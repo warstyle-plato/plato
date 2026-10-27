@@ -4387,7 +4387,9 @@ def install(app: FastAPI) -> None:
         `catalog_text` — каталог координат МСК-77 из приложения к решению:
         разбирается сразу, сети нет. `file_b64` + `filename` — фото или скан
         страницы решения: распознавание долгое, идёт фоном, ответ — `key`,
-        по нему страница переспрашивает (`key` без файла). С Render — на ядро:
+        по нему страница переспрашивает (`key` без файла). Фото схемы без
+        координат обводит Платон, привязка — по `anchor_rings_merc` (контуры
+        участков проекта) и `addresses`. С Render — на ядро:
         распознавание стоит там (`pdf_ocr`, tesseract в образе).
         """
         import base64
@@ -4416,11 +4418,28 @@ def install(app: FastAPI) -> None:
             if len(data) > 12 * 1024 * 1024:
                 return {"status": "failed", "problem": "файл больше 12 МБ — снимите одну страницу"}
             name = str(body.get("filename") or "")[:120]
-            key = "manual-" + hashlib.sha1(data).hexdigest()[:24]
+            # Фото схемы без координат Платон обводит, а движок привязывает
+            # к участкам проекта (`krt_photo_outline`): контуры участков и их
+            # адреса — часть ключа, другой набор участков — другой ответ.
+            anchors = [krt_project_site.clean_points(ring)
+                       for ring in (body.get("anchor_rings_merc") or [])[:40]
+                       if isinstance(ring, list)]
+            anchors = [ring for ring in anchors if len(ring) >= 3]
+            addresses = [str(a)[:200] for a in (body.get("addresses") or [])[:20] if a]
+            key = "manual-" + hashlib.sha1(data + json.dumps(
+                [anchors, points, addresses]).encode("utf-8")).hexdigest()[:24]
+            ask = None
+            if core is not None and callable(getattr(core, "_openai_responses_request", None)):
+                def ask(payload: dict[str, Any]) -> str:
+                    return core._extract_openai_text(core._openai_responses_request(payload, 180.0))
+            model = (os.getenv("OPENAI_KRT_OUTLINE_MODEL")
+                     or os.getenv("OPENAI_AGENT_MODEL", "gpt-5.6")).strip() or "gpt-5.6"
             await run_in_threadpool(lambda: krt_project_site.start(
                 key, lambda: {"schema_version": krt_project_site.SCHEMA_VERSION,
                               "collected_at": int(time.time()), "choices": [],
-                              **krt_manual_contour.recognise(data, name, points_merc=points)}))
+                              **krt_manual_contour.recognise(
+                                  data, name, points_merc=points, anchor_rings_merc=anchors,
+                                  addresses=addresses, ask=ask, model=model)}))
         if not key:
             return {"status": "failed",
                     "problem": "пришлите каталог координат текстом или фото страницы решения"}

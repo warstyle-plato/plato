@@ -13,9 +13,11 @@
   для межевания. Не накрывает участки проекта — это сказано словами;
 - фото таблицы «каталог координат» распознаётся (tesseract, тот же, что у
   сканов) в тот же каталог — точный контур. Фото одной схемы границ без
-  координат к карте точно не привязать: из текста берётся только площадь,
-  форма приблизительная, и ответ это говорит (`approximate`), а не выдаёт
-  квадрат за контур. Распознавание — фоном (`krt_project_site.start`).
+  координат к карте точно не привязать: площадь — из текста, форму обводит
+  Платон, а движок ставит её на карту по участкам проекта с названной
+  погрешностью (`krt_photo_outline`, владелец 27.10.2026); ответ говорит,
+  что границы приблизительные (`approximate`, `origin: photo_outline`).
+  Распознавание — фоном (`krt_project_site.start`).
 """
 
 from __future__ import annotations
@@ -276,10 +278,22 @@ def area_from_text(text: str) -> float | None:
 
 
 def recognise(data: bytes, filename: str, *,
-              points_merc: list[list[float]] | None = None) -> dict[str, Any]:
-    """Фото или скан страницы решения → контур или площадь. Долго — только фоном."""
+              points_merc: list[list[float]] | None = None,
+              anchor_rings_merc: list[list[list[float]]] | None = None,
+              addresses: list[str] | None = None,
+              ask: Any = None, model: str = "") -> dict[str, Any]:
+    """Фото или скан страницы решения → контур или площадь. Долго — только фоном.
+
+    Таблица координат на фото — точный контур (каталог сильнее всего). Её нет —
+    площадь из текста и форма с картинки: Платон (`ask`, единый маршрут модели)
+    обводит границу, движок проверяет обводку, масштабирует её до площади и
+    привязывает к участкам проекта (`krt_photo_outline`). Обводка не вышла —
+    только площадь, и причина названа.
+    """
     name = str(filename or "").lower()
-    if name.endswith(".pdf") or data[:4] == b"%PDF":
+    pdf = name.endswith(".pdf") or data[:4] == b"%PDF"
+    ocr_problem = ""
+    if pdf:
         import document_intake
 
         text = str((document_intake.extract_text(data, filename) or {}).get("text") or "")
@@ -290,21 +304,54 @@ def recognise(data: bytes, filename: str, *,
             text = _ocr_image(data)
         except Exception as exc:  # noqa: BLE001 — отказ распознавания называется
             detail = getattr(exc, "detail", None) or f"{type(exc).__name__}: {exc}"
-            return {"status": "failed", "rings_merc": [], "area_sqm": None,
-                    "approximate": False, "problem": f"фото не распознано: {detail}"[:300]}
-    catalog = from_catalog(text, points_merc=points_merc, source=SOURCE_PHOTO)
-    if catalog["status"] == "ready":
-        catalog["source_note"] = "; ".join(part for part in (
-            catalog.get("source_note"),
-            "цифры распознаны с картинки — сверьте площадь с решением") if part)
-        return catalog
+            ocr_problem = f"фото не распознано: {detail}"[:300]
+            text = ""
+    if text:
+        catalog = from_catalog(text, points_merc=points_merc, source=SOURCE_PHOTO)
+        if catalog["status"] == "ready":
+            catalog["source_note"] = "; ".join(part for part in (
+                catalog.get("source_note"),
+                "цифры распознаны с картинки — сверьте площадь с решением") if part)
+            return catalog
     area = area_from_text(text)
+    outline: dict[str, Any] = {}
+    if not pdf and ask is not None:
+        from auction_search import krt_photo_outline
+
+        outline = krt_photo_outline.from_photo(
+            data, area, ask, model=model, read_area=area_from_text,
+            rings_merc=anchor_rings_merc, points_merc=points_merc, addresses=addresses)
+        area = area or area_from_text(outline.get("area_text") or "")
+    if outline.get("status") == "ready" and area:
+        placed = bool(outline.get("rings_merc"))
+        where = (f"на карту поставлена {outline['anchored_by']}, погрешность — около "
+                 f"{outline['anchor_error_m']} м" if placed else
+                 f"на карту не поставлена: {outline.get('map_problem') or 'причина не названа'}")
+        return {"status": "ready", "origin": "photo_outline", "approximate": True,
+                "area_sqm": round(area, 1), "rings_merc": outline.get("rings_merc") or [],
+                "shape_m": outline["shape_m"], "anchor_error_m": outline.get("anchor_error_m"),
+                "anchored_by": outline.get("anchored_by") or "",
+                "map_problem": outline.get("map_problem") or "",
+                "source": krt_photo_outline.SOURCE_PHOTO_OUTLINE, "problem": "",
+                "source_note": ("на фото нет таблицы координат, поэтому форма снята с "
+                                "картинки: Платон обвёл границу, размер подогнан под площадь "
+                                f"из текста решения; {where}")}
     if area:
+        shape_problem = (outline.get("problem") or "") if ask is not None and not pdf else \
+            ("с документа PDF форма не снимается" if pdf else "Платон не подключён")
         return {"status": "ready", "rings_merc": [], "area_sqm": round(area, 1),
                 "approximate": True, "source": SOURCE_PHOTO_AREA, "problem": "",
+                "shape_problem": shape_problem,
                 "source_note": "на фото нет таблицы координат — к карте его точно не "
                                "привязать, поэтому взята только площадь из текста, а форма "
-                               "участка на схеме приблизительная"}
+                               "участка на схеме приблизительная"
+                               + (f"; форму с картинки снять не вышло: {shape_problem}"
+                                  if shape_problem else "")}
+    if ocr_problem and ask is None:
+        return {"status": "failed", "rings_merc": [], "area_sqm": None, "approximate": False,
+                "problem": ocr_problem}
+    reasons = "; ".join(r for r in (ocr_problem, outline.get("problem")) if r)
     return {"status": "failed", "rings_merc": [], "area_sqm": None, "approximate": False,
             "problem": "на фото не нашлось ни таблицы координат, ни площади территории — "
-                       "снимите страницу с каталогом координат крупнее и ровнее"}
+                       "снимите страницу с каталогом координат крупнее и ровнее"
+                       + (f" ({reasons})" if reasons else "")}
