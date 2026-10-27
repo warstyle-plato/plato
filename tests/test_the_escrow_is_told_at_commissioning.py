@@ -51,7 +51,7 @@ def test_the_escrow_at_the_forecast_commissioning(monkeypatch):
     assert at["plan_coverage"] == pytest.approx(0.9)
 
     text = report.render_text(built)
-    assert ("К вводу 31.12.2026 (прогноз Монитора) при нынешнем темпе на эскроу будет "
+    assert ("к вводу 31.12.2026 (прогноз Монитора) при нынешнем темпе на эскроу будет "
             "120,0 млн ₽ — покрывает кредит 100,0 млн ₽ (1,20×); по плану финмодели — "
             "90,0 млн ₽, 0,90×.") in text, text
     found = {item["topic"]: item["text"] for item in built["findings"]}
@@ -59,7 +59,7 @@ def test_the_escrow_at_the_forecast_commissioning(monkeypatch):
             "по плану финмодели — 0,90×") in found["Финансирование"], found["Финансирование"]
 
     page = report.render_html(built)
-    assert "Эскроу к вводу 31.12.2026 (прогноз Монитора)" in page
+    assert "к вводу 31.12.2026 (прогноз Монитора)" in page and "Покрытие кредита эскроу" in page
     assert "1,20×" in page and "0,90×" in page
 
 
@@ -68,7 +68,7 @@ def test_without_a_forecast_the_approved_date_is_used_and_named(monkeypatch):
     at = built["funding"]["escrow"]["queues"][0]["at_commissioning"]
     assert (at["date"], at["source"]) == ("2026-11-30", "утверждённый срок")
     assert at["keeping_escrow"] == pytest.approx(100 * M)
-    assert "К вводу 30.11.2026 (утверждённый срок)" in report.render_text(built)
+    assert "к вводу 30.11.2026 (утверждённый срок)" in report.render_text(built)
 
 
 def test_a_short_pace_is_told_as_not_covering():
