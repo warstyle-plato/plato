@@ -11,9 +11,10 @@
 - работу называет Монитор следом по той же сети, что дала прогноз;
 - «к раскрытию» раньше ввода объяснено словами.
 
-Данные сводки: накоплено 60 млн ₽ на сентябрь 2026, темп 20 млн ₽ в месяц,
-кредит по плану 100 млн ₽, погашение с февраля 2027 (раскрытие — январь 2027).
-К 30.06.2027: 60 + 9 × 20 = 240 млн ₽ — 2,40× к кредиту перед погашением.
+Данные сводки: накоплено 65 млн ₽ на октябрь 2026, рассрочка 5 млн ₽, новые
+продажи 50/3 млн ₽ в месяц; кредит по плану 100 млн ₽, погашение с февраля 2027
+(раскрытие — январь 2027). Ввод уехал на 30.06.2027 — рассрочку гасят к нему:
+65 + 5 + 8 × 50/3 = 203,3 млн ₽ — 2,03× к кредиту перед погашением.
 
 Запуск: python3 -m pytest tests/test_the_commissioning_is_approved_and_the_forecast_apart.py -q
 """
@@ -57,7 +58,7 @@ def test_the_escrow_is_counted_to_the_approved_date(monkeypatch):
     funding = _late(monkeypatch)["funding"]
     at = funding["escrow"]["queues"][0]["at_commissioning"]
     assert (at["date"], at["source"]) == ("2026-11-30", "утверждённый срок")
-    assert at["keeping_escrow"] == pytest.approx(100 * M)
+    assert at["keeping_escrow"] == pytest.approx((65 + 5 + 50 / 3) * M)
     rows = funding["escrow_track"]["rows"]
     # Квартал ввода — утверждённого; прогноз (2027 Q2) таблицу не удлиняет.
     assert [row["quarter"] for row in rows] == ["2026 Q3", "2026 Q4", "2027 Q1"]
@@ -67,23 +68,23 @@ def test_the_escrow_is_counted_to_the_approved_date(monkeypatch):
 def test_the_forecast_is_told_apart_with_the_work_that_drives_it(monkeypatch):
     built = _late(monkeypatch)
     later = built["funding"]["escrow"]["queues"][0]["at_forecast"]
-    assert later["keeping_escrow"] == pytest.approx(240 * M)
+    assert later["keeping_escrow"] == pytest.approx((65 + 5 + 8 * 50 / 3) * M)
     assert later["credit"] == pytest.approx(100 * M) and later["credit_at"] == "2027-01"
-    assert later["keeping_coverage"] == pytest.approx(2.4)
+    assert later["keeping_coverage"] == pytest.approx(2.0333, abs=1e-4)
 
     text = report.render_text(built)
     assert ("По темпу работ ввод может сдвинуться на 30.06.2027 (прогноз Монитора) — срок "
             "тянет работа «Фасады» (Корпус 2; статья сметы 2.2.2.6): принято 12 % объёма, "
             "по нынешнему темпу закончится 30.06.2027 вместо 31.10.2026 по плану.") in text, text
-    assert ("Если ввод сдвинется, к 30.06.2027 при нынешнем темпе на эскроу будет "
-            "240,0 млн ₽ — покрывает кредит 100,0 млн ₽ (остаток перед погашением по плану "
-            "финмодели, январь 2027; 2,40×).") in text, text
+    assert ("Если ввод сдвинется, к 30.06.2027 по прогнозу на эскроу будет "
+            "203,3 млн ₽ — покрывает кредит 100,0 млн ₽ (остаток перед погашением по плану "
+            "финмодели, январь 2027; 2,03×).") in text, text
     # Утверждённый ввод в тексте эскроу — свой, прогнозу он не уступает.
     assert "к вводу 30.11.2026 (утверждённый срок)" in text
 
     page = report.render_html(built)
     assert "если ввод сдвинется на 30.06.2027 (прогноз Монитора)" in page
-    assert "2,40×" in page and "срок тянет работа «Фасады»" in page
+    assert "2,03×" in page and "срок тянет работа «Фасады»" in page
 
     found = {item["topic"]: item["text"] for item in built["findings"]}
     assert "Срок тянет работа «Фасады» (Корпус 2; статья сметы 2.2.2.6)" in found["Срок"]
