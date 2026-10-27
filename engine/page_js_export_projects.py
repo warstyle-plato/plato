@@ -1569,7 +1569,10 @@ async function accessAdminGrant(){
    (data.until?', до '+accessDate(data.until):', срок каждого участка пойдёт с его первого расчёта')+'.'+
    // Весть человеку в Telegram: дошла — так и сказано, нет — причина, чтобы
    // выдавший написал ему сам.
+   // В очереди — не «не отправлено»: ядро само до Telegram не достаёт, и весть
+   // отправит бот; писать человеку самому не нужно.
    (data.notice?(data.notice.sent?' Сообщение в Telegram отправлено.':
+    data.notice.queued?' Сообщение в Telegram пока не отправлено: '+(data.notice.reason||'')+'.':
     ' Сообщение в Telegram не отправлено: '+(data.notice.reason||'причина неизвестна')+'. Напишите человеку сами.'):'');
   renderAccessAdmin();
  }catch(e){if(status)status.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>'}
