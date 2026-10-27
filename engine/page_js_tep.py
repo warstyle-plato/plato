@@ -2087,6 +2087,7 @@ async function applyNormativeTep(densityOverride,keepRows){
   inputs._mo_calc={query:body.query,territory:data.territory||{},
    density_sqm_per_ha:data.density_sqm_per_ha,vri:data.vri||{},social:data.social||{},
    balance:data.balance||{},warnings:data.warnings||[],
+   site_restrictions:data.site_restrictions||null,
    // Объём квартир последнего нормативного расчёта. По нему обратный счёт
    // отличает правку человека от собственного результата и не зовёт себя по кругу.
    apartments_saleable:Number((data.tep&&data.tep.apartments&&data.tep.apartments.saleable)||0)};

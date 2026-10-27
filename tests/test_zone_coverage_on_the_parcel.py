@@ -76,7 +76,7 @@ def test_a_zone_without_geometry_is_unknown_not_zero():
 
 def test_nothing_to_measure_gives_nothing():
     assert core._land_coverage_shares(None, [square(0, 0, 10, 10)]) == {}
-    assert core._land_coverage_shares(PARCEL, []) == {"shares": [], "free": 1.0,
+    assert core._land_coverage_shares(PARCEL, []) == {"shares": [], "free": 1.0, "cut": 0.0,
                                                       "samples": core._LAND_COVERAGE_GRID ** 2}
 
 
