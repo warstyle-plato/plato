@@ -298,13 +298,14 @@ def collect(project: str, sales_project: str = "", sales_dir: Path | None = None
     if rates:
         kind = rate_kind(rates, cover)
         margin = loans[0]["margin_pp"]
+        # Запятая — только в самом числе: «п. п.» и имена кредитов не трогаются.
+        pp = f"{margin:g}".replace(".", ",") + " п. п."
         if kind == "base":
             path = [{"from": f"{m}-01", "rate": rates[m] - margin} for m in sorted(rates)]
-            words = (f"финмодель, «Ставка кредита ПФ» минус маржа {loans[0]['short']} "
-                     f"{margin:g} п. п.").replace(".", ",", 1)
+            words = f"финмодель, «Ставка кредита ПФ» минус маржа {loans[0]['short']} {pp}"
             notes.append(f"Ставка: в финмодели «Ставка кредита ПФ» не меняется вслед за "
                          f"покрытием эскроу, поэтому она принята базовой — ключевая плюс "
-                         f"{margin:g} п. п. по {loans[0]['short']}".replace(".", ",")
+                         f"{pp} по {loans[0]['short']}"
                          + ". Скидка за покрытие эскроу считается по ступеням договора. "
                          "Если в модели ставка уже со скидкой, проценты здесь занижены.")
         else:

@@ -222,6 +222,8 @@ def test_every_missing_value_is_a_visible_assumption_with_its_effect():
     block = page[page.index("credit-assumptions"):]
     block = block[:block.index("</div>")]
     assert "принята базовой" in block and "проценты здесь занижены" in block
+    # Запятая только в числе маржи — не «п, п,».
+    assert "4,78 п. п. по НКЛ 2025" in block and "п, п," not in block
     assert "при отсутствии дофинансирования и свободных денег" in block
     assert "Аккредитивы не учтены" in block and "оценены сверху" in block
     assert "сначала по НКЛ 2025 в пределах её лимита" in block
