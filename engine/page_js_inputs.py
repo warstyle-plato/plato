@@ -16,7 +16,7 @@ engine/page_build.py. Стенды на node берут куски скрипт�
 # ruff: noqa
 
 PAGE += r"""const TERRITORY_MARKERS=['_glavapu_import','_other_region','_field_origin','_manual_tep_import','_mo_calc','_cadastral_analysis','_cadastral_query','_cadastral_origin',
- '_site_area_user_set','_site_density_user_set','_demolition_source','_land_buyout_source','_vri_relief_source','vri_mpt_override'];
+ '_site_area_user_set','_site_density_user_set','_krt_site','_demolition_source','_land_buyout_source','_vri_relief_source','vri_mpt_override'];
 
 // Предпосылки аналитика — цены, себестоимость, ставки, сроки, налоги — это не
 // данные участка, и сбрасывать их при смене территории нельзя.
