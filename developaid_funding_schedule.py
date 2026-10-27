@@ -276,12 +276,82 @@ def store(project: str, data: bytes, taken_at: Any, filename: str = "") -> dict[
             "unit": parsed["unit"]}
 
 
-def versions(project: str, upto: str = "") -> list[str]:
-    folder = monitor._project_dir(project) / KIND
-    if not folder.exists():
+# Книги, которые Монитор уже хранит, — где лист графика может лежать и без
+# отдельной загрузки (владелец, 27.10.2026: «Откуда я возьму эти файлы и
+# данные? Они все есть или в НКЛ, или в РСС, или в модели»). Лист ищется по
+# имени в оглавлении книги, а не по имени файла.
+BOOKS = (
+    ("baseline/finance.xlsx", "финмодель (финансовая база Монитора)"),
+    ("finance_history/*.xlsx", "прежние версии финмодели"),
+    ("estimate/*.xlsx", "отчёты РСС"),
+    ("budget/*.xlsx", "файлы БДДС «Бюджет месяца»"),
+    ("sales/*.xlsx", "отчёты о продажах"),
+    ("credit/*.xlsx", "файлы кредита"),
+)
+_DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def _sheet_names(path: Path) -> list[str]:
+    """Листы книги по её оглавлению (xl/workbook.xml), не открывая листы."""
+    import html
+    import zipfile
+
+    try:
+        with zipfile.ZipFile(path) as book:
+            index = book.read("xl/workbook.xml").decode("utf-8", "replace")
+    except (OSError, KeyError, zipfile.BadZipFile):
         return []
-    days = sorted(path.stem for path in folder.glob("*.xlsx"))
-    return [day for day in days if not upto or day <= upto]
+    return [html.unescape(name) for name in re.findall(r'<sheet\b[^>]*\bname="([^"]*)"', index)]
+
+
+def _book_day(path: Path) -> str:
+    """Дата версии: из имени файла, у файлов без даты — день загрузки."""
+    found = _DAY.match(path.stem)
+    if found:
+        return found.group(0)
+    return datetime.date.fromtimestamp(path.stat().st_mtime).isoformat()
+
+
+def sources(project: str, upto: str = "") -> dict[str, Any]:
+    """Где лежит график: дата версии → файл, и что просмотрено без находки.
+
+    Отдельно загруженный график на ту же дату главнее книги, где лист нашёлся
+    попутно: его загрузили именно как график.
+    """
+    root = monitor._project_dir(project)
+    found: dict[str, dict[str, Any]] = {}
+    looked: list[dict[str, Any]] = []
+    for pattern, where in BOOKS:
+        paths = sorted(root.glob(pattern))
+        looked.append({"where": where, "files": len(paths)})
+        for path in paths:
+            day = _book_day(path)
+            if (upto and day > upto) or SHEET not in _sheet_names(path):
+                continue
+            found[day] = {"path": path, "where": where, "file": path.name}
+    folder = root / KIND
+    for path in sorted(folder.glob("*.xlsx")) if folder.exists() else []:
+        if not upto or path.stem <= upto:
+            found[path.stem] = {"path": path, "where": "загруженный график финансирования",
+                                "file": path.name}
+    return {"versions": dict(sorted(found.items())), "looked": looked}
+
+
+def versions(project: str, upto: str = "") -> list[str]:
+    return list(sources(project, upto)["versions"])
+
+
+def _missing_words(looked: list[dict[str, Any]]) -> str:
+    seen = [f"{item['where']} ({item['files']})" for item in looked if item["files"]]
+    empty = [item["where"] for item in looked if not item["files"]]
+    text = ("Графика финансирования нет ни в одной книге, которую хранит Монитор, поэтому "
+            "сравнить план оплат с оплаченным не с чем.")
+    if seen:
+        text += " Искали в книгах: " + ", ".join(seen) + "."
+    if empty:
+        text += " Не загружены: " + ", ".join(empty) + "."
+    return (text + " Если график лежит отдельным файлом, его можно загрузить в Мониторе: блок "
+            "«Бюджет месяца», кнопка «Загрузить график».")
 
 
 def version_for(month: str, days: list[str]) -> str:
@@ -297,9 +367,11 @@ def version_for(month: str, days: list[str]) -> str:
     return earlier[-1] if earlier else days[0]
 
 
-def _read_version(project: str, day: str) -> dict[str, Any]:
-    path = monitor._project_dir(project) / KIND / f"{day}.xlsx"
-    return read_schedule(path.read_bytes())
+def _read_version(project: str, day: str, found: dict[str, Any] | None = None) -> dict[str, Any]:
+    place = (found or sources(project)["versions"]).get(day)
+    if place is None:
+        raise ScheduleUnreadable(f"версии графика от {day} нет")
+    return read_schedule(place["path"])
 
 
 # --------------------------------------------------------------------------
@@ -388,10 +460,11 @@ def _compare(plan: float | None, fact: float) -> dict[str, Any]:
 
 def execution(project: str, end: datetime.date) -> dict[str, Any]:
     """Исполнение графика по месяцам на дату ``end`` — один ответ для всех."""
-    days = versions(project, end.isoformat())
+    where = sources(project, end.isoformat())
+    found = where["versions"]
+    days = list(found)
     if not days:
-        return {"state": "missing",
-                "reason": "График финансирования не загружен в Монитор: исполнять сверять не с чем."}
+        return {"state": "missing", "reason": _missing_words(where["looked"])}
     rss = monitor._latest(project, "estimate", ".xlsx", end.isoformat())
     if rss is None:
         return {"state": "missing",
@@ -406,7 +479,7 @@ def execution(project: str, end: datetime.date) -> dict[str, Any]:
 
     def schedule(day: str) -> dict[str, Any]:
         if day not in cache:
-            cache[day] = _read_version(project, day)
+            cache[day] = _read_version(project, day, found)
         return cache[day]
 
     months_seen = sorted({m for day in days for m in schedule(day)["months"] if m <= current})
@@ -449,7 +522,9 @@ def execution(project: str, end: datetime.date) -> dict[str, Any]:
             lines_plan=lines_plan, outside=outside, lines=out_lines,
             earlier_than_version=month < day[:7]))
     latest = schedule(days[-1])
-    return {"state": "ok", "versions": days, "rss": rss.stem, "fact_at": fact_at.isoformat(),
+    return {"state": "ok", "versions": days, "rss": rss.stem,
+            "sources": {day: {"where": place["where"], "file": place["file"]}
+                        for day, place in found.items()}, "fact_at": fact_at.isoformat(),
             "unit": latest["unit"], "months": months,
             "paid_check": paid_check(latest, days[-1], payments, estimate),
             "total": latest["total"], "uncoded": latest["uncoded"]}
