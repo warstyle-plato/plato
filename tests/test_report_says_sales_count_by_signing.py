@@ -59,8 +59,13 @@ def test_the_note_names_the_contracts_at_the_quarter_edge():
     built = _full()
     built["sales"]["quarter"] = dict(quarter, fm={"amount": 1_680 * M, "area": 1.0})
     tiles = {item["label"]: item for item in report.tiles(built)}
-    assert ("по регистрации, как у отдела продаж, — до 291,5 млн ₽"
-            in tiles["Продажи квартала к плану финмодели"]["note"])
+    # Полной фразой, без «до» (владелец, 27.10.2026: «Что значит до?»).
+    note = tiles["Продажи квартала к плану финмодели"]["note"]
+    assert note.endswith(
+        "квартала. Отдел продаж считает по дате регистрации: если 2 договора на "
+        "113,5 млн ₽, подписанные в последние две недели прошлого квартала, "
+        "зарегистрированы уже в этом, у него квартал — 291,5 млн ₽"), note
+    assert " до " not in note
     assert "291,5 млн ₽ вместо 178,0 млн ₽" in report.render_text(built)
     assert "291,5 млн ₽ вместо 178,0 млн ₽" in report.render_html(built)
 
