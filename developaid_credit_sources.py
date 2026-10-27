@@ -286,6 +286,11 @@ def collect(project: str, sales_project: str = "", sales_dir: Path | None = None
     terms = credit.PRESETS[preset_id]["terms"]
     if commissioning and commissioning.get("date"):
         when, words = commissioning["date"][:10], f"срок ввода — {commissioning['source']}"
+        # Та же дата — «плановая дата раскрытия» проверки достаточности (А п. 8.2.60):
+        # проценты до раскрытия считаются до утверждённого ввода, а не до даты условий.
+        datasets["terms.project"] = _set("terms.project", as_of, words, {
+            "planned_disclosure": {"value": when, "source": f"{words}: раскрытие эскроу "
+                                   "в дату ввода"}})
     else:
         when = terms["planned_disclosure"]["value"]
         words = "утверждённого срока ввода нет — плановая дата раскрытия из условий (допущение)"

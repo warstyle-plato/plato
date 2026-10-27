@@ -260,3 +260,20 @@ def test_the_report_discloses_at_the_approved_date_as_the_escrow_table(monkeypat
     assert [(e["date"], round(e["amount"])) for e in disclosed] == [
         ("2027-09-15", round(at["keeping_escrow"]))]
     assert any("ввод может сдвинуться на 15.12.2028" in note for note in base["assumptions"])
+
+
+def test_the_sufficiency_check_counts_interest_to_the_approved_commissioning():
+    """П. 8.2.60: проверка банка — на 30.06.2027 (дата договора), а «плановая дата
+    раскрытия», до которой считаются проценты, — утверждённый ввод, не дата условий."""
+    _project()
+    approved = credit.for_project(PROJECT, SALES, end="2026-10-20", commissioning={
+        "date": "2027-12-20", "source": "утверждённый срок"})["base"]
+    item = next(i for i in approved["sufficiency"] if i["kind"] == "forecast")
+    assert item["date"] == "2027-06-30"
+    assert item["planned_disclosure"] == "2027-12-20"
+    assert approved["terms"]["planned_disclosure"]["source"].startswith("срок ввода")
+    # Позже раскрытие — больше процентов до него.
+    early = _run()["base"]
+    first = next(i for i in early["sufficiency"] if i["kind"] == "forecast")
+    assert first["planned_disclosure"] == "2027-09-15"
+    assert item["planned_interest"] > first["planned_interest"] > 0
