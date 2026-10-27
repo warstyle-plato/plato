@@ -1130,7 +1130,8 @@ def build(project: str, kind: str, end: Any, sales_project: str | None = None,
             ("funding_schedule", lambda: funding_schedule.execution(project, bounds["end"])),
             ("credit", lambda: credit_repayment.for_project(
                 project, sales_project or "", sales_dir, end=bounds["end"],
-                commissioning=_commissioning(dashboard))),
+                commissioning=_commissioning(dashboard),
+                shift=_forecast_shift(dashboard, _commissioning(dashboard)))),
             ("legal", lambda: dict(legal_cases.for_report(
                 project, bounds["start"], bounds["end"]), state="ok")),
             ("notes", lambda: dict(project_notes.for_period(

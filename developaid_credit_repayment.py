@@ -528,7 +528,8 @@ def save(project: str, items: list[dict[str, Any]], author: str,
 
 
 def inputs_for(project: str, sales_project: str = "", sales_dir: Path | None = None,
-               end: Any = None, commissioning: dict[str, str] | None = None) -> dict[str, Any]:
+               end: Any = None, commissioning: dict[str, str] | None = None,
+               shift: dict[str, Any] | None = None) -> dict[str, Any]:
     """Наборы для расчёта: найденное в загруженном + ручные поправки поверх.
 
     Состояние кредита на дату РСС (долг, отложенные проценты, плата за лимит)
@@ -537,7 +538,7 @@ def inputs_for(project: str, sales_project: str = "", sales_dir: Path | None = N
     """
     import developaid_credit_sources as sources
 
-    found = sources.collect(project, sales_project, sales_dir, end, commissioning)
+    found = sources.collect(project, sales_project, sales_dir, end, commissioning, shift)
     kept = load(project)
     manual = kept.get("datasets") or {}
     preset = found["preset"] or kept.get("preset")
@@ -586,7 +587,8 @@ def inputs_for(project: str, sales_project: str = "", sales_dir: Path | None = N
                              "prepayments": []}}
     for name, item in manual.items():
         datasets[name] = dict(item, source=f"поправка вручную: {item['source']}")
-    return {"preset": preset, "datasets": datasets, "missing": missing, "notes": notes}
+    return {"preset": preset, "datasets": datasets, "missing": missing, "notes": notes,
+            "escrow_at_disclosure": found.get("escrow_at_disclosure")}
 
 
 # --------------------------------------------------------------------------
@@ -2137,9 +2139,14 @@ def text_line(result: dict[str, Any]) -> str:
 
 def for_project(project: str, sales_project: str = "", sales_dir: Path | None = None,
                 stress: dict[str, Any] | None = None, end: Any = None,
-                commissioning: dict[str, str] | None = None) -> dict[str, Any]:
-    """Прогноз проекта по уже загруженным данным; чего нет — названо с местом."""
-    inputs = inputs_for(project, sales_project, sales_dir, end, commissioning)
+                commissioning: dict[str, str] | None = None,
+                shift: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Прогноз проекта по уже загруженным данным; чего нет — названо с местом.
+
+    ``commissioning`` — утверждённый срок ввода сводки (к нему раскрытие),
+    ``shift`` — прогноз Монитора, если он позже: только строкой допущений.
+    """
+    inputs = inputs_for(project, sales_project, sales_dir, end, commissioning, shift)
     # Договоры из отчёта о продажах есть у многих проектов; кредитным проект
     # делает только загрузка данных по кредитам.
     if not inputs.get("preset"):

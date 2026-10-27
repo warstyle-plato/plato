@@ -988,14 +988,16 @@ def _credit_answer(req: MonitorCreditRequest) -> dict[str, Any]:
     link = management_report.sales_link(req.project) or {}
     today = _dt.date.today()
     try:
-        # Срок ввода — тот же, что у сводки: прогноз Монитора, без него утверждённый.
-        commissioning = management_report._commissioning(
-            management_report._monitor_dashboard(req.project, today))
+        # Срок ввода — тот же, что у сводки: утверждённый; прогноз Монитора —
+        # только строкой допущений, если он позже.
+        dashboard = management_report._monitor_dashboard(req.project, today)
+        commissioning = management_report._commissioning(dashboard)
+        shift = management_report._forecast_shift(dashboard, commissioning)
     except Exception:  # noqa: BLE001 — без среза Монитора раскрытие берёт плановую дату
-        commissioning = None
+        commissioning, shift = None, None
     result = credit.for_project(req.project, link.get("sales_project") or "",
                                 stress=_credit_stress(req.stress), end=today,
-                                commissioning=commissioning)
+                                commissioning=commissioning, shift=shift)
     if result.get("state") != "ok":
         return {"state": "missing", "reason": result["reason"]}
     changes = credit.compare(credit.remember(req.project, result), result)

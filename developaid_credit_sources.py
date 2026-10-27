@@ -16,14 +16,15 @@
   её лимита на дату, остаток — на следующую (допущение, называется);
 * долг, начисленные и отложенные проценты на дату РСС — досчитываются от первой
   выдачи по условиям договоров (погашений до первой даты графика нет);
-* эскроу — графики поступлений по договорам из отчёта о продажах
-  (`contracting`, тот же источник, что «Эскроу по кварталам»);
-* новые продажи — план эскроу финмодели (лист «КРЕДИТЫ») сверх уже
-  законтрактованного: в прогноз идёт только превышение плана над договорами;
+* эскроу — поступило: графики поступлений по договорам из отчёта о продажах;
+  дальше — тот же прогноз, что «Эскроу по кварталам» и «к вводу» сводки
+  (`contracting.keeping_at`): рассрочка подписанных договоров и новые продажи
+  по нынешнему темпу, равномерно до ввода. Раскрытие в сумме — ровно это число;
 * прогнозные выдачи — план остатка ПФ финмодели сверх уже выбранного;
-* ставка — «Ставка кредита ПФ» финмодели; ключевая = она минус маржа первой
-  линии (допущение: ставка модели — базовая);
-* раскрытие — срок ввода Монитора (прогноз, без него — утверждённый);
+* ставка — «Ставка кредита ПФ» финмодели: снижается вслед за покрытием —
+  итоговая, берётся как есть; иначе базовая, ключевая = она минус маржа;
+* раскрытие — утверждённый срок ввода (`management_report._commissioning`, тот
+  же `schedule`, что у сводки); прогноз Монитора — отдельной строкой допущений;
 * план банка (эскроу и продажи по кварталам) — лист плана банка отчёта о продажах.
 
 Чего нет ни в договорах, ни в РСС, ни в модели — называется в разделе словами:
@@ -37,6 +38,7 @@ from pathlib import Path
 from typing import Any
 
 import developaid_credit_repayment as credit
+from market_search import contracting
 
 M = credit.M
 
@@ -176,7 +178,8 @@ def rate_kind(rates: dict[str, float], cover: dict[str, float]) -> str:
 
 
 def collect(project: str, sales_project: str = "", sales_dir: Path | None = None,
-            end: Any = None, commissioning: dict[str, str] | None = None) -> dict[str, Any]:
+            end: Any = None, commissioning: dict[str, str] | None = None,
+            shift: dict[str, Any] | None = None) -> dict[str, Any]:
     """Наборы для расчёта из загруженного: {"preset", "history", "datasets", "missing", "notes"}.
 
     ``history`` — наборы от первой выдачи (досчитать долг и проценты до даты РСС),
@@ -251,7 +254,18 @@ def collect(project: str, sales_project: str = "", sales_dir: Path | None = None
         missing.append(found["missing"])
     as_of = found.get("as_of") or end.isoformat()
 
-    # Эскроу: графики договоров целиком; на дату расчёта — всё по её месяц.
+    # Раскрытие — в утверждённый срок ввода (тот же `schedule`, что у сводки);
+    # без него — плановая дата из условий.
+    terms = credit.PRESETS[preset_id]["terms"]
+    if commissioning and commissioning.get("date"):
+        when, words = commissioning["date"][:10], f"срок ввода — {commissioning['source']}"
+    else:
+        when = terms["planned_disclosure"]["value"]
+        words = "утверждённого срока ввода нет — плановая дата раскрытия из условий (допущение)"
+
+    # Эскроу: поступило — графики договоров (то, что случилось); дальше — тот же
+    # прогноз, что «Эскроу по кварталам» и «к вводу» сводки (`keeping_at`):
+    # рассрочка подписанных договоров и новые продажи по темпу, равномерно до ввода.
     payments, signed = [], []
     for row in rows:
         for step in row.get("escrow_schedule") or []:
@@ -265,27 +279,35 @@ def collect(project: str, sales_project: str = "", sales_dir: Path | None = None
                         f"«{sales_project}» от {credit.ddmmyyyy(sales_at)}") if sales_at else ""
     if rows:
         balance = sum(p["amount"] for p in payments if p["date"][:7] <= as_of[:7])
+        ahead: dict[str, list[dict[str, Any]]] = {"contracts": [], "sales": []}
+        pace = _escrow_pace(rows, credit_plan, when)
+        if pace:
+            ahead, extra = _escrow_forecast(pace, as_of, when)
+            balance += extra
+            out["escrow_at_disclosure"] = contracting.keeping_at(pace, when[:7])
+            notes.append(
+                "Поступления на эскроу до ввода — тот же прогноз, что в «Эскроу по "
+                f"кварталам»: остаток по рассрочке подписанных договоров "
+                f"{credit.mln(pace['owed'])} млн ₽ и новые продажи по нынешнему темпу "
+                f"{credit.mln(pace['sales_pace'])} млн ₽ в месяц, равномерно до ввода. "
+                "Если продажи пойдут медленнее, к раскрытию на эскроу будет меньше и "
+                "дефицит вырастет.")
         datasets["escrow"] = _set("escrow", as_of, contracts_source + " — поступило по "
                                   f"{credit.ddmmyyyy(as_of)}", {"balance": balance, "history": []})
-        datasets["contracts"] = _set("contracts", as_of, contracts_source,
-                                     {"payments": payments, "signed": signed})
+        datasets["contracts"] = _set("contracts", as_of, contracts_source + (
+            "; дальше — рассрочка по подписанным договорам, равномерно до ввода"
+            if ahead["contracts"] else ""),
+            {"payments": payments + ahead["contracts"], "signed": signed})
         # Расторгнутые договоры контрактация не показывает: их поступлений в
         # графиках уже нет, отдельного прогноза возвратов в системе нет.
         datasets["refunds"] = _set("refunds", as_of, "расторгнутые договоры в контрактации не "
                                    "показываются — их поступлений в графиках нет",
                                    {"payments": []})
-        if credit_plan:
-            datasets["sales"] = _set("sales", as_of, "план эскроу финмодели (лист «КРЕДИТЫ») "
-                                     "сверх законтрактованного", {"payments": _new_sales(
-                                         credit_plan, payments, as_of)})
+        if pace:
+            datasets["sales"] = _set("sales", as_of, "новые продажи по нынешнему темпу "
+                                     "подписания, равномерно до ввода (как в «Эскроу по "
+                                     "кварталам» сводки)", {"payments": ahead["sales"]})
 
-    # Раскрытие — в срок ввода Монитора; без него — плановая дата из условий.
-    terms = credit.PRESETS[preset_id]["terms"]
-    if commissioning and commissioning.get("date"):
-        when, words = commissioning["date"][:10], f"срок ввода — {commissioning['source']}"
-    else:
-        when = terms["planned_disclosure"]["value"]
-        words = "срока ввода Монитора нет — плановая дата раскрытия из условий (допущение)"
     datasets["disclosure"] = _set("disclosure", as_of, f"{words}; раскрытие всего эскроу в "
                                   "дату ввода (допущение: регистрация может сдвинуть позже)",
                                   {"items": [{"date": when, "amount": None, "confirmed": False,
@@ -308,6 +330,11 @@ def collect(project: str, sales_project: str = "", sales_dir: Path | None = None
     notes.append(f"Раскрытие эскроу принято в дату ввода {credit.ddmmyyyy(when)} ({words}). "
                  "На деле банк раскрывает эскроу после регистрации, это может быть позже — "
                  "тогда платежи до раскрытия потребуют больше денег вне эскроу.")
+    if shift and shift.get("date") and shift["date"][:10] > when:
+        notes.append(f"По темпу работ ввод может сдвинуться на {credit.ddmmyyyy(shift['date'])} "
+                     f"({shift.get('source') or 'прогноз Монитора'}). Тогда эскроу раскроется "
+                     "позже, и платежи банку до раскрытия придётся покрывать деньгами вне "
+                     "эскроу; расчёт выше — к утверждённому сроку.")
     if bank:
         datasets["business_plan"] = _set("business_plan", sales_at or as_of,
                                          f"план банка, лист «{bank.get('sheet') or ''}»",
@@ -354,34 +381,54 @@ def collect(project: str, sales_project: str = "", sales_dir: Path | None = None
     return out
 
 
-def _new_sales(credit_plan: dict[str, Any], payments: list[dict[str, Any]],
-               as_of: str) -> list[dict[str, Any]]:
-    """Новые продажи = рост плана эскроу финмодели сверх законтрактованного.
+def _escrow_pace(rows: list[dict[str, Any]], credit_plan: dict[str, Any] | None,
+                 when: str) -> dict[str, Any] | None:
+    """Замер и темп эскроу — тот же вызов, что у сводки («Эскроу по кварталам»)."""
+    if not credit_plan:
+        return None
+    got = contracting.escrow_sufficiency({}, rows, credit_plan, settle=when[:7])
+    queues = got.get("queues") or []
+    pace = queues[0] if queues else None
+    if not pace or pace.get("owed") is None or not pace.get("data_month"):
+        return None
+    return pace
 
-    План эскроу модели — нарастающий итог всего проекта, в нём уже сидят
-    действующие договоры. В прогноз идёт только превышение плана над их
-    графиками: один рубль договора не считается дважды.
+
+def _next_month(month: str) -> str:
+    year, number = int(month[:4]), int(month[5:7])
+    return f"{year + number // 12}-{number % 12 + 1:02d}"
+
+
+def _escrow_forecast(pace: dict[str, Any], as_of: str, when: str
+                     ) -> tuple[dict[str, list[dict[str, Any]]], float]:
+    """Помесячные поступления по `keeping_at` до месяца ввода.
+
+    Рассрочка подписанных договоров — «contracts», новые продажи по темпу —
+    «sales»: сумма по месяц ввода равна прогнозу «к вводу» сводки. Месяцы до
+    даты остатка (выгрузка продаж старше РСС) ложатся в сам остаток — второй
+    раз они не считаются. Поступление месяца ввода датировано днём ввода.
     """
-    plan: dict[str, float] = {}
-    for queue in credit_plan.get("queues") or []:
-        for month, value in (queue.get("escrow") or {}).items():
-            plan[month] = plan.get(month, 0.0) + float(value or 0.0)
-    contracted: dict[str, float] = {}
-    for item in payments:
-        contracted[item["date"][:7]] = contracted.get(item["date"][:7], 0.0) + item["amount"]
-    out, emitted, running, target = [], 0.0, 0.0, 0.0
-    for month in sorted(set(plan) | set(contracted)):
-        running += contracted.get(month, 0.0)
-        if month in plan:
-            target = plan[month]
+    settle, data_month = when[:7], pace["data_month"]
+    out: dict[str, list[dict[str, Any]]] = {"contracts": [], "sales": []}
+    months, month = [], data_month
+    while month < settle:
+        month = _next_month(month)
+        months.append(month)
+    if not months:
+        return out, 0.0
+    owed, sales_pace = float(pace["owed"] or 0.0), float(pace.get("sales_pace") or 0.0)
+    folded = 0.0
+    for month in months:
+        steps = {"contracts": owed / len(months), "sales": sales_pace}
         if month <= as_of[:7]:
+            folded += sum(steps.values())
             continue
-        extra = max(0.0, target - running)
-        if extra > emitted + 1.0:
-            out.append({"date": _month_end(month), "month_only": True,
-                        "amount": extra - emitted, "sale_month": month})
-            emitted = extra
-    return out
+        day = when if month == settle else _month_end(month)
+        for kind, amount in steps.items():
+            if amount > 0.5:
+                out[kind].append({"date": day, "month_only": True, "amount": amount,
+                                  "sale_month": month})
+    return out, folded
 
 
 def _bank_plan(bank: dict[str, Any]) -> dict[str, Any]:
@@ -390,7 +437,6 @@ def _bank_plan(bank: dict[str, Any]) -> dict[str, Any]:
     Первый квартал плана банка несёт продажи с начала проекта — с кварталом его
     сравнивать нельзя, он в план продаж не идёт.
     """
-    from market_search import contracting
 
     escrow = contracting.bank_escrow_plan(bank)
 

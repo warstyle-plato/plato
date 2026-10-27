@@ -7,8 +7,9 @@
 - выдачи и долг — из реестра платежей РСС (платежи из заёмных средств),
   выдача ложится на первую НКЛ в пределах её лимита на дату, остаток — дальше;
 - проценты и плата за лимит до даты РСС досчитаны от первой выдачи;
-- эскроу — из графиков договоров отчёта о продажах, новые продажи — только
-  превышение плана финмодели над договорами (договор не считается дважды);
+- эскроу — поступило по графикам договоров отчёта о продажах, дальше — тот же
+  прогноз, что «Эскроу по кварталам» сводки: раскрытие одно (дата ввода и сумма
+  «к вводу» совпадают с таблицей эскроу);
 - прогнозные выдачи — план остатка ПФ финмодели сверх выбранного;
 - ручной набор — поправка поверх найденного, с подписью;
 - чего нет — названо: что и где не нашлось; «загрузите данные» не пишется.
@@ -77,11 +78,12 @@ def _rss() -> bytes:
     return blob.getvalue()
 
 
-SCHEDULE = {m: 40 * M for m in _months("2025-06", "2027-06")}
+# Поступило по договорам — по месяц выгрузки; остаток цены — рассрочка до ввода.
+SCHEDULE = {m: 40 * M for m in _months("2025-06", "2026-10")}
 
 
 def _sales(credit_plan: bool = True) -> None:
-    row = _contract("2025-06-10", "Квартира", 1000.0, 1000 * M)
+    row = _contract("2025-06-10", "Квартира", 1000.0, 2500 * M)
     row["contract"] = "ДДУ-1"
     row["escrow_schedule"] = [{"month": m, "amount": v} for m, v in SCHEDULE.items()]
     parts = {"contracting": {"project": SALES, "missing": [], "rows": [row]}}
@@ -138,18 +140,29 @@ def test_debt_draws_and_interest_come_from_the_rss_and_the_terms():
     assert drawn == pytest.approx(1100 * M)
 
 
-def test_escrow_comes_from_contract_schedules_and_new_sales_only_above_them():
+def test_escrow_comes_from_contract_schedules_and_one_forecast_with_the_report():
     _project()
     base = _run()["base"]
     on_rss = sum(v for m, v in SCHEDULE.items() if m <= RSS_DAY[:7])
     assert base["top"]["escrow_now"]["value"] == pytest.approx(on_rss)
-    # План эскроу модели — весь проект; в прогноз идёт только его превышение над договорами.
-    plan = {"queues": [{"escrow": {"2026-11": 100 * M, "2026-12": 200 * M, "2027-01": 300 * M}}]}
-    paid = [{"date": "2026-11-30", "amount": 50 * M}, {"date": "2026-12-31", "amount": 50 * M},
-            {"date": "2027-01-31", "amount": 50 * M}]
-    new = sources._new_sales(plan, paid, "2026-10-18")
-    assert [round(x["amount"] / M) for x in new] == [50, 50, 50]
-    assert sum(x["amount"] for x in new) + 150 * M == pytest.approx(300 * M)
+    # Раскрытие одно на сводку: та же дата, что утверждённый ввод, и та же сумма,
+    # что прогноз «к вводу» в «Эскроу по кварталам» (рассрочка + темп продаж).
+    approved = {"date": "2027-09-15", "source": "утверждённый срок"}
+    escrow = report._escrow(SALES, None, approved, None)
+    told = escrow["queues"][0]["at_commissioning"]["keeping_escrow"]
+    disclosed = [e for e in base["escrow"]["events"] if e["kind"] == "disclosure"]
+    assert [e["date"] for e in disclosed] == ["2027-09-15"]
+    assert disclosed[0]["amount"] == pytest.approx(told)
+    first = base["rows"][0]
+    assert first["date"] == "2027-09-15"
+    # В строке раскрытия доступна вся сумма раскрытия (до неё погашений нет).
+    assert first["disclosed_available"] == pytest.approx(told)
+    # Рассрочка подписанных договоров не теряется: без новых продаж (только
+    # подтверждённое) на эскроу к вводу — накоплено плюс остаток по договорам.
+    pace = escrow["queues"][0]
+    assert pace["owed"] > 0
+    assert told == pytest.approx(pace["paid_now"] + pace["owed"]
+                                 + pace["sales_pace"] * 11)
 
 
 def test_a_manual_set_is_a_correction_over_what_was_found():
@@ -224,3 +237,20 @@ def test_an_effective_model_rate_is_used_as_is():
     assert {loan["terms"]["rate"]["value"] for loan in base["loans"]} == {"model"}
     page = credit.render_html({**_run(), "base": base})
     assert "это уже итоговая ставка со скидкой" in page
+
+
+def test_the_report_discloses_at_the_approved_date_as_the_escrow_table(monkeypatch):
+    """Сводка: раскрытие в разделе кредитов — утверждённый ввод, как у таблицы эскроу;
+    прогноз Монитора позже — строкой допущений, а не датой раскрытия."""
+    _project()
+    monkeypatch.setattr(report, "_monitor_view", lambda project, end: {"dashboard": {
+        "funding": {"known": False, "reason": "нет"},
+        "schedule": {"approved_finish": "2027-09-15", "forecast_finish": "2028-12-15"}}})
+    built = report.build(PROJECT, "week", "2026-10-18")
+    at = built["funding"]["escrow"]["queues"][0]["at_commissioning"]
+    assert (at["date"], at["source"]) == ("2027-09-15", "утверждённый срок")
+    base = built["credit"]["base"]
+    disclosed = [e for e in base["escrow"]["events"] if e["kind"] == "disclosure"]
+    assert [(e["date"], round(e["amount"])) for e in disclosed] == [
+        ("2027-09-15", round(at["keeping_escrow"]))]
+    assert any("ввод может сдвинуться на 15.12.2028" in note for note in base["assumptions"])
