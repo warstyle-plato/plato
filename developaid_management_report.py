@@ -2884,6 +2884,9 @@ def _schedule_html(block: dict[str, Any]) -> str:
             note.append("плана в графике нет" + (
                 f": график составлен {_day(month['version'])}"
                 if month.get("earlier_than_version") else ""))
+        if month.get("plan_sheet"):
+            note.append(f"план месяца — с листа «{month['plan_sheet']}»: на листе "
+                        f"«{funding_schedule.SHEET}» этот месяц пустой")
         if month.get("outside"):
             note.append(f"ещё {_rub(month['outside'])} оплачено по статьям, которых нет в графике")
         if (month.get("plan") is not None and month.get("lines_plan") is not None

@@ -16,6 +16,9 @@
   позиции; тройки «Лимит после … / Банк … / Резерв …» справа — не план;
 * итог — объявленная строка ИТОГО, строки после неё (резервы, «Всего:») —
   не статьи;
+* месяц, пустой на основном листе (ни одной суммы, итог пуст или 0), — план с
+  листа «ГФ_до конца 2026» того же файла по коду статьи, с подписью листа
+  (владелец, 28.10.2026: август графика от 23.09 стоит только там);
 * пустая ячейка месяца — «плана нет», а не ноль; текст в числовой ячейке
   («гар. 5 %») — «нет числа» с примечанием;
 * один код может стоять двумя строками — сумма по коду берёт обе и говорит об
@@ -40,6 +43,11 @@ import developaid_actuals as actuals
 import developaid_monitor as monitor
 
 SHEET = "ГФ_до конца стр"
+# Лист того же файла с планом ближних месяцев. Основной лист оставляет
+# прошедший месяц пустым (в файле от 23.09 август — пустая колонка и 0 в
+# итоге), а план на него стоит здесь; владелец, 28.10.2026: «он же с августа
+# реально» — пустой месяц основного листа берётся отсюда, с подписью.
+NEAR_SHEETS = ("ГФ_до конца 2026",)
 KIND = "funding_schedule"
 HEADER_ROWS = (2, 3, 4)
 FIRST_ROW = 5
@@ -121,7 +129,11 @@ def _scale(texts: list[str], contract_total: float | None) -> tuple[float, str]:
 
 
 def read_schedule(data: bytes | Path) -> dict[str, Any]:
-    """Строки графика, месяцы и объявленный итог."""
+    """Строки графика, месяцы и объявленный итог.
+
+    Месяц, пустой на основном листе, берётся с листа ближних месяцев
+    (`NEAR_SHEETS`), если там он есть: ``month_sources`` называет лист.
+    """
     from openpyxl import load_workbook
 
     source = io.BytesIO(data) if isinstance(data, (bytes, bytearray)) else data
@@ -132,7 +144,55 @@ def read_schedule(data: bytes | Path) -> dict[str, Any]:
     if SHEET not in book.sheetnames:
         raise ScheduleUnreadable(
             f"в книге нет листа «{SHEET}»; листы книги: {', '.join(book.sheetnames)}")
-    sheet = book[SHEET]
+    out = _read_sheet(book, SHEET)
+    out["month_sources"] = {}
+    for name in NEAR_SHEETS:
+        if name not in book.sheetnames:
+            continue
+        try:
+            near = _read_sheet(book, name)
+        except ScheduleUnreadable:
+            continue
+        _fill_empty_months(out, near, name)
+    return out
+
+
+def _empty_month(schedule: dict[str, Any], month: str) -> bool:
+    """На листе месяц есть, но ни у одной статьи плана нет и итог — пусто или ноль."""
+    if month not in schedule["months"]:
+        return True
+    if any(row["plan"].get(month) is not None for row in schedule["rows"]):
+        return False
+    return not schedule["total"]["plan"].get(month)
+
+
+def _fill_empty_months(main: dict[str, Any], near: dict[str, Any], name: str) -> None:
+    """Пустой месяц основного листа — план со второго листа, по коду статьи."""
+    for month in near["months"]:
+        if not _empty_month(main, month) or _empty_month(near, month):
+            continue
+        by_code: dict[str, float] = {}
+        for row in near["rows"]:
+            amount = row["plan"].get(month)
+            if amount is not None:
+                by_code[row["code"]] = by_code.get(row["code"], 0.0) + amount
+        taken: set[str] = set()
+        for row in main["rows"]:
+            row["plan"][month] = by_code.get(row["code"]) if row["code"] not in taken else None
+            taken.add(row["code"])
+        for code in by_code.keys() - taken:
+            source = next(row for row in near["rows"] if row["code"] == code)
+            main["rows"].append(dict(source, plan={month: by_code[code]}, notes=[
+                f"статьи нет на листе «{SHEET}», план на {_month_words(month)} — с листа «{name}»"]))
+        main["total"]["plan"][month] = near["total"]["plan"].get(month)
+        main["months"] = sorted(set(main["months"]) | {month})
+        main["month_sources"][month] = name
+    _link(main["rows"])
+
+
+def _read_sheet(book: Any, name: str) -> dict[str, Any]:
+    """Один лист графика: строки, месяцы, объявленный итог."""
+    sheet = book[name]
     # Объединённая ячейка хранит значение только в левой верхней — год над
     # пятью месяцами стоит один раз.
     merged: dict[tuple[int, int], Any] = {}
@@ -226,7 +286,7 @@ def read_schedule(data: bytes | Path) -> dict[str, Any]:
     _link(rows)
     total = {key: _number(cell(total_row[1], key), scale)[0] for key in ("contract", "paid", "remain")}
     total["plan"] = {month: _number(total_row[1][col - 1], scale)[0] for col, month in months.items()}
-    return {"sheet": SHEET, "rows": rows, "uncoded": uncoded,
+    return {"sheet": name, "rows": rows, "uncoded": uncoded,
             "months": sorted(set(months.values())), "total": total, "total_row": total_row[0],
             "unit": unit, "columns": labels}
 
@@ -522,6 +582,7 @@ def execution(project: str, end: datetime.date) -> dict[str, Any]:
             month=month, version=day, closed=month < current,
             fact_at=fact_at.isoformat() if month == current else "",
             no_plan=declared is None and lines_plan is None,
+            plan_sheet=(plan.get("month_sources") or {}).get(month, ""),
             lines_plan=lines_plan, outside=outside, lines=out_lines,
             earlier_than_version=month < day[:7]))
     latest = schedule(days[-1])
