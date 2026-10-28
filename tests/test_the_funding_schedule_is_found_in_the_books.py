@@ -81,6 +81,12 @@ def test_a_book_without_the_sheet_is_not_a_schedule():
     assert "Не загружены: финмодель (финансовая база Монитора)" in reason
     assert reason.endswith("блок «Бюджет месяца», кнопка «Загрузить график».")
     assert "исполнять сверять" not in reason
+    # В сводке раздела нет, пока график не загружен (владелец, 28.10.2026: «Что это в
+    # принципе такое и зачем оно нужно»): абзац о поиске руководству не нужен.
+    assert got["absent"] and report._schedule_html(got) == ""
+    # А загруженный, но не прочитанный график — раздел с причиной.
+    broken = {"state": "missing", "reason": "Не загружен отчёт РСС с реестром платежей."}
+    assert "Не загружен отчёт РСС" in report._schedule_html(broken)
 
 
 def test_an_uploaded_schedule_wins_on_the_same_day():
