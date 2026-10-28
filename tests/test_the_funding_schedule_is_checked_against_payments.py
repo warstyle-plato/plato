@@ -10,7 +10,7 @@
   2 892,69, план сентября 231,85, октября 366,94), месяцы — по заголовку,
   тройки «Лимит после / Банк / Резерв» и строки после ИТОГО — не план;
 - текст в числовых колонках — «нет числа» с примечанием, пустой август —
-  «плана нет», а не ноль;
+  «плана нет», а не ноль; сверка идёт с первого месяца с планом;
 - код 2.2.2.4. двумя строками — обе в сумме и названы; подстроки — вместе с
   родителем, подстрока со своим кодом в реестре — отдельно; платёж по
   глубокому коду РСС находит статью графика по дереву РСС;
@@ -122,11 +122,9 @@ def test_execution_by_month_and_article():
     got = fs.execution(PROJECT, END)
     assert got["state"] == "ok" and got["versions"] == ["2026-09-23"]
     months = {month["month"]: month for month in got["months"]}
-    assert list(months) == ["2026-08", "2026-09", "2026-10"]
-
-    august = months["2026-08"]
-    assert august["no_plan"] and august["plan"] is None and august["earlier_than_version"]
-    assert august["fact"] == pytest.approx(10 * M)
+    # Август в графике пустой: график считается с первого месяца с планом
+    # (владелец, 28.10.2026: «видимо август надо убрать, я ошибся»).
+    assert list(months) == ["2026-09", "2026-10"]
 
     september = months["2026-09"]
     assert september["closed"] and september["plan"] == pytest.approx(231.85 * M)
@@ -177,8 +175,10 @@ def test_the_report_section_and_the_message_line(monkeypatch):
     page = report.render_html(built)
     assert "Исполнение графика финансирования" in page
     assert "октябрь 2026 (месяц не закрыт, оплачено на 25.10.2026)" in page
-    assert "плана в графике нет: график составлен 23.09.2026" in page
-    assert "Колонка «Выплачено» графика от 23.09.2026 против реестра платежей" in page
+    assert "август 2026" not in report._schedule_html(built["funding_schedule"]).lower()
+    assert "Колонка «Выплачено» графика от 23.09.2026:" in page
+    # Статьи — одной таблицей нарастающим итогом, а не по таблице на месяц.
+    assert page.count("По статьям графика") == 1 and "по статьям графика</div>" not in page
     assert "ещё 5,0 млн ₽ оплачено по статьям, которых нет в графике" in page
     text = report.render_text(built)
     assert ("График финансирования от 23.09.2026 исполнен: сентябрь 2026 — оплачено "

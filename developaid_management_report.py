@@ -2860,6 +2860,33 @@ def _schedule_sources(block: dict[str, Any]) -> str:
         for day, place in places.items()) + "."
 
 
+SCHEDULE_LINE_GAP = 1_000_000.0
+
+
+def _schedule_lines_total(months: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Статьи графика за все месяцы вместе: план и оплачено нарастающим итогом.
+
+    План — только по месяцам, где он у статьи есть; нет ни в одном — «нет
+    плана», а не ноль. Порядок — по величине отклонения.
+    """
+    total: dict[str, dict[str, Any]] = {}
+    for month in months:
+        for line in month["lines"]:
+            item = total.setdefault(line["code"], {
+                "code": line["code"], "work": line["work"], "plan": None, "fact": 0.0,
+                "notes": [], "service": line.get("service")})
+            if line.get("plan") is not None:
+                item["plan"] = (item["plan"] or 0.0) + line["plan"]
+            item["fact"] += line["fact"]
+            item["notes"] += [note for note in line.get("notes") or []
+                              if note not in item["notes"]]
+    for item in total.values():
+        item["gap"] = item["fact"] - item["plan"] if item["plan"] is not None else None
+        item["share"] = item["fact"] / item["plan"] if item["plan"] else None
+    return sorted(total.values(), key=lambda item: -abs(item["gap"] if item["gap"] is not None
+                                                         else item["fact"]))
+
+
 def _schedule_html(block: dict[str, Any]) -> str:
     """Исполнение графика финансирования: месяцы, статьи месяца, сверка «Выплачено»."""
     esc = html.escape
@@ -2895,30 +2922,32 @@ def _schedule_html(block: dict[str, Any]) -> str:
                      _pct(month.get("share")), esc("; ".join(note))])
     out.append(_schedule_table(["Месяц", "График от", "План", "Оплачено", "Отклонение",
                                 "Исполнено", "Примечание"], rows))
-    for month in reversed(block["months"]):
-        if not month["lines"]:
-            continue
-        lines = sorted(month["lines"], key=lambda line: -max(abs(line.get("plan") or 0.0),
-                                                              abs(line["fact"])))
-        table = [[esc(f"{line['code']} {line['work']}"), _rub(line.get("plan")),
-                  _rub(line["fact"]), _plus_rub(line.get("gap")), _pct(line.get("share")),
-                  _schedule_notes(line)] for line in lines]
-        out.append(f"<div class='sub'>{esc(_schedule_month_words(month)[:1].upper() + _schedule_month_words(month)[1:])}: по статьям графика</div>")
+    # По статьям — одна таблица нарастающим итогом за все месяцы графика, а не
+    # таблица на каждый месяц (владелец, 28.10.2026: «4!!! разных блока …
+    # зачем 4 и откуда эти 4»). Видны статьи с заметным отклонением.
+    lines = _schedule_lines_total(block["months"])
+    shown = [line for line in lines if line["plan"] is None or line["gap"] is None
+             or abs(line["gap"]) >= SCHEDULE_LINE_GAP]
+    if shown:
+        first, last = block["months"][0], block["months"][-1]
+        upto = (_day(last["fact_at"]) if last.get("fact_at")
+                else _months_label(last["month"]))
+        out.append(f"<div class='sub'>По статьям графика с {esc(_months_label(first['month']))} "
+                   f"по {esc(upto)}, нарастающим итогом: статьи с отклонением от "
+                   f"{_rub(SCHEDULE_LINE_GAP)} и оплаты без плана</div>")
+        table = [[esc(f"{line['code']} {line['work']}"), _rub(line["plan"]), _rub(line["fact"]),
+                  _plus_rub(line["gap"]), _pct(line["share"]), _schedule_notes(line)]
+                 for line in shown]
         out.append(_schedule_table(["Статья", "План", "Оплачено", "Отклонение", "Исполнено",
                                     "Примечание"], table))
+        if len(shown) < len(lines):
+            out.append(f"<p class='note'>Остальные {len(lines) - len(shown)} статей исполнены "
+                       f"с отклонением меньше {_rub(SCHEDULE_LINE_GAP)}.</p>")
     check = block.get("paid_check") or {}
     if check:
-        out.append(f"<div class='sub'>Колонка «Выплачено» графика от {_day(check['at'])} против "
-                   f"реестра платежей на ту же дату</div>")
-        table = [["Всего", _rub(check.get("graph")), _rub(check["register"]),
-                  _plus_rub(check["gap"]), ""]]
-        table += [[esc(f"{line['code']} {line['work']}"), _rub(line.get("graph")),
-                   _rub(line["register"]), _plus_rub(line["gap"]),
-                   esc("; ".join(line["notes"]))] for line in check["lines"]]
-        out.append(_schedule_table(["Статья", "По графику", "По реестру", "Разница",
-                                    "Примечание"], table))
-        if not check["lines"]:
-            out.append("<p class='note'>По статьям «Выплачено» графика совпадает с реестром.</p>")
+        out.append(f"<p class='note'>Колонка «Выплачено» графика от {_day(check['at'])}: "
+                   f"{_rub(check.get('graph'))}, по реестру платежей на ту же дату "
+                   f"{_rub(check['register'])}, разница {_plus_rub(check['gap'])}.</p>")
     service = next((note for month in block["months"] for line in month["lines"]
                     for note in line["notes"] if note.startswith("В статье 2.6")), "")
     if service:
