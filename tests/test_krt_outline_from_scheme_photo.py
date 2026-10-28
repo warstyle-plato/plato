@@ -190,6 +190,66 @@ def test_the_catalog_on_the_photo_still_wins(monkeypatch):
     assert calls == [], "каталог точнее — Платона не спрашивают"
 
 
+# Владелец 28.10.2026: с той же картинки распознаватель собрал «каталог» из
+# случайных чисел — 0,8 м², «контур не накрывает участки проекта», а площадь
+# поля стала 0,0001 га. Числа без названной таблицы — не каталог; распознанный
+# каталог, не сходящийся с площадью из текста, — тоже.
+OCR_NOISE = ("ЮАО, район Царицыно\n1 0,12 0,34\n2 1,05 0,30\n3 0,98 1,61\n"
+             "Условные обозначения: Границы территории нежилой застройки, подлежащей "
+             "комплексному развитию, плошадью 0.77 га.")
+
+
+def test_random_numbers_on_the_scheme_are_not_a_catalog(monkeypatch):
+    assert manual.parse_catalog(OCR_NOISE)["points"] == 3, "контрпример: точки там есть"
+    _ocr(monkeypatch, OCR_NOISE)
+    got = manual.recognise(PHOTO.read_bytes(), "scheme.jpg", anchor_rings_merc=[_parcel()],
+                           addresses=[ADDRESS], ask=_fake_ask(), model="m")
+    assert got["origin"] == "photo_outline", got
+    assert got["area_sqm"] == KRT_SQM, "«плошадью» распознавателя — тоже площадь"
+
+
+def test_a_recognised_catalog_that_disagrees_with_the_text_is_refused(monkeypatch):
+    catalog = ("Каталог координат\n1 8 000,00 10 000,00\n2 8 000,00 10 010,00\n"
+               "3 8 010,00 10 010,00\n4 8 010,00 10 000,00\n")
+    _ocr(monkeypatch, catalog + LEGEND)
+    got = manual.recognise(PHOTO.read_bytes(), "page.jpg", anchor_rings_merc=[_parcel()],
+                           ask=_fake_ask(), model="m")
+    assert got["origin"] == "photo_outline" and got["area_sqm"] == KRT_SQM, got
+    assert "100 м², а в тексте решения — 7 700 м²" in got["source_note"], got["source_note"]
+
+
+def test_a_typed_catalog_of_a_few_square_metres_is_refused():
+    got = manual.from_catalog("1 0,12 0,34\n2 1,05 0,30\n3 0,98 1,61\n")
+    assert got["status"] == "failed" and "это не территория" in got["problem"]
+
+
+def test_a_pdf_of_the_decision_gives_the_shape_from_its_scheme_page(monkeypatch):
+    import io
+
+    import document_intake
+    from PIL import Image
+
+    out = io.BytesIO()
+    Image.open(PHOTO).convert("RGB").save(out, format="PDF", resolution=150)
+    monkeypatch.setattr(document_intake, "extract_text", lambda data, name="": {"text": OCR_NOISE})
+    got = manual.recognise(out.getvalue(), "decision.pdf", anchor_rings_merc=[_parcel()],
+                           addresses=[ADDRESS], ask=_fake_ask(), model="m")
+    assert got["origin"] == "photo_outline" and got["area_sqm"] == KRT_SQM, got
+    assert got["rings_merc"], got
+
+
+def test_the_owner_picture_read_by_tesseract_gives_the_area():
+    import shutil
+
+    if not shutil.which("tesseract"):
+        pytest.skip("на этой машине нет tesseract")
+    from developaid_v2_upgrade import _ocr_image
+
+    text = _ocr_image(PHOTO.read_bytes())
+    assert manual.area_from_text(text) == KRT_SQM, text
+    assert manual.recognised_catalog(text, KRT_SQM)["status"] == "failed"
+
+
 def test_a_model_outage_keeps_the_area_and_names_why_there_is_no_shape(monkeypatch):
     from fastapi import HTTPException
 
