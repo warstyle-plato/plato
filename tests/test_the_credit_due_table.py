@@ -90,7 +90,8 @@ def test_own_money_carries_the_escrow_over():
     отдельно с полным эскроу ошибочно сказала бы «хватает» трижды."""
     rows = [{"principal": amount, "principal_base": amount,
              "interest": {"pace": 0.0}, "interest_base": {"pace": 0.0},
-             "escrow": {"pace": 100.0}, "total": {}, "left": {}, "own": {}}
+             "escrow": {"pace": 100.0}, "money": {"pace": 100.0},
+             "total": {}, "left": {}, "own": {}}
             for amount in (60.0, 60.0, 10.0)]
     report._own_money(rows, "pace")
     assert [row["left"]["pace"] for row in rows] == [100.0, 40.0, 0.0]
@@ -267,3 +268,44 @@ def test_the_table_shows_both_shortfalls_and_their_running_totals(monkeypatch):
     assert running["fm"] == pytest.approx(due["own_total"]["fm"])
     # Недостаток — красным, «хватает» — зелёным.
     assert "<td class='short'>" + report._nb(due["rows"][0]["own"]["pace"]) + "</td>" in table
+
+
+def test_sales_after_commissioning_pay_the_loans_too(monkeypatch):
+    """«Продажи после РНВ почему-то не учтены… По ФМ точно план есть после
+    ввода» (владелец, 28.10.2026). После ввода эскроу не растёт, но продажи
+    идут: деньги от них прибавляются к эскроу и тоже гасят НКЛ. По нашему
+    прогнозу — нынешний темп, пока не распродан остаток; по плану финмодели —
+    её помесячный план после месяца раскрытия."""
+    built = _built(monkeypatch)
+    funding = built["funding"]
+    basis = funding["escrow"]["queues"][0]
+    monkeypatch.setitem(basis, "sales_pace", 100 * M)
+    monkeypatch.setitem(basis, "data_month", "2026-10")
+    span = 11                                   # ноябрь 2026 — сентябрь 2027, до ввода
+    sales = {"state": "ok", "pool": {"total": {"pool_amount": 9000 * M + span * 100 * M,
+                                               "sold_amount": 8500 * M}},
+             "fm_by_month": {"2027-09": 999 * M, "2027-10": 200 * M, "2027-11": 200 * M,
+                             "2027-12": 200 * M, "2028-01": 300 * M}}
+    plain = report.credit_due(built["credit"], funding, None)
+    due = report.credit_due(built["credit"], funding, None, sales)
+    after = due["sales_after"]
+    # Остаток к продаже: 9 000 + 11 × 100 − 8 500 − 11 × 100 (до ввода) = 500 млн.
+    assert after["pace"]["cap"] == pytest.approx(500 * M)
+    rows = {row["date"]: row for row in due["rows"]}
+    first, december = rows["2027-09-30"], rows["2027-12-30"]
+    assert first["after"]["pace"] == 0 and first["money"]["pace"] == first["escrow"]["pace"]
+    # Октябрь — декабрь 2027 по 100 млн; к марту 2028 — весь остаток 500 млн.
+    assert december["after"]["pace"] == pytest.approx(300 * M)
+    assert rows["2028-03-30"]["after"]["pace"] == pytest.approx(500 * M)
+    assert rows["2029-09-30"]["after"]["pace"] == pytest.approx(500 * M)
+    # План ФМ — после месяца ввода (сентябрь 2027 уже в ряде эскроу).
+    assert december["after"]["fm"] == pytest.approx(600 * M)
+    assert rows["2028-03-30"]["after"]["fm"] == pytest.approx(900 * M)
+    # Деньги от продаж уменьшают свои деньги ровно на учтённые продажи.
+    assert plain["own_total"]["pace"] - due["own_total"]["pace"] == pytest.approx(500 * M)
+    page = report._credit_due_html(due)
+    assert "<th>Эскроу и продажи к дате</th>" in page
+    assert ("После ввода к ним прибавляются деньги от продаж: по нашему прогнозу — 100,0 млн ₽ "
+            "в месяц, пока не распродан остаток 500,0 млн ₽; по плану финмодели — по её "
+            "графику, 900,0 млн ₽ к 30.09.2029.") in page
+    assert "От эскроу и продаж после ввода" in " ".join(report.credit_lines(due))
