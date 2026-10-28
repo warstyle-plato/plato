@@ -85,7 +85,8 @@ def test_the_report_shows_the_credit_block_as_the_tz_asks():
             section = tab.locator("div.keep:has(#block-credit)")
             simple = section.locator("table.credit-due")
             assert simple.locator("th").all_inner_texts()[:4] == [
-                "Дата", "Основной долг", "Проценты (темп)", "Проценты (план ФМ)"]
+                "Дата", "Основной долг", "Наш прогноз (нынешний темп продаж)",
+                "План финмодели"]
             # Подробный расчёт свёрнут, пока его не открыли.
             more = section.locator("details.credit-more")
             assert not more.locator("table.credit-table").is_visible()

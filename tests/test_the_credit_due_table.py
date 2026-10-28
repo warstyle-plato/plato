@@ -90,7 +90,8 @@ def test_own_money_carries_the_escrow_over():
     отдельно с полным эскроу ошибочно сказала бы «хватает» трижды."""
     rows = [{"principal": amount, "principal_base": amount,
              "interest": {"pace": 0.0}, "interest_base": {"pace": 0.0},
-             "escrow": {"pace": 100.0}, "total": {}, "left": {}, "own": {}}
+             "escrow": {"pace": 100.0}, "money": {"pace": 100.0},
+             "total": {}, "left": {}, "own": {}}
             for amount in (60.0, 60.0, 10.0)]
     report._own_money(rows, "pace")
     assert [row["left"]["pace"] for row in rows] == [100.0, 40.0, 0.0]
@@ -129,7 +130,8 @@ def test_the_limit_increase_is_on_the_first_loan_schedule(monkeypatch):
     own = due["own_total"]
     assert own["pace"] > own["pace_base"]
     assert report.credit_lines(due)[-1] == (
-        f"Всего своих денег понадобится {report._rub(own['pace'])} по нынешнему темпу / "
+        f"За весь срок, по 30.09.2029, своих денег понадобится {report._rub(own['pace'])} по "
+        f"нынешнему темпу / "
         f"{report._rub(own['fm'])} по плану ФМ, пик — {report._day(due['peak'])}; это с "
         f"учётом увеличения лимита на 2,40 млрд ₽ ({report._rub(own['pace_base'])} без него).")
     page = report._credit_due_html(due)
@@ -159,13 +161,15 @@ def test_each_date_in_the_owner_words_and_the_same_lines_everywhere(monkeypatch)
     page = report.render_html(built)
     section = page[page.index("id='block-credit'"):]
     section = section[:section.index("<h2", 1)]
-    # Две строки над таблицей, семь столбцов, текст по датам и одна строка допущений.
+    # Две строки над таблицей, таблица — две группы (наш прогноз и план ФМ), текст
+    # по датам и одна строка допущений.
     table = section.index("<table class='credit-due'>")
     assert section.index(report.credit_interest_line(due)) < table
     assert section.index(verdict) < table
-    for head in ("Дата", "Основной долг", "Проценты (темп)", "Проценты (план ФМ)",
-                 "Эскроу к дате (темп)", "Эскроу к дате (план ФМ)", "Хватает / не хватает"):
-        assert f"<th>{head}</th>" in section, head
+    for head in ("Наш прогноз (нынешний темп продаж)", "План финмодели"):
+        assert f">{head}</th>" in section, head
+    assert section.count("<th>Не хватает</th>") == 2
+    assert section.count("<th>Нарастающим итогом</th>") == 2
     for line in lines:
         assert line in section
     assert "<details class='credit-more'><summary>Как посчитано" in section
@@ -177,8 +181,18 @@ def test_each_date_in_the_owner_words_and_the_same_lines_everywhere(monkeypatch)
     assert f"Погашение кредитов: {main}" in report.render_text(built)
     assert f"Хватит ли эскроу на платежи по НКЛ с процентами: {verdict}" in page
     tiles = {item["label"]: item for item in report.tiles(built)}
-    assert tiles["Эскроу на платежи по НКЛ"]["value"] == \
-        f"не хватает {report._rub(due['own_total']['pace'])}"
+    # Плитка — первый платёж, к вводу, а не сумма за весь срок (владелец, 28.10.2026:
+    # «бредовое число и пояснение» на «не хватает 6,88 млрд — первый раз 30.09.2027»).
+    tile = tiles["Эскроу на платежи по НКЛ"]
+    first = due["rows"][0]
+    assert tile["value"] == f"не хватает {report._rub(first['own']['pace'])}"
+    assert tile["note"].startswith(
+        f"30.09.2027 по графикам НКЛ платёж {report._rub(first['total']['pace'])} (долг "
+        f"{report._rub(first['principal'])} и проценты {report._rub(first['interest']['pace'])}), "
+        f"на эскроу к этой дате {report._rub(first['escrow']['pace'])} по нашему прогнозу.")
+    assert report._rub(due["own_total"]["pace"]) not in tile["note"]
+    # Сумма за весь срок — под таблицей, с подписью, из чего она сложена.
+    assert "Это не нехватка к вводу" in page
 
 
 def test_a_project_without_credit_terms_says_why(monkeypatch):
@@ -232,9 +246,77 @@ def test_without_interest_the_debt_and_escrow_are_still_told(monkeypatch):
         f"Проценты сверх основного долга не посчитаны: {reason}."
     tiles = {item["label"]: item for item in report.tiles(built)}
     tile = tiles["Эскроу на платежи по НКЛ"]
-    assert tile["value"] != "нет данных" and "без процентов — их не посчитали" in tile["note"]
+    assert tile["value"] != "нет данных" and "проценты не посчитаны" in tile["note"]
     # Причины в пропусках нет — сводка всё равно называет дату пустых процентов.
     built["credit"]["base"]["gaps"] = []
     assert report.credit_due(built["credit"], built["funding"], None)["interest_reason"][
         "pace"] == "в прогнозе кредитов нет процентов на " + report._day(
             built["credit"]["base"]["rows"][0]["date"])
+
+
+def test_the_table_shows_both_shortfalls_and_their_running_totals(monkeypatch):
+    """«Нагляднее… сколько не хватает по ФМ и сколько по нашему прогнозу и
+    накопленный итог» (владелец, 28.10.2026): в каждой группе — «Не хватает» к
+    дате и «Нарастающим итогом»; последняя нарастающая сумма — итог своих денег;
+    недостаток выделен."""
+    import re
+
+    due = _built(monkeypatch)["credit_due"]
+    page = report._credit_due_html(due)
+    table = page[page.index("<table class='credit-due'>"):page.index("</table>")]
+    lines = re.findall(r"<tr>(.*?)</tr>", table)
+    body = [line for line in lines if line.startswith("<td>")]
+    assert len(body) == len(due["rows"])
+    running = {"pace": 0.0, "fm": 0.0}
+    for row, line in zip(due["rows"], body):
+        cells = re.findall(r"<td[^>]*>(.*?)</td>", line)
+        for key in running:
+            running[key] += row["own"][key]
+        shown = [cell for cell in cells if cell]
+        assert report._nb(running["pace"]) in shown or running["pace"] <= 0.5
+        assert report._nb(running["fm"]) in shown or running["fm"] <= 0.5
+    assert running["pace"] == pytest.approx(due["own_total"]["pace"])
+    assert running["fm"] == pytest.approx(due["own_total"]["fm"])
+    # Недостаток — красным, «хватает» — зелёным.
+    assert "<td class='short'>" + report._nb(due["rows"][0]["own"]["pace"]) + "</td>" in table
+
+
+def test_sales_after_commissioning_pay_the_loans_too(monkeypatch):
+    """«Продажи после РНВ почему-то не учтены… По ФМ точно план есть после
+    ввода» (владелец, 28.10.2026). После ввода эскроу не растёт, но продажи
+    идут: деньги от них прибавляются к эскроу и тоже гасят НКЛ. По нашему
+    прогнозу — нынешний темп, пока не распродан остаток; по плану финмодели —
+    её помесячный план после месяца раскрытия."""
+    built = _built(monkeypatch)
+    funding = built["funding"]
+    basis = funding["escrow"]["queues"][0]
+    monkeypatch.setitem(basis, "sales_pace", 100 * M)
+    monkeypatch.setitem(basis, "data_month", "2026-10")
+    span = 11                                   # ноябрь 2026 — сентябрь 2027, до ввода
+    sales = {"state": "ok", "pool": {"total": {"pool_amount": 9000 * M + span * 100 * M,
+                                               "sold_amount": 8500 * M}},
+             "fm_by_month": {"2027-09": 999 * M, "2027-10": 200 * M, "2027-11": 200 * M,
+                             "2027-12": 200 * M, "2028-01": 300 * M}}
+    plain = report.credit_due(built["credit"], funding, None)
+    due = report.credit_due(built["credit"], funding, None, sales)
+    after = due["sales_after"]
+    # Остаток к продаже: 9 000 + 11 × 100 − 8 500 − 11 × 100 (до ввода) = 500 млн.
+    assert after["pace"]["cap"] == pytest.approx(500 * M)
+    rows = {row["date"]: row for row in due["rows"]}
+    first, december = rows["2027-09-30"], rows["2027-12-30"]
+    assert first["after"]["pace"] == 0 and first["money"]["pace"] == first["escrow"]["pace"]
+    # Октябрь — декабрь 2027 по 100 млн; к марту 2028 — весь остаток 500 млн.
+    assert december["after"]["pace"] == pytest.approx(300 * M)
+    assert rows["2028-03-30"]["after"]["pace"] == pytest.approx(500 * M)
+    assert rows["2029-09-30"]["after"]["pace"] == pytest.approx(500 * M)
+    # План ФМ — после месяца ввода (сентябрь 2027 уже в ряде эскроу).
+    assert december["after"]["fm"] == pytest.approx(600 * M)
+    assert rows["2028-03-30"]["after"]["fm"] == pytest.approx(900 * M)
+    # Деньги от продаж уменьшают свои деньги ровно на учтённые продажи.
+    assert plain["own_total"]["pace"] - due["own_total"]["pace"] == pytest.approx(500 * M)
+    page = report._credit_due_html(due)
+    assert "<th>Эскроу и продажи к дате</th>" in page
+    assert ("После ввода к ним прибавляются деньги от продаж: по нашему прогнозу — 100,0 млн ₽ "
+            "в месяц, пока не распродан остаток 500,0 млн ₽; по плану финмодели — по её "
+            "графику, 900,0 млн ₽ к 30.09.2029.") in page
+    assert "остаток эскроу и продажи после ввода" in " ".join(report.credit_lines(due))

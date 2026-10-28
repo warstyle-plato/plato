@@ -922,6 +922,8 @@ def sales(sales_project: str, kind: str, end: Any,
                    for q in comparison.get("quarters") or []],
         "month": {"key": month_key, "fact": _fact(between(month_start)),
                   "fm": fm_month},
+        # Помесячный план продаж финмодели — для продаж после ввода в погашении НКЛ.
+        "fm_by_month": {m: v["amount"] for m, v in sorted(fm.items()) if v.get("amount")},
         "quarter": {"key": quarter, "fact": _fact(between(quarter_start)),
                     "fm": fm_quarter, "bank": bank_quarter,
                     "bank_reason": bank_reason or None,
@@ -1132,7 +1134,7 @@ def _own_money(rows: list[dict[str, Any]], key: str, with_extra: bool = True) ->
     tag = key if with_extra else key + "_base"
     for row in rows:
         interest = row["interest"][key] if with_extra else row["interest_base"][key]
-        escrow = row["escrow"][key]
+        escrow = row["money"][key]
         if escrow is None:
             for later in rows[rows.index(row):]:
                 later["own"][tag] = later["left"][tag] = later["total"][tag] = None
@@ -1149,7 +1151,8 @@ def _own_money(rows: list[dict[str, Any]], key: str, with_extra: bool = True) ->
 
 
 def credit_due(credit_block: dict[str, Any], funding_block: dict[str, Any],
-               plan_block: dict[str, Any] | None = None) -> dict[str, Any]:
+               plan_block: dict[str, Any] | None = None,
+               sales_block: dict[str, Any] | None = None) -> dict[str, Any]:
     """Когда возникают обязательства по НКЛ и хватит ли на них эскроу.
 
     Владелец, 27.10.2026: «Речь шла о простом расчёте: когда возникают
@@ -1160,7 +1163,10 @@ def credit_due(credit_block: dict[str, Any], funding_block: dict[str, Any],
     раздела кредитов при двух эскроу: по нынешнему темпу (``credit_block``) и по
     плану финмодели (``plan_block`` — тот же расчёт с рядом эскроу финмодели).
     Эскроу по темпу — `contracting.keeping_at`, как «Эскроу по кварталам»; по
-    плану — ряд финмодели до раскрытия. Своих денег — нарастающим итогом.
+    плану — ряд финмодели до раскрытия. После ввода к эскроу прибавляются
+    продажи (`_sales_after`): деньги за них приходят напрямую и идут на
+    погашение (владелец, 28.10.2026: «продажи после РНВ почему-то не учтены…
+    По ФМ точно план есть после ввода»). Своих денег — нарастающим итогом.
     """
     if (credit_block or {}).get("state") != "ok":
         return _missing((credit_block or {}).get("reason")
@@ -1189,6 +1195,7 @@ def credit_due(credit_block: dict[str, Any], funding_block: dict[str, Any],
     basis = queues[0] if queues else None
     plan = credit_fm_plan(funding_block or {})
     settle = (basis or {}).get("settle") or ""
+    after = _sales_after(basis, plan, sales_block, settle)
     rows = []
     for day in dates:
         parts = due[day]
@@ -1204,8 +1211,12 @@ def credit_due(credit_block: dict[str, Any], funding_block: dict[str, Any],
                               for key in _SCENARIOS},
             "escrow": {"pace": contracting.keeping_at(basis, day[:7]) if basis else None,
                        "fm": _fm_escrow_at(plan, day[:7])},
+            "after": {key: _sold_after(after[key], day[:7]) for key in _SCENARIOS},
             "before_disclosure": bool(settle) and day[:7] < settle,
             "total": {}, "left": {}, "own": {}})
+        row = rows[-1]
+        row["money"] = {key: (row["escrow"][key] + (row["after"][key] or 0.0))
+                        if row["escrow"][key] is not None else None for key in _SCENARIOS}
     for key in _SCENARIOS:
         _own_money(rows, key)
         _own_money(rows, key, with_extra=False)
@@ -1242,7 +1253,67 @@ def credit_due(credit_block: dict[str, Any], funding_block: dict[str, Any],
             "deferral_end": loans[0]["deferral_limit"], "settle": settle,
             "drawn": drawn, "drawn_at": (funding_block or {}).get("rss") or "",
             "escrow_reason": "" if basis else (escrow.get("reason") or "прогноза эскроу нет"),
-            "plan_reason": plan_reason, "interest_reason": interest_reason}
+            "plan_reason": plan_reason, "interest_reason": interest_reason,
+            "sales_after": after}
+
+
+def _next_month_key(month: str) -> str:
+    year, number = int(month[:4]), int(month[5:7])
+    return f"{year + number // 12}-{number % 12 + 1:02d}"
+
+
+def _sales_after(basis: dict[str, Any] | None, plan: dict[str, Any] | None,
+                 sales_block: dict[str, Any] | None, settle: str) -> dict[str, dict[str, Any]]:
+    """Продажи после ввода по месяцам — деньги, которыми тоже гасят НКЛ.
+
+    По нынешнему темпу — темп подписания «Эскроу по кварталам» (`sales_pace`)
+    каждый месяц после ввода, пока не распродан остаток: стоимость всего
+    проекта по финмодели минус продано и минус продажи до ввода по тому же
+    темпу. По плану финмодели — её помесячный план продаж после месяца
+    раскрытия (до него продажи уже в ряде эскроу финмодели). Деньги — по сумме
+    договоров: после ввода рассрочки на эскроу нет.
+    """
+    sales = sales_block if (sales_block or {}).get("state") == "ok" else {}
+    out: dict[str, dict[str, Any]] = {
+        "pace": {"start": settle, "monthly": {}, "pace": None, "cap": None, "reason": ""},
+        "fm": {"start": (plan or {}).get("cut") or settle, "monthly": {}, "reason": ""}}
+    if not settle:
+        for part in out.values():
+            part["reason"] = "срока ввода нет — продажи после ввода не считаются"
+        return out
+    pace = float((basis or {}).get("sales_pace") or 0.0)
+    total = ((sales.get("pool") or {}).get("total") or {})
+    if basis and pace > 0.5 and total.get("pool_amount"):
+        span = 0
+        month = (basis.get("data_month") or settle)
+        while month < settle:
+            month, span = _next_month_key(month), span + 1
+        cap = max(0.0, float(total["pool_amount"]) - float(total.get("sold_amount") or 0.0)
+                  - pace * span)
+        out["pace"].update(pace=pace, cap=cap)
+        left, month = cap, settle
+        while left > 0.5:
+            month = _next_month_key(month)
+            out["pace"]["monthly"][month] = min(pace, left)
+            left -= out["pace"]["monthly"][month]
+    elif basis and pace > 0.5:
+        # Без остатка к продаже темп пришлось бы продлевать без предела — это
+        # завысило бы деньги и спрятало недостаток.
+        out["pace"]["reason"] = ("объём проекта по финмодели не прочитан — продажи после ввода "
+                                 "по нашему темпу не учтены")
+    else:
+        out["pace"]["reason"] = "нынешнего темпа продаж нет"
+    fm = sales.get("fm_by_month") or {}
+    start = out["fm"]["start"]
+    out["fm"]["monthly"] = {m: float(v) for m, v in sorted(fm.items()) if m > start and v}
+    if not fm:
+        out["fm"]["reason"] = "помесячного плана продаж финмодели нет"
+    return out
+
+
+def _sold_after(part: dict[str, Any], month: str) -> float:
+    """Продажи после ввода нарастающим итогом по месяц ``month`` включительно."""
+    return sum(v for m, v in part["monthly"].items() if m <= month)
 
 
 def _interest_gap(run: dict[str, Any] | None) -> str:
@@ -1324,10 +1395,10 @@ def _due_sentence(row: dict[str, Any], first: bool) -> str:
         text += (f"На эскроу к этой дате скорее всего будет {_rub(row['left']['pace'])} "
                  f"(по нынешнему темпу{fm_words}). ")
     elif row["left"]["pace"] > 0.5:
-        text += (f"На эскроу после прошлых платежей скорее всего останется "
-                 f"{_rub(row['left']['pace'])} (по нынешнему темпу{fm_words}). ")
+        text += (f"{_money_words(row)} скорее всего будет {_rub(row['left']['pace'])} "
+                 f"(по нынешнему темпу{fm_words}). ")
     else:
-        text += ("Эскроу к этой дате уже ушло на прошлые платежи (по нынешнему темпу"
+        text += (f"{_money_words(row, spent=True)} (по нынешнему темпу"
                  + (f"; по плану ФМ осталось бы {_rub(fm)}" if fm is not None and fm > 0.5
                     else "") + "). ")
     if row["before_disclosure"]:
@@ -1339,6 +1410,17 @@ def _due_sentence(row: dict[str, Any], first: bool) -> str:
     return text + "Хватает."
 
 
+def _money_words(row: dict[str, Any], spent: bool = False) -> str:
+    """Чем платить к дате: остаток эскроу, а после ввода — и деньги от продаж."""
+    sold = any((row["after"].get(key) or 0.0) > 0.5 for key in _SCENARIOS)
+    if spent:
+        return ("Свободных денег к этой дате не будет: эскроу и продажи после ввода ушли на "
+                "прошлые платежи" if sold else
+                "Эскроу к этой дате уже ушло на прошлые платежи")
+    return ("Денег на этот платёж (остаток эскроу и продажи после ввода)" if sold else
+            "На эскроу после прошлых платежей")
+
+
 def _own_total_sentence(block: dict[str, Any]) -> str:
     own = block["own_total"]
     if own["pace"] is None:
@@ -1347,7 +1429,8 @@ def _own_total_sentence(block: dict[str, Any]) -> str:
         text = "Своих денег не понадобится: эскроу по нынешнему темпу хватает на все платежи"
         text += (f" (по плану ФМ — {_rub(own['fm'])})" if own["fm"] and own["fm"] > 0.5 else "")
         return text + "."
-    text = (f"Всего своих денег понадобится {_rub(own['pace'])} по нынешнему темпу"
+    text = (f"За весь срок, по {_day(block['rows'][-1]['date'])}, своих денег понадобится "
+            f"{_rub(own['pace'])} по нынешнему темпу"
             + (f" / {_rub(own['fm'])} по плану ФМ" if own["fm"] is not None else "")
             + (f", пик — {_day(block['peak'])}" if block.get("peak") else ""))
     if block["extra"]:
@@ -1390,31 +1473,7 @@ def _credit_due_html(block: dict[str, Any]) -> str:
     out = [f"<p class='note'><b>{esc(credit_interest_line(block))}</b></p>",
            f"<p class='{'note warn' if short else 'note'}'><b>{esc(credit_verdict(block))}</b></p>"]
 
-    def enough(row: dict[str, Any]) -> str:
-        # По нынешнему темпу; план ФМ — в тексте по датам и в строке «Итого».
-        pace = row["own"].get("pace")
-        if pace is None:
-            return "нет данных"
-        # Сумма не рвётся по строкам: «млн» и «₽» — с числом.
-        return f"не хватает {_rub(pace).replace(' ', chr(160))}" if pace > 0.5 else "хватает"
-
-    rows = [[_day(row["date"]), _rub(row["principal"]), _bn(row["interest"]["pace"]),
-             _bn(row["interest"]["fm"]), _bn(row["escrow"]["pace"]), _bn(row["escrow"]["fm"]),
-             enough(row)] for row in block["rows"]]
-    own = block["own_total"]
-    rows.append(["Итого", _rub(block["principal_total"]),
-                 _bn(block["interest_total"]["pace"]), _bn(block["interest_total"]["fm"]),
-                 "", "", f"своих {_bn(own['pace'])}; по плану ФМ — {_bn(own['fm'])}"])
-    if block["extra"]:
-        rows.append(["Без увеличения лимита", _rub(block["principal_base_total"]),
-                     _bn(block["interest_base_total"]["pace"]),
-                     _bn(block["interest_base_total"]["fm"]), "", "",
-                     (f"своих {_bn(own['pace_base'])}; по плану ФМ — "
-                      f"{_bn(own['fm_base'])}")])
-    out.append(_table(["Дата", "Основной долг", "Проценты (темп)", "Проценты (план ФМ)",
-                       "Эскроу к дате (темп)", "Эскроу к дате (план ФМ)",
-                       "Хватает / не хватает"], rows).replace(
-        "<table>", "<table class='credit-due'>", 1))
+    out += _credit_due_table(block)
     out.append("<ul class='credit-dates'>" + "".join(
         f"<li>{esc(line)}</li>" for line in credit_lines(block)) + "</ul>")
     out.append(f"<p class='note'>{esc(_credit_assumptions(block))}</p>")
@@ -1422,6 +1481,129 @@ def _credit_due_html(block: dict[str, Any]) -> str:
         if reason:
             out.append(f"<p class='missing'>{esc(reason)}</p>")
     return "\n".join(out)
+
+
+_GROUPS = (("pace", "Наш прогноз (нынешний темп продаж)"), ("fm", "План финмодели"))
+
+
+def _first_due_words(row: dict[str, Any]) -> str:
+    """Подпись плитки: первый платёж по графикам НКЛ и эскроу к его дате — фразой."""
+    interest = row["interest"]["pace"]
+    owed = (f"платёж {_rub(row['total']['pace'])} (долг {_rub(row['principal'])} и проценты "
+            f"{_rub(interest)})" if interest is not None else
+            f"основной долг {_rub(row['principal'])}, проценты не посчитаны")
+    text = (f"{_day(row['date'])} по графикам НКЛ {owed}, на эскроу к этой дате "
+            f"{_rub(row['escrow']['pace'])} по нашему прогнозу.")
+    fm = row["own"].get("fm")
+    if fm is not None:
+        text += (" По плану финмодели хватает." if fm <= 0.5 else
+                 f" По плану финмодели не хватает {_rub(fm)}.")
+    return text
+
+
+def _money_line(block: dict[str, Any]) -> str:
+    """Над таблицей: сколько на эскроу к вводу и что прибавляется после него."""
+    rows = block["rows"]
+    after = block.get("sales_after") or {}
+    first = rows[0]
+    if first["escrow"]["pace"] is None:
+        return ""
+    words = (f"На эскроу к первому платежу {_day(first['date'])}: "
+             f"{_rub(first['escrow']['pace'])} по нашему прогнозу")
+    if first["escrow"]["fm"] is not None:
+        words += f", {_rub(first['escrow']['fm'])} по плану финмодели"
+    pace, fm = after.get("pace") or {}, after.get("fm") or {}
+    last = rows[-1]["date"][:7]
+    parts = []
+    if pace.get("monthly"):
+        parts.append(f"по нашему прогнозу — {_rub(pace['pace'])} в месяц"
+                     + (f", пока не распродан остаток {_rub(pace['cap'])}"
+                        if pace.get("cap") is not None else ""))
+    if fm.get("monthly"):
+        parts.append(f"по плану финмодели — по её графику, {_rub(_sold_after(fm, last))} к "
+                     f"{_day(rows[-1]['date'])}")
+    if parts:
+        words += (". После ввода к ним прибавляются деньги от продаж: " + "; ".join(parts)
+                  + ". Колонка «Эскроу и продажи к дате» — всё вместе, нарастающим итогом.")
+    else:
+        reasons = "; ".join(r for r in (pace.get("reason"), fm.get("reason")) if r)
+        words += (". Продажи после ввода не учтены" + (f": {reasons}" if reasons else "") + ".")
+    return words
+
+
+def _nb(value: float | None) -> str:
+    """Сумма без переноса внутри: «2,41 млрд ₽» не рвётся на «млрд» и «₽»."""
+    return _bn(value).replace(" ", "\u00a0")
+
+
+def _credit_due_table(block: dict[str, Any]) -> list[str]:
+    """Таблица погашения: две группы — наш прогноз и план финмодели, в каждой
+    проценты, сколько не хватает к дате и нарастающим итогом (владелец,
+    28.10.2026: «Нагляднее… сколько не хватает по ФМ и сколько по нашему
+    прогнозу и накопленный итог»). Эскроу, одинаковое во всех датах, — строкой
+    над таблицей, а не двумя колонками повторов."""
+    esc = html.escape
+    rows = block["rows"]
+    out = [f"<p class='note'>{esc(_money_line(block))}</p>"] if _money_line(block) else []
+
+    def shortage(value: float | None) -> str:
+        if value is None:
+            return "<td>нет данных</td>"
+        if value > 0.5:
+            return f"<td class='short'>{_nb(value)}</td>"
+        return "<td class='ok'>хватает</td>"
+
+    head = ["<tr><th rowspan='2'>Дата</th><th rowspan='2'>Основной долг</th>"]
+    head += [f"<th class='grp' colspan='4'>{esc(title)}</th>" for key, title in _GROUPS]
+    head.append("</tr><tr>")
+    for key, _ in _GROUPS:
+        head.append("<th>Проценты</th><th>Эскроу и продажи к дате</th>"
+                    "<th>Не хватает</th><th>Нарастающим итогом</th>")
+    head.append("</tr>")
+    body = []
+    running = {key: 0.0 for key, _ in _GROUPS}
+    for row in rows:
+        cells = [f"<td>{_day(row['date'])}</td>", f"<td>{_nb(row['principal'])}</td>"]
+        for key, _ in _GROUPS:
+            put = row["own"].get(key)
+            if put is not None and running[key] is not None:
+                running[key] += put
+            else:
+                running[key] = None
+            cells.append(f"<td>{_nb(row['interest'][key])}</td>")
+            cells.append(f"<td>{_nb(row['money'][key])}</td>")
+            cells.append(shortage(put))
+            total = running[key]
+            cells.append("<td>нет данных</td>" if total is None else
+                         f"<td class='{'short' if total > 0.5 else 'ok'}'>"
+                         f"{_nb(total) if total > 0.5 else '—'}</td>")
+        body.append("<tr>" + "".join(cells) + "</tr>")
+    own = block["own_total"]
+
+    def total_row(title: str, principal: float, interest: dict, put: dict) -> str:
+        cells = [f"<td>{esc(title)}</td>", f"<td>{_nb(principal)}</td>"]
+        for key, _ in _GROUPS:
+            cells.append(f"<td>{_nb(interest[key])}</td><td></td>")
+            cells.append(shortage(put.get(key)) + "<td></td>")
+        return "<tr class='total'>" + "".join(cells) + "</tr>"
+
+    body.append(total_row("Итого", block["principal_total"], block["interest_total"],
+                          {"pace": own["pace"], "fm": own["fm"]}))
+    if block["extra"]:
+        body.append(total_row("Без увеличения лимита", block["principal_base_total"],
+                              block["interest_base_total"],
+                              {"pace": own["pace_base"], "fm": own["fm_base"]}))
+    out.append("<table class='credit-due'>" + "".join(head) + "".join(body) + "</table>")
+    out.append(f"<p class='note'>{esc(_totals_words(block))}</p>")
+    return out
+
+
+def _totals_words(block: dict[str, Any]) -> str:
+    """Из чего сложены «Нарастающим итогом» и «Итого» — за весь срок, не к вводу."""
+    return (f"«Нарастающим итогом» и строка «Итого» — сколько своих денег понадобится за весь "
+            f"срок, по {_day(block['rows'][-1]['date'])}: платежи по графикам НКЛ с процентами "
+            "минус эскроу к вводу и деньги от продаж после ввода. Это не нехватка к вводу: к "
+            f"вводу — только первая строка ({_day(block['rows'][0]['date'])}).")
 
 
 def _credit_assumptions(block: dict[str, Any]) -> str:
@@ -1439,7 +1621,8 @@ def _credit_assumptions(block: dict[str, Any]) -> str:
             f"Проценты — по условиям договоров с платой за лимит и отложенными за отсрочку до "
             f"{_day(block['deferral_end'])}, ключевая ставка — из финмодели. Эскроу по темпу — "
             "рассрочка и продажи нынешним темпом до утверждённого ввода; по плану ФМ — ряд "
-            "эскроу финмодели до раскрытия. Своих денег — нарастающим итогом: остаток эскроу "
+            "эскроу финмодели до раскрытия. После ввода к эскроу прибавляются деньги от продаж: "
+            "по темпу — пока не распродан остаток, по плану ФМ — её план продаж. Своих денег — нарастающим итогом: остаток эскроу "
             "переходит на следующий платёж.")
 
 
@@ -1537,7 +1720,7 @@ def build(project: str, kind: str, end: Any, sales_project: str | None = None,
             ("credit_due", lambda: credit_due(
                 blocks.get("credit") or {}, blocks.get("funding") or {},
                 _credit_on_plan(project, sales_project or "", sales_dir, bounds["end"],
-                                dashboard, blocks))),
+                                dashboard, blocks), blocks.get("sales"))),
             ("legal", lambda: dict(legal_cases.for_report(
                 project, bounds["start"], bounds["end"]), state="ok")),
             ("notes", lambda: dict(project_notes.for_period(
@@ -2985,7 +3168,7 @@ figure.chart{margin:10px 0 6px;break-inside:avoid;page-break-inside:avoid}figure
 svg.chart{display:block;max-width:100%}
 .credit-status{padding:6px 9px;border-radius:4px;background:#f4f7fb;margin:6px 0}.credit-status.bad{background:#fdecea}.credit-status.warn{background:#fff6dd}.credit-status.good{background:#eaf5ec}
 table.credit-table tr.loan td{color:#5b6b7d;font-size:10.5px;border-bottom:1px dotted #e1e6ec}table.credit-table tr.loan td:first-child{padding-left:16px}table.credit-table th{white-space:normal}
-table.credit-due th{white-space:normal}table.credit-due td:last-child{text-align:left;white-space:normal}
+table.credit-due th{white-space:normal}table.credit-due th.grp{text-align:center;border-left:2px solid #c5cfdb}table.credit-due td.short{color:#b42318;font-weight:600}table.credit-due td.ok{color:#2e7d32}table.credit-due tr.total td{border-top:2px solid #1f4e8c;font-weight:600}table.credit-due td:first-child,table.credit-due th:first-child{position:sticky;left:0;z-index:1;text-align:left}table.credit-due td:first-child{background:#fff}
 table.credit-top td:last-child{text-align:left;white-space:normal}details.how summary,.credit details>summary{cursor:pointer;color:#1f4e8c}.credit details{margin:6px 0}details.how div{white-space:normal;font-size:10.5px;max-width:520px}
 """
 
@@ -3394,20 +3577,18 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
     # таблицей погашения: одно число на всю сводку (владелец, 27.10.2026).
     due = report.get("credit_due") or {}
     if due.get("state") == "ok":
-        own = due["own_total"]
-        first = next((row for row in due["rows"] if (row["own"].get("pace") or 0.0) > 0.5),
-                      None)
-        fm = (f"; по плану ФМ — {_rub(own['fm'])}" if own["fm"] is not None else "")
-        with_interest = ("без процентов — их не посчитали"
-                         if (due.get("interest_reason") or {}).get("pace") else "с процентами")
-        if own["pace"] is None:
+        # Плитка — только первый платёж, к вводу (владелец, 28.10.2026, через сессию
+        # «Погашение кредитов»: сумма за весь срок рядом с «первый раз 30.09.2027»
+        # читалась как нехватка к вводу — «бредовое число и пояснение»). Сумма за
+        # весь срок — в таблице раздела, с подписью, из чего она сложена.
+        row = due["rows"][0]
+        put = row["own"].get("pace")
+        if put is None:
             add("Эскроу на платежи по НКЛ", None, credit_verdict(due))
-        elif first:
-            add("Эскроу на платежи по НКЛ", f"не хватает {_rub(own['pace'])}",
-                f"своих денег {with_interest}, первый раз {_day(first['date'])}{fm}", "bad")
         else:
-            add("Эскроу на платежи по НКЛ", "хватает",
-                f"до {_day(due['rows'][-1]['date'])}, {with_interest}{fm}", "good")
+            add("Эскроу на платежи по НКЛ",
+                f"не хватает {_rub(put)}" if put > 0.5 else "хватает", _first_due_words(row),
+                "bad" if put > 0.5 else "good")
     else:
         add("Эскроу на платежи по НКЛ", None, due.get("reason") or "не посчитано")
 
