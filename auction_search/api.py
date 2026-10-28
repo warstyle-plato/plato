@@ -4426,8 +4426,11 @@ def install(app: FastAPI) -> None:
                        if isinstance(ring, list)]
             anchors = [ring for ring in anchors if len(ring) >= 3]
             addresses = [str(a)[:200] for a in (body.get("addresses") or [])[:20] if a]
+            # Версия разбора — тоже часть ключа: ответ лежит на диске сутки, и
+            # без неё исправленный разбор отдавал бы прежний (ложный каталог).
             key = "manual-" + hashlib.sha1(data + json.dumps(
-                [anchors, points, addresses]).encode("utf-8")).hexdigest()[:24]
+                [krt_manual_contour.RECOGNISE_VERSION, anchors, points, addresses]
+            ).encode("utf-8")).hexdigest()[:24]
             ask = None
             if core is not None and callable(getattr(core, "_openai_responses_request", None)):
                 def ask(payload: dict[str, Any]) -> str:

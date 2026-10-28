@@ -238,6 +238,29 @@ def test_a_pdf_of_the_decision_gives_the_shape_from_its_scheme_page(monkeypatch)
     assert got["rings_merc"], got
 
 
+def test_a_new_parsing_version_does_not_reuse_the_old_answer_on_disk(monkeypatch):
+    # Ответ разбора лежит на диске сутки: без версии в ключе исправленный разбор
+    # отдавал бы владельцу прежний ложный каталог.
+    import base64
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from auction_search import krt_project_site
+    from auction_search.api import install
+
+    monkeypatch.setitem(sys.modules, "developaid_core", core)
+    monkeypatch.setattr(krt_project_site, "start", lambda key, work, **kw: False)
+    app = FastAPI()
+    install(app)
+    client = TestClient(app)
+    body = {"file_b64": base64.b64encode(PHOTO.read_bytes()).decode(), "filename": "s.jpg"}
+    first = client.post("/krt/manual-contour", json=body).json()["key"]
+    monkeypatch.setattr(manual, "RECOGNISE_VERSION", manual.RECOGNISE_VERSION + 1)
+    second = client.post("/krt/manual-contour", json=body).json()["key"]
+    assert first.startswith("manual-") and first != second
+
+
 def test_the_owner_picture_read_by_tesseract_gives_the_area():
     import shutil
 
@@ -440,3 +463,34 @@ def test_the_approximate_note_is_seen_on_the_scheme_and_on_the_map(seen):
     assert seen["mapTitle"] == "Территория КРТ и окружение", seen
     assert seen["mapNote"].startswith(note), seen
     assert seen["mapCorpora"] >= 1, seen
+
+
+# --- сохранённый ложный каталог (владелец 28.10.2026, прод 0.28.29) ---------------------
+
+def test_the_minimum_territory_is_one_number():
+    assert manual.MIN_CATALOG_SQM == core.KRT_TERRITORY_MIN_SQM
+
+
+JUNK_PROBE = """async ()=>{
+ inputs._krt_site={on:true,status:'failed',problem:'',choices:[],rings_merc:[],
+  manual:{rings_merc:[[[0,0],[1,0],[0,1.6]]],area_sqm:0.8,approximate:false,
+  source:'контур загружен вручную: каталог координат МСК-77, распознан с фото',source_note:''}};
+ openTab('tep'); renderSitePanel();
+ return document.getElementById('siteKrtStatus').innerText;
+}"""
+
+
+def test_a_saved_contour_of_a_square_metre_is_called_out_on_the_page():
+    pytest.importorskip("playwright.sync_api")
+    from playwright.sync_api import sync_playwright
+
+    path = browser.chromium_or_skip()
+    with browser.serve(core.app, 18242) as base, sync_playwright() as pw, \
+            pw.chromium.launch(executable_path=str(path)) as engine:
+        page = engine.new_page(viewport={"width": 390, "height": 844})
+        page.goto(base, wait_until="domcontentloaded")
+        browser.wait_for_result(page)
+        text = page.evaluate(JUNK_PROBE)
+        page.close()
+    assert "Этот контур — не территория КРТ" in text, text
+    assert "Уберите контур кнопкой ниже" in text, text

@@ -197,6 +197,7 @@ PAGE = PAGE.replace("__DEVELOPAID_OBJECT_INSTANCE_RULES__", json.dumps(
 PAGE = PAGE.replace(TRANSFER_LABELS_PLACEHOLDER, json.dumps(
     {"word": TRANSFER_WORD, "note_word": TRANSFER_NOTE_WORD,
      "recipients": TRANSFER_RECIPIENT_NOTE}, ensure_ascii=False))
+PAGE = PAGE.replace("__DEVELOPAID_KRT_TERRITORY_MIN_SQM__", json.dumps(KRT_TERRITORY_MIN_SQM))
 PAGE = PAGE.replace("__DEVELOPAID_STORAGE_AREA_PER_UNIT__",
                     json.dumps(STORAGE_AREA_PER_UNIT_DEFAULT))
 PAGE = PAGE.replace("__DEVELOPAID_UNDERGROUND_PRODUCTS__",
