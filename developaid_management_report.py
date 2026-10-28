@@ -2680,6 +2680,9 @@ def _schedule_sources(block: dict[str, Any]) -> str:
 def _schedule_html(block: dict[str, Any]) -> str:
     """Исполнение графика финансирования: месяцы, статьи месяца, сверка «Выплачено»."""
     esc = html.escape
+    if block.get("absent"):
+        # Графика финансирования не загружали — сверять не с чем, раздела нет.
+        return ""
     out = ["<h3>Исполнение графика финансирования</h3>"]
     if block.get("state") != "ok":
         out.append(f"<p class='missing'>{esc(block.get('reason') or 'Данных нет.')}</p>")
