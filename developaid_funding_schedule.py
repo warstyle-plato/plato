@@ -409,6 +409,7 @@ def _lines(schedule: dict[str, Any], own: set[str]) -> tuple[list[dict[str, Any]
         if row["code"] == key and not line["work"]:
             line["work"] = row["work"]
         line["rows"].append(row)
+    _fold_counted(lines, target)
     for line in lines.values():
         line["work"] = line["work"] or line["rows"][0]["work"]
         same = [row for row in line["rows"] if row["code"] == line["code"]]
@@ -417,7 +418,8 @@ def _lines(schedule: dict[str, Any], own: set[str]) -> tuple[list[dict[str, Any]
             line["notes"].append(
                 f"в графике {len(same)} строки с этим кодом (строки "
                 + ", ".join(str(row["row"]) for row in same) + ") — в сумме все")
-        subs = [row for row in line["rows"] if row["code"] != line["code"]]
+        subs = [row for row in line["rows"] if row["code"] != line["code"]
+                and not _COUNTED_IN.search(row["work"])]
         if subs:
             line["notes"].append(("вместе с подстрокой графика " if len(subs) == 1
                                   else "вместе с подстроками графика ")
@@ -429,6 +431,37 @@ def _lines(schedule: dict[str, Any], own: set[str]) -> tuple[list[dict[str, Any]
             note = next(item["note"] for item in monthly_budget.LINES if item["key"] == "service")
             line["notes"].append(note[:1].upper() + note[1:])
     return list(lines.values()), target
+
+
+_COUNTED_IN = re.compile(r"учтен\w*\s+в\s+п\.?\s*(\d+(?:\.\d+)*)", re.IGNORECASE)
+
+
+def _fold_counted(lines: dict[str, dict[str, Any]], target: dict[str, str]) -> None:
+    """Статья «… (учтено в п.2.2.1.4)» — часть той статьи: её оплаты сверяются там.
+
+    Так пишет сам график: у такой строки плана нет, он стоит в названной
+    статье. Отдельной строкой она давала «оплачено без плана», а названная
+    статья — недоплату (владелец, 28.10.2026, на сводку с такими строками).
+    """
+    for key in list(lines):
+        line = lines.get(key)
+        if line is None:
+            continue
+        own = next((row for row in line["rows"] if row["code"] == key), None)
+        found = _COUNTED_IN.search(own["work"]) if own else None
+        dest = target.get(actuals._code(found.group(1)) or "") if found else None
+        if not dest or dest == key or dest not in lines:
+            continue
+        home = lines.pop(key)
+        lines[dest]["rows"] += home["rows"]
+        lines[dest].setdefault("counted", []).append(key)
+        for code, where in list(target.items()):
+            if where == key:
+                target[code] = dest
+    for line in lines.values():
+        if line.get("counted"):
+            line["notes"].append("с оплатами по " + ", ".join(line.pop("counted"))
+                                 + " — в графике они учтены в этой статье")
 
 
 def _attribution(schedule: dict[str, Any], estimate: dict[str, Any]) -> dict[str, str]:
