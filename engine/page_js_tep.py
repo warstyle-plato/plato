@@ -1786,7 +1786,7 @@ async function setKrtSite(on,slug,name){
  try{
   for(let i=0;i<60;i++){
    const r=await fetch('/krt/project-site',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-   data=await r.json();
+   data=await serverJson(r);
    if(!r.ok)throw new Error(serverDetail(data)||('сервер ответил ошибкой '+r.status));
    if(run!==krtSiteRun)return;
    if(data.status!=='pending')break;
@@ -1828,7 +1828,7 @@ function krtManualStatus(text){
 }
 async function krtManualCall(body){
  const r=await fetch('/krt/manual-contour',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
- const data=await r.json();
+ const data=await serverJson(r);
  if(!r.ok)throw new Error(serverDetail(data)||('сервер ответил ошибкой '+r.status));
  return data;
 }
@@ -1914,7 +1914,7 @@ async function searchKrtSite(){
  box.textContent='Ищем площадку…';
  try{
   const r=await fetch('/krt/project-site',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:q})});
-  const data=await r.json();
+  const data=await serverJson(r);
   if(!r.ok)throw new Error(serverDetail(data)||('сервер ответил ошибкой '+r.status));
   box.innerHTML=krtSiteChoicesHtml(data.choices||[])||escapeHtml(data.problem||'Ничего не нашлось.');
  }catch(e){box.textContent='Поиск не удался: '+(e&&e.message||e)}

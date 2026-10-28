@@ -494,3 +494,38 @@ def test_a_saved_contour_of_a_square_metre_is_called_out_on_the_page():
         page.close()
     assert "Этот контур — не территория КРТ" in text, text
     assert "Уберите контур кнопкой ниже" in text, text
+
+
+# --- страница ошибки шлюза вместо данных (владелец 28.10.2026, прод 0.28.30) -------------
+
+GATEWAY_PROBE = """async ()=>{
+ openTab('tep'); renderSitePanel();
+ document.getElementById('siteKrtToggle').click();
+ for(let i=0;i<100&&(inputs._krt_site||{}).status==='pending';i++)await new Promise(ok=>setTimeout(ok,100));
+ const out={status:document.getElementById('siteKrtStatus').innerText};
+ document.getElementById('siteKrtSearch').value='Пролетарская';
+ await searchKrtSite();
+ out.search=document.getElementById('siteKrtChoices').innerText;
+ return out;
+}"""
+
+
+def test_a_gateway_error_page_is_named_not_parsed_as_json():
+    pytest.importorskip("playwright.sync_api")
+    from playwright.sync_api import sync_playwright
+
+    path = browser.chromium_or_skip()
+    html = "<html>\r\n<head><title>502 Bad Gateway</title></head>\r\n<body></body></html>"
+    with browser.serve(core.app, 18243) as base, sync_playwright() as pw, \
+            pw.chromium.launch(executable_path=str(path)) as engine:
+        page = engine.new_page(viewport={"width": 390, "height": 844})
+        page.route("**/krt/project-site", lambda route: route.fulfill(
+            status=502, body=html, content_type="text/html"))
+        page.goto(base, wait_until="domcontentloaded")
+        browser.wait_for_result(page)
+        got = page.evaluate(GATEWAY_PROBE)
+        page.close()
+    for text in (got["status"], got["search"]):
+        assert "Unexpected token" not in text and "not valid JSON" not in text, got
+        assert "страницей ошибки (код 502, «502 Bad Gateway»)" in text, got
+        assert "повторите через минуту" in text, got
