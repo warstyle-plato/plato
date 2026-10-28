@@ -308,4 +308,4 @@ def test_sales_after_commissioning_pay_the_loans_too(monkeypatch):
     assert ("После ввода к ним прибавляются деньги от продаж: по нашему прогнозу — 100,0 млн ₽ "
             "в месяц, пока не распродан остаток 500,0 млн ₽; по плану финмодели — по её "
             "графику, 900,0 млн ₽ к 30.09.2029.") in page
-    assert "От эскроу и продаж после ввода" in " ".join(report.credit_lines(due))
+    assert "остаток эскроу и продажи после ввода" in " ".join(report.credit_lines(due))
