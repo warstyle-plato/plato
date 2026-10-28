@@ -464,7 +464,10 @@ def execution(project: str, end: datetime.date) -> dict[str, Any]:
     found = where["versions"]
     days = list(found)
     if not days:
-        return {"state": "missing", "reason": _missing_words(where["looked"])}
+        # «absent» — графика просто нет: сводка раздел не показывает (владелец,
+        # 28.10.2026, на абзац о поиске: «Что это в принципе такое и зачем оно
+        # нужно»); причина остаётся для Монитора и проверок.
+        return {"state": "missing", "absent": True, "reason": _missing_words(where["looked"])}
     rss = monitor._latest(project, "estimate", ".xlsx", end.isoformat())
     if rss is None:
         return {"state": "missing",

@@ -27,6 +27,7 @@ import socket
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.error import HTTPError
 
 import pytest
@@ -82,7 +83,7 @@ def no_real_pauses(monkeypatch):
     """Отступ проверяется по вызовам, а не ожиданием: проверка не спит."""
     slept: list[float] = []
     monkeypatch.setattr(time, "sleep", lambda pause: slept.append(pause))
-    monkeypatch.setattr(documents.time, "sleep", lambda pause: slept.append(pause))
+    monkeypatch.setattr(documents, "time", SimpleNamespace(sleep=lambda pause: slept.append(pause)))
     return slept
 
 
