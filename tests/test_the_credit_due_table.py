@@ -130,7 +130,8 @@ def test_the_limit_increase_is_on_the_first_loan_schedule(monkeypatch):
     own = due["own_total"]
     assert own["pace"] > own["pace_base"]
     assert report.credit_lines(due)[-1] == (
-        f"Всего своих денег понадобится {report._rub(own['pace'])} по нынешнему темпу / "
+        f"За весь срок, по 30.09.2029, своих денег понадобится {report._rub(own['pace'])} по "
+        f"нынешнему темпу / "
         f"{report._rub(own['fm'])} по плану ФМ, пик — {report._day(due['peak'])}; это с "
         f"учётом увеличения лимита на 2,40 млрд ₽ ({report._rub(own['pace_base'])} без него).")
     page = report._credit_due_html(due)
@@ -180,8 +181,18 @@ def test_each_date_in_the_owner_words_and_the_same_lines_everywhere(monkeypatch)
     assert f"Погашение кредитов: {main}" in report.render_text(built)
     assert f"Хватит ли эскроу на платежи по НКЛ с процентами: {verdict}" in page
     tiles = {item["label"]: item for item in report.tiles(built)}
-    assert tiles["Эскроу на платежи по НКЛ"]["value"] == \
-        f"не хватает {report._rub(due['own_total']['pace'])}"
+    # Плитка — первый платёж, к вводу, а не сумма за весь срок (владелец, 28.10.2026:
+    # «бредовое число и пояснение» на «не хватает 6,88 млрд — первый раз 30.09.2027»).
+    tile = tiles["Эскроу на платежи по НКЛ"]
+    first = due["rows"][0]
+    assert tile["value"] == f"не хватает {report._rub(first['own']['pace'])}"
+    assert tile["note"].startswith(
+        f"30.09.2027 по графикам НКЛ платёж {report._rub(first['total']['pace'])} (долг "
+        f"{report._rub(first['principal'])} и проценты {report._rub(first['interest']['pace'])}), "
+        f"на эскроу к этой дате {report._rub(first['escrow']['pace'])} по нашему прогнозу.")
+    assert report._rub(due["own_total"]["pace"]) not in tile["note"]
+    # Сумма за весь срок — под таблицей, с подписью, из чего она сложена.
+    assert "Это не нехватка к вводу" in page
 
 
 def test_a_project_without_credit_terms_says_why(monkeypatch):
@@ -235,7 +246,7 @@ def test_without_interest_the_debt_and_escrow_are_still_told(monkeypatch):
         f"Проценты сверх основного долга не посчитаны: {reason}."
     tiles = {item["label"]: item for item in report.tiles(built)}
     tile = tiles["Эскроу на платежи по НКЛ"]
-    assert tile["value"] != "нет данных" and "без процентов — их не посчитали" in tile["note"]
+    assert tile["value"] != "нет данных" and "проценты не посчитаны" in tile["note"]
     # Причины в пропусках нет — сводка всё равно называет дату пустых процентов.
     built["credit"]["base"]["gaps"] = []
     assert report.credit_due(built["credit"], built["funding"], None)["interest_reason"][

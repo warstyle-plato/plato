@@ -1429,7 +1429,8 @@ def _own_total_sentence(block: dict[str, Any]) -> str:
         text = "Своих денег не понадобится: эскроу по нынешнему темпу хватает на все платежи"
         text += (f" (по плану ФМ — {_rub(own['fm'])})" if own["fm"] and own["fm"] > 0.5 else "")
         return text + "."
-    text = (f"Всего своих денег понадобится {_rub(own['pace'])} по нынешнему темпу"
+    text = (f"За весь срок, по {_day(block['rows'][-1]['date'])}, своих денег понадобится "
+            f"{_rub(own['pace'])} по нынешнему темпу"
             + (f" / {_rub(own['fm'])} по плану ФМ" if own["fm"] is not None else "")
             + (f", пик — {_day(block['peak'])}" if block.get("peak") else ""))
     if block["extra"]:
@@ -1483,6 +1484,21 @@ def _credit_due_html(block: dict[str, Any]) -> str:
 
 
 _GROUPS = (("pace", "Наш прогноз (нынешний темп продаж)"), ("fm", "План финмодели"))
+
+
+def _first_due_words(row: dict[str, Any]) -> str:
+    """Подпись плитки: первый платёж по графикам НКЛ и эскроу к его дате — фразой."""
+    interest = row["interest"]["pace"]
+    owed = (f"платёж {_rub(row['total']['pace'])} (долг {_rub(row['principal'])} и проценты "
+            f"{_rub(interest)})" if interest is not None else
+            f"основной долг {_rub(row['principal'])}, проценты не посчитаны")
+    text = (f"{_day(row['date'])} по графикам НКЛ {owed}, на эскроу к этой дате "
+            f"{_rub(row['escrow']['pace'])} по нашему прогнозу.")
+    fm = row["own"].get("fm")
+    if fm is not None:
+        text += (" По плану финмодели хватает." if fm <= 0.5 else
+                 f" По плану финмодели не хватает {_rub(fm)}.")
+    return text
 
 
 def _money_line(block: dict[str, Any]) -> str:
@@ -1578,7 +1594,16 @@ def _credit_due_table(block: dict[str, Any]) -> list[str]:
                               block["interest_base_total"],
                               {"pace": own["pace_base"], "fm": own["fm_base"]}))
     out.append("<table class='credit-due'>" + "".join(head) + "".join(body) + "</table>")
+    out.append(f"<p class='note'>{esc(_totals_words(block))}</p>")
     return out
+
+
+def _totals_words(block: dict[str, Any]) -> str:
+    """Из чего сложены «Нарастающим итогом» и «Итого» — за весь срок, не к вводу."""
+    return (f"«Нарастающим итогом» и строка «Итого» — сколько своих денег понадобится за весь "
+            f"срок, по {_day(block['rows'][-1]['date'])}: платежи по графикам НКЛ с процентами "
+            "минус эскроу к вводу и деньги от продаж после ввода. Это не нехватка к вводу: к "
+            f"вводу — только первая строка ({_day(block['rows'][0]['date'])}).")
 
 
 def _credit_assumptions(block: dict[str, Any]) -> str:
@@ -3549,20 +3574,18 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
     # таблицей погашения: одно число на всю сводку (владелец, 27.10.2026).
     due = report.get("credit_due") or {}
     if due.get("state") == "ok":
-        own = due["own_total"]
-        first = next((row for row in due["rows"] if (row["own"].get("pace") or 0.0) > 0.5),
-                      None)
-        fm = (f"; по плану ФМ — {_rub(own['fm'])}" if own["fm"] is not None else "")
-        with_interest = ("без процентов — их не посчитали"
-                         if (due.get("interest_reason") or {}).get("pace") else "с процентами")
-        if own["pace"] is None:
+        # Плитка — только первый платёж, к вводу (владелец, 28.10.2026, через сессию
+        # «Погашение кредитов»: сумма за весь срок рядом с «первый раз 30.09.2027»
+        # читалась как нехватка к вводу — «бредовое число и пояснение»). Сумма за
+        # весь срок — в таблице раздела, с подписью, из чего она сложена.
+        row = due["rows"][0]
+        put = row["own"].get("pace")
+        if put is None:
             add("Эскроу на платежи по НКЛ", None, credit_verdict(due))
-        elif first:
-            add("Эскроу на платежи по НКЛ", f"не хватает {_rub(own['pace'])}",
-                f"своих денег {with_interest}, первый раз {_day(first['date'])}{fm}", "bad")
         else:
-            add("Эскроу на платежи по НКЛ", "хватает",
-                f"до {_day(due['rows'][-1]['date'])}, {with_interest}{fm}", "good")
+            add("Эскроу на платежи по НКЛ",
+                f"не хватает {_rub(put)}" if put > 0.5 else "хватает", _first_due_words(row),
+                "bad" if put > 0.5 else "good")
     else:
         add("Эскроу на платежи по НКЛ", None, due.get("reason") or "не посчитано")
 
