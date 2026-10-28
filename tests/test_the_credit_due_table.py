@@ -159,13 +159,15 @@ def test_each_date_in_the_owner_words_and_the_same_lines_everywhere(monkeypatch)
     page = report.render_html(built)
     section = page[page.index("id='block-credit'"):]
     section = section[:section.index("<h2", 1)]
-    # Две строки над таблицей, семь столбцов, текст по датам и одна строка допущений.
+    # Две строки над таблицей, таблица — две группы (наш прогноз и план ФМ), текст
+    # по датам и одна строка допущений.
     table = section.index("<table class='credit-due'>")
     assert section.index(report.credit_interest_line(due)) < table
     assert section.index(verdict) < table
-    for head in ("Дата", "Основной долг", "Проценты (темп)", "Проценты (план ФМ)",
-                 "Эскроу к дате (темп)", "Эскроу к дате (план ФМ)", "Хватает / не хватает"):
-        assert f"<th>{head}</th>" in section, head
+    for head in ("Наш прогноз (нынешний темп продаж)", "План финмодели"):
+        assert f">{head}</th>" in section, head
+    assert section.count("<th>Не хватает</th>") == 2
+    assert section.count("<th>Нарастающим итогом</th>") == 2
     for line in lines:
         assert line in section
     assert "<details class='credit-more'><summary>Как посчитано" in section
@@ -238,3 +240,30 @@ def test_without_interest_the_debt_and_escrow_are_still_told(monkeypatch):
     assert report.credit_due(built["credit"], built["funding"], None)["interest_reason"][
         "pace"] == "в прогнозе кредитов нет процентов на " + report._day(
             built["credit"]["base"]["rows"][0]["date"])
+
+
+def test_the_table_shows_both_shortfalls_and_their_running_totals(monkeypatch):
+    """«Нагляднее… сколько не хватает по ФМ и сколько по нашему прогнозу и
+    накопленный итог» (владелец, 28.10.2026): в каждой группе — «Не хватает» к
+    дате и «Нарастающим итогом»; последняя нарастающая сумма — итог своих денег;
+    недостаток выделен."""
+    import re
+
+    due = _built(monkeypatch)["credit_due"]
+    page = report._credit_due_html(due)
+    table = page[page.index("<table class='credit-due'>"):page.index("</table>")]
+    lines = re.findall(r"<tr>(.*?)</tr>", table)
+    body = [line for line in lines if line.startswith("<td>")]
+    assert len(body) == len(due["rows"])
+    running = {"pace": 0.0, "fm": 0.0}
+    for row, line in zip(due["rows"], body):
+        cells = re.findall(r"<td[^>]*>(.*?)</td>", line)
+        for key in running:
+            running[key] += row["own"][key]
+        shown = [cell for cell in cells if cell]
+        assert report._nb(running["pace"]) in shown or running["pace"] <= 0.5
+        assert report._nb(running["fm"]) in shown or running["fm"] <= 0.5
+    assert running["pace"] == pytest.approx(due["own_total"]["pace"])
+    assert running["fm"] == pytest.approx(due["own_total"]["fm"])
+    # Недостаток — красным, «хватает» — зелёным.
+    assert "<td class='short'>" + report._nb(due["rows"][0]["own"]["pace"]) + "</td>" in table

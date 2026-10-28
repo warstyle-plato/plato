@@ -1390,31 +1390,7 @@ def _credit_due_html(block: dict[str, Any]) -> str:
     out = [f"<p class='note'><b>{esc(credit_interest_line(block))}</b></p>",
            f"<p class='{'note warn' if short else 'note'}'><b>{esc(credit_verdict(block))}</b></p>"]
 
-    def enough(row: dict[str, Any]) -> str:
-        # По нынешнему темпу; план ФМ — в тексте по датам и в строке «Итого».
-        pace = row["own"].get("pace")
-        if pace is None:
-            return "нет данных"
-        # Сумма не рвётся по строкам: «млн» и «₽» — с числом.
-        return f"не хватает {_rub(pace).replace(' ', chr(160))}" if pace > 0.5 else "хватает"
-
-    rows = [[_day(row["date"]), _rub(row["principal"]), _bn(row["interest"]["pace"]),
-             _bn(row["interest"]["fm"]), _bn(row["escrow"]["pace"]), _bn(row["escrow"]["fm"]),
-             enough(row)] for row in block["rows"]]
-    own = block["own_total"]
-    rows.append(["Итого", _rub(block["principal_total"]),
-                 _bn(block["interest_total"]["pace"]), _bn(block["interest_total"]["fm"]),
-                 "", "", f"своих {_bn(own['pace'])}; по плану ФМ — {_bn(own['fm'])}"])
-    if block["extra"]:
-        rows.append(["Без увеличения лимита", _rub(block["principal_base_total"]),
-                     _bn(block["interest_base_total"]["pace"]),
-                     _bn(block["interest_base_total"]["fm"]), "", "",
-                     (f"своих {_bn(own['pace_base'])}; по плану ФМ — "
-                      f"{_bn(own['fm_base'])}")])
-    out.append(_table(["Дата", "Основной долг", "Проценты (темп)", "Проценты (план ФМ)",
-                       "Эскроу к дате (темп)", "Эскроу к дате (план ФМ)",
-                       "Хватает / не хватает"], rows).replace(
-        "<table>", "<table class='credit-due'>", 1))
+    out += _credit_due_table(block)
     out.append("<ul class='credit-dates'>" + "".join(
         f"<li>{esc(line)}</li>" for line in credit_lines(block)) + "</ul>")
     out.append(f"<p class='note'>{esc(_credit_assumptions(block))}</p>")
@@ -1422,6 +1398,91 @@ def _credit_due_html(block: dict[str, Any]) -> str:
         if reason:
             out.append(f"<p class='missing'>{esc(reason)}</p>")
     return "\n".join(out)
+
+
+_GROUPS = (("pace", "Наш прогноз (нынешний темп продаж)"), ("fm", "План финмодели"))
+
+
+def _nb(value: float | None) -> str:
+    """Сумма без переноса внутри: «2,41 млрд ₽» не рвётся на «млрд» и «₽»."""
+    return _bn(value).replace(" ", "\u00a0")
+
+
+def _credit_due_table(block: dict[str, Any]) -> list[str]:
+    """Таблица погашения: две группы — наш прогноз и план финмодели, в каждой
+    проценты, сколько не хватает к дате и нарастающим итогом (владелец,
+    28.10.2026: «Нагляднее… сколько не хватает по ФМ и сколько по нашему
+    прогнозу и накопленный итог»). Эскроу, одинаковое во всех датах, — строкой
+    над таблицей, а не двумя колонками повторов."""
+    esc = html.escape
+    rows = block["rows"]
+    flat = {key: len({round(row["escrow"][key] or 0.0) for row in rows}) == 1
+            for key, _ in _GROUPS}
+    out = []
+    first = rows[0]
+    if all(flat.values()) and first["escrow"]["pace"] is not None:
+        words = (f"На эскроу к первому платежу {_day(first['date'])}: "
+                 f"{_rub(first['escrow']['pace'])} по нашему прогнозу")
+        if first["escrow"]["fm"] is not None:
+            words += f", {_rub(first['escrow']['fm'])} по плану финмодели"
+        words += (". К следующим датам эскроу не прибавляется: сколько его хватает, видно в "
+                  "колонках «Не хватает».")
+        out.append(f"<p class='note'>{esc(words)}</p>")
+    escrow_col = {key: not flat[key] for key, _ in _GROUPS}
+
+    def shortage(value: float | None) -> str:
+        if value is None:
+            return "<td>нет данных</td>"
+        if value > 0.5:
+            return f"<td class='short'>{_nb(value)}</td>"
+        return "<td class='ok'>хватает</td>"
+
+    head = ["<tr><th rowspan='2'>Дата</th><th rowspan='2'>Основной долг</th>"]
+    head += [f"<th class='grp' colspan='{3 + escrow_col[key]}'>{esc(title)}</th>"
+             for key, title in _GROUPS]
+    head.append("</tr><tr>")
+    for key, _ in _GROUPS:
+        head.append("<th>Проценты</th>" + ("<th>Эскроу к дате</th>" if escrow_col[key] else "")
+                    + "<th>Не хватает</th><th>Нарастающим итогом</th>")
+    head.append("</tr>")
+    body = []
+    running = {key: 0.0 for key, _ in _GROUPS}
+    for row in rows:
+        cells = [f"<td>{_day(row['date'])}</td>", f"<td>{_nb(row['principal'])}</td>"]
+        for key, _ in _GROUPS:
+            put = row["own"].get(key)
+            if put is not None and running[key] is not None:
+                running[key] += put
+            else:
+                running[key] = None
+            cells.append(f"<td>{_nb(row['interest'][key])}</td>")
+            if escrow_col[key]:
+                cells.append(f"<td>{_nb(row['escrow'][key])}</td>")
+            cells.append(shortage(put))
+            total = running[key]
+            cells.append("<td>нет данных</td>" if total is None else
+                         f"<td class='{'short' if total > 0.5 else 'ok'}'>"
+                         f"{_nb(total) if total > 0.5 else '—'}</td>")
+        body.append("<tr>" + "".join(cells) + "</tr>")
+    own = block["own_total"]
+
+    def total_row(title: str, principal: float, interest: dict, put: dict) -> str:
+        cells = [f"<td>{esc(title)}</td>", f"<td>{_nb(principal)}</td>"]
+        for key, _ in _GROUPS:
+            cells.append(f"<td>{_nb(interest[key])}</td>")
+            if escrow_col[key]:
+                cells.append("<td></td>")
+            cells.append(shortage(put.get(key)) + "<td></td>")
+        return "<tr class='total'>" + "".join(cells) + "</tr>"
+
+    body.append(total_row("Итого", block["principal_total"], block["interest_total"],
+                          {"pace": own["pace"], "fm": own["fm"]}))
+    if block["extra"]:
+        body.append(total_row("Без увеличения лимита", block["principal_base_total"],
+                              block["interest_base_total"],
+                              {"pace": own["pace_base"], "fm": own["fm_base"]}))
+    out.append("<table class='credit-due'>" + "".join(head) + "".join(body) + "</table>")
+    return out
 
 
 def _credit_assumptions(block: dict[str, Any]) -> str:
@@ -2982,7 +3043,7 @@ figure.chart{margin:10px 0 6px;break-inside:avoid;page-break-inside:avoid}figure
 svg.chart{display:block;max-width:100%}
 .credit-status{padding:6px 9px;border-radius:4px;background:#f4f7fb;margin:6px 0}.credit-status.bad{background:#fdecea}.credit-status.warn{background:#fff6dd}.credit-status.good{background:#eaf5ec}
 table.credit-table tr.loan td{color:#5b6b7d;font-size:10.5px;border-bottom:1px dotted #e1e6ec}table.credit-table tr.loan td:first-child{padding-left:16px}table.credit-table th{white-space:normal}
-table.credit-due th{white-space:normal}table.credit-due td:last-child{text-align:left;white-space:normal}
+table.credit-due th{white-space:normal}table.credit-due th.grp{text-align:center;border-left:2px solid #c5cfdb}table.credit-due td.short{color:#b42318;font-weight:600}table.credit-due td.ok{color:#2e7d32}table.credit-due tr.total td{border-top:2px solid #1f4e8c;font-weight:600}table.credit-due td:first-child,table.credit-due th:first-child{position:sticky;left:0;z-index:1;text-align:left}table.credit-due td:first-child{background:#fff}
 table.credit-top td:last-child{text-align:left;white-space:normal}details.how summary,.credit details>summary{cursor:pointer;color:#1f4e8c}.credit details{margin:6px 0}details.how div{white-space:normal;font-size:10.5px;max-width:520px}
 """
 
