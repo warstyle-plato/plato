@@ -471,16 +471,26 @@ def test_the_minimum_territory_is_one_number():
     assert manual.MIN_CATALOG_SQM == core.KRT_TERRITORY_MIN_SQM
 
 
-JUNK_PROBE = """async ()=>{
- inputs._krt_site={on:true,status:'failed',problem:'',choices:[],rings_merc:[],
+JUNK_PROBE = """async (parcel)=>{
+ const k=Math.cos(55.6215*Math.PI/180);
+ inputs.site_area_ha=0.0001; inputs._site_area_user_set=false;
+ inputs._krt_site={on:true,status:'ready',name:'Пролетарский пр-т, влд. 20',slug:'proletarsky-20',
+  problem:'',choices:[],rings_merc:[parcel],area_sqm:1563.8,source:'официальный полигон реестра КРТ',
+  prev:{site_area_ha:0.243,user_set:false,origin:null},
   manual:{rings_merc:[[[0,0],[1,0],[0,1.6]]],area_sqm:0.8,approximate:false,
   source:'контур загружен вручную: каталог координат МСК-77, распознан с фото',source_note:''}};
  openTab('tep'); renderSitePanel();
- return document.getElementById('siteKrtStatus').innerText;
+ await new Promise(ok=>setTimeout(ok,50)); await settledCalculate();
+ const layout=((((lastResult||{}).tep||{}).site_massing||{}).scheme||{}).layout||{};
+ return {status:document.getElementById('siteKrtStatus').innerText,
+  ha:document.getElementById('siteAreaHa').value, manual:!!inputs._krt_site.manual,
+  notes:(layout.notes||[]).join(' | ')};
 }"""
 
 
-def test_a_saved_contour_of_a_square_metre_is_called_out_on_the_page():
+def test_a_saved_contour_of_a_square_metre_is_dropped_by_itself():
+    # Владелец 28.10.2026: после выкатки исправления в проекте остался прежний
+    # «контур» 0,8 м² — он лежал в сохранённом проекте. Теперь он снимается сам.
     pytest.importorskip("playwright.sync_api")
     from playwright.sync_api import sync_playwright
 
@@ -490,10 +500,18 @@ def test_a_saved_contour_of_a_square_metre_is_called_out_on_the_page():
         page = engine.new_page(viewport={"width": 390, "height": 844})
         page.goto(base, wait_until="domcontentloaded")
         browser.wait_for_result(page)
-        text = page.evaluate(JUNK_PROBE)
+        got = page.evaluate(JUNK_PROBE, _parcel())
         page.close()
-    assert "Этот контур — не территория КРТ" in text, text
-    assert "Уберите контур кнопкой ниже" in text, text
+    assert got["manual"] is False, got
+    assert "Сохранённый загруженный контур (0,8 м²) снят" in got["status"], got
+    assert float(got["ha"]) == pytest.approx(0.1564, abs=0.0001), "площадь — найденного контура"
+    assert "распознан с фото" not in got["notes"], got
+
+
+def test_the_engine_does_not_read_a_saved_contour_of_a_square_metre():
+    site = {"on": True, "status": "ready", "rings_merc": [_parcel()], "area_sqm": 1563.8,
+            "manual": {"rings_merc": [[[0, 0], [1, 0], [0, 1.6]]], "area_sqm": 0.8}}
+    assert core.krt_site_effective({"_krt_site": site})["area_sqm"] == 1563.8
 
 
 # --- страница ошибки шлюза вместо данных (владелец 28.10.2026, прод 0.28.30) -------------

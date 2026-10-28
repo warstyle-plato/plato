@@ -330,7 +330,7 @@ def _holes(rings: list[list[list[float]]]) -> list[bool]:
 # Территория КРТ меньше этого — не территория, а случайные числа, принятые за
 # координаты (владелец 28.10.2026: «каталог» 0,8 м² с картинки схемы). Разбор
 # такой каталог не принимает (`auction_search.krt_manual_contour.MIN_CATALOG_SQM`
-# равен этому числу), а страница говорит про уже сохранённый.
+# равен этому числу), а уже сохранённый не читает движок и снимает страница.
 KRT_TERRITORY_MIN_SQM = 100.0
 
 
@@ -342,7 +342,9 @@ def krt_site_effective(x: dict[str, Any]) -> dict[str, Any] | None:
     if not isinstance(site, dict) or site.get("on") is not True:
         return None
     manual = site.get("manual")
-    if isinstance(manual, dict) and float(manual.get("area_sqm") or 0) > 0:
+    # Загруженный «контур» меньше территории — случайные числа с картинки, а не
+    # границы: его не читают ни схема, ни отчёты (страница снимает его сама).
+    if isinstance(manual, dict) and float(manual.get("area_sqm") or 0) >= KRT_TERRITORY_MIN_SQM:
         return {"name": site.get("name"), "slug": site.get("slug"), **manual}
     return site
 
