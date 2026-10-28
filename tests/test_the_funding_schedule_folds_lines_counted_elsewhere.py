@@ -65,3 +65,18 @@ def test_the_report_shows_articles_once_cumulatively():
     row = next(chunk for chunk in page.split("<tr>") if "2.2.1.7 Монолитные работы" in chunk)
     assert "36,0 млн ₽" in row and "12,0 млн ₽" in row
     assert "2.2.2.1 Монолит надземной части" not in page
+
+
+def test_both_tables_end_with_a_total():
+    """Владелец, 28.10.2026: «Итого где строка»."""
+    got = _run()
+    page = report._schedule_html(got)
+    months = [m for m in got["months"] if m.get("plan") is not None]
+    plan = sum(m["plan"] for m in months)
+    fact = sum(m["fact"] for m in got["months"])
+    total = next(chunk for chunk in page.split("<tr>") if "<b>Итого</b>" in chunk)
+    assert report._rub(plan) in total and report._rub(fact) in total
+    lines = next(chunk for chunk in page.split("<tr>")
+                 if "Итого по всем статьям графика" in chunk)
+    # Оплачено по статьям — то же, что по месяцам: статьи и месяцы одной сверки.
+    assert report._rub(fact) in lines
