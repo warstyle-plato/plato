@@ -2920,6 +2920,18 @@ def _schedule_html(block: dict[str, Any]) -> str:
         rows.append([esc(_schedule_month_words(month)), _day(month["version"]),
                      _rub(month.get("plan")), _rub(month["fact"]), _plus_rub(month.get("gap")),
                      _pct(month.get("share")), esc("; ".join(note))])
+    # Итог — сумма месяцев; план без месяцев «плана нет» (владелец, 28.10.2026:
+    # «Итого где строка»).
+    plans = [m["plan"] for m in block["months"] if m.get("plan") is not None]
+    if len(block["months"]) > 1:
+        plan_sum = sum(plans) if plans else None
+        fact_sum = sum(m["fact"] for m in block["months"])
+        outside = sum(m.get("outside") or 0.0 for m in block["months"])
+        rows.append(["<b>Итого</b>", "", _rub(plan_sum), _rub(fact_sum),
+                     _plus_rub(fact_sum - plan_sum if plan_sum is not None else None),
+                     _pct(fact_sum / plan_sum if plan_sum else None),
+                     esc(f"ещё {_rub(outside)} оплачено по статьям, которых нет в графике")
+                     if outside else ""])
     out.append(_schedule_table(["Месяц", "График от", "План", "Оплачено", "Отклонение",
                                 "Исполнено", "Примечание"], rows))
     # По статьям — одна таблица нарастающим итогом за все месяцы графика, а не
@@ -2938,6 +2950,13 @@ def _schedule_html(block: dict[str, Any]) -> str:
         table = [[esc(f"{line['code']} {line['work']}"), _rub(line["plan"]), _rub(line["fact"]),
                   _plus_rub(line["gap"]), _pct(line["share"]), _schedule_notes(line)]
                  for line in shown]
+        # Итог — по всем статьям, и по скрытым с малым отклонением.
+        plan_all = [line["plan"] for line in lines if line["plan"] is not None]
+        plan_sum = sum(plan_all) if plan_all else None
+        fact_sum = sum(line["fact"] for line in lines)
+        table.append(["<b>Итого по всем статьям графика</b>", _rub(plan_sum), _rub(fact_sum),
+                      _plus_rub(fact_sum - plan_sum if plan_sum is not None else None),
+                      _pct(fact_sum / plan_sum if plan_sum else None), ""])
         out.append(_schedule_table(["Статья", "План", "Оплачено", "Отклонение", "Исполнено",
                                     "Примечание"], table))
         if len(shown) < len(lines):
