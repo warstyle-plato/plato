@@ -46,6 +46,16 @@ SOURCE_PHOTO_AREA = ("площадь загружена вручную: из т�
                      "форма участка приблизительная")
 
 MAX_POINTS = 2000
+# Версия разбора фото: входит в ключ ответа на диске (`/krt/manual-contour`).
+# Меняется вместе с правилами разбора — иначе сутки отдаётся прежний ответ.
+RECOGNISE_VERSION = 2
+# Территория КРТ меньше этого — не территория: такие «каталоги» собираются из
+# случайных чисел (распознанные подписи, номера, доли гектара). Равен
+# `KRT_TERRITORY_MIN_SQM` движка: по нему страница предупреждает о сохранённом.
+MIN_CATALOG_SQM = 100.0
+# Каталог, распознанный с картинки, сверяется с площадью, названной в тексте
+# решения: расходится больше этой доли — цифры прочитаны не те.
+CATALOG_AREA_TOLERANCE = 0.25
 # Координата каталога МСК-77 в пределах Москвы с Новой Москвой — десятки
 # километров от начала: больше — это не МСК-77 (градусы, другая зона, номер).
 MSK77_RANGE_M = 120_000.0
@@ -238,6 +248,10 @@ def from_catalog(text: str, *, points_merc: list[list[float]] | None = None,
     if area <= 0:
         return {"status": "failed", "rings_merc": [], "area_sqm": None, "approximate": False,
                 "problem": "точки каталога не образуют площади — проверьте порядок точек"}
+    if area < MIN_CATALOG_SQM:
+        return {"status": "failed", "rings_merc": [], "area_sqm": None, "approximate": False,
+                "problem": (f"точки каталога образуют фигуру площадью {area:.1f} м² — это не "
+                            "территория; похоже, в тексте не таблица координат, а другие числа")}
     merc = rings_to_merc(rings)
     notes: list[str] = []
     points = [p for p in (points_merc or []) if isinstance(p, list) and len(p) >= 2]
@@ -259,12 +273,13 @@ def from_catalog(text: str, *, points_merc: list[list[float]] | None = None,
 # --- фото и скан ------------------------------------------------------------------
 
 _AREA = re.compile(
-    r"площад\w*[^0-9\n]{0,80}?(\d{1,3}(?:[  ]\d{3})*(?:[.,]\d+)?|\d+(?:[.,]\d+)?)\s*"
+    r"пло[щш]ад\w*[^0-9\n]{0,80}?(\d{1,3}(?:[  ]\d{3})*(?:[.,]\d+)?|\d+(?:[.,]\d+)?)\s*"
     r"(га|кв\.?\s*м|м2|м²)", re.I)
 
 
 def area_from_text(text: str) -> float | None:
-    """Площадь территории, названная в тексте решения, м² (га переводятся)."""
+    """Площадь территории, названная в тексте решения, м² (га переводятся).
+    Распознаватель читает «щ» как «ш» («плошадью») — это тоже площадь."""
     best: float | None = None
     for number, unit in _AREA.findall(str(text or "")):
         try:
@@ -275,6 +290,79 @@ def area_from_text(text: str) -> float | None:
         if sqm > 0 and (best is None or sqm > best):
             best = sqm
     return best
+
+
+def _sqm(value: float) -> str:
+    return f"{value:,.0f}".replace(",", " ")
+
+
+def _titled_catalog(text: str) -> bool:
+    """Таблица координат в решении названа («каталог координат», «координаты
+    характерных точек») или у неё шапка «X … Y»: без этого числа на картинке —
+    подписи, номера и доли гектара, а не точки границы."""
+    text = str(text or "")
+    return bool(re.search(r"координат|каталог", text, re.I)
+                or re.search(r"(?:^|\s)[XХ](?:\s[^\n]{0,40})?\s[YУ](?:\s|$)", text, re.M))
+
+
+def recognised_catalog(text: str, area_in_text: float | None, *,
+                       points_merc: list[list[float]] | None = None) -> dict[str, Any]:
+    """Каталог, распознанный с картинки или скана, — только если он похож на
+    каталог: таблица названа, а площадь по точкам сходится с площадью из
+    текста решения (если она там есть). Иначе — `failed` с причиной, и
+    страница идёт дальше (площадь из текста и форма с картинки).
+
+    Владелец 28.10.2026 («Пролетарский пр-т, вл. 20»): с картинки схемы без
+    таблицы распознаватель собрал «каталог» из случайных чисел — 0,8 м²,
+    и он перебил и площадь 0,77 га, и форму.
+    """
+    if not _titled_catalog(text):
+        return {"status": "failed", "problem": "на картинке нет таблицы «каталог координат»"}
+    catalog = from_catalog(text, points_merc=points_merc, source=SOURCE_PHOTO)
+    if catalog["status"] != "ready":
+        return catalog
+    got = float(catalog["area_sqm"])
+    if area_in_text and abs(got - area_in_text) > CATALOG_AREA_TOLERANCE * area_in_text:
+        return {"status": "failed", "problem": (
+            f"площадь по распознанным точкам — {_sqm(got)} м², а в тексте решения — "
+            f"{_sqm(area_in_text)} м²: цифры координат прочитаны не те")}
+    catalog["source_note"] = "; ".join(part for part in (
+        catalog.get("source_note"),
+        "цифры распознаны с картинки — сверьте площадь с решением") if part)
+    return catalog
+
+
+def scheme_page_image(data: bytes) -> tuple[bytes, str]:
+    """PDF решения → картинка страницы со схемой границ (PNG) или причина.
+
+    Страница со схемой — та, где есть картинка и слова «графическое описание»,
+    «схема» или «границ»; таких нет — страница с самой большой картинкой.
+    """
+    try:
+        import pymupdf
+    except Exception:  # noqa: BLE001 — нечем — это причина, а не тишина
+        return b"", "PDF нечем превратить в картинку: на сервере нет pymupdf"
+    try:
+        document = pymupdf.open(stream=data, filetype="pdf")
+    except Exception as exc:  # noqa: BLE001
+        return b"", f"PDF не открылся: {type(exc).__name__}"
+    best, best_score = None, -1.0
+    for index in range(min(document.page_count, 12)):
+        page = document[index]
+        images = page.get_image_info()
+        if not images:
+            continue
+        boxes = [i.get("bbox") or (0, 0, 0, 0) for i in images]
+        cover = max(abs(x1 - x0) * abs(y1 - y0) for x0, y0, x1, y1 in boxes) \
+            / max(1.0, page.rect.width * page.rect.height)
+        words = page.get_text().lower()
+        titled = bool(re.search(r"графическ|схем|границ", words))
+        score = cover + (1.0 if titled else 0.0)
+        if score > best_score:
+            best, best_score = index, score
+    if best is None:
+        return b"", "в PDF нет страницы с картинкой схемы границ"
+    return document[best].get_pixmap(dpi=150).tobytes("png"), ""
 
 
 def recognise(data: bytes, filename: str, *,
@@ -306,20 +394,24 @@ def recognise(data: bytes, filename: str, *,
             detail = getattr(exc, "detail", None) or f"{type(exc).__name__}: {exc}"
             ocr_problem = f"фото не распознано: {detail}"[:300]
             text = ""
-    if text:
-        catalog = from_catalog(text, points_merc=points_merc, source=SOURCE_PHOTO)
-        if catalog["status"] == "ready":
-            catalog["source_note"] = "; ".join(part for part in (
-                catalog.get("source_note"),
-                "цифры распознаны с картинки — сверьте площадь с решением") if part)
-            return catalog
     area = area_from_text(text)
+    catalog_problem = ""
+    if text:
+        catalog = recognised_catalog(text, area, points_merc=points_merc)
+        if catalog["status"] == "ready":
+            return catalog
+        catalog_problem = catalog.get("problem") or ""
     outline: dict[str, Any] = {}
-    if not pdf and ask is not None:
+    picture = data
+    if pdf and ask is not None:
+        picture, picture_problem = scheme_page_image(data)
+        if not picture:
+            outline = {"status": "failed", "problem": picture_problem}
+    if picture and ask is not None:
         from auction_search import krt_photo_outline
 
         outline = krt_photo_outline.from_photo(
-            data, area, ask, model=model, read_area=area_from_text,
+            picture, area, ask, model=model, read_area=area_from_text,
             rings_merc=anchor_rings_merc, points_merc=points_merc, addresses=addresses)
         area = area or area_from_text(outline.get("area_text") or "")
     if outline.get("status") == "ready" and area:
@@ -333,12 +425,13 @@ def recognise(data: bytes, filename: str, *,
                 "anchored_by": outline.get("anchored_by") or "",
                 "map_problem": outline.get("map_problem") or "",
                 "source": krt_photo_outline.SOURCE_PHOTO_OUTLINE, "problem": "",
-                "source_note": ("на фото нет таблицы координат, поэтому форма снята с "
+                "source_note": ("на картинке нет таблицы координат, поэтому форма снята с "
                                 "картинки: Платон обвёл границу, размер подогнан под площадь "
-                                f"из текста решения; {where}")}
+                                f"из текста решения; {where}"
+                                + (f"; числа с картинки за каталог не приняты: {catalog_problem}"
+                                   if catalog_problem and _titled_catalog(text) else ""))}
     if area:
-        shape_problem = (outline.get("problem") or "") if ask is not None and not pdf else \
-            ("с документа PDF форма не снимается" if pdf else "Платон не подключён")
+        shape_problem = (outline.get("problem") or "") if ask is not None else "Платон не подключён"
         return {"status": "ready", "rings_merc": [], "area_sqm": round(area, 1),
                 "approximate": True, "source": SOURCE_PHOTO_AREA, "problem": "",
                 "shape_problem": shape_problem,
@@ -346,7 +439,9 @@ def recognise(data: bytes, filename: str, *,
                                "привязать, поэтому взята только площадь из текста, а форма "
                                "участка на схеме приблизительная"
                                + (f"; форму с картинки снять не вышло: {shape_problem}"
-                                  if shape_problem else "")}
+                                  if shape_problem else "")
+                               + (f"; числа с картинки за каталог не приняты: {catalog_problem}"
+                                  if catalog_problem and _titled_catalog(text) else "")}
     if ocr_problem and ask is None:
         return {"status": "failed", "rings_merc": [], "area_sqm": None, "approximate": False,
                 "problem": ocr_problem}

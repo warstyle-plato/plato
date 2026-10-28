@@ -327,6 +327,13 @@ def _holes(rings: list[list[list[float]]]) -> list[bool]:
             for i, ring in enumerate(rings)]
 
 
+# Территория КРТ меньше этого — не территория, а случайные числа, принятые за
+# координаты (владелец 28.10.2026: «каталог» 0,8 м² с картинки схемы). Разбор
+# такой каталог не принимает (`auction_search.krt_manual_contour.MIN_CATALOG_SQM`
+# равен этому числу), а страница говорит про уже сохранённый.
+KRT_TERRITORY_MIN_SQM = 100.0
+
+
 def krt_site_effective(x: dict[str, Any]) -> dict[str, Any] | None:
     """Чем меряется территория КРТ при стоящей галочке «Проект в КРТ»:
     загруженный человеком контур (`_krt_site.manual`) сильнее найденного

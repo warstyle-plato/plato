@@ -1936,7 +1936,13 @@ function renderKrtSite(){
  box.style.display='';
  const manual=krtSiteManual();
  if(manual){
-  box.innerHTML=(manual.origin==='photo_outline'?'<b>Контур снят с картинки решения, границы приблизительные</b>: ':
+  // Сохранённый «контур» меньше территории (`KRT_TERRITORY_MIN_SQM` движка) —
+  // случайные числа с картинки, принятые за координаты: сказать это прямо.
+  const junk=Number(manual.area_sqm)<__DEVELOPAID_KRT_TERRITORY_MIN_SQM__;
+  box.innerHTML=(junk?'<b>Этот контур — не территория КРТ</b>: '+num(Number(manual.area_sqm))+
+   ' м² — так мало не бывает. Похоже, числа на картинке приняты за координаты по ошибке. '+
+   'Уберите контур кнопкой ниже и загрузите картинку или каталог координат заново. ':'')+
+   (manual.origin==='photo_outline'?'<b>Контур снят с картинки решения, границы приблизительные</b>: ':
    manual.approximate?'<b>Площадь загружена вручную</b>: ':'<b>Контур загружен вручную</b>: ')+
    num(Number(manual.area_sqm))+' м² ('+escapeHtml(manual.source)+(manual.source_note?'; '+escapeHtml(manual.source_note):'')+'). '+
    (krtSiteAutoReady()?'Найденный автоматически контур площадки «'+escapeHtml(s.name||s.slug)+'» ('+num(Number(s.area_sqm))+' м²) сохранён. ':'')+
