@@ -1709,10 +1709,34 @@ function krtSiteOn(){const s=krtSiteState();return !!(s&&s.on===true)}
 // Чем меряется территория: загруженный вручную контур (`manual`) сильнее
 // найденного автоматически, найденный при этом остаётся в `_krt_site`. Тот же
 // выбор делает схема посадки (`krt_site_effective` движка).
+// Территория КРТ меньше этого — не территория (`KRT_TERRITORY_MIN_SQM` движка).
+const KRT_TERRITORY_MIN_SQM=__DEVELOPAID_KRT_TERRITORY_MIN_SQM__;
 function krtSiteManual(){
  const s=krtSiteState();
  const m=s&&s.manual;
- return m&&typeof m==='object'&&Number(m.area_sqm||0)>0?m:null;
+ return m&&typeof m==='object'&&Number(m.area_sqm||0)>=KRT_TERRITORY_MIN_SQM?m:null;
+}
+// Сохранённый загруженный «контур» меньше территории — случайные числа с
+// картинки, принятые за координаты (владелец 28.10.2026: 0,8 м² вместо 0,77 га
+// пережили выкатку исправления, потому что лежали в проекте). Он снимается сам:
+// площадь возвращается к найденному контуру или к прежней, причина — под
+// галочкой. Убирать его руками человек не обязан.
+function dropJunkKrtManual(){
+ const s=krtSiteState();
+ const m=s&&s.manual;
+ if(!m||typeof m!=='object'||!(Number(m.area_sqm||0)>0)||Number(m.area_sqm)>=KRT_TERRITORY_MIN_SQM)return false;
+ const junkHa=krtAreaHa(m);
+ s.manual=null;
+ s.notice='Сохранённый загруженный контур ('+num(Number(m.area_sqm))+' м²) снят: территории такого '+
+  'размера не бывает, числа на картинке были приняты за координаты по ошибке. Загрузите картинку '+
+  'решения или каталог координат заново.';
+ if(Math.abs(Number(inputs.site_area_ha||0)-junkHa)<0.00005&&!applyKrtEffectiveArea()&&s.prev){
+  inputs.site_area_ha=Number(s.prev.site_area_ha||0);
+  inputs._site_area_user_set=!!s.prev.user_set;
+  if(s.prev.origin)fieldOrigins()['inputs.site_area_ha']=s.prev.origin;
+  else if(inputs._field_origin)delete inputs._field_origin['inputs.site_area_ha'];
+ }
+ return true;
 }
 function krtSiteAutoReady(){
  const s=krtSiteState();
@@ -1786,7 +1810,7 @@ async function setKrtSite(on,slug,name){
  try{
   for(let i=0;i<60;i++){
    const r=await fetch('/krt/project-site',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-   data=await r.json();
+   data=await serverJson(r);
    if(!r.ok)throw new Error(serverDetail(data)||('сервер ответил ошибкой '+r.status));
    if(run!==krtSiteRun)return;
    if(data.status!=='pending')break;
@@ -1828,7 +1852,7 @@ function krtManualStatus(text){
 }
 async function krtManualCall(body){
  const r=await fetch('/krt/manual-contour',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
- const data=await r.json();
+ const data=await serverJson(r);
  if(!r.ok)throw new Error(serverDetail(data)||('сервер ответил ошибкой '+r.status));
  return data;
 }
@@ -1877,6 +1901,7 @@ function applyKrtManual(data){
   krtManualStatus('Контур не загружен: '+String(data.problem||'причина не названа')+'. Площадь участка осталась прежней.');
   return;
  }
+ s.notice='';
  s.manual={rings_merc:data.rings_merc||[],area_sqm:Number(data.area_sqm||0),source:String(data.source||''),
   source_note:String(data.source_note||''),approximate:!!data.approximate};
  // Контур с картинки решения: форма, привязка и её погрешность — их читает
@@ -1896,7 +1921,7 @@ function removeKrtManual(){
  const s=krtSiteState();
  if(!s)return;
  const wasManual=siteAreaIsKrt();
- s.manual=null;
+ s.manual=null;s.notice='';
  if(!applyKrtEffectiveArea()&&wasManual&&s.prev){
   inputs.site_area_ha=Number(s.prev.site_area_ha||0);
   inputs._site_area_user_set=!!s.prev.user_set;
@@ -1914,7 +1939,7 @@ async function searchKrtSite(){
  box.textContent='Ищем площадку…';
  try{
   const r=await fetch('/krt/project-site',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:q})});
-  const data=await r.json();
+  const data=await serverJson(r);
   if(!r.ok)throw new Error(serverDetail(data)||('сервер ответил ошибкой '+r.status));
   box.innerHTML=krtSiteChoicesHtml(data.choices||[])||escapeHtml(data.problem||'Ничего не нашлось.');
  }catch(e){box.textContent='Поиск не удался: '+(e&&e.message||e)}
@@ -1925,6 +1950,14 @@ function krtSiteChoicesHtml(choices){
   '" data-name="'+escapeHtml(c.name||'')+'" onclick="pickKrtSite(this)">'+escapeHtml(c.name||c.slug)+'</button>').join('');
 }
 function renderKrtSite(){
+ if(dropJunkKrtManual())setTimeout(()=>{renderSitePanel();calculate()},0);
+ renderKrtSiteStatus();
+ const s=krtSiteState();
+ const box=document.getElementById('siteKrtStatus');
+ if(box&&s&&s.notice&&box.style.display!=='none')
+  box.insertAdjacentHTML('afterbegin','<b>'+escapeHtml(s.notice)+'</b> ');
+}
+function renderKrtSiteStatus(){
  const toggle=document.getElementById('siteKrtToggle');
  const box=document.getElementById('siteKrtStatus');
  if(!toggle||!box)return;
@@ -1936,13 +1969,7 @@ function renderKrtSite(){
  box.style.display='';
  const manual=krtSiteManual();
  if(manual){
-  // Сохранённый «контур» меньше территории (`KRT_TERRITORY_MIN_SQM` движка) —
-  // случайные числа с картинки, принятые за координаты: сказать это прямо.
-  const junk=Number(manual.area_sqm)<__DEVELOPAID_KRT_TERRITORY_MIN_SQM__;
-  box.innerHTML=(junk?'<b>Этот контур — не территория КРТ</b>: '+num(Number(manual.area_sqm))+
-   ' м² — так мало не бывает. Похоже, числа на картинке приняты за координаты по ошибке. '+
-   'Уберите контур кнопкой ниже и загрузите картинку или каталог координат заново. ':'')+
-   (manual.origin==='photo_outline'?'<b>Контур снят с картинки решения, границы приблизительные</b>: ':
+  box.innerHTML=(manual.origin==='photo_outline'?'<b>Контур снят с картинки решения, границы приблизительные</b>: ':
    manual.approximate?'<b>Площадь загружена вручную</b>: ':'<b>Контур загружен вручную</b>: ')+
    num(Number(manual.area_sqm))+' м² ('+escapeHtml(manual.source)+(manual.source_note?'; '+escapeHtml(manual.source_note):'')+'). '+
    (krtSiteAutoReady()?'Найденный автоматически контур площадки «'+escapeHtml(s.name||s.slug)+'» ('+num(Number(s.area_sqm))+' м²) сохранён. ':'')+

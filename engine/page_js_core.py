@@ -842,6 +842,20 @@ function serverDetail(data){
  if(typeof detail==='object')return String(detail.message||(typeof detail.detail==='string'&&detail.detail)||JSON.stringify(detail));
  return String(detail);
 }
+// Ответ сервера как данные. Вместо данных бывает страница ошибки шлюза перед
+// сервером (502/504 — перезапуск после обновления, 413 — файл больше, чем
+// пропускает шлюз): её разбор как JSON печатал «Unexpected token '<'», и
+// причины в этом не было (владелец 28.10.2026, галочка «Проект в КРТ»).
+async function serverJson(r){
+ const text=await r.text();
+ try{return JSON.parse(text)}catch(e){}
+ const title=((String(text).match(/<title>([^<]*)<\/title>/i)||[])[1]||'').trim();
+ const why={413:'файл больше, чем пропускает сервер, — снимите одну страницу или уменьшите картинку',
+  502:'сервер перезапускается или недоступен — повторите через минуту',
+  503:'сервер перезапускается или перегружен — повторите через минуту',
+  504:'сервер не ответил вовремя — повторите через минуту'}[r.status]||'';
+ throw new Error('сервер ответил не данными, а страницей ошибки (код '+r.status+(title?', «'+title+'»':'')+')'+(why?': '+why:''));
+}
 let webLoginBusy=false;
 async function loginViaTelegram(statusEl){
  if(webLoginBusy)return;
