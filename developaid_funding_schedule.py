@@ -491,6 +491,15 @@ def _compare(plan: float | None, fact: float) -> dict[str, Any]:
             "share": (fact / plan) if plan else None}
 
 
+def _first_planned(schedule: dict[str, Any]) -> str:
+    """Первый месяц, где у графика есть план: сумма в статье или ненулевой итог."""
+    for month in schedule["months"]:
+        if (schedule["total"]["plan"].get(month)
+                or any(row["plan"].get(month) is not None for row in schedule["rows"])):
+            return month
+    return ""
+
+
 def execution(project: str, end: datetime.date) -> dict[str, Any]:
     """Исполнение графика по месяцам на дату ``end`` — один ответ для всех."""
     where = sources(project, end.isoformat())
@@ -518,7 +527,11 @@ def execution(project: str, end: datetime.date) -> dict[str, Any]:
             cache[day] = _read_version(project, day, found)
         return cache[day]
 
-    months_seen = sorted({m for day in days for m in schedule(day)["months"] if m <= current})
+    # График считается с первого месяца, где в нём есть план: пустой месяц в
+    # начале листа (август в графике от 23.09 — пустая колонка, 0 в итоге) не
+    # сверяется (владелец, 28.10.2026: «видимо август надо убрать, я ошибся»).
+    months_seen = sorted({m for day in days for m in schedule(day)["months"]
+                          if m <= current and m >= _first_planned(schedule(day))})
     months = []
     for month in months_seen:
         day = version_for(month, days)
