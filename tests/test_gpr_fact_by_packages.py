@@ -162,7 +162,7 @@ def test_a_file_without_works_or_packages_is_refused_not_stored_empty():
 
 
 def test_packages_need_the_approved_schedule_first():
-    with pytest.raises(ValueError, match="сначала загрузите baseline ГПР"):
+    with pytest.raises(ValueError, match="в проекте «Пакетный» он в Мониторе не загружен"):
         monitor.store_schedule_fact(PROJECT, _packages_book(), "2026-10-20")
     assert monitor.latest_schedule_fact(PROJECT) is None
 
@@ -206,16 +206,30 @@ def test_the_monitor_button_says_what_the_packages_gave(tmp_path, monkeypatch):
             tab.wait_for_function("document.getElementById('gprFactBtn')!==null")
             if not tab.is_visible("#gprFactBtn"):
                 tab.click("#setupHead")
-            tab.fill("#project", PROJECT)
+            tab.fill("#project", "")
             tab.evaluate("document.getElementById('cut').value='2026-10-20'")
             tab.set_input_files("#gprFact", str(upload))
+            tab.click("#gprFactBtn")
+            empty = tab.text_content("#gprFactMsg")
+            tab.fill("#project", PROJECT)
             tab.click("#gprFactBtn")
             tab.wait_for_function(
                 "(document.getElementById('gprFactMsg').textContent||'').includes('ГПР-факт')")
             text = tab.text_content("#gprFactMsg")
         finally:
             browser.close()
+    assert empty == ("Не указан проект: впишите название проекта в поле «Проект» вверху "
+                     "страницы.")
     assert text == (
         "ГПР-факт по пакетам загружен: пакетов 10, из них нашли свои работы в утверждённом "
         "ГПР 4; работ с процентом 5, завершено 1. Не нашлось работ для пакетов: "
         "Корректировка проекта, Лифты, ПНР индивидуальные — их процент не учтён.")
+
+
+def test_an_empty_project_name_is_named_as_the_reason():
+    """Владелец, 29.10.2026: поле «Проект» на телефоне было пустым, а отказ
+    говорил «baseline не загружен» — файл ушёл в безымянный проект."""
+    monitor.store_schedule(PROJECT, _baseline(), None, "2026-07-01")
+    with pytest.raises(ValueError, match="Не указан проект"):
+        monitor.store_schedule_fact("  ", _packages_book(), "2026-10-20")
+    assert not (monitor._SNAPSHOT_DIR / "project").exists()
