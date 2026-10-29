@@ -216,8 +216,17 @@ def test_the_monitor_button_says_what_the_packages_gave(tmp_path, monkeypatch):
             tab.wait_for_function(
                 "(document.getElementById('gprFactMsg').textContent||'').includes('ГПР-факт')")
             text = tab.text_content("#gprFactMsg")
+            # Тот же файл на ту же дату ещё раз: отказ говорит, что уже лежит.
+            tab.click("#gprFactBtn")
+            tab.wait_for_function(
+                "(document.getElementById('gprFactMsg').textContent||'').includes('уже загружен')")
+            again = tab.text_content("#gprFactMsg")
         finally:
             browser.close()
+    assert again == (
+        "ГПР-факт на 20.10.2026 уже загружен: это ГПР по пакетам (пакетов 10, факт на "
+        "20.10.2026, с работами утверждённого ГПР сопоставлено 4). Загруженный снимок не "
+        "заменяется: чтобы загрузить новый файл, поставьте вверху страницы другую дату.")
     assert empty == ("Не указан проект: впишите название проекта в поле «Проект» вверху "
                      "страницы.")
     assert text == (
@@ -282,3 +291,15 @@ def test_package_headers_written_a_little_differently_are_read():
     assert got["fact_day"] == "2026-10-20"
     assert [(p["name"], p["codes"], p["fact"]) for p in got["packages"]] == [
         ("Монолит надземной части", ["2.2.2.1"], 0.9)]
+
+
+def test_a_second_upload_on_the_same_day_says_what_is_already_there():
+    """Владелец, 30.10.2026: «ГПР-факт на эту дату уже есть — открываю» не
+    говорило, какой файл уже лежит, — тот же по пакетам или другой."""
+    monitor.store_schedule(PROJECT, _baseline(), None, "2026-07-01")
+    monitor.store_schedule_fact(PROJECT, _baseline(), "2026-10-20")
+    with pytest.raises(FileExistsError) as caught:
+        monitor.store_schedule_fact(PROJECT, _packages_book(), "2026-10-20")
+    assert str(caught.value).startswith(
+        "ГПР-факт на 20.10.2026 уже загружен: в нём работ ГПР — 7. Загруженный снимок не "
+        "заменяется")

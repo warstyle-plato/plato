@@ -409,7 +409,10 @@ def store_schedule_fact(project: str, data: bytes, taken_at: Any) -> dict[str, A
     folder.mkdir(parents=True, exist_ok=True)
     path = _inside(folder, f"{day}.xlsx")
     if path.exists():
-        raise FileExistsError(f"ГПР-факт на {day} уже загружен")
+        raise FileExistsError(
+            f"ГПР-факт на {_dotted(day)} уже загружен{_stored_fact_words(project, day)}. "
+            "Загруженный снимок не заменяется: чтобы загрузить новый файл, поставьте "
+            "вверху страницы другую дату.")
     path.write_bytes(data)
     works = packages["works"] if packages else parsed["works"]
     out = {
@@ -423,6 +426,27 @@ def store_schedule_fact(project: str, data: bytes, taken_at: Any) -> dict[str, A
         out["packages"] = {key: packages[key] for key in (
             "fact_day", "packages", "matched_packages", "unmatched", "ambiguous", "no_fact")}
     return out
+
+
+def _dotted(day: str) -> str:
+    return ".".join(reversed(day.split("-")))
+
+
+def _stored_fact_words(project: str, day: str) -> str:
+    """Что лежит в уже загруженном ГПР-факте: по отказу видно, тот ли это файл."""
+    try:
+        stored = latest_schedule_fact(project, day)
+    except Exception:  # noqa: BLE001 — отказ о дубле важнее подробностей
+        return ""
+    if not stored or stored.get("taken_at") != day:
+        return ""
+    packages = stored.get("packages")
+    if packages:
+        on = f", факт на {_dotted(packages['fact_day'])}" if packages.get("fact_day") else ""
+        return (f": это ГПР по пакетам (пакетов {packages.get('packages', 0)}{on}, "
+                f"с работами утверждённого ГПР сопоставлено "
+                f"{packages.get('matched_packages', 0)})")
+    return f": в нём работ ГПР — {len(stored.get('works') or [])}"
 
 
 def _schedule_packages(project: str, data: bytes) -> dict[str, Any] | None:
