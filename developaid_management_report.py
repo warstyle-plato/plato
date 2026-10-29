@@ -115,7 +115,30 @@ def _physical_notes(block: dict[str, Any]) -> list[str]:
     elif not block.get("fresh"):
         out.append(f"За этот период новый график с процентами не загружали, "
                    f"последний — от {_day(block['fact_snapshot'])}.")
+    if source.get("packages"):
+        out.append(_packages_note(source["packages"]))
     return out
+
+
+def _packages_note(packages: dict[str, Any]) -> str:
+    """Как укрупнённый ГПР по пакетам лёг на работы утверждённого ГПР."""
+    on = f" (факт на {_day(packages['fact_day'])})" if packages.get("fact_day") else ""
+    text = (f"График загружен по пакетам работ{on}: процент пакета поставлен всем работам "
+            "утверждённого ГПР, которые к нему относятся по коду сметы или по названию, — "
+            "это укрупнённая оценка. Сопоставлено пакетов: "
+            f"{packages.get('matched_packages', 0)} из {packages.get('packages', 0)}.")
+    skipped = list(packages.get("unmatched") or [])
+    if skipped:
+        text += (" Не нашлось работ в утверждённом ГПР для пакетов: "
+                 f"{', '.join('«' + name + '»' for name in skipped)}; их процент не учтён.")
+    if packages.get("ambiguous"):
+        count = len(packages["ambiguous"])
+        text += (f" {count} {_plural(count, 'работа подходит', 'работы подходят', 'работ подходят')}"
+                 " сразу к нескольким пакетам, и для них процент оставлен из утверждённого ГПР.")
+    if packages.get("no_fact"):
+        text += (" Без процента в графике: "
+                 f"{', '.join('«' + name + '»' for name in packages['no_fact'])}.")
+    return text
 
 
 def _gpr_source(project: str, end: datetime.date, fact_day: str) -> dict[str, Any]:
@@ -136,7 +159,14 @@ def _gpr_source(project: str, end: datetime.date, fact_day: str) -> dict[str, An
         if folder.exists() else []
     days = [day for day in days if day <= end.isoformat()]
     manual = len(monitor.work_facts(project, end.isoformat()))
-    label = (f"ГПР-факт от {_day(fact_day)}" if fact_day else
+    packages = None
+    if fact_day:
+        try:
+            packages = (monitor.latest_schedule_fact(project, end.isoformat()) or {}) \
+                .get("packages")
+        except Exception:  # noqa: BLE001 — нечитаемый снимок Монитор тоже пропускает
+            packages = None
+    label = (f"ГПР-факт{' по пакетам' if packages else ''} от {_day(fact_day)}" if fact_day else
              f"утверждённый ГПР{' от ' + _day(baseline_day) if baseline_day else ''}")
     if manual:
         label += (f" и решения в Мониторе по {manual} "
@@ -146,7 +176,7 @@ def _gpr_source(project: str, end: datetime.date, fact_day: str) -> dict[str, An
             "manual_works": manual, "manual_last": days[-1] if days else None,
             "day": max(filter(None, [fact_day, days[-1] if days else "", baseline_day]),
                        default=""),
-            "label": label}
+            "label": label, "packages": packages}
 
 
 def _dated(baseline: dict[str, Any]) -> list[tuple[str, dict[str, Any], float]]:
