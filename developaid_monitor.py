@@ -398,8 +398,13 @@ def store_schedule_fact(project: str, data: bytes, taken_at: Any) -> dict[str, A
         # в нём нет, процент пакета разносится на работы утверждённого ГПР.
         packages = _schedule_packages(project, data)
         if packages is None:
-            raise ValueError("в файле не найдено ни работ ГПР (лист «ГПР», строки «Работа»), "
-                             "ни пакетов с колонками «Раздел / пакет» и «Факт …»")
+            import developaid_gpr_packages as gpr_packages
+
+            raise ValueError(
+                "Это не график работ: в файле нет ни листа «ГПР» со строками типа «Работа», "
+                "ни таблицы пакетов с колонками «Раздел / пакет» и «Факт <дата>». "
+                f"{gpr_packages.describe(data)} Справки по договорам и спорам загружают в "
+                "блок «Споры и претензии» на странице сводки.")
     folder = _project_dir(project) / "schedule_fact"
     folder.mkdir(parents=True, exist_ok=True)
     path = _inside(folder, f"{day}.xlsx")

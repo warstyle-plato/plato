@@ -27,7 +27,7 @@ import re
 from typing import Any
 
 _NAME = "раздел / пакет"
-_FACT = re.compile(r"^\s*факт\b\s*(\d{1,2}\.\d{1,2}\.\d{4})?", re.I)
+_FACT = re.compile(r"^\s*факт\b(?:\s+на)?\s*(\d{1,2}\.\d{1,2}\.\d{4})?", re.I)
 _WORD = re.compile(r"[a-zа-яё0-9]+", re.I)
 # Слова, по которым работы не различаются.
 _STOP = {"работы", "работ", "устройство", "монтаж", "корп", "корпус", "и", "в", "на",
@@ -36,6 +36,11 @@ _STOP = {"работы", "работ", "устройство", "монтаж", "
 
 def _norm(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip().lower()
+
+
+def _head(value: Any) -> str:
+    """Заголовок колонки: «Раздел/пакет» и «Раздел / пакет» — одно."""
+    return re.sub(r"\s*/\s*", " / ", _norm(value))
 
 
 def _codes(value: Any) -> list[str]:
@@ -76,11 +81,40 @@ def read(data: bytes) -> dict[str, Any] | None:
     return None
 
 
+def describe(data: bytes) -> str:
+    """Что разборщик увидел в книге, где нет ни работ ГПР, ни пакетов: листы и
+    чего не хватило — чтобы по отказу было понятно, что поправить."""
+    from openpyxl import load_workbook
+
+    try:
+        book = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    except Exception:  # noqa: BLE001
+        return "Файл не открывается как книга Excel (.xlsx)."
+    try:
+        names, partial = [], []
+        for sheet in book.worksheets:
+            names.append(f"«{sheet.title}»")
+            for row in sheet.iter_rows(values_only=True, max_row=20):
+                cells = [_head(c) for c in row]
+                if _NAME in cells:
+                    if not any(_FACT.match(c) for c in cells):
+                        partial.append(f"на листе «{sheet.title}» есть колонка «Раздел / пакет», "
+                                       "но нет колонки «Факт …» с процентами")
+                    break
+    finally:
+        book.close()
+    text = f"Листы в файле: {', '.join(names[:8])}{' и другие' if len(names) > 8 else ''}."
+    if partial:
+        joined = "; ".join(partial)
+        text += " " + joined[:1].upper() + joined[1:] + "."
+    return text
+
+
 def _read_sheet(sheet: Any) -> dict[str, Any] | None:
     rows = list(sheet.iter_rows(values_only=True, max_row=400))
     head, columns, fact_day = None, {}, ""
-    for index, row in enumerate(rows[:12]):
-        cells = [_norm(c) for c in row]
+    for index, row in enumerate(rows[:20]):
+        cells = [_head(c) for c in row]
         if _NAME not in cells:
             continue
         for pos, cell in enumerate(cells):

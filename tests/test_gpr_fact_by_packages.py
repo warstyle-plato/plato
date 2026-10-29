@@ -156,7 +156,7 @@ def test_a_file_without_works_or_packages_is_refused_not_stored_empty():
     book.active["A1"] = "что-то другое"
     blob = io.BytesIO()
     book.save(blob)
-    with pytest.raises(ValueError, match="ни работ ГПР"):
+    with pytest.raises(ValueError, match="Это не график работ"):
         monitor.store_schedule_fact(PROJECT, blob.getvalue(), "2026-10-20")
     assert monitor.latest_schedule_fact(PROJECT) is None
 
@@ -233,3 +233,52 @@ def test_an_empty_project_name_is_named_as_the_reason():
     with pytest.raises(ValueError, match="Не указан проект"):
         monitor.store_schedule_fact("  ", _packages_book(), "2026-10-20")
     assert not (monitor._SNAPSHOT_DIR / "project").exists()
+
+
+def _book(sheets: dict[str, list[tuple]]) -> bytes:
+    book = Workbook()
+    book.remove(book.active)
+    for title, rows in sheets.items():
+        sheet = book.create_sheet(title)
+        for line, row in enumerate(rows, 1):
+            for col, value in enumerate(row, 1):
+                sheet.cell(row=line, column=col, value=value)
+    blob = io.BytesIO()
+    book.save(blob)
+    return blob.getvalue()
+
+
+def test_a_wrong_file_is_refused_with_what_was_seen_in_it():
+    """Владелец, 29.10.2026, загрузил кнопкой «ГПР-факт» справку по договорам
+    подрядчиков (три листа, по договору на лист). Отказ говорил только, чего
+    нет; теперь он называет листы файла и куда такие справки загружают."""
+    monitor.store_schedule(PROJECT, _baseline(), None, "2026-07-01")
+    data = _book({"Подрядчик А": [("Справка по договору № 1",), ("Стоимость", 100)],
+                  "Подрядчик Б": [("Справка по договору № 2",)]})
+    with pytest.raises(ValueError) as caught:
+        monitor.store_schedule_fact(PROJECT, data, "2026-10-20")
+    assert str(caught.value) == (
+        "Это не график работ: в файле нет ни листа «ГПР» со строками типа «Работа», ни "
+        "таблицы пакетов с колонками «Раздел / пакет» и «Факт <дата>». Листы в файле: "
+        "«Подрядчик А», «Подрядчик Б». Справки по договорам и спорам загружают в блок "
+        "«Споры и претензии» на странице сводки.")
+
+
+def test_a_package_table_without_the_fact_column_says_so():
+    monitor.store_schedule(PROJECT, _baseline(), None, "2026-07-01")
+    data = _book({"План": [("№", "Раздел / пакет", "Код РСС", "Прогноз 30.07.2027"),
+                           (1, "Монолит надземной части", "2.2.2.1.", 1.0)]})
+    with pytest.raises(ValueError, match="На листе «План» есть колонка «Раздел / пакет», но "
+                                         "нет колонки «Факт …» с процентами"):
+        monitor.store_schedule_fact(PROJECT, data, "2026-10-20")
+
+
+def test_package_headers_written_a_little_differently_are_read():
+    """«Раздел/пакет» без пробелов и «Факт на 20.10.2026» — те же колонки."""
+    data = _book({"Пакеты": [("Укрупнённый график",), (),
+                             ("№", "Раздел/пакет", "Код РСС", "Статус", "Факт на 20.10.2026"),
+                             (1, "Монолит надземной части", "2.2.2.1.", "В работе", 0.9)]})
+    got = packages.read(data)
+    assert got["fact_day"] == "2026-10-20"
+    assert [(p["name"], p["codes"], p["fact"]) for p in got["packages"]] == [
+        ("Монолит надземной части", ["2.2.2.1"], 0.9)]
