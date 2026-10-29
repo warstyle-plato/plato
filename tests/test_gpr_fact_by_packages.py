@@ -226,7 +226,8 @@ def test_the_monitor_button_says_what_the_packages_gave(tmp_path, monkeypatch):
     assert again == (
         "ГПР-факт на 20.10.2026 уже загружен: это ГПР по пакетам (пакетов 10, факт на "
         "20.10.2026, с работами утверждённого ГПР сопоставлено 4). Загруженный снимок не "
-        "заменяется: чтобы загрузить новый файл, поставьте вверху страницы другую дату.")
+        "заменяется: уберите его кнопкой «Убрать ГПР-факт на эту дату» или поставьте вверху "
+        "страницы другую дату.")
     assert empty == ("Не указан проект: впишите название проекта в поле «Проект» вверху "
                      "страницы.")
     assert text == (
@@ -303,3 +304,99 @@ def test_a_second_upload_on_the_same_day_says_what_is_already_there():
     assert str(caught.value).startswith(
         "ГПР-факт на 20.10.2026 уже загружен: в нём работ ГПР — 7. Загруженный снимок не "
         "заменяется")
+
+
+def test_a_loaded_fact_can_be_withdrawn_to_the_archive():
+    """Владелец, 30.10.2026: ГПР по пакетам «не подходит» — убрать из расчёта,
+    но не стереть: файл уходит в архив с записью, кто убрал."""
+    monitor.store_schedule(PROJECT, _baseline(), None, "2026-07-01")
+    monitor.store_schedule_fact(PROJECT, _packages_book(), "2026-10-20")
+    assert manager._baseline_status(PROJECT, "2026-10-25")["1"]["progress"] == pytest.approx(0.9)
+    got = monitor.withdraw_schedule_fact(PROJECT, "2026-10-20", "Иванов")
+    assert got == {"taken_at": "2026-10-20", "withdrawn": True}
+    assert monitor.latest_schedule_fact(PROJECT) is None
+    assert manager._baseline_status(PROJECT, "2026-10-25")["1"]["progress"] == pytest.approx(0.3)
+    archive = monitor._project_dir(PROJECT) / "schedule_fact" / "withdrawn"
+    assert len(list(archive.glob("2026-10-20-*.xlsx"))) == 1
+    assert "Иванов" in next(archive.glob("2026-10-20-*.json")).read_text(encoding="utf-8")
+    # Теперь на ту же дату можно загрузить другой файл.
+    monitor.store_schedule_fact(PROJECT, _baseline(), "2026-10-20")
+    with pytest.raises(FileNotFoundError, match="ГПР-факта на 21.10.2026 в проекте «Пакетный» "
+                                                "нет. Загружены: 20.10.2026."):
+        monitor.withdraw_schedule_fact(PROJECT, "2026-10-21")
+
+
+def test_the_weekly_blank_is_the_approved_schedule_grouped_by_object():
+    """Бланк из утверждённого ГПР: корпуса по номеру, затем общие объекты; ID те
+    же, процент предзаполнен текущим — загруженный обратно, он меняет только
+    поправленные работы."""
+    import developaid_gpr_template as template
+    from openpyxl import load_workbook
+
+    monitor.store_schedule(PROJECT, _baseline(), None, "2026-07-01")
+    data = template.build(PROJECT, "2026-10-25")
+    sheet = load_workbook(io.BytesIO(data))["ГПР"]
+    rows = [[cell.value for cell in row] for row in sheet.iter_rows(min_row=5)]
+    groups = [row[4] for row in rows if row[0] is None]
+    assert groups == ["Корпус 1", "Корпус 2", "Площадка"]
+    by_id = {row[0]: row for row in rows if row[0] is not None}
+    assert sorted(by_id) == ["1", "2", "3", "4", "5", "6", "7"]
+    assert by_id["1"][6] == pytest.approx(0.30) and by_id["2"][9] == "Завершено"
+    assert 0 < by_id["1"][19] < 1  # план к дате
+    # Читается тем же разборщиком, что и утверждённый ГПР: все семь работ.
+    assert len(monitor._read_baseline_gpr_bytes(data)["works"]) == 7
+
+    # Поправили одну работу — меняется только она.
+    book = load_workbook(io.BytesIO(data))
+    line = next(row[0].row for row in book["ГПР"].iter_rows(min_row=5) if row[0].value == "3")
+    book["ГПР"].cell(row=line, column=7, value=0.8)
+    blob = io.BytesIO()
+    book.save(blob)
+    stored = monitor.store_schedule_fact(PROJECT, blob.getvalue(), "2026-10-25")
+    assert stored["works"] == 7 and "packages" not in stored
+    status = manager._baseline_status(PROJECT, "2026-10-26")
+    assert status["3"]["progress"] == pytest.approx(0.8)
+    assert {tid: item["progress"] for tid, item in status.items() if tid != "3"} == {
+        tid: pytest.approx(progress) for tid, _, _, _, progress, _ in WORKS if tid != "3"}
+
+
+def test_the_blank_and_withdraw_buttons_on_the_rendered_page(tmp_path, monkeypatch):
+    sys.path.insert(0, str(ROOT / "tests"))
+    from browser import chromium_or_skip, serve
+
+    chrome = chromium_or_skip()
+    from openpyxl import load_workbook
+    from playwright.sync_api import sync_playwright
+
+    import main_legacy as core
+
+    monkeypatch.setattr(core, "_require_web_access", lambda *_a, **_k: None)
+    monkeypatch.setattr(core, "_require_team_access", lambda *_a, **_k: None)
+    monitor.store_schedule(PROJECT, _baseline(), None, "2026-07-01")
+    monitor.store_schedule_fact(PROJECT, _packages_book(), "2026-10-20")
+    with serve(core.app, 18807) as base, sync_playwright() as pw:
+        browser = pw.chromium.launch(executable_path=str(chrome))
+        try:
+            tab = browser.new_page(accept_downloads=True)
+            tab.add_init_script("localStorage.setItem('developaid_web_session','проба')")
+            tab.goto(f"{base}/monitor", wait_until="domcontentloaded")
+            tab.wait_for_function("document.getElementById('gprTemplateBtn')!==null")
+            if not tab.is_visible("#gprTemplateBtn"):
+                tab.click("#setupHead")
+            tab.fill("#project", PROJECT)
+            tab.evaluate("document.getElementById('cut').value='2026-10-20'")
+            with tab.expect_download() as caught:
+                tab.click("#gprTemplateBtn")
+            blank = tmp_path / "blank.xlsx"
+            caught.value.save_as(blank)
+            tab.on("dialog", lambda dialog: dialog.accept())
+            tab.click("#gprWithdrawBtn")
+            tab.wait_for_function(
+                "(document.getElementById('gprFactMsg').textContent||'').includes('убран')")
+            text = tab.text_content("#gprFactMsg")
+        finally:
+            browser.close()
+    assert load_workbook(blank)["ГПР"]["A1"].value == f"ГПР с процентами — {PROJECT}"
+    assert text == ("ГПР-факт на 20.10.2026 убран из расчёта, файл сохранён в архиве. "
+                    "Пересчитываю.")
+    assert monitor.latest_schedule_fact(PROJECT) is None

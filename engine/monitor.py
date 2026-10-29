@@ -253,6 +253,13 @@ class MonitorScheduleFactRequest(BaseModel):
     key: str = ""
 
 
+class MonitorScheduleFactDayRequest(BaseModel):
+    project: str
+    taken_at: str
+    session: str = ""
+    key: str = ""
+
+
 class MonitorWorkFactRequest(BaseModel):
     project: str
     taken_at: str
@@ -537,6 +544,36 @@ def monitor_store_schedule_fact(req: MonitorScheduleFactRequest) -> dict[str, An
         raise HTTPException(409, str(exc))
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+
+
+@app.post("/monitor/schedule-fact/withdraw", include_in_schema=False)
+def monitor_withdraw_schedule_fact(req: MonitorScheduleFactDayRequest) -> dict[str, Any]:
+    """Убрать ГПР-факт на дату из расчёта; файл уходит в архив, не удаляется."""
+    _require_team_access(req.session, req.key, "Монитор проекта")
+    try:
+        return developaid_monitor.withdraw_schedule_fact(
+            req.project, req.taken_at, _monitor_note_author(req.session, req.key))
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/monitor/schedule-fact/template", include_in_schema=False)
+def monitor_schedule_fact_template(req: MonitorScheduleFactDayRequest) -> Response:
+    """Бланк недельного ГПР-факта из утверждённого ГПР: те же работы и ID."""
+    _require_team_access(req.session, req.key, "Монитор проекта", write=False)
+    import developaid_gpr_template as gpr_template
+    from urllib.parse import quote
+    try:
+        data = gpr_template.build(req.project, req.taken_at)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    name = f"ГПР с процентами {req.project} {req.taken_at}.xlsx"
+    return Response(data, media_type="application/vnd.openxmlformats-officedocument."
+                                     "spreadsheetml.sheet",
+                    headers={"Content-Disposition":
+                             f"attachment; filename*=UTF-8''{quote(name)}"})
 
 
 @app.post("/monitor/budget", include_in_schema=False)

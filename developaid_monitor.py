@@ -411,8 +411,8 @@ def store_schedule_fact(project: str, data: bytes, taken_at: Any) -> dict[str, A
     if path.exists():
         raise FileExistsError(
             f"ГПР-факт на {_dotted(day)} уже загружен{_stored_fact_words(project, day)}. "
-            "Загруженный снимок не заменяется: чтобы загрузить новый файл, поставьте "
-            "вверху страницы другую дату.")
+            "Загруженный снимок не заменяется: уберите его кнопкой «Убрать ГПР-факт на эту "
+            "дату» или поставьте вверху страницы другую дату.")
     path.write_bytes(data)
     works = packages["works"] if packages else parsed["works"]
     out = {
@@ -426,6 +426,39 @@ def store_schedule_fact(project: str, data: bytes, taken_at: Any) -> dict[str, A
         out["packages"] = {key: packages[key] for key in (
             "fact_day", "packages", "matched_packages", "unmatched", "ambiguous", "no_fact")}
     return out
+
+
+def withdraw_schedule_fact(project: str, taken_at: Any, author: str = "") -> dict[str, Any]:
+    """Убрать ГПР-факт на дату из расчёта: файл уходит в архив, не удаляется.
+
+    Владелец, 30.10.2026, о ГПР по пакетам: «этот файл не подходит», процент
+    целого пакета на каждой работе дал паркинг 60% при плане 49%. Снимок
+    остаётся в `schedule_fact/withdrawn/` с записью, кто и когда его убрал:
+    переписанное прошлое должно быть видно.
+    """
+    day = _iso(taken_at)
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+        raise ValueError("дата ГПР-факта нужна в виде ГГГГ-ММ-ДД")
+    if not str(project or "").strip():
+        raise ValueError("Не указан проект: впишите название проекта в поле «Проект» вверху "
+                         "страницы.")
+    folder = _project_dir(project) / "schedule_fact"
+    path = _inside(folder, f"{day}.xlsx") if folder.exists() else None
+    if path is None or not path.exists():
+        loaded = sorted(item.stem for item in folder.glob("*.xlsx")) if folder.exists() else []
+        raise FileNotFoundError(
+            f"ГПР-факта на {_dotted(day)} в проекте «{project}» нет. "
+            + (f"Загружены: {', '.join(_dotted(item) for item in loaded)}." if loaded
+               else "ГПР-факт в этом проекте ещё не загружали."))
+    archive = folder / "withdrawn"
+    archive.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d%H%M%S")
+    target = archive / f"{day}-{stamp}.xlsx"
+    path.rename(target)
+    (archive / f"{day}-{stamp}.json").write_text(json.dumps(
+        {"taken_at": day, "withdrawn_at": stamp, "author": author}, ensure_ascii=False),
+        encoding="utf-8")
+    return {"taken_at": day, "withdrawn": True}
 
 
 def _dotted(day: str) -> str:
