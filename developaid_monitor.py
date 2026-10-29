@@ -383,6 +383,11 @@ def store_schedule_fact(project: str, data: bytes, taken_at: Any) -> dict[str, A
     day = _iso(taken_at)
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
         raise ValueError("дата ГПР-факта нужна в виде ГГГГ-ММ-ДД")
+    # Пустое имя ведёт в безымянный каталог «project», где утверждённого ГПР
+    # нет, и отказ звучал как «baseline не загружен» — про чужую причину.
+    if not str(project or "").strip():
+        raise ValueError("Не указан проект: впишите название проекта в поле «Проект» вверху "
+                         "страницы и загрузите файл ещё раз.")
     try:
         parsed = _read_baseline_gpr_bytes(data)
     except ValueError:
@@ -427,8 +432,9 @@ def _schedule_packages(project: str, data: bytes) -> dict[str, Any] | None:
     except FileNotFoundError:
         baseline = []
     if not baseline:
-        raise ValueError("ГПР-факт по пакетам разносится на работы утверждённого ГПР, "
-                         "а он в Мониторе не загружен: сначала загрузите baseline ГПР")
+        raise ValueError(f"ГПР-факт по пакетам разносится на работы утверждённого ГПР, а в "
+                         f"проекте «{project}» он в Мониторе не загружен. Проверьте название "
+                         "проекта вверху страницы или сначала загрузите утверждённый ГПР.")
     return dict(gpr_packages.apply(found["packages"], baseline), fact_day=found["fact_day"])
 
 
