@@ -173,13 +173,9 @@ def test_the_report_says_the_percents_come_from_packages():
     block = report.physical(PROJECT, "week", "2026-10-25")
     assert block["source"]["label"] == "ГПР-факт по пакетам от 20.10.2026"
     note = report._physical_notes(block)[-1]
-    assert note.startswith("График загружен по пакетам работ (факт на 20.10.2026): процент "
-                           "пакета поставлен всем работам утверждённого ГПР")
-    assert "Сопоставлено пакетов: 4 из 10." in note
-    assert ("Не нашлось работ в утверждённом ГПР для пакетов: «Корректировка проекта», "
-            "«Лифты», «ПНР индивидуальные»; их процент не учтён.") in note
-    assert "1 работа подходит сразу к нескольким пакетам" in note
-    assert "Без процента в графике: «Содержание стройплощадки»." in note
+    assert note == ("График загружен по пакетам работ (факт на 20.10.2026): процент пакета "
+                    "поставлен его работам, это укрупнённая оценка. С работами утверждённого "
+                    "ГПР сопоставлено пакетов: 4 из 10.")
 
 
 def test_the_monitor_button_says_what_the_packages_gave(tmp_path, monkeypatch):
@@ -326,46 +322,11 @@ def test_a_loaded_fact_can_be_withdrawn_to_the_archive():
         monitor.withdraw_schedule_fact(PROJECT, "2026-10-21")
 
 
-def test_the_weekly_blank_is_the_approved_schedule_grouped_by_object():
-    """Бланк из утверждённого ГПР: корпуса по номеру, затем общие объекты; ID те
-    же, процент предзаполнен текущим — загруженный обратно, он меняет только
-    поправленные работы."""
-    import developaid_gpr_template as template
-    from openpyxl import load_workbook
-
-    monitor.store_schedule(PROJECT, _baseline(), None, "2026-07-01")
-    data = template.build(PROJECT, "2026-10-25")
-    sheet = load_workbook(io.BytesIO(data))["ГПР"]
-    rows = [[cell.value for cell in row] for row in sheet.iter_rows(min_row=5)]
-    groups = [row[4] for row in rows if row[0] is None]
-    assert groups == ["Корпус 1", "Корпус 2", "Площадка"]
-    by_id = {row[0]: row for row in rows if row[0] is not None}
-    assert sorted(by_id) == ["1", "2", "3", "4", "5", "6", "7"]
-    assert by_id["1"][6] == pytest.approx(0.30) and by_id["2"][9] == "Завершено"
-    assert 0 < by_id["1"][19] < 1  # план к дате
-    # Читается тем же разборщиком, что и утверждённый ГПР: все семь работ.
-    assert len(monitor._read_baseline_gpr_bytes(data)["works"]) == 7
-
-    # Поправили одну работу — меняется только она.
-    book = load_workbook(io.BytesIO(data))
-    line = next(row[0].row for row in book["ГПР"].iter_rows(min_row=5) if row[0].value == "3")
-    book["ГПР"].cell(row=line, column=7, value=0.8)
-    blob = io.BytesIO()
-    book.save(blob)
-    stored = monitor.store_schedule_fact(PROJECT, blob.getvalue(), "2026-10-25")
-    assert stored["works"] == 7 and "packages" not in stored
-    status = manager._baseline_status(PROJECT, "2026-10-26")
-    assert status["3"]["progress"] == pytest.approx(0.8)
-    assert {tid: item["progress"] for tid, item in status.items() if tid != "3"} == {
-        tid: pytest.approx(progress) for tid, _, _, _, progress, _ in WORKS if tid != "3"}
-
-
-def test_the_blank_and_withdraw_buttons_on_the_rendered_page(tmp_path, monkeypatch):
+def test_the_withdraw_button_on_the_rendered_page(tmp_path, monkeypatch):
     sys.path.insert(0, str(ROOT / "tests"))
     from browser import chromium_or_skip, serve
 
     chrome = chromium_or_skip()
-    from openpyxl import load_workbook
     from playwright.sync_api import sync_playwright
 
     import main_legacy as core
@@ -377,18 +338,14 @@ def test_the_blank_and_withdraw_buttons_on_the_rendered_page(tmp_path, monkeypat
     with serve(core.app, 18807) as base, sync_playwright() as pw:
         browser = pw.chromium.launch(executable_path=str(chrome))
         try:
-            tab = browser.new_page(accept_downloads=True)
+            tab = browser.new_page()
             tab.add_init_script("localStorage.setItem('developaid_web_session','проба')")
             tab.goto(f"{base}/monitor", wait_until="domcontentloaded")
-            tab.wait_for_function("document.getElementById('gprTemplateBtn')!==null")
-            if not tab.is_visible("#gprTemplateBtn"):
+            tab.wait_for_function("document.getElementById('gprWithdrawBtn')!==null")
+            if not tab.is_visible("#gprWithdrawBtn"):
                 tab.click("#setupHead")
             tab.fill("#project", PROJECT)
             tab.evaluate("document.getElementById('cut').value='2026-10-20'")
-            with tab.expect_download() as caught:
-                tab.click("#gprTemplateBtn")
-            blank = tmp_path / "blank.xlsx"
-            caught.value.save_as(blank)
             tab.on("dialog", lambda dialog: dialog.accept())
             tab.click("#gprWithdrawBtn")
             tab.wait_for_function(
@@ -396,7 +353,6 @@ def test_the_blank_and_withdraw_buttons_on_the_rendered_page(tmp_path, monkeypat
             text = tab.text_content("#gprFactMsg")
         finally:
             browser.close()
-    assert load_workbook(blank)["ГПР"]["A1"].value == f"ГПР с процентами — {PROJECT}"
     assert text == ("ГПР-факт на 20.10.2026 убран из расчёта, файл сохранён в архиве. "
                     "Пересчитываю.")
     assert monitor.latest_schedule_fact(PROJECT) is None

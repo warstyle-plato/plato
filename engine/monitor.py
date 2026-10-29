@@ -559,23 +559,6 @@ def monitor_withdraw_schedule_fact(req: MonitorScheduleFactDayRequest) -> dict[s
         raise HTTPException(400, str(exc))
 
 
-@app.post("/monitor/schedule-fact/template", include_in_schema=False)
-def monitor_schedule_fact_template(req: MonitorScheduleFactDayRequest) -> Response:
-    """Бланк недельного ГПР-факта из утверждённого ГПР: те же работы и ID."""
-    _require_team_access(req.session, req.key, "Монитор проекта", write=False)
-    import developaid_gpr_template as gpr_template
-    from urllib.parse import quote
-    try:
-        data = gpr_template.build(req.project, req.taken_at)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc))
-    name = f"ГПР с процентами {req.project} {req.taken_at}.xlsx"
-    return Response(data, media_type="application/vnd.openxmlformats-officedocument."
-                                     "spreadsheetml.sheet",
-                    headers={"Content-Disposition":
-                             f"attachment; filename*=UTF-8''{quote(name)}"})
-
-
 @app.post("/monitor/budget", include_in_schema=False)
 def monitor_store_budget(req: MonitorEstimateRequest) -> dict[str, Any]:
     """Бюджет месяцев: план-факт БДДС, план стройки и коммерческих расходов."""
