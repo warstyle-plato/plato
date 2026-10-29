@@ -94,9 +94,13 @@ def test_a_stored_finding_about_another_region_leaves_the_card() -> None:
     alien = {"kind": "amended", "anchored_by": "номер", "url": "https://example.org/magadan",
              "quote": "О внесении изменений в отдельные постановления Правительства "
                       "Магаданской области (№ 402-пп, № 945-пп)."}
+    # Своя находка — с изменяющим актом, который назвал Платон: без него
+    # находка новостью не считается вовсе (владелец, 29.10.2026).
     ours = {"kind": "amended", "anchored_by": "номер", "url": "https://example.org/moscow",
             "quote": "О внесении изменений в постановление Правительства Москвы "
-                     "от 23 декабря 2015 г. № 945-ПП"}
+                     "от 23 декабря 2015 г. № 945-ПП",
+            "act": "Постановление Правительства Москвы от 01.12.2026 № 9999-ПП",
+            "act_number": "9999-ПП", "what": "меняет приложение 1"}
     check = {"result": "ok", "sources": {"asked": True, "signals": [alien, ours]}}
     assert registry.source_signals(check, entry) == [ours]
     card = registry._card({**entry, "check": {**check, "sources": {"asked": True, "signals": [alien]}}})

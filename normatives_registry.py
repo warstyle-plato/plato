@@ -134,6 +134,25 @@ _MONTHS_GENITIVE = ("января", "февраля", "марта", "апрел�
                     "августа", "сентября", "октября", "ноября", "декабря")
 
 
+def _accounted_text(entry: dict[str, Any]) -> str:
+    """Текст, которым карточка называет учтённые редакции (см. `accounted_numbers`)."""
+    parts = [str(entry.get("latest_amendment") or "")]
+    parts += [str(x) for x in (entry.get("amendment_history") or [])]
+    # Сверенная редакция называет поправки, по которым карточку проверяли
+    # («последнее известное изменение — постановление от такого-то числа»): они учтены так же, как
+    # строка редакции, и новостью о себе быть не могут.
+    ver = entry.get("verification")
+    if isinstance(ver, dict):
+        parts.append(str(ver.get("edition") or ""))
+    # Цепочка — это «какие поправки существуют», и учтённой делает не наличие
+    # акта в ряду, а разбор его содержания: пока он не разобран, находка о нём
+    # остаётся новостью. Читать надо сам ряд, а не второй список рядом с ним.
+    for step in chain_steps(entry):
+        if str(step.get("status") or "").startswith("разобран"):
+            parts.append(str(step.get("number") or ""))
+    return " ".join(parts)
+
+
 def accounted_numbers(entry: dict[str, Any]) -> set[str]:
     """Редакции, которые в реестре УЖЕ учтены, — номерами.
 
@@ -142,15 +161,7 @@ def accounted_numbers(entry: dict[str, Any]) -> set[str]:
     новая редакция» на карточке 713/30 стояло бы всегда, а постоянная приписка
     перестаёт читаться — и настоящую следующую поправку под ней уже не увидеть.
     """
-    parts = [str(entry.get("latest_amendment") or "")]
-    parts += [str(x) for x in (entry.get("amendment_history") or [])]
-    # Цепочка — это «какие поправки существуют», и учтённой делает не наличие
-    # акта в ряду, а разбор его содержания: пока он не разобран, находка о нём
-    # остаётся новостью. Читать надо сам ряд, а не второй список рядом с ним.
-    for step in chain_steps(entry):
-        if str(step.get("status") or "").startswith("разобран"):
-            parts.append(str(step.get("number") or ""))
-    return {match.group(0).lower() for match in _ACT_NUMBER_RE.finditer(" ".join(parts))}
+    return {match.group(0).lower() for match in _ACT_NUMBER_RE.finditer(_accounted_text(entry))}
 
 
 def chain_steps(entry: dict[str, Any]) -> list[dict[str, Any]]:
@@ -380,7 +391,7 @@ def signal_is_accounted(signal: dict[str, Any], entry: dict[str, Any]) -> bool:
     known = accounted_numbers(entry)
     if not known:
         return False
-    numbers = {m.group(0).lower() for m in _ACT_NUMBER_RE.finditer(str(signal.get("quote") or ""))}
+    numbers = {m.group(0).lower() for m in _ACT_NUMBER_RE.finditer(signal_text(signal))}
     # Собственный номер базового акта ничего не говорит о редакции: он стоит и
     # в поправке, и в самом акте. Берётся он из заголовка, а не из watch_terms:
     # там рядом лежат номера УЧТЁННЫХ поправок (мы сами их туда кладём, чтобы
@@ -390,6 +401,35 @@ def signal_is_accounted(signal: dict[str, Any], entry: dict[str, Any]) -> bool:
     if own:
         numbers -= {own}
     return bool(numbers) and numbers.issubset(known)
+
+
+def signal_text(signal: dict[str, Any]) -> str:
+    """Что находка говорит об акте: изменяющий акт, найденный Платоном, или цитата.
+
+    Платон дочитывает находку поиска до конкретного акта (`plato_specify`):
+    номер, дата, что меняет. Его ответ точнее цитаты — заголовок «О внесении
+    изменений в постановление...» номера изменяющего акта не называет.
+    """
+    act = str(signal.get("act") or "").strip()
+    if act:
+        what = str(signal.get("what") or "").strip()
+        return f"{act}: {what}" if what else act
+    return str(signal.get("quote") or "")
+
+
+def signal_is_concrete(signal: dict[str, Any], entry: dict[str, Any]) -> bool:
+    """Новость ли находка: назван ли изменяющий или отменяющий акт, которого нет в карточке.
+
+    Владелец, 29.10.2026, о девяти «вышла новая редакция» над заголовками
+    «О внесении изменений в постановление...» без номера: «странные
+    предупреждения непонятно о чём; пусть Платон ищет конкретные данные по
+    отмене или изменению». Находка без названного акта — повод Платону
+    искать, а не новость для посетителя. Карточка, у которой правки адресные
+    (`watch_amendments: false`, ПЗЗ), новостью считает только отмену.
+    """
+    if signal.get("kind") != "repealed" and entry.get("watch_amendments") is False:
+        return False
+    return bool(signal_new_numbers(signal, entry))
 
 
 def source_signals(check: dict[str, Any], entry: dict[str, Any] | None = None,
@@ -408,6 +448,20 @@ def source_signals(check: dict[str, Any], entry: dict[str, Any] | None = None,
         return signals
     return [item for item in signals
             if not signal_is_accounted(item, entry)
+            and not signal_names_other_act(item, entry)
+            and signal_is_concrete(item, entry)]
+
+
+def vague_signals(check: dict[str, Any], entry: dict[str, Any]) -> list[dict[str, Any]]:
+    """Находки без названного нового акта: видит только администратор.
+
+    Посетителю они не новость (`signal_is_concrete`), но молча выброшенная
+    находка неотличима от не найденной — администратор видит, что поиск
+    принёс и что Платон по ней ответил.
+    """
+    shown = source_signals(check, entry)
+    return [item for item in source_signals(check)
+            if item not in shown and not signal_is_accounted(item, entry)
             and not signal_names_other_act(item, entry)]
 
 
@@ -956,8 +1010,15 @@ def signal_new_numbers(signal: dict[str, Any], entry: dict[str, Any]) -> set[str
     никакой: в обоих случаях сказать «вышла новая редакция» нечем.
     """
     found = [m.group(0) for m in _ACT_NUMBER_RE.finditer(str(signal.get("message")
-                                                            or signal.get("quote") or ""))]
+                                                            or signal_text(signal)))]
     skip = accounted_numbers(entry) | ({own_number(entry)} - {""})
+    # Номер, который Платон вынес отдельным полем, бывает и без суффикса
+    # («№ 880» приказа МЧС): шаблон номера его не ловит, а новостью он быть обязан.
+    act_number = str(signal.get("act_number") or "").strip().lstrip("№N ").strip()
+    if (act_number and act_number.lower() not in skip and act_number not in found
+            and not re.search(r"№\s*" + re.escape(act_number) + r"(?![0-9A-Za-zА-Яа-яЁё/-])",
+                              _accounted_text(entry), re.I)):
+        found.append(act_number)
     # Номер печатается так, как его написал источник: «ПП», а не «пп».
     return {number for number in found if number.lower() not in skip}
 
@@ -1154,7 +1215,7 @@ def _changes_between(before: dict[str, Any], after: dict[str, Any],
                 "short_name": str(entry.get("short_name") or entry.get("title") or entry_id),
                 "result": "repealed" if first["kind"] == "repealed" else "amended",
                 "was": "",
-                "message": first["quote"],
+                "message": signal_text(first),
                 "source_url": first.get("url") or watch_url(entry),
                 "checked_at": str((check or {}).get("checked_at") or ""),
             })
@@ -1436,6 +1497,105 @@ def _search_client() -> Any:
     return client if getattr(client, "configured", False) else None
 
 
+# Платон дочитывает находку до конкретного акта. Вопрос задаёт движок
+# (`install` кладёт сюда вызов модели ядра), ответ — по схеме: без номера и даты
+# изменяющего акта находка новостью не станет (`signal_is_concrete`).
+_ASK: Any = None
+
+PLATO_SPECIFY_INSTRUCTIONS = (
+    "Ты — Платон, проверяешь нормативную базу сервиса DevelopAid. Тебе дают "
+    "карточку акта (название, учтённая редакция) и находки поиска о нём: заголовок, "
+    "фрагмент, адрес. Для каждой находки найди КОНКРЕТНЫЙ акт, который изменил или "
+    "отменил этот акт: вид и орган, дату, номер, и одной фразой — что он меняет. "
+    "Можно искать в интернете. Пиши только то, что видно в источнике; если номера и "
+    "даты изменяющего акта не нашёл — concrete=false и причина в reason. Если "
+    "находка говорит о другом акте с тем же номером или о редакции, уже названной "
+    "в карточке, — concrete=false и это в reason. Отвечай по-русски, без домыслов."
+)
+
+PLATO_SPECIFY_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["items"],
+    "properties": {"items": {"type": "array", "items": {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["index", "concrete", "kind", "act", "act_number", "act_date",
+                     "what", "effective_from", "url", "reason"],
+        "properties": {
+            "index": {"type": "integer"},
+            "concrete": {"type": "boolean"},
+            "kind": {"type": "string", "enum": ["amended", "repealed", "none"]},
+            "act": {"type": "string"},
+            "act_number": {"type": "string"},
+            "act_date": {"type": "string"},
+            "what": {"type": "string"},
+            "effective_from": {"type": "string"},
+            "url": {"type": "string"},
+            "reason": {"type": "string"},
+        },
+    }}},
+}
+
+
+def plato_specify(entry: dict[str, Any], signals: list[dict[str, Any]],
+                  ask: Any = None) -> list[dict[str, Any]]:
+    """Платон называет по каждой находке изменяющий акт — или говорит, что не нашёл.
+
+    Находка без ответа Платона остаётся как была: без номера она новостью не
+    станет и так. Сбой вызова записывается в находку причиной, а не глотается.
+    """
+    ask = ask or _ASK
+    if not signals or ask is None:
+        return signals
+    brief = {
+        "act": {"title": str(entry.get("title") or ""),
+                "short_name": str(entry.get("short_name") or ""),
+                "accounted_edition": _accounted_text(entry)[:1500]},
+        "findings": [{"index": i, "kind": item.get("kind"), "title": item.get("source"),
+                      "quote": item.get("quote"), "url": item.get("url")}
+                     for i, item in enumerate(signals)],
+    }
+    model = (os.getenv("OPENAI_NORMATIVES_MODEL")
+             or os.getenv("OPENAI_AGENT_MODEL", "gpt-5.6")).strip() or "gpt-5.6"
+    payload = {"model": model, "instructions": PLATO_SPECIFY_INSTRUCTIONS,
+               "input": [{"role": "user", "content": json.dumps(brief, ensure_ascii=False)}],
+               "tools": [{"type": "web_search"}],
+               "text": {"format": {"type": "json_schema", "name": "normative_change",
+                                   "strict": True, "schema": PLATO_SPECIFY_SCHEMA}},
+               "max_output_tokens": 4000, "store": False}
+    try:
+        answer = json.loads(ask(payload))
+    except Exception as exc:                             # noqa: BLE001
+        reason = str(getattr(exc, "detail", "") or exc)[:200]
+        return [{**item, "plato": {"status": "failed", "reason": reason}} for item in signals]
+    by_index = {int(row.get("index", -1)): row for row in (answer.get("items") or [])
+                if isinstance(row, dict)}
+    out = []
+    for i, item in enumerate(signals):
+        row = by_index.get(i)
+        if not row:
+            out.append({**item, "plato": {"status": "silent"}})
+            continue
+        fresh = dict(item)
+        fresh["plato"] = {"status": "concrete" if row.get("concrete") else "not_found",
+                          "reason": str(row.get("reason") or "")[:300]}
+        if row.get("concrete") and row.get("kind") in ("amended", "repealed"):
+            fresh.update({
+                "kind": row["kind"],
+                "act": str(row.get("act") or "")[:200],
+                "act_number": str(row.get("act_number") or "")[:40],
+                "act_date": str(row.get("act_date") or "")[:20],
+                "what": str(row.get("what") or "")[:300],
+                "effective_from": str(row.get("effective_from") or "")[:20],
+            })
+            url = str(row.get("url") or "")
+            if url.startswith("http"):
+                fresh["url"] = url
+        out.append(fresh)
+    return out
+
+
 def _search_signals(entry: dict[str, Any], client: Any) -> dict[str, Any]:
     """Что об акте пишут в открытых источниках.
 
@@ -1480,6 +1640,15 @@ def _search_signals(entry: dict[str, Any], client: Any) -> dict[str, Any]:
         return {"asked": False, "query": query, "queries": asked_queries,
                 "reason": str(asked_queries[0].get("reason") or "поиск не ответил")}
     signals = find_repeal_signals(entry, rows)
+    # Находку, которая не называет нового акта сама, Платон дочитывает до
+    # конкретного изменяющего акта. Уже учтённые и чужие ему не отдаём.
+    unclear = [i for i, item in enumerate(signals)
+               if not signal_is_accounted(item, entry)
+               and not signal_names_other_act(item, entry)]
+    if unclear:
+        specified = plato_specify(entry, [signals[i] for i in unclear])
+        for i, item in zip(unclear, specified):
+            signals[i] = item
     # Немой отказ чинить нечем. «Спросили, принесено десять, наш акт не назван
     # ни в одном» и «поиск не ответил» снаружи выглядят одним нулём находок, а
     # чинятся по-разному: первое — вопрос к запросу, второе — к поиску. Поэтому
@@ -1669,8 +1838,9 @@ def _card(entry: dict[str, Any], admin: bool = False) -> str:
     signals = source_signals(check, entry)
     # «Уже учтено» — только наша учтённая редакция; находка о чужом акте с тем
     # же номером не учтена, а неверна, и не показывается вовсе.
+    vague = vague_signals(check, entry)
     accounted = [item for item in all_signals if item not in signals
-                 and not signal_names_other_act(item, entry)]
+                 and item not in vague and not signal_names_other_act(item, entry)]
     if not signals and accounted:
         # Молча выброшенная находка читается как её отсутствие, поэтому она
         # называется — но тоном «это уже учтено», а не тревогой.
@@ -1681,19 +1851,25 @@ def _card(entry: dict[str, Any], admin: bool = False) -> str:
     if signals:
         rows = []
         for item in signals[:2]:
-            title = ("В источниках: документ утратил силу"
-                     if item.get("kind") == "repealed"
-                     else "В источниках: вышла новая редакция")
+            title = ("Акт утратил силу" if item.get("kind") == "repealed"
+                     else "Акт изменён")
+            # Что именно вышло — изменяющий акт, его дата и что он меняет. Это
+            # и есть новость; заголовок поиска без номера ею не был.
+            text = signal_text(item)
+            if item.get("effective_from"):
+                text += f" Действует с {item['effective_from']}."
             link = str(item.get("url") or "")
             # Чем найдено — часть ответа, и сказать это надо по-русски:
             # значение поля («имя», «номер») в строку не подставляется, у него
             # своя форма.
-            found_by = {"имя": "по имени акта", "номер": "по номеру акта"}.get(
-                str(item.get("anchored_by") or ""), "")
+            found_by = ("Платоном по находке поиска"
+                        if (item.get("plato") or {}).get("status") == "concrete" else
+                        {"имя": "по имени акта", "номер": "по номеру акта"}.get(
+                            str(item.get("anchored_by") or ""), ""))
             rows.append(
                 "<li><b>%s</b><span>%s</span>%s%s</li>" % (
                     html.escape(title),
-                    html.escape(str(item.get("quote") or ""))[:400],
+                    html.escape(text[:400]),
                     (' <em>найдено %s</em>' % html.escape(found_by)) if found_by else "",
                     (' <a href="%s" target="_blank" rel="noopener">источник ↗</a>'
                      % html.escape(link, quote=True)) if link.startswith("http") else "",
@@ -1707,6 +1883,25 @@ def _card(entry: dict[str, Any], admin: bool = False) -> str:
                 (" · спрошено " + html.escape(_fmt_date(asked_at.split("T")[0])))
                 if asked_at else "",
             ))
+
+    if vague and admin:
+        # Посетителю это не новость: изменяющий акт не назван. Администратор
+        # видит, что принёс поиск и почему Платон не нашёл конкретики.
+        items = []
+        for item in vague[:3]:
+            plato = item.get("plato") or {}
+            why = {"not_found": "Платон не нашёл изменяющего акта",
+                   "failed": "Платон не ответил",
+                   "silent": "Платон не ответил по этой находке"}.get(
+                       str(plato.get("status") or ""), "Платона не спрашивали")
+            reason = str(plato.get("reason") or "")
+            items.append("<li><b>%s</b><span>%s</span></li>" % (
+                html.escape(why + (": " + reason if reason else "")),
+                html.escape(str(item.get("quote") or ""))[:300]))
+        news_html += ("<div class='news calm'><h3>Находки без названного акта "
+                      "(видит только администратор)</h3><ul>%s</ul><small>Посетителю "
+                      "это не показывается: без номера и даты изменяющего акта "
+                      "новостью находка не считается.</small></div>" % "".join(items))
 
     notes = html.escape(str(entry.get("notes") or ""))
     # Ссылка на несуществующее — такая же ложь, как подпись под чужим числом:
@@ -2065,6 +2260,13 @@ def install(app: Any, core: Any) -> None:
             {"items": _merged_registry(), "last_run_at": state.get("last_run_at")},
             headers=_HEADERS,
         )
+
+    # Платон дочитывает находки поиска тем же маршрутом модели, что и в окне.
+    global _ASK
+    if callable(getattr(core, "_openai_responses_request", None)):
+        def _ask(payload: dict[str, Any]) -> str:
+            return core._extract_openai_text(core._openai_responses_request(payload, 180.0))
+        _ASK = _ask
 
     # Очередь находок забирает движок (`/internal/normatives/announcements`):
     # у него общая с ботом подпись, а до api.telegram.org с ядра не дойти.
