@@ -702,6 +702,8 @@ def test_a_repeal_outranks_the_page_fingerprint(tmp_path, monkeypatch) -> None:
     check = {"result": "changed",
              "sources": {"asked": True, "signals": [{"kind": "repealed",
                                                      "quote": "945-ПП утратил силу",
+                                                     "act": "Постановление от 01.12.2026 № 1000-ПП",
+                                                     "act_number": "1000-ПП",
                                                      "url": "https://example.test/news"}]}}
     label, badge = registry._reader_label(entry, check)
     assert label == "В источниках: документ утратил силу" and badge == "bad"
@@ -879,12 +881,136 @@ def test_the_next_amendment_is_still_news(tmp_path, monkeypatch) -> None:
     assert [c["result"] for c in changes] == ["amended"]
 
 
-def test_a_quote_without_any_number_stays_news() -> None:
-    """Номера в цитате нет — решать нечем, и находка остаётся новостью.
+def test_a_quote_without_any_number_is_not_news_until_plato_names_the_act() -> None:
+    """Номера в цитате нет — это не новость, а повод Платону искать.
 
-    «Не поняли» безопаснее выдавать за новость, чем за учтённое: второе молчит.
+    Владелец, 29.10.2026, о девяти «вышла новая редакция» над заголовками без
+    номера: «странные предупреждения непонятно о чём; пусть Платон ищет
+    конкретные данные». Посетителю находка без акта не показывается,
+    администратор видит её отдельно; акт, названный Платоном, — новость.
     """
-    check = {"result": "ok", "sources": {"asked": True, "signals": [
-        dict(_FOUND, quote="Нормативы градостроительного проектирования "
-                           "Московской области изложены в новой редакции")]}}
-    assert len(registry.source_signals(check, _ACCOUNTED_ENTRY)) == 1
+    vague = dict(_FOUND, quote="Нормативы градостроительного проектирования "
+                               "Московской области изложены в новой редакции")
+    check = {"result": "ok", "sources": {"asked": True, "signals": [vague]}}
+    assert registry.source_signals(check, _ACCOUNTED_ENTRY) == []
+    assert registry.vague_signals(check, _ACCOUNTED_ENTRY) == [vague]
+    named = dict(vague, act="Постановление Правительства Московской области "
+                            "от 01.12.2026 № 1500-ПП", act_number="1500-ПП",
+                 what="переиздаёт таблицу парковок")
+    check = {"result": "ok", "sources": {"asked": True, "signals": [named]}}
+    assert registry.source_signals(check, _ACCOUNTED_ENTRY) == [named]
+
+
+# --- Платон дочитывает находку до конкретного акта (владелец, 29.10.2026) -----
+
+def test_plato_turns_a_bare_title_into_a_named_act() -> None:
+    """Заголовок «О внесении изменений в постановление...» — не новость.
+
+    Платон получает находку и карточку и возвращает изменяющий акт. Пока он
+    не назвал номер и дату, посетитель ничего не видит; назвал — карточка
+    говорит, каким актом и что изменено.
+    """
+    import json
+
+    bare = {"kind": "amended", "anchored_by": "номер",
+            "quote": "О внесении изменений в постановление...",
+            "source": "О внесении изменений в постановление...",
+            "url": "https://docs.cntd.ru/document/1"}
+    seen: list[dict] = []
+
+    def ask(payload: dict) -> str:
+        seen.append(payload)
+        assert payload["text"]["format"]["schema"] == registry.PLATO_SPECIFY_SCHEMA
+        assert {"type": "web_search"} in payload["tools"]
+        return json.dumps({"items": [{
+            "index": 0, "concrete": True, "kind": "amended",
+            "act": "Постановление Правительства Московской области от 01.12.2026 № 1500-ПП",
+            "act_number": "1500-ПП", "act_date": "01.12.2026",
+            "what": "переиздаёт таблицу приобъектных стоянок",
+            "effective_from": "05.12.2026", "url": "", "reason": ""}]})
+
+    out = registry.plato_specify(_ACCOUNTED_ENTRY, [bare], ask=ask)
+    assert len(seen) == 1
+    assert out[0]["act_number"] == "1500-ПП" and out[0]["plato"]["status"] == "concrete"
+    check = {"result": "ok", "sources": {"asked": True, "signals": out}}
+    assert registry.source_signals(check, _ACCOUNTED_ENTRY) == out
+    card = registry._card({**_ACCOUNTED_ENTRY, "check": check})
+    assert "1500-ПП" in card and "переиздаёт таблицу" in card and "05.12.2026" in card
+    assert "Платоном" in card
+
+
+def test_plato_without_a_number_keeps_the_card_quiet() -> None:
+    """Платон не нашёл акт — посетитель не видит ничего, администратор видит почему."""
+    import json
+
+    bare = {"kind": "amended", "anchored_by": "номер",
+            "quote": "О внесении изменений в постановление...",
+            "url": "https://docs.cntd.ru/document/1"}
+
+    def ask(payload: dict) -> str:
+        return json.dumps({"items": [{
+            "index": 0, "concrete": False, "kind": "none", "act": "", "act_number": "",
+            "act_date": "", "what": "", "effective_from": "", "url": "",
+            "reason": "страница — перечень изменений, нового акта после 1080-ПП нет"}]})
+
+    out = registry.plato_specify(_ACCOUNTED_ENTRY, [bare], ask=ask)
+    check = {"result": "ok", "sources": {"asked": True, "signals": out}}
+    entry = {**_ACCOUNTED_ENTRY, "check": check}
+    assert registry.source_signals(check, _ACCOUNTED_ENTRY) == []
+    assert registry._reader_label(_ACCOUNTED_ENTRY, check)[1] == "ok"
+    reader = registry._card(entry)
+    assert "вышла новая редакция" not in reader and "Акт изменён" not in reader
+    admin = registry._card(entry, admin=True)
+    assert "Платон не нашёл изменяющего акта" in admin and "нового акта после 1080-ПП нет" in admin
+
+
+def test_plato_failure_is_written_into_the_finding() -> None:
+    def ask(payload: dict) -> str:
+        raise RuntimeError("маршрут модели недоступен")
+
+    out = registry.plato_specify(_ACCOUNTED_ENTRY, [dict(_FOUND)], ask=ask)
+    assert out[0]["plato"] == {"status": "failed", "reason": "маршрут модели недоступен"}
+
+
+def test_address_amendments_of_the_zoning_rules_are_not_news() -> None:
+    """ПЗЗ (120-ПП) правятся адресно каждую неделю: новость — только отмена."""
+    rows = {row["id"]: row for row in registry._load_registry()}
+    entry = rows["moscow-120-pp-pzz"]
+    assert entry["watch_amendments"] is False
+    amended = {"kind": "amended", "quote": "О внесении изменений",
+               "act": "Постановление Правительства Москвы от 05.11.2026 № 3000-ПП",
+               "act_number": "3000-ПП"}
+    repealed = dict(amended, kind="repealed",
+                    act="Постановление Правительства Москвы от 05.11.2026 № 3001-ПП",
+                    act_number="3001-ПП")
+    check = {"result": "ok", "sources": {"asked": True, "signals": [amended, repealed]}}
+    assert registry.source_signals(check, entry) == [repealed]
+
+
+def test_the_search_hands_unclear_findings_to_plato(monkeypatch) -> None:
+    """Плановый поиск сам зовёт Платона по находкам, которые не учтены."""
+    import json
+
+    class _Doc:
+        title = 'О внесении изменений в постановление Правительства Московской области от 17.08.2015 № 713/30'
+        snippet = ""
+        url = "https://docs.cntd.ru/document/7"
+
+    class _Client:
+        def search(self, query: str, **kw: object) -> list:
+            return [_Doc()]
+
+    asked: list[dict] = []
+
+    def ask(payload: dict) -> str:
+        asked.append(json.loads(payload["input"][0]["content"]))
+        return json.dumps({"items": [{
+            "index": 0, "concrete": True, "kind": "amended",
+            "act": "Постановление Правительства Московской области от 01.12.2026 № 1500-ПП",
+            "act_number": "1500-ПП", "act_date": "01.12.2026", "what": "меняет таблицу",
+            "effective_from": "", "url": "", "reason": ""}]})
+
+    monkeypatch.setattr(registry, "_ASK", ask)
+    got = registry._search_signals(_ACCOUNTED_ENTRY, _Client())
+    assert asked and asked[0]["findings"][0]["url"] == "https://docs.cntd.ru/document/7"
+    assert got["signals"][0]["act_number"] == "1500-ПП"
