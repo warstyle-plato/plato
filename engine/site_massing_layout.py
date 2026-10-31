@@ -858,6 +858,8 @@ def site_massing_layout(x: dict[str, Any], massing: dict[str, Any],
     blocks = plan.pop("_blocks", None) if plan else None
     analysis_lines: list[str] = []
     plan_view: dict[str, Any] = {}
+    land_balance: dict[str, Any] = {}
+    denser: dict[str, Any] | None = None
     if variants and blocks is not None:
         for c in corpora:
             c["sections"] = massing_sections(c)
@@ -869,6 +871,22 @@ def site_massing_layout(x: dict[str, Any], massing: dict[str, Any],
             gaps, north, plan.get("chooser") or "engine")
         plan_view = massing_plan_view({"site_rings": rings, "underground_rings": inner,
                                        "buildings": corpora}, blocks, lanes, north)
+        # Чем занята земля и, если свободной много, — вариант ниже и плотнее
+        # (владелец 31.10.2026: «почему столько пустого пространства»).
+        land_balance = massing_land_balance(massing)
+        free_line = massing_free_land_line(massing, land_balance)
+        if free_line:
+            analysis_lines.insert(max(0, len(analysis_lines) - 1), free_line)
+        offer = massing_denser_offer(x, massing, phases, inner or rings, north, land_balance,
+                                     limit)
+        if offer:
+            alt_corpora = offer.pop("_corpora")
+            alt_parts = offer.pop("_parts")
+            offer["plan_view"] = massing_plan_view(
+                {"site_rings": rings, "underground_rings": inner, "buildings": alt_corpora},
+                alt_parts, [], north)
+            offer["text"] = massing_denser_text(offer, float(massing.get("typical_storeys") or 0))
+            denser = offer
     for c in corpora:
         c.pop("spines", None)
     unplaced = _unplaced_note(corpora, len(phases)) if plan else ""
@@ -940,6 +958,9 @@ def site_massing_layout(x: dict[str, Any], massing: dict[str, Any],
         "north": north,
         "analysis": analysis_lines,
         "plan_view": plan_view,
+        # Баланс земли участка и предложение «ниже и плотнее» (None — не нужно).
+        "land_balance": land_balance,
+        "denser": denser,
     }
 
 

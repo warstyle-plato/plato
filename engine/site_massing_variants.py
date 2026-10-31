@@ -1018,8 +1018,8 @@ def massing_analysis_lines(analysis: dict[str, Any], variants: dict[str, dict[st
                      "Так выходит, когда пятна застройки в расчёте мало для этой земли; там "
                      "можно разместить двор, сквер или отдельное здание.")
     elif m.get("reach_m") is not None:
-        lines.append(f"Пустых кусков на участке нет: любая его точка не дальше "
-                     f"{_fmt_ru(m['reach_m'])} м от ближайшего дома.")
+        lines.append(f"Дома разнесены по всему участку, без пустого края: любая его точка не "
+                     f"дальше {_fmt_ru(m['reach_m'])} м от ближайшего дома.")
     if north and placed:
         lat = int(m.get("latitudinal_count") or 0)
         share = float(m.get("meridional_share") or 0.0)
@@ -1092,3 +1092,134 @@ def massing_variants_brief(variants: dict[str, dict[str, Any]], analysis: dict[s
                     "houses": [{"house": names.get(r["id"]), "part": r.get("block"),
                                 "shape": r.get("shape")} for r in v["rows"] if r.get("ring_m")]})
     return {"site": analysis, "variants": out, "engine_choice": massing_variant_pick(variants)}
+
+
+# --- Баланс земли и предложение «ниже и плотнее» --------------------------------
+#
+# Владелец 31.10.2026: «почему столько пустого пространства остаётся». Ответ —
+# решение (AskUserQuestion): подписать, чем занята земля между домами, и, когда
+# свободной земли много, предложить вариант ниже и плотнее — те же метры, дома
+# 8–12 этажей, кварталы замкнуты. Этажность в расчёте меняется только кнопкой.
+
+# Свободная земля (сверх домов, двора по норме, проездов, стоянок и отступов)
+# больше этой доли участка — посадка предлагает этажность ниже.
+LAYOUT_FREE_SHARE_OFFER = 0.20
+# После предложения свободной земли остаётся не больше этой доли.
+LAYOUT_FREE_SHARE_TARGET = 0.10
+# Этажность «ниже и плотнее» — из этих чисел, не выше типовой. Допущение:
+# квартальная застройка 8–12 этажей — обычная практика Москвы и МО.
+LAYOUT_DENSER_STOREYS = (12, 10, 9, 8)
+
+
+def massing_land_balance(massing: dict[str, Any]) -> dict[str, Any]:
+    """Чем занята земля участка → строки (подпись, м², доля) и свободный остаток.
+
+    Те же числа, что баланс территории расчёта (`site_massing`): пятна зданий,
+    двор по норме, проезды, открытые стоянки, отступы, участки школы и сада
+    сверх их пятна. Остаток — земля, которую расчёт ничем не занял."""
+    site = float(massing.get("site_sqm") or 0.0)
+    if site <= 0:
+        return {"rows": [], "free_sqm": 0.0, "free_share": 0.0}
+    objects = massing.get("objects") or []
+    plots_extra = max(0.0, float(massing.get("objects_plot_sqm") or 0.0)
+                      - sum(float(o.get("footprint_sqm") or 0.0) for o in objects))
+    rows = [
+        ("Под домами и зданиями", float(massing.get("built_sqm") or 0.0)),
+        ("Двор у домов по норме", float(massing.get("yard_sqm") or 0.0)),
+        ("Проезды, тротуары, пожарные проезды", float(massing.get("driveways_sqm") or 0.0)),
+        ("Открытые стоянки", float(massing.get("surface_parking_sqm") or 0.0)),
+        ("Отступы от границ участка", float(massing.get("setbacks_sqm") or 0.0)),
+        ("Участки школы и детского сада вокруг зданий", plots_extra),
+    ]
+    used = sum(v for _, v in rows)
+    free = max(0.0, site - used)
+    out = [{"label": label, "sqm": round(v), "share": round(v / site, 3)} for label, v in rows if v > 0.5]
+    out.append({"label": "Свободно: сквер, запас под следующие очереди или здания",
+                "sqm": round(free), "share": round(free / site, 3), "free": True})
+    return {"rows": out, "free_sqm": round(free), "free_share": round(free / site, 3),
+            "site_sqm": round(site), "over_sqm": round(max(0.0, used - site))}
+
+
+def massing_denser_offer(x: dict[str, Any], massing: dict[str, Any],
+                         phases: list[dict[str, Any]], site: list[list[list[float]]],
+                         north: list[float] | None, balance: dict[str, Any],
+                         limit: float) -> dict[str, Any] | None:
+    """Свободной земли много — та же площадь домами ниже: этажность, пятно,
+    сколько земли останется свободной, и вид сверху этой посадки. Нет — None.
+
+    Пятно — жилая наземная площадь ÷ этажность, не больше процента застройки
+    расчёта (`coverage_sqm`). Берётся самая высокая этажность из
+    `LAYOUT_DENSER_STOREYS`, при которой свободной земли остаётся не больше
+    10 % участка и все дома встают; такой нет — самая низкая, где все встают."""
+    site_sqm = float(massing.get("site_sqm") or 0.0)
+    gns = float(massing.get("residential_gns_sqm") or 0.0)
+    fp_now = float(massing.get("footprint_sqm") or 0.0)
+    typical = float(massing.get("typical_storeys") or 0.0)
+    if (site_sqm <= 0 or gns <= 0 or fp_now <= 0 or not site
+            or massing.get("footprint_origin") == "manual"
+            or float(balance.get("free_share") or 0.0) < LAYOUT_FREE_SHARE_OFFER):
+        return None
+    cap = float(massing.get("coverage_sqm") or 0.0) or 1e18
+    free_now = float(balance.get("free_sqm") or 0.0)
+    axis = massing_strip_axis(site)
+    blocks = massing_blocks(site, axis)
+    parts = massing_parts(site, axis)
+    fallback = None
+    for storeys in LAYOUT_DENSER_STOREYS:
+        if storeys >= typical - 1e-9:
+            continue
+        fp = min(gns / storeys, cap)
+        if fp <= fp_now * 1.05:
+            continue
+        free_after = free_now - (fp - fp_now)
+        if free_after < 0:
+            continue
+        trial = {**massing, "footprint_sqm": fp, "footprint_origin": "estimate"}
+        corpora = _layout_corpora(x, trial, phases, fp, limit)
+        if not corpora or len(corpora) > LAYOUT_MAX_DRAWN_CORPORA:
+            continue
+        legacy = [dict(c) for c in corpora]
+        massing_place_engine(legacy, blocks, axis)
+        variants = massing_variants_cached(corpora, site, blocks, axis, north, parts, legacy)
+        chosen = massing_variant_pick(variants)
+        if variants[chosen]["metrics"]["unplaced"] > 0:
+            continue
+        massing_apply_variant(corpora, variants[chosen])
+        for c in corpora:
+            c["sections"] = massing_sections(c)
+        offer = {"storeys": int(storeys) if fp < cap else int(_math.ceil(gns / fp)),
+                 "footprint_sqm": round(fp), "share": round(fp / site_sqm, 3),
+                 "free_sqm_now": round(free_now), "free_sqm_after": round(free_after),
+                 "variant": chosen, "_corpora": corpora, "_parts": parts}
+        if free_after <= LAYOUT_FREE_SHARE_TARGET * site_sqm:
+            return offer
+        fallback = offer
+    return fallback
+
+
+def massing_denser_text(offer: dict[str, Any], typical: float) -> str:
+    """Предложение «ниже и плотнее» простыми словами."""
+    return (f"Свободной земли на участке много — около {_fmt_ru(offer['free_sqm_now'])} м². "
+            f"Ту же площадь квартир можно поставить домами по {offer['storeys']} этажей вместо "
+            f"{_fmt_ru(typical)}: пятно домов вырастет до {_fmt_ru(offer['footprint_sqm'])} м² "
+            f"({round(offer['share'] * 100)} % участка), застройка станет "
+            f"«{LAYOUT_VARIANT_NAMES[offer['variant']]}», а свободной земли останется около "
+            f"{_fmt_ru(offer['free_sqm_after'])} м². Этажность в расчёте поменяется, только если "
+            "нажать кнопку ниже; вместе с ней пересчитаются пятно, подземная часть и стоимость.")
+
+
+def massing_free_land_line(massing: dict[str, Any], balance: dict[str, Any]) -> str:
+    """Почему земля свободна — фраза разбора, когда свободного много."""
+    share = float(balance.get("free_share") or 0.0)
+    if share < LAYOUT_FREE_SHARE_OFFER:
+        return ""
+    site = float(massing.get("site_sqm") or 0.0)
+    gns = float(massing.get("above_gns_sqm") or 0.0)
+    typical = float(massing.get("typical_storeys") or 0.0)
+    density = gns / (site / 10000.0) if site > 0 else 0.0
+    return (f"Свободно около {_fmt_ru(balance['free_sqm'])} м² ({round(share * 100)} % участка): "
+            f"дома, двор по норме, проезды, стоянки и отступы занимают остальное. Так выходит, "
+            f"потому что наземной площади в расчёте около {_fmt_ru(density)} м² на гектар участка, "
+            f"а дома — по {_fmt_ru(typical)} этажей. Землю займут дома ниже этажами "
+            "(вариант ниже) или больше площади квартир; иначе свободная земля — это сквер "
+            "или запас под следующие очереди.")

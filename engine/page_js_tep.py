@@ -1604,7 +1604,32 @@ function siteMassingPlanViewHtml(layout){
  const legend=svg?'<p class="site-massing-hint">'+(pv.north_up?'Вид сверху, север вверху. ':'Вид сверху; стороны света неизвестны. ')+
   'Зелёное — части участка, внутри них дворы без машин; дома разделены на секции белыми линиями; оранжевые полосы — места для пожарного проезда.</p>':'';
  return '<div class="site-massing-analysis" id="siteMassingAnalysis"><h4>Разбор участка и посадки</h4>'+svg+legend+
-  '<ul>'+lines.map(t=>'<li>'+escapeHtml(t)+'</li>').join('')+'</ul></div>';
+  siteMassingLandBalanceHtml(layout.land_balance||{})+
+  '<ul>'+lines.map(t=>'<li>'+escapeHtml(t)+'</li>').join('')+'</ul>'+siteMassingDenserHtml(layout.denser)+'</div>';
+}
+// Чем занята земля участка (`massing_land_balance`): строки баланса и
+// свободный остаток — ответ на «почему столько пустого места» (владелец 31.10.2026).
+function siteMassingLandBalanceHtml(b){
+ const rows=b.rows||[];
+ if(!rows.length)return '';
+ return '<table class="site-massing-table site-massing-land" id="siteMassingLand"><caption>Чем занята земля участка ('+num(b.site_sqm||0)+' м²)</caption>'+
+  rows.map(r=>'<tr'+(r.free?' class="site-massing-free"':'')+'><td>'+escapeHtml(r.label)+'</td><td class="num">'+num(r.sqm)+' м²</td><td class="num">'+Math.round((r.share||0)*100)+' %</td></tr>').join('')+'</table>';
+}
+// Вариант «ниже и плотнее» (`massing_denser_offer`): вид сверху и кнопка.
+// Этажность в расчёте меняется только по кнопке — как ручное значение поля
+// «Типовая этажность жилых домов».
+function siteMassingDenserHtml(d){
+ if(!d||!d.storeys)return '';
+ const svg=((d.plan_view||{}).buildings||[]).length?siteMassingPlanViewSvg(d.plan_view):'';
+ return '<div class="site-massing-denser" id="siteMassingDenser"><h4>Ниже и плотнее: дома по '+d.storeys+' этажей</h4>'+svg+
+  '<p class="site-massing-hint">'+escapeHtml(d.text||'')+'</p>'+
+  '<button type="button" class="btn" id="siteMassingDenserButton" onclick="siteMassingTakeStoreys('+Number(d.storeys)+')">Считать с домами по '+Number(d.storeys)+' этажей</button></div>';
+}
+function siteMassingTakeStoreys(n){
+ if(!(Number(n)>0))return;
+ inputs.residential_storeys_typical=Number(n);
+ markFieldManual('inputs.residential_storeys_typical');
+ calculate();
 }
 // План расстановки от Платона готовится фоном (`engine/site_massing_plan.py`):
 // страница спрашивает его состояние и, когда план готов (или отклонён),

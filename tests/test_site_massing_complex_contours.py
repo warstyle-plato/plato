@@ -223,6 +223,57 @@ def test_the_analysis_names_assumptions_not_norms():
         assert words in text, words
 
 
+# --- Баланс земли и «ниже и плотнее» (владелец 31.10.2026: «почему столько
+# пустого пространства остаётся») ------------------------------------------------
+
+def _balanced(rings, gns_per_ha, storeys=17.0):
+    site = _area(rings)
+    gns = site / 10000 * gns_per_ha
+    fp = gns / storeys
+    yard = 0.12 * site
+    drive = 0.15 * site
+    setbacks = 0.04 * site
+    m = {"site_sqm": site, "footprint_sqm": fp, "setback_m": 3.0, "footprint_origin": "estimate",
+         "objects": [], "underground_levels": 0, "underground_level_rows": [],
+         "residential_gns_sqm": gns, "above_gns_sqm": gns, "typical_storeys": storeys,
+         "coverage_sqm": 0.3 * site, "built_sqm": fp, "yard_sqm": yard, "driveways_sqm": drive,
+         "setbacks_sqm": setbacks, "surface_parking_sqm": 0.0}
+    x = {"_land_lookup": {"results": [{"found": True, "contour_merc": [_merc(r)]} for r in rings]}}
+    return x, m, [{"phase": 1, "above_gns_sqm": gns}]
+
+
+def test_the_land_balance_names_what_the_empty_land_is():
+    x, m, phases = _balanced(L_SHAPE, 15000.0)
+    layout = core.site_massing_scheme(x, m, phases)["layout"]
+    b = layout["land_balance"]
+    assert sum(r["sqm"] for r in b["rows"]) == pytest.approx(m["site_sqm"], abs=len(b["rows"]))
+    free = [r for r in b["rows"] if r.get("free")]
+    assert free and free[0]["sqm"] == b["free_sqm"] > 0.2 * m["site_sqm"]
+    assert any(line.startswith("Свободно около") and "на гектар" in line for line in layout["analysis"])
+
+
+def test_with_much_free_land_a_lower_denser_layout_is_offered():
+    x, m, phases = _balanced(L_SHAPE, 15000.0)
+    layout = core.site_massing_scheme(x, m, phases)["layout"]
+    offer = layout["denser"]
+    assert offer, layout["land_balance"]
+    assert offer["storeys"] < m["typical_storeys"] and offer["storeys"] in core.LAYOUT_DENSER_STOREYS
+    assert offer["footprint_sqm"] > m["footprint_sqm"]
+    assert offer["free_sqm_after"] < offer["free_sqm_now"]
+    assert offer["plan_view"]["buildings"]
+    assert "только если нажать кнопку" in offer["text"]
+
+
+def test_a_tight_site_gets_no_denser_offer():
+    """Подделка: свободной земли мало — предложения нет."""
+    x, m, phases = _balanced(L_SHAPE, 15000.0)
+    m["yard_sqm"] = m["site_sqm"] - m["built_sqm"] - m["driveways_sqm"] - m["setbacks_sqm"]
+    layout = core.site_massing_scheme(x, m, phases)["layout"]
+    assert layout["land_balance"]["free_share"] < core.LAYOUT_FREE_SHARE_OFFER
+    assert layout["denser"] is None
+    assert not any(line.startswith("Свободно около") for line in layout["analysis"])
+
+
 # --- Отрисованная страница -----------------------------------------------------
 
 SETUP = """async ([ring, ha])=>{
@@ -248,7 +299,16 @@ READ = """()=>{
          items:Array.from(box.querySelectorAll('li')).map(n=>n.innerText), text:box.innerText,
          placed:(layout.buildings||[]).filter(b=>b.ring_m).length,
          page:document.documentElement.scrollWidth, view:window.innerWidth,
-         svgWidth:svg.getBoundingClientRect().width};
+         svgWidth:svg.getBoundingClientRect().width,
+         land:Array.from(document.querySelectorAll('#siteMassingLand tr')).map(n=>n.innerText),
+         denser:!!document.getElementById('siteMassingDenserButton'),
+         offer:layout.denser?layout.denser.storeys:0, storeys:m.typical_storeys||0,
+         built:m.built_sqm||0};
+}"""
+
+TAKE = """async ()=>{
+ document.getElementById('siteMassingDenserButton').click();
+ await settledCalculate();
 }"""
 
 
@@ -269,6 +329,10 @@ def seen():
             page.evaluate(SETUP, [_merc(L_SHAPE[0]), ha])
             browser.wait_for_result(page)
             out[width] = page.evaluate(READ)
+            if width == 1280 and out[width].get("denser"):
+                page.evaluate(TAKE)
+                browser.wait_for_result(page)
+                out["taken"] = page.evaluate(READ)
             page.close()
     return out
 
@@ -290,3 +354,13 @@ def test_the_page_shows_the_plan_from_above_with_both_wings_built(seen, width):
     assert any(i.startswith("Выбрана застройка") for i in got["items"]), got["items"]
     assert "движок" not in text
     assert got["page"] <= got["view"] and got["svgWidth"] <= width, got
+
+
+def test_the_page_names_the_free_land_and_the_button_takes_the_lower_storeys(seen):
+    got = seen[1280]
+    assert got["land"] and any(row.startswith("Свободно") for row in got["land"]), got["land"]
+    # Участок по умолчанию 9,2 га с площадью квартир по умолчанию — земли много.
+    assert got["denser"] and 0 < got["offer"] < got["storeys"], got
+    taken = seen["taken"]
+    assert taken["storeys"] == got["offer"], taken
+    assert taken["built"] > got["built"], (taken["built"], got["built"])
