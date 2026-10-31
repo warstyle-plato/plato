@@ -121,24 +121,14 @@ def _physical_notes(block: dict[str, Any]) -> list[str]:
 
 
 def _packages_note(packages: dict[str, Any]) -> str:
-    """Как укрупнённый ГПР по пакетам лёг на работы утверждённого ГПР."""
+    """Как укрупнённый ГПР по пакетам лёг на работы — одной фразой.
+
+    Списки несопоставленных пакетов — в сообщении Монитора при загрузке, не в
+    сводке (владелец, 30.10.2026: «не надо лишнее грузить в сводку»)."""
     on = f" (факт на {_day(packages['fact_day'])})" if packages.get("fact_day") else ""
-    text = (f"График загружен по пакетам работ{on}: процент пакета поставлен всем работам "
-            "утверждённого ГПР, которые к нему относятся по коду сметы или по названию, — "
-            "это укрупнённая оценка. Сопоставлено пакетов: "
+    return (f"График загружен по пакетам работ{on}: процент пакета поставлен его работам, "
+            f"это укрупнённая оценка. С работами утверждённого ГПР сопоставлено пакетов: "
             f"{packages.get('matched_packages', 0)} из {packages.get('packages', 0)}.")
-    skipped = list(packages.get("unmatched") or [])
-    if skipped:
-        text += (" Не нашлось работ в утверждённом ГПР для пакетов: "
-                 f"{', '.join('«' + name + '»' for name in skipped)}; их процент не учтён.")
-    if packages.get("ambiguous"):
-        count = len(packages["ambiguous"])
-        text += (f" {count} {_plural(count, 'работа подходит', 'работы подходят', 'работ подходят')}"
-                 " сразу к нескольким пакетам, и для них процент оставлен из утверждённого ГПР.")
-    if packages.get("no_fact"):
-        text += (" Без процента в графике: "
-                 f"{', '.join('«' + name + '»' for name in packages['no_fact'])}.")
-    return text
 
 
 def _gpr_source(project: str, end: datetime.date, fact_day: str) -> dict[str, Any]:

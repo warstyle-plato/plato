@@ -253,6 +253,13 @@ class MonitorScheduleFactRequest(BaseModel):
     key: str = ""
 
 
+class MonitorScheduleFactDayRequest(BaseModel):
+    project: str
+    taken_at: str
+    session: str = ""
+    key: str = ""
+
+
 class MonitorWorkFactRequest(BaseModel):
     project: str
     taken_at: str
@@ -535,6 +542,19 @@ def monitor_store_schedule_fact(req: MonitorScheduleFactRequest) -> dict[str, An
             req.project, base64.b64decode(req.content_base64), req.taken_at)
     except FileExistsError as exc:
         raise HTTPException(409, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/monitor/schedule-fact/withdraw", include_in_schema=False)
+def monitor_withdraw_schedule_fact(req: MonitorScheduleFactDayRequest) -> dict[str, Any]:
+    """Убрать ГПР-факт на дату из расчёта; файл уходит в архив, не удаляется."""
+    _require_team_access(req.session, req.key, "Монитор проекта")
+    try:
+        return developaid_monitor.withdraw_schedule_fact(
+            req.project, req.taken_at, _monitor_note_author(req.session, req.key))
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc))
     except ValueError as exc:
         raise HTTPException(400, str(exc))
 

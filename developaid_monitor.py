@@ -398,13 +398,21 @@ def store_schedule_fact(project: str, data: bytes, taken_at: Any) -> dict[str, A
         # в нём нет, процент пакета разносится на работы утверждённого ГПР.
         packages = _schedule_packages(project, data)
         if packages is None:
-            raise ValueError("в файле не найдено ни работ ГПР (лист «ГПР», строки «Работа»), "
-                             "ни пакетов с колонками «Раздел / пакет» и «Факт …»")
+            import developaid_gpr_packages as gpr_packages
+
+            raise ValueError(
+                "Это не график работ: в файле нет ни листа «ГПР» со строками типа «Работа», "
+                "ни таблицы пакетов с колонками «Раздел / пакет» и «Факт <дата>». "
+                f"{gpr_packages.describe(data)} Справки по договорам и спорам загружают в "
+                "блок «Споры и претензии» на странице сводки.")
     folder = _project_dir(project) / "schedule_fact"
     folder.mkdir(parents=True, exist_ok=True)
     path = _inside(folder, f"{day}.xlsx")
     if path.exists():
-        raise FileExistsError(f"ГПР-факт на {day} уже загружен")
+        raise FileExistsError(
+            f"ГПР-факт на {_dotted(day)} уже загружен{_stored_fact_words(project, day)}. "
+            "Загруженный снимок не заменяется: уберите его кнопкой «Убрать ГПР-факт на эту "
+            "дату» или поставьте вверху страницы другую дату.")
     path.write_bytes(data)
     works = packages["works"] if packages else parsed["works"]
     out = {
@@ -418,6 +426,60 @@ def store_schedule_fact(project: str, data: bytes, taken_at: Any) -> dict[str, A
         out["packages"] = {key: packages[key] for key in (
             "fact_day", "packages", "matched_packages", "unmatched", "ambiguous", "no_fact")}
     return out
+
+
+def withdraw_schedule_fact(project: str, taken_at: Any, author: str = "") -> dict[str, Any]:
+    """Убрать ГПР-факт на дату из расчёта: файл уходит в архив, не удаляется.
+
+    Владелец, 30.10.2026, о ГПР по пакетам: «этот файл не подходит», процент
+    целого пакета на каждой работе дал паркинг 60% при плане 49%. Снимок
+    остаётся в `schedule_fact/withdrawn/` с записью, кто и когда его убрал:
+    переписанное прошлое должно быть видно.
+    """
+    day = _iso(taken_at)
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+        raise ValueError("дата ГПР-факта нужна в виде ГГГГ-ММ-ДД")
+    if not str(project or "").strip():
+        raise ValueError("Не указан проект: впишите название проекта в поле «Проект» вверху "
+                         "страницы.")
+    folder = _project_dir(project) / "schedule_fact"
+    path = _inside(folder, f"{day}.xlsx") if folder.exists() else None
+    if path is None or not path.exists():
+        loaded = sorted(item.stem for item in folder.glob("*.xlsx")) if folder.exists() else []
+        raise FileNotFoundError(
+            f"ГПР-факта на {_dotted(day)} в проекте «{project}» нет. "
+            + (f"Загружены: {', '.join(_dotted(item) for item in loaded)}." if loaded
+               else "ГПР-факт в этом проекте ещё не загружали."))
+    archive = folder / "withdrawn"
+    archive.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d%H%M%S")
+    target = archive / f"{day}-{stamp}.xlsx"
+    path.rename(target)
+    (archive / f"{day}-{stamp}.json").write_text(json.dumps(
+        {"taken_at": day, "withdrawn_at": stamp, "author": author}, ensure_ascii=False),
+        encoding="utf-8")
+    return {"taken_at": day, "withdrawn": True}
+
+
+def _dotted(day: str) -> str:
+    return ".".join(reversed(day.split("-")))
+
+
+def _stored_fact_words(project: str, day: str) -> str:
+    """Что лежит в уже загруженном ГПР-факте: по отказу видно, тот ли это файл."""
+    try:
+        stored = latest_schedule_fact(project, day)
+    except Exception:  # noqa: BLE001 — отказ о дубле важнее подробностей
+        return ""
+    if not stored or stored.get("taken_at") != day:
+        return ""
+    packages = stored.get("packages")
+    if packages:
+        on = f", факт на {_dotted(packages['fact_day'])}" if packages.get("fact_day") else ""
+        return (f": это ГПР по пакетам (пакетов {packages.get('packages', 0)}{on}, "
+                f"с работами утверждённого ГПР сопоставлено "
+                f"{packages.get('matched_packages', 0)})")
+    return f": в нём работ ГПР — {len(stored.get('works') or [])}"
 
 
 def _schedule_packages(project: str, data: bytes) -> dict[str, Any] | None:
