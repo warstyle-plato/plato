@@ -582,7 +582,7 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
     coverage_sqm = home_sqm * coverage_pct / 100.0 if coverage_pct > 0 else home_sqm
     base = min(room, coverage_sqm)
     # Жилые дома — типовой этажности (владелец 23.10.2026: 17 этажей, одно число
-    # для всех классов), но не выше предела; процент застройки и свободное
+    # для всех классов; 31.10.2026: на участке до 0,5 га — 9), но не выше предела; процент застройки и свободное
     # место — верхняя граница пятна. У проекта без жилья типовой нет.
     given_typical = _massing_number(x, "residential_storeys_typical")
     if without_housing(x):
@@ -590,7 +590,9 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
     elif given_typical > 0:
         typical, typical_origin = given_typical, "manual"
     else:
-        typical, typical_origin = RESIDENTIAL_STOREYS_DEFAULT, "default"
+        # Пусто — от размера участка: до 0,5 га 9 этажей, больше — 17
+        # (владелец 31.10.2026, `residential_storeys_default`).
+        typical, typical_origin = _massing_book.residential_storeys_default(site_sqm), "default"
     typical_target = home_gns / min(typical, limit) if typical > 0 and home_gns > 0 else 0.0
     manual_footprint = _massing_number(x, "building_footprint_sqm")
     shortage = 0.0

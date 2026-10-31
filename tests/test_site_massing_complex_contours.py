@@ -402,3 +402,24 @@ def test_the_page_names_the_free_land_and_the_button_takes_the_lower_storeys(see
     taken = seen["taken"]
     assert taken["storeys"] == got["offer"], taken
     assert taken["built"] > got["built"], (taken["built"], got["built"])
+
+
+# --- Этажность по умолчанию от размера участка (владелец 31.10.2026) -------------
+
+def test_a_small_site_defaults_to_nine_storeys_not_a_needle():
+    """На 0,142 га при 17 этажах выходила башня 311 м² — тоньше одной секции.
+    Пусто в поле — до 0,5 га 9 этажей, больше — 17; поле перебивает."""
+    book = sys.modules.get("site_massing_book") or __import__("site_massing_book")
+    assert book.residential_storeys_default(1420.0) == 9.0
+    assert book.residential_storeys_default(5000.0) == 9.0
+    assert book.residential_storeys_default(5001.0) == 17.0
+    assert book.residential_storeys_default(0.0) == 17.0
+    x = core.normalize_inputs({**core.DEFAULT_INPUTS, "site_area_ha": 0.142}) \
+        if hasattr(core, "normalize_inputs") else {**core.DEFAULT_INPUTS, "site_area_ha": 0.142}
+    tep = {"housing": {"gns": 5287.0, "under_gns": 0.0}}
+    m = core.site_massing(x, tep)
+    assert m["typical_storeys"] == 9.0 and m["typical_storeys_origin"] == "default"
+    big = core.site_massing({**x, "site_area_ha": 2.0}, tep)
+    assert big["typical_storeys"] == 17.0
+    hand = core.site_massing({**x, "residential_storeys_typical": 17}, tep)
+    assert hand["typical_storeys"] == 17.0 and hand["typical_storeys_origin"] == "manual"
