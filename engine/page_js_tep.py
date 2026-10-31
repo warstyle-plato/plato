@@ -1681,7 +1681,7 @@ function renderSiteMassingFields(){
  const auto={building_footprint_sqm:m.footprint_estimate_sqm?'оценка '+num(Math.round(m.footprint_estimate_sqm)):'',
   underground_levels:m.underground_sqm?'по расчёту':'',surface_parking_sqm_per_space:m.surface_parking_sqm_per_space?String(m.surface_parking_sqm_per_space).replace('.',','):'',
   max_storeys_allowed:'не выше '+num(m.storeys_limit||25),site_coverage_max_pct:m.coverage_origin==='none'?'не задан':String(m.coverage_pct||30).replace('.',',')+'%',
-  residential_storeys_typical:m.typical_storeys_origin==='none'?'нет жилья':String(m.typical_storeys||17)};
+  residential_storeys_typical:m.typical_storeys_origin==='none'?'нет жилья':m.typical_storeys_origin==='land'?'по свободной земле':String(m.typical_storeys||'')};
  box.innerHTML='';
  SITE_MASSING_INPUTS.forEach(id=>{
   const f=decl[id];if(!f)return;

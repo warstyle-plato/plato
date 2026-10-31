@@ -1214,20 +1214,29 @@ def massing_denser_text(offer: dict[str, Any], typical: float) -> str:
 
 
 def massing_free_land_line(massing: dict[str, Any], balance: dict[str, Any]) -> str:
-    """Почему земля свободна — фраза разбора, когда свободного много."""
+    """Почему земля свободна — фраза разбора, когда свободного много.
+
+    Пятно — вся свободная земля (владелец 31.10.2026), поэтому свободное
+    остаётся, только когда пятно ограничено: процентом застройки или
+    типовой этажностью, вписанной руками."""
     share = float(balance.get("free_share") or 0.0)
     if share < LAYOUT_FREE_SHARE_OFFER:
         return ""
-    site = float(massing.get("site_sqm") or 0.0)
-    gns = float(massing.get("above_gns_sqm") or 0.0)
-    typical = float(massing.get("typical_storeys") or 0.0)
-    density = gns / (site / 10000.0) if site > 0 else 0.0
-    return (f"Свободно около {_fmt_ru(balance['free_sqm'])} м² ({round(share * 100)} % участка): "
-            f"дома, двор по норме, проезды, стоянки и отступы занимают остальное. Так выходит, "
-            f"потому что наземной площади в расчёте около {_fmt_ru(density)} м² на гектар участка, "
-            f"а дома — по {_fmt_ru(typical)} этажей. Землю займут дома ниже этажами "
-            "(вариант ниже) или больше площади квартир; иначе свободная земля — это сквер "
-            "или запас под следующие очереди.")
+    head = (f"Свободно около {_fmt_ru(balance['free_sqm'])} м² ({round(share * 100)} % участка): "
+            "дома, двор по норме, проезды, стоянки и отступы занимают остальное. ")
+    origin = massing.get("footprint_origin")
+    if origin == "coverage":
+        pct = float(massing.get("coverage_pct") or 0.0)
+        own = massing.get("coverage_origin") == "manual"
+        return head + (f"Дома не занимают её, потому что пятно упёрлось в процент застройки "
+                       f"{_fmt_ru(pct)} %{'' if own else ' (наше умолчание)'}. Если градплан или ПЗЗ "
+                       "разрешают больше, впишите свой процент в поле «Процент застройки» — пятно "
+                       "вырастет, а дома станут ниже.")
+    if origin == "typical":
+        return head + (f"Дома не занимают её, потому что типовая этажность вписана руками — "
+                       f"{_fmt_ru(float(massing.get('typical_storeys') or 0))} этажей. Очистите поле, "
+                       "и дома займут всю свободную землю, или посмотрите вариант ниже.")
+    return head + "Пятно здесь задано или ограничено отдельно, поэтому земля осталась свободной."
 
 
 # --- Карта земли: чем занята каждая клетка участка --------------------------------

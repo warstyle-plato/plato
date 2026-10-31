@@ -341,9 +341,14 @@ READ = """()=>{
          landRows:Array.from(document.querySelectorAll('#siteMassingLand tr')).map(n=>n.innerText)};
 }"""
 
-TAKE = """async ()=>{
- document.getElementById('siteMassingDenserButton').click();
+ASSUME = """async (driveways)=>{
+ inputs.site_coverage_max_pct=90; markFieldManual('inputs.site_coverage_max_pct');
+ inputs.site_driveways_pct=driveways; markFieldManual('inputs.site_driveways_pct');
  await settledCalculate();
+ const m=(lastResult.tep||{}).site_massing||{};
+ const l=(m.scheme||{}).layout||{};
+ return {fp:m.footprint_sqm||0, storeys:m.average_storeys||0, origin:m.footprint_origin,
+         drawn:(l.buildings||[]).filter(b=>b.ring_m).reduce((s,b)=>s+b.area_sqm,0)};
 }"""
 
 
@@ -364,10 +369,8 @@ def seen():
             page.evaluate(SETUP, [_merc(L_SHAPE[0]), ha])
             browser.wait_for_result(page)
             out[width] = page.evaluate(READ)
-            if width == 1280 and out[width].get("denser"):
-                page.evaluate(TAKE)
-                browser.wait_for_result(page)
-                out["taken"] = page.evaluate(READ)
+            if width == 1280:
+                out["assumption"] = (page.evaluate(ASSUME, 15), page.evaluate(ASSUME, 5))
             page.close()
     return out
 
@@ -391,35 +394,14 @@ def test_the_page_shows_the_plan_from_above_with_both_wings_built(seen, width):
     assert got["page"] <= got["view"] and got["svgWidth"] <= width, got
 
 
-def test_the_page_names_the_free_land_and_the_button_takes_the_lower_storeys(seen):
+def test_the_page_names_the_land_and_the_footprint_follows_the_assumptions(seen):
+    """Владелец 31.10.2026: «меняю допущения, а пятно не меняется». Пятно —
+    свободная земля: на отрисованной странице проезды меньше — пятно больше."""
     got = seen[1280]
-    assert got["landRows"] and any(row.startswith("Свободно") for row in got["landRows"]), got["landRows"]
-    # Карта земли нарисована слоями, подписи — с площадями из таблицы.
-    assert {"road", "yard", "setback", "free"} <= set(got["land"]), got["land"]
+    assert got["landRows"] and got["landRows"][0].startswith("Под домами"), got["landRows"]
+    assert {"road", "yard", "setback"} <= set(got["land"]), got["land"]
     assert any(t.startswith("Двор у домов") and "м²" in t for t in got["landLegend"]), got["landLegend"]
-    # Участок по умолчанию 9,2 га с площадью квартир по умолчанию — земли много.
-    assert got["denser"] and 0 < got["offer"] < got["storeys"], got
-    taken = seen["taken"]
-    assert taken["storeys"] == got["offer"], taken
-    assert taken["built"] > got["built"], (taken["built"], got["built"])
-
-
-# --- Этажность по умолчанию от размера участка (владелец 31.10.2026) -------------
-
-def test_a_small_site_defaults_to_nine_storeys_not_a_needle():
-    """На 0,142 га при 17 этажах выходила башня 311 м² — тоньше одной секции.
-    Пусто в поле — до 0,5 га 9 этажей, больше — 17; поле перебивает."""
-    book = sys.modules.get("site_massing_book") or __import__("site_massing_book")
-    assert book.residential_storeys_default(1420.0) == 9.0
-    assert book.residential_storeys_default(5000.0) == 9.0
-    assert book.residential_storeys_default(5001.0) == 17.0
-    assert book.residential_storeys_default(0.0) == 17.0
-    x = core.normalize_inputs({**core.DEFAULT_INPUTS, "site_area_ha": 0.142}) \
-        if hasattr(core, "normalize_inputs") else {**core.DEFAULT_INPUTS, "site_area_ha": 0.142}
-    tep = {"housing": {"gns": 5287.0, "under_gns": 0.0}}
-    m = core.site_massing(x, tep)
-    assert m["typical_storeys"] == 9.0 and m["typical_storeys_origin"] == "default"
-    big = core.site_massing({**x, "site_area_ha": 2.0}, tep)
-    assert big["typical_storeys"] == 17.0
-    hand = core.site_massing({**x, "residential_storeys_typical": 17}, tep)
-    assert hand["typical_storeys"] == 17.0 and hand["typical_storeys_origin"] == "manual"
+    before, after = seen["assumption"]
+    assert after["fp"] > before["fp"] + 100, (before, after)
+    assert after["drawn"] > before["drawn"], (before, after)
+    assert after["storeys"] < before["storeys"], (before, after)
