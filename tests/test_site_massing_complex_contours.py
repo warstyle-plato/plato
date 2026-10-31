@@ -249,7 +249,11 @@ def test_the_land_balance_names_what_the_empty_land_is():
     assert sum(r["sqm"] for r in b["rows"]) == pytest.approx(m["site_sqm"], abs=len(b["rows"]))
     free = [r for r in b["rows"] if r.get("free")]
     assert free and free[0]["sqm"] == b["free_sqm"] > 0.2 * m["site_sqm"]
-    assert any(line.startswith("Свободно около") and "на гектар" in line for line in layout["analysis"])
+    # Пятно упёрлось в процент застройки — разбор называет это и что поправить.
+    m2 = {**m, "footprint_origin": "coverage", "coverage_pct": 30.0, "coverage_origin": "default"}
+    lines = core.site_massing_scheme(x, m2, phases)["layout"]["analysis"]
+    assert any(line.startswith("Свободно около") and "процент застройки 30 % (наше умолчание)" in line
+               for line in lines), lines
 
 
 def test_with_much_free_land_a_lower_denser_layout_is_offered():
