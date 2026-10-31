@@ -869,11 +869,14 @@ def site_massing_layout(x: dict[str, Any], massing: dict[str, Any],
         analysis_lines = massing_analysis_lines(
             plan.pop("_analysis", {}), variants, plan.get("variant") or "rows", corpora, lanes,
             gaps, north, plan.get("chooser") or "engine")
-        plan_view = massing_plan_view({"site_rings": rings, "underground_rings": inner,
-                                       "buildings": corpora}, blocks, lanes, north)
         # Чем занята земля и, если свободной много, — вариант ниже и плотнее
-        # (владелец 31.10.2026: «почему столько пустого пространства»).
+        # (владелец 31.10.2026: «почему столько пустого пространства»), и карта
+        # земли на виде сверху: двор, проезды, стоянки, отступы, свободно.
         land_balance = massing_land_balance(massing)
+        land = massing_land_map(rings, inner or rings, blocks, corpora, lanes, land_balance)
+        plan_view = massing_plan_view({"site_rings": rings, "underground_rings": inner,
+                                       "buildings": corpora}, blocks, lanes, north, land,
+                                      massing_land_legend(land, land_balance))
         free_line = massing_free_land_line(massing, land_balance)
         if free_line:
             analysis_lines.insert(max(0, len(analysis_lines) - 1), free_line)
@@ -882,9 +885,16 @@ def site_massing_layout(x: dict[str, Any], massing: dict[str, Any],
         if offer:
             alt_corpora = offer.pop("_corpora")
             alt_parts = offer.pop("_parts")
+            # Карта земли варианта: пятно больше, двор и проезды — те же метры.
+            alt_balance = massing_land_balance({**massing, "built_sqm": float(
+                massing.get("built_sqm") or 0.0) + offer["footprint_sqm"]
+                - float(massing.get("footprint_sqm") or 0.0)})
+            alt_lanes = massing_fire_lanes(alt_corpora, rings)
+            alt_land = massing_land_map(rings, inner or rings, alt_parts, alt_corpora, alt_lanes,
+                                        alt_balance)
             offer["plan_view"] = massing_plan_view(
                 {"site_rings": rings, "underground_rings": inner, "buildings": alt_corpora},
-                alt_parts, [], north)
+                alt_parts, alt_lanes, north, alt_land, massing_land_legend(alt_land, alt_balance))
             offer["text"] = massing_denser_text(offer, float(massing.get("typical_storeys") or 0))
             denser = offer
     for c in corpora:

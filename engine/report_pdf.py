@@ -1078,20 +1078,30 @@ def _site_massing_scheme_pdf(scheme: dict[str, Any] | None, P: Any, small: Any,
             for ring in pv.get("site") or []:
                 plan.add(Polygon(pts(ring), fillColor=colors.HexColor("#eeeeee"),
                                  strokeColor=colors.HexColor("#555555"), strokeWidth=0.5))
+            # Карта земли (`massing_land_map`): двор, проезды, стоянки, отступы.
+            land_colors = pv.get("land_colors") or {}
+            for key, rects in (pv.get("land") or {}).items():
+                fill = colors.HexColor(land_colors.get(key) or "#eeeeee")
+                for ring in rects:
+                    plan.add(Polygon(pts(ring), fillColor=fill, strokeColor=fill, strokeWidth=0.1))
             for b in pv.get("blocks") or []:
-                plan.add(Polygon(pts(b["ring"]), fillColor=colors.HexColor("#dcebd6"),
+                plan.add(Polygon(pts(b["ring"]), fillColor=None if pv.get("land") else
+                                 colors.HexColor("#dcebd6"),
                                  strokeColor=colors.HexColor("#8fb487"), strokeWidth=0.4))
             for ring in pv.get("lanes") or []:
-                plan.add(Polygon(pts(ring), fillColor=colors.HexColor("#f3c47c"),
-                                 strokeColor=colors.HexColor("#d28a1e"), strokeWidth=0.3))
+                plan.add(Polygon(pts(ring), fillColor=None,
+                                 strokeColor=colors.HexColor("#d28a1e"), strokeWidth=0.4))
             for b in pv.get("buildings") or []:
                 plan.add(Polygon(pts(b["ring"]), fillColor=colors.HexColor(b.get("color") or "#2f6fb3"),
                                  strokeColor=colors.HexColor("#222222"), strokeWidth=0.4))
             block.append(plan)
             block.append(P(("Вид сверху, север вверху. " if pv.get("north_up") else
                             "Вид сверху; стороны света неизвестны. ")
-                           + "Зелёное — части участка, внутри них дворы без машин; оранжевые "
-                           "полосы — места для пожарного проезда.", small))
+                           + "; ".join(f"{r['label']} — {r['sqm']:,.0f} м²".replace(",", " ")
+                                       for r in pv.get("land_legend") or [] if r.get("sqm") is not None)
+                           + ". Оранжевый контур — места для пожарного проезда. Площади — из "
+                           "баланса территории расчёта, место каждой — наша схема, а не генплан.",
+                           small))
         block += [P(str(line), small) for line in lines]
         out.append(KeepTogether(block))
     return out

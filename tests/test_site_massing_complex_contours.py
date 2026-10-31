@@ -274,6 +274,39 @@ def test_a_tight_site_gets_no_denser_offer():
     assert not any(line.startswith("Свободно около") for line in layout["analysis"])
 
 
+def test_the_land_map_draws_the_balance_areas_in_their_places():
+    """Владелец 31.10.2026: «сможешь нарисовать, чем занята земля? Двор, дороги,
+    парковки». Площади слоёв — те же, что в таблице баланса; двор — у домов,
+    стоянки — дальше от домов, чем двор."""
+    x, m, phases = _balanced(L_SHAPE, 15000.0)
+    m["surface_parking_sqm"] = 0.03 * m["site_sqm"]
+    layout = core.site_massing_scheme(x, m, phases)["layout"]
+    pv = layout["plan_view"]
+    legend = {r["key"]: r for r in pv["land_legend"]}
+    assert {"road", "yard", "parking", "setback", "free"} <= set(legend), legend
+    cell = 2 * max(2.0, math.sqrt(m["site_sqm"] / core.LAYOUT_LAND_CELLS)) ** 2
+    for key in ("road", "yard", "parking"):
+        assert legend[key]["drawn_sqm"] == pytest.approx(legend[key]["sqm"], abs=cell), legend[key]
+    homes = [b["ring_m"] for b in layout["buildings"] if b.get("ring_m")]
+    nx, ny = layout["north"]
+
+    def back(p):  # вид сверху → координаты схемы
+        return (p[0] * ny + p[1] * nx, -p[0] * nx + p[1] * ny)
+
+    def mean_dist(key):
+        rects = pv["land"][key]
+        ds = []
+        for r in rects:
+            cx = sum(back(p)[0] for p in r) / 4
+            cy = sum(back(p)[1] for p in r) / 4
+            ds.append(min(core._mv_poly_dist([[cx, cy], [cx + 0.01, cy], [cx, cy + 0.01]], h)
+                          for h in homes))
+        return sum(ds) / len(ds)
+
+    assert mean_dist("yard") < mean_dist("parking")
+    assert mean_dist("yard") < mean_dist("free")
+
+
 # --- Отрисованная страница -----------------------------------------------------
 
 SETUP = """async ([ring, ha])=>{
@@ -300,10 +333,12 @@ READ = """()=>{
          placed:(layout.buildings||[]).filter(b=>b.ring_m).length,
          page:document.documentElement.scrollWidth, view:window.innerWidth,
          svgWidth:svg.getBoundingClientRect().width,
-         land:Array.from(document.querySelectorAll('#siteMassingLand tr')).map(n=>n.innerText),
          denser:!!document.getElementById('siteMassingDenserButton'),
          offer:layout.denser?layout.denser.storeys:0, storeys:m.typical_storeys||0,
-         built:m.built_sqm||0};
+         built:m.built_sqm||0,
+         land:Array.from(svg.querySelectorAll('.pv-land')).map(n=>n.getAttribute('data-land')),
+         landLegend:Array.from(box.querySelectorAll('.site-massing-land-legend li')).map(n=>n.innerText),
+         landRows:Array.from(document.querySelectorAll('#siteMassingLand tr')).map(n=>n.innerText)};
 }"""
 
 TAKE = """async ()=>{
@@ -358,7 +393,10 @@ def test_the_page_shows_the_plan_from_above_with_both_wings_built(seen, width):
 
 def test_the_page_names_the_free_land_and_the_button_takes_the_lower_storeys(seen):
     got = seen[1280]
-    assert got["land"] and any(row.startswith("Свободно") for row in got["land"]), got["land"]
+    assert got["landRows"] and any(row.startswith("Свободно") for row in got["landRows"]), got["landRows"]
+    # Карта земли нарисована слоями, подписи — с площадями из таблицы.
+    assert {"road", "yard", "setback", "free"} <= set(got["land"]), got["land"]
+    assert any(t.startswith("Двор у домов") and "м²" in t for t in got["landLegend"]), got["landLegend"]
     # Участок по умолчанию 9,2 га с площадью квартир по умолчанию — земли много.
     assert got["denser"] and 0 < got["offer"] < got["storeys"], got
     taken = seen["taken"]

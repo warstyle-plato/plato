@@ -1583,8 +1583,13 @@ function siteMassingPlanViewSvg(pv){
  const unit=Math.max(w,h)/400;
  let g='';
  (pv.site||[]).forEach(r=>{g+='<polygon class="pv-site" points="'+pts(r)+'" fill="#eeeeee" stroke="#555" stroke-width="'+unit+'"/>'});
- (pv.blocks||[]).forEach(b=>{g+='<polygon class="pv-block" data-part="'+escapeHtml(b.id)+'" points="'+pts(b.ring)+'" fill="#dcebd6" stroke="#8fb487" stroke-width="'+unit*0.8+'" stroke-dasharray="'+unit*4+' '+unit*3+'"/>'});
- (pv.lanes||[]).forEach(r=>{g+='<polygon class="pv-lane" points="'+pts(r)+'" fill="#f3c47c" fill-opacity="0.7" stroke="#d28a1e" stroke-width="'+unit*0.5+'"/>'});
+ // Карта земли (`massing_land_map`): двор, проезды, стоянки, отступы, свободно.
+ const land=pv.land||{},colors=pv.land_colors||{},hasLand=Object.keys(land).length>0;
+ Object.keys(land).forEach(k=>{
+  g+='<path class="pv-land" data-land="'+escapeHtml(k)+'" fill="'+(colors[k]||'#eee')+'" d="'+land[k].map(r=>'M'+r.map(p=>(p[0]-x0).toFixed(1)+','+(y1-p[1]).toFixed(1)).join('L')+'Z').join('')+'"/>';
+ });
+ (pv.blocks||[]).forEach(b=>{g+='<polygon class="pv-block" data-part="'+escapeHtml(b.id)+'" points="'+pts(b.ring)+'" fill="'+(hasLand?'none':'#dcebd6')+'" stroke="#8fb487" stroke-width="'+unit*0.8+'" stroke-dasharray="'+unit*4+' '+unit*3+'"/>'});
+ (pv.lanes||[]).forEach(r=>{g+='<polygon class="pv-lane" points="'+pts(r)+'" fill="none" stroke="#d28a1e" stroke-width="'+unit*0.9+'" stroke-dasharray="'+unit*3+' '+unit*2+'"/>'});
  (pv.buildings||[]).forEach(b=>{
   g+='<polygon class="pv-house" data-building="'+escapeHtml(b.id)+'" points="'+pts(b.ring)+'" fill="'+(b.color||'#2f6fb3')+'" stroke="#222" stroke-width="'+unit*0.7+'"/>';
   (b.sections||[]).forEach(l=>{g+='<polyline class="pv-section" points="'+pts(l)+'" stroke="#fff" stroke-width="'+unit*0.9+'"/>'});
@@ -1601,11 +1606,18 @@ function siteMassingPlanViewHtml(layout){
  const lines=layout.analysis||[];
  if(!(pv.buildings||[]).length&&!lines.length)return '';
  const svg=(pv.buildings||[]).length?siteMassingPlanViewSvg(pv):'';
- const legend=svg?'<p class="site-massing-hint">'+(pv.north_up?'Вид сверху, север вверху. ':'Вид сверху; стороны света неизвестны. ')+
-  'Зелёное — части участка, внутри них дворы без машин; дома разделены на секции белыми линиями; оранжевые полосы — места для пожарного проезда.</p>':'';
+ const legend=svg?siteMassingLandLegendHtml(pv)+'<p class="site-massing-hint">'+(pv.north_up?'Вид сверху, север вверху. ':'Вид сверху; стороны света неизвестны. ')+
+  'Дома разделены на секции белыми линиями; оранжевый пунктир — места для пожарного проезда; зелёный пунктир — границы частей участка. Площади — из баланса территории расчёта, место каждой — наша схема, а не генплан.</p>':'';
  return '<div class="site-massing-analysis" id="siteMassingAnalysis"><h4>Разбор участка и посадки</h4>'+svg+legend+
   siteMassingLandBalanceHtml(layout.land_balance||{})+
   '<ul>'+lines.map(t=>'<li>'+escapeHtml(t)+'</li>').join('')+'</ul>'+siteMassingDenserHtml(layout.denser)+'</div>';
+}
+// Подписи слоёв карты земли: цвет и площадь — из ответа движка.
+function siteMassingLandLegendHtml(pv){
+ const rows=pv.land_legend||[];
+ if(!rows.length)return '';
+ return '<ul class="site-massing-legend site-massing-land-legend">'+rows.map(r=>'<li data-land="'+escapeHtml(r.key)+'"><i style="background:'+r.color+'"></i>'+escapeHtml(r.label)+(r.sqm!=null?' — '+num(r.sqm)+' м²':'')+'</li>').join('')+
+  '<li><i style="background:#2f6fb3"></i>Жилые дома</li></ul>';
 }
 // Чем занята земля участка (`massing_land_balance`): строки баланса и
 // свободный остаток — ответ на «почему столько пустого места» (владелец 31.10.2026).

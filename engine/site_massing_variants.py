@@ -908,8 +908,9 @@ def massing_min_gaps(buildings: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def massing_plan_view(layout: dict[str, Any], blocks: list[dict[str, Any]],
-                      lanes: list[dict[str, Any]], north: list[float] | None
-                      ) -> dict[str, Any]:
+                      lanes: list[dict[str, Any]], north: list[float] | None,
+                      land: dict[str, Any] | None = None,
+                      land_legend: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """Вид сверху для страницы: север вверху (если стороны света известны),
     участок, граница отступа, кварталы, дома с секциями, пожарные проезды."""
     if north:
@@ -928,7 +929,6 @@ def massing_plan_view(layout: dict[str, Any], blocks: list[dict[str, Any]],
     for b in layout.get("buildings") or []:
         colors[b["id"]] = b.get("color") or LAYOUT_PHASE_COLORS[(max(1, b["phase"]) - 1)
                                                                  % len(LAYOUT_PHASE_COLORS)]
-    lane_by = {r["id"]: r for r in lanes}
     return {
         "north_up": bool(north),
         "site": rings(layout.get("site_rings") or []),
@@ -942,6 +942,11 @@ def massing_plan_view(layout: dict[str, Any], blocks: list[dict[str, Any]],
                       for b in layout.get("buildings") or [] if b.get("ring_m")],
         "lanes": [[turn(p) for p in lane] for r in lanes for lane in r["lanes"]],
         "lanes_missing": [r["id"] for r in lanes if not r["ok"]],
+        # Карта земли (`massing_land_map`): слои по назначению и подписи с площадями.
+        "land": {key: [[turn(p) for p in rect] for rect in rects]
+                 for key, rects in ((land or {}).get("layers") or {}).items()},
+        "land_colors": {key: color for key, _, color in LAYOUT_LAND_CLASSES},
+        "land_legend": land_legend or [],
     }
 
 
@@ -1223,3 +1228,157 @@ def massing_free_land_line(massing: dict[str, Any], balance: dict[str, Any]) -> 
             f"а дома — по {_fmt_ru(typical)} этажей. Землю займут дома ниже этажами "
             "(вариант ниже) или больше площади квартир; иначе свободная земля — это сквер "
             "или запас под следующие очереди.")
+
+
+# --- Карта земли: чем занята каждая клетка участка --------------------------------
+#
+# Владелец 31.10.2026: «сможешь нарисовать, чем занята земля? Двор, дороги,
+# парковки». Площади — те же, что в таблице баланса (`massing_land_balance`);
+# место каждой — правилом: проезды — места пожарных проездов, проезды между
+# кварталами и полоса вдоль сторон частей участка; участки школы и сада — вокруг
+# их зданий; двор — ближайшая к жилым домам земля; открытые стоянки — у границы
+# участка, подальше от домов; остальное — свободно. Это схема размещения, а не
+# генплан.
+
+LAYOUT_LAND_CELLS = 4000
+LAYOUT_LAND_CLASSES = (
+    ("setback", "Отступы от границ участка", "#ededed"),
+    ("road", "Проезды, тротуары, пожарные проезды", "#9f9f9f"),
+    ("parking", "Открытые стоянки", "#a9bdd6"),
+    ("plot", "Участки школы и детского сада", "#e9d6c3"),
+    ("yard", "Двор у домов (без машин)", "#cfe6c2"),
+    ("free", "Свободно: сквер или запас", "#f4f0e2"),
+)
+
+
+def _mv_inside_many(px: "_np.ndarray", py: "_np.ndarray", rings: list[list[list[float]]]) -> "_np.ndarray":
+    """Точки внутри хотя бы одного кольца (чётность), сразу для многих точек."""
+    out = _np.zeros(px.shape, dtype=bool)
+    for ring in rings:
+        hit = _np.zeros(px.shape, dtype=bool)
+        n = len(ring)
+        for i in range(n):
+            x1, y1 = ring[i]
+            x2, y2 = ring[i - 1]
+            if y1 == y2:
+                continue
+            cond = (y1 > py) != (y2 > py)
+            xs = (x2 - x1) * (py - y1) / (y2 - y1) + x1
+            hit ^= cond & (px < xs)
+        out |= hit
+    return out
+
+
+def _mv_edge_dist(px: "_np.ndarray", py: "_np.ndarray", rings: list[list[list[float]]]) -> "_np.ndarray":
+    """Расстояние от точек до сторон колец."""
+    best = _np.full(px.shape, 1e9)
+    for ring in rings:
+        n = len(ring)
+        for i in range(n):
+            ax, ay = ring[i - 1]
+            bx, by = ring[i]
+            ex, ey = bx - ax, by - ay
+            ll = ex * ex + ey * ey or 1e-9
+            t = _np.clip(((px - ax) * ex + (py - ay) * ey) / ll, 0.0, 1.0)
+            best = _np.minimum(best, _np.hypot(px - ax - ex * t, py - ay - ey * t))
+    return best
+
+
+def massing_land_map(site_rings: list[list[list[float]]], inner: list[list[list[float]]],
+                     parts: list[dict[str, Any]], buildings: list[dict[str, Any]],
+                     lanes: list[dict[str, Any]], balance: dict[str, Any]) -> dict[str, Any]:
+    """Клетки участка по назначению → {cell_m, layers: {класс: [прямоугольники]}, sqm}.
+
+    Прямоугольники — склеенные по строкам клетки одного назначения, в
+    координатах схемы."""
+    pts = [p for r in site_rings for p in r]
+    if not pts or not balance.get("rows"):
+        return {}
+    area = sum(abs(_ring_area(r)) for r in site_rings)
+    cell = max(2.0, _math.sqrt(area / LAYOUT_LAND_CELLS))
+    x0, x1 = min(p[0] for p in pts), max(p[0] for p in pts)
+    y0, y1 = min(p[1] for p in pts), max(p[1] for p in pts)
+    nx_, ny_ = int(_math.ceil((x1 - x0) / cell)), int(_math.ceil((y1 - y0) / cell))
+    gx = x0 + (_np.arange(nx_) + 0.5) * cell
+    gy = y0 + (_np.arange(ny_) + 0.5) * cell
+    px, py = _np.meshgrid(gx, gy)
+    in_site = _mv_inside_many(px, py, site_rings)
+    in_inner = _mv_inside_many(px, py, inner) & in_site
+    cls = _np.full(px.shape, "", dtype=object)
+    cls[in_site & ~in_inner] = "setback"
+    homes = [b["ring_m"] for b in buildings if b.get("ring_m") and b.get("phase", 0) > 0]
+    others = [b["ring_m"] for b in buildings if b.get("ring_m") and b.get("phase", 0) == 0]
+    in_house = _mv_inside_many(px, py, homes + others) & in_inner
+    cls[in_house] = "house"
+    free = in_inner & ~in_house
+    lane_rings = [lane for r in lanes for lane in r.get("lanes") or []]
+    road = free & _mv_inside_many(px, py, lane_rings) if lane_rings else _np.zeros(px.shape, bool)
+    in_parts = _mv_inside_many(px, py, [p["ring"] for p in parts]) if parts else in_inner
+    road |= free & ~in_parts
+    cls[road] = "road"
+    free &= ~road
+    cell_sqm = cell * cell
+    want = {r["label"]: float(r["sqm"]) for r in balance["rows"]}
+    d_home = _mv_edge_dist(px, py, homes) if homes else _np.full(px.shape, 1e9)
+    d_home[_mv_inside_many(px, py, homes)] = 0.0 if homes else d_home[0, 0]
+    d_other = _mv_edge_dist(px, py, others) if others else _np.full(px.shape, 1e9)
+    d_edge = _mv_edge_dist(px, py, [p["ring"] for p in parts] or inner)
+
+    def take(mask: "_np.ndarray", score: "_np.ndarray", sqm: float, name: str) -> None:
+        nonlocal free
+        count = int(round(max(0.0, sqm) / cell_sqm))
+        idx = _np.flatnonzero(mask & free)
+        if count <= 0 or not len(idx):
+            return
+        order = idx[_np.argsort(score.ravel()[idx], kind="stable")][:count]
+        flat = cls.ravel()
+        flat[order] = name
+        free.ravel()[order] = False
+
+    road_left = want.get("Проезды, тротуары, пожарные проезды", 0.0) - float(road.sum()) * cell_sqm
+    # Проезды — полосой вдоль сторон частей участка, не вплотную к домам.
+    take(d_home > 3.0, d_edge, road_left, "road")
+    take(_np.ones(px.shape, bool), d_other, want.get("Участки школы и детского сада вокруг зданий", 0.0), "plot")
+    take(_np.ones(px.shape, bool), d_home, want.get("Двор у домов по норме", 0.0), "yard")
+    # Стоянки — у границы участка, подальше от домов.
+    take(d_home > 10.0, d_edge - 0.3 * _np.minimum(d_home, 60.0),
+         want.get("Открытые стоянки", 0.0), "parking")
+    cls[free] = "free"
+    layers: dict[str, list[list[list[float]]]] = {}
+    sqm: dict[str, float] = {}
+    for j in range(ny_):
+        row = cls[j]
+        i = 0
+        while i < nx_:
+            name = row[i]
+            k = i
+            while k + 1 < nx_ and row[k + 1] == name:
+                k += 1
+            if name and name != "house":
+                xa, xb = x0 + i * cell, x0 + (k + 1) * cell
+                ya, yb = y0 + j * cell, y0 + (j + 1) * cell
+                layers.setdefault(name, []).append(
+                    [[round(xa, 2), round(ya, 2)], [round(xb, 2), round(ya, 2)],
+                     [round(xb, 2), round(yb, 2)], [round(xa, 2), round(yb, 2)]])
+                sqm[name] = sqm.get(name, 0.0) + (k - i + 1) * cell_sqm
+            i = k + 1
+    return {"cell_m": round(cell, 2), "layers": layers, "sqm": {k: round(v) for k, v in sqm.items()}}
+
+
+def massing_land_legend(land: dict[str, Any], balance: dict[str, Any]) -> list[dict[str, Any]]:
+    """Подписи слоёв карты земли: цвет и площадь из таблицы баланса (те же числа)."""
+    by_label = {r["label"]: r for r in balance.get("rows") or []}
+    numbers = {"setback": by_label.get("Отступы от границ участка"),
+               "road": by_label.get("Проезды, тротуары, пожарные проезды"),
+               "parking": by_label.get("Открытые стоянки"),
+               "plot": by_label.get("Участки школы и детского сада вокруг зданий"),
+               "yard": by_label.get("Двор у домов по норме"),
+               "free": next((r for r in balance.get("rows") or [] if r.get("free")), None)}
+    out = []
+    for key, label, color in LAYOUT_LAND_CLASSES:
+        if key not in (land.get("layers") or {}):
+            continue
+        row = numbers.get(key) or {}
+        out.append({"key": key, "label": label, "color": color, "sqm": row.get("sqm"),
+                    "drawn_sqm": (land.get("sqm") or {}).get(key)})
+    return out
