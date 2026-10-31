@@ -28,7 +28,7 @@
 
 # Версия методики плана: меняется кварталы/фронты/схема ответа — прежние
 # планы не подходят.
-LAYOUT_PLAN_VERSION = 2
+LAYOUT_PLAN_VERSION = 3
 # Замок запроса старше этого — запрос считается потерянным (воркер упал).
 LAYOUT_PLAN_LOCK_SECONDS = 600
 # Неудавшийся запрос (сеть, модель молчит) повторяется не раньше, чем через.
@@ -82,6 +82,40 @@ SITE_MASSING_PLAN_INSTRUCTIONS = (
     "дворы, где башни, как идут очереди. Отвечай только JSON по схеме.")
 
 
+# Жилой проект (владелец 31.10.2026): Платон не ставит прямоугольники, а
+# выбирает один из вариантов посадки движка (`engine/site_massing_variants.py`)
+# и объясняет выбор посетителю.
+SITE_MASSING_VARIANT_SCHEMA = {
+    "type": "object", "additionalProperties": False, "required": ["variant", "summary"],
+    "properties": {"variant": {"type": "string"}, "summary": {"type": "string"}},
+}
+
+SITE_MASSING_VARIANT_INSTRUCTIONS = (
+    "Ты — архитектор-градостроитель. Движок разобрал участок жилого проекта (части участка, их "
+    "размеры и направление по сторонам света) и построил несколько вариантов посадки одних и тех "
+    "же домов: квартальная (дома по периметру кварталов с угловыми секциями, двор без машин), "
+    "меридиональная (дома рядами с севера на юг), комбинированная и рядами вдоль участка. У "
+    "каждого варианта есть числа: сколько домов встало и не встало, самая далёкая от домов точка "
+    "участка, доля участка без домов и где этот кусок, доля пятна домов, вытянутых с севера на "
+    "юг, сколько домов вытянуты с запада на восток, сколько угловых домов. Выбери вариант, "
+    "который лучше как городская застройка: все дома должны встать (вариант, где встало меньше "
+    "домов, чем в лучшем, выбирать нельзя); на участке не должно оставаться пустого куска сбоку; "
+    "лучше дворы, закрытые домами, и дома с севера на юг; учитывай форму частей участка. "
+    "variant — id варианта из списка. summary — одна-две фразы для посетителя-непрофессионала: "
+    "почему этот вариант, где дворы и как дома стоят по солнцу. Отвечай только JSON по схеме.")
+
+
+def massing_variant_check(variants: dict[str, Any], variant: Any) -> str | None:
+    """Годится ли выбранный Платоном вариант → None или причина простыми словами."""
+    if not isinstance(variant, str) or variant not in variants:
+        return f"Платон выбрал вариант «{variant}», которого нет."
+    best = min(v["metrics"]["unplaced"] for v in variants.values())
+    if variants[variant]["metrics"]["unplaced"] > best:
+        return (f"В варианте «{LAYOUT_VARIANT_NAMES.get(variant, variant)}», который выбрал Платон, "
+                "встаёт меньше домов, чем в лучшем варианте.")
+    return None
+
+
 def _plan_enabled() -> bool:
     return os.getenv("SITE_MASSING_PLATO", "1").strip().lower() not in {"0", "false", "no", "off"}
 
@@ -97,11 +131,12 @@ def _plan_hash(data: Any) -> str:
 
 
 def site_massing_plan_key(corpora: list[dict[str, Any]], site: list[list[list[float]]],
-                          setback: float) -> tuple[str, str]:
+                          setback: float, mode: str = "placements") -> tuple[str, str]:
     """Отпечаток входов плана и отпечаток участка (только контур)."""
     rings = [[[round(p[0], 1), round(p[1], 1)] for p in r] for r in site]
     site_key = _plan_hash({"v": LAYOUT_PLAN_VERSION, "rings": rings})
-    key = _plan_hash({"v": LAYOUT_PLAN_VERSION, "rings": rings, "setback": round(float(setback), 2),
+    key = _plan_hash({"v": LAYOUT_PLAN_VERSION, "mode": mode, "rings": rings,
+                      "setback": round(float(setback), 2),
                       "corpora": [[c["id"], round(float(c["area_sqm"]), 1), c["storeys_shown"],
                                    c["phase"], c.get("object")] for c in corpora]})
     return key, site_key
@@ -245,22 +280,81 @@ def _plan_job(key: str, site_key: str, corpora: list[dict[str, Any]],
             _SITE_MASSING_PLAN_RUNNING.discard(key)
 
 
+def _plan_job_variants(key: str, site_key: str, brief: dict[str, Any],
+                       variants: dict[str, Any]) -> None:
+    """Фоновая нить жилого проекта: Платон выбирает вариант посадки."""
+    started = time.time()
+    record: dict[str, Any] = {"key": key, "site_key": site_key, "version": LAYOUT_PLAN_VERSION,
+                              "mode": "variants"}
+    try:
+        model = (os.getenv("OPENAI_MASSING_MODEL") or os.getenv("OPENAI_AGENT_MODEL", "gpt-5.6")).strip()
+        record["model"] = model
+        message = json.dumps(brief, ensure_ascii=False)
+        reason = None
+        for attempt in range(LAYOUT_PLAN_ATTEMPTS):
+            payload = {"model": model, "instructions": SITE_MASSING_VARIANT_INSTRUCTIONS,
+                       "input": [{"role": "user", "content": message}],
+                       "text": {"format": {"type": "json_schema", "name": "site_massing_variant",
+                                           "strict": True, "schema": SITE_MASSING_VARIANT_SCHEMA}},
+                       "max_output_tokens": 2000, "store": False}
+            text = _extract_openai_text(_openai_responses_request(payload, 240.0))
+            try:
+                answer = json.loads(text)
+            except ValueError:
+                answer = None
+            if not isinstance(answer, dict):
+                reason = "Ответ Платона — не JSON по схеме."
+            else:
+                reason = massing_variant_check(variants, answer.get("variant"))
+                if reason is None:
+                    record.update(status="ready", variant=answer["variant"],
+                                  summary=str(answer.get("summary") or "")[:400],
+                                  attempts=attempt + 1)
+                    break
+            message = (json.dumps(brief, ensure_ascii=False)
+                       + "\n\nПрошлый выбор не прошёл проверку движка: " + reason
+                       + " Выбери заново.")
+        if record.get("status") != "ready":
+            record.update(status="rejected", reason=reason, attempts=LAYOUT_PLAN_ATTEMPTS)
+    except HTTPException as exc:
+        record.update(status="failed", reason=str(exc.detail)[:300])
+    except Exception as exc:
+        logging.exception("site massing variant choice failed")
+        record.update(status="failed", reason=f"{type(exc).__name__}: {exc}"[:300])
+    record["seconds"] = round(time.time() - started, 1)
+    record["created_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    try:
+        _plan_write(key, record)
+        if record["status"] in ("ready", "rejected"):
+            _plan_write(f"site-{site_key}", {"key": key})
+    finally:
+        (_SITE_MASSING_PLAN_DIR / f"{key}.lock").unlink(missing_ok=True)
+        with _SITE_MASSING_PLAN_LOCK:
+            _SITE_MASSING_PLAN_RUNNING.discard(key)
+
+
 def site_massing_plan_lookup(x: dict[str, Any], corpora: list[dict[str, Any]],
                              site: list[list[list[float]]], setback: float,
-                             blocks: list[dict[str, Any]], shape_origin: str) -> dict[str, Any]:
+                             blocks: list[dict[str, Any]], shape_origin: str,
+                             variants: dict[str, Any] | None = None,
+                             analysis: dict[str, Any] | None = None) -> dict[str, Any]:
     """План для этих входов → {status, key, …}; нет плана — запускает фоновый
     запрос (если Платон доступен) и сразу отвечает «готовится».
 
     Состояния: `ready` (план есть, проверяет его вызывающий), `pending`,
     `rejected` и `failed` (с причиной), `unavailable` (Платон не подключён),
     `off` (выключено переменной `SITE_MASSING_PLATO`), `square` (контура нет —
-    расставлять не на чем). `stale` — у участка был план для других входов."""
+    расставлять не на чем). `stale` — у участка был план для других входов.
+
+    `variants` — жилой проект: Платон выбирает вариант посадки движка, а не
+    ставит корпуса сам (план с `mode` = `variants`)."""
     if shape_origin != "contour" or not blocks or not corpora:
         return {"status": "square"}
-    key, site_key = site_massing_plan_key(corpora, site, setback)
+    mode = "variants" if variants else "placements"
+    key, site_key = site_massing_plan_key(corpora, site, setback, mode)
     rec = _plan_read(key)
     if rec and rec.get("status") in ("ready", "rejected"):
-        return {**rec, "key": key}
+        return {**rec, "key": key, "mode": mode}
     pointer = _plan_read(f"site-{site_key}") or {}
     stale = bool(pointer.get("key")) and pointer.get("key") != key
     base = {"key": key, "stale": stale}
@@ -279,6 +373,12 @@ def site_massing_plan_lookup(x: dict[str, Any], corpora: list[dict[str, Any]],
         running = key in _SITE_MASSING_PLAN_RUNNING
         if not running and _plan_take_lock(key):
             _SITE_MASSING_PLAN_RUNNING.add(key)
+            if variants:
+                brief = massing_variants_brief(variants, analysis or {}, corpora)
+                metrics = {k: {"metrics": copy.deepcopy(v["metrics"])} for k, v in variants.items()}
+                threading.Thread(target=_plan_job_variants, name=f"massing-plan-{key}", daemon=True,
+                                 args=(key, site_key, brief, metrics)).start()
+                return {**base, "status": "pending", "mode": mode}
             # Нити — копии: расчёт продолжает работать со своими корпусами.
             snapshot = [{k: copy.deepcopy(v) for k, v in c.items()
                          if k in ("id", "label", "phase", "object", "object_kind", "area_sqm",
@@ -307,7 +407,13 @@ def site_massing_plan_note(plan: dict[str, Any], grid: bool = False) -> dict[str
             note += f" Замысел: {str(plan['summary']).strip()}"
         origin = "plato"
     note = note.replace("..", ".")
-    out = {k: v for k, v in plan.items() if k in ("status", "key", "stale", "reason", "summary")}
+    if status == "ready" and plan.get("mode") == "variants":
+        name = LAYOUT_VARIANT_NAMES.get(str(plan.get("variant")), str(plan.get("variant")))
+        note = f"Вариант посадки «{name}» выбрал помощник Платон."
+        if plan.get("summary"):
+            note += f" {str(plan['summary']).strip()}"
+    out = {k: v for k, v in plan.items()
+           if k in ("status", "key", "stale", "reason", "summary", "mode")}
     out.update(status=status, origin=origin, note=note[:1].upper() + note[1:] if note else "")
     return out
 

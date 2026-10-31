@@ -14,7 +14,6 @@
 
 from __future__ import annotations
 
-import copy
 import itertools
 import json
 import math
@@ -148,9 +147,32 @@ def plato(monkeypatch, tmp_path):
 
 
 def _echo(brief):
-    """Честный ответ: расстановка движка из брифа."""
-    return {"placements": copy.deepcopy(brief["engine_layout"]),
-            "summary": "Очереди идут с запада на восток, дворы закрыты секциями."}
+    """Честный ответ: вариант, где встали все дома, и не тот, что выбрал бы
+    движок (если такой есть), — так видно, чей выбор на схеме."""
+    best = min(v["houses_not_placed"] for v in brief["variants"])
+    fit = [v["id"] for v in brief["variants"] if v["houses_not_placed"] == best]
+    other = [v for v in fit if v != brief["engine_choice"]]
+    return {"variant": (other or fit)[0],
+            "summary": "Очереди идут вдоль полосы, дворы закрыты домами."}
+
+
+def _l_site():
+    """Г-образный участок 9,2 га, жильё 28 000 м²/га, 17 этажей: у него
+    несколько вариантов, где встают все дома."""
+    lat = 55.70
+    k = math.cos(math.radians(lat))
+    y0 = math.log(math.tan((90 + lat) * math.pi / 360)) / (math.pi / 180) * 20037508.34 / 180
+    x0 = 37.60 * 20037508.34 / 180
+    ring = [(0, 0), (420, 0), (420, 140), (140, 140), (140, 380), (0, 380)]
+    site = abs(core._ring_area([list(p) for p in ring]))
+    gns = site / 10000 * 28000
+    m = {"site_sqm": site, "footprint_sqm": gns / 17, "setback_m": 3.0, "footprint_origin": "estimate",
+         "objects": [], "underground_levels": 1,
+         "underground_level_rows": [{"level": -1, "area_sqm": gns / 17}],
+         "underground_contour_sqm": site * 0.9, "underground_use_factor": 0.85}
+    x = {"_land_lookup": {"results": [{"found": True, "contour_merc": [
+        [[x0 + px / k, y0 + py / k] for px, py in ring]]}]}}
+    return x, m, [{"phase": 1, "above_gns_sqm": gns}]
 
 
 def _ask(x, m, phases):
@@ -159,53 +181,56 @@ def _ask(x, m, phases):
     return first, core.site_massing_scheme(x, m, phases)
 
 
-def test_a_checked_plan_from_plato_is_drawn_and_named(plato):
+def test_plato_chooses_one_of_the_engine_variants_and_it_is_drawn(plato):
+    """Решение владельца 31.10.2026: жильё сажает движок вариантами, Платон
+    выбирает вариант и объясняет выбор; корпуса сам он не ставит."""
     state, calls = plato
     state["answer"] = _echo
-    x, m, phases = _nagatino()
+    x, m, phases = _l_site()
     first, second = _ask(x, m, phases)
-    # Пока плана нет — расстановка движка и фраза «готовится»; расчёт не ждёт.
+    # Пока выбора нет — вариант движка и фраза «готовится»; расчёт не ждёт.
     assert first["layout"]["plan"]["status"] == "pending"
+    engine_pick = first["layout"]["plan"]["variant"]
     # Внутренняя кухня (готовится, не принят) посетителю не видна (владелец 25.10.2026).
     assert not any("Платон" in n or "движок" in n for n in first["layout"]["notes"])
+    brief = json.loads(calls[0]["input"][0]["content"])
+    assert {v["id"] for v in brief["variants"]} >= {"perimeter", "meridional", "mixed", "rows"}
+    assert brief["engine_choice"] == engine_pick
+    assert brief["site"]["parts"], brief["site"]
     plan = second["layout"]["plan"]
     assert plan["status"] == "ready" and plan["origin"] == "plato", plan
+    assert plan["variant"] != engine_pick and plan["variant"] == _echo(brief)["variant"]
     assert all(b["placement_origin"] == "plato" for b in second["layout"]["buildings"])
-    assert any("предложил помощник Платон" in n for n in second["layout"]["notes"])
-    assert "Замысел:" in plan["note"]
-    assert second["axonometry"]["footer"].startswith("Расстановку корпусов предложил помощник Платон")
-    # Один запрос на одни входы: повторный расчёт читает план с диска.
+    assert any("выбрал помощник Платон" in n for n in second["layout"]["notes"])
+    assert "дворы закрыты домами" in plan["note"]
+    assert second["axonometry"]["footer"].startswith("Вариант посадки выбрал помощник Платон")
+    assert core.massing_check(second["layout"]["buildings"], second["layout"]["underground_rings"]) is None
+    # Один запрос на одни входы: повторный расчёт читает выбор с диска.
     core.site_massing_scheme(x, m, phases)
     assert len(calls) == 1
     assert core.site_massing_plan_status(plan["key"])["status"] == "ready"
 
 
-def _outside(brief):
-    answer = _echo(brief)
-    answer["placements"][0]["offset_m"] += 5000.0
-    return answer
+def _missing(brief):
+    return {"variant": "towers", "summary": "Башни."}
 
 
-def _overlap(brief):
-    answer = _echo(brief)
-    first = answer["placements"][0]
-    # Второй корпус — на место первого, со своими размерами.
-    answer["placements"][1].update({k: first[k] for k in ("front", "offset_m", "inset_m")})
-    return answer
+def _fewer_houses(brief):
+    worst = max(brief["variants"], key=lambda v: v["houses_not_placed"])
+    assert worst["houses_not_placed"] > 0
+    return {"variant": worst["id"], "summary": "Ряды."}
 
 
-def _wrong_area(brief):
-    answer = _echo(brief)
-    answer["placements"][0]["length_m"] *= 1.5
-    return answer
+def _not_a_name(brief):
+    return {"variant": 5, "summary": ""}
 
 
 @pytest.mark.parametrize("fake, words", [
-    (_outside, "выходит за границу участка"),
-    (_overlap, "наезжают друг на друга"),
-    (_wrong_area, "Пятно корпуса"),
+    (_missing, "которого нет"),
+    (_fewer_houses, "встаёт меньше домов"),
+    (_not_a_name, "которого нет"),
 ])
-def test_a_forged_plan_is_rejected_with_its_reason(plato, fake, words):
+def test_a_forged_choice_is_rejected_with_its_reason(plato, fake, words):
     state, calls = plato
     state["answer"] = fake
     x, m, phases = _nagatino()
@@ -259,7 +284,7 @@ def test_the_pdf_draws_the_same_strip_scheme():
     scheme = core.site_massing_scheme(x, m, phases)
     parts = core._site_massing_scheme_pdf(scheme, lambda text, style=None: text, None,
                                           lambda items: items, 1.0)
-    [items] = parts
+    items = parts[0]
     drawing = items[1]
     polygons = [c for c in drawing.contents if type(c).__name__ == "Polygon"]
     assert len(polygons) == len(scheme["axonometry"]["shapes"])
@@ -268,6 +293,13 @@ def test_the_pdf_draws_the_same_strip_scheme():
     assert scheme["axonometry"]["footer"] in items
     lines = [g["line"] for g in scheme["axonometry"]["legend"]]
     assert all(line in items for line in lines)
+    # Разбор участка и вид сверху — тот же ответ движка, что на странице.
+    analysis = parts[1]
+    assert analysis[0] == "Разбор участка и посадки"
+    assert all(line in analysis for line in scheme["layout"]["analysis"])
+    plan = analysis[1]
+    houses = [c for c in plan.contents if type(c).__name__ == "Polygon"]
+    assert len(houses) >= len(scheme["layout"]["plan_view"]["buildings"])
 
 
 # --- Страница: снимок на ширине телефона и планшета --------------------------

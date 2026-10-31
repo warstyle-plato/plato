@@ -301,8 +301,10 @@ _engine_part("site_massing")
 _engine_part("site_massing_layout")
 # Кварталы и фронты участка, расстановка корпусов и её проверка —
 # engine/site_massing_blocks.py; план расстановки от Платона (фоновый запрос,
-# хранение по отпечатку) — engine/site_massing_plan.py.
+# хранение по отпечатку) — engine/site_massing_plan.py. Посадка жилья домами из
+# секций, разбор участка и варианты застройки — engine/site_massing_variants.py.
 _engine_part("site_massing_blocks")
+_engine_part("site_massing_variants")
 _engine_part("site_massing_plan")
 
 

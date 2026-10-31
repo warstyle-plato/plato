@@ -699,9 +699,11 @@ def _krt_area_mismatch_note(contour_sqm: float, site_sqm: float) -> str:
 
 
 def _layout_site(x: dict[str, Any], massing: dict[str, Any]
-                 ) -> tuple[list[list[list[float]]], dict[str, float], str, list[str], str] | None:
+                 ) -> tuple[list[list[list[float]]], dict[str, float], str, list[str], str,
+                            list[float] | None] | None:
     """Участок схемы в метрах → (кольца, рамка, происхождение формы, пояснения,
-    причина, по которой корпусов нет на карте участка);
+    причина, по которой корпусов нет на карте участка, направление на север в
+    координатах схемы или None, если стороны света неизвестны);
     участка нет — None. Схема повёрнута так, что самая длинная сторона участка
     идёт вдоль оси x; полоса — слева направо с лёгким подъёмом."""
     site_sqm = float(massing.get("site_sqm") or 0.0)
@@ -774,6 +776,7 @@ def _layout_site(x: dict[str, Any], massing: dict[str, Any]
         # или чужой участок): рисовать по нему значит рисовать не то.
         map_note = _site_map_note(parts, site_sqm, contour_sqm)
         rings, frame = [], {}
+    north: list[float] | None = None
     if rings:
         shape_origin = "contour"
         axis = massing_strip_axis(rings)
@@ -784,6 +787,10 @@ def _layout_site(x: dict[str, Any], massing: dict[str, Any]
         else:
             frame["angle"] = _main_direction(rings)
         rings = _rotate(rings, -frame["angle"])
+        # Север (ось y карты) после поворота схемы. У формы с картинки, не
+        # вставшей на карту, стороны света неизвестны.
+        if not no_map:
+            north = [_math.sin(frame["angle"]), _math.cos(frame["angle"])]
         if no_map:
             # Метры формы не на карте: перевода в меркатор у корпусов нет.
             frame = {}
@@ -806,7 +813,7 @@ def _layout_site(x: dict[str, Any], massing: dict[str, Any]
         notes.append(map_note)
     elif shape_origin == "contour" and parts.get("overlap"):
         notes.append(_site_overlap_note(parts))
-    return rings, frame, shape_origin, notes, map_note
+    return rings, frame, shape_origin, notes, map_note, north
 
 
 def site_massing_layout(x: dict[str, Any], massing: dict[str, Any],
@@ -824,7 +831,7 @@ def site_massing_layout(x: dict[str, Any], massing: dict[str, Any],
     site = _layout_site(x, massing)
     if not site:
         return {"buildings": [], "site_rings": [], "notes": [], "storeys_limit": limit}
-    rings, frame, shape_origin, notes, map_note = site
+    rings, frame, shape_origin, notes, map_note, north = site
     approximate_note = krt_photo_outline_note(x)
     if approximate_note:
         notes.insert(0, approximate_note)
@@ -835,7 +842,7 @@ def site_massing_layout(x: dict[str, Any], massing: dict[str, Any],
     plan: dict[str, Any] = {}
     if corpora and len(corpora) <= LAYOUT_MAX_DRAWN_CORPORA:
         plan = _place_corpora(x, corpora, rings, inner, setback, shape_origin,
-                              massing.get("shape_plan"))
+                              massing.get("shape_plan"), north)
     for c in corpora:
         ring = c.get("ring_m")
         if not ring:
@@ -845,6 +852,25 @@ def site_massing_layout(x: dict[str, Any], massing: dict[str, Any],
         c["rect_origin"] = "schema"
         if frame:
             c["ring_merc"] = _ring_to_merc(ring, frame)
+    # Разбор участка и посадки жилья (`engine/site_massing_variants.py`): секции
+    # домов, пожарные проезды, разрывы, вид сверху и фразы для посетителя.
+    variants = plan.pop("_variants", None) if plan else None
+    blocks = plan.pop("_blocks", None) if plan else None
+    analysis_lines: list[str] = []
+    plan_view: dict[str, Any] = {}
+    if variants and blocks is not None:
+        for c in corpora:
+            c["sections"] = massing_sections(c)
+            c.pop("spines", None)
+        lanes = massing_fire_lanes(corpora, rings)
+        gaps = massing_min_gaps(corpora)
+        analysis_lines = massing_analysis_lines(
+            plan.pop("_analysis", {}), variants, plan.get("variant") or "rows", corpora, lanes,
+            gaps, north, plan.get("chooser") or "engine")
+        plan_view = massing_plan_view({"site_rings": rings, "underground_rings": inner,
+                                       "buildings": corpora}, blocks, lanes, north)
+    for c in corpora:
+        c.pop("spines", None)
     unplaced = _unplaced_note(corpora, len(phases)) if plan else ""
     if unplaced:
         notes.append(unplaced)
@@ -909,13 +935,19 @@ def site_massing_layout(x: dict[str, Any], massing: dict[str, Any],
         "buildings": corpora,
         "notes": notes,
         "plan": plan,
+        # Север в координатах схемы (None — стороны света неизвестны), разбор
+        # участка и посадки фразами и вид сверху — для страницы и PDF.
+        "north": north,
+        "analysis": analysis_lines,
+        "plan_view": plan_view,
     }
 
 
 def _place_corpora(x: dict[str, Any], corpora: list[dict[str, Any]],
                    rings: list[list[list[float]]], inner: list[list[list[float]]],
                    setback: float, shape_origin: str,
-                   shape_plan: dict[str, Any] | None = None) -> dict[str, Any]:
+                   shape_plan: dict[str, Any] | None = None,
+                   north: list[float] | None = None) -> dict[str, Any]:
     """Корпуса на участке в настоящем размере → состояние плана.
 
     Порядок: план Платона, если он есть, свежий и прошёл проверку движка
@@ -935,6 +967,8 @@ def _place_corpora(x: dict[str, Any], corpora: list[dict[str, Any]],
     # Расстановка движка нужна всегда: она запасная и она же — образец,
     # который получает Платон.
     engine_ok = _engine_layout_cached(corpora, site, blocks, axis)
+    if any(c["phase"] > 0 for c in corpora) and not any(c.get("free_shape") for c in corpora):
+        return _place_housing(x, corpora, site, setback, shape_origin, blocks, axis, north)
     plan = dict(shape_plan) if shape_plan else \
         site_massing_plan_lookup(x, corpora, site, setback, blocks, shape_origin)
     if plan.get("status") == "ready":
@@ -959,6 +993,51 @@ def _place_corpora(x: dict[str, Any], corpora: list[dict[str, Any]],
     for c in corpora:
         c["placement_origin"] = "engine"
     return site_massing_plan_note(plan, grid)
+
+
+def _place_housing(x: dict[str, Any], corpora: list[dict[str, Any]],
+                   site: list[list[list[float]]], setback: float, shape_origin: str,
+                   blocks: list[dict[str, Any]], axis: dict[str, float] | None,
+                   north: list[float] | None) -> dict[str, Any]:
+    """Жилой проект: варианты посадки домами из секций (`massing_variants`),
+    выбор движка или Платона (решение владельца 31.10.2026: «Платон выбирает
+    из вариантов»). Не встало ни одним вариантом — сетка, как прежде."""
+    # Части участка для вариантов: крылья по внутренним углам контура; прежние
+    # кварталы остаются у варианта «рядами вдоль участка».
+    parts = massing_parts(site, axis)
+    # Прежняя расстановка уже сделана (`_engine_layout_cached`) — она и есть
+    # вариант «рядами вдоль участка».
+    variants = massing_variants_cached(corpora, site, blocks, axis, north, parts,
+                                       [copy.deepcopy(c) for c in corpora])
+    analysis = massing_site_analysis(parts, north)
+    chosen = massing_variant_pick(variants)
+    chooser = "engine"
+    plan = site_massing_plan_lookup(x, corpora, site, setback, blocks, shape_origin,
+                                    variants=variants, analysis=analysis)
+    if plan.get("status") == "ready":
+        reason = massing_variant_check(variants, plan.get("variant"))
+        if reason is None:
+            chosen, chooser = str(plan["variant"]), "plato"
+        else:
+            plan = {**plan, "status": "rejected", "reason": reason}
+    massing_apply_variant(corpora, variants[chosen])
+    grid = False
+    if variants[chosen]["metrics"]["unplaced"] > 0:
+        trial = [dict(c) for c in corpora]
+        if _grid_place(trial, site):
+            grid = True
+            for c, t in zip(corpora, trial):
+                for key in ("ring_m", "block", "front", "shape", "place", "spines"):
+                    c.pop(key, None)
+                r = t["rect_m"]
+                c["ring_m"] = [[r[0], r[1]], [r[2], r[1]], [r[2], r[3]], [r[0], r[3]]]
+    for c in corpora:
+        c["placement_origin"] = "plato" if chooser == "plato" else "engine"
+    out = site_massing_plan_note(plan, grid)
+    out.update(variant=chosen, chooser=chooser,
+               variants={k: v["metrics"] for k, v in variants.items()},
+               _variants=variants, _blocks=parts, _analysis=analysis)
+    return out
 
 
 def _unplaced_note(corpora: list[dict[str, Any]], phases_count: int) -> str:
@@ -1238,7 +1317,9 @@ def site_massing_axonometry(layout: dict[str, Any]) -> dict[str, Any]:
                   else "")
                + "Корпуса окрашены по очередям, номер на крыше — номер строки в списке под схемой.")
     plan = layout.get("plan") or {}
-    who = ("Расстановку корпусов предложил помощник Платон" if plan.get("origin") == "plato"
+    who = ("Вариант посадки выбрал помощник Платон, корпуса расставлены"
+           if plan.get("origin") == "plato" and plan.get("mode") == "variants" else
+           "Расстановку корпусов предложил помощник Платон" if plan.get("origin") == "plato"
            else "Корпуса расставлены")
     footer = (f"{who} для наглядности: это не генплан, а схема того, как корпуса могут встать "
               f"на участке. Высота на схеме — по {_fmt_ru(LAYOUT_STOREY_HEIGHT_M)} м на этаж.")

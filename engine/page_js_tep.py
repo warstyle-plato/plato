@@ -1562,10 +1562,49 @@ function renderSiteMassingScheme(m){
  const mapNote=String(layout.map_note||'');
  const notes=(layout.notes||[]).filter(t=>t!==mapNote).map(t=>'<p class="site-massing-hint">'+escapeHtml(t)+'</p>').join('');
  box.innerHTML='<p class="site-massing-hint">'+escapeHtml(ax.caption||'')+'</p>'+siteMassingSchemeSvg(ax)+'<ul class="site-massing-legend">'+legend+'</ul>'+notes+
+  siteMassingPlanViewHtml(layout)+
   '<p class="site-massing-hint">'+escapeHtml(ax.footer||'')+'</p>'+
   (siteMassingMapShapes().length?'<button type="button" class="btn" id="siteMassingMapButton" onclick="siteMassingOpenMap()">Показать корпуса на карте участка</button>':
    mapNote?'<p class="site-massing-hint" id="siteMassingMapNote">'+escapeHtml(mapNote)+'</p>':'');
  siteMassingPlanWatch(layout.plan||{});
+}
+// Вид сверху и разбор участка (владелец 31.10.2026: «посадка на сложных
+// контурах реализована плохо, аналитики нет»). Всё готово в ответе движка
+// (`layout.plan_view`, `layout.analysis`, `engine/site_massing_variants.py`):
+// страница только рисует — север вверху, части участка, дома с секциями,
+// места пожарных проездов.
+function siteMassingPlanViewSvg(pv){
+ const all=[].concat(...(pv.site||[]));
+ if(!all.length)return '';
+ const xs=all.map(p=>p[0]),ys=all.map(p=>p[1]);
+ const pad=Math.max(8,(Math.max(...xs)-Math.min(...xs))*0.04);
+ const x0=Math.min(...xs)-pad,y1=Math.max(...ys)+pad,w=Math.max(...xs)+pad-x0,h=y1-(Math.min(...ys)-pad);
+ const pts=r=>r.map(p=>(p[0]-x0).toFixed(1)+','+(y1-p[1]).toFixed(1)).join(' ');
+ const unit=Math.max(w,h)/400;
+ let g='';
+ (pv.site||[]).forEach(r=>{g+='<polygon class="pv-site" points="'+pts(r)+'" fill="#eeeeee" stroke="#555" stroke-width="'+unit+'"/>'});
+ (pv.blocks||[]).forEach(b=>{g+='<polygon class="pv-block" data-part="'+escapeHtml(b.id)+'" points="'+pts(b.ring)+'" fill="#dcebd6" stroke="#8fb487" stroke-width="'+unit*0.8+'" stroke-dasharray="'+unit*4+' '+unit*3+'"/>'});
+ (pv.lanes||[]).forEach(r=>{g+='<polygon class="pv-lane" points="'+pts(r)+'" fill="#f3c47c" fill-opacity="0.7" stroke="#d28a1e" stroke-width="'+unit*0.5+'"/>'});
+ (pv.buildings||[]).forEach(b=>{
+  g+='<polygon class="pv-house" data-building="'+escapeHtml(b.id)+'" points="'+pts(b.ring)+'" fill="'+(b.color||'#2f6fb3')+'" stroke="#222" stroke-width="'+unit*0.7+'"/>';
+  (b.sections||[]).forEach(l=>{g+='<polyline class="pv-section" points="'+pts(l)+'" stroke="#fff" stroke-width="'+unit*0.9+'"/>'});
+ });
+ // Стрелка на север (если стороны света известны) и масштаб 50 м.
+ const ax=w-unit*14,ay=unit*30;
+ if(pv.north_up)g+='<g class="pv-north"><polygon points="'+ax+','+(ay-unit*20)+' '+(ax-unit*6)+','+ay+' '+(ax+unit*6)+','+ay+'" fill="#222"/><text x="'+ax+'" y="'+(ay+unit*12)+'" font-size="'+unit*11+'" text-anchor="middle">С</text></g>';
+ const sb=50,sx=unit*10,sy=h-unit*10;
+ g+='<g class="pv-scale"><line x1="'+sx+'" y1="'+sy+'" x2="'+(sx+sb)+'" y2="'+sy+'" stroke="#222" stroke-width="'+unit*1.5+'"/><text x="'+(sx+sb/2)+'" y="'+(sy-unit*4)+'" font-size="'+unit*10+'" text-anchor="middle">50 м</text></g>';
+ return '<svg class="site-massing-plan" viewBox="0 0 '+w.toFixed(1)+' '+h.toFixed(1)+'" role="img" aria-label="Вид сверху: дома на участке">'+g+'</svg>';
+}
+function siteMassingPlanViewHtml(layout){
+ const pv=layout.plan_view||{};
+ const lines=layout.analysis||[];
+ if(!(pv.buildings||[]).length&&!lines.length)return '';
+ const svg=(pv.buildings||[]).length?siteMassingPlanViewSvg(pv):'';
+ const legend=svg?'<p class="site-massing-hint">'+(pv.north_up?'Вид сверху, север вверху. ':'Вид сверху; стороны света неизвестны. ')+
+  'Зелёное — части участка, внутри них дворы без машин; дома разделены на секции белыми линиями; оранжевые полосы — места для пожарного проезда.</p>':'';
+ return '<div class="site-massing-analysis" id="siteMassingAnalysis"><h4>Разбор участка и посадки</h4>'+svg+legend+
+  '<ul>'+lines.map(t=>'<li>'+escapeHtml(t)+'</li>').join('')+'</ul></div>';
 }
 // План расстановки от Платона готовится фоном (`engine/site_massing_plan.py`):
 // страница спрашивает его состояние и, когда план готов (или отклонён),

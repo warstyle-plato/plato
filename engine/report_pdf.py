@@ -1056,7 +1056,45 @@ def _site_massing_scheme_pdf(scheme: dict[str, Any] | None, P: Any, small: Any,
     parts += [P(str(item.get("line") or ""), small) for item in ax.get("legend") or []]
     parts += [P(str(note), small) for note in layout.get("notes") or []]
     parts.append(P(str(ax.get("footer") or ""), small))
-    return [KeepTogether(parts)]
+    out = [KeepTogether(parts)]
+    # Разбор участка и вид сверху — тот же ответ движка, что на странице
+    # (`layout.plan_view`, `layout.analysis`).
+    pv = layout.get("plan_view") or {}
+    lines = layout.get("analysis") or []
+    if lines:
+        block = [P("Разбор участка и посадки", small)]
+        site_pts = [p for ring in pv.get("site") or [] for p in ring]
+        if site_pts and pv.get("buildings"):
+            x0 = min(p[0] for p in site_pts) - 8
+            y0 = min(p[1] for p in site_pts) - 8
+            w = max(p[0] for p in site_pts) + 8 - x0
+            h = max(p[1] for p in site_pts) + 8 - y0
+            k = min(110 * mm / w, 80 * mm / h)
+            plan = Drawing(w * k, h * k)
+
+            def pts(ring: list[list[float]]) -> list[float]:
+                return [c for p in ring for c in ((p[0] - x0) * k, (p[1] - y0) * k)]
+
+            for ring in pv.get("site") or []:
+                plan.add(Polygon(pts(ring), fillColor=colors.HexColor("#eeeeee"),
+                                 strokeColor=colors.HexColor("#555555"), strokeWidth=0.5))
+            for b in pv.get("blocks") or []:
+                plan.add(Polygon(pts(b["ring"]), fillColor=colors.HexColor("#dcebd6"),
+                                 strokeColor=colors.HexColor("#8fb487"), strokeWidth=0.4))
+            for ring in pv.get("lanes") or []:
+                plan.add(Polygon(pts(ring), fillColor=colors.HexColor("#f3c47c"),
+                                 strokeColor=colors.HexColor("#d28a1e"), strokeWidth=0.3))
+            for b in pv.get("buildings") or []:
+                plan.add(Polygon(pts(b["ring"]), fillColor=colors.HexColor(b.get("color") or "#2f6fb3"),
+                                 strokeColor=colors.HexColor("#222222"), strokeWidth=0.4))
+            block.append(plan)
+            block.append(P(("Вид сверху, север вверху. " if pv.get("north_up") else
+                            "Вид сверху; стороны света неизвестны. ")
+                           + "Зелёное — части участка, внутри них дворы без машин; оранжевые "
+                           "полосы — места для пожарного проезда.", small))
+        block += [P(str(line), small) for line in lines]
+        out.append(KeepTogether(block))
+    return out
 
 
 def _object_pdf_blocks(story: list[Any], section: dict[str, Any], inputs: dict[str, Any],
