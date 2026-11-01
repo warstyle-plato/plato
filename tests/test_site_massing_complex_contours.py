@@ -223,6 +223,27 @@ def test_the_analysis_names_assumptions_not_norms():
         assert words in text, words
 
 
+def test_the_brief_is_the_chosen_variant_the_houses_and_the_empty_piece():
+    """Владелец 01.11.2026: «стоит там часть текста свернуть». Итог — те же
+    фразы разбора, только выбор варианта, дома и пустой кусок; разбор частей,
+    разрывы, проезды и допущения в итог не входят."""
+    layout = _scheme(L_SHAPE)["layout"]
+    brief, lines = layout["analysis_brief"], layout["analysis"]
+    assert 3 <= len(brief) <= 5, brief
+    # Границы проверки — последней фразой итога (`docs/site_norms_check.md`, п. 3).
+    assert brief[-1] == core.MASSING_BRIEF_LIMITS, brief
+    for words in ("допущениях", "не по нормам", "Красные линии", "инсоляции", "не проверяли"):
+        assert words in brief[-1], words
+    assert all(t in lines for t in brief[:-1]), brief
+    assert brief[0].startswith("Выбрана застройка"), brief
+    assert any(t.startswith("Жилых домов на схеме") for t in brief), brief
+    assert any(t.startswith(("Дома разнесены по всему участку", "Кусок участка")) for t in brief), brief
+    for words in ("Участок без отступов", "Разрывы между домами", "Пожарный проезд",
+                  "Проезды — наше допущение", "Не проверяли", "По солнцу"):
+        assert not any(t.startswith(words) for t in brief), words
+        assert any(t.startswith(words) for t in lines), words
+
+
 # --- Баланс земли и «ниже и плотнее» (владелец 31.10.2026: «почему столько
 # пустого пространства остаётся») ------------------------------------------------
 
@@ -319,6 +340,11 @@ SETUP = """async ([ring, ha])=>{
  const data={query:'77:01:0000000:1',results:[{found:true,kind:'land',cadastral_number:'77:01:0000000:1',contour_merc:[ring]}]};
  inputs._land_lookup=cloneValue(data); landLookup=cloneValue(data);
  await settledCalculate();
+ // Номер участка запускает разбор кадастра (`resolveSitePosition`), и по его
+ // ответу страница считает ещё раз. Ждём этот расчёт здесь, а не в следующем
+ // шаге стенда: иначе он приходится на чужое ожидание.
+ while(sitePositionRun.state==='running')await new Promise(r=>setTimeout(r,50));
+ await settledCalculate();
 }"""
 
 READ = """()=>{
@@ -331,7 +357,17 @@ READ = """()=>{
    return [(r.left+r.right)/2-site.left,(r.top+r.bottom)/2-site.top]});
  const m=(lastResult.tep||{}).site_massing||{};
  const layout=((m.scheme||{}).layout)||{};
- return {houses, site:[site.width,site.height], north:!!svg.querySelector('.pv-north'),
+ const shown=n=>n.checkVisibility();
+ const det=document.getElementById('siteMassingDetails');
+ const fold={brief:Array.from(box.querySelectorAll('#siteMassingBrief li')).filter(shown).map(n=>n.innerText),
+   shownItems:Array.from(box.querySelectorAll('li')).filter(shown).map(n=>n.innerText),
+   open:det?det.open:null, summary:det?det.querySelector('summary').innerText:'',
+   landShown:!!document.querySelector('#siteMassingLand')&&shown(document.querySelector('#siteMassingLand'))};
+ if(det){det.querySelector('summary').click();
+   fold.afterClick=Array.from(det.querySelectorAll('li')).filter(shown).map(n=>n.innerText);
+   fold.landAfter=shown(document.querySelector('#siteMassingLand'));
+   renderTep(); fold.keptOpen=document.getElementById('siteMassingDetails').open;}
+ return {fold, houses, site:[site.width,site.height], north:!!svg.querySelector('.pv-north'),
          sections:svg.querySelectorAll('.pv-section').length, lanes:svg.querySelectorAll('.pv-lane').length,
          items:Array.from(box.querySelectorAll('li')).map(n=>n.innerText), text:box.innerText,
          placed:(layout.buildings||[]).filter(b=>b.ring_m).length,
@@ -368,6 +404,13 @@ def seen():
             pw.chromium.launch(executable_path=str(path)) as engine:
         for width in (390, 1280):
             page = engine.new_page(viewport={"width": width, "height": 900})
+            # Разбор кадастра сервер берёт у калькулятора ГлавАПУ своим
+            # браузером, а его сеть запрет `conftest` не обрывает: на раннере
+            # запрос висел дольше минуты, и расчёт по его ответу не успевал.
+            # Положение участка здесь не проверяется — источник недоступен.
+            page.route("**/cadastral/analyze", lambda route: route.fulfill(
+                status=503, content_type="application/json",
+                body='{"detail": "в стенде калькулятор ГлавАПУ не спрашиваем"}'))
             page.goto(base, wait_until="domcontentloaded")
             browser.wait_for_result(page)
             page.evaluate(SETUP, [_merc(L_SHAPE[0]), ha])
@@ -396,6 +439,28 @@ def test_the_page_shows_the_plan_from_above_with_both_wings_built(seen, width):
     assert any(i.startswith("Выбрана застройка") for i in got["items"]), got["items"]
     assert "движок" not in text
     assert got["page"] <= got["view"] and got["svgWidth"] <= width, got
+
+
+@pytest.mark.parametrize("width", [390, 1280])
+def test_the_page_folds_the_details_and_shows_the_brief(seen, width):
+    """Сразу видны вид сверху и короткий итог; разбор частей участка, баланс
+    земли, разрывы и проезды — под закрытым «Подробнее о разборе участка»."""
+    fold = seen[width]["fold"]
+    assert fold["open"] is False, fold
+    assert fold["summary"] == "Подробнее о разборе участка", fold
+    assert fold["brief"] and fold["brief"][0].startswith("Выбрана застройка"), fold
+    analysis = [i for i in seen[width]["items"] if i not in seen[width]["landLegend"]]
+    shown = [i for i in fold["shownItems"] if i not in seen[width]["landLegend"]]
+    assert shown == fold["brief"] and len(shown) <= 5, shown
+    # Оговорка о границах проверки видна без раскрытия.
+    assert shown[-1].startswith("Это схема на наших допущениях") and "не проверяли" in shown[-1], shown
+    for words in ("Участок без отступов", "Разрывы между домами", "Пожарный проезд", "Не проверяли"):
+        assert not any(i.startswith(words) for i in shown), words
+    assert not fold["landShown"], "баланс земли виден до раскрытия"
+    # По щелчку раскрывается весь остальной разбор, и пересчёт его не сворачивает.
+    assert set(fold["brief"][:-1]) | set(fold["afterClick"]) == set(analysis) - {fold["brief"][-1]}, fold
+    assert any(i.startswith("Участок без отступов") for i in fold["afterClick"]), fold
+    assert fold["landAfter"] and fold["keptOpen"], fold
 
 
 def test_the_page_names_the_land_and_the_footprint_follows_the_assumptions(seen):

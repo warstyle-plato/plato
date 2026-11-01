@@ -857,6 +857,7 @@ def site_massing_layout(x: dict[str, Any], massing: dict[str, Any],
     variants = plan.pop("_variants", None) if plan else None
     blocks = plan.pop("_blocks", None) if plan else None
     analysis_lines: list[str] = []
+    analysis_brief: list[str] = []
     plan_view: dict[str, Any] = {}
     land_balance: dict[str, Any] = {}
     denser: dict[str, Any] | None = None
@@ -866,9 +867,10 @@ def site_massing_layout(x: dict[str, Any], massing: dict[str, Any],
             c.pop("spines", None)
         lanes = massing_fire_lanes(corpora, rings)
         gaps = massing_min_gaps(corpora)
-        analysis_lines = massing_analysis_lines(
+        analysis = massing_analysis_lines(
             plan.pop("_analysis", {}), variants, plan.get("variant") or "rows", corpora, lanes,
             gaps, north, plan.get("chooser") or "engine")
+        analysis_lines, analysis_brief = analysis["lines"], analysis["brief"]
         # Чем занята земля и, если свободной много, — вариант ниже и плотнее
         # (владелец 31.10.2026: «почему столько пустого пространства»), и карта
         # земли на виде сверху: двор, проезды, стоянки, отступы, свободно.
@@ -967,6 +969,8 @@ def site_massing_layout(x: dict[str, Any], massing: dict[str, Any],
         # участка и посадки фразами и вид сверху — для страницы и PDF.
         "north": north,
         "analysis": analysis_lines,
+        # Короткий итог разбора (из тех же фраз) — страница показывает его сразу.
+        "analysis_brief": analysis_brief,
         "plan_view": plan_view,
         # Баланс земли участка и предложение «ниже и плотнее» (None — не нужно).
         "land_balance": land_balance,

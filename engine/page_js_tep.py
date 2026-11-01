@@ -1601,16 +1601,29 @@ function siteMassingPlanViewSvg(pv){
  g+='<g class="pv-scale"><line x1="'+sx+'" y1="'+sy+'" x2="'+(sx+sb)+'" y2="'+sy+'" stroke="#222" stroke-width="'+unit*1.5+'"/><text x="'+(sx+sb/2)+'" y="'+(sy-unit*4)+'" font-size="'+unit*10+'" text-anchor="middle">50 м</text></g>';
  return '<svg class="site-massing-plan" viewBox="0 0 '+w.toFixed(1)+' '+h.toFixed(1)+'" role="img" aria-label="Вид сверху: дома на участке">'+g+'</svg>';
 }
+// Сразу видны вид сверху и короткий итог (`layout.analysis_brief`: какой
+// вариант выбран и почему, сколько домов, есть ли пустой кусок); разбор
+// частей участка, баланс земли, разрывы, проезды и допущения — под закрытым
+// «Подробнее о разборе участка» (владелец 01.11.2026: «стоит там часть текста
+// свернуть»). Что входит в итог, решает движок; страница только делит.
 function siteMassingPlanViewHtml(layout){
  const pv=layout.plan_view||{};
  const lines=layout.analysis||[];
  if(!(pv.buildings||[]).length&&!lines.length)return '';
  const svg=(pv.buildings||[]).length?siteMassingPlanViewSvg(pv):'';
- const legend=svg?siteMassingLandLegendHtml(pv)+'<p class="site-massing-hint">'+(pv.north_up?'Вид сверху, север вверху. ':'Вид сверху; стороны света неизвестны. ')+
-  'Дома разделены на секции белыми линиями; оранжевый пунктир — места для пожарного проезда; зелёный пунктир — границы частей участка. Площади — из баланса территории расчёта, место каждой — наша схема, а не генплан.</p>':'';
+ // Итог — фразы разбора и оговорка о границах проверки (её нет в полном разборе).
+ const brief=layout.analysis_brief||[];
+ const rest=lines.filter(t=>!brief.includes(t));
+ const legend=svg?siteMassingLandLegendHtml(pv)+'<p class="site-massing-hint">'+(pv.north_up?'Вид сверху, север вверху.':'Вид сверху; стороны света неизвестны.')+'</p>':'';
+ const key=svg?'<p class="site-massing-hint">Дома разделены на секции белыми линиями, оранжевый пунктир показывает места для пожарного проезда, зелёный пунктир — границы частей участка. Площади взяты из баланса территории расчёта, а место каждой площади на рисунке — наша схема, а не генплан.</p>':'';
+ const list=t=>t.length?'<ul>'+t.map(x=>'<li>'+escapeHtml(x)+'</li>').join('')+'</ul>':'';
+ // Открытое посетителем «Подробнее» остаётся открытым при пересчёте.
+ const was=document.getElementById('siteMassingDetails');
+ const details=key+siteMassingLandBalanceHtml(layout.land_balance||{})+list(rest);
  return '<div class="site-massing-analysis" id="siteMassingAnalysis"><h4>Разбор участка и посадки</h4>'+svg+legend+
-  siteMassingLandBalanceHtml(layout.land_balance||{})+
-  '<ul>'+lines.map(t=>'<li>'+escapeHtml(t)+'</li>').join('')+'</ul>'+siteMassingDenserHtml(layout.denser)+'</div>';
+  '<div class="site-massing-brief" id="siteMassingBrief">'+list(brief)+'</div>'+
+  (details?'<details class="site-massing-details" id="siteMassingDetails"'+(was&&was.open?' open':'')+'><summary>Подробнее о разборе участка</summary>'+details+'</details>':'')+
+  siteMassingDenserHtml(layout.denser)+'</div>';
 }
 // Подписи слоёв карты земли: цвет и площадь — из ответа движка.
 function siteMassingLandLegendHtml(pv){
