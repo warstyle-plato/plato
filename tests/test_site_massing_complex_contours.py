@@ -223,6 +223,23 @@ def test_the_analysis_names_assumptions_not_norms():
         assert words in text, words
 
 
+def test_the_brief_is_the_chosen_variant_the_houses_and_the_empty_piece():
+    """Владелец 01.11.2026: «стоит там часть текста свернуть». Итог — те же
+    фразы разбора, только выбор варианта, дома и пустой кусок; разбор частей,
+    разрывы, проезды и допущения в итог не входят."""
+    layout = _scheme(L_SHAPE)["layout"]
+    brief, lines = layout["analysis_brief"], layout["analysis"]
+    assert 2 <= len(brief) <= 4, brief
+    assert all(t in lines for t in brief), brief
+    assert brief[0].startswith("Выбрана застройка"), brief
+    assert any(t.startswith("Жилых домов на схеме") for t in brief), brief
+    assert any(t.startswith(("Дома разнесены по всему участку", "Кусок участка")) for t in brief), brief
+    for words in ("Участок без отступов", "Разрывы между домами", "Пожарный проезд",
+                  "Проезды — наше допущение", "Не проверяли", "По солнцу"):
+        assert not any(t.startswith(words) for t in brief), words
+        assert any(t.startswith(words) for t in lines), words
+
+
 # --- Баланс земли и «ниже и плотнее» (владелец 31.10.2026: «почему столько
 # пустого пространства остаётся») ------------------------------------------------
 
@@ -331,7 +348,17 @@ READ = """()=>{
    return [(r.left+r.right)/2-site.left,(r.top+r.bottom)/2-site.top]});
  const m=(lastResult.tep||{}).site_massing||{};
  const layout=((m.scheme||{}).layout)||{};
- return {houses, site:[site.width,site.height], north:!!svg.querySelector('.pv-north'),
+ const shown=n=>n.checkVisibility();
+ const det=document.getElementById('siteMassingDetails');
+ const fold={brief:Array.from(box.querySelectorAll('#siteMassingBrief li')).filter(shown).map(n=>n.innerText),
+   shownItems:Array.from(box.querySelectorAll('li')).filter(shown).map(n=>n.innerText),
+   open:det?det.open:null, summary:det?det.querySelector('summary').innerText:'',
+   landShown:!!document.querySelector('#siteMassingLand')&&shown(document.querySelector('#siteMassingLand'))};
+ if(det){det.querySelector('summary').click();
+   fold.afterClick=Array.from(det.querySelectorAll('li')).filter(shown).map(n=>n.innerText);
+   fold.landAfter=shown(document.querySelector('#siteMassingLand'));
+   renderTep(); fold.keptOpen=document.getElementById('siteMassingDetails').open;}
+ return {fold, houses, site:[site.width,site.height], north:!!svg.querySelector('.pv-north'),
          sections:svg.querySelectorAll('.pv-section').length, lanes:svg.querySelectorAll('.pv-lane').length,
          items:Array.from(box.querySelectorAll('li')).map(n=>n.innerText), text:box.innerText,
          placed:(layout.buildings||[]).filter(b=>b.ring_m).length,
@@ -396,6 +423,26 @@ def test_the_page_shows_the_plan_from_above_with_both_wings_built(seen, width):
     assert any(i.startswith("Выбрана застройка") for i in got["items"]), got["items"]
     assert "движок" not in text
     assert got["page"] <= got["view"] and got["svgWidth"] <= width, got
+
+
+@pytest.mark.parametrize("width", [390, 1280])
+def test_the_page_folds_the_details_and_shows_the_brief(seen, width):
+    """Сразу видны вид сверху и короткий итог; разбор частей участка, баланс
+    земли, разрывы и проезды — под закрытым «Подробнее о разборе участка»."""
+    fold = seen[width]["fold"]
+    assert fold["open"] is False, fold
+    assert fold["summary"] == "Подробнее о разборе участка", fold
+    assert fold["brief"] and fold["brief"][0].startswith("Выбрана застройка"), fold
+    analysis = [i for i in seen[width]["items"] if i not in seen[width]["landLegend"]]
+    shown = [i for i in fold["shownItems"] if i not in seen[width]["landLegend"]]
+    assert shown == fold["brief"] and len(shown) <= 4, shown
+    for words in ("Участок без отступов", "Разрывы между домами", "Пожарный проезд", "Не проверяли"):
+        assert not any(i.startswith(words) for i in shown), words
+    assert not fold["landShown"], "баланс земли виден до раскрытия"
+    # По щелчку раскрывается весь остальной разбор, и пересчёт его не сворачивает.
+    assert set(fold["brief"]) | set(fold["afterClick"]) == set(analysis), fold
+    assert any(i.startswith("Участок без отступов") for i in fold["afterClick"]), fold
+    assert fold["landAfter"] and fold["keptOpen"], fold
 
 
 def test_the_page_names_the_land_and_the_footprint_follows_the_assumptions(seen):

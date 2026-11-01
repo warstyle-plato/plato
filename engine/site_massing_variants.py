@@ -962,9 +962,17 @@ def _mv_plural(n: int, one: str, few: str, many: str) -> str:
 def massing_analysis_lines(analysis: dict[str, Any], variants: dict[str, dict[str, Any]],
                            chosen: str, buildings: list[dict[str, Any]],
                            lanes: list[dict[str, Any]], gaps: dict[str, Any],
-                           north: list[float] | None, chooser: str = "engine") -> list[str]:
-    """Разбор участка и посадки простыми фразами — для карточки и PDF."""
+                           north: list[float] | None, chooser: str = "engine") -> dict[str, list[str]]:
+    """Разбор участка и посадки простыми фразами — для карточки и PDF.
+
+    `lines` — весь разбор (PDF печатает его целиком); `brief` — короткий итог
+    из тех же фраз: какой вариант выбран и почему, сколько домов встало, есть
+    ли пустой кусок. Страница показывает итог сразу, остальное — под
+    свёрнутым «Подробнее о разборе участка» (владелец 01.11.2026: «стоит там
+    часть текста свернуть»). Что входит в итог, решает только эта функция.
+    """
     lines: list[str] = []
+    brief: list[str] = []
     parts = analysis.get("parts") or []
     if parts:
         words = []
@@ -985,6 +993,7 @@ def massing_analysis_lines(analysis: dict[str, Any], variants: dict[str, dict[st
     who = ("Помощник Платон выбрал застройку" if chooser == "plato" else
            "Выбрана застройка")
     lines.append(f"{who} «{LAYOUT_VARIANT_NAMES[chosen]}»: {LAYOUT_VARIANT_WHAT[chosen]}.")
+    brief.append(lines[-1])
     others = []
     for name, v in variants.items():
         if name == chosen:
@@ -1001,6 +1010,7 @@ def massing_analysis_lines(analysis: dict[str, Any], variants: dict[str, dict[st
                           f"самая далёкая точка в {_fmt_ru(om['reach_m'])} м от дома")
     if others:
         lines.append("Другие варианты: " + "; ".join(others) + ".")
+        brief.append(lines[-1])
     placed = [b for b in buildings if b.get("ring_m")]
     homes = [b for b in placed if b.get("phase", 0) > 0]
     sections = sum((b.get("sections") or {}).get("count", 0) for b in homes)
@@ -1017,14 +1027,17 @@ def massing_analysis_lines(analysis: dict[str, Any], variants: dict[str, dict[st
         text += (f", из них {corners} {_mv_plural(corners, 'угловая', 'угловые', 'угловых')}."
                  if corners else ".")
         lines.append(text)
+        brief.append(text)
     if m.get("empty_where"):
         lines.append(f"Кусок участка {m['empty_where']} (около {_fmt_ru(m.get('empty_sqm') or 0)} м²) "
                      f"остаётся без домов: дальше {_fmt_ru(m['empty_limit_m'])} м от ближайшего дома. "
                      "Так выходит, когда пятна застройки в расчёте мало для этой земли; там "
                      "можно разместить двор, сквер или отдельное здание.")
+        brief.append(lines[-1])
     elif m.get("reach_m") is not None:
         lines.append(f"Дома разнесены по всему участку, без пустого края: любая его точка не "
                      f"дальше {_fmt_ru(m['reach_m'])} м от ближайшего дома.")
+        brief.append(lines[-1])
     if north and placed:
         lat = int(m.get("latitudinal_count") or 0)
         share = float(m.get("meridional_share") or 0.0)
@@ -1075,7 +1088,7 @@ def massing_analysis_lines(analysis: dict[str, Any], variants: dict[str, dict[st
                      "текста в нашей библиотеке нормативов нет.")
     lines.append("Не проверяли: красные линии и улицы вокруг участка (их нет в данных), "
                  "расчёт инсоляции по часам, сети и рельеф.")
-    return lines
+    return {"lines": lines, "brief": brief}
 
 
 def massing_variants_brief(variants: dict[str, dict[str, Any]], analysis: dict[str, Any],
