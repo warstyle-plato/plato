@@ -229,8 +229,12 @@ def test_the_brief_is_the_chosen_variant_the_houses_and_the_empty_piece():
     разрывы, проезды и допущения в итог не входят."""
     layout = _scheme(L_SHAPE)["layout"]
     brief, lines = layout["analysis_brief"], layout["analysis"]
-    assert 2 <= len(brief) <= 4, brief
-    assert all(t in lines for t in brief), brief
+    assert 3 <= len(brief) <= 5, brief
+    # Границы проверки — последней фразой итога (`docs/site_norms_check.md`, п. 3).
+    assert brief[-1] == core.MASSING_BRIEF_LIMITS, brief
+    for words in ("допущениях", "не по нормам", "Красные линии", "инсоляции", "не проверяли"):
+        assert words in brief[-1], words
+    assert all(t in lines for t in brief[:-1]), brief
     assert brief[0].startswith("Выбрана застройка"), brief
     assert any(t.startswith("Жилых домов на схеме") for t in brief), brief
     assert any(t.startswith(("Дома разнесены по всему участку", "Кусок участка")) for t in brief), brief
@@ -435,12 +439,14 @@ def test_the_page_folds_the_details_and_shows_the_brief(seen, width):
     assert fold["brief"] and fold["brief"][0].startswith("Выбрана застройка"), fold
     analysis = [i for i in seen[width]["items"] if i not in seen[width]["landLegend"]]
     shown = [i for i in fold["shownItems"] if i not in seen[width]["landLegend"]]
-    assert shown == fold["brief"] and len(shown) <= 4, shown
+    assert shown == fold["brief"] and len(shown) <= 5, shown
+    # Оговорка о границах проверки видна без раскрытия.
+    assert shown[-1].startswith("Это схема на наших допущениях") and "не проверяли" in shown[-1], shown
     for words in ("Участок без отступов", "Разрывы между домами", "Пожарный проезд", "Не проверяли"):
         assert not any(i.startswith(words) for i in shown), words
     assert not fold["landShown"], "баланс земли виден до раскрытия"
     # По щелчку раскрывается весь остальной разбор, и пересчёт его не сворачивает.
-    assert set(fold["brief"]) | set(fold["afterClick"]) == set(analysis), fold
+    assert set(fold["brief"][:-1]) | set(fold["afterClick"]) == set(analysis) - {fold["brief"][-1]}, fold
     assert any(i.startswith("Участок без отступов") for i in fold["afterClick"]), fold
     assert fold["landAfter"] and fold["keptOpen"], fold
 

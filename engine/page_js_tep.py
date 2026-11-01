@@ -1611,7 +1611,8 @@ function siteMassingPlanViewHtml(layout){
  const lines=layout.analysis||[];
  if(!(pv.buildings||[]).length&&!lines.length)return '';
  const svg=(pv.buildings||[]).length?siteMassingPlanViewSvg(pv):'';
- const brief=(layout.analysis_brief||[]).filter(t=>lines.includes(t));
+ // Итог — фразы разбора и оговорка о границах проверки (её нет в полном разборе).
+ const brief=layout.analysis_brief||[];
  const rest=lines.filter(t=>!brief.includes(t));
  const legend=svg?siteMassingLandLegendHtml(pv)+'<p class="site-massing-hint">'+(pv.north_up?'Вид сверху, север вверху.':'Вид сверху; стороны света неизвестны.')+'</p>':'';
  const key=svg?'<p class="site-massing-hint">Дома разделены на секции белыми линиями, оранжевый пунктир показывает места для пожарного проезда, зелёный пунктир — границы частей участка. Площади взяты из баланса территории расчёта, а место каждой площади на рисунке — наша схема, а не генплан.</p>':'';
