@@ -1374,6 +1374,20 @@ def install(app: FastAPI) -> None:
                     "не заданы PULSE_LOGIN и PULSE_PASSWORD")
         return ""
 
+    DUE_RETRY_SECONDS = 5 * 60
+
+    def _weekly_blocked() -> str:
+        """Почему плановый прогон КРТ на этом хосте не идёт — или пустая строка.
+
+        Один ответ для потока и для страницы: прежде причина жила только в
+        журнале, и владелец видел «не пересчитывается» без объяснения.
+        """
+        if os.getenv("AUCTION_KRT_WEEKLY", "1").strip() in {"0", "false", "no"}:
+            return "Плановый прогон выключен на этом сервере (AUCTION_KRT_WEEKLY=0)"
+        if core is None:
+            return "Расчётное ядро на этом сервере не загружено — считать модель нечем"
+        return _market_source_off()
+
     def _weekly_ranking() -> None:
         """Раз в неделю каталог обновляется и считается сам.
 
@@ -1392,19 +1406,25 @@ def install(app: FastAPI) -> None:
         """
         said = ""
         while True:
+            pause = HEARTBEAT_SECONDS
             try:
                 # Хост без источника рынка прогон не ведёт вовсе. Прежде он его
                 # вёл: падала каждая площадка, в журнал уходило по трассировке
                 # на каждую, а в рейтинг — «Расчёт не выполнен» на диск, который
                 # у бота живёт до следующей выкатки. Причина называется ОДИН
                 # раз: строка на каждый удар сердца — это тот же шум, только
-                # тише.
-                off = _market_source_off()
+                # тише. Ту же причину страница читает из `_weekly_blocked`.
+                off = _weekly_blocked()
                 if off:
                     if off != said:
                         logger.warning("Недельный прогон КРТ здесь не идёт: %s", off)
                         said = off
-                elif core is not None and krt_ranking.due():
+                elif krt_ranking.due():
+                    # Пока срок наступил, а прогон не взят (замок держит
+                    # другой прогон или умерший при выкатке воркер), проверяем
+                    # чаще: час ожидания после каждой выкатки съедал рабочий
+                    # день прогона.
+                    pause = DUE_RETRY_SECONDS
                     if krt_ranking.claim():
                         try:
                             projects = krt_registry.projects(refresh=True)
@@ -1420,15 +1440,22 @@ def install(app: FastAPI) -> None:
                             # жильё, считается и та же модель — цифры площадки
                             # прочитаны из её PDF.
                             rows = rows + _decision_rows_for_run()
-                            if rows and not krt_ranking.start(
+                            if not rows:
+                                krt_ranking.note_schedule_failure(
+                                    "Каталог КРТ и список решений пришли пустыми — "
+                                    "считать было нечего, повторю позже")
+                                krt_ranking.release()
+                            elif not krt_ranking.start(
                                     rows, _screen_for_background, scheduled=True, claimed=True):
                                 krt_ranking.release()
-                        except Exception:
+                        except Exception as exc:  # noqa: BLE001
                             logger.exception("weekly KRT ranking failed")
+                            krt_ranking.note_schedule_failure(
+                                f"Плановый прогон не начался: {exc}")
                             krt_ranking.release()
             except Exception:
                 logger.exception("weekly KRT ranking loop")
-            time.sleep(HEARTBEAT_SECONDS)
+            time.sleep(pause)
 
 
     # main.py loads the canonical legacy core as `developaid_core`. Inject only the
@@ -4637,6 +4664,11 @@ def install(app: FastAPI) -> None:
             # Сроки и выключатель называются здесь же: «сторож молчит» при
             # выключенном стороже — ответ, а не поломка.
             "enabled": os.getenv("AUCTION_KRT_WATCH", "1").strip() not in {"0", "false", "no"},
+            # Недельный пересчёт рейтинга — только сроки и причина, без цифр
+            # экономики: «почему не пересчитывается» должно быть видно и без
+            # входа, как и молчание сторожа.
+            "ranking_schedule": await run_in_threadpool(
+                krt_ranking.schedule_status, _weekly_blocked()),
             "periods_seconds": {
                 "site": krt_watch_periods()[0],
                 "decision": krt_watch_periods()[1],
@@ -4696,6 +4728,11 @@ def install(app: FastAPI) -> None:
                 "за вход», а не «проходит ли она по объявленной цене»."
             ),
             "progress": krt_ranking.progress(),
+            # Плановый прогон: когда был последний полный, когда следующий и
+            # что мешает. Без этого «не пересчитывается» снаружи не отличить
+            # от «идёт», «обрывается выкаткой» и «на сервере выключен».
+            "schedule": await run_in_threadpool(
+                krt_ranking.schedule_status, _weekly_blocked()),
             # Находка, посчитанная прежним правилом привязки, признаком не
             # считается: она сделана из того же текста, но по другому правилу,
             # и до перечитывания это «не знаем», а не «занята» (владелец,
