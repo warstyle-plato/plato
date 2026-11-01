@@ -226,7 +226,7 @@ __DEVELOPAID_PLATO_DRAWER__
 __DEVELOPAID_LAND_MAP_DIALOG__
 <script>
 __DEVELOPAID_LAND_MAP_KIT__
-const state={lots:[],filtered:[],families:[],openFamilies:new Set(),coverage:[],quality:{},selected:null,ingested:null,auctionKinds:new Set(),krt:[],krtFiltered:[],krtOkrugs:new Set(),krtModels:{},krtScreening:{},krtReports:{},krtRequirements:{},krtNew:0,krtNewDays:30,krtPolls:0,krtTimer:null,krtRank:{},krtRules:0,krtRankProgress:null,krtRankTimer:null,krtPress:{},krtCards:{},krtTenderLinks:{},krtOrderBySite:{},krtTenders:{},krtOrders:[],krtOrphanLots:[],krtSort:{key:'name',dir:1},krtHidden:{small:0,unknown:0},krtPick:{stage:new Set(),entry:new Set(),renovation:new Set(),purpose:new Set()},egrnStore:null};
+const state={lots:[],filtered:[],families:[],openFamilies:new Set(),coverage:[],quality:{},selected:null,ingested:null,auctionKinds:new Set(),krt:[],krtFiltered:[],krtOkrugs:new Set(),krtModels:{},krtScreening:{},krtReports:{},krtRequirements:{},krtNew:0,krtNewDays:30,krtPolls:0,krtTimer:null,krtRank:{},krtRules:0,krtRankProgress:null,krtSchedule:null,krtRankTimer:null,krtPress:{},krtCards:{},krtTenderLinks:{},krtOrderBySite:{},krtTenders:{},krtOrders:[],krtOrphanLots:[],krtSort:{key:'name',dir:1},krtHidden:{small:0,unknown:0},krtPick:{stage:new Set(),entry:new Set(),renovation:new Set(),purpose:new Set()},egrnStore:null};
 const KRT_OKRUGS=['ЦАО','САО','СВАО','ВАО','ЮВАО','ЮАО','ЮЗАО','ЗАО','СЗАО','НАО','ТАО','ЗелАО'];
 // «ТиНАО» — общая метка Новой Москвы: город пишет её в части решений и
 // списков КРТ, не уточняя округ (лот 28 «Родники»). В Новой Москве два
@@ -3194,18 +3194,46 @@ function krtRankCell(slug){
 // Ход показывается тем, что есть: сколько посчитано из скольких, что считается
 // сейчас, сколько секунд идёт. Ожидание без признака работы читается как
 // внезапность, а прогон по каталогу идёт минутами.
+// Плановый пересчёт называется отдельной строкой: когда был последний полный,
+// когда следующий и почему не прошёл. Дата «оценка от …» меняется от любой
+// открытой карточки и на вопрос «пересчитывалось ли по расписанию» не отвечает.
+function krtScheduleText(s){
+ if(!s)return '';
+ const at=v=>v?new Date(v*1000).toLocaleString('ru-RU',{day:'numeric',month:'long',hour:'2-digit',minute:'2-digit'}):'';
+ const last=s.last_completed_at?`Последний полный пересчёт по расписанию — ${esc(at(s.last_completed_at))}.`
+  :'Полного пересчёта по расписанию ещё не было.';
+ const next=`Следующий — ${esc(at(s.next_at))}.`;
+ if(!s.due)return `${last} ${next}`;
+ const since=`Пересчёт должен был начаться ${esc(at(s.due_since))}`;
+ const part=s.total?` Посчитано ${s.done} из ${s.total}`+(s.failed?`, не удалось ${s.failed}`:'')+'.':'';
+ const restarts=s.restarts?` Перезапусков сервера во время пересчёта: ${s.restarts}; после каждого счёт продолжался с того места, где остановился.`:'';
+ if(s.blocked)return `${last} ${since}, но на этом сервере он не идёт: ${esc(s.blocked)}.`;
+ if(s.running)return `${last} Идёт пересчёт по расписанию.${part}${restarts}`;
+ if(s.stop_reason)return `${last} ${since}, но остановился. Причина: ${esc(s.stop_reason)}.${part} Повторная попытка — через несколько минут.`;
+ if(s.waiting_for_other_run)return `${last} ${since} и ждёт своей очереди: сейчас идёт другой пересчёт или сервер только что перезапустился.${part}`;
+ if(s.interrupted)return `${last} ${since}; его прервал перезапуск сервера.${part} Он продолжится с того же места в ближайшие минуты.${restarts}`;
+ return `${last} ${since} и начнётся в ближайшие минуты.${part}`;
+}
 function renderKrtRankStatus(){
- const box=$('krtRankStatus'),p=state.krtRankProgress;
+ const box=$('krtRankStatus'),p=state.krtRankProgress,sched=krtScheduleText(state.krtSchedule);
  if(!box)return;
- if(!p||(!p.running&&!p.running_elsewhere&&!p.total&&!p.updated_at)){box.style.display='none';return}
+ if(!p||(!p.running&&!p.running_elsewhere&&!p.total&&!p.updated_at)){
+  if(!sched){box.style.display='none';return}
+  box.style.display='';
+  const s=state.krtSchedule||{};
+  box.className=(s.due&&!s.running)?'notice warn':'notice';
+  box.innerHTML=sched;
+  return;
+ }
  box.style.display='';
+ const tail=sched?`<div class="krt-schedule">${sched}</div>`:'';
  // Прогон ведёт один воркер из двух, и ход виден только ему. Второй молчал бы
  // — а молчание после нажатой кнопки читается как поломка.
  if(!p.running&&p.running_elsewhere){
   const when=p.updated_at?new Date(p.updated_at*1000).toLocaleString('ru-RU'):'';
   box.className='notice';
   box.innerHTML='<span class="spinner"></span>Прогон идёт в соседнем процессе — сколько посчитано, отсюда не видно. '
-   +'Строки появляются в таблице по мере счёта'+(when?`, обновлено ${esc(when)}`:'')+'.';
+   +'Строки появляются в таблице по мере счёта'+(when?`, обновлено ${esc(when)}`:'')+'.'+tail;
   return;
  }
  if(p.running){
@@ -3213,7 +3241,7 @@ function renderKrtRankStatus(){
   const failed=p.failed?` · не посчитано: ${p.failed}`:'';
   box.className='notice';
   const how=p.scheduled?'по расписанию':'по вашей кнопке';
-  box.innerHTML=`<span class="spinner"></span>Считаю модель ${how}: ${p.done} из ${p.total} · ${p.elapsed_seconds||0} с${left}${failed}`;
+  box.innerHTML=`<span class="spinner"></span>Считаю модель ${how}: ${p.done} из ${p.total} · ${p.elapsed_seconds||0} с${left}${failed}`+tail;
   return;
  }
  const when=p.updated_at?new Date(p.updated_at*1000).toLocaleString('ru-RU'):'';
@@ -3224,7 +3252,9 @@ function renderKrtRankStatus(){
  box.innerHTML=`Оценка модели по каталогу от ${esc(when)}.${failed}`
   +' Каталог обновляется и пересчитывается сам раз в неделю; кнопка нужна, '
   +'только если хотите пересчитать отобранное прямо сейчас.'
-  +(p.stale?' Данные старше суток.':'');
+  +(p.stale?' Данные старше суток.':'')+tail;
+ const s=state.krtSchedule||{};
+ if(s.due&&!s.running)box.className='notice warn';
 }
 async function loadKrtRanking(){
  try{
@@ -3232,7 +3262,7 @@ async function loadKrtRanking(){
   state.krtRatingTarget=Number(d.investment_rating_target_rub_sqm)||null;
   state.krtRank={};(d.rows||[]).forEach(row=>{state.krtRank[row.slug]=row;
    if(row.available&&row.traffic_light)state.krtModels[row.slug]={traffic_light:row.traffic_light}});
-  state.krtRankProgress=d.progress||null;
+  state.krtRankProgress=d.progress||null;state.krtSchedule=d.schedule||null;
   const targetInput=$('krtRatingTarget');
   if(targetInput&&document.activeElement!==targetInput&&d.investment_rating_target_rub_sqm){
    targetInput.value=String(Math.round(Number(d.investment_rating_target_rub_sqm)));
