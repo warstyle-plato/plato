@@ -340,6 +340,11 @@ SETUP = """async ([ring, ha])=>{
  const data={query:'77:01:0000000:1',results:[{found:true,kind:'land',cadastral_number:'77:01:0000000:1',contour_merc:[ring]}]};
  inputs._land_lookup=cloneValue(data); landLookup=cloneValue(data);
  await settledCalculate();
+ // Номер участка запускает разбор кадастра (`resolveSitePosition`), и по его
+ // ответу страница считает ещё раз. Ждём этот расчёт здесь, а не в следующем
+ // шаге стенда: иначе он приходится на чужое ожидание.
+ while(sitePositionRun.state==='running')await new Promise(r=>setTimeout(r,50));
+ await settledCalculate();
 }"""
 
 READ = """()=>{
@@ -399,6 +404,13 @@ def seen():
             pw.chromium.launch(executable_path=str(path)) as engine:
         for width in (390, 1280):
             page = engine.new_page(viewport={"width": width, "height": 900})
+            # Разбор кадастра сервер берёт у калькулятора ГлавАПУ своим
+            # браузером, а его сеть запрет `conftest` не обрывает: на раннере
+            # запрос висел дольше минуты, и расчёт по его ответу не успевал.
+            # Положение участка здесь не проверяется — источник недоступен.
+            page.route("**/cadastral/analyze", lambda route: route.fulfill(
+                status=503, content_type="application/json",
+                body='{"detail": "в стенде калькулятор ГлавАПУ не спрашиваем"}'))
             page.goto(base, wait_until="domcontentloaded")
             browser.wait_for_result(page)
             page.evaluate(SETUP, [_merc(L_SHAPE[0]), ha])
