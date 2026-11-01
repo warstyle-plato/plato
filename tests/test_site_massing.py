@@ -211,16 +211,31 @@ def test_a_hectare_with_28000_density_is_not_a_fifty_storey_tower():
     m = core.site_massing(x, t)
     assert m["above_gns_sqm"] == pytest.approx(26410.2)
     # Рядом со зданием — двор по норме (5 м² на жителя), остальное
-    # благоустройство — на кровле стилобата. Жилые дома — типовой этажности
-    # 17 (владелец 23.10.2026): пятно 26 410 ÷ 17, это меньше 30 % участка и
-    # свободного места.
+    # благоустройство — на кровле стилобата. Типовой этажности по умолчанию нет
+    # (владелец 31.10.2026): пятно — вся свободная земля, не больше 30 %
+    # участка; этажность = площадь ÷ пятно.
     assert m["footprint_estimate_sqm"] > 3000
     assert m["yard_ground_sqm"] == pytest.approx(10000 - m["footprint_sqm"] - 1500 - m["setbacks_sqm"])
     assert (m["footprint_origin"], m["typical_storeys"], m["typical_storeys_origin"]) == (
-        "typical", 17.0, "default")
-    assert m["footprint_sqm"] == pytest.approx(26410.2 / 17)
-    assert m["average_storeys"] == pytest.approx(17)
+        "coverage", 0.0, "land")
+    assert m["footprint_sqm"] == pytest.approx(3000)
+    assert m["average_storeys"] == pytest.approx(26410.2 / 3000)
     assert not m["warnings"]
+
+
+def test_changing_an_assumption_changes_the_footprint():
+    """Владелец 31.10.2026: «меняю допущения, а пятно не меняется». Пятно —
+    свободная земля: меньше проездов — больше пятна и ниже дом. Подделка:
+    при типовой этажности, вписанной руками, проезды пятно не двигают."""
+    wide = dict(site_coverage_max_pct=90)
+    base = core.site_massing(*_one_hectare(**wide))
+    fewer = core.site_massing(*_one_hectare(site_driveways_pct=5, **wide))
+    assert base["footprint_origin"] == fewer["footprint_origin"] == "estimate"
+    assert fewer["footprint_sqm"] == pytest.approx(base["footprint_sqm"] + 1000, abs=1)
+    assert fewer["average_storeys"] < base["average_storeys"]
+    hand = dict(residential_storeys_typical=17, **wide)
+    assert core.site_massing(*_one_hectare(**hand))["footprint_sqm"] == pytest.approx(
+        core.site_massing(*_one_hectare(site_driveways_pct=5, **hand))["footprint_sqm"])
 
 
 def test_a_hand_footprint_that_eats_the_norm_yard_is_said_aloud():
@@ -234,7 +249,7 @@ def test_a_hand_footprint_that_eats_the_norm_yard_is_said_aloud():
 
 
 def test_the_coverage_from_the_town_plan_wins_and_offices_have_no_default():
-    # Процент застройки — верхняя граница: 12 % участка меньше пятна по 17 этажам.
+    # Процент застройки — верхняя граница: 12 % участка меньше свободной земли.
     m = core.site_massing(*_one_hectare(site_coverage_max_pct=12))
     assert (m["footprint_sqm"], m["coverage_origin"], m["footprint_origin"]) == (
         pytest.approx(1200), "manual", "coverage")
@@ -242,8 +257,8 @@ def test_the_coverage_from_the_town_plan_wins_and_offices_have_no_default():
     # Типовая этажность, заданная руками, и предел участка ниже неё.
     hand = core.site_massing(*_one_hectare(residential_storeys_typical=12))
     assert hand["footprint_sqm"] == pytest.approx(26410.2 / 12)
-    capped = core.site_massing(*_one_hectare(max_storeys_allowed=9))
-    assert capped["average_storeys"] == pytest.approx(9)
+    capped = core.site_massing(*_one_hectare(max_storeys_allowed=5))
+    assert capped["average_storeys"] == pytest.approx(5)
     # Нежилой проект: процента по умолчанию нет — пятно всё свободное место.
     office = core.site_massing(*_office())
     assert office["coverage_origin"] == "none" and office["footprint_origin"] == "estimate"

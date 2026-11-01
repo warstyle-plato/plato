@@ -1562,10 +1562,86 @@ function renderSiteMassingScheme(m){
  const mapNote=String(layout.map_note||'');
  const notes=(layout.notes||[]).filter(t=>t!==mapNote).map(t=>'<p class="site-massing-hint">'+escapeHtml(t)+'</p>').join('');
  box.innerHTML='<p class="site-massing-hint">'+escapeHtml(ax.caption||'')+'</p>'+siteMassingSchemeSvg(ax)+'<ul class="site-massing-legend">'+legend+'</ul>'+notes+
+  siteMassingPlanViewHtml(layout)+
   '<p class="site-massing-hint">'+escapeHtml(ax.footer||'')+'</p>'+
   (siteMassingMapShapes().length?'<button type="button" class="btn" id="siteMassingMapButton" onclick="siteMassingOpenMap()">Показать корпуса на карте участка</button>':
    mapNote?'<p class="site-massing-hint" id="siteMassingMapNote">'+escapeHtml(mapNote)+'</p>':'');
  siteMassingPlanWatch(layout.plan||{});
+}
+// Вид сверху и разбор участка (владелец 31.10.2026: «посадка на сложных
+// контурах реализована плохо, аналитики нет»). Всё готово в ответе движка
+// (`layout.plan_view`, `layout.analysis`, `engine/site_massing_variants.py`):
+// страница только рисует — север вверху, части участка, дома с секциями,
+// места пожарных проездов.
+function siteMassingPlanViewSvg(pv){
+ const all=[].concat(...(pv.site||[]));
+ if(!all.length)return '';
+ const xs=all.map(p=>p[0]),ys=all.map(p=>p[1]);
+ const pad=Math.max(8,(Math.max(...xs)-Math.min(...xs))*0.04);
+ const x0=Math.min(...xs)-pad,y1=Math.max(...ys)+pad,w=Math.max(...xs)+pad-x0,h=y1-(Math.min(...ys)-pad);
+ const pts=r=>r.map(p=>(p[0]-x0).toFixed(1)+','+(y1-p[1]).toFixed(1)).join(' ');
+ const unit=Math.max(w,h)/400;
+ let g='';
+ (pv.site||[]).forEach(r=>{g+='<polygon class="pv-site" points="'+pts(r)+'" fill="#eeeeee" stroke="#555" stroke-width="'+unit+'"/>'});
+ // Карта земли (`massing_land_map`): двор, проезды, стоянки, отступы, свободно.
+ const land=pv.land||{},colors=pv.land_colors||{},hasLand=Object.keys(land).length>0;
+ Object.keys(land).forEach(k=>{
+  g+='<path class="pv-land" data-land="'+escapeHtml(k)+'" fill="'+(colors[k]||'#eee')+'" d="'+land[k].map(r=>'M'+r.map(p=>(p[0]-x0).toFixed(1)+','+(y1-p[1]).toFixed(1)).join('L')+'Z').join('')+'"/>';
+ });
+ (pv.blocks||[]).forEach(b=>{g+='<polygon class="pv-block" data-part="'+escapeHtml(b.id)+'" points="'+pts(b.ring)+'" fill="'+(hasLand?'none':'#dcebd6')+'" stroke="#8fb487" stroke-width="'+unit*0.8+'" stroke-dasharray="'+unit*4+' '+unit*3+'"/>'});
+ (pv.lanes||[]).forEach(r=>{g+='<polygon class="pv-lane" points="'+pts(r)+'" fill="none" stroke="#d28a1e" stroke-width="'+unit*0.9+'" stroke-dasharray="'+unit*3+' '+unit*2+'"/>'});
+ (pv.buildings||[]).forEach(b=>{
+  g+='<polygon class="pv-house" data-building="'+escapeHtml(b.id)+'" points="'+pts(b.ring)+'" fill="'+(b.color||'#2f6fb3')+'" stroke="#222" stroke-width="'+unit*0.7+'"/>';
+  (b.sections||[]).forEach(l=>{g+='<polyline class="pv-section" points="'+pts(l)+'" stroke="#fff" stroke-width="'+unit*0.9+'"/>'});
+ });
+ // Стрелка на север (если стороны света известны) и масштаб 50 м.
+ const ax=w-unit*14,ay=unit*30;
+ if(pv.north_up)g+='<g class="pv-north"><polygon points="'+ax+','+(ay-unit*20)+' '+(ax-unit*6)+','+ay+' '+(ax+unit*6)+','+ay+'" fill="#222"/><text x="'+ax+'" y="'+(ay+unit*12)+'" font-size="'+unit*11+'" text-anchor="middle">С</text></g>';
+ const sb=50,sx=unit*10,sy=h-unit*10;
+ g+='<g class="pv-scale"><line x1="'+sx+'" y1="'+sy+'" x2="'+(sx+sb)+'" y2="'+sy+'" stroke="#222" stroke-width="'+unit*1.5+'"/><text x="'+(sx+sb/2)+'" y="'+(sy-unit*4)+'" font-size="'+unit*10+'" text-anchor="middle">50 м</text></g>';
+ return '<svg class="site-massing-plan" viewBox="0 0 '+w.toFixed(1)+' '+h.toFixed(1)+'" role="img" aria-label="Вид сверху: дома на участке">'+g+'</svg>';
+}
+function siteMassingPlanViewHtml(layout){
+ const pv=layout.plan_view||{};
+ const lines=layout.analysis||[];
+ if(!(pv.buildings||[]).length&&!lines.length)return '';
+ const svg=(pv.buildings||[]).length?siteMassingPlanViewSvg(pv):'';
+ const legend=svg?siteMassingLandLegendHtml(pv)+'<p class="site-massing-hint">'+(pv.north_up?'Вид сверху, север вверху. ':'Вид сверху; стороны света неизвестны. ')+
+  'Дома разделены на секции белыми линиями; оранжевый пунктир — места для пожарного проезда; зелёный пунктир — границы частей участка. Площади — из баланса территории расчёта, место каждой — наша схема, а не генплан.</p>':'';
+ return '<div class="site-massing-analysis" id="siteMassingAnalysis"><h4>Разбор участка и посадки</h4>'+svg+legend+
+  siteMassingLandBalanceHtml(layout.land_balance||{})+
+  '<ul>'+lines.map(t=>'<li>'+escapeHtml(t)+'</li>').join('')+'</ul>'+siteMassingDenserHtml(layout.denser)+'</div>';
+}
+// Подписи слоёв карты земли: цвет и площадь — из ответа движка.
+function siteMassingLandLegendHtml(pv){
+ const rows=pv.land_legend||[];
+ if(!rows.length)return '';
+ return '<ul class="site-massing-legend site-massing-land-legend">'+rows.map(r=>'<li data-land="'+escapeHtml(r.key)+'"><i style="background:'+r.color+'"></i>'+escapeHtml(r.label)+(r.sqm!=null?' — '+num(r.sqm)+' м²':'')+'</li>').join('')+
+  '<li><i style="background:#2f6fb3"></i>Жилые дома</li></ul>';
+}
+// Чем занята земля участка (`massing_land_balance`): строки баланса и
+// свободный остаток — ответ на «почему столько пустого места» (владелец 31.10.2026).
+function siteMassingLandBalanceHtml(b){
+ const rows=b.rows||[];
+ if(!rows.length)return '';
+ return '<table class="site-massing-table site-massing-land" id="siteMassingLand"><caption>Чем занята земля участка ('+num(b.site_sqm||0)+' м²)</caption>'+
+  rows.map(r=>'<tr'+(r.free?' class="site-massing-free"':'')+'><td>'+escapeHtml(r.label)+'</td><td class="num">'+num(r.sqm)+' м²</td><td class="num">'+Math.round((r.share||0)*100)+' %</td></tr>').join('')+'</table>';
+}
+// Вариант «ниже и плотнее» (`massing_denser_offer`): вид сверху и кнопка.
+// Этажность в расчёте меняется только по кнопке — как ручное значение поля
+// «Типовая этажность жилых домов».
+function siteMassingDenserHtml(d){
+ if(!d||!d.storeys)return '';
+ const svg=((d.plan_view||{}).buildings||[]).length?siteMassingPlanViewSvg(d.plan_view):'';
+ return '<div class="site-massing-denser" id="siteMassingDenser"><h4>Ниже и плотнее: дома по '+d.storeys+' этажей</h4>'+svg+
+  '<p class="site-massing-hint">'+escapeHtml(d.text||'')+'</p>'+
+  '<button type="button" class="btn" id="siteMassingDenserButton" onclick="siteMassingTakeStoreys('+Number(d.storeys)+')">Считать с домами по '+Number(d.storeys)+' этажей</button></div>';
+}
+function siteMassingTakeStoreys(n){
+ if(!(Number(n)>0))return;
+ inputs.residential_storeys_typical=Number(n);
+ markFieldManual('inputs.residential_storeys_typical');
+ calculate();
 }
 // План расстановки от Платона готовится фоном (`engine/site_massing_plan.py`):
 // страница спрашивает его состояние и, когда план готов (или отклонён),
@@ -1605,7 +1681,7 @@ function renderSiteMassingFields(){
  const auto={building_footprint_sqm:m.footprint_estimate_sqm?'оценка '+num(Math.round(m.footprint_estimate_sqm)):'',
   underground_levels:m.underground_sqm?'по расчёту':'',surface_parking_sqm_per_space:m.surface_parking_sqm_per_space?String(m.surface_parking_sqm_per_space).replace('.',','):'',
   max_storeys_allowed:'не выше '+num(m.storeys_limit||25),site_coverage_max_pct:m.coverage_origin==='none'?'не задан':String(m.coverage_pct||30).replace('.',',')+'%',
-  residential_storeys_typical:m.typical_storeys_origin==='none'?'нет жилья':String(m.typical_storeys||17)};
+  residential_storeys_typical:m.typical_storeys_origin==='none'?'нет жилья':m.typical_storeys_origin==='land'?'по свободной земле':String(m.typical_storeys||'')};
  box.innerHTML='';
  SITE_MASSING_INPUTS.forEach(id=>{
   const f=decl[id];if(!f)return;
