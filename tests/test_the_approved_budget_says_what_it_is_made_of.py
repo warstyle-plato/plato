@@ -164,3 +164,93 @@ def test_the_tile_and_the_page_carry_the_composition(monkeypatch, tmp_path):
     assert ("<div class='k'>Утверждённый бюджет <span class='i' tabindex='0' role='note' "
             "title='Утверждённый бюджет — сумма") in tiles_html
     assert "оплачено по финмодели (ФАКТ)" in report._funding_html(built)
+
+
+# --- Плашки одной цепочкой по финмодели (решение владельца, 02.11.2026).
+
+def _chain_funding(comp: dict) -> dict:
+    from test_the_extra_financing_is_split_by_chapter import _overpaid_rec
+
+    rec = _overpaid_rec()  # главы 2–3: осталось достроить 175, остаток 100, излишек 35
+    return {
+        "known": True, "need_basis": "model", "bank_limit": 1_400 * K, "paid_actual": 700 * K,
+        "paid_borrowed": 500 * K, "bank_remaining": rec["tiles"]["remaining"], "reserve": 0.0,
+        "approved": comp["total"], "approved_remaining": comp["plan"],
+        "deficit_ladder": {"total": rec["total"]["gap"]},
+        "additional_financing": rec["total"]["gap"],
+        "additional_financing_from": "2027-01-01",
+        "budget_composition": comp, "limit_reconciliation": rec,
+        "baseline_file": {}}
+
+
+def test_each_tile_is_the_previous_ones_subtracted(tmp_path, monkeypatch):
+    from test_management_report_funding import PROJECT, _project
+
+    comp = _read(tmp_path, _finmodel())["budget_composition"]
+    funding = _chain_funding(comp)
+    _project()
+    monkeypatch.setattr(report, "_monitor_view",
+                        lambda project, end: {"dashboard": {"funding": funding}})
+    built = report.build(PROJECT, "week", "2026-10-18")
+    drawn = built["funding"]["draws"]["total"]
+    chain = dashboard.funding_chain(funding, drawn)
+    assert chain["to_pay"] == pytest.approx(chain["budget"] - chain["paid"])
+    assert chain["bank_gives"] == pytest.approx(chain["bank_limit"] - chain["borrowed"])
+    assert chain["short"] == pytest.approx(chain["to_pay"] - chain["bank_gives"])
+    assert chain["bridge"]["matches"]
+
+    shown = [item for item in report.tiles(built)
+             if item["label"] in ("Утверждённый бюджет", "Оплачено по финмодели",
+                                  "Осталось оплатить", "Лимит банка", "Выбрано у банка",
+                                  "Банк ещё даст", "Не хватает")]
+    assert [item["label"] for item in shown] == [
+        "Утверждённый бюджет", "Оплачено по финмодели", "Осталось оплатить", "Лимит банка",
+        "Выбрано у банка", "Банк ещё даст", "Не хватает"]
+    value = {item["label"]: item["value"] for item in shown}
+    assert value["Утверждённый бюджет"] == report._rub(comp["total"])
+    assert value["Оплачено по финмодели"] == report._rub(comp["fact"])
+    assert value["Осталось оплатить"] == report._rub(comp["total"] - comp["fact"])
+    assert value["Выбрано у банка"] == report._rub(drawn)
+    assert value["Банк ещё даст"] == report._rub(1_400 * K - drawn)
+    short = (comp["total"] - comp["fact"]) - (1_400 * K - drawn)
+    assert value["Не хватает"] == (report._rub(short) if short > 0 else "нет")
+    labels = {item["label"] for item in report.tiles(built)}
+    for gone in ("Осталось по смете после всех оплат", "Можно ещё выбрать у банка",
+                 "Потребность в допфинансировании банка"):
+        assert gone not in labels
+
+    text = report.render_text(built)
+    assert "Как складываются плашки." in text
+    assert "Потребность в допфинансировании банка — 75 ₽" in text
+    assert "«Не хватает» получается из неё так: плюс " in text
+    assert "Как складываются плашки" in report._funding_html(built)
+
+
+def test_the_chain_bridge_adds_up_to_the_bank_need_exactly():
+    # Синтетика без книги: осталось оплатить 900, банк даст 300, не хватает 600;
+    # потребность банка по главам 2–3 — 75 (из _overpaid_rec: 50 по главе 2, 25 по главе 3).
+    from test_the_extra_financing_is_split_by_chapter import _overpaid_rec
+
+    rec = _overpaid_rec()
+    funding = {"known": True, "bank_limit": 800.0, "additional_financing": rec["total"]["gap"],
+               "limit_reconciliation": rec,
+               "budget_composition": {"sections": [{"code": "2.2"}], "total": 1_000.0,
+                                      "fact": 100.0, "plan": 900.0}}
+    chain = dashboard.funding_chain(funding, 500.0)
+    assert (chain["to_pay"], chain["bank_gives"], chain["short"]) == (900.0, 300.0, 600.0)
+    bridge = chain["bridge"]
+    assert bridge["matches"]
+    # 600 = 75 + (900 − 175) − (300 − 100)
+    assert bridge["outside"] == pytest.approx(725.0)
+    assert bridge["bank_vs_remaining"] == pytest.approx(200.0)
+    line = dashboard.chain_lines(chain, report._rub)[-1]
+    assert line == ("Потребность в допфинансировании банка — 75 ₽: это нехватка банковских "
+                    "денег на главы 2–3, по каждой главе отдельно. «Не хватает» получается из "
+                    "неё так: плюс 725 ₽ — осталось оплатить вне стройки и коммерции (глав "
+                    "2–3): участок, административные расходы, налоги и прочее; минус 200 ₽ — "
+                    "разница между тем, что банк ещё даст, и остатком по смете глав 2–3: в "
+                    "лимите есть другие главы, а смета уменьшается и на оплаты своими "
+                    "деньгами.")
+    # Подделка: итог водопада разошёлся с главами сверки — разложение не сходится.
+    forged = dict(funding, additional_financing=rec["total"]["gap"] + 7.0)
+    assert dashboard.funding_chain(forged, 500.0)["bridge"]["matches"] is False

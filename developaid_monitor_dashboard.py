@@ -1052,6 +1052,92 @@ def _chapter_title(row: dict[str, Any]) -> str:
     return f"глава {row['chapter']}" + (f" ({row['label']})" if row.get("label") else "")
 
 
+def funding_chain(funding: dict[str, Any], borrowed: float | None) -> dict[str, Any] | None:
+    """Плашки одной цепочкой по финмодели — каждая следующая вычитанием.
+
+    Владелец (02.11.2026): «У нас просто не сходятся плашки вообще. Текущий
+    бюджет понятен, потребность в финансировании понятна, лимиты тоже. А
+    цифры не сходятся» — бюджет был финмоделью целиком, лимит и выбрано —
+    сметой глав 1–3, остаток и потребность — главами 2–3. Решение владельца:
+    цепочка по финмодели.
+
+        бюджет − оплачено = осталось оплатить;
+        лимит − выбрано = банк ещё даст;
+        осталось оплатить − банк ещё даст = не хватает.
+
+    Потребность в допфинансировании банка (главы 2–3, каждая отдельно)
+    остаётся своей строкой, и её отличие от «не хватает» разложено без
+    остатка: оплаты вне стройки и коммерции, «банк ещё даст» против остатка
+    по смете глав 2–3, лимит одной главы, который не переносится на другую,
+    и резерв.
+    """
+    comp = funding.get("budget_composition") or {}
+    if not funding.get("known") or not comp.get("sections") or borrowed is None:
+        return None
+    budget = float(comp.get("total") or 0.0)
+    paid = float(comp.get("fact") or 0.0)
+    to_pay = budget - paid
+    limit = float(funding.get("bank_limit") or 0.0)
+    bank_gives = limit - float(borrowed)
+    short = to_pay - bank_gives
+    out: dict[str, Any] = {
+        "budget": budget, "paid": paid, "to_pay": to_pay,
+        "plan": float(comp.get("plan") or 0.0),
+        "bank_limit": limit, "borrowed": float(borrowed), "bank_gives": bank_gives,
+        "short": short, "bridge": None,
+    }
+    rec = (funding.get("limit_reconciliation") or {}).get("total") or {}
+    if rec:
+        gap = float(funding.get("additional_financing") or 0.0)
+        outside = to_pay - float(rec.get("need") or 0.0)
+        bank_vs_remaining = bank_gives - float(rec.get("remaining") or 0.0)
+        unused = float(rec.get("unused") or 0.0)
+        reserve = float(rec.get("reserve") or 0.0)
+        out["bridge"] = {
+            "gap": gap, "difference": short - gap,
+            "outside": outside, "bank_vs_remaining": bank_vs_remaining,
+            "unused": unused, "reserve": reserve,
+            "chapters": rec.get("chapters") or "",
+            "matches": abs((outside - bank_vs_remaining - unused + reserve) - (short - gap))
+            <= 1e-6 * max(1.0, budget),
+        }
+    return out
+
+
+def chain_lines(chain: dict[str, Any] | None, money: Any) -> list[str]:
+    """Цепочка плашек словами и её связь с потребностью в допфинансировании."""
+    if not chain:
+        return []
+    out = [f"Утверждённый бюджет {money(chain['budget'])} минус оплаченное по финмодели "
+           f"{money(chain['paid'])} — осталось оплатить {money(chain['to_pay'])}. "
+           f"Лимит банка {money(chain['bank_limit'])} минус выбранное кредитом "
+           f"{money(chain['borrowed'])} — банк ещё даст {money(chain['bank_gives'])}. "
+           f"Осталось оплатить минус то, что ещё даст банк, — "
+           + (f"не хватает {money(chain['short'])}." if chain["short"] > 0 else
+              f"банковских денег хватает с запасом {money(-chain['short'])}.")]
+    if abs(chain["to_pay"] - chain["plan"]) > 0.5:
+        out.append(f"В финмодели «ПЛАН» — {money(chain['plan'])}, а бюджет минус «ФАКТ» — "
+                   f"{money(chain['to_pay'])}: в книге итог не равен факту плюс плану.")
+    bridge = chain.get("bridge")
+    if bridge and abs(bridge["difference"]) > 0.5:
+        # Слагаемые со знаком: «не хватает» = потребность банка + … − …
+        parts = [
+            (bridge["outside"], "осталось оплатить вне стройки и коммерции (глав "
+             f"{bridge['chapters']}): участок, административные расходы, налоги и прочее"),
+            (-bridge["bank_vs_remaining"], "разница между тем, что банк ещё даст, и остатком "
+             f"по смете глав {bridge['chapters']}: в лимите есть другие главы, а смета "
+             "уменьшается и на оплаты своими деньгами"),
+            (-bridge["unused"], "лимит одной главы, который не переносится на нехватку другой"),
+            (bridge["reserve"], "нехватка, которую в потребности банка закрывает резерв"),
+        ]
+        words = "".join(f" {'плюс' if value > 0 else 'минус'} {money(abs(value))} — {what};"
+                        for value, what in parts if abs(value) > 0.5).rstrip(";")
+        out.append(f"Потребность в допфинансировании банка — {money(bridge['gap'])}: это "
+                   f"нехватка банковских денег на главы {bridge['chapters']}, по каждой главе "
+                   "отдельно. «Не хватает» получается из неё так:" + words + ".")
+    return out
+
+
 def tiles_bridge_lines(rec: dict[str, Any], money: Any) -> list[str]:
     """«Лимит − выбрано» против «осталось по смете» — полными фразами."""
     tiles = (rec or {}).get("tiles")
