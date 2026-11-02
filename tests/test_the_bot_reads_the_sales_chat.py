@@ -150,6 +150,9 @@ def test_the_report_shows_the_funnel(monkeypatch, tmp_path):
     block = report.sales("Кутузов", "week", "2026-10-24", where)
     assert block["state"] == "ok"
     line = report._funnel_line(block, "week")
-    assert line.startswith("Воронка за неделю: целевые звонки 1 → встречи 2 (200,0%) → ")
-    assert line.endswith("Брокер-туров 1. Сейчас броней 3, ДДУ на регистрации 0. "
+    # Встреч больше, чем звонков: 200% конверсией не показывается.
+    assert line.startswith("Воронка за неделю. Прямой путь: целевые звонки 1 → встречи 2 → ")
+    assert "200" not in line and "часть клиентов пришла без звонка" in line
+    assert "брокер-туров 1." in line
+    assert line.endswith("Сейчас броней 3, ДДУ на регистрации 0. "
                          "По отчётам отдела продаж за 1 день.")

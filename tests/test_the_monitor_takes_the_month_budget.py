@@ -25,6 +25,27 @@ from test_management_report_model import _rss_book, budget_book  # noqa: E402
 PORT = 18797
 
 
+def _october_november() -> bytes:
+    import io
+
+    from openpyxl import Workbook
+
+    book = Workbook()
+    sheet = book.active
+    for column, name in ((5, "Октябрь 2026"), (8, "Ноябрь 2026")):
+        sheet.cell(row=4, column=column, value=name)
+        sheet.cell(row=5, column=column, value="ПЛАН")
+        sheet.cell(row=5, column=column + 1, value="ФАКТ")
+    for r, name in enumerate(("Стоимость строительства и проектирования",
+                              "Содержание службы заказчика", "Коммерческие расходы"), 6):
+        sheet.cell(row=r, column=1, value=name)
+        sheet.cell(row=r, column=5, value=-1e6)
+        sheet.cell(row=r, column=8, value=-1e6)
+    blob = io.BytesIO()
+    book.save(blob)
+    return blob.getvalue()
+
+
 def test_the_budget_is_uploaded_from_the_rendered_page(tmp_path, monkeypatch):
     chrome = chromium_or_skip()
     from playwright.sync_api import sync_playwright
@@ -35,6 +56,8 @@ def test_the_budget_is_uploaded_from_the_rendered_page(tmp_path, monkeypatch):
     monkeypatch.setattr(core, "_require_web_access", lambda *_a, **_k: None)
     good = tmp_path / "бюджет.xlsx"
     good.write_bytes(budget_book())
+    later = tmp_path / "бюджет-ноябрь.xlsx"
+    later.write_bytes(_october_november())
     wrong = tmp_path / "рсс.xlsx"
     wrong.write_bytes(_rss_book([]))
 
@@ -64,10 +87,41 @@ def test_the_budget_is_uploaded_from_the_rendered_page(tmp_path, monkeypatch):
             tab.wait_for_function(
                 "document.getElementById('budgetMsg').textContent.includes('Бюджет загружен')")
             stored = tab.inner_text("#budgetMsg")
+            tab.wait_for_function(
+                "document.getElementById('budgetList').textContent.includes('Убрать')")
+            first_list = tab.inner_text("#budgetList")
+
+            # Второй файл — «октябрь–ноябрь»: загружен последним, план октября
+            # теперь его. Ошибочный — убирается кнопкой и возвращается.
+            tab.set_input_files("#budget", str(later))
+            tab.click("#budgetBtn")
+            tab.wait_for_function(
+                "document.getElementById('budgetList').textContent.includes('Месяцы 10.2026, 11.2026')")
+            both = tab.inner_text("#budgetList")
+            tab.once("dialog", lambda dialog: dialog.accept())
+            tab.click("[data-budget-remove$='2026-10_2026-11.xlsx']")
+            tab.wait_for_function(
+                "document.getElementById('budgetList').textContent.includes('Убранные')")
+            after_remove = tab.inner_text("#budgetList")
+            removed_msg = tab.inner_text("#budgetMsg")
+            tab.click("[data-budget-restore]")
+            tab.wait_for_function(
+                "!document.getElementById('budgetList').textContent.includes('Убранные')")
+            restored = tab.inner_text("#budgetList")
         finally:
             browser.close()
 
     assert not errors, errors
     assert "не нашлось шапки с месяцами" in refused
-    assert stored == "Бюджет загружен, в нём месяцы: 2026-09, 2026-10."
-    assert len(list((tmp_path / "monitor" / "Гродненская" / "budget").glob("*.xlsx"))) == 1
+    assert stored == ("Бюджет загружен, лист «Sheet», в нём месяцы: 2026-09, 2026-10. "
+                      "План этих месяцев сводка теперь берёт из этого файла.")
+    assert "план в сводку: 09.2026, 10.2026" in first_list
+    # Загруженный последним забирает октябрь; у первого остаётся сентябрь.
+    assert "план в сводку: 10.2026, 11.2026" in both
+    assert "план в сводку: 09.2026 " in both
+    assert "Убранные бюджеты" in after_remove
+    assert "план в сводку: 09.2026, 10.2026" in after_remove
+    assert removed_msg.startswith("Бюджет убран из расчёта")
+    assert "план в сводку: 10.2026, 11.2026" in restored
+    folder = tmp_path / "monitor" / "Гродненская" / "budget"
+    assert len(list(folder.glob("*.xlsx"))) == 2

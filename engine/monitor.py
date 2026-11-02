@@ -37,6 +37,13 @@ class MonitorEstimateRequest(BaseModel):
     key: str = ""
 
 
+class MonitorBudgetFileRequest(BaseModel):
+    project: str
+    name: str = ""
+    session: str = ""
+    key: str = ""
+
+
 class MonitorSalesRequest(BaseModel):
     project: str
     taken_at: str
@@ -570,6 +577,43 @@ def monitor_store_budget(req: MonitorEstimateRequest) -> dict[str, Any]:
             req.filename)
     except FileExistsError as exc:
         raise HTTPException(409, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/monitor/budget/list", include_in_schema=False)
+def monitor_list_budgets(req: MonitorBudgetFileRequest) -> dict[str, Any]:
+    """Загруженные бюджеты: месяцы, лист, время загрузки, чей план идёт в сводку."""
+    _require_team_access(req.session, req.key, "Монитор проекта")
+    import developaid_monthly_budget as monthly_budget
+    try:
+        return monthly_budget.list_budgets(req.project)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/monitor/budget/remove", include_in_schema=False)
+def monitor_remove_budget(req: MonitorBudgetFileRequest) -> dict[str, Any]:
+    """Убрать ошибочно загруженный бюджет из расчёта; файл уходит в архив."""
+    _require_team_access(req.session, req.key, "Монитор проекта")
+    import developaid_monthly_budget as monthly_budget
+    try:
+        return monthly_budget.remove_budget(req.project, req.name)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/monitor/budget/restore", include_in_schema=False)
+def monitor_restore_budget(req: MonitorBudgetFileRequest) -> dict[str, Any]:
+    """Вернуть убранный бюджет в расчёт."""
+    _require_team_access(req.session, req.key, "Монитор проекта")
+    import developaid_monthly_budget as monthly_budget
+    try:
+        return monthly_budget.restore_budget(req.project, req.name)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc))
     except ValueError as exc:
         raise HTTPException(400, str(exc))
 

@@ -949,6 +949,11 @@ def sales(sales_project: str, kind: str, end: Any,
                     "bank_reason": bank_reason or None,
                     "edge": _edge(between(quarter_start - datetime.timedelta(days=EDGE_DAYS),
                                           quarter_start - datetime.timedelta(days=1)))},
+        # Подписано в месяце против «зарегистрировано в месяце» из отчёта отдела
+        # продаж и объяснение разницы — тот же расчёт, что в кабинете.
+        "registered": salesroom.registration_check(part("salesroom"), rows, month_key,
+                                                   bounds["end"].isoformat(),
+                                                   (sources.get("contracting") or {}).get("at")),
         # Воронка из ежедневных отчётов отдела продаж (чат: бот или выгрузка).
         "funnel": salesroom.funnel(part("salesroom"), bounds["start"].isoformat(),
                                    bounds["end"].isoformat()),
@@ -2193,13 +2198,14 @@ def _pieces(fact: dict[str, Any]) -> str:
     return ", ".join(out)
 
 
-def _stage_words(stages: dict[str, Any]) -> list[str]:
+def _stage_words(stages: dict[str, Any], bookings_word: str = "новые брони") -> list[str]:
     """«целевые звонки 7 → встречи 5 (71,4%) → …»: ступень, которой в отчётах
-    нет, так и названа, а не пропущена."""
+    нет, так и названа, а не пропущена. Встреч больше, чем звонков, — доля
+    не печатается: больше 100% — не конверсия (`salesroom.MORE_MEETINGS`)."""
     out = []
     for key, word, share in (("calls", "целевые звонки", None),
                              ("meetings", "встречи", "meetings_share"),
-                             ("bookings", "новые брони", "bookings_share"),
+                             ("bookings", bookings_word, "bookings_share"),
                              ("deals", "договоры", "deals_share")):
         value = stages.get(key)
         if value is None:
@@ -2210,20 +2216,45 @@ def _stage_words(stages: dict[str, Any]) -> list[str]:
     return out
 
 
+def _agent_words(agent: dict[str, Any]) -> str:
+    """«Через агентов: агентские брони 1 → договоры 0 (0,0%); брокер-туров 2.»"""
+    if agent.get("bookings") is None:
+        text = "Через агентов: брони в отчётах не названы"
+    else:
+        share = agent.get("deals_share")
+        text = (f"Через агентов: агентские брони {agent['bookings']:.0f} → договоры "
+                f"{agent['deals']:.0f}" + (f" ({_pct(share)})" if share is not None else ""))
+    if agent.get("broker_tours") is not None:
+        text += f"; брокер-туров {agent['broker_tours']:.0f}"
+    return text + "."
+
+
 def _funnel_line(block: dict[str, Any], kind: str) -> str:
-    """Воронка за период: целевые звонки → встречи → новые брони → договоры с
-    конверсией между ступенями (владелец, 24.10.2026: «Почему в воронке нет
-    целевых звонков? Звонок — встреча — бронь»). Брокер-туры и то, что сейчас
-    в работе, — рядом."""
+    """Воронка за период двумя путями (владелец, 24.10.2026: «Звонок — встреча
+    — бронь»; 02.11.2026: «напротив брони „Агентская“. Значит это не по
+    звонку»): прямой — целевые звонки → встречи → прямые брони → договоры,
+    и отдельно агентские брони → договоры с брокер-турами рядом."""
     pipe = block.get("pipeline") or {}
     state = block.get("funnel") or {}
     if not pipe and not state:
         return ""
-    text = f"Воронка за {PERIODS[kind]}: "
-    text += " → ".join(_stage_words(pipe.get("total") or {})) if pipe else "отчётов нет"
-    text += ". В скобках — доля от предыдущей ступени; договоры — по дате подписания."
-    if state.get("broker_tours") is not None:
-        text += f" Брокер-туров {state['broker_tours']:.0f}."
+    text = f"Воронка за {PERIODS[kind]}. "
+    if pipe:
+        direct = pipe.get("direct") or pipe.get("total") or {}
+        text += "Прямой путь: " + " → ".join(_stage_words(direct, "прямые брони")) + "."
+        if pipe.get("more_meetings_text"):
+            text += " " + pipe["more_meetings_text"][:1].upper() + pipe["more_meetings_text"][1:] + "."
+        if pipe.get("agent"):
+            text += " " + _agent_words(pipe["agent"])
+        total = pipe.get("total") or {}
+        if total.get("bookings") is not None:
+            text += (f" Всего новых броней {total['bookings']:.0f}, договоров "
+                     f"{float(total.get('deals') or 0):.0f}.")
+    else:
+        text += "Отчётов нет."
+        if state.get("broker_tours") is not None:
+            text += f" Брокер-туров {state['broker_tours']:.0f}."
+    text += " В скобках — доля от предыдущей ступени; договоры — по дате подписания."
     now = ", ".join(f"{word} {state[key]:.0f}" for key, word in (
         ("bookings", "броней"), ("registering", "ДДУ на регистрации")) if state.get(key) is not None)
     if now:
@@ -2234,22 +2265,43 @@ def _funnel_line(block: dict[str, Any], kind: str) -> str:
 
 def _funnel_figure(block: dict[str, Any], kind: str) -> str:
     """Та же воронка картинкой (владелец, 24.10.2026: «нарисуй воронку
-    картинкой») — из тех же чисел, что строка над ней."""
-    total = (block.get("pipeline") or {}).get("total") or {}
-    if not total:
+    картинкой») — из тех же чисел, что строка над ней: прямой путь и рядом
+    агентский."""
+    pipe = block.get("pipeline") or {}
+    direct = pipe.get("direct") or pipe.get("total") or {}
+    if not direct:
         return ""
-    return charts.funnel_chart(
-        f"Воронка продаж за {PERIODS[kind]}",
-        [("Целевые звонки", total.get("calls"), None),
-         ("Встречи", total.get("meetings"), total.get("meetings_share")),
-         ("Новые брони", total.get("bookings"), total.get("bookings_share")),
-         ("Договоры", total.get("deals"), total.get("deals_share"))],
-        "доля — от предыдущей ступени; договоры — по дате подписания")
+    caption = "доля — от предыдущей ступени; договоры — по дате подписания"
+    if pipe.get("more_meetings_text"):
+        caption = pipe["more_meetings_text"] + "; " + caption
+    out = charts.funnel_chart(
+        f"Воронка продаж за {PERIODS[kind]}: прямой путь",
+        [("Целевые звонки", direct.get("calls"), None),
+         ("Встречи", direct.get("meetings"), direct.get("meetings_share")),
+         ("Прямые брони", direct.get("bookings"), direct.get("bookings_share")),
+         ("Договоры", direct.get("deals"), direct.get("deals_share"))],
+        caption)
+    agent = pipe.get("agent") or {}
+    if agent.get("bookings"):
+        out += charts.funnel_chart(
+            f"Через агентов за {PERIODS[kind]}",
+            [("Агентские брони", agent.get("bookings"), None),
+             ("Договоры", agent.get("deals"), agent.get("deals_share"))],
+            "договор наследует канал брони на ту же квартиру")
+    return out
+
+
+def _split_words(row: dict[str, Any], key: str) -> str:
+    """«(прямых 1, через агентов 1)» — разбивка по каналу, если она есть."""
+    direct, agent = int(row.get(f"direct_{key}") or 0), int(row.get(f"agent_{key}") or 0)
+    parts = ([f"прямых {direct}"] if direct else []) + ([f"через агентов {agent}"] if agent else [])
+    return " (" + ", ".join(parts) + ")" if parts else ""
 
 
 def _managers_line(block: dict[str, Any]) -> str:
     """По менеджерам — тем же расчётом, что воронка отдела («и плюс
-    статистика менеджеров», владелец, 24.10.2026)."""
+    статистика менеджеров», владелец, 24.10.2026), с разбивкой брони и
+    договоров на прямые и через агентов."""
     pipe = block.get("pipeline") or {}
     if not pipe:
         return ""
@@ -2259,8 +2311,10 @@ def _managers_line(block: dict[str, Any]) -> str:
     if managers:
         text = "По менеджерам: " + ", ".join(
             f"{row['author']} — {row['bookings']} "
-            f"{_plural(row['bookings'], 'новая бронь', 'новые брони', 'новых броней')} и "
+            f"{_plural(row['bookings'], 'новая бронь', 'новые брони', 'новых броней')}"
+            f"{_split_words(row, 'bookings')} и "
             f"{row['deals']} {_plural(row['deals'], 'договор', 'договора', 'договоров')}"
+            f"{_split_words(row, 'deals')}"
             for row in managers) + "."
     if notes:
         text += (" " if text else "Оговорки: ") + "; ".join(notes) + "."
@@ -2285,18 +2339,30 @@ SIGNED_NOTE = ("Расхождение с отделом продаж — из-�
 # контрактации нет, поэтому сумма «по регистрации» — верхняя граница, и
 # примечание говорит «если зарегистрированы в квартале» (владелец, 24.10.2026:
 # «надо в отчёте это расхождение примечанием пометить» — с цифрами).
-EDGE_DAYS = 14
+EDGE_DAYS = salesroom.REGISTRATION_DAYS
 
 
-def _signed_note(quarter: dict[str, Any]) -> str:
-    """Примечание о подписании и регистрации — с цифрами квартала."""
+def _signed_note(quarter: dict[str, Any], registered: dict[str, Any] | None = None) -> str:
+    """Примечание о подписании и регистрации — одно на месяц и квартал.
+
+    ``registered`` — сверка месяца (`salesroom.registration_check`): подписано
+    по выгрузке договоров, зарегистрировано по отчёту отдела продаж и чем
+    закрывается разница. Если сверка месяца есть и месяц — первый в квартале,
+    абзац о квартале повторил бы те же договоры конца прошлого месяца и
+    опускается.
+    """
+    month_lines = list((registered or {}).get("lines") or [])
+    text = " ".join([SIGNED_NOTE] + month_lines)
     edge = quarter.get("edge") or {}
-    if not edge.get("contracts"):
-        return SIGNED_NOTE
+    compared = bool((registered or {}).get("signed"))
+    first_of_quarter = str((registered or {}).get("month") or "")[5:7] in ("01", "04", "07", "10")
+    if not edge.get("contracts") or (compared and first_of_quarter):
+        return text
     days = " и ".join(_date(day).strftime("%d.%m") for day in edge["days"])
     count = int(edge["contracts"])
     total = float(quarter["fact"]["amount"]) + float(edge["amount"])
-    return (f"{SIGNED_NOTE} Сейчас это {count} "
+    lead = "По кварталу: сейчас это" if month_lines else "Сейчас это"
+    return (f"{text} {lead} {count} "
             f"{_plural(count, 'договор', 'договора', 'договоров')} на {_rub(edge['amount'])}: "
             f"{_plural(count, 'он подписан', 'они подписаны', 'они подписаны')} {days}, в конце "
             "прошлого квартала, и сводка относит их туда. Если их зарегистрировали уже в этом "
@@ -3141,7 +3207,7 @@ def render_text(report: dict[str, Any]) -> str:
             lines.append(esc(_managers_line(block)))
         if block.get("bookings"):
             lines.append(esc(_bookings_line(block["bookings"], report["kind"])))
-        lines.append(esc(_signed_note(quarter)))
+        lines.append(esc(_signed_note(quarter, block.get("registered"))))
         if block.get("stale"):
             lines.append(f"Внимание: договоры загружены {_day(block['uploaded'])}, "
                          "более поздние сделки в сводку не попали.")
@@ -3783,6 +3849,34 @@ def _delta(value: float | None) -> str:
     return ("+" if value > 0 else "") + _rub(value)
 
 
+def _plan_sources_words(trend: list[dict[str, Any]]) -> str:
+    """Из какого загруженного бюджета взят план месяцев графика.
+
+    Владелец (02.11.2026) загрузил бюджет октября, а план на графике не
+    сменился: без имени файла не видно, что план идёт из другого бюджета.
+    """
+    groups: list[tuple[str, list[str]]] = []
+    for point in trend:
+        source = point.get("plan_file")
+        if not source:
+            continue
+        period = "–".join(_months_label(f"{m}-01") for m in source["period"].split("–")
+                          if m) if source.get("period") else ""
+        key = f"бюджета от {_day(source['file'])}" + (f" ({period})" if period else "")
+        if groups and groups[-1][0] == key:
+            groups[-1][1].append(point["month"])
+        else:
+            groups.append((key, [point["month"]]))
+    if not groups:
+        return ""
+    parts = []
+    for key, months in groups:
+        span = (_months_label(months[0]) if len(months) == 1
+                else f"{_months_label(months[0])} — {_months_label(months[-1])}")
+        parts.append(f"{span} — из {key}")
+    return "План по месяцам взят из загруженных бюджетов: " + "; ".join(parts) + "."
+
+
 def _budget_depth_html(block: dict[str, Any], end: datetime.date) -> str:
     esc = html.escape
     out = []
@@ -3821,6 +3915,9 @@ def _budget_depth_html(block: dict[str, Any], end: datetime.date) -> str:
              money(p["fact"]["commercial"], "нет данных")] for p in trend]))
         out.append("<p class='note'>«Нет данных» — месяц раньше первой оплаты в реестре РСС; "
                    "«нет плана» — месяца нет ни в одном загруженном бюджете.</p>")
+        sources = _plan_sources_words(trend)
+        if sources:
+            out.append(f"<p class='note'>{esc(sources)}</p>")
     articles = block.get("articles") or {}
     if articles.get("known"):
         month_words = _months_label(articles["month"])
@@ -4227,7 +4324,7 @@ def render_html(report: dict[str, Any]) -> str:
             out.append(f"<p class='note'>{esc(_managers_line(block))}</p>")
         if block.get("bookings"):
             out.append(f"<p>{esc(_bookings_line(block['bookings'], report['kind']))}</p>")
-        out.append(f"<p class='note'>{esc(_signed_note(quarter))}</p>")
+        out.append(f"<p class='note'>{esc(_signed_note(quarter, block.get('registered')))}</p>")
         if block.get("stale"):
             out.append(f"<p class='note warn'>Договоры загружены {_day(block['uploaded'])}, "
                        "более поздние сделки в сводку не попали.</p>")

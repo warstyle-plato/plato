@@ -500,6 +500,46 @@ def _fmt_ru(value: float, digits: int = 0) -> str:
     return text
 
 
+def _footprint_basis(origin: str, *, room: float, coverage_pct: float, coverage_origin: str,
+                     coverage_sqm: float, typical: float, limit: float, home_gns: float,
+                     fit: float, territory: str) -> str:
+    """Что ограничивает пятно — по той ветке, которую выбрал расчёт (`origin`).
+
+    Владелец 02.11.2026: «при увеличении свободного места пятно не изменяется».
+    Пятно — меньшее из свободного места и процента застройки (или по типовой
+    этажности, пределу, ручному числу); подпись называет именно ту границу,
+    что сработала, а не угадывает её по совпадению чисел.
+    """
+    free = f"Свободно под здание — {_fmt_ru(room)} м²"
+    pct_word = ("задан в проекте" if coverage_origin == "manual"
+                else "обычное значение для жилья, его можно поменять в допущениях ниже")
+    if origin == "manual":
+        return "Задано вручную в допущениях ниже. Чтобы пятно считалось само, очистите поле."
+    if origin == "coverage":
+        return (f"Пятно ограничено процентом застройки: {_fmt_ru(coverage_pct)}% {territory} — "
+                f"это {_fmt_ru(coverage_sqm)} м² (процент {pct_word}). {free}. Чтобы занять "
+                "больше, поднимите процент застройки или задайте пятно вручную.")
+    if origin == "estimate":
+        cap = (f" Процент застройки ({_fmt_ru(coverage_pct)}%) позволил бы "
+               f"{_fmt_ru(coverage_sqm)} м², то есть больше." if coverage_origin != "none" else
+               " Процент застройки не задан, поэтому пятно — всё свободное место.")
+        return (f"Пятно ограничено свободным местом: после двора, проездов, стоянок и отступов "
+                f"под здание остаётся {_fmt_ru(room)} м².{cap} Чтобы пятно стало больше, "
+                "уменьшите проезды или отступы или задайте пятно вручную.")
+    if origin == "typical":
+        return (f"Пятно ограничено типовой этажностью из допущений: наземная площадь "
+                f"{_fmt_ru(home_gns)} м² на {_fmt_ru(min(typical, limit))} этажах. {free}, "
+                f"процент застройки позволяет {_fmt_ru(coverage_sqm)} м². Чтобы пятно стало "
+                "больше, уменьшите типовую этажность или очистите это поле.")
+    if origin == "fit":
+        return (f"Пятно ограничено тем, сколько корпусов встаёт на участок с отступами и "
+                f"разрывами: не больше {_fmt_ru(fit)} м². {free}.")
+    if origin == "limit":
+        return (f"Пятно взято по предельной этажности {_fmt_ru(limit)} этажей: с меньшим пятном "
+                "здание было бы выше предела. Подробности — в красной плашке этой карточки.")
+    return "Оценка по балансу территории."
+
+
 def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
     """Пятно застройки, средняя этажность, подземный контур, уровни и надбавка.
 
@@ -798,6 +838,16 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
         "footprint_estimate_sqm": max(0.0, estimate),
         "footprint_sqm": footprint,
         "footprint_origin": footprint_origin,
+        # Что ограничивает пятно — подпись по сработавшей ветке (`_footprint_basis`).
+        "footprint_basis": _footprint_basis(
+            footprint_origin, room=room, coverage_pct=coverage_pct,
+            coverage_origin=coverage_origin, coverage_sqm=coverage_sqm, typical=typical,
+            limit=limit, home_gns=home_gns, fit=fit,
+            territory="жилой территории" if objects else "участка"),
+        # Поле допущений, которым эту границу двигают (пусто — поля нет).
+        "footprint_limit_field": {"coverage": "site_coverage_max_pct",
+                                  "typical": "residential_storeys_typical",
+                                  "manual": "building_footprint_sqm"}.get(footprint_origin, ""),
         "footprint_shortage_sqm": shortage,
         # Наибольшее пятно, которое встаёт на участок корпусами схемы (0 — без
         # ограничения): вводная книги, посчитанная геометрией схемы.
