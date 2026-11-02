@@ -30,6 +30,15 @@ from test_legal_cases import CARD  # noqa: E402
 PROJECT = "Гродненская"
 PORT = 18809
 
+# Монитор и сводка — только по ключу администратора (решение владельца
+# 02.11.2026): страница и маршруты открываются ключом, а не сессией.
+ADMIN_TEST_KEY = "browser-admin-key"
+
+
+@pytest.fixture(autouse=True)
+def _admin_key(monkeypatch):
+    monkeypatch.setenv("DEVELOPAID_ADMIN_KEY", ADMIN_TEST_KEY)
+
 
 @pytest.fixture(autouse=True)
 def _isolated(tmp_path, monkeypatch):
@@ -93,7 +102,7 @@ def test_the_page_deletes_and_names_a_lost_connection(monkeypatch):
             tab = browser.new_page()
             errors: list[str] = []
             tab.on("pageerror", lambda e: errors.append(str(e)))
-            tab.add_init_script("localStorage.setItem('developaid_web_session','проба')")
+            tab.add_init_script("localStorage.setItem('developaid_web_session','проба');localStorage.setItem('plato_projects_key','browser-admin-key')")
             tab.on("dialog", lambda d: d.accept())
             tab.goto(f"{base}/report", wait_until="domcontentloaded")
             tab.wait_for_selector(f"#project option[value='{PROJECT}']", state="attached")

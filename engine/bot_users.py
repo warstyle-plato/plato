@@ -1421,15 +1421,19 @@ class SiteChatsRequest(BaseModel):
 
 @app.post("/internal/monitor/site-chats", include_in_schema=False)
 def internal_monitor_site_chats(req: SiteChatsRequest) -> dict[str, Any]:
-    """Привязки чатов для /status. Бот спрашивает только для команды, ядро
-    проверяет это ещё раз: имена проектов — данные владельца."""
+    """Привязки чатов для /status — только по проектам, на сводку которых этот
+    Telegram ID подписан (`developaid_report_mailing.subscribed_projects`).
+    Не подписан — `subscriber: False` и пусто: имена проектов — данные владельца."""
     expected = _web_login_sign("monitor-chats", int(req.chat_id or 0))
     if not hmac.compare_digest(str(req.sign or "").encode("utf-8"),
                                expected.encode("utf-8")):
         raise HTTPException(status_code=403, detail="Подпись не сошлась.")
-    if int(req.chat_id or 0) not in team_chat_ids():
-        raise HTTPException(status_code=403, detail="Привязки чатов видит только команда.")
-    return {"projects": site_chat_bindings()}
+    import developaid_report_mailing as mailing
+    allowed = set(mailing.subscribed_projects(req.chat_id))
+    if not allowed:
+        return {"subscriber": False, "projects": []}
+    return {"subscriber": True,
+            "projects": [row for row in site_chat_bindings() if row["project"] in allowed]}
 
 
 @app.post("/internal/monitor/photo", include_in_schema=False)
@@ -1954,9 +1958,9 @@ def team_chat_ids() -> set[int]:
 
 
 def team_access_allowed(session: str, key: str) -> bool:
-    """«Команда владельца» — отдельный от «вошёл» уровень: данные проектов
-    владельца (монитор, сводка руководству, споры, бюджеты, рассылка) не для
-    клиентов. Команда — ключ администратора, ключ кабинета рынка или вход
+    """«Команда владельца» — отдельный от «вошёл» уровень (торги и т.п.).
+    Монитор, сводку и споры она НЕ открывает: там только `admin_key_allowed`.
+    Команда — ключ администратора, ключ кабинета рынка или вход
     человека из `team_chat_ids()`. Демо-ссылка — никогда: её просмотр
     разделов решает `demo_section_problem` в `_require_team_access`."""
     secret = _env_str("DEVELOPAID_ADMIN_KEY", "").strip()
@@ -1977,12 +1981,89 @@ def team_access_allowed(session: str, key: str) -> bool:
 _TEAM_DEMO_BLOCKS = {"Монитор проекта": "monitor", "Сводка руководству": "report"}
 
 
+# Монитор, сводка руководству и споры — только ключ администратора (решение
+# владельца 02.11.2026: «убрать доступ к блоку report и monitor для всех кроме
+# обладателя ключа администратор»). Ключ кабинета рынка, вход через Telegram
+# (команда и админы по chat_id) и демо-ссылки эти разделы не открывают.
+ADMIN_KEY_ONLY_SECTIONS = frozenset({"Монитор проекта", "Сводка руководству",
+                                     "Споры и претензии"})
+ADMIN_KEY_ONLY_DENIED = "Раздел доступен только по ключу администратора."
+# Ключ едет полем тела или этим заголовком (GET-маршрутам — чтобы не попасть в адрес).
+ADMIN_KEY_HEADER = "x-developaid-admin-key"
+
+
+def _admin_key_from_request() -> str:
+    current = globals().get("_access_request")
+    request = current() if callable(current) else None
+    if request is None:
+        return ""
+    return str(request.headers.get(ADMIN_KEY_HEADER) or "")
+
+
+def admin_key_allowed(key: str) -> bool:
+    """ЕДИНСТВЕННОЕ решение «доступ к монитору и сводке»: ключ администратора.
+    Не задан `DEVELOPAID_ADMIN_KEY` — закрыто для всех (fail closed)."""
+    secret = _env_str("DEVELOPAID_ADMIN_KEY", "").strip()
+    if not secret:
+        return False
+    for candidate in (str(key or "").strip(), _admin_key_from_request().strip()):
+        if candidate and hmac.compare_digest(candidate.encode("utf-8"), secret.encode("utf-8")):
+            return True
+    return False
+
+
+def admin_key_gate_state() -> dict[str, Any]:
+    """Для /health: закрыты ли разделы для всех и почему (сам ключ не выдаётся)."""
+    configured = bool(_env_str("DEVELOPAID_ADMIN_KEY", "").strip())
+    return {"sections": sorted(ADMIN_KEY_ONLY_SECTIONS), "admin_key_configured": configured,
+            "reason": "" if configured else
+            "DEVELOPAID_ADMIN_KEY не задан: монитор и сводка закрыты для всех."}
+
+
+def _admin_gate_refused_via(key: str, session: str = "") -> str:
+    try:
+        demo = globals().get("demo_session_chat")
+        if session and callable(demo) and demo(session):
+            return "demo_link"
+        if session and _web_identity_chat_id(session):
+            return ("team_login" if _web_identity_chat_id(session) in team_chat_ids()
+                    else "telegram_login")
+        team_key = globals().get("_access_team_key")
+        if callable(team_key) and team_key():
+            return "market_key"
+        current = globals().get("_access_request")
+        request = current() if callable(current) else None
+        if request is not None and request.cookies.get(globals().get("DEMO_COOKIE", "")):
+            return "demo_link"
+    except Exception:
+        pass
+    return "wrong_key" if str(key or "").strip() else "no_key"
+
+
+def _require_admin_key(key: str, what: str, session: str = "") -> None:
+    if admin_key_allowed(key):
+        return
+    log = logging.getLogger("developaid.access")
+    if not _env_str("DEVELOPAID_ADMIN_KEY", "").strip():
+        log.warning("admin-key gate closed for everyone: DEVELOPAID_ADMIN_KEY is not set (%s)", what)
+    # Кого отрезало — видом пропуска, без chat_id и ключей: владелец видит в журнале,
+    # кто ходил в раздел не по ключу администратора.
+    log.info("admin-key gate refused %s via=%s", what, _admin_gate_refused_via(key, session))
+    raise HTTPException(status_code=403, detail=f"«{what}»: {ADMIN_KEY_ONLY_DENIED}")
+
+
 def _require_team_access(session: str, key: str, what: str, *, write: bool = True) -> None:
     """Пропуск к данным команды. Без токена бота механизм выключен, как и вход.
+
+    Разделы `ADMIN_KEY_ONLY_SECTIONS` — только ключ администратора, всегда,
+    в том числе без токена бота (`_require_admin_key`).
 
     `write=False` — маршрут только читает: его может открыть демо-ссылка с
     этим разделом (решает `demo_section_problem`). Умолчание — запись: новый
     маршрут закрыт демо, пока его явно не назвали чтением."""
+    if what in ADMIN_KEY_ONLY_SECTIONS:
+        _require_admin_key(key, what, session)
+        return
     if not _telegram_token():
         return
     if team_access_allowed(session, key):

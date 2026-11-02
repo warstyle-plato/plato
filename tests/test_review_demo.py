@@ -207,8 +207,8 @@ def test_a_demo_link_without_the_section_does_not_see_the_team_data(path, monkey
         "source": "проверка", "taken_at": "2026-10-22", "content_base64": ""})
     assert answer.status_code == 403, answer.text
     detail = answer.json()["detail"]
-    assert ("не открывает раздел" in detail or "Споры и претензии" in detail
-            or "для команды владельца" in detail), detail
+    # Монитор и сводка — только по ключу администратора (02.11.2026).
+    assert core.ADMIN_KEY_ONLY_DENIED in detail, detail
 
 
 # --- на отрисованной странице -----------------------------------------------------

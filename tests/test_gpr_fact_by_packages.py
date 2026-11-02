@@ -30,6 +30,15 @@ import developaid_monitor_manager as manager  # noqa: E402
 
 PROJECT = "Пакетный"
 
+# Монитор и сводка — только по ключу администратора (решение владельца
+# 02.11.2026): страница и маршруты открываются ключом, а не сессией.
+ADMIN_TEST_KEY = "browser-admin-key"
+
+
+@pytest.fixture(autouse=True)
+def _admin_key(monkeypatch):
+    monkeypatch.setenv("DEVELOPAID_ADMIN_KEY", ADMIN_TEST_KEY)
+
 
 @pytest.fixture(autouse=True)
 def _isolated(tmp_path, monkeypatch):
@@ -197,7 +206,7 @@ def test_the_monitor_button_says_what_the_packages_gave(tmp_path, monkeypatch):
         browser = pw.chromium.launch(executable_path=str(chrome))
         try:
             tab = browser.new_page()
-            tab.add_init_script("localStorage.setItem('developaid_web_session','проба')")
+            tab.add_init_script("localStorage.setItem('developaid_web_session','проба');localStorage.setItem('plato_projects_key','browser-admin-key')")
             tab.goto(f"{base}/monitor", wait_until="domcontentloaded")
             tab.wait_for_function("document.getElementById('gprFactBtn')!==null")
             if not tab.is_visible("#gprFactBtn"):
@@ -339,7 +348,7 @@ def test_the_withdraw_button_on_the_rendered_page(tmp_path, monkeypatch):
         browser = pw.chromium.launch(executable_path=str(chrome))
         try:
             tab = browser.new_page()
-            tab.add_init_script("localStorage.setItem('developaid_web_session','проба')")
+            tab.add_init_script("localStorage.setItem('developaid_web_session','проба');localStorage.setItem('plato_projects_key','browser-admin-key')")
             tab.goto(f"{base}/monitor", wait_until="domcontentloaded")
             tab.wait_for_function("document.getElementById('gprWithdrawBtn')!==null")
             if not tab.is_visible("#gprWithdrawBtn"):

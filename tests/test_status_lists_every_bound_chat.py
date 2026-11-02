@@ -15,7 +15,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
-from test_the_group_counter_shows_itself import OWNER, bot, private, status_of  # noqa: E402,F401
+from test_the_group_counter_shows_itself import (  # noqa: E402,F401
+    OWNER, bot, private, status_of, subscribe)
 
 SITE, SALES, STRANGER = -1001, -1002, 5555
 
@@ -31,6 +32,7 @@ def test_status_names_both_chats_after_a_restart(bot) -> None:
     import developaid_monitor as monitor
 
     core = bot.core
+    subscribe(OWNER, "Кутузов Сити")
     bot._handle_update(_in(SITE, "Кутузов Сити. Стройка", "/site Кутузов Сити"))
     bot._handle_update(_in(SALES, "Кутузов Сити. Отчеты. Продажи.", "/site Кутузов Сити"))
     daily = monitor._project_dir("Кутузов Сити") / "daily"
@@ -53,24 +55,52 @@ def test_status_names_both_chats_after_a_restart(bot) -> None:
     assert "сообщений не видел ни одного" in text
 
 
-def test_only_the_team_sees_the_bindings(bot) -> None:
+def test_only_a_subscriber_sees_the_bindings(bot) -> None:
+    """Право — числовой Telegram ID в списке подписки на сводку (решение
+    владельца 02.11.2026), а не команда: админ по chat_id без подписки не видит."""
     bot._handle_update(_in(SITE, "Кутузов Сити. Стройка", "/site Кутузов Сити"))
+    for who in (STRANGER, OWNER):
+        bot.sent.clear()
+        bot._handle_update({"message": {"chat": {"id": who, "type": "private"},
+                                        "from": {"id": who}, "text": "/status",
+                                        "date": 1761300000}})
+        answers = [text for chat, text in bot.sent if chat == who]
+        assert answers and "Привязки чатов" not in answers[-1], who
+        assert "Кутузов Сити" not in answers[-1], who
+    # Список меняется — право меняется сразу, без перезапуска (список на диске).
+    subscribe(STRANGER, "Кутузов Сити")
     bot.sent.clear()
     bot._handle_update({"message": {"chat": {"id": STRANGER, "type": "private"},
                                     "from": {"id": STRANGER}, "text": "/status",
                                     "date": 1761300000}})
-    answers = [text for chat, text in bot.sent if chat == STRANGER]
-    assert answers and "Привязки чатов" not in answers[-1]
-    assert "Кутузов Сити" not in answers[-1]
+    assert "Кутузов Сити" in [text for chat, text in bot.sent if chat == STRANGER][-1]
+    import developaid_report_mailing as mailing
+
+    mailing.unsubscribe(STRANGER)
+    bot.sent.clear()
+    bot._handle_update({"message": {"chat": {"id": STRANGER, "type": "private"},
+                                    "from": {"id": STRANGER}, "text": "/status",
+                                    "date": 1761300000}})
+    assert "Кутузов Сити" not in [text for chat, text in bot.sent if chat == STRANGER][-1]
 
 
-def test_the_core_refuses_a_stranger(bot) -> None:
+def test_in_a_group_the_asker_counts_not_the_group(bot) -> None:
+    """В группе право решает ID того, кто спрашивает, а не ID группы."""
+    bot._handle_update(_in(SITE, "Кутузов Сити. Стройка", "/site Кутузов Сити"))
+    subscribe(SITE, "Кутузов Сити")  # даже если ID группы попал в список
+    assert bot.core._telegram_bindings_line(4242) == ""
+    subscribe(4242, "Кутузов Сити")
+    assert "Кутузов Сити" in bot.core._telegram_bindings_line(4242)
+
+
+def test_the_core_shows_a_subscriber_only_their_projects(bot) -> None:
     core = bot.core
-    import pytest
-    from fastapi import HTTPException
-
+    bot._handle_update(_in(SITE, "Кутузов Сити. Стройка", "/site Кутузов Сити"))
+    bot._handle_update(_in(SALES, "Гродненская. Стройка", "/site Гродненская"))
     request = core.SiteChatsRequest(chat_id=STRANGER,
                                     sign=core._web_login_sign("monitor-chats", STRANGER))
-    with pytest.raises(HTTPException) as refused:
-        core.internal_monitor_site_chats(request)
-    assert refused.value.status_code == 403
+    assert core.internal_monitor_site_chats(request) == {"subscriber": False, "projects": []}
+    subscribe(STRANGER, "Гродненская")
+    got = core.internal_monitor_site_chats(request)
+    assert got["subscriber"] is True
+    assert [row["project"] for row in got["projects"]] == ["Гродненская"]

@@ -28,6 +28,15 @@ from market_search import sales_store
 M = 1e6
 PROJECT = "Гродненская"
 
+# Монитор и сводка — только по ключу администратора (решение владельца
+# 02.11.2026): страница и маршруты открываются ключом, а не сессией.
+ADMIN_TEST_KEY = "browser-admin-key"
+
+
+@pytest.fixture(autouse=True)
+def _admin_key(monkeypatch):
+    monkeypatch.setenv("DEVELOPAID_ADMIN_KEY", ADMIN_TEST_KEY)
+
 
 @pytest.fixture(autouse=True)
 def _isolated(tmp_path, monkeypatch):
@@ -389,6 +398,10 @@ def test_budget_route_stores_and_refuses_by_name(monkeypatch):
     import main_legacy as core
 
     monkeypatch.setattr(core, "_require_web_access", lambda *_a, **_k: None)
+
+    # Пропуск монитора — ключ администратора; здесь проверяется сам маршрут.
+
+    monkeypatch.setattr(core, "_require_admin_key", lambda *_a, **_k: None)
     good = core.MonitorEstimateRequest(
         project=PROJECT, taken_at="2026-10-02", filename="бюджет.xlsx",
         content_base64=base64.b64encode(budget_book()).decode())
