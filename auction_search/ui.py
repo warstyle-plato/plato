@@ -910,6 +910,18 @@ function coverageLine(r){
   // Раздел имущества «Развитие территории» — отдельный вход, и молчит он
   // по-своему: пустой раздел и неотвеченный выглядят одинаково, пока не
   // сказано, сколько ссылок он дал.
+  // Городская приватизация берётся только стоящая (решение владельца,
+  // 02.11.2026), и отсев называет причину: молча убранный гараж неотличим от
+  // ненайденного здания.
+  if(r.privatization_seen) bits.push(`приватизация и продажа городской земли: в выборке ${r.privatization_kept||0} из ${r.privatization_seen}`);
+  Object.entries(r.privatization_dropped||{}).forEach(([why,count])=>
+    bits.push(`не взято, потому что ${why}: ${count}`));
+  Object.entries(r.privatization_listing_dropped||{}).forEach(([why,count])=>
+    bits.push(`не открывали карточку, потому что ${why}: ${count}`));
+  (r.privatization_lists||[]).forEach(s=>bits.push(
+    s.reason?`список «${s.name}» не ответил: ${s.reason}`
+            :`список «${s.name}» — карточек к чтению ${s.procedure_links||0}`
+             +(s.empty_pages?`, пустых ответов площадки ${s.empty_pages}`:'')));
   (r.sections||[]).forEach(s=>bits.push(
     s.reason?`раздел «${s.name}» не ответил: ${s.reason}`
             :`раздел «${s.name}» — ссылок ${s.procedure_links||0}`));

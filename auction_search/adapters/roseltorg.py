@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime
+from typing import Any
 from html.parser import HTMLParser
 from urllib.parse import (
     parse_qsl, urlencode, urljoin, urlparse, urlsplit, urlunsplit,
@@ -10,6 +11,7 @@ from urllib.parse import (
 from zoneinfo import ZoneInfo
 
 from auction_search import deadline as clock
+from auction_search import privatization
 from auction_search import reading
 from auction_search.adapters.base import AuctionPlatformAdapter
 from auction_search.classifier import classify_lot, origin_from_evidence
@@ -144,6 +146,128 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
          "https://www.roseltorg.ru/imuschestvo/prochee/razvitie-territorii"
          "?sale=5&okato%5B%5D=45000000000&status%5B%5D=5&status%5B%5D=0&status%5B%5D=1"),
     )
+    # Раздел городской приватизации (решение владельца 02.11.2026: «добавить с
+    # фильтром»). Адреса сверены живыми ответами с ядра 02.11.2026:
+    #
+    # - доли городских обществ (процедуры `178fz…`) поиск тегов площадки
+    #   отдаёт по тегу «продажа доли» — так нашёлся и лот владельца
+    #   178fz30102600019 («Фонвизина 8»), и РТЛ-1, РТЛ-2, ТехноГород-4;
+    # - земля и здания Московской области — разделы имущества с ОКАТО 46.
+    #   Москву здесь НЕ спрашиваем: московская земля и здания 178-ФЗ — те же
+    #   извещения ГИС Торгов (номера `2100000500…`), и их читает ГИС Торги.
+    #
+    # Из списков берутся только процедуры раздела 178-ФЗ: номер `178fz…` или
+    # номер извещения ГИС Торгов (цифры). `COM…` — коммерческая секция
+    # площадки, не городская приватизация; она считается, а не читается.
+    PRIVATIZATION_LISTS = (
+        *(("Доли городских обществ (178-ФЗ), тег «" + tag + "»",
+           "https://www.roseltorg.ru/search/sale?" + urlencode([("tags[]", tag)]))
+          for tag in ("продажа доли", "уставный капитал", "доля в уставном капитале")),
+        ("Земельные участки, Московская область",
+         "https://www.roseltorg.ru/imuschestvo/nedvizhimost/zemelnye-uchastki"
+         "?okato%5B%5D=46000000000&status%5B%5D=5&status%5B%5D=0"),
+        ("Коммерческая недвижимость, Московская область",
+         "https://www.roseltorg.ru/imuschestvo/nedvizhimost/kommercheskaya-nedvizhimost"
+         "?okato%5B%5D=46000000000&status%5B%5D=5&status%5B%5D=0"),
+    )
+    # Страницы списков имущества нумеруются С НУЛЯ: `page=0` — та же первая
+    # страница, `page=1` — вторая (сверено с ядра 02.11.2026: тег «продажа
+    # доли» — десять процедур без номера и на `page=0`, четыре новых на
+    # `page=1`, пусто на `page=2`). Лот владельца «Фонвизина 8» стоял на
+    # второй странице тега «уставный капитал».
+    PRIVATIZATION_MAX_PAGES = 3
+    _PRIVATIZATION_ID = re.compile(r"(?i)^(?:178fz[0-9a-z]+|\d{15,})$")
+
+    @staticmethod
+    def _page_from_zero(url: str, index: int) -> str:
+        if index <= 0:
+            return url
+        parts = urlsplit(url)
+        query = [(key, value) for key, value in parse_qsl(parts.query, keep_blank_values=True)
+                 if key != "page"]
+        query.append(("page", str(index)))
+        return urlunsplit(parts._replace(query=urlencode(query)))
+
+    @classmethod
+    def _privatization_candidate(cls, url: str) -> bool:
+        """Номер процедуры из раздела 178-ФЗ: `178fz…` или номер ГИС Торгов."""
+        parts = [part for part in urlparse(url).path.split("/") if part]
+        if "procedure" not in parts or parts.index("procedure") + 1 >= len(parts):
+            return False
+        return bool(cls._PRIVATIZATION_ID.match(parts[parts.index("procedure") + 1]))
+
+    def _discover_privatization(
+        self, seen_urls: set[str], titles: dict[str, str], deadline: float | None,
+    ) -> list[str]:
+        """Кандидаты раздела приватизации и отсев по строке списка — со счётом.
+
+        Страницы читаются ВСЕ до предела и пачкой: площадка отвечает через
+        раз, и одна и та же страница приходит то полной, то пустой (02.11.2026,
+        тег «уставный капитал»: пусто без номера, десять процедур на второй).
+        Пустая страница здесь — не конец списка, а ответ, который считается.
+        """
+        jobs = [(label, list_url, index)
+                for label, list_url in self.PRIVATIZATION_LISTS
+                for index in range(self.PRIVATIZATION_MAX_PAGES)]
+        pages: dict[tuple[str, int], Any] = {}
+        if not clock.expired(deadline):
+            with ThreadPoolExecutor(max_workers=6) as pool:
+                futures = {
+                    pool.submit(self._read, self._page_from_zero(list_url, index),
+                                clock.timeout(deadline, 25)): (label, list_url, index)
+                    for label, list_url, index in jobs}
+                for future in as_completed(futures):
+                    label, list_url, index = futures[future]
+                    try:
+                        pages[(label, index)] = (self._page_from_zero(list_url, index),
+                                                 future.result())
+                    except Exception as exc:  # noqa: BLE001
+                        pages[(label, index)] = exc
+        found: list[str] = []
+        listing_dropped: dict[str, int] = {}
+        rows: list[dict[str, Any]] = []
+        for label, _list_url in self.PRIVATIZATION_LISTS:
+            row: dict[str, Any] = {"name": label, "procedure_links": 0, "not_178": 0,
+                                   "empty_pages": 0}
+            failures: list[str] = []
+            for index in range(self.PRIVATIZATION_MAX_PAGES):
+                answer = pages.get((label, index))
+                if answer is None:
+                    failures.append(f"страница {index + 1} не спрошена: кончился срок сбора")
+                    continue
+                if isinstance(answer, Exception):
+                    failures.append(f"страница {index + 1}: {type(answer).__name__}: {answer}")
+                    continue
+                page_url, html = answer
+                parser = _RoseltorgHTML()
+                parser.feed(html)
+                self._remember_titles(page_url, parser.links, titles)
+                urls = self._procedure_urls(page_url, parser.links)
+                if not urls:
+                    row["empty_pages"] += 1
+                for url in urls:
+                    if url in seen_urls:
+                        continue
+                    seen_urls.add(url)
+                    if not self._privatization_candidate(url):
+                        row["not_178"] += 1
+                        continue
+                    title = titles.get(url, "")
+                    problem = privatization.listing_problem(
+                        title, self._area_from_text(title))
+                    if problem:
+                        listing_dropped[problem] = listing_dropped.get(problem, 0) + 1
+                        continue
+                    found.append(url)
+                    row["procedure_links"] += 1
+            if failures:
+                row["reason"] = "; ".join(failures)
+            rows.append(row)
+        self.last_report["privatization_lists"] = rows
+        if listing_dropped:
+            self.last_report["privatization_listing_dropped"] = listing_dropped
+        return found
+
     RELEVANT_KINDS = {
         LotKind.LAND_SALE,
         LotKind.LAND_LEASE,
@@ -315,8 +439,10 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
                             # том, чего мы не спрашиваем, читается как
                             # отсутствие таких лотов на рынке.
                             "market": ("процедуры площадки по тегам «земельный участок» и "
-                                       "«комплексное развитие» плюс раздел имущества "
-                                       "«Развитие территории» по Москве")}
+                                       "«комплексное развитие», раздел имущества "
+                                       "«Развитие территории» по Москве и городская "
+                                       "приватизация: доли обществ, земля и здания "
+                                       "Московской области")}
         candidate_urls: list[str] = []
         seen_urls: set[str] = set()
         # Подпись ссылки из раздела: по ней КРТ видно до открытия карточки.
@@ -390,6 +516,10 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
                 candidate_urls.extend(new_urls)
                 seen_urls.update(new_urls)
 
+        # Раздел приватизации — после разделов и тегов: они спрашивались
+        # раньше, и их выдачу новый вход не вытесняет.
+        privatization_urls = self._discover_privatization(seen_urls, titles, deadline)
+        candidate_urls.extend(privatization_urls)
         # Читаем в порядке «сначала то, за чем пришли»: срок кончается раньше,
         # чем список карточек.
         candidate_urls = self._ordered_candidates(candidate_urls, titles)
@@ -424,6 +554,7 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
         # «почему» было нечем — счётчики говорили только «карточек N, лотов M».
         dropped: dict[str, int] = {}
         krt_dropped: dict[str, int] = {}
+        tally = privatization.Tally()
 
         def drop(reason: str, is_krt: bool) -> None:
             dropped[reason] = dropped.get(reason, 0) + 1
@@ -439,6 +570,20 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
             is_krt = (lot.lot_kind == LotKind.KRT
                       or self._looks_like_krt(titles.get(lot_url, ""))
                       or self._looks_like_krt(lot.title or ""))
+            if privatization.applies(lot):
+                # Городская приватизация и продажа городской земли — своё
+                # правило: регион Москва или МО, срок подачи идёт, земля от
+                # 0,5 га, здание от 1 000 м², доли — по правилу для долей.
+                # Вид «доля» и «Продажа доли» прежние шаги отсекали молча.
+                if not tally.keep(lot):
+                    continue
+                if lot.canonical_key in seen_lots:
+                    drop("дубль", is_krt)
+                    continue
+                seen_lots.add(lot.canonical_key)
+                lot.raw["discovered_via"] = "Roseltorg: раздел приватизации (178-ФЗ)"
+                lots.append(lot)
+                continue
             if lot.lot_kind not in self.RELEVANT_KINDS:
                 drop("вид лота не девелоперский", is_krt)
                 continue
@@ -472,6 +617,7 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
             or lot.lot_kind == LotKind.KRT
             or self._looks_like_krt(lot.title or ""))
         self.last_report["kept"] = len(lots)
+        self.last_report.update(tally.report())
         self.last_report["from_section"] = section_found
         if unread:
             # Непрочитанная карточка — «не знаем», а не «лота нет».
@@ -610,6 +756,9 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
                 "published_at": published_at.isoformat() if published_at is not None else None,
             },
         )
+        self._read_privatization_fields(lot, text)
+        organizer = lot.organizer
+        procedure_method = lot.procedure_type
         for field, value in {
             "title": title,
             "cadastral_numbers": ", ".join(cad),
@@ -630,6 +779,56 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
                 source_url=lot_url, fetched_at=fetched_at, raw_value=auction_date,
                 source_section=f"карточка, «Этапы»: {auction_label}")
         return lot
+
+    # Поля карточки по подписи, а не по первому вхождению слова. Первое
+    # «Организатор торгов» на странице — меню регистрации («…Получает
+    # предложения…»), первое «Способ проведения» — разметка для поисковиков
+    # (`"name": "Способ проведения", "value": …`). Разбор по первому вхождению
+    # клал в лот куски меню площадки (карточка 178fz30102600019, 02.11.2026).
+    _CLEAN_METHOD = re.compile(
+        r"Способ проведения\s+([^\"{}|]{3,120}?)\s+Торговая секция")
+    _CLEAN_SECTION = re.compile(
+        r"Торговая секция\s+([^\"{}|]{3,160}?)\s+(?:Подробнее|Запрос на разъяснение)")
+    _CLEAN_ORGANIZER = re.compile(
+        r"Организатор торгов\s+(?:Название организации\s+)?"
+        r"([А-ЯЁ\"«][^|{}]{2,160}?\(ИНН\s*\d{10}\))")
+    _LOCATION = re.compile(
+        r"Расположение\s+(.{6,300}?)(?=\s+(?:Организатор торгов|Название организации|"
+        r"Показать на карте|Продавец|Об объекте|Документ))")
+    _LAND_AREA = re.compile(
+        r"(?iu)Площадь земельного участка\s*([\d\s\u00a0]+(?:[.,]\d+)?)\s*(?:м²|м2|кв\.?\s*м)")
+
+    @classmethod
+    def _read_privatization_fields(cls, lot: AuctionLot, text: str) -> None:
+        """Чистые подписи карточки и площадь — для правила приватизации.
+
+        Найденное по подписи заменяет найденное по первому слову; не нашли —
+        прежнее значение остаётся, а не стирается в пусто.
+        """
+        for pattern, setter in (
+            (cls._CLEAN_METHOD, lambda value: setattr(lot, "procedure_type", value)),
+            (cls._CLEAN_ORGANIZER, lambda value: setattr(lot, "organizer", value)),
+            (cls._CLEAN_SECTION, lambda value: lot.raw.__setitem__("trading_section_clean", value)),
+            (cls._LOCATION, lambda value: lot.raw.__setitem__("location", value)),
+        ):
+            found = pattern.search(text)
+            if found:
+                setter(normalize_space(found.group(1)).strip(" ,;:"))
+        if not privatization.is_privatization(lot):
+            return
+        # У лота приватизации площадь в названии — площадь ПРЕДМЕТА: у здания
+        # это метры здания, у участка — метры участка. Отнести её к земле при
+        # любом предмете значило бы мерить здание порогом участка.
+        land = cls._LAND_AREA.search(text)
+        land_area = parse_decimal(land.group(1)) if land else None
+        if privatization.subject(lot) == "building":
+            if lot.land_area_sqm is not None and lot.building_area_sqm is None:
+                lot.building_area_sqm = lot.land_area_sqm
+                lot.land_area_sqm = None
+            if land_area is not None:
+                lot.land_area_sqm = land_area
+        elif land_area is not None and lot.land_area_sqm is None:
+            lot.land_area_sqm = land_area
 
     @staticmethod
     def _published_at(text: str) -> datetime | None:
