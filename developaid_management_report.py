@@ -949,6 +949,11 @@ def sales(sales_project: str, kind: str, end: Any,
                     "bank_reason": bank_reason or None,
                     "edge": _edge(between(quarter_start - datetime.timedelta(days=EDGE_DAYS),
                                           quarter_start - datetime.timedelta(days=1)))},
+        # Подписано в месяце против «зарегистрировано в месяце» из отчёта отдела
+        # продаж и объяснение разницы — тот же расчёт, что в кабинете.
+        "registered": salesroom.registration_check(part("salesroom"), rows, month_key,
+                                                   bounds["end"].isoformat(),
+                                                   (sources.get("contracting") or {}).get("at")),
         # Воронка из ежедневных отчётов отдела продаж (чат: бот или выгрузка).
         "funnel": salesroom.funnel(part("salesroom"), bounds["start"].isoformat(),
                                    bounds["end"].isoformat()),
@@ -2334,18 +2339,30 @@ SIGNED_NOTE = ("Расхождение с отделом продаж — из-�
 # контрактации нет, поэтому сумма «по регистрации» — верхняя граница, и
 # примечание говорит «если зарегистрированы в квартале» (владелец, 24.10.2026:
 # «надо в отчёте это расхождение примечанием пометить» — с цифрами).
-EDGE_DAYS = 14
+EDGE_DAYS = salesroom.REGISTRATION_DAYS
 
 
-def _signed_note(quarter: dict[str, Any]) -> str:
-    """Примечание о подписании и регистрации — с цифрами квартала."""
+def _signed_note(quarter: dict[str, Any], registered: dict[str, Any] | None = None) -> str:
+    """Примечание о подписании и регистрации — одно на месяц и квартал.
+
+    ``registered`` — сверка месяца (`salesroom.registration_check`): подписано
+    по выгрузке договоров, зарегистрировано по отчёту отдела продаж и чем
+    закрывается разница. Если сверка месяца есть и месяц — первый в квартале,
+    абзац о квартале повторил бы те же договоры конца прошлого месяца и
+    опускается.
+    """
+    month_lines = list((registered or {}).get("lines") or [])
+    text = " ".join([SIGNED_NOTE] + month_lines)
     edge = quarter.get("edge") or {}
-    if not edge.get("contracts"):
-        return SIGNED_NOTE
+    compared = bool((registered or {}).get("signed"))
+    first_of_quarter = str((registered or {}).get("month") or "")[5:7] in ("01", "04", "07", "10")
+    if not edge.get("contracts") or (compared and first_of_quarter):
+        return text
     days = " и ".join(_date(day).strftime("%d.%m") for day in edge["days"])
     count = int(edge["contracts"])
     total = float(quarter["fact"]["amount"]) + float(edge["amount"])
-    return (f"{SIGNED_NOTE} Сейчас это {count} "
+    lead = "По кварталу: сейчас это" if month_lines else "Сейчас это"
+    return (f"{text} {lead} {count} "
             f"{_plural(count, 'договор', 'договора', 'договоров')} на {_rub(edge['amount'])}: "
             f"{_plural(count, 'он подписан', 'они подписаны', 'они подписаны')} {days}, в конце "
             "прошлого квартала, и сводка относит их туда. Если их зарегистрировали уже в этом "
@@ -3190,7 +3207,7 @@ def render_text(report: dict[str, Any]) -> str:
             lines.append(esc(_managers_line(block)))
         if block.get("bookings"):
             lines.append(esc(_bookings_line(block["bookings"], report["kind"])))
-        lines.append(esc(_signed_note(quarter)))
+        lines.append(esc(_signed_note(quarter, block.get("registered"))))
         if block.get("stale"):
             lines.append(f"Внимание: договоры загружены {_day(block['uploaded'])}, "
                          "более поздние сделки в сводку не попали.")
@@ -4307,7 +4324,7 @@ def render_html(report: dict[str, Any]) -> str:
             out.append(f"<p class='note'>{esc(_managers_line(block))}</p>")
         if block.get("bookings"):
             out.append(f"<p>{esc(_bookings_line(block['bookings'], report['kind']))}</p>")
-        out.append(f"<p class='note'>{esc(_signed_note(quarter))}</p>")
+        out.append(f"<p class='note'>{esc(_signed_note(quarter, block.get('registered')))}</p>")
         if block.get("stale"):
             out.append(f"<p class='note warn'>Договоры загружены {_day(block['uploaded'])}, "
                        "более поздние сделки в сводку не попали.</p>")

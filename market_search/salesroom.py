@@ -24,6 +24,9 @@
 **Наполнение эскроу отсюда не берём** (решение владельца, 01.09.2026): деньги
 считаются по проводкам 1С и книге, а ряд из чата был бы четвёртым источником
 одной величины. Он читается только затем, чтобы не спутать его с ценой лота.
+С 02.11.2026 строки «Наполнение эскроу» и «Зарегистрированные ДДУ» читаются
+как наблюдение отдела продаж (`registration_check`): рядом со своим числом,
+с подписью источника, а не вместо проводок и выгрузки договоров.
 """
 
 from __future__ import annotations
@@ -488,6 +491,393 @@ def funnel(read: dict[str, Any] | None, first: str, last: str) -> dict[str, Any]
         named = [day for day in sorted(reported) if key in reported[day]]
         out[key] = reported[named[-1]][key] if named else None
     return out
+
+
+# --- зарегистрированные ДДУ: сверка отчёта отдела продаж с выгрузкой договоров --
+# Владелец (02.11.2026): отчёт чата «за 01.11.2026» пишет «Зарегистрированные
+# ДДУ: Количество — 7, Метры — 500,1, ДС — …», а сводка за октябрь — 5
+# договоров. Отдел продаж считает договор по дате регистрации, сводка — по
+# дате подписания, как план финмодели. Даты регистрации в выгрузке договоров
+# нет, поэтому сверка идёт по числу договоров, метрам и сумме: какие договоры
+# последних дней прошлого месяца (или конца этого) закрывают разницу.
+#
+# Число отдела продаж — наблюдение, а не второй счёт продаж: сводка
+# по-прежнему считает по подписанию, а строка отдела стоит рядом с подписью
+# источника. Наполнение эскроу из того же отчёта читается так же — как
+# наблюдение отдела, деньги сводки по-прежнему из проводок и книги.
+#
+# Блок «Зарегистрированные ДДУ» — нарастающий итог месяца, как «за месяц» у
+# ЦО и встреч: берётся последний отчёт месяца, по дням не складывается.
+#
+# К какому месяцу относится отчёт за 1-е число, решает формат, а не догадка:
+# если «за месяц» у ЦО, встреч или брокер-туров больше, чем «за день», счётчик
+# месяца ещё не обнулился — отчёт подводит итог прошлого месяца. Если «за
+# месяц» равно «за день», а в предыдущем отчёте месячный счётчик был больше —
+# обнулился, отчёт уже нового месяца. Иначе отчёт не относится никуда, и это
+# сказано.
+REGISTRATION_DAYS = 14
+# Округление в отчёте отдела: метры — до десятых, деньги — до копеек, но
+# копейки в отчёте и в выгрузке расходятся (в живом случае на 20 копеек).
+_AREA_TOLERANCE = 0.15
+_AMOUNT_TOLERANCE = 1000.0
+# Сколько договоров с каждого края перебирать: больше — уже не «последние дни».
+_EDGE_POOL = 12
+_EDGE_PICK = 4
+
+_HEADER = re.compile(r"отч[её]т\s*за\s*(\d{2})\.(\d{2})\.(\d{4})", re.I)
+_NUMBER = r"(\d{1,3}(?:\s\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)?)"
+_DASH = r"\s*[-–—:]?\s*"
+_REGISTERED = re.compile(r"зарегистрированн\w*\s*ДДУ\s*:?\s*(.{0,160}?)"
+                         r"(?=количество\s*ЦО|ЦО\s*за|встреч|брокер|ДДУ\s*на\s*регистрации"
+                         r"|текущих|наполнение|$)", re.I)
+_REG_FIELDS = {"contracts": re.compile(r"количество" + _DASH + r"(\d+)", re.I),
+               "area": re.compile(r"метр\w*" + _DASH + _NUMBER, re.I),
+               "amount": re.compile(r"\bДС" + _DASH + _NUMBER, re.I)}
+_ESCROW = {"total": re.compile(r"наполнение\s*эскроу\s*за\s*весь\s*период" + _DASH + _NUMBER
+                               + r"\s*(млрд|млн)?", re.I),
+           "month": re.compile(r"наполнение\s*эскроу\s*за\s*текущий\s*месяц" + _DASH + _NUMBER
+                               + r"\s*(млрд|млн)?", re.I)}
+_MONTH_COUNTS = {"calls": re.compile(r"ЦО\s*за\s*месяц" + _DASH + r"(\d+)", re.I),
+                 "meetings": re.compile(r"встреч\w*\s*за\s*месяц" + _DASH + r"(\d+)", re.I),
+                 "broker_tours": re.compile(r"брокер[\s-]*тур\w*\s*за\s*месяц" + _DASH + r"(\d+)",
+                                            re.I)}
+_IN_MONTH = ("январе", "феврале", "марте", "апреле", "мае", "июне", "июле", "августе",
+             "сентябре", "октябре", "ноябре", "декабре")
+_OF_MONTH = ("января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа",
+             "сентября", "октября", "ноября", "декабря")
+
+
+def _figure(text: str) -> float:
+    return float(text.replace(" ", "").replace(",", "."))
+
+
+def _money(number: str, scale: str | None) -> float:
+    """Рубли из отчёта. «1 591 490 225,9 млрд.» — число уже в рублях, и
+    подпись «млрд» при нём ошибка набора: множитель берётся, только когда
+    число короткое («1,59 млрд»)."""
+    value = _figure(number)
+    if scale and value < 10_000:
+        value *= 1e9 if scale.lower() == "млрд" else 1e6
+    return value
+
+
+def registered_of(text: str) -> dict[str, Any] | None:
+    """Блок «Зарегистрированные ДДУ» отчёта: число, метры, деньги.
+    Блока нет — ``None``: «не сказано», а не «ноль»."""
+    found = _REGISTERED.search(text or "")
+    if not found:
+        return None
+    got: dict[str, Any] = {}
+    for key, pattern in _REG_FIELDS.items():
+        value = pattern.search(found.group(1))
+        got[key] = (int(value.group(1)) if key == "contracts" else _figure(value.group(1))) \
+            if value else None
+    return got if got["contracts"] is not None else None
+
+
+def escrow_of(text: str) -> dict[str, float | None]:
+    """«Наполнение эскроу за весь период / за текущий месяц» — как пишет отдел."""
+    out: dict[str, float | None] = {}
+    for key, pattern in _ESCROW.items():
+        value = pattern.search(text or "")
+        out[key] = _money(value.group(1), value.group(2)) if value else None
+    return out
+
+
+def _report_day(message: dict[str, Any]) -> str:
+    """День отчёта — из заголовка «Отчёт за ДД.ММ.ГГГГ», иначе день сообщения."""
+    head = _HEADER.search(message.get("text") or "")
+    if head:
+        return f"{head.group(3)}-{head.group(2)}-{head.group(1)}"
+    return str(message.get("day") or "")[:10]
+
+
+def _month_counts(text: str) -> dict[str, float]:
+    out = {}
+    for key, pattern in _MONTH_COUNTS.items():
+        value = pattern.search(text or "")
+        if value:
+            out[key] = float(value.group(1))
+    return out
+
+
+def _previous_month(key: str) -> str:
+    year, month = int(key[:4]), int(key[5:7])
+    return f"{year - 1}-12" if month == 1 else f"{year}-{month - 1:02d}"
+
+
+def report_month(text: str, day: str, before: str | None = None) -> str | None:
+    """Месяц, итог которого подводит отчёт за ``day`` (ГГГГ-ММ-ДД).
+
+    ``before`` — текст предыдущего отчёта. Отчёт не за 1-е число — месяц
+    заголовка. Отчёт за 1-е — по счётчикам «за месяц» (см. выше); не видно —
+    ``None``.
+    """
+    if not day:
+        return None
+    if day[8:10] != "01":
+        return day[:7]
+    daily, monthly = _counted(text), _month_counts(text)
+    pairs = [(daily[key], monthly[key]) for key in monthly if key in daily]
+    if any(month > today for today, month in pairs):
+        return _previous_month(day[:7])
+    earlier = _month_counts(before or "")
+    if pairs and any(earlier.get(key, 0.0) > monthly[key] for key in monthly):
+        return day[:7]
+    return None
+
+
+def _month_reports(read: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Отчёты с блоком «Зарегистрированные ДДУ», с днём и месяцем итога."""
+    messages = [m for m in (read or {}).get("messages") or []
+                if _counted(m.get("text") or "") or registered_of(m.get("text") or "")]
+    messages.sort(key=_report_day)
+    out, before = [], None
+    for message in messages:
+        text = message.get("text") or ""
+        day = _report_day(message)
+        registered = registered_of(text)
+        if registered is not None:
+            out.append({"day": day, "month": report_month(text, day, before),
+                        "registered": registered, "escrow": escrow_of(text)})
+        before = text
+    return out
+
+
+def _sums(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Число, метры и сумма договоров — по тому же правилу, что сводка: метры
+    только у того, что продаётся метром."""
+    from market_search import contracting
+
+    totals = contracting._totals(rows) if rows else {"contracts": 0.0, "amount": 0.0}
+    area = sum(float(row.get("area") or 0.0) for row in rows
+               if contracting.product_measure(contracting.product_name(row["product"])) == "area")
+    return {"contracts": int(totals["contracts"]), "area": area,
+            "amount": float(totals["amount"])}
+
+
+def _close(sums: dict[str, Any], seen: dict[str, Any]) -> bool:
+    if sums["contracts"] != seen["contracts"]:
+        return False
+    if seen.get("area") is not None and abs(sums["area"] - seen["area"]) > _AREA_TOLERANCE:
+        return False
+    if seen.get("amount") is not None and abs(sums["amount"] - seen["amount"]) > _AMOUNT_TOLERANCE:
+        return False
+    return True
+
+
+def _explain(signed: list[dict[str, Any]], before: list[dict[str, Any]],
+             seen: dict[str, Any]) -> list[tuple[list, list]]:
+    """Наборы (подписанные в конце прошлого месяца, подписанные в конце этого
+    и ещё не зарегистрированные), с которыми числа отдела сходятся. Не больше
+    двух: два подходящих набора — уже неоднозначность."""
+    import itertools
+
+    def latest(rows):
+        return sorted(rows, key=lambda row: str(row.get("signed") or ""), reverse=True)[:_EDGE_POOL]
+
+    pool_before, pool_late = latest(before), latest(signed)
+    gap = seen["contracts"] - len(signed)
+    found: list[tuple[list, list]] = []
+    for size in range(0, 2 * _EDGE_PICK + 1):
+        for late in range(0, _EDGE_PICK + 1):
+            early = late + gap
+            if early < 0 or early > _EDGE_PICK or early + late != size:
+                continue
+            for add in itertools.combinations(pool_before, early):
+                for drop in itertools.combinations(pool_late, late):
+                    dropped = {id(row) for row in drop}
+                    kept = [row for row in signed if id(row) not in dropped] + list(add)
+                    if _close(_sums(kept), seen):
+                        found.append((list(add), list(drop)))
+                        if len(found) > 1:
+                            return found
+        if found:
+            return found
+    return found
+
+
+def _ru(value: float, digits: int) -> str:
+    return f"{value:,.{digits}f}".replace(",", " ").replace(".", ",")
+
+
+def _sums_words(sums: dict[str, Any]) -> str:
+    count = int(sums["contracts"])
+    word = "договор" if count % 10 == 1 and count % 100 != 11 else (
+        "договора" if count % 10 in (2, 3, 4) and count % 100 not in (12, 13, 14) else "договоров")
+    parts = []
+    if sums.get("area") is not None:
+        parts.append(f"{_ru(sums['area'], 1)} м²")
+    if sums.get("amount") is not None:
+        parts.append(f"{_ru(sums['amount'] / 1e6, 1)} млн ₽")
+    return f"{count} {word}" + (" на " + " и ".join(parts) if parts else "")
+
+
+def _days_words(rows: list[dict[str, Any]]) -> str:
+    days = sorted({str(row.get("signed") or "")[:10] for row in rows})
+    shown = [f"{day[8:10]}.{day[5:7]}" for day in days]
+    return shown[0] if len(shown) == 1 else ", ".join(shown[:-1]) + " и " + shown[-1]
+
+
+def registration_check(read: dict[str, Any] | None, contracts: list[dict[str, Any]],
+                       month: str | None = None, upto: str | None = None,
+                       uploaded: str | None = None) -> dict[str, Any] | None:
+    """Подписано в месяце (выгрузка договоров) рядом с «зарегистрировано в
+    месяце» (последний отчёт отдела продаж за месяц) и объяснение разницы.
+
+    ``month`` — ГГГГ-ММ; не задан — последний месяц, за который отдел продаж
+    назвал зарегистрированные ДДУ. ``upto`` — последний день периода сводки:
+    если месяц не кончился, берутся договоры и отчёт до этого дня. Одна
+    функция для сводки руководству и кабинета; тексты — отсюда же.
+    ``uploaded`` — дата выгрузки договоров: на неё деньги на эскроу.
+    Отчётов с блоком нет — ``None``.
+    """
+    reports = _month_reports(read)
+    if not reports:
+        return None
+    if month is None:
+        dated = [item["month"] for item in reports if item["month"]]
+        if not dated:
+            return None
+        month = max(dated)
+    first = datetime.date.fromisoformat(month + "-01")
+    following = (first.replace(day=28) + datetime.timedelta(days=4)).replace(day=1)
+    end = following - datetime.timedelta(days=1)
+    if upto and datetime.date.fromisoformat(upto[:10]) < end:
+        end = datetime.date.fromisoformat(upto[:10])
+    whole = end == following - datetime.timedelta(days=1)
+    mine = [item for item in reports if item["month"] == month
+            and (whole or item["day"] <= end.isoformat())]
+    undecided = [item for item in reports if item["month"] is None
+                 and item["day"] in (month + "-01", following.isoformat())]
+    if not mine:
+        if not undecided:
+            return None
+        day = undecided[-1]["day"]
+        return {"month": month, "report_day": None, "match": "unknown",
+                "lines": [f"Отчёт отдела продаж за {day[8:10]}.{day[5:7]}.{day[:4]} не отнесён "
+                          "ни к одному месяцу: по счётчикам «за месяц» в нём не видно, "
+                          "начался ли уже новый месяц."]}
+    last = mine[-1]
+    seen = last["registered"]
+
+    def day_of(row):
+        try:
+            return datetime.date.fromisoformat(str(row.get("signed") or "")[:10])
+        except ValueError:
+            return None
+
+    signed = [row for row in contracts if (d := day_of(row)) and first <= d <= end]
+    before = [row for row in contracts if (d := day_of(row))
+              and first - datetime.timedelta(days=REGISTRATION_DAYS) <= d < first]
+    ours = _sums(signed)
+    name = _IN_MONTH[first.month - 1]
+    span = (f"в {name}" if whole
+            else f"с 1 по {end.day} {_OF_MONTH[first.month - 1]}")
+    report_day = last["day"]
+    lines = [f"Подписано {span} — по выгрузке договоров: {_sums_words(ours)}.",
+             f"Зарегистрировано {span} — по отчёту отдела продаж за "
+             f"{report_day[8:10]}.{report_day[5:7]}.{report_day[:4]}: {_sums_words(seen)}."]
+    out = {"month": month, "report_day": report_day, "whole_month": whole,
+           "signed": ours, "registered": seen, "escrow": last["escrow"],
+           "earlier": [], "later": []}
+    if _close(ours, seen):
+        out["match"] = "same"
+        lines.append("Числа совпадают.")
+        out["lines"] = lines
+        return out
+    found = (_explain(signed, before, seen)
+             if seen.get("area") is not None or seen.get("amount") is not None else [])
+    if len(found) == 1:
+        add, drop = found[0]
+        out["match"] = "explained"
+        out["earlier"] = [{"signed": row.get("signed"), "area": row.get("area"),
+                           "amount": row.get("amount")} for row in add]
+        out["later"] = [{"signed": row.get("signed"), "area": row.get("area"),
+                         "amount": row.get("amount")} for row in drop]
+        parts = []
+        if add:
+            parts.append(
+                f"{_sums_words(_sums(add))}, "
+                f"{'подписанный' if len(add) == 1 else 'подписанные'} {_days_words(add)}, в "
+                f"последние дни {_OF_MONTH[(first.month - 2) % 12]}: сводка относит "
+                f"{'его' if len(add) == 1 else 'их'} к {_month_dative(first.month - 2)} — по дате "
+                f"подписания, а отдел продаж — к {_month_dative(first.month - 1)} — по дате регистрации")
+        if drop:
+            parts.append(
+                f"{_sums_words(_sums(drop))}, "
+                f"{'подписанный' if len(drop) == 1 else 'подписанные'} {_days_words(drop)}: в "
+                f"сводке {'он' if len(drop) == 1 else 'они'} уже есть, а в отчёте отдела продаж "
+                f"{'его' if len(drop) == 1 else 'их'} ещё нет — регистрация, судя по сверке, "
+                "ещё не прошла")
+        lines.append("Разницу дают " + "; и ".join(parts) + ". С ними числа сходятся.")
+    else:
+        out["match"] = "ambiguous" if found else "unexplained"
+        if found:
+            lines.append("Разницу можно закрыть разными наборами договоров конца "
+                         f"{_OF_MONTH[(first.month - 2) % 12]} и {_OF_MONTH[first.month - 1]}, "
+                         "поэтому какие именно договоры посчитал отдел продаж, не сказать.")
+        else:
+            lines.append(f"Разницу не удаётся объяснить договорами, подписанными в последние "
+                         f"дни {_OF_MONTH[(first.month - 2) % 12]} или в конце "
+                         f"{_OF_MONTH[first.month - 1]}: числа не сходятся.")
+    if out["match"] == "explained":
+        add, drop = found[0]
+        dropped = {id(row) for row in drop}
+        _paid_lines(out, [row for row in signed if id(row) not in dropped] + list(add),
+                    lines, uploaded)
+    lines.append("Даты регистрации в выгрузке договоров нет, поэтому сверка идёт по числу "
+                 "договоров, метрам и сумме, а не по самим датам.")
+    out["lines"] = lines
+    return out
+
+
+def _to_contracts(count: int) -> str:
+    """«по 1 договору», «по 7 договорам»."""
+    return f"{count} " + ("договору" if count % 10 == 1 and count % 100 != 11 else "договорам")
+
+
+def _paid_lines(out: dict[str, Any], rows: list[dict[str, Any]], lines: list[str],
+                uploaded: str | None) -> None:
+    """Сколько по договорам, которые отдел продаж посчитал зарегистрированными,
+    уже пришло на эскроу (владелец, 02.11.2026: «при этом из 400 почти ничего
+    не оплачено?»). Сумма договора и деньги на счёте расходятся на ипотеку,
+    которую банк перечисляет после регистрации, и на рассрочку. Разбивка по
+    вариантам оплаты — тем же правилом, что в отчёте о продажах
+    (`contracting._payment_structure`)."""
+    from market_search import contracting
+
+    if not rows:
+        return
+    amount = sum(float(row.get("amount") or 0.0) for row in rows)
+    paid = sum(float(row.get("escrow_paid") or 0.0) for row in rows)
+    parts = [{"name": item["name"], "count": item["count"], "amount": item["amount"],
+              "escrow": item["escrow"]} for item in contracting._payment_structure(rows)]
+    out["paid"] = {"contracts": len(rows), "amount": amount, "escrow": paid, "by_payment": parts}
+    when = (f" на {uploaded[8:10]}.{uploaded[5:7]}.{uploaded[:4]}, дату выгрузки договоров"
+            if uploaded else " по выгрузке договоров")
+    share = f" ({_ru(paid / amount * 100, 0)}%)" if amount else ""
+    text = (f"Из {_ru(amount / 1e6, 1)} млн ₽ по {_to_contracts(len(rows))} "
+            f"на эскроу{when} поступило {_ru(paid / 1e6, 1)} млн ₽{share}.")
+    waiting = [item for item in parts if item["amount"] - item["escrow"] >= 1.0]
+    if waiting:
+        text += " Не поступило: " + "; ".join(
+            f"{item['name']} — {_ru((item['amount'] - item['escrow']) / 1e6, 1)} млн ₽ "
+            f"по {_to_contracts(item['count'])}" for item in waiting) + "."
+        if any(item["name"] == "ипотека" for item in waiting):
+            text += (" Деньги по ипотеке банк перечисляет на эскроу только после регистрации "
+                     "договора.")
+        if any(item["name"] == "рассрочка" for item in waiting):
+            text += " По рассрочке остаток приходит платежами по графику."
+    lines.append(text)
+
+
+_TO_MONTH = ("январю", "февралю", "марту", "апрелю", "маю", "июню", "июлю", "августу",
+             "сентябрю", "октябрю", "ноябрю", "декабрю")
+
+
+def _month_dative(index: int) -> str:
+    return _TO_MONTH[index % 12]
 
 
 # --- брони: какие ушли в договор, какие сорвались -----------------------------

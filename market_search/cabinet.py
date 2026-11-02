@@ -3258,6 +3258,16 @@ function roomTrend(labels, series, digits, suffix){
   return '<div class="wrap">'+svg+'</svg></div>';
 }
 
+// Подписано в месяце (выгрузка договоров) и зарегистрировано (отчёт отдела
+// продаж) с объяснением разницы. Строки пишет сервер
+// (`salesroom.registration_check`) — те же, что в сводке руководству.
+function registeredBlock(d){
+  const lines=((d.salesroom||{}).registered||{}).lines||[];
+  if(!lines.length) return '';
+  return '<h3 style="margin-top:14px">Подписано и зарегистрировано за месяц</h3>'
+    +lines.map(t=>`<p style="margin:4px 0">${esc(t)}</p>`).join('');
+}
+
 const ROOM_COLOURS=['#1367AE','#2E7D5B','#C4581B','#6C4AB6','#8798a8'];
 
 function salesRoomBlock(d){
@@ -3941,7 +3951,7 @@ function renderSales(d){
   // Отдел продаж — после каналов и до расторжений: сначала чем и как продавали,
   // потом что говорили в переговорной, потом что сорвалось.
   html+=salesSection('sb-room','Отдел продаж: встречи и разговоры',
-    salesRoomBlock(d), salesNote(d,'salesroom'));
+    salesRoomBlock(d)+registeredBlock(d), salesNote(d,'salesroom'));
 
   if((d.terminated||[]).length){
     html+=salesSection('sb-term','Расторжения',
