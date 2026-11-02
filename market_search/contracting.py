@@ -1974,6 +1974,56 @@ def accumulate(rows: list[dict[str, Any]], opening: dict[str, Any] | None = None
                 row[f"{line}_{metric}_cum"] = total
 
 
+def _next_month(key: str) -> str:
+    year, month = int(key[:4]), int(key[5:7])
+    return f"{year + month // 12:04d}-{month % 12 + 1:02d}"
+
+
+def pace_since_start(dynamics: Iterable[dict[str, Any]], until: str) -> list[dict[str, Any]]:
+    """Темп по месяцам с первого договора по ``until`` и средние с начала продаж.
+
+    Владелец (02.11.2026): «Может добавить скользящую среднюю с момента начала
+    продаж?» — две нарастающие линии на графике темпа:
+
+    - ``avg_area`` / ``avg_units`` / ``avg_amount`` — всё продано с первого
+      месяца продаж по этот месяц включительно, делённое на число месяцев.
+      Месяц без договоров — строка с нулём: он остаётся в знаменателе, иначе
+      пауза в продажах подняла бы средний темп;
+    - ``avg_price_flats`` — сумма договоров квартир, делённая на их метры,
+      нарастающим итогом (средневзвешенная, не среднее месячных цен). Месяцы
+      без метров квартир в неё не входят; пока метров нет — ``None``.
+
+    Числа — те же, что у столбцов и линии цены месяца (``summarise``): график
+    и любые другие читатели берут средние отсюда, а не считают у себя.
+    """
+    by_month = {m["month"]: m for m in dynamics if m.get("month") and m["month"] <= until}
+    sold = [key for key, m in by_month.items()
+            if (m.get("units") or 0) > 0 or (m.get("amount") or 0) > 0]
+    if not sold:
+        return []
+    out: list[dict[str, Any]] = []
+    total = {"area": 0.0, "units": 0.0, "amount": 0.0}
+    flats_area = flats_amount = 0.0
+    key, count = min(sold), 0
+    while key <= until:
+        item = by_month.get(key) or {}
+        flats = (item.get("by_product") or {}).get("Квартира") or {}
+        count += 1
+        row = {"month": key, "price_flats": item.get("price_flats")}
+        for name in total:
+            row[name] = float(item.get(name) or 0.0)
+            total[name] += row[name]
+            row[f"avg_{name}"] = total[name] / count
+        if flats.get("area"):
+            flats_area += float(flats["area"])
+            flats_amount += float(flats.get("amount") or 0.0)
+        row["avg_price_flats"] = flats_amount / flats_area if flats_area else None
+        row["months_since_start"] = count
+        out.append(row)
+        key = _next_month(key)
+    return out
+
+
 def fm_plan_by_month(fm: dict[str, Any] | None) -> dict[str, dict[str, float]]:
     """План финмодели по месяцам: деньги и метры всего проекта.
 

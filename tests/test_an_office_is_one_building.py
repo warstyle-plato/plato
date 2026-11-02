@@ -170,13 +170,18 @@ CONTOUR = """async (ring)=>{
 
 READ = """()=>{
  openTab('tep'); renderTep();
+ // Оговорка о методе видна до раскрытия «Подробнее» (проверяющий #989).
+ const caveat=document.getElementById('siteMassingCaveat');
+ const caveatShown=!!caveat&&caveat.checkVisibility()&&!caveat.closest('details');
+ document.getElementById('siteMassingDetails')&&(document.getElementById('siteMassingDetails').open=true);
  const card=document.getElementById('siteMassingBody');
  const box=document.getElementById('siteMassingScheme');
  const svg=box&&box.querySelector('svg');
  const m=(lastResult.tep||{}).site_massing||{};
  return {roofs:svg?svg.querySelectorAll('polygon[data-kind="roof"]').length:0,
          legend:Array.from(document.querySelectorAll('.site-massing-legend li')).map(n=>n.innerText),
-         card:card?card.innerText:'', scheme:box?box.innerText:'',
+         card:card?card.innerText:'', scheme:box?box.innerText:'', caveatShown,
+         brief:(((m.scheme||{}).layout||{}).analysis_brief||[]).length,
          footprint:m.footprint_sqm||0, storeys:m.average_storeys||0,
          drawn:(((m.scheme||{}).layout||{}).buildings||[]).filter(b=>b.ring_m)
                .reduce((s,b)=>s+b.area_sqm,0)};
@@ -411,7 +416,7 @@ PAGE_SHAPE = """()=>{
  const m=(lastResult.tep||{}).site_massing||{};
  const layout=(m.scheme||{}).layout||{};
  const box=document.getElementById('siteMassingScheme');
- openTab('tep'); renderTep();
+ openTab('tep'); renderTep(); document.getElementById('siteMassingDetails')&&(document.getElementById('siteMassingDetails').open=true);
  return {footprint:m.footprint_sqm||0, origin:m.footprint_origin||'',
          plan:(layout.plan||{}).status||'', points:((layout.buildings||[])[0]||{}).ring_m?
            layout.buildings[0].ring_m.length:0,
@@ -449,3 +454,14 @@ def test_the_page_waits_for_platos_shape_and_redraws(plato):
     assert later["roofs"] == 1 and later["points"] > 4
     card = later["card"].replace("\xa0", " ")
     assert "не встаёт" not in card and "движок" not in card
+
+
+def test_without_a_site_analysis_the_caveat_stays_in_sight(seen):
+    """Проверяющий «Посадка ↔ нормативы» (#989): у офиса нет разбора участка и
+    итога с оговоркой, и единственная оговорка о методе («оценка по балансу
+    территории, а не проект») не должна уходить под закрытый «Подробнее»:
+    метод и границы проверки — рядом с выводом (`docs/site_norms_check.md`, п. 3)."""
+    checked = [k for k, got in seen.items() if isinstance(got, dict) and got.get("brief") == 0]
+    assert checked, "у офиса появился итог разбора — проверка больше ничего не меряет"
+    for key in checked:
+        assert seen[key]["caveatShown"], (key, "оговорка о методе спрятана под «Подробнее»")
