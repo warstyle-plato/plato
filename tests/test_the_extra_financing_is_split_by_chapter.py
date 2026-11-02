@@ -133,6 +133,11 @@ def test_the_report_says_the_chapters_and_what_is_left_out(monkeypatch):
     assert "не входят покупка участка (глава 1 сметы) и проценты по кредиту" in words
 
 
+# Всё, что зовёт fundingStructure на странице Монитора.
+PAGE_FUNCTIONS = ("money", "dt", "pct", "unspentTable", "gapByChapter", "limitReconciliation",
+                  "fundingStructure")
+
+
 def _function(source: str, name: str) -> str:
     start = source.index(f"function {name}(")
     depth = 0
@@ -153,7 +158,7 @@ def test_the_monitor_page_shows_the_chapters_and_the_note():
     script = max(re.findall(r"<script[^>]*>(.*?)</script>", page.MONITOR_PAGE, re.S), key=len)
     esc = re.search(r"const esc=.*?;\n", script).group(0)
     parts = [esc] + [_function(script, name) for name in
-                     ("money", "dt", "pct", "unspentTable", "gapByChapter", "fundingStructure")]
+                     PAGE_FUNCTIONS]
     funding = {key: value for key, value in _limit().items() if key != "need_by_chapter"}
     funding["remaining_need"] = 490 * M
     code = "\n".join(parts) + (
@@ -177,3 +182,117 @@ def test_the_monitor_page_shows_the_chapters_and_the_note():
         capture_output=True, text=True, timeout=60)
     assert empty.returncode == 0, empty.stderr
     assert "глава 2 (стройка)" not in empty.stdout
+
+
+# --- Как сходится: лимит → оплачено → остаток → осталось достроить → не хватает.
+
+def _surplus_articles() -> dict:
+    # Глава 2 не хватает; у главы 3 лимита больше, чем осталось достроить.
+    return {
+        "2.1": {"chapter": "2", "rss_limit": 500.0, "paid_at_baseline": 400.0,
+                "monthly_need": {"2026-11-01": 60.0, "2026-12-01": 90.0}},
+        "3.1": {"chapter": "3", "rss_limit": 100.0, "paid_at_baseline": 40.0,
+                "monthly_need": {"2026-11-01": 25.0}},
+    }
+
+
+def test_the_chain_adds_up_and_names_the_surplus_of_one_chapter():
+    waterfall = dashboard._article_waterfall(_surplus_articles(), 0.0, CUT)
+    rec = dashboard._limit_reconciliation(waterfall, 900.0, ["1", "2", "3"])
+    assert rec["matches"]
+    two, three = rec["chapters"]
+    assert (two["limit"], two["paid"], two["remaining"], two["need"], two["gap"]) == \
+        pytest.approx((500.0, 400.0, 100.0, 150.0, 50.0))
+    assert (three["remaining"], three["need"], three["gap"], three["unused"]) == \
+        pytest.approx((60.0, 25.0, 0.0, 35.0))
+    total = rec["total"]
+    # 175 − 160 = 15, но дофинансировать — 50: излишек главы 3 (35) не переносится.
+    assert total["plain"] == pytest.approx(15.0)
+    assert total["gap"] == pytest.approx(waterfall["additional_financing"]) == pytest.approx(50.0)
+    assert total["plain"] + total["unused"] == pytest.approx(total["gap"])
+    assert rec["outside_chapters"] == ["1"] and rec["outside_limit"] == pytest.approx(300.0)
+    lines = dashboard.reconciliation_lines(rec, report._rub)
+    assert lines[0].startswith("Лимит банка по главам 1–3 — 900 ₽. Сверка ниже считает только "
+                               "главы 2–3 — 600 ₽; остальные 300 ₽ приходятся на глава 1 (участок)")
+    assert "Глава 3 (коммерция): лимит 100 ₽, оплачено 40 ₽, остаток лимита 60 ₽; осталось " \
+           "достроить 25 ₽; не хватает 0 ₽. Лимита останется 35 ₽" in lines[2]
+    assert "излишек одной главы или статьи не покрывает нехватку другой" in lines[-1]
+    assert "дофинансировать нужно 50 ₽, а не меньше" in lines[-1]
+
+
+def test_the_chain_counts_the_reserve_and_the_overpaid_chapter():
+    articles = _articles()
+    articles["3.2"] = {"chapter": "3", "rss_limit": 10.0, "paid_at_baseline": 14.0,
+                       "monthly_need": {"2026-12-01": 6.0}}
+    waterfall = dashboard._article_waterfall(articles, 25.0, CUT)
+    rec = dashboard._limit_reconciliation(waterfall, 0.0, [])
+    assert rec["matches"]
+    total = rec["total"]
+    assert total["plain"] - total["reserve"] + total["unused"] == pytest.approx(total["gap"])
+    assert total["gap"] == pytest.approx(waterfall["additional_financing"])
+    three = rec["chapters"][1]
+    assert three["overpaid"] == pytest.approx(4.0)
+    assert three["remaining"] == pytest.approx(three["limit"] - three["paid"] + three["overpaid"])
+    text = " ".join(dashboard.reconciliation_lines(rec, report._rub))
+    assert "Оплачено больше лимита на 4 ₽" in text and "Резерв закрывает из этого" in text
+    assert "Лимит банка по главам" not in text
+
+
+def test_a_forged_gap_does_not_reconcile():
+    waterfall = dashboard._article_waterfall(_surplus_articles(), 0.0, CUT)
+    forged = {**waterfall, "articles": [{**row, "unfunded_take": row["unfunded_take"] + 5.0}
+                                        for row in waterfall["articles"]]}
+    assert not dashboard._limit_reconciliation(forged, 0.0, [])["matches"]
+
+
+def test_the_monitor_reconciles_the_bank_limit_with_chapters_two_and_three(monkeypatch):
+    from test_the_monitor_takes_the_finmodel_as_its_finance_book import (
+        ESTIMATE, PAID, SECTIONS, _finmodel_funding)
+
+    got = _finmodel_funding(monkeypatch, SECTIONS, ESTIMATE, PAID)
+    rec = got["limit_reconciliation"]
+    assert rec["matches"]
+    assert rec["bank_limit"] == pytest.approx(got["bank_limit"])
+    assert rec["total"]["limit"] == pytest.approx(got["remaining_scope"]["limit"])
+    assert rec["total"]["paid"] == pytest.approx(got["remaining_scope"]["paid"])
+    assert rec["total"]["remaining"] == pytest.approx(got["bank_remaining"])
+    assert rec["total"]["need"] == pytest.approx(got["remaining_need"])
+    assert rec["total"]["gap"] == pytest.approx(got["additional_financing"])
+    assert rec["outside_chapters"] == ["1"]
+    assert got["limit_reconciliation_lines"] == dashboard.reconciliation_lines(
+        rec, dashboard._fmt_money)
+
+
+def test_the_report_and_the_page_show_the_chain(monkeypatch):
+    from test_management_report_funding import PROJECT, _project
+
+    waterfall = dashboard._article_waterfall(_surplus_articles(), 0.0, CUT)
+    rec = dashboard._limit_reconciliation(waterfall, 900.0, ["1", "2", "3"])
+    limit = {**_limit(), "limit_reconciliation": rec,
+             "limit_reconciliation_lines": dashboard.reconciliation_lines(rec, dashboard._fmt_money)}
+    _project()
+    monkeypatch.setattr(report, "_monitor_view",
+                        lambda project, end: {"dashboard": {"funding": limit}})
+    built = report.build(PROJECT, "week", "2026-10-18")
+    for body in (report._funding_html(built), report.render_text(built)):
+        assert "Как сходится дофинансирование" in body
+        assert "не покрывает нехватку другой" in body
+        assert "Лимит банка по главам 1–3" in body
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node недоступен")
+    import developaid_monitor_page as page
+
+    script = max(re.findall(r"<script[^>]*>(.*?)</script>", page.MONITOR_PAGE, re.S), key=len)
+    parts = [re.search(r"const esc=.*?;\n", script).group(0)] + [
+        _function(script, name) for name in PAGE_FUNCTIONS]
+    funding = {key: value for key, value in limit.items() if key != "need_by_chapter"}
+    funding["remaining_need"] = 490 * M
+    done = subprocess.run([node, "-e", "\n".join(parts) + (
+        f"\nconst f={json.dumps(funding, ensure_ascii=False)};"
+        "\nprocess.stdout.write(fundingStructure(f,true,1e9,6e8,490e6));")],
+        capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0, done.stderr
+    assert "Как сходится дофинансирование" in done.stdout
+    assert "не покрывает нехватку другой" in done.stdout

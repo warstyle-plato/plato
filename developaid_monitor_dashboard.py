@@ -839,6 +839,98 @@ def _gap_scope_note(article_rows: list[dict[str, Any]]) -> str:
             "кредиту: здесь посчитаны только стройка и коммерческие расходы.")
 
 
+def _limit_reconciliation(waterfall: dict[str, Any], bank_limit: float,
+                          bank_chapters: Any) -> dict[str, Any]:
+    """Как сходится дофинансирование: лимит → оплачено → остаток → осталось
+    достроить → не хватает. По главам водопада и итогом.
+
+    Владелец (02.11.2026): «У нас сейчас лимит … Надо добавить сколько на
+    достройке. Просто как это сходится тогда». Все числа — строки водопада,
+    второй раз ничего не считается. По каждой статье водопада точно
+    потребность = свой лимит + резерв + непокрытое, поэтому
+    не хватает = осталось достроить − остаток лимита − резерв + лимит, что
+    останется неизрасходованным. Последнее слагаемое — излишек одной статьи
+    или главы: на нехватку другой он не переносится, и «осталось достроить
+    минус остаток» без него не сходится с итогом.
+    """
+    chapters: dict[str, dict[str, Any]] = {}
+    for row in waterfall.get("articles") or []:
+        chapter = str(row.get("chapter") or str(row.get("code") or "").split(".")[0])
+        item = chapters.setdefault(chapter, {
+            "chapter": chapter, "label": _CHAPTER_WORDS.get(chapter, ("", ""))[0],
+            "limit": 0.0, "paid": 0.0, "overpaid": 0.0, "remaining": 0.0, "need": 0.0,
+            "reserve": 0.0, "unused": 0.0, "gap": 0.0})
+        limit = float(row.get("limit") or 0.0)
+        raw = float(row.get("opening_limit_raw") or 0.0)
+        item["limit"] += limit
+        item["paid"] += limit - raw
+        item["overpaid"] += max(0.0, -raw)
+        item["remaining"] += float(row.get("opening_limit") or 0.0)
+        item["need"] += float(row.get("need_total") or 0.0)
+        item["reserve"] += float(row.get("reserve_take") or 0.0)
+        item["unused"] += float(row.get("remaining_limit") or 0.0)
+        item["gap"] += float(row.get("unfunded_take") or 0.0)
+    rows = [chapters[ch] for ch in sorted(chapters)]
+    total = {key: sum(row[key] for row in rows)
+             for key in ("limit", "paid", "overpaid", "remaining", "need", "reserve",
+                         "unused", "gap")}
+    total["chapters"] = chapters_label(list(chapters)) if chapters else ""
+    total["plain"] = total["need"] - total["remaining"]
+    outside = [str(ch) for ch in (bank_chapters or ()) if str(ch) not in chapters]
+    return {
+        "chapters": rows,
+        "total": total,
+        "bank_limit": float(bank_limit or 0.0),
+        "bank_chapters": chapters_label(bank_chapters) if bank_chapters else "",
+        "outside_chapters": outside,
+        "outside_limit": float(bank_limit or 0.0) - total["limit"],
+        # Сходится по построению; признак — для проверки, а не для красоты.
+        "matches": abs(total["plain"] - total["reserve"] + total["unused"] - total["gap"])
+        <= 1e-6 * max(1.0, total["need"]),
+    }
+
+
+def reconciliation_lines(rec: dict[str, Any], money: Any) -> list[str]:
+    """Сверка словами — одна для Монитора и сводки; деньги пишет `money`."""
+    if not rec or not rec.get("chapters"):
+        return []
+    out: list[str] = []
+    total = rec["total"]
+    outside = rec.get("outside_chapters") or []
+    if outside and abs(rec.get("outside_limit") or 0.0) > 1e-6 * max(1.0, rec["bank_limit"]):
+        names = ", ".join(f"глава {ch}" + (f" ({_CHAPTER_WORDS[ch][0]})"
+                                           if ch in _CHAPTER_WORDS else "")
+                          for ch in outside)
+        out.append(f"Лимит банка по главам {rec['bank_chapters']} — {money(rec['bank_limit'])}. "
+                   f"Сверка ниже считает только главы {total['chapters']} — "
+                   f"{money(total['limit'])}; остальные {money(rec['outside_limit'])} "
+                   f"приходятся на {names} и в дофинансирование не входят.")
+    for row in rec["chapters"]:
+        name = f"Глава {row['chapter']}" + (f" ({row['label']})" if row.get("label") else "")
+        text = (f"{name}: лимит {money(row['limit'])}, оплачено {money(row['paid'])}, "
+                f"остаток лимита {money(row['remaining'])}; осталось достроить "
+                f"{money(row['need'])}; не хватает {money(row['gap'])}.")
+        if row["overpaid"] > 0:
+            text += (f" Оплачено больше лимита на {money(row['overpaid'])} — этот перерасход "
+                     "остаток лимита не уменьшает.")
+        if row["unused"] > 0:
+            text += (f" Лимита останется {money(row['unused'])}: он не переносится на "
+                     "нехватку другой главы или статьи.")
+        out.append(text)
+    text = (f"Итого по главам {total['chapters']}: осталось достроить {money(total['need'])} "
+            f"минус остаток лимита {money(total['remaining'])} — это {money(total['plain'])}.")
+    if total["reserve"] > 0:
+        text += f" Резерв закрывает из этого {money(total['reserve'])}."
+    if total["unused"] > 0:
+        text += (f" Но {money(total['unused'])} лимита останутся неизрасходованными: излишек "
+                 "одной главы или статьи не покрывает нехватку другой. Поэтому "
+                 f"дофинансировать нужно {money(total['gap'])}, а не меньше.")
+    else:
+        text += f" Дофинансировать нужно {money(total['gap'])}."
+    out.append(text)
+    return out
+
+
 def _retention(project: str, horizon: Any) -> dict[str, Any] | None:
     """Гарантийные удержания против горизонта стройки.
 
@@ -1126,9 +1218,12 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
                      + max(0.0, one_limit - one_paid["total"]),
                      "opening_article_deficit": float(waterfall["opening_article_deficit"])
                      + max(0.0, one_paid["total"] - one_limit)}
+    reconciliation = _limit_reconciliation(waterfall_book, current["limit"], shown)
     return {
         "known": True,
         "source": baseline["source"],
+        "limit_reconciliation": reconciliation,
+        "limit_reconciliation_lines": reconciliation_lines(reconciliation, _fmt_money),
         "chapters": list(shown),
         "chapters_label": chapters_label(shown),
         "chapters_reason": reason,

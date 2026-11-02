@@ -2813,6 +2813,13 @@ def _chapter_gap_words(limit: dict[str, Any]) -> str:
                      for row in _gap_chapters(limit))
 
 
+def _reconciliation_lines(limit: dict[str, Any]) -> list[str]:
+    """Сверка «лимит → оплачено → остаток → достроить → не хватает» — фразы Монитора."""
+    import developaid_monitor_dashboard as dashboard
+
+    return dashboard.reconciliation_lines(limit.get("limit_reconciliation") or {}, _rub)
+
+
 def _gap_note(limit: dict[str, Any]) -> str:
     """Что в сумму дофинансирования не входит — фраза Монитора, как есть."""
     return str(limit.get("additional_financing_note") or "")
@@ -2901,6 +2908,10 @@ def _funding_text(report: dict[str, Any]) -> list[str]:
             lines.append("По финмодели остатка лимита глав 2–3 хватает до конца стройки.")
         else:
             lines.append("По РСС лимитов и резерва хватает до ввода по прогнозу Монитора.")
+        recon = _reconciliation_lines(limit)
+        if recon:
+            lines.append("Как сходится дофинансирование.")
+            lines.extend(recon)
     else:
         lines.append(f"Лимит и дефицит не посчитаны: {limit.get('reason') or 'нет данных'}.")
     period = PERIODS[report["kind"]]
@@ -3127,6 +3138,10 @@ def _funding_html(report: dict[str, Any]) -> str:
                 for row in _gap_chapters(limit)])))
         if extra > 0 and _gap_note(limit):
             out.append(f"<p class='note'>{esc(_gap_note(limit))}</p>")
+        recon = _reconciliation_lines(limit)
+        if recon:
+            out.append("<p class='note'><b>Как сходится дофинансирование</b></p>"
+                       + "".join(f"<p class='note'>{esc(line)}</p>" for line in recon))
         need = _approved_need(limit)
         if need and credit:
             rows = [["Утверждённый бюджет", _rub(need["approved"])]]

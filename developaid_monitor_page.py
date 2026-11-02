@@ -234,6 +234,14 @@ function gapByChapter(f,row){
      r.from?`первый месяц нехватки — ${dt(r.from)}`:'','bad')).join('')
   +(f.additional_financing_note?`<div class="muted gap-note">${esc(f.additional_financing_note)}</div>`:'');
 }
+// Как сходится: лимит → оплачено → остаток → осталось достроить → не хватает.
+// Фразы собирает сервер из строк водопада; страница их только показывает.
+function limitReconciliation(f){
+ const lines=f.limit_reconciliation_lines||[];
+ if(!lines.length)return '';
+ return '<div class="fundblock recon"><div class="muted" style="margin-bottom:6px"><b>Как сходится дофинансирование</b></div>'
+  +lines.map(t=>`<div class="recon-line">${esc(t)}</div>`).join('')+'</div>';
+}
 
 function fundingStructure(f,hasBook,approved,paid,remainingBudget){
  const money2=v=>(v==null?'—':money(v));
@@ -263,7 +271,8 @@ function fundingStructure(f,hasBook,approved,paid,remainingBudget){
   +(mainGap!=null?row('ДЕФИЦИТ',money2(mainGap),
      structural>0&&from?`первый месяц нехватки — ${dt(from)}`:'',mainGap>0?'bad':'good'):'')
   +gapByChapter(f,row)
-  +'</div>';
+  +'</div>'
+  +limitReconciliation(f);
  // Раскрыто по умолчанию: свёрнутое мелким шрифтом читалось как неважное
  // (владелец, 01.09.2026).
  html+='<details class="fundmore" open><summary>Откуда эти числа</summary>';
