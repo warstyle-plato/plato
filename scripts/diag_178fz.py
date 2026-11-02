@@ -39,55 +39,41 @@ def options(body: str) -> None:
 
 
 def main() -> None:
-    from auction_search.adapters.roseltorg import RoseltorgAdapter
-    from auction_search.parsing import deadline_is_current
+    from auction_search.adapters.roseltorg import RoseltorgAdapter, _RoseltorgHTML
 
-    pages = (
-        "https://www.roseltorg.ru/search/sale",
-        "https://www.roseltorg.ru/search/sale?sale=1",
-        "https://www.roseltorg.ru/search/sale?sale=2",
-        "https://www.roseltorg.ru/search/sale?sale=3",
-        "https://www.roseltorg.ru/imuschestvo/nedvizhimost/zemelnye-uchastki",
-        "https://www.roseltorg.ru/imuschestvo/nedvizhimost/kommercheskaya-nedvizhimost",
-        "https://www.roseltorg.ru/search/sale?tags%5B%5D=%D0%BF%D1%80%D0%BE%D0%B4%D0%B0%D0%B6%D0%B0%20%D0%B4%D0%BE%D0%BB%D0%B8",
-    )
-    found: list[str] = []
-    for i, url in enumerate(pages):
-        try:
-            got = core_page(url)
-        except Exception as exc:  # noqa: BLE001
-            print("СТРАНИЦА", url, "ошибка", exc)
-            continue
-        body = got.get("body") or ""
-        ids = list(dict.fromkeys(re.findall(r"/procedure/(178fz[0-9a-z]+(?:/\d+)?)", body, re.I)))
-        allp = len(set(re.findall(r"/procedure/([0-9a-z]+)", body, re.I)))
-        print("СТРАНИЦА", url, "HTTP", got.get("http_status"), "байт", got.get("bytes"),
-              "процедур", allp, "178fz", len(ids), ids[:6])
-        if i == 0:
-            options(body)
-            pag = sorted(set(re.findall(r'href="([^"]*page=\d+[^"]*)"', body)))[:5]
-            print("ЛИСТАНИЕ", pag)
-        for x in ids:
-            if x not in found:
-                found.append(x)
-    print("ВСЕГО 178fz", len(found))
-    seen_body = {}
-    for pid in found[:45]:
-        url = "https://www.roseltorg.ru/procedure/" + (pid if "/" in pid else pid + "/1")
-        try:
-            html = core_page(url).get("body") or ""
-            RoseltorgAdapter._read = classmethod(lambda cls, u, t, _h=html, **kw: _h)
-            lot = RoseltorgAdapter().fetch_lot(url)
-        except Exception as exc:  # noqa: BLE001
-            print("КАРТОЧКА", pid, "ошибка", type(exc).__name__, exc)
-            continue
-        text = lot.raw.get("page_text") or ""
-        tags = re.search(r"Показать полностью(.{0,200})", text)
-        reg = re.search(r"\b(\d{2})\.\s*(?:г\.?\s*)?[А-ЯЁ][а-яё -]{2,40}", text[:6000])
-        print("КАРТОЧКА", pid, "|", lot.lot_kind.value, "| площадь", lot.land_area_sqm,
-              "| цена", lot.start_price_rub, "| до", lot.application_deadline, "|", lot.status,
-              "| регион", lot.raw.get("lot_region_code"), "|", (lot.title or "")[:150],
-              "| ТЕГИ", (tags.group(1) if tags else "")[:160])
+    tag_share = "tags%5B%5D=%D0%BF%D1%80%D0%BE%D0%B4%D0%B0%D0%B6%D0%B0%20%D0%B4%D0%BE%D0%BB%D0%B8"
+    bases = []
+    for okato, region in (("45000000000", "Москва"), ("46000000000", "МО")):
+        for path in ("imuschestvo/nedvizhimost/zemelnye-uchastki",
+                     "imuschestvo/nedvizhimost/kommercheskaya-nedvizhimost",
+                     "imuschestvo/nedvizhimost/garazhi"):
+            bases.append((region + " " + path.rsplit("/", 1)[-1],
+                          f"https://www.roseltorg.ru/{path}?okato%5B%5D={okato}&status%5B%5D=5&status%5B%5D=0"))
+        bases.append((region + " доли", f"https://www.roseltorg.ru/search/sale?{tag_share}&okato%5B%5D={okato}"))
+    bases.append(("все доли", f"https://www.roseltorg.ru/search/sale?{tag_share}"))
+    for label, base in bases:
+        for page in (1, 2, 3):
+            url = base + (f"&page={page}" if page > 1 else "")
+            try:
+                got = core_page(url)
+            except Exception as exc:  # noqa: BLE001
+                print("СПИСОК", label, page, "ошибка", exc)
+                break
+            body = got.get("body") or ""
+            parser = _RoseltorgHTML()
+            parser.feed(body)
+            titles = {}
+            RoseltorgAdapter._remember_titles(url, parser.links, titles)
+            print("СПИСОК", label, "стр", page, "HTTP", got.get("http_status"), "процедур", len(titles))
+            for proc, title in titles.items():
+                print("   ", proc.rsplit("/procedure/", 1)[-1], "|", title[:170])
+            if len(titles) < 10:
+                break
+            # Контекст карточки списка: цена/площадь/регион рядом со ссылкой.
+        snippet = re.sub(r"<[^>]+>", " ", body)
+        snippet = " ".join(snippet.split())
+        i = snippet.find("Лот 1")
+        print("   ТЕКСТ СПИСКА:", snippet[i:i + 900] if i >= 0 else snippet[:300])
 
 
 if __name__ == "__main__":
