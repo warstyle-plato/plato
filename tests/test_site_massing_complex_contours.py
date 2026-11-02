@@ -363,13 +363,29 @@ READ = """()=>{
    shownItems:Array.from(box.querySelectorAll('li')).filter(shown).map(n=>n.innerText),
    open:det?det.open:null, summary:det?det.querySelector('summary').innerText:'',
    landShown:!!document.querySelector('#siteMassingLand')&&shown(document.querySelector('#siteMassingLand'))};
+ // Баланс территории карточки (владелец 02.11.2026: «почему эта часть так и не
+ // свёртывается?»): до раскрытия видны только главные числа и кнопка карты.
+ const card=document.getElementById('siteMassingCard');
+ const balance=document.getElementById('siteMassingBalance');
+ const visibleText=()=>{const t=[];const w=document.createTreeWalker(card,NodeFilter.SHOW_TEXT);
+   while(w.nextNode()){const p=w.currentNode.parentElement;if(p&&p.checkVisibility()&&w.currentNode.data.trim())t.push(w.currentNode.data.trim())}
+   return t.join(' ')};
+ const keyBox=document.getElementById('siteMassingKey');
+ const btn=document.getElementById('siteMassingMapButton');
+ Object.assign(fold,{balanceExists:!!balance, balanceShown:!!balance&&shown(balance),
+   levelsShown:Array.from(card.querySelectorAll('.site-massing-levels')).some(shown),
+   key:keyBox&&shown(keyBox)?Array.from(keyBox.querySelectorAll('tr')).map(tr=>tr.innerText):[],
+   button:!!btn&&shown(btn), cardText:visibleText(), oneFold:card.querySelectorAll('details.site-massing-details').length,
+   footer:String((((m.scheme||{}).axonometry)||{}).footer||'')});
  if(det){det.querySelector('summary').click();
    fold.afterClick=Array.from(det.querySelectorAll('li')).filter(shown).map(n=>n.innerText);
    fold.landAfter=shown(document.querySelector('#siteMassingLand'));
+   fold.balanceAfter=!!balance&&shown(document.getElementById('siteMassingBalance'));
+   fold.cardTextAfter=visibleText();
    renderTep(); fold.keptOpen=document.getElementById('siteMassingDetails').open;}
  return {fold, houses, site:[site.width,site.height], north:!!svg.querySelector('.pv-north'),
          sections:svg.querySelectorAll('.pv-section').length, lanes:svg.querySelectorAll('.pv-lane').length,
-         items:Array.from(box.querySelectorAll('li')).map(n=>n.innerText), text:box.innerText,
+         items:Array.from(document.querySelectorAll('#siteMassingAnalysis li, #siteMassingAnalysisMore li')).map(n=>n.innerText), text:box.innerText,
          placed:(layout.buildings||[]).filter(b=>b.ring_m).length,
          page:document.documentElement.scrollWidth, view:window.innerWidth,
          svgWidth:svg.getBoundingClientRect().width,
@@ -461,6 +477,35 @@ def test_the_page_folds_the_details_and_shows_the_brief(seen, width):
     assert set(fold["brief"][:-1]) | set(fold["afterClick"]) == set(analysis) - {fold["brief"][-1]}, fold
     assert any(i.startswith("Участок без отступов") for i in fold["afterClick"]), fold
     assert fold["landAfter"] and fold["keptOpen"], fold
+
+
+# Строки баланса с пояснениями: их не должно быть видно до раскрытия.
+BALANCE_ONLY = ("Площадь участка", "− Двор рядом со зданием по норме", "− Проезды, тротуары и пожарные проезды",
+                "− Отступы от границ участка", "Подземный контур", "Площадь подземной части",
+                "Ставка СМР", "Полоса шириной", "Это оценка по балансу территории")
+
+
+@pytest.mark.parametrize("width", [390, 1280])
+def test_the_land_balance_table_is_under_the_same_fold(seen, width):
+    """Владелец 02.11.2026: «почему эта часть так и не свёртывается?» — таблица
+    баланса стояла отдельным блоком карточки (`renderSiteMassing`) мимо
+    «Подробнее». Теперь сразу видны вид сверху, итог, кнопка карты и главные
+    числа; баланс с пояснениями, ставки по уровням и сноски — под тем же одним
+    «Подробнее о разборе участка». На прежней раскладке баланс виден сразу."""
+    fold = seen[width]["fold"]
+    assert fold["oneFold"] == 1, fold
+    assert fold["balanceExists"] and not fold["balanceShown"], "таблица баланса видна до раскрытия"
+    assert not fold["levelsShown"], "ставки СМР по уровням видны до раскрытия"
+    labels = [r.split("\t")[0].strip() for r in fold["key"]]
+    assert labels[0].startswith("Пятно") and "% " in fold["key"][0], fold["key"]
+    assert labels[-2:] == ["Средняя этажность", "Подземных уровней"] and len(labels) <= 4, fold["key"]
+    assert fold["button"], "кнопки «Показать корпуса на карте участка» не видно"
+    text = fold["cardText"]
+    for words in BALANCE_ONLY + (fold["footer"],):
+        assert words not in text, (words, text)
+    assert fold["balanceAfter"], "после раскрытия баланса не видно"
+    for words in BALANCE_ONLY:
+        assert words in fold["cardTextAfter"], words
 
 
 def test_the_page_names_the_land_and_the_footprint_follows_the_assumptions(seen):

@@ -1472,7 +1472,7 @@ function renderSiteMassing(){
   sq(m.built_sqm)+(site>0?', это '+pct(m.built_share)+' участка':''),
   'Жилые дома — '+sq(m.footprint_sqm)+'; '+objects.map(o=>o.label.toLowerCase()+' — '+sq(o.footprint_sqm)).join('; ')+'.',true));
  if(Number(m.footprint_shortage_sqm||0)>0.5)rows.push(row('Не хватает земли под пятно',sq(m.footprint_shortage_sqm),
-  'Пятно больше места, которое остаётся после двора по норме, проездов и отступов: на столько двор по норме не помещается. Подробности — в красной плашке выше.'));
+  'Пятно больше места, которое остаётся после двора по норме, проездов и отступов: на столько двор по норме не помещается. Подробности — в красной плашке этой карточки.'));
  rows.push(row('Средняя этажность',Number(m.average_storeys||0)>0?'≈ '+Number(m.average_storeys).toLocaleString('ru-RU',{maximumFractionDigits:1}):'—',
   (objects.length?'Наземная площадь жилых домов ('+sq(m.residential_gns_sqm)+'), делённая на их пятно.':
    'Наземная площадь здания ('+sq(m.above_gns_sqm)+'), делённая на пятно застройки.'),true));
@@ -1485,7 +1485,7 @@ function renderSiteMassing(){
   'Паркинг с рампами и проездами и подземные кладовые из ТЭП ('+sq(Number(m.underground_sqm||0)-garages)+') и подземные гаражи отдельных объектов ('+sq(garages)+').':
   'Паркинг с рампами и проездами и подземные кладовые из ТЭП.'));
  rows.push(m.underground_levels_unfit?row('Подземных уровней','не посчитано',
-  'Подземная часть под участком не помещается даже на '+num(m.underground_levels_max)+' уровнях. Что поправить — в красной плашке выше.',true):
+  'Подземная часть под участком не помещается даже на '+num(m.underground_levels_max)+' уровнях. Что поправить — в красной плашке этой карточки.',true):
   row('Подземных уровней',String(m.underground_levels||0),
   m.underground_levels_origin==='manual'?'Задано вручную.':'Площадь подземной части, делённая на полезную площадь одного уровня, с округлением вверх.',true));
  let levels='';
@@ -1497,8 +1497,32 @@ function renderSiteMassing(){
  }
  const warn=(m.warnings||[]).map(w=>'<div class="note warning site-massing-warning">'+escapeHtml(w)+'</div>').join('');
  const notes=(m.notes||[]).map(w=>'<p class="site-massing-hint">'+escapeHtml(w)+'</p>').join('');
- body.innerHTML=warn+'<div class="scroll"><table class="site-massing-table"><tbody>'+rows.join('')+'</tbody></table></div>'+levels+notes+
+ // Сразу видны три-четыре главных числа без пояснений (`siteMassingKeyRows`);
+ // весь баланс с пояснениями, ставки СМР по уровням и сноски — под тем же
+ // «Подробнее о разборе участка», что и разбор участка (владелец 02.11.2026:
+ // «почему эта часть так и не свёртывается?»). Числа те же — меняется раскладка.
+ const layout=((m.scheme||{}).layout)||{};
+ const footer=String(((m.scheme||{}).axonometry||{}).footer||'');
+ const was=document.getElementById('siteMassingDetails');
+ const details=siteMassingPlanDetailsHtml(layout)+(footer?'<p class="site-massing-hint">'+escapeHtml(footer)+'</p>':'')+
+  '<div class="scroll"><table class="site-massing-table" id="siteMassingBalance"><tbody>'+rows.join('')+'</tbody></table></div>'+levels+notes+
   '<p class="site-massing-hint">Это оценка по балансу территории, а не проект: формы участка расчёт не знает.</p>';
+ body.innerHTML=warn+siteMassingKeyRows(m)+
+  '<details class="site-massing-details" id="siteMassingDetails"'+(was&&was.open?' open':'')+'><summary>Подробнее о разборе участка</summary>'+details+'</details>';
+}
+// Главные числа посадки — те же значения, что в строках баланса, без пояснений.
+function siteMassingKeyRows(m){
+ const sq=v=>num(Math.round(Number(v||0)))+' м²';
+ const pct=v=>num(Math.round(Number(v||0)*100))+'%';
+ const site=Number(m.site_sqm||0);
+ const objects=(m.objects||[]).length>0;
+ const row=(label,value)=>'<tr><td>'+escapeHtml(label)+'</td><td class="num">'+escapeHtml(value)+'</td></tr>';
+ const rows=[row(objects?'Пятно жилых домов':'Пятно застройки',
+  sq(m.footprint_sqm)+(site>0?', это '+pct(m.footprint_share)+(objects?' жилой территории':' участка'):''))];
+ if(objects)rows.push(row('Всего под зданиями на участке',sq(m.built_sqm)+(site>0?', это '+pct(m.built_share)+' участка':'')));
+ rows.push(row('Средняя этажность',Number(m.average_storeys||0)>0?'≈ '+Number(m.average_storeys).toLocaleString('ru-RU',{maximumFractionDigits:1}):'—'));
+ rows.push(row('Подземных уровней',m.underground_levels_unfit?'не посчитано':String(m.underground_levels||0)));
+ return '<table class="site-massing-table site-massing-key" id="siteMassingKey"><tbody>'+rows.join('')+'</tbody></table>';
 }
 // Объёмная схема: многоугольники, номера и легенда — ответ движка
 // (`site_massing_scheme`); тот же ответ рисует PDF. Здесь ничего не
@@ -1563,7 +1587,6 @@ function renderSiteMassingScheme(m){
  const notes=(layout.notes||[]).filter(t=>t!==mapNote).map(t=>'<p class="site-massing-hint">'+escapeHtml(t)+'</p>').join('');
  box.innerHTML='<p class="site-massing-hint">'+escapeHtml(ax.caption||'')+'</p>'+siteMassingSchemeSvg(ax)+'<ul class="site-massing-legend">'+legend+'</ul>'+notes+
   siteMassingPlanViewHtml(layout)+
-  '<p class="site-massing-hint">'+escapeHtml(ax.footer||'')+'</p>'+
   (siteMassingMapShapes().length?'<button type="button" class="btn" id="siteMassingMapButton" onclick="siteMassingOpenMap()">Показать корпуса на карте участка</button>':
    mapNote?'<p class="site-massing-hint" id="siteMassingMapNote">'+escapeHtml(mapNote)+'</p>':'');
  siteMassingPlanWatch(layout.plan||{});
@@ -1603,9 +1626,10 @@ function siteMassingPlanViewSvg(pv){
 }
 // Сразу видны вид сверху и короткий итог (`layout.analysis_brief`: какой
 // вариант выбран и почему, сколько домов, есть ли пустой кусок); разбор
-// частей участка, баланс земли, разрывы, проезды и допущения — под закрытым
-// «Подробнее о разборе участка» (владелец 01.11.2026: «стоит там часть текста
-// свернуть»). Что входит в итог, решает движок; страница только делит.
+// частей участка, баланс земли, разрывы, проезды и допущения
+// (`siteMassingPlanDetailsHtml`) — под закрытым «Подробнее о разборе участка»
+// внизу карточки, вместе с балансом территории (`renderSiteMassing`). Что
+// входит в итог, решает движок; страница только делит.
 function siteMassingPlanViewHtml(layout){
  const pv=layout.plan_view||{};
  const lines=layout.analysis||[];
@@ -1613,17 +1637,22 @@ function siteMassingPlanViewHtml(layout){
  const svg=(pv.buildings||[]).length?siteMassingPlanViewSvg(pv):'';
  // Итог — фразы разбора и оговорка о границах проверки (её нет в полном разборе).
  const brief=layout.analysis_brief||[];
- const rest=lines.filter(t=>!brief.includes(t));
  const legend=svg?siteMassingLandLegendHtml(pv)+'<p class="site-massing-hint">'+(pv.north_up?'Вид сверху, север вверху.':'Вид сверху; стороны света неизвестны.')+'</p>':'';
- const key=svg?'<p class="site-massing-hint">Дома разделены на секции белыми линиями, оранжевый пунктир показывает места для пожарного проезда, зелёный пунктир — границы частей участка. Площади взяты из баланса территории расчёта, а место каждой площади на рисунке — наша схема, а не генплан.</p>':'';
- const list=t=>t.length?'<ul>'+t.map(x=>'<li>'+escapeHtml(x)+'</li>').join('')+'</ul>':'';
- // Открытое посетителем «Подробнее» остаётся открытым при пересчёте.
- const was=document.getElementById('siteMassingDetails');
- const details=key+siteMassingLandBalanceHtml(layout.land_balance||{})+list(rest);
  return '<div class="site-massing-analysis" id="siteMassingAnalysis"><h4>Разбор участка и посадки</h4>'+svg+legend+
-  '<div class="site-massing-brief" id="siteMassingBrief">'+list(brief)+'</div>'+
-  (details?'<details class="site-massing-details" id="siteMassingDetails"'+(was&&was.open?' open':'')+'><summary>Подробнее о разборе участка</summary>'+details+'</details>':'')+
+  '<div class="site-massing-brief" id="siteMassingBrief">'+siteMassingList(brief)+'</div>'+
   siteMassingDenserHtml(layout.denser)+'</div>';
+}
+function siteMassingList(t){return t.length?'<ul>'+t.map(x=>'<li>'+escapeHtml(x)+'</li>').join('')+'</ul>':''}
+// Часть разбора участка под «Подробнее»: как читать рисунок, баланс земли и
+// фразы разбора, не попавшие в итог.
+function siteMassingPlanDetailsHtml(layout){
+ const pv=layout.plan_view||{};
+ const lines=layout.analysis||[];
+ if(!(pv.buildings||[]).length&&!lines.length)return '';
+ const brief=layout.analysis_brief||[];
+ const key=(pv.buildings||[]).length?'<p class="site-massing-hint">Дома разделены на секции белыми линиями, оранжевый пунктир показывает места для пожарного проезда, зелёный пунктир — границы частей участка. Площади взяты из баланса территории расчёта, а место каждой площади на рисунке — наша схема, а не генплан.</p>':'';
+ return '<div class="site-massing-analysis-more" id="siteMassingAnalysisMore">'+key+siteMassingLandBalanceHtml(layout.land_balance||{})+
+  siteMassingList(lines.filter(t=>!brief.includes(t)))+'</div>';
 }
 // Подписи слоёв карты земли: цвет и площадь — из ответа движка.
 function siteMassingLandLegendHtml(pv){

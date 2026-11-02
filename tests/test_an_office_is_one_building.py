@@ -169,7 +169,7 @@ CONTOUR = """async (ring)=>{
 }"""
 
 READ = """()=>{
- openTab('tep'); renderTep();
+ openTab('tep'); renderTep(); document.getElementById('siteMassingDetails')&&(document.getElementById('siteMassingDetails').open=true);
  const card=document.getElementById('siteMassingBody');
  const box=document.getElementById('siteMassingScheme');
  const svg=box&&box.querySelector('svg');
@@ -411,7 +411,7 @@ PAGE_SHAPE = """()=>{
  const m=(lastResult.tep||{}).site_massing||{};
  const layout=(m.scheme||{}).layout||{};
  const box=document.getElementById('siteMassingScheme');
- openTab('tep'); renderTep();
+ openTab('tep'); renderTep(); document.getElementById('siteMassingDetails')&&(document.getElementById('siteMassingDetails').open=true);
  return {footprint:m.footprint_sqm||0, origin:m.footprint_origin||'',
          plan:(layout.plan||{}).status||'', points:((layout.buildings||[])[0]||{}).ring_m?
            layout.buildings[0].ring_m.length:0,
