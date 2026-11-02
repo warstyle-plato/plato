@@ -39,41 +39,22 @@ def options(body: str) -> None:
 
 
 def main() -> None:
-    from auction_search.adapters.roseltorg import RoseltorgAdapter, _RoseltorgHTML
-
-    tag_share = "tags%5B%5D=%D0%BF%D1%80%D0%BE%D0%B4%D0%B0%D0%B6%D0%B0%20%D0%B4%D0%BE%D0%BB%D0%B8"
-    bases = []
-    for okato, region in (("45000000000", "Москва"), ("46000000000", "МО")):
-        for path in ("imuschestvo/nedvizhimost/zemelnye-uchastki",
-                     "imuschestvo/nedvizhimost/kommercheskaya-nedvizhimost",
-                     "imuschestvo/nedvizhimost/garazhi"):
-            bases.append((region + " " + path.rsplit("/", 1)[-1],
-                          f"https://www.roseltorg.ru/{path}?okato%5B%5D={okato}&status%5B%5D=5&status%5B%5D=0"))
-        bases.append((region + " доли", f"https://www.roseltorg.ru/search/sale?{tag_share}&okato%5B%5D={okato}"))
-    bases.append(("все доли", f"https://www.roseltorg.ru/search/sale?{tag_share}"))
-    for label, base in bases:
-        for page in (1, 2, 3):
-            url = base + (f"&page={page}" if page > 1 else "")
-            try:
-                got = core_page(url)
-            except Exception as exc:  # noqa: BLE001
-                print("СПИСОК", label, page, "ошибка", exc)
-                break
-            body = got.get("body") or ""
-            parser = _RoseltorgHTML()
-            parser.feed(body)
-            titles = {}
-            RoseltorgAdapter._remember_titles(url, parser.links, titles)
-            print("СПИСОК", label, "стр", page, "HTTP", got.get("http_status"), "процедур", len(titles))
-            for proc, title in titles.items():
-                print("   ", proc.rsplit("/procedure/", 1)[-1], "|", title[:170])
-            if len(titles) < 10:
-                break
-            # Контекст карточки списка: цена/площадь/регион рядом со ссылкой.
-        snippet = re.sub(r"<[^>]+>", " ", body)
-        snippet = " ".join(snippet.split())
-        i = snippet.find("Лот 1")
-        print("   ТЕКСТ СПИСКА:", snippet[i:i + 900] if i >= 0 else snippet[:300])
+    for pid in ("178fz30102600019/1", "178fz22102600001/1", "21000030950000001703/1"):
+        body = core_page("https://www.roseltorg.ru/procedure/" + pid).get("body") or ""
+        print("=== КАРТОЧКА", pid)
+        for m in re.finditer(r'<script[^>]*application/ld\+json[^>]*>(.*?)</script>', body, re.S):
+            print("LD", " ".join(m.group(1).split())[:3000])
+        text = " ".join(re.sub(r"<script.*?</script>|<style.*?</style>|<[^>]+>", " ", body, flags=re.S).split())
+        for word in ("Регион", "Местонахождение", "Место нахождения", "Адрес", "Способ проведения",
+                     "Организатор торгов", "Площадь", "Категори", "77.", "50."):
+            for m in list(re.finditer(re.escape(word), text))[:3]:
+                print("ОКОЛО", word, "|", text[max(0, m.start() - 80):m.start() + 220])
+    url = ("https://www.roseltorg.ru/imuschestvo/nedvizhimost/zemelnye-uchastki"
+           "?okato%5B%5D=46000000000&status%5B%5D=5&status%5B%5D=0")
+    body = core_page(url).get("body") or ""
+    i = body.find("/procedure/21000030950000001703")
+    print("=== РАЗМЕТКА СТРОКИ СПИСКА")
+    print(" ".join(body[max(0, i - 2500):i + 2500].split())[:5000])
 
 
 if __name__ == "__main__":
