@@ -906,6 +906,31 @@ _AREA_SLACK = 1.0
 _SIGNED_BEFORE_DAYS = 7
 
 
+# Канал брони — пометка у самой брони (владелец, 02.11.2026: «в переписке
+# менеджеров чётко стоит напротив брони „Агентская“. Значит это не по звонку»).
+# Узнаются только явные написания: «агентская», «агент.», «через агента»,
+# «АН Этажи» (агентство недвижимости — заглавными, отдельным словом). Пометка
+# с отрицанием («не агентская», «без агента») и слова «прямая», «собственная»
+# — явный прямой канал. Пометки нет — бронь считается прямой, но «канал не
+# указан» считается отдельно и называется: отсутствие пометки — не решение.
+_AGENT_WORD = re.compile(r"(?<![а-яё])агент", re.I)
+# «АН» — только заглавными и отдельным словом: строчное «ан» — часть слов.
+_AGENCY = re.compile(r"(?<![А-ЯЁA-Za-zа-яё])АН(?![А-ЯЁA-Za-zа-яё])")
+_NO_AGENT = re.compile(r"(?:(?<![а-яё])не|без)\s+агент", re.I)
+_DIRECT_MARK = re.compile(r"(?<![а-яё])(?:прям(?:ая|ой|ые)|собственн[а-яё]*)(?![а-яё])", re.I)
+CHANNELS = ("direct", "agent")
+
+
+def booking_channel(piece: str) -> str:
+    """«agent» / «direct» по пометке у брони, «» — пометки нет."""
+    text = piece or ""
+    if _NO_AGENT.search(text) or _DIRECT_MARK.search(text):
+        return "direct"
+    if _AGENT_WORD.search(text) or _AGENCY.search(text):
+        return "agent"
+    return ""
+
+
 def booked_lots(text: str) -> list[dict[str, Any]] | None:
     """Брони из списка под «Текущих броней». Нет раздела — ``None``: это «не
     сказано», а не «броней нет»."""
@@ -926,7 +951,8 @@ def booked_lots(text: str) -> list[dict[str, Any]] | None:
         out.append({"apartment": match.group(1),
                     "area": float(area.group(1).replace(",", ".")) if area else None,
                     "tower": tower.group(0) if tower else "",
-                    "manager": " ".join(manager.group(1).split()) if manager else ""})
+                    "manager": " ".join(manager.group(1).split()) if manager else "",
+                    "channel": booking_channel(piece)})
     return out
 
 
@@ -1018,35 +1044,67 @@ def _share(part: float | None, whole: float | None) -> float | None:
     return (float(part) / float(whole)) if part is not None and whole else None
 
 
+# Встреч бывает больше, чем целевых звонков: на встречу приходят без звонка —
+# от агентов, с брокер-тура, повторно. Доля больше 100% конверсией не
+# является, и она не показывается; вместо неё — эта фраза. Владелец фразы —
+# здесь, сводка и кабинет её читают.
+MORE_MEETINGS = ("встреч больше, чем целевых звонков: часть клиентов пришла без звонка "
+                 "(агенты, брокер-туры, повторные встречи)")
+
+
 def _stages(calls: float | None, meetings: float | None, bookings: int | None,
             deals: int | None) -> dict[str, Any]:
+    more = calls is not None and meetings is not None and float(meetings) > float(calls)
     return {"calls": calls, "meetings": meetings, "bookings": bookings, "deals": deals,
-            "meetings_share": _share(meetings, calls),
+            "meetings_share": None if more else _share(meetings, calls),
+            "more_meetings": more,
             "bookings_share": _share(bookings, meetings),
             "deals_share": _share(deals, bookings)}
 
 
+def channel_of(lot: dict[str, Any]) -> str:
+    """Канал брони для счёта: без пометки — прямая (и считается отдельно)."""
+    return lot.get("channel") or "direct"
+
+
 def _person(name: str, people: dict[frozenset, dict[str, Any]]) -> dict[str, Any]:
     return people.setdefault(frozenset(name.lower().split()),
-                             {"author": name, "bookings": 0, "deals": 0})
+                             {"author": name, "bookings": 0, "deals": 0,
+                              **{f"{c}_{k}": 0 for c in CHANNELS for k in ("bookings", "deals")}})
+
+
+def _gaps(texts: dict[str, str]) -> dict[str, list[str]]:
+    """Дни с отчётом, где строка звонков или встреч не распознана: недосчёт
+    ступени виден, а не спрятан в сумме."""
+    rows = {day: _counted(text) for day, text in texts.items()}
+    return {key: sorted(day for day, row in rows.items() if key not in row)
+            for key in ("calls", "meetings")}
+
+
+def _gap_note(key: str, days: list[str], total: int) -> str:
+    word = {"calls": "целевых звонков", "meetings": "встреч"}[key]
+    shown = ", ".join(_day(day).strftime("%d.%m") for day in days[:10])
+    more = f" и ещё {len(days) - 10}" if len(days) > 10 else ""
+    return (f"в {len(days)} из {total} дневных отчётов строка {word} не распознана "
+            f"({shown}{more}) — за эти дни {word} в воронке нет")
 
 
 def sales_funnel(read: dict[str, Any] | None, contracts: list[dict[str, Any]],
                  first: str, last: str) -> dict[str, Any] | None:
-    """Целевые звонки → встречи → новые брони → договоры за период, по отделу и
-    по менеджерам.
+    """Воронка продаж за период, по отделу и по менеджерам, двумя путями.
 
-    - Звонки и встречи — из ежедневных отчётов чата (сводка отдела, в дне —
+    - Прямой путь: целевые звонки → встречи → прямые брони → их договоры.
+      Звонки и встречи — из ежедневных отчётов чата (сводка отдела, в дне —
       последний отчёт). По менеджерам отчёт их не делит, и так и сказано.
+    - Через агентов: агентские брони → их договоры; брокер-туры — рядом.
+      Канал — пометка у брони («АГЕНТСКАЯ»), хранится у брони, и договор на
+      эту квартиру наследует канал брони.
     - Новые брони — квартиры, впервые появившиеся в списке «Текущих броней» в
       этот период. Брони из самого первого отчёта новыми не считаются: когда
       их взяли, отчёт не говорит.
     - Договоры отдела — подписанные в период (контрактация, по дате
-      подписания).
-    - Менеджер — имя в скобках у самой брони («(Помазанова Александра)»), а
-      не автор сообщения: отчёт пишет дежурный за весь отдел. Договор
-      засчитан менеджеру, если на эту квартиру была его бронь: в выгрузке
-      договоров менеджера нет, и угадывать его нельзя.
+      подписания); договор без брони в чате ни одному каналу не приписан.
+    - Менеджер — имя в скобках у самой брони, а не автор сообщения.
     """
     every = _reports(read, "", last)
     if not every:
@@ -1065,30 +1123,57 @@ def sales_funnel(read: dict[str, Any] | None, contracts: list[dict[str, Any]],
     new = [lot for lot in seen.values() if first <= lot["first"] <= last and lot["first"] > since]
     people: dict[frozenset, dict[str, Any]] = {}
     unnamed = 0
+    booked = {c: 0 for c in CHANNELS}
+    unmarked = 0
     for lot in new:
+        channel = channel_of(lot)
+        booked[channel] += 1
+        unmarked += not lot.get("channel")
         if lot.get("manager"):
-            _person(lot["manager"], people)["bookings"] += 1
+            person = _person(lot["manager"], people)
+            person["bookings"] += 1
+            person[f"{channel}_bookings"] += 1
         else:
             unnamed += 1
     attributed = 0
+    dealt = {c: 0 for c in CHANNELS}
     claimed: set[int] = set()
     for lot in seen.values():
         deal = _deal_for(lot, signed)
         if deal and id(deal) not in claimed:
             claimed.add(id(deal))
             attributed += 1
+            channel = channel_of(lot)
+            dealt[channel] += 1
             if lot.get("manager"):
-                _person(lot["manager"], people)["deals"] += 1
+                person = _person(lot["manager"], people)
+                person["deals"] += 1
+                person[f"{channel}_deals"] += 1
     from market_search import contracting
 
     deals = int(contracting._totals(signed)["contracts"]) if signed else 0
+    known = lists_known
     total = _stages(counted.get("calls"), counted.get("meetings"),
                     len(new) if lists_known else None, deals)
-    managers = [dict(_stages(None, None, row["bookings"], row["deals"]), author=row["author"])
+    direct = _stages(counted.get("calls"), counted.get("meetings"),
+                     booked["direct"] if known else None, dealt["direct"] if known else None)
+    agent = {"bookings": booked["agent"] if known else None,
+             "deals": dealt["agent"] if known else None,
+             "deals_share": _share(dealt["agent"], booked["agent"]) if known else None,
+             "broker_tours": counted.get("broker_tours")}
+    managers = [dict(_stages(None, None, row["bookings"], row["deals"]), author=row["author"],
+                     **{key: row[key] for key in row if key.startswith(CHANNELS)})
                 for row in sorted(people.values(), key=lambda r: (-r["deals"], -r["bookings"]))]
+    gaps = _gaps({day: every[day] for day in days})
     notes = []
     if not days:
         notes.append("за период отчётов отдела продаж в чате нет")
+    for key in ("calls", "meetings"):
+        if gaps[key]:
+            notes.append(_gap_note(key, gaps[key], len(days)))
+    if unmarked:
+        notes.append(f"у {unmarked} {_plural_brone(unmarked)} канал не указан — пометки "
+                     "«агентская» нет, они посчитаны прямыми")
     if managers:
         notes.append("целевые звонки и встречи отчёт даёт только по отделу — по менеджерам "
                      "их нет; брони и договоры — по менеджеру, указанному у брони")
@@ -1099,6 +1184,14 @@ def sales_funnel(read: dict[str, Any] | None, contracts: list[dict[str, Any]],
                      "отчёт не говорит")
     if deals > attributed:
         notes.append(f"договоров без брони в отчётах чата — {deals - attributed}: "
-                     "менеджера в выгрузке договоров нет, им они не приписаны")
-    return {"since": since, "days": len(days), "total": total, "managers": managers,
+                     "менеджера и канала в выгрузке договоров нет, им они не приписаны")
+    return {"since": since, "days": len(days), "total": total, "direct": direct,
+            "agent": agent, "unmarked": unmarked, "unattributed_deals": deals - attributed,
+            "gaps": gaps, "managers": managers,
+            "more_meetings_text": MORE_MEETINGS if total["more_meetings"] else "",
             "notes": notes}
+
+
+def _plural_brone(count: int) -> str:
+    """«у 1 новой брони», «у 2 новых броней», «у 11 новых броней»."""
+    return "новой брони" if count % 10 == 1 and count % 100 != 11 else "новых броней"

@@ -49,7 +49,7 @@ READ = """()=>{
  const toggle={present:!!box, checked:!!(box&&box.checked),
   visible:rect.width>0&&rect.height>0, label:field?field.innerText:'',
   next_to_rate:!!(prev&&rate&&prev.contains(rate))};
- openTab('tep'); renderTep();
+ openTab('tep'); renderTep(); document.getElementById('siteMassingDetails')&&(document.getElementById('siteMassingDetails').open=true);
  const levels=document.querySelector('#siteMassingBody .site-massing-levels');
  const rows=levels?Array.from(levels.querySelectorAll('tbody tr')).map(tr=>
   Array.from(tr.querySelectorAll('td')).map(td=>td.innerText)):[];

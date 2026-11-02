@@ -149,7 +149,7 @@ SETUP = """async ()=>{
 }"""
 
 READ = """()=>{
- openTab('tep'); renderTep();
+ openTab('tep'); renderTep(); document.getElementById('siteMassingDetails')&&(document.getElementById('siteMassingDetails').open=true);
  const body=document.getElementById('siteMassingBody');
  const scheme=document.getElementById('siteMassingScheme');
  return {text:body?body.innerText:'', scheme:scheme?scheme.innerText:'',

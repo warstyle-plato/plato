@@ -349,5 +349,7 @@ def test_the_page_draws_the_strip_and_numbers_do_not_overlap(drawn, width):
         for b in marks[i + 1:]:
             apart = a[2] <= b[0] or b[2] <= a[0] or a[3] <= b[1] or b[3] <= a[1]
             assert apart, (a, b)
-    assert "Корпуса расставлены для наглядности" in got["text"]
+    # Оговорка «расставлены для наглядности» — под «Подробнее о разборе участка»
+    # вместе с балансом (`renderSiteMassing`, владелец 02.11.2026), не в схеме.
+    assert "Корпуса расставлены для наглядности" not in got["text"]
     assert "движок" not in got["text"] and "Платон" not in got["text"]

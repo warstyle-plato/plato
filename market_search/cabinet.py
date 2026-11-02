@@ -3295,26 +3295,44 @@ function salesRoomBlock(d){
       +`<td class="num">${cell(m.calls_per_day)}</td>`
       +`<td class="num">${cell(m.bookings_at_once)}</td></tr>`).join('')
     +'</table></div></details>';
-  // Воронка и менеджеры за 30 дней отчётов: целевые звонки → встречи → новые
-  // брони → договоры, тем же расчётом, что в сводке руководству
-  // (`salesroom.sales_funnel`). Ступени, которой в отчётах нет, — прочерк, а
-  // не ноль; доля — от предыдущей ступени.
+  // Воронка и менеджеры за 30 дней отчётов тем же расчётом, что в сводке
+  // руководству (`salesroom.sales_funnel`), двумя путями: прямой — целевые
+  // звонки → встречи → прямые брони → договоры; через агентов — агентские
+  // брони → договоры, брокер-туры рядом. Ступени, которой в отчётах нет, —
+  // прочерк, а не ноль; доля — от предыдущей ступени. Встреч больше, чем
+  // звонков, — доли нет, под таблицей фраза сервера (больше 100% — не
+  // конверсия).
   const pipe=room.pipeline||null;
   if(pipe){
     const share=v=>v===null||v===undefined?'':` <span class="muted">(${num(v*100,1)} %)</span>`;
-    const stageRow=(name,r)=>`<tr><td>${esc(name)}</td>`
+    const split=(r,key)=>{
+      const d=r['direct_'+key]||0, a=r['agent_'+key]||0;
+      const parts=[d?`прямых ${num(d)}`:'', a?`через агентов ${num(a)}`:''].filter(Boolean);
+      return parts.length?` <span class="muted">(${parts.join(', ')})</span>`:'';};
+    const stageRow=(name,r,people)=>`<tr><td>${esc(name)}</td>`
       +`<td class="num">${cell(r.calls)}</td>`
-      +`<td class="num">${cell(r.meetings)}${share(r.meetings_share)}</td>`
-      +`<td class="num">${cell(r.bookings)}${share(r.bookings_share)}</td>`
-      +`<td class="num">${cell(r.deals)}${share(r.deals_share)}</td></tr>`;
+      +`<td class="num">${cell(r.meetings)}${r.more_meetings?'':share(r.meetings_share)}</td>`
+      +`<td class="num">${cell(r.bookings)}${people?split(r,'bookings'):share(r.bookings_share)}</td>`
+      +`<td class="num">${cell(r.deals)}${people?split(r,'deals'):share(r.deals_share)}</td></tr>`;
     const people=pipe.managers||[];
+    const direct=pipe.direct||pipe.total||{};
+    const agent=pipe.agent||null;
+    const tours=agent&&agent.broker_tours!==null&&agent.broker_tours!==undefined
+      ?` (брокер-туров ${num(agent.broker_tours)})`:'';
     html+=`<h3 style="margin-top:14px">Воронка и менеджеры с ${esc(pipe.first||'')} по ${esc(pipe.last||'')}</h3>`
       +'<div class="wrap"><table class="peers">'
       +'<tr><th></th><th class="num">Целевые звонки</th><th class="num">Встречи</th>'
       +'<th class="num">Новые брони</th><th class="num">Договоры</th></tr>'
-      +stageRow('Отдел продаж',pipe.total||{})
-      +(people.length>1?people.map(r=>stageRow(r.author,r)).join(''):'')
+      +stageRow('Прямой путь',direct)
+      +(agent?stageRow('Через агентов'+tours,{bookings:agent.bookings,deals:agent.deals,
+          deals_share:agent.deals_share}):'')
+      +(agent?stageRow('Отдел продаж, всего',{bookings:(pipe.total||{}).bookings,
+          deals:(pipe.total||{}).deals}):'')
+      +(people.length>1?people.map(r=>stageRow(r.author,r,true)).join(''):'')
       +'</table></div>';
+    if(pipe.more_meetings_text){
+      const t=pipe.more_meetings_text;
+      html+=`<div class="muted" style="font-size:12.5px;margin-top:6px">${esc(t.charAt(0).toUpperCase()+t.slice(1))}.</div>`;}
     (pipe.notes||[]).forEach(note=>{
       html+=`<div class="muted" style="font-size:12.5px;margin-top:6px">${esc(note)}.</div>`;});
   }
