@@ -1,0 +1,22 @@
+# ВРЕМЕННЫЙ: диагностика лота 178-ФЗ, удаляется до PR.
+name: diag 178fz
+on:
+  push:
+    branches: ["claude/privatization-178fz"]
+    paths: ["scripts/diag_178fz.py", ".github/workflows/diag-178fz.yml"]
+permissions:
+  contents: read
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - run: pip install -q -r requirements.txt || true
+      - name: Диагностика
+        env:
+          KEY: ${{ secrets.DEVELOPAID_ADMIN_KEY }}
+        run: python scripts/diag_178fz.py
