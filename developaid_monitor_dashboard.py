@@ -1195,8 +1195,8 @@ def own_money_lines(own: dict[str, Any] | None, money: Any) -> list[str]:
     if abs(own["dates"]) > 0.5:
         since = float(own.get("paid_since") or 0.0)
         rest = -own["dates"] - since
-        text = (f"расхождение «ФАКТ» финмодели с реестром РСС — {money(own['dates'])}: "
-                "реестр оплатил больше" if own["dates"] < 0 else
+        text = (f"минус {money(-own['dates'])} — расхождение «ФАКТ» финмодели с реестром "
+                "РСС: реестр оплатил больше" if own["dates"] < 0 else
                 f"расхождение «ФАКТ» финмодели с реестром РСС — {money(own['dates'])}: "
                 "финмодель считает оплаченным больше")
         if since > 0.5:
