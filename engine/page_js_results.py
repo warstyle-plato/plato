@@ -48,6 +48,8 @@ PAGE += r"""function renderResult(){
   :'';
  const conditionalShort=modelDefault?note('при том же допущении'):'';
 
+ // Какой поток стоит за NPV, решает движок (`report.layout.npv_basis`).
+ const npvHint=reportLayout(r).npv_basis==='hotel'?'npv_hotel':'npv';
  const reportKpis=[
   ['Выручка',money(r.summary.revenue),'revenue'],
   // Вторая половина уравнения. В PDF ключевая экономика идёт «Выручка →
@@ -65,8 +67,7 @@ PAGE += r"""function renderResult(){
   // финансирования нет, снимается только доходность капитала (владелец, 17.10.2026).
   // Ставка в подписи — та, по которой движок дисконтировал (`summary`), а не
   // число формы: подпись и подсказка называют одну ставку.
-  ['NPV @'+kpiDiscountRate(r).toLocaleString('ru-RU')+'%',money(r.summary.npv),
-   reportLayout(r).npv_basis==='hotel'?'npv_hotel':'npv',conditionalShort],
+  ['NPV @'+kpiDiscountRate(r).toLocaleString('ru-RU')+'%',money(r.summary.npv),npvHint,conditionalShort],
   // Цена входа стояла только в «Параметрах проекта» ниже и в PDF первой
   // строкой ключевой экономики: экран и отчёт расходились по составу, а
   // главное число сделки в шапку не попадало вовсе.
