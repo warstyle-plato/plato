@@ -45,6 +45,21 @@ _STRATEGY_LEAD = {
 _HOLD_WORDS = ("аренда с удержанием здания", "аренды с удержанием здания", "арендой с удержанием здания")
 
 
+def strategy_hint_key(name: str) -> str:
+    """Ключ подсказки «i» блока в словаре `report_kpi_hints` (тот же словарь и
+    тот же значок, что у плиток отчёта, PR #986)."""
+    return "strategy_" + name
+
+
+def strategy_column_hint(path: dict[str, Any]) -> str:
+    """Подсказка столбца — по способу пути: аренда — по её выходу."""
+    kind = _path_kind(path)
+    if kind == nonres_strategy.STRATEGY_INCOME:
+        hold = path.get("exit_mode") == nonres_strategy.EXIT_HOLD
+        return strategy_hint_key("income_hold" if hold else "income_sale")
+    return strategy_hint_key(kind)
+
+
 def _path_kind(path: dict[str, Any]) -> str:
     """Способ пути для фраз: ПДКП — свой способ, хотя считается прямой продажей."""
     if path.get("key") == nonres_strategy.PATH_PRESALE:
@@ -185,7 +200,8 @@ def _strategy_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
 
     def row(key: str, label: str, fn: Callable[[dict[str, Any]], str], **extra: Any) -> dict[str, Any]:
         # `values` — числа путей движка, из которых сделан текст ячеек.
-        return {"key": key, "label": label, "cells": cells(fn),
+        # `hint` — ключ подсказки «i» строки в словаре `report_kpi_hints`.
+        return {"key": key, "label": label, "cells": cells(fn), "hint": strategy_hint_key(key),
                 "values": [None if p.get("error") else p.get(key) for p in paths], **extra}
 
     rows = [
@@ -221,7 +237,8 @@ def _investor_rows(data: dict[str, Any], paths: list[dict[str, Any]], row: Calla
     rate_text = (" при ставке " + _cmp_num(float(rate), 1).removesuffix(",0") + "%"
                  if isinstance(rate, (int, float)) else "")
     section = {"key": "investor", "label": "Глазами инвестора: собственные деньги с учётом кредита",
-               "cells": [""] * len(paths), "values": [None] * len(paths), "section": True}
+               "cells": [""] * len(paths), "values": [None] * len(paths), "section": True,
+               "hint": strategy_hint_key("investor")}
     return [
         section,
         row("irr_equity", "IRR собственных денег",
@@ -234,9 +251,10 @@ def _investor_rows(data: dict[str, Any], paths: list[dict[str, Any]], row: Calla
             lambda p: _cmp_mln(p.get("stabilized_noi")) if rent(p) else "аренды нет"),
         row("yield_on_cost", "Доходность на затраты: чистый доход от аренды к затратам на создание" + cap_text,
             lambda p: (_cmp_pct(p["yield_on_cost"]) if isinstance(p.get("yield_on_cost"), (int, float)) else "—")
-            if rent(p) else "аренды нет"),
+            if rent(p) else "аренды нет", page_label="Доходность на затраты" + cap_text),
         row("exit_value", "Стоимость здания для покупателя-инвестора (чистый доход / ставка капитализации)",
-            lambda p: _cmp_mln(p.get("exit_value")) if rent(p) else "здание продаётся по частям"),
+            lambda p: _cmp_mln(p.get("exit_value")) if rent(p) else "здание продаётся по частям",
+            page_label="Стоимость здания для покупателя-инвестора"),
         row("dscr_min", "Покрытие платежей по кредиту арендой (DSCR, наименьшее)",
             lambda p: (_cmp_num(float(p["dscr_min"]), 2) + "x") if isinstance(p.get("dscr_min"), (int, float))
             else ("кредита под аренду нет" if rent(p) else "аренды нет")),
@@ -261,7 +279,8 @@ def strategy_compare_item(data: dict[str, Any], points: dict[str, Any] | None = 
         if p.get("key") == nonres_strategy.PATH_PRESALE:
             tags.append(nonres_strategy.PRESALE_BUYERS)
         columns.append({"key": p.get("key"), "label": p.get("label"), "best": p.get("key") == best,
-                        "current": p.get("key") == data.get("current"), "tags": tags})
+                        "current": p.get("key") == data.get("current"), "tags": tags,
+                        "hint": strategy_column_hint(p)})
     gap = None
     current = next((p for p in scored if p.get("key") == data.get("current")), None)
     if best and current:
@@ -271,7 +290,29 @@ def strategy_compare_item(data: dict[str, Any], points: dict[str, Any] | None = 
             "columns": columns, "rows": _strategy_rows(data),
             "teaser": strategy_teaser_line(data),
             "points": list((points or {}).get("lines") or []),
-            "points_title": "Когда стратегии сравняются"}
+            "points_title": "Когда стратегии сравняются",
+            "points_hint": strategy_hint_key("points")}
+
+
+def _strategy_page_stamp(indifference: dict[str, Any] | None) -> str:
+    """Подпись под таблицей на странице: короче PDF — как устроен расчёт,
+    говорит подсказка «i» (`strategy_method`). Причина, почему точки не
+    подобраны, остаётся на виду: она меняет то, что видно в блоке."""
+    if not isinstance(indifference, dict):
+        return STRATEGY_COMPARE_BASIS + " Точки, где стратегии сравняются, ещё подбираются."
+    if indifference.get("error"):
+        return (STRATEGY_COMPARE_BASIS + " Точки, где стратегии сравняются, не подобраны: "
+                + str(indifference.get("reason") or "причина не указана") + ".")
+    return STRATEGY_COMPARE_BASIS + " " + _strategy_stamp_when(indifference) + "."
+
+
+def _strategy_stamp_when(indifference: dict[str, Any]) -> str:
+    when = str(indifference.get("computed_at") or "")
+    try:
+        when = datetime.fromisoformat(when).astimezone(timezone.utc).strftime("%d.%m.%Y %H:%M UTC")
+    except ValueError:
+        pass
+    return f"Подбор: DevelopAid {indifference.get('engine_version') or VERSION} · {when}"
 
 
 def _strategy_stamp(indifference: dict[str, Any] | None) -> str:
@@ -309,6 +350,8 @@ def strategy_compare_block(result: dict[str, Any] | None,
                       for item in items if item["teaser"])
     return {"title": STRATEGY_COMPARE_TITLE, "items": items, "teaser": teaser,
             "stamp": _strategy_stamp(indifference),
+            "page_stamp": _strategy_page_stamp(indifference),
+            "stamp_hint": strategy_hint_key("method"),
             "points_ready": isinstance(indifference, dict) and not indifference.get("error"),
             "fingerprint": (indifference or {}).get("fingerprint")}
 
