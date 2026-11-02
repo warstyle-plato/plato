@@ -356,20 +356,13 @@ def month_fact(rss: Path, month: str, upto: datetime.date | None = None) -> dict
     """Оплачено за месяц по строкам сводки — из реестра платежей РСС.
 
     ``upto`` — дата сводки: оплата позже неё в сводку не входит, даже если
-    реестр её уже несёт (те же границы, что у таблицы статей).
+    реестр её уже несёт. Строки — те же, что у таблицы статей и таблицы по
+    главам (`_month_rows`): одно «оплачено за месяц» для графика и таблиц.
     """
     payments = actuals.read_payments(rss)
-    first = datetime.date.fromisoformat(month)
     sums = {line["key"]: 0.0 for line in LINES}
-    for row in payments["rows"]:
-        day = row.get("date")
-        if not day or (day.year, day.month) != (first.year, first.month):
-            continue
-        if upto is not None and day > upto:
-            continue
-        key = line_of(row.get("estimate_code") or "")
-        if key:
-            sums[key] += float(row.get("amount") or 0.0)
+    for row in _month_rows(rss, month, upto):
+        sums[line_of(row.get("estimate_code") or "")] += float(row.get("amount") or 0.0)
     return {"fact": sums, "last_payment": monitor._iso(payments.get("last")) or None,
             "undated": float(payments.get("undated") or 0.0)}
 
@@ -412,7 +405,7 @@ def month_budget(project: str, end: datetime.date) -> dict[str, Any]:
            "trend": _trend(project, rss, end),
            "by_article": _by_article(rss, month, end),
            "recipients": _recipients(rss, month, end),
-           "articles": _articles(project, end)}
+           "articles": _articles(project, end, rss)}
     if not plan:
         out["reason"] = (f"Не загружен бюджет (план-факт БДДС), в котором есть "
                          f"{datetime.date.fromisoformat(month):%m.%Y} — плана на месяц нет.")
@@ -580,10 +573,21 @@ def _trend(project: str, rss: Path, end: datetime.date, months: int = 12) -> lis
     return out
 
 
-def _month_rows(rss: Path, month: str, end: datetime.date) -> list[dict[str, Any]]:
+def _month_end(month: str) -> datetime.date:
+    return _month_shift(datetime.date.fromisoformat(month), -1) - datetime.timedelta(days=1)
+
+
+def _month_rows(rss: Path, month: str, end: datetime.date | None = None) -> list[dict[str, Any]]:
+    """Оплаты реестра РСС внутри строк сводки за месяц ``month``, не позже ``end``.
+
+    Единственный отбор «оплачено за месяц»: его читают тренд (`month_fact`),
+    таблица статей и таблица закрытого месяца по главам — поэтому числа
+    графика и таблиц за один месяц совпадают.
+    """
     first = datetime.date.fromisoformat(month)
+    last = _month_end(month) if end is None else min(end, _month_end(month))
     return [row for row in actuals.read_payments(rss)["rows"]
-            if row.get("date") and first <= row["date"] <= end
+            if row.get("date") and first <= row["date"] <= last
             and line_of(row.get("estimate_code") or "")]
 
 
@@ -620,67 +624,56 @@ def _recipients(rss: Path, month: str, end: datetime.date, top: int = 8) -> list
     return out
 
 
-# Главы бюджета месяца в порядке строк БДДС; итог — строка «РАСХОДЫ».
-_MONTH_CHAPTERS = (
-    ("land", "Глава 1 — приобретение проекта (земля)"),
-    ("construction_with_service", "Глава 2 — стройка и проектирование, со службой заказчика"),
-    ("commercial", "Глава 3 — коммерческие расходы"),
-    ("admin", "Административно-хозяйственные расходы"),
-)
+def _articles(project: str, end: datetime.date, rss: Path | None = None) -> dict[str, Any]:
+    """Прошлый (последний закрытый) месяц по главам и статьям: план БДДС, факт РСС.
 
+    Факт — оплаты реестра РСС за месяц (`month_articles`, тот же отбор, что у
+    точки графика «план и оплачено по месяцам»): владелец (02.11.2026) решил
+    «один источник — реестр РСС», когда факт по главам из файла БДДС разошёлся
+    с графиком. Из БДДС — только план. Строки, которых в реестре нет (земля,
+    оплаченная мимо РСС, и АХР), берут факт из БДДС с пометкой источника
+    (``rss == "факт БДДС"``).
 
-def _month_chapters(values: dict[str, Any]) -> list[dict[str, Any]]:
-    """План и факт закрытого месяца по главам БДДС и всего — как в самом файле.
-
-    Владелец (22.10.2026) сверяет сентябрь по файлу: «расходы 221, из них
-    2 глава 191, 1 глава 0,285, коммерческие 13,93, АХР 15,478».
-    """
-    extra = values.get("extra") or {}
-    out = []
-    for key, label in _MONTH_CHAPTERS + (("expenses", "Всего расходов по бюджету"),):
-        pair = values.get(key) if key in _BUDGET_ROWS else extra.get(key)
-        if not pair or (pair.get("plan") is None and pair.get("fact") is None):
-            continue
-        out.append({"key": key, "label": label, "plan": pair.get("plan"),
-                    "fact": pair.get("fact")})
-    return out
-
-
-def _articles(project: str, end: datetime.date) -> dict[str, Any]:
-    """Отклонения по статьям БДДС за прошлый месяц — последний закрытый.
-
-    Статьи — те же, что у бюджета месяца (`ARTICLES`, по точному имени строки).
     Месяц — тот, что перед месяцем сводки, а не «последний, где в файле есть
-    факт»: в октябрьской сводке стояла таблица за апрель, и её план читался как
-    октябрьский (финансист, 21.10.2026: «неверный план апреля, не могу понять,
-    откуда он подтянут»). Факта за прошлый месяц в файле нет — так и сказано.
+    факт» (финансист, 21.10.2026: в октябрьской сводке стояла таблица за апрель).
     """
-    files = _budget_files(project, end.isoformat())
-    if not files:
+    if not _budget_files(project, end.isoformat()):
         return {"known": False, "reason": "бюджет не загружен"}
-    month = (end.replace(day=1) - datetime.timedelta(days=1)).replace(day=1).isoformat()
+    month = _month_shift(end.replace(day=1), 1).isoformat()
     label = f"{datetime.date.fromisoformat(month):%m.%Y}"
-    # Свежайший бюджет, где этот месяц есть, — как у плана месяца (`_plan`).
-    files = [path for path in files if month in read_budget(path.read_bytes())["months"]] or files
-    parsed = read_budget(files[0].read_bytes())
-    if month not in parsed["months"]:
-        return {"known": False, "reason": f"в бюджете от {files[0].stem[:10]} нет месяца {label}"}
-    for month in (month,):
-        found = parsed["months"][month]["articles"]
-        if not any(pair.get("fact") is not None for pair in found.values()):
-            return {"known": False,
-                    "reason": f"в бюджете от {files[0].stem[:10]} не заполнен факт за {label}"}
-        rows = []
-        # Месяц закрыт: у части статей факт есть. Пустая ячейка факта в
-        # закрытом месяце бюджета значит «не платили», и это помечено.
-        for key, pair in found.items():
-            if pair.get("plan") is None and pair.get("fact") is None:
+    plan = _plan(project, month, end.isoformat())
+    if plan is None:
+        newest = _budget_files(project, end.isoformat())[0].stem[:10]
+        return {"known": False, "reason": f"в бюджете от {newest} нет месяца {label}"}
+    rss = rss or monitor._latest(project, "estimate", ".xlsx", end.isoformat())
+    if rss is None:
+        return {"known": False,
+                "reason": f"не загружен отчёт РСС с реестром платежей — факта за {label} нет"}
+    dated = [row["date"] for row in actuals.read_payments(rss)["rows"] if row.get("date")]
+    if not dated or min(dated) > _month_end(month):
+        return {"known": False,
+                "reason": f"реестр платежей РСС от {rss.stem[:10]} начинается позже "
+                          f"{label} — факта за этот месяц в нём нет"}
+    table = month_articles(rss, month, _month_end(month), plan)
+    chapters = [{"key": chapter["key"], "label": chapter["label"],
+                 "plan": chapter["total"]["plan"], "fact": chapter["total"]["fact"],
+                 "source": "budget" if chapter["total"].get("rss") == "факт БДДС" else
+                 ("none" if chapter["total"]["fact"] is None else "rss")}
+                for chapter in table["chapters"]]
+    chapters.append({"key": "expenses", "label": "Всего расходов за месяц",
+                     "plan": table["whole"]["plan"], "fact": table["whole"]["fact"],
+                     "source": "rss"})
+    rows = []
+    for chapter in table["chapters"]:
+        if chapter["key"] not in {"construction", "commercial", "service"}:
+            continue
+        for row in chapter["rows"]:
+            # «Прочие статьи главы» — план без карты: их оплаты лежат строками
+            # «без плана», отклонение у этой строки не считается.
+            if row["key"] == "rest" or not (row["plan"] or row["fact"]):
                 continue
-            fact = pair.get("fact") or 0.0
-            rows.append({"article": _ARTICLE[key]["label"], "plan": pair.get("plan"),
-                         "fact": pair.get("fact"), "fact_blank": pair.get("fact") is None,
-                         "delta": fact - pair["plan"] if pair.get("plan") is not None else None})
-        rows.sort(key=lambda row: -abs(row.get("delta") or 0.0))
-        return {"known": True, "month": month, "file": files[0].stem[:10], "rows": rows,
-                "chapters": _month_chapters(parsed["months"][month])}
-    return {"known": False, "reason": "в бюджете нет месяца с фактом"}
+            rows.append({"article": row["label"], "plan": row["plan"], "fact": row["fact"],
+                         "delta": row["fact"] - row["plan"] if row["plan"] is not None else None})
+    rows.sort(key=lambda row: -abs(row["delta"] if row["delta"] is not None else row["fact"]))
+    return {"known": True, "month": month, "file": plan["file"], "rss": rss.stem[:10],
+            "rows": rows, "chapters": chapters}

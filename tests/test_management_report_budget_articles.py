@@ -265,20 +265,101 @@ def test_the_whole_comes_from_the_expenses_row_when_the_file_has_it():
     assert whole["plan"] == pytest.approx(505 * M)
 
 
-def test_the_closed_month_is_shown_by_chapters_as_in_the_file():
-    # «По сентябрю в бюджете написано: расходы 221, из них 2 глава 191,
-    # 1 глава 0,285, коммерческие 13,93, АХР 15,478» (владелец, 22.10.2026).
-    monthly_budget.store_budget(PROJECT, articles_budget(), "2026-09-01")
-    articles = monthly_budget._articles(PROJECT, datetime.date(2026, 9, 15))
+# Закрытый сентябрь: план и «факт» файла БДДС; реестр РСС платил иначе.
+# (имя строки, план сентября, факт сентября по БДДС).
+SEPTEMBER_ROWS = [
+    ("Стоимость приобретения проекта", -20, -20),
+    ("Стоимость строительства и проектирования", -120, -60),
+    ("Основные объекты строительства", -100, -50),
+    ("Наружные сети и сооружения", -10, -5),
+    ("Содержание службы заказчика", -10, -5),
+    ("Коммерческие расходы", -12, -3),
+    ("Реклама и PR (КС) - Группа", -12, -3),
+    ("Административно-хозяйственные расходы", -4, -6),
+    ("РАСХОДЫ", -156, -89),
+]
+# Оплаты реестра: в сентябре стройка 70 + 2, коммерция 9, служба 4; 1 октября —
+# не сентябрь, даже если сводка строится в октябре.
+SEPTEMBER_PAYMENTS = [
+    (datetime.date(2026, 9, 3), 70, "2.2.1.4"),
+    (datetime.date(2026, 9, 12), 2, "2.8"),
+    (datetime.date(2026, 9, 20), 9, "3.1"),
+    (datetime.date(2026, 9, 25), 4, "2.6"),
+    (datetime.date(2026, 10, 1), 30, "2.2.1.4"),
+    (datetime.date(2026, 10, 2), 5, "3.1"),
+]
+
+
+def september_budget() -> bytes:
+    book = Workbook()
+    sheet = book.active
+    for col, name in ((5, "Сентябрь 2026"), (8, "Октябрь 2026")):
+        sheet.cell(row=4, column=col, value=name)
+        sheet.cell(row=5, column=col, value="ПЛАН")
+        sheet.cell(row=5, column=col + 1, value="ФАКТ")
+    for r, (name, plan, fact) in enumerate(SEPTEMBER_ROWS, 6):
+        sheet.cell(row=r, column=1, value=name)
+        sheet.cell(row=r, column=5, value=plan * M)
+        sheet.cell(row=r, column=6, value=fact * M)
+        sheet.cell(row=r, column=8, value=plan * M)
+    blob = io.BytesIO()
+    book.save(blob)
+    return blob.getvalue()
+
+
+def _september() -> dict:
+    monitor.store_schedule(PROJECT, _gpr_book({}), None, "2026-07-01")
+    monitor.store_estimate(PROJECT, _rss_book(
+        [(day, amount * M, code) for day, amount, code in SEPTEMBER_PAYMENTS]), "2026-10-18")
+    monthly_budget.store_budget(PROJECT, september_budget(), "2026-10-02")
+    return report.build(PROJECT, "week", "2026-10-18")
+
+
+def test_the_closed_month_fact_by_chapters_is_the_charts_fact():
+    # «Почему на графике коммерческие в октябре 34 из 43, а ниже в таблице
+    # оплачено 12.5 из 43» (владелец, 02.11.2026). Решение — «один источник —
+    # реестр РСС»: факт главы за месяц тот же, что у точки графика.
+    budget = _september()["budget"]
+    articles = budget["articles"]
+    assert articles["known"] and articles["month"] == "2026-09-01"
     chapters = {row["key"]: row for row in articles["chapters"]}
-    assert chapters["construction_with_service"]["fact"] == pytest.approx(100 * M)
-    assert chapters["commercial"]["fact"] == pytest.approx(4 * M)
-    assert chapters["admin"]["fact"] == pytest.approx(9 * M)
-    assert "land" not in chapters  # в августе земли нет ни в плане, ни в факте
-    page = report._budget_depth_html({"month": "2026-09-01", "articles": articles},
-                                     datetime.date(2026, 9, 15))
-    assert "Бюджет за август 2026 по главам" in page
-    assert "<td>Административно-хозяйственные расходы</td><td>9,0 млн ₽</td>" in page
+    point = next(p for p in budget["trend"] if p["month"] == "2026-09-01")
+    for key, paid in (("construction", 72), ("commercial", 9)):
+        assert chapters[key]["fact"] == pytest.approx(paid * M)
+        assert chapters[key]["fact"] == pytest.approx(point["fact"][key])
+        assert chapters[key]["source"] == "rss"
+    assert chapters["construction"]["plan"] == pytest.approx(point["plan"]["construction"])
+    assert chapters["commercial"]["plan"] == pytest.approx(12 * M)
+    assert chapters["service"]["fact"] == pytest.approx(4 * M)
+    # Земли и АХР в реестре нет — их факт из БДДС, с пометкой источника.
+    assert chapters["land"]["fact"] == pytest.approx(20 * M)
+    assert chapters["admin"]["fact"] == pytest.approx(6 * M)
+    assert {chapters[key]["source"] for key in ("land", "admin")} == {"budget"}
+    assert chapters["expenses"]["plan"] == pytest.approx(156 * M)
+    assert chapters["expenses"]["fact"] == pytest.approx((72 + 9 + 4 + 20 + 6) * M)
+    # Статьи — тот же факт: «Реклама и PR» 9 по реестру, а не 3 по файлу.
+    by_name = {row["article"]: row for row in articles["rows"]}
+    assert by_name["Реклама и PR"]["fact"] == pytest.approx(9 * M)
+    assert by_name["Реклама и PR"]["delta"] == pytest.approx(-3 * M)
+    page = report._budget_depth_html(budget, datetime.date(2026, 10, 18))
+    part = page[page.index("Бюджет за сентябрь 2026 по главам"):]
+    part = part[:part.index("</table>")]
+    assert "<td>Коммерческие расходы</td><td>12,0 млн ₽</td><td>9,0 млн ₽</td>" in part
+    assert "<td>3,0 млн ₽</td>" not in part  # «факт» файла БДДС по коммерции
+    assert "6,0 млн ₽ (факт по БДДС от 02.10.2026)" in part
+    assert "Факт — оплаты по реестру РСС от 18.10.2026" in page
+
+
+def test_the_closed_month_says_why_there_is_no_fact_without_the_register():
+    monthly_budget.store_budget(PROJECT, september_budget(), "2026-10-02")
+    got = monthly_budget._articles(PROJECT, datetime.date(2026, 10, 18))
+    assert got == {"known": False, "reason": "не загружен отчёт РСС с реестром платежей "
+                                             "— факта за 09.2026 нет"}
+    monitor.store_estimate(PROJECT, _rss_book(
+        [(datetime.date(2026, 10, 3), 5 * M)]), "2026-10-18")
+    got = monthly_budget._articles(PROJECT, datetime.date(2026, 10, 18))
+    assert got == {"known": False, "reason": "реестр платежей РСС от 2026-10-18 начинается "
+                                             "позже 09.2026 — факта за этот месяц в нём нет"}
 
 
 def test_the_service_line_carries_its_budget_plan():
@@ -355,10 +436,11 @@ def test_the_tables_carry_totals():
     assert ("<td><b>Итого оплачено с начала месяца</b></td>"
             f"<td><b>{report._rub(paid)}</b></td>") in page
     assert "Итого по " in page and "крупнейшим" in page
-    monthly_budget.store_budget(PROJECT, articles_budget(), "2026-09-01")
-    articles = monthly_budget._articles(PROJECT, datetime.date(2026, 9, 15))
-    html_part = report._budget_depth_html({"month": "2026-09-01", "articles": articles},
-                                          datetime.date(2026, 9, 15))
+    monthly_budget.store_budget(PROJECT, september_budget(), "2026-10-02")
+    articles = monthly_budget._articles(PROJECT, datetime.date(2026, 10, 18))
+    assert articles["known"]
+    html_part = report._budget_depth_html({"month": "2026-10-01", "articles": articles},
+                                          datetime.date(2026, 10, 18))
     plan = sum(row["plan"] for row in articles["rows"] if row.get("plan") is not None)
     assert f"<td><b>Итого по статьям</b></td><td><b>{report._rub(plan)}</b></td>" in html_part
     assert "−0 ₽" not in html_part
