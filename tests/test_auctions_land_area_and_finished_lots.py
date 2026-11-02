@@ -462,6 +462,20 @@ def test_in_a_real_browser_the_area_filter_and_finished_lots(tmp_path, monkeypat
 
 # --- одна площадь участка на фильтр, таблицу и книгу ---------------------------
 
+@pytest.fixture
+def without_privatization_rule(monkeypatch):
+    """Проверка про обход и разбор, а не про пороги приватизации.
+
+    Образец здесь — живая карточка августа 2026: приватизация с прошедшим
+    сроком подачи. Правило стоящих лотов (`privatization`) её законно
+    отсекает, и проверка листания падала бы про другое. У правила свои
+    проверки: tests/test_city_privatization_takes_only_worthy_lots.py.
+    """
+    from auction_search import privatization
+    monkeypatch.setattr(privatization, "applies", lambda lot: False)
+
+
+@pytest.mark.usefixtures("without_privatization_rule")
 def test_the_land_area_in_the_title_reaches_the_filter_not_only_the_table(tmp_path, monkeypatch):
     """Лот «здание 634,4 м² + участок 396 м²» — с площадью участка в выдаче.
 

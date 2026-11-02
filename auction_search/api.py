@@ -77,6 +77,7 @@ from auction_search.export_areas import export_areas
 from auction_search import archives, egrn_archive, egrn_store
 from auction_search import krt_pipeline
 from auction_search import lot_documents
+from auction_search.equity_assets import enrich_equity_from_documents
 from auction_search.krt_pipeline import (
     documents_summary,
     egrn_summary,
@@ -6207,6 +6208,13 @@ def install(app: FastAPI) -> None:
                 lot = await run_in_threadpool(
                     lambda: enrich_krt_from_official_documents(
                         lot, store_dir=_market_dir()))
+            elif lot.lot_kind == LotKind.EQUITY_STAKE and req.enrich_krt_documents:
+                # Продажа доли общества-«обёртки»: участок общества назван
+                # только в документах лота (выписка ЕГРН, документация), а не в
+                # карточке и не адресом общества. Кадастр оттуда едет дальше
+                # той же передачей в расчёт, цена доли — ценой входа.
+                lot = await run_in_threadpool(
+                    lambda: enrich_equity_from_documents(lot, store_dir=_market_dir()))
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except DocumentExtractionError as exc:
@@ -6258,6 +6266,11 @@ def install(app: FastAPI) -> None:
                 # никем не показанное неотличимо от непосчитанного, поэтому
                 # свод едет в ответ, а считает его один `egrn_summary`.
                 "egrn": egrn_summary(lot),
+                # Что стоит за долей: объекты общества из документов лота и
+                # чего прочитать не удалось. Без этого «участка нет» и «не
+                # прочитали» на экране одинаковы.
+                "equity_assets": (lot.raw.get("equity_assets")
+                                  if lot.lot_kind == LotKind.EQUITY_STAKE else None),
                 # Сколько вложений спросили, сколько прочитали и что площадка
                 # не отдала. Счёт лежал в `raw`, а `include_raw` у карточки
                 # выключен: на экране стояло «Документов 26» и ни слова о
