@@ -29,6 +29,15 @@ import developaid_project_notes as notes  # noqa: E402
 PROJECT = "Гродненская"
 PORT = 18798
 
+# Монитор и сводка — только по ключу администратора (решение владельца
+# 02.11.2026): страница и маршруты открываются ключом, а не сессией.
+ADMIN_TEST_KEY = "browser-admin-key"
+
+
+@pytest.fixture(autouse=True)
+def _admin_key(monkeypatch):
+    monkeypatch.setenv("DEVELOPAID_ADMIN_KEY", ADMIN_TEST_KEY)
+
 
 @pytest.fixture(autouse=True)
 def _isolated(tmp_path, monkeypatch):
@@ -105,6 +114,10 @@ def test_the_author_is_who_is_signed_in(monkeypatch):
     import main_legacy as core
 
     monkeypatch.setattr(core, "_require_web_access", lambda *_a, **_k: None)
+
+    # Пропуск монитора — ключ администратора; здесь проверяется сам маршрут.
+
+    monkeypatch.setattr(core, "_require_admin_key", lambda *_a, **_k: None)
     monkeypatch.setattr(core, "_web_identity_chat_id", lambda s: {"a": 11, "b": 22}.get(s, 0))
     monkeypatch.setattr(core, "profile_read",
                         lambda chat: {11: {"name": "Иван Иванов"}, 22: {"telegram_name": "petrov"}}[chat])
@@ -138,13 +151,15 @@ def test_notes_on_the_rendered_page(monkeypatch):
     # Проект выбирается из списка Монитора — у него должен быть хоть график.
     monitor.store_schedule(PROJECT, _gpr_book({}), None, "2026-07-01")
     monkeypatch.setattr(core, "_require_web_access", lambda *_a, **_k: None)
+    # Пропуск монитора — ключ администратора; здесь проверяется сам маршрут.
+    monkeypatch.setattr(core, "_require_admin_key", lambda *_a, **_k: None)
     with serve(core.app, PORT) as base, sync_playwright() as pw:
         browser = pw.chromium.launch(executable_path=str(chrome))
         try:
             tab = browser.new_page()
             errors: list[str] = []
             tab.on("pageerror", lambda e: errors.append(str(e)))
-            tab.add_init_script("localStorage.setItem('developaid_web_session','проба')")
+            tab.add_init_script("localStorage.setItem('developaid_web_session','проба');localStorage.setItem('plato_projects_key','browser-admin-key')")
             # Записи живут на странице «Сводка руководству», а не в Мониторе
             # стройки (владелец, 20.10.2026).
             tab.goto(f"{base}/report", wait_until="domcontentloaded")

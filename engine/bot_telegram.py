@@ -2401,25 +2401,34 @@ def _telegram_group_seen(chat: dict[str, Any], outcome: str = "") -> None:
         row["outcome"] = str(outcome)
 
 
-def _telegram_bindings_line(chat_id: int) -> str:
-    """Привязки чатов из реестра ядра — для команды; остальным пусто.
+def _telegram_bindings_line(user_id: int) -> str:
+    """Привязки чатов и счётчик групп для /status — только подписчику сводки, и
+    только по его проектам; остальным пусто.
 
-    Счётчик групп ниже живёт в памяти воркера с его запуска, и чат стройки,
+    Право — Telegram ID того, кто спрашивает (не ID группы), в списке подписки
+    на сводку (решение владельца 02.11.2026); решает ядро, где лежит список.
+    Счётчик групп живёт в памяти воркера с его запуска, и чат стройки,
     молчавший с выкатки, в нём не виден (владелец, 24.10.2026: «про стройку и
     монитор ни слова»). Привязки и отчёты лежат на ядре — оттуда и ответ.
     """
-    if int(chat_id or 0) not in team_chat_ids():
+    who = int(user_id or 0)
+    if not who:
         return ""
-    payload = {"chat_id": int(chat_id), "sign": _web_login_sign("monitor-chats", int(chat_id))}
+    payload = {"chat_id": who, "sign": _web_login_sign("monitor-chats", who)}
     try:
         url = _core_api_url("/internal/monitor/site-chats")
         got = (_core_post(url, payload, 15.0) if url
                else internal_monitor_site_chats(SiteChatsRequest(**payload)))
     except Exception as exc:
         return "\nПривязки чатов: не получил с сервера — " + html.escape(str(exc)[:120]) + "."
+    if not got.get("subscriber"):
+        return ""
     projects = got.get("projects") or []
+    titles = {title for row in projects for title in row.get("chats") or [] if title}
+    seen = _telegram_group_seen_line(titles)
     if not projects:
-        return "\nПривязки чатов: ни один чат не привязан — в чате напишите /site и имя проекта."
+        return ("\nПривязки чатов: ни один чат ваших проектов не привязан — в чате напишите "
+                "/site и имя проекта." + seen)
     lines = []
     for row in projects:
         chats = ", ".join(f"«{html.escape(title)}»" if title else "чат без названия"
@@ -2433,7 +2442,7 @@ def _telegram_bindings_line(chat_id: int) -> str:
         else:
             sales = "отчётов продаж из чата нет"
         lines.append(f"«{html.escape(str(row.get('project') or ''))}»: {chats}; {site}; {sales}")
-    return "\nПривязки чатов (на сервере):\n• " + "\n• ".join(lines)
+    return "\nПривязки чатов (на сервере):\n• " + "\n• ".join(lines) + seen
 
 
 def _telegram_day(value: str) -> str:
@@ -2443,7 +2452,7 @@ def _telegram_day(value: str) -> str:
         return str(value)
 
 
-def _telegram_group_seen_line() -> str:
+def _telegram_group_seen_line(titles: set[str] | None = None) -> str:
     """Строка о группах для /status: что бот оттуда увидел и чем это кончилось.
 
     Пустой счётчик — это ответ, а не прочерк: privacy mode Telegram по
@@ -2460,6 +2469,11 @@ def _telegram_group_seen_line() -> str:
                 "Если ждёте сводку с площадки — у бота включён privacy mode либо его "
                 "не переподключили к группе.")
     rows = sorted(seen.values(), key=lambda row: int(row.get("count") or 0), reverse=True)
+    if titles is not None:
+        # Подписчику — только группы его проектов: чужие названия — данные владельца.
+        rows = [row for row in rows if row.get("title") in titles]
+        if not rows:
+            return ""
     parts = []
     for row in rows[:5]:
         line = f"{row.get('title') or 'без имени'} — {int(row.get('count') or 0)}"
@@ -2673,8 +2687,7 @@ def _telegram_handle_message(message: dict[str, Any]) -> None:
         _telegram_send_message(
             chat_id,
             f"<b>DevelopAid bot:</b> {status}\nTelegram ID: <code>{user_id}</code>\nВерсия: {VERSION}"
-            + _telegram_bindings_line(chat_id)
-            + _telegram_group_seen_line(),
+            + _telegram_bindings_line(user_id),
         )
         return
     if command == "/cancel":

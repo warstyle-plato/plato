@@ -1395,15 +1395,19 @@ class SiteChatsRequest(BaseModel):
 
 @app.post("/internal/monitor/site-chats", include_in_schema=False)
 def internal_monitor_site_chats(req: SiteChatsRequest) -> dict[str, Any]:
-    """Привязки чатов для /status. Бот спрашивает только для команды, ядро
-    проверяет это ещё раз: имена проектов — данные владельца."""
+    """Привязки чатов для /status — только по проектам, на сводку которых этот
+    Telegram ID подписан (`developaid_report_mailing.subscribed_projects`).
+    Не подписан — `subscriber: False` и пусто: имена проектов — данные владельца."""
     expected = _web_login_sign("monitor-chats", int(req.chat_id or 0))
     if not hmac.compare_digest(str(req.sign or "").encode("utf-8"),
                                expected.encode("utf-8")):
         raise HTTPException(status_code=403, detail="Подпись не сошлась.")
-    if int(req.chat_id or 0) not in team_chat_ids():
-        raise HTTPException(status_code=403, detail="Привязки чатов видит только команда.")
-    return {"projects": site_chat_bindings()}
+    import developaid_report_mailing as mailing
+    allowed = set(mailing.subscribed_projects(req.chat_id))
+    if not allowed:
+        return {"subscriber": False, "projects": []}
+    return {"subscriber": True,
+            "projects": [row for row in site_chat_bindings() if row["project"] in allowed]}
 
 
 @app.post("/internal/monitor/photo", include_in_schema=False)
