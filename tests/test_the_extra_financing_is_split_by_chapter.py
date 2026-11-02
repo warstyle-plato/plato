@@ -155,7 +155,7 @@ def test_the_monitor_page_shows_the_chapters_and_the_note():
         pytest.skip("node недоступен")
     import developaid_monitor_page as page
 
-    script = max(re.findall(r"<script[^>]*>(.*?)</script>", page.MONITOR_PAGE, re.S), key=len)
+    script = page.MONITOR_PAGE  # функции ищутся по имени, разбирать теги не нужно
     esc = re.search(r"const esc=.*?;\n", script).group(0)
     parts = [esc] + [_function(script, name) for name in
                      PAGE_FUNCTIONS]
@@ -212,10 +212,11 @@ def test_the_chain_adds_up_and_names_the_surplus_of_one_chapter():
     assert total["plain"] + total["unused"] == pytest.approx(total["gap"])
     assert rec["outside_chapters"] == ["1"] and rec["outside_limit"] == pytest.approx(300.0)
     lines = dashboard.reconciliation_lines(rec, report._rub)
-    assert lines[0].startswith("Лимит банка по главам 1–3 — 900 ₽. Сверка ниже считает только "
-                               "главы 2–3 — 600 ₽; остальные 300 ₽ приходятся на глава 1 (участок)")
-    assert "Глава 3 (коммерция): лимит 100 ₽, оплачено 40 ₽, остаток лимита 60 ₽; осталось " \
-           "достроить 25 ₽; не хватает 0 ₽. Лимита останется 35 ₽" in lines[2]
+    assert lines[0] == ("Лимит банка по главам 1–3 — 900 ₽. Сверка дофинансирования считает "
+                        "только главы 2–3 — 600 ₽. Остальные 300 ₽ приходятся на главы вне "
+                        "этой сверки: глава 1 (участок). В дофинансирование они не входят.")
+    assert "Глава 3 (коммерция): лимит 100 ₽, оплачено всего 40 ₽, остаток по смете 60 ₽; " \
+           "осталось достроить 25 ₽; не хватает 0 ₽. Лимита останется 35 ₽" in lines[2]
     assert "излишек одной главы или статьи не покрывает нехватку другой" in lines[-1]
     assert "дофинансировать нужно 50 ₽, а не меньше" in lines[-1]
 
@@ -234,7 +235,7 @@ def test_the_chain_counts_the_reserve_and_the_overpaid_chapter():
     assert three["overpaid"] == pytest.approx(4.0)
     assert three["remaining"] == pytest.approx(three["limit"] - three["paid"] + three["overpaid"])
     text = " ".join(dashboard.reconciliation_lines(rec, report._rub))
-    assert "Оплачено больше лимита на 4 ₽" in text and "Резерв закрывает из этого" in text
+    assert "Оплачено больше сметы на 4 ₽" in text and "Резерв закрывает из этого" in text
     assert "Лимит банка по главам" not in text
 
 
@@ -284,7 +285,7 @@ def test_the_report_and_the_page_show_the_chain(monkeypatch):
         pytest.skip("node недоступен")
     import developaid_monitor_page as page
 
-    script = max(re.findall(r"<script[^>]*>(.*?)</script>", page.MONITOR_PAGE, re.S), key=len)
+    script = page.MONITOR_PAGE  # функции ищутся по имени, разбирать теги не нужно
     parts = [re.search(r"const esc=.*?;\n", script).group(0)] + [
         _function(script, name) for name in PAGE_FUNCTIONS]
     funding = {key: value for key, value in limit.items() if key != "need_by_chapter"}
@@ -296,3 +297,74 @@ def test_the_report_and_the_page_show_the_chain(monkeypatch):
     assert done.returncode == 0, done.stderr
     assert "Как сходится дофинансирование" in done.stdout
     assert "не покрывает нехватку другой" in done.stdout
+
+
+# --- Плашки складываются: «лимит − выбрано» против «осталось по смете».
+
+def _overpaid_rec():
+    articles = _surplus_articles()
+    articles["3.1"] = {**articles["3.1"], "paid_at_baseline": 120.0}  # перебор 20
+    waterfall = dashboard._article_waterfall(articles, 0.0, CUT)
+    return dashboard._limit_reconciliation(
+        waterfall, 900.0, ["1", "2", "3"],
+        smeta_by_chapter={"1": 300.0, "2": 500.0, "3": 100.0},
+        paid_by_chapter={"1": {"total": 250.0, "borrowed": 200.0},
+                         "2": {"total": 400.0, "borrowed": 300.0},
+                         "3": {"total": 120.0, "borrowed": 90.0}},
+        approved_by_chapter={"1": 300.0, "2": 520.0, "3": 110.0})
+
+
+def test_limit_minus_drawn_meets_the_remaining_through_a_named_difference():
+    rec = _overpaid_rec()
+    tiles = rec["tiles"]
+    assert tiles["matches"] and rec["matches"]
+    assert tiles["can_draw"] == pytest.approx(900.0 - 590.0)
+    # Остаток по смете — главы 2–3, глава с перебором стоит нулём.
+    assert tiles["remaining"] == pytest.approx(100.0)
+    assert tiles["difference"] == pytest.approx(210.0)
+    # 210 = глава 1 (300 − 200) + свои деньги (100 + 30) − перебор главы 3 (20).
+    assert tiles["not_in_remaining"] == [{"chapter": "1", "label": "участок", "amount": 100.0}]
+    assert tiles["own_money"] == pytest.approx(130.0)
+    assert tiles["overpaid"] == [{"chapter": "3", "label": "коммерция", "amount": 20.0}]
+    lines = dashboard.reconciliation_lines(rec, report._rub)
+    assert lines[0].startswith("Можно ещё выбрать у банка 310 ₽: это лимит 900 ₽ минус 590 ₽")
+    assert lines[1] == (
+        "Разница 210 ₽ складывается так: глава 1 (участок) — 100 ₽: её лимит минус "
+        "выбранное по ней в остаток по смете не входит; собственные деньги, уже заплаченные "
+        "по главам 2–3, — 130 ₽; по главе 3 (коммерция) оплачено больше сметы на 20 ₽ — в "
+        "остатке такая глава стоит нулём, поэтому этот перебор разницу уменьшает.")
+    by_chapter = {line.split(":")[0]: line for line in lines if line.startswith("Глава ")}
+    assert by_chapter["Глава 1 (участок)"] == (
+        "Глава 1 (участок): бюджет 300 ₽, лимит 300 ₽, оплачено всего 250 ₽, из них кредитом "
+        "200 ₽, остаток по смете 50 ₽; в расчёт дофинансирования эта глава не входит.")
+    assert "бюджет 110 ₽, лимит 100 ₽, оплачено всего 120 ₽, из них кредитом 90 ₽, остаток " \
+           "по смете 0 ₽" in by_chapter["Глава 3 (коммерция)"]
+    assert "Оплачено больше сметы на 20 ₽" in by_chapter["Глава 3 (коммерция)"]
+
+
+def test_the_monitor_and_the_tiles_carry_the_bridge(monkeypatch):
+    from test_the_monitor_takes_the_finmodel_as_its_finance_book import (
+        ESTIMATE, PAID, SECTIONS, _finmodel_funding)
+    from test_management_report_funding import PROJECT, _project
+
+    got = _finmodel_funding(monkeypatch, SECTIONS, ESTIMATE, PAID)
+    tiles = got["limit_reconciliation"]["tiles"]
+    assert tiles["matches"]
+    assert tiles["remaining"] == pytest.approx(got["bank_remaining"])
+    assert tiles["borrowed"] == pytest.approx(got["paid_borrowed"])
+    assert tiles["can_draw"] == pytest.approx(got["bank_limit"] - got["paid_borrowed"])
+
+    _project()
+    monkeypatch.setattr(report, "_monitor_view",
+                        lambda project, end: {"dashboard": {"funding": {
+                            **_limit(), "limit_reconciliation": _overpaid_rec()}}})
+    built = report.build(PROJECT, "week", "2026-10-18")
+    shown = {item["label"]: item for item in report.tiles(built)}
+    can_draw = shown["Можно ещё выбрать у банка"]
+    drawn = built["funding"]["draws"]["total"]
+    assert can_draw["value"] == report._rub(_limit()["bank_limit"] - drawn)
+    assert can_draw["note"].startswith("лимит минус выбранное кредитом")
+    left = shown["Осталось по смете после всех оплат"]
+    assert left["note"].startswith("смета минус всё оплаченное, кредитом и своими деньгами; "
+                                   "по главе 3 оплачено больше сметы на 20 ₽")
+    assert "Остаток лимита банка" not in shown

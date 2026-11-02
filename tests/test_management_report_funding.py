@@ -252,7 +252,7 @@ def test_the_approved_budget_and_its_deficit_come_from_the_monitor(monkeypatch):
     # Плашки сверху — деньги стройки пятью числами подряд (владелец, 21.10.2026).
     money = {item["label"]: item["value"] for item in report.tiles(built)}
     assert [money[label] for label in ("Утверждённый бюджет", "Лимит банка",
-                                       "Остаток лимита банка", "Дефицит на достройку")] == [
+                                       "Осталось по смете после всех оплат", "Дефицит на достройку")] == [
         "6,20 млрд ₽", "3,97 млрд ₽", "1,50 млрд ₽", "2,46 млрд ₽"]
     assert money["Выбрано у банка"] == report._rub(built["funding"]["draws"]["total"])
 
@@ -337,9 +337,9 @@ def test_the_draws_follow_the_chapters_of_the_limit(monkeypatch):
     assert tiles["Выбрано у банка"]["note"].startswith("из них за неделю 948,0 млн ₽ и за месяц 1,07 млрд ₽")
     assert "больше лимита на 348,0 млн ₽" in tiles["Выбрано у банка"]["note"]
     assert tiles["Выбрано у банка"]["tone"] == "bad"
-    note = tiles["Остаток лимита банка"]["note"]
+    note = tiles["Осталось по смете после всех оплат"]["note"]
     # Число и одна строка (владелец, 27.10.2026: подписи плиток — «простыни»).
-    assert note == "лимит минус оплаченное; не хватит 1,06 млрд ₽ с ноября 2026"
+    assert note == "смета минус всё оплаченное, кредитом и своими деньгами; не хватит 1,06 млрд ₽ с ноября 2026"
     text = report.render_text(built)
     assert ("перерасход по статьям 1,20 млрд ₽ остаток не уменьшает; лимиты по статьям "
             "больше общего лимита на 60,0 млн ₽") in text
@@ -408,7 +408,7 @@ def test_the_money_tiles_name_chapters_reserves_and_periods(monkeypatch):
     draws = built["funding"]["draws"]
     assert notes["Выбрано у банка"] == (f"из них за неделю {report._rub(draws['period'])} и "
                                         f"за месяц {report._rub(draws['month'])}")
-    assert notes["Остаток лимита банка"] == ("лимит минус оплаченное; не хватит 1,08 млрд ₽ "
+    assert notes["Осталось по смете после всех оплат"] == ("смета минус всё оплаченное, кредитом и своими деньгами; не хватит 1,08 млрд ₽ "
                                              "с ноября 2026")
     # В месячной сводке «за неделю» нет — только за месяц.
     month = report.build(PROJECT, "month", "2026-10-18")

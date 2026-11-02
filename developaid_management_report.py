@@ -3794,13 +3794,32 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
         extra = float(limit.get("additional_financing") or 0.0)
         # Число и одна строка (владелец на проде, 27.10.2026: подписи плиток —
         # «простыни»); разбивка по главам — в разделе «Финансирование».
-        add("Остаток лимита банка", _rub(limit.get("bank_remaining")),
-            "лимит минус оплаченное; "
+        # Плашки складываются (владелец, 02.11.2026: «Тут что-то не бьётся»):
+        # «лимит − выбрано» — это «можно ещё выбрать у банка», а остаток по
+        # смете вычитает все оплаты, и кредитом, и своими деньгами. Разница
+        # названа; разбор по частям — в разделе «Финансирование».
+        bridge = (limit.get("limit_reconciliation") or {}).get("tiles") or {}
+        remaining = float(limit.get("bank_remaining") or 0.0)
+        if draws:
+            can_draw = float(limit.get("bank_limit") or 0.0) - float(draws["total"])
+            gap = can_draw - remaining
+            add("Можно ещё выбрать у банка", _rub(can_draw),
+                "лимит минус выбранное кредитом"
+                + (f"; это на {_rub(abs(gap))} {'больше' if gap > 0 else 'меньше'} остатка "
+                   "по смете — почему, сказано в разделе «Финансирование»"
+                   if abs(gap) > 0.001 * max(1.0, float(limit.get("bank_limit") or 0.0))
+                   else ""),
+                "bad" if can_draw < 0 else "")
+        overpaid = "; ".join(f"по главе {item['chapter']} оплачено больше сметы на "
+                             f"{_rub(item['amount'])}" for item in bridge.get("overpaid") or [])
+        add("Осталось по смете после всех оплат", _rub(remaining),
+            "смета минус всё оплаченное, кредитом и своими деньгами; "
+            + (f"{overpaid}; " if overpaid else "")
             + (f"не хватит {_rub(extra)} {_since(limit.get('additional_financing_from'))}"
                if extra > 0 else "хватает до ввода"),
             "bad" if extra > 0 else "good")
     else:
-        add("Остаток лимита банка", None, "лимит не посчитан")
+        add("Осталось по смете после всех оплат", None, "лимит не посчитан")
     if need and need["deficit"] is not None and _model_basis(limit):
         add("Потребность в допфинансировании банка",
             _rub(need["deficit"]) if need["deficit"] > 0 else "нет",

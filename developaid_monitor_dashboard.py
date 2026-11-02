@@ -840,26 +840,48 @@ def _gap_scope_note(article_rows: list[dict[str, Any]]) -> str:
 
 
 def _limit_reconciliation(waterfall: dict[str, Any], bank_limit: float,
-                          bank_chapters: Any) -> dict[str, Any]:
-    """Как сходится дофинансирование: лимит → оплачено → остаток → осталось
-    достроить → не хватает. По главам водопада и итогом.
+                          bank_chapters: Any, *,
+                          smeta_by_chapter: dict[str, float] | None = None,
+                          paid_by_chapter: dict[str, dict[str, float]] | None = None,
+                          approved_by_chapter: dict[str, float] | None = None,
+                          remaining_outside: Any = ()) -> dict[str, Any]:
+    """Как сходится дофинансирование и как сходятся плашки лимита.
 
     Владелец (02.11.2026): «У нас сейчас лимит … Надо добавить сколько на
-    достройке. Просто как это сходится тогда». Все числа — строки водопада,
-    второй раз ничего не считается. По каждой статье водопада точно
-    потребность = свой лимит + резерв + непокрытое, поэтому
-    не хватает = осталось достроить − остаток лимита − резерв + лимит, что
-    останется неизрасходованным. Последнее слагаемое — излишек одной статьи
-    или главы: на нехватку другой он не переносится, и «осталось достроить
-    минус остаток» без него не сходится с итогом.
+    достройке. Просто как это сходится тогда» и, на плашках сводки, «Тут
+    что-то не бьётся». Две цепочки, обе из строк водопада и оплат РСС, второй
+    раз ничего не считается.
+
+    1. Дофинансирование, по главам водопада. По каждой статье точно
+       потребность = свой лимит + резерв + непокрытое, поэтому
+       не хватает = осталось достроить − остаток лимита − резерв + лимит,
+       что останется неизрасходованным (излишек одной статьи или главы на
+       нехватку другой не переносится).
+    2. Плашки. «Можно ещё выбрать у банка» = лимит − выбрано кредитом (все
+       главы лимита), «осталось по смете после всех оплат» = Σ max(0, лимит −
+       всё оплаченное) по главам остатка. Разница между ними раскладывается
+       без остатка: главы вне остатка (их лимит минус выбранное), собственные
+       деньги, уже заплаченные по главам остатка, перебор сверх сметы (в
+       остатке он взят нулём) и расхождение лимитов статей с итогом сметы.
     """
+    paid_by_chapter = paid_by_chapter or {}
+    approved_by_chapter = approved_by_chapter or {}
     chapters: dict[str, dict[str, Any]] = {}
+
+    def blank(chapter: str) -> dict[str, Any]:
+        return {"chapter": chapter, "label": _CHAPTER_WORDS.get(chapter, ("", ""))[0],
+                "budget": approved_by_chapter.get(chapter), "in_waterfall": False,
+                "in_remaining": False, "limit": 0.0, "paid": 0.0, "borrowed": None,
+                "overpaid": 0.0, "remaining": 0.0, "need": None, "reserve": None,
+                "unused": None, "gap": None}
+
     for row in waterfall.get("articles") or []:
         chapter = str(row.get("chapter") or str(row.get("code") or "").split(".")[0])
-        item = chapters.setdefault(chapter, {
-            "chapter": chapter, "label": _CHAPTER_WORDS.get(chapter, ("", ""))[0],
-            "limit": 0.0, "paid": 0.0, "overpaid": 0.0, "remaining": 0.0, "need": 0.0,
-            "reserve": 0.0, "unused": 0.0, "gap": 0.0})
+        item = chapters.get(chapter)
+        if item is None:
+            item = chapters[chapter] = {**blank(chapter), "in_waterfall": True,
+                                        "in_remaining": True, "need": 0.0, "reserve": 0.0,
+                                        "unused": 0.0, "gap": 0.0}
         limit = float(row.get("limit") or 0.0)
         raw = float(row.get("opening_limit_raw") or 0.0)
         item["limit"] += limit
@@ -870,14 +892,30 @@ def _limit_reconciliation(waterfall: dict[str, Any], bank_limit: float,
         item["reserve"] += float(row.get("reserve_take") or 0.0)
         item["unused"] += float(row.get("remaining_limit") or 0.0)
         item["gap"] += float(row.get("unfunded_take") or 0.0)
+    inside = sorted(chapters)
+    if smeta_by_chapter is not None:
+        for chapter in (str(ch) for ch in (bank_chapters or ())):
+            if chapter in chapters:
+                continue
+            limit = float(smeta_by_chapter.get(chapter) or 0.0)
+            paid = float((paid_by_chapter.get(chapter) or {}).get("total") or 0.0)
+            chapters[chapter] = {**blank(chapter), "limit": limit, "paid": paid,
+                                 "overpaid": max(0.0, paid - limit),
+                                 "remaining": max(0.0, limit - paid),
+                                 "in_remaining": chapter in {str(c) for c in remaining_outside}}
+    for chapter, item in chapters.items():
+        got = paid_by_chapter.get(chapter)
+        if got is not None:
+            item["borrowed"] = float(got.get("borrowed") or 0.0)
     rows = [chapters[ch] for ch in sorted(chapters)]
-    total = {key: sum(row[key] for row in rows)
+    flow = [chapters[ch] for ch in inside]
+    total = {key: sum(row[key] for row in flow)
              for key in ("limit", "paid", "overpaid", "remaining", "need", "reserve",
                          "unused", "gap")}
-    total["chapters"] = chapters_label(list(chapters)) if chapters else ""
+    total["chapters"] = chapters_label(inside) if inside else ""
     total["plain"] = total["need"] - total["remaining"]
-    outside = [str(ch) for ch in (bank_chapters or ()) if str(ch) not in chapters]
-    return {
+    outside = [str(ch) for ch in (bank_chapters or ()) if str(ch) not in inside]
+    out: dict[str, Any] = {
         "chapters": rows,
         "total": total,
         "bank_limit": float(bank_limit or 0.0),
@@ -887,38 +925,109 @@ def _limit_reconciliation(waterfall: dict[str, Any], bank_limit: float,
         # Сходится по построению; признак — для проверки, а не для красоты.
         "matches": abs(total["plain"] - total["reserve"] + total["unused"] - total["gap"])
         <= 1e-6 * max(1.0, total["need"]),
+        "tiles": None,
     }
+    if paid_by_chapter and all(row["borrowed"] is not None for row in rows):
+        borrowed = sum(row["borrowed"] for row in rows)
+        remaining = sum(row["remaining"] for row in rows if row["in_remaining"])
+        not_in_remaining = [{"chapter": row["chapter"], "label": row["label"],
+                             "amount": row["limit"] - row["borrowed"]}
+                            for row in rows if not row["in_remaining"]]
+        own = sum(row["paid"] - row["borrowed"] for row in rows if row["in_remaining"])
+        overpaid = [{"chapter": row["chapter"], "label": row["label"],
+                     "amount": row["overpaid"]}
+                    for row in rows if row["in_remaining"] and row["overpaid"] > 0]
+        book_gap = float(bank_limit or 0.0) - sum(row["limit"] for row in rows)
+        can_draw = float(bank_limit or 0.0) - borrowed
+        explained = (sum(item["amount"] for item in not_in_remaining) + own
+                     - sum(item["amount"] for item in overpaid) + book_gap)
+        out["tiles"] = {
+            "bank_limit": float(bank_limit or 0.0), "borrowed": borrowed,
+            "can_draw": can_draw, "remaining": remaining,
+            "remaining_chapters": chapters_label([row["chapter"] for row in rows
+                                                  if row["in_remaining"]]),
+            "difference": can_draw - remaining,
+            "not_in_remaining": not_in_remaining, "own_money": own,
+            "overpaid": overpaid, "book_gap": book_gap,
+            "matches": abs(can_draw - remaining - explained)
+            <= 1e-6 * max(1.0, float(bank_limit or 0.0)),
+        }
+    return out
+
+
+def _chapter_title(row: dict[str, Any]) -> str:
+    return f"глава {row['chapter']}" + (f" ({row['label']})" if row.get("label") else "")
+
+
+def tiles_bridge_lines(rec: dict[str, Any], money: Any) -> list[str]:
+    """«Лимит − выбрано» против «осталось по смете» — полными фразами."""
+    tiles = (rec or {}).get("tiles")
+    if not tiles:
+        return []
+    out = [f"Можно ещё выбрать у банка {money(tiles['can_draw'])}: это лимит "
+           f"{money(tiles['bank_limit'])} минус {money(tiles['borrowed'])}, уже выбранные "
+           f"кредитом. По смете после всех оплат по главам {tiles['remaining_chapters']} "
+           f"осталось {money(tiles['remaining'])}: здесь вычтено всё оплаченное — и кредитом, "
+           f"и собственными деньгами."]
+    pieces = []
+    for item in tiles["not_in_remaining"]:
+        if abs(item["amount"]) > 0.5:
+            pieces.append(f"{_chapter_title(item)} — {money(item['amount'])}: её лимит минус "
+                          "выбранное по ней в остаток по смете не входит")
+    if abs(tiles["own_money"]) > 0.5:
+        pieces.append(f"собственные деньги, уже заплаченные по главам "
+                      f"{tiles['remaining_chapters']}, — {money(tiles['own_money'])}")
+    for item in tiles["overpaid"]:
+        pieces.append(f"по {_chapter_title(item).replace('глава', 'главе', 1)} оплачено больше "
+                      f"сметы на {money(item['amount'])} — в остатке такая глава стоит нулём, "
+                      "поэтому этот перебор разницу уменьшает")
+    if abs(tiles["book_gap"]) > 0.5:
+        pieces.append(f"лимиты статей финансовой книги расходятся с итогом сметы на "
+                      f"{money(tiles['book_gap'])}")
+    if pieces and abs(tiles["difference"]) > 0.5:
+        out.append(f"Разница {money(tiles['difference'])} складывается так: "
+                   + "; ".join(pieces) + ".")
+    return out
 
 
 def reconciliation_lines(rec: dict[str, Any], money: Any) -> list[str]:
     """Сверка словами — одна для Монитора и сводки; деньги пишет `money`."""
     if not rec or not rec.get("chapters"):
         return []
-    out: list[str] = []
+    out: list[str] = tiles_bridge_lines(rec, money)
     total = rec["total"]
     outside = rec.get("outside_chapters") or []
     if outside and abs(rec.get("outside_limit") or 0.0) > 1e-6 * max(1.0, rec["bank_limit"]):
-        names = ", ".join(f"глава {ch}" + (f" ({_CHAPTER_WORDS[ch][0]})"
-                                           if ch in _CHAPTER_WORDS else "")
+        names = ", ".join(_chapter_title({"chapter": ch, "label": _CHAPTER_WORDS.get(ch, ("",))[0]})
                           for ch in outside)
         out.append(f"Лимит банка по главам {rec['bank_chapters']} — {money(rec['bank_limit'])}. "
-                   f"Сверка ниже считает только главы {total['chapters']} — "
-                   f"{money(total['limit'])}; остальные {money(rec['outside_limit'])} "
-                   f"приходятся на {names} и в дофинансирование не входят.")
+                   f"Сверка дофинансирования считает только главы {total['chapters']} — "
+                   f"{money(total['limit'])}. Остальные {money(rec['outside_limit'])} "
+                   f"приходятся на главы вне этой сверки: {names}. В дофинансирование "
+                   "они не входят.")
     for row in rec["chapters"]:
-        name = f"Глава {row['chapter']}" + (f" ({row['label']})" if row.get("label") else "")
-        text = (f"{name}: лимит {money(row['limit'])}, оплачено {money(row['paid'])}, "
-                f"остаток лимита {money(row['remaining'])}; осталось достроить "
-                f"{money(row['need'])}; не хватает {money(row['gap'])}.")
+        name = _chapter_title(row)
+        name = name[:1].upper() + name[1:]
+        borrowed = (f", из них кредитом {money(row['borrowed'])}"
+                    if row.get("borrowed") is not None else "")
+        budget = (f"бюджет {money(row['budget'])}, " if row.get("budget") is not None else "")
+        text = (f"{name}: {budget}лимит {money(row['limit'])}, оплачено всего "
+                f"{money(row['paid'])}{borrowed}, остаток по смете {money(row['remaining'])}")
+        if row["in_waterfall"]:
+            text += (f"; осталось достроить {money(row['need'])}; не хватает "
+                     f"{money(row['gap'])}.")
+        else:
+            text += "; в расчёт дофинансирования эта глава не входит."
         if row["overpaid"] > 0:
-            text += (f" Оплачено больше лимита на {money(row['overpaid'])} — этот перерасход "
-                     "остаток лимита не уменьшает.")
-        if row["unused"] > 0:
+            text += (f" Оплачено больше сметы на {money(row['overpaid'])} — этот перебор "
+                     "показан здесь, а в остатке глава стоит нулём и остаток других глав "
+                     "он не уменьшает.")
+        if row["in_waterfall"] and row["unused"] > 0:
             text += (f" Лимита останется {money(row['unused'])}: он не переносится на "
                      "нехватку другой главы или статьи.")
         out.append(text)
     text = (f"Итого по главам {total['chapters']}: осталось достроить {money(total['need'])} "
-            f"минус остаток лимита {money(total['remaining'])} — это {money(total['plain'])}.")
+            f"минус остаток по смете {money(total['remaining'])} — это {money(total['plain'])}.")
     if total["reserve"] > 0:
         text += f" Резерв закрывает из этого {money(total['reserve'])}."
     if total["unused"] > 0:
@@ -1218,7 +1327,15 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
                      + max(0.0, one_limit - one_paid["total"]),
                      "opening_article_deficit": float(waterfall["opening_article_deficit"])
                      + max(0.0, one_paid["total"] - one_limit)}
-    reconciliation = _limit_reconciliation(waterfall_book, current["limit"], shown)
+    smeta = dict(current.get("by_chapter") or {})
+    if chapter_one is not None:
+        smeta["1"] = chapter_one["limit"]
+    reconciliation = _limit_reconciliation(
+        waterfall_book, current["limit"], shown, smeta_by_chapter=smeta,
+        paid_by_chapter={str(ch): _paid_in_chapters(rss, estimate, (ch,)) for ch in shown},
+        approved_by_chapter=baseline.get("approved_by_chapter") or {},
+        # Глава 1 из РСС при бюджетной книге входит в остаток плашки (см. выше).
+        remaining_outside=("1",) if chapter_one is not None else ())
     return {
         "known": True,
         "source": baseline["source"],

@@ -251,11 +251,11 @@ def test_the_report_names_the_bank_need_by_chapter_for_the_model(monkeypatch):
         "deficit_ladder": {"total": 2_393 * M}}}})
     built = report.build(PROJECT, "week", "2026-10-18")
     tiles = {item["label"]: item for item in report.tiles(built)}
-    assert tiles["Остаток лимита банка"]["value"] == "1,28 млрд ₽"
+    assert tiles["Осталось по смете после всех оплат"]["value"] == "1,28 млрд ₽"
     # Плитки — число и одна строка (владелец на проде, 27.10.2026: подписи —
     # «простыни»); разбивка по главам — в разделе «Финансирование» ниже.
-    assert tiles["Остаток лимита банка"]["note"] == (
-        "лимит минус оплаченное; не хватит 2,39 млрд ₽ с ноября 2026")
+    assert tiles["Осталось по смете после всех оплат"]["note"] == (
+        "смета минус всё оплаченное, кредитом и своими деньгами; не хватит 2,39 млрд ₽ с ноября 2026")
     assert "Дефицит на достройку" not in tiles
     tile = tiles["Потребность в допфинансировании банка"]
     assert tile["value"] == "2,39 млрд ₽"
