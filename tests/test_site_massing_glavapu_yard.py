@@ -35,7 +35,7 @@ RUN = """async (refused)=>{
   applied:{refused:refused?[{param:'flats_count',place:'поле',reason:'не принято'}]:[]},
   glavapu:{territory:{green_zhk:[4.0,'строка 57, га'],'57_1':[2.8,'строка 57.1, га'],'57_2':[1.2,'строка 57.2, га']}}});
  await settledCalculate();
- openTab('tep'); renderTep();
+ openTab('tep'); renderTep(); document.getElementById('siteMassingDetails')&&(document.getElementById('siteMassingDetails').open=true);
  const m=(lastResult.tep||{}).site_massing||{};
  return {units:units, before:before.yard_sqm, yard:m.yard_sqm, basis:m.yard_basis||'',
          kept:!!inputs._glavapu_scenario,

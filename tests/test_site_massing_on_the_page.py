@@ -38,7 +38,7 @@ SETUP = """async ()=>{
 }"""
 
 READ = """()=>{
- openTab('tep'); renderTep();
+ openTab('tep'); renderTep(); document.getElementById('siteMassingDetails')&&(document.getElementById('siteMassingDetails').open=true);
  const card=document.getElementById('siteMassingCard');
  const body=document.getElementById('siteMassingBody');
  const box=card?card.getBoundingClientRect():{width:0,height:0};
