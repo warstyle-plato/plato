@@ -153,9 +153,11 @@ PAID = {"1": {"total": 280 * K, "borrowed": 100 * K},   # по главе 1 оп
 
 
 def _own(tmp_path):
-    comp = _read(tmp_path, _finmodel())["budget_composition"]
+    got = _read(tmp_path, _finmodel())
+    comp = got["budget_composition"]
     return comp, dashboard._own_money(comp, SMETA, PAID, ["1", "2", "3"],
-                                      datetime.date(2026, 10, 20))
+                                      datetime.date(2026, 10, 20),
+                                      chapter_flow=got["chapter_flow"])
 
 
 def test_limit_is_paid_plus_left_and_budget_is_limit_plus_own_money(tmp_path):
@@ -169,29 +171,34 @@ def test_limit_is_paid_plus_left_and_budget_is_limit_plus_own_money(tmp_path):
                                       "3": pytest.approx(50 * K)}
     assert own["need"] == pytest.approx(210 * K)
     assert own["budget"] == pytest.approx(own["limit"] + own["need"])
-    rows = {row["section"]: row["amount"] for row in own["rows"]}
-    # 210 = участок 30 + стройка 110 + коммерция 20 + административные 40 + даты 10
-    assert rows == {"2.1": pytest.approx(30 * K), "2.2": pytest.approx(110 * K),
-                    "2.3": pytest.approx(20 * K), "2.4": pytest.approx(40 * K)}
-    assert own["dates"] == pytest.approx(10 * K)
+    rows = {row["chapter"]: row["amount"] for row in own["rows"]}
+    # Карта «статьи_БДДС» кладёт административные расходы (2.4.1 → 2.6) в главу 2.
+    # 210 = глава 1: 0 − (−30) + глава 2: 620 − 490 + глава 3: 70 − 50 + расхождение 30
+    assert rows == {"1": pytest.approx(30 * K), "2": pytest.approx(130 * K),
+                    "3": pytest.approx(20 * K)}
+    assert own["rows"][1]["sections"] == {"2.2": pytest.approx(1_000 * K),
+                                          "2.4": pytest.approx(40 * K)}
+    assert own["dates"] == pytest.approx(30 * K)
     assert sum(rows.values()) + own["dates"] == pytest.approx(own["need"])
-    # Первый месяц — водопад всех разделов против их глав: стройке не хватает в ноябре.
+    # Первый месяц — водопад глав: главе 2 не хватает в ноябре.
     assert own["from"] == "2026-11-01"
 
     lines = dashboard.own_money_lines(own, report._rub)
     assert lines[0].startswith("Утверждённый бюджет без налогов 1,4 млн ₽ минус лимит банка "
                                "1,2 млн ₽ — нужно своих денег сверх сметы банка 210 000 ₽, "
                                "первый месяц нехватки — ноябрь 2026.")
-    assert "2.4 «Административно-хозяйственные расходы» — 40 000 ₽: в смете банка таких " \
-           "расходов нет" in lines[1]
-    assert "расхождение «ФАКТ» финмодели с реестром РСС — 10 000 ₽: финмодель считает " \
+    assert ("глава 2 (стройка) — 130 000 ₽: осталось оплатить по финмодели 620 000 ₽ минус "
+            "остаток лимита главы 490 000 ₽; бюджет главы по карте «статьи_БДДС» — разделы "
+            "2.2 1,0 млн ₽ + 2.4 40 000 ₽") in lines[1]
+    assert "расхождение «ФАКТ» финмодели с реестром РСС — 30 000 ₽: финмодель считает " \
            "оплаченным больше" in lines[1]
 
 
 def test_a_forged_section_breaks_the_identity(tmp_path):
-    comp, _ = _own(tmp_path)
-    forged = {**comp, "total": comp["total"] + 5 * K}  # бюджет разошёлся с разделами
-    own = dashboard._own_money(forged, SMETA, PAID, ["1", "2", "3"], datetime.date(2026, 10, 20))
+    got = _read(tmp_path, _finmodel())
+    forged = {**got["budget_composition"], "total": got["approved"] + 5 * K}  # бюджет разошёлся
+    own = dashboard._own_money(forged, SMETA, PAID, ["1", "2", "3"], datetime.date(2026, 10, 20),
+                               chapter_flow=got["chapter_flow"])
     assert own["matches"] is False
 
 
@@ -241,7 +248,7 @@ def test_the_tiles_add_up_on_the_page(tmp_path, monkeypatch):
     assert ("<div class='k'>Утверждённый бюджет <span class='i' tabindex='0' role='note' "
             "title='Утверждённый бюджет — сумма") in page
     assert "Нужно своих денег сверх сметы банка</b>" in report._funding_html(built)
-    assert "расхождение «ФАКТ» финмодели с реестром РСС — 10 000 ₽" in report.render_text(built)
+    assert "расхождение «ФАКТ» финмодели с реестром РСС — 30 000 ₽" in report.render_text(built)
 
 
 # --- Нехватка не прыгает при смене месяца сводки.
@@ -289,3 +296,22 @@ def test_an_unpaid_past_month_moves_to_the_cut():
     owed = dashboard._plan_still_owed(PLAN, BOOK, 0.0, datetime.date(2026, 12, 5))
     assert owed["2026-12-01"] == pytest.approx(60.0 + 30.0 + 20.0)
     assert owed["2027-01-01"] == pytest.approx(10.0)
+
+
+def test_the_bank_gap_takes_the_chapter_by_the_crosswalk(monkeypatch):
+    """Административные расходы, которые карта кладёт в главу 2, — потребность главы 2."""
+    from pathlib import Path
+
+    import test_the_monitor_takes_the_finmodel_as_its_finance_book as fm
+
+    fm._finmodel_funding(monkeypatch, fm.SECTIONS, fm.ESTIMATE, fm.PAID)
+    reader = dashboard._finance_baseline
+    flow = {"2": {"monthly": {"2026-11-01": 250.0 + 40.0, "2026-12-01": 100.0}},  # + 2.4 → 2.6
+            "3": {"monthly": {"2026-11-01": 30.0, "2027-01-01": 50.0}}}
+    monkeypatch.setattr(dashboard, "_finance_baseline",
+                        lambda project: {**reader(project), "chapter_flow": flow})
+    view = {"schedule": {"approved_end": "2027-09-30", "forecast_end": None}}
+    got = dashboard._funding_risk("demo", Path("rss.xlsx"), datetime.date(2026, 10, 20), view)
+    assert got["need_by_chapter"]["2"]["need"] == pytest.approx(390.0)
+    # Без карты прежний расчёт взял бы только раздел 2.2 (350) — и недосчитал 40.
+    assert got["need_by_chapter"]["2"]["gap"] == pytest.approx(390.0 - 50.0)
