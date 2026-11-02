@@ -27,7 +27,7 @@ import developaid_project_notes as notes  # noqa: E402
 import developaid_report_charts as charts  # noqa: E402
 from test_management_report_funding import _rss_with_sources, _sales as _credit_sales  # noqa: E402
 from test_management_report_model import (  # noqa: E402
-    M, PROJECT, _contract, _gpr_book, _project, budget_book)
+    M, PROJECT, _contract, _gpr_book, _project, _rss_book, budget_book)
 
 
 @pytest.fixture(autouse=True)
@@ -253,14 +253,19 @@ def test_closed_month_deviations_by_article_name_without_outline():
     blob = io.BytesIO()
     book.save(blob)
     monthly_budget.store_budget(PROJECT, blob.getvalue(), "2026-10-02")
+    # Факт — по реестру РСС (решение владельца 02.11.2026), не колонка «ФАКТ».
+    monitor.store_estimate(PROJECT, _rss_book([(datetime.date(2026, 9, 5), 150e6),
+                                               (datetime.date(2026, 9, 6), 9e6, "3.1")]),
+                           "2026-10-18")
     got = monthly_budget._articles(PROJECT, datetime.date(2026, 10, 18))
     assert got["known"] and got["month"] == "2026-09-01"
     by_name = {row["article"]: row for row in got["rows"]}
     # Подрядчик и АХР — не статьи карты.
     assert set(by_name) == {"Основные объекты строительства", "Наружные сети и сооружения",
                             "Служба заказчика, охрана и офис", "Реклама и PR"}
-    assert by_name["Основные объекты строительства"]["delta"] == pytest.approx(-90e6)
-    assert by_name["Наружные сети и сооружения"]["fact_blank"] is True
+    assert by_name["Основные объекты строительства"]["delta"] == pytest.approx(-130e6)
+    # Оплат по сетям в реестре нет — это ноль реестра, а не «не платили» файла.
+    assert by_name["Наружные сети и сооружения"]["fact"] == 0.0
     assert got["rows"][0]["article"] == "Основные объекты строительства"
 
 def test_works_of_the_week_from_the_bots_reports():
@@ -326,9 +331,15 @@ def test_deviations_are_for_last_month_not_the_last_month_with_a_fact():
     blob = io.BytesIO()
     book.save(blob)
     monthly_budget.store_budget(PROJECT, blob.getvalue(), "2026-10-02")
+    monitor.store_estimate(PROJECT, _rss_book([(datetime.date(2026, 4, 5), 1e6),
+                                               (datetime.date(2026, 9, 5), 7e6)]),
+                           "2026-10-18")
+    # Пустая колонка «ФАКТ» сентября больше не мешает: факт — по реестру РСС.
     got = monthly_budget._articles(PROJECT, datetime.date(2026, 10, 18))
-    assert got == {"known": False,
-                   "reason": "в бюджете от 2026-10-02 не заполнен факт за 09.2026"}
+    assert got["known"] and got["month"] == "2026-09-01"
+    by_name = {row["article"]: row for row in got["rows"]}
+    assert by_name["Основные объекты строительства"]["plan"] == pytest.approx(280e6 * 4)
+    assert by_name["Основные объекты строительства"]["fact"] == pytest.approx(7e6)
     got = monthly_budget._articles(PROJECT, datetime.date(2026, 12, 5))
     assert got == {"known": False, "reason": "в бюджете от 2026-10-02 нет месяца 11.2026"}
 

@@ -3262,7 +3262,7 @@ def _table(head: list[str], rows: list[list[str]]) -> str:
     return "<table>" + _row(head, True) + "".join(_row(row) for row in rows) + "</table>"
 
 
-def _breakdown_html(breakdown: dict[str, Any], kind: str) -> str:
+def _breakdown_html(breakdown: dict[str, Any], kind: str, charts_shown: bool = True) -> str:
     esc = html.escape
     out = []
     sections = breakdown.get("sections") or []
@@ -3274,10 +3274,11 @@ def _breakdown_html(breakdown: dict[str, Any], kind: str) -> str:
              _pp(row["delta"]) if row.get("delta") is not None else "—"]
             for row in sections[:12]]))
         shown = sections[:8]
-        out.append(charts.bar_chart(
-            "Разделы графика: план и факт выполнения", [row["section"][:22] for row in shown],
-            [{"name": "План", "values": [row["plan"] * 100 for row in shown]},
-             {"name": "Факт", "values": [row["fact"] * 100 for row in shown]}], "%", digits=0))
+        if charts_shown:
+            out.append(charts.bar_chart(
+                "Разделы графика: план и факт выполнения", [row["section"][:22] for row in shown],
+                [{"name": "План", "values": [row["plan"] * 100 for row in shown]},
+                 {"name": "Факт", "values": [row["fact"] * 100 for row in shown]}], "%", digits=0))
     if breakdown.get("laggards"):
         total = breakdown["laggards_total"]
         out.append(f"<h3>Больше всего отстают (с отставанием {total} "
@@ -3773,18 +3774,26 @@ def _budget_depth_html(block: dict[str, Any], end: datetime.date) -> str:
                    "«нет плана» — месяца нет ни в одном загруженном бюджете.</p>")
     articles = block.get("articles") or {}
     if articles.get("known"):
+        month_words = _months_label(articles["month"])
+        budget_day = _day(articles["file"])
+
+        def fact_cell(row: dict[str, Any]) -> str:
+            if row.get("fact") is None:
+                return "нет в РСС"
+            mark = f" (факт по БДДС от {budget_day})" if row.get("source") == "budget" else ""
+            return _rub(row["fact"]) + mark
+
         if articles.get("chapters"):
-            out.append(f"<h3>Бюджет за {_months_label(articles['month'])} по главам</h3>")
+            out.append(f"<h3>Бюджет за {month_words} по главам</h3>")
             out.append(_table(["Глава бюджета", "План", "Факт", "Отклонение"], [
                 [(f"<b>{esc(row['label'])}</b>" if row["key"] == "expenses" else esc(row["label"])),
-                 _rub(row.get("plan")), _rub(row.get("fact")),
+                 _rub(row.get("plan")), fact_cell(row),
                  _delta(row["fact"] - row["plan"])
                  if row.get("plan") is not None and row.get("fact") is not None else "—"]
                 for row in articles["chapters"]]))
-        out.append(f"<h3>Отклонения по статьям бюджета за {_months_label(articles['month'])}</h3>")
+        out.append(f"<h3>Отклонения по статьям бюджета за {month_words}</h3>")
         body = [
-            [esc(row["article"]), _rub(row.get("plan")),
-             "не платили" if row.get("fact_blank") else _rub(row.get("fact")),
+            [esc(row["article"]), _rub(row.get("plan")), _rub(row.get("fact")),
              _delta(row.get("delta"))] for row in articles["rows"][:10]]
         # Итог — по всем статьям, а не по показанным десяти (владелец,
         # 22.10.2026: «тут нет нигде итого»).
@@ -3794,8 +3803,17 @@ def _budget_depth_html(block: dict[str, Any], end: datetime.date) -> str:
         body.append(["<b>Итого по статьям</b>", f"<b>{_rub(plan_sum)}</b>",
                      f"<b>{_rub(fact_sum)}</b>", f"<b>{_delta(fact_sum - plan_sum)}</b>"])
         out.append(_table(["Статья", "План", "Факт", "Отклонение"], body))
-        out.append("<p class='note'>Плюс — перерасход, минус — недоосвоение. Данные — из "
-                   f"план-факта БДДС от {_day(articles['file'])}.</p>")
+        # Один источник факта с графиком выше (владелец, 02.11.2026: «один
+        # источник — реестр РСС»); из БДДС — план и помеченные строки.
+        out.append("<p class='note'>Плюс — перерасход, минус — недоосвоение. План — из "
+                   f"план-факта БДДС от {budget_day}. Факт — оплаты по реестру РСС от "
+                   f"{_day(articles['rss'])}, те же, что на графике «план и оплачено по "
+                   "месяцам»; где написано «факт по БДДС», оплаты в реестре РСС нет и факт "
+                   "взят из файла бюджета."
+                   + (" В статье 2.6 РСС кроме службы заказчика оплачиваются зарплаты офиса "
+                      "и связь, поэтому её факт выше плана."
+                      if any(row["key"] == "service" for row in articles.get("chapters") or [])
+                      else "") + "</p>")
     elif articles.get("reason"):
         out.append(f"<p class='note'>Отклонения по статьям бюджета: {esc(articles['reason'])}.</p>")
     if block.get("by_article"):
@@ -3915,10 +3933,26 @@ def _scale(values: list[float | None]) -> tuple[float, str]:
     return (1e9, "млрд ₽") if peak >= 2e9 else (1e6, "млн ₽")
 
 
-def _physical_chart(block: dict[str, Any]) -> str:
+PROGRESS_CHARTS_MIN_FACTS = 2
+
+
+def progress_charts_shown(block: dict[str, Any]) -> bool:
+    """Графики выполнения ГПР (кривая и разделы) — только от двух дат ГПР-факта.
+
+    Одна точка — не динамика: владелец (02.11.2026) попросил скрыть графики,
+    пока замер один; таблицы «План к дате / Выполнено» остаются. Единственный
+    предикат для всех мест, где эти графики рисуются (страница и PDF — одна
+    разметка ``render_html``).
+    """
     facts = (block.get("series") or {}).get("fact") or []
-    if not facts:
+    days = {point.get("day") for point in facts if point.get("day")}
+    return len(days) >= PROGRESS_CHARTS_MIN_FACTS
+
+
+def _physical_chart(block: dict[str, Any]) -> str:
+    if not progress_charts_shown(block):
         return ""
+    facts = (block.get("series") or {}).get("fact") or []
     facts = facts[-26:]
     labels = [_date(p["day"]).strftime("%d.%m") for p in facts]
     return charts.line_chart(
@@ -4076,8 +4110,13 @@ def render_html(report: dict[str, Any]) -> str:
         notes = _physical_notes(block)
         out.append(f"<p class='note'>{esc(notes[0])}</p>")
         out.extend(f"<p class='note warn'>{esc(line)}</p>" for line in notes[1:])
-        out.append(_physical_chart(block))
-        out.append(_breakdown_html(block.get("breakdown") or {}, report["kind"]))
+        shown = progress_charts_shown(block)
+        if shown:
+            out.append(_physical_chart(block))
+        else:
+            out.append("<p class='note'>График выполнения появится, когда будет второй "
+                       "замер выполнения по графику работ.</p>")
+        out.append(_breakdown_html(block.get("breakdown") or {}, report["kind"], shown))
     else:
         out.append(missing(block))
     out.append("<h3>Люди на площадке</h3>")
