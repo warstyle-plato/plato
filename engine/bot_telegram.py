@@ -2414,7 +2414,10 @@ def _telegram_bindings_line(user_id: int) -> str:
     who = int(user_id or 0)
     if not who:
         return ""
-    payload = {"chat_id": who, "sign": _web_login_sign("monitor-chats", who)}
+    try:
+        payload = {"chat_id": who, "sign": _web_login_sign("monitor-chats", who)}
+    except HTTPException:
+        return ""  # подписать вопрос ядру нечем — права подписчика не проверить
     try:
         url = _core_api_url("/internal/monitor/site-chats")
         got = (_core_post(url, payload, 15.0) if url
