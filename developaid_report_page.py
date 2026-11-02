@@ -86,7 +86,7 @@ REPORT_PAGE = """<!doctype html>
 __DEVELOPAID_CONTOUR__
 <div class="top"><div><h1 style="margin:0">Сводка руководству</h1><div class="muted">Стройка, продажи, финансирование и бюджет за неделю или за месяц — для решений и рассылки</div></div>
 <div class="files"><div class="field"><label>Проект</label><select id="project"><option value="">Загружаю список проектов…</option></select></div><div class="field"><label>Дата сводки</label><input id="cut" type="date"></div><div class="field"><label>Период</label><select id="reportKind"><option value="week">За неделю</option><option value="month">За месяц</option></select></div><div class="field" id="salesField"><label>Проект в отчёте о продажах</label><div id="salesLinked" class="hidden" style="padding-top:6px"><span id="salesName"></span> <button class="btn ghost" id="salesChange" type="button" title="Выбрать другой проект из отчёта о продажах">Сменить</button></div><select id="reportSales" class="hidden" title="Выбор запоминается на сервере для всех, кто открывает сводку этого проекта."></select></div><button class="btn" id="reportBtn">Показать</button><button class="btn alt" id="reportPdfBtn">Скачать PDF</button></div></div>
-<div class="card auth-card" id="loginBox"><div class="body" style="padding:12px 14px"><b>Вход</b><div class="muted">Войдите через Telegram тем же аккаунтом DevelopAid, что и в Мониторе.</div><div class="files" style="margin-top:10px"><button class="btn" id="loginBtn">Войти через Telegram</button><button class="btn ghost" id="keyBtn">Ключ администратора</button></div><div class="msg" id="loginMsg"></div></div></div>
+<div class="card auth-card" id="loginBox"><div class="body" style="padding:12px 14px"><b>Вход</b><div class="muted">Раздел доступен только по ключу администратора. Нажмите «Ключ администратора» и введите его.</div><div class="files" style="margin-top:10px"><button class="btn hidden" id="loginBtn">Войти через Telegram</button><button class="btn" id="keyBtn">Ключ администратора</button></div><div class="msg" id="loginMsg"></div></div></div>
 <div id="privateArea" class="hidden">
 <div class="msg" id="reportMsg"></div>
 <div id="reportBox"><p class="muted">Выберите проект и нажмите «Показать».</p></div>
@@ -110,10 +110,10 @@ const WEB_SESSION_KEY='developaid_web_session',ADMIN_KEY='plato_projects_key';
 function readStorage(...keys){try{for(const k of keys){const v=localStorage.getItem(k);if(v)return v}}catch(e){}return ''}
 function session(){return readStorage(WEB_SESSION_KEY,'session','developaid_session')}
 function adminKey(){return readStorage(ADMIN_KEY,'key','developaid_key')}
-function hasAuth(){return !!(session()||adminKey())}
+function hasAuth(){return !!adminKey()}
 function auth(){return{session:session(),key:adminKey()}}
 function syncAuthUi(){const yes=hasAuth();$('loginBox').classList.toggle('hidden',yes);$('privateArea').classList.toggle('hidden',!yes);return yes}
-function requireLogin(text='Войдите через Telegram, чтобы открыть сводку.'){$('loginBox').classList.remove('hidden');$('privateArea').classList.add('hidden');msg('loginMsg',text,'bad')}
+function requireLogin(text='Введите ключ администратора, чтобы открыть сводку.'){$('loginBox').classList.remove('hidden');$('privateArea').classList.add('hidden');msg('loginMsg',text,'bad')}
 // Обрыв связи браузер называет «Load failed» / «Failed to fetch» — владельцу
 // это ничего не говорит (22.10.2026: «после нажатия кнопки Подтвердить и
 // сохранить пишет load failed»). Здесь причина названа словами, а запрос
@@ -197,7 +197,7 @@ $('loginBtn').onclick=async()=>{msg('loginMsg','Открываю Telegram…','g
 $('keyBtn').onclick=()=>{const k=prompt('Ключ администратора');if(!k)return;remember(ADMIN_KEY,k.trim());if(syncAuthUi())start()};
 $('cut').value=new Date().toISOString().slice(0,10);
 async function start(){if(await loadProjects())renderReport()}
-if(syncAuthUi())start();else msg('loginMsg','Войдите через Telegram, чтобы открыть сводку.','bad');
+if(syncAuthUi())start();else msg('loginMsg','Введите ключ администратора, чтобы открыть сводку.','bad');
 </script>
 </body></html>
 """

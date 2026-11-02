@@ -52,7 +52,8 @@ WINDOW = datetime.timedelta(hours=36)
 RETRY = datetime.timedelta(hours=2)
 START_PREFIX = "rep_"
 STATES = {"pending": "ждёт отправки", "taken": "отправка не подтверждена",
-          "sent": "отправлено", "failed": "не отправлено"}
+          "sent": "отправлено", "failed": "не отправлено",
+          "dropped": "не отправлено: нет в списке подписки"}
 
 
 def _root() -> Path:
@@ -196,6 +197,35 @@ def subscribers(project: str) -> list[dict[str, Any]]:
     return list(_read(_subscribers(), {}).get(project, []))
 
 
+def subscribed_projects(chat_id: Any) -> list[str]:
+    """ЕДИНСТВЕННОЕ право на сводку и данные монитора в Telegram (решение
+    владельца 02.11.2026: «только тем, кто в списке сводки подписан мной»,
+    «по телеграмм ID»): проекты, в списке подписки которых стоит этот числовой
+    Telegram ID. Читается с диска при каждом вопросе — два воркера и правка
+    списка видны без перезапуска."""
+    try:
+        who = int(chat_id or 0)
+    except (TypeError, ValueError):
+        return []
+    if not who:
+        return []
+    book = _read(_subscribers(), {})
+    out = []
+    for project, rows in book.items():
+        for row in rows or []:
+            try:
+                if int(row.get("chat_id") or 0) == who:
+                    out.append(project)
+                    break
+            except (TypeError, ValueError, AttributeError):
+                continue
+    return sorted(out)
+
+
+def subscribed(chat_id: Any, project: str) -> bool:
+    return project in subscribed_projects(chat_id)
+
+
 # --------------------------------------------------------------------------
 # Расписание
 # --------------------------------------------------------------------------
@@ -324,13 +354,21 @@ def take(now: datetime.datetime | None = None) -> list[dict[str, Any]]:
             if place.parent.name not in live:
                 continue
             entry = _read(place, {})
-            chats = [chat for chat, value in entry.get("deliveries", {}).items()
-                     if value.get("state") == "pending"]
-            if not chats:
+            pending = [chat for chat, value in entry.get("deliveries", {}).items()
+                       if value.get("state") == "pending"]
+            # Очередь собрана заранее; право — на момент отправки: кого владелец
+            # убрал из списка, тот сводку уже не получает.
+            chats = [chat for chat in pending if subscribed(chat, entry.get("project"))]
+            for chat in pending:
+                if chat not in chats:
+                    entry["deliveries"][chat] = {"state": "dropped", "at": _stamp(now)}
+            if not pending:
                 continue
             for chat in chats:
                 entry["deliveries"][chat] = {"state": "taken", "at": _stamp(now)}
             _write(place, entry)
+            if not chats:
+                continue
             pdf = place.with_name(entry["pdf"]) if entry.get("pdf") else None
             out.append({"slot": entry["slot"], "project": entry["project"],
                         "text": entry["text"], "filename": entry["filename"],

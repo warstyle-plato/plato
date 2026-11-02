@@ -15,4 +15,6 @@ def test_monitor_uses_the_shared_developaid_session():
 
 def test_monitor_does_not_query_private_data_before_login():
     assert "if(!hasAuth())" in MONITOR_PAGE
-    assert "Войдите через Telegram" in MONITOR_PAGE
+    # Монитор — только по ключу администратора (решение владельца 02.11.2026).
+    assert "function hasAuth(){return !!adminKey()}" in MONITOR_PAGE
+    assert "только по ключу администратора" in MONITOR_PAGE

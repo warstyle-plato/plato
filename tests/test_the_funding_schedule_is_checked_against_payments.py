@@ -59,6 +59,15 @@ PAYMENTS = [
     (D(2026, 10, 28), 50 * M, "2.2.2.6"),          # после даты сводки — не в ней
 ]
 
+# Монитор и сводка — только по ключу администратора (решение владельца
+# 02.11.2026): страница и маршруты открываются ключом, а не сессией.
+ADMIN_TEST_KEY = "browser-admin-key"
+
+
+@pytest.fixture(autouse=True)
+def _admin_key(monkeypatch):
+    monkeypatch.setenv("DEVELOPAID_ADMIN_KEY", ADMIN_TEST_KEY)
+
 
 @pytest.fixture(autouse=True)
 def _isolated(tmp_path, monkeypatch):
@@ -221,7 +230,7 @@ def test_the_monitor_takes_the_file(monkeypatch, tmp_path):
             tab = browser.new_page()
             errors: list[str] = []
             tab.on("pageerror", lambda e: errors.append(str(e)))
-            tab.add_init_script("localStorage.setItem('developaid_web_session','проба')")
+            tab.add_init_script("localStorage.setItem('developaid_web_session','проба');localStorage.setItem('plato_projects_key','browser-admin-key')")
             tab.goto(f"{base}/monitor", wait_until="domcontentloaded")
             tab.fill("#project", PROJECT)
             if not tab.is_visible("#fundingScheduleBtn"):

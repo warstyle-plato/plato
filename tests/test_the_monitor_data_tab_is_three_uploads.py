@@ -37,13 +37,17 @@ def test_the_data_tab_on_the_rendered_page(monkeypatch):
     import main_legacy as core
 
     monkeypatch.setattr(core, "_require_web_access", lambda *_a, **_k: None)
+
+    # Монитор — только по ключу администратора (решение владельца 02.11.2026).
+
+    monkeypatch.setenv("DEVELOPAID_ADMIN_KEY", "browser-admin-key")
     with serve(core.app, PORT) as base, sync_playwright() as pw:
         browser = pw.chromium.launch(executable_path=str(chrome))
         try:
             tab = browser.new_page()
             errors: list[str] = []
             tab.on("pageerror", lambda e: errors.append(str(e)))
-            tab.add_init_script("localStorage.setItem('developaid_web_session','проба')")
+            tab.add_init_script("localStorage.setItem('developaid_web_session','проба');localStorage.setItem('plato_projects_key','browser-admin-key')")
             tab.goto(f"{base}/monitor", wait_until="domcontentloaded")
             tab.wait_for_function("document.getElementById('budgetBtn')!==null")
             if not tab.is_visible("#budgetBtn"):
