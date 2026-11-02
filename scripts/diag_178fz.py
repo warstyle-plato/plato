@@ -39,22 +39,19 @@ def options(body: str) -> None:
 
 
 def main() -> None:
-    for pid in ("178fz30102600019/1", "178fz22102600001/1", "21000030950000001703/1"):
-        body = core_page("https://www.roseltorg.ru/procedure/" + pid).get("body") or ""
-        print("=== КАРТОЧКА", pid)
-        for m in re.finditer(r'<script[^>]*application/ld\+json[^>]*>(.*?)</script>', body, re.S):
-            print("LD", " ".join(m.group(1).split())[:3000])
-        text = " ".join(re.sub(r"<script.*?</script>|<style.*?</style>|<[^>]+>", " ", body, flags=re.S).split())
-        for word in ("Регион", "Местонахождение", "Место нахождения", "Адрес", "Способ проведения",
-                     "Организатор торгов", "Площадь", "Категори", "77.", "50."):
-            for m in list(re.finditer(re.escape(word), text))[:3]:
-                print("ОКОЛО", word, "|", text[max(0, m.start() - 80):m.start() + 220])
-    url = ("https://www.roseltorg.ru/imuschestvo/nedvizhimost/zemelnye-uchastki"
-           "?okato%5B%5D=46000000000&status%5B%5D=5&status%5B%5D=0")
-    body = core_page(url).get("body") or ""
-    i = body.find("/procedure/21000030950000001703")
-    print("=== РАЗМЕТКА СТРОКИ СПИСКА")
-    print(" ".join(body[max(0, i - 2500):i + 2500].split())[:5000])
+    from urllib.parse import urlencode
+    for tag in ("продажа доли", "доля в уставном капитале", "уставный капитал"):
+        base = "https://www.roseltorg.ru/search/sale?" + urlencode([("tags[]", tag)])
+        for suffix in ("", "&page=0", "&page=1", "&page=2", "&page=3"):
+            body = core_page(base + suffix).get("body") or ""
+            ids = list(dict.fromkeys(re.findall(r"/procedure/([0-9A-Za-z]+)/\d", body)))
+            total = re.findall(r"(?:Найдено|найдено|Всего)[^0-9]{0,40}(\d[\d\s]*)", body)
+            print("ТЕГ", tag, "|", suffix or "без page", "|", len(ids), ids, "| итог", total[:2])
+    for url in ("https://www.roseltorg.ru/search/sale?query_field=%D0%A4%D0%BE%D0%BD%D0%B2%D0%B8%D0%B7%D0%B8%D0%BD%D0%B0",
+                "https://www.roseltorg.ru/search/sale?" + urlencode([("tags[]", "продажа доли"), ("sort", "date_published"), ("order", "desc")])):
+        body = core_page(url).get("body") or ""
+        ids = list(dict.fromkeys(re.findall(r"/procedure/([0-9A-Za-z]+)/\d", body)))
+        print("ЗАПРОС", url, "|", ids)
 
 
 if __name__ == "__main__":
