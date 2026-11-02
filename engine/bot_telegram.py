@@ -2581,6 +2581,9 @@ def _telegram_group_message(chat: dict[str, Any], message: dict[str, Any]) -> No
                                      + " → «" + str(answer.get("sales_project")) + "»")
                 # Вопросы Платона по сверке с выгрузкой договоров — одним
                 # коротким сообщением в тот же чат (их собирает ядро).
+                if answer.get("ask_error"):
+                    _telegram_group_seen(chat, "вопросы Платона не собраны: "
+                                         + str(answer["ask_error"])[:80])
                 if answer.get("ask"):
                     try:
                         _telegram_send_message(int(chat.get("id") or 0), str(answer["ask"]))

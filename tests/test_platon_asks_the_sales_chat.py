@@ -103,12 +103,40 @@ def test_the_message_is_short_polite_and_asked_once():
     assert text.count("\n") == sales_questions.MAX_QUESTIONS
     one = sales_questions.message(found[:1])
     assert one.startswith("Извините, это Платон Сергеевич Федоскин, у меня возник вопрос. ")
-    read = sales_questions.mark_asked(_chat(), found, "2026-11-02")
-    again = sales_questions.questions(read, {"rows": ROWS}, UPLOADED, "2026-11-03")
+
+
+
+def test_a_question_is_never_asked_twice(tmp_path):
+    """«И нельзя повторять вопросы» (владелец, 02.11.2026)."""
+    found = sales_questions.questions(_chat(), {"rows": ROWS}, UPLOADED, "2026-11-02")
+    sales_questions.remember(tmp_path, "Кутузов", found, "2026-11-02")
+    asked = set(sales_questions.load_asked(tmp_path, "Кутузов"))
+    assert asked == {item["key"] for item in found[:sales_questions.MAX_QUESTIONS]}
+    again = sales_questions.questions(_chat(), {"rows": ROWS}, UPLOADED, "2026-11-03", asked)
     assert [item["key"] for item in again] == [item["key"] for item in found[3:]]
-    # «Заданные» хранятся в источнике и переживают следующий отчёт.
-    read = salesroom.append_message(read, "2026-11-03", "Дежурный", _report("03.11.2026", []))
-    assert set(read["asked"]) == {item["key"] for item in found[:3]}
+    # С тех пор пришёл платёж (всё ещё меньше 5%) и вышла новая выгрузка — вопрос тот же,
+    # второй раз он не задаётся.
+    paid = [dict(row, escrow_paid=1.0 * M) if row["unit"] == "корп 1 кв.41" else row
+            for row in ROWS]
+    later = sales_questions.questions(_chat(), {"rows": paid}, "2026-11-04", "2026-11-04", asked)
+    assert not any("кв.41" in item["text"] and item["kind"] == "money" for item in later)
+    # Площадь брони уточнили — это та же бронь.
+    fixed = salesroom.append_message(None, "2026-10-25", "Дежурный",
+                                     _report("25.10.2026", [LOT.replace("90,2", "90,4")]))
+    fixed = salesroom.append_message(fixed, "2026-11-01", "Дежурный", _report("01.11.2026", []))
+    dropped = [item["key"] for item in found if item["kind"] == "dropped"]
+    redo = sales_questions.questions(fixed, {"rows": ROWS}, UPLOADED, "2026-11-02")
+    assert [item["key"] for item in redo if item["kind"] == "dropped"] == dropped
+    # Заданные лежат отдельно от источника: новая выгрузка чата их не стирает.
+    sales_store.save(tmp_path, "Кутузов", {"salesroom": _chat()}, "выгрузка.html")
+    assert set(sales_questions.load_asked(tmp_path, "Кутузов")) == asked
+
+
+def test_one_key_is_one_question_inside_a_message():
+    doubled = ROWS + [dict(ROWS[0])]
+    found = sales_questions.questions(_chat(), {"rows": doubled}, UPLOADED, "2026-11-02")
+    keys = [item["key"] for item in found]
+    assert len(keys) == len(set(keys))
 
 
 def test_the_bot_posts_the_questions_into_the_sales_chat_once(monkeypatch, tmp_path):
@@ -132,7 +160,31 @@ def test_the_bot_posts_the_questions_into_the_sales_chat_once(monkeypatch, tmp_p
     assert len(said) == 1
     assert said[0].startswith("Извините, это Платон Сергеевич Федоскин, у меня возник вопрос. "
                               "Договор на корп 1 кв.41")
-    # Повтор доставки и следующий отчёт тот же вопрос не задают.
+    # Повтор доставки, следующий отчёт и заново загруженная выгрузка договоров
+    # тот же вопрос не задают.
     bot.send(_report(today.strftime("%d.%m.%Y"), []), date=now)
     bot.send(_report(today.strftime("%d.%m.%Y"), [LOT]), date=now + 60)
+    sales_store.save(where, "Кутузов", {"contracting": {"rows": rows}}, "контрактация-2.xlsx")
+    bot.send(_report(today.strftime("%d.%m.%Y"), []), date=now + 120)
     assert len([t for chat_id, t in bot.said if chat_id == bot.chat["id"]]) == 1
+
+
+def test_an_unreadable_record_of_asked_questions_asks_nothing(monkeypatch, tmp_path):
+    """Не прочитать, что уже спрошено, — значит промолчать, а не повторить."""
+    import developaid_management_report as report
+    import developaid_monitor as monitor
+    from test_the_bot_reads_the_sales_chat import _Bot
+
+    bot = _Bot(monkeypatch, tmp_path)
+    where = sales_store.default_dir()
+    today = datetime.date.today()
+    rows = [dict(ROWS[0], signed=(today - datetime.timedelta(days=21)).isoformat())]
+    sales_store.save(where, "Кутузов", {"contracting": {"rows": rows}}, "контрактация.xlsx")
+    monitor._project_dir("Кутузов Сити")
+    report.link_sales("Кутузов Сити", "Кутузов", "тест")
+    bot.send("/site Кутузов Сити")
+    place = where / "cabinet" / "кутузов.asked.json"
+    place.write_text("{битый", encoding="utf-8")
+    bot.send(_report(today.strftime("%d.%m.%Y"), []), date=int(time.time()))
+    assert [t for chat_id, t in bot.said if chat_id == bot.chat["id"]] == []
+    assert "вопросы Платона не собраны" in bot.outcome

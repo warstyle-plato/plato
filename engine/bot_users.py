@@ -1375,28 +1375,41 @@ def internal_monitor_sales_chat(req: SalesChatRequest) -> dict[str, Any]:
         # Это ответ, а не отказ: в /status видно, чего не хватает.
         return {"bound": project, "sales_project": ""}
     where = sales_store.default_dir()
-    kept = sales_store.load(where, sales_project)
-    current = ((kept.get("sources") or {}).get("salesroom") or {}).get("data")
-    day = str(req.taken_at or "")[:10]
-    updated = salesroom.append_message(current, day, str(req.author or ""), req.text,
-                                       str(req.title or ""))
-    # Вопросы Платона в чат (владелец, 02.11.2026: «пусть пишет в чат, но
-    # коротко и извиняюсь»): только на новый отчёт — повтор доставки Telegram
-    # вопросов не повторяет, — и каждый вопрос один раз.
-    ask = ""
-    if len(updated.get("messages") or []) > len((current or {}).get("messages") or []) and day:
-        from market_search import sales_questions
+    from market_search import sales_questions
 
-        contracting = (kept.get("sources") or {}).get("contracting") or {}
-        found = sales_questions.questions(updated, contracting.get("data"),
-                                          contracting.get("at"), day)
-        ask = sales_questions.message(found)
-        if ask:
-            updated = sales_questions.mark_asked(updated, found, day)
-    sales_store.save(where, sales_project, {"salesroom": updated},
-                     f"чат «{req.title or ''}» — бот")
+    # Под одной блокировкой: дописать отчёт, собрать вопросы, записать
+    # заданные. Два воркера с двумя отчётами разом не зададут вопрос дважды и
+    # не потеряют сообщение друг друга.
+    with sales_questions.lock(where, sales_project):
+        kept = sales_store.load(where, sales_project)
+        current = ((kept.get("sources") or {}).get("salesroom") or {}).get("data")
+        day = str(req.taken_at or "")[:10]
+        updated = salesroom.append_message(current, day, str(req.author or ""), req.text,
+                                           str(req.title or ""))
+        sales_store.save(where, sales_project, {"salesroom": updated},
+                         f"чат «{req.title or ''}» — бот")
+        # Вопросы Платона в чат (владелец, 02.11.2026: «пусть пишет в чат, но
+        # коротко и извиняюсь»; «и нельзя повторять вопросы»): только на новый
+        # отчёт — повтор доставки Telegram ничего не задаёт, — и каждый вопрос
+        # один раз (`sales_questions`).
+        ask, ask_error = "", ""
+        if day and len(updated.get("messages") or []) > len((current or {}).get("messages") or []):
+            contracting = (kept.get("sources") or {}).get("contracting") or {}
+            try:
+                found = sales_questions.questions(
+                    updated, contracting.get("data"), contracting.get("at"), day,
+                    set(sales_questions.load_asked(where, sales_project)))
+                ask = sales_questions.message(found)
+                if ask:
+                    # Сначала записать, потом отправить: несработавшая отправка
+                    # потеряет вопрос, а не повторит его.
+                    sales_questions.remember(where, sales_project, found, day)
+            except Exception as exc:  # noqa: BLE001
+                # Отчёт уже сохранён; не задать вопрос лучше, чем повторить.
+                ask, ask_error = "", str(exc)[:120]
     return {"bound": project, "sales_project": sales_project,
-            "messages": len(updated.get("messages") or []), "ask": ask}
+            "messages": len(updated.get("messages") or []), "ask": ask,
+            "ask_error": ask_error}
 
 
 class SiteChatsRequest(BaseModel):

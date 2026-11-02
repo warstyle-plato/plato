@@ -17,8 +17,14 @@
   Прайс-листа в источниках нет, поэтому «текущая цена» — это сделки, и в
   вопросе так и сказано.
 
-Вопрос задаётся один раз: заданные ключи хранятся в самом источнике «чат
-отдела продаж» (на диске, его видят оба воркера). Вопросы о деньгах и о
+Вопрос задаётся один раз и больше не повторяется (владелец, 02.11.2026: «и
+нельзя повторять вопросы»). Ключ вопроса — договор или квартира, а не текст:
+поступил ли с тех пор платёж, поменялась ли сумма, уточнили ли площадь брони —
+вопрос тот же. Заданные ключи лежат отдельным файлом рядом со складом
+источников (`<проект>.asked.json`), а не внутри источника: новая выгрузка чата
+или договоров заменяет источник целиком, и вопросы пошли бы по второму кругу.
+Сбор и запись идут под блокировкой файла: два воркера, получившие два отчёта
+разом, не зададут один вопрос дважды. Вопросы о деньгах и о
 пропавших бронях задаются, только если выгрузка договоров свежая: по старой
 выгрузке «денег нет» значит «мы их не видим», и спрашивать людей об этом —
 обвинять их в нашем пропуске.
@@ -26,10 +32,14 @@
 
 from __future__ import annotations
 
+import contextlib
 import datetime
+import fcntl
 import html
+import json
 import statistics
-from typing import Any
+from pathlib import Path
+from typing import Any, Iterator
 
 from market_search import contracting, salesroom
 
@@ -133,7 +143,8 @@ def _dropped(read: dict[str, Any] | None, rows: list[dict[str, Any]], uploaded: 
                                       _area(item["area"]) if item.get("area") else "") if x)
         since, gone = _date(item["first"]), _date(item["gone"])
         out.append({
-            "key": f"dropped:{item['apartment']}:{item.get('area')}:{item['gone']}",
+            # Без площади: её уточняют, а квартира и день ухода брони — те же.
+            "key": f"dropped:{item.get('tower') or ''}:{item['apartment']}:{item['gone']}",
             "kind": "dropped",
             "text": (f"Квартира № {item['apartment']}" + (f" ({where})" if where else "")
                      + f" была в списке броней с {_dm(since)}, а с {_dm(gone)} её там нет, "
@@ -188,8 +199,10 @@ def _unusual(rows: list[dict[str, Any]], uploaded: datetime.date) -> list[dict[s
 
 
 def questions(read: dict[str, Any] | None, contracts: dict[str, Any] | None,
-              uploaded: str | None, today: str) -> list[dict[str, Any]]:
-    """Ещё не заданные вопросы на день ``today`` (ГГГГ-ММ-ДД), по порядку важности."""
+              uploaded: str | None, today: str,
+              asked: set[str] | None = None) -> list[dict[str, Any]]:
+    """Ещё не заданные вопросы на день ``today`` (ГГГГ-ММ-ДД), по порядку важности.
+    ``asked`` — ключи уже заданных (`load_asked`)."""
     rows = list((contracts or {}).get("rows") or [])
     loaded = _date(uploaded)
     if not rows or not loaded or not _date(today):
@@ -200,8 +213,14 @@ def questions(read: dict[str, Any] | None, contracts: dict[str, Any] | None,
         found += _no_money(rows, loaded)
         found += _dropped(read, rows, str(uploaded)[:10], today)
     found += _unusual(rows, loaded)
-    asked = set(((read or {}).get("asked") or {}).keys())
-    return [item for item in found if item["key"] not in asked]
+    seen = set(asked or ())
+    out = []
+    for item in found:
+        # Один ключ — один вопрос и внутри одного сообщения.
+        if item["key"] not in seen:
+            seen.add(item["key"])
+            out.append(item)
+    return out
 
 
 def message(items: list[dict[str, Any]]) -> str:
@@ -215,11 +234,44 @@ def message(items: list[dict[str, Any]]) -> str:
         html.escape(f"{number}. {item['text']}") for number, item in enumerate(items, 1))
 
 
-def mark_asked(read: dict[str, Any], items: list[dict[str, Any]], today: str) -> dict[str, Any]:
-    """Записать заданные вопросы в источник: второй раз их не задавать."""
-    got = dict(read or {})
-    asked = dict(got.get("asked") or {})
+def _asked_path(data_dir: Path, project: str) -> Path:
+    from market_search import sales_store
+
+    return Path(data_dir) / "cabinet" / f"{sales_store.slug(project)}.asked.json"
+
+
+def load_asked(data_dir: Path, project: str) -> dict[str, str]:
+    """{ключ вопроса: день, когда задан}. Нет файла — ничего не задано."""
+    place = _asked_path(data_dir, project)
+    if not place.exists():
+        return {}
+    try:
+        return dict(json.loads(place.read_text(encoding="utf-8")) or {})
+    except Exception:  # noqa: BLE001
+        # Битый файл — повторить вопросы хуже, чем промолчать: молчим.
+        raise RuntimeError(f"не читается {place.name}: вопросы Платона не задаются")
+
+
+def remember(data_dir: Path, project: str, items: list[dict[str, Any]], today: str) -> None:
+    """Записать заданные вопросы (первые ``MAX_QUESTIONS`` — то, что ушло в чат)."""
+    asked = load_asked(data_dir, project)
     for item in items[:MAX_QUESTIONS]:
-        asked[item["key"]] = today
-    got["asked"] = asked
-    return got
+        asked.setdefault(item["key"], today)
+    place = _asked_path(data_dir, project)
+    place.parent.mkdir(parents=True, exist_ok=True)
+    spare = place.with_suffix(".tmp")
+    spare.write_text(json.dumps(asked, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+    spare.replace(place)
+
+
+@contextlib.contextmanager
+def lock(data_dir: Path, project: str) -> Iterator[None]:
+    """Блокировка проекта на сбор и запись вопросов — для двух воркеров."""
+    place = _asked_path(data_dir, project).with_suffix(".lock")
+    place.parent.mkdir(parents=True, exist_ok=True)
+    with open(place, "w", encoding="utf-8") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
