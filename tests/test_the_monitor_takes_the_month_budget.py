@@ -69,5 +69,5 @@ def test_the_budget_is_uploaded_from_the_rendered_page(tmp_path, monkeypatch):
 
     assert not errors, errors
     assert "не нашлось шапки с месяцами" in refused
-    assert stored == "Бюджет загружен, в нём месяцы: 2026-09, 2026-10."
+    assert stored == "Бюджет загружен, лист «Sheet», в нём месяцы: 2026-09, 2026-10."
     assert len(list((tmp_path / "monitor" / "Гродненская" / "budget").glob("*.xlsx"))) == 1
