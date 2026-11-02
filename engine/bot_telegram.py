@@ -2579,6 +2579,17 @@ def _telegram_group_message(chat: dict[str, Any], message: dict[str, Any]) -> No
             else:
                 _telegram_group_seen(chat, "отчёт продаж" + (" за " + taken_at if taken_at else "")
                                      + " → «" + str(answer.get("sales_project")) + "»")
+                # Вопросы Платона по сверке с выгрузкой договоров — одним
+                # коротким сообщением в тот же чат (их собирает ядро).
+                if answer.get("ask_error"):
+                    _telegram_group_seen(chat, "вопросы Платона не собраны: "
+                                         + str(answer["ask_error"])[:80])
+                if answer.get("ask"):
+                    try:
+                        _telegram_send_message(int(chat.get("id") or 0), str(answer["ask"]))
+                    except Exception as exc:
+                        _telegram_group_seen(chat, "вопрос Платона не отправлен: "
+                                             + str(exc)[:80])
             return
         # Не отчёт — просто считаем. Рабочая переписка нас не касается.
         _telegram_group_seen(chat)
