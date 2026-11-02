@@ -945,6 +945,11 @@ def install(app: FastAPI) -> MarketDiscoveryService:
                                               last.isoformat())
                 if pipe:
                     got["salesroom"]["pipeline"] = dict(pipe, first=first, last=last.isoformat())
+            # Подписано в месяце против «зарегистрировано» по отчёту отдела
+            # продаж — тот же расчёт и те же слова, что в сводке руководству.
+            checked = salesroom.registration_check(room, contracts.get("rows") or [])
+            if checked:
+                got["salesroom"]["registered"] = checked
         # Условия рынка: наша рассрочка и рассрочка соседей по району. Свод
         # продаж отвечает на «почему не покупают» нашими числами, а витрину
         # двигает не только наш прайс — без второй половины предложение по
