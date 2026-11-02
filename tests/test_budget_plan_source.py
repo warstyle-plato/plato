@@ -4,7 +4,9 @@
 бюджет октября из файла». Файл той формы читается верно (план коммерции
 октября — сумма её статей); план шёл из другого места: лист не «П-Ф»,
 прежняя версия тех же месяцев с более поздней датой, файл с более поздним
-периодом. Данные — синтетика той же формы, не данные проекта.
+периодом. Решение владельца: план месяца — из файла, загруженного последним;
+ошибочный файл убирают кнопкой. Данные — синтетика той же формы, не данные
+проекта.
 
 Запуск: python3 -m pytest tests/test_budget_plan_source.py -q
 """
@@ -95,24 +97,10 @@ def test_the_plan_fact_sheet_is_taken_by_its_name():
     assert parsed["months"]["2026-10-01"]["commercial"]["plan"] == pytest.approx(40 * M)
 
 
-def test_a_new_upload_replaces_the_same_months_dated_later():
-    # Дата загрузки — срез на странице: новый файл может лечь датой раньше
-    # прежней версии тех же месяцев и не должен ей проиграть.
-    monthly_budget.store_budget(PROJECT, budget(27), "2026-11-01")
-    got = monthly_budget.store_budget(PROJECT, budget(40), "2026-10-18")
-    assert got["replaced"] is True and got["overridden"] == []
-    plan = monthly_budget._plan(PROJECT, "2026-10-01", "2026-11-02")
-    assert plan["plan"]["commercial"] == pytest.approx(40 * M)
-    assert plan["file"] == "2026-10-18"
-    # Более ранняя версия тех же месяцев остаётся — для сводок на те дни.
-    monthly_budget.store_budget(PROJECT, budget(33), "2026-10-05")
-    plan = monthly_budget._plan(PROJECT, "2026-10-01", "2026-11-02")
-    assert plan["plan"]["commercial"] == pytest.approx(33 * M)
-
-
-def test_the_upload_names_the_file_that_keeps_the_plan():
-    later = Workbook()
-    sheet = later.active
+def _later_budget(commercial: float) -> bytes:
+    """Файл «октябрь–ноябрь»: период кончается позже, чем у «сентябрь–октябрь»."""
+    book = Workbook()
+    sheet = book.active
     sheet.title = "П-Ф"
     for column, name in ((5, "Октябрь 2026"), (8, "Ноябрь 2026")):
         sheet.cell(row=4, column=column, value=name)
@@ -120,17 +108,54 @@ def test_the_upload_names_the_file_that_keeps_the_plan():
         sheet.cell(row=5, column=column + 1, value="ФАКТ")
     for r, (name, value) in enumerate((("Стоимость строительства и проектирования", 392),
                                        ("Содержание службы заказчика", 0),
-                                       ("Коммерческие расходы", 27)), 6):
+                                       ("Коммерческие расходы", commercial)), 6):
         sheet.cell(row=r, column=1, value=name)
         sheet.cell(row=r, column=5, value=-value * M)
         sheet.cell(row=r, column=8, value=-value * M)
     blob = io.BytesIO()
-    later.save(blob)
-    monthly_budget.store_budget(PROJECT, blob.getvalue(), "2026-10-20")
-    got = monthly_budget.store_budget(PROJECT, budget(40), "2026-11-01")
-    assert got["overridden"] == [{"month": "2026-10", "file": "2026-10-20",
-                                  "period": "2026-10–2026-11",
-                                  "name": "2026-10-20_2026-10_2026-11.xlsx"}]
+    book.save(blob)
+    return blob.getvalue()
+
+
+def _october() -> float:
+    return monthly_budget._plan(PROJECT, "2026-10-01", "2026-11-02")["plan"]["commercial"]
+
+
+def test_the_last_uploaded_file_gives_the_plan():
+    # Решение владельца (02.11.2026): «брать последний» — загруженный последним,
+    # а не тот, где дата среза в имени позже или период кончается позже.
+    monthly_budget.store_budget(PROJECT, budget(27), "2026-11-01")
+    monthly_budget.store_budget(PROJECT, _later_budget(27), "2026-10-20")
+    monthly_budget.store_budget(PROJECT, budget(40), "2026-10-18")
+    assert _october() == pytest.approx(40 * M)
+    # Ноябрь есть только в файле «октябрь–ноябрь» — он берётся оттуда.
+    november = monthly_budget._plan(PROJECT, "2026-11-01", "2026-11-02")
+    assert november["plan"]["commercial"] == pytest.approx(27 * M)
+    listed = monthly_budget.list_budgets(PROJECT)
+    supplies = {item["name"]: item["supplies"] for item in listed["files"]}
+    assert supplies == {"2026-10-18_2026-09_2026-10.xlsx": ["2026-09", "2026-10"],
+                        "2026-10-20_2026-10_2026-11.xlsx": ["2026-11"],
+                        "2026-11-01_2026-09_2026-10.xlsx": []}
+    assert [item["name"] for item in listed["files"]][0] == "2026-10-18_2026-09_2026-10.xlsx"
+
+
+def test_a_wrong_upload_is_removed_and_can_be_restored():
+    monthly_budget.store_budget(PROJECT, budget(40), "2026-10-18")
+    monthly_budget.store_budget(PROJECT, budget(27), "2026-11-01")
+    assert _october() == pytest.approx(27 * M)
+    got = monthly_budget.remove_budget(PROJECT, "2026-11-01_2026-09_2026-10.xlsx")
+    assert [item["name"] for item in got["removed"]] == ["2026-11-01_2026-09_2026-10.xlsx"]
+    assert _october() == pytest.approx(40 * M)
+    monthly_budget.restore_budget(PROJECT, "2026-11-01_2026-09_2026-10.xlsx")
+    # Возвращённый файл встаёт на своё прежнее место по времени загрузки.
+    assert _october() == pytest.approx(27 * M)
+    with pytest.raises(FileNotFoundError):
+        monthly_budget.remove_budget(PROJECT, "нет-такого.xlsx")
+    with pytest.raises(ValueError):
+        monthly_budget.remove_budget(PROJECT, "../../uploads.json")
+
+
+def test_the_trend_note_names_the_budget_of_each_month():
     trend = [{"month": "2026-09-01", "plan_file": {"file": "2026-11-01",
                                                     "period": "2026-09–2026-10"}},
              {"month": "2026-10-01", "plan_file": {"file": "2026-10-20",

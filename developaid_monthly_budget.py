@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import datetime
 import io
+import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -294,28 +296,55 @@ def store_budget(project: str, data: bytes, taken_at: Any,
     # файла: разные периоды одного дня не спорят, а тот же период заменяется,
     # прежний файл уходит в архив `.replaced/`, а не стирается.
     path = monitor._inside(folder, f"{day}_{months[0]}_{months[-1]}.xlsx")
-    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S")
-    archive = folder / ".replaced"
-    # Тот же период — заменяется. И не только в тот же день: дата загрузки —
-    # срез, выбранный на странице, и прежняя версия тех же месяцев с более
-    # поздней датой в имени молча перекрывала бы только что загруженный файл
-    # (владелец, 02.11.2026: «Загрузил вот этот бюджет октября», а план не
-    # сменился). Версии с более ранней датой остаются — для сводок на те дни.
-    same = [other for other in folder.glob(f"*_{months[0]}_{months[-1]}.xlsx")
-            if other.stem[:10] >= day]
-    replaced = bool(same)
-    for other in same:
+    replaced = path.exists()
+    if replaced:
+        archive = folder / ".replaced"
         archive.mkdir(exist_ok=True)
-        other.rename(monitor._inside(archive, f"{other.stem}-{stamp}.xlsx"))
+        path.rename(monitor._inside(archive, f"{path.stem}-{_stamp()}.xlsx"))
     path.write_bytes(data)
-    sources = plan_sources(project, [f"{m}-01" for m in months])
-    # Месяцы, план которых сводка возьмёт не из этого файла: их называют,
-    # а не оставляют догадываться, почему план не сменился.
-    overridden = [{"month": month, **source} for month, source in sources.items()
-                  if source["name"] != path.name]
+    uploads = _uploads(folder)
+    uploads[path.name] = _now()
+    _save_uploads(folder, uploads)
     return {"taken_at": day, "title": parsed["title"], "sheet": parsed["sheet"],
-            "filename": filename, "months": months, "replaced": replaced,
-            "overridden": overridden}
+            "filename": filename, "months": months, "replaced": replaced}
+
+
+def _now() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="microseconds")
+
+
+def _stamp() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S%f")
+
+
+_UPLOADS = "uploads.json"
+
+
+def _uploads(folder: Path) -> dict[str, str]:
+    """Когда загружен каждый файл бюджета (время загрузки, а не дата среза)."""
+    try:
+        data = json.loads((folder / _UPLOADS).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_uploads(folder: Path, uploads: dict[str, str]) -> None:
+    temp = folder / f".{_UPLOADS}.{os.getpid()}.tmp"
+    temp.write_text(json.dumps(uploads, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+    os.replace(temp, folder / _UPLOADS)
+
+
+def _uploaded_at(path: Path, uploads: dict[str, str]) -> str:
+    """Время загрузки из журнала; файлы до журнала — по времени записи на диск."""
+    if path.name in uploads:
+        return uploads[path.name]
+    try:
+        stamp = path.stat().st_mtime
+    except OSError:
+        return ""
+    return datetime.datetime.fromtimestamp(stamp, datetime.timezone.utc).isoformat(
+        timespec="microseconds")
 
 
 def _file_words(path: Path) -> dict[str, str]:
@@ -324,32 +353,68 @@ def _file_words(path: Path) -> dict[str, str]:
     return {"file": path.stem[:10], "period": period, "name": path.name}
 
 
-def plan_sources(project: str, months: list[str], upto: str = "9999-12-31") -> dict[str, Any]:
-    """Из какого загруженного бюджета берётся план каждого месяца.
+def list_budgets(project: str) -> dict[str, Any]:
+    """Загруженные бюджеты для страницы монитора: что лежит и чей план идёт в сводку.
 
-    Тот же выбор, что у `_plan`: файл с более поздним последним месяцем,
-    при равном — загруженный позже. Ответ загрузки называет его, чтобы новый
-    файл не проигрывал другому молча.
+    У каждого файла — месяцы, план которых сводка берёт именно из него; убранные
+    кнопкой «Убрать» — отдельным списком, их можно вернуть.
     """
-    files = _budget_files(project, upto)
-    out = {}
-    for month in months:
-        for path in files:
-            if month in read_budget(path.read_bytes())["months"]:
-                out[month[:7]] = _file_words(path)
-                break
-    return out
+    folder = monitor._project_dir(project) / "budget"
+    uploads = _uploads(folder) if folder.exists() else {}
+    active = _budget_files(project, "9999-12-31")
+    parsed = {}
+    for path in active:
+        try:
+            parsed[path.name] = read_budget(path.read_bytes())
+        except ValueError:
+            parsed[path.name] = {"months": {}, "sheet": ""}
+    supplies: dict[str, list[str]] = {path.name: [] for path in active}
+    seen: set[str] = set()
+    for path in active:
+        for month in sorted(parsed[path.name]["months"]):
+            if month not in seen:
+                seen.add(month)
+                supplies[path.name].append(month[:7])
+    files = [{**_file_words(path), "uploaded_at": _uploaded_at(path, uploads),
+              "sheet": parsed[path.name].get("sheet", ""),
+              "months": sorted(m[:7] for m in parsed[path.name]["months"]),
+              "supplies": supplies[path.name]} for path in active]
+    removed_dir = folder / ".removed"
+    removed = [{**_file_words(path), "uploaded_at": _uploaded_at(path, uploads)}
+               for path in sorted(removed_dir.glob("*.xlsx"))] if removed_dir.exists() else []
+    return {"files": files, "removed": removed}
 
 
-def _period_end(path: Path) -> str:
-    """Последний месяц файла: из имени, у старых файлов (имя — дата) — из книги."""
-    parts = path.stem.split("_")
-    if len(parts) == 3:
-        return parts[2]
-    try:
-        return max(read_budget(path.read_bytes())["months"])[:7]
-    except (ValueError, OSError):
-        return ""
+def remove_budget(project: str, name: str) -> dict[str, Any]:
+    """Убрать ошибочно загруженный бюджет из расчёта: файл уходит в `.removed/`, не стирается."""
+    folder = monitor._project_dir(project) / "budget"
+    path = monitor._inside(folder, name)
+    if path.suffix != ".xlsx" or not path.is_file():
+        raise FileNotFoundError(f"бюджета «{name}» среди загруженных нет")
+    removed = folder / ".removed"
+    removed.mkdir(exist_ok=True)
+    target = monitor._inside(removed, name)
+    if target.exists():
+        # Тот же файл уже убирали раньше: прежняя убранная копия — в архив замен.
+        archive = folder / ".replaced"
+        archive.mkdir(exist_ok=True)
+        target.rename(monitor._inside(archive, f"{target.stem}-{_stamp()}.xlsx"))
+    path.rename(target)
+    return list_budgets(project)
+
+
+def restore_budget(project: str, name: str) -> dict[str, Any]:
+    """Вернуть убранный бюджет; его время загрузки — прежнее, из журнала."""
+    folder = monitor._project_dir(project) / "budget"
+    path = monitor._inside(folder / ".removed", name)
+    if not path.is_file():
+        raise FileNotFoundError(f"среди убранных бюджетов нет «{name}»")
+    target = monitor._inside(folder, name)
+    if target.exists():
+        raise ValueError(f"бюджет «{name}» уже загружен заново; вернуть прежний нельзя, "
+                         "сначала уберите новый")
+    path.rename(target)
+    return list_budgets(project)
 
 
 def _known_by(path: Path, upto: str) -> bool:
@@ -367,17 +432,20 @@ def _known_by(path: Path, upto: str) -> bool:
 
 
 def _budget_files(project: str, upto: str) -> list[Path]:
-    """Бюджеты, загруженные до ``upto``: сначала с более поздним периодом.
+    """Бюджеты, годные для сводки на ``upto``: сначала загруженный последним.
 
-    Порядок — по месяцам файла, а не по дню загрузки: догруженный в октябре
-    файл за июль—август не должен перекрывать сентябрь из файла за
-    сентябрь—октябрь. При равном периоде свежее тот, что загружен позже.
+    Решение владельца (02.11.2026): план месяца — из последнего загруженного
+    файла, где этот месяц есть, по времени загрузки, а не по дате среза в имени
+    и не по последнему месяцу файла. Ошибочно загруженный файл убирают кнопкой
+    на странице монитора (`remove_budget`).
     """
     folder = monitor._project_dir(project) / "budget"
     if not folder.exists():
         return []
+    uploads = _uploads(folder)
     found = [path for path in folder.glob("*.xlsx") if _known_by(path, upto)]
-    return sorted(found, key=lambda path: (_period_end(path), path.stem[:10]), reverse=True)
+    return sorted(found, key=lambda path: (_uploaded_at(path, uploads), path.name),
+                  reverse=True)
 
 
 def _plan(project: str, month: str, upto: str) -> dict[str, Any] | None:
