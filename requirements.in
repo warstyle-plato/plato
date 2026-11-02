@@ -13,7 +13,7 @@
 
 fastapi>=0.110
 uvicorn[standard]>=0.29
-pydantic>=2.6
+pydantic>=2.14.2
 reportlab>=5.0.1
 openpyxl>=3.1
 # pypdf ниже 6.21.4 несёт CVE-2026-119203…119209 (разбор PDF): pip-audit красный.
