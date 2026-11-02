@@ -41,6 +41,14 @@ core = _wrapper.core
 client = TestClient(core.app, raise_server_exceptions=False)
 OWNER = 777
 ALL = ["calc", "cabinet", "monitor", "report", "auctions", "market"]
+# Монитор и сводка — только по ключу администратора (решение владельца
+# 02.11.2026): демо-ссылка их не открывает, даже если раздел в ней выбран.
+ADMIN_ONLY = {"monitor", "report"}
+
+
+def admin_only_refused(answer) -> bool:
+    return (answer.status_code == 403
+            and core.ADMIN_KEY_ONLY_DENIED in str(answer.json().get("detail")))
 
 
 @pytest.fixture(autouse=True)
@@ -130,6 +138,9 @@ def test_a_link_without_the_section_is_refused_by_name(block):
     session, browser = claim(invite(others))
     reader, name = READS[block]
     answer = reader(session, browser)
+    if block in ADMIN_ONLY:
+        assert admin_only_refused(answer), (block, answer.status_code, answer.text[:300])
+        return
     assert answer.status_code == 403, (block, answer.status_code, answer.text[:300])
     assert f"не открывает раздел «{name}»" in answer.text
 
@@ -139,6 +150,9 @@ def test_a_link_with_the_section_reads_it(block):
     session, browser = claim(invite([block]))
     reader, _name = READS[block]
     answer = reader(session, browser)
+    if block in ADMIN_ONLY:
+        assert admin_only_refused(answer), (block, answer.status_code, answer.text[:300])
+        return
     assert answer.status_code == 200, (block, answer.status_code, answer.text[:300])
     assert "не открывает раздел" not in answer.text and "только для просмотра" not in answer.text
 
@@ -154,11 +168,12 @@ def test_the_access_plaque_names_the_closed_calc_section():
     assert "не открывает раздел «Расчёт»" in data["detail"]
 
 
-def test_the_report_reads_real_projects_of_the_owner():
+def test_the_report_projects_are_for_the_admin_key_only():
     session, browser = claim(invite(["report"]))
-    team = client.post("/monitor/report/projects", json={"key": "kluch"}).json()
-    seen = browser.post("/monitor/report/projects", json={"session": session}).json()
-    assert seen == team, "демо видит не те проекты, что команда"
+    team = client.post("/monitor/report/projects", json={"key": "kluch"})
+    assert team.status_code == 200, team.text
+    seen = browser.post("/monitor/report/projects", json={"session": session})
+    assert admin_only_refused(seen), seen.text
 
 
 # --- запись: отказ всегда, и ничего не записано ------------------------------------
@@ -205,8 +220,7 @@ def test_a_full_link_never_writes_to_the_monitor(path):
     answer = browser.post(path, json=body(session, path))
     assert answer.status_code == 403, (path, answer.status_code, answer.text[:300])
     detail = answer.json()["detail"]
-    assert "только для просмотра" in detail or "Споры и претензии" in detail or \
-        "закрыт" in detail, detail
+    assert core.ADMIN_KEY_ONLY_DENIED in detail, detail
 
 
 def test_a_demo_note_is_refused_and_not_stored(monkeypatch):
@@ -217,14 +231,14 @@ def test_a_demo_note_is_refused_and_not_stored(monkeypatch):
     monkeypatch.setattr(notes, "notes", lambda project: [])
     session, browser = claim(invite(ALL))
     listed = browser.post("/monitor/notes", json={"project": "проверка", "session": session})
-    assert listed.status_code == 200, listed.text
+    assert admin_only_refused(listed), listed.text
     added = browser.post("/monitor/notes", json={"project": "проверка", "session": session,
                                                  "topic": "Срок", "text": "сдвиг"})
-    assert added.status_code == 403 and "только для просмотра" in added.json()["detail"]
+    assert admin_only_refused(added), added.text
     assert stored == [], "запись демо дошла до хранилища"
 
 
-def test_a_demo_cannot_mark_a_photo_but_sees_the_feed(monkeypatch):
+def test_a_demo_neither_sees_nor_marks_the_photos(monkeypatch):
     import developaid_site_photos as photos
 
     chosen = []
@@ -232,7 +246,7 @@ def test_a_demo_cannot_mark_a_photo_but_sees_the_feed(monkeypatch):
     monkeypatch.setattr(photos, "photos", lambda *a, **k: [])
     session, browser = claim(invite(["report"]))
     feed = browser.post("/monitor/photos", json={"project": "проверка", "session": session})
-    assert feed.status_code == 200, feed.text
+    assert admin_only_refused(feed), feed.text
     mark = browser.post("/monitor/photos", json={"project": "проверка", "session": session,
                                                  "photo_id": "a1", "chosen": True})
     assert mark.status_code == 403 and chosen == []
@@ -280,7 +294,7 @@ def test_disputes_stay_closed_even_for_a_full_link(path):
     assert "Споры и претензии" in answer.json()["detail"]
 
 
-def test_the_report_has_no_disputes_for_a_demo(monkeypatch):
+def test_the_report_is_refused_to_a_demo_and_shown_to_the_key(monkeypatch):
     import developaid_management_report as management_report
 
     def fake_build(project, kind, end, sales_project=None):
@@ -292,8 +306,7 @@ def test_the_report_has_no_disputes_for_a_demo(monkeypatch):
     monkeypatch.setattr(management_report, "render_html", lambda report: "")
     session, browser = claim(invite(["report"]))
     demo = browser.post("/monitor/report", json={"project": "проверка", "session": session})
-    assert demo.status_code == 200, demo.text
-    assert demo.json()["report"]["legal"]["state"] == "closed"
+    assert admin_only_refused(demo), demo.text
     team = client.post("/monitor/report", json={"project": "проверка", "key": "kluch"}).json()
     assert team["report"]["legal"]["state"] == "ok", "команда споры видит"
 
@@ -319,7 +332,7 @@ def test_admin_and_access_stay_closed_for_a_full_link():
 def test_a_revoked_link_closes_the_session_and_the_cookie():
     code = invite(ALL)
     session, browser = claim(code)
-    assert monitor(session, browser).status_code not in (401, 403)
+    assert cabinet(session, browser).status_code not in (401, 403)
     client.post("/access/admin/demo/revoke", json={"key": "kluch", "code": code})
     assert monitor(session, browser).status_code in (401, 403)
     answer = auctions(session, browser)
@@ -368,7 +381,7 @@ def test_an_old_link_without_sections_keeps_calc_and_cabinet():
     core._demo_write(record)
     session, browser = claim(code)
     assert cabinet(session, browser).status_code == 200
-    assert "не открывает раздел «Монитор стройки»" in monitor(session, browser).text
+    assert admin_only_refused(monitor(session, browser))
 
 
 # --- журнал и кабинет ----------------------------------------------------------------
