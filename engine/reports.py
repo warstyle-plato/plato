@@ -82,19 +82,21 @@ def report_layout(inputs: dict[str, Any], finance: dict[str, Any],
                        if float(k.get("stabilized_noi") or 0.0))
         exit_value = sum(float(k.get("exit_value") or 0.0) for k in kpis)
         tiles = [
-            {"label": "Кредит объектов — пик", "value": sum(float(t.get("loan_peak") or 0.0) for t in totals), "unit": "rub"},
-            {"label": "Собственный капитал — пик потребности", "value": -worst, "unit": "rub"},
+            {"label": "Кредит объектов — пик", "hint": "objects_loan_peak", "value": sum(float(t.get("loan_peak") or 0.0) for t in totals), "unit": "rub"},
+            {"label": "Собственный капитал — пик потребности", "hint": "objects_equity_peak", "value": -worst, "unit": "rub"},
         ]
         if noi:
             tiles += [
-                {"label": "Стабилизированный NOI, год", "value": noi, "unit": "rub"},
+                {"label": "Стабилизированный NOI, год", "hint": "objects_noi", "value": noi, "unit": "rub"},
                 {"label": "Доходность на затраты (NOI / все затраты с участком)",
-                 "value": noi / noi_cost if noi_cost else 0.0, "unit": "pct"},
+                 "hint": "objects_yield", "value": noi / noi_cost if noi_cost else 0.0, "unit": "pct"},
             ]
         if dscr:
-            tiles.append({"label": "DSCR — минимум по годам", "value": min(dscr), "unit": "mult"})
+            tiles.append({"label": "DSCR — минимум по годам", "hint": "objects_dscr",
+                          "value": min(dscr), "unit": "mult"})
         if exit_value:
-            tiles.append({"label": "Стоимость объектов на выходе", "value": exit_value, "unit": "rub"})
+            tiles.append({"label": "Стоимость объектов на выходе", "hint": "objects_exit",
+                          "value": exit_value, "unit": "rub"})
     # Гостиница — те же «деньги объекта» в шапке: кредит, капитал, EBITDA,
     # DSCR, выход. Плитки читают из `finance.hotel`, итога, вошедшего в поток.
     hotel = finance.get("hotel") or {}
@@ -102,19 +104,22 @@ def report_layout(inputs: dict[str, Any], finance: dict[str, Any],
         kpi = hotel.get("kpi") or {}
         sale = kpi.get("exit_mode") == hotel_strategy.EXIT_SALE
         tiles += [
-            {"label": "Кредит гостиницы — пик", "value": kpi.get("loan_peak"), "unit": "rub"},
-            {"label": "Собственный капитал — пик потребности", "value": kpi.get("equity_peak"),
+            {"label": "Кредит гостиницы — пик", "hint": "hotel_loan_peak", "value": kpi.get("loan_peak"), "unit": "rub"},
+            {"label": "Собственный капитал — пик потребности", "hint": "hotel_equity_peak",
+             "value": kpi.get("equity_peak"),
              "unit": "rub"},
-            {"label": "EBITDA стабилизированного года", "value": kpi.get("stabilized_ebitda"),
+            {"label": "EBITDA стабилизированного года", "hint": "hotel_ebitda", "value": kpi.get("stabilized_ebitda"),
              "unit": "rub"},
             {"label": "Доходность на затраты (EBITDA / CAPEX без НДС)",
-             "value": kpi.get("yield_on_cost"), "unit": "pct"},
+             "hint": "hotel_yield", "value": kpi.get("yield_on_cost"), "unit": "pct"},
         ]
         if kpi.get("dscr_min") is not None:
-            tiles.append({"label": "DSCR — минимум по годам", "value": kpi.get("dscr_min"),
+            tiles.append({"label": "DSCR — минимум по годам", "hint": "hotel_dscr",
+                          "value": kpi.get("dscr_min"),
                           "unit": "mult"})
         tiles.append({"label": ("Выход: продажа гостиницы" if sale
                                 else "Стоимость гостиницы — оценка удержания"),
+                      "hint": "hotel_exit_sale" if sale else "hotel_exit_hold",
                       "value": kpi.get("exit_value"), "unit": "rub"})
     for tile in tiles:
         if tile["unit"] == "rub":
@@ -125,6 +130,10 @@ def report_layout(inputs: dict[str, Any], finance: dict[str, Any],
             "project_finance": project_finance,
             "nonres_strategy": bool(objects),
             "hotel": bool(hotel),
+            # Какой поток стоит за NPV сводки: у посчитанной гостиницы — её
+            # FCFF (`economics`: `npv_project` гостиницы), у прочих — поток
+            # проекта до финансирования. Подсказка плитки читает этот ответ.
+            "npv_basis": "hotel" if hotel.get("computed") else "project",
             "nonres_tiles": tiles,
             "debt_metric": debt_metric(finance, project_finance, objects),
             "kind": kind,

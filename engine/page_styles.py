@@ -78,6 +78,13 @@ a.btn{text-decoration:none;font-size:13.3333px;display:inline-block;line-height:
 .kpi{padding:17px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);min-height:92px}
 .kpi span{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#777}.kpi b{display:block;font-size:22px;margin-top:9px;font-weight:620}
 .kpi small{display:block;color:#888;margin-top:5px}
+.kpi-i{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;margin-left:6px;padding:0;border:1px solid #b9b9b9;border-radius:50%;background:transparent;color:#777;font:italic 600 11px/1 Georgia,serif;vertical-align:middle;cursor:pointer;position:relative}
+.kpi-i::before{content:"i"}
+.kpi-i::after{content:"";position:absolute;inset:-10px}
+.kpi-i:hover,.kpi-i:focus-visible,.kpi-i[aria-expanded="true"]{border-color:#555;color:#222;outline:none}
+.kpi-tip{position:fixed;z-index:10000;box-sizing:border-box;padding:10px 12px;border-radius:8px;background:#222;color:#fff;font-size:12px;line-height:1.45;font-weight:400;letter-spacing:0;text-transform:none;box-shadow:0 6px 24px rgba(0,0,0,.18);pointer-events:auto}
+.kpi-tip[hidden]{display:none}
+@media print{.kpi-i,.kpi-tip{display:none!important}}
 .dates{display:grid;grid-template-columns:repeat(4,1fr);gap:0;border-top:1px solid #111;border-left:1px solid var(--line)}
 .datebox{padding:12px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);font-size:11px;color:#777;text-transform:uppercase;letter-spacing:.05em}
 .datebox b{display:block;color:#111;font-size:14px;margin-top:5px;text-transform:none;letter-spacing:0}

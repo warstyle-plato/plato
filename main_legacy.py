@@ -34,6 +34,8 @@ import plato_provider
 from terms_glossary import (CORE_ABOVE_AREA, CORE_TOTAL_AREA, CORE_UNDER_AREA, OBJECTS_TOTAL_AREA,
                             ROW_AREA_HEADER, ROW_AREA_HEADER_FULL, SALEABLE_AREA, area_total_label,
                             TERMS, TOTAL_AREA, capex_unit_base, page_terms, unit_label)
+# Подсказки «i» у плиток отчёта — один словарь на страницу, PDF и Платона.
+from report_kpi_hints import report_kpi_hints
 import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape as xml_escape
 

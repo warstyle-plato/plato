@@ -1784,6 +1784,9 @@ def _consolidate_phase_results(
             "scenario_revenue_multiplier": n(master_inputs, "scenario_revenue_multiplier", 1.0),
             "scenario_cost_multiplier": n(master_inputs, "scenario_cost_multiplier", 1.0),
             "npv": npv, "npv_equity": npv_equity, "irr_project": irr_project, "irr_equity": irr_equity,
+            # Ставка, по которой дисконтирован NPV, — рядом с ним: подсказка
+            # плитки называет её из расчёта, а не из формы.
+            "discount_rate_pct": discount_rate * 100,
             # Свои деньги — сумма вложений очередей, как КОНСОЛИДАТОР!M8 книги,
             # а не оттоки сведённого потока: деньги одной очереди не гасят
             # вложений другой.
