@@ -928,9 +928,9 @@ def sales(sales_project: str, kind: str, end: Any,
         "previous": _fact(between(previous["start"], previous["end"])),
         "products": _by_product(between(bounds["start"]), between(datetime.date(1900, 1, 1)),
                                 part("fm_plan"), quarter),
-        "pace": [{"month": m["month"], "area": m.get("area"), "amount": m.get("amount"),
-                  "units": m.get("units"), "price_flats": m.get("price_flats")}
-                 for m in summary.get("dynamics") or [] if m["month"] <= month_key][-12:],
+        # Последние 12 месяцев с начала продаж; пустой месяц — нулём, средние
+        # с начала продаж — нарастающим итогом от первого договора.
+        "pace": contracting.pace_since_start(summary.get("dynamics") or [], month_key)[-12:],
         "payments": [{"name": item["name"], "count": item["count"], "amount": item["amount"],
                       "area": item["area"]} for item in summary.get("by_payment") or []],
         "pool": _pool(contracting.pool_progress(summary, rows, part("fm_plan"), part("pool"))),
@@ -3133,6 +3133,8 @@ def render_text(report: dict[str, Any]) -> str:
                          f"({_area(quarter['bank'].get('area'))}).")
         elif quarter.get("bank_reason"):
             lines.append(esc(quarter["bank_reason"]))
+        if _pace_average_line(block.get("pace") or []):
+            lines.append(esc(_pace_average_line(block.get("pace") or [])))
         if block.get("funnel") or block.get("pipeline"):
             lines.append(esc(_funnel_line(block, report["kind"])))
         if _managers_line(block):
@@ -3405,6 +3407,11 @@ PACE_MEASURES = (
 )
 
 
+# Подписи пунктирных средних в легенде графика темпа.
+PACE_AVERAGE_NAMES = {"pace": "Средний темп с начала продаж",
+                      "price": "Средняя цена с начала продаж"}
+
+
 def _pace_charts(pace: list[dict[str, Any]]) -> str:
     """Темп продаж по месяцам — один предмет в трёх мерах, цена линией на каждом.
 
@@ -3419,12 +3426,19 @@ def _pace_charts(pace: list[dict[str, Any]]) -> str:
     prices = [p.get("price_flats") for p in pace]
     line = ({"name": "Цена квартир, тыс. ₽/м²", "values": charts.scaled(prices, 1e3),
              "unit": "тыс. ₽/м²", "digits": 0} if any(prices) else None)
+    avg_prices = [p.get("avg_price_flats") for p in pace]
+    price_average = ({"name": PACE_AVERAGE_NAMES["price"], "axis": "right", "digits": 0,
+                      "values": charts.scaled(avg_prices, 1e3)} if any(avg_prices) else None)
     buttons, panes = [], []
     for index, (key, name, words, divisor, digits) in enumerate(PACE_MEASURES):
+        averages = [{"name": PACE_AVERAGE_NAMES["pace"], "axis": "left", "digits": digits,
+                     "values": charts.scaled([p.get(f"avg_{key}") for p in pace], divisor)}]
+        if price_average:
+            averages.append(price_average)
         figure = charts.bar_chart(
             f"Темп продаж по месяцам: {words}" + (" и цена квартир" if line else ""),
             months, [{"name": name, "values": charts.scaled([p.get(key) for p in pace], divisor)}],
-            name, digits=digits, line=line)
+            name, digits=digits, line=line, averages=averages)
         if not figure:
             continue
         on = " on" if not panes else ""
@@ -3432,8 +3446,43 @@ def _pace_charts(pace: list[dict[str, Any]]) -> str:
         panes.append(f'<div class="pane{on}" data-pane="{key}">{figure}</div>')
     if not panes:
         return ""
+    note = _pace_average_note(pace)
     return ('<div class="switch-charts" data-switch="sales-pace">'
-            f'<div class="switch">{"".join(buttons)}</div>{"".join(panes)}</div>')
+            f'<div class="switch">{"".join(buttons)}</div>{"".join(panes)}</div>'
+            + (f"<p class='note pace-average'>{html.escape(note)}</p>" if note else ""))
+
+
+def _pace_average_note(pace: list[dict[str, Any]]) -> str:
+    """Как считаются пунктирные средние — с месяцем начала продаж из данных."""
+    if not pace or not pace[-1].get("months_since_start"):
+        return ""
+    count = pace[-1]["months_since_start"]
+    first = _month_short(_month_shift_key(pace[-1]["month"], 1 - count))
+    return (f"Пунктир — средние с начала продаж ({first}, месяцев: {count}). "
+            "Средний темп — всё, что продано с первого месяца продаж по этот месяц, "
+            "делённое на число месяцев; месяцы без договоров тоже считаются. "
+            "Средняя цена — сумма договоров квартир, делённая на их метры за то же "
+            "время, поэтому крупные месяцы весят в ней больше.")
+
+
+def _pace_average_line(pace: list[dict[str, Any]]) -> str:
+    """Средние с начала продаж одной строкой — те же числа, что у пунктира."""
+    last = pace[-1] if pace else {}
+    if not last.get("months_since_start"):
+        return ""
+    count = last["months_since_start"]
+    first = _month_short(_month_shift_key(last["month"], 1 - count))
+    units = f"{last['avg_units']:.1f}".replace(".", ",")
+    text = (f"С начала продаж ({first}, месяцев: {count}) в среднем в месяц: "
+            f"{_area(last['avg_area'])}, лотов — {units}, на {_rub(last['avg_amount'])}")
+    if last.get("avg_price_flats"):
+        text += f"; средняя цена квартир — {_rub(last['avg_price_flats'])} за м²"
+    return text + "."
+
+
+def _month_shift_key(key: str, shift: int) -> str:
+    index = int(key[:4]) * 12 + int(key[5:7]) - 1 + shift
+    return f"{index // 12:04d}-{index % 12 + 1:02d}"
 
 
 def _signed_rub(value: float | None) -> str:
@@ -3734,6 +3783,34 @@ def _delta(value: float | None) -> str:
     return ("+" if value > 0 else "") + _rub(value)
 
 
+def _plan_sources_words(trend: list[dict[str, Any]]) -> str:
+    """Из какого загруженного бюджета взят план месяцев графика.
+
+    Владелец (02.11.2026) загрузил бюджет октября, а план на графике не
+    сменился: без имени файла не видно, что план идёт из другого бюджета.
+    """
+    groups: list[tuple[str, list[str]]] = []
+    for point in trend:
+        source = point.get("plan_file")
+        if not source:
+            continue
+        period = "–".join(_months_label(f"{m}-01") for m in source["period"].split("–")
+                          if m) if source.get("period") else ""
+        key = f"бюджета от {_day(source['file'])}" + (f" ({period})" if period else "")
+        if groups and groups[-1][0] == key:
+            groups[-1][1].append(point["month"])
+        else:
+            groups.append((key, [point["month"]]))
+    if not groups:
+        return ""
+    parts = []
+    for key, months in groups:
+        span = (_months_label(months[0]) if len(months) == 1
+                else f"{_months_label(months[0])} — {_months_label(months[-1])}")
+        parts.append(f"{span} — из {key}")
+    return "План по месяцам взят из загруженных бюджетов: " + "; ".join(parts) + "."
+
+
 def _budget_depth_html(block: dict[str, Any], end: datetime.date) -> str:
     esc = html.escape
     out = []
@@ -3772,6 +3849,9 @@ def _budget_depth_html(block: dict[str, Any], end: datetime.date) -> str:
              money(p["fact"]["commercial"], "нет данных")] for p in trend]))
         out.append("<p class='note'>«Нет данных» — месяц раньше первой оплаты в реестре РСС; "
                    "«нет плана» — месяца нет ни в одном загруженном бюджете.</p>")
+        sources = _plan_sources_words(trend)
+        if sources:
+            out.append(f"<p class='note'>{esc(sources)}</p>")
     articles = block.get("articles") or {}
     if articles.get("known"):
         month_words = _months_label(articles["month"])
