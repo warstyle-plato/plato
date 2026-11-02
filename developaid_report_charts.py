@@ -210,8 +210,16 @@ def _group_label(x: float, y: float, label: str, lines: Sequence[str]) -> str:
             f'class="group" aria-label="{html.escape(label)}">{spans}</text>')
 
 
+# Нарастающие средние поверх столбцов: пунктир, без точек по месяцам и с
+# подписью только у последней точки — чтобы не спорить с месячными числами.
+AVERAGE_STYLES = {"left": {"color": "#1f4e8c", "dash": "6 4"},
+                  "right": {"color": "#b2541a", "dash": "6 4"}}
+LEGEND_ROW_H = 14
+
+
 def bar_chart(title: str, groups: Sequence[str], series: Sequence[dict[str, Any]],
-              unit: str, digits: int = 0, line: dict[str, Any] | None = None) -> str:
+              unit: str, digits: int = 0, line: dict[str, Any] | None = None,
+              averages: Sequence[dict[str, Any]] = ()) -> str:
     """Сгруппированные столбцы: группа — подпись X, серия — столбец в группе.
 
     ``line`` — линия на своей шкале справа (``{"name", "values", "unit",
@@ -219,6 +227,11 @@ def bar_chart(title: str, groups: Sequence[str], series: Sequence[dict[str, Any]
     (владелец, 22.10.2026: «может совместить для экономии места?»). Левая шкала
     объёма всегда от нуля, шкала цены — от своего минимума: у объёма ноль —
     настоящее начало отсчёта, а у цены нет.
+
+    ``averages`` — пунктирные линии ``{"name", "values", "axis", "digits"}``:
+    ``axis="left"`` — на шкале столбцов, ``"right"`` — на шкале ``line``
+    (без ``line`` такая линия не рисуется: у неё нет своей шкалы). Подпись
+    числа — только у последней точки; легенда средних — второй строкой.
     """
     values = [v for s in series for v in s["values"] if v is not None]
     if not groups or not values:
@@ -226,7 +239,14 @@ def bar_chart(title: str, groups: Sequence[str], series: Sequence[dict[str, Any]
     line_values = [v for v in (line or {}).get("values") or [] if v is not None]
     if not line_values:
         line = None
-    ticks = _ticks(min(0.0, min(values)), max(values), min_step=10 ** -digits)
+    averages = [a for a in averages
+                if any(v is not None for v in a["values"])
+                and (a.get("axis", "left") == "left" or line)]
+    left_values = values + [v for a in averages if a.get("axis", "left") == "left"
+                            for v in a["values"] if v is not None]
+    right_values = line_values + [v for a in averages if a.get("axis") == "right"
+                                  for v in a["values"] if v is not None]
+    ticks = _ticks(min(0.0, min(left_values)), max(left_values), min_step=10 ** -digits)
     low, high = ticks[0], ticks[-1]
     inner_w = WIDTH - PAD_LEFT - PAD_RIGHT
     inner_h = HEIGHT - PAD_TOP - PAD_BOTTOM
@@ -235,7 +255,7 @@ def bar_chart(title: str, groups: Sequence[str], series: Sequence[dict[str, Any]
     labels = [_wrap(group, slot - 6) for group in groups]
     # Лишние строки подписей опускают легенду и удлиняют рисунок, а не поле.
     extra = (max(len(lines) for lines in labels) - 1) * LABEL_LINE_H
-    height = HEIGHT + extra
+    height = HEIGHT + extra + (LEGEND_ROW_H if averages else 0)
 
     def y_at(v: float) -> float:
         return PAD_TOP + inner_h * (1 - (v - low) / (high - low or 1))
@@ -260,19 +280,20 @@ def bar_chart(title: str, groups: Sequence[str], series: Sequence[dict[str, Any]
             if value is None:
                 continue
             y = y_at(value)
-            top, height = min(y, zero), abs(zero - y)
+            top, bar_h = min(y, zero), abs(zero - y)
             style = BAR_STYLES[s % len(BAR_STYLES)]
             out.append(f'<rect x="{left + s*bar:.1f}" y="{top:.1f}" width="{bar-2:.1f}" '
-                       f'height="{max(height, 0.5):.1f}" fill="{style["fill"]}" stroke="#333" '
+                       f'height="{max(bar_h, 0.5):.1f}" fill="{style["fill"]}" stroke="#333" '
                        f'stroke-width="0.6"/>')
             out.append(f'<text x="{left + s*bar + bar/2 - 1:.1f}" y="{top-3:.1f}" font-size="10" '
                        f'fill="#333" text-anchor="middle">{_num(value, digits)}</text>')
         out.append(_group_label(PAD_LEFT + g * slot + slot / 2, HEIGHT - PAD_BOTTOM + 14, group, labels[g]))
     legend = _legend([s["name"] for s in series], BAR_STYLES, bars=True)
+    ry_at = None
     if line:
         style = STYLES[1]
         line_digits = int(line.get("digits") or 0)
-        right_ticks = _ticks(min(line_values), max(line_values), count=4,
+        right_ticks = _ticks(min(right_values), max(right_values), count=4,
                              min_step=10 ** -line_digits)
         r_low, r_high = right_ticks[0], right_ticks[-1]
 
@@ -309,6 +330,43 @@ def bar_chart(title: str, groups: Sequence[str], series: Sequence[dict[str, Any]
         legend += (swatch.format(x=x, y=y - 4, x2=x + 22)
                    + _marker(style["marker"], x + 11, y - 4, style["color"])
                    + f'<text x="{x+28}" y="{y}" font-size="10.5" fill="#333">{html.escape(line["name"])}</text>')
+    x = PAD_LEFT
+    tags: list[list[Any]] = []
+    for average in averages:
+        axis = average.get("axis", "left")
+        style = AVERAGE_STYLES[axis]
+        place = y_at if axis == "left" else ry_at
+        avg_digits = int(average.get("digits", digits if axis == "left" else 0) or 0)
+        path, broken, last = [], True, None
+        for g, value in enumerate(average["values"]):
+            if value is None:
+                broken = True
+                continue
+            px, py = PAD_LEFT + g * slot + slot / 2, place(value)
+            path.append(f'{"M" if broken else "L"}{px:.1f},{py:.1f}')
+            broken, last = False, (px, py, value)
+        out.append(f'<path d="{" ".join(path)}" fill="none" stroke="{style["color"]}" '
+                   f'stroke-width="1.8" stroke-dasharray="{style["dash"]}" class="average" '
+                   f'data-axis="{axis}" aria-label="{html.escape(average["name"])}"/>')
+        px, py, value = last
+        out.append(f'<circle cx="{px:.1f}" cy="{py:.1f}" r="2.5" fill="{style["color"]}"/>')
+        tags.append([px, py, style["color"], _num(value, avg_digits)])
+        y = HEIGHT - 10 + LEGEND_ROW_H
+        legend += (f'<line x1="{x}" y1="{y-4}" x2="{x+22}" y2="{y-4}" stroke="{style["color"]}" '
+                   f'stroke-width="1.8" stroke-dasharray="{style["dash"]}"/>'
+                   f'<text x="{x+28}" y="{y}" font-size="10.5" fill="#333">'
+                   f'{html.escape(average["name"])}</text>')
+        x += 36 + 6 * len(average["name"])
+    # Подписи средних — левее последней точки, с белой обводкой поверх
+    # столбцов; две близкие по высоте разводятся, чтобы не слиться.
+    tags.sort(key=lambda tag: tag[1])
+    for upper, lower in zip(tags, tags[1:]):
+        if lower[1] - upper[1] < 13:
+            lower[1] = upper[1] + 13
+    for px, py, color, text in tags:
+        out.append(f'<text x="{px - 6:.1f}" y="{py + 12:.1f}" font-size="10.5" font-weight="600" '
+                   f'fill="{color}" stroke="#fff" stroke-width="3" paint-order="stroke" '
+                   f'text-anchor="end" class="average-value">{text}</text>')
     out.append(f'<g transform="translate(0,{extra})">{legend}</g>' if extra else legend)
     out.append("</svg>")
     return f'<figure class="chart"><figcaption>{html.escape(title)}</figcaption>{"".join(out)}</figure>'
