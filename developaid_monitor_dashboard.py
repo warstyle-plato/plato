@@ -150,6 +150,18 @@ FINANCE_SHEETS = (FINANCE_BOOK_SHEET, FINANCE_MODEL_SHEET)
 _FM_CODE_COL, _FM_NAME_COL = 3, 4
 _FM_THOUSANDS = 1000.0
 _FM_RESERVE_CODE = "2.2.11"
+# Раздел «Налоги» финмодели — почти целиком налог на прибыль, платится из
+# продаж после раскрытия эскроу; это не затрата на стройку, и в утверждённый
+# бюджет он не входит (решение владельца, 02.11.2026: «Налоги то зачем в
+# бюджет включать»). Код — явный, имя строки сверяется.
+_FM_TAX_CODE = "2.4.5"
+# Раздел финмодели → глава сметы банка. Административные расходы (2.4) в
+# смете банка своей главы не имеют.
+_FM_SECTION_CHAPTER = {"2.1": "1", "2.2": "2", "2.3": "3"}
+
+
+def _fm_is_tax(code: str) -> bool:
+    return code == _FM_TAX_CODE or code.startswith(_FM_TAX_CODE + ".")
 # Сколько финмодель берёт у банка: строка выборки проектного финансирования.
 # Остальные расходы модель закрывает продажами после раскрытия эскроу и
 # своими деньгами, и у банка на них лимит не просят (владелец, 24.10.2026:
@@ -188,43 +200,51 @@ def _read_finance_baseline(path: Path) -> dict[str, Any]:
 
 
 def _budget_composition(rows: list[dict[str, Any]], money: Any, total_col: int,
-                        fact_col: int, plan_col: int) -> dict[str, Any]:
+                        fact_col: int, plan_col: int,
+                        month_columns: list[tuple[int, datetime.date]] | None = None,
+                        interest: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """Из чего состоит «Утверждённый бюджет» финмодели — по разделам листа.
 
     Владелец (02.11.2026) не понимал, откуда берётся утверждённый бюджет:
-    плитка показывала только главы сметы по карте «статьи_БДДС», и раздел
-    административных расходов с налогами, разнесённый по главам, был не
-    виден. Бюджет — сумма «ИТОГО» листовых строк «2.…», поэтому разделы
-    второго уровня («2.1», «2.2», …) складываются в него без остатка.
-    Налоги и проценты ищутся по имени строки, а не по номеру: номера
-    разделов у разных книг свои.
+    плитка показывала только главы сметы по карте «статьи_БДДС». Бюджет —
+    сумма «ИТОГО» листовых строк «2.…» без раздела «Налоги» (`_FM_TAX_CODE`),
+    поэтому разделы второго уровня («2.1», «2.2», …) складываются в него без
+    остатка. Налоги и проценты по кредиту (строки «3.…» с процентами) — в
+    справке рядом, в сумму не входят.
     """
     leaves = [meta for meta in rows if not meta["has_children"]]
+    counted = [meta for meta in leaves if not _fm_is_tax(meta["code"])]
+    months = month_columns or []
 
-    def sums(code: str) -> dict[str, float]:
-        under = [meta for meta in leaves
+    def sums(code: str, pool: list[dict[str, Any]]) -> dict[str, Any]:
+        under = [meta for meta in pool
                  if meta["code"] == code or meta["code"].startswith(code + ".")]
         return {"total": sum(money(m["row"], total_col) for m in under),
                 "fact": sum(money(m["row"], fact_col) for m in under),
-                "plan": sum(money(m["row"], plan_col) for m in under)}
+                "plan": sum(money(m["row"], plan_col) for m in under),
+                "monthly": {month.isoformat(): sum(max(0.0, money(m["row"], c)) for m in under)
+                            for c, month in months}}
 
     # Раздел — первые два уровня номера листовой строки; строка без своей
     # строки раздела в книге всё равно попадает в раздел, а не теряется.
     names = {meta["code"]: meta["name"] for meta in rows if meta["depth"] == 2}
-    codes = sorted({".".join(meta["code"].split(".")[:2]) for meta in leaves},
+    codes = sorted({".".join(meta["code"].split(".")[:2]) for meta in counted},
                    key=lambda code: [int(part) if part.isdigit() else 0
                                      for part in code.split(".")])
-    sections = [{"code": code, "name": names.get(code, ""), **sums(code)} for code in codes]
-    taxes = [{"code": meta["code"], "name": meta["name"], **sums(meta["code"])}
-             for meta in rows if meta["depth"] >= 3 and "налог" in meta["name"].lower()
-             and not any(meta["code"].startswith(other["code"] + ".")
-                         for other in rows if other is not meta and other["depth"] >= 3
-                         and "налог" in other["name"].lower())]
-    interest = [meta["code"] for meta in leaves if "процент" in meta["name"].lower()]
-    total = sum(money(m["row"], total_col) for m in leaves)
-    fact = sum(money(m["row"], fact_col) for m in leaves)
-    plan = sum(money(m["row"], plan_col) for m in leaves)
-    return {"sections": sections, "taxes": taxes, "interest_rows": interest,
+    sections = [{"code": code, "name": names.get(code, ""),
+                 "chapter": _FM_SECTION_CHAPTER.get(code, ""), **sums(code, counted)}
+                for code in codes]
+    tax_row = next((meta for meta in rows if meta["code"] == _FM_TAX_CODE), None)
+    taxes = ([{"code": _FM_TAX_CODE, "name": tax_row["name"],
+               "named_as_tax": "налог" in tax_row["name"].lower(),
+               **{k: v for k, v in sums(_FM_TAX_CODE, leaves).items() if k != "monthly"}}]
+             if tax_row else [])
+    interest_inside = [meta["code"] for meta in counted if "процент" in meta["name"].lower()]
+    total = sum(item["total"] for item in sections)
+    fact = sum(item["fact"] for item in sections)
+    plan = sum(item["plan"] for item in sections)
+    return {"sections": sections, "taxes": taxes, "interest_rows": interest_inside,
+            "interest_outside": list(interest or []),
             "total": total, "fact": fact, "plan": plan,
             # «ИТОГО = ФАКТ + ПЛАН» у финмодели по построению; расхождение
             # называется, а не прячется.
@@ -239,24 +259,25 @@ def budget_hint_lines(funding: dict[str, Any], money: Any) -> list[str]:
     comp = funding.get("budget_composition") or {}
     out: list[str] = []
     if comp.get("sections"):
-        parts = []
-        taxes = comp.get("taxes") or []
-        for item in comp["sections"]:
-            text = (f"{item['code']} «{item['name']}»" if item.get("name")
-                    else f"раздел {item['code']}") + f" — {money(item['total'])}"
-            inside = [tax for tax in taxes if tax["code"].startswith(item["code"] + ".")]
-            if inside:
-                text += ", из них " + ", ".join(
-                    f"«{tax['name']}» — {money(tax['total'])}" for tax in inside)
-            parts.append(text)
-        out.append("Утверждённый бюджет — сумма строк «ИТОГО» листа «cf_1_new» финмодели, "
-                   f"{money(comp['total'])}. По разделам: " + "; ".join(parts) + ".")
+        parts = [(f"{item['code']} «{item['name']}»" if item.get("name")
+                  else f"раздел {item['code']}") + f" — {money(item['total'])}"
+                 for item in comp["sections"]]
+        out.append("Утверждённый бюджет — сумма строк «ИТОГО» листа «cf_1_new» финмодели без "
+                   f"налогов, {money(comp['total'])}. По разделам: " + "; ".join(parts) + ".")
+        aside = [f"налоги («{tax['name']}», {tax['code']}) — {money(tax['total'])}"
+                 for tax in comp.get("taxes") or []]
+        aside += [f"проценты по кредиту («{row['name']}», {row['code']}) — {money(row['total'])}"
+                  for row in comp.get("interest_outside") or []]
+        if aside:
+            out.append("Справочно: " + " и ".join(aside) + " в бюджет не входят. Налоги — это "
+                       "в основном налог на прибыль, его платят из продаж; проценты — плата "
+                       "банку за кредит, а не затраты на стройку.")
         if comp.get("interest_rows"):
-            out.append("Проценты по кредиту в эту сумму входят: строки "
-                       + ", ".join(comp["interest_rows"]) + ".")
-        else:
-            out.append("Проценты по кредиту в эту сумму не входят: в разделах финмодели "
-                       "строк с процентами нет.")
+            out.append("Внимание: внутри бюджета есть строки с процентами — "
+                       + ", ".join(comp["interest_rows"]) + "; они в сумму вошли.")
+        if any(not tax.get("named_as_tax", True) for tax in comp.get("taxes") or []):
+            out.append(f"Строка {_FM_TAX_CODE} исключена из бюджета как налоги, но в книге она "
+                       "называется иначе — проверьте финмодель.")
         line = (f"Из бюджета уже оплачено по финмодели (ФАКТ) {money(comp['fact'])}, осталось "
                 f"оплатить (ПЛАН) {money(comp['plan'])}; вместе — {money(comp['fact'] + comp['plan'])}.")
         if abs(comp.get("difference") or 0.0) > 0.5:
@@ -321,6 +342,7 @@ def _read_finance_model(wb: Any, path: Path) -> dict[str, Any]:
 
     rows: list[dict[str, Any]] = []
     stack: list[dict[str, Any]] = []
+    interest: list[dict[str, Any]] = []
     credit_plan = None
     for r in range(header_row + 1, ws.max_row + 1):
         if _norm(ws.cell(r, _FM_NAME_COL).value) == _norm(_FM_CREDIT_LABEL) and credit_plan is None:
@@ -334,6 +356,11 @@ def _read_finance_model(wb: Any, path: Path) -> dict[str, Any]:
                             for c, month in month_columns},
             }
         code = actuals._code(ws.cell(r, _FM_CODE_COL).value)
+        name = str(ws.cell(r, _FM_NAME_COL).value or "").strip()
+        if (code and not code.startswith("2.") and "процент" in name.lower()
+                and not any(code.startswith(item["code"] + ".") for item in interest)):
+            interest.append({"code": code, "name": name,
+                             "total": actuals._money(ws.cell(r, total_col).value) * _FM_THOUSANDS})
         if not code or not code.startswith("2."):
             continue
         depth = code.count(".") + 1
@@ -384,7 +411,7 @@ def _read_finance_model(wb: Any, path: Path) -> dict[str, Any]:
                 "total": money(r, total_col), "paid": money(r, fact_col), "plan": money(r, plan_col),
                 "monthly": {month.isoformat(): max(0.0, money(r, c)) for c, month in month_columns},
             }
-        if meta["has_children"]:
+        if meta["has_children"] or _fm_is_tax(meta["code"]):
             continue
         r, code = meta["row"], meta["code"]
         total, paid, need = money(r, total_col), money(r, fact_col), money(r, plan_col)
@@ -420,7 +447,8 @@ def _read_finance_model(wb: Any, path: Path) -> dict[str, Any]:
             "monthly_need": month_need,
         }
     chapters = tuple(c for c in CHAPTERS if c in approved_by_chapter)
-    composition = _budget_composition(rows, money, total_col, fact_col, plan_col)
+    composition = _budget_composition(rows, money, total_col, fact_col, plan_col,
+                                      month_columns, interest)
     reasons = []
     if mixed:
         reasons.append("статьи " + ", ".join(mixed)
@@ -1052,89 +1080,108 @@ def _chapter_title(row: dict[str, Any]) -> str:
     return f"глава {row['chapter']}" + (f" ({row['label']})" if row.get("label") else "")
 
 
-def funding_chain(funding: dict[str, Any], borrowed: float | None) -> dict[str, Any] | None:
-    """Плашки одной цепочкой по финмодели — каждая следующая вычитанием.
+def _own_money(comp: dict[str, Any] | None, smeta: dict[str, float],
+               paid_by_chapter: dict[str, dict[str, float]], bank_chapters: Any,
+               cut: datetime.date) -> dict[str, Any] | None:
+    """«Нужно своих денег сверх сметы банка» = утверждённый бюджет − лимит банка.
 
-    Владелец (02.11.2026): «У нас просто не сходятся плашки вообще. Текущий
-    бюджет понятен, потребность в финансировании понятна, лимиты тоже. А
-    цифры не сходятся» — бюджет был финмоделью целиком, лимит и выбрано —
-    сметой глав 1–3, остаток и потребность — главами 2–3. Решение владельца:
-    цепочка по финмодели.
-
-        бюджет − оплачено = осталось оплатить;
-        лимит − выбрано = банк ещё даст;
-        осталось оплатить − банк ещё даст = не хватает.
-
-    Потребность в допфинансировании банка (главы 2–3, каждая отдельно)
-    остаётся своей строкой, и её отличие от «не хватает» разложено без
-    остатка: оплаты вне стройки и коммерции, «банк ещё даст» против остатка
-    по смете глав 2–3, лимит одной главы, который не переносится на другую,
-    и резерв.
+    Владелец (02.11.2026): «Лимит банка» в РСС — смета банка, в неё банк
+    засчитывает все оплаты, и кредитом, и собственные. Поэтому на плашках
+        лимит = оплачено + остаток лимита (по всем главам лимита),
+        бюджет = лимит + нужно своих денег сверх сметы банка.
+    Разложение без остатка, по разделам финмодели против глав сметы:
+    «осталось оплатить по финмодели» раздела минус остаток сметы его главы;
+    раздел без главы (административные расходы) — целиком; плюс расхождение
+    дат — «ФАКТ» финмодели (на дату книги) против оплаченного по реестру РСС
+    (на дату отчёта) — и расхождение «ИТОГО» книги с «ФАКТ» + «ПЛАН».
+    Первый месяц нехватки — по водопаду из всех разделов против их глав.
     """
-    comp = funding.get("budget_composition") or {}
-    if not funding.get("known") or not comp.get("sections") or borrowed is None:
+    if not comp or not comp.get("sections"):
         return None
+    chapters = [str(ch) for ch in (bank_chapters or ())]
+    limit = sum(float(smeta.get(ch) or 0.0) for ch in chapters)
+    paid = {ch: float((paid_by_chapter.get(ch) or {}).get("total") or 0.0) for ch in chapters}
+    borrowed = sum(float((paid_by_chapter.get(ch) or {}).get("borrowed") or 0.0)
+                   for ch in chapters)
+    left = {ch: float(smeta.get(ch) or 0.0) - paid[ch] for ch in chapters}
+    rows: list[dict[str, Any]] = []
+    dates = book = 0.0
+    used: set[str] = set()
+    articles: dict[str, dict[str, Any]] = {}
+    for item in comp["sections"]:
+        chapter = item.get("chapter") or ""
+        if chapter not in chapters:
+            chapter = ""
+        if chapter:
+            used.add(chapter)
+            rows.append({"section": item["code"], "name": item.get("name") or "",
+                         "chapter": chapter, "to_pay": item["plan"], "left": left[chapter],
+                         "amount": item["plan"] - left[chapter]})
+            dates += item["fact"] - paid[chapter]
+        else:
+            rows.append({"section": item["code"], "name": item.get("name") or "",
+                         "chapter": "", "to_pay": item["plan"], "left": 0.0,
+                         "paid": item["fact"], "amount": item["fact"] + item["plan"]})
+        book += item["total"] - item["fact"] - item["plan"]
+        articles[item["code"]] = {
+            "code": item["code"], "chapter": chapter,
+            "rss_limit": float(smeta.get(chapter) or 0.0) if chapter else 0.0,
+            "paid_at_baseline": paid[chapter] if chapter else 0.0,
+            "monthly_need": dict(item.get("monthly") or {})}
+    for chapter in chapters:
+        if chapter not in used:
+            rows.append({"section": "", "name": "", "chapter": chapter, "to_pay": 0.0,
+                         "left": left[chapter], "amount": -left[chapter]})
+            dates -= paid[chapter]
     budget = float(comp.get("total") or 0.0)
-    paid = float(comp.get("fact") or 0.0)
-    to_pay = budget - paid
-    limit = float(funding.get("bank_limit") or 0.0)
-    bank_gives = limit - float(borrowed)
-    short = to_pay - bank_gives
-    out: dict[str, Any] = {
-        "budget": budget, "paid": paid, "to_pay": to_pay,
-        "plan": float(comp.get("plan") or 0.0),
-        "bank_limit": limit, "borrowed": float(borrowed), "bank_gives": bank_gives,
-        "short": short, "bridge": None,
+    need = budget - limit
+    waterfall = _article_waterfall(articles, 0.0, cut)
+    explained = sum(row["amount"] for row in rows) + dates + book
+    return {
+        "budget": budget, "limit": limit, "paid": sum(paid.values()), "borrowed": borrowed,
+        "own_paid": sum(paid.values()) - borrowed,
+        "left": sum(left.values()), "left_by_chapter": left,
+        "need": need, "rows": rows, "dates": dates, "book": book,
+        "from": waterfall["additional_financing_from"],
+        "book_fact": float(comp.get("fact") or 0.0),
+        "matches": abs(explained - need) <= 1e-6 * max(1.0, budget),
     }
-    rec = (funding.get("limit_reconciliation") or {}).get("total") or {}
-    if rec:
-        gap = float(funding.get("additional_financing") or 0.0)
-        outside = to_pay - float(rec.get("need") or 0.0)
-        bank_vs_remaining = bank_gives - float(rec.get("remaining") or 0.0)
-        unused = float(rec.get("unused") or 0.0)
-        reserve = float(rec.get("reserve") or 0.0)
-        out["bridge"] = {
-            "gap": gap, "difference": short - gap,
-            "outside": outside, "bank_vs_remaining": bank_vs_remaining,
-            "unused": unused, "reserve": reserve,
-            "chapters": rec.get("chapters") or "",
-            "matches": abs((outside - bank_vs_remaining - unused + reserve) - (short - gap))
-            <= 1e-6 * max(1.0, budget),
-        }
-    return out
 
 
-def chain_lines(chain: dict[str, Any] | None, money: Any) -> list[str]:
-    """Цепочка плашек словами и её связь с потребностью в допфинансировании."""
-    if not chain:
+def own_money_lines(own: dict[str, Any] | None, money: Any) -> list[str]:
+    """«Нужно своих денег сверх сметы банка» словами — одна для сводки и Монитора."""
+    if not own:
         return []
-    out = [f"Утверждённый бюджет {money(chain['budget'])} минус оплаченное по финмодели "
-           f"{money(chain['paid'])} — осталось оплатить {money(chain['to_pay'])}. "
-           f"Лимит банка {money(chain['bank_limit'])} минус выбранное кредитом "
-           f"{money(chain['borrowed'])} — банк ещё даст {money(chain['bank_gives'])}. "
-           f"Осталось оплатить минус то, что ещё даст банк, — "
-           + (f"не хватает {money(chain['short'])}." if chain["short"] > 0 else
-              f"банковских денег хватает с запасом {money(-chain['short'])}.")]
-    if abs(chain["to_pay"] - chain["plan"]) > 0.5:
-        out.append(f"В финмодели «ПЛАН» — {money(chain['plan'])}, а бюджет минус «ФАКТ» — "
-                   f"{money(chain['to_pay'])}: в книге итог не равен факту плюс плану.")
-    bridge = chain.get("bridge")
-    if bridge and abs(bridge["difference"]) > 0.5:
-        # Слагаемые со знаком: «не хватает» = потребность банка + … − …
-        parts = [
-            (bridge["outside"], "осталось оплатить вне стройки и коммерции (глав "
-             f"{bridge['chapters']}): участок, административные расходы, налоги и прочее"),
-            (-bridge["bank_vs_remaining"], "разница между тем, что банк ещё даст, и остатком "
-             f"по смете глав {bridge['chapters']}: в лимите есть другие главы, а смета "
-             "уменьшается и на оплаты своими деньгами"),
-            (-bridge["unused"], "лимит одной главы, который не переносится на нехватку другой"),
-            (bridge["reserve"], "нехватка, которую в потребности банка закрывает резерв"),
-        ]
-        words = "".join(f" {'плюс' if value > 0 else 'минус'} {money(abs(value))} — {what};"
-                        for value, what in parts if abs(value) > 0.5).rstrip(";")
-        out.append(f"Потребность в допфинансировании банка — {money(bridge['gap'])}: это "
-                   f"нехватка банковских денег на главы {bridge['chapters']}, по каждой главе "
-                   "отдельно. «Не хватает» получается из неё так:" + words + ".")
+    out = [f"Утверждённый бюджет без налогов {money(own['budget'])} минус лимит банка "
+           f"{money(own['limit'])} — нужно своих денег сверх сметы банка "
+           f"{money(own['need'])}"
+           + (f", первый месяц нехватки — {_month_name(own['from'])}" if own.get("from") else "")
+           + ". Лимит банка — это смета: в неё банк засчитывает все оплаты, и кредитом, и "
+           f"собственными деньгами. Оплачено с начала проекта {money(own['paid'])} (из них "
+           f"кредитом {money(own['borrowed'])}, своими деньгами {money(own['own_paid'])}), "
+           f"остаток лимита {money(own['left'])}."]
+    parts = []
+    for row in own["rows"]:
+        title = (f"{row['section']} «{row['name']}»" if row.get("name") else
+                 (f"раздел {row['section']}" if row["section"] else ""))
+        if row["section"] and row["chapter"]:
+            parts.append(f"{title} — {money(row['amount'])}: осталось оплатить по финмодели "
+                         f"{money(row['to_pay'])} минус остаток лимита главы {row['chapter']} "
+                         f"{money(row['left'])}")
+        elif row["section"]:
+            parts.append(f"{title} — {money(row['amount'])}: в смете банка таких расходов "
+                         f"нет, поэтому весь раздел — свои деньги (уже оплачено "
+                         f"{money(row.get('paid') or 0.0)}, осталось {money(row['to_pay'])})")
+        else:
+            parts.append(f"глава {row['chapter']} — {money(row['amount'])}: остаток её лимита, "
+                         "для которого в финмодели нет раздела")
+    if abs(own["dates"]) > 0.5:
+        parts.append(f"расхождение дат — {money(own['dates'])}: «ФАКТ» финмодели считает "
+                     "оплаты на дату книги, а реестр РСС — на дату отчёта, и суммы оплаченного "
+                     "у них разные")
+    if abs(own["book"]) > 0.5:
+        parts.append(f"{money(own['book'])} — в книге «ИТОГО» не равно «ФАКТ» плюс «ПЛАН»")
+    out.append("Из чего складывается: " + "; ".join(parts) + ".")
     return out
 
 
@@ -1509,9 +1556,12 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
     smeta = dict(current.get("by_chapter") or {})
     if chapter_one is not None:
         smeta["1"] = chapter_one["limit"]
+    paid_by_chapter = {str(ch): _paid_in_chapters(rss, estimate, (ch,)) for ch in shown}
+    own_money = (_own_money(baseline.get("budget_composition"), smeta, paid_by_chapter,
+                            shown, cut) if finmodel else None)
     reconciliation = _limit_reconciliation(
         waterfall_book, current["limit"], shown, smeta_by_chapter=smeta,
-        paid_by_chapter={str(ch): _paid_in_chapters(rss, estimate, (ch,)) for ch in shown},
+        paid_by_chapter=paid_by_chapter,
         approved_by_chapter=baseline.get("approved_by_chapter") or {},
         # Глава 1 из РСС при бюджетной книге входит в остаток плашки (см. выше).
         remaining_outside=("1",) if chapter_one is not None else ())
@@ -1520,6 +1570,8 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
         "source": baseline["source"],
         "limit_reconciliation": reconciliation,
         "budget_composition": baseline.get("budget_composition"),
+        "own_money": own_money,
+        "own_money_lines": own_money_lines(own_money, _fmt_money),
         "baseline_file": monitor.finance_baseline_meta(project),
         "limit_reconciliation_lines": reconciliation_lines(reconciliation, _fmt_money),
         "chapters": list(shown),

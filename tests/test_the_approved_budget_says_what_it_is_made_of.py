@@ -3,9 +3,11 @@
 Владелец (02.11.2026) не понимал, откуда берётся число на плитке: оно
 показывало только главы сметы по карте «статьи_БДДС», а раздел
 административных расходов с налогами, разнесённый по главам, видно не было.
-Теперь у плитки есть подсказка «i»: разделы финмодели (налоги отдельно),
-«без процентов по кредиту», сверка «бюджет = ФАКТ + ПЛАН» и источник —
-исходное имя файла и дата загрузки.
+Теперь у плитки есть подсказка «i»: разделы финмодели, налоги и проценты по
+кредиту справкой (в бюджет не входят: «Налоги то зачем в бюджет включать»),
+сверка «бюджет = ФАКТ + ПЛАН» и источник — имя файла и дата загрузки. Плашки
+складываются: лимит банка (смета) = оплачено + остаток, бюджет = лимит + свои
+деньги сверх сметы банка, и последнее разложено по разделам.
 
 Все числа — синтетика.
 """
@@ -73,30 +75,36 @@ def _read(tmp_path: Path, data: bytes) -> dict:
     return dashboard._read_finance_baseline(path)
 
 
-def test_the_sections_add_up_to_the_budget_with_the_taxes_apart(tmp_path):
+K_BUDGET = (300 + 1000 + 100 + 40) * K  # без налогов 2.4.5
+
+
+def test_the_budget_leaves_the_taxes_and_the_interest_aside(tmp_path):
     got = _read(tmp_path, _finmodel())
     comp = got["budget_composition"]
+    assert got["approved"] == pytest.approx(K_BUDGET)
     assert [item["code"] for item in comp["sections"]] == ["2.1", "2.2", "2.3", "2.4"]
     assert sum(item["total"] for item in comp["sections"]) == pytest.approx(got["approved"])
-    assert comp["sections"][3]["total"] == pytest.approx(160 * K)
-    assert comp["taxes"] == [{"code": "2.4.5", "name": "Налоги", "total": pytest.approx(120 * K),
-                              "fact": pytest.approx(40 * K), "plan": pytest.approx(80 * K)}]
-    # Проценты (3.1.4) — не строка «2.…» и в бюджет не входят.
-    assert comp["interest_rows"] == []
+    assert comp["sections"][3]["total"] == pytest.approx(40 * K)
+    assert comp["taxes"][0]["code"] == "2.4.5" and comp["taxes"][0]["total"] == pytest.approx(120 * K)
+    assert comp["interest_outside"] == [{"code": "3.1.4", "name": "Проценты по кредитам",
+                                         "total": pytest.approx(90 * K)}]
+    # Налоги не попадают ни в главы, ни в оплаченное, ни в остаток.
+    assert sum(got["approved_by_chapter"].values()) == pytest.approx(K_BUDGET)
+    assert got["paid_at_baseline"] == pytest.approx(750 * K)
+    assert got["completion_need_at_baseline"] == pytest.approx(690 * K)
     assert comp["fact"] + comp["plan"] == pytest.approx(got["approved"])
-    assert comp["difference"] == pytest.approx(0.0)
-    # Глав сметы три, а раздел 2.4 по ним разнесён: глава 1 — участок и земельный налог.
-    assert got["approved_by_chapter"]["1"] == pytest.approx(350 * K)
 
     lines = dashboard.budget_hint_lines({"budget_composition": comp}, report._rub)
     assert lines[0] == (
-        "Утверждённый бюджет — сумма строк «ИТОГО» листа «cf_1_new» финмодели, 1,6 млн ₽. "
-        "По разделам: 2.1 «Приобретение проекта» — 300 000 ₽; 2.2 «Строительство» — "
+        "Утверждённый бюджет — сумма строк «ИТОГО» листа «cf_1_new» финмодели без налогов, "
+        "1,4 млн ₽. По разделам: 2.1 «Приобретение проекта» — 300 000 ₽; 2.2 «Строительство» — "
         "1,0 млн ₽; 2.3 «Коммерческие расходы» — 100 000 ₽; 2.4 «Административно-"
-        "хозяйственные расходы» — 160 000 ₽, из них «Налоги» — 120 000 ₽.")
-    assert lines[1].startswith("Проценты по кредиту в эту сумму не входят")
-    assert lines[2] == ("Из бюджета уже оплачено по финмодели (ФАКТ) 790 000 ₽, осталось "
-                        "оплатить (ПЛАН) 770 000 ₽; вместе — 1,6 млн ₽.")
+        "хозяйственные расходы» — 40 000 ₽.")
+    assert lines[1].startswith("Справочно: налоги («Налоги», 2.4.5) — 120 000 ₽ и проценты по "
+                               "кредиту («Проценты по кредитам», 3.1.4) — 90 000 ₽ в бюджет "
+                               "не входят.")
+    assert lines[2] == ("Из бюджета уже оплачено по финмодели (ФАКТ) 750 000 ₽, осталось "
+                        "оплатить (ПЛАН) 690 000 ₽; вместе — 1,4 млн ₽.")
     assert "не сохранились" in lines[3]
 
 
@@ -115,8 +123,7 @@ def test_interest_inside_the_budget_is_not_called_absent(tmp_path):
     comp = _read(tmp_path, _finmodel(rows))["budget_composition"]
     assert comp["interest_rows"] == ["2.4.7"]
     text = " ".join(dashboard.budget_hint_lines({"budget_composition": comp}, report._rub))
-    assert "Проценты по кредиту в эту сумму входят: строки 2.4.7." in text
-    assert "не входят" not in text
+    assert "внутри бюджета есть строки с процентами — 2.4.7; они в сумму вошли" in text
 
 
 def test_the_upload_keeps_the_file_name_and_the_day(tmp_path, monkeypatch):
@@ -126,10 +133,9 @@ def test_the_upload_keeps_the_file_name_and_the_day(tmp_path, monkeypatch):
                                      file_name="C:\\Книги\\ФМ синтетика.xlsx")
     meta = monitor.finance_baseline_meta("demo")
     assert meta["file_name"] == "ФМ синтетика.xlsx"
-    assert meta["uploaded_at"][:4] == str(datetime.datetime.now(datetime.timezone.utc).year)
     day = datetime.date.fromisoformat(meta["uploaded_at"][:10]).strftime("%d.%m.%Y")
     lines = dashboard.budget_hint_lines({"baseline_file": meta}, report._rub)
-    assert lines == [f"Источник: файл «{meta['file_name']}», загружен {day}."]
+    assert lines == [f"Источник: файл «ФМ синтетика.xlsx», загружен {day}."]
     # Загрузка без имени — дата есть, имя названо отсутствующим, а не выдумано.
     monitor.replace_finance_baseline("demo", _finmodel(), "2026-10-24")
     lines = dashboard.budget_hint_lines({"baseline_file": monitor.finance_baseline_meta("demo")},
@@ -138,119 +144,101 @@ def test_the_upload_keeps_the_file_name_and_the_day(tmp_path, monkeypatch):
                      "загрузке не передано."]
 
 
-def test_the_tile_and_the_page_carry_the_composition(monkeypatch, tmp_path):
+# --- Плашки складываются: лимит = оплачено + остаток, бюджет = лимит + свои деньги.
+
+SMETA = {"1": 250 * K, "2": 900 * K, "3": 80 * K}
+PAID = {"1": {"total": 280 * K, "borrowed": 100 * K},   # по главе 1 оплачено больше сметы
+        "2": {"total": 410 * K, "borrowed": 300 * K},   # реестр на 10 впереди «ФАКТ» книги
+        "3": {"total": 30 * K, "borrowed": 20 * K}}
+
+
+def _own(tmp_path):
+    comp = _read(tmp_path, _finmodel())["budget_composition"]
+    return comp, dashboard._own_money(comp, SMETA, PAID, ["1", "2", "3"],
+                                      datetime.date(2026, 10, 20))
+
+
+def test_limit_is_paid_plus_left_and_budget_is_limit_plus_own_money(tmp_path):
+    comp, own = _own(tmp_path)
+    assert own["matches"]
+    assert own["limit"] == pytest.approx(1_230 * K)
+    assert own["paid"] == pytest.approx(720 * K)
+    assert own["left"] == pytest.approx(510 * K)
+    assert own["limit"] == pytest.approx(own["paid"] + own["left"])
+    assert own["left_by_chapter"] == {"1": pytest.approx(-30 * K), "2": pytest.approx(490 * K),
+                                      "3": pytest.approx(50 * K)}
+    assert own["need"] == pytest.approx(210 * K)
+    assert own["budget"] == pytest.approx(own["limit"] + own["need"])
+    rows = {row["section"]: row["amount"] for row in own["rows"]}
+    # 210 = участок 30 + стройка 110 + коммерция 20 + административные 40 + даты 10
+    assert rows == {"2.1": pytest.approx(30 * K), "2.2": pytest.approx(110 * K),
+                    "2.3": pytest.approx(20 * K), "2.4": pytest.approx(40 * K)}
+    assert own["dates"] == pytest.approx(10 * K)
+    assert sum(rows.values()) + own["dates"] == pytest.approx(own["need"])
+    # Первый месяц — водопад всех разделов против их глав: стройке не хватает в ноябре.
+    assert own["from"] == "2026-11-01"
+
+    lines = dashboard.own_money_lines(own, report._rub)
+    assert lines[0].startswith("Утверждённый бюджет без налогов 1,4 млн ₽ минус лимит банка "
+                               "1,2 млн ₽ — нужно своих денег сверх сметы банка 210 000 ₽, "
+                               "первый месяц нехватки — ноябрь 2026.")
+    assert "2.4 «Административно-хозяйственные расходы» — 40 000 ₽: в смете банка таких " \
+           "расходов нет" in lines[1]
+    assert "расхождение дат — 10 000 ₽: «ФАКТ» финмодели считает оплаты на дату книги, а " \
+           "реестр РСС — на дату отчёта" in lines[1]
+
+
+def test_a_forged_section_breaks_the_identity(tmp_path):
+    comp, _ = _own(tmp_path)
+    forged = {**comp, "total": comp["total"] + 5 * K}  # бюджет разошёлся с разделами
+    own = dashboard._own_money(forged, SMETA, PAID, ["1", "2", "3"], datetime.date(2026, 10, 20))
+    assert own["matches"] is False
+
+
+def test_the_tiles_add_up_on_the_page(tmp_path, monkeypatch):
     from test_management_report_funding import PROJECT, _project
 
-    comp = _read(tmp_path, _finmodel())["budget_composition"]
-    _project()
+    comp, own = _own(tmp_path)
     funding = {
-        "known": True, "need_basis": "model", "bank_limit": 1_400 * M, "paid_actual": 700 * M,
-        "paid_borrowed": 500 * M, "bank_remaining": 600 * M, "reserve": 0.0,
-        "approved": 1_560 * M, "approved_remaining": 770 * M,
-        "deficit_ladder": {"total": 170 * M},
-        "budget_composition": comp,
+        "known": True, "need_basis": "model", "bank_limit": own["limit"],
+        "paid_actual": own["paid"], "paid_borrowed": own["borrowed"],
+        "bank_remaining": 540 * K, "reserve": 0.0, "approved": comp["total"],
+        "approved_remaining": comp["plan"], "deficit_ladder": {"total": 130 * K},
+        "additional_financing": 130 * K, "additional_financing_from": "2026-11-01",
+        "budget_composition": comp, "own_money": own,
         "baseline_file": {"file_name": "ФМ синтетика.xlsx",
                           "uploaded_at": "2026-11-02T10:00:00+00:00"}}
-    monkeypatch.setattr(report, "_monitor_view",
-                        lambda project, end: {"dashboard": {"funding": funding}})
-    built = report.build(PROJECT, "week", "2026-10-18")
-    tile = {item["label"]: item for item in report.tiles(built)}["Утверждённый бюджет"]
-    assert tile["note"] == "по разделам финмодели 2.1, 2.2, 2.3, 2.4; без процентов по кредиту"
-    assert "из них «Налоги»" in tile["hint"]
-    assert "Проценты по кредиту в эту сумму не входят" in tile["hint"]
-    assert "Источник: файл «ФМ синтетика.xlsx», загружен 02.11.2026." in tile["hint"]
-    page = report.render_html(built)
-    tiles_html = page[page.index("<div class='tiles'>"):]
-    assert ("<div class='k'>Утверждённый бюджет <span class='i' tabindex='0' role='note' "
-            "title='Утверждённый бюджет — сумма") in tiles_html
-    assert "оплачено по финмодели (ФАКТ)" in report._funding_html(built)
-
-
-# --- Плашки одной цепочкой по финмодели (решение владельца, 02.11.2026).
-
-def _chain_funding(comp: dict) -> dict:
-    from test_the_extra_financing_is_split_by_chapter import _overpaid_rec
-
-    rec = _overpaid_rec()  # главы 2–3: осталось достроить 175, остаток 100, излишек 35
-    return {
-        "known": True, "need_basis": "model", "bank_limit": 1_400 * K, "paid_actual": 700 * K,
-        "paid_borrowed": 500 * K, "bank_remaining": rec["tiles"]["remaining"], "reserve": 0.0,
-        "approved": comp["total"], "approved_remaining": comp["plan"],
-        "deficit_ladder": {"total": rec["total"]["gap"]},
-        "additional_financing": rec["total"]["gap"],
-        "additional_financing_from": "2027-01-01",
-        "budget_composition": comp, "limit_reconciliation": rec,
-        "baseline_file": {}}
-
-
-def test_each_tile_is_the_previous_ones_subtracted(tmp_path, monkeypatch):
-    from test_management_report_funding import PROJECT, _project
-
-    comp = _read(tmp_path, _finmodel())["budget_composition"]
-    funding = _chain_funding(comp)
     _project()
     monkeypatch.setattr(report, "_monitor_view",
                         lambda project, end: {"dashboard": {"funding": funding}})
     built = report.build(PROJECT, "week", "2026-10-18")
-    drawn = built["funding"]["draws"]["total"]
-    chain = dashboard.funding_chain(funding, drawn)
-    assert chain["to_pay"] == pytest.approx(chain["budget"] - chain["paid"])
-    assert chain["bank_gives"] == pytest.approx(chain["bank_limit"] - chain["borrowed"])
-    assert chain["short"] == pytest.approx(chain["to_pay"] - chain["bank_gives"])
-    assert chain["bridge"]["matches"]
-
-    shown = [item for item in report.tiles(built)
-             if item["label"] in ("Утверждённый бюджет", "Оплачено по финмодели",
-                                  "Осталось оплатить", "Лимит банка", "Выбрано у банка",
-                                  "Банк ещё даст", "Не хватает")]
-    assert [item["label"] for item in shown] == [
-        "Утверждённый бюджет", "Оплачено по финмодели", "Осталось оплатить", "Лимит банка",
-        "Выбрано у банка", "Банк ещё даст", "Не хватает"]
-    value = {item["label"]: item["value"] for item in shown}
-    assert value["Утверждённый бюджет"] == report._rub(comp["total"])
-    assert value["Оплачено по финмодели"] == report._rub(comp["fact"])
-    assert value["Осталось оплатить"] == report._rub(comp["total"] - comp["fact"])
-    assert value["Выбрано у банка"] == report._rub(drawn)
-    assert value["Банк ещё даст"] == report._rub(1_400 * K - drawn)
-    short = (comp["total"] - comp["fact"]) - (1_400 * K - drawn)
-    assert value["Не хватает"] == (report._rub(short) if short > 0 else "нет")
-    labels = {item["label"] for item in report.tiles(built)}
-    for gone in ("Осталось по смете после всех оплат", "Можно ещё выбрать у банка",
-                 "Потребность в допфинансировании банка"):
-        assert gone not in labels
-
-    text = report.render_text(built)
-    assert "Как складываются плашки." in text
-    assert "Потребность в допфинансировании банка — 75 ₽" in text
-    assert "«Не хватает» получается из неё так: плюс " in text
-    assert "Как складываются плашки" in report._funding_html(built)
-
-
-def test_the_chain_bridge_adds_up_to_the_bank_need_exactly():
-    # Синтетика без книги: осталось оплатить 900, банк даст 300, не хватает 600;
-    # потребность банка по главам 2–3 — 75 (из _overpaid_rec: 50 по главе 2, 25 по главе 3).
-    from test_the_extra_financing_is_split_by_chapter import _overpaid_rec
-
-    rec = _overpaid_rec()
-    funding = {"known": True, "bank_limit": 800.0, "additional_financing": rec["total"]["gap"],
-               "limit_reconciliation": rec,
-               "budget_composition": {"sections": [{"code": "2.2"}], "total": 1_000.0,
-                                      "fact": 100.0, "plan": 900.0}}
-    chain = dashboard.funding_chain(funding, 500.0)
-    assert (chain["to_pay"], chain["bank_gives"], chain["short"]) == (900.0, 300.0, 600.0)
-    bridge = chain["bridge"]
-    assert bridge["matches"]
-    # 600 = 75 + (900 − 175) − (300 − 100)
-    assert bridge["outside"] == pytest.approx(725.0)
-    assert bridge["bank_vs_remaining"] == pytest.approx(200.0)
-    line = dashboard.chain_lines(chain, report._rub)[-1]
-    assert line == ("Потребность в допфинансировании банка — 75 ₽: это нехватка банковских "
-                    "денег на главы 2–3, по каждой главе отдельно. «Не хватает» получается из "
-                    "неё так: плюс 725 ₽ — осталось оплатить вне стройки и коммерции (глав "
-                    "2–3): участок, административные расходы, налоги и прочее; минус 200 ₽ — "
-                    "разница между тем, что банк ещё даст, и остатком по смете глав 2–3: в "
-                    "лимите есть другие главы, а смета уменьшается и на оплаты своими "
-                    "деньгами.")
-    # Подделка: итог водопада разошёлся с главами сверки — разложение не сходится.
-    forged = dict(funding, additional_financing=rec["total"]["gap"] + 7.0)
-    assert dashboard.funding_chain(forged, 500.0)["bridge"]["matches"] is False
+    tiles = {item["label"]: item for item in report.tiles(built)}
+    assert tiles["Утверждённый бюджет"]["value"] == report._rub(comp["total"])
+    assert tiles["Утверждённый бюджет"]["note"] == (
+        "по разделам финмодели 2.1, 2.2, 2.3, 2.4; без процентов по кредиту")
+    assert "Источник: файл «ФМ синтетика.xlsx», загружен 02.11.2026." in \
+        tiles["Утверждённый бюджет"]["hint"]
+    assert tiles["Лимит банка"]["value"] == report._rub(own["limit"])
+    assert tiles["Лимит банка"]["note"].startswith("смета банка: в неё засчитываются все оплаты")
+    assert tiles["Оплачено с начала проекта"]["value"] == report._rub(own["paid"])
+    assert tiles["Оплачено с начала проекта"]["note"] == (
+        "из них кредитом 420 000 ₽, своими деньгами 300 000 ₽")
+    assert tiles["Остаток лимита банка"]["value"] == report._rub(own["left"])
+    assert tiles["Остаток лимита банка"]["note"] == (
+        "лимит минус всё оплаченное; по главе 1 −30 000 ₽, по главе 2 490 000 ₽, "
+        "по главе 3 50 000 ₽")
+    need = tiles["Нужно своих денег сверх сметы банка"]
+    assert need["value"] == report._rub(own["need"])
+    assert need["note"].startswith("утверждённый бюджет минус лимит банка; первый месяц "
+                                   "нехватки — ноябрь 2026")
+    for gone in ("Потребность в допфинансировании банка", "Осталось по смете после всех оплат",
+                 "Можно ещё выбрать у банка"):
+        assert gone not in tiles
+    found = {item["topic"]: item["text"] for item in built["findings"]}["Финансирование"]
+    assert found.startswith("Нужно своих денег сверх сметы банка 210 000 ₽, первый месяц "
+                            "нехватки — ноябрь 2026")
+    page = report.render_html(built)
+    assert ("<div class='k'>Утверждённый бюджет <span class='i' tabindex='0' role='note' "
+            "title='Утверждённый бюджет — сумма") in page
+    assert "Нужно своих денег сверх сметы банка</b>" in report._funding_html(built)
+    assert "расхождение дат — 10 000 ₽" in report.render_text(built)

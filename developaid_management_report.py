@@ -2038,12 +2038,22 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
             extra = float(limit.get("additional_financing") or 0.0)
             source = "по финмодели" if _model_basis(limit) else "по РСС"
             parts = _chapter_gap_words(limit)
-            pieces.append(f"{source} не хватает {_rub(extra)} "
-                          f"{_since(limit.get('additional_financing_from'))}"
-                          + (f" ({parts})" if parts else "")
-                          if extra > 0 else
-                          ("по финмодели остатка лимита глав 2–3 хватает до конца стройки"
-                           if _model_basis(limit) else "по РСС лимитов и резерва хватает до ввода"))
+            own = limit.get("own_money")
+            if own:
+                # То же число, что на плашке (владелец, 02.11.2026).
+                extra = float(own["need"])
+                pieces.append(f"нужно своих денег сверх сметы банка {_rub(extra)}"
+                              + (f", первый месяц нехватки — {_month_word(own['from'])}"
+                                 if own.get("from") else "")
+                              if extra > 0 else "утверждённый бюджет укладывается в смету банка")
+            else:
+                pieces.append(f"{source} не хватает {_rub(extra)} "
+                              f"{_since(limit.get('additional_financing_from'))}"
+                              + (f" ({parts})" if parts else "")
+                              if extra > 0 else
+                              ("по финмодели остатка лимита глав 2–3 хватает до конца стройки"
+                               if _model_basis(limit)
+                               else "по РСС лимитов и резерва хватает до ввода"))
         pieces.append(f"выборка кредита за {period} — {_rub(block['draws']['period'])} "
                       f"(за предыдущий такой же период — {_rub(block.get('draws_previous'))})")
         escrow = block.get("escrow") or {}
@@ -2059,13 +2069,16 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
         # текста («по рсс», «2026 q3»).
         text = "; ".join(pieces)
         text = text[:1].upper() + text[1:] + "."
-        if limit.get("known") and float(limit.get("additional_financing") or 0) > 0 \
-                and _gap_note(limit):
+        own = limit.get("own_money") if limit.get("known") else None
+        short = (float(own["need"]) if own
+                 else float(limit.get("additional_financing") or 0) if limit.get("known") else 0.0)
+        # Фраза «участок и проценты не входят» — про потребность банка по главам
+        # 2–3; у «своих денег сверх сметы» участок входит, и её там нет.
+        if not own and short > 0 and _gap_note(limit):
             text += " " + _gap_note(limit)
         add("Финансирование", text,
             f"РСС от {_day(block['rss'])}, расчёт Монитора, план финмодели",
-            "bad" if limit.get("known") and float(limit.get("additional_financing") or 0) > 0
-            else "")
+            "bad" if short > 0 else "")
     else:
         add("Финансирование", block.get("reason") or "Данных нет.", "", "missing")
 
@@ -2820,11 +2833,18 @@ def _reconciliation_lines(limit: dict[str, Any]) -> list[str]:
     return dashboard.reconciliation_lines(limit.get("limit_reconciliation") or {}, _rub)
 
 
-def _funding_chain(limit: dict[str, Any], draws: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Цепочка плашек по финмодели; выбрано — то же число, что на плашке «Выбрано»."""
+def _own_money_lines(limit: dict[str, Any]) -> list[str]:
+    """«Нужно своих денег сверх сметы банка» — фразы Монитора, деньги сводки."""
     import developaid_monitor_dashboard as dashboard
 
-    return dashboard.funding_chain(limit, (draws or {}).get("total"))
+    return dashboard.own_money_lines(limit.get("own_money"), _rub)
+
+
+def _month_word(key: str | None) -> str:
+    """«январь 2027»."""
+    import developaid_monitor_dashboard as dashboard
+
+    return dashboard._month_name(key)
 
 
 def _budget_hint(limit: dict[str, Any]) -> list[str]:
@@ -2922,11 +2942,10 @@ def _funding_text(report: dict[str, Any]) -> list[str]:
             lines.append("По финмодели остатка лимита глав 2–3 хватает до конца стройки.")
         else:
             lines.append("По РСС лимитов и резерва хватает до ввода по прогнозу Монитора.")
-        import developaid_monitor_dashboard as dashboard
-        chain_text = dashboard.chain_lines(_funding_chain(limit, block.get("draws")), _rub)
-        if chain_text:
-            lines.append("Как складываются плашки.")
-            lines.extend(chain_text)
+        own_text = _own_money_lines(limit)
+        if own_text:
+            lines.append("Нужно своих денег сверх сметы банка.")
+            lines.extend(own_text)
         recon = _reconciliation_lines(limit)
         if recon:
             lines.append("Как сходится дофинансирование.")
@@ -3157,11 +3176,10 @@ def _funding_html(report: dict[str, Any]) -> str:
                 for row in _gap_chapters(limit)])))
         if extra > 0 and _gap_note(limit):
             out.append(f"<p class='note'>{esc(_gap_note(limit))}</p>")
-        import developaid_monitor_dashboard as dashboard
-        chain_text = dashboard.chain_lines(_funding_chain(limit, block.get("draws")), _rub)
-        if chain_text:
-            out.append("<p class='note'><b>Как складываются плашки</b></p>"
-                       + "".join(f"<p class='note'>{esc(line)}</p>" for line in chain_text))
+        own_text = _own_money_lines(limit)
+        if own_text:
+            out.append("<p class='note'><b>Нужно своих денег сверх сметы банка</b></p>"
+                       + "".join(f"<p class='note'>{esc(line)}</p>" for line in own_text))
         recon = _reconciliation_lines(limit)
         if recon:
             out.append("<p class='note'><b>Как сходится дофинансирование</b></p>"
@@ -3812,16 +3830,17 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
         else "финансовая книга не загружена",
         hint=" ".join(_budget_hint(limit)) if limit.get("known") else "")
     draws = block.get("draws") if block.get("state") == "ok" else None
-    chain = _funding_chain(limit, draws)
-    if chain:
-        # Цепочка по финмодели (решение владельца, 02.11.2026): каждая
-        # следующая плашка — вычитание предыдущих.
-        add("Оплачено по финмодели", _rub(chain["paid"]), "«ФАКТ» финмодели по всем разделам")
-        add("Осталось оплатить", _rub(chain["to_pay"]), "утверждённый бюджет минус оплаченное")
+    # Плашки складываются (владелец, 02.11.2026): «лимит банка» — смета, в неё
+    # банк засчитывает все оплаты; лимит = оплачено + остаток, бюджет = лимит
+    # + свои деньги сверх сметы. Считает Монитор (`own_money`).
+    own = limit.get("own_money") if limit.get("known") else None
     if limit.get("known"):
         add("Лимит банка", _rub(limit.get("bank_limit")),
-            "; ".join(filter(None, [_by_chapter_words(limit.get("limit_by_chapter")) or "по смете РСС",
-                                    _reserve_words(limit)])))
+            "; ".join(filter(None, [
+                "смета банка: в неё засчитываются все оплаты, кредитом и своими деньгами"
+                if own else "",
+                _by_chapter_words(limit.get("limit_by_chapter")) or "по смете РСС",
+                _reserve_words(limit)])))
     else:
         add("Лимит банка", None, limit.get("reason") or "лимит не посчитан")
     if draws:
@@ -3833,16 +3852,19 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
         add("Выбрано у банка", _rub(draws["total"]), note, "bad" if limit.get("known") and over > 0 else "")
     else:
         add("Выбрано у банка", None, "отчёт РСС не загружен")
-    if chain:
-        add("Банк ещё даст", _rub(chain["bank_gives"]), "лимит минус выбранное кредитом",
-            "bad" if chain["bank_gives"] < 0 else "")
-        gap = float(limit.get("additional_financing") or 0.0)
-        add("Не хватает", _rub(chain["short"]) if chain["short"] > 0 else "нет",
-            "осталось оплатить минус то, что ещё даст банк"
-            + (f"; из них потребность в допфинансировании банка {_rub(gap)} "
-               f"{_since(limit.get('additional_financing_from'))} — разбор в разделе "
-               "«Финансирование»" if gap > 0 else ""),
-            "bad" if chain["short"] > 0 else "good")
+    if own:
+        add("Оплачено с начала проекта", _rub(own["paid"]),
+            f"из них кредитом {_rub(own['borrowed'])}, своими деньгами {_rub(own['own_paid'])}")
+        left = own["left_by_chapter"]
+        add("Остаток лимита банка", _rub(own["left"]),
+            "лимит минус всё оплаченное; "
+            + ", ".join(f"по главе {ch} {_rub(left[ch])}" for ch in sorted(left)),
+            "bad" if own["left"] < 0 else "")
+        add("Нужно своих денег сверх сметы банка", _rub(own["need"]) if own["need"] > 0 else "нет",
+            "утверждённый бюджет минус лимит банка"
+            + (f"; первый месяц нехватки — {_month_word(own['from'])}" if own.get("from") else "")
+            + "; из чего складывается — в разделе «Финансирование»",
+            "bad" if own["need"] > 0 else "good")
     elif limit.get("known"):
         extra = float(limit.get("additional_financing") or 0.0)
         # Число и одна строка (владелец на проде, 27.10.2026: подписи плиток —
@@ -3873,7 +3895,7 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
             "bad" if extra > 0 else "good")
     else:
         add("Осталось по смете после всех оплат", None, "лимит не посчитан")
-    if chain:
+    if own:
         pass
     elif need and need["deficit"] is not None and _model_basis(limit):
         add("Потребность в допфинансировании банка",
