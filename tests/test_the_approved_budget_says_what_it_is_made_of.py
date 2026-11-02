@@ -184,8 +184,8 @@ def test_limit_is_paid_plus_left_and_budget_is_limit_plus_own_money(tmp_path):
                                "первый месяц нехватки — ноябрь 2026.")
     assert "2.4 «Административно-хозяйственные расходы» — 40 000 ₽: в смете банка таких " \
            "расходов нет" in lines[1]
-    assert "расхождение дат — 10 000 ₽: «ФАКТ» финмодели считает оплаты на дату книги, а " \
-           "реестр РСС — на дату отчёта" in lines[1]
+    assert "расхождение «ФАКТ» финмодели с реестром РСС — 10 000 ₽: финмодель считает " \
+           "оплаченным больше" in lines[1]
 
 
 def test_a_forged_section_breaks_the_identity(tmp_path):
@@ -241,4 +241,51 @@ def test_the_tiles_add_up_on_the_page(tmp_path, monkeypatch):
     assert ("<div class='k'>Утверждённый бюджет <span class='i' tabindex='0' role='note' "
             "title='Утверждённый бюджет — сумма") in page
     assert "Нужно своих денег сверх сметы банка</b>" in report._funding_html(built)
-    assert "расхождение дат — 10 000 ₽" in report.render_text(built)
+    assert "расхождение «ФАКТ» финмодели с реестром РСС — 10 000 ₽" in report.render_text(built)
+
+
+# --- Нехватка не прыгает при смене месяца сводки.
+
+PLAN = {"2026-10-01": 60.0, "2026-11-01": 30.0, "2026-12-01": 20.0, "2027-01-01": 10.0}
+BOOK = datetime.date(2026, 10, 1)
+
+
+@pytest.mark.parametrize("cut", [datetime.date(2026, 10, 27), datetime.date(2026, 11, 2),
+                                 datetime.date(2026, 12, 15)])
+def test_the_plan_still_owed_does_not_depend_on_the_cut(cut):
+    # После даты книги по реестру оплачено 70: октябрь (60) и 10 из ноября.
+    owed = dashboard._plan_still_owed(PLAN, BOOK, 70.0, cut)
+    assert sum(owed.values()) == pytest.approx(120.0 - 70.0)
+    # Неоплаченное прошлых месяцев переносится на месяц среза, а не выпадает.
+    assert min(owed) == cut.replace(day=1).isoformat()
+    assert all(day >= cut.replace(day=1).isoformat() for day in owed)
+
+
+def test_the_monitor_gap_is_the_same_in_october_and_in_november(monkeypatch):
+    """Настоящий расчёт Монитора на двух датах среза — без новых оплат."""
+    from pathlib import Path
+
+    import test_the_monitor_takes_the_finmodel_as_its_finance_book as fm
+
+    sections = {ch: {**row, "monthly": {"2026-10-01": 120.0, "2026-11-01": 150.0,
+                                        "2026-12-01": 100.0}}
+                for ch, row in fm.SECTIONS.items()}
+    fm._finmodel_funding(monkeypatch, sections, fm.ESTIMATE, fm.PAID)  # ставит заглушки книги
+    reader = dashboard._finance_baseline
+    monkeypatch.setattr(dashboard, "_finance_baseline",
+                        lambda project: {**reader(project), "plan_from": BOOK})
+    # По реестру после даты книги оплачено 40 по каждой главе.
+    monkeypatch.setattr(dashboard, "_paid_since", lambda rss, est, ch, since: 40.0)
+    view = {"schedule": {"approved_end": "2027-09-30", "forecast_end": None}}
+    got = {cut.month: dashboard._funding_risk("demo", Path("rss.xlsx"), cut, view)
+           for cut in (datetime.date(2026, 10, 27), datetime.date(2026, 11, 2))}
+    assert got[10]["additional_financing"] == pytest.approx(got[11]["additional_financing"])
+    assert got[10]["remaining_need"] == pytest.approx(got[11]["remaining_need"])
+    # 2 главы × (370 плана − 40 оплачено после даты книги)
+    assert got[11]["remaining_need"] == pytest.approx(2 * (370.0 - 40.0))
+
+
+def test_an_unpaid_past_month_moves_to_the_cut():
+    owed = dashboard._plan_still_owed(PLAN, BOOK, 0.0, datetime.date(2026, 12, 5))
+    assert owed["2026-12-01"] == pytest.approx(60.0 + 30.0 + 20.0)
+    assert owed["2027-01-01"] == pytest.approx(10.0)
