@@ -89,6 +89,7 @@ PAGE = PAGE.replace(MKD_SPP_SPLIT_PLACEHOLDER, json.dumps(MKD_SPP_SPLIT, ensure_
 # источника реквизитов (`product_registration_line`).
 PAGE = PAGE.replace("__DEVELOPAID_PRODUCT_REGISTRATION__", html.escape(product_registration_line()))
 PAGE = PAGE.replace("__DEVELOPAID_TERMS__", json.dumps(page_terms(), ensure_ascii=False))
+PAGE = PAGE.replace("__DEVELOPAID_KPI_HINTS__", json.dumps(report_kpi_hints(), ensure_ascii=False))
 PAGE = PAGE.replace("__DEVELOPAID_DEFAULT_REPAYMENT__",
                     json.dumps(DEFAULT_REPAYMENT_WORDS, ensure_ascii=False))
 # Слово глоссария в разметке — `__DEVELOPAID_TERM_<ключ>_<падеж>__`: подпись до

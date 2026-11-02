@@ -1233,6 +1233,9 @@ def _calculate_economics(req: CalcRequest) -> dict:
             "object_instances": list(project_object_instances(x)),
             "object_instance_notes": instance_notes,
             "npv": project_npv,
+            # Ставка, по которой дисконтирован NPV, — рядом с ним: подсказка
+            # плитки называет её из расчёта, а не из формы.
+            "discount_rate_pct": discount_rate * 100,
             "npv_equity": equity_npv,
             "irr_project": irr_project,
             "irr_equity": irr_equity,

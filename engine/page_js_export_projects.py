@@ -1194,6 +1194,8 @@ function resetMoParams(){
 }
 function resetAll(){
  localStorage.removeItem('plato_v04');
+ // Открытая подсказка «i» говорит о числе прошлого проекта — закрыть.
+ hideKpiTip();
  inputs=resetInputsWanted();
  tep=resetTepWanted();
  phasing=makeDefaultPhasing(1);phaseBundle=null;reportView='all';

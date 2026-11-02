@@ -48,22 +48,26 @@ PAGE += r"""function renderResult(){
   :'';
  const conditionalShort=modelDefault?note('при том же допущении'):'';
 
+ // Какой поток стоит за NPV, решает движок (`report.layout.npv_basis`).
+ const npvHint=reportLayout(r).npv_basis==='hotel'?'npv_hotel':'npv';
  const reportKpis=[
-  ['Выручка',money(r.summary.revenue)],
+  ['Выручка',money(r.summary.revenue),'revenue'],
   // Вторая половина уравнения. В PDF ключевая экономика идёт «Выручка →
   // Расходы всего → EBITDA», на экране расходов не было вовсе — и EBITDA
   // появлялась из ниоткуда, сравнить её было не с чем.
-  ['Расходы всего',money(r.summary.total_expenses)],
-  ['EBITDA',money(r.summary.ebitda)],
+  ['Расходы всего',money(r.summary.total_expenses),'total_expenses'],
+  ['EBITDA',money(r.summary.ebitda),'ebitda'],
   // Прибыль, маржинальность и NPV после дефолта посчитаны на допущении, что
   // банк дал проекту продолжиться: это одна и та же величина в трёх видах.
   // Голое число читается как достигнутое — оговорка стоит у самого числа, а
   // не только в плашке выше: плашку можно пролистать, плитку нет.
-  ['Чистая прибыль',money(r.summary.net_profit)+conditionalNote],
-  ['Маржинальность',pct(r.summary.margin)+conditionalShort],
+  ['Чистая прибыль',money(r.summary.net_profit),'net_profit',conditionalNote],
+  ['Маржинальность',pct(r.summary.margin),'margin',conditionalShort],
   // NPV проекта — числом и при непогашенном долге: кредита в потоке до
   // финансирования нет, снимается только доходность капитала (владелец, 17.10.2026).
-  ['NPV @'+Number(inputs.discount_rate_pct||20).toLocaleString('ru-RU')+'%',money(r.summary.npv)+conditionalShort],
+  // Ставка в подписи — та, по которой движок дисконтировал (`summary`), а не
+  // число формы: подпись и подсказка называют одну ставку.
+  ['NPV @'+kpiDiscountRate(r).toLocaleString('ru-RU')+'%',money(r.summary.npv),npvHint,conditionalShort],
   // Цена входа стояла только в «Параметрах проекта» ниже и в PDF первой
   // строкой ключевой экономики: экран и отчёт расходились по составу, а
   // главное число сделки в шапку не попадало вовсе.
@@ -73,23 +77,26 @@ PAGE += r"""function renderResult(){
   // Итог сделки: цена участка вместе с выкупом ЗУ/ОКС у третьих лиц. Две
   // строки разбивки стоят в «Параметрах проекта» ниже — шапка остаётся в
   // десять плиток.
-  ['Цена приобретения',(v=>v>0?money(v):'не задана')(expenseGroup('Цена приобретения'))],
+  ['Цена приобретения',(v=>v>0?money(v):'не задана')(expenseGroup('Цена приобретения')),'purchase'],
   // Чем оплачен вход: свои деньги и пик банковского долга до ПФ. Прежде здесь
   // стояли оба БРИДЖа сразу — лимит банка и фактическая потребность, — и рядом
   // они читались как расхождение, а не как разные величины. Остался один,
   // фактический: он отвечает на вопрос «сколько денег нужно». Расчётный лимит и
   // пиковая непокрытая задолженность — величины для разговора с банком, они в
   // таблице «Финансирование» ниже, среди ставок и лимитов.
-  ['Собственные средства до ПФ',money(r.report.financing.own_funds)],
-  ['Пиковый БРИДЖ',money(r.report.financing.actual_bridge)],
-  ['LLCR (расчётный)',mult(r.summary.llcr)]
+  ['Собственные средства до ПФ',money(r.report.financing.own_funds),'own_funds'],
+  ['Пиковый БРИДЖ',money(r.report.financing.actual_bridge),'bridge_peak'],
+  ['LLCR (расчётный)',mult(r.summary.llcr),'llcr']
  ];
  // Нежилой проект без ДДУ: БРИДЖа, ПФ и LLCR у него нет — шапку
  // заканчивают деньги объектов (`report.layout`, решение движка).
  const layout=reportLayout(r);
  if(!layout.project_finance)reportKpis.splice(-3,3);
- (layout.nonres_tiles||[]).forEach(t=>reportKpis.push([t.label,nonresCell(t)]));
- reportKpi.innerHTML=reportKpis.map(x=>`<div class="kpi"><span>${x[0]}</span><b>${x[1]}</b></div>`).join('');
+ (layout.nonres_tiles||[]).forEach(t=>reportKpis.push([t.label,nonresCell(t),t.hint]));
+ // Значок «i» стоит у самого числа, до оговорки под ним: подсказка — о
+ // том, как число посчитано (`report_kpi_hints`), оговорка — о допущении.
+ reportKpi.innerHTML=reportKpis.map(x=>
+  `<div class="kpi"><span>${x[0]}</span><b>${x[1]}${kpiHintButton(x[2],r)}${x[3]||''}</b></div>`).join('');
  applyReportLayout(layout);
  renderObjectReport(r);
 

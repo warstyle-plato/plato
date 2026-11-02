@@ -252,6 +252,93 @@ function reportLayout(r){
  const l=((r||{}).report||{}).layout;
  return l||{housing:true,project_finance:true,nonres_strategy:false,nonres_tiles:[]};
 }
+// Подсказки «i» у плиток управленческого отчёта (владелец, 02.11.2026). Тексты
+// — у словаря `report_kpi_hints`, здесь только подстановка параметров текущего
+// расчёта и показ. Ставка дисконтирования — та, по которой дисконтировал
+// движок (`summary.discount_rate_pct`); порог покрытия — ответ движка
+// (`report.layout.debt_metric.target`).
+const KPI_HINTS=__DEVELOPAID_KPI_HINTS__;
+function kpiDiscountRate(r){
+ const own=((r||{}).summary||{}).discount_rate_pct;
+ if(own!=null&&own!==''&&Number.isFinite(Number(own)))return Number(own);
+ const typed=(typeof inputs!=='undefined'&&inputs)?inputs.discount_rate_pct:null;
+ return typed==null||typed===''||!Number.isFinite(Number(typed))?20:Number(typed);
+}
+function kpiHintText(key,r){
+ const text=key&&KPI_HINTS[key];
+ if(!text)return '';
+ const target=Number((reportLayout(r).debt_metric||{}).target);
+ const params={
+  discount_rate:kpiDiscountRate(r).toLocaleString('ru-RU'),
+  debt_target:Number.isFinite(target)&&target>0
+   ?target.toLocaleString('ru-RU',{minimumFractionDigits:2,maximumFractionDigits:2}):'1,20'};
+ return text.replace(/\{(\w+)\}/g,(all,name)=>name in params?params[name]:all);
+}
+// Буква «i» — из CSS, а не текстом кнопки: значение плитки читают текстом
+// (слой интерфейса, Платон, проверки), и «1,86 млрд ₽i» было бы порчей числа.
+function kpiHintButton(key,r){
+ const text=kpiHintText(key,r);
+ if(!text)return '';
+ return `<button type="button" class="kpi-i" data-kpi-hint="${escapeHtml(key)}"`
+  +` data-hint-text="${escapeHtml(text)}" aria-label="Как считается это число"`
+  +` aria-expanded="false"></button>`;
+}
+// Одно всплывающее окно на страницу, положенное поверх всего (`position:
+// fixed`): внутри плитки его обрезали бы края сетки и карточки. Место
+// считается от значка и прижимается к краям окна браузера.
+let kpiTipFor=null,kpiTipPinned=false;
+function kpiTipBox(){
+ let box=document.getElementById('kpiTip');
+ if(!box){
+  box=document.createElement('div');box.id='kpiTip';box.className='kpi-tip';
+  box.setAttribute('role','tooltip');box.hidden=true;document.body.appendChild(box);
+ }
+ return box;
+}
+function showKpiTip(btn,pinned){
+ const box=kpiTipBox();
+ if(kpiTipFor&&kpiTipFor!==btn)kpiTipFor.setAttribute('aria-expanded','false');
+ box.textContent=btn.getAttribute('data-hint-text')||'';
+ box.hidden=false;box.style.left='0px';box.style.top='0px';
+ const gap=8,vw=document.documentElement.clientWidth||window.innerWidth,
+  vh=window.innerHeight,rect=btn.getBoundingClientRect();
+ box.style.maxWidth=Math.min(320,vw-2*gap)+'px';
+ const w=box.offsetWidth,h=box.offsetHeight;
+ const left=Math.max(gap,Math.min(rect.left+rect.width/2-w/2,vw-w-gap));
+ const below=rect.bottom+6,above=rect.top-6-h;
+ const top=below+h+gap<=vh||above<gap?below:above;
+ box.style.left=Math.round(left)+'px';box.style.top=Math.round(Math.max(gap,top))+'px';
+ kpiTipFor=btn;kpiTipPinned=!!pinned;
+ btn.setAttribute('aria-expanded','true');box.setAttribute('aria-hidden','false');
+}
+function hideKpiTip(){
+ const box=document.getElementById('kpiTip');
+ if(box){box.hidden=true;box.setAttribute('aria-hidden','true')}
+ if(kpiTipFor)kpiTipFor.setAttribute('aria-expanded','false');
+ kpiTipFor=null;kpiTipPinned=false;
+}
+// Мышь — по наведению, палец — нажатием (повторное нажатие или нажатие вне
+// подсказки закрывает), клавиатура — фокусом и Escape.
+document.addEventListener('pointerover',e=>{
+ const btn=e.target.closest&&e.target.closest('.kpi-i');
+ if(btn&&e.pointerType==='mouse'&&!kpiTipPinned)showKpiTip(btn,false);
+});
+document.addEventListener('pointerout',e=>{
+ const btn=e.target.closest&&e.target.closest('.kpi-i');
+ if(btn&&e.pointerType==='mouse'&&kpiTipFor===btn&&!kpiTipPinned)hideKpiTip();
+});
+document.addEventListener('click',e=>{
+ const btn=e.target.closest&&e.target.closest('.kpi-i');
+ if(btn){
+  e.preventDefault();
+  if(kpiTipFor===btn&&kpiTipPinned)hideKpiTip();else showKpiTip(btn,true);
+  return;
+ }
+ if(kpiTipFor&&!(e.target.closest&&e.target.closest('#kpiTip')))hideKpiTip();
+});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&kpiTipFor)hideKpiTip()});
+window.addEventListener('scroll',()=>{if(kpiTipFor)hideKpiTip()},true);
+window.addEventListener('resize',()=>{if(kpiTipFor)hideKpiTip()});
 function applyReportLayout(layout){
  document.querySelectorAll('[data-needs]').forEach(el=>{el.hidden=!layout[el.dataset.needs]});
 }
