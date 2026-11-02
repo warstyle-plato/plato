@@ -3783,6 +3783,34 @@ def _delta(value: float | None) -> str:
     return ("+" if value > 0 else "") + _rub(value)
 
 
+def _plan_sources_words(trend: list[dict[str, Any]]) -> str:
+    """Из какого загруженного бюджета взят план месяцев графика.
+
+    Владелец (02.11.2026) загрузил бюджет октября, а план на графике не
+    сменился: без имени файла не видно, что план идёт из другого бюджета.
+    """
+    groups: list[tuple[str, list[str]]] = []
+    for point in trend:
+        source = point.get("plan_file")
+        if not source:
+            continue
+        period = "–".join(_months_label(f"{m}-01") for m in source["period"].split("–")
+                          if m) if source.get("period") else ""
+        key = f"бюджета от {_day(source['file'])}" + (f" ({period})" if period else "")
+        if groups and groups[-1][0] == key:
+            groups[-1][1].append(point["month"])
+        else:
+            groups.append((key, [point["month"]]))
+    if not groups:
+        return ""
+    parts = []
+    for key, months in groups:
+        span = (_months_label(months[0]) if len(months) == 1
+                else f"{_months_label(months[0])} — {_months_label(months[-1])}")
+        parts.append(f"{span} — из {key}")
+    return "План по месяцам взят из загруженных бюджетов: " + "; ".join(parts) + "."
+
+
 def _budget_depth_html(block: dict[str, Any], end: datetime.date) -> str:
     esc = html.escape
     out = []
@@ -3821,6 +3849,9 @@ def _budget_depth_html(block: dict[str, Any], end: datetime.date) -> str:
              money(p["fact"]["commercial"], "нет данных")] for p in trend]))
         out.append("<p class='note'>«Нет данных» — месяц раньше первой оплаты в реестре РСС; "
                    "«нет плана» — месяца нет ни в одном загруженном бюджете.</p>")
+        sources = _plan_sources_words(trend)
+        if sources:
+            out.append(f"<p class='note'>{esc(sources)}</p>")
     articles = block.get("articles") or {}
     if articles.get("known"):
         month_words = _months_label(articles["month"])

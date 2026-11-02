@@ -405,7 +405,7 @@ def test_budget_route_stores_and_refuses_by_name(monkeypatch):
     assert "шапки с месяцами" in bad.value.detail
 
 
-def test_several_periods_load_the_same_day_and_the_latest_period_wins():
+def test_several_periods_load_the_same_day_and_the_last_upload_wins():
     # «Эти я загрузить через форму не смог: он не принял новые файлы вообще,
     # сказал что октябрь уже загружен» (владелец, 21.10.2026). Файлы БДДС за
     # прошлые периоды догружаются пачкой в один день.
@@ -417,10 +417,16 @@ def test_several_periods_load_the_same_day_and_the_latest_period_wins():
                     ("Сентябрь 2026", (-777, -10, -30), (None, None, None)))):
         stored = monthly_budget.store_budget(PROJECT, budget_book(months=months), "2026-10-21")
         assert stored["replaced"] is False
-    # Август — из файла за август—сентябрь (период позже), а не за июль—август.
+    # Август — из файла за август—сентябрь: он загружен последним.
     plan = monthly_budget._plan(PROJECT, "2026-08-01", "2026-10-31")
     assert plan["plan"]["construction"] == pytest.approx(212 * M)
-    # Сентябрь — из файла за сентябрь—октябрь, хотя он загружен раньше.
+    # Сентябрь — тоже из него: решение владельца (02.11.2026) «брать последний
+    # загруженный», а не файл с более поздним периодом. Нужен сентябрь из
+    # файла за сентябрь—октябрь — лишний файл убирают кнопкой «Убрать».
+    plan = monthly_budget._plan(PROJECT, "2026-09-01", "2026-10-31")
+    assert plan["file"] == "2026-10-21"
+    assert plan["plan"]["construction"] == pytest.approx(767 * M)
+    monthly_budget.remove_budget(PROJECT, "2026-10-21_2026-08_2026-09.xlsx")
     plan = monthly_budget._plan(PROJECT, "2026-09-01", "2026-10-31")
     assert plan["file"] == "2026-10-02"
 
