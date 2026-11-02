@@ -401,7 +401,8 @@ def test_the_page_draws_the_block_of_the_engine(page_state) -> None:
     item = state["engine"]["items"][0]
     assert state["head"] == ["Показатель"] + [
         " ".join([c["label"], *c["tags"]]) for c in item["columns"]]
-    assert state["rows"] == [[r["label"]] if r.get("section") else [r["label"], *r["cells"]]
+    # На странице — короткая подпись строки (`page_label`), пояснение — в «i».
+    assert state["rows"] == [[r["label"]] if r.get("section") else [r.get("page_label") or r["label"], *r["cells"]]
                              for r in item["rows"]]
     assert state["best"] == [item["best"]]
     assert state["lead"] == item["lead"]
@@ -414,7 +415,8 @@ def test_the_page_points_are_the_engine_search(page_state) -> None:
     bundle = core._run_authoritative_model(x, t, [], {})
     block = core.strategy_compare_for_report(bundle, x, t, [], {})
     assert state["points"] == [p["text"] for p in block["items"][0]["points"]]
-    assert len(state["points"]) == 4 and "подбором полным пересчётом" in state["stamp"]
+    assert len(state["points"]) == 4 and "подбором полным пересчётом" in block["stamp"]
+    assert state["stamp"].startswith(core.STRATEGY_COMPARE_BASIS + " Подбор: DevelopAid ")
 
 
 def test_the_page_shows_the_table_before_the_search(page_state) -> None:

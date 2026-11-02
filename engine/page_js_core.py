@@ -453,21 +453,27 @@ let strategyCompareKey='';
 let strategyCompareBlock=null;
 let strategyCompareRound=0;
 // Строка-раздел таблицы («Глазами инвестора…») — на всю ширину.
-function strategySectionRow(row,span){
- return `<tr class="strategy-section" data-row="${escapeHtml(row.key||'')}"><td colspan="${span}">${escapeHtml(row.label||'')}</td></tr>`;
+function strategySectionRow(row,span,r){
+ return `<tr class="strategy-section" data-row="${escapeHtml(row.key||'')}"><td colspan="${span}">${escapeHtml(row.label||'')}${kpiHintButton(row.hint,r)}</td></tr>`;
 }
+// Как считается каждая стратегия и строка — в подсказках «i» (владелец,
+// 02.11.2026: «в пояснение стратегий тоже сделать сноску I»): тот же словарь
+// и тот же значок, что у плиток отчёта; ключи ставит блок движка. На виду —
+// названия, числа, вывод и оговорки, меняющие вывод. `page_label` — короткая
+// подпись строки на странице, `label` — полная, её печатает PDF.
 function strategyCompareHtml(block){
+ const r=typeof lastResult!=='undefined'?lastResult:null;
  return (block.items||[]).map(item=>{
   const cols=item.columns||[];
   const best=i=>!!(cols[i]&&cols[i].best);
   return `<div class="strategy-compare" data-product="${escapeHtml(item.product||'')}">${item.caption?`<div class="strategy-compare-caption">${escapeHtml(item.caption)}</div>`:''}<p class="strategy-compare-lead">${escapeHtml(item.lead||'')}</p><div class="scroll"><table class="strategy-compare-table"><thead><tr><th>Показатель</th>${
-   cols.map(c=>`<th data-strategy="${escapeHtml(c.key||'')}"${c.best?' class="best"':''}>${escapeHtml(c.label||'')}${
+   cols.map(c=>`<th data-strategy="${escapeHtml(c.key||'')}"${c.best?' class="best"':''}>${escapeHtml(c.label||'')}${kpiHintButton(c.hint,r)}${
     (c.tags||[]).map(tag=>`<br><span class="strategy-tag${tag==='лучшая по NPV'?' best-tag':''}">${escapeHtml(tag)}</span>`).join('')}</th>`).join('')}</tr></thead><tbody>${
-   (item.rows||[]).map(row=>row.section?strategySectionRow(row,cols.length+1):`<tr data-row="${escapeHtml(row.key||'')}"><td>${escapeHtml(row.label||'')}</td>${
+   (item.rows||[]).map(row=>row.section?strategySectionRow(row,cols.length+1,r):`<tr data-row="${escapeHtml(row.key||'')}"><td>${escapeHtml(row.page_label||row.label||'')}${kpiHintButton(row.hint,r)}</td>${
     (row.cells||[]).map((cell,i)=>`<td${best(i)?' class="best"':''}>${row.strong&&best(i)?'<b>'+escapeHtml(cell)+'</b>':escapeHtml(cell)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>${
-   (item.points||[]).length?`<div class="strategy-points-title">${escapeHtml(item.points_title||'')}</div><ul class="strategy-points">${
+   (item.points||[]).length?`<div class="strategy-points-title">${escapeHtml(item.points_title||'')}${kpiHintButton(item.points_hint,r)}</div><ul class="strategy-points">${
     item.points.map(p=>`<li>${escapeHtml(p.text||'')}</li>`).join('')}</ul>`:''}</div>`;
- }).join('')+`<div class="strategy-compare-stamp">${escapeHtml(block.stamp||'')}</div>`;
+ }).join('')+`<div class="strategy-compare-stamp">${escapeHtml(block.page_stamp||block.stamp||'')}${kpiHintButton(block.stamp_hint,r)}</div>`;
 }
 function paintStrategyCompare(block){
  document.querySelectorAll('[data-strategy-compare-card]').forEach(card=>{card.hidden=!block});
@@ -490,12 +496,14 @@ function renderStrategyCompare(r){
    if(round!==strategyCompareRound)return;
    if(ok&&(data.items||[]).length){strategyCompareBlock=data;paintStrategyCompare(data);return}
    const why=typeof (data||{}).detail==='string'?data.detail:'сервер не ответил';
-   strategyCompareBlock={...block,stamp:'Точки, где стратегии сравняются, не подобраны: '+why};
+   const failed='Точки, где стратегии сравняются, не подобраны: '+why;
+   strategyCompareBlock={...block,stamp:failed,page_stamp:failed};
    paintStrategyCompare(strategyCompareBlock);
   })
   .catch(error=>{
    if(round!==strategyCompareRound)return;
-   strategyCompareBlock={...block,stamp:'Точки, где стратегии сравняются, не подобраны: '+String(error&&error.message||error)};
+   const failed='Точки, где стратегии сравняются, не подобраны: '+String(error&&error.message||error);
+   strategyCompareBlock={...block,stamp:failed,page_stamp:failed};
    paintStrategyCompare(strategyCompareBlock);
   });
 }
