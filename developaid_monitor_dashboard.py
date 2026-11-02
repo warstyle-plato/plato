@@ -158,6 +158,15 @@ _FM_TAX_CODE = "2.4.5"
 # Раздел финмодели → глава сметы банка. Административные расходы (2.4) в
 # смете банка своей главы не имеют.
 _FM_SECTION_CHAPTER = {"2.1": "1", "2.2": "2", "2.3": "3"}
+# Проценты по кредитам и займам финмодели («Выплаты %% по кредитам и
+# займам») — вне бюджета, справкой. Код — явный: в имени строки слова
+# «процент» может не быть.
+_FM_INTEREST_CODE = "3.1.4"
+
+
+def _fm_names_interest(name: str) -> bool:
+    low = name.lower()
+    return "процент" in low or "%" in low
 
 
 def _fm_is_tax(code: str) -> bool:
@@ -239,7 +248,7 @@ def _budget_composition(rows: list[dict[str, Any]], money: Any, total_col: int,
                "named_as_tax": "налог" in tax_row["name"].lower(),
                **{k: v for k, v in sums(_FM_TAX_CODE, leaves).items() if k != "monthly"}}]
              if tax_row else [])
-    interest_inside = [meta["code"] for meta in counted if "процент" in meta["name"].lower()]
+    interest_inside = [meta["code"] for meta in counted if _fm_names_interest(meta["name"])]
     total = sum(item["total"] for item in sections)
     fact = sum(item["fact"] for item in sections)
     plan = sum(item["plan"] for item in sections)
@@ -357,8 +366,7 @@ def _read_finance_model(wb: Any, path: Path) -> dict[str, Any]:
             }
         code = actuals._code(ws.cell(r, _FM_CODE_COL).value)
         name = str(ws.cell(r, _FM_NAME_COL).value or "").strip()
-        if (code and not code.startswith("2.") and "процент" in name.lower()
-                and not any(code.startswith(item["code"] + ".") for item in interest)):
+        if code == _FM_INTEREST_CODE and not interest:
             interest.append({"code": code, "name": name,
                              "total": actuals._money(ws.cell(r, total_col).value) * _FM_THOUSANDS})
         if not code or not code.startswith("2."):

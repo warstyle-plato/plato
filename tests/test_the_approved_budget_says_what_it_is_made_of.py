@@ -43,7 +43,7 @@ ROWS = {
     "2.4.5": ("Налоги", 120, 40, 80),
     "2.4.5.1": ("Налог на имущество", 70, 20, 50),
     "2.4.5.2": ("Земельный налог", 50, 20, 30),
-    "3.1.4": ("Проценты по кредитам", 90, 10, 80),
+    "3.1.4": ("Выплаты %% по кредитам и займам", 90, 10, 80),
 }
 CROSSWALK = [("2.1.1.1", "Участок", "1.1"), ("2.2.1.1", "Вырубка", "2.1"),
              ("2.3.1.1", "Реклама", "3.2"), ("2.4.1.1", "Управление", "2.6"),
@@ -86,7 +86,7 @@ def test_the_budget_leaves_the_taxes_and_the_interest_aside(tmp_path):
     assert sum(item["total"] for item in comp["sections"]) == pytest.approx(got["approved"])
     assert comp["sections"][3]["total"] == pytest.approx(40 * K)
     assert comp["taxes"][0]["code"] == "2.4.5" and comp["taxes"][0]["total"] == pytest.approx(120 * K)
-    assert comp["interest_outside"] == [{"code": "3.1.4", "name": "Проценты по кредитам",
+    assert comp["interest_outside"] == [{"code": "3.1.4", "name": "Выплаты %% по кредитам и займам",
                                          "total": pytest.approx(90 * K)}]
     # Налоги не попадают ни в главы, ни в оплаченное, ни в остаток.
     assert sum(got["approved_by_chapter"].values()) == pytest.approx(K_BUDGET)
@@ -101,7 +101,7 @@ def test_the_budget_leaves_the_taxes_and_the_interest_aside(tmp_path):
         "1,0 млн ₽; 2.3 «Коммерческие расходы» — 100 000 ₽; 2.4 «Административно-"
         "хозяйственные расходы» — 40 000 ₽.")
     assert lines[1].startswith("Справочно: налоги («Налоги», 2.4.5) — 120 000 ₽ и проценты по "
-                               "кредиту («Проценты по кредитам», 3.1.4) — 90 000 ₽ в бюджет "
+                               "кредиту («Выплаты %% по кредитам и займам», 3.1.4) — 90 000 ₽ в бюджет "
                                "не входят.")
     assert lines[2] == ("Из бюджета уже оплачено по финмодели (ФАКТ) 750 000 ₽, осталось "
                         "оплатить (ПЛАН) 690 000 ₽; вместе — 1,4 млн ₽.")
