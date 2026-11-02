@@ -720,8 +720,8 @@ def _days_words(rows: list[dict[str, Any]]) -> str:
 
 
 def registration_check(read: dict[str, Any] | None, contracts: list[dict[str, Any]],
-                       month: str | None = None, upto: str | None = None
-                       ) -> dict[str, Any] | None:
+                       month: str | None = None, upto: str | None = None,
+                       uploaded: str | None = None) -> dict[str, Any] | None:
     """Подписано в месяце (выгрузка договоров) рядом с «зарегистрировано в
     месяце» (последний отчёт отдела продаж за месяц) и объяснение разницы.
 
@@ -729,6 +729,7 @@ def registration_check(read: dict[str, Any] | None, contracts: list[dict[str, An
     назвал зарегистрированные ДДУ. ``upto`` — последний день периода сводки:
     если месяц не кончился, берутся договоры и отчёт до этого дня. Одна
     функция для сводки руководству и кабинета; тексты — отсюда же.
+    ``uploaded`` — дата выгрузки договоров: на неё деньги на эскроу.
     Отчётов с блоком нет — ``None``.
     """
     reports = _month_reports(read)
@@ -820,10 +821,55 @@ def registration_check(read: dict[str, Any] | None, contracts: list[dict[str, An
             lines.append(f"Разницу не удаётся объяснить договорами, подписанными в последние "
                          f"дни {_OF_MONTH[(first.month - 2) % 12]} или в конце "
                          f"{_OF_MONTH[first.month - 1]}: числа не сходятся.")
+    if out["match"] == "explained":
+        add, drop = found[0]
+        dropped = {id(row) for row in drop}
+        _paid_lines(out, [row for row in signed if id(row) not in dropped] + list(add),
+                    lines, uploaded)
     lines.append("Даты регистрации в выгрузке договоров нет, поэтому сверка идёт по числу "
                  "договоров, метрам и сумме, а не по самим датам.")
     out["lines"] = lines
     return out
+
+
+def _to_contracts(count: int) -> str:
+    """«по 1 договору», «по 7 договорам»."""
+    return f"{count} " + ("договору" if count % 10 == 1 and count % 100 != 11 else "договорам")
+
+
+def _paid_lines(out: dict[str, Any], rows: list[dict[str, Any]], lines: list[str],
+                uploaded: str | None) -> None:
+    """Сколько по договорам, которые отдел продаж посчитал зарегистрированными,
+    уже пришло на эскроу (владелец, 02.11.2026: «при этом из 400 почти ничего
+    не оплачено?»). Сумма договора и деньги на счёте расходятся на ипотеку,
+    которую банк перечисляет после регистрации, и на рассрочку. Разбивка по
+    вариантам оплаты — тем же правилом, что в отчёте о продажах
+    (`contracting._payment_structure`)."""
+    from market_search import contracting
+
+    if not rows:
+        return
+    amount = sum(float(row.get("amount") or 0.0) for row in rows)
+    paid = sum(float(row.get("escrow_paid") or 0.0) for row in rows)
+    parts = [{"name": item["name"], "count": item["count"], "amount": item["amount"],
+              "escrow": item["escrow"]} for item in contracting._payment_structure(rows)]
+    out["paid"] = {"contracts": len(rows), "amount": amount, "escrow": paid, "by_payment": parts}
+    when = (f" на {uploaded[8:10]}.{uploaded[5:7]}.{uploaded[:4]}, дату выгрузки договоров"
+            if uploaded else " по выгрузке договоров")
+    share = f" ({_ru(paid / amount * 100, 0)}%)" if amount else ""
+    text = (f"Из {_ru(amount / 1e6, 1)} млн ₽ по {_to_contracts(len(rows))} "
+            f"на эскроу{when} поступило {_ru(paid / 1e6, 1)} млн ₽{share}.")
+    waiting = [item for item in parts if item["amount"] - item["escrow"] >= 1.0]
+    if waiting:
+        text += " Не поступило: " + "; ".join(
+            f"{item['name']} — {_ru((item['amount'] - item['escrow']) / 1e6, 1)} млн ₽ "
+            f"по {_to_contracts(item['count'])}" for item in waiting) + "."
+        if any(item["name"] == "ипотека" for item in waiting):
+            text += (" Деньги по ипотеке банк перечисляет на эскроу только после регистрации "
+                     "договора.")
+        if any(item["name"] == "рассрочка" for item in waiting):
+            text += " По рассрочке остаток приходит платежами по графику."
+    lines.append(text)
 
 
 _TO_MONTH = ("январю", "февралю", "марту", "апрелю", "маю", "июню", "июлю", "августу",

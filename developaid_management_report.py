@@ -952,7 +952,8 @@ def sales(sales_project: str, kind: str, end: Any,
         # Подписано в месяце против «зарегистрировано в месяце» из отчёта отдела
         # продаж и объяснение разницы — тот же расчёт, что в кабинете.
         "registered": salesroom.registration_check(part("salesroom"), rows, month_key,
-                                                   bounds["end"].isoformat()),
+                                                   bounds["end"].isoformat(),
+                                                   (sources.get("contracting") or {}).get("at")),
         # Воронка из ежедневных отчётов отдела продаж (чат: бот или выгрузка).
         "funnel": salesroom.funnel(part("salesroom"), bounds["start"].isoformat(),
                                    bounds["end"].isoformat()),

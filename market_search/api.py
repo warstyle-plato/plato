@@ -947,7 +947,9 @@ def install(app: FastAPI) -> MarketDiscoveryService:
                     got["salesroom"]["pipeline"] = dict(pipe, first=first, last=last.isoformat())
             # Подписано в месяце против «зарегистрировано» по отчёту отдела
             # продаж — тот же расчёт и те же слова, что в сводке руководству.
-            checked = salesroom.registration_check(room, contracts.get("rows") or [])
+            checked = salesroom.registration_check(
+                room, contracts.get("rows") or [],
+                uploaded=(sources.get("contracting") or {}).get("at"))
             if checked:
                 got["salesroom"]["registered"] = checked
         # Условия рынка: наша рассрочка и рассрочка соседей по району. Свод

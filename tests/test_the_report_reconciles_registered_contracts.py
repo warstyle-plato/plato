@@ -110,9 +110,36 @@ def test_five_signed_plus_two_from_late_september_make_seven_registered():
                         "30.09, в последние дни сентября: сводка относит их к сентябрю — по дате "
                         "подписания, а отдел продаж — к октябрю — по дате регистрации. С ними "
                         "числа сходятся.")
-    assert "Даты регистрации в выгрузке договоров нет" in lines[3]
+    assert "Даты регистрации в выгрузке договоров нет" in lines[-1]
     # Без месяца — последний месяц, за который отдел назвал зарегистрированные.
     assert salesroom.registration_check(_october_chat(), ROWS)["month"] == "2026-10"
+
+
+def test_the_registered_contracts_say_how_much_reached_escrow():
+    """«При этом из 400 почти ничего не оплачено?» (владелец, 02.11.2026):
+    рядом с зарегистрированными — сколько по ним уже на эскроу и чего ждём."""
+    def paid(row, variant, escrow):
+        return dict(row, payment_variant=variant, escrow_paid=escrow)
+
+    rows = ([SEPTEMBER[0], paid(SEPTEMBER[1], "Ипотека Сбер", 11.2 * M),
+             paid(SEPTEMBER[2], "100%", 57.5 * M)]
+            + [paid(row, "Ипотека", 10.0 * M) for row in OCTOBER[:3]]
+            + [paid(row, "Рассрочка 20% ПВ и далее по 200 000 в месяц", 13.0 * M)
+               for row in OCTOBER[3:]])
+    got = salesroom.registration_check(_october_chat(), rows, "2026-10",
+                                       uploaded="2026-11-02T09:00:00+00:00")
+    assert got["match"] == "explained"
+    assert got["paid"]["contracts"] == 7
+    assert got["paid"]["amount"] == pytest.approx(416.0 * M)
+    assert got["paid"]["escrow"] == pytest.approx(124.7 * M)
+    line = next(text for text in got["lines"] if text.startswith("Из "))
+    assert line.startswith("Из 416,0 млн ₽ по 7 договорам на эскроу на 02.11.2026, дату выгрузки "
+                           "договоров поступило 124,7 млн ₽ (30%). Не поступило: ипотека — "
+                           "186,8 млн ₽ по 4 договорам; рассрочка — 104,5 млн ₽ по 2 договорам.")
+    assert "по ипотеке банк перечисляет на эскроу только после регистрации" in line
+    assert "По рассрочке остаток приходит платежами по графику." in line
+    # Договор сентября раньше двух недель в набор не входит.
+    assert all(item["name"] != "дефект заполнения CRM" for item in got["paid"]["by_payment"])
 
 
 def test_numbers_that_do_not_converge_are_named_so():
