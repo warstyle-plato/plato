@@ -486,3 +486,32 @@ def test_the_underground_contour_leaves_out_the_school_and_garden_plots():
     one = core.site_massing({**x, "underground_contour_use_factor": 0.85}, t)["underground_levels"]
     two = core.site_massing({**x, "underground_contour_use_factor": 0.4}, t)["underground_levels"]
     assert (one, two) == (1, 2)
+
+
+def test_the_footprint_names_what_limits_it():
+    """Владелец 02.11.2026: «при увеличении свободного места пятно не изменяется»;
+    решение — «прямо назвать ограничение». Подпись строки «Пятно застройки» —
+    от той ветки, что выбрал расчёт (`footprint_origin`), с числами этой ветки.
+    На прежней подписи («Процент застройки участка. Свободного места больше…»)
+    нет ни процента, ни свободного места числом, и проверка падает."""
+    fmt = core._fmt_ru
+    # Процент застройки 30 % (обычный) меньше свободного места → ограничивает процент.
+    m = core.site_massing(*_one_hectare(site_driveways_pct=5, site_setback_m=1))
+    assert m["footprint_origin"] == "coverage", m["footprint_origin"]
+    assert m["footprint_estimate_sqm"] > m["footprint_sqm"] + 100
+    basis = m["footprint_basis"]
+    assert basis.startswith("Пятно ограничено процентом застройки: 30%"), basis
+    assert f"{fmt(m['coverage_sqm'])} м²" in basis and f"Свободно под здание — {fmt(m['footprint_estimate_sqm'])} м²" in basis, basis
+    assert "поднимите процент застройки" in basis, basis
+    assert m["footprint_limit_field"] == "site_coverage_max_pct"
+    # Процент 90 % больше свободного места → ограничивает свободное место.
+    m = core.site_massing(*_one_hectare(site_coverage_max_pct=90))
+    assert m["footprint_origin"] == "estimate", m["footprint_origin"]
+    basis = m["footprint_basis"]
+    assert basis.startswith("Пятно ограничено свободным местом"), basis
+    assert f"остаётся {fmt(m['footprint_estimate_sqm'])} м²" in basis and "Процент застройки (90%)" in basis, basis
+    assert "процентом" not in basis and m["footprint_limit_field"] == "", basis
+    # Пятно, заданное вручную, — так и названо.
+    m = core.site_massing(*_one_hectare(building_footprint_sqm=2500))
+    assert m["footprint_origin"] == "manual" and m["footprint_basis"].startswith("Задано вручную")
+    assert m["footprint_limit_field"] == "building_footprint_sqm"

@@ -1466,7 +1466,7 @@ function renderSiteMassing(){
    'Процент застройки — '+num(m.coverage_pct)+'%'+(m.coverage_origin==='manual'?', задан в проекте.':', обычное значение для жилья, если градплан не задаёт другое.'))));
  rows.push(row(objects.length?'Пятно жилых домов':'Пятно застройки',
   sq(m.footprint_sqm)+(site>0?', это '+pct(m.footprint_share)+(objects.length?' жилой территории':' участка'):''),
-  siteMassingOrigin(m.footprint_origin),true));
+  m.footprint_basis||siteMassingOrigin(m.footprint_origin),true));
  // Все пятна на участке — тот же итог, что сумма корпусов на схеме (`built_sqm`).
  if(objects.length)rows.push(row('Всего под зданиями на участке',
   sq(m.built_sqm)+(site>0?', это '+pct(m.built_share)+' участка':''),
@@ -1507,8 +1507,28 @@ function renderSiteMassing(){
  const details=siteMassingPlanDetailsHtml(layout)+(footer?'<p class="site-massing-hint">'+escapeHtml(footer)+'</p>':'')+
   '<div class="scroll"><table class="site-massing-table" id="siteMassingBalance"><tbody>'+rows.join('')+'</tbody></table></div>'+levels+notes+
   '<p class="site-massing-hint">Это оценка по балансу территории, а не проект: формы участка расчёт не знает.</p>';
- body.innerHTML=warn+siteMassingKeyRows(m)+
+ body.innerHTML=warn+siteMassingKeyRows(m)+siteMassingLimitHtml(m)+
   '<details class="site-massing-details" id="siteMassingDetails"'+(was&&was.open?' open':'')+'><summary>Подробнее о разборе участка</summary>'+details+'</details>';
+}
+// Что ограничивает пятно — фраза движка (`footprint_basis`) по той границе,
+// что сработала, и переход к полю допущений, которым её двигают
+// (`footprint_limit_field`). Владелец 02.11.2026: «прямо назвать ограничение».
+function siteMassingLimitHtml(m){
+ const text=String(m.footprint_basis||'');
+ if(!text)return '';
+ const field=String(m.footprint_limit_field||'');
+ // Подпись поля — из объявления полей, как у самого поля в «Допущениях расчёта».
+ let label='';if(field)allFieldGroups().forEach(g=>g[1].forEach(f=>{if(f[0]===field)label=f[1]}));
+ return '<p class="site-massing-hint" id="siteMassingFootprintBasis">'+escapeHtml(text)+
+  (field&&label?' <button type="button" class="site-massing-goto" id="siteMassingLimitField" data-field="'+escapeHtml(field)+'" onclick="siteMassingGoToField(this.dataset.field)">Перейти к полю «'+escapeHtml(label)+'»</button>':'')+'</p>';
+}
+function siteMassingGoToField(field){
+ const box=document.getElementById('siteMassingBox');
+ if(box)box.open=true;
+ const el=document.getElementById('massing_'+field);
+ if(!el)return;
+ el.scrollIntoView({block:'center',behavior:'smooth'});
+ try{el.focus({preventScroll:true})}catch(e){el.focus()}
 }
 // Главные числа посадки — те же значения, что в строках баланса, без пояснений.
 function siteMassingKeyRows(m){

@@ -377,6 +377,14 @@ READ = """()=>{
    key:keyBox&&shown(keyBox)?Array.from(keyBox.querySelectorAll('tr')).map(tr=>tr.innerText):[],
    button:!!btn&&shown(btn), cardText:visibleText(), oneFold:card.querySelectorAll('details.site-massing-details').length,
    footer:String((((m.scheme||{}).axonometry)||{}).footer||'')});
+ // Что ограничивает пятно — видно сразу, и кнопка ведёт к полю допущений.
+ const basis=document.getElementById('siteMassingFootprintBasis');
+ const go=document.getElementById('siteMassingLimitField');
+ fold.limit={shown:!!basis&&shown(basis), text:basis?basis.innerText:'', engine:m.footprint_basis||'',
+   field:m.footprint_limit_field||'', button:!!go&&shown(go)};
+ if(go){document.getElementById('siteMassingBox').open=false; go.click();
+   fold.limit.boxOpen=document.getElementById('siteMassingBox').open;
+   fold.limit.focused=(document.activeElement||{}).id||'';}
  if(det){det.querySelector('summary').click();
    fold.afterClick=Array.from(det.querySelectorAll('li')).filter(shown).map(n=>n.innerText);
    fold.landAfter=shown(document.querySelector('#siteMassingLand'));
@@ -519,3 +527,17 @@ def test_the_page_names_the_land_and_the_footprint_follows_the_assumptions(seen)
     assert after["fp"] > before["fp"] + 100, (before, after)
     assert after["drawn"] > before["drawn"], (before, after)
     assert after["storeys"] < before["storeys"], (before, after)
+
+
+@pytest.mark.parametrize("width", [390, 1280])
+def test_the_footprint_limit_is_named_under_the_key_numbers(seen, width):
+    """Владелец 02.11.2026: «прямо назвать ограничение». Под главными числами —
+    фраза движка (`footprint_basis`) о том, что ограничивает пятно, и переход к
+    полю допущений, которым эту границу двигают."""
+    limit = seen[width]["fold"]["limit"]
+    assert limit["shown"] and limit["engine"], limit
+    assert limit["text"].startswith(limit["engine"]), limit
+    assert limit["engine"].startswith("Пятно ограничено"), limit
+    if limit["field"]:
+        assert limit["button"] and limit["boxOpen"], limit
+        assert limit["focused"] == "massing_" + limit["field"], limit
