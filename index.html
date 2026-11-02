@@ -1,0 +1,383 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Йонг. Маленькая собака большого мира</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Yeseva+One&family=Nunito:ital,wght@0,400;0,600;0,700;0,800;1,400&display=swap">
+<style>
+/* Layout: книга, которая открывается из зимней ночи в тёплый дом — тёмная обложка, затем светлые «страницы» одной колонкой */
+:root{
+  --bg:#F5F6FA; --paper:#FFFFFF; --ink:#1B2240; --muted:#5A6283; --line:#DDE1EC;
+  --apricot:#C9773A; --apricot-soft:#F6E3D2; --night:#121834; --night-ink:#F3F1EC;
+  --display:"Yeseva One", Georgia, "Times New Roman", serif;
+  --body:"Nunito", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --step--1:.875rem; --step0:1.0625rem; --step1:1.3rem; --step2:1.75rem; --step3:2.4rem; --step4:clamp(2.4rem,6vw,4.4rem);
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0E1328; --paper:#161C35; --ink:#ECEEF6; --muted:#A4ABC6; --line:#262E4C;
+  --apricot:#EFA466; --apricot-soft:#3A2A22; --night:#080B1A; --night-ink:#F3F1EC; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0E1328; --paper:#161C35; --ink:#ECEEF6; --muted:#A4ABC6; --line:#262E4C;
+  --apricot:#EFA466; --apricot-soft:#3A2A22; --night:#080B1A; --night-ink:#F3F1EC; color-scheme:dark}
+
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--body);font-size:var(--step0);line-height:1.6}
+.wrap{max-width:1120px;margin:0 auto;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+h1,h2,h3{font-family:var(--display);font-weight:400;line-height:1.15;text-wrap:balance;margin:0}
+h2{font-size:var(--step3)}
+h3{font-size:var(--step1)}
+p{margin:0}
+.eyebrow{font-weight:800;font-size:var(--step--1);letter-spacing:.12em;text-transform:uppercase;color:var(--apricot)}
+.lead{font-size:var(--step1);line-height:1.5;max-width:62ch}
+.muted{color:var(--muted)}
+img,video{max-width:100%;display:block}
+a{color:var(--apricot)}
+:focus-visible{outline:3px solid var(--apricot);outline-offset:3px}
+
+/* Обложка */
+.cover{background:var(--night);color:var(--night-ink)}
+.cover .wrap{padding-block:28px 40px;display:grid;gap:24px}
+.cover-art{position:relative;border-radius:18px;overflow:hidden}
+.cover-art img{width:100%;aspect-ratio:16/9;object-fit:cover}
+.cover-art::after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,rgba(8,11,26,.72) 0%,rgba(8,11,26,0) 42%)}
+.cover-title{position:absolute;left:0;right:0;top:0;z-index:1;padding:clamp(16px,4vw,40px);display:grid;gap:6px}
+.cover-title h1{font-size:var(--step4);color:#FFF6EC;text-shadow:0 2px 18px rgba(0,0,0,.35)}
+.cover-title p{font-size:var(--step1);color:#F2D8BE;font-family:var(--display)}
+.cover-meta{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);gap:28px;align-items:start}
+.cover-meta .lead{color:#E7E5F0}
+.facts{display:grid;grid-template-columns:auto 1fr;gap:6px 16px;font-size:var(--step--1);margin:0}
+.facts dt{color:#A9AFCB;font-weight:700}
+.facts dd{margin:0;color:#F3F1EC}
+
+section{padding-block:56px}
+section+section{border-top:1px solid var(--line)}
+.sec-head{display:grid;gap:10px;margin-bottom:28px}
+
+/* Тизер */
+.teaser{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(0,1fr);gap:28px;align-items:start}
+.teaser video{width:100%;aspect-ratio:16/9;border-radius:14px;background:#000}
+.shotlist{list-style:none;margin:0;padding:0;display:grid;gap:10px;font-size:var(--step--1)}
+.shotlist li{display:grid;grid-template-columns:3.2em 1fr;gap:8px}
+.shotlist b{font-variant-numeric:tabular-nums;color:var(--apricot)}
+
+/* Арка */
+.arc{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px;counter-reset:ep}
+.arc li{list-style:none;display:grid;gap:8px;align-content:start}
+.arc .dot{height:6px;border-radius:3px;background:var(--apricot);opacity:.35}
+.arc li:nth-child(2) .dot{opacity:.45}.arc li:nth-child(3) .dot{opacity:.55}.arc li:nth-child(4) .dot{opacity:.7}.arc li:nth-child(5) .dot{opacity:.85}.arc li:nth-child(6) .dot{opacity:1}
+.arc small{font-weight:800;color:var(--muted);font-size:var(--step--1)}
+.arc p{font-size:var(--step--1)}
+.arc ul{padding:0;margin:0}
+
+/* Герои */
+.cast{display:grid;gap:44px}
+.hero-row{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr);gap:28px;align-items:center}
+.hero-row img{width:100%;border-radius:14px;border:1px solid var(--line);background:#FBF7F0}
+.hero-row .txt{display:grid;gap:12px;min-width:0}
+.hero-row h3{font-size:var(--step2)}
+.tags{font-size:var(--step--1);color:var(--muted);font-weight:700}
+.quote{font-family:var(--display);font-size:var(--step1);line-height:1.35;border-left:3px solid var(--apricot);padding-left:14px}
+.note{font-size:var(--step--1);color:var(--muted)}
+.note b{color:var(--ink)}
+
+/* Стиль */
+.rules{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px 32px;margin-top:8px}
+.rules div{display:grid;gap:4px}
+.rules h3{font-family:var(--body);font-weight:800;font-size:var(--step0)}
+.rules p{font-size:var(--step--1);color:var(--muted)}
+.wide{border-radius:14px;width:100%;margin-top:28px}
+.pair{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin-top:16px}
+.pair figure{margin:0;display:grid;gap:6px}
+.pair img{border-radius:12px;width:100%}
+figcaption{font-size:var(--step--1);color:var(--muted)}
+.swatches{display:flex;flex-wrap:wrap;gap:10px;margin-top:20px}
+.sw{display:flex;align-items:center;gap:8px;font-size:var(--step--1);font-weight:700}
+.sw i{width:28px;height:28px;border-radius:50%;border:1px solid var(--line);display:block}
+
+/* Серии */
+.eps{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+.ep{display:grid;grid-template-columns:96px minmax(0,1fr);gap:14px;background:var(--paper);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+.ep img{width:96px;height:100%;object-fit:cover}
+.ep .t{padding:14px 14px 14px 0;display:grid;gap:6px;align-content:start}
+.ep small{font-weight:800;color:var(--apricot);font-size:var(--step--1)}
+.ep h3{font-size:1.15rem}
+.ep p{font-size:var(--step--1)}
+.ep .loc{color:var(--muted)}
+
+/* Кадры */
+.frames{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.frames figure{margin:0;display:grid;gap:4px}
+.frames img{border-radius:10px;width:100%;aspect-ratio:16/9;object-fit:cover}
+
+/* Производство */
+.plan{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+.step{background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:18px;display:grid;gap:8px;align-content:start}
+.state{justify-self:start;font-size:.75rem;font-weight:800;letter-spacing:.06em;text-transform:uppercase;padding:3px 10px;border-radius:99px}
+.done{background:var(--apricot);color:#fff}
+.next{background:var(--apricot-soft);color:var(--ink)}
+.later{border:1px solid var(--line);color:var(--muted)}
+.step ul{margin:0;padding-left:1.1em;font-size:var(--step--1)}
+.step h3{font-family:var(--body);font-weight:800;font-size:var(--step0)}
+.voices{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px}
+.vgroup{background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:18px;display:grid;gap:10px;align-content:start;min-width:0}
+.vgroup h3{font-size:var(--step1)}
+.vline{font-size:var(--step--1);font-style:italic}
+.vrow{display:grid;grid-template-columns:1.6em minmax(0,1fr);gap:4px 8px;align-items:center;font-size:var(--step--1)}
+.vrow b{color:var(--apricot);font-size:var(--step0)}
+.vrow audio{grid-column:1 / -1;width:100%;height:36px}
+@media (max-width:900px){.voices{grid-template-columns:minmax(0,1fr)}}
+footer{padding-block:32px 48px;font-size:var(--step--1);color:var(--muted)}
+
+@media (max-width:900px){
+  .cover-meta,.teaser,.hero-row{grid-template-columns:minmax(0,1fr)}
+  .arc{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .eps,.plan{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .frames{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media (max-width:560px){
+  .arc,.eps,.plan,.rules,.pair{grid-template-columns:minmax(0,1fr)}
+  .cover-art img{aspect-ratio:4/3}
+}
+</style>
+
+<header class="cover">
+  <div class="wrap">
+    <div class="cover-art">
+      <img src="img/poster.jpg" alt="Йонг, Вася, Илюша, Женя и лошади у заснеженного загородного дома">
+      <div class="cover-title">
+        <h1>Йонг</h1>
+        <p>Маленькая собака большого мира</p>
+      </div>
+    </div>
+    <div class="cover-meta">
+      <p class="lead">Тёплый семейный мультсериал о крошечной той-пудельке из Сеула, которая прилетает в Москву, получает новое имя и учится тому, что дом — это не место, а те, рядом с кем можно спокойно закрыть глаза.</p>
+      <dl class="facts">
+        <dt>Формат</dt><dd>6 серий по 10 минут, первый сезон</dd>
+        <dt>Зритель</dt><dd>семьи с детьми 4+, взрослые любители животных</dd>
+        <dt>Вид</dt><dd>3D-анимация уровня современных полнометражных мультфильмов Disney («Зверополис», «Энканто»)</dd>
+        <dt>Тон</dt><dd>уют, мягкий юмор, приключение, немного грусти</dd>
+        <dt>Рассказчик</dt><dd>мягкий ироничный закадровый голос</dd>
+      </dl>
+    </div>
+  </div>
+</header>
+
+<main>
+<section id="teaser"><div class="wrap">
+  <div class="sec-head">
+    <span class="eyebrow">Тизер · серия 1</span>
+    <h2>«Йонг летит домой» за 44 секунды</h2>
+  </div>
+  <div class="teaser">
+    <video controls playsinline preload="metadata" poster="img/s3.jpg" src="teaser.mp4"></video>
+    <ol class="shotlist">
+      <li><b>0:00</b><span>Женя вечером листает объявления и находит маленькую собачку из Кореи.</span></li>
+      <li><b>0:04</b><span>Аэропорт Сеула: переноска, шум, огромный самолёт.</span></li>
+      <li><b>0:09</b><span>Полёт: «Это что… весь мир из ваты?»</span></li>
+      <li><b>0:13</b><span>Москва. Первая встреча: лапка на ладони.</span></li>
+      <li><b>0:18</b><span>Загородный дом в снегу, тёплые окна.</span></li>
+      <li><b>0:22</b><span>Зеркало: «Ты тоже Йонг? Понятно. Двойник».</span></li>
+      <li><b>0:27</b><span>Вася на верхней ступеньке, «как памятник собственной важности».</span></li>
+      <li><b>0:31</b><span>Ночь. «Ладно. Пусть пока остаётся».</span></li>
+      <li><b>0:36</b><span>Название сериала.</span></li>
+    </ol>
+  </div>
+</div></section>
+
+<section id="voices"><div class="wrap">
+  <div class="sec-head">
+    <span class="eyebrow">Голоса · выбор</span>
+    <h2>Послушайте и выберите голоса</h2>
+    <p class="muted">Нажмите ▶ у каждого варианта. Напишите в чат номер, например «Херра 3, рассказчик 2».</p>
+  </div>
+  <div class="voices">
+    <div class="vgroup">
+      <h3>Херра (Йонг) — выбрано</h3>
+      <p class="muted vline">«Это домик? Нет. Не домик. Подозрительно! Драконы не дрожат! Ну… почти не дрожат.»</p>
+      <div class="vrow"><b>1</b><span>Луня — мягкий голос маленькой феи</span><audio controls preload="none" src="audio/h1.mp3"></audio></div>
+      <div class="vrow"><b>✓</b><span><strong>Выбрано:</strong> Луня, выше — звонче</span><audio controls preload="none" src="audio/h2.mp3"></audio></div>
+      <div class="vrow"><b>3</b><span>Луня, совсем малышка — самый щенячий</span><audio controls preload="none" src="audio/h3.mp3"></audio></div>
+      <div class="vrow"><b>4</b><span>Мила, выше — сказочный звонкий</span><audio controls preload="none" src="audio/h4.mp3"></audio></div>
+    </div>
+    <div class="vgroup">
+      <h3>Рассказчик</h3>
+      <p class="muted vline">«Москва была огромной. Но у Йонг уже был плед, игрушка и человек рядом. А это значительно улучшало показатели проекта.»</p>
+      <div class="vrow"><b>1</b><span>Мирон — харизматичный, актёрский</span><audio controls preload="none" src="audio/n1.mp3"></audio></div>
+      <div class="vrow"><b>✓</b><span><strong>Выбрано:</strong> Антон — глубокий, тёплый</span><audio controls preload="none" src="audio/n2.mp3"></audio></div>
+      <div class="vrow"><b>3</b><span>Андрей — низкий, спокойный</span><audio controls preload="none" src="audio/n3.mp3"></audio></div>
+    </div>
+    <div class="vgroup">
+      <h3>Женя — выбрано</h3>
+      <p class="muted vline">«Ты долетела… Умница. Я — Женя. А ты теперь — Йонг.»</p>
+      <div class="vrow"><b>✓</b><span>Алиса — тёплый, естественный</span><audio controls preload="none" src="audio/z1.mp3"></audio></div>
+    </div>
+  </div>
+</div></section>
+
+<section id="season"><div class="wrap">
+  <div class="sec-head">
+    <span class="eyebrow">Сезон</span>
+    <h2>Путь от неизвестности к дому</h2>
+    <p class="lead muted">В начале Йонг боится всего: другого языка, климата, запахов, правил. Каждая серия — отдельное приключение, и в каждой она справляется с одним новым чувством. К Новому году страх сменяется уверенностью: рядом Женя, значит, всё будет хорошо.</p>
+  </div>
+  <ol class="arc">
+    <li><span class="dot"></span><small>Серия 1</small><p>Находит дом и доверие к Жене.</p></li>
+    <li><span class="dot"></span><small>Серия 2</small><p>Встречает непринятие и делает первый шаг к дружбе.</p></li>
+    <li><span class="dot"></span><small>Серия 3</small><p>Учится заботиться о том, кто слабее.</p></li>
+    <li><span class="dot"></span><small>Серия 4</small><p>Открывает мир путешествий и радость нового.</p></li>
+    <li><span class="dot"></span><small>Серия 5</small><p>Преодолевает ревность и учится делить любовь.</p></li>
+    <li><span class="dot"></span><small>Серия 6</small><p>Становится смелее и встречает Новый год в своей семье.</p></li>
+  </ol>
+</div></section>
+
+<section id="cast"><div class="wrap">
+  <div class="sec-head">
+    <span class="eyebrow">Герои</span>
+    <h2>Кто живёт в большом доме</h2>
+    <p class="muted">Листы персонажей — образец для всех следующих кадров: облик, пропорции, ошейники и мимика должны совпадать в каждой сцене.</p>
+  </div>
+  <div class="cast">
+    <article class="hero-row">
+      <img src="img/yong.jpg" alt="Лист персонажа Йонг: четыре ракурса и шесть выражений морды" loading="lazy">
+      <div class="txt">
+        <h3>Йонг</h3>
+        <span class="tags">той-пудель · маленькая · весёлая · преданная</span>
+        <p>Прилетела из Сеула под именем Херра. Женя назвала её Йонг — по-корейски «дракон». Эмоциональная, любопытная, иногда ревнивая, но очень добрая. Мир для неё огромен, поэтому каждое открытие становится приключением.</p>
+        <p class="quote">«Я не слабая. Я просто… компактная».</p>
+        <p class="note"><b>Как играть:</b> хвост живёт своей жизнью и выдаёт все чувства. Уши — главный индикатор страха. Камера чаще на уровне её глаз, чтобы мир казался большим.</p>
+      </div>
+    </article>
+    <article class="hero-row">
+      <img src="img/vasya.jpg" alt="Лист персонажа кота Васи: четыре ракурса и шесть выражений" loading="lazy">
+      <div class="txt">
+        <h3>Вася</h3>
+        <span class="tags">светло-рыжий с белым кот · старожил · с характером · нарисован с настоящего Васи</span>
+        <p>Когда-то его самого нашли на улице, поэтому дом он охраняет даже от тех, кто пришёл с добром. Главный по дивану, тишине и стратегическим подоконникам. Умный, вредный, харизматичный, но не злой.</p>
+        <p class="quote">«Я не вредный. Я системный».</p>
+        <p class="note"><b>Как играть:</b> минимум движений, максимум взгляда. Полуприкрытые глаза — его обычное лицо; распахнутые — значит, его действительно застали врасплох.</p>
+      </div>
+    </article>
+    <article class="hero-row">
+      <img src="img/zhenya.jpg" alt="Лист персонажа Жени: четыре ракурса в полный рост и четыре портрета" loading="lazy">
+      <div class="txt">
+        <h3>Женя</h3>
+        <span class="tags">хозяйка · добрая · спокойная · заботливая</span>
+        <p>Точка опоры для всех животных дома. Любит путешествия и занимается конкуром. Говорит тихо, не торопит, протягивает руку и ждёт. Её спокойствие — главный источник безопасности в сериале.</p>
+        <p class="quote">«Йонг — значит дракон. Но очень маленький. И очень красивый».</p>
+        <p class="note"><b>Как играть:</b> мягкие, неспешные движения; она почти всегда опускается на уровень животных — садится на корточки или на пол.</p>
+      </div>
+    </article>
+    <article class="hero-row">
+      <img src="img/kitten.jpg" alt="Лист персонажа серого котёнка Илюши" loading="lazy">
+      <div class="txt">
+        <h3>Илюша</h3>
+        <span class="tags">серебристый мраморный котёнок · нежный · любопытный · нарисован с настоящего Илюши</span>
+        <p>Брошенный, слабый и больной малыш, которого Женя приносит в серии 3. Рядом с ним Йонг впервые по-настоящему заботится о другом. К концу сезона окрепший Илюша смотрит на Йонг с восхищением.</p>
+        <p class="quote">«Мя?»</p>
+        <p class="note"><b>Как играть:</b> почти без слов. Вся роль — в глазах, позе и том, к кому он прижимается.</p>
+      </div>
+    </article>
+    <article class="hero-row">
+      <img src="img/dobrynya.jpg" alt="Лист персонажа акиты Добрыни" loading="lazy">
+      <div class="txt">
+        <h3>Добрыня</h3>
+        <span class="tags">американская акита · 10 лет · охранник двора · мудрый старший</span>
+        <p>Большой добрый пёс с чёрной, уже чуть поседевшей маской и белым хвостом-бубликом. Ему 10 лет, он старожил двора и появляется со второй серии. Нарисован с настоящего Добрыни. Спокойно объясняет Йонг, почему Вася колючий, что большие животные не обязательно опасные и что смелость — это не отсутствие страха.</p>
+        <p class="quote">«Когда долго живёшь без дома, потом начинаешь его охранять даже от тех, кто пришёл с добром».</p>
+        <p class="note"><b>Как играть:</b> медленный, тяжёлый, тёплый. Говорит короткими фразами и делает паузы.</p>
+      </div>
+    </article>
+    <article class="hero-row">
+      <img src="img/horses.jpg" alt="Лист персонажей лошадей Люси и Корнета" loading="lazy">
+      <div class="txt">
+        <h3>Люся и Корнет</h3>
+        <span class="tags">лошади Жени · конкур · серия 5</span>
+        <p><b>Люся</b> (слева в каждой паре, крупная тёмно-гнедая, звёздочка на лбу) — добрая и мягкая, первой знакомится с Йонг. <b>Корнет</b> (справа, заметно ниже и светлее, белая бабка на задней ноге, коричневые ногавки; нарисован с настоящего Корнета) — невысокий, но статный и немного важный, как спортсмен перед стартом. Сначала Йонг их ревнует, потом принимает.</p>
+        <p class="quote">«Любовь не сено. Если дать одному — у другого не закончится».</p>
+        <p class="note"><b>Как играть:</b> огромные рядом с Йонг; снимать снизу, но с тёплым светом, чтобы они казались величественными, а не страшными.</p>
+      </div>
+    </article>
+  </div>
+</div></section>
+
+<section id="style"><div class="wrap">
+  <div class="sec-head">
+    <span class="eyebrow">Визуальный стиль</span>
+    <h2>Ориентир — современная 3D-анимация Disney</h2>
+    <p class="lead muted">Мы переводим акварельные эскизы в объёмную графику полнометражного уровня, сохраняя их уют: тёплый свет, мягкие формы и выразительные глаза.</p>
+  </div>
+  <div class="rules">
+    <div><h3>Формы говорят о характере</h3><p>Йонг собрана из кругов: голова больше тела, лапки маленькие. Вася — груша с треугольными ушами. Добрыня — квадрат и тяжесть. Женя — мягкие плавные линии.</p></div>
+    <div><h3>Камера на уровне Йонг</h3><p>Большинство кадров снимаем низко, с её высоты. Так обычные чемоданы, лестницы и коты становятся событием, а комедия масштаба работает сама.</p></div>
+    <div><h3>Тёплый дом, холодный мир</h3><p>Внутри дома — янтарный свет ламп. Снаружи — синие сумерки и снег. Когда Йонг страшно, в кадре больше синего; когда спокойно — больше тёплого.</p></div>
+    <div><h3>Шерсть как отдельная роль</h3><p>Кудряшки Йонг, пух Васи и бархат Илюши видны крупно. На них падает контровой свет, по ним читаются движение и настроение.</p></div>
+    <div><h3>Мимика крупно</h3><p>Глаза большие и влажные, брови подвижные, морды умеют улыбаться. Эмоция должна читаться без слов, даже в кадре без звука.</p></div>
+    <div><h3>Цвет серии</h3><p>У каждой серии своя гамма (ниже): золото облаков, сумерки и снег, свет лампы, бирюза моря, сено конюшни, синий с золотом новогодней ночи.</p></div>
+  </div>
+  <img class="wide" src="img/colorscript.jpg" alt="Цветовой сценарий сезона: шесть кадров с Йонг в разных гаммах" loading="lazy">
+  <div class="pair">
+    <figure><img src="img/living.jpg" alt="Гостиная загородного дома вечером" loading="lazy"><figcaption>Главная локация — гостиная: лестница Васи, синий диван, лежанка Йонг, окно в снег.</figcaption></figure>
+    <figure><img src="img/s5.jpg" alt="Загородный дом в снегу вечером" loading="lazy"><figcaption>Дом снаружи: деревянный, двухэтажный, с тёплыми окнами и левадой для лошадей.</figcaption></figure>
+  </div>
+  <div class="swatches" aria-label="Ключевые цвета">
+    <span class="sw"><i style="background:#D99A5B"></i>Йонг, абрикос</span>
+    <span class="sw"><i style="background:#E2A774"></i>Вася, светло-рыжий</span>
+    <span class="sw"><i style="background:#9EA3AD"></i>Илюша, серебро</span>
+    <span class="sw"><i style="background:#26315A"></i>Женя, тёмно-синий</span>
+    <span class="sw"><i style="background:#F2B86B"></i>свет лампы</span>
+    <span class="sw"><i style="background:#6E8FD0"></i>сумерки и снег</span>
+  </div>
+</div></section>
+
+<section id="episodes"><div class="wrap">
+  <div class="sec-head">
+    <span class="eyebrow">Серии</span>
+    <h2>Шесть приключений первого сезона</h2>
+    <p class="muted">Полные сценарии всех серий готовы: по 12 сцен, около 10 минут каждая.</p>
+  </div>
+  <div class="eps">
+    <article class="ep"><img src="img/ep1.jpg" alt="" loading="lazy"><div class="t"><small>Серия 1</small><h3>Йонг летит домой</h3><p>Новое имя, перелёт из Сеула, первая встреча с Женей и с недовольным Васей.</p><p class="loc">Сеул, самолёт, Москва, дом</p></div></article>
+    <article class="ep"><img src="img/ep2.jpg" alt="" loading="lazy"><div class="t"><small>Серия 2</small><h3>Вася против нового жильца</h3><p>Домашняя «холодная война». Йонг случайно помогает Васе, и наступает первое перемирие.</p><p class="loc">Дом, двор, Добрыня</p></div></article>
+    <article class="ep"><img src="img/ep3.jpg" alt="" loading="lazy"><div class="t"><small>Серия 3</small><h3>Серый малыш</h3><p>Женя приносит больного котёнка. Йонг не отходит от лежанки, пока Илюша не поправится.</p><p class="loc">Дом ночью, лампа, лежанка</p></div></article>
+    <article class="ep"><img src="img/ep4.jpg" alt="" loading="lazy"><div class="t"><small>Серия 4</small><h3>Йонг едет на юг</h3><p>Пальмы, набережная, велосипед, яхта и спасательный жилет. Маленький капитан у моря.</p><p class="loc">Ибица, море, закат</p></div></article>
+    <article class="ep"><img src="img/ep5.jpg" alt="" loading="lazy"><div class="t"><small>Серия 5</small><h3>Йонг и лошади</h3><p>Ревность к Люсе и Корнету, переполох на конюшне и открытие: любви не становится меньше.</p><p class="loc">Конюшня, денники, манеж</p></div></article>
+    <article class="ep"><img src="img/ep6.jpg" alt="" loading="lazy"><div class="t"><small>Серия 6</small><h3>Йонг на лыжах и встречает Новый год</h3><p>Рюкзак на груди, шлем и очки, страх сменяется восторгом. Новогодняя ночь в своей семье.</p><p class="loc">Горный курорт, ночь, фейерверк</p></div></article>
+  </div>
+</div></section>
+
+<section id="frames"><div class="wrap">
+  <div class="sec-head">
+    <span class="eyebrow">Кадры серии 1</span>
+    <h2>Ключевые кадры тизера</h2>
+  </div>
+  <div class="frames">
+    <figure><img src="img/s1.jpg" alt="Женя у ноутбука" loading="lazy"><figcaption>Сцена 1. Дом Жени</figcaption></figure>
+    <figure><img src="img/s2.jpg" alt="Йонг в переноске в аэропорту" loading="lazy"><figcaption>Сцена 3. Аэропорт Сеула</figcaption></figure>
+    <figure><img src="img/s3.jpg" alt="Йонг у иллюминатора" loading="lazy"><figcaption>Сцена 4. Взлёт</figcaption></figure>
+    <figure><img src="img/s4.jpg" alt="Первая встреча в аэропорту" loading="lazy"><figcaption>Сцена 6. Москва</figcaption></figure>
+    <figure><img src="img/s5.jpg" alt="Приезд к дому" loading="lazy"><figcaption>Сцена 8. Приезд</figcaption></figure>
+    <figure><img src="img/s6.jpg" alt="Йонг и зеркало" loading="lazy"><figcaption>Сцена 9. Двойник</figcaption></figure>
+    <figure><img src="img/s7.jpg" alt="Вася на лестнице" loading="lazy"><figcaption>Сцена 11. Появление Васи</figcaption></figure>
+    <figure><img src="img/s8.jpg" alt="Ночная гостиная" loading="lazy"><figcaption>Сцена 12. Финал</figcaption></figure>
+  </div>
+</div></section>
+
+<section id="production"><div class="wrap">
+  <div class="sec-head">
+    <span class="eyebrow">Производство</span>
+    <h2>Что сделано и что дальше</h2>
+  </div>
+  <div class="plan">
+    <div class="step"><span class="state done">Готово</span><h3>Сценарии и герои</h3><ul><li>Синопсис, арка и 6 сценариев</li><li>Листы 7 персонажей в 3D</li><li>Цветовой сценарий сезона и главная локация</li><li>Тизер серии 1</li></ul></div>
+    <div class="step"><span class="state next">Следующий шаг</span><h3>Голоса</h3><ul><li>Кастинг: Йонг, Вася, Женя, Добрыня, рассказчик</li><li>Пробная запись сцены 11 (знакомство с Васей)</li></ul></div>
+    <div class="step"><span class="state next">Следующий шаг</span><h3>Аниматик серии 1</h3><ul><li>Раскадровка 12 сцен</li><li>Черновая сборка под голос и музыку, около 10 минут</li></ul></div>
+    <div class="step"><span class="state later">Потом</span><h3>Локации сезона</h3><ul><li>Двор и будка Добрыни, конюшня, южный город, горный курорт</li><li>Листы второстепенных героев: тренер, капитан, инструктор</li></ul></div>
+    <div class="step"><span class="state later">Потом</span><h3>Пилот целиком</h3><ul><li>Анимация серии 1 по аниматику</li><li>Музыкальная тема сериала и звук</li></ul></div>
+    <div class="step"><span class="state later">Потом</span><h3>Питч</h3><ul><li>Презентация для каналов и платформ</li><li>Смета и график сезона</li></ul></div>
+  </div>
+</div></section>
+</main>
+
+<footer><div class="wrap">Проект «Йонг. Маленькая собака большого мира». Изображения и видео созданы генеративными моделями по эскизам автора как образец стиля; это не финальная анимация.</div></footer>
+
+</body></html>
