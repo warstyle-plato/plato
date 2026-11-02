@@ -293,7 +293,7 @@ def test_the_report_names_no_chapters_sheets_or_codes(monkeypatch):
         assert banned not in text, banned
         assert banned not in page, banned
     assert "Лимит банка: 4,10 млрд ₽" in text and "Утверждённый бюджет: 6,50 млрд ₽" in text
-    assert "Эскроу на конец " in text and "Услуги банка и проценты" in page
+    assert "Эскроу на конец " in text and "Комиссии и услуги банка" in page
     notes = {item["label"]: item["note"] for item in report.tiles(built)}
     assert notes["Лимит банка"] == "по смете РСС; резерв 138,0 млн ₽"
     assert notes["Утверждённый бюджет"] == "по финмодели"

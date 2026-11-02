@@ -315,3 +315,26 @@ def test_the_bank_gap_takes_the_chapter_by_the_crosswalk(monkeypatch):
     assert got["need_by_chapter"]["2"]["need"] == pytest.approx(390.0)
     # Без карты прежний расчёт взял бы только раздел 2.2 (350) — и недосчитал 40.
     assert got["need_by_chapter"]["2"]["gap"] == pytest.approx(390.0 - 50.0)
+
+
+def test_the_bank_commission_is_in_the_budget_and_out_of_the_interest(tmp_path):
+    """Комиссия банка (3.1.4.1.3) — в бюджете, в главе 3; проценты — без неё, справкой."""
+    rows = dict(ROWS)
+    rows["3.1.4.1.3"] = ("Комиссии за выдачу заемных средств", 8, 8, 0)
+    cross = CROSSWALK + [("3.1.4.1.3", "Комиссии", "3.5")]
+    book = openpyxl.load_workbook(io.BytesIO(_finmodel(rows)))
+    xw = book["статьи_БДДС"]
+    xw.cell(3 + len(CROSSWALK), 7, cross[-1][0]), xw.cell(3 + len(CROSSWALK), 9, cross[-1][2])
+    out = io.BytesIO()
+    book.save(out)
+    got = _read(tmp_path, out.getvalue())
+    comp = got["budget_composition"]
+    assert got["approved"] == pytest.approx(K_BUDGET + 8 * K)
+    assert [item["code"] for item in comp["sections"]][-1] == "3.1.4.1.3"
+    assert got["chapter_flow"]["3"]["total"] == pytest.approx(100 * K + 8 * K)
+    # Строка комиссии после «2.…» не делает чужую статью «родителем»: 2.4.1 на месте.
+    assert got["chapter_flow"]["2"]["sections"]["2.4"] == pytest.approx(40 * K)
+    assert comp["interest_outside"][0]["total"] == pytest.approx((90 - 8) * K)
+    text = " ".join(dashboard.budget_hint_lines({"budget_composition": comp}, report._rub))
+    assert "без налогов плюс комиссия банка" in text
+    assert "(«Выплаты %% по кредитам и займам», 3.1.4, без комиссии банка) — 82 000 ₽" in text

@@ -755,7 +755,8 @@ def funding(project: str, kind: str, end: Any, sales_project: str = "",
     """Финансирование: лимит банка и дефицит, выборка кредита, проценты, эскроу.
 
     Выборка — платежи РСС из заёмных средств (кредит банк перечисляет сразу
-    подрядчикам); проценты — статья 3.5 РСС «Услуги банка». Лимит, остаток и
+    подрядчикам); комиссии и услуги банка — статья 3.5 РСС «Услуги банка» (это
+    не проценты по кредиту: владелец, 02.11.2026). Лимит, остаток и
     дефицит — тот же расчёт, что в карточке финансирования Монитора. Эскроу и
     план кредита — из отчёта о продажах (лист «КРЕДИТЫ» финмодели).
     """
@@ -2957,7 +2958,7 @@ def _funding_text(report: dict[str, Any]) -> list[str]:
     lines.append(f"Выборка кредита: за {period} "
                  f"{_rub(draws['period'])}, с начала месяца {_rub(draws['month'])}, "
                  f"с начала проекта {_rub(draws['total'])}.")
-    lines.append(f"Услуги банка и проценты: за {period} "
+    lines.append(f"Комиссии и услуги банка: за {period} "
                  f"{_rub(interest['period'])}, с начала месяца {_rub(interest['month'])}, "
                  f"с начала проекта {_rub(interest['total'])}.")
     lines.extend(_escrow_track_lines(block.get("escrow_track") or {}))
@@ -3219,7 +3220,7 @@ def _funding_html(report: dict[str, Any]) -> str:
     out.append(_table(["", f"За {PERIODS[report['kind']]}", "С начала месяца", "С начала проекта"], [
         ["Выборка кредита", _rub(draws["period"]),
          _rub(draws["month"]), _rub(draws["total"])],
-        ["Услуги банка и проценты", _rub(interest["period"]),
+        ["Комиссии и услуги банка", _rub(interest["period"]),
          _rub(interest["month"]), _rub(interest["total"])]]))
     out.append(_escrow_track_html(block.get("escrow_track") or {}))
     escrow = block.get("escrow") or {}

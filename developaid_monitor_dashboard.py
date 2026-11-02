@@ -162,11 +162,26 @@ _FM_SECTION_CHAPTER = {"2.1": "1", "2.2": "2", "2.3": "3"}
 # займам») — вне бюджета, справкой. Код — явный: в имени строки слова
 # «процент» может не быть.
 _FM_INTEREST_CODE = "3.1.4"
+# Комиссия банка за выдачу кредита сидит в финмодели внутри строки процентов
+# (3.1.4), а в смете банка — статьёй 3.5 главы 3. Это не проценты, и в
+# утверждённый бюджет она входит, по карте — в главу 3 (решение владельца,
+# 02.11.2026). Код — явный, имя строки сверяется.
+_FM_COMMISSION_CODE = "3.1.4.1.3"
+
+
+def _fm_in_budget(code: str) -> bool:
+    """Строка листа входит в утверждённый бюджет: расходы «2.…» и комиссия банка."""
+    return code.startswith("2.") or code == _FM_COMMISSION_CODE
 
 
 def _fm_names_interest(name: str) -> bool:
     low = name.lower()
     return "процент" in low or "%" in low
+
+
+def _fm_section(code: str) -> str:
+    """Раздел бюджета строки: «2.2» для «2.2.1.3»; комиссия банка — своей строкой."""
+    return ".".join(code.split(".")[:2]) if code.startswith("2.") else code
 
 
 def _fm_is_tax(code: str) -> bool:
@@ -237,7 +252,9 @@ def _budget_composition(rows: list[dict[str, Any]], money: Any, total_col: int,
     # Раздел — первые два уровня номера листовой строки; строка без своей
     # строки раздела в книге всё равно попадает в раздел, а не теряется.
     names = {meta["code"]: meta["name"] for meta in rows if meta["depth"] == 2}
-    codes = sorted({".".join(meta["code"].split(".")[:2]) for meta in counted},
+    names.update({meta["code"]: meta["name"] for meta in counted
+                  if not meta["code"].startswith("2.")})
+    codes = sorted({_fm_section(meta["code"]) for meta in counted},
                    key=lambda code: [int(part) if part.isdigit() else 0
                                      for part in code.split(".")])
     sections = [{"code": code, "name": names.get(code, ""),
@@ -271,11 +288,15 @@ def budget_hint_lines(funding: dict[str, Any], money: Any) -> list[str]:
         parts = [(f"{item['code']} «{item['name']}»" if item.get("name")
                   else f"раздел {item['code']}") + f" — {money(item['total'])}"
                  for item in comp["sections"]]
+        commission = any(item["code"] == _FM_COMMISSION_CODE for item in comp["sections"])
         out.append("Утверждённый бюджет — сумма строк «ИТОГО» листа «cf_1_new» финмодели без "
-                   f"налогов, {money(comp['total'])}. По разделам: " + "; ".join(parts) + ".")
+                   "налогов" + (" плюс комиссия банка" if commission else "")
+                   + f", {money(comp['total'])}. По разделам: " + "; ".join(parts) + ".")
         aside = [f"налоги («{tax['name']}», {tax['code']}) — {money(tax['total'])}"
                  for tax in comp.get("taxes") or []]
-        aside += [f"проценты по кредиту («{row['name']}», {row['code']}) — {money(row['total'])}"
+        aside += [f"проценты по кредиту («{row['name']}», {row['code']}"
+                  + (", без комиссии банка" if row.get("commission_excluded") else "")
+                  + f") — {money(row['total'])}"
                   for row in comp.get("interest_outside") or []]
         if aside:
             out.append("Справочно: " + " и ".join(aside) + " в бюджет не входят. Налоги — это "
@@ -369,10 +390,17 @@ def _read_finance_model(wb: Any, path: Path) -> dict[str, Any]:
         if code == _FM_INTEREST_CODE and not interest:
             interest.append({"code": code, "name": name,
                              "total": actuals._money(ws.cell(r, total_col).value) * _FM_THOUSANDS})
-        if not code or not code.startswith("2."):
+        if code == _FM_COMMISSION_CODE and interest:
+            # Комиссия уходит в бюджет — из справки о процентах её вычитаем.
+            interest[0]["total"] -= actuals._money(ws.cell(r, total_col).value) * _FM_THOUSANDS
+            interest[0]["commission_excluded"] = True
+        if not code or not _fm_in_budget(code):
             continue
         depth = code.count(".") + 1
-        while stack and stack[-1]["depth"] >= depth:
+        # Родитель — строка, чей код — начало этого кода, а не просто строка
+        # выше и мельче: комиссия банка (3.1.4.1.3) стоит после строк «2.…» и
+        # иначе стала бы «дочерней» у чужой статьи.
+        while stack and not code.startswith(stack[-1]["code"] + "."):
             stack.pop()
         row = {"row": r, "code": code, "depth": depth, "has_children": False,
                "name": str(ws.cell(r, _FM_NAME_COL).value or "").strip()}
@@ -443,7 +471,7 @@ def _read_finance_model(wb: Any, path: Path) -> dict[str, Any]:
         flow["total"] += total
         flow["fact"] += paid
         flow["plan"] += need
-        section_code = ".".join(code.split(".")[:2])
+        section_code = _fm_section(code)
         flow["sections"][section_code] = flow["sections"].get(section_code, 0.0) + total
         for c, month in month_columns:
             key = month.isoformat()
