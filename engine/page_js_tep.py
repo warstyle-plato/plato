@@ -1504,10 +1504,15 @@ function renderSiteMassing(){
  const layout=((m.scheme||{}).layout)||{};
  const footer=String(((m.scheme||{}).axonometry||{}).footer||'');
  const was=document.getElementById('siteMassingDetails');
+ // Метод и границы проверки стоят рядом с выводом (`docs/site_norms_check.md`, п. 3):
+ // когда итога разбора с оговоркой нет (нежилой проект, схемы нет), оговорка
+ // остаётся под главными числами, а не уходит под «Подробнее».
+ const caveat='<p class="site-massing-hint" id="siteMassingCaveat">Это оценка по балансу территории, а не проект: формы участка расчёт не знает.</p>';
+ const caveatShown=!(layout.analysis_brief||[]).length;
  const details=siteMassingPlanDetailsHtml(layout)+(footer?'<p class="site-massing-hint">'+escapeHtml(footer)+'</p>':'')+
   '<div class="scroll"><table class="site-massing-table" id="siteMassingBalance"><tbody>'+rows.join('')+'</tbody></table></div>'+levels+notes+
-  '<p class="site-massing-hint">Это оценка по балансу территории, а не проект: формы участка расчёт не знает.</p>';
- body.innerHTML=warn+siteMassingKeyRows(m)+siteMassingLimitHtml(m)+
+  (caveatShown?'':caveat);
+ body.innerHTML=warn+siteMassingKeyRows(m)+siteMassingLimitHtml(m)+(caveatShown?caveat:'')+
   '<details class="site-massing-details" id="siteMassingDetails"'+(was&&was.open?' open':'')+'><summary>Подробнее о разборе участка</summary>'+details+'</details>';
 }
 // Что ограничивает пятно — фраза движка (`footprint_basis`) по той границе,
