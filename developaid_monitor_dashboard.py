@@ -187,6 +187,97 @@ def _read_finance_baseline(path: Path) -> dict[str, Any]:
         wb.close()
 
 
+def _budget_composition(rows: list[dict[str, Any]], money: Any, total_col: int,
+                        fact_col: int, plan_col: int) -> dict[str, Any]:
+    """Из чего состоит «Утверждённый бюджет» финмодели — по разделам листа.
+
+    Владелец (02.11.2026) не понимал, откуда берётся утверждённый бюджет:
+    плитка показывала только главы сметы по карте «статьи_БДДС», и раздел
+    административных расходов с налогами, разнесённый по главам, был не
+    виден. Бюджет — сумма «ИТОГО» листовых строк «2.…», поэтому разделы
+    второго уровня («2.1», «2.2», …) складываются в него без остатка.
+    Налоги и проценты ищутся по имени строки, а не по номеру: номера
+    разделов у разных книг свои.
+    """
+    leaves = [meta for meta in rows if not meta["has_children"]]
+
+    def sums(code: str) -> dict[str, float]:
+        under = [meta for meta in leaves
+                 if meta["code"] == code or meta["code"].startswith(code + ".")]
+        return {"total": sum(money(m["row"], total_col) for m in under),
+                "fact": sum(money(m["row"], fact_col) for m in under),
+                "plan": sum(money(m["row"], plan_col) for m in under)}
+
+    # Раздел — первые два уровня номера листовой строки; строка без своей
+    # строки раздела в книге всё равно попадает в раздел, а не теряется.
+    names = {meta["code"]: meta["name"] for meta in rows if meta["depth"] == 2}
+    codes = sorted({".".join(meta["code"].split(".")[:2]) for meta in leaves},
+                   key=lambda code: [int(part) if part.isdigit() else 0
+                                     for part in code.split(".")])
+    sections = [{"code": code, "name": names.get(code, ""), **sums(code)} for code in codes]
+    taxes = [{"code": meta["code"], "name": meta["name"], **sums(meta["code"])}
+             for meta in rows if meta["depth"] >= 3 and "налог" in meta["name"].lower()
+             and not any(meta["code"].startswith(other["code"] + ".")
+                         for other in rows if other is not meta and other["depth"] >= 3
+                         and "налог" in other["name"].lower())]
+    interest = [meta["code"] for meta in leaves if "процент" in meta["name"].lower()]
+    total = sum(money(m["row"], total_col) for m in leaves)
+    fact = sum(money(m["row"], fact_col) for m in leaves)
+    plan = sum(money(m["row"], plan_col) for m in leaves)
+    return {"sections": sections, "taxes": taxes, "interest_rows": interest,
+            "total": total, "fact": fact, "plan": plan,
+            # «ИТОГО = ФАКТ + ПЛАН» у финмодели по построению; расхождение
+            # называется, а не прячется.
+            "difference": total - fact - plan}
+
+
+def budget_hint_lines(funding: dict[str, Any], money: Any) -> list[str]:
+    """Подсказка «i» к плитке «Утверждённый бюджет» — состав, сверка, источник.
+
+    Одна для сводки и Монитора; деньги пишет `money`.
+    """
+    comp = funding.get("budget_composition") or {}
+    out: list[str] = []
+    if comp.get("sections"):
+        parts = []
+        taxes = comp.get("taxes") or []
+        for item in comp["sections"]:
+            text = (f"{item['code']} «{item['name']}»" if item.get("name")
+                    else f"раздел {item['code']}") + f" — {money(item['total'])}"
+            inside = [tax for tax in taxes if tax["code"].startswith(item["code"] + ".")]
+            if inside:
+                text += ", из них " + ", ".join(
+                    f"«{tax['name']}» — {money(tax['total'])}" for tax in inside)
+            parts.append(text)
+        out.append("Утверждённый бюджет — сумма строк «ИТОГО» листа «cf_1_new» финмодели, "
+                   f"{money(comp['total'])}. По разделам: " + "; ".join(parts) + ".")
+        if comp.get("interest_rows"):
+            out.append("Проценты по кредиту в эту сумму входят: строки "
+                       + ", ".join(comp["interest_rows"]) + ".")
+        else:
+            out.append("Проценты по кредиту в эту сумму не входят: в разделах финмодели "
+                       "строк с процентами нет.")
+        line = (f"Из бюджета уже оплачено по финмодели (ФАКТ) {money(comp['fact'])}, осталось "
+                f"оплатить (ПЛАН) {money(comp['plan'])}; вместе — {money(comp['fact'] + comp['plan'])}.")
+        if abs(comp.get("difference") or 0.0) > 0.5:
+            line += (f" С бюджетом это расходится на {money(comp['difference'])}: в книге "
+                     "«ИТОГО» не равно «ФАКТ» плюс «ПЛАН».")
+        out.append(line)
+    source = funding.get("baseline_file") or {}
+    day = monitor._day(str(source.get("uploaded_at") or "")[:10]) if source.get("uploaded_at") else None
+    when = day.strftime("%d.%m.%Y") if day else ""
+    if source.get("file_name") and when:
+        out.append(f"Источник: файл «{source['file_name']}», загружен {when}.")
+    elif when:
+        out.append(f"Источник: финансовая база загружена {when}; исходное имя файла при "
+                   "загрузке не передано.")
+    else:
+        out.append("Имя исходного файла и дата загрузки для этой финансовой базы не "
+                   "сохранились: она загружена до того, как их стали записывать. Загрузите "
+                   "книгу заново, и источник появится здесь.")
+    return out
+
+
 def _read_finance_model(wb: Any, path: Path) -> dict[str, Any]:
     """Финмодель как финансовый baseline: лист «cf_1_new» + карта «статьи_БДДС».
 
@@ -329,6 +420,7 @@ def _read_finance_model(wb: Any, path: Path) -> dict[str, Any]:
             "monthly_need": month_need,
         }
     chapters = tuple(c for c in CHAPTERS if c in approved_by_chapter)
+    composition = _budget_composition(rows, money, total_col, fact_col, plan_col)
     reasons = []
     if mixed:
         reasons.append("статьи " + ", ".join(mixed)
@@ -356,6 +448,7 @@ def _read_finance_model(wb: Any, path: Path) -> dict[str, Any]:
         "chapters_reason": "; ".join(reasons),
         "credit_plan": credit_plan,
         "sections": sections,
+        "budget_composition": composition,
     }
 
 
@@ -1340,6 +1433,8 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
         "known": True,
         "source": baseline["source"],
         "limit_reconciliation": reconciliation,
+        "budget_composition": baseline.get("budget_composition"),
+        "baseline_file": monitor.finance_baseline_meta(project),
         "limit_reconciliation_lines": reconciliation_lines(reconciliation, _fmt_money),
         "chapters": list(shown),
         "chapters_label": chapters_label(shown),

@@ -2820,6 +2820,13 @@ def _reconciliation_lines(limit: dict[str, Any]) -> list[str]:
     return dashboard.reconciliation_lines(limit.get("limit_reconciliation") or {}, _rub)
 
 
+def _budget_hint(limit: dict[str, Any]) -> list[str]:
+    """Состав утверждённого бюджета, его сверка и источник — фразы Монитора."""
+    import developaid_monitor_dashboard as dashboard
+
+    return dashboard.budget_hint_lines(limit, _rub)
+
+
 def _gap_note(limit: dict[str, Any]) -> str:
     """Что в сумму дофинансирования не входит — фраза Монитора, как есть."""
     return str(limit.get("additional_financing_note") or "")
@@ -3157,6 +3164,7 @@ def _funding_html(report: dict[str, Any]) -> str:
                          "—" if need["deficit"] is None
                          else (_rub(need["deficit"]) if need["deficit"] > 0 else "хватает")])
             out.append(_table(["Утверждённый бюджет", "Сумма"], rows))
+            out.extend(f"<p class='note'>{esc(line)}</p>" for line in _budget_hint(limit))
         elif need:
             out.append(_table(["Утверждённый бюджет", "Сумма"], [
                 ["Утверждённый бюджет", _rub(need["approved"])],
@@ -3348,6 +3356,8 @@ table.articles tr.over td{background:#fdecea}table.articles tr.left td{backgroun
 .tile .k{font-size:10px;color:#5b6b7d;text-transform:uppercase;letter-spacing:.02em}
 .tile .v{font-size:20px;font-weight:700;margin:2px 0;color:#0f2a4d}.tile.bad .v{color:#b42318}.tile.missing .v{font-size:13px;color:#7b8794;font-weight:600}
 .tile .n{font-size:10px;color:#475569}
+.tile .k .i{display:inline-block;width:12px;height:12px;line-height:12px;border-radius:50%;border:1px solid #5b6b7d;text-align:center;font-size:9px;font-style:italic;text-transform:none;cursor:help}
+@media print{.tile .k .i{display:none}}
 ul.findings{margin:6px 0;padding-left:18px}ul.findings li{margin:5px 0;padding-left:2px}
 ul.findings li.bad::marker{color:#b42318}ul.findings li.missing{color:#5b6b7d}
 ul.findings li b{font-weight:700}ul.findings li.bad b{color:#b42318}
@@ -3706,11 +3716,13 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
     period = PERIODS[report["kind"]]
     out: list[dict[str, str]] = []
 
-    def add(label: str, value: str | None, note: str, tone: str = "") -> None:
+    def add(label: str, value: str | None, note: str, tone: str = "", hint: str = "") -> None:
         if value is None:
             out.append({"label": label, "value": "нет данных", "note": note, "tone": "missing"})
         else:
             out.append({"label": label, "value": value, "note": note, "tone": tone})
+        if hint:
+            out[-1]["hint"] = hint
 
     block = report.get("physical") or {}
     if block.get("state") == "ok":
@@ -3771,9 +3783,17 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
     # Лучше писать из них по 2 главе и по 3 главе столько-то в лимитах РСС. И
     # отдельно резервы такие-то. Выбрано у банка можно писать из них за неделю
     # и за месяц»).
+    # Состав бюджета — по разделам финмодели, а не только главами сметы
+    # (владелец, 02.11.2026: не понимал, откуда 9,6); подробно — в «i».
+    sections = ((limit.get("budget_composition") or {}).get("sections") or []) if need else []
     add("Утверждённый бюджет", _rub(need["approved"]) if need else None,
-        (_by_chapter_words(limit.get("approved_by_chapter")) or "по финмодели") if need
-        else "финансовая книга не загружена")
+        ("по разделам финмодели " + ", ".join(item["code"] for item in sections)
+         + ("; без процентов по кредиту"
+            if not (limit.get("budget_composition") or {}).get("interest_rows") else "")
+         if sections else
+         (_by_chapter_words(limit.get("approved_by_chapter")) or "по финмодели")) if need
+        else "финансовая книга не загружена",
+        hint=" ".join(_budget_hint(limit)) if limit.get("known") else "")
     if limit.get("known"):
         add("Лимит банка", _rub(limit.get("bank_limit")),
             "; ".join(filter(None, [_by_chapter_words(limit.get("limit_by_chapter")) or "по смете РСС",
@@ -3911,7 +3931,10 @@ def tiles_footnote(report: dict[str, Any]) -> str:
 def _tiles_html(items: list[dict[str, str]], footnote: str = "") -> str:
     esc = html.escape
     return ("<div class='tiles'>" + "".join(
-        f"<div class='tile {esc(item['tone'])}'><div class='k'>{esc(item['label'])}</div>"
+        f"<div class='tile {esc(item['tone'])}'><div class='k'>{esc(item['label'])}"
+        + (f" <span class='i' tabindex='0' role='note' title='{esc(item['hint'], quote=True)}' "
+           f"aria-label='{esc(item['hint'], quote=True)}'>i</span>" if item.get("hint") else "")
+        + "</div>"
         f"<div class='v'>{esc(item['value'])}</div><div class='n'>{esc(item['note'])}</div></div>"
         for item in items) + "</div>"
         + (f"<p class='note tiles-note'>{esc(footnote)}</p>" if footnote else ""))

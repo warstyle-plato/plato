@@ -294,13 +294,17 @@ class MonitorStageCloseRequest(BaseModel):
     key: str = ""
 
 
+class MonitorFinanceBaselineRequest(MonitorScheduleFactRequest):
+    file_name: str = ""
+
+
 @app.post("/monitor/finance-baseline", include_in_schema=False)
-def monitor_replace_finance(req: MonitorScheduleFactRequest) -> dict[str, Any]:
+def monitor_replace_finance(req: MonitorFinanceBaselineRequest) -> dict[str, Any]:
     """Заменить финкнигу утверждённым пересчётом; прежняя уходит в историю."""
     _require_team_access(req.session, req.key, "Монитор проекта")
     try:
         return developaid_monitor.replace_finance_baseline(
-            req.project, base64.b64decode(req.content_base64), req.taken_at)
+            req.project, base64.b64decode(req.content_base64), req.taken_at, req.file_name)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
 
