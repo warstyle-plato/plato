@@ -1380,10 +1380,23 @@ def internal_monitor_sales_chat(req: SalesChatRequest) -> dict[str, Any]:
     day = str(req.taken_at or "")[:10]
     updated = salesroom.append_message(current, day, str(req.author or ""), req.text,
                                        str(req.title or ""))
+    # Вопросы Платона в чат (владелец, 02.11.2026: «пусть пишет в чат, но
+    # коротко и извиняюсь»): только на новый отчёт — повтор доставки Telegram
+    # вопросов не повторяет, — и каждый вопрос один раз.
+    ask = ""
+    if len(updated.get("messages") or []) > len((current or {}).get("messages") or []) and day:
+        from market_search import sales_questions
+
+        contracting = (kept.get("sources") or {}).get("contracting") or {}
+        found = sales_questions.questions(updated, contracting.get("data"),
+                                          contracting.get("at"), day)
+        ask = sales_questions.message(found)
+        if ask:
+            updated = sales_questions.mark_asked(updated, found, day)
     sales_store.save(where, sales_project, {"salesroom": updated},
                      f"чат «{req.title or ''}» — бот")
     return {"bound": project, "sales_project": sales_project,
-            "messages": len(updated.get("messages") or [])}
+            "messages": len(updated.get("messages") or []), "ask": ask}
 
 
 class SiteChatsRequest(BaseModel):
