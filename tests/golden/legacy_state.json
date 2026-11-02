@@ -545,6 +545,7 @@
   "summary.construction_cost_per_gns_th": 160.0193,
   "summary.construction_cost_per_saleable_th": 262.338,
   "summary.construction_volume_sqm": 234345.7099,
+  "summary.discount_rate_pct": 20.0,
   "summary.ebitda": 12457611871.2713,
   "summary.ebitda_per_saleable_th": 112.0026,
   "summary.ending_pf": 0.0,
