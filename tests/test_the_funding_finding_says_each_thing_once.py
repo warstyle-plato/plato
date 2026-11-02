@@ -30,7 +30,7 @@ def test_the_finmodel_deficit_is_said_once_with_its_chapters(monkeypatch):
     assert text.count("2,39 млрд ₽") == 1, text
     assert "не хватает на достройку" not in text
     assert text.startswith("По финмодели не хватает 2,39 млрд ₽ с января 2027 (на стройку "
-                           "1,93 млрд ₽, на коммерцию 465,0 млн ₽)")
+                           "по главе 2 — 1,93 млрд ₽, на коммерцию по главе 3 — 465,0 млн ₽)")
 
 
 def _built(monkeypatch):

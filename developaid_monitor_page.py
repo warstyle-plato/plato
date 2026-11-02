@@ -224,6 +224,17 @@ function unspentTable(u,structural){
  return html;
 }
 
+// Из чего сложено дофинансирование: главы сметы из того же водопада, что и
+// итог, и что в сумму не входит (участок, проценты) — полной фразой.
+function gapByChapter(f,row){
+ const parts=(f.additional_financing_by_chapter||[]).filter(r=>Number(r.amount)>0);
+ if(!parts.length)return '';
+ return `<div class="muted" style="margin-top:6px">Постатейно не хватает ${money(f.additional_financing)}, из них:</div>`
+  +parts.map(r=>row(`глава ${esc(r.chapter)}${r.label?` (${esc(r.label)})`:''}`,money(r.amount),
+     r.from?`первый месяц нехватки — ${dt(r.from)}`:'','bad')).join('')
+  +(f.additional_financing_note?`<div class="muted gap-note">${esc(f.additional_financing_note)}</div>`:'');
+}
+
 function fundingStructure(f,hasBook,approved,paid,remainingBudget){
  const money2=v=>(v==null?'—':money(v));
  const row=(name,value,note,cls)=>`<div class="funding-row"><span>${name}${note?` <span class="muted">· ${note}</span>`:''}</span><b class="${cls||''}">${value}</b></div>`;
@@ -251,6 +262,7 @@ function fundingStructure(f,hasBook,approved,paid,remainingBudget){
   +row('Есть: остаток лимитов + резерв',money2(fuel),'оставшийся лимит — это то, что банк готов дать')
   +(mainGap!=null?row('ДЕФИЦИТ',money2(mainGap),
      structural>0&&from?`первый месяц нехватки — ${dt(from)}`:'',mainGap>0?'bad':'good'):'')
+  +gapByChapter(f,row)
   +'</div>';
  // Раскрыто по умолчанию: свёрнутое мелким шрифтом читалось как неважное
  // (владелец, 01.09.2026).

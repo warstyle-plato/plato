@@ -206,9 +206,11 @@ def test_the_need_is_the_model_sections_against_chapters_two_and_three(monkeypat
     assert got["need_basis"] == "model"
     assert got["need_by_chapter"] == {
         "2": {"label": "стройка", "label_acc": "стройку", "need": pytest.approx(350.0),
-              "remaining": pytest.approx(50.0), "gap": pytest.approx(300.0)},
+              "remaining": pytest.approx(50.0), "gap": pytest.approx(300.0),
+              "gap_from": "2026-11-01"},
         "3": {"label": "коммерция", "label_acc": "коммерцию", "need": pytest.approx(80.0),
-              "remaining": pytest.approx(10.0), "gap": pytest.approx(70.0)}}
+              "remaining": pytest.approx(10.0), "gap": pytest.approx(70.0),
+              "gap_from": "2026-11-01"}}
     assert [row["code"] for row in got["articles"]] == ["2", "3"]
     # Лимит глав 2–3 минус оплаченное против остатка водопада — одно число, без «разницы».
     assert got["remaining_check"]["book_gap"] == pytest.approx(0.0)
@@ -257,7 +259,8 @@ def test_the_report_names_the_bank_need_by_chapter_for_the_model(monkeypatch):
     assert "Дефицит на достройку" not in tiles
     tile = tiles["Потребность в допфинансировании банка"]
     assert tile["value"] == "2,39 млрд ₽"
-    assert tile["note"] == "с ноября 2026; по главам — в разделе «Финансирование»"
+    assert tile["note"] == ("с ноября 2026; участок и проценты по кредиту сюда не входят, "
+                            "разбивка по главам — в разделе «Финансирование»")
     text = report.render_text(built)
     assert ("на стройку и коммерцию по финмодели нужно 3,67 млрд ₽ при остатке лимита глав 2–3 "
             "1,28 млрд ₽ — потребность в допфинансировании банка 2,39 млрд ₽: на стройку") in text

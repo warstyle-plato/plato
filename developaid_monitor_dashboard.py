@@ -677,6 +677,7 @@ def _article_waterfall(
     article_unfunded: dict[str, float] = {}
     article_own_take: dict[str, float] = {}
     article_need: dict[str, float] = {}
+    first_unfunded: dict[str, datetime.date] = {}
     for month in months:
         month_key = month.isoformat()
         month_need_total = 0.0
@@ -719,6 +720,8 @@ def _article_waterfall(
             covered = shortage * covered_share
             article_reserve_take[code] = article_reserve_take.get(code, 0.0) + covered
             article_unfunded[code] = article_unfunded.get(code, 0.0) + (shortage - covered)
+            if shortage - covered > 0 and code not in first_unfunded:
+                first_unfunded[code] = month
 
         if reserve_exhaustion is None and month_shortfall > 0 and cumulative_reserve_need > reserve:
             reserve_exhaustion = _interpolated_crossing(
@@ -758,6 +761,7 @@ def _article_waterfall(
             "first_reserve_month": monitor._iso(first_shortfall.get(code)),
             "reserve_take": article_reserve_take.get(code, 0.0),
             "unfunded_take": article_unfunded.get(code, 0.0),
+            "first_unfunded_month": monitor._iso(first_unfunded.get(code)),
             "reserve_left_after_first": reserve_left_after_first,
         })
 
@@ -778,12 +782,61 @@ def _article_waterfall(
         "reserve_balance": reserve_balance,
         "reserve_need": cumulative_reserve_need,
         "additional_financing": cumulative_unfunded,
+        "additional_financing_by_chapter": _gap_by_chapter(article_rows),
+        "additional_financing_note": _gap_scope_note(article_rows),
         "monthly_need": monthly_need,
         "monthly_reserve_draw": monthly_reserve_draw,
         "monthly_unfunded": monthly_unfunded,
         "monthly_reserve_balance": monthly_reserve_balance,
         "articles": article_rows,
     }
+
+
+# Чем является глава сметы для посетителя: «глава 2 (стройка)».
+_CHAPTER_WORDS = {"1": ("участок", "участок"),
+                  **{ch: (word, acc) for ch, word, acc in _FM_SECTIONS.values()}}
+
+
+def _gap_by_chapter(article_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Дофинансирование по главам — из тех же строк водопада, что и итог.
+
+    Владелец (02.11.2026) о «нужно дофинансировать»: «А почему только? Это без
+    учёта 3 главы?» — итог без разбивки не говорил, из чего он сложен. Сумма
+    по главам равна итогу по построению: это те же непокрытые доли статей.
+    Месяц у главы — первый месяц, когда непокрытая часть появилась у любой
+    её статьи.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    for row in article_rows:
+        amount = float(row.get("unfunded_take") or 0.0)
+        if amount <= 0:
+            continue
+        chapter = str(row.get("chapter") or str(row.get("code") or "").split(".")[0])
+        item = out.setdefault(chapter, {"chapter": chapter,
+                                        "label": _CHAPTER_WORDS.get(chapter, ("", ""))[0],
+                                        "label_acc": _CHAPTER_WORDS.get(chapter, ("", ""))[1],
+                                        "amount": 0.0, "from": None})
+        item["amount"] += amount
+        month = row.get("first_unfunded_month")
+        if month and (item["from"] is None or month < item["from"]):
+            item["from"] = month
+    return [out[ch] for ch in sorted(out)]
+
+
+def _gap_scope_note(article_rows: list[dict[str, Any]]) -> str:
+    """Что в сумму дофинансирования не входит — полной фразой.
+
+    Водопад считает только статьи глав сметы, по которым он построен; проценты
+    по кредиту в РСС не входят никогда, а участок (глава 1) — когда его
+    статей в водопаде нет (финмодель: только стройка и коммерция).
+    """
+    chapters = {str(row.get("chapter") or str(row.get("code") or "").split(".")[0])
+                for row in article_rows}
+    if "1" in chapters:
+        return ("В эту сумму не входят проценты по кредиту: здесь посчитаны только "
+                "расходы по главам сметы.")
+    return ("В эту сумму не входят покупка участка (глава 1 сметы) и проценты по "
+            "кредиту: здесь посчитаны только стройка и коммерческие расходы.")
 
 
 def _retention(project: str, horizon: Any) -> dict[str, Any] | None:
@@ -1104,7 +1157,8 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
             "label": sections[row["chapter"]]["label"],
             "label_acc": sections[row["chapter"]].get("label_acc") or sections[row["chapter"]]["label"],
             "need": row["need_total"],
-            "remaining": row["opening_limit"], "gap": row["unfunded_take"]}
+            "remaining": row["opening_limit"], "gap": row["unfunded_take"],
+            "gap_from": row["first_unfunded_month"]}
             for row in waterfall["articles"]} if finmodel else None),
         "bank_remaining": waterfall["opening_bank_remaining"],
         "opening_article_deficit": waterfall["opening_article_deficit"],
@@ -1128,6 +1182,8 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
         "reserve_need": waterfall["reserve_need"],
         "additional_financing": waterfall["additional_financing"],
         "additional_financing_from": waterfall["additional_financing_from"],
+        "additional_financing_by_chapter": waterfall["additional_financing_by_chapter"],
+        "additional_financing_note": waterfall["additional_financing_note"],
         "retention": _retention(project, rnv),
         # Что не будет выбрано до ввода: свободное от договоров считается точно,
         # ГУ раскладываются по статьям оценкой. Считает это отдельный модуль,
@@ -1313,6 +1369,19 @@ def _month_name(value: Any) -> str:
     return f"{names[day.month - 1]} {day.year}"
 
 
+def _gap_by_chapter_sentence(funding: dict[str, Any]) -> str:
+    """«Из них по главе 2 (стройка) — …, первый месяц нехватки — …» и что не входит."""
+    parts = []
+    for row in funding.get("additional_financing_by_chapter") or []:
+        name = f"по главе {row['chapter']}" + (f" ({row['label']})" if row.get("label") else "")
+        since = (f", первый месяц нехватки — {_month_name(row['from'])}"
+                 if row.get("from") else "")
+        parts.append(f"{name} — {_fmt_money(row['amount'])}{since}")
+    text = f" Из них {'; '.join(parts)}." if parts else ""
+    note = funding.get("additional_financing_note")
+    return text + (f" {note}" if note else "")
+
+
 def _summary(view: dict[str, Any], funding: dict[str, Any],
              sales: dict[str, Any]) -> list[str]:
     """Управленческое резюме словами — из тех же чисел, что и графики.
@@ -1393,7 +1462,8 @@ def _summary(view: dict[str, Any], funding: dict[str, Any],
                           f"{_fmt_money(unfunded[first_gap])}")
         out.append("Когда возникает дыра. " + "; ".join(pieces) + ". "
                    f"Всего до конца не хватает {_fmt_money(gap_total)} — это и "
-                   "есть потребность в дофинансировании.")
+                   "есть потребность в дофинансировании."
+                   + _gap_by_chapter_sentence(funding))
         deadline = exhaustion or first_gap
         if deadline:
             out.append(

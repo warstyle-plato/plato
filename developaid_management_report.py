@@ -2037,7 +2037,7 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
                               f"утверждённый бюджет {_rub(need['approved'])} покрыт лимитами и резервом")
             extra = float(limit.get("additional_financing") or 0.0)
             source = "по финмодели" if _model_basis(limit) else "по РСС"
-            parts = _chapter_gap_words(limit) if _model_basis(limit) else ""
+            parts = _chapter_gap_words(limit)
             pieces.append(f"{source} не хватает {_rub(extra)} "
                           f"{_since(limit.get('additional_financing_from'))}"
                           + (f" ({parts})" if parts else "")
@@ -2058,7 +2058,11 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
         # Заглавная — только первая буква: capitalize() ронял регистр всего
         # текста («по рсс», «2026 q3»).
         text = "; ".join(pieces)
-        add("Финансирование", text[:1].upper() + text[1:] + ".",
+        text = text[:1].upper() + text[1:] + "."
+        if limit.get("known") and float(limit.get("additional_financing") or 0) > 0 \
+                and _gap_note(limit):
+            text += " " + _gap_note(limit)
+        add("Финансирование", text,
             f"РСС от {_day(block['rss'])}, расчёт Монитора, план финмодели",
             "bad" if limit.get("known") and float(limit.get("additional_financing") or 0) > 0
             else "")
@@ -2781,11 +2785,37 @@ def _escrow_of(queue: dict[str, Any], queues: list[dict[str, Any]]) -> str:
     return f"эскроу {number.group(1)}-й очереди" if number else f"эскроу очереди «{name}»"
 
 
+def _gap_chapters(limit: dict[str, Any]) -> list[dict[str, Any]]:
+    """Дофинансирование по главам — строки водопада Монитора, не пересчёт.
+
+    Старый снимок Монитора без `additional_financing_by_chapter` читается из
+    `need_by_chapter` (там те же непокрытые доли, без месяца).
+    """
+    rows = limit.get("additional_financing_by_chapter")
+    if rows is None:
+        rows = [{"chapter": ch, "label": row.get("label") or "",
+                 "label_acc": row.get("label_acc") or row.get("label") or "",
+                 "amount": float(row.get("gap") or 0.0), "from": row.get("gap_from")}
+                for ch, row in sorted((limit.get("need_by_chapter") or {}).items())]
+    return [row for row in rows if float(row.get("amount") or 0.0) > 0]
+
+
+def _gap_chapter_name(row: dict[str, Any]) -> str:
+    """«на стройку по главе 2» или «по главе 4», когда у главы нет имени."""
+    acc = row.get("label_acc") or row.get("label")
+    return (f"на {acc} " if acc else "") + f"по главе {row['chapter']}"
+
+
 def _chapter_gap_words(limit: dict[str, Any]) -> str:
-    """«на стройку 1,93 млрд ₽, на коммерцию 465,0 млн ₽» — коротко, для «Главного»."""
-    rows = limit.get("need_by_chapter") or {}
-    return ", ".join(f"на {rows[ch].get('label_acc') or rows[ch]['label']} {_rub(rows[ch]['gap'])}"
-                     for ch in sorted(rows) if float(rows[ch].get("gap") or 0) > 0)
+    """«на стройку по главе 2 — 1,93 млрд ₽ с января 2027, …» — коротко, для «Главного»."""
+    return ", ".join(f"{_gap_chapter_name(row)} — {_rub(row['amount'])}"
+                     + (f" {_since(row['from'])}" if row.get("from") else "")
+                     for row in _gap_chapters(limit))
+
+
+def _gap_note(limit: dict[str, Any]) -> str:
+    """Что в сумму дофинансирования не входит — фраза Монитора, как есть."""
+    return str(limit.get("additional_financing_note") or "")
 
 
 def _chapter_need_words(limit: dict[str, Any]) -> str:
@@ -2861,8 +2891,12 @@ def _funding_text(report: dict[str, Any]) -> list[str]:
         extra = float(limit.get("additional_financing") or 0.0)
         source = "По финмодели" if credit else "По РСС"
         if extra > 0:
+            parts = _chapter_gap_words(limit)
             lines.append(f"{source} не хватает: {_rub(extra)}, "
-                         f"начиная {_since(limit.get('additional_financing_from'))}.")
+                         f"начиная {_since(limit.get('additional_financing_from'))}"
+                         + (f"; по главам: {parts}" if parts else "") + ".")
+            if _gap_note(limit):
+                lines.append(_gap_note(limit))
         elif credit:
             lines.append("По финмодели остатка лимита глав 2–3 хватает до конца стройки.")
         else:
@@ -3086,7 +3120,13 @@ def _funding_html(report: dict[str, Any]) -> str:
             [_reserve_label(limit), _rub(_reserve_value(limit))],
             ["Не хватает по финмодели" if credit else "Не хватает по РСС",
              (f"{_rub(extra)} {_since(limit.get('additional_financing_from'))}"
-              if extra > 0 else "хватает до ввода")]]))
+              if extra > 0 else "хватает до ввода")]]
+            + ([] if credit or extra <= 0 else
+               [[f"в том числе {_gap_chapter_name(row)}",
+                 f"{_rub(row['amount'])} {_since(row.get('from'))}"]
+                for row in _gap_chapters(limit)])))
+        if extra > 0 and _gap_note(limit):
+            out.append(f"<p class='note'>{esc(_gap_note(limit))}</p>")
         need = _approved_need(limit)
         if need and credit:
             rows = [["Утверждённый бюджет", _rub(need["approved"])]]
@@ -3095,7 +3135,9 @@ def _funding_html(report: dict[str, Any]) -> str:
                 acc = row.get("label_acc") or row["label"]
                 rows.append([f"Нужно на {acc} по финмодели", _rub(row["need"])])
                 rows.append([f"Остаток лимита главы {chapter}", _rub(row["remaining"])])
-                rows.append([f"Не хватает на {acc}", _rub(row["gap"])])
+                rows.append([f"Не хватает на {acc}", _rub(row["gap"])
+                             + (f" {_since(row['gap_from'])}"
+                                if row.get("gap_from") and float(row["gap"] or 0) > 0 else "")])
             rows.append(["Потребность в допфинансировании банка",
                          "—" if need["deficit"] is None
                          else (_rub(need["deficit"]) if need["deficit"] > 0 else "хватает")])
@@ -3747,8 +3789,9 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
     if need and need["deficit"] is not None and _model_basis(limit):
         add("Потребность в допфинансировании банка",
             _rub(need["deficit"]) if need["deficit"] > 0 else "нет",
-            (f"{_since(limit.get('additional_financing_from'))}; по главам — в разделе "
-             "«Финансирование»" if need["deficit"] > 0 else "лимита хватает до ввода"),
+            (f"{_since(limit.get('additional_financing_from'))}; участок и проценты по "
+             "кредиту сюда не входят, разбивка по главам — в разделе «Финансирование»"
+             if need["deficit"] > 0 else "лимита хватает до ввода"),
             "bad" if need["deficit"] > 0 else "good")
     elif need and need["deficit"] is not None:
         add("Дефицит на достройку", _rub(need["deficit"]) if need["deficit"] > 0 else "нет",
