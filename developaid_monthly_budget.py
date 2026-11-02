@@ -145,6 +145,24 @@ def _amount(value: Any) -> float | None:
         return None
 
 
+_PF_SHEETS = {"п-ф", "план-факт"}
+
+
+def _month_header(rows: list[list[Any]]) -> tuple[int | None, list[tuple[int, str]]]:
+    """Строка шапки с месяцами и колонки подписей месяцев в ней."""
+    for index, row in enumerate(rows[:20]):
+        found = []
+        for column, cell in enumerate(row):
+            match = _MONTH_HEADER.match(str(cell or ""))
+            if match and match.group(1).lower() in _MONTHS:
+                month = datetime.date(int(match.group(2)),
+                                      _MONTHS[match.group(1).lower()], 1)
+                found.append((column, month.isoformat()))
+        if found:
+            return index, found
+    return None, []
+
+
 def read_budget(data: bytes) -> dict[str, Any]:
     """Разобрать план-факт БДДС: план и факт нужных строк по месяцам.
 
@@ -155,26 +173,23 @@ def read_budget(data: bytes) -> dict[str, Any]:
 
     book = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
     try:
-        rows = [list(row) for row in book.worksheets[0].iter_rows(values_only=True)]
+        sheets = [(sheet.title, [list(row) for row in sheet.iter_rows(values_only=True)])
+                  for sheet in book.worksheets]
     finally:
         book.close()
-    title = next((str(cell) for row in rows[:4] for cell in row if cell), "")
-
-    header = None
-    months: list[tuple[int, str]] = []
-    for index, row in enumerate(rows[:20]):
-        found = []
-        for column, cell in enumerate(row):
-            match = _MONTH_HEADER.match(str(cell or ""))
-            if match and match.group(1).lower() in _MONTHS:
-                month = datetime.date(int(match.group(2)),
-                                      _MONTHS[match.group(1).lower()], 1)
-                found.append((column, month.isoformat()))
-        if found:
-            header, months = index, found
-            break
-    if header is None or header + 1 >= len(rows):
+    # Лист план-факта — по имени «П-Ф», а не первый по порядку: в книге бывает
+    # свод или прежняя версия впереди, и её план читался бы молча. Листа с
+    # таким именем нет — первый лист, где есть шапка с месяцами.
+    named = [item for item in sheets if _norm(item[0]).replace(" ", "") in _PF_SHEETS]
+    candidates = named or [item for item in sheets if _month_header(item[1])[0] is not None]
+    if not candidates:
         raise ValueError("в файле не нашлось шапки с месяцами («Сентябрь 2026»)")
+    sheet_name, rows = candidates[0]
+    title = next((str(cell) for row in rows[:4] for cell in row if cell), "")
+    header, months = _month_header(rows)
+    if header is None or header + 1 >= len(rows):
+        raise ValueError(f"на листе «{sheet_name}» не нашлось шапки с месяцами "
+                         "(«Сентябрь 2026»)")
     sub = rows[header + 1]
     # Блок месяца — от его подписи до подписи следующего; последний кончается
     # на «Итого», иначе план за все месяцы сошёл бы за план последнего.
@@ -258,7 +273,7 @@ def read_budget(data: bytes) -> dict[str, Any]:
             extra[key] = pair
         values["extra"] = extra
         out[month] = values
-    return {"title": title, "months": out,
+    return {"title": title, "sheet": sheet_name, "months": out,
             "articles_missing": [article["label"] for article in ARTICLES
                                  if article["key"] not in article_rows]}
 
@@ -279,15 +294,51 @@ def store_budget(project: str, data: bytes, taken_at: Any,
     # файла: разные периоды одного дня не спорят, а тот же период заменяется,
     # прежний файл уходит в архив `.replaced/`, а не стирается.
     path = monitor._inside(folder, f"{day}_{months[0]}_{months[-1]}.xlsx")
-    replaced = path.exists()
-    if replaced:
-        archive = folder / ".replaced"
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S")
+    archive = folder / ".replaced"
+    # Тот же период — заменяется. И не только в тот же день: дата загрузки —
+    # срез, выбранный на странице, и прежняя версия тех же месяцев с более
+    # поздней датой в имени молча перекрывала бы только что загруженный файл
+    # (владелец, 02.11.2026: «Загрузил вот этот бюджет октября», а план не
+    # сменился). Версии с более ранней датой остаются — для сводок на те дни.
+    same = [other for other in folder.glob(f"*_{months[0]}_{months[-1]}.xlsx")
+            if other.stem[:10] >= day]
+    replaced = bool(same)
+    for other in same:
         archive.mkdir(exist_ok=True)
-        stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S")
-        path.rename(monitor._inside(archive, f"{path.stem}-{stamp}.xlsx"))
+        other.rename(monitor._inside(archive, f"{other.stem}-{stamp}.xlsx"))
     path.write_bytes(data)
-    return {"taken_at": day, "title": parsed["title"], "filename": filename,
-            "months": months, "replaced": replaced}
+    sources = plan_sources(project, [f"{m}-01" for m in months])
+    # Месяцы, план которых сводка возьмёт не из этого файла: их называют,
+    # а не оставляют догадываться, почему план не сменился.
+    overridden = [{"month": month, **source} for month, source in sources.items()
+                  if source["name"] != path.name]
+    return {"taken_at": day, "title": parsed["title"], "sheet": parsed["sheet"],
+            "filename": filename, "months": months, "replaced": replaced,
+            "overridden": overridden}
+
+
+def _file_words(path: Path) -> dict[str, str]:
+    parts = path.stem.split("_")
+    period = (f"{parts[1]}–{parts[2]}" if len(parts) == 3 else "")
+    return {"file": path.stem[:10], "period": period, "name": path.name}
+
+
+def plan_sources(project: str, months: list[str], upto: str = "9999-12-31") -> dict[str, Any]:
+    """Из какого загруженного бюджета берётся план каждого месяца.
+
+    Тот же выбор, что у `_plan`: файл с более поздним последним месяцем,
+    при равном — загруженный позже. Ответ загрузки называет его, чтобы новый
+    файл не проигрывал другому молча.
+    """
+    files = _budget_files(project, upto)
+    out = {}
+    for month in months:
+        for path in files:
+            if month in read_budget(path.read_bytes())["months"]:
+                out[month[:7]] = _file_words(path)
+                break
+    return out
 
 
 def _period_end(path: Path) -> str:
@@ -340,7 +391,8 @@ def _plan(project: str, month: str, upto: str) -> dict[str, Any] | None:
         service = values["service"]["plan"]
         construction = (None if with_service is None
                         else with_service - (service or 0.0))
-        return {"file": path.stem[:10], "title": parsed["title"],
+        return {"file": path.stem[:10], "period": _file_words(path)["period"],
+                "title": parsed["title"],
                 "plan": {"construction": construction,
                          "commercial": values["commercial"]["plan"]},
                 "articles": {key: pair["plan"] for key, pair in values["articles"].items()},
@@ -563,6 +615,8 @@ def _trend(project: str, rss: Path, end: datetime.date, months: int = 12) -> lis
         covered = first is not None and start >= first
         fact = month_fact(rss, month, end)["fact"] if covered else {}
         point = {"month": month,
+                 "plan_file": ({"file": plan["file"], "period": plan["period"]}
+                               if plan else None),
                  "plan": {key: (plan or {}).get("plan", {}).get(key)
                           for key in ("construction", "commercial")},
                  "fact": {key: fact.get(key) for key in ("construction", "commercial")}}
