@@ -1398,7 +1398,9 @@ def internal_monitor_sales_chat(req: SalesChatRequest) -> dict[str, Any]:
             try:
                 found = sales_questions.questions(
                     updated, contracting.get("data"), contracting.get("at"), day,
-                    set(sales_questions.load_asked(where, sales_project)))
+                    set(sales_questions.load_asked(where, sales_project)),
+                    snapshot=((kept.get("sources") or {}).get("chessboard") or {}).get("data"),
+                    report_text=req.text)
                 ask = sales_questions.message(found)
                 if ask:
                     # Сначала записать, потом отправить: несработавшая отправка

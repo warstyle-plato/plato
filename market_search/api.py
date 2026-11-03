@@ -23,7 +23,7 @@ from . import bnmap
 from . import bnmap_ui
 from . import salesroom
 from . import cabinet as cabinet_module
-from . import sales_store
+from . import sales_store, chessboard
 from .geocoder import GeocodingError
 from .http import RemoteServiceError
 from .service_v6 import MarketDiscoveryService
@@ -899,10 +899,18 @@ def install(app: FastAPI) -> MarketDiscoveryService:
 
         contracts = part("contracting")
         if not contracts:
-            return {"project": kept.get("project") or "", "sources": [],
+            stock = chessboard.overlay(part("chessboard"), [], datetime.date.today().isoformat())
+            return {"project": kept.get("project") or "",
+                    "sources": [{"kind": kind, "name": sales_store.KINDS.get(kind, kind),
+                                 "at": value.get("at"), "file": value.get("file")}
+                                for kind, value in sources.items()],
+                    "chessboard": stock, "chessboard_html": chessboard.render(stock),
                     "missing": ["контрактация не загружена"], "empty": True}
         got = contracting.summarise(contracts, part("ledger") or {})
         fm, bank, pool = part("fm_plan"), part("bank_plan"), part("pool")
+        got["chessboard"] = chessboard.overlay(part("chessboard"), contracts.get("rows") or [],
+                                               datetime.date.today().isoformat())
+        got["chessboard_html"] = chessboard.render(got["chessboard"])
         got["fm_plan"] = fm
         got["bank_plan"] = bank
         got["pool"] = contracting.pool_progress(got, contracts.get("rows") or [], fm, pool)
@@ -967,7 +975,7 @@ def install(app: FastAPI) -> MarketDiscoveryService:
 
     def contracting_sources_missing(sources: dict[str, Any]) -> list[tuple[str, str]]:
         return [(kind, name) for kind, name in sales_store.KINDS.items()
-                if kind not in sources]
+                if kind not in sources and kind != "chessboard"]
 
     def _parse_sources(data: bytes) -> tuple[dict[str, Any], list[str]]:
         """Что в файле нашлось, то и разобрано.
@@ -983,6 +991,7 @@ def install(app: FastAPI) -> MarketDiscoveryService:
                              ("fm_plan", contracting.read_fm_plan),
                              ("bank_plan", contracting.read_bank_plan),
                              ("pool", contracting.read_pool),
+                             ("chessboard", chessboard.read),
                              ("credit", contracting.read_credit_plan),
                              ("demand", demand_module.read_demand),
                              # Экспорт чата отдела продаж принимается той же
@@ -1027,6 +1036,12 @@ def install(app: FastAPI) -> MarketDiscoveryService:
             raise HTTPException(
                 status_code=422,
                 detail="Ни одного знакомого листа: " + "; ".join(notes)[:600])
+        if "chessboard" in parts:
+            as_of = str(request.query_params.get("as_of") or "").strip()
+            if not chessboard.day(as_of) or len(as_of) != 10:
+                raise HTTPException(422, "Укажите дату шахматки рядом с кнопкой загрузки.")
+            for corpus in parts["chessboard"]["buildings"].values():
+                corpus["as_of"] = as_of
         project = str(request.query_params.get("project") or "").strip()
         if not project:
             project = str(((parts.get("contracting") or {}).get("project")) or "").strip()
@@ -1036,8 +1051,13 @@ def install(app: FastAPI) -> MarketDiscoveryService:
             # «без-имени» и не встретится со своей контрактацией никогда.
             kept = sales_store.projects(_cabinet_dir())
             project = kept[0]["project"] if len(kept) == 1 else ""
-        kept = await run_in_threadpool(
-            sales_store.save, _cabinet_dir(), project, parts, name)
+        if "chessboard" in parts and not project:
+            raise HTTPException(422, "Сначала откройте проект отчёта о продажах для этой шахматки.")
+        try:
+            kept = await run_in_threadpool(
+                sales_store.save, _cabinet_dir(), project, parts, name)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
         got = _sales_view(kept)
         for line in notes:
             got.setdefault("read_notes", []).append(line)

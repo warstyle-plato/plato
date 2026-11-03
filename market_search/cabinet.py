@@ -573,6 +573,7 @@ __DEVELOPAID_CONTOUR__
     <div class="blockhead"><h2 style="margin:0" id="overviewTitle">Кабинет</h2>
       <label class="upload" title="Что в файле нашлось, то и прочитано: выгрузка ЦФ несёт контрактацию, проводки 1С и оба плана, книга финмодели — квартирографию, план продаж и отчёт правлению. Источники ложатся на склад ядра и переживают закрытие вкладки: файлы грузятся по одному и в любом порядке. Форматы .xlsx, .xlsm, .xlsb">Загрузить файл проекта<input type="file" id="cf" accept=".xlsx,.xlsm,.xlsb"></label>
     </div>
+    <label class="muted">Дата шахматки (при её загрузке) <input type="date" id="chessboardDate"></label>
     <div id="overviewBody" class="muted" style="font-size:13px;margin-top:6px">Смотрю, что уже загружено…</div>
     <div id="cfstate" class="muted" style="font-size:12.5px;margin-top:6px"></div>
     <div id="planstate" class="muted" style="font-size:12.5px"></div>
@@ -2633,7 +2634,10 @@ async function loadContracting(file){
     // сервере. Прежде проценты заменялись на подчёркивание «чтобы не мешали», и
     // раскодировать это было уже нечем: русское имя приезжало на экран как
     // «_D0_9F_D1_80_D0_BE…» и в таком виде уходило Платону в вопрос.
-    const r=await fetch('/cabinet/contracting',{method:'POST',body:file,
+    const uploadParams=new URLSearchParams();
+    if(salesData&&salesData.project)uploadParams.set('project',salesData.project);
+    if($('#chessboardDate').value)uploadParams.set('as_of',$('#chessboardDate').value);
+    const r=await fetch('/cabinet/contracting?'+uploadParams.toString(),{method:'POST',body:file,
       headers:{'x-file-name':encodeURIComponent(file.name)}});
     const raw=await r.text();
     let d;
@@ -3937,6 +3941,8 @@ function renderSales(d){
     +'<div class="switch">'+PLAN_BASES.map(b=>
       `<button type="button" data-basis="${b.key}" data-for="planschart"`
       +` class="${b.key===plansBasis?'on':''}">${esc(b.name)}</button>`).join('')+'</div></div>');
+
+  if(d.chessboard_html)html+=salesSection('sb-chess','Шахматка и остаток продаж',d.chessboard_html);
 
   html+=salesSection('sb-esc','Эскроу против погашения ПФ',
     salesEscrowBlock(d), salesNote(d,'escrow'));

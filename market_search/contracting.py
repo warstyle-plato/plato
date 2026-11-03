@@ -306,6 +306,8 @@ def read_contracts(data: bytes) -> dict[str, Any]:
             "contract_type": str(cell("contract_type") or "").strip(),
             "state": str(cell("state") or "").strip(),
             "amount": _number(cell("amount")),
+            "contract_price_per_sqm": (None if cell("price_per_sqm") in (None, "")
+                                        else _number(cell("price_per_sqm"))),
             "units": _number(cell("units")) or 1.0,
             "payment_variant": str(cell("payment_variant") or "").strip(),
             "broker": str(cell("broker_name") or "").strip(),

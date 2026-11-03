@@ -33,6 +33,7 @@ KINDS = {
     "credit": "план финансирования книги",
     "plan": "план продаж и отчёт правлению",
     "salesroom": "чат отдела продаж",
+    "chessboard": "шахматка квартир",
 }
 
 def default_dir() -> Path:
@@ -83,6 +84,10 @@ def save(data_dir: Path, project: str, parts: dict[str, Any], filename: str) -> 
     for kind, payload in parts.items():
         if payload is None:
             continue
+        if kind == "chessboard":
+            from . import chessboard
+            previous = (kept["sources"].get(kind) or {}).get("data")
+            payload = chessboard.merge(previous, payload, filename)
         kept["sources"][kind] = {"at": at, "file": filename, "data": payload}
     place = _path(data_dir, project)
     place.parent.mkdir(parents=True, exist_ok=True)
