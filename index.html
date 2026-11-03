@@ -19,6 +19,7 @@ button.primary{background:var(--accent);border-color:var(--accent);color:#2b1c14
 .info{padding:13px 15px;background:#17243a;border:1px solid #3d5875;border-radius:12px;color:#c2d3ec;margin:12px 0 0;font-size:13px}.info b{color:#fff}.notice{font-size:13px;color:var(--muted)}.notice a{color:var(--accent2)}.status{min-height:22px;color:var(--ok);font-size:13px;margin:5px 0}.status.err{color:var(--danger)}.empty{padding:25px;color:var(--muted);border:1px dashed var(--line);border-radius:13px;text-align:center}
 footer{margin-top:28px;color:var(--muted);font-size:12px;border-top:1px solid var(--line);padding-top:15px}
 @media(max-width:670px){.wrap{width:calc(100% - 24px);padding-top:14px}header{gap:10px}.ctrl-row .timer{width:100%;margin:0}.controls{padding:12px}.note{grid-template-columns:60px minmax(0,1fr);gap:9px;padding:12px}.note-actions{grid-column:2;justify-content:start}.toolbar{gap:7px}.toolbar button,.toolbar label{font-size:13px}.info{font-size:12px}}
+.action-label[for="localVideo"]{display:none!important}
 </style>
 </head>
 <body>
@@ -34,7 +35,7 @@ footer{margin-top:28px;color:var(--muted);font-size:12px;border-top:1px solid va
 <section class="viewer" id="top">
 <div class="video-shell" id="videoShell">
 <video id="video" preload="metadata" playsinline controls poster=""></video>
-<div class="fallback" id="videoError" role="status">Видео не загрузилось через встроенный проигрыватель. <a href="https://d2ol7oe51mr4n9.cloudfront.net/user_3Isn3dbpyFTMqlgOmugTzflEaDS/cf127368-ccf6-46d8-bb1b-838d3aba33c3.mp4" target="_blank" rel="noopener">Открыть MP4</a> или выберите локальный файл ниже.</div>
+<div class="fallback" id="videoError" role="status">Видео пока не загрузилось. Никакой файл выбирать не нужно — можно открыть фильм отдельно. <a href="https://d2ol7oe51mr4n9.cloudfront.net/user_3Isn3dbpyFTMqlgOmugTzflEaDS/cf127368-ccf6-46d8-bb1b-838d3aba33c3.mp4" target="_blank" rel="noopener">Открыть MP4</a></div>
 </div>
 <div class="controls">
 <div class="ctrl-row"><button id="play" type="button">▶ Воспроизвести</button><button id="back" type="button">−5 с</button><button id="forward" type="button">+5 с</button><button id="full" type="button">На весь экран</button><div class="timer"><strong id="current">0:00</strong> <span>/ <span id="total">9:00</span></span></div></div>
@@ -42,7 +43,7 @@ footer{margin-top:28px;color:var(--muted);font-size:12px;border-top:1px solid va
 <div class="ctrl-row"><button id="add" class="primary" type="button">+ Замечание к этому месту · 0:00</button><label class="action-label" for="localVideo">Открыть видео из файлов<input type="file" id="localVideo" accept="video/mp4,video/*"></label></div>
 </div>
 </section>
-<div class="info"><b>Важно:</b> замечания сохраняются автоматически на этом устройстве в данном браузере. Для передачи мне или переноса на другой телефон используйте «Экспорт JSON» или «Скопировать список». Облачная синхронизация в этой версии формы не настроена. Три ранее выполненные видеоправки отмечены как исправленные.</div>
+<div class="info"><b>Важно:</b> замечания сохраняются автоматически на этом устройстве в данном браузере. Видео подгружается автоматически, файл загружать не требуется. Для передачи мне или переноса на другой телефон используйте «Экспорт JSON» или «Скопировать список». Облачная синхронизация в этой версии формы не настроена. Три ранее выполненные видеоправки отмечены как исправленные.</div>
 <section class="form" id="form" hidden>
 <h2 id="formTitle">Новое замечание</h2>
 <div class="row"><label for="timeInput">Таймкод:</label><input id="timeInput" class="tc" type="text" inputmode="text" placeholder="2:48" aria-label="Таймкод в минутах и секундах"><span class="notice">Можно исправить вручную</span></div>
