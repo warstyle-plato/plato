@@ -169,32 +169,32 @@ def test_limit_is_paid_plus_left_and_budget_is_limit_plus_own_money(tmp_path):
     assert own["limit"] == pytest.approx(own["paid"] + own["left"])
     assert own["left_by_chapter"] == {"1": pytest.approx(-30 * K), "2": pytest.approx(490 * K),
                                       "3": pytest.approx(50 * K)}
-    assert own["need"] == pytest.approx(210 * K)
-    assert own["budget"] == pytest.approx(own["limit"] + own["need"])
+    # Каждая глава одинаково: оплачено + осталось оплатить − лимит главы.
+    # 180 = глава 1: 280 + 0 − 250 + глава 2: 410 + 620 − 900 + глава 3: 30 + 70 − 80
     rows = {row["chapter"]: row["amount"] for row in own["rows"]}
-    # Карта «статьи_БДДС» кладёт административные расходы (2.4.1 → 2.6) в главу 2.
-    # Строка главы — бюджет главы минус её лимит, и строки складываются в итог:
-    # 210 = глава 1: 300 − 250 + глава 2: 1 040 − 900 + глава 3: 100 − 80
-    assert rows == {"1": pytest.approx(50 * K), "2": pytest.approx(140 * K),
+    assert rows == {"1": pytest.approx(30 * K), "2": pytest.approx(130 * K),
                     "3": pytest.approx(20 * K)}
+    assert own["need"] == pytest.approx(180 * K) == pytest.approx(sum(rows.values()))
+    # Карта «статьи_БДДС» кладёт административные расходы (2.4.1 → 2.6) в главу 2.
     assert own["rows"][1]["sections"] == {"2.2": pytest.approx(1_000 * K),
                                           "2.4": pytest.approx(40 * K)}
-    assert sum(rows.values()) == pytest.approx(own["need"])
-    # Расхождение «ФАКТ» с реестром — справка, не слагаемое.
-    assert own["dates"] == pytest.approx(30 * K)
+    # Бюджет − лимит (210) отличается от суммы глав на расхождение учёта прошлых
+    # оплат: финмодель записала оплаченным на 30 больше, чем реестр.
+    assert own["accounting"] == pytest.approx(30 * K)
+    assert own["budget"] - own["limit"] - own["accounting"] == pytest.approx(own["need"])
     # Первый месяц — водопад глав: главе 2 не хватает в ноябре.
     assert own["from"] == "2026-11-01"
 
     lines = dashboard.own_money_lines(own, report._rub)
-    assert lines[0].startswith("Утверждённый бюджет без налогов 1,4 млн ₽ минус лимит банка "
-                               "1,2 млн ₽ — нужно своих денег сверх сметы банка 210 000 ₽, "
-                               "первый месяц нехватки — ноябрь 2026.")
-    assert ("глава 2 (стройка) — 140 000 ₽: бюджет главы по финмодели 1,0 млн ₽ минус лимит "
-            "главы 900 000 ₽ (бюджет главы по карте «статьи_БДДС» — разделы 2.2 1,0 млн ₽ + "
-            "2.4 40 000 ₽)") in lines[1]
-    assert lines[2] == ("Справочно: оплаченное по реестру РСС и по «ФАКТ» финмодели расходится "
-                        "на 30 000 ₽ — финмодель считает оплаченным больше. На сумму сверх "
-                        "сметы это не влияет.")
+    assert lines[0].startswith("Нужно своих денег сверх сметы банка 180 000 ₽, первый месяц "
+                               "нехватки — ноябрь 2026: по каждой главе — оплачено по реестру "
+                               "плюс то, что осталось оплатить, минус лимит главы.")
+    assert ("глава 2 (стройка) — 130 000 ₽: оплачено 410 000 ₽ плюс осталось оплатить по "
+            "финмодели 620 000 ₽ минус лимит главы 900 000 ₽") in lines[1]
+    assert lines[2] == ("Справочно, как это связано с утверждённым бюджетом: бюджет без "
+                        "налогов 1,4 млн ₽ минус лимит банка 1,2 млн ₽ — 210 000 ₽; минус "
+                        "30 000 ₽ — на столько по прошлым оплатам финмодель записала больше, "
+                        "чем реестр РСС; итого 180 000 ₽.")
 
 
 def test_a_forged_section_breaks_the_identity(tmp_path):
@@ -239,19 +239,19 @@ def test_the_tiles_add_up_on_the_page(tmp_path, monkeypatch):
         "по главе 3 50 000 ₽")
     need = tiles["Нужно своих денег сверх сметы банка"]
     assert need["value"] == report._rub(own["need"])
-    assert need["note"].startswith("утверждённый бюджет минус лимит банка; первый месяц "
-                                   "нехватки — ноябрь 2026")
+    assert need["note"].startswith("по главам: оплачено плюс осталось оплатить минус лимит; "
+                                   "первый месяц нехватки — ноябрь 2026")
     for gone in ("Потребность в допфинансировании банка", "Осталось по смете после всех оплат",
                  "Можно ещё выбрать у банка"):
         assert gone not in tiles
     found = {item["topic"]: item["text"] for item in built["findings"]}["Финансирование"]
-    assert found.startswith("Нужно своих денег сверх сметы банка 210 000 ₽, первый месяц "
+    assert found.startswith("Нужно своих денег сверх сметы банка 180 000 ₽, первый месяц "
                             "нехватки — ноябрь 2026")
     page = report.render_html(built)
     assert ("<div class='k'>Утверждённый бюджет <span class='i' tabindex='0' role='note' "
             "title='Утверждённый бюджет — сумма") in page
     assert "Нужно своих денег сверх сметы банка</b>" in report._funding_html(built)
-    assert "глава 2 (стройка) — 140 000 ₽: бюджет главы по финмодели" in report.render_text(built)
+    assert "глава 2 (стройка) — 130 000 ₽: оплачено 410 000 ₽ плюс осталось оплатить" in report.render_text(built)
 
 
 # --- Нехватка не прыгает при смене месяца сводки.
@@ -376,8 +376,10 @@ def test_chapter_two_by_the_funding_schedule(tmp_path, monkeypatch):
     assert own["model_over_schedule"] == pytest.approx(130 * K)
     assert own["matches"]
     assert own["need"] == pytest.approx(sum(row["amount"] for row in own["rows"]))
-    assert own["need"] == pytest.approx(own["budget"] - own["limit"] - 130 * K)
+    assert own["need"] == pytest.approx(own["budget"] - own["limit"] - 130 * K
+                                        - own["accounting"])
     text = " ".join(dashboard.own_money_lines(own, report._rub))
-    assert "минус 130 000 ₽, на которые финмодель закладывает больше графика финансирования" in text
-    assert ("глава 2 (стройка) — 10 000 ₽: оплачено по реестру 410 000 ₽ плюс осталось оплатить "
-            "по графику финансирования от 23.09.2026 500 000 ₽ минус лимит главы 900 000 ₽") in text
+    assert ("минус 130 000 ₽ — на столько финмодель по главе из графика финансирования "
+            "закладывает больше графика") in text
+    assert ("глава 2 (стройка) — 10 000 ₽: оплачено 410 000 ₽ плюс осталось оплатить по "
+            "графику финансирования от 23.09.2026 500 000 ₽ минус лимит главы 900 000 ₽") in text

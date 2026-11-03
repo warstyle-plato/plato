@@ -1168,29 +1168,29 @@ def _own_money(comp: dict[str, Any] | None, smeta: dict[str, float],
     for chapter in chapters:
         flow = chapter_flow.get(chapter) or {"total": 0.0, "fact": 0.0, "plan": 0.0,
                                              "monthly": {}, "sections": {}}
-        # Строка главы — бюджет главы минус её лимит: складывается в итог без
-        # поправок и не зависит от дат книги и реестра (решение владельца,
-        # 03.11.2026: «Как у тебя 0,09+2,44+0,16=2,69 дало 2,34»).
+        # Дефицит главы — оплачено по реестру плюс то, что ещё предстоит
+        # оплатить, минус лимит главы; для всех глав одинаково (решение
+        # владельца, 03.11.2026). Предстоящее: по графику финансирования для
+        # его главы, по финмодели — для остальных, за вычетом оплат по реестру
+        # после даты книги (`_plan_still_owed`).
         by_schedule = schedule is not None and schedule["chapter"] == chapter
-        # Глава по графику финансирования: её стоимость — оплачено по реестру
-        # плюс то, что по графику ещё предстоит оплатить.
-        cost = paid[chapter] + float(schedule["owed"]) if by_schedule else flow["total"]
+        monthly = (dict(schedule["monthly"]) if by_schedule else
+                   _plan_still_owed(dict(flow["monthly"]), plan_from,
+                                    (paid_since or {}).get(chapter, 0.0), cut))
+        owed = sum(monthly.values())
+        cost = paid[chapter] + owed
         rows.append({"chapter": chapter, "label": _CHAPTER_WORDS.get(chapter, ("", ""))[0],
                      "sections": dict(sorted(flow["sections"].items())),
                      "budget": cost, "model_budget": flow["total"],
                      "by_schedule": schedule if by_schedule else None,
-                     "limit": float(smeta.get(chapter) or 0.0),
-                     "to_pay": float(schedule["owed"]) if by_schedule else flow["plan"],
-                     "left": left[chapter],
+                     "paid": paid[chapter], "limit": float(smeta.get(chapter) or 0.0),
+                     "to_pay": owed, "left": left[chapter],
                      "amount": cost - float(smeta.get(chapter) or 0.0)})
         dates += flow["fact"] - paid[chapter]
         book += flow["total"] - flow["fact"] - flow["plan"]
         articles[chapter] = {
             "code": chapter, "chapter": chapter, "rss_limit": float(smeta.get(chapter) or 0.0),
-            "paid_at_baseline": paid[chapter],
-            "monthly_need": (dict(schedule["monthly"]) if by_schedule else
-                             _plan_still_owed(dict(flow["monthly"]), plan_from,
-                                              (paid_since or {}).get(chapter, 0.0), cut))}
+            "paid_at_baseline": paid[chapter], "monthly_need": monthly}
     for chapter, flow in sorted(chapter_flow.items()):
         if chapter in chapters:
             continue
@@ -1204,18 +1204,22 @@ def _own_money(comp: dict[str, Any] | None, smeta: dict[str, float],
             "paid_at_baseline": 0.0,
             "monthly_need": _plan_still_owed(dict(flow["monthly"]), plan_from, 0.0, cut)}
     budget = float(comp.get("total") or 0.0)
-    # Сколько финмодель по главам из графика закладывает сверх графика: с ним
-    # «бюджет − лимит» и сумма строк расходятся ровно на это, и это названо.
+    # Чем «утверждённый бюджет − лимит» отличается от суммы глав, — названо:
+    # по главе графика — на сколько финмодель закладывает больше графика; по
+    # главам финмодели — расхождение учёта прошлых оплат финмодели и реестра.
     over = sum(row["model_budget"] - row["budget"] for row in rows
                if row.get("by_schedule"))
-    need = budget - limit - over
+    accounting = sum(row["model_budget"] - row["budget"] for row in rows
+                     if row["chapter"] and not row.get("by_schedule"))
+    need = budget - limit - over - accounting
     waterfall = _article_waterfall(articles, 0.0, cut)
     explained = sum(row["amount"] for row in rows)
     return {
         "budget": budget, "limit": limit, "paid": sum(paid.values()), "borrowed": borrowed,
         "own_paid": sum(paid.values()) - borrowed,
         "left": sum(left.values()), "left_by_chapter": left,
-        "need": need, "model_over_schedule": over, "rows": rows, "dates": dates, "book": book,
+        "need": need, "model_over_schedule": over, "accounting": accounting,
+        "rows": rows, "dates": dates, "book": book,
         "from": waterfall["additional_financing_from"],
         "book_fact": float(comp.get("fact") or 0.0),
         # Из расхождения «ФАКТ» с реестром — оплаты после даты книги; остальное
@@ -1231,54 +1235,53 @@ def own_money_lines(own: dict[str, Any] | None, money: Any) -> list[str]:
     if not own:
         return []
     over = float(own.get("model_over_schedule") or 0.0)
-    out = [(f"Утверждённый бюджет без налогов {money(own['budget'])} минус лимит банка "
-            f"{money(own['limit'])}"
-            + (f" минус {money(over)}, на которые финмодель закладывает больше графика "
-               "финансирования," if abs(over) > 0.5 else "")
-            + f" — нужно своих денег сверх сметы банка {money(own['need'])}")
+    accounting = float(own.get("accounting") or 0.0)
+    out = [f"Нужно своих денег сверх сметы банка {money(own['need'])}"
            + (f", первый месяц нехватки — {_month_name(own['from'])}" if own.get("from") else "")
-           + ". Лимит банка — это смета: в неё банк засчитывает все оплаты, и кредитом, и "
-           f"собственными деньгами. Оплачено с начала проекта {money(own['paid'])} (из них "
-           f"кредитом {money(own['borrowed'])}, своими деньгами {money(own['own_paid'])}), "
-           f"остаток лимита {money(own['left'])}."]
+           + ": по каждой главе — оплачено по реестру плюс то, что осталось оплатить, минус "
+           "лимит главы. Лимит банка — это смета: в неё банк засчитывает все оплаты, и "
+           f"кредитом, и собственными деньгами. Оплачено с начала проекта {money(own['paid'])} "
+           f"(из них кредитом {money(own['borrowed'])}, своими деньгами "
+           f"{money(own['own_paid'])}), остаток лимита {money(own['left'])}."]
     parts = []
     for row in own["rows"]:
         made = " + ".join(f"{code} {money(amount)}" for code, amount in row["sections"].items())
-        if row["chapter"] and row.get("by_schedule"):
-            sch = row["by_schedule"]
-            day = monitor._day(sch["day"])
+        if row["chapter"]:
             name = f"глава {row['chapter']}" + (f" ({row['label']})" if row.get("label") else "")
-            parts.append(f"{name} — {money(row['amount'])}: оплачено по реестру "
-                         f"{money(row['budget'] - row['to_pay'])} плюс осталось оплатить по "
-                         f"графику финансирования от {day.strftime('%d.%m.%Y') if day else sch['day']} "
-                         f"{money(row['to_pay'])} минус лимит главы {money(row['limit'])}; "
-                         f"финмодель по этой главе закладывает {money(row['model_budget'])}")
-        elif row["chapter"]:
-            name = f"глава {row['chapter']}" + (f" ({row['label']})" if row.get("label") else "")
-            parts.append(f"{name} — {money(row['amount'])}: бюджет главы по финмодели "
-                         f"{money(row['budget'])} минус лимит главы {money(row['limit'])}"
-                         + (f" (бюджет главы по карте «статьи_БДДС» — разделы {made})"
-                            if made else ""))
+            sch = row.get("by_schedule")
+            if sch:
+                day = monitor._day(sch["day"])
+                source = ("по графику финансирования от "
+                          + (day.strftime("%d.%m.%Y") if day else sch["day"]))
+            else:
+                source = "по финмодели"
+            parts.append(f"{name} — {money(row['amount'])}: оплачено {money(row['paid'])} плюс "
+                         f"осталось оплатить {source} {money(row['to_pay'])} минус лимит главы "
+                         f"{money(row['limit'])}")
         else:
             parts.append(f"статьи финмодели вне глав сметы ({made}) — {money(row['amount'])}: "
                          "в смете банка их нет, поэтому это свои деньги")
-    out.append("Из чего складывается: " + "; ".join(parts) + ".")
-    # Справка: оплаченное по финмодели и по реестру расходится — это не
-    # слагаемое, а объяснение, почему «осталось оплатить» по книге и остаток
-    # лимита по реестру нельзя вычитать друг из друга напрямую.
-    if abs(own["dates"]) > 0.5:
-        since = float(own.get("paid_since") or 0.0)
-        rest = -own["dates"] - since
-        text = ("Справочно: оплаченное по реестру РСС и по «ФАКТ» финмодели расходится на "
-                f"{money(abs(own['dates']))}"
-                + (" — реестр оплатил больше" if own["dates"] < 0 else
-                   " — финмодель считает оплаченным больше"))
-        if own["dates"] < 0 and since > 0.5:
-            text += (f": {money(since)} — оплаты после даты книги, которые финмодель ещё "
-                     "числит в «ПЛАН»")
-            if abs(rest) > 0.5:
-                text += f", {money(rest)} — разница в учёте прошлых оплат"
-        out.append(text + ". На сумму сверх сметы это не влияет.")
+    out.append("По главам: " + "; ".join(parts) + ".")
+    gap = own["budget"] - own["limit"]
+    # Арифметика словами: бюджет − лимит − (финмодель сверх графика) −
+    # (расхождение учёта) = сумма по главам. Расхождение учёта меньше нуля,
+    # когда реестр оплатил больше, чем записано в финмодели: тогда оно
+    # прибавляется.
+    steps = []
+    if abs(over) > 0.5:
+        steps.append(f"{'минус' if over > 0 else 'плюс'} {money(abs(over))} — на столько "
+                     "финмодель по главе из графика финансирования закладывает "
+                     + ("больше" if over > 0 else "меньше") + " графика")
+    if abs(accounting) > 0.5:
+        steps.append(f"{'плюс' if accounting < 0 else 'минус'} {money(abs(accounting))} — "
+                     "на столько по прошлым оплатам "
+                     + ("реестр РСС оплатил больше, чем записано в финмодели"
+                        if accounting < 0 else "финмодель записала больше, чем реестр РСС"))
+    if steps:
+        out.append(f"Справочно, как это связано с утверждённым бюджетом: бюджет без налогов "
+                   f"{money(own['budget'])} минус лимит банка {money(own['limit'])} — "
+                   f"{money(gap)}; " + "; ".join(steps)
+                   + f"; итого {money(own['need'])}.")
     if abs(own["book"]) > 0.5:
         out.append(f"В книге «ИТОГО» не равно «ФАКТ» плюс «ПЛАН» на {money(own['book'])}.")
     return out

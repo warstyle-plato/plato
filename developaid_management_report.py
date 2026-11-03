@@ -3865,9 +3865,9 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
             + ", ".join(f"по главе {ch} {_rub(left[ch])}" for ch in sorted(left)),
             "bad" if own["left"] < 0 else "")
         add("Нужно своих денег сверх сметы банка", _rub(own["need"]) if own["need"] > 0 else "нет",
-            ("утверждённый бюджет минус лимит банка"
-             if abs(float(own.get("model_over_schedule") or 0.0)) <= 0.5 else
-             "бюджет минус лимит банка; глава 2 — по графику финансирования, а не по финмодели")
+            ("по главам: оплачено плюс осталось оплатить минус лимит"
+             + ("; глава 2 — по графику финансирования"
+                if (limit.get("schedule_need") or {}).get("chapter") else ""))
             + (f"; первый месяц нехватки — {_month_word(own['from'])}" if own.get("from") else "")
             + "; из чего складывается — в разделе «Финансирование»",
             "bad" if own["need"] > 0 else "good")
