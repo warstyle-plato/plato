@@ -1226,6 +1226,7 @@ def _own_money(comp: dict[str, Any] | None, smeta: dict[str, float],
         "own_paid": sum(paid.values()) - borrowed,
         "left": sum(left.values()), "left_by_chapter": left,
         "need": need, "model_over_schedule": over, "accounting": accounting,
+        "admin": _admin_expenses(comp, chapter_flow),
         "rows": rows, "dates": dates, "book": book,
         "from": waterfall["additional_financing_from"],
         "book_fact": float(comp.get("fact") or 0.0),
@@ -1235,6 +1236,33 @@ def _own_money(comp: dict[str, Any] | None, smeta: dict[str, float],
         "plan_from": plan_from.isoformat() if plan_from else None,
         "matches": abs(explained - need) <= 1e-6 * max(1.0, budget),
     }
+
+
+# Раздел финмодели «Административно-хозяйственные расходы»: своей статьи в
+# смете банка у него нет.
+_FM_ADMIN_SECTION = "2.4"
+
+
+def _admin_expenses(comp: dict[str, Any], chapter_flow: dict[str, dict[str, Any]]
+                    ) -> dict[str, Any] | None:
+    """Административные расходы — отдельной строкой «не хватит».
+
+    Владелец (03.11.2026): «Ахр видимо сядут и в 2 и в 3. Может это отдельно
+    помечать, что не хватит», «надо отдельно указать и пояснить, что часть из
+    2 или 3 главы». Своей статьи в смете банка у них нет: по карте
+    «статьи_БДДС» их платят из статей других глав (сейчас — 2.6 главы 2), и
+    они отнимают лимит, который банк заложил на эти главы. В дефицит своей
+    главы они уже вошли; здесь они названы, а не прибавлены второй раз.
+    """
+    section = next((item for item in comp.get("sections") or []
+                    if item["code"] == _FM_ADMIN_SECTION), None)
+    if section is None or section["total"] <= 0:
+        return None
+    where = {chapter: flow["sections"][_FM_ADMIN_SECTION]
+             for chapter, flow in sorted(chapter_flow.items())
+             if (flow.get("sections") or {}).get(_FM_ADMIN_SECTION)}
+    return {"name": section.get("name") or "", "total": section["total"],
+            "paid": section["fact"], "to_pay": section["plan"], "chapters": where}
 
 
 def own_money_lines(own: dict[str, Any] | None, money: Any) -> list[str]:
@@ -1269,6 +1297,16 @@ def own_money_lines(own: dict[str, Any] | None, money: Any) -> list[str]:
             parts.append(f"статьи финмодели вне глав сметы ({made}) — {money(row['amount'])}: "
                          "в смете банка их нет, поэтому это свои деньги")
     out.append("По главам: " + "; ".join(parts) + ".")
+    admin = own.get("admin")
+    if admin:
+        where = ", ".join(f"главы {ch}" if ch else "вне глав сметы" for ch in admin["chapters"])
+        out.append(
+            f"Административные расходы без налогов — {money(admin['total'])} (уже оплачено "
+            f"{money(admin['paid'])}, осталось {money(admin['to_pay'])}). Своей статьи в смете "
+            "банка у них нет: по карте финмодели их платят из лимита "
+            + (where or "других глав")
+            + ", который банк заложил на другие расходы, поэтому на них лимита не хватит. "
+            "В дефицит этой главы они уже входят и второй раз не прибавляются.")
     gap = own["budget"] - own["limit"]
     # Арифметика словами: бюджет − лимит − (финмодель сверх графика) −
     # (расхождение учёта) = сумма по главам. Расхождение учёта меньше нуля,
