@@ -194,7 +194,7 @@ def test_limit_is_paid_plus_left_and_budget_is_limit_plus_own_money(tmp_path):
             "2.4 40 000 ₽)") in lines[1]
     assert lines[2] == ("Справочно: оплаченное по реестру РСС и по «ФАКТ» финмодели расходится "
                         "на 30 000 ₽ — финмодель считает оплаченным больше. На сумму сверх "
-                        "сметы это не влияет: она — бюджет минус лимит.")
+                        "сметы это не влияет.")
 
 
 def test_a_forged_section_breaks_the_identity(tmp_path):
@@ -341,3 +341,43 @@ def test_the_bank_commission_is_in_the_budget_and_out_of_the_interest(tmp_path):
     text = " ".join(dashboard.budget_hint_lines({"budget_composition": comp}, report._rub))
     assert "без налогов плюс комиссия банка" in text
     assert "(«Выплаты %% по кредитам и займам», 3.1.4, без комиссии банка) — 82 000 ₽" in text
+
+
+
+# --- Глава 2 — по графику финансирования (решение владельца, 03.11.2026).
+
+def test_chapter_two_by_the_funding_schedule(tmp_path, monkeypatch):
+    import funding_schedule_fixture as gf
+    import developaid_funding_schedule as funding_schedule
+
+    path = tmp_path / "2026-09-23.xlsx"
+    path.write_bytes(gf.book())
+    monkeypatch.setattr(funding_schedule, "sources", lambda project, upto="": {
+        "versions": {"2026-09-23": {"path": path, "file": path.name}}, "looked": []})
+    # По реестру с 01.09 по главе 2 оплачено 100 млн.
+    monkeypatch.setattr(dashboard, "_paid_since", lambda rss, est, ch, since: 100 * gf.M)
+    sch = dashboard._schedule_need("demo", Path("rss.xlsx"), {}, datetime.date(2026, 11, 3))
+    planned = sum((row[6] or 0) + (row[7] or 0) for row in gf.ROWS) * gf.M
+    assert sch["day"] == "2026-09-23" and sch["plan_from"] == "2026-09-01"
+    assert sch["owed"] == pytest.approx(planned - 100 * gf.M)
+    assert min(sch["monthly"]) == "2026-11-01"   # прошедшее неоплаченное — на месяц среза
+
+    comp, _ = _own(tmp_path)
+    got = _read(tmp_path, _finmodel())
+    schedule = {"chapter": "2", "day": "2026-09-23", "owed": 500 * K,
+                "monthly": {"2026-11-01": 500 * K}}
+    own = dashboard._own_money(comp, SMETA, PAID, ["1", "2", "3"], datetime.date(2026, 11, 3),
+                               chapter_flow=got["chapter_flow"], schedule=schedule)
+    two = own["rows"][1]
+    # Глава 2: оплачено по реестру 410 + по графику осталось 500 − лимит 900 = 10.
+    assert two["amount"] == pytest.approx(10 * K)
+    assert two["model_budget"] == pytest.approx(1_040 * K)
+    # Финмодель по главе 2 закладывает больше графика на 1 040 − 910 = 130 — и это названо.
+    assert own["model_over_schedule"] == pytest.approx(130 * K)
+    assert own["matches"]
+    assert own["need"] == pytest.approx(sum(row["amount"] for row in own["rows"]))
+    assert own["need"] == pytest.approx(own["budget"] - own["limit"] - 130 * K)
+    text = " ".join(dashboard.own_money_lines(own, report._rub))
+    assert "минус 130 000 ₽, на которые финмодель закладывает больше графика финансирования" in text
+    assert ("глава 2 (стройка) — 10 000 ₽: оплачено по реестру 410 000 ₽ плюс осталось оплатить "
+            "по графику финансирования от 23.09.2026 500 000 ₽ минус лимит главы 900 000 ₽") in text

@@ -3191,7 +3191,10 @@ def _funding_html(report: dict[str, Any]) -> str:
             for chapter in sorted(limit.get("need_by_chapter") or {}):
                 row = limit["need_by_chapter"][chapter]
                 acc = row.get("label_acc") or row["label"]
-                rows.append([f"Нужно на {acc} по финмодели", _rub(row["need"])])
+                by_schedule = (limit.get("schedule_need") or {}).get("chapter") == chapter
+                rows.append([f"Нужно на {acc} по "
+                             + ("графику финансирования" if by_schedule else "финмодели"),
+                             _rub(row["need"])])
                 rows.append([f"Остаток лимита главы {chapter}", _rub(row["remaining"])])
                 rows.append([f"Не хватает на {acc}", _rub(row["gap"])
                              + (f" {_since(row['gap_from'])}"
@@ -3862,7 +3865,9 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
             + ", ".join(f"по главе {ch} {_rub(left[ch])}" for ch in sorted(left)),
             "bad" if own["left"] < 0 else "")
         add("Нужно своих денег сверх сметы банка", _rub(own["need"]) if own["need"] > 0 else "нет",
-            "утверждённый бюджет минус лимит банка"
+            ("утверждённый бюджет минус лимит банка"
+             if abs(float(own.get("model_over_schedule") or 0.0)) <= 0.5 else
+             "бюджет минус лимит банка; глава 2 — по графику финансирования, а не по финмодели")
             + (f"; первый месяц нехватки — {_month_word(own['from'])}" if own.get("from") else "")
             + "; из чего складывается — в разделе «Финансирование»",
             "bad" if own["need"] > 0 else "good")
