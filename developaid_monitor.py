@@ -501,7 +501,7 @@ def _schedule_packages(project: str, data: bytes) -> dict[str, Any] | None:
 
 
 def replace_finance_baseline(project: str, data: bytes,
-                             taken_at: Any) -> dict[str, Any]:
+                             taken_at: Any, file_name: str = "") -> dict[str, Any]:
     """Заменить финансовый baseline утверждённым пересчётом.
 
     Финкнигу пересчитывают решением — например, когда потребность фасадов
@@ -532,7 +532,32 @@ def replace_finance_baseline(project: str, data: bytes,
         stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d%H%M%S")
         (history / f"replaced-{stamp}.xlsx").write_bytes(path.read_bytes())
     path.write_bytes(data)
-    return {"taken_at": day, "replaced": True}
+    # Книга хранится под общим именем, поэтому исходное имя файла и время
+    # загрузки записываются рядом: подсказка плитки «Утверждённый бюджет»
+    # называет источник (владелец, 02.11.2026). Пустое имя — так и пишется:
+    # «нет данных», а не выдуманное.
+    # Браузер на Windows может прислать путь с «\», имя — последняя часть.
+    meta = {"file_name": re.split(r"[\\/]", str(file_name or "").strip())[-1],
+            "uploaded_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "taken_at": day}
+    (folder / FINANCE_META).write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    return {"taken_at": day, "replaced": True, "file_name": meta["file_name"]}
+
+
+# Имя исходного файла финансовой базы и время её загрузки.
+FINANCE_META = "finance_meta.json"
+
+
+def finance_baseline_meta(project: str) -> dict[str, Any]:
+    """Что известно об источнике финансовой базы; нет записи — пустой словарь."""
+    path = _project_dir(project) / "baseline" / FINANCE_META
+    if not path.exists():
+        return {}
+    try:
+        stored = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return stored if isinstance(stored, dict) else {}
 
 
 def store_work_fact(project: str, rows: list[dict[str, Any]],
