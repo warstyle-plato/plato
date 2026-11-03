@@ -1,0 +1,63 @@
+{
+  "id": "22000149210000003919_1",
+  "noticeNumber": "22000149210000003919",
+  "lotNumber": 1,
+  "lotStatus": "PUBLISHED",
+  "biddType": {
+    "code": "178FZ",
+    "name": "Продажа (приватизация) государственного и муниципального имущества"
+  },
+  "biddForm": {
+    "code": "PP",
+    "name": "Публичное предложение"
+  },
+  "lotName": "Здание дома кордона с земельным участком в деревне Милюшино Рыбинского МО",
+  "lotDescription": "Нежилое здание 1980 года постройки общей площадью 86,3 кв.м. с земельным участком общей площадью 1503 кв.м., расположенные по адресу: Ярославская область, Рыбинский р-н, Огарковский сельский округ, деревня Милюшино, ул. Троицкая, д. 93. ",
+  "priceMin": 460599.0,
+  "priceMinExact": "460599.00",
+  "biddEndTime": "2026-09-25T07:00:00.000+00:00",
+  "characteristics": [
+    {
+      "characteristicValue": "86.3",
+      "name": "Общая площадь",
+      "code": "totalAreaRealty",
+      "type": "Decimal"
+    },
+    {
+      "characteristicValue": "1",
+      "name": "Количество этажей ",
+      "code": "numberFloors",
+      "type": "Text(100)"
+    },
+    {
+      "characteristicValue": "1980",
+      "name": "Год ввода в эксплуатацию",
+      "code": "yearCommissioning",
+      "type": "Text(20)"
+    },
+    {
+      "characteristicValue": "76:14:020110:400",
+      "name": "Кадастровый номер",
+      "code": "cadastralNumberRealty",
+      "type": "Text(500)"
+    }
+  ],
+  "currencyCode": "643",
+  "etpCode": "ETP_EETP",
+  "subjectRFCode": "76",
+  "category": {
+    "code": "8",
+    "name": "Здания"
+  },
+  "attributes": [
+    {
+      "code": "DA_limitations_PP(178)",
+      "fullName": "Обремения, ограничения",
+      "value": "в соответствии с информационным сообщением",
+      "attributeType": "Text(500)"
+    }
+  ],
+  "noticeFirstVersionPublicationDate": "2026-08-24T13:07:22.872Z",
+  "npaHintCode": "hint1_178FZ",
+  "typeTransaction": "sale"
+}

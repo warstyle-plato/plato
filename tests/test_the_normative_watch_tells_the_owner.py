@@ -1,0 +1,1016 @@
+"""Проверка актуальности нормативной базы доходит до Платона и до чата.
+
+«Сделать возможность проверки актуальности Платоном и чтобы бот после такой
+проверки присылал, что произошли изменения» (владелец, 06.09.2026).
+
+Проверка источников у реестра была и до этого — кнопкой на странице. Кнопка
+отвечает тому, кто её нажал; человек, который страницу не открывал, не узнавал
+ничего. Дорога до чата та же, что у знакомств и новинок каталога КРТ: до
+api.telegram.org достаёт только хост с вебхуком, поэтому ядро копит находки, а
+он их объявляет. Второго пути не заводим.
+
+Сообщается ПЕРЕХОД, а не состояние: источник, который лежит третью неделю,
+новостью не является, и повторяемое каждые четверть часа сообщение перестало
+бы читаться вовсе.
+
+Запуск: python3 -m pytest tests/test_the_normative_watch_tells_the_owner.py -q
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+import main as wrapper  # noqa: E402
+import normatives_registry as registry  # noqa: E402
+from engine_source import engine_source  # noqa: E402
+
+core = wrapper.core
+
+
+@pytest.fixture()
+def queue(tmp_path, monkeypatch):
+    path = tmp_path / "announcements.jsonl"
+    monkeypatch.setattr(registry, "_ANNOUNCE_PATH", path)
+    return path
+
+
+# --- что считается новостью ---------------------------------------------------
+
+def test_a_new_problem_is_announced(queue) -> None:
+    entries = {"a": {"scope": "Москва", "short_name": "945-ПП", "source_url": "x"}}
+    changes = registry._changes_between(
+        {"a": {"result": "ok"}}, {"a": {"result": "changed", "message": "текст другой"}}, entries)
+    assert [c["result"] for c in changes] == ["changed"]
+    assert changes[0]["was"] == "ok"
+    assert changes[0]["short_name"] == "945-ПП"
+
+
+def test_the_same_problem_is_not_announced_twice(queue) -> None:
+    """Источник, который лежит третью неделю, — не новость."""
+    entries = {"a": {"short_name": "945-ПП"}}
+    assert registry._changes_between(
+        {"a": {"result": "unreachable"}}, {"a": {"result": "unreachable"}}, entries) == []
+
+
+def test_a_missing_source_is_not_a_news_item(queue) -> None:
+    """«Ссылки нет» — наш пробел, он и так виден в справочнике.
+
+    Сообщение о нём приходило бы после каждой проверки и приучило бы не читать
+    эти сообщения вовсе.
+    """
+    entries = {"a": {"short_name": "Приказ ДГИ № 303"}}
+    assert registry._changes_between({}, {"a": {"result": "no_source"}}, entries) == []
+
+
+def test_recovery_is_news_too(queue) -> None:
+    """Обратный переход в порядок новостью не считается — сообщаем о проблемах."""
+    entries = {"a": {"short_name": "945-ПП"}}
+    assert registry._changes_between(
+        {"a": {"result": "unreachable"}}, {"a": {"result": "ok"}}, entries) == []
+
+
+# --- очередь ------------------------------------------------------------------
+
+def test_the_queue_is_taken_once(queue) -> None:
+    """Забирает только один: воркеров два, и оба пришли бы за одним и тем же."""
+    registry._queue_announcements([{"id": "a", "result": "changed"}])
+    first = registry.take_announcements()
+    assert [x["id"] for x in first] == ["a"]
+    assert registry.take_announcements() == [], "очередь отдалась дважды"
+
+
+def test_an_empty_queue_is_not_a_message(queue) -> None:
+    assert registry.take_announcements() == []
+
+
+# --- дорога до чата -----------------------------------------------------------
+
+def test_the_core_hands_the_queue_over_by_the_shared_signature() -> None:
+    """Тот же путь и та же подпись, что у знакомств и новинок КРТ."""
+    source = engine_source()
+    assert '@app.post("/internal/normatives/announcements")' in source
+    block = source[source.index('@app.post("/internal/normatives/announcements")'):]
+    block = block[:block.index('@app.post("/internal/krt/subscribe")')]
+    assert '_web_login_sign("normatives-announcements"' in block
+    assert "compare_digest" in block, "маршрут отдаёт очередь без проверки подписи"
+    # Реестра нет — это говорится вслух: пустой список читался бы как
+    # «в нормативной базе ничего не менялось».
+    assert "503" in block and "не установлен" in block
+
+
+def test_the_bot_sends_one_message_for_the_whole_batch() -> None:
+    """Тринадцать сообщений подряд читаются как поломка бота."""
+    text = wrapper._normatives_announcement_text([
+        {"short_name": "945-ПП", "scope": "Москва", "result": "changed",
+         "message": "текст источника изменился"},
+        {"short_name": "713/30", "scope": "Московская область", "result": "unreachable",
+         "message": "Источник ответил HTTP 403"},
+    ])
+    # Ни поправки, ни отмены не названо — пунктов нет, а оба акта названы
+    # одной строкой каждый: страница изменилась, источник не ответил.
+    assert text.count("•") == 0
+    assert "945-ПП" in text and "713/30" in text
+    assert "страница источника" in text and "не ответил" in text
+
+
+def test_the_delivery_goes_through_the_webhook_host() -> None:
+    import inspect
+
+    body = inspect.getsource(wrapper._deliver_normatives_announcements)
+    assert "_telegram_webhook_enabled" in body, "шлёт не тот хост"
+    assert "/internal/normatives/announcements" in body
+    assert "usage_admin_ids" in body
+
+
+# --- Платон -------------------------------------------------------------------
+
+def test_platon_reads_the_registry_and_not_his_memory() -> None:
+    got = core._tool_check_normatives("status")
+    assert got["available"] and got["count"] == len(registry._merged_registry())
+    names = [item["name"] for item in got["items"]]
+    assert any("945-ПП" in str(name) for name in names)
+    # Отсутствие ссылки — тоже ответ, и оно не прячется: поле стоит у КАЖДОЙ
+    # позиции. Прежде здесь стояло `any(... source_missing)` — и держалось оно
+    # не на утверждении, а на живом пробеле: у приказа ДГИ № 303 не было
+    # ссылки. Пробел закрыт 06.09.2026, и проверка упала на ХОРОШЕЙ новости.
+    # Утверждение было другое, и теперь оно записано словами.
+    assert all("source_missing" in item for item in got["items"])
+    assert got["page"] == "/normatives"
+
+
+def test_a_row_without_a_link_says_so() -> None:
+    """Пробел ссылки называется — на своём примере, а не на живом реестре.
+
+    Проверка, ждущая настоящего пробела, зеленеет ровно до того дня, когда его
+    закроют, и падение читается как поломка. Пример держится здесь.
+    """
+    rows = list(registry._merged_registry())
+    blind = dict(rows[0]); blind["source_url"] = ""
+    seeing = dict(rows[0]); seeing["source_url"] = "https://example.org/act"
+    original = registry._merged_registry
+    try:
+        registry._merged_registry = lambda: [blind, seeing]  # type: ignore[assignment]
+        got = core._tool_check_normatives("status")
+    finally:
+        registry._merged_registry = original  # type: ignore[assignment]
+    assert [item["source_missing"] for item in got["items"]] == [True, False]
+
+
+def test_todays_registry_has_no_link_gaps() -> None:
+    """Замер, а не обещание: у всех позиций есть адрес исходника или причина.
+
+    Ответов здесь три, и слить их нельзя: адрес есть; адреса нет вовсе и это
+    названо (`source_absent` или статус «нет ссылки»); адрес забыт. Пока третий и второй молчали одинаково,
+    пробел источника читался как наш недосмотр, а наш недосмотр — как пробел
+    источника. Число здесь не закрепляется: растёт реестр, растёт и оно.
+    """
+    # Пробел допустим только названный: позиция со статусом «нет ссылки»,
+    # внесённая сюда поимённо. Главная страница mos.ru или чужая новость на
+    # месте адреса — хуже пустоты: сторож отвечал по ним «ok», проверяя не тот
+    # документ. У 2150-ПП адрес найден 16.10.2026 (база «Кодекс»), поимённых
+    # пробелов не осталось — множество пустое, и новый пробел не пройдёт молча.
+    declared: set[str] = set()
+    blind = [str(row.get("short_name") or row.get("title"))
+             for row in registry._merged_registry()
+             if not str(row.get("source_url") or "").strip()
+             and not (row.get("id") in declared
+                      and row.get("status") == "source_link_missing")
+             and not str(row.get("source_absent") or "").strip()]
+    assert not blind, "позиции реестра без ссылки на исходник: " + ", ".join(blind)
+    wrong = [str(row.get("short_name") or row.get("title"))
+             for row in registry._merged_registry()
+             if str(row.get("source_url") or "").strip().rstrip("/")
+             in ("https://www.mos.ru", "https://mos.ru")]
+    assert not wrong, "адрес исходника — главная страница, а не документ: " + ", ".join(wrong)
+
+
+def test_the_tool_is_declared_and_dispatched() -> None:
+    assert "check_normatives" in [tool["name"] for tool in core._AGENT_TOOLS]
+    source = engine_source()
+    dispatch = source.split("def _execute_agent_tool", 1)[1][:5000]
+    assert "check_normatives" in dispatch, "инструмент не диспетчеризуется"
+
+
+def test_the_long_probe_is_not_the_default() -> None:
+    """«run» опрашивает источники и ходит в сеть — только по прямой просьбе."""
+    tool = next(t for t in core._AGENT_TOOLS if t["name"] == "check_normatives")
+    assert tool["parameters"]["properties"]["action"]["enum"] == ["status", "run"]
+    assert "долгое" in tool["description"]
+
+
+# --- расписание ---------------------------------------------------------------
+
+def test_the_watch_has_a_switch_and_it_is_off_in_tests() -> None:
+    """Расписание, зависящее от календаря, срабатывает в прогоне не вовремя."""
+    import os
+    import threading
+
+    assert os.getenv("NORMATIVES_WATCH") == "0"
+    assert "normatives-watch" not in [t.name for t in threading.enumerate()]
+    source = Path(ROOT / "normatives_registry.py").read_text(encoding="utf-8")
+    assert 'os.getenv("NORMATIVES_WATCH"' in source
+
+
+def test_the_watch_waits_for_its_hour(monkeypatch) -> None:
+    monkeypatch.setattr(registry, "_load_state", lambda: {})
+    assert registry._watch_due(24) is True, "пустое состояние — ни разу не смотрели"
+    monkeypatch.setattr(registry, "_load_state", lambda: {"last_run_at": registry._now_iso()})
+    assert registry._watch_due(24) is False
+    monkeypatch.setattr(registry, "_load_state", lambda: {"last_run_at": "не дата"})
+    assert registry._watch_due(24) is True, "нечитаемая отметка — проверяем заново"
+
+
+# --- что об акте пишут в открытых источниках ----------------------------------
+#
+# «Искать обновление надо не так» (владелец, 06.09.2026): отпечаток страницы
+# отвечает на «страницу переписали?», а спрашивать надо «что с актом стало».
+# Страница правовой системы меняется от баннера, а акт отменяют, не трогая наш
+# PDF — у файла в библиотеке отпечаток не изменится НИКОГДА, то есть именно
+# там, где проверка нужнее всего, она молчит по построению.
+
+def test_the_query_is_built_from_the_act_not_from_its_link() -> None:
+    entry = {"short_name": "945-ПП — транспорт и парковки", "source_url": "https://x/y"}
+    query = registry.watch_query(entry)
+    assert query.startswith("945-ПП")
+    assert "утратил силу" in query and "изменения" in query
+    assert "http" not in query, "запрос построен из ссылки, а не из реквизитов"
+
+
+def test_a_signal_needs_the_number_of_this_act() -> None:
+    """Сниппет про соседний акт не имеет права забрать находку себе."""
+    entry = {"short_name": "945-ПП", "watch_terms": ["945-ПП", "2118-ПП"]}
+    docs = [{"title": "Новости", "snippet": "Постановление 123-ПП утратило силу.", "url": "u"}]
+    assert registry.find_repeal_signals(entry, docs) == []
+
+
+def test_an_official_amendment_title_can_name_the_change_and_snippet_the_base_act() -> None:
+    """1080-ПП было пропущено: «внесении изменений» стоит в заголовке,
+    а 713/30 — только в тексте карточки официального акта."""
+    entry = {"short_name": "713/30 — РНГП Московской области",
+             "watch_terms": ["713/30", "774-ПП"]}
+    docs = [{"title": "Постановление Правительства Московской области от 01.09.2026 № 1080-ПП "
+                      "«О внесении изменений в нормативы градостроительного проектирования Московской области»",
+             "snippet": "Изменения вносятся в нормативы, утвержденные постановлением "
+                        "Правительства Московской области от 17.08.2015 № 713/30.",
+             "url": "https://mosreg.ru/document/1080"}]
+    got = registry.find_repeal_signals(entry, docs)
+    assert [x["kind"] for x in got] == ["amended"]
+    assert "1080-ПП" in got[0]["quote"]
+
+
+def test_the_repeal_is_found_with_its_quote_and_link() -> None:
+    entry = {"short_name": "945-ПП", "watch_terms": ["945-ПП"]}
+    docs = [{"title": "Гарант", "url": "u1",
+             "snippet": "Документ 945-ПП утратил силу с 1 января 2027 года."}]
+    got = registry.find_repeal_signals(entry, docs)
+    assert [x["kind"] for x in got] == ["repealed"]
+    assert "утратил силу" in got[0]["quote"] and got[0]["url"] == "u1"
+
+
+def test_the_worst_signal_comes_first() -> None:
+    entry = {"short_name": "945-ПП", "watch_terms": ["945-ПП"]}
+    docs = [{"title": "a", "snippet": "945-ПП в редакции от 05.08.2026.", "url": "u1"},
+            {"title": "b", "snippet": "945-ПП признано утратившим силу.", "url": "u2"}]
+    assert [x["kind"] for x in registry.find_repeal_signals(entry, docs)] == \
+        ["repealed", "amended"]
+
+
+def test_a_marker_in_another_sentence_is_not_a_signal() -> None:
+    """«Отменено» через абзац от нашего номера не значит ничего."""
+    entry = {"short_name": "945-ПП", "watch_terms": ["945-ПП"]}
+    docs = [{"title": "t", "url": "u",
+             "snippet": "945-ПП устанавливает нормативы. Постановление 77-ПП отменено."}]
+    assert registry.find_repeal_signals(entry, docs) == []
+
+
+def test_an_anchor_without_a_number_is_not_an_anchor() -> None:
+    """«Кзатр» или «парковка» опознают тему, а не документ."""
+    entry = {"short_name": "945-ПП", "watch_terms": ["парковка", "Кзатр"]}
+    docs = [{"title": "t", "snippet": "Парковка: документ утратил силу.", "url": "u"}]
+    assert registry.find_repeal_signals(entry, docs) == []
+
+
+def test_an_unconfigured_search_says_so_and_does_not_pretend() -> None:
+    """Пустой ответ поиска — «не нашли», а не «действует»."""
+    got = registry._search_signals({"short_name": "945-ПП"}, None)
+    assert got["asked"] is False and "не настроен" in got["reason"]
+
+
+def test_a_found_repeal_reaches_the_chat() -> None:
+    entries = {"a": {"short_name": "945-ПП", "scope": "Москва"}}
+    after = {"a": {"result": "ok", "sources": {"asked": True, "signals": [
+        {"kind": "repealed", "quote": "945-ПП утратил силу", "url": "u"}]}}}
+    changes = registry._changes_between({"a": {"result": "ok"}}, after, entries)
+    assert [c["result"] for c in changes] == ["repealed"]
+    assert changes[0]["message"] == "945-ПП утратил силу"
+    text = wrapper._normatives_announcement_text(changes)
+    assert "утратил силу" in text
+
+
+def test_the_same_signal_is_not_announced_twice() -> None:
+    entries = {"a": {"short_name": "945-ПП"}}
+    same = {"asked": True, "signals": [{"kind": "repealed", "quote": "q", "url": "u"}]}
+    assert registry._changes_between(
+        {"a": {"result": "ok", "sources": same}},
+        {"a": {"result": "ok", "sources": same}}, entries) == []
+
+
+def test_the_paid_search_has_its_own_clock() -> None:
+    """Поиск платный, но по умолчанию идёт ежедневно вместе со ссылками.
+
+    И отметка у него своя: иначе ежедневная проверка ссылки сдвигала бы срок
+    поиска, и он не наступал бы никогда.
+    """
+    import inspect
+
+    body = inspect.getsource(registry._watch_loop)
+    assert "NORMATIVES_SEARCH_HOURS" in body
+    assert '"24"' in body
+    assert 'key="last_search_at"' in body
+    saved = inspect.getsource(registry._run_check)
+    assert '"last_search_at"' in saved
+
+
+def test_the_search_client_is_the_engines_own() -> None:
+    """Второй клиент — второй счёт за те же запросы и вторая жизнь у настроек."""
+    import inspect
+
+    body = inspect.getsource(registry._search_client)
+    assert "market_search.yandex_search" in body
+    assert "configured" in body
+
+
+def test_daily_link_check_preserves_last_search_signals(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(registry, "_STATE_PATH", tmp_path / "state.json")
+    registry._save_state({"last_search_at": "2026-09-19T00:00:00+00:00", "checks": {
+        "a": {"result": "ok", "sources": {"asked": True, "signals": [
+            {"kind": "amended", "quote": "q", "url": "u"}]}}}})
+    monkeypatch.setattr(registry, "_load_registry", lambda: [{"id": "a"}])
+    monkeypatch.setattr(registry, "_probe", lambda entry, previous: {"result": "ok"})
+    registry._run_check(search=False)
+    saved = registry._load_state()
+    assert saved["checks"]["a"]["sources"]["signals"][0]["url"] == "u"
+
+
+
+def test_signal_dedupe_normalizes_whitespace() -> None:
+    entries = {"a": {"short_name": "713/30"}}
+    before = {"a": {"result": "ok", "sources": {"signals": [{"kind": "amended", "quote": "713/30  внесены   изменения", "url": "U"}]}}}
+    after = {"a": {"result": "ok", "sources": {"signals": [{"kind": "amended", "quote": "713/30 внесены изменения", "url": "u"}]}}}
+    assert registry._changes_between(before, after, entries) == []
+
+def test_a_new_quote_for_the_same_document_is_not_news() -> None:
+    """Сменилась лишь цитата того же документа — акт уже объявлен, повтор не нужен.
+    А смена вида находки (правка → отмена) по тому же адресу — новость."""
+    entries = {"a": {"short_name": "713/30"}}
+    before = {"a": {"result": "ok", "sources": {"signals": [
+        {"kind": "amended", "quote": "Изменения вносятся в … № 713/30.", "url": "u"}]}}}
+    same = {"a": {"result": "ok", "sources": {"signals": [
+        {"kind": "amended", "quote": "№ 1080-ПП «О внесении изменений…»", "url": "u"}]}}}
+    assert registry._changes_between(before, same, entries) == []
+    worse = {"a": {"result": "ok", "sources": {"signals": [
+        {"kind": "repealed", "quote": "713/30 утратило силу", "url": "u"}]}}}
+    assert len(registry._changes_between(before, worse, entries)) == 1
+
+
+def test_signal_replacement_with_same_count_is_news() -> None:
+    entries = {"a": {"short_name": "713/30"}}
+    before = {"a": {"result": "ok", "sources": {"signals": [
+        {"kind": "amended", "quote": "old", "url": "u1"}]}}}
+    after = {"a": {"result": "ok", "sources": {"signals": [
+        {"kind": "amended", "quote": "1080-ПП", "url": "u2"}]}}}
+    got = registry._changes_between(before, after, entries)
+    assert len(got) == 1 and got[0]["message"] == "1080-ПП"
+
+
+def test_watch_error_is_visible_in_state(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(registry, "_STATE_PATH", tmp_path / "state.json")
+    registry._save_state({"last_error": "RuntimeError: search failed", "checks": {}})
+    state = registry.watch_state()
+    assert "search failed" in state["last_error"]
+
+
+# --- счётчик молчания ---------------------------------------------------------
+#
+# «Ну мне ничего не пришло в телеграмме» (владелец, 07.09.2026) — тогда это было
+# про новости КРТ, и ответом стал `/auctions/krt/watch` с парой `/krt/delivery`.
+# У нормативной базы обе половины молчали так же: снаружи «в базе ничего не
+# менялось», «сторож выключен», «адресатов нет» и «ядро не ответило» — одно и
+# то же молчание. Проверки ниже держат ровно это: у каждого молчания есть имя.
+
+
+def test_the_watch_counts_its_own_silence(queue, tmp_path, monkeypatch) -> None:
+    """Сторож называет, заходил ли он, что нашёл и сколько ждёт бота."""
+    monkeypatch.setattr(registry, "_STATE_PATH", tmp_path / "state.json")
+    registry._save_state({"last_run_at": "2026-09-09T01:41:11+03:00",
+                          "checks": {"a": {"result": "changed"},
+                                     "b": {"result": "ok"},
+                                     "c": {"result": "unreachable"}}})
+    registry._queue_announcements([{"id": "a", "result": "changed"}])
+    state = registry.watch_state()
+    assert state["checked"] == 3
+    assert state["results"] == {"changed": 1, "ok": 1, "unreachable": 1}
+    assert state["queued"] == 1
+    assert state["last_run_at"].startswith("2026-09-09")
+    # Заход платного поиска — своя отметка: без неё «источники спрошены» и
+    # «спрошены только ссылки» на экране выглядят одинаково.
+    assert state["last_search_at"] == ""
+    assert "search_available" in state and "enabled" in state
+
+
+def test_reading_the_queue_does_not_take_it(queue) -> None:
+    """Счётчик читает очередь, а не изымает: забрать её может только бот.
+
+    Второй читатель унёс бы уведомление ради ответа на вопрос, дошло ли
+    уведомление.
+    """
+    registry._queue_announcements([{"id": "a", "result": "changed"}])
+    assert registry.queued_count() == 1
+    assert registry.queued_count() == 1
+    assert len(registry.take_announcements()) == 1
+    assert registry.queued_count() == 0
+
+
+def test_the_page_says_what_the_watch_did() -> None:
+    """Строка под кнопками отвечает на «мне ничего не пришло»."""
+    import inspect
+
+    body = inspect.getsource(registry._watch_note)
+    assert "NORMATIVES_WATCH=0" in body, "выключенный сторож не называет себя"
+    said = registry._watch_note({"enabled": True, "last_run_at": "", "queued": 0,
+                                 "search_available": False})
+    assert "ни разу" in said, "не сказано, что проверка ещё не заходила"
+    assert "поиск не настроен" in said
+    assert "переходов" in said, "пустая очередь не названа своим ответом"
+
+
+def test_the_delivery_names_every_silence() -> None:
+    """У каждого молчаливого выхода доставки есть имя.
+
+    Прежде их было пять и все молчали: нет токена, вебхук выключен, адресатов
+    нет, реестра на хосте нет, очередь пуста. Снаружи это неотличимо от
+    «в нормативной базе ничего не менялось».
+    """
+    import inspect
+
+    body = inspect.getsource(wrapper._deliver_normatives_announcements)
+    for reason in ("нет TELEGRAM_BOT_TOKEN", "вебхук выключен",
+                   "DEVELOPAID_ADMIN_IDS пуст", "реестра на этом хосте нет",
+                   "очередь пуста", "очередь у ядра не забрана",
+                   "ни один адресат не принял"):
+        assert reason in body, reason
+    # Пустой список адресатов не должен изымать очередь: забранное не вернуть.
+    admins = body.index("if not admins:")
+    remote = body.index('_projects_remote_url("/internal/normatives/announcements")')
+    assert admins < remote, "очередь забирается раньше, чем проверены адресаты"
+
+
+def test_the_delivery_line_is_declared_once() -> None:
+    """Очередей две, формат строки один: копия разошлась бы молча."""
+    import inspect
+
+    assert "_delivery_line(" in inspect.getsource(wrapper._krt_delivery_line)
+    assert "_delivery_line(" in inspect.getsource(wrapper._normatives_delivery_line)
+    said = wrapper._delivery_line("Нормативная база", {
+        "at": 0, "stopped_by": "ещё не заходили"})
+    assert "заходов доставки ещё не было" in said
+
+
+def test_the_status_carries_the_normatives_line() -> None:
+    """Спрашивают про это бота — строка стоит в `/status`."""
+    import inspect
+
+    body = inspect.getsource(wrapper._status_message)
+    assert "_normatives_delivery_line()" in body
+
+
+# --- кнопка спрашивает то, что обещает ----------------------------------------
+
+def test_the_button_can_ask_about_repeal() -> None:
+    """«Не получили изменений редакции или вовсе отменены» — это платный поиск.
+
+    Отпечаток ссылки на отмену не отвечает по построению: акт отменяют, не
+    трогая нашу страницу. Кнопка звала `_run_check()` без поиска и обещала
+    ответ, которого не давала.
+    """
+    page = registry._page.__doc__ or ""
+    import inspect
+
+    src = inspect.getsource(registry.install)
+    assert "search: str = \"\"" in src, "маршрут проверки не принимает платный вопрос"
+    assert "_run_check(search=wanted)" in src
+    assert "не настроен" in src, "отказ платного поиска не называет причину"
+
+    body = inspect.getsource(registry._page)
+    assert "checkAll(true)" in body and "checkAll(false)" in body, (
+        "на странице нет двух кнопок — два вопроса под одной подписью")
+    assert "платный" in body, "цена платного вопроса не названа"
+    assert page is not None
+
+
+def test_the_watch_route_is_open_and_carries_no_names() -> None:
+    """Счётчик молчания измерим со стороны и адресатов не называет."""
+    import inspect
+
+    src = inspect.getsource(registry.install)
+    assert '"/api/normatives/watch"' in src
+    assert "watch_state()" in src
+    state = registry.watch_state()
+    text = json.dumps(state, ensure_ascii=False)
+    assert "chat" not in text and "@" not in text
+
+
+# --- кнопка была недостижима вообще -------------------------------------------
+#
+# `_is_admin` передавала гейту движка ЦЕЛИКОМ `Request`, а тот принимает две
+# строки — сессию и ключ. Объект молча вставал на место сессии, ключ до проверки
+# не доезжал вовсе, и `TypeError`, ради которого стоял запасной путь, не
+# возникал никогда. Владелец не опознавался НИ РАЗУ: админской панели не было
+# ни у кого, а `POST /api/normatives/check` отвечал 403 всем и всегда.
+#
+# Строковые проверки этого не видят: и кнопка, и её обработчик присутствуют в
+# исходнике страницы у сломанного кода так же, как у рабочего. Ловится только
+# отрисовкой — и мерить надо САМУ панель, а не подстроку «checkBtn»: она стоит
+# ещё и в стилях, то есть есть на странице всегда.
+
+
+@pytest.fixture()
+def client(tmp_path, monkeypatch):
+    monkeypatch.setenv("DEVELOPAID_ADMIN_KEY", "test-key")
+    monkeypatch.setenv("NORMATIVES_WATCH", "0")
+    monkeypatch.setattr(registry, "_STATE_PATH", tmp_path / "state.json")
+    monkeypatch.setattr(registry, "_ANNOUNCE_PATH", tmp_path / "a.jsonl")
+    fastapi_testclient = pytest.importorskip("fastapi.testclient")
+    import main_registry  # noqa: PLC0415
+
+    return fastapi_testclient.TestClient(main_registry.app)
+
+
+def _admin_bar(text: str) -> str:
+    start = text.find('<div class="adminbar">')
+    return "" if start < 0 else text[start:start + 900]
+
+
+def test_the_owner_sees_the_buttons(client) -> None:
+    """Панель отрисовывается владельцу — по ключу администратора."""
+    bar = _admin_bar(client.get("/normatives?key=test-key").text)
+    assert bar, "владелец не опознан: панели нет вовсе"
+    assert "Проверить ссылки" in bar
+    # Платный вопрос либо кнопкой, либо названной причиной, почему его нет.
+    assert ("Спросить об отмене" in bar) or ("не настроен" in bar)
+
+
+def test_a_stranger_sees_no_buttons(client) -> None:
+    """Без ключа панели нет: проверка источников — не витрина."""
+    assert _admin_bar(client.get("/normatives").text) == ""
+
+
+def test_the_check_route_answers_the_owner(client, monkeypatch) -> None:
+    """403 всем и всегда — это не «только администратору», это сломанный гейт.
+
+    Проверяется гейт, а не источники: настоящий `_probe` ходил бы по сети за
+    каждой ссылкой реестра (до 20 с на чтение, до 2,5 МБ с госсайта) и держал
+    долю CI десятки минут. Ссылки отвечают заглушкой — вызов тот же.
+    """
+    probed: list[str] = []
+    monkeypatch.setattr(registry, "_probe",
+                        lambda entry, previous: probed.append(entry.get("id")) or
+                        {"checked_at": "2026-09-27T00:00:00+03:00", "result": "ok"})
+    assert client.post("/api/normatives/check").status_code == 403
+    assert probed == [], "без ключа проверка не должна начинаться"
+    got = client.post("/api/normatives/check?key=test-key")
+    assert got.status_code == 200, got.text
+    assert got.json().get("searched") is False, "бесплатная кнопка не должна платить"
+    assert probed, "владелец нажал «Проверить ссылки», а ни одна ссылка не спрошена"
+
+
+def test_the_paid_question_refuses_with_a_reason(client) -> None:
+    """Молча пройдя без поиска, кнопка второй раз пообещала бы ответ."""
+    got = client.post("/api/normatives/check?search=1&key=test-key")
+    assert got.status_code == 503
+    assert "отмену" in str(got.json().get("detail"))
+
+
+def test_the_watch_route_is_readable_without_a_key(client) -> None:
+    """Счётчик молчания — про наше устройство, а не про чужие данные."""
+    got = client.get("/api/normatives/watch")
+    assert got.status_code == 200
+    assert set(got.json()) >= {"enabled", "queued", "last_run_at", "search_available"}
+
+
+# --- находка поиска доживает до читателя ---------------------------------------
+#
+# Замер прода 19.09.2026: сторож заходит (`last_run_at` того же утра,
+# `last_search_at` 14.09), а `sources` нет НИ У ОДНОГО из пятнадцати
+# источников. Причина не в поиске: ежедневная проверка ссылок собирает запись
+# заново и затирала ответ недельного поиска через сутки. Показать находку было
+# негде и вдобавок нечем — ключи `repealed`/`amended` в подписи карточки были
+# мёртвыми: туда приходит результат пробы, а она таких значений не
+# возвращает. Ровно это и значило «проверки не выкидывают изменения».
+
+_FOUND = {"kind": "amended", "anchored_by": "имя",
+          "quote": 'Постановление Правительства Московской области от 01.09.2026 '
+                   '№ 1080-ПП "О внесении изменений в нормативы '
+                   'градостроительного проектирования Московской области"',
+          "url": "http://publication.pravo.gov.ru/document/5000202609020006"}
+
+
+def _one_entry_registry(monkeypatch, tmp_path, entry: dict) -> None:
+    monkeypatch.setattr(registry, "_STATE_PATH", tmp_path / "state.json")
+    monkeypatch.setattr(registry, "_load_registry", lambda: [entry])
+
+
+def test_the_daily_link_check_keeps_the_search_findings(
+        queue, tmp_path, monkeypatch) -> None:
+    """Ответ платного поиска живёт своим сроком, а не сутками до сверки ссылок."""
+    entry = {"id": "mo-713-30", "short_name": "713/30", "scope": "Московская область",
+             "source_url": "https://example.test/doc", "watch_terms": ["713/30"]}
+    _one_entry_registry(monkeypatch, tmp_path, entry)
+    monkeypatch.setattr(registry, "_probe",
+                        lambda e, prev: {"checked_at": "2026-09-19T04:00:00+03:00",
+                                         "result": "ok", "sha256": "одинаковый"})
+    monkeypatch.setattr(registry, "_search_client", lambda: object())
+    monkeypatch.setattr(registry, "_search_signals",
+                        lambda e, c: {"asked": True, "asked_at": "2026-09-14T03:01:23+03:00",
+                                      "checked": 10, "signals": [_FOUND], "seen": []})
+
+    searched = registry._run_check(search=True)
+    assert registry.source_signals(searched["checks"]["mo-713-30"]) == [_FOUND]
+    assert [c["result"] for c in searched["changes"]] == ["amended"]
+    assert registry.queued_count() == 1
+
+    daily = registry._run_check(search=False)      # следующие сутки, ссылка та же
+    assert registry.source_signals(daily["checks"]["mo-713-30"]) == [_FOUND], \
+        "находка недельного поиска затёрта ежедневной сверкой ссылок"
+    # Сообщается ПЕРЕХОД: перенесённая находка не объявляется второй раз.
+    assert daily["changes"] == []
+    assert registry.queued_count() == 1
+
+
+def test_a_finding_reaches_the_page(tmp_path, monkeypatch) -> None:
+    """Находку видно там, куда приходят за основанием под числом.
+
+    Сообщение отвечает тому, кто страницу не открывал; страницу открывает
+    тот, кто пришёл проверить редакцию, — и до этой правки находка ему не
+    показывалась вовсе.
+    """
+    entry = {"id": "mo-713-30", "scope": "Московская область",
+             "short_name": "713/30 — РНГП Московской области",
+             "title": "Постановление Правительства Московской области от 17.08.2015 "
+                      "№ 713/30 «Об утверждении нормативов градостроительного "
+                      "проектирования Московской области»",
+             "current_as_of": "2026-09-19", "affects": ["парковочную обеспеченность"],
+             "source_url": "https://example.test/doc", "watch_terms": ["713/30"]}
+    _one_entry_registry(monkeypatch, tmp_path, entry)
+    registry._save_state({"last_run_at": "2026-09-19T04:00:00+03:00",
+                          "last_search_at": "2026-09-14T03:01:23+03:00",
+                          "checks": {"mo-713-30": {
+                              "result": "ok", "checked_at": "2026-09-19T04:00:00+03:00",
+                              "sources": {"asked": True, "checked": 10,
+                                          "asked_at": "2026-09-14T03:01:23+03:00",
+                                          "signals": [_FOUND]}}}})
+    row = registry._merged_registry()[0]
+    label, badge = registry._reader_label(row, row["check"])
+    assert label == "В источниках: вышла новая редакция" and badge == "warn"
+    card = registry._card(row)
+    assert "1080-ПП" in card, "цитаты находки нет на карточке"
+    assert "5000202609020006" in card, "ссылки на источник находки нет"
+    assert "найдено по имени акта" in card, "не сказано, чем найдено"
+    assert "реестр правит" in card, "находка выдана за решение, а не за находку"
+
+    state = registry.watch_state()
+    assert state["signals"] == 1 and state["searched"] == 1
+    # В прогоне сторож выключен (`NORMATIVES_WATCH=0`), и строка честно
+    # говорит именно это; здесь проверяется вторая её половина — счёт находок.
+    said = registry._watch_note({**state, "enabled": True})
+    assert "находок о судьбе актов: 1" in said
+
+
+def test_a_repeal_outranks_the_page_fingerprint(tmp_path, monkeypatch) -> None:
+    """«Акт утратил силу» сильнее «страницу переписали»: это про разное."""
+    entry = {"id": "x", "scope": "Москва", "short_name": "945-ПП",
+             "title": "Постановление № 945-ПП «Об утверждении нормативов»",
+             "source_url": "https://example.test/doc"}
+    _one_entry_registry(monkeypatch, tmp_path, entry)
+    check = {"result": "changed",
+             "sources": {"asked": True, "signals": [{"kind": "repealed",
+                                                     "quote": "945-ПП утратил силу",
+                                                     "act": "Постановление от 01.12.2026 № 1000-ПП",
+                                                     "act_number": "1000-ПП",
+                                                     "url": "https://example.test/news"}]}}
+    label, badge = registry._reader_label(entry, check)
+    assert label == "В источниках: документ утратил силу" and badge == "bad"
+
+
+def test_the_search_says_what_it_saw(monkeypatch) -> None:
+    """«Принесли десять, наш акт не назван» и «поиск не ответил» — не одно.
+
+    Без этого нулевая находка читается как ответ источника, а чинятся эти два
+    случая по-разному: первый — вопрос к запросу, второй — к поиску.
+    """
+    class _Doc:
+        def __init__(self, title: str) -> None:
+            self.title = title
+            self.snippet = ""
+            self.url = "https://example.test/" + str(len(title))
+
+    class _Client:
+        def search(self, query: str, **kw: object) -> list[_Doc]:
+            # Вопросов у сторожа два; выдача на оба одна и та же, адреса
+            # совпадают — строка в объединённой выдаче одна.
+            return [_Doc("Постановление о чём-то другом"), _Doc("И ещё о другом")]
+
+    entry = {"id": "mo-713-30", "short_name": "713/30 — РНГП Московской области",
+             "title": "Постановление № 713/30 «Об утверждении нормативов "
+                      "градостроительного проектирования Московской области»",
+             "watch_terms": ["713/30"]}
+    got = registry._search_signals(entry, _Client())
+    assert got["asked"] is True and got["checked"] == 2 and got["signals"] == []
+    assert [row["title"] for row in got["seen"]] == ["Постановление о чём-то другом",
+                                                     "И ещё о другом"]
+    assert got["asked_at"], "не сказано, когда спрашивали"
+    # Поиска нет — это отказ с причиной, а не пустой ответ.
+    assert registry._search_signals(entry, None)["asked"] is False
+
+
+# --- акт правят его собственными словами ---------------------------------------
+
+
+def test_the_amendment_is_found_by_the_words_the_act_uses() -> None:
+    """1080-ПП от 01.09.2026 правит п. 5.12 РНГП МО и лежал незамеченным 18 дней.
+
+    Заголовок взят со страницы публикатора дословно. Номера базового акта в
+    нём нет вовсе — поправка называет ИМЯ, — а набор маркеров не знал главного
+    оборота «О внесении изменений в …». Обе половины и проверяются: находка
+    есть, и найдена она по имени.
+    """
+    entry = {"id": "mo-713-30", "short_name": "713/30 — РНГП Московской области",
+             "title": "Постановление Правительства Московской области от 17.08.2015 "
+                      "№ 713/30 «Об утверждении нормативов градостроительного "
+                      "проектирования Московской области»",
+             "watch_terms": ["713/30", "774-ПП"]}
+    doc = {"title": 'Постановление Правительства Московской области от 01.09.2026 '
+                    '№ 1080-ПП "О внесении изменений в нормативы '
+                    'градостроительного проектирования Московской области"',
+           "snippet": "Номер опубликования: 5000202609020006",
+           "url": "http://publication.pravo.gov.ru/document/5000202609020006"}
+    got = registry.find_repeal_signals(entry, [doc])
+    assert [s["kind"] for s in got] == ["amended"]
+    assert got[0]["anchored_by"] == "имя"
+    assert got[0]["url"].endswith("5000202609020006")
+
+
+def test_a_neighbour_act_does_not_take_the_finding() -> None:
+    """Имя соседнего акта находку не забирает — порог отрезка это и держит."""
+    entry = {"id": "mo-713-30",
+             "title": "Постановление № 713/30 «Об утверждении нормативов "
+                      "градостроительного проектирования Московской области»",
+             "watch_terms": ["713/30"]}
+    doc = {"title": "Об утверждении нормативов градостроительного проектирования "
+                    "города Москвы в области транспорта — внесены изменения",
+           "snippet": "", "url": "https://example.test/moscow"}
+    assert registry.find_repeal_signals(entry, [doc]) == []
+
+
+def test_a_marker_inside_the_acts_own_name_is_not_a_finding() -> None:
+    """214-ФЗ сам зовётся «…и о внесении изменений в некоторые акты».
+
+    Процитируй его заголовок — и маркер найдётся всегда: находка была бы
+    вечной и пустой. Прочие маркеры у такого акта работают.
+    """
+    entry = {"id": "rf-214-fz", "watch_terms": ["214-ФЗ"],
+             "title": "Федеральный закон от 30.12.2004 № 214-ФЗ «Об участии в долевом "
+                      "строительстве многоквартирных домов и иных объектов "
+                      "недвижимости и о внесении изменений в некоторые "
+                      "законодательные акты Российской Федерации»"}
+    own = {"title": entry["title"], "snippet": "", "url": "https://example.test/214"}
+    assert registry.find_repeal_signals(entry, [own]) == []
+    news = {"title": "214-ФЗ утратил силу с 01.01.2027", "snippet": "",
+            "url": "https://example.test/news"}
+    assert [s["kind"] for s in registry.find_repeal_signals(entry, [news])] == ["repealed"]
+
+
+def test_an_abzats_repeal_is_not_the_act_repeal() -> None:
+    """«Абзац тринадцатый признать утратившим силу» — не отмена акта.
+
+    Повелительная форма стоит внутри поправки и говорит о её абзацах — ровно
+    так 1080-ПП снял абзац тринадцатый п. 5.12. Ложная тревога «акт отменён»
+    — худшая из возможных, поэтому такого маркера в наборе нет. Настоящая
+    отмена звучит иначе, и она обязана находиться: проверка держит обе
+    половины, иначе первая зеленела бы на коде, который отмену не видит вовсе.
+    """
+    entry = {"id": "mo-713-30", "watch_terms": ["713/30"],
+             "title": "Постановление № 713/30 «Об утверждении нормативов»"}
+    abzats = {"title": "В нормативах 713/30 абзац тринадцатый признать утратившим силу",
+              "snippet": "", "url": "https://example.test/x"}
+    assert not [s for s in registry.find_repeal_signals(entry, [abzats])
+                if s["kind"] == "repealed"]
+    act = {"title": "Постановление 713/30 признано утратившим силу",
+           "snippet": "", "url": "https://example.test/y"}
+    assert [s["kind"] for s in registry.find_repeal_signals(entry, [act])] == ["repealed"]
+
+
+# --- учтённая редакция новостью быть перестаёт ---------------------------------
+#
+# Поиск приносит одну и ту же публикацию каждую неделю и после того, как мы её
+# разобрали. Без этой половины на карточке 713/30 навсегда стояло бы «вышла
+# новая редакция», а постоянная приписка перестаёт читаться — и следующую
+# поправку под ней уже не увидеть.
+
+_ACCOUNTED_ENTRY = {
+    "id": "mo-713-30", "scope": "Московская область",
+    "short_name": "713/30 — РНГП Московской области",
+    "title": "Постановление Правительства Московской области от 17.08.2015 "
+             "№ 713/30 «Об утверждении нормативов градостроительного "
+             "проектирования Московской области»",
+    "current_as_of": "2026-09-19",
+    "latest_amendment": "ПП Московской области от 01.09.2026 № 1080-ПП, "
+                        "официально опубликовано 02.09.2026",
+    "amendment_history": ["02.07.2026 № 774-ПП — новая редакция п. 5.12"],
+    "watch_terms": ["713/30", "1080-ПП"], "source_url": "https://example.test/doc",
+}
+
+
+def test_an_accounted_redaction_is_not_news(tmp_path, monkeypatch) -> None:
+    """Названа редакция, которую мы уже учли, — это не новость, но и не молчание."""
+    _one_entry_registry(monkeypatch, tmp_path, _ACCOUNTED_ENTRY)
+    check = {"result": "ok", "sources": {"asked": True, "checked": 10,
+                                         "signals": [_FOUND]}}
+    assert registry.source_signals(check, _ACCOUNTED_ENTRY) == []
+    label, badge = registry._reader_label(_ACCOUNTED_ENTRY, check)
+    assert label.startswith("Учтено на") and badge == "ok"
+    # Очередь боту тоже молчит: объявлять учтённое значит объявлять вечно.
+    assert registry._changes_between({}, {"mo-713-30": check},
+                                     {"mo-713-30": _ACCOUNTED_ENTRY}) == []
+    # А на карточке находка названа — молча выброшенная читается как её
+    # отсутствие, — только тоном «уже учтено».
+    row = dict(_ACCOUNTED_ENTRY, check=check)
+    card = registry._card(row)
+    assert "уже учтена" in card
+    assert "вышла новая редакция" not in card
+
+    registry._save_state({"last_run_at": "2026-09-19T04:00:00+03:00",
+                          "checks": {"mo-713-30": check}})
+    assert registry.watch_state()["signals"] == 0, \
+        "счётчик находок считает то, чего на экране нет"
+
+
+def test_the_next_amendment_is_still_news(tmp_path, monkeypatch) -> None:
+    """Учтённый номер не глушит следующую поправку — иначе правка вредна.
+
+    Находка с НЕучтённым номером обязана остаться новостью: ровно ради неё
+    сторож и живёт.
+    """
+    _one_entry_registry(monkeypatch, tmp_path, _ACCOUNTED_ENTRY)
+    nxt = dict(_FOUND, quote="Постановление Правительства Московской области от "
+                             "15.03.2027 № 250-ПП «О внесении изменений в нормативы "
+                             "градостроительного проектирования Московской области»")
+    check = {"result": "ok", "sources": {"asked": True, "signals": [nxt]}}
+    assert registry.source_signals(check, _ACCOUNTED_ENTRY) == [nxt]
+    assert registry._reader_label(_ACCOUNTED_ENTRY, check)[0] == \
+        "В источниках: вышла новая редакция"
+    changes = registry._changes_between({}, {"mo-713-30": check},
+                                        {"mo-713-30": _ACCOUNTED_ENTRY})
+    assert [c["result"] for c in changes] == ["amended"]
+
+
+def test_a_quote_without_any_number_is_not_news_until_plato_names_the_act() -> None:
+    """Номера в цитате нет — это не новость, а повод Платону искать.
+
+    Владелец, 29.10.2026, о девяти «вышла новая редакция» над заголовками без
+    номера: «странные предупреждения непонятно о чём; пусть Платон ищет
+    конкретные данные». Посетителю находка без акта не показывается,
+    администратор видит её отдельно; акт, названный Платоном, — новость.
+    """
+    vague = dict(_FOUND, quote="Нормативы градостроительного проектирования "
+                               "Московской области изложены в новой редакции")
+    check = {"result": "ok", "sources": {"asked": True, "signals": [vague]}}
+    assert registry.source_signals(check, _ACCOUNTED_ENTRY) == []
+    assert registry.vague_signals(check, _ACCOUNTED_ENTRY) == [vague]
+    named = dict(vague, act="Постановление Правительства Московской области "
+                            "от 01.12.2026 № 1500-ПП", act_number="1500-ПП",
+                 what="переиздаёт таблицу парковок")
+    check = {"result": "ok", "sources": {"asked": True, "signals": [named]}}
+    assert registry.source_signals(check, _ACCOUNTED_ENTRY) == [named]
+
+
+# --- Платон дочитывает находку до конкретного акта (владелец, 29.10.2026) -----
+
+def test_plato_turns_a_bare_title_into_a_named_act() -> None:
+    """Заголовок «О внесении изменений в постановление...» — не новость.
+
+    Платон получает находку и карточку и возвращает изменяющий акт. Пока он
+    не назвал номер и дату, посетитель ничего не видит; назвал — карточка
+    говорит, каким актом и что изменено.
+    """
+    import json
+
+    bare = {"kind": "amended", "anchored_by": "номер",
+            "quote": "О внесении изменений в постановление...",
+            "source": "О внесении изменений в постановление...",
+            "url": "https://docs.cntd.ru/document/1"}
+    seen: list[dict] = []
+
+    def ask(payload: dict) -> str:
+        seen.append(payload)
+        assert payload["text"]["format"]["schema"] == registry.PLATO_SPECIFY_SCHEMA
+        assert {"type": "web_search"} in payload["tools"]
+        return json.dumps({"items": [{
+            "index": 0, "concrete": True, "kind": "amended",
+            "act": "Постановление Правительства Московской области от 01.12.2026 № 1500-ПП",
+            "act_number": "1500-ПП", "act_date": "01.12.2026",
+            "what": "переиздаёт таблицу приобъектных стоянок",
+            "effective_from": "05.12.2026", "url": "", "reason": ""}]})
+
+    out = registry.plato_specify(_ACCOUNTED_ENTRY, [bare], ask=ask)
+    assert len(seen) == 1
+    assert out[0]["act_number"] == "1500-ПП" and out[0]["plato"]["status"] == "concrete"
+    check = {"result": "ok", "sources": {"asked": True, "signals": out}}
+    assert registry.source_signals(check, _ACCOUNTED_ENTRY) == out
+    card = registry._card({**_ACCOUNTED_ENTRY, "check": check})
+    assert "1500-ПП" in card and "переиздаёт таблицу" in card and "05.12.2026" in card
+    assert "Платоном" in card
+
+
+def test_plato_without_a_number_keeps_the_card_quiet() -> None:
+    """Платон не нашёл акт — посетитель не видит ничего, администратор видит почему."""
+    import json
+
+    bare = {"kind": "amended", "anchored_by": "номер",
+            "quote": "О внесении изменений в постановление...",
+            "url": "https://docs.cntd.ru/document/1"}
+
+    def ask(payload: dict) -> str:
+        return json.dumps({"items": [{
+            "index": 0, "concrete": False, "kind": "none", "act": "", "act_number": "",
+            "act_date": "", "what": "", "effective_from": "", "url": "",
+            "reason": "страница — перечень изменений, нового акта после 1080-ПП нет"}]})
+
+    out = registry.plato_specify(_ACCOUNTED_ENTRY, [bare], ask=ask)
+    check = {"result": "ok", "sources": {"asked": True, "signals": out}}
+    entry = {**_ACCOUNTED_ENTRY, "check": check}
+    assert registry.source_signals(check, _ACCOUNTED_ENTRY) == []
+    assert registry._reader_label(_ACCOUNTED_ENTRY, check)[1] == "ok"
+    reader = registry._card(entry)
+    assert "вышла новая редакция" not in reader and "Акт изменён" not in reader
+    admin = registry._card(entry, admin=True)
+    assert "Платон не нашёл изменяющего акта" in admin and "нового акта после 1080-ПП нет" in admin
+
+
+def test_plato_failure_is_written_into_the_finding() -> None:
+    def ask(payload: dict) -> str:
+        raise RuntimeError("маршрут модели недоступен")
+
+    out = registry.plato_specify(_ACCOUNTED_ENTRY, [dict(_FOUND)], ask=ask)
+    assert out[0]["plato"] == {"status": "failed", "reason": "маршрут модели недоступен"}
+
+
+def test_address_amendments_of_the_zoning_rules_are_not_news() -> None:
+    """ПЗЗ (120-ПП) правятся адресно каждую неделю: новость — только отмена."""
+    rows = {row["id"]: row for row in registry._load_registry()}
+    entry = rows["moscow-120-pp-pzz"]
+    assert entry["watch_amendments"] is False
+    amended = {"kind": "amended", "quote": "О внесении изменений",
+               "act": "Постановление Правительства Москвы от 05.11.2026 № 3000-ПП",
+               "act_number": "3000-ПП"}
+    repealed = dict(amended, kind="repealed",
+                    act="Постановление Правительства Москвы от 05.11.2026 № 3001-ПП",
+                    act_number="3001-ПП")
+    check = {"result": "ok", "sources": {"asked": True, "signals": [amended, repealed]}}
+    assert registry.source_signals(check, entry) == [repealed]
+
+
+def test_the_search_hands_unclear_findings_to_plato(monkeypatch) -> None:
+    """Плановый поиск сам зовёт Платона по находкам, которые не учтены."""
+    import json
+
+    class _Doc:
+        title = 'О внесении изменений в постановление Правительства Московской области от 17.08.2015 № 713/30'
+        snippet = ""
+        url = "https://docs.cntd.ru/document/7"
+
+    class _Client:
+        def search(self, query: str, **kw: object) -> list:
+            return [_Doc()]
+
+    asked: list[dict] = []
+
+    def ask(payload: dict) -> str:
+        asked.append(json.loads(payload["input"][0]["content"]))
+        return json.dumps({"items": [{
+            "index": 0, "concrete": True, "kind": "amended",
+            "act": "Постановление Правительства Московской области от 01.12.2026 № 1500-ПП",
+            "act_number": "1500-ПП", "act_date": "01.12.2026", "what": "меняет таблицу",
+            "effective_from": "", "url": "", "reason": ""}]})
+
+    monkeypatch.setattr(registry, "_ASK", ask)
+    got = registry._search_signals(_ACCOUNTED_ENTRY, _Client())
+    assert asked and asked[0]["findings"][0]["url"] == "https://docs.cntd.ru/document/7"
+    assert got["signals"][0]["act_number"] == "1500-ПП"

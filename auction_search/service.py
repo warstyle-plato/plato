@@ -1,0 +1,431 @@
+from __future__ import annotations
+
+import inspect
+import re
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date
+from typing import Iterable
+
+from auction_search import deadline as clock
+from auction_search.adapters.base import AuctionPlatformAdapter
+from auction_search.catalogue_quality import catalogue_quality
+from auction_search.models import AuctionLot, LotKind, SourceKind
+
+
+class AuctionSearchService:
+    """Primary-source-only auction orchestration.
+
+    Adapters must represent the official ETP on which the procedure is conducted,
+    or the official registry the law obliges to publish it (ЕФРСБ for
+    bankruptcy). Commercial aggregators are deliberately unsupported.
+    """
+
+    def __init__(self, adapters: Iterable[AuctionPlatformAdapter]):
+        self.adapters = list(adapters)
+        self.last_quality_report: dict[str, int] = {
+            "seen": 0,
+            "accepted": 0,
+            "incomplete": 0,
+            "outside_profile": 0,
+            "noise": 0,
+        }
+
+    def discover_moscow(
+        self,
+        *,
+        include_noise: bool = False,
+        budget_seconds: float | None = None,
+    ) -> list[AuctionLot]:
+        """Собрать каталог, уложившись в срок.
+
+        Срок нужен не ради скорости, а ради того, чтобы ответ вообще дошёл:
+        шлюз рвёт соединение раньше, чем кончается неограниченный сбор, и
+        человек получает страницу ошибки вместо каталога. Источник, до
+        которого не дошли, называется вслух — молча пропущенный читается как
+        «лотов там нет».
+        """
+        until = clock.start(budget_seconds)
+        lots: list[AuctionLot] = []
+        if budget_seconds is not None and len(self.adapters) > 1:
+            # Площадки независимы. Последовательный обход позволял первой
+            # медленной ЭТП съесть все сорок секунд: следующие источники даже
+            # не опрашивались, и общий поиск показывал ноль. У всех боевых
+            # читателей один общий дедлайн, поэтому они безопасно работают
+            # одновременно и весь каталог по-прежнему укладывается в срок.
+            batches: list[list[AuctionLot] | None] = [None] * len(self.adapters)
+            # Источников уже больше четырёх; искусственная очередь снова дала
+            # бы первым медленным площадкам съесть общий срок до опроса новых.
+            with ThreadPoolExecutor(max_workers=min(8, len(self.adapters))) as pool:
+                pending = {
+                    pool.submit(self._ask, adapter, until): (index, adapter)
+                    for index, adapter in enumerate(self.adapters)
+                }
+                for future in as_completed(pending):
+                    index, adapter = pending[future]
+                    try:
+                        batches[index] = list(future.result())
+                        self._count_kinds(adapter, batches[index])
+                    except Exception as exc:  # noqa: BLE001
+                        self._failed(adapter, exc)
+                        batches[index] = []
+            for batch in batches:
+                lots.extend(batch or [])
+        else:
+            for adapter in self.adapters:
+                if clock.expired(until):
+                    self._not_asked(adapter, budget_seconds)
+                    continue
+                try:
+                    found = list(self._ask(adapter, until))
+                    self._count_kinds(adapter, found)
+                    lots.extend(found)
+                except Exception as exc:  # noqa: BLE001
+                    # Один недоступный источник не отменяет остальные. Прежде
+                    # любое его исключение доходило до маршрута, тот отвечал
+                    # 502, и каталог пропадал целиком — из-за одной площадки,
+                    # у которой сеть моргнула.
+                    self._failed(adapter, exc)
+        lots = self._deduplicate(lots)
+        assessed: list[tuple[AuctionLot, dict, dict]] = []
+        for lot in lots:
+            screening = self.screen_lot(lot)
+            quality = catalogue_quality(lot)
+            assessed.append((lot, screening, quality))
+        self.last_quality_report = self._quality_report(assessed)
+        if include_noise:
+            return lots
+        return [lot for lot, screen, quality in assessed if self.in_main_selection(screen, quality)]
+
+    @staticmethod
+    def _quality_report(assessed: list[tuple[AuctionLot, dict, dict]]) -> dict:
+        """Воронка допуска: сколько лотов прошло в основную подборку и чем отсеяны прочие.
+
+        Одна сборка на живой каталог и на историю: без неё «найдено 0» в истории
+        не отличалось от «торгов не было», хотя площадка отдала 48 лотов.
+        """
+        # КРТ считается отдельной строкой: в общей воронке площадка КРТ
+        # неотличима от гаража, а спрашивают именно про неё («в торгах по КРТ
+        # на самом деле активных 12, а не 6», владелец, 03.09.2026). Отсев без
+        # числа на каждом шаге чинится наугад — в тот шаг, который на виду.
+        krt = [(lot, screen, quality) for lot, screen, quality in assessed
+               if getattr(lot.lot_kind, "value", "") == "krt"]
+        krt_dropped: dict[str, int] = {}
+        for _lot, _screen, quality in krt:
+            if quality.get("accepted"):
+                continue
+            for reason in (quality.get("reasons") or ["причина не названа"]):
+                krt_dropped[reason] = krt_dropped.get(reason, 0) + 1
+        return {
+            "krt_seen": len(krt),
+            "krt_accepted": sum(1 for _l, _s, quality in krt if quality.get("accepted")),
+            "krt_dropped": [{"reason": reason, "count": count}
+                            for reason, count in sorted(krt_dropped.items(),
+                                                        key=lambda pair: -pair[1])],
+            "seen": len(assessed),
+            "accepted": sum(1 for _, screen, quality in assessed
+                            if screen["development_relevant"] and quality["accepted"]),
+            "incomplete": sum(1 for _, screen, quality in assessed
+                              if screen["development_relevant"]
+                              and quality["state"] == "incomplete"),
+            "outside_profile": sum(1 for _, screen, quality in assessed
+                                   if screen["development_relevant"]
+                                   and quality["state"] == "outside_profile"),
+            "noise": sum(1 for _, screen, _ in assessed
+                         if not screen["development_relevant"]),
+        }
+
+    @staticmethod
+    def in_main_selection(screen: dict, quality: dict) -> bool:
+        """Лот основной подборки «Интересные»: относится к девелопменту и прошёл допуск.
+
+        Одно правило на отбор сервера и на пометку лота для страницы: режим
+        «с шумом» добавляет прочие лоты к этим, а не заменяет их.
+        """
+        return bool(screen.get("development_relevant") and quality.get("accepted"))
+
+
+    @staticmethod
+    def _ask(adapter: AuctionPlatformAdapter, until: float | None) -> Iterable[AuctionLot]:
+        """Позвать источник, отдав ему срок, если он умеет его читать.
+
+        Адаптер без срока зовётся как раньше: заставлять все источники разом
+        научиться сроку ради одного значило бы переписать четыре читателя
+        вместо того, что нужно сейчас.
+        """
+        discover = adapter.discover_moscow
+        try:
+            takes_deadline = "deadline" in inspect.signature(discover).parameters
+        except (TypeError, ValueError):  # noqa: BLE001 — встроенные и обёртки
+            takes_deadline = False
+        if takes_deadline:
+            return discover(deadline=until)
+        return discover()
+
+    @staticmethod
+    def _count_kinds(adapter: AuctionPlatformAdapter, lots: list[AuctionLot]) -> None:
+        """Сколько КРТ дал источник — в его же строке охвата.
+
+        «Как так вышло, что фильтр только один КРТ и нашёл, хотя их там чуть ли
+        не десять» (владелец, 02.09.2026). По строке охвата ответить было
+        нечем: она говорит «лотов 9», а какие это лоты — нет, и который из
+        источников принёс единственный КРТ, на экране не видно вовсе.
+
+        Считается здесь, в одном месте на все источники: у каждого читателя
+        свой такой счёт однажды разошёлся бы с общим списком.
+        """
+        report = getattr(adapter, "last_report", None)
+        if not isinstance(report, dict):
+            return
+        report["kept_krt"] = sum(1 for lot in lots if lot.lot_kind is LotKind.KRT)
+
+    @staticmethod
+    def _failed(adapter: AuctionPlatformAdapter, exc: Exception) -> None:
+        """Источник ответил ошибкой — это его строка охвата, а не отказ всем."""
+        said = f"источник не ответил: {type(exc).__name__}: {exc}"[:300]
+        report = getattr(adapter, "last_report", None)
+        if isinstance(report, dict):
+            report.setdefault("pages", 0)
+            report.setdefault("cards", 0)
+            report.setdefault("kept", 0)
+            report["reason"] = said
+        else:
+            adapter.last_report = {
+                "source": getattr(adapter, "platform_name", adapter.__class__.__name__),
+                "pages": 0, "cards": 0, "kept": 0, "reason": said,
+            }
+
+    @staticmethod
+    def _not_asked(adapter: AuctionPlatformAdapter, budget_seconds: float | None) -> None:
+        """Источник, до которого не дошли, обязан сказать это сам."""
+        said = (
+            f"источник не опрошен: на каталог отведено {budget_seconds:.0f} с, "
+            "и они кончились на предыдущих"
+            if budget_seconds is not None else
+            "источник не опрошен"
+        )
+        report = getattr(adapter, "last_report", None)
+        if isinstance(report, dict):
+            report.update({"pages": 0, "cards": 0, "kept": 0, "reason": said})
+        else:
+            adapter.last_report = {
+                "source": getattr(adapter, "platform_name", adapter.__class__.__name__),
+                "pages": 0, "cards": 0, "kept": 0, "reason": said,
+            }
+
+    # Почему у площадки нет завершённых торгов на странице — её строкой охвата.
+    # У РАД архив читается по лоту отдельным запросом (около двадцати секунд
+    # на карточку) и в срок ответа не укладывается; у Росэлторга архив
+    # открывается только по известным адресам процедур. Обе умеют это лишь
+    # ручной выгрузкой `history_cli`.
+    FINISHED_UNAVAILABLE = (
+        "завершённые торги по этой площадке на странице недоступны: её архив "
+        "не читается одним запросом выдачи")
+
+    def discover_moscow_finished(
+        self,
+        since: date,
+        until: date,
+        *,
+        include_noise: bool = False,
+        budget_seconds: float | None = None,
+    ) -> list[AuctionLot]:
+        """Завершённые торги Москвы за окно дат — у площадок, которые это умеют.
+
+        Площадка без такой выборки не молчит: её строка охвата называет, что
+        завершённые по ней не показаны, — пустота иначе читалась бы как
+        «торгов не было».
+        """
+        deadline = clock.start(budget_seconds)
+        lots: list[AuctionLot] = []
+        for adapter in self.adapters:
+            discover = getattr(adapter, "discover_moscow_finished", None)
+            if discover is None:
+                adapter.last_report = {
+                    "source": getattr(adapter, "platform_name", adapter.__class__.__name__),
+                    "pages": 0, "cards": 0, "kept": 0, "finished_available": False,
+                    "reason": self.FINISHED_UNAVAILABLE,
+                }
+                continue
+            if clock.expired(deadline):
+                self._not_asked(adapter, budget_seconds)
+                continue
+            try:
+                found = list(discover(since, until, deadline=deadline))
+                lots.extend(found)
+            except Exception as exc:  # noqa: BLE001
+                self._failed(adapter, exc)
+            report = getattr(adapter, "last_report", None)
+            if isinstance(report, dict):
+                report["finished_available"] = True
+        lots = self._deduplicate_history(lots)
+        assessed = [(lot, self.screen_lot(lot), catalogue_quality(lot)) for lot in lots]
+        self.last_quality_report = self._quality_report(assessed)
+        if include_noise:
+            return lots
+        return [lot for lot, screen, quality in assessed if self.in_main_selection(screen, quality)]
+
+    def discover_moscow_history(
+        self,
+        since: date,
+        until: date,
+        *,
+        include_noise: bool = False,
+        candidate_urls: Iterable[str] = (),
+    ) -> list[AuctionLot]:
+        """Opt-in historical discovery; never called by the production endpoint."""
+        urls = tuple(candidate_urls)
+        lots: list[AuctionLot] = []
+        for adapter in self.adapters:
+            discover = getattr(adapter, "discover_moscow_history", None)
+            if discover is not None:
+                lots.extend(discover(since, until, candidate_urls=urls))
+        lots = self._deduplicate_history(lots)
+        for lot in lots:
+            self.screen_lot(lot)
+        if include_noise:
+            return lots
+        return [lot for lot in lots if self.is_development_relevant(lot)]
+
+    @staticmethod
+    def _deduplicate_history(lots: Iterable[AuctionLot]) -> list[AuctionLot]:
+        """Keep relistings: history identity is an official procedure, not a parcel."""
+        by_source: OrderedDict[str, AuctionLot] = OrderedDict()
+        for lot in AuctionSearchService._drop_registry_copies(list(lots)):
+            key = f"{lot.source.platform.value}:{lot.source.external_lot_id}"
+            by_source.setdefault(key, lot)
+        return list(by_source.values())
+
+    @staticmethod
+    def _deduplicate(lots: Iterable[AuctionLot]) -> list[AuctionLot]:
+        lots = AuctionSearchService._drop_registry_copies(list(lots))
+        by_key: OrderedDict[str, AuctionLot] = OrderedDict()
+        for lot in lots:
+            existing = by_key.get(lot.canonical_key)
+            if existing is None:
+                by_key[lot.canonical_key] = lot
+                continue
+            # Keep the richer official record; never merge conflicting facts silently.
+            existing_score = len(existing.documents) + len(existing.provenance)
+            new_score = len(lot.documents) + len(lot.provenance)
+            if new_score > existing_score:
+                by_key[lot.canonical_key] = lot
+        return list(by_key.values())
+
+    @staticmethod
+    def _drop_registry_copies(lots: list[AuctionLot]) -> list[AuctionLot]:
+        """Лот ЕФРСБ, который мы уже читаем с самой площадки, — не второй лот.
+
+        Сообщение в ЕФРСБ и карточка на Сбербанк-АСТ, ЭТП ГПБ, ЭТП РФ или НИС —
+        одни и те же торги. Остаётся карточка площадки: у неё документы и
+        разбор; ссылка на сообщение ЕФРСБ переходит к ней.
+        """
+        from auction_search.adapters.efrsb import same_trade
+
+        registry = [lot for lot in lots if lot.source.platform is SourceKind.EFRSB]
+        if not registry:
+            return lots
+        platforms = [lot for lot in lots if lot.source.platform is not SourceKind.EFRSB]
+        kept = list(platforms)
+        for copy in registry:
+            twin = next((lot for lot in platforms if same_trade(copy, lot)), None)
+            if twin is None:
+                kept.append(copy)
+                continue
+            twin.raw.setdefault("efrsb_message_url", copy.source.lot_url)
+        order = {id(lot): index for index, lot in enumerate(lots)}
+        return sorted(kept, key=lambda lot: order[id(lot)])
+
+    @staticmethod
+    def is_development_relevant(lot: AuctionLot) -> bool:
+        return AuctionSearchService.screen_lot(lot)["development_relevant"]
+
+    @staticmethod
+    def screen_lot(lot: AuctionLot) -> dict:
+        selected: list[str] = []
+        excluded: list[str] = []
+        flags: list[str] = []
+        location = " ".join((lot.address or "", str(lot.raw.get("region") or ""), lot.title or "")).lower()
+        if "москва" in location:
+            selected.append("Москва")
+        kind_labels = {LotKind.KRT: "КРТ", LotKind.PROPERTY_COMPLEX: "имущественный комплекс", LotKind.UNFINISHED: "незавершённый объект", LotKind.LAND_SALE: "продажа земли", LotKind.LAND_LEASE: "аренда земли", LotKind.EQUITY_STAKE: "доля в юрлице"}
+        if lot.lot_kind in kind_labels:
+            selected.append(kind_labels[lot.lot_kind])
+        if lot.land_area_sqm is not None:
+            if lot.land_area_sqm >= 10_000:
+                selected.append(f"площадь {lot.land_area_sqm / 10_000:g} га")
+                flags.append("large_site")
+            else:
+                selected.append(f"площадь {lot.land_area_sqm:g} м²")
+        if lot.permitted_use:
+            selected.append(lot.permitted_use)
+
+        use = " ".join((lot.permitted_use or "", lot.title or "")).lower()
+        explicit_test_lot = (
+            bool(re.match(r"^\s*\[?\s*тест\s*\]?\b", lot.title or "", re.I))
+            or "тестовый лот" in use
+        )
+        if explicit_test_lot:
+            excluded.append("тестовая карточка ЭТП")
+            flags.append("platform_test_lot")
+        noise_markers = ("ижс", "индивидуальн", "личного подсобного", "садовод", "огород")
+        if any(m in use for m in noise_markers):
+            excluded.append("ИЖС или индивидуальное использование")
+            flags.append("individual_housing")
+        residential_house = any(m in use for m in ("жилой дом", "жилого дома", "жилым домом", "домовладение"))
+        residential_unit = (
+            "квартир" in use
+            or (
+                any(marker in use for marker in ("жилое помещение", "жилого помещения"))
+                and not any(marker in use for marker in ("нежилое помещение", "нежилого помещения"))
+            )
+        )
+        small = lot.land_area_sqm is not None and lot.land_area_sqm < 5_000
+        if residential_house:
+            flags.append("existing_residential_house")
+        if small:
+            # Сам по себе размер не исключает лот: в эталоне владельца есть
+            # реальные сделки существенно меньше 5 000 м². Масштаб сравнивает
+            # измеренный профиль, а здесь маленький участок лишь называется.
+            flags.append("small_site")
+        if residential_house and small:
+            excluded.append("малый участок с жилым домом")
+        if residential_unit and lot.lot_kind == LotKind.PROPERTY_COMPLEX:
+            excluded.append("отдельная квартира, не объект девелопмента")
+            flags.append("residential_unit")
+
+        if explicit_test_lot:
+            relevant = False
+        elif lot.lot_kind == LotKind.KRT:
+            relevant = True
+        elif lot.lot_kind in {LotKind.PROPERTY_COMPLEX, LotKind.UNFINISHED}:
+            relevant = not (residential_house and small) and not residential_unit
+        elif lot.lot_kind == LotKind.EQUITY_STAKE:
+            # Доля в юрлице — предмет девелоперского интереса сама по себе:
+            # владелец попросил их смотреть (01.09.2026). Подходит ли она по
+            # цене и стоит ли за ней недвижимость, отвечает `equity_stake` —
+            # здесь решается только «это вообще наш рынок».
+            relevant = not residential_unit
+        else:
+            relevant = lot.lot_kind in {LotKind.LAND_SALE, LotKind.LAND_LEASE} and not excluded
+        lot.selection_reasons = selected
+        lot.exclusion_reasons = excluded
+        lot.relevance_flags = flags
+        rating = "Высокая" if relevant and lot.lot_kind == LotKind.KRT else "Средняя" if relevant else "Шум"
+        why_here = " · ".join(selected[:4])
+        concerns = excluded or (["нужна проверка градостроительного потенциала"] if relevant else [])
+        return {
+            "development_relevant": relevant,
+            "rating": rating,
+            "selection_reasons": selected,
+            "exclusion_reasons": excluded,
+            "relevance_flags": flags,
+            "why_here": why_here,
+            "platon_explanation": {
+                "rating": rating,
+                "why_here": why_here,
+                "concerns": concerns,
+                "verify_before_calculation": ["официальные документы лота", "кадастр и градостроительные ограничения"],
+                "grounding": "selection_reasons_and_official_lot_fields_only",
+            },
+        }

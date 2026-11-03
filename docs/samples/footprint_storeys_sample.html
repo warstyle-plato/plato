@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Пятно и этажность — образец</title>
+<style>
+:root{--bg:#fff;--fg:#1d2433;--mute:#667085;--line:#e4e7ec;--accent:#1f6feb;--warn:#b54708;--warnbg:#fffaeb;--chip:#f2f4f7}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1420;--fg:#e6e9ef;--mute:#98a2b3;--line:#2a3142;--accent:#6ea8ff;--warn:#fdb022;--warnbg:#2a2210;--chip:#1b2130}}
+body{background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:0;padding:16px}
+main{max-width:860px;margin:0 auto}
+h1{font-size:20px;margin:0 0 4px}h2{font-size:16px;margin:24px 0 8px}
+.lead{color:var(--mute);margin:0 0 16px}
+table{width:100%;border-collapse:collapse;margin:6px 0}
+td,th{padding:6px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+td.n{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+tr.sum td{font-weight:600}
+.src{color:var(--mute);font-size:13px}
+.chip{display:inline-block;background:var(--chip);border-radius:10px;padding:0 8px;font-size:12px;color:var(--mute)}
+.note{background:var(--warnbg);border-left:3px solid var(--warn);padding:8px 12px;margin:10px 0}
+.box{border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin:10px 0}
+.wrap{overflow-x:auto}
+</style></head><body><main>
+<h1>Пятно застройки, этажность и подземные уровни — образец</h1>
+<p class="lead">Пример: офис, Пролетарский проспект, вл. 20. Участок 0,243 га, наземная площадь здания 22 842 м², 68 машино-мест. Числа посчитаны по предлагаемым допущениям; каждое из них можно поменять руками.</p>
+
+<h2>1. В таблице ТЭП — новый блок «Участок и здание»</h2>
+<div class="wrap"><table>
+<tr><th>Показатель</th><th>Значение</th><th>Откуда</th></tr>
+<tr><td>Площадь участка</td><td class="n">2 430 м²</td><td class="src">выписка / ввод</td></tr>
+<tr><td>− Двор: озеленение и площадки</td><td class="n">0 м²</td><td class="src">та же площадь, что у благоустройства; у нежилого проекта жителей нет — двор по населению не считается</td></tr>
+<tr><td>− Проезды, тротуары, пожарные проезды</td><td class="n">365 м²</td><td class="src">15% участка <span class="chip">допущение 1</span></td></tr>
+<tr><td>− Наземные стоянки</td><td class="n">0 м²</td><td class="src">все 68 мест под землёй; место на открытой стоянке — 25 м² (Москва), 22,5 м² (МО, 713/30 п. 5.11)</td></tr>
+<tr><td>− Отступы от границ участка</td><td class="n">556 м²</td><td class="src">полоса 3 м по периметру <span class="chip">допущение 2</span></td></tr>
+<tr class="sum"><td>= Пятно застройки (оценка)</td><td class="n">1 509 м² · 62%</td><td class="src">расчёт; можно задать своё число</td></tr>
+<tr class="sum"><td>Средняя этажность</td><td class="n">≈ 15,1</td><td class="src">22 842 м² ÷ 1 509 м² (так её определяет норматив)</td></tr>
+<tr><td>Подземный контур</td><td class="n">1 874 м²</td><td class="src">участок минус отступы; под двором стилобат допустим</td></tr>
+<tr><td>Площадь подземной части</td><td class="n">2 380 м²</td><td class="src">68 мест × 35 м² (с рампами и проездами) + подземные кладовые</td></tr>
+<tr class="sum"><td>Подземных уровней</td><td class="n">2</td><td class="src">2 380 ÷ (1 874 × 0,85) = 1,49 → вверх до 2 <span class="chip">допущение 3</span></td></tr>
+</table></div>
+
+<h2>2. Ставка подземной части по уровням</h2>
+<div class="wrap"><table>
+<tr><th>Уровень</th><th>Площадь</th><th>Ставка</th><th>Сумма</th></tr>
+<tr><td>−1</td><td class="n">1 593 м²</td><td class="n">152 тыс ₽/м²</td><td class="n">242,1 млн ₽</td></tr>
+<tr><td>−2 (надбавка +10%)</td><td class="n">787 м²</td><td class="n">167 тыс ₽/м²</td><td class="n">131,6 млн ₽</td></tr>
+<tr class="sum"><td>Итого</td><td class="n">2 380 м²</td><td class="n">157 тыс ₽/м² в среднем</td><td class="n">373,7 млн ₽</td></tr>
+</table></div>
+<p class="src">Было: одна ставка 152 тыс ₽/м² на всю подземную часть — 361,8 млн ₽. Разница +11,9 млн ₽ (+3,3%). Если ставка подземной части задана руками, надбавки к ней не применяются. <span class="chip">допущение 4</span></p>
+
+<h2>3. Предупреждение, если этажность выше разрешённой</h2>
+<div class="note">Средняя этажность по расчёту — 15,1, а градплан участка разрешает не выше 9 этажей. Здание с такой наземной площадью на этом участке не помещается: уменьшите площадь здания или проверьте допущения по пятну застройки.</div>
+<p class="src">Показывается, только если предельная этажность или высота известна: из градплана, ПЗЗ или введена руками. Иначе пишем, что сравнить не с чем.</p>
+
+<h2>4. В отчёте и PDF — тот же расчёт одной строкой</h2>
+<div class="box">Здание: пятно ≈ 1 509 м² (62% участка), средняя этажность ≈ 15, подземная часть 2 380 м² на двух уровнях. Оценка по балансу территории, не проект.</div>
+
+<h2>Регионы</h2>
+<div class="wrap"><table>
+<tr><th></th><th>Москва</th><th>Московская область</th><th>Другие регионы</th></tr>
+<tr><td>Двор</td><td>площадь благоустройства проекта (сверяется с 2152-ПП: 5 м² на жителя)</td><td>площадь благоустройства проекта</td><td>площадь благоустройства проекта</td></tr>
+<tr><td>Место на открытой стоянке</td><td>25 м² <span class="chip">экспертное умолчание</span></td><td>22,5 м² — норматив 713/30, п. 5.11</td><td>25 м² <span class="chip">экспертное умолчание</span></td></tr>
+<tr><td>Проезды и отступы</td><td colspan="3">одни умолчания для всех регионов — норматива с долей нет; помечены как экспертная оценка</td></tr>
+</table></div>
+</main></body></html>

@@ -1,0 +1,6312 @@
+from __future__ import annotations
+
+# Release repair after #513: VERSION is assigned only by the release-merge step.
+
+import io
+import json
+import logging
+import math
+import os
+import hashlib
+import re
+import statistics
+import sys
+import threading
+import time
+import urllib.parse
+import guide
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
+from urllib.parse import parse_qs, unquote, urlparse
+
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from pydantic import BaseModel, Field
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.table import Table, TableStyleInfo
+
+from request_body import json_object
+from auction_search.adapters import (
+    NistpAdapter,
+    ETPGPBAdapter,
+    ETPRFAdapter,
+    InvestMoscowDiscoveryAdapter,
+    LotOnlineAdapter,
+    RoseltorgAdapter,
+    SberbankASTAdapter,
+)
+from auction_search.adapters.torgi_gov import (
+    ACTIVE_LOT_STATUSES as torgi_gov_active_statuses,
+    FINISHED_LOT_STATUSES as torgi_gov_finished_statuses,
+    TorgiGovAdapter, lot_status_ru, trust_report as torgi_trust_report,
+)
+from auction_search.adapters.etp_probe import (
+    SLUGS as etp_slugs,
+    probe as etp_probe,
+    probe_browser_platform as etp_probe_browser,
+)
+from auction_search.adapters.fedresurs import (
+    SEARCH_PAGE as FEDRESURS_SEARCH_PAGE,
+    KNOWN_DEBTOR_INN as FEDRESURS_KNOWN_INN,
+    KNOWN_MESSAGE_GUID as FEDRESURS_KNOWN_MESSAGE,
+    probe as fedresurs_probe, probe_api as fedresurs_probe_api,
+    probe_backend as fedresurs_probe_backend,
+    probe_browser as fedresurs_browser)
+from auction_search.adapters import source_page
+from auction_search.adapters.efrsb import EfrsbAdapter
+from auction_search.adapters.roseltorg_probe import (
+    CATALOGUE_URL as ROSELTORG_SECTION_URL,
+    probe as roseltorg_probe,
+    probe_section_browser as roseltorg_section_browser,
+)
+from auction_search.bridge import auction_page_with_handoff, install_page_bridge
+from auction_search.catalogue_quality import catalogue_quality
+from auction_search.developaid_mapper import krt_territory_coverage
+from auction_search.parsing import (
+    cadastral_numbers, deadline_iso, deadline_moment, parse_hectares_sqm,
+)
+from auction_search import equity_stake
+from auction_search.developaid_mapper import build_developaid_seed
+from auction_search.documents import DocumentExtractionError
+from auction_search.export_areas import export_areas
+from auction_search import archives, egrn_archive, egrn_store
+from auction_search import krt_pipeline
+from auction_search import lot_documents
+from auction_search.equity_assets import enrich_equity_from_documents
+from auction_search.krt_pipeline import (
+    documents_summary,
+    egrn_summary,
+    egrn_view,
+    enrich_krt_from_official_documents,
+)
+from auction_search.krt_ranking import (
+    HEARTBEAT_SECONDS, NEW_FOR_SECONDS, KrtRanking, score_row)
+# Имя `krt_ranking` внутри маршрутов занято ЭКЗЕМПЛЯРОМ хранилища, а версия
+# методики — функция модуля: `krt_ranking.model_is_current` там разрешилось бы
+# на экземпляре и упало бы при первом же чтении рейтинга.
+from auction_search import krt_ranking as krt_ranking_rules
+from auction_search.krt_screening import build_krt_model_screening
+from auction_search.krt_screening import housing_measure_named
+from auction_search.models import LotKind
+from auction_search.preset_mapper import build_project_preset
+from auction_search.profile_fit import profile_fit
+from auction_search.service import AuctionSearchService
+from auction_search import krt_territory, nagatino_parcels
+from auction_search import view_access as auction_view
+from auction_search import lot_notes as lot_notes_rules
+from auction_search import export_columns
+from auction_search import krt_early_projects
+from auction_search import krt_project_site
+from auction_search import krt_investment_score
+from auction_search.nagatino_ui import nagatino_page
+from auction_search.krt_investment_card import krt_investment_card_page
+from auction_search.ui import auctions_page
+from market_search.krt_registry import CATALOGUE_URL, KrtRegistry
+from market_search.krt_map_data import wgs84 as krt_wgs84
+from market_search import krt_decision_tep
+from market_search import tep_check
+from market_search import cabinet as market_cabinet
+from auction_search import access_keys
+from market_search.geocoder import GeocodingError
+from market_search.http import RemoteServiceError
+from market_search.subject import SubjectNotFound
+
+
+logger = logging.getLogger(__name__)
+
+
+def _positive_float(value: Any) -> float | None:
+    """A persisted zero/negative benchmark is missing, not a usable denominator."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+class KrtRankingRequest(BaseModel):
+    """Что считать: слаги отобранных площадок. Пусто — весь каталог.
+
+    `only_stale` оставляет из выбранного то, что посчитано ПРЕЖНЕЙ методикой
+    или не считалось вовсе. Умолчание — `False`: прогон по кнопке обязан
+    пересчитывать и свежие строки, потому что рынок движется и цена стареет
+    сама по себе, без всяких наших правок. «Устарело по методике» и «устарело
+    по времени» — разные вопросы, и отвечать на них одним ключом нельзя.
+    """
+
+    # Потолок был 400, когда каталог держал 124 площадки. Теперь их 580, и
+    # кнопка «Пересчитать только их» слала весь отобранный список: приходил
+    # 422, а его `detail` — СПИСОК, и на экране он показывался как
+    # «[object Object]» (владелец, 05.09.2026). То есть кнопка не работала
+    # вовсе, и сказать об этом было нечем. Потолок считается от каталога с
+    # запасом на рост, а не от числа, верного позапрошлым летом.
+    slugs: list[str] = Field(default_factory=list, max_length=2000)
+    only_stale: bool = False
+
+
+class AuctionIngestRequest(BaseModel):
+    url: str = Field(min_length=12, max_length=2000)
+    enrich_krt_documents: bool = True
+    include_raw: bool = False
+
+class AuctionExportRequest(BaseModel):
+    rows: list[dict[str, Any]] = Field(default_factory=list, max_length=2000)
+    kind: str = Field(default="auctions", max_length=40)
+
+class AuctionLotPointRequest(BaseModel):
+    query: str = Field(min_length=3, max_length=500)
+
+
+_CADASTRAL_OKRUG = {
+    "77:01": "ЦАО",
+    "77:02": "СВАО",
+    "77:03": "ВАО",
+    "77:04": "ЮВАО",
+    "77:05": "ЮАО",
+    "77:06": "ЮЗАО",
+    "77:07": "ЗАО",
+    "77:08": "СЗАО",
+    "77:09": "САО",
+    "77:10": "ЗелАО",
+}
+_DISTRICT_OKRUG = {
+    "арбат": "ЦАО", "басманный": "ЦАО", "хамовники": "ЦАО",
+    "лефортово": "ЮВАО", "покровское-стрешнево": "СЗАО",
+    "покровское стрешнево": "СЗАО", "ростокино": "СВАО",
+    "москворечье-сабурово": "ЮАО", "москворечье сабурово": "ЮАО",
+    "куркино": "СЗАО", "южное бутово": "ЮЗАО",
+    "орехово-борисово северное": "ЮАО", "орехово-борисово южное": "ЮАО",
+    "гольяново": "ВАО", "коптево": "САО", "перово": "ВАО",
+    "зеленоград": "ЗелАО",
+}
+_STREET_HINTS = (
+    "ул.", "улица", "ш.", "шоссе", "пр-д", "проезд", "просп", "пер.",
+    "переул", "наб.", "набереж", "б-р", "бульвар", "д.", "дом", "вл.",
+    "владен", "стр.", "строен",
+)
+_ADDRESS_CITY_MARKERS = (
+    "г. москва,", "г москва,", "город москва,",
+    "г. москве,", "г москве,", "город москве,",
+    "г. москвы,", "г москвы,", "город москвы,",
+)
+_ADDRESS_STOP_MARKERS = (
+    " одновременно с ", " площадью ", " общей площадью ",
+    " кадастровый номер", " кадастрового номера", " к/н ", " кн ", " кад. №",
+    " право аренды", " находящ", " вид права",
+)
+
+
+def _first_after(text: str, markers: tuple[str, ...]) -> tuple[str, str]:
+    """Return tail after the earliest literal marker, without regular expressions.
+
+    Auction titles are external input. Literal scans stay linear even on a title
+    containing tens of thousands of repeated spaces, unlike several permissive
+    regexes that CodeQL correctly flagged as polynomial.
+    """
+    low = text.lower()
+    found: tuple[int, str] | None = None
+    for marker in markers:
+        index = low.find(marker)
+        if index >= 0 and (found is None or index < found[0]):
+            found = (index, marker)
+    if found is None:
+        return "", ""
+    index, marker = found
+    return text[index + len(marker):], marker
+
+
+def _cut_at_first_literal(text: str, markers: tuple[str, ...]) -> str:
+    low = text.lower()
+    positions = [pos for marker in markers if (pos := low.find(marker)) >= 0]
+    return text[:min(positions)] if positions else text
+
+
+def _export_address(row: dict[str, Any]) -> str:
+    explicit = " ".join(str(row.get("address") or "").split()).strip(" ,;")
+    if explicit:
+        return explicit
+    title = " ".join(str(row.get("name") or row.get("title") or "").split())
+    if not title:
+        return ""
+
+    value, marker = _first_after(title, ("по адресу", "по адресам"))
+    if value:
+        value = value.lstrip(" :")
+    else:
+        value, marker = _first_after(title, _ADDRESS_CITY_MARKERS)
+        if value:
+            value = "г. Москва, " + value.lstrip()
+    if not value:
+        return ""
+
+    # После адреса в названии лота обычно снова начинается описание объекта.
+    value = _cut_at_first_literal(value, _ADDRESS_STOP_MARKERS)
+    return value.strip(" ,;.-")
+
+
+def _export_district(row: dict[str, Any], address: str) -> str:
+    existing = " ".join(str(row.get("district") or "").split()).strip()
+    if existing:
+        return existing
+
+    text = " ".join((address, str(row.get("name") or row.get("title") or "")))
+    low = text.lower()
+    for marker in ("муниципальный округ ", "район ", "р-н "):
+        index = low.find(marker)
+        if index < 0:
+            continue
+        tail = text[index + len(marker):]
+        stop = min([p for p in (tail.find(","), tail.find(";")) if p >= 0] or [len(tail)])
+        candidate = tail[:stop].strip(" .")
+        if candidate:
+            return candidate
+
+    # Формат «г. Москва, Лефортово, ул. ...» встречается в ГИС Торгах.
+    tail, _ = _first_after(address, _ADDRESS_CITY_MARKERS)
+    if tail:
+        stop = min([p for p in (tail.find(","), tail.find(";")) if p >= 0] or [len(tail)])
+        candidate = tail[:stop].strip()
+        candidate_low = candidate.lower()
+        if candidate and not any(hint in candidate_low for hint in _STREET_HINTS):
+            return candidate
+    return ""
+
+def _export_okrug(row: dict[str, Any], district: str, cadastre: str) -> str:
+    existing = " ".join(str(row.get("okrug") or "").split()).strip()
+    if existing:
+        return existing
+    for number in cadastral_numbers(cadastre):
+        okrug = _CADASTRAL_OKRUG.get(number[:5])
+        if okrug:
+            return okrug
+    return _DISTRICT_OKRUG.get(district.lower().replace("ё", "е"), "")
+
+
+def _days_to_application_deadline(row: dict[str, Any]) -> int | None:
+    raw = row.get("application_deadline_iso") or row.get("application_deadline")
+    moment = deadline_moment(str(raw or ""))
+    if moment is None:
+        return None
+    return (moment.date() - datetime.now(moment.tzinfo).date()).days
+
+
+def _yandex_maps_href(address: str) -> str:
+    return ("https://yandex.ru/maps/?text=" + urllib.parse.quote_plus(address)) if address else ""
+
+
+_XLSX_DATE_KEYS = ("application_start", "application_deadline", "auction_date")
+_XLSX_DATE_RE = re.compile(
+    r"^\s*(\d{1,2})\.(\d{1,2})\.(\d{4})(?:[ ,T]+(\d{1,2}):(\d{2}))?\s*$")
+
+
+def _xlsx_date(value: Any) -> datetime | None:
+    """Дата торгов из текста площадки — настоящей датой, чтобы Excel её сортировал.
+
+    Разбирается только однозначная форма «ДД.ММ.ГГГГ[ ЧЧ:ММ]»; всё прочее
+    («в течение месяца») остаётся текстом как есть — догадка о дате хуже текста.
+    """
+    match = _XLSX_DATE_RE.match(str(value or ""))
+    if not match:
+        return None
+    day, month, year, hour, minute = match.groups()
+    try:
+        return datetime(int(year), int(month), int(day),
+                        int(hour or 0), int(minute or 0))
+    except ValueError:
+        return None
+
+
+def _xlsx_safe_href(value: Any) -> str:
+    """В гиперссылку книги идёт только http(s): `javascript:` из данных — нет."""
+    text = str(value or "").strip()
+    return text if re.match(r"^https?://", text, re.I) else ""
+
+
+def _export_number(value: Any) -> float | int | None:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = float(value)
+        return int(parsed) if parsed.is_integer() else parsed
+    except (TypeError, ValueError):
+        return None
+
+
+@dataclass
+class _ExportContext:
+    """Что строке торгов нужно с диска: комментарии Платона, очередь, точки НСПД.
+
+    Читается один раз на таблицу — и книгой, и страницей. Модель здесь не
+    зовётся: комментарий пишет фоновый разбор (`lot_notes`), таблица его читает.
+    """
+    notes: dict[str, Any]
+    queue_place: dict[str, int]
+    interval: float
+    points: dict[str, Any]
+    points_waiting: list[str]
+
+    @classmethod
+    def read(cls) -> "_ExportContext":
+        store = lot_notes_rules.LotNotes(os.path.join(os.getenv("DATA_DIR", "data"), "market"))
+        return cls(
+            notes=store.notes(),
+            queue_place={lot["url"]: index for index, lot in enumerate(store.queue(), start=1)},
+            interval=lot_notes_rules.interval_seconds(),
+            points=store.points(),
+            points_waiting=store.points_queue(),
+        )
+
+
+def _export_row(source_row: dict[str, Any], keys: tuple[str, ...],
+                context: "_ExportContext | None", *,
+                again: str = "выгрузите таблицу ещё раз") -> tuple[dict[str, Any], str]:
+    """Строка таблицы торгов так, как её видят книга и страница. Один разбор на обе.
+
+    Возвращает строку и ссылку на участок в НСПД (пусто — точки нет).
+    """
+    row = dict(source_row)
+    if row.get("section") == "Торги":
+        areas = export_areas(row)
+        row["land_area_sqm"] = areas.land_area_sqm
+        row["building_area_sqm"] = areas.building_area_sqm
+        if not row.get("cadastre"):
+            row["cadastre"] = ", ".join(cadastral_numbers(str(row.get("name") or "")))
+        row["address"] = _export_address(row)
+        row["district"] = _export_district(row, row["address"])
+        row["okrug"] = _export_okrug(row, row["district"], str(row.get("cadastre") or ""))
+        if str(row.get("type") or "").strip().upper() == "КРТ" and not row.get("krt_area_ha"):
+            area_sqm = _export_number(row.get("land_area_sqm"))
+            if area_sqm is None:
+                area_sqm = parse_hectares_sqm(str(row.get("name") or ""))
+            row["krt_area_ha"] = (area_sqm / 10_000) if area_sqm is not None else ""
+        row["days_to_deadline"] = _days_to_application_deadline(row)
+    # Снимки, сохранённые до перевода, несут код ГИС Торгов как есть.
+    row["status"] = lot_status_ru(row.get("status"))
+    if row.get("section") == "Торги":
+        # Просроченный лот не выдаётся за идущие торги, хоть площадка и не
+        # сменила статус: приём заявок закончился.
+        row["status"] = export_columns.status_for(row["status"], row.get("days_to_deadline"))
+    nspd_href = ""
+    if context is not None:
+        if "plato_comment" in keys:
+            key = str(row.get("url") or "").strip()
+            days = row.get("days_to_deadline")
+            if not context.notes.get(key) and isinstance(days, int) and days < 0:
+                # Очередь разбора берёт только живые лоты (`LotNotes.queue`):
+                # «не поставлен в очередь» здесь было бы неправдой о причине.
+                row["plato_comment"] = ("Не разбирался: приём заявок закончился, "
+                                        "разбор делается только по живым лотам")
+            else:
+                row["plato_comment"] = lot_notes_rules.comment_for_book(
+                    context.notes.get(key), place=context.queue_place.get(key),
+                    interval_seconds=context.interval, again=again)
+        if "nspd_map" in keys:
+            row["nspd_map"], nspd_href = lot_notes_rules.nspd_cell(
+                lot_notes_rules.row_numbers(row), context.points,
+                waiting=context.points_waiting, interval_seconds=context.interval,
+                again=again)
+    return row, nspd_href
+
+
+def _web_table(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Таблица торгов для страницы: те же колонки и те же значения, что в книге.
+
+    Каждая клетка — текст для экрана, ссылка (если есть) и число (для
+    сортировки). Пустых клеток нет: у пустоты — тире или причина.
+    """
+    columns = export_columns.AUCTION_COLUMNS
+    keys = tuple(c.key for c in columns)
+    context = _ExportContext.read()
+    out = []
+    for source_row in rows[:2000]:
+        row, nspd_href = _export_row(source_row, keys, context, again="обновите таблицу позже")
+        cells: dict[str, dict[str, Any]] = {}
+        for column in columns:
+            value = row.get(column.key)
+            if column.kind in export_columns.NUMERIC_KINDS:
+                value = _export_number(value)
+            cell: dict[str, Any] = {"text": export_columns.cell_text(column, value)}
+            if isinstance(value, (int, float)):
+                cell["value"] = value
+            href = ""
+            if column.key == "url":
+                href = _xlsx_safe_href(value)
+            elif column.key == "address":
+                href = _yandex_maps_href(str(value or ""))
+            elif column.key in ("nspd_map", "cadastre"):
+                href = _xlsx_safe_href(nspd_href)
+            if href:
+                cell["href"] = href
+            if column.kind == "comment":
+                key = str(row.get("url") or "").strip()
+                cell["ready"] = bool((context.notes.get(key) or {}).get("text"))
+            cells[column.key] = cell
+        out.append({"url": str(row.get("url") or ""), "cells": cells})
+    return {"columns": export_columns.public_columns(columns), "rows": out}
+
+
+def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
+    if kind == "krt":
+        columns = [
+            ("name", "Проект КРТ", 48),
+            ("okrug", "Округ", 10),
+            ("district", "Район", 20),
+            ("status", "Статус", 18),
+            ("krt_area_ha", "Площадь территории, га", 20),
+            ("total_gfa_sqm", "Общий объём строительства, м²", 24),
+            ("housing_gfa_sqm", "Жильё, м²", 18),
+            ("nonresidential_gfa_sqm", "Нежилое, м²", 18),
+            ("business_gfa_sqm", "Общественно-деловое, м²", 22),
+            ("jobs", "Рабочие места", 17),
+            ("score", "Балл площадки", 19),
+            ("traffic_light", "Светофор модели", 25),
+            ("saleable_sqm", "Продаваемая площадь, м²", 22),
+            ("entry_capacity_rub_per_sqm", "Потолок цены входа, ₽/м² продаваемой", 27),
+            ("entry_capacity_mln", "Потолок цены входа всего, млн ₽", 25),
+            ("project_llcr_x", "LLCR проекта, x", 17),
+            ("weakest_phase_llcr_x", "LLCR слабейшей очереди, x", 22),
+            ("margin_pct", "Маржа до неизвестных обязательств, %", 25),
+            ("surrounding_price_rub_sqm", "Цена окружения, ₽/м²", 23),
+            # Темп рядом с ценой, а не вместо неё: «почём продают» и
+            # «сколько продают» — разные вопросы об одном окружении.
+            ("surrounding_sales_units_per_month", "Продажи окружения, ДДУ/мес.", 27),
+            # Чьё это КРТ и не занято ли оно. Ячейка несёт цитату источника или
+            # словами говорит, чего не хватает: пустая клетка читалась бы как
+            # «нет», а это «не нашли» или «не читали».
+            ("krt_kind", "Вид КРТ", 26),
+            ("krt_city_needs", "Городские нужды — цитата", 44),
+            ("krt_operator", "Оператор / застройщик", 34),
+            ("url", "Источник", 42),
+        ]
+        obligation_columns = [
+            ("name", "Проект КРТ", 48),
+            ("okrug", "Округ", 10),
+            ("district", "Район", 20),
+            ("status", "Статус", 18),
+            ("demolition_objects", "Снос, объектов", 16),
+            ("demolition_area_sqm", "Снос, известная площадь, м²", 23),
+            ("conditional_objects", "Снос/реконструкция, объектов", 23),
+            ("conditional_area_sqm", "Снос/реконструкция, известная площадь, м²", 30),
+            ("reconstruction_objects", "Реконструкция, объектов", 21),
+            ("reconstruction_area_sqm", "Реконструкция, известная площадь, м²", 28),
+            ("preservation_objects", "Сохранение, объектов", 20),
+            ("preservation_area_sqm", "Сохранение, известная площадь, м²", 27),
+            ("resettlement_mentions", "Расселение/изъятие, упоминаний", 25),
+            ("url", "Источник", 42),
+        ]
+        numeric_keys = {
+            "krt_area_ha", "total_gfa_sqm", "housing_gfa_sqm",
+            "nonresidential_gfa_sqm", "business_gfa_sqm", "jobs", "score",
+            "saleable_sqm", "entry_capacity_rub_per_sqm", "entry_capacity_mln",
+            "project_llcr_x", "weakest_phase_llcr_x", "margin_pct", "surrounding_price_rub_sqm",
+            "surrounding_sales_units_per_month",
+            "demolition_objects", "demolition_area_sqm", "conditional_objects",
+            "conditional_area_sqm", "reconstruction_objects", "reconstruction_area_sqm",
+            "preservation_objects", "preservation_area_sqm", "resettlement_mentions",
+        }
+    else:
+        # Список колонок торгов — один на книгу и страницу (`export_columns`).
+        columns = [(c.key, c.title, c.width) for c in export_columns.AUCTION_COLUMNS]
+        obligation_columns = []
+        numeric_keys = {c.key for c in export_columns.AUCTION_COLUMNS
+                        if c.kind in export_columns.NUMERIC_KINDS}
+    number = _export_number
+    formats = {
+        **{c.key: export_columns.XLSX_FORMATS[c.kind] for c in export_columns.AUCTION_COLUMNS
+           if c.kind in export_columns.XLSX_FORMATS},
+        "land_area_sqm": '#,##0.00', "building_area_sqm": '#,##0.00',
+        "krt_area_ha": '0.00', "total_gfa_sqm": '#,##0', "housing_gfa_sqm": '#,##0',
+        "nonresidential_gfa_sqm": '#,##0', "business_gfa_sqm": '#,##0',
+        "jobs": '#,##0', "price": '#,##0" ₽"', "score": '0',
+        "days_to_deadline": '0',
+        "saleable_sqm": '#,##0', "entry_capacity_rub_per_sqm": '#,##0" ₽/м²"',
+        "entry_capacity_mln": '#,##0.0" млн ₽"', "project_llcr_x": '0.00"x"',
+        "weakest_phase_llcr_x": '0.00"x"', "margin_pct": '0.0"%"',
+        "demolition_objects": '0', "demolition_area_sqm": '#,##0.0',
+        "conditional_objects": '0', "conditional_area_sqm": '#,##0.0',
+        "reconstruction_objects": '0', "reconstruction_area_sqm": '#,##0.0',
+        "preservation_objects": '0', "preservation_area_sqm": '#,##0.0',
+        "resettlement_mentions": '0',
+    }
+    wb = Workbook()
+    context = _ExportContext.read() if kind != "krt" else None
+    nspd_links: dict[int, str] = {}
+
+    def fill_sheet(ws, sheet_columns, title: str, table_name: str) -> None:
+        ws.title = title
+        keys = tuple(column[0] for column in sheet_columns)
+        ws.append([column[1] for column in sheet_columns])
+        for source_row in rows[:2000]:
+            row, nspd_href = _export_row(source_row, keys, context)
+            if "nspd_map" in keys:
+                nspd_links[ws.max_row + 1] = nspd_href
+            values = []
+            for key in keys:
+                if key in numeric_keys:
+                    values.append(number(row.get(key)))
+                elif key in _XLSX_DATE_KEYS and _xlsx_date(row.get(key)) is not None:
+                    values.append(_xlsx_date(row.get(key)))
+                else:
+                    values.append(row.get(key) or "")
+            ws.append(values)
+            # Текст площадки, начинающийся с «=», openpyxl пишет формулой:
+            # название лота исполнялось бы в Excel. Такой текст — строка.
+            for cell in ws[ws.max_row]:
+                if cell.data_type == "f":
+                    cell.data_type = "s"
+
+        ws.freeze_panes = "A2"
+        last_column = get_column_letter(len(sheet_columns))
+        ws.auto_filter.ref = f"A1:{last_column}{max(1, ws.max_row)}"
+        ws.sheet_view.showGridLines = False
+        header_fill = PatternFill("solid", fgColor="171717")
+        for cell in ws[1]:
+            cell.fill = header_fill
+            cell.font = Font(color="FFFFFF", bold=True)
+            cell.alignment = Alignment(vertical="center", wrap_text=True)
+        ws.row_dimensions[1].height = 38
+        for index, (_, _, width) in enumerate(sheet_columns, start=1):
+            ws.column_dimensions[get_column_letter(index)].width = width
+        url_column = keys.index("url") + 1
+        address_column = keys.index("address") + 1 if "address" in keys else None
+        cadastre_column = keys.index("cadastre") + 1 if "cadastre" in keys else None
+        nspd_column = keys.index("nspd_map") + 1 if "nspd_map" in keys else None
+        for row_number in range(2, ws.max_row + 1):
+            cell = ws.cell(row_number, url_column)
+            href = _xlsx_safe_href(cell.value)
+            if href:
+                cell.hyperlink = href
+                cell.style = "Hyperlink"
+            if address_column:
+                address_cell = ws.cell(row_number, address_column)
+                href = _yandex_maps_href(str(address_cell.value or ""))
+                if href:
+                    address_cell.hyperlink = href
+                    address_cell.style = "Hyperlink"
+            href = nspd_links.get(row_number, "")
+            if href:
+                for column in (cadastre_column, nspd_column):
+                    if column:
+                        ws.cell(row_number, column).hyperlink = href
+                        ws.cell(row_number, column).style = "Hyperlink"
+        # Стиль «Hyperlink» сбрасывает выравнивание и формат ячейки — поэтому
+        # перенос строк и форматы ставятся ПОСЛЕ ссылок: «Адрес» со ссылкой на
+        # карту иначе вытягивался в одну строку.
+        wrap_columns = {
+            index for index, (key, _, _) in enumerate(sheet_columns, start=1)
+            if key in {"name", "address", "cadastre", "status", "traffic_light", "url",
+                       "application_start", "application_deadline", "auction_date",
+                       "plato_comment"}
+        }
+        numeric_columns = {
+            index for index, (key, _, _) in enumerate(sheet_columns, start=1)
+            if key in numeric_keys
+        }
+        for row in ws.iter_rows(min_row=2):
+            for cell in row:
+                cell.alignment = Alignment(
+                    horizontal="right" if cell.column in numeric_columns else "left",
+                    vertical="top", wrap_text=cell.column in wrap_columns)
+        for index, (key, _, _) in enumerate(sheet_columns, start=1):
+            if key in _XLSX_DATE_KEYS:
+                for cells in ws.iter_cols(min_col=index, max_col=index, min_row=2):
+                    for item in cells:
+                        if isinstance(item.value, datetime):
+                            item.number_format = (
+                                "DD.MM.YYYY HH:MM"
+                                if (item.value.hour or item.value.minute) else "DD.MM.YYYY")
+            if key in formats:
+                for cells in ws.iter_cols(min_col=index, max_col=index, min_row=2):
+                    for item in cells:
+                        item.number_format = formats[key]
+        if ws.max_row >= 2:
+            table = Table(displayName=table_name, ref=f"A1:{last_column}{ws.max_row}")
+            table.tableStyleInfo = TableStyleInfo(
+                name="TableStyleMedium2", showFirstColumn=False, showLastColumn=False,
+                showRowStripes=True, showColumnStripes=False,
+            )
+            ws.add_table(table)
+        ws.page_setup.orientation = "landscape"
+        ws.page_setup.fitToWidth = 1
+        ws.sheet_properties.pageSetUpPr.fitToPage = True
+
+    fill_sheet(
+        wb.active, columns, "КРТ" if kind == "krt" else "Выборка",
+        "DevelopAidKrtSelection" if kind == "krt" else "DevelopAidSelection",
+    )
+    if obligation_columns:
+        fill_sheet(
+            wb.create_sheet("Обязательства"), obligation_columns,
+            "Обязательства", "DevelopAidKrtDuties",
+        )
+    out = io.BytesIO()
+    wb.save(out)
+    return out.getvalue()
+
+
+def _handoff_land_cadastres(preset: dict[str, Any], context: dict[str, Any]) -> list[str]:
+    """Keep source lot data intact; narrow only the DevelopAid handoff."""
+    land_numbers = [
+        str(item.get("cadastral_number"))
+        for item in (context.get("land_parcels") or [])
+        if item.get("cadastral_number")
+    ]
+    if not land_numbers:
+        return []
+    preset["project"]["cadastral_numbers"] = land_numbers
+    preset["project"]["cadastral_numbers_input"] = ", ".join(land_numbers)
+    preset["land"]["cadastral_numbers"] = land_numbers
+    preset["land"]["cadastral_numbers_csv"] = ", ".join(land_numbers)
+    cadastral_import = preset["project"]["cadastral_import"]
+    cadastral_import["mode"] = "bulk" if len(land_numbers) > 1 else "single"
+    cadastral_import["note"] += (
+        " КН зданий/ОКС исключены из площади территории; "
+        "переданы только земельные участки НСПД."
+    )
+    return land_numbers
+
+
+_LOTONLINE_PROJECT_SHARES_FLAG = "AUCTION_LOTONLINE_PROJECT_SHARES_DISCOVERY"
+
+
+def _feature_enabled(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _lot_online_discovery_adapter() -> LotOnlineAdapter:
+    # Доли в юрлицах спрашиваются по умолчанию (владелец, 01.09.2026: «надо
+    # посмотреть ещё лоты по продаже долей в юр лицах»). Категория 85 РАД —
+    # «Акции и доли предприятий»; выключатель остаётся на случай, когда цена
+    # обхода каталога важнее полноты.
+    return LotOnlineAdapter(
+        include_project_shares=_feature_enabled(_LOTONLINE_PROJECT_SHARES_FLAG, True),
+    )
+
+
+def _adapter_for(url: str):
+    host = (urlparse(url).hostname or "").lower()
+    if host == "roseltorg.ru" or host.endswith(".roseltorg.ru"):
+        return RoseltorgAdapter()
+    if host == "lot-online.ru" or host.endswith(".lot-online.ru"):
+        return LotOnlineAdapter()
+    if host == ETPGPBAdapter.HOST or host.endswith("." + ETPGPBAdapter.HOST) or host.endswith(".gpb.ru"):
+        return ETPGPBAdapter()
+    if host == ETPRFAdapter.HOST or host.endswith("." + ETPRFAdapter.HOST):
+        return ETPRFAdapter()
+    if host == SberbankASTAdapter.HOST or host.endswith("." + SberbankASTAdapter.HOST):
+        return SberbankASTAdapter()
+    if host == EfrsbAdapter.HOST or host.endswith("." + EfrsbAdapter.HOST):
+        return EfrsbAdapter()
+    if host == NistpAdapter.HOST or host.endswith("." + NistpAdapter.HOST):
+        return NistpAdapter()
+    if host == TorgiGovAdapter.HOST or host.endswith("." + TorgiGovAdapter.HOST):
+        return TorgiGovAdapter()
+    raise ValueError(
+        "Разбирать умеем только официальные адреса Росэлторга, РАД/Lot-online, "
+        f"ЭТП ГПБ, ЭТП РФ, Сбербанк-АСТ и ГИС Торгов; «{host or url}» ни на один из них не похож")
+
+
+def _analysis_support(url: str) -> dict[str, Any]:
+    """Можно ли разобрать этот лот целиком — и если нет, то почему.
+
+    Отвечает тот же `_adapter_for`, который потом и разбирает. Второе правило о
+    том же самом однажды разошлось бы с первым, и кнопка обещала бы разбор там,
+    где его нет.
+
+    Спрашивается это ДО клика намеренно. Список показывал все лоты одинаково, а
+    половина из них на «Разобрать лот» отвечала «поддерживаются только Росэлторг
+    и РАД»: узнать, что карточку не открыть, можно было только нажав
+    (владелец, 25.08.2026 — «зачем они тогда в списке»). Отказ, о котором
+    сказано заранее, — это свойство лота; отказ после клика — поломка.
+    """
+    try:
+        adapter = _adapter_for(url)
+    except ValueError as exc:
+        return {"available": False, "reason": str(exc)}
+    note = getattr(adapter, "deep_parse_unavailable", "")
+    if note:
+        return {"available": False, "reason": str(note)}
+    return {"available": True, "reason": ""}
+
+
+def _discovery_adapters(source: str):
+    value = (source or "all").strip().lower()
+    if value in {"lot_online", "rad", "lot-online"}:
+        return [_lot_online_discovery_adapter()]
+    if value in {"roseltorg", "ros"}:
+        return [RoseltorgAdapter()]
+    if value in {"investmoscow", "moscow", "city"}:
+        return [InvestMoscowDiscoveryAdapter()]
+    if value in {"torgi", "torgi_gov"}:
+        return [TorgiGovAdapter()]
+    if value in {"etp_gpb", "etpgpb", "gpb"}:
+        return [ETPGPBAdapter()]
+    if value in {"etp_rf", "etprf"}:
+        return [ETPRFAdapter()]
+    if value in {"sberbank_ast", "sberbank", "sber", "sberbank-ast"}:
+        return [SberbankASTAdapter()]
+    if value in {"nistp", "nis"}:
+        return [NistpAdapter()]
+    if value in {"efrsb", "fedresurs"}:
+        return [EfrsbAdapter()]
+    if value == "all":
+        # ГИС Торги — официальный источник имущественных торгов, а не
+        # банкротный рынок. Это честно подписано в его отчёте, но исключать его
+        # из кнопки «все источники» нельзя: именно там сейчас есть актуальные
+        # московские лоты, когда две узкие ЭТП возвращают пустую выдачу.
+        return [
+            TorgiGovAdapter(), _lot_online_discovery_adapter(), RoseltorgAdapter(),
+            InvestMoscowDiscoveryAdapter(), ETPGPBAdapter(), ETPRFAdapter(),
+            SberbankASTAdapter(), NistpAdapter(), EfrsbAdapter(),
+        ]
+    raise ValueError(
+        "source: all, lot_online, roseltorg, investmoscow, torgi, etp_gpb, etp_rf, sberbank_ast, "
+        "nistp или efrsb")
+
+
+def _coverage_row(adapter: Any) -> dict[str, Any]:
+    """Строка охвата одного источника — с его именем.
+
+    Отчёты у читателей разной формы: у ИнвестМосквы свои ключи про карточки
+    города, у остальных «страницы / карточки / оставлено». Раньше экран читал
+    ТОЛЬКО первый отчёт списка и печатал его ключами — то есть про четыре
+    источника из пяти на экране не было ничего, включая их отказы. Имя
+    источника проставляется здесь, а не в каждом читателе: иначе следующий
+    читатель забудет его так же, как забыли эти.
+    """
+    name = getattr(adapter, "platform_name", adapter.__class__.__name__)
+    report = getattr(adapter, "last_report", None)
+    if not isinstance(report, dict):
+        # Источник, который отвечал, но отчёта не прислал, из охвата исчезал —
+        # и на экране становился неотличим от неопрошенного. Строка есть
+        # всегда; то, чего мы про него не знаем, названо, а не показано нулём.
+        return {"source": name, "reason": "отчёта об охвате не прислал"}
+    row = dict(report)
+    row.setdefault("source", name)
+    return row
+
+
+def _moscow_today() -> date:
+    """Сегодня по московскому календарю: торги и их даты — московские."""
+    return datetime.now(timezone(timedelta(hours=3))).date()
+
+
+def _months_before(day: date, months: int) -> date:
+    """Тот же день `months` месяцев назад; короткий месяц — его последний день."""
+    month_index = day.year * 12 + day.month - 1 - months
+    year, month = divmod(month_index, 12)
+    month += 1
+    for candidate in (day.day, 30, 29, 28):
+        try:
+            return date(year, month, min(day.day, candidate))
+        except ValueError:
+            continue
+    return date(year, month, 28)
+
+
+def _resolved_areas(data: dict[str, Any]) -> None:
+    """Площади участка и здания лота — тем же правилом, что в книге Excel.
+
+    Площадь участка у многих лотов есть только в названии («…земельный участок
+    площадью 497 кв. м…»). Таблица и книга достраивали её оттуда
+    (`export_areas`), а фильтр «участок от N га» читал поле площадки и видел
+    пустоту: лот с 497 м² проходил фильтр 0,5 га с пометкой «площадь участка не
+    указана» (владелец, 19.10.2026). Теперь площадь разрешается один раз здесь,
+    и фильтр, балл, таблица и книга читают одно число; взятое из названия
+    подписано в `area_from_title`.
+    """
+    source = data.get("source") or {}
+    areas = export_areas({
+        "name": data.get("title") or "",
+        "url": source.get("lot_url") if isinstance(source, dict) else "",
+        "land_area_sqm": data.get("land_area_sqm"),
+        "building_area_sqm": data.get("building_area_sqm"),
+    })
+    from_title = [
+        key for key, value in (("land_area_sqm", areas.land_area_sqm),
+                               ("building_area_sqm", areas.building_area_sqm))
+        if value is not None and value != data.get(key)]
+    data["land_area_sqm"] = areas.land_area_sqm
+    data["building_area_sqm"] = areas.building_area_sqm
+    data["area_from_title"] = from_title
+
+
+def _nspd_land_area(data: dict[str, Any], points: dict[str, dict[str, Any]]) -> None:
+    """Площадь участков лота по НСПД — когда площадка и название её не дали.
+
+    Кадастровые номера лота спрашивает фон (`points_queue`); здесь только
+    читается сохранённое. Участки лота складываются: лот покупается целиком.
+    Если НСПД ответил не по всем номерам, площадь помечается неполной
+    (`land_area_partial`) — фильтр такой лот по площади не выкидывает: сумма
+    части участков меньше площади лота. Номера, которые ещё не спрошены, —
+    `land_area_pending`: «уточняется», а не «нет».
+    """
+    numbers = [str(n).strip() for n in (data.get("cadastral_numbers") or []) if str(n).strip()]
+    land: list[float] = []
+    counted: set[str] = set()
+    under_building = False
+    pending = unresolved = 0
+    for number in dict.fromkeys(numbers):
+        point = points.get(number) or {}
+        if not point or ("kind" not in point and not point.get("failed")):
+            pending += 1
+        elif point.get("kind") == "land":
+            if point.get("area_sqm"):
+                if number not in counted:
+                    counted.add(number)
+                    land.append(float(point["area_sqm"]))
+            else:
+                unresolved += 1
+        elif point.get("kind") == "building":
+            # Участок под зданием — когда в лоте только номер здания. Участок,
+            # который уже стоит в лоте своим номером, второй раз не считается.
+            for parcel in point.get("under_parcels") or []:
+                parcel_number = str(parcel.get("cadastral_number") or "")
+                if parcel_number and parcel_number not in counted and parcel.get("area_sqm"):
+                    counted.add(parcel_number)
+                    land.append(float(parcel["area_sqm"]))
+                    under_building = True
+            if "under_parcels" not in point:
+                pending += 1
+        elif point.get("failed"):
+            unresolved += 1
+    data.setdefault("land_area_source", "площадка" if data.get("land_area_sqm") is not None else "")
+    if data.get("area_from_title") and "land_area_sqm" in data["area_from_title"]:
+        data["land_area_source"] = "название лота"
+    data["land_area_pending"] = pending
+    data["land_area_partial"] = False
+    if not land:
+        return
+    total = round(sum(land), 2)
+    complete = not pending and not unresolved
+    current = data.get("land_area_sqm")
+    if current is None or (complete and total > float(current)):
+        # НСПД знает больше участков лота, чем названо в тексте, — берём его
+        # сумму; меньшую сумму НСПД поверх названного не ставим.
+        data["land_area_sqm"] = total
+        data["land_area_source"] = (f"НСПД, участков {len(land)}"
+                                    + (", в том числе под зданием" if under_building else ""))
+        data["land_area_partial"] = not complete
+
+
+def _public_lot_dict(lot) -> dict[str, Any]:
+    data = lot.to_dict()
+    data.pop("raw", None)
+    _resolved_areas(data)
+    # Момент срока считает сервер и отдаёт его ISO рядом со строкой площадки.
+    # Строка остаётся такой, какой её написала площадка, — её и печатают; а
+    # разбирать русскую дату в браузере нельзя: `new Date('09.10.26 15:00')`
+    # читает первое число месяцем (см. `deadline_moment`).
+    data["application_deadline_iso"] = deadline_iso(data.get("application_deadline"))
+    return data
+
+
+def _plato_number(value: Any, digits: int = 0) -> str:
+    try:
+        return f"{float(value):,.{digits}f}".replace(",", " ").replace(".", ",")
+    except (TypeError, ValueError):
+        return "—"
+
+
+_MARKET_DIGEST_KEYS = ("peers", "price_hint", "comparison", "analysis", "subject", "segment")
+
+
+def _market_digest(report: dict[str, Any]) -> dict[str, Any]:
+    """Что из отчёта рынка нужно карточке. Остальное на диске не хранится.
+
+    Полный отчёт несёт и разбор источников, и сырые выдачи поиска. Карточке они
+    не нужны, а диск у нас уже кончался — молча и до отказа выкатки.
+    """
+    digest = {key: report.get(key) for key in _MARKET_DIGEST_KEYS if report.get(key) is not None}
+    peers = digest.get("peers")
+    if isinstance(peers, list):
+        digest["peers"] = peers[:12]
+    analysis = digest.get("analysis")
+    if isinstance(analysis, dict):
+        digest["analysis"] = {key: value for key, value in analysis.items()
+                              if key in {"site", "overall"}}
+    verdict = report.get("verdict")
+    if isinstance(verdict, dict):
+        digest["verdict"] = {key: verdict.get(key) for key in
+                             ("units_per_month", "sold_lot_avg", "price_per_sqm", "headline")
+                             if verdict.get(key) is not None}
+    return digest
+
+
+def _plato_krt_prompt(stored: dict[str, Any]) -> str:
+    """Что спросить у Платона про площадку.
+
+    Числа собираются здесь и подаются готовыми: модель их не пересчитывает и
+    пересчитывать не должна — экономику считает движок, а Платон читает
+    посчитанное. Спрашиваем и по маркетингу, и по модели одним вопросом:
+    рекомендация, разведённая по двум ответам, не сходится сама с собой.
+    """
+    project = stored.get("project") or {}
+    screening = stored.get("screening") or {}
+    report = stored.get("market") or {}
+    metrics = screening.get("metrics") or {}
+    market_block = screening.get("market") or {}
+    phasing = screening.get("phasing") or {}
+    capacity = screening.get("entry_capacity") or {}
+    duties = screening.get("requirements") or {}
+    verdict = report.get("verdict") or {}
+    peers = report.get("peers") or []
+
+    lines = [
+        "Ты оцениваешь площадку КРТ в Москве для решения об участии в торгах.",
+        "Все числа ниже посчитаны движком DevelopAid и маркетинговым модулем; "
+        "пересчитывать их не надо, надо прочитать.",
+        "",
+        f"ПЛОЩАДКА: {project.get('name') or stored.get('slug')}",
+        f"Округ и район: {' · '.join(str(v) for v in (project.get('okrug'), project.get('district')) if v) or '—'}",
+        f"Статус: {project.get('status') or '—'}; площадь {project.get('area_ha') or '—'} га; "
+        f"жилой объём {_plato_number(project.get('housing_gfa_sqm'))} м².",
+        "",
+        "МАРКЕТИНГ",
+        f"Рекомендованный класс: {market_block.get('recommended_segment') or '—'}; "
+        f"стартовая цена в модели {_plato_number(market_block.get('start_price_rub_sqm'))} ₽/м² "
+        f"({market_block.get('price_basis') or 'основание не указано'}).",
+        f"Ориентир рынка: {_plato_number(market_block.get('market_price_rub_sqm'))} ₽/м²; "
+        f"сопоставимых проектов рядом: {len(peers)}.",
+    ]
+    if verdict.get("units_per_month"):
+        lines.append(
+            f"Темп рынка: {verdict.get('units_per_month')} ДДУ/мес.; "
+            f"средний проданный лот {verdict.get('sold_lot_avg') or '—'} м².")
+    lines += [
+        "",
+        "МОДЕЛЬ DEVELOPAID (предварительная, цена входа принята нулём)",
+        f"Выручка {_plato_number(metrics.get('revenue_mln'))} млн ₽, "
+        f"CAPEX {_plato_number(metrics.get('capex_mln'))} млн ₽, "
+        f"чистая прибыль {_plato_number(metrics.get('net_profit_mln'))} млн ₽, "
+        f"маржа {_plato_number(metrics.get('margin_pct'), 1)}%.",
+        f"LLCR проекта {_plato_number(metrics.get('project_llcr_x'), 2)}x, "
+        f"слабейшая очередь {_plato_number(metrics.get('weakest_phase_llcr_x'), 2)}x "
+        f"при целевом ориентире банка 1,20x.",
+        f"Очередей: {phasing.get('count') or '—'}; продаваемая площадь "
+        f"{_plato_number(phasing.get('saleable_sqm'))} м².",
+        f"Пик БРИДЖа {_plato_number(metrics.get('peak_bridge_mln'))} млн ₽, "
+        f"пик ПФ {_plato_number(metrics.get('peak_pf_mln'))} млн ₽.",
+    ]
+    if capacity.get("available"):
+        lines.append(
+            f"Потолок цены входа при LLCR 1,20x: {_plato_number(capacity.get('amount_mln'), 1)} млн ₽.")
+    else:
+        lines.append(f"Потолок цены входа не подобран: {capacity.get('reason') or 'причина не названа'}.")
+    if duties:
+        lines += [
+            "",
+            "ОПУБЛИКОВАННЫЕ ОБЯЗАТЕЛЬСТВА",
+            f"Безусловный снос: {_plato_number(duties.get('demolition_area_sqm'))} м² "
+            f"({duties.get('demolition_objects') or 0} объектов); "
+            f"снос/реконструкция: {duties.get('conditional_objects') or 0} объектов.",
+            f"Расселение/изъятие: {'найдено' if duties.get('resettlement') else 'не найдено в опубликованном проекте решения'}; "
+            f"дополнительные объекты: {len(duties.get('unmodelled_construction') or [])}.",
+        ]
+    for item in (screening.get("exclusions") or [])[:6]:
+        lines.append(f"НЕ УЧТЕНО: {item}")
+    lines += [
+        "",
+        "Ответь по-русски, коротко и по делу, без списка формул:",
+        "1. Идти ли смотреть эту площадку дальше — да, нет или «при условии», и почему.",
+        "2. Что в маркетинге и в модели противоречит друг другу, если противоречит.",
+        "3. Три вопроса, которые надо снять до подачи заявки, по убыванию цены вопроса.",
+        "Не выдумывай чисел, которых нет выше. Про неучтённое скажи прямо, что оно неучтено.",
+    ]
+    return "\n".join(lines)
+
+
+def press_refusal_without_address() -> dict[str, Any]:
+    """Отказ спрашивать публикации там, где адреса нет.
+
+    Заголовок проекта решения без адреса — это «искать не по чему», а не
+    «в источниках пусто»: поиск по имени документа ответил бы про все проекты
+    решений сразу и стоил бы денег. Отказ ЗАПИСЫВАЕТСЯ — незаписанный отказ не
+    отличить от отсутствия признака, — и объявлен один раз: его отдаёт и
+    прогон, и кнопка на карточке.
+    """
+    return {
+        "available": False,
+        "checked_at": int(time.time()),
+        "reason": ("адрес в заголовке проекта решения не назван — "
+                   "искать публикации не по чему"),
+    }
+
+
+def krt_watch_periods() -> tuple[int, int, int]:
+    """Сроки сторожа — у самого сторожа, копией они разошлись бы молча."""
+    from . import krt_watch
+
+    return (krt_watch.CATALOGUE_PERIOD, krt_watch.DECISIONS_PERIOD,
+            krt_watch.TENDERS_PERIOD)
+
+
+def _krt_decision_rows_built(found: dict[str, Any]) -> list[dict[str, Any]]:
+    """Строки площадок, у которых есть проект решения и нет карточки каталога.
+
+    Собираются в ОДНОМ месте: их читает и список на экране, и еженедельный
+    прогон публикаций. Две сборки одной строки однажды разошлись бы — у
+    прогона оказался бы другой адрес, чем на экране, и обе выглядели бы
+    верными.
+    """
+    rows: list[dict[str, Any]] = []
+    tep_by_document = (found or {}).get("tep") or {}
+    for one in ((found or {}).get("decisions") or []):
+        document_id = str(one.get("id") or "")
+        if not document_id:
+            continue
+        # Цифры площадки без карточки берутся из её решения: прежде их
+        # не было вовсе, и карточка писала «Оценка Платона: 0/100 · ТЭП
+        # не указан» при опубликованном на mos.ru PDF с площадью,
+        # предельной СПП и площадью квартир (владелец, 04.09.2026).
+        # Ноль в решении — ответ города («строить нельзя»), поэтому
+        # берётся `is not None`, а не истинность значения.
+        tep = tep_by_document.get(document_id) or {}
+        address = str(one.get("address") or "").strip()
+        row = {
+            "slug": "decision:" + document_id,
+            "name": address or str(one.get("title") or ""),
+            "okrug": one.get("okrug") or "",
+            "district": "",
+            "status": "",
+            "status_kind": "draft",
+            "url": one.get("url"),
+            "no_card": True,
+            # Адрес из заголовка решения — это то, чем площадку ищут в
+            # публикациях. Его отсутствие названо признаком, а не выведено
+            # из имени: имя тогда несёт заголовок документа, и по нему
+            # поиск ответил бы про все проекты решений сразу.
+            "address_known": bool(address),
+            "krt_kind": one.get("kind") or "",
+            "draft_decision_at": one.get("published_at") or 0,
+            "draft_decision_url": one.get("url") or "",
+            "department": one.get("department") or "",
+            # Чем прочитано — часть ответа: «решение не прочитано» и
+            # «в решении величина не названа» — разные ответы, и ни
+            # один из них не «ноль».
+            "tep_source": ("decision" if tep.get("read") else
+                           "decision_silent" if tep.get("available") else ""),
+            "tep_document_url": tep.get("pdf_url") or "",
+            # Чьё это КРТ — из того же прочитанного документа. Без
+            # этого карточка площадки писала «проект решения ещё не
+            # прочитан» при уже прочитанном решении.
+            "decision_intent": tep.get("intent") or None,
+        }
+        for key in ("area_ha", "total_gfa_sqm", "housing_gfa_sqm",
+                    "nonresidential_gfa_sqm", "flats_sqm",
+                    "nonresidential_ground_sqm"):
+            if tep.get(key) is not None:
+                row[key] = tep[key]
+        rows.append(row)
+    return rows
+
+
+def krt_decision_rows(found: dict[str, Any]) -> list[dict[str, Any]]:
+    """Строки площадок-решений, схлопнутые по второй публикации документа."""
+    return _without_second_publication(_krt_decision_rows_built(found))
+
+
+def _publication_section(url: str) -> str:
+    """Раздел портала, в котором лежит документ: dgi, dipp, dgp."""
+    found = re.search(r"mos\.ru/([^/]+)/documents/view/", str(url or ""))
+    return found.group(1) if found else ""
+
+
+def _without_second_publication(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Один документ, опубликованный двумя департаментами, — одна строка.
+
+    Замер на проде 05.09.2026: из 298 площадок-решений 38 стояли парами и
+    тройками, и во ВСЕХ 38 группах совпадали заголовок, площадь и ДЕНЬ
+    публикации, а различался только раздел портала — dgi, dipp, dgp. Это один
+    и тот же проект решения: город публикует его и у Департамента городского
+    имущества, и у Департамента инвестиционной и промышленной политики.
+    Человек видел «Котляково (территория № 1)» дважды подряд и различить
+    строки не мог ничем.
+
+    День публикации в ключе — не придирка, а граница правила: по одной
+    территории бывают РАЗНЫЕ документы, и они остаются. У «Алабушево» пара от
+    30.12.2021 — дубль, а документ от 20.05.2022 самостоятельный, и схлопнуть
+    его значило бы спрятать более позднее решение города.
+
+    Схлопнутое не выбрасывается молча: оставшаяся строка несёт адреса вторых
+    публикаций (`also_published`), а счёт убранных возвращается вызывающему,
+    чтобы экран назвал его под таблицей.
+    """
+    groups: dict[tuple[str, float | None, int], list[dict[str, Any]]] = {}
+    order: list[tuple[str, float | None, int]] = []
+    for row in rows:
+        when = int(row.get("draft_decision_at") or 0)
+        area = row.get("area_ha")
+        key = (str(row.get("name") or "").strip().casefold(),
+               round(float(area), 2) if isinstance(area, (int, float)) else None,
+               when // 86400 if when else 0)
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(row)
+
+    kept: list[dict[str, Any]] = []
+    for key in order:
+        same = groups[key]
+        sections = {_publication_section(one.get("draft_decision_url")) for one in same}
+        # Совпали заголовок, площадь и день, но раздел ОДИН — значит это два
+        # разных документа одного департамента, и решать за город, что один из
+        # них лишний, нам нечем.
+        if len(same) == 1 or len(sections) < len(same):
+            kept.extend(same)
+            continue
+        first = min(same, key=lambda one: (int(one.get("draft_decision_at") or 0),
+                                           str(one.get("slug") or "")))
+        first = dict(first)
+        # Имя ведомства едет вместе с адресом: раздел портала («dipp») читателю
+        # ничего не говорит, а departament у строки уже прочитан.
+        first["also_published"] = [
+            {"url": one.get("draft_decision_url") or "",
+             "section": _publication_section(one.get("draft_decision_url")),
+             "department": str(one.get("department") or "")}
+            for one in same if one is not first and one.get("slug") != first.get("slug")
+        ]
+        kept.append(first)
+    return kept
+
+
+def install(app: FastAPI) -> None:
+    if getattr(app.state, "auction_search_installed", False):
+        return
+    app.state.auction_search_installed = True
+    market = getattr(app.state, "market_discovery_service", None)
+    krt_registry = getattr(market, "krt", None) or KrtRegistry(
+        os.path.join(os.getenv("DATA_DIR", "data"), "market")
+    )
+    krt_ranking = KrtRanking(os.path.join(os.getenv("DATA_DIR", "data"), "market"))
+    lot_notes = lot_notes_rules.LotNotes(os.path.join(os.getenv("DATA_DIR", "data"), "market"))
+    # Очередь новинок забирает движок (`/internal/krt/announcements`) — у него
+    # общая с ботом подпись, а до api.telegram.org с ядра не дойти. Отдаём ему
+    # ТОТ ЖЕ экземпляр каталога, который помечает площадки «новыми» на экране:
+    # второй ответ на вопрос «это новое?» однажды разошёлся бы с первым, и в
+    # чат приехало бы не то, что видно в списке.
+    def _take_krt_announcements() -> list[dict[str, Any]]:
+        """Новинки с именами площадок.
+
+        В очередь ложится слаг: имя знает каталог, а `first_seen` — состав.
+        Имя подставляется здесь, при выдаче, и если площадки в каталоге уже
+        нет — остаётся слаг. Выдумывать имя нельзя, а молча выбросить запись
+        значит потерять новость.
+        """
+        records = krt_ranking.take_announcements()
+        if not records:
+            return []
+        try:
+            # Обе половины списка: у площадки-решения карточки каталога нет, и
+            # по каталогу её имя не найти — в чат уехал бы слаг
+            # `decision:333331220`, немой для читателя.
+            names = {str(row.get("slug") or ""): str(row.get("name") or "")
+                     for row in _krt_all_sites()}
+        except Exception:  # noqa: BLE001
+            names = {}
+        return [{**record, "name": names.get(str(record.get("slug") or ""), "")}
+                for record in records]
+
+    app.state.krt_announcements_take = _take_krt_announcements
+
+    def _remember_tender_links(lots: list[dict[str, Any]]) -> dict[str, Any]:
+        """Связать собранные лоты с площадками и запомнить связку.
+
+        Один код на два входа: маршрут сбора каталога и сторож каталога. Два
+        сборщика на одну связку однажды ответили бы про одну площадку разное, и
+        оба выглядели бы верными.
+        """
+        from . import krt_tenders
+
+        # Список экрана целиком, а не одна его половина: площадка-решение
+        # кандидатом не была вовсе, и «идут торги» по ней не могло появиться
+        # никогда — при живом лоте в соседней вкладке (Рубцовская наб., влд. 3,
+        # владелец 07.09.2026).
+        matched = krt_tenders.match(list(lots or []), _krt_all_sites())
+        by_site = matched.get("by_site") or {}
+        keeper = getattr(krt_registry, "remember_tender_lots", None)
+        if callable(keeper):
+            keeper(by_site)
+        return by_site
+
+    def _collect_tender_links() -> dict[str, Any]:
+        """Сходить за лотами самому и связать их с площадками.
+
+        Сторожу нужен тот же сбор, что и вкладке «Торги»: до правки связка
+        появлялась ТОЛЬКО когда человек эту вкладку открывал, и «выставлена на
+        торги» не было новостью вовсе.
+        """
+        service = AuctionSearchService(_discovery_adapters("all"))
+        lots = service.discover_moscow(budget_seconds=WATCH_DISCOVERY_BUDGET_SECONDS)
+        by_site = _remember_tender_links([_public_lot_dict(lot) for lot in lots])
+        _read_krt_notices(by_site)
+        return by_site
+
+    # Сколько секунд проход за извещениями держит поток сторожа. Первый заход по
+    # лоту — это его вложения (на живом лоте их 26), то есть минуты внешних
+    # запросов; дальше площадка спрашивается только о неотданном, а разобранный
+    # состав не спрашивается вовсе. Недочитанное дочитает следующий заход, и
+    # это названо в своде, а не молчит.
+    NOTICES_BUDGET_SECONDS = float(os.getenv("AUCTION_KRT_NOTICES_BUDGET", "240") or 240)
+
+    # Сколько секунд сторож собирает лоты. У маршрута это сорок секунд, и они
+    # про ШЛЮЗ: он рвёт соединение на шестидесяти. У сторожа окна запроса нет
+    # вовсе, а раздел Росэлторга обещает пятьдесят одну карточку и за каждой
+    # идёт свой запрос: на проде 14.09.2026 прочитано было 12, и непрочитанные
+    # 39 — наш пробел, который на экране читался как «столько лотов на рынке»
+    # (владелец: «так всего реально на торгах сколько сейчас крт?» — одиннадцать
+    # при семи на вкладке). Своим сроком сбор дочитывает раздел целиком.
+    WATCH_DISCOVERY_BUDGET_SECONDS = float(
+        os.getenv("AUCTION_WATCH_DISCOVERY_BUDGET", "300") or 300)
+
+    def _read_krt_notices(by_site: dict[str, Any]) -> dict[str, Any]:
+        """Извещения берутся сами — по связке «площадка ↔ лот».
+
+        «Почему ты не берешь извещения тогда? они же есть у всех кто на
+        торгах! и лежит в росэлторге» (владелец, 14.09.2026). Состав территории
+        появлялся только по нажатию «Разобрать лот»: разбор вложений зовётся из
+        маршрута одного лота и из CLI, а прогон каталога не звал его вовсе.
+
+        Стоит это в пути СТОРОЖА, а не маршрута: минуты внешних запросов в
+        ответе маршрута — это шлюз, отдающий свою страницу на 504 вместо
+        каталога. Отказ прохода лотов не роняет: связка уже записана.
+        """
+        if os.getenv("AUCTION_KRT_NOTICES", "1").strip() in {"0", "false", "no"}:
+            return {}
+        try:
+            summary = krt_pipeline.read_notices(
+                by_site,
+                fetch_lot=lambda url: _adapter_for(url).fetch_lot(url),
+                store_dir=_market_dir(),
+                budget_seconds=NOTICES_BUDGET_SECONDS)
+        except Exception:  # noqa: BLE001 — проход молчит, а не роняет сторожа
+            logger.exception("KRT: проход за извещениями не прошёл")
+            return {}
+        try:
+            krt_territory.remember_run(summary, root=_market_dir())
+        except Exception:  # noqa: BLE001
+            logger.exception("KRT: свод прохода за извещениями не записан")
+        logger.info(
+            "KRT извещения: лотов %s, прочитано %s, уже было %s, ждут %s, "
+            "таблицы нет %s, площадка не отдала %s, мы не прочитали %s, "
+            "не успели %s",
+            summary.get("lots"), summary.get("read"), summary.get("already"),
+            summary.get("waiting"), summary.get("no_table"),
+            summary.get("refused"), summary.get("unread"),
+            summary.get("out_of_time"))
+        return summary
+
+    # Сбор лотов объявлен крючком: его берёт сторож (`collect_lots`), и на нём
+    # же стоит проход за извещениями. Двух дорог к составу территории не
+    # заводим — разойдясь, они дали бы два достоверных на вид ответа об одной
+    # площадке; а проверить, что состав приезжает БЕЗ нажатия, можно только
+    # позвав тот путь, которым он приезжает.
+    app.state.krt_tender_links_collect = _collect_tender_links
+    app.state.krt_notices_read = _read_krt_notices
+
+    # Сторож каталога: свой срок у каждого источника, работу берёт один воркер
+    # из двух. Выключается `AUCTION_KRT_WATCH=0`.
+    # Поток просыпается часто и почти всегда просто смотрит на часы: спрашивает
+    # он источник только тогда, когда у того наступил свой срок.
+    WATCH_HEARTBEAT_SECONDS = 300.0
+    WATCH_LOCK = os.path.join(os.getenv("DATA_DIR", "data"), "market", "krt", "watch.lock")
+    WATCH_LOCK_TTL_SECONDS = 900.0
+
+    def _krt_watch_loop() -> None:
+        """Что у города изменилось — новостью, а не к следующему прогону.
+
+        «Надо через бота подписчиков уведомлять — появился новый проект КРТ,
+        или опубликовано решение по старому проекту КРТ, выставлен на торги. Но
+        если это будет раз в неделю то поздновато конечно» (владелец,
+        06.09.2026).
+
+        Раз в неделю считается РЕЙТИНГ — это про цифры. Новости идут своим
+        сроком у каждого источника (`krt_watch`), а очередь забирает бот каждые
+        пятнадцать минут, как знакомства.
+        """
+        from . import krt_watch
+
+        # Обход просит сам сторож: снимок каталога живёт сутки и обновлялся,
+        # только если кто-то откроет страницу. Не открыл никто — не случилось
+        # ничего, и «новая площадка» ждала чужого нажатия.
+        watch = krt_watch.KrtWatch(krt_registry, krt_ranking,
+                                   collect_lots=_collect_tender_links,
+                                   all_sites=_krt_all_sites,
+                                   screen_list=_krt_screen_list)
+        while True:
+            try:
+                if krt_ranking_rules.claim_file(WATCH_LOCK, WATCH_LOCK_TTL_SECONDS):
+                    try:
+                        watch.poll()
+                    finally:
+                        krt_ranking_rules.release_file(WATCH_LOCK)
+            except Exception:  # noqa: BLE001 — сторож молчит, а не роняет процесс
+                logger.exception("KRT watch loop")
+            time.sleep(WATCH_HEARTBEAT_SECONDS)
+
+    def _market_source_off() -> str:
+        """Почему рынок отвечать не может — или пустая строка.
+
+        Прогон КРТ считает модель по каждой площадке, а модель начинается с
+        рыночного отчёта. Доступ к источнику живёт в окружении
+        (`PULSE_LOGIN`/`PULSE_PASSWORD`), и он есть не у всякого хоста: бот на
+        Render поднимает тот же модуль, что и ядро, и 07.09.2026 его журнал
+        показал `RemoteServiceError` по КАЖДОЙ площадке подряд — прогон честно
+        ходил в каталог, честно падал на первом же шаге и записывал строке
+        «Расчёт не выполнен».
+
+        Наличие модуля признаком не является — как маршрут Платона решает
+        `PLATO_AI_URL`, а не наличие ключа. Спрашиваем то, что отвечает на
+        вопрос: включён ли источник.
+        """
+        if market is None:
+            return "Финансовый модуль рынка на этом хосте не подключён"
+        pulse = getattr(market, "pulse", None)
+        if pulse is not None and not getattr(pulse, "available", True):
+            return ("Источник рыночных данных выключен: "
+                    "не заданы PULSE_LOGIN и PULSE_PASSWORD")
+        return ""
+
+    DUE_RETRY_SECONDS = 5 * 60
+
+    def _weekly_blocked() -> str:
+        """Почему плановый прогон КРТ на этом хосте не идёт — или пустая строка.
+
+        Один ответ для потока и для страницы: прежде причина жила только в
+        журнале, и владелец видел «не пересчитывается» без объяснения.
+        """
+        if os.getenv("AUCTION_KRT_WEEKLY", "1").strip() in {"0", "false", "no"}:
+            return "Плановый прогон выключен на этом сервере (AUCTION_KRT_WEEKLY=0)"
+        if core is None:
+            return "Расчётное ядро на этом сервере не загружено — считать модель нечем"
+        return _market_source_off()
+
+    def _weekly_ranking() -> None:
+        """Раз в неделю каталог обновляется и считается сам.
+
+        Ждать прогон каждый раз, когда открываешь торги, — это минуты на пустом
+        месте (владелец, 23.08.2026). Здесь считается ВЕСЬ каталог, а не срез
+        фильтра: никто не ждёт, а к утру должно быть посчитано всё.
+
+        Срок — ночь с субботы на воскресенье, 3 часа по Москве: к утру
+        воскресенья каталог свежий, а рабочая неделя начинается с посчитанного.
+        Считается календарная точка, а не «неделя от прошлого раза», иначе
+        расписание уползает на часы с каждой выкаткой.
+
+        Воркеров два, память у них раздельная, поэтому работу берёт один — по
+        файловому замку. Проигравший просто спит дальше. Отключается
+        переменной `AUCTION_KRT_WEEKLY=0`.
+        """
+        said = ""
+        while True:
+            pause = HEARTBEAT_SECONDS
+            try:
+                # Хост без источника рынка прогон не ведёт вовсе. Прежде он его
+                # вёл: падала каждая площадка, в журнал уходило по трассировке
+                # на каждую, а в рейтинг — «Расчёт не выполнен» на диск, который
+                # у бота живёт до следующей выкатки. Причина называется ОДИН
+                # раз: строка на каждый удар сердца — это тот же шум, только
+                # тише. Ту же причину страница читает из `_weekly_blocked`.
+                off = _weekly_blocked()
+                if off:
+                    if off != said:
+                        logger.warning("Недельный прогон КРТ здесь не идёт: %s", off)
+                        said = off
+                elif krt_ranking.due():
+                    # Пока срок наступил, а прогон не взят (замок держит
+                    # другой прогон или умерший при выкатке воркер), проверяем
+                    # чаще: час ожидания после каждой выкатки съедал рабочий
+                    # день прогона.
+                    pause = DUE_RETRY_SECONDS
+                    if krt_ranking.claim():
+                        try:
+                            projects = krt_registry.projects(refresh=True)
+                            rows = [row.to_dict() if hasattr(row, "to_dict") else row
+                                    for row in projects]
+                            # Площадки-решения идут тем же прогоном (владелец,
+                            # 04.09.2026: «по решениям надо, раз в неделю как
+                            # обычно»). Прогон публикаций по каталогу до них не
+                            # доходил никогда, и все «не знаем» по входу и
+                            # реновации сидели ровно в них. Вопрос «кто здесь
+                            # уже собрался строить» у них тот же, и отвечают на
+                            # него те же публикации; а когда в решении названо
+                            # жильё, считается и та же модель — цифры площадки
+                            # прочитаны из её PDF.
+                            rows = rows + _decision_rows_for_run()
+                            if not rows:
+                                krt_ranking.note_schedule_failure(
+                                    "Каталог КРТ и список решений пришли пустыми — "
+                                    "считать было нечего, повторю позже")
+                                krt_ranking.release()
+                            elif not krt_ranking.start(
+                                    rows, _screen_for_background, scheduled=True, claimed=True):
+                                krt_ranking.release()
+                        except Exception as exc:  # noqa: BLE001
+                            logger.exception("weekly KRT ranking failed")
+                            krt_ranking.note_schedule_failure(
+                                f"Плановый прогон не начался: {exc}")
+                            krt_ranking.release()
+            except Exception:
+                logger.exception("weekly KRT ranking loop")
+            time.sleep(pause)
+
+
+    # main.py loads the canonical legacy core as `developaid_core`. Inject only the
+    # same-origin handoff bootstrap; no calculation or project UI is duplicated.
+    core = sys.modules.get("developaid_core")
+    if core is not None:
+        install_page_bridge(core)
+
+    # Ограниченный ключ включается только когда AUCTIONS_VIEW_KEY реально
+    # задан. До настройки переменной поведение /auctions остаётся прежним:
+    # выкатить код раньше секрета безопаснее, чем случайно закрыть раздел.
+    # Выданные личные ключи тоже закрывают раздел: ключ, который можно
+    # отозвать, ничего не значит, если без него открыто то же самое.
+    def _auctions_gate_enabled() -> bool:
+        if auction_view.view_key():
+            return True
+        try:
+            return access_keys.any_active()
+        except RuntimeError:
+            # Реестр не читается — закрыто, а не открыто всем.
+            return True
+
+    def _scoped_key(request: Request) -> dict[str, Any] | None:
+        """Личный ключ «auctions» этого браузера, если нет полного ключа."""
+        if not access_keys.has_cookie(request) or market_cabinet.authorised(request):
+            return None
+        return access_keys.scoped(request)
+
+    def _view_only(request: Request) -> bool:
+        """Вошёл ограниченным ключом просмотра, без полного ключа кабинета."""
+        if _scoped_key(request):
+            return True
+        return bool(
+            _auctions_gate_enabled()
+            and auction_view.authorised(request)
+            and not market_cabinet.authorised(request)
+        )
+
+    def _scope_denied(request: Request, problem: str):
+        wants_page = (request.method in ("GET", "HEAD")
+                      and "text/html" in request.headers.get("accept", ""))
+        if wants_page:
+            return HTMLResponse(access_keys.denied_page(
+                guide.legal_footer_html(core) if core is not None else ""), status_code=403,
+                                headers={"Cache-Control": "no-store"})
+        return JSONResponse({"detail": problem}, status_code=403,
+                            headers={"Cache-Control": "no-store"})
+
+    def _team_request(request: Request) -> bool:
+        """Запрос от команды: ключ кабинета или то, что признаёт движок
+        (`team_access_allowed`: ключ владельца, вход человека из команды)."""
+        if market_cabinet.authorised(request):
+            return True
+        allowed = getattr(core, "team_access_allowed", None) if core is not None else None
+        query = request.query_params
+        return bool(callable(allowed)
+                    and allowed(query.get("session") or "", query.get("key") or ""))
+
+    async def _auctions_view_gate(request: Request, call_next):
+        path = request.url.path.rstrip("/") or "/"
+        # Личный ключ «auctions» ограничивает ВЕСЬ сайт, а не только /auctions:
+        # с ним открыт раздел торгов и нужные ему запросы карты, остальное —
+        # отказ на сервере. Отозванный ключ не действует: браузер становится
+        # обычным посетителем.
+        try:
+            scoped = _scoped_key(request)
+        except RuntimeError:
+            logger.exception("auctions key registry unreadable")
+            return JSONResponse({"detail": access_keys.REGISTRY_BROKEN},
+                                status_code=503, headers={"Cache-Control": "no-store"})
+        if scoped:
+            problem = access_keys.scope_problem(
+                request.method, path, request.query_params)
+            if problem:
+                return _scope_denied(request, problem)
+            request.state.access_scope = access_keys.SCOPE
+            return await call_next(request)
+        if path == access_keys.ENTER_PATH:
+            return await call_next(request)
+        if path != "/auctions" and not path.startswith("/auctions/"):
+            return await call_next(request)
+        if path == "/auctions/login":
+            return await call_next(request)
+        # Демо-ссылка с разделом «Торги и КРТ»: только чтение, решение — одно
+        # на движок (`demo_request_access`). Полный ключ кабинета главнее.
+        if not market_cabinet.authorised(request):
+            demo = market_cabinet.demo_access(request)
+            if demo.get("demo"):
+                if demo.get("allowed"):
+                    return await call_next(request)
+                problem = str(demo.get("problem") or "")
+                if (request.method in ("GET", "HEAD")
+                        and "text/html" in request.headers.get("accept", "")):
+                    return HTMLResponse(auction_view.login_page(problem), status_code=403,
+                                        headers={"Cache-Control": "no-store"})
+                return JSONResponse({"detail": problem}, status_code=403,
+                                    headers={"Cache-Control": "no-store"})
+        if not _auctions_gate_enabled():
+            # Ворота выключены — чтение открыто всем, запись и пробы — только
+            # команде: ключ кабинета, ключ владельца или вход человека команды.
+            if not _team_request(request):
+                problem = auction_view.anonymous_problem(
+                    request.method, path, request.query_params)
+                if problem:
+                    return JSONResponse({"detail": problem}, status_code=401,
+                                        headers={"Cache-Control": "no-store"})
+            return await call_next(request)
+
+        full_access = market_cabinet.authorised(request)
+        view_access = auction_view.authorised(request)
+        if not full_access and not view_access:
+            if request.method in ("GET", "HEAD") and path == "/auctions":
+                problem = auction_view.key_problem()
+                status = 503 if problem else 401
+                return HTMLResponse(
+                    auction_view.login_page(problem),
+                    status_code=status,
+                    headers={"Cache-Control": "no-store, must-revalidate"},
+                )
+            return JSONResponse(
+                {"detail": "Нужен ключ доступа к разделу «Торги»"},
+                status_code=401,
+                headers={"Cache-Control": "no-store"},
+            )
+
+        # Новый ключ — именно право СМОТРЕТЬ. Полный MARKET_CABINET_KEY
+        # продолжает работать как раньше и не попадает под эти ограничения.
+        if view_access and not full_access:
+            problem = auction_view.scope_problem(
+                request.method, path, request.query_params)
+            if problem:
+                return JSONResponse(
+                    {"detail": problem},
+                    status_code=403,
+                    headers={"Cache-Control": "no-store"},
+                )
+        return await call_next(request)
+
+    # Production устанавливает auction_search до первого запроса. Если же
+    # приложение уже обслужило запрос (тесты, встраивание), FastAPI не даёт
+    # add_middleware — но молча остаться без гейта нельзя: это проверка
+    # доступа, и без неё ключ «auctions» открывал бы весь сайт. Гейт ставится
+    # в список и стек сбрасывается: Starlette соберёт его заново на следующем
+    # запросе.
+    if getattr(app, "middleware_stack", None) is None:
+        app.middleware("http")(_auctions_view_gate)
+    else:
+        from starlette.middleware import Middleware
+        from starlette.middleware.base import BaseHTTPMiddleware
+
+        app.user_middleware.insert(
+            0, Middleware(BaseHTTPMiddleware, dispatch=_auctions_view_gate))
+        app.middleware_stack = None
+
+    @app.post("/auctions/login", include_in_schema=False)
+    async def auctions_login(request: Request):
+        """Один вход для полного ключа рынка и отдельного read-only ключа."""
+        raw = (await request.body()).decode("utf-8", errors="replace")
+        key = (parse_qs(raw).get("key") or [""])[0]
+
+        response = RedirectResponse("/auctions", status_code=303)
+        if market_cabinet.key_accepted(key):
+            market_cabinet.set_cookie(response, key)
+            return response
+        if auction_view.key_accepted(key):
+            auction_view.set_cookie(response, key)
+            return response
+
+        return HTMLResponse(
+            auction_view.login_page("Ключ не подошёл."),
+            status_code=401,
+            headers={"Cache-Control": "no-store, must-revalidate"},
+        )
+
+    @app.get("/krt-12-preview", response_class=HTMLResponse, include_in_schema=False)
+    async def krt_12_preview_redirect() -> Response:
+        """Старая тестовая страница 12 площадок ведёт в общий формат КРТ."""
+        return RedirectResponse(
+            "/auctions?early=1",
+            status_code=307,
+            headers={"Cache-Control": "no-store, must-revalidate"},
+        )
+
+    @app.get(access_keys.ENTER_PATH, response_class=HTMLResponse, include_in_schema=False)
+    async def auctions_enter_page() -> HTMLResponse:
+        """Вход по ссылке: ключ во фрагменте `#k=…`, до сервера он не доходит."""
+        footer = guide.legal_footer_html(core) if core is not None else ""
+        return HTMLResponse(access_keys.enter_page(footer), headers={
+            "Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
+
+    @app.post(access_keys.ENTER_PATH, include_in_schema=False)
+    async def auctions_enter(request: Request):
+        """Обменять личный ключ на cookie. Сам ключ в cookie не кладётся."""
+        body = await json_object(request)
+        try:
+            record = access_keys.find_by_key(str(body.get("key") or ""))
+        except RuntimeError:
+            logger.exception("auctions key registry unreadable")
+            return JSONResponse({"detail": access_keys.REGISTRY_BROKEN}, status_code=503)
+        if not record:
+            return JSONResponse(
+                {"detail": "Ссылка не действует: ключ неверный, отозван или его "
+                           "срок истёк. "
+                           "Попросите владельца выдать новую."},
+                status_code=401, headers={"Cache-Control": "no-store"})
+        access_keys.record_login(record["id"])
+        logger.info("auctions key login: id=%s", record["id"])
+        response = JSONResponse({"ok": True, "scope": access_keys.SCOPE},
+                                headers={"Cache-Control": "no-store"})
+        response.set_cookie(
+            access_keys.COOKIE_NAME, access_keys.cookie_value(record),
+            httponly=True, samesite="lax", max_age=access_keys.cookie_max_age(record),
+            path="/", secure=request.url.scheme == "https")
+        return response
+
+    @app.get("/auctions", response_class=HTMLResponse)
+    async def auctions_home(request: Request) -> HTMLResponse:
+        scope = getattr(request.state, "access_scope", "") or ""
+        return HTMLResponse(
+            auction_page_with_handoff(auctions_page(core, access_scope=scope)),
+            headers={"Cache-Control": "no-store, must-revalidate"},
+        )
+
+    @app.get("/auctions/krt-card/{slug}", response_class=HTMLResponse, include_in_schema=False)
+    async def auction_krt_investment_card(slug: str) -> HTMLResponse:
+        """Универсальная полноэкранная карточка КРТ поверх production-источников."""
+        return HTMLResponse(
+            krt_investment_card_page(
+                slug, guide.legal_footer_html(core) if core is not None else ""),
+            headers={"Cache-Control": "no-store, must-revalidate"},
+        )
+
+    def _explicit_rating_burden(
+        project: dict[str, Any], screening: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Достроить burden в ЯВНОМ массовом расчёте рейтинга.
+
+        Фоновый цикл читает ЕГРН маленькими порциями, чтобы не давить web-процесс.
+        Но кнопка «Пересчитать рейтинги» до сих пор вообще не звала generic burden:
+        она строила рынок/модель и почти гарантированно оставляла 75% coverage.
+        Здесь запрос явный и последовательный, поэтому дочитываем до 72 объектов
+        за один проект (3 прохода по 24) и сохраняем тот же strict #485 result.
+        Unknown не превращается в ноль: terminal missing остаётся missing.
+        """
+        if core is None or project.get("early_unpublished") or not screening.get("available"):
+            return {}
+        state: dict[str, Any] = {}
+        for _ in range(3):
+            state = krt_investment_score.generic_project_burden(
+                core,
+                project,
+                screening,
+                lookup_chunk=24,
+            )
+            if not state.get("pending"):
+                break
+        return state
+
+
+    def _rating_catalogue_medians() -> dict[str, dict[str, Any]]:
+        """Observed medians used only when one rating input is absent.
+
+        Never write these values back as project facts: they are estimates and
+        must not recursively become part of the next median sample.
+        """
+        rows = list(krt_ranking.rows() or [])
+
+        def median_of(key: str, *, positive: bool = False, predicate: Any = None) -> dict[str, Any]:
+            values: list[float] = []
+            for item in rows:
+                if predicate is not None and not predicate(item):
+                    continue
+                try:
+                    value = float(item.get(key))
+                except (TypeError, ValueError):
+                    continue
+                if not math.isfinite(value):
+                    continue
+                if positive and value <= 0:
+                    continue
+                values.append(value)
+            return {
+                "value": None if not values else float(statistics.median(values)),
+                "count": len(values),
+            }
+
+        return {
+            "llcr": median_of("project_llcr_x", positive=True),
+            "price": median_of("surrounding_price_rub_sqm", positive=True),
+            "absorption": median_of("local_absorption_sqm_month", positive=True),
+            "burden": median_of("burden_pct", predicate=lambda item: bool(
+                item.get("burden_complete"))),
+        }
+
+
+    def _city_rating_reference(segment: Any) -> dict[str, Any]:
+        """Moscow class reference with all-class fallback when class is unknown."""
+        city = getattr(market, "city", None) if market is not None else None
+        if city is None:
+            return {"price": None, "absorption": None, "segment": str(segment or "")}
+        name = str(segment or "").strip()
+        price = None
+        absorption = None
+        if name:
+            snapshot = getattr(city, "snapshot", lambda _x: None)(name)
+            price = _positive_float(getattr(snapshot, "price_median", None)) if snapshot else None
+            reader = getattr(city, "area_median", None)
+            if callable(reader):
+                absorption = _positive_float(reader(name))
+        if price is None or absorption is None:
+            prices: list[float] = []
+            areas: list[float] = []
+            segments = getattr(city, "segments", None)
+            for item in (segments() if callable(segments) else []):
+                snapshot = getattr(city, "snapshot", lambda _x: None)(item)
+                p = _positive_float(getattr(snapshot, "price_median", None)) if snapshot else None
+                reader = getattr(city, "area_median", None)
+                a = _positive_float(reader(item)) if callable(reader) else None
+                if p is not None:
+                    prices.append(p)
+                if a is not None:
+                    areas.append(a)
+            if price is None and prices:
+                price = float(statistics.median(prices))
+            if absorption is None and areas:
+                absorption = float(statistics.median(areas))
+        return {"price": price, "absorption": absorption, "segment": name}
+
+
+    def _is_nagatino(project: dict[str, Any]) -> bool:
+        """Контрольный кейс #485 узнаётся по паспорту, а не по нестабильному slug."""
+        text = " ".join(str(project.get(k) or "") for k in ("name", "address", "district"))
+        try:
+            area = float(project.get("area_ha") or 0)
+        except (TypeError, ValueError):
+            area = 0.0
+        return abs(area - 14.62) < 0.08 and bool(re.search(r"(нагатин|варшавск)", text, re.I))
+
+    def _burden_attempt_failed(exc: Exception) -> dict[str, Any]:
+        """Сбой попытки собрать нагрузку — не ответ «нагрузки нет»."""
+        return {
+            "available": False,
+            "pending": True,
+            "failed": True,
+            "checked_at": int(time.time()),
+            "retry_after_seconds": krt_investment_score.BURDEN_NETWORK_RETRY_SECONDS,
+            "reason": f"Сбор нагрузки не выполнен: {type(exc).__name__}: {exc}"[:300],
+        }
+
+    def _investment_rating(
+        project: dict[str, Any],
+        *,
+        row: dict[str, Any],
+        stored: dict[str, Any],
+        price_target_rub_sqm: float | None = None,
+        burden_state: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Единственная сборка инвестиционного рейтинга КРТ (#485).
+
+        Её зовут карточка, массовая кнопка и фоновый слой. Прежде у каждого
+        была своя копия: фон звал `score()` без медианных подстановок и
+        затирал оценку, записанную кнопкой, на «—»; прототип Нагатино брал
+        LLCR до нагрузки. Одно число — один владелец.
+
+        `burden_state` — свежая попытка собрать денежную нагрузку (явный
+        пересчёт или фон). None — попытки не было, читаем сохранённое.
+        Сбой или недочитанный ЕГРН не стирает прежде собранную нагрузку той же
+        версии методики: разовый 503 — не ответ «нагрузка неизвестна».
+        """
+        screening = dict(stored.get("screening") or {})
+        metrics = dict(screening.get("metrics") or {})
+        market_block = dict(stored.get("market") or screening.get("market_report") or {})
+
+        shared_target = krt_ranking.rating_target(
+            krt_investment_score.DEFAULT_PRICE_TARGET_RUB_SQM)
+        target = float(
+            price_target_rub_sqm if price_target_rub_sqm is not None else shared_target)
+
+        llcr = metrics.get("project_llcr_x")
+        if llcr is None:
+            llcr = row.get("project_llcr_x")
+        entry_capacity_mln = row.get("entry_capacity_mln")
+
+        # Цена окружения — ровно то число, которое рыночный скрининг признал
+        # ценой окружения (`market_price_rub_sqm` → `surrounding_price_rub_sqm`).
+        # Цену «доминирующего класса» из site_verdict правило v5 скрининга
+        # запретило; засчитывать её здесь как измеренную значило вернуть её
+        # в балл через заднюю дверь. Нет цены — прозрачная медиана ниже.
+        market_price = _positive_float(row.get("surrounding_price_rub_sqm"))
+        if market_price is None:
+            market_price = _positive_float(
+                (screening.get("market") or {}).get("market_price_rub_sqm"))
+
+        # Поглощение считается из свежих аналогов отчёта; сохранённое число —
+        # только когда аналогов в отчёте нет. Иначе однажды записанная медиана
+        # переживала любой пересчёт рынка.
+        peers = [p for p in (market_block.get("peers") or []) if isinstance(p, dict)]
+        areas: list[float] = []
+        for peer in peers:
+            try:
+                value = float(peer.get("area_per_month"))
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(value):
+                areas.append(value)
+        local_absorption = (
+            round(float(statistics.median(areas)), 1) if areas
+            else row.get("local_absorption_sqm_month")
+        )
+        comparison = dict(market_block.get("comparison") or {})
+        subject = dict(market_block.get("subject") or {})
+        segment = (
+            comparison.get("segment")
+            or subject.get("segment")
+            or row.get("investment_rating_segment")
+            or row.get("segment")
+            or (screening.get("market") or {}).get("recommended_segment")
+        )
+        benchmark_absorption = None
+        if market is not None:
+            reader = getattr(getattr(market, "city", None), "area_median", None)
+            if callable(reader):
+                benchmark_absorption = _positive_float(reader(segment))
+        if benchmark_absorption is None:
+            benchmark_absorption = _positive_float(row.get("moscow_absorption_sqm_month"))
+
+        # --- денежная нагрузка --------------------------------------------
+        current_pipeline = int(krt_investment_score.BURDEN_PIPELINE_VERSION)
+        row_burden_ok = (
+            row.get("burden_complete") is True
+            and int(row.get("burden_pipeline_version") or 0) >= current_pipeline
+            and row.get("burden_pct") is not None
+        )
+        burden_pct = None
+        burden_mln = None
+        ordinary_capex_mln = row.get("ordinary_capex_mln")
+        burden_complete = False
+        burden_components: dict[str, Any] = {}
+        burden_reason = str(row.get("burden_reason") or "")
+        burden_llcr = None
+        burden_entry = None
+
+        def take_row() -> None:
+            nonlocal burden_pct, burden_mln, ordinary_capex_mln, burden_complete
+            nonlocal burden_components, burden_llcr, burden_entry
+            burden_pct = row.get("burden_pct")
+            burden_mln = row.get("burden_mln")
+            ordinary_capex_mln = row.get("ordinary_capex_mln")
+            burden_complete = True
+            burden_components = dict(row.get("burden_components") or {})
+            burden_llcr = row.get("burden_llcr_x")
+            burden_entry = row.get("burden_entry_capacity_mln")
+
+        early = bool(project.get("early_unpublished"))
+        state = dict(burden_state or {})
+        if early:
+            # У раннего сигнала известна отдельная оценка изъятия, но это НЕ
+            # весь денежный стек КРТ: частичное число не становится полным.
+            model_inputs = dict(screening.get("model_inputs") or {})
+            if ordinary_capex_mln is None and model_inputs and core is not None:
+                try:
+                    ordinary_capex_mln = krt_investment_score._ordinary_capex(
+                        core,
+                        dict(model_inputs.get("inputs") or {}),
+                        dict(model_inputs.get("tep") or {}),
+                        dict(model_inputs.get("phasing") or {}),
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception("Early KRT ordinary CAPEX failed slug=%s",
+                                     project.get("slug"))
+            if project.get("burden_complete") is True:
+                early_burden = _positive_float(project.get("seizure_mln"))
+                if early_burden and ordinary_capex_mln and float(ordinary_capex_mln) > 0:
+                    burden_mln = early_burden
+                    burden_pct = 100.0 * early_burden / float(ordinary_capex_mln)
+                    burden_complete = True
+        elif burden_state is None:
+            if row_burden_ok:
+                take_row()
+        elif state.get("available"):
+            burden_pct = state.get("burden_pct")
+            burden_mln = state.get("burden_mln")
+            ordinary_capex_mln = state.get("ordinary_capex_mln")
+            burden_complete = burden_pct is not None
+            burden_components = dict(state.get("components") or {})
+            burden_llcr = state.get("project_llcr_x")
+            burden_entry = state.get("entry_capacity_mln")
+            burden_reason = ""
+        else:
+            burden_reason = str(state.get("reason") or "")
+            if (state.get("pending") or state.get("failed")) and row_burden_ok:
+                take_row()
+
+        control: dict[str, Any] = {}
+        if _is_nagatino(project) and core is not None:
+            try:
+                control = krt_investment_score.nagatino_live_example(core)
+            except Exception:  # noqa: BLE001
+                logger.exception("Nagatino control burden failed")
+                control = {}
+            # Контрольный кейс заполняет только нагрузку, и только полную:
+            # LLCR и потолок остаются у настоящей модели проекта.
+            if control.get("available") and control.get("burden_pct") is None:
+                burden_reason = str(control.get("burden_reason") or burden_reason)
+            if control.get("available") and control.get("burden_pct") is not None:
+                stack = control.get("cost_stack") or {}
+                burden_pct = control.get("burden_pct")
+                burden_mln = stack.get("total_known_mln")
+                ordinary_capex_mln = control.get("ordinary_capex_mln")
+                burden_complete = True
+                burden_components = dict(stack)
+                burden_reason = ""
+
+        if burden_complete:
+            if burden_llcr is not None:
+                llcr = burden_llcr
+            if burden_entry is not None:
+                entry_capacity_mln = burden_entry
+
+        status_kind = str(project.get("status_kind") or "").strip().lower()
+        if not status_kind:
+            status_kind = (
+                "running" if _krt_status_kind(project.get("status")) == "running"
+                else "planned"
+            )
+
+        # Факт и оценка разделены: coverage считает только реальные входы
+        # площадки, а отсутствующий вход получает прозрачную медиану.
+        observed_components: set[str] = set()
+        if llcr is not None:
+            observed_components.add("llcr")
+        if market_price is not None:
+            observed_components.add("price")
+        if local_absorption is not None and benchmark_absorption is not None:
+            observed_components.add("absorption")
+        if burden_pct is not None:
+            observed_components.add("burden")
+
+        catalogue_medians = _rating_catalogue_medians()
+        city_reference = _city_rating_reference(segment)
+        imputed_components: dict[str, str] = {}
+        deferred_components: dict[str, str] = {}
+        segment_label = segment or "все классы"
+        least = krt_investment_score.MIN_MEDIAN_SAMPLE
+
+        def catalogue_median(key: str, label: str) -> Any:
+            """Медиана каталога — ответ, только если под ней хватает площадок.
+
+            Порог один на все четыре медианы (`MIN_MEDIAN_SAMPLE`). Не дотянув,
+            составляющая откладывается с причиной, а не подставляется числом
+            одной-двух строк.
+            """
+            item = catalogue_medians[key]
+            count = int(item.get("count") or 0)
+            if item.get("value") is None or count < least:
+                deferred_components[key] = (
+                    f"медиана {label} посчитана по {count} площадкам каталога, "
+                    f"нужно не меньше {least} — составляющая отложена"
+                )
+                return None
+            imputed_components[key] = f"медиана {label} рассчитанных КРТ, n={count}"
+            return item.get("value")
+
+        score_llcr = llcr
+        if score_llcr is None:
+            score_llcr = catalogue_median("llcr", "LLCR")
+
+        score_market_price = market_price
+        if score_market_price is None:
+            score_market_price = city_reference.get("price")
+            if score_market_price is not None:
+                imputed_components["price"] = f"медиана цены Москвы, {segment_label}"
+            else:
+                score_market_price = catalogue_median("price", "цены")
+
+        score_benchmark_absorption = benchmark_absorption
+        if score_benchmark_absorption is None:
+            score_benchmark_absorption = city_reference.get("absorption")
+        score_local_absorption = local_absorption
+        if score_local_absorption is None and score_benchmark_absorption is not None:
+            score_local_absorption = score_benchmark_absorption
+            imputed_components["absorption"] = (
+                f"локальных данных нет — медиана поглощения Москвы, {segment_label}")
+        elif score_local_absorption is None:
+            score_local_absorption = catalogue_median("absorption", "поглощения")
+            if score_local_absorption is not None:
+                score_benchmark_absorption = (
+                    score_benchmark_absorption or score_local_absorption)
+        elif benchmark_absorption is None and score_benchmark_absorption is not None:
+            imputed_components["absorption"] = (
+                f"эталон — медиана поглощения Москвы, {segment_label}")
+
+        # Поглощение считается ПАРОЙ, и неполная пара — тоже пропуск. Случай
+        # «локальная медиана есть, эталона нет» не был разобран ни одной из
+        # ветвей выше: составляющая молча уходила в missing, без подстановки и
+        # без названной причины. Замер прода 27.09.2026 подстановкой живых
+        # строк: две площадки из 365 теряли балл именно так.
+        if score_benchmark_absorption is None and score_local_absorption is not None:
+            score_benchmark_absorption = catalogue_median(
+                "absorption", "поглощения")
+            if score_benchmark_absorption is not None:
+                imputed_components["absorption"] = (
+                    "эталона Москвы по классу нет — "
+                    + imputed_components["absorption"])
+
+        score_burden_pct = burden_pct
+        if score_burden_pct is None:
+            score_burden_pct = catalogue_median("burden", "нагрузки полностью")
+
+        missing_reasons: dict[str, str] = {}
+        if local_absorption is None or benchmark_absorption is None:
+            missing_reasons["absorption"] = (
+                "Нужна пара м²/мес.: локальная медиана и медиана Москвы по классу. "
+                "Сохранённые ДДУ/мес. не подменяют эту меру."
+            )
+        if burden_pct is None:
+            if early and project.get("seizure_mln") is not None:
+                missing_reasons["burden"] = (
+                    f"Известна только предварительная оценка изъятия "
+                    f"{project.get('seizure_mln')} млн ₽; полный денежный стек КРТ "
+                    "ещё не собран, поэтому нагрузка остаётся unknown."
+                )
+            else:
+                missing_reasons["burden"] = (
+                    str(control.get("reason") or "") if control and not control.get("available")
+                    else ""
+                ) or burden_reason or (
+                    "Полная денежная нагрузка КРТ пока не собрана для этой площадки; "
+                    "неизвестное не считается нулём."
+                )
+
+        peer_count = len([p for p in peers if p.get("area_per_month") is not None])
+        rating = krt_investment_score.score(
+            status_kind=status_kind,
+            llcr=score_llcr,
+            market_rub_sqm=score_market_price,
+            target_rub_sqm=target,
+            local_sqm_month=score_local_absorption,
+            benchmark_sqm_month=score_benchmark_absorption,
+            burden_pct=score_burden_pct,
+            burden_mln=burden_mln,
+            ordinary_capex_mln=ordinary_capex_mln,
+            housing_gfa_sqm=project.get("housing_gfa_sqm") or row.get("housing_gfa_sqm"),
+            entry_capacity_mln=entry_capacity_mln,
+            sources={
+                "llcr": "DevelopAid financial engine",
+                "price": "рынок 3 км",
+                "absorption": (
+                    f"Pulse: медиана {peer_count} аналогов 3 км / Москва, "
+                    f"класс {segment or 'не определён'}, м²/мес."
+                ),
+                "burden": (
+                    "ранний сигнал: известна лишь часть нагрузки; полный стек не подтверждён"
+                    if early
+                    else "ЕГРН + обязательства КРТ + DevelopAid ordinary CAPEX"
+                ),
+            },
+            missing_reasons=missing_reasons,
+            observed_components=observed_components,
+            imputed_components=imputed_components,
+            deferred_components=deferred_components,
+        )
+        # Карточка и таблица читают один и тот же результат. Храним только
+        # компактный summary, а не всю методику #485 на каждой строке.
+        stored_rating = {
+            key: rating.get(key) for key in
+            ("score", "display_score", "coverage_pct", "rankable", "reason",
+             "missing", "imputed", "deferred")
+        }
+        stored_rating["components"] = {
+            key: {
+                "name": value.get("name"),
+                "score": value.get("score"),
+                "value": value.get("value"),
+                "benchmark": value.get("benchmark"),
+                "ratio": value.get("ratio"),
+                "estimated": bool(value.get("estimated")),
+                "estimate_source": value.get("estimate_source"),
+                "deferred": bool(value.get("deferred")),
+            }
+            for key, value in (rating.get("components") or {}).items()
+        }
+        now = int(time.time())
+        burden_fields = {
+            # Поля нужны и с None: remember() обязан очистить старую
+            # ошибочную «полную нагрузку» после смены методики.
+            "burden_pct": burden_pct,
+            "burden_mln": burden_mln,
+            "ordinary_capex_mln": ordinary_capex_mln,
+            "burden_pipeline_version": current_pipeline,
+            "burden_checked_at": int(
+                state.get("checked_at") or row.get("burden_checked_at") or now),
+            "burden_pending": bool(
+                state.get("pending") if burden_state is not None
+                else row.get("burden_pending")),
+            "burden_retry_after_seconds": int(
+                state.get("retry_after_seconds")
+                or row.get("burden_retry_after_seconds")
+                or krt_investment_score.BURDEN_RETRY_SECONDS),
+            "burden_complete": bool(burden_complete and burden_pct is not None),
+            "burden_reason": "" if burden_complete else burden_reason,
+            "burden_components": burden_components,
+            "burden_llcr_x": (
+                burden_llcr if burden_complete and burden_llcr is not None else None),
+            "burden_entry_capacity_mln": (
+                burden_entry if burden_complete and burden_entry is not None else None),
+        }
+        rating_fields = {
+            "investment_rating": stored_rating,
+            "investment_rating_version": str(
+                (rating.get("methodology") or {}).get("version") or ""),
+            "investment_rating_target_rub_sqm": target,
+            "investment_rating_computed_at": now,
+            "local_absorption_sqm_month": local_absorption,
+            "moscow_absorption_sqm_month": benchmark_absorption,
+            "investment_rating_segment": segment,
+        }
+        return {
+            "rating": rating,
+            "control_case": control,
+            "canonical": abs(target - float(shared_target)) < 0.5,
+            "canonical_target_rub_sqm": shared_target,
+            "burden_fields": burden_fields,
+            "fields": {**rating_fields, **burden_fields},
+            "absorption": {
+                "local_median_sqm_month": local_absorption,
+                "moscow_median_sqm_month": benchmark_absorption,
+                "segment": segment,
+                "peer_count": peer_count,
+            },
+        }
+
+    @app.get("/auctions/krt/{slug}/investment-score", include_in_schema=False)
+    async def auction_krt_investment_score(
+        slug: str,
+        request: Request,
+        price_target_rub_sqm: float | None = Query(
+            default=None,
+            ge=1,
+            le=10_000_000,
+        ),
+        ensure_model: bool = Query(default=False),
+    ) -> dict[str, Any]:
+        """Рейтинг КРТ по четырём равным блокам.
+
+        Пропуск больше не убивает весь рейтинг. Сначала используем данные самой
+        площадки/локального рынка; если одного входа нет, берём прозрачную
+        медианную подстановку (Москва/класс либо уже рассчитанные КРТ). Coverage
+        при этом остаётся долей фактических данных, а не становится 100%.
+        """
+        project = next(
+            (item for item in _krt_all_sites() if str(item.get("slug") or "") == slug),
+            None,
+        )
+        if project is None:
+            finder = getattr(krt_registry, "find", None)
+            project = finder(f"krt:{slug}") if callable(finder) else None
+        if not project:
+            raise HTTPException(status_code=404, detail="Территория КРТ не найдена")
+        await run_in_threadpool(_krt_economics_gate, request, slug)
+
+        # ensure_model используется именно массовой кнопкой каталога. Тяжёлый
+        # burden lookup тоже относится к этому явному пересчёту и требует тот
+        # же кабинет, даже если рынок/модель уже лежат в кэше.
+        if ensure_model:
+            market_cabinet.require_cabinet(request)
+
+        row = krt_ranking.stored_row(slug)
+        stored = krt_ranking.report(slug) or {}
+        screening = dict(stored.get("screening") or {})
+
+        # При массовом расчёте рейтинг обязан достроить отсутствующие рынок
+        # и финансовую модель, а не просто прочитать пустой кэш. Тяжёлый путь
+        # защищён кабинетом; сохранённый результат после этого виден всем.
+        need_model = not screening.get("available")
+        if need_model and (ensure_model or project.get("early_unpublished")):
+            market_cabinet.require_cabinet(request)
+            try:
+                fresh, live_report = await run_in_threadpool(
+                    _market_model_only, project)
+            except (SubjectNotFound, GeocodingError, RemoteServiceError, ValueError) as exc:
+                fresh, live_report = {"available": False, "reason": str(exc)}, {}
+            fresh_for_store = dict(fresh or {})
+            market_digest = (
+                _market_digest(live_report) if live_report
+                else dict(fresh_for_store.pop("market_report", None) or {})
+            )
+            await run_in_threadpool(
+                krt_ranking.save_failure_or_report,
+                slug,
+                fresh_for_store,
+                {
+                    "project": project,
+                    "market": market_digest,
+                    "screening": fresh_for_store,
+                },
+            )
+            fresh_row = score_row(project, fresh_for_store)
+            await run_in_threadpool(krt_ranking.upsert_row, fresh_row)
+            row = krt_ranking.stored_row(slug)
+            stored = krt_ranking.report(slug) or {}
+            screening = dict(stored.get("screening") or fresh_for_store)
+        # Явный пересчёт (массовая кнопка) достраивает четвёртый компонент
+        # #485 — денежную нагрузку. Без него у всего каталога выходили 50/75%.
+        burden_state: dict[str, Any] | None = None
+        if ensure_model and not project.get("early_unpublished") and screening.get("available"):
+            try:
+                # Пустой ответ — попытки не было (движок не подключён), а не
+                # «нагрузки нет»: сохранённое остаётся как есть.
+                burden_state = await run_in_threadpool(
+                    _explicit_rating_burden, project, screening) or None
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Explicit KRT burden failed slug=%s", slug)
+                burden_state = _burden_attempt_failed(exc)
+
+        result = await run_in_threadpool(
+            lambda: _investment_rating(
+                project,
+                row=row,
+                stored=stored,
+                price_target_rub_sqm=price_target_rub_sqm,
+                burden_state=burden_state,
+            ))
+        rating = result["rating"]
+        canonical = bool(result["canonical"])
+        # Ключ «только просмотр» читает, но в общий каталог не пишет.
+        may_write = not _view_only(request)
+        # В общий каталог записывается только канонический рейтинг. Сценарий,
+        # который пользователь крутит в карточке другим ориентиром, не должен
+        # менять цифру у всех остальных; собранная явным пересчётом нагрузка —
+        # факт площадки и пишется при любом ориентире.
+        if may_write and canonical:
+            await run_in_threadpool(krt_ranking.remember, slug, result["fields"])
+        elif may_write and burden_state is not None:
+            await run_in_threadpool(krt_ranking.remember, slug, result["burden_fields"])
+        return {
+            "slug": slug,
+            "rating": rating,
+            "canonical": canonical,
+            "canonical_target_rub_sqm": result["canonical_target_rub_sqm"],
+            "control_case": result["control_case"],
+            "imputation": rating.get("imputed") or [],
+            "absorption": result["absorption"],
+        }
+
+    @app.get("/auctions/krt-prototype/nagatino", include_in_schema=False)
+    async def auction_krt_nagatino_prototype() -> Response:
+        """Прежний адрес прототипа ведёт в общую карточку площадки.
+
+        Прототип считал рейтинг третьим, своим способом (LLCR до нагрузки, без
+        подстановок) и показывал Нагатино иначе, чем каталог и карточка.
+        Нагатино — обычная площадка каталога; контрольный кейс #485 живёт в
+        общей сборке `_investment_rating`.
+        """
+        project = next(
+            (item for item in (await run_in_threadpool(_krt_all_sites) or [])
+             if _is_nagatino(item)),
+            None,
+        )
+        slug = str((project or {}).get("slug") or "").strip()
+        if not slug:
+            raise HTTPException(
+                status_code=404, detail="Нагатино не найдено в текущем каталоге КРТ")
+        return RedirectResponse(
+            f"/auctions/krt-card/{urllib.parse.quote(slug, safe='')}",
+            status_code=307,
+            headers={"Cache-Control": "no-store, must-revalidate"},
+        )
+
+    @app.get("/auctions/sources")
+    async def auction_sources() -> dict[str, Any]:
+        return {
+            "source_policy": "official_etp_only",
+            "sources": [
+                {
+                    "id": "lot_online",
+                    "name": "Российский аукционный дом / Lot-online",
+                    "direct_lot_ingest": True,
+                    "moscow_discovery": True,
+                    "discovery_access": "public_catalogue",
+                    "project_company_shares_discovery": {
+                        "enabled": _feature_enabled(_LOTONLINE_PROJECT_SHARES_FLAG, True),
+                        "rollout": "on_by_default_switchable",
+                    },
+                },
+                {
+                    "id": "torgi_gov",
+                    "name": "ГИС Торги (torgi.gov.ru) — приватизация и прочие торги",
+                    "direct_lot_ingest": False,
+                    "moscow_discovery": TorgiGovAdapter.enabled(),
+                    "discovery_access": "public_api",
+                    "note": ("Не входит в основную подборку: живой ответ подтвердил "
+                             "178-ФЗ, а не банкротство. Доступен отдельным источником; "
+                             "Москву отбираем по subjectRFCode=77."),
+                    # Сертификат torgi.gov.ru выпущен Минцифры, и обычным
+                    # хранилищем корней он не проверяется. Корни лежат в
+                    # `certs` на машине, а не в репозитории. Пустой список
+                    # здесь — самая частая причина «источник включён, а лотов
+                    # нет»: соединение обрывается на проверке цепочки, и без
+                    # этой строки причину пришлось бы искать в логе.
+                    "trusted_roots": torgi_trust_report(),
+                },
+                {
+                    "id": "roseltorg",
+                    "name": "Росэлторг",
+                    "direct_lot_ingest": True,
+                    "moscow_discovery": True,
+                    "discovery_access": "public_tags_search_and_property_section",
+                    # Что источник СОДЕРЖИТ — часть ответа. Раздел имущества
+                    # «Развитие территории» — адрес, с которого город публикует
+                    # аукционы КРТ; со страницы берутся только ссылки на
+                    # карточки процедур, а читает их тот же разбор, что и
+                    # раньше. Чем отвечает сам раздел, показывает
+                    # `/auctions/roseltorg/probe` — с ядра: из песочницы
+                    # roseltorg.ru закрыт.
+                    "note": ("Поиск процедур по тегам плюс раздел имущества "
+                             "«Развитие территории» по Москве (ОКАТО 45000000000). "
+                             "Проба раздела — /auctions/roseltorg/probe."),
+                },
+                {
+                    "id": "etp_gpb",
+                    "name": "ЭТП ГПБ",
+                    "direct_lot_ingest": True,
+                    "moscow_discovery": True,
+                    "discovery_access": "official_public_json_api",
+                },
+                {
+                    "id": "etp_rf",
+                    "name": "ЭТП РФ",
+                    "direct_lot_ingest": False,
+                    "moscow_discovery": True,
+                    "discovery_access": "official_public_registry",
+                    "note": "Поиск подключён; детальный разбор документов площадки пока недоступен.",
+                },
+                {
+                    "id": "sberbank_ast",
+                    "name": "Сбербанк-АСТ",
+                    "direct_lot_ingest": True,
+                    "moscow_discovery": True,
+                    "discovery_access": "official_public_html_post",
+                    "note": ("Официальный реестр банкротных торгов: общий список, "
+                             "имущество и раздел АП. Если площадка вернула антибот-страницу, "
+                             "это отражается в охвате источника; обход защиты не используется."),
+                },
+                {
+                    "id": "nistp",
+                    "name": "НИС (nistp.ru)",
+                    "direct_lot_ingest": False,
+                    "moscow_discovery": True,
+                    "discovery_access": "official_public_registry",
+                    "note": "Публичный поиск банкротных лотов по Москве; подключён без обхода защиты.",
+                },
+                {
+                    "id": "efrsb",
+                    "name": "ЕФРСБ (fedresurs.ru) — сообщения о торгах по банкротству",
+                    "direct_lot_ingest": False,
+                    "moscow_discovery": True,
+                    "discovery_access": "official_public_json_api",
+                    "note": ("Реестр, куда управляющий выкладывает торги с любой площадки "
+                             "банкротства. Собирается в фоне и хранится на диске: сервис "
+                             "ограничивает частоту запросов."),
+                },
+                {
+                    "id": "investmoscow",
+                    "name": "Официальный портал «Торги Москвы» → фактическая ЭТП",
+                    "direct_lot_ingest": False,
+                    "moscow_discovery": True,
+                    "discovery_access": "public_city_catalogue_then_official_etp",
+                    "facts_source": "conducting_etp_only",
+                },
+            ],
+            "document_access": "public_first_optional_service_account_session",
+        }
+
+    # Виды статуса каталога. Город пишет два слова о стройке — «Планируемый» и
+    # «В реализации», — а третий вид у нас свой: у площадки, известной только
+    # проектом решения, карточки нет и статуса каталога не существует вовсе.
+    # Слово источника при этом остаётся словом источника: вид считается ОТ него,
+    # а не подменяет его на экране.
+    def _krt_status_kind(status: Any) -> str:
+        word = str(status or "").strip().casefold()
+        if not word:
+            return "draft"
+        if "планируем" in word:
+            return "planned"
+        if "реализац" in word:
+            return "running"
+        # Разбор карточки съехал на поле: статусом стал хвост адреса. Такой
+        # строке вид не присваивается — «не разобрано» не третий статус.
+        return "unparsed"
+
+    @app.get("/auctions/krt")
+    async def auction_krt_catalogue(refresh: bool = False) -> dict[str, Any]:
+        """Каталог площадок КРТ. `refresh` — нажатая человеком кнопка.
+
+        Снимок живёт сутки, и до 04.09.2026 «Обновить каталог» на свежем
+        снимке не читал источник вовсе: страница перерисовывала тот же файл, а
+        опубликованный вчера проект решения ждал ночного обхода. Обновление
+        касается обеих половин экрана — и каталога, и решений mos.ru: они
+        приходят из разных источников, а человек нажимает одну кнопку.
+        """
+        projects = await run_in_threadpool(
+            lambda: krt_registry.catalogue(refresh=bool(refresh)))
+        # Тот же список едет в разложение решений. Второе чтение каталога в
+        # этом же ответе однажды застало бы файл подменённым фоновым обходом —
+        # и площадка встала бы дважды: карточкой из первого чтения и строкой
+        # «карточки нет» из второго.
+        catalogue_read = list(projects)
+        if refresh:
+            # Решения mos.ru — второй источник этого же экрана, и человек
+            # нажимает одну кнопку. Обход идёт фоном: шестьдесят страниц поиска
+            # в срок ответа не укладываются, а работу принимают, а не держат
+            # соединением.
+            asked = getattr(krt_registry, "refresh_decisions_in_background", None)
+            if callable(asked):
+                try:
+                    asked()
+                except Exception:  # noqa: BLE001
+                    logger.exception("KRT decisions refresh failed to start")
+        # Состав каталога здесь только ЧИТАЕТСЯ. Прежде каждое чтение страницы
+        # переписывало снимок по тому списку, который собрался у ЭТОГО воркера,
+        # — а половина списка (площадки-решения) приезжает фоном, воркеров два,
+        # память раздельная. Замер прода 07.09.2026: 767 строк в одном ответе и
+        # 514 в следующем, очередь уведомлений растёт на 4–214 записей с каждого
+        # открытия каталога, 4492 накопленных «новости» — ни одна не новость
+        # города. Пишет состав тот, кто видит его целиком: сторож под замком,
+        # один воркер из двух.
+        seen = await run_in_threadpool(krt_ranking.first_seen)
+        projects = [
+            {**row,
+             "first_seen_at": seen.get(str(row.get("slug") or "")) or 0,
+             "is_new": krt_ranking.is_new(seen.get(str(row.get("slug") or ""))),
+             # Вид статуса объявляется ЗДЕСЬ и один раз. Экран прежде выводил
+             # его сам из слова города, и когда сюда добавилась строка «Проект
+             # решения», выбор «Статус: проект решения» перестал давать хоть
+             # что-нибудь: фильтр искал пустое слово, а в строке стояло слово
+             # (владелец, 04.09.2026: «Статус проект решения вообще не даёт
+             # ничего»). Перечисление в двух местах расходится молча.
+             "status_kind": _krt_status_kind(row.get("status"))}
+            for row in projects
+        ]
+        # Что карточка города говорит о застройщике и реновации — бесплатный
+        # официальный источник, и он больше не ждёт платного прогона: строка
+        # каталога несёт то, что уже прочитано, а недостающее дочитывается
+        # фоном порциями. Пока это лежало только в прогоне, у площадки с явным
+        # оператором в колонке не стояло ничего, и «не спрашивали» читалось как
+        # «оператора нет» (владелец, 01.09.2026).
+        cards_state: dict[str, Any] | None = None
+        known = getattr(krt_registry, "card_facts_known", None)
+        if callable(known):
+            slugs = [str(row.get("slug") or "") for row in projects]
+            try:
+                facts = await run_in_threadpool(known, slugs)
+            except Exception:  # noqa: BLE001
+                logger.exception("KRT card facts cache failed")
+                facts = {}
+            if facts:
+                def _with_card(row: dict[str, Any]) -> dict[str, Any]:
+                    card = facts.get(str(row.get("slug") or ""))
+                    if not card:
+                        return row
+                    # Город отвечает о площадке дважды: плиткой списка, по
+                    # которой собран каталог, и карточкой проекта. Совпадают
+                    # они не всегда — у «Дербеневской ул. тер. 2» плитка даёт
+                    # общий объём 153 320 и ОДН 14 400, карточка 358 100 без
+                    # ОДН (замер прода 20.09.2026; из 282 карточек расходится
+                    # немного, но расхождение есть). Выбирать между двумя
+                    # числами источника мы не вправе: считаем по-прежнему
+                    # плиткой и НАЗЫВАЕМ расхождение — молча выбранное число
+                    # выглядит на экране ровно так же, как сверенное. Ответ
+                    # несёт и то, было ли ЧТО сверять: «сверять не с чем» —
+                    # не «сошлось».
+                    card_tep = card.get("tep") if isinstance(card, dict) else None
+                    return {
+                        **row, "card_facts": card,
+                        "card_tep_check": {
+                            **tep_check.compare(
+                                card_tep or {}, row,
+                                ours_label="в карточке", theirs_label="в списке"),
+                            "read": bool(card_tep and any(
+                                value is not None for value in card_tep.values())),
+                        },
+                    }
+
+                projects = [_with_card(row) for row in projects]
+            # Сколько карточек прочитано и на чём споткнулись остальные. Без
+            # этого «реновации нет» и «карточку не спросили» выглядят на экране
+            # одинаково, а общий отказ источника не виден вовсе.
+            coverage = getattr(krt_registry, "card_facts_coverage", None)
+            if callable(coverage):
+                try:
+                    cards_state = await run_in_threadpool(coverage, slugs)
+                except Exception:  # noqa: BLE001
+                    logger.exception("KRT card facts coverage failed")
+                    cards_state = None
+            else:
+                cards_state = None
+            filler = getattr(krt_registry, "fill_card_facts_in_background", None)
+            if callable(filler):
+                try:
+                    filler(slugs)
+                except Exception:  # noqa: BLE001
+                    logger.exception("KRT card facts fill failed")
+
+        # Лоты, привязанные к площадкам, — запасной путь к тому, что уже
+        # посчитано: без него «идут торги» видно только тому, кто в этой же
+        # вкладке успел открыть соседнюю.
+        lots_known = getattr(krt_registry, "tender_lots_known", None)
+        remembered: dict[str, Any] = {}
+        if callable(lots_known):
+            try:
+                remembered = await run_in_threadpool(lots_known)
+            except Exception:  # noqa: BLE001
+                logger.exception("KRT tender lots cache failed")
+                remembered = {}
+
+        from . import krt_tenders as _krt_tenders
+
+        def _with_tender_lots(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            """Связку приписать ОБЕИМ половинам списка.
+
+            Прежде она приписывалась до того, как к каталогу добавлялись
+            площадки-решения, — то есть у половины строк её не бывало по
+            построению.
+            """
+            if not remembered:
+                return rows
+            out = []
+            for row in rows:
+                known = remembered.get(str(row.get("slug") or ""))
+                out.append({**row,
+                            # Момент срока считает сервер и для запомненных
+                            # лотов тоже: связка старше правила, и без него
+                            # прошедший срок читается как идущие торги.
+                            "tender_lots": _krt_tenders.with_moment(
+                                (known or {}).get("lots") or []),
+                            "tender_lots_seen_at": (known or {}).get("seen_at") or 0}
+                           if known else row)
+            return out
+
+        status = krt_registry.status()
+        # Неразобранная карточка называется вслух. Её значения съезжают на
+        # поле — округом становится статус, статусом хвост адреса, — и такая
+        # строка не проходит ни один флажок округа и пропадает с экрана без
+        # единого слова. Молча выброшенная площадка читается как её
+        # отсутствие, а это самая крупная площадка каталога и есть.
+        unparsed = [row for row in projects if row.get("parse_problem")]
+        # Площадка, у которой опубликован ПРОЕКТ решения, а карточки в
+        # каталоге нет, стояла отдельным списком под таблицей — то есть в общем
+        # ряду её не было («КРТ без карточки надо включать в общий список, но
+        # делать пометку», владелец, 31.08.2026). Она едет строкой сюда же, с
+        # меткой и датой. ТЭП у неё нет вовсе, и придумывать их нельзя: в
+        # колонках стоит прочерк, а не ноль.
+        #
+        # Метка называет ДОКУМЕНТ, а не его отсутствие: «без карточки» — это
+        # про наш каталог, а на mos.ru лежит проект решения о КРТ, и это не
+        # решение (владелец, 31.08.2026: «то, что ты назвал КРТ без карточки,
+        # вообще-то ПРОЕКТ решения»). Разница не в слове: проект решения город
+        # публикует для сбора мнений правообладателей — решения ещё нет, и
+        # назвать его принятым значит показать стадию, которой не наступало.
+        # Зато это самый ранний сигнал из всех: до торгов остаётся время.
+        decision_rows: list[dict[str, Any]] = []
+        second_publications = 0
+        tep_state: dict[str, Any] | None = None
+        # Числа обхода и причина устаревания объявляются ЗДЕСЬ, а не читаются
+        # из `found`: он существует только внутри ветки, и безусловное чтение
+        # роняло маршрут `UnboundLocalError` там, где читателя решений нет
+        # вовсе (поймано прогоном затронутого до открытия PR).
+        decisions_walk: dict[str, Any] = {}
+        decisions_stale_reason = ""
+        reader = getattr(krt_registry, "decisions", None)
+        if callable(reader):
+            try:
+                found = await run_in_threadpool(
+                    lambda: reader(catalogue=catalogue_read))
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("KRT decisions failed")
+                found = {"decisions": [], "error": f"{type(exc).__name__}: {exc}"}
+            # Дата проекта решения у площадки, которая в каталоге ЕСТЬ: колонка
+            # стояла пустой, будто документа не существует, а он найден и
+            # сопоставлен. «С карточкой и без — это по сути решение принято или
+            # это ещё проект» (владелец, 01.09.2026): ответить на это можно
+            # только датой документа, а не наличием карточки.
+            by_slug = {str(one.get("slug") or ""): one
+                       for one in (found.get("matched_rows") or [])}
+            # ТЭП, вынутый из самих PDF. У площадки без карточки это её
+            # единственные цифры; у площадки с карточкой — самопроверка пары
+            # «решение ↔ карточка», и расхождение называется, а не заменяет
+            # собой каталог.
+            decisions_walk = dict(found.get("walk") or {})
+            decisions_stale_reason = str(found.get("stale_reason") or "")
+            tep_by_document = found.get("tep") or {}
+            tep_state = found.get("tep_coverage")
+            # Недостающие решения дочитываются фоном и порциями — как карточки
+            # города: три сотни PDF подряд это налёт на mos.ru, а не чтение.
+            tep_filler = getattr(krt_registry, "fill_decision_tep_in_background", None)
+            if callable(tep_filler) and found.get("tep_pending"):
+                try:
+                    tep_filler(found.get("tep_pending") or [])
+                except Exception:  # noqa: BLE001
+                    logger.exception("KRT decision TEP fill failed")
+            if by_slug:
+                def _with_decision(row: dict[str, Any]) -> dict[str, Any]:
+                    one = by_slug.get(str(row.get("slug") or "")) or {}
+                    tep = tep_by_document.get(str(one.get("id") or "")) or {}
+                    return {
+                        **row,
+                        "draft_decision_at": one.get("published_at") or 0,
+                        "draft_decision_url": one.get("url") or "",
+                        # Чем ТЭП решения не сошёлся с карточкой. Гектары здесь
+                        # улика: расходится площадь территории — значит пара
+                        # собрана неверно, и метрам такой пары верить нельзя.
+                        # Расхождение НАЗЫВАЕТСЯ и каталог не подменяет: два
+                        # достоверных на вид ТЭП одной площадки — ровно та
+                        # беда, которую мы ловим в отчёте и книге. Ответ несёт
+                        # и то, ЧТО сверено: «сверять не с чем» — не «сошлось».
+                        "decision_tep_check": {
+                            **krt_decision_tep.catalogue_check(tep, row),
+                            # Было ли ЧТО сверять со стороны решения: без этого
+                            # «пара не найдена» и «пара есть, а величины в ней
+                            # не те» звучали бы одинаково, и экран утверждал бы
+                            # «решение прочитано» там, где решения нет вовсе.
+                            "read": bool(tep),
+                        },
+                    }
+
+                projects = [_with_decision(row) for row in projects]
+            # Считается по СОБРАННЫМ строкам, а не по числу документов:
+            # решение без идентификатора строкой не становится вовсе, и
+            # разность с ним назвала бы схлопнутым наш собственный пропуск.
+            built = _krt_decision_rows_built(found)
+            decision_rows = _without_second_publication(built)
+            # Схлопнутое называется числом: молча убранная строка читается как
+            # пропавшая площадка, а их 38 из 298 на снимке прода 05.09.2026.
+            second_publications = len(built) - len(decision_rows)
+            projects = projects + decision_rows
+        # Ранние площадки владельца ещё не опубликованы городом, но для
+        # инвестиционного отбора это тот же класс возможностей, что
+        # «Планируемый». Они живут в общем списке и проходят тот же рынок,
+        # финансовую модель и рейтинг. Когда город публикует совпавшую площадку,
+        # ранняя строка автоматически уступает официальной.
+        _inherit_early_market(projects)
+        early_rows = (krt_early_projects.projects(projects)
+                      if callable(getattr(krt_registry, "projects", None)) else [])
+        projects = projects + early_rows
+        projects = _with_tender_lots(projects)
+        return {
+            "source": CATALOGUE_URL,
+            "geometry_status": "not_published_in_catalogue",
+            **status,
+            "count": len(projects),
+            "unparsed_count": len(unparsed),
+            "unparsed": [
+                {"slug": row.get("slug"), "name": row.get("name"),
+                 "problem": row.get("parse_problem")}
+                for row in unparsed[:20]
+            ],
+            "no_card_count": len(decision_rows),
+            "early_unpublished_count": len(early_rows),
+            # Сколько строк убрано схлопыванием второй публикации одного и того
+            # же документа: у города он лежит и в разделе ДГИ, и в разделе ДИПП.
+            "second_publications": second_publications,
+            # Чем посчитана полнота снимка решений — часть ответа, а не
+            # подробность. Снимок её хранит с 0.23.87, а наружу не отдавал:
+            # «дочитан: True» проверить было нечем, и когда после выкатки
+            # строк стало 246 вместо 248, объяснить это со стороны не мог
+            # никто — счётчик молчания есть, а прочитать его нельзя.
+            "decisions_walk": decisions_walk,
+            "decisions_stale_reason": decisions_stale_reason,
+            "new_count": sum(1 for row in projects if row.get("is_new")),
+            "new_for_days": NEW_FOR_SECONDS // 86400,
+            # Охват карточек города: прочитано, не ответило и по какой причине.
+            "cards_state": cards_state,
+            # Сколько решений mos.ru прочитано ради их ТЭП: пустая колонка без
+            # этого числа читается как «в решении цифр нет», а это чаще наш
+            # пробел чтения.
+            "decision_tep_state": tep_state,
+            "projects": projects,
+        }
+
+    def _decision_rows_state(
+        catalogue: list[dict[str, Any]] | None = None,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """Площадки-решения строками и ответ «дочитаны ли они».
+
+        Полнота — часть ответа, а не подробность: решения приезжают фоном
+        страницами, и «этих решений я ещё не видел» на диске выглядит ровно
+        как «этих решений нет».
+
+        `catalogue` — список, уже прочитанный вызывающим. Две половины одного
+        экрана обязаны спорить о том, у кого есть карточка, по ОДНОМУ входу:
+        два чтения снимка ловят подмену файла фоновым обходом, и площадка
+        встаёт строкой дважды.
+        """
+        reader = getattr(krt_registry, "decisions", None)
+        if not callable(reader):
+            return [], False
+        try:
+            found = reader() if catalogue is None else reader(catalogue=catalogue)
+        except Exception:  # noqa: BLE001
+            # Источник не ответил — это ответ, а не «решений нет»: прогон идёт
+            # по каталогу, а недочитанное называется в логе.
+            logger.exception("KRT decisions read failed")
+            return [], False
+        whole = bool(found.get("complete")) and not found.get("stale")
+        return krt_decision_rows(found), whole
+
+    def _decision_rows_for_run() -> list[dict[str, Any]]:
+        """Площадки-решения строками — тем же сборщиком, что и на экране."""
+        return _decision_rows_state()[0]
+
+    def _inherit_early_market(official_rows: list[dict[str, Any]]) -> None:
+        """Carry only location-market facts from a matched early row.
+
+        Official publication can change TEP and therefore the financial model,
+        LLCR, margin and rating. Those are deliberately NOT copied. The 3 km
+        market around the same strongly matched site is reusable until the
+        normal production refresh replaces it.
+        """
+        by_slug = {
+            str(row.get("slug") or ""): row for row in official_rows
+            if isinstance(row, dict) and row.get("slug")
+        }
+        for early_slug, official_slug in krt_early_projects.published_aliases(official_rows).items():
+            official = by_slug.get(official_slug)
+            if not official:
+                continue
+            current = krt_ranking.report(official_slug) or {}
+            if current.get("market"):
+                continue
+            previous = krt_ranking.report(early_slug) or {}
+            previous_market = previous.get("market")
+            if not previous_market:
+                continue
+            payload = {
+                key: value for key, value in current.items()
+                if key not in ("schema_version", "slug", "computed_at")
+            }
+            payload["project"] = official
+            payload["market"] = previous_market
+            payload.setdefault("screening", {})
+            krt_ranking.save_report(
+                official_slug, payload,
+                computed_at=int(previous.get("computed_at") or time.time()),
+            )
+            old_row = krt_ranking.stored_row(early_slug)
+            new_row = krt_ranking.stored_row(official_slug)
+            safe_market_fields = {}
+            for key in (
+                "surrounding_price_rub_sqm",
+                "surrounding_sales_units_per_month",
+                "local_absorption_sqm_month",
+                "moscow_absorption_sqm_month",
+                "investment_rating_segment",
+                "segment",
+            ):
+                if new_row.get(key) is None and old_row.get(key) is not None:
+                    safe_market_fields[key] = old_row.get(key)
+            if safe_market_fields:
+                safe_market_fields["market_inherited_from_early"] = early_slug
+                krt_ranking.remember(official_slug, safe_market_fields)
+
+    def _krt_screen_state() -> tuple[list[dict[str, Any]], bool, dict[str, Any]]:
+        """Список экрана, ответ «виден ли он целиком» и ПОЧЕМУ именно такой.
+
+        Целиком — значит каталог прочитан и не обновляется прямо сейчас, а
+        решения дочитаны. Только такой список вправе отметить состав: неполный
+        забыл бы чужую половину, и следующий заход объявил бы её новой.
+
+        Причина считается ЗДЕСЬ ЖЕ, а не вторым ответом: сторож молчал, а
+        снаружи «состав не отмечен» и «решения дочитаны не все» выглядели
+        одинаково — `/auctions/krt/watch` отдавал `site: known 0` и ни слова о
+        том, чей это пробел. У молчащего цикла обязан быть счётчик молчания, и
+        считает его тот же вызов, которым сторож и решает.
+        """
+        try:
+            catalogue = list(krt_registry.catalogue())
+        except Exception:  # noqa: BLE001
+            logger.exception("KRT catalogue for siblings failed")
+            catalogue = []
+        decisions, decisions_whole = _decision_rows_state(catalogue)
+        official_rows = catalogue + decisions
+        _inherit_early_market(official_rows)
+        early = (krt_early_projects.projects(official_rows)
+                 if callable(getattr(krt_registry, "projects", None)) else [])
+        try:
+            state = krt_registry.status()
+        except Exception:  # noqa: BLE001
+            state = {}
+        catalogue_whole = bool(catalogue) and bool(state.get("complete")) \
+            and not state.get("refreshing") and not state.get("decisions_refreshing")
+        why = {
+            "catalogue_rows": len(catalogue),
+            "catalogue_complete": bool(state.get("complete")),
+            "catalogue_refreshing": bool(state.get("refreshing")),
+            "decisions_refreshing": bool(state.get("decisions_refreshing")),
+            "decision_rows": len(decisions),
+            "early_unpublished_rows": len(early),
+            "decisions_whole": bool(decisions_whole),
+            "whole": bool(catalogue_whole and decisions_whole),
+        }
+        # Числа обхода — рядом с признаком, которым он посчитан: страниц из
+        # объявленных, документов из объявленных и сколько документов снимок
+        # объясняет вместе с неразобранными. Без них «решения дочитаны не все»
+        # снаружи неотличимо от «в источнике столько и есть».
+        walk = state.get("decisions_walk")
+        if isinstance(walk, dict) and walk:
+            why["decisions_walk"] = walk
+        return catalogue + decisions + early, catalogue_whole and decisions_whole, why
+
+    def _krt_screen_list() -> tuple[list[dict[str, Any]], bool]:
+        """Список экрана и полнота — тем же счётом, что и причина."""
+        rows, whole, _why = _krt_screen_state()
+        return rows, whole
+
+    def _krt_all_sites() -> list[dict[str, Any]]:
+        """Все площадки списка: каталог плюс решения без карточки.
+
+        Обе половины экрана — один список. По нему ищется площадка по слагу и
+        по нему же считаются соседи: пока соседями были одни карточки каталога,
+        улица с площадкой-решением опознавала каждую из них.
+        """
+        return _krt_screen_list()[0]
+
+    def _read_open_sources(project: dict[str, Any]) -> dict[str, Any]:
+        """Что об этой площадке сказано в публикациях и каналах. Один разбор.
+
+        Зовётся и кнопкой на карточке, и еженедельным прогоном: второй такой
+        разбор однажды ответил бы про одну площадку иначе, чем первый, и оба
+        ответа выглядели бы верными.
+        """
+        from market_search import krt_open_sources
+
+        name = str((project or {}).get("name") or "")
+        if not name:
+            return {"available": False, "reason": "У площадки нет имени — искать нечего"}
+        # Поиск берётся у маркетингового движка — того самого, которым считаются
+        # соседи по рынку. Своего второго не заводим: модуль, идущий наружу мимо
+        # общего пути, однажды ответит иначе, чем весь остальной сервис.
+        client = getattr(market, "search", None)
+        finder = getattr(client, "search", None)
+        if not callable(finder) or not getattr(client, "configured", False):
+            return {"available": False,
+                    "reason": "Веб-поиск не настроен — публикации спросить нечем"}
+        asked = krt_open_sources.queries(
+            name, str((project or {}).get("okrug") or ""),
+            str((project or {}).get("district") or ""))
+        docs: list[Any] = []
+        errors: list[str] = []
+        for query in asked:
+            try:
+                docs.extend(finder(query))
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{type(exc).__name__}: {exc}")
+        if not docs and errors:
+            # Поиск не ответил — это ответ, а не «в источниках ничего нет».
+            return {"available": False, "reason": "; ".join(errors[:2]), "queries": asked}
+        # Соседи по каталогу решают, опознаёт ли улица площадку вообще: там,
+        # где на той же улице стоит ещё одна площадка, засчитываются только
+        # упоминания с номером владения или именем проекта.
+        mine = str((project or {}).get("slug") or "")
+        # Соседи считаются по ОБЕИМ половинам списка: у площадки-решения
+        # карточки в каталоге нет, и без её адреса в соседях улица, на которой
+        # стоят две площадки, опознавала бы каждую из них.
+        siblings = [str(item.get("name") or "") for item in _krt_all_sites()
+                    if str(item.get("slug") or "") != mine]
+        # Паспорт площадки едет вместе с именем: публикация, назвавшая её
+        # гектары или объём, говорит о НАШЕЙ территории даже там, где номер
+        # владения не называет никто — «Прошлякова, вл. 9» знают как развитие
+        # ЖК «Строгино 360» (владелец, 06.09.2026).
+        passport = {key: (project or {}).get(key) for key in
+                    ("area_ha", "housing_gfa_sqm", "total_gfa_sqm")}
+        found = krt_open_sources.read_findings(docs, name, siblings, passport)
+        # Рынок знает площадку по имени проекта, а не по адресу: «Строгино 360»
+        # знают все, «Маршала Прошлякова ул., вл. 9» — никто. Имя берётся из
+        # публикации, где оно стоит рядом с адресом, и вторым кругом ищется уже
+        # оно. Круг ровно один: поиск платный, а бренд у площадки один.
+        for brand in (found.get("brands") or [])[:1]:
+            query = f'"{brand}" застройщик КРТ Москва'
+            asked = asked + [query]
+            try:
+                docs.extend(finder(query))
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{type(exc).__name__}: {exc}")
+            else:
+                found = krt_open_sources.read_findings(docs, name, siblings, passport)
+        # Телеграм-каналы говорят о площадке раньше прессы (владелец,
+        # 01.09.2026: «а поиск информации можно через телеграм-каналы ещё
+        # вести?»). Спрашиваются тем же платным индексом с ограничением по
+        # домену — своего пути наружу не заводим. Круг один: у поиска цена.
+        tg_asked = krt_open_sources.telegram_queries(name, found.get("brands") or [])
+        tg_ok = False
+        for query in tg_asked:
+            asked = asked + [query]
+            try:
+                docs.extend(finder(query))
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{type(exc).__name__}: {exc}")
+            else:
+                tg_ok = True
+                found = krt_open_sources.read_findings(docs, name, siblings, passport)
+        found.update({"available": True, "queries": asked, "errors": errors[:2],
+                      "checked_at": int(time.time()),
+                      # Спросили каналы и там пусто — не то же, что не спросили.
+                      "telegram_asked": tg_ok})
+        return found
+
+    # Занятость — ответ ОДНОСТОРОННИЙ: отданная площадка свободной не
+    # становится (владелец, 01.09.2026: «может, один раз провести прогон как с
+    # моделью, а потом только по требованию?»). Значит спрашивать её повторно
+    # незачем: прогон платит за площадку один раз, дальше платит только тот,
+    # кто нажал «Пересчитать сейчас». Неотвеченная и свободная спрашиваются
+    # снова — там ответ ещё может измениться.
+    def _row_without_stale_facts(row: dict[str, Any]) -> dict[str, Any]:
+        """Строка рейтинга без признаков, посчитанных прежним правилом."""
+        facts = (row or {}).get("press_facts") or {}
+        if not facts or _facts_by_current_rules(facts):
+            return row
+        kept = dict(row)
+        kept["press_facts"] = {
+            "available": False,
+            "stale_rules": True,
+            "checked_at": facts.get("checked_at"),
+            "reason": ("прочитано прежним правилом привязки — до перечитывания "
+                       "признаки по нему не ставим"),
+        }
+        return kept
+
+    def _facts_by_current_rules(stored: dict[str, Any]) -> bool:
+        """Посчитан ли хранимый ответ нынешним правилом привязки.
+
+        Занятость спрашивается один раз — «отданная площадка свободной не
+        становится», — и неверная находка поэтому живёт вечно: «Бореалис» стоял
+        у Фестивальной, 53А, хотя строит он 6, 6а, 6б (владелец, 02.09.2026).
+        Правило привязки версионируется, и ответ прежней версии — не ответ.
+        """
+        from market_search import krt_open_sources
+
+        return int((stored or {}).get("rules_version") or 0) >= \
+            krt_open_sources.ANCHOR_RULES_VERSION
+
+    def _open_sources_for_run(project: dict[str, Any]) -> dict[str, Any]:
+        slug = str((project or {}).get("slug") or "")
+        stored = {}
+        try:
+            stored = (krt_ranking.stored_row(slug) or {}).get("press_facts") or {}
+        except Exception:  # noqa: BLE001
+            logger.exception("stored press facts failed slug=%s", slug)
+        if stored.get("available") and stored.get("taken") and _facts_by_current_rules(stored):
+            return stored
+        try:
+            return _read_open_sources(project)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("KRT open sources failed slug=%s", slug)
+            fresh = {"available": False, "reason": f"{type(exc).__name__}: {exc}"}
+            # Неудача не затирает прежний ответ — правило «посчитанное не
+            # выбрасывают» здесь то же самое.
+            return stored or fresh
+
+    def _krt_economics_gate(request: Request, slug: str | None) -> None:
+        """Экономика каталога — под тем же решением доступа, что и расчёт
+        (`core.catalog_economics_access`): площадка — её кадастровые номера,
+        весь рейтинг — без участка. Движка нет — решать нечем, как и прежде."""
+        decide = getattr(core, "catalog_economics_access", None) if core is not None else None
+        if not callable(decide):
+            return
+        numbers: list[str] = []
+        if slug:
+            try:
+                numbers = [str(n) for n in ((_requirements_for(slug) or {}).get("cadastral_numbers") or [])]
+            except Exception:  # noqa: BLE001 — без номеров решает правило всего каталога
+                logger.exception("KRT economics gate: cadastral numbers of %s", slug)
+        decide(cadastral=numbers or None, request=request)
+
+    def _requirements_for(slug: str) -> dict[str, Any] | None:
+        """Обязательства площадки. Один ответ на модуль, а не у каждой двери.
+
+        Документ один и тот же — проект решения о КРТ, — но дорога до него
+        разная: у площадки каталога через её слаг, у площадки-решения через
+        номер документа, потому что слага у неё нет вовсе. Пока выбор жил у
+        каждого вызывающего, карточка и прогон читали бы одну площадку
+        по-разному, и оба ответа выглядели бы верными.
+        """
+        clean = str(slug or "")
+        # Выбор двери живёт в реестре (`requirements_for`): его же читает сбор
+        # контура по перечню решения, и разойтись им теперь негде.
+        reader = getattr(krt_registry, "requirements_for", None)
+        if callable(reader):
+            return reader(clean)
+        if clean.startswith("decision:"):
+            reader = getattr(krt_registry, "decision_requirements", None)
+            if not callable(reader):
+                return None
+            return reader(clean[len("decision:"):])
+        return krt_registry.requirements(clean)
+
+    def _asking_price_mln(slug: str) -> float | None:
+        """Цена входа, объявленная на торгах по этой площадке.
+
+        Связку «площадка ↔ лот» помнит сервер (`tender_lots.json`) — второго
+        ответа на «какие у площадки лоты» не заводим, а какая из названных цен
+        берётся, решает `krt_tenders.asking_price_mln`: правило живёт там же,
+        где сама связка.
+        """
+        from . import krt_tenders
+
+        reader = getattr(krt_registry, "tender_lots_known", None)
+        if not callable(reader) or not slug:
+            return None
+        try:
+            known = reader() or {}
+        except Exception:  # noqa: BLE001
+            logger.exception("KRT tender lots read failed")
+            return None
+        return krt_tenders.asking_price_mln((known.get(slug) or {}).get("lots") or [])
+
+    def _krt_market_subject(
+        project: dict[str, Any], *, allow_remote_geocode: bool = True,
+    ) -> str:
+        """Subject рынка: официальный контур прежде любого геокодера.
+
+        Фоновый пересчёт работает только по уже известной геометрии. Адресный
+        геокодинг оставлен ручному пересчёту: массовый background не должен
+        превращать Nominatim в очередь из сотен одинаковых запросов.
+        """
+        if project.get("early_unpublished"):
+            if not allow_remote_geocode:
+                raise SubjectNotFound(
+                    "У ранней площадки пока нет официальной геометрии; "
+                    "фоновый расчёт не геокодирует адрес удалённо"
+                )
+            address = str(project.get("address") or project.get("name") or "").strip()
+            if not address:
+                raise ValueError("У ранней площадки нет адреса для рынка")
+            return address if address.casefold().startswith("москва") else "Москва, " + address
+
+        slug = str(project.get("slug") or "").strip()
+        if slug and core is not None:
+            try:
+                reader = getattr(krt_registry, "map_lookup", None)
+                lookup = (reader(slug, str(project.get("name") or ""), dict(project))
+                          if callable(reader) else {})
+                site = (lookup or {}).get("site") or {}
+                centre = site.get("centre_merc")
+                rings = list(site.get("rings_merc") or [])
+                if not centre and rings:
+                    points = [point for ring in rings for point in ring]
+                    if points:
+                        centre = [
+                            sum(float(point[0]) for point in points) / len(points),
+                            sum(float(point[1]) for point in points) / len(points),
+                        ]
+                if centre:
+                    lat, lng = krt_wgs84(
+                        float(centre[0]), float(centre[1]))
+                    return f"{lat:.7f}, {lng:.7f}"
+            except Exception:  # noqa: BLE001
+                logger.exception("KRT official market point failed slug=%s", slug)
+
+            try:
+                cached_outline = getattr(krt_registry, "outline_cached", None)
+                outline = cached_outline(slug) if callable(cached_outline) else None
+                centre = (outline or {}).get("centre_merc")
+                if centre:
+                    lat, lng = krt_wgs84(
+                        float(centre[0]), float(centre[1]))
+                    return f"{lat:.7f}, {lng:.7f}"
+            except Exception:  # noqa: BLE001
+                logger.exception("KRT decision market point failed slug=%s", slug)
+
+        if not allow_remote_geocode:
+            raise SubjectNotFound(
+                "У площадки пока нет официального или сохранённого контура; "
+                "фоновый расчёт не геокодирует адрес удалённо"
+            )
+
+        if project.get("no_card") and project.get("address_known"):
+            address = str(project.get("address") or project.get("name") or "").strip()
+            if address:
+                return address if address.casefold().startswith("москва") else "Москва, " + address
+
+        return f"krt:{slug}"
+
+    def _krt_market_report(
+        project: dict[str, Any], *, radius_km: float = 3.0, peers_limit: int = 12,
+        allow_remote_geocode: bool = True,
+    ) -> dict[str, Any]:
+        """Тот же production market engine для всех стадий КРТ."""
+        if market is None:
+            raise ValueError("Маркетинговый движок не подключён")
+        query = _krt_market_subject(project, allow_remote_geocode=allow_remote_geocode)
+        try:
+            return market.build_report(
+                query, radius_km=radius_km, peers_limit=peers_limit,
+                city_reference=False, include_project_totals=True,
+                match_nearby_project=False,
+            )
+        except (SubjectNotFound, GeocodingError):
+            if not allow_remote_geocode:
+                raise
+            fallback = str(project.get("address") or project.get("name") or "").strip()
+            if not fallback:
+                raise
+            if not fallback.casefold().startswith("москва"):
+                fallback = "Москва, " + fallback
+            time.sleep(1.1)
+            try:
+                return market.build_report(
+                    fallback, radius_km=radius_km, peers_limit=peers_limit,
+                    city_reference=False, include_project_totals=True,
+                    match_nearby_project=False,
+                )
+            except GeocodingError as exc:
+                if "too many requests" not in str(exc).casefold():
+                    raise
+                time.sleep(2.2)
+                return market.build_report(
+                    fallback, radius_km=radius_km, peers_limit=peers_limit,
+                    city_reference=False, include_project_totals=True,
+                    match_nearby_project=False,
+                )
+
+    def _market_model_only(
+        project: dict[str, Any], *, allow_remote_geocode: bool = True,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Рынок + финансовая модель без платного поиска публикаций."""
+        if core is None or market is None:
+            return ({"available": False,
+                     "reason": "Финансовый движок DevelopAid не подключён"}, {})
+        report = _krt_market_report(
+            project, radius_km=3.0, peers_limit=12,
+            allow_remote_geocode=allow_remote_geocode,
+        )
+        slug = str(project.get("slug") or "")
+        try:
+            requirements = _requirements_for(slug)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("KRT requirements failed slug=%s", slug)
+            requirements = {
+                "available": False,
+                "warning": f"Документы обязательств временно не прочитаны: {type(exc).__name__}",
+            }
+        asking_price = _asking_price_mln(slug)
+        if asking_price is None and project.get("early_unpublished"):
+            try:
+                asking_price = float(project.get("start_price_mln"))
+            except (TypeError, ValueError):
+                asking_price = None
+        screening = build_krt_model_screening(
+            project, report, core, requirements=requirements,
+            asking_price_mln=asking_price)
+        return screening, report
+
+    def _screen_one(
+        project: dict[str, Any], *, allow_remote_geocode: bool = True,
+    ) -> dict[str, Any]:
+        """Полный прогон: рынок + модель + карточка города + публичный контекст."""
+        screening, report = _market_model_only(
+            project, allow_remote_geocode=allow_remote_geocode)
+        if not report:
+            return screening
+        slug = str(project.get("slug") or "")
+        document_id = slug[len("decision:"):] if slug.startswith("decision:") else ""
+        # Карточка каталога — официальный и бесплатный источник застройщика и
+        # реновации. Читается в прогоне, а не по нажатию: иначе фильтр по
+        # оператору и городским нуждам работает только по открытым руками.
+        if document_id or project.get("no_card"):
+            # Площадка-решение и ранний неопубликованный проект по построению
+            # не имеют карточки krt.mos.ru. Это свойство источника, не ошибка.
+            reason = (
+                "Проект ещё не опубликован в каталоге krt.mos.ru"
+                if project.get("early_unpublished")
+                else "Карточки в каталоге krt.mos.ru у этой площадки нет"
+            )
+            card = {"available": False, "no_card": True, "reason": reason}
+        else:
+            try:
+                card = krt_registry.card_facts(slug)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("KRT card facts failed slug=%s", slug)
+                card = {"available": False, "reason": f"{type(exc).__name__}: {exc}"}
+        screening["card_facts"] = card
+        # Занятость площадки — в прогон, а не по нажатию: пока она приходила
+        # только кнопкой, каталог показывал «Планируемая» там, где договор
+        # давно подписан. Платится один раз на площадку: занятая больше не
+        # спрашивается никогда.
+        screening["press_facts"] = _open_sources_for_run(project)
+        # Маркетинг едет вместе со скринингом и оседает в отчёте площадки.
+        # Считать его второй раз при открытии карточки незачем: прогон уже
+        # сходил к рынку, к соседям и к движку — минуты чужого ожидания на
+        # готовом ответе. Кладётся выжимка, а не отчёт целиком: сто двадцать
+        # площадок × полный отчёт — это десятки мегабайт на диске, который у
+        # нас уже кончался, а карточка рисует ровно эти блоки.
+        screening["market_report"] = _market_digest(report)
+        return screening
+
+    def _cached_investment_rating_fields(
+        project: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Посчитать общий рейтинг из УЖЕ сохранённых рынка и модели.
+
+        Это дешёвый фоновый слой над существующим ranking/report. Он не ходит
+        к Pulse и не запускает второй финансовый движок: если рынок/модель ещё
+        не посчитаны, отдельный фоновый прогон ниже сначала заполняет их.
+        Сборка рейтинга — та же `_investment_rating`, что у карточки и кнопки.
+        """
+        slug = str(project.get("slug") or "").strip()
+        if not slug or _krt_status_kind(project.get("status")) == "running":
+            return None
+        row = krt_ranking.stored_row(slug)
+        stored = krt_ranking.report(slug) or {}
+        screening = dict(stored.get("screening") or {})
+        # Даже отказ модели — полезная строка, но рейтинг без единого
+        # инвестиционного исходного числа в каталог писать бессмысленно.
+        if not row and not screening:
+            return None
+
+        burden_state: dict[str, Any] | None = None
+        if not project.get("early_unpublished"):
+            try:
+                burden_state = krt_investment_score.generic_project_burden(
+                    core, project, screening)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Generic KRT burden failed slug=%s", slug)
+                burden_state = _burden_attempt_failed(exc)
+        return _investment_rating(
+            project, row=row, stored=stored, burden_state=burden_state)["fields"]
+
+    # Фоновый слой — функция замыкания; проверки зовут её через состояние
+    # приложения, а не копией логики.
+    app.state.krt_background_rating_fields = _cached_investment_rating_fields
+
+    def _rating_needs_recount(project: dict[str, Any], row: dict[str, Any]) -> bool:
+        if _krt_status_kind(project.get("status")) == "running":
+            return False
+        target = krt_ranking.rating_target(
+            krt_investment_score.DEFAULT_PRICE_TARGET_RUB_SQM)
+        version = str(krt_investment_score.methodology().get("version") or "")
+        if int((row or {}).get("burden_pipeline_version") or 0) < int(
+                krt_investment_score.BURDEN_PIPELINE_VERSION):
+            return True
+        checked = float((row or {}).get("burden_checked_at") or 0)
+        retry_after = float(
+            (row or {}).get("burden_retry_after_seconds") or 24 * 60 * 60)
+        if (
+            # False может не пережить очередную сборку model-row: исторический
+            # merge сохраняет только truthy remembered facts. Поэтому отсутствие
+            # True здесь тоже означает «полный burden ещё не подтверждён».
+            # Недочитанный ЕГРН при сохранённой прежней нагрузке — тоже повод
+            # дочитать: прежние числа держатся, пока новые не собраны.
+            ((row or {}).get("burden_complete") is not True
+             or (row or {}).get("burden_pending"))
+            and time.time() - checked >= max(60.0, retry_after)
+        ):
+            return True
+        rating = (row or {}).get("investment_rating") or {}
+        if not rating:
+            return True
+        if str((row or {}).get("investment_rating_version") or "") != version:
+            return True
+        try:
+            if abs(float((row or {}).get("investment_rating_target_rub_sqm")) - target) > 0.5:
+                return True
+        except (TypeError, ValueError):
+            return True
+        try:
+            model_at = int((row or {}).get("computed_at") or 0)
+            rating_at = int((row or {}).get("investment_rating_computed_at") or 0)
+        except (TypeError, ValueError):
+            return True
+        return model_at > rating_at
+
+    def _autonomous_market_model(
+        project: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Рынок + модель для фоновых прогонов без тупика на пустой геометрии.
+
+        Порядок строгий: официальный/сохранённый контур; затем контур из
+        решения и ЕГРН; и только если координаты всё ещё не появились —
+        адресный fallback через общий геокодер движка. На production он
+        сериализован общей защёлкой и выдерживает паузу между запросами.
+        """
+        try:
+            return _market_model_only(project, allow_remote_geocode=False)
+        except SubjectNotFound:
+            slug = str(project.get("slug") or "").strip()
+            builder = getattr(krt_registry, "decision_outline", None)
+            lookup = getattr(core, "_land_lookup_by_numbers", None) if core is not None else None
+            outline = None
+            if slug and callable(builder) and callable(lookup):
+                try:
+                    outline = builder(slug, lookup=lookup)
+                except Exception:  # noqa: BLE001
+                    logger.exception("KRT autonomous outline failed slug=%s", slug)
+            if (outline or {}).get("centre_merc"):
+                try:
+                    return _market_model_only(project, allow_remote_geocode=False)
+                except SubjectNotFound:
+                    pass
+            # Последний шанс: общий движковый геокодер уже rate-limited.
+            # Дополнительная пауза не даёт соседним строкам стартовать вплотную.
+            time.sleep(1.2)
+            return _market_model_only(project, allow_remote_geocode=True)
+
+    def _rating_screen_only(project: dict[str, Any]) -> dict[str, Any]:
+        """Достроить рынок + модель для фонового рейтинга."""
+        screening, report = _autonomous_market_model(project)
+        answer = dict(screening or {})
+        if report:
+            answer["market_report"] = _market_digest(report)
+        return answer
+
+    def _fill_cached_investment_ratings(*, limit: int = 8) -> int:
+        """Положить готовые рейтинги в общий серверный каталог.
+
+        Generic burden может дочитывать ЕГРН. Поэтому за один минутный такт
+        берём ограниченную пачку: каталог прогрессирует фоном, а не устраивает
+        сотни сетевых запросов одним залпом.
+        """
+        changed = 0
+        processed = 0
+        # Файл рейтинга читается один раз за такт, а не на каждую площадку:
+        # сотни полных разборов ranking.json в минуту на воркер.
+        rows = {str(item.get("slug") or ""): item for item in krt_ranking.rows()}
+        for project in _krt_all_sites():
+            if _krt_status_kind(project.get("status")) == "running":
+                continue
+            slug = str(project.get("slug") or "").strip()
+            if not slug:
+                continue
+            row = dict(rows.get(slug) or {})
+            if not _rating_needs_recount(project, row):
+                continue
+            fields = _cached_investment_rating_fields(project)
+            if not fields:
+                continue
+            krt_ranking.remember(slug, fields)
+            changed += 1
+            processed += 1
+            if processed >= max(1, int(limit)):
+                break
+        return changed
+
+    def _rating_background_loop() -> None:
+        """Фоново поддерживать рейтинг каталога без участия пользователя.
+
+        Сначала дешёвая арифметика по уже сохранённым отчётам. Если у новой
+        площадки ещё нет нынешней модели, запускается существующий background
+        runner рынка+DevelopAid небольшими порциями; после его записи следующий
+        такт автоматически положит рейтинг в ranking.json.
+        """
+        time.sleep(12)
+        while True:
+            try:
+                changed = _fill_cached_investment_ratings()
+                if changed:
+                    logger.info("KRT background rating: stored %d ratings", changed)
+
+                off = _market_source_off()
+                if not off and core is not None and market is not None and not krt_ranking.claimed():
+                    now = time.time()
+                    missing: list[dict[str, Any]] = []
+                    rows = {str(item.get("slug") or ""): item for item in krt_ranking.rows()}
+                    for project in _krt_all_sites():
+                        # «В реализации» не получает инвестиционный рейтинг,
+                        # но рынок у строки должен оставаться свежим: цена
+                        # окружения видна в общем каталоге независимо от стадии.
+                        slug = str(project.get("slug") or "").strip()
+                        if not slug:
+                            continue
+                        row = dict(rows.get(slug) or {})
+                        # Неудачный пересчёт не должен превращать stale-строку
+                        # в бесконечную очередь повторных запросов. keep_computed
+                        # оставляет последнюю удачную строку, а recompute_failed_at
+                        # задаёт отдельный возраст именно неудачной попытки.
+                        try:
+                            age = now - float(row.get("computed_at") or 0)
+                        except (TypeError, ValueError):
+                            age = 10**9
+                        try:
+                            failed_age = now - float(row.get("recompute_failed_at") or 0)
+                        except (TypeError, ValueError):
+                            failed_age = 10**9
+                        reason = str(
+                            row.get("recompute_reason") or row.get("reason") or ""
+                        ).casefold()
+                        transient_geocode = (
+                            "too many requests" in reason
+                            or "geocod" in reason
+                            or "геокод" in reason
+                        )
+                        retry_failed_after = 10 * 60 if transient_geocode else 24 * 60 * 60
+                        stale_available = (
+                            row.get("available")
+                            and krt_ranking_rules.model_needs_recount(row)
+                        )
+                        stale_retry_ready = (
+                            not row.get("recompute_failed_at")
+                            or failed_age >= retry_failed_after
+                        )
+                        needs_model = (
+                            (not row)
+                            or (stale_available and stale_retry_ready)
+                            or (
+                                not row.get("available")
+                                and age >= retry_failed_after
+                            )
+                        )
+                        if needs_model:
+                            missing.append(project)
+                        # Keep one autonomous run small. Market/Pulse reports allocate large
+                        # temporary objects; the ranking worker trims them between rows, and a
+                        # short batch gives the 512 MB web process a chance to stay below its cap.
+                        if len(missing) >= 4:
+                            break
+                    if missing:
+                        krt_ranking.start(missing, _rating_screen_only)
+            except Exception:  # noqa: BLE001
+                logger.exception("KRT background rating loop")
+            time.sleep(60)
+
+    @app.get("/auctions/krt/decisions")
+    async def auction_krt_decisions(refresh: bool = False) -> dict[str, Any]:
+        """Решения о КРТ, у которых нет карточки в каталоге.
+
+        Каталог krt.mos.ru отвечает на «какие площадки город показывает».
+        Решение публикуется отдельно, и площадка может иметь опубликованное
+        решение, не имея карточки вовсе — до сих пор такие были не видны ни при
+        каком фильтре. Сопоставление строгое: ложная привязка прячет настоящий
+        пробел, поэтому «не сопоставилось» здесь значит «карточки не нашли», а
+        не «новая площадка».
+        """
+        reader = getattr(krt_registry, "decisions", None)
+        if not callable(reader):
+            raise HTTPException(status_code=503, detail="Чтение решений недоступно")
+        try:
+            payload = await run_in_threadpool(lambda: reader(refresh=bool(refresh)))
+        except Exception as exc:  # источник закрыт — это ответ, а не пустой список
+            raise HTTPException(status_code=502,
+                                detail=f"Поиск mos.ru не ответил: {exc}") from exc
+        return payload
+
+    @app.get("/auctions/investmoscow/probe")
+    async def auction_investmoscow_probe() -> dict[str, Any]:
+        """Почему у нас нет ИнвестМосквы. Проба показывает ответ, а не догадку.
+
+        Адаптер есть и стоит в наборе «все источники», но лот у него рождается
+        длинной цепочкой: каталог → карточки города → ссылка на официальную ЭТП
+        → лот у адаптера ЭТП. Оборвись цепочка на первом шаге — карточек ноль,
+        лотов ноль, и в отчёте источника это видно только числами. Проба
+        называет, где именно рвётся: сколько байт вернул каталог, похоже ли это
+        на оболочку SPA и сколько ссылок на карточки в нём нашлось.
+        """
+        from .adapters.investmoscow import InvestMoscowDiscoveryAdapter as _IM
+
+        def collect() -> list[dict[str, Any]]:
+            adapter = _IM()
+            out: list[dict[str, Any]] = []
+            for url in _IM._search_urls()[:3]:
+                row: dict[str, Any] = {"url": url}
+                try:
+                    html = adapter._read_html(url)
+                except Exception as exc:  # noqa: BLE001
+                    row["error"] = f"{type(exc).__name__}: {exc}"[:300]
+                    out.append(row)
+                    continue
+                row["bytes"] = len(html)
+                low = html[:600].lower()
+                row["looks_html"] = "<html" in low or "<!doctype" in low
+                try:
+                    cards = _IM._city_card_urls(url, html)
+                except Exception as exc:  # noqa: BLE001
+                    row["parse_error"] = f"{type(exc).__name__}: {exc}"[:200]
+                    cards = []
+                row["city_cards"] = len(cards)
+                row["first_cards"] = list(cards)[:3]
+                out.append(row)
+            return out
+
+        answers = await run_in_threadpool(collect)
+        return {
+            "source": "investmoscow",
+            "asked": len(answers),
+            "answers": answers,
+            "note": ("Ноль карточек при живом ответе означает, что каталог отдаёт "
+                     "оболочку, а список приезжает отдельным вызовом — тогда нужен "
+                     "браузер и адрес, по которому страница сама ходит за данными: "
+                     "/auctions/etp/probe/browser?url=…"),
+        }
+
+    @app.post("/auctions/krt/{slug}/tender-order")
+    async def auction_krt_mark_tender(slug: str, request: Request) -> dict[str, Any]:
+        """Отметить: по этой площадке объявлены торги — по такому-то распоряжению.
+
+        Машине привязать нечем. Распоряжение ДГП не называет адреса ни в
+        заголовке, ни в карточке документа, а его PDF — скан: семь страниц, 199
+        картинок на первой, текста только регистрационный штамп. Придумать
+        привязку по номеру или по дате значило бы объявить площадку выставленной
+        на торги без единого основания.
+
+        Поэтому отметку ставит человек, открывший распоряжение, а мы храним её
+        как его утверждение — с номером, ссылкой и датой отметки.
+        """
+        setter = getattr(krt_registry, "mark_tender", None)
+        if not callable(setter):
+            raise HTTPException(status_code=503, detail="Отметки недоступны")
+        payload = await json_object(request)
+        order = (payload or {}).get("order") or {}
+        if order and not str(order.get("url") or "").startswith("https://www.mos.ru/"):
+            raise HTTPException(status_code=422,
+                                detail="Ссылка должна вести на распоряжение mos.ru")
+        try:
+            entry = await run_in_threadpool(
+                lambda: setter(slug, order, str((payload or {}).get("who") or "")))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"slug": slug, "link": entry}
+
+    @app.get("/auctions/krt/tender-links")
+    async def auction_krt_tender_links() -> dict[str, Any]:
+        """Все проставленные вручную привязки распоряжений к площадкам."""
+        reader = getattr(krt_registry, "tender_link", None)
+        if not callable(reader):
+            return {"links": {}}
+        return {"links": await run_in_threadpool(lambda: reader(""))}
+
+    # --- служебная страница: участки КРТ Нагатино и их правообладатели -------
+    # Владелец, 07.09.2026: «отдельная страничка на карте Москвы по КРТ
+    # Нагатино», следом — «можно просто не включать в публичную часть кабинета,
+    # для служебных нужд сейчас». Поэтому оба маршрута скрыты из схемы, из
+    # публичной части кабинета на них ссылки нет, а числа за ними — владельцу
+    # сервиса: в выгрузке живые компании с ИНН и кадастровой стоимостью.
+
+    def _nagatino_gate(request: Request, session: str, key: str, share: str) -> None:
+        """Кто вправе видеть числа: владелец, кабинет рынка либо ссылка.
+
+        Ключей у сервиса ДВА, и они разные. `DEVELOPAID_ADMIN_KEY` — владелец
+        сервиса, едет параметром `key`. `MARKET_CABINET_KEY` — кабинет рынка,
+        живёт кукой `market_cabinet` и заголовком `X-Market-Key`, в
+        `localStorage` его нет вовсе. Человек с настоящим ключом кабинета
+        («ключ наш <значение убрано>») получал «только для владельца сервиса», и
+        отказ не называл, какого именно ключа не хватило: на экране два
+        рабочих ключа неразличимы. Кабинет закрывает лицензионные данные того
+        же класса и открыт той же команде — пускаем и по нему.
+
+        Ссылка бессрочная и открытая — решение владельца (07.09.2026), тот же
+        механизм, что у «Поделиться» проектом: код случайный и длинный, адрес
+        открывает любой, кто его получил, рядом всегда кнопка отзыва. Второго
+        механизма на один вопрос не заводим.
+
+        Код сверяется постоянным по времени сравнением: обычное `==` на
+        коротком коде выдаёт длину совпавшего начала, и подбор становится
+        линейным вместо переборного.
+        """
+        import hmac
+
+        code = nagatino_parcels.share_code()
+        if code and share and hmac.compare_digest(str(share), code):
+            return
+        if market_cabinet.authorised(request):
+            return
+        # Демо-ссылка с разделом «Торги и КРТ» читает участки, как ключ
+        # просмотра; команды обновления — запись, их отказ называет причину.
+        demo = market_cabinet.demo_access(request)
+        if demo.get("demo"):
+            if demo.get("allowed"):
+                return
+            raise HTTPException(status_code=403, detail=str(demo.get("problem") or ""))
+        # Отдельный ключ торгов действует только здесь: generic-кабинет его
+        # не знает, поэтому /cabinet и финансовая модель им не открываются.
+        if auction_view.authorised(request):
+            # Тот же принцип, что у middleware /auctions: ограниченный ключ
+            # читает готовое, но не превращает GET-параметр в команду
+            # обновления служебных данных. Правило одно — в view_access.
+            flag = auction_view.command_flag(request.query_params)
+            if flag:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Ограниченный ключ даёт только просмотр торгов и КРТ",
+                )
+            return
+        if core is not None and hasattr(core, "_require_admin"):
+            # Выгрузка называет живые компании с ИНН и кадастровой стоимостью:
+            # это не витрина. Механизм честно выключен там, где владельца
+            # опознать нечем, — иначе на машине без настроек страница пропала
+            # бы у всех, включая самого владельца.
+            core._require_admin(session, key, "Участки КРТ Нагатино")
+
+    @app.get("/krt/nagatino/share", include_in_schema=False)
+    async def nagatino_share(session: str = "", key: str = "",
+                             revoke: str = "") -> dict[str, Any]:
+        """Выдать или отозвать ссылку. Только владельцу — делится он.
+
+        Выданная ссылка не перевыдаётся: у человека на руках адрес, и молча
+        сменить его значило бы сломать чужую вкладку, ничего об этом не сказав.
+        """
+        if core is not None and hasattr(core, "_require_admin"):
+            core._require_admin(session, key, "Участки КРТ Нагатино")
+        # Признак читается строкой, а не `bool`. Браузер шлёт пустой параметр
+        # как `revoke=`, и разбор в `bool` отвечал 422 — то есть кнопка
+        # «Поделиться» не работала НИ РАЗУ, даже у владельца: «я жму
+        # поделиться, но ничего не происходит» (владелец, 07.09.2026). Пустое
+        # значение — это «не отзывать», а не негодный ввод.
+        if str(revoke).strip().lower() in ("1", "true", "yes", "on"):
+            await run_in_threadpool(nagatino_parcels.revoke_share_code)
+            return {"code": "", "revoked": True}
+        code = await run_in_threadpool(nagatino_parcels.issue_share_code)
+        return {"code": code, "revoked": False}
+
+    @app.get("/land/live-map.js", include_in_schema=False)
+    async def land_live_map_script() -> Response:
+        """Живая карта движка со «Схема / Гибрид» — для нового интерфейса участка."""
+        from auction_search import land_map
+
+        return Response(land_map.standalone(core), media_type="application/javascript",
+                        headers={"Cache-Control": "no-cache"})
+
+    @app.get("/krt/nagatino", response_class=HTMLResponse, include_in_schema=False)
+    async def nagatino_parcels_home() -> HTMLResponse:
+        """Оболочка страницы. Проверки здесь нет по той же причине, что у
+        монитора: числа приходят отдельным маршрутом, и он спрашивает
+        владельца, — запирать ещё и оболочку значило бы дублировать проверку,
+        которая уже стоит на данных."""
+        return HTMLResponse(nagatino_page(core),
+                            headers={"Cache-Control": "no-store, must-revalidate"})
+
+    @app.get("/krt/nagatino/parcels", include_in_schema=False)
+    async def nagatino_parcels_data(request: Request, session: str = "", key: str = "",
+                                    share: str = "",
+                                    refresh: bool = False) -> dict[str, Any]:
+        """Участки выгрузки, их правообладатели и прочитанные контуры ЕГРН.
+
+        Сеть внутри запроса не трогается. Тридцать девять номеров по три в
+        потоке — это до пяти минут, а шлюз держит шестьдесят секунд: страница
+        отдала бы свою же ошибку вместо карты. Ответы копятся порциями на
+        диске, дочитывает фон, а страница показывает, чего ещё не спрашивали.
+        """
+        _nagatino_gate(request, session, key, share)
+        try:
+            data = await run_in_threadpool(nagatino_parcels.payload)
+        except nagatino_parcels.RegistryProblem as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        data["siblings"] = await run_in_threadpool(_krt_sites_with_lots)
+        lookup = getattr(core, "_land_lookup_by_numbers", None) if core is not None else None
+        if callable(lookup):
+            started = await run_in_threadpool(
+                lambda: nagatino_parcels.fill_in_background(
+                    lookup, find_site=_nagatino_site_finder(refresh)))
+            if started:
+                data["outlines"]["reading"] = True
+        else:
+            data["outlines"]["problem"] = (data["outlines"]["problem"]
+                                           or "движок ЕГРН не подключён — контуры не спрашивались")
+        return data
+
+    @app.get("/krt/nagatino/export.xlsx", include_in_schema=False)
+    async def nagatino_parcels_export(request: Request, session: str = "", key: str = "",
+                                      share: str = "") -> Response:
+        """Свод книгой Excel. Собирается из того же `territory()`, что и экран.
+
+        Второй сборки нет: разойдясь, книга и страница дали бы два достоверных
+        на вид ответа об одной территории.
+        """
+        _nagatino_gate(request, session, key, share)
+        from auction_search import nagatino_export
+
+        try:
+            raw = await run_in_threadpool(
+                lambda: nagatino_export.build(
+                    nagatino_parcels.territory(),
+                    nagatino_parcels.owners_summary(),
+                    nagatino_parcels.land_holdings(),
+                    nagatino_parcels.registry().get("groups") or [],
+                    nagatino_parcels.land_under_buildings(),
+                    nagatino_parcels.holdings_under(),
+                    nagatino_parcels.buyout(),
+                    # Адрес территории и её находки — утверждения об ЭТОЙ
+                    # площадке, и живут они у неё, а не умолчанием в книге:
+                    # оставленные умолчанием, они уехали бы в книгу чужой.
+                    subject="КРТ нежилой застройки 14,62 га, Варшавское ш., влд. 37, "
+                            "Нагатинская ул., влд. 3А/6 (ЮАО, Нагатино-Садовники)",
+                    site_notes=[
+                        ("Оперативное управление",
+                         "Не собственность: у девяти строений собственник — "
+                         "город Москва, держатель — ГБУ «Жилищник»"),
+                        ("Расхождение документов",
+                         "77:05:0004001:2077 есть в выписках и нет в извещении; "
+                         "77:05:0004001:1951 наоборот"),
+                    ]))
+        except nagatino_parcels.RegistryProblem as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        name = "КРТ Нагатино — участки и объекты.xlsx"
+        quoted = urllib.parse.quote(name)
+        return Response(
+            raw,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quoted}"},
+        )
+
+    @app.get("/krt/nagatino/decision-outline.png", include_in_schema=False)
+    async def nagatino_decision_outline(request: Request, session: str = "", key: str = "",
+                                        share: str = "") -> Response:
+        """Картинка границ из приложения 1 к проекту решения — как есть.
+
+        Не наложение: растр без координат, и совмещать его на глаз значит
+        рисовать геометрию, которой у нас нет. Она стоит рядом с картой и
+        подписана источником.
+        """
+        _nagatino_gate(request, session, key, share)
+        try:
+            raw = await run_in_threadpool(nagatino_parcels.decision_outline_picture)
+        except nagatino_parcels.OutlinePictureProblem as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return Response(raw, media_type="image/png",
+                        headers={"Cache-Control": "public, max-age=86400"})
+
+    def _nagatino_site_finder(refresh: bool):
+        """Чем опознать площадку в реестре КРТ. Своей геометрии здесь нет:
+        полигоны — реестра, правило пересечения — движка.
+
+        Полигоны берутся тем же составом, что рисует общая карта КРТ: файл
+        карты города ПЛЮС контуры, собранные по перечням проектов решений.
+        Одного файла мало — 35 строк каталога из 268 в нём нет вовсе, и
+        Варшавское ш., вл. 37 (Нагатино-Садовники) как раз из них: искать
+        только в файле значило бы не найти ровно ту площадку, ради которой всё
+        это делается.
+        """
+        reader = getattr(krt_registry, "map_dataset", None)
+        supplement = getattr(krt_registry, "map_supplement", None)
+        crossings = getattr(core, "_row_crossings", None) if core is not None else None
+        if not callable(reader) or not callable(crossings):
+            return None
+
+        def find() -> dict[str, Any]:
+            data = reader(refresh=refresh) or {}
+            if data.get("problem"):
+                return {"problem": f"файл карты реестра не прочитан: {data['problem']}"}
+            sites = list(data.get("sites") or [])
+            if callable(supplement):
+                try:
+                    sites += list((supplement(data) or {}).get("sites") or [])
+                except Exception:  # noqa: BLE001 — добавка не роняет поиск
+                    logger.exception("КРТ Нагатино: добавка контуров по решениям не собралась")
+            return nagatino_parcels.resolve_site(sites, crossings)
+
+        return find
+
+    # --- тот же свод для любой площадки КРТ ---------------------------------
+    # «Цель была чтобы все крт с торгов разбирались по образу и подобию
+    # Нагатино» (владелец, 13.09.2026). Сборщик свода ОДИН — тот, что собирает
+    # Нагатино; здесь меняются только источники: состав территории из извещения
+    # лота, свойства и собственники из его выписок, контур площадки из реестра.
+    def _krt_site_source(slug: str) -> tuple[dict[str, Any], Any]:
+        """Площадка каталога и её источник свода.
+
+        **Сеть здесь не трогается**: это правило страницы, и первая версия его
+        нарушила — площадка искалась в общем списке (`_krt_all_sites`), а тот
+        при просроченном снимке уходит обходить krt.mos.ru и mos.ru, и
+        собственный запрос страницы не возвращался вовсе. Спрашивается то, что
+        лежит на диске: `find` читает снимок каталога (у площадки-решения —
+        снимок решений) и только заводит фоновое обновление, а связка с лотами
+        лежит файлом. Не знает ни один — 404 с причиной: пустой свод читался бы
+        как территория без объектов.
+        """
+        finder = getattr(krt_registry, "find", None)
+        project = finder(f"krt:{slug}") if callable(finder) else None
+        if project is None:
+            # Каталожной карточки нет (или снимок её ещё не принёс), а лот у
+            # площадки есть: имя берём из связки и подписываем, чьё оно.
+            known = next((item for item in _krt_sites_with_lots()
+                          if item["slug"] == slug), None)
+            if known:
+                project = {"slug": slug, "name": known["name"],
+                           "name_source": known["name_source"]}
+        if not project:
+            raise HTTPException(
+                status_code=404,
+                detail="Территории КРТ с таким слагом нет ни в снимке каталога, "
+                       "ни в связке с лотами торгов")
+        numbers: list[str] = []
+        try:
+            numbers = [str(number) for number
+                       in ((_requirements_for(slug) or {}).get("cadastral_numbers") or [])]
+        except Exception:  # noqa: BLE001 — перечень необязателен, отказ назовёт свод
+            logger.exception("КРТ: перечень участков решения не прочитан slug=%s", slug)
+        # Ключ склада берётся у связки «площадка ↔ лот»: выписки и вложения
+        # лежат по ключу ЛОТА, а не площадки. Своего разбора номера из адреса
+        # лота здесь нет — формат объявлен в адаптере площадки.
+        key = ""
+        reader = getattr(krt_registry, "tender_lots_known", None)
+        if callable(reader):
+            try:
+                lots = ((reader() or {}).get(slug) or {}).get("lots") or []
+            except Exception:  # noqa: BLE001
+                logger.exception("КРТ: связка с лотами не прочитана slug=%s", slug)
+                lots = []
+            key = next((str(lot.get("store_key") or "") for lot in lots
+                        if lot.get("store_key")), "")
+        site = krt_territory.site_for(
+            slug, str(project.get("name") or slug), key=key,
+            decision_numbers=numbers, root=_market_dir())
+        return dict(project), site
+
+    # Рисунок границ, как его напечатал город. Раскрытие «Контур площадки, как
+    # его напечатал город» стоит в разметке страницы у ВСЕХ площадок, а
+    # картинку отдавал маршрут, который был только у Нагатино: у остальных 580
+    # человек открывал блок и видел пустоту (экран владельца, 14.09.2026).
+    # Пустого раскрытия не бывает — либо картинка, либо названная причина.
+    _OUTLINE_MARKS = ("схема границ", "границ территории", "схема территории")
+
+    def _site_outline_picture(slug: str) -> tuple[bytes, str]:
+        """Картинка и чем она найдена — или отказ с причиной.
+
+        Сеть здесь не трогается: берутся УЖЕ скачанные вложения лота
+        (`lot_documents`) и приложение к решению Нагатино, лежащее файлом.
+        Иначе один открытый блок уводил бы страницу на минуты в Росэлторг, а
+        шлюз отвечал бы своей страницей вместо картинки.
+        """
+        key = ""
+        reader = getattr(krt_registry, "tender_lots_known", None)
+        if callable(reader):
+            try:
+                lots = ((reader() or {}).get(slug) or {}).get("lots") or []
+            except Exception:  # noqa: BLE001
+                logger.exception("КРТ: связка с лотами не прочитана slug=%s", slug)
+                lots = []
+            key = next((str(lot.get("store_key") or "") for lot in lots
+                        if lot.get("store_key")), "")
+        if not key:
+            raise nagatino_parcels.OutlinePictureProblem(
+                "рисунок города берётся из документации лота, а лота у этой "
+                "площадки мы не знаем")
+        kept = lot_documents.manifest(_market_dir(), key)
+        # Подпись вложения лежит под тем же ключом, каким её пишет склад
+        # (`title`); её же читает счёт вложений. Имя файла — запасной путь:
+        # площадка кладёт его в адрес.
+        names = [(url, str((entry or {}).get("title")
+                           or (entry or {}).get("file") or url))
+                 for url, entry in (kept.get("files") or {}).items()]
+        found = [(url, name) for url, name in names
+                 if any(mark in name.casefold() for mark in _OUTLINE_MARKS)]
+        if not found:
+            raise nagatino_parcels.OutlinePictureProblem(
+                "в скачанных вложениях лота схемы границ нет"
+                + (f" (вложений на складе {len(names)})" if names else
+                   ": склад по этому лоту пуст"))
+        said = ""
+        for url, name in found:
+            got = lot_documents.load(_market_dir(), key, url)
+            if not got:
+                said = said or f"«{name}» на складе числится, а байтов нет"
+                continue
+            try:
+                return nagatino_parcels.outline_picture_from(
+                    got[0], what=f"«{name}»"), name
+            except nagatino_parcels.OutlinePictureProblem as exc:
+                said = said or str(exc)
+        raise nagatino_parcels.OutlinePictureProblem(
+            said or "схема границ не прочиталась")
+
+    @app.get("/krt/site/{slug}/decision-outline.png", include_in_schema=False)
+    async def krt_site_outline(slug: str, request: Request, session: str = "",
+                               key: str = "", share: str = "") -> Response:
+        """Рисунок границ площадки — как есть, без наложения на нашу карту.
+
+        Растр без координат: совместить его с картой можно только на глаз, а
+        нарисованная так граница выглядела бы ровно так же уверенно, как
+        настоящая. Поэтому он стоит рядом с картой и подписан источником.
+        """
+        _nagatino_gate(request, session, key, share)
+        try:
+            raw, name = await run_in_threadpool(_site_outline_picture, slug)
+        except nagatino_parcels.OutlinePictureProblem as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return Response(raw, media_type="image/png", headers={
+            "Cache-Control": "public, max-age=86400",
+            # Чем найдено — часть ответа: подпись под картинкой называет
+            # документ, из которого она вынута.
+            "X-Outline-Source": urllib.parse.quote(name),
+        })
+
+    def _krt_sites_with_lots() -> list[dict[str, Any]]:
+        """Площадки, у которых есть лот торгов — список для служебной страницы.
+
+        Ссылки на эту страницу в публичной части нет (решение владельца), и
+        потому перейти между территориями можно только ОТСЮДА: страница без
+        такого списка отвечала бы «где искать остальные» молчанием.
+
+        **Каталог здесь не спрашивается.** Сеть внутри запроса страницы не
+        трогается — это правило модуля, и первая версия его нарушила: имя
+        площадки бралось из списка каталога, а тот при просроченном снимке
+        уходит обходить krt.mos.ru и mos.ru. Страница вставала насмерть (её
+        собственный запрос не возвращался вовсе), и пять браузерных проверок
+        Нагатино упали таймаутом — на верном на вид коде. Имя берётся из самой
+        связки: там лежит адрес лота, и он назван своим именем.
+
+        «Лот живой» здесь НЕ утверждается: правило живости живёт у каталога
+        (`krtLiveLot`), и второе такое правило однажды ответило бы про один лот
+        иначе. Печатается срок в том виде, в каком его объявила площадка;
+        момент считается при чтении (`with_moment`), потому что связка лежит на
+        диске и старше правила разбора даты.
+        """
+        from . import krt_tenders as rules
+
+        reader = getattr(krt_registry, "tender_lots_known", None)
+        if not callable(reader):
+            return []
+        try:
+            known = reader() or {}
+        except Exception:  # noqa: BLE001
+            logger.exception("КРТ: связка с лотами не прочитана")
+            return []
+        out: list[dict[str, Any]] = []
+        for slug, record in known.items():
+            lots = rules.with_moment((record or {}).get("lots") or [])
+            if not lots:
+                continue
+            out.append({
+                "slug": str(slug),
+                # Имя — адрес лота из связки; каталожного имени здесь нет, и
+                # подписано оно тем, чем является.
+                "name": str(lots[0].get("address") or slug),
+                "name_source": "адрес лота" if lots[0].get("address") else "слаг площадки",
+                "lots": len(lots),
+                "deadline": str(lots[0].get("deadline") or ""),
+                "deadline_iso": str(lots[0].get("deadline_iso") or ""),
+                "url": ("/krt/nagatino" if str(slug) == "nagatino"
+                        else "/krt/site/" + urllib.parse.quote(str(slug))),
+            })
+        out.sort(key=lambda item: item["name"])
+        return out
+
+    def _krt_site_finder(slug: str, name: str):
+        """Контур площадки для её свода: сперва файл карты города, потом перечень.
+
+        Тот же порядок, что у точки на карте (`/point`), и те же две дороги:
+        второго пути к контуру в модуле нет. Владелец дорог —
+        `krt_project_site.find_site`: им же берёт контур галочка «Проект в КРТ». Опознавать геометрией здесь не
+        нужно — слаг площадки известен.
+        """
+        def find() -> dict[str, Any]:
+            return krt_project_site.find_site(krt_registry, slug, name,
+                                              decision_outline=_decision_outline_now)
+
+        return find
+
+    @app.get("/krt/site/{slug}", response_class=HTMLResponse, include_in_schema=False)
+    async def krt_site_home(slug: str) -> HTMLResponse:
+        """Оболочка той же страницы. Адрес решает, чья это территория.
+
+        Форка страницы нет: копию негде обновлять, а два экрана об одной
+        территории однажды показали бы разное. Свой адрес страница узнаёт из
+        `location`, и маршруты данных живут рядом с ней.
+        """
+        return HTMLResponse(nagatino_page(core),
+                            headers={"Cache-Control": "no-store, must-revalidate"})
+
+    @app.get("/krt/site/{slug}/parcels", include_in_schema=False)
+    async def krt_site_parcels(request: Request, slug: str, session: str = "",
+                               key: str = "", share: str = "") -> dict[str, Any]:
+        """Свод территории площадки. Сеть внутри запроса не трогается."""
+        _nagatino_gate(request, session, key, share)
+        project, site = await run_in_threadpool(_krt_site_source, slug)
+        data = await run_in_threadpool(lambda: nagatino_parcels.payload(site))
+        data["siblings"] = await run_in_threadpool(_krt_sites_with_lots)
+        data["site"] = {"slug": slug, "name": project.get("name") or slug,
+                        "okrug": project.get("okrug") or "",
+                        "district": project.get("district") or "",
+                        "status": project.get("status") or "",
+                        "area_ha": project.get("area_ha"),
+                        "source": krt_registry.KRT_SOURCE if hasattr(
+                            krt_registry, "KRT_SOURCE") else ""}
+        lookup = getattr(core, "_land_lookup_by_numbers", None) if core is not None else None
+        if callable(lookup):
+            started = await run_in_threadpool(
+                lambda: nagatino_parcels.fill_in_background(
+                    lookup, find_site=_krt_site_finder(
+                        slug, str(project.get("name") or slug)),
+                    site=site))
+            if started:
+                data["outlines"]["reading"] = True
+        else:
+            data["outlines"]["problem"] = (data["outlines"]["problem"]
+                                           or "движок ЕГРН не подключён — контуры не спрашивались")
+        return data
+
+    @app.get("/krt/site/{slug}/export.xlsx", include_in_schema=False)
+    async def krt_site_export(request: Request, slug: str, session: str = "",
+                              key: str = "", share: str = "") -> Response:
+        """Свод книгой Excel. Собирается из того же `territory()`, что и экран."""
+        _nagatino_gate(request, session, key, share)
+        project, site = await run_in_threadpool(_krt_site_source, slug)
+        from auction_search import nagatino_export
+
+        def build() -> bytes:
+            view = nagatino_parcels.territory(site)
+            holdings = nagatino_parcels.land_holdings(view, site)
+            return nagatino_export.build(
+                view,
+                nagatino_parcels.owners_summary(view, site),
+                holdings,
+                nagatino_parcels.registry(site).get("groups") or [],
+                nagatino_parcels.land_under_buildings(view, site),
+                nagatino_parcels.holdings_under(view, holdings, site),
+                nagatino_parcels.buyout(holdings, view, site),
+                subject=" · ".join(part for part in (
+                    f"КРТ {project.get('name') or slug}",
+                    f"{project.get('area_ha')} га по каталогу"
+                    if project.get("area_ha") else "",
+                    " ".join(str(project.get(key) or "")
+                             for key in ("okrug", "district")).strip(),
+                ) if part))
+
+        raw = await run_in_threadpool(build)
+        name = f"КРТ {project.get('name') or slug} — участки и объекты.xlsx"
+        quoted = urllib.parse.quote(name)
+        return Response(
+            raw,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quoted}"},
+        )
+
+    @app.get("/auctions/krt/map")
+    async def auction_krt_map(refresh: bool = False, step_m: float = Query(default=40.0, ge=1.0, le=200.0)) -> dict[str, Any]:
+        """Площадки КРТ с официальными границами — для карты Москвы.
+
+        Контуры отдаются в метрах веб-меркатора, в тех же, в которых считает
+        подложка `/land/basemap`: переводить их в браузере значило бы завести
+        вторую проекцию, а перепутанный порядок пары «широта, долгота» молча
+        зеркалит полигон — участок остаётся правдоподобным и встаёт не туда.
+        """
+        reader = getattr(krt_registry, "map_dataset", None)
+        if not callable(reader):
+            raise HTTPException(status_code=503, detail="Реестр карты недоступен")
+        try:
+            payload = dict(await run_in_threadpool(
+                lambda: reader(refresh=bool(refresh), step_m=float(step_m))))
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=502,
+                                detail=f"Карта КРТ не прочитана: {exc}") from exc
+        # Файл карты города — не весь реестр: часть строк каталога в нём не
+        # находится ничем, и на карте их не было вовсе (владелец, 04.09.2026:
+        # «На карте крт Нагатино так и нет. Хотя контур в карточке верный»).
+        # Тем, кого нет, контур собирает тот же путь, что уже у карточки —
+        # участки ЕГРН по перечню проекта решения, — и рисуется он иначе:
+        # это состав территории по документу, а не официальный полигон.
+        supplement = getattr(krt_registry, "map_supplement", None)
+        if callable(supplement):
+            try:
+                extra = dict(await run_in_threadpool(lambda: supplement(payload)))
+            except Exception as exc:  # noqa: BLE001 — свод карты не роняем добавкой
+                logger.exception("КРТ: добавка контуров по решениям не собралась")
+                extra = {"sites": [], "gaps": [],
+                         "counts": {}, "problem": f"{type(exc).__name__}: {exc}"[:160]}
+            payload["sites"] = list(payload.get("sites") or []) + list(extra.get("sites") or [])
+            payload["supplement"] = extra
+            payload["count"] = len(payload["sites"])
+            filler = getattr(krt_registry, "fill_outlines_in_background", None)
+            lookup = getattr(core, "_land_lookup_by_numbers", None) if core is not None else None
+            if callable(filler) and callable(lookup):
+                # Непрочитанные перечни дочитывает фон порциями: обход ЕГРН по
+                # десяткам площадок в срок ответа не укладывается, а держать
+                # соединение вместо этого мы уже пробовали.
+                await run_in_threadpool(lambda: filler(
+                    [gap.get("slug") for gap in (extra.get("gaps") or [])
+                     if gap.get("kind") == "unread"], lookup=lookup))
+        return payload
+
+    @app.get("/auctions/krt/api-probe")
+    async def auction_krt_api_probe(url: str = Query(default="")) -> dict[str, Any]:
+        """Что на самом деле отдаёт api.krt.mos.ru. Разбора здесь нет.
+
+        Каталог мы читаем с этого домена — но КАК HTML, парсером разметки и с
+        текстовым фолбэком. Есть ли под ним JSON со статусами, включая
+        «Проекты на торгах», мы не знаем: адреса не спрашивали ни разу.
+        Гадать имена полей мы уже пробовали на ГИС Торгах — приехали гаражи,
+        поэтому здесь только проба, которая ПОКАЗЫВАЕТ ответ.
+        """
+        from . import krt_api_probe
+
+        return await run_in_threadpool(krt_api_probe.probe, url.strip())
+
+    @app.get("/auctions/krt/api-probe/browser")
+    async def auction_krt_api_probe_browser(
+        seconds: float = Query(default=45.0, ge=5.0, le=90.0),
+        url: str = Query(default=""),
+    ) -> dict[str, Any]:
+        """Та же проба настоящим браузером: адреса, по которым ходит сама страница.
+
+        У SPA данные приезжают отдельными вызовами бэкенда, и списка статусов в
+        разметке может не быть вовсе. Секреты проба не печатает — ни заголовков,
+        ни cookies, ни хранилища.
+        """
+        from .adapters.browser_probe import probe_browser
+
+        from . import krt_api_probe
+
+        return await run_in_threadpool(
+            lambda: probe_browser(url.strip() or krt_api_probe.PORTAL_URL, seconds=seconds))
+
+    @app.post("/auctions/krt/tenders")
+    async def auction_krt_tenders(request: Request) -> dict[str, Any]:
+        """Торги по КРТ: распоряжения города и лоты, привязанные к площадкам.
+
+        Лоты приходят те, что уже собраны на экране: второй прогон каталога
+        стоил бы минуту чужого ожидания на готовом ответе. Правило совпадения
+        одно — то же, что у решений: улица держится за своим владением, иначе
+        ложная привязка объявит площадку проданной.
+        """
+        from . import krt_tenders
+
+        payload = await json_object(request)
+        lots = (payload or {}).get("lots") or []
+        if not isinstance(lots, list) or len(lots) > 5000:
+            raise HTTPException(status_code=422, detail="Список лотов не разобран")
+        # Тот же список, что у сторожа и у экрана: половина площадок приходит
+        # из проектов решений, и по каталогу их не найти.
+        sites = await run_in_threadpool(_krt_all_sites)
+        matched = await run_in_threadpool(krt_tenders.match, lots, sites)
+        # Посчитанное сервером сервер и хранит: связка жила в памяти вкладки,
+        # и без соседней вкладки «Торги» её не существовало вовсе — плашки
+        # нет, а правило «живой лот сильнее публикации» не срабатывает.
+        keeper = getattr(krt_registry, "remember_tender_lots", None)
+        if callable(keeper):
+            try:
+                await run_in_threadpool(keeper, matched.get("by_site"))
+            except Exception:  # noqa: BLE001
+                logger.exception("KRT tender lots remember failed")
+        orders: dict[str, Any] = {}
+        reader = getattr(krt_registry, "tender_orders", None)
+        if callable(reader):
+            try:
+                orders = await run_in_threadpool(reader)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("KRT tender orders failed")
+                orders = {"orders": [], "error": f"{type(exc).__name__}: {exc}"}
+        # Распоряжение привязывается к площадке САМО: адрес и короткое имя КРТ
+        # достаются распознаванием скана, а совпадение считает то же правило,
+        # что у решений и лотов. Ручная отметка остаётся поправкой на те
+        # распоряжения, где распознать не удалось.
+        from market_search import krt_tender_orders as order_reader
+
+        rows = orders.get("orders") or []
+        order_by_site: dict[str, dict[str, Any]] = {}
+        unbound: list[dict[str, Any]] = []
+        for one in rows:
+            site = await run_in_threadpool(order_reader.match_site, one, sites)
+            if site:
+                order_by_site.setdefault(str(site.get("slug") or ""), one)
+            elif one.get("address") or one.get("krt_name"):
+                unbound.append(one)
+        # Счёт распоряжений считает сервер, а не экран: у числа обязано быть
+        # ОКНО и ПРЕДМЕТ. «Город объявил 55» без них читалось как «идёт 55
+        # аукционов» и сравнивалось с восемью лотами соседней вкладки
+        # (владелец, 09.09.2026) — а это документы с 2017 года, из них за
+        # последние двенадцать месяцев 16.
+        year_ago = time.time() - 365 * 86400
+        recent = sum(1 for one in rows
+                     if float(one.get("published_at") or 0) > year_ago)
+        addressed = sum(1 for one in rows if one.get("address"))
+        # Связок помним больше, чем собрали сейчас, и оба числа обязаны стоять
+        # рядом: меньшее — наш сбор (раздел читается не целиком), а не рынок.
+        # «Живым» здесь никто не объявляется: правило живости живёт у каталога
+        # (`krtLiveLot`), и второе такое правило ответило бы про один лот иначе.
+        known = 0
+        known_reader = getattr(krt_registry, "tender_lots_known", None)
+        if callable(known_reader):
+            try:
+                known = sum(len((row or {}).get("lots") or [])
+                            for row in (known_reader() or {}).values())
+            except Exception:  # noqa: BLE001 — связка необязательна для свода
+                logger.exception("КРТ: связка с лотами не прочитана")
+        return {**matched, "orders": rows,
+                "known_links": known,
+                "orders_by_site": order_by_site,
+                "orders_unbound": unbound[:40],
+                "orders_total": len(rows),
+                "orders_recent_12m": recent,
+                "orders_with_address": addressed,
+                "orders_note": orders.get("note") or "",
+                "orders_complete": orders.get("complete"),
+                "orders_error": orders.get("error") or ""}
+
+    @app.get("/auctions/krt/{slug}/open-sources")
+    async def auction_krt_open_sources(slug: str) -> dict[str, Any]:
+        """Что об этой площадке сказано в публикациях.
+
+        В самом проекте решения об операторе и городских нуждах не сказано
+        почти ничего — проверено на восьми живых документах (31.08.2026).
+        Живут эти факты в публикациях mos.ru и деловой прессы, откуда их берёт
+        и ручная таблица владельца. Ни один признак не ставится без цитаты и
+        ссылки, а поиск — общий крючок сервиса, своего здесь не заводим.
+        """
+        # Площадка ищется в ОБЕИХ половинах списка. У площадки-решения карточки
+        # каталога нет вовсе, и кнопка отвечала ей «не найдена» — при том что
+        # публикации у неё единственный источник ответа, а прогон её как раз
+        # спрашивает. Кнопка, отказывающая там, где отвечает прогон, читается
+        # как поломка.
+        project = next((row for row in _krt_all_sites()
+                        if row.get("slug") == slug), None)
+        if not str((project or {}).get("name") or ""):
+            raise HTTPException(status_code=404, detail="Площадка не найдена в каталоге")
+        if project.get("no_card") and not project.get("address_known"):
+            return press_refusal_without_address()
+        # Разбор один на кнопку и на прогон (`_read_open_sources`). Здесь
+        # стояло имя `service`, а оно живёт локально внутри маршрута выдачи
+        # лотов: снаружи его не существует, и кнопка «Что пишут об этой
+        # площадке» отвечала пятисоткой ВСЕГДА (экран владельца, 01.09.2026).
+        found = await run_in_threadpool(_read_open_sources, project or {})
+        # Прочитанное остаётся на сервере, а не в памяти вкладки: поиск
+        # платный, и потерянная находка — это второй счёт за тот же ответ.
+        # Кладётся туда же, куда кладёт прогон, и общее для всех.
+        if found.get("available") is not False:
+            await run_in_threadpool(krt_ranking.remember, slug, {"press_facts": found})
+        return found
+
+    @app.get("/auctions/krt/{slug}/card-facts")
+    async def auction_krt_card_facts(slug: str) -> dict[str, Any]:
+        """Застройщик и реновация — со страницы самой площадки.
+
+        Один запрос к krt.mos.ru, без поиска и без его квоты. Прогон читает то
+        же самое и кладёт в строку рейтинга; здесь — для площадки, которую ещё
+        не считали: открыл карточку и видишь, кто застройщик.
+        """
+        reader = getattr(krt_registry, "card_facts", None)
+        if not callable(reader):
+            raise HTTPException(status_code=503, detail="Чтение карточки не подключено")
+        return await run_in_threadpool(reader, slug)
+
+    @app.get("/auctions/krt/{slug}/requirements")
+    async def auction_krt_requirements(slug: str) -> dict[str, Any]:
+        """Requirements from the official decision for one planned KRT.
+
+        This endpoint deliberately distinguishes an unpublished fact from a
+        negative fact.  If the project decision says nothing about resettlement,
+        the UI shows "not published", never "no resettlement".  The signed KRT
+        agreement remains the final source of the developer's duties.
+        """
+        if not callable(getattr(krt_registry, "requirements", None)):
+            raise HTTPException(
+                status_code=503, detail="Чтение требований КРТ не подключено")
+        # Дверь выбирает `_requirements_for`, а не этот маршрут: у
+        # площадки-решения слага в реестре нет, и прямое чтение по слагу
+        # отвечало ей «территория не найдена» при прочитанном решении.
+        result = await run_in_threadpool(_requirements_for, slug)
+        if result is None:
+            raise HTTPException(status_code=404, detail="Территория КРТ не найдена")
+        return result
+
+    def _decision_outline_now(slug: str) -> dict[str, Any]:
+        """То же, но синхронно: фоновому читателю ждать нечем.
+
+        Ответ один на обе двери. Второй сбор того же контура однажды ответил бы
+        про одну площадку иначе, и оба ответа выглядели бы верными.
+        """
+        reader = getattr(krt_registry, "decision_outline", None)
+        lookup = getattr(core, "_land_lookup_by_numbers", None) if core is not None else None
+        if not callable(reader) or not callable(lookup):
+            return {"rings_merc": [], "problem": "контур по перечню решения не спрашивался — "
+                                                 "нет движка ЕГРН"}
+        try:
+            return dict(reader(slug, lookup=lookup) or {})
+        except Exception as exc:  # noqa: BLE001 — причина едет в подпись, а не в лог
+            logger.exception("КРТ: контур по перечню решения не собрался slug=%s", slug)
+            return {"rings_merc": [], "problem": f"{type(exc).__name__}: {exc}"[:160]}
+
+    async def _decision_outline(slug: str) -> dict[str, Any]:
+        """Контур из участков проекта решения — или причина, почему его нет.
+
+        ЕГРН спрашивает путь движка (`_land_lookup_by_numbers`): второго
+        клиента НСПД в модуле торгов нет. Без движка — «не спрашивали».
+        """
+        return await run_in_threadpool(_decision_outline_now, slug)
+
+    @app.get("/auctions/krt/{slug}/contour-objects")
+    async def auction_krt_contour_objects(slug: str) -> dict[str, Any]:
+        """ОКС и ЗУ в контуре площадки на карте НСПД: сверка с перечнем, снос, выкуп.
+
+        Запрос не ждёт НСПД: ответ читается с диска, а сбор (десятки рамок по
+        четырём слоям и дочитка ЕГРН) идёт фоном — как фоновая сборка тизера.
+        Пока сбора нет, ответ говорит «ищем» и когда спросить снова.
+        """
+        from auction_search import krt_contour_objects
+
+        project, _site = await run_in_threadpool(_krt_site_source, slug)
+        try:
+            requirements = await run_in_threadpool(_requirements_for, slug)
+        except Exception as exc:  # noqa: BLE001 — перечень нужен для сверки, не для поиска
+            logger.exception("КРТ: перечень решения для контура не прочитан slug=%s", slug)
+            requirements = {"available": False, "reason": f"{type(exc).__name__}: {exc}"[:200]}
+        finder = getattr(core, "_land_contour_objects", None) if core is not None else None
+        lookup = getattr(core, "_land_lookup_by_numbers", None) if core is not None else None
+        started = False
+        if callable(finder):
+            started = await run_in_threadpool(lambda: krt_contour_objects.start(
+                slug,
+                find_site=_krt_site_finder(slug, str(project.get("name") or slug)),
+                contour_objects=finder, requirements=requirements, lookup=lookup,
+                buyout=krt_investment_score._cached_cadastral_buyout))
+        data = await run_in_threadpool(
+            krt_contour_objects.view, slug, requirements,
+            krt_investment_score._cached_cadastral_buyout)
+        if not callable(finder):
+            data["problem"] = (str(data.get("problem") or "")
+                               or "движок НСПД не подключён — контур не опрашивался")
+        data["pending"] = bool(data.get("pending") or started)
+        data["retry_after_seconds"] = 20 if data["pending"] else None
+        return data
+
+    @app.post("/krt/project-site", include_in_schema=False)
+    async def krt_project_site_route(request: Request) -> dict[str, Any]:
+        """Территория КРТ проекта для галочки «Проект в КРТ» на вкладке ТЭП.
+
+        Тело: `slug` (площадка выбрана человеком) или участки проекта —
+        `cadastral_numbers` и `points_merc` (точки его участков из госреестра);
+        `query` — поиск площадки по имени, когда опознать её не вышло. Ответ —
+        контур, площадь (`krt_contour_area_sqm` движка) и источник, либо
+        причина и площадки на выбор. Файл карты и ЕГРН по перечню — долго:
+        сбор идёт фоном, запрос читает диск. С Render — на ядро, где реестр
+        и НСПД (как `/land/lookup`).
+        """
+        body = await json_object(request)
+        url = (core._core_api_url("/krt/project-site")
+               if core is not None and hasattr(core, "_core_api_url") else "")
+        if url:
+            return await run_in_threadpool(
+                core._core_post, url, body, getattr(core, "_MO_CALC_TIMEOUT_SECONDS", 60))
+        query = str(body.get("query") or "").strip()
+        if query:
+            found = await run_in_threadpool(krt_registry.suggest, query[:120], 8)
+            return {"status": "choices", "problem": "" if found else
+                    "в каталоге КРТ площадок с таким именем или районом нет",
+                    "choices": [{"slug": str(item.get("slug") or ""),
+                                 "name": str(item.get("name") or ""),
+                                 "matched_by": "выбрана по имени в каталоге КРТ"}
+                                for item in found if item.get("slug")]}
+        slug = str(body.get("slug") or "").strip()[:160]
+        numbers = krt_project_site.clean_numbers(body.get("cadastral_numbers"))
+        points = krt_project_site.clean_points(body.get("points_merc"))
+        area = getattr(core, "krt_contour_area_sqm", None) if core is not None else None
+        if not callable(area):
+            return {"status": "failed", "choices": [],
+                    "problem": "движок расчёта не загружен — площадь контура считать нечем"}
+        name = str(body.get("name") or "").strip()[:200]
+        key = krt_project_site.request_key(slug, numbers, points)
+        await run_in_threadpool(lambda: krt_project_site.start(key, lambda: krt_project_site.gather(
+            krt_registry, slug=slug, name=name or slug, numbers=numbers, points_merc=points,
+            decision_outline=_decision_outline_now, area_sqm=area),
+            refresh=bool(body.get("refresh"))))
+        return await run_in_threadpool(krt_project_site.view, key)
+
+    @app.post("/krt/manual-contour", include_in_schema=False)
+    async def krt_manual_contour_route(request: Request) -> dict[str, Any]:
+        """Контур КРТ, загруженный человеком, для галочки «Проект в КРТ».
+
+        `catalog_text` — каталог координат МСК-77 из приложения к решению:
+        разбирается сразу, сети нет. `file_b64` + `filename` — фото или скан
+        страницы решения: распознавание долгое, идёт фоном, ответ — `key`,
+        по нему страница переспрашивает (`key` без файла). Фото схемы без
+        координат обводит Платон, привязка — по `anchor_rings_merc` (контуры
+        участков проекта) и `addresses`. С Render — на ядро:
+        распознавание стоит там (`pdf_ocr`, tesseract в образе).
+        """
+        import base64
+
+        from auction_search import krt_manual_contour
+
+        body = await json_object(request)
+        url = (core._core_api_url("/krt/manual-contour")
+               if core is not None and hasattr(core, "_core_api_url") else "")
+        if url:
+            return await run_in_threadpool(
+                core._core_post, url, body, getattr(core, "_MO_CALC_TIMEOUT_SECONDS", 60))
+        points = krt_project_site.clean_points(body.get("points_merc"))
+        text = str(body.get("catalog_text") or "")
+        if text.strip():
+            return await run_in_threadpool(
+                lambda: krt_manual_contour.from_catalog(text[:200_000], points_merc=points))
+        raw = str(body.get("file_b64") or "")
+        key = str(body.get("key") or "")
+        key = key if re.fullmatch(r"manual-[0-9a-f]{24}", key) else ""
+        if raw:
+            try:
+                data = base64.b64decode(raw.split(",", 1)[-1], validate=False)
+            except Exception:  # noqa: BLE001 — битый файл называется
+                return {"status": "failed", "problem": "файл не прочитан — пришлите его ещё раз"}
+            if len(data) > 12 * 1024 * 1024:
+                return {"status": "failed", "problem": "файл больше 12 МБ — снимите одну страницу"}
+            name = str(body.get("filename") or "")[:120]
+            # Фото схемы без координат Платон обводит, а движок привязывает
+            # к участкам проекта (`krt_photo_outline`): контуры участков и их
+            # адреса — часть ключа, другой набор участков — другой ответ.
+            anchors = [krt_project_site.clean_points(ring)
+                       for ring in (body.get("anchor_rings_merc") or [])[:40]
+                       if isinstance(ring, list)]
+            anchors = [ring for ring in anchors if len(ring) >= 3]
+            addresses = [str(a)[:200] for a in (body.get("addresses") or [])[:20] if a]
+            # Версия разбора — тоже часть ключа: ответ лежит на диске сутки, и
+            # без неё исправленный разбор отдавал бы прежний (ложный каталог).
+            key = "manual-" + hashlib.sha1(data + json.dumps(
+                [krt_manual_contour.RECOGNISE_VERSION, anchors, points, addresses]
+            ).encode("utf-8")).hexdigest()[:24]
+            ask = None
+            if core is not None and callable(getattr(core, "_openai_responses_request", None)):
+                def ask(payload: dict[str, Any]) -> str:
+                    return core._extract_openai_text(core._openai_responses_request(payload, 180.0))
+            model = (os.getenv("OPENAI_KRT_OUTLINE_MODEL")
+                     or os.getenv("OPENAI_AGENT_MODEL", "gpt-5.6")).strip() or "gpt-5.6"
+            await run_in_threadpool(lambda: krt_project_site.start(
+                key, lambda: {"schema_version": krt_project_site.SCHEMA_VERSION,
+                              "collected_at": int(time.time()), "choices": [],
+                              **krt_manual_contour.recognise(
+                                  data, name, points_merc=points, anchor_rings_merc=anchors,
+                                  addresses=addresses, ask=ask, model=model)}))
+        if not key:
+            return {"status": "failed",
+                    "problem": "пришлите каталог координат текстом или фото страницы решения"}
+        answer = await run_in_threadpool(krt_project_site.view, key)
+        answer["key"] = key
+        return answer
+
+    @app.get("/auctions/krt/{slug}/point")
+    async def auction_krt_point(slug: str) -> dict[str, Any]:
+        """Геокодированная точка территории — чтобы показать её на карте.
+
+        Полный отчёт рынка ради одной картинки гонять незачем: он считает
+        соседей, цены и модель. Здесь только адрес → координата, через тот же
+        геокодер движка и тот же кэш; своего второго geocode не заводим.
+        Точность возвращается вместе с точкой: центр района выглядит на карте
+        так же уверенно, как настоящий адрес.
+        """
+        if market is None:
+            raise HTTPException(status_code=503, detail="Маркетинговый движок не подключён")
+        finder = getattr(krt_registry, "find", None)
+        project = finder(f"krt:{slug}") if callable(finder) else None
+        if project is None:
+            # Площадка ищется в ОБЕИХ половинах списка — то же правило, что у
+            # кнопки публикаций. У площадки-решения карточки каталога нет
+            # вовсе: `find` её не знает, и служебный ключ уходил геокодеру как
+            # адрес — на экране стояло «Адрес „krt:decision:347614220“ не
+            # найден» (владелец, 05.09.2026). Спрашивать надо её адрес, он
+            # разобран из заголовка документа.
+            project = next(
+                (item for item in _krt_all_sites() if item.get("slug") == slug), None)
+        if not project:
+            raise HTTPException(status_code=404, detail="Территория КРТ не найдена")
+        # Сначала официальный файл карты: у каждой площадки реестра там контур
+        # и центр. Геокодер — только когда площадки в файле нет: он ставит
+        # точку по адресу, а карточка писала «полигон не публикуется» и
+        # показывала чужой квартал (владелец, 02.09.2026: «и карта»).
+        site_reader = getattr(krt_registry, "map_lookup", None)
+        lookup = ((await run_in_threadpool(site_reader, slug, str(project.get("name") or ""),
+                                           dict(project)))
+                  if callable(site_reader) else {})
+        site = (lookup or {}).get("site")
+        map_problem = str((lookup or {}).get("problem") or "")
+        rings = list((site or {}).get("rings_merc") or [])
+        centre = (site or {}).get("centre_merc")
+        if site and core is not None and (rings or centre):
+            if not centre:
+                points = [point for ring in rings for point in ring]
+                centre = [sum(p[0] for p in points) / len(points),
+                          sum(p[1] for p in points) / len(points)]
+            lat, lng = krt_wgs84(float(centre[0]), float(centre[1]))
+            data = {
+                "query": f"krt:{slug}", "latitude": lat, "longitude": lng,
+                "precision": "official_centre", "address": project.get("name"),
+                "notes": ["Точка и контур — официальный файл карты реестра КРТ "
+                          "(krt.mos.ru): центр территории и полигон её границ."
+                          + {"address": " Площадка найдена в файле по адресу — имя там "
+                                        "записано иначе, чем в списке.",
+                             "passport": " Площадка найдена в файле по паспорту — району, "
+                                         "площади и жилому объёму: имя там другое."
+                             }.get(str((lookup or {}).get("matched") or ""), "")],
+            }
+            geometry_status = "official_polygon" if rings else "official_centre_only"
+        elif (outline := await _decision_outline(slug)).get("rings_merc") and core is not None:
+            # Файл карты — не весь реестр: у 35 площадок каталога из 268 записи
+            # в нём нет, и у Варшавского ш., вл. 37 контур не приезжал никаким
+            # сопоставлением имён (владелец, 04.09.2026: «и что с контуром КРТ
+            # Нагатино?»). Проект решения перечисляет состав территории —
+            # участки с кадастровыми номерами, — и контур собирается из ЕГРН по
+            # ним. Это состав по документу, а не официальный полигон, и подпись
+            # это говорит.
+            rings = list(outline["rings_merc"])
+            centre = outline.get("centre_merc")
+            lat, lng = krt_wgs84(float(centre[0]), float(centre[1]))
+            counts = dict(outline.get("counts") or {})
+            title = str((outline.get("decision") or {}).get("title") or "проект решения о КРТ")
+            extras = []
+            if counts.get("buildings"):
+                extras.append(f"{counts['buildings']} номеров перечня — здания, контур они не задают")
+            if counts.get("missing"):
+                extras.append(f"{counts['missing']} в ЕГРН не найдены")
+            if outline.get("problem"):
+                extras.append(str(outline["problem"]))
+            area_text = (f", вместе {outline['area_ha']} га при {project.get('area_ha')} га по каталогу"
+                         if outline.get("area_ha") and project.get("area_ha") else "")
+            data = {
+                "query": f"krt:{slug}", "latitude": lat, "longitude": lng,
+                "precision": "decision_parcels", "address": project.get("name"),
+                "notes": [
+                    f"Контур — участки ЕГРН из перечня документа «{title[:160]}» (mos.ru): "
+                    f"{counts.get('land', 0)} участков{area_text}."
+                    + (" " + "; ".join(extras) + "." if extras else ""),
+                    (map_problem or "площадки нет в файле карты реестра").capitalize()
+                    + ", поэтому это состав территории по документу, а не официальный "
+                      "полигон её границ.",
+                ],
+            }
+            geometry_status = "decision_parcels"
+        else:
+            # Точка берётся тем же путём, что и точка отчёта, — `resolve_subject`:
+            # свой геокодер здесь был четвёртым случаем одной ошибки (см. правило
+            # в CLAUDE.md о точке карты и точке отчёта).
+            # Чем спрашивать: у карточки каталога — её ключ, который реестр
+            # знает; у площадки-решения ключа в реестре нет, и спрашивается её
+            # адрес. Ключ, отданный геокодеру, — это не «адреса нет», а наш
+            # служебный идентификатор, показанный человеку как его запрос.
+            query = f"krt:{slug}"
+            if project.get("no_card"):
+                address = str(project.get("address") or project.get("name") or "").strip()
+                if not project.get("address_known") or not address:
+                    raise HTTPException(
+                        status_code=422,
+                        detail="У площадки-решения нет адреса: заголовок документа называет "
+                               "район или границы, а по ним точку не поставить.")
+                query = address if address.lower().startswith("москва") else f"Москва, {address}"
+            try:
+                subject = await run_in_threadpool(market.resolve_subject, query)
+            except (GeocodingError, RemoteServiceError, RuntimeError) as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            data = subject.to_dict() if hasattr(subject, "to_dict") else {}
+            # Причина называется та, что случилась: «файл не прочитан» и «в файле
+            # нет такой площадки» — разные ответы, и первый ничего не говорит о
+            # площадке. Точка при этом всё равно геокодерная, и это сказано.
+            data["notes"] = list(data.get("notes") or []) + [
+                (map_problem or "площадки нет в файле карты реестра").capitalize()
+                + " — точка поставлена геокодером по адресу, контур не показан."]
+            if outline.get("problem"):
+                data["notes"].append(
+                    "Контур из участков проекта решения не собрался: "
+                    + str(outline["problem"]) + ".")
+            if len(str(project.get("name") or "").split(",")) > 2:
+                data["notes"].append(
+                    "В названии площадки несколько адресов: геокодер ставит точку по одному "
+                    "из них, и центр территории может оказаться в стороне.")
+            geometry_status = "geocoded_point"
+        # Ссылка на публичную карту НСПД строится движком (`_nspd_map_url`) —
+        # координаты там в веб-меркаторе, и второй сборщик этого адреса в
+        # браузере разошёлся бы с первым молча. Ссылка нужна не как украшение:
+        # подложка — то, на чём рисуют, и когда она не пришла, первоисточник
+        # остаётся единственным способом посмотреть на участок.
+        nspd_url = ""
+        latitude, longitude = data.get("latitude"), data.get("longitude")
+        if core is not None and latitude is not None and longitude is not None:
+            try:
+                merc_x, merc_y = core._wgs84_to_mercator(
+                    float(latitude), float(longitude))
+                nspd_url = core._nspd_map_url(
+                    {"merc_x": round(merc_x, 2), "merc_y": round(merc_y, 2)}, "")
+            except Exception:
+                logger.exception("НСПД: адрес карты не собрался slug=%s", slug)
+                nspd_url = ""
+        return {
+            "slug": slug,
+            "query": data.get("query") or "",
+            "latitude": latitude,
+            "longitude": longitude,
+            "precision": data.get("precision"),
+            "address": data.get("address"),
+            # Чем опознана точка — часть ответа, а не подробность: центр района
+            # выглядит на карте так же уверенно, как настоящий адрес.
+            "notes": data.get("notes") or [],
+            "area_ha": project.get("area_ha"),
+            "nspd_url": nspd_url,
+            # Контур в метрах меркатора — тех же, что у подложки `/land/basemap`.
+            "geometry_status": geometry_status,
+            "rings_merc": rings,
+            "centre_merc": centre,
+        }
+
+    @app.get("/auctions/krt/watch")
+    async def auction_krt_watch() -> dict[str, Any]:
+        """Состояние сторожа новостей: что он видел и что ждёт отправки.
+
+        «Ну мне ничего не пришло в телеграмме» (владелец, 07.09.2026) — и
+        проверить это было нечем: и «новостей не было», и «сторож не работает»
+        снаружи выглядят одинаковым молчанием. Здесь названы оба ответа:
+        сколько ключей вида уже запомнено (первый снимок вида никого не
+        объявляет — это не поломка, а правило), когда состав отмечен последний
+        раз, сколько записей ждёт бота и какого они вида.
+
+        Очередь не изымается: её забирает бот, и второй читатель унёс бы
+        уведомление ради ответа на вопрос, дошло ли уведомление.
+        """
+        state = await run_in_threadpool(krt_ranking.watch_state)
+        # Почему состав ПЛОЩАДОК не отмечен — ответ, а не подробность: вид
+        # `site` стоял `known 0, bootstrapped false` при заведённых `decision`
+        # и `tender` (замер прода 15.09.2026), и различить «список дочитан не
+        # весь» от «сторож сломан» снаружи было нечем. Считает это тот же
+        # вызов, которым сторож и решает: второй ответ разошёлся бы с первым.
+        return {
+            **state,
+            "site_source": await run_in_threadpool(lambda: _krt_screen_state()[2]),
+            # Сроки и выключатель называются здесь же: «сторож молчит» при
+            # выключенном стороже — ответ, а не поломка.
+            "enabled": os.getenv("AUCTION_KRT_WATCH", "1").strip() not in {"0", "false", "no"},
+            # Недельный пересчёт рейтинга — только сроки и причина, без цифр
+            # экономики: «почему не пересчитывается» должно быть видно и без
+            # входа, как и молчание сторожа.
+            "ranking_schedule": await run_in_threadpool(
+                krt_ranking.schedule_status, _weekly_blocked()),
+            "periods_seconds": {
+                "site": krt_watch_periods()[0],
+                "decision": krt_watch_periods()[1],
+                "tender": krt_watch_periods()[2],
+            },
+            "delivery": ("бот забирает очередь каждые 15 минут и шлёт "
+                         "подписчикам /krt и владельцу"),
+            # Проход за извещениями идёт тем же сроком, что сбор лотов. У
+            # молчащего прохода обязан быть счётчик молчания: «состава ни у
+            # кого нет», «проход выключен» и «проход сломан» снаружи выглядят
+            # одинаково. Пустой свод — «здесь он ещё не заходил», а не ноль
+            # прочитанных.
+            "notices": {
+                "enabled": os.getenv("AUCTION_KRT_NOTICES", "1").strip()
+                not in {"0", "false", "no"},
+                "budget_seconds": NOTICES_BUDGET_SECONDS,
+                "last_run": await run_in_threadpool(
+                    krt_territory.stored_run, root=_market_dir()),
+                "note": ("состав территории читается из извещения лота: "
+                         "разобранный не спрашивается больше никогда, "
+                         "«таблицы нет» — сутки, отказ площадки — полчаса"),
+            },
+        }
+
+    @app.get("/auctions/krt/ranking")
+    async def auction_krt_ranking(request: Request) -> dict[str, Any]:
+        """Балл по всем КРТ: потолок цены входа на метр продаваемой.
+
+        Отдаёт посчитанное сразу — даже на ходу прогона: половина рейтинга с
+        честным ходом полезнее пустого экрана, который ничего не объясняет.
+        """
+        await run_in_threadpool(_krt_economics_gate, request, None)
+        rating_version = str(krt_investment_score.methodology().get("version") or "")
+        try:
+            # Список собирается из каталога и решений — не в цикле событий.
+            sites, whole = await run_in_threadpool(_krt_screen_list)
+            catalogue = ({str(site.get("slug") or "") for site in sites}
+                         if whole else None)
+        except Exception:  # noqa: BLE001
+            logger.exception("KRT ranking: catalogue for rating marks failed")
+            catalogue = None
+        rows = [_row_without_stale_facts(row) for row in krt_ranking.rows()]
+        rows = [
+            krt_ranking_rules.rating_by_current_methodology(
+                row, rating_version, catalogue_slugs=catalogue)
+            for row in rows
+        ]
+        return {
+            "investment_rating_target_rub_sqm": krt_ranking.rating_target(
+                krt_investment_score.DEFAULT_PRICE_TARGET_RUB_SQM),
+            "measure": "entry_capacity_rub_per_sqm",
+            "measure_label": "Потолок цены входа, ₽/м² продаваемой",
+            "target_llcr": 1.20,
+            "price_note": (
+                "Цена аукциона в балл не входит: у проекта каталога krt.mos.ru "
+                "ценового поля нет. Балл отвечает «сколько площадка выдерживает "
+                "за вход», а не «проходит ли она по объявленной цене»."
+            ),
+            "progress": krt_ranking.progress(),
+            # Плановый прогон: когда был последний полный, когда следующий и
+            # что мешает. Без этого «не пересчитывается» снаружи не отличить
+            # от «идёт», «обрывается выкаткой» и «на сервере выключен».
+            "schedule": await run_in_threadpool(
+                krt_ranking.schedule_status, _weekly_blocked()),
+            # Находка, посчитанная прежним правилом привязки, признаком не
+            # считается: она сделана из того же текста, но по другому правилу,
+            # и до перечитывания это «не знаем», а не «занята» (владелец,
+            # 02.09.2026: «Бореалис 53А не строит»).
+            "rows": rows,
+            # Сколько находок ждут перечитывания по новому правилу привязки.
+            # Смена версии правила снимает признаки СРАЗУ У ВСЕХ, и без этого
+            # числа пустая колонка читается как «заново атрибутировать каждый
+            # раз» (владелец, 02.09.2026), хотя перечитать надо один раз —
+            # кнопкой «Прочитать публикации по планируемым».
+            "stale_rules_count": sum(
+                1 for row in rows
+                if ((row.get("press_facts") or {}).get("stale_rules"))),
+            # Сколько баллов посчитано прежней методикой и не пересчитано:
+            # причина у каждой строки своя (`investment_rating.reason`).
+            "stale_rating_count": sum(
+                1 for row in rows
+                if (row.get("investment_rating") or {}).get("stale_methodology")),
+            # Сколько строк судят по ПРЕЖНЕЙ методике счёта. Правка цены,
+            # очередей или соцобъектов меняет числа сразу у всех, а строка
+            # выглядит свежей: `computed_at` отвечает «когда», а не «чем», и
+            # прогон публикаций обновляет его, не тронув модель. Так на
+            # Нагатине осталась стартовая цена 477 тыс от 03.09, при том что
+            # правка «цена — рекомендация отчёта» уехала на прод 04.09
+            # (владелец: «почему в Нагатино до сих пор цена для расчёта 477»).
+            "stale_model_count": sum(
+                1 for row in rows
+                if row.get("available") and not krt_ranking_rules.model_is_current(row)),
+            # Чем посчитаны устаревшие — часть ответа. «Строк прежней методики:
+            # 183» не говорит, насколько прежней: 16.09.2026 каталог судил
+            # выпуском 0.23.22 при работающем 0.23.96, и семьдесят четыре
+            # выпуска экономики прошли молча.
+            "stale_model_engines": _stale_engines(rows),
+            # Сколько строк ПЕРЕСЧИТАЕТ кнопка «Пересчитать только их». Это не
+            # то же число, что `stale_model_count`: у той величины строка
+            # посчитана прежней методикой, а здесь к ней прибавлены строки, у
+            # которых модели нет вовсе — им тоже есть что считать. Пока число
+            # было одно, подпись называла 5, а кнопка планировала 388.
+            "recount_planned_count": sum(
+                1 for row in rows if krt_ranking_rules.model_needs_recount(row)),
+            # Диагностика отвечает на вопрос «каталог вообще посчитан?» без
+            # гадания по пустым ячейкам. Модель и рынок считаются отдельно:
+            # строка может иметь экономику, но не иметь темпа/цены окружения.
+            "model_audit": {
+                "rows_total": len(rows),
+                "model_available": sum(1 for row in rows if row.get("available")),
+                "model_missing": sum(1 for row in rows if not row.get("available")),
+                "model_current": sum(
+                    1 for row in rows
+                    if row.get("available") and krt_ranking_rules.model_is_current(row)
+                ),
+                # Два РАЗНЫХ вопроса, и под одним именем они жили до
+                # 21.09.2026: ключ `market_price_available` стоял в этом
+                # словаре дважды, Python оставлял последний, и пара «есть /
+                # нет» считала разное — 202 против 584 при 585 строках.
+                # Первый: доехало ли поле до строки (его завели позже самих
+                # строк, и без подъёма версии правил оно пусто у прежних).
+                "market_price_in_row": sum(
+                    1 for row in rows if row.get("surrounding_price_rub_sqm") is not None
+                ),
+                "market_price_missing_in_row": sum(
+                    1 for row in rows if row.get("surrounding_price_rub_sqm") is None
+                ),
+                # Второй: ответил ли рынок ценой, когда строку считали. Это
+                # та же величина `_market_inputs`, что уходит в цену модели,
+                # поэтому она есть и у строк, записанных до появления поля.
+                "market_answered_price": sum(
+                    1 for row in rows
+                    if krt_ranking_rules._number(row.get("start_price_rub_sqm")) > 0
+                ),
+            },
+            "rules_version": krt_ranking_rules._screening_rules_version(),
+            # Выпуск объявлен один раз — `VERSION`; страница берёт его отсюда,
+            # своей копии у неё нет по той же причине, что и у остальных.
+            "engine_version": krt_ranking_rules._engine_version(),
+        }
+
+    def _stale_engines(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Каким выпуском посчитана каждая устаревшая строка, по убыванию числа.
+
+        Считает сервер, рядом с самим признаком: страница решить, какая строка
+        устарела, не может — отпечаток методики снимает движок.
+        """
+        tally: dict[str, int] = {}
+        for row in rows:
+            if not row.get("available") or krt_ranking_rules.model_is_current(row):
+                continue
+            # Строка без выпуска посчитана до того, как его завели: это ответ,
+            # а не пропуск, и прочерк читался бы как «неизвестный выпуск».
+            name = str(row.get("engine_version") or "").strip() or "до 0.21.х"
+            tally[name] = tally.get(name, 0) + 1
+        return [{"engine": name, "rows": count}
+                for name, count in sorted(tally.items(), key=lambda kv: (-kv[1], kv[0]))]
+
+    @app.post("/auctions/krt/investment-rating/target", include_in_schema=False)
+    async def auction_krt_rating_target(request: Request, session: str = "",
+                                        key: str = "") -> dict[str, Any]:
+        """Сменить УРОВЕНЬ каталога — только владельцу сервиса.
+
+        Ориентир каталога — объявленный уровень (600 000 ₽/м²), а не чьё-то
+        поле ввода: он решает, какая строка каталога устарела, и смена
+        отправляет на пересчёт все шестьсот. Маршрут стоял за общим ключом
+        кабинета — тем же, что у всей команды и демо-доступа, — и любой, кто
+        вписал своё число и нажал «пересчитать», менял уровень всем и делал
+        каталог устаревшим целиком. Решение владельца (27.09.2026): «мне не
+        надо, чтобы пользователь поставил 450 000 как ориентир и для всех
+        каталог перечитался… себе считай что хочешь, но нас интересует уровень
+        600», и следом — «маршрут смены под ключом владельца».
+
+        Ключей у сервиса ДВА, и это ключ владельца (`DEVELOPAID_ADMIN_KEY`),
+        а не кабинета рынка: свой сценарий считается БЕЗ этого маршрута —
+        ориентир едет параметром запроса в оценку площадки и в каталог не
+        пишется (сторож `canonical`).
+
+        Там, где владельца опознать нечем (ни списка владельцев, ни ключа),
+        маршрут ОТКАЗЫВАЕТ и называет причину. Витрина примеров в таком случае
+        честно открыта — её нечем закрыть, — но здесь речь о настройке, которая
+        переписывает каталог всем: «опознать нечем» не равно «разрешено».
+        """
+        owner_gate = getattr(core, "_require_admin", None) if core is not None else None
+        if not callable(owner_gate):
+            raise HTTPException(
+                status_code=403,
+                detail="Уровень каталога меняет владелец сервиса, а опознать его "
+                       "нечем: движок DevelopAid этому процессу недоступен.",
+            )
+        knows_owner = bool(getattr(core, "usage_admin_ids", lambda: [])()) or bool(
+            (getattr(core, "_env_str", lambda *a: "")("DEVELOPAID_ADMIN_KEY", "") or "").strip())
+        if not knows_owner:
+            raise HTTPException(
+                status_code=403,
+                detail="Уровень каталога меняет владелец сервиса, а опознать его "
+                       "нечем: ни списка владельцев, ни ключа владельца на этом "
+                       "сервере не настроено.",
+            )
+        owner_gate(session, key, "Ценовой ориентир каталога КРТ")
+        payload = await json_object(request)
+        try:
+            target = float((payload or {}).get("price_target_rub_sqm"))
+            target = await run_in_threadpool(krt_ranking.set_rating_target, target)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"price_target_rub_sqm": target}
+
+    @app.post("/auctions/krt/ranking/refresh")
+    async def auction_krt_ranking_refresh(
+        request: Request, body: KrtRankingRequest | None = None
+    ) -> dict[str, Any]:
+        """Запустить фоновый прогон. На ходу — не запускает второй.
+
+        Считаются те площадки, которые остались после фильтра на экране, а не
+        весь каталог: смотрят перспективные округа и нужный статус, а прогон по
+        всем ста двадцати четырём — это минуты чужой работы и чужой нагрузки на
+        рынок (владелец, 23.08.2026). Список слагов приходит со страницы; пустой
+        список значит «весь каталог» — так ведёт себя вызов без тела.
+        """
+        market_cabinet.require_cabinet(request)
+        if market is None or core is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Прогон требует и маркетингового движка, и движка DevelopAid",
+            )
+        # Прогон идёт по тому же списку, который видит человек: каталог плюс
+        # площадки-решения. Пока здесь стоял один каталог, кнопка «пересчитать
+        # отобранное» молча пропускала половину экрана, а отказ «ни одна из
+        # выбранных не найдена в каталоге» был утверждением о нашем списке, а
+        # не о выборе человека.
+        projects = await run_in_threadpool(_krt_all_sites)
+        if not projects:
+            raise HTTPException(
+                status_code=503,
+                detail="Каталог КРТ ещё не получен — обновите каталог и повторите",
+            )
+        wanted = [str(slug) for slug in ((body.slugs if body else None) or []) if str(slug).strip()]
+        if wanted:
+            order = {slug: index for index, slug in enumerate(wanted)}
+            projects = [row for row in projects if str(row.get("slug")) in order]
+            projects.sort(key=lambda row: order.get(str(row.get("slug")), 0))
+            if not projects:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Ни одна из выбранных площадок не найдена в списке",
+                )
+        skipped = 0
+        if body is not None and body.only_stale:
+            fresh_rows = {}
+            try:
+                fresh_rows = {str(row.get("slug") or ""): row
+                              for row in (krt_ranking.rows() or [])}
+            except Exception:  # noqa: BLE001
+                logger.exception("KRT ranking rows failed")
+            keep = []
+            for row in projects:
+                stored = fresh_rows.get(str(row.get("slug") or "")) or {}
+                # Тот же предикат, что считает число у кнопки: два счёта одного
+                # вопроса однажды разошлись бы, и подпись обещала бы не то.
+                if not krt_ranking_rules.model_needs_recount(stored):
+                    skipped += 1
+                    continue
+                keep.append(row)
+            projects = keep
+            if not projects:
+                return {"started": False,
+                        "reason": ("Пересчитывать нечего: все выбранные площадки "
+                                   "посчитаны нынешней методикой"),
+                        "skipped": skipped, "progress": krt_ranking.progress()}
+        # Кнопка на хосте без источника рынка отвечает причиной, а не
+        # шестьюстами строками «Расчёт не выполнен»: отказ, названный заранее,
+        # это свойство хоста, отказ после нажатия — поломка.
+        off = _market_source_off()
+        if off:
+            return {"started": False, "reason": off, "progress": krt_ranking.progress()}
+        # Чем считать строку, решает один и тот же выбор, что и в недельном
+        # прогоне: у площадки-решения свой путь к обязательствам, а у нежилой
+        # модели нет вовсе.
+        # Явный запуск владельцем — не массовый фоновый прогон: здесь допустим
+        # обычный resolver с адресным fallback. Scheduled/background пути выше
+        # по-прежнему используют _screen_for_background и публичный геокодер не грузят.
+        started = krt_ranking.start(projects, _screen_for)
+        progress = krt_ranking.progress()
+        if started:
+            reason = ""
+        elif progress.get("running"):
+            reason = "Прогон уже идёт"
+        else:
+            # Воркеров два, и ход прогона виден только тому, кто его ведёт.
+            # «Прогон уже идёт» без этой оговорки читалось бы как поломка:
+            # на экране ничего не движется, а кнопка отказывает.
+            reason = ("Прогон уже идёт в соседнем процессе — строки появляются "
+                      "в таблице по мере счёта")
+        # Сколько пропущено как посчитанное нынешней методикой — молча
+        # пропущенное читается как несостоявшийся прогон.
+        return {"started": started, "reason": reason, "progress": progress,
+                "planned": len(projects), "skipped": skipped}
+
+    def _press_only(project: dict[str, Any]) -> dict[str, Any]:
+        """Прогон одних публикаций: без рынка и без модели.
+
+        Ответ на «кто здесь собрался строить» у планируемой площадки бывает
+        только один — публикации и каналы: карточка города до торгов
+        застройщика не называет (0 из 30 измеренных). А поиск был заперт внутри
+        полного прогона, который на каждой площадке ещё строит рыночный отчёт и
+        гоняет движок — минуты на площадку, поэтому он и ходит раз в неделю.
+        Дешёвый проход отвечает на один вопрос и стоит своих пяти запросов.
+
+        Модель здесь не считается, и это сказано вслух: «не посчитали» — тоже
+        ответ, а балл в строке остаётся прежним, потому что неудавшийся
+        пересчёт не затирает удавшийся.
+        """
+        if project.get("no_card") and not project.get("address_known"):
+            # Заголовок решения без адреса — это «искать не по чему», а не
+            # «в источниках пусто». Спросить по такому имени значило бы
+            # заплатить за выдачу про все проекты решений сразу. Отказ
+            # записывается: незаписанный отказ нельзя посчитать, и площадка
+            # выглядела бы неспрошенной по нашему недосмотру.
+            return {
+                "available": False,
+                "reason": "Прогон публикаций: модель и рынок в нём не считаются",
+                "press_facts": press_refusal_without_address(),
+            }
+        return {
+            "available": False,
+            "reason": "Прогон публикаций: модель и рынок в нём не считаются",
+            "press_facts": _open_sources_for_run(project),
+        }
+
+    def _screen_for(
+        project: dict[str, Any], *, allow_remote_geocode: bool = True,
+    ) -> dict[str, Any]:
+        """Чем считать эту строку. Один ответ на весь модуль.
+
+        Выбор живёт здесь, а не у каждого вызывающего: разойдись они,
+        недельный прогон и кнопка посчитали бы одну площадку по-разному.
+
+        У площадки-решения карточки каталога нет, но субъект у неё теперь
+        есть — адрес из заголовка решения, — и цифры тоже: площадь, СПП и
+        жильё прочитаны из PDF. Значит считать её можно тем же скринингом,
+        что и площадку каталога; второго скрининга не заводим по той же
+        причине, по которой нет копии `VERSION`.
+
+        Три границы названы вслух, а не молча.
+        **Съехавшая карточка не считается вовсе**: у «ул. Мусоргского» площадь
+        участка вышла 26 500 «га» — это метры, съехавшие на поле, — и модель
+        выдала на них LLCR 1,10x, маржу 8,7% и балл 55; у «2-й Звенигородской»
+        районом стало слово статуса, и адрес «Москва, район Планируемый» уехал
+        в геокодер, где нашёлся Краснодарский край. Правдоподобный вердикт из
+        чисел, стоящих не в своих колонках, хуже отсутствующего, а рыночный
+        отчёт по такому адресу ещё и платный.
+        **Без адреса площадку не опознать**: заголовок решения опознаёт
+        документ, а не место, и геокодер поставил бы точку куда угодно.
+        **Нежилые пока не считаем** — решение владельца (05.09.2026): у
+        офисного центра своя экономика (свой выход площади, свой профиль
+        продаж, свой покупатель), и считать его пресетом жилья значило бы
+        показать посчитанным то, что посчитано не тем. Это ответ методики, а
+        не наш пробел, и балл площадки от него не снижается.
+
+        А вот «нежилая» решает не эта копия вопроса, а `housing_measure_named`
+        — та же функция, которой отказывает сам скрининг. Своя копия читала
+        только жилую СПП, и 27 площадок-решений прода с НАЗВАННОЙ площадью
+        квартир отказывались «жилья в проекте решения нет»: наш пробел был
+        выдан за ответ документа.
+        """
+        shift = str(project.get("parse_problem") or "").strip()
+        if shift:
+            return {
+                "available": False,
+                "reason": f"Карточка каталога разобрана со сдвигом ({shift}) — считать нечем",
+            }
+        if not project.get("no_card"):
+            return _screen_one(project, allow_remote_geocode=allow_remote_geocode)
+        if not project.get("address_known"):
+            return _press_only(project)
+        if not housing_measure_named(project):
+            answer = _press_only(project)
+            answer["reason"] = (
+                "Жилья в проекте решения нет — нежилую площадку модель пока не считает: "
+                "у офисов и торговли своя экономика, и считать их пресетом жилья нельзя. "
+                "Балл площадки при этом остаётся: это ответ методики, а не пробел."
+            )
+            return answer
+        return _screen_one(project, allow_remote_geocode=allow_remote_geocode)
+
+
+    def _screen_for_background(project: dict[str, Any]) -> dict[str, Any]:
+        """Scheduled pass uses the same safe geometry/address fallback as ratings."""
+        try:
+            return _screen_for(project, allow_remote_geocode=False)
+        except SubjectNotFound:
+            screening, report = _autonomous_market_model(project)
+            answer = dict(screening or {})
+            if report:
+                answer["market_report"] = _market_digest(report)
+            return answer
+
+    @app.post("/auctions/krt/press/run")
+    async def auction_krt_press_run(request: Request) -> dict[str, Any]:
+        """Прочитать публикации по всем планируемым площадкам разом.
+
+        По планируемым — потому что вопрос «кто собрался строить» есть только у
+        них: у площадки в реализации застройщика называет сама карточка города,
+        бесплатно и без поиска. Площадки-решения сюда входят: карточки у них
+        нет вовсе, значит публикации — единственный источник ответа, и до
+        04.09.2026 их не спрашивал никто (владелец: «по решениям надо»).
+
+        Уже спрошенные пропускаются: занятая площадка свободной не станет, и
+        платить за неё второй раз незачем (владелец, 01.09.2026). Замок общий с
+        прогоном модели — двум проходам по одному каталогу расходиться негде.
+        """
+        market_cabinet.require_cabinet(request)
+        if market is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Поиск по публикациям требует маркетингового движка",
+            )
+        projects = list(await run_in_threadpool(krt_registry.catalogue))
+        # Площадки-решения — та же половина списка и тот же вопрос: их
+        # спрашивает и недельный прогон. Отказ — только когда пусты ОБЕ
+        # половины: пустой каталог при живых решениях это не «спрашивать
+        # некого», а «одна половина не приехала».
+        decisions = await run_in_threadpool(_decision_rows_for_run)
+        if not projects and not decisions:
+            raise HTTPException(
+                status_code=503,
+                detail="Каталог КРТ ещё не получен — обновите каталог и повторите",
+            )
+        projects = projects + decisions
+        planned = []
+        no_address = 0
+        for row in projects:
+            if "реализац" in str(row.get("status") or "").lower():
+                continue
+            if row.get("no_card") and not row.get("address_known"):
+                # Спросить не по чему — и это считается, а не пропускается
+                # молча: непосчитанный отказ выглядит как отсутствие признака.
+                no_address += 1
+                continue
+            stored = {}
+            try:
+                stored = (krt_ranking.stored_row(str(row.get("slug") or "")) or {}).get(
+                    "press_facts") or {}
+            except Exception:  # noqa: BLE001
+                logger.exception("stored press facts failed slug=%s", row.get("slug"))
+            if (stored.get("available") and stored.get("taken")
+                    and _facts_by_current_rules(stored)):
+                continue
+            planned.append(row)
+        if not planned:
+            return {"started": False, "reason": "Спрашивать нечего: планируемых площадок нет",
+                    "planned": 0, "no_address": no_address,
+                    "progress": krt_ranking.progress()}
+        started = krt_ranking.start(planned, _press_only)
+        progress = krt_ranking.progress()
+        if started:
+            reason = ""
+        elif progress.get("running"):
+            reason = "Прогон уже идёт"
+        else:
+            reason = ("Прогон уже идёт в соседнем процессе — находки появляются "
+                      "в таблице по мере чтения")
+        return {"started": started, "reason": reason,
+                "planned": len(planned), "no_address": no_address,
+                "progress": progress}
+
+    def _stored_report(slug: str) -> dict[str, Any]:
+        stored = krt_ranking.report(slug)
+        if not stored:
+            raise HTTPException(
+                status_code=404,
+                detail="Эта площадка ещё не считалась. Запустите прогон — или дождитесь "
+                       "еженедельного: он идёт в ночь с субботы на воскресенье.",
+            )
+        return stored
+
+    @app.get("/auctions/krt/{slug}/report")
+    async def auction_krt_report(slug: str, request: Request) -> dict[str, Any]:
+        """Готовый отчёт площадки: маркетинг, модель и рекомендация Платона.
+
+        Ничего не считает. Прогон уже сходил и к рынку, и к движку — карточка
+        показывает посчитанное, а не запускает то же самое заново.
+        """
+        market_cabinet.require_cabinet(request)
+        return await run_in_threadpool(_stored_report, slug)
+
+    @app.get("/auctions/krt/{slug}/handoff")
+    async def auction_krt_handoff(slug: str, request: Request) -> dict[str, Any]:
+        """Вводные площадки для калькулятора DevelopAid.
+
+        Это те же самые вводные, которыми посчитан отчёт, — не собранные
+        заново. Второй сборщик модели однажды разошёлся бы с первым, и карточка
+        с калькулятором показывали бы про одну площадку разное.
+        """
+        market_cabinet.require_cabinet(request)
+        stored = await run_in_threadpool(_stored_report, slug)
+        screening = stored.get("screening") or {}
+        model = screening.get("model_inputs")
+        if not model:
+            raise HTTPException(
+                status_code=409,
+                detail=str(screening.get("reason")
+                          or "Модель по этой площадке не собрана — передавать нечего"),
+            )
+        project = stored.get("project") or {}
+        # Участок едет вместе с моделью. Номера называет проект решения, а
+        # какие из них ЗЕМЛЯ — уже ответил ЕГРН, когда карточка собирала
+        # контур: на Варшавском ш., вл. 37 из 60 номеров 20 участков и 39
+        # зданий. Отдать все — это ровно та ошибка, что ловилась на лотах:
+        # ГлавАПУ примет площадь здания за площадь территории и сложит их.
+        # Второго опроса ЕГРН здесь нет — берётся тот же `decision_outline`.
+        outline = await _decision_outline(slug)
+        counts = dict(outline.get("counts") or {})
+        parcels = [str(item.get("cadastral_number") or "")
+                   for item in (outline.get("parcels") or [])
+                   if item.get("cadastral_number")]
+        return {
+            "slug": slug,
+            "name": project.get("name") or slug,
+            "computed_at": stored.get("computed_at"),
+            "inputs": model.get("inputs") or {},
+            "tep": model.get("tep") or {},
+            "phasing": model.get("phasing") or {},
+            "requirements": screening.get("requirements") or {},
+            "assumptions": screening.get("assumptions") or [],
+            "exclusions": screening.get("exclusions") or [],
+            "cadastral_numbers": parcels,
+            # Чем прочитан перечень и что из него выброшено — часть ответа:
+            # пустое поле участка и «участков в документе нет» на экране
+            # выглядят одинаково.
+            "cadastral": {
+                "land": len(parcels),
+                "listed": int(counts.get("numbers") or 0),
+                "buildings": int(counts.get("buildings") or 0),
+                "missing": int(counts.get("missing") or 0),
+                "source": str(outline.get("numbers_source") or "none"),
+                "problem": str(outline.get("problem") or ""),
+                # Какую часть территории эти участки покрывают: перечень не
+                # обязан совпадать с границами КРТ, и поле участка с двумя
+                # номерами не должно читаться как «вся площадка».
+                **krt_territory_coverage(
+                    outline.get("parcels") or [],
+                    (model.get("inputs") or {}).get("site_area_ha")),
+            },
+        }
+
+    def _plato_access(request: Request) -> dict[str, Any] | None:
+        """Кто спрашивает Платона: кабинет (None) или личный ключ (его запись).
+
+        Остальным — 401, как и прежде: Платон стоит денег и без входа не
+        открывается."""
+        scoped = _scoped_key(request)
+        if scoped:
+            return scoped
+        market_cabinet.require_cabinet(request)
+        return None
+
+    def _plato_quota(scoped: dict[str, Any] | None) -> None:
+        if not scoped:
+            return
+        allowed, used, limit = access_keys.plato_take(scoped["id"])
+        if not allowed:
+            raise HTTPException(status_code=429,
+                                detail=access_keys.plato_limit_message(used, limit))
+
+    @app.post(access_keys.ASK_PATH)
+    async def auctions_ask(request: Request) -> dict[str, Any]:
+        """Вопрос Платону из раздела «Торги».
+
+        Для кабинета — то же, что `/cabinet/ask`. Для личного ключа — с дневным
+        лимитом и рамкой темы: только торги, лоты и площадки КРТ."""
+        scoped = _plato_access(request)
+        ask = getattr(market, "plato_ask", None) if market is not None else None
+        if ask is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Платон недоступен: модуль рынка запущен без движка DevelopAid",
+            )
+        payload = await json_object(request)
+        message = str((payload or {}).get("message") or "").strip()
+        if not message:
+            raise HTTPException(status_code=422, detail="Пустой вопрос")
+        history = [
+            {"role": str(item.get("role") or ""),
+             "content": str(item.get("content") or "")}
+            for item in ((payload or {}).get("history") or [])
+            if isinstance(item, dict)
+            and str(item.get("role") or "") in ("user", "assistant")
+            and str(item.get("content") or "").strip()
+        ][-6:]
+        _plato_quota(scoped)
+        if scoped:
+            message = access_keys.framed(message)
+        try:
+            return await run_in_threadpool(ask, message, request, history)
+        except HTTPException:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("auctions ask failed")
+            raise HTTPException(status_code=502, detail="Платон не ответил") from exc
+
+    @app.post("/auctions/krt/{slug}/plato")
+    async def auction_krt_plato(slug: str, request: Request) -> dict[str, Any]:
+        """Рекомендация Платона по этой площадке — по маркетингу и по модели.
+
+        Спрашивается по требованию и запоминается в том же отчёте: гонять
+        модель по всему каталогу в еженедельном прогоне значит платить за сто
+        двадцать ответов, из которых прочитают три. Готовый ответ возвращается
+        сразу; `refresh=1` спрашивает заново.
+
+        Долгий ответ забирается вторым запросом по номеру запуска — тем же
+        `trace_id`, что и везде: цепочка ядро → Render → OpenAI одним
+        соединением не держится, и `plato_ask` отдаёт браузеру «работа
+        принята». Прежде маршрут читал это как пустой текст и отвечал 502
+        «Платон вернул пустой ответ» — принятая работа выглядела отказом
+        (владелец, 06.09.2026). Забирает готовое этот же маршрут, а не
+        `/agent/result` напрямую: ответ надо ещё положить в отчёт площадки, а
+        отчёт знает он.
+        """
+        scoped = _plato_access(request)
+        stored = await run_in_threadpool(_stored_report, slug)
+        refresh = str(request.query_params.get("refresh") or "").strip() in {"1", "true", "yes"}
+        cached = stored.get("plato")
+        trace_id = str(request.query_params.get("trace_id") or "").strip()
+
+        async def _remember(text: str, trace: str = "") -> dict[str, Any]:
+            payload = {"text": text, "asked_at": int(time.time())}
+            stored["plato"] = payload
+            rest = {key: value for key, value in stored.items()
+                    if key not in {"schema_version", "slug", "computed_at"}}
+            await run_in_threadpool(
+                lambda: krt_ranking.save_report(
+                    slug, rest, computed_at=stored.get("computed_at")),
+            )
+            return {"slug": slug, "cached": False, "pending": False,
+                    "trace_id": trace, **payload}
+
+        if trace_id:
+            result = getattr(market, "plato_result", None) if market is not None else None
+            if result is None:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Платон недоступен: модуль рынка запущен без движка DevelopAid",
+                )
+            got = await run_in_threadpool(result, trace_id) or {}
+            if got.get("status") == "error":
+                raise HTTPException(
+                    status_code=502,
+                    detail=str(got.get("detail") or got.get("error")
+                               or "Платон не справился"))
+            text = str(got.get("reply") or got.get("text") or "").strip()
+            if not text:
+                return {"slug": slug, "pending": True, "trace_id": trace_id}
+            return await _remember(text, trace_id)
+
+        if cached and not refresh:
+            return {"slug": slug, "cached": True, "pending": False, **cached}
+        ask = getattr(market, "plato_ask", None) if market is not None else None
+        if ask is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Платон недоступен: модуль рынка запущен без движка DevelopAid",
+            )
+        prompt = _plato_krt_prompt(stored)
+        # Готовый ответ и забор по номеру запуска лимит не тратят: платный
+        # только новый вопрос модели.
+        _plato_quota(scoped)
+        if scoped:
+            prompt = access_keys.framed(prompt)
+        try:
+            answer = await run_in_threadpool(ask, prompt, request)
+        except HTTPException:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status_code=502, detail=f"Платон не ответил: {type(exc).__name__}: {exc}"
+            ) from exc
+        answer = answer or {}
+        text = str(answer.get("reply") or answer.get("text") or "").strip()
+        if not text:
+            # Работа принята, а не пуста: номер запуска едет в окно, и оно
+            # забирает ответ вторым запросом. Билет один на весь вызов —
+            # повтор без него заказал бы вторую работу вместо начатой.
+            trace = str(answer.get("trace_id") or "").strip()
+            if trace:
+                return {"slug": slug, "pending": True, "trace_id": trace}
+            raise HTTPException(
+                status_code=502,
+                detail="Платон не ответил и не назвал номер запуска — забирать нечего.")
+        return await _remember(text, str(answer.get("trace_id") or ""))
+
+    @app.get("/auctions/krt/{slug}/market")
+    async def auction_krt_market(
+        slug: str,
+        request: Request,
+        radius_km: float = Query(default=3.0, ge=0.25, le=10.0),
+        peers_limit: int = Query(default=12, ge=1, le=20),
+        tep_ratios: str = Query(default="", max_length=400),
+    ) -> dict[str, Any]:
+        """Existing market engine, embedded in the KRT opportunity card.
+
+        `tep_ratios` — доли ТЭП в том же виде, что во вводных страницы
+        («apartments: 90/65»). Пусто — наши умолчания.
+        """
+        market_cabinet.require_cabinet(request)
+        if market is None:
+            raise HTTPException(status_code=503, detail="Маркетинговый движок не подключён")
+        try:
+            def build_report_with_model() -> dict[str, Any]:
+                project = next(
+                    (item for item in _krt_all_sites() if item.get("slug") == slug), None)
+                # Площадка берётся из того же списка, что на экране: у
+                # площадки-решения и раннего проекта цифры живут в строке,
+                # а реестр krt.mos.ru их может ещё не знать.
+                if project is None:
+                    finder = getattr(krt_registry, "find", None)
+                    project = finder(f"krt:{slug}") if callable(finder) else None
+                if project is None:
+                    raise ValueError("Территория КРТ не найдена")
+                report = _krt_market_report(
+                    project, radius_km=radius_km, peers_limit=peers_limit)
+                if core is None:
+                    screening = {
+                        "available": False,
+                        "reason": "Финансовый движок DevelopAid не подключён",
+                    }
+                else:
+                    try:
+                        requirements = _requirements_for(slug)
+                        asking_price = _asking_price_mln(slug)
+                        if asking_price is None and project.get("early_unpublished"):
+                            try:
+                                asking_price = float(project.get("start_price_mln"))
+                            except (TypeError, ValueError):
+                                asking_price = None
+                        screening = build_krt_model_screening(
+                            project, report, core, tep_ratios, requirements,
+                            asking_price_mln=asking_price)
+                    except Exception:
+                        # Marketing remains useful if a preliminary model cannot
+                        # be assembled.  Do not turn an optional screen into a
+                        # failure of the existing market report.
+                        logger.exception("KRT model screening failed slug=%s", slug)
+                        screening = {
+                            "available": False,
+                            "reason": "Предварительный прогон модели временно недоступен",
+                        }
+                # Пересчёт из карточки — тот же прогон, что и еженедельный,
+                # поэтому и оседает он там же. Иначе «пересчитать сейчас»
+                # обновляло бы только экран: на диске остался бы прошлый отчёт,
+                # в таблице — прошлый балл, и оба выглядели бы верными.
+                # Расчёт на чужих долях в общий рейтинг не идёт. Балл в списке
+                # и числа в карточке обязаны быть про одно: сохрани мы сюда
+                # разовое допущение аналитика, таблица показывала бы его всем и
+                # выглядела бы при этом посчитанной по методике.
+                custom_ratios = bool((screening.get("tep_ratios") or {}).get("custom"))
+                if project is not None and screening.get("available") is not None \
+                        and not custom_ratios:
+                    stored = dict(screening)
+                    krt_ranking.save_failure_or_report(slug, stored, {
+                        "project": project,
+                        "market": _market_digest(report),
+                        "screening": {key: value for key, value in stored.items()
+                                      if key != "market_report"},
+                    })
+                    krt_ranking.upsert_row(score_row(project, dict(stored)))
+                return {**report, "model_screening": screening}
+
+            return await run_in_threadpool(build_report_with_model)
+        except (SubjectNotFound, GeocodingError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except RemoteServiceError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @app.get("/auctions/torgi/probe")
+    async def auction_torgi_probe(
+        page: int = Query(default=0),
+        status: str = Query(default=""),
+        cat: str = Query(default="2"),
+        sort: str = Query(default=""),
+        size: int = Query(default=0, ge=0, le=200),
+        extra: str = Query(default="", max_length=500),
+    ) -> dict[str, Any]:
+        """Сырой ответ ГИС Торгов и разобранный лот рядом.
+
+        Из песочницы torgi.gov.ru закрыт сетевой политикой, как НСПД: сверить
+        поля можно только с ядра. Показываем и сырое, и разобранное вместе —
+        расхождение должно быть видно глазами, а не вылезти числом в отчёте.
+
+        `status` — коды через запятую (`finished` — статусы завершения),
+        `extra` — добавочные параметры запроса площадки строкой
+        (`biddEndFrom=…&biddEndTo=…`): так с ядра проверяется, какой фильтр даты
+        площадка понимает, прежде чем рабочий сбор на него положится.
+        """
+        if status.strip().lower() == "finished":
+            statuses = torgi_gov_finished_statuses
+        elif status.strip():
+            statuses = tuple(code.strip().upper() for code in status.split(",") if code.strip())
+        else:
+            statuses = torgi_gov_active_statuses
+        return await run_in_threadpool(lambda: TorgiGovAdapter().probe(
+            page, statuses=statuses, cat_code=cat, sort=sort, size=size or None, extra=extra))
+
+    @app.get("/auctions/torgi/regions")
+    async def auction_torgi_regions(page: int = Query(default=0)) -> dict[str, Any]:
+        """Какое имя параметра действительно фильтрует регион.
+
+        Запрос с `dynSubjRF=77,50` приносит чужие области: сервис молча
+        игнорирует неизвестный параметр. Перебирать имена вслепую можно
+        вечно — здесь они измеряются: «сколько из присланного наше».
+        """
+        return await run_in_threadpool(lambda: TorgiGovAdapter().probe_regions(page))
+
+    @app.get("/auctions/fedresurs/probe")
+    async def auction_fedresurs_probe() -> dict[str, Any]:
+        """Что отвечает ЕФРСБ. Разбора нет — сначала ответ, потом код.
+
+        ГИС Торги оказались не тем рынком: живой ответ подтвердил один код вида
+        торгов — приватизацию госимущества, — а 44% выборки владельца это
+        банкротство, и лежит оно на площадках, которых мы не читаем.
+
+        Из песочницы bankrot.fedresurs.ru закрыт, как НСПД и torgi.gov.ru,
+        поэтому проба ходит только с ядра. Разбор по догадке здесь запрещён
+        намеренно: ровно так ГИС Торги приехали на прод с тридцатью гаражами.
+        """
+        return await run_in_threadpool(fedresurs_probe)
+
+    @app.get("/auctions/fedresurs/api")
+    async def auction_fedresurs_api(
+        message: str = Query(default=""),
+        inn: str = Query(default=""),
+        seconds: float = Query(default=40.0, ge=5.0, le=90.0),
+        path: str = Query(default=""),
+    ) -> dict[str, Any]:
+        """JSON-бэкенд ЕФРСБ: сверенные маршруты по должнику и адреса из бандла.
+
+        Страница сообщения — оболочка Angular, данные идут из `/backend/…`.
+        Адрес карточки сообщения и списка торгов проба ищет в бандле самой
+        страницы, а не перебирает вслепую. Разбора нет.
+
+        `path` — полный ответ одного пути бэкенда (`bankruptcy-messages/<guid>`):
+        поля сверяются по целому ответу, а не по началу тела.
+        """
+        if path.strip():
+            return await run_in_threadpool(
+                lambda: fedresurs_probe_backend(path, seconds=seconds))
+        return await run_in_threadpool(lambda: fedresurs_probe_api(
+            message_guid=message.strip() or FEDRESURS_KNOWN_MESSAGE,
+            inn=inn.strip() or FEDRESURS_KNOWN_INN, seconds=seconds))
+
+    @app.get("/auctions/fedresurs/browser")
+    async def auction_fedresurs_browser(
+        seconds: float = Query(default=45.0),
+        url: str = Query(default=""),
+    ) -> dict[str, Any]:
+        """Та же проба, но настоящим браузером — и список запросов страницы.
+
+        Простой запрос упёрся в капчу Qrator: корень отдаёт 401 со скриптом
+        защиты. Обходить её мы не будем — от этого она и поставлена. Браузер
+        проходит вызов штатно, как браузер человека; покажет капчу и ему —
+        проба скажет это вслух, а не выдаст пустой источник за отсутствие лотов.
+
+        Нужен не текст страницы, а адреса, по которым она сама ходит за
+        данными: у SPA числа приезжают отдельными вызовами бэкенда. Гадать эти
+        адреса мы уже пробовали — вышли гаражи.
+        """
+        # Адрес спрашивается, а не назначается: `/TradeList.aspx` — старый путь,
+        # а человек открывает корень, и отказ у них может быть разный. Пустой
+        # параметр оставляет страницу поиска торгов, как было.
+        return await run_in_threadpool(
+            lambda: fedresurs_browser(url=url.strip() or FEDRESURS_SEARCH_PAGE, seconds=seconds))
+
+    @app.get("/auctions/roseltorg/probe")
+    async def auction_roseltorg_probe(
+        seconds: float = Query(default=45.0, ge=5.0, le=90.0),
+        url: str = Query(default=""),
+    ) -> dict[str, Any]:
+        """Чем отвечает раздел «Развитие территории» Росэлторга. Разбора нет.
+
+        Владелец прислал адрес каталога и живой лот на экране: аукцион на
+        право заключения договора о КРТ нежилой застройки Москвы, 14,62 га,
+        2,4 млрд ₽. Наша разведка Росэлторга этот раздел не спрашивает вовсе —
+        она ходит только в поиск процедур по тегам. Это утверждение о нашем
+        коде, и его видно в нём; чем отвечает сам раздел, скажет проба.
+
+        Рядом спрашивается НЫНЕШНИЙ путь разведки: «раздел отвечает» и «раздел
+        отвечает лучше нынешнего» — разные утверждения, и второе без
+        контрольного запроса не проверяется.
+
+        Ответ из двух половин и обе нужны: простой запрос показывает, что
+        приходит в HTML, живой браузер — за чем страница ходит сама и что в
+        итоге оказалось в DOM. Пустой список запросов при видимых карточках
+        значит «всё пришло первым ответом», а не «карточек нет».
+
+        Из песочницы roseltorg.ru закрыт, поэтому проба ходит только с ядра.
+
+        Адрес раздела зашит и остаётся тем, который открывает владелец. Рядом
+        появился `url` — и прежняя оговорка «произвольного адреса здесь нет
+        намеренно» снята не по забывчивости: 12.09.2026 РАЗДЕЛ отвечал 200, а
+        карточка лота с того же ядра — таймаутом, и сказать об этом было
+        нечем, кроме как «мы её не читаем». Ограничение осталось там, где оно
+        и держит: только официальный хост площадки, никакого разбора, а рядом
+        печатается, сколько сертификатов прислал сервер —
+        `CERTIFICATE_VERIFY_FAILED` это вопрос «чего не хватает», а не диагноз.
+        """
+        return await run_in_threadpool(
+            lambda: roseltorg_probe(seconds=float(seconds), url=url.strip()))
+
+    @app.get("/auctions/source-page")
+    async def auction_source_page(url: str = Query(default="")) -> dict[str, Any]:
+        """Страница площадки целиком — образец для разбора даты торгов.
+
+        Проба Росэлторга отдаёт голову текста, а разбор пишется по всей
+        карточке. Только официальные хосты площадок, без разбора; из песочницы
+        эти площадки закрыты, поэтому образец снимается здесь, на ядре.
+        """
+        return await run_in_threadpool(lambda: source_page.fetch(url))
+
+    @app.get("/auctions/roseltorg/browser")
+    async def auction_roseltorg_browser(
+        seconds: float = Query(default=45.0, ge=5.0, le=90.0),
+        url: str = Query(default=""),
+        save: bool = Query(default=False),
+    ) -> dict[str, Any]:
+        """Тот же раздел живым браузером — и адреса, за которыми он ходит.
+
+        Если каталог рисует приложение, в простом ответе будет оболочка, а
+        числа приедут отдельными вызовами. Их адреса и нужны, чтобы написать
+        читателя — не угаданные, а увиденные. `save=1` кладёт страницу файлом:
+        читатель пишется по настоящей странице и ею же проверяется.
+        """
+        target = url.strip() or ROSELTORG_SECTION_URL
+        save_to = "/tmp/roseltorg-section.html" if save else ""
+        return await run_in_threadpool(
+            lambda: roseltorg_section_browser(target, seconds=seconds, save_to=save_to))
+
+    @app.get("/auctions/etp/probe")
+    async def auction_etp_probe() -> dict[str, Any]:
+        """Что отвечают площадки банкротства. Разбора нет — сначала ответ.
+
+        ЕФРСБ как агрегатор закрыт: капча простому запросу, 403 живому
+        браузеру. Читаем сами площадки — пять адресов из таблицы владельца
+        дают больше половины банкротных лотов. Но код пишется по ответу, а не
+        по догадке: ровно так ГИС Торги приехали на прод с гаражами.
+        """
+        return await run_in_threadpool(etp_probe)
+
+    @app.get("/auctions/etp/probe/browser")
+    async def auction_etp_probe_browser(
+        platform: str = Query(default=""),
+        seconds: float = Query(default=40.0, ge=5.0, le=90.0),
+        save: bool = Query(default=False),
+        url: str = Query(default=""),
+    ) -> dict[str, Any]:
+        """Каталог одной площадки, открытый настоящим браузером.
+
+        Простой запрос показывает оболочку: каталог рисует приложение, а числа
+        приезжают отдельными вызовами бэкенда. Их адреса и нужны, чтобы
+        написать читателя — не угаданные, а увиденные.
+
+        По одной площадке за вызов намеренно: пять по сорок секунд не уложатся
+        ни в один шлюз, а ответ, не дошедший до человека, — это ответ, которого
+        нет. Без параметра маршрут перечисляет, что можно спросить.
+
+        `url=` спрашивает заданный адрес: наш сохранённый ведёт куда придётся,
+        и это видно только по ответу — у Сбербанк-АСТ каталог банкротства увёл
+        редиректом на главную. `save=1` кладёт страницу файлом: читатель
+        пишется по настоящей странице и ею же проверяется.
+        """
+        slug = str(platform or "").strip().lower()
+        if not slug:
+            return {
+                "ok": False,
+                "reason": "укажите площадку: ?platform=<имя>",
+                "known": {key: name for key, name in sorted(etp_slugs.items())},
+                "parsing": "разбора нет: ни одно имя поля не сверено ответом площадки",
+            }
+        return await run_in_threadpool(
+            lambda: etp_probe_browser(slug, seconds=float(seconds),
+                                      save=bool(save), url=str(url or "")))
+
+    # Срок на сбор каталога. Шлюз рвёт соединение на шестидесяти секундах и
+    # отдаёт свою HTML-страницу; браузер разбирает её как JSON и показывает
+    # поломку разбора вместо причины. Сбор ограничивался только числом страниц,
+    # то есть объёмом: у ГИС Торгов это сорок страниц по восемь секунд, у
+    # Росэлторга и РАД — по запросу на каждый лот по двадцать пять. Сорок
+    # секунд оставляют шлюзу запас на ответ, а недособранное называется вслух
+    # в строке охвата: источник, до которого не дошли, — это «не знаем», а не
+    # «лотов там нет».
+    DISCOVERY_BUDGET_SECONDS = 40.0
+
+    # --- комментарий Платона к лотам торгов ---------------------------------
+    # Разбор идёт фоном по одному лоту: платный поиск и ответ модели в запросе
+    # выгрузки заняли бы десятки минут. Темп ниже лимита Платона на клиента
+    # (30 вопросов в час), чтобы фон не отнимал ответы у людей.
+    LOT_NOTE_INTERVAL_SECONDS = lot_notes_rules.interval_seconds()
+    LOT_NOTE_CLAIM_TTL_SECONDS = 20 * 60
+
+    def _lot_note_search(lot: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
+        client = getattr(market, "search", None)
+        finder = getattr(client, "search", None)
+        if not callable(finder) or not getattr(client, "configured", False):
+            return [], "веб-поиск не настроен (YANDEX_SEARCH_API_KEY / FOLDER_ID)"
+        found: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        errors: list[str] = []
+        for query in lot_notes_rules.search_queries(lot):
+            try:
+                docs = finder(query)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{type(exc).__name__}: {exc}"[:200])
+                continue
+            for doc in docs or []:
+                item = doc.to_dict() if hasattr(doc, "to_dict") else dict(doc)
+                url = str(item.get("url") or "")
+                # Карточка самого лота — не «что о нём пишут».
+                if not url or url in seen or url == lot.get("url"):
+                    continue
+                seen.add(url)
+                found.append({key: item.get(key) for key in ("title", "url", "snippet", "modtime")
+                              if item.get(key)})
+        if not found and errors:
+            return [], "; ".join(errors[:2])
+        return found[:lot_notes_rules.MAX_SOURCES], ""
+
+    def _nspd_point(number: str) -> dict[str, Any]:
+        """Точка участка на карте НСПД. Адрес карты собирает движок (`_nspd_map_url`).
+
+        Где до НСПД не достучаться (Render), движок спрашивает ядро — та же
+        развилка, что у `/land/lookup`, без записи в счётчик посещений сайта.
+        """
+        now = int(time.time())
+        lookup = getattr(core, "_land_lookup_by_numbers", None)
+        if core is None or not callable(lookup):
+            return {"asked_at": now, "failed": True,
+                    "reason": "движок расчёта не загружен — НСПД спросить нечем"}
+        try:
+            url = core._core_api_url("/land/lookup") if hasattr(core, "_core_api_url") else ""
+            if url:
+                answer = core._core_post(url, {"query": number, "limit": 1},
+                                         getattr(core, "_MO_CALC_TIMEOUT_SECONDS", 60))
+                results = list((answer or {}).get("results") or [])
+            else:
+                results = list(lookup([number]) or [])
+        except Exception as exc:  # noqa: BLE001
+            detail = getattr(exc, "detail", None) or str(exc)
+            return {"asked_at": now, "failed": True,
+                    "reason": f"НСПД не ответил: {detail}"[:300]}
+        found = next((item for item in results if item.get("found")), None)
+        if found is None:
+            miss = results[0] if results else {}
+            if miss.get("lookup_failed"):
+                return {"asked_at": now, "failed": True,
+                        "reason": f"НСПД не ответил: {miss.get('note') or 'без причины'}"[:300]}
+            return {"asked_at": now, "failed": True, "not_found": True,
+                    "reason": "НСПД не нашёл участок по этому номеру"}
+        href = str(found.get("map_url") or "")
+        # Адрес без координат открывает общую карту — это не ссылка на участок.
+        if "coordinate_x=" not in href:
+            return {"asked_at": now, "failed": True, "not_found": True,
+                    "reason": "НСПД нашёл номер, но не отдал его границы — точки нет"}
+        # Вид объекта и площадь — заодно: площадь участка, которой нет у
+        # площадки и в названии, лот берёт отсюда (`_nspd_land_area`).
+        area = found.get("area_sqm")
+        return {"asked_at": now, "map_url": href,
+                "address": str(found.get("address") or "")[:300],
+                "kind": str(found.get("kind") or ""),
+                "area_sqm": float(area) if isinstance(area, (int, float)) and area > 0 else None}
+
+    def _parcels_under(number: str) -> tuple[list[dict[str, Any]], str]:
+        """Участки под зданием по номеру здания — тем же `_land_lot_context`, что карточка лота.
+
+        У лота «нежилое здание» в лоте только номер здания, и площадь участка
+        не находилась нигде (прод, 19.10.2026: три здания при фильтре 0,5 га
+        стояли с пометкой «площадь не указана»). Участок ищется по связи в
+        ЕГРН, а без неё — в центре контура здания; способ сохраняется.
+        """
+        context_of = getattr(core, "_land_lot_context", None)
+        if core is None or not callable(context_of):
+            return [], "движок расчёта не загружен — участок под зданием искать нечем"
+        try:
+            context = context_of([number])
+        except Exception as exc:  # noqa: BLE001
+            return [], f"НСПД не ответил: {getattr(exc, 'detail', None) or exc}"[:300]
+        parcels = []
+        for parcel in (context or {}).get("land_parcels") or []:
+            area = parcel.get("area_sqm")
+            if parcel.get("cadastral_number") and isinstance(area, (int, float)) and area > 0:
+                parcels.append({"cadastral_number": str(parcel["cadastral_number"]),
+                                "area_sqm": float(area),
+                                "method": ", ".join(parcel.get("lookup_methods") or [])})
+        return parcels, "" if parcels else "НСПД не определила участок под зданием"
+
+    def _nspd_points_once(limit: int = lot_notes_rules.NSPD_POINTS_PER_RUN) -> int:
+        """Получить точки для нескольких номеров из очереди. Возвращает, сколько спрошено."""
+        numbers = lot_notes.points_queue()[:limit]
+        found = 0
+        last_reason = ""
+        for number in numbers:
+            point = _nspd_point(number)
+            if point.get("kind") == "building":
+                point["under_parcels"], under_reason = _parcels_under(number)
+                if under_reason:
+                    point["under_reason"] = under_reason
+            lot_notes.save_point(number, point)
+            if point.get("map_url"):
+                found += 1
+            else:
+                last_reason = str(point.get("reason") or "")
+        if numbers:
+            result = f"точки НСПД: спрошено {len(numbers)}, получено {found}"
+            if last_reason:
+                result += f"; последняя причина: {last_reason}"
+        else:
+            result = "точки НСПД: очередь пуста"
+        lot_notes.record_run("nspd_points", result)
+        return len(numbers)
+
+    app.state.auction_nspd_points_once = _nspd_points_once
+
+    def _lot_note_once() -> bool:
+        """Разобрать один лот из очереди. False — очередь пуста или спрашивать некого."""
+        if core is None or not hasattr(core, "plato_answer"):
+            lot_notes.record_run("notes", "Платон недоступен: движок расчёта не загружен")
+            return False
+        queue = lot_notes.queue()
+        if not queue:
+            lot_notes.record_run("notes", "очередь пуста")
+            return False
+        lot = queue[0]
+        key = str(lot.get("url") or "")
+        now = int(time.time())
+        docs, problem = _lot_note_search(lot)
+        docs = lot_notes_rules.fit_docs(lot, docs, problem)
+        try:
+            answer = core.plato_answer(
+                core.AgentChatRequest(
+                    message=lot_notes_rules.prompt(lot, docs, problem),
+                    inputs=dict(core.DEFAULT_INPUTS),
+                    tep={name: dict(row) for name, row in core.TEP_DEFAULT.items()},
+                ),
+                lot_notes_rules.background_request(),
+            ) or {}
+            text = str(answer.get("answer") or answer.get("reply")
+                       or answer.get("text") or "").strip()
+            if not text:
+                raise RuntimeError("Платон вернул пустой ответ")
+        except Exception as exc:  # noqa: BLE001
+            detail = getattr(exc, "detail", None) or str(exc)
+            logger.warning("Торги: комментарий к лоту не получен %s: %s", key, detail)
+            lot_notes.save_note(key, {"asked_at": now, "failed": True,
+                                      "reason": f"{type(exc).__name__}: {detail}"[:300],
+                                      "sources": docs, "search_problem": problem})
+            lot_notes.record_run("notes", f"разбор не удался {key}: {detail}")
+            return True
+        lot_notes.save_note(key, {"asked_at": now, "failed": False, "text": text[:2000],
+                                  "sources": docs, "search_problem": problem})
+        lot_notes.record_run("notes", f"разобран {key}")
+        return True
+
+    def _lot_notes_loop() -> None:
+        time.sleep(45)
+        claim = lot_notes.claim_path
+        while True:
+            try:
+                if krt_ranking_rules.claim_file(claim, LOT_NOTE_CLAIM_TTL_SECONDS):
+                    try:
+                        # Точки — отдельным шагом: отказ НСПД не должен
+                        # останавливать комментарий, и наоборот.
+                        try:
+                            _nspd_points_once()
+                        except Exception:  # noqa: BLE001
+                            logger.exception("Торги: точки участков НСПД")
+                        _lot_note_once()
+                    finally:
+                        krt_ranking_rules.release_file(claim)
+            except Exception:  # noqa: BLE001
+                logger.exception("Торги: фоновый разбор лотов")
+            time.sleep(LOT_NOTE_INTERVAL_SECONDS)
+
+    app.state.auction_lot_note_once = _lot_note_once
+
+    @app.get("/auctions/lot-notes/status")
+    async def auction_lot_notes_status() -> dict[str, Any]:
+        """Сколько лотов разобрано и почему не разобраны остальные — не только в логе."""
+        return await run_in_threadpool(lot_notes.status)
+
+    def _discover_row(lot, points: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
+        """Лот выдачи для страницы — одной сборкой для живых и завершённых."""
+        data = _public_lot_dict(lot)
+        _nspd_land_area(data, lot_notes.points() if points is None else points)
+        return {
+                **data,
+                "analysis": _analysis_support(lot.source.lot_url),
+                # Соответствие профилю считает сервер по измеренному
+                # эталону сделок: балл, собранный в браузере, был бы
+                # вторым счётом той же величины.
+                "fit": profile_fit(data),
+                "quality": catalogue_quality(lot),
+                # Лот основной подборки: в режиме «с шумом» страница ставит
+                # такие первыми и отделяет от добавленных неполных и шума.
+                "main_selection": AuctionSearchService.in_main_selection(
+                    AuctionSearchService.screen_lot(lot), catalogue_quality(lot)),
+                # Доля в юрлице разбирается сервером: пороги владельца и
+                # разбор активов, объявленные один раз. Собранные на
+                # странице, они были бы вторым ответом на тот же вопрос.
+                "equity": equity_stake.screen(lot),
+                "screening": {
+                    **AuctionSearchService.screen_lot(lot),
+                    "documents_count": len(lot.documents),
+                    "full_document_parse_deferred": True,
+                },
+        }
+
+    @app.get("/auctions/discover")
+    async def auction_discover(
+        source: str = Query(default="all"),
+        include_noise: bool = Query(default=False),
+    ) -> dict[str, Any]:
+        """Discover current Moscow opportunities from official public ETP catalogues.
+
+        This endpoint does not download/parse every attachment. Full KRT document
+        extraction happens only through `/auctions/ingest` for a selected lot.
+        """
+        try:
+            adapters = _discovery_adapters(source)
+            service = AuctionSearchService(adapters)
+            lots = await run_in_threadpool(
+                lambda: service.discover_moscow(
+                    include_noise=include_noise,
+                    budget_seconds=DISCOVERY_BUDGET_SECONDS))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Не удалось получить публичный каталог ЭТП: {exc}") from exc
+
+        # Связку «площадка ↔ лот» пишет тот, кто лоты СОБРАЛ. Прежде она
+        # писалась только маршрутом, куда список присылала страница, и потому
+        # появлялась, лишь если человек открыл соседнюю вкладку «Торги» в этой
+        # же вкладке браузера: на проде склад был пуст при восьми живых
+        # аукционах на право договора о КРТ, и фильтр честно показывал «Торги
+        # (0)» — ноль, который читается как ответ о рынке (владелец,
+        # 05.09.2026: «торги 0????»). Сервер видел эти лоты сам, и запомнить
+        # их — его работа, а не побочный эффект чужого нажатия.
+        try:
+            await run_in_threadpool(_remember_tender_links,
+                                    [_public_lot_dict(lot) for lot in lots])
+        except Exception:  # noqa: BLE001 — каталог лотов не роняем связкой
+            logger.exception("KRT: связка лотов с площадками при сборе не записалась")
+        # Лоты сбора — очередь фонового комментария Платона (`lot_notes`).
+        try:
+            await run_in_threadpool(lot_notes.remember_lots,
+                                    [_public_lot_dict(lot) for lot in lots])
+        except Exception:  # noqa: BLE001 — каталог лотов не роняем очередью
+            logger.exception("Торги: лоты сбора не записаны в очередь комментариев")
+
+        try:
+            nspd_points = await run_in_threadpool(lot_notes.points)
+        except Exception:  # noqa: BLE001 — каталог не роняем чтением точек
+            logger.exception("Торги: точки НСПД не прочитаны")
+            nspd_points = {}
+        return {
+            "source_policy": "official_etp_only",
+            "source": source,
+            "count": len(lots),
+            "quality": service.last_quality_report,
+            "coverage": [_coverage_row(adapter) for adapter in adapters],
+            "lots": [_discover_row(lot, nspd_points) for lot in lots],
+        }
+
+    # История завершённых торгов. Тяжёлая выборка — до сорока страниц ГИС
+    # Торгов, — поэтому ответ кладётся на диск: второй воркер и повторное
+    # нажатие читают готовое, а не листают площадку заново. Полный ответ живёт
+    # час, неполный (не уложились в срок, источник отказал) — двадцать минут:
+    # недособранное не должно надолго выдавать себя за всю историю.
+    #
+    # Запись помечена схемой ответа и номером выпуска. Файл на диске переживает
+    # выкатку: после #754 прод три часа отдавал ответ, записанный старым кодом,
+    # — без воронки допуска, и страница снова писала голое «найдено 0»
+    # (19.10.2026). Чужая версия и запись без версии не отдаются.
+    FINISHED_CACHE_SECONDS = 60 * 60
+    FINISHED_PARTIAL_CACHE_SECONDS = 20 * 60
+    FINISHED_CACHE_SCHEMA = 2
+    FINISHED_WINDOW_MONTHS = 3
+
+    def _finished_cache_path(source: str, as_of: date, months: int, noise: bool) -> str:
+        root = os.path.join(os.getenv("DATA_DIR", "data"), "market", "auctions")
+        name = re.sub(r"[^a-z0-9_]+", "_", (source or "all").lower())
+        return os.path.join(
+            root, f"finished_{name}_{as_of.isoformat()}_{months}m_{int(noise)}.json")
+
+    def _finished_cache_version() -> str:
+        return f"{FINISHED_CACHE_SCHEMA}:{getattr(core, 'VERSION', '') or ''}"
+
+    def _finished(source: str, as_of: date, months: int, include_noise: bool) -> dict[str, Any]:
+        path = _finished_cache_path(source, as_of, months, include_noise)
+        try:
+            with open(path, encoding="utf-8") as handle:
+                cached = json.load(handle)
+            if cached.get("version") != _finished_cache_version():
+                raise ValueError("кеш записан другой версией кода")
+            age = time.time() - float(cached.get("saved_at") or 0)
+            ttl = FINISHED_CACHE_SECONDS if cached.get("complete") else FINISHED_PARTIAL_CACHE_SECONDS
+            if 0 <= age < ttl:
+                return {**cached["payload"], "cached": True,
+                        "cached_age_seconds": int(age)}
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        since = _months_before(as_of, months)
+        nspd_points = lot_notes.points()
+        adapters = _discovery_adapters(source)
+        service = AuctionSearchService(adapters)
+        lots = service.discover_moscow_finished(
+            since, as_of, include_noise=include_noise,
+            budget_seconds=DISCOVERY_BUDGET_SECONDS)
+        coverage = [_coverage_row(adapter) for adapter in adapters]
+        payload = {
+            "source_policy": "official_etp_only",
+            "mode": "finished",
+            "source": source,
+            "window": {"since": since.isoformat(), "until": as_of.isoformat(),
+                       "months": months},
+            "count": len(lots),
+            # Воронка допуска — та же, что у живого каталога: без неё «найдено
+            # 0» не отличить от «торгов не было».
+            "quality": service.last_quality_report,
+            "coverage": coverage,
+            "lots": [{**_discover_row(lot, nspd_points), "finished": True} for lot in lots],
+        }
+        complete = not any(
+            row.get("finished_available") and row.get("reason") for row in coverage)
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            temp = f"{path}.{os.getpid()}.tmp"
+            with open(temp, "w", encoding="utf-8") as handle:
+                json.dump({"saved_at": time.time(), "complete": complete,
+                           "version": _finished_cache_version(),
+                           "payload": payload}, handle, ensure_ascii=False)
+            os.replace(temp, path)
+        except OSError:
+            logger.exception("Торги: история завершённых не записалась на диск")
+        return {**payload, "cached": False}
+
+    @app.get("/auctions/finished")
+    async def auction_finished(
+        source: str = Query(default="all"),
+        include_noise: bool = Query(default=False),
+        as_of: str = Query(default=""),
+        months: int = Query(default=FINISHED_WINDOW_MONTHS, ge=1, le=12),
+    ) -> dict[str, Any]:
+        """Завершённые торги Москвы за `months` месяцев до даты `as_of`.
+
+        Отдельный запрос, а не часть `/auctions/discover`: живой каталог не
+        ждёт истории, а история укладывается в тот же срок сорок секунд.
+        """
+        try:
+            day = date.fromisoformat(as_of) if as_of else _moscow_today()
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="Дата «на дату» должна быть в виде ГГГГ-ММ-ДД") from exc
+        try:
+            return await run_in_threadpool(_finished, source, day, int(months), bool(include_noise))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Не удалось получить завершённые торги: {exc}") from exc
+
+    @app.post("/auctions/export.xlsx")
+    async def auction_export(req: AuctionExportRequest, request: Request) -> Response:
+        # Лоты выгрузки встают в очередь комментария Платона. Ключ «только
+        # просмотр» платный разбор не заказывает: он читает готовое.
+        if req.kind != "krt" and not _view_only(request):
+            try:
+                await run_in_threadpool(lot_notes.request, list(req.rows or []))
+            except Exception:  # noqa: BLE001 — выгрузку не роняем очередью
+                logger.exception("Торги: лоты выгрузки не поставлены в очередь комментариев")
+        data = await run_in_threadpool(_xlsx, req.rows, req.kind)
+        filename = "developaid-krt.xlsx" if req.kind == "krt" else "developaid-auctions.xlsx"
+        return Response(content=data, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+    @app.post("/auctions/table")
+    async def auction_table(req: AuctionExportRequest, request: Request) -> dict[str, Any]:
+        """Таблица торгов для страницы — колонки и значения книги Excel.
+
+        Только чтение: комментарий Платона берётся из фонового разбора, модель
+        в запросе страницы не зовётся. Заказать разбор — отдельной кнопкой
+        (`/auctions/lot-notes/request`), её нет у ключа «только просмотр».
+        """
+        table = await run_in_threadpool(_web_table, list(req.rows or []))
+        table["may_request_notes"] = not _view_only(request)
+        return table
+
+    @app.post("/auctions/lot-notes/request")
+    async def auction_lot_notes_request(req: AuctionExportRequest, request: Request) -> dict[str, Any]:
+        """Поставить лоты в очередь фонового комментария Платона — как выгрузка."""
+        if _view_only(request):
+            raise HTTPException(status_code=403, detail="Ключ «только просмотр» разбор не заказывает")
+        added = await run_in_threadpool(lot_notes.request, list(req.rows or []))
+        return {"queued": added}
+
+    @app.post("/auctions/lot-point")
+    async def auction_lot_point(req: AuctionLotPointRequest) -> dict[str, Any]:
+        if market is None:
+            raise HTTPException(status_code=503, detail="Маркетинговый движок не подключён")
+        try:
+            subject = await run_in_threadpool(market.resolve_subject, req.query)
+        except (GeocodingError, RemoteServiceError, RuntimeError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        data = subject.to_dict() if hasattr(subject, "to_dict") else {}
+        return {"latitude": data.get("latitude"), "longitude": data.get("longitude"),
+                "address": data.get("address") or req.query, "precision": data.get("precision"),
+                "nspd_url": data.get("nspd_url") or ""}
+
+    # Зип с выписками ЕГРН руками. Загрузчик получает от Росэлторга 503 через
+    # раз, и присланный человеком архив бывает ЕДИНСТВЕННЫМ источником сведений
+    # об объектах площадки (владелец, 13.09.2026: «надо сделать там возможность
+    # загружать зип с ЕГРН и распознавать его»).
+    #
+    # Без multipart нарочно — как у плана продаж в кабинете: `UploadFile` тянет
+    # python-multipart, которого в зависимостях нет, а архив приходит один и
+    # целиком, то есть тело запроса и есть файл.
+    @app.post("/auctions/egrn/archive")
+    async def auction_egrn_archive(request: Request, key: str = "",
+                                   file: str = "") -> dict[str, Any]:
+        """Архив выписок → записи, свод и склад. Второго разбора выписки нет."""
+        market_cabinet.require_cabinet(request)
+        # Ключ обязателен: без него архивы разных площадок легли бы в одну
+        # кучу, и на экране это выглядело бы как сведения об этой площадке.
+        if not str(key).strip():
+            raise HTTPException(
+                status_code=422,
+                detail="Не сказано, к какой площадке архив: нужен ключ лота или КРТ")
+        data = await request.body()
+        if not data:
+            raise HTTPException(status_code=422, detail="Пустой файл")
+        if len(data) > 60 * 1024 * 1024:
+            raise HTTPException(
+                status_code=413,
+                detail="Архив больше 60 МБ — столько лотовая документация не весит")
+        name = _uploaded_name(file) or "архив"
+
+        def work() -> dict[str, Any]:
+            parsed = egrn_archive.read(data, name=name)
+            kept = egrn_store.save(_market_dir(), key, parsed, name)
+            return {"parsed": parsed, "kept": kept}
+
+        try:
+            done = await run_in_threadpool(work)
+        except archives.ArchiveProblem as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        parsed, kept = done["parsed"], done["kept"]
+        upload = (kept.get("uploads") or [{}])[0]
+        return {
+            "key": key,
+            "file": name,
+            # Что принёс ИМЕННО этот архив, и что лежит на складе ВСЕГО —
+            # разные числа: второй зип дополняет первый, и «прочитано 14» про
+            # файл читается как про площадку, пока их не развели.
+            "upload": {
+                "entries": parsed.get("entries", 0),
+                "read": parsed.get("read", 0),
+                "unread": parsed.get("unread", []),
+                "companions": parsed.get("companions", []),
+                "duplicates": parsed.get("duplicates", []),
+                "added": upload.get("added", 0),
+                "replaced": upload.get("replaced", 0),
+                "superseded": upload.get("superseded", 0),
+            },
+            "egrn": egrn_view(egrn_store.block(kept)),
+            "records": kept.get("records") or [],
+            "uploads": kept.get("uploads") or [],
+        }
+
+    @app.get("/auctions/egrn/archive")
+    async def auction_egrn_stored(request: Request, key: str = "") -> dict[str, Any]:
+        """Что уже прочитано по этой площадке. Разбирать второй раз незачем.
+
+        Без этого маршрута загрузка была бы разовым взглядом: закрыл вкладку —
+        и присланный архив нужно грузить снова, а разобранное уже лежит на
+        ядре.
+        """
+        market_cabinet.require_cabinet(request)
+        if not str(key).strip():
+            raise HTTPException(status_code=422, detail="Не сказано, какая площадка")
+        kept = await run_in_threadpool(egrn_store.load, _market_dir(), key)
+        return {
+            "key": key,
+            "egrn": egrn_view(egrn_store.block(kept)) if kept.get("records") else None,
+            "records": kept.get("records") or [],
+            "uploads": kept.get("uploads") or [],
+            "broken": kept.get("broken") or "",
+        }
+
+    def _market_dir() -> Path:
+        """Каталог данных рынка — спрашивается при обращении.
+
+        Складов в нём два, и оба про лот: разобранные выписки (`egrn_store`) и
+        скачанные вложения (`lot_documents`). Каталог один, потому что два
+        ответа на «где данные рынка» разошлись бы молча.
+
+        Замороженный на импорте путь означает, что проверка пишет в рабочее
+        дерево репозитория: приложение собирается один раз, а `DATA_DIR` у
+        проверки свой. Это уже стоило нам зелёной проверки, находившей в
+        рабочем `data/` снимок соседа.
+        """
+        return Path(os.getenv("DATA_DIR", "data")) / "market"
+
+    def _uploaded_name(value: str) -> str:
+        """Имя присланного файла: заголовок кодируют, чтобы раскодировать.
+
+        Имя едет процентным кодированием, потому что заголовок обязан быть
+        ASCII. Заменять проценты «чтобы не мешали» нельзя: раскодировать это
+        потом нечем — так «Продажи Кутузов Сити.xlsx» показывалось двумястами
+        знаков нечитаемой строки. Не раскодировалось — оставляем как пришло.
+        """
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        try:
+            raw = unquote(raw)
+        except Exception:  # noqa: BLE001
+            pass
+        return raw.rsplit("/", 1)[-1].rsplit("\\", 1)[-1][:200]
+
+    @app.post("/auctions/ingest")
+    async def auction_ingest(req: AuctionIngestRequest) -> dict[str, Any]:
+        try:
+            adapter = _adapter_for(req.url)
+            lot = await run_in_threadpool(adapter.fetch_lot, req.url)
+            if lot.lot_kind == LotKind.KRT and req.enrich_krt_documents:
+                # Склад скачанного — тот же каталог данных, что у разобранных
+                # выписок: спрашивается при обращении, а не замораживается на
+                # импорте (замороженный означает, что проверка пишет в рабочее
+                # дерево репозитория).
+                lot = await run_in_threadpool(
+                    lambda: enrich_krt_from_official_documents(
+                        lot, store_dir=_market_dir()))
+            elif lot.lot_kind == LotKind.EQUITY_STAKE and req.enrich_krt_documents:
+                # Продажа доли общества-«обёртки»: участок общества назван
+                # только в документах лота (выписка ЕГРН, документация), а не в
+                # карточке и не адресом общества. Кадастр оттуда едет дальше
+                # той же передачей в расчёт, цена доли — ценой входа.
+                lot = await run_in_threadpool(
+                    lambda: enrich_equity_from_documents(lot, store_dir=_market_dir()))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except DocumentExtractionError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except Exception as exc:
+            # Platform outages/layout changes are upstream failures, not model errors.
+            raise HTTPException(status_code=502, detail=f"Не удалось прочитать официальный лот: {exc}") from exc
+
+        screening = AuctionSearchService.screen_lot(lot)
+        normalized = lot.to_dict()
+        if not req.include_raw:
+            normalized.pop("raw", None)
+        project_preset = build_project_preset(lot)
+        # ОКС и участок — разные объекты ЕГРН. В карточках торгов часто
+        # публикуют оба КН; передача обоих в ГлавАПУ заставляет калькулятор
+        # принять площадь здания за площадь территории и сложить их. Поэтому в
+        # handoff оставляем только земельные КН, подтверждённые НСПД.
+        #
+        # КРТ здесь стоял исключением, и зря: в его извещении КН зданий больше
+        # всего — их сносят, и они перечислены поимённо. «Из карточки КРТ в
+        # DevelopAid неверно передаёт КН участков» (владелец, 02.09.2026) — это
+        # оно: участками уезжали заодно и снесённые дома.
+        if lot.cadastral_numbers and core is not None:
+            try:
+                context = await run_in_threadpool(core._land_lot_context, lot.cadastral_numbers)
+                _handoff_land_cadastres(project_preset, context)
+            except Exception:
+                logger.warning("Не удалось отделить КН здания от участка для handoff", exc_info=True)
+        return {
+            "lot": normalized,
+            "developaid_seed": build_developaid_seed(lot),
+            "project_preset": project_preset,
+            "project_preset_import": {
+                "endpoint": "/api/project-presets/import",
+                "mode": "preview_then_apply",
+                "filled_inputs": project_preset.get("auction_import", {}).get("filled_inputs", {}),
+            },
+            "screening": {
+                **screening,
+                "legal_structure": lot.lot_kind.value,
+                "requires_krt_terms": lot.lot_kind == LotKind.KRT,
+                "krt_documents_complete": (
+                    bool(lot.raw.get("krt_extraction_complete")) if lot.lot_kind == LotKind.KRT else None
+                ),
+                "krt_auth_required": (
+                    bool(lot.raw.get("krt_auth_required")) if lot.lot_kind == LotKind.KRT else None
+                ),
+                # Правообладатели из выписок лота. Посчитанное за маршрутом и
+                # никем не показанное неотличимо от непосчитанного, поэтому
+                # свод едет в ответ, а считает его один `egrn_summary`.
+                "egrn": egrn_summary(lot),
+                # Что стоит за долей: объекты общества из документов лота и
+                # чего прочитать не удалось. Без этого «участка нет» и «не
+                # прочитали» на экране одинаковы.
+                "equity_assets": (lot.raw.get("equity_assets")
+                                  if lot.lot_kind == LotKind.EQUITY_STAKE else None),
+                # Сколько вложений спросили, сколько прочитали и что площадка
+                # не отдала. Счёт лежал в `raw`, а `include_raw` у карточки
+                # выключен: на экране стояло «Документов 26» и ни слова о
+                # четырёх неотданных.
+                "documents": documents_summary(lot) if lot.lot_kind == LotKind.KRT else None,
+                "ready_for_financial_model": (
+                    bool(lot.krt_program or lot.obligations) and not lot.raw.get("krt_document_warnings")
+                    if lot.lot_kind == LotKind.KRT
+                    else bool(lot.cadastral_numbers and (lot.current_price_rub is not None or lot.start_price_rub is not None))
+                ),
+            },
+        }
+
+    # Поток поднимается последним: он зовёт `_screen_one`, а замыкание
+    # разрешается в момент вызова — стартуй он выше, первая же итерация
+    # получила бы NameError.
+    if os.getenv("AUCTION_KRT_WEEKLY", "1").strip() not in {"0", "false", "no"}:
+        threading.Thread(target=_weekly_ranking, name="krt-weekly", daemon=True).start()
+    if os.getenv("AUCTION_KRT_WATCH", "1").strip() not in {"0", "false", "no"}:
+        threading.Thread(target=_krt_watch_loop, name="krt-watch", daemon=True).start()
+    # В pytest автономный фоновый поток не стартует: тесты сами вызывают
+    # нужные маршруты/раннеры. Иначе каждый временный FastAPI-app оставляет
+    # daemon-поток, который через 12 секунд начинает ходить в подменённые
+    # зависимости и на завершении Python может упасть с exit 134, хотя все
+    # проверки уже прошли. В production pytest не импортирован, поведение
+    # фонового пересчёта не меняется.
+    if (
+        "pytest" not in sys.modules
+        and os.getenv("AUCTION_LOT_NOTES", "1").strip() not in {"0", "false", "no"}
+    ):
+        threading.Thread(target=_lot_notes_loop, name="auction-lot-notes", daemon=True).start()
+    if (
+        "pytest" not in sys.modules
+        and os.getenv("AUCTION_KRT_RATING_BACKGROUND", "1").strip()
+        not in {"0", "false", "no"}
+    ):
+        threading.Thread(
+            target=_rating_background_loop, name="krt-rating-background", daemon=True
+        ).start()

@@ -1,0 +1,534 @@
+{
+  "schema_version": "developaid.project_preset.v4",
+  "project": {
+    "name": "КРТ Варшавское шоссе / Нагатинская",
+    "region": "Москва",
+    "status": "auction / acquisition underwriting",
+    "currency": "RUB",
+    "address": "г. Москва, Варшавское шоссе, вл. 37; ул. Нагатинская, вл. 3А/6",
+    "site_area_ha": 14.62,
+    "land_area_ha": 14.62,
+    "cadastral_numbers": [
+      "77:05:0004001:2046",
+      "77:05:0004001:40",
+      "77:05:0004001:2049",
+      "77:05:0004001:2045",
+      "77:05:0004001:2475",
+      "77:05:0004001:2474",
+      "77:05:0004001:2473",
+      "77:05:0004001:15",
+      "77:05:0004001:2471",
+      "77:05:0004001:2469",
+      "77:05:0004001:2470",
+      "77:05:0004001:16",
+      "77:05:0004001:2121",
+      "77:05:0004001:9",
+      "77:05:0004001:1999",
+      "77:05:0004001:1",
+      "77:05:0004001:1998",
+      "77:05:0004001:7",
+      "77:05:0004001:2458",
+      "77:05:0004001:8"
+    ],
+    "cadastral_numbers_input": "77:05:0004001:2046, 77:05:0004001:40, 77:05:0004001:2049, 77:05:0004001:2045, 77:05:0004001:2475, 77:05:0004001:2474, 77:05:0004001:2473, 77:05:0004001:15, 77:05:0004001:2471, 77:05:0004001:2469, 77:05:0004001:2470, 77:05:0004001:16, 77:05:0004001:2121, 77:05:0004001:9, 77:05:0004001:1999, 77:05:0004001:1, 77:05:0004001:1998, 77:05:0004001:7, 77:05:0004001:2458, 77:05:0004001:8",
+    "cadastral_import": {
+      "enabled": true,
+      "mode": "bulk",
+      "autofetch_after_import": true,
+      "deduplicate": true,
+      "source": "Приложение 2 к извещению о торгах, страницы 29–43",
+      "note": "Часть участков включена в границы КРТ частично. Не суммировать полные площади участков как площадь территории КРТ."
+    }
+  },
+  "source_priority": [
+    "Постановление Правительства Москвы № 1961-ПП от 21.07.2026",
+    "Извещение и лотовая документация торгов, распоряжение ДГИ № ДГИ-Р-54/26 от 14.08.2026",
+    "Будущая проектная документация и подтвержденная продуктовая программа",
+    "Явные предпосылки андеррайтинга с указанием источника"
+  ],
+  "planning": {
+    "ppt_gfa_total_m2": 443700,
+    "ppt_residential_development_m2": 229490,
+    "ppt_nonresidential_development_m2": 214210,
+    "underground": {
+      "area_m2": 101710,
+      "spaces": 2906,
+      "origin": "project_calculation",
+      "included_in_ppt_gfa_total": false,
+      "included_in_total_area": true,
+      "area_per_space_m2": 35,
+      "note": "Расчёт проекта: жильё 1781 м/м, ТЦ 606 м/м, офисы 519 м/м. Подземная площадь не входит в ГНС 443 700 м²."
+    },
+    "above_ground_parking": {
+      "gfa_m2": "TBD",
+      "spaces": "TBD",
+      "origin": "tbd"
+    },
+    "objects": [
+      {
+        "id": "HOUSING",
+        "name": "Жильё — общий ТЭП проекта",
+        "in_deal_perimeter": true,
+        "gfa_m2": 229490,
+        "residential_part_m2": 215720.6,
+        "residential_saleable_m2": 140218.39,
+        "embedded_nonresidential_m2": 13769.4,
+        "embedded_nonresidential_saleable_m2": 12392.46,
+        "allocation_origin": "glavapu_baseline",
+        "note": "ГНС жилых объектов 229 490 м² разделён по пропорции ГлавАПУ 94/6: квартиры и коммерция первых этажей. Продаваемая: 65% квартирного ГНС и 90% ГНС встроенной коммерции."
+      },
+      {
+        "id": "SHOPPING_CENTER",
+        "name": "Торговый центр",
+        "product_type": "shopping_center",
+        "in_deal_perimeter": true,
+        "gfa_m2": 92730,
+        "total_area_m2": 87166.2,
+        "saleable_m2": 52299.72,
+        "allocation_origin": "project_product_split",
+        "note": "Половина общественно-деловой части по решению проекта. Продаваемая площадь: 92 730 × 94% × 60% = 52 299,72 м². Очередь 2."
+      },
+      {
+        "id": "OFFICE_BUILDING",
+        "name": "Офисный объект",
+        "product_type": "office",
+        "in_deal_perimeter": true,
+        "gfa_m2": 92730,
+        "total_area_m2": 87166.2,
+        "saleable_m2": 52299.72,
+        "allocation_origin": "project_product_split",
+        "note": "Половина общественно-деловой части по решению проекта. Продаваемая площадь: 92 730 × 94% × 60% = 52 299,72 м². Очередь 4."
+      },
+      {
+        "id": "SCHOOL",
+        "name": "Школа",
+        "in_deal_perimeter": true,
+        "gfa_m2": 22220,
+        "capacity": {
+          "total_places": 1000,
+          "school_places": 1000,
+          "preschool_places": 0
+        },
+        "cost_classification": "mandatory_social_construction",
+        "construction_capex_in_project": true,
+        "mandatory_for_project": true,
+        "generates_revenue": false
+      },
+      {
+        "id": "PRESCHOOL",
+        "name": "ДОО",
+        "in_deal_perimeter": true,
+        "gfa_m2": 6300,
+        "capacity": {
+          "total_places": 350,
+          "school_places": 0,
+          "preschool_places": 350
+        },
+        "cost_classification": "mandatory_social_construction",
+        "construction_capex_in_project": true,
+        "mandatory_for_project": true,
+        "generates_revenue": false
+      },
+      {
+        "id": "RP_KNS",
+        "name": "Коммунальный объект",
+        "in_deal_perimeter": true,
+        "gfa_m2": 230,
+        "cost_classification": "mandatory_utility_object",
+        "mandatory_for_project": true,
+        "generates_revenue": false,
+        "note": "Учитывается в очередности как прочий обязательный объект, не как продаваемая недвижимость."
+      }
+    ]
+  },
+  "site_preparation": {
+    "scope": "demolition_or_reconstruction",
+    "phase": 1,
+    "cost_bucket": "preparation",
+    "cost_mln": 823.0785,
+    "unit_cost_th_per_m2": 15,
+    "cost_origin": "project_assumption",
+    "owner_buyout_compensation_mln": "TBD",
+    "generates_revenue": false,
+    "included_in_new_construction_gns": false,
+    "included_in_saleable_area": false,
+    "unique_capital_objects_count": 39,
+    "listed_existing_area_m2": 54871.9,
+    "partial_objects_deduplicated": true,
+    "treatment_decision": "TBD for each object: 823.0785 млн ₽ is a provisional full-area calculation; the source states demolition/reconstruction and does not select one treatment",
+    "source": "Приложение 2 к извещению о торгах, страницы 29–43",
+    "objects": [
+      {"cadastral_number": "77:05:0004001:1052", "listed_area_m2": 2522.8},
+      {"cadastral_number": "77:05:0004001:1040", "listed_area_m2": 1046.5},
+      {"cadastral_number": "77:05:0004001:1039", "listed_area_m2": 1017.1},
+      {"cadastral_number": "77:05:0004001:1038", "listed_area_m2": 7477},
+      {"cadastral_number": "77:05:0004001:1044", "listed_area_m2": 62},
+      {"cadastral_number": "77:05:0004001:2100", "listed_area_m2": 71.6, "partially_within_krt": true},
+      {"cadastral_number": "77:05:0004001:1098", "listed_area_m2": 266.2, "partially_within_krt": true},
+      {"cadastral_number": "77:05:0004001:1043", "listed_area_m2": 106.6},
+      {"cadastral_number": "77:05:0004001:1041", "listed_area_m2": 676.6},
+      {"cadastral_number": "77:05:0004001:1045", "listed_area_m2": 33.4},
+      {"cadastral_number": "77:05:0004001:2053", "listed_area_m2": 818},
+      {"cadastral_number": "77:05:0004001:1046", "listed_area_m2": 6567.6},
+      {"cadastral_number": "77:05:0004001:1100", "listed_area_m2": 339},
+      {"cadastral_number": "77:05:0004001:1102", "listed_area_m2": 634.7},
+      {"cadastral_number": "77:05:0004001:1103", "listed_area_m2": 48},
+      {"cadastral_number": "77:05:0004001:1104", "listed_area_m2": 39.7},
+      {"cadastral_number": "77:05:0004001:2080", "listed_area_m2": 399, "partially_within_krt": true},
+      {"cadastral_number": "77:05:0004001:2091", "listed_area_m2": 656.3, "partially_within_krt": true},
+      {"cadastral_number": "77:05:0004001:2092", "listed_area_m2": 618.3, "partially_within_krt": true},
+      {"cadastral_number": "77:05:0004001:1004", "listed_area_m2": 2030.5},
+      {"cadastral_number": "77:05:0004001:1055", "listed_area_m2": 41.8},
+      {"cadastral_number": "77:05:0004001:1093", "listed_area_m2": 1304},
+      {"cadastral_number": "77:05:0004001:1095", "listed_area_m2": 1218.5},
+      {"cadastral_number": "77:05:0004001:1951", "listed_area_m2": 2490.9},
+      {"cadastral_number": "77:05:0004001:1069", "listed_area_m2": 3861.3},
+      {"cadastral_number": "77:05:0004001:1952", "listed_area_m2": 1108.9},
+      {"cadastral_number": "77:05:0004001:1071", "listed_area_m2": 6527.7},
+      {"cadastral_number": "77:05:0004001:2101", "listed_area_m2": 31.4},
+      {"cadastral_number": "77:05:0004001:1034", "listed_area_m2": 7660.2},
+      {"cadastral_number": "77:05:0004001:1001", "listed_area_m2": 1882.4},
+      {"cadastral_number": "77:05:0004001:1068", "listed_area_m2": 344.7},
+      {"cadastral_number": "77:05:0004001:1080", "listed_area_m2": 367.4},
+      {"cadastral_number": "77:05:0004001:1082", "listed_area_m2": 445.7},
+      {"cadastral_number": "77:05:0004001:1077", "listed_area_m2": 134.7},
+      {"cadastral_number": "77:05:0004001:2078", "listed_area_m2": 514.9},
+      {"cadastral_number": "77:05:0004001:1089", "listed_area_m2": 813.9},
+      {"cadastral_number": "77:05:0004001:2099", "listed_area_m2": 41.9},
+      {"cadastral_number": "77:05:0004001:1079", "listed_area_m2": 353.1},
+      {"cadastral_number": "77:05:0004001:1117", "listed_area_m2": 297.6}
+    ]
+  },
+  "mpt": {},
+  "vri": {
+    "required": false,
+    "remaining_cash_out_after_confirmed_payment_rub": 0,
+    "note": "Цена права КРТ является ценой приобретения и не должна попадать в ВРИ."
+  },
+  "tp": {
+    "open_items": [
+      "Получить условия и стоимость технологического присоединения по проекту."
+    ]
+  },
+  "import_rules": {
+    "unknown_values": "TBD",
+    "no_silent_inference": true,
+    "do_not_apply_foreign_saleable_ratios": true,
+    "saleable_area_requires_source": true,
+    "derive_parking_from_tep": false,
+    "phase_product_allocation_requires_explicit_assignment": true,
+    "parking_not_in_saleable_m2": true,
+    "purchase_price_is_not_vri": true,
+    "bulk_cadastral_import": true,
+    "cadastral_source_field": "project.cadastral_numbers",
+    "trigger_cadastral_autofetch": true
+  },
+  "construction_cost_settings": {
+    "scope": "KRT Varshavskoe / Nagatinskaya preset only",
+    "base_cost_source": "use current DevelopAid service defaults by object type",
+    "rule": "Do not replace global service defaults. Apply project assumptions only after their source is recorded.",
+    "assumption_policy": "Do not reuse Rumyantsevo saleable-area or construction coefficients.",
+    "open_items": [
+      "Получить продуктовую себестоимость жилья, офисов, школы, ДОО и коммунального объекта.",
+      "Получить площади и себестоимость паркинга."
+    ]
+  },
+  "claude_import_notes": {
+    "project_specific_only": true,
+    "required_behavior": [
+      "Use the v4 preset structure already supported by DevelopAid.",
+      "Calculate apartments and ground-floor commercial from the GlavAPU 94/6 baseline for the 229,490 m² residential-building GNS.",
+      "Do not apply Rumyantsevo coefficients to this project.",
+      "Store 2,403,657,113.51 RUB as acquisition purchase price, never as VRI.",
+      "Keep preschool as a non-revenue product in phase 2; keep school and the 230 m² utility object as non-revenue products in phase 3.",
+      "Place the shopping center in phase 2 and the office building in phase 4; split apartments and ground-floor commercial 25/25/25/25.",
+      "Keep 2,906 underground spaces / 101,710 m² outside GNS and inside total area.",
+      "Keep demolition/reconstruction in phase 1 preparation, outside new-construction GNS and saleable area."
+    ]
+  },
+  "social_infrastructure": {
+    "school": {
+      "gfa_m2": 22220,
+      "places": 1000,
+      "phase": 3,
+      "generates_revenue": false
+    },
+    "preschool": {
+      "gfa_m2": 6300,
+      "places": 350,
+      "phase": 2,
+      "generates_revenue": false
+    }
+  },
+  "validation_controls": {
+    "ppt_gfa_total_m2": 443700,
+    "residential_gns_m2": 229490,
+    "public_business_and_other_gns_m2": 214210,
+    "apartments_gns_m2": 215720.6,
+    "ground_commercial_gns_m2": 13769.4,
+    "shopping_center_gns_m2": 92730,
+    "offices_gns_m2": 92730,
+    "school_gfa_m2": 22220,
+    "school_places": 1000,
+    "preschool_gfa_m2": 6300,
+    "preschool_places": 350,
+    "utility_gfa_m2": 230,
+    "components_sum_m2": 443700,
+    "cadastral_numbers_count": 20,
+    "purchase_price_rub": 2403657113.51,
+    "purchase_price_field": "economics.purchase_price_mln",
+    "vri_must_remain_zero": true,
+    "saleable_ratio_source_required": true,
+    "apartments_saleable_m2": 140218.39,
+    "ground_commercial_saleable_m2": 12392.46,
+    "shopping_center_saleable_m2": 52299.72,
+    "offices_saleable_m2": 52299.72,
+    "total_revenue_saleable_m2": 257210.29,
+    "underground_parking_spaces": 2906,
+    "underground_parking_area_m2": 101710,
+    "site_preparation_objects_count": 39,
+    "site_preparation_existing_area_m2": 54871.9
+  },
+  "land": {
+    "area_ha": 14.62,
+    "right_type": "право заключения договора о КРТ",
+    "cadastral_numbers": [
+      "77:05:0004001:2046",
+      "77:05:0004001:40",
+      "77:05:0004001:2049",
+      "77:05:0004001:2045",
+      "77:05:0004001:2475",
+      "77:05:0004001:2474",
+      "77:05:0004001:2473",
+      "77:05:0004001:15",
+      "77:05:0004001:2471",
+      "77:05:0004001:2469",
+      "77:05:0004001:2470",
+      "77:05:0004001:16",
+      "77:05:0004001:2121",
+      "77:05:0004001:9",
+      "77:05:0004001:1999",
+      "77:05:0004001:1",
+      "77:05:0004001:1998",
+      "77:05:0004001:7",
+      "77:05:0004001:2458",
+      "77:05:0004001:8"
+    ],
+    "bulk_fetch_required": true,
+    "validation": {
+      "expected_count": 20,
+      "status": "verify current parcels and partial inclusions against EGRN before final underwriting"
+    }
+  },
+  "transaction": {
+    "type": "право заключения договора о комплексном развитии территории",
+    "start_price_rub": 2403657113.51,
+    "deposit_rub": 480731422.7,
+    "auction_date": "2026-09-29",
+    "application_deadline": "2026-09-21T15:00:00+03:00",
+    "price_includes_vat": true,
+    "source": "Извещение о проведении торгов, страница 2"
+  },
+  "sources": {
+    "territory_and_address": "Лотовая документация, страница 1",
+    "transaction": "Извещение о проведении торгов, страница 2",
+    "ppt": "Постановление Правительства Москвы № 1961-ПП от 21.07.2026",
+    "tep": "Лотовая документация, страница 6: ГНС 443 700 м²; жильё 229 490 м²; общественно-деловые и иные объекты 214 210 м²",
+    "cadastral": "Приложение 2 к извещению, страницы 29–43",
+    "product_split": "Вводная проекта: 185 460 м² деловой части разделены на два объекта по 92 730 м²",
+    "phase_split": "Решение проекта: квартиры и коммерция первых этажей 25/25/25/25; ТЦ — очередь 2; офисы — очередь 4; ДОО — очередь 2",
+    "saleable_underwriting": "Квартиры и коммерция первых этажей рассчитаны по пропорциям ГлавАПУ 94/6, 65% и 90%; ТЦ и офисы — по принятой цепочке 94% общей площади и 60% продаваемой от общей.",
+    "site_preparation": "Лотовая документация, приложение 2, страницы 29–43: существующие объекты — снос/реконструкция"
+  },
+  "canonical_tep": {
+    "headline": {
+      "ppt_gns_m2": 443700,
+      "residential_gns_m2": 229490,
+      "public_business_and_other_gns_m2": 214210,
+      "saleable_m2": 257210.29,
+      "saleable_status": "project calculation with explicit assumptions and sources"
+    },
+    "products": {
+      "apartments": {
+        "gns_m2": 215720.6,
+        "saleable_m2": 140218.39,
+        "saleable_ratio": 0.65,
+        "ratio_source": "ГлавАПУ: 94% жилого объекта — квартирный ГНС; продаваемая площадь квартир — 65% квартирного ГНС"
+      },
+      "ground_commercial": {
+        "gns_m2": 13769.4,
+        "saleable_m2": 12392.46,
+        "saleable_ratio": 0.9,
+        "ratio_source": "ГлавАПУ: 6% жилого объекта — коммерция первых этажей; продаваемая площадь равна 90% её ГНС"
+      },
+      "shopping_center": {
+        "gns_m2": 92730,
+        "saleable_m2": 52299.72,
+        "saleable_ratio": 0.564,
+        "phase": 2,
+        "ratio_source": "Рабочая предпосылка проекта: общая площадь 94% ГНС, продаваемая 60% общей"
+      },
+      "offices": {
+        "gns_m2": 92730,
+        "saleable_m2": 52299.72,
+        "saleable_ratio": 0.564,
+        "phase": 4,
+        "ratio_source": "Рабочая предпосылка проекта: общая площадь 94% ГНС, продаваемая 60% общей"
+      }
+    },
+    "non_revenue_objects": {
+      "school": {
+        "gns_m2": 22220,
+        "units": 1000
+      },
+      "preschool": {
+        "gns_m2": 6300,
+        "units": 350
+      },
+      "other_mandatory": {
+        "gns_m2": 230,
+        "units": 1
+      }
+    },
+    "reconciliation": {
+      "residential_plus_public_business_m2": 443700,
+      "public_business_components_m2": 214210,
+      "formula": "229490 + 185460 + 22220 + 6300 + 230 = 443700"
+    }
+  },
+  "phasing": {
+    "enabled": true,
+    "phase_count": 4,
+    "phase_gap_months": 12,
+    "products": {
+      "apartments": [
+        25,
+        25,
+        25,
+        25
+      ],
+      "ground_commercial": [
+        25,
+        25,
+        25,
+        25
+      ],
+      "underground_parking": [
+        15.34755677907777,
+        36.16655196145905,
+        15.313145216792842,
+        33.17274604267034
+      ]
+    },
+    "discrete": {
+      "standalone_retail": 2,
+      "offices": 4
+    },
+    "social_objects": [
+      {
+        "name": "Школа",
+        "type": "school",
+        "capacity": 1000,
+        "phase": 3
+      },
+      {
+        "name": "ДОО",
+        "type": "kindergarten",
+        "capacity": 350,
+        "phase": 2
+      }
+    ],
+    "phases": [
+      {
+        "name": "Очередь 1 — квартиры + коммерция первых этажей + подготовка территории",
+        "start_offset_months": 0,
+        "construction_months": 36,
+        "preparation_scope": {
+          "type": "demolition_or_reconstruction",
+          "unique_capital_objects_count": 39,
+          "listed_existing_area_m2": 54871.9,
+          "capex_mln": 823.0785,
+          "generates_revenue": false,
+          "included_in_new_construction_gns": false,
+          "source_ref": "site_preparation"
+        }
+      },
+    {
+      "name": "Очередь 2 — квартиры + коммерция первых этажей + ТЦ + ДОО",
+      "start_offset_months": 12,
+      "construction_months": 36,
+      "products": {
+        "kindergarten": {
+          "gns": 6300,
+          "total_area": 6300,
+          "useful": 0,
+          "saleable": 0,
+          "transfer": 6300,
+          "units": 350,
+          "generates_revenue": false,
+          "start_date": "TBD",
+          "end_date": "TBD",
+          "capex_mln": "TBD",
+          "assumption_source": "условия КРТ; размещение в очереди 2 — решение проекта"
+        }
+      }
+      },
+      {
+      "name": "Очередь 3 — квартиры + коммерция первых этажей + школа + коммунальный объект",
+        "start_offset_months": 24,
+        "construction_months": 36,
+        "products": {
+          "school": {
+            "gns": 22220,
+            "total_area": 22220,
+            "useful": 0,
+            "saleable": 0,
+            "transfer": 22220,
+            "units": 1000,
+            "generates_revenue": false,
+            "start_date": "TBD",
+            "end_date": "TBD",
+            "capex_mln": "TBD",
+            "assumption_source": "условия КРТ"
+          },
+          "other_mandatory": {
+            "gns": 230,
+            "total_area": 230,
+            "useful": 0,
+            "saleable": 0,
+            "transfer": 230,
+            "units": 1,
+            "generates_revenue": false,
+            "start_date": "TBD",
+            "end_date": "TBD",
+            "capex_mln": "TBD",
+            "assumption_source": "условия КРТ — коммунальный объект"
+          }
+        }
+      },
+      {
+        "name": "Очередь 4 — квартиры + коммерция первых этажей + офисный объект",
+        "start_offset_months": 36,
+        "construction_months": 36
+      }
+    ],
+    "allocation_rule": "Квартиры и коммерция первых этажей распределяются 25/25/25/25; ТЦ назначен в очередь 2, офисный объект — в очередь 4. Подземный паркинг распределён по потребности продуктов каждой очереди.",
+    "timing_origin": "assumption — заменить подтвержденным графиком"
+  },
+  "economics": {
+    "purchase_price_mln": 2403.65711351,
+    "origins": {
+      "purchase_price_mln": "source"
+    }
+  },
+  "open_items": [
+    "Задать цены реализации квартир, коммерции первых этажей, ТЦ, офисов и машино-мест.",
+    "Задать продуктовую себестоимость квартир, коммерции первых этажей, ТЦ, офисов и подземной части.",
+    "Подтвердить рабочую предпосылку продаваемой площади ТЦ и офисов: 56,4% ГНС.",
+    "Определить по каждому из 39 существующих объектов: снос или реконструкция; уточнить предварительный CAPEX 823,0785 млн ₽.",
+    "Получить условия и сумму выкупа/компенсации собственникам; сейчас значение TBD и не включено в стоимость сноса.",
+    "Задать CAPEX и сроки по каждому продукту и очереди.",
+    "Подтвердить расчёт паркинга: 2 906 м/м и 101 710 м² подземной площади.",
+    "Проверить актуальные кадастровые номера и участки, входящие в КРТ частично."
+  ]
+}

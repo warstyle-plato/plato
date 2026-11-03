@@ -1,0 +1,47 @@
+{
+ "sales_start_month": "2022-02-01",
+ "actual_sales_month": "2026-08-01",
+ "period_start": "2024-01-01",
+ "period_end": "2026-08-01",
+ "sales_status": null,
+ "cols": [
+  {
+   "key": "living",
+   "label": "Квартиры",
+   "remaining_perc": 87.42,
+   "remaining_units": 1386,
+   "remaining_area": 72182.1,
+   "sold_units": 954,
+   "sold_area": 50074.12,
+   "avg_units": 19.333333333333332,
+   "avg_area": 878.3366666666666,
+   "total_count": 2333
+  },
+  {
+   "key": "nonliving",
+   "label": "Нежилые",
+   "remaining_perc": 94.81,
+   "remaining_units": 729,
+   "remaining_area": null,
+   "sold_units": 395,
+   "sold_area": 2531.07,
+   "avg_units": 7.999999999999999,
+   "avg_area": 96.40333333333334,
+   "total_count": 1124
+  },
+  {
+   "key": "parking",
+   "label": "Машиноместа",
+   "remaining_perc": 94.46,
+   "remaining_units": 778,
+   "remaining_area": null,
+   "sold_units": 236,
+   "sold_area": 4102.01,
+   "avg_units": 4.666666666666667,
+   "avg_area": 67.22666666666667,
+   "total_count": 1014
+  }
+ ],
+ "access_restricted": false,
+ "restricted_count": 0
+}

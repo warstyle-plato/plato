@@ -1,0 +1,20 @@
+[
+  {
+    "source": "СИС / ЕРЗ.РФ",
+    "region": "Москва",
+    "reference_date": "2026-04-01",
+    "value_rub_m2": 191692,
+    "unit": "apartments",
+    "scope": "Полная стоимость строительства МКД массового спроса, для вновь начинаемого строительства, ₽/м² общей площади квартир",
+    "source_url": "https://erzrf.ru/publikacii/srednyaya-stoimost-stroitelstva-mkd-massovogo-sprosa-i-sredniye-tseny-na-rynke-nedvizhimosti-po-regionam-rf-na-aprel-2026-goda"
+  },
+  {
+    "source": "СИС / ЕРЗ.РФ",
+    "region": "Московская область",
+    "reference_date": "2026-04-01",
+    "value_rub_m2": 150018,
+    "unit": "apartments",
+    "scope": "Полная стоимость строительства МКД массового спроса, для вновь начинаемого строительства, ₽/м² общей площади квартир",
+    "source_url": "https://erzrf.ru/publikacii/srednyaya-stoimost-stroitelstva-mkd-massovogo-sprosa-i-sredniye-tseny-na-rynke-nedvizhimosti-po-regionam-rf-na-aprel-2026-goda"
+  }
+]

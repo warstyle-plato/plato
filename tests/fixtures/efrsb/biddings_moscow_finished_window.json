@@ -1,0 +1,455 @@
+{
+ "_source": "GET /backend/biddings?limit=15&offset=0&regionCode=77&lotStartPrice=20000000&tradeStartDate=2026-07-19T00:00:00&tradeEndDate=2026-10-19T23:59:59, 19.10.2026",
+ "answer": {
+  "pageData": [
+   {
+    "guid": "479fcd97-2462-46bf-afa1-99a9a2f854d4",
+    "dateCreate": "2026-10-19T14:33:48.603",
+    "type": "Открытый аукцион",
+    "number": "241078-МЭТС-1",
+    "status": {
+     "code": "ApplicationSessionStarted",
+     "name": "Открыт прием заявок"
+    },
+    "priceForm": "OpenForm",
+    "bankrupt": {
+     "guid": "40a3f74d-05e0-4c14-bfbd-902bc1c78db3",
+     "name": "Шаповалов Дмитрий Викторович",
+     "type": "Person",
+     "inn": "773605238784"
+    },
+    "tradePlace": {
+     "guid": "3c4c040a-49a1-4e3a-8498-6d2ab1f1e072",
+     "name": "Межрегиональная Электронная Торговая Система"
+    },
+    "dateStart": "2026-10-19T15:00:00",
+    "dateFinish": "2026-11-24T10:00:00",
+    "filesWithHit": [],
+    "tradeHighlights": [],
+    "tradeOrganizerHighlights": [],
+    "tradePlaceHighlights": [],
+    "bankruptHighlights": [],
+    "lotHighlights": []
+   },
+   {
+    "guid": "d049c052-79dc-411c-8679-8ad6063bb518",
+    "dateCreate": "2026-10-19T11:15:07.397",
+    "type": "Публичное предложение",
+    "number": "960000334763",
+    "status": {
+     "code": "Finished",
+     "name": "Завершенные"
+    },
+    "priceForm": "OpenForm",
+    "bankrupt": {
+     "guid": "9f5b8f9c-9375-4eb1-9230-73f043208700",
+     "name": "ООО КБ \"Нэклис-Банк\"",
+     "type": "Company",
+     "ogrn": "1027700409791",
+     "inn": "7707040963"
+    },
+    "tradePlace": {
+     "guid": "4af02a48-7e0b-4a98-a77b-fbfa28c33da2",
+     "name": "Российский аукционный дом"
+    },
+    "dateStart": "2026-08-26T00:00:00",
+    "dateFinish": "2026-10-17T14:00:00",
+    "filesWithHit": [],
+    "tradeHighlights": [],
+    "tradeOrganizerHighlights": [],
+    "tradePlaceHighlights": [],
+    "bankruptHighlights": [],
+    "lotHighlights": []
+   },
+   {
+    "guid": "99f96d1d-9d52-4b1d-89a4-8812ae815ea9",
+    "dateCreate": "2026-10-19T11:10:08.823",
+    "type": "Открытый аукцион",
+    "number": "960000335564",
+    "status": {
+     "code": "BiddingFail",
+     "name": "Торги не состоялись"
+    },
+    "priceForm": "OpenForm",
+    "bankrupt": {
+     "guid": "ad38066a-901d-4cf5-b466-9e1bac4d76e6",
+     "name": "АО \"РМБ\" БАНК",
+     "type": "Company",
+     "ogrn": "1077711000036",
+     "inn": "7750004111"
+    },
+    "tradePlace": {
+     "guid": "4af02a48-7e0b-4a98-a77b-fbfa28c33da2",
+     "name": "Российский аукционный дом"
+    },
+    "dateStart": "2026-10-19T14:00:00",
+    "dateFinish": "2026-10-19T15:00:00",
+    "filesWithHit": [],
+    "tradeHighlights": [],
+    "tradeOrganizerHighlights": [],
+    "tradePlaceHighlights": [],
+    "bankruptHighlights": [],
+    "lotHighlights": []
+   },
+   {
+    "guid": "a3bf3657-0f8a-4a4d-a04b-4bc41f06f92f",
+    "dateCreate": "2026-10-19T11:10:08.203",
+    "type": "Открытый аукцион",
+    "number": "960000335561",
+    "status": {
+     "code": "BiddingFail",
+     "name": "Торги не состоялись"
+    },
+    "priceForm": "OpenForm",
+    "bankrupt": {
+     "guid": "46afe5af-e961-4404-81ff-83fad2e601d8",
+     "name": "КБ \"ИНТЕРКОММЕРЦ\" (ООО)",
+     "type": "Company",
+     "ogrn": "1037700024581",
+     "inn": "7704045650"
+    },
+    "tradePlace": {
+     "guid": "4af02a48-7e0b-4a98-a77b-fbfa28c33da2",
+     "name": "Российский аукционный дом"
+    },
+    "dateStart": "2026-10-19T14:00:00",
+    "dateFinish": "2026-10-19T15:00:00",
+    "filesWithHit": [],
+    "tradeHighlights": [],
+    "tradeOrganizerHighlights": [],
+    "tradePlaceHighlights": [],
+    "bankruptHighlights": [],
+    "lotHighlights": []
+   },
+   {
+    "guid": "05dc18cf-04d4-421c-ad9f-3092db8ab43b",
+    "dateCreate": "2026-10-18T01:03:51.413",
+    "type": "Публичное предложение",
+    "number": "387121",
+    "status": {
+     "code": "ApplicationSessionStarted",
+     "name": "Открыт прием заявок"
+    },
+    "priceForm": "CloseForm",
+    "bankrupt": {
+     "guid": "7b04b988-5260-4e42-adbf-2b2ffad9ae6d",
+     "name": "ООО \"МЕРКУРИЙ\"",
+     "type": "Company",
+     "ogrn": "1197746119801",
+     "inn": "9731029185"
+    },
+    "tradePlace": {
+     "guid": "23c725c8-5177-485a-a3a1-a288f698c3b9",
+     "name": "Центр дистанционных торгов"
+    },
+    "dateStart": "2026-10-19T12:00:00",
+    "dateFinish": "2026-12-13T12:00:00",
+    "filesWithHit": [],
+    "tradeHighlights": [],
+    "tradeOrganizerHighlights": [],
+    "tradePlaceHighlights": [],
+    "bankruptHighlights": [],
+    "lotHighlights": []
+   },
+   {
+    "guid": "2253984e-c16d-4391-aff1-d5e285df7a0a",
+    "dateCreate": "2026-10-18T00:15:18.45",
+    "type": "Публичное предложение",
+    "number": "387120",
+    "status": {
+     "code": "ApplicationSessionStarted",
+     "name": "Открыт прием заявок"
+    },
+    "priceForm": "CloseForm",
+    "bankrupt": {
+     "guid": "7b04b988-5260-4e42-adbf-2b2ffad9ae6d",
+     "name": "ООО \"МЕРКУРИЙ\"",
+     "type": "Company",
+     "ogrn": "1197746119801",
+     "inn": "9731029185"
+    },
+    "tradePlace": {
+     "guid": "23c725c8-5177-485a-a3a1-a288f698c3b9",
+     "name": "Центр дистанционных торгов"
+    },
+    "dateStart": "2026-10-19T12:00:00",
+    "dateFinish": "2026-12-13T12:00:00",
+    "filesWithHit": [],
+    "tradeHighlights": [],
+    "tradeOrganizerHighlights": [],
+    "tradePlaceHighlights": [],
+    "bankruptHighlights": [],
+    "lotHighlights": []
+   },
+   {
+    "guid": "fff02699-66db-465e-b585-0e83c9a31450",
+    "dateCreate": "2026-10-18T00:04:19.983",
+    "type": "Публичное предложение",
+    "number": "387122",
+    "status": {
+     "code": "ApplicationSessionStarted",
+     "name": "Открыт прием заявок"
+    },
+    "priceForm": "CloseForm",
+    "bankrupt": {
+     "guid": "7b04b988-5260-4e42-adbf-2b2ffad9ae6d",
+     "name": "ООО \"МЕРКУРИЙ\"",
+     "type": "Company",
+     "ogrn": "1197746119801",
+     "inn": "9731029185"
+    },
+    "tradePlace": {
+     "guid": "23c725c8-5177-485a-a3a1-a288f698c3b9",
+     "name": "Центр дистанционных торгов"
+    },
+    "dateStart": "2026-10-19T12:00:00",
+    "dateFinish": "2026-12-13T12:00:00",
+    "filesWithHit": [],
+    "tradeHighlights": [],
+    "tradeOrganizerHighlights": [],
+    "tradePlaceHighlights": [],
+    "bankruptHighlights": [],
+    "lotHighlights": []
+   },
+   {
+    "guid": "70e0b7cd-f4a2-4782-8737-c1338188705a",
+    "dateCreate": "2026-10-17T19:02:47.533",
+    "type": "Публичное предложение",
+    "number": "240839-МЭТС-1",
+    "status": {
+     "code": "ApplicationSessionStarted",
+     "name": "Открыт прием заявок"
+    },
+    "priceForm": "OpenForm",
+    "bankrupt": {
+     "guid": "ff4c91d0-4e32-408a-941a-edb7dfc7c94b",
+     "name": "Закревская Светлана Владимировна",
+     "type": "Person",
+     "inn": "770974711990"
+    },
+    "tradePlace": {
+     "guid": "3c4c040a-49a1-4e3a-8498-6d2ab1f1e072",
+     "name": "Межрегиональная Электронная Торговая Система"
+    },
+    "dateStart": "2026-10-19T09:00:00",
+    "dateFinish": "2026-12-04T23:00:00",
+    "filesWithHit": [],
+    "tradeHighlights": [],
+    "tradeOrganizerHighlights": [],
+    "tradePlaceHighlights": [],
+    "bankruptHighlights": [],
+    "lotHighlights": []
+   },
+   {
+    "guid": "fc3dd35a-9472-44d4-8eb3-f4c9031c3063",
+    "dateCreate": "2026-10-17T15:18:04.167",
+    "type": "Публичное предложение",
+    "number": "ПП-226328",
+    "status": {
+     "code": "ApplicationSessionStarted",
+     "name": "Открыт прием заявок"
+    },
+    "priceForm": "OpenForm",
+    "bankrupt": {
+     "guid": "e5bc60b7-6eb1-4cb9-97e0-c1811a3f53fe",
+     "name": "АО \"КУБ\"",
+     "type": "Company",
+     "ogrn": "1087746769175",
+     "inn": "7722651519"
+    },
+    "tradePlace": {
+     "guid": "9583bed3-c786-4933-b783-bda7b72a0c62",
+     "name": "Альфалот"
+    },
+    "dateStart": "2026-10-19T00:00:00",
+    "dateFinish": "2027-02-01T00:00:00",
+    "filesWithHit": [],
+    "tradeHighlights": [],
+    "tradeOrganizerHighlights": [],
+    "tradePlaceHighlights": [],
+    "bankruptHighlights": [],
+    "lotHighlights": []
+   },
+   {
+    "guid": "a8145085-43cb-463b-8593-fb738d712f43",
+    "dateCreate": "2026-10-17T01:16:03.64",
+    "type": "Открытый аукцион",
+    "number": "ОАОФЦП-226879",
+    "status": {
+     "code": "ApplicationSessionStarted",
+     "name": "Открыт прием заявок"
+    },
+    "priceForm": "OpenForm",
+    "bankrupt": {
+     "guid": "bdb56c88-e0f2-4318-9e5e-39b176ef25f3",
+     "name": "ООО \"ИНВЕСТАКТИВ\"",
+     "type": "Company",
+     "ogrn": "1175024000029",
+     "inn": "5015014213"
+    },
+    "tradePlace": {
+     "guid": "9583bed3-c786-4933-b783-bda7b72a0c62",
+     "name": "Альфалот"
+    },
+    "dateStart": "2026-10-16T15:00:00",
+    "dateFinish": "2026-11-23T23:59:00",
+    "filesWithHit": [],
+    "tradeHighlights": [],
+    "tradeOrganizerHighlights": [],
+    "tradePlaceHighlights": [],
+    "bankruptHighlights": [],
+    "lotHighlights": []
+   },
+   {
+    "guid": "e87722ea-cf90-4cf2-8f06-8ba6617de706",
+    "dateCreate": "2026-10-16T18:16:01.113",
+    "type": "Открытый аукцион",
+    "number": "71422-ОАОФ",
+    "status": {
+     "code": "ApplicationSessionStarted",
+     "name": "Открыт прием заявок"
+    },
+    "priceForm": "OpenForm",
+    "bankrupt": {
+     "guid": "d970b948-5f7e-4012-8388-5688212dbd18",
+     "name": "Черняков Андрей Валерьевич",
+     "type": "Person",
+     "inn": "770303464446"
+    },
+    "tradePlace": {
+     "guid": "1194e09c-7e4a-4264-ac70-07d27dd25f31",
+     "name": "«Новые информационные сервисы»"
+    },
+    "dateStart": "2026-10-19T00:00:00",
+    "dateFinish": "2026-11-24T00:00:00",
+    "filesWithHit": [],
+    "tradeHighlights": [],
+    "tradeOrganizerHighlights": [],
+    "tradePlaceHighlights": [],
+    "bankruptHighlights": [],
+    "lotHighlights": []
+   },
+   {
+    "guid": "986e7416-69fb-4bdf-b94c-eccfc078be20",
+    "dateCreate": "2026-10-16T16:11:56.43",
+    "type": "Публичное предложение",
+    "number": "240781-МЭТС-18",
+    "status": {
+     "code": "ApplicationSessionStarted",
+     "name": "Открыт прием заявок"
+    },
+    "priceForm": "OpenForm",
+    "bankrupt": {
+     "guid": "1de444a1-f6bb-425a-9dd3-1bafdca74df0",
+     "name": "ООО \"УЛЬТРА-М\"",
+     "type": "Company",
+     "ogrn": "1117746425697",
+     "inn": "7714841403"
+    },
+    "tradePlace": {
+     "guid": "3c4c040a-49a1-4e3a-8498-6d2ab1f1e072",
+     "name": "Межрегиональная Электронная Торговая Система"
+    },
+    "dateStart": "2026-10-19T00:00:00",
+    "dateFinish": "2026-11-23T00:00:00",
+    "filesWithHit": [],
+    "tradeHighlights": [],
+    "tradeOrganizerHighlights": [],
+    "tradePlaceHighlights": [],
+    "bankruptHighlights": [],
+    "lotHighlights": []
+   },
+   {
+    "guid": "8091dc49-6e45-4026-91e0-af5dd291aec5",
+    "dateCreate": "2026-10-16T10:22:35.28",
+    "type": "Открытый аукцион",
+    "number": "ОАОФЦП-64665",
+    "status": {
+     "code": "BiddingFail",
+     "name": "Торги не состоялись"
+    },
+    "priceForm": "OpenForm",
+    "bankrupt": {
+     "guid": "e5688b04-4c43-11f0-9969-00620be2fa80",
+     "name": "ГРАЖДАНСКОЕ ОБЩЕСТВО ПО УПРАВЛЕНИЮ НЕДВИЖИМОСТЬЮ СЦИ ИМБРОС",
+     "type": "Company",
+     "ogrn": "0000000000013",
+     "inn": "9909462915"
+    },
+    "tradePlace": {
+     "guid": "323396e8-806a-414c-8f29-430080c69736",
+     "name": "uTender"
+    },
+    "dateStart": "2026-07-20T09:00:00",
+    "dateFinish": "2026-08-21T18:00:00",
+    "filesWithHit": [],
+    "tradeHighlights": [],
+    "tradeOrganizerHighlights": [],
+    "tradePlaceHighlights": [],
+    "bankruptHighlights": [],
+    "lotHighlights": []
+   },
+   {
+    "guid": "a598a1fc-1e9c-4b21-9a51-adb5c62455bf",
+    "dateCreate": "2026-10-16T10:21:54.043",
+    "type": "Открытый аукцион",
+    "number": "ОАОФЦП-64809",
+    "status": {
+     "code": "BiddingFail",
+     "name": "Торги не состоялись"
+    },
+    "priceForm": "OpenForm",
+    "bankrupt": {
+     "guid": "e5688b04-4c43-11f0-9969-00620be2fa80",
+     "name": "ГРАЖДАНСКОЕ ОБЩЕСТВО ПО УПРАВЛЕНИЮ НЕДВИЖИМОСТЬЮ СЦИ ИМБРОС",
+     "type": "Company",
+     "ogrn": "0000000000013",
+     "inn": "9909462915"
+    },
+    "tradePlace": {
+     "guid": "323396e8-806a-414c-8f29-430080c69736",
+     "name": "uTender"
+    },
+    "dateStart": "2026-08-25T09:00:00",
+    "dateFinish": "2026-09-28T18:00:00",
+    "filesWithHit": [],
+    "tradeHighlights": [],
+    "tradeOrganizerHighlights": [],
+    "tradePlaceHighlights": [],
+    "bankruptHighlights": [],
+    "lotHighlights": []
+   },
+   {
+    "guid": "d4b95339-b1c4-441f-904b-ade71bb91f87",
+    "dateCreate": "2026-10-15T17:44:15.287",
+    "type": "Публичное предложение",
+    "number": "11082–ОТПП",
+    "status": {
+     "code": "ApplicationSessionStarted",
+     "name": "Открыт прием заявок"
+    },
+    "priceForm": "CloseForm",
+    "bankrupt": {
+     "guid": "365dba63-bb7d-4be3-bb3f-466d125a1d7e",
+     "name": "ООО \"ФИРМА \"ДЕКОР\"",
+     "type": "Company",
+     "ogrn": "1037739752555",
+     "inn": "7705033745"
+    },
+    "tradePlace": {
+     "guid": "fb1474ba-5dd8-42c6-880f-55a0f3bdf9be",
+     "name": "\"Всероссийская Электронная Торговая Площадка\""
+    },
+    "dateStart": "2026-10-19T11:00:00",
+    "dateFinish": "2026-12-23T16:00:00",
+    "filesWithHit": [],
+    "tradeHighlights": [],
+    "tradeOrganizerHighlights": [],
+    "tradePlaceHighlights": [],
+    "bankruptHighlights": [],
+    "lotHighlights": []
+   }
+  ],
+  "found": 922
+ }
+}

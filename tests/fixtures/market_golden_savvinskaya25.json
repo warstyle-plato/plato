@@ -1,0 +1,120 @@
+{
+  "as_of": "2026-08-07",
+  "subject": {
+    "address": "Москва, Саввинская набережная, 25",
+    "locality": "Москва",
+    "district": "Хамовники",
+    "validation_radius_km": 3
+  },
+  "purpose": "Golden regression set for market discovery. It is test/reference data only and must never be injected into runtime discovery results.",
+  "must_find": [
+    {
+      "name": "Хамовники 12",
+      "aliases": ["Хамовники XII"],
+      "developer": "COLDY",
+      "address": "Москва, 1-й переулок Тружеников, 12А",
+      "class": "элитный",
+      "status": "сдан",
+      "market_signals": [
+        {
+          "source": "Яндекс Недвижимость",
+          "observed_at": "2026-02-28",
+          "price_per_sqm_rub": 3306021,
+          "inventory_observed": 3,
+          "url": "https://realty.yandex.ru/moskva_i_moskovskaya_oblast/kupit/novostrojka/hamovniki-12-3186893/"
+        },
+        {
+          "source": "ЦИАН",
+          "observed_at": "2026-07",
+          "price_per_sqm_rub": 3055202,
+          "url": "https://zhk-hamovniki-12-i.cian.ru/"
+        }
+      ]
+    },
+    {
+      "name": "Саввинская 27",
+      "aliases": ["Саввинская, 27"],
+      "developer": "Level Group",
+      "address": "Москва, Саввинская набережная, 27",
+      "class": "делюкс",
+      "status": "сдан",
+      "market_signals": [
+        {
+          "source": "Новострой.ру",
+          "observed_at": "2026-07-11",
+          "min_price_per_sqm_rub": 2256990,
+          "inventory_observed": 10,
+          "url": "https://www.novostroy.ru/buildings/savvinskaya-27/"
+        },
+        {
+          "source": "ЦИАН",
+          "observed_at": "2026-07",
+          "price_per_sqm_rub": 3200000,
+          "inventory_observed": 10,
+          "url": "https://www.cian.ru/novostroyki-2026-moskva-savvinskaya-naberezhnaya-022022/"
+        }
+      ]
+    },
+    {
+      "name": "ДОМ XXII",
+      "aliases": ["Дом XXII", "Дом 22"],
+      "developer": "ДОНСТРОЙ",
+      "address": "Москва, Погодинская улица, вл. 22/3",
+      "class": "элитный",
+      "status": "строится",
+      "market_signals": [
+        {
+          "source": "ЦИАН",
+          "observed_at": "2026-07",
+          "price_per_sqm_rub": 3200000,
+          "inventory_observed": 14,
+          "url": "https://www.cian.ru/kupit-kvartiru-zhiloy-kompleks-dom-xxii-4463213/"
+        }
+      ]
+    },
+    {
+      "name": "Клубный квартал Фрунзенский",
+      "aliases": ["Фрунзенский"],
+      "developer": "Sminex",
+      "address": "Москва, Фрунзенская набережная, 30",
+      "class": "элитный",
+      "status": "строится",
+      "market_signals": [
+        {
+          "source": "ЦИАН",
+          "observed_at": "2026-07",
+          "price_per_sqm_rub": 3265845,
+          "sales_velocity_units_per_month": 2,
+          "url": "https://zhk-frunzenskaya-naberezhnaya-i.cian.ru/"
+        }
+      ]
+    },
+    {
+      "name": "Проект Sminex на Саввинской набережной",
+      "aliases": ["Московский шелк", "Московский шёлк", "на Саввинской набережной"],
+      "developer": "Sminex",
+      "address": "Москва, Большой Саввинский переулок, 12с6",
+      "class": "элитный",
+      "status": "проект / старт строительства 2026",
+      "market_signals": [],
+      "project_metrics": {
+        "site_area_ha": 4.5,
+        "planned_real_estate_area_sqm": 125000
+      },
+      "url": "https://www.novostroy.ru/buildings/na-savvinskoy-naberezhnoy/"
+    }
+  ],
+  "must_not_accept": [
+    "проекты из других регионов при совпадении маркетингового названия",
+    "офисные и бизнес-центры",
+    "вторичный рынок без активных продаж от застройщика",
+    "апарт-отели без жилых квартир",
+    "объекты за пределами заданного радиуса после геокодирования"
+  ],
+  "acceptance": {
+    "minimum_recall_must_find": 0.8,
+    "must_include_names": ["Хамовники 12", "Саввинская 27"],
+    "must_surface_unpriced_pipeline": true,
+    "runtime_must_not_read_fixture": true
+  }
+}

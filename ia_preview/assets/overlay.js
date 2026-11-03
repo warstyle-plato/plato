@@ -1,0 +1,1718 @@
+/* Слой перестройки /ia.
+ *
+ * Страница остаётся той же: тот же движок, те же поля, тот же путь расчёта.
+ * Слой двигает уже существующие узлы и сокращает тексты — это перестановка
+ * информационной архитектуры, а не вторая реализация страницы.
+ *
+ * Два правила, из которых собран весь файл.
+ *
+ * 1. Селектор живёт парой с диагностикой. Слой держится на чужой разметке;
+ *    если узел переименуют, шаг обязан сказать об этом на экране. Молчаливое
+ *    «не сработало» на preview неотличимо от «так и задумано».
+ * 2. Поведение не переписывается. Переключение раздела кликает настоящую
+ *    кнопку вкладки, а не повторяет её onclick: у вкладок есть побочные
+ *    действия (renderPhasing, renderSensitivityForm), и вторая их копия
+ *    разошлась бы с первой в первый же день.
+ */
+(function () {
+
+  // Умолчание посадки объявлено один раз — атрибутом value поля #moDensity.
+  // Копий этого числа было три, и они уже разошлись с тем, что на экране:
+  // подпись обещала 30 000, пока в поле стояло 18 000.
+  function moDensityDefault() {
+    var el = document.getElementById('moDensity');
+    return el ? Number(el.getAttribute('value') || 0) : 0;
+  }
+  'use strict';
+
+  var missing = [];
+  /* «План и риски» из первоначального разбора не пережил первого взгляда
+     владельца: очередность — это устройство проекта, а не риск. Разделы
+     названы тем, что внутри: очередность и календарь — сроки, чувствительность
+     — анализ результата, и живёт рядом с отчётом. */
+  /* Разделы — это шаги, и человека ведут по ним (решение владельца):
+     вперёд — кнопкой «Далее», назад — свободно, перескочить нельзя.
+     Деление: слева вводишь, справа смотришь. ВРИ и кривая ключевой ставки —
+     вводные, поэтому в «Экономике»; вкладка финансирования — таблицы БРИДЖа,
+     ПФ и LLCR, то есть результат. «Пересчитать модель» и «Открыть пример»
+     открывают отчёт и потому разблокируют путь целиком. */
+  /* Структура владельца: три раздела, шаги внутри. «Проект» — что строим:
+     участок, ТЭП, очередность. «Экономика» — на каких условиях: вводные по
+     стройке, продажам и сделке, ВРИ, процентная ставка. «Результат» — что
+     вышло. Кнопка «Далее» ведёт по шагам как проводник, но ничего не заперто:
+     «просто посмотреть» можно всё и сразу — замечание владельца. */
+  var SECTIONS = [
+    { id: 'project', label: 'Проект', tabs: ['iaSite', 'tep', 'phasing'] },
+    { id: 'economics', label: 'Экономика', tabs: ['inputs', 'vri', 'rates'] },
+    { id: 'result', label: 'Результат', tabs: ['report', 'sensitivity'] }
+  ];
+  /* Финансирование и календарь отдельными вкладками были дублями: в отчёте
+     оба живут разделами с оглавлением (rsFinance, rsCalendar) — «зачем блок
+     финансирование там? он такой же в отчёте». Панели остаются в разметке и
+     наполняются расчётом, но навигация ведёт в отчёт. Чувствительность — не
+     дубль, а инструмент: там задают параметр и запускают анализ. */
+  var RETIRED_TABS = ['finance', 'calendar'];
+  var PATH = [];
+  SECTIONS.forEach(function (section) { section.tabs.forEach(function (t) { PATH.push(t); }); });
+  // Путь ведёт к ответу и на ответе заканчивается: «Далее» после отчёта
+  // предлагал чувствительность как следующий шаг, хотя это инструмент по
+  // желанию, а не стадия (замечание владельца).
+  PATH = PATH.slice(0, PATH.indexOf('report') + 1);
+  var SUB_LABEL = {
+    iaSite: 'Участок', tep: 'ТЭП', vri: 'ВРИ', inputs: 'Вводные',
+    rates: 'Ключевая ставка', finance: 'Финансирование',
+    phasing: 'Очередность', calendar: 'Календарь', sensitivity: 'Чувствительность',
+    report: 'Отчёт'
+  };
+  var TARGET_LLCR = 1.2;
+
+  function inTelegram() { return /[#&](telegram_session|cad)=/.test(location.hash); }
+
+  function need(selector, what) {
+    var el = document.querySelector(selector);
+    if (!el) missing.push(what + ' — ' + selector);
+    return el;
+  }
+
+  function step(name, fn) {
+    try {
+      fn();
+    } catch (error) {
+      missing.push(name + ' — ' + (error && error.message ? error.message : error));
+    }
+  }
+
+  /* Замена текста объявляет, что именно она рассчитывала найти: строка в
+     разметке может уехать, и тогда на экране останется прежняя формулировка,
+     а понять это со стороны нельзя. */
+  function retext(selector, from, to) {
+    var el = document.querySelector(selector);
+    if (!el) { missing.push('текст «' + from + '» — ' + selector); return; }
+    if (el.textContent.trim().indexOf(from) !== 0) {
+      missing.push('текст «' + from + '» изменился — ' + selector + ': «' + el.textContent.trim().slice(0, 60) + '»');
+      return;
+    }
+    el.textContent = to;
+  }
+
+  /* Данные страницы объявлены через let/const: свойствами window они не
+     становятся и видны только по имени. Через window.lastResult слой читал бы
+     undefined — и карточка решения вечно показывала бы «расчёт не выполнен».
+     Форматтеры money/mult/pct — тоже const, поэтому берутся так же. */
+  function pageResult() { return typeof lastResult === 'undefined' ? null : lastResult; }
+  /* Очереди — свой объект страницы: lastResult держит свод или одну очередь,
+     смотря какой вид открыт, а порог банка смотрит на каждую очередь. */
+  function pagePhases() {
+    if (typeof phaseBundle === 'undefined' || !phaseBundle || !phaseBundle.phases || !phaseBundle.phases.length) return null;
+    return phaseBundle;
+  }
+  function weakestPhase(bundle) {
+    var weakest = null;
+    bundle.phases.forEach(function (item) {
+      var value = item && item.result && item.result.summary ? item.result.summary.llcr : null;
+      if (value == null) return;
+      if (!weakest || value < weakest.llcr) weakest = { name: item.name || 'очередь', llcr: value };
+    });
+    return weakest;
+  }
+  function pageGlavapu() { return typeof glavapuImport === 'undefined' ? null : glavapuImport; }
+  function pageMoResult() { return typeof moResult === 'undefined' ? null : moResult; }
+  /* Карточка с кнопкой «Применить» на экране — ещё не решение: применение
+     перерисовывает ту же карточку, поэтому видимость ни о чём не говорит.
+     Применённый импорт держит mappings той же ссылкой (applyGlavapu и
+     renderStoredGlavapu), применённый расчёт МО — territory (applyMo);
+     несовпадение ссылок и значит «получено, но в модель не попало». */
+  function pendingGlavapu() {
+    var incoming = pageGlavapu();
+    if (!incoming || typeof window.applyGlavapu !== 'function') return false;
+    var m = incoming.mappings || {};
+    if (!Object.keys(m.inputs || {}).length && !Object.keys(m.tep || {}).length) return false;
+    var applied = (pageInputs() || {})._glavapu_import;
+    return !applied || applied.mappings !== incoming.mappings;
+  }
+  function pendingMo() {
+    var incoming = pageMoResult();
+    if (!incoming || typeof window.applyMo !== 'function') return false;
+    var applied = (pageInputs() || {})._mo_calc;
+    if (!applied) return true;
+    if (incoming.territory) return applied.territory !== incoming.territory;
+    return String(applied.query || '') !== String(incoming.query || '');
+  }
+  function pendingImport() {
+    return pendingGlavapu() ? 'glavapu' : (pendingMo() ? 'mo' : null);
+  }
+  function pageInputs() { return typeof inputs === 'undefined' ? {} : inputs; }
+  function pageTep() { return typeof tep === 'undefined' ? {} : tep; }
+  function pageRates() { return typeof rates === 'undefined' ? [] : rates; }
+  function pagePhasing() { return typeof phasing === 'undefined' ? {} : phasing; }
+  // Подбор цены — тот же расчёт участка: сервер пускает его по сессии входа
+  // и праву на участок, как `/calculate` страницы.
+  function pageSession() { return typeof activeSession === 'function' ? activeSession() : ''; }
+  function pageAccessKey() { return typeof projectsAdminKey === 'undefined' ? '' : projectsAdminKey; }
+
+  var fmtMoney = function (v) { return typeof money === 'function' ? money(v) : String(v); };
+  var fmtMult = function (v) { return typeof mult === 'function' ? mult(v) : String(v); };
+  var fmtPct = function (v) { return typeof pct === 'function' ? pct(v) : String(v); };
+
+  /* Цены в подборе приходят в млн ₽ — так их держит и вводная
+     purchase_price_mln. Слой их не переводит: перевод единиц — это уже вторая
+     реализация экономики, а разница цен приезжает из движка полем change_abs. */
+  function mlnLabel(value) {
+    if (value == null || isNaN(value)) return '—';
+    return Number(value).toLocaleString('ru-RU', { maximumFractionDigits: 1 }) + ' млн ₽';
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Шапка                                                               */
+  /* ------------------------------------------------------------------ */
+
+  function rebuildHeader() {
+    var sub = need('.title p', 'подзаголовок шапки');
+    if (sub) {
+      var version = (sub.textContent.match(/v[\d.]+/) || [''])[0];
+      sub.innerHTML = '';
+      sub.appendChild(document.createTextNode(
+        'Оценка экономики девелоперского проекта по адресу или кадастровому номеру'));
+      if (version) {
+        var badge = document.createElement('span');
+        badge.className = 'ia-ver';
+        badge.textContent = version;
+        sub.appendChild(badge);
+      }
+    }
+
+    var actions = need('.actions', 'кнопки шапки');
+    if (!actions) return;
+
+    // Состояние расчёта занимает левый край шапки: инструкция «после ручного
+    // изменения нажмите Пересчитать» жила в постоянном абзаце, хотя это
+    // состояние, а не правило.
+    var state = document.createElement('div');
+    state.className = 'ia-state';
+    state.id = 'iaState';
+    state.innerHTML = '<span class="ia-dot-state"></span><span id="iaStateText">Расчёт актуален</span>';
+    actions.parentNode.insertBefore(state, actions);
+
+    // Платон — плавающей кнопкой. Он объясняет результат, а не вводит данные,
+    // и в ряду со «Сбросить» и «Мои проекты» читался как равный им по важности.
+    var ai = document.querySelector('.ai-open-btn');
+    if (!ai) missing.push('кнопка Платона — .ai-open-btn');
+    else {
+      ai.classList.add('ia-fab');
+      ai.classList.remove('btn');
+      document.body.appendChild(ai);
+      // «Платон Сергеевич» в углу читался как подпись автора, а не как
+      // помощник, — никто не понимал, что там спрятан AI. Подпись говорит,
+      // что это и зачем, и не прячется на телефоне.
+      var label = ai.querySelector('.ai-label');
+      if (!label) missing.push('подпись кнопки Платона — .ai-open-btn .ai-label');
+      else label.textContent = 'Платон · AI-помощник';
+      var bubble = document.createElement('div');
+      bubble.className = 'ia-fab-hint';
+      bubble.id = 'iaFabHint';
+      bubble.innerHTML = 'Это AI-помощник по модели: разложит показатели, найдёт потолок цены, '
+        + 'проверит аномалии. Числа считает движок, а не языковая модель.'
+        + '<button type="button" aria-label="Понятно">×</button>';
+      document.body.appendChild(bubble);
+      var hide = function () { bubble.remove(); };
+      bubble.querySelector('button').onclick = hide;
+      ai.addEventListener('click', hide);
+    }
+
+    // Класс и сценарий уезжают в «Экономику»: их спрашивали раньше, чем
+    // человек ввёл участок. Тип проекта сюда не едет — его ставит на шаг
+    // «Участок» placeProjectKind: «что строим» спрашивается раньше «где».
+    var setup = document.createElement('div');
+    setup.className = 'ia-setup';
+    document.querySelectorAll('.actions .scenario').forEach(function (node) {
+      if (node.querySelector('#projectKindSelect') && !inTelegram()) return;
+      setup.appendChild(node);
+    });
+
+    var note = document.querySelector('.header-note');
+    if (!note) missing.push('абзац о классе и сценарии — .header-note');
+    else {
+      var box = document.createElement('details');
+      box.className = 'ia-method';
+      box.innerHTML = '<summary>Как считаются класс и сценарий</summary>';
+      note.parentNode.removeChild(note);
+      box.appendChild(note);
+      // Цифры классов — из PROJECT_CLASS_PRESETS страницы, не копией:
+      // пояснение без конкретных чисел не объясняло ничего (замечание
+      // владельца), а вторая копия чисел разъехалась бы с первой.
+      if (typeof PROJECT_CLASS_PRESETS !== 'undefined') {
+        var fmtN = function (v) { return Number(v).toLocaleString('ru-RU'); };
+        var rows = Object.keys(PROJECT_CLASS_PRESETS).map(function (key) {
+          var c = PROJECT_CLASS_PRESETS[key];
+          return '<tr><td>' + c.label + '</td><td>' + fmtN(c.apartment_price_th) + ' / '
+            + fmtN(c.commercial_price_th) + '</td><td>' + fmtN(c.parking_price_th) + '</td><td>'
+            + fmtN(c.main_above_th_per_sqm) + ' / ' + fmtN(c.main_under_th_per_sqm) + '</td></tr>';
+        }).join('');
+        var table = document.createElement('div');
+        table.innerHTML = '<table class="ia-class-table"><thead><tr><th>Класс</th>'
+          + '<th>Квартиры / коммерция, тыс. ₽/м²</th><th>Машино-место, тыс. ₽</th>'
+          + '<th>Стройка наземной / подземной части, тыс. ₽/м²</th></tr></thead><tbody>' + rows + '</tbody></table>'
+          // Множители сценариев сказаны абзацем выше (.header-note) — второй
+          // строкой здесь они повторялись слово в слово.
+          // Методика свода — здесь, а не в окне настроек: человек спрашивает
+          // «как считается класс» этой кнопкой, и объяснение обязано жить за
+          // ней (замечание владельца, 26.08.2026).
+          + '<div style="font-size:11px;color:#555;margin:6px 0 10px"><b>Откуда берётся стоимость строительства.</b> '
+          + 'Модуль «Статистика» собирает данные о стоимости строительства из источников рынка и наших проектов. '
+          + 'Каждую статью он приводит к её базе площади: стройку наземной части — к метру наземной части, '
+          + 'подземной — к метру подземной, а ставки «на продаваемый метр» пересчитывает через ТЭП вашего проекта. '
+          + 'Источники он взвешивает по надёжности, свежести и похожести на ваш проект, отбрасывает выбросы '
+          + 'и выдаёт итоговую ставку по каждому классу. Она стоит в «Настройках класса» строкой под ставкой: '
+          + 'нажмите на число, чтобы подставить его классу. Полная таблица источников — на странице '
+          + '<a href="/statistics" target="_blank">«Статистика»</a>.</div>';
+        box.appendChild(table);
+      } else {
+        missing.push('таблица классов — PROJECT_CLASS_PRESETS не найдены');
+      }
+      setup.appendChild(box);
+    }
+
+    var host = document.querySelector('#inputs .card');
+    if (!host) missing.push('карточка вводных — #inputs .card');
+    else {
+      var card = document.createElement('div');
+      card.className = 'card';
+      card.innerHTML = '<div class="section-title">Класс проекта и сценарий</div>';
+      card.appendChild(setup);
+      host.parentNode.insertBefore(card, host);
+    }
+
+    // «Сбросить» остаётся открытой кнопкой: защита от случайного клика — это
+    // подтверждение, а меню «⋯» из одного пункта было глупостью — клик
+    // отнимало, а защиты не добавляло (замечание владельца).
+    var reset = Array.prototype.filter.call(actions.querySelectorAll('button'), function (b) {
+      return b.textContent.trim() === 'Сбросить';
+    })[0];
+    if (!reset) missing.push('кнопка «Сбросить» в шапке');
+    else {
+      reset.textContent = 'Сбросить проект';
+      reset.setAttribute('data-ia-confirm', '1');
+    }
+  }
+
+  /* Сброс страницы был неполным, и слой закрывал это обёрткой: снимал
+     карточку ГлавАПУ и пересчитывал модель после resetAll. Правка ушла в
+     страницу целиком — «Сбросить» теперь поднимает окно заново, — и обёртка
+     стала второй реализацией того же: она успевала отправить запрос расчёта,
+     который перезагрузка тут же обрывала. */
+
+  /* Сброс подтверждается: он стирает весь проект одним кликом.
+     Обёртка ставится на onclick, чтобы не переписывать resetAll. */
+  function guardReset() {
+    var reset = document.querySelector('[data-ia-confirm]');
+    if (!reset) return;
+    var original = reset.onclick;
+    reset.onclick = function (event) {
+      if (!window.confirm('Сбросить проект? Введённые вводные, ТЭП и импорт будут потеряны.')) return;
+      if (original) return original.call(this, event);
+    };
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Первый экран: участок отдельной панелью                             */
+  /* ------------------------------------------------------------------ */
+
+  function splitSite() {
+    var inputs = need('#inputs', 'панель вводных');
+    var card = need('#inputs .import-card', 'карточка автозагрузки');
+    if (!inputs || !card) return;
+
+    var panel = document.createElement('div');
+    panel.id = 'iaSite';
+    panel.className = 'panel';
+    inputs.parentNode.insertBefore(panel, inputs);
+    panel.appendChild(card);
+
+    // openTab ищет кнопку по data-tab: без неё разметка активной вкладки
+    // выпадет ровно на новой панели.
+    var tabs = document.querySelector('.tabs');
+    if (!tabs) { missing.push('строка вкладок — .tabs'); return; }
+    var button = document.createElement('button');
+    button.className = 'tab';
+    button.setAttribute('data-tab', 'iaSite');
+    button.textContent = 'Участок';
+    button.onclick = function () { window.openTab('iaSite', button); };
+    tabs.insertBefore(button, tabs.firstChild);
+
+    var recognized = document.querySelector('#glavapuPreview .scroll');
+    if (!recognized) missing.push('таблица распознанного — #glavapuPreview .scroll');
+    else {
+      var provenance = document.createElement('details');
+      provenance.innerHTML = '<summary style="font-size:13px;padding:8px 0">'
+        + 'Что распознано — построчно, с происхождением каждого числа</summary>';
+      recognized.parentNode.insertBefore(provenance, recognized);
+      provenance.appendChild(recognized);
+    }
+
+    addExampleButton();
+
+    // Человеку без кадастра и адреса некуда было идти — путь «собрать ТЭП
+    // вручную» существовал, но о нём знали только по подсказке на другой
+    // вкладке. Теперь он назван кнопкой там, где человек упёрся.
+    var actions = document.querySelector('#iaSite .import-actions');
+    if (actions) {
+      var manual = document.createElement('button');
+      manual.className = 'btn';
+      manual.type = 'button';
+      manual.textContent = 'Нет кадастра — собрать ТЭП вручную';
+      manual.onclick = function () {
+        var button = tabButton('tep');
+        if (button) button.click();
+      };
+      actions.appendChild(manual);
+    }
+
+  }
+
+  /* Тип проекта — первым на шаге «Участок», до поля кадастра. Иначе человек
+     вводил кадастр, получал расчёт жилья и только в «Экономике» узнавал, что
+     тип можно сменить (замечание владельца). Узел переносится, а не
+     копируется: один select, один обработчик applyProjectKind, варианты
+     по-прежнему рисует syncProjectKindSelector из PROJECT_KINDS движка.
+     В телеграме тип остаётся рядом с классом: туда участок приходит кадастром
+     в ссылке, и поле участка там не первый шаг. */
+  function placeProjectKind() {
+    if (inTelegram()) return;
+    var select = need('#projectKindSelect', 'выбор типа проекта');
+    var note = need('#projectKindNoteTop', 'пояснение типа проекта');
+    var site = need('#iaSite', 'панель участка');
+    if (!select || !note || !site) return;
+    var holder = select.closest('.scenario');
+    if (!holder) { missing.push('обёртка выбора типа проекта — .scenario вокруг #projectKindSelect'); return; }
+
+    var card = document.createElement('div');
+    card.className = 'card ia-kind';
+    card.id = 'iaKind';
+    card.innerHTML = '<div class="section-title">Что строим</div>';
+    // Подпись «Проект» в шапке стояла слева от списка; в карточке её роль
+    // играет заголовок, и вторая подпись «Проект» читалась бы как опечатка.
+    Array.prototype.slice.call(holder.childNodes).forEach(function (child) {
+      if (child.nodeType === 3) holder.removeChild(child);
+    });
+    holder.classList.add('ia-kind-row');
+    note.style.textAlign = 'left';
+    card.appendChild(holder);
+    site.insertBefore(card, site.firstChild);
+
+    // Подсказки у запертых жилых полей называют место выбора типа одним
+    // ответом страницы — PROJECT_KIND_WHERE. Список уехал, ответ меняется там
+    // же; иначе подсказка продолжала бы слать в шапку, где его больше нет.
+    if (typeof PROJECT_KIND_WHERE === 'undefined') {
+      missing.push('место выбора типа для подсказок — PROJECT_KIND_WHERE');
+      return;
+    }
+    PROJECT_KIND_WHERE = 'на шаге «Проект → Участок», карточка «Что строим»';
+    if (typeof withoutHousing === 'function' && withoutHousing()) {
+      if (typeof renderInputs === 'function') renderInputs();
+      if (typeof renderTep === 'function') renderTep();
+    }
+  }
+
+  /* Холодному пользователю нужен один клик, а не выбор из четырёх способов
+     загрузки. Пресеты на сервере уже есть — не было кнопки. */
+  function addExampleButton() {
+    var actions = document.querySelector('#iaSite .import-actions');
+    if (!actions) { missing.push('кнопки автозагрузки — #iaSite .import-actions'); return; }
+    var button = document.createElement('button');
+    button.className = 'btn ia-example';
+    button.type = 'button';
+    button.textContent = 'Открыть пример';
+    button.onclick = function () {
+      var status = document.getElementById('cadastralStatus');
+      var input = document.getElementById('presetFile');
+      if (!input || typeof window.uploadPreset !== 'function') {
+        if (status) status.textContent = 'Импорт пресета на странице не найден.';
+        return;
+      }
+      if (status) status.textContent = 'Открываю пример проекта…';
+      // Файл кладётся в тот же ввод, которым пользуется человек, и дальше
+      // работает штатный uploadPreset: свой путь импорта разошёлся бы с
+      // общим в первый же день, а экран проверки перед применением — не
+      // вежливость, а место, где видно, что именно меняется.
+      fetch('/ia/example.json').then(function (response) {
+        if (!response.ok) throw new Error('пример не отдан, код ' + response.status);
+        return response.text();
+      }).then(function (text) {
+        var transfer = new DataTransfer();
+        transfer.items.add(new File([text], 'Пример.json', { type: 'application/json' }));
+        input.files = transfer.files;
+        if (status) status.textContent = '';
+        return window.uploadPreset();
+      }).catch(function (error) {
+        if (status) status.textContent = 'Пример не открылся: ' + (error && error.message ? error.message : error);
+      });
+    };
+    actions.appendChild(button);
+  }
+
+  /* Подсказки адресов по мере ввода — как на обычных сайтах (замечание
+     владельца). Работают только при заданном DADATA_API_KEY на сервере:
+     без ключа сервер отвечает «выключено», и слой не рисует ничего. Клик по
+     дому запускает расчёт (кадастром или координатами), клик по городу или
+     улице уточняет запрос. */
+  var suggestReady = false;
+  var suggestBox = null;
+  var suggestField = null;
+  var originalObtainTep = null;
+  // Текст, который человек набрал сам, — до подмены подсказкой. Бот находит
+  // «Мишина 46» именно по нему: в НСПД уходит строка как есть. Это запасной
+  // ключ поиска на случай, когда нормализованная форма DaData не распознана.
+  var lastTypedQuery = '';
+
+  /* Уровень «конкретный объект» против «улица или город»: по первому клик
+     запускает расчёт, по второму — только уточняет строку. Типы взяты из
+     ФИАС, и порядок в переборе не косметический — длинные стоят раньше
+     коротких, иначе «влд» съедается «вл», а «двлд» — «д».
+
+     Здесь и жила вторая половина «почему он не ищет владение»: в списке
+     стояло `вл`, а ФИАС пишет `влд`. «влд 12» не опознавалось объектом, клик
+     по нему дописывал запятую и ждал уточнения — как по клику на «Мытищи».
+     Проверять такое перечислением в регулярке нельзя без теста: строка
+     выглядит правдоподобно и молчит. */
+  var HOUSE_LEVEL_RE = /,\s*(двлд|влд|вл|дом|д|зд|уч|стр|корп|к)[\s.]/;
+
+  function hideSuggest() { if (suggestBox) suggestBox.style.display = 'none'; }
+
+  function renderSuggestItems(items) {
+    if (!suggestBox || !items.length) { hideSuggest(); return false; }
+    suggestBox.innerHTML = '';
+    // Участки с кадастром помечены: клик по ним срабатывает всегда, а дом
+    // без кадастра идёт через текстовый поиск НСПД (обе формы адреса —
+    // resolveHouse) с фолбэком на координаты.
+    var hasCad = items.some(function (i) { return i.cadastral_number; });
+    if (hasCad) {
+      var note = document.createElement('div');
+      note.style.cssText = 'padding:7px 12px;font-size:10px;color:#777;border-bottom:1px solid #eee';
+      note.textContent = 'Надёжнее всего варианты с кадастровым номером — они помечены номером под адресом.';
+      suggestBox.appendChild(note);
+    }
+    items.forEach(function (item) {
+      var row = document.createElement('button');
+      row.type = 'button';
+      var label = document.createElement('span');
+      label.textContent = item.label || '';
+      row.appendChild(label);
+      if (item.cadastral_number) {
+        var cad = document.createElement('small');
+        cad.textContent = item.cadastral_number;
+        row.appendChild(cad);
+      }
+      row.onclick = function () {
+        // Дом — запускаем расчёт: кадастром, а без него координатами дома.
+        // Город или улица — только уточняем запрос: клик по «Мытищи»
+        // вставлял координаты центра, и точечный поиск собирал 20 случайных
+        // участков вокруг.
+        var houseLevel = HOUSE_LEVEL_RE.test(item.label || '');
+        if (item.cadastral_number) {
+          suggestField.value = item.cadastral_number;
+          hideSuggest();
+          if (typeof window.obtainTep === 'function') window.obtainTep();
+        } else if (houseLevel) {
+          // Выбор обязан быть виден: раньше поле оставалось с набранным
+          // текстом, и клик по подсказке выглядел как несработавший
+          // (замечание владельца, 18.08.2026).
+          suggestField.value = item.label || '';
+          hideSuggest();
+          resolveHouse(item.label || '');
+        } else {
+          suggestField.value = (item.label || '') + ', ';
+          suggestField.focus();
+          suggestField.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+      };
+      suggestBox.appendChild(row);
+    });
+    suggestBox.style.display = 'block';
+    return true;
+  }
+
+  function fetchSuggest(query) {
+    return fetch('/ia/suggest?q=' + encodeURIComponent(query))
+      .then(function (r) { return r.json(); })
+      .then(function (data) { return (data && data.items) || []; })
+      .catch(function () { return []; });
+  }
+
+  /* Клик по дому без кадастра решается проверкой, а не верой в подсказку.
+     Бот находит «Мишина 46», потому что в НСПД уходит строка, набранная
+     человеком; нормализованную форму DaData («г Москва, ул Мишина, д 46»)
+     тот же текстовый поиск понимает хуже. Поэтому обе формы проверяются тем
+     же запросом /land/lookup, что и штатная цепочка (удачный ответ ложится в
+     серверный кэш — повторный запрос цепочки бесплатен). Сработала
+     подсказка — идём ей; сработал только набранный текст — идём им и говорим
+     об этом вслух; не нашлось ничего — штатная цепочка доведёт до координат
+     дома и своих предупреждений. */
+  function probeLookup(query) {
+    return fetch('/land/lookup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: query, limit: 30 })
+    }).then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (data) {
+        if (!data) return null;
+        return (data.results || []).filter(function (x) {
+          return x && x.found && x.kind === 'land' && x.cadastral_number;
+        }).map(function (x) { return String(x.cadastral_number); });
+      })
+      // Сеть упала — проверка не судья: null значит «не знаю», не «нет».
+      .catch(function () { return null; });
+  }
+
+  /* Каноническая подсказка DaData и строка, по которой ищет НСПД, различаются
+     сокращениями дома: «г Москва, ул Гродненская, д 18» против «…, 18». По
+     первой НСПД не отдаёт ничего, по второй участок находится — и плашка
+     «подсказку поиск НСПД не распознал» вылезала почти на каждом адресе с
+     домом (экран владельца, 01.09.2026). Причина не в НСПД и не в подсказке, а
+     в том, что мы спрашивали неподходящей формой.
+
+     Выбрасывается только приставка НОМЕРА ДОМА — «д», «вл», «влд». «Стр» и
+     «корп» остаются: они не форма записи, а часть адреса, и без них «д 46,
+     стр 2» превращается в «46, 2» — два числа, из которых второе выглядит
+     самостоятельным домом. */
+  function nspdAddress(text) {
+    return String(text || '')
+      .replace(/(^|[\s,])(?:д|дом|вл|влд|владение)\.?(?=[\s,]|$)/gi, '$1')
+      .replace(/\s{2,}/g, ' ')
+      .replace(/\s+,/g, ',')
+      .trim();
+  }
+
+  /* Чистая функция решения: по итогам двух проверок выбирает строку поиска
+     и текст предупреждения. Вынесена из resolveHouse, чтобы тест гонял её
+     через node без DOM. byLabel/byTyped — массив найденных кадастровых
+     номеров, null — проверка недоступна. Сравниваются составы, а не
+     «нашлось/пусто»: по Гродненской бот (сырая строка) видел два участка,
+     сайт (нормализованная подсказка) — один, и оба ответа выглядели
+     достоверно. */
+  function houseQueryDecision(label, typed, byLabel, byTyped) {
+    var labelSet = Array.isArray(byLabel) ? byLabel : null;
+    var typedSet = Array.isArray(byTyped) ? byTyped : null;
+    if (labelSet === null || !typed || typed === label) return { query: label, note: '' };
+    if (labelSet.length) {
+      /* Подсказка нашлась, но набранный текст может видеть ту же территорию
+         шире: НСПД по сырой строке возвращает все участки адреса. Расширение
+         принимается только внутри кадастровых кварталов подсказки — жадному
+         геокодеру, собирающему «Мишина 46» по всей стране, сюда хода нет. */
+      if (typedSet && typedSet.length > labelSet.length) {
+        var quarter = function (num) { return String(num).split(':').slice(0, 3).join(':'); };
+        var quarters = {};
+        labelSet.forEach(function (num) { quarters[quarter(num)] = true; });
+        var coversLabel = labelSet.every(function (num) { return typedSet.indexOf(num) >= 0; });
+        var staysHome = typedSet.every(function (num) { return quarters[quarter(num)]; });
+        if (coversLabel && staysHome) {
+          return {
+            query: typed,
+            note: 'По введённому тексту «' + typed + '» НСПД видит эту территорию шире: '
+              + 'участков ' + typedSet.length + ', по подсказке «' + label + '» — '
+              + labelSet.length + '. Считаю по введённому тексту, как ищет бот; '
+              + 'лишние участки можно убрать из поля и повторить «Получить ТЭП».'
+          };
+        }
+      }
+      return { query: label, note: '' };
+    }
+    if (typedSet && typedSet.length) {
+      /* Запасной поиск по сырой строке жаден: «Мишина 46» нашлась в
+         Калининграде, Свердловской области и Москве разом, и все пять
+         участков ссыпались в поле (скриншот владельца, 18.08.2026). Улица с
+         одинаковым именем в разных регионах — не адрес, а совпадение: округ у
+         настоящего адреса один. */
+      var district = function (num) { return String(num).split(':')[0]; };
+      var districts = {};
+      typedSet.forEach(function (num) { districts[district(num)] = true; });
+      if (Object.keys(districts).length > 1) {
+        return {
+          query: '',
+          note: 'Подсказку «' + label + '» поиск НСПД не распознал, а по тексту «' + typed
+            + '» участки нашлись в разных регионах (' + typedSet.length + ' шт.). '
+            + 'Это разные улицы с одинаковым названием — уточните адрес до дома '
+            + 'или введите кадастровый номер.'
+        };
+      }
+      return {
+        query: typed,
+        note: 'Подсказку «' + label + '» поиск НСПД не распознал — участок найден по '
+          + 'введённому вами тексту «' + typed + '», как ищет бот. '
+          + 'Проверьте адрес в карточке участка.'
+      };
+    }
+    return {
+      query: label,
+      note: 'Ни подсказка, ни введённый текст поиском НСПД не нашлись — '
+        + 'участок ищется по координатам дома.'
+    };
+  }
+
+  function suggestNote(text) {
+    var note = document.getElementById('iaSuggestNote');
+    if (!note) {
+      if (!text || !suggestField || !suggestField.parentNode) return;
+      note = document.createElement('div');
+      note.id = 'iaSuggestNote';
+      note.className = 'ia-suggest-note';
+      suggestField.parentNode.appendChild(note);
+    }
+    note.textContent = text || '';
+    note.style.display = text ? 'block' : 'none';
+  }
+
+  function runObtainTep(value) {
+    suggestField.value = value;
+    // Обход обёртки обязателен, иначе адрес снова откроет список — петля.
+    if (originalObtainTep) originalObtainTep();
+    else if (typeof window.obtainTep === 'function') window.obtainTep();
+  }
+
+  function resolveHouse(label) {
+    var typed = lastTypedQuery;
+    suggestNote('');
+    var status = document.getElementById('cadastralStatus');
+    if (status) status.textContent = 'Проверяю адрес в НСПД…';
+    // Обе формы проверяются всегда и параллельно: сравнение составов требует
+    // обоих ответов, а ждать их по очереди — плата в полную цепочку геокодера.
+    // Подсказка спрашивается в той форме, которой ищет НСПД: канонические
+    // «д 18» и «вл 9» он не находит, и запасной путь по сырому тексту
+    // срабатывал там, где никакого расхождения нет.
+    var asked = nspdAddress(label) || label;
+    var needTyped = typed && typed !== asked;
+    Promise.all([
+      probeLookup(asked),
+      needTyped ? probeLookup(typed) : Promise.resolve(null)
+    ]).then(function (probes) {
+      var decision = houseQueryDecision(asked, typed, probes[0], probes[1]);
+      suggestNote(decision.note);
+      // Пустой запрос — это ответ «так искать нельзя»: считать по пяти
+      // участкам из разных регионов хуже, чем не считать вовсе.
+      if (!decision.query) {
+        if (status) status.textContent = '';
+        return;
+      }
+      runObtainTep(decision.query);
+    });
+  }
+
+  function wireSuggest() {
+    suggestField = document.getElementById('cadastralNumbers');
+    if (!suggestField) { missing.push('поле участка — #cadastralNumbers'); return; }
+    fetch('/ia/suggest?q=').then(function (r) { return r.json(); }).then(function (probe) {
+      if (!probe || !probe.available) return;
+      suggestReady = true;
+      suggestBox = document.createElement('div');
+      suggestBox.className = 'ia-suggest';
+      suggestField.parentNode.style.position = 'relative';
+      suggestField.parentNode.appendChild(suggestBox);
+      var timer = null, lastQuery = '';
+      suggestField.addEventListener('input', function () {
+        var query = suggestField.value.trim();
+        if (timer) clearTimeout(timer);
+        if (query.length < 3 || /\d{2}:\d{2}:\d{6,8}/.test(query)) { hideSuggest(); return; }
+        lastTypedQuery = query;
+        timer = setTimeout(function () {
+          lastQuery = query;
+          fetchSuggest(query).then(function (items) {
+            if (suggestField.value.trim() !== lastQuery) return;
+            renderSuggestItems(items);
+          });
+        }, 300);
+      });
+      document.addEventListener('click', function (event) {
+        if (event.target !== suggestField && suggestBox && !suggestBox.contains(event.target)) hideSuggest();
+      });
+      suggestField.addEventListener('keydown', function (event) { if (event.key === 'Escape') hideSuggest(); });
+    }).catch(function () { });
+  }
+
+  /* «Получить ТЭП» со свободным текстом сначала даёт выбор. Путь свободного
+     текста в движке жадный: геокодер возвращает кандидатов «Мишина 46» по
+     всей стране, каждый превращается в участок, и в поле ссыпались кадастры
+     Москвы, Калининграда и Татарстана разом (скриншот владельца). Выбор из
+     списка — вместо молчаливого сбора участков всех регионов. */
+  function wrapObtainTep() {
+    var original = window.obtainTep;
+    if (typeof original !== 'function') { missing.push('функция obtainTep не найдена'); return; }
+    originalObtainTep = original;
+    window.obtainTep = async function () {
+      try {
+        var field = document.getElementById('cadastralNumbers');
+        var raw = (field && field.value || '').trim();
+        var cadastralLike = /\d{2}:\d{2}:\d{6,8}:\d+/.test(raw);
+        var pointLike = /^-?\d{1,3}[.,]\d+\s*,\s*-?\d{1,3}[.,]\d+$/.test(raw);
+        if (raw && suggestReady && !cadastralLike && !pointLike) {
+          lastTypedQuery = raw;
+          var items = await fetchSuggest(raw);
+          if (items.length && renderSuggestItems(items)) {
+            var status = document.getElementById('cadastralStatus');
+            if (status) status.textContent = 'Уточните адрес — выберите вариант из списка под полем.';
+            return null;
+          }
+        }
+      } catch (error) { /* выбор не важнее запуска */ }
+      return original.apply(this, arguments);
+    };
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Пять разделов вместо девяти вкладок                                  */
+  /* ------------------------------------------------------------------ */
+
+  var navButtons = {};
+  var currentSection = null;
+
+  function sectionOf(tabId) {
+    for (var i = 0; i < SECTIONS.length; i++) {
+      if (SECTIONS[i].tabs.indexOf(tabId) >= 0) return SECTIONS[i];
+    }
+    return null;
+  }
+
+  function tabButton(tabId) {
+    return document.querySelector('.tabs [data-tab="' + tabId + '"]');
+  }
+
+  function buildNav() {
+    var tabs = need('.tabs', 'строка вкладок');
+    if (!tabs) return;
+    document.body.classList.add('ia-on');
+
+    SECTIONS.forEach(function (section) {
+      section.tabs.forEach(function (tabId) {
+        if (!tabButton(tabId)) missing.push('вкладка «' + (SUB_LABEL[tabId] || tabId) + '» — [data-tab="' + tabId + '"]');
+      });
+    });
+
+    var nav = document.createElement('div');
+    nav.className = 'ia-nav';
+    var sub = document.createElement('div');
+    sub.className = 'ia-sub';
+    sub.id = 'iaSub';
+
+    SECTIONS.forEach(function (section) {
+      var button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = section.label;
+      button.onclick = function () { openSection(section.id); };
+      navButtons[section.id] = button;
+      nav.appendChild(button);
+    });
+
+    tabs.parentNode.insertBefore(nav, tabs);
+    tabs.parentNode.insertBefore(sub, tabs.nextSibling);
+  }
+
+  function openSection(id, keepTab) {
+    var section = SECTIONS.filter(function (s) { return s.id === id; })[0];
+    if (!section) return;
+    var target = keepTab && section.tabs.indexOf(keepTab) >= 0 ? keepTab : section.tabs[0];
+    var button = tabButton(target);
+    if (button) button.click();
+    syncNav(target);
+  }
+
+  function syncNav(activeTab) {
+    var section = sectionOf(activeTab);
+    if (!section) return;
+    currentSection = section.id;
+    Object.keys(navButtons).forEach(function (key) {
+      navButtons[key].classList.toggle('active', key === section.id);
+    });
+    var sub = document.getElementById('iaSub');
+    if (!sub) return;
+    sub.innerHTML = '';
+    if (section.tabs.length > 1) {
+      section.tabs.forEach(function (tabId) {
+        var button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = SUB_LABEL[tabId] || tabId;
+        var info = STEP_INFO[tabId] && STEP_INFO[tabId]();
+        if (info && info.mark) {
+          var mark = document.createElement('span');
+          mark.className = 'ia-mark ' + info.mark;
+          mark.textContent = { ok: '✓', warn: '!', need: 'обязательно', opt: 'по желанию' }[info.mark] || '';
+          button.appendChild(mark);
+        }
+        button.className = tabId === activeTab ? 'active' : '';
+        button.onclick = function () {
+          var original = tabButton(tabId);
+          if (original) original.click();
+        };
+        sub.appendChild(button);
+      });
+    }
+    var pos = PATH.indexOf(activeTab);
+    var nextTab = pos >= 0 ? PATH[pos + 1] : null;
+    if (nextTab) {
+      var forward = document.createElement('button');
+      forward.type = 'button';
+      forward.className = 'ia-next';
+      forward.textContent = 'Далее: ' + (SUB_LABEL[nextTab] || nextTab) + ' →';
+      forward.onclick = function () {
+        var go = function () { var b = tabButton(nextTab); if (b) b.click(); };
+        // Уход с «Участка» вперёд — это принятие данных: загруженный файл
+        // применяется сам, отдельное «Применить» не требуется (замечание
+        // владельца). Кнопка «Применить» остаётся для тех, кто хочет
+        // применить и остаться на месте.
+        if (activeTab === 'iaSite' && pendingGlavapu()) {
+          forward.disabled = true;
+          Promise.resolve(window.applyGlavapu()).then(go, go);
+        } else if (activeTab === 'iaSite' && pendingMo()) {
+          forward.disabled = true;
+          Promise.resolve(window.applyMo()).then(go, go);
+        } else go();
+      };
+      sub.appendChild(forward);
+    }
+    var hintInfo = STEP_INFO[activeTab] && STEP_INFO[activeTab]();
+    var hintBox = document.getElementById('iaStepHint');
+    if (!hintBox) {
+      hintBox = document.createElement('div');
+      hintBox.id = 'iaStepHint';
+      hintBox.className = 'ia-step-hint';
+      sub.parentNode.insertBefore(hintBox, sub.nextSibling);
+    }
+    hintBox.textContent = hintInfo ? hintInfo.hint : '';
+    hintBox.style.display = hintInfo ? '' : 'none';
+    renderPendingWarn(activeTab);
+  }
+
+  /* Поиск выполнен, «Подставить в проект» не нажато — а человек уже
+     ушёл вводить экономику. Модель в этот момент считает по прежним ТЭП, и
+     на других вкладках этого не видно никак: владелец так досчитал проект на
+     чужих, не обнулённых ТЭП (16.08.2026). Плашка ходит по вкладкам за
+     человеком, пока расчёт не применён или карточка не сброшена; на самом
+     «Участке» её нет — там карточка с кнопкой и так перед глазами. */
+  function renderPendingWarn(activeTab) {
+    var kind = pendingImport();
+    var box = document.getElementById('iaPendingWarn');
+    if (!kind || activeTab === 'iaSite') { if (box) box.remove(); return; }
+    var hintBox = document.getElementById('iaStepHint');
+    if (!hintBox || !hintBox.parentNode) return;
+    if (!box) {
+      box = document.createElement('div');
+      box.id = 'iaPendingWarn';
+      box.className = 'ia-pending';
+    }
+    hintBox.parentNode.insertBefore(box, hintBox.nextSibling);
+    box.innerHTML = '';
+    var text = document.createElement('b');
+    text.textContent = 'Расчёт по участку не подставлен в проект — модель считает по прежнему ТЭП.';
+    box.appendChild(text);
+    var apply = document.createElement('button');
+    apply.type = 'button';
+    apply.textContent = 'Подставить в проект';
+    apply.onclick = function () {
+      apply.disabled = true;
+      var run = kind === 'glavapu' ? window.applyGlavapu : window.applyMo;
+      Promise.resolve(run()).then(
+        function () { syncNav(activeTab); },
+        function () { apply.disabled = false; }
+      );
+    };
+    box.appendChild(apply);
+    var drop = document.createElement('button');
+    drop.type = 'button';
+    drop.textContent = 'Сбросить карточку';
+    drop.onclick = function () {
+      var clear = kind === 'glavapu' ? window.dropGlavapuPreview : window.dropMoPreview;
+      if (typeof clear === 'function') clear();
+      syncNav(activeTab);
+    };
+    box.appendChild(drop);
+  }
+
+  /* Пустой результат поиска называет причины: какие геокодеры пропущены
+     и почему («0 из 0» без объяснения не диагностируется — владелец
+     трижды присылал скриншоты вместо одного предупреждения). */
+  function wrapLandLookup() {
+    var original = window.lookupLand;
+    if (typeof original !== 'function') { missing.push('функция lookupLand не найдена'); return; }
+    window.lookupLand = async function () {
+      var out = await original.apply(this, arguments);
+      try {
+        if ((!out || !out.length) && typeof landLookup !== 'undefined' && landLookup
+            && (landLookup.warnings || []).length) {
+          var status = document.getElementById('cadastralStatus');
+          if (status) {
+            var box = document.createElement('div');
+            box.style.cssText = 'font-size:11px;color:#8a4b08;margin-top:6px';
+            box.textContent = 'Почему не нашлось: ' + landLookup.warnings.join(' · ');
+            status.appendChild(box);
+          }
+        }
+      } catch (error) { /* диагностика не важнее поиска */ }
+      return out;
+    };
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Обязательность шагов                                                 */
+  /* ------------------------------------------------------------------ */
+
+  /* «Обязательно» — это не список, а состояние: движок считает с
+     умолчаниями почти всё, поэтому обязательно ровно то, что при пропуске
+     даёт достоверную неправду. Участок/ТЭП — иначе считаются умолчания
+     80 000 м² чужого проекта; цена входа — иначе LLCR посчитан для
+     бесплатного участка. Остальное честно помечено «по желанию». */
+  function tepTotalGns() {
+    var t = pageTep(), sum = 0;
+    Object.keys(t || {}).forEach(function (key) { sum += Number((t[key] || {}).gns || 0); });
+    return sum;
+  }
+
+  var STEP_INFO = {
+    iaSite: function () {
+      if (pendingImport()) {
+        return { mark: 'warn', hint: 'Расчёт по участку готов, но ещё не подставлен в проект. Нажмите «Подставить в проект» или сбросьте карточку — пока модель считает по прежнему ТЭП.' };
+      }
+      if (pageGlavapu() || (pageInputs() || {})._mo_calc) {
+        return { mark: 'ok', hint: 'Участок найден, ТЭП посчитан. На следующем шаге проверьте его.' };
+      }
+      return { mark: 'need', hint: 'Введите адрес или кадастровый номер участка — мы сами посчитаем ТЭП. Номера нет — заполните ТЭП вручную на следующем шаге.' };
+    },
+    tep: function () {
+      if (pendingImport()) {
+        return { mark: 'warn', hint: 'Расчёт по участку ещё не подставлен в проект, поэтому здесь прежний ТЭП. Вернитесь на шаг «Участок» и нажмите «Подставить в проект» или сбросьте карточку.' };
+      }
+      if (tepTotalGns() > 0) {
+        return { mark: 'ok', hint: 'ТЭП заполнен — проверьте цифры, вручную здесь меняют только фактические значения по проекту.' };
+      }
+      return { mark: 'need', hint: 'ТЭП пока не рассчитан: укажите площадь и плотность ниже — или вернитесь в «Участок».' };
+    },
+    phasing: function () {
+      var ph = pagePhasing();
+      if (ph && ph.enabled && Number(ph.phase_count || 1) > 1) {
+        return { mark: 'ok', hint: 'Проект разбит на очереди — сроки, инфляция и цены считаются по каждой.' };
+      }
+      return { mark: 'opt', hint: 'По желанию: нужен, только если проект строится очередями. Пропустите — посчитается одной очередью.' };
+    },
+    inputs: function () {
+      if (Number((pageInputs() || {}).purchase_price_mln || 0) > 0) {
+        return { mark: 'ok', hint: 'Цена входа задана. Проверьте класс, цены продаж и себестоимость — умолчания здесь заданы классом проекта.' };
+      }
+      return { mark: 'warn', hint: 'Обязательное поле не заполнено: цена входа (стоимость покупки) — 0. Без неё LLCR и решение считаются как для бесплатного участка.' };
+    },
+    vri: function () {
+      var i = pageInputs() || {};
+      if (!Number(i.land_rights_cost_mln || 0)) {  // плату решает сумма (vri_payment_active)
+        /* «Можно пропустить» — правда не везде. В Москве под жильё плата
+           обычно есть, а у площадки КРТ карточка торгов её не считает
+           вовсе: ноль там значит «не посчитано», а не «не нужно». */
+        var region = typeof classRegion === 'function' ? classRegion() : 'msk';
+        var krt = ((i._manual_tep_import || {}).source || {}).kind === 'krt';
+        if (krt) {
+          return { mark: 'warn', hint: 'Плата за смену ВРИ не посчитана: карточка торгов КРТ её не считает, а в Москве под жильё она обычно есть. Без неё расчёт её не учитывает — впишите сумму из расчёта ГлавАПУ или договора КРТ.' };
+        }
+        if (region === 'msk') {
+          return { mark: 'warn', hint: 'Плата за смену ВРИ не задана, и расчёт её не учитывает. В Москве она обычно есть, если участок меняет назначение под жильё. Получите ТЭП калькулятором ГлавАПУ на шаге «Участок» — плата придёт с ним — или впишите сумму сами.' };
+        }
+        return { mark: 'opt', hint: 'По желанию: нужен, только если участку требуется смена ВРИ. Плата 0 — шаг можно пропустить.' };
+      }
+      return { mark: 'ok', hint: 'Смена ВРИ включена: плата посчитана, проверьте сумму, график и источники оплаты.' };
+    },
+    rates: function () {
+      return { mark: 'opt', hint: 'По желанию: прогноз ключевой ставки уже задан умолчанием. Меняйте, если ваш взгляд на ставку другой — кривая пересчитает проценты БРИДЖа и ПФ.' };
+    },
+    report: function () {
+      return { mark: null, hint: 'Итог: карточка решения сверху, детали — по оглавлению ниже. Любое поле можно вернуться и поменять — расчёт обновится.' };
+    },
+    sensitivity: function () {
+      return { mark: 'opt', hint: 'По желанию: покажет, какие параметры сильнее всего двигают результат, и посчитает ваш сценарий.' };
+    }
+  };
+
+  /* openTab зовут и мимо навигации — calculateAndOpen('report') после каждого
+     пересчёта. Без обёртки раздел в шапке остался бы на прежнем. */
+  function wrapOpenTab() {
+    var original = window.openTab;
+    if (typeof original !== 'function') { missing.push('функция openTab не найдена'); return; }
+    window.openTab = function (id, btn) {
+      var out = original.apply(this, arguments);
+      try {
+        syncNav(id);
+        if (id === 'tep') annotateTep();
+        if (id === 'report') ensureGoalSeek();
+      } catch (error) { /* навигация не должна ронять расчёт */ }
+      return out;
+    };
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Состояние расчёта                                                    */
+  /* ------------------------------------------------------------------ */
+
+  var dirty = 0;
+  var running = 0;
+
+  /* Страница пересчитывает модель сама, как только поле подтверждено
+     (onchange у каждого поля вызывает calculate). Инструкция в шапке —
+     «после ручного изменения нажмите Пересчитать модель» — этому противоречила
+     прямо. Поэтому здесь не правило, а состояние: правится → считается →
+     актуально. */
+  /* Плашка расчёта по центру экрана: статус в шапке мелкий и вне поля
+     зрения — человек не видел, что модель считает и что уже посчитала
+     (замечание владельца). */
+  var toastTimer = null;
+
+  function showToast(message, sticky) {
+    var toast = document.getElementById('iaToast');
+    if (!toast) {
+      toast = document.createElement('div');
+      toast.id = 'iaToast';
+      toast.className = 'ia-toast';
+      document.body.appendChild(toast);
+    }
+    if (toastTimer) { clearTimeout(toastTimer); toastTimer = null; }
+    toast.textContent = message;
+    toast.classList.add('show');
+    if (!sticky) toastTimer = setTimeout(function () { toast.classList.remove('show'); }, 1600);
+  }
+
+  function hideToast() {
+    var toast = document.getElementById('iaToast');
+    if (toast) toast.classList.remove('show');
+  }
+
+  /* Расчёт закрыт плашкой (вход или доступ к участку): «актуален» и
+     «обновлён» про него — неправда, итога нет. */
+  function calcClosed() {
+    var locked = document.getElementById('calcLocked');
+    return !!locked && locked.style.display !== 'none' && !!locked.innerHTML;
+  }
+
+  function renderState() {
+    var box = document.getElementById('iaState');
+    var text = document.getElementById('iaStateText');
+    if (!box || !text) return;
+    // Кнопка «Пересчитать модель» — главное действие только когда есть
+    // изменения; при актуальном расчёте она спорила со статусом рядом.
+    var recalc = document.querySelector('.actions .btn.dark');
+    if (recalc) recalc.style.display = (dirty > 0 && !running) ? '' : 'none';
+    box.classList.toggle('dirty', dirty > 0 && !running);
+    if (running) text.textContent = 'Считаю…';
+    else if (dirty > 0) {
+      text.textContent = 'Есть ' + dirty + ' ' + plural(dirty, ['изменение', 'изменения', 'изменений'])
+        + ' вне расчёта — пересчитать';
+    } else text.textContent = calcClosed() ? 'Расчёт закрыт — условия в разделе «Результат»' : 'Расчёт актуален';
+  }
+
+  function plural(n, forms) {
+    var mod100 = n % 100, mod10 = n % 10;
+    if (mod100 > 4 && mod100 < 21) return forms[2];
+    if (mod10 === 1) return forms[0];
+    if (mod10 > 1 && mod10 < 5) return forms[1];
+    return forms[2];
+  }
+
+  function watchChanges() {
+    document.addEventListener('input', onEdit, true);
+    document.addEventListener('change', onEdit, true);
+    var original = window.calculate;
+    if (typeof original !== 'function') { missing.push('функция calculate не найдена'); return; }
+    window.calculate = function () {
+      running += 1;
+      renderState();
+      showToast('Пересчитываю модель…', true);
+      var out = original.apply(this, arguments);
+      if (out && typeof out.then === 'function') {
+        out.then(function () { dirty = 0; }, function () { }).then(function () {
+          running -= 1;
+          renderState();
+          if (!running) {
+            if (calcClosed()) hideToast();
+            else showToast('✓ Расчёт обновлён');
+          }
+        });
+      } else { running -= 1; renderState(); hideToast(); }
+      return out;
+    };
+  }
+
+  function onEdit(event) {
+    var target = event.target;
+    if (!target || !target.closest) return;
+    if (!target.closest('.content')) return;
+    if (target.closest('.ai-drawer')) return;
+    // Поле поиска участка и блок загрузки — не вводные модели: каждая буква
+    // адреса накручивала «есть 136 изменений» (наблюдение владельца).
+    if (target.closest('.import-card')) return;
+    dirty += 1;
+    renderState();
+    goalSeekStale = true;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Карточка инвестиционного решения                                     */
+  /* ------------------------------------------------------------------ */
+
+  var goalSeek = null;
+  var goalSeekStale = true;
+  var goalSeekBusy = false;
+  var goalSeekAbort = null;
+  /* Номер расчёта, для которого просили подбор: ответ, пришедший после
+     следующего пересчёта, относится к прежним вводным и не рисуется. */
+  var goalSeekRound = 0;
+
+  function buildVerdict() {
+    var report = need('#report', 'панель отчёта');
+    var hero = need('#report .report-hero', 'шапка отчёта');
+    if (!report || !hero) return;
+    var card = document.createElement('div');
+    card.className = 'ia-verdict';
+    card.id = 'iaVerdict';
+    card.innerHTML = '<div class="section-title">Инвестиционное решение</div>'
+      + '<h2 id="iaVerdictTitle">Расчёт не выполнен</h2>'
+      + '<p class="ia-verdict-lead" id="iaVerdictLead">Нажмите «Пересчитать модель».</p>'
+      + '<div class="ia-verdict-grid" id="iaVerdictGrid"></div>'
+      + '<div class="ia-stamp" id="iaVerdictStamp"></div>'
+      + '<button type="button" class="btn ia-ask" id="iaAskPlaton">Спросить Платона: почему такой вердикт?</button>';
+    report.insertBefore(card, hero);
+    var ask = card.querySelector('#iaAskPlaton');
+    ask.onclick = function () {
+      var hint = document.getElementById('iaFabHint');
+      if (hint) hint.remove();
+      var input = document.getElementById('aiInput');
+      if (input && !input.value) {
+        input.value = 'Объясни текущее инвестиционное решение: что двигает '
+          + (debtMetric(pageResult()).key === 'dscr' ? 'DSCR кредита объектов' : 'LLCR')
+          + ', какие два-три параметра важнее всего и что бы ты проверил в первую очередь?';
+      }
+      if (typeof window.toggleAgent === 'function') window.toggleAgent(true);
+    };
+  }
+
+  /* Главный — IRR проекта: поток до финансирования, на все вложения. IRR
+     капитала — вторым, и числом только когда движок счёл его показательным
+     (`summary.equity_irr`): при почти нулевых своих деньгах (всё до ПФ несёт
+     БРИДЖ) он выходит 300 %+ и доходностью не является (владелец, 16.10.2026). */
+  function irrLead(summary) {
+    /* IRR проекта — числом и при непогашенном долге: кредита в потоке до
+       финансирования нет; «N/A — долг не погашен» — только у капитала
+       (владелец, 17.10.2026). */
+    var na = (summary.equity_returns || {}).label;
+    var project = summary.irr_project == null ? 'не считается' : fmtPct(summary.irr_project);
+    var verdict = summary.equity_irr;
+    var equity = verdict && verdict.meaningful === false ? (verdict.label || 'N/A')
+      : na || (summary.irr_equity == null ? 'N/A' : fmtPct(summary.irr_equity));
+    return 'IRR проекта ' + project + ' · IRR капитала ' + equity;
+  }
+
+  function renderVerdict() {
+    var card = document.getElementById('iaVerdict');
+    var result = pageResult();
+    if (!card || !result || !result.summary) return;
+
+    /* Свод и слабейшая очередь — два разных числа, и банк смотрит на второе:
+       у каждой очереди своя кредитная линия. Сводный LLCR 1,23x рядом с
+       «максимум не достигается» читался как противоречие, пока карточка не
+       говорила, что максимум подбирался для очереди с 0,95x. */
+    /* Чем мерить долг, решает движок (`report.layout.debt_metric`): LLCR у
+       проекта с ПФ, DSCR кредита объектов у нежилого. Карточка читает это
+       решение: LLCR нежилого проекта (−8,68x) — деление нуля ПФ, а не ответ. */
+    var metric = debtMetric(result);
+    var byLlcr = metric.key === 'llcr';
+    var phases = byLlcr ? pagePhases() : null;
+    var weakest = phases ? weakestPhase(phases) : null;
+    var llcr = !byLlcr ? metric.value
+      : phases && phases.consolidated && phases.consolidated.summary
+        ? phases.consolidated.summary.llcr : result.summary.llcr;
+    var name = byLlcr ? 'LLCR' : 'DSCR';
+    var target = Number(metric.target || TARGET_LLCR), floor = Number(metric.floor || 1.05);
+    /* Судит свод: банк смотрит лимит в целом, ради этого и есть перенос долга
+       между очередями (владелец, 04.09.2026). Слабейшая очередь называется
+       рядом — она говорит, где понадобится согласие банка, а не проходит ли
+       проект. */
+    var title = document.getElementById('iaVerdictTitle');
+    card.classList.remove('pass', 'edge', 'fail');
+    if (!metric.key) {
+      title.textContent = Number(result.summary.net_profit || 0) > 0
+        ? 'Экономика проходит по прибыли' : 'Экономика не проходит';
+      card.classList.add(Number(result.summary.net_profit || 0) > 0 ? 'edge' : 'fail');
+    } else if (llcr == null) {
+      title.textContent = name + ' не рассчитан';
+    } else if (llcr >= target) {
+      card.classList.add('pass'); title.textContent = 'Экономика проходит';
+    } else if (llcr >= floor) {
+      card.classList.add('edge'); title.textContent = 'Экономика на границе';
+    } else {
+      card.classList.add('fail'); title.textContent = 'Экономика не проходит';
+    }
+
+    document.getElementById('iaVerdictLead').textContent =
+      (weakest ? 'Свод LLCR ' + fmtMult(llcr) + ', слабейшая очередь ' + weakest.name + ' — ' + fmtMult(weakest.llcr)
+        + (weakest.llcr < TARGET_LLCR ? ' (ниже порога: по ней понадобится перенос долга или согласие банка)' : '') + '. ' : '')
+      + 'Чистая прибыль ' + fmtMoney(result.summary.net_profit)
+      + ' · маржинальность ' + fmtPct(result.summary.margin)
+      + ' · ' + irrLead(result.summary)
+      + (metric.key ? ' · порог банка ' + name + ' ' + target.toFixed(2).replace('.', ',') + 'x.'
+        : '. Покрытие долга не меряется' + (metric.reason ? ': ' + metric.reason : '.'));
+
+    var found = goalSeek && goalSeek.available && goalSeek.solution ? goalSeek.solution : null;
+    var price = found ? goalSeek.current.variable : Number(pageInputs().purchase_price_mln || 0);
+    var solution = found ? found.variable : null;
+    var cells = [
+      weakest
+        ? { label: 'LLCR (свод / слабейшая очередь)', value: fmtMult(llcr) + ' / ' + fmtMult(weakest.llcr),
+            note: 'Ориентир банка — 1,20x; судит свод, слабейшая — ' + weakest.name + '.' }
+        : metric.key
+          ? { label: byLlcr ? 'LLCR (расчётный)' : metric.label, value: fmtMult(llcr),
+              note: 'Ориентир банка — ' + target.toFixed(2).replace('.', ',') + 'x'
+                + (byLlcr ? '.' : '; доход объекта на проценты и тело кредита.') }
+          // Причину называет движок (`debt_metric.reason`): у гостиницы, у
+          // аренды без кредита и у прямой продажи она своя.
+          : { label: metric.label, value: 'не считается', note: metric.reason || 'Показателя покрытия у проекта нет.', wait: true },
+      price > 0
+        ? { label: 'Цена входа', value: mlnLabel(price), note: 'Текущая цена приобретения.' }
+        : { label: 'Цена входа', value: 'не задана', note: 'Заполните «Стоимость покупки» в Экономике — сейчас всё посчитано как для бесплатного участка.', wait: true },
+      !metric.key
+        ? { label: 'Максимум цены входа', value: 'не подбирается', note: 'Потолок цены ищется по порогу покрытия долга, а показателя покрытия у проекта нет. Смотрите прибыль и IRR.', wait: true }
+        : found
+        ? { label: 'Максимум цены входа', value: mlnLabel(solution), note: 'При ' + name + ' не ниже ' + target.toFixed(2).replace('.', ',') + 'x' + (goalSeek.scope_label ? ' · ' + goalSeek.scope_label : '') + '.' }
+        : { label: 'Максимум цены входа', value: ceilingText(), note: ceilingNote(), wait: true },
+      !metric.key
+        ? { label: 'Запас к цене', value: '—', note: 'Нет потолка — нет и запаса.', wait: true }
+        : found
+        ? { label: 'Запас к цене', value: mlnLabel(found.change_abs), note: found.change_abs >= 0 ? 'Цена ниже потолка.' : 'Цена выше потолка — покупка не проходит по ' + name + '.' }
+        : { label: 'Запас к цене', value: '—', note: refused() ? 'Порог не достигается ни при какой цене входа' + (goalSeek.scope_label ? ' у ' + scopeGenitive(goalSeek.scope_label) : '') + ' — дело не в цене.' : 'Считается после подбора максимума.', wait: true }
+    ];
+
+    /* Пришёл ответ подбора для этих вводных — плитки, вердикт и подпись
+       рисуются из него: их текст собирает движок (`entry_price_block`), и
+       тизер с PDF печатают тот же. Свои клетки выше — только пока ответа нет. */
+    var server = goalSeek && !goalSeekStale && goalSeek.tiles && metric.key
+      && goalSeek.target_metric === metric.key ? goalSeek : null;
+    if (server) {
+      cells = server.tiles;
+      if (server.verdict && server.verdict.title) {
+        card.classList.remove('pass', 'edge', 'fail');
+        if (server.verdict.tone) card.classList.add(server.verdict.tone);
+        title.textContent = server.verdict.title;
+      }
+    }
+    document.getElementById('iaVerdictGrid').innerHTML = cells.map(function (cell) {
+      return '<div class="ia-verdict-cell' + (cell.wait ? ' wait' : '') + '"><span>' + cell.label + '</span><b>'
+        + cell.value + '</b><small>' + cell.note + '</small></div>';
+    }).join('');
+
+    var stamp = document.getElementById('iaVerdictStamp');
+    if (server) {
+      stamp.textContent = server.stamp || '';
+    } else if (!metric.key) {
+      stamp.textContent = '';
+    } else if (goalSeek && goalSeek.available === false) {
+      stamp.textContent = 'Подбор выполнен движком DevelopAid ' + (goalSeek.engine_version || '')
+        + ': ' + (goalSeek.reason || 'причина не указана');
+    } else if (goalSeek && goalSeek.engine_version) {
+      stamp.textContent = 'Подбор выполнен полным пересчётом модели DevelopAid ' + goalSeek.engine_version
+        + ' · ' + goalSeek.computed_at + ' UTC. Текущая модель не изменена.'
+        + (goalSeek.threshold_beyond_bound ? ' Порог упёрся в границу поиска — предел может лежать дальше.' : '');
+    } else {
+      stamp.textContent = '';
+    }
+  }
+
+  /* Отказ подбора — это ответ, а не пустая клетка: цена, «допустимая» у
+     проекта, который порог не проходит ни при каких вводных, выглядела бы на
+     экране ровно так же, как посчитанная. */
+  function refused() { return !!(goalSeek && goalSeek.available === false); }
+  function ceilingText() {
+    if (goalSeekBusy) return 'считается…';
+    if (refused()) return 'не достигается';
+    return 'откройте раздел';
+  }
+  /* Отказ подписывается тем, чьё число не дотянуло: подбор для очередей идёт
+     по слабейшей, и «не достигается» рядом со сводным 1,23x без этого
+     читается как ошибка счёта. */
+  function ceilingNote() {
+    if (refused()) {
+      var closest = goalSeek.closest_tested || {};
+      var who = goalSeek.scope_label ? scopeGenitive(goalSeek.scope_label) : 'проекта';
+      var at = Number(closest.variable || 0) === 0
+        ? 'даже при нулевой цене входа'
+        : 'ближе всего при ' + mlnLabel(Number(closest.variable));
+      var got = closest.metric == null ? '' : ' — там выходит ' + fmtMult(closest.metric)
+        + (closest.scope_label && closest.scope_label !== goalSeek.scope_label ? ' (' + closest.scope_label + ')' : '');
+      if (goalSeek.target_metric === null) return goalSeek.reason || '';
+      return seekName() + ' ' + seekTarget() + ' у ' + who + ' не достигается ' + at + got + '.';
+    }
+    return 'Подбор параметра движком при ' + seekName() + ' ' + seekTarget() + '.';
+  }
+  // Порог — из движка (`debt_metric.target`), а не числом в тексте.
+  function seekTarget() {
+    return Number(debtMetric(pageResult()).target || TARGET_LLCR).toFixed(2).replace('.', ',') + 'x';
+  }
+  function seekName() {
+    var m = goalSeek && goalSeek.target_metric ? goalSeek.target_metric : debtMetric(pageResult()).key;
+    return m === 'dscr' ? 'DSCR' : 'LLCR';
+  }
+  function debtMetric(result) {
+    var layout = result && result.report && result.report.layout;
+    return (layout && layout.debt_metric) || { key: 'llcr', label: 'LLCR', target: TARGET_LLCR, floor: 1.05 };
+  }
+  function scopeGenitive(label) {
+    if (label.indexOf('слабейшая очередь') === 0) return 'слабейшей очереди' + label.slice('слабейшая очередь'.length);
+    if (label === 'Весь проект') return 'всего проекта';
+    return label;
+  }
+
+  /* Подбор — это многократный полный пересчёт модели, поэтому он не идёт
+     вместе с расчётом: карточка показывается сразу, максимум приезжает
+     отдельным запросом и только там, где на него смотрят. */
+  function ensureGoalSeek() {
+    if (!pageResult() || goalSeekBusy) return;
+    if (!debtMetric(pageResult()).key) return;  // подбирать не по чему
+    if (goalSeek && !goalSeekStale) return;
+    if (goalSeekAbort) goalSeekAbort.abort();
+    goalSeekAbort = new AbortController();
+    goalSeekBusy = true;
+    var round = goalSeekRound;
+    renderVerdict();
+    fetch('/ia/goal-seek', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: goalSeekAbort.signal,
+      body: JSON.stringify({
+        inputs: pageInputs(), tep: pageTep(),
+        rates: pageRates(), phasing: pagePhasing(),
+        variable: 'purchase_price_mln', target_llcr: TARGET_LLCR,
+        session: pageSession(), access_key: pageAccessKey()
+      })
+    }).then(function (response) { return response.json(); })
+      .then(function (data) {
+        if (round !== goalSeekRound) return;
+        goalSeek = data; goalSeekStale = false;
+      })
+      .catch(function (error) {
+        if (error && error.name === 'AbortError') return;
+        goalSeek = { available: false, reason: String(error && error.message || error) };
+      })
+      .then(function () {
+        goalSeekBusy = false;
+        renderVerdict();
+        // Пока подбор шёл, модель пересчитали: просим подбор новых вводных.
+        if (round !== goalSeekRound && currentSection === 'result') ensureGoalSeek();
+      });
+  }
+
+  /* Тизер и PDF берут найденный здесь потолок без пересчёта, если сервер
+     узнаёт в нём подбор тех же вводных (отпечаток и подпись); нет — подбирают
+     сами в фоне. */
+  window.pageGoalSeek = function () { return goalSeek && goalSeek.fingerprint ? goalSeek : null; };
+
+  function wrapRenderResult() {
+    var original = window.renderResult;
+    if (typeof original !== 'function') { missing.push('функция renderResult не найдена'); return; }
+    window.renderResult = function () {
+      var out = original.apply(this, arguments);
+      try {
+        goalSeekStale = true;
+        goalSeekRound += 1;
+        renderVerdict();
+        relabelBridge();
+        if (currentSection) {
+          var active = document.querySelector('.tabs .tab.active');
+          if (active) syncNav(active.getAttribute('data-tab'));
+        }
+        if (currentSection === 'result') ensureGoalSeek();
+      } catch (error) { /* отчёт важнее карточки */ }
+      return out;
+    };
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Подсказки на вкладке ТЭП                                            */
+  /* ------------------------------------------------------------------ */
+
+  /* Кнопка «Сформировать ТЭП по новым параметрам» висела без объяснения,
+     когда ею пользоваться, — замечание владельца.
+     Подсказка знает состояние: загружен ГлавАПУ, посчитано Подмосковье или
+     участка нет вовсе — и говорит про текущий случай, а не про все сразу. */
+  var tepAnnotated = false;
+
+  function annotateTep() {
+    var card = document.querySelector('#tep .card');
+    if (!card) {
+      if (!tepAnnotated) { tepAnnotated = true; missing.push('карточка ТЭП — #tep .card'); report(); }
+      return;
+    }
+    var intro = document.getElementById('iaTepIntro');
+    if (!intro) {
+      intro = document.createElement('div');
+      intro.id = 'iaTepIntro';
+      intro.className = 'note';
+      intro.style.margin = '0 0 14px';
+      card.insertBefore(intro, card.children[1] || null);
+    }
+    var mo = (pageInputs() || {})._mo_calc;
+    if (pageGlavapu()) {
+      intro.textContent = 'ТЭП загружен из ГлавАПУ по участку с шага 1 — числа можно править прямо в '
+        + 'таблице ниже. Подземный паркинг производный: постоянные + гостевые места × 35 м².';
+    } else if (mo) {
+      var district = mo.territory && mo.territory.district ? ' (' + mo.territory.district + ')' : '';
+      var density = Number(mo.density_sqm_per_ha || moDensityDefault()).toLocaleString('ru-RU');
+      intro.textContent = 'Участок в Московской области' + district + ': ТЭП посчитан по нормативам области, '
+        + 'посадка ' + density + ' м² на га. Поменяйте площадь или плотность выше и нажмите '
+        + '«Сформировать ТЭП по новым параметрам».';
+    } else {
+      intro.textContent = 'ТЭП пока не рассчитан. Укажите площадь и плотность — или вернитесь в «Участок» '
+        + 'и загрузите участок по адресу или кадастровому номеру.';
+    }
+
+    // Пояснение стоит у самого блока Подмосковья, а не в начале карточки:
+    // блок внизу, и подсказка сверху его не объясняла — замечание владельца.
+    var moscowLoaded = !!pageGlavapu();
+    var moBox = document.getElementById('moParamsBox');
+    if (moBox) {
+      var moNote = document.getElementById('iaMoNote');
+      if (!moNote) {
+        moNote = document.createElement('div');
+        moNote.id = 'iaMoNote';
+        moNote.className = 'note';
+        moNote.style.margin = '10px 0 6px';
+        moBox.parentNode.insertBefore(moNote, moBox);
+      }
+      // Московскому участку параметры Подмосковья не нужны вовсе — блок
+      // скрывается, а не подписывается: подпись «не нужен» сбивает так же
+      // (замечание владельца).
+      moBox.style.display = moscowLoaded ? 'none' : '';
+      moNote.style.display = moscowLoaded ? 'none' : '';
+      if (moscowLoaded) {
+        moNote.textContent = '';
+      } else if (mo) {
+        var moDistrict = mo.territory && mo.territory.district ? mo.territory.district : 'округ не определён';
+        // Число берётся у поля, а не пишется рядом словами. Зашитые «30 000»
+        // стояли на экране вместе с реальными 18 000 из верхней подписи: два
+        // числа об одном и том же, и оба выглядели одинаково достоверно.
+        // Умолчание объявлено один раз — атрибутом value самого поля.
+        var moDensityInput = document.getElementById('moDensity');
+        var moDensityNow = moDensityInput ? Number(moDensityInput.value || 0) : 0;
+        var moDensityBase = moDensityDefault();
+        var moDensityText = moDensityNow
+          ? (moDensityNow === moDensityBase
+              ? 'Плотность по умолчанию — ' + moDensityNow.toLocaleString('ru-RU') + ' м² квартир на гектар.'
+              : 'Плотность сейчас — ' + moDensityNow.toLocaleString('ru-RU') + ' м² квартир на гектар'
+                + (moDensityBase ? ', по умолчанию было бы ' + moDensityBase.toLocaleString('ru-RU') : '') + '.')
+          : 'Плотность пока не задана.';
+        moNote.textContent = 'Ваш участок в Московской области (' + moDistrict + '). Цены взяты '
+          + 'из справочников. ' + moDensityText + ' Откройте блок, если хотите поменять числа '
+          + 'вручную: правка сразу пересчитает ТЭП участка.';
+      } else {
+        moNote.textContent = 'Этот блок нужен в двух случаях. Если участок в Московской области, плотность '
+          + 'и цены подставятся из справочников. Если считаете вручную без участка, введите здесь площадь и плотность.';
+      }
+    } else if (!tepAnnotated) {
+      tepAnnotated = true;
+      missing.push('блок параметров МО — #moParamsBox');
+      report();
+    }
+
+    // Той же логикой — подпись у кнопки «Заполнить таблицу по площади и
+    // плотности». Кнопка стоит в карточке участка, у полей площади и
+    // плотности (владелец, 18.10.2026), и перед заменой показывает, что
+    // изменится. Кому и зачем кнопка — говорит подпись рядом с ней, по
+    // состоянию, одним простым предложением.
+    var calcButton = document.querySelector('#tep [onclick="formTepByDensity()"]');
+    if (!calcButton && !tepAnnotated) {
+      tepAnnotated = true;
+      missing.push('кнопка формирования ТЭП по плотности — #tep [onclick="formTepByDensity()"]');
+      report();
+    }
+    var staleWrap = document.getElementById('iaManualCalc');
+    if (staleWrap) {
+      var bar = staleWrap.querySelector('.toolbar');
+      if (bar) staleWrap.parentNode.insertBefore(bar, staleWrap);
+      staleWrap.remove();
+    }
+
+    var hint = document.getElementById('siteApplyHint');
+    if (hint) {
+      if (pageGlavapu()) {
+        hint.textContent = 'Хотите проверить свою плотность — поменяйте её и нажмите: квартиры и магазины '
+          + 'посчитаются заново вместо данных ГлавАПУ, перед заменой покажем, что изменится '
+          + '(вернуть данные ГлавАПУ — «Получить ТЭП» на шаге «Участок»).';
+      } else if (mo) {
+        hint.textContent = 'Поменяли площадь или плотность — нажмите, и таблица ниже заполнится заново: '
+          + 'квартиры, магазины, детсады, школы и парковка по нормативам Московской области.';
+      } else {
+        hint.textContent = 'Введите площадь участка и плотность и нажмите — таблица ниже заполнится сама: '
+          + 'квартиры, магазины, детсады, школы и парковка.';
+      }
+    }
+
+    // Пояснение к «Подтянуть значения из «Экономики»» стоит рядом с кнопкой
+    // под таблицей — второй копии слой не ставит, но пропажу кнопки называет.
+    var sync = document.querySelector('#tep [onclick="syncTep()"]');
+    if (!sync && !tepAnnotated) {
+      tepAnnotated = true;
+      missing.push('кнопка «Подтянуть значения из «Экономики»» — #tep [onclick="syncTep()"]');
+      report();
+    }
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Тексты                                                              */
+  /* ------------------------------------------------------------------ */
+
+  /* Потребность и лимит — две разные величины с одним именем «БРИДЖ». Плата за
+     ВРИ в потребность входит, а в расчётный лимит банка нет, и на странице это
+     читалось как противоречие. Разница между ними — то, что банк не
+     финансирует; сейчас движок выдаёт БРИДЖем всю потребность. */
+  var bridgeChecked = false;
+
+  function relabelBridge() {
+    var done = 0;
+    document.querySelectorAll('#reportKpi .kpi span').forEach(function (node) {
+      if (node.textContent.trim() === 'Пиковый БРИДЖ') {
+        node.textContent = 'Потребность в БРИДЖе (пик)'; done += 1;
+      }
+    });
+    // Подписи таблицы приходят из row() ячейками td, а не заголовками: на th
+    // переименование молча не срабатывало, и на экране оставался прежний
+    // «Расчётный лимит» — ровно та потеря, ради которой заведена плашка.
+    document.querySelectorAll('#bridgeTable td').forEach(function (node) {
+      var text = node.textContent.trim();
+      if (text === 'Пиковый остаток') { node.textContent = 'Пиковая потребность в БРИДЖе'; done += 1; }
+      if (text === 'Расчётный лимит') { node.textContent = 'Расчётный лимит банка'; done += 1; }
+    });
+    // У проекта без ПФ (нежилой вне ДДУ) страница сама убирает плитку
+    // «Пиковый БРИДЖ» из шапки — решение движка `report.layout`. Ждать её там
+    // значит поднимать ложную тревогу «переименованы частично (2 из 3)».
+    var layout = typeof reportLayout === 'function' ? reportLayout(pageResult()) : null;
+    var expected = layout && layout.project_finance === false ? 2 : 3;
+    if (!bridgeChecked && pageResult() && done < expected) {
+      bridgeChecked = true;
+      missing.push('термины БРИДЖа переименованы частично (' + done + ' из ' + expected + ') — проверьте #reportKpi и #bridgeTable');
+      report();
+    }
+    if (done >= expected) bridgeChecked = true;
+    explainBridge();
+  }
+
+  /* Потребность и лимит — две величины, которые страница называла одинаково.
+     Плата за ВРИ входит в первую и не входит во вторую, и на экране это
+     читалось как противоречие. Пояснение — текст, не расчёт. */
+  function explainBridge() {
+    var table = document.getElementById('bridgeTable');
+    if (!table || document.getElementById('iaBridgeNote')) return;
+    var note = document.createElement('div');
+    note.id = 'iaBridgeNote';
+    note.className = 'note';
+    note.style.margin = '10px 0 0';
+    note.style.fontSize = '11px';
+    note.textContent = 'Потребность — сколько денег нужно до открытия ПФ; плата за смену ВРИ в неё входит. '
+      + 'Расчётный лимит — то, что банк считает своим бюджетом БРИДЖа: цена входа, П, РД и денежная '
+      + 'соцкомпенсация. Разницу между ними банк не финансирует.';
+    table.parentNode.appendChild(note);
+  }
+
+  /* Инструкцию «после ручного изменения нажмите Пересчитать» слой вырезал:
+     каждое подтверждённое поле пересчитывает модель само. Теперь абзац
+     страницы говорит это сам, и вырезать нечего. */
+
+  function trimTexts() {
+    retext('#rates .card h2', 'Автоматическая кривая нормализации', 'Прогноз ключевой ставки');
+    retext('#sensitivity .report-title h2', 'Что решает судьбу проекта', 'Чувствительность');
+    retext('#phasing .card h2', 'Разбиение мастер-проекта на очереди', 'Очередность проекта');
+    retext('#report #vriCard h2', 'Обязательство, график погашения и источники оплаты',
+      'ВРИ: сумма и график платежей');
+
+    // Оговорку о пересчёте ТЭП участка в блоке Подмосковья слой больше не
+    // подменяет: абзац разметки говорит её сам.
+
+    // Предупреждение о расчётном LLCR стояло трижды. Остаётся одно — рядом с
+    // самим числом; повторённое трижды, оно не читается нигде.
+    var kept = document.querySelector('#finance .llcr-label');
+    if (!kept) missing.push('оговорка рядом с LLCR — #finance .llcr-label');
+    var dropped = 0;
+    document.querySelectorAll('#finance .note.warning, #report > .note.warning').forEach(function (node) {
+      if (node.textContent.indexOf('LLCR') >= 0) { node.style.display = 'none'; dropped += 1; }
+    });
+    if (dropped < 2) missing.push('дублей предупреждения о LLCR найдено ' + dropped + ', ожидалось 2');
+  }
+
+  /* ------------------------------------------------------------------ */
+
+  function ribbon() {
+    // Лента «тестовый адрес» — примета стенда. На корне новая архитектура и
+    // есть рабочая страница: баннер там был бы ложью.
+    if (location.pathname.indexOf('/ia') !== 0) return;
+    var shell = document.querySelector('.shell');
+    if (!shell) { missing.push('корень страницы — .shell'); return; }
+    var bar = document.createElement('div');
+    bar.className = 'ia-ribbon';
+    bar.innerHTML = '<span>Тестовый адрес · новая архитектура</span>'
+      + '<span class="ia-ribbon-note">Тот же движок и те же вводные. Прежний интерфейс — <a href="/classic">/classic</a></span>'
+      + '<span class="ia-ribbon-note" id="iaBuild" style="margin-left:auto"></span>';
+    shell.insertBefore(bar, shell.firstChild);
+    // Номер сборки — в ленту: «какая версия на стенде» уже дважды
+    // разбиралась перепиской и скриншотами, а /health знал ответ всё время.
+    fetch('/health').then(function (r) { return r.json(); }).then(function (h) {
+      var el = document.getElementById('iaBuild');
+      if (el && h && h.commit) el.textContent = 'сборка ' + String(h.commit).slice(0, 7);
+    }).catch(function () { });
+  }
+
+  function report() {
+    if (!missing.length) return;
+    var shell = document.querySelector('.shell') || document.body;
+    var box = document.createElement('div');
+    box.className = 'ia-missing';
+    box.innerHTML = '<b>Слой перестройки не нашёл ' + missing.length + ' узл'
+      + plural(missing.length, ['а', 'а', 'ов']) + ' страницы — эти изменения не применились:</b><ul>'
+      + missing.map(function (item) { return '<li>' + item + '</li>'; }).join('') + '</ul>';
+    var header = shell.querySelector('.header');
+    if (header && header.nextSibling) shell.insertBefore(box, header.nextSibling);
+    else shell.appendChild(box);
+  }
+
+  /* Слой запущен — сторож загрузки (boot_guard.js в <head>) снимает экран
+     загрузки. В finally: даже сорвавшийся запуск не имеет права оставить
+     человека перед вечной заставкой — сбой шагов показывает report(). */
+  function boot() {
+    try {
+      bootSteps();
+    } finally {
+      var root = document.documentElement;
+      root.classList.add('ia-ready');
+      root.classList.remove('ia-loading');
+    }
+  }
+
+  function bootSteps() {
+    step('лента preview', ribbon);
+    step('шапка', rebuildHeader);
+    step('подтверждение сброса', guardReset);
+    step('панель участка', splitSite);
+    step('тип проекта на участке', placeProjectKind);
+    step('подсказки адресов', wireSuggest);
+    step('свободный текст даёт выбор', wrapObtainTep);
+    step('причины пустого поиска', wrapLandLookup);
+    step('навигация', buildNav);
+    step('перехват openTab', wrapOpenTab);
+    step('карточка решения', buildVerdict);
+    step('перехват renderResult', wrapRenderResult);
+    step('состояние расчёта', watchChanges);
+    step('тексты', trimTexts);
+    step('подсказки ТЭП', annotateTep);
+    step('термины БРИДЖа', relabelBridge);
+    openSection('project', 'iaSite');
+    renderState();
+    renderVerdict();
+    report();
+  }
+
+  // Телеграм опознаётся по параметрам запуска — telegram_session или cad в
+  // хеше: telegram-web-app.js на странице не подключён, window.Telegram там
+  // не существует. Слой работает и в телеграме — проверено живым прогоном
+  // (15.08.2026): cad-путь доходит до отправки результата в чат, режим
+  // правки живёт. Особенность WebView одна: внизу прибита кнопка «Обновить
+  // расчёт в Telegram», и класс ia-telegram поднимает FAB Платона над ней.
+  if (inTelegram()) {
+    document.documentElement.classList.add('ia-telegram');
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
+  else boot();
+})();

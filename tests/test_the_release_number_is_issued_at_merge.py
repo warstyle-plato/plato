@@ -1,0 +1,557 @@
+"""Номер выпуска выдаёт слияние, а ветка его не занимает.
+
+Номер брали в ветке заранее и ВСЛЕПУЮ: сторож сверяет с main, а соседняя
+сессия держит свой номер у себя, и до её слияния расхождения не видно
+ниоткуда. 21.09.2026 так столкнулись #464 и #465 на 0.24.16 — каждая ветка
+взяла номер законно, и узналось это только после первого слияния, красной
+сборкой и тремя подъёмами номера по кругу приёмки на каждый.
+
+Здесь закреплено новое устройство: на ветке номер равен базе (не выдан) или
+выше базы и СВОБОДЕН, а ниже базы — выпуск назад. Сам номер пишется внутри
+слияния (`scripts/release_merge.py`), и между счётом и слиянием база
+перечитывается.
+
+Запуск: python3 -m pytest tests/test_the_release_number_is_issued_at_merge.py -q
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parent.parent
+GUARD = ROOT / "scripts" / "check_version_grows.py"
+MERGE = ROOT / "scripts" / "release_merge.py"
+BRANCH_GUARD = ROOT / ".github" / "workflows" / "version-guard.yml"
+MERGE_FLOW = ROOT / ".github" / "workflows" / "release-merge.yml"
+
+
+def _module(path: Path, name: str):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+release_merge = _module(MERGE, "release_merge_under_test")
+
+
+class Work:
+    """Рабочая копия с настоящим origin — ровно то, что видит сторож."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def run(self, *args: str) -> None:
+        subprocess.run(args, cwd=self.path, check=True, capture_output=True)
+
+    def commit(self, version: str, body: str = "x = 1\n") -> None:
+        (self.path / "main_legacy.py").write_text(_engine(version, body),
+                                                  encoding="utf-8")
+        self.run("git", "add", "main_legacy.py")
+        self.run("git", "commit", "-qm", version)
+
+    def branch(self, name: str, version: str, body: str = "x = 1\n") -> None:
+        self.run("git", "checkout", "-q", "-B", name, "main")
+        self.commit(version, body)
+        self.run("git", "push", "-q", "origin", name)
+
+
+def _run(repo: Work, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run([sys.executable, str(GUARD), *args],
+                          cwd=repo.path, capture_output=True, text=True)
+
+
+def _engine(version: str, body: str = "x = 1\n") -> str:
+    return f'VERSION = "{version}"\n{body}'
+
+
+@pytest.fixture
+def repo(tmp_path: Path):
+    """Ветка с настоящим origin: сверка соседей спрашивает `git ls-remote`.
+
+    Подделать её словарём нельзя — проверялся бы тогда словарь, а не сторож.
+    """
+    origin = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "--bare", "-q", str(origin)], check=True)
+    path = tmp_path / "work"
+    subprocess.run(["git", "clone", "-q", str(origin), str(path)], check=True)
+    work = Work(path)
+    work.run("git", "config", "user.email", "test@example.com")
+    work.run("git", "config", "user.name", "test")
+    work.run("git", "checkout", "-q", "-b", "main")
+    work.commit("0.24.18")
+    work.run("git", "push", "-q", "origin", "main")
+    return work
+
+
+def test_a_number_equal_to_the_base_is_not_a_violation(repo):
+    """Равный базе номер значит «ещё не выдан» — это нормальное состояние."""
+    repo.run("git", "checkout", "-q", "-B", "work", "main")
+    repo.commit("0.24.18", "x = 2\n")
+    answer = _run(repo, "--on-branch", "--base", "origin/main")
+    assert answer.returncode == 0, answer.stderr
+    assert "не выдан" in answer.stdout
+
+
+def test_a_number_below_the_base_is_a_release_backwards(repo):
+    """Номер ниже базы — это откат прода на прошлый образ."""
+    repo.run("git", "checkout", "-q", "-B", "work", "main")
+    repo.commit("0.24.17", "x = 2\n")
+    answer = _run(repo, "--on-branch", "--base", "origin/main")
+    assert answer.returncode == 1
+    assert "ниже базы" in answer.stderr
+
+
+def test_a_free_number_above_the_base_still_passes(repo):
+    """Взять номер в ветке больше не нужно, но и не запрещено."""
+    repo.run("git", "checkout", "-q", "-B", "work", "main")
+    repo.commit("0.24.19", "x = 2\n")
+    answer = _run(repo, "--on-branch", "--base", "origin/main")
+    assert answer.returncode == 0, answer.stderr
+    assert "свободен" in answer.stdout
+
+
+def test_a_number_held_by_a_neighbour_is_named_before_the_merge(repo):
+    """То самое столкновение #464 и #465 — названное ДО слияния, а не после."""
+    repo.branch("neighbour", "0.24.19", "y = 1\n")
+    repo.run("git", "checkout", "-q", "-B", "work", "main")
+    repo.commit("0.24.19", "x = 2\n")
+    answer = _run(repo, "--on-branch", "--base", "origin/main")
+    assert answer.returncode == 1, answer.stdout
+    assert "neighbour" in answer.stderr
+    assert "0.24.19" in answer.stderr
+
+
+def test_my_own_number_is_not_mistaken_for_a_neighbours(repo):
+    """Своя же ветка в origin — не сосед; иначе сторож падал бы на себе."""
+    repo.branch("work", "0.24.19", "x = 2\n")
+    answer = _run(repo, "--on-branch", "--base", "origin/main")
+    assert answer.returncode == 0, answer.stderr
+
+
+@pytest.mark.parametrize("pull, expected", [
+    ({"state": "open", "draft": False, "mergeable": False,
+      "mergeable_state": "dirty"}, "Конфликт"),
+    ({"state": "open", "draft": True, "mergeable": True,
+      "mergeable_state": "clean"}, "черновик"),
+    ({"state": "closed", "draft": False}, "не открыт"),
+    ({"state": "open", "draft": False, "mergeable": None,
+      "mergeable_state": "unknown"}, "считает слияемость"),
+    ({"state": "open", "draft": False, "mergeable": True,
+      "mergeable_state": "blocked"}, "не пускает"),
+])
+def test_a_refusal_names_its_reason(pull, expected):
+    """«Не сливается» без имени состояния — это разбор руками, только позже."""
+    assert expected in release_merge.refuse_reason(pull)
+
+
+def test_a_clean_pull_request_is_not_refused():
+    assert release_merge.refuse_reason(
+        {"state": "open", "draft": False, "merged": False,
+         "mergeable": True, "mergeable_state": "clean"}) == ""
+
+
+def test_a_change_that_leaves_the_engine_alone_spends_no_number(repo):
+    """Выдать номер правке документации значит объявить выпуск, которого не
+    было: следующий настоящий уедет на единицу дальше выкаченного."""
+    guard = _module(GUARD, "check_version_grows_under_test")
+    repo.run("git", "checkout", "-q", "-B", "docs-only", "main")
+    (repo.path / "README.md").write_text("текст\n", encoding="utf-8")
+    repo.run("git", "add", "README.md")
+    repo.run("git", "commit", "-qm", "только документация")
+    repo.run("git", "push", "-q", "origin", "docs-only")
+    import os
+    here = os.getcwd()
+    os.chdir(repo.path)
+    try:
+        assert not release_merge._engine_changed(guard, "main", "docs-only")
+    finally:
+        os.chdir(here)
+
+
+def test_a_changed_engine_does_spend_a_number(repo):
+    guard = _module(GUARD, "check_version_grows_under_test")
+    repo.branch("work", "0.24.18", "x = 2\n")
+    import os
+    here = os.getcwd()
+    os.chdir(repo.path)
+    try:
+        assert release_merge._engine_changed(guard, "main", "work")
+    finally:
+        os.chdir(here)
+
+
+def test_market_search_change_spends_a_number(repo):
+    """Рыночный модуль входит в production-образ и обязан менять VERSION."""
+    guard = _module(GUARD, "check_version_grows_market_under_test")
+    repo.run("git", "checkout", "-q", "-B", "market-work", "main")
+    market = repo.path / "market_search"
+    market.mkdir(exist_ok=True)
+    (market / "price_hint.py").write_text("VALUE = 2\n", encoding="utf-8")
+    repo.run("git", "add", "market_search/price_hint.py")
+    repo.run("git", "commit", "-qm", "market runtime")
+    repo.run("git", "push", "-q", "origin", "market-work")
+    import os
+    here = os.getcwd()
+    os.chdir(repo.path)
+    try:
+        assert release_merge._engine_changed(guard, "main", "market-work")
+    finally:
+        os.chdir(here)
+
+
+def test_tests_change_spends_no_number(repo):
+    """Тесты проверяют выпуск, но сами выпуском не являются."""
+    guard = _module(GUARD, "check_version_grows_tests_under_test")
+    repo.run("git", "checkout", "-q", "-B", "tests-only", "main")
+    tests = repo.path / "tests"
+    tests.mkdir(exist_ok=True)
+    (tests / "test_dummy.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+    repo.run("git", "add", "tests/test_dummy.py")
+    repo.run("git", "commit", "-qm", "tests only")
+    repo.run("git", "push", "-q", "origin", "tests-only")
+    import os
+    here = os.getcwd()
+    os.chdir(repo.path)
+    try:
+        assert not release_merge._engine_changed(guard, "main", "tests-only")
+    finally:
+        os.chdir(here)
+
+
+def test_a_market_change_does_spend_a_number(repo):
+    """Рыночный модуль — production-код, даже если main_legacy.py не тронут."""
+    guard = _module(GUARD, "check_version_grows_market_under_test")
+    repo.run("git", "checkout", "-q", "-B", "market-work", "main")
+    market = repo.path / "market_search"
+    market.mkdir()
+    (market / "price_hint.py").write_text("VALUE = 2\n", encoding="utf-8")
+    repo.run("git", "add", "market_search/price_hint.py")
+    repo.run("git", "commit", "-qm", "market change")
+    repo.run("git", "push", "-q", "origin", "market-work")
+    import os
+    here = os.getcwd()
+    os.chdir(repo.path)
+    try:
+        assert release_merge._engine_changed(guard, "main", "market-work")
+    finally:
+        os.chdir(here)
+
+
+def test_the_base_is_read_again_right_before_the_merge():
+    """Между счётом номера и слиянием сосед успевает слить своё.
+
+    Проверка структурная нарочно: сетевого GitHub здесь нет, а свойство,
+    которое держит весь замысел, — что чтение базы стоит ПОСЛЕ записи номера
+    и ДО вызова слияния.
+    """
+    source = MERGE.read_text(encoding="utf-8")
+    body = source[source.index("for attempt in range"):]
+    wrote = body.index("_set_version(")
+    reread = body.index("!= before", wrote)
+    merged = body.index('"PUT"', wrote)
+    assert wrote < reread < merged, (
+        "база не перечитывается между выдачей номера и слиянием")
+
+
+def test_the_counting_of_a_free_number_has_no_copy():
+    """Счёт свободного номера объявлен в стороже; второй ответ на «какой
+    следующий» разошёлся бы с первым молча."""
+    source = MERGE.read_text(encoding="utf-8")
+    assert "check_version_grows" in source
+    assert "_next_version" not in source.split("def _guard(")[0]
+
+
+def test_the_branch_guard_asks_for_the_new_rule():
+    """Сторож на ветке зовёт `--on-branch`: со старым вызовом он снова требует
+    роста, то есть возвращает слепой выбор номера."""
+    assert "--on-branch" in BRANCH_GUARD.read_text(encoding="utf-8")
+
+
+def test_two_merges_do_not_run_at_once():
+    """Два прогона разом прочитали бы одну базу и выдали один номер."""
+    text = MERGE_FLOW.read_text(encoding="utf-8")
+    assert "group: release-merge" in text
+    assert "cancel-in-progress: false" in text
+
+
+@pytest.mark.parametrize("pull, settled", [
+    ({"head": {"sha": "new"}, "mergeable": True}, True),
+    ({"head": {"sha": "new"}, "mergeable": False}, True),
+    ({"head": {"sha": "new"}, "mergeable": None}, False),
+    ({"head": {"sha": "old"}, "mergeable": True}, False),
+    ({}, False),
+])
+def test_the_merge_waits_until_github_knows_the_new_head(pull, settled):
+    """Сразу после push номера GitHub отдаёт прежнюю голову или
+    mergeable=null, и слияние в эту секунду получает 405. Так падали все
+    прогоны workflow с 22.09."""
+    assert release_merge._settled(pull, "new") is settled
+
+
+def test_the_wait_stands_between_the_number_and_the_merge():
+    source = MERGE.read_text(encoding="utf-8")
+    body = source[source.index("for attempt in range"):]
+    wrote = body.index("_set_version(")
+    waited = body.index("_wait_settled(", wrote)
+    merged = body.index('"PUT"', wrote)
+    assert wrote < waited < merged, "слияние не ждёт, пока GitHub досчитает новую голову"
+
+
+def test_a_number_left_by_a_failed_run_does_not_block_the_retry():
+    """Прогон, которому GitHub отказал, оставляет номер в ветке. Повтор
+    обязан слить эту голову, а не падать на «номер уже стоит»."""
+    source = MERGE.read_text(encoding="utf-8")
+    body = source[source.index("def _write_version("):source.index("def _conflict_may_be_the_number(")]
+    assert "raise SystemExit(f\"Номер" not in body
+    assert "if replaced == text:" in body
+
+
+def test_a_branch_behind_a_bumped_base_gets_its_number_without_a_conflict(
+        repo, monkeypatch):
+    """Ветка отошла от 0.24.18 и сама заняла 0.24.19, а база тем временем
+    выпустила свой 0.24.19. Выданный 0.24.20 поверх такой ветки менял ту же
+    строку, что и база, — GitHub видел конфликт, и так 27.09 отказал #484."""
+    # Строки правок стоят поодаль от VERSION, как в настоящем движке: вплотную
+    # git склеил бы их с номером в один кусок и конфликт был бы честным.
+    body = "\n\n\na = 0\n\n\n\n\nb = 0\n"
+    repo.commit("0.24.18", body)
+    repo.run("git", "push", "-q", "origin", "main")
+    repo.branch("feat", "0.24.19", body.replace("a = 0", "a = 1"))
+    repo.run("git", "checkout", "-q", "main")
+    repo.commit("0.24.19", body.replace("b = 0", "b = 1"))
+    repo.run("git", "push", "-q", "origin", "main")
+
+    guard = _module(GUARD, "guard_for_merge")
+    monkeypatch.setattr(release_merge, "_guard", lambda: guard)
+    monkeypatch.setattr(release_merge, "ROOT", repo.path)
+    monkeypatch.setattr(release_merge, "ENGINE", repo.path / "main_legacy.py")
+    monkeypatch.chdir(repo.path)
+
+    head = release_merge._set_version("feat", "0.24.20", "main")
+
+    pushed = subprocess.run(["git", "rev-parse", "origin/feat"], cwd=repo.path,
+                            capture_output=True, text=True, check=True).stdout.strip()
+    assert pushed == head
+    text = subprocess.run(["git", "show", "origin/feat:main_legacy.py"], cwd=repo.path,
+                          capture_output=True, text=True, check=True).stdout
+    assert text == _engine("0.24.20", "\n\n\na = 1\n\n\n\n\nb = 1\n")
+    clean = subprocess.run(["git", "merge-tree", "--write-tree", "origin/main", "origin/feat"],
+                           cwd=repo.path, capture_output=True, text=True)
+    assert clean.returncode == 0, clean.stdout
+
+
+def test_the_pushed_release_head_orders_no_pr_runs(repo, monkeypatch):
+    """Push номера рождал synchronize, а слияние через две секунды снимало
+    merge-ref: после каждого выпуска на ветке висели три красных прогона без
+    единого job. Голова, которую пушит скрипт, их не заказывает; коммиты
+    самой ветки метку не получают."""
+    body = "\n\n\na = 0\n"
+    repo.commit("0.24.18", body)
+    repo.run("git", "push", "-q", "origin", "main")
+    repo.branch("feat", "0.24.18", "\n\n\na = 1\n")
+
+    guard = _module(GUARD, "guard_for_skip")
+    monkeypatch.setattr(release_merge, "_guard", lambda: guard)
+    monkeypatch.setattr(release_merge, "ROOT", repo.path)
+    monkeypatch.setattr(release_merge, "ENGINE", repo.path / "main_legacy.py")
+    monkeypatch.chdir(repo.path)
+
+    head = release_merge._set_version("feat", "0.24.19", "main")
+
+    def message(rev):
+        return subprocess.run(["git", "log", "-1", "--format=%B", rev], cwd=repo.path,
+                              capture_output=True, text=True, check=True).stdout
+    assert release_merge.SKIP_PR_RUNS in {"[skip ci]", "[ci skip]", "[no ci]",
+                                          "[skip actions]", "[actions skip]"}
+    assert head == subprocess.run(["git", "rev-parse", "origin/feat"], cwd=repo.path,
+                                  capture_output=True, text=True, check=True).stdout.strip()
+    assert message(head).startswith("Выпуск 0.24.19")
+    assert release_merge.SKIP_PR_RUNS in message(head)
+    assert release_merge.SKIP_PR_RUNS not in message(f"{head}~1")
+
+
+def test_a_real_conflict_is_named_and_not_merged(repo, monkeypatch):
+    body = "\n\n\na = 0\n"
+    repo.commit("0.24.18", body)
+    repo.run("git", "push", "-q", "origin", "main")
+    repo.branch("feat", "0.24.18", "\n\n\na = 1\n")
+    repo.run("git", "checkout", "-q", "main")
+    repo.commit("0.24.19", "\n\n\na = 2\n")
+    repo.run("git", "push", "-q", "origin", "main")
+
+    guard = _module(GUARD, "guard_for_conflict")
+    monkeypatch.setattr(release_merge, "_guard", lambda: guard)
+    monkeypatch.setattr(release_merge, "ROOT", repo.path)
+    monkeypatch.setattr(release_merge, "ENGINE", repo.path / "main_legacy.py")
+    monkeypatch.chdir(repo.path)
+
+    before = subprocess.run(["git", "rev-parse", "origin/feat"], cwd=repo.path,
+                            capture_output=True, text=True, check=True).stdout
+    with pytest.raises(SystemExit, match="не только номером"):
+        release_merge._set_version("feat", "0.24.20", "main")
+    subprocess.run(["git", "fetch", "-q", "origin"], cwd=repo.path, check=True)
+    after = subprocess.run(["git", "rev-parse", "origin/feat"], cwd=repo.path,
+                           capture_output=True, text=True, check=True).stdout
+    assert before == after, "ветку с настоящим конфликтом скрипт не должен трогать"
+
+
+def test_a_release_merge_starts_the_build_itself():
+    """Слияние от GITHUB_TOKEN не запускает сборку main push-событием:
+    27.09 пять выпусков легли в main и не уехали на прод."""
+    source = MERGE.read_text(encoding="utf-8")
+    body = source[source.index("for attempt in range"):]
+    merged = body.index('"PUT"')
+    assert body.index("_dispatch_build(", merged) > merged
+    assert (ROOT / ".github" / "workflows" / release_merge.BUILD_WORKFLOW).exists()
+    assert "actions: write" in MERGE_FLOW.read_text(encoding="utf-8")
+
+
+def _entry(monkeypatch, pull: dict) -> list[str]:
+    """Пройти вход main() на сухом прогоне; вернуть, до чего он дошёл."""
+    reached: list[str] = []
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    monkeypatch.setenv("GH_TOKEN", "t")
+    monkeypatch.setattr(sys, "argv", ["release_merge.py", "--pr", "538", "--dry-run"])
+    monkeypatch.setattr(release_merge, "_api", lambda *a, **k: dict(pull))
+    monkeypatch.setattr(release_merge, "_wait_settled", lambda *a, **k: dict(pull))
+
+    class Guard:
+        def _version(self, text):
+            reached.append("счёт номера")
+            return (0, 24, 46)
+
+        def _show(self, ref):
+            return ""
+
+        def _next_version(self, before):
+            return "0.24.47"
+
+    monkeypatch.setattr(release_merge, "_guard", lambda: Guard())
+    monkeypatch.setattr(release_merge, "_git", lambda *a: "")
+    monkeypatch.setattr(release_merge, "_engine_changed", lambda *a: True)
+    reached.append(f"код {release_merge.main()}")
+    return reached
+
+
+_PULL = {"state": "open", "draft": False, "merged": False,
+         "head": {"ref": "feat", "sha": "abc"}, "base": {"ref": "main"}}
+
+
+def test_an_unsettled_entry_is_not_a_refusal(monkeypatch):
+    """27.09 #532 и #538 упали на входе: после сдвига main GitHub больше
+    минуты отдавал mergeable=null. Недосчитанная слияемость — не отказ:
+    база вливается в ветку, и перед слиянием GitHub спрашивают снова."""
+    reached = _entry(monkeypatch, {**_PULL, "mergeable": None,
+                                   "mergeable_state": "unknown"})
+    assert reached == ["счёт номера", "код 0"]
+
+
+def test_a_blocked_entry_is_still_refused(monkeypatch):
+    """Предохранитель: послабление касается только null, а не отказа базы."""
+    reached = _entry(monkeypatch, {**_PULL, "mergeable": True,
+                                   "mergeable_state": "blocked"})
+    assert reached == ["код 1"]
+
+
+def _pull_merge_ref(repo: Work, base_version: str) -> None:
+    """Коммит слияния, как его строит GitHub: первый родитель — main, второй — ветка."""
+    repo.run("git", "checkout", "-q", "--detach", "main")
+    repo.run("git", "merge", "-q", "--no-ff", "--no-edit", "work")
+    assert base_version in (repo.path / "main_legacy.py").read_text(encoding="utf-8")
+
+
+def _main_moves_on(repo: Work, version: str) -> None:
+    """Сосед слился после сборки коммита слияния: origin/main ушёл вперёд."""
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo.path,
+                          capture_output=True, text=True, check=True).stdout.strip()
+    repo.run("git", "checkout", "-q", "main")
+    repo.commit(version, "x = 1\nz = 1\n")
+    repo.run("git", "push", "-q", "origin", "main")
+    repo.run("git", "fetch", "-q", "origin")
+    repo.run("git", "checkout", "-q", head)
+
+
+def test_a_branch_behind_a_moved_main_is_not_a_release_backwards(repo):
+    """Ветка номер не трогала, а main ушёл вперёд после сборки коммита слияния.
+
+    Против свежего main это читалось как «номер ниже базы» и будило автора
+    вливать main; против первого родителя коммита слияния — номер не выдан.
+    """
+    repo.run("git", "checkout", "-q", "-B", "work", "main")
+    (repo.path / "feature.py").write_text("y = 1\n", encoding="utf-8")
+    repo.run("git", "add", "feature.py")
+    repo.run("git", "commit", "-qm", "feature")
+    _pull_merge_ref(repo, "0.24.18")
+    _main_moves_on(repo, "0.24.19")
+
+    stale = _run(repo, "--on-branch", "--base", "origin/main")
+    assert stale.returncode == 1 and "ниже базы" in stale.stderr, stale.stdout
+
+    answer = _run(repo, "--on-branch", "--base", "HEAD^1")
+    assert answer.returncode == 0, answer.stderr
+    assert "не выдан" in answer.stdout
+
+
+def test_a_branch_that_lowers_the_number_is_still_caught_on_the_merge_ref(repo):
+    """Откат номера ветка приносит сама — он виден и против первого родителя."""
+    repo.run("git", "checkout", "-q", "-B", "work", "main")
+    repo.commit("0.24.17", "x = 2\n")
+    _pull_merge_ref(repo, "0.24.17")
+    _main_moves_on(repo, "0.24.19")
+
+    answer = _run(repo, "--on-branch", "--base", "HEAD^1")
+    assert answer.returncode == 1
+    assert "ниже базы" in answer.stderr
+
+
+def test_the_branch_guard_compares_with_the_merge_parent_not_a_fresh_main():
+    """Сторож на PR берёт базу из коммита слияния, а не скачивает main заново."""
+    guard = BRANCH_GUARD.read_text(encoding="utf-8")
+    assert '--base "HEAD^1"' in guard
+    assert 'origin/${{ github.base_ref }}' not in guard
+
+
+def test_a_branch_behind_the_base_is_judged_by_its_own_changes(repo):
+    """Ветка, правившая только .github/, отстала от main, а main с тех пор
+    поменял движок. Её собственная правка номера не требует — без этого
+    скрипт выдавал номер и толкал коммит выпуска в чужую ветку (#865)."""
+    guard = _module(GUARD, "check_version_grows_under_test")
+    repo.run("git", "checkout", "-q", "-B", "ci-only", "main")
+    (repo.path / ".github").mkdir(exist_ok=True)
+    (repo.path / ".github" / "ci.yml").write_text("on: push\n", encoding="utf-8")
+    repo.run("git", "add", ".github/ci.yml")
+    repo.run("git", "commit", "-qm", "только CI")
+    repo.run("git", "push", "-q", "origin", "ci-only")
+    repo.run("git", "checkout", "-q", "main")
+    repo.commit("0.24.19", "x = 2\n")
+    repo.run("git", "push", "-q", "origin", "main")
+    import os
+    here = os.getcwd()
+    os.chdir(repo.path)
+    try:
+        repo.run("git", "fetch", "-q", "origin")
+        assert not release_merge._engine_changed(guard, "main", "ci-only")
+        # Своя правка движка в отставшей ветке по-прежнему тратит номер.
+        repo.branch("engine-old", "0.24.18", "x = 3\n")
+        repo.run("git", "reset", "-q", "--hard", "HEAD")
+        repo.run("git", "fetch", "-q", "origin")
+        assert release_merge._engine_changed(guard, "main", "engine-old")
+    finally:
+        os.chdir(here)
+
+
+def test_a_refused_push_names_the_server_answer():
+    remote = ("To github.com:o/r.git\n ! [remote rejected] HEAD -> dependabot/x "
+              "(refusing to allow a GitHub App to create or update workflow "
+              "`.github/workflows/a.yml` without `workflows` permission)\n")
+    text = release_merge._git_refusal(("push", "origin", "HEAD:dependabot/x"), 1, remote)
+    assert "remote rejected" in text and "workflows" in text
+    assert "GITHUB_TOKEN не вправе менять .github/workflows" in text
+    other = release_merge._git_refusal(("fetch", "origin"), 128, "fatal: boom")
+    assert "fatal: boom" in other and "GITHUB_TOKEN" not in other

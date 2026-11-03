@@ -1,0 +1,378 @@
+{
+ "_about": "Образец в формате ответа WMS GetFeatureInfo НСПД (/api/aeggis/v3/<слой>/wms, INFO_FORMAT=application/json): FeatureCollection, properties.options — поля ЕГРН, геометрия в EPSG:3857. Собран по формату ответа, которым живут скрининг и поиск участка (tests/test_land_lookup.py, test_screening_asks_the_contour.py); из песочницы НСПД недоступна (обрыв соединения), живой снимок снимается на ядре — см. описание PR. Площадка условная: квадрат 400×400 м веб-меркатора.",
+ "contour_rings_merc": [
+  [
+   [
+    4180000.0,
+    7510000.0
+   ],
+   [
+    4180400.0,
+    7510000.0
+   ],
+   [
+    4180400.0,
+    7510400.0
+   ],
+   [
+    4180000.0,
+    7510400.0
+   ],
+   [
+    4180000.0,
+    7510000.0
+   ]
+  ]
+ ],
+ "layers": {
+  "36048": {
+   "type": "FeatureCollection",
+   "features": [
+    {
+     "type": "Feature",
+     "id": 101,
+     "geometry": {
+      "type": "Polygon",
+      "coordinates": [
+       [
+        [
+         4180000.0,
+         7510000.0
+        ],
+        [
+         4180200.0,
+         7510000.0
+        ],
+        [
+         4180200.0,
+         7510400.0
+        ],
+        [
+         4180000.0,
+         7510400.0
+        ],
+        [
+         4180000.0,
+         7510000.0
+        ]
+       ]
+      ]
+     },
+     "properties": {
+      "category": 36048,
+      "categoryName": "Земельные участки из ЕГРН",
+      "options": {
+       "cad_num": "77:05:0001001:10",
+       "readable_address": "г. Москва, Каширское ш., вл. 1",
+       "land_record_area": 80000.0,
+       "permitted_use_established_by_document": "Производственная деятельность",
+       "cost_value": "100 000 000,00",
+       "ownership_type": "Частная собственность"
+      }
+     }
+    },
+    {
+     "type": "Feature",
+     "id": 102,
+     "geometry": {
+      "type": "Polygon",
+      "coordinates": [
+       [
+        [
+         4180200.0,
+         7510000.0
+        ],
+        [
+         4180400.0,
+         7510000.0
+        ],
+        [
+         4180400.0,
+         7510400.0
+        ],
+        [
+         4180200.0,
+         7510400.0
+        ],
+        [
+         4180200.0,
+         7510000.0
+        ]
+       ]
+      ]
+     },
+     "properties": {
+      "category": 36048,
+      "categoryName": "Земельные участки из ЕГРН",
+      "options": {
+       "cad_num": "77:05:0001001:11",
+       "readable_address": "г. Москва, Каширское ш., вл. 1А",
+       "land_record_area": 80000.0,
+       "permitted_use_established_by_document": "Склады",
+       "cost_value": "90 000 000,00",
+       "ownership_type": "Собственность публично-правовых образований"
+      }
+     }
+    },
+    {
+     "type": "Feature",
+     "id": 103,
+     "geometry": {
+      "type": "Polygon",
+      "coordinates": [
+       [
+        [
+         4180390.0,
+         7510000.0
+        ],
+        [
+         4180700.0,
+         7510000.0
+        ],
+        [
+         4180700.0,
+         7510400.0
+        ],
+        [
+         4180390.0,
+         7510400.0
+        ],
+        [
+         4180390.0,
+         7510000.0
+        ]
+       ]
+      ]
+     },
+     "properties": {
+      "category": 36048,
+      "categoryName": "Земельные участки из ЕГРН",
+      "options": {
+       "cad_num": "77:05:0001001:12",
+       "readable_address": "г. Москва, Каширское ш., вл. 3",
+       "land_record_area": 124000.0,
+       "cost_value": "150 000 000,00",
+       "ownership_type": "Частная собственность"
+      }
+     }
+    }
+   ]
+  },
+  "36049": {
+   "type": "FeatureCollection",
+   "features": [
+    {
+     "type": "Feature",
+     "id": 201,
+     "geometry": {
+      "type": "Polygon",
+      "coordinates": [
+       [
+        [
+         4180020.0,
+         7510020.0
+        ],
+        [
+         4180080.0,
+         7510020.0
+        ],
+        [
+         4180080.0,
+         7510060.0
+        ],
+        [
+         4180020.0,
+         7510060.0
+        ],
+        [
+         4180020.0,
+         7510020.0
+        ]
+       ]
+      ]
+     },
+     "properties": {
+      "category": 36049,
+      "categoryName": "Здания",
+      "options": {
+       "cad_num": "77:05:0001001:1001",
+       "readable_address": "г. Москва, Каширское ш., вл. 1, стр. 1",
+       "build_record_area": 1480.0,
+       "purpose": "Нежилое",
+       "cost_value": "50 000 000,00",
+       "ownership_type": "Частная собственность"
+      }
+     }
+    },
+    {
+     "type": "Feature",
+     "id": 202,
+     "geometry": {
+      "type": "Polygon",
+      "coordinates": [
+       [
+        [
+         4180220.0,
+         7510220.0
+        ],
+        [
+         4180300.0,
+         7510220.0
+        ],
+        [
+         4180300.0,
+         7510300.0
+        ],
+        [
+         4180220.0,
+         7510300.0
+        ],
+        [
+         4180220.0,
+         7510220.0
+        ]
+       ]
+      ]
+     },
+     "properties": {
+      "category": 36049,
+      "categoryName": "Здания",
+      "options": {
+       "cad_num": "77:05:0001001:1002",
+       "readable_address": "г. Москва, Каширское ш., вл. 1А, стр. 2",
+       "build_record_area": 2300.0,
+       "purpose": "Нежилое",
+       "cost_value": "70 000 000,00",
+       "ownership_type": "Собственность города Москвы"
+      }
+     }
+    },
+    {
+     "type": "Feature",
+     "id": 203,
+     "geometry": {
+      "type": "Polygon",
+      "coordinates": [
+       [
+        [
+         4180100.0,
+         7510300.0
+        ],
+        [
+         4180150.0,
+         7510300.0
+        ],
+        [
+         4180150.0,
+         7510350.0
+        ],
+        [
+         4180100.0,
+         7510350.0
+        ],
+        [
+         4180100.0,
+         7510300.0
+        ]
+       ]
+      ]
+     },
+     "properties": {
+      "category": 36049,
+      "categoryName": "Здания",
+      "options": {
+       "cad_num": "77:05:0001001:1003",
+       "readable_address": "г. Москва, Каширское ш., вл. 1, стр. 3",
+       "build_record_area": 900.0,
+       "purpose": "Нежилое",
+       "cost_value": "30 000 000,00",
+       "ownership_type": "Частная собственность"
+      }
+     }
+    }
+   ]
+  },
+  "36328": {
+   "type": "FeatureCollection",
+   "features": [
+    {
+     "type": "Feature",
+     "id": 301,
+     "geometry": {
+      "type": "Polygon",
+      "coordinates": [
+       [
+        [
+         4180010.0,
+         7510195.0
+        ],
+        [
+         4180390.0,
+         7510195.0
+        ],
+        [
+         4180390.0,
+         7510205.0
+        ],
+        [
+         4180010.0,
+         7510205.0
+        ],
+        [
+         4180010.0,
+         7510195.0
+        ]
+       ]
+      ]
+     },
+     "properties": {
+      "category": 36328,
+      "categoryName": "Сооружения",
+      "options": {
+       "cad_num": "77:05:0000000:5001",
+       "readable_address": "г. Москва, кабельная линия 10 кВ",
+       "purpose": "Сооружения электроэнергетики",
+       "ownership_type": "Частная собственность",
+       "cost_value": "5 000 000,00"
+      }
+     }
+    }
+   ]
+  },
+  "36329": {
+   "type": "FeatureCollection",
+   "features": []
+  }
+ },
+ "decision": {
+  "available": true,
+  "decision_available": true,
+  "cadastral_numbers_source": "appendix",
+  "cadastral_numbers": [
+   "77:05:0001001:10",
+   "77:05:0001001:1001",
+   "77:05:0001001:1003",
+   "77:05:0001001:1004"
+  ],
+  "object_actions": [
+   {
+    "cadastral_number": "77:05:0001001:1001",
+    "category": "demolition",
+    "action": "Снос",
+    "area_sqm": 1500.0
+   },
+   {
+    "cadastral_number": "77:05:0001001:1003",
+    "category": "preservation",
+    "action": "Сохранение",
+    "area_sqm": 900.0
+   },
+   {
+    "cadastral_number": "77:05:0001001:1004",
+    "category": "demolition",
+    "action": "Снос",
+    "area_sqm": 700.0
+   }
+  ]
+ }
+}

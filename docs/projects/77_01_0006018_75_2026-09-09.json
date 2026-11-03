@@ -1,0 +1,939 @@
+{
+ "kind": "developaid.project.settings",
+ "version": 1,
+ "app_version": "0.25.91",
+ "name": "77:01:0006018:75 — отчёт 09.09.2026",
+ "saved_at": "2026-10-17T00:00:00Z",
+ "inputs": {
+  "project_class": "custom",
+  "purchase_price_mln": 0,
+  "purchase_schedule": "",
+  "construction_months": 24,
+  "apartment_price_th": 878,
+  "commercial_price_th": 750,
+  "parking_price_th": 5000,
+  "share_before_rve_pct": 85,
+  "pace_adjustment_pct": 25,
+  "inflation_after_rve_pct": 3,
+  "seasonal_reduction_pct": -15,
+  "growth_stage1_pct": 0,
+  "growth_stage2_pct": 0,
+  "growth_stage3_pct": 0,
+  "growth_stage4_pct": 0,
+  "demolition_area_sqm": 0.0,
+  "demolition_cost_th_per_sqm": 0.0,
+  "resettlement_cost_mln": 0.0,
+  "ird_th_per_sqm": 1,
+  "design_p_th_per_sqm": 6.0,
+  "design_rd_th_per_sqm": 8.5,
+  "preparation_th_per_sqm": 2.75,
+  "main_above_th_per_sqm": 190,
+  "utilities_th_per_sqm": 10.25,
+  "commissioning_th_per_sqm": 1,
+  "site_maintenance_th_per_sqm": 4.7,
+  "gc_fee_pct": 7,
+  "reserve_pct": 5,
+  "project_management_pct": 5,
+  "technical_supervision_pct": 0,
+  "author_supervision_pct": 3,
+  "marketing_pct": 4.5,
+  "selling_pct": 2.5,
+  "profit_tax_pct": 25,
+  "vat_pct": 22,
+  "pre_pf_own_funds_mln": 0.0,
+  "bridge_spread_pp": 6,
+  "bridge_cap_spread_pp": 6,
+  "pf_spread_pp": 4.5,
+  "pf_special_pct": 4.5,
+  "pf_limit_approved_mln": 0.0,
+  "pf_special_steps": "100:3,47; 110:1,75; 120:0,03; 130:0,01",
+  "limit_fee_pct": 0.7,
+  "reservation_fee_pct": 0.1,
+  "discount_rate_pct": 20,
+  "ird_months": 18,
+  "sales_lag_months": 0,
+  "bridge_repay_lag_months": 0,
+  "residual_sales_months": 6,
+  "social_comp_date": "2028-06-01",
+  "social_compensation_mln": 1364.268,
+  "kindergarten_places": 40,
+  "kindergarten_cost_mln_per_place": 2.75,
+  "kindergarten_start": "2028-06-01",
+  "kindergarten_months": 24,
+  "school_places": 80,
+  "school_cost_mln_per_place": 3,
+  "school_start": "2028-06-01",
+  "school_months": 30,
+  "clinic_capacity": 17,
+  "clinic_cost_mln_per_unit": 3,
+  "clinic_start": "2028-06-01",
+  "clinic_months": 24,
+  "social_dou_gba_sqm": 0,
+  "social_school_gba_sqm": 0,
+  "social_clinic_gba_sqm": 0,
+  "project_start": "2027-01-01",
+  "main_under_th_per_sqm": 152,
+  "social_mode": "Денежная компенсация",
+  "social_area_source": "norm",
+  "social_dou_norm_sqm": 18,
+  "social_school_norm_sqm": 0,
+  "social_clinic_norm_sqm": 15,
+  "underground_area_per_space_sqm": 17.5,
+  "parking_design_mode": "maximum",
+  "underground_manual_gns_sqm": 7700,
+  "underground_manual_spaces": 440,
+  "underground_parking_disabled": false,
+  "rate_scenario": "base",
+  "land_rights_cost_mln": 3987.556,
+  "bridge_interest_mode": "Капитализация в ПФ",
+  "rate_start_pct": 14.0,
+  "rate_start_date": "2026-07-24",
+  "rate_target_high_pct": 11.0,
+  "rate_target_base_pct": 9.0,
+  "rate_target_low_pct": 7.0,
+  "rate_normalization_months": 24,
+  "rate_curve_shape": 2.0,
+  "vri_required": true,
+  "vri_region": "msk",
+  "land_right": "ownership",
+  "vri_obligation_date": "",
+  "vri_payment_mode": "lump",
+  "vri_installment_years": 3,
+  "vri_periodicity_months": 3,
+  "vri_schedule_mode": "auto",
+  "vri_interest_enabled": "",
+  "vri_interest_spread_pp": 3.0,
+  "vri_early_repay_after_pf": false,
+  "vri_pf_open_date": "",
+  "vri_in_bank_budget": true,
+  "vri_financing_mode": "auto",
+  "vri_share_bridge_pct": 0.0,
+  "vri_share_pf_pct": 0.0,
+  "vri_share_equity_pct": 0.0,
+  "vri_security_cost_mln": 0.0,
+  "vri_relief_mode": "none",
+  "vri_relief_pct": 0.0,
+  "vri_relief_mln": 0.0,
+  "vri_transfer_offset_mln": 0.0,
+  "vri_obligation_date_mode": "before_rns_1m",
+  "vri_months_after_purchase": 12,
+  "vri_initial_pct": 0.0,
+  "tep_ratios_custom": "",
+  "monthly_growth_pre_pct": 1.5,
+  "_cadastral_query": "77:01:0006018:75",
+  "_cost_structure_version": "0.7.1",
+  "landscaping_gns_th_per_sqm": 18.06,
+  "site_area_ha": 0.809,
+  "parking_k1": 0.75,
+  "parking_k2": 0.2,
+  "_glavapu_import": {
+   "source": {
+    "filename": "ГлавАПУ_77-01-0006018-75.xlsx",
+    "format": "Штатный калькулятор ГлавАПУ — серверный запуск",
+    "export_date": null,
+    "sheets": [
+     "ТЭП",
+     "Параметры территории"
+    ],
+    "tep_sheet": "ТЭП",
+    "parking_sheet": null,
+    "params_sheet": "Параметры территории",
+    "cadastral_numbers": [
+     "77:01:0006018:75"
+    ],
+    "calculated_at": "2026-10-17",
+    "calculator_url": "https://genplan.tech/calc/?terrArea=0.8089&restrictArea=0",
+    "headless": {
+     "state": "готов",
+     "where": "ядро"
+    }
+   },
+   "normalized": {
+    "site_area_ha": 0.809,
+    "density_spp_th_sqm_ha": 35.0,
+    "density_np_th_sqm_ha": 31.5,
+    "population": 525.0,
+    "apartment_units": 250.0,
+    "spp_total_sqm": 28312.0,
+    "residential_spp_sqm": 26613.0,
+    "ground_commercial_spp_sqm": 1699.0,
+    "standalone_nonres_spp_sqm": 0.0,
+    "social_spp_sqm": 0.0,
+    "np_total_sqm": 25480.0,
+    "residential_np_sqm": 23952.0,
+    "ground_commercial_np_sqm": 1529.0,
+    "standalone_nonres_np_sqm": 0.0,
+    "social_np_sqm": 0.0,
+    "apartment_area_sqm": 17298.0,
+    "nonresidential_aboveground_sqm": 1529.0,
+    "office_gba_sqm": null,
+    "office_saleable_sqm": null,
+    "office_land_ha": null,
+    "mfc_parking_area_sqm": null,
+    "mfc_parking_spaces": null,
+    "office_need_sqm": null,
+    "storage_units": null,
+    "storage_area_sqm": null,
+    "actual_kindergarten_places": 0.0,
+    "actual_kindergarten_spp_sqm": 0.0,
+    "actual_kindergarten_np_sqm": 0.0,
+    "actual_kindergarten_land_ha": 0.0,
+    "actual_school_places": 0.0,
+    "actual_school_spp_sqm": 0.0,
+    "actual_school_np_sqm": 0.0,
+    "actual_school_land_ha": 0.0,
+    "actual_clinic_capacity": 0.0,
+    "actual_clinic_spp_sqm": 0.0,
+    "actual_clinic_np_sqm": 0.0,
+    "actual_clinic_land_ha": 0.0,
+    "required_kindergarten_places": 24.0,
+    "required_school_places": 48.0,
+    "required_clinic_capacity": 10.0,
+    "parking_required_total": 223.0,
+    "parking_permanent": 200.0,
+    "parking_guest": 20.0,
+    "parking_attached": 3.0,
+    "parking_short_stop": 5.0,
+    "change_vri_mln": 2417.518,
+    "social_compensation_total_mln": 815.938,
+    "social_compensation_kindergarten_mln": 273.828,
+    "social_compensation_school_mln": 410.951,
+    "social_compensation_clinic_mln": 131.159,
+    "district": "Замоскворечье",
+    "calculation_zone": null,
+    "cadastral_quarter": "77:01:0006018",
+    "rent_coefficient": 0.1514,
+    "parking_k1_coefficient": 0.75,
+    "parking_k2_coefficient": 0.2,
+    "parking_k2_label": "К2 — деловая активность (внутри ТТК)",
+    "mpt_coefficient": "False",
+    "vri_base_cost_rub": null,
+    "vri_base_costs_by_use": {},
+    "vri_upks_by_use": {},
+    "kindergarten_norm_per_1000": null,
+    "school_norm_per_1000": null,
+    "residential_underground_parking_spaces": 220.0,
+    "residential_underground_parking_gns_sqm": 7700.0,
+    "underground_parking_spaces": 220.0,
+    "underground_parking_gns_sqm": 7700.0,
+    "suggested_social_mode": "Денежная компенсация"
+   },
+   "recognized": [
+    {
+     "label": "Площадь территории",
+     "key": "site_area_ha",
+     "value": 0.809,
+     "display": "0,809",
+     "unit": "га",
+     "target": "Справочно / ГлавАПУ"
+    },
+    {
+     "label": "Плотность от СПП",
+     "key": "density_spp_th_sqm_ha",
+     "value": 35.0,
+     "display": "35,00",
+     "unit": "тыс. м²/га",
+     "target": "Справочно / ГлавАПУ"
+    },
+    {
+     "label": "Плотность от НП",
+     "key": "density_np_th_sqm_ha",
+     "value": 31.5,
+     "display": "31,50",
+     "unit": "тыс. м²/га",
+     "target": "Справочно / ГлавАПУ"
+    },
+    {
+     "label": "Население",
+     "key": "population",
+     "value": 525.0,
+     "display": "525",
+     "unit": "чел.",
+     "target": "Справочно / ГлавАПУ"
+    },
+    {
+     "label": "Количество квартир",
+     "key": "apartment_units",
+     "value": 250.0,
+     "display": "250",
+     "unit": "шт.",
+     "target": "ТЭП → Квартиры"
+    },
+    {
+     "label": "СПП жилая",
+     "key": "residential_spp_sqm",
+     "value": 26613.0,
+     "display": "26 613,0",
+     "unit": "м²",
+     "target": "ТЭП → Квартиры → ГНС"
+    },
+    {
+     "label": "НП жилая",
+     "key": "residential_np_sqm",
+     "value": 23952.0,
+     "display": "23 952,0",
+     "unit": "м²",
+     "target": "ТЭП → Квартиры → Общая площадь"
+    },
+    {
+     "label": "Площадь квартир",
+     "key": "apartment_area_sqm",
+     "value": 17298.0,
+     "display": "17 298,0",
+     "unit": "м²",
+     "target": "ТЭП → Квартиры → Продаваемая"
+    },
+    {
+     "label": "СПП нежилой части МКД",
+     "key": "ground_commercial_spp_sqm",
+     "value": 1699.0,
+     "display": "1 699,0",
+     "unit": "м²",
+     "target": "ТЭП → Коммерция 1 эт. → ГНС"
+    },
+    {
+     "label": "НП нежилой части МКД",
+     "key": "ground_commercial_np_sqm",
+     "value": 1529.0,
+     "display": "1 529,0",
+     "unit": "м²",
+     "target": "ТЭП → Коммерция 1 эт. → Продаваемая"
+    },
+    {
+     "label": "Стоимость смены ВРИ",
+     "key": "change_vri_mln",
+     "value": 2417.518,
+     "display": "2 417,518",
+     "unit": "млн ₽",
+     "target": "Вводные → оформление земельных правоотношений"
+    },
+    {
+     "label": "Компенсация за соцобъекты",
+     "key": "social_compensation_total_mln",
+     "value": 815.938,
+     "display": "815,938",
+     "unit": "млн ₽",
+     "target": "Вводные → социальная нагрузка"
+    },
+    {
+     "label": "Рекомендуемый режим соцнагрузки",
+     "key": "suggested_social_mode",
+     "value": "Денежная компенсация",
+     "display": "Денежная компенсация",
+     "unit": "",
+     "target": "Справочно; выбор пользователя не перезаписывается"
+    },
+    {
+     "label": "Расчётная потребность ДОО",
+     "key": "required_kindergarten_places",
+     "value": 24.0,
+     "display": "24",
+     "unit": "мест",
+     "target": "Справочно / ГлавАПУ"
+    },
+    {
+     "label": "Расчётная потребность СОШ",
+     "key": "required_school_places",
+     "value": 48.0,
+     "display": "48",
+     "unit": "мест",
+     "target": "Справочно / ГлавАПУ"
+    },
+    {
+     "label": "Расчётная потребность поликлиника",
+     "key": "required_clinic_capacity",
+     "value": 10.0,
+     "display": "10",
+     "unit": "пос./см.",
+     "target": "Справочно / ГлавАПУ"
+    },
+    {
+     "label": "Требуемые машино-места",
+     "key": "parking_required_total",
+     "value": 223.0,
+     "display": "223",
+     "unit": "м/м",
+     "target": "Справочно"
+    },
+    {
+     "label": "Постоянные парковки",
+     "key": "parking_permanent",
+     "value": 200.0,
+     "display": "200",
+     "unit": "м/м",
+     "target": "Подземный паркинг"
+    },
+    {
+     "label": "Гостевые парковки",
+     "key": "parking_guest",
+     "value": 20.0,
+     "display": "20",
+     "unit": "м/м",
+     "target": "Подземный паркинг"
+    },
+    {
+     "label": "Приобъектные парковки",
+     "key": "parking_attached",
+     "value": 3.0,
+     "display": "3",
+     "unit": "м/м",
+     "target": "Не включаются в подземный паркинг"
+    },
+    {
+     "label": "Кратковременная остановка",
+     "key": "parking_short_stop",
+     "value": 5.0,
+     "display": "5",
+     "unit": "м/м",
+     "target": "Не включаются в подземный паркинг"
+    },
+    {
+     "label": "Подземный паркинг — расчётное количество",
+     "key": "underground_parking_spaces",
+     "value": 220.0,
+     "display": "220",
+     "unit": "м/м",
+     "target": "ТЭП → Подземный паркинг → Количество"
+    },
+    {
+     "label": "Подземный паркинг — общая площадь",
+     "key": "underground_parking_gns_sqm",
+     "value": 7700.0,
+     "display": "7 700,0",
+     "unit": "м²",
+     "target": "ТЭП → Подземный паркинг → ГНС"
+    },
+    {
+     "label": "МФК / офисы — GBA",
+     "key": "office_gba_sqm",
+     "value": null,
+     "display": "—",
+     "unit": "м²",
+     "target": "Вводные → МФОЦ / офисы"
+    },
+    {
+     "label": "МФК / офисы — продаваемая",
+     "key": "office_saleable_sqm",
+     "value": null,
+     "display": "—",
+     "unit": "м²",
+     "target": "Вводные → МФОЦ / офисы"
+    },
+    {
+     "label": "МФК — подземный паркинг",
+     "key": "mfc_parking_spaces",
+     "value": null,
+     "display": "—",
+     "unit": "м/м",
+     "target": "ТЭП → Подземный паркинг (отдельный блок МФК)"
+    },
+    {
+     "label": "Расчётная потребность офисов",
+     "key": "office_need_sqm",
+     "value": null,
+     "display": "—",
+     "unit": "м²",
+     "target": "Справочно / рабочие места"
+    },
+    {
+     "label": "Кладовые — количество",
+     "key": "storage_units",
+     "value": null,
+     "display": "—",
+     "unit": "шт.",
+     "target": "ТЭП → Кладовки"
+    },
+    {
+     "label": "Район",
+     "key": "district",
+     "value": "Замоскворечье",
+     "display": "Замоскворечье",
+     "unit": "",
+     "target": "Справочно / ГлавАПУ"
+    },
+    {
+     "label": "Кадастровый квартал",
+     "key": "cadastral_quarter",
+     "value": "77:01:0006018",
+     "display": "77:01:0006018",
+     "unit": "",
+     "target": "Справочно / ГлавАПУ"
+    }
+   ],
+   "warnings": [],
+   "mappings": {
+    "inputs": {
+     "land_rights_cost_mln": 2417.518,
+     "social_compensation_mln": 815.938,
+     "kindergarten_places": 0,
+     "school_places": 0,
+     "clinic_capacity": 0,
+     "social_dou_gba_sqm": 0,
+     "social_school_gba_sqm": 0,
+     "social_clinic_gba_sqm": 0,
+     "parking_k1": 0.75,
+     "parking_k2": 0.2,
+     "vri_required": true
+    },
+    "tep": {
+     "apartments": {
+      "gns": 26613.0,
+      "total_area": 23952.0,
+      "useful": 17298.0,
+      "saleable": 17298.0,
+      "units": 250.0
+     },
+     "ground_commercial": {
+      "gns": 1699.0,
+      "total_area": 1529.0,
+      "useful": 1529.0,
+      "saleable": 1529.0,
+      "units": 0
+     },
+     "underground_parking": {
+      "gns": 7700.0,
+      "total_area": 7700.0,
+      "useful": 0,
+      "saleable": 0,
+      "transfer": 0,
+      "units": 220.0
+     },
+     "standalone_retail": {
+      "gns": 0,
+      "total_area": 0,
+      "useful": 0,
+      "saleable": 0,
+      "units": 0
+     },
+     "kindergarten": {
+      "gns": 0,
+      "total_area": 0,
+      "transfer": 0,
+      "units": 0
+     },
+     "school": {
+      "gns": 0,
+      "total_area": 0,
+      "transfer": 0,
+      "units": 0
+     },
+     "clinic": {
+      "gns": 0,
+      "total_area": 0,
+      "transfer": 0,
+      "units": 0
+     }
+    }
+   },
+   "provenance": {
+    "inputs.land_rights_cost_mln": {
+     "source": "glavapu",
+     "date": "",
+     "sheet": "ТЭП",
+     "row": "строка 44",
+     "text": "ГлавАПУ, выгрузка (дата в файле не указана), лист «ТЭП», строка 44"
+    },
+    "inputs.social_compensation_mln": {
+     "source": "glavapu",
+     "date": "",
+     "sheet": "ТЭП",
+     "row": "раздел «Расчёт компенсации за социальные объекты»",
+     "text": "ГлавАПУ, выгрузка (дата в файле не указана), лист «ТЭП», раздел «Расчёт компенсации за социальные объекты»"
+    },
+    "inputs.kindergarten_places": {
+     "source": "glavapu",
+     "date": "",
+     "sheet": "ТЭП",
+     "row": "строка 18",
+     "text": "ГлавАПУ, выгрузка (дата в файле не указана), лист «ТЭП», строка 18"
+    },
+    "inputs.school_places": {
+     "source": "glavapu",
+     "date": "",
+     "sheet": "ТЭП",
+     "row": "строка 22",
+     "text": "ГлавАПУ, выгрузка (дата в файле не указана), лист «ТЭП», строка 22"
+    },
+    "inputs.clinic_capacity": {
+     "source": "glavapu",
+     "date": "",
+     "sheet": "ТЭП",
+     "row": "строка 26",
+     "text": "ГлавАПУ, выгрузка (дата в файле не указана), лист «ТЭП», строка 26"
+    },
+    "inputs.social_dou_gba_sqm": {
+     "source": "glavapu",
+     "date": "",
+     "sheet": "ТЭП",
+     "row": "строка 20",
+     "text": "ГлавАПУ, выгрузка (дата в файле не указана), лист «ТЭП», строка 20"
+    },
+    "inputs.social_school_gba_sqm": {
+     "source": "glavapu",
+     "date": "",
+     "sheet": "ТЭП",
+     "row": "строка 24",
+     "text": "ГлавАПУ, выгрузка (дата в файле не указана), лист «ТЭП», строка 24"
+    },
+    "inputs.social_clinic_gba_sqm": {
+     "source": "glavapu",
+     "date": "",
+     "sheet": "ТЭП",
+     "row": "строка 28",
+     "text": "ГлавАПУ, выгрузка (дата в файле не указана), лист «ТЭП», строка 28"
+    },
+    "inputs.parking_k1": {
+     "source": "glavapu",
+     "date": "",
+     "sheet": "Параметры территории",
+     "row": "«К1 — доступность рельсового каркаса»",
+     "text": "ГлавАПУ, выгрузка (дата в файле не указана), лист «Параметры территории», «К1 — доступность рельсового каркаса»"
+    },
+    "inputs.parking_k2": {
+     "source": "glavapu",
+     "date": "",
+     "sheet": "Параметры территории",
+     "row": "«К2 — деловая активность»",
+     "text": "ГлавАПУ, выгрузка (дата в файле не указана), лист «Параметры территории», «К2 — деловая активность»"
+    },
+    "inputs.vri_required": {
+     "source": "glavapu",
+     "date": "",
+     "sheet": "ТЭП",
+     "row": "строка 44",
+     "text": "ГлавАПУ, выгрузка (дата в файле не указана), лист «ТЭП», строка 44"
+    },
+    "tep.apartments.gns": {
+     "source": "glavapu",
+     "date": "",
+     "sheet": "ТЭП",
+     "row": "строка 7.1",
+     "text": "ГлавАПУ, выгрузка (дата в файле не указана), лист «ТЭП», строка 7.1"
+    },
+    "tep.apartments.total_area": {
+     "source": "glavapu",
+     "date": "",
+     "sheet": "ТЭП",
+     "row": "строка 9.1.1",
+     "text": "ГлавАПУ, выгрузка (дата в файле не указана), лист «ТЭП», строка 9.1.1"
+    },
+    "tep.apartments.useful": {
+     "source": "glavapu",
+     "date": "",
+     "sheet": "ТЭП",
+     "row": "строка 10",
+     "text": "ГлавАПУ, выгрузка (дата в файле не указана), лист «ТЭП», строка 10"
+    },
+    "tep.apartments.saleable": {
+     "source": "glavapu",
+     "date": "",
+     "sheet": "ТЭП",
+     "row": "строка 10",
+     "text": "ГлавАПУ, выгрузка (дата в файле не указана), лист «ТЭП», строка 10"
+    },
+    "tep.apartments.units": {
+     "source": "glavapu",
+     "date": "",
+     "sheet": "ТЭП",
+     "row": "строка 5",
+     "text": "ГлавАПУ, выгрузка (дата в файле не указана), лист «ТЭП», строка 5"
+    },
+    "tep.ground_commercial.gns": {
+     "source": "glavapu",
+     "date": "",
+     "sheet": "ТЭП",
+     "row": "строка 7.2",
+     "text": "ГлавАПУ, выгрузка (дата в файле не указана), лист «ТЭП», строка 7.2"
+    },
+    "tep.ground_commercial.total_area": {
+     "source": "glavapu",
+     "date": "",
+     "sheet": "ТЭП",
+     "row": "строка 9.1.2",
+     "text": "ГлавАПУ, выгрузка (дата в файле не указана), лист «ТЭП», строка 9.1.2"
+    },
+    "tep.ground_commercial.useful": {
+     "source": "glavapu",
+     "date": "",
+     "sheet": "ТЭП",
+     "row": "строка 11",
+     "text": "ГлавАПУ, выгрузка (дата в файле не указана), лист «ТЭП», строка 11"
+    },
+    "tep.ground_commercial.saleable": {
+     "source": "glavapu",
+     "date": "",
+     "sheet": "ТЭП",
+     "row": "строка 11",
+     "text": "ГлавАПУ, выгрузка (дата в файле не указана), лист «ТЭП», строка 11"
+    },
+    "tep.underground_parking.gns": {
+     "source": "glavapu",
+     "date": "",
+     "sheet": "ТЭП",
+     "row": "строки 42.1 + 42.2 × 35 м² (+ паркинг МФК)",
+     "text": "ГлавАПУ, выгрузка (дата в файле не указана), лист «ТЭП», строки 42.1 + 42.2 × 35 м² (+ паркинг МФК)"
+    },
+    "tep.underground_parking.total_area": {
+     "source": "glavapu",
+     "date": "",
+     "sheet": "ТЭП",
+     "row": "строки 42.1 + 42.2 × 35 м² (+ паркинг МФК)",
+     "text": "ГлавАПУ, выгрузка (дата в файле не указана), лист «ТЭП», строки 42.1 + 42.2 × 35 м² (+ паркинг МФК)"
+    },
+    "tep.underground_parking.units": {
+     "source": "glavapu",
+     "date": "",
+     "sheet": "ТЭП",
+     "row": "строки 42.1 + 42.2 (+ паркинг МФК)",
+     "text": "ГлавАПУ, выгрузка (дата в файле не указана), лист «ТЭП», строки 42.1 + 42.2 (+ паркинг МФК)"
+    },
+    "tep.standalone_retail.gns": {
+     "source": "glavapu",
+     "date": "",
+     "sheet": "ТЭП",
+     "row": "строка 8.1",
+     "text": "ГлавАПУ, выгрузка (дата в файле не указана), лист «ТЭП», строка 8.1"
+    },
+    "tep.standalone_retail.total_area": {
+     "source": "glavapu",
+     "date": "",
+     "sheet": "ТЭП",
+     "row": "строка 9.2.1",
+     "text": "ГлавАПУ, выгрузка (дата в файле не указана), лист «ТЭП», строка 9.2.1"
+    },
+    "tep.standalone_retail.useful": {
+     "source": "glavapu",
+     "date": "",
+     "sheet": "ТЭП",
+     "row": "строка 9.2.1",
+     "text": "ГлавАПУ, выгрузка (дата в файле не указана), лист «ТЭП», строка 9.2.1"
+    },
+    "tep.standalone_retail.saleable": {
+     "source": "glavapu",
+     "date": "",
+     "sheet": "ТЭП",
+     "row": "строка 9.2.1",
+     "text": "ГлавАПУ, выгрузка (дата в файле не указана), лист «ТЭП», строка 9.2.1"
+    },
+    "tep.kindergarten.gns": {
+     "source": "glavapu",
+     "date": "",
+     "sheet": "ТЭП",
+     "row": "строка 19",
+     "text": "ГлавАПУ, выгрузка (дата в файле не указана), лист «ТЭП», строка 19"
+    },
+    "tep.kindergarten.total_area": {
+     "source": "glavapu",
+     "date": "",
+     "sheet": "ТЭП",
+     "row": "строка 20",
+     "text": "ГлавАПУ, выгрузка (дата в файле не указана), лист «ТЭП», строка 20"
+    },
+    "tep.kindergarten.transfer": {
+     "source": "glavapu",
+     "date": "",
+     "sheet": "ТЭП",
+     "row": "строка 20",
+     "text": "ГлавАПУ, выгрузка (дата в файле не указана), лист «ТЭП», строка 20"
+    },
+    "tep.kindergarten.units": {
+     "source": "glavapu",
+     "date": "",
+     "sheet": "ТЭП",
+     "row": "строка 18",
+     "text": "ГлавАПУ, выгрузка (дата в файле не указана), лист «ТЭП», строка 18"
+    },
+    "tep.school.gns": {
+     "source": "glavapu",
+     "date": "",
+     "sheet": "ТЭП",
+     "row": "строка 23",
+     "text": "ГлавАПУ, выгрузка (дата в файле не указана), лист «ТЭП», строка 23"
+    },
+    "tep.school.total_area": {
+     "source": "glavapu",
+     "date": "",
+     "sheet": "ТЭП",
+     "row": "строка 24",
+     "text": "ГлавАПУ, выгрузка (дата в файле не указана), лист «ТЭП», строка 24"
+    },
+    "tep.school.transfer": {
+     "source": "glavapu",
+     "date": "",
+     "sheet": "ТЭП",
+     "row": "строка 24",
+     "text": "ГлавАПУ, выгрузка (дата в файле не указана), лист «ТЭП», строка 24"
+    },
+    "tep.school.units": {
+     "source": "glavapu",
+     "date": "",
+     "sheet": "ТЭП",
+     "row": "строка 22",
+     "text": "ГлавАПУ, выгрузка (дата в файле не указана), лист «ТЭП», строка 22"
+    },
+    "tep.clinic.gns": {
+     "source": "glavapu",
+     "date": "",
+     "sheet": "ТЭП",
+     "row": "строка 27",
+     "text": "ГлавАПУ, выгрузка (дата в файле не указана), лист «ТЭП», строка 27"
+    },
+    "tep.clinic.total_area": {
+     "source": "glavapu",
+     "date": "",
+     "sheet": "ТЭП",
+     "row": "строка 28",
+     "text": "ГлавАПУ, выгрузка (дата в файле не указана), лист «ТЭП», строка 28"
+    },
+    "tep.clinic.transfer": {
+     "source": "glavapu",
+     "date": "",
+     "sheet": "ТЭП",
+     "row": "строка 28",
+     "text": "ГлавАПУ, выгрузка (дата в файле не указана), лист «ТЭП», строка 28"
+    },
+    "tep.clinic.units": {
+     "source": "glavapu",
+     "date": "",
+     "sheet": "ТЭП",
+     "row": "строка 26",
+     "text": "ГлавАПУ, выгрузка (дата в файле не указана), лист «ТЭП», строка 26"
+    }
+   }
+  },
+  "_field_origin": {
+   "inputs.site_area_ha": {
+    "source": "glavapu",
+    "text": "ГлавАПУ, серверный расчёт 2026-10-17, лист «ТЭП», строка 1"
+   },
+   "inputs.land_rights_cost_mln": {
+    "source": "glavapu",
+    "text": "Пересчёт по параметрам исходного расчёта ГлавАПУ под 29 250 м² квартир (ставка территории 85,39 тыс ₽/м² СПП); то же число — в отчёте 09.09.2026"
+   },
+   "inputs.social_compensation_mln": {
+    "source": "glavapu",
+    "text": "Пересчёт по параметрам исходного расчёта ГлавАПУ под 29 250 м² квартир (население 887, ДОО 40 / СОШ 80 / поликлиника 17); то же число — в отчёте 09.09.2026"
+   },
+   "inputs.kindergarten_places": {
+    "source": "glavapu",
+    "text": "пересчёт от базы ГлавАПУ под 29 250 м² квартир"
+   },
+   "inputs.school_places": {
+    "source": "glavapu",
+    "text": "пересчёт от базы ГлавАПУ под 29 250 м² квартир"
+   },
+   "inputs.clinic_capacity": {
+    "source": "glavapu",
+    "text": "пересчёт от базы ГлавАПУ под 29 250 м² квартир"
+   },
+   "inputs.parking_k1": {
+    "source": "glavapu",
+    "text": "ГлавАПУ, параметры территории"
+   },
+   "inputs.parking_k2": {
+    "source": "glavapu",
+    "text": "ГлавАПУ, параметры территории"
+   },
+   "tep.apartments.gns": {
+    "source": "manual",
+    "text": "восстановлено из отчёта DevelopAid 0.22.92 от 09.09.2026 (расчёт 8a6530696aaf)"
+   },
+   "tep.apartments.total_area": {
+    "source": "manual",
+    "text": "восстановлено из отчёта DevelopAid 0.22.92 от 09.09.2026 (расчёт 8a6530696aaf)"
+   },
+   "tep.apartments.useful": {
+    "source": "manual",
+    "text": "восстановлено из отчёта DevelopAid 0.22.92 от 09.09.2026 (расчёт 8a6530696aaf)"
+   },
+   "tep.apartments.saleable": {
+    "source": "manual",
+    "text": "восстановлено из отчёта DevelopAid 0.22.92 от 09.09.2026 (расчёт 8a6530696aaf)"
+   },
+   "inputs.apartment_price_th": {
+    "source": "manual",
+    "text": "восстановлено из отчёта DevelopAid 0.22.92 от 09.09.2026 (расчёт 8a6530696aaf)"
+   },
+   "inputs.commercial_price_th": {
+    "source": "manual",
+    "text": "восстановлено из отчёта DevelopAid 0.22.92 от 09.09.2026 (расчёт 8a6530696aaf)"
+   },
+   "inputs.parking_price_th": {
+    "source": "manual",
+    "text": "восстановлено из отчёта DevelopAid 0.22.92 от 09.09.2026 (расчёт 8a6530696aaf)"
+   },
+   "inputs.main_above_th_per_sqm": {
+    "source": "manual",
+    "text": "восстановлено из отчёта DevelopAid 0.22.92 от 09.09.2026 (расчёт 8a6530696aaf)"
+   },
+   "inputs.main_under_th_per_sqm": {
+    "source": "manual",
+    "text": "восстановлено из отчёта DevelopAid 0.22.92 от 09.09.2026 (расчёт 8a6530696aaf)"
+   },
+   "inputs.monthly_growth_pre_pct": {
+    "source": "manual",
+    "text": "восстановлено из отчёта DevelopAid 0.22.92 от 09.09.2026 (расчёт 8a6530696aaf)"
+   },
+   "inputs.technical_supervision_pct": {
+    "source": "manual",
+    "text": "восстановлено из отчёта DevelopAid 0.22.92 от 09.09.2026 (расчёт 8a6530696aaf)"
+   },
+   "inputs.landscaping_gns_th_per_sqm": {
+    "source": "manual",
+    "text": "восстановлено из отчёта DevelopAid 0.22.92 от 09.09.2026 (расчёт 8a6530696aaf)"
+   },
+   "inputs.underground_manual_spaces": {
+    "source": "manual",
+    "text": "восстановлено из отчёта DevelopAid 0.22.92 от 09.09.2026 (расчёт 8a6530696aaf)"
+   },
+   "inputs.underground_manual_gns_sqm": {
+    "source": "manual",
+    "text": "восстановлено из отчёта DevelopAid 0.22.92 от 09.09.2026 (расчёт 8a6530696aaf)"
+   },
+   "inputs.underground_area_per_space_sqm": {
+    "source": "manual",
+    "text": "восстановлено из отчёта DevelopAid 0.22.92 от 09.09.2026 (расчёт 8a6530696aaf)"
+   },
+   "inputs.social_mode": {
+    "source": "manual",
+    "text": "восстановлено из отчёта DevelopAid 0.22.92 от 09.09.2026 (расчёт 8a6530696aaf)"
+   }
+  }
+ },
+ "tep": {
+  "apartments": {
+   "gns": 45000,
+   "total_area": 40500,
+   "useful": 29250,
+   "saleable": 29250,
+   "transfer": 0,
+   "units": 250
+  },
+  "ground_commercial": {
+   "gns": 1699,
+   "total_area": 1529,
+   "useful": 1529,
+   "saleable": 1529,
+   "transfer": 0,
+   "units": 0
+  },
+  "underground_parking": {
+   "gns": 7700,
+   "total_area": 7700,
+   "useful": 0,
+   "saleable": 0,
+   "transfer": 0,
+   "units": 440
+  },
+  "storage": {
+   "gns": 0,
+   "total_area": 0,
+   "useful": 0,
+   "saleable": 0,
+   "transfer": 0,
+   "units": 0
+  }
+ },
+ "phasing": null,
+ "scenario": "base"
+}

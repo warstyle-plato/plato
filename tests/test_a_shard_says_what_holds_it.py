@@ -1,0 +1,220 @@
+"""Доля называет, кто держит её после итога, а не ждёт молча.
+
+Пять прогонов подряд Доля 3 кончала работу через десять–тринадцать минут ПОСЛЕ
+итога pytest (замер 15.09.2026: итог 11:08, конец 24:44; у остальных долей
+разрыв 34–46 секунд). Снаружи это неотличимо от медленной доли, а цена — треть
+потолка, который считается от ХУДШЕЙ доли.
+
+Замер в песочнице причину не показал: подозреваемый файл в одиночку и вся
+третья доля целиком выходят с разрывом в секунду-две. Значит ждать надо на
+раннере — а для этого молчание обязано заговорить.
+
+Сторож, который молчит всегда, неотличим от отсутствующего, поэтому здесь
+проверяется именно то, что он ГОВОРИТ, когда нить есть.
+"""
+
+from __future__ import annotations
+
+import sys
+import threading
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from tests import conftest  # noqa: E402
+
+
+def test_a_clean_finish_says_nothing():
+    """Ничего живого — не печатается ничего: приписку в доле перестают читать."""
+    assert conftest.hanging_report([], []) == ""
+    assert conftest.hanging_report([]) == ""
+
+
+def test_a_lingering_thread_is_named():
+    """Нить названа по имени, и сказано, чем это выглядит в логе."""
+    said = conftest.hanging_report(["krt-catalogue-refresh", "плато-сторож"])
+
+    assert "krt-catalogue-refresh" in said and "плато-сторож" in said
+    assert "(2)" in said, said
+    assert "медленная доля" in said, said
+
+
+def test_the_counter_sees_a_real_non_daemon_thread():
+    """Счёт мерит НАСТОЯЩИЕ нити, а не пересказ.
+
+    Предохранитель: сперва убеждаемся, что до запуска нити её в ответе нет, —
+    иначе проверка зелена при любом счёте.
+    """
+    name = "проверочная-нить-доли"
+    assert name not in conftest.live_threads()
+
+    stop = threading.Event()
+    thread = threading.Thread(target=stop.wait, name=name, daemon=False)
+    thread.start()
+    try:
+        assert name in conftest.live_threads()
+    finally:
+        stop.set()
+        thread.join(timeout=5)
+    assert name not in conftest.live_threads()
+
+
+def test_a_daemon_thread_is_not_named():
+    """Демон процесс не держит — называть его значит кричать зря."""
+    stop = threading.Event()
+    thread = threading.Thread(target=stop.wait, name="демон-доли", daemon=True)
+    thread.start()
+    try:
+        assert "демон-доли" not in conftest.live_threads()
+    finally:
+        stop.set()
+        thread.join(timeout=5)
+
+
+def test_a_child_is_named_apart_from_a_thread():
+    """Нить и ребёнок названы порознь: это разные поломки.
+
+    Сторож нитей на прогоне 16.09.2026 промолчал во всех четырёх долях, а Доля
+    3 всё равно молчала одиннадцать с половиной минут после итога (итог
+    00:32:55, следующая строка лога 00:44:37 «Post job cleanup»). Значит держит
+    не нить: незакрытый ребёнок наследует вывод шага, и раннер ждёт закрытия
+    трубы. Одно число их бы скрыло, а чинятся они по-разному.
+    """
+    said = conftest.hanging_report(["нить-а"], ["999 chromium --headless"])
+
+    assert "недемонические нити (1)" in said, said
+    assert "дочерние процессы (1)" in said, said
+    assert said.index("нити (1)") < said.index("процессы (1)"), said
+
+
+def test_the_child_counter_sees_a_real_subprocess():
+    """Счёт мерит НАСТОЯЩИХ детей, а не пересказ.
+
+    Предохранитель: до запуска ребёнка его в ответе нет — иначе проверка зелена
+    при любом счёте.
+    """
+    import subprocess
+    import sys as _sys
+
+    before = conftest.live_children()
+    assert not any("уснувший-ребёнок" in one for one in before), before
+
+    child = subprocess.Popen(
+        [_sys.executable, "-c", "import sys, time; sys.stderr.write('уснувший-ребёнок'); time.sleep(30)"])
+    try:
+        found = conftest.live_children()
+        assert any(one.startswith(f"{child.pid} ") for one in found), (child.pid, found)
+    finally:
+        child.kill()
+        child.wait(timeout=10)
+    assert not any(one.startswith(f"{child.pid} ") for one in conftest.live_children())
+
+
+def test_a_pipe_holder_is_named_apart_from_a_child():
+    """Держатель трубы назван третьим и порознь: это третья поломка.
+
+    Замер 16.09.2026 (доля 3): шаг «Доля набора» кончился 01:18:01 при итоге
+    pytest 01:07:39 — разрыв десять минут двадцать одна секунда, — а
+    послешаговые шаги заняли НОЛЬ секунд и сторож промолчал. Значит держит ни
+    раннер, ни нить, ни прямой ребёнок: раннер ждёт закрытия ТРУБЫ шага, и
+    держать её может внук или переподчинённая сирота, которых счёт по родителю
+    не видит вовсе.
+    """
+    said = conftest.hanging_report(["нить-а"], ["999 chromium"],
+                                   (["777 python -c sleep"], 0))
+
+    assert "недемонические нити (1)" in said, said
+    assert "дочерние процессы (1)" in said, said
+    assert "держат чужие процессы (1)" in said, said
+    assert said.index("процессы (1)") < said.index("держат чужие"), said
+
+
+def test_an_unread_process_is_counted_only_next_to_a_finding():
+    """Непрочитанные процессы называются рядом с находкой, а не сами по себе.
+
+    В здоровой доле чужие процессы нечитаемы всегда, и постоянная приписка
+    перестала бы читаться; но при находке умолчать о них значит выдать слепоту
+    за полноту.
+    """
+    assert conftest.hanging_report([], [], ([], 12)) == ""
+
+    said = conftest.hanging_report([], [], (["777 python"], 12))
+    assert "12 процессов" in said, said
+
+
+def test_the_pipe_counter_sees_an_orphan_that_the_parent_count_misses():
+    """Счёт мерит НАСТОЯЩЕГО держателя трубы, и ставится именно сирота.
+
+    Внук, чей родитель умер, уезжает к init: по PPID его не видно ни у кого из
+    нас, а трубу шага он держит так же. Предохранитель здесь двойной — сирота
+    обязана НЕ найтись счётом по родителю и обязана найтись счётом по трубе;
+    совпади оба, проверка не отличала бы один счёт от другого.
+    """
+    import json
+    import subprocess
+    import sys as _sys
+    import tempfile
+
+    grandchild = ("import subprocess, sys; "
+                  "subprocess.Popen([sys.executable, '-c', "
+                  "'import time; time.sleep(120)'])")
+    with tempfile.TemporaryDirectory() as home:
+        out = Path(home) / "ответ.json"
+        program = (
+            "import json, subprocess, sys, time\n"
+            f"sys.path.insert(0, {str(ROOT)!r})\n"
+            "from tests import conftest\n"
+            f"mid = subprocess.Popen([sys.executable, '-c', {grandchild!r}])\n"
+            "mid.wait()\n"
+            "time.sleep(1.0)\n"
+            "kids = conftest.live_children()\n"
+            "holders, unseen = conftest.pipe_holders()\n"
+            f"open({str(out)!r}, 'w', encoding='utf-8').write(json.dumps("
+            "{'kids': kids, 'holders': holders, 'unseen': unseen}))\n"
+        )
+        # Вывод измеряющего процесса — настоящая труба: иначе ждать её закрытия
+        # некому, и мерить нечего.
+        proc = subprocess.Popen([_sys.executable, "-c", program],
+                                stdout=subprocess.PIPE)
+        try:
+            proc.wait(timeout=60)
+        finally:
+            proc.stdout.close()
+        said = json.loads(out.read_text(encoding="utf-8"))
+
+    holders = said["holders"]
+    assert holders, said
+    orphans = [one for one in holders if "time.sleep(120)" in one]
+    assert orphans, said
+    pid = int(orphans[0].split()[0])
+    try:
+        assert not any(one.startswith(f"{pid} ") for one in said["kids"]), said
+    finally:
+        import os
+        import signal
+
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+def test_only_the_writing_end_counts():
+    """Читающий конец трубы шаг не держит — ждут закрытия пишущего.
+
+    Без этого отсева сторож называл бы и читателя (это сам раннер), то есть
+    кричал бы зря в каждой доле; направление говорит `fdinfo`, а не ссылка —
+    у обоих концов она одна и та же.
+    """
+    import os
+
+    read, write = os.pipe()
+    try:
+        assert os.readlink(f"/proc/self/fd/{read}") == \
+            os.readlink(f"/proc/self/fd/{write}")
+        assert conftest._writes(os.getpid(), str(write)) is True
+        assert conftest._writes(os.getpid(), str(read)) is False
+    finally:
+        os.close(read)
+        os.close(write)

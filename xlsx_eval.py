@@ -1,0 +1,721 @@
+"""Крошечный вычислитель формул Excel: и проверка книги, и её сохранённые значения.
+
+Пересчитать книгу в песочнице нечем: openpyxl формулы не считает, LibreOffice
+здесь сломан, а `formulas` спотыкается на функциях шаблона. Поэтому правки
+формул проверялись чужим пересчётом — то есть на слово. Для книги, которую мы
+собираем сами, этого мало: она вся из формул, и ошибка в любой уедет к
+аналитику молча.
+
+Здесь ровно тот набор, которым книга и написана: ссылки, диапазоны, арифметика,
+сравнения и девять функций. Ничего больше он не умеет и уметь не должен —
+формула, для которой не хватает возможностей, должна ломать тест, а не
+пролезать.
+
+С 13.09.2026 он не только проверяет книгу, но и считает значения, которые в неё
+кладутся рядом с формулами: без них всё, что не пересчитывает формулы само —
+предпросмотр в телеграме, Quick Look, телефон, диски — показывает пустые клетки.
+Поэтому он переехал из `tests/` в корень: это уже не только проверочный код.
+Формула, которую он не понимает, по-прежнему обязана ломать тест, а не
+пролезать, — и по той же причине не получает сохранённого значения: соврать
+кэшем хуже, чем оставить клетку пустой.
+
+Запуск: python3 -m pytest tests -q
+"""
+
+from __future__ import annotations
+
+import calendar as _calendar
+import datetime as _dt
+import math as _math
+import re
+from typing import Any, Callable
+
+from openpyxl.utils import column_index_from_string, get_column_letter
+
+_TOKEN = re.compile(
+    r"""
+    (?P<string>"(?:[^"]|"")*")
+  | (?P<number>\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)
+  | (?P<sheet>(?:'[^']+'|[^\s,()<>=+\-*/&:!]+)!)
+  | (?P<cell>\$?[A-Za-z]{1,3}\$?\d+)
+  | (?P<op><>|<=|>=|[-+*/^<>=&,():])
+  | (?P<name>[A-Za-z_][A-Za-z_0-9.]*)
+  | (?P<space>\s+)
+    """,
+    re.VERBOSE,
+)
+
+
+class FormulaError(Exception):
+    """Формула, которую вычислитель не понимает, — повод упасть, а не гадать."""
+
+
+class ExcelError(FormulaError):
+    """Ошибка, которую дал бы и сам Excel: #VALUE!, #N/A, #REF!.
+
+    Её ловит IFERROR — как в Excel. Прочая `FormulaError` — это пробел
+    вычислителя, а не ответ книги, и IFERROR её НЕ глотает: иначе непонятая
+    формула получала запасное значение (обычно ноль) и выглядела посчитанной.
+    Так 29.09.2026 в сохранённых значениях стояли нулями все темпы продаж
+    ОТЧЕТА и ставки CF, хотя Excel считал их верно.
+    """
+
+
+def _as_number(value: Any) -> float:
+    if value is None or value == "":
+        return 0.0
+    if isinstance(value, bool):
+        return 1.0 if value else 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, _dt.datetime):
+        value = value.date()
+    if isinstance(value, _dt.date):
+        # Серийная дата Excel: 1899-12-30 — нулевой день книги.
+        return float((value - _dt.date(1899, 12, 30)).days)
+    if isinstance(value, list):
+        raise FormulaError(f"массив там, где ждали число: {len(value)} значений")
+    raise ExcelError(f"не число: {value!r}")
+
+
+def _as_date(value: Any) -> _dt.date:
+    if isinstance(value, _dt.datetime):
+        return value.date()
+    if isinstance(value, _dt.date):
+        return value
+    return _dt.date(1899, 12, 30) + _dt.timedelta(days=int(_as_number(value)))
+
+
+def _edate(value: Any, offset: Any) -> _dt.date:
+    start = _as_date(value)
+    total = start.year * 12 + start.month - 1 + int(_as_number(offset))
+    year, month = divmod(total, 12)
+    day = min(start.day, _calendar.monthrange(year, month + 1)[1])
+    return _dt.date(year, month + 1, day)
+
+
+def _ceiling(value: float, step: float) -> float:
+    if step == 0:
+        return 0.0
+    return _math.ceil(value / step) * step
+
+
+def _flatten(values: Any) -> list[Any]:
+    if isinstance(values, list):
+        out: list[Any] = []
+        for item in values:
+            out.extend(_flatten(item))
+        return out
+    return [values]
+
+
+def _numbers(values: Any) -> list[float]:
+    """Числа набора — так же, как их отбирает Excel.
+
+    SUM, AVERAGE, MAX и MIN текст внутри диапазона не складывают и не
+    бракуют, а ПРОПУСКАЮТ. Вычислитель бракует: `SUM('Вводные'!A1:BZ1000)`
+    по листу, где рядом с числами стоят подписи строк, отвечал у нас
+    ошибкой там, где книга отвечает числом, — то есть проверка расходилась с
+    тем, что она проверяет. Логические значения оставлены как были: их в
+    диапазонах книги нет, а менять две вещи разом — значит не знать, какая
+    из них подействовала."""
+    return [_as_number(v) for v in _flatten(values)
+            if v is not None and v != "" and not isinstance(v, str)]
+
+
+class RangeValue(list):
+    """Диапазон, помнящий свою форму: INDEX(range, r, c) без неё не собрать."""
+
+    def __init__(self, values: list[Any], rows: int, cols: int) -> None:
+        super().__init__(values)
+        self.rows = rows
+        self.cols = cols
+
+
+def _excel_round(value: float, digits: float, up: bool = False) -> float:
+    n = int(digits)
+    scale = 10.0 ** n
+    scaled = value * scale
+    if up:
+        result = _math.ceil(abs(scaled)) * (1 if scaled >= 0 else -1)
+    else:
+        # Excel округляет половину от нуля, а не к чётному, как round().
+        result = _math.floor(abs(scaled) + 0.5) * (1 if scaled >= 0 else -1)
+    return result / scale
+
+
+def _index(args: list[Any]) -> Any:
+    values = args[0]
+    row = int(_as_number(args[1])) if len(args) > 1 else 1
+    col = int(_as_number(args[2])) if len(args) > 2 else 0
+    if isinstance(values, RangeValue) and col:
+        return values[(row - 1) * values.cols + (col - 1)]
+    flat = _flatten(values)
+    position = max(row, col, 1)
+    if not 1 <= position <= len(flat):
+        raise ExcelError(f"INDEX за пределами диапазона: {position} из {len(flat)}")
+    return flat[position - 1]
+
+
+def _match(args: list[Any]) -> int:
+    target = args[0]
+    flat = _flatten(args[1])
+    mode = int(_as_number(args[2])) if len(args) > 2 else 1
+    if mode != 0:
+        raise FormulaError("MATCH поддержан только с точным совпадением (0)")
+    for position, item in enumerate(flat, start=1):
+        if _compare("=", item, target):
+            return position
+    raise ExcelError(f"MATCH: {target!r} не найдено")
+
+
+_CRITERIA_OP = re.compile(r"^(<=|>=|<>|<|>|=)?(.*)$", re.S)
+
+
+def _criteria(value: Any) -> tuple[str, Any]:
+    """Условие Excel: «<45000», «>=3», «Да» — оператор стоит внутри строки.
+
+    Прежде условие сравнивалось только на равенство, и всякое «<дата» молча
+    считалось несовпадением: SUMIF по месяцам до РнС вернул бы ноль, а ноль в
+    книге выглядит как посчитанный ответ.
+    """
+    if not isinstance(value, str):
+        return "=", value
+    match = _CRITERIA_OP.match(value)
+    operator, rest = (match.group(1) or "="), match.group(2).strip()
+    try:
+        return operator, _dt.date.fromisoformat(rest)
+    except ValueError:
+        pass
+    try:
+        return operator, float(rest.replace(",", "."))
+    except ValueError:
+        return operator, rest
+
+
+def _countif(args: list[Any]) -> int:
+    operator, target = _criteria(args[1])
+    return sum(1 for item in _flatten(args[0]) if _compare(operator, item, target))
+
+
+def _sumif(args: list[Any]) -> float:
+    """SUMIF(диапазон; условие[; диапазон_суммирования])."""
+    tested = _flatten(args[0])
+    summed = _flatten(args[2]) if len(args) > 2 else tested
+    operator, target = _criteria(args[1])
+    return sum(_as_number(value)
+               for item, value in zip(tested, summed)
+               if _compare(operator, item, target))
+
+
+def _npv(args: list[Any]) -> float:
+    rate = _as_number(args[0])
+    flows = _numbers(args[1:])
+    return sum(flow / (1 + rate) ** period for period, flow in enumerate(flows, start=1))
+
+
+def _xirr(args: list[Any]) -> float:
+    flows = [_as_number(v) for v in _flatten(args[0])]
+    days = [_as_number(v) for v in _flatten(args[1])]
+    if len(flows) != len(days) or not flows:
+        raise FormulaError("XIRR: потоки и даты разной длины")
+    base = days[0]
+
+    def value(rate: float) -> float:
+        return sum(f / (1 + rate) ** ((d - base) / 365.0) for f, d in zip(flows, days))
+
+    low, high = -0.9999, 100.0
+    f_low, f_high = value(low), value(high)
+    if f_low * f_high > 0:
+        raise _DivZero()  # IRR не существует — Excel вернул бы #NUM!, ловится IFERROR
+    for _ in range(200):
+        mid = (low + high) / 2
+        f_mid = value(mid)
+        if abs(f_mid) < 1e-9:
+            return mid
+        if f_low * f_mid <= 0:
+            high, f_high = mid, f_mid
+        else:
+            low, f_low = mid, f_mid
+    return (low + high) / 2
+
+
+def _irr(args: list[Any]) -> float:
+    """IRR по периодам ряда, как у Excel: ставка за период, без годового
+    пересчёта. Корня нет (поток не меняет знак) — #NUM!, ловится IFERROR.
+
+    Excel ищет корень Ньютоном от догадки; здесь — делением отрезка, как у
+    движка (`_monthly_irr`): у ряда «вложения, потом возврат» корень один, и
+    оба способа приходят к нему же.
+    """
+    flows = _numbers(args[0])
+    if not any(v < 0 for v in flows) or not any(v > 0 for v in flows):
+        raise _DivZero()
+    tail = next((1.0 if v > 0 else -1.0 for v in reversed(flows) if v), 0.0)
+
+    def value(rate: float) -> float:
+        total, factor = 0.0, 1.0
+        for flow in flows:
+            if factor == 0.0:
+                return _math.inf * tail
+            total += flow / factor
+            try:
+                factor *= 1.0 + rate
+            except OverflowError:
+                factor = _math.inf
+        return total
+
+    low, high = -0.95, 1.0
+    f_low, f_high = value(low), value(high)
+    while f_low * f_high > 0 and high < 100:
+        high *= 2
+        f_high = value(high)
+    if f_low * f_high > 0:
+        # Вложение, приход и хвост налога после него: края одного знака, а
+        # корень есть. Тот же запасной поиск, что у движка.
+        from developaid_finance_math import _irr_falling_bracket
+        bracket = _irr_falling_bracket(value)
+        if bracket is None:
+            raise _DivZero()
+        low, high = bracket
+        f_low, f_high = value(low), value(high)
+    for _ in range(200):
+        mid = (low + high) / 2
+        f_mid = value(mid)
+        if f_mid == 0.0:
+            return mid
+        if f_low * f_mid <= 0:
+            high, f_high = mid, f_mid
+        else:
+            low, f_low = mid, f_mid
+    return (low + high) / 2
+
+
+def _sumproduct(args: list[Any]) -> float:
+    """SUMPRODUCT с любым числом массивов, в том числе с одним.
+
+    Один массив — это сумма уже перемноженного выражения:
+    `SUMPRODUCT((A1:C1+A2:C2)*A3:C3)`. Массивы разной длины Excel не
+    складывает (#VALUE!), и молча обрезать их по короткому здесь нельзя.
+    """
+    columns = [[_as_number(v) for v in _flatten(arg)] for arg in args]
+    if len({len(column) for column in columns}) > 1:
+        raise ExcelError("SUMPRODUCT: массивы разной длины")
+    total = 0.0
+    for values in zip(*columns):
+        product = 1.0
+        for value in values:
+            product *= value
+        total += product
+    return total
+
+
+FUNCTIONS: dict[str, Callable[[list[Any]], Any]] = {
+    "SUM": lambda args: sum(_numbers(args)),
+    "MAX": lambda args: max(_numbers(args) or [0.0]),
+    "MIN": lambda args: min(_numbers(args) or [0.0]),
+    "ABS": lambda args: abs(_as_number(args[0])),
+    "SQRT": lambda args: _math.sqrt(max(0.0, _as_number(args[0]))),
+    "AND": lambda args: all(bool(_as_number(a)) for a in _flatten(args)),
+    "OR": lambda args: any(bool(_as_number(a)) for a in _flatten(args)),
+    "IF": lambda args: args[1] if bool(_as_number(args[0]))
+    else (args[2] if len(args) > 2 else False),
+    "SUMPRODUCT": lambda args: _sumproduct(args),
+    "YEAR": lambda args: _as_date(args[0]).year,
+    "DAY": lambda args: _as_date(args[0]).day,
+    "EXP": lambda args: _math.exp(_as_number(args[0])),
+    "CEILING": lambda args: _ceiling(_as_number(args[0]), _as_number(args[1])),
+    "CEILING.MATH": lambda args: _ceiling(_as_number(args[0]),
+                                          _as_number(args[1]) if len(args) > 1 else 1.0),
+    "EDATE": lambda args: _edate(args[0], args[1]),
+    "MONTH": lambda args: _as_date(args[0]).month,
+    "MOD": lambda args: _as_number(args[0]) - _as_number(args[1]) * _math.floor(
+        _as_number(args[0]) / _as_number(args[1])),
+    "ROUND": lambda args: _excel_round(_as_number(args[0]), _as_number(args[1])),
+    "SUBSTITUTE": lambda args: _text(args[0]).replace(_text(args[1]), _text(args[2])),
+    "ROUNDUP": lambda args: _excel_round(_as_number(args[0]), _as_number(args[1]), up=True),
+    "COUNT": lambda args: len(_numbers(args)),
+    "COUNTIF": _countif,
+    "SUMIF": _sumif,
+    "INDEX": _index,
+    "MATCH": _match,
+    "TEXT": lambda args: _text_format(args),
+    "FIXED": lambda args: _fixed(args),
+    # Строковые: подпись очередей соцобъекта собирается формулой, чтобы не
+    # устаревать после правки мест прямо в книге.
+    "LEN": lambda args: float(len(_text(args[0]))),
+    "REPT": lambda args: _text(args[0]) * max(0, int(_as_number(args[1]))),
+    "LEFT": lambda args: _text(args[0])[:int(_as_number(args[1]))
+                                        if len(args) > 1 else 1],
+    "NPV": _npv,
+    "IRR": _irr,
+    "INT": lambda args: float(_math.floor(_as_number(args[0]))),
+    "XIRR": _xirr,
+}
+
+
+class Evaluator:
+    """Считает лист openpyxl: значения как есть, формулы — разбором.
+
+    Ленивый: значение ячейки вычисляется при обращении и запоминается. Цикл
+    ссылок ловится и превращается в ошибку — в книге его быть не должно.
+    """
+
+    def __init__(self, workbook) -> None:
+        self.workbook = workbook
+        self._cache: dict[tuple[str, str], Any] = {}
+        # Диапазон помнится целиком, а не собирается заново из уже посчитанных
+        # ячеек. Книга статична, ячейки и так кэшируются — заново собирался
+        # только список. Замер на умолчаниях: 29 437 обращений к диапазонам, из
+        # них различных 3 293; `Продажи!D9:GA9` спрашивался 1 620 раз, и каждый
+        # раз это 180 обращений к ячейке. После протяжки сетки со 120 месяцев до
+        # 180 счёт книги подорожал вместе с ней.
+        self._ranges: dict[tuple[str, str, str], "RangeValue"] = {}
+        self._stack: set[tuple[str, str]] = set()
+        # Лист по имени openpyxl ищет перебором всех листов — на каждую ячейку.
+        self._sheets: dict[str, Any] = {}
+        self._tokens: list[tuple[str, str]] = []
+        self._pos = 0
+        self._sheet = ""
+
+    # --- доступ к ячейкам --------------------------------------------------
+
+    def cell(self, sheet: str, address: str) -> Any:
+        address = address.replace("$", "").upper()
+        key = (sheet, address)
+        if key in self._cache:
+            return self._cache[key]
+        if key in self._stack:
+            raise FormulaError(f"круговая ссылка на {sheet}!{address}")
+        ws = self._sheets.get(sheet)
+        if ws is None:
+            ws = self._sheets[sheet] = self.workbook[sheet]
+        raw = ws[address].value
+        self._stack.add(key)
+        try:
+            value = self.evaluate(raw, sheet) if isinstance(raw, str) and raw.startswith("=") else raw
+        finally:
+            self._stack.discard(key)
+        self._cache[key] = value
+        return value
+
+    def _range(self, sheet: str, start: str, end: str) -> list[Any]:
+        start, end = start.replace("$", "").upper(), end.replace("$", "").upper()
+        key = (sheet, start, end)
+        remembered = self._ranges.get(key)
+        if remembered is not None:
+            return remembered
+        c1, r1 = _split(start)
+        c2, r2 = _split(end)
+        out = []
+        for row in range(min(r1, r2), max(r1, r2) + 1):
+            for column in range(min(c1, c2), max(c1, c2) + 1):
+                out.append(self.cell(sheet, f"{get_column_letter(column)}{row}"))
+        # Кладётся только досчитанный диапазон: круговая ссылка бросает из
+        # `cell`, и до этой строки исполнение не доходит.
+        value = RangeValue(out, abs(r2 - r1) + 1, abs(c2 - c1) + 1)
+        self._ranges[key] = value
+        return value
+
+    # --- разбор ------------------------------------------------------------
+
+    def evaluate(self, formula: str, sheet: str) -> Any:
+        # Разбор рекурсивный: ссылка внутри формулы уводит в другую формулу,
+        # поэтому состояние разборщика сохраняется и возвращается.
+        saved = (self._tokens, self._pos, self._sheet)
+        self._tokens, self._pos, self._sheet = _tokenize(formula.lstrip("=")), 0, sheet
+        try:
+            value = self._expression()
+            if self._pos != len(self._tokens):
+                raise FormulaError(f"хвост после разбора: {formula}")
+            return value
+        finally:
+            self._tokens, self._pos, self._sheet = saved
+
+    def _peek(self) -> tuple[str, str] | None:
+        return self._tokens[self._pos] if self._pos < len(self._tokens) else None
+
+    def _take(self) -> tuple[str, str]:
+        token = self._tokens[self._pos]
+        self._pos += 1
+        return token
+
+    def _expression(self) -> Any:
+        left = self._concat()
+        while (token := self._peek()) and token[0] == "op" and token[1] in ("=", "<>", "<", "<=", ">", ">="):
+            self._take()
+            right = self._concat()
+            left = _elementwise(lambda a, b, op=token[1]: _compare(op, a, b), left, right)
+        return left
+
+    def _concat(self) -> Any:
+        left = self._sum()
+        while (token := self._peek()) and token == ("op", "&"):
+            self._take()
+            left = f"{_text(left)}{_text(self._sum())}"
+        return left
+
+    def _sum(self) -> Any:
+        left = self._product()
+        while (token := self._peek()) and token[0] == "op" and token[1] in "+-":
+            self._take()
+            right = self._product()
+            left = _elementwise(
+                (lambda a, b: _as_number(a) + _as_number(b)) if token[1] == "+"
+                else (lambda a, b: _as_number(a) - _as_number(b)), left, right)
+        return left
+
+    def _product(self) -> Any:
+        left = self._power()
+        while (token := self._peek()) and token[0] == "op" and token[1] in "*/":
+            self._take()
+            right = self._power()
+            left = _elementwise(_divide if token[1] == "/"
+                                else (lambda a, b: _as_number(a) * _as_number(b)), left, right)
+        return left
+
+    def _power(self) -> Any:
+        left = self._unary()
+        while (token := self._peek()) and token == ("op", "^"):
+            self._take()
+            left = _as_number(left) ** _as_number(self._unary())
+        return left
+
+    def _unary(self) -> Any:
+        token = self._peek()
+        if token and token[0] == "op" and token[1] in "+-":
+            self._take()
+            value = self._unary()
+            sign = -1.0 if token[1] == "-" else 1.0
+            if isinstance(value, list):
+                return RangeValue([sign * _as_number(v) for v in value],
+                                  getattr(value, "rows", len(value)), getattr(value, "cols", 1))
+            return sign * _as_number(value)
+        return self._atom()
+
+    def _atom(self) -> Any:
+        token = self._take()
+        kind, text = token
+        if kind == "number":
+            return float(text)
+        if kind == "string":
+            return text[1:-1].replace('""', '"')
+        if kind == "op" and text == "(":
+            value = self._expression()
+            self._expect(")")
+            return value
+        if kind == "sheet":
+            sheet = text[:-1].strip("'")
+            return self._reference(sheet, self._take())
+        if kind == "cell":
+            return self._reference(self._sheet, token)
+        if kind == "name":
+            return self._call(text.upper().removeprefix("_XLFN."))
+        raise FormulaError(f"неожиданный токен {text!r}")
+
+    def _reference(self, sheet: str, token: tuple[str, str]) -> Any:
+        if token[0] != "cell":
+            raise FormulaError(f"после имени листа ожидалась ячейка, а не {token[1]!r}")
+        start = token[1]
+        if (nxt := self._peek()) and nxt == ("op", ":"):
+            self._take()
+            end = self._take()
+            if end[0] == "sheet":
+                # «Лист!A1:Лист!B2» — легальная запись Excel; лист обязан
+                # совпадать с началом диапазона.
+                if end[1][:-1].strip("'") != sheet:
+                    raise FormulaError("диапазон через два разных листа")
+                end = self._take()
+            return self._range(sheet, start, end[1])
+        return self.cell(sheet, start)
+
+    def _call(self, name: str) -> Any:
+        self._expect("(")
+        args: list[Any] = []
+        if self._peek() != ("op", ")"):
+            while True:
+                if name in ("IF", "IFERROR"):
+                    args.append(self._lazy())
+                else:
+                    args.append(self._expression())
+                if self._peek() == ("op", ","):
+                    self._take()
+                    continue
+                break
+        self._expect(")")
+        if name == "IFERROR":
+            try:
+                value = args[0]()
+            except (_DivZero, ZeroDivisionError, ExcelError):
+                return args[1]()
+            return value
+        if name == "IF":
+            condition = bool(_as_number(args[0]()))
+            if condition:
+                return args[1]()
+            return args[2]() if len(args) > 2 else False
+        function = FUNCTIONS.get(name)
+        if function is None:
+            raise FormulaError(f"функция {name} вычислителю неизвестна")
+        return function(args)
+
+    def _lazy(self) -> Callable[[], Any]:
+        """Аргумент IF/IFERROR считается только если до него дошло."""
+        start = self._pos
+        depth = 0
+        while self._pos < len(self._tokens):
+            kind, text = self._tokens[self._pos]
+            if kind == "op" and text == "(":
+                depth += 1
+            elif kind == "op" and text == ")":
+                if depth == 0:
+                    break
+                depth -= 1
+            elif kind == "op" and text == "," and depth == 0:
+                break
+            self._pos += 1
+        piece = self._tokens[start:self._pos]
+        sheet = self._sheet
+
+        def run() -> Any:
+            saved_tokens, saved_pos, saved_sheet = self._tokens, self._pos, self._sheet
+            self._tokens, self._pos, self._sheet = piece, 0, sheet
+            try:
+                value = self._expression()
+                if self._pos != len(piece):
+                    raise FormulaError("хвост в аргументе")
+                return value
+            finally:
+                self._tokens, self._pos, self._sheet = saved_tokens, saved_pos, saved_sheet
+
+        return run
+
+    def _expect(self, symbol: str) -> None:
+        token = self._take()
+        if token != ("op", symbol):
+            raise FormulaError(f"ожидалось {symbol!r}, встретилось {token[1]!r}")
+
+
+class _DivZero(Exception):
+    """#DIV/0! — ловится IFERROR, как в Excel."""
+
+
+def _split(address: str) -> tuple[int, int]:
+    match = re.fullmatch(r"([A-Z]{1,3})(\d+)", address)
+    if not match:
+        raise FormulaError(f"не адрес: {address}")
+    return column_index_from_string(match.group(1)), int(match.group(2))
+
+
+_TEXT_FIXED = re.compile(r"^0(?:\.(0+))?$")
+
+
+def _text_format(args: list[Any]) -> str:
+    """TEXT(значение; формат) — ровно те форматы, что пишет книга.
+
+    Прежде формат отбрасывался, и в сохранённых значениях авто-рисков
+    Дашборда стояло «ДА · 16043.71748868101», хотя Excel покажет «16043,7».
+    Разделитель — запятая: книгу открывают в русском Excel. Незнакомый формат
+    — пробел вычислителя, а не повод угадать.
+    """
+    if len(args) < 2:
+        return _text(args[0])
+    code = _text(args[1])
+    match = _TEXT_FIXED.match(code)
+    if not match:
+        raise FormulaError(f"TEXT: формат {code!r} вычислителю неизвестен")
+    digits = len(match.group(1) or "")
+    value = _excel_round(_as_number(args[0]), digits)
+    return f"{value:.{digits}f}".replace(".", ",")
+
+
+def _fixed(args: list[Any]) -> str:
+    """FIXED(число; знаков; без_разрядов) — текст с разделителем локали.
+
+    В отличие от TEXT, код формата не нужен, и русский Excel пишет запятую сам:
+    LLCR дашборда — «0,90x», а не «0.9x» и не #VALUE! от TEXT(…;"0.00").
+    """
+    digits = int(_as_number(args[1])) if len(args) > 1 and args[1] is not None else 2
+    if digits < 0:
+        raise FormulaError("FIXED: отрицательное число знаков вычислителю неизвестно")
+    no_groups = len(args) > 2 and bool(args[2])
+    value = _excel_round(_as_number(args[0]), digits)
+    text = f"{value:,.{digits}f}" if not no_groups else f"{value:.{digits}f}"
+    return text.replace(",", "\u00a0").replace(".", ",")
+
+
+def _text(value: Any) -> str:
+    # Целое число Excel склеивает без хвоста: 916 & "" — «916», а не «916.0».
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return "" if value is None else str(value)
+
+
+def _divide(a: Any, b: Any) -> float:
+    divisor = _as_number(b)
+    if divisor == 0:
+        raise _DivZero()
+    return _as_number(a) / divisor
+
+
+def _shape(value: Any) -> tuple[int, int]:
+    return (getattr(value, "rows", len(value)), getattr(value, "cols", 1))
+
+
+def _elementwise(op: Callable[[Any, Any], Any], left: Any, right: Any) -> Any:
+    """Операция над числами или поэлементно над диапазонами — как в Excel.
+
+    `SUMPRODUCT((A1:C1+A2:C2)*A3:C3)` и `--(A1:C1>0)` книга пишет постоянно;
+    без этого вычислитель падал на «не число: [массив]». Строка растягивается
+    на блок той же ширины (1×N с M×N даёт M×N), столбец — на блок той же
+    высоты: так делает Excel. Иные формы — пробел, а не ответ: Excel дал бы
+    #N/A по краю, и гадать здесь нельзя.
+    """
+    left_list, right_list = isinstance(left, list), isinstance(right, list)
+    if not left_list and not right_list:
+        return op(left, right)
+    if not left_list:
+        rows, cols = _shape(right)
+        return RangeValue([op(left, y) for y in right], rows, cols)
+    if not right_list:
+        rows, cols = _shape(left)
+        return RangeValue([op(x, right) for x in left], rows, cols)
+    (r1, c1), (r2, c2) = _shape(left), _shape(right)
+    if len(left) != r1 * c1 or len(right) != r2 * c2:
+        raise FormulaError("массив без формы")
+    rows, cols = max(r1, r2), max(c1, c2)
+    if r1 not in (1, rows) or r2 not in (1, rows) or c1 not in (1, cols) or c2 not in (1, cols):
+        raise FormulaError(f"диапазоны разной формы: {r1}×{c1} и {r2}×{c2}")
+    out = []
+    for r in range(rows):
+        for c in range(cols):
+            x = left[(r if r1 > 1 else 0) * c1 + (c if c1 > 1 else 0)]
+            y = right[(r if r2 > 1 else 0) * c2 + (c if c2 > 1 else 0)]
+            out.append(op(x, y))
+    return RangeValue(out, rows, cols)
+
+
+def _compare(operator: str, left: Any, right: Any) -> bool:
+    if isinstance(left, str) or isinstance(right, str):
+        a, b = _text(left), _text(right)
+    else:
+        a, b = _as_number(left), _as_number(right)
+    return {
+        "=": a == b, "<>": a != b, "<": a < b,
+        "<=": a <= b, ">": a > b, ">=": a >= b,
+    }[operator]
+
+
+def _tokenize(formula: str) -> list[tuple[str, str]]:
+    tokens: list[tuple[str, str]] = []
+    position = 0
+    while position < len(formula):
+        match = _TOKEN.match(formula, position)
+        if not match:
+            raise FormulaError(f"не разобрано с позиции {position}: {formula[position:]!r}")
+        position = match.end()
+        kind = match.lastgroup
+        if kind == "space":
+            continue
+        tokens.append((kind, match.group()))
+    return tokens

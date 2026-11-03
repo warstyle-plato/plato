@@ -1,0 +1,44 @@
+{
+ "results": [
+  {
+   "id": 2,
+   "name": "Центральный федеральный округ",
+   "level": 0,
+   "shortName": "ЦФО",
+   "count": 12628,
+   "isMatch": false,
+   "children": [
+    {
+     "id": 9,
+     "name": "Московская область",
+     "level": 1,
+     "shortName": "Московская обл",
+     "count": 3511,
+     "isMatch": true,
+     "parentId": 2,
+     "children": []
+    }
+   ]
+  },
+  {
+   "id": 4,
+   "name": "Южный федеральный округ",
+   "level": 0,
+   "shortName": "ЮФО",
+   "count": 1,
+   "isMatch": false,
+   "children": [
+    {
+     "id": 50,
+     "name": "Астраханская область",
+     "level": 1,
+     "shortName": "Астраханская обл",
+     "count": 1,
+     "isMatch": false,
+     "parentId": 4,
+     "children": []
+    }
+   ]
+  }
+ ]
+}

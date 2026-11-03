@@ -1,0 +1,435 @@
+DEVELOPAID v0.12.65 ONE PARCEL LIMIT EVERYWHERE OK
+Python syntax (main.py + main_legacy.py): OK
+Page JavaScript syntax (node --check): OK
+tests/ — 309 passed (2 new)
+EGRN card no longer sends limit:5; address resolution not capped at five: OK
+LandLookupRequest and MoCalculateRequest both default to 30: OK
+Guard test fails if limit:5 reappears or the defaults diverge: OK
+Status line reports parcels taken against parcels asked for: OK
+
+DEVELOPAID v0.12.64 PARCEL IDENTIFIED POSITIVELY OK
+Python syntax (main.py + main_legacy.py): OK
+tests/ — 307 passed (11 new on classification)
+Land recognised by its own category words, not by excluding others: OK
+Unknown category no longer falls through into land: OK
+  incomplete construction and property complexes no longer inflate the area: OK
+Category label decides the kind; fields decide only when there is no label: OK
+Address and point search keep parcels only, hidden counted by kind: OK
+Cadastral-number search applies no filter at all: OK
+
+DEVELOPAID v0.12.63 ADDRESS SEARCH RETURNS THE PARCEL OK
+Python syntax (main.py + main_legacy.py): OK
+tests/ — 296 passed (4 new)
+Premises split from buildings: flats and parking are their own kind: OK
+Address and point search hide premises, land first then buildings: OK
+Hidden count reported in the response and explained in a warning: OK
+A premise asked for by its cadastral number is never hidden: OK
+include_premises brings them back when they are actually wanted: OK
+
+DEVELOPAID v0.12.62 ALL PARCELS, NOT THE FIRST TEN OK
+Python syntax (main.py + main_legacy.py): OK
+tests/ — 292 passed (4 new)
+22 cadastral numbers give 22.4 ha, previously 10 numbers and 16 ha: OK
+Limit raised from 10 to 30, matching what the page promises: OK
+Region block asks for 30 explicitly: OK
+Truncation now warns and says the area is understated: OK
+Lookups run three at a time, order preserved, same result as sequential: OK
+Limit and worker count configurable by environment: OK
+
+DEVELOPAID v0.12.61 REGION PARAMETERS RECALCULATE OK
+Python syntax (main.py + main_legacy.py): OK
+Page JavaScript syntax (node --check): OK
+tests/ — 288 passed (3 new)
+Density edit recalculates: 16.1729 ha at 10 000 gives 161 729 sqm: OK
+Flat size, Ksr, Kd and district change all recalculate too: OK
+Manual override checkboxes recalculate on both switch directions: OK
+Recalculation reuses the stored query, no repeat EGRN lookup: OK
+Browser check on mocked network: four calls for four edits, no errors: OK
+
+DEVELOPAID v0.12.60 PROFITABILITY COEFFICIENT FROM DECREE 1745 OK
+Python syntax (main.py + main_legacy.py): OK
+Page JavaScript syntax (node --check): OK
+tests/ — 285 passed (6 new on Kd)
+Table 3 of decree 1745 read into data/mo_vri_kd.csv: 56 municipalities: OK
+Three groups: 10 percent, 5 percent, 1 percent: OK
+Mytishchi 10 percent matches the customer sample that used 0.1: OK
+Same 6.67 ha parcel: 4 761.1 / 1 272.6 / 263.6 mln by group: OK
+Four districts absent from the table are not guessed, warning raised: OK
+/mo/reference exposes Kd and its basis per district: OK
+Field is read-only, fills on district choice, states the percent and source: OK
+Manual override behind a checkbox, sent to the server only when set: OK
+Explicit Kd wins over the table: OK
+
+DEVELOPAID v0.12.59 STEP-BY-STEP BOT HELP OK
+Python syntax (main.py + main_legacy.py): OK
+tests/ — 279 passed (3 new on the help text)
+Help names all three cases: Moscow, Moscow Region, other region: OK
+Each case states the method: GlavAPU, RNGP MO plus decree 114-R, expert entry: OK
+New Moscow explained: a 50:* number does not mean the region: OK
+Five numbered steps from sending a parcel to asking Platon: OK
+Archive explained: 00 recalculates on input change, 90 does not: OK
+Short «Что умеет DevelopAid» card names the three cases and points to /help: OK
+
+DEVELOPAID v0.12.58 FIRST MONTHS OF THE VRI INSTALLMENT OK
+Python syntax (main.py + main_legacy.py): OK
+tests/ — 276 passed (1 new)
+D65 was a static link dropping the whole payment into month one: replaced: OK
+E65, D66 and E66 were empty: filled from the pattern used from column F: OK
+Lump sum now lands on the obligation month, not on the first model month: OK
+Interest accrues from the first month of the window: OK
+Formula count 113 709: two replaced by dates, three added: OK
+
+DEVELOPAID v0.12.57 KSR COMES FROM THE DISTRICT OK
+Python syntax (main.py + main_legacy.py): OK
+Page JavaScript syntax (node --check): OK
+tests/ — 275 passed (3 new on the Ksr field)
+/mo/reference now carries Ksr and its basis for all 60 districts: OK
+Mytishchi 238 052, Bogorodsky 131 783, Serebryanye Prudy 77 041: OK
+Districts missing from the decree fall back to the region average 198 907: OK
+Ksr field is read-only and fills the moment a district is picked: OK
+Caption states the basis: by district, region average, or entered by hand: OK
+Manual override behind a checkbox, survives a district change: OK
+Unchecking it restores the reference value: OK
+Price is sent to the server only when entered by hand: OK
+
+DEVELOPAID v0.12.56 SOURCES BACK, 0.12.55 MERGED IN OK
+Python syntax (main.py + main_legacy.py): OK
+tests/ — 272 passed (3 new)
+Base64 payload on main unpacked and compared: identical to our main.py: OK
+exec() wrapper and the runtime patch module removed: OK
+Bank-budget fix ported: nothing lands on the bridge when the bank is out: OK
+  same enforced for explicitly set shares: OK
+Default obligation date moved to a month before the permit, flagged estimated: OK
+Wording about the expert estimate carried into the fields and the VRI tab: OK
+Unified cadastral input, live model export and the ZU fill come with it: OK
+
+DEVELOPAID v0.12.53 LAND SHEET FILLED OK
+Python syntax (main.py + main_legacy.py): OK
+tests/ — 269 passed (3 new on the land sheet)
+Found sheet «ЗУ» drives cf_1 through 357 references: OK
+Template already computes the VRI installment, final payment and interest: OK
+Row «Последний» equalled «Первый», so the window was empty: fixed: OK
+Foreign parcel data cleared: cadastral 77:07:0013002:8740, Lyotnaya, 1.51 bn: OK
+Payment share carries the relief: 30% relief writes 0.7: OK
+Spread and the payment window come from our VRI schedule: OK
+Monthly divisor replaced from hard-coded 12x6 with the real month count: OK
+Exactly two template formulas replaced, 113 706 left untouched: OK
+Dockerfile, compose and .env.example added for Yandex Cloud: OK
+
+DEVELOPAID v0.12.52 LIVE MODEL IN THE EXPORT OK
+Python syntax (main.py + main_legacy.py): OK
+tests/ — 267 passed (4 new on the archive layout)
+Measured the old export: 473 formulas in 5 811 cells, 8.1%: OK
+  all of them SUM/IF, zero cross-sheet references, none onto «Вводные»: OK
+Archive now leads with the filled PLATO template: 113 708 formulas, 27 sheets: OK
+Workbook set to full recalculation on open: OK
+Phased archive carries a live model per phase plus the consolidator: OK
+Detail workbooks renumbered 90…99 and no longer called the model: OK
+README states which file recalculates and which does not: OK
+Missing template leaves the detail alone and explains why in README: OK
+Build time measured: 6 s single, 22 s for three phases: OK
+
+DEVELOPAID v0.12.51 ONE CADASTRAL INPUT OK
+Python syntax (main.py + main_legacy.py): OK
+Page JavaScript syntax (node --check): OK
+tests/ — 263 passed (6 new on the unified entry)
+One input field and one primary button on the page: OK
+Moscow 77:* routed to GlavAPU, no region call made: OK
+New Moscow 50:* confirmed by GlavAPU stays on GlavAPU: OK
+Region 50:* outside Moscow, and with GlavAPU down, routed to RNGP MO: OK
+Address resolved through EGRN into a cadastral number, then routed: OK
+Ksr upload removed from the UI, reference bundled: 56 municipalities: OK
+Ksr and UPKS filled by district without being passed in: OK
+Explicit price still wins over the reference: OK
+Region parameters collapsed, labelled as reference, editable: OK
+Server-filled density, district and Ksr returned into the fields: OK
+Browser check: routing on mocked network, real MO payload renders, no errors: OK
+
+DEVELOPAID v0.12.50 VRI TAB RESTORED OK
+Python syntax (main.py + main_legacy.py): OK
+Page JavaScript syntax (node --check): OK
+tests/ — 257 passed (3 new on the tab)
+Tab bar: Вводные · ТЭП · ВРИ · Очередность · Ставка · Финансирование · Календарь · Отчёт: OK
+All 24 VRI inputs render inside the tab, not in the general list: OK
+VRI group removed from «Вводные», no duplicated field ids: OK
+Totals and schedule fill from shared helpers, tab and report cannot diverge: OK
+Report card kept for the printed version, both render together: OK
+Empty state explains itself when the change of use is not required: OK
+Browser check: tab switches, installment and relief recalculate, no page errors: OK
+
+DEVELOPAID v0.12.49 NEW MOSCOW ROUTING AND NSPD TRANSPORT OK
+Python syntax (main.py + main_legacy.py): OK
+tests/ — 254 passed (20 new: routing, NSPD transport, VRI parity)
+New Moscow 50:* confirmed by GlavAPU stays on the Moscow calculator: OK
+50:* outside Moscow, or with GlavAPU down, goes to the region calculator: OK
+77:* without GlavAPU is a plain error, not a region calculation: OK
+Mixed 50:* and 77:* never treated as region-only: OK
+Routing decision is a pure function, tested without the network: OK
+NSPD requests carry Referer, Origin and a browser User-Agent: OK
+Other hosts keep the plain DevelopAid User-Agent, no Referer: OK
+Search query asks for CRS=EPSG:4326: OK
+TLS: normal verification first, one insecure retry only on SSLError: OK
+Insecure retry is reported in /land/providers, switchable off by env: OK
+Ordinary network failures are not retried insecurely: OK
+EGRN area aliases widened with the portal's newer key spellings: OK
+Dead startup hotfix removed: it rewrote sources and raised on every boot: OK
+Its help/close patches already live in the code natively: OK
+Application boots clean, no startup traceback: OK
+VRI obligation date modes: at RnS, 1m/3m before, after purchase, manual: OK
+Only a hand-entered date counts as exact, the rest carry a reason: OK
+Obligation before RnS moves the payment to the bridge and raises its peak: OK
+Initial installment payment lands on the obligation date, lowers interest: OK
+Initial payment ignored for a lump sum, principal still reconciles: OK
+
+DEVELOPAID v0.12.48 VRI RELIEF AND CHARTS OK
+Python syntax (main.py + main_legacy.py): OK
+Page JavaScript syntax (node --check): OK
+tests/ — 234 passed (10 new: 6 on relief, 4 on charts)
+Percent relief cuts the obligation, fixed-amount relief too: OK
+Relief capped at the obligation, block switches off at zero: OK
+Relief applied before overheads: reserve and installment interest both fall: OK
+Six-year interest 1125.2 -> 787.6 mln at 30% relief, exactly proportional: OK
+No relief by default, gross equals the amount payable: OK
+Phased: relief applied once in the base, not again per phase share: OK
+Report card and «ВРИ» sheet show gross and relief only when there is relief: OK
+Expense structure left untouched — relief is not an expense: OK
+Charts written as native package parts, no external library: OK
+«Расходы»: bar chart over the expense-structure rows: OK
+«Помесячно»: line chart of PF balance, escrow and bridge balance: OK
+«Сравнение очередей»: LLCR bars plus revenue against CAPEX: OK
+Chart parts well-formed, declared in [Content_Types], sheet rels present: OK
+Series point at sheet ranges, so edits redraw the chart: OK
+Workbooks still open under openpyxl with warnings as errors: OK
+Browser check: relief fields, card shows gross and relief, no page errors: OK
+
+DEVELOPAID v0.12.47 VRI PAYMENT SCHEDULE OK
+Python syntax (main.py + main_legacy.py): OK
+Page JavaScript syntax (node --check): OK
+tests/ — 222 passed (34 new on the VRI schedule)
+Lump default reproduces the previous cash flow, one payment at RnS: OK
+Moscow six-year installment = 24 quarterly payments, balance closes at zero: OK
+Entered term snapped to the allowed 1 / 3 / 6 years: OK
+Interest accrues on the outstanding balance, key rate plus spread: OK
+Interest is a separate cost article, not mixed with loan interest: OK
+Moscow region: no automatic interest, warning when switched on by agreement: OK
+Moscow region: term and periodicity from the amount ranges, warning when unset: OK
+Payments before PF go to bridge, after PF to project finance: OK
+Outside the bank budget the payment stays on equity and leaves debt base: OK
+Explicit shares split the payment, PF share before PF carried by bridge: OK
+Early repayment after PF closes the balance in one payment: OK
+Security cost is its own row on the obligation date: OK
+Manual schedule used as entered, mismatch and empty list reported: OK
+Installment lowers peak PF, early obligation raises the bridge: OK
+Phased: one project calendar, identical payment dates across phases: OK
+Phased: consolidated schedule sums phase shares, balance closes: OK
+Phased: later phase carries early payments on its own bridge: OK
+Phased: payment before a phase start moved to its first month with a warning: OK
+Export gains sheet «ВРИ» in every workbook and in the consolidator: OK
+PLATO archive carries «ВРИ_график_….xlsx» beside the untouched template: OK
+No VRI book in the archive when the change of use is switched off: OK
+Moscow region block marks the model as region 50 for VRI rules: OK
+Browser check: VRI group in inputs, report card renders schedule, no page errors: OK
+
+DEVELOPAID v0.12.46 LATE SOCIAL ALLOCATION OK
+Python syntax (main.py + main_legacy.py): OK
+tests/ — 188 passed (23 new on social phasing)
+Default allocation late: school last, kindergarten second, clinic near the end: OK
+First phase carries no social objects for 2..5 phases: OK
+Obligation "not later than N" pulls the object earlier and is explained: OK
+Obligation looser than the default does not move the object: OK
+Clinic may land in the first phase by obligation, school and DOO may not: OK
+Manual registry phase wins over automation, out-of-range phase clamped: OK
+Social cost and object list reported per phase: OK
+Late allocation lowers peak PF versus everything in the first phase: OK
+Money-compensation mode untouched, single-phase project untouched: OK
+Comparison sheet shows social load and objects, first phase zero: OK
+
+DEVELOPAID v0.12.45 QUARTERLY VIEW OK
+Python syntax (main.py + main_legacy.py): OK
+tests/ — 165 passed (6 new on the quarterly view)
+Quarter grouping: 2027-01..03 -> 2027-Q1, partial quarters kept: OK
+Quarterly cost totals equal the monthly ones article by article: OK
+Column headers are quarters, fewer columns than months: OK
+Flows summed, balances taken at quarter end, rates averaged: OK
+Totals row sums flows only, balances and rates left blank: OK
+Phase files carry the quarterly sheets too: OK
+
+DEVELOPAID v0.12.44 PLATO TEMPLATE EXPORT OK
+Python syntax (main.py + main_legacy.py): OK
+Page JavaScript syntax (node --check): OK
+tests/ — 159 passed (17 new on the PLATO template)
+Only the two input sheets are written, 113 708 formulas survive untouched: OK
+All 27 sheets survive, workbook set to full recalculation on open: OK
+87 mapped fields found in the template, nothing missing: OK
+Percentages written as shares, dates as dates, object flags as Да/Нет: OK
+Values written into all three scenario columns: OK
+TEP sheet receives model areas and the VRI cost: OK
+Changed input reaches the template: OK
+Single archive holds one workbook; phased holds consolidator plus one per phase: OK
+Missing template answered with a clear 503: OK
+
+DEVELOPAID v0.12.43 MONTHLY DETAIL OF THE FINANCIAL MODEL OK
+Python syntax (main.py + main_legacy.py): OK
+tests/ — 142 passed
+Engine now emits capex_by_article: every CAPEX item spread month by month: OK
+Sum of per-article months equals capex.total to the rouble: OK
+Per-month sum of articles equals the aggregate monthly capex: OK
+Monthly revenue and sold volumes exposed per product: OK
+Cost scenario multiplier applied to the detail as well: OK
+Export gains sheets «Расходы помесячно» and «Продажи помесячно»: OK
+Row totals are SUM formulas, cached values match the engine: OK
+Phase files carry their own detail sheets: OK
+
+DEVELOPAID v0.12.42 UPKS VALUATION VINTAGE EXPOSED OK
+Python syntax (main.py + main_legacy.py): OK
+Page JavaScript syntax (node --check): OK
+tests/ — 134 passed
+UPKS source reported: land 01.01.2022 (report 01/2022), OKS 01.01.2023 (report 01/2023): OK
+Next valuation dates carried: land 01.01.2026 -> applied 01.01.2027: OK
+VRI card shows the valuation date next to each UPKS row: OK
+Per-parcel table shows EGRN cadastral value with its determination date: OK
+/mo/reference exposes upks_source, /mo/calculate exposes upks.source: OK
+Parcel cadastral values still come live from EGRN, not from the tables: OK
+
+DEVELOPAID v0.12.41 KSR REFERENCE FILLED FROM DECREE 114-R OK
+Python syntax (main.py + main_legacy.py): OK
+Page JavaScript syntax (node --check): OK
+tests/ — 131 passed
+data/mo_market_price.csv holds all 56 municipalities of decree 114-R: OK
+  read twice from the scanned PDF at two zoom levels, values identical: OK
+  region average 198 907 rub, period III-IV quarters 2026: OK
+  Mytishchi 238 052, Krasnogorsk 251 426, Serebryanye Prudy 77 041: OK
+Every decree row maps onto a district of the UPKS reference: OK
+Pavlovo-Posadsky / Pavlovsky Posad synonym resolved: OK
+Districts merged away fall back to the region average with a warning: OK
+Totals row removed from the district dictionary, 60 districts left: OK
+Ksr auto-filled in the UI, source and period shown in the VRI card: OK
+Browser check: reference state line, calculation, no page errors: OK
+
+DEVELOPAID v0.12.40 MARKET PRICE REFERENCE (Ksr) OK
+Python syntax (main.py + main_legacy.py): OK
+Page JavaScript syntax (node --check): OK
+tests/ — 127 passed (8 new on the Ksr reference)
+Decree annex .xlsx parsed into municipality/price pairs: OK
+Names matched to the 61-district reference, region average kept apart: OK
+Unmatched rows and districts without a price reported back: OK
+Table without prices rejected with a clear message: OK
+Manual upload via POST /mo/market-price and read back: OK
+Ksr auto-filled from the reference, source and period shown: OK
+Explicit Ksr in the request wins over the reference: OK
+Without the reference falls back to district UPKS with a warning: OK
+Reference saved to data/mo_market_price.csv, CSV returned for the repo: OK
+Browser check: upload, state line, Ksr row in the VRI card, no page errors: OK
+
+DEVELOPAID v0.12.39 MOSCOW REGION CALCULATOR OK
+Python syntax (main.py + main_legacy.py): OK
+Page JavaScript syntax (node --check): OK
+tests/ — 119 passed (34 Moscow region + 25 model export + 17 Platon/TEP + 23 land lookup + 20 shared)
+Social program reproduces the 200 000 sqm PPT sample line by line: OK
+  population 7143, DOO 465, school 975, clinic 127: OK
+  parking 2289 / 458, underground 80 115 sqm: OK
+  greenery 46 429.5 / 31 429.2 sqm, SPP GNS 314 911 sqm: OK
+  budget compensation: hospital 42.858, ambulance 0.714, fire 1.429: OK
+VRI payment reproduces the Mytishchi sample to the kopeck: OK
+  delta 630 964 445.36, K1 1.8302, K 3.615, payment 4 174 618 253.82: OK
+  per-parcel delta matches the source table: OK
+VRI chain proven equal to Ksr x apartments x Kd (documented): OK
+Norms are overridable, zero area yields an empty program: OK
+UPKS reference: 61 districts, 30 839 quarters loaded: OK
+District resolved from EGRN address and from free wording: OK
+Region 50 enforced, Moscow numbers rejected with a clear message: OK
+Density is a parameter, default 30 000 sqm/ha: OK
+Dense project warns that normative social objects do not fit: OK
+TEP and inputs feed the model, calculation and Excel export both run: OK
+Bot routes 50:* to the region calculator, 77:* stays on GlavAPU: OK
+Bot region card reaches Platon as TEP context: OK
+Browser check: block calculates, renders and applies to the model, no page errors: OK
+
+DEVELOPAID v0.12.38 FULL MODEL EXPORT OK
+Python syntax (main.py + main_legacy.py): OK
+tests/ — 65 passed (25 model export + 17 Platon/TEP + 23 land lookup)
+Workbooks open as real XLSX (openpyxl, strict warnings): OK
+Every workbook part is well-formed XML: OK
+Single mode ZIP: model workbook + README: OK
+Phased mode ZIP: 00_Консолидация.xlsx + one file per phase + README: OK
+Consolidator keeps phases as sheets and sums them with live SUMIF: OK
+Consolidation values equal the sum of phases, every phase month covered: OK
+Phase comparison sheet totals match the engine: OK
+Monthly sheet matches engine row by row, totals are SUM formulas: OK
+Balances, rates and escrow coverage are not summed in totals: OK
+Summary revenue / LLCR / margin match the engine: OK
+Inputs sheet exports every FIELD_GROUPS key: OK
+TEP and cashflow totals are formulas with correct cached values: OK
+One-phase project exports as a single model, no consolidator: OK
+/report/model returns a ZIP attachment; partial payload filled with defaults: OK
+Build failure reported as a plain Russian 500: OK
+Browser check: both downloads via the report tab, no page errors: OK
+Telegram sends the model archive after the PDF: OK
+
+DEVELOPAID v0.12.37 PLATON TEP COMMENTARY OK
+Python syntax (main.py + main_legacy.py): OK
+tests/ — 40 passed (17 Platon/TEP + 23 land lookup)
+Wrapper boots, /health reports 0.12.37: OK
+Bot TEP expanded into full model context (DEFAULT_INPUTS + TEP_DEFAULT): OK
+TEP review card offers "Прокомментировать ТЭП" and "Спросить Платона": OK
+Commentary runs the real calculation engine, LLM only comments: OK
+Mini App context takes priority over bot TEP context: OK
+"Спросить Платона" works on bot-built TEP (no "model not sent" dead end): OK
+Proposal apply works without a Mini App session, model link rebuilt: OK
+Long answer split into <=3900-char Telegram chunks: OK
+Missing OPENAI_API_KEY reported in plain language and in /status: OK
+Commentary does not hijack plain-text bot flow: OK
+/comment command and platon_tep callback routed: OK
+/land/lookup and /land/providers reachable through the wrapper: OK
+Browser check on wrapper app, no page errors: OK
+
+DEVELOPAID v0.12.35 FEDERAL LAND LOOKUP OK
+Python syntax: OK
+Page JavaScript syntax (node --check): OK
+tests/test_land_lookup.py — 23 passed
+Cadastral number -> region and quarter parsed offline: OK
+EPSG:3857 geometry converted to WGS84 center: OK
+WGS84 geometry left unprojected: OK
+EGRN fields normalized (area, category, permitted use, cadastral value, unit price): OK
+Buildings classified separately from land parcels: OK
+Several cadastral numbers in one query, duplicates removed: OK
+Missing number keeps offline region/quarter hints: OK
+NSPD outage reported per number, request still returns 200: OK
+Address resolved directly in NSPD, land parcels ranked first: OK
+Address fallback: geocoder -> point -> parcel: OK
+DaData cadastral number used directly when returned: OK
+Coordinate query "lat, lng" recognized: OK
+Out-of-range coordinates and empty/oversized query rejected with 400: OK
+NSPD search response cached (one network call for two lookups): OK
+Browser check: card renders, numbers transfer to GlavAPU block, project save/restore, no page errors: OK
+inputs._land_lookup does not change calculation output: OK
+No calculation formulas changed from v0.12.34: OK
+
+PLATO v0.12.5 EXPLANATION LAYOUT OK
+Python syntax: OK
+Static version and health version 0.12.5: OK
+Class/scenario and construction-cost explanations consolidated above tabs: OK
+Duplicate explanation below tabs removed: OK
+Header-note responsive alignment: OK
+No calculation formulas changed from v0.12.4: OK
+Hard-coded 11% / 9% / 7% scenario labels removed: OK
+Dynamic scenario label — base target 10.5% -> `Базовый → 10,5%`: OK
+Selected rate scenario preserved after label refresh: OK
+PF rate labels renamed in KPI and detailed reports: OK
+No calculation formulas changed from v0.12.3: OK
+Single-phase wrapper: EXACT OK
+3-phase calculation: OK
+Core-only tax schedule: OK
+Office-only tax schedule: OK
+Standalone retail-only tax schedule: OK
+Above-ground parking-only tax schedule: OK
+All KRT products together: OK
+KRT margin = revenue - physical units sold x unit cost: OK
+No profit tax before RVE: OK
+Monthly tax sum = reported project tax: OK
+Financing tax deductions reconcile to interest and fees: OK
+Late KRT sales extend project horizon: OK
+Late KRT sales included in financing rows (`sales`): OK
+Platon profit-tax explanation and trace: OK
+PF limit fee double count in NPV removed: OK
+Agent decision hotfix from v0.12.2 preserved: OK

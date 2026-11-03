@@ -1,0 +1,2644 @@
+{
+ "objects": 580,
+ "objects_matched": 181,
+ "programs": 1115,
+ "projects": {
+  "1069": {
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Ситимикс",
+   "offered": 1,
+   "programs": 1,
+   "term_deadline_programs": 0,
+   "to_mortgage": true
+  },
+  "1226": {
+   "has_installment": false,
+   "name": "ILove",
+   "offered": 0,
+   "programs": 1
+  },
+  "1471": {
+   "down_payment_pct": 20.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Ривер Парк Кутузовский",
+   "offered": 6,
+   "price_terms": {
+    "базовая": 6
+   },
+   "programs": 6,
+   "term_deadline_programs": 6,
+   "term_months": 18,
+   "to_mortgage": true
+  },
+  "1475": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": true,
+   "name": "Вейв",
+   "offered": 2,
+   "price_terms": {
+    "базовая": 2
+   },
+   "programs": 2,
+   "term_deadline_programs": 2,
+   "term_months": 11,
+   "to_mortgage": true
+  },
+  "1594": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Hide",
+   "offered": 3,
+   "price_terms": {
+    "базовая": 3
+   },
+   "programs": 3,
+   "term_deadline_programs": 2,
+   "term_months": 6,
+   "to_mortgage": true
+  },
+  "1599": {
+   "down_payment_pct": 20.0,
+   "has_installment": true,
+   "keys_before_payment": true,
+   "name": "Сидней Сити",
+   "offered": 4,
+   "price_terms": {
+    "базовая": 2,
+    "удорожание": 2
+   },
+   "programs": 4,
+   "term_deadline_programs": 0,
+   "term_months": 24,
+   "to_mortgage": true
+  },
+  "1659": {
+   "has_installment": false,
+   "name": "TWICE",
+   "offered": 0,
+   "programs": 1
+  },
+  "1674": {
+   "has_installment": false,
+   "name": "Forst",
+   "offered": 0,
+   "programs": 1
+  },
+  "1677": {
+   "has_installment": false,
+   "name": "Метрополия",
+   "offered": 0,
+   "programs": 1
+  },
+  "1679": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "name": "SkyView",
+   "offered": 1,
+   "programs": 1,
+   "term_deadline_programs": 1
+  },
+  "1686": {
+   "down_payment_pct": 40.0,
+   "has_installment": true,
+   "name": "Дом 7 Даниловский",
+   "offered": 1,
+   "price_terms": {
+    "скидка": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 1,
+   "term_months": 7,
+   "to_mortgage": true
+  },
+  "1695": {
+   "down_payment_pct": 15.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Коллекция Лужники",
+   "offered": 5,
+   "price_terms": {
+    "базовая": 5
+   },
+   "programs": 5,
+   "term_deadline_programs": 0,
+   "term_months": 30,
+   "to_mortgage": true
+  },
+  "1784": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Левел Причальный",
+   "offered": 1,
+   "price_terms": {
+    "удорожание": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 0,
+   "term_months": 5,
+   "to_mortgage": true
+  },
+  "1789": {
+   "down_payment_pct": 20.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Алиа",
+   "offered": 2,
+   "price_terms": {
+    "скидка": 2
+   },
+   "programs": 2,
+   "term_deadline_programs": 1,
+   "term_months": 14,
+   "to_mortgage": true
+  },
+  "1792": {
+   "down_payment_pct": 15.0,
+   "has_installment": true,
+   "keys_before_payment": true,
+   "name": "Дом Малевич",
+   "offered": 3,
+   "price_terms": {
+    "базовая": 1,
+    "скидка": 2
+   },
+   "programs": 3,
+   "term_deadline_programs": 0,
+   "term_months": 18,
+   "to_mortgage": true
+  },
+  "1806": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Левел Южнопортовая",
+   "offered": 6,
+   "price_terms": {
+    "удорожание": 6
+   },
+   "programs": 6,
+   "term_deadline_programs": 0,
+   "term_months": 36,
+   "to_mortgage": true
+  },
+  "1934": {
+   "down_payment_pct": 20.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Инсайдер",
+   "offered": 1,
+   "price_terms": {
+    "базовая": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 1,
+   "term_months": 9,
+   "to_mortgage": true
+  },
+  "1938": {
+   "has_installment": false,
+   "name": "Диус",
+   "offered": 0,
+   "programs": 1
+  },
+  "1961": {
+   "has_installment": true,
+   "name": "Сиреневый парк",
+   "offered": 1,
+   "programs": 2,
+   "term_deadline_programs": 0
+  },
+  "2095": {
+   "down_payment_pct": 25.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "ВЭРИ на Ботанической",
+   "offered": 7,
+   "price_terms": {
+    "базовая": 7
+   },
+   "programs": 7,
+   "term_deadline_programs": 0,
+   "term_months": 12,
+   "to_mortgage": true
+  },
+  "2099": {
+   "down_payment_pct": 20.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Преображенская площадь",
+   "offered": 6,
+   "price_terms": {
+    "базовая": 6
+   },
+   "programs": 6,
+   "term_deadline_programs": 1,
+   "term_months": 10,
+   "to_mortgage": true
+  },
+  "2119": {
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Red 7",
+   "offered": 1,
+   "programs": 1,
+   "term_deadline_programs": 0,
+   "to_mortgage": true
+  },
+  "2351": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Сити Бэй",
+   "offered": 15,
+   "price_terms": {
+    "скидка": 12,
+    "удорожание": 3
+   },
+   "programs": 15,
+   "term_deadline_programs": 5,
+   "term_months": 25,
+   "to_mortgage": true
+  },
+  "2366": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": true,
+   "name": "Театральный квартал",
+   "offered": 3,
+   "price_terms": {
+    "скидка": 3
+   },
+   "programs": 3,
+   "term_deadline_programs": 0,
+   "term_months": 18,
+   "to_mortgage": true
+  },
+  "2412": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Ильинка 3/8",
+   "offered": 1,
+   "price_terms": {
+    "базовая": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 0,
+   "term_months": 9
+  },
+  "2552": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Лаврушинский",
+   "offered": 1,
+   "price_terms": {
+    "базовая": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 0,
+   "term_months": 9
+  },
+  "2559": {
+   "has_installment": true,
+   "name": "Бадаевский",
+   "offered": 1,
+   "programs": 1,
+   "term_deadline_programs": 0
+  },
+  "2649": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "МОД",
+   "offered": 2,
+   "price_terms": {
+    "скидка": 2
+   },
+   "programs": 2,
+   "term_deadline_programs": 0,
+   "term_months": 12,
+   "to_mortgage": true
+  },
+  "2658": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Михалковский",
+   "offered": 1,
+   "price_terms": {
+    "базовая": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 1,
+   "term_months": 9,
+   "to_mortgage": true
+  },
+  "2746": {
+   "down_payment_pct": 50.0,
+   "has_installment": true,
+   "keys_before_payment": true,
+   "name": "Симфония 34",
+   "offered": 1,
+   "price_terms": {
+    "удорожание": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 0,
+   "term_months": 12,
+   "to_mortgage": true
+  },
+  "2748": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "name": "N’ice Loft",
+   "offered": 1,
+   "price_terms": {
+    "скидка": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 0,
+   "term_months": 12,
+   "to_mortgage": true
+  },
+  "2789": {
+   "down_payment_pct": 20.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Ever",
+   "offered": 2,
+   "price_terms": {
+    "базовая": 2
+   },
+   "programs": 2,
+   "term_deadline_programs": 2,
+   "term_months": 15,
+   "to_mortgage": true
+  },
+  "2990": {
+   "down_payment_pct": 10.0,
+   "has_installment": true,
+   "keys_before_payment": true,
+   "name": "Will Towers",
+   "offered": 3,
+   "price_terms": {
+    "базовая": 2,
+    "удорожание": 1
+   },
+   "programs": 3,
+   "term_deadline_programs": 0,
+   "term_months": 12,
+   "to_mortgage": true
+  },
+  "2991": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": true,
+   "name": "Режиссер",
+   "offered": 2,
+   "price_terms": {
+    "базовая": 1,
+    "удорожание": 1
+   },
+   "programs": 2,
+   "term_deadline_programs": 0,
+   "term_months": 24,
+   "to_mortgage": true
+  },
+  "2996": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Павелецкая Сити",
+   "offered": 3,
+   "price_terms": {
+    "скидка": 2,
+    "удорожание": 1
+   },
+   "programs": 3,
+   "term_deadline_programs": 0,
+   "term_months": 34,
+   "to_mortgage": true
+  },
+  "3028": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Наметкин Тауэр",
+   "offered": 4,
+   "price_terms": {
+    "базовая": 4
+   },
+   "programs": 4,
+   "term_deadline_programs": 0,
+   "to_mortgage": true
+  },
+  "3031": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Южные Сады",
+   "offered": 1,
+   "price_terms": {
+    "базовая": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 0,
+   "to_mortgage": true
+  },
+  "3043": {
+   "has_installment": false,
+   "name": "Саввинская 27",
+   "offered": 0,
+   "programs": 1
+  },
+  "3045": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": true,
+   "name": "FORIVER",
+   "offered": 1,
+   "price_terms": {
+    "базовая": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 0,
+   "term_months": 9
+  },
+  "3048": {
+   "down_payment_pct": 25.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Хай Лайф",
+   "offered": 3,
+   "price_terms": {
+    "скидка": 1,
+    "удорожание": 2
+   },
+   "programs": 3,
+   "term_deadline_programs": 1,
+   "term_months": 36,
+   "to_mortgage": true
+  },
+  "3184": {
+   "down_payment_pct": 20.0,
+   "has_installment": true,
+   "keys_before_payment": true,
+   "name": "Скай Гарден",
+   "offered": 4,
+   "price_terms": {
+    "базовая": 1,
+    "удорожание": 3
+   },
+   "programs": 4,
+   "term_deadline_programs": 0,
+   "term_months": 24,
+   "to_mortgage": true
+  },
+  "3204": {
+   "down_payment_pct": 20.0,
+   "has_installment": true,
+   "keys_before_payment": true,
+   "name": "Фестиваль парк-2",
+   "offered": 3,
+   "price_terms": {
+    "базовая": 1,
+    "удорожание": 2
+   },
+   "programs": 3,
+   "term_deadline_programs": 1,
+   "term_months": 6,
+   "to_mortgage": true
+  },
+  "3248": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "ВЭРИ на Миклухо-Маклая",
+   "offered": 1,
+   "price_terms": {
+    "базовая": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 0
+  },
+  "3251": {
+   "down_payment_pct": 20.0,
+   "has_installment": true,
+   "keys_before_payment": true,
+   "name": "1-й Измайловский",
+   "offered": 2,
+   "price_terms": {
+    "базовая": 2
+   },
+   "programs": 2,
+   "term_deadline_programs": 0,
+   "term_months": 9,
+   "to_mortgage": true
+  },
+  "3341": {
+   "down_payment_pct": 20.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Верейская 41",
+   "offered": 1,
+   "price_terms": {
+    "удорожание": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 0,
+   "term_months": 12,
+   "to_mortgage": true
+  },
+  "3352": {
+   "has_installment": false,
+   "name": "Monodom Lake",
+   "offered": 0,
+   "programs": 1
+  },
+  "3359": {
+   "has_installment": false,
+   "name": "Куркино 15",
+   "offered": 0,
+   "programs": 1
+  },
+  "3372": {
+   "has_installment": false,
+   "name": "Саввинская 17",
+   "offered": 0,
+   "programs": 1
+  },
+  "3378": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "LIFE TIME",
+   "offered": 1,
+   "price_terms": {
+    "базовая": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 0,
+   "term_months": 9
+  },
+  "3379": {
+   "down_payment_pct": 20.0,
+   "has_installment": true,
+   "keys_before_payment": true,
+   "name": "Rotterdam",
+   "offered": 3,
+   "price_terms": {
+    "базовая": 2,
+    "удорожание": 1
+   },
+   "programs": 3,
+   "term_deadline_programs": 0,
+   "term_months": 24,
+   "to_mortgage": true
+  },
+  "3383": {
+   "has_installment": false,
+   "name": "Лосиноостровский парк",
+   "offered": 0,
+   "programs": 1
+  },
+  "3387": {
+   "down_payment_pct": 15.0,
+   "has_installment": true,
+   "name": "Высотка на Жукова",
+   "offered": 2,
+   "price_terms": {
+    "базовая": 2
+   },
+   "programs": 2,
+   "term_deadline_programs": 0,
+   "term_months": 25,
+   "to_mortgage": true
+  },
+  "3388": {
+   "down_payment_pct": 10.0,
+   "has_installment": true,
+   "keys_before_payment": true,
+   "name": "Обручева 30",
+   "offered": 8,
+   "price_terms": {
+    "базовая": 2,
+    "скидка": 3,
+    "удорожание": 3
+   },
+   "programs": 8,
+   "term_deadline_programs": 7,
+   "term_months": 6,
+   "to_mortgage": true
+  },
+  "3391": {
+   "down_payment_pct": 15.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Мираполис",
+   "offered": 7,
+   "price_terms": {
+    "базовая": 7
+   },
+   "programs": 7,
+   "term_deadline_programs": 0,
+   "term_months": 13,
+   "to_mortgage": true
+  },
+  "3394": {
+   "down_payment_pct": 40.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "СОЮЗ",
+   "offered": 1,
+   "price_terms": {
+    "базовая": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 1,
+   "term_months": 7,
+   "to_mortgage": true
+  },
+  "3402": {
+   "has_installment": false,
+   "name": "Инноватор",
+   "offered": 0,
+   "programs": 1
+  },
+  "3421": {
+   "has_installment": false,
+   "name": "Форум",
+   "offered": 0,
+   "programs": 1
+  },
+  "3437": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Левел Мичуринский",
+   "offered": 2,
+   "price_terms": {
+    "удорожание": 2
+   },
+   "programs": 2,
+   "term_deadline_programs": 0,
+   "term_months": 8,
+   "to_mortgage": true
+  },
+  "3452": {
+   "down_payment_pct": 1.0,
+   "has_installment": true,
+   "name": "ИНДИ Тауэрз",
+   "offered": 3,
+   "price_terms": {
+    "базовая": 1,
+    "удорожание": 2
+   },
+   "programs": 3,
+   "term_deadline_programs": 0,
+   "term_months": 36,
+   "to_mortgage": true
+  },
+  "3490": {
+   "down_payment_pct": 20.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Дубровка от Гранель",
+   "offered": 8,
+   "price_terms": {
+    "базовая": 8
+   },
+   "programs": 8,
+   "term_deadline_programs": 0,
+   "term_months": 36,
+   "to_mortgage": true
+  },
+  "3500": {
+   "has_installment": false,
+   "name": "3215",
+   "offered": 0,
+   "programs": 1
+  },
+  "3501": {
+   "down_payment_pct": 20.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Павелецкая от Гранель",
+   "offered": 9,
+   "price_terms": {
+    "базовая": 9
+   },
+   "programs": 9,
+   "term_deadline_programs": 1,
+   "term_months": 36,
+   "to_mortgage": true
+  },
+  "3672": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": true,
+   "name": "1-й Ленинградский",
+   "offered": 1,
+   "price_terms": {
+    "базовая": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 0,
+   "term_months": 24
+  },
+  "3683": {
+   "down_payment_pct": 20.0,
+   "has_installment": true,
+   "keys_before_payment": true,
+   "name": "Воксхолл",
+   "offered": 2,
+   "price_terms": {
+    "скидка": 2
+   },
+   "programs": 2,
+   "term_deadline_programs": 2,
+   "term_months": 21,
+   "to_mortgage": true
+  },
+  "4043": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Фон Дессин",
+   "offered": 1,
+   "price_terms": {
+    "базовая": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 0,
+   "term_months": 9
+  },
+  "4061": {
+   "has_installment": true,
+   "name": "Космо 4/22",
+   "offered": 1,
+   "programs": 1,
+   "term_deadline_programs": 0
+  },
+  "4069": {
+   "has_installment": true,
+   "name": "АХЕД",
+   "offered": 1,
+   "programs": 1,
+   "term_deadline_programs": 0
+  },
+  "4074": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Феймос",
+   "offered": 1,
+   "price_terms": {
+    "скидка": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 0,
+   "term_months": 12,
+   "to_mortgage": true
+  },
+  "4077": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "ФизтехСити",
+   "offered": 6,
+   "price_terms": {
+    "базовая": 4,
+    "скидка": 2
+   },
+   "programs": 6,
+   "term_deadline_programs": 0,
+   "term_months": 12,
+   "to_mortgage": true
+  },
+  "4078": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "CHAMPINE",
+   "offered": 1,
+   "price_terms": {
+    "базовая": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 0,
+   "term_months": 3,
+   "to_mortgage": true
+  },
+  "4093": {
+   "has_installment": false,
+   "name": "КларНет",
+   "offered": 0,
+   "programs": 1
+  },
+  "4100": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "name": "Сидней Прайм",
+   "offered": 1,
+   "price_terms": {
+    "удорожание": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 0,
+   "term_months": 24,
+   "to_mortgage": true
+  },
+  "4105": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Левел Селигерская",
+   "offered": 1,
+   "price_terms": {
+    "удорожание": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 0,
+   "term_months": 2,
+   "to_mortgage": true
+  },
+  "4178": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "OPUS",
+   "offered": 3,
+   "price_terms": {
+    "скидка": 2,
+    "удорожание": 1
+   },
+   "programs": 3,
+   "term_deadline_programs": 2,
+   "term_months": 36,
+   "to_mortgage": true
+  },
+  "4198": {
+   "has_installment": false,
+   "name": "Петровский парк II",
+   "offered": 0,
+   "programs": 1
+  },
+  "4211": {
+   "has_installment": false,
+   "name": "Варшавские ворота",
+   "offered": 0,
+   "programs": 1
+  },
+  "4235": {
+   "down_payment_pct": 50.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Кантемировский",
+   "offered": 2,
+   "price_terms": {
+    "базовая": 2
+   },
+   "programs": 2,
+   "term_deadline_programs": 2,
+   "term_months": 7,
+   "to_mortgage": true
+  },
+  "4239": {
+   "has_installment": false,
+   "name": "Левел Академическая",
+   "offered": 0,
+   "programs": 1
+  },
+  "4242": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Большая Серпуховская, 38",
+   "offered": 1,
+   "price_terms": {
+    "базовая": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 0,
+   "term_months": 6
+  },
+  "4245": {
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Ситимикс Новокосино",
+   "offered": 1,
+   "programs": 1,
+   "term_deadline_programs": 0,
+   "to_mortgage": true
+  },
+  "4257": {
+   "down_payment_pct": 20.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Апсайд Тауэрс",
+   "offered": 2,
+   "price_terms": {
+    "скидка": 2
+   },
+   "programs": 2,
+   "term_deadline_programs": 0,
+   "to_mortgage": true
+  },
+  "4263": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Страна Озёрная",
+   "offered": 1,
+   "price_terms": {
+    "базовая": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 1,
+   "term_months": 3
+  },
+  "4294": {
+   "has_installment": true,
+   "name": "Брюсов",
+   "offered": 1,
+   "programs": 1,
+   "term_deadline_programs": 0
+  },
+  "4302": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Эра",
+   "offered": 3,
+   "price_terms": {
+    "базовая": 3
+   },
+   "programs": 3,
+   "term_deadline_programs": 3,
+   "term_months": 27,
+   "to_mortgage": true
+  },
+  "4308": {
+   "has_installment": false,
+   "name": "Левел Бауманская",
+   "offered": 0,
+   "programs": 1
+  },
+  "4311": {
+   "down_payment_pct": 5.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Квартал на воде",
+   "offered": 1,
+   "price_terms": {
+    "базовая": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 0,
+   "term_months": 12,
+   "to_mortgage": true
+  },
+  "4356": {
+   "down_payment_pct": 20.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Дом горизонтов",
+   "offered": 2,
+   "price_terms": {
+    "базовая": 2
+   },
+   "programs": 2,
+   "term_deadline_programs": 2,
+   "term_months": 15,
+   "to_mortgage": true
+  },
+  "4358": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Дом Дау",
+   "offered": 3,
+   "price_terms": {
+    "базовая": 2,
+    "удорожание": 1
+   },
+   "programs": 3,
+   "term_deadline_programs": 2,
+   "term_months": 24,
+   "to_mortgage": true
+  },
+  "4366": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Обыденский №1",
+   "offered": 1,
+   "price_terms": {
+    "базовая": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 0,
+   "term_months": 9
+  },
+  "476": {
+   "down_payment_pct": 10.0,
+   "has_installment": true,
+   "keys_before_payment": true,
+   "name": "Зорге 9",
+   "offered": 11,
+   "price_terms": {
+    "скидка": 11
+   },
+   "programs": 11,
+   "term_deadline_programs": 0,
+   "term_months": 18,
+   "to_mortgage": true
+  },
+  "5014": {
+   "has_installment": false,
+   "name": "Семеновский парк-2",
+   "offered": 0,
+   "programs": 1
+  },
+  "5022": {
+   "down_payment_pct": 15.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Квартал Домашний",
+   "offered": 1,
+   "price_terms": {
+    "базовая": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 0,
+   "to_mortgage": true
+  },
+  "5030": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Эмоушн",
+   "offered": 4,
+   "price_terms": {
+    "базовая": 4
+   },
+   "programs": 4,
+   "term_deadline_programs": 0,
+   "term_months": 10,
+   "to_mortgage": true
+  },
+  "5072": {
+   "down_payment_pct": 20.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Твелв",
+   "offered": 2,
+   "price_terms": {
+    "базовая": 2
+   },
+   "programs": 2,
+   "term_deadline_programs": 1,
+   "term_months": 17,
+   "to_mortgage": true
+  },
+  "5076": {
+   "down_payment_pct": 20.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Инджой",
+   "offered": 5,
+   "price_terms": {
+    "скидка": 5
+   },
+   "programs": 5,
+   "term_deadline_programs": 4,
+   "term_months": 7,
+   "to_mortgage": true
+  },
+  "510": {
+   "down_payment_pct": 25.0,
+   "has_installment": true,
+   "keys_before_payment": true,
+   "name": "HeadLiner",
+   "offered": 1,
+   "price_terms": {
+    "базовая": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 1,
+   "term_months": 3,
+   "to_mortgage": true
+  },
+  "5149": {
+   "has_installment": false,
+   "name": "Дом 56",
+   "offered": 0,
+   "programs": 1
+  },
+  "5167": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Левел Нижегородская",
+   "offered": 1,
+   "price_terms": {
+    "удорожание": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 0,
+   "term_months": 1,
+   "to_mortgage": true
+  },
+  "5209": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Николь",
+   "offered": 1,
+   "price_terms": {
+    "базовая": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 0
+  },
+  "5247": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Shift",
+   "offered": 9,
+   "price_terms": {
+    "скидка": 8,
+    "удорожание": 1
+   },
+   "programs": 9,
+   "term_deadline_programs": 5,
+   "term_months": 36,
+   "to_mortgage": true
+  },
+  "5351": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Квартал Герцена",
+   "offered": 1,
+   "price_terms": {
+    "базовая": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 0,
+   "to_mortgage": true
+  },
+  "5403": {
+   "down_payment_pct": 20.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Джойс",
+   "offered": 8,
+   "price_terms": {
+    "базовая": 3,
+    "скидка": 5
+   },
+   "programs": 8,
+   "term_deadline_programs": 6,
+   "term_months": 15,
+   "to_mortgage": true
+  },
+  "5406": {
+   "down_payment_pct": 1.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Аквилон Сигнал",
+   "offered": 1,
+   "price_terms": {
+    "удорожание": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 0,
+   "term_months": 12,
+   "to_mortgage": true
+  },
+  "5469": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Ситидзен",
+   "offered": 3,
+   "price_terms": {
+    "удорожание": 3
+   },
+   "programs": 3,
+   "term_deadline_programs": 3,
+   "term_months": 20,
+   "to_mortgage": true
+  },
+  "5474": {
+   "down_payment_pct": 10.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "КИНГ&САНС",
+   "offered": 1,
+   "price_terms": {
+    "базовая": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 1,
+   "term_months": 15,
+   "to_mortgage": true
+  },
+  "5477": {
+   "down_payment_pct": 10.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Квартал Серебряный Бор",
+   "offered": 6,
+   "price_terms": {
+    "скидка": 6
+   },
+   "programs": 6,
+   "term_deadline_programs": 0,
+   "term_months": 10,
+   "to_mortgage": true
+  },
+  "5485": {
+   "down_payment_pct": 10.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "ЭВОПАРК Сокольники",
+   "offered": 3,
+   "price_terms": {
+    "базовая": 3
+   },
+   "programs": 3,
+   "term_deadline_programs": 0,
+   "to_mortgage": true
+  },
+  "5501": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "ЭВОПАРК Измайлово",
+   "offered": 2,
+   "price_terms": {
+    "базовая": 2
+   },
+   "programs": 2,
+   "term_deadline_programs": 0
+  },
+  "5504": {
+   "down_payment_pct": 40.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Фрунзенский",
+   "offered": 1,
+   "price_terms": {
+    "базовая": 1
+   },
+   "programs": 2,
+   "term_deadline_programs": 0,
+   "term_months": 9
+  },
+  "5506": {
+   "down_payment_pct": 20.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Веспер Кутузовский",
+   "offered": 2,
+   "price_terms": {
+    "базовая": 1,
+    "удорожание": 1
+   },
+   "programs": 2,
+   "term_deadline_programs": 1,
+   "term_months": 36,
+   "to_mortgage": true
+  },
+  "5511": {
+   "down_payment_pct": 20.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Северный Порт",
+   "offered": 11,
+   "price_terms": {
+    "базовая": 11
+   },
+   "programs": 11,
+   "term_deadline_programs": 3,
+   "term_months": 36,
+   "to_mortgage": true
+  },
+  "5513": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Монс",
+   "offered": 2,
+   "price_terms": {
+    "базовая": 2
+   },
+   "programs": 2,
+   "term_deadline_programs": 1,
+   "term_months": 10,
+   "to_mortgage": true
+  },
+  "5516": {
+   "down_payment_pct": 40.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Тишинский Бульвар",
+   "offered": 1,
+   "price_terms": {
+    "базовая": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 0,
+   "term_months": 12
+  },
+  "5519": {
+   "down_payment_pct": 10.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Артель",
+   "offered": 3,
+   "price_terms": {
+    "базовая": 3
+   },
+   "programs": 3,
+   "term_deadline_programs": 3,
+   "term_months": 6,
+   "to_mortgage": true
+  },
+  "5520": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Издание",
+   "offered": 3,
+   "price_terms": {
+    "базовая": 3
+   },
+   "programs": 3,
+   "term_deadline_programs": 1,
+   "term_months": 10,
+   "to_mortgage": true
+  },
+  "5531": {
+   "has_installment": false,
+   "name": "2-й Иртышский",
+   "offered": 0,
+   "programs": 1
+  },
+  "5549": {
+   "down_payment_pct": 20.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Родина Парк",
+   "offered": 5,
+   "price_terms": {
+    "базовая": 5
+   },
+   "programs": 5,
+   "term_deadline_programs": 5,
+   "term_months": 17,
+   "to_mortgage": true
+  },
+  "5560": {
+   "has_installment": true,
+   "name": "Монблан",
+   "offered": 1,
+   "programs": 1,
+   "term_deadline_programs": 0
+  },
+  "5561": {
+   "down_payment_pct": 20.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Мангазея на Речном",
+   "offered": 18,
+   "price_terms": {
+    "скидка": 18
+   },
+   "programs": 18,
+   "term_deadline_programs": 0,
+   "term_months": 10,
+   "to_mortgage": true
+  },
+  "5576": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Дрим Рива",
+   "offered": 3,
+   "price_terms": {
+    "базовая": 3
+   },
+   "programs": 3,
+   "term_deadline_programs": 3,
+   "term_months": 9
+  },
+  "5577": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Сезар Сити",
+   "offered": 4,
+   "price_terms": {
+    "базовая": 4
+   },
+   "programs": 4,
+   "term_deadline_programs": 0,
+   "to_mortgage": true
+  },
+  "5578": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Левел Звенигородская",
+   "offered": 1,
+   "price_terms": {
+    "удорожание": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 0,
+   "term_months": 16,
+   "to_mortgage": true
+  },
+  "5587": {
+   "down_payment_pct": 20.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Хайдаут",
+   "offered": 1,
+   "price_terms": {
+    "скидка": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 0,
+   "term_months": 18,
+   "to_mortgage": true
+  },
+  "5588": {
+   "down_payment_pct": 20.0,
+   "has_installment": true,
+   "keys_before_payment": true,
+   "name": "Амбер Сити",
+   "offered": 5,
+   "price_terms": {
+    "базовая": 2,
+    "удорожание": 3
+   },
+   "programs": 5,
+   "term_deadline_programs": 0,
+   "term_months": 9,
+   "to_mortgage": true
+  },
+  "5607": {
+   "down_payment_pct": 20.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "НАТИВ",
+   "offered": 6,
+   "price_terms": {
+    "базовая": 1,
+    "скидка": 5
+   },
+   "programs": 6,
+   "term_deadline_programs": 0,
+   "term_months": 12,
+   "to_mortgage": true
+  },
+  "5655": {
+   "down_payment_pct": 20.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Мнёвники от Гранель",
+   "offered": 8,
+   "price_terms": {
+    "базовая": 8
+   },
+   "programs": 8,
+   "term_deadline_programs": 0,
+   "term_months": 36,
+   "to_mortgage": true
+  },
+  "5656": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Дом А",
+   "offered": 9,
+   "price_terms": {
+    "базовая": 9
+   },
+   "programs": 9,
+   "term_deadline_programs": 0,
+   "term_months": 12,
+   "to_mortgage": true
+  },
+  "5661": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "ИНДИВО",
+   "offered": 7,
+   "price_terms": {
+    "скидка": 7
+   },
+   "programs": 7,
+   "term_deadline_programs": 0,
+   "term_months": 15,
+   "to_mortgage": true
+  },
+  "5711": {
+   "down_payment_pct": 5.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Страна.Заречная",
+   "offered": 4,
+   "price_terms": {
+    "базовая": 4
+   },
+   "programs": 4,
+   "term_deadline_programs": 2,
+   "term_months": 15,
+   "to_mortgage": true
+  },
+  "5725": {
+   "down_payment_pct": 10.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Солос",
+   "offered": 5,
+   "price_terms": {
+    "скидка": 5
+   },
+   "programs": 5,
+   "term_deadline_programs": 1,
+   "term_months": 30,
+   "to_mortgage": true
+  },
+  "5737": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Спрингс",
+   "offered": 2,
+   "price_terms": {
+    "скидка": 2
+   },
+   "programs": 2,
+   "term_deadline_programs": 0,
+   "to_mortgage": true
+  },
+  "575": {
+   "down_payment_pct": 10.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Файв Тауэрс",
+   "offered": 2,
+   "price_terms": {
+    "базовая": 2
+   },
+   "programs": 2,
+   "term_deadline_programs": 2,
+   "to_mortgage": true
+  },
+  "5758": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Садовническая 69",
+   "offered": 3,
+   "price_terms": {
+    "базовая": 3
+   },
+   "programs": 3,
+   "term_deadline_programs": 0,
+   "term_months": 20
+  },
+  "5759": {
+   "down_payment_pct": 20.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Крылатская 33",
+   "offered": 2,
+   "price_terms": {
+    "скидка": 2
+   },
+   "programs": 2,
+   "term_deadline_programs": 2,
+   "term_months": 8,
+   "to_mortgage": true
+  },
+  "5761": {
+   "down_payment_pct": 20.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Ракурс",
+   "offered": 3,
+   "price_terms": {
+    "скидка": 3
+   },
+   "programs": 3,
+   "term_deadline_programs": 0,
+   "term_months": 17,
+   "to_mortgage": true
+  },
+  "5765": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "УНО.Соколиная гора",
+   "offered": 3,
+   "price_terms": {
+    "базовая": 3
+   },
+   "programs": 3,
+   "term_deadline_programs": 0,
+   "to_mortgage": true
+  },
+  "5771": {
+   "down_payment_pct": 15.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "МИРА",
+   "offered": 7,
+   "price_terms": {
+    "базовая": 2,
+    "скидка": 5
+   },
+   "programs": 7,
+   "term_deadline_programs": 3,
+   "term_months": 15,
+   "to_mortgage": true
+  },
+  "5812": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Акценты",
+   "offered": 2,
+   "price_terms": {
+    "базовая": 1,
+    "удорожание": 1
+   },
+   "programs": 2,
+   "term_deadline_programs": 0,
+   "term_months": 12,
+   "to_mortgage": true
+  },
+  "5831": {
+   "down_payment_pct": 20.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Бестселлер",
+   "offered": 4,
+   "price_terms": {
+    "базовая": 3,
+    "удорожание": 1
+   },
+   "programs": 4,
+   "term_deadline_programs": 3,
+   "term_months": 9,
+   "to_mortgage": true
+  },
+  "5846": {
+   "down_payment_pct": 20.0,
+   "has_installment": true,
+   "keys_before_payment": true,
+   "name": "Мариин Парк",
+   "offered": 2,
+   "price_terms": {
+    "базовая": 1,
+    "скидка": 1
+   },
+   "programs": 2,
+   "term_deadline_programs": 2,
+   "term_months": 13,
+   "to_mortgage": true
+  },
+  "5886": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": true,
+   "name": "Соколин Парк",
+   "offered": 1,
+   "price_terms": {
+    "удорожание": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 0,
+   "term_months": 12,
+   "to_mortgage": true
+  },
+  "5896": {
+   "down_payment_pct": 20.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Свет",
+   "offered": 24,
+   "price_terms": {
+    "скидка": 23,
+    "удорожание": 1
+   },
+   "programs": 24,
+   "term_deadline_programs": 0,
+   "term_months": 18,
+   "to_mortgage": true
+  },
+  "5902": {
+   "down_payment_pct": 20.0,
+   "has_installment": true,
+   "name": "ЮТУ",
+   "offered": 3,
+   "price_terms": {
+    "базовая": 3
+   },
+   "programs": 3,
+   "term_deadline_programs": 1,
+   "term_months": 15,
+   "to_mortgage": true
+  },
+  "5911": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Айс Тауэрс",
+   "offered": 1,
+   "price_terms": {
+    "базовая": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 1,
+   "term_months": 25,
+   "to_mortgage": true
+  },
+  "5924": {
+   "down_payment_pct": 5.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Кутузов Сити",
+   "offered": 4,
+   "price_terms": {
+    "базовая": 4
+   },
+   "programs": 4,
+   "term_deadline_programs": 4,
+   "term_months": 15,
+   "to_mortgage": true
+  },
+  "5931": {
+   "down_payment_pct": 5.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "УНО.Горбунова",
+   "offered": 3,
+   "price_terms": {
+    "базовая": 3
+   },
+   "programs": 3,
+   "term_deadline_programs": 2,
+   "term_months": 20,
+   "to_mortgage": true
+  },
+  "5966": {
+   "down_payment_pct": 25.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Ультима Сити",
+   "offered": 2,
+   "price_terms": {
+    "базовая": 1,
+    "скидка": 1
+   },
+   "programs": 2,
+   "term_deadline_programs": 0,
+   "term_months": 12,
+   "to_mortgage": true
+  },
+  "5982": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "name": "Дом Соболева",
+   "offered": 1,
+   "price_terms": {
+    "базовая": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 1,
+   "term_months": 20
+  },
+  "5996": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Пыжевский",
+   "offered": 1,
+   "price_terms": {
+    "базовая": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 1,
+   "term_months": 33,
+   "to_mortgage": true
+  },
+  "5998": {
+   "down_payment_pct": 20.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Нижегородская от Гранель",
+   "offered": 8,
+   "price_terms": {
+    "базовая": 8
+   },
+   "programs": 8,
+   "term_deadline_programs": 0,
+   "term_months": 36,
+   "to_mortgage": true
+  },
+  "6006": {
+   "has_installment": false,
+   "name": "Arkenston",
+   "offered": 0,
+   "programs": 1
+  },
+  "6018": {
+   "down_payment_pct": 20.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "ОНЕ",
+   "offered": 4,
+   "price_terms": {
+    "базовая": 3,
+    "скидка": 1
+   },
+   "programs": 4,
+   "term_deadline_programs": 3,
+   "term_months": 42,
+   "to_mortgage": true
+  },
+  "6039": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Зиккурат Преображенский",
+   "offered": 1,
+   "price_terms": {
+    "скидка": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 0,
+   "to_mortgage": true
+  },
+  "6043": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Левел Войковская",
+   "offered": 1,
+   "price_terms": {
+    "скидка": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 0,
+   "term_months": 21,
+   "to_mortgage": true
+  },
+  "606": {
+   "down_payment_pct": 10.0,
+   "has_installment": true,
+   "name": "AFI Tower",
+   "offered": 2,
+   "price_terms": {
+    "базовая": 1
+   },
+   "programs": 2,
+   "term_deadline_programs": 0,
+   "term_months": 5,
+   "to_mortgage": true
+  },
+  "6145": {
+   "down_payment_pct": 35.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Гранд Фили",
+   "offered": 1,
+   "price_terms": {
+    "базовая": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 0,
+   "term_months": 24,
+   "to_mortgage": true
+  },
+  "6147": {
+   "down_payment_pct": 10.0,
+   "has_installment": true,
+   "keys_before_payment": true,
+   "name": "Резиденция Омега",
+   "offered": 4,
+   "price_terms": {
+    "базовая": 1,
+    "скидка": 3
+   },
+   "programs": 4,
+   "term_deadline_programs": 4,
+   "term_months": 30,
+   "to_mortgage": true
+  },
+  "6149": {
+   "down_payment_pct": 20.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Новая, 11",
+   "offered": 2,
+   "price_terms": {
+    "базовая": 1,
+    "скидка": 1
+   },
+   "programs": 2,
+   "term_deadline_programs": 0,
+   "term_months": 24,
+   "to_mortgage": true
+  },
+  "6150": {
+   "down_payment_pct": 20.0,
+   "has_installment": true,
+   "keys_before_payment": true,
+   "name": "Симоновский Вал",
+   "offered": 2,
+   "price_terms": {
+    "базовая": 1,
+    "удорожание": 1
+   },
+   "programs": 2,
+   "term_deadline_programs": 0,
+   "term_months": 2,
+   "to_mortgage": true
+  },
+  "6151": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "КОД Сокольники",
+   "offered": 19,
+   "price_terms": {
+    "базовая": 1,
+    "скидка": 18
+   },
+   "programs": 19,
+   "term_deadline_programs": 0,
+   "term_months": 24,
+   "to_mortgage": true
+  },
+  "6156": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Татум",
+   "offered": 3,
+   "price_terms": {
+    "скидка": 3
+   },
+   "programs": 3,
+   "term_deadline_programs": 0,
+   "term_months": 24,
+   "to_mortgage": true
+  },
+  "6158": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Сезар Силика",
+   "offered": 4,
+   "price_terms": {
+    "базовая": 4
+   },
+   "programs": 4,
+   "term_deadline_programs": 0,
+   "to_mortgage": true
+  },
+  "6159": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Энигмия",
+   "offered": 2,
+   "price_terms": {
+    "скидка": 2
+   },
+   "programs": 2,
+   "term_deadline_programs": 0,
+   "term_months": 24,
+   "to_mortgage": true
+  },
+  "6209": {
+   "down_payment_pct": 20.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "АУРУС Резиденции",
+   "offered": 8,
+   "price_terms": {
+    "базовая": 3,
+    "скидка": 5
+   },
+   "programs": 8,
+   "term_deadline_programs": 0,
+   "term_months": 60,
+   "to_mortgage": true
+  },
+  "6220": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Magnum Solo",
+   "offered": 1,
+   "price_terms": {
+    "базовая": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 0,
+   "term_months": 12,
+   "to_mortgage": true
+  },
+  "6242": {
+   "down_payment_pct": 20.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "МАСТЕРС",
+   "offered": 5,
+   "price_terms": {
+    "базовая": 5
+   },
+   "programs": 5,
+   "term_deadline_programs": 0,
+   "term_months": 36
+  },
+  "6243": {
+   "down_payment_pct": 20.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Муза",
+   "offered": 7,
+   "price_terms": {
+    "скидка": 1,
+    "удорожание": 6
+   },
+   "programs": 7,
+   "term_deadline_programs": 0,
+   "term_months": 30,
+   "to_mortgage": true
+  },
+  "6269": {
+   "down_payment_pct": 20.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Тессинский, 5",
+   "offered": 2,
+   "price_terms": {
+    "базовая": 1,
+    "скидка": 1
+   },
+   "programs": 2,
+   "term_deadline_programs": 0,
+   "term_months": 24,
+   "to_mortgage": true
+  },
+  "6282": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "ОМ Ботанический",
+   "offered": 3,
+   "price_terms": {
+    "базовая": 3
+   },
+   "programs": 3,
+   "term_deadline_programs": 0,
+   "term_months": 30,
+   "to_mortgage": true
+  },
+  "6304": {
+   "down_payment_pct": 35.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Ридж",
+   "offered": 4,
+   "price_terms": {
+    "скидка": 4
+   },
+   "programs": 4,
+   "term_deadline_programs": 0,
+   "term_months": 36,
+   "to_mortgage": true
+  },
+  "6327": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Сезар Будущее",
+   "offered": 4,
+   "price_terms": {
+    "базовая": 4
+   },
+   "programs": 4,
+   "term_deadline_programs": 0,
+   "to_mortgage": true
+  },
+  "6334": {
+   "down_payment_pct": 40.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "С5",
+   "offered": 1,
+   "price_terms": {
+    "скидка": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 0,
+   "term_months": 30,
+   "to_mortgage": true
+  },
+  "6336": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Сикрет Гарден",
+   "offered": 1,
+   "price_terms": {
+    "базовая": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 0,
+   "term_months": 24,
+   "to_mortgage": true
+  },
+  "6360": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "26 Парквью",
+   "offered": 1,
+   "price_terms": {
+    "удорожание": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 0,
+   "term_months": 30,
+   "to_mortgage": true
+  },
+  "6365": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Кинетик. Резиденции на Дмитровском",
+   "offered": 2,
+   "price_terms": {
+    "базовая": 2
+   },
+   "programs": 2,
+   "term_deadline_programs": 0,
+   "to_mortgage": true
+  },
+  "764": {
+   "down_payment_pct": 30.0,
+   "has_installment": true,
+   "keys_before_payment": true,
+   "name": "СЛАВА",
+   "offered": 2,
+   "price_terms": {
+    "базовая": 1,
+    "удорожание": 1
+   },
+   "programs": 2,
+   "term_deadline_programs": 1,
+   "term_months": 12,
+   "to_mortgage": true
+  },
+  "850": {
+   "down_payment_pct": 25.0,
+   "has_installment": true,
+   "keys_before_payment": false,
+   "name": "Lunar",
+   "offered": 1,
+   "price_terms": {
+    "скидка": 1
+   },
+   "programs": 1,
+   "term_deadline_programs": 0,
+   "term_months": 9,
+   "to_mortgage": true
+  }
+ },
+ "registry_projects": 685,
+ "saved_at": "2026-09-08",
+ "sheet": "Рассрочки. Москва",
+ "source": "TrendAgent, свод рассрочек по Москве",
+ "unmatched": [
+  "(Загородная недвижимость)",
+  "1-й Донской",
+  "1-й Лермонтовский",
+  "1-й Саларьевский",
+  "1-й Химкинский",
+  "1-й Шереметьевский",
+  "1-й Южный",
+  "1-й Ясеневский",
+  "8 кленов, Рафинад",
+  "A. Residence",
+  "AFI PARK Воронцовский",
+  "AFI Парк Воронцовский",
+  "AFI Резиденция Архитекторов",
+  "Armani / Casa Moscow Residences",
+  "G3 Михалевич",
+  "G3 Театральный",
+  "Kazakov Grand Loft",
+  "Lucky",
+  "Lumin",
+  "Prime park (корпус R8, R9)",
+  "Republic (2 этап)",
+  "Republic (4 этап)",
+  "River House Щелково",
+  "River Residences",
+  "RiverSky",
+  "Russian Design District",
+  "Self",
+  "Sky Garden",
+  "Stories на Мосфильмовской",
+  "Sydney Prime",
+  "TOPHILLS",
+  "Tate",
+  "Titul и Dialog",
+  "Vesper Tverskaya",
+  "Vnukovo Country Club",
+  "Vnukovo Country Club 1",
+  "Wave Кладовые помещения",
+  "Wave Машино-места (КРОМЕ категорий 1, 1.1)",
+  "West Garden",
+  "АРТ",
+  "АУРА. Мангазея на Тульской",
+  "Авиатор-2",
+  "Адмирал корп. 1.1",
+  "Адмирал корп. 1.3, 1.4",
+  "Александрия Таун",
+  "Алхимово",
+  "Аметист",
+  "Аникеевский корп. 7, 1.1, 1.2",
+  "Аникеевский корп. 7, 1.2",
+  "Апарт-комплекс Residence 15",
+  "Апарт-отель Елочка",
+  "Апартаменты на Пресне",
+  "Апрелевка Клаб",
+  "Арбат 2",
+  "Аристов Берег",
+  "Архитектор",
+  "Атлантис",
+  "Базаева, 11",
+  "Бархат.Сити",
+  "Белый город",
+  "Берег",
+  "Бисайд 2.0",
+  "Блик",
+  "Большое Путилково. ФК УРАЛСИБ",
+  "Большое Юрлово 3 очередь 1 этап, 4 очередь 1 этап",
+  "Борисоглебское",
+  "Бристоль",
+  "Веер, Сет",
+  "Вейв 1 очередь 2-к.кв. и 3-к.кв. кроме",
+  "Верейская 41 (кроме к. 4.1, 4.2)",
+  "Вереск",
+  "Весна",
+  "Волковская 67",
+  "Восток-2",
+  "Все объекты",
+  "Все объекты, кроме ЖК Пение Птиц",
+  "Все проекты",
+  "Все проекты с плановой датой РВЭ более 3 месяцев",
+  "Все проекты, кроме КП Волжский берег",
+  "Все проекты, кроме проектов загородной недвижимости",
+  "Высокий Берег",
+  "ГРЭЙ",
+  "Гармония Парк",
+  "Гоголь парк",
+  "Горки Парк (к. 6.1, 6.2, 8.1, 8.2)",
+  "Горки парк 7 очередь (к. 9.1, 9.2)",
+  "Городские Истории",
+  "Городской бор",
+  "Гранд Комфорт",
+  "Гранд Комфорт 3",
+  "Грэйн",
+  "Данилов Дом",
+  "Деснаречье",
+  "Детали",
+  "Дзен Кварталы",
+  "Дмитровское небо Кладовые помещения этап 1.1",
+  "Дмитровское небо Машино-места",
+  "Дмитровское небо машино-места оч. 1 этап 1,2",
+  "Дмитровское небо очередь 2, этап 2.5",
+  "Дмитровское небо, очередь 1, к. 1, 2",
+  "Дмитровское небо, очередь 1, к. 1,2",
+  "Дмитровское небо, очередь 2, к. 2.5",
+  "Дом А (от 70 кв. м)",
+  "Дом Достижение",
+  "Дом Палашевский 11",
+  "Дом на Часовой",
+  "Дом-Мегалит в Королеве",
+  "Досфлота 10",
+  "Дрим Тауэрс",
+  "Дубровицы клаб",
+  "Дубровка",
+  "Дюна",
+  "Дюна 1 оч. 2-к.кв, 3Е-к.кв. и 3-к.кв",
+  "Дюна 2 оч. 2-к.кв, 3Е-к.кв. и 3-к.кв",
+  "Дюна корпуса 1, 2 (1-к.кв)",
+  "Дюна корпуса 1, 2 (2-к.кв)",
+  "Дюна корпуса 1, 2 (2-к.кв, 3Е-к.кв)",
+  "Дюна корпуса 1, 2 (2Е-к.кв, 2-к.кв, 3Е-к.кв)",
+  "Дюна корпуса 1, 2 (3-к.кв)",
+  "Дюна корпуса 1, 2 (студии)",
+  "Дюна корпуса 3, 4, 5 (1-к.кв)",
+  "Дюна корпуса 3, 4, 5 (2-к.кв)",
+  "Дюна корпуса 3, 4, 5 (2-к.кв, 3Е-к.кв)",
+  "Дюна корпуса 3, 4, 5 (2Е-к.кв)",
+  "Дюна корпуса 3, 4, 5 (3-к.кв)",
+  "Дюна корпуса 3, 4, 5 (студии)",
+  "Егорово парк 4 очередь (корпус 4.1)",
+  "ЖК Дружный и Майданово Парк",
+  "ЖК Кит - 2",
+  "ЖК Москворецкий",
+  "Жаворонки Клаб 3Б и 3А корпуса",
+  "Жаворонки клаб",
+  "Жаворонки клаб 6А корпус",
+  "Живописный",
+  "Заречье Парк",
+  "Звезды Арбата",
+  "Зеленая вертикаль",
+  "Зеленый Бор",
+  "Зеленый город",
+  "Зиларт корп 1-7,16-17, машино-места",
+  "Зиларт корп 7-17, кладовые, ВМТ",
+  "Зиларт корп 8, машино-места",
+  "Зиларт корп. Grand",
+  "Зиларт корп. Grand, машино-места",
+  "Зиларт корп. Spark",
+  "Зиларт корп. Spark, машино-места",
+  "Зиларт корп. Гранд",
+  "Золотые крылья 1 корпус",
+  "Золотые крылья 3 корпус",
+  "Идеал",
+  "Ильинойс",
+  "Императорские Мытищи корп. 1.1, 9, 17",
+  "Инсайдер (на лоты с террасой)",
+  "Инсайдер корп. 1, 2 (на лоты без отделки)",
+  "Инсайдер корп. 3 (на лоты с отделкой)",
+  "Интонация",
+  "Истомкино Парк 2, Солнечный, Портал, Озера, Ступино, Юго-Западный квартал",
+  "КОД Сокольники, квартиры от 65 кв.м",
+  "КП Art House",
+  "КП Riga Family",
+  "КП Волжский берег",
+  "КП Крекшино",
+  "КП Парк-отель Экоранчо",
+  "КП Первый Пионерский",
+  "КП Резиденция Булатово",
+  "КП Сысоево Парк",
+  "Кашинцево",
+  "Каштановая роща",
+  "Квартал Авиаторов (к. 2, 3, 7/к.4)",
+  "Квартал Западный (к. 6,9,10)",
+  "Квартал Ивакино 2 очередь 1 этап",
+  "Квартал Светлый",
+  "Квартал Строгино 3 очередь 1 этап (корпус 3.1, 3.2, 3.3, 3.4)",
+  "Квартал Строгино к. 1, 2.1, 2.2, 2.3",
+  "Квартал домашний 3 очередь 3 этап",
+  "Квартал на воде 3 очередь 1 этап",
+  "Киноквартал (2 корпус",
+  "Киноквартал (2 корпус)",
+  "Киноквартал (3 корпус)",
+  "Киноквартал (3 корпус, квартиры стоимостью 12 000 000 и выше)",
+  "Киноквартал (3 корпус, кроме студий, 1-к.кв, менее 8 000 000 р.)",
+  "Клевер",
+  "Клубный Дом в Газетном",
+  "Клубный город на реке Примавера, корп.  Беллини",
+  "Клубный дом Sole Hills",
+  "Клубный дом Рублево",
+  "Коллекция",
+  "Коренёвский Форт 2.3",
+  "Космический Квартал (к. 1)",
+  "Космопарк",
+  "Котельники Парк",
+  "Коттеджный поселок PORT EMM ZAVIDOVO",
+  "Крылья",
+  "ЛОТ",
+  "Лайф Варшавская",
+  "Ласточкино",
+  "Левел Лесной",
+  "Легенда Коренево",
+  "Легенда Марусино, кроме студий",
+  "Лесная Коллекция",
+  "Лесная Отрада",
+  "Лефорт",
+  "Литературный квартал",
+  "Лофт-аппартаменты Fabrik",
+  "Лофт-квартал Октябрьский 403",
+  "Лучи Корпус 1-4 и 15, кладовые помещения",
+  "Лучи Корпус 1-4, машино-места",
+  "Лучи Корпус 1-9, машино-места, ДКП",
+  "Лучи Корпус 15, машино-места",
+  "Лучи Корпус 5-9, кладовые помещения",
+  "Лучи Корпус 5-9, машино-места",
+  "Лучи2, корпусы 1-4",
+  "Лучи2, корпусы 5-9",
+  "М1 Сколково",
+  "МАРК",
+  "МАРК, машино-места",
+  "МФЗ «Сантерра»",
+  "МЫС, корп. 8, 9, 10, таунхаусы",
+  "МЫС, корп. Алтай, Урал, Карелия",
+  "МЫС, корп. Волга, Сибирь",
+  "Малаховский",
+  "Малиново",
+  "Марк",
+  "Мартемьяново Клаб",
+  "Мартемьяново Клаб 1 корпус",
+  "Мартемьяново клаб",
+  "Маршал",
+  "Маслово Forest club",
+  "Матч поинт",
+  "Молжаниново 1 оч., к. 4, 5, 6",
+  "Моментс (2.1, 2.2, 2.3)",
+  "Мытищи Парк (к. 6)",
+  "Мята",
+  "На объекты не введенные в эксплуатацию",
+  "Нагатино Ай-Лэнд, уч.1.7, к. 1-4",
+  "Нагатино Ай‑Лэнд, уч. 1.7, корпус 1-3",
+  "Нагатино Ай‑Лэнд, уч. 1.7, корпус 1-4",
+  "Назаре. Мангазея в Богородском",
+  "Настоящее",
+  "Нексус",
+  "Нова, на площади до 40.99 кв.м",
+  "Нова, на площади от 41 кв.м до 80.99 кв.м",
+  "Нова, на площади от 81 кв.м",
+  "Новая Алексеевская роща",
+  "Новая Звезда, 2 очередь 1, 2, 6 корпуса",
+  "Новая Звезда, 2 очередь, 3 корпус",
+  "Новая Щербинка",
+  "Ново-Молоково",
+  "Новое Видное (к.17, 14.1, 14.2, 18.1, 18.2)",
+  "Новое Внуково (к. 31, 32, 33, 34,35, 37, 38)",
+  "Новое Летово",
+  "Новое замитино",
+  "Новотомилино, к.7",
+  "Новые Ватутинки мкрн. Заречный",
+  "Новые Ватутинки мкрн. Квартал у реки",
+  "Новые Ватутинки мкрн. Центральный",
+  "Новые Островцы",
+  "Новые Смыслы",
+  "Новые котельники",
+  "Новый Весенний",
+  "Новый Зеленоград (5 корпус)",
+  "Обручева 30 Машино-места",
+  "Одинбург (башня Наследие)",
+  "Одинбург, квартал Наследие (К1-К2)",
+  "Одинград, квартал Семейный",
+  "Одинцово Сити",
+  "Одинцовские Кварталы Эволюция",
+  "Октябрьский",
+  "Олива",
+  "Ольховый Квартал",
+  "Ольховый Квартал (к. 2.1, 2.2)",
+  "Онегин",
+  "Остафьево (к. 20, 21, 22, 23)",
+  "Отрада 3",
+  "ПРАЙД",
+  "Павлово 3",
+  "Павлово 3, 1 корпус",
+  "Парк Апрель",
+  "Парксайд (1-к.кв, 2-к.кв. № 826/824, 3-к.кв.)",
+  "Парксайд (студии и 2-к.кв, кроме 826/824)",
+  "Парксайд Кладовые помещения",
+  "Пахра Сити",
+  "Пейв (все корпуса)",
+  "Пение птиц",
+  "Первый Нагатинский (1-к.кв)",
+  "Первый Нагатинский (2-к.кв и 3-к.кв)",
+  "Первый Нагатинский (студии)",
+  "Первый Нагатинский 2 очередь (2-к.кв, 1.к.кв > 48 кв.м",
+  "Первый Нагатинский 2 очередь (студии, 1.к.кв < 48 кв.м",
+  "Первый квартал",
+  "Переделкино",
+  "Переделкино (спец.лоты  во 2-й очереди)",
+  "Пироговская Ривьера",
+  "Планерный квартал",
+  "Поварово-Молодежный-2",
+  "Подсолнух Парк",
+  "Полянка 44",
+  "Портленд (5,6,7,8)",
+  "Прибрежный Парк 6 очередь (к. 11.1, 11.2)",
+  "Пригород Лесное (к. 19, 20, 21)",
+  "Притяжение сити",
+  "Прокшино",
+  "Публицист",
+  "Пушкино Град",
+  "Равновесие",
+  "Равновесие 1",
+  "Равновесие: 1",
+  "Райз",
+  "Резиденции архитекторов",
+  "Ренессанс",
+  "Рига Хилл ( только 1 корпус)",
+  "Рига Хилл (только 1 корпус)",
+  "Рига Хиллс ( только 1 корпус)",
+  "Родина Парк (2 очередь 4, 5 корпус)",
+  "Родина Парк (спец.лоты)",
+  "Родина Парк 2 очередь, 4, 5 корпуса)",
+  "Рублевский квартал 5 очередь 1 этап (корпус 1.1, 1.2, 1.3, 2.1, 2.2)",
+  "СОУЛ (1,2)",
+  "СОУЛ (3,4,5, камерный дом(6))",
+  "СОУЛ (корпус 9, 8, камерный дом(7))",
+  "СОУЛ(корпус 9, 8, камерный дом(7))",
+  "СОЮЗ (2",
+  "Сабурово Клаб",
+  "СберСити в Рублево-Архангельском,квартал B14",
+  "Сердце Лыткарино",
+  "Сидней сити (корпус 1, 2, 3, 2.1, 2.2)",
+  "Сидней сити (корпус 5.1, 5.2, 6.1, 6.2, 6.3)",
+  "Сити квартал Отрада",
+  "Сказка",
+  "Скай Спутник 5 очередь, к. 19, 20, 21",
+  "Скандинавия",
+  "Сколково ВАН",
+  "Смарт Гарден",
+  "Соболевка",
+  "Соколин Парк, к. 1,2, 2-к.кв и 3-к.кв",
+  "Соколин Парк, к. 1,2, студии и 1-к.кв",
+  "Сокольники",
+  "Солнечная долина",
+  "Солнечный парк",
+  "Союзный",
+  "Спутник 5 очередь 1,2 этапы",
+  "Станиславский",
+  "Станция Л",
+  "Страна. Заречная паркинг и",
+  "Страна. Парковая паркинг и",
+  "Страна.Парковая",
+  "Тетрис",
+  "Томилино Парк (к. 6.4)",
+  "Точка отсчета",
+  "Трилогия Кристалл",
+  "Троицкий",
+  "Тропарево Парк 2 очередь 3 этап (корпус 2.2, 2.3)",
+  "Усадьба Новая Салтыковка",
+  "Филатов Луг",
+  "Фрайдей Виллас",
+  "Хай Лайф 1 оч. (пентхаусы)",
+  "Хай Лайф к. 4, 5, 6 (пентхаусы)",
+  "Хай Лайф к. 4,5,6",
+  "Химки Парк 1 очередь 1 этап",
+  "Хлебный 19",
+  "Хольм",
+  "Цветочные Поляны (к. 9, 11, 12)",
+  "Шагал, 1 оч., к. 8, 13, 2 оч., 1 этап, к. 4-7, 2 этап, к. 1-3, 4 этап, к.7, 5 этап, к. 3, 6 этап, к. 1",
+  "Шагал, 1 оч., к. 8-9",
+  "Шагал, 1 очередь, к. 13",
+  "Шагал, 2 оч., 1 этап, к. 4-7, 2 этап, к. 1-3, 5 этап, к. 3,4, 6 этап, к.1,2",
+  "Шагал, 3 оч., 2 этап, к. 1-4, 3 этап, к. 5-11, 6 этап, к. 10",
+  "Шагал, 3 оч., 4 этап, к. 1-3",
+  "Шагал, 3 оч., 5 этап, к. 4-9",
+  "Шагал, 4 оч., 3 этап, к. 1-3, 2 этап, к. 4-6, 1 этап, к. 1-3",
+  "Школьный",
+  "Школьный, Восточный",
+  "Шолохово",
+  "ЭВО",
+  "ЭВО, корп. 15, 16.1, 17",
+  "Эко Видное 2.0",
+  "Эко-парк Троицкое",
+  "ЭкоБунино (к. 13, 14.2)",
+  "Экоград Новый Катуар",
+  "Эльйон",
+  "Этап 2, 2.5",
+  "Южная Битца",
+  "Южная Долина",
+  "Южное Пушкино",
+  "— Большое Юрлово 3 очередь 1 этап, 4 очередь 1 этап",
+  "— Горки Парк — 7 очередь (корпус 9.1, 9.2)",
+  "— Егорово Парк — 4 очередь (корпус 4.1)",
+  "— Заречье Парк —",
+  "— Квартал Домашний 3 очередь 3 этап",
+  "— Квартал Ивакино —",
+  "— Квартал Строгино — 3 очередь (корпус 3.1, 3.2, 3.3, 3.4)",
+  "— Литературный Квартал",
+  "— Новое Внуково — 5 очередь 3 этап",
+  "— Ольховый Квартал —",
+  "— Прибрежный Парк — 6 очередь (корпуса 11.1, 11.2)",
+  "— Пригород Лесное —",
+  "— Рублевский квартал — 5 очередь 1 этап (корпус 1.1, 1.2, 1.3, 2.1, 2.2)",
+  "— Томилино Парк — 6 очередь 3 этап (корпус 6.4)",
+  "— Химки Парк — 1 очередь 1 этап"
+ ]
+}
