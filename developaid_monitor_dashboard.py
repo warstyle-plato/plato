@@ -162,6 +162,11 @@ _FM_SECTION_CHAPTER = {"2.1": "1", "2.2": "2", "2.3": "3"}
 # займам») — вне бюджета, справкой. Код — явный: в имени строки слова
 # «процент» может не быть.
 _FM_INTEREST_CODE = "3.1.4"
+# Статьи финмодели, чьи строки карты «статьи_БДДС» ведут в разные главы, а
+# глава решена владельцем явно, а не большинством строк. 2.3.4 «Расходы на
+# продажу»: пять строк карты ведут в 2.6, четыре — в 3.2/3.4, но деньги —
+# комиссии риэлторов и брокеров, и это глава 3 (решение владельца, 03.11.2026).
+_FM_CHAPTER_DECIDED = {"2.3.4": "3"}
 # Комиссия банка за выдачу кредита сидит в финмодели внутри строки процентов
 # (3.1.4), а в смете банка — статьёй 3.5 главы 3. Это не проценты, и в
 # утверждённый бюджет она входит, по карте — в главу 3 (решение владельца,
@@ -422,6 +427,8 @@ def _read_finance_model(wb: Any, path: Path) -> dict[str, Any]:
             for item in crosswalk
             if item["estimate_code"]
             and (item["bdds_code"] == code or item["bdds_code"].startswith(code + ".")))
+        if code in _FM_CHAPTER_DECIDED:
+            return _FM_CHAPTER_DECIDED[code], False
         if not votes:
             return "", False
         best = max(sorted(votes), key=lambda chapter: votes[chapter])

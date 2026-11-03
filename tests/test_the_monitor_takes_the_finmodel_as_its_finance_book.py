@@ -114,12 +114,32 @@ def test_the_chapters_come_from_the_crosswalk(tmp_path):
                                           "2": pytest.approx(550 * K),
                                           "3": pytest.approx(90 * K)}
     assert got["articles"]["2.1.1"]["chapter"] == "1"
-    # 2.3.4: две строки карты в главу 3, одна в главу 2 — глава большинства, и это сказано.
+    # 2.3.4 «Расходы на продажу» — глава 3 по решению владельца (комиссии
+    # риэлторов и брокеров), а не по большинству строк карты; в причину не идёт.
     assert got["articles"]["2.3.4"]["chapter"] == "3"
-    assert "2.3.4" in got["chapters_reason"] and "разные главы" in got["chapters_reason"]
+    assert "2.3.4" not in got["chapters_reason"]
     # Статья без строк в карте — вне глав, и это тоже сказано.
     assert got["articles"]["2.4.9"]["chapter"] == ""
     assert "2.4.9" in got["chapters_reason"] and "не найдены" in got["chapters_reason"]
+
+
+def test_a_mixed_article_without_a_decision_goes_by_majority_and_says_so(tmp_path, monkeypatch):
+    monkeypatch.setattr(dashboard, "_FM_CHAPTER_DECIDED", {})
+    got = _read(tmp_path, _finmodel())
+    # 2.3.4: две строки карты в главу 3, одна в главу 2 — глава большинства, и это сказано.
+    assert got["articles"]["2.3.4"]["chapter"] == "3"
+    assert "2.3.4" in got["chapters_reason"] and "разные главы" in got["chapters_reason"]
+
+
+def test_the_owner_decides_the_chapter_of_the_sales_expenses(tmp_path, monkeypatch):
+    """Решение владельца сильнее большинства строк карты: строки ведут в главу 2."""
+    flipped = [(bdds, name, "2.6" if bdds.startswith("2.3.4") else est)
+               for bdds, name, est in CROSSWALK]
+    monkeypatch.setattr(sys.modules[__name__], "CROSSWALK", flipped)
+    got = _read(tmp_path, _finmodel())
+    assert got["articles"]["2.3.4"]["chapter"] == "3"
+    monkeypatch.setattr(dashboard, "_FM_CHAPTER_DECIDED", {})
+    assert _read(tmp_path, _finmodel())["articles"]["2.3.4"]["chapter"] == "2"
 
 
 def test_without_the_crosswalk_the_model_is_a_reason_not_a_guess(tmp_path):
