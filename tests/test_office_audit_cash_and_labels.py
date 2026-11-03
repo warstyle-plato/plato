@@ -1,4 +1,4 @@
-"""Cash receipts exclude retained value; live Excel labels follow the exit input."""
+"""Cash excludes retained value; sale and hold remain independent Excel variants."""
 import io
 
 import pytest
@@ -12,7 +12,7 @@ def held_book():
     return _book("аренда и удержание, погашение из NOI")[0]
 
 
-def test_labels_follow_excel_exit_changes_including_the_winner(held_book):
+def test_both_exit_variants_stay_distinct_when_the_excel_input_changes(held_book):
     book = openpyxl.load_workbook(io.BytesIO(held_book))
     report = book[ow.REPORT_SHEET]
     header = next(cell for row in report for cell in row if cell.value == "Показатель")
@@ -21,18 +21,19 @@ def test_labels_follow_excel_exit_changes_including_the_winner(held_book):
     selected = _row(report, "Способ, выбранный в проекте")
     winner = _row(report, "Выгоднее по NPV среди вариантов книги")
     # Force rent to win without depending on a particular fixture's economics.
-    for sheet_name, value in (("CF_ДДУ", -3), ("CF_ПДКП", -2), ("CF_Продажа", -1), ("CF_Аренда", 1)):
+    for sheet_name, value in (("CF_ДДУ", -3), ("CF_ПДКП", -2), ("CF_Продажа", -1),
+                              ("CF_Выход_продажа", -1), ("CF_Аренда", 1)):
         sheet = book[sheet_name]
         sheet[f"B{_row(sheet, 'NPV проекта')}"] = value
     inputs = book[ow.INPUTS_SHEET]
     exit_row = _row(inputs, "Выход в конце удержания")
     exit_cell = next(cell for cell in inputs[exit_row] if cell.value == ow.EXIT[ow.ns.EXIT_HOLD])
-    for mode, label in ((ow.ns.EXIT_HOLD, "Аренда и удержание здания"),
-                        (ow.ns.EXIT_SALE, "Аренда и продажа здания")):
+    for mode in (ow.ns.EXIT_HOLD, ow.ns.EXIT_SALE):
         exit_cell.value = ow.EXIT[mode]
         evaluator = ow.Evaluator(book)
         for address in (f"E{header.row}", f"B{selected}", f"B{winner}"):
-            assert evaluator.cell(ow.REPORT_SHEET, address) == label
+            assert evaluator.cell(ow.REPORT_SHEET, address) == "Аренда и удержание здания"
+        assert evaluator.cell(ow.REPORT_SHEET, f"F{header.row}") == "Аренда и продажа здания"
 
 
 def test_receipts_exclude_valuation_but_project_npv_keeps_it(held_book):

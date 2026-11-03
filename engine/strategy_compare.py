@@ -55,6 +55,8 @@ def strategy_column_hint(path: dict[str, Any]) -> str:
     """Подсказка столбца — по способу пути: аренда — по её выходу."""
     kind = _path_kind(path)
     if kind == nonres_strategy.STRATEGY_INCOME:
+        if path.get("exit_mode") is None:
+            return strategy_hint_key("income_mixed")
         hold = path.get("exit_mode") == nonres_strategy.EXIT_HOLD
         return strategy_hint_key("income_hold" if hold else "income_sale")
     return strategy_hint_key(kind)
@@ -69,6 +71,8 @@ def _path_kind(path: dict[str, Any]) -> str:
 
 def _words(path: dict[str, Any]) -> tuple[str, str, str]:
     """Падежи стратегии пути: аренда — по её выходу (продажа или удержание)."""
+    if _path_kind(path) == nonres_strategy.STRATEGY_INCOME and path.get("exit_mode") is None:
+        return ("аренда с исходами из вводных", "аренды с исходами из вводных", "аренду с исходами из вводных")
     if _path_kind(path) == nonres_strategy.STRATEGY_INCOME \
             and path.get("exit_mode") == nonres_strategy.EXIT_HOLD:
         return _HOLD_WORDS

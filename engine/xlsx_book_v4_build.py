@@ -72,7 +72,7 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
             continue
         row = t.get(obj.key) or {}
         item: dict[str, Any] = {
-            "key": obj.key, "prefix": obj.prefix, "title": obj.tep_label or obj.label,
+            "key": obj.key, "prefix": obj.prefix, "product": obj.product, "title": obj.tep_label or obj.label,
             "measure": obj.measure,
             "volume": n(x, f"{obj.prefix}_spaces") if obj.measure == "spaces" else n(x, f"{obj.prefix}_gba_sqm"),
             "total_area": n(row, "total_area"),
@@ -91,6 +91,7 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
         # стратегий вне ДДУ, какую бы стратегию ни выбрал проект. Вводные —
         # те же поля, что движок читает, когда `office_paths` меняет стратегию.
         office = obj.product == "offices" and bool(obj.strategies) and item["in_tax_pool"]
+        compared = obj.product in ("offices", "standalone_retail") and bool(obj.strategies) and item["in_tax_pool"]
         # Класс офиса — из вводных (`office_class_choice`), а не угадан по числам.
         if obj.product == "offices":
             item["office_class"] = nonres_strategy.office_class_choice(x, obj.prefix)["office_class"]
@@ -102,7 +103,7 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
         # тем же `sales_schedule`, что в `build_operating_model`, — доля до
         # ввода объекта, остаток после, рост цены; профиль продаж и лестница
         # цены — вводные, которые книга получает таблицей.
-        if (not plan_item or office) and item["in_tax_pool"] and n(x, obj.rate_price) > 0:
+        if (not plan_item or compared) and item["in_tax_pool"] and n(x, obj.rate_price) > 0:
             sales_start = d(x[f"{obj.prefix}_sales_start"])
             weights, factor = None, None
             weights_raw, _notes = schedule_weights(x.get(f"{obj.prefix}_sales_profile"), sales_start)
@@ -134,7 +135,7 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
                 "parking_over_mln": n(x, f"{obj.prefix}_parking_over_price_mln_per_space"),
                 "sales_weights": weights, "price_factor": factor,
             })
-        if plan_item or office:
+        if plan_item or compared:
             params = ((plan_item or {}).get("params")
                       or {suffix: x.get(f"{obj.prefix}_{suffix}")
                           for suffix in nonres_strategy.STRATEGY_FIELD_DEFAULTS})
@@ -286,8 +287,8 @@ def _nonres_project_workbook(inputs: dict[str, Any], tep: dict[str, Any],
     Решение владельца (13.10.2026): объект по ДДУ — не повод отдавать жилую
     книгу; его продажи, эскроу, БРИДЖ и ПФ книга нежилого проекта считает
     формулами. Книгу собирает `office_workbook` на каркасе жилой v4: проект с
-    офисом — четыре способа продажи офиса, без офиса — стратегия каждого объекта
-    (ДДУ — листы объекта и «ПФ»). ПФ по очередям книга не моделирует: проект с
+    офисом и/или ТЦ — все варианты сравнения из office_paths/retail_paths;
+    без этих продуктов — стратегия каждого объекта (ДДУ — листы объекта и «ПФ»). ПФ по очередям книга не моделирует: проект с
     очередями и ПФ получает книгу v4.
     """
     consolidated = (_run_authoritative_model(
@@ -305,12 +306,9 @@ def _nonres_project_workbook(inputs: dict[str, Any], tep: dict[str, Any],
         spec["missing"].append("Очереди: книга моделирует проект одной очередью, "
                                "сверка идёт со сводом очередей")
     stem = _safe_file_stem(project_name or "project", "project")
-    # Книга на каркасе жилой v4 (`office_workbook`; образец владельца 22.10.2026,
-    # решение 24.10.2026 «Новая книга считает и ДДУ»). Проект с офисом — три
-    # способа продажи офиса рядом: по ДДУ, блоками и арендой; объект по ДДУ
-    # рядом с офисом (ТЦ по ДДУ) входит в ПФ каждого способа. Проект без офиса
-    # (ТЦ, ФОК, наземный паркинг) — один способ: стратегия каждого объекта,
-    # сверка с основным расчётом (поручение владельца 24.10.2026).
+    # Офис и ТЦ сравниваются отдельными группами из основного расчёта.
+    # Реестр офисов нужен книге только для шкалы класса, не для выбора
+    # продуктов сравнения: их определяют office_paths и retail_paths.
     office_keys = {obj.key for obj in STANDALONE_OBJECTS if obj.product == "offices"}
     with_office = bool(consolidated.get("office_paths")) and any(
         (item.get("nonres") or item.get("ddu")) and item["key"] in office_keys for item in spec["objects"])
@@ -325,7 +323,7 @@ def _nonres_project_workbook(inputs: dict[str, Any], tep: dict[str, Any],
     filename = f"DevelopAid_{kind}_{stem}_{date.today().isoformat()}.xlsx"
     return content, filename, {"missing": missing, "phased": phased, "class_deviations": [],
                                "nonres_book": True, "office_book": with_office,
-                               "checks": report["verdict"]}
+                               "checks": report["verdict"], "comparisons": report["comparisons"]}
 
 
 def _hotel_project_workbook(inputs: dict[str, Any], tep: dict[str, Any],
