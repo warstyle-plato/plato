@@ -173,13 +173,15 @@ def test_limit_is_paid_plus_left_and_budget_is_limit_plus_own_money(tmp_path):
     assert own["budget"] == pytest.approx(own["limit"] + own["need"])
     rows = {row["chapter"]: row["amount"] for row in own["rows"]}
     # Карта «статьи_БДДС» кладёт административные расходы (2.4.1 → 2.6) в главу 2.
-    # 210 = глава 1: 0 − (−30) + глава 2: 620 − 490 + глава 3: 70 − 50 + расхождение 30
-    assert rows == {"1": pytest.approx(30 * K), "2": pytest.approx(130 * K),
+    # Строка главы — бюджет главы минус её лимит, и строки складываются в итог:
+    # 210 = глава 1: 300 − 250 + глава 2: 1 040 − 900 + глава 3: 100 − 80
+    assert rows == {"1": pytest.approx(50 * K), "2": pytest.approx(140 * K),
                     "3": pytest.approx(20 * K)}
     assert own["rows"][1]["sections"] == {"2.2": pytest.approx(1_000 * K),
                                           "2.4": pytest.approx(40 * K)}
+    assert sum(rows.values()) == pytest.approx(own["need"])
+    # Расхождение «ФАКТ» с реестром — справка, не слагаемое.
     assert own["dates"] == pytest.approx(30 * K)
-    assert sum(rows.values()) + own["dates"] == pytest.approx(own["need"])
     # Первый месяц — водопад глав: главе 2 не хватает в ноябре.
     assert own["from"] == "2026-11-01"
 
@@ -187,11 +189,12 @@ def test_limit_is_paid_plus_left_and_budget_is_limit_plus_own_money(tmp_path):
     assert lines[0].startswith("Утверждённый бюджет без налогов 1,4 млн ₽ минус лимит банка "
                                "1,2 млн ₽ — нужно своих денег сверх сметы банка 210 000 ₽, "
                                "первый месяц нехватки — ноябрь 2026.")
-    assert ("глава 2 (стройка) — 130 000 ₽: осталось оплатить по финмодели 620 000 ₽ минус "
-            "остаток лимита главы 490 000 ₽; бюджет главы по карте «статьи_БДДС» — разделы "
-            "2.2 1,0 млн ₽ + 2.4 40 000 ₽") in lines[1]
-    assert "расхождение «ФАКТ» финмодели с реестром РСС — 30 000 ₽: финмодель считает " \
-           "оплаченным больше" in lines[1]
+    assert ("глава 2 (стройка) — 140 000 ₽: бюджет главы по финмодели 1,0 млн ₽ минус лимит "
+            "главы 900 000 ₽ (бюджет главы по карте «статьи_БДДС» — разделы 2.2 1,0 млн ₽ + "
+            "2.4 40 000 ₽)") in lines[1]
+    assert lines[2] == ("Справочно: оплаченное по реестру РСС и по «ФАКТ» финмодели расходится "
+                        "на 30 000 ₽ — финмодель считает оплаченным больше. На сумму сверх "
+                        "сметы это не влияет: она — бюджет минус лимит.")
 
 
 def test_a_forged_section_breaks_the_identity(tmp_path):
@@ -248,7 +251,7 @@ def test_the_tiles_add_up_on_the_page(tmp_path, monkeypatch):
     assert ("<div class='k'>Утверждённый бюджет <span class='i' tabindex='0' role='note' "
             "title='Утверждённый бюджет — сумма") in page
     assert "Нужно своих денег сверх сметы банка</b>" in report._funding_html(built)
-    assert "расхождение «ФАКТ» финмодели с реестром РСС — 30 000 ₽" in report.render_text(built)
+    assert "глава 2 (стройка) — 140 000 ₽: бюджет главы по финмодели" in report.render_text(built)
 
 
 # --- Нехватка не прыгает при смене месяца сводки.

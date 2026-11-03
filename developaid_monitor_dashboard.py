@@ -1167,10 +1167,14 @@ def _own_money(comp: dict[str, Any] | None, smeta: dict[str, float],
     for chapter in chapters:
         flow = chapter_flow.get(chapter) or {"total": 0.0, "fact": 0.0, "plan": 0.0,
                                              "monthly": {}, "sections": {}}
+        # Строка главы — бюджет главы минус её лимит: складывается в итог без
+        # поправок и не зависит от дат книги и реестра (решение владельца,
+        # 03.11.2026: «Как у тебя 0,09+2,44+0,16=2,69 дало 2,34»).
         rows.append({"chapter": chapter, "label": _CHAPTER_WORDS.get(chapter, ("", ""))[0],
                      "sections": dict(sorted(flow["sections"].items())),
+                     "budget": flow["total"], "limit": float(smeta.get(chapter) or 0.0),
                      "to_pay": flow["plan"], "left": left[chapter],
-                     "amount": flow["plan"] - left[chapter]})
+                     "amount": flow["total"] - float(smeta.get(chapter) or 0.0)})
         dates += flow["fact"] - paid[chapter]
         book += flow["total"] - flow["fact"] - flow["plan"]
         articles[chapter] = {
@@ -1182,8 +1186,9 @@ def _own_money(comp: dict[str, Any] | None, smeta: dict[str, float],
         if chapter in chapters:
             continue
         rows.append({"chapter": "", "label": "", "sections": dict(sorted(flow["sections"].items())),
+                     "budget": flow["total"], "limit": 0.0,
                      "to_pay": flow["plan"], "left": 0.0, "paid": flow["fact"],
-                     "amount": flow["fact"] + flow["plan"]})
+                     "amount": flow["total"]})
         book += flow["total"] - flow["fact"] - flow["plan"]
         articles[f"вне глав {chapter}"] = {
             "code": f"вне глав {chapter}", "chapter": "", "rss_limit": 0.0,
@@ -1192,7 +1197,7 @@ def _own_money(comp: dict[str, Any] | None, smeta: dict[str, float],
     budget = float(comp.get("total") or 0.0)
     need = budget - limit
     waterfall = _article_waterfall(articles, 0.0, cut)
-    explained = sum(row["amount"] for row in rows) + dates + book
+    explained = sum(row["amount"] for row in rows)
     return {
         "budget": budget, "limit": limit, "paid": sum(paid.values()), "borrowed": borrowed,
         "own_paid": sum(paid.values()) - borrowed,
@@ -1225,32 +1230,32 @@ def own_money_lines(own: dict[str, Any] | None, money: Any) -> list[str]:
         made = " + ".join(f"{code} {money(amount)}" for code, amount in row["sections"].items())
         if row["chapter"]:
             name = f"глава {row['chapter']}" + (f" ({row['label']})" if row.get("label") else "")
-            parts.append(f"{name} — {money(row['amount'])}: осталось оплатить по финмодели "
-                         f"{money(row['to_pay'])} минус остаток лимита главы "
-                         f"{money(row['left'])}"
-                         + (f"; бюджет главы по карте «статьи_БДДС» — разделы {made}"
+            parts.append(f"{name} — {money(row['amount'])}: бюджет главы по финмодели "
+                         f"{money(row['budget'])} минус лимит главы {money(row['limit'])}"
+                         + (f" (бюджет главы по карте «статьи_БДДС» — разделы {made})"
                             if made else ""))
         else:
             parts.append(f"статьи финмодели вне глав сметы ({made}) — {money(row['amount'])}: "
-                         f"в смете банка их нет, поэтому это свои деньги (уже оплачено "
-                         f"{money(row.get('paid') or 0.0)}, осталось {money(row['to_pay'])})")
+                         "в смете банка их нет, поэтому это свои деньги")
+    out.append("Из чего складывается: " + "; ".join(parts) + ".")
+    # Справка: оплаченное по финмодели и по реестру расходится — это не
+    # слагаемое, а объяснение, почему «осталось оплатить» по книге и остаток
+    # лимита по реестру нельзя вычитать друг из друга напрямую.
     if abs(own["dates"]) > 0.5:
         since = float(own.get("paid_since") or 0.0)
         rest = -own["dates"] - since
-        text = (f"минус {money(-own['dates'])} — расхождение «ФАКТ» финмодели с реестром "
-                "РСС: реестр оплатил больше" if own["dates"] < 0 else
-                f"расхождение «ФАКТ» финмодели с реестром РСС — {money(own['dates'])}: "
-                "финмодель считает оплаченным больше")
-        if since > 0.5:
-            text += (f"; из этого {money(since)} — оплаты после даты книги, которые финмодель "
-                     "ещё числит в «ПЛАН»")
+        text = ("Справочно: оплаченное по реестру РСС и по «ФАКТ» финмодели расходится на "
+                f"{money(abs(own['dates']))}"
+                + (" — реестр оплатил больше" if own["dates"] < 0 else
+                   " — финмодель считает оплаченным больше"))
+        if own["dates"] < 0 and since > 0.5:
+            text += (f": {money(since)} — оплаты после даты книги, которые финмодель ещё "
+                     "числит в «ПЛАН»")
             if abs(rest) > 0.5:
-                text += (f", а {money(rest)} — разница в учёте прошлых оплат между финмоделью "
-                         "и реестром")
-        parts.append(text)
+                text += f", {money(rest)} — разница в учёте прошлых оплат"
+        out.append(text + ". На сумму сверх сметы это не влияет: она — бюджет минус лимит.")
     if abs(own["book"]) > 0.5:
-        parts.append(f"{money(own['book'])} — в книге «ИТОГО» не равно «ФАКТ» плюс «ПЛАН»")
-    out.append("Из чего складывается: " + "; ".join(parts) + ".")
+        out.append(f"В книге «ИТОГО» не равно «ФАКТ» плюс «ПЛАН» на {money(own['book'])}.")
     return out
 
 
