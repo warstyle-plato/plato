@@ -14,6 +14,8 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
@@ -47,6 +49,32 @@ ROWS = [
 ROWS.append(dict(_contract("2026-09-08", "Машиноместа", 0.0, 6.0 * M), unit="",
                  contract="ДДУ №0022М/ГР от 08.09.2026", escrow_paid=0.0, payment_variant="1"))
 UPLOADED = "2026-11-02T09:00:00+00:00"
+
+
+@pytest.mark.parametrize("rate,expected", [(100_000, False), (85_000, False), (84_999.99, True),
+                                           (50_000, True), (115_000, False), (128_000, False),
+                                           (200_000, False)])
+def test_price_questions_only_for_more_than_fifteen_percent_below_peers(rate, expected):
+    peers = [_row("2026-09-01", f"корп 1 кв.{n}", "2К", 50, 5_000_000, 5_000_000)
+             for n in (1, 2, 3)]
+    target = _row("2026-10-20", "корп 1 кв.9", "2К", 50, rate * 50, rate * 50)
+    found = sales_questions.questions(None, {"rows": peers + [target]}, UPLOADED, "2026-11-02")
+    assert bool(found) is expected
+    if expected:
+        assert len(found) == 1 and found[0]["kind"] == "price"
+        assert "ниже средней" in found[0]["text"]
+        assert sales_questions.questions(None, {"rows": peers + [target]}, UPLOADED,
+                                         "2026-11-02", {found[0]["key"]}) == []
+
+
+@pytest.mark.parametrize("paid,variant,kind", [(0, "Рассрочка", "money"),
+                                             (6_400_000, "непонятная схема", "terms")])
+def test_a_higher_price_does_not_hide_unpaid_money_or_unknown_terms(paid, variant, kind):
+    peers = [_row("2026-09-01", f"корп 1 кв.{n}", "2К", 50, 5_000_000, 5_000_000)
+             for n in (1, 2, 3)]
+    target = _row("2026-10-20", "корп 1 кв.9", "2К", 50, 6_400_000, paid, variant)
+    found = sales_questions.questions(None, {"rows": peers + [target]}, UPLOADED, "2026-11-02")
+    assert [item["kind"] for item in found] == [kind]
 
 
 def _report(day: str, lots: list[str]) -> str:

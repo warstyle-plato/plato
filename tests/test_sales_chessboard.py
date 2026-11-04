@@ -75,13 +75,28 @@ def test_three_uploads_keep_all_corps_and_replace_only_the_uploaded_one(tmp_path
     assert sales_store.load(tmp_path, "Проба")["sources"]["chessboard"]["data"] == after
 
 
-@pytest.mark.parametrize("amount,expected", [(3_400_000, 0), (4_600_000, 0),
-                                             (3_200_000, 1), (4_800_000, 1)])
-def test_price_question_requires_more_than_fifteen_percent(amount, expected):
+@pytest.mark.parametrize("amount,expected", [(4_000_000, 0), (3_400_001, 0), (3_400_000, 0),
+                                             (3_399_999, 1), (3_200_000, 1), (4_600_000, 0),
+                                             (4_800_000, 0), (8_000_000, 0), (40_000_000, 0)])
+def test_price_question_requires_discount_strictly_over_fifteen_percent(amount, expected):
     found = chessboard.questions(snapshot(), [contract(amount=amount)], "", "2026-11-03")
     assert len(found) == expected
     if expected:
-        assert "шахматки" in found[0]["text"] and "почему" in found[0]["text"]
+        assert "ниже цены шахматки" in found[0]["text"] and "почему" in found[0]["text"]
+        assert "вверх" not in found[0]["text"]
+
+
+def test_explicit_contract_rate_above_chessboard_does_not_ask():
+    row = dict(contract(amount=6_400_000), contract_price_per_sqm=160_000)
+    assert not chessboard.questions(snapshot(), [row], "", "2026-11-03")
+
+
+def test_discount_question_keeps_its_identity_and_is_not_asked_twice():
+    contracts = {"rows": [contract()]}
+    first = sales_questions.questions(None, contracts, "2026-11-03", "2026-11-03", snapshot=snapshot())
+    assert len(first) == 1 and first[0]["key"] == "chess-price:ДДУ 1"
+    assert not sales_questions.questions(None, contracts, "2026-11-03", "2026-11-03",
+                                         {first[0]["key"]}, snapshot=snapshot())
 
 
 def test_old_future_ambiguous_and_inconsistent_prices_do_not_accuse_people():

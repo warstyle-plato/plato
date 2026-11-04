@@ -159,13 +159,12 @@ def questions(snapshot: dict | None, contracts: list[dict], report_text: str, to
             continue
         expected = lot["price_per_sqm"]
         gap = actual / expected - 1
-        if abs(gap) > PRICE_GAP + 1e-10:
+        if gap < -PRICE_GAP - 1e-10:
             identity = row.get("contract") or f"{lot['building']}:{lot['unit']}:{row['signed']}"
             found.append({"key": f"chess-price:{identity}", "kind": "chess_price",
                           "text": f"Корпус {lot['building']}, квартира № {lot['unit']}: цена договора "
-                          f"{ru(actual)} ₽/м² отличается от шахматки на {lot['as_of']} "
-                          f"({ru(expected)} ₽/м²) на {ru(abs(gap)*100, 1)}% "
-                          f"{'вниз' if gap < 0 else 'вверх'}. Подскажите, почему?"})
+                          f"{ru(actual)} ₽/м² ниже цены шахматки на {lot['as_of']} "
+                          f"({ru(expected)} ₽/м²) на {ru(-gap*100, 1)}%. Подскажите, почему?"})
     for booking in salesroom.booked_lots(report_text) or []:
         lot = match(inventory, booking["apartment"], area=booking.get("area"))
         if lot and lot["status"] in ("sold", "unavailable", "regrouping"):
