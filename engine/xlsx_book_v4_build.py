@@ -103,7 +103,9 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
         # тем же `sales_schedule`, что в `build_operating_model`, — доля до
         # ввода объекта, остаток после, рост цены; профиль продаж и лестница
         # цены — вводные, которые книга получает таблицей.
-        if (not plan_item or compared) and item["in_tax_pool"] and n(x, obj.rate_price) > 0:
+        # Сравнение строит путь ДДУ и при нулевой цене продажи. Его вводные
+        # нужны книге независимо от наличия выручки; сама цена остаётся нулём.
+        if (not plan_item or compared) and item["in_tax_pool"] and (compared or n(x, obj.rate_price) > 0):
             sales_start = d(x[f"{obj.prefix}_sales_start"])
             weights, factor = None, None
             weights_raw, _notes = schedule_weights(x.get(f"{obj.prefix}_sales_profile"), sales_start)

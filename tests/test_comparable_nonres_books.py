@@ -6,6 +6,29 @@ import pytest
 from test_office_workbook import _project, core, openpyxl, ow, _row
 
 
+def test_a_rented_retail_with_zero_sale_price_still_exports_every_variant():
+    """A zero sale price is preserved; it must not remove the DDU input schema."""
+    x, t = _project(offices_enabled=False, retail_enabled=True,
+                    retail_gba_sqm=15000., retail_saleable_sqm=11000.,
+                    retail_strategy="income", retail_price_th_per_sqm=0)
+    content, _, meta = core.build_project_workbook(x, t, [], {}, project_name="ТЦ без цены продажи")
+    assert meta["missing"] == [] and meta["checks"] == ow.PASSED, meta
+    book = openpyxl.load_workbook(io.BytesIO(content))
+    evaluator = ow.evaluate(book)
+    assert ow.verdict(evaluator) == (ow.PASSED, [])
+    group, = meta["comparisons"]
+    assert [p["key"] for p in group["paths"]] == ["ddu", "presale", "direct", "income_hold", "income"]
+    inputs = book[ow.INPUTS_SHEET]
+    assert inputs[f"B{_row(inputs, 'Цена продажи (у офиса пусто — по классу)')}"].value == 0
+    for path in group["paths"]:
+        if path["key"] in ("ddu", "presale", "direct"):
+            flows = book[path["flows"]]
+            price_row = _row(flows, "Цена продажи «в расчёт»")
+            assert evaluator.cell(flows.title, f"B{price_row}") == 0
+    report = book[group["report"]]
+    assert evaluator.cell(report.title, f"F{_row(report, 'Доход аренды')}") > 0
+
+
 @pytest.fixture(scope="module", params=("office", "retail", "mixed", "mixed_office_exits"))
 def example(request):
     over = dict(offices_strategy="income", offices_rent_th_per_sqm_month=8)
