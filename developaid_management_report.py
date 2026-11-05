@@ -776,6 +776,11 @@ def funding(project: str, kind: str, end: Any, sales_project: str = "",
             limit = _monitor_funding(project, bounds["end"])
         except Exception as exc:  # noqa: BLE001 — причина уходит в сводку
             limit = {"known": False, "reason": f"{type(exc).__name__}: {exc}"}
+    if not limit.get("known") and not limit.get("source_dates"):
+        import developaid_monitor_dashboard as funding_dashboard
+
+        limit = {**limit, "source_dates": funding_dashboard._funding_source_dates(
+            project, rss, bounds["end"])}
     # Выборка — по тем же главам РСС, что лимит Монитора (владелец,
     # 22.10.2026: «лимит 4,64, выбрано 4,80, остаток 1,00 — так не
     # сходится»). Лимит не посчитан — все главы, как раньше.
@@ -2831,14 +2836,14 @@ def _reconciliation_lines(limit: dict[str, Any]) -> list[str]:
     """Сверка «лимит → оплачено → остаток → достроить → не хватает» — фразы Монитора."""
     import developaid_monitor_dashboard as dashboard
 
-    return dashboard.reconciliation_lines(limit.get("limit_reconciliation") or {}, _rub)
+    return dashboard.funding_reconciliation_lines(limit, _rub)
 
 
 def _own_money_lines(limit: dict[str, Any]) -> list[str]:
     """«Нужно своих денег сверх сметы банка» — фразы Монитора, деньги сводки."""
     import developaid_monitor_dashboard as dashboard
 
-    return dashboard.own_money_lines(limit.get("own_money"), _rub)
+    return dashboard.own_money_lines(limit.get("own_money"), _rub, with_reconciliation=False)
 
 
 def _month_word(key: str | None) -> str:
@@ -3003,7 +3008,10 @@ def _schedule_words(block: dict[str, Any]) -> str:
                      f"при плане {_rub(month['plan'])} ({_pct(month.get('share'))})")
     if not parts:
         return ""
-    return (f"График финансирования от {_day(block['versions'][-1])} исполнен: "
+    day = _schedule_data_day(block, block["versions"][-1])
+    source = (f"График финансирования от {_day(day)}" if day else
+              "График финансирования (дата данных не указана)")
+    return (source + " исполнен: "
             + "; ".join(parts) + ".")
 
 
@@ -3020,13 +3028,20 @@ def _schedule_notes(line: dict[str, Any]) -> str:
     return html.escape("; ".join(notes))
 
 
+def _schedule_data_day(block: dict[str, Any], version: str) -> str | None:
+    """Известная дата данных, отдельно от ключа выбора версии графика."""
+    return ((block.get("sources") or {}).get(version) or {}).get("data_date")
+
+
 def _schedule_sources(block: dict[str, Any]) -> str:
     """«График взят из: финмодель (файл finance.xlsx), версия от 01.10.2026»."""
     places = block.get("sources") or {}
     if not places:
         return ""
     return "График взят из: " + "; ".join(
-        f"{place['where']} (файл {place['file']}), версия от {_day(day)}"
+        f"{place['where']} (файл {place['file']}), "
+        + (f"версия от {_day(place['data_date'])}" if place.get("data_date")
+           else "дата данных не указана")
         for day, place in places.items()) + "."
 
 
@@ -3078,16 +3093,16 @@ def _schedule_html(block: dict[str, Any]) -> str:
     for month in block["months"]:
         note = []
         if month.get("no_plan"):
+            day = _schedule_data_day(block, month["version"])
             note.append("плана в графике нет" + (
-                f": график составлен {_day(month['version'])}"
-                if month.get("earlier_than_version") else ""))
+                f": дата данных графика {_day(day)}" if day and month.get("earlier_than_version") else ""))
         if month.get("outside"):
             note.append(f"ещё {_rub(month['outside'])} оплачено по статьям, которых нет в графике")
         if (month.get("plan") is not None and month.get("lines_plan") is not None
                 and abs(month["plan"] - month["lines_plan"]) >= funding_schedule.PAID_TOLERANCE):
             note.append(f"сумма статей графика {_rub(month['lines_plan'])} не равна строке "
                         f"«ИТОГО» {_rub(month['plan'])}")
-        rows.append([esc(_schedule_month_words(month)), _day(month["version"]),
+        rows.append([esc(_schedule_month_words(month)), _day(_schedule_data_day(block, month["version"])),
                      _rub(month.get("plan")), _rub(month["fact"]), _plus_rub(month.get("gap")),
                      _pct(month.get("share")), esc("; ".join(note))])
     # Итог — сумма месяцев; план без месяцев «плана нет» (владелец, 28.10.2026:
@@ -3102,7 +3117,7 @@ def _schedule_html(block: dict[str, Any]) -> str:
                      _pct(fact_sum / plan_sum if plan_sum else None),
                      esc(f"ещё {_rub(outside)} оплачено по статьям, которых нет в графике")
                      if outside else ""])
-    out.append(_schedule_table(["Месяц", "График от", "План", "Оплачено", "Отклонение",
+    out.append(_schedule_table(["Месяц", "Дата данных графика", "План", "Оплачено", "Отклонение",
                                 "Исполнено", "Примечание"], rows))
     # По статьям — одна таблица нарастающим итогом за все месяцы графика, а не
     # таблица на каждый месяц (владелец, 28.10.2026: «4!!! разных блока …
@@ -3134,8 +3149,10 @@ def _schedule_html(block: dict[str, Any]) -> str:
                        f"с отклонением меньше {_rub(SCHEDULE_LINE_GAP)}.</p>")
     check = block.get("paid_check") or {}
     if check:
-        out.append(f"<p class='note'>Колонка «Выплачено» графика от {_day(check['at'])}: "
-                   f"{_rub(check.get('graph'))}, по реестру платежей на ту же дату "
+        day = _schedule_data_day(block, check["at"])
+        source = f"графика от {_day(day)}" if day else "графика (дата данных не указана)"
+        out.append(f"<p class='note'>Колонка «Выплачено» {source}: "
+                   f"{_rub(check.get('graph'))}, по реестру платежей для сверки на {_day(check['at'])} "
                    f"{_rub(check['register'])}, разница {_plus_rub(check['gap'])}.</p>")
     service = next((note for month in block["months"] for line in month["lines"]
                     for note in line["notes"] if note.startswith("В статье 2.6")), "")
@@ -3387,10 +3404,10 @@ table.works td{vertical-align:top}table.works td:nth-child(2),table.works th:nth
 table.articles tr.chapter td{background:#f4f7fb;font-weight:600}
 table.articles tr.total td{border-top:2px solid #1f4e8c;font-weight:600}
 table.articles tr.over td{background:#fdecea}table.articles tr.left td{background:#fff6dd}
-.note{color:#5b6b7d;font-size:10.5px;margin:4px 0}.warn{color:#9a5b00}.missing{color:#9a5b00;font-style:italic}
+.note{color:#5b6b7d;font-size:10.5px;margin:4px 0;overflow-wrap:anywhere}.warn{color:#9a5b00}.missing{color:#9a5b00;font-style:italic}
 .item{margin:4px 0}.item b{font-weight:600}
-.tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:12px 0 4px}
-.tile{border:1px solid #d6dde6;border-top:4px solid #1f4e8c;border-radius:4px;padding:7px 9px;break-inside:avoid;background:#fff}
+.tiles{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:12px 0 4px}
+.tile{min-width:0;overflow-wrap:anywhere;border:1px solid #d6dde6;border-top:4px solid #1f4e8c;border-radius:4px;padding:7px 9px;break-inside:avoid;background:#fff}
 .tile.good{border-top-color:#2e7d32}.tile.bad{border-top-color:#b42318;background:#fff8f7}.tile.missing{border-top-color:#9aa5b1}
 .tile .k{font-size:10px;color:#5b6b7d;text-transform:uppercase;letter-spacing:.02em}
 .tile .v{font-size:20px;font-weight:700;margin:2px 0;color:#0f2a4d}.tile.bad .v{color:#b42318}.tile.missing .v{font-size:13px;color:#7b8794;font-weight:600}
@@ -3848,8 +3865,13 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
     else:
         add("Лимит банка", None, limit.get("reason") or "лимит не посчитан")
     if draws:
-        note = (f"из них за {period} {_rub(draws['period'])} и за месяц {_rub(draws['month'])}"
-                if report["kind"] != "month" else f"из них за месяц {_rub(draws['period'])}")
+        bounds = period_bounds(report["kind"], report["end"])
+        span = f"{bounds['start']:%d.%m.%Y}–{bounds['end']:%d.%m.%Y}"
+        month_start = bounds["end"].replace(day=1)
+        note = (f"из них за период {span} {_rub(draws['period'])}; с начала месяца "
+                f"({month_start:%d.%m.%Y}–{bounds['end']:%d.%m.%Y}) {_rub(draws['month'])}"
+                if report["kind"] != "month" else
+                f"из них с начала месяца ({span}) {_rub(draws['period'])}")
         over = draws["total"] - float(limit.get("bank_limit") or 0.0)
         if limit.get("known") and over > 0:
             note += f"; больше лимита на {_rub(over)}"
@@ -3917,6 +3939,20 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
             "bad" if need["deficit"] > 0 else "good")
     else:
         add("Дефицит на достройку", None, "утверждённый бюджет не загружен")
+    if limit.get("known") or limit.get("source_dates"):
+        import developaid_monitor_dashboard as dashboard
+
+        notes = dashboard.funding_source_notes(limit)
+        source_for = {"Утверждённый бюджет": "budget", "Лимит банка": "limit",
+                      "Оплачено с начала проекта": "paid", "Выбрано у банка": "paid",
+                      "Остаток лимита банка": "left",
+                      "Осталось по смете после всех оплат": "left",
+                      "Нужно своих денег сверх сметы банка": "need",
+                      "Потребность в допфинансировании банка": "need", "Дефицит на достройку": "need"}
+        for item in out:
+            key = source_for.get(item["label"])
+            if key and item["tone"] != "missing":
+                item["note"] = item["note"].rstrip(" .;") + ". " + notes[key]
     # Хватит ли эскроу на платежи по НКЛ с процентами — тот же вывод, что над
     # таблицей погашения: одно число на всю сводку (владелец, 27.10.2026).
     due = report.get("credit_due") or {}

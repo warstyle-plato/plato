@@ -223,20 +223,21 @@ def test_the_tiles_add_up_on_the_page(tmp_path, monkeypatch):
                         lambda project, end: {"dashboard": {"funding": funding}})
     built = report.build(PROJECT, "week", "2026-10-18")
     tiles = {item["label"]: item for item in report.tiles(built)}
+    source_notes = dashboard.funding_source_notes(funding)
     assert tiles["Утверждённый бюджет"]["value"] == report._rub(comp["total"])
     assert tiles["Утверждённый бюджет"]["note"] == (
-        "по разделам финмодели 2.1, 2.2, 2.3, 2.4; без процентов по кредиту")
+        "по разделам финмодели 2.1, 2.2, 2.3, 2.4; без процентов по кредиту. " + source_notes["budget"])
     assert "Источник: файл «ФМ синтетика.xlsx», загружен 02.11.2026." in \
         tiles["Утверждённый бюджет"]["hint"]
     assert tiles["Лимит банка"]["value"] == report._rub(own["limit"])
     assert tiles["Лимит банка"]["note"].startswith("смета банка: в неё засчитываются все оплаты")
     assert tiles["Оплачено с начала проекта"]["value"] == report._rub(own["paid"])
     assert tiles["Оплачено с начала проекта"]["note"] == (
-        "из них кредитом 420 000 ₽, своими деньгами 300 000 ₽")
+        "из них кредитом 420 000 ₽, своими деньгами 300 000 ₽. " + source_notes["paid"])
     assert tiles["Остаток лимита банка"]["value"] == report._rub(own["left"])
     assert tiles["Остаток лимита банка"]["note"] == (
         "лимит минус всё оплаченное; по главе 1 −30 000 ₽, по главе 2 490 000 ₽, "
-        "по главе 3 50 000 ₽")
+        "по главе 3 50 000 ₽. " + source_notes["left"])
     need = tiles["Нужно своих денег сверх сметы банка"]
     assert need["value"] == report._rub(own["need"])
     assert need["note"].startswith("по главам: оплачено плюс осталось оплатить минус лимит; "
