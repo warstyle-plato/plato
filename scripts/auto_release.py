@@ -109,18 +109,34 @@ def latest_review_refusal(reviews: list[dict]) -> str:
     for review in sorted(reviews, key=lambda x: int(x["id"])):
         # A later COMMENTED review does not cancel CHANGES_REQUESTED.
         if review.get("state") in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}:
-            decisions[(review.get("user") or {}).get("login")] = review["state"]
+            user = review.get("user") or {}
+            if type(user.get("id")) is int and user["id"] > 0:
+                identity = ("id", user["id"])
+            elif isinstance(user.get("login"), str) and user["login"].strip():
+                identity = ("login", user["login"].lower())
+            else:
+                return "reviewer identity is unavailable; release refused"
+            decisions[identity] = review["state"]
     return "changes requested by a reviewer" if "CHANGES_REQUESTED" in decisions.values() else ""
 
 
 def run_order(run: dict) -> tuple:
-    # Re-running an old workflow preserves its id. The attempt's timestamps
-    # decide recency; an older id must not hide a newer pending/failed retry.
-    times = [datetime.datetime.fromisoformat(run[key].replace("Z", "+00:00"))
-             for key in ("run_started_at", "updated_at", "created_at") if run.get(key)]
-    if not times:
-        raise ValueError("Missing CI attempt timestamps; release refused")
-    return max(times), int(run["id"]), int(run.get("run_attempt") or 1)
+    # An old, long-running success may finish after a newer failed attempt.
+    # GitHub updates run_started_at for retries while preserving run id.
+    if not run.get("run_started_at"):
+        raise ValueError("Missing CI attempt start; release refused")
+    started = datetime.datetime.fromisoformat(run["run_started_at"].replace("Z", "+00:00"))
+    if started.tzinfo is None:
+        raise ValueError("CI attempt start has no timezone; release refused")
+    return started, int(run["id"]), int(run.get("run_attempt") or 1)
+
+
+def association_repo(side: dict, repo: str) -> bool:
+    """REST PR associations may carry repo.url/id instead of repo.full_name."""
+    metadata = side.get("repo") or {}
+    full_name, url = metadata.get("full_name"), metadata.get("url")
+    return bool(full_name or url) and (not full_name or full_name == repo) and (
+        not url or url == "https://api.github.com/repos/" + repo)
 
 
 def refusal(snapshot: dict, actors: set[str], required_jobs: set[str],
@@ -172,7 +188,13 @@ def refusal(snapshot: dict, actors: set[str], required_jobs: set[str],
                 or (run.get("head_repository") or {}).get("full_name") != snapshot["repo"]
                 or run.get("status") != "completed" or run.get("conclusion") != "success"):
             return "latest required CI is stale, pending, or unsuccessful"
-        if not any(p.get("number") == pull["number"] and (p.get("head") or {}).get("sha") == head
+        # run.head_sha is immutable. pull_requests[].head.sha is a LIVE PR
+        # association and can already contain the consumer's version commit.
+        associated_heads = {head, pull["head"]["sha"]}
+        if not any(p.get("number") == pull["number"]
+                   and (p.get("head") or {}).get("sha") in associated_heads
+                   and association_repo(p.get("head") or {}, snapshot["repo"])
+                   and association_repo(p.get("base") or {}, snapshot["repo"])
                    and SHA.fullmatch((p.get("base") or {}).get("sha") or "")
                    for p in run.get("pull_requests") or []):
             return "CI did not verify this PR head"

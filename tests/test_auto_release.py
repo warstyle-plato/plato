@@ -82,6 +82,24 @@ def test_latest_attestation_and_review_control_the_decision():
     assert "no successful control" in queue.refusal(snapshot, ACTORS, JOBS)
 
 
+@pytest.mark.parametrize("later", ["APPROVED", "DISMISSED"])
+def test_unknown_reviewers_cannot_clear_an_unknown_request_for_changes(later):
+    api = FakeGitHub()
+    api.snapshot["reviews"] = [
+        {"id": 1, "user": None, "state": "CHANGES_REQUESTED"},
+        {"id": 2, "user": None, "state": later}]
+    assert "reviewer identity is unavailable" in queue.dispatch(api, ready(), ACTORS, JOBS, "run")
+    assert not api.writes
+
+
+def test_native_review_user_ids_do_not_merge_different_missing_logins():
+    reviews = [{"id": 1, "user": {"id": 7}, "state": "CHANGES_REQUESTED"},
+               {"id": 2, "user": {"id": 8}, "state": "APPROVED"}]
+    assert "changes requested" in queue.latest_review_refusal(reviews)
+    reviews[1]["user"]["id"] = 7
+    assert queue.latest_review_refusal(reviews) == ""
+
+
 def test_later_main_does_not_revoke_the_same_source_head_acceptance():
     snapshot = ready()
     snapshot["statuses"][0]["description"] = f"pr=42 head={HEAD} base={BASE} reviewed"
@@ -234,6 +252,33 @@ def test_consumer_rechecks_the_original_source_even_after_its_version_push(late_
     assert len(api.writes) == 2  # consumer gate is read-only
 
 
+@pytest.mark.parametrize("fault", [None, "run_head", "association_head", "association_pr", "association_repo"])
+def test_consumer_accepts_live_issued_head_associations_but_pins_immutable_run_source(fault):
+    api = FakeGitHub()
+    assert queue.dispatch(api, ready(), ACTORS, JOBS, "run") == ""
+    api.snapshot["pull"]["head"]["sha"] = OTHER
+    api.snapshot["pull"]["mergeable_state"] = "unstable"
+    for run in api.snapshot["all_runs"] + [r for runs in api.snapshot["runs"].values() for r in runs]:
+        assert run["head_sha"] == HEAD
+        association = run["pull_requests"][0]
+        association["head"]["sha"] = OTHER  # native REST association follows LIVE PR HEAD
+        for side in ("head", "base"):
+            association[side]["repo"] = {"id": 1, "name": "repo",
+                                         "url": "https://api.github.com/repos/" + REPO}
+    target = api.snapshot["runs"][queue.TEST_WORKFLOW][0]
+    if fault == "run_head":
+        target["head_sha"] = OTHER
+    elif fault == "association_head":
+        target["pull_requests"][0]["head"]["sha"] = "d" * 40
+    elif fault == "association_pr":
+        target["pull_requests"][0]["number"] = 43
+    elif fault == "association_repo":
+        target["pull_requests"][0]["head"]["repo"]["url"] = "https://api.github.com/repos/stranger/repo"
+    result = queue.validate_approved_source(api, 42, HEAD, OTHER, ACTORS, JOBS, "7")
+    assert bool(result) == bool(fault)
+    assert len(api.writes) == 2
+
+
 def test_no_intent_is_written_for_a_stale_selected_head():
     api = FakeGitHub()
     api.snapshot["pull"]["head"]["sha"] = OTHER
@@ -300,6 +345,26 @@ def test_retry_of_an_older_run_is_newer_than_a_larger_successful_run_id(status, 
         api.snapshot["runs"][queue.TEST_WORKFLOW] = [success]
         # FakeGitHub's jobs endpoint now follows the selected run id 20.
         assert queue.dispatch(api, ready(), ACTORS, JOBS, "run") == ""
+
+
+def test_late_completion_of_an_old_success_does_not_hide_a_newer_failed_attempt():
+    api = FakeGitHub()
+    prior = copy.deepcopy(api.snapshot["all_runs"][0])
+    old_success = {**prior, "id": 20, "run_started_at": "2026-11-05T20:00:00Z",
+                   "updated_at": "2026-11-05T23:00:00Z"}
+    new_failure = {**prior, "id": 10, "run_attempt": 2, "conclusion": "failure",
+                   "created_at": "2026-11-05T18:00:00Z",
+                   "run_started_at": "2026-11-05T22:00:00Z", "updated_at": "2026-11-05T22:30:00Z"}
+    api.snapshot["all_runs"] = [old_success, new_failure, api.snapshot["all_runs"][1]]
+    api.snapshot["runs"][queue.TEST_WORKFLOW] = [new_failure, old_success]
+    assert "latest PR workflow" in queue.dispatch(api, ready(), ACTORS, JOBS, "run")
+    assert not api.writes
+
+
+def test_completion_timestamp_cannot_replace_a_missing_attempt_start():
+    run = {"id": 10, "run_attempt": 2, "updated_at": "2026-11-05T23:00:00Z"}
+    with pytest.raises(ValueError, match="Missing CI attempt start"):
+        queue.run_order(run)
 
 
 def test_pagination_does_not_hide_a_later_failed_status(monkeypatch):
