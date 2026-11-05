@@ -1,10 +1,11 @@
 name: Выпуск принятых задач
 
 on:
+  workflow_dispatch:
   schedule:
     - cron: "*/5 * * * *"
   workflow_run:
-    workflows: ["Тесты на PR", "Версия ветки выше main"]
+    workflows: ["Тесты на PR", "Версия ветки выше main", "Контроль выпуска"]
     types: [completed]
 
 concurrency:

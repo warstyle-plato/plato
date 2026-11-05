@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """One-shot release queue. Only trusted main code may dispatch release-merge.yml.
 
-The control status is an attestation, not something this script can grant itself.
+The human control workflow run is an attestation this script cannot grant itself.
 An append-only dispatch status is reserved BEFORE dispatch; ambiguous failures
 stay reserved for a human to investigate instead of retrying a release forever.
 """
@@ -12,12 +12,13 @@ import json
 import os
 import re
 import subprocess
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
 
-APPROVED = "control/release-approved"
+APPROVAL_WORKFLOW = "release-approval.yml"
 DISPATCHED = "control/release-dispatched"
 RELEASE_WORKFLOW = "release-merge.yml"
 TEST_WORKFLOW = "tests-on-pr.yml"
@@ -25,7 +26,9 @@ VERSION_WORKFLOW = "version-guard.yml"
 ACTIVE_RUN_STATES = ("queued", "in_progress", "waiting", "pending", "requested")
 OPTIONAL_SKIPS = {"Сборка preview-образа", "Preview-образ готов"}
 SHA = re.compile(r"[0-9a-f]{40}\Z")
-ATTESTATION = re.compile(r"pr=([1-9][0-9]*) head=([0-9a-f]{40})(?: base=([0-9a-f]{40}))? reviewed\Z")
+CONTROL_BINDING = re.compile(r"release-control pr=([1-9][0-9]*) head=([0-9a-f]{40}) ")
+ATTESTATION = re.compile(
+    r"release-control pr=([1-9][0-9]*) head=([0-9a-f]{40}) decision=(approve|revoke) reviewed\Z")
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -69,6 +72,54 @@ def latest_statuses(statuses: list[dict]) -> dict[str, dict]:
     return latest
 
 
+def control_workflow_id(api: GitHub) -> int:
+    workflow = api.request("GET", f"/actions/workflows/{APPROVAL_WORKFLOW}")
+    if (workflow.get("path") != ".github/workflows/" + APPROVAL_WORKFLOW
+            or type(workflow.get("id")) is not int or workflow["id"] <= 0):
+        raise ValueError("Cannot identify the canonical control workflow")
+    return workflow["id"]
+
+
+def control_record_refusal(run: dict, repo: str, workflow_id: int, actors: set[str],
+                           number: int, head: str, require_complete: bool = True) -> str:
+    """One validator for the read-only producer and both release gates."""
+    match = ATTESTATION.fullmatch(run.get("display_title") or "")
+    if not match or match.groups()[:2] != (str(number), head):
+        return "control run title does not bind this PR and head"
+    path = ".github/workflows/" + APPROVAL_WORKFLOW
+    if (run.get("workflow_id") != workflow_id or run.get("path") not in {path, path + "@refs/heads/main"}
+            or run.get("event") != "workflow_dispatch" or run.get("head_branch") != "main"
+            or (run.get("repository") or {}).get("full_name") != repo
+            or (run.get("head_repository") or {}).get("full_name") != repo):
+        return "control run is not the canonical main workflow in this repository"
+    for field in ("actor", "triggering_actor"):
+        actor = run.get(field) or {}
+        login = actor.get("login", "").lower()
+        if actor.get("type") != "User" or login not in actors or login.endswith("[bot]"):
+            return "control run actor is not a configured human control actor"
+    if require_complete and (run.get("status") != "completed" or run.get("conclusion") != "success"):
+        return "latest control decision is pending or unsuccessful"
+    return ""
+
+
+def control_refusal(snapshot: dict, actors: set[str], number: int, head: str) -> str:
+    # IDs order HUMAN dispatch decisions. Re-running an old approval cannot
+    # make it newer than a subsequently dispatched revocation.
+    matching = [run for run in snapshot["approvals"]
+                if (match := CONTROL_BINDING.match(run.get("display_title") or ""))
+                and match.groups() == (str(number), head)]
+    if not matching:
+        return "no successful human control attestation"
+    latest = max(matching, key=lambda run: int(run["id"]))
+    reason = control_record_refusal(latest, snapshot["repo"], snapshot["approval_workflow_id"],
+                                    actors, number, head)
+    if reason:
+        return reason
+    if ATTESTATION.fullmatch(latest["display_title"]).group(3) == "revoke":
+        return "latest control decision revokes release"
+    return ""
+
+
 def source_refusal(snapshot: dict, actors: set[str], own_intent: int | None = None) -> str:
     """Cheap checks, also repeated immediately before dispatch."""
     pull, main = snapshot["pull"], snapshot["main"]
@@ -85,17 +136,10 @@ def source_refusal(snapshot: dict, actors: set[str], own_intent: int | None = No
         return "invalid PR head"
     if snapshot.get("source_head") and head["sha"] != snapshot.get("expected_actual_head"):
         return "actual PR head changed during the consumer gate"
+    reason = control_refusal(snapshot, actors, pull["number"], source)
+    if reason:
+        return reason
     statuses = latest_statuses(snapshot["statuses"])
-    approval = statuses.get(APPROVED) or {}
-    if approval.get("state") != "success":
-        return "no successful control attestation"
-    creator = (approval.get("creator") or {}).get("login", "").lower()
-    if (creator not in actors or creator.endswith("[bot]")
-            or (approval.get("creator") or {}).get("type") == "Bot"):
-        return "attestation creator is not a configured control actor"
-    match = ATTESTATION.fullmatch(approval.get("description") or "")
-    if not match or match.groups()[:2] != (str(pull["number"]), source):
-        return "attestation does not bind this PR and head"
     intent = statuses.get(DISPATCHED)
     if intent and intent["id"] != own_intent:
         return "dispatch intent already exists for this SHA; control must investigate"
@@ -167,7 +211,8 @@ def refusal(snapshot: dict, actors: set[str], required_jobs: set[str],
            for r in latest_runs.values()):
         return "a latest PR workflow is pending or unsuccessful"
     for context, status in latest_statuses(snapshot["statuses"]).items():
-        if context not in {APPROVED, DISPATCHED} and status.get("state") != "success":
+        # The retired user-status channel neither grants nor revokes release.
+        if context not in {DISPATCHED, "control/release-approved"} and status.get("state") != "success":
             return "a commit status is pending or failed"
     checks = snapshot["checks"]
     if not checks or any(c.get("status") != "completed" or not (
@@ -231,7 +276,10 @@ def inspect(api: GitHub, number: int, actors: set[str], own_intent: int | None =
     head = source_head or (pull.get("head") or {}).get("sha") or ""
     snapshot = {"repo": api.repo, "pull": pull,
                 "main": api.request("GET", "/git/ref/heads/main")["object"]["sha"],
-                "statuses": api.items(f"/commits/{head}/statuses") if SHA.fullmatch(head) else []}
+                "statuses": api.items(f"/commits/{head}/statuses") if SHA.fullmatch(head) else [],
+                "approval_workflow_id": control_workflow_id(api),
+                "approvals": api.items(f"/actions/workflows/{APPROVAL_WORKFLOW}/runs", "workflow_runs",
+                                       event="workflow_dispatch", branch="main")}
     if source_head:
         snapshot.update(source_head=source_head, expected_actual_head=actual_head)
     if source_refusal(snapshot, actors, own_intent):
@@ -256,6 +304,34 @@ def inspect(api: GitHub, number: int, actors: set[str], own_intent: int | None =
 
 def control_actors(repo: str, configured: str) -> set[str]:
     return {a.strip().lower() for a in (configured.strip() or repo.split("/")[0]).split(",") if a.strip()}
+
+
+def validate_control_run() -> int:
+    """Read-only approval producer. Its successful native run is the record."""
+    if (os.environ.get("GITHUB_REF") != "refs/heads/main"
+            or os.environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch"
+            or not os.environ.get("GITHUB_WORKFLOW_REF", "").endswith(
+                "/.github/workflows/release-approval.yml@refs/heads/main")):
+        raise SystemExit("Control attestation executes only the main workflow")
+    number, head = os.environ.get("CONTROL_PR", ""), os.environ.get("CONTROL_HEAD", "")
+    decision = os.environ.get("CONTROL_DECISION", "")
+    if (not re.fullmatch(r"[1-9][0-9]*", number) or not SHA.fullmatch(head)
+            or decision not in {"approve", "revoke"}):
+        raise SystemExit("Invalid control PR, source SHA, or decision")
+    repo, token = os.environ.get("GITHUB_REPOSITORY", ""), os.environ.get("GH_TOKEN", "")
+    run_id = os.environ.get("GITHUB_RUN_ID", "")
+    if not token or not run_id.isdigit():
+        raise SystemExit("No read-only workflow token or run id")
+    api = GitHub(repo, token)
+    run = api.request("GET", f"/actions/runs/{run_id}")
+    actors = control_actors(repo, os.environ.get("RELEASE_CONTROL_ACTORS", ""))
+    reason = control_record_refusal(run, repo, control_workflow_id(api), actors, int(number), head, False)
+    if reason:
+        raise SystemExit(reason)
+    if run["display_title"] != f"release-control pr={number} head={head} decision={decision} reviewed":
+        raise SystemExit("Control inputs differ from the immutable native run title")
+    print(f"Human control decision validated: PR #{number}, source {head}, {decision}")
+    return 0
 
 
 def validate_approved_source(api: GitHub, number: int, source_head: str, actual_head: str,
@@ -301,11 +377,13 @@ def dispatch(api: GitHub, candidate: dict, actors: set[str], required_jobs: set[
 
 
 def main() -> int:
+    if sys.argv[1:] == ["--validate-control-run"]:
+        return validate_control_run()
     if (os.environ.get("GITHUB_REF") != "refs/heads/main"
-            or os.environ.get("GITHUB_EVENT_NAME") not in {"schedule", "workflow_run"}
+            or os.environ.get("GITHUB_EVENT_NAME") not in {"schedule", "workflow_run", "workflow_dispatch"}
             or not os.environ.get("GITHUB_WORKFLOW_REF", "").endswith(
                 "/.github/workflows/auto-release.yml@refs/heads/main")):
-        raise SystemExit("Auto release executes only the main workflow on scheduled/CI events")
+        raise SystemExit("Auto release executes only the main workflow on supported queue events")
     repo, token = os.environ.get("GITHUB_REPOSITORY", ""), os.environ.get("GH_TOKEN", "")
     if not token:
         raise SystemExit("No workflow token")

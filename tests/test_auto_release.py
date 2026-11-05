@@ -1,7 +1,12 @@
 """A control attestation permits one guarded dispatch, never an automatic approval."""
 from __future__ import annotations
 
+import base64
 import copy
+import io
+import json
+import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -12,6 +17,18 @@ ROOT = Path(__file__).resolve().parent.parent
 HEAD, BASE, OTHER = "a" * 40, "b" * 40, "c" * 40
 REPO, ACTORS = "owner/repo", {"owner"}
 JOBS = queue.test_jobs(ROOT)
+
+
+def control_run(run_id=100, decision="approve", **extra):
+    return {"id": run_id, "workflow_id": 501, "run_attempt": 1,
+            "display_title": f"release-control pr=42 head={HEAD} decision={decision} reviewed",
+            "event": "workflow_dispatch", "path": ".github/workflows/release-approval.yml",
+            "head_branch": "main", "head_sha": BASE,
+            "repository": {"full_name": REPO}, "head_repository": {"full_name": REPO},
+            "actor": {"login": "owner", "type": "User"},
+            "triggering_actor": {"login": "owner", "type": "User"},
+            "status": "completed", "conclusion": "success",
+            "run_started_at": "2026-11-05T12:00:00Z", **extra}
 
 
 def ready():
@@ -30,20 +47,18 @@ def ready():
         jobs[workflow] = [{"name": name, "status": "completed", "conclusion": "success"}
                           for name in names]
     return {"repo": REPO, "main": BASE, "pull": pull, "active_release": False,
-            "statuses": [{"id": 1, "context": queue.APPROVED, "state": "success",
-                          "creator": {"login": "owner"},
-                          "description": f"pr=42 head={HEAD} reviewed"}],
+            "statuses": [], "approvals": [control_run()], "approval_workflow_id": 501,
             "checks": [{"name": name, "status": "completed", "conclusion": "success"}
                        for name in JOBS | {"version"}], "reviews": [], "runs": runs, "jobs": jobs,
             "all_runs": [copy.deepcopy(runs[w][0]) for w in runs]}
 
 
 @pytest.mark.parametrize("mutation,reason", [
-    (lambda s: s.update(statuses=[]), "no successful control"),
-    (lambda s: s["statuses"][0].update(creator={"login": "author"}), "creator"),
-    (lambda s: s["statuses"][0].update(description=f"pr=42 head={OTHER} reviewed"), "does not bind"),
-    (lambda s: s["statuses"][0].update(description=f"pr=43 head={HEAD} reviewed"), "does not bind"),
-    (lambda s: s["pull"]["head"].update(sha=OTHER), "does not bind"),
+    (lambda s: s.update(approvals=[]), "no successful human control"),
+    (lambda s: s["approvals"][0].update(actor={"login": "author", "type": "User"}), "actor"),
+    (lambda s: s["approvals"][0].update(display_title=f"release-control pr=42 head={OTHER} decision=approve reviewed"), "no successful human control"),
+    (lambda s: s["approvals"][0].update(display_title=f"release-control pr=43 head={HEAD} decision=approve reviewed"), "no successful human control"),
+    (lambda s: s["pull"]["head"].update(sha=OTHER), "no successful human control"),
     (lambda s: s["pull"].update(merged=True), "closed, merged"),
     (lambda s: s["pull"].update(draft=True), "closed, merged"),
     (lambda s: s["pull"].update(mergeable=None), "mergeable"),
@@ -73,13 +88,101 @@ def test_release_is_refused(mutation, reason):
 
 def test_latest_attestation_and_review_control_the_decision():
     snapshot = ready()
-    snapshot["statuses"].insert(0, {**snapshot["statuses"][0], "id": 0, "state": "failure"})
+    snapshot["approvals"].insert(0, control_run(99, conclusion="failure"))
     snapshot["reviews"] = [
         {"id": 1, "user": {"login": "reviewer"}, "state": "CHANGES_REQUESTED"},
         {"id": 2, "user": {"login": "reviewer"}, "state": "APPROVED"}]
     assert queue.refusal(snapshot, ACTORS, JOBS) == ""
-    snapshot["statuses"].append({**snapshot["statuses"][1], "id": 2, "state": "pending"})
-    assert "no successful control" in queue.refusal(snapshot, ACTORS, JOBS)
+    snapshot["approvals"].append(control_run(101, status="queued", conclusion=None))
+    assert "latest control decision is pending" in queue.refusal(snapshot, ACTORS, JOBS)
+
+
+@pytest.mark.parametrize("change", [
+    {"workflow_id": 999}, {"path": ".github/workflows/foreign.yml"},
+    {"event": "push"}, {"head_branch": "untrusted"},
+    {"repository": {"full_name": "stranger/repo"}}, {"head_repository": {"full_name": "stranger/repo"}},
+    {"actor": {"login": "owner", "type": "Bot"}},
+    {"triggering_actor": {"login": "github-actions[bot]", "type": "Bot"}},
+    {"triggering_actor": {"login": "stranger", "type": "User"}},
+    {"display_title": None}, {"display_title": f"release-control pr=42 head={HEAD} decision=invalid reviewed"},
+    {"status": "queued", "conclusion": None, "run_started_at": None},
+    {"status": "in_progress", "conclusion": None}, {"status": "completed", "conclusion": "failure"},
+])
+def test_control_run_provenance_and_completion_are_mandatory(change):
+    api = FakeGitHub()
+    api.snapshot["approvals"][0].update(change)
+    assert queue.dispatch(api, ready(), ACTORS, JOBS, "run")
+    assert not api.writes
+
+
+def test_old_native_approval_status_is_not_an_alternative_admission_or_revocation_channel():
+    snapshot = ready()
+    snapshot["approvals"] = []
+    snapshot["statuses"] = [{"id": 9, "context": "control/release-approved", "state": "success",
+                             "creator": {"login": "owner", "type": "User"},
+                             "description": f"pr=42 head={HEAD} reviewed"}]
+    assert "no successful human control" in queue.refusal(snapshot, ACTORS, JOBS)
+    snapshot["approvals"] = [control_run()]
+    snapshot["statuses"][0]["state"] = "failure"
+    assert queue.refusal(snapshot, ACTORS, JOBS) == ""
+
+
+@pytest.mark.parametrize("status,conclusion", [("queued", None), ("in_progress", None),
+                                             ("completed", "failure"), ("completed", "success")])
+def test_new_revocation_holds_an_older_approval_even_when_the_older_run_is_retried_later(status, conclusion):
+    api = FakeGitHub()
+    api.snapshot["approvals"] = [
+        control_run(100, run_attempt=2, run_started_at="2026-11-06T23:00:00Z"),
+        control_run(101, "revoke", status=status, conclusion=conclusion,
+                    run_started_at="2026-11-05T12:00:00Z")]
+    assert queue.dispatch(api, ready(), ACTORS, JOBS, "run")
+    assert not api.writes
+    # Only a NEW explicit human dispatch (new immutable id) grants again.
+    api.snapshot["approvals"].append(control_run(102))
+    assert queue.dispatch(api, ready(), ACTORS, JOBS, "run") == ""
+
+
+@pytest.mark.parametrize("case", ["approve", "revoke", "bot", "wrong_ref", "wrong_input"])
+def test_read_only_control_workflow_executes_the_shared_validator_at_its_main_sha(monkeypatch, case):
+    flow = (ROOT / ".github/workflows/release-approval.yml").read_text()
+    assert "actions/checkout" not in flow and ": write" not in flow
+    assert "contents: read" in flow and "actions: read" in flow
+    bootstrap = textwrap.dedent(flow.split("python3 - <<'PY'\n", 1)[1].rsplit("          PY", 1)[0])
+    decision = "revoke" if case == "revoke" else "approve"
+    record = control_run(decision=decision, status="in_progress", conclusion=None)
+    if case == "bot":
+        record["actor"] = {"login": "github-actions[bot]", "type": "Bot"}
+    env = {"GITHUB_REF": "refs/heads/main", "GITHUB_EVENT_NAME": "workflow_dispatch",
+           "GITHUB_WORKFLOW_REF": REPO + "/.github/workflows/release-approval.yml@refs/heads/main",
+           "GITHUB_REPOSITORY": REPO, "GITHUB_SHA": BASE, "GITHUB_RUN_ID": "100",
+           "GH_TOKEN": "synthetic-read-only-token", "CONTROL_PR": "42", "CONTROL_HEAD": HEAD,
+           "CONTROL_DECISION": decision, "RELEASE_CONTROL_ACTORS": "owner"}
+    if case == "wrong_ref":
+        env["GITHUB_REF"] = "refs/heads/untrusted"
+    if case == "wrong_input":
+        env["CONTROL_HEAD"] = OTHER
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(sys, "argv", ["bootstrap"])
+    requests = []
+    def respond(request, timeout):
+        assert request.get_method() == "GET"
+        requests.append(request.full_url)
+        if "/contents/" in request.full_url:
+            assert request.full_url.endswith("/scripts/auto_release.py?ref=" + BASE)
+            result = {"path": "scripts/auto_release.py", "type": "file", "encoding": "base64",
+                      "content": base64.encodebytes((ROOT / "scripts/auto_release.py").read_bytes()).decode()}
+        elif request.full_url.endswith("/actions/runs/100"):
+            result = record
+        else:
+            assert request.full_url.endswith("/actions/workflows/release-approval.yml")
+            result = {"id": 501, "path": ".github/workflows/release-approval.yml"}
+        return io.BytesIO(json.dumps(result).encode())
+    monkeypatch.setattr(queue.urllib.request, "urlopen", respond)
+    with pytest.raises(SystemExit) as result:
+        exec(compile(bootstrap, "release-approval bootstrap", "exec"), {})
+    assert (result.value.code == 0) == (case in {"approve", "revoke"})
+    assert len(requests) == (0 if case == "wrong_ref" else 3)
 
 
 @pytest.mark.parametrize("later", ["APPROVED", "DISMISSED"])
@@ -102,7 +205,6 @@ def test_native_review_user_ids_do_not_merge_different_missing_logins():
 
 def test_later_main_does_not_revoke_the_same_source_head_acceptance():
     snapshot = ready()
-    snapshot["statuses"][0]["description"] = f"pr=42 head={HEAD} base={BASE} reviewed"
     snapshot["main"] = OTHER
     # CI and the attestation retain the previously tested base. Branch protection
     # can still report behind/blocked, which is independently rejected above.
@@ -111,10 +213,11 @@ def test_later_main_does_not_revoke_the_same_source_head_acceptance():
 
 def test_explicit_control_actor_is_supported_but_the_queue_cannot_approve_itself():
     snapshot = ready()
-    snapshot["statuses"][0]["creator"]["login"] = "release-control"
+    for field in ("actor", "triggering_actor"):
+        snapshot["approvals"][0][field]["login"] = "release-control"
     assert queue.refusal(snapshot, {"release-control"}, JOBS) == ""
-    snapshot["statuses"][0]["creator"]["login"] = "github-actions[bot]"
-    assert "creator" in queue.refusal(snapshot, {"github-actions[bot]"}, JOBS)
+    snapshot["approvals"][0]["actor"] = {"login": "github-actions[bot]", "type": "Bot"}
+    assert "actor" in queue.refusal(snapshot, {"github-actions[bot]"}, JOBS)
 
 
 def test_only_the_two_optional_preview_checks_may_be_skipped():
@@ -134,8 +237,8 @@ def test_only_the_two_optional_preview_checks_may_be_skipped():
                                     {"login": "control[bot]", "type": "User"}])
 def test_a_configured_bot_cannot_attest_independent_acceptance(creator):
     snapshot = ready()
-    snapshot["statuses"][0]["creator"] = creator
-    assert "creator" in queue.refusal(snapshot, {creator["login"]}, JOBS)
+    snapshot["approvals"][0]["actor"] = creator
+    assert "actor" in queue.refusal(snapshot, {creator["login"]}, JOBS)
 
 
 class FakeGitHub:
@@ -152,6 +255,10 @@ class FakeGitHub:
                 return copy.deepcopy(self.snapshot["pull"])
             if path == "/git/ref/heads/main":
                 return {"object": {"sha": self.snapshot["main"]}}
+            if path == "/actions/workflows/release-approval.yml":
+                return {"id": self.snapshot["approval_workflow_id"], "path": ".github/workflows/release-approval.yml"}
+            if path == "/actions/runs/100":
+                return copy.deepcopy(self.snapshot["approvals"][0])
             raise AssertionError(path)
         self.writes.append((path, body))
         if path == f"/statuses/{HEAD}":
@@ -171,10 +278,14 @@ class FakeGitHub:
             return copy.deepcopy(s["checks"])
         if path == "/pulls/42/reviews":
             return copy.deepcopy(s["reviews"])
+        if path == "/actions/workflows/release-approval.yml/runs":
+            return copy.deepcopy(s["approvals"])
         if path == "/actions/workflows/release-merge.yml/runs":
             return [{"status": query["status"]}] if s["active_release"] else []
         if path == "/actions/runs":
             return copy.deepcopy(s["all_runs"])
+        if path == "/pulls":
+            return [copy.deepcopy(s["pull"])]
         for workflow, runs in s["runs"].items():
             if path == f"/actions/workflows/{workflow}/runs":
                 return copy.deepcopy(runs)
@@ -205,7 +316,7 @@ def test_a_change_after_intent_stops_dispatch_and_does_not_remove_the_reservatio
         elif change == "main":
             api.snapshot["main"] = OTHER
         elif change == "approval":
-            api.snapshot["statuses"][0]["state"] = "pending"
+            api.snapshot["approvals"].append(control_run(101, status="queued", conclusion=None))
         else:
             api.snapshot["active_release"] = True
     api.after_intent = changed
@@ -224,7 +335,7 @@ def test_ambiguous_dispatch_is_not_retried_automatically():
 
 
 @pytest.mark.parametrize("late_change,reason", [
-    ("none", ""), ("approval", "no successful control"),
+    ("none", ""), ("approval", "latest control decision revokes"),
     ("review", "changes requested"), ("checks", "incomplete"),
     ("rerun", "latest PR workflow"), ("head", "actual PR head changed"),
     ("blocked", "mergeable"),
@@ -235,7 +346,7 @@ def test_consumer_rechecks_the_original_source_even_after_its_version_push(late_
     api.snapshot["pull"]["head"]["sha"] = OTHER
     api.snapshot["pull"]["mergeable_state"] = "unstable"
     if late_change == "approval":
-        api.snapshot["statuses"][0]["state"] = "failure"
+        api.snapshot["approvals"].append(control_run(101, "revoke"))
     elif late_change == "review":
         api.snapshot["reviews"].append({"id": 9, "user": {"login": "reviewer"}, "state": "CHANGES_REQUESTED"})
     elif late_change == "checks":
@@ -394,9 +505,25 @@ def test_workflow_uses_only_main_code_and_minimal_release_permissions():
 
 
 @pytest.mark.parametrize("ref,event", [("refs/heads/attacker", "workflow_run"),
+                                       ("refs/heads/attacker", "workflow_dispatch"),
                                        ("refs/heads/main", "pull_request")])
 def test_untrusted_invocation_is_rejected_before_any_api_call(monkeypatch, ref, event):
     monkeypatch.setenv("GITHUB_REF", ref)
     monkeypatch.setenv("GITHUB_EVENT_NAME", event)
     with pytest.raises(SystemExit, match="only the main workflow"):
         queue.main()
+
+
+def test_manual_main_queue_run_still_skips_every_pr_without_human_admission(monkeypatch, capsys):
+    api = FakeGitHub()
+    api.snapshot["approvals"] = []
+    for key, value in {"GITHUB_REF": "refs/heads/main", "GITHUB_EVENT_NAME": "workflow_dispatch",
+                       "GITHUB_WORKFLOW_REF": REPO + "/.github/workflows/auto-release.yml@refs/heads/main",
+                       "GITHUB_REPOSITORY": REPO, "GH_TOKEN": "synthetic", "GITHUB_RUN_ID": "7"}.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("RELEASE_CONTROL_ACTORS", "owner")
+    monkeypatch.setattr(queue, "GitHub", lambda *a: api)
+    monkeypatch.setattr(queue.subprocess, "check_output", lambda *a, **k: BASE)
+    assert queue.main() == 0
+    assert "no successful human control" in capsys.readouterr().out
+    assert api.writes == []
