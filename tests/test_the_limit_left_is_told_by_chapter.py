@@ -40,7 +40,10 @@ def test_the_remaining_limit_is_split_by_chapter(monkeypatch):
     report, built = _built(monkeypatch)
     tile = {item["label"]: item for item in report.tiles(built)}["Осталось по смете после всех оплат"]
     assert tile["value"] == "1,28 млрд ₽"
-    assert tile["note"] == "смета минус всё оплаченное, кредитом и своими деньгами; не хватит 2,39 млрд ₽ с января 2027"
+    assert tile["note"] == (
+        "смета минус всё оплаченное, кредитом и своими деньгами; не хватит 2,39 млрд ₽ с января 2027. "
+        "Смета и оплаты для остатка лимита — РСС: дата данных не указана. "
+        "Дата расчётного среза не указана.")
     text = report.render_text(built)
     assert "остаток лимитов 1,28 млрд ₽ (по 2 главе 1,12 млрд ₽, по 3 главе 155,4 млн ₽) — " in text
     page = report.render_html(built)
