@@ -1348,6 +1348,15 @@ class SalesChatRequest(BaseModel):
     author: str = ""
     text: str = ""
     taken_at: str = ""
+    action: str = "report"
+    batch_id: str = ""
+    message_id: int = 0
+    author_id: int = 0
+    telegram_date: int = 0
+    reply_to_id: int = 0
+    reply_text: str = ""
+    reply_from_id: int = 0
+    reply_is_bot: bool = False
 
 
 @app.post("/internal/monitor/sales-chat", include_in_schema=False)
@@ -1362,6 +1371,35 @@ def internal_monitor_sales_chat(req: SalesChatRequest) -> dict[str, Any]:
     if not hmac.compare_digest(str(req.sign or "").encode("utf-8"),
                                expected.encode("utf-8")):
         raise HTTPException(status_code=403, detail="Подпись не сошлась.")
+    from market_search import sales_dialogue, sales_store
+
+    with sales_dialogue.origin_lock(sales_store.default_dir()):
+        return _apply_sales_chat(req)
+
+
+def _apply_sales_chat(req: SalesChatRequest) -> dict[str, Any]:
+    """Только после проверки подписи и под общей блокировкой происхождения."""
+    if req.action == "reply":
+        from market_search import sales_dialogue, sales_questions, sales_store
+
+        bot_id = str(_telegram_token() or "").partition(":")[0]
+        ours = (bot_id.isdigit() and int(bot_id) == req.reply_from_id and req.reply_is_bot)
+        if not ours or req.reply_to_id <= 0 or not sales_dialogue.is_question(req.reply_text):
+            return {"reply_saved": False}
+        where = sales_store.default_dir()
+        origin = sales_dialogue.reply_project(where, req.chat_id, req.reply_to_id, req.reply_text)
+        # Неизвестные исторические вопросы хранятся отдельно, без приписывания
+        # нынешнему проекту. Telegram ID сообщения уникален только ВНУТРИ чата.
+        target = where if origin else where / "unattributed"
+        key = origin or str(req.chat_id)
+        with sales_questions.lock(target, key):
+            saved = sales_dialogue.reply(
+                target, key, chat_id=req.chat_id, message_id=req.message_id,
+                reply_to_id=req.reply_to_id, quoted=req.reply_text, text=req.text,
+                author=req.author, author_id=req.author_id, telegram_date=req.telegram_date,
+                allow_legacy=not bool(origin))
+        return {"sales_project": origin, "reply_saved": saved,
+                "reply_unattributed": not bool(origin)}
     project = _site_project_name(_site_chat_project(int(req.chat_id or 0)))
     if not project:
         return {"bound": "", "sales_project": ""}
@@ -1375,12 +1413,18 @@ def internal_monitor_sales_chat(req: SalesChatRequest) -> dict[str, Any]:
         # Это ответ, а не отказ: в /status видно, чего не хватает.
         return {"bound": project, "sales_project": ""}
     where = sales_store.default_dir()
-    from market_search import sales_questions
+    from market_search import sales_dialogue, sales_questions
 
     # Под одной блокировкой: дописать отчёт, собрать вопросы, записать
     # заданные. Два воркера с двумя отчётами разом не зададут вопрос дважды и
     # не потеряют сообщение друг друга.
     with sales_questions.lock(where, sales_project):
+        if req.action == "delivered":
+            return {"bound": project, "sales_project": sales_project,
+                    "delivered": sales_dialogue.delivered(
+                        where, sales_project, req.chat_id, req.batch_id, req.message_id)}
+        if req.action != "report":
+            raise HTTPException(400, "Неизвестное действие чата продаж.")
         kept = sales_store.load(where, sales_project)
         current = ((kept.get("sources") or {}).get("salesroom") or {}).get("data")
         day = str(req.taken_at or "")[:10]
@@ -1392,24 +1436,26 @@ def internal_monitor_sales_chat(req: SalesChatRequest) -> dict[str, Any]:
         # коротко и извиняюсь»; «и нельзя повторять вопросы»): только на новый
         # отчёт — повтор доставки Telegram ничего не задаёт, — и каждый вопрос
         # один раз (`sales_questions`).
-        ask, ask_error = "", ""
+        ask, ask_error, ask_id = "", "", ""
         if day and len(updated.get("messages") or []) > len((current or {}).get("messages") or []):
             contracting = (kept.get("sources") or {}).get("contracting") or {}
             try:
                 found = sales_questions.questions(
                     updated, contracting.get("data"), contracting.get("at"), day,
-                    set(sales_questions.load_asked(where, sales_project)))
+                    set(sales_questions.load_asked(where, sales_project))
+                    | sales_dialogue.asked_keys(where, sales_project))
                 ask = sales_questions.message(found)
                 if ask:
                     # Сначала записать, потом отправить: несработавшая отправка
                     # потеряет вопрос, а не повторит его.
                     sales_questions.remember(where, sales_project, found, day)
+                    ask_id = sales_dialogue.prepare(where, sales_project, req.chat_id, found, day)
             except Exception as exc:  # noqa: BLE001
                 # Отчёт уже сохранён; не задать вопрос лучше, чем повторить.
                 ask, ask_error = "", str(exc)[:120]
     return {"bound": project, "sales_project": sales_project,
             "messages": len(updated.get("messages") or []), "ask": ask,
-            "ask_error": ask_error}
+            "ask_error": ask_error, "ask_id": ask_id}
 
 
 class SiteChatsRequest(BaseModel):
