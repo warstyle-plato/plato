@@ -1,0 +1,60 @@
+name: Контроль выпуска
+run-name: release-control pr=${{ inputs.pr }} head=${{ inputs.head }} decision=${{ inputs.decision }} reviewed
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Номер завершённой порученной задачи
+        required: true
+      head:
+        description: Полный source SHA после независимой приёмки
+        required: true
+      decision:
+        type: choice
+        options: [approve, revoke]
+        default: approve
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  attest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Проверить человека и неизменяемую запись решения
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_CONTROL_ACTORS: ${{ vars.RELEASE_CONTROL_ACTORS }}
+          CONTROL_PR: ${{ inputs.pr }}
+          CONTROL_HEAD: ${{ inputs.head }}
+          CONTROL_DECISION: ${{ inputs.decision }}
+        # No checkout. Load the shared validator at this MAIN workflow's SHA,
+        # not the PR input SHA. The producer only reads GitHub metadata.
+        run: |
+          python3 - <<'PY'
+          import base64, json, os, re, sys, urllib.request
+          if (os.environ.get('GITHUB_REF') != 'refs/heads/main'
+              or os.environ.get('GITHUB_EVENT_NAME') != 'workflow_dispatch'
+              or not os.environ.get('GITHUB_WORKFLOW_REF', '').endswith(
+                  '/.github/workflows/release-approval.yml@refs/heads/main')):
+              raise SystemExit('Only the main control workflow may attest a release')
+          repo, source = os.environ['GITHUB_REPOSITORY'], os.environ['GITHUB_SHA']
+          if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repo) or not re.fullmatch(r'[0-9a-f]{40}', source):
+              raise SystemExit('Invalid native repository or workflow SHA')
+          path = 'scripts/auto_release.py'
+          request = urllib.request.Request(
+              f'https://api.github.com/repos/{repo}/contents/{path}?ref={source}',
+              headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+                       'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28'})
+          with urllib.request.urlopen(request, timeout=30) as response:
+              item = json.load(response)
+          if item.get('type') != 'file' or item.get('path') != path or item.get('encoding') != 'base64':
+              raise SystemExit('Cannot read the trusted main validator')
+          code = base64.b64decode(''.join(item['content'].split()), validate=True)
+          sys.argv = [path, '--validate-control-run']
+          exec(compile(code, path, 'exec'), {'__name__': '__main__', '__file__': '/trusted-main/' + path})
+          PY
