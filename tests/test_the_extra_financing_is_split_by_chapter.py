@@ -260,8 +260,20 @@ def test_the_monitor_reconciles_the_bank_limit_with_chapters_two_and_three(monke
     assert rec["total"]["need"] == pytest.approx(got["remaining_need"])
     assert rec["total"]["gap"] == pytest.approx(got["additional_financing"])
     assert rec["outside_chapters"] == ["1"]
-    assert got["limit_reconciliation_lines"] == dashboard.reconciliation_lines(
+    source_lines = [
+        "Финмодель: дата данных не указана. Файл «finance.xlsx».",
+        "Оплаты учтены по РСС: дата данных не указана. Расчёт на 20.10.2026. Файл «rss.xlsx».",
+        "Смета банка — РСС: дата данных не указана. Файл «rss.xlsx».",
+        "Смета и оплаты для остатка лимита — РСС: дата данных не указана. Расчёт на 20.10.2026.",
+        "Расчёт на 20.10.2026. Источники расчёта: финмодель: дата данных не указана; "
+        "РСС: дата данных не указана.",
+    ]
+    # Даты добавлены перед прежней арифметической сверкой, не заменяют её.
+    assert got["limit_reconciliation_lines"] == source_lines + dashboard.reconciliation_lines(
         rec, dashboard._fmt_money)
+    assert got["source_dates"]["report_date"] == "2026-10-20"
+    assert got["source_dates"]["budget"]["data_date"] is None
+    assert got["source_dates"]["rss"]["data_date"] is None
 
 
 def test_the_report_and_the_page_show_the_chain(monkeypatch):
