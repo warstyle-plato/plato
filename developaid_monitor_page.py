@@ -52,6 +52,7 @@ h1{margin:0;font-size:24px}h2{margin:0;font-size:14px}.muted{color:var(--muted)}
 @media(max-width:1200px){.kpis{grid-template-columns:repeat(4,1fr)}.setup,.finance-grid,.forecast-grid{grid-template-columns:1fr}.g-axis,.g-row{grid-template-columns:250px 1fr 170px}.detail-grid{grid-template-columns:repeat(3,1fr)}}
 .crew-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-top:6px;font-size:12px}
 .fundblock{border-top:1px solid var(--line);padding-top:8px;margin-top:8px}
+.recon-line{min-width:0;overflow-wrap:anywhere}
 .fundmore{margin-top:10px}.fundmore>summary{cursor:pointer;font-size:12px;font-weight:600;color:var(--text);padding:6px 0;list-style:none}.fundhead{font-size:12px;font-weight:600;margin-top:8px}.fundmore>summary::-webkit-details-marker{display:none}.fundmore>summary:before{content:"▸ ";}.fundmore[open]>summary:before{content:"▾ ";}
 table.unspent td{padding:7px 8px;border:1px solid var(--line);text-align:right}table.unspent td:first-child,table.unspent td:nth-child(2){text-align:left}table.unspent tfoot td{font-weight:700;background:#f7f9fb}
 .fundblock:first-child{border-top:0;margin-top:0}
