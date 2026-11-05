@@ -142,7 +142,13 @@ def test_new_revocation_holds_an_older_approval_even_when_the_older_run_is_retri
     assert queue.dispatch(api, ready(), ACTORS, JOBS, "run") == ""
 
 
-@pytest.mark.parametrize("case", ["approve", "revoke", "bot", "wrong_ref", "wrong_input"])
+def test_control_producer_must_execute_its_runtime_guard_instead_of_skipping_the_job():
+    flow = (ROOT / ".github/workflows/release-approval.yml").read_text()
+    job_header = flow.split("jobs:\n", 1)[1].split("    steps:", 1)[0]
+    assert not any(line.strip().startswith("if:") for line in job_header.splitlines())
+
+
+@pytest.mark.parametrize("case", ["approve", "revoke", "bot", "wrong_ref", "wrong_input", "wrong_native_sha"])
 def test_read_only_control_workflow_executes_the_shared_validator_at_its_main_sha(monkeypatch, case):
     flow = (ROOT / ".github/workflows/release-approval.yml").read_text()
     assert "actions/checkout" not in flow and ": write" not in flow
@@ -152,13 +158,18 @@ def test_read_only_control_workflow_executes_the_shared_validator_at_its_main_sh
     record = control_run(decision=decision, status="in_progress", conclusion=None)
     if case == "bot":
         record["actor"] = {"login": "github-actions[bot]", "type": "Bot"}
+    if case == "wrong_native_sha":
+        record["head_sha"] = OTHER
     env = {"GITHUB_REF": "refs/heads/main", "GITHUB_EVENT_NAME": "workflow_dispatch",
            "GITHUB_WORKFLOW_REF": REPO + "/.github/workflows/release-approval.yml@refs/heads/main",
            "GITHUB_REPOSITORY": REPO, "GITHUB_SHA": BASE, "GITHUB_RUN_ID": "100",
            "GH_TOKEN": "synthetic-read-only-token", "CONTROL_PR": "42", "CONTROL_HEAD": HEAD,
            "CONTROL_DECISION": decision, "RELEASE_CONTROL_ACTORS": "owner"}
     if case == "wrong_ref":
-        env["GITHUB_REF"] = "refs/heads/untrusted"
+        # GitHub can report head_branch='main' for a TAG named main too.
+        # It must execute/fail the guard, never become all-skipped success.
+        env["GITHUB_REF"] = "refs/tags/main"
+        env["GITHUB_WORKFLOW_REF"] = REPO + "/.github/workflows/release-approval.yml@refs/tags/main"
     if case == "wrong_input":
         env["CONTROL_HEAD"] = OTHER
     for key, value in env.items():
@@ -182,7 +193,9 @@ def test_read_only_control_workflow_executes_the_shared_validator_at_its_main_sh
     with pytest.raises(SystemExit) as result:
         exec(compile(bootstrap, "release-approval bootstrap", "exec"), {})
     assert (result.value.code == 0) == (case in {"approve", "revoke"})
-    assert len(requests) == (0 if case == "wrong_ref" else 3)
+    assert len(requests) == (0 if case == "wrong_ref" else 2 if case == "wrong_native_sha" else 3)
+    if case == "wrong_native_sha":
+        assert "Native control run SHA differs" in str(result.value)
 
 
 @pytest.mark.parametrize("later", ["APPROVED", "DISMISSED"])

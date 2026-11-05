@@ -324,6 +324,9 @@ def validate_control_run() -> int:
         raise SystemExit("No read-only workflow token or run id")
     api = GitHub(repo, token)
     run = api.request("GET", f"/actions/runs/{run_id}")
+    workflow_sha = os.environ.get("GITHUB_SHA", "")
+    if not SHA.fullmatch(workflow_sha) or run.get("head_sha") != workflow_sha:
+        raise SystemExit("Native control run SHA differs from the trusted workflow SHA")
     actors = control_actors(repo, os.environ.get("RELEASE_CONTROL_ACTORS", ""))
     reason = control_record_refusal(run, repo, control_workflow_id(api), actors, int(number), head, False)
     if reason:
