@@ -3886,12 +3886,15 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
             "лимит минус всё оплаченное; "
             + ", ".join(f"по главе {ch} {_rub(left[ch])}" for ch in sorted(left)),
             "bad" if own["left"] < 0 else "")
+        chapter_amounts = []
+        for row in own.get("rows") or []:
+            name = f"Глава {row['chapter']}" if row.get("chapter") else "Вне глав сметы"
+            if row.get("label"):
+                name += f" ({row['label']})"
+            chapter_amounts.append(f"{name} — {_rub(row.get('amount'))}")
         add("Нужно своих денег сверх сметы банка", _rub(own["need"]) if own["need"] > 0 else "нет",
-            ("по главам: оплачено плюс осталось оплатить минус лимит"
-             + ("; глава 2 — по графику финансирования"
-                if (limit.get("schedule_need") or {}).get("chapter") else ""))
-            + (f"; первый месяц нехватки — {_month_word(own['from'])}" if own.get("from") else "")
-            + "; из чего складывается — в разделе «Финансирование»",
+            ("; ".join(chapter_amounts) or "Разбивка по главам не получена")
+            + (f"; первая нехватка — {_month_word(own['from'])}" if own.get("from") else ""),
             "bad" if own["need"] > 0 else "good")
     elif limit.get("known"):
         extra = float(limit.get("additional_financing") or 0.0)

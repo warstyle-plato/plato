@@ -240,8 +240,10 @@ def test_the_tiles_add_up_on_the_page(tmp_path, monkeypatch):
         "по главе 3 50 000 ₽. " + source_notes["left"])
     need = tiles["Нужно своих денег сверх сметы банка"]
     assert need["value"] == report._rub(own["need"])
-    assert need["note"].startswith("по главам: оплачено плюс осталось оплатить минус лимит; "
-                                   "первый месяц нехватки — ноябрь 2026")
+    assert need["note"] == (
+        "Глава 1 (участок) — 30 000 ₽; Глава 2 (стройка) — 130 000 ₽; "
+        "Глава 3 (коммерция) — 20 000 ₽; первая нехватка — ноябрь 2026. "
+        + source_notes["need"])
     for gone in ("Потребность в допфинансировании банка", "Осталось по смете после всех оплат",
                  "Можно ещё выбрать у банка"):
         assert gone not in tiles
