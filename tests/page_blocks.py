@@ -93,6 +93,11 @@ def piece(name: str, page: str | None = None) -> str:
         return constant(name, page)
 
 
+def partial_tep_mode() -> str:
+    """Настоящий признак черновика для стендов, собирающих страницу вручную."""
+    return constant("PARTIAL_TEP_SCHEMA") + "\n" + function("partialTepMode")
+
+
 def krt_lock() -> str:
     """Замок «Требования КРТ» со списком запертых полей и общим писателем.
 
