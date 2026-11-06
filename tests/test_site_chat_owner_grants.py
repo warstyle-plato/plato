@@ -238,6 +238,26 @@ def test_owner_api_checks_current_key_over_real_http_and_lists_legacy_for_migrat
         assert client.post("/monitor/site-chats/authorize", json={**body, "project": "../private"}, headers=headers).status_code == 400
 
 
+def test_readonly_group_listing_accepts_current_header_but_not_url_key(bot, monkeypatch):
+    with TestClient(bot.core.app) as client:
+        query_only = client.get("/monitor/site-chats/access", params={"key": KEY})
+        assert query_only.status_code == 403
+        assert query_only.headers["cache-control"] == "private, no-store"
+        header_only = client.get("/monitor/site-chats/access", headers={"X-Developaid-Admin-Key": KEY})
+        assert header_only.status_code == 200 and header_only.json() == {"chats": []}
+        assert "key" not in header_only.request.url.params
+        assert header_only.headers["cache-control"] == "private, no-store"
+        assert KEY not in header_only.text
+        rotated = "synthetic-rotated-owner-key"
+        monkeypatch.setenv("DEVELOPAID_ADMIN_KEY", rotated)
+        old = client.get("/monitor/site-chats/access", headers={"X-Developaid-Admin-Key": KEY})
+        assert old.status_code == 403 and old.headers["cache-control"] == "private, no-store"
+        current = client.get("/monitor/site-chats/access", headers={"X-Developaid-Admin-Key": rotated})
+        assert current.status_code == 200 and current.json() == {"chats": []}
+        monkeypatch.delenv("DEVELOPAID_ADMIN_KEY")
+        assert client.get("/monitor/site-chats/access", headers={"X-Developaid-Admin-Key": rotated}).status_code == 403
+
+
 def test_group_send_rechecks_current_authorization_after_generation(bot, monkeypatch):
     core = bot.core
     authorize(bot)
