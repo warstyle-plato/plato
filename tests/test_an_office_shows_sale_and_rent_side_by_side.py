@@ -183,14 +183,16 @@ def test_the_presale_vat_is_charged_in_the_month_of_each_advance() -> None:
 
 
 def test_the_presale_names_who_may_buy() -> None:
-    """214-ФЗ ст. 1 ч. 2: до ввода гражданам — только ДДУ. Условие названо в
-    подписи способа, у столбца сравнения и в подсказках обоих полей окна."""
+    """Сценарий с покупателями-компаниями подписан как допущение модели,
+    единое для сравнения и обоих полей окна продаж, а не вывод о любой сделке."""
     result = _calc(offices_strategy=ns.STRATEGY_DDU)
     presale = next(c for c in result["strategy_compare"]["items"][0]["columns"] if c["key"] == ns.PATH_PRESALE)
     assert presale["label"].startswith("Продажа компаниям") and ns.PRESALE_BUYERS in presale["tags"]
     hints = {f[0]: f[2] for _, group in core.FIELD_GROUPS for f in group if isinstance(f, list)}
     for key in ("offices_presale_start_months", "offices_presale_end_months"):
-        assert "только по ДДУ" in hints[key] and "214-ФЗ" in hints[key], key
+        assert ns.PRESALE_BUYERS_NOTE in hints[key], key
+        assert "В этом варианте модели" in hints[key], key
+        assert "только по ДДУ" not in hints[key], key
 
 
 def test_the_presale_follows_the_office_class() -> None:

@@ -73,7 +73,13 @@ def call(method: str, path: str, session: str = "", key: str = "",
     if method == "GET":
         for param in getattr(dependant, "query_params", []) or []:
             out.setdefault(param.name, "проверка")
-        return browser.get(path, params=out, headers=headers or {})
+        # GET credentials belong in the documented header, never the URL.
+        # The route need not expose a query-key parameter to accept its owner.
+        out.pop("key", None)
+        get_headers = dict(headers or {})
+        if key and not any(name.lower() == "x-developaid-admin-key" for name in get_headers):
+            get_headers["X-Developaid-Admin-Key"] = key
+        return browser.get(path, params=out, headers=get_headers)
     for param in getattr(dependant, "body_params", []) or []:
         model = getattr(param.field_info, "annotation", None) or param.type_
         for name, field in getattr(model, "model_fields", {}).items():
@@ -132,7 +138,7 @@ def test_nobody_but_the_admin_key_gets_in(method, path):
         "команда DEVELOPAID_TEAM_IDS": call(method, path,
                                             session=core._telegram_session(CLIENT, [])),
         "ключ кабинета рынка": call(method, path, headers={"X-Market-Key": "team-test-key"}),
-        "неверный ключ": call(method, path, key="не-тот"),
+        "неверный ключ": call(method, path, key="wrong-key"),
         "демо-ссылка с разделами": call(method, path, session=demo, browser=browser),
     }
     opened = {who: a.status_code for who, a in tries.items() if not _refused(a)}

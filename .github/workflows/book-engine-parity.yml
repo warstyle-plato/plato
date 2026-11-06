@@ -76,14 +76,21 @@ jobs:
   nightly-issue:
     name: Задача по ночной сверке
     needs: [parity]
-    if: always() && github.event_name == 'schedule'
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       issues: write
       actions: read
     steps:
+      # Keep the PR check conclusive without granting it the scheduled
+      # notifier's write action. The actual parity job above always verifies
+      # the formulas, including its deliberately tampered examples.
+      - name: Уведомление не требуется для этого события
+        if: github.event_name != 'schedule'
+        run: echo 'Создание задачи по ночной сверке неприменимо к этому типу события.'
       - uses: actions/github-script@v9
+        if: github.event_name == 'schedule'
         env:
           RESULT: ${{ needs.parity.result }}
         with:
