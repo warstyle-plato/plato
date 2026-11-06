@@ -76,7 +76,7 @@ def test_real_pdf_parser_and_production_ocr_raster_path_keep_page_bounds(monkeyp
     # Tesseract/language availability is outside this library regression. PDF
     # opening, page limiting and rasterization run through the production function.
     monkeypatch.setattr(pdf_ocr, 'unavailable_reason', lambda: '')
-    monkeypatch.setattr(pdf_ocr.subprocess, 'run', recognize)
+    monkeypatch.setattr(pdf_ocr, 'subprocess', SimpleNamespace(run=recognize))
     assert pdf_ocr.text(source, pages=1, dpi=72) == 'synthetic OCR\n'
     assert len(calls) == 1
     assert calls[0][0] == ['tesseract', 'stdin', 'stdout', '-l', 'rus', '--psm', '6']
