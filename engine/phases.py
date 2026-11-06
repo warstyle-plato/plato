@@ -1741,7 +1741,8 @@ def _consolidate_phase_results(
             "rve": max(r["dates"]["rve"] for r in results),
         },
         "tep": {
-            "rows": tep_rows, "total": tep_total,
+            "rows": tep_rows, "total": tep_total, "above_gns": project_gns,
+            "underground_products": list(underground_products(master_inputs)),
             "core_above_gns": sum(r["tep"]["core_above_gns"] for r in results),
             "core_under_gns": sum(r["tep"]["core_under_gns"] for r in results),
             "project_articles_sqm": sum(float(r["tep"].get("project_articles_sqm") or 0.0)

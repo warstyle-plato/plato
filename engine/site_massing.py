@@ -239,7 +239,7 @@ def _object_rows(x: dict[str, Any], tep: dict[str, Any]) -> list[tuple[str, dict
 
 def residential_above_gns(x: dict[str, Any], tep: dict[str, Any]) -> float:
     """Наземная ГНС жилых домов: наземная ГНС проекта без отдельных зданий."""
-    return max(0.0, project_above_gns(tep or {}) - sum(g for _, _, g in _object_rows(x, tep)))
+    return max(0.0, project_above_gns(tep or {}, x) - sum(g for _, _, g in _object_rows(x, tep)))
 
 
 def _glavapu_ha(cell: Any) -> float:
@@ -554,7 +554,7 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
         return dict(project)
     tep = tep or {}
     site_sqm = _massing_number(x, "site_area_ha") * 10000.0
-    above_gns = project_above_gns(tep)
+    above_gns = project_above_gns(tep, x)
     under_sqm = underground_area_of(x, tep)
     warnings: list[str] = []
     notes: list[str] = []

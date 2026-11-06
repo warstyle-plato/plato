@@ -450,7 +450,8 @@ def _v4_apply_landscaping_base(xml: str, per_person: str, population_norm: str,
         # и МФОЦ книга дала 1 197,0 млн ₽ против 1 308,8 в отчёте.
         outside = _V4_QUEUE_OUTSIDE_ABOVE_COL
         above = (f"('Вводные'!$I${queue_row}+'Вводные'!$J${queue_row}"
-                 f"+'Вводные'!${outside}${queue_row})")
+                 f"+'Вводные'!${outside}${queue_row}"
+                 f"+'Вводные'!$AR${queue_row}*{_v4_storage_above_flag()})")
         # Ссылка шаблона абсолютная ($B$47), а карта ячеек несёт координату
         # без долларов: сравнение «в лоб» не находило её и уводило живую
         # формулу в `missing` — то есть сторож кричал бы на верной книге.
@@ -503,10 +504,11 @@ def _v4_storage_area_cells(tep_xml: str, report_xml: str, missing: list[str]
     #
     # На ТЭП колонка одна и названа честно — «ГНС / подземная площадь», —
     # поэтому там кладовые остаются в C.
-    # Наземные кладовые (`storage_placement`) лежат внутри ГНС квартир: в B
-    # их второй раз не складывают, а в подземной их нет.
+    # Кладовые — отдельная площадь сверх квартир: признак размещения
+    # направляет её ровно в одну колонку, не меняя общего объёма.
     report_xml, done = _v4_set_cells(report_xml, _V4_REPORT_STORAGE_ROW, {
-        f"B{_V4_REPORT_STORAGE_ROW}": dict(formula="0"),
+        f"B{_V4_REPORT_STORAGE_ROW}": dict(
+            formula=f"SUM('Вводные'!AR88:AR91)*{_v4_storage_above_flag()}"),
         f"{_V4_UNDER_COLUMN}{_V4_REPORT_STORAGE_ROW}": dict(
             formula=f"SUM('Вводные'!AR88:AR91)*{_v4_storage_under_flag()}")})
     if not done:
@@ -533,16 +535,15 @@ def _v4_apply_storage_area_rows(xml: str, missing: list[str]) -> str:
     Благоустройство сюда не входит: его база — двор, а не объём, и к этому
     моменту `_v4_apply_landscaping_base` уже сняла у него сумму трёх ГНС.
     Формула шаблона не опознана — `missing`, а не тихий счёт по прежней базе.
-    Наземные кладовые (`storage_placement`, владелец 15.10.2026) ни в одну из
-    этих баз не входят: их метры уже в ГНС квартир.
+    Кладовые — отдельная площадь: в общий объём входят при обоих
+    размещениях, а в СМР — по ставке выбранной части здания.
     """
-    # Наземные кладовые (`storage_placement`) уже лежат в ГНС квартир
-    # (колонка I): ни к подземной части, ни к объёму их метры не прибавляются.
-    # Решает вводная книги, а не сборка: правка размещения в книге двигает базы.
+    # Размещение меняет часть здания и её ставку, а не общий объём.
+    # Формулы читают вводную книги и пересчитываются после её правки.
     flag = _v4_storage_under_flag()
     area = "'Вводные'!$AR$%d*" + flag.replace("%", "%%")
     volume_was = "SUM('Вводные'!$I$88:$K$91)"
-    volume_now = f"({volume_was}+SUM('Вводные'!$AR$88:$AR$91)*{flag})"
+    volume_now = f"({volume_was}+SUM('Вводные'!$AR$88:$AR$91))"
     xml, count = xml.replace(volume_was, volume_now), xml.count(volume_was)
     expect = len(_V4_SHARED_CASH_ARTICLES) * _V4_CAPEX_PHASES
     if count != expect:
@@ -551,6 +552,18 @@ def _v4_apply_storage_area_rows(xml: str, missing: list[str]) -> str:
     for phase in range(_V4_CAPEX_PHASES):
         base = _V4_CAPEX_BLOCK_STRIDE * phase
         queue_row = _V4_CF_QUEUE_ENABLED_ROW + phase
+        # Наземная часть очереди: квартиры + коммерция + наземные кладовые.
+        row = _V4_CAPEX_ARTICLE_ROW["main_above"] + base
+        was = f"('Вводные'!$I${queue_row}+'Вводные'!$J${queue_row})"
+        found = _re_search_cell_formula(xml, f"B{row}")
+        if found is None or was not in found:
+            missing.append(f"CAPEX · СМР наземной части: формула строки {row} не опознана")
+        else:
+            now = was[:-1] + f"+'Вводные'!$AR${queue_row}*{_v4_storage_above_flag()})"
+            xml, done = _v4_set_cells(xml, row, {f"B{row}": dict(
+                formula=found.replace(was, now, 1))})
+            if not done:
+                missing.append(f"CAPEX · СМР наземной части: строка {row} не записана")
         # Подземная часть очереди: K → (K + площадь кладовых).
         row = _V4_CAPEX_ARTICLE_ROW["main_under"] + base
         was = f"'Вводные'!$K${queue_row}"
@@ -574,7 +587,7 @@ def _v4_apply_storage_area_rows(xml: str, missing: list[str]) -> str:
             if found is None or was not in found:
                 missing.append(f"CAPEX · объём очереди: формула строки {row} не опознана")
                 continue
-            now = was[:-1] + f"+{area % queue_row})"
+            now = was[:-1] + f"+'Вводные'!$AR${queue_row})"
             xml, done = _v4_set_cells(xml, row, {f"B{row}": dict(
                 formula=found.replace(was, now, 1))})
             if not done:
@@ -643,7 +656,7 @@ def _v4_storage_norm_rows_xml(xml: str, inputs: dict[str, Any],
              + "</x:t></x:is></x:c>"
              + f'<x:c r="C{base_row + 2}" t="inlineStr"><x:is><x:t>'
              + xml_escape(f"«{_V4_STORAGE_UNDER_WORD}» или «{_V4_STORAGE_ABOVE_WORD}»; "
-                          "наземные лежат внутри ГНС квартир (колонка I), "
+                          "наземные добавляются сверх площади квартир, "
                           "строятся по наземной ставке и в подземную "
                           "площадь не входят")
              + "</x:t></x:is></x:c>"

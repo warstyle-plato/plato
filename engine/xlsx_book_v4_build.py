@@ -220,7 +220,7 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
         # База и ставка благоустройства — те же, что у движка (`landscaping_cost`):
         # наземная ГНС проекта и ставка `landscaping_gns_rate` (ручная или
         # умолчание нежилого проекта).
-        "landscaping_gns": project_above_gns(t),
+        "landscaping_gns": project_above_gns(t, x),
         "parking_price_th": n(x, "parking_price_th"),
         "main_under_th": n(x, "main_under_th_per_sqm"),
         "cost": {

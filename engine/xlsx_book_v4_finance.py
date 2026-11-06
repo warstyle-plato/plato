@@ -1769,8 +1769,8 @@ def _v4_apply_core_pool_by_product(xml: str, phase: int, missing: list[str]) -> 
     кладовых. Теперь пул раскладывается по продуктам блоком внизу листа:
       · прямые — СМР наземной и подземной части с надбавками (генподряд,
         техзаказчик, управление проектом, резерв — тот же процент с СМР
-        части), продуктам своей части по их ГНС; наземные кладовые лежат в
-        ГНС квартир и идут с наземной частью (`storage_placement`);
+        части), продуктам своей части по их отдельным ГНС; кладовые
+        добавляются к выбранной части здания (`storage_placement`);
       · общие — остаток пула, по выручке продуктов (без выручки — по ГНС);
     и каждый продукт признаёт СВОЮ себестоимость долей своего проданного
     объёма в своих единицах. Продукт без продаж и остаток, который делить не
@@ -1837,14 +1837,14 @@ def _v4_apply_core_pool_by_product(xml: str, phase: int, missing: list[str]) -> 
     capex = _V4_CAPEX_BLOCK_STRIDE * (phase - 1)
     flats, shops, garage, store = (f"'Вводные'!${col}${queue}" for col in ("I", "J", "K", "AR"))
     under, above = _v4_storage_under_flag(), _v4_storage_above_flag()
-    inside = f"MIN({store},{flats})*{above}"
+    storage_above = f"{store}*{above}"
     part_gns = {
-        "apartments": (f"({flats}-{inside})", "0"),
+        "apartments": (flats, "0"),
         "ground_commercial": (shops, "0"),
         "underground_parking": ("0", garage),
-        "storage": (inside, f"{store}*{under}"),
+        "storage": (storage_above, f"{store}*{under}"),
     }
-    above_total, under_total = f"({flats}+{shops})", f"({garage}+{store}*{under})"
+    above_total, under_total = f"({flats}+{shops}+{storage_above})", f"({garage}+{store}*{under})"
     uplift = ("(1+'Вводные'!$B$50+'Вводные'!$B$53+'Вводные'!$B$52)"
               "*(1+'Вводные'!$B$54)")
     revenue = {key: f"'Продажи'!$B${_V4_POOL_SALES_ROWS[key][1] + shift}"
