@@ -106,6 +106,7 @@ def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = 
 def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Response:
     import hashlib as _hashlib
     import binascii as _binascii
+    import secrets as _secrets
     import developaid_management_report_jobs as jobs
     private = {"Cache-Control": "private, no-store"}
     try:
@@ -138,7 +139,9 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
                     payload.update(contract_id=req.contract_id, evidence_id=req.evidence_id,
                                    confirmed=req.confirmed)
             # The store persists only the fingerprint, not these private inputs.
-            fingerprint = {"operation": operation, **payload}
+            # A fresh click must not reuse another running view of older data.
+            # Retrying the same admission keeps its exact ticket and fingerprint.
+            fingerprint = {"operation": operation, "click": req.ticket or _secrets.token_hex(16), **payload}
             if archive:
                 fingerprint["archive_sha256"] = _hashlib.sha256(archive).hexdigest()
             def build():

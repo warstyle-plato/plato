@@ -97,6 +97,28 @@ def test_owner_family_rotation_and_ticket_parameters_fail_closed(api, monkeypatc
     assert post(client, "contracts/result", key="rotated-synthetic-key", ticket=ticket, session="person-A").status_code == 404
 
 
+def test_a_fresh_view_does_not_reuse_an_older_inflight_view(api, monkeypatch):
+    client, _ = api
+    release = threading.Event()
+    calls = []
+    def execute(*args):
+        version = len(calls)+1
+        calls.append(version)
+        assert release.wait(10)
+        return {"ok": True, "register": {"version": version}}
+    monkeypatch.setattr(core, "_monitor_cumulative_execute", execute)
+    try:
+        first = post(client, "contracts/build", project="Fixture", ticket="3" * 32)
+        second = post(client, "contracts/build", project="Fixture", ticket="4" * 32)
+        assert first.status_code == second.status_code == 202
+        assert first.json()["ticket"] != second.json()["ticket"]
+        assert post(client, "contracts/build", project="Fixture", ticket="4" * 32).json()["ticket"] == second.json()["ticket"]
+    finally:
+        release.set()
+    assert poll(client, first.json()["ticket"]).json()["register"]["version"] == 1
+    assert poll(client, second.json()["ticket"]).json()["register"]["version"] == 2
+
+
 def test_upload_checks_envelope_before_worker_and_preserves_bytes(api, monkeypatch):
     client, _ = api
     calls = []
