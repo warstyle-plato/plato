@@ -69,7 +69,9 @@ def main() -> int:
                         return
                 result['blocked_navigation'] = window.evaluate_js(
                     'document.querySelector("#ready").textContent') == 'ready'
-                window.evaluate_js('window.open("file:///C:/__DevelopAid_synthetic_missing__")')
+                # File popups may be rejected by Chromium before the host event.
+                # An HTTP popup reaches the host callback and is denied by our policy.
+                window.evaluate_js('window.open("http://example.test/")')
                 result['blocked_popup'] = guard.popup_blocked.wait(10)
             finally:
                 window.destroy()
