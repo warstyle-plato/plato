@@ -1962,11 +1962,12 @@ def _build_project_workbook(
         # Наземные метры очереди вне МКД — базой благоустройства по ставке на
         # метр ГНС. Мера одна с движком (`project_above_gns`): разность с
         # метрами дома, а не второй список объектов.
-        _outside_above = max(0.0, project_above_gns(crow)
-                             - num_row(crow.get("apartments"), "gns")
-                             - num_row(crow.get("ground_commercial"), "gns"))
+        # ОСЗ отсутствуют в single-phase fallback crow, а в живом результате
+        # очередей уже присутствуют. Один формульный источник исключает их из
+        # остатка и добавляет из реестра ОБЪЕКТОВ ровно в свою очередь.
         xml, _done = _v4_set_or_insert_cell(
-            xml, f"{_V4_QUEUE_OUTSIDE_ABOVE_COL}{row}", number=_outside_above)
+            xml, f"{_V4_QUEUE_OUTSIDE_ABOVE_COL}{row}",
+            formula=_v4_outside_above_gns_formula(crow, index))
         if not _done:
             missing.append(f"наземная ГНС вне МКД очереди {index + 1}")
         if index == 0:

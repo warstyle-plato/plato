@@ -127,20 +127,53 @@ def test_the_result_lives_on_disk_for_the_other_worker(cold):
     assert again.status_code == 200 and again.content.startswith(b"%PDF")
 
 
-def test_a_repeated_request_with_the_same_ticket_does_not_build_twice(cold):
-    """Оборванный запрос повторяют с тем же билетом — сборка одна."""
+def test_a_repeated_request_with_the_same_ticket_does_not_build_twice(cold, monkeypatch):
+    """Повтор билета ждёт одну сборку, даже до начала downstream-скрининга."""
     from fastapi.testclient import TestClient
     release, calls = cold
     inputs, tep = _inputs()
     client = TestClient(core.app)
+    entered, proceed, finished = threading.Event(), threading.Event(), threading.Event()
+    entries = []
+    entry_lock = threading.Lock()
+    original = core._teaser_build
+
+    def observed_build(*args):
+        # HTTP202 означает admission фоновой сборки, а не окончание расчёта
+        # модели до land_screening. Синхронизируемся на реальной границе
+        # worker и держим её до второго POST, без угадывания паузы.
+        with entry_lock:
+            entries.append(args[0])
+        entered.set()
+        try:
+            assert proceed.wait(30), "тест не отпустил worker тизера"
+            original(*args)
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(core, "_teaser_build", observed_build)
     ticket = "ab" * 16
-    first = _post(client, inputs, tep, ticket=ticket)
-    second = _post(client, inputs, tep, ticket=ticket)
-    assert first.status_code == 202 and second.status_code == 202
-    assert second.json()["ticket"] == ticket
-    assert len(calls) == 1
-    release.set()
-    assert _poll(client, ticket).status_code == 200
+    try:
+        first = _post(client, inputs, tep, ticket=ticket)
+        assert entered.wait(BUDGET_SECONDS), "worker сборки не начал выполнение"
+        second = _post(client, inputs, tep, ticket=ticket)
+        assert first.status_code == 202 and second.status_code == 202
+        assert first.json()["ticket"] == second.json()["ticket"] == ticket
+        # Модель ещё не запущена: ноль вызовов скрининга здесь — корректно.
+        assert calls == []
+        proceed.set()
+        release.set()
+        done = _poll(client, ticket)
+        assert done.status_code == 200 and done.content.startswith(b"%PDF")
+        assert finished.wait(30), "worker не закончил сборку тизера"
+        # Проверяем после полного завершения, чтобы не пропустить дубль,
+        # который стартовал/достроился позже первого результата.
+        with entry_lock:
+            assert entries == [ticket]
+        assert len(calls) == 1
+    finally:
+        proceed.set()
+        release.set()
 
 
 def test_a_warm_teaser_still_answers_with_the_pdf_itself(monkeypatch, tmp_path):
