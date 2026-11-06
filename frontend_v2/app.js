@@ -400,8 +400,14 @@ function renderTornado() {
 
 const platon = { scenarios: [], history: [], busy: false };
 
+function platonPollHeaders() {
+  const read = (key) => { try { return localStorage.getItem(key) || ''; } catch (_) { return ''; } };
+  return { 'X-Plato-Session': read('developaid_web_session'),
+    'X-Developaid-Admin-Key': read('plato_projects_key') };
+}
+
 function platonTraceId() {
-  return Array.from(crypto.getRandomValues(new Uint8Array(6)))
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)))
     .map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
@@ -446,7 +452,7 @@ async function platonAwaitResult(traceId, thinking) {
   while (Date.now() < deadline && Date.now() < hardStop) {
     await new Promise((resolve) => setTimeout(resolve, 2000));
     try {
-      const response = await fetch(`/agent/result/${traceId}`, { cache: 'no-store' });
+      const response = await fetch(`/agent/result/${traceId}`, { cache: 'no-store', headers: platonPollHeaders() });
       if (response.ok) {
         const data = await response.json();
         if (data && !data.pending && data.answer) return data;
@@ -455,7 +461,7 @@ async function platonAwaitResult(traceId, thinking) {
     } catch (error) { /* обрыв опроса — не конец работы, пробуем снова */ }
     let stage = '';
     try {
-      const trace = await (await fetch(`/agent/trace/${traceId}`, { cache: 'no-store' })).json();
+      const trace = await (await fetch(`/agent/trace/${traceId}`, { cache: 'no-store', headers: platonPollHeaders() })).json();
       if (trace && trace.label && trace.stage !== 'done') stage = trace.label;
     } catch (error) { /* стадия необязательна */ }
     // Пока движок отчитывается о новом шаге, работа идёт, а не висит.
@@ -482,7 +488,7 @@ async function askPlaton(message, scenario) {
   try {
     const response = await fetch('/agent/chat', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...platonPollHeaders() },
       cache: 'no-store',
       body: JSON.stringify({
         message,

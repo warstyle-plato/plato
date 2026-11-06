@@ -309,6 +309,10 @@ def _plato_chat_launch(
     результата. Ждать завершения — дело зовущего: у окна на это двадцать
     секунд, у бота столько, сколько нужно.
     """
+    actor = getattr(req, "_agent_actor", None)
+    if not isinstance(actor, _agent_access.Actor):
+        actor = _agent_bind_actor(req, request)
+    _agent_actor_current(req)
     _agent_rate_limit(request)
     message = str(req.message or "").strip()
     if not message:
@@ -328,8 +332,9 @@ def _plato_chat_launch(
 
     started = time.monotonic()
     trace_id = str(req.trace_id or "").strip().lower()
-    if not _TRACE_ID_RE.fullmatch(trace_id):
-        trace_id = os.urandom(6).hex()
+    if not _agent_access.NONCE.fullmatch(trace_id):
+        trace_id = os.urandom(16).hex()
+    _agent_access.claim(_PLATO_STAGE_DIR, trace_id, actor)
     scenario = str(req.scenario or "").strip()
     if scenario and scenario not in _AGENT_LOCAL_SCENARIOS:
         scenario = ""
@@ -342,6 +347,8 @@ def _plato_chat_launch(
     done = threading.Event()
     cached = _plato_answer_get(cache_key)
     if cached is not None:
+        _agent_actor_current(req)
+        _plato_answer_put("run" + trace_id, cached)
         _plato_trace_write(trace_id, "done", "Ответ найден в кэше")
         _PLATON_LOG.info("Platon [%s] cache hit (%.2fs)", trace_id, time.monotonic() - started)
         outcome["result"] = cached
@@ -364,6 +371,7 @@ def _plato_chat_launch(
         })
 
     def _work() -> dict[str, Any]:
+        _agent_actor_current(req)
         _plato_trace_write(trace_id, "model", "Пересчитываю модель DevelopAid")
         try:
             bundle = _run_authoritative_model(req.inputs, req.tep, req.rates, req.phasing)
@@ -397,6 +405,7 @@ def _plato_chat_launch(
                              trace_id, len(result.get("tools_used") or []),
                              time.monotonic() - started)
 
+        _agent_actor_current(req)
         _plato_answer_put(cache_key, result)
         # Ответ кладётся ещё и под номер запуска: соединение до окна короче
         # работы, и забирают его отдельным запросом. На диск — потому что
@@ -536,7 +545,10 @@ def agent_chat(req: AgentChatRequest, request: Request) -> dict[str, Any]:
     # Бот и /ia/goal-seek сюда не приходят — они зовут функции напрямую.
     # Платон на каждом вопросе пересчитывает модель проекта (`_work`) — это
     # расчёт того же участка, и право на него решает та же функция.
+    req.session = req.session or request.headers.get("x-plato-session", "")
+    req.access_key = req.access_key or request.headers.get("x-developaid-admin-key", "")
     require_calc_access(req.session, req.access_key, "Платон отвечает", inputs=req.inputs)
+    _agent_bind_actor(req, request, private_surface="web")
     # Учёт здесь, а не в общей части: бот идёт тем же путём, но его вопросы уже
     # записаны в журнал как сообщения — иначе каждый считался бы дважды.
     # chat_id здесь не был передан вовсе, и все вопросы ложились под нулём:
@@ -562,7 +574,9 @@ def plato_answer_handoff(req: AgentChatRequest, request: Request) -> dict[str, A
     if not done.wait(_PLATO_CHAT_HANDOFF_SECONDS):
         _PLATON_LOG.info("Platon [%s] handed off to polling after %ds",
                          trace_id, int(_PLATO_CHAT_HANDOFF_SECONDS))
+        _agent_actor_current(req)
         return {"pending": True, "trace_id": trace_id}
+    _agent_actor_current(req)
     return _plato_chat_result(trace_id, outcome)
 
 
@@ -579,6 +593,7 @@ def plato_answer(req: AgentChatRequest, request: Request) -> dict[str, Any]:
             status_code=504,
             detail=(f"Платон Сергеевич не ответил за {int(_PLATO_AGENT_WAIT_SECONDS)} с. "
                     "Повторите вопрос."))
+    _agent_actor_current(req)
     return _plato_chat_result(trace_id, outcome)
 
 
@@ -591,6 +606,7 @@ def agent_document(req: AgentDocumentRequest, request: Request) -> dict[str, Any
     карточку; расчёт — кнопкой «Всё верно, считать» ровно по карточке.
     """
     _require_web_access(req.session, req.access_key, "Разбор документа")
+    actor = _agent_bind_actor(req, request, private_surface="web")
     # Применение уже разобранного: модель второй раз не зовём — она бы
     # прочитала документ заново и могла ответить иначе на тех же страницах.
     if req.accept:
@@ -638,7 +654,7 @@ def agent_document(req: AgentDocumentRequest, request: Request) -> dict[str, Any
             **got,
             "card": (None if got.get("reason") else
                      _intake_queue_start(str(req.filename or ""), got, document, inputs, tep,
-                                         class_profile=req.class_profile))}
+                                         class_profile=req.class_profile, actor=actor))}
 
 
 def document_intake_read(document: dict[str, Any], request: Any) -> dict[str, Any]:
@@ -649,6 +665,9 @@ def document_intake_read(document: dict[str, Any], request: Any) -> dict[str, An
         tep={key: dict(value) for key, value in TEP_DEFAULT.items()},
         scenario="document_intake",
     )
+    actor = request.scope.get("plato_actor")
+    if isinstance(actor, _agent_access.Actor):
+        object.__setattr__(payload, "_agent_actor", actor)
     answer = plato_answer(payload, request)
     return document_intake.parse_intake(str((answer or {}).get("answer") or ""))
 
@@ -668,20 +687,24 @@ def _intake_queue_path(intake_id: str) -> Path:
 def _intake_queue_save(queue: dict[str, Any]) -> None:
     path = _intake_queue_path(queue["id"])
     _PLATO_STAGE_DIR.mkdir(parents=True, exist_ok=True)
-    # Через временный файл: соседний воркер не должен прочитать половину.
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(queue, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(path)
+    # Complete atomic records, with the same private permissions as run state.
+    _agent_access.write_json(path, queue)
     cutoff = time.time() - _INTAKE_QUEUE_TTL
     for stale in _PLATO_STAGE_DIR.glob("intake_*.json"):
         try:
             if stale.stat().st_mtime < cutoff:
                 stale.unlink()
+                (_PLATO_STAGE_DIR / "intake_access" /
+                 ("access_" + stale.stem.removeprefix("intake_") + ".json")).unlink(missing_ok=True)
         except OSError:
             pass
 
 
-def _intake_queue_load(intake_id: str) -> dict[str, Any]:
+def _intake_queue_load(intake_id: str, req=None, request: Request | None = None) -> dict[str, Any]:
+    if request is None:
+        raise HTTPException(403, "Не определён владелец документа.")
+    metadata = _agent_access.load(_PLATO_STAGE_DIR / "intake_access", intake_id)
+    _agent_check_metadata(metadata, req, request)
     try:
         return json.loads(_intake_queue_path(intake_id).read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -706,12 +729,14 @@ def teaser_card_view(queue: dict[str, Any], inputs: dict[str, Any],
 def _intake_queue_start(filename: str, extraction: dict[str, Any], document: dict[str, Any],
                         inputs: dict[str, Any], tep: dict[str, dict[str, Any]],
                         *, by_parcel: bool = False, parcel_region: str = "moscow",
-                        class_profile: dict[str, Any] | None = None) -> dict[str, Any]:
+                        class_profile: dict[str, Any] | None = None, actor=None) -> dict[str, Any]:
     """Завести состояние разбора и отдать карточку первого шага."""
     queue = {"id": os.urandom(16).hex(),
              **teaser_card.start(extraction, document, filename,
                                  presets=PROJECT_CLASS_PRESETS,
                                  current_class=str(inputs.get("project_class") or ""))}
+    if isinstance(actor, _agent_access.Actor):
+        _agent_access.claim(_PLATO_STAGE_DIR / "intake_access", queue["id"], actor)
     card = teaser_card_view(queue, inputs, tep, by_parcel=by_parcel, parcel_region=parcel_region,
                             class_profile=class_profile)
     try:
@@ -724,26 +749,26 @@ def _intake_queue_start(filename: str, extraction: dict[str, Any], document: dic
 
 
 @app.post("/agent/document/card")
-def agent_document_card(req: AgentDocumentCardRequest) -> dict[str, Any]:
+def agent_document_card(req: AgentDocumentCardRequest, request: Request) -> dict[str, Any]:
     """Карточка заново по текущим вводным — перед «Всё верно, считать».
 
     Вводные могли поменяться после загрузки тизера; движок получает то, что
     показано, поэтому показываем то, что получит он.
     """
     _require_web_access(req.session, req.access_key, "Разбор документа")
-    return teaser_card_view(_intake_queue_load(req.intake_id), req.inputs or {}, req.tep or {},
+    return teaser_card_view(_intake_queue_load(req.intake_id, req, request), req.inputs or {}, req.tep or {},
                             class_profile=req.class_profile)
 
 
 @app.post("/agent/document/answer")
-def agent_document_answer(req: AgentDocumentAnswerRequest) -> dict[str, Any]:
+def agent_document_answer(req: AgentDocumentAnswerRequest, request: Request) -> dict[str, Any]:
     """Ответ на текущий вопрос: записать в разбор и отдать обновлённую карточку.
 
     Модель не меняется: ответ правит карточку, а в расчёт карточка уходит
     только кнопкой «Всё верно, считать».
     """
     _require_web_access(req.session, req.access_key, "Разбор документа")
-    queue = _intake_queue_load(req.intake_id)
+    queue = _intake_queue_load(req.intake_id, req, request)
     inputs, tep = req.inputs or {}, req.tep or {}
     got = teaser_card.answer(queue, inputs, tep, index=req.index,
                              action=str(req.action or "answer"), choice=req.choice,
@@ -768,7 +793,7 @@ def agent_document_answer(req: AgentDocumentAnswerRequest) -> dict[str, Any]:
 
 
 @app.get("/agent/result/{trace_id}")
-def agent_result(trace_id: str) -> dict[str, Any]:
+def agent_result(trace_id: str, request: Request) -> dict[str, Any]:
     """Готовый ответ по номеру запуска.
 
     Нужен, когда соединение с окном оборвалось: работа на сервере при этом
@@ -777,6 +802,7 @@ def agent_result(trace_id: str) -> dict[str, Any]:
     """
     if not _TRACE_ID_RE.fullmatch(str(trace_id or "").strip().lower()):
         raise HTTPException(status_code=400, detail="Неверный идентификатор запроса.")
+    _agent_check_run(str(trace_id).strip().lower(), request)
     stored = _plato_answer_get("run" + str(trace_id).strip().lower())
     if stored is None:
         return {"pending": True}
