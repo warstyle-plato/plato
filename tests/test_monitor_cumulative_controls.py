@@ -50,7 +50,8 @@ def register(project='Учебный проект'):
                             'daily_evidence': [{'id': 'evidence-01', 'date': '2026-11-02',
                                                 'text': MARKER, 'contractor': 'Подрядчик',
                                                 'match_status': 'proposed',
-                                                'candidate_contract_ids': [CONTRACT]}],
+                                                'candidate_contract_ids': [CONTRACT],
+                                                'source': {'kind': 'daily_report', 'date': '2026-11-02', 'line_index': 1}}],
                             'issues': ['Текст сообщения не подтверждает приёмку']}},
         {'id': OTHER, 'contractor': 'Другой подрядчик', 'contract': 'Д-02',
          'amount': None, 'completed': 0, 'completion_ratio': None, 'remaining': None,
@@ -92,6 +93,7 @@ class Responses:
         self.calls = []
         self.jobs = {}
         self.uploaded = False
+        self.upload_failure = False
         self.reject_build_once = False
         self.reject_key = False
         self.reject_poll = False
@@ -128,6 +130,13 @@ class Responses:
             if params.get('project') in self.pending_projects:
                 return route.fulfill(status=202, json={'pending': True, 'ticket': body['ticket']})
             if job == '/monitor/cumulative/upload':
+                if self.upload_failure:
+                    return route.fulfill(json={'pending': False, 'ok': False, 'detail': 'Не удалось прочитать один файл. Архив не сохранён.', 'files': [
+                        {'filename': 'Читаемый.xlsx', 'status': 'parsed'},
+                        {'filename': 'Примечания.txt', 'status': 'ignored'},
+                        {'filename': MARKER+'.xlsx', 'status': 'failed', 'warnings': [MARKER]},
+                        {'filename': 'Следующий.xlsx', 'status': 'not_read'},
+                    ]})
                 self.uploaded = True
                 return route.fulfill(json={'pending': False, 'ok': True, 'snapshot': {
                     'taken_at': params['taken_at'], 'filename': params['filename'],
@@ -186,6 +195,8 @@ def test_contracts_render_exact_money_unknowns_and_separate_physics(width):
         expect(page.locator('#contractsDetails')).to_contain_text('35%')
         expect(page.locator('#contractsDetails')).to_contain_text('100 м²')
         expect(page.locator('#contractsDetails')).to_contain_text('не заменяет акт приёмки')
+        expect(page.locator('#contractsDetails .contract-source').filter(has_text='Ежедневный отчёт')).to_contain_text('строка 1')
+        expect(page.locator('#contractsDetails .contract-source').filter(has_text='Ежедневный отчёт')).not_to_contain_text('строка 2')
         assert page.locator('#contractsRows img, #contractsDetails img').count() == 0
         assert page.evaluate('window.untrustedRan') is None
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
@@ -295,4 +306,36 @@ def test_failed_poll_does_not_restart_archive_upload():
         page.locator('#cumulativeUpload').click()
         expect(page.locator('#cumulativeMsg')).to_have_class('msg bad', timeout=10000)
         assert len([1 for p, _, _ in responses.calls if p == '/monitor/cumulative/upload']) == 1
+        assert not errors
+
+
+def test_failed_archive_shows_each_file_status_and_keeps_previous_snapshot():
+    from playwright.sync_api import expect
+    with browser_page() as (page, responses, errors):
+        expect(page.locator('#setupCard')).to_have_class('card setup-card open')
+        page.locator('#cumulativeFile').set_input_files({'name': 'Годный.zip', 'mimeType': 'application/zip', 'buffer': b'good-synthetic'})
+        page.locator('#cumulativeUpload').click()
+        expect(page.locator('#cumulativeMsg')).to_contain_text('Архив обработан', timeout=10000)
+        expect(page.locator('#cumulativeProtocol')).to_contain_text('Годный.zip')
+        expect(page.locator('#cumulativeHistory')).to_contain_text('Сохранённые снимки')
+        previous_history = page.locator('#cumulativeHistory').text_content()
+        responses.upload_failure = True
+        page.locator('#cumulativeFile').set_input_files({'name': 'Ошибка.zip', 'mimeType': 'application/zip', 'buffer': b'bad-synthetic'})
+        expect(page.locator('#cumulativeProtocol')).to_contain_text('Годный.zip')
+        page.locator('#cumulativeUpload').click()
+        expect(page.locator('#cumulativeMsg')).to_contain_text('Архив не сохранён', timeout=10000)
+        protocol = page.locator('#cumulativeFailureProtocol')
+        expect(protocol).to_contain_text('Прочитано: 1')
+        expect(protocol).to_contain_text('Сопутствующие файлы: 1')
+        expect(protocol).to_contain_text('Не прочитано: 2')
+        expect(protocol).to_contain_text('Читаемый.xlsx — Прочитан')
+        expect(protocol).to_contain_text('Примечания.txt — Сопутствующий файл')
+        expect(protocol).to_contain_text(MARKER+'.xlsx — Ошибка разбора')
+        expect(protocol).to_contain_text('Следующий.xlsx — Не прочитан')
+        assert protocol.locator('img').count() == 0
+        assert page.evaluate('window.untrustedRan') is None
+        expect(page.locator('#cumulativeProtocol')).to_contain_text('Годный.zip')
+        expect(page.locator('#cumulativeProtocol')).not_to_contain_text('Ошибка.zip')
+        expect(page.locator('#cumulativeHistory')).to_have_text(previous_history)
+        assert len([1 for path, _, _ in responses.calls if path == '/monitor/cumulative/upload']) == 2
         assert not errors
