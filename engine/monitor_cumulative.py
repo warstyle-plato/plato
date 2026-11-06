@@ -162,7 +162,8 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
         }
         raise HTTPException(exc.status, messages.get(exc.status, "Не удалось завершить операцию. Повторите запрос."),
                             headers=private) from None
-    except (OSError, ValueError):
+    except Exception as exc:
+        logging.getLogger("developaid.monitor").error("Cumulative operation unavailable (%s)", type(exc).__name__)
         raise HTTPException(503, "Договорная сверка сейчас недоступна. Повторите запрос.", headers=private) from None
 
 
@@ -182,7 +183,8 @@ def monitor_cumulative_list(req: MonitorCumulativeProject) -> Response:
     import developaid_monitor_ledgers as ledgers
     try:
         return JSONResponse(content={"snapshots": ledgers.list_snapshots(req.project)})
-    except (OSError, ValueError):
+    except Exception as exc:
+        logging.getLogger("developaid.monitor").error("Cumulative snapshot list unavailable (%s)", type(exc).__name__)
         raise HTTPException(503, "История накопительных сейчас недоступна.") from None
 
 
