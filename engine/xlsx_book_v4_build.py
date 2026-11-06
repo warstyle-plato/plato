@@ -217,7 +217,7 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
         # База и ставка благоустройства — те же, что у движка (`landscaping_cost`):
         # наземная ГНС проекта и ставка `landscaping_gns_rate` (ручная или
         # умолчание нежилого проекта).
-        "landscaping_gns": project_above_gns(t),
+        "landscaping_gns": project_above_gns(t, x),
         "parking_price_th": n(x, "parking_price_th"),
         "main_under_th": n(x, "main_under_th_per_sqm"),
         "cost": {
@@ -1962,9 +1962,8 @@ def _build_project_workbook(
         # Наземные метры очереди вне МКД — базой благоустройства по ставке на
         # метр ГНС. Мера одна с движком (`project_above_gns`): разность с
         # метрами дома, а не второй список объектов.
-        _outside_above = max(0.0, project_above_gns(crow)
-                             - num_row(crow.get("apartments"), "gns")
-                             - num_row(crow.get("ground_commercial"), "gns"))
+        _outside_above = max(0.0, project_above_gns(crow, x)
+                             - sum(mkd_part_gns(x, crow)["above"].values()))
         xml, _done = _v4_set_or_insert_cell(
             xml, f"{_V4_QUEUE_OUTSIDE_ABOVE_COL}{row}", number=_outside_above)
         if not _done:
