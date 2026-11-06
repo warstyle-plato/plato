@@ -15,6 +15,8 @@
 from __future__ import annotations
 
 import threading
+from types import SimpleNamespace
+from agent_access import Actor
 from pathlib import Path
 
 import pytest
@@ -51,7 +53,7 @@ def test_the_handoff_returns_a_ticket_when_the_work_is_slow(monkeypatch) -> None
     monkeypatch.setattr(main_legacy, "_PLATO_CHAT_HANDOFF_SECONDS", 0.05)
     monkeypatch.setattr(main_legacy, "_plato_chat_launch",
                         lambda req, request: ("abcd1234", never, {}))
-    got = main_legacy.plato_answer_handoff(object(), object())
+    got = main_legacy.plato_answer_handoff(SimpleNamespace(_agent_actor=Actor("synthetic", "web", False, "public")), object())
     assert got == {"pending": True, "trace_id": "abcd1234"}
 
 
@@ -65,7 +67,7 @@ def test_the_fast_answer_comes_back_on_the_same_request(monkeypatch) -> None:
                         lambda req, request: ("abcd1234", done, {"reply": "готово"}))
     monkeypatch.setattr(main_legacy, "_plato_chat_result",
                         lambda trace_id, outcome: {"reply": outcome["reply"]})
-    assert main_legacy.plato_answer_handoff(object(), object()) == {"reply": "готово"}
+    assert main_legacy.plato_answer_handoff(SimpleNamespace(_agent_actor=Actor("synthetic", "web", False, "public")), object()) == {"reply": "готово"}
 
 
 def test_one_implementation_of_the_handoff() -> None:

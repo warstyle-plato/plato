@@ -454,7 +454,7 @@ async function askMonitorPlato(question){
   // Быстрый ответ приходит тем же запросом; за долгим ходим по номеру запуска.
   for(let i=0;!text&&d.trace_id&&i<120;i++){
    await new Promise(done=>setTimeout(done,2500));
-   const p=await fetch('/agent/result/'+encodeURIComponent(d.trace_id));
+   const p=await fetch('/agent/result/'+encodeURIComponent(d.trace_id),{cache:'no-store',headers:{'X-Plato-Session':session(),'X-Developaid-Admin-Key':adminKey()}});
    if(!p.ok)continue;
    const pd=await p.json().catch(()=>({}));
    if(pd.status==='error'){text='Ошибка: '+(pd.detail||pd.error||'неизвестно');break}
