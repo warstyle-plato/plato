@@ -144,6 +144,123 @@ def test_incomplete_identity_is_visible_and_cannot_guess_a_join(context, bad_fie
     assert view['rows'] == [] and len(view['unresolved_sources']) == 1
 
 
+def _repeated_party_book(header, value):
+    wb = openpyxl.load_workbook(io.BytesIO(ks()))
+    wb.active['D2'], wb.active['E2'] = header, value
+    output = io.BytesIO()
+    wb.save(output)
+    return output.getvalue()
+
+
+@pytest.mark.parametrize('field,header', [('customer', 'Заказчик'), ('contractor', 'Подрядчик')])
+def test_conflicting_parties_are_unresolved_with_every_source_cell(context, field, header):
+    payload = _repeated_party_book(header, 'ООО «Другой участник»')
+    snapshot = parsed(('Conflict.xlsx', payload))
+    ledger, = snapshot['ledgers']
+    assert not ledger[field]
+    assert field not in ledger['identity_source']
+    assert len(ledger['party_evidence'][field]) == 2
+    assert ledger['party_evidence'][field][1]['raw'] == 'ООО «Другой участник»'
+    assert ledger['party_evidence'][field][1]['source']['cell'] == 'E2'
+    provide(context, snapshot, [rss_contract()])
+    view = contracts.build('Example', '2026-11-06')
+    assert view['rows'] == []
+    unresolved, = view['unresolved_sources']
+    assert 'разные наименования' in unresolved['identity_warnings'][0]
+    assert unresolved['party_evidence'] == ledger['party_evidence']
+
+
+@pytest.mark.parametrize('header,value', [
+    ('Заказчик', 'ооо "Заказчик"'),
+    ('Подрядчик', 'ооо “Подрядчик”'),
+])
+def test_equivalent_repeated_party_names_are_not_conflicts(context, header, value):
+    snapshot = parsed(('Repeat.xlsx', _repeated_party_book(header, value)))
+    provide(context, snapshot, [rss_contract()])
+    view = contracts.build('Example', '2026-11-06')
+    assert len(view['rows']) == 1 and not view['unresolved_sources']
+    assert view['rows'][0]['amount'] == 1000
+
+
+def test_party_normalization_preserves_equivalent_yo_but_not_business_punctuation():
+    rows = [['Подрядчик', 'ООО «Ёлка, Север»'], ['Подрядчик', 'ооо "елка, Север"']]
+    assert ledgers._metadata(rows)['contractor'] == 'ООО «Ёлка, Север»'
+    rows.append(['Подрядчик', 'ООО «Ёлка Север»'])
+    assert not ledgers._metadata(rows)['contractor']
+
+
+@pytest.mark.parametrize('placeholder', ['""', '« »'])
+def test_quote_only_party_is_not_an_identity_candidate(placeholder):
+    rows = [['Подрядчик', placeholder]]
+    assert not ledgers._metadata(rows)['contractor']
+    rows.append(['Подрядчик', 'ООО «Учебный подрядчик»'])
+    meta = ledgers._metadata(rows)
+    assert meta['contractor'] == 'ООО «Учебный подрядчик»'
+    assert meta['identity_source']['contractor']['cell'] == 'B2'
+    assert len(meta['party_evidence']['contractor']) == 2
+
+
+def test_pre_party_evidence_snapshot_is_reparsed_from_immutable_original(context):
+    snapshot = ledgers.store_archive('Example', archive([
+        ('Conflict.xlsx', _repeated_party_book('Подрядчик', 'ООО «Другой участник»'))]), '2026-11-06')
+    path = next(ledgers._root('Example').glob('*.json'))
+    saved = json.loads(path.read_text())
+    for ledger in saved['ledgers']:
+        ledger.pop('party_evidence')
+        ledger['contractor'] = 'ООО «Другой участник»'  # The prior last-wins result.
+    path.write_text(json.dumps(saved), encoding='utf-8')
+    original_bytes = path.read_bytes()
+    context.setattr(contracts, '_archive', ARCHIVE_READER)
+    view = contracts.build('Example', '2026-11-06')
+    assert view['rows'] == [] and len(view['unresolved_sources']) == 1
+    assert len(view['unresolved_sources'][0]['party_evidence']['contractor']) == 2
+    assert path.read_bytes() == original_bytes
+
+
+def test_missing_original_cannot_make_old_last_wins_parties_authoritative(context):
+    ledgers.store_archive('Example', archive([('Saved.xlsx', ks())]), '2026-11-06')
+    path = next(ledgers._root('Example').glob('*.json'))
+    saved = json.loads(path.read_text())
+    for ledger in saved['ledgers']:
+        ledger.pop('party_evidence')
+    path.write_text(json.dumps(saved), encoding='utf-8')
+    original_bytes = path.read_bytes()
+    next(ledgers._root('Example').glob('*.zip')).unlink()
+    context.setattr(contracts, '_archive', ARCHIVE_READER)
+    view = contracts.build('Example', '2026-11-06')
+    assert view['rows'] == []
+    unresolved, = view['unresolved_sources']
+    assert not unresolved['contractor']
+    assert 'Стороны договора не подтверждены' in unresolved['identity_warnings'][0]
+    evidence, = unresolved['party_evidence']['contractor']
+    assert evidence['raw'] == 'ООО «Подрядчик»'
+    assert evidence['origin'] == 'unverified_saved_header'
+    assert evidence['source']['cell'] == 'C2'
+    assert path.read_bytes() == original_bytes
+
+
+@pytest.mark.parametrize('width', [390, 1440])
+def test_conflicting_party_evidence_is_visible_and_escaped_in_real_page(context, width):
+    from test_monitor_cumulative_controls import browser_page
+    from playwright.sync_api import expect
+    marker = '<img src=x onerror="window.partyHeaderXSS=1">'
+    snapshot = parsed(('Conflict.xlsx', _repeated_party_book('Подрядчик', marker)))
+    provide(context, snapshot)
+    register = contracts.build('Example', '2026-11-06')
+    with browser_page(width) as (page, responses, errors):
+        responses.data = register
+        page.locator('#contractsTab').click()
+        warning = page.locator('#contractsWarnings')
+        expect(warning).to_contain_text('разные наименования подрядчика')
+        expect(warning).to_contain_text(marker)
+        expect(warning).to_contain_text('E2')
+        expect(page.locator('#contractsMsg')).to_contain_text('Договоров из накопительных: 0')
+        assert warning.locator('img').count() == 0
+        assert page.evaluate('window.partyHeaderXSS') is None
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+        assert not errors
+
+
 @pytest.mark.parametrize('override', [{'customer': ''}, {'contract_date': None}, {'contract_date': '2026-01-02'}])
 def test_incomplete_or_different_rss_identity_cannot_enrich_price(context, override):
     provide(context, parsed(), [rss_contract(**override)])

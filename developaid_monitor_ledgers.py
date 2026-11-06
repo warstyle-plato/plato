@@ -282,6 +282,12 @@ def _party(value: Any) -> str:
                     text, maxsplit=1, flags=re.I)[0].strip(' ,;')
 
 
+def _party_key(value: str) -> str:
+    # Same legal name with case/quotes/ё differences is still one candidate.
+    # Preserve business punctuation: different legal names must not collapse.
+    return re.sub(r'\s+', ' ', re.sub(r'[«»“”"]', '', value.casefold().replace('ё', 'е'))).strip()
+
+
 def _contract(value: Any) -> str:
     text = _text(value)
     text = re.sub(r'^договор\s*(?:подряда\s*)?(?:№|N)?\s*', '', text, flags=re.I)
@@ -291,7 +297,8 @@ def _contract(value: Any) -> str:
 def _metadata(rows: list[list[Any]], filename: str = "", sheet: str = "") -> dict:
     out = {'contractor': '', 'customer': '', 'contract': '', 'contract_date': None,
            'contract_amount': None, 'amount_scope': 'year_or_sheet',
-           'identity_source': {}, 'identity_warnings': []}
+           'identity_source': {}, 'identity_warnings': [],
+           'party_evidence': {'customer': [], 'contractor': []}}
     refs, dates = [], []
     for i, row in enumerate(rows[:40]):
         for j, value in enumerate(row):
@@ -300,9 +307,9 @@ def _metadata(rows: list[list[Any]], filename: str = "", sheet: str = "") -> dic
                           if v is not None and _text(v)), None)
             if label in {'подрядчик', 'субподрядчик', 'генподрядчик', 'заказчик'} and right:
                 field = 'contractor' if label in {'подрядчик', 'субподрядчик'} else 'customer'
-                out[field] = _party(right[1])
-                out['identity_source'][field] = _source(filename, sheet, i+1,
-                    cell=_cell(right[0]+1, i+1), label_cell=_cell(j+1, i+1), label=_text(value))
+                out['party_evidence'][field].append({'value': _party(right[1]),
+                    'raw': _text(right[1]), 'source': _source(filename, sheet, i+1,
+                    cell=_cell(right[0]+1, i+1), label_cell=_cell(j+1, i+1), label=_text(value))})
             elif re.fullmatch(r'договор(?:\s+подряда)?', label) and right:
                 if re.match(r'^(?:дс\b|доп(?:олнительное|\.)?\s*соглаш)', _norm(right[1])):
                     out['identity_warnings'].append('В поле договора указано допсоглашение; основной договор не установлен по догадке.')
@@ -330,6 +337,20 @@ def _metadata(rows: list[list[Any]], filename: str = "", sheet: str = "") -> dic
                 amount = next((_number(v) for v in row[j+1:] if _number(v) is not None), None)
                 if amount is not None:
                     out['contract_amount'] = amount
+    for field, evidence in out['party_evidence'].items():
+        candidates = {}
+        for item in evidence:
+            key = _party_key(item['value'])
+            if key:
+                candidates.setdefault(key, item)
+        if len(candidates) == 1:
+            first = next(iter(candidates.values()))
+            out[field] = first['value']
+            out['identity_source'][field] = first['source']
+        elif len(candidates) > 1:
+            role = 'заказчика' if field == 'customer' else 'подрядчика'
+            out['identity_warnings'].append(
+                f'В шапке указаны разные наименования {role}; сторона договора не выбрана. Проверьте исходные ячейки.')
     numbers = {number for number, _ in refs if number}
     if len(numbers) == 1:
         out['contract'] = next(iter(numbers))

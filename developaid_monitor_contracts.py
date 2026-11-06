@@ -116,7 +116,8 @@ def _archive(project: str, cut: str) -> dict | None:
         return snapshot
     if snapshot.get("identity_schema") == 3 and all(
             re.fullmatch(r"[0-9a-f]{64}", str(x.get("file_sha256") or ""))
-            and isinstance(x.get("identity_source"), dict) for x in snapshot.get("ledgers") or []):
+            and isinstance(x.get("identity_source"), dict)
+            and isinstance(x.get("party_evidence"), dict) for x in snapshot.get("ledgers") or []):
         return snapshot
     # Previously imported archives remain usable without a second upload.
     # Re-read their immutable, hash-verified original bytes with the fixed
@@ -136,7 +137,22 @@ def _archive(project: str, cut: str) -> dict | None:
             except ledgers.LedgerProblem:
                 raise ContractProblem("Сохранённый архив накопительных не прочитан; проверьте исходный файл.") from None
             return {**snapshot, **parsed, "identity_schema": 3}
-    return {**snapshot, "warnings": [*(snapshot.get("warnings") or []),
+    safe_ledgers = []
+    for item in snapshot.get("ledgers") or []:
+        if isinstance(item.get("party_evidence"), dict):
+            safe_ledgers.append(item)
+            continue
+        # The earlier parser chose the last party label. Without the original
+        # bytes we cannot establish whether it hid contradictory candidates.
+        evidence = {field: [{"raw": str(item[field]), "value": str(item[field]),
+                             "origin": "unverified_saved_header",
+                             "source": (item.get("identity_source") or {}).get(field)
+                                       or item.get("source") or {}}] if item.get(field) else []
+                    for field in ("customer", "contractor")}
+        safe_ledgers.append({**item, "customer": "", "contractor": "",
+            "party_evidence": evidence, "identity_warnings": [*(item.get("identity_warnings") or []),
+                "Исходный ZIP недоступен: повторяющиеся поля сторон в сохранённой шапке не проверены. Стороны договора не подтверждены."]})
+    return {**snapshot, "ledgers": safe_ledgers, "warnings": [*(snapshot.get("warnings") or []),
         "Сохранённый исходный ZIP недоступен: точная привязка уточнения шапки к файлу не подтверждена; отпечаток не выдуман."]}
 
 
@@ -506,6 +522,8 @@ def build(project: str, cut: str = "") -> dict:
                 "contractor": ledger.get("contractor") or "", "contract": ledger.get("contract") or "",
                 "contract_date": ledger.get("contract_date"),
                 "date_evidence": ledger.get("contract_date_evidence") or [],
+                "identity_warnings": ledger.get("identity_warnings") or [],
+                "party_evidence": ledger.get("party_evidence") or {},
                 "date_confirmation": ledger.get("date_confirmation"),
                 "snapshot_id": (snapshot or {}).get("snapshot_id"), "file_sha256": ledger.get("file_sha256"),
                 "reason": "В шапке не подтверждены: " + ", ".join(missing) + ". Источник не потерян и не объединён по догадке."})
