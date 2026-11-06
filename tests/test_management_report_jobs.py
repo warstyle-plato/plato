@@ -378,3 +378,120 @@ def test_a_late_admission_cannot_replace_a_changed_report_or_login(report_ui, mo
         expect(page.locator("#reportBox h1")).to_have_count(0)
         if change in ("auth", "stored-key"):
             expect(page.locator("#privateArea")).to_be_hidden()
+
+
+def test_latest_selection_waits_for_real_capacity_without_extra_workers(report_ui, monkeypatch):
+    """Intermediate selections fill both slots; the final selection must recover."""
+    from playwright.sync_api import expect
+    page, base = report_ui
+    release = threading.Event()
+    calls, admissions = [], []
+
+    def build(req, **policy):
+        calls.append((req.project, req.kind, req.end))
+        assert release.wait(10)
+        return {**RESULT, "html": f"<h1>{req.project} / {req.kind} / {req.end}</h1>"}
+
+    def response(r):
+        if r.url.endswith('/monitor/report/build'):
+            admissions.append((r.status, r.request.post_data_json))
+
+    monkeypatch.setattr(core, "_monitor_report_body", build)
+    page.on('response', response)
+    try:
+        with page.expect_response('**/monitor/report/build') as first:
+            page.goto(base + '/report')
+        assert first.value.status == 202
+        with page.expect_response('**/monitor/report/build') as second:
+            page.select_option('#project', 'Fixture B')
+        assert second.value.status == 202
+        with page.expect_response('**/monitor/report/build') as full:
+            page.select_option('#reportKind', 'month')
+        assert full.value.status == 429
+        expect(page.locator('#reportMsg')).to_have_class('msg warn')
+        # A further change invalidates the old waiting admission as well.
+        with page.expect_response('**/monitor/report/build') as latest:
+            page.fill('#cut', '2026-10-31')
+        assert latest.value.status == 429
+        with page.expect_response('**/monitor/report/build', timeout=3_000) as retry:
+            pass
+        assert retry.value.status == 429
+        assert len(calls) == 2  # No worker/queue item for rejected admissions.
+        last_request = admissions[-1][1]
+        assert last_request == admissions[-2][1]  # Exact payload and nonce retry.
+        release.set()
+        expect(page.locator('#reportBox h1')).to_have_text(
+            'Fixture B / month / 2026-10-31', timeout=6_000)
+        expect(page.locator('#reportMsg')).to_be_empty()
+        assert calls[-1] == ('Fixture B', 'month', '2026-10-31')
+        assert len(calls) == 3
+        # The stale month/today admission never retried after the date changed.
+        assert sum(body['ticket'] == admissions[2][1]['ticket'] for _, body in admissions) == 1
+    finally:
+        release.set()
+
+
+@pytest.mark.parametrize('status, expected_requests', [(429, 61), (403, 1), (409, 1), (500, 1)])
+def test_admission_retries_are_bounded_and_only_for_capacity(report_ui, status, expected_requests):
+    from playwright.sync_api import expect
+    page, base = report_ui
+    requests = []
+    # Advance only the report wait; the production retry budget remains intact.
+    page.add_init_script("""const originalTimeout=window.setTimeout;
+        window.setTimeout=(fn,ms,...args)=>originalTimeout(fn,ms===1500?0:ms,...args);""")
+
+    def refused(route):
+        requests.append(route.request.post_data_json)
+        route.fulfill(status=status, content_type='application/json',
+                      body=json.dumps({'detail': 'Fixture admission refusal'}))
+
+    page.route('**/monitor/report/build', refused)
+    page.goto(base + '/report')
+    message = '#loginMsg' if status == 403 else '#reportMsg'
+    expect(page.locator(message)).to_have_class('msg bad', timeout=10_000)
+    expect(page.locator(message)).to_have_text('Fixture admission refusal')
+    assert len(requests) == expected_requests
+    assert all(request == requests[0] for request in requests)
+    assert page.evaluate('reportJob') is None
+    if status == 403:
+        expect(page.locator('#privateArea')).to_be_hidden()
+
+
+@pytest.mark.parametrize('change', ['project', 'empty', 'auth', 'stored-key'])
+def test_a_waiting_capacity_retry_is_cancelled_by_selection_or_auth_change(report_ui, change):
+    from playwright.sync_api import expect
+    page, base = report_ui
+    requests = []
+    # Keep the timer pending so cancellation can be checked without a race.
+    page.add_init_script("""window.reportWaits=[];const originalTimeout=window.setTimeout;
+        window.setTimeout=(fn,ms,...args)=>ms===1500?reportWaits.push(fn):originalTimeout(fn,ms,...args);""")
+
+    def admission(route):
+        payload = route.request.post_data_json
+        requests.append(payload)
+        if payload['project'] == 'Fixture A':
+            route.fulfill(status=429, content_type='application/json',
+                          body='{"detail":"Fixture busy"}')
+        else:
+            route.fulfill(status=200, content_type='application/json', body=json.dumps({
+                'pending': False, 'html': '<h1>Latest report</h1>'}))
+
+    page.route('**/monitor/report/build', admission)
+    page.goto(base + '/report')
+    expect(page.locator('#reportMsg')).to_have_class('msg warn')
+    page.wait_for_function('reportWaits.length===1')
+    if change == 'project':
+        page.select_option('#project', 'Fixture B')
+        expect(page.locator('#reportBox h1')).to_have_text('Latest report')
+    elif change == 'empty':
+        page.evaluate("const p=$('project');p.add(new Option('Choose',''));p.value='';p.dispatchEvent(new Event('change'))")
+    elif change == 'auth':
+        page.evaluate("requireLogin('Fixture login changed')")
+    else:
+        page.evaluate("window.dispatchEvent(new StorageEvent('storage',{key:'plato_projects_key'}))")
+    page.evaluate('async()=>{reportWaits.splice(0).forEach(fn=>fn());await new Promise(requestAnimationFrame)}')
+    assert [r['project'] for r in requests] == (['Fixture A', 'Fixture B'] if change == 'project' else ['Fixture A'])
+    if change == 'project':
+        expect(page.locator('#reportBox h1')).to_have_text('Latest report')
+    else:
+        expect(page.locator('#reportBox h1')).to_have_count(0)

@@ -145,7 +145,20 @@ async function renderReport(quiet){
  if(!reportJob||reportJob.signature!==signature||reportJob.done)reportJob={signature,ticket:newReportTicket(),done:false};
  const job=reportJob;msg('reportMsg','Собираю сводку…','warn');
  try{
-  let r=await post('/monitor/report/build',Object.assign({},payload,{ticket:job.ticket}));
+  let r;
+  // Быстрые изменения полей могут занять оба места предыдущими сборками.
+  // Ждём место только для последнего выбора: до 60 повторов, без очереди
+  // на сервере, с теми же параметрами и номером запроса при каждом повторе.
+  for(let retry=0;;retry++){
+   if(seq!==reportSeq)return;
+   try{r=await post('/monitor/report/build',Object.assign({},payload,{ticket:job.ticket}));break}
+   catch(e){
+    if(seq!==reportSeq)return;
+    if(e.status!==429||retry>=60)throw e;
+    msg('reportMsg','Сервер собирает другие сводки. Ожидаю свободного места…','warn');
+    await new Promise(resolve=>setTimeout(resolve,1500));
+   }
+  }
   if(seq!==reportSeq)return;job.ticket=r.ticket||job.ticket;
   while(r.pending){
    msg('reportMsg','Собираю сводку. Можно оставить страницу открытой.','warn');
