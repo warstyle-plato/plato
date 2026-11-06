@@ -219,6 +219,11 @@ def _apply_pace(project: str, view: dict[str, Any], cut: datetime.date) -> dict[
         pm, late_seeds, evidence=bool(evidence or late_seeds))
     if isinstance((view.get("dashboard") or {}).get("schedule"), dict):
         view["dashboard"]["schedule"]["qualified_rnv"] = schedule["dependency_timeline"]["rnv"]
+        # A prebuilt summary may have been produced before RNV qualification.
+        # Refresh its schedule sentence from the same source as the cards,
+        # without recalculating or rewriting any financial paragraph.
+        from developaid_monitor_dashboard import refresh_schedule_summary
+        refresh_schedule_summary(view)
     schedule["dependency_timeline_html"] = schedule_timeline.render(schedule["dependency_timeline"])
     schedule["corpus_gpr"] = corpus_gpr.latest(project, cut.isoformat())
     schedule["corpus_gpr_html"] = corpus_gpr.render(schedule["corpus_gpr"])

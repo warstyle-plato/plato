@@ -131,3 +131,36 @@ def test_monitor_report_html_pdf_share_model_and_escape_data():
     assert 'marker-end="url(#dependency-arrow)"' in html
     wrapped = report._gantt_html({'gantt': {'state': 'missing', 'dependency_timeline': block}})
     assert html in wrapped
+
+
+@pytest.mark.parametrize('raw', [None, '', 'НД', 'неизвестно', '—', False, 'нет 0 дней', 'NaN', '3 часа'])
+def test_source_unknown_reserve_is_not_promoted_to_zero(tmp_path, raw):
+    from openpyxl import Workbook
+    from developaid_monitor_schedule_graph import _read_pm
+
+    wb = Workbook()
+    sheet = wb.active
+    sheet.title = 'Таблица_задач1'
+    sheet.append(['ИД', 'Название задачи', 'Начало', 'Окончание', 'Предшественники', 'Общий временной резерв'])
+    sheet.append([1, 'Учебный этап', day('2026-01-01'), day('2026-01-10'), '', raw])
+    path = tmp_path / 'synthetic-reserve.xlsx'
+    wb.save(path)
+    pm = _read_pm(path)
+    assert pm['tasks']['1']['total_float_known'] is False
+    row = timeline.model(pm, {'1': day('2026-01-20')}, evidence=True)['rows'][0]
+    assert row['remaining_float_days'] is None and row['float_source'] == 'unknown'
+
+
+@pytest.mark.parametrize('raw,days', [(0, 0), (0.0, 0), ('0', 0), ('0 дней', 0), ('0,0 дн.', 0),
+                                     ('-2 дн', -2), ('+3 days', 3)])
+def test_recognized_numeric_reserve_including_zero_remains_known(raw, days):
+    from developaid_monitor_schedule_graph import _known_days
+
+    assert _known_days(raw) == days
+
+
+@pytest.mark.parametrize('raw', [float('nan'), float('inf'), -float('inf'), '9' * 400])
+def test_nonfinite_day_reserve_is_unknown(raw):
+    from developaid_monitor_schedule_graph import _known_days
+
+    assert _known_days(raw) is None

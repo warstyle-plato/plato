@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -68,6 +69,25 @@ def _date(value: Any) -> datetime.date | None:
 def _days(value: Any) -> int:
     m = re.search(r"-?\d+(?:[.,]\d+)?", str(value or ""))
     return int(round(float(m.group(0).replace(",", ".")))) if m else 0
+
+
+def _known_days(value: Any) -> int | None:
+    """A numeric day reserve is evidence; arbitrary nonempty text is not.
+
+    Do not extract digits from an error/note or silently convert hours to days:
+    the working calendar has not been confirmed. Explicit zero stays known.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    text = str(value).strip().replace("−", "-")
+    match = re.fullmatch(
+        r"([+-]?\d+(?:[.,]\d+)?)\s*(?:д(?:ень|ня|ней|н)?\.?|days?|d)?",
+        text, flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+    number = float(match.group(1).replace(",", "."))
+    return int(round(number)) if math.isfinite(number) else None
 
 
 def _parse_predecessors(value: Any) -> list[dict[str, Any]]:
@@ -190,6 +210,7 @@ def _read_pm(path: Any) -> dict[str, Any]:
             parsed_pred = _parse_predecessors(raw_pred)
             if len([token for token in re.split(r"[;,]", raw_pred) if token.strip()]) != len(parsed_pred):
                 validation_issues.append("Не все связи из колонки предшественников PM распознаны.")
+            total_float = _known_days(cell("total"))
             task = {
                 "id": tid,
                 "name": name,
@@ -198,8 +219,8 @@ def _read_pm(path: Any) -> dict[str, Any]:
                 "duration_days": max(0, (finish - start).days),
                 "predecessors": parsed_pred,
                 "free_float_days": _days(cell("free")),
-                "total_float_days": _days(cell("total")),
-                "total_float_known": cell("total") not in (None, ""),
+                "total_float_days": total_float if total_float is not None else 0,
+                "total_float_known": total_float is not None,
             }
             tasks[tid] = task
             low = _norm(name)

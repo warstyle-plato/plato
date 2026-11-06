@@ -1952,6 +1952,8 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
         text = ("Прогноз РНВ неполный. " if qualified.get("state") == "partial"
                 else "Прогноз РНВ не рассчитан. ")
         text += " ".join(qualified.get("reasons") or [])
+        if block.get("stalled"):
+            text += " " + _stalled_words(block)
         add("Срок", text, "прогноз Монитора по темпу работ", "missing")
     elif block.get("reason"):
         add("Срок", block["reason"], "", "missing")
@@ -4549,8 +4551,9 @@ def render_html(report: dict[str, Any]) -> str:
         driver = _driver_words(block.get("driver"))
         if driver and isinstance(delay, (int, float)) and delay > 0:
             out.append(f"<p class='note warn'>{html.escape(driver[:1].upper() + driver[1:])}.</p>")
-        if block.get("stalled"):
-            out.append(f"<p class='note warn'>{html.escape(_stalled_words(block))}</p>")
+    if block.get("state") == "ok" and block.get("stalled"):
+        # A missing final RNV must not hide known near-zero-pace risk facts.
+        out.append(f"<p class='note warn'>{html.escape(_stalled_words(block))}</p>")
 
     out.append(_photos_html(report.get("photos") or {}, report["kind"]))
 
