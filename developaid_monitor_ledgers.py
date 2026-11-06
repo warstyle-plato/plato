@@ -316,12 +316,23 @@ def _period_dates(label: str) -> tuple[str | None, str | None]:
     return (_day(matches[0]), _day(matches[-1])) if matches else (None, None)
 
 
+def amount_basis(header: str) -> str:
+    """Explicit tax basis shared by cumulative and contract-register readers.
+
+    This labels source wording only. It never selects a VAT rate or converts
+    an amount. A label without an explicit qualifier stays unspecified.
+    """
+    text = _norm(header)
+    if re.search(r'без\s*ндс', text):
+        return 'without_vat'
+    if re.search(r'(?:с\s*ндс|включая\s*ндс|в\s*том\s*числе\s*ндс|в\s*т\.?\s*ч\.?\s*ндс)', text):
+        return 'with_vat'
+    return 'unspecified'
+
+
 def _amount_basis(header: str) -> str:
-    text = re.sub(r'\s+', '', _norm(header))
-    without, with_vat = 'безндс' in text, 'сндс' in text
-    if without == with_vat:
-        return 'unspecified'
-    return 'without_vat' if without else 'with_vat'
+    # Backward-compatible private entry point; one predicate owns semantics.
+    return amount_basis(header)
 
 
 def _full_contract_price(label: str) -> bool:

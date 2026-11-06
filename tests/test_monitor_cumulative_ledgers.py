@@ -190,6 +190,23 @@ def test_contract_and_act_vat_bases_are_separate_evidence():
     assert 'без НДС' in parsed[1]['acts'][0]['source']['amount_header']
 
 
+@pytest.mark.parametrize('qualifier', ['включая НДС', 'в том числе НДС', 'в т.ч. НДС', 'вт.ч.НДС'])
+def test_explicit_inclusive_vat_synonyms_are_not_unspecified(qualifier):
+    parsed = ledgers.parse_archive(archive([('Summary.xlsx', summary(
+        amount_header='Сумма договора '+qualifier, act_header='Сумма по КС без НДС'))]))['summary_contracts']
+    for contract in parsed:
+        assert contract['amount_basis'] == 'with_vat'
+        assert contract['amount_versions'][0]['amount_basis'] == 'with_vat'
+        assert contract['acts'][0]['amount_basis'] == 'without_vat'
+    assert ledgers.amount_basis('Сумма '+qualifier) == 'with_vat'
+
+
+def test_tax_basis_helper_does_not_invent_rate_or_treat_without_as_inclusive():
+    assert ledgers.amount_basis('Сумма безНДС') == 'without_vat'
+    assert ledgers.amount_basis('Сумма без НДС, включая стоимость работ') == 'without_vat'
+    assert ledgers.amount_basis('Сумма договора') == 'unspecified'
+
+
 def test_vat_qualifier_in_same_column_header_prefix_is_retained():
     w = openpyxl.load_workbook(io.BytesIO(summary()))
     s = w.active
