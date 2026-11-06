@@ -71,9 +71,10 @@ def test_native_guard_binds_before_show_and_cancels_navigation_and_os_schemes():
     control = SimpleNamespace(NavigationStarting=EventHook(),
                               CoreWebView2InitializationCompleted=EventHook(), CoreWebView2=core)
     window = SimpleNamespace(native=SimpleNamespace(webview=control),
-                             events=SimpleNamespace(before_show=EventHook()))
+                             events=SimpleNamespace(before_show=EventHook(), closing=EventHook()))
     guard = app.guard_navigation(window)
     assert window.events.before_show.handlers == [guard.attach]
+    assert window.events.closing.handlers == [guard.closing]
     guard.attach()
     assert guard.native_attached and guard.core_attached
     assert control.NavigationStarting.handlers == [guard.navigation]
@@ -110,3 +111,22 @@ def test_missing_native_guard_support_closes_the_window():
     with pytest.raises(RuntimeError, match='navigation policy'):
         app.NavigationGuard(window).attach()
     assert closed == ['close', 'dispose']
+
+
+@pytest.mark.parametrize('stop_fails', [False, True])
+def test_native_shutdown_disposes_controller_even_if_navigation_stop_fails(stop_fails):
+    app = client()
+    calls = []
+    def stop():
+        calls.append('stop')
+        if stop_fails:
+            raise RuntimeError('synthetic stop failure')
+    native = SimpleNamespace(CoreWebView2=SimpleNamespace(Stop=stop),
+                             Dispose=lambda: calls.append('dispose'))
+    guard = app.NavigationGuard(SimpleNamespace(native=SimpleNamespace(webview=native)))
+    if stop_fails:
+        with pytest.raises(RuntimeError, match='synthetic stop failure'):
+            guard.closing()
+    else:
+        guard.closing()
+    assert calls == ['stop', 'dispose']
