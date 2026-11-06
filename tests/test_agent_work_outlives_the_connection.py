@@ -64,18 +64,18 @@ def test_a_heavy_question_is_accepted_not_held(client, monkeypatch):
     monkeypatch.setattr(core, "_PLATO_CHAT_HANDOFF_SECONDS", 0.4)
     monkeypatch.setattr(core, "_call_openai_tool_agent", _slow_llm(2.0))
     started = time.monotonic()
-    response = client.post("/agent/chat", json=_payload("aa11bb22cc33"))
+    response = client.post("/agent/chat", json=_payload("aa11bb22cc3300000000000000000000"))
     assert response.status_code == 200
     assert time.monotonic() - started < 1.5, "соединение держали дольше передачи работы"
     body = response.json()
     assert body["pending"] is True
-    assert body["trace_id"] == "aa11bb22cc33"
+    assert body["trace_id"] == "aa11bb22cc3300000000000000000000"
 
 
 def test_the_accepted_work_finishes_and_waits_under_the_run_id(client, monkeypatch):
     monkeypatch.setattr(core, "_PLATO_CHAT_HANDOFF_SECONDS", 0.4)
     monkeypatch.setattr(core, "_call_openai_tool_agent", _slow_llm(1.5, "Пересчитал: LLCR 1,27x."))
-    trace = "bb22cc33dd44"
+    trace = "bb22cc33dd4400000000000000000000"
     assert client.post("/agent/chat", json=_payload(trace)).json()["pending"] is True
 
     deadline = time.monotonic() + 20
@@ -91,7 +91,7 @@ def test_the_accepted_work_finishes_and_waits_under_the_run_id(client, monkeypat
 def test_a_quick_answer_still_comes_back_in_the_same_request(client, monkeypatch):
     """Опрос — цена только для долгой работы. Кнопка отвечает как раньше."""
     monkeypatch.setattr(core, "_call_openai_tool_agent", _slow_llm(0.0, "Быстрый ответ."))
-    body = client.post("/agent/chat", json=_payload("cc33dd44ee55")).json()
+    body = client.post("/agent/chat", json=_payload("cc33dd44ee5500000000000000000000")).json()
     assert body.get("pending") is None
     assert body["answer"] == "Быстрый ответ."
 

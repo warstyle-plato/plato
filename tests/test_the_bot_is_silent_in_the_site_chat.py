@@ -52,9 +52,11 @@ class _Bot:
         monkeypatch.setattr(core, "_PROJECTS_DIR", tmp_path / "projects")
         monkeypatch.setattr(core, "_core_api_url", lambda path: "")
         core.app.state.telegram_group_seen = {}
+        monkeypatch.setenv("DEVELOPAID_ADMIN_KEY", "synthetic-test-owner-key")
         self.bound = bound
         if bound:
-            core._site_chat_bind(_chat()["id"], bound)
+            core.monitor_site_chat_authorize(core.SiteChatAccessRequest(
+                chat_id=_chat()["id"], project=bound, key="synthetic-test-owner-key"))
 
     def to_group(self, chat_id=-100500):
         return [text for where, text in self.said if where == chat_id]
@@ -95,27 +97,19 @@ def test_an_unbound_chat_stays_silent_too(monkeypatch, tmp_path):
 
     assert bot.to_group() == [], bot.to_group()
     # И это не потеря: наш пробел назван в счётчике, а не выброшен молча.
-    assert "не привязан" in bot.outcome, bot.outcome
+    assert "не авторизована" in bot.outcome, bot.outcome
 
 
-def test_the_binding_is_confirmed_to_the_author_in_private(monkeypatch, tmp_path):
-    """Ответ на команду уходит в личку тому, кто её набрал.
-
-    Молчание в ответ на `/site` неотличимо от сломанной команды, а человек
-    только что сам её написал — значит ответ ему не «сообщение в чат», а
-    ответ на его действие. Группа при этом не видит ничего.
-    """
+def test_site_explains_owner_authorization_without_binding_or_exposing_a_key(monkeypatch, tmp_path):
     bot = _Bot(monkeypatch, tmp_path)
-
     core._telegram_handle_message(_message("/site"))
-
     assert bot.to_group() == []
-    assert len(bot.to_author()) == 1, bot.said
-    assert "Гродненская — реализация" in bot.to_author()[0]
-    assert core._site_chat_project(_chat()["id"]) == "Гродненская — реализация"
-
+    assert len(bot.to_author()) == 1
+    assert "закрытом кабинете" in bot.to_author()[0]
+    assert str(_chat()["id"]) in bot.to_author()[0]
+    assert core._site_chat_project(_chat()["id"]) == ""
     core._telegram_handle_message(_message("/site Нагатино"))
-    assert core._site_chat_project(_chat()["id"]) == "Нагатино"
+    assert core._site_chat_project(_chat()["id"]) == ""
     assert bot.to_group() == []
 
 
@@ -182,7 +176,7 @@ def test_the_project_name_never_becomes_a_path(monkeypatch, tmp_path):
     assert core._site_chat_project(_chat()["id"]) == ""
     assert bot.to_group() == []
     assert bot.to_author(), bot.said
-    assert "не годится" in bot.to_author()[-1] or "не удалась" in bot.to_author()[-1]
+    assert "закрытом кабинете" in bot.to_author()[-1]
 
 
 def test_a_bad_name_left_in_the_registry_is_not_trusted(monkeypatch, tmp_path):

@@ -2379,17 +2379,17 @@ def _tool_get_user_guide(section: str) -> dict[str, Any]:
     }
 
 
-def _tool_search_project_knowledge(query: str, source: str) -> dict[str, Any]:
+def _tool_search_project_knowledge(query: str, source: str, req=None) -> dict[str, Any]:
     """Наши записи по запросу: правила, открытые вопросы, выжимки нормативов.
 
-    Копии записей в промпте нет — она отстала бы так же, как отстала база
-    методики; источник один и читается лениво, как руководство. Выдача
-    обезличена (`project_knowledge.redact`): Платон отвечает пользователям, а в
-    записях лежат номера договоров, кадастры и адреса собственных проектов.
+    Право на внутренние источники проверяется до их чтения. Без доверенного
+    серверного actor с действующим ключом доступны лишь нормативы и словарь;
+    маскирование названий не заменяет проверку доступа.
     """
     import project_knowledge
 
-    return project_knowledge.search(query, source=None if source == "all" else source)
+    return project_knowledge.search(query, source=None if source == "all" else source,
+                                    allow_private=_agent_private_allowed(req))
 
 
 def _tool_where_to_edit(query: str, req: AgentChatRequest | None = None) -> dict[str, Any]:
@@ -3318,7 +3318,7 @@ def _execute_agent_tool(
     if name == "where_to_edit":
         return _tool_where_to_edit(args["query"], req)
     if name == "search_project_knowledge":
-        return _tool_search_project_knowledge(args["query"], args["source"])
+        return _tool_search_project_knowledge(args["query"], args["source"], req)
     if name == "check_normatives":
         return _tool_check_normatives(args["action"])
     if name == "calculate_mpt_benefit":
@@ -4397,6 +4397,8 @@ def _call_openai_tool_agent(
         }
         if effort:
             payload["reasoning"] = {"effort": effort}
+        if getattr(req, "_agent_actor", None) is not None:
+            _agent_actor_current(req)
         response = _openai_responses_request(payload)
         # Время раунда — то, чего не хватало при разборе «Платон завис»: по
         # логу видно, ушли минуты в модель или в цепочку до неё.
@@ -4475,6 +4477,8 @@ def _call_openai_tool_agent(
         "store": False,
     }
     _plato_trace_write(trace_id, "synthesis", "Собираю окончательный ответ")
+    if getattr(req, "_agent_actor", None) is not None:
+        _agent_actor_current(req)
     try:
         final_response = _openai_responses_request(synthesis_payload)
         answer = _extract_openai_text(final_response)
@@ -4541,6 +4545,147 @@ _PLATO_ANSWER_TTL = 600
 _TRACE_ID_RE = re.compile(r"^[0-9a-f]{8,32}$")
 _PLATO_TRACE_LOCAL = threading.local()
 
+# Actor metadata is constructed here, after authentication, and is never a
+# request-model field. Direct tool calls without it have no private authority.
+import agent_access as _agent_access
+
+
+@app.middleware("http")
+async def _agent_owner_cookie(request: Request, call_next):
+    owner, cookie = _agent_access.browser_owner(
+        _PLATO_STAGE_DIR, request.cookies.get(_agent_access.COOKIE, ""))
+    request.scope["plato_browser_owner"] = owner
+    agent_response = (request.url.path.startswith("/agent/") or
+                      request.url.path.endswith("/ask") or
+                      (request.url.path.startswith("/auctions/krt/") and
+                       request.url.path.endswith("/plato")))
+    try:
+        response = await call_next(request)
+    except Exception:
+        if not agent_response:
+            raise
+        # Preserve the owner cookie on an initial failed POST, so the browser
+        # can still retrieve the failure/result written by the worker.
+        from starlette.responses import JSONResponse
+        response = JSONResponse({"detail": "Не удалось выполнить запрос Платона."}, status_code=500)
+    if cookie:
+        response.set_cookie(_agent_access.COOKIE, cookie, httponly=True,
+                            secure=(request.url.scheme == "https" or request.url.hostname not in
+                                    {"localhost", "127.0.0.1", "::1", "testserver"}),
+                            samesite="strict",
+                            max_age=30 * 24 * 3600, path="/")
+    if agent_response:
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+    return response
+
+
+def _agent_key_valid(key: str) -> bool:
+    # admin_key_allowed also supports ambient HTTP headers. Requiring the
+    # captured credential itself prevents inheriting ambient authority in a
+    # background worker or a direct tool call.
+    current = _env_str("DEVELOPAID_ADMIN_KEY", "").strip()
+    return bool(key and current and
+                hmac.compare_digest(str(key).encode(), current.encode()) and
+                admin_key_allowed(key))
+
+
+def _agent_resolve_actor(req, request: Request, *, surface: str = ""):
+    scope = request.scope
+    trusted_bot = scope.get("plato_bot_actor")
+    if (isinstance(trusted_bot, tuple) and len(trusted_bot) == 2 and
+            trusted_bot[0] is _agent_access.BOT_CAPABILITY):
+        identity = "bot:" + str(trusted_bot[1])
+        key = ""
+        surface = "telegram"
+    else:
+        session = str(getattr(req, "session", "") or
+                      request.headers.get("x-plato-session") or "")
+        chat = _web_identity_chat_id(session)
+        identity = ("web:" + str(chat)) if chat else scope.setdefault(
+            "plato_browser_owner", "ephemeral:" + os.urandom(32).hex())
+        # Authentication accepts a current body credential or current header.
+        # Bind exactly that valid credential, rather than downgrading a closed
+        # Monitor run when a stale body key accompanies a valid header.
+        candidates = (str(getattr(req, "access_key", "") or "").strip(),
+                      str(request.headers.get("x-developaid-admin-key") or "").strip())
+        key = next((candidate for candidate in candidates if _agent_key_valid(candidate)), "")
+        # Only the authenticated owning handler can pass a private surface.
+        # The URL is used solely to partition public adapter output.
+        surface = surface or "public:" + request.url.path
+    # Public adapters may persist or share their answers (e.g. a lot report).
+    # They never acquire private-source authority from an ambient admin header.
+    private = surface in {"web", "monitor"} and _agent_key_valid(key)
+    if surface == "monitor" and not private:
+        raise HTTPException(403, "Нужен действующий ключ администратора.")
+    return _agent_access.Actor(
+        owner=_agent_access.digest(_PLATO_STAGE_DIR, identity), surface=surface,
+        private=private,
+        acl=_agent_access.digest(_PLATO_STAGE_DIR, "admin:" + key) if private else "public",
+        key=key if private else "")
+
+
+def _agent_bind_actor(req, request: Request, *, private_surface: str = ""):
+    actor = _agent_resolve_actor(req, request, surface=private_surface)
+    object.__setattr__(req, "_agent_actor", actor)
+    request.scope["plato_actor"] = actor
+    return actor
+
+
+def _agent_actor_current(req):
+    actor = getattr(req, "_agent_actor", None)
+    if not isinstance(actor, _agent_access.Actor):
+        raise HTTPException(403, "Не определён владелец запроса.")
+    if actor.private and not _agent_key_valid(actor.key):
+        raise HTTPException(403, "Нужен действующий ключ администратора.")
+    return actor
+
+
+def _agent_private_allowed(req) -> bool:
+    actor = getattr(req, "_agent_actor", None)
+    return bool(isinstance(actor, _agent_access.Actor) and actor.private and
+                _agent_key_valid(actor.key))
+
+
+def _agent_check_metadata(metadata, req, request: Request):
+    if not isinstance(metadata, dict) or metadata.get("version") != 1:
+        raise HTTPException(404, "Запрос не найден.")
+    actor = _agent_resolve_actor(req, request, surface=str(metadata.get("surface") or ""))
+    if metadata != actor.metadata():
+        raise HTTPException(403, "Этот запрос недоступен.")
+    if actor.private and not _agent_key_valid(actor.key):
+        raise HTTPException(403, "Нужен действующий ключ администратора.")
+    return actor
+
+
+def _agent_check_run(trace_id: str, request: Request):
+    metadata = _agent_access.load(_PLATO_STAGE_DIR, trace_id)
+    return _agent_check_metadata(metadata, None, request)
+
+
+def _agent_public_reply_stamp(trace_id: str, request: Request, slug: str, text: str):
+    actor = _agent_check_run(trace_id, request)
+    if actor.private or actor.surface != "public:" + request.url.path:
+        raise HTTPException(403, "Этот ответ нельзя сохранить в общий отчёт.")
+    return {"public_sources_version": 1,
+            "public_sources_proof": _agent_access.public_reply_signature(
+                _PLATO_STAGE_DIR, slug, actor.surface, text)}
+
+
+def _agent_public_reply_valid(slug: str, payload) -> bool:
+    if not isinstance(payload, dict) or payload.get("public_sources_version") != 1:
+        return False
+    expected = _agent_access.public_reply_signature(
+        _PLATO_STAGE_DIR, slug, "public:/auctions/krt/" + slug + "/plato",
+        str(payload.get("text") or ""))
+    return hmac.compare_digest(str(payload.get("public_sources_proof") or "").encode(), expected.encode())
+
+
+def _agent_bind_bot_request(request: Request, chat_id: int) -> Request:
+    _agent_access.bind_bot(request, chat_id)
+    return request
+
+
 
 def _plato_stage_path(kind: str, key: str) -> Path:
     return _safe_child(_PLATO_STAGE_DIR, f"{kind}_{key}.json")
@@ -4551,11 +4696,8 @@ def _plato_trace_write(trace_id: str, stage: str, label: str) -> None:
         return
     try:
         _PLATO_STAGE_DIR.mkdir(parents=True, exist_ok=True)
-        _plato_stage_path("trace", trace_id).write_text(
-            json.dumps({"stage": stage, "label": label, "at": time.time()},
-                       ensure_ascii=False),
-            encoding="utf-8",
-        )
+        _agent_access.write_json(_plato_stage_path("trace", trace_id),
+                                 {"stage": stage, "label": label, "at": time.time()})
     except (OSError, ValueError):
         pass  # стадия — удобство; ронять из-за неё ответ нельзя
 
@@ -4577,6 +4719,8 @@ def _plato_stage_cleanup() -> None:
         cutoff = time.time() - _PLATO_TRACE_TTL
         for pattern in ("*.json", "*.taken"):
             for path in _PLATO_STAGE_DIR.glob(pattern):
+                if path.name.startswith("intake_"):
+                    continue  # document queues have their own three-day retention
                 if path.stat().st_mtime < cutoff:
                     path.unlink(missing_ok=True)
     except OSError:
@@ -4584,10 +4728,11 @@ def _plato_stage_cleanup() -> None:
 
 
 @app.get("/agent/trace/{trace_id}")
-def agent_trace(trace_id: str) -> dict[str, Any]:
+def agent_trace(trace_id: str, request: Request) -> dict[str, Any]:
     """Текущая стадия запроса — окно опрашивает её, пока ждёт ответ."""
     if not _TRACE_ID_RE.fullmatch(trace_id):
         raise HTTPException(status_code=400, detail="Неверный идентификатор запроса.")
+    _agent_check_run(trace_id, request)
     try:
         return json.loads(_plato_stage_path("trace", trace_id).read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -4598,7 +4743,9 @@ def _plato_answer_key(req: AgentChatRequest, scenario: str) -> str:
     # Свободный вопрос зависит от истории диалога — «а почему?» без неё другой
     # вопрос. Сценарий кнопки от истории не зависит, и класть её в ключ значило
     # бы промахиваться мимо кэша при каждом повторном нажатии.
+    actor = _agent_actor_current(req)
     payload = {
+        "access": actor.metadata(),
         "message": str(req.message or "").strip(),
         "scenario": scenario,
         "inputs": req.inputs,
@@ -4629,9 +4776,7 @@ def _plato_answer_get(key: str) -> dict[str, Any] | None:
 def _plato_answer_put(key: str, payload: dict[str, Any]) -> None:
     try:
         _PLATO_STAGE_DIR.mkdir(parents=True, exist_ok=True)
-        _plato_stage_path("answer", key).write_text(
-            json.dumps({"at": time.time(), "payload": payload}, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        _agent_access.write_json(_plato_stage_path("answer", key),
+                                 {"at": time.time(), "payload": payload})
     except (OSError, TypeError, ValueError):
         pass

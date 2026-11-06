@@ -89,7 +89,7 @@ def _plato_ask(message: str, request, history=None):
     return core.plato_answer_handoff(payload, request)
 
 
-def _plato_result(trace_id: str):
+def _plato_result(trace_id: str, request):
     """Готовый ответ по номеру запуска — тем же путём, что и у окна расчёта.
 
     Своего хранилища ответов модуль не заводит: воркеров два, память у них
@@ -97,7 +97,12 @@ def _plato_result(trace_id: str):
     результатом в свой маршрут (он же кладёт ответ в отчёт площадки), а тот —
     сюда.
     """
-    return core.agent_result(trace_id)
+    actor = core._agent_check_run(trace_id, request)
+    # This adapter writes to a shared lot report. A private chat/monitor run
+    # must never be relabelled as a public lot answer, even by its owner.
+    if actor.private or actor.surface != "public:" + request.url.path:
+        raise core.HTTPException(403, "Этот ответ нельзя сохранить в общий отчёт.")
+    return core.agent_result(trace_id, request)
 
 
 market_search.cadastre_lookup = _cadastre_from_egrn

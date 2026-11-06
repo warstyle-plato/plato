@@ -27,7 +27,7 @@ def _setup(monkeypatch, tmp_path, count=1):
     sales_store.save(where, "Тест", {"contracting": {"rows": rows}}, "synthetic.xlsx")
     monitor._project_dir("Тест")
     report.link_sales("Тест", "Тест", "тест")
-    bot.send("/site Тест")
+    bot.authorize("Тест")
     bot.said.clear()
     return bot, where, rows
 
@@ -122,9 +122,9 @@ def test_remote_bot_passes_reply_and_delivery_metadata(monkeypatch, tmp_path):
     monkeypatch.setattr(core, "_core_post", post)
     quoted = _question(bot)
     _reply(bot, quoted)
-    assert [p["action"] for p in calls] == ["report", "delivered", "reply"]
-    assert calls[1]["message_id"] == 100 and calls[1]["batch_id"]
-    assert calls[2]["reply_to_id"] == 100 and calls[2]["author_id"] == 4242
+    assert [p["action"] for p in calls] == ["report", "send", "delivered", "reply"]
+    assert calls[2]["message_id"] == 100 and calls[2]["batch_id"]
+    assert calls[3]["reply_to_id"] == 100 and calls[3]["author_id"] == 4242
     assert len(next(iter(sales_dialogue.load(where, "Тест")["batches"].values()))["replies"]) == 1
 
 
@@ -163,7 +163,7 @@ def test_delivery_is_bound_to_chat_and_batch_and_reply_id(monkeypatch, tmp_path)
     assert next(iter(sales_dialogue.load(where, "Тест")["batches"].values()))["replies"] == []
 
 
-def test_reply_stays_with_original_project_after_rebinding(monkeypatch, tmp_path):
+def test_reply_scope_requires_original_project_and_survives_reauthorization(monkeypatch, tmp_path):
     import developaid_management_report as report
     import developaid_monitor as monitor
 
@@ -172,24 +172,26 @@ def test_reply_stays_with_original_project_after_rebinding(monkeypatch, tmp_path
     monitor._project_dir("Другой")
     sales_store.save(where, "Другие продажи", {"contracting": {"rows": []}}, "other.xlsx")
     report.link_sales("Другой", "Другие продажи", "тест")
-    bot.send("/site Другой")
+    # Owner-authorized change of scope still cannot write the old project's journal.
+    bot.authorize("Другой")
     _reply(bot, quoted)
-    assert len(next(iter(sales_dialogue.load(where, "Тест")["batches"].values()))["replies"]) == 1
+    original = next(iter(sales_dialogue.load(where, "Тест")["batches"].values()))
+    assert original["replies"] == []
     assert sales_dialogue.load(where, "Другие продажи")["batches"] == {}
-    # Даже отсутствие текущей привязки не теряет исходного владельца вопроса.
-    monkeypatch.setattr(core, "_site_chat_project", lambda chat_id: "")
+    # Restore the same explicit owner scope: the original durable question is retained.
+    bot.authorize("Тест")
     _reply(bot, quoted, message_id=102)
-    assert len(next(iter(sales_dialogue.load(where, "Тест")["batches"].values()))["replies"]) == 2
+    assert len(next(iter(sales_dialogue.load(where, "Тест")["batches"].values()))["replies"]) == 1
 
 
-def test_ambiguous_pending_question_does_not_choose_a_project(monkeypatch, tmp_path):
+def test_pending_questions_in_other_projects_do_not_choose_a_project(monkeypatch, tmp_path):
     bot, where, _ = _setup(monkeypatch, tmp_path)
     items = [{"key": "money:example:2026-10-01", "kind": "money", "text": "Когда ждать оплату?"}]
     for project in ("Один", "Два"):
         sales_dialogue.prepare(where, project, bot.chat["id"], items, "2026-11-05")
     quoted = html.unescape(sales_questions.message(items))
     _reply(bot, quoted)
-    assert "неоднозначный" in bot.outcome
+    assert "без привязки к проекту" in bot.outcome
     for project in ("Один", "Два"):
         assert next(iter(sales_dialogue.load(where, project)["batches"].values()))["replies"] == []
 
