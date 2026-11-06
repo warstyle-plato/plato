@@ -388,6 +388,7 @@ function renderShareTable(h,b,data,labels,bucket){
 }
 function renderPhasing(){
  if(!document.getElementById('phasingEnabled'))return;
+ if(partialTepMode()&&partialTepMissing().length){phaseCards.textContent='Очередность и даты будут доступны после уточнения обязательных полей ТЭП.';phaseRecommendation.textContent='Неполный черновик: сроки не рассчитаны';phaseProductHead.replaceChildren();phaseProductBody.replaceChildren();return}
  normalizeSocialObjectDates();
  document.getElementById('phasing').classList.toggle('phasing-on',!!phasing.enabled&&Number(phasing.phase_count||1)>1);
  phasingEnabled.checked=!!phasing.enabled;phaseCount.value=String(phasing.phase_count);phaseTargetSize.value=Number(phasing.target_size_sqm||70000);phaseGap.value=Number(phasing.phase_gap_months||12);if(document.getElementById('phaseCostInflation'))phaseCostInflation.value=Number(phasing.cost_inflation_pct??8);if(document.getElementById('phaseSalesPriceInflation'))phaseSalesPriceInflation.value=Number(phasing.sales_price_inflation_pct??8);

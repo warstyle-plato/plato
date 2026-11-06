@@ -43,7 +43,11 @@ FEE_MLN = 10170.0
 
 @pytest.fixture(scope="module")
 def core():
-    import main as wrapper
+    import main_registry as wrapper
+    from mpt_extension import inject_mpt_panel
+    # Module import is cached; a previous test's PAGE rollback is not. Prepare
+    # the same production addon before the per-test PAGE isolation begins.
+    wrapper.core.PAGE = inject_mpt_panel(wrapper.core.PAGE)
     return wrapper.core
 
 

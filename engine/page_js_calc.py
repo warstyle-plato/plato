@@ -331,6 +331,7 @@ let calcRun=0,calcSettled=0;
 // раньше ответа, а `lastResult` после загрузки проекта ещё меняется.
 function calcIdle(){return calcSettled===calcRun}
 async function calculate(){
+ if(partialTepMode()&&partialTepMissing().length){lastResult=null;phaseBundle=null;blankResultSurfaces();partialTepNotice();return null}
  // Форма забирается целиком, КРОМЕ полей, где стоит счётный показатель, а не
  // набранное число: у таких вводная равна нулю, и ноль здесь значит «считает
  // методика». Забери его отсюда — и методика превратилась бы в снимок: класс
@@ -410,7 +411,7 @@ async function calculate(){
  // выглядело это как «предустановка не проедается в расчёт».
  persistLocalSilently();
  return lastResult;
- }finally{if(calcTicket>calcSettled)calcSettled=calcTicket}
+ }finally{if(calcTicket>calcSettled)calcSettled=calcTicket;if(typeof partialTepGuardSurfaces==='function')partialTepGuardSurfaces()}
 }
 
 // Что принёс загруженный снимок в производных полях — до первого ответа
@@ -430,6 +431,7 @@ function derivedTailField(key){
 // чужого числа, которое прочёл бы кто-то, кроме подписи. Пресет своё число
 // гостевых знает из документа — его строка остаётся как пришла.
 function rememberDerivedTail(source,strip){
+ if(partialTepMode())return;
  const tail={};
  ['underground_parking'].concat(SOCIAL_TEP_PRODUCTS).forEach(key=>{
   const field=derivedTailField(key),row=source&&source[key];
@@ -445,6 +447,7 @@ function rememberDerivedTail(source,strip){
 // выгрузка записи из списка без открытия) — поля в снимок не идут вовсе:
 // отсутствие значит «выведет движок», а не ноль и не чужое число.
 function persistedTep(source,fresh=derivedState().fresh){
+ if(partialTepMode())return cloneValue(source||{});
  const out=cloneValue(source||{});
  ['underground_parking'].concat(SOCIAL_TEP_PRODUCTS).forEach(key=>{
   const row=out[key];

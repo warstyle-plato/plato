@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import logging
 import os
 import re
 import sys
@@ -11,11 +12,15 @@ from typing import Any
 
 from urllib.parse import parse_qs, quote, unquote
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
+from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
+from fastapi.routing import APIRoute
 from fastapi import Response
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from pydantic import BaseModel, Field, model_validator
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from request_body import json_object
 
@@ -23,7 +28,7 @@ from . import bnmap
 from . import bnmap_ui
 from . import salesroom
 from . import cabinet as cabinet_module
-from . import sales_store
+from . import sales_store, chessboard
 from .geocoder import GeocodingError
 from .http import RemoteServiceError
 from .service_v6 import MarketDiscoveryService
@@ -176,6 +181,49 @@ def _uploaded_file_name(raw: object) -> str:
     return text[:120]
 
 
+class _PrivateSalesRoute(APIRoute):
+    """Keep private source responses uncached without changing app middleware.
+
+    A module can be installed after another core route has already served a
+    request. Starlette then forbids adding application middleware, while route
+    registration is still supported. Keep this policy on the two source routes.
+    """
+
+    @staticmethod
+    def _uncached(response: Response) -> Response:
+        response.headers["Cache-Control"] = "private, no-store"
+        response.headers["Pragma"] = "no-cache"
+        return response
+
+    async def handle(self, scope, receive, send):
+        try:
+            await super().handle(scope, receive, send)
+        except StarletteHTTPException as exc:
+            # Method rejection (405) happens before get_route_handler. Keep its
+            # standard status/detail/Allow header and the same cache policy.
+            response = await http_exception_handler(Request(scope, receive), exc)
+            await self._uncached(response)(scope, receive, send)
+
+    def get_route_handler(self):
+        route_handler = super().get_route_handler()
+
+        async def private_response(request: Request) -> Response:
+            try:
+                response = await route_handler(request)
+            except RequestValidationError as exc:
+                response = await request_validation_exception_handler(request, exc)
+            except StarletteHTTPException as exc:
+                response = await http_exception_handler(request, exc)
+            except Exception as exc:
+                # Never include bodies, credentials, source values or exception text.
+                logging.getLogger(__name__).warning("sales source request failed (%s)", type(exc).__name__)
+                response = JSONResponse(status_code=500, content={
+                    "detail": "Не удалось получить отчёт о продажах. Повторите запрос; если ошибка сохраняется, сообщите время и действие."})
+            return self._uncached(response)
+
+        return private_response
+
+
 def install(app: FastAPI) -> MarketDiscoveryService:
     if getattr(app.state, "market_discovery_installed", False):
         return app.state.market_discovery_service
@@ -184,6 +232,8 @@ def install(app: FastAPI) -> MarketDiscoveryService:
     service = MarketDiscoveryService(data_dir)
     app.state.market_discovery_installed = True
     app.state.market_discovery_service = service
+
+    private_sources = APIRouter(route_class=_PrivateSalesRoute)
 
     # Недельный свод рынка по регионам из кабинета «Пульса». Поток только
     # проверяет срок раз в час; сбор идёт раз в 7 дней и берёт замок-файл,
@@ -899,7 +949,12 @@ def install(app: FastAPI) -> MarketDiscoveryService:
 
         contracts = part("contracting")
         if not contracts:
-            return {"project": kept.get("project") or "", "sources": [],
+            stock = chessboard.overlay(part("chessboard"), None, datetime.date.today().isoformat())
+            return {"project": kept.get("project") or "",
+                    "sources": [{"kind": kind, "name": sales_store.KINDS.get(kind, kind),
+                                 "at": value.get("at"), "file": value.get("file")}
+                                for kind, value in sources.items()],
+                    "chessboard": stock, "chessboard_html": chessboard.render(stock),
                     "missing": ["контрактация не загружена"], "empty": True}
         # Та же календарная база, что в сводке: месяц среза выгрузки тоже
         # учитывается, даже если в нём ещё не было договоров.
@@ -910,6 +965,9 @@ def install(app: FastAPI) -> MarketDiscoveryService:
             until = None
         got = contracting.summarise(contracts, part("ledger") or {}, until=until)
         fm, bank, pool = part("fm_plan"), part("bank_plan"), part("pool")
+        got["chessboard"] = chessboard.overlay(part("chessboard"), contracts.get("rows") or [],
+                                               datetime.date.today().isoformat(), contracts.get("coverage"))
+        got["chessboard_html"] = chessboard.render(got["chessboard"])
         got["fm_plan"] = fm
         got["bank_plan"] = bank
         got["pool"] = contracting.pool_progress(got, contracts.get("rows") or [], fm, pool)
@@ -974,7 +1032,7 @@ def install(app: FastAPI) -> MarketDiscoveryService:
 
     def contracting_sources_missing(sources: dict[str, Any]) -> list[tuple[str, str]]:
         return [(kind, name) for kind, name in sales_store.KINDS.items()
-                if kind not in sources]
+                if kind not in sources and kind != "chessboard"]
 
     def _parse_sources(data: bytes) -> tuple[dict[str, Any], list[str]]:
         """Что в файле нашлось, то и разобрано.
@@ -990,6 +1048,7 @@ def install(app: FastAPI) -> MarketDiscoveryService:
                              ("fm_plan", contracting.read_fm_plan),
                              ("bank_plan", contracting.read_bank_plan),
                              ("pool", contracting.read_pool),
+                             ("chessboard", chessboard.read),
                              ("credit", contracting.read_credit_plan),
                              ("demand", demand_module.read_demand),
                              # Экспорт чата отдела продаж принимается той же
@@ -1011,7 +1070,7 @@ def install(app: FastAPI) -> MarketDiscoveryService:
             notes.append(f"{sales_store.KINDS['plan']}: {exc}")
         return parts, notes
 
-    @app.post("/cabinet/contracting")
+    @private_sources.post("/cabinet/contracting")
     async def cabinet_contracting(request: Request) -> dict[str, Any]:
         """Принять файл проекта: что в нём нашлось, то и прочитано.
 
@@ -1034,6 +1093,12 @@ def install(app: FastAPI) -> MarketDiscoveryService:
             raise HTTPException(
                 status_code=422,
                 detail="Ни одного знакомого листа: " + "; ".join(notes)[:600])
+        if "chessboard" in parts:
+            as_of = str(request.query_params.get("as_of") or "").strip()
+            if not chessboard.day(as_of) or len(as_of) != 10:
+                raise HTTPException(422, "Укажите дату шахматки рядом с кнопкой загрузки.")
+            for corpus in parts["chessboard"]["buildings"].values():
+                corpus["as_of"] = as_of
         project = str(request.query_params.get("project") or "").strip()
         if not project:
             project = str(((parts.get("contracting") or {}).get("project")) or "").strip()
@@ -1043,14 +1108,19 @@ def install(app: FastAPI) -> MarketDiscoveryService:
             # «без-имени» и не встретится со своей контрактацией никогда.
             kept = sales_store.projects(_cabinet_dir())
             project = kept[0]["project"] if len(kept) == 1 else ""
-        kept = await run_in_threadpool(
-            sales_store.save, _cabinet_dir(), project, parts, name)
+        if "chessboard" in parts and not project:
+            raise HTTPException(422, "Сначала откройте проект отчёта о продажах для этой шахматки.")
+        try:
+            kept = await run_in_threadpool(
+                sales_store.save, _cabinet_dir(), project, parts, name)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
         got = _sales_view(kept)
         for line in notes:
             got.setdefault("read_notes", []).append(line)
         return got
 
-    @app.get("/cabinet/sales/summary")
+    @private_sources.get("/cabinet/sales/summary")
     async def cabinet_sales(request: Request, project: str = "") -> dict[str, Any]:
         """Свод продаж по уже загруженным источникам — без файла."""
         cabinet_module.require_cabinet(request)
@@ -1120,4 +1190,5 @@ def install(app: FastAPI) -> MarketDiscoveryService:
             detail = f"Внутренняя ошибка market discovery: {type(exc).__name__}: {exc}"
             raise HTTPException(status_code=500, detail=detail) from exc
 
+    app.include_router(private_sources)
     return service

@@ -201,19 +201,22 @@ def _unusual(rows: list[dict[str, Any]], uploaded: datetime.date) -> list[dict[s
 
 def questions(read: dict[str, Any] | None, contracts: dict[str, Any] | None,
               uploaded: str | None, today: str,
-              asked: set[str] | None = None) -> list[dict[str, Any]]:
+              asked: set[str] | None = None, snapshot: dict | None = None,
+              report_text: str = "") -> list[dict[str, Any]]:
     """Ещё не заданные вопросы на день ``today`` (ГГГГ-ММ-ДД), по порядку важности.
     ``asked`` — ключи уже заданных (`load_asked`)."""
     rows = list((contracts or {}).get("rows") or [])
     loaded = _date(uploaded)
-    if not rows or not loaded or not _date(today):
+    if not _date(today):
         return []
-    fresh = (_date(today) - loaded).days <= FRESH_DAYS
-    found: list[dict[str, Any]] = []
-    if fresh:
+    fresh = bool(loaded) and 0 <= (_date(today) - loaded).days <= FRESH_DAYS
+    from . import chessboard
+    found = chessboard.questions(snapshot, rows if fresh else [], report_text, today)
+    if rows and fresh:
         found += _no_money(rows, loaded)
         found += _dropped(read, rows, str(uploaded)[:10], today)
-    found += _unusual(rows, loaded)
+    if rows and loaded:
+        found += _unusual(chessboard.reconciled_contracts(rows)[0], loaded)
     seen = set(asked or ())
     out = []
     for item in found:

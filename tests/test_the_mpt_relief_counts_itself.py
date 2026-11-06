@@ -46,7 +46,11 @@ OTHER_PARCEL = {"category": "office", "district": "Хорошево-Мневни
 
 @pytest.fixture(scope="module")
 def core():
-    import main as wrapper
+    import main_registry as wrapper
+    from mpt_extension import inject_mpt_panel
+    # Other tests restore PAGE after a first import of main_registry. Restore
+    # this real page dependency in module setup, before pristine_page snapshots.
+    wrapper.core.PAGE = inject_mpt_panel(wrapper.core.PAGE)
     return wrapper.core
 
 

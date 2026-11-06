@@ -14,7 +14,27 @@ engine/page_build.py. Стенды на node берут куски скрипт�
 """
 # ruff: noqa
 
-PAGE += r"""function currentPdfReportPayload(cads=[]){
+PAGE += r"""// Partial source imports are opt-in. Legacy snapshots retain their usual rules.
+const PARTIAL_TEP_SCHEMA=__DEVELOPAID_PARTIAL_TEP_SCHEMA__;
+function partialTepMode(){return !!(inputs&&inputs._partial_tep&&inputs._partial_tep.kind===PARTIAL_TEP_SCHEMA.kind)}
+function partialTepRequiredInputs(rows){const out=[...PARTIAL_TEP_SCHEMA.base_inputs];for(const key of rows){const price=PARTIAL_TEP_SCHEMA.prices[key];if(price)out.push(price)}if(rows.some(k=>['storage','underground_parking'].includes(k)))out.push('main_under_th_per_sqm');return [...new Set(out)]}
+function partialTepKnown(value){return typeof value==='number'&&Number.isFinite(value)&&value>=0}
+function partialTepMissing(){if(!partialTepMode())return[];if(inputs.project_kind!=='mixed'||PARTIAL_TEP_SCHEMA.unsupported_switches.some(k=>inputs[k]))return[{path:'inputs.project_kind',label:'Частичный ТЭП v1 поддерживает только продукты МКД; отдельные нежилые объекты не поддержаны.'}];const out=[],rows=inputs._partial_tep.rows||[];for(const key of rows){const present=PARTIAL_TEP_SCHEMA.fields.some(f=>partialTepKnown(tep[key]?.[f])&&tep[key][f]>0);for(const field of PARTIAL_TEP_SCHEMA.fields){const v=tep[key]?.[field];if(!partialTepKnown(v)||(field==='gns'&&present&&!(v>0)))out.push({path:'tep.'+key+'.'+field,label:PARTIAL_TEP_SCHEMA.products[key]+': '+PARTIAL_TEP_SCHEMA.labels[field]})}if(key==='underground_parking'){const guest=tep[key]?.guest_units;if(!partialTepKnown(guest)||(partialTepKnown(tep[key]?.units)&&guest>tep[key].units))out.push({path:'tep.'+key+'.guest_units',label:'Подземный паркинг: гостевые места (от 0 до общего количества)'})}}for(const key of partialTepRequiredInputs(rows)){const v=inputs[key],known=key==='project_start'?typeof v==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(v)&&!isNaN(Date.parse(v))&&new Date(v).toISOString().slice(0,10)===v:partialTepKnown(v);if(!known||(key==='construction_months'&&(!(v>0)||!Number.isInteger(v))))out.push({path:'inputs.'+key,label:PARTIAL_TEP_SCHEMA.input_labels[key]||key})}return out}
+function partialTepGuardSurfaces(){
+ const mode=partialTepMode(),masked=mode&&(partialTepMissing().length>0||!lastResult);
+ if(!mode&&!document.querySelector('.partial-tep-hidden'))return;
+ if(!document.getElementById('partialTepGateStyle')){const style=document.createElement('style');style.id='partialTepGateStyle';style.textContent='.partial-tep-hidden > :not(.partial-tep-gate):not(#calcLocked):not(#calcAccessLine){display:none!important}';document.head.append(style)}
+ for(const id of ['report','finance','calendar','sensitivity']){const panel=document.getElementById(id);if(!panel)continue;panel.classList.toggle('partial-tep-hidden',!!masked);let gate=panel.querySelector('.partial-tep-gate');if(masked){if(!gate){gate=document.createElement('div');gate.className='card partial-tep-gate';gate.setAttribute('role','status');panel.prepend(gate)}gate.textContent='Нет финансового результата для текущего черновика. Уточните обязательные поля ТЭП и запустите расчёт.'}else if(gate)gate.remove()}
+}
+function partialTepInvalidateResult(){calcRun++;lastResult=null;phaseBundle=null;sensitivityReport=null;blankResultSurfaces()}
+function partialTepNotice(){partialTepGuardSurfaces();let box=document.getElementById('partialTepNotice');if(!partialTepMode()){if(box)box.remove();return}if(!box){box=document.createElement('div');box.id='partialTepNotice';box.className='card';box.setAttribute('role','status');box.style.cssText='padding:14px;border-left:4px solid #b87511;overflow-wrap:anywhere';const anchor=document.querySelector('.tabs')||document.getElementById('inputs');anchor.parentNode.insertBefore(box,anchor)}const missing=partialTepMissing();box.replaceChildren();const title=document.createElement('b');title.textContent=missing.length?'Черновик ТЭП: известные данные загружены, расчёт и документы заблокированы.':'ТЭП уточнён: обязательные поля заполнены. Расчёт доступен по вашей команде.';box.append(title);const note=document.createElement('p');note.textContent='Пустое поле означает «не указано», а не ноль. Прямые значения не достраиваются пропорциями. Прочие параметры модели — предпосылки, а не данные документа.';box.append(note);if(missing.length){const details=document.createElement('details'),summary=document.createElement('summary'),list=document.createElement('ul');summary.textContent='Не хватает полей: '+missing.length;for(const item of missing){const li=document.createElement('li');li.textContent=item.label;list.append(li)}details.append(summary,list);box.append(details)}const refs=inputs._partial_tep.references;if(refs?.rnv_quarter){const p=document.createElement('p');p.textContent='План РНВ из источника: '+String(refs.rnv_quarter)+' (квартал, не точная дата).';box.append(p)}if(refs?.actual_storeys){const p=document.createElement('p');p.textContent='Этажность из источника: '+String(refs.actual_storeys.value??refs.actual_storeys)+'; не градостроительный предел.';box.append(p)}const source=inputs._partial_tep.source;if(source?.label){const p=document.createElement('p');p.textContent='Источник: '+source.label;box.append(p)}}
+function partialTepSetOrigin(path,value){const state=inputs._partial_tep;state.origins=state.origins||{};state.origins[path]={origin:value==null?'tbd':'source',method:'manual',note:value==null?'Не указано':'Уточнено пользователем'};fieldOrigins()[path]={source:'document',text:state.origins[path].note}}
+function partialTepEditInput(id,el,type){if(!partialTepMode())return false;const raw=el.value;inputs[id]=type==='checkbox'?el.checked:type==='number'?(raw.trim()===''?null:Number(raw)):raw;partialTepSetOrigin('inputs.'+id,inputs[id]);if(id==='underground_manual_spaces'&&tep.underground_parking){tep.underground_parking.units=inputs[id];partialTepSetOrigin('tep.underground_parking.units',inputs[id])}if(id==='underground_manual_gns_sqm'&&tep.underground_parking){tep.underground_parking.gns=inputs[id];partialTepSetOrigin('tep.underground_parking.gns',inputs[id])}partialTepInvalidateResult();persistLocalSilently();partialTepNotice();return true}
+function partialTepEditCell(key,col,value){if(!partialTepMode())return false;tep[key][col]=String(value).trim()===''?null:Number(value);partialTepSetOrigin('tep.'+key+'.'+col,tep[key][col]);if(key==='underground_parking'&&col==='gns')inputs.underground_manual_gns_sqm=tep[key][col];if(key==='underground_parking'&&col==='units')inputs.underground_manual_spaces=tep[key][col];partialTepInvalidateResult();persistLocalSilently();renderTep();partialTepNotice();return true}
+function partialTepTotals(){const ids={gns:'tg',total_area:'ta',useful:'tu',saleable:'ts',transfer:'tt',units:'tn'},rows=inputs._partial_tep.rows;for(const [field,id]of Object.entries(ids)){const values=rows.map(k=>tep[k]?.[field]),host=document.getElementById(id);if(host)host.textContent=values.every(partialTepKnown)?num(values.reduce((a,b)=>a+b,0)):'не указано'}partialTepNotice()}
+function preparePartialTep(data){if(data.version!==1||!data.tep||typeof data.tep!=='object'||Array.isArray(data.tep))throw new Error('Неверная версия или таблица частичного ТЭП.');const saved=data.inputs?._partial_tep,rows=[...new Set(saved?.rows||Object.keys(data.tep))];if((data.inputs?.project_kind&&data.inputs.project_kind!=='mixed')||PARTIAL_TEP_SCHEMA.unsupported_switches.some(k=>data.inputs?.[k]))throw new Error('Частичный ТЭП v1 поддерживает только продукты МКД.');for(const [key,row]of Object.entries(data.tep)){if(!rows.includes(key)&&row&&PARTIAL_TEP_SCHEMA.fields.some(f=>partialTepKnown(row[f])&&row[f]>0))throw new Error('Активная строка ТЭП отсутствует в составе черновика.')}if(!rows.length||rows.some(k=>!Object.hasOwn(PARTIAL_TEP_SCHEMA.products,k)))throw new Error('Нужны поддерживаемые строки: квартиры, встроенная коммерция, подземный паркинг, кладовые.');const x=cloneValue(INPUT_DEFAULT),t=cloneValue(TEP_DEFAULT),origins={};for(const key of Object.keys(x))origins['inputs.'+key]={origin:'assumption',note:'Предустановка модели, не данные документа'};for(const key of partialTepRequiredInputs(rows)){x[key]=null;origins['inputs.'+key]={origin:'tbd',note:'В источнике не указано; заполните перед расчётом'}}for(const [key,value]of Object.entries(data.inputs||{})){if(Object.hasOwn(INPUT_DEFAULT,key)||['_cadastral_query','_project_uid'].includes(key)){x[key]=cloneValue(value);origins['inputs.'+key]={origin:value==null?'tbd':'source',note:value==null?'Не указано':'Из импортированного источника'}}}for(const [key,row]of Object.entries(t)){if(key==='underground_parking')row.guest_units=rows.includes(key)?null:0;for(const field of PARTIAL_TEP_SCHEMA.fields)row[field]=rows.includes(key)?null:0}for(const key of rows){const source=data.tep[key];if(!source||typeof source!=='object'||Array.isArray(source))throw new Error('Некорректная строка ТЭП.');for(const field of PARTIAL_TEP_SCHEMA.fields){const value=source[field];if(value!=null&&!partialTepKnown(value))throw new Error('Числа ТЭП должны быть конечными и неотрицательными.');t[key][field]=value??null;origins['tep.'+key+'.'+field]={origin:value==null?'tbd':'source',note:value==null?'Не указано':'Из импортированного источника'}}if(key==='underground_parking')origins['tep.underground_parking.guest_units']={origin:partialTepKnown(source.guest_units)?'source':'tbd',note:partialTepKnown(source.guest_units)?'Гостевые места из источника':'Не указано'}}for(const [path,origin]of Object.entries(saved?.origins||data.provenance||{})){if(Object.hasOwn(origins,path)&&origin&&['source','derived','assumption','tbd'].includes(origin.origin))origins[path]=cloneValue(origin)}if(rows.includes('underground_parking')){x.underground_manual_spaces=t.underground_parking.units;x.underground_manual_gns_sqm=t.underground_parking.gns;if(partialTepKnown(data.tep.underground_parking.guest_units))t.underground_parking.guest_units=data.tep.underground_parking.guest_units}x._partial_tep={kind:PARTIAL_TEP_SCHEMA.kind,version:1,rows,origins,source:cloneValue(saved?.source||data.source||{}),references:cloneValue(saved?.references||data.references||{})};x._field_origin={};for(const [path,origin]of Object.entries(origins))x._field_origin[path]={source:'document',text:({source:'Источник',derived:'Вычислено по источнику',assumption:'Предпосылка',tbd:'Не указано'}[origin.origin]||'')+': '+(origin.note||origin.origin)};x._manual_tep_import={project_name:String(data.name||'Черновик ТЭП'),source:{label:String(x._partial_tep.source.label||'Частичный ТЭП из документа')}};x.project_class='custom';x._class_manual=Object.keys(INPUT_DEFAULT);x._parking_by_hand=['underground'];return{inputs:x,tep:t,phasing:null,scenario:data.scenario||'base'}}
+
+function currentPdfReportPayload(cads=[]){
  const glavapuMeta=inputs._glavapu_import||null;
  const manualMeta=inputs._manual_tep_import||null;
  const source=(glavapuMeta&&glavapuMeta.source)||(manualMeta&&manualMeta.source)||{};
@@ -28,6 +48,7 @@ PAGE += r"""function currentPdfReportPayload(cads=[]){
 }
 
 async function exportReportPdf(){
+ if(partialTepMode()&&partialTepMissing().length){partialTepNotice();openTab('tep');alert('Сначала заполните неизвестные поля черновика ТЭП.');return}
  // Полный PDF проверяет ограничения у каждого участка проекта; на площадке
  // из двадцати участков это минуты НСПД, и сервер отвечает 202 с билетом —
  // PDF забирается опросом, как у тизера, а кнопка называет стадию.
@@ -54,6 +75,7 @@ async function exportReportPdf(){
 }
 
 async function exportTeaserPdf(){
+ if(partialTepMode()&&partialTepMissing().length){partialTepNotice();openTab('tep');alert('Сначала заполните неизвестные поля черновика ТЭП.');return}
  // Тизер считает сервер тем же расчётом, что PDF и книгу: страница только
  // шлёт вводные. Ответ разбирается с оглядкой на то, что он может быть не PDF.
  // На холодных кэшах сервер собирает тизер минутами и отвечает 202 с билетом
@@ -91,6 +113,7 @@ function downloadBlobResponse(blob,disposition,fallback){
 }
 
 async function exportModelArchive(){
+ if(partialTepMode()&&partialTepMissing().length){partialTepNotice();openTab('tep');alert('Сначала заполните неизвестные поля черновика ТЭП.');return}
  // Одна модель на выгрузку: книга DevelopAid v4, считающая проект формулами
  // из текущих вводных. Прежние выгрузки — архив очередей с консолидатором и
  // заполненный шаблон ПЛАТО — сняты вместе с маршрутами: они остались от
@@ -833,6 +856,7 @@ function applyProjectSnapshot(data){
  openedProject=null;
  forgetTerritoryState();
  inputs=Object.assign(cloneValue(INPUT_DEFAULT),data.inputs||{});
+ if(inputs._partial_tep)partialTepInvalidateResult();
  tep=cloneValue(TEP_DEFAULT);
  Object.entries(data.tep||{}).forEach(([key,values])=>{
   if(values&&typeof values==='object')tep[key]=Object.assign(tep[key]||{},values);
@@ -877,7 +901,7 @@ async function loadProject(id){
 const SETTINGS_FILE_KIND='developaid.project.settings';
 
 function settingsFileFrom(name,payload){
- return {kind:SETTINGS_FILE_KIND,version:1,app_version:'__DEVELOPAID_VERSION__',
+ return {kind:payload.inputs?._partial_tep?PARTIAL_TEP_SCHEMA.kind:SETTINGS_FILE_KIND,version:1,app_version:'__DEVELOPAID_VERSION__',
   name:name||'Проект',saved_at:new Date().toISOString(),
   inputs:payload.inputs||{},tep:payload.tep||{},
   phasing:payload.phasing||null,scenario:payload.scenario||'base'};
@@ -935,7 +959,7 @@ async function applySettingsFile(input){
  let data;
  try{data=JSON.parse(await file.text())}
  catch(e){alert('Файл не читается как JSON: '+String(e.message||e));return}
- if(!data||data.kind!==SETTINGS_FILE_KIND){
+ if(!data||(data.kind!==SETTINGS_FILE_KIND&&data.kind!==PARTIAL_TEP_SCHEMA.kind)){
   alert('Это не файл настроек DevelopAid. Нужен .json из кнопки «Скачать настройки текущего».');
   return;
  }
@@ -943,8 +967,10 @@ async function applySettingsFile(input){
   +'Сохранён: '+String(data.saved_at||'').replace('T',' ').slice(0,16)
   +(data.app_version?' · версия '+data.app_version:'')+'\n\n'
   +'Текущие вводные на экране будут заменены.'))return;
+ if(data.kind===PARTIAL_TEP_SCHEMA.kind){try{data=preparePartialTep(data)}catch(e){alert(String(e.message||e));return}}
  applyProjectSnapshot(data);
  closeProjects();
+ if(partialTepMode()){lastResult=null;phaseBundle=null;blankResultSurfaces();partialTepNotice();openTab('tep');return}
  calculateAndOpen('report');
 }
 
