@@ -21,6 +21,11 @@ jobs:
       - name: Build Windows client
         shell: powershell
         run: ./desktop/windows/build.ps1
+      - name: Check native WebView2 startup and session storage
+        shell: powershell
+        run: |
+          & ./desktop/windows/.venv/Scripts/python.exe ./desktop/windows/smoke_test.py
+          if ($LASTEXITCODE -ne 0) { throw 'Native WebView2 smoke check failed' }
       - uses: actions/upload-artifact@v4
         with:
           name: DevelopAid-Windows-x64
