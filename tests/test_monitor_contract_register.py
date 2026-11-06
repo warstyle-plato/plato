@@ -170,6 +170,8 @@ def test_yearly_ledger_amount_is_not_full_contract_and_supply_not_installation(p
               "items": [{"name": "Curtain wall frame", "scope": "Building 2",
                          "unit": "м²", "plan_quantity": 100, "completed_quantity": 20,
                          "material_quantity": 80, "planned_amount": 9000, "completed_amount": 6000,
+                         "periods": [{"date_start": "2026-03-01", "date_end": "2026-03-31",
+                                      "quantity": 20, "material_quantity": 80, "amount": 6000}],
                          "source": {"filename": "synthetic.xlsx", "sheet": "1", "row": 30}}]}
     archive(monkeypatch, ledgers=[ledger])
     row, = contracts.build(project)["rows"]
@@ -183,7 +185,9 @@ def test_yearly_ledger_amount_is_not_full_contract_and_supply_not_installation(p
 
 def test_overplan_is_visible_and_does_not_close_whole_contract(project, monkeypatch):
     ledger = {**summary(), "items": [{"name": "Slab", "plan_quantity": 50,
-                                      "completed_quantity": 90, "unit": "м³"}]}
+                                      "completed_quantity": 90, "unit": "м³",
+                                      "periods": [{"date_start": "2026-03-01", "date_end": "2026-03-31",
+                                                   "quantity": 90}]}]}
     archive(monkeypatch, ledgers=[ledger])
     row, = contracts.build(project)["rows"]
     physical, = row["physical_items"]
@@ -211,11 +215,19 @@ def test_punctuation_and_contract_dates_disambiguate_identity(project, monkeypat
 
 
 def test_stable_identity_survives_snapshot_and_quantity_changes(project, monkeypatch):
-    archive(monkeypatch, summaries=[summary()])
+    archive(monkeypatch, summaries=[summary(contract_date="2024-01-01")])
     before, = contracts.build(project)["rows"]
     archive(monkeypatch, summaries=[summary(amount=1400, contract_date="2024-01-01")], day="2026-05-01")
     after, = contracts.build(project)["rows"]
     assert before["id"] == after["id"]
+
+
+def test_missing_date_refinement_requires_fresh_manual_confirmation(project, monkeypatch):
+    archive(monkeypatch, summaries=[summary()])
+    before, = contracts.build(project)["rows"]
+    archive(monkeypatch, summaries=[summary(contract_date="2024-01-01")])
+    after, = contracts.build(project)["rows"]
+    assert before["id"] != after["id"]
 
 
 def test_even_identically_named_contracts_are_scoped_to_the_project(project, monkeypatch):
@@ -236,6 +248,165 @@ def test_future_archive_cannot_enter_a_past_view_even_if_provider_returns_it(pro
     view = contracts.build(project, "2026-04-01")
     assert view["rows"] == []
     assert any("позже среза" in warning for warning in view["warnings"])
+
+
+def test_reissued_contract_in_a_separate_snapshot_does_not_inherit_a_term(project, monkeypatch):
+    archive(monkeypatch, summaries=[summary(contract_date="2025-01-01")])
+    old, = contracts.build(project)["rows"]
+    contracts.set_term(project, old["id"], "2027-05-01", "Only the original contract")
+    archive(monkeypatch, summaries=[summary(contract_date="2026-01-01")], day="2026-05-01")
+    new, = contracts.build(project)["rows"]
+    assert new["id"] != old["id"]
+    assert new["deadline"] is None
+    assert new["manual_deadline_reference"] is None
+
+
+def test_latest_ambiguous_amendment_invalidates_the_old_full_price(project, monkeypatch):
+    archive(monkeypatch, summaries=[summary(amount=None, amount_scope="ambiguous_amendment",
+        amount_date="2026-02-01", amount_versions=[
+            {"amount": 1000, "date": "2026-01-01", "scope": "full_contract"},
+            {"amount": None, "stated_amount": 200, "date": "2026-02-01", "scope": "ambiguous_amendment"}])])
+    row, = contracts.build(project)["rows"]
+    assert row["amount"] is None  # Neither 1000, 200 nor 1200 is supported.
+    assert row["completion_ratio"] is None
+    assert row["remaining"] is None
+    assert any("допсоглашения" in warning for warning in row["warnings"])
+
+
+def test_undated_amendment_cannot_resurrect_an_old_dated_price(project, monkeypatch):
+    archive(monkeypatch, summaries=[summary(amount=None, amount_scope="ambiguous_amendment",
+        amount_versions=[{"amount": 1000, "date": "2026-01-01", "scope": "full_contract"},
+                         {"amount": None, "stated_amount": 200, "date": None,
+                          "scope": "ambiguous_amendment"}])])
+    row, = contracts.build(project)["rows"]
+    assert row["amount"] is None
+
+
+def test_explicit_new_full_price_after_an_amendment_is_usable(project, monkeypatch):
+    archive(monkeypatch, summaries=[summary(amount_versions=[
+        {"amount": 1000, "date": "2026-01-01", "scope": "full_contract"},
+        {"amount": None, "stated_amount": 200, "date": "2026-02-01", "scope": "ambiguous_amendment"},
+        {"amount": 1300, "date": "2026-03-01", "scope": "full_contract"}])])
+    row, = contracts.build(project)["rows"]
+    assert row["amount"] == 1300
+    assert row["completion_ratio"] == pytest.approx(200/1300)
+
+
+def test_different_explicit_vat_bases_do_not_produce_ratio_or_remaining(project, monkeypatch):
+    archive(monkeypatch, summaries=[summary(amount=1200, amount_basis="with_vat", acts=[
+        {"number": "1", "date": "2026-03-12", "amount": 1000, "amount_basis": "without_vat"}])])
+    row, = contracts.build(project)["rows"]
+    assert row["amount"] == 1200 and row["completed"] == 1000
+    assert row["amount_basis"] == "with_vat" and row["completed_basis"] == "without_vat"
+    assert row["completion_ratio"] is None and row["remaining"] is None
+    assert row["monetary_comparable"] is False
+    assert any("НДС" in warning for warning in row["warnings"])
+
+
+def test_matching_explicit_vat_basis_keeps_the_source_ratio(project, monkeypatch):
+    archive(monkeypatch, summaries=[summary(amount=1200, amount_basis="with_vat", acts=[
+        {"number": "1", "date": "2026-03-12", "amount": 600, "amount_basis": "with_vat"}])])
+    row, = contracts.build(project)["rows"]
+    assert row["completion_ratio"] == .5 and row["remaining"] == 600
+
+
+def test_different_vat_bases_inside_acts_are_not_summed(project, monkeypatch):
+    archive(monkeypatch, summaries=[summary(amount=1200, amount_basis="with_vat", acts=[
+        {"number": "1", "date": "2026-03-12", "amount": 100, "amount_basis": "with_vat"},
+        {"number": "2", "date": "2026-03-13", "amount": 100, "amount_basis": "without_vat"}])])
+    row, = contracts.build(project)["rows"]
+    assert row["completed"] is None and row["completion_ratio"] is None
+
+
+def test_explicit_rss_vat_mismatch_is_also_not_a_comparable_pair(project):
+    rss(project, [entry(amount=1200, completed=1000)],
+        headers={8: "Сумма договора с НДС", 12: "Выполнено без НДС"})
+    row, = contracts.build(project)["rows"]
+    assert row["amount"] == 1200 and row["completed"] == 1000
+    assert row["completion_ratio"] is None and row["remaining"] is None
+
+
+def physical_view(monkeypatch, project, item, cut="2026-03-15"):
+    ledger = {"contractor": "Builder A", "customer": "Developer A", "contract": "C-10",
+              "contract_date": "2026-01-01", "period_year": 2026, "items": [item]}
+    archive(monkeypatch, ledgers=[ledger], day="2026-03-01")
+    return contracts.build(project, cut)["rows"][0]["physical_items"][0]
+
+
+def test_future_physical_period_and_annual_total_do_not_enter_the_cut(project, monkeypatch):
+    item = physical_view(monkeypatch, project, {
+        "name": "Slab", "unit": "м³", "plan_quantity": 100, "completed_quantity": 100,
+        "completed_amount": 1000, "periods": [
+            {"quantity": 10, "amount": 100, "date_start": "2026-02-01", "date_end": "2026-02-28"},
+            {"quantity": 90, "amount": 900, "date_start": "2026-04-01", "date_end": "2026-04-30"}]})
+    assert item["completed_quantity"] == 10 and item["completion_ratio"] == .1
+    assert item["completed_amount"] == 100
+    assert item["reported_completed_quantity"] is None
+    assert len(item["periods"]) == 1
+    assert item["quantity_date"] == "2026-02-28" and item["snapshot_date"] == "2026-03-01"
+    assert item["quantity_cut"] == "2026-03-15"
+
+
+def test_undated_quantity_is_only_a_reference_not_dated_by_the_archive(project, monkeypatch):
+    item = physical_view(monkeypatch, project, {
+        "name": "Slab", "unit": "м³", "plan_quantity": 100, "completed_quantity": 40,
+        "periods": [{"quantity": 40, "label": "КС-2 №1"}]})
+    assert item["completed_quantity"] is None and item["completion_ratio"] is None
+    assert item["reported_completed_quantity"] == 40
+    assert item["reported_completion_ratio"] == .4
+    assert item["quantity_date"] is None and item["snapshot_date"] == "2026-03-01"
+    assert "без дат" in item["quantity_basis"]
+
+
+def test_mixed_dated_and_undated_quantities_do_not_make_a_full_asof_total(project, monkeypatch):
+    item = physical_view(monkeypatch, project, {
+        "name": "Slab", "plan_quantity": 100, "completed_quantity": 40, "periods": [
+            {"quantity": 10, "date_start": "2026-02-01", "date_end": "2026-02-28"},
+            {"quantity": 30, "label": "Unknown date"}]})
+    assert item["completed_quantity"] is None and item["completion_ratio"] is None
+    assert item["dated_completed_quantity"] == 10
+    assert item["reported_completed_quantity"] == 40
+
+
+def test_overlapping_period_is_not_prorated_across_the_cut(project, monkeypatch):
+    item = physical_view(monkeypatch, project, {
+        "name": "Slab", "plan_quantity": 100, "completed_quantity": 40, "periods": [
+            {"quantity": 40, "date_start": "2026-03-01", "date_end": "2026-03-31"}]})
+    assert item["completed_quantity"] is None and item["completion_ratio"] is None
+    assert item["periods"] == [] and item["reported_completed_quantity"] is None
+    assert "пересекает" in item["quantity_basis"]
+
+
+def test_periods_must_reconcile_with_the_cumulative_quantity(project, monkeypatch):
+    item = physical_view(monkeypatch, project, {
+        "name": "Slab", "plan_quantity": 100, "completed_quantity": 50, "periods": [
+            {"quantity": 40, "date_start": "2026-02-01", "date_end": "2026-02-28"}]})
+    assert item["completed_quantity"] is None and item["completion_ratio"] is None
+    assert item["dated_completed_quantity"] == 40
+    assert "не сходится" in item["quantity_basis"]
+
+
+def test_blank_future_slots_do_not_invalidate_a_reconciled_past_quantity(project, monkeypatch):
+    item = physical_view(monkeypatch, project, {
+        "name": "Slab", "plan_quantity": 100, "completed_quantity": 10, "periods": [
+            {"quantity": 10, "date_start": "2026-02-01", "date_end": "2026-02-28"},
+            {"quantity": None, "date_start": "2026-04-01", "date_end": "2026-04-30"},
+            {"quantity": None, "label": "Unused slot"}]})
+    assert item["completed_quantity"] == 10 and item["completion_ratio"] == .1
+
+
+def test_later_manual_deadline_remains_a_current_reference_not_historical_fact(project):
+    rss(project, [entry(deadline="2026-09-01")], headers={13: "Срок исполнения"})
+    row, = contracts.build(project)["rows"]
+    path = monitor._project_dir(project) / "cumulative_terms.json"
+    path.write_text(json.dumps({row["id"]: {"deadline": "2027-01-01", "note": "Later decision",
+                                          "updated_at": "2026-06-01T10:00:00+00:00"}}))
+    old, = contracts.build(project, "2026-04-15")["rows"]
+    assert old["deadline"] == "2026-09-01"
+    assert old["manual_deadline_reference"]["deadline"] == "2027-01-01"
+    assert old["manual_deadline_reference"]["updated_at"].startswith("2026-06-01")
+    assert old["manual_deadline_reference"]["applicable_to_cut"] is False
+    assert any("позже даты среза" in warning for warning in old["warnings"])
 
 
 def test_rss_is_primary_but_conflicting_summary_is_not_hidden(project, monkeypatch):
@@ -266,6 +437,7 @@ def test_manual_deadline_is_project_scoped_explicit_and_removable(project):
     changed, = contracts.build(project)["rows"]
     assert changed["deadline"] == "2027-02-01"
     assert changed["deadline_source"]["label"] == "Указан вручную"
+    assert changed["manual_deadline_reference"]["applicable_to_cut"] is True
     assert changed["amount"] == 1000
     path = monitor._project_dir(project) / "cumulative_terms.json"
     assert path.stat().st_mode & 0o077 == 0
