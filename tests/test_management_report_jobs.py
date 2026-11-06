@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import copy
 import subprocess
 import sys
 import threading
@@ -162,6 +163,59 @@ def test_demo_policy_is_bound_and_frozen_before_the_background_build(api, monkey
     assert "ADMIN_CASE_MARKER" not in result.text
     assert result.json()["report"]["legal"]["state"] == "closed"
     assert call(client, "result", session="", ticket=ticket).status_code == 404
+
+
+@pytest.mark.parametrize("mode", ["legacy", "background", "background-expired"])
+def test_demo_removes_legal_findings_from_json_text_and_html(api, monkeypatch, mode):
+    client, _ = api
+    import developaid_management_report as report
+
+    marker = "LEGAL_PRIVATE_FIXTURE_FINDING_81d4"
+    other = "NON_LEGAL_FIXTURE_FINDING"
+    raw = {"project": "Fixture", "kind": "week", "start": "2026-11-01", "end": "2026-11-06",
+           "legal": {"state": "ok", "recorded": 1, "open": [{
+               "card": {"counterparty": marker, "subject": "Fixture legal subject",
+                        "status": "claim", "deadline": None}, "totals": {}}]}}
+    raw["findings"] = report.findings(raw)
+    raw["findings"].append({"topic": "Fixture other", "text": other, "source": "fixture", "tone": ""})
+    assert any(marker in item["text"] for item in raw["findings"] if item["topic"] == "Споры")
+    alive = {"demo": True}
+    release, returned = threading.Event(), threading.Event()
+    release.set()
+    monkeypatch.setattr(core, "demo_session_chat", lambda session: 5 if session == "demo" and alive["demo"] else 0)
+
+    def build(*a, **k):
+        release.wait(10)
+        if mode == "background-expired":
+            alive["demo"] = False
+        returned.set()
+        return copy.deepcopy(raw)
+
+    monkeypatch.setattr(report, "build", build)
+    admin = client.post("/monitor/report", json={"key": KEY, **PARAMS})
+    assert admin.status_code == 200
+    for channel in [json.dumps(admin.json()["report"]), admin.json()["text"], admin.json()["html"]]:
+        assert marker in channel
+    alive["demo"] = True
+    if mode == "legacy":
+        result = client.post("/monitor/report", json={"key": KEY, "session": "demo", **PARAMS})
+    else:
+        release.clear()
+        returned.clear()
+        ticket = call(client, "build", session="demo", **PARAMS).json()["ticket"]
+        release.set()
+        assert returned.wait(2)
+        if mode == "background-expired":
+            assert call(client, "result", session="demo", ticket=ticket).status_code == 404
+            alive["demo"] = True
+        result = done(client, ticket, session="demo")
+    assert result.status_code == 200
+    output = result.json()
+    for channel in [json.dumps(output["report"]), output["text"], output["html"]]:
+        assert marker not in channel
+        assert other in channel
+    assert output["report"]["legal"]["state"] == "closed"
+    assert output["report"]["findings"] == [item for item in raw["findings"] if item["topic"] != "Споры"]
 
 
 def test_job_errors_and_metadata_never_expose_credentials_or_internal_details(api, monkeypatch, caplog):

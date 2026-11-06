@@ -917,6 +917,19 @@ def monitor_photo(req: MonitorPhotosRequest) -> Response:
                     headers={"Cache-Control": "private, max-age=86400"})
 
 
+def _monitor_report_close_legal(report: dict[str, Any]) -> None:
+    """Apply the document policy to both the legal block and its summary.
+
+    build() derives findings before access redaction. Hiding only the block
+    leaves counterparties in the JSON and in the rendered «Главное» section.
+    The other findings and all financial values remain unchanged.
+    """
+    report["legal"] = {"state": "closed", "reason": DEMO_DISPUTES_CLOSED}
+    if "findings" in report:
+        report["findings"] = [item for item in report["findings"] or []
+                              if item.get("topic") != "Споры"]
+
+
 def _monitor_report(req: MonitorReportRequest) -> dict[str, Any]:
     import datetime as _dt
 
@@ -930,7 +943,7 @@ def _monitor_report(req: MonitorReportRequest) -> dict[str, Any]:
     # Споры и претензии демо-ссылке закрыты всегда (решение владельца
     # 25.10.2026): в сводке вместо блока — причина, и в «Главном» строки нет.
     if demo_session_chat(req.session):
-        report["legal"] = {"state": "closed", "reason": DEMO_DISPUTES_CLOSED}
+        _monitor_report_close_legal(report)
     return report
 
 
@@ -1021,7 +1034,7 @@ def _monitor_report_body(req: MonitorReportRequest, *, hide_legal: bool = False)
     if hide_legal:
         # Freeze the admission profile: a demo session expiring during the
         # long calculation must never turn its result into an admin document.
-        report["legal"] = {"state": "closed", "reason": DEMO_DISPUTES_CLOSED}
+        _monitor_report_close_legal(report)
     return {"report": report, "text": management_report.render_text(report),
             "html": management_report.render_html(report)}
 
