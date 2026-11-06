@@ -1,10 +1,13 @@
-"""Вкладка «Данные проекта» — три загрузки на виду, остальное свёрнуто.
+"""Вкладка «Данные проекта» — основные загрузки на виду, прочее свёрнуто.
 
 «Сейчас вкладка данных по проекту в Мониторе перегружена, это были частные
 случаи. По факту нужен ГПР с динамикой, РСС и бюджеты. Отчёт со стройки читает
 бот» (владелец, 20.10.2026). Решения владельца: ручной отчёт со стройки и
 продажи убраны; финансовая книга — на виду рядом с ГПР; PM, rebaseline,
 реестр ГУ и монолитный цикл — в свёрнутом блоке «Прочие загрузки».
+
+Новое поручение владельца: накопительные ведомости загружаются одним
+ZIP-архивом в Монитор. Это четвёртая основная форма рядом с РСС.
 
 Проверяется отрисованная страница: что видно, что спрятано, что убрано, и что
 ни один обработчик не ссылается на убранное поле (иначе скрипт падает и
@@ -25,7 +28,8 @@ from browser import chromium_or_skip, serve  # noqa: E402
 
 PORT = 18800
 VISIBLE = ["gpr", "finance", "baselineBtn", "gprFact", "gprFactBtn", "finRepl",
-           "finReplBtn", "rss", "rssBtn", "budget", "budgetBtn"]
+           "finReplBtn", "rss", "rssBtn", "cumulativeFile", "cumulativeDate",
+           "cumulativeUpload", "budget", "budgetBtn"]
 FOLDED = ["pm", "rebase", "rebaseBtn", "retention", "retentionBtn", "stageObj", "stageBtn"]
 GONE = ["sales", "salesBtn", "salesMonth", "salesRowBtn", "dailyText", "dailyBtn"]
 
@@ -63,7 +67,7 @@ def test_the_data_tab_on_the_rendered_page(monkeypatch):
 
     assert not errors, errors
     assert titles == ["ГПР и финансовая книга", "РСС · каждую неделю",
-                      "Бюджет месяца · раз в месяц"]
+                      "Накопительные · КС-6а", "Бюджет месяца · раз в месяц"]
     assert all(shown[name] for name in VISIBLE), shown
     assert not any(shown[name] for name in FOLDED), shown
     assert all(opened.values()), opened
