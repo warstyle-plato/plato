@@ -151,3 +151,22 @@ def test_worker_failure_is_generic_and_validation_is_not_cacheable(api, monkeypa
     invalid = post(client, "contracts/build")
     assert invalid.status_code == 422
     assert invalid.headers["cache-control"] == "private, no-store"
+
+
+@pytest.mark.parametrize("surface", ["history", "poll"])
+def test_unexpected_storage_shape_errors_remain_private(api, monkeypatch, caplog, surface):
+    import developaid_monitor_ledgers as ledgers
+    import developaid_management_report_jobs as jobs
+    client, _ = api
+    marker = "synthetic-private-storage-content"
+    def fail(*args):
+        raise AttributeError(marker)
+    if surface == "history":
+        monkeypatch.setattr(ledgers, "list_snapshots", fail)
+        response = post(client, "cumulative/list", project="Fixture")
+    else:
+        monkeypatch.setattr(jobs.Store, "poll", fail)
+        response = post(client, "contracts/result", ticket="a" * 32)
+    assert response.status_code == 503
+    assert response.headers["cache-control"] == "private, no-store"
+    assert marker not in response.text and marker not in caplog.text
