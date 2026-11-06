@@ -2,7 +2,7 @@ name: Windows desktop
 on:
   workflow_dispatch:
   push:
-    branches: [codex/windows-desktop]
+    branches: [main]
     paths: ['desktop/windows/**', '.github/workflows/windows-desktop.yml']
   pull_request:
     paths: ['desktop/windows/**', '.github/workflows/windows-desktop.yml']

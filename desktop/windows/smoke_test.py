@@ -35,7 +35,8 @@ def main() -> int:
         server = ThreadingHTTPServer(('127.0.0.1', 0), Page)
         Thread(target=server.serve_forever, daemon=True).start()
         url = f'http://127.0.0.1:{server.server_port}/'
-        window = webview.create_window('DevelopAid smoke', url, hidden=True, js_api=None)
+        # load_url requires the native shown event; exercise a visible window like the app.
+        window = webview.create_window('DevelopAid smoke', url, hidden=False, js_api=None)
 
         def check():
             try:
