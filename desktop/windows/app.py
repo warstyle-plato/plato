@@ -49,6 +49,7 @@ class NavigationGuard:
         self.native_attached = False
         self.core_attached = False
         self.failed = False
+        self.shutting_down = False
         self.blocked = Event()
         self.popup_blocked = Event()
 
@@ -77,6 +78,7 @@ class NavigationGuard:
         # pywebview's persistent-profile path exits the WinForms loop without
         # disposing WebView2. Dispose on its UI thread before Python finalizes,
         # so pending .NET callbacks cannot enter a torn-down interpreter.
+        self.shutting_down = True
         native = self.window.native.webview
         try:
             if native.CoreWebView2 is not None:
@@ -94,6 +96,8 @@ class NavigationGuard:
             self.window.native.Dispose()
 
     def initialized(self, sender, args):
+        if self.shutting_down:
+            return
         try:
             if not args.IsSuccess:
                 raise RuntimeError("WebView2 initialization failed")

@@ -130,3 +130,14 @@ def test_native_shutdown_disposes_controller_even_if_navigation_stop_fails(stop_
     else:
         guard.closing()
     assert calls == ['stop', 'dispose']
+
+
+def test_closing_during_initialization_does_not_reenter_window_close():
+    app = client()
+    calls = []
+    native = SimpleNamespace(CoreWebView2=None, Dispose=lambda: calls.append('dispose'))
+    guard = app.NavigationGuard(SimpleNamespace(native=SimpleNamespace(webview=native)))
+    guard.closing()
+    guard.initialized(native, SimpleNamespace(IsSuccess=False))
+    assert calls == ['dispose']
+    assert not guard.failed
