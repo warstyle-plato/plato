@@ -412,7 +412,8 @@ def check_scenario(browser, base: str, name: str, admin_key: str, out: Path,
         context.close()
 
 
-def check_team_report(browser, base: str, admin_key: str, out: Path) -> list[Finding]:
+def check_team_report(browser, base: str, admin_key: str, out: Path, *,
+                      wait_timeout_ms: int = 120_000) -> list[Finding]:
     """«Сводка руководству»: ключ администратора в браузере, как по кнопке."""
     found: list[Finding] = []
     for label, viewport in (("", DESKTOP), (", телефон", PHONE)):
@@ -420,15 +421,32 @@ def check_team_report(browser, base: str, admin_key: str, out: Path) -> list[Fin
         try:
             page.goto(base + "/report", wait_until="domcontentloaded", timeout=120_000)
             try:
-                page.wait_for_function(
-                    "() => { const a=document.getElementById('privateArea');"
-                    " return a && !a.classList.contains('hidden') && a.innerText.replace(/\\s+/g,'').length > 200"
-                    " && !document.querySelector('.msg.warn'); }", timeout=120_000)
+                # The shell alone has more than 200 characters. A failed report
+                # changes .warn to .bad, so checking the shell/no warning used
+                # to accept both a broken connection and HTTP 500 as success.
+                result = page.wait_for_function("""() => {
+                    const area=document.getElementById('privateArea');
+                    const login=document.getElementById('loginMsg');
+                    const message=document.getElementById('reportMsg');
+                    const box=document.getElementById('reportBox');
+                    const opened=area && !area.classList.contains('hidden');
+                    if (!opened && login && login.classList.contains('bad') && login.textContent.trim())
+                        return {ready:false,where:'#loginMsg',reason:login.textContent.trim()};
+                    if (message && message.classList.contains('bad') && message.textContent.trim())
+                        return {ready:false,where:'#reportMsg',reason:message.textContent.trim()};
+                    const heading=box && box.querySelector('h1');
+                    if (opened && heading && heading.textContent.trim() &&
+                        !(message && message.classList.contains('warn')))
+                        return {ready:true};
+                    return null;
+                }""", timeout=wait_timeout_ms).json_value()
             except Exception:  # noqa: BLE001
-                login = page.evaluate("() => (document.getElementById('loginMsg')||{}).textContent||''")
+                result = {"ready": False, "where": "#reportBox",
+                          "reason": "Содержимое сводки не появилось за время ожидания."}
+            if not result["ready"]:
                 page.screenshot(path=str(out / f"report{'-phone' if label else ''}.png"), full_page=True)
                 found.append(Finding(BREAK, "Сводка руководству" + label, "сводка не открылась",
-                                     "#privateArea", (login or "содержимое не появилось за 120 с")[:200]))
+                                     result["where"], result["reason"][:200]))
                 continue
             page.wait_for_timeout(1500)  # дорисовка фото и графиков после ответа
             scan = page.evaluate(SCAN_JS, {})
