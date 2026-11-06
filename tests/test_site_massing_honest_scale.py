@@ -76,7 +76,7 @@ def test_what_does_not_fit_is_named_and_the_rest_is_drawn_at_full_size():
         assert abs(core._ring_area(b["ring_m"])) == pytest.approx(b["area_sqm"], rel=0.01)
     assert core.massing_check(drawn, layout["underground_rings"]) is None
     assert "schema_shrink" not in layout
-    note = next(n for n in layout["notes"] if n.startswith("На участке в настоящем размере"))
+    note = next(n for n in layout["notes"] if n.startswith("На участке встают"))
     assert f"встают {len(drawn)} из {len(buildings)} корпусов" in note
     assert "уменьшены" not in " ".join(layout["notes"])
     # Пропавший корпус назван в строке своей группы.

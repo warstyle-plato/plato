@@ -34,6 +34,8 @@ import site_massing_book as _massing_book
 # Выше этого здание расчёт не ставит, когда предел участка не задан
 # (владелец 22.10.2026). Один источник с книгой и объёмной схемой.
 STOREYS_LIMIT_DEFAULT = _massing_book.STOREYS_LIMIT_DEFAULT
+# Потолок оценки подземных уровней — тот же, что у формулы книги.
+UNDERGROUND_LEVELS_MAX = _massing_book.UNDERGROUND_LEVELS_MAX
 COVERAGE_PCT_DEFAULT = _massing_book.COVERAGE_PCT_DEFAULT
 RESIDENTIAL_STOREYS_DEFAULT = _massing_book.RESIDENTIAL_STOREYS_DEFAULT
 
@@ -41,8 +43,11 @@ RESIDENTIAL_STOREYS_DEFAULT = _massing_book.RESIDENTIAL_STOREYS_DEFAULT
 # территорий ЖК на жителя (её же требует калькулятор ГлавАПУ, строка 57).
 # Подмосковье — РНГП МО, та же норма, что у калькулятора области
 # (`MO_NORMS_DEFAULT["green_quarter_sqm_per_person"]`). Прочие регионы —
-# СП 42.13330.2016, п. 7.4: озеленённая территория квартала многоквартирной
-# застройки — не менее 25 % его площади.
+# допущение 25 % площади участка: так было в СП 42.13330.2016, п. 7.4
+# («озеленённая территория квартала многоквартирной застройки — не менее
+# 25 %»), а в действующем СП 42.13330.2026 такой нормы нет — регион задаёт
+# минимальный процент озеленения в ПЗЗ (п. 6.2.56). Число оставлено
+# допущением по решению владельца 26.10.2026.
 MSK_GREEN_ZHK_SQM_PER_PERSON = 5.0
 OTHER_REGION_GREEN_SHARE = 0.25
 
@@ -141,19 +146,25 @@ def _yard_floor(x: dict[str, Any], tep: dict[str, Any], site_sqm: float) -> tupl
         per = float(MO_NORMS_DEFAULT["green_quarter_sqm_per_person"])
         return (per * population,
                 f"норма Московской области: {_norm_ru(per)} м² на жителя × {population} жителей")
-    # Прочие регионы — большее из федерального СП 42 (25 % участка) и нормы
-    # Москвы на жителя: своих норм региона у нас нет (владелец 22.10.2026).
+    # Прочие регионы — большее из двух допущений: 25 % участка (прежний
+    # СП 42.13330.2016, п. 7.4; в СП 42.13330.2026 нормы нет, владелец
+    # 26.10.2026) и нормы Москвы на жителя: своих норм региона у нас нет
+    # (владелец 22.10.2026).
     share = OTHER_REGION_GREEN_SHARE * site_sqm
     per_person = MSK_GREEN_ZHK_SQM_PER_PERSON * population
+    sp42_note = ("25% участка требовал прежний СП 42.13330.2016 (п. 7.4); в действующем "
+                 "СП 42.13330.2026 такой нормы нет — процент озеленения задают правила "
+                 "землепользования и застройки региона, сверьте с ними")
     if per_person > share + 0.5:
         return (per_person,
                 f"допущение: норма Москвы {_norm_ru(MSK_GREEN_ZHK_SQM_PER_PERSON)} м² на жителя × "
-                f"{population} жителей — норм этого региона у нас нет; это больше, чем требует "
-                "СП 42.13330.2016, п. 7.4 (25% участка)")
+                f"{population} жителей — норм этого региона у нас нет. Это больше, чем 25% "
+                f"участка: {sp42_note}")
     return (share,
-            "СП 42.13330.2016, п. 7.4: озеленение жилого квартала — не меньше 25% участка "
-            f"(это не меньше нормы Москвы {_norm_ru(MSK_GREEN_ZHK_SQM_PER_PERSON)} м² на жителя × "
-            f"{population} жителей, которую берём допущением: норм этого региона у нас нет)")
+            f"допущение: озеленённый двор — не меньше 25% участка. {sp42_note[0].upper()}"
+            f"{sp42_note[1:]}. Это не меньше нормы Москвы "
+            f"{_norm_ru(MSK_GREEN_ZHK_SQM_PER_PERSON)} м² на жителя × {population} жителей, "
+            "которую берём допущением: норм этого региона у нас нет")
 
 
 def _glavapu_territory_value(cell: Any) -> float:
@@ -403,8 +414,7 @@ def underground_rate_by_hand(x: dict[str, Any]) -> bool:
 
     Ручная — вписанная в поле проекта (`_field_origin`, `_class_manual`) или отличная от базы
     класса (`project_class_deviations`: правка руками или личная перекрышка).
-    Надбавки за глубину к ней не прибавляются: число человека остаётся его
-    числом.
+    Применять ли к ней надбавки за глубину, решает `underground_depth_markups_apply`.
     """
     origin = ((x.get("_field_origin") or {}).get("inputs.main_under_th_per_sqm") or {})
     if isinstance(origin, dict) and origin.get("source") == "manual":
@@ -415,6 +425,20 @@ def underground_rate_by_hand(x: dict[str, Any]) -> bool:
         return True
     return any(row.get("field") == "main_under_th_per_sqm"
                for row in project_class_deviations(x).get("rows") or [])
+
+
+def underground_depth_markups_apply(x: dict[str, Any]) -> bool:
+    """Применять ли надбавки за глубину к ставке подземной части — одно решение.
+
+    Ставка класса — да. Ручная ставка — нет: число человека остаётся его числом
+    на всех уровнях, пока он не отметил флажком `underground_rate_is_level1`, что
+    вписал ставку первого уровня; тогда ниже добавляются те же надбавки, что к
+    ставке класса. Ключа нет — флажок снят (умолчание, а не чьё-то решение);
+    «Да», «true», 1 из книги, пресета или старого проекта — стоит (`b`).
+    Читают движок, книга (`site_massing_book.input_values`) и подпись под
+    таблицей уровней.
+    """
+    return not underground_rate_by_hand(x) or b(x, "underground_rate_is_level1")
 
 
 def _level_areas(total: float, capacity: float, levels: int) -> list[float]:
@@ -437,9 +461,83 @@ def _level_areas(total: float, capacity: float, levels: int) -> list[float]:
     return areas
 
 
+def underground_unfit_reason(under_sqm: float, capacity: float, site_sqm: float,
+                             social_plot: float, setbacks_sqm: float, use_factor: float) -> str:
+    """Почему подземная часть под участком не помещается — словами, с числами."""
+    taken = []
+    if social_plot > 0:
+        taken.append(f"участки школы, детского сада и поликлиники ({_fmt_ru(social_plot)} м², "
+                     "под ними паркинг не строят)")
+    if setbacks_sqm > 0:
+        taken.append(f"полоса отступа вдоль границ ({_fmt_ru(setbacks_sqm)} м²)")
+    verb = "вычтены" if len(taken) > 1 or social_plot > 0 else "вычтена"
+    whence = (f"Из участка {_fmt_ru(site_sqm)} м² {verb} " + " и ".join(taken) + ", а под "
+              f"машино-места идёт {_fmt_ru(use_factor * 100)}% оставшейся площади. "
+              if taken else
+              f"Под машино-места идёт {_fmt_ru(use_factor * 100)}% площади участка "
+              f"{_fmt_ru(site_sqm)} м². ")
+    if capacity > 0.5:
+        needed = int(_math.ceil(under_sqm / capacity - 1e-9))
+        head = (f"Подземная часть {_fmt_ru(under_sqm)} м² под этим участком не помещается: "
+                f"на одном подземном уровне здесь около {_fmt_ru(capacity)} м², и понадобилось "
+                f"бы {_fmt_ru(needed)} уровней, а больше {UNDERGROUND_LEVELS_MAX} уровней мы не "
+                "оцениваем — это наше допущение. ")
+        money = ("Поэтому число подземных уровней не посчитано, и надбавка за глубину в смету "
+                 "не вошла: стоимость подземной части в расчёте ниже, чем была бы на "
+                 f"{_fmt_ru(needed)} настоящих уровнях. ")
+    else:
+        head = (f"Подземная часть {_fmt_ru(under_sqm)} м² под этим участком не помещается: "
+                "места под землёй на участке не остаётся. ")
+        money = ("Поэтому число подземных уровней не посчитано, и надбавка за глубину в смету "
+                 "не вошла: стоимость подземной части в расчёте ниже настоящей. ")
+    return (head + whence + money + "Проверьте площадь участка, участки школы и детского "
+            "сада, отступ от границ и площадь подземной части или впишите число подземных "
+            "уровней вручную в поле «Подземных уровней».")
+
+
 def _fmt_ru(value: float, digits: int = 0) -> str:
     text = f"{value:,.{digits}f}".replace(",", " ").replace(".", ",")
     return text
+
+
+def _footprint_basis(origin: str, *, room: float, coverage_pct: float, coverage_origin: str,
+                     coverage_sqm: float, typical: float, limit: float, home_gns: float,
+                     fit: float, territory: str) -> str:
+    """Что ограничивает пятно — по той ветке, которую выбрал расчёт (`origin`).
+
+    Владелец 02.11.2026: «при увеличении свободного места пятно не изменяется».
+    Пятно — меньшее из свободного места и процента застройки (или по типовой
+    этажности, пределу, ручному числу); подпись называет именно ту границу,
+    что сработала, а не угадывает её по совпадению чисел.
+    """
+    free = f"Свободно под здание — {_fmt_ru(room)} м²"
+    pct_word = ("задан в проекте" if coverage_origin == "manual"
+                else "обычное значение для жилья, его можно поменять в допущениях ниже")
+    if origin == "manual":
+        return "Задано вручную в допущениях ниже. Чтобы пятно считалось само, очистите поле."
+    if origin == "coverage":
+        return (f"Пятно ограничено процентом застройки: {_fmt_ru(coverage_pct)}% {territory} — "
+                f"это {_fmt_ru(coverage_sqm)} м² (процент {pct_word}). {free}. Чтобы занять "
+                "больше, поднимите процент застройки или задайте пятно вручную.")
+    if origin == "estimate":
+        cap = (f" Процент застройки ({_fmt_ru(coverage_pct)}%) позволил бы "
+               f"{_fmt_ru(coverage_sqm)} м², то есть больше." if coverage_origin != "none" else
+               " Процент застройки не задан, поэтому пятно — всё свободное место.")
+        return (f"Пятно ограничено свободным местом: после двора, проездов, стоянок и отступов "
+                f"под здание остаётся {_fmt_ru(room)} м².{cap} Чтобы пятно стало больше, "
+                "уменьшите проезды или отступы или задайте пятно вручную.")
+    if origin == "typical":
+        return (f"Пятно ограничено типовой этажностью из допущений: наземная площадь "
+                f"{_fmt_ru(home_gns)} м² на {_fmt_ru(min(typical, limit))} этажах. {free}, "
+                f"процент застройки позволяет {_fmt_ru(coverage_sqm)} м². Чтобы пятно стало "
+                "больше, уменьшите типовую этажность или очистите это поле.")
+    if origin == "fit":
+        return (f"Пятно ограничено тем, сколько корпусов встаёт на участок с отступами и "
+                f"разрывами: не больше {_fmt_ru(fit)} м². {free}.")
+    if origin == "limit":
+        return (f"Пятно взято по предельной этажности {_fmt_ru(limit)} этажей: с меньшим пятном "
+                "здание было бы выше предела. Подробности — в красной плашке этой карточки.")
+    return "Оценка по балансу территории."
 
 
 def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
@@ -523,8 +621,8 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
         coverage_pct, coverage_origin = COVERAGE_PCT_DEFAULT, "default"
     coverage_sqm = home_sqm * coverage_pct / 100.0 if coverage_pct > 0 else home_sqm
     base = min(room, coverage_sqm)
-    # Жилые дома — типовой этажности (владелец 23.10.2026: 17 этажей, одно число
-    # для всех классов), но не выше предела; процент застройки и свободное
+    # Жилые дома — типовой этажности, если её вписали (поле); пусто — пятно
+    # по свободной земле (владелец 31.10.2026), но этажность не выше предела; процент застройки и свободное
     # место — верхняя граница пятна. У проекта без жилья типовой нет.
     given_typical = _massing_number(x, "residential_storeys_typical")
     if without_housing(x):
@@ -532,7 +630,11 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
     elif given_typical > 0:
         typical, typical_origin = given_typical, "manual"
     else:
-        typical, typical_origin = RESIDENTIAL_STOREYS_DEFAULT, "default"
+        # Пусто — типовой нет: пятно — вся свободная земля (участок − двор −
+        # проезды − стоянки − отступы), не больше процента застройки, этажность
+        # = площадь ÷ пятно (владелец 31.10.2026: «меняю допущения, а пятно не
+        # меняется»). Ветка «coverage»/«estimate» ниже; книга — та же формула с 0.
+        typical, typical_origin = 0.0, "land"
     typical_target = home_gns / min(typical, limit) if typical > 0 and home_gns > 0 else 0.0
     manual_footprint = _massing_number(x, "building_footprint_sqm")
     shortage = 0.0
@@ -586,6 +688,38 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
     else:
         footprint, footprint_origin = room, "estimate"
 
+    # Пятно, которое встаёт на участок корпусами схемы (`site_massing_fit_sqm`):
+    # не встаёт — пятно сжимается до него и этажность растёт, но не выше
+    # предела (владелец 25.10.2026). Ручное пятно — число человека, его не трогаем.
+    fit = max(0.0, float(x.get("_massing_fit_sqm") or 0.0))
+    if fit > 0 and footprint_origin != "manual" and footprint > fit + 0.5 and home_gns > 0:
+        wanted = footprint
+        floor_spot = home_gns / limit
+        if floor_spot <= fit + 0.5:
+            footprint, footprint_origin = fit, "fit"
+            notes.append(
+                f"Пятно {_fmt_ru(wanted)} м² на участке не встаёт: с отступом "
+                f"{_fmt_ru(setback_m)} м от границ и разрывом {_fmt_ru(LAYOUT_GAP_IN_ROW_M)} м между "
+                f"корпусами на нём помещается не больше {_fmt_ru(fit)} м². Поэтому пятно взято "
+                f"{_fmt_ru(fit)} м², а этажность выше — "
+                f"{_fmt_ru(_mo_land_capacity.average_storeys(home_gns, fit), 1)}."
+                + (" Это пятно прямоугольника. Помощник Платон подбирает форму здания по "
+                   "границам участка: если пятно встанет целиком, расчёт и схема обновятся сами."
+                   if x.get("_massing_fit_pending") else ""))
+        else:
+            footprint, footprint_origin = floor_spot, "limit"
+            warnings.append(
+                f"{subject} с наземной площадью {_fmt_ru(home_gns)} м² на участке не помещается. "
+                f"Даже на {_fmt_ru(limit)} этажах "
+                f"{'(предел участка)' if max_storeys > 0 else '(выше расчёт не ставит)'} "
+                f"пятно — {_fmt_ru(floor_spot)} м², а с отступом {_fmt_ru(setback_m)} м от границ "
+                f"и разрывом {_fmt_ru(LAYOUT_GAP_IN_ROW_M)} м между корпусами на участке "
+                f"помещается не больше {_fmt_ru(fit)} м²: не хватает "
+                f"{_fmt_ru(floor_spot - fit)} м². Уменьшите наземную площадь, проверьте "
+                "предельную этажность или задайте пятно застройки вручную.")
+        # Нехватка земли — по балансу участка, как в книге.
+        shortage = max(0.0, footprint - room) if site_sqm > 0 else 0.0
+
     if site_sqm <= 0:
         warnings.append("Площадь участка не задана, поэтому пятно застройки, этажность "
                         "и число подземных уровней не посчитаны. Укажите площадь участка "
@@ -627,10 +761,17 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
         levels, levels_origin = 0, "estimate"
     elif manual_levels > 0:
         levels, levels_origin = manual_levels, "manual"
-    elif capacity > 0:
-        levels, levels_origin = int(_math.ceil(under_sqm / capacity - 1e-9)), "estimate"
     else:
-        levels, levels_origin = 0, "estimate"
+        needed = int(_math.ceil(under_sqm / capacity - 1e-9)) if capacity > 0 else 0
+        # Не помещается в потолок (или места под участком нет) — уровней в
+        # оценке нет, а не тысяча: причина ниже, словами.
+        levels = needed if 0 < needed <= UNDERGROUND_LEVELS_MAX else 0
+        levels_origin = "estimate"
+    unfit_reason = ""
+    if under_sqm > 0 and levels_origin == "estimate" and levels == 0 and site_sqm > 0:
+        unfit_reason = underground_unfit_reason(
+            under_sqm, capacity, site_sqm, social_plot, setbacks_sqm, use_factor)
+        warnings.append(unfit_reason)
     if levels_origin == "manual" and capacity > 0 and under_sqm > capacity * levels + 0.5:
         warnings.append(
             f"Подземная часть {_fmt_ru(under_sqm)} м² не помещается на {levels} "
@@ -639,18 +780,26 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
     areas = _level_areas(under_sqm, capacity, levels)
 
     by_hand = underground_rate_by_hand(x)
-    markups = [0.0 if i == 0 else (markup2 if i == 1 else markup3) for i in range(len(areas))]
-    if by_hand or not areas:
+    apply_markups = underground_depth_markups_apply(x)
+    markups = [0.0 if i == 0 or not apply_markups else (markup2 if i == 1 else markup3)
+               for i in range(len(areas))]
+    if not areas:
         depth_factor = 1.0
     else:
         depth_factor = sum(a * (1 + m / 100.0) for a, m in zip(areas, markups)) / sum(areas)
     rate = n(x, "main_under_th_per_sqm")
-    level_rows = [{"level": -(i + 1), "area_sqm": a, "markup_pct": 0.0 if by_hand else m,
-                   "rate_th": rate * (1.0 if by_hand else 1 + m / 100.0)}
+    level_rows = [{"level": -(i + 1), "area_sqm": a, "markup_pct": m,
+                   "rate_th": rate * (1 + m / 100.0)}
                   for i, (a, m) in enumerate(zip(areas, markups))]
-    if by_hand and len(areas) > 1:
+    steps = (f"второй уровень дороже на {_fmt_ru(markup2, 1).replace(',0', '')}%, "
+             f"третий и ниже — на {_fmt_ru(markup3, 1).replace(',0', '')}%")
+    if not apply_markups and len(areas) > 1:
         depth_basis = ("Ставка подземной части задана вручную, поэтому надбавки за глубину "
                        "не применяются.")
+    elif by_hand and len(areas) > 1:
+        depth_basis = ("Ставка подземной части задана вручную как ставка первого уровня, "
+                       f"поэтому ниже к ней добавлены надбавки за глубину: {steps}. "
+                       "Надбавки — экспертная оценка.")
     elif len(areas) > 1:
         depth_basis = (f"Ставка второго уровня выше на {_fmt_ru(markup2, 1).replace(',0', '')}%, "
                        f"третьего и ниже — на {_fmt_ru(markup3, 1).replace(',0', '')}%. "
@@ -689,7 +838,20 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
         "footprint_estimate_sqm": max(0.0, estimate),
         "footprint_sqm": footprint,
         "footprint_origin": footprint_origin,
+        # Что ограничивает пятно — подпись по сработавшей ветке (`_footprint_basis`).
+        "footprint_basis": _footprint_basis(
+            footprint_origin, room=room, coverage_pct=coverage_pct,
+            coverage_origin=coverage_origin, coverage_sqm=coverage_sqm, typical=typical,
+            limit=limit, home_gns=home_gns, fit=fit,
+            territory="жилой территории" if objects else "участка"),
+        # Поле допущений, которым эту границу двигают (пусто — поля нет).
+        "footprint_limit_field": {"coverage": "site_coverage_max_pct",
+                                  "typical": "residential_storeys_typical",
+                                  "manual": "building_footprint_sqm"}.get(footprint_origin, ""),
         "footprint_shortage_sqm": shortage,
+        # Наибольшее пятно, которое встаёт на участок корпусами схемы (0 — без
+        # ограничения): вводная книги, посчитанная геометрией схемы.
+        "footprint_fit_sqm": fit,
         # Всё, что стоит на участке: пятно жилых домов и пятна отдельных зданий
         # (владелец 23.10.2026) — тот же итог, что сумма корпусов на схеме.
         "built_sqm": footprint + sum(o["footprint_sqm"] for o in objects),
@@ -714,8 +876,16 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
                                        if isinstance(row, dict)),
         "underground_levels": levels,
         "underground_levels_origin": levels_origin,
+        # Подземная часть под участком в потолок уровней не помещается: уровней
+        # в оценке нет, причина — словами (её же читают схема и отчёт).
+        "underground_levels_unfit": bool(unfit_reason),
+        "underground_levels_reason": unfit_reason,
+        "underground_levels_max": UNDERGROUND_LEVELS_MAX,
         "underground_level_rows": level_rows,
         "underground_rate_by_hand": by_hand,
+        # Надбавки за глубину применены (`underground_depth_markups_apply`): книга
+        # и подпись под таблицей уровней читают это решение, а не ставку.
+        "underground_depth_markups_apply": apply_markups,
         "underground_level2_markup_pct": markup2,
         "underground_level3_markup_pct": markup3,
         "underground_depth_factor": depth_factor,
@@ -725,7 +895,8 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
         "summary": site_massing_line({
             "footprint_sqm": footprint, "site_sqm": home_sqm,
             "average_storeys": storeys, "underground_sqm": under_sqm,
-            "underground_levels": levels, "objects": objects}),
+            "underground_levels": levels, "objects": objects,
+            "underground_levels_unfit": bool(unfit_reason)}),
     }
 
 
@@ -739,7 +910,9 @@ def site_massing_line(m: dict[str, Any]) -> str:
     under = float(m.get("underground_sqm") or 0.0)
     words = {1: "одном уровне", 2: "двух уровнях", 3: "трёх уровнях", 4: "четырёх уровнях"}
     tail = (f", подземная часть {_fmt_ru(under)} м² на "
-            f"{words.get(levels, f'{levels} уровнях')}" if levels > 0 and under > 0 else "")
+            f"{words.get(levels, f'{levels} уровнях')}" if levels > 0 and under > 0 else
+            f", подземная часть {_fmt_ru(under)} м² под участком не помещается"
+            if m.get("underground_levels_unfit") and under > 0 else "")
     objects = m.get("objects") or []
     head = ("Жилые дома: пятно застройки около {fp} м² ({share}% жилой территории)"
             if objects else "Здание: пятно застройки около {fp} м² ({share}% участка)")

@@ -435,10 +435,12 @@ def test_the_parity_script_finds_no_gap_for_sports_and_parking(name, tmp_path) -
 
 def test_the_irr_holds_when_it_is_searched_from_a_guess_like_excel(monkeypatch) -> None:
     """Excel и LibreOffice ищут IRR Ньютоном от догадки, а `xlsx_eval` —
-    делением отрезка. У паркинга по ДДУ поток «сначала деньги покупателей,
-    потом затраты» (−65% в год): от догадки 0,01 Ньютон уходит в ложный корень
-    на бесконечности. Книга пробует догадки по очереди и отбрасывает ответ
-    больше 100% в месяц — IRR сходится с движком и при поиске «как у Excel»."""
+    делением отрезка. У ТЦ по ДДУ поток собственника от одной догадки 0,01
+    Ньютон уводит в ложный корень. Книга пробует догадки по очереди и
+    отбрасывает ответ больше 100% в месяц — IRR сходится с движком и при
+    поиске «как у Excel». Прежде этот случай давал поток проекта паркинга по
+    ДДУ, где деньги покупателей шли раньше затрат; по 214-ФЗ они приходят
+    раскрытием эскроу после затрат (владелец, 25.10.2026)."""
     import xlsx_eval
 
     def newton(args):
@@ -458,16 +460,21 @@ def test_the_irr_holds_when_it_is_searched_from_a_guess_like_excel(monkeypatch) 
                 return rate
         raise xlsx_eval._DivZero()
 
-    spec_name = "наземный паркинг по ДДУ"
+    spec_name = "ТЦ по ДДУ"
     content, _ = _book(spec_name)
     monkeypatch.setitem(xlsx_eval.FUNCTIONS, "IRR", newton)
     verdict, bad, _, _ = _evaluate(content)
     assert verdict == ow.PASSED and bad == []
 
     def first_guess_only(book):
-        sheet = book["CF"]
-        cell = sheet[f"B{_row(sheet, 'IRR проекта')}"]
-        flows = cell.value.split("IRR(")[1].split(",")[0]
-        cell.value = f'=IFERROR((1+IRR({flows},0.01))^12-1,"")'
+        for name in book.sheetnames:
+            if not name.startswith("CF"):
+                continue
+            sheet = book[name]
+            for r in range(1, sheet.max_row + 1):
+                cell = sheet[f"B{r}"]
+                if str(sheet[f"A{r}"].value or "").startswith("IRR") and "IRR(" in str(cell.value):
+                    flows = cell.value.split("IRR(")[1].split(",")[0]
+                    cell.value = f'=IFERROR((1+IRR({flows},0.01))^12-1,"")'
 
-    assert "Проект: IRR проекта" in _tampered(spec_name, first_guess_only)
+    assert "Проект: IRR собственного капитала" in _tampered(spec_name, first_guess_only)

@@ -211,7 +211,10 @@ def install(app: FastAPI) -> None:
         own_numbers = core._project_cadastral_numbers(req.inputs or {})
         core.require_calc_access(req.session, req.access_key, "Расчёт экономики",
                                  inputs=req.inputs,
-                                 cadastral=None if own_numbers else (req.cadastral_numbers or None))
+                                 cadastral=None if own_numbers else (req.cadastral_numbers or None),
+                                 # Кнопки «Посчитать бесплатно» в 2.0 нет: бесплатный
+                                 # участок тратится первым расчётом, как прежде.
+                                 free_consent=True)
         try:
             payload = project_result.build_project_result(
                 core,

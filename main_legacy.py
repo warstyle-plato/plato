@@ -34,6 +34,8 @@ import plato_provider
 from terms_glossary import (CORE_ABOVE_AREA, CORE_TOTAL_AREA, CORE_UNDER_AREA, OBJECTS_TOTAL_AREA,
                             ROW_AREA_HEADER, ROW_AREA_HEADER_FULL, SALEABLE_AREA, area_total_label,
                             TERMS, TOTAL_AREA, capex_unit_base, page_terms, unit_label)
+# Подсказки «i» у плиток отчёта — один словарь на страницу, PDF и Платона.
+from report_kpi_hints import report_kpi_hints
 import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape as xml_escape
 
@@ -89,6 +91,7 @@ from developaid_report_page import REPORT_PAGE as _REPORT_PAGE_RAW
 # техприсоединению) в продукты и деньги модели живёт отдельным модулем: он о
 # документах, движок — об экономике, и смешивать их незачем.
 import document_intake
+import teaser_card
 from request_body import json_object
 import v4_book_polish
 import v4_dashboard
@@ -109,7 +112,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.27.69"
+VERSION = "0.28.62"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -165,6 +168,9 @@ _engine_part("tep_import")
 # пространстве имён движка: порядок объявлений и подмены core.<имя>
 # остаются прежними.
 _engine_part("monitor")
+
+# Накопительные и договорная сверка — тот же вход и данные Монитора.
+_engine_part("monitor_cumulative")
 
 
 # Маршруты импорта — пресет проекта, ассеты, ТЭП из Excel и анализ
@@ -300,8 +306,10 @@ _engine_part("site_massing")
 _engine_part("site_massing_layout")
 # Кварталы и фронты участка, расстановка корпусов и её проверка —
 # engine/site_massing_blocks.py; план расстановки от Платона (фоновый запрос,
-# хранение по отпечатку) — engine/site_massing_plan.py.
+# хранение по отпечатку) — engine/site_massing_plan.py. Посадка жилья домами из
+# секций, разбор участка и варианты застройки — engine/site_massing_variants.py.
 _engine_part("site_massing_blocks")
+_engine_part("site_massing_variants")
 _engine_part("site_massing_plan")
 
 
@@ -383,6 +391,10 @@ _engine_part("entry_price_ceiling")
 # «Сравнение стратегий» объекта с выбором способа продажи — одна таблица,
 # вывод, строка тизера и подбор точек безразличия для всех поверхностей.
 _engine_part("strategy_compare")
+
+# Подбор срока кредита аренды объекта — отдельным запросом по кнопке
+# «Подобрать» у поля «Срок кредита».
+_engine_part("loan_term_pick")
 
 
 # Маршруты /current-key-rate и /calculate вынесены в engine/calc_routes.py

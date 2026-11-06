@@ -157,19 +157,32 @@ V4_INPUTS_NOT_IN_BOOK: dict[str, str] = {
         "срок; сумму (B17) и календарь считает движок, а формулы книги читают "
         "готовое число — смена слова в книге ничего не пересчитывает "
         "(решение владельца 26.09.2026: книгу не усложнять)"),
+    "underground_rate_is_level1": (
+        "флажок «ручная ставка подземной части — ставка первого уровня»; ручная "
+        "ли ставка, знает движок, и решение «применять надбавки за глубину» "
+        "(`underground_depth_markups_apply`) приходит в блок «Пятно застройки» "
+        "строкой «Надбавки за глубину не применяются»"),
 }
 # Стратегия реализации ТЦ и офисов (`developaid_nonres_strategy`): аренду,
 # кредит объекта и выход формулы шаблона не моделируют. В книгу приходит
 # результат движка — лист «Нежильё — стратегия», — а вводные показываются
-# основанием, как у платы за ВРИ.
+# основанием, как у платы за ВРИ. Причина повторяется в строке каждого поля
+# каждого объекта, поэтому она короткая: длина листа — цена каждого прохода
+# по нему (`tests/test_the_workbook_is_written_by_rows.py`).
 V4_INPUTS_NOT_IN_BOOK.update({
     f"{_obj.prefix}_{_suffix}": (
-        "стратегия реализации объекта (ДДУ / прямая продажа / доходный метод) "
-        "и её параметры считаются движком; книга получает результат на листе "
-        "«Нежильё — стратегия»")
+        "способ продажи объекта и его параметры считает движок; "
+        "результат — на листе «Нежильё — стратегия»")
     for _obj in STANDALONE_OBJECTS if _obj.strategies
     for _suffix in nonres_strategy.STRATEGY_FIELD_DEFAULTS
     if _obj.garage_sellable or _suffix != "parking_rent_th_month"})
+# Класс офиса — не число, а выбор, который ставит числа полей офиса
+# (`apply_office_classes`): книга получает сами числа — цену, себестоимость,
+# аренду, — а выбор класса показывается основанием.
+V4_INPUTS_NOT_IN_BOOK.update({
+    f"{_obj.prefix}_{nonres_strategy.OFFICE_CLASS_FIELD}": (
+        "класс офиса ставит цену, себестоимость и аренду офиса; книга получает числа")
+    for _obj in STANDALONE_OBJECTS if _obj.product == "offices"})
 # Назначение каждого экземпляра ФОКа — та же вводная норматива, что у первого.
 V4_INPUTS_NOT_IN_BOOK.update({
     _obj.purpose_key: V4_INPUTS_NOT_IN_BOOK["sports_purpose"]
@@ -349,14 +362,20 @@ def _v4_landscaping_rows_xml(xml: str, inputs: dict[str, Any],
                  + text_cell(f"D{given_row}", "landscaping_area_sqm")
                  + "</x:row>")
     gns_rate_row = base_row + 4
+    # Ставка — та же, что у движка (`landscaping_gns_rate`): у нежилого проекта
+    # без ручной ставки — умолчание нежилого проекта (владелец, 25.10.2026), и
+    # пометка говорит, что число не вписано руками.
+    gns_rate, gns_rate_origin = landscaping_gns_rate(inputs)
+    gns_rate_note = ("по умолчанию для нежилого проекта: благоустройство считается "
+                     "ставкой на метр наземной площади"
+                     if gns_rate_origin == LANDSCAPING_RATE_NONRES_DEFAULT else
+                     "привычный сметчику показатель; заданный, он сильнее методики "
+                     "двора — так же, как заданная площадь сильнее норматива")
     parts.append(f'<x:row r="{gns_rate_row}">'
                  + text_cell(f"A{gns_rate_row}", "Ставка на метр ГНС, тыс ₽/м² "
                                                  "(0 — считать методикой двора)")
-                 + number_cell(f"B{gns_rate_row}", float(inputs.get(
-                     "landscaping_gns_th_per_sqm") or 0.0))
-                 + text_cell(f"C{gns_rate_row}", "привычный сметчику показатель; заданный, "
-                                                 "он сильнее методики двора — так же, как "
-                                                 "заданная площадь сильнее норматива")
+                 + number_cell(f"B{gns_rate_row}", gns_rate)
+                 + text_cell(f"C{gns_rate_row}", gns_rate_note)
                  + text_cell(f"D{gns_rate_row}", "landscaping_gns_th_per_sqm")
                  + "</x:row>")
     norm_row = base_row + 5

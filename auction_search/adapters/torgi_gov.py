@@ -75,6 +75,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Iterable
 
 from auction_search import deadline as clock
+from auction_search import privatization
 from auction_search.adapters.base import AuctionPlatformAdapter
 from auction_search.classifier import (
     BANKRUPTCY_WORDS as _BANKRUPTCY_WORDS,
@@ -688,6 +689,11 @@ def to_lot(card: dict[str, Any], fetched_at: str) -> AuctionLot | None:
         result_price_rub=result_price,
         relevance_flags=flags,
         provenance=provenance,
+        # Код вида торгов и регион — для правила приватизации
+        # (`privatization`): «178FZ» — приватизация, а регион уже сверен
+        # `subjectRFCode` и второй раз по словам не угадывается.
+        raw={"bidd_type_code": _text(bidd.get("code") if isinstance(bidd, dict) else bidd).upper(),
+             "lot_region_code": _text(card.get("subjectRFCode")).lstrip("0")},
     )
 
 
@@ -772,6 +778,14 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
             return []
         lots, report = self._sweep(
             ACTIVE_LOT_STATUSES, deadline=deadline, max_pages=MAX_PAGES_PER_FILTER)
+        # Городская приватизация и продажа городской земли — только стоящие
+        # лоты (решение владельца 02.11.2026). Отсеянное считается с причиной:
+        # молча убранный гараж неотличим от ненайденного здания.
+        tally = privatization.Tally()
+        lots = [lot for lot in lots
+                if not privatization.applies(lot) or tally.keep(lot)]
+        report.update(tally.report())
+        report["kept"] = len(lots)
         self.last_report = report
         return lots
 

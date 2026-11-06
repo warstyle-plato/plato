@@ -86,7 +86,7 @@ REPORT_PAGE = """<!doctype html>
 __DEVELOPAID_CONTOUR__
 <div class="top"><div><h1 style="margin:0">Сводка руководству</h1><div class="muted">Стройка, продажи, финансирование и бюджет за неделю или за месяц — для решений и рассылки</div></div>
 <div class="files"><div class="field"><label>Проект</label><select id="project"><option value="">Загружаю список проектов…</option></select></div><div class="field"><label>Дата сводки</label><input id="cut" type="date"></div><div class="field"><label>Период</label><select id="reportKind"><option value="week">За неделю</option><option value="month">За месяц</option></select></div><div class="field" id="salesField"><label>Проект в отчёте о продажах</label><div id="salesLinked" class="hidden" style="padding-top:6px"><span id="salesName"></span> <button class="btn ghost" id="salesChange" type="button" title="Выбрать другой проект из отчёта о продажах">Сменить</button></div><select id="reportSales" class="hidden" title="Выбор запоминается на сервере для всех, кто открывает сводку этого проекта."></select></div><button class="btn" id="reportBtn">Показать</button><button class="btn alt" id="reportPdfBtn">Скачать PDF</button></div></div>
-<div class="card auth-card" id="loginBox"><div class="body" style="padding:12px 14px"><b>Вход</b><div class="muted">Войдите через Telegram тем же аккаунтом DevelopAid, что и в Мониторе.</div><div class="files" style="margin-top:10px"><button class="btn" id="loginBtn">Войти через Telegram</button><button class="btn ghost" id="keyBtn">Ключ администратора</button></div><div class="msg" id="loginMsg"></div></div></div>
+<div class="card auth-card" id="loginBox"><div class="body" style="padding:12px 14px"><b>Вход</b><div class="muted">Раздел доступен только по ключу администратора. Нажмите «Ключ администратора» и введите его.</div><div class="files" style="margin-top:10px"><button class="btn hidden" id="loginBtn">Войти через Telegram</button><button class="btn" id="keyBtn">Ключ администратора</button></div><div class="msg" id="loginMsg"></div></div></div>
 <div id="privateArea" class="hidden">
 <div class="msg" id="reportMsg"></div>
 <div id="reportBox"><p class="muted">Выберите проект и нажмите «Показать».</p></div>
@@ -101,20 +101,26 @@ __DEVELOPAID_CONTOUR__
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 function dt(v){if(!v)return '—';const d=new Date(v);return isNaN(d)?v:d.toLocaleDateString('ru-RU')}
+function dtm(v){if(!v)return '—';const d=new Date(v);return isNaN(d)?v:d.toLocaleDateString('ru-RU',{timeZone:'Europe/Moscow'})+' в '+d.toLocaleTimeString('ru-RU',{timeZone:'Europe/Moscow',hour:'2-digit',minute:'2-digit'})}
+function mailingWhat(x){return `${x.kind==='month'?'за месяц':'за неделю'} по ${dt(x.end)}`}
+function mailingLast(x){if(!x)return ' · сводок ещё не было';return ` · последняя сводка — ${esc(mailingWhat(x))}: ${esc(x.label)}${x.at?' '+esc(dtm(x.at)):''}${x.error?' — '+esc(x.error):''}`}
+function mailingMissing(r){const rows=(r.missing||[]).map(x=>`<div class="msg bad">Сводка ${esc(mailingWhat(x))} должна была уйти ${esc(dtm(x.at))}, но ещё не собрана. ${x.error?'Причина: '+esc(x.error)+' (проверено '+esc(dtm(x.error_at||''))+').':'Сервер пробует собрать её каждые две минуты.'}</div>`);const b=r.builder||{};if(b.error)rows.push(`<div class="msg bad">Сборка рассылки на сервере остановилась с ошибкой: ${esc(b.error)}</div>`);return rows.join('')}
 function msg(id,t,cls=''){const e=$(id);if(!e)return;e.textContent=t;e.className='msg '+cls}
 const WEB_SESSION_KEY='developaid_web_session',ADMIN_KEY='plato_projects_key';
+let reportSeq=0,reportJob=null;
+function invalidateReport(){reportSeq++;reportJob=null;$('reportBox').innerHTML='<div class="muted">Выберите проект и нажмите «Показать».</div>'}
 function readStorage(...keys){try{for(const k of keys){const v=localStorage.getItem(k);if(v)return v}}catch(e){}return ''}
 function session(){return readStorage(WEB_SESSION_KEY,'session','developaid_session')}
 function adminKey(){return readStorage(ADMIN_KEY,'key','developaid_key')}
-function hasAuth(){return !!(session()||adminKey())}
+function hasAuth(){return !!adminKey()}
 function auth(){return{session:session(),key:adminKey()}}
 function syncAuthUi(){const yes=hasAuth();$('loginBox').classList.toggle('hidden',yes);$('privateArea').classList.toggle('hidden',!yes);return yes}
-function requireLogin(text='Войдите через Telegram, чтобы открыть сводку.'){$('loginBox').classList.remove('hidden');$('privateArea').classList.add('hidden');msg('loginMsg',text,'bad')}
+function requireLogin(text='Введите ключ администратора, чтобы открыть сводку.'){invalidateReport();$('loginBox').classList.remove('hidden');$('privateArea').classList.add('hidden');msg('loginMsg',text,'bad')}
 // Обрыв связи браузер называет «Load failed» / «Failed to fetch» — владельцу
 // это ничего не говорит (22.10.2026: «после нажатия кнопки Подтвердить и
 // сохранить пишет load failed»). Здесь причина названа словами, а запрос
 // назван, чтобы было видно, что именно не дошло.
-async function post(path,p){let r;try{r=await fetch(path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(Object.assign(auth(),p||{}))})}catch(e){throw new Error(`Сервер не ответил на запрос ${path}: связь прервалась (${e.message}). Проверьте интернет и повторите; если это повторяется — напишите нам, какое действие и во сколько.`)}const d=await r.json().catch(()=>({}));if(r.status===401)requireLogin();if(!r.ok)throw new Error(d.detail||('Ошибка '+r.status));return d}
+async function post(path,p){let r;try{r=await fetch(path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(Object.assign(auth(),p||{}))})}catch(e){throw new Error(`Сервер не ответил на запрос ${path}: связь прервалась (${e.message}). Проверьте интернет и повторите; если это повторяется — напишите нам, какое действие и во сколько.`)}const d=await r.json().catch(()=>({}));if(r.status===401||r.status===403)requireLogin(d.detail||undefined);if(!r.ok)throw Object.assign(new Error(d.detail||('Ошибка '+r.status)),{status:r.status});return d}
 function remember(key,value){try{localStorage.setItem(key,value)}catch(e){}}
 function recall(key){try{return localStorage.getItem(key)||''}catch(e){return ''}}
 let projectList=[],salesList=[];
@@ -128,12 +134,42 @@ async function mergeRun(apply){const source=$('mergeSource').value,target=$('mer
 $('mergeCheckBtn').onclick=()=>mergeRun(false);$('mergeApplyBtn').onclick=()=>mergeRun(true);$('mergeSource').onchange=$('mergeTarget').onchange=()=>{$('mergeApplyBtn').disabled=true;$('mergePlan').innerHTML=''};
 async function loadProjects(){try{drawProjects(await post('/monitor/report/projects',{}));if(!projectList.length)msg('reportMsg','В Мониторе пока нет проектов. Загрузите РСС или график работ на странице Монитора — проект появится в списке.','warn');return projectList.length>0}catch(e){msg('reportMsg',e.message,'bad');return false}}
 function reportPayload(){remember('mgmt_report_project',$('project').value);return {project:$('project').value,kind:$('reportKind').value,end:$('cut').value||''}}
-let reportSeq=0;
+function newReportTicket(){if(!globalThis.crypto||!crypto.getRandomValues)return '';const bytes=new Uint8Array(16);crypto.getRandomValues(bytes);return Array.from(bytes,x=>x.toString(16).padStart(2,'0')).join('')}
 // Переключатель мер темпа продаж — орудие страницы: в документе кнопок нет и
 // там все меры подряд. Обработчик один на карточку: разметка приходит с
 // сервера заново при каждой сборке.
 $('reportBox').addEventListener('click',e=>{const b=e.target.closest('.switch-charts .switch button');if(!b)return;const box=b.closest('.switch-charts');box.querySelectorAll('.switch button').forEach(x=>x.classList.toggle('on',x===b));box.querySelectorAll('.pane').forEach(p=>p.classList.toggle('on',p.dataset.pane===b.dataset.pane))});
-async function renderReport(quiet){const p=$('project').value;if(!p)return msg('reportMsg','Выберите проект в списке.','bad');const seq=++reportSeq;msg('reportMsg','Собираю сводку…','warn');try{const r=await post('/monitor/report',reportPayload());if(seq!==reportSeq)return;$('reportBox').innerHTML=r.html;msg('reportMsg','','')}catch(e){if(seq!==reportSeq)return;msg('reportMsg',e.message,'bad')}renderNotes();loadMailing();loadLegal();if(!quiet)loadPhotos()}
+async function renderReport(quiet){
+ const seq=++reportSeq,p=$('project').value;if(!p){reportJob=null;$('reportBox').innerHTML='<div class="muted">Выберите проект и нажмите «Показать».</div>';return msg('reportMsg','Выберите проект в списке.','bad')}
+ const payload=reportPayload(),signature=JSON.stringify(payload);
+ if(!reportJob||reportJob.signature!==signature||reportJob.done)reportJob={signature,ticket:newReportTicket(),done:false};
+ const job=reportJob;msg('reportMsg','Собираю сводку…','warn');
+ try{
+  let r;
+  // Быстрые изменения полей могут занять оба места предыдущими сборками.
+  // Ждём место только для последнего выбора: до 60 повторов, без очереди
+  // на сервере, с теми же параметрами и номером запроса при каждом повторе.
+  for(let retry=0;;retry++){
+   if(seq!==reportSeq)return;
+   try{r=await post('/monitor/report/build',Object.assign({},payload,{ticket:job.ticket}));break}
+   catch(e){
+    if(seq!==reportSeq)return;
+    if(e.status!==429||retry>=60)throw e;
+    msg('reportMsg','Сервер собирает другие сводки. Ожидаю свободного места…','warn');
+    await new Promise(resolve=>setTimeout(resolve,1500));
+   }
+  }
+  if(seq!==reportSeq)return;job.ticket=r.ticket||job.ticket;
+  while(r.pending){
+   msg('reportMsg','Собираю сводку. Можно оставить страницу открытой.','warn');
+   await new Promise(resolve=>setTimeout(resolve,1500));if(seq!==reportSeq)return;
+   r=await post('/monitor/report/result',{ticket:job.ticket});if(seq!==reportSeq)return;
+  }
+  if(typeof r.html!=='string'||!r.html.trim())throw Object.assign(new Error('Сервер не вернул сводку. Повторите запрос.'),{status:500});
+  job.done=true;$('reportBox').innerHTML=r.html;msg('reportMsg','','');
+ }catch(e){if(seq!==reportSeq)return;if(e.status)reportJob=null;msg('reportMsg',e.message,'bad')}
+ renderNotes();loadMailing();loadLegal();if(!quiet)loadPhotos()
+}
 const photoUrls={};
 async function photoSrc(id){if(photoUrls[id])return photoUrls[id];const r=await fetch('/monitor/photo',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(Object.assign(auth(),{project:$('project').value.trim(),photo_id:id}))});if(!r.ok)return '';photoUrls[id]=URL.createObjectURL(await r.blob());return photoUrls[id]}
 async function loadPhotos(extra){const p=$('project').value.trim();if(!p)return;try{drawPhotos(await post('/monitor/photos',Object.assign({project:p,kind:$('reportKind').value,end:$('cut').value||''},extra||{})));return true}catch(e){msg('photosMsg',e.message,'bad');return false}}
@@ -150,7 +186,7 @@ function drawPhotos(r){const list=r.photos||[];$('photosState').textContent=list
  $('photosList').querySelectorAll('label').forEach(box=>{const id=box.dataset.id;box.querySelector('.photoPick').onchange=async e=>{if(await loadPhotos({photo_id:id,chosen:e.target.checked})){msg('photosMsg','Выбор сохранён — сводка обновлена.','good');renderReport(true)}}})}
 let mailingSeq=0;
 async function loadMailing(extra){const p=$('project').value.trim();if(!p)return;const seq=++mailingSeq;try{const r=await post('/monitor/report/mailing',Object.assign({project:p},extra||{}));if(!extra&&seq!==mailingSeq)return true;if(extra)mailingSeq++;drawMailing(r);return true}catch(e){if(!extra&&seq!==mailingSeq)return false;msg('mailingMsg',e.message,'bad');return false}}
-function drawMailing(r){const people=r.subscribers||[],next=r.next||{};$('mailingNext').textContent=next.at?`Ближайшая рассылка — ${dt(next.at)} в 9:00, ${next.kind==='week'?'за неделю':'за месяц'}.`:'';$('mailingInviteBtn').textContent=r.invite?'Выдать новую ссылку (прежняя перестанет действовать)':'Создать ссылку-приглашение';$('mailingLink').innerHTML=r.link?`<div>Ссылка-приглашение: <input id="mailingLinkText" readonly value="${esc(r.link)}" style="width:420px"> <button class="btn ghost" id="mailingCopyBtn">Скопировать</button></div><div class="muted" style="font-size:11px">Создана ${dt(r.invite.at)}, ${esc(r.invite.by)}. Кто открыл ссылку, остаётся подписан и после выдачи новой.</div>`:(r.link_reason?`<div class="msg bad">${esc(r.link_reason)}</div>`:'<div class="muted">Ссылки ещё нет.</div>');if($('mailingCopyBtn'))$('mailingCopyBtn').onclick=()=>{$('mailingLinkText').select();try{navigator.clipboard.writeText(r.link)}catch(e){document.execCommand('copy')}msg('mailingMsg','Ссылка скопирована.','good')};$('mailingList').innerHTML=people.length?`<b>Получатели: ${people.length}</b>`+people.map(x=>`<div class="mailingPerson" data-chat="${esc(x.chat_id)}" style="border-top:1px solid #e5e7eb;padding:5px 0">${esc(x.name||('чат '+x.chat_id))} <span class="muted">· подписан ${dt(x.at)}${x.last?` · последняя сводка: ${esc(x.last.label)}${x.last.error?' — '+esc(x.last.error):''}`:' · сводок ещё не было'}</span> <button class="btn ghost mailingRemove">Отписать</button></div>`).join(''):'<div class="muted">Получателей пока нет.</div>';$('mailingList').querySelectorAll('.mailingPerson').forEach(box=>{box.querySelector('.mailingRemove').onclick=async()=>{if(!confirm('Отписать получателя от сводки по этому проекту?'))return;if(await loadMailing({remove_chat:Number(box.dataset.chat)}))msg('mailingMsg','Получатель отписан.','good')}})}
+function drawMailing(r){const people=r.subscribers||[],next=r.next||{};$('mailingNext').textContent=next.at?`Ближайшая рассылка — ${dt(next.at)} в 9:00, ${next.kind==='week'?'за неделю':'за месяц'}.`:'';$('mailingInviteBtn').textContent=r.invite?'Выдать новую ссылку (прежняя перестанет действовать)':'Создать ссылку-приглашение';$('mailingLink').innerHTML=r.link?`<div>Ссылка-приглашение: <input id="mailingLinkText" readonly value="${esc(r.link)}" style="width:420px"> <button class="btn ghost" id="mailingCopyBtn">Скопировать</button></div><div class="muted" style="font-size:11px">Создана ${dt(r.invite.at)}, ${esc(r.invite.by)}. Кто открыл ссылку, остаётся подписан и после выдачи новой.</div>`:(r.link_reason?`<div class="msg bad">${esc(r.link_reason)}</div>`:'<div class="muted">Ссылки ещё нет.</div>');if($('mailingCopyBtn'))$('mailingCopyBtn').onclick=()=>{$('mailingLinkText').select();try{navigator.clipboard.writeText(r.link)}catch(e){document.execCommand('copy')}msg('mailingMsg','Ссылка скопирована.','good')};$('mailingList').innerHTML=mailingMissing(r)+(people.length?`<b>Получатели: ${people.length}</b>`+people.map(x=>`<div class="mailingPerson" data-chat="${esc(x.chat_id)}" style="border-top:1px solid #e5e7eb;padding:5px 0">${esc(x.name||('чат '+x.chat_id))} <span class="muted">· подписан ${dt(x.at)}${mailingLast(x.last)}</span> <button class="btn ghost mailingRemove">Отписать</button></div>`).join(''):'<div class="muted">Получателей пока нет.</div>');$('mailingList').querySelectorAll('.mailingPerson').forEach(box=>{box.querySelector('.mailingRemove').onclick=async()=>{if(!confirm('Отписать получателя от сводки по этому проекту?'))return;if(await loadMailing({remove_chat:Number(box.dataset.chat)}))msg('mailingMsg','Получатель отписан.','good')}})}
 $('mailingInviteBtn').onclick=async()=>{if(await loadMailing({invite:true}))msg('mailingMsg','Новая ссылка готова: отправьте её тем, кто должен получать сводку.','good')};
 let legalData={cases:[],documents:[],statuses:{},directions:{}},legalDraft=null;
 const rub=v=>v==null||v===''?'—':(Math.abs(v)>=1e6?(v/1e6).toFixed(1).replace('.',',')+' млн ₽':Math.round(v).toLocaleString('ru-RU')+' ₽');
@@ -188,12 +224,14 @@ $('project').onchange=()=>{drawSalesLink(false);renderReport()};
 $('salesChange').onclick=()=>drawSalesLink(true);
 $('reportSales').onchange=async()=>{const v=$('reportSales').value;if(!v)return;try{drawProjects(await post('/monitor/report/link',{project:$('project').value,sales_project:v==='__none__'?'':v}),$('project').value);msg('reportMsg','Выбор запомнен: теперь он действует для всех, кто открывает сводку этого проекта.','good');renderReport(true)}catch(e){msg('reportMsg',e.message,'bad')}};
 $('reportKind').onchange=()=>renderReport();
-$('reportPdfBtn').onclick=async()=>{const btn=$('reportPdfBtn');btn.disabled=true;msg('reportMsg','Печатаю PDF — обычно до двадцати секунд.','warn');try{const r=await fetch('/monitor/report.pdf',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(Object.assign(auth(),reportPayload()))});if(r.status===401)requireLogin();if(!r.ok){const d=await r.json().catch(()=>({}));throw new Error(d.detail||('Не удалось напечатать PDF: ошибка '+r.status))}const blob=await r.blob(),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`Сводка ${$('project').value.trim()} ${$('cut').value||''}.pdf`;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),60000);msg('reportMsg','PDF скачан.','good')}catch(e){msg('reportMsg',e.message,'bad')}finally{btn.disabled=false}};
-$('loginBtn').onclick=async()=>{msg('loginMsg','Открываю Telegram…','good');try{const r=await fetch('/auth/telegram/start',{method:'POST'}),d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.detail||'Вход через Telegram недоступен');if(d.link)window.open(d.link,'_blank');for(let i=0;i<60;i++){await new Promise(ok=>setTimeout(ok,2000));const c=await fetch('/auth/telegram/claim',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:d.code})}),cd=await c.json().catch(()=>({}));if(c.ok&&cd.session){remember(WEB_SESSION_KEY,cd.session);if(syncAuthUi())start();return}}throw new Error('Подтверждение не пришло за 2 минуты.')}catch(e){msg('loginMsg',e.message,'bad')}};
-$('keyBtn').onclick=()=>{const k=prompt('Ключ администратора');if(!k)return;remember(ADMIN_KEY,k.trim());if(syncAuthUi())start()};
+$('cut').onchange=()=>renderReport();
+$('reportPdfBtn').onclick=async()=>{const btn=$('reportPdfBtn');btn.disabled=true;msg('reportMsg','Печатаю PDF — обычно до двадцати секунд.','warn');try{const r=await fetch('/monitor/report.pdf',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(Object.assign(auth(),reportPayload()))});if(!r.ok){const d=await r.json().catch(()=>({}));if(r.status===401||r.status===403)requireLogin(d.detail||undefined);throw new Error(d.detail||('Не удалось напечатать PDF: ошибка '+r.status))}const blob=await r.blob(),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`Сводка ${$('project').value.trim()} ${$('cut').value||''}.pdf`;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),60000);msg('reportMsg','PDF скачан.','good')}catch(e){msg('reportMsg',e.message,'bad')}finally{btn.disabled=false}};
+$('loginBtn').onclick=async()=>{msg('loginMsg','Открываю Telegram…','good');try{const r=await fetch('/auth/telegram/start',{method:'POST'}),d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.detail||'Вход через Telegram недоступен');if(d.link)window.open(d.link,'_blank');for(let i=0;i<60;i++){await new Promise(ok=>setTimeout(ok,2000));const c=await fetch('/auth/telegram/claim',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:d.code})}),cd=await c.json().catch(()=>({}));if(c.ok&&cd.session){invalidateReport();remember(WEB_SESSION_KEY,cd.session);if(syncAuthUi())start();return}}throw new Error('Подтверждение не пришло за 2 минуты.')}catch(e){msg('loginMsg',e.message,'bad')}};
+$('keyBtn').onclick=()=>{const k=prompt('Ключ администратора');if(!k)return;invalidateReport();remember(ADMIN_KEY,k.trim());if(syncAuthUi())start()};
+window.addEventListener('storage',e=>{if(e.key===null||[WEB_SESSION_KEY,ADMIN_KEY,'session','developaid_session','key','developaid_key'].includes(e.key))requireLogin()});
 $('cut').value=new Date().toISOString().slice(0,10);
 async function start(){if(await loadProjects())renderReport()}
-if(syncAuthUi())start();else msg('loginMsg','Войдите через Telegram, чтобы открыть сводку.','bad');
+if(syncAuthUi())start();else msg('loginMsg','Введите ключ администратора, чтобы открыть сводку.','bad');
 </script>
 </body></html>
 """

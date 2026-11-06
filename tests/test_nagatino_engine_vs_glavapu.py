@@ -37,6 +37,9 @@ import main_legacy as core  # noqa: E402
 REFERENCE = json.loads((ROOT / "tests" / "fixtures" / "glavapu_nagatino_calc_2026_10_06.json")
                        .read_text(encoding="utf-8"))
 I = REFERENCE["inputs"]
+# Ставки компенсации за соцобъекты — дня выгрузки: город их индексирует
+# (`GLAVAPU_SOCIAL_COMPENSATION_RATES`).
+RATES_AT = "2026-10-06"
 
 # --------------------------------------------------------- дубль калькулятора --
 
@@ -68,7 +71,8 @@ def mirror() -> dict[str, float | None]:
                          "business_inside_ttc": 0.2, "rent": I["rent_coeff"],
                          "base_cost_zh_high": I["base_cost_mkd_rub"], "upks_zh_high": I["upks_rub"]},
     }
-    result = core.vri_tep_quick("msk", "77:05:0004001:1", analysis=analysis)
+    result = core.vri_tep_quick("msk", "77:05:0004001:1", analysis=analysis,
+                                rates_at=RATES_AT)
     import io
     import openpyxl
     sheet = openpyxl.load_workbook(io.BytesIO(result["file"]))["ТЭП"]
@@ -109,7 +113,8 @@ def test_the_mirror_jobs_follow_the_calculators_norm(mirror) -> None:
     """МПТ встроенных помещений — 32 м² НП на место, вниз: 22 217 → 694."""
     analysis = {"territory": {"area_ha": I["site_area_ha"]},
                 "coefficients": {"rail": I["k1"], "business_outside_ttc": I["k2"]}}
-    book = core.vri_tep_quick("msk", "77:05:0004001:1", analysis=analysis)["file"]
+    book = core.vri_tep_quick("msk", "77:05:0004001:1", analysis=analysis,
+                              rates_at=RATES_AT)["file"]
     assert gs.mpt_by_vri(book)["total"] == 694
 
 
@@ -142,7 +147,8 @@ def _derived() -> dict:
         apartment_area_sqm=I["apartment_area_sqm"],
         residential_living_spp_sqm=I["residential_living_spp_sqm"],
         nonresidential_np_sqm=I["built_in_np_sqm"], k1=I["k1"], k2=I["k2"],
-        upks_rub=I["upks_rub"], apartment_count=I["apartment_count"])
+        upks_rub=I["upks_rub"], apartment_count=I["apartment_count"],
+        compensation_at=RATES_AT)
     out = {key: norms.get(key) for key in (
         "population", "apartment_units", "kindergarten_places", "school_places",
         "clinic_capacity", "parking_permanent", "parking_guest", "parking_onsite",

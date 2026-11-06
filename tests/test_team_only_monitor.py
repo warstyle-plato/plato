@@ -1,22 +1,22 @@
-"""Монитор и сводка руководству — для команды владельца, а не для всех вошедших.
+"""Монитор, сводка руководству и споры — только по ключу администратора.
 
-Решение владельца 22.10.2026: вход через Telegram открывает расчёт и личный
-кабинет, а данные проектов команды — финансы, споры, бюджеты, записи,
-объединение проектов, рассылка — видит только команда: ключ администратора,
-ключ кабинета рынка или человек из `DEVELOPAID_ADMIN_IDS` / `DEVELOPAID_TEAM_IDS`
-(по умолчанию пуст). Здесь закреплено:
+Решение владельца 02.11.2026: «Надо убрать доступ к блоку report и monitor для
+всех кроме обладателя ключа администратор». Здесь закреплено:
 
-- обычный вошедший получает 403 с причиной простыми словами, без входа — 401;
-- команда проходит каждым из трёх способов;
-- все маршруты данных монитора читают одно решение (`_require_team_access`),
-  а не прежний пропуск «вошёл».
+- маршруты берутся из регистрации `app` (все `/monitor*` и `/report`, кроме
+  подписанных ботом `/internal/*` и выгрузок расчёта `/report/pdf|teaser|workbook`),
+  а не списком руками: новый маршрут, оставшийся открытым, роняет тест;
+- без ключа администратора — 403 с причиной «только по ключу администратора»
+  для всех: сессия команды и админа по chat_id, ключ кабинета рынка, демо-ссылка
+  с этими разделами, обычный вошедший, никто — и без токена бота тоже;
+- не задан `DEVELOPAID_ADMIN_KEY` — закрыто для всех, и это видно в /health;
+- с ключом администратора (полем тела или заголовком) пропуск проходит.
 
 Запуск: python3 -m pytest tests/test_team_only_monitor.py -q
 """
 
 from __future__ import annotations
 
-import re
 import sys
 from pathlib import Path
 
@@ -30,62 +30,146 @@ import main as _wrapper  # noqa: E402
 core = _wrapper.core
 client = TestClient(core.app, raise_server_exceptions=False)
 OWNER, CLIENT = 777, 5050
-ROUTES = ["/monitor/report", "/monitor/legal", "/monitor/notes", "/monitor/budget",
-          "/monitor/report/projects", "/monitor/merge"]
+KEY = "kluch"
+# Страницы-оболочки без данных (числа приходят с маршрутов ниже) и выгрузки
+# расчёта участка — не сводка руководству, у них своё право (`require_calc_access`).
+SHELLS = {"/monitor", "/report"}
+NOT_MANAGEMENT = ("/report/pdf", "/report/teaser", "/report/workbook")
+
+
+def _gated_routes() -> list[tuple[str, str]]:
+    out = []
+    for route in core.app.routes:
+        path = getattr(route, "path", "")
+        if not (path.startswith("/monitor") or path.startswith("/report")):
+            continue
+        if path in SHELLS or path.startswith(NOT_MANAGEMENT):
+            continue
+        for method in sorted(getattr(route, "methods", ()) or ()):
+            if method in ("GET", "POST"):
+                out.append((method, path))
+    return sorted(set(out))
+
+
+ROUTES = _gated_routes()
+_FILL = {str: "проверка", int: 1, float: 1.0, bool: False, list: [], dict: {}}
+
+
+def _route(method: str, path: str):
+    return next(r for r in core.app.routes
+                if getattr(r, "path", "") == path and method in getattr(r, "methods", ()))
+
+
+def call(method: str, path: str, session: str = "", key: str = "",
+         headers: dict | None = None, browser: TestClient = client):
+    """Запрос, который модель маршрута примет: отказ доступа обязан прийти
+    раньше разбора дела, а не прятаться за 422."""
+    out: dict = {"project": "проверка", "session": session, "key": key,
+                 "source": "проверка", "target": "проверка", "first": "a", "second": "b",
+                 "date": "2026-10-22", "taken_at": "2026-10-22", "content_base64": ""}
+    route = _route(method, path)
+    dependant = getattr(route, "dependant", None)
+    if method == "GET":
+        for param in getattr(dependant, "query_params", []) or []:
+            out.setdefault(param.name, "проверка")
+        return browser.get(path, params=out, headers=headers or {})
+    for param in getattr(dependant, "body_params", []) or []:
+        model = getattr(param.field_info, "annotation", None) or param.type_
+        for name, field in getattr(model, "model_fields", {}).items():
+            if field.is_required() and name not in out:
+                kind = getattr(field.annotation, "__origin__", None) or field.annotation
+                out[name] = _FILL.get(kind, "проверка")
+    return browser.post(path, json=out, headers=headers or {})
 
 
 @pytest.fixture(autouse=True)
 def env(monkeypatch):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123456:team-only-test-token")
     monkeypatch.setenv("DEVELOPAID_ADMIN_IDS", str(OWNER))
-    monkeypatch.setenv("DEVELOPAID_ADMIN_KEY", "kluch")
+    monkeypatch.setenv("DEVELOPAID_ADMIN_KEY", KEY)
     monkeypatch.setenv("MARKET_CABINET_KEY", "team-test-key")
-    monkeypatch.delenv("DEVELOPAID_TEAM_IDS", raising=False)
+    monkeypatch.setenv("DEVELOPAID_TEAM_IDS", str(CLIENT))
+    monkeypatch.setattr(core, "_MO_CALC_API_URL", "")
+    core._DEMO_ALIVE_CACHE.clear()
     yield
 
 
-def post(path: str, session: str = "", key: str = "", headers: dict | None = None):
-    # Поля с запасом на модели всех маршрутов: отказ доступа обязан прийти
-    # раньше разбора дела, а не прятаться за 422.
-    return client.post(path, json={"project": "проверка", "session": session, "key": key,
-                                   "sources": [], "target": "проверка", "source": "проверка",
-                                   "taken_at": "2026-10-22", "content_base64": ""},
-                       headers=headers or {})
+def _refused(answer) -> bool:
+    return (answer.status_code == 403
+            and core.ADMIN_KEY_ONLY_DENIED in str(answer.json().get("detail")))
 
 
-@pytest.mark.parametrize("path", ROUTES)
-def test_a_client_login_does_not_open_the_team_data(path):
-    answer = post(path, session=core._telegram_session(CLIENT, []))
-    assert answer.status_code == 403, answer.text
-    assert "для команды владельца" in answer.json()["detail"]
+def test_the_routes_are_found_from_the_app():
+    paths = {path for _m, path in ROUTES}
+    for must in ("/monitor/view", "/monitor/report", "/monitor/report.pdf",
+                 "/monitor/legal/export", "/monitor/crew", "/monitor/report/mailing"):
+        assert must in paths, must
+    assert len(ROUTES) >= 40, ROUTES
 
 
-@pytest.mark.parametrize("path", ROUTES)
-def test_without_a_login_the_answer_is_log_in(path):
-    answer = post(path)
-    assert answer.status_code == 401 and "Telegram" in answer.json()["detail"]
+def _demo_session() -> tuple[str, TestClient]:
+    made = client.post("/access/admin/demo/create",
+                       json={"key": KEY, "note": "проверка", "days": 5,
+                             "blocks": ["monitor", "report"]})
+    assert made.status_code == 200, made.text
+    browser = TestClient(core.app, raise_server_exceptions=False)
+    claimed = browser.post("/demo/claim", json={"code": made.json()["code"]})
+    assert claimed.status_code == 200, claimed.text
+    return claimed.json()["session"], browser
 
 
-@pytest.mark.parametrize("path", ROUTES)
-def test_the_team_passes_every_way(path, monkeypatch):
-    for answer in (post(path, session=core._telegram_session(OWNER, [])),
-                   post(path, key="kluch"),
-                   post(path, headers={"X-Market-Key": "team-test-key"})):
-        assert answer.status_code not in (401, 403), answer.text
-    monkeypatch.setenv("DEVELOPAID_TEAM_IDS", str(CLIENT))
-    answer = post(path, session=core._telegram_session(CLIENT, []))
-    assert answer.status_code not in (401, 403), answer.text
+@pytest.mark.parametrize("method,path", ROUTES)
+def test_nobody_but_the_admin_key_gets_in(method, path):
+    demo, browser = _demo_session()
+    tries = {
+        "никто": call(method, path),
+        "админ по chat_id": call(method, path, session=core._telegram_session(OWNER, [])),
+        "команда DEVELOPAID_TEAM_IDS": call(method, path,
+                                            session=core._telegram_session(CLIENT, [])),
+        "ключ кабинета рынка": call(method, path, headers={"X-Market-Key": "team-test-key"}),
+        "неверный ключ": call(method, path, key="не-тот"),
+        "демо-ссылка с разделами": call(method, path, session=demo, browser=browser),
+    }
+    opened = {who: a.status_code for who, a in tries.items() if not _refused(a)}
+    assert not opened, f"{method} {path} открыт: {opened}"
 
 
-def test_every_monitor_data_route_reads_the_team_gate():
-    """Проверка по читателям: каждый маршрут данных монитора зовёт командный
-    пропуск, а не прежний «вошёл». Оболочки страниц и подписанные ботом
-    `/internal/*` — без него."""
-    source = (Path(__file__).resolve().parent.parent / "engine" / "monitor.py").read_text(
-        encoding="utf-8")
-    assert "_require_web_access(" not in source
-    blocks = re.split(r'(?m)^@app\.(?:get|post)\("([^"]+)"', source)[1:]
-    for path, body in zip(blocks[0::2], blocks[1::2]):
-        if path.startswith("/internal/") or path in {"/report", "/monitor"}:
-            continue
-        assert "_require_team_access(" in body.split("\n@app.")[0], path
+@pytest.mark.parametrize("method,path", ROUTES)
+def test_without_the_bot_token_it_stays_closed(method, path, monkeypatch):
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.setattr(core, "_telegram_token", lambda: "")
+    assert _refused(call(method, path)), f"{method} {path} открыт без токена бота"
+
+
+@pytest.mark.parametrize("method,path", ROUTES)
+def test_without_the_admin_key_setting_it_is_closed_for_everyone(method, path, monkeypatch):
+    monkeypatch.delenv("DEVELOPAID_ADMIN_KEY", raising=False)
+    assert _refused(call(method, path, key=KEY))
+    assert _refused(call(method, path, session=core._telegram_session(OWNER, [])))
+
+
+@pytest.mark.parametrize("method,path", ROUTES)
+def test_the_admin_key_passes(method, path):
+    # Заголовком ключ едет на GET-маршрутах (страница так не кладёт его в адрес).
+    answers = [call(method, path, key=KEY)]
+    if method == "GET":
+        answers.append(call(method, path, headers={"X-Developaid-Admin-Key": KEY}))
+    for answer in answers:
+        assert answer.status_code not in (401, 403), f"{method} {path}: {answer.text[:200]}"
+
+
+def test_health_names_the_closed_gate(monkeypatch):
+    monkeypatch.delenv("DEVELOPAID_ADMIN_KEY", raising=False)
+    gate = client.get("/health").json()["admin_key_sections"]
+    assert gate["admin_key_configured"] is False and "не задан" in gate["reason"]
+    monkeypatch.setenv("DEVELOPAID_ADMIN_KEY", KEY)
+    gate = client.get("/health").json()["admin_key_sections"]
+    assert gate["admin_key_configured"] is True and KEY not in str(gate)
+
+
+def test_the_gate_fails_on_a_forgery(monkeypatch):
+    """Контрпример: прежнее правило «команда» должно ронять тест выше."""
+    monkeypatch.setattr(core, "ADMIN_KEY_ONLY_SECTIONS", frozenset())
+    answer = call("POST", "/monitor/report/projects",
+                  headers={"X-Market-Key": "team-test-key"})
+    assert not _refused(answer)

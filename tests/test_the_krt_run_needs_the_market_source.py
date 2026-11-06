@@ -86,7 +86,11 @@ def test_the_weekly_run_asks_the_same_one_question() -> None:
     """
     start = API.index("    def _weekly_ranking(")
     body = API[start:API.index("\n    # main.py loads the canonical legacy core", start)]
-    assert "_market_source_off()" in body, "недельный прогон источник не спрашивает"
-    assert body.index("_market_source_off()") < body.index("krt_ranking.due()"), \
+    # Прогон спрашивает общий ответ `_weekly_blocked()` — тот же читает
+    # страница, — а он спрашивает источник рынка.
+    assert "_weekly_blocked()" in body, "недельный прогон источник не спрашивает"
+    assert body.index("_weekly_blocked()") < body.index("krt_ranking.due()"), \
         "источник спрашивается после каталога — обход уже разбужен"
+    gate = API[API.index("    def _weekly_blocked("):start]
+    assert "return _market_source_off()" in gate, "общий ответ не спрашивает источник"
     assert API.count("    def _market_source_off(") == 1, "ответ объявлен дважды"

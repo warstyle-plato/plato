@@ -89,13 +89,18 @@ def test_the_housing_book_counts_levels_and_the_depth_markup():
         x["main_under_th_per_sqm"]) * 1000
 
 
-def test_a_hand_rate_has_no_markup_in_the_book():
+@pytest.mark.parametrize("level1", [False, True])
+def test_a_hand_rate_has_no_markup_in_the_book(level1):
+    """Ручная ставка: без флажка «ставка первого уровня» множитель книги 1, с ним —
+    тот же, что у движка (надбавки ниже уровня −1)."""
     sys.setrecursionlimit(400000)
     openpyxl = pytest.importorskip("openpyxl")
     from xlsx_eval import Evaluator
 
     x, t = _housing()
     x["_class_manual"] = ["main_under_th_per_sqm"]
+    if level1:
+        x["underground_rate_is_level1"] = True
     bundle = core._run_authoritative_model(x, t, [], None)
     content, _, _ = core.build_project_workbook(
         x, t, [], None, project_name="Донской",
@@ -103,7 +108,9 @@ def test_a_hand_rate_has_no_markup_in_the_book():
     book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
     cells = _block(book, "Параметры модели")
     evaluator = Evaluator(book)
-    assert float(evaluator.cell("Параметры модели", cells["depth_factor"])) == 1.0
+    engine = bundle["consolidated"]["tep"]["site_massing"]["underground_depth_factor"]
+    assert (engine > 1.0) is level1, engine
+    assert float(evaluator.cell("Параметры модели", cells["depth_factor"])) == pytest.approx(engine)
     assert float(evaluator.cell("Параметры модели", cells["underground_levels"])) == 2
 
 

@@ -27,35 +27,62 @@ STRATEGY_COMPARE_BASIS = "Лучшая стратегия выбрана по NP
 # Падежи стратегий для фраз: именительный, родительный, творительный.
 _STRATEGY_WORDS: dict[str, tuple[str, str, str]] = {
     nonres_strategy.STRATEGY_DDU: ("продажа по ДДУ", "продажи по ДДУ", "продажей по ДДУ"),
-    nonres_strategy.STRATEGY_DIRECT: ("продажа блоками", "продажи блоками", "продажей блоками"),
+    nonres_strategy.PATH_PRESALE: ("продажа по предварительному договору",
+                                   "продажи по предварительному договору",
+                                   "продажей по предварительному договору"),
+    nonres_strategy.STRATEGY_DIRECT: ("продажа блоками после ввода", "продажи блоками после ввода",
+                                      "продажей блоками после ввода"),
     nonres_strategy.STRATEGY_INCOME: ("аренда с продажей здания", "аренды с продажей здания",
                                       "арендой с продажей здания"),
 }
 # Полное имя стратегии для вывода над таблицей.
 _STRATEGY_LEAD = {
     nonres_strategy.STRATEGY_DDU: "продажа по ДДУ с эскроу",
+    nonres_strategy.PATH_PRESALE: "продажа компаниям по предварительному договору во время стройки",
     nonres_strategy.STRATEGY_DIRECT: "продажа блоками после ввода",
     nonres_strategy.STRATEGY_INCOME: "аренда с продажей здания",
 }
 _HOLD_WORDS = ("аренда с удержанием здания", "аренды с удержанием здания", "арендой с удержанием здания")
 
 
+def strategy_hint_key(name: str) -> str:
+    """Ключ подсказки «i» блока в словаре `report_kpi_hints` (тот же словарь и
+    тот же значок, что у плиток отчёта, PR #986)."""
+    return "strategy_" + name
+
+
+def strategy_column_hint(path: dict[str, Any]) -> str:
+    """Подсказка столбца — по способу пути: аренда — по её выходу."""
+    kind = _path_kind(path)
+    if kind == nonres_strategy.STRATEGY_INCOME:
+        hold = path.get("exit_mode") == nonres_strategy.EXIT_HOLD
+        return strategy_hint_key("income_hold" if hold else "income_sale")
+    return strategy_hint_key(kind)
+
+
+def _path_kind(path: dict[str, Any]) -> str:
+    """Способ пути для фраз: ПДКП — свой способ, хотя считается прямой продажей."""
+    if path.get("key") == nonres_strategy.PATH_PRESALE:
+        return nonres_strategy.PATH_PRESALE
+    return str(path.get("strategy") or path.get("key"))
+
+
 def _words(path: dict[str, Any]) -> tuple[str, str, str]:
     """Падежи стратегии пути: аренда — по её выходу (продажа или удержание)."""
-    if path.get("strategy", path.get("key")) == nonres_strategy.STRATEGY_INCOME \
+    if _path_kind(path) == nonres_strategy.STRATEGY_INCOME \
             and path.get("exit_mode") == nonres_strategy.EXIT_HOLD:
         return _HOLD_WORDS
-    return _STRATEGY_WORDS[str(path.get("strategy") or path.get("key"))]
+    return _STRATEGY_WORDS[_path_kind(path)]
 
 
 def _lead_word(path: dict[str, Any]) -> str:
-    if path.get("strategy", path.get("key")) == nonres_strategy.STRATEGY_INCOME:
+    if _path_kind(path) == nonres_strategy.STRATEGY_INCOME:
         return _words(path)[0]
-    return _STRATEGY_LEAD[str(path.get("strategy") or path.get("key"))]
+    return _STRATEGY_LEAD[_path_kind(path)]
 
 
 _OBJECT_WORDS = {"offices": "офисы", "standalone_retail": "ТЦ"}
-_COUNT_GENITIVE = {2: "двух", 3: "трёх", 4: "четырёх"}
+_COUNT_GENITIVE = {2: "двух", 3: "трёх", 4: "четырёх", 5: "пяти"}
 
 # Границы подбора — во сколько раз поле может отойти от нынешнего значения.
 _INDIFFERENCE_BOUNDS = {"rent": (0.02, 20.0), "cap": (0.1, 5.0), "price": (0.05, 10.0)}
@@ -70,6 +97,15 @@ def _cmp_mln(value: Any) -> str:
     if not isinstance(value, (int, float)):
         return "—"
     return _cmp_num(float(value) / 1e6) + " млн ₽"
+
+
+def _years_word(count: int, genitive: bool = False) -> str:
+    """«5 лет», «21 год» / после «от», «не короче»: «от 5 лет», «от 21 года»."""
+    if count % 10 == 1 and count % 100 != 11:
+        return "года" if genitive else "год"
+    if not genitive and count % 10 in (2, 3, 4) and count % 100 not in (12, 13, 14):
+        return "года"
+    return "лет"
 
 
 def _cmp_pct(value: Any) -> str:
@@ -164,7 +200,8 @@ def _strategy_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
 
     def row(key: str, label: str, fn: Callable[[dict[str, Any]], str], **extra: Any) -> dict[str, Any]:
         # `values` — числа путей движка, из которых сделан текст ячеек.
-        return {"key": key, "label": label, "cells": cells(fn),
+        # `hint` — ключ подсказки «i» строки в словаре `report_kpi_hints`.
+        return {"key": key, "label": label, "cells": cells(fn), "hint": strategy_hint_key(key),
                 "values": [None if p.get("error") else p.get(key) for p in paths], **extra}
 
     rows = [
@@ -200,7 +237,8 @@ def _investor_rows(data: dict[str, Any], paths: list[dict[str, Any]], row: Calla
     rate_text = (" при ставке " + _cmp_num(float(rate), 1).removesuffix(",0") + "%"
                  if isinstance(rate, (int, float)) else "")
     section = {"key": "investor", "label": "Глазами инвестора: собственные деньги с учётом кредита",
-               "cells": [""] * len(paths), "values": [None] * len(paths), "section": True}
+               "cells": [""] * len(paths), "values": [None] * len(paths), "section": True,
+               "hint": strategy_hint_key("investor")}
     return [
         section,
         row("irr_equity", "IRR собственных денег",
@@ -213,9 +251,10 @@ def _investor_rows(data: dict[str, Any], paths: list[dict[str, Any]], row: Calla
             lambda p: _cmp_mln(p.get("stabilized_noi")) if rent(p) else "аренды нет"),
         row("yield_on_cost", "Доходность на затраты: чистый доход от аренды к затратам на создание" + cap_text,
             lambda p: (_cmp_pct(p["yield_on_cost"]) if isinstance(p.get("yield_on_cost"), (int, float)) else "—")
-            if rent(p) else "аренды нет"),
+            if rent(p) else "аренды нет", page_label="Доходность на затраты" + cap_text),
         row("exit_value", "Стоимость здания для покупателя-инвестора (чистый доход / ставка капитализации)",
-            lambda p: _cmp_mln(p.get("exit_value")) if rent(p) else "здание продаётся по частям"),
+            lambda p: _cmp_mln(p.get("exit_value")) if rent(p) else "здание продаётся по частям",
+            page_label="Стоимость здания для покупателя-инвестора"),
         row("dscr_min", "Покрытие платежей по кредиту арендой (DSCR, наименьшее)",
             lambda p: (_cmp_num(float(p["dscr_min"]), 2) + "x") if isinstance(p.get("dscr_min"), (int, float))
             else ("кредита под аренду нет" if rent(p) else "аренды нет")),
@@ -235,8 +274,13 @@ def strategy_compare_item(data: dict[str, Any], points: dict[str, Any] | None = 
             tags.append("лучшая по NPV")
         if p.get("key") == data.get("current"):
             tags.append("выбрана в проекте")
+        # Гражданам до ввода — только ДДУ (214-ФЗ ст. 1 ч. 2): условие стоит
+        # у столбца везде, где его печатают.
+        if p.get("key") == nonres_strategy.PATH_PRESALE:
+            tags.append(nonres_strategy.PRESALE_BUYERS)
         columns.append({"key": p.get("key"), "label": p.get("label"), "best": p.get("key") == best,
-                        "current": p.get("key") == data.get("current"), "tags": tags})
+                        "current": p.get("key") == data.get("current"), "tags": tags,
+                        "hint": strategy_column_hint(p)})
     gap = None
     current = next((p for p in scored if p.get("key") == data.get("current")), None)
     if best and current:
@@ -246,7 +290,29 @@ def strategy_compare_item(data: dict[str, Any], points: dict[str, Any] | None = 
             "columns": columns, "rows": _strategy_rows(data),
             "teaser": strategy_teaser_line(data),
             "points": list((points or {}).get("lines") or []),
-            "points_title": "Когда стратегии сравняются"}
+            "points_title": "Когда стратегии сравняются",
+            "points_hint": strategy_hint_key("points")}
+
+
+def _strategy_page_stamp(indifference: dict[str, Any] | None) -> str:
+    """Подпись под таблицей на странице: короче PDF — как устроен расчёт,
+    говорит подсказка «i» (`strategy_method`). Причина, почему точки не
+    подобраны, остаётся на виду: она меняет то, что видно в блоке."""
+    if not isinstance(indifference, dict):
+        return STRATEGY_COMPARE_BASIS + " Точки, где стратегии сравняются, ещё подбираются."
+    if indifference.get("error"):
+        return (STRATEGY_COMPARE_BASIS + " Точки, где стратегии сравняются, не подобраны: "
+                + str(indifference.get("reason") or "причина не указана") + ".")
+    return STRATEGY_COMPARE_BASIS + " " + _strategy_stamp_when(indifference) + "."
+
+
+def _strategy_stamp_when(indifference: dict[str, Any]) -> str:
+    when = str(indifference.get("computed_at") or "")
+    try:
+        when = datetime.fromisoformat(when).astimezone(timezone.utc).strftime("%d.%m.%Y %H:%M UTC")
+    except ValueError:
+        pass
+    return f"Подбор: DevelopAid {indifference.get('engine_version') or VERSION} · {when}"
 
 
 def _strategy_stamp(indifference: dict[str, Any] | None) -> str:
@@ -284,6 +350,8 @@ def strategy_compare_block(result: dict[str, Any] | None,
                       for item in items if item["teaser"])
     return {"title": STRATEGY_COMPARE_TITLE, "items": items, "teaser": teaser,
             "stamp": _strategy_stamp(indifference),
+            "page_stamp": _strategy_page_stamp(indifference),
+            "stamp_hint": strategy_hint_key("method"),
             "points_ready": isinstance(indifference, dict) and not indifference.get("error"),
             "fingerprint": (indifference or {}).get("fingerprint")}
 
@@ -316,14 +384,16 @@ def _strategy_field_value(inputs: dict[str, Any], prefix: str, suffix: str) -> f
 
 def _strategy_npv(inputs: dict[str, Any], tep: dict[str, Any], rates: list[Any],
                   prefixes: tuple[str, ...], strategy: str, suffix: str | None = None,
-                  factor: float = 1.0) -> float:
-    """NPV проекта при этой стратегии у объектов и поле `suffix`, умноженном
-    на `factor`: полный расчёт движка, без сравнения путей внутри."""
+                  factor: float = 1.0, fixed: dict[str, Any] | None = None) -> float:
+    """NPV проекта при этом пути у объектов (`apply_path`: стратегия и окно
+    продаж) и поле `suffix`, умноженном на `factor` (или полях `fixed` —
+    значением как есть): полный расчёт движка, без сравнения путей внутри."""
     x, t, r = copy.deepcopy((inputs, tep, rates))
     for prefix in prefixes:
-        x[f"{prefix}_strategy"] = strategy
+        apply_path(x, prefix, strategy)
         if suffix:
             x[f"{prefix}_{suffix}"] = _strategy_field_value(inputs, prefix, suffix) * factor
+        x.update({f"{prefix}_{key}": value for key, value in (fixed or {}).items()})
     token = OFFICE_PATHS_ON.set(False)
     try:
         run = _finalize_result(_calculate_economics(CalcRequest(inputs=x, tep=t, rates=r)))
@@ -391,6 +461,39 @@ def _indifference_line(kind: str, factor: float | None, current: float, single: 
     return {"kind": kind, "value": value, "current": current, "factor": factor, "text": text}
 
 
+def _hold_indifference_line(inputs: dict[str, Any], tep: dict[str, Any], rates: list[Any],
+                            prefixes: tuple[str, ...], sale: dict[str, Any]) -> dict[str, Any]:
+    """С какого срока удержания аренда обгоняет лучшую продажу по NPV проекта.
+
+    Перебор целых лет до `LONG_TERM_MAX_YEARS`: NPV по сроку не обязан
+    расти монотонно (деньги от продажи здания отодвигаются и дисконтируются),
+    поэтому «от N лет» — это срок, начиная с которого аренда выигрывает при
+    КАЖДОМ более долгом удержании, а не первое совпадение."""
+    target = float(sale["npv"])
+    top = nonres_strategy.LONG_TERM_MAX_YEARS
+    npv = {years: _strategy_npv(inputs, tep, rates, prefixes, nonres_strategy.STRATEGY_INCOME,
+                                fixed={"hold_years": years}) for years in range(1, top + 1)}
+    good = [years for years in npv if npv[years] >= target]
+    start = next((years for years in good if all(npv[y] >= target for y in range(years, top + 1))), None)
+    current = int(_strategy_field_value(inputs, prefixes[0], "hold_years"))
+    other = _words(sale)[0].replace("продажа", "продажу", 1)
+    now = f"(сейчас {current} {_years_word(current)})"
+    if start is not None:
+        text = (f"Аренда обгоняет {other} при удержании здания от {start} "
+                f"{_years_word(start, True)} {now}.")
+    elif good:
+        end = next((y for y in range(good[0], top + 1) if npv[y] < target), top + 1) - 1
+        text = (f"Аренда обгоняет {other} только при удержании здания от {good[0]} до {end} "
+                f"{_years_word(end, True)} {now}.")
+    else:
+        closest = max(npv, key=npv.__getitem__)
+        text = (f"Аренда не обгоняет {other} ни при каком сроке удержания здания от 1 до {top} лет "
+                f"{now}. Ближе всего она, если держать здание {closest} {_years_word(closest)}: "
+                f"NPV проекта и тогда меньше на {_cmp_mln(target - npv[closest])}.")
+    return {"kind": "hold", "value": start, "current": current,
+            "years": [years for years in good], "text": text}
+
+
 def _product_indifference(inputs: dict[str, Any], tep: dict[str, Any], rates: list[Any],
                           data: dict[str, Any]) -> dict[str, Any]:
     prefixes = tuple(data.get("prefixes") or ())
@@ -398,7 +501,8 @@ def _product_indifference(inputs: dict[str, Any], tep: dict[str, Any], rates: li
     single = len(prefixes) == 1
     first = prefixes[0] if prefixes else ""
     lines: list[dict[str, Any]] = []
-    sales = _scored(list(paths.values()), (nonres_strategy.STRATEGY_DDU, nonres_strategy.STRATEGY_DIRECT))
+    sales = _scored(list(paths.values()), (nonres_strategy.STRATEGY_DDU, nonres_strategy.PATH_PRESALE,
+                                           nonres_strategy.STRATEGY_DIRECT))
     income = paths.get(nonres_strategy.STRATEGY_INCOME)
     if prefixes and income and sales:
         sale = max(sales, key=lambda p: float(p["npv"]))
@@ -411,6 +515,7 @@ def _product_indifference(inputs: dict[str, Any], tep: dict[str, Any], rates: li
                 inputs, tep, rates, prefixes, nonres_strategy.STRATEGY_INCOME, suffix, f) - target, low, high)
             lines.append(_indifference_line(kind, factor, _strategy_field_value(inputs, first, suffix) * scale,
                                             single, "Аренда", other, behind))
+        lines.append(_hold_indifference_line(inputs, tep, rates, prefixes, sale))
     ddu, direct = paths.get(nonres_strategy.STRATEGY_DDU), paths.get(nonres_strategy.STRATEGY_DIRECT)
     if prefixes and ddu and direct:
         target = float(ddu["npv"])
@@ -419,8 +524,8 @@ def _product_indifference(inputs: dict[str, Any], tep: dict[str, Any], rates: li
             inputs, tep, rates, prefixes, nonres_strategy.STRATEGY_DIRECT, "price_th_per_sqm", f) - target,
             low, high)
         lines.append(_indifference_line("price", factor, _strategy_field_value(inputs, first, "price_th_per_sqm"),
-                                        single, "Продажа блоками", _STRATEGY_WORDS[nonres_strategy.STRATEGY_DDU],
-                                        False))
+                                        single, "Продажа блоками после ввода",
+                                        _STRATEGY_WORDS[nonres_strategy.STRATEGY_DDU], False))
     return {"product": data.get("product"), "lines": lines}
 
 
@@ -428,7 +533,11 @@ def strategy_indifference(result: dict[str, Any], inputs: dict[str, Any], tep: d
                           rates: list[Any], phasing: dict[str, Any] | None = None) -> dict[str, Any]:
     """Подбор точек безразличия для каждого продукта со сравнением. Звать
     только вне запроса расчёта: это десятки полных пересчётов."""
-    items = [_product_indifference(inputs, tep, rates or [], data) for data in strategy_path_sets(result)]
+    # Подбор множит поле объекта и считает мимо `calculate`: класс офиса
+    # ставится здесь, один раз, тем же правилом, что у основного расчёта.
+    applied = copy.deepcopy(inputs or {})
+    apply_office_classes(applied)
+    items = [_product_indifference(applied, tep, rates or [], data) for data in strategy_path_sets(result)]
     return {"items": items, "engine_version": VERSION,
             "computed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "fingerprint": entry_price_fingerprint(inputs, tep, rates, phasing, "strategy_indifference")}

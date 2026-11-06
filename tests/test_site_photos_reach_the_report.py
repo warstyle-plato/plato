@@ -30,6 +30,15 @@ from test_management_report_model import PROJECT, _project  # noqa: E402
 
 PORT = 18803
 
+# Монитор и сводка — только по ключу администратора (решение владельца
+# 02.11.2026): страница и маршруты открываются ключом, а не сессией.
+ADMIN_TEST_KEY = "browser-admin-key"
+
+
+@pytest.fixture(autouse=True)
+def _admin_key(monkeypatch):
+    monkeypatch.setenv("DEVELOPAID_ADMIN_KEY", ADMIN_TEST_KEY)
+
 
 def _jpeg(color=(200, 120, 40)) -> bytes:
     from PIL import Image
@@ -168,7 +177,7 @@ def test_the_page_ticks_a_photo_into_the_report(monkeypatch):
             tab = browser.new_page()
             errors: list[str] = []
             tab.on("pageerror", lambda e: errors.append(str(e)))
-            tab.add_init_script("localStorage.setItem('developaid_web_session','проба')")
+            tab.add_init_script("localStorage.setItem('developaid_web_session','проба');localStorage.setItem('plato_projects_key','browser-admin-key')")
             tab.goto(f"{base}/report", wait_until="domcontentloaded")
             tab.wait_for_selector(f"#project option[value='{PROJECT}']", state="attached")
             tab.select_option("#project", PROJECT)
@@ -225,7 +234,7 @@ def test_the_photos_fold_by_day(monkeypatch):
             tab = browser.new_page()
             errors: list[str] = []
             tab.on("pageerror", lambda e: errors.append(str(e)))
-            tab.add_init_script("localStorage.setItem('developaid_web_session','проба')")
+            tab.add_init_script("localStorage.setItem('developaid_web_session','проба');localStorage.setItem('plato_projects_key','browser-admin-key')")
             tab.goto(f"{base}/report", wait_until="domcontentloaded")
             tab.wait_for_selector(f"#project option[value='{PROJECT}']", state="attached")
             tab.select_option("#project", PROJECT)

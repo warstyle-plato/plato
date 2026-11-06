@@ -64,10 +64,11 @@ def test_the_root_is_the_page_plus_the_layer(client: TestClient):
     """Корень и /ia — ровно PAGE плюс подключение слоя, прежний вид — /classic."""
     page = client.get("/ia").text
     assert page.count("<html") == core.PAGE.count("<html")
-    without_layer = (
-        page.replace('<link rel="stylesheet" href="/ia/assets/overlay.css">\n', "")
-        .replace('<script src="/ia/assets/overlay.js" defer></script>\n', "")
-    )
+    from ia_preview import _INJECTION, _head_injection
+
+    assert page.count(_head_injection()) == 1, "сторож загрузки не в <head>"
+    assert page.index(_head_injection()) < page.index("</head>")
+    without_layer = page.replace(_head_injection(), "", 1).replace(_INJECTION, "", 1)
     assert without_layer == core.PAGE
     assert client.get("/ia/").text == page
     assert client.get("/").text == page, "корень отдаёт не тот же слой, что /ia"
@@ -112,6 +113,7 @@ def test_the_layer_is_valid_javascript():
     if not node:
         pytest.skip("node недоступен")
     subprocess.run([node, "--check", str(_OVERLAY)], check=True)
+    subprocess.run([node, "--check", str(_OVERLAY.with_name("boot_guard.js"))], check=True)
 
 
 def test_the_example_is_a_whole_project(client: TestClient):

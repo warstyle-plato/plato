@@ -252,6 +252,93 @@ function reportLayout(r){
  const l=((r||{}).report||{}).layout;
  return l||{housing:true,project_finance:true,nonres_strategy:false,nonres_tiles:[]};
 }
+// Подсказки «i» у плиток управленческого отчёта (владелец, 02.11.2026). Тексты
+// — у словаря `report_kpi_hints`, здесь только подстановка параметров текущего
+// расчёта и показ. Ставка дисконтирования — та, по которой дисконтировал
+// движок (`summary.discount_rate_pct`); порог покрытия — ответ движка
+// (`report.layout.debt_metric.target`).
+const KPI_HINTS=__DEVELOPAID_KPI_HINTS__;
+function kpiDiscountRate(r){
+ const own=((r||{}).summary||{}).discount_rate_pct;
+ if(own!=null&&own!==''&&Number.isFinite(Number(own)))return Number(own);
+ const typed=(typeof inputs!=='undefined'&&inputs)?inputs.discount_rate_pct:null;
+ return typed==null||typed===''||!Number.isFinite(Number(typed))?20:Number(typed);
+}
+function kpiHintText(key,r){
+ const text=key&&KPI_HINTS[key];
+ if(!text)return '';
+ const target=Number((reportLayout(r).debt_metric||{}).target);
+ const params={
+  discount_rate:kpiDiscountRate(r).toLocaleString('ru-RU'),
+  debt_target:Number.isFinite(target)&&target>0
+   ?target.toLocaleString('ru-RU',{minimumFractionDigits:2,maximumFractionDigits:2}):'1,20'};
+ return text.replace(/\{(\w+)\}/g,(all,name)=>name in params?params[name]:all);
+}
+// Буква «i» — из CSS, а не текстом кнопки: значение плитки читают текстом
+// (слой интерфейса, Платон, проверки), и «1,86 млрд ₽i» было бы порчей числа.
+function kpiHintButton(key,r){
+ const text=kpiHintText(key,r);
+ if(!text)return '';
+ return `<button type="button" class="kpi-i" data-kpi-hint="${escapeHtml(key)}"`
+  +` data-hint-text="${escapeHtml(text)}" aria-label="Как считается это число"`
+  +` aria-expanded="false"></button>`;
+}
+// Одно всплывающее окно на страницу, положенное поверх всего (`position:
+// fixed`): внутри плитки его обрезали бы края сетки и карточки. Место
+// считается от значка и прижимается к краям окна браузера.
+let kpiTipFor=null,kpiTipPinned=false;
+function kpiTipBox(){
+ let box=document.getElementById('kpiTip');
+ if(!box){
+  box=document.createElement('div');box.id='kpiTip';box.className='kpi-tip';
+  box.setAttribute('role','tooltip');box.hidden=true;document.body.appendChild(box);
+ }
+ return box;
+}
+function showKpiTip(btn,pinned){
+ const box=kpiTipBox();
+ if(kpiTipFor&&kpiTipFor!==btn)kpiTipFor.setAttribute('aria-expanded','false');
+ box.textContent=btn.getAttribute('data-hint-text')||'';
+ box.hidden=false;box.style.left='0px';box.style.top='0px';
+ const gap=8,vw=document.documentElement.clientWidth||window.innerWidth,
+  vh=window.innerHeight,rect=btn.getBoundingClientRect();
+ box.style.maxWidth=Math.min(320,vw-2*gap)+'px';
+ const w=box.offsetWidth,h=box.offsetHeight;
+ const left=Math.max(gap,Math.min(rect.left+rect.width/2-w/2,vw-w-gap));
+ const below=rect.bottom+6,above=rect.top-6-h;
+ const top=below+h+gap<=vh||above<gap?below:above;
+ box.style.left=Math.round(left)+'px';box.style.top=Math.round(Math.max(gap,top))+'px';
+ kpiTipFor=btn;kpiTipPinned=!!pinned;
+ btn.setAttribute('aria-expanded','true');box.setAttribute('aria-hidden','false');
+}
+function hideKpiTip(){
+ const box=document.getElementById('kpiTip');
+ if(box){box.hidden=true;box.setAttribute('aria-hidden','true')}
+ if(kpiTipFor)kpiTipFor.setAttribute('aria-expanded','false');
+ kpiTipFor=null;kpiTipPinned=false;
+}
+// Мышь — по наведению, палец — нажатием (повторное нажатие или нажатие вне
+// подсказки закрывает), клавиатура — фокусом и Escape.
+document.addEventListener('pointerover',e=>{
+ const btn=e.target.closest&&e.target.closest('.kpi-i');
+ if(btn&&e.pointerType==='mouse'&&!kpiTipPinned)showKpiTip(btn,false);
+});
+document.addEventListener('pointerout',e=>{
+ const btn=e.target.closest&&e.target.closest('.kpi-i');
+ if(btn&&e.pointerType==='mouse'&&kpiTipFor===btn&&!kpiTipPinned)hideKpiTip();
+});
+document.addEventListener('click',e=>{
+ const btn=e.target.closest&&e.target.closest('.kpi-i');
+ if(btn){
+  e.preventDefault();
+  if(kpiTipFor===btn&&kpiTipPinned)hideKpiTip();else showKpiTip(btn,true);
+  return;
+ }
+ if(kpiTipFor&&!(e.target.closest&&e.target.closest('#kpiTip')))hideKpiTip();
+});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&kpiTipFor)hideKpiTip()});
+window.addEventListener('scroll',()=>{if(kpiTipFor)hideKpiTip()},true);
+window.addEventListener('resize',()=>{if(kpiTipFor)hideKpiTip()});
 function applyReportLayout(layout){
  document.querySelectorAll('[data-needs]').forEach(el=>{el.hidden=!layout[el.dataset.needs]});
 }
@@ -356,6 +443,7 @@ function renderObjectReport(r){
  renderNonresFinancing(r);
  renderEquityParticipation(r);
  renderStrategyCompare(r);
+ if(typeof refreshLoanTermPicks==='function')refreshLoanTermPicks();
 }
 // «Сравнение стратегий» — блок движка (`strategy_compare_block`): таблица
 // стратегий, вывод и точки, где стратегии сравняются. Страница только
@@ -365,21 +453,27 @@ let strategyCompareKey='';
 let strategyCompareBlock=null;
 let strategyCompareRound=0;
 // Строка-раздел таблицы («Глазами инвестора…») — на всю ширину.
-function strategySectionRow(row,span){
- return `<tr class="strategy-section" data-row="${escapeHtml(row.key||'')}"><td colspan="${span}">${escapeHtml(row.label||'')}</td></tr>`;
+function strategySectionRow(row,span,r){
+ return `<tr class="strategy-section" data-row="${escapeHtml(row.key||'')}"><td colspan="${span}">${escapeHtml(row.label||'')}${kpiHintButton(row.hint,r)}</td></tr>`;
 }
+// Как считается каждая стратегия и строка — в подсказках «i» (владелец,
+// 02.11.2026: «в пояснение стратегий тоже сделать сноску I»): тот же словарь
+// и тот же значок, что у плиток отчёта; ключи ставит блок движка. На виду —
+// названия, числа, вывод и оговорки, меняющие вывод. `page_label` — короткая
+// подпись строки на странице, `label` — полная, её печатает PDF.
 function strategyCompareHtml(block){
+ const r=typeof lastResult!=='undefined'?lastResult:null;
  return (block.items||[]).map(item=>{
   const cols=item.columns||[];
   const best=i=>!!(cols[i]&&cols[i].best);
   return `<div class="strategy-compare" data-product="${escapeHtml(item.product||'')}">${item.caption?`<div class="strategy-compare-caption">${escapeHtml(item.caption)}</div>`:''}<p class="strategy-compare-lead">${escapeHtml(item.lead||'')}</p><div class="scroll"><table class="strategy-compare-table"><thead><tr><th>Показатель</th>${
-   cols.map(c=>`<th data-strategy="${escapeHtml(c.key||'')}"${c.best?' class="best"':''}>${escapeHtml(c.label||'')}${
+   cols.map(c=>`<th data-strategy="${escapeHtml(c.key||'')}"${c.best?' class="best"':''}>${escapeHtml(c.label||'')}${kpiHintButton(c.hint,r)}${
     (c.tags||[]).map(tag=>`<br><span class="strategy-tag${tag==='лучшая по NPV'?' best-tag':''}">${escapeHtml(tag)}</span>`).join('')}</th>`).join('')}</tr></thead><tbody>${
-   (item.rows||[]).map(row=>row.section?strategySectionRow(row,cols.length+1):`<tr data-row="${escapeHtml(row.key||'')}"><td>${escapeHtml(row.label||'')}</td>${
+   (item.rows||[]).map(row=>row.section?strategySectionRow(row,cols.length+1,r):`<tr data-row="${escapeHtml(row.key||'')}"><td>${escapeHtml(row.page_label||row.label||'')}${kpiHintButton(row.hint,r)}</td>${
     (row.cells||[]).map((cell,i)=>`<td${best(i)?' class="best"':''}>${row.strong&&best(i)?'<b>'+escapeHtml(cell)+'</b>':escapeHtml(cell)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>${
-   (item.points||[]).length?`<div class="strategy-points-title">${escapeHtml(item.points_title||'')}</div><ul class="strategy-points">${
+   (item.points||[]).length?`<div class="strategy-points-title">${escapeHtml(item.points_title||'')}${kpiHintButton(item.points_hint,r)}</div><ul class="strategy-points">${
     item.points.map(p=>`<li>${escapeHtml(p.text||'')}</li>`).join('')}</ul>`:''}</div>`;
- }).join('')+`<div class="strategy-compare-stamp">${escapeHtml(block.stamp||'')}</div>`;
+ }).join('')+`<div class="strategy-compare-stamp">${escapeHtml(block.page_stamp||block.stamp||'')}${kpiHintButton(block.stamp_hint,r)}</div>`;
 }
 function paintStrategyCompare(block){
  document.querySelectorAll('[data-strategy-compare-card]').forEach(card=>{card.hidden=!block});
@@ -402,14 +496,106 @@ function renderStrategyCompare(r){
    if(round!==strategyCompareRound)return;
    if(ok&&(data.items||[]).length){strategyCompareBlock=data;paintStrategyCompare(data);return}
    const why=typeof (data||{}).detail==='string'?data.detail:'сервер не ответил';
-   strategyCompareBlock={...block,stamp:'Точки, где стратегии сравняются, не подобраны: '+why};
+   const failed='Точки, где стратегии сравняются, не подобраны: '+why;
+   strategyCompareBlock={...block,stamp:failed,page_stamp:failed};
    paintStrategyCompare(strategyCompareBlock);
   })
   .catch(error=>{
    if(round!==strategyCompareRound)return;
-   strategyCompareBlock={...block,stamp:'Точки, где стратегии сравняются, не подобраны: '+String(error&&error.message||error)};
+   const failed='Точки, где стратегии сравняются, не подобраны: '+String(error&&error.message||error);
+   strategyCompareBlock={...block,stamp:failed,page_stamp:failed};
    paintStrategyCompare(strategyCompareBlock);
   });
+}
+// Подбор срока кредита аренды — кнопка «Подобрать» у поля «Срок кредита»
+// объекта с доходным методом. Подбор — десятки полных пересчётов модели
+// (`loan_term_pick` движка), поэтому он идёт отдельным запросом
+// (`/loan-term-pick`), а не с расчётом. Найденный срок встаёт в поле с
+// происхождением «подобран»; ручная правка поля сильнее подбора. Подобранный
+// срок не замораживается: когда меняются вводные, от которых он зависит,
+// подбор повторяется сам (`refreshLoanTermPicks` после каждого расчёта).
+const LOAN_TERM_SUFFIX='_loan_term_years';
+const loanTermPicks={};
+function loanTermPickField(id){return String(id).endsWith(LOAN_TERM_SUFFIX)&&!!STRATEGY_FIELD_READERS[id]}
+// Отпечаток вводных, от которых зависит подбор: всё, кроме самого срока,
+// служебных пометок и баллона, если его поставил подбор «без баллона».
+function loanTermPickHash(prefix){
+ const x={};
+ Object.keys(inputs).sort().forEach(k=>{if(!k.startsWith('_')&&k!==prefix+LOAN_TERM_SUFFIX)x[k]=inputs[k]});
+ const balloon=(inputs._field_origin||{})['inputs.'+prefix+'_loan_balloon_pct'];
+ if(balloon&&balloon.source==='picked')delete x[prefix+'_loan_balloon_pct'];
+ const text=JSON.stringify([x,tep,rates,phasing]);
+ let h=5381;
+ for(let i=0;i<text.length;i++)h=((h*33)^text.charCodeAt(i))>>>0;
+ return h.toString(36)+'.'+text.length.toString(36);
+}
+function loanTermPickHtml(prefix){
+ const st=loanTermPicks[prefix]||{};
+ const d=st.data;
+ const full=d&&d.full&&d.full.years;
+ return `<button type="button" class="loan-term-pick-go" onclick="runLoanTermPick('${escapeHtml(prefix)}','bank',false)"${st.busy?' disabled':''}>${st.busy?'Подбираю срок…':'Подобрать'}</button>`+
+  (st.error?`<div class="hint loan-term-pick-error">${escapeHtml(st.error)}</div>`:'')+
+  (d?`<ul class="loan-term-pick-lines"><li data-kind="bank">${escapeHtml(d.bank.text)}</li><li data-kind="full">${escapeHtml(d.full.text)}</li></ul>`+
+   (full?`<button type="button" class="loan-term-pick-full" onclick="applyLoanTermPick('${escapeHtml(prefix)}','full')">Взять ${full} ${yearsWord(full)} без баллона</button>`:''):'');
+}
+function yearsWord(n){const a=n%10,b=n%100;return a===1&&b!==11?'год':a>=2&&a<=4&&(b<12||b>14)?'года':'лет'}
+function paintLoanTermPick(prefix){
+ document.querySelectorAll(`.loan-term-pick[data-prefix="${prefix}"]`).forEach(box=>{box.innerHTML=loanTermPickHtml(prefix)});
+}
+function loanTermPickNode(id){
+ const prefix=id.slice(0,-LOAN_TERM_SUFFIX.length);
+ const box=document.createElement('div');
+ box.className='loan-term-pick';box.dataset.prefix=prefix;
+ box.innerHTML=loanTermPickHtml(prefix);
+ return box;
+}
+function applyLoanTermPick(prefix,mode){
+ const st=loanTermPicks[prefix]||{};
+ const v=st.data&&st.data[mode];
+ if(!v||!v.years)return false;
+ const key='inputs.'+prefix+LOAN_TERM_SUFFIX;
+ inputs[prefix+LOAN_TERM_SUFFIX]=v.years;
+ if(mode==='full'){
+  inputs[prefix+'_loan_balloon_pct']=0;
+  fieldOrigins()['inputs.'+prefix+'_loan_balloon_pct']={source:'picked',mode,text:'подобран: без баллона аренда гасит весь кредит'};
+ }
+ fieldOrigins()[key]={source:'picked',mode,hash:loanTermPickHash(prefix),
+  text:mode==='full'?`подобран: ${v.years} ${yearsWord(v.years)} — аренда гасит весь кредит без баллона`
+   :`подобран: ${v.years} ${yearsWord(v.years)} — аренда покрывает платежи с запасом, нужным банку`};
+ renderInputs();calculate();
+ return true;
+}
+async function runLoanTermPick(prefix,mode,auto){
+ loanTermPicks[prefix]={busy:true};paintLoanTermPick(prefix);
+ const hash=loanTermPickHash(prefix);
+ try{
+  const response=await fetch('/loan-term-pick',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({inputs,tep,rates,phasing,prefix,session:activeSession(),access_key:projectsAdminKey||''})});
+  const data=await response.json();
+  if(!response.ok)throw new Error(typeof data.detail==='string'?data.detail:'Срок кредита не подобран: сервер не ответил.');
+  loanTermPicks[prefix]={data};
+  if(applyLoanTermPick(prefix,mode))return;
+  // Срока нет: число в поле остаётся, но пометка говорит, что оно подобрано
+  // при прежних вводных, — иначе старый подбор выглядел бы нынешним.
+  const origin=fieldOrigins()['inputs.'+prefix+LOAN_TERM_SUFFIX];
+  if(auto&&origin&&origin.source==='picked'){
+   Object.assign(origin,{hash,text:'подобран при прежних вводных; при нынешних подходящего срока нет — пояснение под кнопкой «Подобрать»'});
+   renderInputs();
+  }
+ }catch(error){
+  loanTermPicks[prefix]={error:String(error&&error.message||error)};
+ }
+ paintLoanTermPick(prefix);
+}
+// После расчёта: подобранный срок, вводные которого изменились, подбирается
+// заново тем же способом (с баллоном или без). Ручной срок не трогается.
+function refreshLoanTermPicks(){
+ Object.entries(inputs._field_origin||{}).forEach(([path,o])=>{
+  if(!o||o.source!=='picked'||!path.endsWith(LOAN_TERM_SUFFIX))return;
+  const prefix=path.slice('inputs.'.length,-LOAN_TERM_SUFFIX.length);
+  if((loanTermPicks[prefix]||{}).busy||o.hash===loanTermPickHash(prefix))return;
+  runLoanTermPick(prefix,o.mode==='full'?'full':'bank',true);
+ });
 }
 // Разделы меню отчёта: объектная вёрстка — список движка, жилая — прежний.
 function reportTocSections(r){
@@ -424,7 +610,7 @@ async function runObjectGoalSeek(){
   const response=await fetch('/ia/goal-seek',{method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify({inputs,tep,rates,phasing,variable:'purchase_price_mln'})});
   const data=await response.json();
-  if(!response.ok)throw new Error(data.detail||'Подбор не выполнен');
+  if(!response.ok)throw new Error(serverDetail(data)||'Подбор не выполнен');
   if(data.available===false)throw new Error(data.reason||'Показателя долга у проекта нет');
   const v=(data.solution||{}).variable;
   if(out)out.textContent=v!=null?('Максимальная цена входа: '+Number(v).toLocaleString('ru-RU',{maximumFractionDigits:0})+' млн ₽'):(data.reason||'Цель не достигается в границах подбора');
@@ -615,7 +801,7 @@ async function sendFeedback(){
  try{
   const r=await fetch('/feedback',{method:'POST',headers:{'Content-Type':'application/json'},
                                    body:JSON.stringify(payload)});
-  if(!r.ok)throw new Error((await r.json().catch(()=>({}))).detail||'не отправилось');
+  if(!r.ok)throw new Error(serverDetail(await r.json().catch(()=>({})))||'не отправилось');
   feedbackRemember({done:Date.now(),role:payload.role,region:payload.region});
   status.textContent='Спасибо. Это правда помогает.';
   setTimeout(()=>closeFeedback('sent'),1200);
@@ -732,6 +918,39 @@ let telegramCalcOverrides={};
 const WEB_SESSION_KEY='developaid_web_session';
 function webSession(){try{return localStorage.getItem(WEB_SESSION_KEY)||''}catch(e){return ''}}
 function activeSession(){return telegramSession||webSession()}
+// Причина отказа сервера словами — один разбор для всех запросов страницы.
+// Обычный отказ приходит строкой `detail`, а отказ проверки полей (FastAPI,
+// 422) — списком {loc,msg}: подставленный как есть, он печатался
+// «[object Object]», и человек не видел ни причины, ни поля.
+function serverDetail(data){
+ const detail=data&&data.detail;
+ if(detail==null||detail==='')return '';
+ if(typeof detail==='string')return detail;
+ if(Array.isArray(detail)){
+  const parts=detail.map(item=>{
+   const loc=Array.isArray(item&&item.loc)?item.loc.filter(x=>x!=='body').join('.'):'';
+   const msg=String((item&&item.msg)||(typeof item==='string'?item:JSON.stringify(item)));
+   return (loc?'поле «'+loc+'»: ':'')+msg;
+  });
+  return 'Сервер не принял запрос — '+parts.join('; ')+'.';
+ }
+ if(typeof detail==='object')return String(detail.message||(typeof detail.detail==='string'&&detail.detail)||JSON.stringify(detail));
+ return String(detail);
+}
+// Ответ сервера как данные. Вместо данных бывает страница ошибки шлюза перед
+// сервером (502/504 — перезапуск после обновления, 413 — файл больше, чем
+// пропускает шлюз): её разбор как JSON печатал «Unexpected token '<'», и
+// причины в этом не было (владелец 28.10.2026, галочка «Проект в КРТ»).
+async function serverJson(r){
+ const text=await r.text();
+ try{return JSON.parse(text)}catch(e){}
+ const title=((String(text).match(/<title>([^<]*)<\/title>/i)||[])[1]||'').trim();
+ const why={413:'файл больше, чем пропускает сервер, — снимите одну страницу или уменьшите картинку',
+  502:'сервер перезапускается или недоступен — повторите через минуту',
+  503:'сервер перезапускается или перегружен — повторите через минуту',
+  504:'сервер не ответил вовремя — повторите через минуту'}[r.status]||'';
+ throw new Error('сервер ответил не данными, а страницей ошибки (код '+r.status+(title?', «'+title+'»':'')+')'+(why?': '+why:''));
+}
 let webLoginBusy=false;
 async function loginViaTelegram(statusEl){
  if(webLoginBusy)return;
@@ -740,7 +959,7 @@ async function loginViaTelegram(statusEl){
  try{
   const r=await fetch('/auth/telegram/start',{method:'POST'});
   const d=await r.json().catch(()=>({}));
-  if(!r.ok)throw new Error(d.detail||'Вход через Telegram недоступен');
+  if(!r.ok)throw new Error(serverDetail(d)||'Вход через Telegram недоступен');
   // Окно бота открывается сразу, но после запроса к серверу браузер уже не
   // считает его открытым по клику и часто глушит — Safari почти всегда. Ссылка
   // показывается всегда: без неё человек стоит перед пустым ожиданием и не
@@ -781,7 +1000,7 @@ async function loginViaTelegram(statusEl){
     openProfile();
     return;
    }
-   if(!cr.ok)throw new Error(cd.detail||'Код входа не принят');
+   if(!cr.ok)throw new Error(serverDetail(cd)||'Код входа не принят');
   }
   throw new Error('Время ожидания вышло — попробуйте войти ещё раз.');
  }catch(e){say(String(e.message||e))}
@@ -838,7 +1057,7 @@ async function saveProfile(){
    body:JSON.stringify({session:activeSession(),name:value('profName'),company:value('profCompany'),
     role:value('profRole'),source:value('profSource'),contact:value('profContact'),consent:true})});
   const d=await r.json().catch(()=>({}));
-  if(!r.ok)throw new Error(d.detail||'Анкета не сохранена');
+  if(!r.ok)throw new Error(serverDetail(d)||'Анкета не сохранена');
   profileState={complete:true,profile:d.profile||{},sources:profileState.sources};
   closeProfile();
   renderAccountBox();
@@ -861,7 +1080,7 @@ async function loadProfile(openIfEmpty){
                                       body:JSON.stringify({session:activeSession()})});
   if(!r.ok){
    let detail='';
-   try{detail=((await r.json())||{}).detail||''}catch(e){}
+   try{detail=serverDetail(await r.json())||''}catch(e){}
    profileState={...profileState,known:false,
                  reason:'Знакомство не проверено: '+(detail||('сервер ответил '+r.status))};
    return profileState;

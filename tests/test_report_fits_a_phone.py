@@ -82,7 +82,7 @@ def test_the_first_column_is_not_crushed_on_a_tablet():
     _project()
     _sales()
     body = report.render_html(report.build(PROJECT, "week", "2026-10-18", sales_project="ЖК"))
-    assert "Эскроу, очередь" in body
+    assert "Эскроу по кварталам" in body
     with sync_playwright() as pw:
         browser = pw.chromium.launch(executable_path=str(chrome))
         try:
@@ -94,7 +94,7 @@ def test_the_first_column_is_not_crushed_on_a_tablet():
                          "document.getElementById('privateArea').classList.remove('hidden') }", body)
             width, lines, outside = tab.evaluate("""() => {
                 const th = [...document.querySelectorAll('#reportBox th')]
-                    .find(c => c.textContent.trim() === 'Эскроу, очередь');
+                    .find(c => c.textContent.trim() === 'Эскроу по кварталам');
                 const r = th.getBoundingClientRect();
                 const edge = document.getElementById('reportBox').getBoundingClientRect().right;
                 const out = [...document.querySelectorAll('#reportBox table')]

@@ -566,7 +566,8 @@ a.btn{display:inline-block;margin-top:16px;padding:10px 16px;border-radius:10px;
    .then(function(x){
     if(!x.ok){status.textContent=x.d.detail||'Не удалось проверить оплату.';return}
     if(x.d.granted){try{localStorage.removeItem('developaid_pending_payment')}catch(e){}
-     status.textContent='Оплата прошла, доступ открыт. Вернитесь к расчёту — он посчитается сразу.';return}
+     status.textContent='Оплата прошла, доступ открыт. Возвращаем вас к расчёту — он посчитается сам.';
+     setTimeout(function(){location.href='/'},1500);return}
     if(x.d.status==='canceled'){try{localStorage.removeItem('developaid_pending_payment')}catch(e){}
      status.textContent='Платёж отменён, деньги не списаны. Можно попробовать оплатить ещё раз.';return}
     if(tries<20){status.textContent='Платёж ещё в обработке. Проверяем снова…';setTimeout(ask,3000);return}

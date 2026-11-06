@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hmac
 import os
+import sys
 from typing import Any
 
 from fastapi import HTTPException, Request, Response
@@ -76,8 +77,50 @@ def authorised(request: Request) -> bool:
     return False
 
 
+def demo_access(request: Request) -> dict[str, Any]:
+    """Решение движка по демо-ссылке для этого запроса (`demo_request_access`
+    в `engine/review_demo.py`): кабинет и торги своего решения не держат.
+    Движка нет — демо-ссылок тоже нет."""
+    for name in ("developaid_core", "main_legacy"):
+        decide = getattr(sys.modules.get(name), "demo_request_access", None)
+        if callable(decide):
+            try:
+                return decide(request) or {"demo": False}
+            except Exception:
+                return {"demo": True, "allowed": False,
+                        "problem": "Демо-доступ не проверился: попробуйте обновить страницу."}
+    return {"demo": False}
+
+
+def demo_viewer(request: Request) -> bool:
+    """Демо-ссылка с этим разделом читает этот запрос (не полный ключ)."""
+    decision = demo_access(request)
+    return bool(decision.get("demo") and decision.get("allowed"))
+
+
+def page_gate(request: Request) -> tuple[int, str] | None:
+    """Вход на страницу кабинета: None — пускаем, иначе код и страница отказа.
+    Один на все страницы кабинета, чтобы демо не открывало одну и не другую."""
+    problem = key_problem()
+    if problem:
+        return 503, login_page(problem)
+    if not cabinet_key():
+        return 503, login_page(f"Кабинет выключен: не задан {ENV_NAME}.")
+    if authorised(request):
+        return None
+    decision = demo_access(request)
+    if decision.get("demo"):
+        if decision.get("allowed"):
+            return None
+        return 403, login_page(str(decision.get("problem") or ""))
+    return 401, login_page()
+
+
 def require_cabinet(request: Request) -> None:
-    """Пропустить или отказать. Причина отказа называется: она разная."""
+    """Пропустить или отказать. Причина отказа называется: она разная.
+
+    Демо-ссылка с разделом проходит только то, что `demo_access` назвал
+    чтением; запись и чужой раздел — 403 с причиной."""
     problem = key_problem()
     if problem:
         raise HTTPException(status_code=503, detail=problem)
@@ -89,8 +132,14 @@ def require_cabinet(request: Request) -> None:
                 "показывает лицензионные данные и без ключа не открывается."
             ),
         )
-    if not authorised(request):
-        raise HTTPException(status_code=401, detail="Нужен ключ доступа к кабинету")
+    if authorised(request):
+        return
+    decision = demo_access(request)
+    if decision.get("demo"):
+        if decision.get("allowed"):
+            return
+        raise HTTPException(status_code=403, detail=str(decision.get("problem") or ""))
+    raise HTTPException(status_code=401, detail="Нужен ключ доступа к кабинету")
 
 
 def set_cookie(response: Response, key: str) -> None:
@@ -2701,7 +2750,7 @@ function has(value){
 }
 function barChart(rows, opts){
   const bars=rows.filter(r=>has(r.value)).map(r=>Number(r.value));
-  const lines=(opts.lines||[]);
+  const lines=(opts.lines||[]).filter(l=>!l.average||rows.some(r=>has(r[l.key])));
   const all=bars.concat(...lines.map(l=>rows.filter(r=>has(r[l.key])).map(r=>Number(r[l.key]))));
   if(!all.length) return '<div class="muted" style="font-size:12.5px">Показывать нечего.</div>';
   const max=Math.max(...all,1);
@@ -2723,7 +2772,12 @@ function barChart(rows, opts){
   const bw=Math.max(6,Math.min(40,step-10));
   const x=i=>L+i*step+step/2;
   const y=v=>T+(H-T-B)*(1-((Number(v)||0)-base)/(max-base||1));
-  let svg=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img">`;
+  const averageLabels=[];
+  // На узком экране SVG сжимается целиком. Размер только новых числовых
+  // подписей компенсирует это сжатие; их интервал ниже меняется вместе с ним.
+  const viewport=typeof window==='undefined'?W+40:(window.innerWidth||W+40);
+  const labelFont=10*Math.max(1,W/Math.max(240,Math.min(W,viewport-40)));
+  let svg=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="${esc(opts.caption||opts.factName||'Динамика')}">`;
   // Окно последних месяцев подсвечивается ПОЛОСОЙ, а не цветом столбика:
   // бледный столбик уже значит «неполный период», и второй смысл на ту же
   // краску вешать нельзя — под одним знаком стояли бы два разных утверждения.
@@ -2739,6 +2793,14 @@ function barChart(rows, opts){
     svg+=`<line x1="${L}" y1="${y(v)}" x2="${W-R}" y2="${y(v)}" stroke="#e6ecf2"/>`
        +`<text x="${L-6}" y="${y(v)+4}" text-anchor="end" font-size="10" fill="#8798a8">${opts.axis(v)}</text>`;});
   const ry=v=>T+(H-T-B)*(1-((Number(v)||0)-rightBase)/((rightMax-rightBase)||1));
+  const averageMark=(l,axis,scale,show)=>{
+    if(!l.average)return;
+    const i=rows.length-1;
+    if(i<0||!has(rows[i][l.key]))return;
+    const value=Number(rows[i][l.key]);
+    svg+=`<circle class="chart-average-point" data-axis="${axis}" cx="${x(i).toFixed(1)}" cy="${scale(value).toFixed(1)}" r="3" fill="${l.color}" data-tip="${esc(rows[i].label+': '+l.name+' '+show(value))}"></circle>`;
+    averageLabels.push({x:x(i)-4,y:scale(value)-7,value,name:l.name,axis,color:l.color,show});
+  };
   if(right.length){
     [0,0.5,1].forEach(f=>{const v=rightBase+(rightMax-rightBase)*f;
       svg+=`<text x="${W-R+6}" y="${ry(v).toFixed(1)}" font-size="10" fill="#8798a8">${opts.rightAxis(v)}</text>`;});
@@ -2762,7 +2824,9 @@ function barChart(rows, opts){
       return point;
     }).filter(Boolean).join(' ');
     if(path) svg+=`<path d="${path}" fill="none" stroke="${l.color}" stroke-width="2"`
+      +`${l.average?` class="chart-average" data-axis="left" aria-label="${esc(l.name)}"`:''}`
       +`${l.dash?' stroke-dasharray="5 4"':''}/>`;
+    if(l.average){averageMark(l,'left',y,opts.averageShow||opts.show);return}
     rows.forEach((r,i)=>{ if(!has(r[l.key])) return;
       svg+=`<circle cx="${x(i).toFixed(1)}" cy="${y(r[l.key]).toFixed(1)}" r="3" fill="${l.color}"`
          +` data-tip="${esc(r.label+': '+l.name+' '+opts.show(r[l.key]))}"></circle>`; });
@@ -2778,24 +2842,32 @@ function barChart(rows, opts){
     // Линия цены тоньше и чуть бледнее линий объёма: их пять на одном поле, и
     // без разницы в весе они читаются как один клубок.
     if(path) svg+=`<path d="${path}" fill="none" stroke="${l.color}" stroke-width="1.4"`
+      +`${l.average?` class="chart-average" data-axis="right" aria-label="${esc(l.name)}"`:''}`
       +` opacity="0.85"${l.dash?' stroke-dasharray="4 3"':''}/>`;
+    if(l.average){averageMark(l,'right',ry,opts.rightAverageShow||opts.rightAxis);return}
     rows.forEach((r,i)=>{ if(!has(r[l.key])) return;
       svg+=`<circle cx="${x(i).toFixed(1)}" cy="${ry(r[l.key]).toFixed(1)}" r="2.5" fill="${l.color}"`
          +` data-tip="${esc(r.label+': '+l.name+' '+opts.rightShow(r[l.key]))}"></circle>`; });
   });
+  // Две средние могут прийти к одной высоте на разных шкалах. Подписи
+  // остаются внутри поля и раздвигаются, чтобы числа не перекрывались.
+  averageLabels.sort((a,b)=>a.y-b.y);
+  averageLabels.forEach((p,i)=>p.labelY=Math.max(T+labelFont,Math.min(H-B-4,p.y),i?averageLabels[i-1].labelY+labelFont+6:0));
+  const overflow=averageLabels.length?Math.max(0,averageLabels[averageLabels.length-1].labelY-(H-B-4)):0;
+  averageLabels.forEach(p=>{svg+=`<text class="chart-average-value" data-axis="${p.axis}" data-value="${p.value}" aria-label="${esc(p.name)}" x="${p.x.toFixed(1)}" y="${(p.labelY-overflow).toFixed(1)}" text-anchor="end" font-size="${labelFont.toFixed(2)}" font-weight="600" fill="${p.color}" stroke="white" stroke-width="3" paint-order="stroke">${esc(p.show(p.value))}</text>`});
   rows.forEach((r,i)=>{
     if(rows.length>16&&i%2) return;
     svg+=`<text x="${x(i).toFixed(1)}" y="${H-26}" text-anchor="middle" font-size="9" fill="#8798a8">${esc(r.short||r.label)}</text>`;
   });
   const legend=[{name:opts.factName||'факт',color:opts.fill||'#4E9BDE'}]
-    .concat(lines.map(l=>({name:l.name,color:l.color})))
-    .concat(right.map(l=>({name:l.name,color:l.color})));
+    .concat(lines.map(l=>({name:l.name,color:l.color,dash:l.dash})))
+    .concat(right.map(l=>({name:l.name,color:l.color,dash:l.dash})));
   svg+=`<text x="${L}" y="${H-8}" font-size="10" fill="#8798a8">${esc(opts.caption||'')}`
      +`${right.length?esc('; справа '+(opts.rightName||'цена')+', шкала от '+opts.rightAxis(rightBase)
         +' — цена от нуля не читается'):''}</text>`;
   let out='<div class="wrap">'+svg+'</svg></div><div class="muted" style="font-size:12px">';
   legend.forEach(l=>{ out+=`<span style="margin-right:14px;white-space:nowrap">`
-    +`<span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${l.color};margin-right:4px"></span>`
+    +`<span style="display:inline-block;width:${l.dash?'18':'9'}px;height:${l.dash?'0':'9'}px;${l.dash?'border-top:2px dashed '+l.color:'border-radius:2px;background:'+l.color};margin-right:4px;vertical-align:middle"></span>`
     +`${esc(l.name)}</span>`; });
   return out+'</div>';
 }
@@ -2839,16 +2911,25 @@ function salesDynamicsProducts(d){
   return order.map((name,i)=>({name, color:palette[i%palette.length]}));
 }
 
+// Оформление средней: ненулевой небольшой темп не становится видимым нулём.
+function salesAverageNumber(v,d=0){
+  const value=Number(v)===0?0:Number(v),a=Math.abs(value);
+  if(a>0&&a<0.001)return value.toLocaleString('ru-RU',{notation:'scientific',maximumSignificantDigits:2});
+  if(a>0&&a<1)return value.toLocaleString('ru-RU',{maximumSignificantDigits:2});
+  return num(value,d);
+}
+
 // Один график: либо выручка всего проекта, либо объём ОДНОГО товара.
 function salesDynamicsChart(d, metric, product){
   // Цена — в мере своего товара: у машино-места это рубли за лот. Считает её
   // сервер, здесь только подпись.
   const byPiece=product&&salesMeasureOf(d, product.name)==='units';
   const priceUnit=byPiece?'₽ за лот':'₽/м²';
-  const rows=(d.dynamics||[]).filter(m=>m.amount>0).map(m=>{
+  const pace=product?((d.dynamics_pace||{}).by_product||{})[product.name]:(d.dynamics_pace||{}).total;
+  const rows=(pace||(d.dynamics||[]).filter(m=>m.amount>0)).map(m=>{
     // Товара в этом месяце не продавали — это пропуск, а не ноль: столбика
     // просто нет, и линия цены рвётся.
-    const own=product?((m.by_product||{})[product.name]||null):null;
+    const own=product?(pace?m:((m.by_product||{})[product.name]||null)):null;
     let value=product?(own?own[metric.key]:null):m[metric.key];
     // Лот продан, а «Проектная S» не заполнена: метров мы не знаем, и ноль
     // здесь нарисовал бы столбик в пиксель — «продали ноль метров».
@@ -2856,17 +2937,26 @@ function salesDynamicsChart(d, metric, product){
     if(blind) value=null;
     const price=product?(own?own.price:null):m.price_flats;
     return {label:m.month, short:String(m.month).slice(2), value, price,
+      average:m['avg_'+metric.key],price_average:product?m.avg_price:m.avg_price_flats,
       tip:m.month+': '+(product?product.name+', ':'')
          +(has(value)?metric.show(value):'—')+' '
          +(metric.unit?metric.unit(value):metric.name)};
   });
   const priceName=product?('цена, '+priceUnit):'цена квартир, ₽/м²';
   return barChart(rows,{axis:metric.axis, show:metric.show, fill:product?product.color:null,
+    averageShow:metric.key==='amount'?v=>salesAverageNumber(v/1e6,1):v=>salesAverageNumber(v,metric.key==='units'?1:0),
     factName:(product?product.name:'выручка')+', '+metric.name,
-    rightLines:[{key:'price',name:priceName,color:SALES_PRICE_COLOR}],
-    rightAxis:v=>num(v/1000)+' тыс', rightShow:v=>num(v)+' '+priceUnit,
+    lines:[{key:'average',name:'Средний темп с начала продаж',color:'#1B5E77',dash:true,average:true}],
+    rightLines:[{key:'price',name:priceName,color:SALES_PRICE_COLOR},
+                {key:'price_average',name:'Средняя цена с начала продаж',color:SALES_PRICE_COLOR,dash:true,average:true}],
+    rightAxis:v=>salesAverageNumber(v/1000)+' тыс', rightShow:v=>num(v)+' '+priceUnit,
     rightName:product?'цена этого товара':'цена квартир',
-    caption:(product?product.name+' · '+metric.name:metric.name+' по месяцам')});
+    caption:(product?product.name+' · '+metric.name:metric.name+' по месяцам')})
+    +(pace&&pace.length?'<div class="muted sales-average-note" style="font-size:11px;margin-top:6px">'
+      +esc('Пунктир — средние с начала продаж '+(product?'этого товара':'проекта')+' ('+pace[0].month+' — '+pace[pace.length-1].month+', месяцев: '+pace[pace.length-1].months_since_start+'). '
+        +'Средний темп — накопленный объём, делённый на число календарных месяцев, включая месяцы без продаж. '
+        +'Средняя цена — накопленная сумма '+(product?'этого товара':'договоров квартир')+', делённая на '+(byPiece?'лоты':'метры')+'. '
+        +(!byPiece?'С месяца с неизвестной площадью средние в метрах и цена за м² не показываются.':''))+'</div>':'');
 }
 
 // Помесячные числа ОДНОГО товара. Общей строки «лотов всего» здесь нет — это
@@ -3209,6 +3299,16 @@ function roomTrend(labels, series, digits, suffix){
   return '<div class="wrap">'+svg+'</svg></div>';
 }
 
+// Подписано в месяце (выгрузка договоров) и зарегистрировано (отчёт отдела
+// продаж) с объяснением разницы. Строки пишет сервер
+// (`salesroom.registration_check`) — те же, что в сводке руководству.
+function registeredBlock(d){
+  const lines=((d.salesroom||{}).registered||{}).lines||[];
+  if(!lines.length) return '';
+  return '<h3 style="margin-top:14px">Подписано и зарегистрировано за месяц</h3>'
+    +lines.map(t=>`<p style="margin:4px 0">${esc(t)}</p>`).join('');
+}
+
 const ROOM_COLOURS=['#1367AE','#2E7D5B','#C4581B','#6C4AB6','#8798a8'];
 
 function salesRoomBlock(d){
@@ -3236,26 +3336,44 @@ function salesRoomBlock(d){
       +`<td class="num">${cell(m.calls_per_day)}</td>`
       +`<td class="num">${cell(m.bookings_at_once)}</td></tr>`).join('')
     +'</table></div></details>';
-  // Воронка и менеджеры за 30 дней отчётов: целевые звонки → встречи → новые
-  // брони → договоры, тем же расчётом, что в сводке руководству
-  // (`salesroom.sales_funnel`). Ступени, которой в отчётах нет, — прочерк, а
-  // не ноль; доля — от предыдущей ступени.
+  // Воронка и менеджеры за 30 дней отчётов тем же расчётом, что в сводке
+  // руководству (`salesroom.sales_funnel`), двумя путями: прямой — целевые
+  // звонки → встречи → прямые брони → договоры; через агентов — агентские
+  // брони → договоры, брокер-туры рядом. Ступени, которой в отчётах нет, —
+  // прочерк, а не ноль; доля — от предыдущей ступени. Встреч больше, чем
+  // звонков, — доли нет, под таблицей фраза сервера (больше 100% — не
+  // конверсия).
   const pipe=room.pipeline||null;
   if(pipe){
     const share=v=>v===null||v===undefined?'':` <span class="muted">(${num(v*100,1)} %)</span>`;
-    const stageRow=(name,r)=>`<tr><td>${esc(name)}</td>`
+    const split=(r,key)=>{
+      const d=r['direct_'+key]||0, a=r['agent_'+key]||0;
+      const parts=[d?`прямых ${num(d)}`:'', a?`через агентов ${num(a)}`:''].filter(Boolean);
+      return parts.length?` <span class="muted">(${parts.join(', ')})</span>`:'';};
+    const stageRow=(name,r,people)=>`<tr><td>${esc(name)}</td>`
       +`<td class="num">${cell(r.calls)}</td>`
-      +`<td class="num">${cell(r.meetings)}${share(r.meetings_share)}</td>`
-      +`<td class="num">${cell(r.bookings)}${share(r.bookings_share)}</td>`
-      +`<td class="num">${cell(r.deals)}${share(r.deals_share)}</td></tr>`;
+      +`<td class="num">${cell(r.meetings)}${r.more_meetings?'':share(r.meetings_share)}</td>`
+      +`<td class="num">${cell(r.bookings)}${people?split(r,'bookings'):share(r.bookings_share)}</td>`
+      +`<td class="num">${cell(r.deals)}${people?split(r,'deals'):share(r.deals_share)}</td></tr>`;
     const people=pipe.managers||[];
+    const direct=pipe.direct||pipe.total||{};
+    const agent=pipe.agent||null;
+    const tours=agent&&agent.broker_tours!==null&&agent.broker_tours!==undefined
+      ?` (брокер-туров ${num(agent.broker_tours)})`:'';
     html+=`<h3 style="margin-top:14px">Воронка и менеджеры с ${esc(pipe.first||'')} по ${esc(pipe.last||'')}</h3>`
       +'<div class="wrap"><table class="peers">'
       +'<tr><th></th><th class="num">Целевые звонки</th><th class="num">Встречи</th>'
       +'<th class="num">Новые брони</th><th class="num">Договоры</th></tr>'
-      +stageRow('Отдел продаж',pipe.total||{})
-      +(people.length>1?people.map(r=>stageRow(r.author,r)).join(''):'')
+      +stageRow('Прямой путь',direct)
+      +(agent?stageRow('Через агентов'+tours,{bookings:agent.bookings,deals:agent.deals,
+          deals_share:agent.deals_share}):'')
+      +(agent?stageRow('Отдел продаж, всего',{bookings:(pipe.total||{}).bookings,
+          deals:(pipe.total||{}).deals}):'')
+      +(people.length>1?people.map(r=>stageRow(r.author,r,true)).join(''):'')
       +'</table></div>';
+    if(pipe.more_meetings_text){
+      const t=pipe.more_meetings_text;
+      html+=`<div class="muted" style="font-size:12.5px;margin-top:6px">${esc(t.charAt(0).toUpperCase()+t.slice(1))}.</div>`;}
     (pipe.notes||[]).forEach(note=>{
       html+=`<div class="muted" style="font-size:12.5px;margin-top:6px">${esc(note)}.</div>`;});
   }
@@ -3874,7 +3992,7 @@ function renderSales(d){
   // Отдел продаж — после каналов и до расторжений: сначала чем и как продавали,
   // потом что говорили в переговорной, потом что сорвалось.
   html+=salesSection('sb-room','Отдел продаж: встречи и разговоры',
-    salesRoomBlock(d), salesNote(d,'salesroom'));
+    salesRoomBlock(d)+registeredBlock(d), salesNote(d,'salesroom'));
 
   if((d.terminated||[]).length){
     html+=salesSection('sb-term','Расторжения',

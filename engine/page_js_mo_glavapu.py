@@ -213,7 +213,7 @@ async function calculateMo(queryText){
    })
   });
   const data=await response.json();
-  if(!response.ok)throw new Error(data.detail||'Не удалось рассчитать проект');
+  if(!response.ok)throw new Error(serverDetail(data)||'Не удалось рассчитать проект');
   moResult=data;
   moLastQuery=query;
   renderMo(data);
@@ -311,6 +311,7 @@ function renderMo(data){
     (landSource.valuation_date?' · оценка на '+landSource.valuation_date:'')],
   ['УПКС ОКС МКД округа',(v.upks_average_oks!=null?landNum(v.upks_average_oks,2)+' ₽/м²':'—')+
     (oksSource.valuation_date?' · оценка на '+oksSource.valuation_date:'')],
+  ['УПКС ОКС МКД для коэффициента К',(v.upks_p!=null?landNum(v.upks_p,2)+' ₽/м²':'—')+(v.upks_p_basis?' · '+v.upks_p_basis:'')],
   ['Кадастровая стоимость сейчас',landNum(v.cadastral_value_current_rub/1e6,1)+' млн ₽'],
   ['Кадастровая стоимость целевая',landNum(v.cadastral_value_target_rub/1e6,1)+' млн ₽'],
   ['Разница ∆КС',landNum(v.delta_rub/1e6,1)+' млн ₽'],
@@ -329,7 +330,9 @@ function renderMo(data){
    .concat([['Занято нормативами',landNum(b.used_ha,4)+' га'],['Остаток под жильё, УДС и прочее',landNum(b.remaining_ha,4)+' га']])
  ));
  document.getElementById('moTables').innerHTML='<div class="mo-tables">'+tables.join('')+'</div>';
- document.getElementById('moWarnings').innerHTML=(data.warnings||[]).map(x=>'• '+escapeHtml(x)).join('<br>');
+ const said=showSiteRestrictions('moRestrictions',data.site_restrictions);
+ document.getElementById('moWarnings').innerHTML=(data.warnings||[]).filter(x=>!said.includes(String(x)))
+  .map(x=>'• '+escapeHtml(x)).join('<br>');
  document.getElementById('moPreview').style.display='block';
 }
 
@@ -355,7 +358,8 @@ async function applyMo(options){
   vri:moResult.vri||{},
   social:moResult.social||{},
   balance:moResult.balance||{},
-  warnings:moResult.warnings||[]
+  warnings:moResult.warnings||[],
+  site_restrictions:moResult.site_restrictions||null
  };
  Object.entries(moResult.tep||{}).forEach(([key,values])=>{
   if(tep[key])Object.assign(tep[key],values);
@@ -477,7 +481,7 @@ async function uploadGlavapu(){
      }
    }else if(manual.headers.get('X-DevelopAid-Template')==='yes'){
      const payload=await manual.json().catch(()=>({}));
-     templateError=String(payload.detail||'').trim()||'Шаблон ТЭП DevelopAid заполнен не полностью.';
+     templateError=String(serverDetail(payload)||'').trim()||'Шаблон ТЭП DevelopAid заполнен не полностью.';
    }
  }catch(e){/* не наш шаблон — пробуем формат ГлавАПУ */}
  if(templateError){
@@ -492,7 +496,7 @@ async function uploadGlavapu(){
      body:await file.arrayBuffer()
    });
    const payload=await response.json();
-   if(!response.ok)throw new Error(payload.detail||'Ошибка импорта');
+   if(!response.ok)throw new Error(serverDetail(payload)||'Ошибка импорта');
    // Пустой разбор — не успех. Ни одного числа значит «формат не наш», а не
    // «в файле нули»: сводка из прочерков читается как распознанный файл.
    const found=Object.values(payload.normalized||{}).filter(
@@ -524,7 +528,8 @@ function renderGlavapuPreview(data){
  // Предупреждение, которое видно всегда, не видно никогда: шесть абзацев
  // справки печатались на каждый импорт, и «продаваемая площадь не прочитана»
  // терялось между ними. Теперь блок появляется, только когда есть что сказать.
- const gw=(data.warnings||[]).filter(x=>String(x||'').trim());
+ const said=showSiteRestrictions('glavapuRestrictions',data.site_restrictions);
+ const gw=(data.warnings||[]).filter(x=>String(x||'').trim()&&!said.includes(String(x)));
  glavapuWarnings.innerHTML=gw.map(x=>'• '+x).join('<br>');
  glavapuWarnings.style.display=gw.length?'block':'none';
  const gn=(data.notes||[]).filter(x=>String(x||'').trim());
@@ -631,7 +636,7 @@ async function sendTelegramResult(){
      body:JSON.stringify({session:telegramSession,summary:payload})
    }).finally(()=>clearTimeout(slow));
    const result=await response.json();
-   if(!response.ok)throw new Error(result.detail||'Telegram не принял результат');
+   if(!response.ok)throw new Error(serverDetail(result)||'Telegram не принял результат');
    telegramResultSent=true;
    const status=document.getElementById('glavapuStatus');
    if(status)status.innerHTML+=' <b>Итоговая карточка и PDF-отчёт отправлены в Telegram.</b>'

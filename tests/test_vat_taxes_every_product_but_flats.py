@@ -1,4 +1,5 @@
-"""База НДС — вся выручка, кроме квартир, и она не перечисляется списком.
+"""База НДС — вся выручка, кроме квартир и нежилого дома по ДДУ, и она не
+перечисляется списком.
 
 Движок брал облагаемые продукты перечислением двух пулов — `core_products` и
 объекты КРТ. Паркинг отдельно стоящих объектов завели позже обоих (06.09.2026)
@@ -9,7 +10,9 @@
 «корзина, заведённая позже, в счётчик не попадает».
 
 Закреплено:
-- облагается всё, кроме квартир (пп. 22-23 п. 3 ст. 149 НК);
+- облагается всё, кроме квартир (пп. 22-23 п. 3 ст. 149 НК) и нежилого дома,
+  проданного по ДДУ до РВЭ (пп. 23.1, решение владельца 25.10.2026 —
+  `vat_exempt_ddu`); отдельно стоящие объекты облагаются;
 - база берётся из самих графиков выручки, а не из перечня продуктов, — иначе
   следующий продукт выпадет так же молча;
 - у сценария есть предохранитель: паркинг объектов обязан продаваться, иначе
@@ -64,17 +67,21 @@ def test_the_scenario_actually_sells_the_object_parking(report: dict) -> None:
 
 
 def test_the_vat_base_is_every_product_but_the_flats(report: dict) -> None:
-    """Начисленный НДС считается со всей выручки, кроме квартир."""
+    """Начисленный НДС считается со всей выручки, кроме квартир и нежилого
+    дома, проданного по ДДУ."""
     finance = report["finance"]
     rate = float(core.DEFAULT_INPUTS["vat_pct"]) / 100
     charged = float(finance["vat_charged"])
     taxable = charged / (rate / (1 + rate))
     revenue = _revenue(report)
-    expected = sum(value for key, value in revenue.items() if key != "apartments")
+    exempt = float(finance["vat_exempt_ddu"])
+    expected = sum(value for key, value in revenue.items() if key != "apartments") - exempt
     assert taxable == pytest.approx(expected, rel=1e-6), (
         f"в базе НДС {taxable / 1e6:.1f} млн, а нежилой выручки "
         f"{expected / 1e6:.1f} млн — продукт выпал из базы")
     assert revenue["apartments"] > 0, "квартиры обязаны продаваться: они и освобождены"
+    # Паркинг отдельно стоящего объекта — не нежилое дома: он обязан остаться в базе.
+    assert expected >= revenue[OFFICE_PARKING] * (1 - 1e-9)
 
 
 def test_the_base_is_taken_from_the_revenue_itself_not_from_a_list() -> None:

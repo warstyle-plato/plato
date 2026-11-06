@@ -40,6 +40,15 @@ import developaid_monitor as monitor
 PORT = 18803
 SALES = "ЖК Гродненская"
 
+# Монитор и сводка — только по ключу администратора (решение владельца
+# 02.11.2026): страница и маршруты открываются ключом, а не сессией.
+ADMIN_TEST_KEY = "browser-admin-key"
+
+
+@pytest.fixture(autouse=True)
+def _admin_key(monkeypatch):
+    monkeypatch.setenv("DEVELOPAID_ADMIN_KEY", ADMIN_TEST_KEY)
+
 
 @pytest.fixture(autouse=True)
 def _isolated(tmp_path, monkeypatch):
@@ -72,7 +81,7 @@ def test_the_link_is_explicit_and_kept_on_the_server():
     assert report.sales_link(PROJECT)["sales_project"] == SALES
     linked = report.build(PROJECT, "month", "2026-10-31")
     assert linked["sales"]["state"] == "ok"
-    assert "План банка на квартал: 280,0 млн ₽" in report.render_text(linked)
+    assert "План банка на квартал — 280,0 млн ₽" in report.render_text(linked)
 
     report.link_sales(PROJECT, "", "Иванов")
     declined = report.build(PROJECT, "month", "2026-10-31")
@@ -91,6 +100,8 @@ def test_the_link_route_refuses_an_unknown_project(monkeypatch):
     _project()
     _sales([])
     monkeypatch.setattr(core, "_require_web_access", lambda *_a, **_k: None)
+    # Пропуск монитора — ключ администратора; здесь проверяется сам маршрут.
+    monkeypatch.setattr(core, "_require_admin_key", lambda *_a, **_k: None)
     with pytest.raises(HTTPException) as unknown:
         core.monitor_report_link(core.MonitorReportLinkRequest(
             project="Нет такого", sales_project=SALES))
@@ -114,6 +125,8 @@ def test_the_page_picks_both_projects_from_lists(monkeypatch):
     _sales([_contract("2026-10-13", "Квартира", 50.0, 12.5 * M)])
     monitor.store_schedule("Кутузов Сити", _gpr_book({}), None, "2026-07-01")
     monkeypatch.setattr(core, "_require_web_access", lambda *_a, **_k: None)
+    # Пропуск монитора — ключ администратора; здесь проверяется сам маршрут.
+    monkeypatch.setattr(core, "_require_admin_key", lambda *_a, **_k: None)
 
     def visible(tab, selector):
         return tab.locator(selector).is_visible()
@@ -125,7 +138,7 @@ def test_the_page_picks_both_projects_from_lists(monkeypatch):
             errors: list[str] = []
             tab.on("pageerror", lambda e: errors.append(str(e)))
             # Последний открытый — записан старой страницей рукой, через дефис.
-            tab.add_init_script("localStorage.setItem('developaid_web_session','проба');"
+            tab.add_init_script("localStorage.setItem('developaid_web_session','проба');localStorage.setItem('plato_projects_key','browser-admin-key');"
                                 "localStorage.setItem('mgmt_report_project','кутузов-сити')")
             tab.goto(f"{base}/report", wait_until="domcontentloaded")
             tab.wait_for_selector("#project option[value='Кутузов Сити']", state="attached")
@@ -151,7 +164,7 @@ def test_the_page_picks_both_projects_from_lists(monkeypatch):
             # Новое окно: связь уже на сервере, выбирать второй раз не надо.
             fresh = browser.new_page()
             fresh.on("pageerror", lambda e: errors.append(str(e)))
-            fresh.add_init_script("localStorage.setItem('developaid_web_session','проба');"
+            fresh.add_init_script("localStorage.setItem('developaid_web_session','проба');localStorage.setItem('plato_projects_key','browser-admin-key');"
                                   "localStorage.setItem('mgmt_report_project','Гродненская')")
             fresh.goto(f"{base}/report", wait_until="domcontentloaded")
             fresh.wait_for_function(

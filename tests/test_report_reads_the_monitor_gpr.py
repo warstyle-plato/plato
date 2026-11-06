@@ -24,6 +24,15 @@ from test_management_report_model import PROJECT, _project
 import developaid_management_report as report
 import developaid_monitor as monitor
 
+# Монитор и сводка — только по ключу администратора (решение владельца
+# 02.11.2026): страница и маршруты открываются ключом, а не сессией.
+ADMIN_TEST_KEY = "browser-admin-key"
+
+
+@pytest.fixture(autouse=True)
+def _admin_key(monkeypatch):
+    monkeypatch.setenv("DEVELOPAID_ADMIN_KEY", ADMIN_TEST_KEY)
+
 
 @pytest.fixture(autouse=True)
 def _isolated(tmp_path, monkeypatch):
@@ -40,6 +49,8 @@ def test_a_doubt_closed_in_the_monitor_reaches_the_report(monkeypatch):
 
     _project()  # ГПР-факт от 16.10: «Фасад» (Корпус 2) — 40 %
     monkeypatch.setattr(core, "_require_web_access", lambda *_a, **_k: None)
+    # Пропуск монитора — ключ администратора; здесь проверяется сам маршрут.
+    monkeypatch.setattr(core, "_require_admin_key", lambda *_a, **_k: None)
     before = report.physical(PROJECT, "week", "2026-10-18")
     assert _corpus(before, "Корпус 2") == pytest.approx(0.40)
 

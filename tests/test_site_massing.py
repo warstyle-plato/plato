@@ -91,6 +91,43 @@ def test_a_hand_rate_stays_without_markups(how):
     assert m["underground_rate_by_hand"] is True
     assert m["underground_depth_factor"] == 1.0
     assert "вручную" in m["underground_depth_basis"]
+    assert m["underground_depth_markups_apply"] is False
+
+
+def test_a_hand_rate_of_the_first_level_gets_the_markups_below():
+    """Флажок «ставка первого уровня»: ручная ставка — на уровне −1, ниже — надбавки
+    как у ставки класса. Без флажка (и без ключа) — как раньше, без надбавок."""
+    x, t = _office()
+    x["_class_manual"] = ["main_under_th_per_sqm"]
+    rate = float(x["main_under_th_per_sqm"])
+    off = core.site_massing({k: v for k, v in x.items() if k != "underground_rate_is_level1"}, t)
+    assert off["underground_depth_factor"] == 1.0
+    on = core.site_massing({**x, "underground_rate_is_level1": True}, t)
+    by_class = core.site_massing({k: v for k, v in x.items() if k != "_class_manual"}, t)
+    assert on["underground_rate_by_hand"] is True and on["underground_depth_markups_apply"]
+    assert on["underground_depth_factor"] == pytest.approx(by_class["underground_depth_factor"])
+    assert on["underground_depth_factor"] > 1.0
+    assert [r["rate_th"] for r in on["underground_level_rows"]] == pytest.approx(
+        [rate, rate * 1.1])
+    assert "как ставка первого уровня" in on["underground_depth_basis"]
+    # Флажок у ставки класса ничего не меняет: надбавки у неё и так есть.
+    assert core.site_massing({**x, "underground_rate_is_level1": True,
+                              "_class_manual": []}, t)["underground_depth_factor"] == \
+        pytest.approx(by_class["underground_depth_factor"])
+
+
+@pytest.mark.parametrize("flag", ["Да", "true", 1, "1"])
+def test_the_first_level_flag_is_read_from_any_truthy_value(flag):
+    """Флажок из книги, пресета или старого проекта приходит не булевым True —
+    «Да», «true», 1 его тоже включают."""
+    x, t = _office()
+    x["_class_manual"] = ["main_under_th_per_sqm"]
+    m = core.site_massing({**x, "underground_rate_is_level1": flag}, t)
+    assert m["underground_depth_markups_apply"] is True
+    assert m["underground_depth_factor"] > 1.0
+    assert "как ставка первого уровня" in m["underground_depth_basis"]
+    off = core.site_massing({**x, "underground_rate_is_level1": "Нет"}, t)
+    assert off["underground_depth_markups_apply"] is False
 
 
 def test_hand_values_are_kept_and_estimates_follow_the_tep():
@@ -174,16 +211,31 @@ def test_a_hectare_with_28000_density_is_not_a_fifty_storey_tower():
     m = core.site_massing(x, t)
     assert m["above_gns_sqm"] == pytest.approx(26410.2)
     # Рядом со зданием — двор по норме (5 м² на жителя), остальное
-    # благоустройство — на кровле стилобата. Жилые дома — типовой этажности
-    # 17 (владелец 23.10.2026): пятно 26 410 ÷ 17, это меньше 30 % участка и
-    # свободного места.
+    # благоустройство — на кровле стилобата. Типовой этажности по умолчанию нет
+    # (владелец 31.10.2026): пятно — вся свободная земля, не больше 30 %
+    # участка; этажность = площадь ÷ пятно.
     assert m["footprint_estimate_sqm"] > 3000
     assert m["yard_ground_sqm"] == pytest.approx(10000 - m["footprint_sqm"] - 1500 - m["setbacks_sqm"])
     assert (m["footprint_origin"], m["typical_storeys"], m["typical_storeys_origin"]) == (
-        "typical", 17.0, "default")
-    assert m["footprint_sqm"] == pytest.approx(26410.2 / 17)
-    assert m["average_storeys"] == pytest.approx(17)
+        "coverage", 0.0, "land")
+    assert m["footprint_sqm"] == pytest.approx(3000)
+    assert m["average_storeys"] == pytest.approx(26410.2 / 3000)
     assert not m["warnings"]
+
+
+def test_changing_an_assumption_changes_the_footprint():
+    """Владелец 31.10.2026: «меняю допущения, а пятно не меняется». Пятно —
+    свободная земля: меньше проездов — больше пятна и ниже дом. Подделка:
+    при типовой этажности, вписанной руками, проезды пятно не двигают."""
+    wide = dict(site_coverage_max_pct=90)
+    base = core.site_massing(*_one_hectare(**wide))
+    fewer = core.site_massing(*_one_hectare(site_driveways_pct=5, **wide))
+    assert base["footprint_origin"] == fewer["footprint_origin"] == "estimate"
+    assert fewer["footprint_sqm"] == pytest.approx(base["footprint_sqm"] + 1000, abs=1)
+    assert fewer["average_storeys"] < base["average_storeys"]
+    hand = dict(residential_storeys_typical=17, **wide)
+    assert core.site_massing(*_one_hectare(**hand))["footprint_sqm"] == pytest.approx(
+        core.site_massing(*_one_hectare(site_driveways_pct=5, **hand))["footprint_sqm"])
 
 
 def test_a_hand_footprint_that_eats_the_norm_yard_is_said_aloud():
@@ -197,7 +249,7 @@ def test_a_hand_footprint_that_eats_the_norm_yard_is_said_aloud():
 
 
 def test_the_coverage_from_the_town_plan_wins_and_offices_have_no_default():
-    # Процент застройки — верхняя граница: 12 % участка меньше пятна по 17 этажам.
+    # Процент застройки — верхняя граница: 12 % участка меньше свободной земли.
     m = core.site_massing(*_one_hectare(site_coverage_max_pct=12))
     assert (m["footprint_sqm"], m["coverage_origin"], m["footprint_origin"]) == (
         pytest.approx(1200), "manual", "coverage")
@@ -205,8 +257,8 @@ def test_the_coverage_from_the_town_plan_wins_and_offices_have_no_default():
     # Типовая этажность, заданная руками, и предел участка ниже неё.
     hand = core.site_massing(*_one_hectare(residential_storeys_typical=12))
     assert hand["footprint_sqm"] == pytest.approx(26410.2 / 12)
-    capped = core.site_massing(*_one_hectare(max_storeys_allowed=9))
-    assert capped["average_storeys"] == pytest.approx(9)
+    capped = core.site_massing(*_one_hectare(max_storeys_allowed=5))
+    assert capped["average_storeys"] == pytest.approx(5)
     # Нежилой проект: процента по умолчанию нет — пятно всё свободное место.
     office = core.site_massing(*_office())
     assert office["coverage_origin"] == "none" and office["footprint_origin"] == "estimate"
@@ -334,7 +386,9 @@ def test_other_regions_take_the_larger_of_sp42_and_the_moscow_norm():
     x["site_area_ha"] = 4.0                      # 25 % — 10 000 м², норма Москвы — 6 820 м²
     m = core.site_massing(x, t)
     assert m["yard_sqm"] == pytest.approx(0.25 * 40000)
-    assert "СП 42.13330.2016" in m["yard_basis"] and "допущением" in m["yard_basis"]
+    assert "СП 42.13330.2016" in m["yard_basis"] and "допущение" in m["yard_basis"]
+    # Действующая редакция нормы 25 % не содержит — подпись так и говорит.
+    assert "в действующем СП 42.13330.2026 такой нормы нет" in m["yard_basis"]
     x["site_area_ha"] = 0.5                      # 25 % — 1 250 м², норма Москвы — 6 820 м²
     dense = core.site_massing(x, t)
     assert dense["yard_sqm"] == pytest.approx(5.0 * 1364)
@@ -432,3 +486,32 @@ def test_the_underground_contour_leaves_out_the_school_and_garden_plots():
     one = core.site_massing({**x, "underground_contour_use_factor": 0.85}, t)["underground_levels"]
     two = core.site_massing({**x, "underground_contour_use_factor": 0.4}, t)["underground_levels"]
     assert (one, two) == (1, 2)
+
+
+def test_the_footprint_names_what_limits_it():
+    """Владелец 02.11.2026: «при увеличении свободного места пятно не изменяется»;
+    решение — «прямо назвать ограничение». Подпись строки «Пятно застройки» —
+    от той ветки, что выбрал расчёт (`footprint_origin`), с числами этой ветки.
+    На прежней подписи («Процент застройки участка. Свободного места больше…»)
+    нет ни процента, ни свободного места числом, и проверка падает."""
+    fmt = core._fmt_ru
+    # Процент застройки 30 % (обычный) меньше свободного места → ограничивает процент.
+    m = core.site_massing(*_one_hectare(site_driveways_pct=5, site_setback_m=1))
+    assert m["footprint_origin"] == "coverage", m["footprint_origin"]
+    assert m["footprint_estimate_sqm"] > m["footprint_sqm"] + 100
+    basis = m["footprint_basis"]
+    assert basis.startswith("Пятно ограничено процентом застройки: 30%"), basis
+    assert f"{fmt(m['coverage_sqm'])} м²" in basis and f"Свободно под здание — {fmt(m['footprint_estimate_sqm'])} м²" in basis, basis
+    assert "поднимите процент застройки" in basis, basis
+    assert m["footprint_limit_field"] == "site_coverage_max_pct"
+    # Процент 90 % больше свободного места → ограничивает свободное место.
+    m = core.site_massing(*_one_hectare(site_coverage_max_pct=90))
+    assert m["footprint_origin"] == "estimate", m["footprint_origin"]
+    basis = m["footprint_basis"]
+    assert basis.startswith("Пятно ограничено свободным местом"), basis
+    assert f"остаётся {fmt(m['footprint_estimate_sqm'])} м²" in basis and "Процент застройки (90%)" in basis, basis
+    assert "процентом" not in basis and m["footprint_limit_field"] == "", basis
+    # Пятно, заданное вручную, — так и названо.
+    m = core.site_massing(*_one_hectare(building_footprint_sqm=2500))
+    assert m["footprint_origin"] == "manual" and m["footprint_basis"].startswith("Задано вручную")
+    assert m["footprint_limit_field"] == "building_footprint_sqm"

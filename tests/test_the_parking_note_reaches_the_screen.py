@@ -446,12 +446,12 @@ def test_the_field_hint_does_not_repeat_the_note() -> None:
     garaged = sum(1 for obj in core.STANDALONE_OBJECTS if obj.garage)
     assert len(hints) == 2 * garaged, f"полей паркинга объектов найдено {len(hints)}"
     for key, hint in hints:
-        assert "приложения 6" not in hint, (
+        assert "приложений 1 и 6" not in hint, (
             f"{key}: подсказка повторяет подпись под полем — {hint}")
         assert len(hint) < 40, f"{key}: подсказка длиной {len(hint)} — это снова стена"
     # А сама норма при этом названа: подпись говорит и чьё число, и чем перебить.
     said = _render_fields(_result(True, 159, 0), {"offices_enabled": True})["note_offices"]
-    assert "приложения 6" in said and "перебить" in said, said
+    assert "приложений 1 и 6" in said and "перебить" in said, said
 
 
 def test_no_state_of_the_note_is_silent() -> None:
@@ -520,7 +520,7 @@ def test_a_fresh_result_still_fills_the_field() -> None:
          "required_spaces": 159, "under_spaces": 159, "over_spaces": 0},
     ]}})
     assert seen["field_offices"] == 159, seen
-    assert "приложения 6" in seen["note_offices"], seen["note_offices"]
+    assert "приложений 1 и 6" in seen["note_offices"], seen["note_offices"]
 
 
 def test_a_stale_result_is_not_called_a_disabled_object() -> None:
@@ -698,6 +698,6 @@ def test_in_a_real_browser_the_note_is_written_by_the_form() -> None:
         browser.close()
     assert not errors, errors[:3]
     assert seen["note"], "подпись под полем пуста на отрисованной форме"
-    assert "приложения 6" not in (seen["label"] or ""), (
+    assert "приложений 1 и 6" not in (seen["label"] or ""), (
         f"подсказка снова повторяет подпись: {seen['label']}")
 

@@ -174,6 +174,8 @@ def test_the_route_forwards_the_conversation_to_the_engine(monkeypatch) -> None:
     seen.clear()
     monkeypatch.setattr(main_legacy, "_require_web_access",
                         lambda session, key, what: None)
+    # Монитор — только по ключу администратора; здесь проверяется пересылка истории.
+    monkeypatch.setattr(main_legacy, "_require_admin_key", lambda *_a, **_k: None)
     monkeypatch.setattr(main_legacy, "plato_answer_handoff",
                         lambda payload, request: seen.append(payload) or {"reply": "ok"})
     main_legacy.monitor_ask(

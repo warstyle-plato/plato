@@ -266,6 +266,34 @@ def _v4_apply_vri_monthly_accrual(xml: str, missing: list[str]) -> str:
     return xml
 
 
+def _v4_vat_exempt_ddu(formula: str) -> str | None:
+    """Нежилое дома, проданное до РВЭ по ДДУ, выходит из облагаемой выручки.
+
+    Пп. 23.1 п. 3 ст. 149 НК освобождает услуги застройщика по ДДУ на
+    «входящие в состав многоквартирных домов жилые и (или) нежилые
+    помещения, машино-места» (решение владельца 25.10.2026, ревизия
+    docs/vat_ddu_review.md). Шаблон облагал «всю выручку минус квартиры» —
+    в обоих местах формулы (начисление и доля вычета) к квартирам теперь
+    прибавляется проданное ДО РВЭ очереди из строк коммерции, паркинга и
+    кладовых её блока листа «Продажи» (квартиры + 3, + 6, + 9). Движок
+    вычитает то же (`VAT_MKD_NONRES_PRODUCTS`, `vat_exempt_ddu`).
+    """
+    found = re.search(r"SUM\('Продажи'!\$D\$(\d+):\$GA\$\1\)", formula)
+    if not found:
+        return None
+    apartments = int(found.group(1))
+    old = found.group(0)
+    exempt = "+".join(
+        f"SUMPRODUCT(--('Продажи'!$D$3:$GA$3<$B$8),'Продажи'!$D${row}:$GA${row})"
+        for row in (apartments + 3, apartments + 6, apartments + 9))
+    if formula.count(old) != 2:
+        return None
+    # В шаблоне строка квартир ВЫЧИТАЕТСЯ: «вся выручка − SUM(квартиры)».
+    # Освобождённое нежилое уходит вместе с ней — в одних скобках, иначе
+    # минус перед квартирами его бы прибавил.
+    return formula.replace(old, f"({old}+{exempt})")
+
+
 def _v4_apply_vat_base(xml: str, phase: int, missing: list[str]) -> str:
     """Проценты по рассрочке ВРИ НДС не облагаются — значит и вычета не дают.
 
@@ -306,7 +334,11 @@ def _v4_apply_vat_base(xml: str, phase: int, missing: list[str]) -> str:
             continue
         if was not in formula or vri_was not in formula:
             continue
-        cells[coord] = dict(formula=formula.replace(was, now, 1).replace(vri_was, vri_now, 1))
+        formula = formula.replace(was, now, 1).replace(vri_was, vri_now, 1)
+        exempt = _v4_vat_exempt_ddu(formula)
+        if exempt is None:
+            continue
+        cells[coord] = dict(formula=exempt)
     if not cells:
         missing.append(f"CF очереди {phase}: база НДС в строке {row} не опознана")
         return xml

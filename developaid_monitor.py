@@ -383,25 +383,125 @@ def store_schedule_fact(project: str, data: bytes, taken_at: Any) -> dict[str, A
     day = _iso(taken_at)
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
         raise ValueError("дата ГПР-факта нужна в виде ГГГГ-ММ-ДД")
-    parsed = _read_baseline_gpr_bytes(data)
+    # Пустое имя ведёт в безымянный каталог «project», где утверждённого ГПР
+    # нет, и отказ звучал как «baseline не загружен» — про чужую причину.
+    if not str(project or "").strip():
+        raise ValueError("Не указан проект: впишите название проекта в поле «Проект» вверху "
+                         "страницы и загрузите файл ещё раз.")
+    try:
+        parsed = _read_baseline_gpr_bytes(data)
+    except ValueError:
+        parsed = {"works": []}
+    packages = None
+    if not parsed["works"]:
+        # Укрупнённый ГПР по пакетам («Раздел / пакет», «Факт <дата>»): работ
+        # в нём нет, процент пакета разносится на работы утверждённого ГПР.
+        packages = _schedule_packages(project, data)
+        if packages is None:
+            import developaid_gpr_packages as gpr_packages
+
+            raise ValueError(
+                "Это не график работ: в файле нет ни листа «ГПР» со строками типа «Работа», "
+                "ни таблицы пакетов с колонками «Раздел / пакет» и «Факт <дата>». "
+                f"{gpr_packages.describe(data)} Справки по договорам и спорам загружают в "
+                "блок «Споры и претензии» на странице сводки.")
     folder = _project_dir(project) / "schedule_fact"
     folder.mkdir(parents=True, exist_ok=True)
     path = _inside(folder, f"{day}.xlsx")
     if path.exists():
-        raise FileExistsError(f"ГПР-факт на {day} уже загружен")
+        raise FileExistsError(
+            f"ГПР-факт на {_dotted(day)} уже загружен{_stored_fact_words(project, day)}. "
+            "Загруженный снимок не заменяется: уберите его кнопкой «Убрать ГПР-факт на эту "
+            "дату» или поставьте вверху страницы другую дату.")
     path.write_bytes(data)
-    works = parsed["works"]
-    return {
+    works = packages["works"] if packages else parsed["works"]
+    out = {
         "taken_at": day,
         "works": len(works),
         "completed": sum(1 for row in works
                          if "заверш" in str(row.get("status") or "").lower()
                          or (row.get("progress") or 0) >= 0.999),
     }
+    if packages:
+        out["packages"] = {key: packages[key] for key in (
+            "fact_day", "packages", "matched_packages", "unmatched", "ambiguous", "no_fact")}
+    return out
+
+
+def withdraw_schedule_fact(project: str, taken_at: Any, author: str = "") -> dict[str, Any]:
+    """Убрать ГПР-факт на дату из расчёта: файл уходит в архив, не удаляется.
+
+    Владелец, 30.10.2026, о ГПР по пакетам: «этот файл не подходит», процент
+    целого пакета на каждой работе дал паркинг 60% при плане 49%. Снимок
+    остаётся в `schedule_fact/withdrawn/` с записью, кто и когда его убрал:
+    переписанное прошлое должно быть видно.
+    """
+    day = _iso(taken_at)
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+        raise ValueError("дата ГПР-факта нужна в виде ГГГГ-ММ-ДД")
+    if not str(project or "").strip():
+        raise ValueError("Не указан проект: впишите название проекта в поле «Проект» вверху "
+                         "страницы.")
+    folder = _project_dir(project) / "schedule_fact"
+    path = _inside(folder, f"{day}.xlsx") if folder.exists() else None
+    if path is None or not path.exists():
+        loaded = sorted(item.stem for item in folder.glob("*.xlsx")) if folder.exists() else []
+        raise FileNotFoundError(
+            f"ГПР-факта на {_dotted(day)} в проекте «{project}» нет. "
+            + (f"Загружены: {', '.join(_dotted(item) for item in loaded)}." if loaded
+               else "ГПР-факт в этом проекте ещё не загружали."))
+    archive = folder / "withdrawn"
+    archive.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d%H%M%S")
+    target = archive / f"{day}-{stamp}.xlsx"
+    path.rename(target)
+    (archive / f"{day}-{stamp}.json").write_text(json.dumps(
+        {"taken_at": day, "withdrawn_at": stamp, "author": author}, ensure_ascii=False),
+        encoding="utf-8")
+    return {"taken_at": day, "withdrawn": True}
+
+
+def _dotted(day: str) -> str:
+    return ".".join(reversed(day.split("-")))
+
+
+def _stored_fact_words(project: str, day: str) -> str:
+    """Что лежит в уже загруженном ГПР-факте: по отказу видно, тот ли это файл."""
+    try:
+        stored = latest_schedule_fact(project, day)
+    except Exception:  # noqa: BLE001 — отказ о дубле важнее подробностей
+        return ""
+    if not stored or stored.get("taken_at") != day:
+        return ""
+    packages = stored.get("packages")
+    if packages:
+        on = f", факт на {_dotted(packages['fact_day'])}" if packages.get("fact_day") else ""
+        return (f": это ГПР по пакетам (пакетов {packages.get('packages', 0)}{on}, "
+                f"с работами утверждённого ГПР сопоставлено "
+                f"{packages.get('matched_packages', 0)})")
+    return f": в нём работ ГПР — {len(stored.get('works') or [])}"
+
+
+def _schedule_packages(project: str, data: bytes) -> dict[str, Any] | None:
+    """ГПР-факт по пакетам → строки работ утверждённого ГПР; не пакеты — None."""
+    import developaid_gpr_packages as gpr_packages
+
+    found = gpr_packages.read(data)
+    if found is None:
+        return None
+    try:
+        baseline = _read_baseline_gpr(project).get("works") or []
+    except FileNotFoundError:
+        baseline = []
+    if not baseline:
+        raise ValueError(f"ГПР-факт по пакетам разносится на работы утверждённого ГПР, а в "
+                         f"проекте «{project}» он в Мониторе не загружен. Проверьте название "
+                         "проекта вверху страницы или сначала загрузите утверждённый ГПР.")
+    return dict(gpr_packages.apply(found["packages"], baseline), fact_day=found["fact_day"])
 
 
 def replace_finance_baseline(project: str, data: bytes,
-                             taken_at: Any) -> dict[str, Any]:
+                             taken_at: Any, file_name: str = "") -> dict[str, Any]:
     """Заменить финансовый baseline утверждённым пересчётом.
 
     Финкнигу пересчитывают решением — например, когда потребность фасадов
@@ -432,7 +532,32 @@ def replace_finance_baseline(project: str, data: bytes,
         stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d%H%M%S")
         (history / f"replaced-{stamp}.xlsx").write_bytes(path.read_bytes())
     path.write_bytes(data)
-    return {"taken_at": day, "replaced": True}
+    # Книга хранится под общим именем, поэтому исходное имя файла и время
+    # загрузки записываются рядом: подсказка плитки «Утверждённый бюджет»
+    # называет источник (владелец, 02.11.2026). Пустое имя — так и пишется:
+    # «нет данных», а не выдуманное.
+    # Браузер на Windows может прислать путь с «\», имя — последняя часть.
+    meta = {"file_name": re.split(r"[\\/]", str(file_name or "").strip())[-1],
+            "uploaded_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "taken_at": day}
+    (folder / FINANCE_META).write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    return {"taken_at": day, "replaced": True, "file_name": meta["file_name"]}
+
+
+# Имя исходного файла финансовой базы и время её загрузки.
+FINANCE_META = "finance_meta.json"
+
+
+def finance_baseline_meta(project: str) -> dict[str, Any]:
+    """Что известно об источнике финансовой базы; нет записи — пустой словарь."""
+    path = _project_dir(project) / "baseline" / FINANCE_META
+    if not path.exists():
+        return {}
+    try:
+        stored = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return stored if isinstance(stored, dict) else {}
 
 
 def store_work_fact(project: str, rows: list[dict[str, Any]],
@@ -538,7 +663,15 @@ def latest_schedule_fact(project: str, upto: str = "") -> dict[str, Any] | None:
     path = _latest(project, "schedule_fact", ".xlsx", upto)
     if path is None:
         return None
-    parsed = _read_baseline_gpr_bytes(path.read_bytes())
+    data = path.read_bytes()
+    try:
+        parsed = _read_baseline_gpr_bytes(data)
+    except ValueError:
+        parsed = {"works": []}
+    if not parsed["works"]:
+        packages = _schedule_packages(project, data)
+        if packages is not None:
+            parsed = {"works": packages.pop("works"), "packages": packages}
     parsed["taken_at"] = path.stem
     return parsed
 

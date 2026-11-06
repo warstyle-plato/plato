@@ -270,18 +270,10 @@ def install(app: FastAPI) -> MarketDiscoveryService:
     @app.get("/cabinet", response_class=HTMLResponse)
     async def cabinet_home(request: Request) -> HTMLResponse:
         """Кабинет. Без ключа — форма входа, а не отказ: сюда приходит человек."""
-        problem = cabinet_module.key_problem()
-        if problem:
-            return HTMLResponse(cabinet_module.login_page(problem), status_code=503)
-        if not cabinet_module.cabinet_key():
-            return HTMLResponse(
-                cabinet_module.login_page(
-                    f"Кабинет выключен: не задан {cabinet_module.ENV_NAME}."
-                ),
-                status_code=503,
-            )
-        if not cabinet_module.authorised(request):
-            return HTMLResponse(cabinet_module.login_page(), status_code=401)
+        # Ключ, демо-ссылка с разделом «Рынок» или отказ с причиной.
+        refused = cabinet_module.page_gate(request)
+        if refused:
+            return HTMLResponse(refused[1], status_code=refused[0])
         # Страница меняется по нескольку раз в день, а браузер держит HTML без
         # заголовка сколько сочтёт нужным. Выкаченная правка на экране не
         # появлялась, и отличить «не сделано» от «показана вчерашняя копия»
@@ -293,16 +285,10 @@ def install(app: FastAPI) -> MarketDiscoveryService:
 
     def _cabinet_view(request: Request, view: str) -> HTMLResponse:
         """Тот же кабинет, другой его вид. Вход проверяется тем же способом."""
-        problem = cabinet_module.key_problem()
-        if problem:
-            return HTMLResponse(cabinet_module.login_page(problem), status_code=503)
-        if not cabinet_module.cabinet_key():
-            return HTMLResponse(
-                cabinet_module.login_page(
-                    f"Кабинет выключен: не задан {cabinet_module.ENV_NAME}."),
-                status_code=503)
-        if not cabinet_module.authorised(request):
-            return HTMLResponse(cabinet_module.login_page(), status_code=401)
+        # Ключ, демо-ссылка с разделом «Рынок» или отказ с причиной.
+        refused = cabinet_module.page_gate(request)
+        if refused:
+            return HTMLResponse(refused[1], status_code=refused[0])
         return HTMLResponse(cabinet_module.cabinet_page(view),
                             headers={"Cache-Control": "no-store, must-revalidate"})
 
@@ -320,18 +306,10 @@ def install(app: FastAPI) -> MarketDiscoveryService:
     @app.get("/cabinet/price-hint", response_class=HTMLResponse)
     async def cabinet_price_hint_page(request: Request) -> HTMLResponse:
         """Отдельная расшифровка рекомендации цены с ручным составом аналогов."""
-        problem = cabinet_module.key_problem()
-        if problem:
-            return HTMLResponse(cabinet_module.login_page(problem), status_code=503)
-        if not cabinet_module.cabinet_key():
-            return HTMLResponse(
-                cabinet_module.login_page(
-                    f"Кабинет выключен: не задан {cabinet_module.ENV_NAME}."
-                ),
-                status_code=503,
-            )
-        if not cabinet_module.authorised(request):
-            return HTMLResponse(cabinet_module.login_page(), status_code=401)
+        # Ключ, демо-ссылка с разделом «Рынок» или отказ с причиной.
+        refused = cabinet_module.page_gate(request)
+        if refused:
+            return HTMLResponse(refused[1], status_code=refused[0])
         return HTMLResponse(
             price_hint_ui.page(),
             headers={"Cache-Control": "no-store, must-revalidate"},
@@ -923,7 +901,14 @@ def install(app: FastAPI) -> MarketDiscoveryService:
         if not contracts:
             return {"project": kept.get("project") or "", "sources": [],
                     "missing": ["контрактация не загружена"], "empty": True}
-        got = contracting.summarise(contracts, part("ledger") or {})
+        # Та же календарная база, что в сводке: месяц среза выгрузки тоже
+        # учитывается, даже если в нём ещё не было договоров.
+        uploaded = str((sources.get("contracting") or {}).get("at") or "")[:10]
+        try:
+            until = datetime.date.fromisoformat(uploaded).strftime("%Y-%m")
+        except ValueError:
+            until = None
+        got = contracting.summarise(contracts, part("ledger") or {}, until=until)
         fm, bank, pool = part("fm_plan"), part("bank_plan"), part("pool")
         got["fm_plan"] = fm
         got["bank_plan"] = bank
@@ -967,6 +952,13 @@ def install(app: FastAPI) -> MarketDiscoveryService:
                                               last.isoformat())
                 if pipe:
                     got["salesroom"]["pipeline"] = dict(pipe, first=first, last=last.isoformat())
+            # Подписано в месяце против «зарегистрировано» по отчёту отдела
+            # продаж — тот же расчёт и те же слова, что в сводке руководству.
+            checked = salesroom.registration_check(
+                room, contracts.get("rows") or [],
+                uploaded=(sources.get("contracting") or {}).get("at"))
+            if checked:
+                got["salesroom"]["registered"] = checked
         # Условия рынка: наша рассрочка и рассрочка соседей по району. Свод
         # продаж отвечает на «почему не покупают» нашими числами, а витрину
         # двигает не только наш прайс — без второй половины предложение по

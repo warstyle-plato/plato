@@ -30,6 +30,15 @@ PORT = 18809
 OTHER = dict(CARD, counterparty="ООО «Лютик»", contract="Договор № 2 от 01.05.2026",
              claims=[], events=[])
 
+# Монитор и сводка — только по ключу администратора (решение владельца
+# 02.11.2026): страница и маршруты открываются ключом, а не сессией.
+ADMIN_TEST_KEY = "browser-admin-key"
+
+
+@pytest.fixture(autouse=True)
+def _admin_key(monkeypatch):
+    monkeypatch.setenv("DEVELOPAID_ADMIN_KEY", ADMIN_TEST_KEY)
+
 
 def _file(*cards, project=PROJECT) -> bytes:
     return json.dumps({"projects": [{"project": project, "at": "2026-10-01T00:00:00+00:00",
@@ -74,6 +83,8 @@ def test_the_route_is_for_the_owner_only(monkeypatch):
 
     monitor.store_schedule(PROJECT, _gpr_book({}), None, "2026-07-01")
     monkeypatch.setattr(core, "_require_web_access", lambda *_a, **_k: None)
+    # Пропуск монитора — ключ администратора; здесь проверяется сам маршрут.
+    monkeypatch.setattr(core, "_require_admin_key", lambda *_a, **_k: None)
     request = core.MonitorLegalImportRequest(
         project=PROJECT, content_base64=base64.b64encode(_file(CARD)).decode())
     monkeypatch.setattr(core, "_is_admin_request", lambda *_a, **_k: False)
@@ -97,6 +108,8 @@ def test_the_owner_uploads_the_file_on_the_page(monkeypatch, tmp_path):
 
     monitor.store_schedule(PROJECT, _gpr_book({}), None, "2026-07-01")
     monkeypatch.setattr(core, "_require_web_access", lambda *_a, **_k: None)
+    # Пропуск монитора — ключ администратора; здесь проверяется сам маршрут.
+    monkeypatch.setattr(core, "_require_admin_key", lambda *_a, **_k: None)
     monkeypatch.setattr(core, "_is_admin_request", lambda *_a, **_k: True)
     sample = tmp_path / "legal_seed.json"
     sample.write_bytes(_file(CARD, OTHER))
@@ -106,7 +119,7 @@ def test_the_owner_uploads_the_file_on_the_page(monkeypatch, tmp_path):
             tab = browser.new_page()
             errors: list[str] = []
             tab.on("pageerror", lambda e: errors.append(str(e)))
-            tab.add_init_script("localStorage.setItem('developaid_web_session','проба')")
+            tab.add_init_script("localStorage.setItem('developaid_web_session','проба');localStorage.setItem('plato_projects_key','browser-admin-key')")
             tab.goto(f"{base}/report", wait_until="domcontentloaded")
             tab.wait_for_selector("#legalImport:not(.hidden)")
             tab.set_input_files("#legalImportFile", str(sample))

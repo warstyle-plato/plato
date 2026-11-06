@@ -20,7 +20,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
 from pathlib import Path
 
@@ -29,20 +28,10 @@ sys.path.insert(0, str(ROOT))
 
 import main_legacy as core  # noqa: E402
 
+sys.path.insert(0, str(ROOT / "tests"))
+import page_blocks
+
 PAGE = core.PAGE
-
-
-def _piece(name: str, kind: str = "function") -> str:
-    start = PAGE.index(f"{kind} {name}(")
-    depth, i = 0, PAGE.index("{", start)
-    while True:
-        if PAGE[i] == "{":
-            depth += 1
-        elif PAGE[i] == "}":
-            depth -= 1
-            if depth == 0:
-                return PAGE[start:i + 1]
-        i += 1
 
 
 STUBS = """
@@ -72,16 +61,17 @@ ROWS = [
 
 
 def _rendered() -> str:
-    script = STUBS + _piece("openProjects", kind="async function") + """
+    # Остальные куски (рисование списка, его порядок и поиск) стенд добирает
+    # со страницы сам: перечисленный руками список отставал бы от неё.
+    prelude = STUBS + """
 function projectsCall(path){
   if(path==='/projects/list')return Promise.resolve({projects:%s});
   return Promise.resolve({});
 }
-(async()=>{await openProjects();console.log(JSON.stringify(projectsBody.innerHTML))})();
 """ % json.dumps(ROWS, ensure_ascii=False)
-    out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=60)
-    assert out.returncode == 0, out.stderr[-2000:]
-    return json.loads(out.stdout)
+    out, _ = page_blocks.run(
+        prelude, "(async()=>{await openProjects();console.log(JSON.stringify(projectsBody.innerHTML))})();")
+    return json.loads(out)
 
 
 def test_every_saved_row_offers_writing_over_it() -> None:

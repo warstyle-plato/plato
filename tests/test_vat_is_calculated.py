@@ -83,11 +83,17 @@ def test_flats_alone_pay_no_vat():
 
 
 def test_the_charge_is_taken_from_the_non_residential_revenue():
-    """Начислено = выручка нежилого × 22/122, ни рублём больше."""
+    """Начислено = (выручка нежилого − нежилое дома по ДДУ) × 22/122.
+
+    Коммерция, паркинг и кладовые дома, проданные до РВЭ по ДДУ, освобождены
+    (пп. 23.1 п. 3 ст. 149 НК, решение владельца 25.10.2026); проданное после
+    ввода облагается."""
     result = build(vat_pct=RATE)
     taxable = sum(item["revenue"] for item in result["report"]["products"]
                   if item["key"] != "apartments")
-    assert result["finance"]["vat_charged"] == pytest.approx(taxable * GROSS_TO_TAX, rel=1e-6)
+    exempt = result["finance"]["vat_exempt_ddu"]
+    assert 0 < exempt < taxable
+    assert result["finance"]["vat_charged"] == pytest.approx((taxable - exempt) * GROSS_TO_TAX, rel=1e-6)
 
 
 def test_the_flats_revenue_is_not_in_the_base():

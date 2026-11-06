@@ -111,6 +111,7 @@ _V4_NORMATIVE_STATUS_WORDS = {
     "verified": "Сверено по исходнику",
     "verified_in_engine_source_pack": "Сверено по своду норм, не по акту",
     "review_required": "Требует сверки",
+    "not_confirmed": "Не подтверждено",
     "source_link_missing": "Нет ссылки на исходник",
     "superseded": "Утратил силу",
 }
@@ -567,8 +568,8 @@ def _v4_finance_hints(bundle: dict[str, Any]) -> dict[str, Any]:
         }
     hints["parity"] = _v4_parity_targets(bundle.get("consolidated") or {})
     # IRR проекта (до финансирования) — числом движка: поток проекта книги
-    # (CF!28) ведёт выручку по раскрытию эскроу, движок — по договорам, и
-    # формула книги дала бы второе, несогласное число. Числом и при
+    # (CF!28) и движка ведут выручку по ДДУ с раскрытия эскроу (214-ФЗ), но
+    # IRR — один владелец, `summary.irr_project`. Числом и при
     # непогашенном долге: «N/A — долг не погашен» — только у капитала
     # (владелец, 17.10.2026).
     _summary = (bundle.get("consolidated") or {}).get("summary") or {}

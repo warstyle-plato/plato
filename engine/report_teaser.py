@@ -427,6 +427,9 @@ def build_teaser_pdf(bundle: dict[str, Any], inputs: dict[str, Any],
     # «Сравнение стратегий» — одна строка тизера из блока расчёта.
     presentation["strategy_line"] = (((bundle or {}).get("consolidated") or {})
                                      .get("strategy_compare") or {}).get("teaser") or ""
+    presentation["office_class_line"] = "; ".join(
+        (row["text"] if len(rows) == 1 else f"{row['title']}: {row['text']}")
+        for rows in [office_class_rows(inputs)] for row in rows)
     caption = None
     if isinstance(map_png, tuple):
         map_png, caption = map_png

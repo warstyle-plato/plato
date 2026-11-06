@@ -7,6 +7,7 @@ import json
 import logging
 import math
 import os
+import hashlib
 import re
 import statistics
 import sys
@@ -76,6 +77,7 @@ from auction_search.export_areas import export_areas
 from auction_search import archives, egrn_archive, egrn_store
 from auction_search import krt_pipeline
 from auction_search import lot_documents
+from auction_search.equity_assets import enrich_equity_from_documents
 from auction_search.krt_pipeline import (
     documents_summary,
     egrn_summary,
@@ -99,6 +101,7 @@ from auction_search import view_access as auction_view
 from auction_search import lot_notes as lot_notes_rules
 from auction_search import export_columns
 from auction_search import krt_early_projects
+from auction_search import krt_project_site
 from auction_search import krt_investment_score
 from auction_search.nagatino_ui import nagatino_page
 from auction_search.krt_investment_card import krt_investment_card_page
@@ -1372,6 +1375,20 @@ def install(app: FastAPI) -> None:
                     "не заданы PULSE_LOGIN и PULSE_PASSWORD")
         return ""
 
+    DUE_RETRY_SECONDS = 5 * 60
+
+    def _weekly_blocked() -> str:
+        """Почему плановый прогон КРТ на этом хосте не идёт — или пустая строка.
+
+        Один ответ для потока и для страницы: прежде причина жила только в
+        журнале, и владелец видел «не пересчитывается» без объяснения.
+        """
+        if os.getenv("AUCTION_KRT_WEEKLY", "1").strip() in {"0", "false", "no"}:
+            return "Плановый прогон выключен на этом сервере (AUCTION_KRT_WEEKLY=0)"
+        if core is None:
+            return "Расчётное ядро на этом сервере не загружено — считать модель нечем"
+        return _market_source_off()
+
     def _weekly_ranking() -> None:
         """Раз в неделю каталог обновляется и считается сам.
 
@@ -1390,19 +1407,25 @@ def install(app: FastAPI) -> None:
         """
         said = ""
         while True:
+            pause = HEARTBEAT_SECONDS
             try:
                 # Хост без источника рынка прогон не ведёт вовсе. Прежде он его
                 # вёл: падала каждая площадка, в журнал уходило по трассировке
                 # на каждую, а в рейтинг — «Расчёт не выполнен» на диск, который
                 # у бота живёт до следующей выкатки. Причина называется ОДИН
                 # раз: строка на каждый удар сердца — это тот же шум, только
-                # тише.
-                off = _market_source_off()
+                # тише. Ту же причину страница читает из `_weekly_blocked`.
+                off = _weekly_blocked()
                 if off:
                     if off != said:
                         logger.warning("Недельный прогон КРТ здесь не идёт: %s", off)
                         said = off
-                elif core is not None and krt_ranking.due():
+                elif krt_ranking.due():
+                    # Пока срок наступил, а прогон не взят (замок держит
+                    # другой прогон или умерший при выкатке воркер), проверяем
+                    # чаще: час ожидания после каждой выкатки съедал рабочий
+                    # день прогона.
+                    pause = DUE_RETRY_SECONDS
                     if krt_ranking.claim():
                         try:
                             projects = krt_registry.projects(refresh=True)
@@ -1418,15 +1441,22 @@ def install(app: FastAPI) -> None:
                             # жильё, считается и та же модель — цифры площадки
                             # прочитаны из её PDF.
                             rows = rows + _decision_rows_for_run()
-                            if rows and not krt_ranking.start(
+                            if not rows:
+                                krt_ranking.note_schedule_failure(
+                                    "Каталог КРТ и список решений пришли пустыми — "
+                                    "считать было нечего, повторю позже")
+                                krt_ranking.release()
+                            elif not krt_ranking.start(
                                     rows, _screen_for_background, scheduled=True, claimed=True):
                                 krt_ranking.release()
-                        except Exception:
+                        except Exception as exc:  # noqa: BLE001
                             logger.exception("weekly KRT ranking failed")
+                            krt_ranking.note_schedule_failure(
+                                f"Плановый прогон не начался: {exc}")
                             krt_ranking.release()
             except Exception:
                 logger.exception("weekly KRT ranking loop")
-            time.sleep(HEARTBEAT_SECONDS)
+            time.sleep(pause)
 
 
     # main.py loads the canonical legacy core as `developaid_core`. Inject only the
@@ -1510,6 +1540,20 @@ def install(app: FastAPI) -> None:
             return await call_next(request)
         if path == "/auctions/login":
             return await call_next(request)
+        # Демо-ссылка с разделом «Торги и КРТ»: только чтение, решение — одно
+        # на движок (`demo_request_access`). Полный ключ кабинета главнее.
+        if not market_cabinet.authorised(request):
+            demo = market_cabinet.demo_access(request)
+            if demo.get("demo"):
+                if demo.get("allowed"):
+                    return await call_next(request)
+                problem = str(demo.get("problem") or "")
+                if (request.method in ("GET", "HEAD")
+                        and "text/html" in request.headers.get("accept", "")):
+                    return HTMLResponse(auction_view.login_page(problem), status_code=403,
+                                        headers={"Cache-Control": "no-store"})
+                return JSONResponse({"detail": problem}, status_code=403,
+                                    headers={"Cache-Control": "no-store"})
         if not _auctions_gate_enabled():
             # Ворота выключены — чтение открыто всем, запись и пробы — только
             # команде: ключ кабинета, ключ владельца или вход человека команды.
@@ -3574,6 +3618,13 @@ def install(app: FastAPI) -> None:
             return
         if market_cabinet.authorised(request):
             return
+        # Демо-ссылка с разделом «Торги и КРТ» читает участки, как ключ
+        # просмотра; команды обновления — запись, их отказ называет причину.
+        demo = market_cabinet.demo_access(request)
+        if demo.get("demo"):
+            if demo.get("allowed"):
+                return
+            raise HTTPException(status_code=403, detail=str(demo.get("problem") or ""))
         # Отдельный ключ торгов действует только здесь: generic-кабинет его
         # не знает, поэтому /cabinet и финансовая модель им не открываются.
         if auction_view.authorised(request):
@@ -3942,32 +3993,13 @@ def install(app: FastAPI) -> None:
         """Контур площадки для её свода: сперва файл карты города, потом перечень.
 
         Тот же порядок, что у точки на карте (`/point`), и те же две дороги:
-        второго пути к контуру в модуле нет. Опознавать геометрией здесь не
+        второго пути к контуру в модуле нет. Владелец дорог —
+        `krt_project_site.find_site`: им же берёт контур галочка «Проект в КРТ». Опознавать геометрией здесь не
         нужно — слаг площадки известен.
         """
         def find() -> dict[str, Any]:
-            lookup = getattr(krt_registry, "map_lookup", None)
-            found = (lookup(slug, name, None) or {}) if callable(lookup) else {}
-            site = found.get("site") or {}
-            rings = [ring for ring in (site.get("rings_merc") or [])
-                     if isinstance(ring, list) and len(ring) >= 3]
-            if rings:
-                return {"slug": slug, "name": str(site.get("name") or name),
-                        "rings_merc": rings, "matched": str(found.get("matched") or "map"),
-                        "source": "официальный файл карты реестра КРТ", "problem": ""}
-            outline = _decision_outline_now(slug)
-            rings = [ring for ring in (outline.get("rings_merc") or [])
-                     if isinstance(ring, list) and len(ring) >= 3]
-            if rings:
-                return {"slug": slug, "name": name, "rings_merc": rings,
-                        "matched": "decision",
-                        "source": "состав территории по проекту решения, "
-                                  "а не официальный полигон",
-                        "problem": str(outline.get("problem") or "")}
-            return {"problem": (str(found.get("problem") or "")
-                                or str(outline.get("problem") or "")
-                                or "контур площадки не собрался: её нет ни в файле "
-                                   "карты города, ни в перечне проекта решения")}
+            return krt_project_site.find_site(krt_registry, slug, name,
+                                              decision_outline=_decision_outline_now)
 
         return find
 
@@ -4334,6 +4366,118 @@ def install(app: FastAPI) -> None:
         data["retry_after_seconds"] = 20 if data["pending"] else None
         return data
 
+    @app.post("/krt/project-site", include_in_schema=False)
+    async def krt_project_site_route(request: Request) -> dict[str, Any]:
+        """Территория КРТ проекта для галочки «Проект в КРТ» на вкладке ТЭП.
+
+        Тело: `slug` (площадка выбрана человеком) или участки проекта —
+        `cadastral_numbers` и `points_merc` (точки его участков из госреестра);
+        `query` — поиск площадки по имени, когда опознать её не вышло. Ответ —
+        контур, площадь (`krt_contour_area_sqm` движка) и источник, либо
+        причина и площадки на выбор. Файл карты и ЕГРН по перечню — долго:
+        сбор идёт фоном, запрос читает диск. С Render — на ядро, где реестр
+        и НСПД (как `/land/lookup`).
+        """
+        body = await json_object(request)
+        url = (core._core_api_url("/krt/project-site")
+               if core is not None and hasattr(core, "_core_api_url") else "")
+        if url:
+            return await run_in_threadpool(
+                core._core_post, url, body, getattr(core, "_MO_CALC_TIMEOUT_SECONDS", 60))
+        query = str(body.get("query") or "").strip()
+        if query:
+            found = await run_in_threadpool(krt_registry.suggest, query[:120], 8)
+            return {"status": "choices", "problem": "" if found else
+                    "в каталоге КРТ площадок с таким именем или районом нет",
+                    "choices": [{"slug": str(item.get("slug") or ""),
+                                 "name": str(item.get("name") or ""),
+                                 "matched_by": "выбрана по имени в каталоге КРТ"}
+                                for item in found if item.get("slug")]}
+        slug = str(body.get("slug") or "").strip()[:160]
+        numbers = krt_project_site.clean_numbers(body.get("cadastral_numbers"))
+        points = krt_project_site.clean_points(body.get("points_merc"))
+        area = getattr(core, "krt_contour_area_sqm", None) if core is not None else None
+        if not callable(area):
+            return {"status": "failed", "choices": [],
+                    "problem": "движок расчёта не загружен — площадь контура считать нечем"}
+        name = str(body.get("name") or "").strip()[:200]
+        key = krt_project_site.request_key(slug, numbers, points)
+        await run_in_threadpool(lambda: krt_project_site.start(key, lambda: krt_project_site.gather(
+            krt_registry, slug=slug, name=name or slug, numbers=numbers, points_merc=points,
+            decision_outline=_decision_outline_now, area_sqm=area),
+            refresh=bool(body.get("refresh"))))
+        return await run_in_threadpool(krt_project_site.view, key)
+
+    @app.post("/krt/manual-contour", include_in_schema=False)
+    async def krt_manual_contour_route(request: Request) -> dict[str, Any]:
+        """Контур КРТ, загруженный человеком, для галочки «Проект в КРТ».
+
+        `catalog_text` — каталог координат МСК-77 из приложения к решению:
+        разбирается сразу, сети нет. `file_b64` + `filename` — фото или скан
+        страницы решения: распознавание долгое, идёт фоном, ответ — `key`,
+        по нему страница переспрашивает (`key` без файла). Фото схемы без
+        координат обводит Платон, привязка — по `anchor_rings_merc` (контуры
+        участков проекта) и `addresses`. С Render — на ядро:
+        распознавание стоит там (`pdf_ocr`, tesseract в образе).
+        """
+        import base64
+
+        from auction_search import krt_manual_contour
+
+        body = await json_object(request)
+        url = (core._core_api_url("/krt/manual-contour")
+               if core is not None and hasattr(core, "_core_api_url") else "")
+        if url:
+            return await run_in_threadpool(
+                core._core_post, url, body, getattr(core, "_MO_CALC_TIMEOUT_SECONDS", 60))
+        points = krt_project_site.clean_points(body.get("points_merc"))
+        text = str(body.get("catalog_text") or "")
+        if text.strip():
+            return await run_in_threadpool(
+                lambda: krt_manual_contour.from_catalog(text[:200_000], points_merc=points))
+        raw = str(body.get("file_b64") or "")
+        key = str(body.get("key") or "")
+        key = key if re.fullmatch(r"manual-[0-9a-f]{24}", key) else ""
+        if raw:
+            try:
+                data = base64.b64decode(raw.split(",", 1)[-1], validate=False)
+            except Exception:  # noqa: BLE001 — битый файл называется
+                return {"status": "failed", "problem": "файл не прочитан — пришлите его ещё раз"}
+            if len(data) > 12 * 1024 * 1024:
+                return {"status": "failed", "problem": "файл больше 12 МБ — снимите одну страницу"}
+            name = str(body.get("filename") or "")[:120]
+            # Фото схемы без координат Платон обводит, а движок привязывает
+            # к участкам проекта (`krt_photo_outline`): контуры участков и их
+            # адреса — часть ключа, другой набор участков — другой ответ.
+            anchors = [krt_project_site.clean_points(ring)
+                       for ring in (body.get("anchor_rings_merc") or [])[:40]
+                       if isinstance(ring, list)]
+            anchors = [ring for ring in anchors if len(ring) >= 3]
+            addresses = [str(a)[:200] for a in (body.get("addresses") or [])[:20] if a]
+            # Версия разбора — тоже часть ключа: ответ лежит на диске сутки, и
+            # без неё исправленный разбор отдавал бы прежний (ложный каталог).
+            key = "manual-" + hashlib.sha1(data + json.dumps(
+                [krt_manual_contour.RECOGNISE_VERSION, anchors, points, addresses]
+            ).encode("utf-8")).hexdigest()[:24]
+            ask = None
+            if core is not None and callable(getattr(core, "_openai_responses_request", None)):
+                def ask(payload: dict[str, Any]) -> str:
+                    return core._extract_openai_text(core._openai_responses_request(payload, 180.0))
+            model = (os.getenv("OPENAI_KRT_OUTLINE_MODEL")
+                     or os.getenv("OPENAI_AGENT_MODEL", "gpt-5.6")).strip() or "gpt-5.6"
+            await run_in_threadpool(lambda: krt_project_site.start(
+                key, lambda: {"schema_version": krt_project_site.SCHEMA_VERSION,
+                              "collected_at": int(time.time()), "choices": [],
+                              **krt_manual_contour.recognise(
+                                  data, name, points_merc=points, anchor_rings_merc=anchors,
+                                  addresses=addresses, ask=ask, model=model)}))
+        if not key:
+            return {"status": "failed",
+                    "problem": "пришлите каталог координат текстом или фото страницы решения"}
+        answer = await run_in_threadpool(krt_project_site.view, key)
+        answer["key"] = key
+        return answer
+
     @app.get("/auctions/krt/{slug}/point")
     async def auction_krt_point(slug: str) -> dict[str, Any]:
         """Геокодированная точка территории — чтобы показать её на карте.
@@ -4521,6 +4665,11 @@ def install(app: FastAPI) -> None:
             # Сроки и выключатель называются здесь же: «сторож молчит» при
             # выключенном стороже — ответ, а не поломка.
             "enabled": os.getenv("AUCTION_KRT_WATCH", "1").strip() not in {"0", "false", "no"},
+            # Недельный пересчёт рейтинга — только сроки и причина, без цифр
+            # экономики: «почему не пересчитывается» должно быть видно и без
+            # входа, как и молчание сторожа.
+            "ranking_schedule": await run_in_threadpool(
+                krt_ranking.schedule_status, _weekly_blocked()),
             "periods_seconds": {
                 "site": krt_watch_periods()[0],
                 "decision": krt_watch_periods()[1],
@@ -4580,6 +4729,11 @@ def install(app: FastAPI) -> None:
                 "за вход», а не «проходит ли она по объявленной цене»."
             ),
             "progress": krt_ranking.progress(),
+            # Плановый прогон: когда был последний полный, когда следующий и
+            # что мешает. Без этого «не пересчитывается» снаружи не отличить
+            # от «идёт», «обрывается выкаткой» и «на сервере выключен».
+            "schedule": await run_in_threadpool(
+                krt_ranking.schedule_status, _weekly_blocked()),
             # Находка, посчитанная прежним правилом привязки, признаком не
             # считается: она сделана из того же текста, но по другому правилу,
             # и до перечитывания это «не знаем», а не «занята» (владелец,
@@ -6054,6 +6208,13 @@ def install(app: FastAPI) -> None:
                 lot = await run_in_threadpool(
                     lambda: enrich_krt_from_official_documents(
                         lot, store_dir=_market_dir()))
+            elif lot.lot_kind == LotKind.EQUITY_STAKE and req.enrich_krt_documents:
+                # Продажа доли общества-«обёртки»: участок общества назван
+                # только в документах лота (выписка ЕГРН, документация), а не в
+                # карточке и не адресом общества. Кадастр оттуда едет дальше
+                # той же передачей в расчёт, цена доли — ценой входа.
+                lot = await run_in_threadpool(
+                    lambda: enrich_equity_from_documents(lot, store_dir=_market_dir()))
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except DocumentExtractionError as exc:
@@ -6105,6 +6266,11 @@ def install(app: FastAPI) -> None:
                 # никем не показанное неотличимо от непосчитанного, поэтому
                 # свод едет в ответ, а считает его один `egrn_summary`.
                 "egrn": egrn_summary(lot),
+                # Что стоит за долей: объекты общества из документов лота и
+                # чего прочитать не удалось. Без этого «участка нет» и «не
+                # прочитали» на экране одинаковы.
+                "equity_assets": (lot.raw.get("equity_assets")
+                                  if lot.lot_kind == LotKind.EQUITY_STAKE else None),
                 # Сколько вложений спросили, сколько прочитали и что площадка
                 # не отдала. Счёт лежал в `raw`, а `include_raw` у карточки
                 # выключен: на экране стояло «Документов 26» и ни слова о

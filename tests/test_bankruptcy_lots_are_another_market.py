@@ -475,6 +475,20 @@ def test_a_foreign_region_is_not_ours() -> None:
     assert in_target_region(dict(_real_card(), subjectRFCode="50")) is False
 
 
+@pytest.fixture
+def without_privatization_rule(monkeypatch):
+    """Проверка про обход и разбор, а не про пороги приватизации.
+
+    Образец здесь — живая карточка августа 2026: приватизация с прошедшим
+    сроком подачи. Правило стоящих лотов (`privatization`) её законно
+    отсекает, и проверка листания падала бы про другое. У правила свои
+    проверки: tests/test_city_privatization_takes_only_worthy_lots.py.
+    """
+    from auction_search import privatization
+    monkeypatch.setattr(privatization, "applies", lambda lot: False)
+
+
+@pytest.mark.usefixtures("without_privatization_rule")
 def test_the_collector_drops_foreign_regions(monkeypatch) -> None:
     import auction_search.adapters.torgi_gov as mod
     ours = dict(_real_card(), subjectRFCode="77", id="ours_1")
@@ -532,6 +546,7 @@ def test_a_street_named_moscow_is_not_moscow() -> None:
     assert in_target_region(card) is False
 
 
+@pytest.mark.usefixtures("without_privatization_rule")
 def test_cards_without_a_region_are_counted_not_swallowed(monkeypatch) -> None:
     """Пропущенное молча читается как отсутствующее."""
     import auction_search.adapters.torgi_gov as mod
@@ -838,6 +853,7 @@ def test_the_page_shows_unrecognised_origin_as_its_own_group() -> None:
     assert "l.origin||'city'" not in page
 
 
+@pytest.mark.usefixtures("without_privatization_rule")
 def test_a_short_page_is_not_the_last_page(monkeypatch) -> None:
     """Размер страницы мы просим, а не назначаем.
 
@@ -866,6 +882,7 @@ def test_a_short_page_is_not_the_last_page(monkeypatch) -> None:
     assert adapter.last_report["cards_per_page"] == 10
 
 
+@pytest.mark.usefixtures("without_privatization_rule")
 def test_the_envelope_says_where_the_pages_end(monkeypatch) -> None:
     """Конец выборки объявляет ответ, а не наша догадка о размере."""
     import auction_search.adapters.torgi_gov as mod
@@ -885,6 +902,7 @@ def test_the_envelope_says_where_the_pages_end(monkeypatch) -> None:
     assert adapter.last_report["total_elements"] == 2
 
 
+@pytest.mark.usefixtures("without_privatization_rule")
 def test_a_standing_page_number_is_caught(monkeypatch) -> None:
     """Сервис, игнорирующий `page`, вернул бы свои карточки сорок раз.
 

@@ -224,6 +224,12 @@ def _project_owner(session: str = "", key: str = "") -> int:
     """
     if session:
         chat_id = int(_telegram_verify_session(session).get("chat_id") or 0)
+        demo = globals().get("demo_chat")
+        if chat_id and callable(demo) and demo(chat_id):
+            # Свои проекты и профиль — раздел «Личный кабинет» демо-ссылки.
+            problem = demo_section_problem(chat_id, "cabinet", write=False)
+            if problem:
+                raise HTTPException(status_code=403, detail=problem)
         if chat_id:
             return chat_id
         raise HTTPException(status_code=403, detail="В сессии нет владельца — войдите заново.")
@@ -1342,6 +1348,15 @@ class SalesChatRequest(BaseModel):
     author: str = ""
     text: str = ""
     taken_at: str = ""
+    action: str = "report"
+    batch_id: str = ""
+    message_id: int = 0
+    author_id: int = 0
+    telegram_date: int = 0
+    reply_to_id: int = 0
+    reply_text: str = ""
+    reply_from_id: int = 0
+    reply_is_bot: bool = False
 
 
 @app.post("/internal/monitor/sales-chat", include_in_schema=False)
@@ -1356,6 +1371,35 @@ def internal_monitor_sales_chat(req: SalesChatRequest) -> dict[str, Any]:
     if not hmac.compare_digest(str(req.sign or "").encode("utf-8"),
                                expected.encode("utf-8")):
         raise HTTPException(status_code=403, detail="Подпись не сошлась.")
+    from market_search import sales_dialogue, sales_store
+
+    with sales_dialogue.origin_lock(sales_store.default_dir()):
+        return _apply_sales_chat(req)
+
+
+def _apply_sales_chat(req: SalesChatRequest) -> dict[str, Any]:
+    """Только после проверки подписи и под общей блокировкой происхождения."""
+    if req.action == "reply":
+        from market_search import sales_dialogue, sales_questions, sales_store
+
+        bot_id = str(_telegram_token() or "").partition(":")[0]
+        ours = (bot_id.isdigit() and int(bot_id) == req.reply_from_id and req.reply_is_bot)
+        if not ours or req.reply_to_id <= 0 or not sales_dialogue.is_question(req.reply_text):
+            return {"reply_saved": False}
+        where = sales_store.default_dir()
+        origin = sales_dialogue.reply_project(where, req.chat_id, req.reply_to_id, req.reply_text)
+        # Неизвестные исторические вопросы хранятся отдельно, без приписывания
+        # нынешнему проекту. Telegram ID сообщения уникален только ВНУТРИ чата.
+        target = where if origin else where / "unattributed"
+        key = origin or str(req.chat_id)
+        with sales_questions.lock(target, key):
+            saved = sales_dialogue.reply(
+                target, key, chat_id=req.chat_id, message_id=req.message_id,
+                reply_to_id=req.reply_to_id, quoted=req.reply_text, text=req.text,
+                author=req.author, author_id=req.author_id, telegram_date=req.telegram_date,
+                allow_legacy=not bool(origin))
+        return {"sales_project": origin, "reply_saved": saved,
+                "reply_unattributed": not bool(origin)}
     project = _site_project_name(_site_chat_project(int(req.chat_id or 0)))
     if not project:
         return {"bound": "", "sales_project": ""}
@@ -1369,15 +1413,49 @@ def internal_monitor_sales_chat(req: SalesChatRequest) -> dict[str, Any]:
         # Это ответ, а не отказ: в /status видно, чего не хватает.
         return {"bound": project, "sales_project": ""}
     where = sales_store.default_dir()
-    kept = sales_store.load(where, sales_project)
-    current = ((kept.get("sources") or {}).get("salesroom") or {}).get("data")
-    day = str(req.taken_at or "")[:10]
-    updated = salesroom.append_message(current, day, str(req.author or ""), req.text,
-                                       str(req.title or ""))
-    sales_store.save(where, sales_project, {"salesroom": updated},
-                     f"чат «{req.title or ''}» — бот")
+    from market_search import sales_dialogue, sales_questions
+
+    # Под одной блокировкой: дописать отчёт, собрать вопросы, записать
+    # заданные. Два воркера с двумя отчётами разом не зададут вопрос дважды и
+    # не потеряют сообщение друг друга.
+    with sales_questions.lock(where, sales_project):
+        if req.action == "delivered":
+            return {"bound": project, "sales_project": sales_project,
+                    "delivered": sales_dialogue.delivered(
+                        where, sales_project, req.chat_id, req.batch_id, req.message_id)}
+        if req.action != "report":
+            raise HTTPException(400, "Неизвестное действие чата продаж.")
+        kept = sales_store.load(where, sales_project)
+        current = ((kept.get("sources") or {}).get("salesroom") or {}).get("data")
+        day = str(req.taken_at or "")[:10]
+        updated = salesroom.append_message(current, day, str(req.author or ""), req.text,
+                                           str(req.title or ""))
+        sales_store.save(where, sales_project, {"salesroom": updated},
+                         f"чат «{req.title or ''}» — бот")
+        # Вопросы Платона в чат (владелец, 02.11.2026: «пусть пишет в чат, но
+        # коротко и извиняюсь»; «и нельзя повторять вопросы»): только на новый
+        # отчёт — повтор доставки Telegram ничего не задаёт, — и каждый вопрос
+        # один раз (`sales_questions`).
+        ask, ask_error, ask_id = "", "", ""
+        if day and len(updated.get("messages") or []) > len((current or {}).get("messages") or []):
+            contracting = (kept.get("sources") or {}).get("contracting") or {}
+            try:
+                found = sales_questions.questions(
+                    updated, contracting.get("data"), contracting.get("at"), day,
+                    set(sales_questions.load_asked(where, sales_project))
+                    | sales_dialogue.asked_keys(where, sales_project))
+                ask = sales_questions.message(found)
+                if ask:
+                    # Сначала записать, потом отправить: несработавшая отправка
+                    # потеряет вопрос, а не повторит его.
+                    sales_questions.remember(where, sales_project, found, day)
+                    ask_id = sales_dialogue.prepare(where, sales_project, req.chat_id, found, day)
+            except Exception as exc:  # noqa: BLE001
+                # Отчёт уже сохранён; не задать вопрос лучше, чем повторить.
+                ask, ask_error = "", str(exc)[:120]
     return {"bound": project, "sales_project": sales_project,
-            "messages": len(updated.get("messages") or [])}
+            "messages": len(updated.get("messages") or []), "ask": ask,
+            "ask_error": ask_error, "ask_id": ask_id}
 
 
 class SiteChatsRequest(BaseModel):
@@ -1389,15 +1467,19 @@ class SiteChatsRequest(BaseModel):
 
 @app.post("/internal/monitor/site-chats", include_in_schema=False)
 def internal_monitor_site_chats(req: SiteChatsRequest) -> dict[str, Any]:
-    """Привязки чатов для /status. Бот спрашивает только для команды, ядро
-    проверяет это ещё раз: имена проектов — данные владельца."""
+    """Привязки чатов для /status — только по проектам, на сводку которых этот
+    Telegram ID подписан (`developaid_report_mailing.subscribed_projects`).
+    Не подписан — `subscriber: False` и пусто: имена проектов — данные владельца."""
     expected = _web_login_sign("monitor-chats", int(req.chat_id or 0))
     if not hmac.compare_digest(str(req.sign or "").encode("utf-8"),
                                expected.encode("utf-8")):
         raise HTTPException(status_code=403, detail="Подпись не сошлась.")
-    if int(req.chat_id or 0) not in team_chat_ids():
-        raise HTTPException(status_code=403, detail="Привязки чатов видит только команда.")
-    return {"projects": site_chat_bindings()}
+    import developaid_report_mailing as mailing
+    allowed = set(mailing.subscribed_projects(req.chat_id))
+    if not allowed:
+        return {"subscriber": False, "projects": []}
+    return {"subscriber": True,
+            "projects": [row for row in site_chat_bindings() if row["project"] in allowed]}
 
 
 @app.post("/internal/monitor/photo", include_in_schema=False)
@@ -1922,10 +2004,11 @@ def team_chat_ids() -> set[int]:
 
 
 def team_access_allowed(session: str, key: str) -> bool:
-    """«Команда владельца» — отдельный от «вошёл» уровень: данные проектов
-    владельца (монитор, сводка руководству, споры, бюджеты, рассылка) не для
-    клиентов. Команда — ключ администратора, ключ кабинета рынка или вход
-    человека из `team_chat_ids()`. Демо-доступ проверяющих — никогда."""
+    """«Команда владельца» — отдельный от «вошёл» уровень (торги и т.п.).
+    Монитор, сводку и споры она НЕ открывает: там только `admin_key_allowed`.
+    Команда — ключ администратора, ключ кабинета рынка или вход
+    человека из `team_chat_ids()`. Демо-ссылка — никогда: её просмотр
+    разделов решает `demo_section_problem` в `_require_team_access`."""
     secret = _env_str("DEVELOPAID_ADMIN_KEY", "").strip()
     if secret and key and hmac.compare_digest(str(key).encode("utf-8"), secret.encode("utf-8")):
         return True
@@ -1939,12 +2022,106 @@ def team_access_allowed(session: str, key: str) -> bool:
     return chat in team_chat_ids()
 
 
-def _require_team_access(session: str, key: str, what: str) -> None:
-    """Пропуск к данным команды. Без токена бота механизм выключен, как и вход."""
+# Раздел демо-ссылки для каждой проверки команды — явная карта по `what`.
+# Чего в карте нет (споры, рассылка без своего раздела), демо закрыто всегда.
+_TEAM_DEMO_BLOCKS = {"Монитор проекта": "monitor", "Сводка руководству": "report"}
+
+
+# Монитор, сводка руководству и споры — только ключ администратора (решение
+# владельца 02.11.2026: «убрать доступ к блоку report и monitor для всех кроме
+# обладателя ключа администратор»). Ключ кабинета рынка, вход через Telegram
+# (команда и админы по chat_id) и демо-ссылки эти разделы не открывают.
+ADMIN_KEY_ONLY_SECTIONS = frozenset({"Монитор проекта", "Сводка руководству",
+                                     "Споры и претензии"})
+ADMIN_KEY_ONLY_DENIED = "Раздел доступен только по ключу администратора."
+# Ключ едет полем тела или этим заголовком (GET-маршрутам — чтобы не попасть в адрес).
+ADMIN_KEY_HEADER = "x-developaid-admin-key"
+
+
+def _admin_key_from_request() -> str:
+    current = globals().get("_access_request")
+    request = current() if callable(current) else None
+    if request is None:
+        return ""
+    return str(request.headers.get(ADMIN_KEY_HEADER) or "")
+
+
+def admin_key_allowed(key: str) -> bool:
+    """ЕДИНСТВЕННОЕ решение «доступ к монитору и сводке»: ключ администратора.
+    Не задан `DEVELOPAID_ADMIN_KEY` — закрыто для всех (fail closed)."""
+    secret = _env_str("DEVELOPAID_ADMIN_KEY", "").strip()
+    if not secret:
+        return False
+    for candidate in (str(key or "").strip(), _admin_key_from_request().strip()):
+        if candidate and hmac.compare_digest(candidate.encode("utf-8"), secret.encode("utf-8")):
+            return True
+    return False
+
+
+def admin_key_gate_state() -> dict[str, Any]:
+    """Для /health: закрыты ли разделы для всех и почему (сам ключ не выдаётся)."""
+    configured = bool(_env_str("DEVELOPAID_ADMIN_KEY", "").strip())
+    return {"sections": sorted(ADMIN_KEY_ONLY_SECTIONS), "admin_key_configured": configured,
+            "reason": "" if configured else
+            "DEVELOPAID_ADMIN_KEY не задан: монитор и сводка закрыты для всех."}
+
+
+def _admin_gate_refused_via(key: str, session: str = "") -> str:
+    try:
+        demo = globals().get("demo_session_chat")
+        if session and callable(demo) and demo(session):
+            return "demo_link"
+        if session and _web_identity_chat_id(session):
+            return ("team_login" if _web_identity_chat_id(session) in team_chat_ids()
+                    else "telegram_login")
+        team_key = globals().get("_access_team_key")
+        if callable(team_key) and team_key():
+            return "market_key"
+        current = globals().get("_access_request")
+        request = current() if callable(current) else None
+        if request is not None and request.cookies.get(globals().get("DEMO_COOKIE", "")):
+            return "demo_link"
+    except Exception:
+        pass
+    return "wrong_key" if str(key or "").strip() else "no_key"
+
+
+def _require_admin_key(key: str, what: str, session: str = "") -> None:
+    if admin_key_allowed(key):
+        return
+    log = logging.getLogger("developaid.access")
+    if not _env_str("DEVELOPAID_ADMIN_KEY", "").strip():
+        log.warning("admin-key gate closed for everyone: DEVELOPAID_ADMIN_KEY is not set (%s)", what)
+    # Кого отрезало — видом пропуска, без chat_id и ключей: владелец видит в журнале,
+    # кто ходил в раздел не по ключу администратора.
+    log.info("admin-key gate refused %s via=%s", what, _admin_gate_refused_via(key, session))
+    raise HTTPException(status_code=403, detail=f"«{what}»: {ADMIN_KEY_ONLY_DENIED}")
+
+
+def _require_team_access(session: str, key: str, what: str, *, write: bool = True) -> None:
+    """Пропуск к данным команды. Без токена бота механизм выключен, как и вход.
+
+    Разделы `ADMIN_KEY_ONLY_SECTIONS` — только ключ администратора, всегда,
+    в том числе без токена бота (`_require_admin_key`).
+
+    `write=False` — маршрут только читает: его может открыть демо-ссылка с
+    этим разделом (решает `demo_section_problem`). Умолчание — запись: новый
+    маршрут закрыт демо, пока его явно не назвали чтением."""
+    if what in ADMIN_KEY_ONLY_SECTIONS:
+        _require_admin_key(key, what, session)
+        return
     if not _telegram_token():
         return
     if team_access_allowed(session, key):
         return
+    demo = globals().get("demo_session_chat")
+    chat = demo(session) if callable(demo) else 0
+    if chat:
+        problem = demo_section_problem(chat, _TEAM_DEMO_BLOCKS.get(what, ""), write=write,
+                                       what=what)
+        if not problem:
+            return
+        raise HTTPException(status_code=403, detail=problem)
     if _web_identity_chat_id(session):
         raise HTTPException(
             status_code=403,

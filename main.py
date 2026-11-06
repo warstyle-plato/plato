@@ -868,10 +868,10 @@ def _status_message(chat_id: int, user_id: int) -> None:
         # ответа не имело вовсе. Тот же промах, что и с самим гейтом, только
         # зеркальный: там правило стояло не у той двери, здесь — ответ.
         # Привязки чатов — с ядра, не из памяти воркера: чат стройки, молчавший
-        # с выкатки, иначе не виден вовсе (владелец, 24.10.2026). Только команде.
-        + core._telegram_bindings_line(chat_id)
-        # Названия групп и проектов — данные владельца: только команде.
-        + (core._telegram_group_seen_line() if int(chat_id) in core.team_chat_ids() else "")
+        # с выкатки, иначе не виден вовсе (владелец, 24.10.2026). Вместе со
+        # счётчиком групп — только подписчику сводки по Telegram ID того, кто
+        # спрашивает, и только по его проектам (решение владельца 02.11.2026).
+        + core._telegram_bindings_line(user_id)
         # Справочник устаревает тихо: расчёт идёт, числа выглядят как обычно,
         # а под ними прошлогодний тариф. Напоминание тут потому, что /status
         # смотрят, когда что-то проверяют.
@@ -1310,14 +1310,20 @@ def _grant_command(chat_id: int, user_id: int, argument: str) -> None:
     except HTTPException as exc:
         _send_message(chat_id, f"Доступ не выдан: {html.escape(str(exc.detail))}")
         return
+    notice = result.get("notice") or {}
+    told = (" Сообщение ему в Telegram отправлено." if notice.get("sent") else
+            f" Сообщение ему в Telegram пока не отправлено: {html.escape(str(notice.get('reason') or ''))}."
+            if notice.get("queued") else
+            f" Сообщение ему в Telegram не отправлено: {html.escape(str(notice.get('reason') or 'причина неизвестна'))}."
+            " Напишите ему сами.") if notice else ""
     if reserve:
         _send_message(chat_id, f"Пользователю {int(parts[0])} положено в запас: {int(parts[2])} "
                                f"{core._access_plots_word(int(parts[2]))}. Теперь в запасе: "
-                               f"{int(result.get('reserve') or 0)}.")
+                               f"{int(result.get('reserve') or 0)}.{told}")
         return
     until = datetime.fromtimestamp(float(result.get("until") or 0), tz=timezone.utc).astimezone(
         timezone(timedelta(hours=3))).strftime("%d.%m.%Y")
-    _send_message(chat_id, f"Доступ выдан пользователю {int(parts[0])} до {until}.")
+    _send_message(chat_id, f"Доступ выдан пользователю {int(parts[0])} до {until}.{told}")
 
 
 def _send_model_archive(chat_id: int) -> None:
@@ -1908,6 +1914,36 @@ def _deliver_profile_announcements() -> None:
         core._telegram_send_profile_card(record, admins)
 
 
+def _deliver_access_notices() -> None:
+    """Вести «вам открыт доступ» с ядра — человеку в Telegram.
+
+    Доступ выдаётся на ядре, а до api.telegram.org достаёт только этот хост:
+    ядро кладёт весть в очередь, мы забираем её тем же путём, что и знакомства,
+    и отправляем. Иначе выдавший читал «Telegram API недоступен» и писал
+    человеку сам. Забрать весть, а потом её потерять, нельзя: забираем только
+    тогда, когда здесь есть чем отправить.
+    """
+    if not core._telegram_token() or not core._telegram_webhook_enabled():
+        return
+    remote = core._projects_remote_url("/internal/access/notices")
+    if remote:
+        payload = {"code": "access-notices", "chat_id": 0,
+                   "sign": core._web_login_sign("access-notices", 0)}
+        records = list(core._core_post(remote, payload, 30.0).get("notices") or [])
+    else:
+        records = core.access_take_notices()
+    core.access_deliver_notices(records)
+
+
+def _access_notices_loop() -> None:
+    while True:
+        try:
+            _deliver_access_notices()
+        except Exception:
+            pass  # ядро не ответило — весть лежит в его очереди до следующего круга
+        time.sleep(core.ACCESS_NOTICE_POLL_SECONDS)
+
+
 def _deliver_normatives_announcements() -> None:
     """Изменения в нормативной базе — в чат владельцу.
 
@@ -1981,38 +2017,17 @@ def _deliver_normatives_announcements() -> None:
                                  "stopped_by": "" if sent else "ни один адресат не принял"})
 
 
-_NORMATIVES_RESULT_WORDS = {
-    "changed": "источник изменился",
-    "review_required": "источник требует проверки",
-    "unreachable": "источник не отвечает",
-    # Находки открытых источников: акт отменяют, не трогая наш файл, и
-    # отпечаток об этом молчит по построению.
-    "repealed": "в источниках пишут, что документ утратил силу",
-    "amended": "в источниках пишут о новой редакции",
-}
-
-
 def _normatives_announcement_text(records: list[dict]) -> str:
     """Одно сообщение на всю пачку: проверка идёт по всему реестру разом.
 
     Тринадцать сообщений подряд читаются как поломка бота — ровно так же, как
-    это уже было с новинками каталога.
+    это уже было с новинками каталога. Текст собирает реестр
+    (`normatives_registry.announcement_text`): что изменилось, что задевает
+    в расчёте, что делать и кто решает — по карточке акта, а не по памяти.
     """
-    lines = ["<b>Нормативная база: есть изменения</b>"]
-    for item in records[:20]:
-        name = str(item.get("short_name") or item.get("id") or "")
-        word = _NORMATIVES_RESULT_WORDS.get(str(item.get("result") or ""), "изменение")
-        scope = str(item.get("scope") or "")
-        line = f"• {name}" + (f" ({scope})" if scope else "") + f" — {word}"
-        message = str(item.get("message") or "").strip()
-        if message:
-            line += f": {message}"
-        lines.append(line)
-    if len(records) > 20:
-        lines.append(f"…и ещё {len(records) - 20}")
-    lines.append("")
-    lines.append("Что именно изменилось — на странице «Нормативная база»: /normatives")
-    return "\n".join(lines)
+    import normatives_registry
+
+    return normatives_registry.announcement_text(records)
 
 
 def _krt_take_announcements() -> tuple[list[dict], list[int], dict[str, dict[str, bool]]]:
@@ -2889,6 +2904,10 @@ def _start_usage_digest() -> None:
     # слишком редкий, у неё свой.
     threading.Thread(target=_management_report_loop, name="management-report",
                      daemon=True).start()
+    # Весть «вам открыт доступ» ждать четверть часа не должна: человек только
+    # что заплатил или ему только что выдали доступ. Ядро до Telegram не
+    # достаёт, а мы до ядра — да: забираем вести коротким кругом.
+    threading.Thread(target=_access_notices_loop, name="access-notices", daemon=True).start()
 
 
 @app.on_event("startup")

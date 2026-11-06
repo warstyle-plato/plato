@@ -163,6 +163,21 @@ def test_the_decision_reads_the_hotel_numbers() -> None:
     assert kpi["equity_peak"] == pytest.approx(-worst, rel=1e-9)
 
 
+def test_the_costs_open_with_the_expense_structure_of_the_engine() -> None:
+    """Как у жилья и нежилого: первым блоком «Затрат» — строки движка
+    `report.expense_structure` с итогом «Расходы всего» (решение владельца,
+    25.10.2026)."""
+    result = _run()
+    first = _sections(result)["costs"]["blocks"][0]
+    assert first["title"] == "Структура расходов"
+    rows = first["years"]
+    assert [(r["label"], r["value"]) for r in rows[:-1]] == [
+        (e["label"], e["value"]) for e in result["report"]["expense_structure"]]
+    assert rows[-1]["label"] == "Расходы всего"
+    assert rows[-1]["value"] == result["summary"]["total_expenses"]
+    assert sum(r["value"] for r in rows[:-1]) == pytest.approx(rows[-1]["value"], abs=1.0)
+
+
 def test_the_capex_block_adds_up_to_the_hotel_capex() -> None:
     result = _run()
     block = _block(_sections(result)["costs"], "CAPEX гостиницы")

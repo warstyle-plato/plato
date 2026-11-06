@@ -61,22 +61,68 @@ SALE_CURVES = ("flat", "bell", "front_loaded", "back_loaded")
 # дана на дату `OFFICE_RENT_DATE` и до ввода растёт на индексацию аренды —
 # как цена продажи растёт до ввода. Заполняемость, срок заполнения,
 # эксплуатация и ставка капитализации — стартовые допущения; всё правится во
-# вводных, правка руками сильнее класса.
+# вводных, правка руками сильнее класса. Себестоимость здания офиса — тоже
+# ступень класса офиса, тыс ₽/м² GBA: 175 / 200 / 225 прежней шкалы классов
+# проекта и 250 у A+ (владелец, 25.10.2026: «за классом офиса, A+ = 250»).
 OFFICE_CLASSES: tuple[str, ...] = ("B", "B+", "A", "A+")
 OFFICE_RENT_DATE = "2025-12-01"
 OFFICE_CLASS_SCALE: dict[str, dict[str, float]] = {
-    "B": {"price_th_per_sqm": 400.0, "rent_th_per_sqm_year": 28.348, "occupancy_stable_pct": 90.0,
+    "B": {"price_th_per_sqm": 400.0, "cost_th_per_sqm": 175.0,
+          "rent_th_per_sqm_year": 28.348, "occupancy_stable_pct": 90.0,
           "leaseup_months": 18, "opex_pct": 20.0, "exit_cap_pct": 11.5},
-    "B+": {"price_th_per_sqm": 550.0, "rent_th_per_sqm_year": 39.874, "occupancy_stable_pct": 92.0,
+    "B+": {"price_th_per_sqm": 550.0, "cost_th_per_sqm": 200.0,
+           "rent_th_per_sqm_year": 39.874, "occupancy_stable_pct": 92.0,
            "leaseup_months": 15, "opex_pct": 18.0, "exit_cap_pct": 10.5},
-    "A": {"price_th_per_sqm": 750.0, "rent_th_per_sqm_year": 53.436, "occupancy_stable_pct": 94.0,
+    "A": {"price_th_per_sqm": 750.0, "cost_th_per_sqm": 225.0,
+          "rent_th_per_sqm_year": 53.436, "occupancy_stable_pct": 94.0,
           "leaseup_months": 12, "opex_pct": 16.0, "exit_cap_pct": 9.5},
-    "A+": {"price_th_per_sqm": 1000.0, "rent_th_per_sqm_year": 89.958, "occupancy_stable_pct": 95.0,
+    "A+": {"price_th_per_sqm": 1000.0, "cost_th_per_sqm": 250.0,
+           "rent_th_per_sqm_year": 89.958, "occupancy_stable_pct": 95.0,
            "leaseup_months": 12, "opex_pct": 15.0, "exit_cap_pct": 9.0},
 }
 # Класс проекта → класс офиса по умолчанию.
 OFFICE_CLASS_BY_PROJECT: dict[str, str] = {"comfort": "B", "business": "B+", "elite": "A"}
 DEFAULT_OFFICE_CLASS = "B"
+
+# Свой выбор класса офиса (владелец, 22.10.2026 и 25.10.2026): у каждого офиса
+# проекта поле `{приставка}_office_class`. Пусто или нет поля — класс идёт за
+# классом проекта; одна из ступеней — выбран человеком. Ответ «какой класс у
+# офиса и откуда он» даёт `office_class_choice`, и его читают страница, PDF,
+# тизер, сравнение стратегий и книга офиса.
+OFFICE_CLASS_FIELD = "office_class"
+OFFICE_CLASS_CHOSEN = "chosen"
+OFFICE_CLASS_BY_PROJECT_SOURCE = "project"
+OFFICE_CLASS_DEFAULT_SOURCE = "default"
+# Поля стратегии офиса, которые ставит шкала класса. Цена продажи и
+# себестоимость — поля профиля класса проекта, их ведёт профиль
+# (`office_class_rate`), а не этот список.
+OFFICE_CLASS_FOLLOWED: tuple[str, ...] = (
+    "rent_th_per_sqm_month", "occupancy_stable_pct", "leaseup_months", "opex_pct", "exit_cap_pct")
+# В НЕЖИЛОМ проекте класс проекта — это класс офиса B / B+ / A / A+
+# (владелец, 25.10.2026): вводная `nonres_office_class`. Профиль класса
+# проекта (машино-место, подземная ставка) берётся у пары: B — комфорт,
+# B+ — бизнес, A и A+ — элитный (A+ — «как у A», владелец 25.10.2026).
+# Пусто — класс выводится из класса проекта (`OFFICE_CLASS_BY_PROJECT`):
+# нежилой проект, сохранённый до решения, открывается с тем же результатом.
+NONRES_CLASS_FIELD = "nonres_office_class"
+NONRES_CLASS_PROFILE: dict[str, str] = {"B": "comfort", "B+": "business", "A": "elite", "A+": "elite"}
+PROJECT_KIND_NONRESIDENTIAL = "nonresidential"
+
+
+def nonres_project_class(inputs: dict[str, Any] | None) -> str | None:
+    """Класс нежилого проекта (ступень класса офиса); `None` — проект не
+    нежилой или класс не задан ни выбором, ни классом проекта."""
+    x = inputs or {}
+    if str(x.get("project_kind") or "") != PROJECT_KIND_NONRESIDENTIAL:
+        return None
+    raw = str(x.get(NONRES_CLASS_FIELD) or "").strip()
+    if raw in OFFICE_CLASSES:
+        return raw
+    return OFFICE_CLASS_BY_PROJECT.get(str(x.get("project_class") or ""))
+
+
+# Происхождение поля, которое поставил класс офиса (`_field_origin`).
+OFFICE_CLASS_ORIGIN = "office_class"
 
 
 def office_class_fields(office_class: str) -> dict[str, Any]:
@@ -88,7 +134,89 @@ def office_class_fields(office_class: str) -> dict[str, Any]:
     scale = OFFICE_CLASS_SCALE.get(office_class) or OFFICE_CLASS_SCALE[DEFAULT_OFFICE_CLASS]
     return {"rent_th_per_sqm_month": round(scale["rent_th_per_sqm_year"] / 12.0, 3),
             "rent_date": OFFICE_RENT_DATE,
-            **{k: v for k, v in scale.items() if k not in ("price_th_per_sqm", "rent_th_per_sqm_year")}}
+            **{k: v for k, v in scale.items()
+               if k not in ("price_th_per_sqm", "rent_th_per_sqm_year", "cost_th_per_sqm")}}
+
+
+def office_class_choice(inputs: dict[str, Any] | None, prefix: str) -> dict[str, str]:
+    """Класс офиса с приставкой `prefix` и его происхождение.
+
+    Выбранная ступень сильнее класса проекта. Пустое поле, отсутствующее поле
+    и непонятное значение — не выбор: класс идёт за классом проекта, а у
+    пользовательского класса проекта — ступень по умолчанию.
+    """
+    x = inputs or {}
+    raw = str(x.get(f"{prefix}_{OFFICE_CLASS_FIELD}") or "").strip()
+    if raw in OFFICE_CLASSES:
+        return {"office_class": raw, "source": OFFICE_CLASS_CHOSEN, "text": "выбран"}
+    by_project = nonres_project_class(x) or OFFICE_CLASS_BY_PROJECT.get(str(x.get("project_class") or ""))
+    if by_project:
+        return {"office_class": by_project, "source": OFFICE_CLASS_BY_PROJECT_SOURCE,
+                "text": "по классу проекта"}
+    return {"office_class": DEFAULT_OFFICE_CLASS, "source": OFFICE_CLASS_DEFAULT_SOURCE,
+            "text": "по умолчанию"}
+
+
+def office_class_followed_values(office_class: str) -> dict[str, float]:
+    """Числа шкалы для полей `OFFICE_CLASS_FOLLOWED`, в единицах движка."""
+    fields = office_class_fields(office_class)
+    return {suffix: fields[suffix] for suffix in OFFICE_CLASS_FOLLOWED}
+
+
+def office_field_follows(inputs: dict[str, Any] | None, prefix: str, suffix: str) -> bool:
+    """Идёт ли поле офиса за классом офиса.
+
+    Поле, которое поставил класс, идёт за ним, пока в нём стоит число этого
+    класса: сдвиг подбора или сценария (`report_sensitivity`, точки
+    безразличия) — уже не число класса, и пересчёт его не сбрасывает. Поле с
+    другим происхождением — вписанное руками, из документа, подобранное —
+    своё. Поле без пометки идёт за классом, пока в нём умолчание — число
+    ступени по умолчанию: так проект, сохранённый до выбора класса, получает
+    шкалу. Другое число без пометки (ступень другого класса в том числе) кто-то
+    вписал, и оно своё. Прежние умолчания PR #531 сюда не входят: они
+    совпадают со ступенями других классов (срок заполнения 12 мес. — ступень
+    A, заполняемость 92% — B+), и отличить их от вписанного нельзя.
+    """
+    x = inputs or {}
+    origins = x.get("_field_origin") if isinstance(x.get("_field_origin"), dict) else {}
+    origin = origins.get(f"inputs.{prefix}_{suffix}")
+    raw = x.get(f"{prefix}_{suffix}")
+    if raw in (None, ""):
+        return not (isinstance(origin, dict) and origin.get("source")
+                    and origin.get("source") != OFFICE_CLASS_ORIGIN)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return False
+    if isinstance(origin, dict) and origin.get("source"):
+        if origin.get("source") != OFFICE_CLASS_ORIGIN:
+            return False
+        if origin.get("class") in OFFICE_CLASSES:
+            return abs(value - float(office_class_followed_values(origin["class"])[suffix])) < 1e-9
+    return abs(value - float(office_class_followed_values(DEFAULT_OFFICE_CLASS)[suffix])) < 1e-9
+
+
+def apply_office_class(x: dict[str, Any], prefix: str) -> dict[str, str]:
+    """Ставит полям офиса `prefix` числа его класса, кроме своих. Правит `x`.
+
+    Возвращает выбор класса (`office_class_choice`). Поставленное поле
+    получает происхождение «класс офиса» — после сохранения оно не выглядит
+    вписанным руками.
+    """
+    choice = office_class_choice(x, prefix)
+    values = office_class_followed_values(choice["office_class"])
+    followed = [suffix for suffix in OFFICE_CLASS_FOLLOWED if office_field_follows(x, prefix, suffix)]
+    if not followed:
+        return choice
+    origins = x.get("_field_origin")
+    origins = dict(origins) if isinstance(origins, dict) else {}
+    for suffix in followed:
+        x[f"{prefix}_{suffix}"] = values[suffix]
+        origins[f"inputs.{prefix}_{suffix}"] = {
+            "source": OFFICE_CLASS_ORIGIN, "class": choice["office_class"],
+            "text": f"по классу офиса {choice['office_class']}"}
+    x["_field_origin"] = origins
+    return choice
 
 
 # Поля стратегии у объекта: суффикс → (умолчание офиса, умолчание ТЦ).
@@ -104,6 +232,12 @@ STRATEGY_FIELD_DEFAULTS: dict[str, tuple[Any, Any]] = {
     "direct_sale_offset_months": (0, 0),
     "direct_sale_months": (12, 12),
     "direct_sale_curve": ("flat", "flat"),
+    # Окно продажи по предварительному ДКП во время стройки — четвёртого
+    # способа «Сравнения стратегий» (`presale_window`): месяцев от начала
+    # стройки объекта до первой продажи и от последней продажи до ввода.
+    # Нули — с начала стройки до ввода (владелец, 25.10.2026).
+    "presale_start_months": (0, 0),
+    "presale_end_months": (0, 0),
     # Офис — класс B шкалы (`OFFICE_CLASS_SCALE`, класс офиса комфорта), ТЦ — умолчания PR #531.
     "rent_th_per_sqm_month": (office_class_fields(DEFAULT_OFFICE_CLASS)["rent_th_per_sqm_month"], 3.8),
     # Дата, на которую указана ставка аренды; до ввода ставка растёт на
@@ -130,6 +264,13 @@ STRATEGY_FIELD_DEFAULTS: dict[str, tuple[Any, Any]] = {
 }
 
 
+# Самый длинный срок кредита и удержания, который перебирают подборы
+# (`loan_term_pick`, точка безразличия по сроку удержания): срок амортизации
+# здания по умолчанию. Кредит дольше срока службы здания банк не даёт, а
+# удержание дольше — оценка того, чего уже нет.
+LONG_TERM_MAX_YEARS = int(STRATEGY_FIELD_DEFAULTS["depreciation_years"][0])
+
+
 def strategy_defaults(prefix: str, family: str) -> dict[str, Any]:
     column = 1 if family == "standalone_retail" else 0
     return {f"{prefix}_{suffix}": pair[column]
@@ -140,6 +281,55 @@ def object_strategy(inputs: dict[str, Any] | None, prefix: str) -> str:
     """Стратегия объекта. Отсутствующее или чужое значение — ДДУ, как было."""
     value = str((inputs or {}).get(f"{prefix}_strategy") or "").strip().lower()
     return value if value in STRATEGY_LABELS else STRATEGY_DDU
+
+
+# Продажа по предварительному ДКП будущей вещи во время стройки — способ
+# продажи, а не своя стратегия: это прямая продажа (`STRATEGY_DIRECT`) со
+# стартом до ввода, авансы покупателей без эскроу (владелец, 03.10.2026 и
+# 25.10.2026: «Их же 4?!»). Своей арифметики у неё нет — только окно продаж.
+PATH_PRESALE = "presale"
+# Кому так можно продавать (ревизия «Нормативки», 25.10.2026): деньги граждан
+# на помещения в ещё не введённом здании, в том числе нежилые, привлекаются
+# только по ДДУ или через ЖСК — 214-ФЗ, ст. 1 ч. 2,
+# `docs/normative/rf_214fz_red_20240808.ocr.txt`. ИП для закона — граждане.
+# Одна формулировка для подсказок полей, столбца сравнения и книги.
+PRESALE_BUYERS = "покупатели — только компании"
+PRESALE_BUYERS_NOTE = ("Так можно продавать только компаниям (юридическим лицам): гражданам, в том "
+                       "числе индивидуальным предпринимателям, до ввода продают только по ДДУ с "
+                       "эскроу — этого требует закон о долевом строительстве (214-ФЗ, статья 1, "
+                       "часть 2).")
+
+
+def is_presale(inputs: dict[str, Any] | None, prefix: str) -> bool:
+    """Объект проекта продаётся по предварительному ДКП: прямая продажа со
+    стартом раньше ввода."""
+    x = inputs or {}
+    return (object_strategy(x, prefix) == STRATEGY_DIRECT
+            and int(_num(x, f"{prefix}_direct_sale_offset_months", 0)) < 0)
+
+
+def presale_window(inputs: dict[str, Any] | None, prefix: str, build_months: int) -> tuple[int, int]:
+    """Сдвиг старта от ввода и срок продаж по предварительному ДКП — одно
+    правило для движка (`office_paths`) и книги офиса.
+
+    Объект проекта уже продаётся до ввода — его собственное окно. Иначе окно
+    из полей ПДКП: от начала стройки (`presale_start_months` после него) до
+    ввода (`presale_end_months` до него), равномерно по умолчанию."""
+    x = inputs or {}
+    if is_presale(x, prefix):
+        return (int(_num(x, f"{prefix}_direct_sale_offset_months", 0)),
+                max(1, int(_num(x, f"{prefix}_direct_sale_months", 12))))
+    months = max(1, int(build_months))
+    start = max(0, int(_num(x, f"{prefix}_presale_start_months", 0)))
+    end = max(0, int(_num(x, f"{prefix}_presale_end_months", 0)))
+    return start - months, max(1, months - start - end)
+
+
+def presale_bounds(inputs: dict[str, Any] | None, prefix: str, build_months: int) -> tuple[int, int]:
+    """То же окно ПДКП в мерах книги: месяцев от начала стройки до первой
+    продажи и от последней продажи до ввода (минус — после ввода)."""
+    offset, period = presale_window(inputs, prefix, build_months)
+    return int(build_months) + offset, -(offset + period)
 
 
 # --- даты -------------------------------------------------------------------

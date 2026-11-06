@@ -72,14 +72,32 @@ def test_the_screening_answers_before_any_model(monkeypatch):
     assert result["single"] is True
 
 
+ZONE = {"flag_class": "info", "effect": "frame", "name": "ПКК. Территориальные зоны",
+        "impact": "территориальная зона по ПЗЗ", "coverage_pct": 100.0}
+
+
 def test_a_clean_parcel_gets_no_permission_to_build(monkeypatch):
     """Разрешительный вывод запрещён: максимум — «не обнаружено», и с оговоркой."""
-    result = _screening(monkeypatch, [])
+    result = _screening(monkeypatch, [ZONE])
     verdict = result["verdict"]
+    assert verdict["zone_found"] is True
     assert verdict["status"] == "NO_CRITICAL_FLAGS"
     assert "не обнаружено" in verdict["headline"]
     assert "подходит" not in verdict["headline"].lower()
     assert "ЕГРН" in verdict["disclaimer"] and "не доказывает" in verdict["disclaimer"]
+
+
+def test_without_the_zone_the_verdict_says_what_was_not_checked(monkeypatch):
+    """Зона ПЗЗ не получена — «критических ограничений не обнаружено» нельзя:
+    не проверено, разрешено ли на участке то, что на нём сажают (прогон
+    «Посадка ↔ нормативы», 25.10.2026: деловые участки и жильё на них)."""
+    result = _screening(monkeypatch, [])
+    for verdict in (result["verdict"], result["parcels"][0]["verdict"]):
+        assert verdict["zone_found"] is False
+        assert "не обнаружено" not in verdict["headline"]
+        assert "территориальная зона не получена" in verdict["headline"]
+        assert "Территориальная зона" in verdict["disclaimer"]
+        assert "жильё" in verdict["disclaimer"]
 
 
 def test_only_economic_flags_give_a_warning(monkeypatch):

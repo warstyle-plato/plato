@@ -149,26 +149,22 @@ def test_the_guard_runs_on_pull_requests():
     assert "--base" in guard
 
 
-def test_stale_production_builds_are_cancelled():
-    """Старый main не должен позже переписать prod после более нового."""
+def test_a_stale_main_build_never_publishes_after_a_newer_one():
+    """Старый main не должен позже переписать prod поверх более нового.
+
+    Держит это одна общая группа: в ней один идущий прогон и один ожидающий,
+    новый ожидающий снимает прежний ожидающий, а сами прогоны идут по очереди —
+    ожидающий всегда новее идущего и публикуется после него. Идущий не
+    обрывается: сборка с тестами дольше промежутка между слияниями, и при
+    `cancel-in-progress: true` prod не обновлялся сутками (24–26.10: 21 из 27
+    сборок снята следующей)."""
     import yaml as _yaml
     workflow = _yaml.safe_load(
         (ROOT / ".github" / "workflows" / "build-yandex.yml").read_text(encoding="utf-8")
     )
     concurrency = workflow["concurrency"]
     assert concurrency["group"] == "build-yandex"
-    assert concurrency["cancel-in-progress"] is True
-
-
-def test_stale_main_build_is_cancelled():
-    """Старый main не должен позже переписать prod поверх более нового."""
-    import yaml as _yaml
-    workflow = _yaml.safe_load(
-        (ROOT / ".github" / "workflows" / "build-yandex.yml").read_text(encoding="utf-8")
-    )
-    concurrency = workflow["concurrency"]
-    assert concurrency["group"] == "build-yandex"
-    assert concurrency["cancel-in-progress"] is True
+    assert concurrency["cancel-in-progress"] is False
 
 
 def test_a_cancelled_build_does_not_hide_code_without_a_number(tmp_path):

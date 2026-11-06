@@ -815,11 +815,12 @@ def _v4_mirror_secondary_input_styles(xml: str) -> str:
     for row in range(1, 160):
         key = _v4_cell_text(xml, f"H{row}")
         has_e = _v4_cell_text(xml, f"E{row}") is not None
-        has_f = (_v4_cell_text(xml, f"F{row}") is not None
-                 or _v4_cell_formula(xml, f"F{row}") is not None)
         if not has_e:
             continue
-        if not key and not has_f:
+        # Формула F нужна только строке без ключа: каждый её поиск — проход
+        # по листу (`tests/test_the_workbook_is_written_by_rows.py`).
+        if not key and not (_v4_cell_text(xml, f"F{row}") is not None
+                            or _v4_cell_formula(xml, f"F{row}") is not None):
             set_style(f"E{row}", exemplar["header"])
             continue
         if str(key) not in field_meta:

@@ -36,7 +36,7 @@ _NUMBERS = ["77:01:0005006:7684"]
 
 def _server_path(monkeypatch, rows_calls: dict):
     """Серверный путь с настоящим калькулятором, но без браузера."""
-    def fake_rows(numbers, area_ha):
+    def fake_rows(numbers, area_ha, restrict_ha=0.0):
         rows_calls["count"] = rows_calls.get("count", 0) + 1
         return [{"code": "60", "name": "Озеленение", "unit": "га", "value": "1"}]
 

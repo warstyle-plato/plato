@@ -37,6 +37,13 @@ class MonitorEstimateRequest(BaseModel):
     key: str = ""
 
 
+class MonitorBudgetFileRequest(BaseModel):
+    project: str
+    name: str = ""
+    session: str = ""
+    key: str = ""
+
+
 class MonitorSalesRequest(BaseModel):
     project: str
     taken_at: str
@@ -163,14 +170,14 @@ def monitor_store_sales(req: MonitorSalesRequest) -> dict[str, Any]:
 
 @app.get("/monitor/snapshots", include_in_schema=False)
 def monitor_snapshots(project: str, session: str = "", key: str = "") -> dict[str, Any]:
-    _require_team_access(session, key, "Монитор проекта")
+    _require_team_access(session, key, "Монитор проекта", write=False)
     return developaid_monitor.snapshots(project)
 
 
 @app.post("/monitor/view", include_in_schema=False)
 def monitor_view(req: MonitorViewRequest) -> dict[str, Any]:
     """Срез и тренд по нему. Считает сервер, страница только рисует."""
-    _require_team_access(req.session, req.key, "Монитор проекта")
+    _require_team_access(req.session, req.key, "Монитор проекта", write=False)
     programme = _monitor_programme(req)
     try:
         return {
@@ -187,7 +194,7 @@ def monitor_view(req: MonitorViewRequest) -> dict[str, Any]:
 def monitor_rewritten(project: str, first: str, second: str,
                       session: str = "", key: str = "") -> dict[str, Any]:
     """Что переписали в прошлом между двумя снимками."""
-    _require_team_access(session, key, "Монитор проекта")
+    _require_team_access(session, key, "Монитор проекта", write=False)
     try:
         return developaid_monitor.moved_between_snapshots(project, first, second)
     except FileNotFoundError as exc:
@@ -253,6 +260,13 @@ class MonitorScheduleFactRequest(BaseModel):
     key: str = ""
 
 
+class MonitorScheduleFactDayRequest(BaseModel):
+    project: str
+    taken_at: str
+    session: str = ""
+    key: str = ""
+
+
 class MonitorWorkFactRequest(BaseModel):
     project: str
     taken_at: str
@@ -280,13 +294,17 @@ class MonitorStageCloseRequest(BaseModel):
     key: str = ""
 
 
+class MonitorFinanceBaselineRequest(MonitorScheduleFactRequest):
+    file_name: str = ""
+
+
 @app.post("/monitor/finance-baseline", include_in_schema=False)
-def monitor_replace_finance(req: MonitorScheduleFactRequest) -> dict[str, Any]:
+def monitor_replace_finance(req: MonitorFinanceBaselineRequest) -> dict[str, Any]:
     """Заменить финкнигу утверждённым пересчётом; прежняя уходит в историю."""
     _require_team_access(req.session, req.key, "Монитор проекта")
     try:
         return developaid_monitor.replace_finance_baseline(
-            req.project, base64.b64decode(req.content_base64), req.taken_at)
+            req.project, base64.b64decode(req.content_base64), req.taken_at, req.file_name)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
 
@@ -321,7 +339,7 @@ def monitor_ask(req: MonitorAskRequest, request: Request) -> dict[str, Any]:
     соединением не держится, и держал её тут `plato_answer`, обещавший в этой
     же строке обратное.
     """
-    _require_team_access(req.session, req.key, "Монитор проекта")
+    _require_team_access(req.session, req.key, "Монитор проекта", write=False)
     message = str(req.message or "").strip()
     if not message:
         raise HTTPException(422, "Пустой вопрос")
@@ -354,7 +372,7 @@ def monitor_ask(req: MonitorAskRequest, request: Request) -> dict[str, Any]:
 @app.post("/monitor/doubts", include_in_schema=False)
 def monitor_doubts(req: MonitorDoubtsRequest) -> dict[str, Any]:
     """Сомнения Платона: незакрытое, противоречащее фактуре, и сеть без него."""
-    _require_team_access(req.session, req.key, "Монитор проекта")
+    _require_team_access(req.session, req.key, "Монитор проекта", write=False)
     try:
         return developaid_monitor_scenarios.doubts(req.project, req.cut)
     except FileNotFoundError as exc:
@@ -428,7 +446,7 @@ def monitor_crew(project: str, date: str = "", session: str = "",
     договоров не заводим: он стал бы вторым мнением о том, кто за статью
     отвечает.
     """
-    _require_team_access(session, key, "Монитор проекта")
+    _require_team_access(session, key, "Монитор проекта", write=False)
     import developaid_monitor_crew as crew
 
     day = (date or "").strip()
@@ -472,7 +490,7 @@ def monitor_crew(project: str, date: str = "", session: str = "",
 def monitor_daily_summary(project: str, upto: str = "",
                           session: str = "", key: str = "") -> dict[str, Any]:
     """Люди на площадке по дням и последний отчёт словами."""
-    _require_team_access(session, key, "Монитор проекта")
+    _require_team_access(session, key, "Монитор проекта", write=False)
     try:
         out = developaid_monitor_daily.daily_summary(
             project, upto or None, known=_monitor_known_parties(project))
@@ -539,6 +557,19 @@ def monitor_store_schedule_fact(req: MonitorScheduleFactRequest) -> dict[str, An
         raise HTTPException(400, str(exc))
 
 
+@app.post("/monitor/schedule-fact/withdraw", include_in_schema=False)
+def monitor_withdraw_schedule_fact(req: MonitorScheduleFactDayRequest) -> dict[str, Any]:
+    """Убрать ГПР-факт на дату из расчёта; файл уходит в архив, не удаляется."""
+    _require_team_access(req.session, req.key, "Монитор проекта")
+    try:
+        return developaid_monitor.withdraw_schedule_fact(
+            req.project, req.taken_at, _monitor_note_author(req.session, req.key))
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
 @app.post("/monitor/budget", include_in_schema=False)
 def monitor_store_budget(req: MonitorEstimateRequest) -> dict[str, Any]:
     """Бюджет месяцев: план-факт БДДС, план стройки и коммерческих расходов."""
@@ -550,6 +581,59 @@ def monitor_store_budget(req: MonitorEstimateRequest) -> dict[str, Any]:
             req.filename)
     except FileExistsError as exc:
         raise HTTPException(409, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/monitor/budget/list", include_in_schema=False)
+def monitor_list_budgets(req: MonitorBudgetFileRequest) -> dict[str, Any]:
+    """Загруженные бюджеты: месяцы, лист, время загрузки, чей план идёт в сводку."""
+    _require_team_access(req.session, req.key, "Монитор проекта")
+    import developaid_monthly_budget as monthly_budget
+    try:
+        return monthly_budget.list_budgets(req.project)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/monitor/budget/remove", include_in_schema=False)
+def monitor_remove_budget(req: MonitorBudgetFileRequest) -> dict[str, Any]:
+    """Убрать ошибочно загруженный бюджет из расчёта; файл уходит в архив."""
+    _require_team_access(req.session, req.key, "Монитор проекта")
+    import developaid_monthly_budget as monthly_budget
+    try:
+        return monthly_budget.remove_budget(req.project, req.name)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/monitor/budget/restore", include_in_schema=False)
+def monitor_restore_budget(req: MonitorBudgetFileRequest) -> dict[str, Any]:
+    """Вернуть убранный бюджет в расчёт."""
+    _require_team_access(req.session, req.key, "Монитор проекта")
+    import developaid_monthly_budget as monthly_budget
+    try:
+        return monthly_budget.restore_budget(req.project, req.name)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/monitor/funding-schedule", include_in_schema=False)
+def monitor_store_funding_schedule(req: MonitorEstimateRequest) -> dict[str, Any]:
+    """График финансирования (ДДС): версия на её дату, все версии хранятся.
+
+    С ним сводка сверяет, что реально оплачено по реестру платежей РСС.
+    """
+    _require_team_access(req.session, req.key, "Монитор проекта")
+    import developaid_funding_schedule as funding_schedule
+    try:
+        return funding_schedule.store(
+            req.project, base64.b64decode(req.content_base64), req.taken_at,
+            req.filename)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
 
@@ -573,7 +657,9 @@ def monitor_notes(req: MonitorNotesRequest) -> dict[str, Any]:
     Без ``note_id`` и без темы — только список; с темой — новая запись; с
     ``note_id`` — новая версия записи (текст и/или статус).
     """
-    _require_team_access(req.session, req.key, "Монитор проекта")
+    # Без записи и без темы — только список; остальное — запись.
+    _require_team_access(req.session, req.key, "Сводка руководству",
+                         write=bool(req.note_id or req.topic or req.text))
     import developaid_project_notes as project_notes
     author = _monitor_note_author(req.session, req.key)
     try:
@@ -649,7 +735,7 @@ def monitor_legal_import(req: MonitorLegalImportRequest) -> dict[str, Any]:
     номером карточки обновляет её; похожая строка без номера возвращается
     вопросом, а не склеивается (`legal.import_cards`).
     """
-    _require_team_access(req.session, req.key, "Сводка руководству")
+    _require_team_access(req.session, req.key, "Споры и претензии")
     if not _is_admin_request(req.session, req.key):
         raise HTTPException(403, "Загружать готовые карточки споров может только владелец сервиса.")
     import developaid_legal_cases as legal
@@ -666,7 +752,7 @@ def monitor_legal_import(req: MonitorLegalImportRequest) -> dict[str, Any]:
 @app.post("/monitor/legal", include_in_schema=False)
 def monitor_legal(req: MonitorLegalRequest) -> dict[str, Any]:
     """Споры и претензии проекта: подтверждённые карточки и документы."""
-    _require_team_access(req.session, req.key, "Сводка руководству")
+    _require_team_access(req.session, req.key, "Споры и претензии")
     return _legal_listing(req.project, req.session, req.key)
 
 
@@ -677,7 +763,7 @@ def monitor_legal_upload(req: MonitorLegalRequest) -> dict[str, Any]:
     Распознавание сканов и ответ модели — минуты: запрос их не ждёт, страница
     спрашивает `/monitor/legal/job`.
     """
-    _require_team_access(req.session, req.key, "Сводка руководству")
+    _require_team_access(req.session, req.key, "Споры и претензии")
     import developaid_legal_cases as legal
     author = _monitor_note_author(req.session, req.key)
     if not req.files:
@@ -706,7 +792,7 @@ def monitor_legal_upload(req: MonitorLegalRequest) -> dict[str, Any]:
 @app.post("/monitor/legal/job", include_in_schema=False)
 def monitor_legal_job(req: MonitorLegalRequest) -> dict[str, Any]:
     """Как идёт чтение документов: running / done (черновик карточки) / failed."""
-    _require_team_access(req.session, req.key, "Сводка руководству")
+    _require_team_access(req.session, req.key, "Споры и претензии")
     import developaid_legal_cases as legal
     try:
         return legal.job(req.project, req.job_id)
@@ -719,7 +805,7 @@ def monitor_legal_job(req: MonitorLegalRequest) -> dict[str, Any]:
 @app.post("/monitor/legal/case", include_in_schema=False)
 def monitor_legal_case(req: MonitorLegalRequest) -> dict[str, Any]:
     """Подтвердить карточку спора (новую или новую версию). В сводку идёт только она."""
-    _require_team_access(req.session, req.key, "Сводка руководству")
+    _require_team_access(req.session, req.key, "Споры и претензии")
     import developaid_legal_cases as legal
     author = _monitor_note_author(req.session, req.key)
     try:
@@ -737,7 +823,7 @@ def monitor_legal_case(req: MonitorLegalRequest) -> dict[str, Any]:
 @app.post("/monitor/legal/split", include_in_schema=False)
 def monitor_legal_split(req: MonitorLegalRequest) -> dict[str, Any]:
     """Разнести перепутанную карточку на две или снять признак («это один спор»)."""
-    _require_team_access(req.session, req.key, "Сводка руководству")
+    _require_team_access(req.session, req.key, "Споры и претензии")
     import developaid_legal_cases as legal
     author = _monitor_note_author(req.session, req.key)
     made = None
@@ -758,7 +844,7 @@ def monitor_legal_split(req: MonitorLegalRequest) -> dict[str, Any]:
 def monitor_legal_export(req: MonitorLegalRequest) -> Response:
     """Карточки споров файлом с номерами — для проверки и правки; загрузка
     обратно обновляет карточки по номеру. Только команде."""
-    _require_team_access(req.session, req.key, "Сводка руководству")
+    _require_team_access(req.session, req.key, "Споры и претензии")
     import developaid_legal_cases as legal
     from urllib.parse import quote
     body = json.dumps(legal.export_cards(req.project), ensure_ascii=False, indent=1)
@@ -771,7 +857,7 @@ def monitor_legal_export(req: MonitorLegalRequest) -> Response:
 @app.post("/monitor/legal/doc", include_in_schema=False)
 def monitor_legal_doc(req: MonitorLegalRequest) -> Response:
     """Документ спора как его загрузили."""
-    _require_team_access(req.session, req.key, "Сводка руководству")
+    _require_team_access(req.session, req.key, "Споры и претензии")
     import developaid_legal_cases as legal
     from urllib.parse import quote
     try:
@@ -794,7 +880,9 @@ def monitor_photos(req: MonitorPhotosRequest) -> dict[str, Any]:
 
     Выбирает человек: в сводку попадает только отмеченное (владелец, 20.10.2026).
     """
-    _require_team_access(req.session, req.key, "Монитор проекта")
+    # Отметка снимка для сводки — запись; без неё — просмотр ленты.
+    _require_team_access(req.session, req.key, "Сводка руководству",
+                         write=bool(req.photo_id and req.chosen is not None))
     import datetime as _dt
 
     import developaid_management_report as management_report
@@ -816,7 +904,7 @@ def monitor_photos(req: MonitorPhotosRequest) -> dict[str, Any]:
 @app.post("/monitor/photo", include_in_schema=False)
 def monitor_photo(req: MonitorPhotosRequest) -> Response:
     """Сам снимок — для ленты на странице сводки."""
-    _require_team_access(req.session, req.key, "Монитор проекта")
+    _require_team_access(req.session, req.key, "Сводка руководству", write=False)
     import developaid_site_photos as site_photos
     try:
         data = site_photos.read(req.project, req.photo_id)
@@ -829,16 +917,34 @@ def monitor_photo(req: MonitorPhotosRequest) -> Response:
                     headers={"Cache-Control": "private, max-age=86400"})
 
 
+def _monitor_report_close_legal(report: dict[str, Any]) -> None:
+    """Apply the document policy to both the legal block and its summary.
+
+    build() derives findings before access redaction. Hiding only the block
+    leaves counterparties in the JSON and in the rendered «Главное» section.
+    The other findings and all financial values remain unchanged.
+    """
+    report["legal"] = {"state": "closed", "reason": DEMO_DISPUTES_CLOSED}
+    if "findings" in report:
+        report["findings"] = [item for item in report["findings"] or []
+                              if item.get("topic") != "Споры"]
+
+
 def _monitor_report(req: MonitorReportRequest) -> dict[str, Any]:
     import datetime as _dt
 
     import developaid_management_report as management_report
     end = (req.end or "").strip() or _dt.date.today().isoformat()
     try:
-        return management_report.build(req.project, req.kind, end,
-                                       sales_project=req.sales_project)
+        report = management_report.build(req.project, req.kind, end,
+                                         sales_project=req.sales_project)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+    # Споры и претензии демо-ссылке закрыты всегда (решение владельца
+    # 25.10.2026): в сводке вместо блока — причина, и в «Главном» строки нет.
+    if demo_session_chat(req.session):
+        _monitor_report_close_legal(report)
+    return report
 
 
 class MonitorReportLinkRequest(BaseModel):
@@ -864,7 +970,7 @@ def monitor_report_projects(req: MonitorReportLinkRequest) -> dict[str, Any]:
     У каждого проекта Монитора — его связь с отчётом о продажах (``None`` —
     ещё не выбрана), чтобы имя не приходилось вводить руками дважды.
     """
-    _require_team_access(req.session, req.key, "Сводка руководству")
+    _require_team_access(req.session, req.key, "Сводка руководству", write=False)
     return _monitor_report_projects()
 
 
@@ -918,11 +1024,166 @@ def monitor_merge(req: MonitorMergeRequest) -> dict[str, Any]:
 @app.post("/monitor/report", include_in_schema=False)
 def monitor_report(req: MonitorReportRequest) -> dict[str, Any]:
     """Сводка руководству: числа, текст для бота и разметка документа."""
-    _require_team_access(req.session, req.key, "Сводка руководству")
+    _require_team_access(req.session, req.key, "Сводка руководству", write=False)
+    return _monitor_report_body(req)
+
+
+def _monitor_report_body(req: MonitorReportRequest, *, hide_legal: bool = False) -> dict[str, Any]:
     import developaid_management_report as management_report
     report = _monitor_report(req)
+    if hide_legal:
+        # Freeze the admission profile: a demo session expiring during the
+        # long calculation must never turn its result into an admin document.
+        _monitor_report_close_legal(report)
     return {"report": report, "text": management_report.render_text(report),
             "html": management_report.render_html(report)}
+
+
+class MonitorReportBuildRequest(MonitorReportRequest):
+    ticket: str = ""
+
+
+class MonitorReportResultRequest(BaseModel):
+    ticket: str
+    session: str = ""
+    key: str = ""
+
+
+def _monitor_report_job(req, *, start: bool) -> Response:
+    import datetime as _dt
+    from fastapi.encoders import jsonable_encoder
+    import developaid_management_report as management_report
+    import developaid_management_report_jobs as jobs
+
+    private = {"Cache-Control": "private, no-store"}
+    try:
+        # The ticket is not permission. Recheck the current administrator key
+        # before any lookup, including after key rotation or on another worker.
+        _require_team_access(req.session, req.key, "Сводка руководству", write=False)
+        profile = "demo" if demo_session_chat(req.session) else "admin"
+        owner = jobs.owner_binding(_env_str("DEVELOPAID_ADMIN_KEY", "").strip(), req.session, profile)
+        store = jobs.Store(developaid_monitor._SNAPSHOT_DIR / ".report_jobs")
+        if start:
+            end = (req.end or "").strip() or _dt.date.today().isoformat()
+            try:
+                management_report.period_bounds(req.kind, end)
+            except ValueError:
+                raise HTTPException(400, "Проверьте период и дату сводки.") from None
+            payload = {"project": req.project, "kind": req.kind, "end": end,
+                       "sales_project": req.sales_project}
+            # Only canonical calculation inputs and a fixed policy are captured;
+            # raw authentication credentials never enter the worker or manifest.
+            def build():
+                return jsonable_encoder(_monitor_report_body(
+                    MonitorReportRequest(**payload), hide_legal=profile == "demo"))
+            result = store.start(owner, profile, payload, build, req.ticket)
+        else:
+            result = store.poll(req.ticket, owner, profile)
+        return JSONResponse(status_code=202 if result["pending"] else 200,
+                            content=result, headers=private)
+    except HTTPException as exc:
+        exc.headers = {**(exc.headers or {}), **private}
+        raise
+    except jobs.JobProblem as exc:
+        raise HTTPException(exc.status, exc.detail, headers=private) from None
+    except (OSError, ValueError):
+        raise HTTPException(503, "Сборка сводки сейчас недоступна. Повторите запрос.",
+                            headers=private) from None
+
+
+@app.post("/monitor/report/build", include_in_schema=False)
+def monitor_report_build(req: MonitorReportBuildRequest) -> Response:
+    """Start/resume a private report without holding a long HTTP connection."""
+    return _monitor_report_job(req, start=True)
+
+
+@app.post("/monitor/report/result", include_in_schema=False)
+def monitor_report_result(req: MonitorReportResultRequest) -> Response:
+    """Short authenticated polling; no recalculation and no credentials in URLs."""
+    return _monitor_report_job(req, start=False)
+
+
+class MonitorCreditRequest(BaseModel):
+    project: str
+    # Наборы данных: списком в теле или JSON-файлом (base64) — {"datasets": [...]}.
+    datasets: list[dict[str, Any]] = []
+    content_base64: str = ""
+    preset: str = "kutuzov_city"
+    stress: dict[str, Any] = {}
+    session: str = ""
+    key: str = ""
+
+
+_CREDIT_STRESS_LIMITS = {"inflow_cut_pct": (0.0, 100.0), "disclosure_delay_months": (0, 36),
+                         "key_rate_pp": (-10.0, 30.0)}
+
+
+def _credit_stress(raw: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for name, (low, high) in _CREDIT_STRESS_LIMITS.items():
+        if raw.get(name) in (None, ""):
+            continue
+        try:
+            value = type(low)(float(raw[name]))
+        except (TypeError, ValueError):
+            raise HTTPException(400, f"Стресс: «{raw[name]}» — не число.")
+        if not low <= value <= high:
+            raise HTTPException(400, f"Стресс: значение {value} вне пределов {low}…{high}.")
+        out[name] = value
+    return out
+
+
+def _credit_answer(req: MonitorCreditRequest) -> dict[str, Any]:
+    """Прогноз погашения кредитов проекта и разметка карточки Монитора."""
+    import developaid_credit_repayment as credit
+    import developaid_management_report as management_report
+    import datetime as _dt
+    link = management_report.sales_link(req.project) or {}
+    today = _dt.date.today()
+    try:
+        # Срок ввода — тот же, что у сводки: утверждённый; прогноз Монитора —
+        # только строкой допущений, если он позже.
+        dashboard = management_report._monitor_dashboard(req.project, today)
+        commissioning = management_report._commissioning(dashboard)
+        shift = management_report._forecast_shift(dashboard, commissioning)
+    except Exception:  # noqa: BLE001 — без среза Монитора раскрытие берёт плановую дату
+        commissioning, shift = None, None
+    result = credit.for_project(req.project, link.get("sales_project") or "",
+                                stress=_credit_stress(req.stress), end=today,
+                                commissioning=commissioning, shift=shift)
+    if result.get("state") != "ok":
+        return {"state": "missing", "reason": result["reason"]}
+    changes = credit.compare(credit.remember(req.project, result), result)
+    return {"state": "ok", "status": result["status"], "stress_status": result["stress_status"],
+            "text": credit.text_line(result), "changes": changes,
+            "datasets": result["base"]["datasets"],
+            "html": credit.render_html(result, monitor=True, changes=changes)}
+
+
+@app.post("/monitor/credit", include_in_schema=False)
+def monitor_credit(req: MonitorCreditRequest) -> dict[str, Any]:
+    """Погашение кредитов: платежи банку, эскроу к датам, раскрытие, дефицит."""
+    _require_team_access(req.session, req.key, "Монитор проекта")
+    return _credit_answer(req)
+
+
+@app.post("/monitor/credit/data", include_in_schema=False)
+def monitor_credit_data(req: MonitorCreditRequest) -> dict[str, Any]:
+    """Загрузить или обновить наборы данных по кредитам — каждый с датой и источником."""
+    _require_team_access(req.session, req.key, "Монитор проекта")
+    import developaid_credit_repayment as credit
+    items = list(req.datasets)
+    if req.content_base64:
+        try:
+            parsed = json.loads(base64.b64decode(req.content_base64).decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            raise HTTPException(400, "Файл данных по кредитам не читается: нужен JSON в UTF-8.")
+        items += parsed.get("datasets") if isinstance(parsed, dict) else parsed
+    try:
+        credit.save(req.project, items, _monitor_note_author(req.session, req.key), req.preset)
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise HTTPException(400, f"Данные по кредитам не сохранены: {exc}")
+    return _credit_answer(req)
 
 
 @app.post("/monitor/report.pdf", include_in_schema=False)
@@ -932,7 +1193,7 @@ def monitor_report_pdf(req: MonitorReportRequest) -> Response:
     Маршрут синхронный, поэтому FastAPI выполняет его в пуле потоков: печать
     не держит цикл событий, а очередь печати общая с отчётом о продажах.
     """
-    _require_team_access(req.session, req.key, "Сводка руководству")
+    _require_team_access(req.session, req.key, "Сводка руководству", write=False)
     from market_search import report_pdf
     report = _monitor_report(req)
     try:
@@ -1103,7 +1364,7 @@ def internal_report_sent(req: ReportMailingInternalRequest) -> dict[str, Any]:
 @app.post("/monitor/gantt", include_in_schema=False)
 def monitor_gantt(req: MonitorGanttRequest) -> dict[str, Any]:
     """Гант по последнему снимку графика. Считает сервер, страница рисует."""
-    _require_team_access(req.session, req.key, "Монитор проекта")
+    _require_team_access(req.session, req.key, "Монитор проекта", write=False)
     try:
         return developaid_monitor.gantt(req.project, cut=req.cut, upto=req.upto)
     except FileNotFoundError as exc:
@@ -1115,7 +1376,7 @@ def monitor_gantt(req: MonitorGanttRequest) -> dict[str, Any]:
 @app.post("/monitor/scenario", include_in_schema=False)
 def monitor_scenario(req: MonitorScenarioRequest) -> dict[str, Any]:
     """Посчитать what-if по PM-сети и утверждённому контуру финансирования."""
-    _require_team_access(req.session, req.key, "Монитор проекта")
+    _require_team_access(req.session, req.key, "Монитор проекта", write=False)
     try:
         return developaid_monitor_scenarios.run(
             req.project, req.cut, req.kind, req.wbs, req.days,

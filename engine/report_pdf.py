@@ -952,22 +952,31 @@ def _strategy_compare_pdf(story: list[Any], block: dict[str, Any], P: Any, table
             parts.append(Paragraph(escape(str(item["caption"])), head))
         parts.append(P(str(item.get("lead") or ""), small))
         sections: list[int] = []
-        rows = [[Paragraph("Показатель", head)] + [
-            Paragraph(escape(str(c.get("label") or "")) + "".join(tag(t) for t in c.get("tags") or []), head)
+        # Пять столбцов и больше (четыре способа продажи и аренда с удержанием):
+        # шрифт таблицы мельче, иначе длинные слова рвутся посередине.
+        if len(columns) >= 5:
+            head_, cell_, strong_ = (ParagraphStyle(f"{s.name}_narrow", parent=s, fontSize=size, leading=size + 2)
+                                     for s, size in ((head, 6.6), (cell, 7.2), (strong, 7.2)))
+        else:
+            head_, cell_, strong_ = head, cell, strong
+        rows = [[Paragraph("Показатель", head_)] + [
+            Paragraph(escape(str(c.get("label") or "")) + "".join(tag(t) for t in c.get("tags") or []), head_)
             for c in columns]]
         for row in item.get("rows") or []:
             if row.get("section"):
                 sections.append(len(rows))
-                rows.append([Paragraph(escape(str(row.get("label") or "")), head)] + [""] * len(columns))
+                rows.append([Paragraph(escape(str(row.get("label") or "")), head_)] + [""] * len(columns))
                 continue
-            rows.append([Paragraph(escape(str(row.get("label") or "")), cell)] + [
-                Paragraph(escape(str(value)), strong if row.get("strong") and i < len(columns)
-                          and columns[i].get("best") else cell)
+            rows.append([Paragraph(escape(str(row.get("label") or "")), cell_)] + [
+                Paragraph(escape(str(value)), strong_ if row.get("strong") and i < len(columns)
+                          and columns[i].get("best") else cell_)
                 for i, value in enumerate(row.get("cells") or [])])
         # Ширина полосы страницы — 182 мм (A4 без полей отчёта).
-        label = 52 if len(columns) <= 3 else 44
+        label = 52 if len(columns) <= 3 else 44 if len(columns) <= 4 else 34
         width = (182 - label) / max(1, len(columns))
         grid = table(rows, [label*mm] + [width*mm] * len(columns), font_size=7.6)
+        if len(columns) >= 5:
+            grid.setStyle(TableStyle([("LEFTPADDING", (0, 0), (-1, -1), 3), ("RIGHTPADDING", (0, 0), (-1, -1), 3)]))
         best = [i + 1 for i, c in enumerate(columns) if c.get("best")]
         if best:
             grid.setStyle(TableStyle([("BACKGROUND", (best[0], 0), (best[0], 0), colors.HexColor("#DCEFE2")),
@@ -1047,7 +1056,55 @@ def _site_massing_scheme_pdf(scheme: dict[str, Any] | None, P: Any, small: Any,
     parts += [P(str(item.get("line") or ""), small) for item in ax.get("legend") or []]
     parts += [P(str(note), small) for note in layout.get("notes") or []]
     parts.append(P(str(ax.get("footer") or ""), small))
-    return [KeepTogether(parts)]
+    out = [KeepTogether(parts)]
+    # Разбор участка и вид сверху — тот же ответ движка, что на странице
+    # (`layout.plan_view`, `layout.analysis`).
+    pv = layout.get("plan_view") or {}
+    lines = layout.get("analysis") or []
+    if lines:
+        block = [P("Разбор участка и посадки", small)]
+        site_pts = [p for ring in pv.get("site") or [] for p in ring]
+        if site_pts and pv.get("buildings"):
+            x0 = min(p[0] for p in site_pts) - 8
+            y0 = min(p[1] for p in site_pts) - 8
+            w = max(p[0] for p in site_pts) + 8 - x0
+            h = max(p[1] for p in site_pts) + 8 - y0
+            k = min(110 * mm / w, 80 * mm / h)
+            plan = Drawing(w * k, h * k)
+
+            def pts(ring: list[list[float]]) -> list[float]:
+                return [c for p in ring for c in ((p[0] - x0) * k, (p[1] - y0) * k)]
+
+            for ring in pv.get("site") or []:
+                plan.add(Polygon(pts(ring), fillColor=colors.HexColor("#eeeeee"),
+                                 strokeColor=colors.HexColor("#555555"), strokeWidth=0.5))
+            # Карта земли (`massing_land_map`): двор, проезды, стоянки, отступы.
+            land_colors = pv.get("land_colors") or {}
+            for key, rects in (pv.get("land") or {}).items():
+                fill = colors.HexColor(land_colors.get(key) or "#eeeeee")
+                for ring in rects:
+                    plan.add(Polygon(pts(ring), fillColor=fill, strokeColor=fill, strokeWidth=0.1))
+            for b in pv.get("blocks") or []:
+                plan.add(Polygon(pts(b["ring"]), fillColor=None if pv.get("land") else
+                                 colors.HexColor("#dcebd6"),
+                                 strokeColor=colors.HexColor("#8fb487"), strokeWidth=0.4))
+            for ring in pv.get("lanes") or []:
+                plan.add(Polygon(pts(ring), fillColor=None,
+                                 strokeColor=colors.HexColor("#d28a1e"), strokeWidth=0.4))
+            for b in pv.get("buildings") or []:
+                plan.add(Polygon(pts(b["ring"]), fillColor=colors.HexColor(b.get("color") or "#2f6fb3"),
+                                 strokeColor=colors.HexColor("#222222"), strokeWidth=0.4))
+            block.append(plan)
+            block.append(P(("Вид сверху, север вверху. " if pv.get("north_up") else
+                            "Вид сверху; стороны света неизвестны. ")
+                           + "; ".join(f"{r['label']} — {r['sqm']:,.0f} м²".replace(",", " ")
+                                       for r in pv.get("land_legend") or [] if r.get("sqm") is not None)
+                           + ". Оранжевый контур — места для пожарного проезда. Площади — из "
+                           "баланса территории расчёта, место каждой — наша схема, а не генплан.",
+                           small))
+        block += [P(str(line), small) for line in lines]
+        out.append(KeepTogether(block))
+    return out
 
 
 def _object_pdf_blocks(story: list[Any], section: dict[str, Any], inputs: dict[str, Any],
@@ -1113,9 +1170,13 @@ def _object_pdf_blocks(story: list[Any], section: dict[str, Any], inputs: dict[s
                 rows.append([str(year.get(c[0])) if c[2] == "text"
                              else _pdf_object_value({"unit": c[2], "value": year.get(c[0])})
                              for c in columns])
-            width = 170 / max(1, len(columns))
+            # Ширины колонок блок может назвать сам («Структура расходов»:
+            # длинная подпись статьи и два коротких числа); иначе — поровну.
+            widths = [float(w) for w in block.get("widths") or []]
+            if len(widths) != len(columns):
+                widths = [170 / max(1, len(columns))] * len(columns)
             story.append(KeepTogether([P(title, small),
-                                       table(rows, [width*mm] * len(columns), font_size=6.8)]))
+                                       table(rows, [w*mm for w in widths], font_size=6.8)]))
             continue
         rows = [[title or " ", " "]]
         for row in block.get("rows") or []:
@@ -1966,7 +2027,9 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     # Класс — то же решение, что у карточки «Ключевые параметры»
     # (`project_class_view`): у гостиницы — звёздность, а не класс жилья.
     _class_dev=project_class_view(inputs)
-    premise_rows=[["Параметр","Значение"],[_class_dev["title"],_class_dev["label"]],["Стартовая цена квартир",_pdf_num(inputs.get('apartment_price_th'),0)+" тыс. ₽/м²"],["Стартовая цена коммерции",_pdf_num(inputs.get('commercial_price_th'),0)+" тыс. ₽/м²"],["Цена подземного машино-места",_pdf_num(inputs.get('parking_price_th'),0)+" тыс. ₽/шт."],["СМР наземной площади МКД",_pdf_num(inputs.get('main_above_th_per_sqm'),0)+" тыс. ₽/м²"],["СМР подземной площади МКД",_pdf_num(inputs.get('main_under_th_per_sqm'),0)+" тыс. ₽/м²"],["Наружные инженерные сети, в т.ч. техприсоединение",_pdf_num(inputs.get('utilities_th_per_sqm'),1)+" тыс. ₽/м² "+CORE_TOTAL_AREA.genitive],["Доля продаж до РВЭ",_pdf_num(inputs.get('share_before_rve_pct'),1)+"%"],["Налог на прибыль",_pdf_num(inputs.get('profit_tax_pct'),1)+"%"]]
+    # Класс офиса — свой у каждого офиса (`office_class_rows`): выбран или
+    # идёт за классом проекта, и отчёт называет, откуда он.
+    premise_rows=[["Параметр","Значение"],[_class_dev["title"],_class_dev["label"]],*[[row["label"],row["text"]] for row in office_class_rows(inputs)],["Стартовая цена квартир",_pdf_num(inputs.get('apartment_price_th'),0)+" тыс. ₽/м²"],["Стартовая цена коммерции",_pdf_num(inputs.get('commercial_price_th'),0)+" тыс. ₽/м²"],["Цена подземного машино-места",_pdf_num(inputs.get('parking_price_th'),0)+" тыс. ₽/шт."],["СМР наземной площади МКД",_pdf_num(inputs.get('main_above_th_per_sqm'),0)+" тыс. ₽/м²"],["СМР подземной площади МКД",_pdf_num(inputs.get('main_under_th_per_sqm'),0)+" тыс. ₽/м²"],["Наружные инженерные сети, в т.ч. техприсоединение",_pdf_num(inputs.get('utilities_th_per_sqm'),1)+" тыс. ₽/м² "+CORE_TOTAL_AREA.genitive],["Доля продаж до РВЭ",_pdf_num(inputs.get('share_before_rve_pct'),1)+"%"],["Налог на прибыль",_pdf_num(inputs.get('profit_tax_pct'),1)+"%"]]
     # Тип проекта называется только там, где он не тот, что у всех: строка
     # «Жилой / смешанный» в каждом отчёте — постоянная приписка, а такие
     # перестают читаться. Оставшееся от жилья идёт своей строкой, потому что

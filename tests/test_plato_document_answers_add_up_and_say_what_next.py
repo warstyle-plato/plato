@@ -108,40 +108,50 @@ def _parse(monkeypatch) -> dict:
         filename="Светлый 4.pdf", content_b64=base64.b64encode(b"%PDF stub").decode()), None)
 
 
-def _answer(queue: dict, index: int, inputs: dict, **kw) -> dict:
+def _answer(card: dict, index: int, inputs: dict, **kw) -> dict:
     return core.agent_document_answer(core.AgentDocumentAnswerRequest(
-        intake_id=queue["id"], index=index, inputs=inputs, tep={}, **kw))
+        intake_id=card["id"], index=index, inputs=inputs, tep={}, **kw))
+
+
+def _engine(card: dict) -> dict:
+    """Что уйдёт в расчёт по карточке: путь → значение."""
+    return {row["path"]: row["value"] for row in card["to_engine"]}
 
 
 def test_three_obligations_into_social_load_add_up(monkeypatch) -> None:
-    queue = _parse(monkeypatch)["queue"]
+    card = _parse(monkeypatch)["card"]
+    # Ответ меняет карточку, а не модель: вводные до тизера — одни и те же.
     inputs = {"project_start": "2027-01-01", "social_compensation_mln": 0}
-    inputs = _answer(queue, 0, inputs, choice=0)["inputs"]
+    _answer(card, 0, inputs, choice=0)
     for index, typed in ((1, "165"), (2, "500"), (3, "100")):
-        got = _answer(queue, index, inputs, choice=1, value=typed)
-        inputs = got["inputs"]
-    assert inputs["social_compensation_mln"] == 765.0, "последний ответ затёр прежние"
+        got = _answer(card, index, inputs, choice=1, value=typed)
+    engine = _engine(got["card"])
+    assert engine["inputs.social_compensation_mln"] == 765.0, "последний ответ затёр прежние"
     row = got["applied"][0]
     assert [part["value"] for part in row["parts"]] == [165.0, 500.0, 100.0]
-    assert inputs["purchase_price_mln"] == 2550.0
-    changes = got["queue"]["answers"][-1]["changes"]
-    assert changes and changes[0]["was"] == 665.0 and changes[0]["now"] == 765.0
+    assert row["was"] == 665.0 and row["now"] == 765.0
+    assert engine["inputs.purchase_price_mln"] == 2550.0
+    shown = next(r["shown"] for r in got["card"]["to_engine"]
+                 if r["path"] == "inputs.social_compensation_mln")
+    assert "165 + 500 + 100" in shown, shown
 
 
 def test_a_field_with_its_own_number_asks_add_or_replace(monkeypatch) -> None:
-    queue = _parse(monkeypatch)["queue"]
-    _answer(queue, 0, {}, action="skip")
+    card = _parse(monkeypatch)["card"]
+    _answer(card, 0, {}, action="skip")
     inputs = {"social_compensation_mln": 1200,
               "_field_origin": {"inputs.social_compensation_mln":
                                 {"source": "manual", "text": "вписано вручную"}}}
-    asked = _answer(queue, 1, inputs, choice=1, value="165")
+    asked = _answer(card, 1, inputs, choice=1, value="165")
     assert asked["confirm"]["current"] == 1200 and asked["confirm"]["origin"] == "вписано вручную"
-    assert not asked["applied"] and asked["queue"]["index"] == 1, "вопрос закрылся без решения"
+    assert not asked["applied"] and asked["card"]["questions"]["index"] == 1, \
+        "вопрос закрылся без решения"
 
-    added = _answer(queue, 1, inputs, choice=1, value="165", mode="add")
-    assert added["inputs"]["social_compensation_mln"] == 1365.0
-    more = _answer(queue, 2, added["inputs"], choice=1, value="500")
-    assert more["inputs"]["social_compensation_mln"] == 1865.0, "второе слагаемое спросило снова"
+    added = _answer(card, 1, inputs, choice=1, value="165", mode="add")
+    assert _engine(added["card"])["inputs.social_compensation_mln"] == 1365.0
+    more = _answer(card, 2, inputs, choice=1, value="500")
+    assert "confirm" not in more, "второе слагаемое спросило снова"
+    assert _engine(more["card"])["inputs.social_compensation_mln"] == 1865.0
 
 
 def test_replace_drops_the_old_number() -> None:
@@ -186,7 +196,7 @@ def test_offices_from_the_document_switch_the_object_on() -> None:
 
 # --- страница: итог после последнего вопроса --------------------------------
 
-def test_on_the_page_the_summary_says_what_changed_and_what_next(monkeypatch) -> None:
+def test_on_the_page_the_card_says_what_goes_in_and_what_next(monkeypatch) -> None:
     browser.chromium_or_skip()
     from playwright.sync_api import sync_playwright
 
@@ -200,53 +210,52 @@ def test_on_the_page_the_summary_says_what_changed_and_what_next(monkeypatch) ->
             page.goto(root + "/", wait_until="domcontentloaded")
             browser.wait_for_result(page)
             price_before = page.evaluate("() => inputs.purchase_price_mln")
+            before = page.evaluate("() => [inputs.purchase_price_mln, inputs.social_compensation_mln]")
             page.evaluate("() => toggleAgent(true)")
             page.set_input_files("#aiFile", files=[{"name": "Светлый 4.pdf",
                                                     "mimeType": "application/pdf",
                                                     "buffer": b"%PDF-1.4 stub"}])
-            page.wait_for_function("() => !aiBusy && aiIntake !== null", timeout=15_000)
-            table = page.evaluate(
-                "() => [...document.querySelectorAll('.ai-intake-pick')].map("
-                "el => [el.dataset.key, el.checked, el.closest('tr').innerText])")
+            page.wait_for_function("() => !aiBusy && aiCard !== null", timeout=15_000)
+            first = page.locator(".ai-card").last.inner_text().replace("\u00a0", " ")
+            page.locator(".ai-card").last.get_by_role("button", name="Перейти к вопросам").click()
 
             def last_card():
                 return page.locator(".ai-question").last
 
-            last_card().get_by_role("button", name=TWO_WAYS[0]).click()
-            for n, typed in ((2, "165"), (3, "500"), (4, "100")):
+            def settle(n: int) -> None:
                 page.wait_for_function(
                     f"() => !aiBusy && document.querySelectorAll('.ai-question').length==={n}",
                     timeout=15_000)
+
+            last_card().get_by_role("button", name=TWO_WAYS[0]).click()
+            for n, typed in ((2, "165"), (3, "500"), (4, "100")):
+                settle(n)
                 last_card().locator(".ai-question-value").fill(typed)
                 last_card().get_by_role("button", name=TWO_WAYS[1]).click()
-            page.wait_for_selector(".ai-intake-summary", timeout=15_000)
+            settle(5)
+            last_card().get_by_role("button", name="Пусть модель посчитает сама").click()
+            settle(6)
+            last_card().get_by_text("Пропустить").click()  # класс — как в модели
+            page.wait_for_function("() => !aiBusy && aiCard && aiCard.ready", timeout=15_000)
+            final = page.locator(".ai-card").last.inner_text().replace("\u00a0", " ")
+            untouched = page.evaluate("() => [inputs.purchase_price_mln, inputs.social_compensation_mln]")
+
+            page.locator(".ai-card").last.get_by_role("button", name="Всё верно, считать").click()
             page.wait_for_function(
-                "() => /Модель пересчитана|не пересчиталась/.test("
-                "document.querySelector('.ai-intake-summary').innerText)", timeout=60_000)
-            summary = page.evaluate(
-                "() => document.querySelector('.ai-intake-summary').innerText"
-            ).replace("\u00a0", " ")
+                "() => !aiBusy && /Модель пересчитана|не пересчиталась/.test("
+                "([...document.querySelectorAll('.ai-card .ai-intake-recalc')].pop()?.innerText||''))",
+                timeout=60_000)
+            recalc = page.evaluate(
+                "() => [...document.querySelectorAll('.ai-card .ai-intake-recalc')].pop().innerText")
             buttons = page.evaluate(
-                "() => [...document.querySelectorAll('.ai-intake-summary button')]"
-                ".map(b => b.innerText)")
+                "() => [...[...document.querySelectorAll('.ai-card')].pop().querySelectorAll('button')]"
+                ".filter(b => !b.disabled).map(b => b.innerText)")
             model = page.evaluate(
                 "() => [inputs.purchase_price_mln, inputs.social_compensation_mln,"
-                " inputs.purchase_schedule]")
+                " inputs.purchase_schedule, inputs.offices_enabled, inputs.offices_gba_sqm,"
+                " tep.apartments.gns + tep.ground_commercial.gns, inputs.vri_relief_mode]")
 
-            page.locator(".ai-intake-summary").get_by_role(
-                "button", name="Применить к расчёту").click()
-            page.wait_for_function(
-                "() => document.querySelectorAll('.ai-intake-recalc').length === 2"
-                " && /Модель пересчитана|не пересчиталась/.test("
-                "[...document.querySelectorAll('.ai-intake-recalc')].pop().innerText)",
-                timeout=60_000)
-            table_applied = page.evaluate(
-                "() => [inputs.offices_enabled, inputs.offices_gba_sqm,"
-                " tep.apartments.gns + tep.ground_commercial.gns,"
-                " inputs.vri_relief_mode, [...document.querySelectorAll('.ai-intake-recalc')]"
-                ".pop().innerText]")
-
-            page.locator(".ai-intake-summary").get_by_role(
+            page.locator(".ai-card").last.get_by_role(
                 "button", name="Отменить изменения документа").click()
             page.wait_for_function("() => /отменены/.test(aiMessages.innerText)",
                                    timeout=30_000)
@@ -255,27 +264,22 @@ def test_on_the_page_the_summary_says_what_changed_and_what_next(monkeypatch) ->
         chrome.close()
 
     assert not errors, errors
-    relief = next(row for row in table if row[0] == "vri_relief_mln")
-    assert relief[1] is False, "льгота из документа отмечена сама"
-    assert "Льгота по плате за смену ВРИ" in relief[2], "в таблице ключ вместо подписи"
-    assert next(row for row in table if row[0] == "offices_gba_sqm")[1] is True
+    assert "Льгота по плате за смену разрешённого использования" in first, "в карточке ключ вместо подписи"
+    assert "Спрошу ниже, взять ли эту сумму" in first, "льгота из документа взята сама"
+    assert "Вопрос 1" not in first
+    assert untouched == before, "ответы записались в модель до кнопки"
+    assert "2 550" in final, "цены сделки в карточке нет в миллионах"
+    assert "765" in final and "165 + 500 + 100" in final, final
+    assert "В расчёт не идёт: модель считает льготу сама" in final
 
     assert model[0] == 2550.0 and model[1] == 765.0, model
     assert model[2] == "1249.5@0; 1300.5@13", model
-    assert "Что изменилось в модели" in summary
-    assert "2 550" in summary, "цены сделки в итоге нет в миллионах"
-    assert "765" in summary and "165 + 500 + 100" in summary, summary
-    assert "Модель пересчитана" in summary, summary
-    assert "до документа" in summary.lower() and "LLCR" in summary
-    assert "Ещё не применено из таблицы разбора" in summary
-    pending = summary.split("Ещё не применено из таблицы разбора")[1].split("\n")[0]
-    assert "Льгота" not in pending, "неотмеченная льгота попала под «Применить к расчёту»"
-    assert "Не отмечено в таблице разбора" in summary and "1874-ПП" in summary
-    assert {"Применить к расчёту", "Открыть результат", "Проверить вводные",
+    offices_on, offices, house, relief_mode = model[3:]
+    assert offices_on is True and offices == 26300.0, model
+    assert round(house, 1) == 82840.0, "квартиры с коммерцией не равны дому из документа"
+    assert relief_mode != "amount", "льгота, которую не взяли, легла в модель"
+    assert "Модель пересчитана" in recalc, recalc
+    assert "до документа" in recalc.lower() and "LLCR" in recalc
+    assert {"Открыть результат", "Проверить вводные",
             "Отменить изменения документа"} <= set(buttons), buttons
     assert undone == [price_before, 0], undone
-    offices_on, offices, house, relief_mode, recalc = table_applied
-    assert offices_on is True and offices == 26300.0, table_applied
-    assert round(house, 1) == 82840.0, "квартиры с коммерцией не равны дому из документа"
-    assert relief_mode != "amount", "неотмеченная льгота легла в модель"
-    assert "Модель пересчитана" in recalc, recalc

@@ -52,7 +52,8 @@ WINDOW = datetime.timedelta(hours=36)
 RETRY = datetime.timedelta(hours=2)
 START_PREFIX = "rep_"
 STATES = {"pending": "ждёт отправки", "taken": "отправка не подтверждена",
-          "sent": "отправлено", "failed": "не отправлено"}
+          "sent": "отправлено", "failed": "не отправлено",
+          "dropped": "не отправлено: нет в списке подписки"}
 
 
 def _root() -> Path:
@@ -196,6 +197,35 @@ def subscribers(project: str) -> list[dict[str, Any]]:
     return list(_read(_subscribers(), {}).get(project, []))
 
 
+def subscribed_projects(chat_id: Any) -> list[str]:
+    """ЕДИНСТВЕННОЕ право на сводку и данные монитора в Telegram (решение
+    владельца 02.11.2026: «только тем, кто в списке сводки подписан мной»,
+    «по телеграмм ID»): проекты, в списке подписки которых стоит этот числовой
+    Telegram ID. Читается с диска при каждом вопросе — два воркера и правка
+    списка видны без перезапуска."""
+    try:
+        who = int(chat_id or 0)
+    except (TypeError, ValueError):
+        return []
+    if not who:
+        return []
+    book = _read(_subscribers(), {})
+    out = []
+    for project, rows in book.items():
+        for row in rows or []:
+            try:
+                if int(row.get("chat_id") or 0) == who:
+                    out.append(project)
+                    break
+            except (TypeError, ValueError, AttributeError):
+                continue
+    return sorted(out)
+
+
+def subscribed(chat_id: Any, project: str) -> bool:
+    return project in subscribed_projects(chat_id)
+
+
 # --------------------------------------------------------------------------
 # Расписание
 # --------------------------------------------------------------------------
@@ -263,7 +293,14 @@ def build_due(make, now: datetime.datetime | None = None) -> list[str]:
                 place = _outbox(item["slot"], project)
                 if not people or place.exists():
                     continue
-                got = make(project, item["kind"], item["end"])
+                # Сбой сборки одного проекта не останавливает остальные, а его
+                # причина ложится на диск: страницу может обслужить другой воркер.
+                try:
+                    got = make(project, item["kind"], item["end"])
+                except Exception as exc:  # noqa: BLE001 — причину видит владелец
+                    _problem(item["slot"], project, f"{type(exc).__name__}: {exc}", now)
+                    continue
+                _problem(item["slot"], project, "", now)
                 # Печать занята соседним PDF — попробуем в следующий проход; через
                 # два часа ждать дальше незачем: уйдёт сообщение с причиной.
                 if got.get("retry") and _now(now) < (
@@ -289,6 +326,24 @@ def build_due(make, now: datetime.datetime | None = None) -> list[str]:
     return built
 
 
+def _problems() -> Path:
+    return _root() / "problems.json"
+
+
+def _problem(slot: str, project: str, error: str,
+             now: datetime.datetime | None = None) -> None:
+    """Почему срок проекта не собрался; пустая причина — собрался."""
+    with _locked():
+        book = _read(_problems(), {})
+        if error:
+            book.setdefault(slot, {})[project] = {"error": error[:500], "error_at": _stamp(now)}
+        elif project in book.get(slot, {}):
+            book[slot].pop(project)
+        else:
+            return
+        _write(_problems(), {key: value for key, value in book.items() if value})
+
+
 def take(now: datetime.datetime | None = None) -> list[dict[str, Any]]:
     """Отдать боту неотправленное; отданное помечается «передано боту» сразу."""
     out = []
@@ -299,13 +354,21 @@ def take(now: datetime.datetime | None = None) -> list[dict[str, Any]]:
             if place.parent.name not in live:
                 continue
             entry = _read(place, {})
-            chats = [chat for chat, value in entry.get("deliveries", {}).items()
-                     if value.get("state") == "pending"]
-            if not chats:
+            pending = [chat for chat, value in entry.get("deliveries", {}).items()
+                       if value.get("state") == "pending"]
+            # Очередь собрана заранее; право — на момент отправки: кого владелец
+            # убрал из списка, тот сводку уже не получает.
+            chats = [chat for chat in pending if subscribed(chat, entry.get("project"))]
+            for chat in pending:
+                if chat not in chats:
+                    entry["deliveries"][chat] = {"state": "dropped", "at": _stamp(now)}
+            if not pending:
                 continue
             for chat in chats:
                 entry["deliveries"][chat] = {"state": "taken", "at": _stamp(now)}
             _write(place, entry)
+            if not chats:
+                continue
             pdf = place.with_name(entry["pdf"]) if entry.get("pdf") else None
             out.append({"slot": entry["slot"], "project": entry["project"],
                         "text": entry["text"], "filename": entry["filename"],
@@ -339,9 +402,16 @@ def status(project: str, now: datetime.datetime | None = None) -> dict[str, Any]
         for chat, value in entry.get("deliveries", {}).items():
             if (last.get(chat) or {}).get("at_slot", "") <= entry.get("at", ""):
                 last[chat] = dict(value, at_slot=entry.get("at", ""), slot=entry.get("slot"),
+                                  kind=entry.get("kind"), end=entry.get("end"),
                                   label=STATES.get(value.get("state"), value.get("state")),
                                   pdf_error=entry.get("error", ""))
     people = [dict(row, last=last.get(str(row["chat_id"])))
               for row in subscribers(project)]
+    # Срок наступил, а очереди нет: без этой строки страница показала бы
+    # «отправлено» про прошлую сводку, и молчание сошло бы за доставку.
+    problems = _read(_problems(), {})
+    missing = [dict(item, **(problems.get(item["slot"], {}).get(project) or {}))
+               for item in due(now)
+               if people and not _outbox(item["slot"], project).exists()]
     return {"invite": current_invite(project), "subscribers": people,
-            "next": next_slot(now)}
+            "next": next_slot(now), "missing": missing}

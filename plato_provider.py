@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any
 
 # Умолчание — самая способная общедоступная модель Anthropic. Понижать её
@@ -119,6 +120,26 @@ def _text_of(content: Any) -> str:
     return "\n".join(pieces)
 
 
+def _images_of(content: Any) -> list[dict[str, Any]]:
+    """Картинки сообщения (`input_image` OpenAI) → блоки `image` Anthropic.
+
+    Без них картинка терялась бы молча: модель отвечала бы про текст, как
+    будто видела страницу (обводка границы КРТ с фото решения).
+    """
+    blocks: list[dict[str, Any]] = []
+    for part in content if isinstance(content, list) else []:
+        if not isinstance(part, dict) or part.get("type") != "input_image":
+            continue
+        url = str(part.get("image_url") or "")
+        found = re.match(r"data:(image/[\w.+-]+);base64,(.+)", url, re.S)
+        if found:
+            blocks.append({"type": "image", "source": {"type": "base64", "media_type": found.group(1),
+                                                       "data": found.group(2)}})
+        elif url.startswith("https://"):
+            blocks.append({"type": "image", "source": {"type": "url", "url": url}})
+    return blocks
+
+
 def messages_for_anthropic(input_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Разговор во внутренней форме → `messages` Anthropic.
 
@@ -180,7 +201,11 @@ def messages_for_anthropic(input_items: list[dict[str, Any]]) -> list[dict[str, 
         role = item.get("role")
         if role in ("user", "assistant"):
             text = _text_of(item.get("content"))
-            if text.strip():
+            images = _images_of(item.get("content")) if role == "user" else []
+            if images:
+                messages.append({"role": role, "content": (
+                    [{"type": "text", "text": text}] if text.strip() else []) + images})
+            elif text.strip():
                 messages.append({"role": role, "content": text})
             continue
 

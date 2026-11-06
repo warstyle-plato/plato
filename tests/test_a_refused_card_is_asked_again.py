@@ -24,6 +24,7 @@ import socket
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.error import HTTPError, URLError
 
 import pytest
@@ -78,8 +79,10 @@ def _answers(monkeypatch, answers, paused=None):
         return outcome() if callable(outcome) else outcome
 
     monkeypatch.setattr(reading, "urlopen", urlopen)
-    monkeypatch.setattr(reading.time, "sleep",
-                        lambda pause: (paused if paused is not None else []).append(pause))
+    # Подменяем `time` только в `reading`: общий `time.sleep` подменять нельзя —
+    # фоновый поток соседнего теста начнёт крутиться и писать в `paused`.
+    monkeypatch.setattr(reading, "time", SimpleNamespace(
+        sleep=lambda pause: (paused if paused is not None else []).append(pause)))
     return asked
 
 

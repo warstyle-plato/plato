@@ -249,7 +249,48 @@ def _apply_pace(project: str, view: dict[str, Any], cut: datetime.date) -> dict[
     dash_schedule["forecast_source"] = graph["pace_forecast_source"]
     dash_schedule["rnv_delay_days"] = graph["pace_rnv_delay_days"]
     dash_schedule["stalled"] = stalled
+    dash_schedule["driver"] = _driver(pm, propagated, network_rnv, baseline_rnv, rows)
     return view
+
+
+def _driver(pm: dict[str, Any], propagated: dict[str, dict[str, Any]],
+            network_rnv: datetime.date | None, baseline_rnv: datetime.date | None,
+            rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Работа, которая тянет прогноз ввода.
+
+    Владелец, 27.10.2026: рядом с прогнозом ввода назвать работу, которая
+    тянет срок. С PM-сетью — след от вехи ввода назад по той же сети, что дала
+    прогноз (`schedule_graph.driver`); без сети РНВ — самый поздний финиш строк,
+    и тянет его строка с этим финишем. Ввод в срок — называть некого.
+    """
+    if not network_rnv or not baseline_rnv or network_rnv <= baseline_rnv:
+        return None
+    by_id = {forecast._row_id(row): row for row in rows}
+    if propagated:
+        end = pm.get("rnv_id") if pm.get("rnv_id") in propagated else max(
+            propagated, key=lambda tid: propagated[tid]["forecast_finish"])
+        tid = schedule_graph.driver(propagated, end)
+        if not tid:
+            return None
+        task = propagated[tid]
+        row = by_id.get(tid, {})
+        name = task.get("name") or row.get("name")
+        plan, finish = task["finish"], task["forecast_finish"]
+    else:
+        late = [row for row in rows if row.get("pace_forecast_finish")
+                and monitor._day(row["pace_forecast_finish"]) == network_rnv]
+        if not late:
+            return None
+        row = late[0]
+        tid, name = forecast._row_id(row), row.get("name")
+        plan = monitor._day(row.get("plan_finish"))
+        finish = monitor._day(row["pace_forecast_finish"])
+    return {"id": tid, "name": str(name or ""), "object": str(row.get("object") or ""),
+            "rss_codes": monitor._codes(row.get("code")),
+            "plan_finish": monitor._iso(plan), "forecast_finish": monitor._iso(finish),
+            "progress": row.get("rss_accepted_ratio"), "pace_3m": row.get("rss_act_cost_rate_3m"),
+            "method": row.get("pace_forecast_method") or "",
+            "rnv_delay_days": (network_rnv - baseline_rnv).days}
 
 
 def _build(project: str, cut: Any, programme: dict[str, Any] | None = None, upto: str = "") -> dict[str, Any]:

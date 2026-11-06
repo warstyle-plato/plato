@@ -657,6 +657,13 @@ class KrtRanking:
         # запомнили, и она пришла бы снова.
         self.watch_seen_path = Path(data_dir) / "krt" / "watch_seen.json"
         self.rating_settings_path = Path(data_dir) / "krt" / "rating_settings.json"
+        # Ход планового прогона — на диске, а не в памяти воркера. Полный проход
+        # по каталогу идёт часами, а выкатка перезапускает процесс несколько раз
+        # в день: прогон, живший только в памяти, начинался с первой площадки
+        # после каждой выкатки и до последней не доходил. Здесь записано, какие
+        # площадки этого срока уже посчитаны (продолжить с места), сколько раз
+        # прогон перезапускался и почему остановился — это видно на странице.
+        self.schedule_path = Path(data_dir) / "krt" / "schedule.json"
         self.ttl_seconds = ttl_seconds
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
@@ -700,6 +707,124 @@ class KrtRanking:
             return float(at) < self.last_scheduled_moment(now)
         except (TypeError, ValueError):
             return True
+
+    def next_scheduled_moment(self, now: float | None = None) -> float:
+        """Следующий срок после последнего наступившего."""
+        return self.last_scheduled_moment(now) + WEEKLY_SECONDS
+
+    def _schedule_state(self, period: float) -> dict[str, Any]:
+        """Запись хода прогона ЭТОГО срока; чужой срок — пустая запись."""
+        state = load_json(self.schedule_path) or {}
+        if not isinstance(state, dict):
+            return {}
+        try:
+            same = float(state.get("period") or 0) == float(period)
+        except (TypeError, ValueError):
+            same = False
+        return state if same else {}
+
+    def _write_schedule(self, state: dict[str, Any]) -> None:
+        try:
+            save_json(self.schedule_path, state)
+        except OSError:
+            logger.exception("KRT schedule state write failed")
+
+    def _schedule_begin(self, projects: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Начать или продолжить плановый прогон этого срока.
+
+        Посчитанные в этот срок площадки второй раз не считаются: прогон,
+        оборванный выкаткой, продолжает с места, а не с первой площадки.
+        """
+        period = self.last_scheduled_moment()
+        state = self._schedule_state(period)
+        attempted = set(state.get("attempted") or [])
+        resumed = bool(state.get("started_at")) and not state.get("finished_at")
+        now = int(time.time())
+        remaining = [p for p in projects
+                     if str(p.get("slug") or "") not in attempted]
+        self._write_schedule({
+            "period": period,
+            "started_at": state.get("started_at") or now,
+            "resumed_at": now if resumed else state.get("resumed_at"),
+            "restarts": int(state.get("restarts") or 0) + (1 if resumed else 0),
+            "total": len(projects),
+            "attempted": sorted(attempted),
+            "failed": int(state.get("failed") or 0),
+            "finished_at": None,
+            "stop_reason": "",
+        })
+        return remaining
+
+    def _schedule_mark(self, slug: str, failed: bool) -> None:
+        period = self.last_scheduled_moment()
+        state = self._schedule_state(period)
+        if not state:
+            return
+        attempted = set(state.get("attempted") or [])
+        attempted.add(slug)
+        state["attempted"] = sorted(attempted)
+        if failed:
+            state["failed"] = int(state.get("failed") or 0) + 1
+        state["heartbeat_at"] = int(time.time())
+        self._write_schedule(state)
+
+    def _schedule_end(self, *, completed: bool, reason: str = "") -> None:
+        state = load_json(self.schedule_path) or {}
+        if not isinstance(state, dict):
+            state = {}
+        now = int(time.time())
+        if completed:
+            state["finished_at"] = now
+            state["stop_reason"] = ""
+        else:
+            state["stop_reason"] = reason
+            state["stopped_at"] = now
+        self._write_schedule(state)
+
+    def note_schedule_failure(self, reason: str) -> None:
+        """Плановый прогон не начался или упал — причину видно на странице."""
+        period = self.last_scheduled_moment()
+        state = dict(self._schedule_state(period))
+        state.update({"period": period, "stop_reason": str(reason),
+                      "stopped_at": int(time.time())})
+        self._write_schedule(state)
+
+    def schedule_status(self, blocked: str = "", now: float | None = None) -> dict[str, Any]:
+        """Когда был последний полный плановый прогон, когда следующий и что мешает.
+
+        Один ответ на вопрос «почему не пересчитывается» для страницы: прежде
+        он жил только в журнале сервера, и снаружи «прогон идёт», «прогон
+        обрывается» и «прогон не начинается» выглядели одинаково.
+        """
+        now = time.time() if now is None else now
+        cached = load_json(self.path) or {}
+        last = cached.get("catalogue_run_at") \
+            if cached.get("schema_version") == CACHE_SCHEMA_VERSION else None
+        period = self.last_scheduled_moment(now)
+        due = self.due(now)
+        state = self._schedule_state(period) if due else {}
+        unfinished = bool(state.get("started_at")) and not state.get("finished_at")
+        running = unfinished and self.claimed()
+        answer: dict[str, Any] = {
+            "last_completed_at": int(float(last)) if last else None,
+            "due": due,
+            "due_since": int(period) if due else None,
+            "next_at": int(self.next_scheduled_moment(now)),
+            "running": running,
+            "done": len(state.get("attempted") or []),
+            "total": int(state.get("total") or 0),
+            "failed": int(state.get("failed") or 0),
+            "restarts": int(state.get("restarts") or 0),
+            "started_at": state.get("started_at"),
+            "blocked": str(blocked or ""),
+            "stop_reason": str(state.get("stop_reason") or ""),
+            # Начат, не закончен, не идёт и без названной ошибки — процесс
+            # перезапустили посреди счёта (выкатка). Продолжит с места.
+            "interrupted": bool(unfinished and not running
+                                and not state.get("stop_reason")),
+            "waiting_for_other_run": bool(due and not running and self.claimed()),
+        }
+        return answer
 
     def claim(self) -> bool:
         """Взять работу может только один воркер из двух.
@@ -1235,6 +1360,8 @@ class KrtRanking:
                 if not claimed:
                     self.release()
                 return False
+            if scheduled:
+                projects = self._schedule_begin(projects)
             self._progress = {
                 "running": True, "done": 0, "total": len(projects), "current": "",
                 "started_at": time.time(), "finished_at": None, "failed": 0,
@@ -1262,9 +1389,12 @@ class KrtRanking:
         # часами и писал целиком после каждой площадки: всё, что за это время
         # записала карточка (`remember` — общий рейтинг, нагрузка), молча
         # откатывалось к старому.
+        completed = False
+        stop_reason = ""
         try:
             for index, project in enumerate(projects, start=1):
                 name = str(project.get("name") or project.get("slug") or "")
+                site_failed = False
                 with self._lock:
                     self._progress["current"] = name
                 try:
@@ -1274,6 +1404,7 @@ class KrtRanking:
                     # и молчать о ней нельзя: строка получает причину отказа.
                     logger.exception("KRT ranking failed slug=%s", project.get("slug"))
                     screening = {"available": False, "reason": f"Расчёт не выполнен: {exc}"}
+                    site_failed = True
                     with self._lock:
                         self._progress["failed"] += 1
                 row = score_row(project, screening)
@@ -1289,15 +1420,33 @@ class KrtRanking:
                         "screening": screening,
                     })
                     self._persist({row["slug"]: row})
+                if catalogue_run and row["slug"]:
+                    self._schedule_mark(row["slug"], site_failed)
                 with self._lock:
                     self._progress["done"] = index
                 self.heartbeat()
                 _trim_process_memory()
+            completed = True
+        except Exception as exc:  # noqa: BLE001 — причина уходит на страницу
+            logger.exception("KRT ranking run stopped")
+            stop_reason = f"Прогон остановился с ошибкой: {exc}"
+            with self._lock:
+                self._progress["stop_reason"] = stop_reason
         finally:
             # Полный прогон по расписанию отмечается своим полем: по нему
             # `due()` решает, когда следующий. Пачка фона или пересчёт одной
-            # площадки срок не сдвигают.
-            self._persist({}, catalogue_run=catalogue_run)
+            # площадки срок не сдвигают. И отмечается он, только если дошёл до
+            # последней площадки: оборванный ошибкой прогон, отмеченный как
+            # полный, неделю выдавал бы недосчитанный каталог за посчитанный.
+            stamp = bool(catalogue_run and completed)
+            try:
+                self._persist({}, catalogue_run=stamp)
+            except Exception:  # noqa: BLE001
+                logger.exception("KRT ranking final write failed")
+                stamp = False
+                stop_reason = stop_reason or "Не удалось записать итог прогона на диск"
+            if catalogue_run:
+                self._schedule_end(completed=stamp, reason=stop_reason)
             # Замок отпускается ровно здесь: держать его до протухания значило
             # бы, что после первого же прогона неделя превращается в шесть часов
             # ожидания следующего.

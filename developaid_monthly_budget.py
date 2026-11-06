@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import datetime
 import io
+import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -145,6 +147,24 @@ def _amount(value: Any) -> float | None:
         return None
 
 
+_PF_SHEETS = {"п-ф", "план-факт"}
+
+
+def _month_header(rows: list[list[Any]]) -> tuple[int | None, list[tuple[int, str]]]:
+    """Строка шапки с месяцами и колонки подписей месяцев в ней."""
+    for index, row in enumerate(rows[:20]):
+        found = []
+        for column, cell in enumerate(row):
+            match = _MONTH_HEADER.match(str(cell or ""))
+            if match and match.group(1).lower() in _MONTHS:
+                month = datetime.date(int(match.group(2)),
+                                      _MONTHS[match.group(1).lower()], 1)
+                found.append((column, month.isoformat()))
+        if found:
+            return index, found
+    return None, []
+
+
 def read_budget(data: bytes) -> dict[str, Any]:
     """Разобрать план-факт БДДС: план и факт нужных строк по месяцам.
 
@@ -155,26 +175,23 @@ def read_budget(data: bytes) -> dict[str, Any]:
 
     book = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
     try:
-        rows = [list(row) for row in book.worksheets[0].iter_rows(values_only=True)]
+        sheets = [(sheet.title, [list(row) for row in sheet.iter_rows(values_only=True)])
+                  for sheet in book.worksheets]
     finally:
         book.close()
-    title = next((str(cell) for row in rows[:4] for cell in row if cell), "")
-
-    header = None
-    months: list[tuple[int, str]] = []
-    for index, row in enumerate(rows[:20]):
-        found = []
-        for column, cell in enumerate(row):
-            match = _MONTH_HEADER.match(str(cell or ""))
-            if match and match.group(1).lower() in _MONTHS:
-                month = datetime.date(int(match.group(2)),
-                                      _MONTHS[match.group(1).lower()], 1)
-                found.append((column, month.isoformat()))
-        if found:
-            header, months = index, found
-            break
-    if header is None or header + 1 >= len(rows):
+    # Лист план-факта — по имени «П-Ф», а не первый по порядку: в книге бывает
+    # свод или прежняя версия впереди, и её план читался бы молча. Листа с
+    # таким именем нет — первый лист, где есть шапка с месяцами.
+    named = [item for item in sheets if _norm(item[0]).replace(" ", "") in _PF_SHEETS]
+    candidates = named or [item for item in sheets if _month_header(item[1])[0] is not None]
+    if not candidates:
         raise ValueError("в файле не нашлось шапки с месяцами («Сентябрь 2026»)")
+    sheet_name, rows = candidates[0]
+    title = next((str(cell) for row in rows[:4] for cell in row if cell), "")
+    header, months = _month_header(rows)
+    if header is None or header + 1 >= len(rows):
+        raise ValueError(f"на листе «{sheet_name}» не нашлось шапки с месяцами "
+                         "(«Сентябрь 2026»)")
     sub = rows[header + 1]
     # Блок месяца — от его подписи до подписи следующего; последний кончается
     # на «Итого», иначе план за все месяцы сошёл бы за план последнего.
@@ -258,7 +275,7 @@ def read_budget(data: bytes) -> dict[str, Any]:
             extra[key] = pair
         values["extra"] = extra
         out[month] = values
-    return {"title": title, "months": out,
+    return {"title": title, "sheet": sheet_name, "months": out,
             "articles_missing": [article["label"] for article in ARTICLES
                                  if article["key"] not in article_rows]}
 
@@ -283,22 +300,121 @@ def store_budget(project: str, data: bytes, taken_at: Any,
     if replaced:
         archive = folder / ".replaced"
         archive.mkdir(exist_ok=True)
-        stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S")
-        path.rename(monitor._inside(archive, f"{path.stem}-{stamp}.xlsx"))
+        path.rename(monitor._inside(archive, f"{path.stem}-{_stamp()}.xlsx"))
     path.write_bytes(data)
-    return {"taken_at": day, "title": parsed["title"], "filename": filename,
-            "months": months, "replaced": replaced}
+    uploads = _uploads(folder)
+    uploads[path.name] = _now()
+    _save_uploads(folder, uploads)
+    return {"taken_at": day, "title": parsed["title"], "sheet": parsed["sheet"],
+            "filename": filename, "months": months, "replaced": replaced}
 
 
-def _period_end(path: Path) -> str:
-    """Последний месяц файла: из имени, у старых файлов (имя — дата) — из книги."""
-    parts = path.stem.split("_")
-    if len(parts) == 3:
-        return parts[2]
+def _now() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="microseconds")
+
+
+def _stamp() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S%f")
+
+
+_UPLOADS = "uploads.json"
+
+
+def _uploads(folder: Path) -> dict[str, str]:
+    """Когда загружен каждый файл бюджета (время загрузки, а не дата среза)."""
     try:
-        return max(read_budget(path.read_bytes())["months"])[:7]
-    except (ValueError, OSError):
+        data = json.loads((folder / _UPLOADS).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_uploads(folder: Path, uploads: dict[str, str]) -> None:
+    temp = folder / f".{_UPLOADS}.{os.getpid()}.tmp"
+    temp.write_text(json.dumps(uploads, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+    os.replace(temp, folder / _UPLOADS)
+
+
+def _uploaded_at(path: Path, uploads: dict[str, str]) -> str:
+    """Время загрузки из журнала; файлы до журнала — по времени записи на диск."""
+    if path.name in uploads:
+        return uploads[path.name]
+    try:
+        stamp = path.stat().st_mtime
+    except OSError:
         return ""
+    return datetime.datetime.fromtimestamp(stamp, datetime.timezone.utc).isoformat(
+        timespec="microseconds")
+
+
+def _file_words(path: Path) -> dict[str, str]:
+    parts = path.stem.split("_")
+    period = (f"{parts[1]}–{parts[2]}" if len(parts) == 3 else "")
+    return {"file": path.stem[:10], "period": period, "name": path.name}
+
+
+def list_budgets(project: str) -> dict[str, Any]:
+    """Загруженные бюджеты для страницы монитора: что лежит и чей план идёт в сводку.
+
+    У каждого файла — месяцы, план которых сводка берёт именно из него; убранные
+    кнопкой «Убрать» — отдельным списком, их можно вернуть.
+    """
+    folder = monitor._project_dir(project) / "budget"
+    uploads = _uploads(folder) if folder.exists() else {}
+    active = _budget_files(project, "9999-12-31")
+    parsed = {}
+    for path in active:
+        try:
+            parsed[path.name] = read_budget(path.read_bytes())
+        except ValueError:
+            parsed[path.name] = {"months": {}, "sheet": ""}
+    supplies: dict[str, list[str]] = {path.name: [] for path in active}
+    seen: set[str] = set()
+    for path in active:
+        for month in sorted(parsed[path.name]["months"]):
+            if month not in seen:
+                seen.add(month)
+                supplies[path.name].append(month[:7])
+    files = [{**_file_words(path), "uploaded_at": _uploaded_at(path, uploads),
+              "sheet": parsed[path.name].get("sheet", ""),
+              "months": sorted(m[:7] for m in parsed[path.name]["months"]),
+              "supplies": supplies[path.name]} for path in active]
+    removed_dir = folder / ".removed"
+    removed = [{**_file_words(path), "uploaded_at": _uploaded_at(path, uploads)}
+               for path in sorted(removed_dir.glob("*.xlsx"))] if removed_dir.exists() else []
+    return {"files": files, "removed": removed}
+
+
+def remove_budget(project: str, name: str) -> dict[str, Any]:
+    """Убрать ошибочно загруженный бюджет из расчёта: файл уходит в `.removed/`, не стирается."""
+    folder = monitor._project_dir(project) / "budget"
+    path = monitor._inside(folder, name)
+    if path.suffix != ".xlsx" or not path.is_file():
+        raise FileNotFoundError(f"бюджета «{name}» среди загруженных нет")
+    removed = folder / ".removed"
+    removed.mkdir(exist_ok=True)
+    target = monitor._inside(removed, name)
+    if target.exists():
+        # Тот же файл уже убирали раньше: прежняя убранная копия — в архив замен.
+        archive = folder / ".replaced"
+        archive.mkdir(exist_ok=True)
+        target.rename(monitor._inside(archive, f"{target.stem}-{_stamp()}.xlsx"))
+    path.rename(target)
+    return list_budgets(project)
+
+
+def restore_budget(project: str, name: str) -> dict[str, Any]:
+    """Вернуть убранный бюджет; его время загрузки — прежнее, из журнала."""
+    folder = monitor._project_dir(project) / "budget"
+    path = monitor._inside(folder / ".removed", name)
+    if not path.is_file():
+        raise FileNotFoundError(f"среди убранных бюджетов нет «{name}»")
+    target = monitor._inside(folder, name)
+    if target.exists():
+        raise ValueError(f"бюджет «{name}» уже загружен заново; вернуть прежний нельзя, "
+                         "сначала уберите новый")
+    path.rename(target)
+    return list_budgets(project)
 
 
 def _known_by(path: Path, upto: str) -> bool:
@@ -316,17 +432,20 @@ def _known_by(path: Path, upto: str) -> bool:
 
 
 def _budget_files(project: str, upto: str) -> list[Path]:
-    """Бюджеты, загруженные до ``upto``: сначала с более поздним периодом.
+    """Бюджеты, годные для сводки на ``upto``: сначала загруженный последним.
 
-    Порядок — по месяцам файла, а не по дню загрузки: догруженный в октябре
-    файл за июль—август не должен перекрывать сентябрь из файла за
-    сентябрь—октябрь. При равном периоде свежее тот, что загружен позже.
+    Решение владельца (02.11.2026): план месяца — из последнего загруженного
+    файла, где этот месяц есть, по времени загрузки, а не по дате среза в имени
+    и не по последнему месяцу файла. Ошибочно загруженный файл убирают кнопкой
+    на странице монитора (`remove_budget`).
     """
     folder = monitor._project_dir(project) / "budget"
     if not folder.exists():
         return []
+    uploads = _uploads(folder)
     found = [path for path in folder.glob("*.xlsx") if _known_by(path, upto)]
-    return sorted(found, key=lambda path: (_period_end(path), path.stem[:10]), reverse=True)
+    return sorted(found, key=lambda path: (_uploaded_at(path, uploads), path.name),
+                  reverse=True)
 
 
 def _plan(project: str, month: str, upto: str) -> dict[str, Any] | None:
@@ -340,7 +459,8 @@ def _plan(project: str, month: str, upto: str) -> dict[str, Any] | None:
         service = values["service"]["plan"]
         construction = (None if with_service is None
                         else with_service - (service or 0.0))
-        return {"file": path.stem[:10], "title": parsed["title"],
+        return {"file": path.stem[:10], "period": _file_words(path)["period"],
+                "title": parsed["title"],
                 "plan": {"construction": construction,
                          "commercial": values["commercial"]["plan"]},
                 "articles": {key: pair["plan"] for key, pair in values["articles"].items()},
@@ -356,20 +476,13 @@ def month_fact(rss: Path, month: str, upto: datetime.date | None = None) -> dict
     """Оплачено за месяц по строкам сводки — из реестра платежей РСС.
 
     ``upto`` — дата сводки: оплата позже неё в сводку не входит, даже если
-    реестр её уже несёт (те же границы, что у таблицы статей).
+    реестр её уже несёт. Строки — те же, что у таблицы статей и таблицы по
+    главам (`_month_rows`): одно «оплачено за месяц» для графика и таблиц.
     """
     payments = actuals.read_payments(rss)
-    first = datetime.date.fromisoformat(month)
     sums = {line["key"]: 0.0 for line in LINES}
-    for row in payments["rows"]:
-        day = row.get("date")
-        if not day or (day.year, day.month) != (first.year, first.month):
-            continue
-        if upto is not None and day > upto:
-            continue
-        key = line_of(row.get("estimate_code") or "")
-        if key:
-            sums[key] += float(row.get("amount") or 0.0)
+    for row in _month_rows(rss, month, upto):
+        sums[line_of(row.get("estimate_code") or "")] += float(row.get("amount") or 0.0)
     return {"fact": sums, "last_payment": monitor._iso(payments.get("last")) or None,
             "undated": float(payments.get("undated") or 0.0)}
 
@@ -412,7 +525,7 @@ def month_budget(project: str, end: datetime.date) -> dict[str, Any]:
            "trend": _trend(project, rss, end),
            "by_article": _by_article(rss, month, end),
            "recipients": _recipients(rss, month, end),
-           "articles": _articles(project, end)}
+           "articles": _articles(project, end, rss)}
     if not plan:
         out["reason"] = (f"Не загружен бюджет (план-факт БДДС), в котором есть "
                          f"{datetime.date.fromisoformat(month):%m.%Y} — плана на месяц нет.")
@@ -570,6 +683,8 @@ def _trend(project: str, rss: Path, end: datetime.date, months: int = 12) -> lis
         covered = first is not None and start >= first
         fact = month_fact(rss, month, end)["fact"] if covered else {}
         point = {"month": month,
+                 "plan_file": ({"file": plan["file"], "period": plan["period"]}
+                               if plan else None),
                  "plan": {key: (plan or {}).get("plan", {}).get(key)
                           for key in ("construction", "commercial")},
                  "fact": {key: fact.get(key) for key in ("construction", "commercial")}}
@@ -580,10 +695,21 @@ def _trend(project: str, rss: Path, end: datetime.date, months: int = 12) -> lis
     return out
 
 
-def _month_rows(rss: Path, month: str, end: datetime.date) -> list[dict[str, Any]]:
+def _month_end(month: str) -> datetime.date:
+    return _month_shift(datetime.date.fromisoformat(month), -1) - datetime.timedelta(days=1)
+
+
+def _month_rows(rss: Path, month: str, end: datetime.date | None = None) -> list[dict[str, Any]]:
+    """Оплаты реестра РСС внутри строк сводки за месяц ``month``, не позже ``end``.
+
+    Единственный отбор «оплачено за месяц»: его читают тренд (`month_fact`),
+    таблица статей и таблица закрытого месяца по главам — поэтому числа
+    графика и таблиц за один месяц совпадают.
+    """
     first = datetime.date.fromisoformat(month)
+    last = _month_end(month) if end is None else min(end, _month_end(month))
     return [row for row in actuals.read_payments(rss)["rows"]
-            if row.get("date") and first <= row["date"] <= end
+            if row.get("date") and first <= row["date"] <= last
             and line_of(row.get("estimate_code") or "")]
 
 
@@ -620,67 +746,56 @@ def _recipients(rss: Path, month: str, end: datetime.date, top: int = 8) -> list
     return out
 
 
-# Главы бюджета месяца в порядке строк БДДС; итог — строка «РАСХОДЫ».
-_MONTH_CHAPTERS = (
-    ("land", "Глава 1 — приобретение проекта (земля)"),
-    ("construction_with_service", "Глава 2 — стройка и проектирование, со службой заказчика"),
-    ("commercial", "Глава 3 — коммерческие расходы"),
-    ("admin", "Административно-хозяйственные расходы"),
-)
+def _articles(project: str, end: datetime.date, rss: Path | None = None) -> dict[str, Any]:
+    """Прошлый (последний закрытый) месяц по главам и статьям: план БДДС, факт РСС.
 
+    Факт — оплаты реестра РСС за месяц (`month_articles`, тот же отбор, что у
+    точки графика «план и оплачено по месяцам»): владелец (02.11.2026) решил
+    «один источник — реестр РСС», когда факт по главам из файла БДДС разошёлся
+    с графиком. Из БДДС — только план. Строки, которых в реестре нет (земля,
+    оплаченная мимо РСС, и АХР), берут факт из БДДС с пометкой источника
+    (``rss == "факт БДДС"``).
 
-def _month_chapters(values: dict[str, Any]) -> list[dict[str, Any]]:
-    """План и факт закрытого месяца по главам БДДС и всего — как в самом файле.
-
-    Владелец (22.10.2026) сверяет сентябрь по файлу: «расходы 221, из них
-    2 глава 191, 1 глава 0,285, коммерческие 13,93, АХР 15,478».
-    """
-    extra = values.get("extra") or {}
-    out = []
-    for key, label in _MONTH_CHAPTERS + (("expenses", "Всего расходов по бюджету"),):
-        pair = values.get(key) if key in _BUDGET_ROWS else extra.get(key)
-        if not pair or (pair.get("plan") is None and pair.get("fact") is None):
-            continue
-        out.append({"key": key, "label": label, "plan": pair.get("plan"),
-                    "fact": pair.get("fact")})
-    return out
-
-
-def _articles(project: str, end: datetime.date) -> dict[str, Any]:
-    """Отклонения по статьям БДДС за прошлый месяц — последний закрытый.
-
-    Статьи — те же, что у бюджета месяца (`ARTICLES`, по точному имени строки).
     Месяц — тот, что перед месяцем сводки, а не «последний, где в файле есть
-    факт»: в октябрьской сводке стояла таблица за апрель, и её план читался как
-    октябрьский (финансист, 21.10.2026: «неверный план апреля, не могу понять,
-    откуда он подтянут»). Факта за прошлый месяц в файле нет — так и сказано.
+    факт» (финансист, 21.10.2026: в октябрьской сводке стояла таблица за апрель).
     """
-    files = _budget_files(project, end.isoformat())
-    if not files:
+    if not _budget_files(project, end.isoformat()):
         return {"known": False, "reason": "бюджет не загружен"}
-    month = (end.replace(day=1) - datetime.timedelta(days=1)).replace(day=1).isoformat()
+    month = _month_shift(end.replace(day=1), 1).isoformat()
     label = f"{datetime.date.fromisoformat(month):%m.%Y}"
-    # Свежайший бюджет, где этот месяц есть, — как у плана месяца (`_plan`).
-    files = [path for path in files if month in read_budget(path.read_bytes())["months"]] or files
-    parsed = read_budget(files[0].read_bytes())
-    if month not in parsed["months"]:
-        return {"known": False, "reason": f"в бюджете от {files[0].stem[:10]} нет месяца {label}"}
-    for month in (month,):
-        found = parsed["months"][month]["articles"]
-        if not any(pair.get("fact") is not None for pair in found.values()):
-            return {"known": False,
-                    "reason": f"в бюджете от {files[0].stem[:10]} не заполнен факт за {label}"}
-        rows = []
-        # Месяц закрыт: у части статей факт есть. Пустая ячейка факта в
-        # закрытом месяце бюджета значит «не платили», и это помечено.
-        for key, pair in found.items():
-            if pair.get("plan") is None and pair.get("fact") is None:
+    plan = _plan(project, month, end.isoformat())
+    if plan is None:
+        newest = _budget_files(project, end.isoformat())[0].stem[:10]
+        return {"known": False, "reason": f"в бюджете от {newest} нет месяца {label}"}
+    rss = rss or monitor._latest(project, "estimate", ".xlsx", end.isoformat())
+    if rss is None:
+        return {"known": False,
+                "reason": f"не загружен отчёт РСС с реестром платежей — факта за {label} нет"}
+    dated = [row["date"] for row in actuals.read_payments(rss)["rows"] if row.get("date")]
+    if not dated or min(dated) > _month_end(month):
+        return {"known": False,
+                "reason": f"реестр платежей РСС от {rss.stem[:10]} начинается позже "
+                          f"{label} — факта за этот месяц в нём нет"}
+    table = month_articles(rss, month, _month_end(month), plan)
+    chapters = [{"key": chapter["key"], "label": chapter["label"],
+                 "plan": chapter["total"]["plan"], "fact": chapter["total"]["fact"],
+                 "source": "budget" if chapter["total"].get("rss") == "факт БДДС" else
+                 ("none" if chapter["total"]["fact"] is None else "rss")}
+                for chapter in table["chapters"]]
+    chapters.append({"key": "expenses", "label": "Всего расходов за месяц",
+                     "plan": table["whole"]["plan"], "fact": table["whole"]["fact"],
+                     "source": "rss"})
+    rows = []
+    for chapter in table["chapters"]:
+        if chapter["key"] not in {"construction", "commercial", "service"}:
+            continue
+        for row in chapter["rows"]:
+            # «Прочие статьи главы» — план без карты: их оплаты лежат строками
+            # «без плана», отклонение у этой строки не считается.
+            if row["key"] == "rest" or not (row["plan"] or row["fact"]):
                 continue
-            fact = pair.get("fact") or 0.0
-            rows.append({"article": _ARTICLE[key]["label"], "plan": pair.get("plan"),
-                         "fact": pair.get("fact"), "fact_blank": pair.get("fact") is None,
-                         "delta": fact - pair["plan"] if pair.get("plan") is not None else None})
-        rows.sort(key=lambda row: -abs(row.get("delta") or 0.0))
-        return {"known": True, "month": month, "file": files[0].stem[:10], "rows": rows,
-                "chapters": _month_chapters(parsed["months"][month])}
-    return {"known": False, "reason": "в бюджете нет месяца с фактом"}
+            rows.append({"article": row["label"], "plan": row["plan"], "fact": row["fact"],
+                         "delta": row["fact"] - row["plan"] if row["plan"] is not None else None})
+    rows.sort(key=lambda row: -abs(row["delta"] if row["delta"] is not None else row["fact"]))
+    return {"known": True, "month": month, "file": plan["file"], "rss": rss.stem[:10],
+            "rows": rows, "chapters": chapters}

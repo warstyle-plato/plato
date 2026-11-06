@@ -61,7 +61,7 @@ def _v4_site_massing_rows_xml(xml: str, inputs: dict[str, Any],
     книге двигает уровни и СМР подземной части её формулами.
     """
     import re as _re
-    massing = site_massing(inputs, tep)
+    massing = site_massing_fitted(inputs, tep)
     values = _massing_book.input_values(massing, inputs)
     numbers = [int(number) for number in _re.findall(r'<x:row r="(\d+)"', xml)]
     base_row = (max(numbers) if numbers else 0) + 2
@@ -92,6 +92,8 @@ def _v4_site_massing_rows_xml(xml: str, inputs: dict[str, Any],
         "underground_sqm": "паркинг с рампами и проездами, подземные кладовые и гаражи объектов",
         "markup2_pct": "поле underground_level2_markup_pct; экспертная оценка, согласована владельцем",
         "markup3_pct": "поле underground_level3_markup_pct; экспертная оценка, согласована владельцем",
+        "markups_off": ("Да — ставка подземной части вписана вручную и флажок поля "
+                        "underground_rate_is_level1 («ставка первого уровня») снят"),
         "depth_factor": "умножает ставку подземной части в CAPEX очередей и гаражей объектов",
     }
     for key, label, kind in _massing_book.ROWS:

@@ -40,6 +40,15 @@ import developaid_report_mailing as mailing
 MSK = mailing.MSK
 PORT = 18804
 
+# Монитор и сводка — только по ключу администратора (решение владельца
+# 02.11.2026): страница и маршруты открываются ключом, а не сессией.
+ADMIN_TEST_KEY = "browser-admin-key"
+
+
+@pytest.fixture(autouse=True)
+def _admin_key(monkeypatch):
+    monkeypatch.setenv("DEVELOPAID_ADMIN_KEY", ADMIN_TEST_KEY)
+
 
 def at(text: str) -> datetime.datetime:
     return datetime.datetime.fromisoformat(text).replace(tzinfo=MSK)
@@ -131,6 +140,25 @@ def test_two_workers_build_once_and_hand_out_once():
     assert people[502]["last"]["label"] == "не отправлено"
     assert "blocked" in people[502]["last"]["error"]
     assert people[503]["last"] is None
+
+
+def test_only_the_owners_list_receives_the_report():
+    """Сводку в Telegram получают только Telegram ID из списка подписки
+    (решение владельца 02.11.2026). Убранный из списка после сборки очереди
+    её уже не получает; список читается с диска — без перезапуска."""
+    token = mailing.invite(PROJECT, "Иванов")["start"]
+    mailing.subscribe(token, 501, "Пётр")
+    mailing.subscribe(token, 502, "Мария")
+    assert mailing.subscribed_projects(501) == [PROJECT]
+    assert mailing.subscribed_projects("501") == [PROJECT], "сравнение — по числу"
+    assert mailing.subscribed_projects(777) == [] and mailing.subscribed_projects(None) == []
+    now = at("2026-11-09T09:01")
+    mailing.build_due(_made([]), now)
+    mailing.unsubscribe(502, PROJECT)
+    handed = mailing.take(now)
+    assert [sorted(item["chats"]) for item in handed] == [[501]]
+    people = {row["chat_id"]: row for row in mailing.status(PROJECT, now)["subscribers"]}
+    assert 502 not in people and mailing.subscribed(502, PROJECT) is False
 
 
 def test_unconfirmed_is_not_called_sent_and_old_slots_are_not_handed_out():
@@ -251,7 +279,7 @@ def test_the_page_shows_the_link_and_the_recipients(monkeypatch):
             errors: list[str] = []
             tab.on("pageerror", lambda e: errors.append(str(e)))
             tab.on("dialog", lambda d: d.accept())
-            tab.add_init_script("localStorage.setItem('developaid_web_session','проба')")
+            tab.add_init_script("localStorage.setItem('developaid_web_session','проба');localStorage.setItem('plato_projects_key','browser-admin-key')")
             tab.goto(f"{base}/report", wait_until="domcontentloaded")
             tab.wait_for_selector(f"#project option[value='{PROJECT}']", state="attached")
             tab.select_option("#project", PROJECT)
@@ -309,7 +337,7 @@ def test_a_late_refresh_does_not_bring_back_the_old_link(monkeypatch):
         try:
             tab = browser.new_page()
             tab.on("dialog", lambda d: d.accept())
-            tab.add_init_script("localStorage.setItem('developaid_web_session','проба')")
+            tab.add_init_script("localStorage.setItem('developaid_web_session','проба');localStorage.setItem('plato_projects_key','browser-admin-key')")
             tab.route("**/monitor/report/mailing", hold_plain_refresh)
             tab.goto(f"{base}/report", wait_until="domcontentloaded")
             tab.wait_for_selector(f"#project option[value='{PROJECT}']", state="attached")

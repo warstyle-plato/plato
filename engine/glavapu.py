@@ -511,7 +511,8 @@ def _glavapu_parcel_message(numbers: list[str], snapshot: dict[str, Any]) -> str
 
 
 def _glavapu_drive_page(page: Any, numbers: list[str], area_ha: float,
-                        timings: dict[str, int]) -> list[dict[str, Any]]:
+                        timings: dict[str, int],
+                        restrict_ha: float = 0.0) -> list[dict[str, Any]]:
     """Шаги браузерной автоматизации — те же, что отрабатывает скрытый iframe
     на сайте: «Участок» → кадастровые номера → «Отправить» → «Перейти к
     расчётам» → чтение таблицы. Готовность таблицы определяется так же, как на
@@ -605,7 +606,10 @@ def _glavapu_drive_page(page: Any, numbers: list[str], area_ha: float,
     except Exception:
         pass
     url = ("https://genplan.tech/calc/?terrArea=" + urllib.parse.quote(f"{area_ha:.4f}")
-           + "&restrictArea=0&plato=" + str(int(time.time() * 1000)))
+           # Площадь ограничений — из свода скрининга (`land_restrictions`):
+           # калькулятор вычитает её из территории (terrArea − restrictArea).
+           + "&restrictArea=" + urllib.parse.quote(f"{max(0.0, restrict_ha):.4f}")
+           + "&plato=" + str(int(time.time() * 1000)))
     page.goto(url, wait_until="domcontentloaded")
     mark("load")
     if not numbers:
@@ -713,7 +717,9 @@ def _glavapu_browser_worker() -> None:
                         # чистится перед каждым расчётом: диагностика, а не журнал.
                         _glavapu_net_watch(page)
                     _glavapu_net_reset()
-                    holder["rows"] = _glavapu_drive_page(page, numbers, area_ha, timings)
+                    holder["rows"] = _glavapu_drive_page(
+                        page, numbers, area_ha, timings,
+                        float(holder.get("restrict_ha") or 0.0))
                     scenario = holder.get("scenario_params")
                     if scenario and numbers:
                         # Сценарий ставится на ТОМ ЖЕ экране расчёта, что
@@ -787,17 +793,19 @@ def _glavapu_warm_up() -> None:
         logging.warning("glavapu warm-up failed: %s", exc)
 
 
-def _glavapu_headless_rows(numbers: list[str], area_ha: float) -> list[dict[str, Any]]:
+def _glavapu_headless_rows(numbers: list[str], area_ha: float,
+                           restrict_ha: float = 0.0) -> list[dict[str, Any]]:
     """Таблица ТЭП, снятая с настоящего калькулятора ГлавАПУ.
 
     Расчёт уходит потоку-владельцу браузера и ждёт его ответа. Ожидание в
     очереди конечно: не дождался — уходим на серверные формулы, а не висим.
     """
-    return _glavapu_headless_run(numbers, area_ha).get("rows") or []
+    return _glavapu_headless_run(numbers, area_ha, restrict_ha=restrict_ha).get("rows") or []
 
 
 def _glavapu_headless_run(numbers: list[str], area_ha: float,
-                          scenario_params: dict[str, Any] | None = None) -> dict[str, Any]:
+                          scenario_params: dict[str, Any] | None = None,
+                          restrict_ha: float = 0.0) -> dict[str, Any]:
     """Прогон браузера: таблица участка и — если задан — наш сценарий поверх.
 
     Один путь для расчёта, пробы и сверки сценария: второй браузер или вторая
@@ -818,6 +826,8 @@ def _glavapu_headless_run(numbers: list[str], area_ha: float,
     started = time.monotonic()
     try:
         holder: dict[str, Any] = {"scenario_params": scenario_params} if scenario_params else {}
+        if restrict_ha > 0:
+            holder["restrict_ha"] = float(restrict_ha)
         done = threading.Event()
         with _GLAVAPU_BROWSER_LOCK:
             if _GLAVAPU_BROWSER_THREAD is None or not _GLAVAPU_BROWSER_THREAD.is_alive():
@@ -862,6 +872,87 @@ _GLAVAPU_DRIFT_INTERVAL_SECONDS = max(60.0, _env_float("GLAVAPU_DRIFT_INTERVAL_S
 _GLAVAPU_DRIFT_LOCK = threading.Lock()
 
 
+# Расхождение формул — ответ про КОНКРЕТНЫЙ участок: сверка сравнивает таблицу
+# калькулятора по этим кадастрам с нашими формулами по тем же кадастрам.
+# Прежде итог лежал одним общим флагом в памяти процесса и пристёгивался к
+# любому ответу — под ТЭП одного участка висели суммы другого, а второй воркер
+# флага не видел вовсе. Теперь запись — по участку и на диске (воркеров два),
+# с версией выпуска: новая выкатка могла уже починить формулы, и старая запись
+# не имеет права пугать посетителя до новой сверки.
+_GLAVAPU_DRIFT_MAX_AGE_SECONDS = 7 * 24 * 3600.0
+
+
+def _glavapu_drift_file() -> Path:
+    return Path(os.getenv("DEVELOPAID_DATA_DIR") or "data") / "glavapu-drift.json"
+
+
+def _glavapu_drift_key(numbers: list[str]) -> str:
+    return ", ".join(sorted({str(n).strip() for n in numbers or [] if str(n).strip()}))
+
+
+def _glavapu_drift_sites() -> dict[str, Any]:
+    try:
+        raw = json.loads(_glavapu_drift_file().read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(raw, dict) or raw.get("version") != VERSION:
+        return {}
+    sites = raw.get("sites")
+    return sites if isinstance(sites, dict) else {}
+
+
+def _glavapu_drift_record(numbers: list[str], items: list[str]) -> None:
+    """Итог сверки по участку — на диск: расхождение записать, совпадение —
+    снять запись этого участка. Чужие участки не трогаются."""
+    key = _glavapu_drift_key(numbers)
+    if not key:
+        return
+    try:
+        with _GLAVAPU_DRIFT_LOCK:
+            sites = _glavapu_drift_sites()
+            if items:
+                sites[key] = {"items": list(items), "checked_at": time.time(),
+                              "found_at": datetime.now(timezone.utc).isoformat()}
+            elif not sites.pop(key, None):
+                return
+            path = _glavapu_drift_file()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps({"version": VERSION, "sites": sites},
+                                      ensure_ascii=False), encoding="utf-8")
+            tmp.replace(path)
+    except Exception as exc:
+        # Диагностика не роняет расчёт, но и не молчит: без записи второй
+        # воркер не узнает о расхождении.
+        logging.warning("glavapu drift: запись не удалась: %s", exc)
+
+
+def _glavapu_drift_for(numbers: list[str]) -> list[str]:
+    """Расхождения, найденные сверкой ИМЕННО этого участка; пусто — сверки
+    не было или формулы сошлись."""
+    key = _glavapu_drift_key(numbers)
+    if not key:
+        return []
+    item = _glavapu_drift_sites().get(key) or {}
+    if item and time.time() - float(item.get("checked_at") or 0.0) <= _GLAVAPU_DRIFT_MAX_AGE_SECONDS:
+        return [str(x) for x in item.get("items") or []]
+    # Запись на диск могла не удаться — тогда свой воркер помнит сам.
+    if _glavapu_drift_key(_GLAVAPU_FORMULA_DRIFT.get("numbers") or []) == key:
+        return [str(x) for x in _GLAVAPU_FORMULA_DRIFT.get("items") or []]
+    return []
+
+
+def _glavapu_drift_warning(numbers: list[str], advice: str) -> str:
+    """Предупреждение о расхождении — с номером участка, к которому оно
+    относится. Пусто, если по этому участку расхождения нет."""
+    items = _glavapu_drift_for(numbers)
+    if not items:
+        return ""
+    return ("ВНИМАНИЕ: по участку " + _glavapu_drift_key(numbers)
+            + " серверные формулы DevelopAid разошлись со штатным калькулятором ("
+            + "; ".join(items[:4]) + "). " + advice)
+
+
 def _glavapu_drift_in_background(rows: list[list[Any]], numbers: list[str]) -> None:
     """Ставит сверку формул в фон, но не чаще раза в интервал.
 
@@ -887,11 +978,14 @@ def _glavapu_drift_in_background(rows: list[list[Any]], numbers: list[str]) -> N
             logging.warning("glavapu drift check failed: %s", exc)
             drift = []
         else:
+            _glavapu_drift_record(numbers, drift)
             if drift:
                 _GLAVAPU_FORMULA_DRIFT.update(
                     items=drift, found_at=datetime.now(timezone.utc).isoformat(),
                     numbers=[str(n) for n in numbers])
-                _TELEGRAM_RUNTIME["last_error"] = "Дрейф формул ГлавАПУ: " + "; ".join(drift[:4])
+                _TELEGRAM_RUNTIME["last_error"] = (
+                    f"Дрейф формул ГлавАПУ, участок {_glavapu_drift_key(numbers)}: "
+                    + "; ".join(drift[:4]))
             elif _GLAVAPU_FORMULA_DRIFT.get("items"):
                 # Формулы снова сходятся — снять флаг, чтобы Telegram не пугал зря.
                 _GLAVAPU_FORMULA_DRIFT.update(items=[], found_at="", numbers=[])
@@ -1670,9 +1764,24 @@ def _glavapu_scenario_run(key: str, scenario: dict[str, Any]) -> None:
     except (GlavapuTableNotReady, GlavapuParcelNotAccepted) as exc:
         record.update(state="error", error=exc.public_message,
                       where="калькулятор ГлавАПУ: расчёт участка до ввода сценария")
+    except glavapu_scenario.CalculatorNotice as exc:
+        # Калькулятор сам назвал ошибку — её текст и есть причина.
+        logging.warning("glavapu scenario: калькулятор сообщил: %s", exc)
+        record.update(state="error", error=exc.public_message, where=exc.where)
     except Exception as exc:  # noqa: BLE001 — отказ доходит до окна с местом
-        record.update(state="error", error=_public_error(exc, "glavapu scenario"),
-                      where=_error_location(exc))
+        # Сырой текст Playwright и строка кода — в журнал по метке; на
+        # страницу — что не получилось и что делать (26.10.2026: посетитель
+        # читал «Locator.click: Timeout 7000ms exceeded… intercepts pointer
+        # events», потому что место отдавалось `_error_location`).
+        ref = os.urandom(4).hex()
+        logging.error("glavapu scenario [%s]: %s", ref, _error_location(exc),
+                      exc_info=(type(exc), exc, exc.__traceback__))
+        record.update(
+            state="error",
+            error=("калькулятор ГлавАПУ не довёл расчёт сценария до конца, поэтому "
+                   "сравнивать не с чем. Запустите сверку ещё раз через несколько минут; "
+                   f"если не получится, сообщите нам номер ошибки {ref}"),
+            where="калькулятор ГлавАПУ, сверка сценария")
     record["finished_at"] = datetime.now(timezone.utc).isoformat()
     record["seconds"] = round(time.monotonic() - started, 1)
     record["stored_at"] = time.time()
@@ -1819,6 +1928,34 @@ def _cadastral_analysis_for(numbers: list[str],
         CadastralAnalysisRequest(cadastral_numbers=numbers))
 
 
+def _tep_with_restrictions(result: dict[str, Any],
+                           restrictions: dict[str, Any] | None) -> dict[str, Any]:
+    """Свод ограничений участка — в ответ ТЭП: оговорки первыми, площадь в источник.
+
+    Один читатель на три пути ТЭП (браузер ядра, окно сайта, серверные формулы):
+    каждый из них раньше молчал о скрининге по-своему. Запрет идёт первым —
+    «строить нельзя» не должно читаться сноской; остальное — после оговорок
+    самого расчёта (на странице у свода свой блок над кнопкой).
+    """
+    if not isinstance(restrictions, dict):
+        return result
+    result["site_restrictions"] = restrictions
+    texts = [str(text) for text in restrictions.get("warnings") or [] if text]
+    bans = [t for t in texts if t.startswith(("Строить нельзя", "Часть участка под запретом"))]
+    warnings = [w for w in result.get("warnings") or [] if w not in texts]
+    result["warnings"] = bans + warnings + [t for t in texts if t not in bans]
+    restrict_ha = float(restrictions.get("restrict_ha") or 0.0)
+    source = result.setdefault("source", {})
+    area_ha = float(restrictions.get("area_ha") or 0.0)
+    source["restrict_ha"] = restrict_ha
+    # Адрес калькулятора — с теми же двумя полями, с которыми он считал:
+    # открыв его, человек увидит ту же площадь ограничений, что ушла в расчёт.
+    if area_ha > 0:
+        source["calculator_url"] = "https://genplan.tech/calc/?" + urllib.parse.urlencode({
+            "terrArea": f"{area_ha:.4f}", "restrictArea": f"{restrict_ha:.4f}"})
+    return result
+
+
 @app.post("/cadastral/tep-server")
 def cadastral_tep_server(req: CadastralAnalysisRequest) -> dict[str, Any]:
     """ТЭП по формулам ГлавАПУ, посчитанный сервером.
@@ -1854,6 +1991,14 @@ def cadastral_tep_server(req: CadastralAnalysisRequest) -> dict[str, Any]:
             # Ядро не ответило — считаем здесь формулами, как раньше.
             logging.warning("tep-server core forward failed: %s", exc)
 
+    # Ограничения участка — до калькулятора: площадь под охранными зонами и
+    # красными линиями уходит в него полем «площадь ограничений», и ТЭП,
+    # посчитанный без неё, был бы ТЭП другого участка. Скрининг живёт в кэше
+    # шесть часов; страница обычно уже спросила его при вводе номера.
+    restrictions = land_restrictions(numbers, "msk")
+    restrict_ha = float(restrictions.get("restrict_ha") or 0.0)
+    cache_key = numbers + ([f"restrict={restrict_ha:.4f}"] if restrict_ha > 0 else [])
+
     # Сначала — настоящий калькулятор. Формулы остаются фолбэком: копия
     # методики отстаёт от города на неизвестный срок, и это уже дважды
     # находил человек на скриншотах, а не мы.
@@ -1862,17 +2007,17 @@ def cadastral_tep_server(req: CadastralAnalysisRequest) -> dict[str, Any]:
     if _glavapu_headless_available() and numbers:
         # Браузер на ходу — запасной ответ из памяти не годится: он отвечал бы
         # за калькулятор, который снова работает.
-        cached = _glavapu_tep_cached(numbers, want_calculator=True)
+        cached = _glavapu_tep_cached(cache_key, want_calculator=True)
         if cached is not None:
             logging.info("tep-server rid=%s из кэша", req.request_id or "-")
-            return cached
+            return _tep_with_restrictions(cached, restrictions)
 
     if _glavapu_headless_available() and numbers:
         try:
             started = time.monotonic()
             analysis = _cadastral_analysis_for(numbers, req.cadastral_analysis)
             area = float((analysis.get("territory") or {}).get("area_ha") or 0.0)
-            rows = _glavapu_headless_rows(numbers, area)
+            rows = _glavapu_headless_rows(numbers, area, restrict_ha)
             imported = import_cadastral_tep(CadastralTepRequest(
                 rows=rows, cadastral_analysis=analysis))
             _GLAVAPU_HEADLESS["runs"] += 1
@@ -1891,8 +2036,8 @@ def cadastral_tep_server(req: CadastralAnalysisRequest) -> dict[str, Any]:
             })
             logging.info("tep-server rid=%s готов за %.1f с",
                          req.request_id or "-", time.monotonic() - started)
-            _glavapu_tep_store(numbers, imported)
-            return imported
+            _glavapu_tep_store(cache_key, imported)
+            return _tep_with_restrictions(imported, restrictions)
         except Exception as exc:
             _GLAVAPU_HEADLESS["fallbacks"] += 1
             # Первая строка сообщения Playwright называет виновника прямо:
@@ -1909,10 +2054,10 @@ def cadastral_tep_server(req: CadastralAnalysisRequest) -> dict[str, Any]:
 
     # Формулы тоже помнятся: пока штатный калькулятор недоступен, повторный
     # расчёт того же участка не должен снова ходить к ГлавАПУ за территорией.
-    cached_formulas = _glavapu_tep_cached(numbers) if numbers else None
+    cached_formulas = _glavapu_tep_cached(cache_key) if numbers else None
     if cached_formulas is not None:
         logging.info("tep-server rid=%s формулы из кэша", req.request_id or "-")
-        return cached_formulas
+        return _tep_with_restrictions(cached_formulas, restrictions)
 
     # Территория для формул: присланная страницей идёт без сети вовсе. Если её
     # нет и спросить не у кого — не роняем расчёт, формулы спросят сами.
@@ -1922,7 +2067,8 @@ def cadastral_tep_server(req: CadastralAnalysisRequest) -> dict[str, Any]:
             formulas_analysis = _cadastral_analysis_for(numbers, req.cadastral_analysis)
         except Exception as exc:
             logging.info("tep-server: территорию для формул взять не удалось: %s", exc)
-    quick = vri_tep_quick("msk", ", ".join(numbers), analysis=formulas_analysis)
+    quick = vri_tep_quick("msk", ", ".join(numbers), analysis=formulas_analysis,
+                          restrict_ha=restrict_ha)
     result = parse_glavapu_xlsx(quick["file"], quick["filename"])
     result["source"].update({
         "format": "Формулы калькулятора ГлавАПУ — серверный расчёт DevelopAid",
@@ -1947,18 +2093,15 @@ def cadastral_tep_server(req: CadastralAnalysisRequest) -> dict[str, Any]:
            "/glavapu/health (в боте — /status)."
            if _GLAVAPU_HEADLESS.get("last_error") else ""),
     )
-    if _GLAVAPU_FORMULA_DRIFT["items"]:
-        result["warnings"].insert(
-            0,
-            "ВНИМАНИЕ: серверные формулы разошлись со штатным калькулятором "
-            "(" + "; ".join(_GLAVAPU_FORMULA_DRIFT["items"][:4]) + "). "
-            "Методика ГлавАПУ могла измениться — сверьте расчёт на сайте.",
-        )
+    drift_warning = _glavapu_drift_warning(
+        numbers, "Методика ГлавАПУ могла измениться — сверьте расчёт на сайте.")
+    if drift_warning:
+        result["warnings"].insert(0, drift_warning)
     if numbers:
-        _glavapu_tep_store(numbers, result, is_fallback=True)
+        _glavapu_tep_store(cache_key, result, is_fallback=True)
     logging.info("tep-server rid=%s формулы за %.1f с", req.request_id or "-",
                  time.monotonic() - request_started)
-    return result
+    return _tep_with_restrictions(result, restrictions)
 
 
 def _glavapu_row_values(rows: list[list[Any]]) -> dict[str, str]:
@@ -2170,17 +2313,16 @@ def import_cadastral_tep(req: CadastralTepRequest) -> dict[str, Any]:
     # и обратно.
     result["glavapu"] = {"rows": table_rows, "parameters": parameters,
                          "calculator": True}
+    _tep_with_restrictions(result, req.site_restrictions)
     # Каждый успешный сбор штатного калькулятора — бесплатная сверка серверных
     # формул: разошлись — значит, ГлавАПУ поменял методику, и путь Telegram
     # начал бы врать. Ошибка, ушедшая только в лог, — ошибка, которой нет,
     # поэтому расхождение кричит здесь, в /status и в серверных ответах.
     _glavapu_drift_in_background(table_rows, [str(n) for n in numbers])
-    if _GLAVAPU_FORMULA_DRIFT.get("items"):
-        result["warnings"].insert(
-            0,
-            "ВНИМАНИЕ: серверные формулы DevelopAid разошлись со штатным "
-            "калькулятором (" + "; ".join(_GLAVAPU_FORMULA_DRIFT["items"][:4]) + "). "
-            "Методика ГлавАПУ могла измениться — расчёты Telegram и кнопки бота "
-            "требуют сверки.",
-        )
+    drift_warning = _glavapu_drift_warning(
+        [str(n) for n in numbers],
+        "Методика ГлавАПУ могла измениться — расчёты Telegram и кнопки бота "
+        "требуют сверки.")
+    if drift_warning:
+        result["warnings"].insert(0, drift_warning)
     return result

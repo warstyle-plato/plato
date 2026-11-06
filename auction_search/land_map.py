@@ -38,6 +38,11 @@ FUNCTIONS = (
     "landMapGeo", "landMapMerc", "landMapViews", "landMapLayerPref",
     "landMapLayerBar", "landMapYandex", "landMapSetLayer", "landMapHybridOpen",
     "landMapHybridClose", "landMapNote",
+    # Панорама Яндекса и ссылка на неё. Встроенную чужая страница не получает
+    # (`payload.panorama` ставит только открытая карточка участка), а ссылку —
+    # да: шаблон один, `LAND_PANORAMA_LINK`.
+    "landPanoramaUrl", "landMapPanoramaRefuse", "landMapPanoramaOpen",
+    "landMapPanoramaClose",
     # Помощники, которыми карта пользуется. Своих на странице торгов нет, а
     # завести вторые значило бы получить два разных округления одного числа.
     "landNum", "escapeHtml",
@@ -49,7 +54,7 @@ FUNCTIONS = (
 )
 
 # Константы мира: те же числа, что у серверной склейки.
-CONSTANTS = ("LAND_MAP_WORLD", "LAND_MAP_ORIGIN")
+CONSTANTS = ("LAND_MAP_WORLD", "LAND_MAP_ORIGIN", "LAND_PANORAMA_LINK")
 
 _DIALOG_START = '<div id="landMapDialog"'
 

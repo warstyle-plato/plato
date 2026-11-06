@@ -173,16 +173,22 @@ def test_twenty_pdf_parcels_reach_one_territory() -> None:
     assert core._intake_cadastral_numbers(got) == numbers
 
 
-def test_the_bot_hands_the_parcel_to_the_calculator() -> None:
-    """Номер участка из документа уходит туда же, куда присланный сообщением."""
+def test_the_bot_hands_the_parcel_to_the_calculator(monkeypatch) -> None:
+    """Номер участка из документа уходит в расчёт кнопкой «Всё верно, считать»:
+    мини-приложение получает его вместе со строками карточки."""
+    import base64
     import main_legacy as core
+    from urllib.parse import parse_qs
 
     assert core._intake_cadastral_numbers(parsed()) == ["77:09:0003021:158"]
-    body = engine_source()
-    start = body.index("def _telegram_handle_intake_document(")
-    intake = body[start:body.index("\ndef _intake_cadastral_numbers(")]
-    assert "_telegram_handle_cadastral_numbers(chat_id, numbers)" in intake, \
+    monkeypatch.setattr(core, "_telegram_token", lambda: "123:test")
+    card = {"cadastral_numbers": ["77:09:0003021:158"], "to_engine": [
+        {"path": "inputs.offices_gba_sqm", "value": 26300.0, "origin": "тизер, стр. 2"}]}
+    button = core._telegram_intake_calc_markup(1, card)["inline_keyboard"][0][0]
+    assert button["text"] == "Всё верно, считать"
+    token = parse_qs(button["web_app"]["url"].split("#", 1)[1])["telegram_session"][0]
+    encoded = token.split(".", 1)[0]
+    session = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
+    assert session["cad"] == ["77:09:0003021:158"], \
         "участок прочитан и брошен: считать его никто не пошёл"
-    # И имя поля на экране, а не ключ латиницей.
-    assert "document_intake.INTAKE_LABELS" in intake
-    assert 'html.escape(item["key"])' not in intake
+    assert session["calc_overrides"]["offices_gba_sqm"] == 26300.0

@@ -63,17 +63,20 @@ def test_the_engine_reads_the_quarter_upks():
 
 
 def test_the_server_path_uses_the_formula_with_a_fallback():
-    """Серверный расчёт считает формулой, а без УПКС откатывается на прежние
-    ставки: они хотя бы того же порядка, а голое строительство без земли —
-    почти вдвое ниже правды."""
+    """Серверный расчёт считает формулой, а без УПКС откатывается на УПКС
+    квартала прежних ставок: это хотя бы тот же порядок, а голое строительство
+    без земли — почти вдвое ниже правды. Ставки и земля на место — у одного
+    владельца (`glavapu_social_compensation_mln`)."""
     import inspect
     source = inspect.getsource(core.vri_tep_quick)
     assert "_social_comp" in source
-    assert "4799.71" in source and "4578.69" in source and "7887.92" in source
-    assert "legacy_rate" in source, "нужен откат, если УПКС не пришёл"
+    assert "glavapu_social_compensation_mln(" in source
+    assert "GLAVAPU_SOCIAL_FALLBACK_UPKS" in source, "нужен откат, если УПКС не пришёл"
+    assert "clinic_adult + clinic_child" in source
     # Нормативы земли на место — из калькулятора, не выдуманные.
     # ДОО 35 м² до 150 мест, дальше 32; школа 19 до 900, 16 до 1 500, дальше
     # 14; поликлиника 30 — от мощности взрослая + детская.
-    assert "35.0 if dou <= 150 else 32.0" in source
-    assert "19.0 if school <= 900 else 16.0 if school <= 1500 else 14.0" in source
-    assert "clinic_adult + clinic_child, 7887.92, 30.0, 1.0" in source
+    land = core.glavapu_social_land_sqm
+    assert (land("kindergarten", 150), land("kindergarten", 151)) == (35.0, 32.0)
+    assert (land("school", 900), land("school", 1500), land("school", 1501)) == (19.0, 16.0, 14.0)
+    assert land("clinic", 10) == 30.0

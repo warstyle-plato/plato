@@ -81,7 +81,9 @@ def _norm(key: str) -> dict:
         k1=analysis["k1"], k2=analysis["k2"],
         zone_two=core.district_zone_two(analysis["district"]),
         upks_rub=analysis["upks"] or 0.0,
-        apartment_count=inputs["apartment_count"] or 0.0)
+        apartment_count=inputs["apartment_count"] or 0.0,
+        # Ставки компенсации — дня выгрузки: город их индексирует.
+        compensation_at=e["date"])
     out = {k: got.get(k) for k in NORM_KEYS if k in got}
     for kind, value in got["compensation_breakdown_mln"].items():
         out[f"compensation_{kind}_mln"] = value
@@ -166,7 +168,8 @@ def _mirror(key: str) -> dict[str, float | None]:
         "coefficients": {"rail": a["k1"], k2_key: a["k2"], "rent": a["rent"],
                          "base_cost_zh_high": a["base_cost_mkd"], "upks_zh_high": a["upks"] or 0.0},
     }
-    result = core.vri_tep_quick("msk", "77:00:0000000:1", analysis=analysis)
+    result = core.vri_tep_quick("msk", "77:00:0000000:1", analysis=analysis,
+                                rates_at=EXPORTS[key]["date"])
     import openpyxl
     book = openpyxl.load_workbook(io.BytesIO(result["file"]))
     rows: dict[str, float | None] = {}

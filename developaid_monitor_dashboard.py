@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime
 import io
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,95 @@ def _norm(value: Any) -> str:
 
 def _finance_file(project: str) -> Path:
     return monitor._project_dir(project) / "baseline" / "finance.xlsx"
+
+
+def _source_day(value: Any) -> str | None:
+    day = monitor._day(value)
+    return day.isoformat() if day else None
+
+
+def _stored_funding_source(project: str, path: Path) -> dict[str, Any]:
+    """Дата данных из метаданных или имени снимка в каноническом хранилище.
+
+    Произвольное исходное имя файла и mtime не являются датой данных.
+    """
+    if path == _finance_file(project):
+        meta = monitor.finance_baseline_meta(project)
+    else:
+        try:
+            meta = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            meta = {}
+        if not isinstance(meta, dict):
+            meta = {}
+    day = _source_day(meta.get("taken_at"))
+    root = monitor._project_dir(project)
+    if day is None and path.parent in (root / "estimate", root / "funding_schedule"):
+        day = _source_day(path.stem)
+    return {"data_date": day, "uploaded_at": meta.get("uploaded_at") or meta.get("loaded_at"),
+            "file": meta.get("file_name") or meta.get("filename") or path.name}
+
+
+def _funding_source_dates(project: str, rss: Path, cut: datetime.date,
+                          schedule: dict[str, Any] | None = None) -> dict[str, Any]:
+    return {"report_date": cut.isoformat(),
+            "budget": _stored_funding_source(project, _finance_file(project)),
+            "rss": _stored_funding_source(project, rss), "schedule_used": schedule is not None,
+            "schedule": ((schedule or {}).get("source_dates", {
+                "data_date": _source_day((schedule or {}).get("day")),
+                "file": (schedule or {}).get("file") or ""}) if schedule else {})}
+
+
+def funding_source_notes(funding: dict[str, Any]) -> dict[str, str]:
+    """Единые видимые даты карточек, Монитора, текста и печатной сводки."""
+    dates = funding.get("source_dates") or {}
+    meta = funding.get("baseline_file") or {}
+    budget = dates.get("budget") or {
+        "data_date": _source_day(meta.get("taken_at")), "uploaded_at": meta.get("uploaded_at"),
+        "file": meta.get("file_name") or ""}
+    rss = dates.get("rss") or {}
+    schedule = dates.get("schedule") or {}
+
+    def when(value: Any) -> str:
+        day = monitor._day(value)
+        return day.strftime("%d.%m.%Y") if day else "дата данных не указана"
+
+    def version(source: dict[str, Any]) -> str:
+        return "от " + when(source["data_date"]) if source.get("data_date") else "дата данных не указана"
+
+    def file_note(source: dict[str, Any]) -> str:
+        return f" Файл «{source['file']}»." if source.get("file") else ""
+
+    report_day = dates.get("report_date")
+    report_note = ("Расчёт на " + when(report_day) + "." if report_day
+                   else "Дата расчётного среза не указана.")
+    book_name = "Финмодель" if funding.get("need_basis") == "model" else "Финансовая книга"
+    budget_note = (book_name + ": версия " + version(budget) + "." if budget.get("data_date")
+                   else book_name + ": дата данных не указана.") + file_note(budget)
+    uploaded = _source_day(budget.get("uploaded_at"))
+    if uploaded:
+        budget_note += " Загружена " + when(uploaded) + "."
+    if budget.get("data_date") and report_day and budget["data_date"] > report_day:
+        budget_note += " Версия финансовой базы позже даты расчётного среза."
+    notes = {
+        "budget": budget_note,
+        "paid": "Оплаты учтены по РСС: " + version(rss) + ". " + report_note + file_note(rss),
+        "limit": "Смета банка — РСС: " + version(rss) + "." + file_note(rss),
+        "left": "Смета и оплаты для остатка лимита — РСС: " + version(rss) + ". " + report_note,
+    }
+    sources = [book_name.lower() + ": " + version(budget), "РСС: " + version(rss)]
+    if dates.get("schedule_used"):
+        notes["schedule"] = "График финансирования: " + version(schedule) + "." + file_note(schedule)
+        sources.append("график финансирования: " + version(schedule))
+    notes["need"] = report_note + " Источники расчёта: " + "; ".join(sources) + "."
+    return notes
+
+
+def funding_reconciliation_lines(funding: dict[str, Any], money: Any) -> list[str]:
+    """Даты и существующая арифметическая сверка рядом с дофинансированием."""
+    return (list(funding_source_notes(funding).values())
+            + reconciliation_lines(funding.get("limit_reconciliation") or {}, money)
+            + own_budget_reconciliation_lines(funding.get("own_money"), money))
 
 
 def _sales_dir(project: str) -> Path:
@@ -150,6 +240,47 @@ FINANCE_SHEETS = (FINANCE_BOOK_SHEET, FINANCE_MODEL_SHEET)
 _FM_CODE_COL, _FM_NAME_COL = 3, 4
 _FM_THOUSANDS = 1000.0
 _FM_RESERVE_CODE = "2.2.11"
+# Раздел «Налоги» финмодели — почти целиком налог на прибыль, платится из
+# продаж после раскрытия эскроу; это не затрата на стройку, и в утверждённый
+# бюджет он не входит (решение владельца, 02.11.2026: «Налоги то зачем в
+# бюджет включать»). Код — явный, имя строки сверяется.
+_FM_TAX_CODE = "2.4.5"
+# Раздел финмодели → глава сметы банка. Административные расходы (2.4) в
+# смете банка своей главы не имеют.
+_FM_SECTION_CHAPTER = {"2.1": "1", "2.2": "2", "2.3": "3"}
+# Проценты по кредитам и займам финмодели («Выплаты %% по кредитам и
+# займам») — вне бюджета, справкой. Код — явный: в имени строки слова
+# «процент» может не быть.
+_FM_INTEREST_CODE = "3.1.4"
+# Статьи финмодели, чьи строки карты «статьи_БДДС» ведут в разные главы, а
+# глава решена владельцем явно, а не большинством строк. 2.3.4 «Расходы на
+# продажу»: пять строк карты ведут в 2.6, четыре — в 3.2/3.4, но деньги —
+# комиссии риэлторов и брокеров, и это глава 3 (решение владельца, 03.11.2026).
+_FM_CHAPTER_DECIDED = {"2.3.4": "3"}
+# Комиссия банка за выдачу кредита сидит в финмодели внутри строки процентов
+# (3.1.4), а в смете банка — статьёй 3.5 главы 3. Это не проценты, и в
+# утверждённый бюджет она входит, по карте — в главу 3 (решение владельца,
+# 02.11.2026). Код — явный, имя строки сверяется.
+_FM_COMMISSION_CODE = "3.1.4.1.3"
+
+
+def _fm_in_budget(code: str) -> bool:
+    """Строка листа входит в утверждённый бюджет: расходы «2.…» и комиссия банка."""
+    return code.startswith("2.") or code == _FM_COMMISSION_CODE
+
+
+def _fm_names_interest(name: str) -> bool:
+    low = name.lower()
+    return "процент" in low or "%" in low
+
+
+def _fm_section(code: str) -> str:
+    """Раздел бюджета строки: «2.2» для «2.2.1.3»; комиссия банка — своей строкой."""
+    return ".".join(code.split(".")[:2]) if code.startswith("2.") else code
+
+
+def _fm_is_tax(code: str) -> bool:
+    return code == _FM_TAX_CODE or code.startswith(_FM_TAX_CODE + ".")
 # Сколько финмодель берёт у банка: строка выборки проектного финансирования.
 # Остальные расходы модель закрывает продажами после раскрытия эскроу и
 # своими деньгами, и у банка на них лимит не просят (владелец, 24.10.2026:
@@ -185,6 +316,112 @@ def _read_finance_baseline(path: Path) -> dict[str, Any]:
         return {"known": False, "reason": finance_sheets_reason()}
     finally:
         wb.close()
+
+
+def _budget_composition(rows: list[dict[str, Any]], money: Any, total_col: int,
+                        fact_col: int, plan_col: int,
+                        month_columns: list[tuple[int, datetime.date]] | None = None,
+                        interest: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Из чего состоит «Утверждённый бюджет» финмодели — по разделам листа.
+
+    Владелец (02.11.2026) не понимал, откуда берётся утверждённый бюджет:
+    плитка показывала только главы сметы по карте «статьи_БДДС». Бюджет —
+    сумма «ИТОГО» листовых строк «2.…» без раздела «Налоги» (`_FM_TAX_CODE`),
+    поэтому разделы второго уровня («2.1», «2.2», …) складываются в него без
+    остатка. Налоги и проценты по кредиту (строки «3.…» с процентами) — в
+    справке рядом, в сумму не входят.
+    """
+    leaves = [meta for meta in rows if not meta["has_children"]]
+    counted = [meta for meta in leaves if not _fm_is_tax(meta["code"])]
+    months = month_columns or []
+
+    def sums(code: str, pool: list[dict[str, Any]]) -> dict[str, Any]:
+        under = [meta for meta in pool
+                 if meta["code"] == code or meta["code"].startswith(code + ".")]
+        return {"total": sum(money(m["row"], total_col) for m in under),
+                "fact": sum(money(m["row"], fact_col) for m in under),
+                "plan": sum(money(m["row"], plan_col) for m in under),
+                "monthly": {month.isoformat(): sum(max(0.0, money(m["row"], c)) for m in under)
+                            for c, month in months}}
+
+    # Раздел — первые два уровня номера листовой строки; строка без своей
+    # строки раздела в книге всё равно попадает в раздел, а не теряется.
+    names = {meta["code"]: meta["name"] for meta in rows if meta["depth"] == 2}
+    names.update({meta["code"]: meta["name"] for meta in counted
+                  if not meta["code"].startswith("2.")})
+    codes = sorted({_fm_section(meta["code"]) for meta in counted},
+                   key=lambda code: [int(part) if part.isdigit() else 0
+                                     for part in code.split(".")])
+    sections = [{"code": code, "name": names.get(code, ""),
+                 "chapter": _FM_SECTION_CHAPTER.get(code, ""), **sums(code, counted)}
+                for code in codes]
+    tax_row = next((meta for meta in rows if meta["code"] == _FM_TAX_CODE), None)
+    taxes = ([{"code": _FM_TAX_CODE, "name": tax_row["name"],
+               "named_as_tax": "налог" in tax_row["name"].lower(),
+               **{k: v for k, v in sums(_FM_TAX_CODE, leaves).items() if k != "monthly"}}]
+             if tax_row else [])
+    interest_inside = [meta["code"] for meta in counted if _fm_names_interest(meta["name"])]
+    total = sum(item["total"] for item in sections)
+    fact = sum(item["fact"] for item in sections)
+    plan = sum(item["plan"] for item in sections)
+    return {"sections": sections, "taxes": taxes, "interest_rows": interest_inside,
+            "interest_outside": list(interest or []),
+            "total": total, "fact": fact, "plan": plan,
+            # «ИТОГО = ФАКТ + ПЛАН» у финмодели по построению; расхождение
+            # называется, а не прячется.
+            "difference": total - fact - plan}
+
+
+def budget_hint_lines(funding: dict[str, Any], money: Any) -> list[str]:
+    """Подсказка «i» к плитке «Утверждённый бюджет» — состав, сверка, источник.
+
+    Одна для сводки и Монитора; деньги пишет `money`.
+    """
+    comp = funding.get("budget_composition") or {}
+    out: list[str] = []
+    if comp.get("sections"):
+        parts = [(f"{item['code']} «{item['name']}»" if item.get("name")
+                  else f"раздел {item['code']}") + f" — {money(item['total'])}"
+                 for item in comp["sections"]]
+        commission = any(item["code"] == _FM_COMMISSION_CODE for item in comp["sections"])
+        out.append("Утверждённый бюджет — сумма строк «ИТОГО» листа «cf_1_new» финмодели без "
+                   "налогов" + (" плюс комиссия банка" if commission else "")
+                   + f", {money(comp['total'])}. По разделам: " + "; ".join(parts) + ".")
+        aside = [f"налоги («{tax['name']}», {tax['code']}) — {money(tax['total'])}"
+                 for tax in comp.get("taxes") or []]
+        aside += [f"проценты по кредиту («{row['name']}», {row['code']}"
+                  + (", без комиссии банка" if row.get("commission_excluded") else "")
+                  + f") — {money(row['total'])}"
+                  for row in comp.get("interest_outside") or []]
+        if aside:
+            out.append("Справочно: " + " и ".join(aside) + " в бюджет не входят. Налоги — это "
+                       "в основном налог на прибыль, его платят из продаж; проценты — плата "
+                       "банку за кредит, а не затраты на стройку.")
+        if comp.get("interest_rows"):
+            out.append("Внимание: внутри бюджета есть строки с процентами — "
+                       + ", ".join(comp["interest_rows"]) + "; они в сумму вошли.")
+        if any(not tax.get("named_as_tax", True) for tax in comp.get("taxes") or []):
+            out.append(f"Строка {_FM_TAX_CODE} исключена из бюджета как налоги, но в книге она "
+                       "называется иначе — проверьте финмодель.")
+        line = (f"Из бюджета уже оплачено по финмодели (ФАКТ) {money(comp['fact'])}, осталось "
+                f"оплатить (ПЛАН) {money(comp['plan'])}; вместе — {money(comp['fact'] + comp['plan'])}.")
+        if abs(comp.get("difference") or 0.0) > 0.5:
+            line += (f" С бюджетом это расходится на {money(comp['difference'])}: в книге "
+                     "«ИТОГО» не равно «ФАКТ» плюс «ПЛАН».")
+        out.append(line)
+    source = funding.get("baseline_file") or {}
+    day = monitor._day(str(source.get("uploaded_at") or "")[:10]) if source.get("uploaded_at") else None
+    when = day.strftime("%d.%m.%Y") if day else ""
+    if source.get("file_name") and when:
+        out.append(f"Источник: файл «{source['file_name']}», загружен {when}.")
+    elif when:
+        out.append(f"Источник: финансовая база загружена {when}; исходное имя файла при "
+                   "загрузке не передано.")
+    else:
+        out.append("Имя исходного файла и дата загрузки для этой финансовой базы не "
+                   "сохранились: она загружена до того, как их стали записывать. Загрузите "
+                   "книгу заново, и источник появится здесь.")
+    return out
 
 
 def _read_finance_model(wb: Any, path: Path) -> dict[str, Any]:
@@ -230,6 +467,7 @@ def _read_finance_model(wb: Any, path: Path) -> dict[str, Any]:
 
     rows: list[dict[str, Any]] = []
     stack: list[dict[str, Any]] = []
+    interest: list[dict[str, Any]] = []
     credit_plan = None
     for r in range(header_row + 1, ws.max_row + 1):
         if _norm(ws.cell(r, _FM_NAME_COL).value) == _norm(_FM_CREDIT_LABEL) and credit_plan is None:
@@ -243,10 +481,21 @@ def _read_finance_model(wb: Any, path: Path) -> dict[str, Any]:
                             for c, month in month_columns},
             }
         code = actuals._code(ws.cell(r, _FM_CODE_COL).value)
-        if not code or not code.startswith("2."):
+        name = str(ws.cell(r, _FM_NAME_COL).value or "").strip()
+        if code == _FM_INTEREST_CODE and not interest:
+            interest.append({"code": code, "name": name,
+                             "total": actuals._money(ws.cell(r, total_col).value) * _FM_THOUSANDS})
+        if code == _FM_COMMISSION_CODE and interest:
+            # Комиссия уходит в бюджет — из справки о процентах её вычитаем.
+            interest[0]["total"] -= actuals._money(ws.cell(r, total_col).value) * _FM_THOUSANDS
+            interest[0]["commission_excluded"] = True
+        if not code or not _fm_in_budget(code):
             continue
         depth = code.count(".") + 1
-        while stack and stack[-1]["depth"] >= depth:
+        # Родитель — строка, чей код — начало этого кода, а не просто строка
+        # выше и мельче: комиссия банка (3.1.4.1.3) стоит после строк «2.…» и
+        # иначе стала бы «дочерней» у чужой статьи.
+        while stack and not code.startswith(stack[-1]["code"] + "."):
             stack.pop()
         row = {"row": r, "code": code, "depth": depth, "has_children": False,
                "name": str(ws.cell(r, _FM_NAME_COL).value or "").strip()}
@@ -268,6 +517,8 @@ def _read_finance_model(wb: Any, path: Path) -> dict[str, Any]:
             for item in crosswalk
             if item["estimate_code"]
             and (item["bdds_code"] == code or item["bdds_code"].startswith(code + ".")))
+        if code in _FM_CHAPTER_DECIDED:
+            return _FM_CHAPTER_DECIDED[code], False
         if not votes:
             return "", False
         best = max(sorted(votes), key=lambda chapter: votes[chapter])
@@ -283,6 +534,7 @@ def _read_finance_model(wb: Any, path: Path) -> dict[str, Any]:
     mixed: list[str] = []
     unmapped: list[str] = []
     sections: dict[str, dict[str, Any]] = {}
+    chapter_flow: dict[str, dict[str, Any]] = {}
     for meta in rows:
         if meta["code"] in _FM_SECTIONS:
             chapter, label, label_acc = _FM_SECTIONS[meta["code"]]
@@ -293,7 +545,7 @@ def _read_finance_model(wb: Any, path: Path) -> dict[str, Any]:
                 "total": money(r, total_col), "paid": money(r, fact_col), "plan": money(r, plan_col),
                 "monthly": {month.isoformat(): max(0.0, money(r, c)) for c, month in month_columns},
             }
-        if meta["has_children"]:
+        if meta["has_children"] or _fm_is_tax(meta["code"]):
             continue
         r, code = meta["row"], meta["code"]
         total, paid, need = money(r, total_col), money(r, fact_col), money(r, plan_col)
@@ -307,6 +559,20 @@ def _read_finance_model(wb: Any, path: Path) -> dict[str, Any]:
         paid_at_baseline += paid
         if chapter:
             approved_by_chapter[chapter] = approved_by_chapter.get(chapter, 0.0) + total
+        # Деньги финмодели по главам сметы — по карте «статьи_БДДС», а не по
+        # разделам: административные расходы (2.4) и часть коммерции лежат в
+        # смете в главе 2 (владелец, 02.11.2026: «Административные расходы
+        # сидят скорее всего в главе 2-3 тоже, 2.6 статья например»).
+        flow = chapter_flow.setdefault(chapter, {"total": 0.0, "fact": 0.0, "plan": 0.0,
+                                                 "monthly": {}, "sections": {}})
+        flow["total"] += total
+        flow["fact"] += paid
+        flow["plan"] += need
+        section_code = _fm_section(code)
+        flow["sections"][section_code] = flow["sections"].get(section_code, 0.0) + total
+        for c, month in month_columns:
+            key = month.isoformat()
+            flow["monthly"][key] = flow["monthly"].get(key, 0.0) + max(0.0, money(r, c))
         if code == _FM_RESERVE_CODE:
             reserve += max(0.0, need)
             reserve_parts[code] = max(0.0, need)
@@ -329,6 +595,8 @@ def _read_finance_model(wb: Any, path: Path) -> dict[str, Any]:
             "monthly_need": month_need,
         }
     chapters = tuple(c for c in CHAPTERS if c in approved_by_chapter)
+    composition = _budget_composition(rows, money, total_col, fact_col, plan_col,
+                                      month_columns, interest)
     reasons = []
     if mixed:
         reasons.append("статьи " + ", ".join(mixed)
@@ -356,6 +624,10 @@ def _read_finance_model(wb: Any, path: Path) -> dict[str, Any]:
         "chapters_reason": "; ".join(reasons),
         "credit_plan": credit_plan,
         "sections": sections,
+        # Дата книги — первый месяц плана: с него «ПЛАН», до него «ФАКТ».
+        "plan_from": min((month for _, month in month_columns), default=None),
+        "chapter_flow": chapter_flow,
+        "budget_composition": composition,
     }
 
 
@@ -677,6 +949,7 @@ def _article_waterfall(
     article_unfunded: dict[str, float] = {}
     article_own_take: dict[str, float] = {}
     article_need: dict[str, float] = {}
+    first_unfunded: dict[str, datetime.date] = {}
     for month in months:
         month_key = month.isoformat()
         month_need_total = 0.0
@@ -719,6 +992,8 @@ def _article_waterfall(
             covered = shortage * covered_share
             article_reserve_take[code] = article_reserve_take.get(code, 0.0) + covered
             article_unfunded[code] = article_unfunded.get(code, 0.0) + (shortage - covered)
+            if shortage - covered > 0 and code not in first_unfunded:
+                first_unfunded[code] = month
 
         if reserve_exhaustion is None and month_shortfall > 0 and cumulative_reserve_need > reserve:
             reserve_exhaustion = _interpolated_crossing(
@@ -758,6 +1033,7 @@ def _article_waterfall(
             "first_reserve_month": monitor._iso(first_shortfall.get(code)),
             "reserve_take": article_reserve_take.get(code, 0.0),
             "unfunded_take": article_unfunded.get(code, 0.0),
+            "first_unfunded_month": monitor._iso(first_unfunded.get(code)),
             "reserve_left_after_first": reserve_left_after_first,
         })
 
@@ -778,12 +1054,429 @@ def _article_waterfall(
         "reserve_balance": reserve_balance,
         "reserve_need": cumulative_reserve_need,
         "additional_financing": cumulative_unfunded,
+        "additional_financing_by_chapter": _gap_by_chapter(article_rows),
+        "additional_financing_note": _gap_scope_note(article_rows),
         "monthly_need": monthly_need,
         "monthly_reserve_draw": monthly_reserve_draw,
         "monthly_unfunded": monthly_unfunded,
         "monthly_reserve_balance": monthly_reserve_balance,
         "articles": article_rows,
     }
+
+
+# Чем является глава сметы для посетителя: «глава 2 (стройка)».
+_CHAPTER_WORDS = {"1": ("участок", "участок"),
+                  **{ch: (word, acc) for ch, word, acc in _FM_SECTIONS.values()}}
+
+
+def _gap_by_chapter(article_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Дофинансирование по главам — из тех же строк водопада, что и итог.
+
+    Владелец (02.11.2026) о «нужно дофинансировать»: «А почему только? Это без
+    учёта 3 главы?» — итог без разбивки не говорил, из чего он сложен. Сумма
+    по главам равна итогу по построению: это те же непокрытые доли статей.
+    Месяц у главы — первый месяц, когда непокрытая часть появилась у любой
+    её статьи.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    for row in article_rows:
+        amount = float(row.get("unfunded_take") or 0.0)
+        if amount <= 0:
+            continue
+        chapter = str(row.get("chapter") or str(row.get("code") or "").split(".")[0])
+        item = out.setdefault(chapter, {"chapter": chapter,
+                                        "label": _CHAPTER_WORDS.get(chapter, ("", ""))[0],
+                                        "label_acc": _CHAPTER_WORDS.get(chapter, ("", ""))[1],
+                                        "amount": 0.0, "from": None})
+        item["amount"] += amount
+        month = row.get("first_unfunded_month")
+        if month and (item["from"] is None or month < item["from"]):
+            item["from"] = month
+    return [out[ch] for ch in sorted(out)]
+
+
+def _gap_scope_note(article_rows: list[dict[str, Any]]) -> str:
+    """Что в сумму дофинансирования не входит — полной фразой.
+
+    Водопад считает только статьи глав сметы, по которым он построен; проценты
+    по кредиту в РСС не входят никогда, а участок (глава 1) — когда его
+    статей в водопаде нет (финмодель: только стройка и коммерция).
+    """
+    chapters = {str(row.get("chapter") or str(row.get("code") or "").split(".")[0])
+                for row in article_rows}
+    if "1" in chapters:
+        return ("В эту сумму не входят проценты по кредиту: здесь посчитаны только "
+                "расходы по главам сметы.")
+    return ("В эту сумму не входят покупка участка (глава 1 сметы) и проценты по "
+            "кредиту: здесь посчитаны только стройка и коммерческие расходы.")
+
+
+def _limit_reconciliation(waterfall: dict[str, Any], bank_limit: float,
+                          bank_chapters: Any, *,
+                          smeta_by_chapter: dict[str, float] | None = None,
+                          paid_by_chapter: dict[str, dict[str, float]] | None = None,
+                          approved_by_chapter: dict[str, float] | None = None,
+                          remaining_outside: Any = ()) -> dict[str, Any]:
+    """Как сходится дофинансирование и как сходятся плашки лимита.
+
+    Владелец (02.11.2026): «У нас сейчас лимит … Надо добавить сколько на
+    достройке. Просто как это сходится тогда» и, на плашках сводки, «Тут
+    что-то не бьётся». Две цепочки, обе из строк водопада и оплат РСС, второй
+    раз ничего не считается.
+
+    1. Дофинансирование, по главам водопада. По каждой статье точно
+       потребность = свой лимит + резерв + непокрытое, поэтому
+       не хватает = осталось достроить − остаток лимита − резерв + лимит,
+       что останется неизрасходованным (излишек одной статьи или главы на
+       нехватку другой не переносится).
+    2. Плашки. «Можно ещё выбрать у банка» = лимит − выбрано кредитом (все
+       главы лимита), «осталось по смете после всех оплат» = Σ max(0, лимит −
+       всё оплаченное) по главам остатка. Разница между ними раскладывается
+       без остатка: главы вне остатка (их лимит минус выбранное), собственные
+       деньги, уже заплаченные по главам остатка, перебор сверх сметы (в
+       остатке он взят нулём) и расхождение лимитов статей с итогом сметы.
+    """
+    paid_by_chapter = paid_by_chapter or {}
+    approved_by_chapter = approved_by_chapter or {}
+    chapters: dict[str, dict[str, Any]] = {}
+
+    def blank(chapter: str) -> dict[str, Any]:
+        return {"chapter": chapter, "label": _CHAPTER_WORDS.get(chapter, ("", ""))[0],
+                "budget": approved_by_chapter.get(chapter), "in_waterfall": False,
+                "in_remaining": False, "limit": 0.0, "paid": 0.0, "borrowed": None,
+                "overpaid": 0.0, "remaining": 0.0, "need": None, "reserve": None,
+                "unused": None, "gap": None}
+
+    for row in waterfall.get("articles") or []:
+        chapter = str(row.get("chapter") or str(row.get("code") or "").split(".")[0])
+        item = chapters.get(chapter)
+        if item is None:
+            item = chapters[chapter] = {**blank(chapter), "in_waterfall": True,
+                                        "in_remaining": True, "need": 0.0, "reserve": 0.0,
+                                        "unused": 0.0, "gap": 0.0}
+        limit = float(row.get("limit") or 0.0)
+        raw = float(row.get("opening_limit_raw") or 0.0)
+        item["limit"] += limit
+        item["paid"] += limit - raw
+        item["overpaid"] += max(0.0, -raw)
+        item["remaining"] += float(row.get("opening_limit") or 0.0)
+        item["need"] += float(row.get("need_total") or 0.0)
+        item["reserve"] += float(row.get("reserve_take") or 0.0)
+        item["unused"] += float(row.get("remaining_limit") or 0.0)
+        item["gap"] += float(row.get("unfunded_take") or 0.0)
+    inside = sorted(chapters)
+    if smeta_by_chapter is not None:
+        for chapter in (str(ch) for ch in (bank_chapters or ())):
+            if chapter in chapters:
+                continue
+            limit = float(smeta_by_chapter.get(chapter) or 0.0)
+            paid = float((paid_by_chapter.get(chapter) or {}).get("total") or 0.0)
+            chapters[chapter] = {**blank(chapter), "limit": limit, "paid": paid,
+                                 "overpaid": max(0.0, paid - limit),
+                                 "remaining": max(0.0, limit - paid),
+                                 "in_remaining": chapter in {str(c) for c in remaining_outside}}
+    for chapter, item in chapters.items():
+        got = paid_by_chapter.get(chapter)
+        if got is not None:
+            item["borrowed"] = float(got.get("borrowed") or 0.0)
+    rows = [chapters[ch] for ch in sorted(chapters)]
+    flow = [chapters[ch] for ch in inside]
+    total = {key: sum(row[key] for row in flow)
+             for key in ("limit", "paid", "overpaid", "remaining", "need", "reserve",
+                         "unused", "gap")}
+    total["chapters"] = chapters_label(inside) if inside else ""
+    total["plain"] = total["need"] - total["remaining"]
+    outside = [str(ch) for ch in (bank_chapters or ()) if str(ch) not in inside]
+    out: dict[str, Any] = {
+        "chapters": rows,
+        "total": total,
+        "bank_limit": float(bank_limit or 0.0),
+        "bank_chapters": chapters_label(bank_chapters) if bank_chapters else "",
+        "outside_chapters": outside,
+        "outside_limit": float(bank_limit or 0.0) - total["limit"],
+        # Сходится по построению; признак — для проверки, а не для красоты.
+        "matches": abs(total["plain"] - total["reserve"] + total["unused"] - total["gap"])
+        <= 1e-6 * max(1.0, total["need"]),
+        "tiles": None,
+    }
+    if paid_by_chapter and all(row["borrowed"] is not None for row in rows):
+        borrowed = sum(row["borrowed"] for row in rows)
+        remaining = sum(row["remaining"] for row in rows if row["in_remaining"])
+        not_in_remaining = [{"chapter": row["chapter"], "label": row["label"],
+                             "amount": row["limit"] - row["borrowed"]}
+                            for row in rows if not row["in_remaining"]]
+        own = sum(row["paid"] - row["borrowed"] for row in rows if row["in_remaining"])
+        overpaid = [{"chapter": row["chapter"], "label": row["label"],
+                     "amount": row["overpaid"]}
+                    for row in rows if row["in_remaining"] and row["overpaid"] > 0]
+        book_gap = float(bank_limit or 0.0) - sum(row["limit"] for row in rows)
+        can_draw = float(bank_limit or 0.0) - borrowed
+        explained = (sum(item["amount"] for item in not_in_remaining) + own
+                     - sum(item["amount"] for item in overpaid) + book_gap)
+        out["tiles"] = {
+            "bank_limit": float(bank_limit or 0.0), "borrowed": borrowed,
+            "can_draw": can_draw, "remaining": remaining,
+            "remaining_chapters": chapters_label([row["chapter"] for row in rows
+                                                  if row["in_remaining"]]),
+            "difference": can_draw - remaining,
+            "not_in_remaining": not_in_remaining, "own_money": own,
+            "overpaid": overpaid, "book_gap": book_gap,
+            "matches": abs(can_draw - remaining - explained)
+            <= 1e-6 * max(1.0, float(bank_limit or 0.0)),
+        }
+    return out
+
+
+def _chapter_title(row: dict[str, Any]) -> str:
+    return f"глава {row['chapter']}" + (f" ({row['label']})" if row.get("label") else "")
+
+
+def _own_money(comp: dict[str, Any] | None, smeta: dict[str, float],
+               paid_by_chapter: dict[str, dict[str, float]], bank_chapters: Any,
+               cut: datetime.date, plan_from: datetime.date | None = None,
+               paid_since: dict[str, float] | None = None,
+               chapter_flow: dict[str, dict[str, Any]] | None = None,
+               schedule: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """«Нужно своих денег сверх сметы банка» = утверждённый бюджет − лимит банка.
+
+    Владелец (02.11.2026): «Лимит банка» в РСС — смета банка, в неё банк
+    засчитывает все оплаты, и кредитом, и собственные. Поэтому на плашках
+        лимит = оплачено + остаток лимита (по всем главам лимита),
+        бюджет = лимит + нужно своих денег сверх сметы банка.
+    Разложение без остатка — по главам сметы, а деньги финмодели разнесены по
+    главам картой «статьи_БДДС» (`chapter_flow`): административные расходы и
+    часть коммерции лежат в главе 2. По главе: «осталось оплатить» по
+    финмодели минус остаток лимита главы; статьи вне глав — целиком; плюс
+    расхождение «ФАКТ» финмодели (на дату книги) с оплаченным по реестру РСС
+    (на дату отчёта) и расхождение «ИТОГО» книги с «ФАКТ» + «ПЛАН».
+    Первый месяц нехватки — по водопаду глав.
+    """
+    if not comp or not comp.get("sections") or chapter_flow is None:
+        return None
+    chapters = [str(ch) for ch in (bank_chapters or ())]
+    limit = sum(float(smeta.get(ch) or 0.0) for ch in chapters)
+    paid = {ch: float((paid_by_chapter.get(ch) or {}).get("total") or 0.0) for ch in chapters}
+    borrowed = sum(float((paid_by_chapter.get(ch) or {}).get("borrowed") or 0.0)
+                   for ch in chapters)
+    left = {ch: float(smeta.get(ch) or 0.0) - paid[ch] for ch in chapters}
+    rows: list[dict[str, Any]] = []
+    dates = book = 0.0
+    articles: dict[str, dict[str, Any]] = {}
+    for chapter in chapters:
+        flow = chapter_flow.get(chapter) or {"total": 0.0, "fact": 0.0, "plan": 0.0,
+                                             "monthly": {}, "sections": {}}
+        # Дефицит главы — оплачено по реестру плюс то, что ещё предстоит
+        # оплатить, минус лимит главы; для всех глав одинаково (решение
+        # владельца, 03.11.2026). Предстоящее: по графику финансирования для
+        # его главы, по финмодели — для остальных, за вычетом оплат по реестру
+        # после даты книги (`_plan_still_owed`).
+        by_schedule = schedule is not None and schedule["chapter"] == chapter
+        monthly = (dict(schedule["monthly"]) if by_schedule else
+                   _plan_still_owed(dict(flow["monthly"]), plan_from,
+                                    (paid_since or {}).get(chapter, 0.0), cut))
+        owed = sum(monthly.values())
+        cost = paid[chapter] + owed
+        rows.append({"chapter": chapter, "label": _CHAPTER_WORDS.get(chapter, ("", ""))[0],
+                     "sections": dict(sorted(flow["sections"].items())),
+                     "budget": cost, "model_budget": flow["total"],
+                     "by_schedule": schedule if by_schedule else None,
+                     "paid": paid[chapter], "limit": float(smeta.get(chapter) or 0.0),
+                     "to_pay": owed, "left": left[chapter],
+                     "amount": cost - float(smeta.get(chapter) or 0.0)})
+        dates += flow["fact"] - paid[chapter]
+        book += flow["total"] - flow["fact"] - flow["plan"]
+        articles[chapter] = {
+            "code": chapter, "chapter": chapter, "rss_limit": float(smeta.get(chapter) or 0.0),
+            "paid_at_baseline": paid[chapter], "monthly_need": monthly}
+    for chapter, flow in sorted(chapter_flow.items()):
+        if chapter in chapters:
+            continue
+        rows.append({"chapter": "", "label": "", "sections": dict(sorted(flow["sections"].items())),
+                     "budget": flow["total"], "limit": 0.0,
+                     "to_pay": flow["plan"], "left": 0.0, "paid": flow["fact"],
+                     "amount": flow["total"]})
+        book += flow["total"] - flow["fact"] - flow["plan"]
+        articles[f"вне глав {chapter}"] = {
+            "code": f"вне глав {chapter}", "chapter": "", "rss_limit": 0.0,
+            "paid_at_baseline": 0.0,
+            "monthly_need": _plan_still_owed(dict(flow["monthly"]), plan_from, 0.0, cut)}
+    budget = float(comp.get("total") or 0.0)
+    # Чем «утверждённый бюджет − лимит» отличается от суммы глав, — названо:
+    # по главе графика — на сколько финмодель закладывает больше графика; по
+    # главам финмодели — расхождение учёта прошлых оплат финмодели и реестра.
+    over = sum(row["model_budget"] - row["budget"] for row in rows
+               if row.get("by_schedule"))
+    accounting = sum(row["model_budget"] - row["budget"] for row in rows
+                     if row["chapter"] and not row.get("by_schedule"))
+    need = budget - limit - over - accounting
+    waterfall = _article_waterfall(articles, 0.0, cut)
+    explained = sum(row["amount"] for row in rows)
+    return {
+        "budget": budget, "limit": limit, "paid": sum(paid.values()), "borrowed": borrowed,
+        "own_paid": sum(paid.values()) - borrowed,
+        "left": sum(left.values()), "left_by_chapter": left,
+        "need": need, "model_over_schedule": over, "accounting": accounting,
+        "rows": rows, "dates": dates, "book": book,
+        "from": waterfall["additional_financing_from"],
+        "book_fact": float(comp.get("fact") or 0.0),
+        # Из расхождения «ФАКТ» с реестром — оплаты после даты книги; остальное
+        # — разница учёта прошлых оплат.
+        "paid_since": sum(float((paid_since or {}).get(ch) or 0.0) for ch in chapters),
+        "plan_from": plan_from.isoformat() if plan_from else None,
+        "matches": abs(explained - need) <= 1e-6 * max(1.0, budget),
+    }
+
+
+def own_money_lines(own: dict[str, Any] | None, money: Any,
+                    with_reconciliation: bool = True) -> list[str]:
+    """«Нужно своих денег сверх сметы банка» словами — одна для сводки и Монитора."""
+    if not own:
+        return []
+    out = [f"Нужно своих денег сверх сметы банка {money(own['need'])}"
+           + (f", первый месяц нехватки — {_month_name(own['from'])}" if own.get("from") else "")
+           + ": по каждой главе — оплачено по реестру плюс то, что осталось оплатить, минус "
+           "лимит главы. Лимит банка — это смета: в неё банк засчитывает все оплаты, и "
+           f"кредитом, и собственными деньгами. Оплачено с начала проекта {money(own['paid'])} "
+           f"(из них кредитом {money(own['borrowed'])}, своими деньгами "
+           f"{money(own['own_paid'])}), остаток лимита {money(own['left'])}."]
+    parts = []
+    for row in own["rows"]:
+        made = " + ".join(f"{code} {money(amount)}" for code, amount in row["sections"].items())
+        if row["chapter"]:
+            name = f"глава {row['chapter']}" + (f" ({row['label']})" if row.get("label") else "")
+            sch = row.get("by_schedule")
+            if sch:
+                # day у найденного внутри книги графика может быть датой загрузки.
+                value = ((sch.get("source_dates") or {}).get("data_date")
+                         if "source_dates" in sch else sch["day"])
+                day = monitor._day(value)
+                source = ("по графику финансирования от " + day.strftime("%d.%m.%Y") if day else
+                          "по графику финансирования (дата данных не указана)")
+            else:
+                source = "по финмодели"
+            parts.append(f"{name} — {money(row['amount'])}: оплачено {money(row['paid'])} плюс "
+                         f"осталось оплатить {source} {money(row['to_pay'])} минус лимит главы "
+                         f"{money(row['limit'])}")
+        else:
+            parts.append(f"статьи финмодели вне глав сметы ({made}) — {money(row['amount'])}: "
+                         "в смете банка их нет, поэтому это свои деньги")
+    out.append("По главам: " + "; ".join(parts) + ".")
+    if with_reconciliation:
+        out.extend(own_budget_reconciliation_lines(own, money))
+    return out
+
+
+def own_budget_reconciliation_lines(own: dict[str, Any] | None, money: Any) -> list[str]:
+    """Прежняя сверка исходного бюджета и поправок, без нового расчёта денег."""
+    if not own:
+        return []
+    out: list[str] = []
+    over = float(own.get("model_over_schedule") or 0.0)
+    accounting = float(own.get("accounting") or 0.0)
+    gap = own["budget"] - own["limit"]
+    # Арифметика словами: бюджет − лимит − (финмодель сверх графика) −
+    # (расхождение учёта) = сумма по главам. Расхождение учёта меньше нуля,
+    # когда реестр оплатил больше, чем записано в финмодели: тогда оно
+    # прибавляется.
+    steps = []
+    if abs(over) > 0.5:
+        steps.append(f"{'минус' if over > 0 else 'плюс'} {money(abs(over))} — на столько "
+                     "финмодель по главе из графика финансирования закладывает "
+                     + ("больше" if over > 0 else "меньше") + " графика")
+    if abs(accounting) > 0.5:
+        steps.append(f"{'плюс' if accounting < 0 else 'минус'} {money(abs(accounting))} — "
+                     "на столько по прошлым оплатам "
+                     + ("реестр РСС оплатил больше, чем записано в финмодели"
+                        if accounting < 0 else "финмодель записала больше, чем реестр РСС"))
+    if steps:
+        out.append(f"Справочно, как это связано с утверждённым бюджетом: бюджет без налогов "
+                   f"{money(own['budget'])} минус лимит банка {money(own['limit'])} — "
+                   f"{money(gap)}; " + "; ".join(steps)
+                   + f"; итого {money(own['need'])}.")
+    if abs(own["book"]) > 0.5:
+        out.append(f"В книге «ИТОГО» не равно «ФАКТ» плюс «ПЛАН» на {money(own['book'])}.")
+    return out
+
+
+def tiles_bridge_lines(rec: dict[str, Any], money: Any) -> list[str]:
+    """«Лимит − выбрано» против «осталось по смете» — полными фразами."""
+    tiles = (rec or {}).get("tiles")
+    if not tiles:
+        return []
+    out = [f"Можно ещё выбрать у банка {money(tiles['can_draw'])}: это лимит "
+           f"{money(tiles['bank_limit'])} минус {money(tiles['borrowed'])}, уже выбранные "
+           f"кредитом. По смете после всех оплат по главам {tiles['remaining_chapters']} "
+           f"осталось {money(tiles['remaining'])}: здесь вычтено всё оплаченное — и кредитом, "
+           f"и собственными деньгами."]
+    pieces = []
+    for item in tiles["not_in_remaining"]:
+        if abs(item["amount"]) > 0.5:
+            pieces.append(f"{_chapter_title(item)} — {money(item['amount'])}: её лимит минус "
+                          "выбранное по ней в остаток по смете не входит")
+    if abs(tiles["own_money"]) > 0.5:
+        pieces.append(f"собственные деньги, уже заплаченные по главам "
+                      f"{tiles['remaining_chapters']}, — {money(tiles['own_money'])}")
+    for item in tiles["overpaid"]:
+        pieces.append(f"по {_chapter_title(item).replace('глава', 'главе', 1)} оплачено больше "
+                      f"сметы на {money(item['amount'])} — в остатке такая глава стоит нулём, "
+                      "поэтому этот перебор разницу уменьшает")
+    if abs(tiles["book_gap"]) > 0.5:
+        pieces.append(f"лимиты статей финансовой книги расходятся с итогом сметы на "
+                      f"{money(tiles['book_gap'])}")
+    if pieces and abs(tiles["difference"]) > 0.5:
+        out.append(f"Разница {money(tiles['difference'])} складывается так: "
+                   + "; ".join(pieces) + ".")
+    return out
+
+
+def reconciliation_lines(rec: dict[str, Any], money: Any) -> list[str]:
+    """Сверка словами — одна для Монитора и сводки; деньги пишет `money`."""
+    if not rec or not rec.get("chapters"):
+        return []
+    out: list[str] = tiles_bridge_lines(rec, money)
+    total = rec["total"]
+    outside = rec.get("outside_chapters") or []
+    if outside and abs(rec.get("outside_limit") or 0.0) > 1e-6 * max(1.0, rec["bank_limit"]):
+        names = ", ".join(_chapter_title({"chapter": ch, "label": _CHAPTER_WORDS.get(ch, ("",))[0]})
+                          for ch in outside)
+        out.append(f"Лимит банка по главам {rec['bank_chapters']} — {money(rec['bank_limit'])}. "
+                   f"Сверка дофинансирования считает только главы {total['chapters']} — "
+                   f"{money(total['limit'])}. Остальные {money(rec['outside_limit'])} "
+                   f"приходятся на главы вне этой сверки: {names}. В дофинансирование "
+                   "они не входят.")
+    for row in rec["chapters"]:
+        name = _chapter_title(row)
+        name = name[:1].upper() + name[1:]
+        borrowed = (f", из них кредитом {money(row['borrowed'])}"
+                    if row.get("borrowed") is not None else "")
+        budget = (f"бюджет {money(row['budget'])}, " if row.get("budget") is not None else "")
+        text = (f"{name}: {budget}лимит {money(row['limit'])}, оплачено всего "
+                f"{money(row['paid'])}{borrowed}, остаток по смете {money(row['remaining'])}")
+        if row["in_waterfall"]:
+            text += (f"; осталось достроить {money(row['need'])}; не хватает "
+                     f"{money(row['gap'])}.")
+        else:
+            text += "; в расчёт дофинансирования эта глава не входит."
+        if row["overpaid"] > 0:
+            text += (f" Оплачено больше сметы на {money(row['overpaid'])} — этот перебор "
+                     "показан здесь, а в остатке глава стоит нулём и остаток других глав "
+                     "он не уменьшает.")
+        if row["in_waterfall"] and row["unused"] > 0:
+            text += (f" Лимита останется {money(row['unused'])}: он не переносится на "
+                     "нехватку другой главы или статьи.")
+        out.append(text)
+    text = (f"Итого по главам {total['chapters']}: осталось достроить {money(total['need'])} "
+            f"минус остаток по смете {money(total['remaining'])} — это {money(total['plain'])}.")
+    if total["reserve"] > 0:
+        text += f" Резерв закрывает из этого {money(total['reserve'])}."
+    if total["unused"] > 0:
+        text += (f" Но {money(total['unused'])} лимита останутся неизрасходованными: излишек "
+                 "одной главы или статьи не покрывает нехватку другой. Поэтому "
+                 f"дофинансировать нужно {money(total['gap'])}, а не меньше.")
+    else:
+        text += f" Дофинансировать нужно {money(total['gap'])}."
+    out.append(text)
+    return out
 
 
 def _retention(project: str, horizon: Any) -> dict[str, Any] | None:
@@ -966,9 +1659,16 @@ def _payment_total_ch23(rss: Path, estimate: dict[str, Any],
 
 
 def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, Any]) -> dict[str, Any]:
+    def unavailable(reason: str, **extra: Any) -> dict[str, Any]:
+        result = {"known": False, "reason": reason, **extra,
+                  "source_dates": _funding_source_dates(project, rss, cut)}
+        notes = funding_source_notes(result)
+        result["limit_reconciliation_lines"] = [notes["paid"], notes["limit"]]
+        return result
+
     baseline = _finance_baseline(project)
     if not baseline.get("known"):
-        return {"known": False, "reason": baseline.get("reason", "нет финансового baseline")}
+        return unavailable(baseline.get("reason", "нет финансового baseline"))
 
     estimate = actuals.read_estimate(rss)
     chapters = tuple(baseline.get("chapters") or ("2", "3"))
@@ -979,22 +1679,19 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
     sections = baseline.get("sections") if finmodel else None
     if finmodel and not all(ch in (sections or {}) for ch in _FM_BANK_CHAPTERS):
         wanted = ", ".join(f"«{code}»" for code in _FM_SECTIONS)
-        return {
-            "known": False,
-            "reason": f"в листе «cf_1_new» нет строк разделов {wanted} — потребность "
-                      "на стройку и коммерцию не прочитать",
-            "source": baseline.get("source"),
-        }
+        return unavailable(f"в листе «cf_1_new» нет строк разделов {wanted} — потребность "
+                           "на стройку и коммерцию не прочитать", source=baseline.get("source"))
+    schedule_need = None
     if finmodel:
         # Сколько нужно на стройку и коммерцию — план разделов финмодели с
         # месяца среза; тот же ряд идёт в водопад против остатка лимита
         # глав 2–3 сметы.
-        cut_month = cut.replace(day=1)
-        remaining_need = sum(
-            float(amount or 0.0)
-            for ch in _FM_BANK_CHAPTERS
-            for month, amount in (sections[ch].get("monthly") or {}).items()
-            if (monitor._day(month) or cut_month) >= cut_month)
+        plan_from = monitor._day(baseline.get("plan_from"))
+        schedule_need = _schedule_need(project, rss, estimate, cut)
+        section_rows = _section_articles(sections, estimate, rss, cut, plan_from,
+                                         baseline.get("chapter_flow"), schedule_need)
+        remaining_need = sum(sum(item["monthly_need"].values())
+                             for item in section_rows.values())
     else:
         paid_delta = max(0.0, paid_actual - float(baseline["paid_at_baseline"] or 0.0))
         remaining_need = max(0.0, float(baseline["completion_need_at_baseline"] or 0.0)
@@ -1002,18 +1699,15 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
 
     articles = baseline.get("articles") or {}
     if not articles:
-        return {
-            "known": False,
-            "reason": "в финансовом baseline не найдена постатейная программа потребности",
-            "source": baseline.get("source"),
-        }
+        return unavailable("в финансовом baseline не найдена постатейная программа потребности",
+                           source=baseline.get("source"))
 
     # Для финмодели водопад — по главам 2–3 сметы: лимит главы минус всё
     # оплаченное по ней (резервы 2.8/2.9 уже внутри лимита главы 2) против
     # плана раздела финмодели по месяцам. Статьи финмодели на статьи сметы
     # один в один не ложатся, и постатейно здесь нечего считать.
     waterfall = _article_waterfall(
-        _section_articles(sections, estimate, rss) if finmodel else articles,
+        section_rows if finmodel else articles,
         0.0 if finmodel else float(baseline.get("reserve") or 0.0),
         cut,
         {} if finmodel else _payment_by_code(rss),
@@ -1073,9 +1767,35 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
                      + max(0.0, one_limit - one_paid["total"]),
                      "opening_article_deficit": float(waterfall["opening_article_deficit"])
                      + max(0.0, one_paid["total"] - one_limit)}
-    return {
+    smeta = dict(current.get("by_chapter") or {})
+    if chapter_one is not None:
+        smeta["1"] = chapter_one["limit"]
+    paid_by_chapter = {str(ch): _paid_in_chapters(rss, estimate, (ch,)) for ch in shown}
+    own_money = None
+    if finmodel:
+        plan_from = monitor._day(baseline.get("plan_from"))
+        own_money = _own_money(
+            baseline.get("budget_composition"), smeta, paid_by_chapter, shown, cut, plan_from,
+            {str(ch): _paid_since(rss, estimate, str(ch), plan_from) for ch in shown},
+            baseline.get("chapter_flow"), schedule_need)
+    reconciliation = _limit_reconciliation(
+        waterfall_book, current["limit"], shown, smeta_by_chapter=smeta,
+        paid_by_chapter=paid_by_chapter,
+        approved_by_chapter=baseline.get("approved_by_chapter") or {},
+        # Глава 1 из РСС при бюджетной книге входит в остаток плашки (см. выше).
+        remaining_outside=("1",) if chapter_one is not None else ())
+    result = {
         "known": True,
         "source": baseline["source"],
+        "limit_reconciliation": reconciliation,
+        "budget_composition": baseline.get("budget_composition"),
+        "own_money": own_money,
+        # Глава, потребность которой взята из графика финансирования, и его версия.
+        "schedule_need": ({k: schedule_need[k] for k in ("chapter", "day", "file", "owed")}
+                          if schedule_need else None),
+        "own_money_lines": own_money_lines(own_money, _fmt_money),
+        "baseline_file": monitor.finance_baseline_meta(project),
+        "limit_reconciliation_lines": reconciliation_lines(reconciliation, _fmt_money),
         "chapters": list(shown),
         "chapters_label": chapters_label(shown),
         "chapters_reason": reason,
@@ -1104,7 +1824,8 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
             "label": sections[row["chapter"]]["label"],
             "label_acc": sections[row["chapter"]].get("label_acc") or sections[row["chapter"]]["label"],
             "need": row["need_total"],
-            "remaining": row["opening_limit"], "gap": row["unfunded_take"]}
+            "remaining": row["opening_limit"], "gap": row["unfunded_take"],
+            "gap_from": row["first_unfunded_month"]}
             for row in waterfall["articles"]} if finmodel else None),
         "bank_remaining": waterfall["opening_bank_remaining"],
         "opening_article_deficit": waterfall["opening_article_deficit"],
@@ -1128,6 +1849,8 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
         "reserve_need": waterfall["reserve_need"],
         "additional_financing": waterfall["additional_financing"],
         "additional_financing_from": waterfall["additional_financing_from"],
+        "additional_financing_by_chapter": waterfall["additional_financing_by_chapter"],
+        "additional_financing_note": waterfall["additional_financing_note"],
         "retention": _retention(project, rnv),
         # Что не будет выбрано до ввода: свободное от договоров считается точно,
         # ГУ раскладываются по статьям оценкой. Считает это отдельный модуль,
@@ -1163,6 +1886,9 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
             "автоматически не кросс-финансируют дефицит"
         ),
     }
+    result["source_dates"] = _funding_source_dates(project, rss, cut, schedule_need)
+    result["limit_reconciliation_lines"] = funding_reconciliation_lines(result, _fmt_money)
+    return result
 
 
 _FM_BANK_CHAPTERS = tuple(sorted({ch for ch, _, _ in _FM_SECTIONS.values()}))
@@ -1187,19 +1913,115 @@ def _reserve_inside(rss: Path, estimate: dict[str, Any]) -> dict[str, Any] | Non
             "chapters": chapters_label(chapters) if chapters else ""}
 
 
+def _paid_since(rss: Path, estimate: dict[str, Any], chapter: str,
+                since: datetime.date | None) -> float:
+    """Оплачено по главе по реестру РСС начиная с `since` (дата книги)."""
+    if since is None:
+        return 0.0
+    keep = payment_in_chapters(estimate, (chapter,))
+    return sum(float(row.get("amount") or 0.0)
+               for row in actuals.read_payments(rss).get("rows") or []
+               if keep(row) and row.get("date") and row["date"] >= since)
+
+
+def _plan_still_owed(monthly: dict[str, float], plan_from: datetime.date | None,
+                     paid_since: float, cut: datetime.date) -> dict[str, float]:
+    """План финмодели, который ещё предстоит оплатить, по месяцам.
+
+    План книги начинается с её даты, а реестр РСС уже несёт оплаты после неё.
+    Прежде потребность бралась «с месяца среза»: когда наступал новый месяц,
+    план прошедшего месяца выпадал целиком, оплачен он или нет, и нехватка
+    прыгала без единого платежа (владелец, 02.11.2026: 2,40 в октябре, 1,77 в
+    ноябре). Теперь оплаты по реестру после даты книги гасят план с его
+    начала, а неоплаченный остаток прошедших месяцев переносится на месяц
+    среза: он всё ещё должен быть оплачен.
+    """
+    cut_month = cut.replace(day=1)
+    start = plan_from.replace(day=1) if plan_from else cut_month
+    left = max(0.0, float(paid_since or 0.0))
+    out: dict[str, float] = {}
+    for key in sorted(monthly):
+        month = monitor._day(key)
+        if month is None or month < start:
+            continue
+        amount = max(0.0, float(monthly[key] or 0.0))
+        covered = min(left, amount)
+        left -= covered
+        amount -= covered
+        target = max(month, cut_month).isoformat()
+        out[target] = out.get(target, 0.0) + amount
+    return out
+
+
+# Глава, потребность которой берётся из графика финансирования, а не из
+# финмодели (решение владельца, 03.11.2026: «Верно считает график» — график
+# собран по договорам, финмодель закладывала по главе 2 на 0,7 млрд больше).
+_SCHEDULE_CHAPTER = "2"
+
+
+def _schedule_need(project: str, rss: Path, estimate: dict[str, Any],
+                   cut: datetime.date, chapter: str = _SCHEDULE_CHAPTER) -> dict[str, Any] | None:
+    """Что ещё предстоит оплатить по главе — по графику финансирования.
+
+    Версия — последняя на дату среза. План графика берётся с месяца версии, а
+    оплаты по реестру РСС с начала этого месяца гасят его с начала
+    (`_plan_still_owed`): «Остаток к выплате» графика — на его дату, реестр
+    идёт дальше. Нет графика — None, и глава считается по финмодели.
+    """
+    import developaid_funding_schedule as funding_schedule
+
+    found = funding_schedule.sources(project, cut.isoformat())["versions"]
+    if not found:
+        return None
+    day = list(found)[-1]
+    try:
+        schedule = funding_schedule.read_schedule(found[day]["path"])
+    except funding_schedule.ScheduleUnreadable:
+        return None
+    monthly: dict[str, float] = {}
+    rows = [row for row in schedule["rows"]
+            if row["code"] == chapter or row["code"].startswith(chapter + ".")]
+    for row in rows:
+        for month, amount in (row.get("plan") or {}).items():
+            if amount:
+                key = f"{month}-01"
+                monthly[key] = monthly.get(key, 0.0) + float(amount)
+    start = datetime.date.fromisoformat(day[:7] + "-01")
+    paid_since = _paid_since(rss, estimate, chapter, start)
+    owed = _plan_still_owed(monthly, start, paid_since, cut)
+    return {"day": day, "file": found[day].get("file") or "", "chapter": chapter,
+            "source_dates": _stored_funding_source(project, Path(found[day]["path"])),
+            "monthly": owed, "owed": sum(owed.values()), "paid_since": paid_since,
+            "plan_from": start.isoformat()}
+
+
 def _section_articles(sections: dict[str, dict[str, Any]], estimate: dict[str, Any],
-                      rss: Path) -> dict[str, dict[str, Any]]:
+                      rss: Path, cut: datetime.date | None = None,
+                      plan_from: datetime.date | None = None,
+                      chapter_flow: dict[str, dict[str, Any]] | None = None,
+                      schedule: dict[str, Any] | None = None
+                      ) -> dict[str, dict[str, Any]]:
     """Разделы финмодели как строки водопада — по главам 2–3 сметы.
 
     Лимит — «Общая сметная стоимость» строки главы РСС (резервы внутри),
     «оплачено» — всё оплаченное по главе по РСС, потребность по месяцам — план
-    раздела финмодели.
+    раздела финмодели с даты книги за вычетом оплаченного по реестру после неё
+    (`_plan_still_owed`).
     """
     by_code = estimate.get("by_code") or {}
     out: dict[str, dict[str, Any]] = {}
     for chapter in _FM_BANK_CHAPTERS:
         section = sections[chapter]
         row = by_code.get(chapter) or {}
+        # Потребность главы — статьи финмодели, которые карта относит к ней;
+        # без карты (старая база) — раздел финмодели этой главы.
+        flow = (chapter_flow or {}).get(chapter)
+        monthly = dict((flow if flow is not None else section).get("monthly") or {})
+        if schedule is not None and schedule["chapter"] == chapter:
+            monthly = dict(schedule["monthly"])
+        elif cut is not None:
+            monthly = _plan_still_owed(monthly, plan_from,
+                                       _paid_since(rss, estimate, chapter, plan_from), cut)
         out[chapter] = {
             "code": chapter, "chapter": chapter,
             "name": f"{section['label'].capitalize()} — {section['name']} (финмодель) "
@@ -1207,7 +2029,7 @@ def _section_articles(sections: dict[str, dict[str, Any]], estimate: dict[str, A
             "rss_limit": float(row.get("estimate") or 0.0),
             "paid_at_baseline": float(_paid_in_chapters(rss, estimate, (chapter,))["total"]),
             "has_programme": any((section.get("monthly") or {}).values()),
-            "monthly_need": dict(section.get("monthly") or {}),
+            "monthly_need": monthly,
         }
     return out
 
@@ -1313,6 +2135,19 @@ def _month_name(value: Any) -> str:
     return f"{names[day.month - 1]} {day.year}"
 
 
+def _gap_by_chapter_sentence(funding: dict[str, Any]) -> str:
+    """«Из них по главе 2 (стройка) — …, первый месяц нехватки — …» и что не входит."""
+    parts = []
+    for row in funding.get("additional_financing_by_chapter") or []:
+        name = f"по главе {row['chapter']}" + (f" ({row['label']})" if row.get("label") else "")
+        since = (f", первый месяц нехватки — {_month_name(row['from'])}"
+                 if row.get("from") else "")
+        parts.append(f"{name} — {_fmt_money(row['amount'])}{since}")
+    text = f" Из них {'; '.join(parts)}." if parts else ""
+    note = funding.get("additional_financing_note")
+    return text + (f" {note}" if note else "")
+
+
 def _summary(view: dict[str, Any], funding: dict[str, Any],
              sales: dict[str, Any]) -> list[str]:
     """Управленческое резюме словами — из тех же чисел, что и графики.
@@ -1393,7 +2228,8 @@ def _summary(view: dict[str, Any], funding: dict[str, Any],
                           f"{_fmt_money(unfunded[first_gap])}")
         out.append("Когда возникает дыра. " + "; ".join(pieces) + ". "
                    f"Всего до конца не хватает {_fmt_money(gap_total)} — это и "
-                   "есть потребность в дофинансировании.")
+                   "есть потребность в дофинансировании."
+                   + _gap_by_chapter_sentence(funding))
         deadline = exhaustion or first_gap
         if deadline:
             out.append(

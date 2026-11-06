@@ -114,12 +114,32 @@ def test_the_chapters_come_from_the_crosswalk(tmp_path):
                                           "2": pytest.approx(550 * K),
                                           "3": pytest.approx(90 * K)}
     assert got["articles"]["2.1.1"]["chapter"] == "1"
-    # 2.3.4: две строки карты в главу 3, одна в главу 2 — глава большинства, и это сказано.
+    # 2.3.4 «Расходы на продажу» — глава 3 по решению владельца (комиссии
+    # риэлторов и брокеров), а не по большинству строк карты; в причину не идёт.
     assert got["articles"]["2.3.4"]["chapter"] == "3"
-    assert "2.3.4" in got["chapters_reason"] and "разные главы" in got["chapters_reason"]
+    assert "2.3.4" not in got["chapters_reason"]
     # Статья без строк в карте — вне глав, и это тоже сказано.
     assert got["articles"]["2.4.9"]["chapter"] == ""
     assert "2.4.9" in got["chapters_reason"] and "не найдены" in got["chapters_reason"]
+
+
+def test_a_mixed_article_without_a_decision_goes_by_majority_and_says_so(tmp_path, monkeypatch):
+    monkeypatch.setattr(dashboard, "_FM_CHAPTER_DECIDED", {})
+    got = _read(tmp_path, _finmodel())
+    # 2.3.4: две строки карты в главу 3, одна в главу 2 — глава большинства, и это сказано.
+    assert got["articles"]["2.3.4"]["chapter"] == "3"
+    assert "2.3.4" in got["chapters_reason"] and "разные главы" in got["chapters_reason"]
+
+
+def test_the_owner_decides_the_chapter_of_the_sales_expenses(tmp_path, monkeypatch):
+    """Решение владельца сильнее большинства строк карты: строки ведут в главу 2."""
+    flipped = [(bdds, name, "2.6" if bdds.startswith("2.3.4") else est)
+               for bdds, name, est in CROSSWALK]
+    monkeypatch.setattr(sys.modules[__name__], "CROSSWALK", flipped)
+    got = _read(tmp_path, _finmodel())
+    assert got["articles"]["2.3.4"]["chapter"] == "3"
+    monkeypatch.setattr(dashboard, "_FM_CHAPTER_DECIDED", {})
+    assert _read(tmp_path, _finmodel())["articles"]["2.3.4"]["chapter"] == "2"
 
 
 def test_without_the_crosswalk_the_model_is_a_reason_not_a_guess(tmp_path):
@@ -206,9 +226,11 @@ def test_the_need_is_the_model_sections_against_chapters_two_and_three(monkeypat
     assert got["need_basis"] == "model"
     assert got["need_by_chapter"] == {
         "2": {"label": "стройка", "label_acc": "стройку", "need": pytest.approx(350.0),
-              "remaining": pytest.approx(50.0), "gap": pytest.approx(300.0)},
+              "remaining": pytest.approx(50.0), "gap": pytest.approx(300.0),
+              "gap_from": "2026-11-01"},
         "3": {"label": "коммерция", "label_acc": "коммерцию", "need": pytest.approx(80.0),
-              "remaining": pytest.approx(10.0), "gap": pytest.approx(70.0)}}
+              "remaining": pytest.approx(10.0), "gap": pytest.approx(70.0),
+              "gap_from": "2026-11-01"}}
     assert [row["code"] for row in got["articles"]] == ["2", "3"]
     # Лимит глав 2–3 минус оплаченное против остатка водопада — одно число, без «разницы».
     assert got["remaining_check"]["book_gap"] == pytest.approx(0.0)
@@ -249,14 +271,20 @@ def test_the_report_names_the_bank_need_by_chapter_for_the_model(monkeypatch):
         "deficit_ladder": {"total": 2_393 * M}}}})
     built = report.build(PROJECT, "week", "2026-10-18")
     tiles = {item["label"]: item for item in report.tiles(built)}
-    assert tiles["Остаток лимита банка"]["value"] == "1,28 млрд ₽"
-    assert "главы 2–3: лимит 4,64 млрд ₽ без оплаченного 3,36 млрд ₽" in tiles["Остаток лимита банка"]["note"]
+    assert tiles["Осталось по смете после всех оплат"]["value"] == "1,28 млрд ₽"
+    # Плитки — число и одна строка (владелец на проде, 27.10.2026: подписи —
+    # «простыни»); разбивка по главам — в разделе «Финансирование» ниже.
+    assert tiles["Осталось по смете после всех оплат"]["note"] == (
+        "смета минус всё оплаченное, кредитом и своими деньгами; не хватит 2,39 млрд ₽ с ноября 2026. "
+        "Смета и оплаты для остатка лимита — РСС: дата данных не указана. "
+        "Дата расчётного среза не указана.")
     assert "Дефицит на достройку" not in tiles
     tile = tiles["Потребность в допфинансировании банка"]
     assert tile["value"] == "2,39 млрд ₽"
-    assert tile["note"] == ("на стройку 1,93 млрд ₽ (нужно 3,05 млрд ₽, лимита 1,12 млрд ₽), "
-                            "на коммерцию 465,0 млн ₽ (нужно 621,0 млн ₽, лимита 155,0 млн ₽); "
-                            "с ноября 2026")
+    assert tile["note"] == ("с ноября 2026; участок и проценты по кредиту сюда не входят, "
+                            "разбивка по главам — в разделе «Финансирование». "
+                            "Дата расчётного среза не указана. Источники расчёта: "
+                            "финмодель: дата данных не указана; РСС: дата данных не указана.")
     text = report.render_text(built)
     assert ("на стройку и коммерцию по финмодели нужно 3,67 млрд ₽ при остатке лимита глав 2–3 "
             "1,28 млрд ₽ — потребность в допфинансировании банка 2,39 млрд ₽: на стройку") in text

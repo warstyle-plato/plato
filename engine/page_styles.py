@@ -49,7 +49,7 @@ details[open]>summary>.group-peek{display:none}
 .site-parking-box .site-conflict-mark{color:#b3261e;font-weight:600;font-size:12px}
 .site-card .site-fields{grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px 14px;padding:0 0 4px}
 .site-massing-scheme svg{display:block;width:100%;max-width:640px;height:auto;margin:0 auto}.site-massing-legend{list-style:none;padding:0;margin:6px 0 10px;font-size:13px}.site-massing-legend li{margin:3px 0}.site-massing-legend i{display:inline-block;width:11px;height:11px;border-radius:2px;margin-right:6px;vertical-align:-1px}
-.site-massing-table,.site-massing-levels{width:100%;border-collapse:collapse;font-size:13px}.site-massing-table td,.site-massing-levels td,.site-massing-levels th{padding:4px 6px;border-bottom:1px solid #eee;text-align:left;vertical-align:top}.site-massing-table td.num,.site-massing-levels td.num{text-align:right;white-space:nowrap}.site-massing-table td.hint{font-size:11px;color:#777}.site-massing-sum td{font-weight:600}.site-massing-levels{margin-top:8px;max-width:520px}.site-massing-hint{font-size:12px;color:#666;margin:6px 0}.site-source{display:block;font-size:11px;color:#777;min-height:14px}.site-value{display:block;padding:9px 0;font-size:15px}
+.site-massing-table,.site-massing-levels{width:100%;border-collapse:collapse;font-size:13px}.site-massing-table td,.site-massing-levels td,.site-massing-levels th{padding:4px 6px;border-bottom:1px solid #eee;text-align:left;vertical-align:top}.site-massing-table td.num,.site-massing-levels td.num{text-align:right;white-space:nowrap}.site-massing-table td.hint{font-size:11px;color:#777}.site-massing-sum td{font-weight:600}.site-massing-levels{margin-top:8px;max-width:520px}.site-massing-hint{font-size:12px;color:#666;margin:6px 0}.site-massing-analysis{margin:12px 0}.site-massing-analysis h4{margin:8px 0 4px;font-size:14px}.site-massing-analysis ul{margin:4px 0 8px;padding-left:18px;font-size:13px}.site-massing-analysis li{margin:3px 0}.site-massing-details{margin:6px 0 8px}.site-massing-key{max-width:520px}.site-massing-goto{background:none;border:0;padding:0;color:#2f6fb3;text-decoration:underline;cursor:pointer;font:inherit}.site-massing-details summary{cursor:pointer;color:#2f6fb3;font-size:13px}svg.site-massing-plan{display:block;width:100%;max-width:520px;height:auto;margin:6px auto}.site-massing-land{max-width:520px;margin:6px 0}.site-massing-land caption{text-align:left;font-size:13px;font-weight:600;padding:4px 0}.site-massing-free td{font-weight:600}.site-massing-denser{border-top:1px solid #e3e3e3;margin-top:10px;padding-top:6px}.site-source{display:block;font-size:11px;color:#777;min-height:14px}.site-krt-toggle{display:flex;align-items:center;gap:6px;margin-top:8px;font-size:13px;cursor:pointer}.site-krt-toggle input{width:auto;margin:0}.site-krt-status{font-size:12px;color:#555;margin-top:4px}.site-krt-status .btn{margin:4px 4px 0 0}.site-krt-status input{margin-top:4px}.site-krt-manual{margin-top:6px;font-size:12px}.site-krt-manual summary{cursor:pointer;color:#2f6fb3}.site-krt-manual textarea{width:100%;box-sizing:border-box;font-family:monospace;font-size:12px;margin:4px 0}.site-krt-manual input[type=file]{display:block;margin:6px 0}.site-value{display:block;padding:9px 0;font-size:15px}
 .site-help{border-top:0;padding:0;margin:0 0 4px}.site-help>summary{font-size:12px;font-weight:400;color:#777;padding:4px 0}.site-help>span{display:block;font-size:11px;color:#777;padding:0 0 6px 18px}
 .site-card .note.warning{margin-top:10px}
 #tepSettingsCard .site-parking-box{margin-top:0}
@@ -78,6 +78,13 @@ a.btn{text-decoration:none;font-size:13.3333px;display:inline-block;line-height:
 .kpi{padding:17px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);min-height:92px}
 .kpi span{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#777}.kpi b{display:block;font-size:22px;margin-top:9px;font-weight:620}
 .kpi small{display:block;color:#888;margin-top:5px}
+.kpi-i{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;margin-left:6px;padding:0;border:1px solid #b9b9b9;border-radius:50%;background:transparent;color:#777;font:italic 600 11px/1 Georgia,serif;vertical-align:middle;cursor:pointer;position:relative}
+.kpi-i::before{content:"i"}
+.kpi-i::after{content:"";position:absolute;inset:-10px}
+.kpi-i:hover,.kpi-i:focus-visible,.kpi-i[aria-expanded="true"]{border-color:#555;color:#222;outline:none}
+.kpi-tip{position:fixed;z-index:10000;box-sizing:border-box;padding:10px 12px;border-radius:8px;background:#222;color:#fff;font-size:12px;line-height:1.45;font-weight:400;letter-spacing:0;text-transform:none;box-shadow:0 6px 24px rgba(0,0,0,.18);pointer-events:auto}
+.kpi-tip[hidden]{display:none}
+@media print{.kpi-i,.kpi-tip{display:none!important}}
 .dates{display:grid;grid-template-columns:repeat(4,1fr);gap:0;border-top:1px solid #111;border-left:1px solid var(--line)}
 .datebox{padding:12px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);font-size:11px;color:#777;text-transform:uppercase;letter-spacing:.05em}
 .datebox b{display:block;color:#111;font-size:14px;margin-top:5px;text-transform:none;letter-spacing:0}
@@ -161,6 +168,8 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
 .import-summary b{display:block;margin-top:4px;font-size:13px}
 .import-actions{display:flex;gap:8px;margin-top:14px;align-items:center;flex-wrap:wrap}
 .import-ok{color:var(--positive);font-weight:650}.import-error{color:var(--negative);font-weight:650}
+.site-restrictions{margin:10px 0}.site-restrictions.critical{border-left-color:var(--negative);background:#fbefee}
+.site-restrictions div{margin-top:4px}
 .cadastral-box{margin-top:16px;padding:16px;background:#f7f7f5;border:1px solid #ddd}
 details.cadastral-box>summary{cursor:pointer;font-size:15px;font-weight:600;margin-bottom:6px}
 details.cadastral-box>summary::marker{color:#888}
@@ -189,6 +198,10 @@ details.cadastral-box>summary::marker{color:#888}
 .calc-locked h3{margin:0 0 8px;font-size:15px}
 .calc-locked p{margin:0 0 10px;font-size:13px;color:#555;max-width:640px}
 .calc-locked .calc-locked-why{font-size:11px;color:#888}
+.calc-locked .calc-access-offer{margin:0 0 12px 18px;padding:0;font-size:13px;color:#333;max-width:640px}
+.calc-locked .calc-access-offer li{margin:0 0 4px}
+.calc-access-line{font-size:12px;color:#555;margin:8px 0 0}
+#report.calc-closed>:not(#calcLocked){display:none!important}
 .login-qr{display:flex;gap:12px;align-items:center;margin-top:12px}
 .login-qr img{width:132px;height:132px;border:1px solid #e5e5e3;background:#fff}
 .login-qr span{font-size:11px;color:#777;max-width:260px}
@@ -400,6 +413,11 @@ details.cadastral-box>summary::marker{color:#888}
 .strategy-points-title{font-weight:600;font-size:13px;margin:12px 0 4px}
 .strategy-points{margin:0;padding-left:18px;font-size:12px;line-height:1.5}
 .strategy-compare-stamp{color:var(--muted);font-size:11px;margin-top:10px}
+.loan-term-pick{margin-top:6px}
+.loan-term-pick button{font-size:12px;padding:4px 10px;margin:2px 6px 2px 0}
+.loan-term-pick-lines{margin:6px 0 0;padding-left:18px;font-size:12px;line-height:1.45;color:var(--ink)}
+.loan-term-pick-lines li{margin-bottom:4px}
+.loan-term-pick-error{color:#a33;margin:4px 0 0}
 .object-verdict{font-size:13px;line-height:1.5}
 .object-verdict b{display:block;font-size:15px;margin-bottom:4px}
 table.nonres-strategy tr.section td{font-weight:700;padding-top:12px;border-top:1px solid var(--line)}
@@ -437,6 +455,62 @@ table.nonres-finance-years td:first-child,table.nonres-finance-years th:first-ch
 @media(max-width:700px){.ai-drawer{width:100vw}.ai-open-btn .ai-label{display:none}}
 @media(max-width:700px){.cadastral-entry{grid-template-columns:1fr}.import-summary{grid-template-columns:1fr 1fr}}
 
+/* Личный кабинет (#projectsDialog). Шкала — та же, что у страницы: 15 px —
+   заголовок окна, 13 px — текст, кнопки, поля и таблицы, 11 px — подписи и
+   заголовки разделов (как `.section-title`). Одно семейство: поля и кнопки
+   наследуют шрифт, иначе браузер ставит им свой Arial и 13,3 px. Блоки —
+   белые карточки на мягком фоне, как карточки страницы. Размеры шрифта
+   задаются только здесь: инлайн-кегль в разметке или в строке JS выбивается
+   из шкалы, и проверка на отрисованной странице это ловит. */
+.cab-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:80;align-items:center;justify-content:center;padding:20px}
+.cab{background:var(--soft);max-width:900px;width:100%;max-height:80vh;overflow:auto;padding:18px 20px;font-size:13px;line-height:1.45;color:var(--ink)}
+.cab input,.cab select,.cab button,.cab textarea{font:inherit}
+.cab input,.cab select{padding:7px 9px;border:1px solid #cfcfcf;border-radius:0;background-color:#fff;color:#111}
+/* Safari рисует селект системным (свой шрифт и стрелка) и не слушает
+   `font`, пока у него родной вид: снимаем его и ставим свою стрелку. */
+.cab select{-webkit-appearance:none;appearance:none;padding-right:28px;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23555'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 10px center}
+.cab small,.cab th{font-size:11px}
+.cab-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px}
+.cab-head h2{margin:0;font-size:15px;font-weight:700}
+.cab-close,.cab-push{margin-left:auto}
+.cab-card,.cab-login{background:#fff;border:1px solid var(--line);padding:16px 18px;margin-bottom:12px}
+.cab-login{margin:0 0 12px}
+.cab-title{font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:#777;font-weight:750;margin:0 0 10px}
+.cab-sub{font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:#777;font-weight:750;margin:18px 0 8px}
+.cab p{margin:0 0 6px}.cab ul{margin:0 0 10px 18px;padding:0}.cab li{margin:0 0 4px}
+.cab-note{font-size:11px;color:#777;margin:0 0 8px}
+.cab-muted{color:#666;margin:0 0 8px}
+.cab-warn{color:#a05a00}
+.cab-status:empty{display:none}.cab-status{margin:6px 0}
+.cab-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 8px}
+.cab-row>input,.cab-row>select{width:auto;flex:0 1 280px;min-width:180px}
+.cab-row>input.cab-short,.cab .cab-short{width:72px;min-width:0;flex:none}
+.cab-tabs{display:flex;gap:22px;border-bottom:1px solid var(--line);margin:0 0 14px;overflow-x:auto}
+.cab-tab{border:0;background:none;padding:8px 0 9px;font-weight:700;color:#777;white-space:nowrap;border-bottom:2px solid transparent;margin-bottom:-1px;cursor:pointer}
+.cab-tab.active{color:#000;border-color:#000}
+.cab-panel[hidden]{display:none}
+#projectsFind>input{flex:1 1 280px}
+.cab-pay{margin-top:10px;flex-wrap:wrap}
+.cab-pay>#payEmail{flex:0 1 240px;min-width:180px}
+.cab-pay>label{white-space:nowrap;color:#555}
+.cab-row>.cab-push{margin:0 0 0 auto}.cab-card>:last-child,.cab-row:last-child{margin-bottom:0}
+.cab-demo{border-left:3px solid #6f93b8;background:#f4f8fc;padding:8px 12px}
+.cab-nowrap{white-space:nowrap}.cab .demo-link{word-break:break-all}
+/* Выдача доступа — сетка «подпись слева, поле справа», поле разумной ширины;
+   подсказка — подписью под полем. На телефоне подпись встаёт над полем. */
+.grant-form{display:grid;gap:10px;max-width:660px;margin:0 0 10px}
+.grant-form>label{display:grid;grid-template-columns:200px minmax(0,1fr);gap:4px 16px;align-items:baseline}
+.grant-form>label>span:first-child{color:#555}
+.grant-form>label>span:last-child>input,.grant-form>label>span:last-child>select{width:100%;max-width:420px}
+.grant-form>label>span:last-child>.cab-short{width:90px}
+.grant-form small{display:block;color:#777;margin-top:3px;max-width:420px}
+.grant-submit{padding-left:216px}
+@media(max-width:640px){
+  .cab{padding:14px 12px}.cab-card,.cab-login{padding:12px}
+  .grant-form>label{grid-template-columns:1fr}.grant-submit{padding-left:0}
+}
 /* Анкета. Двадцать три подпункта в двух колонках на телефоне превращаются в
    лапшу: подпись ломается на три строки, баллы жмутся к правому краю. На узком
    экране строка раскладывается вертикально — подпись сверху, баллы под ней во

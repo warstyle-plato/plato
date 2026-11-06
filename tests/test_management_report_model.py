@@ -28,6 +28,15 @@ from market_search import sales_store
 M = 1e6
 PROJECT = "Гродненская"
 
+# Монитор и сводка — только по ключу администратора (решение владельца
+# 02.11.2026): страница и маршруты открываются ключом, а не сессией.
+ADMIN_TEST_KEY = "browser-admin-key"
+
+
+@pytest.fixture(autouse=True)
+def _admin_key(monkeypatch):
+    monkeypatch.setenv("DEVELOPAID_ADMIN_KEY", ADMIN_TEST_KEY)
+
 
 @pytest.fixture(autouse=True)
 def _isolated(tmp_path, monkeypatch):
@@ -367,7 +376,7 @@ def test_message_carries_all_three_blocks():
                                            sales_project="ЖК Гродненская"))
     assert "за октябрь 2026" in text
     assert "Стройка и проектирование за октябрь 2026: оплачено 150,0 млн ₽." in text
-    assert "План банка на квартал: 280,0 млн ₽" in text
+    assert "План банка на квартал — 280,0 млн ₽" in text
     assert "Выполнено по графику работ" in text
 
 
@@ -389,6 +398,10 @@ def test_budget_route_stores_and_refuses_by_name(monkeypatch):
     import main_legacy as core
 
     monkeypatch.setattr(core, "_require_web_access", lambda *_a, **_k: None)
+
+    # Пропуск монитора — ключ администратора; здесь проверяется сам маршрут.
+
+    monkeypatch.setattr(core, "_require_admin_key", lambda *_a, **_k: None)
     good = core.MonitorEstimateRequest(
         project=PROJECT, taken_at="2026-10-02", filename="бюджет.xlsx",
         content_base64=base64.b64encode(budget_book()).decode())
@@ -405,7 +418,7 @@ def test_budget_route_stores_and_refuses_by_name(monkeypatch):
     assert "шапки с месяцами" in bad.value.detail
 
 
-def test_several_periods_load_the_same_day_and_the_latest_period_wins():
+def test_several_periods_load_the_same_day_and_the_last_upload_wins():
     # «Эти я загрузить через форму не смог: он не принял новые файлы вообще,
     # сказал что октябрь уже загружен» (владелец, 21.10.2026). Файлы БДДС за
     # прошлые периоды догружаются пачкой в один день.
@@ -417,10 +430,16 @@ def test_several_periods_load_the_same_day_and_the_latest_period_wins():
                     ("Сентябрь 2026", (-777, -10, -30), (None, None, None)))):
         stored = monthly_budget.store_budget(PROJECT, budget_book(months=months), "2026-10-21")
         assert stored["replaced"] is False
-    # Август — из файла за август—сентябрь (период позже), а не за июль—август.
+    # Август — из файла за август—сентябрь: он загружен последним.
     plan = monthly_budget._plan(PROJECT, "2026-08-01", "2026-10-31")
     assert plan["plan"]["construction"] == pytest.approx(212 * M)
-    # Сентябрь — из файла за сентябрь—октябрь, хотя он загружен раньше.
+    # Сентябрь — тоже из него: решение владельца (02.11.2026) «брать последний
+    # загруженный», а не файл с более поздним периодом. Нужен сентябрь из
+    # файла за сентябрь—октябрь — лишний файл убирают кнопкой «Убрать».
+    plan = monthly_budget._plan(PROJECT, "2026-09-01", "2026-10-31")
+    assert plan["file"] == "2026-10-21"
+    assert plan["plan"]["construction"] == pytest.approx(767 * M)
+    monthly_budget.remove_budget(PROJECT, "2026-10-21_2026-08_2026-09.xlsx")
     plan = monthly_budget._plan(PROJECT, "2026-09-01", "2026-10-31")
     assert plan["file"] == "2026-10-02"
 

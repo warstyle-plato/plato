@@ -261,7 +261,7 @@ def _segments_cross(p1, p2, q1, q2) -> bool:
 
 
 def _poly_inside(poly: list[list[float]], ring: list[list[float]]) -> bool:
-    """Выпуклый многоугольник целиком внутри кольца (кольцо может быть вогнутым)."""
+    """Многоугольник целиком внутри кольца (оба могут быть вогнутыми)."""
     cx = sum(p[0] for p in poly) / len(poly)
     cy = sum(p[1] for p in poly) / len(poly)
     # Углы чуть стянуты к центру: корпус, стоящий ровно на границе, — внутри.
@@ -279,28 +279,27 @@ def _poly_inside(poly: list[list[float]], ring: list[list[float]]) -> bool:
         for j in range(len(probe)):
             if _segments_cross(a, b, probe[j], probe[(j + 1) % len(probe)]):
                 return False
-        if _convex_contains(probe, a):
+        if _inside((a[0], a[1]), [probe]):
             return False
     return True
 
 
-def _convex_contains(poly: list[list[float]], p: list[float]) -> bool:
-    sign = 0.0
-    for i in range(len(poly)):
-        a, b = poly[i], poly[(i + 1) % len(poly)]
-        cross = (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0])
-        if abs(cross) < 1e-9:
-            return False
-        if sign == 0.0:
-            sign = cross
-        elif (cross > 0) != (sign > 0):
-            return False
+def _ring_simple(ring: list[list[float]]) -> bool:
+    """Кольцо без самопересечений: несоседние стороны не пересекаются."""
+    count = len(ring)
+    for i in range(count):
+        for j in range(i + 1, count):
+            if j == i + 1 or (i == 0 and j == count - 1):
+                continue
+            if _segments_cross(ring[i], ring[(i + 1) % count], ring[j], ring[(j + 1) % count]):
+                return False
     return True
 
 
 def _gap_between(p: list[list[float]], q: list[list[float]]) -> float:
     """Расстояние между выпуклыми многоугольниками; наложение — отрицательное
-    (глубина по лучшей оси разделения)."""
+    (глубина по лучшей оси разделения). У вогнутого пятна — расстояние между
+    выпуклыми оболочками: не больше настоящего, проверка строже, а не мягче."""
     best = -_math.inf
     for poly in (p, q):
         for i in range(len(poly)):
@@ -663,6 +662,24 @@ def massing_place_plan(corpora: list[dict[str, Any]], blocks: list[dict[str, Any
             return f"Платон поставил корпус «{cid}», которого нет в расчёте."
         if cid in seen:
             return f"Платон поставил корпус «{by_id[cid]['label']}» дважды."
+        ring = item.get("ring_m")
+        if ring is not None:
+            # Пятно любой формы — только у отдельного нежилого здания (`free_shape`).
+            c = by_id[cid]
+            if not c.get("free_shape"):
+                return f"Корпус «{c['label']}» — секция, его пятно — прямоугольник на фронте."
+            try:
+                ring = [[float(p[0]), float(p[1])] for p in ring]
+            except (TypeError, ValueError, IndexError):
+                return f"У корпуса «{c['label']}» в плане Платона негодный контур."
+            ring = _clean_ring(ring)
+            if not 3 <= len(ring) <= 24 or not _ring_simple(ring):
+                return f"Контур корпуса «{c['label']}» в плане Платона пересекает сам себя."
+            seen.add(cid)
+            c["ring_m"] = [[round(p[0], 2), round(p[1], 2)] for p in ring]
+            c["place"] = {"corpus": cid, "ring_m": c["ring_m"]}
+            c["shape"] = "polygon"
+            continue
         if fid not in fronts:
             return f"Платон поставил корпус «{by_id[cid]['label']}» на фронт «{fid}», которого нет."
         try:

@@ -1,0 +1,535 @@
+"""A source-backed contract view, not another financial register.
+
+RSS is the primary monetary source. Cumulative books add quantities and a
+separately identified closing register; yearly book totals never become the
+full price of a contract. The caller must authenticate before calling here.
+"""
+from __future__ import annotations
+
+import datetime as dt
+import hashlib
+import importlib
+import json
+import math
+import os
+import re
+import tempfile
+from pathlib import Path
+from typing import Any
+
+import developaid_actuals as actuals
+import developaid_monitor as monitor
+from developaid_monitor_ledgers import amount_basis as _amount_basis
+
+
+class ContractProblem(ValueError):
+    """A controlled, safe message that may be returned to an authenticated user."""
+
+
+def _date(value: Any) -> str | None:
+    if isinstance(value, dt.datetime):
+        return value.date().isoformat()
+    if isinstance(value, dt.date):
+        return value.isoformat()
+    if not isinstance(value, str):
+        return None
+    try:
+        return dt.date.fromisoformat(value).isoformat()
+    except ValueError:
+        parsed = actuals._date(value)
+        return parsed.isoformat() if parsed else None
+
+
+def _cut(value: str) -> str:
+    value = value or dt.date.today().isoformat()
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        raise ContractProblem("Дата среза нужна в виде ГГГГ-ММ-ДД.")
+    try:
+        return dt.date.fromisoformat(value).isoformat()
+    except ValueError:
+        raise ContractProblem("Проверьте дату среза.") from None
+
+
+def _number(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, str):
+        value = value.replace("\xa0", "").replace(" ", "").replace(",", ".")
+        if not value or value.startswith(("=", "#")):
+            return None
+    try:
+        result = float(value)
+    except (ValueError, TypeError, OverflowError):
+        return None
+    return result if math.isfinite(result) else None
+
+
+def _norm(value: Any) -> str:
+    value = str(value or "").casefold().replace("ё", "е")
+    return re.sub(r"\s+", " ", re.sub(r'[«»“”"]', "", value)).strip()
+
+
+def _contract_number(value: Any) -> str:
+    # Strip only explicit decoration. Punctuation within a number is identity:
+    # 12/3 and 123 must not silently become the same contract.
+    value = re.split(r"\s+от\s+", str(value or ""), maxsplit=1, flags=re.I)[0]
+    value = re.sub(r"^\s*(?:договор\b\s*)?№?\s*", "", value, flags=re.I)
+    return re.sub(r"\s+", "", value).casefold().replace("ё", "е")
+
+
+def _base_key(item: dict) -> tuple[str, str, str]:
+    return (_norm(item.get("customer")), _norm(item.get("contractor")),
+            _contract_number(item.get("contract")))
+
+
+def _source(value: Any, label: str = "") -> dict:
+    source = dict(value) if isinstance(value, dict) else {}
+    if label:
+        source.setdefault("label", label)
+    return source
+
+
+def _warnings(values) -> list[str]:
+    out = []
+    for value in values or []:
+        if isinstance(value, dict):
+            value = value.get("message") or value.get("detail") or value.get("code")
+        if isinstance(value, str) and value and value not in out:
+            out.append(value)
+    return out
+
+
+def _basis(value: Any) -> str:
+    return value if value in {"with_vat", "without_vat"} else "unspecified"
+
+
+def _archive(project: str, cut: str) -> dict | None:
+    try:
+        ledgers = importlib.import_module("developaid_monitor_ledgers")
+    except ModuleNotFoundError as exc:
+        if exc.name != "developaid_monitor_ledgers":
+            raise
+        return None
+    return ledgers.latest_snapshot(project, cut)
+
+
+def _read_rss(project: str, cut: str) -> tuple[list[dict], str | None, list[str]]:
+    path = monitor._latest(project, "estimate", ".xlsx", cut)
+    if path is None:
+        return [], None, []
+    day = path.stem
+    try:
+        parsed = actuals.read_contracts(path)
+        # The legacy reader deliberately converts empty monetary cells to 0.
+        # Restore availability from its very same source cells for this view.
+        raw = list(actuals._sheet(path, actuals._CONTRACTS_SHEET))
+    except (KeyError, ValueError, OSError):
+        return [], day, ["Реестр договоров в выбранном снимке РСС не прочитан."]
+    source_rows = []
+    for row_number, row in enumerate(raw, 1):
+        if row_number < actuals._CONTRACTS_FIRST_ROW:
+            continue
+        get = lambda index: row[index] if index < len(row) else None
+        if not str(get(1) or "").strip() and not actuals._money(get(7)):
+            continue
+        source_rows.append((row_number, row))
+    if len(source_rows) != len(parsed.get("rows") or []):
+        return [], day, ["Строки реестра договоров РСС неоднозначны; денежные значения не объединены."]
+    header = {i: _norm(v) for r in raw[:actuals._CONTRACTS_FIRST_ROW-1]
+              for i, v in enumerate(r) if v is not None}
+    deadline_cols = [i for i, text in header.items()
+                     if text in {"срок исполнения", "срок договора", "срок выполнения работ",
+                                 "дата исполнения", "дата окончания работ", "срок окончания работ",
+                                 "дата завершения работ", "окончание работ"}]
+    date_cols = [i for i, text in header.items() if text in {"дата договора", "дата заключения договора"}]
+    out = []
+    for item, (row_number, raw_row) in zip(parsed.get("rows") or [], source_rows):
+        if _norm(item.get("contractor")).startswith(("итого", "всего")):
+            continue
+        row = dict(item, kind="rss", customer="", source_date=day)
+        row["amount"] = _number(raw_row[7]) if len(raw_row) > 7 else None
+        row["completed"] = _number(raw_row[11]) if len(raw_row) > 11 else None
+        row["amount_basis"] = _amount_basis(" ".join(str(r[7] or "") for r in raw[:8] if len(r) > 7))
+        row["completed_basis"] = _amount_basis(" ".join(str(r[11] or "") for r in raw[:8] if len(r) > 11))
+        row["contract_date"] = (_date(raw_row[date_cols[0]]) if len(date_cols) == 1
+                                and len(raw_row) > date_cols[0] else None)
+        if not row["contract_date"] and re.search(r"\sот\s", row.get("contract", ""), re.I):
+            row["contract_date"] = _date(row["contract"])
+        row["deadline"] = (_date(raw_row[deadline_cols[0]]) if len(deadline_cols) == 1
+                           and len(raw_row) > deadline_cols[0] else None)
+        row["source"] = {"label": "Реестр договоров РСС", "filename": path.name,
+                         "sheet": actuals._CONTRACTS_SHEET, "row": row_number}
+        out.append(row)
+    return out, day, []
+
+
+def _groups(entries: list[dict], project: str) -> list[tuple[str, list[dict]]]:
+    buckets: dict[tuple, list[dict]] = {}
+    for ordinal, item in enumerate(entries):
+        base = _base_key(item)
+        # Missing identity does not authorize a join, even if names coincide.
+        key = base if base[1] and base[2] else (*base, "unresolved", ordinal)
+        buckets.setdefault(key, []).append(item)
+    result = []
+    for base, items in buckets.items():
+        partitions = {}
+        for item in items:
+            # A known date is always part of identity, even when the old and
+            # reissued contracts occur in two different source snapshots.
+            date = _date(item.get("contract_date")) or "unknown-date"
+            partitions.setdefault(date, []).append(item)
+        for date, grouped in partitions.items():
+            if not grouped:
+                continue
+            identity = json.dumps([monitor._resolved_slug(project), base, date],
+                                  ensure_ascii=False, separators=(",", ":"))
+            identifier = hashlib.sha256(identity.encode()).hexdigest()
+            if len(partitions) > 1:
+                grouped = [dict(item, warnings=_warnings(item.get("warnings")) + [
+                    "Даты одноимённых договоров различаются или отсутствуют; записи не объединены."])
+                    for item in grouped]
+            result.append((identifier, grouped))
+    return result
+
+
+def _rss_money(items: list[dict], warnings: list[str]) -> tuple[float | None, float | None, str, str]:
+    rows = [x for x in items if x.get("kind") == "rss"]
+    # Exact duplicates, including the article, do not multiply a contract.
+    unique = {}
+    for row in rows:
+        key = json.dumps({k: row.get(k) for k in
+                          ("amount", "completed", "estimate_code", "subject", "article_name",
+                           "amount_basis", "completed_basis")},
+                         ensure_ascii=False, sort_keys=True)
+        unique[key] = row
+    rows = list(unique.values())
+    if len(rows) > 1:
+        totals = [r for r in rows if re.search(r"итого\s+по\s+договору|всего\s+по\s+договору",
+                                             str(r.get("subject") or ""), re.I)]
+        rows = totals if len(totals) == 1 else rows
+    if len(rows) > 1:
+        warnings.append("Договор разбит на несколько строк РСС. Полная сумма и выполнение требуют сверки; строки не сложены.")
+        return None, None, "unspecified", "unspecified"
+    if not rows:
+        return None, None, "unspecified", "unspecified"
+    amount, completed = _number(rows[0].get("amount")), _number(rows[0].get("completed"))
+    if amount is not None and amount < 0:
+        warnings.append("Отрицательная сумма договора в РСС требует проверки.")
+        amount = None
+    return amount, completed, _basis(rows[0].get("amount_basis")), _basis(rows[0].get("completed_basis"))
+
+
+def _summary_money(items: list[dict], cut: str, warnings: list[str]) -> tuple[float | None, float | None, str, str]:
+    rows = [r for r in items if r.get("kind") == "summary"]
+    if not rows:
+        return None, None, "unspecified", "unspecified"
+    amount_rows = []
+    for row in rows:
+        versions = row.get("amount_versions") or []
+        if versions:
+            for version in versions:
+                amount_rows.append({"amount": version.get("amount"),
+                                    "amount_date": version.get("date"),
+                                    "amount_scope": version.get("scope"),
+                                    "amount_basis": version.get("amount_basis")})
+        else:
+            amount_rows.append(row)
+    candidates = [r for r in amount_rows if not _date(r.get("amount_date"))
+                  or _date(r.get("amount_date")) <= cut]
+    dated = [r for r in candidates if _date(r.get("amount_date"))]
+    if dated and len(dated) == len(candidates):
+        latest = max(_date(r.get("amount_date")) for r in dated)
+        candidates = [r for r in dated if _date(r.get("amount_date")) == latest]
+    values = {_number(r.get("amount")) for r in candidates}
+    amount = next(iter(values)) if len(values) == 1 else None
+    price_bases = {_basis(r.get("amount_basis")) for r in candidates}
+    explicit_price_bases = price_bases - {"unspecified"}
+    amount_basis = ("conflicting" if len(explicit_price_bases) > 1 else
+                    next(iter(explicit_price_bases)) if explicit_price_bases else "unspecified")
+    if amount_basis == "conflicting":
+        warnings.append("В источниках суммы договора различаются базы НДС; денежный процент требует сверки.")
+    # An amendment amount with unknown semantics invalidates the current full
+    # price. It must not disappear from the candidates and revive an old price.
+    if any(r.get("amount_scope") not in {None, "", "full_contract"} for r in candidates):
+        amount = None
+        warnings.append("Сумма допсоглашения не подтверждена как полная новая цена договора; действующая сумма требует сверки.")
+    if len(values) > 1:
+        warnings.append("В сводной несколько несогласованных сумм договора; сумма не выбрана автоматически.")
+    if amount is not None and amount < 0:
+        amount = None
+        warnings.append("Отрицательная сумма договора в сводной требует проверки.")
+    acts = [act for row in rows for act in row.get("acts") or []]
+    if not acts:
+        return amount, None, amount_basis, "unspecified"
+    by_key = {}
+    uncertain = False
+    for act in acts:
+        date, value = _date(act.get("date")), _number(act.get("amount"))
+        if date and date > cut:
+            continue
+        if date is None or value is None:
+            uncertain = True
+            continue
+        number = _norm(act.get("number"))
+        source = act.get("source") or {}
+        key = (number, date) if number else ("source", date, json.dumps(source, sort_keys=True))
+        evidence = (value, _basis(act.get("amount_basis")))
+        if key in by_key and by_key[key] != evidence:
+            uncertain = True
+        by_key[key] = evidence
+    if uncertain:
+        warnings.append("Акты без даты, суммы или с конфликтующими значениями требуют сверки; выполнение не посчитано.")
+        return amount, None, amount_basis, "unspecified"
+    act_bases = {basis for _, basis in by_key.values() if basis != "unspecified"}
+    if len(act_bases) > 1:
+        warnings.append("В актах смешаны суммы с НДС и без НДС; они не сложены в единое выполнение.")
+        return amount, None, amount_basis, "unspecified"
+    completed_basis = next(iter(act_bases)) if act_bases else "unspecified"
+    return amount, sum(value for value, _ in by_key.values()), amount_basis, completed_basis
+
+
+def _physical(item: dict, ledger: dict, cut: str) -> dict:
+    result = {k: item.get(k) for k in
+              ("position", "name", "scope", "unit", "plan_quantity", "planned_amount")}
+    result["source"] = _source(item.get("source") or ledger.get("source"), "Накопительная КС-6а")
+    result["period_year"] = ledger.get("period_year")
+    result["warnings"] = _warnings(item.get("warnings"))
+    result["snapshot_date"] = _date(ledger.get("source_date"))
+    periods = list(item.get("periods") or [])
+    included = [p for p in periods if _date(p.get("date_end"))
+                and _date(p["date_end"]) <= cut
+                and (not _date(p.get("date_start"))
+                     or _date(p["date_start"]) <= _date(p["date_end"]))]
+    # A period ending after cut is never returned as a fact for the cut.
+    result["periods"] = included
+    result["quantity_date"] = max((_date(p["date_end"]) for p in included), default=None)
+    result["quantity_cut"] = cut
+    has_future_values = any(_date(p.get("date_end")) and _date(p["date_end"]) > cut
+                            and any((_number(p.get(key)) or 0) != 0
+                                    for key in ("quantity", "material_quantity", "amount"))
+                            for p in periods)
+
+    def asof(field: str, annual_field: str) -> tuple[float | None, str]:
+        annual = _number(item.get(annual_field))
+        if annual is None:
+            return None, "Накопительный итог не подтверждён числом."
+        if not any(_date(p.get("date_end")) for p in periods):
+            return None, "Накопительный итог без дат выполнения; доступен только справочно."
+        values = [(p, _number(p.get(field))) for p in periods]
+        if any(value not in (None, 0) and not _date(p.get("date_end")) for p, value in values):
+            return None, "Есть выполнение без даты периода; итог на дату среза не определён."
+        if any(value not in (None, 0) and _date(p.get("date_start"))
+               and _date(p.get("date_end")) and _date(p["date_start"]) > _date(p["date_end"])
+               for p, value in values):
+            return None, "Начало периода позже его окончания; итог на дату среза не определён."
+        if any(value not in (None, 0) and _date(p.get("date_end")) > cut
+               and (not _date(p.get("date_start")) or _date(p["date_start"]) <= cut)
+               for p, value in values if _date(p.get("date_end"))):
+            return None, "Период выполнения пересекает дату среза; делить его объём по дням нельзя."
+        total = sum(value for _, value in values if value is not None)
+        if abs(total-annual) > max(1e-6, abs(annual)*1e-7):
+            return None, "Накопительный итог не сходится с объёмами периодов; требуется сверка."
+        fact = sum(_number(p.get(field)) or 0 for p in included)
+        return fact, "По датированным периодам, завершённым не позднее даты среза."
+
+    fact, basis = asof("quantity", "completed_quantity")
+    material, _ = asof("material_quantity", "material_quantity")
+    amount, _ = asof("amount", "completed_amount")
+    result["completed_amount"] = amount
+    result["material_quantity"] = material
+    result["quantity_basis"] = basis
+    result["dated_completed_quantity"] = sum(_number(p.get("quantity")) or 0 for p in included) if included else None
+    # Undated source totals remain explicitly separate reference values. An
+    # annual total known to contain future periods is not exposed in this cut.
+    for field in ("completed_quantity", "material_quantity", "completed_amount"):
+        result["reported_"+field] = (_number(item.get(field)) if fact is None
+                                     and not has_future_values else None)
+    reported = result["reported_completed_quantity"]
+    reported_plan = _number(result["plan_quantity"])
+    result["reported_completion_ratio"] = (reported / reported_plan if reported is not None
+                                           and reported_plan is not None and reported_plan > 0 else None)
+    result["reported_quantity_basis"] = ("Итог ведомости, дата выполнения не подтверждена; не факт на дату среза."
+        if not any(_date(p.get("date_end")) for p in periods) else
+        "Справочный итог ведомости; как факт на дату среза не подтверждён.")
+    result["future_periods_excluded"] = has_future_values
+    if fact is None:
+        result["warnings"].append(basis)
+    if has_future_values:
+        result["warnings"].append("Выполнение периодов позже даты среза исключено.")
+    plan = _number(result["plan_quantity"])
+    result["plan_quantity"], result["completed_quantity"] = plan, fact
+    result["completion_ratio"] = fact / plan if plan is not None and plan > 0 and fact is not None else None
+    if plan is None or plan <= 0:
+        result["warnings"].append("Нет положительного полного объёма этой позиции; процент не определён.")
+    if fact is not None and fact < 0:
+        result["warnings"].append("Отрицательное выполнение требует проверки.")
+    if result["completion_ratio"] is not None and result["completion_ratio"] > 1.000001:
+        result["warnings"].append("Выполнение превышает объём позиции; требуется сверка.")
+    return result
+
+
+def _terms_path(project: str) -> Path:
+    return monitor._project_dir(project) / "cumulative_terms.json"
+
+
+def _read_terms(project: str) -> dict:
+    try:
+        data = json.loads(_terms_path(project).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (ValueError, OSError):
+        raise ContractProblem("Сохранённые сроки договоров не прочитаны; проверьте хранилище проекта.") from None
+    if not isinstance(data, dict):
+        raise ContractProblem("Сохранённые сроки договоров имеют неверный формат.")
+    return data
+
+
+def build(project: str, cut: str = "") -> dict:
+    """Read current source snapshots; never mutate finance or physical GPR."""
+    cut = _cut(cut)
+    if not str(project or "").strip():
+        raise ContractProblem("Выберите проект.")
+    rss, rss_day, warnings = _read_rss(project, cut)
+    snapshot = _archive(project, cut)
+    archive_day = (snapshot or {}).get("taken_at")
+    if snapshot and (not _date(archive_day) or _date(archive_day) > cut):
+        warnings.append("Дата накопительного архива не подтверждена или позже среза; архив не включён в этот срез.")
+        snapshot, archive_day = None, None
+    entries = list(rss)
+    for kind, key in (("summary", "summary_contracts"), ("ledger", "ledgers")):
+        for original in (snapshot or {}).get(key) or []:
+            entries.append(dict(original, kind=kind, source_date=archive_day))
+    terms = _read_terms(project)
+    rows = []
+    for identifier, items in _groups(entries, project):
+        first = items[0]
+        row_warnings = _warnings([v for x in items for v in x.get("warnings") or []])
+        if not _base_key(first)[1] or not _base_key(first)[2]:
+            row_warnings.append("Не хватает контрагента или номера договора; запись не объединена с другими источниками.")
+        amount, completed, amount_basis, completed_basis = _rss_money(items, row_warnings)
+        summary_amount, summary_completed, summary_amount_basis, summary_completed_basis = _summary_money(items, cut, row_warnings)
+        rss_items = [x for x in items if x.get("kind") == "rss"]
+        summary_items = [x for x in items if x.get("kind") == "summary"]
+        primary = rss_items[0] if rss_items else (summary_items[0] if summary_items else first)
+        if not rss_items:
+            amount, completed = summary_amount, summary_completed
+            amount_basis, completed_basis = summary_amount_basis, summary_completed_basis
+        elif summary_items and any(a is not None and b is not None and abs(a-b) > 0.01
+                                   for a, b in ((amount, summary_amount), (completed, summary_completed))):
+            row_warnings.append("РСС и сводная дают разные денежные значения. Основной показатель оставлен по РСС; источники требуют сверки.")
+        if not rss_items and not summary_items:
+            row_warnings.append("В накопительной указан объём отдельного года или листа. Полная сумма договора и процент актирования не подтверждены.")
+        if amount is None:
+            row_warnings.append("Нет подтверждённой полной суммы договора.")
+        if completed is None:
+            row_warnings.append("Нет подтверждённой суммы актированного выполнения на дату среза.")
+        comparable = (amount_basis != "conflicting" and completed_basis != "conflicting"
+                      and not (amount_basis != "unspecified" and completed_basis != "unspecified"
+                               and amount_basis != completed_basis))
+        if not comparable:
+            row_warnings.append("Сумма договора и актированное выполнение указаны с разными базами НДС; процент и остаток не рассчитаны.")
+        ratio = completed / amount if comparable and amount is not None and amount > 0 and completed is not None else None
+        if ratio is not None and (ratio < 0 or ratio > 1.000001):
+            row_warnings.append("Актированное выполнение выходит за пределы суммы договора; требуется сверка.")
+        deadlines = {_date(x.get("deadline")) for x in items if _date(x.get("deadline"))}
+        deadline = next(iter(deadlines)) if len(deadlines) == 1 else None
+        deadline_source = {"label": "Срок из источника"} if deadline else None
+        if len(deadlines) > 1:
+            row_warnings.append("В источниках указаны разные сроки договора; срок не выбран автоматически.")
+        manual = terms.get(identifier)
+        manual_reference = None
+        if isinstance(manual, dict) and _date(manual.get("deadline")):
+            updated = str(manual.get("updated_at") or "")
+            updated_day = _date(updated[:10])
+            manual_reference = {"deadline": _date(manual["deadline"]), "note": str(manual.get("note") or ""),
+                                "updated_at": manual.get("updated_at"), "label": "Текущий ручной срок",
+                                "applicable_to_cut": bool(updated_day and updated_day <= cut)}
+            if updated_day and updated_day <= cut:
+                deadline = manual_reference["deadline"]
+                deadline_source = {"label": "Указан вручную", "note": manual_reference["note"],
+                                   "updated_at": manual.get("updated_at")}
+            else:
+                row_warnings.append("Ручной срок введён позже даты среза или дата ввода неизвестна; он показан только как текущая справка.")
+        physical = [_physical(item, ledger, cut) for ledger in items if ledger.get("kind") == "ledger"
+                    for item in ledger.get("items") or []]
+        row = {"id": identifier, "contractor": str(first.get("contractor") or ""),
+               "customer": str(first.get("customer") or ""),
+               "contract": str(first.get("contract") or ""),
+               "contract_date": next((_date(x.get("contract_date")) for x in items
+                                      if _date(x.get("contract_date"))), None),
+               "subject": str(next((x.get("subject") for x in items if x.get("subject")), "")),
+               "amount": amount, "completed": completed, "completion_ratio": ratio,
+               "amount_basis": amount_basis, "completed_basis": completed_basis,
+               "monetary_comparable": comparable,
+               "remaining": amount-completed if comparable and amount is not None and completed is not None else None,
+               "deadline": deadline, "deadline_source": deadline_source,
+               "manual_deadline_reference": manual_reference,
+               "deadline_passed": bool(deadline and deadline < cut),
+               "source": _source(primary.get("source"), "Реестр договоров"),
+               "source_date": primary.get("source_date"), "warnings": _warnings(row_warnings),
+               "requires_reconciliation": bool(row_warnings),
+               "physical_items": physical,
+               "sources": [_source(x.get("source")) for x in items],
+               "financial_sources": ([{"label": "РСС", "amount": amount, "completed": completed,
+                                        "source_date": rss_day, "amount_basis": amount_basis,
+                                        "completed_basis": completed_basis}] if rss_items else [])
+                  + ([{"label": "Сводная по закрытию", "amount": summary_amount,
+                       "completed": summary_completed, "source_date": archive_day,
+                       "amount_basis": summary_amount_basis,
+                       "completed_basis": summary_completed_basis}] if summary_items else []),
+               "scope": sorted({str(item.get("scope") or "") for item in physical if item.get("scope")}),
+               "performance_basis": "Актированное выполнение в рублях; не оплата и не физическая готовность"}
+        rows.append(row)
+    # A missing customer cannot silently match a named customer in another book.
+    by_party_number = {}
+    for row in rows:
+        by_party_number.setdefault((_norm(row["contractor"]), _contract_number(row["contract"])), []).append(row)
+    for group in by_party_number.values():
+        if len(group) > 1 and len({_norm(x["customer"]) for x in group}) > 1:
+            for row in group:
+                row["warnings"].append("Номер и контрагент встречаются у разных или неуказанных заказчиков; записи оставлены раздельно.")
+    rows.sort(key=lambda r: (_norm(r["contractor"]), _norm(r["customer"]), _norm(r["contract"]), r["id"]))
+    return {"cut": cut, "source_date": max(filter(None, (rss_day, archive_day)), default=None),
+            "rows": rows, "snapshots": {"rss": rss_day, "cumulative": archive_day,
+                                         "cumulative_id": (snapshot or {}).get("snapshot_id")},
+            "warnings": _warnings(warnings + _warnings((snapshot or {}).get("warnings"))),
+            "performance_basis": "Актированное выполнение в рублях; не оплата и не физическая готовность"}
+
+
+def set_term(project: str, contract_id: str, deadline: str, note: str = "") -> dict:
+    """Save one explicit contractual deadline, independently of GPR dates."""
+    if not re.fullmatch(r"[0-9a-f]{64}", str(contract_id or "")):
+        raise ContractProblem("Выберите договор из списка.")
+    if not str(project or "").strip():
+        raise ContractProblem("Выберите проект.")
+    if not isinstance(deadline, str) or (deadline and (
+            _date(deadline) != deadline or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", deadline))):
+        raise ContractProblem("Срок договора нужен в виде ГГГГ-ММ-ДД.")
+    if not isinstance(note, str) or len(note) > 500:
+        raise ContractProblem("Пояснение к сроку должно быть не длиннее 500 символов.")
+    if contract_id not in {r["id"] for r in build(project)["rows"]}:
+        raise ContractProblem("Договор не найден в текущих данных выбранного проекта.")
+    path = _terms_path(project)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    import fcntl
+    fd = os.open(path.with_suffix(".lock"), os.O_RDWR | os.O_CREAT, 0o600)
+    with os.fdopen(fd, "a+b") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        data = _read_terms(project)
+        if deadline:
+            record = {"deadline": deadline, "note": note,
+                      "updated_at": dt.datetime.now(dt.timezone.utc).isoformat()}
+            data[contract_id] = record
+        else:
+            data.pop(contract_id, None)
+            record = {"deadline": None, "note": ""}
+        temp_fd, temporary = tempfile.mkstemp(prefix=".terms-", dir=path.parent)
+        try:
+            with os.fdopen(temp_fd, "w", encoding="utf-8") as output:
+                json.dump(data, output, ensure_ascii=False, allow_nan=False)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, path)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+    return {"contract_id": contract_id, **record}

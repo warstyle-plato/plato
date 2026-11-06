@@ -69,6 +69,15 @@ def private(text: str) -> dict:
                         "from": {"id": OWNER}, "text": text, "date": 1757721600}}
 
 
+def subscribe(chat: int, project: str) -> None:
+    """В список подписки на сводку — так, как это делает ссылка-приглашение.
+    Сводку и данные стройки в Telegram видит только подписчик (решение
+    владельца 02.11.2026)."""
+    import developaid_report_mailing as mailing
+
+    mailing.subscribe(mailing.invite(project, "владелец")["start"], chat, "")
+
+
 def status_of(bot) -> str:
     bot.sent.clear()
     bot._handle_update(private("/status"))
@@ -79,6 +88,7 @@ def status_of(bot) -> str:
 
 def test_status_says_nothing_seen_when_nothing_was_seen(bot) -> None:
     """Пустой счёт — это ответ, а не прочерк: privacy mode виден только так."""
+    subscribe(OWNER, "Кутузов Сити")
     answer = status_of(bot)
     assert "Группы:" in answer
     assert "ни одного" in answer
@@ -86,15 +96,25 @@ def test_status_says_nothing_seen_when_nothing_was_seen(bot) -> None:
 
 def test_status_carries_what_the_group_gave(bot) -> None:
     """Сообщение из группы дошло — значит в `/status` есть её имя и счёт."""
+    subscribe(OWNER, "Кутузов Сити")
+    bot._handle_update(group("/site Кутузов Сити"))
     bot._handle_update(group("доброе утро"))
     answer = status_of(bot)
     assert "Стройка" in answer, answer
 
 
+def test_without_a_subscription_status_names_no_group(bot) -> None:
+    """Админ по chat_id, но не в списке подписки, — ни групп, ни проектов."""
+    bot._handle_update(group("/site Кутузов Сити"))
+    bot._handle_update(group("доброе утро"))
+    answer = status_of(bot)
+    assert "Стройка" not in answer and "Кутузов Сити" not in answer, answer
+    assert "Группы" not in answer and "Привязки чатов" not in answer, answer
+
+
 def test_the_binding_outcome_reaches_status(bot, monkeypatch) -> None:
     """Исход разбора важнее счёта: по нему и видно, куда легла сводка."""
-    monkeypatch.setattr(bot.core, "_site_chat_store",
-                        lambda chat_id, text, taken_at, project="", **kw: {"bound": project})
+    subscribe(OWNER, "Кутузов Сити")
     bot._handle_update(group("/site Кутузов Сити"))
     answer = status_of(bot)
     assert "Кутузов Сити" in answer, answer
@@ -107,5 +127,8 @@ def test_the_line_is_read_from_the_engine(bot) -> None:
     воркера, а выглядит она так же.
     """
     source = (ROOT / "main.py").read_text(encoding="utf-8")
-    assert "core._telegram_group_seen_line()" in source
+    # Счётчик групп печатается внутри строки привязок движка — за той же
+    # проверкой подписки, что и привязки.
+    assert "core._telegram_bindings_line(user_id)" in source
+    assert "_telegram_group_seen_line" not in source
     assert "Группы:" not in source, "второй копии строки быть не должно"

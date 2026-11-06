@@ -60,12 +60,21 @@ def test_the_funnel_goes_call_meeting_booking_deal():
     got = salesroom.sales_funnel(_chat(), DEALS, "2026-10-20", "2026-10-26")
     # Звонки и встречи — за 20–22.10; новые брони — 41 и 63 (20 была в первом
     # отчёте); 41 при уточнённой площади — та же бронь; договоры по подписанию — 2.
+    # Встреч (6) больше, чем звонков (4): доля 150% — не конверсия, её нет.
     assert got["total"] == {"calls": 4.0, "meetings": 6.0, "bookings": 2, "deals": 2,
-                            "meetings_share": 1.5, "bookings_share": 2 / 6, "deals_share": 1.0}
+                            "meetings_share": None, "more_meetings": True,
+                            "bookings_share": 2 / 6, "deals_share": 1.0}
+    # 41 — «АГЕНТСКАЯ», 63 без пометки — прямая; договор на 63 — прямой.
+    assert (got["direct"]["bookings"], got["direct"]["deals"]) == (1, 1)
+    assert (got["agent"]["bookings"], got["agent"]["deals"]) == (1, 0)
     line = report._funnel_line({"pipeline": got, "funnel": salesroom.funnel(
         _chat(), "2026-10-20", "2026-10-26")}, "week")
-    assert line.startswith("Воронка за неделю: целевые звонки 4 → встречи 6 (150,0%) → "
-                           "новые брони 2 (33,3%) → договоры 2 (100,0%).")
+    assert line.startswith("Воронка за неделю. Прямой путь: целевые звонки 4 → встречи 6 → "
+                           "прямые брони 1 (16,7%) → договоры 1 (100,0%). Встреч больше, чем "
+                           "целевых звонков: часть клиентов пришла без звонка (агенты, "
+                           "брокер-туры, повторные встречи). Через агентов: агентские брони 1 "
+                           "→ договоры 0 (0,0%).")
+    assert "150" not in line
 
 
 def test_a_missing_stage_is_named_not_skipped():
@@ -83,8 +92,8 @@ def test_managers_come_from_the_booking_not_from_the_author():
     assert any("только по отделу" in note for note in got["notes"])
     assert any("договоров без брони в отчётах чата — 1" in note for note in got["notes"])
     line = report._managers_line({"pipeline": got})
-    assert line.startswith("По менеджерам (по имени у брони): Мария Вольпи — новые брони 2, "
-                           "договоры 1.")
+    assert line.startswith("По менеджерам: Мария Вольпи — 2 новые брони (прямых 1, через "
+                           "агентов 1) и 1 договор (прямых 1).")
 
 
 def test_a_corrected_area_does_not_split_a_booking():
@@ -141,6 +150,10 @@ def test_the_cabinet_draws_the_funnel_and_the_managers(tmp_path):
     assert "Целевые звонки" in text and "Новые брони" in text
     assert "Отдел продаж" in text and "Мария Вольпи" in text and "Кочеткова Мария" in text
     assert "только по отделу" in text
+    # Прямой путь и агентский — отдельными строками; 150% как конверсии нет.
+    assert "Прямой путь" in text and "Через агентов" in text and "150" not in text
+    assert "часть клиентов пришла без звонка" in text
+    assert "прямых 1, через агентов 1" in text
 
 
 def test_the_funnel_is_drawn_as_a_picture():
@@ -154,8 +167,8 @@ def test_the_funnel_is_drawn_as_a_picture():
     got = salesroom.sales_funnel(_chat(), DEALS, "2026-10-20", "2026-10-26")
     figure = report._funnel_figure({"pipeline": got}, "week")
     assert "Воронка продаж за неделю" in figure
-    assert re.findall(r'class="value">([^<]+)<', figure) == ["4", "6", "2", "2"]
-    assert re.findall(r'class="share">↓ ([^<]+)<', figure) == ["150,0%", "33,3%", "100,0%"]
+    assert re.findall(r'class="value">([^<]+)<', figure) == ["4", "6", "1", "1", "1", "0"]
+    assert re.findall(r'class="share">↓ ([^<]+)<', figure) == ["16,7%", "100,0%", "0,0%"]
     gap = charts.funnel_chart("Воронка", [("Целевые звонки", None, None), ("Встречи", 3.0, None)])
     assert "в отчётах нет" in gap and 'stroke-dasharray="4 3"' in gap
 
