@@ -111,6 +111,19 @@ def test_substring_party_and_fuzzy_inline_alias_do_not_auto_confirm():
     assert item["match_status"] != "confirmed"
 
 
+@pytest.mark.parametrize("party", ["ИП Альфа", "АО Альфа", "ПАО Альфа"])
+def test_different_explicit_legal_forms_cannot_auto_confirm_a_contract(party):
+    report("Корпус 1 по договору A-12 бетонирование", party=party)
+    result = evidence()
+    assert result["unmatched_works"][0]["match_status"] != "confirmed"
+    assert result["rows"][0]["reconciliation"]["status"] != "Есть подтверждённые связи"
+
+
+def test_inline_different_legal_form_does_not_become_an_exact_known_party():
+    report("ИП Альфа — Корпус 1 по договору A-12 бетонирование")
+    assert evidence()["unmatched_works"][0]["match_status"] != "confirmed"
+
+
 def test_attendance_is_not_a_work_record_or_acceptance():
     report(attendance=True)
     data = register()
@@ -147,6 +160,38 @@ def test_manual_link_is_persistent_and_exact_work_signature_only(monkeypatch):
     path = links._path(PROJECT)
     assert path.stat().st_mode & 0o077 == 0
     assert not any(field in path.read_text() for field in ('"key"', '"session"', '"text"'))
+
+
+def test_changed_tail_after_display_limit_changes_identity_and_does_not_inherit_manual_link(monkeypatch):
+    install_register(monkeypatch)
+    prefix = "Корпус 1 " + "Длинное описание работы " * 1000
+    report(prefix + "ПЕРВЫЙ ИСХОДНЫЙ ХВОСТ")
+    one = evidence()["unmatched_works"][0]
+    assert len(one["text"]) <= links._MAX_TEXT and one["text_truncated"]
+    links.set_link(PROJECT, FIRST, one["id"], CUT)
+    assert evidence()["unmatched_works"] == []
+    report(prefix + "ИЗМЕНЁННЫЙ ИСХОДНЫЙ ХВОСТ")
+    two = evidence()["unmatched_works"][0]
+    assert one["id"] != two["id"]
+    assert two["link_basis"] != "manual" and two["match_status"] == "proposed"
+    assert one["text"] == two["text"]  # display equality is not source identity
+
+
+def test_explicit_legal_form_change_invalidates_prior_manual_signature(monkeypatch):
+    install_register(monkeypatch)
+    report(party="ООО Альфа")
+    one = evidence()["unmatched_works"][0]
+    links.set_link(PROJECT, FIRST, one["id"], CUT)
+    report(party="ИП Альфа")
+    two = evidence()["unmatched_works"][0]
+    assert one["id"] != two["id"] and two["link_basis"] != "manual"
+
+
+def test_scope_after_display_limit_is_still_considered_for_contract_identity():
+    report("Работы по договору A-12 " + "Длинное описание " * 1500 + " Корпус 2")
+    item = evidence()["unmatched_works"][0]
+    assert item["scope"] == "Корпус 2"
+    assert item["match_status"] == "unmatched" and item["candidate_contract_ids"] == []
 
 
 def test_revocation_suppresses_explicit_auto_link_and_can_be_undone(monkeypatch):

@@ -66,6 +66,21 @@ def _party(value: Any) -> str:
     return " ".join(words)
 
 
+def _party_identity(value: Any) -> str:
+    """Full normalized source identity; never erases an explicit legal form."""
+    return " ".join(re.findall(r"[0-9a-zа-я]+", _text(value)))
+
+
+def _same_party_exact(left: Any, right: Any) -> bool:
+    """Omitted form can be shorthand; two different explicit forms cannot."""
+    first, second = _party_identity(left).split(), _party_identity(right).split()
+    if not first or not second or _party(left) != _party(right):
+        return False
+    first_form = first[0] if first[0] in _LEGAL_FORMS else ""
+    second_form = second[0] if second[0] in _LEGAL_FORMS else ""
+    return not first_form or not second_form or first_form == second_form
+
+
 def _digest(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
 
@@ -75,8 +90,10 @@ def _project_key(project: str) -> str:
 
 
 def _scope(value: Any) -> set[str]:
+    # Normalize the entire source before looking for scope. Display truncation
+    # may not hide a later corpus, and bounded spaces avoid regex backtracking.
     return {m.casefold() for m in re.findall(
-        r"\bкорпус\s*№?\s*([0-9]{1,3}[а-яa-z]?)\b", str(value or "")[:_MAX_TEXT], re.I)}
+        r"\bкорпус ?№? ?([0-9]{1,3}[а-яa-z]?)\b", _text(value), re.I)}
 
 
 def _contract_scopes(row: dict) -> set[str]:
@@ -111,8 +128,12 @@ def _explicit_number(text: str, row: dict) -> bool:
     return bool(re.search(pattern, _text(text).replace("–", "-").replace("—", "-")))
 
 
-def _signature(evidence: dict) -> str:
-    return _digest([_party(evidence.get("contractor")), _text(evidence.get("text")),
+def _signature(evidence: dict, *, source_text: str, source_contractor: str) -> str:
+    # Work identity is made from the complete source, before limiting UI text.
+    # Preserve raw header identity too: a legal form/party change is not a
+    # repeated work signature even if the ordinary daily attribution is fuzzy.
+    return _digest([_party_identity(evidence.get("contractor")),
+                    _party_identity(source_contractor), _text(source_text),
                     _text(evidence.get("scope"))])
 
 
@@ -131,19 +152,21 @@ def _evidence(project: str, register: dict, cut: str, start: str = "") -> list[d
         raw = parsed.get("works") or []
         attributed = daily.attribute_works(raw, known)
         for index, item in enumerate(attributed):
-            line = str(item.get("line") or "").strip()[:_MAX_TEXT]
+            line = str(item.get("line") or "").strip()
             if not line:
                 continue
+            source_text = str(raw[index].get("line") or "") if index < len(raw) else line
+            source_contractor = str(raw[index].get("contractor") or "") if index < len(raw) else ""
             name = str(item.get("contractor") or "").strip()
             inline = daily._split_inline(line)
             exact_party = bool(name)
             if item.get("named_inline"):
                 # The ordinary daily UI allows fuzzy aliases. Such attribution
                 # must not silently approve a legal contract identity.
-                exact_party = len(inline) == 2 and _party(inline[0]) == _party(name)
+                exact_party = len(inline) == 2 and _same_party_exact(inline[0], name)
                 line = inline[-1].strip()
             elif index < len(raw):
-                exact_party = exact_party and _party(raw[index].get("contractor")) == _party(name)
+                exact_party = exact_party and _same_party_exact(raw[index].get("contractor"), name)
             line = " ".join(line.split()).strip(" ;.")
             if not line:
                 continue
@@ -152,8 +175,12 @@ def _evidence(project: str, register: dict, cut: str, start: str = "") -> list[d
             evidence = {"date": day, "contractor": name, "scope": scope, "text": line,
                         "source": {"kind": "daily_report", "date": day, "line_index": index + 1},
                         "party_exact": exact_party}
-            evidence["signature"] = _signature(evidence)
+            evidence["signature"] = _signature(evidence, source_text=source_text,
+                                                source_contractor=source_contractor)
             evidence["id"] = _digest([_project_key(project), day, evidence["signature"]])
+            if len(line) > _MAX_TEXT:
+                evidence["text"] = line[:_MAX_TEXT - 1] + "…"
+                evidence["text_truncated"] = True
             # Repeated identical lines within one daily report are one piece of
             # evidence, never extra work/quantity or additional acceptance.
             out.setdefault(evidence["id"], evidence)
@@ -240,6 +267,7 @@ def enrich(project: str, register: dict, cut: str, start: str = "") -> dict:
         manual = direct or max(applicable, key=lambda r: (r.get("source_date") or "", r.get("confirmed_at") or ""), default={})
         blocked = {str(manual.get("contract_id") or "")} if manual.get("confirmed") is False else set()
         explicit = [row for row in candidates if item["party_exact"]
+                    and _same_party_exact(item["contractor"], row.get("contractor"))
                     and str(row["id"]) not in blocked and _explicit_number(item["text"], row)]
         # Bind to the exact work signature and the current project's registry.
         # Stale/deleted contracts and a changed contract scope do not revive links.
@@ -286,6 +314,8 @@ def enrich(project: str, register: dict, cut: str, start: str = "") -> dict:
             issues.append("Работы этого договора в ежедневных отчётах периода не определены. Акты могут относиться к другому периоду.")
         if any(item["match_status"] != "confirmed" for item in related):
             issues.append("Связь сообщений с договором требует подтверждения; совпадение подрядчика не подтверждает состав работ.")
+        if any(item.get("text_truncated") for item in related):
+            issues.append("Длинное сообщение показано сокращённо. Связь относится к полному исходному тексту ежедневного отчёта.")
         if related and not row.get("physical_items"):
             issues.append("Накопительная с объёмами к этому договору не привязана.")
         if str(row.get("id") or "") not in unique:
