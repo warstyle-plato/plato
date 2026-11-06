@@ -35,7 +35,10 @@ import browser  # noqa: E402
 import document_intake  # noqa: E402
 import main as wrapper  # noqa: E402
 
+from fastapi.testclient import TestClient
+
 core = wrapper.core
+client = TestClient(core.app)
 PORT = 18291
 
 SPV = ("Платёж 2,55 млрд руб. за SPV с городом (49% оплачено, остаток 51% в феврале "
@@ -104,13 +107,13 @@ def _parse(monkeypatch) -> dict:
                                              "filename": name})
     monkeypatch.setattr(core, "plato_answer",
                         lambda *_a: {"answer": json.dumps(EXTRACTION, ensure_ascii=False)})
-    return core.agent_document(core.AgentDocumentRequest(
-        filename="Светлый 4.pdf", content_b64=base64.b64encode(b"%PDF stub").decode()), None)
+    return client.post("/agent/document", json=core.AgentDocumentRequest(
+        filename="Светлый 4.pdf", content_b64=base64.b64encode(b"%PDF stub").decode()).model_dump()).json()
 
 
 def _answer(card: dict, index: int, inputs: dict, **kw) -> dict:
-    return core.agent_document_answer(core.AgentDocumentAnswerRequest(
-        intake_id=card["id"], index=index, inputs=inputs, tep={}, **kw))
+    return client.post("/agent/document/answer", json=core.AgentDocumentAnswerRequest(
+        intake_id=card["id"], index=index, inputs=inputs, tep={}, **kw).model_dump()).json()
 
 
 def _engine(card: dict) -> dict:

@@ -344,7 +344,7 @@ def monitor_ask(req: MonitorAskRequest, request: Request) -> dict[str, Any]:
     if not message:
         raise HTTPException(422, "Пустой вопрос")
     payload = AgentChatRequest(
-        message=message,
+        message=message, session=req.session, access_key=req.key,
         inputs=dict(DEFAULT_INPUTS),
         tep={key: dict(value) for key, value in TEP_DEFAULT.items()},
         history=[
@@ -356,6 +356,7 @@ def monitor_ask(req: MonitorAskRequest, request: Request) -> dict[str, Any]:
             and str(item.get("content") or "").strip()
         ][-6:],
     )
+    _agent_bind_actor(payload, request, private_surface="monitor")
     try:
         # Спрашивает браузер, а не бот: соединение держится только до передачи
         # работы опросу. `plato_answer` ждёт ответ целиком, и на длинном
