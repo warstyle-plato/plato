@@ -24,6 +24,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -136,7 +137,51 @@ def _write_version(guard, number: str, message: str) -> bool:
     return True
 
 
-def _set_version(head_ref: str, number: str, base_ref: str = "main") -> str:
+def _require_expected_pull(pull: dict, expected_head: str, expected_base: str) -> None:
+    """Optional queue contract; manual calls without it keep their behaviour."""
+    if expected_head and (pull.get("head") or {}).get("sha") != expected_head:
+        raise SystemExit("Source HEAD changed after release approval; refusing release.")
+    # pull.base.sha can remain the older PR snapshot after another release.
+    # The authoritative current main is checked by fetch/API, not this field.
+    if expected_base and (pull.get("base") or {}).get("ref") != "main":
+        raise SystemExit("The queue only releases PRs targeting main.")
+
+
+def _require_expected_main(repo: str, token: str, expected_base: str) -> None:
+    if expected_base:
+        current = _api("GET", f"/repos/{repo}/git/ref/heads/main", token)["object"]["sha"]
+        if current != expected_base:
+            raise SystemExit("Main changed after dispatch; control must recheck the release.")
+
+
+def _require_expected_refs(head_ref: str, base_ref: str,
+                           expected_head: str, expected_base: str) -> None:
+    if expected_head and _git("rev-parse", f"origin/{head_ref}") != expected_head:
+        raise SystemExit("Source HEAD changed during fetch; refusing release.")
+    if expected_base and _git("rev-parse", f"origin/{base_ref}") != expected_base:
+        raise SystemExit("Main changed during release; control must recheck the release.")
+
+
+def _approved_source_gate(repo: str, token: str, number: str, source_head: str):
+    """Load the canonical policy once, from trusted main before any PR checkout."""
+    spec = importlib.util.spec_from_file_location("trusted_auto_release", ROOT / "scripts/auto_release.py")
+    policy = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(policy)
+    api = policy.GitHub(repo, token)
+    actors = frozenset(policy.control_actors(repo, os.environ.get("RELEASE_CONTROL_ACTORS", "")))
+    required_jobs = frozenset(policy.test_jobs(ROOT))
+    run_id = os.environ.get("GITHUB_RUN_ID", "")
+
+    def check(actual_head: str) -> None:
+        reason = policy.validate_approved_source(api, int(number), source_head, actual_head,
+                                                actors, required_jobs, run_id)
+        if reason:
+            raise SystemExit("Approved source gate refused release: " + reason)
+    return check
+
+
+def _set_version(head_ref: str, number: str, base_ref: str = "main",
+                 expected_head: str = "", expected_base: str = "", guard=None) -> str:
     """Записать номер в ветку и вернуть новую голову.
 
     Правится ОДНА строка объявления — та самая, что объявлена в движке один
@@ -150,8 +195,11 @@ def _set_version(head_ref: str, number: str, base_ref: str = "main") -> str:
     только потом пишется выданный номер. Конфликт вне VERSION — настоящий, его
     здесь не разрешают.
     """
-    guard = _guard()
+    # main() loads this object from trusted main before any PR checkout.
+    # Reuse it on retries: the worktree can already contain PR code then.
+    guard = _guard() if guard is None else guard
     _git("fetch", "--no-tags", "origin", head_ref, base_ref)
+    _require_expected_refs(head_ref, base_ref, expected_head, expected_base)
     _git("checkout", "-B", head_ref, f"origin/{head_ref}")
     found = guard._VERSION.search(guard._show(f"origin/{base_ref}"))
     if not found:
@@ -241,6 +289,11 @@ def main() -> int:
     options = dict(zip(argv[::2], argv[1::2]))
     number = options.get("--pr") or os.environ.get("PR", "")
     method = options.get("--method") or os.environ.get("METHOD") or "squash"
+    expected_head = options.get("--expected-head", "")
+    expected_base = options.get("--expected-base", "")
+    if any(value and not re.fullmatch(r"[0-9a-f]{40}", value)
+           for value in (expected_head, expected_base)):
+        raise SystemExit("Expected head/base must be full commit SHAs.")
     repo = os.environ.get("GITHUB_REPOSITORY", "")
     token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN", "")
     if not number.isdigit():
@@ -249,10 +302,13 @@ def main() -> int:
         raise SystemExit("Нет GITHUB_REPOSITORY или GH_TOKEN — это шаг workflow.")
 
     pull = _api("GET", f"/repos/{repo}/pulls/{number}", token)
+    _require_expected_pull(pull, expected_head, expected_base)
+    _require_expected_main(repo, token, expected_base)
     if pull.get("mergeable") is None:
         # Сдвиг main заставляет GitHub пересчитать все PR, и первый ответ
         # после любого слияния — null. Ждать, а не отказывать.
         pull = _wait_settled(repo, number, token, (pull.get("head") or {}).get("sha", ""))
+        _require_expected_pull(pull, expected_head, expected_base)
     reason = refuse_reason(pull)
     if reason and pull.get("mergeable") is None and pull.get("state") == "open" \
             and not pull.get("draft") and not pull.get("merged"):
@@ -267,9 +323,13 @@ def main() -> int:
     head_ref = pull["head"]["ref"]
     base_ref = pull["base"]["ref"]
     guard = _guard()
+    source_gate = _approved_source_gate(repo, token, number, expected_head) if expected_head else None
 
     for attempt in range(1, ATTEMPTS + 1):
         _git("fetch", "--no-tags", "origin", base_ref, head_ref)
+        _require_expected_refs(head_ref, base_ref, expected_head, expected_base)
+        if source_gate:
+            source_gate(expected_head)
         before = guard._version(guard._show(f"origin/{base_ref}"))
         issuing = _engine_changed(guard, base_ref, head_ref)
         issued = guard._next_version(before) if issuing else ".".join(map(str, before))
@@ -278,12 +338,13 @@ def main() -> int:
                  else "production-код не менялся — выпуска нет, номер не выдаётся."))
         if dry:
             return 0
-        head_sha = (_set_version(head_ref, issued, base_ref) if issuing
+        head_sha = (_set_version(head_ref, issued, base_ref, expected_head, expected_base, guard) if issuing
                     else _git("rev-parse", f"origin/{head_ref}"))
         # Перечитать базу ПЕРЕД слиянием: между счётом и слиянием сосед мог
         # слить своё. Слить поверх ушедшей базы — это выпуск под занятым
         # номером, то есть ровно то, от чего написан этот шаг.
         _git("fetch", "--no-tags", "origin", base_ref)
+        _require_expected_refs(head_ref, base_ref, "", expected_base)
         if guard._version(guard._show(f"origin/{base_ref}")) != before:
             print("База ушла, пока выдавался номер — считаем заново.")
             continue
@@ -293,10 +354,14 @@ def main() -> int:
                   f"головы {head_sha[:7]}. Повторите прогон: номер уже в ветке, "
                   "и повтор сольёт её как есть.", file=sys.stderr)
             return 1
+        _require_expected_pull(settled, head_sha if expected_head else "", expected_base)
         reason = refuse_reason(settled)
         if reason:
             print(reason, file=sys.stderr)
             return 1
+        if source_gate:
+            source_gate(head_sha)
+        _require_expected_main(repo, token, expected_base)
         try:
             answer = _api("PUT", f"/repos/{repo}/pulls/{number}/merge", token,
                           {"merge_method": method, "sha": head_sha,

@@ -179,3 +179,49 @@ def test_a_file_validation_error_does_not_reject_the_key(monitor_server,page,mon
     assert failed.value.status==400
     expect(page.locator('#privateArea')).to_be_visible()
     expect(page.locator('#loginState')).to_have_text('Доступ подтверждён')
+
+
+@pytest.mark.parametrize('width', [390, 1440])
+def test_contract_data_is_cleared_when_current_key_is_rejected(monitor_server, page, monkeypatch, width):
+    """The new lawyer tab must not retain a previous authorized result on denial."""
+    from playwright.sync_api import expect
+    base, _ = monitor_server
+    page.set_viewport_size({'width': width, 'height': 900})
+    saved(page)
+    page.route('**/monitor/contracts/build', lambda route: route.fulfill(
+        status=200, content_type='application/json', body=json.dumps({'register': {
+            'rows': [{'id': 'a' * 32, 'contractor': 'Синтетический подрядчик',
+                      'contract': 'Тестовый договор', 'amount': 100, 'completed': 25,
+                      'completion_ratio': .25, 'remaining': 75}],
+        }})))
+    with page.expect_response('**/monitor/view'):
+        page.goto(base + '/monitor')
+    page.locator('#contractsTab').click()
+    expect(page.locator('#contractsRows')).to_contain_text('Синтетический подрядчик')
+    monkeypatch.setenv('DEVELOPAID_ADMIN_KEY', ROTATED)
+    page.evaluate("post('/monitor/cumulative/list', {project:'Синтетический проект'}).catch(()=>null)")
+    expect(page.locator('#privateArea')).to_be_hidden()
+    expect(page.locator('#contractsRows')).to_be_empty()
+    expect(page.locator('#keyBtn')).to_be_visible()
+    page.unroute('**/monitor/contracts/build')
+    enter_key(page, ROTATED)
+    expect(page.locator('#privateArea')).to_be_visible()
+    expect(page.locator('#loginState')).to_have_text('Доступ подтверждён')
+    expect(page.locator('#contractsRows')).not_to_contain_text('Синтетический подрядчик')
+
+
+def test_short_job_requests_keep_timeout_and_admission_status(monitor_server, page):
+    """Updating the auth helper must retain the background job HTTP contract."""
+    base, _ = monitor_server
+    saved(page)
+    with page.expect_response('**/monitor/view'):
+        page.goto(base + '/monitor')
+    page.route('**/monitor/test-admission', lambda route: route.fulfill(
+        status=429, content_type='application/json', body=json.dumps({'detail': 'Занято'})))
+    result = page.evaluate("post('/monitor/test-admission',{}, {timeout:1000}).catch(e=>({status:e.status,message:e.message}))")
+    assert result == {'status': 429, 'message': 'Занято'}
+    delayed = []
+    page.route('**/monitor/test-short-timeout', lambda route: delayed.append(route))
+    result = page.evaluate("post('/monitor/test-short-timeout',{}, {timeout:50}).catch(e=>e.name)")
+    assert result == 'AbortError'
+    assert delayed

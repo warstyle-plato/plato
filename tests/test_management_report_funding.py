@@ -29,6 +29,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 import developaid_management_report as report  # noqa: E402
 import developaid_monitor as monitor  # noqa: E402
+import developaid_monitor_dashboard as dashboard  # noqa: E402
 from market_search import sales_store  # noqa: E402
 from test_management_report_model import (  # noqa: E402
     M, PROJECT, _contract, _gpr_book, _rss_book)
@@ -295,8 +296,9 @@ def test_the_report_names_no_chapters_sheets_or_codes(monkeypatch):
     assert "Лимит банка: 4,10 млрд ₽" in text and "Утверждённый бюджет: 6,50 млрд ₽" in text
     assert "Эскроу на конец " in text and "Комиссии и услуги банка" in page
     notes = {item["label"]: item["note"] for item in report.tiles(built)}
-    assert notes["Лимит банка"] == "по смете РСС; резерв 138,0 млн ₽"
-    assert notes["Утверждённый бюджет"] == "по финмодели"
+    source_notes = dashboard.funding_source_notes(built["funding"]["limit"])
+    assert notes["Лимит банка"] == "по смете РСС; резерв 138,0 млн ₽. " + source_notes["limit"]
+    assert notes["Утверждённый бюджет"] == "по финмодели. " + source_notes["budget"]
 
 
 def test_the_draws_follow_the_chapters_of_the_limit(monkeypatch):
@@ -334,12 +336,16 @@ def test_the_draws_follow_the_chapters_of_the_limit(monkeypatch):
     built = report.build(PROJECT, "week", "2026-10-18")
     assert built["funding"]["draws"]["total"] == pytest.approx(280 * M + 168 * M + 900 * M)
     tiles = {item["label"]: item for item in report.tiles(built)}
-    assert tiles["Выбрано у банка"]["note"].startswith("из них за неделю 948,0 млн ₽ и за месяц 1,07 млрд ₽")
+    assert tiles["Выбрано у банка"]["note"].startswith(
+        "из них за период 12.10.2026–18.10.2026 948,0 млн ₽; с начала месяца "
+        "(01.10.2026–18.10.2026) 1,07 млрд ₽")
     assert "больше лимита на 348,0 млн ₽" in tiles["Выбрано у банка"]["note"]
     assert tiles["Выбрано у банка"]["tone"] == "bad"
     note = tiles["Осталось по смете после всех оплат"]["note"]
     # Число и одна строка (владелец, 27.10.2026: подписи плиток — «простыни»).
-    assert note == "смета минус всё оплаченное, кредитом и своими деньгами; не хватит 1,06 млрд ₽ с ноября 2026"
+    assert note == ("смета минус всё оплаченное, кредитом и своими деньгами; не хватит "
+                    "1,06 млрд ₽ с ноября 2026. "
+                    + dashboard.funding_source_notes(built["funding"]["limit"])["left"])
     text = report.render_text(built)
     assert ("перерасход по статьям 1,20 млрд ₽ остаток не уменьшает; лимиты по статьям "
             "больше общего лимита на 60,0 млн ₽") in text
@@ -379,7 +385,8 @@ def test_without_chapter_one_the_report_stays_plain(monkeypatch):
         "reserve": 0.0, "additional_financing": 0.0}}})
     built = report.build(PROJECT, "week", "2026-10-18")
     notes = {item["label"]: item["note"] for item in report.tiles(built)}
-    assert notes["Лимит банка"] == "по смете РСС"
+    assert notes["Лимит банка"] == ("по смете РСС. "
+                                   + dashboard.funding_source_notes(built["funding"]["limit"])["limit"])
     assert "главы 2–3" not in report.render_html(built)
 
 
@@ -400,17 +407,19 @@ def test_the_money_tiles_name_chapters_reserves_and_periods(monkeypatch):
         "deficit_ladder": {"total": 2_000 * M}}}})
     built = report.build(PROJECT, "week", "2026-10-18")
     notes = {item["label"]: item["note"] for item in report.tiles(built)}
+    source_notes = dashboard.funding_source_notes(built["funding"]["limit"])
     assert notes["Утверждённый бюджет"] == ("из них по 1 главе 1,30 млрд ₽, по 2 главе 6,90 млрд ₽, "
-                                             "по 3 главе 610,0 млн ₽")
+                                             "по 3 главе 610,0 млн ₽. " + source_notes["budget"])
     assert notes["Лимит банка"] == ("из них по 1 главе 1,20 млрд ₽, по 2 главе 5,10 млрд ₽, "
                                     "по 3 главе 510,0 млн ₽; резервы: Непредвиденные расходы "
-                                    "209,7 млн ₽ и Резерв на удорожание 96,4 млн ₽")
+                                    "209,7 млн ₽ и Резерв на удорожание 96,4 млн ₽. " + source_notes["limit"])
     draws = built["funding"]["draws"]
-    assert notes["Выбрано у банка"] == (f"из них за неделю {report._rub(draws['period'])} и "
-                                        f"за месяц {report._rub(draws['month'])}")
+    assert notes["Выбрано у банка"] == (f"из них за период 12.10.2026–18.10.2026 {report._rub(draws['period'])}; "
+                                        f"с начала месяца (01.10.2026–18.10.2026) {report._rub(draws['month'])}. "
+                                        + source_notes["paid"])
     assert notes["Осталось по смете после всех оплат"] == ("смета минус всё оплаченное, кредитом и своими деньгами; не хватит 1,08 млрд ₽ "
-                                             "с ноября 2026")
+                                             "с ноября 2026. " + source_notes["left"])
     # В месячной сводке «за неделю» нет — только за месяц.
     month = report.build(PROJECT, "month", "2026-10-18")
     notes = {item["label"]: item["note"] for item in report.tiles(month)}
-    assert notes["Выбрано у банка"].startswith("из них за месяц ") and "за неделю" not in notes["Выбрано у банка"]
+    assert notes["Выбрано у банка"].startswith("из них с начала месяца (01.10.2026–18.10.2026)")
