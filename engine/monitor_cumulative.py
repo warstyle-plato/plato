@@ -96,7 +96,9 @@ def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = 
         else:
             raise RuntimeError("unknown monitor operation")
         return {"ok": True, **jsonable_encoder(result)}
-    except (ledgers.LedgerProblem, contracts.ContractProblem) as exc:
+    except ledgers.LedgerProblem as exc:
+        return {"ok": False, "detail": str(exc), "files": exc.files}
+    except (contracts.ContractProblem, links.LinkProblem) as exc:
         # These exception classes contain deliberate user-facing diagnostics.
         return {"ok": False, "detail": str(exc)}
 
@@ -177,7 +179,7 @@ def monitor_cumulative_list(req: MonitorCumulativeProject) -> Response:
     import developaid_monitor_ledgers as ledgers
     try:
         return JSONResponse(content={"snapshots": ledgers.list_snapshots(req.project)})
-    except OSError:
+    except (OSError, ValueError):
         raise HTTPException(503, "История накопительных сейчас недоступна.") from None
 
 
