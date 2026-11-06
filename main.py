@@ -1014,7 +1014,7 @@ def _request_for_agent(chat_id: int) -> Request:
         "client": ("telegram", int(chat_id)),
         "server": ("developaid", 443),
     }
-    return Request(scope)
+    return core._agent_bind_bot_request(Request(scope), chat_id)
 
 
 def _run_agent(chat_id: int, text: str, *, intro: str = "") -> None:
