@@ -357,12 +357,12 @@ def _works_done(rows: list[dict[str, Any]], parties: list[str] | None = None
     новая работа.
     """
     import developaid_monitor_daily as daily
+    import developaid_monitor_contract_links as contract_links
 
     groups: dict[str, dict[str, Any]] = {}
     for report_row in sorted(rows, key=lambda r: str(r.get("date") or "")):
         parsed = report_row.get("parsed") or {}
-        known = [c["name"] for c in parsed.get("contractors") or []] + list(parties or [])
-        for item in daily.attribute_works(parsed.get("works") or [], known):
+        for item in contract_links.attribute_work_items(parsed, list(parties or [])):
             line = str(item.get("line") or "")
             if item.get("named_inline"):
                 # Имя подрядчика уже в колонке «Подрядчик» — в строке оно лишнее.
@@ -424,15 +424,21 @@ def crew(project: str, kind: str, end: Any) -> dict[str, Any]:
                "workers": (float((by_day[day.isoformat()].get("parsed") or {})
                                  .get("workers_total") or 0)
                            if day.isoformat() in by_day else None)} for day in days]
-    works = _works_done(now, daily.known_parties(project, bounds["end"]))
+    parties = daily.known_parties(project, bounds["end"])
+    context = None
     reconciliation_warning = ""
     try:
         import developaid_monitor_contract_links as contract_links
-        works = contract_links.enrich_report_works(project, works, bounds["start"], bounds["end"])
+        context = contract_links.prepare_report_context(project, now, bounds["start"], bounds["end"], parties)
+        if context is not None:
+            parties = context["parties"]
     except (ImportError, OSError, ValueError, KeyError):
         # The money/schedule report stays available if a new register cannot be
         # read. Do not expose exception paths or silently assert a legal link.
         reconciliation_warning = "Связи работ с договорами не удалось проверить. Откройте вкладку «Договоры и сверка» в Мониторе."
+    works = _works_done(now, parties)
+    if context is not None:
+        works = contract_links.enrich_report_works(project, works, bounds["start"], bounds["end"], context=context)
     return {"state": "ok", "now": _crew_stats(now), "previous": _crew_stats(before),
             "period_days": (bounds["end"] - bounds["start"]).days + 1,
             "last_report": last or None, "by_contractor": by_contractor[:10],

@@ -124,6 +124,20 @@ def test_inline_different_legal_form_does_not_become_an_exact_known_party():
     assert evidence()["unmatched_works"][0]["match_status"] != "confirmed"
 
 
+def test_inline_explicit_legal_form_survives_shorthand_alias_and_continuation():
+    folder = monitor._project_dir(PROJECT) / "daily"
+    folder.mkdir(parents=True)
+    (folder / "2026-10-14.json").write_text(json.dumps({"date": "2026-10-14", "parsed": {
+        "contractors": [{"name": "Альфа", "workers": 5}],
+        "works": [{"contractor": "Альфа", "line": "ИП Альфа — Корпус 1 подготовка"},
+                  {"contractor": "Альфа", "line": "Корпус 1 по договору A-12 бетонирование"}]}}, ensure_ascii=False))
+    result = evidence()
+    assert len(result["unmatched_works"]) == 2
+    assert result["unmatched_works"][0]["reported_contractor"] == "ИП Альфа"
+    assert result["unmatched_works"][1]["party_attribution_uncertain"]
+    assert all(item["match_status"] != "confirmed" for item in result["unmatched_works"])
+
+
 def test_attendance_is_not_a_work_record_or_acceptance():
     report(attendance=True)
     data = register()
@@ -258,6 +272,26 @@ def test_scope_mismatch_and_unknown_contract_do_not_create_manual_links(monkeypa
     assert not links._path(PROJECT).exists()
 
 
+def test_entire_mixed_corpus_line_cannot_be_confirmed_for_a_partial_contract(monkeypatch):
+    install_register(monkeypatch)
+    report("Корпус 1 и корпус 2 по договору A-12 бетонирование")
+    item = evidence()["unmatched_works"][0]
+    assert item["candidate_contract_ids"] == [FIRST]
+    assert item["match_status"] == "proposed"
+    with pytest.raises(links.LinkProblem, match="Корпус"):
+        links.set_link(PROJECT, FIRST, item["id"], CUT)
+    assert not links._path(PROJECT).exists()
+
+
+def test_explicit_mixed_corpus_link_can_cover_both_documented_contract_scopes():
+    report("Корпус 1 и корпус 2 по договору A-12 бетонирование")
+    data = register()
+    data["rows"][0]["scope"] = ["Корпус 1", "Корпус 2"]
+    result = evidence(data)
+    assert result["unmatched_works"] == []
+    assert result["rows"][0]["reconciliation"]["daily_evidence"][0]["match_status"] == "confirmed"
+
+
 def test_concurrent_confirmations_do_not_lose_a_link(monkeypatch):
     install_register(monkeypatch)
     report()
@@ -306,6 +340,31 @@ def test_report_uses_same_confirmed_links_with_project_scoped_deeplink(monkeypat
     assert "Договор A-12" in html and "Договор не уточнён" in html
     assert "project=Synthetic+Site" in html
     assert management._work_contract_text(out[0]["lines"][0]) == " (Договор A-12)"
+
+
+def test_authoritative_crew_links_works_only_report_without_headcount(monkeypatch):
+    data = install_register(monkeypatch, register(two=True))
+    monkeypatch.setitem(sys.modules, "developaid_monitor_ledgers",
+                        types.SimpleNamespace(latest_snapshot=lambda project, cut: {"snapshot_id": "fixture"}))
+    daily.store_daily_report(PROJECT, "По работам:\nООО Альфа — Корпус 1 бетонирование", "2026-10-14")
+    stored = daily._load_reports(PROJECT)[0]
+    assert stored["parsed"]["contractors"] == []
+    item = evidence(data)["unmatched_works"][0]
+    assert item["match_status"] == "ambiguous"
+    links.set_link(PROJECT, FIRST, item["id"], CUT)
+    calls = []
+    def build_once(project, cut):
+        calls.append((project, cut))
+        return copy.deepcopy(data)
+    sys.modules["developaid_monitor_contracts"].build = build_once
+    import developaid_management_report as management
+    block = management.crew(PROJECT, "week", CUT)
+    found = [entry for group in block["works"] for entry in group["lines"] if entry.get("contract_links")]
+    assert len(found) == 1 and found[0]["contract_links"][0]["id"] == FIRST
+    assert block["works"][0]["contractor"] == 'ООО «Альфа»'
+    assert "ООО Альфа" not in found[0]["line"]
+    assert "Договор A-12" in management._works_html(block, "week")
+    assert calls == [(PROJECT, CUT)]
 
 
 def test_report_without_cumulative_sources_keeps_old_work_shape(monkeypatch):

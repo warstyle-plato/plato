@@ -111,6 +111,11 @@ def _compatible(evidence: dict, row: dict) -> bool:
     return not actual or not expected or bool(actual & expected)
 
 
+def _scope_covers(evidence: dict, row: dict) -> bool:
+    actual, expected = _scope(evidence.get("scope")), _contract_scopes(row)
+    return not actual or not expected or actual <= expected
+
+
 def _number(value: Any) -> str:
     text = _text(value).replace("–", "-").replace("—", "-")
     text = re.sub(r"^договор\s*", "", text).lstrip("№# ")
@@ -128,19 +133,49 @@ def _explicit_number(text: str, row: dict) -> bool:
     return bool(re.search(pattern, _text(text).replace("–", "-").replace("—", "-")))
 
 
-def _signature(evidence: dict, *, source_text: str, source_contractor: str) -> str:
+def _signature(evidence: dict, *, source_text: str, source_contractor: str, source_context: str = "") -> str:
     # Work identity is made from the complete source, before limiting UI text.
     # Preserve raw header identity too: a legal form/party change is not a
     # repeated work signature even if the ordinary daily attribution is fuzzy.
     return _digest([_party_identity(evidence.get("contractor")),
-                    _party_identity(source_contractor), _text(source_text),
+                    _party_identity(source_contractor), _party_identity(evidence.get("reported_contractor")),
+                    _party_identity(source_context), _text(source_text),
                     _text(evidence.get("scope"))])
 
 
-def _evidence(project: str, register: dict, cut: str, start: str = "") -> list[dict]:
-    names = [str(row.get("contractor") or "") for row in register.get("rows") or []]
+def attribute_work_items(parsed: dict, parties: list[str]) -> list[dict]:
+    """One attribution path for both daily evidence and displayed report works."""
+    known = [str(item.get("name") or "") for item in parsed.get("contractors") or []]
+    known.extend(parties)
+    raw = parsed.get("works") or []
+    attributed = daily.attribute_works(raw, known)
+    running_source, last_header, lineage, uncertain = "", None, "", False
+    out = []
+    for original, item in zip(raw, attributed):
+        header = str(original.get("contractor") or "")
+        if header != last_header:
+            running_source, last_header, lineage, uncertain = "", header, "", False
+        parts = daily._split_inline(str(original.get("line") or ""))
+        if item.get("named_inline") and len(parts) == 2:
+            running_source = parts[0]
+            lineage, uncertain = running_source, False
+        elif len(parts) == 2:
+            if running_source and _party_identity(running_source) != _party_identity(header):
+                uncertain = True
+            running_source = ""
+        out.append({**item, "_contract_source_party": running_source or header,
+                    "_contract_source_context": lineage, "_contract_party_uncertain": uncertain})
+    return out
+
+
+def _evidence(project: str, register: dict, cut: str, start: str = "", *,
+              reports: list[dict] | None = None, parties: list[str] | None = None) -> list[dict]:
+    names = list(daily.known_parties(project, cut) if parties is None else parties)
+    names.extend(str(row.get("contractor") or "") for row in register.get("rows") or [])
+    names = list(dict.fromkeys(names))
     out: dict[str, dict] = {}
-    for report in sorted(daily._load_reports(project), key=lambda r: str(r.get("date") or "")):
+    for report in sorted(daily._load_reports(project) if reports is None else reports,
+                         key=lambda r: str(r.get("date") or "")):
         try:
             day = _day(report.get("date"))
         except LinkProblem:
@@ -148,9 +183,8 @@ def _evidence(project: str, register: dict, cut: str, start: str = "") -> list[d
         if not report.get("date") or day > cut or start and day < start:
             continue
         parsed = report.get("parsed") or {}
-        known = names + [str(c.get("name") or "") for c in parsed.get("contractors") or []]
         raw = parsed.get("works") or []
-        attributed = daily.attribute_works(raw, known)
+        attributed = attribute_work_items(parsed, names)
         for index, item in enumerate(attributed):
             line = str(item.get("line") or "").strip()
             if not line:
@@ -159,24 +193,27 @@ def _evidence(project: str, register: dict, cut: str, start: str = "") -> list[d
             source_contractor = str(raw[index].get("contractor") or "") if index < len(raw) else ""
             name = str(item.get("contractor") or "").strip()
             inline = daily._split_inline(line)
-            exact_party = bool(name)
+            reported_party = str(item.get("_contract_source_party") or "").strip()
+            exact_party = _same_party_exact(reported_party, name) and not item.get("_contract_party_uncertain")
             if item.get("named_inline"):
                 # The ordinary daily UI allows fuzzy aliases. Such attribution
                 # must not silently approve a legal contract identity.
-                exact_party = len(inline) == 2 and _same_party_exact(inline[0], name)
+                exact_party = exact_party and len(inline) == 2 and _same_party_exact(inline[0], name)
                 line = inline[-1].strip()
-            elif index < len(raw):
-                exact_party = exact_party and _same_party_exact(raw[index].get("contractor"), name)
             line = " ".join(line.split()).strip(" ;.")
             if not line:
                 continue
             scopes = _scope(line)
             scope = ", ".join(f"Корпус {n}" for n in sorted(scopes))
-            evidence = {"date": day, "contractor": name, "scope": scope, "text": line,
+            evidence = {"date": day, "contractor": name, "reported_contractor": reported_party,
+                        "scope": scope, "text": line,
                         "source": {"kind": "daily_report", "date": day, "line_index": index + 1},
                         "party_exact": exact_party}
             evidence["signature"] = _signature(evidence, source_text=source_text,
-                                                source_contractor=source_contractor)
+                                                source_contractor=source_contractor,
+                                                source_context=str(item.get("_contract_source_context") or ""))
+            if item.get("_contract_party_uncertain"):
+                evidence["party_attribution_uncertain"] = True
             evidence["id"] = _digest([_project_key(project), day, evidence["signature"]])
             if len(line) > _MAX_TEXT:
                 evidence["text"] = line[:_MAX_TEXT - 1] + "…"
@@ -241,7 +278,8 @@ def _write(project: str, data: dict) -> None:
         Path(temporary).unlink(missing_ok=True)
 
 
-def enrich(project: str, register: dict, cut: str, start: str = "") -> dict:
+def enrich(project: str, register: dict, cut: str, start: str = "", *,
+           _reports: list[dict] | None = None, _parties: list[str] | None = None) -> dict:
     """Return a copy of a register with traceable, non-financial daily evidence."""
     cut, start = _day(cut), _day(start, optional=True)
     if start and start > cut:
@@ -253,7 +291,7 @@ def enrich(project: str, register: dict, cut: str, start: str = "") -> dict:
     for row in rows:
         ids.setdefault(str(row.get("id") or ""), []).append(row)
     unique = {key: values[0] for key, values in ids.items() if key and len(values) == 1}
-    evidence = _evidence(project, result, cut, start)
+    evidence = _evidence(project, result, cut, start, reports=_reports, parties=_parties)
     saved = _read(project).get("links") or {}
     for item in evidence:
         candidates = [row for row in rows if row.get("id") in unique
@@ -268,6 +306,8 @@ def enrich(project: str, register: dict, cut: str, start: str = "") -> dict:
         blocked = {str(manual.get("contract_id") or "")} if manual.get("confirmed") is False else set()
         explicit = [row for row in candidates if item["party_exact"]
                     and _same_party_exact(item["contractor"], row.get("contractor"))
+                    and _same_party_exact(item["reported_contractor"], row.get("contractor"))
+                    and _scope_covers(item, row)
                     and str(row["id"]) not in blocked and _explicit_number(item["text"], row)]
         # Bind to the exact work signature and the current project's registry.
         # Stale/deleted contracts and a changed contract scope do not revive links.
@@ -279,7 +319,7 @@ def enrich(project: str, register: dict, cut: str, start: str = "") -> dict:
         # a prior confirmation is not a perpetual contractor-wide permission.
         repeat_with_same_choices = (item["date"] >= str(manual.get("source_date") or "9999")
                                     and manual.get("candidate_contract_ids") == candidate_ids)
-        if (manual.get("confirmed") is True and manual_row is not None and _compatible(item, manual_row)
+        if (manual.get("confirmed") is True and manual_row is not None and _scope_covers(item, manual_row)
                 and (same_source or repeat_with_same_choices)):
             chosen, basis = manual_row, "manual"
         elif len(explicit) == 1:
@@ -318,6 +358,15 @@ def enrich(project: str, register: dict, cut: str, start: str = "") -> dict:
             issues.append("Длинное сообщение показано сокращённо. Связь относится к полному исходному тексту ежедневного отчёта.")
         if related and not row.get("physical_items"):
             issues.append("Накопительная с объёмами к этому договору не привязана.")
+        if any(not _scope_covers(item, row) for item in related):
+            issues.append("Сообщение охватывает корпуса за пределами известного состава договора. Связь всей строки не подтверждена.")
+        if any(item["contract_id"] == row.get("id") and (not _scope(item.get("scope")) or not _contract_scopes(row))
+               for item in related):
+            issues.append("Договор определён, но корпус не указан в одном из источников. Соответствие состава работ требует проверки.")
+        if any(not _same_party_exact(item.get("reported_contractor"), row.get("contractor")) for item in related):
+            issues.append("Имя или юридическая форма контрагента в исходном отчёте отличается от договора. Проверьте источник сообщения.")
+        if any(item.get("party_attribution_uncertain") for item in related):
+            issues.append("Принадлежность части строк подрядчику неоднозначна после смены имени в тексте. Проверьте исходный ежедневный отчёт.")
         if str(row.get("id") or "") not in unique:
             issues.append("Идентификатор договора неоднозначен; автоматическая привязка отключена.")
         row["reconciliation"] = {
@@ -344,7 +393,7 @@ def set_link(project: str, contract_id: str, evidence_id: str, cut: str,
     if len(found) != 1:
         raise LinkProblem("Строка ежедневного отчёта не найдена в выбранном проекте на эту дату.")
     evidence = found[0]
-    if not _compatible(evidence, rows[0]):
+    if confirmed and not _scope_covers(evidence, rows[0]):
         raise LinkProblem("Корпус в сообщении не соответствует корпусу работ договора. Проверьте исходные данные.")
     with _locked(project):
         value = _read(project)
@@ -365,17 +414,33 @@ def set_link(project: str, contract_id: str, evidence_id: str, cut: str,
     return {"contract_id": str(contract_id), "evidence_id": evidence_id, "confirmed": confirmed}
 
 
-def enrich_report_works(project: str, groups: list[dict], start: Any, end: Any) -> list[dict]:
+def prepare_report_context(project: str, reports: list[dict] | None, start: Any, end: Any,
+                           parties: list[str] | None = None) -> dict | None:
+    """Freeze one registry and one attribution context for a report period."""
+    import developaid_monitor_ledgers as ledgers
+    if ledgers.latest_snapshot(project, _day(end)) is None:
+        return None
+    import developaid_monitor_contracts as contracts
+    register = contracts.build(project, _day(end))
+    names = list(daily.known_parties(project, _day(end)) if parties is None else parties)
+    names.extend(str(row.get("contractor") or "") for row in register.get("rows") or [])
+    names = list(dict.fromkeys(names))
+    return {"parties": names,
+            "register": enrich(project, register, _day(end), _day(start),
+                               _reports=reports, _parties=names)}
+
+
+def enrich_report_works(project: str, groups: list[dict], start: Any, end: Any, *,
+                        context: dict | None = None) -> list[dict]:
     """Link report lines using the same registry/resolver, without money totals.
 
     Existing reports without cumulative sources keep their historical shape.
     No second, competing interpretation of a contractor name is created here.
     """
-    import developaid_monitor_ledgers as ledgers
-    if ledgers.latest_snapshot(project, _day(end)) is None:
+    context = context if context is not None else prepare_report_context(project, None, start, end)
+    if context is None:
         return groups
-    import developaid_monitor_contracts as contracts
-    register = enrich(project, contracts.build(project, _day(end)), _day(end), _day(start))
+    register = context["register"]
     by_id = {str(row.get("id")): row for row in register.get("rows") or []}
     evidences: dict[str, dict] = {}
     for row in register.get("rows") or []:
