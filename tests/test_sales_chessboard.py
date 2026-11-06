@@ -398,6 +398,35 @@ def test_invalid_stock_upload_is_not_cached(client):
     assert response.headers["cache-control"] == "private, no-store"
 
 
+def test_private_source_routes_install_after_the_core_has_served_a_request(monkeypatch, tmp_path):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from market_search.api import install
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("MARKET_CABINET_KEY", "late-install-synthetic")
+    app = FastAPI()
+
+    @app.get("/already-running")
+    def running():
+        return {"running": True}
+
+    api = TestClient(app)
+    assert api.get("/already-running").json() == {"running": True}
+    assert app.middleware_stack is not None
+    service = install(app)
+    registered_routes = len(app.routes)
+    assert install(app) is service
+    assert len(app.routes) == registered_routes
+    for path, method in (("/cabinet/contracting", "post"), ("/cabinet/sales/summary", "get")):
+        response = getattr(api, method)(path)
+        assert response.status_code == 401
+        assert response.headers["cache-control"] == "private, no-store"
+        assert response.headers["pragma"] == "no-cache"
+    assert api.get("/already-running").json() == {"running": True}
+    assert "cache-control" not in api.get("/already-running").headers
+
+
 def test_conflicting_price_facts_do_not_fall_back_to_a_median_accusation():
     peers = [dict(contract(unit=i, amount=4_000_000), rooms="2К") for i in (11, 12, 13)]
     low = dict(contract(), rooms="2К", escrow_total=3_200_000)

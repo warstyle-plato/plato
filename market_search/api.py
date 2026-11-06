@@ -12,11 +12,15 @@ from typing import Any
 
 from urllib.parse import parse_qs, quote, unquote
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
+from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
+from fastapi.routing import APIRoute
 from fastapi import Response
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from pydantic import BaseModel, Field, model_validator
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from request_body import json_object
 
@@ -177,6 +181,36 @@ def _uploaded_file_name(raw: object) -> str:
     return text[:120]
 
 
+class _PrivateSalesRoute(APIRoute):
+    """Keep private source responses uncached without changing app middleware.
+
+    A module can be installed after another core route has already served a
+    request. Starlette then forbids adding application middleware, while route
+    registration is still supported. Keep this policy on the two source routes.
+    """
+
+    def get_route_handler(self):
+        route_handler = super().get_route_handler()
+
+        async def private_response(request: Request) -> Response:
+            try:
+                response = await route_handler(request)
+            except RequestValidationError as exc:
+                response = await request_validation_exception_handler(request, exc)
+            except StarletteHTTPException as exc:
+                response = await http_exception_handler(request, exc)
+            except Exception as exc:
+                # Never include bodies, credentials, source values or exception text.
+                logging.getLogger(__name__).warning("sales source request failed (%s)", type(exc).__name__)
+                response = JSONResponse(status_code=500, content={
+                    "detail": "Не удалось получить отчёт о продажах. Повторите запрос; если ошибка сохраняется, сообщите время и действие."})
+            response.headers["Cache-Control"] = "private, no-store"
+            response.headers["Pragma"] = "no-cache"
+            return response
+
+        return private_response
+
+
 def install(app: FastAPI) -> MarketDiscoveryService:
     if getattr(app.state, "market_discovery_installed", False):
         return app.state.market_discovery_service
@@ -186,22 +220,7 @@ def install(app: FastAPI) -> MarketDiscoveryService:
     app.state.market_discovery_installed = True
     app.state.market_discovery_service = service
 
-    @app.middleware("http")
-    async def private_sales_sources(request: Request, call_next):
-        # A private snapshot must not survive in browser/shared caches, including
-        # denied or failed requests. Preserve the existing cabinet admission gate.
-        if request.url.path not in {"/cabinet/contracting", "/cabinet/sales/summary"}:
-            return await call_next(request)
-        try:
-            response = await call_next(request)
-        except Exception as exc:
-            # Do not log request bodies, source values, credentials or exception text.
-            logging.getLogger(__name__).warning("sales source request failed (%s)", type(exc).__name__)
-            response = JSONResponse(status_code=500, content={
-                "detail": "Не удалось получить отчёт о продажах. Повторите запрос; если ошибка сохраняется, сообщите время и действие."})
-        response.headers["Cache-Control"] = "private, no-store"
-        response.headers["Pragma"] = "no-cache"
-        return response
+    private_sources = APIRouter(route_class=_PrivateSalesRoute)
 
     # Недельный свод рынка по регионам из кабинета «Пульса». Поток только
     # проверяет срок раз в час; сбор идёт раз в 7 дней и берёт замок-файл,
@@ -1038,7 +1057,7 @@ def install(app: FastAPI) -> MarketDiscoveryService:
             notes.append(f"{sales_store.KINDS['plan']}: {exc}")
         return parts, notes
 
-    @app.post("/cabinet/contracting")
+    @private_sources.post("/cabinet/contracting")
     async def cabinet_contracting(request: Request) -> dict[str, Any]:
         """Принять файл проекта: что в нём нашлось, то и прочитано.
 
@@ -1088,7 +1107,7 @@ def install(app: FastAPI) -> MarketDiscoveryService:
             got.setdefault("read_notes", []).append(line)
         return got
 
-    @app.get("/cabinet/sales/summary")
+    @private_sources.get("/cabinet/sales/summary")
     async def cabinet_sales(request: Request, project: str = "") -> dict[str, Any]:
         """Свод продаж по уже загруженным источникам — без файла."""
         cabinet_module.require_cabinet(request)
@@ -1158,4 +1177,5 @@ def install(app: FastAPI) -> MarketDiscoveryService:
             detail = f"Внутренняя ошибка market discovery: {type(exc).__name__}: {exc}"
             raise HTTPException(status_code=500, detail=detail) from exc
 
+    app.include_router(private_sources)
     return service
