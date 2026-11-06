@@ -151,6 +151,9 @@ def render(block: dict) -> str:
     chain = rnv.get('driving_chain') or []
     if chain:
         out.append('<p><b>Одна из ведущих цепочек:</b> '+ ' → '.join(esc(row['name']) for row in chain)+'</p>')
+    if block.get('physical'):
+        from developaid_schedule_physical import render as render_physical
+        out.append(render_physical(block['physical']))
     all_rows = block.get('rows') or []
     # Focus on delayed rows and their immediate dependencies; cap the visual,
     # disclose truncation, and keep the complete model available to the caller.
@@ -171,6 +174,7 @@ def render(block: dict) -> str:
     span = max((last-first).days, 1)
     x = lambda value: 260+530*(dt.date.fromisoformat(value)-first).days/span
     positions = {row['id']: i for i, row in enumerate(rows)}
+    physical_rows = {row['task_id']: row for row in (block.get('physical') or {}).get('tasks') or []}
     out.append('<div style="overflow-x:auto"><svg role="img" aria-label="Зависимости и сдвиги работ" '
                f'viewBox="0 0 1000 {len(rows)*48+42}" style="width:100%;min-width:850px" xmlns="http://www.w3.org/2000/svg">')
     out.append('<defs><marker id="dependency-arrow" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0 0L6 3L0 6" fill="#8a6200"/></marker></defs>')
@@ -191,11 +195,15 @@ def render(block: dict) -> str:
         out.append(f'<text x="0" y="{y+10}" font-size="12"><title>'+esc(row['name'])+'</title>'+esc(row['name'][:35])+'</text>')
         a, b = x(row['plan_start']), x(row['plan_finish'])
         out.append(f'<rect x="{a:.1f}" y="{y}" width="{max(2,b-a):.1f}" height="6" fill="#cbd1d9"/>')
+        physical_row = physical_rows.get(row['id']) or {}
+        physical_progress = physical_row.get('progress') if physical_row.get('mode') == 'quantities' else None
+        if isinstance(physical_progress, (int, float)) and 0 <= physical_progress <= 1:
+            out.append(f'<rect x="{a:.1f}" y="{y}" width="{max(0,(b-a)*physical_progress):.1f}" height="6" fill="#2e7d55"><title>Подтверждённый натуральный объём: {physical_progress*100:.1f}%</title></rect>')
         if row.get('forecast_start') and row.get('forecast_finish'):
             a, b = x(row['forecast_start']), x(row['forecast_finish'])
             out.append(f'<rect x="{a:.1f}" y="{y+9}" width="{max(2,b-a):.1f}" height="6" fill="#205c96"/>')
         own, inherited = row.get('own_delay_days'), row.get('inherited_delay_days')
         out.append(f'<text x="805" y="{y+12}" font-size="11">Своя: '+esc('—' if own is None else own)+' · от этапов: '+esc('—' if inherited is None else inherited)+'</text>')
         out.append(f'<text x="260" y="{y+31}" font-size="10">'+esc(date(row['plan_finish']))+' → '+esc(date(row.get('forecast_finish')))+' · резерв: '+esc('не указан' if row.get('remaining_float_days') is None else str(row['remaining_float_days'])+' дн.')+'</text>')
-    out.append('</svg></div><p class="note">Серое — исходный план; синее — расчёт по известным данным; стрелки — связи PM. Унаследованные сдвиги по цепочке не складываются.</p></section>')
+    out.append('</svg></div><p class="note">Серое — исходный план; зелёное на плановой полосе — доля натурального объёма отдельной работы; синее — расчёт по известным данным; стрелки — связи PM. Разные компоненты не усредняются. Унаследованные сдвиги по цепочке не складываются.</p></section>')
     return ''.join(out)

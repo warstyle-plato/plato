@@ -18,6 +18,7 @@ import developaid_monitor_schedule_graph as schedule_graph
 import developaid_schedule_timeline as schedule_timeline
 import developaid_gpr_corpus as corpus_gpr
 import developaid_schedule_confirmation as schedule_confirmation
+import developaid_schedule_physical as schedule_physical
 
 _INSTALLED = False
 _ORIGINAL_BUILD = None
@@ -217,13 +218,29 @@ def _apply_pace(project: str, view: dict[str, Any], cut: datetime.date) -> dict[
     _aggregate_management(management)
 
     qualified_pm = schedule_confirmation.qualify(project, pm, cut.isoformat())
-    # Calendar/chain confirmation cannot promote the existing cost/EAC proxy to
-    # a complete physical forecast. The natural-quantity contour is separate.
-    qualified_pm['validation_issues'] = list(qualified_pm.get('validation_issues') or []) + [
-        'Натуральная выработка КС и её сопоставление с работами графика ещё не подтверждены. '
-        'Стоимостный темп КС не доказывает физическую готовность.']
+    physical = schedule_physical.build(project, cut.isoformat(), pm)
+    qualified_pm['validation_issues'] = list(qualified_pm.get('validation_issues') or [])
+    qualified_pm['validation_issues'].extend(physical['reasons'])
+    # Legacy cost/EAC remains a separately qualified management indicator.
+    # Once natural evidence exists, it exclusively seeds the physical timeline;
+    # a cost-derived delay can never leak into a certified physical RNV.
+    timeline_seeds = late_seeds
+    if physical['physical_evidence']:
+        timeline_seeds = {tid: monitor._day(value) for tid, value in physical['seeds'].items()}
+        for row in rows:
+            if row.get('rebaseline_seed') or row.get('forecast_source') == 'approved_rebaseline':
+                tid = str(row.get('id') or row.get('wbs') or '').strip()
+                value = monitor._day(row.get('forecast_finish'))
+                if tid and value:
+                    timeline_seeds[tid] = max(value, timeline_seeds.get(tid, value))
+    else:
+        qualified_pm['validation_issues'].append(
+            'Натуральная выработка КС и её сопоставление с работами графика ещё не подтверждены. '
+            'Стоимостный темп КС не доказывает физическую готовность.')
     schedule["dependency_timeline"] = schedule_timeline.model(
-        qualified_pm, late_seeds, evidence=bool(evidence or late_seeds))
+        qualified_pm, timeline_seeds, evidence=bool(physical['physical_evidence'] or evidence or late_seeds))
+    schedule['dependency_timeline']['physical'] = physical
+    schedule['physical_progress'] = physical
     if isinstance((view.get("dashboard") or {}).get("schedule"), dict):
         view["dashboard"]["schedule"]["qualified_rnv"] = schedule["dependency_timeline"]["rnv"]
         # A prebuilt summary may have been produced before RNV qualification.
@@ -235,7 +252,7 @@ def _apply_pace(project: str, view: dict[str, Any], cut: datetime.date) -> dict[
     schedule["corpus_gpr"] = corpus_gpr.latest(project, cut.isoformat())
     schedule["corpus_gpr_html"] = corpus_gpr.render(schedule["corpus_gpr"])
     if evidence <= 0:
-        return view
+        return _physical_dashboard(view)
 
     if baseline_rnv is None:
         baseline_rnv = monitor._day(schedule.get("approved_end"))
@@ -271,6 +288,21 @@ def _apply_pace(project: str, view: dict[str, Any], cut: datetime.date) -> dict[
     dash_schedule["rnv_delay_days"] = graph["pace_rnv_delay_days"]
     dash_schedule["stalled"] = stalled
     dash_schedule["driver"] = _driver(pm, propagated, network_rnv, baseline_rnv, rows)
+    return _physical_dashboard(view)
+
+
+def _physical_dashboard(view):
+    timeline = (view.get('schedule') or {}).get('dependency_timeline') or {}
+    physical = timeline.get('physical') or {}
+    if physical.get('physical_evidence'):
+        qualified = timeline['rnv']
+        schedule = (view.get('dashboard') or {}).get('schedule')
+        if isinstance(schedule, dict):
+            schedule.update(forecast_known=qualified['state'] == 'complete',
+                            forecast_finish=qualified['forecast'],
+                            forecast_source='натуральные объёмы, подтверждённые факты и цепочка PM',
+                            rnv_delay_days=qualified['delay_days'] if qualified['state'] == 'complete' else None,
+                            driver=None, physical_driving_chain=qualified['driving_chain'])
     return view
 
 

@@ -54,12 +54,25 @@ class MonitorScheduleConfirmation(MonitorCumulativeProject):
     note: str = _CumulativeField(min_length=1, max_length=1000)
 
 
+class MonitorPhysicalView(MonitorContractsBuild):
+    query: str = _CumulativeField(default="", max_length=200)
+    offset: int = _CumulativeField(default=0, ge=0, le=100000, strict=True)
+
+
+class MonitorPhysicalSave(MonitorCumulativeProject):
+    pm_sha256: str = _CumulativeField(pattern=r"^[0-9a-f]{64}$")
+    snapshot_id: str = _CumulativeField(pattern=r"^\d{4}-\d{2}-\d{2}-[0-9a-f]{64}$")
+    revision: int = _CumulativeField(ge=0, strict=True)
+    configuration: dict[str, Any]
+
+
 _CUMULATIVE_PATHS = frozenset({
     "/monitor/cumulative/upload", "/monitor/cumulative/result",
     "/monitor/cumulative/list", "/monitor/contracts/build",
     "/monitor/contracts/result", "/monitor/contracts/term", "/monitor/contracts/link",
     "/monitor/view", "/monitor/schedule-fact", "/monitor/gpr-corpus/view",
     "/monitor/schedule-confirmation/view", "/monitor/schedule-confirmation/save",
+    "/monitor/schedule-physical/view", "/monitor/schedule-physical/save",
 })
 
 
@@ -123,6 +136,34 @@ def monitor_schedule_confirmation_view(req: MonitorContractsBuild) -> Response:
 @app.post("/monitor/schedule-confirmation/save", include_in_schema=False)
 def monitor_schedule_confirmation_save(req: MonitorScheduleConfirmation) -> Response:
     return _monitor_schedule_confirmation(req, save=True)
+
+
+def _monitor_schedule_physical(req, *, save=False):
+    _require_admin_key(req.key, "Монитор проекта", req.session)
+    if not req.project.strip():
+        raise HTTPException(400, "Выберите проект.")
+    import developaid_schedule_physical as physical
+    try:
+        result = (physical.save(req.project.strip(), req.pm_sha256, req.snapshot_id,
+                                req.revision, req.configuration) if save else
+                  physical.catalog(req.project.strip(), _monitor_cumulative_day(req.cut),
+                                   req.query, req.offset))
+        return JSONResponse(content=result)
+    except physical.PhysicalProblem as exc:
+        raise HTTPException(exc.status, str(exc)) from None
+    except Exception as exc:
+        logging.getLogger("developaid.monitor").error("Physical schedule unavailable (%s)", type(exc).__name__)
+        raise HTTPException(503, "Привязки накопительных сейчас недоступны. Повторите запрос.") from None
+
+
+@app.post("/monitor/schedule-physical/view", include_in_schema=False)
+def monitor_schedule_physical_view(req: MonitorPhysicalView) -> Response:
+    return _monitor_schedule_physical(req)
+
+
+@app.post("/monitor/schedule-physical/save", include_in_schema=False)
+def monitor_schedule_physical_save(req: MonitorPhysicalSave) -> Response:
+    return _monitor_schedule_physical(req, save=True)
 
 
 def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = b"") -> dict:

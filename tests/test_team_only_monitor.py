@@ -66,7 +66,11 @@ def call(method: str, path: str, session: str = "", key: str = "",
     раньше разбора дела, а не прятаться за 422."""
     out: dict = {"project": "проверка", "session": session, "key": key,
                  "source": "проверка", "target": "проверка", "first": "a", "second": "b",
-                 "date": "2026-10-22", "taken_at": "2026-10-22", "content_base64": ""}
+                 "date": "2026-10-22", "taken_at": "2026-10-22", "content_base64": "",
+                 "file_sha256": "a" * 64, "contract_date": "2024-07-03",
+                 "source_sha256": "a" * 64, "pm_sha256": "a" * 64,
+                 "snapshot_id": "2026-10-22-" + "a" * 64,
+                 "calendar_basis": "unconfirmed"}
     route = _route(method, path)
     dependant = getattr(route, "dependant", None)
     if method == "GET":
@@ -85,6 +89,9 @@ def call(method: str, path: str, session: str = "", key: str = "",
             if field.is_required() and name not in out:
                 kind = getattr(field.annotation, "__origin__", None) or field.annotation
                 out[name] = _FILL.get(kind, "проверка")
+        if getattr(model, "model_fields", None):
+            # A malformed harness must not hide admission behind FastAPI422.
+            model.model_validate(out)
     return browser.post(path, json=out, headers=headers or {})
 
 
