@@ -12,11 +12,33 @@ import developaid_monitor as monitor
 import developaid_monitor_contracts as contracts
 
 
+class FixtureProject(str):
+    """Numeric fixtures explicitly include their own cumulative contract universe."""
+    pass
+
+
 @pytest.fixture
 def project(monkeypatch, tmp_path):
     monkeypatch.setattr(monitor, "_SNAPSHOT_DIR", tmp_path)
-    monkeypatch.setattr(contracts, "_archive", lambda project, cut: None)
-    return "Synthetic site"
+    value = FixtureProject("Synthetic site")
+    value.snapshots = []
+    monkeypatch.setattr(contracts, "_archive", lambda name, cut: next((x for x in
+        reversed(value.snapshots) if x["taken_at"] <= cut), None) if name == value else None)
+    return value
+
+
+def primary_ledger(row, *, acts=None):
+    """Explicit synthetic KS evidence, separate from the tested RSS/reference row."""
+    acts = acts if acts is not None else [{"date": "2026-03-12", "amount": row.get("completed")}]
+    values = [contracts._number(x.get("amount")) for x in acts]
+    return {"customer": row.get("customer", "Developer A"), "contractor": row.get("contractor", "Builder A"),
+            "contract": row.get("contract", "C-12/7"), "contract_date": row.get("contract_date", "2026-01-01"),
+            "source": {"filename": "Synthetic-KS.xlsx", "sheet": "Работы", "row": 6},
+            "period_year": 2026, "items": [{"position": "1", "name": "Declared work", "unit": "шт",
+                "plan_quantity": 10, "completed_quantity": len(acts),
+                "completed_amount": sum(values) if all(x is not None for x in values) else None,
+                "periods": [{"date_start": x.get("date"), "date_end": x.get("date"), "quantity": 1,
+                             "amount": x.get("amount"), "amount_basis": x.get("amount_basis")} for x in acts]}]}
 
 
 def rss(project, rows, day="2026-04-01", headers=None):
@@ -25,6 +47,11 @@ def rss(project, rows, day="2026-04-01", headers=None):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Реестр договоров"
+    ws.cell(1, 1, "Заказчик")
+    ws.cell(1, 2, "Developer A")
+    ws.cell(6, 4, "Дата договора")
+    ws.cell(6, 8, "Сумма договора")
+    ws.cell(6, 12, "Выполнено по реестру")
     for column, text in (headers or {}).items():
         ws.cell(6, column, text)
     for i, row in enumerate(rows, 9):
@@ -36,22 +63,38 @@ def rss(project, rows, day="2026-04-01", headers=None):
                 ws.cell(i, index, row[field])
     wb.save(folder / f"{day}.xlsx")
     wb.close()
+    # All numeric integration cases now require an explicitly supplied KS header.
+    declared = [r for r in rows if not contracts._norm(r.get("contractor")).startswith(("итого", "всего"))]
+    totals = [r for r in declared if r.get("subject") == "Итого по договору"]
+    if totals:
+        declared = totals
+    primary = []
+    for row in declared:
+        value = dict(row)
+        if headers and headers.get(12):
+            value["completed"] = row.get("completed")
+        ledger = primary_ledger(value)
+        if headers and headers.get(12):
+            ledger["items"][0]["periods"][0]["amount_basis"] = contracts._amount_basis(headers[12])
+        primary.append(ledger)
+    project.snapshots.append({"taken_at": day, "ledgers": primary, "summary_contracts": []})
 
 
 def entry(**kw):
     return {"contractor": "Builder A", "contract": "№ C-12/7", "amount": 1000,
-            "completed": 250, "estimate_code": "2.1", **kw}
+            "completed": 250, "estimate_code": "2.1", "contract_date": "2026-01-01", **kw}
 
 
 def archive(monkeypatch, *, summaries=(), ledgers=(), day="2026-04-01"):
+    primaries = list(ledgers) if ledgers else [primary_ledger(x, acts=x.get("acts") or []) for x in summaries]
     snapshot = {"snapshot_id": "a"*64, "taken_at": day,
-                "summary_contracts": list(summaries), "ledgers": list(ledgers)}
+                "summary_contracts": list(summaries), "ledgers": primaries}
     monkeypatch.setattr(contracts, "_archive", lambda project, cut: snapshot)
 
 
 def summary(**kw):
     return {"customer": "Developer A", "contractor": "Builder A", "contract": "C-12/7",
-            "amount": 1000, "amount_date": "2026-03-01",
+            "amount": 1000, "amount_date": "2026-03-01", "contract_date": "2026-01-01",
             "acts": [{"number": "1", "date": "2026-03-12", "amount": 200}], **kw}
 
 
@@ -60,7 +103,7 @@ def test_contract_completion_is_accepted_money_not_paid(project):
     row, = contracts.build(project, "2026-04-02")["rows"]
     assert (row["amount"], row["completed"], row["completion_ratio"], row["remaining"]) == (1000, 250, .25, 750)
     assert row["deadline"] is None
-    assert row["physical_items"] == []
+    assert row["physical_items"]  # The contract is explicitly present in uploaded KS evidence.
     assert "не оплата" in row["performance_basis"]
 
 
@@ -176,7 +219,7 @@ def test_yearly_ledger_amount_is_not_full_contract_and_supply_not_installation(p
     archive(monkeypatch, ledgers=[ledger])
     row, = contracts.build(project)["rows"]
     assert row["amount"] is None
-    assert row["completed"] is None
+    assert row["completed"] == 6000  # Dated KS execution is known; whole contract price is not.
     physical, = row["physical_items"]
     assert physical["completion_ratio"] == .2
     assert physical["material_quantity"] == 80
@@ -200,9 +243,8 @@ def test_unknown_customer_does_not_join_another_customer(project, monkeypatch):
     rss(project, [entry()])
     archive(monkeypatch, summaries=[summary()])
     rows = contracts.build(project)["rows"]
-    assert len(rows) == 2
-    assert len({r["id"] for r in rows}) == 2
-    assert all(any("заказчиков" in w for w in r["warnings"]) for r in rows)
+    assert len(rows) == 1  # Only the declared KS contract belongs to this view.
+    assert rows[0]["customer"] == "Developer A"
 
 
 def test_punctuation_and_contract_dates_disambiguate_identity(project, monkeypatch):
@@ -223,11 +265,12 @@ def test_stable_identity_survives_snapshot_and_quantity_changes(project, monkeyp
 
 
 def test_missing_date_refinement_requires_fresh_manual_confirmation(project, monkeypatch):
-    archive(monkeypatch, summaries=[summary()])
-    before, = contracts.build(project)["rows"]
+    archive(monkeypatch, summaries=[summary(contract_date=None)])
+    before = contracts.build(project)
+    assert before["rows"] == [] and before["unresolved_sources"]
     archive(monkeypatch, summaries=[summary(contract_date="2024-01-01")])
     after, = contracts.build(project)["rows"]
-    assert before["id"] != after["id"]
+    assert after["contract_date"] == "2024-01-01"
 
 
 def test_even_identically_named_contracts_are_scoped_to_the_project(project, monkeypatch):
@@ -409,12 +452,13 @@ def test_later_manual_deadline_remains_a_current_reference_not_historical_fact(p
     assert any("позже даты среза" in warning for warning in old["warnings"])
 
 
-def test_rss_is_primary_but_conflicting_summary_is_not_hidden(project, monkeypatch):
+def test_conflicting_full_price_references_are_not_picked_over_ks_identity(project, monkeypatch):
     rss(project, [entry()])
-    archive(monkeypatch, summaries=[summary(customer="", amount=2000)])
+    archive(monkeypatch, summaries=[summary(amount=2000)])
     row, = contracts.build(project)["rows"]
-    assert row["amount"] == 1000
-    assert any("разные денежные" in w for w in row["warnings"])
+    assert row["amount"] is None
+    assert row["completed"] == 200  # KS source, never RSS L=250.
+    assert any("разные полные суммы" in w for w in row["warnings"])
     assert len(row["financial_sources"]) == 2
 
 
