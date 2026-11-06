@@ -57,18 +57,19 @@ def book(*, split=False, actual=4, formula=False, styled=False):
     return out.getvalue()
 
 
-def summary():
+def summary(*, amendment_label='Дополнительные работы', amendment_amount=1500,
+            amount_header='Сумма договора/ доп.соглашения', act_header='Сумма по КС'):
     w = openpyxl.Workbook()
     s = w.active
     s.title = 'Закрытие'
     s.append(['ООО «Заказчик»'])
     s.append([])
     s.append(['ООО «Первый подрядчик»', 'Работы выполнены'])
-    head = ['Вид работ', '№ договора/ доп.соглашения, дата', 'Сумма договора/ доп.соглашения',
-            '№ КС', 'Дата КС', 'Сумма по КС', 'Аванс']
+    head = ['Вид работ', '№ договора/ доп.соглашения, дата', amount_header,
+            '№ КС', 'Дата КС', act_header, 'Аванс']
     s.append(head)
     s.append(['Работы', 'Договор № П-1 от 01.01.2026', 1000, 1, dt.date(2026, 1, 31), 100])
-    s.append(['Дополнительные работы', 'ДС № 1 от 01.02.2026', 1500, 2, dt.date(2026, 2, 28), 200])
+    s.append([amendment_label, 'ДС № 1 от 01.02.2026', amendment_amount, 2, dt.date(2026, 2, 28), 200])
     s.append(['ИТОГО', None, None, None, None, 300])
     s.append(['ООО «Второй подрядчик»', 'Работы выполнены'])
     s.append(head)
@@ -154,18 +155,51 @@ def test_missing_formula_cache_is_not_zero_and_overplan_is_not_capped():
     assert any('границы' in w for w in over['warnings'])
 
 
-def test_contract_amendments_replace_amount_and_party_headers_change_identity():
+def test_ambiguous_contract_amendments_invalidate_full_price_and_keep_party_identity():
     rows = ledgers.parse_archive(archive([('Сводная.xlsx', summary())]))['summary_contracts']
     assert len(rows) == 2
     first, second = rows
     assert first['contractor'] == 'ООО «Первый подрядчик»'
-    assert first['amount'] == 1500
+    assert first['amount'] is None
+    assert first['amount_scope'] == 'ambiguous_amendment'
     assert first['amount_date'] == '2026-02-01'
-    assert [v['amount'] for v in first['amount_versions']] == [1000, 1500]
+    assert [v['amount'] for v in first['amount_versions']] == [1000, None]
+    assert first['amount_versions'][-1]['stated_amount'] == 1500
     assert [a['amount'] for a in first['acts']] == [100, 200]
     assert second['contractor'] == 'ООО «Второй подрядчик»'
     assert second['contract'] == 'П-2'
     assert second['deadline'] is None
+
+
+def test_only_explicit_new_whole_contract_price_can_replace_base():
+    ambiguous = ledgers.parse_archive(archive([('Summary.xlsx', summary(amendment_amount=200))]))['summary_contracts'][0]
+    assert ambiguous['amount'] is None  # Neither 200 nor an invented 1200 nor the stale base 1000.
+    assert ambiguous['amount_versions'][-1]['stated_amount'] == 200
+    declared = ledgers.parse_archive(archive([('Summary.xlsx', summary(
+        amendment_label='Новая полная стоимость договора', amendment_amount=1200))]))['summary_contracts'][0]
+    assert declared['amount'] == 1200
+    assert declared['amount_scope'] == 'full_contract'
+
+
+def test_contract_and_act_vat_bases_are_separate_evidence():
+    parsed = ledgers.parse_archive(archive([('Summary.xlsx', summary(
+        amount_header='Сумма договора с НДС', act_header='Сумма по КС без НДС'))]))['summary_contracts']
+    assert parsed[1]['amount_basis'] == 'with_vat'
+    assert parsed[1]['amount_versions'][0]['amount_basis'] == 'with_vat'
+    assert parsed[1]['acts'][0]['amount_basis'] == 'without_vat'
+    assert 'без НДС' in parsed[1]['acts'][0]['source']['amount_header']
+
+
+def test_vat_qualifier_in_same_column_header_prefix_is_retained():
+    w = openpyxl.load_workbook(io.BytesIO(summary()))
+    s = w.active
+    s.cell(3, 3, 'с НДС')
+    s.cell(3, 6, 'без НДС')
+    raw = io.BytesIO()
+    w.save(raw)
+    parsed = ledgers.parse_archive(archive([('Summary.xlsx', raw.getvalue())]))['summary_contracts'][0]
+    assert parsed['amount_basis'] == 'with_vat'
+    assert parsed['acts'][0]['amount_basis'] == 'without_vat'
 
 
 def test_xls_biff_is_supported():
@@ -333,3 +367,68 @@ def test_reading_unrelated_or_undated_sources_does_not_guess_contract_deadline()
 
 def test_party_names_preserve_business_punctuation_but_not_address_fields():
     assert ledgers._party('ООО «Первый, второй», ИНН 1234567890') == 'ООО «Первый, второй»'
+
+
+def test_store_protocol_preserves_file_sheet_and_row_warnings_without_full_manifest(tmp_path, monkeypatch):
+    monkeypatch.setattr(monitor, '_SNAPSHOT_DIR', tmp_path)
+    w = openpyxl.load_workbook(io.BytesIO(book(actual=15)))
+    notes = w.create_sheet('Примечания')
+    notes.cell(1, 1, 'Сопроводительные сведения')
+    raw = io.BytesIO()
+    w.save(raw)
+    data = archive([('Source.xlsx', raw.getvalue())])
+    result = ledgers.store_archive('Project', data, '2026-03-01')
+    assert 'ledgers' not in result
+    assert any(i['filename'] == 'Source.xlsx' and i['sheet'] == 'Работы' and i['row'] == 9
+               and 'границы' in i['message'] for i in result['issues'])
+    assert any(i['filename'] == 'Source.xlsx' and 'Примечания' in i['message']
+               for i in result['issues'])
+    assert any('год' in i['message'] for i in result['issues'])
+    assert result['issues_count'] == len(result['issues'])
+    assert result['issues_overflow_count'] == 0
+    duplicate = ledgers.store_archive('Project', data, '2026-03-01')
+    assert duplicate['duplicate'] is True
+    assert duplicate['issues'] == result['issues']
+
+
+def test_split_remaining_warning_is_visible_in_store_protocol(tmp_path, monkeypatch):
+    monkeypatch.setattr(monitor, '_SNAPSHOT_DIR', tmp_path)
+    result = ledgers.store_archive('Project', archive([('Stages.xlsx', book(split=True))]), '2026-03-01')
+    assert any(i['filename'] == 'Stages.xlsx' and i['sheet'] == 'Работы' and i['row'] == 9
+               and 'Остаток в книге' in i['message'] for i in result['issues'])
+
+
+def test_protocol_caps_issues_but_reports_total_and_omitted_count():
+    snapshot = {'files': [{'filename': 'Source.xlsx', 'warnings': ['File issue']}],
+                'warnings': ['File issue'],
+                'ledgers': [{'source': {'filename': 'Source.xlsx', 'sheet': 'Работы', 'row': 8},
+                             'warnings': ['General issue'],
+                             'items': [{'source': {'filename': 'Source.xlsx', 'sheet': 'Работы', 'row': i},
+                                        'warnings': ['Row issue']} for i in range(1, 121)]}]}
+    result = ledgers._import_result(snapshot, duplicate=False)
+    assert len(result['issues']) == 100
+    assert result['issues_count'] == 122
+    assert result['issues_overflow_count'] == 22
+    assert all(i['message'] == 'Row issue' for i in result['issues'])
+
+
+def test_materialized_text_budget_is_shared_between_workbooks(monkeypatch):
+    single = book()
+    captured = {'text_bytes': 0}
+    ledgers._read_workbook('One.xlsx', single, captured)
+    monkeypatch.setattr(ledgers, 'MAX_MATERIALIZED_TEXT_BYTES', captured['text_bytes']+1)
+    # Each workbook fits on its own, but a ZIP must share one aggregate budget.
+    with pytest.raises(ledgers.LedgerProblem, match='объём текстовых ячеек'):
+        ledgers.parse_archive(archive([('One.xlsx', single), ('Two.xlsx', single)]))
+
+
+def test_oversized_individual_text_cell_is_rejected_before_ledger_normalization(monkeypatch):
+    w = openpyxl.load_workbook(io.BytesIO(book()))
+    w.active.cell(9, 3, 'а'*20001)
+    raw = io.BytesIO()
+    w.save(raw)
+    called = []
+    monkeypatch.setattr(ledgers, '_ledger', lambda *args: called.append(True))
+    with pytest.raises(ledgers.LedgerProblem, match='длинная текстовая ячейка'):
+        ledgers.parse_archive(archive([('Long.xlsx', raw.getvalue())]))
+    assert not called

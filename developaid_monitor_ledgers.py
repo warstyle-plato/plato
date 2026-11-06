@@ -36,6 +36,9 @@ MAX_RATIO = 1_000
 MAX_ITEMS = 20_000
 MAX_PERIOD_VALUES = 100_000
 MAX_PARSED_BYTES = 24 * 1024 * 1024
+MAX_ISSUES = 100
+MAX_TEXT_CELL_CHARS = 20_000
+MAX_MATERIALIZED_TEXT_BYTES = 16 * 1024 * 1024
 SUPPORTED = {'.xlsx', '.xlsm', '.xls'}
 
 
@@ -203,7 +206,22 @@ def _xlsx_bounds(data: bytes) -> int:
     return row_bound
 
 
-def _read_workbook(filename: str, data: bytes) -> list[tuple[str, list[list[Any]]]]:
+def _bounded_row(row, budget: dict) -> list[Any]:
+    # Shared-string references can expand a tiny ZIP into enormous repeated
+    # business strings. Check materialized values before retaining/normalizing
+    # rows; the same budget is shared by every workbook in the archive.
+    for value in row:
+        if isinstance(value, str):
+            if len(value) > MAX_TEXT_CELL_CHARS:
+                raise LedgerProblem('В книге есть слишком длинная текстовая ячейка.')
+            budget['text_bytes'] += len(value.encode('utf-8'))
+            if budget['text_bytes'] > MAX_MATERIALIZED_TEXT_BYTES:
+                raise LedgerProblem('В архиве слишком большой объём текстовых ячеек.')
+    return list(row)
+
+
+def _read_workbook(filename: str, data: bytes, budget: dict | None = None) -> list[tuple[str, list[list[Any]]]]:
+    budget = budget if budget is not None else {'text_bytes': 0}
     suffix = PurePosixPath(filename).suffix.lower()
     if suffix == '.xls':
         try:
@@ -214,14 +232,16 @@ def _read_workbook(filename: str, data: bytes) -> list[tuple[str, list[list[Any]
                     raise LedgerProblem('В книге слишком много листов.')
                 out = []
                 cells = 0
-                for sheet in wb.sheets():
+                for index in range(wb.nsheets):
+                    sheet = wb.sheet_by_index(index)
                     if sheet.nrows > MAX_ROWS or sheet.ncols > MAX_COLUMNS:
                         raise LedgerProblem('В книге слишком большая таблица для загрузки накопительных.')
                     cells += sheet.nrows * sheet.ncols
                     if cells > MAX_CELLS:
                         raise LedgerProblem('В книге слишком большая таблица для загрузки накопительных.')
-                    out.append((sheet.name, [[sheet.cell_value(r, c) for c in range(sheet.ncols)]
+                    out.append((sheet.name, [_bounded_row([sheet.cell_value(r, c) for c in range(sheet.ncols)], budget)
                                              for r in range(sheet.nrows)]))
+                    wb.unload_sheet(index)
                 return out
             finally:
                 wb.release_resources()
@@ -238,7 +258,7 @@ def _read_workbook(filename: str, data: bytes) -> list[tuple[str, list[list[Any]
         try:
             if len(wb.worksheets) > MAX_SHEETS:
                 raise LedgerProblem('В книге слишком много листов.')
-            return [(sheet.title, [list(r) for r in sheet.iter_rows(
+            return [(sheet.title, [_bounded_row(r, budget) for r in sheet.iter_rows(
                 max_row=min(sheet.max_row or bound, bound),
                 max_col=min(sheet.max_column or MAX_COLUMNS, MAX_COLUMNS), values_only=True)])
                     for sheet in wb.worksheets]
@@ -294,6 +314,20 @@ def _metadata(rows: list[list[Any]]) -> dict:
 def _period_dates(label: str) -> tuple[str | None, str | None]:
     matches = re.findall(r'\d{1,2}[./]\d{1,2}[./]\d{4}', label)
     return (_day(matches[0]), _day(matches[-1])) if matches else (None, None)
+
+
+def _amount_basis(header: str) -> str:
+    text = re.sub(r'\s+', '', _norm(header))
+    without, with_vat = 'безндс' in text, 'сндс' in text
+    if without == with_vat:
+        return 'unspecified'
+    return 'without_vat' if without else 'with_vat'
+
+
+def _full_contract_price(label: str) -> bool:
+    text = _norm(label)
+    return bool(re.search(r'(?:новая|итоговая|общая|полная)\s+(?:сумма|цена|стоимость)\s+(?:по\s+)?договора', text)
+                or re.search(r'(?:сумма|цена|стоимость)\s+договора\s+с\s+уч[её]том\b', text))
 
 
 def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
@@ -371,6 +405,12 @@ def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
             item_warnings.append('Нет сохранённого выполненного количества: требуется пересчёт и сохранение книги в Excel.')
         if actual is not None and (actual < -1e-6 or (plan >= 0 and actual > plan + max(1e-6, abs(plan)*1e-7))):
             item_warnings.append('Выполненное количество выходит за границы планового. Проверьте объём или состав работ.')
+        if split and actual is not None:
+            source_remaining = _number(at(year_col+4))
+            if (source_remaining is not None
+                    and abs(source_remaining-(plan-actual)) > max(1e-6, abs(plan)*1e-7)):
+                item_warnings.append('Остаток в книге отличается от остатка по монтажу. '
+                                     'Поставку материалов нельзя вычитать как выполненный монтаж.')
         periods = []
         for col in period_cols:
             label = next((_text(rows[r][col]) for r in range(qi-1, hi-1, -1)
@@ -441,6 +481,13 @@ def _summary(filename: str, sheet: str, rows: list[list[Any]]) -> list[dict] | N
                 return next(j for j, label in enumerate(labels) if needle in label)
             header_map = {'contract': col('№ договора'), 'amount': col('сумма договора'),
                           'number': col('№ кс'), 'date': col('дата кс'), 'act_amount': col('сумма по кс')}
+            def basis_header(column):
+                # Tax qualifiers can be a preceding/following header cell in
+                # the same column. Never borrow a neighbour's VAT qualifier.
+                return ' '.join(_text(rows[r][column]) for r in range(max(0, ri-2), min(len(rows), ri+2))
+                                if column < len(rows[r]) and isinstance(rows[r][column], str))
+            header_map['amount_header'] = basis_header(header_map['amount'])
+            header_map['act_amount_header'] = basis_header(header_map['act_amount'])
             continue
         def at(field):
             c = header_map.get(field)
@@ -461,19 +508,31 @@ def _summary(filename: str, sheet: str, rows: list[list[Any]]) -> list[dict] | N
             current = {'contractor': contractor, 'customer': customer,
                        'contract': _contract(contract_text), 'contract_date': _day(contract_text),
                        'amount': _number(at('amount')), 'amount_date': _day(contract_text),
+                       'amount_scope': 'full_contract',
+                       'amount_basis': _amount_basis(header_map['amount_header']),
                        'deadline': None, 'acts': [], 'amount_versions': [], 'warnings': [],
-                       'source': _source(filename, sheet, ri+1)}
+                       'source': _source(filename, sheet, ri+1, amount_header=header_map['amount_header'])}
             contracts.append(current)
             if current['amount'] is not None:
                 current['amount_versions'].append({'amount': current['amount'], 'date': current['amount_date'],
+                                                   'scope': 'full_contract', 'amount_basis': current['amount_basis'],
                                                    'label': contract_text, 'source': _source(filename, sheet, ri+1)})
         elif current is not None and re.match(r'^(?:дс|доп\.?\s*соглаш)', contract_text, re.I):
             amount = _number(at('amount'))
             if amount is not None:
-                current['amount'] = amount
+                declared_full = _full_contract_price(first+' '+contract_text+' '+header_map['amount_header'])
+                scope = 'full_contract' if declared_full else 'ambiguous_amendment'
+                current['amount'] = amount if declared_full else None
                 current['amount_date'] = _day(contract_text)
-                current['amount_versions'].append({'amount': amount, 'date': current['amount_date'],
+                current['amount_scope'] = scope
+                current['amount_basis'] = _amount_basis(header_map['amount_header'])
+                current['amount_versions'].append({'amount': current['amount'], 'stated_amount': amount,
+                                                   'scope': scope, 'amount_basis': current['amount_basis'],
+                                                   'date': current['amount_date'],
                                                    'label': contract_text, 'source': _source(filename, sheet, ri+1)})
+                if not declared_full:
+                    current['warnings'].append(f'Строка {ri+1}: сумма допсоглашения не подписана как полная новая сумма договора. '
+                                               'Действующая сумма договора требует подтверждения.')
         if current is None:
             continue
         number, amount = _text(at('number')), _number(at('act_amount'))
@@ -482,7 +541,8 @@ def _summary(filename: str, sheet: str, rows: list[list[Any]]) -> list[dict] | N
             if not date:
                 current['warnings'].append(f'Строка {ri+1}: у акта нет действительной даты.')
             current['acts'].append({'number': number, 'date': date, 'amount': amount,
-                                    'source': _source(filename, sheet, ri+1)})
+                                    'amount_basis': _amount_basis(header_map['act_amount_header']),
+                                    'source': _source(filename, sheet, ri+1, amount_header=header_map['act_amount_header'])})
     for item in contracts:
         if not item['contractor']:
             item['warnings'].append('Не распознан контрагент договорного блока.')
@@ -502,6 +562,7 @@ def parse_archive(data: bytes, filename: str = '') -> dict:
     if filename and PurePosixPath(filename).suffix.lower() != '.zip':
         raise LedgerProblem('Выберите ZIP-архив с накопительными книгами Excel.')
     members = _zip_members(data)
+    budget = {'text_bytes': 0}
     result = {'files': [], 'ledgers': [], 'summary_contracts': [], 'warnings': []}
     if not members:
         raise LedgerProblem('Архив пуст. Добавьте накопительные книги Excel.')
@@ -518,7 +579,7 @@ def parse_archive(data: bytes, filename: str = '') -> dict:
                       for n, _ in members if n not in read]
             raise LedgerProblem('В архиве есть неподдерживаемый файл. Оставьте только XLS, XLSX и XLSM.', files=files)
         try:
-            sheets = _read_workbook(name, payload)
+            sheets = _read_workbook(name, payload, budget)
             count = 0
             sheet_warnings = []
             recognized = []
@@ -620,6 +681,56 @@ def _brief(snapshot: dict) -> dict:
                                               'files_count', 'ledgers_count', 'quantity_rows_count', 'warnings_count')}
 
 
+def _import_result(snapshot: dict, *, duplicate: bool) -> dict:
+    """Return an actionable protocol without transferring the whole manifest.
+
+    Row problems precede general methodology notes, so the bounded preview does
+    not hide an overrun behind repeated annual-scope notices. Counts include
+    every distinct issue, including the portion omitted from the preview.
+    """
+    issues, seen = [], set()
+    total = 0
+
+    def add(message, source):
+        nonlocal total
+        source = source or {}
+        row = source.get('row')
+        explicit_row = re.match(r'^Строка (\d+):', str(message))
+        if explicit_row:
+            row = int(explicit_row.group(1))
+        item = {'filename': source.get('filename', ''), 'sheet': source.get('sheet', ''),
+                'row': row, 'message': str(message)}
+        key = (item['filename'], item['sheet'], item['row'], item['message'])
+        if key in seen:
+            return
+        seen.add(key)
+        total += 1
+        if len(issues) < MAX_ISSUES:
+            issues.append(item)
+
+    for ledger in snapshot.get('ledgers', []):
+        for item in ledger.get('items', []):
+            for message in item.get('warnings', []):
+                add(message, item.get('source'))
+    file_messages = set()
+    for file in snapshot.get('files', []):
+        for message in file.get('warnings', []):
+            add(message, {'filename': file.get('filename', '')})
+            file_messages.add(str(message))
+    for ledger in snapshot.get('ledgers', []):
+        for message in ledger.get('warnings', []):
+            add(message, ledger.get('source'))
+    for contract in snapshot.get('summary_contracts', []):
+        for message in contract.get('warnings', []):
+            add(message, contract.get('source'))
+    for message in snapshot.get('warnings', []):
+        if str(message) not in file_messages:
+            add(message, {})
+    return {**_brief(snapshot), 'files': snapshot['files'], 'warnings': snapshot['warnings'],
+            'duplicate': duplicate, 'issues': issues, 'issues_count': total,
+            'issues_overflow_count': max(0, total-len(issues))}
+
+
 def store_archive(project: str, data: bytes, taken_at: Any, filename: str = '') -> dict:
     day = _iso(taken_at)
     digest = hashlib.sha256(data).hexdigest()
@@ -633,7 +744,7 @@ def store_archive(project: str, data: bytes, taken_at: Any, filename: str = '') 
             path = _snapshot_path(root, stem)
             if len(existing) == 1 and existing[0] == path:
                 stored = json.loads(path.read_text(encoding='utf-8'))
-                return {**_brief(stored), 'files': stored['files'], 'warnings': stored['warnings'], 'duplicate': True}
+                return _import_result(stored, duplicate=True)
             raise LedgerConflict('Архив на эту дату уже загружен. Выберите дату нового среза; предыдущий архив сохранён.')
         stored = {**parsed, 'snapshot_id': stem, 'taken_at': day,
                   'loaded_at': dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -647,7 +758,7 @@ def store_archive(project: str, data: bytes, taken_at: Any, filename: str = '') 
         except Exception:
             raw_path.unlink(missing_ok=True)
             raise
-        return {**_brief(stored), 'files': stored['files'], 'warnings': stored['warnings'], 'duplicate': False}
+        return _import_result(stored, duplicate=False)
 
 
 def list_snapshots(project: str) -> list[dict]:
