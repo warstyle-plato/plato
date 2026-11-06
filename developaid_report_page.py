@@ -107,18 +107,20 @@ function mailingLast(x){if(!x)return ' · сводок ещё не было';ret
 function mailingMissing(r){const rows=(r.missing||[]).map(x=>`<div class="msg bad">Сводка ${esc(mailingWhat(x))} должна была уйти ${esc(dtm(x.at))}, но ещё не собрана. ${x.error?'Причина: '+esc(x.error)+' (проверено '+esc(dtm(x.error_at||''))+').':'Сервер пробует собрать её каждые две минуты.'}</div>`);const b=r.builder||{};if(b.error)rows.push(`<div class="msg bad">Сборка рассылки на сервере остановилась с ошибкой: ${esc(b.error)}</div>`);return rows.join('')}
 function msg(id,t,cls=''){const e=$(id);if(!e)return;e.textContent=t;e.className='msg '+cls}
 const WEB_SESSION_KEY='developaid_web_session',ADMIN_KEY='plato_projects_key';
+let reportSeq=0,reportJob=null;
+function invalidateReport(){reportSeq++;reportJob=null;$('reportBox').innerHTML='<div class="muted">Выберите проект и нажмите «Показать».</div>'}
 function readStorage(...keys){try{for(const k of keys){const v=localStorage.getItem(k);if(v)return v}}catch(e){}return ''}
 function session(){return readStorage(WEB_SESSION_KEY,'session','developaid_session')}
 function adminKey(){return readStorage(ADMIN_KEY,'key','developaid_key')}
 function hasAuth(){return !!adminKey()}
 function auth(){return{session:session(),key:adminKey()}}
 function syncAuthUi(){const yes=hasAuth();$('loginBox').classList.toggle('hidden',yes);$('privateArea').classList.toggle('hidden',!yes);return yes}
-function requireLogin(text='Введите ключ администратора, чтобы открыть сводку.'){$('loginBox').classList.remove('hidden');$('privateArea').classList.add('hidden');msg('loginMsg',text,'bad')}
+function requireLogin(text='Введите ключ администратора, чтобы открыть сводку.'){invalidateReport();$('loginBox').classList.remove('hidden');$('privateArea').classList.add('hidden');msg('loginMsg',text,'bad')}
 // Обрыв связи браузер называет «Load failed» / «Failed to fetch» — владельцу
 // это ничего не говорит (22.10.2026: «после нажатия кнопки Подтвердить и
 // сохранить пишет load failed»). Здесь причина названа словами, а запрос
 // назван, чтобы было видно, что именно не дошло.
-async function post(path,p){let r;try{r=await fetch(path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(Object.assign(auth(),p||{}))})}catch(e){throw new Error(`Сервер не ответил на запрос ${path}: связь прервалась (${e.message}). Проверьте интернет и повторите; если это повторяется — напишите нам, какое действие и во сколько.`)}const d=await r.json().catch(()=>({}));if(r.status===401)requireLogin();if(!r.ok)throw new Error(d.detail||('Ошибка '+r.status));return d}
+async function post(path,p){let r;try{r=await fetch(path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(Object.assign(auth(),p||{}))})}catch(e){throw new Error(`Сервер не ответил на запрос ${path}: связь прервалась (${e.message}). Проверьте интернет и повторите; если это повторяется — напишите нам, какое действие и во сколько.`)}const d=await r.json().catch(()=>({}));if(r.status===401||r.status===403)requireLogin(d.detail||undefined);if(!r.ok)throw Object.assign(new Error(d.detail||('Ошибка '+r.status)),{status:r.status});return d}
 function remember(key,value){try{localStorage.setItem(key,value)}catch(e){}}
 function recall(key){try{return localStorage.getItem(key)||''}catch(e){return ''}}
 let projectList=[],salesList=[];
@@ -132,12 +134,42 @@ async function mergeRun(apply){const source=$('mergeSource').value,target=$('mer
 $('mergeCheckBtn').onclick=()=>mergeRun(false);$('mergeApplyBtn').onclick=()=>mergeRun(true);$('mergeSource').onchange=$('mergeTarget').onchange=()=>{$('mergeApplyBtn').disabled=true;$('mergePlan').innerHTML=''};
 async function loadProjects(){try{drawProjects(await post('/monitor/report/projects',{}));if(!projectList.length)msg('reportMsg','В Мониторе пока нет проектов. Загрузите РСС или график работ на странице Монитора — проект появится в списке.','warn');return projectList.length>0}catch(e){msg('reportMsg',e.message,'bad');return false}}
 function reportPayload(){remember('mgmt_report_project',$('project').value);return {project:$('project').value,kind:$('reportKind').value,end:$('cut').value||''}}
-let reportSeq=0;
+function newReportTicket(){if(!globalThis.crypto||!crypto.getRandomValues)return '';const bytes=new Uint8Array(16);crypto.getRandomValues(bytes);return Array.from(bytes,x=>x.toString(16).padStart(2,'0')).join('')}
 // Переключатель мер темпа продаж — орудие страницы: в документе кнопок нет и
 // там все меры подряд. Обработчик один на карточку: разметка приходит с
 // сервера заново при каждой сборке.
 $('reportBox').addEventListener('click',e=>{const b=e.target.closest('.switch-charts .switch button');if(!b)return;const box=b.closest('.switch-charts');box.querySelectorAll('.switch button').forEach(x=>x.classList.toggle('on',x===b));box.querySelectorAll('.pane').forEach(p=>p.classList.toggle('on',p.dataset.pane===b.dataset.pane))});
-async function renderReport(quiet){const p=$('project').value;if(!p)return msg('reportMsg','Выберите проект в списке.','bad');const seq=++reportSeq;msg('reportMsg','Собираю сводку…','warn');try{const r=await post('/monitor/report',reportPayload());if(seq!==reportSeq)return;$('reportBox').innerHTML=r.html;msg('reportMsg','','')}catch(e){if(seq!==reportSeq)return;msg('reportMsg',e.message,'bad')}renderNotes();loadMailing();loadLegal();if(!quiet)loadPhotos()}
+async function renderReport(quiet){
+ const seq=++reportSeq,p=$('project').value;if(!p){reportJob=null;$('reportBox').innerHTML='<div class="muted">Выберите проект и нажмите «Показать».</div>';return msg('reportMsg','Выберите проект в списке.','bad')}
+ const payload=reportPayload(),signature=JSON.stringify(payload);
+ if(!reportJob||reportJob.signature!==signature||reportJob.done)reportJob={signature,ticket:newReportTicket(),done:false};
+ const job=reportJob;msg('reportMsg','Собираю сводку…','warn');
+ try{
+  let r;
+  // Быстрые изменения полей могут занять оба места предыдущими сборками.
+  // Ждём место только для последнего выбора: до 60 повторов, без очереди
+  // на сервере, с теми же параметрами и номером запроса при каждом повторе.
+  for(let retry=0;;retry++){
+   if(seq!==reportSeq)return;
+   try{r=await post('/monitor/report/build',Object.assign({},payload,{ticket:job.ticket}));break}
+   catch(e){
+    if(seq!==reportSeq)return;
+    if(e.status!==429||retry>=60)throw e;
+    msg('reportMsg','Сервер собирает другие сводки. Ожидаю свободного места…','warn');
+    await new Promise(resolve=>setTimeout(resolve,1500));
+   }
+  }
+  if(seq!==reportSeq)return;job.ticket=r.ticket||job.ticket;
+  while(r.pending){
+   msg('reportMsg','Собираю сводку. Можно оставить страницу открытой.','warn');
+   await new Promise(resolve=>setTimeout(resolve,1500));if(seq!==reportSeq)return;
+   r=await post('/monitor/report/result',{ticket:job.ticket});if(seq!==reportSeq)return;
+  }
+  if(typeof r.html!=='string'||!r.html.trim())throw Object.assign(new Error('Сервер не вернул сводку. Повторите запрос.'),{status:500});
+  job.done=true;$('reportBox').innerHTML=r.html;msg('reportMsg','','');
+ }catch(e){if(seq!==reportSeq)return;if(e.status)reportJob=null;msg('reportMsg',e.message,'bad')}
+ renderNotes();loadMailing();loadLegal();if(!quiet)loadPhotos()
+}
 const photoUrls={};
 async function photoSrc(id){if(photoUrls[id])return photoUrls[id];const r=await fetch('/monitor/photo',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(Object.assign(auth(),{project:$('project').value.trim(),photo_id:id}))});if(!r.ok)return '';photoUrls[id]=URL.createObjectURL(await r.blob());return photoUrls[id]}
 async function loadPhotos(extra){const p=$('project').value.trim();if(!p)return;try{drawPhotos(await post('/monitor/photos',Object.assign({project:p,kind:$('reportKind').value,end:$('cut').value||''},extra||{})));return true}catch(e){msg('photosMsg',e.message,'bad');return false}}
@@ -192,9 +224,11 @@ $('project').onchange=()=>{drawSalesLink(false);renderReport()};
 $('salesChange').onclick=()=>drawSalesLink(true);
 $('reportSales').onchange=async()=>{const v=$('reportSales').value;if(!v)return;try{drawProjects(await post('/monitor/report/link',{project:$('project').value,sales_project:v==='__none__'?'':v}),$('project').value);msg('reportMsg','Выбор запомнен: теперь он действует для всех, кто открывает сводку этого проекта.','good');renderReport(true)}catch(e){msg('reportMsg',e.message,'bad')}};
 $('reportKind').onchange=()=>renderReport();
-$('reportPdfBtn').onclick=async()=>{const btn=$('reportPdfBtn');btn.disabled=true;msg('reportMsg','Печатаю PDF — обычно до двадцати секунд.','warn');try{const r=await fetch('/monitor/report.pdf',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(Object.assign(auth(),reportPayload()))});if(r.status===401)requireLogin();if(!r.ok){const d=await r.json().catch(()=>({}));throw new Error(d.detail||('Не удалось напечатать PDF: ошибка '+r.status))}const blob=await r.blob(),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`Сводка ${$('project').value.trim()} ${$('cut').value||''}.pdf`;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),60000);msg('reportMsg','PDF скачан.','good')}catch(e){msg('reportMsg',e.message,'bad')}finally{btn.disabled=false}};
-$('loginBtn').onclick=async()=>{msg('loginMsg','Открываю Telegram…','good');try{const r=await fetch('/auth/telegram/start',{method:'POST'}),d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.detail||'Вход через Telegram недоступен');if(d.link)window.open(d.link,'_blank');for(let i=0;i<60;i++){await new Promise(ok=>setTimeout(ok,2000));const c=await fetch('/auth/telegram/claim',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:d.code})}),cd=await c.json().catch(()=>({}));if(c.ok&&cd.session){remember(WEB_SESSION_KEY,cd.session);if(syncAuthUi())start();return}}throw new Error('Подтверждение не пришло за 2 минуты.')}catch(e){msg('loginMsg',e.message,'bad')}};
-$('keyBtn').onclick=()=>{const k=prompt('Ключ администратора');if(!k)return;remember(ADMIN_KEY,k.trim());if(syncAuthUi())start()};
+$('cut').onchange=()=>renderReport();
+$('reportPdfBtn').onclick=async()=>{const btn=$('reportPdfBtn');btn.disabled=true;msg('reportMsg','Печатаю PDF — обычно до двадцати секунд.','warn');try{const r=await fetch('/monitor/report.pdf',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(Object.assign(auth(),reportPayload()))});if(!r.ok){const d=await r.json().catch(()=>({}));if(r.status===401||r.status===403)requireLogin(d.detail||undefined);throw new Error(d.detail||('Не удалось напечатать PDF: ошибка '+r.status))}const blob=await r.blob(),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`Сводка ${$('project').value.trim()} ${$('cut').value||''}.pdf`;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),60000);msg('reportMsg','PDF скачан.','good')}catch(e){msg('reportMsg',e.message,'bad')}finally{btn.disabled=false}};
+$('loginBtn').onclick=async()=>{msg('loginMsg','Открываю Telegram…','good');try{const r=await fetch('/auth/telegram/start',{method:'POST'}),d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.detail||'Вход через Telegram недоступен');if(d.link)window.open(d.link,'_blank');for(let i=0;i<60;i++){await new Promise(ok=>setTimeout(ok,2000));const c=await fetch('/auth/telegram/claim',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:d.code})}),cd=await c.json().catch(()=>({}));if(c.ok&&cd.session){invalidateReport();remember(WEB_SESSION_KEY,cd.session);if(syncAuthUi())start();return}}throw new Error('Подтверждение не пришло за 2 минуты.')}catch(e){msg('loginMsg',e.message,'bad')}};
+$('keyBtn').onclick=()=>{const k=prompt('Ключ администратора');if(!k)return;invalidateReport();remember(ADMIN_KEY,k.trim());if(syncAuthUi())start()};
+window.addEventListener('storage',e=>{if(e.key===null||[WEB_SESSION_KEY,ADMIN_KEY,'session','developaid_session','key','developaid_key'].includes(e.key))requireLogin()});
 $('cut').value=new Date().toISOString().slice(0,10);
 async function start(){if(await loadProjects())renderReport()}
 if(syncAuthUi())start();else msg('loginMsg','Введите ключ администратора, чтобы открыть сводку.','bad');

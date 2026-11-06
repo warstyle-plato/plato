@@ -901,7 +901,14 @@ def install(app: FastAPI) -> MarketDiscoveryService:
         if not contracts:
             return {"project": kept.get("project") or "", "sources": [],
                     "missing": ["контрактация не загружена"], "empty": True}
-        got = contracting.summarise(contracts, part("ledger") or {})
+        # Та же календарная база, что в сводке: месяц среза выгрузки тоже
+        # учитывается, даже если в нём ещё не было договоров.
+        uploaded = str((sources.get("contracting") or {}).get("at") or "")[:10]
+        try:
+            until = datetime.date.fromisoformat(uploaded).strftime("%Y-%m")
+        except ValueError:
+            until = None
+        got = contracting.summarise(contracts, part("ledger") or {}, until=until)
         fm, bank, pool = part("fm_plan"), part("bank_plan"), part("pool")
         got["fm_plan"] = fm
         got["bank_plan"] = bank

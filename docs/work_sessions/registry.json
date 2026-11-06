@@ -1,0 +1,178 @@
+{
+  "schema_version": 1,
+  "observed_at_utc": "2026-11-04T07:18:29+00:00",
+  "scope": "warstyle-plato/plato",
+  "source": "Live GitHub and scoped successor reviews; a dated snapshot, not an automated queue.",
+  "control": {
+    "id": "control",
+    "location": "current_owner_conversation_in_codex",
+    "authority": "current_owner_instructions",
+    "previous_claude_sessions": "closed_by_owner",
+    "automatic_background_monitoring": false,
+    "automatic_persistent_chat_creation": false
+  },
+  "roles": [
+    {
+      "id": "control",
+      "title": "Контроль",
+      "responsibility": "Текущий разговор с владельцем; очередь, поручения, независимая приёмка и выпуск.",
+      "start": "CONTROL_HANDOFF.md",
+      "lifecycle": "on_demand"
+    },
+    {
+      "id": "finance",
+      "title": "Финмодель и Монитор",
+      "responsibility": "Продолжение АХР, бюджета, лимитов, факта и плана.",
+      "start": "roles/finance.md",
+      "lifecycle": "on_demand"
+    },
+    {
+      "id": "sales",
+      "title": "Продажи и бот",
+      "responsibility": "Шахматка, аномалии, брони, вопросы и ответы, прогноз поступлений.",
+      "start": "roles/sales.md",
+      "lifecycle": "on_demand"
+    },
+    {
+      "id": "books",
+      "title": "Офис, ТЦ и Excel",
+      "responsibility": "Формульные книги, сравнение стратегий и общие пояснения.",
+      "start": "roles/books.md",
+      "lifecycle": "on_demand"
+    },
+    {
+      "id": "platform",
+      "title": "Платформа и зависимости",
+      "responsibility": "Windows-клиент и обновления зависимостей с сохранением прав доступа.",
+      "start": "roles/platform.md",
+      "lifecycle": "on_demand"
+    },
+    {
+      "id": "security",
+      "title": "Страж безопасности",
+      "responsibility": "Права, ключи, секреты, загрузки и границы доверия.",
+      "start": "roles/security.md",
+      "lifecycle": "on_demand"
+    },
+    {
+      "id": "visual",
+      "title": "Страж интерфейса",
+      "responsibility": "Настоящие страницы и документы, мобильная видимость и понятность.",
+      "start": "roles/visual.md",
+      "lifecycle": "on_demand"
+    },
+    {
+      "id": "excel",
+      "title": "Страж Excel и методики",
+      "responsibility": "Независимая сверка чисел, формул, денежных потоков и N/A.",
+      "start": "roles/excel.md",
+      "lifecycle": "on_demand"
+    },
+    {
+      "id": "normative",
+      "title": "Страж нормативов",
+      "responsibility": "Источники, редакции, обязательные нормы и допущения.",
+      "start": "roles/normative.md",
+      "lifecycle": "on_demand"
+    }
+  ],
+  "release_candidate": {
+    "pr": 1000,
+    "state": "ready_for_current_owner_release_instruction",
+    "decision_recorded": false
+  },
+  "work": [
+    {
+      "id": "999-finance",
+      "pr": 999,
+      "url": "https://github.com/warstyle-plato/plato/pull/999",
+      "owner": "finance",
+      "card": "tasks/999-finance.md",
+      "head": "297700f11914ed07ecefb58381c59551d89d3c30",
+      "branch": "claude/admin-expenses-apart",
+      "state": "blocked_financial_acceptance",
+      "ci": "success",
+      "deployed": false
+    },
+    {
+      "id": "1000-report-key",
+      "pr": 1000,
+      "url": "https://github.com/warstyle-plato/plato/pull/1000",
+      "owner": "control",
+      "card": "tasks/1000-report-key.md",
+      "head": "6773453dd7ac0b5549c8d6e58162a869532fc705",
+      "branch": "fix/report-admin-key-retry",
+      "state": "ready_for_release_instruction",
+      "ci": "success",
+      "deployed": false
+    },
+    {
+      "id": "1001-sales",
+      "pr": 1001,
+      "url": "https://github.com/warstyle-plato/plato/pull/1001",
+      "owner": "sales",
+      "card": "tasks/1001-sales.md",
+      "head": "902fd243bbc3225ca3bb660ca6f2bbcac21f8161",
+      "branch": "feat/sales-chessboard-comparison",
+      "state": "published_with_local_followup",
+      "ci": "success",
+      "deployed": false
+    },
+    {
+      "id": "1002-audit",
+      "pr": 1002,
+      "url": "https://github.com/warstyle-plato/plato/pull/1002",
+      "owner": "control",
+      "card": "tasks/1002-audit.md",
+      "head": "c6f9c9bb9513e9020e14e9abbddb83f02ea6570a",
+      "branch": "audit/office-models-strategies",
+      "state": "included_in_1003",
+      "ci": "not_refreshed_in_this_snapshot",
+      "deployed": false
+    },
+    {
+      "id": "1003-books",
+      "pr": 1003,
+      "url": "https://github.com/warstyle-plato/plato/pull/1003",
+      "owner": "books",
+      "card": "tasks/1003-books.md",
+      "head": "20e371a1bf5f39a69c0e4d751350009fb6fc87b1",
+      "branch": "feat/comparable-nonres-books",
+      "state": "awaiting_ci_after_reviewed_fixes",
+      "ci": "in_progress",
+      "deployed": false,
+      "accepted_local_fix": {
+        "base_head": "26dd6f45a2b8713f45330818460980fd7ab4e180",
+        "reviewer": "excel",
+        "tests_passed": 3,
+        "parity_rows": 249,
+        "published_head": "20e371a1bf5f39a69c0e4d751350009fb6fc87b1",
+        "release_approved": false
+      }
+    },
+    {
+      "id": "985-dependencies",
+      "pr": 985,
+      "url": "https://github.com/warstyle-plato/plato/pull/985",
+      "owner": "platform",
+      "card": "tasks/985-dependencies.md",
+      "head": "aa9617239d6fcc7369c184493152f1d3dee1a370",
+      "branch": "dependabot/pip/pip-minor-patch-0e2eec1e01",
+      "state": "blocked_ci",
+      "ci": "failure",
+      "deployed": false
+    },
+    {
+      "id": "898-windows",
+      "pr": 898,
+      "url": "https://github.com/warstyle-plato/plato/pull/898",
+      "owner": "platform",
+      "card": "tasks/898-windows.md",
+      "head": "4cda94e47d2e50c08e7fe1b0d8e6bafec40c5031",
+      "branch": "codex/windows-desktop",
+      "state": "draft_incomplete",
+      "ci": "success",
+      "deployed": false
+    }
+  ]
+}

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import datetime
 import io
+import json
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -35,6 +37,95 @@ def _norm(value: Any) -> str:
 
 def _finance_file(project: str) -> Path:
     return monitor._project_dir(project) / "baseline" / "finance.xlsx"
+
+
+def _source_day(value: Any) -> str | None:
+    day = monitor._day(value)
+    return day.isoformat() if day else None
+
+
+def _stored_funding_source(project: str, path: Path) -> dict[str, Any]:
+    """Дата данных из метаданных или имени снимка в каноническом хранилище.
+
+    Произвольное исходное имя файла и mtime не являются датой данных.
+    """
+    if path == _finance_file(project):
+        meta = monitor.finance_baseline_meta(project)
+    else:
+        try:
+            meta = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            meta = {}
+        if not isinstance(meta, dict):
+            meta = {}
+    day = _source_day(meta.get("taken_at"))
+    root = monitor._project_dir(project)
+    if day is None and path.parent in (root / "estimate", root / "funding_schedule"):
+        day = _source_day(path.stem)
+    return {"data_date": day, "uploaded_at": meta.get("uploaded_at") or meta.get("loaded_at"),
+            "file": meta.get("file_name") or meta.get("filename") or path.name}
+
+
+def _funding_source_dates(project: str, rss: Path, cut: datetime.date,
+                          schedule: dict[str, Any] | None = None) -> dict[str, Any]:
+    return {"report_date": cut.isoformat(),
+            "budget": _stored_funding_source(project, _finance_file(project)),
+            "rss": _stored_funding_source(project, rss), "schedule_used": schedule is not None,
+            "schedule": ((schedule or {}).get("source_dates", {
+                "data_date": _source_day((schedule or {}).get("day")),
+                "file": (schedule or {}).get("file") or ""}) if schedule else {})}
+
+
+def funding_source_notes(funding: dict[str, Any]) -> dict[str, str]:
+    """Единые видимые даты карточек, Монитора, текста и печатной сводки."""
+    dates = funding.get("source_dates") or {}
+    meta = funding.get("baseline_file") or {}
+    budget = dates.get("budget") or {
+        "data_date": _source_day(meta.get("taken_at")), "uploaded_at": meta.get("uploaded_at"),
+        "file": meta.get("file_name") or ""}
+    rss = dates.get("rss") or {}
+    schedule = dates.get("schedule") or {}
+
+    def when(value: Any) -> str:
+        day = monitor._day(value)
+        return day.strftime("%d.%m.%Y") if day else "дата данных не указана"
+
+    def version(source: dict[str, Any]) -> str:
+        return "от " + when(source["data_date"]) if source.get("data_date") else "дата данных не указана"
+
+    def file_note(source: dict[str, Any]) -> str:
+        return f" Файл «{source['file']}»." if source.get("file") else ""
+
+    report_day = dates.get("report_date")
+    report_note = ("Расчёт на " + when(report_day) + "." if report_day
+                   else "Дата расчётного среза не указана.")
+    book_name = "Финмодель" if funding.get("need_basis") == "model" else "Финансовая книга"
+    budget_note = (book_name + ": версия " + version(budget) + "." if budget.get("data_date")
+                   else book_name + ": дата данных не указана.") + file_note(budget)
+    uploaded = _source_day(budget.get("uploaded_at"))
+    if uploaded:
+        budget_note += " Загружена " + when(uploaded) + "."
+    if budget.get("data_date") and report_day and budget["data_date"] > report_day:
+        budget_note += " Версия финансовой базы позже даты расчётного среза."
+    notes = {
+        "budget": budget_note,
+        "paid": "Оплаты учтены по РСС: " + version(rss) + ". " + report_note + file_note(rss),
+        "limit": "Смета банка — РСС: " + version(rss) + "." + file_note(rss),
+        "left": "Смета и оплаты для остатка лимита — РСС: " + version(rss) + ". " + report_note,
+    }
+    sources = [book_name.lower() + ": " + version(budget), "РСС: " + version(rss)]
+    if dates.get("schedule_used"):
+        notes["schedule"] = "График финансирования: " + version(schedule) + "." + file_note(schedule)
+        sources.append("график финансирования: " + version(schedule))
+    notes["need"] = report_note + " Источники расчёта: " + "; ".join(sources) + "."
+    return notes
+
+
+def funding_reconciliation_lines(funding: dict[str, Any], money: Any) -> list[str]:
+    """Даты и существующая арифметическая сверка рядом с дофинансированием."""
+    return (list(funding_source_notes(funding).values())
+            + reconciliation_lines(funding.get("limit_reconciliation") or {}, money)
+            + own_budget_reconciliation_lines(funding.get("own_money"), money))
 
 
 def _sales_dir(project: str) -> Path:
@@ -420,6 +511,15 @@ def _read_finance_model(wb: Any, path: Path) -> dict[str, Any]:
     def money(r: int, c: int) -> float:
         return actuals._money(ws.cell(r, c).value) * _FM_THOUSANDS
 
+    def known_money(r: int, c: int) -> bool:
+        value = ws.cell(r, c).value
+        if value is None or isinstance(value, bool):
+            return False
+        try:
+            return math.isfinite(float(str(value).replace("\xa0", "").replace(" ", "").replace(",", ".")))
+        except (TypeError, ValueError):
+            return False
+
     def chapter_of(code: str) -> tuple[str, bool]:
         """Глава статьи по карте и признак «строки карты ведут в разные главы»."""
         votes = Counter(
@@ -507,6 +607,23 @@ def _read_finance_model(wb: Any, path: Path) -> dict[str, Any]:
     chapters = tuple(c for c in CHAPTERS if c in approved_by_chapter)
     composition = _budget_composition(rows, money, total_col, fact_col, plan_col,
                                       month_columns, interest)
+    # Keep monetary leaf amounts and candidate chapters. Counting crosswalk
+    # rows is not a monetary allocation of administrative expenses.
+    composition["admin_items"] = [
+        {"code": meta["code"], "name": meta["name"],
+         "total": money(meta["row"], total_col), "fact": money(meta["row"], fact_col),
+         "plan": money(meta["row"], plan_col),
+         "source": {"sheet": "cf_1_new", "row": meta["row"],
+                    "columns": {"total": total_col, "fact": fact_col, "plan": plan_col}},
+         "known_fields": {name: known_money(meta["row"], column)
+                          for name, column in (("total", total_col), ("fact", fact_col),
+                                               ("plan", plan_col))},
+         "chapter_candidates": sorted({item["estimate_code"].split(".")[0]
+             for item in crosswalk if item.get("estimate_code") and
+             (item["bdds_code"] == meta["code"] or
+              item["bdds_code"].startswith(meta["code"] + "."))})}
+        for meta in rows if not meta["has_children"] and not _fm_is_tax(meta["code"])
+        and (meta["code"] == "2.4" or meta["code"].startswith("2.4."))]
     reasons = []
     if mixed:
         reasons.append("статьи " + ", ".join(mixed)
@@ -1226,7 +1343,7 @@ def _own_money(comp: dict[str, Any] | None, smeta: dict[str, float],
         "own_paid": sum(paid.values()) - borrowed,
         "left": sum(left.values()), "left_by_chapter": left,
         "need": need, "model_over_schedule": over, "accounting": accounting,
-        "admin": _admin_expenses(comp, chapter_flow),
+        "admin": _admin_expenses(comp, chapter_flow, schedule),
         "rows": rows, "dates": dates, "book": book,
         "from": waterfall["additional_financing_from"],
         "book_fact": float(comp.get("fact") or 0.0),
@@ -1238,39 +1355,100 @@ def _own_money(comp: dict[str, Any] | None, smeta: dict[str, float],
     }
 
 
-# Раздел финмодели «Административно-хозяйственные расходы»: своей статьи в
-# смете банка у него нет.
-_FM_ADMIN_SECTION = "2.4"
+def _admin_expenses(comp: dict[str, Any] | None,
+                    chapter_flow: dict[str, dict[str, Any]] | None,
+                    schedule: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """Source-backed admin budget; a code map never proves bank coverage.
 
-
-def _admin_expenses(comp: dict[str, Any], chapter_flow: dict[str, dict[str, Any]]
-                    ) -> dict[str, Any] | None:
-    """Административные расходы — отдельной строкой «не хватит».
-
-    Владелец (03.11.2026): «Ахр видимо сядут и в 2 и в 3. Может это отдельно
-    помечать, что не хватит», «надо отдельно указать и пояснить, что часть из
-    2 или 3 главы». Своей статьи в смете банка у них нет: по карте
-    «статьи_БДДС» их платят из статей других глав (сейчас — 2.6 главы 2), и
-    они отнимают лимит, который банк заложил на эти главы. В дефицит своей
-    главы они уже вошли; здесь они названы, а не прибавлены второй раз.
+    A mapped section can be part of a model chapter without having a dedicated
+    bank limit. A replacement funding schedule can omit it altogether. Neither
+    fact permits allocating the shared limit or declaring its deficit covered.
     """
-    section = next((item for item in comp.get("sections") or []
-                    if item["code"] == _FM_ADMIN_SECTION), None)
-    if section is None or section["total"] <= 0:
+    section = next((item for item in (comp or {}).get("sections", [])
+                    if item.get("code") == "2.4"), None)
+    if section is None:
         return None
-    where = {chapter: flow["sections"][_FM_ADMIN_SECTION]
-             for chapter, flow in sorted(chapter_flow.items())
-             if (flow.get("sections") or {}).get(_FM_ADMIN_SECTION)}
-    return {"name": section.get("name") or "", "total": section["total"],
-            "paid": section["fact"], "to_pay": section["plan"], "chapters": where}
+    items = (comp or {}).get("admin_items")
+    chapters: dict[str, dict[str, float | None]] = {}
+    unallocated = {"total": 0.0, "paid": 0.0, "to_pay": 0.0}
+    reasons = []
+    unknown_fields: set[str] = set()
+    if items is None:
+        unallocated = {"total": section["total"], "paid": section["fact"],
+                       "to_pay": section["plan"]}
+        reasons.append("нет денежной детализации листовых строк раздела 2.4")
+    else:
+        for item in items:
+            candidates = item.get("chapter_candidates") or []
+            bucket = (chapters.setdefault(candidates[0], {"total": 0.0, "paid": 0.0,
+                                                         "to_pay": 0.0})
+                      if len(candidates) == 1 else unallocated)
+            for target, source in (("total", "total"), ("paid", "fact"), ("to_pay", "plan")):
+                if not item.get("known_fields", {}).get(source, True):
+                    unknown_fields.add(source)
+                    bucket[target] = None
+                elif bucket[target] is not None:
+                    bucket[target] += float(item[source])
+            if len(candidates) > 1:
+                reasons.append(f"статья {item['code']}: карта ведёт в разные главы без денежных долей")
+            elif not candidates:
+                reasons.append(f"статья {item['code']}: глава по карте не установлена")
+    if unknown_fields:
+        reasons.append("часть денежных ячеек листовых строк не содержит сохранённого значения")
+    allocation_known = items is not None and not reasons
+    schedule_chapter = str((schedule or {}).get("chapter") or "")
+    replaced = bool(schedule_chapter and (schedule_chapter in chapters or not allocation_known))
+    if replaced:
+        reasons.append("включение АХР в заменяющий график финансирования не подтверждено")
+    # Aggregate model FACT and chapter RSS payments have no common payment IDs.
+    # Do not add them or claim a deduplicated current payment balance.
+    reasons.append("ФАКТ финмодели не сверён с реестром оплат РСС и платежами БДДС по идентификаторам")
+    return {"name": section.get("name") or "Административные расходы",
+            "total": None if "total" in unknown_fields else section["total"],
+            "paid": None if "fact" in unknown_fields else section["fact"],
+            "to_pay": None if "plan" in unknown_fields else section["plan"],
+            "chapters": {ch: row["total"] for ch, row in chapters.items()},
+            "by_chapter": chapters, "unallocated": unallocated,
+            "allocation_known": allocation_known, "source": {"sheet": "cf_1_new", "section": "2.4"},
+            "items": list(items or []), "payment_basis": "financial_model_fact",
+            "paid_at_cut": None, "bank_coverage": None,
+            "included_in_replacement_schedule": None,
+            "replacement_schedule_applies": replaced,
+            "included_in_deficit": None, "added_to_deficit": 0.0,
+            "reconciled": False, "reasons": list(dict.fromkeys(reasons))}
 
 
-def own_money_lines(own: dict[str, Any] | None, money: Any) -> list[str]:
+def admin_expense_lines(admin: dict[str, Any] | None, money: Any) -> list[str]:
+    """One honest explanation for both Monitor and report HTML/PDF/text."""
+    if not admin:
+        return []
+    out = [f"Административные расходы без налогов — {money(admin['total'])}: "
+           f"ФАКТ финмодели {money(admin['paid'])}, ПЛАН {money(admin['to_pay'])}. "
+           "Это суммы книги, а не подтверждённая сверка оплат на дату среза."]
+    parts = []
+    for ch, row in sorted(admin["by_chapter"].items()):
+        label = f"глава {ch}" if ch in CHAPTERS else f"вне глав 1–3 (код главы {ch})"
+        parts.append(f"{label} — {money(row['total'])} "
+                     f"(ФАКТ {money(row['paid'])}, ПЛАН {money(row['to_pay'])})")
+    if not admin["allocation_known"]:
+        row = admin["unallocated"]
+        parts.append(f"не распределено — {money(row['total'])} "
+                     f"(ФАКТ {money(row['paid'])}, ПЛАН {money(row['to_pay'])})")
+    if parts:
+        out.append("Денежная карта АХР: " + "; ".join(parts) + ". "
+                   "Соответствие статье сметы не подтверждает кредитное покрытие.")
+    out.append("Покрытие АХР и их включение в дефицит не подтверждены: "
+               + "; ".join(admin["reasons"]) + ". "
+               "Отдельно к дефициту не прибавлены, чтобы не задвоить расходы. "
+               "Итог финансирования требует сверки АХР; это не подтверждение, что лимита хватит.")
+    return out
+
+
+def own_money_lines(own: dict[str, Any] | None, money: Any,
+                    with_reconciliation: bool = True) -> list[str]:
     """«Нужно своих денег сверх сметы банка» словами — одна для сводки и Монитора."""
     if not own:
         return []
-    over = float(own.get("model_over_schedule") or 0.0)
-    accounting = float(own.get("accounting") or 0.0)
     out = [f"Нужно своих денег сверх сметы банка {money(own['need'])}"
            + (f", первый месяц нехватки — {_month_name(own['from'])}" if own.get("from") else "")
            + ": по каждой главе — оплачено по реестру плюс то, что осталось оплатить, минус "
@@ -1285,9 +1463,12 @@ def own_money_lines(own: dict[str, Any] | None, money: Any) -> list[str]:
             name = f"глава {row['chapter']}" + (f" ({row['label']})" if row.get("label") else "")
             sch = row.get("by_schedule")
             if sch:
-                day = monitor._day(sch["day"])
-                source = ("по графику финансирования от "
-                          + (day.strftime("%d.%m.%Y") if day else sch["day"]))
+                # day у найденного внутри книги графика может быть датой загрузки.
+                value = ((sch.get("source_dates") or {}).get("data_date")
+                         if "source_dates" in sch else sch["day"])
+                day = monitor._day(value)
+                source = ("по графику финансирования от " + day.strftime("%d.%m.%Y") if day else
+                          "по графику финансирования (дата данных не указана)")
             else:
                 source = "по финмодели"
             parts.append(f"{name} — {money(row['amount'])}: оплачено {money(row['paid'])} плюс "
@@ -1297,16 +1478,19 @@ def own_money_lines(own: dict[str, Any] | None, money: Any) -> list[str]:
             parts.append(f"статьи финмодели вне глав сметы ({made}) — {money(row['amount'])}: "
                          "в смете банка их нет, поэтому это свои деньги")
     out.append("По главам: " + "; ".join(parts) + ".")
-    admin = own.get("admin")
-    if admin:
-        where = ", ".join(f"главы {ch}" if ch else "вне глав сметы" for ch in admin["chapters"])
-        out.append(
-            f"Административные расходы без налогов — {money(admin['total'])} (уже оплачено "
-            f"{money(admin['paid'])}, осталось {money(admin['to_pay'])}). Своей статьи в смете "
-            "банка у них нет: по карте финмодели их платят из лимита "
-            + (where or "других глав")
-            + ", который банк заложил на другие расходы, поэтому на них лимита не хватит. "
-            "В дефицит этой главы они уже входят и второй раз не прибавляются.")
+    if with_reconciliation:
+        out.extend(own_budget_reconciliation_lines(own, money))
+    out.extend(admin_expense_lines(own.get("admin"), money))
+    return out
+
+
+def own_budget_reconciliation_lines(own: dict[str, Any] | None, money: Any) -> list[str]:
+    """Прежняя сверка исходного бюджета и поправок, без нового расчёта денег."""
+    if not own:
+        return []
+    out: list[str] = []
+    over = float(own.get("model_over_schedule") or 0.0)
+    accounting = float(own.get("accounting") or 0.0)
     gap = own["budget"] - own["limit"]
     # Арифметика словами: бюджет − лимит − (финмодель сверх графика) −
     # (расхождение учёта) = сумма по главам. Расхождение учёта меньше нуля,
@@ -1593,9 +1777,16 @@ def _payment_total_ch23(rss: Path, estimate: dict[str, Any],
 
 
 def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, Any]) -> dict[str, Any]:
+    def unavailable(reason: str, **extra: Any) -> dict[str, Any]:
+        result = {"known": False, "reason": reason, **extra,
+                  "source_dates": _funding_source_dates(project, rss, cut)}
+        notes = funding_source_notes(result)
+        result["limit_reconciliation_lines"] = [notes["paid"], notes["limit"]]
+        return result
+
     baseline = _finance_baseline(project)
     if not baseline.get("known"):
-        return {"known": False, "reason": baseline.get("reason", "нет финансового baseline")}
+        return unavailable(baseline.get("reason", "нет финансового baseline"))
 
     estimate = actuals.read_estimate(rss)
     chapters = tuple(baseline.get("chapters") or ("2", "3"))
@@ -1606,12 +1797,8 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
     sections = baseline.get("sections") if finmodel else None
     if finmodel and not all(ch in (sections or {}) for ch in _FM_BANK_CHAPTERS):
         wanted = ", ".join(f"«{code}»" for code in _FM_SECTIONS)
-        return {
-            "known": False,
-            "reason": f"в листе «cf_1_new» нет строк разделов {wanted} — потребность "
-                      "на стройку и коммерцию не прочитать",
-            "source": baseline.get("source"),
-        }
+        return unavailable(f"в листе «cf_1_new» нет строк разделов {wanted} — потребность "
+                           "на стройку и коммерцию не прочитать", source=baseline.get("source"))
     schedule_need = None
     if finmodel:
         # Сколько нужно на стройку и коммерцию — план разделов финмодели с
@@ -1630,11 +1817,8 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
 
     articles = baseline.get("articles") or {}
     if not articles:
-        return {
-            "known": False,
-            "reason": "в финансовом baseline не найдена постатейная программа потребности",
-            "source": baseline.get("source"),
-        }
+        return unavailable("в финансовом baseline не найдена постатейная программа потребности",
+                           source=baseline.get("source"))
 
     # Для финмодели водопад — по главам 2–3 сметы: лимит главы минус всё
     # оплаченное по ней (резервы 2.8/2.9 уже внутри лимита главы 2) против
@@ -1718,7 +1902,7 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
         approved_by_chapter=baseline.get("approved_by_chapter") or {},
         # Глава 1 из РСС при бюджетной книге входит в остаток плашки (см. выше).
         remaining_outside=("1",) if chapter_one is not None else ())
-    return {
+    result = {
         "known": True,
         "source": baseline["source"],
         "limit_reconciliation": reconciliation,
@@ -1820,6 +2004,15 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
             "автоматически не кросс-финансируют дефицит"
         ),
     }
+    result["source_dates"] = _funding_source_dates(project, rss, cut, schedule_need)
+    admin = (own_money or {}).get("admin")
+    if admin is not None:
+        admin["source_dates"] = {"report_date": cut.isoformat(),
+                                 "budget": result["source_dates"].get("budget", {}),
+                                 "rss": result["source_dates"].get("rss", {}),
+                                 "schedule": result["source_dates"].get("schedule", {})}
+    result["limit_reconciliation_lines"] = funding_reconciliation_lines(result, _fmt_money)
+    return result
 
 
 _FM_BANK_CHAPTERS = tuple(sorted({ch for ch, _, _ in _FM_SECTIONS.values()}))
@@ -1921,6 +2114,7 @@ def _schedule_need(project: str, rss: Path, estimate: dict[str, Any],
     paid_since = _paid_since(rss, estimate, chapter, start)
     owed = _plan_still_owed(monthly, start, paid_since, cut)
     return {"day": day, "file": found[day].get("file") or "", "chapter": chapter,
+            "source_dates": _stored_funding_source(project, Path(found[day]["path"])),
             "monthly": owed, "owed": sum(owed.values()), "paid_since": paid_since,
             "plan_from": start.isoformat()}
 

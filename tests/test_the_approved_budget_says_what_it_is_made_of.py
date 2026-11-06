@@ -191,7 +191,7 @@ def test_limit_is_paid_plus_left_and_budget_is_limit_plus_own_money(tmp_path):
                                "плюс то, что осталось оплатить, минус лимит главы.")
     assert ("глава 2 (стройка) — 130 000 ₽: оплачено 410 000 ₽ плюс осталось оплатить по "
             "финмодели 620 000 ₽ минус лимит главы 900 000 ₽") in lines[1]
-    assert lines[3] == ("Справочно, как это связано с утверждённым бюджетом: бюджет без "
+    assert lines[2] == ("Справочно, как это связано с утверждённым бюджетом: бюджет без "
                         "налогов 1,4 млн ₽ минус лимит банка 1,2 млн ₽ — 210 000 ₽; минус "
                         "30 000 ₽ — на столько по прошлым оплатам финмодель записала больше, "
                         "чем реестр РСС; итого 180 000 ₽.")
@@ -223,24 +223,27 @@ def test_the_tiles_add_up_on_the_page(tmp_path, monkeypatch):
                         lambda project, end: {"dashboard": {"funding": funding}})
     built = report.build(PROJECT, "week", "2026-10-18")
     tiles = {item["label"]: item for item in report.tiles(built)}
+    source_notes = dashboard.funding_source_notes(funding)
     assert tiles["Утверждённый бюджет"]["value"] == report._rub(comp["total"])
     assert tiles["Утверждённый бюджет"]["note"] == (
-        "по разделам финмодели 2.1, 2.2, 2.3, 2.4; без процентов по кредиту")
+        "по разделам финмодели 2.1, 2.2, 2.3, 2.4; без процентов по кредиту. " + source_notes["budget"])
     assert "Источник: файл «ФМ синтетика.xlsx», загружен 02.11.2026." in \
         tiles["Утверждённый бюджет"]["hint"]
     assert tiles["Лимит банка"]["value"] == report._rub(own["limit"])
     assert tiles["Лимит банка"]["note"].startswith("смета банка: в неё засчитываются все оплаты")
     assert tiles["Оплачено с начала проекта"]["value"] == report._rub(own["paid"])
     assert tiles["Оплачено с начала проекта"]["note"] == (
-        "из них кредитом 420 000 ₽, своими деньгами 300 000 ₽")
+        "из них кредитом 420 000 ₽, своими деньгами 300 000 ₽. " + source_notes["paid"])
     assert tiles["Остаток лимита банка"]["value"] == report._rub(own["left"])
     assert tiles["Остаток лимита банка"]["note"] == (
         "лимит минус всё оплаченное; по главе 1 −30 000 ₽, по главе 2 490 000 ₽, "
-        "по главе 3 50 000 ₽")
+        "по главе 3 50 000 ₽. " + source_notes["left"])
     need = tiles["Нужно своих денег сверх сметы банка"]
     assert need["value"] == report._rub(own["need"])
-    assert need["note"].startswith("по главам: оплачено плюс осталось оплатить минус лимит; "
-                                   "первый месяц нехватки — ноябрь 2026")
+    assert need["note"] == (
+        "Глава 1 (участок) — 30 000 ₽; Глава 2 (стройка) — 130 000 ₽; "
+        "Глава 3 (коммерция) — 20 000 ₽; первая нехватка — ноябрь 2026. "
+        + source_notes["need"])
     for gone in ("Потребность в допфинансировании банка", "Осталось по смете после всех оплат",
                  "Можно ещё выбрать у банка"):
         assert gone not in tiles
@@ -385,16 +388,21 @@ def test_chapter_two_by_the_funding_schedule(tmp_path, monkeypatch):
             "графику финансирования от 23.09.2026 500 000 ₽ минус лимит главы 900 000 ₽") in text
 
 
-def test_admin_expenses_are_named_apart_and_not_added_twice(tmp_path):
-    """АХР — отдельной строкой: своей статьи в смете нет, платят из лимита главы 2."""
+def test_admin_expenses_are_named_apart_and_not_assumed_covered(tmp_path):
+    """A budget-map chapter is not proof of bank coverage or current payments."""
     _, own = _own(tmp_path)
     admin = own["admin"]
     assert admin["total"] == pytest.approx(40 * K)
     assert admin["chapters"] == {"2": pytest.approx(40 * K)}
-    # Итог не меняется: АХР уже внутри дефицита главы 2.
+    assert admin["bank_coverage"] is None
+    assert admin["included_in_deficit"] is None
+    assert admin["paid_at_cut"] is None
+    assert admin["added_to_deficit"] == 0
     assert own["need"] == pytest.approx(sum(row["amount"] for row in own["rows"]))
     text = " ".join(dashboard.own_money_lines(own, report._rub))
-    assert ("Административные расходы без налогов — 40 000 ₽ (уже оплачено 20 000 ₽, осталось "
-            "20 000 ₽). Своей статьи в смете банка у них нет: по карте финмодели их платят из "
-            "лимита главы 2") in text
-    assert "второй раз не прибавляются" in text
+    assert "Административные расходы без налогов — 40 000 ₽" in text
+    assert "ФАКТ финмодели 20 000 ₽, ПЛАН 20 000 ₽" in text
+    assert "глава 2 — 40 000 ₽" in text
+    assert "Покрытие АХР и их включение в дефицит не подтверждены" in text
+    assert "уже входят" not in text
+    assert "лимита не хватит" not in text
