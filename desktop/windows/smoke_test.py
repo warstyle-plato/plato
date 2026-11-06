@@ -47,7 +47,9 @@ def main() -> int:
                 result['no_python_api'] = window.evaluate_js(
                     'Object.keys(window.pywebview.api).length') == 0
                 window.evaluate_js('localStorage.setItem("synthetic-smoke", "saved")')
-                window.load_url(url)
+                # Edge's Source setter may ignore an identical URI after pywebview
+                # has cleared loaded. A new query forces same-origin navigation.
+                window.load_url(url + '?reload=1')
                 if not window.events.loaded.wait(40):
                     return
                 result['session_storage'] = window.evaluate_js(
