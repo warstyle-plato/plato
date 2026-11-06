@@ -53,7 +53,7 @@ def _ask(client, monkeypatch, trace_id: str, message: str = "Почему так
 
 def test_the_answer_waits_under_the_run_id(client, monkeypatch):
     """Соединение оборвалось — ответ никуда не делся."""
-    trace = "a1b2c3d4e5f6"
+    trace = "a1b2c3d4e5f600000000000000000000"
     assert _ask(client, monkeypatch, trace).status_code == 200
     late = client.get("/agent/result/" + trace)
     assert late.status_code == 200
@@ -62,10 +62,8 @@ def test_the_answer_waits_under_the_run_id(client, monkeypatch):
     assert "проектирование" in body["answer"]
 
 
-def test_an_unknown_run_is_pending_not_an_error(client):
-    """Окно опрашивает результат, пока идёт работа: «ещё нет» — не ошибка."""
-    body = client.get("/agent/result/ffffffffffff").json()
-    assert body == {"pending": True}
+def test_an_unknown_run_has_no_owner_and_fails_closed(client):
+    assert client.get("/agent/result/" + "ffffffff" * 4).status_code == 404
 
 
 def test_a_broken_run_id_is_refused(client):
@@ -75,7 +73,7 @@ def test_a_broken_run_id_is_refused(client):
 
 def test_the_answer_survives_the_other_worker(client, monkeypatch, tmp_path):
     """Воркеров два: ответ обязан лежать на диске, а не в памяти процесса."""
-    trace = "0badc0ffee11"
+    trace = "0badc0ffee1100000000000000000000"
     _ask(client, monkeypatch, trace)
     stored = list(core._PLATO_STAGE_DIR.glob("answer_*.json"))
     assert stored, "ответ не доехал до диска — второй воркер его не увидит"
@@ -128,7 +126,7 @@ def test_the_free_question_always_reaches_the_model(monkeypatch, client):
     monkeypatch.setattr(core, "_call_openai_tool_agent", fake_llm)
     client.post("/agent/chat", json={
         "message": "По твоему какова цена покупки актива",
-        "trace_id": "abcdefabcdef", "inputs": dict(core.DEFAULT_INPUTS),
+        "trace_id": "abcdefabcdef00000000000000000000", "inputs": dict(core.DEFAULT_INPUTS),
         "tep": {k: dict(v) for k, v in core.TEP_DEFAULT.items()},
         "rates": [], "phasing": {}, "history": [], "selected_view": "all"})
     assert calls.get("asked") == "По твоему какова цена покупки актива"
@@ -143,7 +141,7 @@ def test_an_unknown_scenario_is_not_an_error(monkeypatch, client):
                             "response_id": None, "tools_used": [], "proposals": []})
     response = client.post("/agent/chat", json={
         "message": "вопрос", "scenario": "выдуманный_сценарий",
-        "trace_id": "beefbeefbeef", "inputs": dict(core.DEFAULT_INPUTS),
+        "trace_id": "beefbeefbeef00000000000000000000", "inputs": dict(core.DEFAULT_INPUTS),
         "tep": {k: dict(v) for k, v in core.TEP_DEFAULT.items()},
         "rates": [], "phasing": {}, "history": [], "selected_view": "all"})
     assert response.status_code == 200
@@ -164,7 +162,7 @@ def test_a_failure_is_remembered_under_the_run_id(client, monkeypatch):
         raise RuntimeError("модель не ответила")
 
     monkeypatch.setattr(core, "_call_openai_tool_agent", boom)
-    trace = "dead0000beef"
+    trace = "dead0000beef00000000000000000000"
     try:
         client.post("/agent/chat", json={
             "message": "тяжёлый вопрос", "trace_id": trace,

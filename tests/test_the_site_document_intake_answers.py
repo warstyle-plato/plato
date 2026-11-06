@@ -32,7 +32,8 @@ def test_the_site_document_route_returns_the_read_portion(monkeypatch) -> None:
         filename="Москва, Южное Медведково_Тизер.pdf",
         content_b64=base64.b64encode(b"%PDF-1.4 stub").decode(),
     )
-    got = core.agent_document(req, None)
+    from fastapi.testclient import TestClient
+    got = TestClient(core.app).post("/agent/document", json=req.model_dump()).json()
 
     portion = document_intake.intake_text({"text": text})
     assert got["document"]["read_chars"] == portion["read_chars"]

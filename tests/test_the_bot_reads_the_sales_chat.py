@@ -1,7 +1,7 @@
 """Бот в чате отдела продаж: ежедневные отчёты сами попадают в сводку.
 
 Владелец (24.10.2026): «может туда тоже бота посадить? Для отчётов по звонкам,
-броням и т. п.». Чат привязывается к проекту Монитора той же командой `/site`,
+броням и т. п.». Чат разрешается владельцем с текущим ключом в закрытом кабинете,
 отчёт ложится в источник «чат отдела продаж» связанного проекта отчёта о
 продажах — тот же, что даёт выгрузка чата, — и в сводке появляется воронка.
 В группу бот пишет только вопросы Платона по сверке с выгрузкой договоров
@@ -88,8 +88,13 @@ class _Bot:
         monkeypatch.setattr(core, "_core_api_url", lambda path: "")
         monkeypatch.setattr(monitor, "_SNAPSHOT_DIR", tmp_path / "monitor")
         monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+        monkeypatch.setenv("DEVELOPAID_ADMIN_KEY", "synthetic-test-owner-key")
         core.app.state.telegram_group_seen = {}
         self.chat = {"id": -100777, "type": "supergroup", "title": "Кутузов Сити. Отчёты. Продажи"}
+
+    def authorize(self, project):
+        core.monitor_site_chat_authorize(core.SiteChatAccessRequest(
+            chat_id=self.chat["id"], project=project, key="synthetic-test-owner-key"))
 
     def send(self, text, date=1761200000):
         core._telegram_handle_message({"chat": self.chat, "from": {"id": 4242, "first_name": "Мария"},
@@ -110,7 +115,7 @@ def test_the_bot_stores_the_report_into_the_linked_sales_project(monkeypatch, tm
     monitor._project_dir("Кутузов Сити")
     report.link_sales("Кутузов Сити", "Кутузов", "тест")
 
-    bot.send("/site Кутузов Сити")
+    bot.authorize("Кутузов Сити")
     bot.send(REPORT)
     bot.send("Коллеги, созвон в 15:00")
 
@@ -128,11 +133,11 @@ def test_the_bot_stores_the_report_into_the_linked_sales_project(monkeypatch, tm
 def test_an_unlinked_project_is_named_not_lost(monkeypatch, tmp_path):
     bot = _Bot(monkeypatch, tmp_path)
     bot.send(REPORT)
-    assert "не привязан" in bot.outcome
+    assert "не авторизована" in bot.outcome
     import developaid_monitor as monitor
 
     monitor._project_dir("Кутузов Сити")
-    bot.send("/site Кутузов Сити")
+    bot.authorize("Кутузов Сити")
     bot.send(REPORT)
     assert "не связан с отчётом о продажах" in bot.outcome
 

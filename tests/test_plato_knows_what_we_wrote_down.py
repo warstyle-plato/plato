@@ -34,7 +34,7 @@ core = wrapper.core
 
 def test_the_notes_are_cut_into_rules_not_lines():
     """Запись — это правило целиком: половина правила выглядит целой."""
-    found = knowledge.entries()
+    found = knowledge.entries(allow_private=True)
     assert len(found) > 300, "записей подозрительно мало — разбор не нашёл правила"
     for entry in found[:50]:
         assert entry["text"].startswith(("- **", "## ", "# ")), entry["title"][:60]
@@ -46,14 +46,14 @@ def test_a_question_finds_the_rule_that_answers_it():
     «благоустройство» из вопроса и «благоустраивают» из правила — разные
     строки, как «двора» и «двор»; без приведения к основе поиск отвечал мимо.
     """
-    answer = knowledge.search("почему благоустройство считается от двора")
+    answer = knowledge.search(allow_private=True, query="почему благоустройство считается от двора")
     assert answer["available"] is True
     assert "двор" in answer["entries"][0]["title"].lower()
 
 
 def test_an_abbreviation_is_a_word_too():
     """ГНС, ВРИ, СПП — предмет вопроса, а не служебные слова."""
-    answer = knowledge.search("подземный паркинг входит в ГНС?")
+    answer = knowledge.search(allow_private=True, query="подземный паркинг входит в ГНС?")
     assert "ГНС" in answer["entries"][0]["title"]
 
 
@@ -63,7 +63,7 @@ def test_the_answer_is_redacted_for_the_person_asking():
     Правило то же, что у свода «Статистики» (решение владельца 26.08.2026):
     сырые файлы не трогаются, чистится точка выдачи.
     """
-    answer = knowledge.search("методика финансирования сверена с НКЛ Сбера договоры")
+    answer = knowledge.search(allow_private=True, query="методика финансирования сверена с НКЛ Сбера договоры")
     printed = " ".join(item["text"] for item in answer["entries"])
     assert not re.search(r"\b400[A-Z0-9]{6,}\b", printed), "номер договора вышел наружу"
     assert not re.search(r"\b\d{2}:\d{2}:\d{6,7}:\d+", printed), "кадастр вышел наружу"
@@ -73,7 +73,7 @@ def test_the_answer_is_redacted_for_the_person_asking():
 
 def test_the_redaction_is_proven_on_a_note_that_has_something_to_hide():
     """Предохранитель: чистить было что, иначе проверка выше ничего не значит."""
-    raw = " ".join(entry["text"] for entry in knowledge.entries())
+    raw = " ".join(entry["text"] for entry in knowledge.entries(allow_private=True))
     assert re.search(r"\b\d{2}:\d{2}:\d{6,7}:\d+", raw), "в записях нет кадастров"
     assert "‹кадастровый номер скрыт›" in knowledge.redact(
         re.search(r"\b\d{2}:\d{2}:\d{6,7}:\d+", raw).group(0))
@@ -85,13 +85,13 @@ def test_the_redaction_is_proven_on_a_note_that_has_something_to_hide():
 
 def test_the_cut_is_named_not_silent():
     """Показано меньше найденного — это говорится числом."""
-    answer = knowledge.search("очередь")
+    answer = knowledge.search(allow_private=True, query="очередь")
     assert answer["found"] > answer["shown"]
     assert answer["shown"] >= 1
 
 
 def test_nothing_found_is_an_answer_with_a_reason():
-    answer = knowledge.search("квантовая хромодинамика")
+    answer = knowledge.search(allow_private=True, query="квантовая хромодинамика")
     assert answer["available"] is False
     assert "квантовая хромодинамика" in answer["reason"]
 
@@ -100,9 +100,9 @@ def test_the_agent_reaches_the_notes_through_its_own_door():
     """Проверять надо ту дверь, в которую ходит Платон."""
     answer = core._execute_agent_tool(
         "search_project_knowledge",
-        {"query": "гостевые машино-места продаются", "source": "all"}, None, {})
+        {"query": "ГНС", "source": "glossary"}, None, {})
     assert answer["available"] is True
-    assert "остев" in answer["entries"][0]["title"]
+    assert all("Словарь" in entry["source"] for entry in answer["entries"])
     names = {tool.get("name") for tool in core._AGENT_TOOLS}
     assert "search_project_knowledge" in names
 
@@ -187,7 +187,7 @@ def test_the_normative_notes_are_reachable():
     содержания норм не видел вовсе: «какой норматив стоянок у ФОК» отвечать было
     нечем, кроме памяти модели — то есть наугад.
     """
-    answer = knowledge.search("норма стоянок оздоровительный комплекс",
+    answer = knowledge.search(allow_private=True, query="норма стоянок оздоровительный комплекс",
                               source="normative")
     assert answer["available"] is True
     assert all("нормативных актов" in item["source"] for item in answer["entries"])
@@ -216,9 +216,9 @@ def test_the_raw_ocr_is_not_a_source():
 
 def test_a_source_is_labelled_by_whose_it_is():
     """Норма города и наше правило под одной подписью читаются как одно."""
-    labels = {entry["source"] for entry in knowledge.entries()}
+    labels = {entry["source"] for entry in knowledge.entries(allow_private=True)}
     assert labels == {"rules", "backlog", "normative"}
-    said = knowledge.search("озеленение компенсация")["note"]
+    said = knowledge.search(allow_private=True, query="озеленение компенсация")["note"]
     assert "НОРМАТИВНОГО акта города" in said
     assert "наше решение — нашим" in said
 
@@ -272,7 +272,7 @@ def test_missing_notes_are_named_not_passed_off_as_nothing_found(monkeypatch, tm
     """Нет файлов записей — причина в сборке, а не в вопросе."""
     monkeypatch.setattr(knowledge, "_ROOT", tmp_path)
     monkeypatch.setattr(knowledge, "NORMATIVE_DIR", tmp_path / "docs" / "normative")
-    answer = knowledge.search("благоустройство")
+    answer = knowledge.search(allow_private=True, query="благоустройство")
     assert answer["available"] is False
     assert "нет" in answer["reason"] and "не найдены" in answer["reason"]
     assert "questions_backlog.md" in answer["reason"]

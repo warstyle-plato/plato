@@ -34,7 +34,10 @@ from browser import chromium_or_skip  # noqa: E402
 import document_intake  # noqa: E402
 import main as wrapper  # noqa: E402
 
+from fastapi.testclient import TestClient
+
 core = wrapper.core
+client = TestClient(core.app)
 PORT = 18287
 NUMBER = "77:08:0010008:1049"
 
@@ -70,13 +73,13 @@ def _stub_model(monkeypatch) -> None:
 
 def _parse(monkeypatch) -> dict:
     _stub_model(monkeypatch)
-    return core.agent_document(core.AgentDocumentRequest(
-        filename="teaser.pdf", content_b64=base64.b64encode(b"%PDF stub").decode()), None)
+    return client.post("/agent/document", json=core.AgentDocumentRequest(
+        filename="teaser.pdf", content_b64=base64.b64encode(b"%PDF stub").decode()).model_dump()).json()
 
 
 def _answer(card: dict, index: int, **kw) -> dict:
-    return core.agent_document_answer(core.AgentDocumentAnswerRequest(
-        intake_id=card["id"], index=index, inputs={"demolition_area_sqm": 0}, tep={}, **kw))
+    return client.post("/agent/document/answer", json=core.AgentDocumentAnswerRequest(
+        intake_id=card["id"], index=index, inputs={"demolition_area_sqm": 0}, tep={}, **kw).model_dump()).json()
 
 
 def _engine(card: dict) -> dict:
