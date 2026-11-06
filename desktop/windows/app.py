@@ -6,6 +6,7 @@ import logging
 import os
 from pathlib import Path
 import sys
+from threading import Event
 import webbrowser
 from urllib.parse import urlsplit
 
@@ -13,24 +14,107 @@ APP_URL = "https://developaid.ru/"
 _BROWSER_OPEN = webbrowser.open
 
 
-def open_external(url: str, *args, **kwargs) -> bool:
-    """Open web links without forwarding local files or OS command protocols."""
+def web_url_allowed(url: str, *, local_origin: str | None = None) -> bool:
+    """Only HTTPS in production; a specific loopback origin is for the CI page."""
     if not isinstance(url, str) or any(ord(c) < 32 or ord(c) == 127 for c in url):
         return False
     try:
         target = urlsplit(url)
-        if (target.scheme.lower() != "https" or not target.hostname
-                or target.username is not None or target.password is not None):
+        if (not target.hostname or target.username is not None
+                or target.password is not None):
             return False
-        target.port  # Reject malformed ports before invoking the operating system.
+        target.port  # Reject malformed ports, too.
+        if target.scheme.lower() == "https":
+            return True
+        if local_origin is not None:
+            local = urlsplit(local_origin)
+            return (target.scheme == local.scheme == "http"
+                    and target.hostname == local.hostname == "127.0.0.1"
+                    and target.netloc == local.netloc)
     except ValueError:
         return False
-    return bool(_BROWSER_OPEN(url, *args, **kwargs))
+    return False
+
+
+def open_external(url: str, *args, **kwargs) -> bool:
+    """Do not forward files or OS command protocols to the browser launcher."""
+    return bool(_BROWSER_OPEN(url, *args, **kwargs)) if web_url_allowed(url) else False
+
+
+class NavigationGuard:
+    """Enforce the policy on real WebView2 events, before any remote page loads."""
+    def __init__(self, window, *, local_origin: str | None = None):
+        self.window = window
+        self.local_origin = local_origin
+        self.native_attached = False
+        self.core_attached = False
+        self.failed = False
+        self.blocked = Event()
+        self.popup_blocked = Event()
+
+    def navigation(self, sender, args):
+        if not web_url_allowed(str(args.Uri), local_origin=self.local_origin):
+            args.Cancel = True
+            self.blocked.set()
+
+    def external_scheme(self, sender, args):
+        args.Cancel = True
+        self.blocked.set()
+
+    def popup(self, sender, args):
+        if not web_url_allowed(str(args.Uri)):
+            args.Handled = True
+            self.popup_blocked.set()
+
+    def _attach_core(self, core):
+        if self.core_attached:
+            return
+        core.LaunchingExternalUriScheme += self.external_scheme
+        core.NewWindowRequested += self.popup
+        self.core_attached = True
+
+    def _fail_closed(self):
+        self.failed = True
+        # This callback runs on the WinForms UI thread before shown; public
+        # window.destroy waits for shown and cannot safely close this stage.
+        try:
+            self.window.native.Close()
+        finally:
+            self.window.native.Dispose()
+
+    def initialized(self, sender, args):
+        try:
+            if not args.IsSuccess:
+                raise RuntimeError("WebView2 initialization failed")
+            self._attach_core(sender.CoreWebView2)
+        except Exception:
+            self._fail_closed()
+            raise RuntimeError("Cannot enforce the WebView2 navigation policy") from None
+
+    def attach(self):
+        try:
+            native = self.window.native.webview
+            # The control-level event is available before CoreWebView2 is ready.
+            native.NavigationStarting += self.navigation
+            native.CoreWebView2InitializationCompleted += self.initialized
+            if native.CoreWebView2 is not None:
+                self._attach_core(native.CoreWebView2)
+            self.native_attached = True
+        except Exception:
+            self._fail_closed()
+            raise RuntimeError("Cannot enforce the WebView2 navigation policy") from None
+
+
+def guard_navigation(window, *, local_origin: str | None = None) -> NavigationGuard:
+    guard = NavigationGuard(window, local_origin=local_origin)
+    window.events.before_show += guard.attach
+    return guard
 
 
 def configure_webview(webview) -> None:
     webview.settings["ALLOW_DOWNLOADS"] = True
     webview.settings["ALLOW_FILE_URLS"] = False
+    webview.settings["IGNORE_SSL_ERRORS"] = False
     webview.settings["OPEN_EXTERNAL_LINKS_IN_BROWSER"] = True
     # pywebview's Edge backend forwards popup URLs to this standard-library hook.
     # Keep files, javascript and arbitrary custom protocols out of the OS launcher.
@@ -53,6 +137,7 @@ def main() -> int:
             min_size=(1000, 700), background_color="#ffffff", zoomable=True,
             js_api=None,
         )
+        guard = guard_navigation(window)
         menu = [Menu("DevelopAid", [
             MenuAction("Открыть главную", lambda: window.load_url(APP_URL)),
             MenuAction("Открыть в браузере", lambda: webbrowser.open(APP_URL)),
@@ -61,7 +146,7 @@ def main() -> int:
         # No Python API is exposed to the remote page. Never fall back to IE.
         webview.start(gui="edgechromium", private_mode=False,
                       storage_path=str(profile / "WebView2"), menu=menu, debug=False)
-        return 0
+        return 1 if guard.failed else 0
     except Exception:
         logging.exception("Desktop startup failed")
         ctypes.windll.user32.MessageBoxW(

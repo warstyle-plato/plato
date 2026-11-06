@@ -8,7 +8,7 @@ import sys
 from tempfile import TemporaryDirectory
 from threading import Thread
 
-from app import configure_webview
+from app import configure_webview, guard_navigation
 
 
 class Page(BaseHTTPRequestHandler):
@@ -30,13 +30,15 @@ def main() -> int:
     import webview
 
     configure_webview(webview)
-    result = {'native_webview2': False, 'session_storage': False, 'no_python_api': False}
+    result = {name: False for name in ('native_webview2', 'session_storage',
+              'no_python_api', 'navigation_guard', 'blocked_navigation', 'blocked_popup')}
     with TemporaryDirectory(prefix='developaid-smoke-') as profile:
         server = ThreadingHTTPServer(('127.0.0.1', 0), Page)
         Thread(target=server.serve_forever, daemon=True).start()
         url = f'http://127.0.0.1:{server.server_port}/'
         # load_url requires the native shown event; exercise a visible window like the app.
         window = webview.create_window('DevelopAid smoke', url, hidden=False, js_api=None)
+        guard = guard_navigation(window, local_origin=url)
 
         def check():
             try:
@@ -44,6 +46,7 @@ def main() -> int:
                     return
                 result['native_webview2'] = window.evaluate_js(
                     'document.querySelector("#ready").textContent') == 'ready'
+                result['navigation_guard'] = guard.native_attached and guard.core_attached
                 result['no_python_api'] = window.evaluate_js(
                     'Object.keys(window.pywebview.api).length') == 0
                 window.evaluate_js('localStorage.setItem("synthetic-smoke", "saved")')
@@ -54,6 +57,20 @@ def main() -> int:
                     return
                 result['session_storage'] = window.evaluate_js(
                     'localStorage.getItem("synthetic-smoke")') == 'saved'
+                from System import Action
+                native = window.native.webview
+                for target in ('file:///C:/__DevelopAid_synthetic_missing__',
+                               'http://example.test/',
+                               'developaid-synthetic-no-handler://noop'):
+                    guard.blocked.clear()
+                    native.Invoke(Action(lambda target=target:
+                        native.CoreWebView2.Navigate(target)))
+                    if not guard.blocked.wait(10):
+                        return
+                result['blocked_navigation'] = window.evaluate_js(
+                    'document.querySelector("#ready").textContent') == 'ready'
+                window.evaluate_js('window.open("file:///C:/__DevelopAid_synthetic_missing__")')
+                result['blocked_popup'] = guard.popup_blocked.wait(10)
             finally:
                 window.destroy()
 
