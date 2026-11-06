@@ -59,9 +59,9 @@ jobs:
           print(json.dumps({'runtime_version': health.get('version'), 'runtime_commit': health.get('commit')}))
           projects = call('/monitor/report/projects', {}).get('projects') or []
           print(json.dumps({'project_count': len(projects)}))
-          if not projects or not isinstance(projects[0].get('project'), str):
+          if len(projects) < 2 or not isinstance(projects[1].get('project'), str):
               raise SystemExit(3)
-          report = call('/monitor/report', {'project': projects[0]['project'],
+          report = call('/monitor/report', {'project': projects[1]['project'],
               'kind': 'week', 'end': datetime.datetime.now(datetime.timezone.utc).date().isoformat()})
           ok = isinstance(report.get('report'), dict) and bool(report.get('html'))
           print(json.dumps({'report_complete': ok}))
