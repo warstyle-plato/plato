@@ -44,7 +44,9 @@ def register(project='Учебный проект'):
          'physical_items': [{'name': 'Монтаж', 'scope': 'Корпус 1', 'unit': 'м²',
                              'plan_quantity': 100, 'completed_quantity': 35,
                              'material_quantity': 100, 'completion_ratio': .35,
-                             'source': {'filename': 'КС.xlsx', 'row': 41}, 'warnings': []}],
+                             'source': {'filename': 'КС.xlsx', 'row': 41}, 'warnings': [],
+                             'quantity_date': '2026-10-20', 'quantity_cut': '2026-11-06',
+                             'quantity_basis': 'По датированным периодам.', 'snapshot_date': '2026-11-06'}],
          'reconciliation': {'status': 'Требуется подтверждение',
                             'source_dates': {'КС': '2026-10-21'},
                             'daily_evidence': [{'id': 'evidence-01', 'date': '2026-11-02',
@@ -338,4 +340,67 @@ def test_failed_archive_shows_each_file_status_and_keeps_previous_snapshot():
         expect(page.locator('#cumulativeProtocol')).not_to_contain_text('Ошибка.zip')
         expect(page.locator('#cumulativeHistory')).to_have_text(previous_history)
         assert len([1 for path, _, _ in responses.calls if path == '/monitor/cumulative/upload']) == 2
+        assert not errors
+
+
+def test_undated_quantity_and_later_manual_deadline_are_only_references():
+    from playwright.sync_api import expect
+    with browser_page(390) as (page, responses, errors):
+        data = responses.data['rows'][0]
+        data['manual_deadline_reference'] = {'deadline': '2027-02-01', 'updated_at': '2026-11-10T10:00:00Z',
+                                             'note': MARKER, 'applicable_to_cut': False}
+        item = data['physical_items'][0]
+        item.update(completed_quantity=None, material_quantity=None, completion_ratio=None,
+                    quantity_date=None, quantity_basis='Накопительный итог без дат выполнения.',
+                    snapshot_date='2026-11-06', reported_completed_quantity=50,
+                    reported_material_quantity=80, reported_completion_ratio=.5,
+                    reported_quantity_basis='Дата выполнения не подтверждена; не факт на дату среза.',
+                    future_periods_excluded=False)
+        page.locator('#contractsTab').click()
+        row = page.locator(f'tr[data-contract-id="{CONTRACT}"]')
+        row.wait_for()
+        expect(row.locator('.term')).to_contain_text('Не указан')
+        expect(row.locator('.term')).not_to_contain_text('01.02.2027')
+        expect(page.locator('#contractsRows .contract-scroll-hint')).to_be_visible()
+        row.locator('.contract-open').click()
+        main = page.locator('.contract-physical .physical-main')
+        assert main.locator('td.numeric').all_text_contents() == ['100 м²', '—', '—', '—']
+        expect(main.locator('.physical-source')).to_contain_text('Дата выполнения не подтверждена')
+        expect(main.locator('.physical-source')).to_contain_text('Архив от 06.11.2026')
+        expect(main.locator('.physical-source')).to_contain_text('не дата выполнения')
+        reference = page.locator('.physical-reference')
+        expect(reference).to_contain_text('Итог ведомости — справочно')
+        expect(reference).to_contain_text('выполнение 50 м²')
+        expect(reference).to_contain_text('материалы 80 м²')
+        expect(reference).to_contain_text('доля объёма 50%')
+        manual = page.locator('.manual-deadline-reference')
+        expect(manual).to_contain_text('01.02.2027')
+        expect(manual).to_contain_text('не подтверждает срок договора на выбранную дату среза')
+        assert manual.locator('img').count() == 0
+        row.locator('.contract-term').click()
+        assert page.locator('#contractsTermDate').input_value() == '2027-02-01'
+        expect(page.locator('#contractsTermMsg')).to_contain_text('текущую ручную отметку')
+        assert not errors
+
+
+def test_dated_quantity_stays_at_cut_and_future_total_never_replaces_it():
+    from playwright.sync_api import expect
+    with browser_page(1440) as (page, responses, errors):
+        item = responses.data['rows'][0]['physical_items'][0]
+        item.update(completed_quantity=35, material_quantity=40, completion_ratio=.35,
+                    quantity_date='2026-10-20', quantity_cut='2026-11-06',
+                    quantity_basis='По датированным периодам, завершённым не позднее даты среза.',
+                    snapshot_date='2026-11-06', future_periods_excluded=True,
+                    warnings=['Выполнение периодов позже даты среза исключено.'],
+                    reported_completed_quantity=100, reported_material_quantity=100,
+                    reported_completion_ratio=1.0)
+        page.locator('#contractsTab').click()
+        page.locator(f'tr[data-contract-id="{CONTRACT}"] .contract-open').click()
+        main = page.locator('.contract-physical .physical-main')
+        assert main.locator('td.numeric').all_text_contents() == ['100 м²', '35 м²', '40 м²', '35%']
+        expect(main.locator('.physical-source')).to_contain_text('Последний учтённый период: 20.10.2026')
+        expect(main.locator('.physical-source')).to_contain_text('Архив от 06.11.2026')
+        expect(main.locator('.physical-source')).to_contain_text('позже даты среза исключено')
+        assert page.locator('.physical-reference').count() == 0
+        expect(page.locator('#contractsRows .contract-scroll-hint')).to_be_hidden()
         assert not errors
