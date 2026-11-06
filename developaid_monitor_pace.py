@@ -15,6 +15,8 @@ import developaid_monitor as monitor
 import developaid_monitor_forecast as forecast
 import developaid_monitor_reason as reason
 import developaid_monitor_schedule_graph as schedule_graph
+import developaid_schedule_timeline as schedule_timeline
+import developaid_gpr_corpus as corpus_gpr
 
 _INSTALLED = False
 _ORIGINAL_BUILD = None
@@ -213,6 +215,13 @@ def _apply_pace(project: str, view: dict[str, Any], cut: datetime.date) -> dict[
             node["status"] = src.get("pace_status") or node.get("status")
     _aggregate_management(management)
 
+    schedule["dependency_timeline"] = schedule_timeline.model(
+        pm, late_seeds, evidence=bool(evidence or late_seeds))
+    if isinstance((view.get("dashboard") or {}).get("schedule"), dict):
+        view["dashboard"]["schedule"]["qualified_rnv"] = schedule["dependency_timeline"]["rnv"]
+    schedule["dependency_timeline_html"] = schedule_timeline.render(schedule["dependency_timeline"])
+    schedule["corpus_gpr"] = corpus_gpr.latest(project, cut.isoformat())
+    schedule["corpus_gpr_html"] = corpus_gpr.render(schedule["corpus_gpr"])
     if evidence <= 0:
         return view
 

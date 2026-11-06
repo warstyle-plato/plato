@@ -169,6 +169,8 @@ def _read_pm(path: Any) -> dict[str, Any]:
                     break
         tasks: dict[str, dict[str, Any]] = {}
         rnv_id = ""
+        validation_issues: list[str] = []
+        rnv_candidates: list[str] = []
         for values in rows:
             def cell(key: str) -> Any:
                 i = idx.get(key, -1)
@@ -179,16 +181,25 @@ def _read_pm(path: Any) -> dict[str, Any]:
             start = _date(cell("start"))
             finish = _date(cell("finish"))
             if not tid or not name or not start or not finish:
+                if tid and name:
+                    validation_issues.append("В PM есть именованная работа без распознанных дат.")
                 continue
+            if tid in tasks:
+                validation_issues.append("В PM повторяется идентификатор работы.")
+            raw_pred = str(cell("pred") or "").strip()
+            parsed_pred = _parse_predecessors(raw_pred)
+            if len([token for token in re.split(r"[;,]", raw_pred) if token.strip()]) != len(parsed_pred):
+                validation_issues.append("Не все связи из колонки предшественников PM распознаны.")
             task = {
                 "id": tid,
                 "name": name,
                 "start": start,
                 "finish": finish,
                 "duration_days": max(0, (finish - start).days),
-                "predecessors": _parse_predecessors(cell("pred")),
+                "predecessors": parsed_pred,
                 "free_float_days": _days(cell("free")),
                 "total_float_days": _days(cell("total")),
+                "total_float_known": cell("total") not in (None, ""),
             }
             tasks[tid] = task
             low = _norm(name)
@@ -201,7 +212,10 @@ def _read_pm(path: Any) -> dict[str, Any]:
                 )
             ):
                 rnv_id = tid
-        return {"known": bool(tasks), "tasks": tasks, "rnv_id": rnv_id, "source": path.name}
+                rnv_candidates.append(tid)
+        return {"known": bool(tasks), "tasks": tasks, "rnv_id": rnv_id, "source": path.name,
+                "validation_issues": list(dict.fromkeys(validation_issues)),
+                "rnv_candidates": rnv_candidates}
     finally:
         wb.close()
 

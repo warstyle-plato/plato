@@ -50,6 +50,7 @@ _CUMULATIVE_PATHS = frozenset({
     "/monitor/cumulative/upload", "/monitor/cumulative/result",
     "/monitor/cumulative/list", "/monitor/contracts/build",
     "/monitor/contracts/result", "/monitor/contracts/term", "/monitor/contracts/link",
+    "/monitor/view", "/monitor/schedule-fact", "/monitor/gpr-corpus/view",
 })
 
 
@@ -59,6 +60,19 @@ async def monitor_cumulative_private_headers(request: Request, call_next):
     if request.url.path in _CUMULATIVE_PATHS:
         response.headers["Cache-Control"] = "private, no-store"
     return response
+
+
+@app.post("/monitor/gpr-corpus/view", include_in_schema=False)
+def monitor_corpus_gpr_view(req: MonitorContractsBuild) -> Response:
+    """Source preview works even before RSS and the approved baseline exist."""
+    private = {"Cache-Control": "private, no-store"}
+    _require_admin_key(req.key, "Монитор проекта", req.session)
+    if not req.project.strip():
+        raise HTTPException(400, "Выберите проект.", headers=private)
+    import developaid_gpr_corpus as corpus_gpr
+    cut = _monitor_cumulative_day(req.cut)
+    source = corpus_gpr.latest(req.project.strip(), cut)
+    return JSONResponse(content={"source": source, "html": corpus_gpr.render(source)}, headers=private)
 
 
 def _monitor_cumulative_day(value: str) -> str:
