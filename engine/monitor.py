@@ -1439,7 +1439,3 @@ def monitor_page() -> HTMLResponse:
     бы дублировать проверку, которая уже стоит на данных.
     """
     return HTMLResponse(MONITOR_PAGE_HTML)
-
-
-# Накопительные и договорная сверка используют ту же авторизацию Монитора.
-_engine_part("monitor_cumulative")

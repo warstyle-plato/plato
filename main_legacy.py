@@ -169,6 +169,9 @@ _engine_part("tep_import")
 # остаются прежними.
 _engine_part("monitor")
 
+# Накопительные и договорная сверка — тот же вход и данные Монитора.
+_engine_part("monitor_cumulative")
+
 
 # Маршруты импорта — пресет проекта, ассеты, ТЭП из Excel и анализ
 # территории ГлавАПУ — вынесены в engine/tep_import_routes.py и
