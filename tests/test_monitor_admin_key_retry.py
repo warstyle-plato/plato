@@ -135,7 +135,15 @@ def test_a_rejected_header_get_also_restores_key_entry(monitor_server,page,monke
     with page.expect_response('**/monitor/view'):
         page.goto(base+'/monitor')
     monkeypatch.setenv('DEVELOPAID_ADMIN_KEY', ROTATED)
-    with page.expect_response(url) as denied:
+    # Initial refresh starts the same GET in the background. Its previously
+    # admitted 200 can finish after rotation; observe the newly issued request
+    # rather than mistaking that older response for the denial under test.
+    page.evaluate("""prefix=>{const original=window.fetch;window.fetch=(url,options={})=>{
+      if(String(url).startsWith(prefix))options={...options,headers:{...options.headers,'X-Plato-Key-Retry-Probe':'current'}};
+      return original(url,options);
+    }}""",url.removeprefix('**').split('?')[0])
+    with page.expect_response(lambda response:
+            response.request.headers.get('x-plato-key-retry-probe')=='current') as denied:
         page.evaluate(action)
     assert denied.value.status==403
     expect(page.locator('#keyBtn')).to_be_visible()

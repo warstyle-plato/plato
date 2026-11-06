@@ -66,7 +66,6 @@ def bot(monkeypatch, tmp_path):
     monkeypatch.setattr(engine, "_telegram_api", lambda *_a, **_k: {})
     monkeypatch.setattr(engine, "_PLATO_STAGE_DIR", tmp_path)
     monkeypatch.setattr(engine, "_telegram_token", lambda: "123:test")
-    monkeypatch.setattr(engine, "_telegram_agent_request", lambda _chat: None)
     monkeypatch.setattr(engine, "_telegram_allowed_user_ids", lambda: set())
     monkeypatch.setattr(document_intake, "extract_text",
                         lambda _data, name: {"text": TEXT, "pages": 4, "filename": name})
@@ -259,3 +258,91 @@ def test_a_50_number_without_glavapu_is_not_guessed(bot, monkeypatch):
     _press("intake_region")
     url = _buttons(bot[-1])[0]["web_app"]["url"]
     assert "mode=intake" not in url and _session(url)["cad"] == [number]
+
+
+def test_real_upload_questions_and_answer_keep_exact_public_telegram_owner(bot, monkeypatch):
+    """Exercise the adapter contract; no intake/ACL/card helper is mocked."""
+    import agent_access
+
+    key = "synthetic-admin-key-intake-test"
+    monkeypatch.setenv("DEVELOPAID_ADMIN_KEY", key)
+    monkeypatch.setattr(engine, "_telegram_download_document", lambda _doc: (b"%PDF", "own.pdf"))
+    actors = []
+    def extract(req, request):
+        actor = engine._agent_actor_current(req)
+        actors.append(actor)
+        assert actor == request.scope["plato_actor"]
+        assert actor.surface == "telegram" and not actor.private and not actor.key
+        assert not engine._execute_agent_tool("search_project_knowledge",
+            {"query": "FOREIGN_PRIVATE_SENTINEL", "source": "rules"}, req, {})["available"]
+        return {"answer": json.dumps(EXTRACTION, ensure_ascii=False)}
+    monkeypatch.setattr(engine, "plato_answer", extract)
+    engine._telegram_handle_update({"message": {
+        "chat": {"id": CHAT, "type": "private"}, "from": {"id": CHAT},
+        "document": {"file_id": "synthetic-pdf", "file_name": "own.pdf"}}})
+    dialog = engine._telegram_dialog_get(CHAT)
+    intake_id = dialog["intake"]["id"]
+    metadata = agent_access.load(engine._PLATO_STAGE_DIR / "intake_access", intake_id)
+    assert metadata == actors[0].metadata()
+    assert metadata["owner"] == agent_access.digest(engine._PLATO_STAGE_DIR, "bot:" + str(CHAT))
+    assert metadata["private"] is False and metadata["acl"] == "public"
+    assert key not in json.dumps(metadata)
+    _press("intake_questions")
+    assert "Вопрос 1 из 3" in bot[-1]["text"]
+    # Another worker reconstructs the same actor from the trusted Telegram chat.
+    engine._TELEGRAM_DIALOGS.pop(CHAT, None)
+    _press(_buttons(bot[-1])[0]["callback_data"])
+    assert "Вопрос 2 из 3" in bot[-1]["text"]
+    queue = engine._intake_queue_load(intake_id, request=engine._telegram_agent_request(CHAT))
+    card = engine.teaser_card_view(queue, dict(engine.DEFAULT_INPUTS), dict(engine.TEP_DEFAULT))
+    assert card["questions"]["index"] == 1
+    assert engine.teaser_card.calc_overrides(card)["purchase_price_mln"] == 2550.0
+    assert "FOREIGN_PRIVATE_SENTINEL" not in json.dumps(list(bot), ensure_ascii=False)
+
+
+def test_foreign_chat_web_identity_and_forged_bot_claim_cannot_read_or_answer_intake(bot, monkeypatch):
+    import copy
+    from fastapi.testclient import TestClient
+    from starlette.requests import Request
+
+    monkeypatch.setenv("DEVELOPAID_PAYWALL", "0")
+    key = "synthetic-admin-key-intake-test"
+    monkeypatch.setenv("DEVELOPAID_ADMIN_KEY", key)
+    engine._telegram_handle_intake_document(CHAT, b"%PDF", "own.pdf")
+    dialog = engine._telegram_dialog_get(CHAT)
+    intake_id = dialog["intake"]["id"]
+    before = engine._intake_queue_path(intake_id).read_bytes()
+    with pytest.raises(engine.HTTPException) as denied:
+        engine._intake_queue_load(intake_id, request=engine._telegram_agent_request(CHAT + 1))
+    assert denied.value.status_code == 403
+    forged = Request({"type": "http", "method": "POST", "path": "/telegram/intake",
+        "headers": [(b"x-developaid-admin-key", key.encode())], "query_string": b"",
+        "plato_bot_actor": ("client-claimed", CHAT),
+        "plato_actor": {"owner": CHAT, "private": True, "surface": "telegram"}})
+    with pytest.raises(engine.HTTPException) as denied:
+        engine._intake_queue_load(intake_id, request=forged)
+    assert denied.value.status_code == 403
+    # A different Telegram chat cannot answer even after obtaining an intake ID.
+    foreign_dialog = copy.deepcopy(dialog)
+    engine._telegram_dialog_save(CHAT + 1, foreign_dialog)
+    engine._telegram_handle_update({"callback_query": {
+        "id": "", "data": "intake_opt:0:0", "from": {"id": CHAT + 1},
+        "message": {"chat": {"id": CHAT + 1, "type": "private"}}}})
+    assert engine._intake_queue_path(intake_id).read_bytes() == before
+    assert "недоступен" in bot[-1]["text"]
+    # Same numeric ID through signed web login is a separate surface/owner.
+    session = engine._telegram_session(CHAT, [])
+    with TestClient(engine.app) as client:
+        body = {"session": session, "access_key": key, "intake_id": intake_id,
+                "owner": CHAT, "caller": "telegram", "is_admin": True,
+                "plato_bot_actor": ["client-claimed", CHAT]}
+        response = client.post("/agent/document/card", json=body)
+        assert response.status_code == 403
+        assert "own.pdf" not in response.text
+        response = client.post("/agent/document/answer", json={**body,
+            "index": 0, "action": "answer", "choice": 0})
+        assert response.status_code == 403
+    assert engine._intake_queue_path(intake_id).read_bytes() == before
+    # Failed foreign attempts do not break the owning chat's next question.
+    _press("intake_questions")
+    assert "Вопрос 1 из 3" in bot[-1]["text"]

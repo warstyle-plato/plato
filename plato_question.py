@@ -176,10 +176,15 @@ function platoThread(){
 //
 // Числа сюда не приходят: что положить в вопрос, решает поверхность. Общее —
 // как спросить, как дождаться и как показать разговор.
+function platoPollHeaders(){
+ const read=k=>{try{return localStorage.getItem(k)||''}catch(_){return ''}};
+ return {'X-Plato-Session':typeof activeSession==='function'?activeSession():read('developaid_web_session'),
+  'X-Developaid-Admin-Key':typeof projectsAdminKey!=='undefined'?projectsAdminKey:read('plato_projects_key')};
+}
 async function platoAsk(message, history, onStage){
  // Куда спрашивать, решает страница: торги по личному ключу ходят в свой
  // маршрут с лимитом (`/auctions/ask`), остальные — в кабинет.
- const r=await fetch(window.DEVELOPAID_PLATO_ASK_URL||'/cabinet/ask',{method:'POST',headers:{'Content-Type':'application/json'},
+ const r=await fetch(window.DEVELOPAID_PLATO_ASK_URL||'/cabinet/ask',{method:'POST',headers:Object.assign({'Content-Type':'application/json'},platoPollHeaders()),
    body:JSON.stringify({message, history: history||[]})});
  // Ответ бывает не JSON — например HTML страницы шлюза. Разбирать его вслепую
  // значит показать поломку разбора вместо причины отказа.
@@ -207,7 +212,7 @@ async function platoAsk(message, history, onStage){
 // сохраняется в отчёт площадки. Ждут при этом одинаково.
 async function platoAwait(d, onStage, poll){
  const ready=poll||(async id=>{
-  const p=await fetch('/agent/result/'+encodeURIComponent(id));
+  const p=await fetch('/agent/result/'+encodeURIComponent(id),{cache:'no-store',headers:platoPollHeaders()});
   return p.ok?p.json():null;
  });
  // Быстрый ответ приходит тем же запросом; за долгим ходим по номеру запуска:
@@ -218,7 +223,7 @@ async function platoAwait(d, onStage, poll){
  for(let i=0;!text&&d.trace_id&&i<120;i++){
   await new Promise(done=>setTimeout(done,2500));
   try{
-   const s=await fetch('/agent/trace/'+encodeURIComponent(d.trace_id));
+   const s=await fetch('/agent/trace/'+encodeURIComponent(d.trace_id),{cache:'no-store',headers:platoPollHeaders()});
    if(s.ok){ const sd=await s.json();
     stage=sd.stage||stage; label=sd.label||label;
     if(onStage) onStage(`${label||stage||'работа принята'} · ${Math.round((Date.now()-began)/1000)} с`);

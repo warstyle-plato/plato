@@ -229,7 +229,7 @@ def test_the_status_reports_the_effort():
 
 def test_the_stage_is_readable_while_the_answer_is_prepared():
     """Страница опрашивает стадию по id, который сгенерировала сама."""
-    trace_id = "ab12cd34ef56"
+    trace_id = "ab12cd34ef5600000000000000000000"
     response = ask("expense_structure", trace_id=trace_id)
 
     assert response.json()["trace_id"] == trace_id
@@ -249,5 +249,5 @@ def test_an_invalid_trace_id_is_rejected_by_the_poll():
     assert client.get("/agent/trace/{bad}").status_code == 400
 
 
-def test_an_unknown_trace_reads_as_unknown_not_error():
-    assert client.get("/agent/trace/deadbeef0000").json()["stage"] == "unknown"
+def test_an_unknown_trace_fails_closed():
+    assert client.get("/agent/trace/" + "deadbeef" * 4).status_code == 404
