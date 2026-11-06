@@ -4604,14 +4604,20 @@ def _agent_resolve_actor(req, request: Request, *, surface: str = ""):
         chat = _web_identity_chat_id(session)
         identity = ("web:" + str(chat)) if chat else scope.setdefault(
             "plato_browser_owner", "ephemeral:" + os.urandom(32).hex())
-        key = str(getattr(req, "access_key", "") or
-                  request.headers.get("x-developaid-admin-key") or "").strip()
+        # Authentication accepts a current body credential or current header.
+        # Bind exactly that valid credential, rather than downgrading a closed
+        # Monitor run when a stale body key accompanies a valid header.
+        candidates = (str(getattr(req, "access_key", "") or "").strip(),
+                      str(request.headers.get("x-developaid-admin-key") or "").strip())
+        key = next((candidate for candidate in candidates if _agent_key_valid(candidate)), "")
         # Only the authenticated owning handler can pass a private surface.
         # The URL is used solely to partition public adapter output.
         surface = surface or "public:" + request.url.path
     # Public adapters may persist or share their answers (e.g. a lot report).
     # They never acquire private-source authority from an ambient admin header.
     private = surface in {"web", "monitor"} and _agent_key_valid(key)
+    if surface == "monitor" and not private:
+        raise HTTPException(403, "Нужен действующий ключ администратора.")
     return _agent_access.Actor(
         owner=_agent_access.digest(_PLATO_STAGE_DIR, identity), surface=surface,
         private=private,

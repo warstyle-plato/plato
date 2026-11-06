@@ -449,3 +449,33 @@ def test_public_report_proof_is_bound_to_verified_public_run_and_content():
     with pytest.raises(core.HTTPException) as denied:
         core._agent_public_reply_stamp(private_trace, request, slug, PRIVATE)
     assert denied.value.status_code == 403
+
+
+@pytest.mark.parametrize("body_current,header_current", [(False,True),(True,False)])
+def test_monitor_key_conflict_binds_the_credential_that_actually_passed_gate(monkeypatch, body_current, header_current):
+    fake_search(monkeypatch)
+    client=TestClient(core.app)
+    response=client.post("/monitor/ask",json={"message":"syntheticboundary query",
+        "key":KEY if body_current else "stale-body-key"},
+        headers={"X-Developaid-Admin-Key":KEY if header_current else "stale-header-key"})
+    assert response.status_code==200,response.text
+    trace=response.json()["trace_id"]
+    metadata=agent_access.load(core._PLATO_STAGE_DIR,trace)
+    assert metadata["surface"]=="monitor" and metadata["private"] is True
+    assert metadata["acl"]!="public"
+    assert client.get("/agent/result/"+trace).status_code==403
+    assert client.get("/agent/result/"+trace,headers=poll_headers(key=KEY)).status_code==200
+    monkeypatch.setenv("DEVELOPAID_ADMIN_KEY","rotated-synthetic-key")
+    for route in ("result","trace"):
+        for key in ("",KEY,"rotated-synthetic-key"):
+            denied=client.get(f"/agent/{route}/{trace}",headers=poll_headers(key=key))
+            assert denied.status_code==403
+            assert PRIVATE not in denied.text
+
+
+def test_monitor_actor_never_silently_becomes_public(monkeypatch):
+    request=Request({"type":"http","method":"POST","path":"/monitor/ask",
+                     "headers":[],"query_string":b""})
+    with pytest.raises(core.HTTPException) as denied:
+        core._agent_resolve_actor(None,request,surface="monitor")
+    assert denied.value.status_code==403
