@@ -21,11 +21,13 @@ jobs:
         run: |
           python3 - <<'PY'
           """Bounded read-only funding-source diagnostics. Never print private values."""
+          import contextlib
           import datetime as dt
           import json
           import math
           import os
           import re
+          import signal
           import sys
           import time
           import urllib.error
@@ -174,6 +176,33 @@ jobs:
               raise ProbeError('json_shape')
 
 
+          @contextlib.contextmanager
+          def wall_limit(seconds):
+              # urllib's socket timeout is an idle timeout. Ubuntu/main-thread SIGALRM
+              # also bounds headers, a trickling body and JSON parsing by elapsed time.
+              if type(seconds) not in (int, float) or not math.isfinite(seconds) or not 0 < seconds <= 15:
+                  raise ProbeError('configuration')
+              if not hasattr(signal, 'setitimer') or not hasattr(signal, 'SIGALRM'):
+                  raise ProbeError('configuration')
+              previous_timer = signal.getitimer(signal.ITIMER_REAL)
+              if any(previous_timer):
+                  raise ProbeError('configuration')
+              previous_handler = signal.getsignal(signal.SIGALRM)
+              def expired(signum, frame):
+                  raise TimeoutError()
+              try:
+                  signal.signal(signal.SIGALRM, expired)
+              except (ValueError, OSError):
+                  # No request is made if this is not the supported main-thread runtime.
+                  raise ProbeError('configuration') from None
+              try:
+                  signal.setitimer(signal.ITIMER_REAL, seconds)
+                  yield
+              finally:
+                  signal.setitimer(signal.ITIMER_REAL, 0)
+                  signal.signal(signal.SIGALRM, previous_handler)
+
+
           class Transport:
               def __init__(self):
                   self.opener = urllib.request.build_opener(NoRedirect)
@@ -183,6 +212,13 @@ jobs:
                   self.builds = 0
 
               def _json(self, path, payload=None, timeout=15):
+                  try:
+                      with wall_limit(timeout):
+                          return self._request_json(path, payload, timeout)
+                  except TimeoutError:
+                      raise ProbeError('request_timeout') from None
+
+              def _request_json(self, path, payload=None, timeout=15):
                   if (path != '/health' and path not in POSTS) or (path == '/health') != (payload is None):
                       raise ProbeError('internal')
                   data = None if payload is None else json.dumps(dict(payload, key=self.key, session='')).encode()
@@ -317,12 +353,17 @@ jobs:
               started = time.monotonic()
               value = transport.post('/monitor/report/build', {'project': project, 'kind': 'month', 'end': CUT})
               admission = time.monotonic() - started
+              if time.monotonic() >= started + 360:
+                  raise ProbeError('deadline')
               ticket = value.get('ticket')
               if not isinstance(ticket, str) or not re.fullmatch(r'[0-9a-f]{32}', ticket):
                   raise ProbeError('json_shape')
               polls, longest = 0, 0.0
               deadline = started + 360
               while True:
+                  # Check even a completed admission or completed result, not only pending.
+                  if time.monotonic() >= deadline:
+                      raise ProbeError('deadline')
                   if type(value.get('pending')) is not bool or value.get('ticket') != ticket:
                       raise ProbeError('json_shape')
                   if value['pending'] is False:
