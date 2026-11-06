@@ -126,6 +126,25 @@ def test_manual_storage_area_is_not_replaced_by_the_default_area_per_unit():
     assert t == before
 
 
+@pytest.mark.parametrize('region', ['msk', 'mo'])
+def test_storage_adds_no_residents_or_social_load(region):
+    cases = []
+    for placement, with_storage in [('underground', False), ('underground', True), ('above', True)]:
+        x, t = project(placement, with_storage)
+        x.update(vri_region=region, social_mode='Строительство',
+                 kindergarten_places=18, school_places=45, clinic_capacity=5,
+                 social_dou_gba_sqm=1000, social_school_gba_sqm=3000,
+                 social_clinic_gba_sqm=500)
+        r = core.calculate(core.CalcRequest(inputs=x, tep=t, rates=[]))
+        rows = {row['key']: row for row in r['tep']['rows']}
+        population, _ = core.project_population(rows, region)
+        assert population > 0 and r['capex']['social'] > 0
+        assert r['summary']['social_required']['available']
+        cases.append((population, r['summary']['social_required'],
+                      r['summary']['social_program'], r['capex']['social']))
+    assert cases[0] == cases[1] == cases[2]
+
+
 def test_two_phases_sum_their_full_storage_areas_once():
     x, t = project('above')
     phasing = {'enabled': True, 'mode': 'phased', 'phase_count': 2, 'user_enabled': True,
