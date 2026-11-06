@@ -1274,14 +1274,16 @@ def _telegram_handle_glavapu_document(chat_id: int, data: bytes, filename: str) 
 
 
 def _telegram_agent_request(chat_id: int) -> Request:
-    """Запрос без веб-запроса: боту его взять неоткуда, а Платону он нужен."""
-    return Request({
+    """Server-owned public actor for this exact Telegram chat, never an admin."""
+    request = _agent_bind_bot_request(Request({
         "type": "http", "asgi": {"version": "3.0", "spec_version": "2.3"},
         "http_version": "1.1", "method": "POST", "scheme": "https",
         "path": "/telegram/intake", "raw_path": b"/telegram/intake",
         "query_string": b"", "headers": [],
         "client": ("telegram", int(chat_id)), "server": ("developaid", 443),
-    })
+    }), chat_id)
+    request.scope["plato_actor"] = _agent_resolve_actor(None, request)
+    return request
 
 
 def _telegram_platon_remember_document(chat_id: int, context: dict[str, Any]) -> str:
@@ -1319,7 +1321,8 @@ def _telegram_handle_intake_document(chat_id: int, data: bytes, filename: str) -
                  f"Страниц: {document.get('pages')}. Сначала покажу, что нашёл и что "
                  "уйдёт в расчёт; вопросы — потом.")
     try:
-        got = document_intake_read(document, _telegram_agent_request(chat_id))
+        request = _telegram_agent_request(chat_id)
+        got = document_intake_read(document, request)
     except Exception as exc:  # noqa: BLE001
         _telegram_send_message(
             chat_id, "<b>Разбор не удался.</b>\n" + html.escape(str(exc)))
@@ -1340,7 +1343,8 @@ def _telegram_handle_intake_document(chat_id: int, data: bytes, filename: str) -
     region = _telegram_intake_region(_intake_cadastral_numbers(got))
     card = _intake_queue_start(filename, got, document, dict(DEFAULT_INPUTS),
                                {key: dict(value) for key, value in TEP_DEFAULT.items()},
-                               by_parcel=True, parcel_region=region)
+                               by_parcel=True, parcel_region=region,
+                               actor=request.scope["plato_actor"])
     dialog = _telegram_dialog_get(chat_id) or {}
     dialog["step"] = "intake_card"
     # Регион участка решается один раз, при разборе: определить его — запрос
@@ -1495,7 +1499,8 @@ def _telegram_open_model_button(chat_id: int) -> dict[str, Any] | None:
 def _telegram_intake_card(chat_id: int, dialog: dict[str, Any]) -> dict[str, Any] | None:
     intake = dialog.get("intake") or {}
     try:
-        queue = _intake_queue_load(str(intake.get("id") or ""))
+        queue = _intake_queue_load(str(intake.get("id") or ""),
+                                   request=_telegram_agent_request(chat_id))
     except HTTPException as exc:
         dialog.pop("intake", None)
         dialog.pop("step", None)
