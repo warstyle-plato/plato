@@ -171,3 +171,18 @@ def test_even_parsed_sources_cannot_turn_the_primary_gate_green(tmp_path, capsys
 def test_invalid_cut_is_rejected_without_echo(cut, capsys):
     assert probe.main(["--cut", cut]) == 2
     assert json.loads(capsys.readouterr().out)["error"] == "invalid_cut"
+
+
+@pytest.mark.parametrize("arguments", [
+    [], ["--cut"], ["--cut", CUT, "--finance"],
+    ["--cut", CUT, "--finance-file", "/readonly/PRIVATE-client-document.xlsx"],
+])
+def test_invalid_arguments_do_not_echo_private_paths(arguments, capsys):
+    with pytest.raises(SystemExit) as error:
+        probe.main(arguments)
+    assert error.value.code == 2
+    captured = capsys.readouterr()
+    assert not captured.err
+    assert json.loads(captured.out) == {
+        "error": "invalid_arguments", "primary_source_gate": "BLOCKED",
+    }

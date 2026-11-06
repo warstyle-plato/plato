@@ -30,6 +30,13 @@ MAX_FILE_BYTES = 32 * 1024 * 1024
 ID_HEADERS = frozenset(("id платежа", "идентификатор платежа", "payment id"))
 
 
+class _PrivateArgumentParser(argparse.ArgumentParser):
+    def error(self, message):
+        # argparse's default error includes argv values, potentially source paths.
+        print('{"error":"invalid_arguments","primary_source_gate":"BLOCKED"}')
+        raise SystemExit(2)
+
+
 def _stream(data: bytes) -> io.BytesIO:
     source = io.BytesIO(data)
     source.name = "source.xlsx"
@@ -182,7 +189,7 @@ def _inspect_source(path: Path | None, kind: str, cut: str, meta: Path | None = 
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = _PrivateArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--cut", required=True, help="YYYY-MM-DD")
     for kind in ("finance", "rss", "schedule", "bdds"):
         parser.add_argument("--" + kind, type=Path, action="append" if kind == "bdds" else "store")
