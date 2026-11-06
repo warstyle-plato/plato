@@ -76,6 +76,12 @@ __DEVELOPAID_CONTOUR__
  <div style="margin-top:9px;border-top:1px solid var(--line);padding-top:9px"><b>Экспертная отметка</b><div class="files"><input id="stageObj" placeholder="объект: паркинг / корпус 2 / пусто — весь проект" style="width:280px"><button class="btn alt" id="stageBtn" data-hint="Закрывает сотней работы монолитного цикла: котлован, подготовку, гидроизоляции, фундаменты, арматуру, монолит. С указанным объектом закрывает и поэтажный монолит («верт констр», «ПП», «тех этаж») — поэтому объект с недолитыми этажами (корпус 3) так закрывать нельзя. С пустым полем этажные строки не трогаются. Проценты лягут точечными фактами поверх графика, baseline не меняется." tabindex="0">Закрыть монолитный цикл сотней</button></div><div class="msg" id="stageMsg"></div></div>
  </details>
 </div></div>
+<details class="card" id="siteAccessCard"><summary class="head" style="cursor:pointer"><h2>Доступ Telegram-групп</h2></summary><div class="body">
+<p class="muted">Выберите проект вверху и укажите ID группы из ответа бота на /site. Бот сможет принимать отчёты и задавать уточняющие вопросы по этому проекту. Вопросы видят все участники группы. Ключ в Telegram отправлять не нужно.</p>
+<div class="files"><label>ID группы <input id="siteChatId" placeholder="Например, -100…"></label><label>Название для списка <input id="siteChatTitle" placeholder="Необязательно"></label></div>
+<div class="files" style="margin-top:10px"><button class="btn" id="siteAuthorizeBtn" type="button">Разрешить группу для проекта</button><button class="btn ghost" id="siteRevokeBtn" type="button">Отозвать доступ</button><button class="btn ghost" id="siteAccessRefresh" type="button">Показать привязки</button></div>
+<div class="msg" id="siteAccessMsg" role="status"></div><div id="siteAccessList"></div>
+</div></details>
 <div class="card hidden" id="dashCard"><div class="head"><h2>Состояние проекта</h2><span class="muted" id="source"></span></div><div class="body"><div class="kpis" id="kpis"></div></div></div>
 <div class="card hidden" id="summaryCard"><div class="head"><div><h2 data-hint="Те же числа, что в графиках, но словами: сколько нужно, сколько есть, когда возникает дыра и к какой дате нужно решение о дофинансировании. Считает сервер из помесячной программы РСС и остатков лимитов статей." tabindex="0">Платон · резюме словами</h2><div class="muted">Лимит, модель, дефицит и его дата — без чтения столбиков</div></div></div><div class="body" id="summaryBody" style="line-height:1.65;font-size:12px;max-width:1100px"></div></div>
 <div class="card hidden forecast-card" id="forecastCard"><div class="head"><div><h2 data-hint="Главный вывод модели: когда будет ввод при текущем темпе и какие работы этот срок держат. «Драйвер» — работа, чьё отставание доезжает до РНВ по цепочке зависимостей." tabindex="0">Платон · управленческий прогноз</h2><div class="muted">Что произойдёт при сохранении текущего темпа и почему</div></div><span class="muted" id="forecastConfidence">расчёт модели</span></div><div class="body"><div class="forecast-headline" id="forecastHeadline">Платон рассчитывает прогноз…</div><div class="forecast-grid"><div class="forecast-metrics" id="forecastMetrics"></div><div><b>Что двигает прогноз РНВ</b><div id="forecastDrivers"></div></div></div><div class="model-line" id="forecastModel"></div></div></div>
@@ -514,6 +520,40 @@ $('detailClose').onclick=e=>{e.stopPropagation();$('detailCard').classList.add('
 $('setupHead').onclick=e=>{if(e.target.closest('input,button'))return;const card=$('setupCard'),open=card.classList.toggle('open');$('setupChev').textContent=open?'▾':'▸'};
 try{const saved=localStorage.getItem('monitor_project');if(saved&&!$('project').value)$('project').value=saved}catch(e){}
 $('project').addEventListener('change',()=>{try{const v=$('project').value.trim();if(v)localStorage.setItem('monitor_project',v)}catch(e){}});
+async function siteAccessCall(path,payload){
+ const options=payload===undefined?{cache:'no-store',headers:{'x-developaid-admin-key':adminKey()}}:{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(Object.assign({key:adminKey()},payload))};
+ const response=await fetch(path,options),data=await response.json().catch(()=>({}));
+ if(response.status===401||response.status===403){$('siteAccessList').replaceChildren();requireLogin(data.detail||'Введите действующий ключ администратора.');}
+ if(!response.ok)throw new Error(data.detail||('Ошибка '+response.status));
+ return data;
+}
+function drawSiteAccess(data){
+ const box=$('siteAccessList');box.replaceChildren();
+ const rows=Array.isArray(data.chats)?data.chats:[];
+ if(!rows.length){box.textContent='Привязок пока нет. Укажите ID нужной группы.';return;}
+ for(const row of rows){
+  const line=document.createElement('div');line.className='files';line.style.marginTop='8px';
+  const label=document.createElement('span');label.textContent=[row.title||'Группа',String(row.chat_id),row.project||'Проект не задан',row.authorized?'Доступ разрешён':'Нужно разрешить ключом'].join(' · ');
+  const choose=document.createElement('button');choose.type='button';choose.className='btn ghost';choose.textContent='Выбрать';
+  choose.onclick=()=>{$('siteChatId').value=String(row.chat_id);$('siteChatTitle').value=row.title||'';if(row.project){$('project').value=row.project;$('project').dispatchEvent(new Event('change'));}};
+  line.append(label,choose);box.append(line);
+ }
+}
+async function loadSiteAccess(){drawSiteAccess(await siteAccessCall('/monitor/site-chats/access'));}
+async function changeSiteAccess(action){
+ const raw=$('siteChatId').value.trim(),chatId=Number(raw),project=$('project').value.trim();
+ if(!/^-\d+$/.test(raw)||!Number.isSafeInteger(chatId)||chatId>=0)return msg('siteAccessMsg','Укажите отрицательный числовой ID Telegram-группы.','bad');
+ if(!project)return msg('siteAccessMsg','Выберите проект вверху страницы.','bad');
+ const buttons=['siteAuthorizeBtn','siteRevokeBtn','siteAccessRefresh'].map($);buttons.forEach(button=>button.disabled=true);
+ try{
+  msg('siteAccessMsg',action==='authorize'?'Разрешаю доступ…':'Отзываю доступ…','warn');
+  const payload={chat_id:chatId,project};if(action==='authorize')payload.title=$('siteChatTitle').value.trim();
+  await siteAccessCall('/monitor/site-chats/'+action,payload);
+  await loadSiteAccess();msg('siteAccessMsg',action==='authorize'?'Группа разрешена для выбранного проекта. Участники увидят уточняющие вопросы по его отчётам.':'Доступ группы отозван.','good');
+ }catch(error){msg('siteAccessMsg',error.message,'bad');}finally{buttons.forEach(button=>button.disabled=false);}
+}
+$('siteAuthorizeBtn').onclick=()=>changeSiteAccess('authorize');$('siteRevokeBtn').onclick=()=>changeSiteAccess('revoke');
+$('siteAccessRefresh').onclick=async()=>{try{msg('siteAccessMsg','Загружаю привязки…','warn');await loadSiteAccess();msg('siteAccessMsg','');}catch(error){msg('siteAccessMsg',error.message,'bad');}};
 syncAuthUi();if(hasAuth())refresh();else msg('viewMsg','Введите ключ администратора, чтобы открыть данные проекта.','bad');
 </script>
 </body></html>
