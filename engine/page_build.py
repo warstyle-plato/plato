@@ -248,3 +248,6 @@ def index() -> HTMLResponse:
         "Expires": "0",
         "X-DevelopAid-Version": VERSION,
     })
+
+import partial_tep as _partial_tep_schema
+PAGE = PAGE.replace("__DEVELOPAID_PARTIAL_TEP_SCHEMA__", json.dumps(_partial_tep_schema.schema(), ensure_ascii=False))

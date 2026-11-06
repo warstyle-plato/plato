@@ -3177,6 +3177,7 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
     свода ещё не приведён к очередям (см. `_calculate_phased_with_carry`).
     Очереди решены своим `calculate`.
     """
+    _partial_tep_preflight(req.inputs, req.tep)
     migrations = migrate_growth_post(req.inputs)
     apply_office_classes(req.inputs)
     bundle = _calculate_phased_with_table(req)
@@ -3351,6 +3352,7 @@ def _calculate_phased_with_carry(req: PhasedCalcRequest) -> dict[str, Any]:
 @app.post("/calculate-phased")
 def calculate_phased_api(req: PhasedCalcRequest) -> dict[str, Any]:
     # Очерёдность — тот же расчёт экономики, и та же граница входа.
+    _partial_tep_preflight(req.inputs, req.tep)
     access = require_calc_access(req.session, req.access_key, "Расчёт экономики",
                                  inputs=req.inputs, free_consent=req.use_free)
     bundle = calculate_phased(req)

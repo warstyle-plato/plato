@@ -395,6 +395,7 @@ function undergroundAreaPerSpace(){
 }
 
 function repairParkingFromGlavapu(){
+ if(partialTepMode())return false;
  if(!tep.underground_parking)return false;
  // Отказ от подземного паркинга: в области потребность закрывают наземным
  // гаражом. Ноль в поле мест значит «по нормативу», поэтому отказ — отдельный
@@ -470,6 +471,7 @@ function syncUndergroundPair(changed){
 }
 
 function fillUndergroundFromTep(){
+ if(partialTepMode())return false;
  // Поля показывают расчёт участка, а не пустоту со значением «возьми
  // норматив»: человек пришёл править числа, которые видит, и ноль в поле
  // читался как «паркинга нет». Новый импорт ГлавАПУ перезаписывает пару.
@@ -1967,12 +1969,12 @@ function renderInputs(){
      // оказывался выше настоящего: 1,16 вместо 1,07.
      if(type==='checkbox')el.checked=(id in inputs)?!!inputs[id]:!!INPUT_DEFAULT[id];
      if(id==='vri_required'){inputs.vri_required=vriPaymentActive();el.checked=inputs.vri_required}
-     else el.value=inputs[id]??INPUT_DEFAULT[id]??'';
+     else el.value=partialTepMode()?(inputs[id]??''):(inputs[id]??INPUT_DEFAULT[id]??'');
      if(mskQuarter){
       el.disabled=true;
       el.title='Москва: платежи ежеквартально — установлено нормативно';
      }
-     el.onchange=()=>{if(id==='vri_required')return vriRequiredToggled(el);if(OFFICE_CLASS_FIELDS[id])return setOfficeClass(OFFICE_CLASS_FIELDS[id],el.value);const classRegionBefore=classRegion();const valueBefore=inputs[id];inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);markFieldManual('inputs.'+id);if(id==='land_rights_cost_mln'){vriFeeClearedMln=0;syncVriRequiredBox()}if(id==='demolition_area_sqm'||id==='land_buyout_mln')refreshClassFieldUnit(id);if(id==='social_mode')inputs._social_mode_user_set=true;if(id==='social_population_method')socialPopulationSwitched(valueBefore);{const parkOwner=OBJECT_PARKING_PREFIXES.find(p=>id===p+'_parking_under_spaces'||id===p+'_parking_over_spaces');if(parkOwner){if(String(el.value).trim()==='')restoreParkingNorm(parkOwner);else parkingFieldByHand(parkOwner,id);}}if(id==='underground_manual_spaces'||id==='underground_manual_gns_sqm'){if(Number(el.value)>0)markParkingByHand(PROJECT_PARKING_KEY);else markParkingByNorm(PROJECT_PARKING_KEY);}if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){followClassRegion(classRegionBefore);syncTep(false);renderInputs();return calculate()}if(id==='vri_relief_mode'||id==='vri_financing_mode'){renderInputs();return calculate()}if(VRI_SHARE_FIELDS.includes(id))refreshVriSharesNote();if(STRATEGY_FIELD_READERS_SWITCHES.includes(id)){renderInputs();return calculate()}if(markClassManual(id)){syncProjectClassSelector();refreshClassFieldUnit(id)}if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(id==='storage_area_per_unit_sqm'){syncStoragePair('units');renderTep()}if(TEP_DERIVED_INPUTS.includes(id)){const modeSwitched=id==='social_area_source';const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(modeSwitched||filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
+     el.onchange=()=>{if(partialTepEditInput(id,el,type))return;if(id==='vri_required')return vriRequiredToggled(el);if(OFFICE_CLASS_FIELDS[id])return setOfficeClass(OFFICE_CLASS_FIELDS[id],el.value);const classRegionBefore=classRegion();const valueBefore=inputs[id];inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);markFieldManual('inputs.'+id);if(id==='land_rights_cost_mln'){vriFeeClearedMln=0;syncVriRequiredBox()}if(id==='demolition_area_sqm'||id==='land_buyout_mln')refreshClassFieldUnit(id);if(id==='social_mode')inputs._social_mode_user_set=true;if(id==='social_population_method')socialPopulationSwitched(valueBefore);{const parkOwner=OBJECT_PARKING_PREFIXES.find(p=>id===p+'_parking_under_spaces'||id===p+'_parking_over_spaces');if(parkOwner){if(String(el.value).trim()==='')restoreParkingNorm(parkOwner);else parkingFieldByHand(parkOwner,id);}}if(id==='underground_manual_spaces'||id==='underground_manual_gns_sqm'){if(Number(el.value)>0)markParkingByHand(PROJECT_PARKING_KEY);else markParkingByNorm(PROJECT_PARKING_KEY);}if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){followClassRegion(classRegionBefore);syncTep(false);renderInputs();return calculate()}if(id==='vri_relief_mode'||id==='vri_financing_mode'){renderInputs();return calculate()}if(VRI_SHARE_FIELDS.includes(id))refreshVriSharesNote();if(STRATEGY_FIELD_READERS_SWITCHES.includes(id)){renderInputs();return calculate()}if(markClassManual(id)){syncProjectClassSelector();refreshClassFieldUnit(id)}if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(id==='storage_area_per_unit_sqm'){syncStoragePair('units');renderTep()}if(TEP_DERIVED_INPUTS.includes(id)){const modeSwitched=id==='social_area_source';const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(modeSwitched||filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
      wrap.appendChild(el);
      // Кнопка «Подобрать» у срока кредита объекта с доходным методом.
      if(typeof loanTermPickField==='function'&&loanTermPickField(id))wrap.appendChild(loanTermPickNode(id));

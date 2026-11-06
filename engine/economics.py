@@ -124,6 +124,7 @@ def capex_unit_rows(capex: dict[str, float], bases: dict[str, float]) -> dict[st
 
 
 def calculate(req: CalcRequest) -> dict:
+    _partial_tep_preflight(req.inputs, req.tep)
     # Решение о доходности капитала принимается один раз, на выходе расчёта:
     # у раннего выхода (наложение фактов) и у основного пути одно правило.
     # Проект, сохранённый до «одной вводной роста после РВЭ», переносится
@@ -376,6 +377,7 @@ def prepared_calculation(x: dict, t: dict, rates: list[dict[str, Any]] | None) -
     повторяют порядок правок ТЭП у себя. Правит переданные словари так же,
     как правил расчёт до выноса.
     """
+    _partial_tep_preflight(x, t)
     if not rates:
         rates = generate_rate_curve(
             d(x.get("rate_start_date", date.today().isoformat())),

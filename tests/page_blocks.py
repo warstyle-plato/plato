@@ -153,6 +153,10 @@ def tep_cell_stand() -> str:
         # выгрузки ГлавАПУ его потом не перезаписывает.
         function("fieldOrigins"),
         function("markFieldManual"),
+        # The real opt-in handler returns to the usual writer for legacy
+        # inputs. Load its real dependency, not a stub that disables drafts.
+        function("partialTepMode"),
+        function("partialTepEditCell"),
         function("tepCellChanged"),
         # Пересборка строки по долям — тот же путь, что правка ячейки:
         # «наши» и правка доли обязаны считать переданное так же.
