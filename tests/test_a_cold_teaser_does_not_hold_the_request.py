@@ -272,6 +272,7 @@ def test_the_page_polls_the_ticket_until_the_pdf():
     """Страница: 202 → опрос билета с надписью стадии на кнопке → скачивание."""
     prelude = """
 const log=[];let button={textContent:'Скачать тизер',disabled:false};
+const inputs={};
 const document={querySelector:()=>button};
 async function calculate(){}
 function activeSession(){return ''}

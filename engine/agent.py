@@ -288,6 +288,7 @@ def _run_authoritative_model(
     rates: list[dict[str, Any]],
     phasing: dict[str, Any],
 ) -> dict[str, Any]:
+    _partial_tep_preflight(inputs, tep)
     x = copy.deepcopy(inputs)
     t = copy.deepcopy(tep)
     rr = copy.deepcopy(rates)

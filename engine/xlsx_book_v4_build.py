@@ -383,6 +383,7 @@ def build_project_workbook(
     Второй объект пишется в книгу, только когда он включён: проект без него
     получает ту же книгу, что и до его появления в реестре (`_V4_BOOK_OBJECTS`).
     """
+    _partial_tep_preflight(inputs, tep)
     inputs = dict(inputs or {})
     migrate_growth_post(inputs)
     apply_office_classes(inputs)
@@ -405,7 +406,15 @@ def build_project_workbook(
     merged = object_instances_applied(merged, {})[0]
     token = _V4_BOOK_OBJECTS.set(_v4_book_objects(merged))
     try:
-        return _build_project_workbook(inputs, tep, rates, phasing, **kwargs)
+        built = _build_project_workbook(inputs, tep, rates, phasing, **kwargs)
+        # An explicit source draft must not receive a workbook that its own
+        # mapping says cannot reproduce the supplied facts. Legacy exports
+        # keep their existing warning contract; no workbook formulas change.
+        import partial_tep
+        if partial_tep.active(inputs) and built[2].get("missing"):
+            raise HTTPException(422, "Excel пока не воспроизводит все исходные поля этого ТЭП. "
+                                "Файл не выдан: требуется сверка соответствия полей книги.")
+        return built
     finally:
         _V4_BOOK_OBJECTS.reset(token)
 
@@ -2477,6 +2486,7 @@ _XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.
 
 @app.post("/report/workbook")
 def report_workbook(req: WorkbookExportRequest) -> Response:
+    _partial_tep_preflight(req.inputs, req.tep)
     require_calc_access(req.session, req.access_key, "Excel-модель", inputs=req.inputs)
     try:
         content, filename, meta = build_project_workbook(

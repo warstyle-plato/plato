@@ -175,6 +175,7 @@ def render_periodicity(region: str, saved: float | str) -> dict:
         "const id='vri_periodicity_months', type='select';\n"
         "const el={value:'',disabled:false,title:''};\n"
         + page_blocks.project_region() + "\n"
+        + page_blocks.partial_tep_mode() + "\n"
         + source[start:end] + "\n"
         "console.log(JSON.stringify({value:el.value,disabled:el.disabled,"
         "stored:inputs.vri_periodicity_months}));\n"
