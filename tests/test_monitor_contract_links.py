@@ -292,6 +292,45 @@ def test_explicit_mixed_corpus_link_can_cover_both_documented_contract_scopes():
     assert result["rows"][0]["reconciliation"]["daily_evidence"][0]["match_status"] == "confirmed"
 
 
+@pytest.mark.parametrize("scope", ["Корпус 1 и 2", "Корпус 1,2", "Корпуса 1 и 2",
+                                   "Корпуса №1, №2", "Корпус1и2", "Корпуса 1, 2 и 3"])
+def test_corpus_enumeration_cannot_drop_later_corpora_for_auto_or_manual_confirmation(monkeypatch, scope):
+    install_register(monkeypatch)
+    report(scope + " по договору A-12 бетонирование")
+    item = evidence()["unmatched_works"][0]
+    assert "Корпус 2" in item["scope"]
+    assert item["match_status"] == "proposed"
+    with pytest.raises(links.LinkProblem, match="Корпус"):
+        links.set_link(PROJECT, FIRST, item["id"], CUT)
+
+
+@pytest.mark.parametrize("scope", ["Корпус 1 и 2", "Корпус 1,2", "Корпуса 1 и 2"])
+def test_matching_complete_documented_corpus_enumeration_can_confirm(scope):
+    report(scope + " по договору A-12 бетонирование")
+    data = register()
+    data["rows"][0]["scope"] = ["Корпуса 1 и 2"]
+    assert evidence(data)["unmatched_works"] == []
+
+
+@pytest.mark.parametrize("scope", ["Корпус 1/2", "Корпуса 1–2", "Корпус 1-2"])
+def test_ambiguous_corpus_notation_requires_clarification_instead_of_first_number(monkeypatch, scope):
+    install_register(monkeypatch)
+    report(scope + " по договору A-12 бетонирование")
+    result = evidence()
+    item = result["unmatched_works"][0]
+    assert item["scope_ambiguous"] and item["match_status"] != "confirmed"
+    assert any("неоднозначно" in message for message in result["rows"][0]["reconciliation"]["issues"])
+    with pytest.raises(links.LinkProblem, match="неоднозначно"):
+        links.set_link(PROJECT, FIRST, item["id"], CUT)
+
+
+def test_ambiguous_contract_corpus_scope_also_blocks_whole_line_confirmation():
+    report("Корпус 1 по договору A-12 бетонирование")
+    data = register()
+    data["rows"][0]["scope"] = ["Корпус 1/2"]
+    assert evidence(data)["unmatched_works"][0]["match_status"] != "confirmed"
+
+
 def test_concurrent_confirmations_do_not_lose_a_link(monkeypatch):
     install_register(monkeypatch)
     report()

@@ -24,6 +24,9 @@ import developaid_monitor_daily as daily
 _MAX_TEXT = 20000
 _ID = re.compile(r"^[0-9a-f]{64}$")
 _LEGAL_FORMS = {"ооо", "ао", "пао", "оао", "зао", "ип"}
+_CORPUS_WORD = re.compile(r"\bкорпус(?:а|ов)? ?(?:№ ?)?(?=[0-9])")
+_CORPUS_NUMBER = re.compile(r"[0-9]{1,3}[a-zа-я]?(?![0-9a-zа-я])")
+_CORPUS_SEPARATOR = re.compile(r"(?:[,;] ?|и ?)(?:№ ?)?(?=[0-9])")
 _STATUS = {
     "confirmed": "Договор определён",
     "proposed": "Связь с договором нужно подтвердить",
@@ -89,21 +92,59 @@ def _project_key(project: str) -> str:
     return monitor._resolved_slug(project)
 
 
+def _scope_info(value: Any) -> tuple[set[str], bool]:
+    """Read complete ordinary corpus lists, keeping ambiguous scope explicit.
+
+    A slash or range may mean a section/address rather than another corpus;
+    that source needs clarification instead of silently keeping its first ID.
+    """
+    text = _text(value)
+    # In compact «1и2», и is a conjunction, not the letter suffix of corpus 1.
+    text = re.sub(r"(?<=[0-9])и(?= ?(?:№ ?)?[0-9])", " и", text)
+    found: set[str] = set()
+    ambiguous = False
+    for prefix in _CORPUS_WORD.finditer(text):
+        cursor = prefix.end()
+        while True:
+            number = _CORPUS_NUMBER.match(text, cursor)
+            if number is None:
+                ambiguous = True
+                break
+            found.add(number.group())
+            cursor = number.end()
+            if text[cursor:cursor + 1] == " ":
+                cursor += 1
+            tail = text[cursor:cursor + 32]
+            if (tail[:1] in {"/", "-", "–", "—"} and tail[1:].lstrip(" №").startswith(tuple("0123456789"))
+                    or tail.startswith("или") and tail[3:].lstrip(" №").startswith(tuple("0123456789"))):
+                ambiguous = True
+                break
+            separator = _CORPUS_SEPARATOR.match(text, cursor)
+            if separator is None:
+                break
+            cursor = separator.end()
+    return found, ambiguous
+
+
 def _scope(value: Any) -> set[str]:
-    # Normalize the entire source before looking for scope. Display truncation
-    # may not hide a later corpus, and bounded spaces avoid regex backtracking.
-    return {m.casefold() for m in re.findall(
-        r"\bкорпус ?№? ?([0-9]{1,3}[а-яa-z]?)\b", _text(value), re.I)}
+    return _scope_info(value)[0]
+
+
+def _contract_scope_info(row: dict) -> tuple[set[str], bool]:
+    texts = [row.get("subject"), *(row.get("scope") or [])]
+    for item in row.get("physical_items") or []:
+        texts.extend([item.get("scope"), item.get("name")])
+    scopes: set[str] = set()
+    ambiguous = False
+    for text in texts:
+        parts, unclear = _scope_info(text)
+        scopes.update(parts)
+        ambiguous = ambiguous or unclear
+    return scopes, ambiguous
 
 
 def _contract_scopes(row: dict) -> set[str]:
-    scopes = _scope(row.get("subject"))
-    for scope in row.get("scope") or []:
-        scopes.update(_scope(scope))
-    for item in row.get("physical_items") or []:
-        scopes.update(_scope(item.get("scope")))
-        scopes.update(_scope(item.get("name")))
-    return scopes
+    return _contract_scope_info(row)[0]
 
 
 def _compatible(evidence: dict, row: dict) -> bool:
@@ -112,7 +153,10 @@ def _compatible(evidence: dict, row: dict) -> bool:
 
 
 def _scope_covers(evidence: dict, row: dict) -> bool:
-    actual, expected = _scope(evidence.get("scope")), _contract_scopes(row)
+    actual, unclear_actual = _scope_info(evidence.get("scope"))
+    expected, unclear_expected = _contract_scope_info(row)
+    if evidence.get("scope_ambiguous") or unclear_actual or unclear_expected:
+        return False
     return not actual or not expected or actual <= expected
 
 
@@ -203,12 +247,14 @@ def _evidence(project: str, register: dict, cut: str, start: str = "", *,
             line = " ".join(line.split()).strip(" ;.")
             if not line:
                 continue
-            scopes = _scope(line)
+            scopes, scope_ambiguous = _scope_info(line)
             scope = ", ".join(f"Корпус {n}" for n in sorted(scopes))
             evidence = {"date": day, "contractor": name, "reported_contractor": reported_party,
                         "scope": scope, "text": line,
                         "source": {"kind": "daily_report", "date": day, "line_index": index + 1},
                         "party_exact": exact_party}
+            if scope_ambiguous:
+                evidence["scope_ambiguous"] = True
             evidence["signature"] = _signature(evidence, source_text=source_text,
                                                 source_contractor=source_contractor,
                                                 source_context=str(item.get("_contract_source_context") or ""))
@@ -358,7 +404,9 @@ def enrich(project: str, register: dict, cut: str, start: str = "", *,
             issues.append("Длинное сообщение показано сокращённо. Связь относится к полному исходному тексту ежедневного отчёта.")
         if related and not row.get("physical_items"):
             issues.append("Накопительная с объёмами к этому договору не привязана.")
-        if any(not _scope_covers(item, row) for item in related):
+        if _contract_scope_info(row)[1] or any(item.get("scope_ambiguous") for item in related):
+            issues.append("Обозначение корпусов в источнике неоднозначно. Уточните его до подтверждения связи всей строки.")
+        elif any(not _scope_covers(item, row) for item in related):
             issues.append("Сообщение охватывает корпуса за пределами известного состава договора. Связь всей строки не подтверждена.")
         if any(item["contract_id"] == row.get("id") and (not _scope(item.get("scope")) or not _contract_scopes(row))
                for item in related):
@@ -394,7 +442,7 @@ def set_link(project: str, contract_id: str, evidence_id: str, cut: str,
         raise LinkProblem("Строка ежедневного отчёта не найдена в выбранном проекте на эту дату.")
     evidence = found[0]
     if confirmed and not _scope_covers(evidence, rows[0]):
-        raise LinkProblem("Корпус в сообщении не соответствует корпусу работ договора. Проверьте исходные данные.")
+        raise LinkProblem("Корпусный состав строки не подтверждён составом договора или указан неоднозначно. Проверьте исходные данные.")
     with _locked(project):
         value = _read(project)
         signature = evidence["signature"]
