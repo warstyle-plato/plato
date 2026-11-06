@@ -48,13 +48,15 @@ def fixture_browser(browser, outcome):
                 return route.fulfill(status=403, content_type="application/json",
                                      body=json.dumps({"detail": PRIVATE_MARKER}))
             data = {"projects": [{"project": "Visual fixture"}], "sales_projects": []}
-        elif path == "/monitor/report":
+        elif path == "/monitor/report/build":
             if outcome == "connection":
                 return route.abort("failed")
             if outcome == "http-error":
                 return route.fulfill(status=500, content_type="application/json",
                                      body=json.dumps({"detail": PRIVATE_MARKER}))
-            data = {"html": html} if outcome == "success" else {"html": ""}
+            data = {"pending": True, "ticket": "0" * 32}
+        elif path == "/monitor/report/result":
+            data = {"pending": False, "html": html} if outcome == "success" else {"html": ""}
         return route.fulfill(status=200, content_type="application/json", body=json.dumps(data))
 
     class RoutedBrowser:
@@ -94,7 +96,7 @@ def test_a_rendered_report_passes(report_browser, tmp_path):
 def test_an_empty_success_response_does_not_pass_as_a_report(report_browser, tmp_path):
     found = visual.check_team_report(fixture_browser(report_browser, "empty"),
                                      "https://report-fixture.test", "fixture-key", tmp_path,
-                                     wait_timeout_ms=1_000)
+                                     wait_timeout_ms=5_000)
     failures = [f for f in found if f.severity == visual.BREAK]
     assert len(failures) == 2
-    assert all(f.where == "#reportBox" for f in failures)
+    assert all(f.where == "#reportMsg" for f in failures)

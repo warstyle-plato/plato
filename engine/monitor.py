@@ -1012,10 +1012,82 @@ def monitor_merge(req: MonitorMergeRequest) -> dict[str, Any]:
 def monitor_report(req: MonitorReportRequest) -> dict[str, Any]:
     """Сводка руководству: числа, текст для бота и разметка документа."""
     _require_team_access(req.session, req.key, "Сводка руководству", write=False)
+    return _monitor_report_body(req)
+
+
+def _monitor_report_body(req: MonitorReportRequest, *, hide_legal: bool = False) -> dict[str, Any]:
     import developaid_management_report as management_report
     report = _monitor_report(req)
+    if hide_legal:
+        # Freeze the admission profile: a demo session expiring during the
+        # long calculation must never turn its result into an admin document.
+        report["legal"] = {"state": "closed", "reason": DEMO_DISPUTES_CLOSED}
     return {"report": report, "text": management_report.render_text(report),
             "html": management_report.render_html(report)}
+
+
+class MonitorReportBuildRequest(MonitorReportRequest):
+    ticket: str = ""
+
+
+class MonitorReportResultRequest(BaseModel):
+    ticket: str
+    session: str = ""
+    key: str = ""
+
+
+def _monitor_report_job(req, *, start: bool) -> Response:
+    import datetime as _dt
+    from fastapi.encoders import jsonable_encoder
+    import developaid_management_report as management_report
+    import developaid_management_report_jobs as jobs
+
+    private = {"Cache-Control": "private, no-store"}
+    try:
+        # The ticket is not permission. Recheck the current administrator key
+        # before any lookup, including after key rotation or on another worker.
+        _require_team_access(req.session, req.key, "Сводка руководству", write=False)
+        profile = "demo" if demo_session_chat(req.session) else "admin"
+        owner = jobs.owner_binding(_env_str("DEVELOPAID_ADMIN_KEY", "").strip(), req.session, profile)
+        store = jobs.Store(developaid_monitor._SNAPSHOT_DIR / ".report_jobs")
+        if start:
+            end = (req.end or "").strip() or _dt.date.today().isoformat()
+            try:
+                management_report.period_bounds(req.kind, end)
+            except ValueError:
+                raise HTTPException(400, "Проверьте период и дату сводки.") from None
+            payload = {"project": req.project, "kind": req.kind, "end": end,
+                       "sales_project": req.sales_project}
+            # Only canonical calculation inputs and a fixed policy are captured;
+            # raw authentication credentials never enter the worker or manifest.
+            def build():
+                return jsonable_encoder(_monitor_report_body(
+                    MonitorReportRequest(**payload), hide_legal=profile == "demo"))
+            result = store.start(owner, profile, payload, build, req.ticket)
+        else:
+            result = store.poll(req.ticket, owner, profile)
+        return JSONResponse(status_code=202 if result["pending"] else 200,
+                            content=result, headers=private)
+    except HTTPException as exc:
+        exc.headers = {**(exc.headers or {}), **private}
+        raise
+    except jobs.JobProblem as exc:
+        raise HTTPException(exc.status, exc.detail, headers=private) from None
+    except (OSError, ValueError):
+        raise HTTPException(503, "Сборка сводки сейчас недоступна. Повторите запрос.",
+                            headers=private) from None
+
+
+@app.post("/monitor/report/build", include_in_schema=False)
+def monitor_report_build(req: MonitorReportBuildRequest) -> Response:
+    """Start/resume a private report without holding a long HTTP connection."""
+    return _monitor_report_job(req, start=True)
+
+
+@app.post("/monitor/report/result", include_in_schema=False)
+def monitor_report_result(req: MonitorReportResultRequest) -> Response:
+    """Short authenticated polling; no recalculation and no credentials in URLs."""
+    return _monitor_report_job(req, start=False)
 
 
 class MonitorCreditRequest(BaseModel):
