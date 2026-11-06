@@ -105,11 +105,15 @@ def test_every_section_of_the_report_draws_without_killing_the_page(tmp_path) ->
     import browser_launch
 
     body = cabinet_page("sales").replace("__DEVELOPAID_VERSION__", "test")
-    file = tmp_path / "cabinet.html"
-    file.write_text(body, encoding="utf-8")
+    from browser import serve
+    from starlette.applications import Starlette
+    from starlette.responses import HTMLResponse
+    from starlette.routing import Route
 
+    # Render the real page over HTTP, as in production; file:// is not a product route.
+    app = Starlette(routes=[Route("/", lambda request: HTMLResponse(body))])
     errors: list[str] = []
-    with pw.sync_playwright() as play:
+    with serve(app, 18873) as base, pw.sync_playwright() as play:
         try:
             browser = browser_launch.launch(play)
         except Exception as exc:  # образ без Chromium — не поломка кабинета
@@ -117,7 +121,9 @@ def test_every_section_of_the_report_draws_without_killing_the_page(tmp_path) ->
         try:
             tab = browser.new_page()
             tab.on("pageerror", lambda e: errors.append(str(e)))
-            tab.goto(file.as_uri())
+            tab.route("**/*", lambda route: route.continue_()
+                      if route.request.url == base + "/" else route.abort())
+            tab.goto(base + "/")
             seen = tab.evaluate(
                 "(d)=>{showSales(d); const box=document.querySelector('#sales');"
                 " return {len:box?box.innerHTML.length:0,"
