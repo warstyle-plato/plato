@@ -121,7 +121,9 @@ def test_a_photo_from_the_site_chat_lands_on_the_core_and_the_chat_hears_nothing
     monkeypatch.setattr(core, "_site_photo_async", core._site_photo_job)
     core.app.state.telegram_group_seen = {}
     chat = {"id": -100500, "type": "supergroup", "title": "Гродненская"}
-    core._site_chat_bind(chat["id"], PROJECT)
+    monkeypatch.setenv("DEVELOPAID_ADMIN_KEY", "synthetic-test-owner-key")
+    core.monitor_site_chat_authorize(core.SiteChatAccessRequest(
+        chat_id=chat["id"], project=PROJECT, key="synthetic-test-owner-key"))
     message = {"chat": chat, "from": {"id": 7, "first_name": "Иван", "last_name": "Прораб"},
                "date": 1760605200, "message_id": 31, "caption": "Монолит 5 эт.",
                "photo": [{"file_id": "small", "file_unique_id": "AQADs", "width": 90, "height": 67},

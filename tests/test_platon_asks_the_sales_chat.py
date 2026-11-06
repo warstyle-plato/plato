@@ -177,7 +177,7 @@ def test_the_bot_posts_the_questions_into_the_sales_chat_once(monkeypatch, tmp_p
     sales_store.save(where, "Кутузов", {"contracting": {"rows": ROWS[:1]}}, "контрактация.xlsx")
     monitor._project_dir("Кутузов Сити")
     report.link_sales("Кутузов Сити", "Кутузов", "тест")
-    bot.send("/site Кутузов Сити")
+    bot.authorize("Кутузов Сити")
     now = int(time.time())
     today = datetime.date.today()
     # Договор подписан три недели назад и без денег; выгрузка — сегодняшняя.
@@ -210,7 +210,7 @@ def test_an_unreadable_record_of_asked_questions_asks_nothing(monkeypatch, tmp_p
     sales_store.save(where, "Кутузов", {"contracting": {"rows": rows}}, "контрактация.xlsx")
     monitor._project_dir("Кутузов Сити")
     report.link_sales("Кутузов Сити", "Кутузов", "тест")
-    bot.send("/site Кутузов Сити")
+    bot.authorize("Кутузов Сити")
     place = where / "cabinet" / "кутузов.asked.json"
     place.write_text("{битый", encoding="utf-8")
     bot.send(_report(today.strftime("%d.%m.%Y"), []), date=int(time.time()))

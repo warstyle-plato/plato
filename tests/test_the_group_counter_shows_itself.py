@@ -43,6 +43,7 @@ def bot(tmp_path, monkeypatch):
     monkeypatch.setattr(core, "_projects_remote_url", lambda path: "")
     monkeypatch.setattr(core, "usage_admin_ids", lambda: {OWNER})
     monkeypatch.setattr(core, "_telegram_token", lambda: "t")
+    monkeypatch.setenv("DEVELOPAID_ADMIN_KEY", "synthetic-test-owner-key")
     # Счёт живёт в памяти воркера и переживает тесты: без чистки соседний
     # прогон видит чужие группы, и «не видел ни одного» не воспроизводится.
     monkeypatch.setattr(core.app.state, "telegram_group_seen", {}, raising=False)
@@ -70,9 +71,7 @@ def private(text: str) -> dict:
 
 
 def subscribe(chat: int, project: str) -> None:
-    """В список подписки на сводку — так, как это делает ссылка-приглашение.
-    Сводку и данные стройки в Telegram видит только подписчик (решение
-    владельца 02.11.2026)."""
+    """Mailing membership is intentionally insufficient for closed status."""
     import developaid_report_mailing as mailing
 
     mailing.subscribe(mailing.invite(project, "владелец")["start"], chat, "")
@@ -86,38 +85,41 @@ def status_of(bot) -> str:
     return answers[-1]
 
 
-def test_status_says_nothing_seen_when_nothing_was_seen(bot) -> None:
-    """Пустой счёт — это ответ, а не прочерк: privacy mode виден только так."""
+def authorize_group(bot):
+    bot.core.monitor_site_chat_authorize(bot.core.SiteChatAccessRequest(
+        chat_id=GROUP, project="Кутузов Сити", title="Стройка", key="synthetic-test-owner-key"))
+
+
+def test_a_subscription_alone_does_not_disclose_the_group_counter(bot) -> None:
     subscribe(OWNER, "Кутузов Сити")
     answer = status_of(bot)
-    assert "Группы:" in answer
-    assert "ни одного" in answer
+    assert "Группы:" not in answer
+    authorize_group(bot)
+    bot._handle_update(group("доброе утро"))
+    answer = status_of(bot)
+    assert "Стройка" not in answer and "Кутузов Сити" not in answer
 
 
-def test_status_carries_what_the_group_gave(bot) -> None:
-    """Сообщение из группы дошло — значит в `/status` есть её имя и счёт."""
-    subscribe(OWNER, "Кутузов Сити")
+def test_authorized_group_scope_carries_what_the_group_gave(bot) -> None:
+    authorize_group(bot)
+    bot._handle_update(group("доброе утро"))
+    answer = bot.core._telegram_bindings_line(GROUP)
+    assert "Стройка" in answer and "Кутузов Сити" in answer
+
+
+def test_without_a_grant_status_names_no_group(bot) -> None:
     bot._handle_update(group("/site Кутузов Сити"))
     bot._handle_update(group("доброе утро"))
     answer = status_of(bot)
-    assert "Стройка" in answer, answer
+    assert "Стройка" not in answer and "Кутузов Сити" not in answer
+    assert "Группы" not in answer and "Привязки чатов" not in answer
 
 
-def test_without_a_subscription_status_names_no_group(bot) -> None:
-    """Админ по chat_id, но не в списке подписки, — ни групп, ни проектов."""
-    bot._handle_update(group("/site Кутузов Сити"))
-    bot._handle_update(group("доброе утро"))
-    answer = status_of(bot)
-    assert "Стройка" not in answer and "Кутузов Сити" not in answer, answer
-    assert "Группы" not in answer and "Привязки чатов" not in answer, answer
-
-
-def test_the_binding_outcome_reaches_status(bot, monkeypatch) -> None:
-    """Исход разбора важнее счёта: по нему и видно, куда легла сводка."""
+def test_site_alone_does_not_grant_the_counter_even_with_subscription(bot) -> None:
     subscribe(OWNER, "Кутузов Сити")
     bot._handle_update(group("/site Кутузов Сити"))
-    answer = status_of(bot)
-    assert "Кутузов Сити" in answer, answer
+    assert "Кутузов Сити" not in status_of(bot)
+    assert bot.core._telegram_bindings_line(GROUP) == ""
 
 
 def test_the_line_is_read_from_the_engine(bot) -> None:
@@ -128,7 +130,7 @@ def test_the_line_is_read_from_the_engine(bot) -> None:
     """
     source = (ROOT / "main.py").read_text(encoding="utf-8")
     # Счётчик групп печатается внутри строки привязок движка — за той же
-    # проверкой подписки, что и привязки.
+    # проверкой current owner grant, что и привязки.
     assert "core._telegram_bindings_line(user_id)" in source
     assert "_telegram_group_seen_line" not in source
     assert "Группы:" not in source, "второй копии строки быть не должно"

@@ -2291,7 +2291,7 @@ def _site_chat_store(chat_id: int, text: str, taken_at: str,
 
 def _sales_chat_store(chat: dict[str, Any], message: dict[str, Any], text: str,
                       taken_at: str, *, action: str = "report", batch_id: str = "",
-                      sent_message_id: int = 0) -> dict[str, Any]:
+                      sent_message_id: int = 0, project: str = "") -> dict[str, Any]:
     """Отчёт отдела продаж — ядру, той же дорогой, что сводка стройки."""
     chat_id = int((chat or {}).get("id") or 0)
     sender = message.get("from") or {}
@@ -2307,6 +2307,7 @@ def _sales_chat_store(chat: dict[str, Any], message: dict[str, Any], text: str,
         "text": str(text or ""),
         "taken_at": str(taken_at or ""),
         "action": action,
+        "project": project,
         "batch_id": batch_id,
         "message_id": int(sent_message_id or message.get("message_id") or 0),
         "author_id": int(sender.get("id") or 0),
@@ -2380,9 +2381,9 @@ def _site_photo_job(chat: dict[str, Any], message: dict[str, Any]) -> None:
         return
     if answer.get("bound"):
         _telegram_group_seen(chat, "фото сохранено для сводки проекта «"
-                             + str(answer["bound"]) + "»")
+                             + str(answer["bound"]) + "»", project=str(answer["bound"]))
     else:
-        _telegram_group_seen(chat, "фото не сохранено: чат не привязан — нужен /site")
+        _telegram_group_seen(chat, "фото не сохранено: группа не авторизована — доступ разрешает владелец в кабинете")
 
 
 def _site_photo_async(chat: dict[str, Any], message: dict[str, Any]) -> None:
@@ -2390,7 +2391,7 @@ def _site_photo_async(chat: dict[str, Any], message: dict[str, Any]) -> None:
                      name="site-photo", daemon=True).start()
 
 
-def _telegram_group_seen(chat: dict[str, Any], outcome: str = "") -> None:
+def _telegram_group_seen(chat: dict[str, Any], outcome: str = "", *, project: str = "") -> None:
     """Счётчик увиденного в группах — иначе молчание нечем объяснить.
 
     «Privacy mode не сняли», «бота не переподключили» и «мост не дописан»
@@ -2411,17 +2412,14 @@ def _telegram_group_seen(chat: dict[str, Any], outcome: str = "") -> None:
     row["last"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
     if outcome:
         row["outcome"] = str(outcome)
+        row["project"] = str(project or "")
 
 
 def _telegram_bindings_line(user_id: int) -> str:
-    """Привязки чатов и счётчик групп для /status — только подписчику сводки, и
-    только по его проектам; остальным пусто.
+    """Closed group/project metadata only under a current owner-issued grant.
 
-    Право — Telegram ID того, кто спрашивает (не ID группы), в списке подписки
-    на сводку (решение владельца 02.11.2026); решает ядро, где лежит список.
-    Счётчик групп живёт в памяти воркера с его запуска, и чат стройки,
-    молчавший с выкатки, в нём не виден (владелец, 24.10.2026: «про стройку и
-    монитор ни слова»). Привязки и отчёты лежат на ядре — оттуда и ответ.
+    The core verifies the group scope and key generation. A mailing subscription
+    or Telegram login alone does not authorize this status data.
     """
     who = int(user_id or 0)
     if not who:
@@ -2429,21 +2427,21 @@ def _telegram_bindings_line(user_id: int) -> str:
     try:
         payload = {"chat_id": who, "sign": _web_login_sign("monitor-chats", who)}
     except HTTPException:
-        return ""  # подписать вопрос ядру нечем — права подписчика не проверить
+        return ""  # no transport signature: the core cannot verify this request
     try:
         url = _core_api_url("/internal/monitor/site-chats")
         got = (_core_post(url, payload, 15.0) if url
                else internal_monitor_site_chats(SiteChatsRequest(**payload)))
     except Exception as exc:
         return "\nПривязки чатов: не получил с сервера — " + html.escape(str(exc)[:120]) + "."
-    if not got.get("subscriber"):
+    if got.get("authorized") is not True or got.get("chat_id") != who:
         return ""
     projects = got.get("projects") or []
-    titles = {title for row in projects for title in row.get("chats") or [] if title}
-    seen = _telegram_group_seen_line(titles)
+    chat_projects = {int(chat): str(row.get("project") or "")
+                     for row in projects for chat in row.get("chat_ids") or []}
+    seen = _telegram_group_seen_line(chat_projects=chat_projects)
     if not projects:
-        return ("\nПривязки чатов: ни один чат ваших проектов не привязан — в чате напишите "
-                "/site и имя проекта." + seen)
+        return ("\nПривязки чатов: доступ группы к проекту разрешает владелец в закрытом кабинете." + seen)
     lines = []
     for row in projects:
         chats = ", ".join(f"«{html.escape(title)}»" if title else "чат без названия"
@@ -2467,7 +2465,7 @@ def _telegram_day(value: str) -> str:
         return str(value)
 
 
-def _telegram_group_seen_line(titles: set[str] | None = None) -> str:
+def _telegram_group_seen_line(*, chat_projects: dict[int, str] | None = None) -> str:
     """Строка о группах для /status: что бот оттуда увидел и чем это кончилось.
 
     Пустой счётчик — это ответ, а не прочерк: privacy mode Telegram по
@@ -2483,12 +2481,19 @@ def _telegram_group_seen_line(titles: set[str] | None = None) -> str:
         return ("\nГруппы: сообщений не видел ни одного (счёт с запуска этого воркера). "
                 "Если ждёте сводку с площадки — у бота включён privacy mode либо его "
                 "не переподключили к группе.")
-    rows = sorted(seen.values(), key=lambda row: int(row.get("count") or 0), reverse=True)
-    if titles is not None:
-        # Подписчику — только группы его проектов: чужие названия — данные владельца.
-        rows = [row for row in rows if row.get("title") in titles]
-        if not rows:
-            return ""
+    scoped = []
+    for key, row in seen.items():
+        if chat_projects is not None:
+            if int(key) not in chat_projects:
+                continue
+            # An owner may deliberately move this group to a different scope.
+            # Do not expose its cached outcomes from the previously granted project.
+            if row.get("project") != chat_projects[int(key)]:
+                row = dict(row, outcome="")
+        scoped.append(row)
+    rows = sorted(scoped, key=lambda row: int(row.get("count") or 0), reverse=True)
+    if not rows:
+        return ""
     parts = []
     for row in rows[:5]:
         line = f"{row.get('title') or 'без имени'} — {int(row.get('count') or 0)}"
@@ -2549,30 +2554,12 @@ def _telegram_group_message(chat: dict[str, Any], message: dict[str, Any]) -> No
     command = head.split("@", 1)[0]
 
     if command == "/site":
-        # Имя проекта берём из команды, а нет его — из названия группы: не
-        # заставлять печатать то, что Telegram уже прислал.
-        wanted = text.split(maxsplit=1)[1].strip() if " " in text else ""
-        wanted = wanted or str((chat or {}).get("title") or "").strip()
-        if not wanted:
-            _telegram_group_seen(chat, "имя проекта не задано")
-            _telegram_group_reply(message, "Название проекта не задано: "
-                                           "<code>/site Имя объекта</code>.")
-            return
-        try:
-            answer = _site_chat_store(chat_id, "", "", project=wanted,
-                                      title=str((chat or {}).get("title") or ""))
-        except Exception as exc:
-            _telegram_group_seen(chat, "привязка не удалась: " + str(exc)[:80])
-            _telegram_group_reply(message, "Привязка не удалась: " + html.escape(str(exc)))
-            return
-        bound = str(answer.get("bound") or wanted)
-        _telegram_group_seen(chat, "привязан к проекту «" + bound + "»")
+        _telegram_group_seen(chat, "чат не привязан автоматически: нужна авторизация владельца в кабинете")
         _telegram_group_reply(
             message,
-            "<b>Чат «" + html.escape(str((chat or {}).get("title") or "")) +
-            "» привязан к проекту «" + html.escape(bound) + "».</b>\n"
-            "Ежедневные отчёты — сводку с численностью и отчёт отдела продаж — "
-            "читаю оттуда сам и в чат ничего не пишу.")
+            "Доступ группы к проекту разрешает владелец в закрытом кабинете Монитора.\n"
+            "Telegram ID этой группы: <code>" + str(chat_id) + "</code>.\n"
+            "Укажите там проект и этот ID. Ключ администратора вводится только в кабинете.")
         return
 
     parsed = None
@@ -2621,14 +2608,15 @@ def _telegram_group_message(chat: dict[str, Any], message: dict[str, Any]) -> No
                 _telegram_group_seen(chat, "отчёт продаж не сохранён: " + str(exc)[:80])
                 return
             if not answer.get("bound"):
-                _telegram_group_seen(chat, "отчёт продаж прочитан, но чат не привязан — нужен /site")
+                _telegram_group_seen(chat, "отчёт продаж прочитан, но группа не авторизована — доступ разрешает владелец в кабинете")
             elif not answer.get("sales_project"):
                 _telegram_group_seen(chat, "отчёт продаж прочитан, но проект «"
                                      + str(answer.get("bound")) + "» не связан с отчётом "
                                      "о продажах — свяжите на странице сводки")
             else:
                 _telegram_group_seen(chat, "отчёт продаж" + (" за " + taken_at if taken_at else "")
-                                     + " → «" + str(answer.get("sales_project")) + "»")
+                                     + " → «" + str(answer.get("sales_project")) + "»",
+                                     project=str(answer.get("bound") or ""))
                 # Вопросы Платона по сверке с выгрузкой договоров — одним
                 # коротким сообщением в тот же чат (их собирает ядро).
                 if answer.get("ask_error"):
@@ -2636,6 +2624,13 @@ def _telegram_group_message(chat: dict[str, Any], message: dict[str, Any]) -> No
                                          + str(answer["ask_error"])[:80])
                 if answer.get("ask"):
                     try:
+                        # Recheck current core authorization immediately before disclosure.
+                        expected_project = str(answer.get("bound") or "")
+                        checked = _sales_chat_store(chat, message, "", taken_at, action="send",
+                                                    project=expected_project)
+                        if (checked.get("authorized") is not True or not expected_project
+                                or checked.get("bound") != expected_project):
+                            raise HTTPException(403, "Ядро не подтвердило доступ группы к проекту.")
                         sent = _telegram_send_message(int(chat.get("id") or 0), str(answer["ask"]))
                     except Exception as exc:
                         _telegram_group_seen(chat, "вопрос Платона не отправлен: "
@@ -2646,7 +2641,8 @@ def _telegram_group_message(chat: dict[str, Any], message: dict[str, Any]) -> No
                         try:
                             delivery = _sales_chat_store(
                                 chat, message, "", taken_at, action="delivered",
-                                batch_id=str(answer["ask_id"]), sent_message_id=sent_id)
+                                batch_id=str(answer["ask_id"]), sent_message_id=sent_id,
+                                project=str(answer.get("bound") or ""))
                             if not delivery.get("delivered"):
                                 _telegram_group_seen(chat, "вопрос отправлен, связь с сообщением не сохранена")
                         except Exception as exc:
@@ -2667,7 +2663,7 @@ def _telegram_group_message(chat: dict[str, Any], message: dict[str, Any]) -> No
         # Сводка есть, а проекта нет — класть её некуда. Это наш пробел, и он
         # обязан быть виден: молча выброшенный отчёт читается как «сводки не
         # было». В чат при этом не пишем — там о нашей привязке не знают.
-        _telegram_group_seen(chat, "сводка прочитана, но чат не привязан — нужен /site")
+        _telegram_group_seen(chat, "сводка прочитана, но группа не авторизована — доступ разрешает владелец в кабинете")
         return
     _telegram_group_seen(
         chat,
@@ -2675,7 +2671,7 @@ def _telegram_group_message(chat: dict[str, Any], message: dict[str, Any]) -> No
         + str(len(parsed.get("contractors") or []))
         + ", ИТР " + str(parsed.get("itr_total") or 0)
         + ", рабочих " + str(parsed.get("workers_total") or 0)
-        + " → «" + str(answer.get("bound")) + "»")
+        + " → «" + str(answer.get("bound")) + "»", project=str(answer.get("bound") or ""))
 
 
 def _telegram_is_group(chat: dict[str, Any] | None) -> bool:
