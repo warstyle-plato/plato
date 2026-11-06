@@ -59,12 +59,12 @@ def test_the_schedule_in_the_finance_model_needs_no_upload():
     got = fs.execution(PROJECT, END)
     assert got["state"] == "ok" and got["versions"] == ["2026-10-01"]
     assert got["sources"]["2026-10-01"] == {"where": "финмодель (финансовая база Монитора)",
-                                            "file": "finance.xlsx"}
+                                            "file": "finance.xlsx", "data_date": None}
     september = next(m for m in got["months"] if m["month"] == "2026-09")
     assert september["plan"] == pytest.approx(231.85 * fx.M)
     words = report._schedule_sources(got)
     assert words == ("График взят из: финмодель (финансовая база Монитора) (файл "
-                     "finance.xlsx), версия от 01.10.2026.")
+                     "finance.xlsx), дата данных не указана.")
 
 
 def test_a_book_without_the_sheet_is_not_a_schedule():

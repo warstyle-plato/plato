@@ -2290,12 +2290,15 @@ def _site_chat_store(chat_id: int, text: str, taken_at: str,
 
 
 def _sales_chat_store(chat: dict[str, Any], message: dict[str, Any], text: str,
-                      taken_at: str) -> dict[str, Any]:
+                      taken_at: str, *, action: str = "report", batch_id: str = "",
+                      sent_message_id: int = 0) -> dict[str, Any]:
     """Отчёт отдела продаж — ядру, той же дорогой, что сводка стройки."""
     chat_id = int((chat or {}).get("id") or 0)
     sender = message.get("from") or {}
     author = " ".join(str(sender.get(k) or "").strip()
                       for k in ("first_name", "last_name")).strip()
+    original = message.get("reply_to_message") or {}
+    original_sender = original.get("from") or {}
     payload = {
         "chat_id": chat_id,
         "sign": _web_login_sign("monitor-sales", chat_id),
@@ -2303,6 +2306,15 @@ def _sales_chat_store(chat: dict[str, Any], message: dict[str, Any], text: str,
         "author": author,
         "text": str(text or ""),
         "taken_at": str(taken_at or ""),
+        "action": action,
+        "batch_id": batch_id,
+        "message_id": int(sent_message_id or message.get("message_id") or 0),
+        "author_id": int(sender.get("id") or 0),
+        "telegram_date": int(message.get("date") or 0),
+        "reply_to_id": int(original.get("message_id") or 0),
+        "reply_text": str(original.get("text") or ""),
+        "reply_from_id": int(original_sender.get("id") or 0),
+        "reply_is_bot": bool(original_sender.get("is_bot")),
     }
     url = _core_api_url("/internal/monitor/sales-chat")
     if url:
@@ -2576,6 +2588,27 @@ def _telegram_group_message(chat: dict[str, Any], message: dict[str, Any]) -> No
             int(stamp), _TELEGRAM_MOSCOW).date().isoformat()
     except (TypeError, ValueError, OSError):
         taken_at = ""
+    # Ответ на вопрос Платона — отдельный маршрут, до распознавания отчёта.
+    # Не читаем посторонние ответы/ботов и не отвечаем в группу квитанцией.
+    from market_search import sales_dialogue
+
+    original = message.get("reply_to_message") or {}
+    original_sender = original.get("from") or {}
+    bot_id = str(_telegram_token() or "").partition(":")[0]
+    if (not (message.get("from") or {}).get("is_bot") and bot_id.isdigit()
+            and str(original_sender.get("id") or "") == bot_id
+            and original_sender.get("is_bot")
+            and sales_dialogue.is_question(str(original.get("text") or ""))):
+        try:
+            result = _sales_chat_store(chat, message, text, taken_at, action="reply")
+            outcome = ("ответ Платону сохранён" if result.get("reply_saved")
+                       else "ответ Платону не сохранён: сообщение вопроса не найдено")
+            if result.get("reply_saved") and result.get("reply_unattributed"):
+                outcome += " без привязки к проекту: исторический вопрос"
+            _telegram_group_seen(chat, outcome)
+        except Exception as exc:
+            _telegram_group_seen(chat, "ответ Платону не сохранён: " + str(exc)[:80])
+        return
     if not parsed or not parsed.get("contractors"):
         from market_search import salesroom
 
@@ -2603,10 +2636,22 @@ def _telegram_group_message(chat: dict[str, Any], message: dict[str, Any]) -> No
                                          + str(answer["ask_error"])[:80])
                 if answer.get("ask"):
                     try:
-                        _telegram_send_message(int(chat.get("id") or 0), str(answer["ask"]))
+                        sent = _telegram_send_message(int(chat.get("id") or 0), str(answer["ask"]))
                     except Exception as exc:
                         _telegram_group_seen(chat, "вопрос Платона не отправлен: "
                                              + str(exc)[:80])
+                        return
+                    sent_id = int((sent or {}).get("message_id") or 0)
+                    if answer.get("ask_id") and sent_id:
+                        try:
+                            delivery = _sales_chat_store(
+                                chat, message, "", taken_at, action="delivered",
+                                batch_id=str(answer["ask_id"]), sent_message_id=sent_id)
+                            if not delivery.get("delivered"):
+                                _telegram_group_seen(chat, "вопрос отправлен, связь с сообщением не сохранена")
+                        except Exception as exc:
+                            _telegram_group_seen(chat, "вопрос отправлен, связь с сообщением не сохранена: "
+                                                 + str(exc)[:80])
             return
         # Не отчёт — просто считаем. Рабочая переписка нас не касается.
         _telegram_group_seen(chat)
