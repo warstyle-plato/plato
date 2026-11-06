@@ -201,7 +201,7 @@ def test_the_bot_receives_the_chessboard_and_does_not_repeat_the_question(monkey
     sales_store.save(where, "Проба", {"chessboard": snapshot(as_of=today.isoformat())}, "board.xlsx")
     monitor._project_dir("Тестовый проект")
     report.link_sales("Тестовый проект", "Проба", "тест")
-    bot.send("/site Тестовый проект")
+    bot.authorize("Тестовый проект")
     text = (f"Отчёт за {today:%d.%m.%Y}\nВстречи за день - 1\nТекущих броней: 1\n"
             "- квартира №4, 50 кв.м.")
     import time
