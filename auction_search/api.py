@@ -5145,6 +5145,12 @@ def install(app: FastAPI) -> None:
                 detail="Эта площадка ещё не считалась. Запустите прогон — или дождитесь "
                        "еженедельного: он идёт в ночь с субботы на воскресенье.",
             )
+        cached_plato = stored.get("plato")
+        validate_reply = getattr(core, "_agent_public_reply_valid", None)
+        if cached_plato and (not callable(validate_reply) or not validate_reply(slug, cached_plato)):
+            # Legacy replies have no source/ACL proof and may contain internal
+            # knowledge from before the private-source boundary was enforced.
+            stored = {key: value for key, value in stored.items() if key != "plato"}
         return stored
 
     @app.get("/auctions/krt/{slug}/report")
@@ -5297,7 +5303,11 @@ def install(app: FastAPI) -> None:
         trace_id = str(request.query_params.get("trace_id") or "").strip()
 
         async def _remember(text: str, trace: str = "") -> dict[str, Any]:
-            payload = {"text": text, "asked_at": int(time.time())}
+            stamp = getattr(core, "_agent_public_reply_stamp", None)
+            if not callable(stamp):
+                raise HTTPException(503, "Не удалось проверить источник ответа Платона.")
+            proof = await run_in_threadpool(stamp, trace, request, slug, text)
+            payload = {"text": text, "asked_at": int(time.time()), **proof}
             stored["plato"] = payload
             rest = {key: value for key, value in stored.items()
                     if key not in {"schema_version", "slug", "computed_at"}}
@@ -5315,13 +5325,13 @@ def install(app: FastAPI) -> None:
                     status_code=503,
                     detail="Платон недоступен: модуль рынка запущен без движка DevelopAid",
                 )
-            got = await run_in_threadpool(result, trace_id) or {}
+            got = await run_in_threadpool(result, trace_id, request) or {}
             if got.get("status") == "error":
                 raise HTTPException(
                     status_code=502,
                     detail=str(got.get("detail") or got.get("error")
                                or "Платон не справился"))
-            text = str(got.get("reply") or got.get("text") or "").strip()
+            text = str(got.get("reply") or got.get("answer") or got.get("text") or "").strip()
             if not text:
                 return {"slug": slug, "pending": True, "trace_id": trace_id}
             return await _remember(text, trace_id)
@@ -5349,7 +5359,7 @@ def install(app: FastAPI) -> None:
                 status_code=502, detail=f"Платон не ответил: {type(exc).__name__}: {exc}"
             ) from exc
         answer = answer or {}
-        text = str(answer.get("reply") or answer.get("text") or "").strip()
+        text = str(answer.get("reply") or answer.get("answer") or answer.get("text") or "").strip()
         if not text:
             # Работа принята, а не пуста: номер запуска едет в окно, и оно
             # забирает ответ вторым запросом. Билет один на весь вызов —

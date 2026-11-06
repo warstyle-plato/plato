@@ -1458,3 +1458,25 @@ def _v4_object_parking_in_checks(xml: str, missing: list[str]) -> str:
         if not done:
             missing.append(f"ПРОВЕРКИ: C{row} ({label}, CAPEX) не записана")
     return xml
+
+
+def _v4_outside_above_gns_formula(canonical_rows: dict[str, Any], phase_index: int) -> str:
+    """Наземная ГНС вне МКД: применённые соцстроки и живые площади ОСЗ.
+
+    Single-phase fallback распределяет только MKD/social и не содержит ОСЗ.
+    Объекты берутся из их единственного формульного реестра книги, с проверкой
+    включения и фактической очереди. Поэтому их площадь не теряется в одной
+    очереди, не повторяется в остальных и не замораживается после правки ГНС.
+    """
+    residual = {key: row for key, row in canonical_rows.items()
+                if key not in MKD_PRODUCTS and key not in STANDALONE_PRODUCTS}
+    residual_gns = project_above_gns(residual)
+    queue = _V4_CF_QUEUE_ENABLED_ROW + phase_index
+    terms = [format(residual_gns, ".15g")]
+    for layout in _v4_layouts():
+        head = layout.object_head
+        active = (f"AND('Вводные'!$B${queue}=\"Да\","
+                  f"'ОБЪЕКТЫ'!$B${head + 1}=\"Да\","
+                  f"'ОБЪЕКТЫ'!$B${head + 2}={phase_index + 1})")
+        terms.append(f"IF({active},'ОБЪЕКТЫ'!$B${head + 6},0)")
+    return "(" + "+".join(terms) + ")"

@@ -5,8 +5,9 @@
 `docs/glossary.md` — отдельный источник: он определяет терминологию, но не
 подменяет нормативный источник чисел и правил.
 
-Наружу внутренние записи выходят обезличенными: номера договоров, кадастровые
-номера и имена собственных проектов владельца скрываются в точке выдачи.
+Публичный поиск читает только нормативы и словарь. Внутренние правила и
+бэклог читаются лишь после серверной проверки действующего ключа администратора.
+Обезличивание — дополнительное оформление, а не проверка права доступа.
 """
 
 from __future__ import annotations
@@ -86,9 +87,9 @@ def _title_of(chunk: str) -> str:
     return " ".join(chunk.split()[:9])
 
 
-def _patterns(source: str | None = None) -> list[str]:
+def _patterns(source: str | None = None, *, allow_private: bool = False) -> list[str]:
     found = [pattern for key, patterns in SOURCES.items()
-             if not source or source == key for pattern in patterns]
+             if allow_private and (not source or source == key) for pattern in patterns]
     if not source or source == "normative":
         found.append(str(NORMATIVE_DIR.relative_to(_ROOT) / "*.md"))
     if not source or source == "glossary":
@@ -96,7 +97,7 @@ def _patterns(source: str | None = None) -> list[str]:
     return found
 
 
-def entries(source: str | None = None) -> list[dict[str, str]]:
+def entries(source: str | None = None, *, allow_private: bool = False) -> list[dict[str, str]]:
     """Записи правил/бэклога/нормативов.
 
     Словарь намеренно не примешивается к `entries()` без указания источника:
@@ -107,7 +108,7 @@ def entries(source: str | None = None) -> list[dict[str, str]]:
     found: list[dict[str, str]] = []
     paths: list[tuple[str, Path]] = [
         (key, path)
-        for key, patterns in SOURCES.items() if not source or source == key
+        for key, patterns in SOURCES.items() if allow_private and (not source or source == key)
         for pattern in patterns for path in sorted(_ROOT.glob(pattern))
     ]
     if not source or source == "normative":
@@ -203,28 +204,32 @@ def _file_entries(key: str, path: Path) -> list[dict[str, str]]:
     return found
 
 
-def _pool(source: str | None) -> list[dict[str, str]]:
+def _pool(source: str | None, *, allow_private: bool = False) -> list[dict[str, str]]:
     if source == "glossary":
         return entries("glossary")
-    pool = entries(source)
+    pool = entries(source, allow_private=allow_private)
     if source is None:
         pool += entries("glossary")
     return pool
 
 
-def search(query: str, limit: int = 4, source: str | None = None) -> dict[str, Any]:
+def search(query: str, limit: int = 4, source: str | None = None, *, allow_private: bool = False) -> dict[str, Any]:
     """Записи по запросу: словарь входит в общий поиск и может быть запрошен отдельно."""
+    if source in SOURCES and not allow_private:
+        return {"available": False, "reason": "Внутренние записи доступны только по действующему ключу администратора."}
+    if source not in (None, "rules", "backlog", "normative", "glossary"):
+        return {"available": False, "reason": "Неизвестный источник."}
     words = {w.lower() for w in _WORD.findall(str(query or ""))}
     if not words:
         return {"available": False, "reason": "Пустой запрос — искать нечего."}
     meaningful = words - _QUESTION_WORDS
     words = {_stem(word) for word in (meaningful or words)}
-    pool = _pool(source)
+    pool = _pool(source, allow_private=allow_private)
     if not pool:
         return {
             "available": False,
             "reason": ("Записей проекта в этой сборке нет: файлы "
-                       f"{', '.join(_patterns(source))} не найдены на сервере."),
+                       f"{', '.join(_patterns(source, allow_private=allow_private))} не найдены на сервере."),
         }
 
     везде = {word: sum(1 for entry in pool if word in entry["text"].lower())

@@ -124,7 +124,7 @@ def _tampered(name: str, tamper) -> set[str]:
     return {f"{section}: {label}" for section, label in bad}
 
 
-DDU, PRESALE, SALE, RENT = (ow.section_of(p) for p in ow.PATHS)
+DDU, PRESALE, SALE, RENT = (ow.section_of({"label": label}) for _, label in core.OFFICE_PATHS)
 
 
 @pytest.mark.parametrize("name", list(VARIANTS))
@@ -161,8 +161,8 @@ def test_the_book_has_the_sample_composition_and_the_v4_look() -> None:
     book = openpyxl.load_workbook(io.BytesIO(content))
     assert book.sheetnames == [ow.DASH_SHEET, ow.REPORT_SHEET, ow.INPUTS_SHEET, ow.GUIDE_SHEET, ow.TEP_SHEET,
                                ow.TIME_SHEET, ow.CAPEX_SHEET, ow.RATE_SHEET, ow.DDU_SHEET, ow.PRESALE_SHEET,
-                               ow.SALE_SHEET, ow.RENT_SHEET, ow.EXIT_SHEET, ow.PF_SHEET, "CF_ДДУ", "CF_ПДКП",
-                               "CF_Продажа", "CF_Аренда",
+                               ow.SALE_SHEET, "Удержание", ow.RENT_SHEET, ow.EXIT_SHEET, ow.PF_SHEET, "CF_ДДУ", "CF_ПДКП",
+                               "CF_Продажа", "CF_Удержание", "CF_Аренда",
                                ow.TAX_SHEET, ow.CHECK_SHEET, ow.SOURCES_SHEET]
     for name in (ow.TIME_SHEET, ow.CAPEX_SHEET, ow.DDU_SHEET, ow.PRESALE_SHEET, ow.SALE_SHEET, ow.RENT_SHEET,
                  ow.PF_SHEET, "CF_ДДУ", "CF_ПДКП", "CF_Продажа", "CF_Аренда", ow.TAX_SHEET):
@@ -207,7 +207,9 @@ def test_the_model_sheets_hold_formulas_not_engine_numbers() -> None:
     assert all(isinstance(report[f"{c}{row}"].value, float) for c in "BCDE")
     # Четыре способа рядом — столбцами отчёта, в порядке `PATHS`.
     head = _row(report, "Показатель")
-    assert [report.cell(head, 2 + j).value for j in range(4)] == [p["label"] for p in ow.PATHS]
+    paths = _book("аренда и продажа здания, аннуитет")[1]["comparisons"][0]["paths"]
+    assert len(paths) == 5
+    assert [report.cell(head, 2 + j).value for j in range(5)] == [p["label"] for p in paths]
     assert cached[ow.CHECK_SHEET]["I5"].value == ow.PASSED
 
 
@@ -215,7 +217,7 @@ def test_choices_are_russian_lists_and_dates_are_dates() -> None:
     content, _ = _book("аренда и продажа здания, аннуитет")
     sheet = openpyxl.load_workbook(io.BytesIO(content))[ow.INPUTS_SHEET]
     lists = {str(rng) for dv in sheet.data_validations.dataValidation for rng in dv.sqref.ranges}
-    for label in ("Профиль продаж", "Выход в конце удержания", "Погашение после ввода",
+    for label in ("Профиль продаж", "Погашение после ввода",
                   "Класс офиса", "Сценарий ключевой ставки"):
         assert f"B{_row(sheet, label)}" in lists, label
     assert hasattr(sheet[f"B{_row(sheet, 'Начало проекта')}"].value, "year")
@@ -312,13 +314,14 @@ def test_a_tampered_tax_rule_is_caught() -> None:
     assert "Проект: Налог на прибыль" in labels
 
 
-def test_switching_the_exit_in_the_book_moves_the_model() -> None:
+def test_tampering_with_the_added_hold_outcome_is_caught() -> None:
     def tamper(book):
-        sheet = book[ow.INPUTS_SHEET]
-        sheet[f"B{_row(sheet, 'Выход в конце удержания')}"] = ow.EXIT["hold"]
+        sheet = book["Удержание"]
+        sheet[f"B{_row(sheet, 'Выход')}"] = ow.EXIT["sale"]
 
     labels = _tampered("аренда и продажа здания, аннуитет", tamper)
-    assert {f"{RENT}: Офис: продажа здания", "Офисы: Оценка удержания"} <= labels
+    hold = ow.section_of({"label": "Аренда и удержание здания"})
+    assert {f"{hold}: Офис: продажа здания", f"{hold}: NPV проекта"} <= labels
 
 
 def test_a_longer_project_than_the_engine_is_caught() -> None:

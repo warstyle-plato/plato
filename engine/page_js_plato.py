@@ -70,6 +70,7 @@ async function applyAgentProposal(idx){
  appendAiMessage('assistant','Изменение применено к текущим Inputs и модель пересчитана.');
 }
 function askAgentQuick(text,scenario){aiInput.value=text;sendAgentMessage(scenario)}
+function aiPollHeaders(){return {'X-Plato-Session':activeSession(),'X-Developaid-Admin-Key':projectsAdminKey||''}}
 async function refreshAgentStatus(){try{const r=await fetch('/agent/status'),s=await r.json();aiStatusDot.classList.toggle('ready',!!s.enabled);aiStatusDot.title=s.enabled?`AI готов · ${s.model} · думает через ${s.thinks_via||'этот сервер'}`:'AI не настроен: нет ни OPENAI_API_KEY, ни PLATO_AI_URL'}catch(e){aiStatusDot.classList.remove('ready')}}
 async function syncInputsForAgent(){document.querySelectorAll('[id^=f_]').forEach(el=>{const id=el.id.slice(2);inputs[id]=el.type==='checkbox'?el.checked:(el.type==='number'?Number(el.value):el.value)});if(document.getElementById('rateScenario'))inputs.rate_scenario=rateScenario.value||'base';generateRateCurve();repairParkingFromGlavapu();normalizeSocialObjectDates()}
 // Разбор присланного документа. Тизер, справка по участку, решение ГЗК — то,
@@ -440,8 +441,8 @@ async function sendAgentMessage(scenario){
  // trace_id генерирует страница: он нужен ей раньше ответа, чтобы опрашивать
  // стадию. Пока запрос идёт, подпись показывает, что именно сейчас происходит,
  // и «долго» отличимо от «зависло».
- const traceId=Array.from(crypto.getRandomValues(new Uint8Array(6))).map(b=>b.toString(16).padStart(2,'0')).join('');
- const stagePoll=setInterval(async()=>{try{const r=await fetch('/agent/trace/'+traceId);const t=await r.json();if(t&&t.label&&t.stage!=='done')thinking.textContent=t.label+'…'}catch(e){}},1200);
+ const traceId=Array.from(crypto.getRandomValues(new Uint8Array(16))).map(b=>b.toString(16).padStart(2,'0')).join('');
+ const stagePoll=setInterval(async()=>{try{const r=await fetch('/agent/trace/'+traceId,{cache:'no-store',headers:aiPollHeaders()});const t=await r.json();if(t&&t.label&&t.stage!=='done')thinking.textContent=t.label+'…'}catch(e){}},1200);
  // Номер принятой работы читает catch ниже, поэтому он объявлен ДО try:
  // объявленный внутри, он в catch недоступен, и кнопка «Забрать ответ» не
  // вставала бы никогда.
@@ -549,7 +550,7 @@ async function awaitAgentResult(traceId,thinking,accepted){
  while(Date.now()<deadline){
   await new Promise(r=>setTimeout(r,2000));
   try{
-   const r=await fetch('/agent/result/'+traceId);
+   const r=await fetch('/agent/result/'+traceId,{cache:'no-store',headers:aiPollHeaders()});
    if(r.ok){
     const x=await r.json();
     if(x&&!x.pending&&x.answer)return x;
@@ -558,7 +559,7 @@ async function awaitAgentResult(traceId,thinking,accepted){
    }
   }catch(e){}
   let stage='';
-  try{const t=await(await fetch('/agent/trace/'+traceId)).json();if(t&&t.label&&t.stage!=='done')stage=t.label}catch(e){}
+  try{const t=await(await fetch('/agent/trace/'+traceId,{cache:'no-store',headers:aiPollHeaders()})).json();if(t&&t.label&&t.stage!=='done')stage=t.label}catch(e){}
   // Пока движок отчитывается о новом шаге, работа идёт, а не висит: сдаваться
   // по часам, когда на той стороне что-то происходит, — терять посчитанное.
   if(stage)lastStage=stage;

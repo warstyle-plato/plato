@@ -247,8 +247,9 @@ def _office_path_metrics(result: dict[str, Any], prefixes: tuple[str, ...],
     LLCR проектного финансирования; объектов вне ДДУ у офиса тогда нет."""
     summary = result.get("summary") or {}
     finance = result.get("finance") or {}
+    product_keys = {obj.key for obj in STANDALONE_OBJECTS if obj.prefix in prefixes}
     objects = [o for o in ((result.get("finance") or {}).get("nonres") or {}).get("objects") or []
-               if o.get("key") in {p for p in prefixes} or o.get("prefix") in prefixes]
+               if o.get("key") in product_keys or o.get("prefix") in prefixes]
     totals = [o.get("totals") or {} for o in objects]
     kpis = [o.get("kpi") or {} for o in objects]
     noi = sum(float(k.get("stabilized_noi") or 0.0) for k in kpis)
@@ -330,7 +331,7 @@ def office_paths(original: tuple[dict, dict, list], result: dict[str, Any],
     current_key = current.pop() if len(current) == 1 else None
     exits = {_path_exit_mode(inputs, prefix) for prefix in prefixes}
     exit_now = exits.pop() if len(exits) == 1 else None
-    variants = [(key, INCOME_EXIT_LABELS.get(exit_now, label) if key == nonres_strategy.STRATEGY_INCOME else label,
+    variants = [(key, INCOME_EXIT_LABELS.get(exit_now, "Аренда: исходы объектов из вводных") if key == nonres_strategy.STRATEGY_INCOME else label,
                  path_strategy(key), None) for key, label in OFFICE_PATHS]
     if exit_now is not None:
         other = (nonres_strategy.EXIT_HOLD if exit_now == nonres_strategy.EXIT_SALE
@@ -341,6 +342,10 @@ def office_paths(original: tuple[dict, dict, list], result: dict[str, Any],
         # удержанием раньше аренды с продажей здания.
         variants.sort(key=lambda v: v[2] == nonres_strategy.STRATEGY_INCOME
                       and (v[3] or exit_now) == nonres_strategy.EXIT_SALE)
+    if exit_now is None:
+        for mode in (nonres_strategy.EXIT_HOLD, nonres_strategy.EXIT_SALE):
+            variants.append((f"{nonres_strategy.STRATEGY_INCOME}_{mode}", INCOME_EXIT_LABELS[mode],
+                             nonres_strategy.STRATEGY_INCOME, mode))
     paths = []
     for key, label, strategy, exit_mode in variants:
         tags = {"key": key, "label": label, "strategy": strategy,

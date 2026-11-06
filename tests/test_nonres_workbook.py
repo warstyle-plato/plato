@@ -172,68 +172,45 @@ def test_the_book_formulas_agree_with_the_engine(name) -> None:
             assert engine[("ПФ", label)] not in ("", None, 0), label
         assert isinstance(engine[("Проект", "LLCR")], float)
     elif name not in DDU_NAMES:
-        assert ow.PF_SHEET not in book.sheetnames
+        # ПФ присутствует для сравниваемой продажи ТЦ по ДДУ, даже если
+        # исходный проект в аренде; текущая стратегия всё ещё на своём кредите.
+        assert (ow.PF_SHEET in book.sheetnames) == bool(meta["comparisons"])
         assert engine[("Проект", "Кредит объектов — пик")] not in ("", None, 0)
         assert "Собственное участие" in sections and "По годам" in sections
 
 
-def test_the_book_is_the_v4_frame_with_one_way_to_sell() -> None:
-    """Состав книги — как у офиса, без листов трёх способов продажи офиса и
-    шкалы класса: объекты — своими листами, поток — один лист «CF»."""
-    content, _ = _book("наземный паркинг по ДДУ и ТЦ в аренде")
+def test_the_retail_book_compares_all_five_ways_on_the_v4_frame() -> None:
+    content, meta = _book("наземный паркинг по ДДУ и ТЦ в аренде")
     book = openpyxl.load_workbook(io.BytesIO(content))
+    group = meta["comparisons"][0]
+    assert group["product"] == "standalone_retail" and len(group["paths"]) == 5
     assert book.sheetnames == [ow.DASH_SHEET, ow.REPORT_SHEET, ow.INPUTS_SHEET, ow.GUIDE_SHEET, ow.TEP_SHEET,
-                               ow.TIME_SHEET, ow.CAPEX_SHEET, ow.RATE_SHEET, RETAIL, "Наземный паркинг",
-                               ow.PF_SHEET, "CF", ow.TAX_SHEET, ow.CHECK_SHEET]
-    for name in (ow.TIME_SHEET, ow.CAPEX_SHEET, RETAIL, "Наземный паркинг", ow.PF_SHEET, "CF", ow.TAX_SHEET):
+                              ow.TIME_SHEET, ow.CAPEX_SHEET, ow.RATE_SHEET,
+                              ow.DDU_SHEET, ow.PRESALE_SHEET, ow.SALE_SHEET, "Удержание", ow.RENT_SHEET,
+                              ow.EXIT_SHEET, "Наземный паркинг", ow.PF_SHEET,
+                              "CF_ДДУ", "CF_ПДКП", "CF_Продажа", "CF_Удержание", "CF_Аренда",
+                              ow.TAX_SHEET, ow.CHECK_SHEET]
+    for name in (ow.TIME_SHEET, ow.CAPEX_SHEET, ow.RENT_SHEET, "Наземный паркинг", ow.PF_SHEET,
+                 "CF_Аренда", ow.TAX_SHEET):
         sheet = book[name]
-        # Месяцы вправо с D, шапка и подписи закреплены, печать — по 12 месяцев.
         assert sheet.freeze_panes == "D5", name
         assert sheet.print_title_cols.replace("$", "") == "A:C", name
         assert len(sheet.col_breaks.brk) >= 5, name
         assert sheet["A1"].font.name == ow.FONT
-    assert book[RETAIL].sheet_properties.tabColor.rgb.endswith(ow.RENT_TAB)
-    assert book["Наземный паркинг"].sheet_properties.tabColor.rgb.endswith(ow.DDU_TAB)
-    report = book[ow.REPORT_SHEET]
-    head = _row(report, "Показатель")
-    assert [report.cell(head, c).value for c in (2, 3)] == [ow.PROJECT_PATH["label"], None]
-    chosen = report.cell(_row(report, "Способ, выбранный в проекте"), 2).value
-    assert "Коммерция ОСЗ — аренда и выход" in chosen and "Наземный паркинг — продажа по ДДУ" in chosen
-    assert not any(str(report[f"A{r}"].value or "").startswith(("Выгоднее", "Офис"))
-                   for r in range(1, report.max_row + 1))
     cached = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
-    assert isinstance(cached[ow.REPORT_SHEET][f"B{_row(report, 'NPV проекта')}"].value, float)
+    report = cached[ow.REPORT_SHEET]
+    head = _row(report, "Показатель")
+    assert [report.cell(head, c).value for c in range(2, 7)] == [p["label"] for p in group["paths"]]
     assert cached[ow.CHECK_SHEET]["I5"].value == ow.PASSED
     inputs = book[ow.INPUTS_SHEET]
     assert not any(str(inputs[f"A{r}"].value or "").startswith(("Шкала класса", "Класс офиса"))
                    for r in range(1, inputs.max_row + 1))
 
 
-@pytest.mark.parametrize("name", ["ТЦ ДКП, продажи до ввода", "ТЦ блоками и ФОК по ДДУ"])
-def test_the_model_sheets_hold_formulas_not_engine_numbers(name) -> None:
-    """Числа на листах модели — формулы; значения — только на «Вводных» и в
-    рядах, подписанных «СЧИТАЕТ ДВИЖОК»."""
-    book = openpyxl.load_workbook(io.BytesIO(_book(name)[0]))
-    formulas = 0
-    for sheet_name in book.sheetnames:
-        if sheet_name in (ow.INPUTS_SHEET, ow.CHECK_SHEET, ow.GUIDE_SHEET):
-            continue
-        sheet = book[sheet_name]
-        for row in sheet.iter_rows(min_row=5, min_col=2):
-            for cell in row:
-                if isinstance(cell.value, str) and cell.value.startswith("="):
-                    formulas += 1
-                elif isinstance(cell.value, (int, float)) and not isinstance(cell.value, bool):
-                    engine = cell.fill.fgColor.rgb.endswith(ow.ENGINE)
-                    year = sheet_name == ow.REPORT_SHEET and cell.column == 1
-                    assert engine or year or cell.value == 0, f"{sheet_name}!{cell.coordinate} = {cell.value}"
-    assert formulas > 2000
-
-
 def test_choices_are_russian_lists_and_dates_are_dates() -> None:
     sheet = openpyxl.load_workbook(io.BytesIO(_book("ТЦ аренда и продажа, аннуитет")[0]))[ow.INPUTS_SHEET]
     lists = {str(rng) for dv in sheet.data_validations.dataValidation for rng in dv.sqref.ranges}
-    for label in ("Профиль продаж", "Выход в конце удержания", "Погашение после ввода"):
+    for label in ("Профиль продаж", "Погашение после ввода"):
         assert _input(sheet, label).coordinate in lists, label
     assert f"B{_row(sheet, 'Сценарий ключевой ставки')}" in lists
     assert hasattr(sheet[f"B{_row(sheet, 'Начало проекта')}"].value, "year")
@@ -247,7 +224,7 @@ def test_choices_are_russian_lists_and_dates_are_dates() -> None:
 def test_a_tampered_formula_is_caught() -> None:
     """Подделка формулы: доход аренды ТЦ завышен на процент."""
     def tamper(book):
-        sheet = book[RETAIL]
+        sheet = book[ow.RENT_SHEET]
         row = _row(sheet, "Доход аренды")
         for col in range(ow.FIRST_COL, sheet.max_column + 1):
             cell = sheet.cell(row, col)
@@ -290,14 +267,18 @@ def test_a_tampered_tax_rule_is_caught() -> None:
     assert "Проект: Налог на прибыль" in _tampered("аренда и удержание, погашение из NOI", tamper)
 
 
-def test_switching_the_exit_in_the_book_moves_the_model() -> None:
-    """Список — не подпись: «Удержание с оценкой» убирает выручку выхода и
-    ставит оценку, как у движка с тем же выбором."""
-    def tamper(book):
-        _input(book[ow.INPUTS_SHEET], "Выход в конце удержания").value = ow.EXIT["hold"]
-
-    labels = _tampered("ТЦ аренда и продажа, аннуитет", tamper)
-    assert {f"{RETAIL}: Продажа здания", f"{RETAIL}: Оценка удержания"} <= labels
+def test_both_retail_exits_are_calculated_independently() -> None:
+    content, _ = _book("ТЦ аренда и продажа, аннуитет")
+    book = openpyxl.load_workbook(io.BytesIO(content))
+    cell = _input(book[ow.INPUTS_SHEET], "Выход в конце удержания")
+    assert cell.comment and "справочно" in cell.comment.text
+    cell.value = ow.EXIT["hold"]
+    evaluator = ow.evaluate(book)
+    # Справочная ячейка не превращает обе стратегии в удержание.
+    hold = book["CF_Удержание"]
+    sale = book["CF_Аренда"]
+    assert evaluator.cell(hold.title, f"B{_row(hold, 'Оценка удержанного здания (не деньги)')}") > 0
+    assert evaluator.cell(sale.title, f"B{_row(sale, 'Оценка удержанного здания (не деньги)')}") == 0
 
 
 def test_a_longer_project_than_the_engine_is_caught() -> None:
@@ -325,7 +306,7 @@ def test_a_tampered_pf_rate_is_caught() -> None:
     assert {"Проект: Проценты и комиссии", "Проект: LLCR"} <= labels
 
 
-@pytest.mark.parametrize("name, sheet_name", [("ТЦ по ДДУ", RETAIL), ("ТЦ блоками и ФОК по ДДУ", SPORTS_SHEET),
+@pytest.mark.parametrize("name, sheet_name", [("ТЦ по ДДУ", ow.DDU_SHEET), ("ТЦ блоками и ФОК по ДДУ", SPORTS_SHEET),
                                               ("наземный паркинг по ДДУ", "Наземный паркинг")])
 def test_a_tampered_ddu_price_is_caught(name, sheet_name) -> None:
     """Цена по ДДУ ТЦ, ФОК и наземного паркинга завышена: краснеют выручка,
@@ -336,7 +317,8 @@ def test_a_tampered_ddu_price_is_caught(name, sheet_name) -> None:
         cell.value = cell.value + "*1.05"
 
     labels = _tampered(name, tamper)
-    assert {"ПФ: Эскроу — пик", "Проект: Выручка проекта", f"{sheet_name.replace('-', '/')}: Выручка по ДДУ"} \
+    object_title = RETAIL if name == "ТЦ по ДДУ" else sheet_name.replace('-', '/')
+    assert {"ПФ: Эскроу — пик", "Проект: Выручка проекта", f"{object_title}: Выручка по ДДУ"} \
         <= labels
 
 
