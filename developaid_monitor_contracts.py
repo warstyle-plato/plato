@@ -19,6 +19,7 @@ from typing import Any
 
 import developaid_actuals as actuals
 import developaid_monitor as monitor
+from developaid_monitor_ledgers import amount_basis as _amount_basis
 
 
 class ContractProblem(ValueError):
@@ -96,14 +97,6 @@ def _warnings(values) -> list[str]:
         if isinstance(value, str) and value and value not in out:
             out.append(value)
     return out
-
-
-def _amount_basis(header: str) -> str:
-    if re.search(r"без\s*ндс", _norm(header)):
-        return "without_vat"
-    if re.search(r"(?:с\s*ндс|включая\s*ндс|в\s*том\s*числе\s*ндс)", _norm(header)):
-        return "with_vat"
-    return "unspecified"
 
 
 def _basis(value: Any) -> str:
