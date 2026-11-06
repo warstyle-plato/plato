@@ -54,3 +54,15 @@ def test_shared_strategy_hints_explain_non_cash_valuation():
     for key in ("strategy_revenue", "strategy_net_profit", "strategy_npv"):
         assert "оценк" in REPORT_KPI_HINTS[key]
     assert "не поступление денег" in REPORT_KPI_HINTS["strategy_revenue"]
+
+
+def test_presale_notes_are_consistent_in_the_real_workbook_and_strategy_hint(held_book):
+    book = openpyxl.load_workbook(io.BytesIO(held_book), data_only=True)
+    guide = " ".join(str(cell.value or "") for row in book[ow.GUIDE_SHEET] for cell in row)
+    hint = REPORT_KPI_HINTS["strategy_presale"]
+    for text in (guide, hint):
+        assert ow.ns.PRESALE_BUYERS_NOTE in text
+        assert ow.ns.PRESALE_VAT_NOTE in text
+        assert "платится в месяц оплаты" not in text
+        assert "только по ДДУ" not in text
+    assert "начисляется в месяц" in hint and "уплата считается отдельно" in hint
