@@ -41,7 +41,7 @@ jobs:
               request = urllib.request.Request(base + path, data=data,
                   headers={'Content-Type': 'application/json'} if data else {})
               try:
-                  with opener.open(request, timeout=180) as response:
+                  with opener.open(request, timeout=15) as response:
                       raw = response.read()
                       result = json.loads(raw)
                       print(json.dumps({'probe': path, 'status': response.status,
@@ -61,9 +61,25 @@ jobs:
           print(json.dumps({'project_count': len(projects)}))
           if len(projects) < 2 or not isinstance(projects[1].get('project'), str):
               raise SystemExit(3)
-          report = call('/monitor/report', {'project': projects[1]['project'],
+          started = time.monotonic()
+          report = call('/monitor/report/build', {'project': projects[1]['project'],
               'kind': 'week', 'end': datetime.datetime.now(datetime.timezone.utc).date().isoformat()})
-          ok = isinstance(report.get('report'), dict) and bool(report.get('html'))
-          print(json.dumps({'report_complete': ok}))
+          admission_seconds = time.monotonic() - started
+          ticket = report.get('ticket')
+          if not isinstance(ticket, str) or len(ticket) != 32:
+              raise SystemExit(4)
+          polls, longest_poll = 0, 0.0
+          deadline = time.monotonic() + 360
+          while report.get('pending') and time.monotonic() < deadline:
+              time.sleep(2)
+              poll_started = time.monotonic()
+              report = call('/monitor/report/result', {'ticket': ticket})
+              longest_poll = max(longest_poll, time.monotonic() - poll_started)
+              polls += 1
+          ok = (not report.get('pending') and isinstance(report.get('report'), dict)
+                and bool(report.get('html')))
+          print(json.dumps({'report_complete': ok, 'admission_seconds': round(admission_seconds, 3),
+              'polls': polls, 'longest_poll_seconds': round(longest_poll, 3),
+              'total_seconds': round(time.monotonic() - started, 3)}))
           raise SystemExit(0 if ok else 1)
           PY
