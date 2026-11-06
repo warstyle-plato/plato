@@ -424,11 +424,20 @@ def crew(project: str, kind: str, end: Any) -> dict[str, Any]:
                "workers": (float((by_day[day.isoformat()].get("parsed") or {})
                                  .get("workers_total") or 0)
                            if day.isoformat() in by_day else None)} for day in days]
+    works = _works_done(now, daily.known_parties(project, bounds["end"]))
+    reconciliation_warning = ""
+    try:
+        import developaid_monitor_contract_links as contract_links
+        works = contract_links.enrich_report_works(project, works, bounds["start"], bounds["end"])
+    except (ImportError, OSError, ValueError, KeyError):
+        # The money/schedule report stays available if a new register cannot be
+        # read. Do not expose exception paths or silently assert a legal link.
+        reconciliation_warning = "Связи работ с договорами не удалось проверить. Откройте вкладку «Договоры и сверка» в Мониторе."
     return {"state": "ok", "now": _crew_stats(now), "previous": _crew_stats(before),
             "period_days": (bounds["end"] - bounds["start"]).days + 1,
             "last_report": last or None, "by_contractor": by_contractor[:10],
             "series": series,
-            "works": _works_done(now, daily.known_parties(project, bounds["end"]))}
+            "works": works, **({"contract_link_warning": reconciliation_warning} if reconciliation_warning else {})}
 
 
 # --------------------------------------------------------------------------
@@ -3286,10 +3295,13 @@ def render_text(report: dict[str, Any]) -> str:
     elif block.get("reason"):
         lines.append(esc(block["reason"]))
     for group in (block.get("works") or [])[:4]:
-        shown = "; ".join(entry["line"] for entry in group["lines"][:3])
+        shown = "; ".join(entry["line"] + _work_contract_text(entry)
+                          for entry in group["lines"][:3])
         more = len(group["lines"]) - 3
         lines.append(esc(f"Работы {group['contractor']}: {shown}"
                          + (f" и ещё {more}" if more > 0 else "") + "."))
+    if block.get("contract_link_warning"):
+        lines.append(esc(block["contract_link_warning"]))
     chosen = len((report.get("photos") or {}).get("items") or [])
     if chosen:
         lines.append(f"Фото со стройки: {chosen} — в PDF.")
@@ -3524,6 +3536,13 @@ def _crew_html(block: dict[str, Any], kind: str) -> str:
     return "\n".join(out)
 
 
+def _work_contract_text(entry: dict[str, Any]) -> str:
+    if "contract_links" not in entry:
+        return ""
+    links = entry.get("contract_links") or []
+    return " (" + "; ".join(str(link["label"]) for link in links) + ")" if links else " (договор не уточнён)"
+
+
 def _works_html(block: dict[str, Any], kind: str) -> str:
     """Выполненные работы за период — как их назвали прорабы в отчётах бота."""
     esc = html.escape
@@ -3537,12 +3556,26 @@ def _works_html(block: dict[str, Any], kind: str) -> str:
                else "за период не было ни одного отчёта со стройки")
         return title + f"<p class='missing'>Работы не перечислены: {why}.</p>"
     rows = []
+    linked = any("contract_links" in entry for group in groups for entry in group["lines"])
     for group in groups:
         for index, entry in enumerate(group["lines"]):
             dates = ", ".join(_date(day).strftime("%d.%m") for day in entry["days"])
-            rows.append([f"<b>{esc(group['contractor'])}</b>" if index == 0 else "",
-                         esc(entry["line"]), dates])
-    return (title + "<table class='works'>" + _row(["Подрядчик", "Работы", "Дни в отчётах"], True)
+            cells = [f"<b>{esc(group['contractor'])}</b>" if index == 0 else "",
+                     esc(entry["line"]), dates]
+            if linked:
+                links = entry.get("contract_links") or []
+                cells.append("<br>".join(
+                    # A relative URL works on screen but vanishes as a PDF
+                    # annotation when Chromium prints an in-memory document.
+                    f"<a href='https://developaid.ru{esc(link['href'], quote=True)}'>{esc(link['label'])}</a>"
+                    if str(link.get("href") or "").startswith("/monitor#tab=contracts&")
+                    else esc(link["label"]) for link in links)
+                             if links else "Договор не уточнён")
+            rows.append(cells)
+    headings = ["Подрядчик", "Работы", "Дни в отчётах"] + (["Договор"] if linked else [])
+    warning = ("<p class='missing'>" + esc(block["contract_link_warning"]) + "</p>"
+               if block.get("contract_link_warning") else "")
+    return (title + warning + "<table class='works'>" + _row(headings, True)
             + "".join("<tr>" + "".join(f"<td>{c}</td>" for c in row) + "</tr>" for row in rows)
             + "</table><p class='note'>Строки — как их написали в отчёте; одинаковая строка "
               "за несколько дней показана один раз с датами.</p>")
