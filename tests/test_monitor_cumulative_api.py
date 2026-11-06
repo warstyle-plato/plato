@@ -100,15 +100,18 @@ def test_owner_family_rotation_and_ticket_parameters_fail_closed(api, monkeypatc
 def test_a_fresh_view_does_not_reuse_an_older_inflight_view(api, monkeypatch):
     client, _ = api
     release = threading.Event()
+    first_entered = threading.Event()
     calls = []
     def execute(*args):
         version = len(calls)+1
         calls.append(version)
+        first_entered.set()
         assert release.wait(10)
         return {"ok": True, "register": {"version": version}}
     monkeypatch.setattr(core, "_monitor_cumulative_execute", execute)
     try:
         first = post(client, "contracts/build", project="Fixture", ticket="3" * 32)
+        assert first_entered.wait(2)
         second = post(client, "contracts/build", project="Fixture", ticket="4" * 32)
         assert first.status_code == second.status_code == 202
         assert first.json()["ticket"] != second.json()["ticket"]
