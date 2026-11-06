@@ -22,6 +22,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import main as wrapper  # noqa: E402
+import page_blocks  # noqa: E402
 
 core = wrapper.core
 
@@ -101,11 +102,13 @@ def test_only_one_progress_line_is_ever_created():
 def calculate_and_open(session: str) -> dict:
     script = (
         f"let telegramSession={json.dumps(session)};\n"
+        "const inputs={};\n"
         "const calls=[];\n"
         "function calculate(){calls.push('calculate');return Promise.resolve()}\n"
         "function openTab(id){calls.push('openTab:'+id)}\n"
         "function telegramRecalculateAndFinish(tab){calls.push('finish:'+tab);"
         "return Promise.resolve()}\n"
+        + page_blocks.partial_tep_mode() + "\n"
         + page_function("calculateAndOpen") + "\n"
         + "Promise.resolve(calculateAndOpen('report')).then(()=>"
           "console.log(JSON.stringify(calls)));\n"

@@ -218,6 +218,7 @@ def render(inputs: dict, tail: str = "console.log(JSON.stringify(groups()));",
         page_blocks.project_kind(),
         # Регион проекта форма читает у поля периодичности рассрочки ВРИ.
         page_blocks.project_region(),
+        page_blocks.partial_tep_mode(),
         page_function("renderInputs"),
         # Под выбором класса офиса форма пишет, какой класс действует и откуда.
         page_const("OFFICE_CLASS"),
