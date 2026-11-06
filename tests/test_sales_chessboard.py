@@ -427,6 +427,22 @@ def test_private_source_routes_install_after_the_core_has_served_a_request(monke
     assert "cache-control" not in api.get("/already-running").headers
 
 
+@pytest.mark.parametrize("path,allowed", [("/cabinet/contracting", "POST"), ("/cabinet/sales/summary", "GET")])
+@pytest.mark.parametrize("method", ["put", "options", "head"])
+def test_rejected_private_source_methods_are_uncached_without_source_io(client, monkeypatch, path, allowed, method):
+    def forbidden_io(*_args, **_kwargs):
+        raise AssertionError("source I/O on rejected HTTP method")
+
+    monkeypatch.setattr(sales_store, "projects", forbidden_io)
+    monkeypatch.setattr(sales_store, "load", forbidden_io)
+    monkeypatch.setattr(sales_store, "save", forbidden_io)
+    response = getattr(client, method)(path)
+    assert response.status_code == 405
+    assert response.headers["allow"] == allowed
+    assert response.headers["cache-control"] == "private, no-store"
+    assert response.headers["pragma"] == "no-cache"
+
+
 def test_conflicting_price_facts_do_not_fall_back_to_a_median_accusation():
     peers = [dict(contract(unit=i, amount=4_000_000), rooms="2К") for i in (11, 12, 13)]
     low = dict(contract(), rooms="2К", escrow_total=3_200_000)

@@ -189,6 +189,21 @@ class _PrivateSalesRoute(APIRoute):
     registration is still supported. Keep this policy on the two source routes.
     """
 
+    @staticmethod
+    def _uncached(response: Response) -> Response:
+        response.headers["Cache-Control"] = "private, no-store"
+        response.headers["Pragma"] = "no-cache"
+        return response
+
+    async def handle(self, scope, receive, send):
+        try:
+            await super().handle(scope, receive, send)
+        except StarletteHTTPException as exc:
+            # Method rejection (405) happens before get_route_handler. Keep its
+            # standard status/detail/Allow header and the same cache policy.
+            response = await http_exception_handler(Request(scope, receive), exc)
+            await self._uncached(response)(scope, receive, send)
+
     def get_route_handler(self):
         route_handler = super().get_route_handler()
 
@@ -204,9 +219,7 @@ class _PrivateSalesRoute(APIRoute):
                 logging.getLogger(__name__).warning("sales source request failed (%s)", type(exc).__name__)
                 response = JSONResponse(status_code=500, content={
                     "detail": "Не удалось получить отчёт о продажах. Повторите запрос; если ошибка сохраняется, сообщите время и действие."})
-            response.headers["Cache-Control"] = "private, no-store"
-            response.headers["Pragma"] = "no-cache"
-            return response
+            return self._uncached(response)
 
         return private_response
 
