@@ -430,10 +430,11 @@ def check_team_report(browser, base: str, admin_key: str, out: Path, *,
                     const message=document.getElementById('reportMsg');
                     const box=document.getElementById('reportBox');
                     const opened=area && !area.classList.contains('hidden');
+                    // Findings are published; server details remain only in the UI.
                     if (!opened && login && login.classList.contains('bad') && login.textContent.trim())
-                        return {ready:false,where:'#loginMsg',reason:login.textContent.trim()};
+                        return {ready:false,where:'#loginMsg',reason:'Не удалось открыть доступ к сводке.'};
                     if (message && message.classList.contains('bad') && message.textContent.trim())
-                        return {ready:false,where:'#reportMsg',reason:message.textContent.trim()};
+                        return {ready:false,where:'#reportMsg',reason:'Запрос сводки завершился ошибкой.'};
                     const heading=box && box.querySelector('h1');
                     if (opened && heading && heading.textContent.trim() &&
                         !(message && message.classList.contains('warn')))

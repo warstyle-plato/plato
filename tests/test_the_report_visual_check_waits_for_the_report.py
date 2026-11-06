@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sys
+from dataclasses import asdict
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -13,6 +14,8 @@ sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import prod_visual as visual
+
+PRIVATE_MARKER = "PRIVATE_REPORT_FIXTURE_DETAIL_6f29"
 
 
 @pytest.fixture
@@ -41,13 +44,16 @@ def fixture_browser(browser, outcome):
             return route.fulfill(status=200, content_type="text/html", body=REPORT_PAGE)
         data = {}
         if path == "/monitor/report/projects":
+            if outcome == "login-error":
+                return route.fulfill(status=403, content_type="application/json",
+                                     body=json.dumps({"detail": PRIVATE_MARKER}))
             data = {"projects": [{"project": "Visual fixture"}], "sales_projects": []}
         elif path == "/monitor/report":
             if outcome == "connection":
                 return route.abort("failed")
             if outcome == "http-error":
                 return route.fulfill(status=500, content_type="application/json",
-                                     body=json.dumps({"detail": "Fixture report failed"}))
+                                     body=json.dumps({"detail": PRIVATE_MARKER}))
             data = {"html": html} if outcome == "success" else {"html": ""}
         return route.fulfill(status=200, content_type="application/json", body=json.dumps(data))
 
@@ -60,14 +66,23 @@ def fixture_browser(browser, outcome):
     return RoutedBrowser()
 
 
-@pytest.mark.parametrize("outcome", ["connection", "http-error"])
+@pytest.mark.parametrize("outcome", ["connection", "http-error", "login-error"])
 def test_a_report_request_failure_is_a_break(report_browser, tmp_path, outcome):
     found = visual.check_team_report(fixture_browser(report_browser, outcome),
                                      "https://report-fixture.test", "fixture-key", tmp_path)
     failures = [f for f in found if f.severity == visual.BREAK]
     assert len(failures) == 2, "Both desktop and phone must reject the failed report"
     assert all(f.kind == "сводка не открылась" for f in failures)
-    assert all(f.where == "#reportMsg" for f in failures)
+    assert all(f.where == ("#loginMsg" if outcome == "login-error" else "#reportMsg")
+               for f in failures)
+    # Findings are emitted as JSON, step summary and public PR/issue prose.
+    # An arbitrary server detail stays on the user's page, not in these outputs.
+    for finding in found:
+        finding.new = True
+    published = json.dumps([asdict(f) for f in found], ensure_ascii=False)
+    published += visual.summary_markdown(found, [], "https://report-fixture.test", {}, "fixture")
+    published += visual.author_note(found, "https://report-fixture.test", {})
+    assert PRIVATE_MARKER not in published
 
 
 def test_a_rendered_report_passes(report_browser, tmp_path):
