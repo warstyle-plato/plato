@@ -9,6 +9,8 @@ not mislabeled as forecast.
 from __future__ import annotations
 
 import datetime
+import hashlib
+import io
 import json
 import math
 import re
@@ -147,26 +149,27 @@ def _load_pm(project: str) -> dict[str, Any]:
     а книга в полторы тысячи строк на 84 колонки стоит секунду разбора и
     читается дважды на каждый срез."""
     import copy as _copy
-    import os as _os
-
     path = monitor._project_dir(project) / "baseline" / "pm.xlsx"
-    if not path.exists():
+    try:
+        data = path.read_bytes()
+    except FileNotFoundError:
         return {"known": False, "tasks": {}, "rnv_id": "", "source": ""}
-    stat = _os.stat(path)
-    key = (str(path), stat.st_mtime_ns, stat.st_size)
+    key = (str(path), hashlib.sha256(data).hexdigest())
     if key in _PM_CACHE:
         return _copy.deepcopy(_PM_CACHE[key])
-    result = _read_pm(path)
+    result = _read_pm(path, data=data)
     if len(_PM_CACHE) > 8:
         _PM_CACHE.clear()
     _PM_CACHE[key] = result
     return _copy.deepcopy(result)
 
 
-def _read_pm(path: Any) -> dict[str, Any]:
+def _read_pm(path: Any, *, data: bytes | None = None) -> dict[str, Any]:
     from openpyxl import load_workbook
 
-    wb = load_workbook(path, read_only=True, data_only=True)
+    if data is None:
+        data = path.read_bytes()
+    wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
     try:
         ws = wb["Таблица_задач1"] if "Таблица_задач1" in wb.sheetnames else wb[wb.sheetnames[0]]
         rows = ws.iter_rows(values_only=True)
@@ -235,6 +238,7 @@ def _read_pm(path: Any) -> dict[str, Any]:
                 rnv_id = tid
                 rnv_candidates.append(tid)
         return {"known": bool(tasks), "tasks": tasks, "rnv_id": rnv_id, "source": path.name,
+                "source_sha256": hashlib.sha256(data).hexdigest(),
                 "validation_issues": list(dict.fromkeys(validation_issues)),
                 "rnv_candidates": rnv_candidates}
     finally:

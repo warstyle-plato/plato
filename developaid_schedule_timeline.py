@@ -21,7 +21,7 @@ def model(pm: dict, seeds: dict[str, dt.date], *, evidence: bool = False) -> dic
     reasons = list(pm.get('validation_issues') or [])
     tasks = pm.get('tasks') or {}
     if not pm.get('known') or not tasks:
-        return {'state': 'unknown', 'rows': [], 'edges': [], 'rnv': {
+        return {'state': 'unknown', 'rows': [], 'edges': [], 'confirmation': pm.get('confirmation') or {}, 'rnv': {
             'state': 'unknown', 'approved': None, 'forecast': None, 'indicative_forecast': None,
             'delay_days': None, 'driving_chain': [],
             'reasons': ['Выгрузка PM с подтверждёнными связями работ не загружена.']}}
@@ -117,6 +117,7 @@ def model(pm: dict, seeds: dict[str, dt.date], *, evidence: bool = False) -> dic
     indicative = rnv.get('forecast_finish') if rnv and evidence and not has_cycle and not ambiguous_rnv else None
     state = 'unknown' if not indicative else 'partial' if reasons else 'complete'
     return {'state': 'ok', 'rows': rows, 'edges': edges, 'source': pm.get('source') or '',
+            'confirmation': pm.get('confirmation') or {},
             'calendar_basis': 'calendar_days', 'rnv': {'state': state,
                 'approved': _iso(approved), 'forecast': _iso(indicative) if state == 'complete' else None,
                 'indicative_forecast': _iso(indicative),
@@ -139,6 +140,14 @@ def render(block: dict) -> str:
                    ' · сдвиг '+esc(rnv.get('delay_days'))+' дн. Это не подтверждённый итоговый срок РНВ.</p>')
     for reason in rnv.get('reasons') or []:
         out.append('<p class="note">'+esc(reason)+'</p>')
+    confirmation = block.get('confirmation') or {}
+    if confirmation.get('recorded_at'):
+        out.append('<p class="note"><b>Проверка исходного графика:</b> '+
+                   ('Расчёт в календарных днях подтверждён.' if confirmation.get('calendar_basis') == 'calendar_days'
+                    else 'Календарь не подтверждён.')+' '+
+                   ('Полнота цепочки до РНВ подтверждена.' if confirmation.get('rnv_chain_complete')
+                    else 'Полнота цепочки до РНВ не подтверждена.')+' Проверка от '+
+                   esc(date(confirmation['recorded_at'][:10]))+'. '+esc(confirmation.get('note'))+'</p>')
     chain = rnv.get('driving_chain') or []
     if chain:
         out.append('<p><b>Одна из ведущих цепочек:</b> '+ ' → '.join(esc(row['name']) for row in chain)+'</p>')

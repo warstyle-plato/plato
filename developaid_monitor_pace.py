@@ -17,6 +17,7 @@ import developaid_monitor_reason as reason
 import developaid_monitor_schedule_graph as schedule_graph
 import developaid_schedule_timeline as schedule_timeline
 import developaid_gpr_corpus as corpus_gpr
+import developaid_schedule_confirmation as schedule_confirmation
 
 _INSTALLED = False
 _ORIGINAL_BUILD = None
@@ -215,8 +216,14 @@ def _apply_pace(project: str, view: dict[str, Any], cut: datetime.date) -> dict[
             node["status"] = src.get("pace_status") or node.get("status")
     _aggregate_management(management)
 
+    qualified_pm = schedule_confirmation.qualify(project, pm, cut.isoformat())
+    # Calendar/chain confirmation cannot promote the existing cost/EAC proxy to
+    # a complete physical forecast. The natural-quantity contour is separate.
+    qualified_pm['validation_issues'] = list(qualified_pm.get('validation_issues') or []) + [
+        'Натуральная выработка КС и её сопоставление с работами графика ещё не подтверждены. '
+        'Стоимостный темп КС не доказывает физическую готовность.']
     schedule["dependency_timeline"] = schedule_timeline.model(
-        pm, late_seeds, evidence=bool(evidence or late_seeds))
+        qualified_pm, late_seeds, evidence=bool(evidence or late_seeds))
     if isinstance((view.get("dashboard") or {}).get("schedule"), dict):
         view["dashboard"]["schedule"]["qualified_rnv"] = schedule["dependency_timeline"]["rnv"]
         # A prebuilt summary may have been produced before RNV qualification.

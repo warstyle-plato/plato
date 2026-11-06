@@ -46,11 +46,20 @@ class MonitorCumulativeResult(MonitorCumulativeAuth):
     ticket: str = _CumulativeField(min_length=1, max_length=128)
 
 
+class MonitorScheduleConfirmation(MonitorCumulativeProject):
+    source_sha256: str = _CumulativeField(pattern=r"^[0-9a-f]{64}$")
+    revision: int = _CumulativeField(ge=0, strict=True)
+    calendar_basis: str = _CumulativeField(pattern=r"^(unconfirmed|calendar_days)$")
+    rnv_chain_complete: bool = _CumulativeField(strict=True)
+    note: str = _CumulativeField(min_length=1, max_length=1000)
+
+
 _CUMULATIVE_PATHS = frozenset({
     "/monitor/cumulative/upload", "/monitor/cumulative/result",
     "/monitor/cumulative/list", "/monitor/contracts/build",
     "/monitor/contracts/result", "/monitor/contracts/term", "/monitor/contracts/link",
     "/monitor/view", "/monitor/schedule-fact", "/monitor/gpr-corpus/view",
+    "/monitor/schedule-confirmation/view", "/monitor/schedule-confirmation/save",
 })
 
 
@@ -85,6 +94,35 @@ def _monitor_cumulative_day(value: str) -> str:
     if day.isoformat() != text:
         raise HTTPException(400, "Укажите дату в формате ГГГГ-ММ-ДД.")
     return text
+
+
+def _monitor_schedule_confirmation(req, *, save=False):
+    _require_admin_key(req.key, "Монитор проекта", req.session)
+    project = req.project.strip()
+    if not project:
+        raise HTTPException(400, "Выберите проект.")
+    import developaid_schedule_confirmation as confirmation
+    cut = "" if save else _monitor_cumulative_day(req.cut)
+    try:
+        result = (confirmation.save(project, req.source_sha256, req.revision,
+                                    req.calendar_basis, req.rnv_chain_complete, req.note)
+                  if save else confirmation.view(project, cut))
+        return JSONResponse(content=result)
+    except confirmation.ConfirmationProblem as exc:
+        raise HTTPException(exc.status, str(exc)) from None
+    except Exception as exc:
+        logging.getLogger("developaid.monitor").error("Schedule confirmation unavailable (%s)", type(exc).__name__)
+        raise HTTPException(503, "Подтверждения графика сейчас недоступны. Повторите запрос.") from None
+
+
+@app.post("/monitor/schedule-confirmation/view", include_in_schema=False)
+def monitor_schedule_confirmation_view(req: MonitorContractsBuild) -> Response:
+    return _monitor_schedule_confirmation(req)
+
+
+@app.post("/monitor/schedule-confirmation/save", include_in_schema=False)
+def monitor_schedule_confirmation_save(req: MonitorScheduleConfirmation) -> Response:
+    return _monitor_schedule_confirmation(req, save=True)
 
 
 def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = b"") -> dict:
