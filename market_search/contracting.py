@@ -1065,9 +1065,11 @@ def _read_bank_quarterly(data: bytes) -> dict[str, Any]:
             "price_by_quarter": price_plan}
 
 
-def summarise(contracts: dict[str, Any], ledger: dict[str, Any] | None = None) -> dict[str, Any]:
+def summarise(contracts: dict[str, Any], ledger: dict[str, Any] | None = None,
+              *, until: str | None = None) -> dict[str, Any]:
     """Свод: динамика, структура оплаты, каналы, вознаграждение, расторжения."""
-    rows = contracts.get("rows") or []
+    rows = [dict(row, area=0.0) if row.get("area") is None else row
+            for row in contracts.get("rows") or []]
     ledger = ledger or {}
 
     months: dict[str, dict[str, Any]] = {}
@@ -1209,6 +1211,7 @@ def summarise(contracts: dict[str, Any], ledger: dict[str, Any] | None = None) -
         "missing": contracts.get("missing") or [],
         "total": _totals(rows),
         "dynamics": dynamics,
+        "dynamics_pace": _dynamics_pace(dynamics, until),
         "by_quarter": by_quarter,
         "by_quarter_flats": by_quarter_flats,
         "by_product": by_product,
@@ -1981,49 +1984,96 @@ def _next_month(key: str) -> str:
     return f"{year + month // 12:04d}-{month % 12 + 1:02d}"
 
 
-def pace_since_start(dynamics: Iterable[dict[str, Any]], until: str) -> list[dict[str, Any]]:
-    """Темп по месяцам с первого договора по ``until`` и средние с начала продаж.
+def _valid_month(key: Any) -> bool:
+    if not isinstance(key, str) or not re.fullmatch(r"\d{4}-\d{2}", key):
+        return False
+    try:
+        datetime.date.fromisoformat(key + "-01")
+    except ValueError:
+        return False
+    return True
 
-    Владелец (02.11.2026): «Может добавить скользящую среднюю с момента начала
-    продаж?» — две нарастающие линии на графике темпа:
 
-    - ``avg_area`` / ``avg_units`` / ``avg_amount`` — всё продано с первого
-      месяца продаж по этот месяц включительно, делённое на число месяцев.
-      Месяц без договоров — строка с нулём: он остаётся в знаменателе, иначе
-      пауза в продажах подняла бы средний темп;
-    - ``avg_price_flats`` — сумма договоров квартир, делённая на их метры,
-      нарастающим итогом (средневзвешенная, не среднее месячных цен). Месяцы
-      без метров квартир в неё не входят; пока метров нет — ``None``.
-
-    Числа — те же, что у столбцов и линии цены месяца (``summarise``): график
-    и любые другие читатели берут средние отсюда, а не считают у себя.
-    """
-    by_month = {m["month"]: m for m in dynamics if m.get("month") and m["month"] <= until}
+def _cumulative_pace(dynamics: Iterable[dict[str, Any]], until: str, *,
+                     price_product: str | None = None, measure: str = "area",
+                     price_key: str = "price") -> list[dict[str, Any]]:
+    """Общий календарь, темп и взвешенная цена — без второго счёта у читателей."""
+    if not _valid_month(until):
+        raise ValueError("until должен быть месяцем в формате YYYY-MM")
+    by_month = {m["month"]: m for m in dynamics
+                if _valid_month(m.get("month")) and m["month"] <= until}
     sold = [key for key, m in by_month.items()
             if (m.get("units") or 0) > 0 or (m.get("amount") or 0) > 0]
     if not sold:
         return []
     out: list[dict[str, Any]] = []
     total = {"area": 0.0, "units": 0.0, "amount": 0.0}
-    flats_area = flats_amount = 0.0
+    price_amount = price_base = area_unknown = 0.0
+    price_area_known = True
     key, count = min(sold), 0
     while key <= until:
         item = by_month.get(key) or {}
-        flats = (item.get("by_product") or {}).get("Квартира") or {}
         count += 1
-        row = {"month": key, "price_flats": item.get("price_flats")}
+        row = {"month": key, "price": item.get(price_key)}
         for name in total:
             row[name] = float(item.get(name) or 0.0)
             total[name] += row[name]
             row[f"avg_{name}"] = total[name] / count
-        if flats.get("area"):
-            flats_area += float(flats["area"])
-            flats_amount += float(flats.get("amount") or 0.0)
-        row["avg_price_flats"] = flats_amount / flats_area if flats_area else None
+        sold_now = row["units"] > 0 or row["amount"] > 0
+        unknown = float(item.get("area_unknown") or 0.0)
+        if sold_now and row["area"] <= 0:
+            unknown = max(1.0, unknown)
+        area_unknown += unknown
+        row["area_unknown"] = unknown
+        row["area_unknown_cum"] = area_unknown
+        if area_unknown:
+            row["avg_area"] = None
+        basis = ((item.get("by_product") or {}).get(price_product) or {}
+                 if price_product is not None else item)
+        price_amount += float(basis.get("amount") or 0.0)
+        price_base += float(basis.get(measure) or 0.0)
+        if measure == "area":
+            basis_sold = (basis.get("units") or 0) > 0 or (basis.get("amount") or 0) > 0
+            if basis.get("area_unknown") or (basis_sold and not (basis.get("area") or 0) > 0):
+                price_area_known = False
+        row["avg_price"] = price_amount / price_base if price_base > 0 and price_area_known else None
         row["months_since_start"] = count
         out.append(row)
+        if key == until:
+            break
         key = _next_month(key)
     return out
+
+
+def pace_since_start(dynamics: Iterable[dict[str, Any]], until: str) -> list[dict[str, Any]]:
+    """Полный календарь с первого договора и средние с начала продаж.
+
+    avg_amount/avg_units/avg_area — накопленный объём / число календарных
+    месяцев, включая паузы. Неизвестная площадь проданного лота подавляет
+    avg_area, а не превращается в измеренные нулевые метры. avg_price_flats —
+    накопленная сумма ТОЛЬКО квартир / их площадь; при неполной площади
+    квартир средняя цена не объявляется. Цена и площадь фактического месяца
+    сохраняются, причина пропуска новых средних — area_unknown_cum.
+    """
+    rows = _cumulative_pace(dynamics, until, price_product="Квартира", price_key="price_flats")
+    for row in rows:
+        row["price_flats"] = row.pop("price")
+        row["avg_price_flats"] = row.pop("avg_price")
+    return rows
+
+
+def _dynamics_pace(dynamics: list[dict[str, Any]], until: str | None = None) -> dict[str, Any]:
+    """Те же средние для общей динамики и каждого товара в его собственной мере."""
+    months = [m for m in dynamics if _valid_month(m.get("month"))]
+    end = until if until is not None else max((m["month"] for m in months), default=None)
+    if end is None:
+        return {"total": [], "by_product": {}}
+    products = sorted({product for m in months for product in m.get("by_product") or {}})
+    return {"total": pace_since_start(months, end), "by_product": {
+        product: _cumulative_pace(
+            [{"month": m["month"], **m["by_product"][product]} for m in months
+             if product in (m.get("by_product") or {})], end, measure=product_measure(product))
+        for product in products}}
 
 
 def fm_plan_by_month(fm: dict[str, Any] | None) -> dict[str, dict[str, float]]:

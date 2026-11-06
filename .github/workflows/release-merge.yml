@@ -21,6 +21,14 @@ on:
         description: "Как сливать: squash или merge"
         required: false
         default: squash
+      expected_head:
+        description: "Для автоматической очереди: принятый source HEAD"
+        required: false
+        default: ""
+      expected_base:
+        description: "Для автоматической очереди: main на момент dispatch"
+        required: false
+        default: ""
 
 concurrency:
   # Два прогона разом прочитали бы одну и ту же базу и выдали ОДИН номер —
@@ -35,6 +43,8 @@ permissions:
   # Слияние от GITHUB_TOKEN не запускает сборку main push-событием, поэтому
   # скрипт зовёт её сам — для этого нужен запуск workflow.
   actions: write
+  checks: read
+  statuses: read
 
 jobs:
   merge:
@@ -54,4 +64,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ inputs.pr }}
           METHOD: ${{ inputs.method }}
-        run: python3 scripts/release_merge.py --pr "$PR" --method "$METHOD"
+          EXPECTED_HEAD: ${{ inputs.expected_head }}
+          EXPECTED_BASE: ${{ inputs.expected_base }}
+          RELEASE_CONTROL_ACTORS: ${{ vars.RELEASE_CONTROL_ACTORS }}
+        run: python3 scripts/release_merge.py --pr "$PR" --method "$METHOD" --expected-head "$EXPECTED_HEAD" --expected-base "$EXPECTED_BASE"

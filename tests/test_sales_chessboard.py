@@ -210,7 +210,8 @@ def test_the_bot_receives_the_chessboard_and_does_not_repeat_the_question(monkey
     assert len([text for chat, text in bot.said if chat == bot.chat["id"]]) == 1
 
 
-def test_sales_page_draws_the_shared_overlay(client):
+@pytest.mark.parametrize("width", [390, 1440])
+def test_sales_page_draws_the_shared_overlay(client, width):
     import main_registry
     from browser import chromium_or_skip, serve
     from playwright.sync_api import expect, sync_playwright
@@ -222,7 +223,7 @@ def test_sales_page_draws_the_shared_overlay(client):
     with serve(main_registry.app, 18848) as base, sync_playwright() as pw:
         browser = pw.chromium.launch(executable_path=str(chromium_or_skip()))
         try:
-            page = browser.new_page(viewport={"width": 390, "height": 844})
+            page = browser.new_page(viewport={"width": width, "height": 844})
             errors = []
             page.on("pageerror", lambda error: errors.append(str(error)))
             page.request.post(base + "/cabinet/login", form={"key": "cabinet-probe-key"})
@@ -237,6 +238,17 @@ def test_sales_page_draws_the_shared_overlay(client):
                     "buffer": book(2)})
             assert uploaded.value.status == 200
             expect(page.locator(".chessboard-overlay")).to_contain_text("свободно квартир — 2")
+            if width == 1440:
+                from pypdf import PdfReader
+                printed = page.evaluate("salesPrintHtml()")
+                paper = browser.new_page()
+                paper.set_content(printed)
+                pdf = paper.pdf()
+                text = " ".join((p.extract_text() or "") for p in PdfReader(io.BytesIO(pdf)).pages)
+                assert "Остаток по шахматке" in text
+                assert "Состав новых лотов" in text
+                assert "не график поступлений на эскроу" in text
+                paper.close()
             assert not errors
         finally:
             browser.close()
@@ -258,3 +270,29 @@ def test_rendered_overlay_fits_a_phone_and_keeps_regrouping_explanation():
             assert page.evaluate("document.documentElement.scrollWidth") <= 390
         finally:
             browser.close()
+
+
+def test_replied_chessboard_question_is_not_repeated_after_asked_file_is_lost(monkeypatch, tmp_path):
+    """Main's durable answer journal must remain authoritative after merging stock questions."""
+    import html
+    import time
+    from market_search import sales_dialogue
+    from test_sales_chat_answers import _setup, _reply
+
+    bot, where, _ = _setup(monkeypatch, tmp_path)
+    today = datetime.date.today()
+    sales_store.save(where, "Тест", {"contracting": {"rows": []},
+                     "chessboard": snapshot(as_of=today.isoformat())}, "synthetic.xlsx")
+    text = (f"Отчёт за {today:%d.%m.%Y}\nВстречи за день - 1\nТекущих броней: 1\n"
+            "- квартира №4, 50 кв.м.")
+    bot.send(text, date=int(time.time()))
+    quoted = html.unescape(next(t for c, t in bot.said if c == bot.chat["id"]))
+    assert "Продано" in quoted
+    _reply(bot, quoted, text="Бронь снята; в отчёте осталась старая строка.")
+    batch = next(iter(sales_dialogue.load(where, "Тест")["batches"].values()))
+    assert len(batch["replies"]) == 1
+    assert batch["questions"][0]["kind"] == "chess_status"
+    sales_questions._asked_path(where, "Тест").unlink()
+    sales_store.save(where, "Тест", {"chessboard": snapshot(as_of=today.isoformat())}, "new.xlsx")
+    bot.send(text, date=int(time.time()))
+    assert len([t for c, t in bot.said if c == bot.chat["id"]]) == 1

@@ -229,18 +229,24 @@ def test_the_live_screen_markup_parses_into_slides(tmp_path) -> None:
     got["conclusions"] = contracting.conclusions(got)
     got["pool"] = contracting.pool_progress(got, [], None, None)
 
-    file = tmp_path / "cabinet.html"
-    file.write_text(cabinet_page("sales").replace("__DEVELOPAID_VERSION__", "test"), encoding="utf-8")
-    with play.sync_playwright() as pw:
+    body = cabinet_page("sales").replace("__DEVELOPAID_VERSION__", "test")
+    from browser import serve
+    from starlette.applications import Starlette
+    from starlette.responses import HTMLResponse
+    from starlette.routing import Route
+
+    # Render the real page over HTTP, as in production; file:// is not a product route.
+    app = Starlette(routes=[Route("/", lambda request: HTMLResponse(body))])
+    with serve(app, 18872) as base, play.sync_playwright() as pw:
         try:
             browser = browser_launch.launch(pw)
         except Exception as exc:  # noqa: BLE001
             pytest.skip(f"Chromium недоступен: {exc}")
         try:
             tab = browser.new_page()
-            tab.route("**/*", lambda route: route.abort()
-                      if route.request.url.startswith("http") else route.continue_())
-            tab.goto(file.as_uri())
+            tab.route("**/*", lambda route: route.continue_()
+                      if route.request.url == base + "/" else route.abort())
+            tab.goto(base + "/")
             markup = tab.evaluate("(d)=>{renderSales(d); return salesPrintHtml()}", got)
         finally:
             browser.close()
