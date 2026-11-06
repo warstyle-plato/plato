@@ -132,12 +132,35 @@ def match(inventory: list[dict], unit: str, corpus: str = "", area: Any = None) 
     return lot
 
 
+def reconciled_contracts(rows: list[dict]) -> tuple[list[dict], int, list[dict]]:
+    """Повтор источника — один договор; противоречивые цены/площади не выбираем."""
+    kept, fingerprints, conflicts, duplicates = {}, {}, set(), 0
+    for row in rows:
+        product = "apartment" if row.get("product") in ("Квартира", "Квартиры") else str(row.get("product") or "")
+        corpus = building(row.get("unit"))
+        unit = _UNIT.search(str(row.get("unit") or ""))
+        name = (str(int(unit.group(1))) if corpus and unit
+                else " ".join(str(row.get("unit") or "").casefold().split()))
+        identity = (product, corpus, name, str(row.get("signed") or ""),
+                    " ".join(str(row.get("contract") or "").casefold().split()))
+        fingerprint = (number(row.get("area")), number(row.get("amount")),
+                       number(row.get("contract_price_per_sqm")))
+        if identity in kept:
+            duplicates += 1
+            if fingerprint != fingerprints[identity]:
+                conflicts.add(identity)
+        else:
+            kept[identity], fingerprints[identity] = row, fingerprint
+    return ([row for key, row in kept.items() if key not in conflicts], duplicates,
+            [row for key, row in kept.items() if key in conflicts])
+
+
 def questions(snapshot: dict | None, contracts: list[dict], report_text: str, today: str) -> list[dict]:
     from . import salesroom
 
     inventory = lots(snapshot, today)
     found = []
-    for row in contracts:
+    for row in reconciled_contracts(contracts)[0]:
         if row.get("product") not in ("Квартира", "Квартиры"):
             continue
         hit = _UNIT.search(str(row.get("unit") or ""))
@@ -175,7 +198,61 @@ def questions(snapshot: dict | None, contracts: list[dict], report_text: str, to
     return found
 
 
-def overlay(snapshot: dict | None, contracts: list[dict], today: str) -> dict | None:
+def _pace(contracts: list[dict] | None, corps: set[str], today: str,
+          coverage: dict | None) -> dict:
+    """Темп известных договоров отдельно от подтверждённого полного периода."""
+    end = day(today).replace(day=1) - dt.timedelta(days=1)
+    cut = end.replace(day=1)
+    months = []
+    for _ in range(3):
+        months.append(cut.strftime("%Y-%m"))
+        cut = (cut - dt.timedelta(days=1)).replace(day=1)
+    start = dt.date.fromisoformat(min(months) + "-01")
+    state, reason, total, duplicates = "partial", "", 0.0, 0
+    observed = None
+    if contracts is None:
+        state, reason = "missing", "Контрактация не загружена; темп продаж неизвестен."
+    else:
+        unique, duplicates, conflicts = reconciled_contracts(contracts)
+        ambiguous = any(day(row.get("signed")) and str(row["signed"])[:7] in months
+                        and row.get("product") in ("Квартира", "Квартиры")
+                        and (not building(row.get("unit")) or building(row.get("unit")) in corps)
+                        for row in conflicts)
+        for row in unique:
+            signed = day(row.get("signed"))
+            if not signed or signed.strftime("%Y-%m") not in months or row.get("product") not in ("Квартира", "Квартиры"):
+                continue
+            corpus = building(row.get("unit"))
+            # Без явного корпуса не угадываем принадлежность продаж этому остатку.
+            if not corpus:
+                ambiguous = True
+                continue
+            if corpus not in corps:
+                continue
+            unit = _UNIT.search(str(row.get("unit") or ""))
+            area = number(row.get("area"))
+            if not unit or area is None or area <= 0:
+                ambiguous = True
+                continue
+            total += area
+        if ambiguous:
+            state, reason = "unknown", "Есть договоры без однозначного корпуса, квартиры или площади либо с противоречивой площадью или ценой одного договора; темп не подтверждён."
+        else:
+            observed = total / 3
+            meta = coverage if isinstance(coverage, dict) else {}
+            first, last = day(meta.get("from")), day(meta.get("through"))
+            if first and last and first <= start and end <= last <= day(today):
+                state = "ok"
+            else:
+                reason = ("Полнота контрактации за три завершённых месяца не подтверждена "
+                          "датами покрытия источника; подтверждённый прогноз срока распродажи не рассчитан.")
+    return {"pace_months": sorted(months), "pace_state": state, "pace_reason": reason,
+            "pace_area": observed if state == "ok" else None,
+            "pace_observed_area": observed, "pace_duplicate_rows": duplicates}
+
+
+def overlay(snapshot: dict | None, contracts: list[dict] | None, today: str,
+            coverage: dict | None = None) -> dict | None:
     if not snapshot:
         return None
     inventory = [x for x in lots(snapshot, today) if x["product"] == "apartment"]
@@ -186,7 +263,7 @@ def overlay(snapshot: dict | None, contracts: list[dict], today: str) -> dict | 
     # Подписанный после снимка договор уменьшает остаток, но не становится
     # второй продажей и не меняет сам источник.
     signed = set()
-    for row in contracts:
+    for row in contracts or []:
         if row.get("product") not in ("Квартира", "Квартиры"):
             continue
         hit = _UNIT.search(str(row.get("unit") or ""))
@@ -197,25 +274,23 @@ def overlay(snapshot: dict | None, contracts: list[dict], today: str) -> dict | 
             signed.add(lot["key"])
     available = [x for x in available if x["key"] not in signed]
     known = [x for x in available if x["price_consistent"]]
-    # Три полностью завершённых месяца: текущий неполный месяц не раздувает темп.
-    cut = day(today).replace(day=1)
-    months = []
-    for _ in range(3):
-        cut = (cut - dt.timedelta(days=1)).replace(day=1)
-        months.append(cut.strftime("%Y-%m"))
     corps = {x["building"] for x in inventory}
-    area_sold = sum(number(x.get("area")) or 0 for x in contracts
-                    if day(x.get("signed")) and str(x["signed"])[:7] in months
-                    and x.get("product") in ("Квартира", "Квартиры")
-                    and building(x.get("unit")) in corps)
-    pace = area_sold / 3
+    pace = _pace(contracts, corps, today, coverage)
     area_left = sum(x["area"] for x in available)
+    confirmed = (area_left / pace["pace_area"]
+                 if pace["pace_area"] is not None and pace["pace_area"] > 0 else None)
+    conditional = (area_left / pace["pace_observed_area"]
+                   if pace["pace_state"] == "partial" and pace["pace_observed_area"]
+                   and pace["pace_observed_area"] > 0 else None)
     return {"state": "ok", "as_of": sorted({x["as_of"] for x in inventory}),
             "buildings": sorted(corps),
             "counts": dict(counts), "available": len(available), "available_area": area_left,
             "valuation": sum(x["amount"] for x in known) if len(known) == len(available) else None,
-            "price_unconfirmed": len(available) - len(known), "pace_months": sorted(months),
-            "pace_area": pace, "months_to_sell": area_left / pace if pace > 0 else None,
+            "price_unconfirmed": len(available) - len(known), **pace,
+            "months_to_sell": confirmed, "confirmed_months_to_sell": confirmed,
+            "conditional_months_to_sell": conditional,
+            "forecast_state": ("confirmed" if confirmed is not None else
+                               "conditional" if conditional is not None else "unknown"),
             "booked": counts["booked"], "regrouping_units": counts["regrouping"],
             "regrouping_lots": None, "regrouping_value": None,
             "unknown_status": counts["unknown"],
@@ -236,8 +311,16 @@ def render(block: dict | None) -> str:
     if block["months_to_sell"] is not None:
         text += (f"При среднем темпе {ru(block['pace_area'], 1)} м² в месяц за три завершённых месяца "
                  f"остаток соответствует {ru(block['months_to_sell'], 1)} месяца продаж. ")
+    elif block.get("pace_state") == "ok":
+        text += "За три завершённых месяца с подтверждённым покрытием источника нет положительного темпа продаж; срок распродажи не рассчитан. "
     else:
-        text += "Для срока распродажи нет положительного темпа за три завершённых месяца. "
+        text += (block.get("pace_reason") or "Темп продаж не подтверждён; срок распродажи не рассчитан.") + " "
+        if block.get("pace_observed_area") is not None:
+            text += (f"Только по найденным договорам — {ru(block['pace_observed_area'], 1)} м² в месяц; "
+                     "это частичное наблюдение, не подтверждённый темп всего периода. ")
+        if block.get("conditional_months_to_sell") is not None:
+            text += (f"Условная оценка — {ru(block['conditional_months_to_sell'], 1)} месяца "
+                     "при сохранении темпа по загруженным договорам; полнота периода не подтверждена. ")
     text += (f"Для объединения выделено квартир — {block['regrouping_units']}. Состав новых лотов, "
              "их цены и сроки выхода пока не заданы: в обычный прогноз они не включены. "
              "Это оценка свободного остатка по текущим ценам, а не график поступлений на эскроу.")

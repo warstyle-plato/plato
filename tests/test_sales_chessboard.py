@@ -124,7 +124,8 @@ def test_booking_on_sold_flat_is_asked_without_a_contract_export():
 
 def test_forecast_separates_bookings_and_regrouping_and_counts_only_free_stock():
     rows = [contract(unit=99, amount=5_000_000, signed="2026-08-15", area=60)]
-    out = chessboard.overlay(snapshot(), rows, "2026-11-03")
+    out = chessboard.overlay(snapshot(), rows, "2026-11-03",
+                             {"from": "2026-08-01", "through": "2026-10-31"})
     assert out["available"] == 1 and out["available_area"] == 40
     assert out["valuation"] == 4_000_000
     assert out["booked"] == 1
@@ -133,7 +134,8 @@ def test_forecast_separates_bookings_and_regrouping_and_counts_only_free_stock()
     assert out["pace_area"] == 20 and out["months_to_sell"] == 2
     assert out["pace_months"] == ["2026-08", "2026-09", "2026-10"]
     other_corpus = dict(rows[0], unit="корп 2 кв.99", area=600)
-    assert chessboard.overlay(snapshot(), rows + [other_corpus], "2026-11-03")["pace_area"] == 20
+    assert chessboard.overlay(snapshot(), rows + [other_corpus], "2026-11-03",
+                              {"from": "2026-08-01", "through": "2026-10-31"})["pace_area"] == 20
     # Новый договор после снимка исключает лот из свободного остатка ровно один раз.
     out = chessboard.overlay(snapshot(), rows + [contract(), contract()], "2026-11-03")
     assert out["available"] == 0 and out["adjusted_signed"] == 1
@@ -244,7 +246,8 @@ def test_sales_page_draws_the_shared_overlay(client, width):
                 paper = browser.new_page()
                 paper.set_content(printed)
                 pdf = paper.pdf()
-                text = " ".join((p.extract_text() or "") for p in PdfReader(io.BytesIO(pdf)).pages)
+                text = " ".join(" ".join((p.extract_text() or "").split())
+                                for p in PdfReader(io.BytesIO(pdf)).pages)
                 assert "Остаток по шахматке" in text
                 assert "Состав новых лотов" in text
                 assert "не график поступлений на эскроу" in text
@@ -296,3 +299,109 @@ def test_replied_chessboard_question_is_not_repeated_after_asked_file_is_lost(mo
     sales_store.save(where, "Тест", {"chessboard": snapshot(as_of=today.isoformat())}, "new.xlsx")
     bot.send(text, date=int(time.time()))
     assert len([t for c, t in bot.said if c == bot.chat["id"]]) == 1
+
+
+def test_pace_deduplicates_same_contract_without_merging_other_corps():
+    coverage = {"from": "2026-08-01", "through": "2026-10-31"}
+    row = contract(signed="2026-08-15", area=30)
+    first = chessboard.overlay(snapshot(), [row], "2026-11-03", coverage)
+    twice = chessboard.overlay(snapshot(), [row, dict(row)], "2026-11-03", coverage)
+    assert first["pace_area"] == twice["pace_area"] == 10
+    assert twice["pace_duplicate_rows"] == 1
+    combined = chessboard.merge(snapshot(), snapshot(2), "two.xlsx")
+    other = dict(row, unit="корпус 2 кв.1")
+    assert chessboard.overlay(combined, [row, other], "2026-11-03", coverage)["pace_area"] == 20
+    # Conflicting quantities for one identity are not silently picked or added.
+    bad = chessboard.overlay(snapshot(), [row, dict(row, area=50)], "2026-11-03", coverage)
+    assert bad["pace_state"] == "unknown" and bad["pace_area"] is None
+    assert bad["months_to_sell"] is None
+
+
+def test_missing_export_unknown_coverage_and_confirmed_zero_are_different():
+    coverage = {"from": "2026-08-01", "through": "2026-10-31"}
+    missing = chessboard.overlay(snapshot(), None, "2026-11-03")
+    assert missing["pace_state"] == "missing" and missing["pace_area"] is None
+    assert missing["pace_observed_area"] is None
+    assert "Контрактация не загружена" in chessboard.render(missing)
+    partial = chessboard.overlay(snapshot(), [contract(signed="2026-08-15", area=30)], "2026-11-03")
+    assert partial["pace_state"] == "partial" and partial["pace_area"] is None
+    assert partial["pace_observed_area"] == 10 and partial["months_to_sell"] is None
+    assert partial["confirmed_months_to_sell"] is None
+    assert partial["conditional_months_to_sell"] == 4 and partial["forecast_state"] == "conditional"
+    assert "при сохранении темпа по загруженным договорам; полнота периода не подтверждена" in chessboard.render(partial)
+    assert "Только по найденным договорам" in chessboard.render(partial)
+    old = chessboard.overlay(snapshot(), [], "2026-11-03", {"from": "2026-08-01", "through": "2026-09-30"})
+    assert old["pace_state"] == "partial" and old["pace_area"] is None
+    zero = chessboard.overlay(snapshot(), [], "2026-11-03", coverage)
+    assert zero["pace_state"] == "ok" and zero["pace_area"] == 0
+    assert zero["months_to_sell"] is None
+
+
+def test_public_stock_without_contract_source_does_not_claim_zero_pace(client):
+    response = client.post("/cabinet/contracting", params={"project": "Проба", "as_of": "2026-11-01"}, content=book())
+    assert response.status_code == 200
+    block = response.json()["chessboard"]
+    assert block["pace_state"] == "missing" and block["pace_area"] is None
+    got = client.get("/cabinet/sales/summary", params={"project": "Проба"}).json()
+    assert got["chessboard"] == block
+
+
+@pytest.mark.parametrize("changed", [{"area": 50}, {"amount": 9_000_000}, {"contract_price_per_sqm": 999_999}])
+def test_conflicting_contract_facts_do_not_pick_a_price_or_forecast(changed):
+    row = contract(signed="2026-08-15", area=30)
+    out = chessboard.overlay(snapshot(), [row, dict(row, **changed)], "2026-11-03",
+                             {"from": "2026-08-01", "through": "2026-10-31"})
+    assert out["pace_state"] == "unknown" and out["pace_area"] is None
+    assert out["conditional_months_to_sell"] is None and out["months_to_sell"] is None
+    fresh = contract()
+    assert not chessboard.questions(snapshot(), [fresh, dict(fresh, **changed)], "", "2026-11-03")
+
+
+@pytest.mark.parametrize("path,method", [("/cabinet/sales/summary", "get"), ("/cabinet/contracting", "post")])
+def test_private_stock_responses_are_not_cached_and_require_admission_before_source_io(client, monkeypatch, path, method):
+    from market_search import cabinet
+    from fastapi import HTTPException
+    request = getattr(client, method)
+    data = {"content": book()} if method == "post" else {}
+    params = {"project": "Проба", "as_of": "2026-11-01"}
+    response = request(path, params=params, **data)
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "private, no-store"
+    assert response.headers["pragma"] == "no-cache"
+
+    def fail_io(*_args, **_kwargs):
+        raise AssertionError("private-source-marker")
+
+    monkeypatch.setattr(sales_store, "load", fail_io)
+    response = request(path, params=params, **data)
+    assert response.status_code == 500
+    assert "private-source-marker" not in response.text
+    assert response.headers["cache-control"] == "private, no-store"
+    client.cookies.clear()
+    response = request(path, params=params, **data)
+    assert response.status_code == 401
+    assert response.headers["cache-control"] == "private, no-store"
+    assert response.headers["pragma"] == "no-cache"
+
+    def denied(_request):
+        raise HTTPException(403, "synthetic denied")
+
+    monkeypatch.setattr(cabinet, "require_cabinet", denied)
+    response = request(path, params=params, **data)
+    assert response.status_code == 403
+    assert response.headers["cache-control"] == "private, no-store"
+
+
+def test_invalid_stock_upload_is_not_cached(client):
+    response = client.post("/cabinet/contracting", content=b"not-a-workbook")
+    assert response.status_code == 422
+    assert response.headers["cache-control"] == "private, no-store"
+
+
+def test_conflicting_price_facts_do_not_fall_back_to_a_median_accusation():
+    peers = [dict(contract(unit=i, amount=4_000_000), rooms="2К") for i in (11, 12, 13)]
+    low = dict(contract(), rooms="2К", escrow_total=3_200_000)
+    contradictory = dict(low, amount=4_000_000)
+    got = sales_questions.questions(None, {"rows": peers + [low, contradictory]},
+                                    "2026-11-03", "2026-11-03", snapshot=snapshot())
+    assert not [q for q in got if q["kind"] in ("price", "chess_price")]

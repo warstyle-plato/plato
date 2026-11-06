@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import logging
 import os
 import re
 import sys
@@ -14,7 +15,7 @@ from urllib.parse import parse_qs, quote, unquote
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi import Response
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from pydantic import BaseModel, Field, model_validator
 
 from request_body import json_object
@@ -184,6 +185,23 @@ def install(app: FastAPI) -> MarketDiscoveryService:
     service = MarketDiscoveryService(data_dir)
     app.state.market_discovery_installed = True
     app.state.market_discovery_service = service
+
+    @app.middleware("http")
+    async def private_sales_sources(request: Request, call_next):
+        # A private snapshot must not survive in browser/shared caches, including
+        # denied or failed requests. Preserve the existing cabinet admission gate.
+        if request.url.path not in {"/cabinet/contracting", "/cabinet/sales/summary"}:
+            return await call_next(request)
+        try:
+            response = await call_next(request)
+        except Exception as exc:
+            # Do not log request bodies, source values, credentials or exception text.
+            logging.getLogger(__name__).warning("sales source request failed (%s)", type(exc).__name__)
+            response = JSONResponse(status_code=500, content={
+                "detail": "Не удалось получить отчёт о продажах. Повторите запрос; если ошибка сохраняется, сообщите время и действие."})
+        response.headers["Cache-Control"] = "private, no-store"
+        response.headers["Pragma"] = "no-cache"
+        return response
 
     # Недельный свод рынка по регионам из кабинета «Пульса». Поток только
     # проверяет срок раз в час; сбор идёт раз в 7 дней и берёт замок-файл,
@@ -899,7 +917,7 @@ def install(app: FastAPI) -> MarketDiscoveryService:
 
         contracts = part("contracting")
         if not contracts:
-            stock = chessboard.overlay(part("chessboard"), [], datetime.date.today().isoformat())
+            stock = chessboard.overlay(part("chessboard"), None, datetime.date.today().isoformat())
             return {"project": kept.get("project") or "",
                     "sources": [{"kind": kind, "name": sales_store.KINDS.get(kind, kind),
                                  "at": value.get("at"), "file": value.get("file")}
@@ -916,7 +934,7 @@ def install(app: FastAPI) -> MarketDiscoveryService:
         got = contracting.summarise(contracts, part("ledger") or {}, until=until)
         fm, bank, pool = part("fm_plan"), part("bank_plan"), part("pool")
         got["chessboard"] = chessboard.overlay(part("chessboard"), contracts.get("rows") or [],
-                                               datetime.date.today().isoformat())
+                                               datetime.date.today().isoformat(), contracts.get("coverage"))
         got["chessboard_html"] = chessboard.render(got["chessboard"])
         got["fm_plan"] = fm
         got["bank_plan"] = bank

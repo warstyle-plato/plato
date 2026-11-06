@@ -216,7 +216,7 @@ def questions(read: dict[str, Any] | None, contracts: dict[str, Any] | None,
         found += _no_money(rows, loaded)
         found += _dropped(read, rows, str(uploaded)[:10], today)
     if rows and loaded:
-        found += _unusual(rows, loaded)
+        found += _unusual(chessboard.reconciled_contracts(rows)[0], loaded)
     seen = set(asked or ())
     out = []
     for item in found:
