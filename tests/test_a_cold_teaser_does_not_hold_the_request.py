@@ -78,31 +78,74 @@ def _poll(client, ticket, limit=60.0):
     raise AssertionError("тизер не собрался за отведённое время")
 
 
-def test_a_cold_teaser_answers_within_the_budget_and_names_the_stage(cold):
+def test_a_cold_teaser_answers_within_the_budget_and_names_the_stage(cold, monkeypatch):
     from fastapi.testclient import TestClient
     release, calls = cold
     inputs, tep = _inputs()
     client = TestClient(core.app)
-    started = time.monotonic()
-    response = _post(client, inputs, tep)
-    took = time.monotonic() - started
-    assert took < BUDGET_SECONDS, f"запрос держался {took:.1f} с — столько же, сколько холодный источник"
-    assert response.status_code == 202, response.text[:300]
-    state = response.json()
-    assert state["pending"] is True and state["ticket"]
-    assert state["stage"] == "screening", state
-    assert "скрининг" in state["detail"]
-    assert calls, "скрининг не начался: 202 вышел не из-за холодного источника"
+    ceiling_entered, ceiling_release = threading.Event(), threading.Event()
+    screening_entered = threading.Event()
+    original_price = core.entry_price_for_report
 
-    # Пока сборка идёт — опрос честно говорит «готовится».
-    assert client.get(f"/report/teaser/{state['ticket']}").status_code == 202
+    def controlled_price(*args, **kwargs):
+        # До скрининга есть реальные стадии модели и подбора цены. При
+        # занятости CI первая передача202 может честно случиться на любой
+        # из них. Удерживаем подбор явно, вместо угадывания скорости CPU.
+        ceiling_entered.set()
+        assert ceiling_release.wait(30), "тест не отпустил подбор цены"
+        return original_price(*args, **kwargs)
 
-    release.set()
-    done = _poll(client, state["ticket"])
-    assert done.status_code == 200, done.text[:300]
-    assert done.headers["content-type"].startswith("application/pdf")
-    assert done.content.startswith(b"%PDF")
-    assert "Холодный" in done.headers["content-disposition"] or "%D0%A5" in done.headers["content-disposition"]
+    def controlled_screening(**kwargs):
+        calls.append(kwargs)
+        screening_entered.set()
+        assert release.wait(30), "тест не отпустил холодный скрининг"
+        return {"parcels": [], "verdict": {}}
+
+    monkeypatch.setattr(core, "entry_price_for_report", controlled_price)
+    monkeypatch.setattr(core, "land_screening", controlled_screening)
+    ticket = None
+    try:
+        started = time.monotonic()
+        response = _post(client, inputs, tep)
+        took = time.monotonic() - started
+        assert took < BUDGET_SECONDS, f"запрос держался {took:.1f} с — столько же, сколько холодный источник"
+        assert response.status_code == 202, response.text[:300]
+        state = response.json()
+        assert state["pending"] is True and state["ticket"]
+        ticket = state["ticket"]
+        assert state["stage"] in {"model", "ceiling"}, state
+        assert state["detail"] == f"Тизер готовится: {core._TEASER_STAGES[state['stage']]}."
+        assert ceiling_entered.wait(30), "сборка не дошла до подбора цены"
+
+        price = client.get(f"/report/teaser/{ticket}")
+        assert price.status_code == 202
+        assert price.json()["stage"] == "ceiling", price.json()
+        assert "подбор максимальной цены входа" in price.json()["detail"]
+        assert calls == [], "скрининг начался раньше завершения подбора цены"
+        ceiling_release.set()
+        assert screening_entered.wait(30), "сборка не дошла до холодного источника"
+
+        # Проверяем именно скрининг на его реальной, удержанной границе.
+        pending = client.get(f"/report/teaser/{ticket}")
+        assert pending.status_code == 202
+        assert pending.json()["stage"] == "screening", pending.json()
+        assert "скрининг" in pending.json()["detail"]
+        assert len(calls) == 1
+
+        release.set()
+        done = _poll(client, ticket)
+        assert done.status_code == 200, done.text[:300]
+        assert done.headers["content-type"].startswith("application/pdf")
+        assert done.content.startswith(b"%PDF")
+        assert "Холодный" in done.headers["content-disposition"] or "%D0%A5" in done.headers["content-disposition"]
+    finally:
+        ceiling_release.set()
+        release.set()
+        if ticket:
+            with core._TEASER_JOBS_LOCK:
+                finished = core._TEASER_JOBS.get(ticket)
+            if finished is not None:
+                assert finished.wait(30), "поток сборки тизера не закончился"
 
 
 def test_the_result_lives_on_disk_for_the_other_worker(cold):
