@@ -2181,10 +2181,15 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
     # список читают несколько мест, и каждое падало бы на своём .get.
     social_objects = [copy.deepcopy(obj) for obj in (phasing.get("social_objects") or [])
                       if isinstance(obj, dict)]
+    # A source draft explicitly declares the supported geometry, including
+    # absent social rows. Do not invent queue objects from unrelated form
+    # defaults: the single-phase declared-row calculation preserves those
+    # zeros too. Explicit social objects remain subject to the usual checks.
+    import partial_tep
     # Совмещённый режим тоже строит: без него реестр объектов оставался пустым,
     # стройка школы и садика в очередях исчезала, и соцнагрузка выходила нулевой.
     if (str(x_master.get("social_mode")) in ("Строительство", SOCIAL_MODE_BOTH)
-            and not social_objects):
+            and not social_objects and not partial_tep.active(x_master)):
         # Реестр объектов пуст — собираем его из вводных, чтобы нагрузка не потерялась.
         for typ, key in (("kindergarten", "kindergarten_places"), ("school", "school_places"),
                          ("clinic", "clinic_capacity")):

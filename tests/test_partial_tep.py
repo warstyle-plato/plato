@@ -128,6 +128,44 @@ def test_completed_draft_calculates_exact_declared_geometry_without_default_obje
     assert rows['kindergarten']['units']==0.
 
 
+@pytest.mark.parametrize('partial', [True, False])
+def test_two_phase_source_draft_does_not_invent_default_social_objects(partial):
+    data = complete()
+    inputs = copy.deepcopy(core.DEFAULT_INPUTS)
+    inputs.update(data['inputs'])
+    inputs.update(project_kind='mixed', underground_manual_spaces=10.,
+                  underground_manual_gns_sqm=500., _parking_by_hand=['underground'],
+                  social_mode='Строительство', kindergarten_places=40.,
+                  school_places=90., clinic_capacity=0.)
+    if not partial:
+        inputs.pop('_partial_tep')
+    tep = copy.deepcopy(core.TEP_DEFAULT)
+    for row in tep.values():
+        for field in partial_tep.FIELDS:
+            row[field] = 0.
+    for key, row in data['tep'].items():
+        tep[key].update(row)
+    tep['underground_parking']['guest_units'] = 2.
+    phasing = {'enabled': True, 'mode': 'phased', 'phase_count': 2,
+               'user_enabled': True, 'phase_gap_months': 12,
+               'phases': [{'name': f'Queue {i+1}', 'start_offset_months': 12*i,
+                           'construction_months': 24} for i in range(2)]}
+    bundle = core.calculate_phased(core.PhasedCalcRequest(
+        inputs=inputs, tep=tep, rates=[], phasing=phasing))
+    assert len(bundle['phases']) == 2
+    rows = [{r['key']: r for r in p['result']['tep']['rows']} for p in bundle['phases']]
+    if partial:
+        for key in ('apartments', 'underground_parking'):
+            for field in ('gns', 'total_area', 'saleable', 'units'):
+                assert sum(r[key][field] for r in rows) == pytest.approx(tep[key][field])
+        for key in ('kindergarten', 'school', 'clinic'):
+            assert all(r[key]['units'] == r[key]['gns'] == 0 for r in rows)
+    else:
+        # The legacy form still uses its explicitly configured fallback.
+        assert sum(r['kindergarten']['units'] for r in rows) == 40.
+        assert sum(r['school']['units'] for r in rows) == 90.
+
+
 def test_declared_absent_product_in_phase_is_not_missing_unknown():
     data=complete()
     data['tep']['underground_parking']={key:0. for key in (*partial_tep.FIELDS,'guest_units')}
