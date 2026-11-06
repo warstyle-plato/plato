@@ -36,7 +36,12 @@ import document_intake  # noqa: E402
 import main as wrapper  # noqa: E402
 import teaser_card  # noqa: E402
 
+from starlette.requests import Request
+
 core = wrapper.core
+# A real, stable server request identity for the direct handler tests.
+request = Request({"type": "http", "method": "POST", "path": "/agent/document",
+                   "headers": [], "query_string": b""})
 PORT = 18293
 NUMBER = "77:08:0010008:1049"
 TEXT = ("[стр. 1]\nСветлый 4. Инвестиционный тизер\n\n"
@@ -76,12 +81,12 @@ def _parse(monkeypatch) -> dict:
     _stub(monkeypatch)
     return core.agent_document(core.AgentDocumentRequest(
         filename="svetly4.pdf", content_b64=base64.b64encode(b"%PDF").decode(),
-        inputs=dict(core.DEFAULT_INPUTS), tep=core.TEP_DEFAULT), None)
+        inputs=dict(core.DEFAULT_INPUTS), tep=core.TEP_DEFAULT), request)
 
 
 def _answer(card: dict, **kw) -> dict:
     return core.agent_document_answer(core.AgentDocumentAnswerRequest(
-        intake_id=card["id"], inputs=dict(core.DEFAULT_INPUTS), tep=core.TEP_DEFAULT, **kw))
+        intake_id=card["id"], inputs=dict(core.DEFAULT_INPUTS), tep=core.TEP_DEFAULT, **kw), request)
 
 
 # --- карточка: один сборщик, страница у каждого числа -------------------------
@@ -150,10 +155,10 @@ def test_the_class_shows_this_projects_numbers_and_keeps_typed_ones(monkeypatch)
     profile = {"business": {"apartment_price_th": 480}}
     for index in range(3):
         core.agent_document_answer(core.AgentDocumentAnswerRequest(
-            intake_id=card["id"], index=index, action="skip", inputs=inputs, tep=core.TEP_DEFAULT))
+            intake_id=card["id"], index=index, action="skip", inputs=inputs, tep=core.TEP_DEFAULT), request)
     got = core.agent_document_answer(core.AgentDocumentAnswerRequest(
         intake_id=card["id"], index=3, choice=1, inputs=inputs, tep=core.TEP_DEFAULT,
-        class_profile=profile))["card"]
+        class_profile=profile), request)["card"]
     engine = {row["path"]: row["value"] for row in got["to_engine"]}
     assert engine["inputs.apartment_price_th"] == 480, "карточка показала базу, а не цену проекта"
     assert "inputs.parking_price_th" not in engine, "класс затёр вписанное руками"
@@ -182,7 +187,7 @@ def test_the_bot_overrides_are_exactly_the_card_rows(monkeypatch) -> None:
 def test_the_parcel_rows_have_no_number_before_the_calculation(monkeypatch) -> None:
     _stub(monkeypatch)
     got = core.agent_document(core.AgentDocumentRequest(
-        filename="svetly4.pdf", content_b64=base64.b64encode(b"%PDF").decode()), None)
+        filename="svetly4.pdf", content_b64=base64.b64encode(b"%PDF").decode()), request)
     queue = json.loads(core._intake_queue_path(got["card"]["id"]).read_text(encoding="utf-8"))
     card = core.teaser_card_view(queue, dict(core.DEFAULT_INPUTS), core.TEP_DEFAULT, by_parcel=True)
     missing = {row["key"]: row for row in card["missing"]}

@@ -174,13 +174,20 @@ def test_the_route_forwards_the_conversation_to_the_engine(monkeypatch) -> None:
     seen.clear()
     monkeypatch.setattr(main_legacy, "_require_web_access",
                         lambda session, key, what: None)
-    # Монитор — только по ключу администратора; здесь проверяется пересылка истории.
-    monkeypatch.setattr(main_legacy, "_require_admin_key", lambda *_a, **_k: None)
+    # Exercise the real admin gate and server-owned actor while recording
+    # only the handoff payload. An object() request has no authenticated owner.
+    from starlette.requests import Request
+    key = "synthetic-conversation-owner-key"
+    monkeypatch.setenv("DEVELOPAID_ADMIN_KEY", key)
+    request = Request({"type":"http","method":"POST","path":"/monitor/ask",
+                       "headers":[],"query_string":b""})
     monkeypatch.setattr(main_legacy, "plato_answer_handoff",
                         lambda payload, request: seen.append(payload) or {"reply": "ok"})
     main_legacy.monitor_ask(
-        main_legacy.MonitorAskRequest(message="вопрос", history=talk), object())
+        main_legacy.MonitorAskRequest(message="вопрос", history=talk,key=key), request)
     assert seen, "монитор движок не позвал"
+    assert seen[0]._agent_actor.private is True
+    assert seen[0]._agent_actor.surface == "monitor"
     # Чужая роль и пустая реплика до движка не едут: он читает историю как
     # разговор, и «system» в ней — не реплика собеседника.
     assert [(item["role"], item["content"]) for item in seen[0].history] == [

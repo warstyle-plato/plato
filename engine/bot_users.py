@@ -908,6 +908,7 @@ class SitePhotoRequest(BaseModel):
 
     chat_id: int = 0
     sign: str = ""
+    project: str = ""
     photo_id: str = ""
     data: str = ""
     day: str = ""
@@ -972,8 +973,89 @@ def _site_chats() -> dict[str, str]:
     return found
 
 
+def _site_chat_grants_path() -> Path:
+    return _PROJECTS_DIR.parent / "site_chat_grants.json"
+
+
+def _site_chat_access(chat_id: int, action: str, project: str = ""):
+    import site_chat_access
+
+    return site_chat_access.access(_site_chat_grants_path(),
+                                  _env_str("DEVELOPAID_ADMIN_KEY", "").strip(),
+                                  int(chat_id or 0), action, project)
+
+
 def _site_chat_project(chat_id: int) -> str:
-    return _site_chats().get(str(int(chat_id or 0)), "")
+    """Only a current owner grant is authoritative; legacy metadata is not."""
+    import site_chat_access
+
+    try:
+        with _site_chat_access(chat_id, "status") as project:
+            return project
+    except site_chat_access.AccessDenied:
+        return ""
+
+
+class SiteChatAccessRequest(BaseModel):
+    chat_id: int
+    project: str
+    title: str = ""
+    key: str = ""
+
+
+@app.middleware("http")
+async def _site_chat_access_private_response(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path in {"/monitor/site-chats/access", "/monitor/site-chats/authorize",
+                            "/monitor/site-chats/revoke"}:
+        # Custom key headers are not an HTTP cache partition. Include denials
+        # and validation responses as well as successful owner operations.
+        response.headers["Cache-Control"] = "private, no-store"
+    return response
+
+
+@app.post("/monitor/site-chats/authorize", include_in_schema=False)
+def monitor_site_chat_authorize(req: SiteChatAccessRequest) -> dict[str, Any]:
+    _require_admin_key(req.key, "Доступ проектной группы")
+    name = _site_project_name(req.project)
+    if req.chat_id >= 0 or not name:
+        raise HTTPException(400, "Укажите проект и отрицательный Telegram ID группы.")
+    import site_chat_access
+
+    site_chat_access.authorize(_site_chat_grants_path(),
+                              _env_str("DEVELOPAID_ADMIN_KEY", "").strip(), req.chat_id, name)
+    _site_chat_bind(req.chat_id, name, req.title)
+    return {"chat_id": req.chat_id, "project": name, "authorized": True}
+
+
+@app.post("/monitor/site-chats/revoke", include_in_schema=False)
+def monitor_site_chat_revoke(req: SiteChatAccessRequest) -> dict[str, Any]:
+    _require_admin_key(req.key, "Доступ проектной группы")
+    import site_chat_access
+
+    try:
+        site_chat_access.revoke(_site_chat_grants_path(), req.chat_id, req.project)
+    except site_chat_access.AccessDenied as exc:
+        raise HTTPException(409, str(exc)) from exc
+    # Preserve metadata, reports and the question/reply journal for reauthorization.
+    return {"chat_id": req.chat_id, "project": req.project, "authorized": False}
+
+
+@app.get("/monitor/site-chats/access", include_in_schema=False)
+def monitor_site_chat_access() -> dict[str, Any]:
+    _require_admin_key("", "Доступ проектных групп")
+    titles = _site_chat_titles()
+    chats = _site_chats()
+    import site_chat_access
+
+    for entry in site_chat_access.load(_site_chat_grants_path()).values():
+        if isinstance(entry, dict) and isinstance(entry.get("grant"), dict):
+            grant = entry["grant"]
+            chats[str(grant.get("chat_id"))] = str(grant.get("project") or "")
+    return {"chats": [{"chat_id": int(chat), "project": name,
+                       "title": titles.get(chat, ""),
+                       "authorized": _site_chat_project(int(chat)) == name}
+                      for chat, name in sorted(chats.items()) if chat.lstrip("-").isdigit()]}
 
 
 def _site_chat_titles() -> dict[str, str]:
@@ -995,7 +1077,7 @@ def _site_chats_write(chats: dict[str, str], titles: dict[str, str]) -> None:
 
 
 def _site_chat_bind(chat_id: int, project: str, title: str = "") -> str:
-    """Привязать чат к проекту. Пустое имя снимает привязку."""
+    """Legacy metadata only. This helper never grants access to project data."""
     chats = _site_chats()
     titles = _site_chat_titles()
     key = str(int(chat_id or 0))
@@ -1028,7 +1110,7 @@ def _site_chat_title_seen(chat_id: int, title: str) -> None:
         _site_chats_write(chats, titles)
 
 
-def site_chat_bindings() -> list[dict[str, Any]]:
+def site_chat_bindings(*, authorized_chats: dict[str, str] | None = None) -> list[dict[str, Any]]:
     """Привязки чатов по проектам и когда из них последний раз что-то легло.
 
     Владелец (24.10.2026, на /status, где был виден только чат продаж): «про
@@ -1041,8 +1123,13 @@ def site_chat_bindings() -> list[dict[str, Any]]:
 
     titles = _site_chat_titles()
     projects: dict[str, list[str]] = {}
-    for key, project in sorted(_site_chats().items()):
-        projects.setdefault(project, []).append(titles.get(key) or "")
+    project_chat_ids: dict[str, list[int]] = {}
+    chats = _site_chats() if authorized_chats is None else authorized_chats
+    for key in sorted(chats):
+        project = (_site_chat_project(int(key)) if authorized_chats is None else chats[key])
+        if project:
+            projects.setdefault(project, []).append(titles.get(key) or "")
+            project_chat_ids.setdefault(project, []).append(int(key))
     out = []
     for project, chats in sorted(projects.items()):
         daily = monitor._project_dir(project) / "daily"
@@ -1054,7 +1141,7 @@ def site_chat_bindings() -> list[dict[str, Any]]:
             messages = ((((kept.get("sources") or {}).get("salesroom") or {}).get("data") or {})
                         .get("messages") or [])
             sales_last = max((str(m.get("day") or "") for m in messages), default="")
-        out.append({"project": project, "chats": chats,
+        out.append({"project": project, "chats": chats, "chat_ids": project_chat_ids[project],
                     "site_last": days[-1] if days else "",
                     "sales_project": sales_project, "sales_last": sales_last})
     return out
@@ -1319,21 +1406,23 @@ def internal_monitor_daily(req: SiteChatReportRequest) -> dict[str, Any]:
     if not hmac.compare_digest(str(req.sign or "").encode("utf-8"),
                                expected.encode("utf-8")):
         raise HTTPException(status_code=403, detail="Подпись не сошлась.")
-    if req.project:
-        return {"bound": _site_chat_bind(int(req.chat_id or 0), req.project, req.title)}
-    project = _site_project_name(_site_chat_project(int(req.chat_id or 0)))
-    if not project:
-        # «Чат не привязан» — это ответ, а не отказ: человеку надо сказать, чем
-        # привязать, иначе отчёт молча падает в никуда и выглядит принятым.
-        return {"bound": ""}
-    _site_chat_title_seen(int(req.chat_id or 0), req.title)
-    import developaid_monitor_daily as daily
+    import site_chat_access
 
     try:
-        stored = daily.store_daily_report(project, req.text, req.taken_at or None)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc))
-    return {"bound": project, "stored": stored}
+        with _site_chat_access(req.chat_id, "daily", req.project) as project:
+            # Incoming reports never change a binding, even with a signed transport.
+            if not req.text:
+                return {"bound": project}
+            _site_chat_title_seen(req.chat_id, req.title)
+            import developaid_monitor_daily as daily
+
+            try:
+                stored = daily.store_daily_report(project, req.text, req.taken_at or None)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            return {"bound": project, "stored": stored}
+    except site_chat_access.AccessDenied as exc:
+        raise HTTPException(403, str(exc)) from exc
 
 
 class SalesChatRequest(BaseModel):
@@ -1348,6 +1437,7 @@ class SalesChatRequest(BaseModel):
     author: str = ""
     text: str = ""
     taken_at: str = ""
+    project: str = ""
     action: str = "report"
     batch_id: str = ""
     message_id: int = 0
@@ -1363,7 +1453,7 @@ class SalesChatRequest(BaseModel):
 def internal_monitor_sales_chat(req: SalesChatRequest) -> dict[str, Any]:
     """Отчёт из чата отдела продаж: бот принял, ядро дописало в источник.
 
-    Чат привязан к проекту Монитора той же командой `/site`; отчёт ложится в
+    Чат разрешён владельцем через закрытый кабинет; отчёт ложится в
     проект отчёта о продажах, связанный с ним на странице сводки, — источник
     «чат отдела продаж», тот же, что даёт выгрузка чата. Подпись — своим кодом.
     """
@@ -1371,14 +1461,24 @@ def internal_monitor_sales_chat(req: SalesChatRequest) -> dict[str, Any]:
     if not hmac.compare_digest(str(req.sign or "").encode("utf-8"),
                                expected.encode("utf-8")):
         raise HTTPException(status_code=403, detail="Подпись не сошлась.")
+    import site_chat_access
     from market_search import sales_dialogue, sales_store
 
-    with sales_dialogue.origin_lock(sales_store.default_dir()):
-        return _apply_sales_chat(req)
+    try:
+        with _site_chat_access(req.chat_id, "sales:" + req.action, req.project) as project:
+            if req.action == "send":
+                return {"bound": project, "authorized": True}
+            with sales_dialogue.origin_lock(sales_store.default_dir()):
+                return _apply_sales_chat(req, project)
+    except site_chat_access.AccessDenied as exc:
+        raise HTTPException(403, str(exc)) from exc
 
 
-def _apply_sales_chat(req: SalesChatRequest) -> dict[str, Any]:
-    """Только после проверки подписи и под общей блокировкой происхождения."""
+def _apply_sales_chat(req: SalesChatRequest, project: str) -> dict[str, Any]:
+    """Only under the current owner grant and the origin lock."""
+    import developaid_management_report as management_report
+
+    sales_project = ((management_report.sales_link(project) or {}).get("sales_project") or "")
     if req.action == "reply":
         from market_search import sales_dialogue, sales_questions, sales_store
 
@@ -1387,7 +1487,21 @@ def _apply_sales_chat(req: SalesChatRequest) -> dict[str, Any]:
         if not ours or req.reply_to_id <= 0 or not sales_dialogue.is_question(req.reply_text):
             return {"reply_saved": False}
         where = sales_store.default_dir()
-        origin = sales_dialogue.reply_project(where, req.chat_id, req.reply_to_id, req.reply_text)
+        # Never search other projects' journals using caller-supplied quotes.
+        # Reauthorizing this same scope restores its own durable dialogue.
+        batches = (sales_dialogue.load(where, sales_project)["batches"].values()
+                   if sales_project else [])
+        known, pending = [], []
+        for batch in batches:
+            if batch["chat_id"] != req.chat_id:
+                continue
+            if batch["message_id"] == req.reply_to_id:
+                known.append(batch)
+            elif not batch["message_id"] and batch["text"] == req.reply_text:
+                pending.append(batch)
+        if len(known or pending) > 1:
+            raise HTTPException(409, "Неоднозначный исходный вопрос продаж.")
+        origin = sales_project if known or pending else ""
         # Неизвестные исторические вопросы хранятся отдельно, без приписывания
         # нынешнему проекту. Telegram ID сообщения уникален только ВНУТРИ чата.
         target = where if origin else where / "unattributed"
@@ -1400,14 +1514,8 @@ def _apply_sales_chat(req: SalesChatRequest) -> dict[str, Any]:
                 allow_legacy=not bool(origin))
         return {"sales_project": origin, "reply_saved": saved,
                 "reply_unattributed": not bool(origin)}
-    project = _site_project_name(_site_chat_project(int(req.chat_id or 0)))
-    if not project:
-        return {"bound": "", "sales_project": ""}
     _site_chat_title_seen(int(req.chat_id or 0), req.title)
-    import developaid_management_report as management_report
     from market_search import salesroom, sales_store
-
-    sales_project = ((management_report.sales_link(project) or {}).get("sales_project") or "")
     if not sales_project:
         # Проект Монитора не связан с отчётом о продажах — дописывать некуда.
         # Это ответ, а не отказ: в /status видно, чего не хватает.
@@ -1469,19 +1577,31 @@ class SiteChatsRequest(BaseModel):
 
 @app.post("/internal/monitor/site-chats", include_in_schema=False)
 def internal_monitor_site_chats(req: SiteChatsRequest) -> dict[str, Any]:
-    """Привязки чатов для /status — только по проектам, на сводку которых этот
-    Telegram ID подписан (`developaid_report_mailing.subscribed_projects`).
-    Не подписан — `subscriber: False` и пусто: имена проектов — данные владельца."""
+    """Closed status metadata requires the exact current owner group scope."""
     expected = _web_login_sign("monitor-chats", int(req.chat_id or 0))
     if not hmac.compare_digest(str(req.sign or "").encode("utf-8"),
                                expected.encode("utf-8")):
         raise HTTPException(status_code=403, detail="Подпись не сошлась.")
-    import developaid_report_mailing as mailing
-    allowed = set(mailing.subscribed_projects(req.chat_id))
-    if not allowed:
+    # A mailing subscription is not authorization to read closed project state.
+    import site_chat_access
+
+    try:
+        with _site_chat_access(req.chat_id, "status") as project:
+            state = site_chat_access.load(_site_chat_grants_path())
+            owner_key = _env_str("DEVELOPAID_ADMIN_KEY", "").strip()
+            allowed: dict[str, str] = {}
+            for chat in _site_chats():
+                try:
+                    if site_chat_access.project(state, owner_key, int(chat), "status") == project:
+                        allowed[chat] = project
+                except site_chat_access.AccessDenied:
+                    continue
+            # Keep the grant lock until the scoped reads finish. Never load
+            # other projects and filter them only after reading their data.
+            return {"subscriber": True, "authorized": True, "chat_id": req.chat_id,
+                    "projects": site_chat_bindings(authorized_chats=allowed)}
+    except site_chat_access.AccessDenied:
         return {"subscriber": False, "projects": []}
-    return {"subscriber": True,
-            "projects": [row for row in site_chat_bindings() if row["project"] in allowed]}
 
 
 @app.post("/internal/monitor/photo", include_in_schema=False)
@@ -1495,18 +1615,20 @@ def internal_monitor_photo(req: SitePhotoRequest) -> dict[str, Any]:
     if not hmac.compare_digest(str(req.sign or "").encode("utf-8"),
                                expected.encode("utf-8")):
         raise HTTPException(status_code=403, detail="Подпись не сошлась.")
-    project = _site_project_name(_site_chat_project(int(req.chat_id or 0)))
-    if not project:
-        return {"bound": ""}
+    import site_chat_access
     import developaid_site_photos as site_photos
 
     try:
-        data = base64.b64decode(req.data or "", validate=True)
-        stored = site_photos.store(project, data, req.photo_id, req.day, req.author,
-                                   req.caption, req.at, req.message_id)
-    except ValueError as exc:  # и binascii.Error — он подкласс ValueError
-        raise HTTPException(400, str(exc))
-    return {"bound": project, "stored": {k: v for k, v in stored.items() if k != "data"}}
+        with _site_chat_access(req.chat_id, "photo", req.project) as project:
+            try:
+                data = base64.b64decode(req.data or "", validate=True)
+                stored = site_photos.store(project, data, req.photo_id, req.day, req.author,
+                                           req.caption, req.at, req.message_id)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            return {"bound": project, "stored": {k: v for k, v in stored.items() if k != "data"}}
+    except site_chat_access.AccessDenied as exc:
+        raise HTTPException(403, str(exc)) from exc
 
 
 @app.post("/internal/krt/subscribe")
