@@ -571,8 +571,14 @@ def execution(project: str, end: datetime.date) -> dict[str, Any]:
             lines_plan=lines_plan, outside=outside, lines=out_lines,
             earlier_than_version=month < day[:7]))
     latest = schedule(days[-1])
+    # Дата выбора версии не всегда дата данных: legacy-поиск использует также mtime.
+    # Только метаданные вывода; алгоритм выбора и числовая сверка прежние.
+    import developaid_monitor_dashboard as dashboard
+
     return {"state": "ok", "versions": days, "rss": rss.stem,
-            "sources": {day: {"where": place["where"], "file": place["file"]}
+            "sources": {day: {"where": place["where"], "file": place["file"],
+                              "data_date": dashboard._stored_funding_source(
+                                  project, Path(place["path"]))["data_date"]}
                         for day, place in found.items()}, "fact_at": fact_at.isoformat(),
             "unit": latest["unit"], "months": months,
             "paid_check": paid_check(latest, days[-1], payments, estimate),

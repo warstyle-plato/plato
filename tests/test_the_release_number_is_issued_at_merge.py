@@ -555,3 +555,112 @@ def test_a_refused_push_names_the_server_answer():
     assert "GITHUB_TOKEN не вправе менять .github/workflows" in text
     other = release_merge._git_refusal(("fetch", "origin"), 128, "fatal: boom")
     assert "fatal: boom" in other and "GITHUB_TOKEN" not in other
+
+
+_SOURCE, _BASE, _GENERATED = "a" * 40, "b" * 40, "c" * 40
+
+
+def test_queue_checks_the_source_again_inside_the_version_fetch(monkeypatch):
+    """A push between the outer preflight and _set_version's second fetch."""
+    calls = []
+    def git(*args):
+        calls.append(args)
+        if args[0] == "fetch":
+            return ""
+        if args == ("rev-parse", "origin/feat"):
+            return _GENERATED  # a new, unreviewed source commit
+        raise AssertionError(f"must stop before checkout/version write: {args}")
+    monkeypatch.setattr(release_merge, "_git", git)
+    with pytest.raises(SystemExit, match="Source HEAD changed during fetch"):
+        release_merge._set_version("feat", "0.24.19", "main", _SOURCE, _BASE, object())
+    assert calls[0] == ("fetch", "--no-tags", "origin", "feat", "main")
+    assert not any(c[0] in {"checkout", "push", "commit"} for c in calls)
+
+
+def test_queue_accepts_stale_pull_base_metadata_but_checks_current_main(monkeypatch):
+    pull = {"head": {"sha": _SOURCE}, "base": {"ref": "main", "sha": "d" * 40}}
+    release_merge._require_expected_pull(pull, _SOURCE, _BASE)
+    monkeypatch.setattr(release_merge, "_api", lambda *a: {"object": {"sha": _BASE}})
+    release_merge._require_expected_main("o/r", "synthetic", _BASE)
+    monkeypatch.setattr(release_merge, "_api", lambda *a: {"object": {"sha": _GENERATED}})
+    with pytest.raises(SystemExit, match="Main changed after dispatch"):
+        release_merge._require_expected_main("o/r", "synthetic", _BASE)
+
+
+def test_queue_refuses_a_changed_source_before_any_git_action(monkeypatch):
+    _entry(monkeypatch, {**_PULL, "mergeable": True, "mergeable_state": "clean"})
+    monkeypatch.setattr(sys, "argv", ["release_merge.py", "--pr", "538", "--expected-head", _SOURCE])
+    monkeypatch.setattr(release_merge, "_git", lambda *a: pytest.fail("git must not run"))
+    with pytest.raises(SystemExit, match="Source HEAD changed after release approval"):
+        release_merge.main()
+
+
+@pytest.mark.parametrize("raced", [False, True])
+def test_queue_allows_its_own_version_commit_but_not_a_later_source_push(monkeypatch, raced):
+    """The approved source SHA differs from the expected generated version SHA."""
+    _entry(monkeypatch, {**_PULL, "mergeable": True, "mergeable_state": "clean"})
+    monkeypatch.setattr(sys, "argv", ["release_merge.py", "--pr", "538", "--expected-head", _SOURCE,
+                                      "--expected-base", _BASE])
+    pull = {**_PULL, "title": "synthetic release", "head": {"ref": "feat", "sha": _SOURCE},
+            "base": {"ref": "main", "sha": "d" * 40},
+            "mergeable": True, "mergeable_state": "clean"}
+    writes, guards, checks = [], [], []
+    monkeypatch.setattr(release_merge, "_approved_source_gate", lambda *a: checks.append)
+    def api(method, path, token, body=None):
+        if method != "GET":
+            writes.append((method, path, body))
+            return {"merged": True, "sha": _GENERATED}
+        return {"object": {"sha": _BASE}} if "/git/ref/" in path else dict(pull)
+    def git(*args):
+        return {"origin/feat": _SOURCE, "origin/main": _BASE}.get(args[-1], "")
+    def version(head_ref, issued, base_ref, expected_head, expected_base, guard):
+        assert (expected_head, expected_base) == (_SOURCE, _BASE)
+        guards.append(guard)
+        return _GENERATED
+    monkeypatch.setattr(release_merge, "_api", api)
+    monkeypatch.setattr(release_merge, "_git", git)
+    monkeypatch.setattr(release_merge, "_set_version", version)
+    monkeypatch.setattr(release_merge, "_wait_settled", lambda *a: {
+        **pull, "head": {"sha": "e" * 40 if raced else _GENERATED}})
+    assert release_merge.main() == (1 if raced else 0)
+    merge = [w for w in writes if w[0] == "PUT"]
+    assert guards and bool(merge) is not raced
+    assert checks == ([_SOURCE] if raced else [_SOURCE, _GENERATED])
+    if not raced:
+        assert merge[0][2]["sha"] == _GENERATED
+
+
+def test_version_retries_reuse_the_guard_loaded_before_the_pr_checkout(monkeypatch):
+    guard = object()
+    monkeypatch.setattr(release_merge, "_guard", lambda: pytest.fail("must not load PR code"))
+    monkeypatch.setattr(release_merge, "_git", lambda *a: "changed" if a[0] == "rev-parse" else "")
+    # Abort at the opt-in ref guard after fetch, without importing from the PR.
+    with pytest.raises(SystemExit, match="Source HEAD changed"):
+        release_merge._set_version("feat", "0.24.19", "main", _SOURCE, _BASE, guard)
+
+
+def test_consumer_keeps_the_trusted_policy_and_matrix_after_pr_checkout(tmp_path, monkeypatch):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    policy = scripts / "auto_release.py"
+    policy.write_text('''
+from pathlib import Path
+ROOT = Path(__file__).resolve().parent.parent
+class GitHub:
+    def __init__(self, *args): pass
+def control_actors(*args): return {'owner'}
+def test_jobs(root): return set((root / 'matrix.txt').read_text().splitlines())
+def validate_approved_source(api, number, source, actual, actors, jobs, run_id):
+    assert actors == frozenset({'owner'})
+    assert jobs == frozenset({'Доля 1', 'Полный набор'})
+    assert source != actual or source == 'a' * 40
+    return ''
+''')
+    (tmp_path / "matrix.txt").write_text("Доля 1\nПолный набор\n")
+    monkeypatch.setattr(release_merge, "ROOT", tmp_path)
+    gate = release_merge._approved_source_gate("o/r", "synthetic", "42", _SOURCE)
+    # Checkout has now replaced both Python policy and matrix with PR versions.
+    policy.write_text("raise AssertionError('untrusted PR policy imported')\n")
+    (tmp_path / "matrix.txt").write_text("fake green\n")
+    gate(_SOURCE)
+    gate(_GENERATED)
