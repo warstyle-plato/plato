@@ -20,6 +20,7 @@ from typing import Any
 
 import developaid_actuals as actuals
 import developaid_monitor as monitor
+import developaid_monitor_contract_risk as contract_risk
 from developaid_monitor_ledgers import amount_basis as _amount_basis
 
 
@@ -453,7 +454,8 @@ def _physical_key(item: dict) -> tuple:
     return tuple(_norm(item.get(key)) for key in ("position", "name", "scope", "unit"))
 
 
-def _cumulative_money(physical: list[dict], warnings: list[str]) -> tuple[float | None, str]:
+def _cumulative_money(physical: list[dict], warnings: list[str],
+                      dated: list | None = None) -> tuple[float | None, str]:
     """Sum dated, nonduplicated work-period evidence, never RSS closing or payments."""
     if not physical:
         return None, "unspecified"
@@ -489,6 +491,10 @@ def _cumulative_money(physical: list[dict], warnings: list[str]) -> tuple[float 
     if uncertain or not periods:
         warnings.append("Сумма выполнения по загруженным накопительным на срез не подтверждена: проверьте даты, пересечения периодов, сохранённые суммы и повторяющиеся позиции.")
         return None, "unspecified"
+    if dated is not None:
+        # The same deduplicated periods feed the deadline pace; no second reading.
+        dated.extend((dt.date.fromisoformat(key[-2]), dt.date.fromisoformat(key[-1]), value[0])
+                     for key, value in periods.items())
     return sum(value[0] for value in periods.values()), next(iter(bases)) if bases else "unspecified"
 
 
@@ -536,6 +542,12 @@ def build(project: str, cut: str = "") -> dict:
     extras = [*rss, *(dict(x, kind="summary", source_date=archive_day)
                        for x in (snapshot or {}).get("summary_contracts") or [])]
     terms, rows = (_read_terms(project) if primary else {}), []
+    paid_rows = None
+    if primary:
+        paid_rows, payment_warnings = contract_risk.payments(
+            monitor._latest(project, "estimate", ".xlsx", cut), dt.date.fromisoformat(cut),
+            contract_number=_contract_number)
+        warnings.extend(payment_warnings)
     for identifier, ledger_items in _groups(primary, project):
         first = ledger_items[0]
         identity = _identity(first)
@@ -552,7 +564,8 @@ def build(project: str, cut: str = "") -> dict:
             amount = None
             row_warnings.append("РСС и сводная дают разные полные суммы договора; действующая цена не выбрана автоматически.")
         physical = [_physical(item, ledger, cut) for ledger in ledger_items for item in ledger.get("items") or []]
-        completed, completed_basis = _cumulative_money(physical, row_warnings)
+        dated_money: list = []
+        completed, completed_basis = _cumulative_money(physical, row_warnings, dated_money)
         if amount is None:
             row_warnings.append("Нет подтверждённой полной суммы договора. Итог года или отдельной ведомости не использован как цена всего договора.")
         comparable = (amount_basis != "conflicting" and completed_basis != "conflicting"
@@ -624,6 +637,11 @@ def build(project: str, cut: str = "") -> dict:
                "scope": sorted({str(item.get("scope") or "") for item in physical if item.get("scope")}),
                "performance_basis": "Денежное выполнение только по загруженным накопительным и завершённым датированным периодам; не оплата и не физическая готовность",
                "performance_source_count": len(ledger_items), "reported_performance_sources": references}
+        row["risk"] = contract_risk.forecast(
+            amount=amount, completed=completed, comparable=comparable, periods=dated_money,
+            cut=dt.date.fromisoformat(cut), deadline=dt.date.fromisoformat(deadline) if deadline else None)
+        row["advance"] = contract_risk.advance(row, paid_rows, contract_number=_contract_number,
+                                               completed_basis=completed_basis)
         rows.append(row)
     rows.sort(key=lambda r: (_norm(r["contractor"]), _norm(r["customer"]), _norm(r["contract"]), r["id"]))
     note = ("В списке только уникальные договоры из шапок загруженных накопительных: номер, дата, контрагент и заказчик. "
@@ -636,7 +654,11 @@ def build(project: str, cut: str = "") -> dict:
                                                    "В шапках накопительных пока нет полностью распознанных договоров." if not rows else ""),
             "snapshots": {"rss": rss_day, "cumulative": archive_day, "cumulative_id": (snapshot or {}).get("snapshot_id")},
             "warnings": _warnings(warnings + _warnings((snapshot or {}).get("warnings"))),
-            "performance_basis": "Выполнение по загруженным накопительным; реестр РСС и оплата не подменяют выполнение КС."}
+            "performance_basis": "Выполнение по загруженным накопительным; реестр РСС и оплата не подменяют выполнение КС.",
+            "risk_summary": contract_risk.summary(rows),
+            "risk_basis": ("Прогноз окончания — по денежному темпу накопительных за последние 90 дней; "
+                           "это показатель выполнения, а не физическая готовность. Оплаты — «Реестр платежей» РСС "
+                           "по точному подрядчику, номеру и дате договора.")}
 
 
 def confirm_header_date(project: str, cut: str, snapshot_id: str, **fields) -> dict:

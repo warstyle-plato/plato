@@ -1783,6 +1783,7 @@ def build(project: str, kind: str, end: Any, sales_project: str | None = None,
                                 dashboard, blocks), blocks.get("sales"))),
             ("legal", lambda: dict(legal_cases.for_report(
                 project, bounds["start"], bounds["end"]), state="ok")),
+            ("contract_risks", lambda: contract_risks(project, bounds["end"])),
             ("notes", lambda: dict(project_notes.for_period(
                 project, bounds["start"], bounds["end"]), state="ok")),
             ("photos", lambda: dict(site_photos.for_report(
@@ -2142,6 +2143,11 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
             else "реестр споров, карточки подтверждены по документам")
     elif block.get("state") == "ok" and not block.get("recorded"):
         add("Споры", LEGAL_EMPTY, "реестр споров", "missing")
+
+    block = report.get("contract_risks") or {}
+    if block.get("state") == "ok" and (block.get("summary") or {}).get("warning_count"):
+        add("Договоры", _contract_risk_words(block),
+            "накопительные КС, сроки договоров и «Реестр платежей» РСС", "bad")
 
     block = report.get("notes") or {}
     if block.get("state") == "ok":
@@ -3402,6 +3408,7 @@ def render_text(report: dict[str, Any]) -> str:
         lines.append(esc(block.get("reason") or "Данных нет."))
 
     lines += ["", "<b>Общая информация</b>"]
+    lines.extend(_contract_risk_lines(report.get("contract_risks") or {}))
     lines.extend(_legal_lines(report.get("legal") or {}))
     block = report.get("notes") or {}
     if block.get("state") != "ok":
@@ -4648,6 +4655,7 @@ def render_html(report: dict[str, Any]) -> str:
         out.append(_budget_depth_html(report["budget"], _date(report["end"])))
 
     out.append(_block_heading("legal"))
+    out.append(_contract_risks_html(report.get("contract_risks") or {}))
     out.append(_legal_html(report.get("legal") or {}))
     out.append(_block_heading("info"))
     block = report.get("notes") or {}
@@ -4709,6 +4717,95 @@ def _legal_lines(block: dict[str, Any]) -> list[str]:
             line += " " + LEGAL_UNCHECKED
         out.append(line)
     return out
+
+
+CONTRACT_RISK_LIMIT = 30
+
+
+def contract_risks(project: str, end: Any) -> dict[str, Any]:
+    """Contracts at risk of missing their deadline, from the Monitor register.
+
+    The register is the one owner of the forecast and payments; the summary
+    only selects and orders its rows."""
+    import developaid_monitor_contract_risk as contract_risk
+    import developaid_monitor_contracts as contracts
+    view = contracts.build(project, _date(end).isoformat())
+    rows = view.get("rows") or []
+    if not rows:
+        return _missing(view.get("empty_reason") or "Договоров из накопительных на дату сводки нет.")
+    at_risk = sorted((r for r in rows if (r.get("risk") or {}).get("status") in contract_risk.WARNING_STATUSES),
+                     key=contract_risk.severity)
+    keep = ("contractor", "contract", "contract_date", "deadline", "amount", "completed", "risk", "advance")
+    return {"state": "ok", "total": len(rows), "summary": view.get("risk_summary") or {},
+            "rows": [{k: r.get(k) for k in keep} for r in at_risk[:CONTRACT_RISK_LIMIT]],
+            "omitted": max(0, len(at_risk) - CONTRACT_RISK_LIMIT),
+            "basis": view.get("risk_basis") or ""}
+
+
+def _contract_risk_words(block: dict[str, Any]) -> str:
+    summary = block.get("summary") or {}
+    counts = summary.get("counts") or {}
+    parts = [f"{label}: {counts[key]}" for key, label in (
+        ("overdue", "срок прошёл, работы не завершены"), ("late", "не успевают к сроку"),
+        ("stalled", "работы стоят")) if counts.get(key)]
+    if not parts:
+        return f"Из {block.get('total', 0)} договоров ни один не отстаёт от срока по текущему темпу накопительных."
+    text = "Договоры под угрозой срыва срока — " + "; ".join(parts) + "."
+    if summary.get("unworked_at_risk_total"):
+        text += (f" По ним оплачено сверх выполнения {_rub(summary['unworked_at_risk_total'])}"
+                 " — риск неотработки аванса.")
+    return text
+
+
+def _contract_risk_lines(block: dict[str, Any]) -> list[str]:
+    esc = html.escape
+    if block.get("state") != "ok":
+        return [esc(block.get("reason") or "Договоры не собраны.")] if block else []
+    lines = [esc(_contract_risk_words(block))]
+    for row in block.get("rows") or []:
+        risk = row.get("risk") or {}
+        advance = row.get("advance") or {}
+        line = (f"• <b>{esc(row.get('contractor') or 'Подрядчик')}</b>, {esc(row.get('contract') or '')}"
+                f" — {esc(risk.get('label') or '')}; срок {_day(row.get('deadline'))}"
+                + (f", прогноз {_day(risk['forecast_finish'])}" if risk.get("forecast_finish") else "")
+                + (f", сверх выполнения оплачено {_rub(advance['unworked'])}" if (advance.get("unworked") or 0) > 0 else "")
+                + ".")
+        lines.append(line)
+    return lines
+
+
+def _contract_risks_html(block: dict[str, Any]) -> str:
+    esc = html.escape
+    out = ["<h3>Договоры под угрозой срыва срока</h3>"]
+    if block.get("state") != "ok":
+        out.append(f"<p class='missing'>{esc(block.get('reason') or 'Договоры не собраны.')}</p>")
+        return "".join(out)
+    out.append(f"<p>{esc(_contract_risk_words(block))}</p>")
+    rows = []
+    for row in block.get("rows") or []:
+        risk = row.get("risk") or {}
+        advance = row.get("advance") or {}
+        delay = risk.get("delay_days")
+        rows.append([
+            f"<b>{esc(row.get('contractor') or 'Подрядчик не указан')}</b><br>{esc(row.get('contract') or '')}"
+            + (f" от {_day(row.get('contract_date'))}" if row.get("contract_date") else ""),
+            esc(risk.get("label") or "—") + (f"<br><span style='color:#5b6b7d'>{esc(risk['reason'])}</span>"
+                                             if risk.get("reason") else ""),
+            _day(row.get("deadline")),
+            (_day(risk.get("forecast_finish")) if risk.get("forecast_finish") else "—")
+            + (f"<br>+{int(delay)} дн" if delay and delay > 0 else ""),
+            f"{_rub(row.get('completed'))} из {_rub(row.get('amount'))}",
+            _rub(advance.get("paid")),
+            _rub(advance.get("unworked")) if advance.get("unworked") is not None else "—"])
+    if rows:
+        out.append("<table class='legal'>" + _row(["Подрядчик, договор", "Сигнал", "Срок", "Прогноз",
+                                                   "Выполнено", "Оплачено", "Сверх выполнения"], True)
+                   + "".join(_row(row) for row in rows) + "</table>")
+    if block.get("omitted"):
+        out.append(f"<p class='note'>Ещё {block['omitted']} договоров под угрозой — полный список в Мониторе.</p>")
+    if block.get("basis"):
+        out.append(f"<p class='note'>{esc(block['basis'])}</p>")
+    return "".join(out)
 
 
 def _legal_html(block: dict[str, Any]) -> str:
