@@ -43,19 +43,34 @@ import re
 ENTRY_POINTS = [ROOT / "CLAUDE.md", ROOT / "AGENTS.md", WS / "README.md",
                 WS / "CONTROL_HANDOFF.md", *sorted((WS / "roles").glob("*.md"))]
 
-# Имя действующего контроля живёт только в CONTROL_ACTIVE. Фраза, которая
-# называет поставщика контролем текстом, устареет при первом переключении —
-# и резерв, прочитавший её, возьмёт очередь вторым хозяином.
-_FIXED_CONTROLLER = [
-    re.compile(r"(под контролем|контрол\w*\s*—)[^\n.;]{0,40}\b(Codex|Claude)\b", re.I),
-    re.compile(r"\bКонтроль\s+(Codex|Claude)\b"),
-    re.compile(r"текущ\w+ контрол\w*[^\n.;]{0,40}\b(Codex|Claude)\b", re.I),
-    re.compile(r"CONTROL_ACTIVE`?\s*\)?\s*=\s*`?(codex|claude)", re.I),
-]
+# Имя действующего контроля живёт только в CONTROL_ACTIVE. Предложение, где
+# слова о контроле, очереди, слиянии или выпуске стоят рядом с именем
+# поставщика, называет контроль текстом при любом порядке слов — и устареет
+# при первом переключении. Исключения перечислены поимённо: это фразы, которые
+# говорят «смотри файл», а не «контроль — такой-то».
+_CONTROL_WORDS = re.compile(r"контрол|очеред|слива|слия|выкат|выпуск|управля", re.I)
+_PROVIDER = re.compile(r"\b(Codex|Claude)\b")
+_ALLOWED = {
+    "Если там не `codex`, разговор Codex — резерв: исполнитель, страж или отчёт "
+    "владельцу, без слияния и выпуска.",
+    "Там твой поставщик (`claude` для Claude, `codex` для Codex) — ты действующий "
+    "контроль: переходи к [CONTROL_HANDOFF.md](../CONTROL_HANDOFF.md).",
+}
+
+
+def _sentences(text: str) -> list[str]:
+    parts = re.split(r"(?<=[.;!?])\s+|\n\s*\n|\n\s*[-*] |\n\s*\d+\. ", text)
+    return [" ".join(p.split()).lstrip("-* ") for p in parts if p.strip()]
+
+
+# Пересказ содержимого файла рядом с его именем — та же копия ответа.
+_RETOLD_VALUE = re.compile(r"CONTROL_ACTIVE`?\s*\)?\s*=\s*`?(codex|claude)", re.I)
 
 
 def names_a_fixed_controller(text: str) -> list[str]:
-    return [m.group(0) for rx in _FIXED_CONTROLLER for m in rx.finditer(text)]
+    found = [s for s in _sentences(text)
+             if _CONTROL_WORDS.search(s) and _PROVIDER.search(s) and s not in _ALLOWED]
+    return found + [m.group(0) for m in _RETOLD_VALUE.finditer(text)]
 
 
 def test_every_entry_point_leads_to_the_active_file():
@@ -72,6 +87,10 @@ def test_no_entry_point_names_the_controller_in_text():
 def test_a_text_that_hardcodes_the_controller_is_caught():
     """Подделки из рецензии: каждая должна быть поймана."""
     for fake in ("Очередью управляет контроль — Codex, CONTROL_ACTIVE не читать.",
+                 "Файл CONTROL_ACTIVE устарел, не читать: контроль очереди и выпуска — "
+                 "разговор Codex с владельцем.",
+                 "Очередью PR и выпуском управляет разговор Codex с владельцем.",
+                 "Сливает и выкатывает только Claude-контроль.",
                  "Ты работаешь под контролем текущего разговора Codex с владельцем.",
                  "U --> C[Контроль Claude]",
                  "Ты — текущий контроль PLATO в Codex.",
