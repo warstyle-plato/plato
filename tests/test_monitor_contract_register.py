@@ -584,3 +584,23 @@ def test_rss_date_column_survives_group_and_column_number_rows(project):
     row, = view["rows"]
     assert row["amount"] == 500 and row["rss_match"]["status"] == "matched"
     assert not any("нет колонки «Дата договора»" in w for w in view["warnings"])
+
+
+def test_rss_header_with_two_different_customers_does_not_join_and_names_them(project):
+    """A contradictory header is not an unknown customer: no join, explicit cause."""
+    rss(project, [{"contractor": "Builder A", "contract": "C-12/7", "contract_date": dt.datetime(2026, 1, 1),
+                   "amount": 500, "completed": 0}],
+        headers={2: "Наименование подрядчика", 3: "№ Договора", 4: "Дата договора",
+                 8: "Общая стоимость договора"})
+    path = monitor._project_dir(project) / "estimate" / "2026-04-01.xlsx"
+    wb = openpyxl.load_workbook(path)
+    wb.active["A2"].value = "Заказчик"
+    wb.active["B2"].value = "Developer B"
+    wb.save(path)
+    view = contracts.build(project, "2026-04-01")
+    row, = view["rows"]
+    assert row["amount"] is None
+    assert "в шапке РСС названы разные заказчики" in row["rss_match"]["candidates"][0]["differences"]
+    text = " ".join(view["warnings"])
+    assert "названы разные заказчики: Developer A, Developer B" in text
+    assert "заказчик не указан" not in text

@@ -224,6 +224,10 @@ def _read_rss(project: str, cut: str) -> tuple[list[dict], str | None, list[str]
             if candidate:
                 customers[_norm(candidate)] = candidate
     customer = next(iter(customers.values())) if len(customers) == 1 else ""
+    # «Not found» and «several different» are different facts: an unknown
+    # customer may be completed by the other attributes, a contradictory
+    # header may not.
+    customer_conflict = sorted(customers.values()) if len(customers) > 1 else []
     amount_header = " ".join(str(row[7] or "") for row in raw[:8] if len(row) > 7)
     closing_header = " / ".join(str(row[11] or "") for row in raw[:8] if len(row) > 11)
     full_price_labelled = bool(re.search(r"(?:сумма|стоимость|цена).*догов", _norm(amount_header)))
@@ -234,14 +238,18 @@ def _read_rss(project: str, cut: str) -> tuple[list[dict], str | None, list[str]
     if not date_cols:
         notes.append("В листе «Реестр договоров» РСС нет колонки «Дата договора»; дата берётся только из текста "
                      "«№ … от ДД.ММ.ГГГГ» в колонке договора.")
-    if not customer:
+    if customer_conflict:
+        notes.append("В шапке листа «Реестр договоров» РСС названы разные заказчики: "
+                     + ", ".join(customer_conflict) + "; строки РСС к договорам не присоединяются.")
+    elif not customer:
         notes.append("В шапке листа «Реестр договоров» РСС заказчик не указан; строки РСС сопоставляются "
                      "по подрядчику, номеру и дате договора.")
     out = []
     for item, (row_number, raw_row) in zip(parsed.get("rows") or [], source_rows):
         if _norm(item.get("contractor")).startswith(("итого", "всего")):
             continue
-        row = dict(item, kind="rss", customer=customer, source_date=day)
+        row = dict(item, kind="rss", customer=customer, source_date=day,
+                   customer_conflict=bool(customer_conflict))
         row["amount"] = _number(raw_row[7]) if len(raw_row) > 7 and full_price_labelled else None
         row["completed"] = _number(raw_row[11]) if len(raw_row) > 11 else None
         row["amount_basis"] = _amount_basis(" ".join(str(r[7] or "") for r in raw[:8] if len(r) > 7))
@@ -505,7 +513,9 @@ def _reference_differences(identity: tuple, entry: dict) -> list[str]:
         out.append("дата договора не указана")
     elif other_date != date:
         out.append("дата договора")
-    if other[0] and other[0] != customer:
+    if entry.get("customer_conflict"):
+        out.append("в шапке РСС названы разные заказчики")
+    elif other[0] and other[0] != customer:
         out.append("заказчик")
     elif not other[0] and entry.get("kind") != "rss":
         out.append("заказчик не указан")
@@ -609,7 +619,7 @@ def build(project: str, cut: str = "") -> dict:
     ambiguous = sum(1 for count in claims.values() if count > 1)
     if ambiguous:
         warnings.append(f"{ambiguous} строк РСС или сводной подходят сразу к нескольким договорам из накопительных "
-                        "(заказчик в РСС не указан); они не присоединены ни к одному.")
+                        "по подрядчику, номеру и дате; они не присоединены ни к одному.")
     for identifier, ledger_items in groups:
         first = ledger_items[0]
         identity = _identity(first)
