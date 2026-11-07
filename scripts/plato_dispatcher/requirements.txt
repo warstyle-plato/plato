@@ -1,0 +1,2 @@
+# Official Python SDK includes matching native app-server / CodeMode host binaries.
+openai-codex==0.167.0
