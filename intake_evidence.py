@@ -10,17 +10,18 @@ from typing import Any
 
 _NUMBER = re.compile(r"(?<![\d:])[-+]?(?:\d{1,3}(?:[ \u00a0\u202f]\d{3})+|\d+)(?:[.,]\d+)?(?![\d:])")
 _CADASTRE = re.compile(r"(?<!\d)\d{2}:\d{2}:\d{5,8}:\d+(?!\d)")
-_UNIT = re.compile(r"^\s*(?:млрд\.?|миллиард\w*|млн\.?|миллион\w*|"
-                   r"(?:тыс\.?|тысяч\w*)\s*(?:руб\w*\.?|₽|м\s*[²2]|кв\.?\s*м\.?)?|"
-                   r"руб\w*\.?|₽|га\b|гект\w*|м\s*[²2]|кв\.?\s*м\.?|"
-                   r"машино[- ]?мест\w*|м/м|мест\w*|шт\.?|пос\.?\s*/\s*смен\w*|посещ\w*)", re.I)
+_MAGNITUDE = r"(?:млрд|миллиард[а-я]*|млн|миллион[а-я]*|тыс|тысяч[а-я]*)\.?"
+_UNIT = re.compile(r"^\s*(?:(?:" + _MAGNITUDE + r"\s*)?"
+                   r"(?:руб[а-я]*\.?|₽|RUB\b|м\s*[²2]|кв\.?\s*м\.?)|"
+                   r"га\b|гект[а-я]*|машино[- ]?мест[а-я]*|м/м|мест[а-я]*|шт\.?|"
+                   r"пос\.?\s*/\s*смен[а-я]*|посещ[а-я]*)(?![a-zа-я])", re.I)
 
 
 def _dimension(unit: str) -> str:
     normalized = _flat(unit)
     if re.search(r"м\s*[²2]|кв\.?\s*м\.?|\bга\b|гект", normalized):
         return "area"
-    if re.search(r"млрд|миллиард|млн|миллион|руб|₽", normalized):
+    if re.search(r"руб|₽|\brub\b", normalized):
         return "money"
     if re.search(r"пос\.?\s*/\s*смен|посещ", normalized):
         return "visits"
@@ -71,6 +72,12 @@ def validate(extraction: dict[str, Any], document: dict[str, Any]) -> dict[str, 
                 for match in _NUMBER.finditer(quote):
                     suffix_match = _UNIT.match(quote[match.end():])
                     suffix = suffix_match.group() if suffix_match else ""
+                    tail = quote[match.end() + suffix_match.end():] if suffix_match else ""
+                    if suffix_match and re.match(
+                            r"\s*(?:/|(?:за|на|в)\s+(?:(?:1|один|одну)\s+)?"
+                            r"(?:м\s*[²2]|кв\.?\s*м|га\b|гектар|сотк|мест|год|месяц|сутк|час|челов))",
+                            tail, re.I):
+                        continue  # a rate per area/time is not a total amount
                     expected = ("money" if key in di._MONEY_FIELDS else
                                 "area" if key in di._AREA_SQM_FIELDS | {"site_area_ha"} else
                                 "visits" if key == "clinic_capacity" else "count")
@@ -108,6 +115,10 @@ def validate(extraction: dict[str, Any], document: dict[str, Any]) -> dict[str, 
     questions = []
     for question in extraction.get("questions") or []:
         item = dict(question)
+        if item.get("requires_manual"):
+            item["source_quote"] = ""
+            questions.append(item)
+            continue
         quote = str(item.get("quote") or "")
         candidate_text = " ".join([str(item.get("question") or "")] +
             [str(o.get("value") or "") + " " + str(o.get("unit") or "") + " " + str(o.get("label") or "")

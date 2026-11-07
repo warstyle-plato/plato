@@ -29,6 +29,12 @@ def check(fields, text):
     (field(100, "Цена 100 млн руб.", "underground_manual_spaces", "мест"), "Цена 100 млн руб."),
     (field(100, "Площадь 100 акров", "apartments_gns_sqm", "м²"), "Площадь 100 акров"),
     (field(100, "Поликлиника 100 мест", "clinic_capacity", "пос./смену"), "Поликлиника 100 мест"),
+    (field(400, "Стоимость 400 млн USD"), "Стоимость 400 млн USD"),
+    (field(400, "Площадь 400 млн м²"), "Площадь 400 млн м²"),
+    (field(400, "Стоимость 400 млн ₽/м²"), "Стоимость 400 млн ₽/м²"),
+    (field(400, "Стоимость 400 млн ₽ за гектар"), "Стоимость 400 млн ₽ за гектар"),
+    (field(400, "Стоимость 400 млн ₽ на м²"), "Стоимость 400 млн ₽ на м²"),
+    (field(400, "Стоимость 400 млн ₽ за место"), "Стоимость 400 млн ₽ за место"),
 ])
 def test_a_candidate_without_matching_source_is_never_an_engine_fact(candidate, text):
     got = check([candidate], text)
@@ -84,7 +90,10 @@ def test_questions_cannot_smuggle_unverified_amounts_or_schedules(question, quot
     extraction = di.parse_intake(json.dumps({"fields": [], "questions": [{
         "key": "", "question": question, "quote": quote,
         "options": ["В цену сделки — платится на входе", "В соцнагрузку"]}]}))
-    state = tc.start(extraction, {"text": "[стр. 1]\n" + quote}, "teaser.pdf", presets={}, current_class="")
+    document = {"text": "[стр. 1]\n" + quote}
+    # The actual request validates once before creating the card and once at
+    # the card boundary; a second pass must never restore untrusted amounts.
+    state = tc.start(intake_evidence.validate(extraction, document), document, "teaser.pdf", presets={}, current_class="")
     assert state["cards"][0]["requires_manual"]
     got = tc.answer(state, {}, {}, index=0, action="answer", choice=0, spp_split={}, presets={})
     assert got["invalid"]

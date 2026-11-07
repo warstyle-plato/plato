@@ -646,20 +646,22 @@ def to_field_number(key: str, value: Any, unit: str = "") -> tuple[float | None,
         for mark, scale in _MONEY_SCALE:
             if mark in said:
                 return number * scale, ""
-        if "руб" in said or "₽" in said:
+        if "руб" in said or "₽" in said or re.search(r"\brub\b", said):
             # Рубли без порядка — это рубли: миллионы называются словом.
             return number / 1_000_000.0, ""
         return None, ("единица не названа — «млн ₽», «₽» или «тыс ₽»? "
                       "Разница в миллион раз, поэтому не подставляем")
     if key == "site_area_ha":
-        area_scale = 1000.0 if re.search(r"\b(?:тыс|тысяч)", said) else 1.0
+        area_scale = (1_000_000.0 if re.search(r"\b(?:млн|миллион)", said) else
+                      1000.0 if re.search(r"\b(?:тыс|тысяч)", said) else 1.0)
         if "га" in said or "гект" in said:
             return number * area_scale, ""
         if "м2" in said or "м²" in said or "кв" in said:
             return number * area_scale / 10_000.0, ""
         return None, "единица площади не названа — «га» или «м²»?"
     if key in _AREA_SQM_FIELDS:
-        area_scale = 1000.0 if re.search(r"\b(?:тыс|тысяч)", said) else 1.0
+        area_scale = (1_000_000.0 if re.search(r"\b(?:млн|миллион)", said) else
+                      1000.0 if re.search(r"\b(?:тыс|тысяч)", said) else 1.0)
         for mark, scale in _AREA_SCALE:
             if mark in said:
                 return number * scale * area_scale, ""

@@ -61,8 +61,8 @@ EXTRACTION = {
         {"key": "vri_relief_mln", "value": "2,57", "unit": "млрд руб.",
          "quote": "Льгота МПТ – 2,57 млрд руб. – покрытие ВРИ на 65%"},
     ],
-    "questions": [{"key": "", "question": SPV, "options": TWO_WAYS}]
-    + [{"key": "", "question": q, "options": TWO_WAYS} for q in OBLIGATIONS],
+    "questions": [{"key": "", "question": SPV, "quote": SPV.split(" — ", 1)[0], "options": TWO_WAYS}]
+    + [{"key": "", "question": q, "quote": q.split(" — ", 1)[0], "options": TWO_WAYS} for q in OBLIGATIONS],
     "notes": [],
 }
 
@@ -103,7 +103,7 @@ def _parse(monkeypatch) -> dict:
     monkeypatch.setattr(core, "_require_web_access", lambda *_a, **_k: None)
     monkeypatch.setattr(core, "usage_track", lambda *_a, **_k: None)
     monkeypatch.setattr(document_intake, "extract_text",
-                        lambda _data, name: {"text": "Тизер. Светлый 4.", "pages": 5,
+                        lambda _data, name: {"text": "[стр. 1]\n" + "\n".join(row["quote"] for row in EXTRACTION["fields"] + EXTRACTION["questions"]), "pages": 5,
                                              "filename": name})
     monkeypatch.setattr(core, "plato_answer",
                         lambda *_a: {"answer": json.dumps(EXTRACTION, ensure_ascii=False)})

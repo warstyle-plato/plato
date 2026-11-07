@@ -688,7 +688,7 @@ def agent_document(req: AgentDocumentRequest, request: Request) -> dict[str, Any
             raise HTTPException(413, "Файл больше 20 МБ. Пришлите нужные страницы отдельно.")
         filename = req.filename
         document = document_intake.extract_text(data, filename)
-    document["source"] = source
+    document["source"] = source or {"kind": "upload", "sha256": hashlib.sha256(data).hexdigest()}
 
     if not document.get("text"):
         # Скан — не пустой документ, и выдавать «ничего не нашли» за ответ

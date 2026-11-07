@@ -1306,6 +1306,8 @@ def _telegram_handle_intake_document(chat_id: int, data: bytes, filename: str, d
     Карточку собирает тот же сборщик, что и для сайта (`teaser_card_view`).
     """
     document = document_override if document_override is not None else document_intake.extract_text(data, filename)
+    if not document.get("source") and data:
+        document["source"] = {"kind": "upload", "sha256": hashlib.sha256(data).hexdigest()}
     if not document.get("text"):
         # Скан — не пустой документ. Сказать «ничего не нашли» значит соврать
         # про источник: там всё есть, просто картинкой. Признак скана гейтом
