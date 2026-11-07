@@ -81,14 +81,11 @@ def _above_ground_sqm(tep_report: dict[str, Any]) -> float:
     Берётся из тех же строк ТЭП, что и вся таблица отчёта: заводить вторую
     арифметику ради подписи нельзя — она разойдётся с числами над ней.
     """
+    if tep_report.get("above_gns") is not None:
+        return max(0.0, _number_or_zero(tep_report["above_gns"]))
     return max(0.0, _number_or_zero((tep_report.get("total") or {}).get("gns"))
-               - _core_underground_sqm(tep_report)
-               # Наземные кладовые лежат внутри метров квартир: строка их
-               # несёт, а к наземной части они второй раз не прибавляются.
-               - sum(_number_or_zero(row.get("gns"))
-                     for row in (tep_report.get("rows") or [])
-                     if str(row.get("key")) in ROWS_OUTSIDE_ABOVE_SUM
-                     and str(row.get("key")) not in _report_underground_keys(tep_report)))
+               - _core_underground_sqm(tep_report))
+
 
 
 def _report_underground_keys(tep_report: dict[str, Any]) -> tuple[str, ...]:

@@ -98,13 +98,6 @@ UNDERGROUND_PRODUCTS_BY_PLACEMENT: dict[str, tuple[str, ...]] = {
     STORAGE_ABOVE: ("underground_parking",),
 }
 
-# Строки, чьи метры к наземной ГНС проекта НЕ прибавляются. Это другой вопрос,
-# чем «что под землёй»: наземные кладовые стоят внутри наземной ГНС здания —
-# их вырезают из площади квартир, как коммерцию, а не добавляют сверху
-# (владелец, 15.10.2026). Поэтому кладовые здесь при любом размещении.
-ROWS_OUTSIDE_ABOVE_SUM: tuple[str, ...] = ("underground_parking", "storage")
-
-
 def storage_above_ground(inputs: dict[str, Any] | None) -> bool:
     """Кладовые на наземных этажах — только явным выбором проекта."""
     value = (inputs or {}).get(STORAGE_PLACEMENT_FIELD)
@@ -121,42 +114,35 @@ def underground_placement_payload() -> dict[str, Any]:
     """Правило «что под землёй» для страницы — плейсхолдером, не копией."""
     return {"field": STORAGE_PLACEMENT_FIELD, "default": STORAGE_PLACEMENT_DEFAULT,
             "by_placement": {key: list(value)
-                             for key, value in UNDERGROUND_PRODUCTS_BY_PLACEMENT.items()},
-            "outside_above": list(ROWS_OUTSIDE_ABOVE_SUM)}
+                             for key, value in UNDERGROUND_PRODUCTS_BY_PLACEMENT.items()}}
 
 
-def project_above_gns(tep: dict[str, Any]) -> float:
-    """Наземная ГНС проекта — та самая, что стоит в сводке под именем ГНС.
+def project_above_gns(tep: dict[str, Any], inputs: dict[str, Any] | None = None) -> float:
+    """Наземная ГНС — сумма отдельных наземных строк ТЭП этого проекта.
 
-    Объявлена один раз: её читают и сводка, и удельные, и статья
-    благоустройства. Второй счёт той же величины разошёлся бы с первым, и оба
-    числа выглядели бы верными. От размещения кладовых она не зависит:
-    подземные в неё не входят, наземные уже лежат в метрах квартир.
+    Строка кладовых содержит собственную площадь и входит ровно в одну
+    часть здания. Переключение размещения не меняет площадь квартир или
+    общую площадь; оно переносит кладовые между наземной и подземной базой.
+    Отсутствующий выбор сохраняет прежнее умолчание «подземные».
     """
-    object_under = sum(n(row, "under_gns") for row in tep.values())
-    outside = (sum(n(tep.get(key) or {}, "gns") for key in ROWS_OUTSIDE_ABOVE_SUM)
-               + object_under)
-    volume = sum(n(row, "gns") for row in tep.values()) + object_under
-    return max(0.0, volume - outside)
+    excluded = underground_products(inputs)
+    return max(0.0, sum(n(row, "gns") for key, row in tep.items() if key not in excluded))
 
 
 def mkd_part_gns(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[str, dict[str, float]]:
     """ГНС продуктов МКД по частям здания: наземной и подземной.
 
-    Сумма наземной части — ГНС квартир и коммерции (`core_above_gns`), и
-    наземные кладовые в ней ВЫРЕЗАНЫ из квартир; сумма подземной —
-    `core_under_gns`. По этим метрам прямые затраты части (её СМР с
-    надбавками) делятся между продуктами этой части.
+    Кладовые — отдельная строка, их площадь не вырезается из квартир.
+    Наземная и подземная части сохраняют сумму площадей продуктов МКД.
     """
     def gns(key: str) -> float:
         return n(tep.get(key) or {}, "gns")
 
     flats, storage = gns("apartments"), gns("storage")
     if storage_above_ground(inputs):
-        inside = min(storage, flats)
-        return {"above": {"apartments": flats - inside,
+        return {"above": {"apartments": flats,
                           "ground_commercial": gns("ground_commercial"),
-                          "storage": inside},
+                          "storage": storage},
                 "under": {"underground_parking": gns("underground_parking")}}
     return {"above": {"apartments": flats, "ground_commercial": gns("ground_commercial")},
             "under": {"underground_parking": gns("underground_parking"), "storage": storage}}

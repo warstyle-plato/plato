@@ -927,13 +927,10 @@ function tepRowUnderGns(key,row){
  return (undergroundProducts().includes(key)?Number(r.gns||0):0)
   +(Number(r.under_gns||0)||objectGarageUnderGns(key));
 }
-// Сколько у строки НАЗЕМНОЙ площади — пара к подземной выше. Гараж лежит под
-// землёй целиком, кладовые — либо под землёй, либо ВНУТРИ метров квартир, и
-// к наземной ГНС их колонка не прибавляется ни в одном случае; правило —
-// `ROWS_OUTSIDE_ABOVE_SUM` из движка (`project_above_gns`). Читатели,
-// считавшие сами, пропускали один гараж, и кладовые садились в наземную ГНС.
+// Сколько у строки НАЗЕМНОЙ площади — пара к подземной выше.
+// Отдельная площадь кладовых входит в выбранную часть ровно один раз.
 function tepRowAboveGns(key,row){
- return UNDERGROUND_PLACEMENT.outside_above.includes(key)?0:Number((row||{}).gns||0);
+ return undergroundProducts().includes(key)?0:Number((row||{}).gns||0);
 }
 // Галочки у строки ТЭП из `TEP_ONLY_INPUTS`. Снята — значение `off`, оно же
 // умолчание движка: отсутствующий ключ не читается как «стоит».
