@@ -1952,8 +1952,11 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
         if block.get("stalled"):
             text += " " + _stalled_words(block)
         if block.get("estimate"):
-            text += " Это оценка по ГПР и накопительным, без цепочки до получения разрешения."
-        add("Срок", text, "ГПР и накопительные" if block.get("estimate") else "прогноз Монитора по темпу работ",
+            driver = ((block.get("qualification") or {}).get("driving_chain") or [{}])[0]
+            if not late and driver.get("method") == "plan":
+                text = text.replace(": в срок.", ": по плану ГПР; роста процента для подтверждения темпа нет.")
+            text += " Это оценка по ГПР, без цепочки до получения разрешения."
+        add("Срок", text, "ГПР" if block.get("estimate") else "прогноз Монитора по темпу работ",
             "bad" if late else "")
     elif block.get("qualification"):
         qualified = block["qualification"]
@@ -4559,7 +4562,7 @@ def render_html(report: dict[str, Any]) -> str:
                    f"{_day(block['forecast'])}"
                    + (f" — на {delay:.0f} дн. позже." if isinstance(delay, (int, float))
                       and delay > 0 else ".")
-                   + (" Оценка по ГПР и накопительным, без цепочки до получения разрешения."
+                   + (" Оценка по ГПР, без цепочки до получения разрешения."
                       if block.get("estimate") else "") + "</p>")
         driver = _driver_words(block.get("driver"))
         if driver and isinstance(delay, (int, float)) and delay > 0:

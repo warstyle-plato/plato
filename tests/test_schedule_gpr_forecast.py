@@ -138,3 +138,18 @@ def test_monitor_card_shows_the_estimate_date_with_its_caveat():
         expect(kpis).to_contain_text('10.05.2027')
         expect(kpis).to_contain_text('оценка по ГПР')
         assert not errors
+
+
+def test_rnv_driven_by_a_plan_only_work_is_not_called_on_time():
+    import developaid_management_report as report
+    import developaid_monitor_dashboard as dashboard
+    qualified = {"state": "estimate", "approved": "2027-04-30", "forecast": "2027-04-30", "delay_days": 0,
+                 "basis": "gpr", "reasons": [gpr.ESTIMATE_NOTE],
+                 "driving_chain": [{"id": "2", "name": "Кровля", "method": "plan", "reason": "показан план"}]}
+    sentence = dashboard._schedule_summary({"qualified_rnv": qualified})
+    assert "оценка по ГПР — 30.04.2027" in sentence and "в срок" not in sentence
+    assert "по плану ГПР" in sentence and "накопительн" not in sentence
+    block = report.schedule({"schedule": {"qualified_rnv": qualified}})
+    payload = {"project": "Учебный", "kind": "week", "start": "2026-11-01", "end": "2026-11-06", "schedule": block}
+    text = " ".join(f["text"] for f in report.findings(payload) if f.get("topic") == "Срок")
+    assert "в срок" not in text and "по плану ГПР" in text and "накопительн" not in text

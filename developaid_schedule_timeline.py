@@ -300,19 +300,25 @@ def render(block: dict, *, context: str = 'monitor') -> str:
     esc = lambda value: html.escape(str(value if value is not None else ''), quote=True)
     rnv = block.get('rnv') or {}
     state = rnv.get('state')
+    gpr = rnv.get('basis') == 'gpr'
     forecast = (date_text(rnv.get('forecast')) if state == 'complete' and rnv.get('forecast')
+                else date_text(rnv.get('forecast'))+' — оценка по ГПР' if state == 'estimate' and rnv.get('forecast')
                 else 'неполный' if state == 'partial' else 'недостаточно данных')
     delta = rnv.get('delay_days')
-    delay = (f'{delta:+g} дн.' if state in {'complete', 'partial'}
+    delay = (f'{delta:+g} дн.' if state in {'complete', 'partial', 'estimate'}
              and isinstance(delta, (int, float)) else 'не определён')
     out = [styles(), '<section class="dependency-timeline schedule-overview">',
            '<h3>РНВ и причины переноса срока</h3>',
            '<div class="schedule-rnv-cards"><div><span>План РНВ</span><strong>'+esc(date_text(rnv.get('approved')))+'</strong></div>',
            '<div class="'+('schedule-warning' if state != 'complete' else '')+'"><span>Прогноз РНВ</span><strong>'+esc(forecast)+'</strong></div>',
-           '<div><span>Сдвиг РНВ'+(' по известной части сети' if state == 'partial' else '')+'</span><strong>'+esc(delay)+'</strong></div></div>']
+           '<div><span>Сдвиг РНВ'+(' по работам ГПР с прогнозом' if state == 'partial' and gpr else ' по известной части сети' if state == 'partial' else '')+'</span><strong>'+esc(delay)+'</strong></div></div>']
     if state == 'partial' and rnv.get('indicative_forecast'):
-        out.append('<p class="schedule-note">По известной части сети: '+esc(date_text(rnv['indicative_forecast']))+
-                   '. Это не подтверждённый итоговый срок РНВ.</p>')
+        out.append('<p class="schedule-note">'+('По работам ГПР с прогнозом: ' if gpr else 'По известной части сети: ')
+                   +esc(date_text(rnv['indicative_forecast']))+'. Это не подтверждённый итоговый срок РНВ.</p>')
+    chain = rnv.get('driving_chain') or []
+    if gpr and chain:
+        out.append('<p class="schedule-note"><b>Срок тянет работа:</b> «'+esc(chain[0].get('name') or '')+'»'
+                   +(' — '+esc(chain[0]['reason']) if chain[0].get('reason') else '')+'</p>')
     reasons = rnv.get('reasons') or []
     for reason in reasons[:3]:
         out.append('<p class="schedule-note">'+esc(reason)+'</p>')

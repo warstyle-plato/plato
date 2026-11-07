@@ -68,7 +68,7 @@ def test_findings_carry_numbers_and_sources():
     assert list(found) == ["Стройка", "Люди на площадке", "Отстающие работы", "Срок",
                            "Бюджет месяца", "Продажи", "Финансирование", "Споры",
                            "Открытые вопросы"]
-    assert "ГПР и накопительные" == found["Срок"]["source"]
+    assert "ГПР" == found["Срок"]["source"]
     assert "без цепочки до получения разрешения" in found["Срок"]["text"]
     lag = built["physical"]["lag"]
     assert f"отставание {report._pp(-lag)[1:]}" in found["Стройка"]["text"]

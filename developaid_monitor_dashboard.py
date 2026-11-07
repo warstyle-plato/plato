@@ -2156,9 +2156,16 @@ def _schedule_summary(schedule: dict[str, Any]) -> str | None:
             approved = monitor._day(qualified.get("approved"))
             forecast = monitor._day(qualified.get("forecast"))
             delay = qualified.get("delay_days")
-            drift = (f"на {delay} дней позже плана" if isinstance(delay, (int, float)) and delay > 0 else "в срок")
+            driver = (qualified.get("driving_chain") or [{}])[0]
+            if isinstance(delay, (int, float)) and delay > 0:
+                drift = f"на {delay} дней позже плана"
+            elif driver.get("method") == "plan":
+                # The latest work carries only its plan: no growth to call it «on time».
+                drift = "по плану ГПР; роста процента для подтверждения темпа нет"
+            else:
+                drift = "в срок"
             return ("Срок. " + (f"Утверждённый ввод — {approved.strftime('%d.%m.%Y')}; " if approved else "")
-                    + (f"оценка по ГПР и накопительным — {forecast.strftime('%d.%m.%Y')}, {drift}"
+                    + (f"оценка по ГПР — {forecast.strftime('%d.%m.%Y')}, {drift}"
                        if forecast else "оценки нет")
                     + ". Без цепочки до получения разрешения.")
         if qualified.get("state") != "complete":

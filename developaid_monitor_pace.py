@@ -158,13 +158,13 @@ def _apply_gpr(project: str, view: dict[str, Any], cut: datetime.date) -> dict[s
     schedule["gpr_forecasts"] = works
     schedule["dependency_timeline_html"] = schedule_timeline.render(schedule["dependency_timeline"])
     schedule["corpus_gpr"] = corpus_gpr.latest(project, cut.isoformat())
-    schedule["corpus_gpr_html"] = corpus_gpr.render(schedule["corpus_gpr"])
+    schedule["corpus_gpr_html"] = corpus_gpr.render_overview(schedule["corpus_gpr"], cut.isoformat())
     if isinstance(dash, dict):
         driver = (qualified.get("driving_chain") or [None])[0]
         dash.update(qualified_rnv=qualified, stalled=stalled,
                     forecast_known=qualified["state"] == "estimate",
                     forecast_finish=qualified.get("forecast"),
-                    forecast_source="ГПР и накопительные, без цепочки до разрешения",
+                    forecast_source="ГПР, без цепочки до разрешения",
                     rnv_delay_days=qualified.get("delay_days") if qualified["state"] == "estimate" else None,
                     driver={"id": driver["id"], "name": driver["name"]} if driver else None)
         from developaid_monitor_dashboard import refresh_schedule_summary

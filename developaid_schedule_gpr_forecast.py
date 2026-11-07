@@ -192,13 +192,14 @@ def rnv(rows: list[dict], works: dict[str, dict], approved: Any) -> dict[str, An
         reasons.append(f"Без прогноза {len(missing)} строительных работ (стоят или нет данных): {names}"
                        + (" и др." if len(missing) > 5 else "") + ". Итоговая дата неполная.")
     if not known:
-        return {"state": "unknown", "approved": monitor._iso(approved_day), "forecast": None,
+        return {"state": "unknown", "approved": monitor._iso(approved_day), "approved_source": "утверждённый ГПР",
+                "forecast": None,
                 "indicative_forecast": None, "delay_days": None, "driving_chain": [],
                 "basis": "gpr", "reasons": reasons + ["Ни у одной строительной работы ГПР нет прогноза."]}
     day, row, item = max(known, key=lambda k: k[0])
     delay = (day - approved_day).days if approved_day else None
     state = "partial" if missing else "estimate"
-    return {"state": state, "approved": monitor._iso(approved_day),
+    return {"state": state, "approved": monitor._iso(approved_day), "approved_source": "утверждённый ГПР",
             "forecast": day.isoformat() if state == "estimate" else None,
             "indicative_forecast": day.isoformat(), "delay_days": delay,
             "driving_chain": [{"id": str(row.get("id") or row.get("wbs") or ""), "name": str(row.get("name") or ""),
