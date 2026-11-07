@@ -26,7 +26,7 @@ def model(pm: dict, seeds: dict[str, dt.date], *, evidence: bool = False,
         return {'state': 'unknown', 'rows': [], 'edges': [], 'confirmation': pm.get('confirmation') or {}, 'rnv': {
             'state': 'unknown', 'approved': None, 'forecast': None, 'indicative_forecast': None,
             'delay_days': None, 'driving_chain': [],
-            'reasons': ['Выгрузка PM с подтверждёнными связями работ не загружена.']}}
+            'reasons': [pm.get('reason') or 'Выгрузка PM с подтверждёнными связями работ не загружена.']}}
     valid_types = {'FS', 'SS', 'FF', 'SF'}
     safe_tasks = {}
     for tid, task in tasks.items():

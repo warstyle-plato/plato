@@ -271,7 +271,7 @@ def doubts(project: str, cut: Any) -> dict[str, Any]:
     view = monitor.build(project, cut=cut_date)
     pm = graph._load_pm(project)
     if not pm.get("known"):
-        raise ValueError("для пересчёта сети нужен сырой PM с зависимостями")
+        raise ValueError(pm.get("reason") or "для пересчёта сети нужен сырой PM с зависимостями")
 
     rows = (view.get("schedule") or {}).get("rows") or []
     seeded = forecast.current_seeds(rows, cut_date)
@@ -388,7 +388,7 @@ def run(project: str, cut: Any, kind: str, wbs: str = "", days: int = 0,
     view = monitor.build(project, cut=cut_date)
     pm = graph._load_pm(project)
     if not pm.get("known"):
-        raise ValueError("для сценария нужен сырой PM с зависимостями")
+        raise ValueError(pm.get("reason") or "для сценария нужен сырой PM с зависимостями")
     targets = _target_ids(pm, wbs) if kind != "current_pace" else []
     if kind != "current_pace" and not targets:
         raise ValueError(f"WBS «{wbs}» не найден в PM-графике")
