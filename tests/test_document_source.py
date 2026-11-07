@@ -33,7 +33,7 @@ class Response:
     def getheader(self, name):
         return self.headers.get(name)
 
-    def read(self, amount):
+    def read1(self, amount):
         return self.stream.read(amount)
 
 
@@ -171,6 +171,77 @@ def test_timeout_is_a_public_source_error_and_closes_connection(monkeypatch):
     assert raised.value.status_code == 504
     assert "internal detail" not in str(raised.value)
     assert len(sent) == 1 and closed == ["files.example"]
+
+
+def test_slow_body_is_checked_after_each_single_read_not_after_filling_64kb(monkeypatch):
+    clock = [0.0]
+    calls = {"read": 0, "read1": 0}
+
+    class Trickle(Response):
+        def read(self, amount):
+            # The old read(n) could receive many tiny chunks, each below its
+            # per-recv timeout, before returning to the caller's deadline check.
+            calls["read"] += 1
+            clock[0] += 50.0
+            return PDF
+
+        def read1(self, amount):
+            calls["read1"] += 1
+            clock[0] += 0.4
+            return b"x"
+
+    monkeypatch.setattr(ds.time, "monotonic", lambda: clock[0])
+    sent, closed = transport(monkeypatch, [Trickle()])
+    with pytest.raises(ds.DocumentSourceError) as raised:
+        ds.read_url("https://files.example/a", timeout=1.0)
+    assert raised.value.code == "source_timeout"
+    assert calls == {"read": 0, "read1": 3}
+    assert clock[0] < 1.3  # one single read, not a 50-second accumulating call
+    assert len(sent) == 1 and closed == ["files.example"]
+
+
+def test_slow_header_line_cannot_reset_timeout_past_total_deadline(monkeypatch):
+    clock = [0.0]
+    limits = []
+
+    class Trickle(io.BytesIO):
+        def read1(self, amount=-1):
+            clock[0] += 0.2
+            return super().read(1)  # one byte per recv, each below socket timeout
+
+    class Socket:
+        def makefile(self, mode):
+            return Trickle(b"HTTP/1.1 200 OK\r\nContent-Type: application/pdf\r\n\r\n" + PDF)
+
+        def settimeout(self, value):
+            limits.append(value)
+
+    monkeypatch.setattr(ds.time, "monotonic", lambda: clock[0])
+    response = ds._DeadlineResponse(Socket(), deadline=0.5)
+    try:
+        with pytest.raises(ds.DocumentSourceError) as raised:
+            response.begin()
+        assert raised.value.code == "source_timeout"
+        assert limits == pytest.approx([0.5, 0.3, 0.1])
+        assert clock[0] == pytest.approx(0.6)
+    finally:
+        response.close()
+
+
+def test_deadline_response_keeps_real_http_chunk_framing(monkeypatch):
+    class Socket:
+        def makefile(self, mode):
+            return io.BytesIO(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n2\r\nde\r\n0\r\n\r\n")
+
+        def settimeout(self, value):
+            pass
+
+    response = ds._DeadlineResponse(Socket(), deadline=time.monotonic() + 5)
+    try:
+        response.begin()
+        assert response.read1(100) + response.read1(100) + response.read1(100) == b"abcde"
+    finally:
+        response.close()
 
 
 @pytest.mark.parametrize("status", [401, 403])

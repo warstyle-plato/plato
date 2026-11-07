@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import http.client
 import ipaddress
+import io
 import re
 import socket
 import threading
@@ -136,11 +137,46 @@ def _target(url: str, deadline: float) -> tuple[str, str, str, tuple[Any, ...]]:
     return canonical, host, request_target, tuple(endpoints)
 
 
+class _DeadlineRaw(io.RawIOBase):
+    """Check the total budget between raw reads, including header/framing reads."""
+
+    def __init__(self, reader: Any, sock: Any, deadline: float) -> None:
+        super().__init__()
+        self._reader, self._sock, self._deadline = reader, sock, deadline
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer: Any) -> int:
+        self._sock.settimeout(_remaining(self._deadline))
+        data = self._reader.read1(len(buffer))
+        _remaining(self._deadline)
+        buffer[:len(data)] = data
+        return len(data)
+
+    def close(self) -> None:
+        try:
+            self._reader.close()
+        finally:
+            super().close()
+
+
+class _DeadlineResponse(http.client.HTTPResponse):
+    def __init__(self, sock: Any, *args: Any, deadline: float, **kwargs: Any) -> None:
+        super().__init__(sock, *args, **kwargs)
+        # HTTPResponse reads status/header/chunk lines with readline(). Wrapping
+        # the stream below its buffering means even one slow line cannot keep
+        # resetting a per-recv timeout beyond the request's total deadline.
+        self.fp = io.BufferedReader(_DeadlineRaw(self.fp, sock, deadline))
+
+
 class _PinnedHTTPS(http.client.HTTPSConnection):
     def __init__(self, host: str, endpoints: tuple[Any, ...], timeout: float) -> None:
         super().__init__(host, port=443, timeout=timeout, context=trust_context())
         self._endpoints = endpoints
         self._deadline = time.monotonic() + timeout
+        self.response_class = lambda sock, *args, **kwargs: _DeadlineResponse(
+            sock, *args, deadline=self._deadline, **kwargs)
 
     def connect(self) -> None:
         last_error: OSError | None = None
@@ -216,7 +252,12 @@ def _download(url: str, deadline: float, max_bytes: int) -> tuple[bytes, str, st
                 remaining = _remaining(deadline)
                 if connection.sock is not None:
                     connection.sock.settimeout(remaining)
-                part = response.read(min(64 * 1024, max_bytes + 1 - size))
+                # HTTPResponse.read(n) may keep receiving until n bytes have
+                # accumulated: a trickle can reset the socket timeout many
+                # times inside that single call. read1 returns after one
+                # buffered/raw read so the total budget is checked again.
+                part = response.read1(min(64 * 1024, max_bytes + 1 - size))
+                _remaining(deadline)
                 if not part:
                     break
                 chunks.append(part)
