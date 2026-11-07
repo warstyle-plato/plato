@@ -1328,6 +1328,7 @@ def read_payments(path: str | Path) -> dict[str, Any]:
         rows.append({
             "contractor": str(cell("contractor") or "").strip(),
             "contract": str(cell("contract") or "").strip(),
+            "contract_date": _date(cell("contract_date")),
             "object": str(cell("object") or "").strip(),
             "purpose": str(cell("purpose") or "").strip(),
             "estimate_code": _code(cell("estimate_code")),
