@@ -1255,14 +1255,23 @@ class KrtRanking:
         slug = str(project.get("slug") or "").strip()
         if not slug:
             return
+        from auction_search.krt_screening import market_only_screening
+
+        verified = market_only_screening(project, market) or {}
+        problem = ("Результат проверки наблюдений рынка имеет неподдерживаемую структуру"
+                   if not isinstance(screening, dict) else
+                   str(screening.get("market_problem") or verified.get("market_problem") or ""))
+        if problem:
+            self.note_market_failure(project, problem)
+            raise ValueError(problem)
         now = int(time.time())
         save_json(self._market_report_path(slug), {
             "schema_version": MARKET_REPORT_SCHEMA_VERSION, "slug": slug,
             "project": project, "market": market,
             "market_computed_at": now, "exclusion": excluded,
         })
-        observed = screening.get("market") or {}
-        absorption = screening.get("absorption") or {}
+        observed = verified.get("market") or {}
+        absorption = verified.get("absorption") or {}
         price = _number(observed.get("market_price_rub_sqm"))
         self.remember(slug, {
             **{key: project[key] for key in _CATALOGUE_FIELDS if key in project},
@@ -1275,6 +1284,18 @@ class KrtRanking:
             "surrounding_price_rub_sqm": round(price) if price > 0 else None,
             "surrounding_sales_units_per_month": (
                 absorption.get("market_units_per_month") if absorption.get("available") else None),
+        })
+
+    def note_market_failure(self, project: dict[str, Any], reason: str) -> None:
+        """Record a failed attempt without erasing the last good observations."""
+        excluded = model_exclusion(project)
+        if excluded is None:
+            raise ValueError("Отдельное обновление рынка требует исключённой из расчёта площадки")
+        self.remember(str(project.get("slug") or ""), {
+            **{key: project[key] for key in _CATALOGUE_FIELDS if key in project},
+            "model_excluded": True, "model_exclusion_reason": excluded["reason"],
+            "market_failed_at": int(time.time()),
+            "market_failure_reason": str(reason or "Рынок не обновлён"),
         })
 
     def save_report(
@@ -1468,16 +1489,18 @@ class KrtRanking:
                     slug = str(project.get("slug") or "")
                     market = screening.pop("market_report", None)
                     if market:
-                        self.save_market_only(project, screening, market)
+                        try:
+                            self.save_market_only(project, screening, market)
+                        except ValueError:
+                            if not site_failed:
+                                site_failed = True
+                                with self._lock:
+                                    self._progress["failed"] += 1
                     else:
-                        self.remember(slug, {
-                            **{key: project[key] for key in _CATALOGUE_FIELDS if key in project},
-                            "model_excluded": True, "model_exclusion_reason": excluded["reason"],
-                            "market_failed_at": int(time.time()),
-                            "market_failure_reason": (screening.get("market_problem")
-                                or (screening.get("reason") if not screening.get("model_excluded") else None)
-                                or "Источник рынка не вернул отчёт для обновления наблюдений"),
-                        })
+                        self.note_market_failure(project,
+                            screening.get("market_problem")
+                            or (screening.get("reason") if not screening.get("model_excluded") else None)
+                            or "Источник рынка не вернул отчёт для обновления наблюдений")
                         if not site_failed:
                             site_failed = True
                             with self._lock:

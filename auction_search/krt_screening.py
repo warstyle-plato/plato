@@ -769,15 +769,29 @@ def market_only_screening(
     excluded = model_exclusion(project)
     if excluded is None:
         return None
-    if not market_report:
+    if not isinstance(market_report, dict) or not market_report:
         return {**excluded, "market_problem": "Источник рынка не вернул отчёт для обновления наблюдений"}
+    if (market_report.get("available") is False or market_report.get("error")
+            or market_report.get("market_problem")):
+        return {**excluded, "market_problem": "Источник рынка сообщил об ошибке вместо успешного отчёта"}
+    for key in ("analysis", "price_hint", "verdict"):
+        if market_report.get(key) is not None and not isinstance(market_report[key], dict):
+            return {**excluded, "market_problem": "Источник рынка вернул отчёт с неподдерживаемой структурой"}
+    analysis = market_report.get("analysis") or {}
+    for key in ("site", "overall"):
+        if analysis.get(key) is not None and not isinstance(analysis[key], dict):
+            return {**excluded, "market_problem": "Источник рынка вернул отчёт с неподдерживаемой структурой"}
     segment, start_price, market_price, basis = _market_inputs(market_report)
+    if not math.isfinite(start_price) or not math.isfinite(market_price):
+        return {**excluded, "market_problem": "Источник рынка вернул недействительный ценовой ориентир"}
     raw_pace = _verdict(market_report).get("units_per_month")
     try:
         pace = float(raw_pace)
         pace_known = not isinstance(raw_pace, bool) and math.isfinite(pace) and pace >= 0
     except (ValueError, TypeError):
         pace, pace_known = 0.0, False
+    if start_price <= 0 and not pace_known:
+        return {**excluded, "market_problem": "Источник рынка не вернул ценовых наблюдений или темпа продаж"}
     return {
         **excluded,
         "market": {

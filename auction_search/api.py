@@ -3224,7 +3224,7 @@ def install(app: FastAPI) -> None:
         """Полный прогон: рынок + модель + карточка города + публичный контекст."""
         screening, report = _market_model_only(
             project, allow_remote_geocode=allow_remote_geocode)
-        if not report:
+        if not report or screening.get("market_problem"):
             return screening
         slug = str(project.get("slug") or "")
         document_id = slug[len("decision:"):] if slug.startswith("decision:") else ""
@@ -3373,7 +3373,7 @@ def install(app: FastAPI) -> None:
         """Достроить рынок + модель для фонового рейтинга."""
         screening, report = _autonomous_market_model(project)
         answer = dict(screening or {})
-        if report:
+        if report and not answer.get("market_problem"):
             answer["market_report"] = _market_digest(report)
         return answer
 
@@ -3441,7 +3441,8 @@ def install(app: FastAPI) -> None:
                             # observations cannot pretend to be a model run.
                             market_at = _positive_float(row.get("market_computed_at")) or 0
                             failed_at = _positive_float(row.get("market_failed_at")) or 0
-                            retry_after = 10 * 60 if failed_at > market_at else krt_ranking.ttl_seconds
+                            retry_after = (10 * 60 if failed_at > 0 and failed_at >= market_at
+                                           else krt_ranking.ttl_seconds)
                             if now - max(market_at, failed_at) >= retry_after:
                                 missing.append(project)
                             if len(missing) >= 4:
@@ -5083,7 +5084,7 @@ def install(app: FastAPI) -> None:
         except SubjectNotFound:
             screening, report = _autonomous_market_model(project)
             answer = dict(screening or {})
-            if report:
+            if report and not answer.get("market_problem"):
                 answer["market_report"] = _market_digest(report)
             return answer
 
@@ -5460,7 +5461,11 @@ def install(app: FastAPI) -> None:
                 # выглядела бы при этом посчитанной по методике.
                 custom_ratios = bool((screening.get("tep_ratios") or {}).get("custom"))
                 if screening.get("model_excluded"):
-                    krt_ranking.save_market_only(project, screening, _market_digest(report))
+                    try:
+                        krt_ranking.save_market_only(project, screening,
+                            {} if screening.get("market_problem") else _market_digest(report))
+                    except ValueError as exc:
+                        raise HTTPException(status_code=502, detail=str(exc)) from exc
                 elif project is not None and screening.get("available") is not None \
                         and not custom_ratios:
                     stored = dict(screening)

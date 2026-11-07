@@ -289,3 +289,77 @@ def test_an_empty_market_reply_is_a_failed_observation_not_a_new_model(tmp_path)
     assert ranking.stored_row("running")["model_excluded"] is True
     assert ranking.report_path("running").read_bytes() == old_bytes
     assert ranking.stored_row("running")["computed_at"] == 100
+
+
+BAD_MARKET_REPORTS = [
+    pytest.param({}, id="empty"),
+    pytest.param(None, id="missing"),
+    pytest.param([], id="list"),
+    pytest.param({"error": "synthetic source failure"}, id="source-error"),
+    pytest.param({**MARKET, "available": False}, id="explicitly-unavailable"),
+    pytest.param({"analysis": "broken"}, id="wrong-analysis"),
+    pytest.param({"analysis": {"site": []}}, id="wrong-site"),
+    pytest.param({"subject": {"query": "synthetic"}}, id="no-observations"),
+    pytest.param({"price_hint": {"price_per_sqm": float("inf"), "basis": "peers"}}, id="infinite-price"),
+]
+
+
+def _keep_good_market(ranking):
+    observed = market_only_screening(RUNNING, MARKET)
+    ranking.save_market_only(RUNNING, observed, MARKET)
+    return ranking._market_report_path("running").read_bytes(), ranking.stored_row("running")
+
+
+@pytest.mark.parametrize("report", BAD_MARKET_REPORTS)
+def test_bad_market_api_does_not_restamp_or_erase_previous_observations(tmp_path, monkeypatch, report):
+    app, ranking, _, model_calls, _, requirements = _app(tmp_path, monkeypatch)
+    old_model = _keep_old_model(ranking)
+    old_market, previous_row = _keep_good_market(ranking)
+    app.state.market_discovery_service.build_report = lambda *args, **kwargs: copy.deepcopy(report)
+    response = TestClient(app).get("/auctions/krt/running/market", headers={"X-Market-Key": KEY})
+    assert response.status_code == 502, response.text
+    row = ranking.stored_row("running")
+    assert row["market_computed_at"] == previous_row["market_computed_at"]
+    assert row["market_failed_at"] and row["market_failure_reason"]
+    assert row["surrounding_price_rub_sqm"] == 800_000
+    assert row["investment_rating"] == {"score": 77} and row["computed_at"] == 100
+    assert ranking._market_report_path("running").read_bytes() == old_market
+    assert ranking.report_path("running").read_bytes() == old_model
+    assert not model_calls and not requirements
+
+
+@pytest.mark.parametrize("report", BAD_MARKET_REPORTS)
+def test_storage_rechecks_bad_raw_market_even_with_previously_good_screening(tmp_path, report):
+    ranking = krt_ranking.KrtRanking(tmp_path)
+    old_model = _keep_old_model(ranking)
+    old_market, previous_row = _keep_good_market(ranking)
+    good_screening = market_only_screening(RUNNING, MARKET)
+    with pytest.raises(ValueError):
+        ranking.save_market_only(RUNNING, good_screening, report)
+    assert ranking.stored_row("running")["market_computed_at"] == previous_row["market_computed_at"]
+    assert ranking.stored_row("running")["market_failure_reason"]
+    assert ranking._market_report_path("running").read_bytes() == old_market
+    assert ranking.report_path("running").read_bytes() == old_model
+
+
+def test_storage_rejects_an_explicit_problem_even_if_the_raw_market_looks_valid(tmp_path):
+    ranking = krt_ranking.KrtRanking(tmp_path)
+    old_market, previous_row = _keep_good_market(ranking)
+    problem = {**market_only_screening(RUNNING, MARKET), "market_problem": "Synthetic review failed"}
+    with pytest.raises(ValueError, match="Synthetic review failed"):
+        ranking.save_market_only(RUNNING, problem, MARKET)
+    row = ranking.stored_row("running")
+    assert row["market_failure_reason"] == "Synthetic review failed"
+    assert row["market_computed_at"] == previous_row["market_computed_at"]
+    assert ranking._market_report_path("running").read_bytes() == old_market
+
+
+def test_zero_sales_without_a_known_price_are_valid_observations(tmp_path):
+    ranking = krt_ranking.KrtRanking(tmp_path)
+    report = {"analysis": {"site": {"units_per_month": 0}}}
+    observed = market_only_screening(RUNNING, report)
+    ranking.save_market_only(RUNNING, observed, report)
+    row = ranking.stored_row("running")
+    assert row["market_computed_at"] and not row["market_failed_at"]
+    assert row["surrounding_sales_units_per_month"] == 0
+    assert row["surrounding_price_rub_sqm"] is None
