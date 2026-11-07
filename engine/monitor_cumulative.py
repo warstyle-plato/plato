@@ -49,7 +49,9 @@ class MonitorContractsHeaderDate(MonitorContractsBuild):
     sheet: str = _CumulativeField(min_length=1, max_length=200)
     cell: str = _CumulativeField(min_length=1, max_length=10)
     raw: str = _CumulativeField(min_length=1, max_length=20000)
-    contract_date: str = _CumulativeField(min_length=10, max_length=10)
+    # Empty date revokes an earlier clarification; a correction needs a note.
+    contract_date: str = _CumulativeField(default="", max_length=10)
+    note: str = _CumulativeField(default="", max_length=500)
 
 
 class MonitorCumulativeResult(MonitorCumulativeAuth):
@@ -104,7 +106,7 @@ def monitor_corpus_gpr_view(req: MonitorContractsBuild) -> Response:
     import developaid_gpr_corpus as corpus_gpr
     cut = _monitor_cumulative_day(req.cut)
     source = corpus_gpr.latest(req.project.strip(), cut)
-    return JSONResponse(content={"source": source, "html": corpus_gpr.render(source)}, headers=private)
+    return JSONResponse(content={"source": source, "html": corpus_gpr.render_overview(source, cut)}, headers=private)
 
 
 def _monitor_cumulative_day(value: str) -> str:
@@ -241,10 +243,11 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
                         _monitor_cumulative_day(req.deadline)
                     payload.update(contract_id=req.contract_id, deadline=req.deadline, note=req.note)
                 elif operation == "header-date":
-                    _monitor_cumulative_day(req.contract_date)
+                    if req.contract_date:
+                        _monitor_cumulative_day(req.contract_date)
                     payload.update(snapshot_id=req.snapshot_id, filename=req.filename,
                                    file_sha256=req.file_sha256, sheet=req.sheet, cell=req.cell,
-                                   raw=req.raw, contract_date=req.contract_date)
+                                   raw=req.raw, contract_date=req.contract_date, note=req.note)
                 elif operation == "link":
                     payload.update(contract_id=req.contract_id, evidence_id=req.evidence_id,
                                    confirmed=req.confirmed)

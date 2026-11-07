@@ -4071,14 +4071,17 @@ def _gantt_html(report: dict[str, Any]) -> str:
     import developaid_schedule_timeline as dependency_timeline
     import developaid_gpr_corpus as corpus_gpr
     if block.get("dependency_timeline"):
-        out.append(dependency_timeline.render(block["dependency_timeline"]))
-    if block.get("corpus_gpr"):
-        out.append(corpus_gpr.render(block["corpus_gpr"]))
+        out.append(dependency_timeline.render(block["dependency_timeline"], context="report"))
+    if block.get("corpus_gpr") and block.get("state") != "ok":
+        out.append(corpus_gpr.render_overview(block["corpus_gpr"], str(report.get("end") or "")))
+    elif block.get("corpus_gpr"):
+        out.append('<details class="schedule-provenance"><summary>Исходные показания ГПР по корпусам</summary>'+
+                   corpus_gpr.render(block["corpus_gpr"])+"</details>")
     if block.get("state") != "ok":
         out.append(f"<p class='note'>{html.escape(block.get('reason') or 'Графика работ нет.')}</p>")
         return "".join(out)
     rnv = report.get("schedule") if (report.get("schedule") or {}).get("state") == "ok" else {}
-    out.append(report_gantt.svg(block, report.get("end"), rnv))
+    out.append(report_gantt.render(block, report.get("end")))
     out.extend(f"<p class='note'>{html.escape(line)}</p>"
                for line in report_gantt.notes(block, rnv))
     return "".join(out)

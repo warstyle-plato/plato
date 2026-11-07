@@ -204,8 +204,11 @@ def test_manual_completion_is_not_painted_as_a_quantity_percentage():
     block=timeline.model(pm,{k:day(v) for k,v in model['seeds'].items()},evidence=True)
     block['physical']=model
     text=timeline.render(block)
-    assert text.count('Подтверждённый натуральный объём:')==1
-    assert 'Подтверждённый натуральный объём: 50.0%' in text
+    # The drawing is removed; the physical table states the quantity once and
+    # the manual completion carries no quantity percent.
+    assert 'Зависимости и сдвиги работ' not in text and 'Подтверждённый натуральный объём:' not in text
+    assert '50 / 100' in text
+    assert model['tasks'][1]['mode']=='completed' and not model['tasks'][1]['components']
 
 
 @pytest.mark.parametrize('completion', ['manual', 'quantities'])
@@ -241,7 +244,7 @@ def test_completed_fs_successor_preserves_its_fact_but_cannot_certify_rnv(comple
     assert block['rnv']['state'] != 'complete' and block['rnv']['forecast'] is None
     assert block['rnv']['indicative_forecast'] is None
     assert view['dashboard']['schedule']['qualified_rnv'] == block['rnv']
-    assert 'Факт завершения: 31.10.2026' in timeline.render(block)
+    assert 'Зависимости и сдвиги работ' not in timeline.render(block)
 
 
 @pytest.mark.parametrize('completion', ['manual', 'quantities'])

@@ -71,17 +71,48 @@ def _norm(value: Any) -> str:
     return re.sub(r"\s+", " ", re.sub(r'[«»“”"]', "", value)).strip()
 
 
-def _contract_number(value: Any) -> str:
+def _contract_number(value: Any, *, reference: bool = False) -> str:
     # Strip only explicit decoration. Punctuation within a number is identity:
     # 12/3 and 123 must not silently become the same contract.
     value = re.split(r"\s+от\s+", str(value or ""), maxsplit=1, flags=re.I)[0]
+    if reference and "№" in value:
+        # «Договор подряда № 12/3» and «№12/3» name the same number: the number
+        # is what follows the sign, whatever words describe the document.
+        value = value.split("№", 1)[1]
     value = re.sub(r"^\s*(?:договор\b\s*)?№?\s*", "", value, flags=re.I)
     return re.sub(r"\s+", "", value).casefold().replace("ё", "е")
 
 
+# Full and abbreviated legal forms are one party; nothing else is merged.
+_LEGAL_FORMS = (
+    ("общество с ограниченной ответственностью", "ооо"),
+    ("публичное акционерное общество", "пао"),
+    ("закрытое акционерное общество", "зао"),
+    ("непубличное акционерное общество", "ао"),
+    ("акционерное общество", "ао"),
+    ("индивидуальный предприниматель", "ип"),
+)
+
+
+def _party_norm(value: Any) -> str:
+    text = _norm(value)
+    for full, short in _LEGAL_FORMS:
+        text = re.sub(r"(?<![а-я])" + full + r"(?![а-я])", short, text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def _base_key(item: dict) -> tuple[str, str, str]:
+    # Persisted contract ids own manual deadlines and work links. Keep the
+    # original header identity stable; RSS comparison rules must not rekey or
+    # silently merge existing cumulative contracts.
     return (_norm(item.get("customer")), _norm(item.get("contractor")),
             _contract_number(item.get("contract")))
+
+
+def _reference_key(item: dict) -> tuple[str, str, str]:
+    """Compare external references without changing cumulative identity."""
+    return (_party_norm(item.get("customer")), _party_norm(item.get("contractor")),
+            _contract_number(item.get("contract"), reference=True))
 
 
 def _source(value: Any, label: str = "") -> dict:
@@ -179,13 +210,19 @@ def _read_rss(project: str, cut: str) -> tuple[list[dict], str | None, list[str]
         source_rows.append((row_number, row))
     if len(source_rows) != len(parsed.get("rows") or []):
         return [], day, ["Строки реестра договоров РСС неоднозначны; денежные значения не объединены."]
-    header = {i: _norm(v) for r in raw[:actuals._CONTRACTS_FIRST_ROW-1]
-              for i, v in enumerate(r) if v is not None}
-    deadline_cols = [i for i, text in header.items()
-                     if text in {"срок исполнения", "срок договора", "срок выполнения работ",
+    # A column keeps every label of every header row: the production sheet has
+    # a group row above the labels and a column-number row (1, 2, 3, …) below
+    # them, and a last-row-wins map lost «Дата договора» to the number «4».
+    header: dict[int, set[str]] = {}
+    for r in raw[:actuals._CONTRACTS_FIRST_ROW-1]:
+        for i, v in enumerate(r):
+            if v is not None and str(v).strip():
+                header.setdefault(i, set()).add(_norm(v))
+    deadline_cols = [i for i, texts in header.items()
+                     if texts & {"срок исполнения", "срок договора", "срок выполнения работ",
                                  "дата исполнения", "дата окончания работ", "срок окончания работ",
                                  "дата завершения работ", "окончание работ"}]
-    date_cols = [i for i, text in header.items() if text in {"дата договора", "дата заключения договора"}]
+    date_cols = [i for i, texts in header.items() if texts & {"дата договора", "дата заключения договора"}]
     customers = {}
     for header_row in raw[:actuals._CONTRACTS_FIRST_ROW-1]:
         for index, value in enumerate(header_row):
@@ -197,14 +234,32 @@ def _read_rss(project: str, cut: str) -> tuple[list[dict], str | None, list[str]
             if candidate:
                 customers[_norm(candidate)] = candidate
     customer = next(iter(customers.values())) if len(customers) == 1 else ""
+    # «Not found» and «several different» are different facts: an unknown
+    # customer may be completed by the other attributes, a contradictory
+    # header may not.
+    customer_conflict = sorted(customers.values()) if len(customers) > 1 else []
     amount_header = " ".join(str(row[7] or "") for row in raw[:8] if len(row) > 7)
     closing_header = " / ".join(str(row[11] or "") for row in raw[:8] if len(row) > 11)
     full_price_labelled = bool(re.search(r"(?:сумма|стоимость|цена).*догов", _norm(amount_header)))
+    notes = []
+    if not full_price_labelled:
+        notes.append("Колонка H листа «Реестр договоров» РСС подписана «" + (amount_header.strip() or "без подписи")
+                     + "», а не «сумма договора»; полная сумма договора из РСС не взята.")
+    if not date_cols:
+        notes.append("В листе «Реестр договоров» РСС нет колонки «Дата договора»; дата берётся только из текста "
+                     "«№ … от ДД.ММ.ГГГГ» в колонке договора.")
+    if customer_conflict:
+        notes.append("В шапке листа «Реестр договоров» РСС названы разные заказчики: "
+                     + ", ".join(customer_conflict) + "; строки РСС к договорам не присоединяются.")
+    elif not customer:
+        notes.append("В шапке листа «Реестр договоров» РСС заказчик не указан; строки РСС сопоставляются "
+                     "по подрядчику, номеру и дате договора.")
     out = []
     for item, (row_number, raw_row) in zip(parsed.get("rows") or [], source_rows):
         if _norm(item.get("contractor")).startswith(("итого", "всего")):
             continue
-        row = dict(item, kind="rss", customer=customer, source_date=day)
+        row = dict(item, kind="rss", customer=customer, source_date=day,
+                   customer_conflict=bool(customer_conflict))
         row["amount"] = _number(raw_row[7]) if len(raw_row) > 7 and full_price_labelled else None
         row["completed"] = _number(raw_row[11]) if len(raw_row) > 11 else None
         row["amount_basis"] = _amount_basis(" ".join(str(r[7] or "") for r in raw[:8] if len(r) > 7))
@@ -221,7 +276,7 @@ def _read_rss(project: str, cut: str) -> tuple[list[dict], str | None, list[str]
                          "amount_header": amount_header, "completed_header": closing_header,
                          "completed_label": "Показатель столбца L реестра РСС; вид закрывающего документа не подтверждён"}
         out.append(row)
-    return out, day, []
+    return out, day, notes
 
 
 def _groups(entries: list[dict], project: str) -> list[tuple[str, list[dict]]]:
@@ -446,8 +501,35 @@ def _read_terms(project: str) -> dict:
 
 
 def _identity(item: dict) -> tuple | None:
-    base, date = _base_key(item), _date(item.get("contract_date"))
+    base, date = _reference_key(item), _date(item.get("contract_date"))
     return (*base, date) if all(base) and date else None
+
+
+def _reference_differences(identity: tuple, entry: dict) -> list[str]:
+    """Which identity attributes of a reference row (РСС, сводная) differ.
+
+    An attribute the reference does not state at all is unknown, not a
+    mismatch, only for the customer of the project's own RSS register, whose
+    sheet may not name the customer. Every other attribute must be equal."""
+    customer, contractor, number, date = identity
+    other = _reference_key(entry)
+    other_date = _date(entry.get("contract_date"))
+    out = []
+    if other[1] != contractor:
+        out.append("подрядчик")
+    if other[2] != number:
+        out.append("номер договора")
+    if not other_date:
+        out.append("дата договора не указана")
+    elif other_date != date:
+        out.append("дата договора")
+    if entry.get("customer_conflict"):
+        out.append("в шапке РСС названы разные заказчики")
+    elif other[0] and other[0] != customer:
+        out.append("заказчик")
+    elif not other[0] and entry.get("kind") != "rss":
+        out.append("заказчик не указан")
+    return out
 
 
 def _physical_key(item: dict) -> tuple:
@@ -473,6 +555,13 @@ def _cumulative_money(physical: list[dict], warnings: list[str],
         if item.get("completed_amount") is None:
             uncertain = True
         for period in item.get("periods") or []:
+            # An empty cell group is not an execution record. Only omit it
+            # after _physical has reconciled this item's monetary total;
+            # never turn a missing price for a stated quantity into zero.
+            if (item.get("completed_amount") is not None
+                    and all(period.get(field) is None
+                            for field in ("amount", "quantity", "material_quantity"))):
+                continue
             first, last = _date(period.get("date_start")), _date(period.get("date_end"))
             amount = _number(period.get("amount"))
             if not first or not last or amount is None or first > last:
@@ -540,7 +629,7 @@ def build(project: str, cut: str = "") -> dict:
             unresolved.append({"source": _source(ledger.get("source"), "Накопительная ведомость работ"),
                 "contractor": ledger.get("contractor") or "", "contract": ledger.get("contract") or "",
                 "contract_date": ledger.get("contract_date"),
-                "date_evidence": ledger.get("contract_date_evidence") or [],
+                "date_evidence": _date_evidence(snapshot, ledger),
                 "identity_warnings": ledger.get("identity_warnings") or [],
                 "party_evidence": ledger.get("party_evidence") or {},
                 "date_confirmation": ledger.get("date_confirmation"),
@@ -561,10 +650,26 @@ def build(project: str, cut: str = "") -> dict:
             monitor._latest(project, "estimate", ".xlsx", cut), dt.date.fromisoformat(cut),
             contract_number=_contract_number)
         warnings.extend(payment_warnings)
-    for identifier, ledger_items in _groups(primary, project):
+    groups = _groups(primary, project)
+    claims: dict[int, int] = {}
+    for _, ledger_items in groups:
+        identity = _identity(ledger_items[0])
+        for entry in extras:
+            if identity and not _reference_differences(identity, entry):
+                claims[id(entry)] = claims.get(id(entry), 0) + 1
+    ambiguous = sum(1 for count in claims.values() if count > 1)
+    if ambiguous:
+        warnings.append(f"{ambiguous} строк РСС или сводной подходят сразу к нескольким договорам из накопительных "
+                        "по подрядчику, номеру и дате; они не присоединены ни к одному.")
+    for identifier, ledger_items in groups:
         first = ledger_items[0]
         identity = _identity(first)
-        items = ledger_items + [entry for entry in extras if _identity(entry) == identity]
+        matched = [entry for entry in extras if identity and not _reference_differences(identity, entry)
+                   and claims.get(id(entry), 0) == 1]
+        items = ledger_items + matched
+        rss_candidates = [entry for entry in extras if entry.get("kind") == "rss" and identity
+                          and entry not in matched
+                          and (_reference_key(entry)[1] == identity[1] or _reference_key(entry)[2] == identity[2])]
         rss_items = [x for x in items if x.get("kind") == "rss"]
         summary_items = [x for x in items if x.get("kind") == "summary"]
         row_warnings = _warnings([v for x in items for v in [*(x.get("warnings") or []), *(x.get("identity_warnings") or [])]])
@@ -576,7 +681,10 @@ def build(project: str, cut: str = "") -> dict:
         if summary_amount is not None and rss_amount is not None and abs(summary_amount-rss_amount) > .01:
             amount = None
             row_warnings.append("РСС и сводная дают разные полные суммы договора; действующая цена не выбрана автоматически.")
-        physical = [_physical(item, ledger, cut) for ledger in ledger_items for item in ledger.get("items") or []]
+        physical_sources = [(ledger, [_physical(item, ledger, cut)
+                                     for item in ledger.get("items") or []])
+                            for ledger in ledger_items]
+        physical = [item for _, views in physical_sources for item in views]
         money_parts: dict = {}
         dated_money: list = []
         completed, completed_basis = _cumulative_money(physical, row_warnings, money_parts, dated_money)
@@ -623,11 +731,15 @@ def build(project: str, cut: str = "") -> dict:
                 "source": _source(summary_items[0].get("source")), "source_date": archive_day,
                 "amount_basis": summary_amount_basis, "completed_basis": summary_completed_basis})
         references = []
-        for ledger in ledger_items:
+        for ledger, views in physical_sources:
             values = [_number(item.get("completed_amount")) for item in ledger.get("items") or []]
+            future_excluded = any(item.get("future_periods_excluded") for item in views)
             references.append({"source": _source(ledger.get("source"), "Накопительная ведомость"),
                 "period_year": ledger.get("period_year"), "source_date": archive_day,
-                "completed": sum(values) if values and all(v is not None for v in values) else None,
+                "completed": (sum(values) if not future_excluded and values
+                              and all(v is not None for v in values) else None),
+                "period_dates_known": bool(ledger.get("period_dates_known")),
+                "future_periods_excluded": future_excluded,
                 "label": "Сумма сохранённых итогов позиций этой ведомости; справочно, период закрытия не установлен"})
         row = {"id": identifier, "contractor": str(first.get("contractor") or ""),
                "customer": str(first.get("customer") or ""), "contract": str(first.get("contract") or ""),
@@ -635,6 +747,7 @@ def build(project: str, cut: str = "") -> dict:
                "identity_source": first.get("identity_source") or {},
                "date_confirmation": first.get("date_confirmation"),
                "date_confirmations": [x["date_confirmation"] for x in ledger_items if x.get("date_confirmation")],
+               "date_evidence": [e for x in ledger_items for e in _date_evidence(snapshot, x)],
                "subject": str(next((x.get("subject") for x in items if x.get("subject")), "")),
                "amount": amount, "amount_source_label": amount_source,
                "completed": completed, "completion_ratio": ratio,
@@ -656,6 +769,7 @@ def build(project: str, cut: str = "") -> dict:
                "requires_reconciliation": bool(row_warnings), "physical_items": physical,
                "sources": [_source(x.get("source")) for x in ledger_items],
                "financial_sources": financial,
+               "rss_match": _rss_match(identity, rss_items, rss_candidates, rss_day),
                "scope": sorted({str(item.get("scope") or "") for item in physical if item.get("scope")}),
                "performance_basis": "Денежное выполнение только по загруженным накопительным и завершённым датированным периодам; не оплата и не физическая готовность",
                "performance_source_count": len(ledger_items), "reported_performance_sources": references}
@@ -683,6 +797,34 @@ def build(project: str, cut: str = "") -> dict:
             "risk_basis": ("Прогноз окончания — по денежному темпу накопительных за последние 90 дней; "
                            "это показатель выполнения, а не физическая готовность. Оплаты — «Реестр платежей» РСС "
                            "по точному подрядчику, номеру и дате договора.")}
+
+
+def _date_evidence(snapshot: dict, ledger: dict) -> list[dict]:
+    """Header date cells with the exact binding the page sends back to clarify."""
+    import developaid_monitor_header_confirmations as confirmations
+    return [dict(evidence, binding=confirmations.binding(snapshot, ledger, evidence))
+            for evidence in ledger.get("contract_date_evidence") or []]
+
+
+def _rss_match(identity: tuple | None, matched: list[dict], candidates: list[dict],
+               rss_day: str | None) -> dict:
+    """Why RSS did or did not complete this contract, attribute by attribute."""
+    if rss_day is None:
+        return {"status": "no_rss", "text": "РСС на дату среза не загружен.", "candidates": []}
+    if matched:
+        return {"status": "matched", "text": "Строка РСС совпала по подрядчику, номеру и дате договора.",
+                "candidates": []}
+    rows = [{"source": _source(entry.get("source")), "contractor": str(entry.get("contractor") or ""),
+             "contract": str(entry.get("contract") or ""), "contract_date": _date(entry.get("contract_date")),
+             "differences": _reference_differences(identity, entry) if identity else []}
+            for entry in candidates[:3]]
+    if not rows:
+        return {"status": "not_found", "candidates": [],
+                "text": "В РСС нет строки с тем же подрядчиком или номером договора."}
+    return {"status": "differs", "candidates": rows,
+            "text": "В РСС есть похожие строки, но не совпало: " + "; ".join(
+                f"{row['contract'] or 'без номера'} — {', '.join(row['differences']) or 'подходит к нескольким договорам'}"
+                for row in rows) + "."}
 
 
 def confirm_header_date(project: str, cut: str, snapshot_id: str, **fields) -> dict:
