@@ -366,7 +366,7 @@ def replay(state: dict[str, Any], inputs: dict[str, Any], tep: dict[str, dict[st
         choice = int(answer.get("choice") if answer.get("choice") is not None else -1)
         option = (card.get("options") or [])[choice] if 0 <= choice < len(card.get("options") or []) else None
         said = str(answer.get("answer") or "")
-        mine = {"source": "document",
+        mine = {"source": "manual" if card.get("requires_manual") else "document",
                 "text": f"ваш ответ на вопрос по тизеру «{filename}»: «{_quote(said, 90)}»"}
         if card.get("kind") == CLASS_CARD_KIND:
             key = str((option or {}).get("value") or "")
@@ -452,6 +452,9 @@ def answer(state: dict[str, Any], inputs: dict[str, Any], tep: dict[str, dict[st
                                    typed=str(value or ""), ledger=before["ledger"], mode=mode)
             if probe.get("confirm"):
                 return {"confirm": probe["confirm"], "answer": said}
+            if probe.get("refused") and card.get("requires_manual"):
+                record["refused"] = probe["refused"]
+                return {"answer": record, "invalid": True}
             record["refused"] = probe.get("refused") or []
             record["applied"] = probe.get("applied") or []
         elif option is None:

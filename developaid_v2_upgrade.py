@@ -92,12 +92,12 @@ def apply_photo_values(core: Any, req: TepPhotoApplyRequest) -> dict[str, Any]:
         inputs, tep = got["inputs"], got["tep"]
         origins = inputs.setdefault("_field_origin", {})
         for field, rule in got["derived"].items():
-            origins[f"tep.{row_key}.{field}"] = {"source": "document",
+            origins[f"tep.{row_key}.{field}"] = {"source": "derived",
                                                   "text": f"По данным фотографии: {rule}"}
         for field, item in cells.items():
             tep[row_key][field] = item["value"]
             origins[f"tep.{row_key}.{field}"] = {
-                "source": "document", "text": "Из фотографии таблицы ТЭП: " + item["source_line"],
+                "source": "manual", "text": "Подтверждено пользователем по фотографии ТЭП: " + item["source_line"],
             }
             applied.append({"row_key": row_key, "field_key": field, "value": item["value"]})
         notes.extend(_row_to_inputs(core, inputs, row_key, tep[row_key]))
@@ -106,7 +106,7 @@ def apply_photo_values(core: Any, req: TepPhotoApplyRequest) -> dict[str, Any]:
         for field, input_key in core.tep_row_inputs(row_key).items():
             if field in tep[row_key]:
                 origins[f"inputs.{input_key}"] = dict(origins.get(f"tep.{row_key}.{field}") or {
-                    "source": "document", "text": "По данным фотографии таблицы ТЭП"})
+                    "source": "manual", "text": "Подтверждено пользователем по фотографии ТЭП"})
     for row_key, cells in grouped.items():
         switch = next((obj.enabled_key for obj in core.STANDALONE_OBJECTS if obj.key == row_key), "")
         if switch and not inputs.get(switch) and any(item["value"] > 0 for item in cells.values()):
@@ -118,6 +118,7 @@ def apply_photo_values(core: Any, req: TepPhotoApplyRequest) -> dict[str, Any]:
                    for field, item in cells.items()):
                 raise HTTPException(409, "Настройки социальной нагрузки меняют числа фотографии. "
                                     "Проверьте нормативный или ручной режим площадей и повторите применение.")
+    inputs["_tep_source_packet"] = {"version": 1, "kind": "user_reviewed_photo"}
     return {"inputs": inputs, "tep": tep, "applied": applied, "notes": list(dict.fromkeys(notes))}
 
 

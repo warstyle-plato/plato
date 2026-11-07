@@ -361,6 +361,7 @@ def intake_prompt(document: dict[str, Any], budget: int = DOCUMENT_TEXT_BUDGET) 
    Вопрос о поле модели несёт его имя в key. У варианта value — число в
    единице unit, если вариант сам его называет (снос всего здания — его
    площадь, «не требуется» — 0), и null, если число впишет человек.
+   У вопроса с числом или графиком обязательно добавь quote — дословную строку документа, подтверждающую все суммы, даты и доли.
    Сумму обязательства пиши в тексте вопроса так, как в документе, с её
    единицей («2,55 млрд руб.»), и график оплаты рядом («49% оплачено,
    остаток 51% в феврале 2028»): число ответа берётся оттуда.
@@ -380,7 +381,7 @@ def intake_prompt(document: dict[str, Any], budget: int = DOCUMENT_TEXT_BUDGET) 
 Верни ТОЛЬКО JSON такого вида, без пояснений вокруг:
 {{"fields": [{{"key": "...", "value": "как в документе", "unit": "...",
    "quote": "дословная строка"}}],
- "questions": [{{"key": "поле модели или пусто", "question": "...",
+ "questions": [{{"key": "поле модели или пусто", "question": "...", "quote": "цитата или пусто",
    "options": [{{"label": "подпись варианта", "value": "число или null",
                 "unit": "единица числа"}}]}}],
  "notes": ["что важно, но в поля модели не ложится"]}}
@@ -581,6 +582,7 @@ def parse_intake(answer: str) -> dict[str, Any]:
         choices = [option if isinstance(option, dict) else {"label": str(option)}
                    for option in (row.get("options") or []) if option is not None]
         item = {"key": str(row.get("key") or ""), "question": text,
+                "quote": str(row.get("quote") or ""),
                 "options": [str(option.get("label") or option.get("value") or "")
                             for option in choices],
                 "choices": choices}
@@ -650,15 +652,17 @@ def to_field_number(key: str, value: Any, unit: str = "") -> tuple[float | None,
         return None, ("единица не названа — «млн ₽», «₽» или «тыс ₽»? "
                       "Разница в миллион раз, поэтому не подставляем")
     if key == "site_area_ha":
+        area_scale = 1000.0 if re.search(r"\b(?:тыс|тысяч)", said) else 1.0
         if "га" in said or "гект" in said:
-            return number, ""
+            return number * area_scale, ""
         if "м2" in said or "м²" in said or "кв" in said:
-            return number / 10_000.0, ""
+            return number * area_scale / 10_000.0, ""
         return None, "единица площади не названа — «га» или «м²»?"
     if key in _AREA_SQM_FIELDS:
+        area_scale = 1000.0 if re.search(r"\b(?:тыс|тысяч)", said) else 1.0
         for mark, scale in _AREA_SCALE:
             if mark in said:
-                return number * scale, ""
+                return number * scale * area_scale, ""
         # Метры без подписи — метры. Отказ здесь был бы отказом на ровном
         # месте: площадь участка документы пишут и в гектарах, и в метрах, а
         # СПП, ГНС и площадь сносимого — только в метрах. Требование единицы
@@ -931,7 +935,7 @@ def question_card(item: dict[str, Any]) -> dict[str, Any]:
     """
     key = str(item.get("key") or "").strip()
     field = key if key in ASKABLE_KEYS and key != "cadastral_numbers" else ""
-    amounts = question_amounts(str(item.get("question") or ""))
+    amounts = question_amounts(str(item.get("source_quote") or item.get("question") or ""))
     options = []
     for raw in item.get("choices") or item.get("options") or []:
         if isinstance(raw, dict) and "value" in raw:
@@ -954,6 +958,8 @@ def question_card(item: dict[str, Any]) -> dict[str, Any]:
                         "unit": INTAKE_UNITS.get(target, ""), "why": why,
                         **({"from_question": from_question} if from_question else {})})
     return {"question": str(item.get("question") or ""), "key": field,
+            "requires_manual": bool(item.get("requires_manual")),
+            "source_quote": str(item.get("source_quote") or ""),
             "label": INTAKE_LABELS.get(field, ""), "unit": INTAKE_UNITS.get(field, ""),
             # Обязательство складывается с тем, что уже стоит в поле: три
             # обязательства «в соцнагрузку» — три слагаемых, а не три замены.
@@ -1085,7 +1091,7 @@ def _apply_purchase_schedule(card: dict[str, Any], number: float,
     Суммы, а не доли: цена сделки складывается из нескольких ответов и
     прежнего значения, и доли одного платежа не доли всей цены.
     """
-    shares, why = payment_schedule(card.get("question") or "", got["inputs"].get("project_start"))
+    shares, why = payment_schedule(card.get("source_quote") or card.get("question") or "", got["inputs"].get("project_start"))
     payments = list(entry.get("payments") or [])
     if shares:
         payments += [(number * share / 100.0, month) for share, month in shares]
@@ -1136,7 +1142,7 @@ def extraction_schema() -> dict[str, Any]:
             "key": {"type": "string", "enum": sorted(INTAKE_KEYS)},
             "value": string, "unit": string, "quote": string})},
         "questions": {"type": "array", "items": obj({
-            "key": string, "question": string,
+            "key": string, "question": string, "quote": string,
             "options": {"type": "array", "items": option}})},
         "notes": {"type": "array", "items": string},
     })

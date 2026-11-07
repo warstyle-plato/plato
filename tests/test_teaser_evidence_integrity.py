@@ -25,6 +25,10 @@ def check(fields, text):
     (field("1.5", "Паркинг 1.5 мест", "underground_manual_spaces", "мест"), "Паркинг 1.5 мест"),
     (field("77:01:0005017:20", "77:01:0005017:56", "cadastral_numbers", "список"), "77:01:0005017:56"),
     (field(400, "Цена 400 млн руб. | выдуманный хвост"), "Цена 400 млн руб."),
+    (field(100, "Паркинг 100 мест", "apartments_gns_sqm", "м²"), "Паркинг 100 мест"),
+    (field(100, "Цена 100 млн руб.", "underground_manual_spaces", "мест"), "Цена 100 млн руб."),
+    (field(100, "Площадь 100 акров", "apartments_gns_sqm", "м²"), "Площадь 100 акров"),
+    (field(100, "Поликлиника 100 мест", "clinic_capacity", "пос./смену"), "Поликлиника 100 мест"),
 ])
 def test_a_candidate_without_matching_source_is_never_an_engine_fact(candidate, text):
     got = check([candidate], text)
@@ -69,6 +73,28 @@ def test_duplicate_facts_are_deduplicated_instead_of_summed():
                 "Цена 400 млн руб.\nЦена 0,4 млрд руб.")
     assert len(got["fields"]) == 1
     assert not got["conflicts"]
+
+
+@pytest.mark.parametrize("question,quote", [
+    ("Инфраструктурный договор 900 млн руб. — куда отнести?", "Цена сделки 400 млн руб."),
+    ("Инфраструктурный договор 400 млрд руб. — куда отнести?", "Договор 400 млн руб."),
+    ("Договор 400 млн руб., 49% оплачено, 51% в феврале 2028 — куда?", "Договор 400 млн руб."),
+])
+def test_questions_cannot_smuggle_unverified_amounts_or_schedules(question, quote):
+    extraction = di.parse_intake(json.dumps({"fields": [], "questions": [{
+        "key": "", "question": question, "quote": quote,
+        "options": ["В цену сделки — платится на входе", "В соцнагрузку"]}]}))
+    state = tc.start(extraction, {"text": "[стр. 1]\n" + quote}, "teaser.pdf", presets={}, current_class="")
+    assert state["cards"][0]["requires_manual"]
+    got = tc.answer(state, {}, {}, index=0, action="answer", choice=0, spp_split={}, presets={})
+    assert got["invalid"]
+    assert state["index"] == 0
+    assert not tc.replay(state, {}, {}, spp_split={}, presets={})["origins"]
+    tc.answer(state, {}, {}, index=0, action="answer", choice=0, value="400", spp_split={}, presets={})
+    replay = tc.replay(state, {}, {}, spp_split={}, presets={})
+    assert replay["inputs"]["purchase_price_mln"] == 400
+    assert replay["origins"]["inputs.purchase_price_mln"]["source"] == "manual"
+    assert not replay["inputs"].get("purchase_schedule")
 
 
 def test_all_cadastral_numbers_survive_the_local_fallback():
@@ -131,3 +157,42 @@ def test_client_extraction_can_no_longer_bypass_source_validation(server):
         core.agent_document(core.AgentDocumentRequest(accept=["purchase_price_mln"],
                             extraction={"fields": [field(900, "выдуманная цитата")]}), request)
     assert exc.value.status_code == 409
+
+
+@pytest.mark.parametrize("gns", [31000, 100.25, 100.26])
+def test_gns_import_updates_stale_dependants_in_the_actual_engine(server, gns):
+    core, request = server
+    actor = core._agent_bind_actor(core.AgentDocumentRequest(), request, private_surface="web")
+    inputs, tep = dict(core.DEFAULT_INPUTS), core.copy.deepcopy(core.TEP_DEFAULT)
+    before = tep["apartments"]["saleable"]
+    quote = f"Квартиры {gns} м²"
+    card = core._intake_queue_start("teaser.pdf", {"fields": [field(gns, quote, "apartments_gns_sqm", "м²")]},
+        {"text": "[стр. 1]\n" + quote}, inputs, tep, actor=actor)
+    core.agent_document_answer(core.AgentDocumentAnswerRequest(intake_id=card["id"], index=0, choice=0, inputs=inputs, tep=tep), request)
+    card = core.agent_document_card(core.AgentDocumentCardRequest(intake_id=card["id"], inputs=inputs, tep=tep), request)
+    applied = core.agent_document_apply(core.AgentDocumentApplyRequest(intake_id=card["id"], card_key=card["card_key"], inputs=inputs, tep=tep), request)
+    assert applied["tep"]["apartments"]["gns"] == gns
+    assert applied["tep"]["apartments"]["saleable"] != before
+    result = core.calculate(core.CalcRequest(inputs=applied["inputs"], tep=applied["tep"], rates=[]))
+    row = next(row for row in result["tep"]["rows"] if row["key"] == "apartments")
+    assert row["gns"] == gns
+    assert row["saleable"] == applied["tep"]["apartments"]["saleable"]
+
+
+def test_document_extraction_has_no_calculation_or_agent_tools(server, monkeypatch):
+    core, request = server
+    monkeypatch.setattr(core, "_agent_rate_limit", lambda *_a: None)
+    monkeypatch.setattr(core, "_run_authoritative_model", lambda *_a: pytest.fail("extraction calculated project economics"))
+    payloads = []
+    def model(payload):
+        payloads.append(payload)
+        return {"status": "completed", "output": [{"type": "message", "content": [
+            {"type": "output_text", "text": '{"fields":[],"questions":[],"notes":[]}'}]}]}
+    monkeypatch.setattr(core, "_openai_responses_request", model)
+    req = core.AgentChatRequest(message="read document", inputs=dict(core.DEFAULT_INPUTS),
+                                 tep=core.TEP_DEFAULT, scenario="document_intake")
+    _, done, outcome = core._plato_chat_launch(req, request)
+    assert done.wait(5)
+    assert "error" not in outcome
+    assert payloads[0]["text"]["format"]["strict"]
+    assert "tools" not in payloads[0]

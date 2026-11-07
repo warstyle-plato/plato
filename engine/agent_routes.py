@@ -820,6 +820,12 @@ def teaser_card_view(queue: dict[str, Any], inputs: dict[str, Any],
                                      "origin": "Связанный показатель: рассчитан движком по данным документа.",
                                      "page": row.get("page")})
             paths.add(path)
+    # The editor rounds derived cells for display. Source cells are the
+    # confirmed facts, so restore them exactly after deriving all dependants.
+    for row in card["to_engine"]:
+        parts = row["path"].split(".")
+        if parts[0] == "tep" and len(parts) == 3 and not row.get("derived"):
+            card["tep"].setdefault(parts[1], {})[parts[2]] = row["value"]
     card["id"] = queue["id"]
     # Version covers both the proposed changes and the unchanged assumptions.
     card["card_key"] = hashlib.sha256(json.dumps(
@@ -909,6 +915,7 @@ def agent_document_apply(req: AgentDocumentApplyRequest, request: Request) -> di
         if row["path"].startswith(("inputs.", "tep.")):
             origins[row["path"]] = {"source": row.get("source") or "document", "text": row["origin"]}
     card["inputs"]["_field_origin"] = origins
+    card["inputs"]["_tep_source_packet"] = {"version": 1, "kind": "teaser_card", "intake_id": queue["id"]}
     usage_track("document_apply", surface="site", text=str(queue.get("filename") or ""))
     return {"card": card, "inputs": card["inputs"], "tep": card["tep"],
             "cadastral_numbers": card["cadastral_numbers"]}

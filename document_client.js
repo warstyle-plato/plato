@@ -3,6 +3,10 @@
   'use strict';
   window.PlatoDocumentClient = {
     async read(payload) {
+      const pollHeaders = {
+        'x-plato-session': payload.session || '',
+        'x-developaid-admin-key': payload.access_key || '',
+      };
       const response = await fetch('/agent/document/start', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload), cache: 'no-store',
@@ -15,7 +19,7 @@
         await new Promise(resolve => setTimeout(resolve, 1000));
         let result, state;
         try {
-          result = await fetch('/agent/result/' + encodeURIComponent(start.trace_id), { cache: 'no-store' });
+          result = await fetch('/agent/result/' + encodeURIComponent(start.trace_id), { cache: 'no-store', headers: pollHeaders });
           state = await result.json();
         } catch (error) {
           if (++failures > 5) throw new Error('Связь прервалась. Разбор продолжает выполняться на сервере. Повторите загрузку позднее.');

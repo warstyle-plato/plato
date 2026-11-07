@@ -182,7 +182,7 @@ def test_photo_packet_preserves_source_cells_and_reaches_the_engine():
     assert rows['apartments']['saleable'] == 7200
     assert rows['underground_parking']['units'] == 50
     assert rows['underground_parking']['gns'] == 2200
-    assert got['inputs']['_field_origin']['inputs.underground_manual_spaces']['source'] == 'document'
+    assert got['inputs']['_field_origin']['inputs.underground_manual_spaces']['source'] == 'manual'
 
 
 def test_photo_packet_refuses_conflicting_values_for_one_cell():
