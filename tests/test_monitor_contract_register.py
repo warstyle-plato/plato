@@ -542,3 +542,65 @@ def test_view_without_sources_is_empty_not_zero_contracts_with_fabricated_values
 def test_invalid_cut_rejected(project, cut):
     with pytest.raises(ValueError):
         contracts.build(project, cut)
+
+
+def test_rss_sheet_header_problems_are_named_to_the_user(project):
+    """A price column not called «сумма договора», a missing date column and an
+    unstated customer each reach the register warnings with their cause."""
+    rss(project, [{"contractor": "Builder A", "contract": "C-12/7", "contract_date": "2026-01-01",
+                   "amount": 500, "completed": 0}], headers={8: "Стоимость", 4: "Дата"})
+    path = monitor._project_dir(project) / "estimate" / "2026-04-01.xlsx"
+    wb = openpyxl.load_workbook(path)
+    wb.active["A1"].value = None
+    wb.active["B1"].value = None
+    wb.save(path)
+    view = contracts.build(project, "2026-04-01")
+    text = " ".join(view["warnings"])
+    assert "«Стоимость»" in text and "полная сумма договора из РСС не взята" in text
+    assert "нет колонки «Дата договора»" in text
+    assert "заказчик не указан" in text
+    row, = view["rows"]
+    assert row["amount"] is None and row["rss_match"]["status"] in {"differs", "not_found", "matched"}
+
+
+def test_rss_date_column_survives_group_and_column_number_rows(project):
+    """Synthetic copy of the production header layout: a group row above the
+    labels, the labels, and a row of column numbers below them. No customer."""
+    rss(project, [{"contractor": "Builder A", "contract": "C-12/7", "contract_date": dt.datetime(2026, 1, 1),
+                   "amount": 500, "completed": 0}],
+        headers={2: "Наименование подрядчика", 3: "№ Договора", 4: "Дата договора",
+                 8: "Общая стоимость договора", 12: "Выполнено работ всего"})
+    path = monitor._project_dir(project) / "estimate" / "2026-04-01.xlsx"
+    wb = openpyxl.load_workbook(path)
+    ws = wb.active
+    ws["A1"].value = None
+    ws["B1"].value = None
+    for column in range(2, 9):
+        ws.cell(5, column).value = "данные договора"
+    for column in range(1, 13):
+        ws.cell(8, column).value = column
+    wb.save(path)
+    view = contracts.build(project, "2026-04-01")
+    row, = view["rows"]
+    assert row["amount"] == 500 and row["rss_match"]["status"] == "matched"
+    assert not any("нет колонки «Дата договора»" in w for w in view["warnings"])
+
+
+def test_rss_header_with_two_different_customers_does_not_join_and_names_them(project):
+    """A contradictory header is not an unknown customer: no join, explicit cause."""
+    rss(project, [{"contractor": "Builder A", "contract": "C-12/7", "contract_date": dt.datetime(2026, 1, 1),
+                   "amount": 500, "completed": 0}],
+        headers={2: "Наименование подрядчика", 3: "№ Договора", 4: "Дата договора",
+                 8: "Общая стоимость договора"})
+    path = monitor._project_dir(project) / "estimate" / "2026-04-01.xlsx"
+    wb = openpyxl.load_workbook(path)
+    wb.active["A2"].value = "Заказчик"
+    wb.active["B2"].value = "Developer B"
+    wb.save(path)
+    view = contracts.build(project, "2026-04-01")
+    row, = view["rows"]
+    assert row["amount"] is None
+    assert "в шапке РСС названы разные заказчики" in row["rss_match"]["candidates"][0]["differences"]
+    text = " ".join(view["warnings"])
+    assert "названы разные заказчики: Developer A, Developer B" in text
+    assert "заказчик не указан" not in text
