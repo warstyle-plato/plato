@@ -87,19 +87,20 @@ def test_above_ground_storage_is_built_at_the_above_ground_rate(under, above) ->
     storage = _storage_gns(under)
     assert storage == pytest.approx(103, abs=0.5), "стенд без кладовых ничего не проверяет"
     rate_under = float(_inputs()["main_under_th_per_sqm"]) * 1000
-    # Наземная ГНС не растёт: кладовые уже лежат в ней, вырезанные из квартир.
-    assert above["tep"]["core_above_gns"] == pytest.approx(under["tep"]["core_above_gns"])
-    assert above["summary"]["project_gns_sqm"] == pytest.approx(under["summary"]["project_gns_sqm"])
+    # Отдельная площадь кладовых переносится над землю сверх квартир.
+    assert above["tep"]["core_above_gns"] == pytest.approx(under["tep"]["core_above_gns"] + storage)
+    assert above["summary"]["project_gns_sqm"] == pytest.approx(under["summary"]["project_gns_sqm"] + storage)
     # Подземная — только паркинг.
     assert above["tep"]["core_under_gns"] == pytest.approx(_parking_gns(above))
     assert under["tep"]["core_under_gns"] == pytest.approx(_parking_gns(under) + storage)
     assert above["summary"]["underground_gns_sqm"] == pytest.approx(
         under["summary"]["underground_gns_sqm"] - storage)
     # СМР подземной части меньше ровно на кладовые по подземной ставке,
-    # наземной — прежнее: метры кладовых в ней уже стояли.
+    # наземной — больше на ту же отдельную площадь по наземной ставке.
     assert above["capex"]["main_under"] == pytest.approx(
         under["capex"]["main_under"] - storage * rate_under)
-    assert above["capex"]["main_above"] == pytest.approx(under["capex"]["main_above"])
+    assert above["capex"]["main_above"] == pytest.approx(
+        under["capex"]["main_above"] + storage * float(_inputs()["main_above_th_per_sqm"]) * 1000)
     assert above["tep"]["underground_products"] == ["underground_parking"]
     assert under["tep"]["underground_products"] == ["underground_parking", "storage"]
 
@@ -149,7 +150,7 @@ def _prepared(x: dict, t: dict) -> tuple[dict, dict]:
 
 
 def test_the_tax_recognizes_each_product_in_its_own_units(under, above) -> None:
-    """Итог налога за проект тот же — сдвигается только график признания."""
+    """Каждый вариант признаёт ровно распределённую продуктовую себестоимость."""
     for result in (under, above):
         finance = result["finance"]
         costs = finance["core_product_costs"]

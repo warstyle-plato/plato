@@ -90,13 +90,13 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     underground = t.get("underground_parking", {})
     storage = t.get("storage", {})
 
-    core_above_gns = n(apartment, "gns") + n(commercial, "gns")
+    core_above_gns = sum(mkd_part_gns(x, t)["above"].values())
     # Своего гаража у встроенной коммерции нет: её машино-места лежат в общем
     # подземном паркинге проекта, который тут и стоит. Отдельный гараж был бы
     # вторым счётом тех же мест, а приобъектная стоянка — асфальт, метров она
     # не занимает вовсе.
-    # Что под землёй — по размещению кладовых ЭТОГО проекта: наземные лежат
-    # внутри ГНС квартир и строятся по наземной ставке (`underground_products`).
+    # Каждая строка площади входит в одну часть: наземные кладовые
+    # добавляются к наземной части, подземные — к подземной.
     core_under_gns = sum(n(t.get(key) or {}, "gns") for key in underground_products(x))
     core_total_gns = core_above_gns + core_under_gns
     # Пятно, этажность и подземные уровни — один расчёт на проект; СМР
@@ -125,7 +125,7 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     # метр ГНС», то есть сделать то, что уже сделано. Двор и деньги отвечают
     # на разные вопросы, значит и оснований у них два.
     landscaping_amount, landscaping_money_basis = landscaping_cost(
-        x, t, project_above_gns(t))
+        x, t, project_above_gns(t, x))
 
     revenue: dict[date, float] = defaultdict(float)
     revenue_by_product: dict[str, float] = {}

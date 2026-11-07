@@ -569,11 +569,10 @@ def _calculate_economics(req: CalcRequest) -> dict:
     # входит — под землёй наружных стен не бывает и у объекта тоже.
     object_under_gns = sum(n(row, "under_gns") for row in t.values())
     # Подземная часть — по размещению кладовых ЭТОГО проекта. Объём — наземная
-    # плюс подземная, а не сумма строк: наземные кладовые лежат внутри метров
-    # квартир, и сумма строк считала бы их дважды.
+    # плюс подземная; каждая отдельная строка ТЭП учитывается один раз.
     underground_gns_sqm = (sum(n(t.get(key) or {}, "gns") for key in underground_products(x))
                            + object_under_gns)
-    project_gns_sqm = project_above_gns(t)
+    project_gns_sqm = project_above_gns(t, x)
     construction_volume_sqm = project_gns_sqm + underground_gns_sqm
     total_expenses = full_project_cost
 
@@ -1133,7 +1132,7 @@ def _calculate_economics(req: CalcRequest) -> dict:
         },
         "tep": {
             "rows": tep_rows,
-            "total": tep_total,
+            "total": tep_total, "above_gns": project_gns_sqm,
             "core_above_gns": op["core_above_gns"],
             "core_under_gns": op["core_under_gns"],
             # Чьи метры под землёй у ЭТОГО расчёта: страница, PDF и тизер
