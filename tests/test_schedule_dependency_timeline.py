@@ -126,9 +126,10 @@ def test_monitor_report_html_pdf_share_model_and_escape_data():
     pm = network(); pm['tasks']['1']['name'] = '<img src=x onerror=alert(1)>'
     block = timeline.model(pm, {'1': day('2026-12-10')}, evidence=True)
     html = timeline.render(block)
-    assert '<img' not in html and '&lt;img' in html
-    assert 'Своя: 0' in html and 'от этапов: 15' in html
-    assert 'marker-end="url(#dependency-arrow)"' in html
+    assert '<img' not in html  # the task name is no longer drawn at all
+    # Owner's decision: the dependency drawing is not shown; the card keeps text.
+    assert 'Зависимости и сдвиги работ' not in html and 'от этапов' not in html
+    assert 'Прогноз РНВ' in html and block['rows'] and block['edges']
     wrapped = report._gantt_html({'gantt': {'state': 'missing', 'dependency_timeline': block}})
     assert timeline.render(block, context='report') in wrapped
     assert '<table class="schedule-all-tasks">' not in wrapped

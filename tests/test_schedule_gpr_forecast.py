@@ -153,3 +153,49 @@ def test_rnv_driven_by_a_plan_only_work_is_not_called_on_time():
     payload = {"project": "Учебный", "kind": "week", "start": "2026-11-01", "end": "2026-11-06", "schedule": block}
     text = " ".join(f["text"] for f in report.findings(payload) if f.get("topic") == "Срок")
     assert "в срок" not in text and "по плану ГПР" in text and "накопительн" not in text
+
+
+@pytest.mark.parametrize('width', [390, 1440])
+def test_gpr_rnv_driver_is_shown_once_without_restoring_pm_drawing(width):
+    import io
+    from playwright.sync_api import expect
+    from pypdf import PdfReader
+    import developaid_management_report as report
+    import developaid_schedule_timeline as timeline
+    from test_monitor_cumulative_controls import browser_page
+
+    name = 'Монтаж фасада <img src=x onerror="window.forecastXSS=1">'
+    works = {'1': {'forecast_finish': '2027-05-10', 'method': 'gpr_pace',
+                   'reason': 'Оценка по измеренному росту процента ГПР.'}}
+    qualified = gpr.rnv([row(name=name)], works, '2027-04-30')
+    # Keep a legacy PM row in the same model: integrating the GPR renderer
+    # must not make removed dependency lanes/technical details reappear.
+    block = {'state': 'ok', 'rnv': qualified, 'edges': [], 'rows': [
+        {'id': 'historic-pm', 'name': 'Устаревшая техническая работа',
+         'plan_start': '2020-01-01', 'plan_finish': '2020-12-31'}]}
+    view = {'schedule': {'management': [], 'dependency_timeline': block,
+                        'dependency_timeline_html': timeline.render(block)}}
+    with browser_page(width) as (page, responses, errors):
+        page.evaluate('(view)=>renderGantt(view)', view)
+        body = page.locator('#dependencyTimelineBody')
+        expect(body).to_be_visible()
+        expect(body).to_contain_text('10.05.2027 — оценка по ГПР')
+        expect(body).to_contain_text('Оценка по измеренному росту процента ГПР.')
+        driver = body.locator('p.schedule-note').filter(has_text='Срок тянет')
+        assert driver.count() == 1
+        expect(driver).to_contain_text(name)
+        assert body.locator('.schedule-lane,.schedule-technical,svg,img').count() == 0
+        assert page.evaluate('window.forecastXSS') is None
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+        if width == 1440:
+            data = {'project': 'Учебный', 'kind': 'week', 'start': '2026-11-01',
+                    'end': '2026-11-06', 'gantt': {'dependency_timeline': block}}
+            page.set_content(report.render_html(data))
+            text = ' '.join(' '.join(p.extract_text() or '' for p in
+                                    PdfReader(io.BytesIO(page.pdf(format='A4'))).pages).split())
+            assert '10.05.2027' in text and 'оценка по ГПР' in text
+            assert text.count('Срок тянет') == 1
+            assert 'Оценка по измеренному росту процента ГПР.' in text
+            assert 'Устаревшая техническая работа' not in text
+            assert 'Техническая сеть работ' not in text
+        assert not errors
