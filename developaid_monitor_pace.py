@@ -251,7 +251,7 @@ def _apply_pace(project: str, view: dict[str, Any], cut: datetime.date) -> dict[
         refresh_schedule_summary(view)
     schedule["dependency_timeline_html"] = schedule_timeline.render(schedule["dependency_timeline"])
     schedule["corpus_gpr"] = corpus_gpr.latest(project, cut.isoformat())
-    schedule["corpus_gpr_html"] = corpus_gpr.render(schedule["corpus_gpr"])
+    schedule["corpus_gpr_html"] = corpus_gpr.render_overview(schedule["corpus_gpr"], cut.isoformat())
     if evidence <= 0:
         return _physical_dashboard(view)
 
