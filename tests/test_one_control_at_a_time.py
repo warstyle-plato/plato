@@ -38,10 +38,47 @@ def test_an_ambiguous_file_is_refused():
         raise AssertionError(f"принято неоднозначное значение {bad!r}")
 
 
+import re
+
+ENTRY_POINTS = [ROOT / "CLAUDE.md", ROOT / "AGENTS.md", WS / "README.md",
+                WS / "CONTROL_HANDOFF.md", *sorted((WS / "roles").glob("*.md"))]
+
+# Имя действующего контроля живёт только в CONTROL_ACTIVE. Фраза, которая
+# называет поставщика контролем текстом, устареет при первом переключении —
+# и резерв, прочитавший её, возьмёт очередь вторым хозяином.
+_FIXED_CONTROLLER = [
+    re.compile(r"(под контролем|контрол\w*\s*—)[^\n.;]{0,40}\b(Codex|Claude)\b", re.I),
+    re.compile(r"\bКонтроль\s+(Codex|Claude)\b"),
+    re.compile(r"текущ\w+ контрол\w*[^\n.;]{0,40}\b(Codex|Claude)\b", re.I),
+    re.compile(r"CONTROL_ACTIVE`?\s*\)?\s*=\s*`?(codex|claude)", re.I),
+]
+
+
+def names_a_fixed_controller(text: str) -> list[str]:
+    return [m.group(0) for rx in _FIXED_CONTROLLER for m in rx.finditer(text)]
+
+
 def test_every_entry_point_leads_to_the_active_file():
-    for path in (ROOT / "CLAUDE.md", ROOT / "AGENTS.md", WS / "README.md",
-                 WS / "CONTROL_HANDOFF.md", WS / "roles" / "reserve.md"):
+    for path in ENTRY_POINTS:
         assert "CONTROL_ACTIVE" in path.read_text(encoding="utf-8"), path
+
+
+def test_no_entry_point_names_the_controller_in_text():
+    found = {str(p.relative_to(ROOT)): names_a_fixed_controller(p.read_text(encoding="utf-8"))
+             for p in ENTRY_POINTS}
+    assert not {k: v for k, v in found.items() if v}, found
+
+
+def test_a_text_that_hardcodes_the_controller_is_caught():
+    """Подделки из рецензии: каждая должна быть поймана."""
+    for fake in ("Очередью управляет контроль — Codex, CONTROL_ACTIVE не читать.",
+                 "Ты работаешь под контролем текущего разговора Codex с владельцем.",
+                 "U --> C[Контроль Claude]",
+                 "Ты — текущий контроль PLATO в Codex.",
+                 "(`docs/work_sessions/CONTROL_ACTIVE` = `claude`)"):
+        assert names_a_fixed_controller(fake), fake
+    assert not names_a_fixed_controller(
+        "Действующий контроль — тот, что назван в `CONTROL_ACTIVE`.")
 
 
 def test_the_registry_knows_the_reserve():
