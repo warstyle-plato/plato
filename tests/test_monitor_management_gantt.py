@@ -47,7 +47,7 @@ def test_completed_works_are_cost_evidence_not_physical_wbs_percent():
 
 
 def test_money_pace_can_never_push_a_wbs_finish_to_2031(monkeypatch):
-    monkeypatch.setattr(manager, "_baseline_status", lambda _: {
+    monkeypatch.setattr(manager, "_baseline_status", lambda *_: {
         "100": {"closed": False, "status": "В работе"}
     })
     schedule = {"rows": [{
@@ -71,7 +71,7 @@ def test_money_pace_can_never_push_a_wbs_finish_to_2031(monkeypatch):
 
 
 def test_closed_wbs_stays_closed_even_if_cost_ratio_is_below_one(monkeypatch):
-    monkeypatch.setattr(manager, "_baseline_status", lambda _: {
+    monkeypatch.setattr(manager, "_baseline_status", lambda *_: {
         "914": {"closed": True, "status": "Завершено"}
     })
     schedule = {"rows": [{
@@ -100,7 +100,7 @@ def test_own_gpr_percent_is_the_floor_of_task_readiness(monkeypatch):
     процент задачи из утверждённого ГПР — нижняя граница: задача не может
     быть менее готова, чем принято в baseline.
     """
-    monkeypatch.setattr(manager, "_baseline_status", lambda _: {
+    monkeypatch.setattr(manager, "_baseline_status", lambda *_: {
         "1393": {"closed": False, "status": "Просрочено", "progress": 0.9},
     })
     schedule = {"rows": [{
