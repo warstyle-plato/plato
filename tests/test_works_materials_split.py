@@ -2,13 +2,15 @@
 from __future__ import annotations
 
 import io
+import re
+import zipfile
 
 import openpyxl
 import pytest
 
 import developaid_monitor_contracts as contracts
 import developaid_monitor_ledgers as ledgers
-from test_monitor_cumulative_ledgers import book
+from test_monitor_cumulative_ledgers import archive, book
 from test_monitor_contract_register import project, primary_ledger  # noqa: F401  (fixture)
 
 
@@ -103,6 +105,45 @@ def test_truly_empty_half_with_known_other_half_still_has_a_known_total(project)
     _, row = source_row(project, dated_split_book(J9=None, P9=None))
     assert row['completed'] == 200
     assert row['works_materials_split']
+    assert (row['completed_works'], row['completed_materials']) == (200, 0)
+
+
+def zip_source_row(project, data):
+    parsed = ledgers.parse_archive(archive([('Учебная.xlsx', data)]))
+    ledger, = parsed['ledgers']
+    project.snapshots.append({'taken_at': '2026-05-01', 'ledgers': [ledger], 'summary_contracts': []})
+    row, = contracts.build(project, '2026-05-01')['rows']
+    return ledger, row
+
+
+def test_uncached_formula_is_not_a_truly_empty_money_half(project):
+    ledger, row = zip_source_row(project, dated_split_book(J9='=1+2', P9='=1+2'))
+    assert row['completed'] is None
+    assert row['completed_works'] is None and row['completed_materials'] is None
+    assert not row['works_materials_split']
+    assert any('Пересчитайте и сохраните книгу' in warning for warning in ledger['items'][0]['warnings'])
+
+
+@pytest.mark.parametrize('kind', ['empty', 'numeric_zero', 'cached_formula_zero'])
+def test_real_zip_reader_keeps_known_zero_and_empty_controls(project, kind):
+    value = {'empty': None, 'numeric_zero': 0, 'cached_formula_zero': '=0'}[kind]
+    data = dated_split_book(J9=value, P9=value)
+    if kind == 'cached_formula_zero':
+        out = io.BytesIO()
+        with zipfile.ZipFile(io.BytesIO(data)) as original, zipfile.ZipFile(out, 'w') as rebuilt:
+            for item in original.infolist():
+                payload = original.read(item.filename)
+                if item.filename == 'xl/worksheets/sheet1.xml':
+                    text = payload.decode()
+                    for cell in ('J9', 'P9'):
+                        pattern = r'(<c\b[^>]*\br="'+cell+r'"[^>]*>.*?<v>)(.*?)(</v>.*?</c>)'
+                        text, count = re.subn(pattern, lambda match: match[1]+'0'+match[3], text, flags=re.S)
+                        assert count == 1
+                    payload = text.encode()
+                rebuilt.writestr(item, payload)
+        data = out.getvalue()
+    _, row = zip_source_row(project, data)
+    assert row['completed'] == 200 and row['works_materials_split']
     assert (row['completed_works'], row['completed_materials']) == (200, 0)
 
 

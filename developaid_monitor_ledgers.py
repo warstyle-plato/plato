@@ -40,6 +40,8 @@ MAX_ISSUES = 100
 MAX_TEXT_CELL_CHARS = 20_000
 MAX_MATERIALIZED_TEXT_BYTES = 16 * 1024 * 1024
 SUPPORTED = {'.xlsx', '.xlsm', '.xls'}
+# Kept distinct from an actually empty cell; this is never evaluated.
+_UNCACHED_FORMULA = '=__uncached_formula__'
 
 
 class LedgerProblem(ValueError):
@@ -255,15 +257,29 @@ def _read_workbook(filename: str, data: bytes, budget: dict | None = None) -> li
     try:
         from openpyxl import load_workbook
         wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True, keep_links=False)
+        formula_wb = None
         try:
             if len(wb.worksheets) > MAX_SHEETS:
                 raise LedgerProblem('В книге слишком много листов.')
-            return [(sheet.title, [_bounded_row(r, budget) for r in sheet.iter_rows(
-                max_row=min(sheet.max_row or bound, bound),
-                max_col=min(sheet.max_column or MAX_COLUMNS, MAX_COLUMNS), values_only=True)])
-                    for sheet in wb.worksheets]
+            formula_wb = load_workbook(io.BytesIO(data), read_only=True, data_only=False, keep_links=False)
+            out = []
+            for sheet, formula_sheet in zip(wb.worksheets, formula_wb.worksheets):
+                bounds = {'max_row': min(sheet.max_row or bound, bound),
+                          'max_col': min(sheet.max_column or MAX_COLUMNS, MAX_COLUMNS)}
+                rows = []
+                for cached, source in zip(sheet.iter_rows(**bounds), formula_sheet.iter_rows(**bounds)):
+                    # Reading formula text only identifies unavailable cached values;
+                    # formulas/macros and external references are never executed.
+                    _bounded_row([cell.value for cell in source if cell.data_type == 'f'], budget)
+                    values = [_UNCACHED_FORMULA if cell.value is None and raw.data_type == 'f' else cell.value
+                              for cell, raw in zip(cached, source)]
+                    rows.append(_bounded_row(values, budget))
+                out.append((sheet.title, rows))
+            return out
         finally:
             wb.close()
+            if formula_wb is not None:
+                formula_wb.close()
     except LedgerProblem:
         raise
     except Exception:
@@ -542,6 +558,8 @@ def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
                     item_warnings.append('Не подтверждены суммы выполнения в ячейках '
                                          + ', '.join(_cell(c+1, ri) for c in bad)
                                          + ': непустое значение не прочитано как число; сумма периода неизвестна.')
+                    if any(at(c) == _UNCACHED_FORMULA for c in bad):
+                        item_warnings.append('У формулы нет сохранённого результата. Пересчитайте и сохраните книгу в Excel; формула не вычислялась.')
                 if not _money_pair_columns(qhead, col+2):
                     item_warnings.append('Подписи сумм периода не разделяют материалы и СМР; '
                                          'отдельные денежные показатели не определены.')
@@ -567,6 +585,8 @@ def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
                 item_warnings.append('Не подтверждены годовые суммы в ячейках '
                                      + ', '.join(_cell(c+1, ri) for c in bad)
                                      + ': непустое значение не прочитано как число; годовой итог неизвестен.')
+                if any(at(c) == _UNCACHED_FORMULA for c in bad):
+                    item_warnings.append('У формулы нет сохранённого результата. Пересчитайте и сохраните книгу в Excel; формула не вычислялась.')
         else:
             completed_amount = _number(at(amount_col))
         items.append({'position': _text(at(max(0, name_col-1))), 'name': name,
