@@ -1124,9 +1124,10 @@ const returnsNa=s=>((s||{}).equity_returns||{}).label||null;
 // Показателен ли IRR капитала, решает движок (summary.equity_irr): при своих
 // деньгах меньше порога от затрат вместо числа — его подпись «не показателен».
 const irrEquityNa=s=>{const v=(s||{}).equity_irr;return v&&v.meaningful===false?(v.label||'N/A'):returnsNa(s);};
-const inputDisplay=v=>Math.round(Number(v||0)*10)/10;
+const inputDisplay=v=>partialTepMode()&&v==null?'':Math.round(Number(v||0)*10)/10;
 
 function openTab(id,btn){
+ if(typeof partialTepGuardSurfaces==='function')partialTepGuardSurfaces();
  document.querySelectorAll('.panel').forEach(x=>x.classList.remove('active'));document.getElementById(id).classList.add('active');
  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
  (btn||document.querySelector(`[data-tab="${id}"]`)).classList.add('active');
@@ -1164,6 +1165,7 @@ function askProfileOnResult(){
  loadProfile(false).then(state=>{if(state&&state.known&&!state.complete)openProfile()});
 }
 function calculateAndOpen(id){
+ if(partialTepMode()&&partialTepMissing().length){partialTepNotice();openTab('tep');return Promise.resolve(null)}
  // В Telegram расчёт — это законченное действие: человек пришёл за цифрами в
  // чат, а не жить в окне. Раньше кнопка просто пересчитывала, окно оставалось
  // висеть, и было непонятно, надо ли ещё что-то вводить.

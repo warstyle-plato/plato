@@ -40,7 +40,7 @@ import developaid_project_notes as project_notes
 import developaid_site_photos as site_photos
 import developaid_report_charts as charts
 import developaid_report_gantt as report_gantt
-from market_search import contracting, salesroom, sales_store
+from market_search import contracting, salesroom, sales_store, chessboard
 
 PERIODS = {"week": "неделю", "month": "месяц"}
 _PREVIOUS = {"week": "прошлую неделю", "month": "прошлый месяц"}
@@ -955,6 +955,7 @@ def sales(sales_project: str, kind: str, end: Any,
         "payments": [{"name": item["name"], "count": item["count"], "amount": item["amount"],
                       "area": item["area"]} for item in summary.get("by_payment") or []],
         "pool": _pool(contracting.pool_progress(summary, rows, part("fm_plan"), part("pool"))),
+        "chessboard": chessboard.overlay(part("chessboard"), rows, bounds["end"].isoformat(), contracts.get("coverage")),
         "series": [{"label": q["label"],
                     "fact": q.get("fact_amount_cum"), "fm": q.get("fm_amount_cum"),
                     "bank": q.get("bank_amount_cum"),
@@ -4258,7 +4259,7 @@ def _budget_depth_html(block: dict[str, Any], end: datetime.date) -> str:
 
 def _sales_depth_html(block: dict[str, Any], kind: str) -> str:
     esc = html.escape
-    out = []
+    out = [chessboard.render(block.get("chessboard"))]
     products = block.get("products") or []
     if products:
         def price(item: dict[str, Any], scope: str) -> str:

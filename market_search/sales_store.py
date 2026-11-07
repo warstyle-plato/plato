@@ -14,12 +14,15 @@
 """
 from __future__ import annotations
 
+import contextlib
 import datetime
+import fcntl
 import json
 import os
 import re
+import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 # Что умеем принимать. Ключ — как называется источник внутри, значение — как он
 # называется человеку.
@@ -33,6 +36,7 @@ KINDS = {
     "credit": "план финансирования книги",
     "plan": "план продаж и отчёт правлению",
     "salesroom": "чат отдела продаж",
+    "chessboard": "шахматка квартир",
 }
 
 def default_dir() -> Path:
@@ -64,6 +68,8 @@ def load(data_dir: Path, project: str) -> dict[str, Any]:
         return {"project": project, "sources": {}}
     try:
         got = json.loads(place.read_text(encoding="utf-8"))
+        if not isinstance(got, dict) or not isinstance(got.get("sources", {}), dict):
+            raise ValueError("invalid source snapshot shape")
     except Exception:  # noqa: BLE001
         # Битый файл — это «нечего показать», а не «продаж не было».
         return {"project": project, "sources": {}, "broken": str(place.name)}
@@ -71,24 +77,65 @@ def load(data_dir: Path, project: str) -> dict[str, Any]:
     return got
 
 
+@contextlib.contextmanager
+def _project_lock(data_dir: Path, project: str) -> Iterator[None]:
+    """Сериализовать загрузки одного проекта между процессами двух воркеров.
+
+    Это отдельный lock источников, не lock диалога/вопросов: загрузка не берёт
+    блокировок диалога, а его обработчик может безопасно обновить salesroom.
+    """
+    place = _path(data_dir, project)
+    place.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(place.parent, 0o700)
+    fd = os.open(place.with_suffix(".sources.lock"), os.O_CREAT | os.O_RDWR, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        os.fchmod(handle.fileno(), 0o600)
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+def _replace(place: Path, kept: dict[str, Any]) -> None:
+    """Читатель видит целую старую или целую новую версию, без обрезанного JSON."""
+    raw = json.dumps(kept, ensure_ascii=False, separators=(",", ":"))
+    fd, temporary = tempfile.mkstemp(prefix=".sources-write-", dir=place.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, place)
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(temporary)
+
+
 def save(data_dir: Path, project: str, parts: dict[str, Any], filename: str) -> dict[str, Any]:
     """Положить разобранные части рядом с уже лежащими.
 
     Кладётся то, что разобралось. Источник, которого в этом файле не было,
     остаётся прежним: иначе вторая загрузка стирала бы то, что принесла первая.
+    Весь read/merge/write защищён межпроцессной блокировкой; ошибка слияния или
+    записи до atomic replace оставляет прежний снимок и другие источники.
     """
-    kept = load(data_dir, project)
-    kept["project"] = project or kept.get("project") or ""
-    at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
-    for kind, payload in parts.items():
-        if payload is None:
-            continue
-        kept["sources"][kind] = {"at": at, "file": filename, "data": payload}
-    place = _path(data_dir, project)
-    place.parent.mkdir(parents=True, exist_ok=True)
-    place.write_text(json.dumps(kept, ensure_ascii=False, separators=(",", ":")),
-                     encoding="utf-8")
-    return kept
+    with _project_lock(data_dir, project):
+        kept = load(data_dir, project)
+        if kept.get("broken"):
+            raise ValueError("Источники проекта повреждены: новая загрузка не заменяет прежний файл.")
+        kept["project"] = project or kept.get("project") or ""
+        at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+        for kind, payload in parts.items():
+            if payload is None:
+                continue
+            if kind == "chessboard":
+                from . import chessboard
+                previous = (kept["sources"].get(kind) or {}).get("data")
+                payload = chessboard.merge(previous, payload, filename)
+            kept["sources"][kind] = {"at": at, "file": filename, "data": payload}
+        _replace(_path(data_dir, project), kept)
+        return kept
 
 
 def projects(data_dir: Path) -> list[dict[str, Any]]:

@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 from market_search import sales_store
@@ -61,11 +62,16 @@ def test_the_store_holds_no_names_of_buyers() -> None:
 def test_the_summary_is_assembled_by_one_function() -> None:
     """Два сборщика на один проект однажды разойдутся, и обе картинки будут верны."""
     api = (Path(__file__).resolve().parent.parent / "market_search" / "api.py").read_text()
-    assert api.count("def _sales_view(") == 1
-    # И загрузка файла, и открытие кабинета зовут её же.
-    upload = api[api.index("async def cabinet_contracting("):api.index("@app.get(\"/cabinet/sales/summary\")")]
-    opened = api[api.index("async def cabinet_sales("):api.index("@app.post(\"/market/report\")")]
-    assert "_sales_view(" in upload and "_sales_view(" in opened
+    functions = [node for node in ast.walk(ast.parse(api))
+                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    assert sum(node.name == "_sales_view" for node in functions) == 1
+    # Оба обработчика зовут общий сборщик независимо от декоратора роутера.
+    for name in ("cabinet_contracting", "cabinet_sales"):
+        handlers = [node for node in functions if node.name == name]
+        assert len(handlers) == 1, name
+        assert any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                   and node.func.id == "_sales_view"
+                   for node in ast.walk(handlers[0])), name
 
 
 def test_the_screen_asks_the_store_before_asking_for_a_file() -> None:

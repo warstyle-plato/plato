@@ -229,6 +229,7 @@ async def report_teaser(request: Request) -> Response:
     payload = await json_object(request)
     if not isinstance(payload.get("inputs"), dict) or not payload.get("tep"):
         raise HTTPException(status_code=400, detail="Нет вводных для тизера")
+    _partial_tep_preflight(payload.get("inputs") or {}, payload.get("tep") or {})
     require_payload_access(payload, "Тизер проекта")
     ticket = str(payload.get("ticket") or "").strip().lower()
     if ticket and not _TEASER_TICKET_RE.fullmatch(ticket):
@@ -372,6 +373,7 @@ async def report_pdf(request: Request) -> Response:
         raise HTTPException(status_code=400, detail="Нет данных расчёта для PDF")
     # PDF пересчитывает модель на сервере — это не бесплатно, и отчёт уносят
     # с собой: с сайта он доступен после входа через Telegram (мягкий гейт).
+    _partial_tep_preflight(payload.get("inputs") or {}, payload.get("tep") or {})
     require_payload_access(payload, "PDF-отчёт")
     ticket = str(payload.get("ticket") or "").strip().lower()
     if ticket and not _TEASER_TICKET_RE.fullmatch(ticket):

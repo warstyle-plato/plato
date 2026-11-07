@@ -188,6 +188,7 @@ def test_an_unknown_report_ticket_is_not_pending(monkeypatch, tmp_path):
 
 def test_the_page_polls_the_report_ticket_until_the_pdf():
     prelude = """
+const inputs={};
 const log=[];let button={textContent:'Экспорт PDF',disabled:false};
 const document={querySelector:()=>button};
 async function calculate(){}

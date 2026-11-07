@@ -201,7 +201,9 @@ def test_the_nonres_book_says_na_like_the_engine(nonres_unrepaid) -> None:
     engine, book = nonres_unrepaid
     label = engine["summary"]["equity_returns"]["label"]
     report = book.workbook[ow.REPORT_SHEET]
-    assert report["B4"].value == ow.PATHS[0]["label"] and ow.PATHS[0]["key"] == "ddu"
+    first_path = engine["office_paths"]["paths"][0]
+    assert first_path["key"] == engine["office_paths"]["current"] == "ddu"
+    assert book.cell(ow.REPORT_SHEET, "B4") == first_path["label"]
     shown = {report[f"A{row}"].value: book.cell(ow.REPORT_SHEET, f"B{row}")
              for row in range(1, 40)
              if str(report[f"A{row}"].value or "").startswith(("NPV", "IRR"))}
