@@ -294,8 +294,12 @@ def _constraint_start(
 
 
 def _propagate(
-    pm: dict[str, Any], seeds: dict[str, datetime.date]
+    pm: dict[str, Any], seeds: dict[str, datetime.date], *,
+    actual_finishes: dict[str, datetime.date] | None = None,
 ) -> dict[str, dict[str, Any]]:
+    # Monetary scenarios omit actual_finishes and retain their existing rules.
+    # A physical completion is a dated fact, not a movable forecast seed.
+    actual_finishes = actual_finishes or {}
     tasks = {
         tid: {
             **item,
@@ -326,6 +330,18 @@ def _propagate(
         task["forecast_finish"] = finish
         task["own_delay_days"] = shift
 
+    for tid, finish in actual_finishes.items():
+        task = tasks.get(tid)
+        if not task or not isinstance(finish, datetime.date):
+            continue
+        task["actual_finish"] = finish
+        task["forecast_finish"] = finish
+        # The completion record supplies no actual start. This internal bound
+        # must not be shown as a factual interval or certify SS/SF successors.
+        task["forecast_start"] = min(task["start"], finish)
+        task["own_delay_days"] = max(0, (finish-task["finish"]).days)
+        task["completion_conflicts"] = []
+
     queue = [tid for tid, deg in indegree.items() if deg == 0]
     order: list[str] = []
     while queue:
@@ -346,7 +362,22 @@ def _propagate(
             required = succ["forecast_start"]
             for edge in succ["predecessors"]:
                 pred = tasks[edge["id"]]
+                if pred.get("actual_finish") and edge["type"] in {"SS", "SF"}:
+                    # A finish alone cannot supply an actual start constraint.
+                    succ.setdefault("unknown_actual_starts", set()).add(edge["id"])
+                    continue
+                if succ.get("actual_finish"):
+                    anchor = (pred["forecast_start"] if edge["type"] in {"SS", "SF"}
+                              else pred["forecast_finish"])
+                    earliest = anchor + datetime.timedelta(days=edge["lag_days"])
+                    if earliest > succ["actual_finish"]:
+                        conflict = {"predecessor": edge["id"], "type": edge["type"]}
+                        if conflict not in succ["completion_conflicts"]:
+                            succ["completion_conflicts"].append(conflict)
+                    continue
                 required = max(required, _constraint_start(edge, pred, succ))
+            if succ.get("actual_finish"):
+                continue
             if required > succ["forecast_start"]:
                 delta = (required - succ["forecast_start"]).days
                 succ["forecast_start"] += datetime.timedelta(days=delta)

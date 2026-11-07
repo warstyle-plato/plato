@@ -17,7 +17,9 @@ def _iso(value):
     return value.isoformat() if isinstance(value, dt.date) else None
 
 
-def model(pm: dict, seeds: dict[str, dt.date], *, evidence: bool = False) -> dict:
+def model(pm: dict, seeds: dict[str, dt.date], *, evidence: bool = False,
+          actual_finishes: dict[str, dt.date] | None = None) -> dict:
+    actual_finishes = actual_finishes or {}
     reasons = list(pm.get('validation_issues') or [])
     tasks = pm.get('tasks') or {}
     if not pm.get('known') or not tasks:
@@ -74,16 +76,20 @@ def model(pm: dict, seeds: dict[str, dt.date], *, evidence: bool = False) -> dic
         reasons.append('Полнота цепочки до РНВ, включая приёмку и получение разрешения, не подтверждена.')
     if not evidence:
         reasons.append('Нет актуального темпа или утверждённого переноса, подтверждающего прогноз.')
-    propagated = (graph._propagate(dict(pm, tasks=safe_tasks), seeds)
+    propagated = (graph._propagate(dict(pm, tasks=safe_tasks), seeds, actual_finishes=actual_finishes)
                   if not has_cycle else {})
     rows, edges = [], []
     for tid, source in safe_tasks.items():
         task = propagated.get(tid) or source
         forecast_start = task.get('forecast_start') if evidence and not has_cycle else None
         forecast_finish = task.get('forecast_finish') if evidence and not has_cycle else None
+        actual_finish = actual_finishes.get(tid)
+        if isinstance(actual_finish, dt.date):
+            forecast_start, forecast_finish = None, actual_finish
         rows.append({'id': tid, 'name': source.get('name') or tid,
                      'plan_start': _iso(source['start']), 'plan_finish': _iso(source['finish']),
                      'forecast_start': _iso(forecast_start), 'forecast_finish': _iso(forecast_finish),
+                     'actual_finish': _iso(actual_finish),
                      'own_delay_days': task.get('own_delay_days') if forecast_finish else None,
                      'inherited_delay_days': task.get('inherited_delay_days') if forecast_finish else None,
                      'remaining_float_days': (task.get('current_float_days') if forecast_finish
@@ -92,6 +98,28 @@ def model(pm: dict, seeds: dict[str, dt.date], *, evidence: bool = False) -> dic
         edges.extend({'from': edge['id'], 'to': tid, 'type': edge['type'],
                       'lag_days': edge['lag_days']} for edge in source['predecessors'])
     rnv_id = pm.get('rnv_id')
+    ancestors, pending = set(), [rnv_id]
+    while pending:
+        tid = pending.pop()
+        if tid in safe_tasks and tid not in ancestors:
+            ancestors.add(tid)
+            pending.extend(e['id'] for e in safe_tasks[tid]['predecessors'])
+    incompatible_facts = False
+    for tid in ancestors:
+        task = propagated.get(tid) or {}
+        seed = seeds.get(tid)
+        if (isinstance(seed, dt.date) and seed < safe_tasks[tid]['finish']
+                and tid not in actual_finishes):
+            reasons.append('Раннее окончание работы «'+str(task.get('name') or tid)+
+                           '» передано без подтверждения факта; игнорирование этой даты не подтверждает РНВ.')
+        if task.get('completion_conflicts'):
+            incompatible_facts = True
+            reasons.append('Фактическое завершение работы «'+str(task.get('name') or tid)+
+                           '» противоречит зависимостям. Факт сохранён; итоговый срок РНВ не подтверждён.')
+        if task.get('unknown_actual_starts'):
+            incompatible_facts = True
+            reasons.append('Для связи от начала завершённой работы к «'+str(task.get('name') or tid)+
+                           '» фактическое начало не подтверждено.')
     rnv = propagated.get(rnv_id) or safe_tasks.get(rnv_id)
     if not rnv:
         reasons.append('В PM не найдена отдельная веха получения РНВ; конец строительных работ её не заменяет.')
@@ -114,7 +142,8 @@ def model(pm: dict, seeds: dict[str, dt.date], *, evidence: bool = False) -> dic
         # a display chain is one explanation, not an exclusive critical path.
         cursor = sorted(pushing, key=lambda e: str(e['id']))[0]['id']
     approved = rnv.get('finish') if rnv else None
-    indicative = rnv.get('forecast_finish') if rnv and evidence and not has_cycle and not ambiguous_rnv else None
+    indicative = (rnv.get('forecast_finish') if rnv and evidence and not has_cycle
+                  and not ambiguous_rnv and not incompatible_facts else None)
     state = 'unknown' if not indicative else 'partial' if reasons else 'complete'
     return {'state': 'ok', 'rows': rows, 'edges': edges, 'source': pm.get('source') or '',
             'confirmation': pm.get('confirmation') or {},
@@ -157,7 +186,8 @@ def render(block: dict) -> str:
     all_rows = block.get('rows') or []
     # Focus on delayed rows and their immediate dependencies; cap the visual,
     # disclose truncation, and keep the complete model available to the caller.
-    picked = {r['id'] for r in all_rows if (r.get('own_delay_days') or r.get('inherited_delay_days'))}
+    picked = {r['id'] for r in all_rows if (r.get('own_delay_days') or r.get('inherited_delay_days')
+                                          or r.get('actual_finish'))}
     picked.update(item['id'] for item in chain)
     for edge in block.get('edges') or []:
         if edge['to'] in picked:
@@ -202,8 +232,11 @@ def render(block: dict) -> str:
         if row.get('forecast_start') and row.get('forecast_finish'):
             a, b = x(row['forecast_start']), x(row['forecast_finish'])
             out.append(f'<rect x="{a:.1f}" y="{y+9}" width="{max(2,b-a):.1f}" height="6" fill="#205c96"/>')
+        if row.get('actual_finish'):
+            out.append(f'<circle cx="{x(row["actual_finish"]):.1f}" cy="{y+12}" r="4" fill="#2e7d55"><title>Факт завершения: '+esc(date(row['actual_finish']))+'</title></circle>')
         own, inherited = row.get('own_delay_days'), row.get('inherited_delay_days')
         out.append(f'<text x="805" y="{y+12}" font-size="11">Своя: '+esc('—' if own is None else own)+' · от этапов: '+esc('—' if inherited is None else inherited)+'</text>')
-        out.append(f'<text x="260" y="{y+31}" font-size="10">'+esc(date(row['plan_finish']))+' → '+esc(date(row.get('forecast_finish')))+' · резерв: '+esc('не указан' if row.get('remaining_float_days') is None else str(row['remaining_float_days'])+' дн.')+'</text>')
-    out.append('</svg></div><p class="note">Серое — исходный план; зелёное на плановой полосе — доля натурального объёма отдельной работы; синее — расчёт по известным данным; стрелки — связи PM. Разные компоненты не усредняются. Унаследованные сдвиги по цепочке не складываются.</p></section>')
+        label = ' · факт: ' if row.get('actual_finish') else ' → '
+        out.append(f'<text x="260" y="{y+31}" font-size="10">'+esc(date(row['plan_finish']))+label+esc(date(row.get('forecast_finish')))+' · резерв: '+esc('не указан' if row.get('remaining_float_days') is None else str(row['remaining_float_days'])+' дн.')+'</text>')
+    out.append('</svg></div><p class="note">Серое — исходный план; зелёное на плановой полосе — доля натурального объёма отдельной работы; зелёная точка — факт окончания без предположения о фактическом начале; синее — расчёт по известным данным; стрелки — связи PM. Разные компоненты не усредняются. Унаследованные сдвиги по цепочке не складываются.</p></section>')
     return ''.join(out)

@@ -238,7 +238,8 @@ def _apply_pace(project: str, view: dict[str, Any], cut: datetime.date) -> dict[
             'Натуральная выработка КС и её сопоставление с работами графика ещё не подтверждены. '
             'Стоимостный темп КС не доказывает физическую готовность.')
     schedule["dependency_timeline"] = schedule_timeline.model(
-        qualified_pm, timeline_seeds, evidence=bool(physical['physical_evidence'] or evidence or late_seeds))
+        qualified_pm, timeline_seeds, evidence=bool(physical['physical_evidence'] or evidence or late_seeds),
+        actual_finishes={tid: monitor._day(value) for tid, value in physical.get('actual_finishes', {}).items()})
     schedule['dependency_timeline']['physical'] = physical
     schedule['physical_progress'] = physical
     if isinstance((view.get("dashboard") or {}).get("schedule"), dict):

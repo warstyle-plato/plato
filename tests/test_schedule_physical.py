@@ -206,3 +206,82 @@ def test_manual_completion_is_not_painted_as_a_quantity_percentage():
     text=timeline.render(block)
     assert text.count('Подтверждённый натуральный объём:')==1
     assert 'Подтверждённый натуральный объём: 50.0%' in text
+
+
+@pytest.mark.parametrize('completion', ['manual', 'quantities'])
+def test_completed_fs_successor_preserves_its_fact_but_cannot_certify_rnv(completion, monkeypatch):
+    import developaid_monitor_pace as pace
+    pm, cfg, snap = network(), config(), snapshot()
+    if completion == 'manual':
+        cfg['tasks'][1].update(mode='completed', actual_finish='2026-10-31')
+    else:
+        cfg['tasks'][1].update(mode='quantities')
+        cfg['components'].append(dict(component_id='Поставка', task_id='2', item_ids=['1:0']))
+        snap = snapshot([(2026, item()), (2026, item(done=100))])
+    model = physical.evaluate(pm, snap, cfg, CUT)
+    assert model['state'] == 'partial'
+    assert model['tasks'][0]['forecast_finish'] == '2026-12-07'
+    assert model['actual_finishes']['2'] == '2026-10-31'
+    assert any('противоречит' in reason for reason in model['reasons'])
+    # A legacy caller which drops the new actual-fact map must fail closed,
+    # rather than silently ignore an early seed and certify a different date.
+    dropped_facts = timeline.model(pm, {k: day(v) for k, v in model['seeds'].items()}, evidence=True)
+    assert dropped_facts['rnv']['state'] != 'complete'
+    monkeypatch.setattr(pace.schedule_graph, '_load_pm', lambda *_: copy.deepcopy(pm))
+    monkeypatch.setattr(pace.schedule_confirmation, 'qualify', lambda project, source, cut: source)
+    monkeypatch.setattr(pace.schedule_physical, 'build', lambda *a: copy.deepcopy(model))
+    monkeypatch.setattr(pace.corpus_gpr, 'latest', lambda *a: None)
+    view = {'schedule': {'rows': [dict(id='1', plan_start='2026-11-01', plan_finish='2026-11-20')],
+                         'management': []}, 'dashboard': {'schedule': {}, 'summary': []}}
+    pace._apply_pace('Synthetic', view, day(CUT))
+    block = view['schedule']['dependency_timeline']
+    fact = next(row for row in block['rows'] if row['id'] == '2')
+    assert fact['actual_finish'] == fact['forecast_finish'] == '2026-10-31'
+    assert fact['forecast_start'] is None  # no actual start was supplied
+    assert block['rnv']['state'] != 'complete' and block['rnv']['forecast'] is None
+    assert block['rnv']['indicative_forecast'] is None
+    assert view['dashboard']['schedule']['qualified_rnv'] == block['rnv']
+    assert 'Факт завершения: 31.10.2026' in timeline.render(block)
+
+
+@pytest.mark.parametrize('completion', ['manual', 'quantities'])
+def test_nonconflicting_completion_is_not_moved_to_the_planned_or_future_finish(completion):
+    pm, cfg, snap = network(), config(), snapshot([(2026, item(done=100))])
+    if completion == 'manual':
+        cfg['tasks'][0].update(mode='completed', actual_finish='2026-10-31')
+        cfg['components'] = []
+    model = physical.evaluate(pm, snap, cfg, CUT)
+    assert model['state'] == 'complete'
+    block = timeline.model(pm, {k: day(v) for k, v in model['seeds'].items()}, evidence=True,
+                           actual_finishes={k: day(v) for k, v in model['actual_finishes'].items()})
+    first = block['rows'][0]
+    assert first['actual_finish'] == first['forecast_finish'] == '2026-10-31'
+    assert first['forecast_start'] is None
+    assert block['rnv']['state'] == 'complete'
+    assert block['rnv']['forecast'] == '2027-02-01'  # no assumed acceleration of later stages
+
+
+@pytest.mark.parametrize('kind', ['SS', 'SF'])
+def test_a_completed_finish_does_not_invent_an_actual_start_for_start_based_links(kind):
+    pm, cfg = network(), config()
+    pm['tasks']['2']['predecessors'][0]['type'] = kind
+    model = physical.evaluate(pm, snapshot([(2026, item(done=100))]), cfg, CUT)
+    assert model['state'] == 'partial'
+    block = timeline.model(pm, {k: day(v) for k, v in model['seeds'].items()}, evidence=True,
+                           actual_finishes={k: day(v) for k, v in model['actual_finishes'].items()})
+    assert block['rnv']['state'] != 'complete'
+    assert any('начало' in reason for reason in block['rnv']['reasons'])
+
+
+def test_a_late_actual_finish_keeps_its_date_without_creating_an_actual_start():
+    pm, cfg = network(), config()
+    pm['tasks']['1'].update(start=day('2026-10-01'), finish=day('2026-10-20'), duration_days=19)
+    cfg['tasks'][0].update(mode='completed', actual_finish='2026-10-31')
+    cfg['components'] = []
+    model = physical.evaluate(pm, snapshot(), cfg, CUT)
+    block = timeline.model(pm, {k: day(v) for k, v in model['seeds'].items()}, evidence=True,
+                           actual_finishes={k: day(v) for k, v in model['actual_finishes'].items()})
+    assert model['state'] == 'complete' and block['rnv']['state'] == 'complete'
+    assert block['rows'][0]['forecast_finish'] == '2026-10-31'
+    assert block['rows'][0]['forecast_start'] is None
+    assert block['rows'][0]['own_delay_days'] == 11

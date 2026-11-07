@@ -305,7 +305,7 @@ def evaluate(pm, snapshot, configuration, cut):
             continue
         required.add(tid)
         pending.extend(e['id'] for e in tasks[tid].get('predecessors') or [])
-    rows, seeds, reasons = [], {}, []
+    rows, seeds, actual_finishes, reasons = [], {}, {}, []
     physical_evidence = False
     for tid in tasks:
         config = configs.get(tid)
@@ -337,11 +337,16 @@ def evaluate(pm, snapshot, configuration, cut):
             result['reason'] = 'Состав работы и основание прогноза не подтверждены.'
         if result['forecast_finish']:
             seeds[tid] = result['forecast_finish']
+            if (result['mode'] == 'completed' or result['mode'] == 'quantities'
+                    and own and all(c.get('method') == 'completed_quantities' for c in own)):
+                actual_finishes[tid] = result['forecast_finish']
+                result['actual_finish'] = result['forecast_finish']
         rows.append(result)
     # A confirmed non-quantity stage may not have started because its predecessor
     # moved. Keep its planned duration when the same network places its finish
     # in the future; never silently treat a past, unshifted stage as completed.
-    propagated = graph._propagate(pm, {tid: _day(value) for tid, value in seeds.items()}) if seeds else {}
+    propagated = graph._propagate(pm, {tid: _day(value) for tid, value in seeds.items()},
+                                 actual_finishes={tid: _day(value) for tid, value in actual_finishes.items()}) if seeds else {}
     for row in rows:
         config = configs.get(row['task_id']) or {}
         shifted = (propagated.get(row['task_id']) or {}).get('forecast_finish')
@@ -350,6 +355,13 @@ def evaluate(pm, snapshot, configuration, cut):
             row.update(known=True, reason='')
         if row['task_id'] in required and not row['known']:
             reasons.append('Не подтверждены объёмы или факт выполнения работы «'+row['name']+'».')
+        network = propagated.get(row['task_id']) or {}
+        if row['task_id'] in required and network.get('completion_conflicts'):
+            reasons.append('Факт завершения работы «'+row['name']+'» противоречит связям с предшественниками. '
+                           'Проверьте фактические даты и зависимости; завершённая работа не переносится в будущее.')
+        if row['task_id'] in required and network.get('unknown_actual_starts'):
+            reasons.append('Для связи от начала завершённой работы к «'+row['name']+'» '
+                           'неизвестна фактическая дата начала; одного окончания недостаточно.')
     if not required:
         reasons.append('В PM не выбрана веха РНВ.')
     if not configuration['tasks']:
@@ -361,7 +373,7 @@ def evaluate(pm, snapshot, configuration, cut):
     if len(all_reasons) > 20:
         display_reasons.append(f'Дополнительно не подтверждены {len(all_reasons)-20} оснований; проверьте весь перечень привязок.')
     return {'state': 'complete' if not reasons else 'partial' if physical_evidence else 'unknown',
-            'tasks': rows, 'seeds': seeds, 'physical_evidence': physical_evidence,
+            'tasks': rows, 'seeds': seeds, 'actual_finishes': actual_finishes, 'physical_evidence': physical_evidence,
             'reasons': display_reasons, 'basis': 'natural_quantities_and_explicit_facts'}
 
 

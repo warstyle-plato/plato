@@ -109,7 +109,8 @@ def test_physical_complete_forecast_cannot_render_old_cost_scenario():
         assert not errors
 
 
-def test_report_pdf_contains_the_same_physical_quantities(tmp_path):
+@pytest.mark.parametrize('completed_conflict', [False, True])
+def test_report_pdf_contains_the_same_physical_quantities(tmp_path, completed_conflict):
     import fitz
     import developaid_management_report as report
     import developaid_schedule_physical as physical
@@ -118,8 +119,12 @@ def test_report_pdf_contains_the_same_physical_quantities(tmp_path):
     from test_schedule_dependency_timeline import network,day
     from browser import chromium_or_skip
     from playwright.sync_api import sync_playwright
-    pm=network();model=physical.evaluate(pm,snapshot(),config(),CUT)
-    block=timeline.model(pm,{tid:day(value) for tid,value in model['seeds'].items()},evidence=True)
+    pm=network();cfg=config()
+    if completed_conflict:
+        cfg['tasks'][1].update(mode='completed',actual_finish='2026-10-31')
+    model=physical.evaluate(pm,snapshot(),cfg,CUT)
+    block=timeline.model(pm,{tid:day(value) for tid,value in model['seeds'].items()},evidence=True,
+                         actual_finishes={tid:day(value) for tid,value in model['actual_finishes'].items()})
     block['physical']=model
     payload={'project':'Учебный проект','kind':'week','start':'2026-11-01','end':CUT,
              'gantt':{'state':'missing','dependency_timeline':block}}
@@ -131,7 +136,12 @@ def test_report_pdf_contains_the_same_physical_quantities(tmp_path):
         page.pdf(path=str(path),format='A4');browser.close()
     with fitz.open(path) as pdf:text=' '.join(page.get_text() for page in pdf)
     assert 'Физическое выполнение' in text and '50 / 100' in text
-    assert '13.02.2027' in text
+    if completed_conflict:
+        assert block['rnv']['forecast'] is None
+        assert 'факт: 31.10.2026' in ' '.join(text.split())
+        assert 'противоречит' in text
+    else:
+        assert '13.02.2027' in text
 
 
 def test_saved_revocation_cannot_leave_an_old_forecast_when_refresh_fails():
