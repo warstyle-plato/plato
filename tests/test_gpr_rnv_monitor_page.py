@@ -24,8 +24,11 @@ def test_real_monitor_shows_inherited_delay_rnv_qualification_and_source(width):
         expect(page.locator('#dependencyTimelineCard')).to_be_visible()
         expect(page.locator('#dependencyTimelineBody .schedule-rnv-cards')).to_contain_text('Прогноз РНВ')
         expect(page.locator('#dependencyTimelineBody .schedule-rnv-cards')).to_contain_text('неполный')
-        expect(page.locator('#dependencyTimelineBody .schedule-lane[data-task-id="2"]')).to_contain_text('от предыдущих этапов: 15 дн.')
-        assert page.locator('#dependencyTimelineBody svg path[marker-end]').count() == 3
+        # Owner's decision: no dependency drawing; the RNV cards stay.
+        assert page.locator('#dependencyTimelineBody .schedule-lane').count() == 0
+        assert page.locator('#dependencyTimelineBody svg path[marker-end]').count() == 0
+        assert page.locator('#dependencyTimelineBody .schedule-technical').count() == 0
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         expect(page.locator('#corpusGprCard')).to_be_visible()
         page.locator('#corpusGprBody .schedule-source-packages>summary').click()
         page.locator('#corpusGprBody .corpus-gpr-source details>summary').click()
