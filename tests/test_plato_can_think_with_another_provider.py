@@ -278,3 +278,46 @@ def test_the_openai_path_is_untouched(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         core._openai_direct_request({"input": []})
     assert "OPENAI_API_KEY" in str(exc.value.detail), "ушли не по тому пути"
+
+
+def test_the_key_that_counts_is_the_chosen_providers(monkeypatch):
+    """«Можно звать модель» решает ключ выбранного поставщика, а не любой найденный."""
+    for name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("PLATO_MODEL_PROVIDER", "anthropic")
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    assert plato_provider.model_key_present() is False
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.delenv("OPENAI_API_KEY")
+    assert plato_provider.model_key_present() is True
+    monkeypatch.setenv("PLATO_MODEL_PROVIDER", "nonsense")
+    assert plato_provider.model_key_present() is False
+
+
+def test_the_status_of_a_model_server_names_provider_and_model(monkeypatch):
+    """Render после переключения: статус не говорит «gpt-5.6» и «выключен»."""
+    import main_legacy as core
+
+    monkeypatch.setattr(core, "_PLATO_AI_URL", "")
+    monkeypatch.setattr(core, "_PLATO_AI_PROXY_SECRET", "")
+    monkeypatch.setenv("PLATO_MODEL_PROVIDER", "anthropic")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("PLATO_ANTHROPIC_MODEL", raising=False)
+    status = core.agent_status()
+    assert status["enabled"] is True
+    assert status["provider"] == "anthropic"
+    assert status["model"] == plato_provider.DEFAULT_ANTHROPIC_MODEL
+    assert status["model_key_env"] == "ANTHROPIC_API_KEY"
+
+    monkeypatch.setenv("PLATO_MODEL_PROVIDER", "nonsense")
+    status = core.agent_status()
+    assert status["enabled"] is False
+    assert status["provider"] is None
+    assert "PLATO_MODEL_PROVIDER" in status["provider_error"]
+
+    monkeypatch.delenv("PLATO_MODEL_PROVIDER")
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    monkeypatch.setenv("OPENAI_AGENT_MODEL", "gpt-test")
+    status = core.agent_status()
+    assert (status["provider"], status["model"], status["enabled"]) == ("openai", "gpt-test", True)

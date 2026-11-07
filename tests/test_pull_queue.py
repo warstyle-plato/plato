@@ -250,11 +250,51 @@ def test_the_worker_reports_a_failure_instead_of_swallowing_it(monkeypatch):
     assert sent["body"]["status"] == 502
 
 
+def _started_workers(monkeypatch, *, provider: str, keys: dict[str, str],
+                     ai_url: str = "") -> list[str]:
+    """Сколько потоков разбора запустит старт при данных переменных."""
+    monkeypatch.setattr(core, "_PLATO_PULL_URL", "https://core.example")
+    monkeypatch.setattr(core, "_PLATO_AI_URL", ai_url)
+    monkeypatch.setenv("PLATO_MODEL_PROVIDER", provider)
+    for name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in keys.items():
+        monkeypatch.setenv(name, value)
+    started: list[str] = []
+
+    class FakeThread:
+        def __init__(self, target=None, name="", daemon=None):
+            self.name = name
+
+        def start(self):
+            started.append(self.name)
+
+    monkeypatch.setattr(core.threading, "Thread", FakeThread)
+    core._start_plato_pull_worker()
+    return started
+
+
 def test_the_worker_starts_only_where_the_key_is(monkeypatch):
-    import inspect
-    source = inspect.getsource(core._start_plato_pull_worker)
-    assert "_PLATO_PULL_URL and not _PLATO_AI_URL" in source
-    assert "OPENAI_API_KEY" in source
+    assert _started_workers(monkeypatch, provider="openai",
+                            keys={"OPENAI_API_KEY": "k"}) == ["plato-pull"]
+    assert _started_workers(monkeypatch, provider="openai", keys={}) == []
+    # Ядро со своим прокси очередь не разбирает, даже имея ключ.
+    assert _started_workers(monkeypatch, provider="openai", keys={"OPENAI_API_KEY": "k"},
+                            ai_url="https://render.example/internal/plato/chat") == []
+
+
+def test_the_worker_starts_on_the_anthropic_key_alone(monkeypatch):
+    """Render после перехода на Anthropic: ключа OpenAI нет — разбор всё равно идёт."""
+    assert _started_workers(monkeypatch, provider="anthropic",
+                            keys={"ANTHROPIC_API_KEY": "k"}) == ["plato-pull"]
+
+
+def test_a_key_of_the_other_provider_does_not_start_the_worker(monkeypatch):
+    """Ключ OpenAI при выбранном Anthropic думать не даёт — и разбор не стартует."""
+    assert _started_workers(monkeypatch, provider="anthropic",
+                            keys={"OPENAI_API_KEY": "k"}) == []
+    assert _started_workers(monkeypatch, provider="nonsense",
+                            keys={"OPENAI_API_KEY": "k", "ANTHROPIC_API_KEY": "k"}) == []
 
 
 # --- видно снаружи ------------------------------------------------------------
@@ -263,6 +303,50 @@ def test_the_status_shows_the_queue(core_side):
     status = core.agent_status()["pull_queue"]
     assert status["enabled"] is True
     assert "waiting_jobs" in status
+
+
+def test_the_core_status_names_the_provider_render_reported(client, core_side, monkeypatch,
+                                                            tmp_path):
+    """Ядро своей переменной поставщика не управляет: в статусе — то, что сказал Render."""
+    monkeypatch.setattr(core, "_PLATO_STAGE_DIR", tmp_path)
+    monkeypatch.setenv("PLATO_MODEL_PROVIDER", "openai")
+    status = core.agent_status()
+    assert status["provider"] is None and status["model"] is None
+    assert "сервис модели" in status["model_source"]
+
+    response = client.get("/internal/plato/queue?wait=0",
+                          headers={**core_side, "X-Plato-Provider": "anthropic",
+                                   "X-Plato-Model": "claude-opus-5<script>"})
+    assert response.status_code == 200
+    status = core.agent_status()
+    assert status["provider"] == "anthropic"
+    assert status["model"] == "claude-opus-5script"
+    assert status["pull_queue"]["puller_seen_ago_seconds"] is not None
+
+
+def test_an_old_style_seen_mark_still_reads(core_side, monkeypatch, tmp_path):
+    """Отметка прежнего вида (одно время) после выката не ломает статус."""
+    monkeypatch.setattr(core, "_PLATO_STAGE_DIR", tmp_path)
+    (tmp_path / "puller.seen").write_text(str(time.time() - 30), encoding="utf-8")
+    assert 25 <= core._plato_puller_seen_ago() <= 60
+    assert core.agent_status()["provider"] is None
+
+
+def test_the_worker_names_its_provider_to_the_core(monkeypatch):
+    monkeypatch.setattr(core, "_PLATO_PULL_URL", "https://core.example")
+    monkeypatch.setenv("PLATO_MODEL_PROVIDER", "anthropic")
+    monkeypatch.setenv("PLATO_ANTHROPIC_MODEL", "claude-test")
+    seen: dict[str, str] = {}
+
+    def fake_once(base, headers):
+        seen.update(headers)
+        raise SystemExit
+
+    monkeypatch.setattr(core, "_plato_pull_once", fake_once)
+    with pytest.raises(SystemExit):
+        core._plato_pull_worker()
+    assert seen["X-Plato-Provider"] == "anthropic"
+    assert seen["X-Plato-Model"] == "claude-test"
 
 
 def test_the_selftest_names_a_silent_worker(client, core_side, monkeypatch):

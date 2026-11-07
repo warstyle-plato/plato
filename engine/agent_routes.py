@@ -246,6 +246,33 @@ _AGENT_TOOL_LABELS = {
 }
 
 
+def _agent_status_model() -> dict[str, Any]:
+    """Поставщик и модель Платона для статуса — с источником сведения."""
+    if not _PLATO_AI_URL:
+        here = plato_provider.describe(_plato_openai_agent_model())
+        return {
+            "provider": here["provider"],
+            "model": here["model"],
+            "model_source": "этот сервер",
+            "model_key_env": here["key_env"],
+            "model_key_present": here["key_present"],
+            "provider_error": here["error"],
+        }
+    seen = _plato_puller_seen_record() if _PLATO_PULL_ENABLED else {}
+    if seen.get("provider"):
+        return {
+            "provider": seen["provider"],
+            "model": seen.get("model"),
+            "model_source": "сервис модели (сообщил при заборе задания)",
+        }
+    return {
+        "provider": None,
+        "model": None,
+        "model_source": ("модель выбирает сервис модели по PLATO_AI_URL; "
+                         "этому серверу он её не сообщал — смотрите /agent/status там"),
+    }
+
+
 @app.get("/agent/status")
 def agent_status() -> dict[str, Any]:
     return {
@@ -253,7 +280,7 @@ def agent_status() -> dict[str, Any]:
         # через сервис, адрес которого задан в PLATO_AI_URL.
         "enabled": bool(
             (_PLATO_AI_URL and _PLATO_AI_PROXY_SECRET)
-            or os.getenv("OPENAI_API_KEY", "").strip()
+            or plato_provider.model_key_present()
         ),
         "thinks_via": "внешний сервис" if _PLATO_AI_URL else "этот сервер",
         # Маршрут виден снаружи: хостинг закрыт, и лезть в журнал за строкой
@@ -280,9 +307,11 @@ def agent_status() -> dict[str, Any]:
             "last_ok": _PLATO_KEEPALIVE["last_ok"],
             "last_error": _PLATO_KEEPALIVE["last_error"],
         },
-        "model": os.getenv("OPENAI_AGENT_MODEL", "gpt-5.6"),
-        "reasoning_effort": _agent_reasoning_effort(
-            os.getenv("OPENAI_AGENT_MODEL", "gpt-5.6").strip() or "gpt-5.6") or "default",
+        # Кем Платон думает. На своём сервере — по своим переменным; при маршруте
+        # через Render — то, что назвал сам Render (очередь), или «не знаем»
+        # (прокси): умолчание ядра выбором Render не является.
+        **_agent_status_model(),
+        "reasoning_effort": _agent_reasoning_effort(_plato_openai_agent_model()) or "default",
         "agent_name": "Платон Сергеевич Федоскин",
         "mode": "reasoning_agent_with_confirmed_input_patches",
         "bank_llcr_target": _AGENT_BANK_LLCR_TARGET,
@@ -534,6 +563,10 @@ def _plato_selftest_verdict(outcome: dict[str, Any]) -> str:
         return "Вызов до Render дошёл, но вернулся ошибкой — текст в поле error."
     if "OPENAI_API_KEY" in error:
         return "Ключ OpenAI на этом сервере не задан."
+    if "ANTHROPIC_API_KEY" in error:
+        return "Ключ Anthropic на этом сервере не задан."
+    if "PLATO_MODEL_PROVIDER" in error:
+        return "Поставщик модели задан неизвестным значением: смотрите текст ошибки."
     return "Вызов модели с этого сервера не прошёл — текст в поле error."
 
 
