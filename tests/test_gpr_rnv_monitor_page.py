@@ -17,18 +17,21 @@ def test_real_monitor_shows_inherited_delay_rnv_qualification_and_source(width):
     source = corpus.read(book(name='Монтаж фасада'))
     view = {'schedule': {'management': [], 'dependency_timeline': block,
                         'dependency_timeline_html': timeline.render(block),
-                        'corpus_gpr': source, 'corpus_gpr_html': corpus.render(source)},
+                        'corpus_gpr': source, 'corpus_gpr_html': corpus.render_overview(source, '2026-11-06')},
             'dashboard': {'schedule': {'qualified_rnv': block['rnv']}}}
     with browser_page(width) as (page, responses, errors):
         page.evaluate('(view)=>{++corpusSourceRequest;currentView=view;renderGantt(view);renderDash(view);renderCorpusGprSource({html:view.schedule.corpus_gpr_html})}', view)
         expect(page.locator('#dependencyTimelineCard')).to_be_visible()
-        expect(page.locator('#dependencyTimelineBody')).to_contain_text('Прогноз РНВ: неполный')
-        # Owner's decision: no dependency drawing; the RNV card stays as text.
-        assert page.locator('#dependencyTimelineBody svg[aria-label="Зависимости и сдвиги работ"]').count() == 0
-        expect(page.locator('#dependencyTimelineBody')).not_to_contain_text('от этапов')
+        expect(page.locator('#dependencyTimelineBody .schedule-rnv-cards')).to_contain_text('Прогноз РНВ')
+        expect(page.locator('#dependencyTimelineBody .schedule-rnv-cards')).to_contain_text('неполный')
+        # Owner's decision: no dependency drawing; the RNV cards stay.
+        assert page.locator('#dependencyTimelineBody .schedule-lane').count() == 0
+        assert page.locator('#dependencyTimelineBody svg path[marker-end]').count() == 0
+        assert page.locator('#dependencyTimelineBody .schedule-technical').count() == 0
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         expect(page.locator('#corpusGprCard')).to_be_visible()
-        page.locator('#corpusGprBody summary').click()
+        page.locator('#corpusGprBody .schedule-source-packages>summary').click()
+        page.locator('#corpusGprBody .corpus-gpr-source details>summary').click()
         expect(page.locator('#corpusGprBody')).to_contain_text('31.06.2027')
         expect(page.locator('#corpusGprBody')).to_contain_text('нет числа')
         assert page.locator('#corpusGprBody script').count() == 0
