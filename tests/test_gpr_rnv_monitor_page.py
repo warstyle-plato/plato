@@ -23,8 +23,10 @@ def test_real_monitor_shows_inherited_delay_rnv_qualification_and_source(width):
         page.evaluate('(view)=>{++corpusSourceRequest;currentView=view;renderGantt(view);renderDash(view);renderCorpusGprSource({html:view.schedule.corpus_gpr_html})}', view)
         expect(page.locator('#dependencyTimelineCard')).to_be_visible()
         expect(page.locator('#dependencyTimelineBody')).to_contain_text('Прогноз РНВ: неполный')
-        expect(page.locator('#dependencyTimelineBody')).to_contain_text('Своя: 0 · от этапов: 15')
-        assert page.locator('#dependencyTimelineBody svg path[marker-end]').count() == 3
+        # Owner's decision: no dependency drawing; the RNV card stays as text.
+        assert page.locator('#dependencyTimelineBody svg[aria-label="Зависимости и сдвиги работ"]').count() == 0
+        expect(page.locator('#dependencyTimelineBody')).not_to_contain_text('от этапов')
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         expect(page.locator('#corpusGprCard')).to_be_visible()
         page.locator('#corpusGprBody summary').click()
         expect(page.locator('#corpusGprBody')).to_contain_text('31.06.2027')

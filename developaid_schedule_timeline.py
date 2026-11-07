@@ -161,7 +161,7 @@ def render(block: dict) -> str:
     rnv = block.get('rnv') or {}
     date = lambda value: dt.date.fromisoformat(value).strftime('%d.%m.%Y') if value else '—'
     state = rnv.get('state')
-    out = ['<section class="dependency-timeline"><h3>Сдвиги по цепочке работ и прогноз РНВ</h3>',
+    out = ['<section class="dependency-timeline"><h3>Прогноз РНВ</h3>',
            '<p><b>План РНВ:</b> '+esc(date(rnv.get('approved')))+' · <b>Прогноз РНВ:</b> '+
            esc(date(rnv.get('forecast')) if state == 'complete' else 'неполный' if state == 'partial' else 'недостаточно данных')+'</p>']
     if state == 'partial' and rnv.get('indicative_forecast'):
@@ -183,60 +183,11 @@ def render(block: dict) -> str:
     if block.get('physical'):
         from developaid_schedule_physical import render as render_physical
         out.append(render_physical(block['physical']))
-    all_rows = block.get('rows') or []
-    # Focus on delayed rows and their immediate dependencies; cap the visual,
-    # disclose truncation, and keep the complete model available to the caller.
-    picked = {r['id'] for r in all_rows if (r.get('own_delay_days') or r.get('inherited_delay_days')
-                                          or r.get('actual_finish'))}
-    picked.update(item['id'] for item in chain)
-    for edge in block.get('edges') or []:
-        if edge['to'] in picked:
-            picked.add(edge['from'])
-    rows = [r for r in all_rows if r['id'] in picked][:60]
-    if not rows:
-        out.append('</section>')
-        return ''.join(out)
-    if len(picked) > len(rows):
-        out.append('<p class="note">Показаны первые 60 работ; остальные остаются в полном графике Монитора.</p>')
-    days = [dt.date.fromisoformat(r[k]) for r in rows
-            for k in ('plan_start', 'plan_finish', 'forecast_start', 'forecast_finish') if r.get(k)]
-    first, last = min(days), max(days)
-    span = max((last-first).days, 1)
-    x = lambda value: 260+530*(dt.date.fromisoformat(value)-first).days/span
-    positions = {row['id']: i for i, row in enumerate(rows)}
-    physical_rows = {row['task_id']: row for row in (block.get('physical') or {}).get('tasks') or []}
-    out.append('<div style="overflow-x:auto"><svg role="img" aria-label="Зависимости и сдвиги работ" '
-               f'viewBox="0 0 1000 {len(rows)*48+42}" style="width:100%;min-width:850px" xmlns="http://www.w3.org/2000/svg">')
-    out.append('<defs><marker id="dependency-arrow" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0 0L6 3L0 6" fill="#8a6200"/></marker></defs>')
-    out.append('<text x="260" y="14" font-size="12">'+esc(date(first.isoformat()))+'</text><text x="700" y="14" font-size="12">'+esc(date(last.isoformat()))+'</text>')
-    for edge in block.get('edges') or []:
-        if edge['from'] not in positions or edge['to'] not in positions:
-            continue
-        pred, succ = rows[positions[edge['from']]], rows[positions[edge['to']]]
-        pf = 'forecast_finish' if edge['type'][0] == 'F' else 'forecast_start'
-        sf = 'forecast_start' if edge['type'][1] == 'S' else 'forecast_finish'
-        if not pred.get(pf) or not succ.get(sf):
-            continue
-        px, sx = x(pred[pf]), x(succ[sf])
-        py, sy = 42+positions[pred['id']]*48, 42+positions[succ['id']]*48
-        out.append(f'<path d="M{px:.1f} {py}H{px+8:.1f}V{sy}H{sx:.1f}" fill="none" stroke="#8a6200" marker-end="url(#dependency-arrow)"><title>'+esc(edge['type'])+' '+esc(edge['lag_days'])+' дн.</title></path>')
-    for i, row in enumerate(rows):
-        y = 30+i*48
-        out.append(f'<text x="0" y="{y+10}" font-size="12"><title>'+esc(row['name'])+'</title>'+esc(row['name'][:35])+'</text>')
-        a, b = x(row['plan_start']), x(row['plan_finish'])
-        out.append(f'<rect x="{a:.1f}" y="{y}" width="{max(2,b-a):.1f}" height="6" fill="#cbd1d9"/>')
-        physical_row = physical_rows.get(row['id']) or {}
-        physical_progress = physical_row.get('progress') if physical_row.get('mode') == 'quantities' else None
-        if isinstance(physical_progress, (int, float)) and 0 <= physical_progress <= 1:
-            out.append(f'<rect x="{a:.1f}" y="{y}" width="{max(0,(b-a)*physical_progress):.1f}" height="6" fill="#2e7d55"><title>Подтверждённый натуральный объём: {physical_progress*100:.1f}%</title></rect>')
-        if row.get('forecast_start') and row.get('forecast_finish'):
-            a, b = x(row['forecast_start']), x(row['forecast_finish'])
-            out.append(f'<rect x="{a:.1f}" y="{y+9}" width="{max(2,b-a):.1f}" height="6" fill="#205c96"/>')
-        if row.get('actual_finish'):
-            out.append(f'<circle cx="{x(row["actual_finish"]):.1f}" cy="{y+12}" r="4" fill="#2e7d55"><title>Факт завершения: '+esc(date(row['actual_finish']))+'</title></circle>')
-        own, inherited = row.get('own_delay_days'), row.get('inherited_delay_days')
-        out.append(f'<text x="805" y="{y+12}" font-size="11">Своя: '+esc('—' if own is None else own)+' · от этапов: '+esc('—' if inherited is None else inherited)+'</text>')
-        label = ' · факт: ' if row.get('actual_finish') else ' → '
-        out.append(f'<text x="260" y="{y+31}" font-size="10">'+esc(date(row['plan_finish']))+label+esc(date(row.get('forecast_finish')))+' · резерв: '+esc('не указан' if row.get('remaining_float_days') is None else str(row['remaining_float_days'])+' дн.')+'</text>')
-    out.append('</svg></div><p class="note">Серое — исходный план; зелёное на плановой полосе — доля натурального объёма отдельной работы; зелёная точка — факт окончания без предположения о фактическом начале; синее — расчёт по известным данным; стрелки — связи PM. Разные компоненты не усредняются. Унаследованные сдвиги по цепочке не складываются.</p></section>')
+    # Owner's decision: the dependency drawing is removed from Monitor and the
+    # summary. It took every PM task (sales, permits, pre-construction work of
+    # earlier years), cut them at 60 and was unreadable on a phone; inherited
+    # delays of thousands of days were shown as facts. The RNV card above keeps
+    # its plan, forecast, qualification and reasons; the model (rows, edges)
+    # stays in the cut for the single GPR chart that replaces this drawing.
+    out.append('</section>')
     return ''.join(out)

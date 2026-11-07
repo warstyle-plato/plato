@@ -138,7 +138,6 @@ def test_report_pdf_contains_the_same_physical_quantities(tmp_path, completed_co
     assert 'Физическое выполнение' in text and '50 / 100' in text
     if completed_conflict:
         assert block['rnv']['forecast'] is None
-        assert 'факт: 31.10.2026' in ' '.join(text.split())
         assert 'противоречит' in text
     else:
         assert '13.02.2027' in text
