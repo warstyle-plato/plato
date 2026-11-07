@@ -241,6 +241,16 @@ def _apply_pace(project: str, view: dict[str, Any], cut: datetime.date) -> dict[
         qualified_pm, timeline_seeds, evidence=bool(physical['physical_evidence'] or evidence or late_seeds),
         actual_finishes={tid: monitor._day(value) for tid, value in physical.get('actual_finishes', {}).items()})
     schedule['dependency_timeline']['physical'] = physical
+    rnv_block = schedule['dependency_timeline'].get('rnv') or {}
+    if not rnv_block.get('approved'):
+        # Without a PM milestone (PM is off) the approved RNV is still the GPR
+        # plan; a missing network must not erase it from cards and summary.
+        dash_plan = ((view.get('dashboard') or {}).get('schedule') or {}).get('approved_finish')
+        approved = monitor._day(dash_plan or schedule.get('approved_end'))
+        if approved:
+            rnv_block['approved'] = approved.isoformat()
+            rnv_block['approved_source'] = 'утверждённый ГПР'
+            schedule['dependency_timeline']['rnv'] = rnv_block
     schedule['physical_progress'] = physical
     if isinstance((view.get("dashboard") or {}).get("schedule"), dict):
         view["dashboard"]["schedule"]["qualified_rnv"] = schedule["dependency_timeline"]["rnv"]

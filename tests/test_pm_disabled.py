@@ -43,3 +43,19 @@ def test_monitor_page_hides_pm_cards_and_does_not_request_them():
         expect(page.locator("#physicalScheduleCard")).to_be_hidden()
         expect(page.locator("#pm")).to_be_hidden()
         assert not errors
+
+
+def test_pm_off_keeps_the_approved_rnv_from_the_gpr_in_cards_and_summary(monkeypatch):
+    import datetime as dt
+    import developaid_monitor_dashboard as dashboard
+    import developaid_monitor_pace as pace
+    monkeypatch.setattr(pace.corpus_gpr, "latest", lambda *_: None)
+    row = {"id": "1", "plan_start": "2026-11-01", "plan_finish": "2027-01-20"}
+    view = {"cut": "2026-11-06", "schedule": {"rows": [row], "management": [], "approved_end": "2027-02-01"},
+            "dashboard": {"schedule": {"approved_finish": "2027-02-01"}, "summary": []}}
+    pace._apply_pace("Учебный", view, dt.date(2026, 11, 6))
+    qualified = view["dashboard"]["schedule"]["qualified_rnv"]
+    assert qualified["approved"] == "2027-02-01" and qualified["approved_source"] == "утверждённый ГПР"
+    assert graph.PM_DISABLED_REASON in qualified["reasons"]
+    sentence = dashboard._schedule_summary(view["dashboard"]["schedule"])
+    assert "Утверждённый ввод — 01.02.2027" in sentence
