@@ -33,6 +33,9 @@ class _Document:
     def __getitem__(self, index: int) -> _Page:
         return _Page(f"png-{index}".encode())
 
+    def close(self) -> None:
+        pass
+
 
 def _stub_ocr(monkeypatch, recognized: str, count: int = 4) -> list[int]:
     """Растеризатор и tesseract подменяются: в песочнице их может не быть."""

@@ -232,13 +232,11 @@
     });
   }
 
-  function currentField(rowLabel, fieldLabel) {
+  function currentField(rowKey, fieldKey) {
     const groups = Array.from(document.querySelectorAll('#inputBlock .input-group'));
-    const group = groups.find((node) => String((node.querySelector('h4') || {}).textContent || '').trim() === rowLabel);
+    const group = groups.find((node) => node.dataset.rowKey === rowKey);
     if (!group) return null;
-    const rows = Array.from(group.querySelectorAll('.input-row'));
-    const row = rows.find((node) => String((node.querySelector('.input-label') || {}).textContent || '').trim() === fieldLabel);
-    return row ? row.querySelector('input') : null;
+    return Array.from(group.querySelectorAll('input')).find((node) => node.id === `f_${fieldKey}`) || null;
   }
 
   function formatNumber(value) {
@@ -257,14 +255,14 @@
       review.innerHTML = payload.text ? `<details class="v2-photo-raw"><summary>Показать распознанный текст</summary><pre>${esc(payload.text)}</pre></details>` : '';
       return;
     }
-    status.textContent = `Распознано строк: ${payload.recognized_rows || 0} из ${payload.total_rows || 0}. Проверьте значения и отметьте, что подставить.`;
+    status.textContent = `Распознано строк: ${payload.recognized_rows || 0} из ${payload.total_rows || 0}. Проверьте значения и отметьте, что подставить.`
+      + ((payload.warnings || []).length ? ' ' + payload.warnings.join(' ') : '');
     review.innerHTML = photoState.suggestions.map((item, index) => {
-      const input = currentField(item.row_label, item.field_label);
+      const input = currentField(item.row_key, item.field_key);
       const oldValue = input && input.value !== '' ? formatNumber(input.value) : 'пусто';
-      const confidence = Math.round(Number(item.confidence || 0) * 100);
       return `<label class="v2-photo-suggestion">
-        <input type="checkbox" data-photo-index="${index}" checked>
-        <span><strong>${esc(item.row_label)}</strong> · ${esc(item.field_label)}<br><small>сейчас: ${esc(oldValue)} · уверенность ${confidence}%</small></span>
+        <input type="checkbox" data-photo-index="${index}">
+        <span><strong>${esc(item.row_label)}</strong> · ${esc(item.field_label)}<br><small>сейчас: ${esc(oldValue)} · сверьте число с фотографией</small><br><small>Прочитано: ${esc(item.source_line || '')}</small></span>
         <b>${esc(formatNumber(item.value))}</b>
       </label>`;
     }).join('') + `
@@ -273,22 +271,37 @@
     document.getElementById('v2PhotoApply').addEventListener('click', applyPhotoSuggestions);
   }
 
-  function applyPhotoSuggestions() {
+  async function applyPhotoSuggestions() {
     const checks = Array.from(document.querySelectorAll('[data-photo-index]:checked'));
-    let applied = 0;
-    for (const check of checks) {
-      const item = photoState.suggestions[Number(check.dataset.photoIndex)];
-      if (!item) continue;
-      const input = currentField(item.row_label, item.field_label);
-      if (!input) continue;
-      input.value = String(item.value);
-      input.dispatchEvent(new Event('change', { bubbles: true }));
-      applied += 1;
-    }
     const status = document.getElementById('v2PhotoStatus');
-    if (status) status.textContent = applied
-      ? `Подставлено ${applied} значений. Проверьте ТЭП и нажмите «Посчитать движком».`
-      : 'Ничего не подставлено. Откройте первый блок «ТЭП проекта» и повторите.';
+    if (photoState.busy || typeof form === 'undefined' || !form || !form.draft) return;
+    const selected = checks.map((check) => photoState.suggestions[Number(check.dataset.photoIndex)]).filter(Boolean);
+    if (!selected.length) { if (status) status.textContent = 'Отметьте значения, сверенные с фотографией.'; return; }
+    const before = JSON.stringify({ inputs: form.draft.inputs, tep: form.draft.tep });
+    photoState.busy = true;
+    const button = document.getElementById('v2PhotoApply');
+    if (button) button.disabled = true;
+    try {
+      const response = await nativeFetch('/api/v2/tep-photo/apply', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, cache: 'no-store',
+        body: JSON.stringify({ ...JSON.parse(before), selected }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || 'Не удалось применить фотографию.');
+      if (JSON.stringify({ inputs: form.draft.inputs, tep: form.draft.tep }) !== before) {
+        throw new Error('Вводные изменились во время обработки. Проверьте их и примените фотографию еще раз.');
+      }
+      form.draft.inputs = data.inputs;
+      form.draft.tep = data.tep;
+      if (typeof renderStep === 'function') renderStep();
+      if (status) status.textContent = `Подставлено ${(data.applied || []).length} значений. Проверьте ТЭП и нажмите «Посчитать движком». `
+        + (data.notes || []).join(' ');
+    } catch (error) {
+      if (status) status.textContent = String(error.message || error);
+    } finally {
+      photoState.busy = false;
+      if (button) button.disabled = false;
+    }
   }
 
   async function onPhotoChosen(event) {

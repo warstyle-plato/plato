@@ -48,6 +48,26 @@ MIN_CHARS_PER_PAGE = 40
 # ждёт ответа в окне. Восемь закрывают тизер, справку и решение ГЗК целиком;
 # что не поместилось — называется вслух, как и обрезка по знакам.
 OCR_MAX_PAGES = 8
+IMAGE_MAX_BYTES = 12 * 1024 * 1024
+IMAGE_MAX_PIXELS = 25_000_000
+
+
+def _image_pdf(data: bytes) -> bytes:
+    """Convert only supported, bounded photos, respecting camera orientation."""
+    import io
+    from PIL import Image, ImageOps
+
+    if len(data) > IMAGE_MAX_BYTES:
+        raise ValueError("фотография больше 12 МБ")
+    with Image.open(io.BytesIO(data)) as image:
+        if image.format not in {"JPEG", "PNG"}:
+            raise ValueError("для фотографии нужен JPEG или PNG")
+        if image.width * image.height > IMAGE_MAX_PIXELS:
+            raise ValueError("слишком большое разрешение фотографии — не более 25 млн пикселей")
+        prepared = ImageOps.exif_transpose(image).convert("RGB")
+        output = io.BytesIO()
+        prepared.save(output, format="PDF", resolution=200)
+        return output.getvalue()
 
 
 def extract_text(data: bytes, filename: str = "",
@@ -69,6 +89,15 @@ def extract_text(data: bytes, filename: str = "",
     if not data:
         return {"text": "", "pages": 0, "scanned": False, "recognized": False,
                 "reason": "пустой файл"}
+    is_image = data.startswith((b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff"))
+    if is_image:
+        try:
+            data = _image_pdf(data)
+        except Exception as exc:  # noqa: BLE001
+            return {"filename": name, "text": "", "pages": 0,
+                    "scanned": True, "recognized": False,
+                    "reason": (str(exc) if isinstance(exc, ValueError)
+                               else "не удалось открыть фотографию JPEG/PNG")}
     try:
         from pypdf import PdfReader
         import io
@@ -81,28 +110,69 @@ def extract_text(data: bytes, filename: str = "",
                 "reason": f"не удалось открыть PDF ({type(exc).__name__}) — "
                           "файл повреждён или это не PDF"}
     pages = len(reader.pages)
-    chunks = []
+    coverage: list[dict[str, Any]] = []
+    reasons = []
+    ocr_count = 0
     for index, page in enumerate(reader.pages[:MAX_PAGES], start=1):
         try:
-            chunks.append(f"[стр. {index}]\n" + (page.extract_text() or ""))
+            layer = page.extract_text() or ""
         except Exception:  # noqa: BLE001
-            chunks.append(f"[стр. {index}]\n")
-    text = "\n\n".join(chunks).strip()
-    read_pages = min(pages, MAX_PAGES)
-    scanned = read_pages > 0 and len(re.sub(r"\s", "", text)) < MIN_CHARS_PER_PAGE * read_pages
-    result = {
-        "filename": name, "text": text, "pages": pages,
-        "pages_read": read_pages, "scanned": scanned, "recognized": False,
-        "reason": "",
-    }
-    if scanned and recognize:
-        result = _recognized(result, data, pages)
-    elif scanned:
-        result["reason"] = _SCAN_REFUSAL
-    if pages > result["pages_read"]:
-        result["reason"] = (result["reason"] + "; " if result["reason"] else "") + \
-            f"прочитаны первые {result['pages_read']} страниц из {pages}"
-    return result
+            layer = ""
+        sparse = len(re.sub(r"\s", "", layer)) < MIN_CHARS_PER_PAGE
+        item = {"page": index, "status": "text", "text": layer,
+                "needs_recognition": sparse}
+        if sparse:
+            item["status"] = "partial" if layer.strip() else "unread"
+            why = _SCAN_REFUSAL
+            if recognize and ocr_count < OCR_MAX_PAGES:
+                ocr_count += 1
+                try:
+                    recognized = pdf_ocr.text(data, page_indices=[index - 1])
+                    recognized = re.sub(r"^\[стр\. \d+\]\s*", "", recognized).strip()
+                    if recognized:
+                        item.update(status="ocr", text=recognized)
+                        why = ""
+                    else:
+                        why = "распознавание не нашло букв"
+                except pdf_ocr.Unavailable as exc:
+                    why = getattr(exc, "public_message", "") or _SCAN_REFUSAL
+                except Exception as exc:  # noqa: BLE001
+                    logging.warning("document_intake: распознавание сорвалось", exc_info=True)
+                    why = f"распознавание сорвалось ({type(exc).__name__})"
+            elif recognize:
+                why = f"превышен предел распознавания — {OCR_MAX_PAGES} страниц"
+            if why:
+                item["reason"] = why
+                reasons.append(f"стр. {index}: {why}")
+        coverage.append(item)
+    for index in range(MAX_PAGES + 1, pages + 1):
+        coverage.append({"page": index, "status": "unread", "text": "",
+                         "reason": f"предел чтения — {MAX_PAGES} страниц"})
+    recognized = any(item["status"] == "ocr" for item in coverage)
+    if recognized:
+        reasons.insert(0, "текст получен распознаванием скана: буквы и цифры "
+                       "восстановлены по картинке, цитаты не дословны — числа "
+                       "сверьте с документом")
+    read_pages = sum(item["status"] in {"text", "ocr"} for item in coverage)
+    if pages > read_pages:
+        complete_prefix = 0
+        for item in coverage:
+            if item["status"] not in {"text", "ocr"}:
+                break
+            complete_prefix += 1
+        reasons.append(f"прочитаны первые {complete_prefix} страниц из {pages}"
+                       if complete_prefix == read_pages else
+                       f"полностью прочитано {read_pages} страниц из {pages}")
+    # Unread pages are represented by coverage, not by invented text. Keeping
+    # page markers for readable pages lets downstream source checks work for OCR.
+    text = "\n\n".join(f"[стр. {item['page']}]\n{item['text']}" for item in coverage
+                         if item["text"].strip())
+    return {"filename": name, "text": text, "pages": pages,
+            "pages_read": read_pages,
+            "scanned": any(item.get("needs_recognition") for item in coverage),
+            "recognized": recognized, "reason": "; ".join(reasons),
+            "page_coverage": [{k: v for k, v in item.items() if k != "text"}
+                              for item in coverage]}
 
 
 # Отказ прежний и остаётся: распознавания в образе может не быть (бот живёт на
@@ -110,27 +180,6 @@ def extract_text(data: bytes, filename: str = "",
 _SCAN_REFUSAL = (
     "в документе нет текстового слоя — это скан, а распознать его здесь нечем: "
     "читать придётся глазами или прислать страницы картинками")
-
-
-def _recognized(result: dict[str, Any], data: bytes, pages: int) -> dict[str, Any]:
-    """Второй ход по скану: распознать страницы и сказать, что они распознаны."""
-    limit = min(pages, OCR_MAX_PAGES)
-    try:
-        text = pdf_ocr.text(data, pages=limit)
-    except pdf_ocr.Unavailable as exc:
-        return {**result, "reason": f"{_SCAN_REFUSAL} ({getattr(exc, 'public_message', '')})"}
-    except Exception as exc:  # noqa: BLE001
-        # Сорвалось — это «не смогли», а не «в документе пусто».
-        logging.warning("document_intake: распознавание сорвалось", exc_info=True)
-        return {**result, "reason": f"{_SCAN_REFUSAL}; распознавание сорвалось "
-                                    f"({type(exc).__name__})"}
-    if len(re.sub(r"\s", "", text)) < MIN_CHARS_PER_PAGE:
-        return {**result, "reason": f"{_SCAN_REFUSAL}; распознавание не нашло букв"}
-    return {**result, "text": text.strip(), "recognized": True,
-            "pages_read": limit,
-            "reason": "текст получен распознаванием скана: буквы и цифры "
-                      "восстановлены по картинке, цитаты не дословны — числа "
-                      "сверьте с документом"}
 
 
 # Что документ вообще может принести. Ключи — настоящие поля движка; всё, чего
