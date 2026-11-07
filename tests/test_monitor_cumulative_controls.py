@@ -155,7 +155,8 @@ class Responses:
                 evidence['match_status'] = 'confirmed' if params['confirmed'] else 'proposed'
                 return route.fulfill(json={'pending': False, 'ok': True, 'link': {}})
             data = copy.deepcopy(self.data)
-            data['rows'][0]['contractor'] = 'Подрядчик ' + params['project']
+            if data['rows']:
+                data['rows'][0]['contractor'] = 'Подрядчик ' + params['project']
             return route.fulfill(json={'pending': False, 'ok': True, 'register': data})
         return route.fulfill(json={})
 
