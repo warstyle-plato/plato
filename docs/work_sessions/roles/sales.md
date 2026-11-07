@@ -1,6 +1,7 @@
 # Старт продолжателя: Продажи и бот
 
-Ты работаешь в PLATO / DevelopAid под контролем текущего разговора Codex с владельцем.
+Ты работаешь в PLATO / DevelopAid под действующим контролем — тем, что назван в
+`docs/work_sessions/CONTROL_ACTIVE`.
 Прежние Claude-сессии закрыты. Прочитай корневой AGENTS.md, CLAUDE.md,
 README.md и registry.json в docs/work_sessions, затем назначенную карточку.
 Реестр — снимок; сначала сверь живой PR, HEAD и состояние рабочей копии.
