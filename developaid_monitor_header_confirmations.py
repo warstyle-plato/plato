@@ -20,6 +20,10 @@ import developaid_monitor as monitor
 MAX_BYTES = 4 * 1024 * 1024
 MAX_RECORDS = 6000
 FIELDS = {'snapshot_id', 'file_sha256', 'filename', 'sheet', 'cell', 'raw'}
+REQUIRED = {'binding', 'contract_date', 'confirmed_at', 'origin'}
+OPTIONAL = {'note', 'previous'}
+MAX_VERSIONS = 50
+MAX_NOTE = 500
 
 
 class ConfirmationProblem(ValueError):
@@ -56,6 +60,32 @@ def _valid_binding(result: dict) -> bool:
     return True
 
 
+def _check_version(version) -> None:
+    """One dated decision: a date, or None for an explicit revocation."""
+    if not isinstance(version, dict):
+        raise ValueError
+    date = version.get('contract_date')
+    if date is not None and not _date(date):
+        raise ValueError
+    note = version.get('note', '')
+    if not isinstance(note, str) or len(note) > MAX_NOTE:
+        raise ValueError
+    stamp = dt.datetime.fromisoformat(version['confirmed_at'])
+    if stamp.tzinfo is None:
+        raise ValueError
+
+
+def _versions(record: dict) -> list[dict]:
+    current = {k: v for k, v in record.items() if k in {'contract_date', 'confirmed_at', 'note'}}
+    return [*record.get('previous', []), current]
+
+
+def _effective(record: dict, cut: str) -> dict | None:
+    """The decision in force at the cut; a later correction is not backdated."""
+    known = [v for v in _versions(record) if v['confirmed_at'][:10] <= cut]
+    return known[-1] if known else None
+
+
 def _key(value: dict) -> str:
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
                                    separators=(',', ':')).encode()).hexdigest()
@@ -82,13 +112,17 @@ def _read(project: str) -> dict:
         if len(records) > MAX_RECORDS:
             raise ValueError
         for key, record in records.items():
-            if (not isinstance(record, dict) or set(record) != {'binding', 'contract_date', 'confirmed_at', 'origin'}
+            if (not isinstance(record, dict) or not REQUIRED <= set(record) <= REQUIRED | OPTIONAL
                     or not isinstance(record['binding'], dict) or not _valid_binding(record['binding'])
-                    or _key(record['binding']) != key or not _date(record['contract_date'])
-                    or record['origin'] != 'manual_confirmation'):
+                    or _key(record['binding']) != key or record['origin'] != 'manual_confirmation'):
                 raise ValueError
-            stamp = dt.datetime.fromisoformat(record['confirmed_at'])
-            if stamp.tzinfo is None:
+            previous = record.get('previous', [])
+            if not isinstance(previous, list) or len(previous) > MAX_VERSIONS:
+                raise ValueError
+            for version in [*previous, record]:
+                _check_version(version)
+            # Only a correction may revoke; the first record is always a date.
+            if record['contract_date'] is None and not previous:
                 raise ValueError
         return records
     except (ValueError, TypeError, KeyError, AttributeError):
@@ -108,18 +142,24 @@ def apply(project: str, snapshot: dict, cut: str) -> dict:
                 if record['binding'] == reference:
                     matches.append(record)
         if matches:
-            dates = {x['contract_date'] for x in matches}
-            if len(dates) != 1:
+            effective = [(record, _effective(record, cut)) for record in matches]
+            dates = {version['contract_date'] for _, version in effective if version}
+            if len(dates) > 1:
                 ledger['identity_warnings'] = [*(ledger.get('identity_warnings') or []),
                                               'Уточнения даты разных полей шапки противоречат друг другу.']
                 ledger['contract_date'] = None
             else:
-                record = matches[0]
-                applicable = record['confirmed_at'][:10] <= cut
-                ledger['date_confirmation'] = {**record, 'applicable_to_cut': applicable}
-                if applicable:
+                record, version = next(((r, v) for r, v in effective if v), effective[0])
+                applicable = version is not None
+                shown = version or record
+                ledger['date_confirmation'] = {**record, 'contract_date': shown['contract_date'],
+                                               'confirmed_at': shown['confirmed_at'],
+                                               'note': shown.get('note', ''),
+                                               'revoked': applicable and shown['contract_date'] is None,
+                                               'applicable_to_cut': applicable}
+                if applicable and shown['contract_date'] is not None:
                     ledger['contract_date_original'] = ledger.get('contract_date')
-                    ledger['contract_date'] = record['contract_date']
+                    ledger['contract_date'] = shown['contract_date']
                     ledger['identity_warnings'] = [*(ledger.get('identity_warnings') or []),
                         'Дата договора уточнена администратором по исходной ячейке; исходный текст не исправлен.']
         result['ledgers'].append(ledger)
@@ -127,9 +167,14 @@ def apply(project: str, snapshot: dict, cut: str) -> dict:
 
 
 def confirm(project: str, snapshot: dict, *, filename: str, file_sha256: str,
-            sheet: str, cell: str, raw: str, contract_date: str) -> dict:
-    if not _date(contract_date) or contract_date > dt.date.today().isoformat():
+            sheet: str, cell: str, raw: str, contract_date: str, note: str = '') -> dict:
+    """Save, correct or revoke (empty date) one cell's date; history is kept."""
+    revoke = contract_date == ''
+    if not revoke and (not _date(contract_date) or contract_date > dt.date.today().isoformat()):
         raise ConfirmationProblem('Укажите действительную дату договора не позже текущей даты.')
+    note = note.strip() if isinstance(note, str) else ''
+    if len(note) > MAX_NOTE:
+        raise ConfirmationProblem('Основание уточнения — не больше 500 знаков.')
     supplied = {'snapshot_id': snapshot.get('snapshot_id'), 'filename': filename,
                 'file_sha256': file_sha256, 'sheet': sheet, 'cell': cell, 'raw': raw}
     references = [binding(snapshot, ledger, evidence) for ledger in snapshot.get('ledgers') or []
@@ -146,14 +191,23 @@ def confirm(project: str, snapshot: dict, *, filename: str, file_sha256: str,
         try:
             records = _read(project)
             key = _key(supplied)
-            if key in records:
-                if records[key]['contract_date'] != contract_date:
-                    raise ConfirmationProblem('Для этой исходной ячейки уже сохранена другая дата; требуется отдельная проверка уточнения.')
-                return records[key]
+            existing = records.get(key)
+            if existing is not None and existing['contract_date'] == (None if revoke else contract_date):
+                return existing
+            if existing is None and revoke:
+                raise ConfirmationProblem('Для этой ячейки нет сохранённого уточнения; снимать нечего.')
+            if existing is not None and not note:
+                raise ConfirmationProblem('Укажите основание исправления или снятия уточнения: прежнее решение сохраняется в истории.')
+            if existing is not None and len(existing.get('previous', [])) >= MAX_VERSIONS:
+                raise ConfirmationProblem('У этой ячейки слишком много исправлений; проверьте хранилище.')
             if len(records) >= MAX_RECORDS:
                 raise ConfirmationProblem('В проекте слишком много уточнений шапок; проверьте хранилище.')
-            record = {'binding': supplied, 'contract_date': contract_date,
+            record = {'binding': supplied, 'contract_date': None if revoke else contract_date,
                       'confirmed_at': dt.datetime.now(dt.timezone.utc).isoformat(), 'origin': 'manual_confirmation'}
+            if note:
+                record['note'] = note
+            if existing is not None:
+                record['previous'] = _versions(existing)
             records[key] = record
             data = json.dumps({'schema': 1, 'confirmations': records}, ensure_ascii=False).encode()
             if len(data) > MAX_BYTES:

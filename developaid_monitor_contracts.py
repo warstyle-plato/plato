@@ -521,7 +521,7 @@ def build(project: str, cut: str = "") -> dict:
             unresolved.append({"source": _source(ledger.get("source"), "Накопительная ведомость работ"),
                 "contractor": ledger.get("contractor") or "", "contract": ledger.get("contract") or "",
                 "contract_date": ledger.get("contract_date"),
-                "date_evidence": ledger.get("contract_date_evidence") or [],
+                "date_evidence": _date_evidence(snapshot, ledger),
                 "identity_warnings": ledger.get("identity_warnings") or [],
                 "party_evidence": ledger.get("party_evidence") or {},
                 "date_confirmation": ledger.get("date_confirmation"),
@@ -608,6 +608,7 @@ def build(project: str, cut: str = "") -> dict:
                "identity_source": first.get("identity_source") or {},
                "date_confirmation": first.get("date_confirmation"),
                "date_confirmations": [x["date_confirmation"] for x in ledger_items if x.get("date_confirmation")],
+               "date_evidence": [e for x in ledger_items for e in _date_evidence(snapshot, x)],
                "subject": str(next((x.get("subject") for x in items if x.get("subject")), "")),
                "amount": amount, "amount_source_label": amount_source,
                "completed": completed, "completion_ratio": ratio,
@@ -637,6 +638,13 @@ def build(project: str, cut: str = "") -> dict:
             "snapshots": {"rss": rss_day, "cumulative": archive_day, "cumulative_id": (snapshot or {}).get("snapshot_id")},
             "warnings": _warnings(warnings + _warnings((snapshot or {}).get("warnings"))),
             "performance_basis": "Выполнение по загруженным накопительным; реестр РСС и оплата не подменяют выполнение КС."}
+
+
+def _date_evidence(snapshot: dict, ledger: dict) -> list[dict]:
+    """Header date cells with the exact binding the page sends back to clarify."""
+    import developaid_monitor_header_confirmations as confirmations
+    return [dict(evidence, binding=confirmations.binding(snapshot, ledger, evidence))
+            for evidence in ledger.get("contract_date_evidence") or []]
 
 
 def confirm_header_date(project: str, cut: str, snapshot_id: str, **fields) -> dict:
