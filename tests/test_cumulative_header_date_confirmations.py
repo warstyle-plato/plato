@@ -166,3 +166,106 @@ def test_wrong_binding_does_not_create_metadata_or_echo_source_data(api):
     assert result.status_code == 200 and result.json()['ok'] is False
     assert not confirmations._path('Fixture').exists()
     assert 'different-raw' not in result.text
+
+
+def _days_ago(n):
+    return (dt.date.today()-dt.timedelta(days=n)).isoformat()
+
+
+def test_wrong_clarification_can_be_corrected_with_a_note_and_history_is_kept(api, monkeypatch):
+    snapshot = stored()
+    data = fields(snapshot)
+    first = dt.datetime.now(dt.timezone.utc)-dt.timedelta(days=3)
+    real_datetime = dt.datetime
+
+    class Frozen(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return first
+    monkeypatch.setattr(confirmations.dt, 'datetime', Frozen)
+    contracts.confirm_header_date('Fixture', _days_ago(0), **{**data, 'contract_date': '2024-03-07'})
+    monkeypatch.setattr(confirmations.dt, 'datetime', real_datetime)
+    with pytest.raises(contracts.ContractProblem, match='основание'):
+        contracts.confirm_header_date('Fixture', _days_ago(0), **data)
+    record = contracts.confirm_header_date('Fixture', _days_ago(0), **data, note='Дата по подписанному экземпляру.')
+    assert record['contract_date'] == '2024-07-03' and record['previous'][0]['contract_date'] == '2024-03-07'
+    row, = contracts.build('Fixture', _days_ago(0))['rows']
+    assert row['contract_date'] == '2024-07-03'
+    assert row['date_confirmation']['note'] == 'Дата по подписанному экземпляру.'
+    # A cut between the two decisions sees the decision in force then.
+    old, = contracts.build('Fixture', _days_ago(1))['rows']
+    assert old['contract_date'] == '2024-03-07'
+
+
+def test_clarification_can_be_revoked_and_the_contract_returns_to_review(api):
+    snapshot = stored()
+    data = fields(snapshot)
+    with pytest.raises(contracts.ContractProblem, match='снимать нечего'):
+        contracts.confirm_header_date('Fixture', _days_ago(0), **{**data, 'contract_date': ''}, note='Ошибка.')
+    contracts.confirm_header_date('Fixture', _days_ago(0), **data)
+    record = contracts.confirm_header_date('Fixture', _days_ago(0), **{**data, 'contract_date': ''},
+                                           note='Уточнение внесено по ошибке.')
+    assert record['contract_date'] is None and len(record['previous']) == 1
+    view = contracts.build('Fixture', _days_ago(0))
+    assert view['rows'] == []
+    unresolved, = view['unresolved_sources']
+    assert unresolved['date_confirmation']['revoked'] is True
+    # The page receives the exact binding it must send back.
+    assert unresolved['date_evidence'][0]['binding'] == {k: v for k, v in data.items() if k != 'contract_date'}
+
+
+def test_corrupted_correction_history_fails_closed(api):
+    snapshot = stored()
+    data = fields(snapshot)
+    contracts.confirm_header_date('Fixture', _days_ago(0), **data)
+    path = confirmations._path('Fixture')
+    value = json.loads(path.read_text())
+    record, = value['confirmations'].values()
+    record['contract_date'] = None  # A revocation without any prior decision.
+    path.write_text(json.dumps(value))
+    with pytest.raises(contracts.ContractProblem, match='неверный формат'):
+        contracts.build('Fixture', _days_ago(0))
+
+
+def test_real_page_sends_correction_for_the_exact_header_cell():
+    from playwright.sync_api import expect
+    from test_monitor_cumulative_controls import browser_page, register
+    binding = {'snapshot_id': '2026-11-06-'+'a'*64, 'file_sha256': 'b'*64, 'filename': 'Учебная.xlsx',
+               'sheet': 'Работы', 'cell': 'B4', 'raw': '03.07.124'}
+    data = register()
+    data['unresolved_sources'] = [{
+        'contractor': 'ООО «Учебный подрядчик»', 'contract': 'У-1', 'reason': 'В шапке не подтверждены: дата.',
+        'source': {'label': 'Учебная.xlsx'}, 'date_evidence': [{'raw': '03.07.124', 'source': {'cell': 'B4'}, 'binding': binding}],
+        'date_confirmation': {'binding': binding, 'contract_date': '2024-03-07', 'confirmed_at': '2026-11-05T09:00:00+00:00',
+                              'origin': 'manual_confirmation', 'applicable_to_cut': True, 'revoked': False}}]
+    sent = []
+
+    def header_date(route):
+        sent.append(route.request.post_data_json)
+        route.fulfill(json={'pending': False, 'ok': True, 'header_date': {}})
+    with browser_page(390) as (page, responses, errors):
+        responses.data = data
+        page.route('**/monitor/contracts/header-date', header_date)
+        page.locator('#contractsTab').click()
+        button = page.locator('#contractsWarnings .header-date-edit')
+        expect(button).to_have_text('Исправить дату договора')
+        button.click()
+        expect(page.locator('#contractsHeaderDateTitle')).to_contain_text('ячейка B4')
+        expect(page.locator('#contractsHeaderDateValue')).to_have_value('2024-03-07')
+        page.locator('#contractsHeaderDateValue').fill('2024-07-03')
+        page.locator('#contractsHeaderDateSave').click()
+        expect(page.locator('#contractsHeaderDateMsg')).to_contain_text('основание')
+        assert not sent
+        page.locator('#contractsHeaderDateNote').fill('Дата по подписанному экземпляру.')
+        page.locator('#contractsHeaderDateSave').click()
+        expect(page.locator('#contractsHeaderDate')).to_be_hidden()
+        body, = sent
+        assert {k: body[k] for k in binding} == binding
+        assert body['contract_date'] == '2024-07-03' and body['note'] == 'Дата по подписанному экземпляру.'
+        button.click()
+        page.locator('#contractsHeaderDateNote').fill('Уточнение внесено по ошибке.')
+        page.locator('#contractsHeaderDateRevoke').click()
+        expect(page.locator('#contractsHeaderDate')).to_be_hidden()
+        assert sent[-1]['contract_date'] == '' and len(sent) == 2
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+        assert not errors
