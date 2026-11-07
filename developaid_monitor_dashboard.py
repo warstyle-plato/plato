@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime
 import io
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -510,6 +511,15 @@ def _read_finance_model(wb: Any, path: Path) -> dict[str, Any]:
     def money(r: int, c: int) -> float:
         return actuals._money(ws.cell(r, c).value) * _FM_THOUSANDS
 
+    def known_money(r: int, c: int) -> bool:
+        value = ws.cell(r, c).value
+        if value is None or isinstance(value, bool):
+            return False
+        try:
+            return math.isfinite(float(str(value).replace("\xa0", "").replace(" ", "").replace(",", ".")))
+        except (TypeError, ValueError):
+            return False
+
     def chapter_of(code: str) -> tuple[str, bool]:
         """Глава статьи по карте и признак «строки карты ведут в разные главы»."""
         votes = Counter(
@@ -597,6 +607,23 @@ def _read_finance_model(wb: Any, path: Path) -> dict[str, Any]:
     chapters = tuple(c for c in CHAPTERS if c in approved_by_chapter)
     composition = _budget_composition(rows, money, total_col, fact_col, plan_col,
                                       month_columns, interest)
+    # Keep monetary leaf amounts and candidate chapters. Counting crosswalk
+    # rows is not a monetary allocation of administrative expenses.
+    composition["admin_items"] = [
+        {"code": meta["code"], "name": meta["name"],
+         "total": money(meta["row"], total_col), "fact": money(meta["row"], fact_col),
+         "plan": money(meta["row"], plan_col),
+         "source": {"sheet": "cf_1_new", "row": meta["row"],
+                    "columns": {"total": total_col, "fact": fact_col, "plan": plan_col}},
+         "known_fields": {name: known_money(meta["row"], column)
+                          for name, column in (("total", total_col), ("fact", fact_col),
+                                               ("plan", plan_col))},
+         "chapter_candidates": sorted({item["estimate_code"].split(".")[0]
+             for item in crosswalk if item.get("estimate_code") and
+             (item["bdds_code"] == meta["code"] or
+              item["bdds_code"].startswith(meta["code"] + "."))})}
+        for meta in rows if not meta["has_children"] and not _fm_is_tax(meta["code"])
+        and (meta["code"] == "2.4" or meta["code"].startswith("2.4."))]
     reasons = []
     if mixed:
         reasons.append("статьи " + ", ".join(mixed)
@@ -1316,6 +1343,7 @@ def _own_money(comp: dict[str, Any] | None, smeta: dict[str, float],
         "own_paid": sum(paid.values()) - borrowed,
         "left": sum(left.values()), "left_by_chapter": left,
         "need": need, "model_over_schedule": over, "accounting": accounting,
+        "admin": _admin_expenses(comp, chapter_flow, schedule),
         "rows": rows, "dates": dates, "book": book,
         "from": waterfall["additional_financing_from"],
         "book_fact": float(comp.get("fact") or 0.0),
@@ -1325,6 +1353,95 @@ def _own_money(comp: dict[str, Any] | None, smeta: dict[str, float],
         "plan_from": plan_from.isoformat() if plan_from else None,
         "matches": abs(explained - need) <= 1e-6 * max(1.0, budget),
     }
+
+
+def _admin_expenses(comp: dict[str, Any] | None,
+                    chapter_flow: dict[str, dict[str, Any]] | None,
+                    schedule: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """Source-backed admin budget; a code map never proves bank coverage.
+
+    A mapped section can be part of a model chapter without having a dedicated
+    bank limit. A replacement funding schedule can omit it altogether. Neither
+    fact permits allocating the shared limit or declaring its deficit covered.
+    """
+    section = next((item for item in (comp or {}).get("sections", [])
+                    if item.get("code") == "2.4"), None)
+    if section is None:
+        return None
+    items = (comp or {}).get("admin_items")
+    chapters: dict[str, dict[str, float | None]] = {}
+    unallocated = {"total": 0.0, "paid": 0.0, "to_pay": 0.0}
+    reasons = []
+    unknown_fields: set[str] = set()
+    if items is None:
+        unallocated = {"total": section["total"], "paid": section["fact"],
+                       "to_pay": section["plan"]}
+        reasons.append("нет денежной детализации листовых строк раздела 2.4")
+    else:
+        for item in items:
+            candidates = item.get("chapter_candidates") or []
+            bucket = (chapters.setdefault(candidates[0], {"total": 0.0, "paid": 0.0,
+                                                         "to_pay": 0.0})
+                      if len(candidates) == 1 else unallocated)
+            for target, source in (("total", "total"), ("paid", "fact"), ("to_pay", "plan")):
+                if not item.get("known_fields", {}).get(source, True):
+                    unknown_fields.add(source)
+                    bucket[target] = None
+                elif bucket[target] is not None:
+                    bucket[target] += float(item[source])
+            if len(candidates) > 1:
+                reasons.append(f"статья {item['code']}: карта ведёт в разные главы без денежных долей")
+            elif not candidates:
+                reasons.append(f"статья {item['code']}: глава по карте не установлена")
+    if unknown_fields:
+        reasons.append("часть денежных ячеек листовых строк не содержит сохранённого значения")
+    allocation_known = items is not None and not reasons
+    schedule_chapter = str((schedule or {}).get("chapter") or "")
+    replaced = bool(schedule_chapter and (schedule_chapter in chapters or not allocation_known))
+    if replaced:
+        reasons.append("включение АХР в заменяющий график финансирования не подтверждено")
+    # Aggregate model FACT and chapter RSS payments have no common payment IDs.
+    # Do not add them or claim a deduplicated current payment balance.
+    reasons.append("ФАКТ финмодели не сверён с реестром оплат РСС и платежами БДДС по идентификаторам")
+    return {"name": section.get("name") or "Административные расходы",
+            "total": None if "total" in unknown_fields else section["total"],
+            "paid": None if "fact" in unknown_fields else section["fact"],
+            "to_pay": None if "plan" in unknown_fields else section["plan"],
+            "chapters": {ch: row["total"] for ch, row in chapters.items()},
+            "by_chapter": chapters, "unallocated": unallocated,
+            "allocation_known": allocation_known, "source": {"sheet": "cf_1_new", "section": "2.4"},
+            "items": list(items or []), "payment_basis": "financial_model_fact",
+            "paid_at_cut": None, "bank_coverage": None,
+            "included_in_replacement_schedule": None,
+            "replacement_schedule_applies": replaced,
+            "included_in_deficit": None, "added_to_deficit": 0.0,
+            "reconciled": False, "reasons": list(dict.fromkeys(reasons))}
+
+
+def admin_expense_lines(admin: dict[str, Any] | None, money: Any) -> list[str]:
+    """One honest explanation for both Monitor and report HTML/PDF/text."""
+    if not admin:
+        return []
+    out = [f"Административные расходы без налогов — {money(admin['total'])}: "
+           f"ФАКТ финмодели {money(admin['paid'])}, ПЛАН {money(admin['to_pay'])}. "
+           "Это суммы книги, а не подтверждённая сверка оплат на дату среза."]
+    parts = []
+    for ch, row in sorted(admin["by_chapter"].items()):
+        label = f"глава {ch}" if ch in CHAPTERS else f"вне глав 1–3 (код главы {ch})"
+        parts.append(f"{label} — {money(row['total'])} "
+                     f"(ФАКТ {money(row['paid'])}, ПЛАН {money(row['to_pay'])})")
+    if not admin["allocation_known"]:
+        row = admin["unallocated"]
+        parts.append(f"не распределено — {money(row['total'])} "
+                     f"(ФАКТ {money(row['paid'])}, ПЛАН {money(row['to_pay'])})")
+    if parts:
+        out.append("Денежная карта АХР: " + "; ".join(parts) + ". "
+                   "Соответствие статье сметы не подтверждает кредитное покрытие.")
+    out.append("Покрытие АХР и их включение в дефицит не подтверждены: "
+               + "; ".join(admin["reasons"]) + ". "
+               "Отдельно к дефициту не прибавлены, чтобы не задвоить расходы. "
+               "Итог финансирования требует сверки АХР; это не подтверждение, что лимита хватит.")
+    return out
 
 
 def own_money_lines(own: dict[str, Any] | None, money: Any,
@@ -1363,6 +1480,7 @@ def own_money_lines(own: dict[str, Any] | None, money: Any,
     out.append("По главам: " + "; ".join(parts) + ".")
     if with_reconciliation:
         out.extend(own_budget_reconciliation_lines(own, money))
+    out.extend(admin_expense_lines(own.get("admin"), money))
     return out
 
 
@@ -1887,6 +2005,12 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
         ),
     }
     result["source_dates"] = _funding_source_dates(project, rss, cut, schedule_need)
+    admin = (own_money or {}).get("admin")
+    if admin is not None:
+        admin["source_dates"] = {"report_date": cut.isoformat(),
+                                 "budget": result["source_dates"].get("budget", {}),
+                                 "rss": result["source_dates"].get("rss", {}),
+                                 "schedule": result["source_dates"].get("schedule", {})}
     result["limit_reconciliation_lines"] = funding_reconciliation_lines(result, _fmt_money)
     return result
 

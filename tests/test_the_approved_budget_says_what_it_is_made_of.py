@@ -386,3 +386,23 @@ def test_chapter_two_by_the_funding_schedule(tmp_path, monkeypatch):
             "закладывает больше графика") in text
     assert ("глава 2 (стройка) — 10 000 ₽: оплачено 410 000 ₽ плюс осталось оплатить по "
             "графику финансирования от 23.09.2026 500 000 ₽ минус лимит главы 900 000 ₽") in text
+
+
+def test_admin_expenses_are_named_apart_and_not_assumed_covered(tmp_path):
+    """A budget-map chapter is not proof of bank coverage or current payments."""
+    _, own = _own(tmp_path)
+    admin = own["admin"]
+    assert admin["total"] == pytest.approx(40 * K)
+    assert admin["chapters"] == {"2": pytest.approx(40 * K)}
+    assert admin["bank_coverage"] is None
+    assert admin["included_in_deficit"] is None
+    assert admin["paid_at_cut"] is None
+    assert admin["added_to_deficit"] == 0
+    assert own["need"] == pytest.approx(sum(row["amount"] for row in own["rows"]))
+    text = " ".join(dashboard.own_money_lines(own, report._rub))
+    assert "Административные расходы без налогов — 40 000 ₽" in text
+    assert "ФАКТ финмодели 20 000 ₽, ПЛАН 20 000 ₽" in text
+    assert "глава 2 — 40 000 ₽" in text
+    assert "Покрытие АХР и их включение в дефицит не подтверждены" in text
+    assert "уже входят" not in text
+    assert "лимита не хватит" not in text
