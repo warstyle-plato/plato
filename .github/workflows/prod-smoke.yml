@@ -62,6 +62,7 @@ jobs:
               'any_dated_money', 'all_dated_money',
               'any_reference_money', 'all_rows_have_dated_or_reference_money',
               'ratio_present', 'all_ratios', 'any_rss_financial_source',
+              'rss_snapshot_present', 'rss_read_failed',
               'any_physical_positions', 'references_safety_metadata_complete',
               'gpr_any_corpora', 'gpr_source_present', 'gpr_network_present',
               'rnv_qualification_present', 'rnv_complete', 'rnv_partial', 'rnv_unknown',
@@ -222,6 +223,18 @@ jobs:
                       raise ProbeError('contracts_missing')
                   rows = records(register['rows'])
                   all_refs = [ref for row in rows for ref in records(row.get('reported_performance_sources'))]
+                  rss_snapshot = mapping(register.get('snapshots')).get('rss')
+                  try:
+                      rss_snapshot_present = (isinstance(rss_snapshot, str)
+                          and datetime.date.fromisoformat(rss_snapshot).isoformat() == rss_snapshot)
+                  except ValueError:
+                      rss_snapshot_present = False
+                  source_warnings = register.get('warnings')
+                  if source_warnings is None:
+                      source_warnings = []
+                  if (not isinstance(source_warnings, list)
+                          or any(not isinstance(warning, str) for warning in source_warnings)):
+                      raise ProbeError('invalid_payload')
 
                   def reference(row):
                       return any(number(ref.get('completed'))
@@ -242,6 +255,11 @@ jobs:
                       'any_rss_financial_source': any(
                           isinstance(source.get('label'), str) and source['label'].startswith('РСС')
                           for row in rows for source in records(row.get('financial_sources'))),
+                      'rss_snapshot_present': rss_snapshot_present,
+                      'rss_read_failed': any(warning in (
+                          'Реестр договоров в выбранном снимке РСС не прочитан.',
+                          'Строки реестра договоров РСС неоднозначны; денежные значения не объединены.',
+                      ) for warning in source_warnings),
                       'any_physical_positions': any(bool(records(row.get('physical_items'))) for row in rows),
                       'references_safety_metadata_complete': bool(all_refs) and all(
                           type(ref.get('future_periods_excluded')) is bool
