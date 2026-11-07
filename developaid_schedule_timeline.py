@@ -290,7 +290,7 @@ def overview_rows(block: dict) -> tuple[list[dict], str]:
 
 def render(block: dict, *, context: str = 'monitor') -> str:
     """A readable executive overview; raw PM evidence is opt-in and not printed."""
-    from developaid_schedule_visual import styles, lanes, legend, date_text
+    from developaid_schedule_visual import styles, lanes, legend, date_text, physical_summary
     esc = lambda value: html.escape(str(value if value is not None else ''), quote=True)
     rnv = block.get('rnv') or {}
     state = rnv.get('state')
@@ -325,6 +325,7 @@ def render(block: dict, *, context: str = 'monitor') -> str:
     if rows:
         out.append(lanes(rows))
         out.append(legend(rows))
+    out.append(physical_summary(block.get('physical')))
     if not block.get('history'):
         out.append('<p class="schedule-note">Изменение между версиями ГПР не рассчитано: данные сравнения не предоставлены.</p>')
     confirmation = block.get('confirmation') or {}

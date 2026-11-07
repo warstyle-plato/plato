@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import html
+import math
 
 
 def day(value):
@@ -38,6 +39,7 @@ def styles():
 .schedule-legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;margin:10px 0}.schedule-legend i{display:inline-block;width:22px;height:9px;border-radius:3px;margin-right:5px;background:#aebbc9}.schedule-legend i.forecast{background:#205c96}.schedule-legend i.actual{background:#25704c}.schedule-legend i.delay{background:#e0a13b}
 .schedule-corpus{border:1px solid #dce3ed;border-radius:8px;padding:10px 12px;margin:10px 0}.schedule-corpus>details{padding:0 0 5px}
 .schedule-all-tasks{border-collapse:collapse;min-width:760px;font-size:12px}.schedule-all-tasks td,.schedule-all-tasks th{padding:8px;border:1px solid #dce3ed;text-align:left;vertical-align:top}
+.schedule-physical-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}.schedule-physical-item{border:1px solid #dce3ed;border-radius:8px;padding:10px;min-width:0;break-inside:avoid;page-break-inside:avoid}.schedule-physical-item h4{font-size:14px;margin:0 0 6px}.schedule-physical-item p{font-size:12px;line-height:1.45;margin:5px 0}.schedule-physical-item .schedule-physical-value{font-size:16px;font-weight:700}.schedule-physical-summary{margin:16px 0}
 @media(max-width:640px){.schedule-rnv-cards{grid-template-columns:repeat(2,minmax(0,1fr))}.schedule-rnv-cards>div:last-child{grid-column:1/-1}.schedule-rnv-cards strong{font-size:20px}.schedule-axis{display:block}.schedule-axis>div:first-child,.schedule-axis>div:last-child{display:none}.schedule-lane{display:flex;flex-direction:column;align-items:stretch;gap:6px;padding:11px 0}.schedule-label{font-size:15px}.schedule-lane-bars{width:100%;height:40px}.schedule-dates{font-size:12px}.schedule-corpus{padding:10px}.schedule-overview h3{font-size:18px}}
 @media print{.schedule-overview{font-size:10pt}.schedule-overview h3{font-size:14pt}.schedule-rnv-cards strong{font-size:15pt}.schedule-rnv-cards>div{padding:8px}.schedule-label{font-size:10pt}.schedule-dates,.schedule-overview .schedule-note,.schedule-legend{font-size:9pt}.schedule-lane{padding:9px 0}.schedule-technical,.schedule-reasons,.schedule-provenance,.schedule-article-details,.schedule-source-packages,.schedule-monitor-link{display:none!important}.schedule-rnv-cards,.schedule-lane{break-inside:avoid;page-break-inside:avoid}}
 </style>'''
@@ -127,3 +129,49 @@ def legend(rows=()):
             ('<span><i class="actual"></i>Подтверждённый объём / окончание</span>' if fact else '')+
             ('<span><i class="actual"></i>Показание исходного ГПР</span>' if source else '')+
             '<span><i class="delay"></i>Сдвиг</span></div>')
+
+
+def physical_summary(block):
+    """Print the supplied natural quantities and explicit facts, not PM rows.
+
+    Components retain their own units and qualifications. There is no cross-work
+    sum, average percentage, date inference or conversion from money here.
+    """
+    if not block:
+        return ''
+    esc = lambda value: html.escape(str(value if value is not None else ''), quote=True)
+    def number(value):
+        return (f'{value:g}' if isinstance(value, (int, float)) and not isinstance(value, bool)
+                and math.isfinite(value) else 'нет данных')
+    out = ['<section class="schedule-physical-summary"><h3>Физическое выполнение по накопительным</h3>',
+           '<div class="schedule-physical-grid">']
+    displayed = False
+    for task in block.get('tasks') or []:
+        for component in task.get('components') or []:
+            displayed = True
+            done, plan = number(component.get('completed_quantity')), number(component.get('plan_quantity'))
+            unit = esc(component.get('unit') or '')
+            out.append('<article class="schedule-physical-item"><h4>'+esc(task.get('name') or task.get('task_id'))+'</h4><p>'+esc(component.get('component_id'))+'</p><p class="schedule-physical-value">'+esc(done+' / '+plan)+' '+unit+'</p>')
+            progress = component.get('progress')
+            if isinstance(progress, (int, float)) and not isinstance(progress, bool) and math.isfinite(progress):
+                out.append('<p>Доля полного объёма компонента: '+esc(f'{progress*100:g}%')+'</p>')
+            if component.get('period_end'):
+                out.append('<p>Объём по '+esc(date_text(component['period_end']))+'</p>')
+            pace = component.get('rate_per_day')
+            if isinstance(pace, (int, float)) and not isinstance(pace, bool) and math.isfinite(pace):
+                out.append('<p>Темп: '+esc(number(pace))+' '+unit+'/день</p>')
+            if task.get('known') and component.get('known') and component.get('forecast_finish'):
+                out.append('<p>Расчётное окончание компонента: '+esc(date_text(component['forecast_finish']))+'</p>')
+            if component.get('reason'):
+                out.append('<p>'+esc(component['reason'])+'</p>')
+            if task.get('reason'):
+                out.append('<p>'+esc(task['reason'])+'</p>')
+            out.append('</article>')
+        if task.get('actual_finish'):
+            displayed = True
+            out.append('<article class="schedule-physical-item"><h4>'+esc(task.get('name') or task.get('task_id'))+'</h4><p>Подтверждённое окончание, факт: '+esc(date_text(task['actual_finish']))+'</p></article>')
+    out.append('</div>')
+    if not displayed:
+        out.append('<p class="schedule-note">Подтверждённые натуральные объёмы и фактические даты завершения не предоставлены.</p>')
+    out.append('<p class="schedule-note">Компоненты с разными единицами и объёмами показаны отдельно. Эти данные не являются средней готовностью всего корпуса.</p></section>')
+    return ''.join(out)
