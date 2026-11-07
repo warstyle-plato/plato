@@ -9,7 +9,9 @@
     "authority": "current_owner_instructions",
     "previous_claude_sessions": "closed_by_owner",
     "automatic_background_monitoring": false,
-    "automatic_persistent_chat_creation": false
+    "automatic_persistent_chat_creation": false,
+    "active_file": "CONTROL_ACTIVE",
+    "reserve": "RESERVE_CONTROL.md"
   },
   "roles": [
     {
@@ -73,6 +75,13 @@
       "title": "Страж нормативов",
       "responsibility": "Источники, редакции, обязательные нормы и допущения.",
       "start": "roles/normative.md",
+      "lifecycle": "on_demand"
+    },
+    {
+      "id": "reserve",
+      "title": "Резервный контроль",
+      "responsibility": "Чтение очереди и прода, страж или исполнитель по карточке; не сливает и не выкатывает, пока CONTROL_ACTIVE называет другой контроль.",
+      "start": "roles/reserve.md",
       "lifecycle": "on_demand"
     }
   ],
