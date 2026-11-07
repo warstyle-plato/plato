@@ -31,7 +31,7 @@ def test_mapping_save_reload_revoke_and_escape_with_actual_page(width):
             current=state(configuration=body['configuration'],revision=current['revision']+1,
                           recorded_at='2026-11-06T12:00:00+00:00')
         route.fulfill(json=current)
-    with browser_page(width) as (page,responses,errors):
+    with browser_page(width, init='window.DEVELOPAID_PM_ENABLED=true') as (page,responses,errors):
         page.route('**/monitor/schedule-physical/*',respond)
         page.evaluate('void loadPhysicalSchedule()')
         expect(page.locator('#physicalSave')).to_be_enabled()
@@ -64,7 +64,7 @@ def test_mapping_save_reload_revoke_and_escape_with_actual_page(width):
 
 def test_stale_read_or_logout_cannot_restore_physical_sources():
     from playwright.sync_api import expect
-    with browser_page() as (page,responses,errors):
+    with browser_page(init='window.DEVELOPAID_PM_ENABLED=true') as (page,responses,errors):
         held=[]
         page.route('**/monitor/schedule-physical/view',lambda route:held.append(route))
         with page.expect_request('**/monitor/schedule-physical/view'):

@@ -378,6 +378,12 @@ def evaluate(pm, snapshot, configuration, cut):
 
 
 def build(project, cut, pm):
+    if (pm or {}).get('disabled'):
+        # Mappings were made to PM tasks; with PM off they do not apply.
+        return {'state': 'unknown', 'tasks': [], 'seeds': {}, 'physical_evidence': False,
+                'disabled': True,
+                'reasons': ['Привязки накопительных к работам PM не применяются: PM отключён. '
+                            'Привязка накопительных к работам ГПР — следующим шагом.']}
     try:
         pm, snapshot = _sources(project, cut, pm)
         state = _state(project, cut, pm, snapshot)
