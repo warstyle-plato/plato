@@ -205,3 +205,51 @@ def test_document_extraction_has_no_calculation_or_agent_tools(server, monkeypat
     assert "error" not in outcome
     assert payloads[0]["text"]["format"]["strict"]
     assert "tools" not in payloads[0]
+
+
+def test_document_jobs_are_bounded_and_release_capacity(server, monkeypatch):
+    import threading
+    core, request = server
+    release = threading.Event()
+    monkeypatch.setattr(core, "_DOCUMENT_JOBS", threading.BoundedSemaphore(2))
+    monkeypatch.setattr(core, "_agent_rate_limit", lambda *_a: None)
+    def read(*_a):
+        assert release.wait(5)
+        return {"reason": "synthetic result"}
+    monkeypatch.setattr(core, "agent_document", read)
+    started = []
+    try:
+        for _ in range(2):
+            started.append(core.agent_document_start(core.AgentDocumentRequest(), request))
+        with pytest.raises(core.HTTPException) as exc:
+            core.agent_document_start(core.AgentDocumentRequest(), request)
+        assert exc.value.status_code == 429
+    finally:
+        release.set()
+        names = {"document-" + row["trace_id"] for row in started}
+        for thread in threading.enumerate():
+            if thread.name in names:
+                thread.join(5)
+    assert core._DOCUMENT_JOBS.acquire(blocking=False)
+    core._DOCUMENT_JOBS.release()
+
+
+def test_shared_document_poll_transmits_the_same_identity_headers():
+    from pathlib import Path
+    import subprocess
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "document_client.js").read_text()
+    script = """const window={};const calls=[];
+const setTimeout=fn=>fn();let step=0;
+const fetch=async(url,init)=>{calls.push({url,init});const values=[{trace_id:'abc'},
+{pending:true},{pending:false,card:{id:'intake'}}];return{ok:true,json:async()=>values[step++]}};
+""" + source + """
+window.PlatoDocumentClient.read({session:'synthetic-session',access_key:'synthetic-key'}).then(result=>{
+ console.log(JSON.stringify({result,calls}));
+});"""
+    got = json.loads(subprocess.check_output(["node", "-e", script], text=True))
+    assert got["result"]["card"]["id"] == "intake"
+    assert len(got["calls"]) == 3
+    for call in got["calls"][1:]:
+        assert call["init"]["headers"] == {"x-plato-session": "synthetic-session", "x-developaid-admin-key": "synthetic-key"}
+        assert "synthetic-key" not in call["url"]

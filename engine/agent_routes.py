@@ -921,24 +921,36 @@ def agent_document_apply(req: AgentDocumentApplyRequest, request: Request) -> di
             "cadastral_numbers": card["cadastral_numbers"]}
 
 
+_DOCUMENT_JOBS = threading.BoundedSemaphore(2)
+
+
 @app.post("/agent/document/start")
 def agent_document_start(req: AgentDocumentRequest, request: Request) -> dict[str, Any]:
     """OCR and extraction survive the lifetime of the browser connection."""
     _require_web_access(req.session, req.access_key, "Разбор документа")
     actor = _agent_bind_actor(req, request, private_surface="web")
     _agent_rate_limit(request)
+    if not _DOCUMENT_JOBS.acquire(blocking=False):
+        raise HTTPException(429, "Сейчас разбираются другие документы. Повторите загрузку чуть позже.")
     trace_id = os.urandom(16).hex()
-    _agent_access.claim(_PLATO_STAGE_DIR, trace_id, actor)
-    _plato_stage_cleanup()
     def run():
         try:
-            result = agent_document(req, request)
-        except Exception as exc:
-            status = getattr(exc, "status_code", 500)
-            result = {"error": (str(getattr(exc, "detail", "")) if status < 500
-                                else "Разбор не завершился. Повторите загрузку документа.")}
-        _plato_answer_put("run" + trace_id, result)
-    threading.Thread(target=run, name="document-" + trace_id, daemon=True).start()
+            try:
+                result = agent_document(req, request)
+            except Exception as exc:
+                status = getattr(exc, "status_code", 500)
+                result = {"error": (str(getattr(exc, "detail", "")) if status < 500
+                                    else "Разбор не завершился. Повторите загрузку документа.")}
+            _plato_answer_put("run" + trace_id, result)
+        finally:
+            _DOCUMENT_JOBS.release()
+    try:
+        _agent_access.claim(_PLATO_STAGE_DIR, trace_id, actor)
+        _plato_stage_cleanup()
+        threading.Thread(target=run, name="document-" + trace_id, daemon=True).start()
+    except Exception:
+        _DOCUMENT_JOBS.release()
+        raise
     return {"trace_id": trace_id, "pending": True}
 
 
