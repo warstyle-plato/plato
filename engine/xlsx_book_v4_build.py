@@ -72,7 +72,7 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
             continue
         row = t.get(obj.key) or {}
         item: dict[str, Any] = {
-            "key": obj.key, "prefix": obj.prefix, "title": obj.tep_label or obj.label,
+            "key": obj.key, "prefix": obj.prefix, "product": obj.product, "title": obj.tep_label or obj.label,
             "measure": obj.measure,
             "volume": n(x, f"{obj.prefix}_spaces") if obj.measure == "spaces" else n(x, f"{obj.prefix}_gba_sqm"),
             "total_area": n(row, "total_area"),
@@ -91,6 +91,7 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
         # стратегий вне ДДУ, какую бы стратегию ни выбрал проект. Вводные —
         # те же поля, что движок читает, когда `office_paths` меняет стратегию.
         office = obj.product == "offices" and bool(obj.strategies) and item["in_tax_pool"]
+        compared = obj.product in ("offices", "standalone_retail") and bool(obj.strategies) and item["in_tax_pool"]
         # Класс офиса — из вводных (`office_class_choice`), а не угадан по числам.
         if obj.product == "offices":
             item["office_class"] = nonres_strategy.office_class_choice(x, obj.prefix)["office_class"]
@@ -102,7 +103,9 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
         # тем же `sales_schedule`, что в `build_operating_model`, — доля до
         # ввода объекта, остаток после, рост цены; профиль продаж и лестница
         # цены — вводные, которые книга получает таблицей.
-        if (not plan_item or office) and item["in_tax_pool"] and n(x, obj.rate_price) > 0:
+        # Сравнение строит путь ДДУ и при нулевой цене продажи. Его вводные
+        # нужны книге независимо от наличия выручки; сама цена остаётся нулём.
+        if (not plan_item or compared) and item["in_tax_pool"] and (compared or n(x, obj.rate_price) > 0):
             sales_start = d(x[f"{obj.prefix}_sales_start"])
             weights, factor = None, None
             weights_raw, _notes = schedule_weights(x.get(f"{obj.prefix}_sales_profile"), sales_start)
@@ -134,7 +137,7 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
                 "parking_over_mln": n(x, f"{obj.prefix}_parking_over_price_mln_per_space"),
                 "sales_weights": weights, "price_factor": factor,
             })
-        if plan_item or office:
+        if plan_item or compared:
             params = ((plan_item or {}).get("params")
                       or {suffix: x.get(f"{obj.prefix}_{suffix}")
                           for suffix in nonres_strategy.STRATEGY_FIELD_DEFAULTS})
@@ -286,8 +289,8 @@ def _nonres_project_workbook(inputs: dict[str, Any], tep: dict[str, Any],
     Решение владельца (13.10.2026): объект по ДДУ — не повод отдавать жилую
     книгу; его продажи, эскроу, БРИДЖ и ПФ книга нежилого проекта считает
     формулами. Книгу собирает `office_workbook` на каркасе жилой v4: проект с
-    офисом — четыре способа продажи офиса, без офиса — стратегия каждого объекта
-    (ДДУ — листы объекта и «ПФ»). ПФ по очередям книга не моделирует: проект с
+    офисом и/или ТЦ — все варианты сравнения из office_paths/retail_paths;
+    без этих продуктов — стратегия каждого объекта (ДДУ — листы объекта и «ПФ»). ПФ по очередям книга не моделирует: проект с
     очередями и ПФ получает книгу v4.
     """
     consolidated = (_run_authoritative_model(
@@ -305,12 +308,9 @@ def _nonres_project_workbook(inputs: dict[str, Any], tep: dict[str, Any],
         spec["missing"].append("Очереди: книга моделирует проект одной очередью, "
                                "сверка идёт со сводом очередей")
     stem = _safe_file_stem(project_name or "project", "project")
-    # Книга на каркасе жилой v4 (`office_workbook`; образец владельца 22.10.2026,
-    # решение 24.10.2026 «Новая книга считает и ДДУ»). Проект с офисом — три
-    # способа продажи офиса рядом: по ДДУ, блоками и арендой; объект по ДДУ
-    # рядом с офисом (ТЦ по ДДУ) входит в ПФ каждого способа. Проект без офиса
-    # (ТЦ, ФОК, наземный паркинг) — один способ: стратегия каждого объекта,
-    # сверка с основным расчётом (поручение владельца 24.10.2026).
+    # Офис и ТЦ сравниваются отдельными группами из основного расчёта.
+    # Реестр офисов нужен книге только для шкалы класса, не для выбора
+    # продуктов сравнения: их определяют office_paths и retail_paths.
     office_keys = {obj.key for obj in STANDALONE_OBJECTS if obj.product == "offices"}
     with_office = bool(consolidated.get("office_paths")) and any(
         (item.get("nonres") or item.get("ddu")) and item["key"] in office_keys for item in spec["objects"])
@@ -325,7 +325,7 @@ def _nonres_project_workbook(inputs: dict[str, Any], tep: dict[str, Any],
     filename = f"DevelopAid_{kind}_{stem}_{date.today().isoformat()}.xlsx"
     return content, filename, {"missing": missing, "phased": phased, "class_deviations": [],
                                "nonres_book": True, "office_book": with_office,
-                               "checks": report["verdict"]}
+                               "checks": report["verdict"], "comparisons": report["comparisons"]}
 
 
 def _hotel_project_workbook(inputs: dict[str, Any], tep: dict[str, Any],
@@ -383,6 +383,7 @@ def build_project_workbook(
     Второй объект пишется в книгу, только когда он включён: проект без него
     получает ту же книгу, что и до его появления в реестре (`_V4_BOOK_OBJECTS`).
     """
+    _partial_tep_preflight(inputs, tep)
     inputs = dict(inputs or {})
     migrate_growth_post(inputs)
     apply_office_classes(inputs)
@@ -405,7 +406,15 @@ def build_project_workbook(
     merged = object_instances_applied(merged, {})[0]
     token = _V4_BOOK_OBJECTS.set(_v4_book_objects(merged))
     try:
-        return _build_project_workbook(inputs, tep, rates, phasing, **kwargs)
+        built = _build_project_workbook(inputs, tep, rates, phasing, **kwargs)
+        # An explicit source draft must not receive a workbook that its own
+        # mapping says cannot reproduce the supplied facts. Legacy exports
+        # keep their existing warning contract; no workbook formulas change.
+        import partial_tep
+        if partial_tep.active(inputs) and built[2].get("missing"):
+            raise HTTPException(422, "Excel пока не воспроизводит все исходные поля этого ТЭП. "
+                                "Файл не выдан: требуется сверка соответствия полей книги.")
+        return built
     finally:
         _V4_BOOK_OBJECTS.reset(token)
 
@@ -1962,11 +1971,12 @@ def _build_project_workbook(
         # Наземные метры очереди вне МКД — базой благоустройства по ставке на
         # метр ГНС. Мера одна с движком (`project_above_gns`): разность с
         # метрами дома, а не второй список объектов.
-        _outside_above = max(0.0, project_above_gns(crow)
-                             - num_row(crow.get("apartments"), "gns")
-                             - num_row(crow.get("ground_commercial"), "gns"))
+        # ОСЗ отсутствуют в single-phase fallback crow, а в живом результате
+        # очередей уже присутствуют. Один формульный источник исключает их из
+        # остатка и добавляет из реестра ОБЪЕКТОВ ровно в свою очередь.
         xml, _done = _v4_set_or_insert_cell(
-            xml, f"{_V4_QUEUE_OUTSIDE_ABOVE_COL}{row}", number=_outside_above)
+            xml, f"{_V4_QUEUE_OUTSIDE_ABOVE_COL}{row}",
+            formula=_v4_outside_above_gns_formula(crow, index))
         if not _done:
             missing.append(f"наземная ГНС вне МКД очереди {index + 1}")
         if index == 0:
@@ -2477,6 +2487,7 @@ _XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.
 
 @app.post("/report/workbook")
 def report_workbook(req: WorkbookExportRequest) -> Response:
+    _partial_tep_preflight(req.inputs, req.tep)
     require_calc_access(req.session, req.access_key, "Excel-модель", inputs=req.inputs)
     try:
         content, filename, meta = build_project_workbook(

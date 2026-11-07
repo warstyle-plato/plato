@@ -267,11 +267,13 @@ def test_opening_the_tep_tab_redraws_it_from_the_last_calculation() -> None:
     """
     prelude = """
 let drawn=0;
+const inputs={};
 function renderTep(){drawn++}
 // Счётчик чтения отчёта к ТЭП отношения не имеет — заглушка.
 function feedbackWatchReport(){}
 const el=()=>({classList:{add(){},remove(){}}});
-const document={querySelectorAll:()=>[],getElementById:el,querySelector:el};
+const document={querySelectorAll:()=>[],getElementById:el,
+ querySelector:sel=>sel==='.partial-tep-hidden'?null:el()};
 """
     out, _ = page_blocks.run(prelude, "openTab('inputs');const a=drawn;openTab('tep');"
                              "process.stdout.write(JSON.stringify([a,drawn]));")

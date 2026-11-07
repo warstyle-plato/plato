@@ -260,14 +260,13 @@ def test_the_office_book_agrees_with_the_block(office) -> None:
     labels = {"revenue": ("Выручка", False), "net_profit": ("Чистая прибыль", False),
               "npv": ("NPV проекта", False), "irr_project": ("IRR проекта", True),
               "equity_peak": ("Пик собственных денег", False), "llcr": ("LLCR проектного финансирования", True)}
-    sections = {p["key"]: ow.section_of(p) for p in ow.PATHS}
+    sections = {p["key"]: ow.section_of(p) for p in item["columns"]}
     compared = 0
     for row in item["rows"]:
         if row["key"] not in labels:
             continue
         label, ratio = labels[row["key"]]
         for column, value in zip(item["columns"], row["values"]):
-            # Аренда с другим выходом — столбец блока, но не способ книги.
             if value is None or column["key"] not in sections:
                 continue
             got = in_book[(sections[column["key"]], label)]
@@ -275,7 +274,8 @@ def test_the_office_book_agrees_with_the_block(office) -> None:
             assert got == pytest.approx(want, rel=1e-6, abs=1e-6), (column["key"], label)
             compared += 1
     # IRR проекта у ПДКП Пролетарского не считается (движок даёт пусто) — 20, а не 21.
-    assert compared == 20
+    assert compared == sum(value is not None for row in item["rows"] if row["key"] in labels
+                           for value in row["values"])
 
 
 # --- PDF и тизер ----------------------------------------------------------------------

@@ -121,11 +121,15 @@ def test_the_printed_markup_is_the_screen_without_its_tools(tmp_path) -> None:
     from market_search import report_pdf
 
     body = cabinet_page("sales").replace("__DEVELOPAID_VERSION__", "test")
-    file = tmp_path / "cabinet.html"
-    file.write_text(body, encoding="utf-8")
+    from browser import serve
+    from starlette.applications import Starlette
+    from starlette.responses import HTMLResponse
+    from starlette.routing import Route
 
+    # Render the real page over HTTP, as in production; file:// is not a product route.
+    app = Starlette(routes=[Route("/", lambda request: HTMLResponse(body))])
     errors: list[str] = []
-    with pw.sync_playwright() as play:
+    with serve(app, 18871) as base, pw.sync_playwright() as play:
         try:
             browser = browser_launch.launch(play)
         except Exception as exc:  # образ без Chromium — не поломка кабинета
@@ -133,7 +137,9 @@ def test_the_printed_markup_is_the_screen_without_its_tools(tmp_path) -> None:
         try:
             tab = browser.new_page()
             tab.on("pageerror", lambda e: errors.append(str(e)))
-            tab.goto(file.as_uri())
+            tab.route("**/*", lambda route: route.continue_()
+                      if route.request.url == base + "/" else route.abort())
+            tab.goto(base + "/")
             printed = tab.evaluate(
                 "(d)=>{renderSales(d); return {print:salesPrintHtml(),"
                 " screen:document.querySelector('#sales .card').innerHTML,"
