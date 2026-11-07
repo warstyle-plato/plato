@@ -175,3 +175,26 @@ except physical.PhysicalProblem as error:
     with ThreadPoolExecutor(max_workers=4) as pool: outcomes=list(pool.map(lambda _:run(),range(4)))
     assert outcomes.count('saved')==1 and outcomes.count('conflict')==3
     assert len(list(root.rglob('physical_schedule_links/*.json')))==1
+
+
+def test_changed_sources_name_the_real_reason_in_rnv_card_and_report(sources):
+    """A new archive or PM drops old mappings; the card must not say «never bound»."""
+    client,_,pm,snap=sources
+    assert post(client,'schedule-physical/save',**payload()).status_code==200
+    snap['snapshot_id']=CUT+'-'+'d'*64
+    view=post(client,'schedule-physical/view',project='Учебный проект',cut=CUT).json()
+    block=physical.build('Учебный проект',CUT,copy.deepcopy(pm))
+    for reasons in (view['model']['reasons'], block['reasons']):
+        assert physical.SOURCE_CHANGED_REASON in reasons
+        assert 'Накопительные ещё не привязаны к работам исходного графика.' not in reasons
+    html=physical.render(block)
+    assert 'Исходные файлы изменились' in html and 'ещё не привязаны' not in html
+
+
+def test_cut_before_first_mapping_is_not_reported_as_changed_sources(sources):
+    client,_,pm,_=sources
+    assert post(client,'schedule-physical/save',**payload()).status_code==200
+    earlier=post(client,'schedule-physical/view',project='Учебный проект',cut='2026-11-05').json()
+    assert not earlier['source_changed']
+    assert 'Накопительные ещё не привязаны к работам исходного графика.' in earlier['model']['reasons']
+    assert physical.SOURCE_CHANGED_REASON not in physical.build('Учебный проект','2026-11-05',copy.deepcopy(pm))['reasons']

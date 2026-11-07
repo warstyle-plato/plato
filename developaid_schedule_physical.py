@@ -122,13 +122,15 @@ def _sources(project, cut, pm=None):
 def _state(project, cut, pm, snapshot):
     events = _history(project)
     sha, sid = pm.get('source_sha256') or '', (snapshot or {}).get('snapshot_id') or ''
-    matching = [e for e in events if e['pm_sha256'] == sha and e['snapshot_id'] == sid
-                and dt.datetime.fromisoformat(e['recorded_at']).date().isoformat() <= cut]
+    # Only events already recorded at this cut can say that sources changed;
+    # a cut before the first save has simply no mapping yet.
+    known = [e for e in events if dt.datetime.fromisoformat(e['recorded_at']).date().isoformat() <= cut]
+    matching = [e for e in known if e['pm_sha256'] == sha and e['snapshot_id'] == sid]
     latest = matching[-1] if matching else None
     return {'pm_sha256': sha, 'snapshot_id': sid, 'revision': len(events),
             'configuration': latest['configuration'] if latest else {'tasks': [], 'components': [], 'note': ''},
             'recorded_at': latest['recorded_at'] if latest else None,
-            'source_changed': bool(events and not matching),
+            'source_changed': bool(known and not matching),
             'can_edit': bool(sha and sid) and cut == _now().date().isoformat()}
 
 
@@ -148,7 +150,8 @@ def catalog(project, cut, query='', offset=0):
     return dict(state, tasks=[{'task_id': tid, 'name': task.get('name') or tid}
                              for tid, task in (pm.get('tasks') or {}).items()],
                 items=rows[offset:offset+200], item_count=len(rows), offset=offset,
-                model=evaluate(pm, snapshot, state['configuration'], cut))
+                model=evaluate(pm, snapshot, state['configuration'], cut,
+                               source_changed=state['source_changed']))
 
 
 def save(project, pm_sha256, snapshot_id, revision, configuration):
@@ -289,7 +292,12 @@ def _component(component, items, cut):
                 forecast_finish=finish, method='natural_quantity_pace')
 
 
-def evaluate(pm, snapshot, configuration, cut):
+SOURCE_CHANGED_REASON = ('Исходные файлы изменились: загружен новый архив накопительных или новый PM-график. '
+                         'Прежние привязки к ним не применяются; проверьте и сохраните привязки заново '
+                         'в настройке «Накопительные → физическое выполнение и сроки».')
+
+
+def evaluate(pm, snapshot, configuration, cut, *, source_changed=False):
     day = _day(cut)
     if not day:
         raise PhysicalProblem('Укажите существующую дату среза.')
@@ -365,7 +373,10 @@ def evaluate(pm, snapshot, configuration, cut):
     if not required:
         reasons.append('В PM не выбрана веха РНВ.')
     if not configuration['tasks']:
-        reasons.append('Накопительные ещё не привязаны к работам исходного графика.')
+        # The real cause must survive into the RNV card, summary and PDF:
+        # saved mappings exist but belong to other source bytes.
+        reasons.append(SOURCE_CHANGED_REASON if source_changed
+                       else 'Накопительные ещё не привязаны к работам исходного графика.')
     if not physical_evidence:
         reasons.append('Нет подтверждённого натурального темпа или факта завершения.')
     all_reasons = list(dict.fromkeys(reasons))
@@ -381,7 +392,8 @@ def build(project, cut, pm):
     try:
         pm, snapshot = _sources(project, cut, pm)
         state = _state(project, cut, pm, snapshot)
-        result = evaluate(pm, snapshot, state['configuration'], cut)
+        result = evaluate(pm, snapshot, state['configuration'], cut,
+                          source_changed=state['source_changed'])
         return dict(result, snapshot_id=state['snapshot_id'], pm_sha256=state['pm_sha256'],
                     recorded_at=state['recorded_at'], source_changed=state['source_changed'],
                     confirmation_note=state['configuration']['note'])
