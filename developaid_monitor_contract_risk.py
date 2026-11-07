@@ -12,6 +12,10 @@ pace older than 45 days is not extrapolated. Without a confirmed full price, a
 comparable VAT basis or a pace, the forecast stays unknown with its reason.
 This is an indicator from accepted money, not physical readiness.
 
+Works and materials. When the books separate «Стоимость СМР» and «Стоимость
+материалы», the pace is works only and the unworked advance is paid over works;
+paid over works plus delivered materials is a reference line.
+
 Unworked advance. Payments come from «Реестр платежей» of the same RSS workbook
 and join a contract only by its exact identity: contractor, number and contract
 date. Payments after the cut are not facts for the cut. Paid minus executed is
@@ -59,11 +63,19 @@ def _tolerance(value: float) -> float:
 
 
 def forecast(*, amount: float | None, completed: float | None, comparable: bool,
-             periods: list[tuple[dt.date, dt.date, float]], cut: dt.date,
-             deadline: dt.date | None) -> dict:
-    """Status of one contract against its deadline from accepted money pace."""
+             periods: list[tuple], cut: dt.date, deadline: dt.date | None,
+             works: float | None = None, materials: float | None = None) -> dict:
+    """Status of one contract against its deadline from accepted money pace.
+
+    When the books separate works (СМР) and materials, the pace is works only:
+    a delivery of materials does not move the deadline (owner's decision). The
+    remaining part is the price less executed works and delivered materials;
+    materials still to come stay inside it, so the forecast errs on the late
+    side. Without the split the total pace is used and the reason says so."""
+    split = works is not None and materials is not None
     result = {"status": "unknown", "label": "", "forecast_finish": None, "delay_days": None,
-              "remaining": None, "pace_per_day": None, "pace_window": None, "reason": ""}
+              "remaining": None, "pace_per_day": None, "pace_window": None, "reason": "",
+              "pace_basis": "works" if split else "total"}
 
     def done(status: str, reason: str = "", **values) -> dict:
         return dict(result, status=status, label=STATUSES[status], reason=reason, **values)
@@ -79,6 +91,9 @@ def forecast(*, amount: float | None, completed: float | None, comparable: bool,
     if remaining <= _tolerance(amount):
         return done("done", "Выполнение по накопительным достигло полной суммы договора.", remaining=0.0)
     window_start = cut - dt.timedelta(days=PACE_WINDOW_DAYS)
+    # (start, end, money) where money is works when split, else the total.
+    periods = [(p[0], p[1], (p[3] if split else p[2]) if len(p) > 3 else p[2]) for p in periods
+               if not split or len(p) > 3 and p[3] is not None]
     recent = sorted(p for p in periods if p[0] >= window_start and p[1] <= cut)
     pace = None
     finish = None
@@ -100,6 +115,9 @@ def forecast(*, amount: float | None, completed: float | None, comparable: bool,
                 pace = None
             else:
                 finish = cut + dt.timedelta(days=remaining_days)
+    if not split:
+        note = "В накопительных работы и материалы не разделены: темп посчитан по общей сумме."
+        reason = (reason + " " + note).strip()
     values = {"remaining": remaining, "pace_per_day": pace,
               "pace_window": ([recent[0][0].isoformat(), recent[-1][1].isoformat()] if pace else None),
               "forecast_finish": finish.isoformat() if finish else None}
@@ -112,8 +130,8 @@ def forecast(*, amount: float | None, completed: float | None, comparable: bool,
     if not deadline:
         return done("no_deadline", "Срок договора не указан; прогноз окончания показан без сравнения.", **values)
     if finish > deadline:
-        return done("late", "", delay_days=(finish - deadline).days, **values)
-    return done("on_track", "", delay_days=0, **values)
+        return done("late", reason, delay_days=(finish - deadline).days, **values)
+    return done("on_track", reason, delay_days=0, **values)
 
 
 def _norm(value: Any) -> str:
@@ -149,8 +167,13 @@ def payments(path: Any, cut: dt.date, *, contract_number) -> tuple[list[dict] | 
 
 
 def advance(row: dict, paid_rows: list[dict] | None, *, contract_number, completed_basis: str) -> dict:
-    """Paid vs executed for one contract; exact identity only."""
+    """Paid vs executed for one contract; exact identity only.
+
+    The main figure is paid over executed works (СМР); paid over works plus
+    delivered materials is a reference line. Without the split the total
+    execution is used and the reason says so."""
     result = {"paid": None, "paid_advance_labelled": None, "unworked": None, "payments_count": 0,
+              "unworked_with_materials": None, "basis": "total",
               "unmatched_candidates": 0, "unmatched_amount": None, "reason": ""}
     if paid_rows is None:
         return dict(result, reason="Реестр платежей не прочитан.")
@@ -175,7 +198,13 @@ def advance(row: dict, paid_rows: list[dict] | None, *, contract_number, complet
         notes.append("Выполнение указано без НДС или с разными базами НДС, а оплаты — фактические платежи; "
                      "переплата не считается без сверки.")
     else:
-        result["unworked"] = max(0.0, paid - completed)
+        works, materials = row.get("completed_works"), row.get("completed_materials")
+        if row.get("works_materials_split") and works is not None and materials is not None:
+            result.update(unworked=max(0.0, paid - works), basis="works",
+                          unworked_with_materials=max(0.0, paid - works - materials))
+        else:
+            result["unworked"] = max(0.0, paid - completed)
+            notes.append("Работы и материалы в накопительных не разделены; сравнение с общим выполнением.")
         if completed_basis == "unspecified":
             notes.append("База НДС выполнения не указана; сравнение с оплатами — оценка.")
     return dict(result, reason=" ".join(notes))

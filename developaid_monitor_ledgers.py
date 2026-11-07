@@ -399,6 +399,32 @@ def _full_contract_price(label: str) -> bool:
                 or re.search(r'(?:сумма|цена|стоимость)\s+договора\s+с\s+уч[её]том\b', text))
 
 
+def _money_kind(qhead: list[Any], column: int) -> str:
+    label = _norm(qhead[column]) if 0 <= column < len(qhead) else ''
+    if 'стоимост' not in label and 'сумм' not in label:
+        return ''
+    if 'матер' in label and 'смр' not in label:
+        return 'material'
+    if 'смр' in label and 'матер' not in label:
+        return 'work'
+    return ''
+
+
+def _money_parts(qhead: list[Any], first: int, at) -> tuple[float | None, float | None]:
+    """(works, materials) money of a labelled pair; unlabelled pairs are unknown.
+
+    The book's total already counts an empty half as nothing when the other half
+    is a number, so the halves do the same and always add up to that total. Two
+    empty halves stay unknown."""
+    kinds = {_money_kind(qhead, first): first, _money_kind(qhead, first+1): first+1}
+    if set(kinds) != {'work', 'material'}:
+        return None, None
+    work, material = _number(at(kinds['work'])), _number(at(kinds['material']))
+    if work is None and material is None:
+        return None, None
+    return work or 0.0, material or 0.0
+
+
 def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
     # Recognize a labelled table, not the file's name or a particular contractor.
     top = rows[:45]
@@ -446,6 +472,13 @@ def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
     warnings.append('Сумма и количества этой книги относятся к её году или составу работ; это не подтверждение полной суммы договора.')
     if split:
         warnings.append('Материалы и монтаж учтены отдельно. Поставку не считать выполнением монтажа.')
+    # Works and materials money are told apart by their own column labels, never
+    # by position. An unlabelled pair stays a total with an explicit warning.
+    money_split = split and all(_money_kind(qhead, c) == kind for c, kind in
+                                ((year_col+2, 'material'), (year_col+3, 'work')))
+    if split and not money_split:
+        warnings.append('Колонки сумм материалов и СМР не распознаны по подписям; '
+                        'выполнение работ и поставка материалов по деньгам не разделены.')
     items = []
     scope = ''
     errors = []
@@ -488,23 +521,29 @@ def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
             start, end = _period_dates(label)
             pqty = _number(at(col+1 if split else col))
             pmat = _number(at(col)) if split else None
+            pwork = pmaterial = None
             if split:
                 parts = [_number(at(col+2)), _number(at(col+3))]
                 pamount = sum(p for p in parts if p is not None) if any(p is not None for p in parts) else None
+                pwork, pmaterial = _money_parts(qhead, col+2, at)
             else:
                 pamount = _number(at(col+1))
             money_cols = (col+2, col+3) if split else (col+1,)
             bases = {_amount_basis(_text(qhead[c])) for c in money_cols if c < len(qhead)} - {'unspecified'}
             pamount_basis = 'conflicting' if len(bases) > 1 else next(iter(bases)) if bases else 'unspecified'
             periods.append({'label': label, 'quantity': pqty, 'material_quantity': pmat,
-                            'amount': pamount, 'amount_basis': pamount_basis, 'date_start': start, 'date_end': end,
+                            'amount': pamount, 'work_amount': pwork, 'material_amount': pmaterial,
+                            'amount_split': split and money_split,
+                            'amount_basis': pamount_basis, 'date_start': start, 'date_end': end,
                             'source': _source(filename, sheet, ri,
                                               quantity_cell=_cell(col+(2 if split else 1), ri),
                                               amount_cell=(_cell(col+3, ri)+' + '+_cell(col+4, ri)
                                                            if split else _cell(col+2, ri)))})
+        completed_work = completed_material = None
         if split:
             amount_parts = [_number(at(year_col+2)), _number(at(year_col+3))]
             completed_amount = sum(v for v in amount_parts if v is not None) if any(v is not None for v in amount_parts) else None
+            completed_work, completed_material = _money_parts(qhead, year_col+2, at)
         else:
             completed_amount = _number(at(amount_col))
         items.append({'position': _text(at(max(0, name_col-1))), 'name': name,
@@ -512,6 +551,8 @@ def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
                       'completed_quantity': actual, 'material_quantity': _number(at(year_col)) if split else None,
                       'quantity_kind': 'installation' if split else 'work_quantity',
                       'planned_amount': _number(at(cost_col)), 'completed_amount': completed_amount,
+                      'completed_work_amount': completed_work, 'completed_material_amount': completed_material,
+                      'amount_split': split and money_split,
                       'periods': periods, 'warnings': item_warnings,
                       'source': _source(filename, sheet, ri,
                                         plan_quantity_cell=_cell(plan_col+1, ri),
@@ -637,7 +678,7 @@ def parse_archive(data: bytes, filename: str = '') -> dict:
         raise LedgerProblem('Выберите ZIP-архив с накопительными книгами Excel.')
     members = _zip_members(data)
     budget = {'text_bytes': 0}
-    result = {'files': [], 'ledgers': [], 'summary_contracts': [], 'warnings': [], 'identity_schema': 3}
+    result = {'files': [], 'ledgers': [], 'summary_contracts': [], 'warnings': [], 'identity_schema': 4}
     if not members:
         raise LedgerProblem('Архив пуст. Добавьте накопительные книги Excel.')
     for name, payload in members:

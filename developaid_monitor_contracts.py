@@ -115,7 +115,7 @@ def _archive(project: str, cut: str) -> dict | None:
     snapshot = ledgers.latest_snapshot(project, cut)
     if not snapshot:
         return snapshot
-    if snapshot.get("identity_schema") == 3 and all(
+    if snapshot.get("identity_schema") == 4 and all(
             re.fullmatch(r"[0-9a-f]{64}", str(x.get("file_sha256") or ""))
             and isinstance(x.get("identity_source"), dict)
             and isinstance(x.get("party_evidence"), dict) for x in snapshot.get("ledgers") or []):
@@ -137,7 +137,7 @@ def _archive(project: str, cut: str) -> dict | None:
                 parsed = ledgers.parse_archive(data, snapshot.get("filename") or "")
             except ledgers.LedgerProblem:
                 raise ContractProblem("Сохранённый архив накопительных не прочитан; проверьте исходный файл.") from None
-            return {**snapshot, **parsed, "identity_schema": 3}
+            return {**snapshot, **parsed, "identity_schema": 4}
     safe_ledgers = []
     for item in snapshot.get("ledgers") or []:
         if isinstance(item.get("party_evidence"), dict):
@@ -455,8 +455,15 @@ def _physical_key(item: dict) -> tuple:
 
 
 def _cumulative_money(physical: list[dict], warnings: list[str],
-                      dated: list | None = None) -> tuple[float | None, str]:
-    """Sum dated, nonduplicated work-period evidence, never RSS closing or payments."""
+                      parts: dict | None = None, dated: list | None = None) -> tuple[float | None, str]:
+    """Sum dated, nonduplicated work-period evidence, never RSS closing or payments.
+
+    ``parts`` receives works (СМР) and materials money of the same periods when
+    every period carries both labelled halves; otherwise they stay unknown.
+    ``dated`` receives (start, end, total, works or None) of the same periods for
+    the deadline pace; no second reading."""
+    if parts is not None:
+        parts.update(works=None, materials=None, split=False)
     if not physical:
         return None, "unspecified"
     periods, ranges, bases = {}, {}, set()
@@ -472,7 +479,9 @@ def _cumulative_money(physical: list[dict], warnings: list[str],
                 uncertain = True
                 continue
             key = (*work, first, last)
-            evidence = (amount, _number(period.get("quantity")), _number(period.get("material_quantity")))
+            evidence = (amount, _number(period.get("quantity")), _number(period.get("material_quantity")),
+                        _number(period.get("work_amount")) if period.get("amount_split") else None,
+                        _number(period.get("material_amount")) if period.get("amount_split") else None)
             if key in periods and periods[key] != evidence:
                 uncertain = True
             periods[key] = evidence
@@ -491,9 +500,13 @@ def _cumulative_money(physical: list[dict], warnings: list[str],
     if uncertain or not periods:
         warnings.append("Сумма выполнения по загруженным накопительным на срез не подтверждена: проверьте даты, пересечения периодов, сохранённые суммы и повторяющиеся позиции.")
         return None, "unspecified"
+    split = all(v[3] is not None and v[4] is not None for v in periods.values())
+    if parts is not None and split:
+        parts.update(works=sum(v[3] for v in periods.values()),
+                     materials=sum(v[4] for v in periods.values()), split=True)
     if dated is not None:
-        # The same deduplicated periods feed the deadline pace; no second reading.
-        dated.extend((dt.date.fromisoformat(key[-2]), dt.date.fromisoformat(key[-1]), value[0])
+        dated.extend((dt.date.fromisoformat(key[-2]), dt.date.fromisoformat(key[-1]), value[0],
+                      value[3] if split else None)
                      for key, value in periods.items())
     return sum(value[0] for value in periods.values()), next(iter(bases)) if bases else "unspecified"
 
@@ -564,8 +577,9 @@ def build(project: str, cut: str = "") -> dict:
             amount = None
             row_warnings.append("РСС и сводная дают разные полные суммы договора; действующая цена не выбрана автоматически.")
         physical = [_physical(item, ledger, cut) for ledger in ledger_items for item in ledger.get("items") or []]
+        money_parts: dict = {}
         dated_money: list = []
-        completed, completed_basis = _cumulative_money(physical, row_warnings, dated_money)
+        completed, completed_basis = _cumulative_money(physical, row_warnings, money_parts, dated_money)
         if amount is None:
             row_warnings.append("Нет подтверждённой полной суммы договора. Итог года или отдельной ведомости не использован как цена всего договора.")
         comparable = (amount_basis != "conflicting" and completed_basis != "conflicting"
@@ -624,6 +638,14 @@ def build(project: str, cut: str = "") -> dict:
                "subject": str(next((x.get("subject") for x in items if x.get("subject")), "")),
                "amount": amount, "amount_source_label": amount_source,
                "completed": completed, "completion_ratio": ratio,
+               # Works (СМР) and materials supply are separate facts; delivery is
+               # not construction. Unknown when the books do not label both halves.
+               "completed_works": money_parts.get("works"),
+               "completed_materials": money_parts.get("materials"),
+               "works_materials_split": bool(money_parts.get("split")),
+               "works_materials_note": ("" if money_parts.get("split") or completed is None else
+                   "В накопительных этого договора суммы работ (СМР) и материалов не разделены; "
+                   "показано общее выполнение."),
                "amount_basis": amount_basis, "completed_basis": completed_basis,
                "monetary_comparable": comparable,
                "remaining": amount-completed if comparable and amount is not None and completed is not None else None,
@@ -639,7 +661,9 @@ def build(project: str, cut: str = "") -> dict:
                "performance_source_count": len(ledger_items), "reported_performance_sources": references}
         row["risk"] = contract_risk.forecast(
             amount=amount, completed=completed, comparable=comparable, periods=dated_money,
-            cut=dt.date.fromisoformat(cut), deadline=dt.date.fromisoformat(deadline) if deadline else None)
+            cut=dt.date.fromisoformat(cut), deadline=dt.date.fromisoformat(deadline) if deadline else None,
+            works=row["completed_works"] if row["works_materials_split"] else None,
+            materials=row["completed_materials"] if row["works_materials_split"] else None)
         row["advance"] = contract_risk.advance(row, paid_rows, contract_number=_contract_number,
                                                completed_basis=completed_basis)
         rows.append(row)

@@ -4735,7 +4735,8 @@ def contract_risks(project: str, end: Any) -> dict[str, Any]:
         return _missing(view.get("empty_reason") or "Договоров из накопительных на дату сводки нет.")
     at_risk = sorted((r for r in rows if (r.get("risk") or {}).get("status") in contract_risk.WARNING_STATUSES),
                      key=contract_risk.severity)
-    keep = ("contractor", "contract", "contract_date", "deadline", "amount", "completed", "risk", "advance")
+    keep = ("contractor", "contract", "contract_date", "deadline", "amount", "completed",
+            "completed_works", "completed_materials", "works_materials_split", "risk", "advance")
     return {"state": "ok", "total": len(rows), "summary": view.get("risk_summary") or {},
             "rows": [{k: r.get(k) for k in keep} for r in at_risk[:CONTRACT_RISK_LIMIT]],
             "omitted": max(0, len(at_risk) - CONTRACT_RISK_LIMIT),
@@ -4768,7 +4769,8 @@ def _contract_risk_lines(block: dict[str, Any]) -> list[str]:
         line = (f"• <b>{esc(row.get('contractor') or 'Подрядчик')}</b>, {esc(row.get('contract') or '')}"
                 f" — {esc(risk.get('label') or '')}; срок {_day(row.get('deadline'))}"
                 + (f", прогноз {_day(risk['forecast_finish'])}" if risk.get("forecast_finish") else "")
-                + (f", сверх выполнения оплачено {_rub(advance['unworked'])}" if (advance.get("unworked") or 0) > 0 else "")
+                + (f", сверх выполненных {'работ' if advance.get('basis') == 'works' else 'объёмов'} оплачено "
+                   f"{_rub(advance['unworked'])}" if (advance.get("unworked") or 0) > 0 else "")
                 + ".")
         lines.append(line)
     return lines
@@ -4796,10 +4798,12 @@ def _contract_risks_html(block: dict[str, Any]) -> str:
             + (f"<br>+{int(delay)} дн" if delay and delay > 0 else ""),
             f"{_rub(row.get('completed'))} из {_rub(row.get('amount'))}",
             _rub(advance.get("paid")),
-            _rub(advance.get("unworked")) if advance.get("unworked") is not None else "—"])
+            (_rub(advance.get("unworked")) if advance.get("unworked") is not None else "—")
+            + (f"<br><span style='color:#5b6b7d'>с материалами {_rub(advance['unworked_with_materials'])}</span>"
+               if advance.get("unworked_with_materials") is not None and (advance.get("unworked") or 0) > 0 else "")])
     if rows:
         out.append("<table class='legal'>" + _row(["Подрядчик, договор", "Сигнал", "Срок", "Прогноз",
-                                                   "Выполнено", "Оплачено", "Сверх выполнения"], True)
+                                                   "Выполнено", "Оплачено", "Сверх выполненных работ"], True)
                    + "".join(_row(row) for row in rows) + "</table>")
     if block.get("omitted"):
         out.append(f"<p class='note'>Ещё {block['omitted']} договоров под угрозой — полный список в Мониторе.</p>")

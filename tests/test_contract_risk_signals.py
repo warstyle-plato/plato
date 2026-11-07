@@ -217,3 +217,31 @@ def test_management_summary_names_a_missing_archive(project):
     block = report.contract_risks(project, dt.date(2026, 11, 6))
     assert block["state"] == "missing" and "накопительных" in block["reason"]
     assert "накопительных" in report._contract_risks_html(block)
+
+
+def test_material_delivery_does_not_make_a_late_contract_look_on_time(project):
+    base = {"contractor": "Builder A", "contract_date": dt.datetime(2026, 1, 1), "source": "Собственные средства"}
+    book(project, [contract("MAT", deadline=dt.datetime(2026, 11, 30))],
+         acts={"MAT": acts(("2026-09-15", 500), ("2026-10-31", 200))},
+         payments=[dict(base, contract="MAT", purpose="Аванс", date=dt.datetime(2026, 2, 1), amount=800)])
+    ledger = project.snapshots[-1]["ledgers"][0]
+    # September: 100 of works and 400 of materials supply; October: 200 of works.
+    for period, (work, material) in zip(ledger["items"][0]["periods"], [(100, 400), (200, 0)]):
+        period.update(work_amount=work, material_amount=material, amount_split=True)
+    row, = contracts.build(project, CUT)["rows"]
+    assert (row["completed_works"], row["completed_materials"]) == (300, 400)
+    result = row["risk"]
+    # Works pace 300 per 47 days against 300 left -> 47 days; the total pace
+    # (700 per 47 days) would have finished by 27.11 and looked on time.
+    assert result["pace_basis"] == "works" and result["status"] == "late"
+    assert result["forecast_finish"] == "2026-12-23" and result["delay_days"] == 23
+    advance = row["advance"]
+    assert advance["basis"] == "works" and advance["unworked"] == 500
+    assert advance["unworked_with_materials"] == 100
+
+
+def test_without_split_the_total_pace_is_named():
+    periods = [(dt.date(2026, 10, 1), dt.date(2026, 10, 31), 300.0, None)]
+    result = risk.forecast(amount=1000, completed=300, comparable=True, periods=periods,
+                           cut=dt.date(2026, 11, 6), deadline=dt.date(2027, 6, 1))
+    assert result["pace_basis"] == "total" and "не разделены" in result["reason"]
