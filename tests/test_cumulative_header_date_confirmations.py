@@ -248,8 +248,16 @@ def test_real_page_sends_correction_for_the_exact_header_cell():
         page.route('**/monitor/contracts/header-date', header_date)
         page.locator('#contractsTab').click()
         button = page.locator('#contractsWarnings .header-date-edit')
+
+        def open_form():
+            # The unresolved header list is collapsed by default.
+            details = page.locator('#contractsWarnings details.contract-detail')
+            if not details.evaluate('d => d.open'):
+                details.locator('summary').click()
+            button.click()
+        expect(button).to_have_count(1)
         expect(button).to_have_text('Исправить дату договора')
-        button.click()
+        open_form()
         expect(page.locator('#contractsHeaderDateTitle')).to_contain_text('ячейка B4')
         expect(page.locator('#contractsHeaderDateValue')).to_have_value('2024-03-07')
         page.locator('#contractsHeaderDateValue').fill('2024-07-03')
@@ -262,7 +270,7 @@ def test_real_page_sends_correction_for_the_exact_header_cell():
         body, = sent
         assert {k: body[k] for k in binding} == binding
         assert body['contract_date'] == '2024-07-03' and body['note'] == 'Дата по подписанному экземпляру.'
-        button.click()
+        open_form()
         page.locator('#contractsHeaderDateNote').fill('Уточнение внесено по ошибке.')
         page.locator('#contractsHeaderDateRevoke').click()
         expect(page.locator('#contractsHeaderDate')).to_be_hidden()

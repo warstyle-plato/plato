@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import copy
 import io
+import re
 import sys
 from functools import lru_cache
 from pathlib import Path
@@ -267,23 +268,37 @@ BROWSER_STATE = r"""() => {
 }"""
 
 
-@pytest.fixture(scope='module')
-def browser_cases():
+@pytest.fixture(scope='module', params=['/', '/classic'], ids=['main', 'classic'])
+def browser_cases(request):
     import browser
-    from playwright.sync_api import sync_playwright
+    from main_registry import app as registry_app
+    from playwright.sync_api import expect, sync_playwright
+
+    surface = request.param
+
+    def open_tep(page):
+        # The production entrypoint puts IA on / and intentionally hides the
+        # legacy tabs. Collection order must not choose which interface we test.
+        if surface == '/':
+            page.locator('.ia-nav').get_by_role('button', name='Проект', exact=True).click()
+            page.locator('#iaSub').get_by_role('button', name=re.compile(r'^ТЭП')).click()
+        else:
+            page.locator('button[data-tab="tep"]').click()
+        expect(page.locator('#tep_storage_placement')).to_be_visible()
+
     x, t = project()
     output = []
-    with browser.serve(core.app, 18946) as base, sync_playwright() as pw:
+    with browser.serve(registry_app, 18946) as base, sync_playwright() as pw:
         with pw.chromium.launch(executable_path=str(browser.chromium_or_skip())) as engine:
             for width in (390, 1440):
                 page = engine.new_page(viewport={'width': width, 'height': 1000})
                 errors = []
                 page.on('pageerror', lambda e: errors.append(str(e)))
-                page.goto(base, wait_until='domcontentloaded')
+                page.goto(base + surface, wait_until='domcontentloaded')
                 browser.wait_for_result(page)
                 page.evaluate("async data => {applyProjectSnapshot(data); await settledCalculate();}",
                               {'inputs': x, 'tep': t, 'phasing': {'enabled': False, 'user_enabled': False}})
-                page.locator('button[data-tab="tep"]').click()
+                open_tep(page)
                 before = page.evaluate(BROWSER_STATE)
                 page.locator('#tep_storage_placement').check()
                 page.evaluate('async () => {await settledCalculate();}')
@@ -292,7 +307,7 @@ def browser_cases():
                 page.reload(wait_until='domcontentloaded')
                 browser.wait_for_result(page)
                 page.evaluate('async () => {await settledCalculate();}')
-                page.locator('button[data-tab="tep"]').click()
+                open_tep(page)
                 restored = page.evaluate(BROWSER_STATE)
                 page.locator('#tep_storage_placement').uncheck()
                 page.evaluate('async () => {await settledCalculate();}')
