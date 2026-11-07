@@ -1829,6 +1829,7 @@ def install(app: FastAPI) -> None:
         Сбой или недочитанный ЕГРН не стирает прежде собранную нагрузку той же
         версии методики: разовый 503 — не ответ «нагрузка неизвестна».
         """
+        project = krt_status.with_last_known_status(project, row)
         screening = dict(stored.get("screening") or {})
         metrics = dict(screening.get("metrics") or {})
         market_block = dict(stored.get("market") or screening.get("market_report") or {})
@@ -1838,12 +1839,16 @@ def install(app: FastAPI) -> None:
         target = float(
             price_target_rub_sqm if price_target_rub_sqm is not None else shared_target)
 
-        if krt_status.model_exclusion(project) is not None:
+        excluded = krt_status.model_exclusion(project)
+        if excluded is not None:
             # Even an old successful report does not authorize another burden
             # model or a fresh persisted rating after the city changed status.
             rating = krt_investment_score.score(
                 status_kind="running", llcr=None, market_rub_sqm=None,
                 target_rub_sqm=target)
+            if excluded["status_kind"] != "running":
+                rating["reason"] = excluded["reason"]
+                rating["status_kind"] = excluded["status_kind"]
             return {
                 "rating": rating, "control_case": {},
                 "canonical": abs(target - float(shared_target)) < 0.5,
@@ -2228,6 +2233,7 @@ def install(app: FastAPI) -> None:
             project = finder(f"krt:{slug}") if callable(finder) else None
         if not project:
             raise HTTPException(status_code=404, detail="Территория КРТ не найдена")
+        project = krt_ranking.model_project(project)
         await run_in_threadpool(_krt_economics_gate, request, slug)
 
         # ensure_model используется именно массовой кнопкой каталога. Тяжёлый
@@ -3187,6 +3193,7 @@ def install(app: FastAPI) -> None:
         project: dict[str, Any], *, allow_remote_geocode: bool = True,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Рынок + финансовая модель без платного поиска публикаций."""
+        project = krt_ranking.model_project(project)
         excluded = krt_status.model_exclusion(project)
         if market is None or (core is None and excluded is None):
             return ({"available": False,
@@ -3271,6 +3278,7 @@ def install(app: FastAPI) -> None:
         не посчитаны, отдельный фоновый прогон ниже сначала заполняет их.
         Сборка рейтинга — та же `_investment_rating`, что у карточки и кнопки.
         """
+        project = krt_ranking.model_project(project)
         slug = str(project.get("slug") or "").strip()
         if not slug or krt_status.model_exclusion(project) is not None:
             return None
@@ -3298,6 +3306,7 @@ def install(app: FastAPI) -> None:
     app.state.krt_background_rating_fields = _cached_investment_rating_fields
 
     def _rating_needs_recount(project: dict[str, Any], row: dict[str, Any]) -> bool:
+        project = krt_status.with_last_known_status(project, row)
         if krt_status.model_exclusion(project) is not None:
             return False
         target = krt_ranking.rating_target(
@@ -3390,12 +3399,13 @@ def install(app: FastAPI) -> None:
         # сотни полных разборов ranking.json в минуту на воркер.
         rows = {str(item.get("slug") or ""): item for item in krt_ranking.rows()}
         for project in _krt_all_sites():
-            if krt_status.model_exclusion(project) is not None:
-                continue
             slug = str(project.get("slug") or "").strip()
             if not slug:
                 continue
             row = dict(rows.get(slug) or {})
+            project = krt_status.with_last_known_status(project, row)
+            if krt_status.model_exclusion(project) is not None:
+                continue
             if not _rating_needs_recount(project, row):
                 continue
             fields = _cached_investment_rating_fields(project)
@@ -3436,6 +3446,7 @@ def install(app: FastAPI) -> None:
                         if not slug:
                             continue
                         row = dict(rows.get(slug) or {})
+                        project = krt_status.with_last_known_status(project, row)
                         if krt_status.model_exclusion(project) is not None:
                             # Market freshness has its own clock. Refreshing
                             # observations cannot pretend to be a model run.
@@ -5420,6 +5431,7 @@ def install(app: FastAPI) -> None:
                     project = finder(f"krt:{slug}") if callable(finder) else None
                 if project is None:
                     raise ValueError("Территория КРТ не найдена")
+                project = krt_ranking.model_project(project)
                 report = _krt_market_report(
                     project, radius_km=radius_km, peers_limit=peers_limit)
                 market_only = market_only_screening(project, report)

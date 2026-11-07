@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import sys
 import time
 from types import ModuleType, SimpleNamespace
@@ -115,7 +116,9 @@ def _app(tmp_path, monkeypatch, projects=None):
 
     def duties(slug, **kwargs):
         requirements.append(slug)
-        assert slug != RUNNING["slug"], "Running project reads model obligations"
+        current = next(p for p in projects if p["slug"] == slug)
+        current = krt_status.with_last_known_status(current, ranking.stored_row(slug))
+        assert krt_status.model_exclusion(current) is None, "Running project reads model obligations"
         return {}
 
     registry = SimpleNamespace(
@@ -363,3 +366,136 @@ def test_zero_sales_without_a_known_price_are_valid_observations(tmp_path):
     assert row["market_computed_at"] and not row["market_failed_at"]
     assert row["surrounding_sales_units_per_month"] == 0
     assert row["surrounding_price_rub_sqm"] is None
+
+
+UNKNOWN_RUNNING = {**RUNNING, "status": "Новое значение, не распознано", "status_kind": "running"}
+
+
+def test_an_unparsed_transition_retains_last_running_without_relabelling_the_raw_status():
+    excluded = krt_status.model_exclusion(UNKNOWN_RUNNING)
+    assert krt_status.project_kind(UNKNOWN_RUNNING) == "unparsed"
+    assert excluded["status_kind"] == "unparsed"
+    assert excluded["last_known_status_kind"] == "running"
+    assert "не распознан" in excluded["reason"] and "не подтверждено" in excluded["reason"]
+    assert UNKNOWN_RUNNING["status"] == "Новое значение, не распознано"
+
+
+def test_unknown_following_running_stops_direct_screening_and_burden_before_reads():
+    class Bomb:
+        __getattr__ = forbidden
+        get = forbidden
+
+    project = {**UNKNOWN_RUNNING, "housing_gfa_sqm": 50_000}
+    for answer in (build_krt_model_screening(project, Bomb(), Bomb()),
+                   krt_investment_score.generic_project_burden(Bomb(), project, Bomb())):
+        assert answer["model_excluded"] and answer["status_kind"] == "unparsed"
+
+
+def test_a_recognized_planned_transition_replaces_the_old_running_history():
+    previous = krt_status.with_last_known_status(RUNNING)
+    unknown = krt_status.with_last_known_status(UNKNOWN_RUNNING, previous)
+    assert krt_status.model_exclusion(unknown)
+    planned = krt_status.with_last_known_status({**unknown, "status": "Планируемый"}, unknown)
+    assert planned["last_known_status_kind"] == "planned"
+    assert planned["status_kind"] == "planned"
+    assert krt_status.model_exclusion(planned) is None
+    unknown_again = krt_status.with_last_known_status(UNKNOWN_RUNNING, planned)
+    assert unknown_again["last_known_status_kind"] == "planned"
+    assert unknown_again["status_kind"] == "unparsed"
+    assert krt_status.project_kind(unknown_again) == "unparsed"
+    assert krt_status.model_exclusion(unknown_again) is None
+    assert krt_status.model_exclusion({"status": "Нераспознанный новый статус"}) is None
+
+
+def test_the_real_weekly_loop_preserves_a_model_during_an_unknown_running_transition(tmp_path, monkeypatch):
+    _, ranking, loops, model_calls, _, requirements = _app(tmp_path, monkeypatch, [UNKNOWN_RUNNING])
+    old_model = _keep_old_model(ranking)
+    monkeypatch.setattr(ranking, "due", lambda: True)
+    _synchronous_worker(monkeypatch, ranking)
+    _one_pass(monkeypatch, loops["krt-weekly"])
+    assert not model_calls and not requirements
+    assert ranking.report_path("running").read_bytes() == old_model
+    row = ranking.stored_row("running")
+    assert row["computed_at"] == 100 and row["entry_capacity_mln"] == 123
+    assert row["status"] == UNKNOWN_RUNNING["status"]
+    assert row["status_kind"] == "unparsed" and row["last_known_status_kind"] == "running"
+    assert ranking.progress()["model_skipped"] == 1
+
+
+def test_running_history_and_its_planned_replacement_survive_separate_apps(tmp_path, monkeypatch):
+    app, ranking, _, calls, _, _ = _app(tmp_path, monkeypatch, [UNKNOWN_RUNNING])
+    _keep_old_model(ranking)
+    response = TestClient(app).get("/auctions/krt/running/market", headers={"X-Market-Key": KEY})
+    assert response.status_code == 200 and not calls
+    assert ranking.stored_row("running")["last_known_status_kind"] == "running"
+
+    # A new process with no derived status hint still has the saved witness.
+    no_hint = {key: value for key, value in UNKNOWN_RUNNING.items() if key != "status_kind"}
+    app, ranking, _, calls, _, _ = _app(tmp_path, monkeypatch, [no_hint])
+    old_model = ranking.report_path("running").read_bytes()
+    response = TestClient(app).get("/auctions/krt/running/market", headers={"X-Market-Key": KEY})
+    assert response.status_code == 200 and not calls
+    assert ranking.report_path("running").read_bytes() == old_model
+
+    # A recognized source transition, unlike unknown, permits the normal model.
+    app, ranking, _, calls, _, _ = _app(tmp_path, monkeypatch, [{**UNKNOWN_RUNNING, "status": "Планируемый"}])
+    response = TestClient(app).get("/auctions/krt/running/market", headers={"X-Market-Key": KEY})
+    assert response.status_code == 200 and calls == ["running"]
+    assert ranking.stored_row("running")["last_known_status_kind"] == "planned"
+
+    app, ranking, _, calls, _, _ = _app(tmp_path, monkeypatch, [UNKNOWN_RUNNING])
+    response = TestClient(app).get("/auctions/krt/running/market", headers={"X-Market-Key": KEY})
+    assert response.status_code == 200 and calls == ["running"]
+    assert ranking.stored_row("running")["status_kind"] == "unparsed"
+    assert ranking.stored_row("running")["last_known_status_kind"] == "planned"
+
+
+def test_unknown_running_rating_refuses_truthfully_without_market_or_model(tmp_path, monkeypatch):
+    app, ranking, _, calls, market_calls, requirements = _app(tmp_path, monkeypatch, [UNKNOWN_RUNNING])
+    old_model = _keep_old_model(ranking)
+    response = TestClient(app).get("/auctions/krt/running/investment-score?ensure_model=true",
+                                   headers={"X-Market-Key": KEY})
+    assert response.status_code == 200
+    rating = response.json()["rating"]
+    assert rating["rankable"] is False and rating["status_kind"] == "unparsed"
+    assert "не распознан" in rating["reason"] and "Последний известный" in rating["reason"]
+    assert not calls and not market_calls and not requirements
+    assert ranking.report_path("running").read_bytes() == old_model
+
+
+def test_source_snapshot_retains_and_updates_status_history_without_running_models(tmp_path):
+    from market_search.krt_registry import KrtRegistry
+
+    status = ["В реализации"]
+
+    def fetch(url):
+        return (f'<a href="/projects/synthetic">Synthetic site</a>'
+                f'<p>Статус: {status[0]}</p>').encode()
+
+    registry = KrtRegistry(tmp_path, fetch=fetch)
+    for value, last_known, excluded in [
+        ("В реализации", "running", True),
+        ("Новое значение, не распознано", "running", True),
+        ("Планируемый", "planned", False),
+        ("Другое нераспознанное значение", "planned", False),
+    ]:
+        status[0] = value
+        row = registry.projects(refresh=True, max_pages=1)[0].to_dict()
+        assert row["status"] == value and row["last_known_status_kind"] == last_known
+        assert bool(krt_status.model_exclusion(row)) is excluded
+        reloaded = KrtRegistry(tmp_path, fetch=forbidden).catalogue()[0]
+        assert reloaded["last_known_status_kind"] == last_known
+        assert reloaded["status"] == value
+
+
+@pytest.mark.parametrize("old_snapshot", [[], {"projects": [None, 123]}, {"projects": 123}])
+def test_bad_old_history_does_not_block_a_successful_source_refresh(tmp_path, old_snapshot):
+    from market_search.krt_registry import KrtRegistry
+
+    page = '<a href="/projects/synthetic">Synthetic site</a><p>Статус: Планируемый</p>'.encode()
+    registry = KrtRegistry(tmp_path, fetch=lambda url: page)
+    registry.path.parent.mkdir(parents=True, exist_ok=True)
+    registry.path.write_text(json.dumps(old_snapshot))
+    rows = registry.projects(refresh=True, max_pages=1)
+    assert rows and rows[0].slug == "synthetic"
+    assert rows[0].last_known_status_kind == "planned"

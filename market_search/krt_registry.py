@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 from urllib.parse import urljoin
 
+from krt_status import with_last_known_status
 from .http import RemoteServiceError, fresh, load_json, request_bytes, save_json
 from .krt_requirements import (
     decision_intent,
@@ -215,6 +216,7 @@ class KrtTerritory:
     okrug: str | None = None
     district: str | None = None
     status: str | None = None
+    last_known_status_kind: str = ""
     total_gfa_sqm: float | None = None
     housing_gfa_sqm: float | None = None
     nonresidential_gfa_sqm: float | None = None
@@ -338,7 +340,9 @@ def _checked(row: KrtTerritory) -> KrtTerritory:
     после следующего обхода — на проде это сутки, — и «пять ложных тревог
     сняты» читалось на экране как «ничего не изменилось».
     """
-    return replace(row, parse_problem=parse_problem(row))
+    history = with_last_known_status(row.to_dict())
+    return replace(row, parse_problem=parse_problem(row),
+                   last_known_status_kind=str(history.get("last_known_status_kind") or ""))
 
 
 def tep_from_fields(fields: dict[str, str]) -> dict[str, float | None]:
@@ -458,6 +462,12 @@ class KrtRegistry:
                 and cached.get("complete", True)):
             return self._decode(cached)
         rows: list[KrtTerritory] = []
+        previous_rows = cached.get("projects") if isinstance(cached, dict) else None
+        previous_statuses = {
+            str(raw["slug"]): with_last_known_status(raw)
+            for raw in (previous_rows if isinstance(previous_rows, list) else [])
+            if isinstance(raw, dict) and raw.get("slug")
+        }
         seen_urls: set[str] = set()
         seen_slugs: set[str] = set()
         # Есть ли на диске ПОЛНЫЙ снимок. Пока этого вопроса не было, каждая
@@ -475,6 +485,12 @@ class KrtRegistry:
         def persist(*, complete: bool) -> None:
             if not rows:
                 return
+            # Persist the source's last recognized state independently of any
+            # model run. A confirmed planned transition must not be forgotten
+            # just because the next catalogue refresh has an unparsed value.
+            rows[:] = [replace(row, last_known_status_kind=str(
+                with_last_known_status(row.to_dict(), previous_statuses.get(row.slug))
+                .get("last_known_status_kind") or "")) for row in rows]
             if not complete and had_complete:
                 return
             save_json(self.path, {

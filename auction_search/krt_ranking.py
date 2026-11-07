@@ -43,7 +43,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from market_search.http import load_json, save_json
-from auction_search.krt_status import model_exclusion
+from auction_search.krt_status import model_exclusion, project_kind, with_last_known_status
 
 logger = logging.getLogger(__name__)
 
@@ -180,7 +180,8 @@ def _number(value: Any) -> float:
 
 # Паспорт площадки приходит из каталога krt.mos.ru и к нашему счёту отношения
 # не имеет: он обновляется даже тогда, когда посчитать не удалось.
-_CATALOGUE_FIELDS = ("name", "okrug", "district", "status", "area_ha", "housing_gfa_sqm",
+_CATALOGUE_FIELDS = ("name", "okrug", "district", "status", "status_kind", "last_known_status_kind",
+                     "area_ha", "housing_gfa_sqm",
                      # Съезд разбора — свойство карточки, а не счёта: карточка
                      # исправилась — метка обязана уйти вместе с ней, поэтому
                      # поле обновляется и пустым.
@@ -413,6 +414,7 @@ def score_row(project: dict[str, Any], screening: dict[str, Any]) -> dict[str, A
     млн ₽ в рубли, рубли на метр продаваемой. Всё остальное приходит готовым из
     `build_krt_model_screening`, второй экономики тут нет.
     """
+    project = with_last_known_status(project)
     slug = str(project.get("slug") or "")
     excluded = model_exclusion(project)
     if excluded is not None:
@@ -424,6 +426,8 @@ def score_row(project: dict[str, Any], screening: dict[str, Any]) -> dict[str, A
         "okrug": project.get("okrug"),
         "district": project.get("district"),
         "status": project.get("status"),
+        "status_kind": project_kind(project),
+        "last_known_status_kind": project.get("last_known_status_kind") or "",
         "area_ha": project.get("area_ha"),
         "housing_gfa_sqm": project.get("housing_gfa_sqm"),
         # Съезд разбора едет вместе со строкой. Экран прячет числа съехавшей
@@ -1245,6 +1249,10 @@ class KrtRanking:
         # Reuse the model report's validated slug, never a second path policy.
         return self.path.parent / "market-reports" / self.report_path(slug).name
 
+    def model_project(self, project: dict[str, Any]) -> dict[str, Any]:
+        """Read source history first, falling back to a legacy stored row."""
+        return with_last_known_status(project, self.stored_row(str(project.get("slug") or "")))
+
     def save_market_only(
         self, project: dict[str, Any], screening: dict[str, Any], market: dict[str, Any],
     ) -> None:
@@ -1280,6 +1288,8 @@ class KrtRanking:
             "market_computed_at": now,
             "model_excluded": True,
             "model_exclusion_reason": excluded["reason"],
+            "status_kind": excluded["status_kind"],
+            "last_known_status_kind": excluded["last_known_status_kind"],
             "market_failed_at": None, "market_failure_reason": "",
             "surrounding_price_rub_sqm": round(price) if price > 0 else None,
             "surrounding_sales_units_per_month": (
@@ -1294,6 +1304,8 @@ class KrtRanking:
         self.remember(str(project.get("slug") or ""), {
             **{key: project[key] for key in _CATALOGUE_FIELDS if key in project},
             "model_excluded": True, "model_exclusion_reason": excluded["reason"],
+            "status_kind": excluded["status_kind"],
+            "last_known_status_kind": excluded["last_known_status_kind"],
             "market_failed_at": int(time.time()),
             "market_failure_reason": str(reason or "Рынок не обновлён"),
         })
@@ -1470,6 +1482,7 @@ class KrtRanking:
         stop_reason = ""
         try:
             for index, project in enumerate(projects, start=1):
+                project = self.model_project(project)
                 name = str(project.get("name") or project.get("slug") or "")
                 site_failed = False
                 with self._lock:
