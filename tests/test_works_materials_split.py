@@ -41,6 +41,71 @@ def test_swapped_labels_follow_the_labels_not_the_position():
     assert (item['completed_work_amount'], item['completed_material_amount']) == (500, 200)
 
 
+def dated_split_book(**cells):
+    wb = openpyxl.load_workbook(io.BytesIO(book(split=True)))
+    ws = wb.active
+    ws['H7'] = 'Выполнение (01.01.2026 - 31.01.2026)'
+    for address, value in cells.items():
+        ws[address] = value
+    out = io.BytesIO()
+    wb.save(out)
+    return out.getvalue()
+
+
+def source_row(project, data):
+    ledger = parsed_ledger(data)
+    project.snapshots.append({'taken_at': '2026-05-01', 'ledgers': [ledger], 'summary_contracts': []})
+    row, = contracts.build(project, '2026-05-01')['rows']
+    return ledger, row
+
+
+def test_swapped_labelled_money_reaches_register_without_losing_split(project):
+    ledger, row = source_row(project, dated_split_book(
+        J8='Стоимость СМР', K8='Стоимость материалы',
+        P8='Стоимость СМР', Q8='Стоимость материалы'))
+    assert ledger['items'][0]['amount_split']
+    assert ledger['items'][0]['periods'][0]['amount_split']
+    assert row['completed'] == 700
+    assert row['works_materials_split']
+    assert (row['completed_works'], row['completed_materials']) == (500, 200)
+
+
+def test_each_period_uses_its_own_labels_when_annual_pair_is_unlabelled(project):
+    ledger, row = source_row(project, dated_split_book(P8='Стоимость', Q8='Стоимость'))
+    assert not ledger['items'][0]['amount_split']
+    assert ledger['items'][0]['periods'][0]['amount_split']
+    assert row['completed'] == 700 and row['works_materials_split']
+    assert (row['completed_works'], row['completed_materials']) == (200, 500)
+
+
+@pytest.mark.parametrize('cells', [
+    {'J9': 'не рассчитано', 'P9': 'не рассчитано'},
+    {'J9': 'не рассчитано'},
+    {'P9': 'не рассчитано'},
+    {'K9': '#VALUE!', 'Q9': '#VALUE!'},
+])
+def test_nonempty_unreadable_half_cannot_become_zero_or_partial_total(project, cells):
+    ledger, row = source_row(project, dated_split_book(**cells))
+    item = ledger['items'][0]
+    assert row['completed'] is None
+    assert row['completed_works'] is None and row['completed_materials'] is None
+    assert not row['works_materials_split']
+    assert row['completion_ratio'] is None and row['remaining'] is None
+    assert any('не прочитано как число' in warning for warning in item['warnings'])
+    if 'P9' in cells or 'Q9' in cells:
+        assert item['completed_amount'] is None and not item['amount_split']
+    if 'J9' in cells or 'K9' in cells:
+        assert item['periods'][0]['amount'] is None
+        assert not item['periods'][0]['amount_split']
+
+
+def test_truly_empty_half_with_known_other_half_still_has_a_known_total(project):
+    _, row = source_row(project, dated_split_book(J9=None, P9=None))
+    assert row['completed'] == 200
+    assert row['works_materials_split']
+    assert (row['completed_works'], row['completed_materials']) == (200, 0)
+
+
 def test_unlabelled_money_pair_is_not_split_by_position():
     wb = openpyxl.load_workbook(io.BytesIO(book(split=True)))
     ws = wb.active
