@@ -401,6 +401,93 @@ def test_explicit_legal_form_and_number_sign_normalisation(context, rss_contract
     assert row['amount'] == 1000
 
 
+# These ids were produced by the released 48e8ac68 reader. They address
+# persisted manual deadlines and daily-work confirmations, not RSS aliases.
+PERSISTED_IDENTITIES = [
+    ('Общество с ограниченной ответственностью «Подрядчик»', 'A-12',
+     'b8a9a3a62ab41d4f927426ae440d3f890b9a49828242dc51a90d894fa4148f81'),
+    ('ООО «Подрядчик»', 'Договор подряда № A-12',
+     '5ea3642ee3ab40e395546ce6a176f8e4be646082d30d2d08c2185cae71754e76'),
+]
+
+
+@pytest.mark.parametrize('party,number,persisted_id', PERSISTED_IDENTITIES)
+def test_reference_aliases_preserve_persisted_contract_id_and_manual_deadline(
+        context, party, number, persisted_id):
+    snapshot = parsed()
+    snapshot['ledgers'][0].update(contractor=party, contract=number)
+    provide(context, snapshot, [rss_contract()])
+    path = contracts._terms_path('Example')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({persisted_id: {
+        'deadline': '2026-12-31', 'note': 'Срок по отдельному основанию',
+        'updated_at': '2026-11-01T12:00:00+00:00'}}, ensure_ascii=False))
+    original = path.read_bytes()
+
+    row, = contracts.build('Example', '2026-11-06')['rows']
+
+    assert row['id'] == persisted_id
+    assert row['deadline'] == '2026-12-31'
+    assert row['manual_deadline_reference']['applicable_to_cut']
+    assert row['manual_deadline_reference']['note'] == 'Срок по отдельному основанию'
+    assert row['amount'] == 1000 and row['rss_match']['status'] == 'matched'
+    assert path.read_bytes() == original  # Reading does not migrate private state.
+
+
+@pytest.mark.parametrize('party,number,persisted_id', PERSISTED_IDENTITIES)
+def test_reference_aliases_preserve_saved_manual_work_confirmation(
+        context, party, number, persisted_id):
+    import developaid_monitor_contract_links as links
+
+    snapshot = parsed()
+    snapshot['ledgers'][0].update(contractor=party, contract=number)
+    provide(context, snapshot, [rss_contract()])
+    folder = monitor._project_dir('Example') / 'daily'
+    folder.mkdir(parents=True)
+    (folder / '2026-11-05.json').write_text(json.dumps({
+        'date': '2026-11-05', 'parsed': {
+            'contractors': [{'name': party}],
+            'works': [{'contractor': party, 'line': 'Устройство стены'}]}}, ensure_ascii=False))
+    register = contracts.build('Example', '2026-11-06')
+    item, = links._evidence('Example', register, '2026-11-06')
+    path = links._path('Example')
+    path.write_text(json.dumps({'version': 1, 'links': {item['id']: {
+        'contract_id': persisted_id, 'evidence_id': item['id'],
+        'signature': item['signature'], 'confirmed': True,
+        'confirmed_at': '2026-11-05T12:00:00+00:00',
+        'source_date': '2026-11-05', 'basis': 'manual',
+        'candidate_contract_ids': [persisted_id]}}}, ensure_ascii=False))
+    original = path.read_bytes()
+
+    result = links.enrich('Example', contracts.build('Example', '2026-11-06'), '2026-11-06')
+
+    row, = result['rows']
+    linked, = row['reconciliation']['daily_evidence']
+    assert row['id'] == persisted_id
+    assert linked['contract_id'] == persisted_id and linked['link_basis'] == 'manual'
+    assert linked['match_status'] == 'confirmed'
+    assert result['unmatched_works'] == []
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize('party,number,persisted_id', PERSISTED_IDENTITIES)
+def test_reference_aliases_do_not_merge_prior_contracts_or_choose_one_for_rss(
+        context, party, number, persisted_id):
+    snapshot = parsed(('Decorated.xlsx', ks()), ('Plain.xlsx', ks()))
+    snapshot['ledgers'][0].update(contractor=party, contract=number)
+    provide(context, snapshot, [rss_contract()])
+
+    view = contracts.build('Example', '2026-11-06')
+
+    assert len(view['rows']) == 2
+    assert {row['id'] for row in view['rows']} == {
+        persisted_id, 'f09d26b1916c812e61460a12fe188ed72dd15c9aff7053bdc03cd43a947a7385'}
+    assert all(row['amount'] is None and row['rss_match']['status'] == 'differs'
+               for row in view['rows'])
+    assert all(row['performance_source_count'] == 1 for row in view['rows'])
+    assert any('сразу к нескольким договорам' in warning for warning in view['warnings'])
+
+
 @pytest.mark.parametrize('rss_contractor,rss_number', [('ООО «Подрядчик-2»', 'A-12'), ('ООО «Подрядчик»', 'A-121')])
 def test_similar_but_different_party_or_number_is_not_joined(context, rss_contractor, rss_number):
     provide(context, parsed(), [rss_contract(contract=rss_number, contractor=rss_contractor)])

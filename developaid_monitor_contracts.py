@@ -70,11 +70,11 @@ def _norm(value: Any) -> str:
     return re.sub(r"\s+", " ", re.sub(r'[«»“”"]', "", value)).strip()
 
 
-def _contract_number(value: Any) -> str:
+def _contract_number(value: Any, *, reference: bool = False) -> str:
     # Strip only explicit decoration. Punctuation within a number is identity:
     # 12/3 and 123 must not silently become the same contract.
     value = re.split(r"\s+от\s+", str(value or ""), maxsplit=1, flags=re.I)[0]
-    if "№" in value:
+    if reference and "№" in value:
         # «Договор подряда № 12/3» and «№12/3» name the same number: the number
         # is what follows the sign, whatever words describe the document.
         value = value.split("№", 1)[1]
@@ -101,8 +101,17 @@ def _party_norm(value: Any) -> str:
 
 
 def _base_key(item: dict) -> tuple[str, str, str]:
-    return (_party_norm(item.get("customer")), _party_norm(item.get("contractor")),
+    # Persisted contract ids own manual deadlines and work links. Keep the
+    # original header identity stable; RSS comparison rules must not rekey or
+    # silently merge existing cumulative contracts.
+    return (_norm(item.get("customer")), _norm(item.get("contractor")),
             _contract_number(item.get("contract")))
+
+
+def _reference_key(item: dict) -> tuple[str, str, str]:
+    """Compare external references without changing cumulative identity."""
+    return (_party_norm(item.get("customer")), _party_norm(item.get("contractor")),
+            _contract_number(item.get("contract"), reference=True))
 
 
 def _source(value: Any, label: str = "") -> dict:
@@ -491,7 +500,7 @@ def _read_terms(project: str) -> dict:
 
 
 def _identity(item: dict) -> tuple | None:
-    base, date = _base_key(item), _date(item.get("contract_date"))
+    base, date = _reference_key(item), _date(item.get("contract_date"))
     return (*base, date) if all(base) and date else None
 
 
@@ -502,7 +511,7 @@ def _reference_differences(identity: tuple, entry: dict) -> list[str]:
     mismatch, only for the customer of the project's own RSS register, whose
     sheet may not name the customer. Every other attribute must be equal."""
     customer, contractor, number, date = identity
-    other = _base_key(entry)
+    other = _reference_key(entry)
     other_date = _date(entry.get("contract_date"))
     out = []
     if other[1] != contractor:
@@ -635,7 +644,7 @@ def build(project: str, cut: str = "") -> dict:
         items = ledger_items + matched
         rss_candidates = [entry for entry in extras if entry.get("kind") == "rss" and identity
                           and entry not in matched
-                          and (_base_key(entry)[1] == identity[1] or _base_key(entry)[2] == identity[2])]
+                          and (_reference_key(entry)[1] == identity[1] or _reference_key(entry)[2] == identity[2])]
         rss_items = [x for x in items if x.get("kind") == "rss"]
         summary_items = [x for x in items if x.get("kind") == "summary"]
         row_warnings = _warnings([v for x in items for v in [*(x.get("warnings") or []), *(x.get("identity_warnings") or [])]])
