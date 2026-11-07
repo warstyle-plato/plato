@@ -114,7 +114,7 @@ def _archive(project: str, cut: str) -> dict | None:
     snapshot = ledgers.latest_snapshot(project, cut)
     if not snapshot:
         return snapshot
-    if snapshot.get("identity_schema") == 3 and all(
+    if snapshot.get("identity_schema") == 4 and all(
             re.fullmatch(r"[0-9a-f]{64}", str(x.get("file_sha256") or ""))
             and isinstance(x.get("identity_source"), dict)
             and isinstance(x.get("party_evidence"), dict) for x in snapshot.get("ledgers") or []):
@@ -136,7 +136,7 @@ def _archive(project: str, cut: str) -> dict | None:
                 parsed = ledgers.parse_archive(data, snapshot.get("filename") or "")
             except ledgers.LedgerProblem:
                 raise ContractProblem("Сохранённый архив накопительных не прочитан; проверьте исходный файл.") from None
-            return {**snapshot, **parsed, "identity_schema": 3}
+            return {**snapshot, **parsed, "identity_schema": 4}
     safe_ledgers = []
     for item in snapshot.get("ledgers") or []:
         if isinstance(item.get("party_evidence"), dict):
@@ -453,8 +453,14 @@ def _physical_key(item: dict) -> tuple:
     return tuple(_norm(item.get(key)) for key in ("position", "name", "scope", "unit"))
 
 
-def _cumulative_money(physical: list[dict], warnings: list[str]) -> tuple[float | None, str]:
-    """Sum dated, nonduplicated work-period evidence, never RSS closing or payments."""
+def _cumulative_money(physical: list[dict], warnings: list[str],
+                      parts: dict | None = None) -> tuple[float | None, str]:
+    """Sum dated, nonduplicated work-period evidence, never RSS closing or payments.
+
+    ``parts`` receives works (СМР) and materials money of the same periods when
+    every period carries both labelled halves; otherwise they stay unknown."""
+    if parts is not None:
+        parts.update(works=None, materials=None, split=False)
     if not physical:
         return None, "unspecified"
     periods, ranges, bases = {}, {}, set()
@@ -470,7 +476,9 @@ def _cumulative_money(physical: list[dict], warnings: list[str]) -> tuple[float 
                 uncertain = True
                 continue
             key = (*work, first, last)
-            evidence = (amount, _number(period.get("quantity")), _number(period.get("material_quantity")))
+            evidence = (amount, _number(period.get("quantity")), _number(period.get("material_quantity")),
+                        _number(period.get("work_amount")) if period.get("amount_split") else None,
+                        _number(period.get("material_amount")) if period.get("amount_split") else None)
             if key in periods and periods[key] != evidence:
                 uncertain = True
             periods[key] = evidence
@@ -489,6 +497,9 @@ def _cumulative_money(physical: list[dict], warnings: list[str]) -> tuple[float 
     if uncertain or not periods:
         warnings.append("Сумма выполнения по загруженным накопительным на срез не подтверждена: проверьте даты, пересечения периодов, сохранённые суммы и повторяющиеся позиции.")
         return None, "unspecified"
+    if parts is not None and all(v[3] is not None and v[4] is not None for v in periods.values()):
+        parts.update(works=sum(v[3] for v in periods.values()),
+                     materials=sum(v[4] for v in periods.values()), split=True)
     return sum(value[0] for value in periods.values()), next(iter(bases)) if bases else "unspecified"
 
 
@@ -552,7 +563,8 @@ def build(project: str, cut: str = "") -> dict:
             amount = None
             row_warnings.append("РСС и сводная дают разные полные суммы договора; действующая цена не выбрана автоматически.")
         physical = [_physical(item, ledger, cut) for ledger in ledger_items for item in ledger.get("items") or []]
-        completed, completed_basis = _cumulative_money(physical, row_warnings)
+        money_parts: dict = {}
+        completed, completed_basis = _cumulative_money(physical, row_warnings, money_parts)
         if amount is None:
             row_warnings.append("Нет подтверждённой полной суммы договора. Итог года или отдельной ведомости не использован как цена всего договора.")
         comparable = (amount_basis != "conflicting" and completed_basis != "conflicting"
@@ -611,6 +623,14 @@ def build(project: str, cut: str = "") -> dict:
                "subject": str(next((x.get("subject") for x in items if x.get("subject")), "")),
                "amount": amount, "amount_source_label": amount_source,
                "completed": completed, "completion_ratio": ratio,
+               # Works (СМР) and materials supply are separate facts; delivery is
+               # not construction. Unknown when the books do not label both halves.
+               "completed_works": money_parts.get("works"),
+               "completed_materials": money_parts.get("materials"),
+               "works_materials_split": bool(money_parts.get("split")),
+               "works_materials_note": ("" if money_parts.get("split") or completed is None else
+                   "В накопительных этого договора суммы работ (СМР) и материалов не разделены; "
+                   "показано общее выполнение."),
                "amount_basis": amount_basis, "completed_basis": completed_basis,
                "monetary_comparable": comparable,
                "remaining": amount-completed if comparable and amount is not None and completed is not None else None,
