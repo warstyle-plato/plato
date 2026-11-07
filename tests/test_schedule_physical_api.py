@@ -157,7 +157,8 @@ from test_schedule_physical import config,snapshot,CUT
 from test_schedule_dependency_timeline import network
 monitor._SNAPSHOT_DIR=Path(sys.argv[1])/'monitor'
 physical.graph._load_pm=lambda _:dict(network(),source_sha256='a'*64)
-physical.ledgers.latest_snapshot=lambda *a: snapshot()
+import developaid_monitor_ledgers as ledgers
+ledgers.latest_snapshot=lambda *a: snapshot()
 physical._now=lambda:dt.datetime(2026,11,6,12,tzinfo=dt.timezone.utc)
 try:
     physical.save('Учебный проект','a'*64,CUT+'-'+'b'*64,0,config())
@@ -175,3 +176,18 @@ except physical.PhysicalProblem as error:
     with ThreadPoolExecutor(max_workers=4) as pool: outcomes=list(pool.map(lambda _:run(),range(4)))
     assert outcomes.count('saved')==1 and outcomes.count('conflict')==3
     assert len(list(root.rglob('physical_schedule_links/*.json')))==1
+
+
+def test_physical_mapping_reads_the_same_archive_as_the_contract_register(api, monkeypatch):
+    """Clarified header dates and re-read parties must reach the mapping too."""
+    import developaid_monitor_contracts as contracts
+    from test_cumulative_header_date_confirmations import stored, fields
+    snapshot = stored('Fixture')
+    today = dt.date.today().isoformat()
+    contracts.confirm_header_date('Fixture', today, **fields(snapshot))
+    monkeypatch.setattr(graph, '_load_pm', lambda project: dict(network(), source_sha256='a'*64))
+    row, = contracts.build('Fixture', today)['rows']
+    catalog = physical.catalog('Fixture', today)
+    assert catalog['snapshot_id'] == snapshot['snapshot_id'] and catalog['items']
+    assert {(x['contractor'], x['contract'], x['contract_date']) for x in catalog['items']} == {
+        (row['contractor'], row['contract'], '2024-07-03')}

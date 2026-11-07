@@ -17,7 +17,7 @@ import re
 import tempfile
 
 import developaid_monitor as monitor
-import developaid_monitor_ledgers as ledgers
+import developaid_monitor_contracts as contracts
 import developaid_monitor_schedule_graph as graph
 
 MAX_BINDINGS = 1000
@@ -116,7 +116,13 @@ def _history(project):
 
 
 def _sources(project, cut, pm=None):
-    return pm if pm is not None else graph._load_pm(project), ledgers.latest_snapshot(project, cut)
+    # The same archive reading as the contract register: re-read old snapshots
+    # and apply header clarifications, never a second private interpretation.
+    try:
+        snapshot = contracts.cumulative_snapshot(project, cut)
+    except contracts.ContractProblem as exc:
+        raise PhysicalProblem(str(exc), 503) from None
+    return pm if pm is not None else graph._load_pm(project), snapshot
 
 
 def _state(project, cut, pm, snapshot):

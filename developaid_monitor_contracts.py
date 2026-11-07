@@ -492,23 +492,37 @@ def _cumulative_money(physical: list[dict], warnings: list[str]) -> tuple[float 
     return sum(value[0] for value in periods.values()), next(iter(bases)) if bases else "unspecified"
 
 
-def build(project: str, cut: str = "") -> dict:
-    """The contract universe is exactly the uploaded cumulative ledger headers."""
+def cumulative_snapshot(project: str, cut: str, warnings: list[str] | None = None) -> dict | None:
+    """The one reading of the cumulative archive for contracts and physical mapping.
+
+    Old snapshots are re-read from their verified original bytes and the
+    administrator's header-date clarifications are applied, so every surface
+    sees the same parties, numbers and contract dates.
+    """
     cut = _cut(cut)
-    if not str(project or "").strip():
-        raise ContractProblem("Выберите проект.")
     snapshot = _archive(project, cut)
     archive_day = (snapshot or {}).get("taken_at")
-    warnings = []
     if snapshot and (not _date(archive_day) or _date(archive_day) > cut):
-        warnings.append("Дата накопительного архива не подтверждена или позже среза; архив не включён в этот срез.")
-        snapshot, archive_day = None, None
+        if warnings is not None:
+            warnings.append("Дата накопительного архива не подтверждена или позже среза; архив не включён в этот срез.")
+        return None
     if snapshot:
         import developaid_monitor_header_confirmations as confirmations
         try:
             snapshot = confirmations.apply(project, snapshot, cut)
         except confirmations.ConfirmationProblem as exc:
             raise ContractProblem(str(exc)) from None
+    return snapshot
+
+
+def build(project: str, cut: str = "") -> dict:
+    """The contract universe is exactly the uploaded cumulative ledger headers."""
+    cut = _cut(cut)
+    if not str(project or "").strip():
+        raise ContractProblem("Выберите проект.")
+    warnings = []
+    snapshot = cumulative_snapshot(project, cut, warnings)
+    archive_day = (snapshot or {}).get("taken_at")
     primary, unresolved = [], []
     for original in (snapshot or {}).get("ledgers") or []:
         ledger = dict(original, kind="ledger", source_date=archive_day)

@@ -23,9 +23,11 @@ def item(year=2026, done=50, **changes):
 
 def snapshot(rows=None):
     rows = rows or [(2026, item())]
-    return {'snapshot_id': CUT+'-'+'b'*64, 'ledgers': [
+    # Shaped like a stored archive of the current schema (dated, header evidence).
+    return {'snapshot_id': CUT+'-'+'b'*64, 'taken_at': CUT, 'identity_schema': 3, 'ledgers': [
         {'period_year': year, 'contractor': 'Учебный подрядчик', 'contract': 'Д-1',
-         'contract_date': '2025-01-01', 'items': [row]} for year, row in rows]}
+         'contract_date': '2025-01-01', 'file_sha256': 'c'*64, 'identity_source': {},
+         'party_evidence': {}, 'items': [row]} for year, row in rows]}
 
 
 def config(item_ids=None):
