@@ -670,7 +670,9 @@ def agent_document(req: AgentDocumentRequest, request: Request) -> dict[str, Any
         try:
             loaded = document_source.read_url(req.source_url)
         except document_source.DocumentSourceError as exc:
-            raise HTTPException(exc.status_code, str(exc)) from exc
+            public_error = HTTPException(exc.status_code, str(exc))
+            public_error.document_public = True
+            raise public_error from exc
         source = loaded["source"]
         filename = loaded["filename"]
         data = loaded.get("data") or b""
@@ -939,7 +941,7 @@ def agent_document_start(req: AgentDocumentRequest, request: Request) -> dict[st
                 result = agent_document(req, request)
             except Exception as exc:
                 status = getattr(exc, "status_code", 500)
-                result = {"error": (str(getattr(exc, "detail", "")) if status < 500
+                result = {"error": (str(getattr(exc, "detail", "")) if status < 500 or getattr(exc, "document_public", False)
                                     else "Разбор не завершился. Повторите загрузку документа.")}
             _plato_answer_put("run" + trace_id, result)
         finally:

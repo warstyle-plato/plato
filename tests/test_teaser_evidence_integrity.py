@@ -253,3 +253,29 @@ window.PlatoDocumentClient.read({session:'synthetic-session',access_key:'synthet
     for call in got["calls"][1:]:
         assert call["init"]["headers"] == {"x-plato-session": "synthetic-session", "x-developaid-admin-key": "synthetic-key"}
         assert "synthetic-key" not in call["url"]
+
+
+@pytest.mark.parametrize("public", [True, False])
+def test_async_document_keeps_public_source_failure_but_masks_internal_error(server, monkeypatch, public):
+    import threading
+    core, request = server
+    done = threading.Event()
+    monkeypatch.setattr(core, "_agent_rate_limit", lambda *_a: None)
+    def fail(*_a):
+        if public:
+            exc = core.HTTPException(504, "Время загрузки документа по ссылке истекло.")
+            exc.document_public = True
+            raise exc
+        raise RuntimeError("PRIVATE_INTERNAL_SENTINEL")
+    monkeypatch.setattr(core, "agent_document", fail)
+    original = core._plato_answer_put
+    def save(key, payload):
+        original(key, payload)
+        done.set()
+    monkeypatch.setattr(core, "_plato_answer_put", save)
+    job = core.agent_document_start(core.AgentDocumentRequest(), request)
+    assert done.wait(5)
+    got = core.agent_result(job["trace_id"], request)
+    assert "PRIVATE_INTERNAL_SENTINEL" not in got["error"]
+    if public:
+        assert got["error"] == "Время загрузки документа по ссылке истекло."
