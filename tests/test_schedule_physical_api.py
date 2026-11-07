@@ -190,4 +190,3 @@ except physical.PhysicalProblem as error:
     with ThreadPoolExecutor(max_workers=4) as pool: outcomes=list(pool.map(lambda _:run(),range(4)))
     assert outcomes.count('saved')==1 and outcomes.count('conflict')==3
     assert len(list(root.rglob('physical_schedule_links/*.json')))==1
-
