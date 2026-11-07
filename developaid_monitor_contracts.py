@@ -200,13 +200,19 @@ def _read_rss(project: str, cut: str) -> tuple[list[dict], str | None, list[str]
         source_rows.append((row_number, row))
     if len(source_rows) != len(parsed.get("rows") or []):
         return [], day, ["Строки реестра договоров РСС неоднозначны; денежные значения не объединены."]
-    header = {i: _norm(v) for r in raw[:actuals._CONTRACTS_FIRST_ROW-1]
-              for i, v in enumerate(r) if v is not None}
-    deadline_cols = [i for i, text in header.items()
-                     if text in {"срок исполнения", "срок договора", "срок выполнения работ",
+    # A column keeps every label of every header row: the production sheet has
+    # a group row above the labels and a column-number row (1, 2, 3, …) below
+    # them, and a last-row-wins map lost «Дата договора» to the number «4».
+    header: dict[int, set[str]] = {}
+    for r in raw[:actuals._CONTRACTS_FIRST_ROW-1]:
+        for i, v in enumerate(r):
+            if v is not None and str(v).strip():
+                header.setdefault(i, set()).add(_norm(v))
+    deadline_cols = [i for i, texts in header.items()
+                     if texts & {"срок исполнения", "срок договора", "срок выполнения работ",
                                  "дата исполнения", "дата окончания работ", "срок окончания работ",
                                  "дата завершения работ", "окончание работ"}]
-    date_cols = [i for i, text in header.items() if text in {"дата договора", "дата заключения договора"}]
+    date_cols = [i for i, texts in header.items() if texts & {"дата договора", "дата заключения договора"}]
     customers = {}
     for header_row in raw[:actuals._CONTRACTS_FIRST_ROW-1]:
         for index, value in enumerate(header_row):

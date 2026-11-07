@@ -561,3 +561,26 @@ def test_rss_sheet_header_problems_are_named_to_the_user(project):
     assert "заказчик не указан" in text
     row, = view["rows"]
     assert row["amount"] is None and row["rss_match"]["status"] in {"differs", "not_found", "matched"}
+
+
+def test_rss_date_column_survives_group_and_column_number_rows(project):
+    """Synthetic copy of the production header layout: a group row above the
+    labels, the labels, and a row of column numbers below them. No customer."""
+    rss(project, [{"contractor": "Builder A", "contract": "C-12/7", "contract_date": dt.datetime(2026, 1, 1),
+                   "amount": 500, "completed": 0}],
+        headers={2: "Наименование подрядчика", 3: "№ Договора", 4: "Дата договора",
+                 8: "Общая стоимость договора", 12: "Выполнено работ всего"})
+    path = monitor._project_dir(project) / "estimate" / "2026-04-01.xlsx"
+    wb = openpyxl.load_workbook(path)
+    ws = wb.active
+    ws["A1"].value = None
+    ws["B1"].value = None
+    for column in range(2, 9):
+        ws.cell(5, column).value = "данные договора"
+    for column in range(1, 13):
+        ws.cell(8, column).value = column
+    wb.save(path)
+    view = contracts.build(project, "2026-04-01")
+    row, = view["rows"]
+    assert row["amount"] == 500 and row["rss_match"]["status"] == "matched"
+    assert not any("нет колонки «Дата договора»" in w for w in view["warnings"])
