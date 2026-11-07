@@ -140,3 +140,39 @@ def test_daily_candidates_do_not_inherit_confirmation_for_another_contract():
         expect(page.locator('#contractsDetails')).to_contain_text('Договор определён по номеру в сообщении')
         assert page.locator('#contractsDetails .evidence-remove').count() == 1
         assert not errors
+
+
+@pytest.mark.parametrize('width', [390, 1440])
+def test_passed_contract_deadline_stays_in_attention_count_filter_and_next_step(width):
+    with browser_page(width) as (page, responses, errors):
+        row = responses.data['rows'][0]
+        row.update(amount=1_000_000, completed=500_000, completion_ratio=.5,
+                   remaining=500_000, deadline='2026-11-01', deadline_passed=True,
+                   warnings=[])
+        row['reconciliation'] = {'issues': [], 'daily_evidence': [{
+            'id': 'own-confirmed', 'date': '2026-11-02', 'text': 'Работы по договору',
+            'match_status': 'confirmed', 'contract_id': CONTRACT, 'link_basis': 'manual'}]}
+        future = copy.deepcopy(row)
+        future.update(id=OTHER, deadline='2026-12-01', deadline_passed=False)
+        future['reconciliation']['daily_evidence'][0]['contract_id'] = OTHER
+        responses.data['rows'] = [row, future]
+        page.locator('#contractsTab').click()
+        expect(page.locator('#contractsSummary b').nth(1)).to_have_text('1')
+        passed = page.locator(f'tr[data-contract-id="{CONTRACT}"]')
+        expect(passed.locator('.contract-next')).to_have_text(
+            'Проверить исполнение: срок прошёл')
+        expect(passed).to_contain_text('Срок прошёл; проверьте исполнение')
+        expect(passed).not_to_contain_text('Договор не исполнен')
+        expect(passed).not_to_contain_text('Нарушение договора')
+        page.locator('#contractsFilter').select_option('warnings')
+        expect(page.locator('tr[data-contract-id]')).to_have_count(1)
+        expect(passed).to_be_visible()
+        # A known future deadline alone does not require checking or become a missing term.
+        page.locator('#contractsFilter').select_option('no-term')
+        expect(page.locator('tr[data-contract-id]')).to_have_count(0)
+        row.update(deadline='2026-12-01', deadline_passed=False)
+        page.locator('#contractsRefresh').click()
+        expect(page.locator('#contractsSummary b').nth(1)).to_have_text('0')
+        page.locator('#contractsFilter').select_option('warnings')
+        expect(page.locator('tr[data-contract-id]')).to_have_count(0)
+        assert not errors
