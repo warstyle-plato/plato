@@ -18,6 +18,7 @@ import developaid_monitor_schedule_graph as schedule_graph
 import developaid_schedule_timeline as schedule_timeline
 import developaid_gpr_corpus as corpus_gpr
 import developaid_schedule_confirmation as schedule_confirmation
+import developaid_schedule_gpr_forecast as gpr_forecast
 import developaid_schedule_physical as schedule_physical
 import developaid_schedule_work_fact as schedule_work_fact
 
@@ -101,11 +102,84 @@ def _aggregate_management(nodes: list[dict[str, Any]]) -> None:
         visit(root)
 
 
+_GPR_STATUS = {
+    "done": "ЗАВЕРШЕНО ПО ГПР", "gpr_pace": "ПРОГНОЗ ПО ТЕМПУ ГПР",
+    "cumulative_quantities": "ПРОГНОЗ ПО НАКОПИТЕЛЬНЫМ", "plan": "ПО ПЛАНУ ГПР",
+    "stalled": "СТОИТ: ПРОЦЕНТ НЕ РАСТЁТ", "stale": "НЕТ СВЕЖЕГО ГПР", "no_pace": "НЕТ ТЕМПА",
+}
+
+
+def _apply_gpr(project: str, view: dict[str, Any], cut: datetime.date) -> dict[str, Any]:
+    """PM is off (owner): forecasts from the GPR and cumulative KS, never money."""
+    schedule = view.get("schedule") or {}
+    rows = schedule.get("rows") or []
+    works = gpr_forecast.forecasts(project, cut, rows)
+    stalled = []
+    for row in rows:
+        tid = str(row.get("id") or row.get("wbs") or "").strip()
+        item = works.get(tid) or {}
+        finish = monitor._day(item.get("forecast_finish"))
+        plan = monitor._day(row.get("plan_finish"))
+        row["pace_progress"] = item.get("progress")
+        row["pace_forecast_known"] = finish is not None
+        row["pace_forecast_method"] = item.get("method")
+        row["pace_forecast_reason"] = item.get("reason")
+        row["pace_forecast_finish"] = monitor._iso(finish) if finish else None
+        row["pace_delta_days"] = (finish - plan).days if finish and plan else None
+        row["pace_status"] = _GPR_STATUS.get(item.get("method"), "НЕТ ДАННЫХ ГПР")
+        if item.get("method") == "stalled":
+            stalled.append({"id": tid, "name": str(row.get("name") or ""),
+                            "object": str(row.get("object") or ""),
+                            "plan_finish": monitor._iso(plan), "progress": item.get("progress"),
+                            "monthly_rate": None})
+    for node in _walk(schedule.get("management") or []):
+        src = {str(r.get("id") or r.get("wbs") or "").strip(): r for r in rows}.get(
+            str(node.get("id") or node.get("wbs") or "").strip())
+        if not src:
+            continue
+        for key in ("pace_progress", "pace_forecast_known", "pace_forecast_method",
+                    "pace_forecast_finish", "pace_delta_days", "pace_status"):
+            node[key] = src.get(key)
+        if src.get("pace_forecast_known") and src.get("pace_forecast_finish"):
+            node["forecast_finish"] = src["pace_forecast_finish"]
+            node["delta_days"] = src.get("pace_delta_days")
+            node["status"] = src.get("pace_status") or node.get("status")
+    _aggregate_management(schedule.get("management") or [])
+    dash = (view.get("dashboard") or {}).get("schedule")
+    approved = ((dash or {}).get("approved_finish") or schedule.get("approved_end")
+                or max((r.get("plan_finish") for r in rows if r.get("plan_finish")), default=None))
+    qualified = gpr_forecast.rnv(rows, works, approved)
+    pm = schedule_graph._load_pm(project)
+    physical = schedule_physical.build(project, cut.isoformat(), pm)
+    schedule["dependency_timeline"] = {"state": "ok", "rows": [], "edges": [], "rnv": qualified,
+                                       "confirmation": {}, "basis": "gpr", "physical": physical}
+    schedule["physical_progress"] = physical
+    schedule["work_fact"] = schedule_work_fact.model(rows, physical)
+    schedule["gpr_forecasts"] = works
+    schedule["dependency_timeline_html"] = schedule_timeline.render(schedule["dependency_timeline"])
+    schedule["corpus_gpr"] = corpus_gpr.latest(project, cut.isoformat())
+    schedule["corpus_gpr_html"] = corpus_gpr.render_overview(schedule["corpus_gpr"], cut.isoformat())
+    if isinstance(dash, dict):
+        driver = (qualified.get("driving_chain") or [None])[0]
+        dash.update(qualified_rnv=qualified, stalled=stalled,
+                    forecast_known=qualified["state"] == "estimate",
+                    forecast_finish=qualified.get("forecast"),
+                    forecast_source="ГПР, без цепочки до разрешения",
+                    rnv_delay_days=qualified.get("delay_days") if qualified["state"] == "estimate" else None,
+                    driver={"id": driver["id"], "name": driver["name"]} if driver else None)
+        from developaid_monitor_dashboard import refresh_schedule_summary
+        refresh_schedule_summary(view)
+    return view
+
+
 def _apply_pace(project: str, view: dict[str, Any], cut: datetime.date) -> dict[str, Any]:
     schedule = view.get("schedule") or {}
     rows = schedule.get("rows") or []
     if not rows:
         return view
+    # One decision point: the PM reader itself says that PM is off.
+    if schedule_graph._load_pm(project).get("disabled"):
+        return _apply_gpr(project, view, cut)
 
     evidence = 0
     local_forecasts: dict[str, datetime.date] = {}

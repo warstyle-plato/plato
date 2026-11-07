@@ -539,7 +539,9 @@ def _forecast_shift(dashboard: dict[str, Any] | None,
                     commissioning: dict[str, str] | None) -> dict[str, Any] | None:
     """Прогноз Монитора, если он позже утверждённого ввода: дата и работа, которая тянет."""
     block = schedule(dashboard or {})
-    if block.get("state") != "ok" or not block.get("forecast") or not block.get("known"):
+    if (block.get("state") != "ok" or not block.get("forecast") or not block.get("known")
+            or block.get("estimate")):
+        # A GPR estimate without the chain to the permit does not shift loans.
         return None
     date = str(block["forecast"])[:10]
     if commissioning and date <= commissioning["date"]:
@@ -1052,9 +1054,12 @@ def schedule(dashboard: dict[str, Any]) -> dict[str, Any]:
     if qualified is not None:
         return {"state": "ok", "approved": qualified.get("approved"),
                 "forecast": qualified.get("forecast"),
-                "known": qualified.get("state") == "complete",
+                # An estimate from the GPR is shown with its caveat; only a
+                # confirmed forecast moves financing (see _forecast_shift).
+                "known": qualified.get("state") in {"complete", "estimate"},
+                "estimate": qualified.get("state") == "estimate",
                 "source": "; ".join(qualified.get("reasons") or []) or "PM-сеть",
-                "delay_days": qualified.get("delay_days") if qualified.get("state") == "complete" else None,
+                "delay_days": qualified.get("delay_days") if qualified.get("state") in {"complete", "estimate"} else None,
                 "qualification": qualified, "stalled": list(block.get("stalled") or []),
                 "driver": block.get("driver")}
     if not block.get("approved_finish") and not block.get("forecast_finish"):
@@ -1947,7 +1952,12 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
             text += " " + driver[:1].upper() + driver[1:] + "."
         if block.get("stalled"):
             text += " " + _stalled_words(block)
-        add("Срок", text, "прогноз Монитора по темпу работ",
+        if block.get("estimate"):
+            driver = ((block.get("qualification") or {}).get("driving_chain") or [{}])[0]
+            if not late and driver.get("method") == "plan":
+                text = text.replace(": в срок.", ": по плану ГПР; роста процента для подтверждения темпа нет.")
+            text += " Это оценка по ГПР, без цепочки до получения разрешения."
+        add("Срок", text, "ГПР" if block.get("estimate") else "прогноз Монитора по темпу работ",
             "bad" if late else "")
     elif block.get("qualification"):
         qualified = block["qualification"]
@@ -4558,7 +4568,9 @@ def render_html(report: dict[str, Any]) -> str:
         out.append(f"<p class='note'>Ввод: {lead}прогноз Монитора при нынешнем темпе "
                    f"{_day(block['forecast'])}"
                    + (f" — на {delay:.0f} дн. позже." if isinstance(delay, (int, float))
-                      and delay > 0 else ".") + "</p>")
+                      and delay > 0 else ".")
+                   + (" Оценка по ГПР, без цепочки до получения разрешения."
+                      if block.get("estimate") else "") + "</p>")
         driver = _driver_words(block.get("driver"))
         if driver and isinstance(delay, (int, float)) and delay > 0:
             out.append(f"<p class='note warn'>{html.escape(driver[:1].upper() + driver[1:])}.</p>")

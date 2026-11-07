@@ -2152,10 +2152,27 @@ def _schedule_summary(schedule: dict[str, Any]) -> str | None:
     """Use the same qualified RNV as the cards, including partial/unknown."""
     qualified = schedule.get("qualified_rnv")
     if isinstance(qualified, dict):
+        if qualified.get("state") == "estimate":
+            approved = monitor._day(qualified.get("approved"))
+            forecast = monitor._day(qualified.get("forecast"))
+            delay = qualified.get("delay_days")
+            driver = (qualified.get("driving_chain") or [{}])[0]
+            if isinstance(delay, (int, float)) and delay > 0:
+                drift = f"на {delay} дней позже плана"
+            elif driver.get("method") == "plan":
+                # The latest work carries only its plan: no growth to call it «on time».
+                drift = "по плану ГПР; роста процента для подтверждения темпа нет"
+            else:
+                drift = "в срок"
+            return ("Срок. " + (f"Утверждённый ввод — {approved.strftime('%d.%m.%Y')}; " if approved else "")
+                    + (f"оценка по ГПР — {forecast.strftime('%d.%m.%Y')}, {drift}"
+                       if forecast else "оценки нет")
+                    + ". Без цепочки до получения разрешения.")
         if qualified.get("state") != "complete":
             if qualified.get("state") == "partial":
                 indicative = monitor._day(qualified.get("indicative_forecast"))
-                known_part = (f" По известной части сети — {indicative.strftime('%d.%m.%Y')};"
+                where = "По работам ГПР с прогнозом" if qualified.get("basis") == "gpr" else "По известной части сети"
+                known_part = (f" {where} — {indicative.strftime('%d.%m.%Y')};"
                               " это не подтверждённый итоговый срок РНВ." if indicative else "")
                 return "Срок. Прогноз РНВ неполный." + known_part
             approved = monitor._day(qualified.get("approved"))

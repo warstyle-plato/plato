@@ -122,12 +122,15 @@ def test_the_report_takes_the_monitor_tree():
     assert block["state"] == "ok"
     by_name = {corpus["name"]: corpus for corpus in block["corpora"]}
     assert set(by_name) == {"Корпус 1", "Корпус 2"}
-    # Те же даты, что прогноз темпа Монитора по работам этих корпусов.
-    assert by_name["Корпус 1"]["forecast_finish"] == "2027-01-15"
-    assert by_name["Корпус 2"]["delta_days"] == 28
+    # Те же даты, что прогноз Монитора по работам этих корпусов. PM отключён:
+    # темп — рост процента ГПР за 90 дней (09.10 → 16.10), не деньги актов КС.
+    # «Монолит» 40→55% за 7 дней, остаток 45% → 21 день; «Фасад» 10→40%, 60% → 14 дней.
+    assert by_name["Корпус 1"]["forecast_finish"] == "2026-11-06"
+    assert by_name["Корпус 2"]["forecast_finish"] == "2026-10-30"
+    assert by_name["Корпус 2"]["delta_days"] == -30
     page = report.render_html(got)
     assert "Сроки работ по корпусам" in page and 'class="chart gantt"' in page
     text = report.render_text(got)
-    assert "Корпус 2: окончание работ по графику 29.11.2026, прогноз 27.12.2026 (+28 дн.)." in text
-    found = [item for item in got["findings"] if item["topic"] == "Корпуса"]
-    assert found and "Корпус 2" in found[0]["text"] and "28 дн." in found[0]["text"]
+    assert "Корпус 2: окончание работ по графику 29.11.2026, прогноз 30.10.2026 (раньше на 30 дн.)." in text
+    # No corpus is late by the GPR pace, so there is no delay finding.
+    assert not [item for item in got["findings"] if item["topic"] == "Корпуса"]
