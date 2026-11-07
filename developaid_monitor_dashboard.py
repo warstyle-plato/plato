@@ -2158,7 +2158,9 @@ def _schedule_summary(schedule: dict[str, Any]) -> str | None:
                 known_part = (f" По известной части сети — {indicative.strftime('%d.%m.%Y')};"
                               " это не подтверждённый итоговый срок РНВ." if indicative else "")
                 return "Срок. Прогноз РНВ неполный." + known_part
-            return "Срок. Прогноз РНВ: недостаточно данных."
+            approved = monitor._day(qualified.get("approved"))
+            lead = f"Срок. Утверждённый ввод — {approved.strftime('%d.%m.%Y')}; " if approved else "Срок. "
+            return lead + ("прогноз РНВ: недостаточно данных." if approved else "Прогноз РНВ: недостаточно данных.")
         schedule = {"approved_finish": qualified.get("approved"),
                     "forecast_finish": qualified.get("forecast"),
                     "rnv_delay_days": qualified.get("delay_days")}

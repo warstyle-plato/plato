@@ -327,8 +327,10 @@ def test_real_monitor_shows_cumulative_count_sources_quarantine_and_printed_valu
         if width == 1440:
             text = ' '.join(' '.join((x.extract_text() or '').split())
                             for x in PdfReader(io.BytesIO(page.pdf())).pages)
-            assert 'A-12' in text and 'B-24' in text and '03.07.124' in text
-            assert '400' in text and 'Номер из шапки' in text
+            assert 'A-12' in text and 'B-24' in text
+            assert '400' in text and 'по накопительным' in text
+            # Technical evidence remains in closed source details, not in the working printout.
+            assert 'Номер из шапки' not in text and '03.07.124' not in text
         assert not errors
 
 

@@ -19,6 +19,7 @@ import developaid_schedule_timeline as schedule_timeline
 import developaid_gpr_corpus as corpus_gpr
 import developaid_schedule_confirmation as schedule_confirmation
 import developaid_schedule_physical as schedule_physical
+import developaid_schedule_work_fact as schedule_work_fact
 
 _INSTALLED = False
 _ORIGINAL_BUILD = None
@@ -241,7 +242,19 @@ def _apply_pace(project: str, view: dict[str, Any], cut: datetime.date) -> dict[
         qualified_pm, timeline_seeds, evidence=bool(physical['physical_evidence'] or evidence or late_seeds),
         actual_finishes={tid: monitor._day(value) for tid, value in physical.get('actual_finishes', {}).items()})
     schedule['dependency_timeline']['physical'] = physical
+    rnv_block = schedule['dependency_timeline'].get('rnv') or {}
+    if not rnv_block.get('approved'):
+        # Without a PM milestone (PM is off) the approved RNV is still the GPR
+        # plan; a missing network must not erase it from cards and summary.
+        dash_plan = ((view.get('dashboard') or {}).get('schedule') or {}).get('approved_finish')
+        approved = monitor._day(dash_plan or schedule.get('approved_end'))
+        if approved:
+            rnv_block['approved'] = approved.isoformat()
+            rnv_block['approved_source'] = 'утверждённый ГПР'
+            schedule['dependency_timeline']['rnv'] = rnv_block
     schedule['physical_progress'] = physical
+    # One owner of both readiness facts per work, read by the chart and summary.
+    schedule['work_fact'] = schedule_work_fact.model(rows, physical)
     if isinstance((view.get("dashboard") or {}).get("schedule"), dict):
         view["dashboard"]["schedule"]["qualified_rnv"] = schedule["dependency_timeline"]["rnv"]
         # A prebuilt summary may have been produced before RNV qualification.
@@ -251,7 +264,7 @@ def _apply_pace(project: str, view: dict[str, Any], cut: datetime.date) -> dict[
         refresh_schedule_summary(view)
     schedule["dependency_timeline_html"] = schedule_timeline.render(schedule["dependency_timeline"])
     schedule["corpus_gpr"] = corpus_gpr.latest(project, cut.isoformat())
-    schedule["corpus_gpr_html"] = corpus_gpr.render(schedule["corpus_gpr"])
+    schedule["corpus_gpr_html"] = corpus_gpr.render_overview(schedule["corpus_gpr"], cut.isoformat())
     if evidence <= 0:
         return _physical_dashboard(view)
 
