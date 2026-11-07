@@ -2148,6 +2148,45 @@ def _gap_by_chapter_sentence(funding: dict[str, Any]) -> str:
     return text + (f" {note}" if note else "")
 
 
+def _schedule_summary(schedule: dict[str, Any]) -> str | None:
+    """Use the same qualified RNV as the cards, including partial/unknown."""
+    qualified = schedule.get("qualified_rnv")
+    if isinstance(qualified, dict):
+        if qualified.get("state") != "complete":
+            if qualified.get("state") == "partial":
+                indicative = monitor._day(qualified.get("indicative_forecast"))
+                known_part = (f" По известной части сети — {indicative.strftime('%d.%m.%Y')};"
+                              " это не подтверждённый итоговый срок РНВ." if indicative else "")
+                return "Срок. Прогноз РНВ неполный." + known_part
+            return "Срок. Прогноз РНВ: недостаточно данных."
+        schedule = {"approved_finish": qualified.get("approved"),
+                    "forecast_finish": qualified.get("forecast"),
+                    "rnv_delay_days": qualified.get("delay_days")}
+    approved = monitor._day(schedule.get("approved_finish") or schedule.get("approved_end"))
+    forecast = monitor._day(schedule.get("forecast_finish"))
+    delay = schedule.get("rnv_delay_days")
+    if approved and forecast:
+        drift = (f"на {delay} дней позже плана" if isinstance(delay, (int, float))
+                 and delay and delay > 0 else "в срок")
+        return (
+            f"Срок. Утверждённый ввод — {approved.strftime('%d.%m.%Y')}; при "
+            f"нынешнем темпе актов КС модель ждёт "
+            f"{forecast.strftime('%d.%m.%Y')} — {drift}.")
+    return None
+
+
+def refresh_schedule_summary(view: dict[str, Any]) -> None:
+    """Refresh only the schedule sentence; preserve financial prose verbatim."""
+    dashboard = view.get("dashboard") or {}
+    current = dashboard.get("summary")
+    if not isinstance(current, list):
+        return
+    schedule = dashboard.get("schedule") or view.get("schedule") or {}
+    sentence = _schedule_summary(schedule)
+    rest = [line for line in current if not isinstance(line, str) or not line.startswith("Срок.")]
+    dashboard["summary"] = ([sentence] if sentence else []) + rest
+
+
 def _summary(view: dict[str, Any], funding: dict[str, Any],
              sales: dict[str, Any]) -> list[str]:
     """Управленческое резюме словами — из тех же чисел, что и графики.
@@ -2157,16 +2196,9 @@ def _summary(view: dict[str, Any], funding: dict[str, Any],
     """
     out: list[str] = []
     schedule = (view.get("dashboard") or {}).get("schedule") or view.get("schedule") or {}
-    approved = monitor._day(schedule.get("approved_finish") or schedule.get("approved_end"))
-    forecast = monitor._day(schedule.get("forecast_finish"))
-    delay = schedule.get("rnv_delay_days")
-    if approved and forecast:
-        drift = (f"на {delay} дней позже плана" if isinstance(delay, (int, float))
-                 and delay and delay > 0 else "в срок")
-        out.append(
-            f"Срок. Утверждённый ввод — {approved.strftime('%d.%m.%Y')}; при "
-            f"нынешнем темпе актов КС модель ждёт "
-            f"{forecast.strftime('%d.%m.%Y')} — {drift}.")
+    sentence = _schedule_summary(schedule)
+    if sentence:
+        out.append(sentence)
 
     if not funding.get("known"):
         out.append("Деньги. Финансовая книга не загружена — потребность и "

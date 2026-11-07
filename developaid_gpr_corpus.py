@@ -1,0 +1,206 @@
+"""Source-only corpus GPR snapshots. No automatic WBS, baseline or KS mapping.
+
+The two-row header identifies each corpus independently. Row numbers are source
+coordinates, not task identifiers; repeated design rows are never aggregated.
+"""
+from __future__ import annotations
+
+import datetime as dt
+import hashlib
+import json
+import math
+import re
+from typing import Any
+
+import developaid_monitor_ledgers as ledgers
+
+
+def _text(value: Any) -> str:
+    return str(value if value is not None else '').strip()
+
+
+def _date(value: Any) -> str | None:
+    if isinstance(value, dt.datetime):
+        return value.date().isoformat()
+    if isinstance(value, dt.date):
+        return value.isoformat()
+    for fmt in ('%d.%m.%Y', '%Y-%m-%d'):
+        try:
+            return dt.datetime.strptime(_text(value), fmt).date().isoformat()
+        except ValueError:
+            pass
+    return None
+
+
+def _raw(value: Any) -> Any:
+    if isinstance(value, (dt.datetime, dt.date)):
+        return value.isoformat()
+    if isinstance(value, float) and not math.isfinite(value):
+        return str(value)
+    return value
+
+
+def read(data: bytes) -> dict | None:
+    """Recognize only the selected ГПР sheet and bounded two-row corpus schema."""
+    sheets = ledgers._read_workbook('gpr.xlsx', data)
+    rows = next((rows for name, rows in sheets if name.strip().casefold() == 'гпр'), None)
+    if rows is None:
+        return None
+    header, blocks, name_col = None, [], None
+    for ri, row in enumerate(rows[:19]):
+        names = [_text(v).casefold() for v in row]
+        if names[:4] != ['№', 'наименование работ', 'стадия', 'статус'] or ri+1 >= len(rows):
+            continue
+        subs = rows[ri+1]
+        for col, name in enumerate(names):
+            if not re.fullmatch(r'корпус\s+[\w-]+|паркинг', name):
+                continue
+            if col+2 >= len(subs):
+                continue
+            fact, start, finish = [_text(v) for v in subs[col:col+3]]
+            match = re.fullmatch(r'Факт\s+(\d{1,2}\.\d{1,2}\.\d{4})', fact, re.I)
+            if not match or start.casefold() != 'старт' or finish.casefold() != 'финиш':
+                continue
+            blocks.append({'name': _text(row[col]), 'col': col,
+                           'fact_day': _date(match[1]), 'fact_day_raw': match[1]})
+        if len(blocks) >= 2:
+            header, name_col = ri+1, names.index('наименование работ')
+            break
+        blocks = []
+    if header is None:
+        return None
+    if len(blocks) > 16:
+        raise ValueError('В корпусном ГПР слишком много объектов: допустимо не более 16.')
+    packages, issues, excluded_rows = [], [], []
+    for block in blocks:
+        if not block['fact_day']:
+            issues.append({'cell': ledgers._cell(block['col']+1, header+1),
+                           'code': 'invalid_fact_day',
+                           'message': 'Дата показания в шапке некорректна; дата среза не подставлена.'})
+    group = ''
+    for ri, row in enumerate(rows[header+1:], header+2):
+        def cell(col):
+            return row[col] if col < len(row) else None
+        name = _text(cell(name_col))
+        if not name:
+            if _text(cell(0)) and not _text(cell(0)).isdigit():
+                group = _text(cell(0))
+            continue
+        if not re.fullmatch(r'[1-9]\d*(?:\.0)?', _text(cell(0))):
+            excluded_rows.append(ri)
+            continue
+        scopes = []
+        for block in blocks:
+            col = block['col']
+            refs = {key: ledgers._cell(col+offset+1, ri)
+                    for offset, key in enumerate(('progress', 'start', 'finish'))}
+            values = {key: cell(col+offset) for offset, key in enumerate(('progress', 'start', 'finish'))}
+            parsed = {'start': _date(values['start']), 'finish': _date(values['finish'])}
+            progress = None
+            raw_progress = values['progress']
+            if raw_progress is not None and _text(raw_progress):
+                try:
+                    number = float(str(raw_progress).replace(',', '.').replace('%', '').strip())
+                    if '%' in str(raw_progress):
+                        number /= 100
+                    if math.isfinite(number) and 0 <= number <= 1:
+                        progress = number
+                except (ValueError, TypeError):
+                    pass
+                if progress is None:
+                    issues.append({'cell': refs['progress'], 'code': 'invalid_progress',
+                                   'message': 'Процент не распознан: ожидается доля от 0 до 1 или число со знаком %.'})
+            for key in ('start', 'finish'):
+                if _text(values[key]) and not parsed[key]:
+                    issues.append({'cell': refs[key], 'code': 'invalid_date',
+                                   'message': 'Некорректная дата сохранена как в источнике; срок не подставлен.'})
+            if parsed['start'] and parsed['finish'] and parsed['finish'] < parsed['start']:
+                issues.append({'cell': refs['finish'], 'code': 'reversed_dates',
+                               'message': 'Окончание раньше начала.'})
+            scopes.append({'corpus': block['name'], 'fact_day': block['fact_day'],
+                           'fact_day_raw': block['fact_day_raw'], 'progress': progress,
+                           'start': parsed['start'], 'finish': parsed['finish'],
+                           'applicability': 'unconfirmed', 'mapping_status': 'unconfirmed',
+                           'source_cells': refs, 'raw': {k: _raw(v) for k, v in values.items()}})
+        packages.append({'source_row': ri, 'source_id': 'ГПР!'+ledgers._cell(name_col+1, ri),
+                         'number_raw': _text(cell(0)), 'name': name, 'group': group,
+                         'stage': _text(cell(2)), 'status': _text(cell(3)), 'scopes': scopes})
+        if len(packages) > 1000:
+            raise ValueError('В корпусном ГПР слишком много пакетов: допустимо не более 1000.')
+    if not packages:
+        return None
+    result = {'format': 'corpus-gpr-v1', 'sheet': 'ГПР', 'sha256': hashlib.sha256(data).hexdigest(),
+            'packages': packages, 'issues': issues[:100], 'issue_count': len(issues),
+            'issues_not_shown': max(0, len(issues)-100),
+            'excluded_non_task_rows': excluded_rows,
+            'baseline_approved': False, 'quantity_mapping_confirmed': False,
+            'reason': 'Показания исходного ГПР по корпусам. Связи с WBS и объёмами КС не подтверждены; '
+                      'проценты не меняют утверждённый график и не дают темп или прогноз РНВ.'}
+    if len(json.dumps(result, ensure_ascii=False, allow_nan=False).encode()) > 8*1024*1024:
+        raise ValueError('Результат разбора корпусного ГПР слишком большой.')
+    return result
+
+
+def store(project: str, data: bytes, taken_at: str, parsed: dict) -> dict:
+    import developaid_monitor as monitor
+    day = dt.date.fromisoformat(taken_at).isoformat()
+    fact_days = {scope['fact_day'] for package in parsed['packages'] for scope in package['scopes']
+                 if scope.get('fact_day')}
+    if any(fact_day > day for fact_day in fact_days):
+        raise ValueError('Дата версии раньше даты факта в шапке ГПР. Выберите дату не раньше последнего показания.')
+    root = monitor._project_dir(project) / 'gpr_corpus'
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    result = dict(parsed, taken_at=day)
+    payload = json.dumps(result, ensure_ascii=False, allow_nan=False).encode()
+    with ledgers._lock(root):
+        path = monitor._inside(root, day+'.json')
+        if path.exists():
+            previous = json.loads(path.read_text())
+            if previous.get('sha256') != result['sha256']:
+                raise FileExistsError('Корпусный ГПР на эту дату уже сохранён; выберите другую дату версии.')
+            return previous
+        ledgers._atomic(path, payload)
+    return result
+
+
+def latest(project: str, cut: str = '') -> dict | None:
+    import developaid_monitor as monitor
+    path = monitor._latest(project, 'gpr_corpus', '.json', cut)
+    if path is None:
+        return None
+    return json.loads(path.read_text())
+
+
+def render(source: dict | None) -> str:
+    """Read-only evidence table, shared with HTML/PDF. No overall percentage."""
+    import html
+    if not source:
+        return ''
+    esc = lambda value: html.escape(str(value if value is not None else '—'), quote=True)
+    out = ['<section class="corpus-gpr-source"><h3>ГПР по корпусам · исходные показания</h3>',
+           '<p>'+esc(source.get('reason'))+'</p>',
+           '<p>Версия загружена: '+esc(source.get('taken_at'))+' · лист '+esc(source.get('sheet'))+'</p>']
+    for issue in source.get('issues') or []:
+        out.append('<p class="note">'+esc(issue['cell'])+': '+esc(issue['message'])+'</p>')
+    if source.get('issues_not_shown'):
+        out.append('<p class="note">Других замечаний: '+esc(source['issues_not_shown'])+'.</p>')
+    out.append('<details><summary>Работы и даты из исходного файла</summary><div style="overflow-x:auto"><table style="min-width:760px"><thead><tr><th>Работа</th><th>Корпус</th><th>Факт на дату</th><th>Начало → окончание</th><th>Источник</th></tr></thead><tbody>')
+    shown = 0
+    total_scopes = sum(len(p.get('scopes') or []) for p in source.get('packages') or [])
+    for package in source.get('packages') or []:
+        for scope in package.get('scopes') or []:
+            if shown >= 400:
+                continue
+            shown += 1
+            value = scope.get('progress')
+            progress = 'нет числа' if value is None else f'{value*100:g}%'
+            refs = scope['source_cells']
+            out.append('<tr><td>'+esc(package['name'][:500])+'</td><td>'+esc(scope['corpus'])+
+                       '</td><td>'+esc(progress)+' · '+esc(scope.get('fact_day') or scope.get('fact_day_raw'))+
+                       '</td><td>'+esc((_text(scope['raw'].get('start')) or '—')[:128])+' → '+esc((_text(scope['raw'].get('finish')) or '—')[:128])+
+                       '</td><td>ГПР!'+esc(refs['progress'])+'; '+esc(refs['start'])+'; '+esc(refs['finish'])+'</td></tr>')
+    out.append('</tbody></table></div></details>')
+    if total_scopes > shown:
+        out.append('<p class="note">Показаны первые 400 строк по корпусам из '+esc(total_scopes)+'. Все исходные показания сохранены в версии.</p>')
+    out.append('<p class="note">Ноль без дат не означает, что работа применима к корпусу. Общие работы и готовность по разным основаниям не суммируются.</p></section>')
+    return ''.join(out)
