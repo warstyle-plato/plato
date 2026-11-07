@@ -26,7 +26,7 @@ def model(pm: dict, seeds: dict[str, dt.date], *, evidence: bool = False,
         return {'state': 'unknown', 'rows': [], 'edges': [], 'confirmation': pm.get('confirmation') or {}, 'rnv': {
             'state': 'unknown', 'approved': None, 'forecast': None, 'indicative_forecast': None,
             'delay_days': None, 'driving_chain': [],
-            'reasons': ['Выгрузка PM с подтверждёнными связями работ не загружена.']}}
+            'reasons': [pm.get('reason') or 'Выгрузка PM с подтверждёнными связями работ не загружена.']}}
     valid_types = {'FS', 'SS', 'FF', 'SF'}
     safe_tasks = {}
     for tid, task in tasks.items():
@@ -163,9 +163,12 @@ def _technical_render(block: dict) -> str:
     state = rnv.get('state')
     out = ['<section class="dependency-timeline"><h3>Сдвиги по цепочке работ и прогноз РНВ</h3>',
            '<p><b>План РНВ:</b> '+esc(date(rnv.get('approved')))+' · <b>Прогноз РНВ:</b> '+
-           esc(date(rnv.get('forecast')) if state == 'complete' else 'неполный' if state == 'partial' else 'недостаточно данных')+'</p>']
+           esc(date(rnv.get('forecast')) if state == 'complete' else
+                date(rnv.get('forecast'))+' — оценка по ГПР' if state == 'estimate' else
+                'неполный' if state == 'partial' else 'недостаточно данных')+'</p>']
     if state == 'partial' and rnv.get('indicative_forecast'):
-        out.append('<p>По известной части сети: '+esc(date(rnv['indicative_forecast']))+
+        out.append('<p>'+('По работам ГПР с прогнозом: ' if rnv.get('basis') == 'gpr' else 'По известной части сети: ')
+                   +esc(date(rnv['indicative_forecast']))+
                    ' · сдвиг '+esc(rnv.get('delay_days'))+' дн. Это не подтверждённый итоговый срок РНВ.</p>')
     for reason in rnv.get('reasons') or []:
         out.append('<p class="note">'+esc(reason)+'</p>')
@@ -178,7 +181,10 @@ def _technical_render(block: dict) -> str:
                     else 'Полнота цепочки до РНВ не подтверждена.')+' Проверка от '+
                    esc(date(confirmation['recorded_at'][:10]))+'. '+esc(confirmation.get('note'))+'</p>')
     chain = rnv.get('driving_chain') or []
-    if chain:
+    if chain and rnv.get('basis') == 'gpr':
+        out.append('<p><b>Срок тянет работа:</b> «'+esc(chain[0]['name'])+'»'+
+                   (' — '+esc(chain[0]['reason']) if chain[0].get('reason') else '')+'</p>')
+    elif chain:
         out.append('<p><b>Одна из ведущих цепочек:</b> '+ ' → '.join(esc(row['name']) for row in chain)+'</p>')
     if block.get('physical'):
         from developaid_schedule_physical import render as render_physical
@@ -294,19 +300,25 @@ def render(block: dict, *, context: str = 'monitor') -> str:
     esc = lambda value: html.escape(str(value if value is not None else ''), quote=True)
     rnv = block.get('rnv') or {}
     state = rnv.get('state')
+    gpr = rnv.get('basis') == 'gpr'
     forecast = (date_text(rnv.get('forecast')) if state == 'complete' and rnv.get('forecast')
+                else date_text(rnv.get('forecast'))+' — оценка по ГПР' if state == 'estimate' and rnv.get('forecast')
                 else 'неполный' if state == 'partial' else 'недостаточно данных')
     delta = rnv.get('delay_days')
-    delay = (f'{delta:+g} дн.' if state in {'complete', 'partial'}
+    delay = (f'{delta:+g} дн.' if state in {'complete', 'partial', 'estimate'}
              and isinstance(delta, (int, float)) else 'не определён')
     out = [styles(), '<section class="dependency-timeline schedule-overview">',
            '<h3>РНВ и причины переноса срока</h3>',
            '<div class="schedule-rnv-cards"><div><span>План РНВ</span><strong>'+esc(date_text(rnv.get('approved')))+'</strong></div>',
            '<div class="'+('schedule-warning' if state != 'complete' else '')+'"><span>Прогноз РНВ</span><strong>'+esc(forecast)+'</strong></div>',
-           '<div><span>Сдвиг РНВ'+(' по известной части сети' if state == 'partial' else '')+'</span><strong>'+esc(delay)+'</strong></div></div>']
+           '<div><span>Сдвиг РНВ'+(' по работам ГПР с прогнозом' if state == 'partial' and gpr else ' по известной части сети' if state == 'partial' else '')+'</span><strong>'+esc(delay)+'</strong></div></div>']
     if state == 'partial' and rnv.get('indicative_forecast'):
-        out.append('<p class="schedule-note">По известной части сети: '+esc(date_text(rnv['indicative_forecast']))+
-                   '. Это не подтверждённый итоговый срок РНВ.</p>')
+        out.append('<p class="schedule-note">'+('По работам ГПР с прогнозом: ' if gpr else 'По известной части сети: ')
+                   +esc(date_text(rnv['indicative_forecast']))+'. Это не подтверждённый итоговый срок РНВ.</p>')
+    chain = rnv.get('driving_chain') or []
+    if gpr and chain:
+        out.append('<p class="schedule-note"><b>Срок тянет работа:</b> «'+esc(chain[0].get('name') or '')+'»'
+                   +(' — '+esc(chain[0]['reason']) if chain[0].get('reason') else '')+'</p>')
     reasons = rnv.get('reasons') or []
     for reason in reasons[:3]:
         out.append('<p class="schedule-note">'+esc(reason)+'</p>')

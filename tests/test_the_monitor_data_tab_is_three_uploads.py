@@ -30,7 +30,9 @@ PORT = 18800
 VISIBLE = ["gpr", "finance", "baselineBtn", "gprFact", "gprFactBtn", "finRepl",
            "finReplBtn", "rss", "rssBtn", "cumulativeFile", "cumulativeDate",
            "cumulativeUpload", "budget", "budgetBtn"]
-FOLDED = ["pm", "rebase", "rebaseBtn", "retention", "retentionBtn", "stageObj", "stageBtn"]
+FOLDED = ["rebase", "rebaseBtn", "retention", "retentionBtn", "stageObj", "stageBtn"]
+# PM is off by owner decision: its upload stays hidden even in the folded block.
+HIDDEN = ["pm"]
 GONE = ["sales", "salesBtn", "salesMonth", "salesRowBtn", "dailyText", "dailyBtn"]
 
 
@@ -62,6 +64,7 @@ def test_the_data_tab_on_the_rendered_page(monkeypatch):
             present = {name: tab.locator(f"#{name}").count() for name in GONE}
             tab.click("#otherUploads summary")
             opened = {name: tab.is_visible(f"#{name}") for name in FOLDED}
+            hidden = {name: tab.is_visible(f"#{name}") for name in HIDDEN}
         finally:
             browser.close()
 
@@ -71,4 +74,5 @@ def test_the_data_tab_on_the_rendered_page(monkeypatch):
     assert all(shown[name] for name in VISIBLE), shown
     assert not any(shown[name] for name in FOLDED), shown
     assert all(opened.values()), opened
+    assert not any(hidden.values()), hidden
     assert not any(present.values()), present
