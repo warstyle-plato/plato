@@ -9,11 +9,14 @@ import datetime as dt
 
 import openpyxl
 import pytest
+from test_monitor_contract_register import (  # noqa: F401  (fixture)
+    primary_ledger,
+    project,
+)
 
 import developaid_monitor as monitor
 import developaid_monitor_contract_risk as risk
 import developaid_monitor_contracts as contracts
-from test_monitor_contract_register import project, primary_ledger  # noqa: F401  (fixture)
 
 CUT = "2026-11-06"
 DAY = "2026-11-01"
