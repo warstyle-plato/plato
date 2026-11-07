@@ -164,7 +164,7 @@ class Responses:
 
 
 @contextlib.contextmanager
-def browser_page(width=390, hash_=''):
+def browser_page(width=390, hash_='', init=''):
     from playwright.sync_api import sync_playwright
     chrome = chromium_or_skip()
     responses = Responses()
@@ -174,6 +174,8 @@ def browser_page(width=390, hash_=''):
         page = browser.new_page(viewport={'width': width, 'height': 950})
         page.set_default_timeout(5000)
         page.add_init_script(f"localStorage.setItem('plato_projects_key',{json.dumps(KEY)});localStorage.setItem('monitor_project','Учебный проект');")
+        if init:
+            page.add_init_script(init)
         page.route('**/monitor/**', responses)
         errors = []
         page.on('pageerror', lambda e: errors.append(str(e)))

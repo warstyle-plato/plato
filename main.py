@@ -335,7 +335,9 @@ def _agent_ready() -> bool:
     На ядре Яндекса OPENAI_API_KEY отсутствует намеренно, и прежняя проверка
     объявляла Платона отключённым при исправно настроенном прокси на Render.
     """
-    return _proxy_configured() or bool(os.getenv("OPENAI_API_KEY", "").strip())
+    import plato_provider
+
+    return _proxy_configured() or plato_provider.model_key_present()
 
 
 def _agent_unready_reason() -> str:
@@ -1047,7 +1049,8 @@ def _run_agent(chat_id: int, text: str, *, intro: str = "") -> None:
             chat_id,
             "<b>Платон отключён на сервере.</b>\n"
             f"AI-прокси Render не настроен: {_agent_unready_reason()} — без него бот не может "
-            "комментировать расчёт. Ключ <code>OPENAI_API_KEY</code> задаётся только на Render, "
+            "комментировать расчёт. Ключ модели (<code>OPENAI_API_KEY</code> или "
+            "<code>ANTHROPIC_API_KEY</code>) задаётся только на Render, "
             "на ядре он не нужен. Добавьте переменные в настройках сервиса и перезапустите его.",
         )
         return
