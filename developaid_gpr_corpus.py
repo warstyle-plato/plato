@@ -204,3 +204,41 @@ def render(source: dict | None) -> str:
         out.append('<p class="note">Показаны первые 400 строк по корпусам из '+esc(total_scopes)+'. Все исходные показания сохранены в версии.</p>')
     out.append('<p class="note">Ноль без дат не означает, что работа применима к корпусу. Общие работы и готовность по разным основаниям не суммируются.</p></section>')
     return ''.join(out)
+
+
+def render_overview(source: dict | None, cut: str = '') -> str:
+    """Readable source-only fallback when no approved corpus mapping exists."""
+    if not source:
+        return ''
+    import html
+    from developaid_schedule_visual import day, date_text, lanes, legend, styles
+    packages = source.get('packages') or []
+    if not packages:
+        return ''
+    reference = day(cut)
+    def rank(package):
+        scopes = package.get('scopes') or []
+        active = any(isinstance(scope.get('progress'), (int, float)) and 0 < scope['progress'] < 1
+                     for scope in scopes)
+        dates = [value for scope in scopes if (value := day(scope.get('finish')))]
+        distance = min((abs((value-reference).days) for value in dates), default=10**9) if reference else 0
+        return (not active, distance, str(package.get('source_id') or ''))
+    selected = min(packages, key=rank)
+    rows = []
+    for scope in selected.get('scopes') or []:
+        rows.append({'id': str(selected.get('source_id') or '')+':'+str(scope.get('corpus') or ''),
+                     'name': scope.get('corpus') or 'Объект не указан',
+                     'subtitle': ('Показание на '+date_text(scope.get('fact_day'))
+                                  if day(scope.get('fact_day')) else 'Дата показания не распознана'),
+                     'plan_start': scope.get('start'), 'plan_finish': scope.get('finish'),
+                     'source_progress': scope.get('progress')})
+    esc = lambda value: html.escape(str(value if value is not None else ''), quote=True)
+    out = [styles(), '<section class="schedule-overview corpus-gpr-overview"><h3>Исходные показания ГПР по корпусам</h3>',
+           '<p class="schedule-note">Эти показания не подтверждают утверждённый базовый график, привязку КС к работам или прогноз РНВ.</p>',
+           '<h4>'+esc(selected.get('name') or 'Пакет без названия')+'</h4>',
+           '<p class="schedule-note">Для просмотра выбран пакет с промежуточными показаниями и ближайшими исходными сроками, если они есть. Это не автоматическое определение текущего этапа.</p>',
+           lanes(rows), legend(rows),
+           '<details class="schedule-source-packages"><summary>Все пакеты исходного файла ('+str(len(packages))+')</summary>']
+    out.append(render(source))
+    out.append('</details></section>')
+    return ''.join(out)
