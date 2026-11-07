@@ -163,9 +163,12 @@ def render(block: dict) -> str:
     state = rnv.get('state')
     out = ['<section class="dependency-timeline"><h3>Сдвиги по цепочке работ и прогноз РНВ</h3>',
            '<p><b>План РНВ:</b> '+esc(date(rnv.get('approved')))+' · <b>Прогноз РНВ:</b> '+
-           esc(date(rnv.get('forecast')) if state == 'complete' else 'неполный' if state == 'partial' else 'недостаточно данных')+'</p>']
+           esc(date(rnv.get('forecast')) if state == 'complete' else
+                date(rnv.get('forecast'))+' — оценка по ГПР' if state == 'estimate' else
+                'неполный' if state == 'partial' else 'недостаточно данных')+'</p>']
     if state == 'partial' and rnv.get('indicative_forecast'):
-        out.append('<p>По известной части сети: '+esc(date(rnv['indicative_forecast']))+
+        out.append('<p>'+('По работам ГПР с прогнозом: ' if rnv.get('basis') == 'gpr' else 'По известной части сети: ')
+                   +esc(date(rnv['indicative_forecast']))+
                    ' · сдвиг '+esc(rnv.get('delay_days'))+' дн. Это не подтверждённый итоговый срок РНВ.</p>')
     for reason in rnv.get('reasons') or []:
         out.append('<p class="note">'+esc(reason)+'</p>')
@@ -178,7 +181,10 @@ def render(block: dict) -> str:
                     else 'Полнота цепочки до РНВ не подтверждена.')+' Проверка от '+
                    esc(date(confirmation['recorded_at'][:10]))+'. '+esc(confirmation.get('note'))+'</p>')
     chain = rnv.get('driving_chain') or []
-    if chain:
+    if chain and rnv.get('basis') == 'gpr':
+        out.append('<p><b>Срок тянет работа:</b> «'+esc(chain[0]['name'])+'»'+
+                   (' — '+esc(chain[0]['reason']) if chain[0].get('reason') else '')+'</p>')
+    elif chain:
         out.append('<p><b>Одна из ведущих цепочек:</b> '+ ' → '.join(esc(row['name']) for row in chain)+'</p>')
     if block.get('physical'):
         from developaid_schedule_physical import render as render_physical
