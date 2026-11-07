@@ -155,8 +155,8 @@ def model(pm: dict, seeds: dict[str, dt.date], *, evidence: bool = False,
                 'reasons': list(dict.fromkeys(reasons))}}
 
 
-def render(block: dict) -> str:
-    """Escaped HTML and SVG reused verbatim by Monitor, report HTML and PDF."""
+def _technical_render(block: dict) -> str:
+    """Escaped technical evidence for opt-in Monitor details."""
     esc = lambda value: html.escape(str(value if value is not None else ''), quote=True)
     rnv = block.get('rnv') or {}
     date = lambda value: dt.date.fromisoformat(value).strftime('%d.%m.%Y') if value else '—'
@@ -184,20 +184,16 @@ def render(block: dict) -> str:
         from developaid_schedule_physical import render as render_physical
         out.append(render_physical(block['physical']))
     all_rows = block.get('rows') or []
-    # Focus on delayed rows and their immediate dependencies; cap the visual,
-    # disclose truncation, and keep the complete model available to the caller.
-    picked = {r['id'] for r in all_rows if (r.get('own_delay_days') or r.get('inherited_delay_days')
-                                          or r.get('actual_finish'))}
-    picked.update(item['id'] for item in chain)
-    for edge in block.get('edges') or []:
-        if edge['to'] in picked:
-            picked.add(edge['from'])
-    rows = [r for r in all_rows if r['id'] in picked][:60]
+    out.append('<h4>Все работы исходной сети ('+str(len(all_rows))+')</h4><div style="overflow-x:auto"><table class="schedule-all-tasks"><thead><tr><th>Работа / ID</th><th>План</th><th>Расчёт / факт окончания</th><th>Собственная задержка</th><th>От предыдущих этапов</th><th>Резерв</th></tr></thead><tbody>')
+    for row in all_rows:
+        out.append('<tr data-network-task="'+esc(row['id'])+'"><td>'+esc(row['name'])+'<br><small>'+esc(row['id'])+'</small></td><td>'+esc(date(row.get('plan_start')))+' — '+esc(date(row.get('plan_finish')))+'</td><td>'+('Факт завершения: ' if row.get('actual_finish') else '')+esc(date(row.get('actual_finish') or row.get('forecast_finish')))+'</td><td>'+esc('нет данных' if row.get('own_delay_days') is None else row['own_delay_days'])+'</td><td>'+esc('нет данных' if row.get('inherited_delay_days') is None else row['inherited_delay_days'])+'</td><td>'+esc('не указан' if row.get('remaining_float_days') is None else row['remaining_float_days'])+'</td></tr>')
+    out.append('</tbody></table></div>')
+    # A small example can show its whole network. Large networks use the same
+    # explicitly selected driver explanation; every task is accessible above.
+    rows = all_rows if len(all_rows) <= 12 else overview_rows(block)[0]
     if not rows:
         out.append('</section>')
         return ''.join(out)
-    if len(picked) > len(rows):
-        out.append('<p class="note">Показаны первые 60 работ; остальные остаются в полном графике Монитора.</p>')
     days = [dt.date.fromisoformat(r[k]) for r in rows
             for k in ('plan_start', 'plan_finish', 'forecast_start', 'forecast_finish') if r.get(k)]
     first, last = min(days), max(days)
@@ -239,4 +235,99 @@ def render(block: dict) -> str:
         label = ' · факт: ' if row.get('actual_finish') else ' → '
         out.append(f'<text x="260" y="{y+31}" font-size="10">'+esc(date(row['plan_finish']))+label+esc(date(row.get('forecast_finish')))+' · резерв: '+esc('не указан' if row.get('remaining_float_days') is None else str(row['remaining_float_days'])+' дн.')+'</text>')
     out.append('</svg></div><p class="note">Серое — исходный план; зелёное на плановой полосе — доля натурального объёма отдельной работы; зелёная точка — факт окончания без предположения о фактическом начале; синее — расчёт по известным данным; стрелки — связи PM. Разные компоненты не усредняются. Унаследованные сдвиги по цепочке не складываются.</p></section>')
+    return ''.join(out)
+
+
+def overview_rows(block: dict) -> tuple[list[dict], str]:
+    """Select an explanation of the existing driving chain, never PM file order.
+
+    This does not change or aggregate the network. Long chains retain their
+    largest own-delay source and final steps; the complete chain remains in the
+    technical view. Finished historical rows cannot crowd out the current cause.
+    """
+    all_rows = {row['id']: row for row in block.get('rows') or []}
+    chain = [all_rows[item['id']] for item in (block.get('rnv') or {}).get('driving_chain') or []
+             if item['id'] in all_rows]
+    pending = [row for row in chain if not row.get('actual_finish')]
+    delayed = [row for row in chain
+               if (row.get('own_delay_days') or 0) > 0 or (row.get('inherited_delay_days') or 0) > 0]
+    if delayed:
+        origins = [row for row in delayed if (row.get('own_delay_days') or 0) > 0]
+        source = max(origins or delayed,
+                     key=lambda row: (row.get('own_delay_days') or 0,
+                                      row.get('inherited_delay_days') or 0,
+                                      row.get('forecast_finish') or ''))
+        selected_ids = {source['id'], *(row['id'] for row in pending[-3:])}
+        rows = [row for row in chain if row['id'] in selected_ids]
+        hidden = len(chain)-len(rows)
+        note = ('Показаны источник задержки и завершающие этапы одной из ведущих цепочек. '
+                'Переносы по цепочке не складываются.')
+        if hidden:
+            note += f' Ещё работ в этой цепочке: {hidden}; они доступны в подробном графике Монитора.'
+        return rows, note
+    # A PM may contain delayed jobs without a confirmed path to RNV. They are
+    # useful operational facts, but must not be labelled the project's driver.
+    available = [row for row in all_rows.values() if not row.get('actual_finish')
+                 and ((row.get('own_delay_days') or 0) > 0
+                      or (row.get('inherited_delay_days') or 0) > 0)]
+    if available:
+        own = max(available, key=lambda row: (row.get('own_delay_days') or 0,
+                                              row.get('forecast_finish') or ''))
+        inherited = max(available, key=lambda row: (row.get('inherited_delay_days') or 0,
+                                                    row.get('forecast_finish') or ''))
+        return list({row['id']: row for row in (own, inherited)}.values()), (
+            'Показаны работы с наибольшей собственной и унаследованной задержкой. '
+            'Их влияние на итоговый РНВ не подтверждено.')
+    planned = [row for row in all_rows.values() if not row.get('actual_finish')
+               and row.get('plan_start') and row.get('plan_finish')]
+    if planned:
+        return sorted(planned, key=lambda row: (row['plan_finish'], row['plan_start'], str(row['id'])),
+                      reverse=True)[:3], (
+            'Показаны работы с самыми поздними сроками исходного плана. '
+            'Это не прогноз и не подтверждённая цепочка переноса РНВ.')
+    return [], 'Подтверждённой цепочки переноса для отображения пока нет.'
+
+
+def render(block: dict, *, context: str = 'monitor') -> str:
+    """A readable executive overview; raw PM evidence is opt-in and not printed."""
+    from developaid_schedule_visual import styles, date_text, physical_summary
+    esc = lambda value: html.escape(str(value if value is not None else ''), quote=True)
+    rnv = block.get('rnv') or {}
+    state = rnv.get('state')
+    forecast = (date_text(rnv.get('forecast')) if state == 'complete' and rnv.get('forecast')
+                else 'неполный' if state == 'partial' else 'недостаточно данных')
+    delta = rnv.get('delay_days')
+    delay = (f'{delta:+g} дн.' if state in {'complete', 'partial'}
+             and isinstance(delta, (int, float)) else 'не определён')
+    out = [styles(), '<section class="dependency-timeline schedule-overview">',
+           '<h3>РНВ и причины переноса срока</h3>',
+           '<div class="schedule-rnv-cards"><div><span>План РНВ</span><strong>'+esc(date_text(rnv.get('approved')))+'</strong></div>',
+           '<div class="'+('schedule-warning' if state != 'complete' else '')+'"><span>Прогноз РНВ</span><strong>'+esc(forecast)+'</strong></div>',
+           '<div><span>Сдвиг РНВ'+(' по известной части сети' if state == 'partial' else '')+'</span><strong>'+esc(delay)+'</strong></div></div>']
+    if state == 'partial' and rnv.get('indicative_forecast'):
+        out.append('<p class="schedule-note">По известной части сети: '+esc(date_text(rnv['indicative_forecast']))+
+                   '. Это не подтверждённый итоговый срок РНВ.</p>')
+    reasons = rnv.get('reasons') or []
+    for reason in reasons[:3]:
+        out.append('<p class="schedule-note">'+esc(reason)+'</p>')
+    if len(reasons) > 3:
+        out.append('<details class="schedule-reasons"><summary>Все причины неполного прогноза ('+str(len(reasons))+')</summary>'+''.join('<p class="schedule-note">'+esc(reason)+'</p>' for reason in reasons[3:])+'</details>')
+    # Owner's decision: no dependency drawing in Monitor or the summary. The
+    # RNV cards, reasons, physical summary and calendar check stay; the chain
+    # lanes and the technical network view are not drawn. The model (rows,
+    # edges) stays in the cut. The work that drives the date is named as text.
+    chain = rnv.get('driving_chain') or []
+    if chain:
+        out.append('<p class="schedule-note"><b>Срок тянет:</b> '+esc(chain[-1].get('name') or '')+'</p>')
+    out.append(physical_summary(block.get('physical')))
+    if not block.get('history'):
+        out.append('<p class="schedule-note">Изменение между версиями ГПР не рассчитано: данные сравнения не предоставлены.</p>')
+    confirmation = block.get('confirmation') or {}
+    if confirmation.get('recorded_at'):
+        calendar = ('Расчёт в календарных днях подтверждён.'
+                    if confirmation.get('calendar_basis') == 'calendar_days' else 'Календарь не подтверждён.')
+        chain = ('Полнота цепочки до РНВ подтверждена.'
+                 if confirmation.get('rnv_chain_complete') else 'Полнота цепочки до РНВ не подтверждена.')
+        out.append('<div class="schedule-confirmation-summary"><p class="schedule-note"><b>Проверка исходного графика</b> от '+esc(date_text(confirmation['recorded_at']))+'. '+esc(calendar+' '+chain)+'</p><p class="schedule-note">'+esc(confirmation.get('note'))+'</p></div>')
+    out.append('</section>')
     return ''.join(out)
