@@ -41,7 +41,8 @@ def test_an_ambiguous_file_is_refused():
 import re
 
 ENTRY_POINTS = [ROOT / "CLAUDE.md", ROOT / "AGENTS.md", WS / "README.md",
-                WS / "CONTROL_HANDOFF.md", *sorted((WS / "roles").glob("*.md"))]
+                WS / "CONTROL_HANDOFF.md", WS / "RESERVE_CONTROL.md",
+                *sorted((WS / "roles").glob("*.md"))]
 
 # Имя действующего контроля живёт только в CONTROL_ACTIVE. Предложение, где
 # слова о контроле, очереди, слиянии или выпуске стоят рядом с именем
@@ -49,8 +50,11 @@ ENTRY_POINTS = [ROOT / "CLAUDE.md", ROOT / "AGENTS.md", WS / "README.md",
 # при первом переключении. Исключения перечислены поимённо: это фразы, которые
 # говорят «смотри файл», а не «контроль — такой-то».
 _CONTROL_WORDS = re.compile(r"контрол|очеред|слива|слия|выкат|выпуск|управля", re.I)
-_PROVIDER = re.compile(r"\b(Codex|Claude)\b")
+_PROVIDER = re.compile(r"\b(codex|claude)\b(?!\.md)", re.I)
 _ALLOWED = {
+    "Контроль PLATO может вестись двумя поставщиками: Codex и Claude.",
+    "Работать исполнителем по карточке, выданной действующим контролем, в своей "
+    "ветке с префиксом поставщика (`claude/…` или `codex/…`).",
     "Если там не `codex`, разговор Codex — резерв: исполнитель, страж или отчёт "
     "владельцу, без слияния и выпуска.",
     "Там твой поставщик (`claude` для Claude, `codex` для Codex) — ты действующий "
@@ -91,6 +95,8 @@ def test_a_text_that_hardcodes_the_controller_is_caught():
                  "разговор Codex с владельцем.",
                  "Очередью PR и выпуском управляет разговор Codex с владельцем.",
                  "Сливает и выкатывает только Claude-контроль.",
+                 "Очередью и выпуском сейчас управляет разговор codex с владельцем.",
+                 "Сейчас действующий контроль — Claude «Контроль PLATO».",
                  "Ты работаешь под контролем текущего разговора Codex с владельцем.",
                  "U --> C[Контроль Claude]",
                  "Ты — текущий контроль PLATO в Codex.",
