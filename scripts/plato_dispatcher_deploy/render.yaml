@@ -1,0 +1,17 @@
+# PROPOSAL ONLY. Do not apply until workspace/cost/source and acceptance gates
+# have been reviewed. This is a NEW isolated service, not the PLATO bot/core.
+services:
+  - type: worker
+    name: plato-session-dispatcher
+    runtime: docker
+    repo: https://github.com/warstyle-plato/plato
+    branch: feat/cloud-session-dispatcher
+    region: frankfurt
+    plan: 1c-2g
+    dockerfilePath: ./scripts/plato_dispatcher_deploy/Dockerfile
+    dockerContext: .
+    autoDeployTrigger: 'off'
+    disk:
+      name: plato-dispatcher-state
+      mountPath: /root/.codex
+      sizeGB: 1
