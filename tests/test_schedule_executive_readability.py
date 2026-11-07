@@ -59,12 +59,13 @@ def test_dense_network_is_calculated_fully_but_history_cannot_crowd_out_delay_or
     html = executive_html(block, grouped)
     assert 'history-1095' not in html and 'Историческая техническая' not in html
     assert 'schedule-technical' not in html.split('</style>')[-1]
-    assert 'от предыдущих этапов: 15 дн.' in html
+    # Owner's decision: no dependency drawing and no technical network view;
+    # the full model stays in the cut and the RNV cards keep the dates.
+    assert 'от предыдущих этапов' not in html
     assert block == before
-    technical = timeline.render(block)
-    assert 'data-network-task="history-1095"' in technical
-    assert 'Все работы исходной сети (1100)' in technical
-    assert 'Показаны первые 60' not in technical
+    monitor_html = timeline.render(block)
+    assert 'data-network-task' not in monitor_html and 'schedule-technical' not in monitor_html.split('</style>')[-1]
+    assert 'Показаны первые 60' not in monitor_html
 
 
 @pytest.mark.parametrize('state', ['partial', 'unknown'])
@@ -83,7 +84,7 @@ def test_no_corpus_mapping_keeps_known_pm_dates_and_explains_the_gap():
     block, _, _ = dense_schedule()
     html = executive_html(block, {'state': 'missing', 'reason': 'Привязка к корпусам не подтверждена.',
                                   'dependency_timeline': block})
-    assert '16.02.2027' in html and 'от предыдущих этапов: 15 дн.' in html
+    assert '16.02.2027' in html and 'от предыдущих этапов' not in html
     assert 'Привязка к корпусам не подтверждена.' in html
     assert 'Историческая техническая работа' not in html
 
@@ -94,15 +95,15 @@ def test_finished_delay_origin_is_kept_in_the_explanation():
                            actual_finishes={'1': day('2026-12-10')})
     rows, _ = timeline.overview_rows(block)
     assert rows[0]['id'] == '1' and rows[0]['actual_finish'] == '2026-12-10'
-    assert 'Факт окончания:</b> 10.12.2026' in timeline.render(block, context='report')
+    # The explanation stays in the model; the drawing is not rendered (owner).
+    assert 'schedule-lane' not in timeline.render(block, context='report').split('</style>')[-1]
 
 
 def test_unconfirmed_pm_still_shows_supplied_plan_without_renaming_it_forecast():
     block = timeline.model(network(), {}, evidence=False)
     html = timeline.render(block, context='report')
     assert 'Прогноз РНВ</span><strong>недостаточно данных' in html
-    assert 'самыми поздними сроками исходного плана' in html
-    assert '01.02.2027' in html and 'schedule-plan' in html
+    assert '01.02.2027' in html
     assert 'class="schedule-bar schedule-forecast"' not in html
 
 
@@ -149,7 +150,8 @@ def test_actual_executive_renderer_keeps_fonts_bars_and_height_at_realistic_dens
         page = engine.new_page(viewport={'width': width, 'height': 1000})
         page.set_content('<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><body style="margin:12px">'+executive_html(block, grouped)+'</body></html>')
         expect(page.locator('.schedule-rnv-cards')).to_contain_text('16.02.2027')
-        assert page.locator('.schedule-lane:visible').count() == 8
+        # Corpus lanes only: the RNV dependency lanes are not drawn (owner).
+        assert page.locator('.schedule-lane:visible').count() == 4
         assert page.locator('.schedule-article-leaf').count() == 4
         assert page.locator('.schedule-article-details[open]').count() == 0
         assert page.locator('svg').count() == 0
@@ -165,7 +167,7 @@ def test_actual_executive_renderer_keeps_fonts_bars_and_height_at_realistic_dens
         assert min(bounds['bars']) > 8
         page.locator('.schedule-article-tree>summary').click()
         page.locator('.schedule-article-leaf>summary').first.click()
-        assert page.locator('.schedule-lane:visible').count() == 33
+        assert page.locator('.schedule-lane:visible').count() == 29
         expect(page.locator('.schedule-article-leaf').first).to_contain_text('Укрупнённый этап 24')
         engine.close()
 
@@ -179,12 +181,10 @@ def test_real_monitor_all_raw_rows_are_reachable_but_closed_on_first_paint():
     with browser_page(390) as (page, responses, errors):
         page.evaluate('(v)=>renderGantt(v)', view)
         expect(page.locator('#dependencyTimelineBody .schedule-rnv-cards')).to_contain_text('16.02.2027')
-        assert page.locator('#dependencyTimelineBody .schedule-lane:visible').count() == 4
-        assert not page.locator('.schedule-technical').evaluate('(e)=>e.open')
-        assert page.locator('[data-network-task]:visible').count() == 0
-        page.locator('.schedule-technical>summary').click()
-        assert page.locator('[data-network-task]:visible').count() == 1100
-        expect(page.locator('[data-network-task="history-1095"]')).to_contain_text('Историческая техническая работа 1095')
+        # Owner's decision: no dependency lanes and no technical network view.
+        assert page.locator('#dependencyTimelineBody .schedule-lane').count() == 0
+        assert page.locator('.schedule-technical').count() == 0
+        assert page.locator('[data-network-task]').count() == 0
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         assert not errors
 
@@ -207,4 +207,4 @@ def test_real_a4_print_does_not_expand_raw_network_or_article_detail():
     assert '16.02.2027' in text and 'Корпус 4' in text
     assert 'Историческая техническая' not in text
     assert 'Укрупнённый этап 24' not in text
-    assert 'от предыдущих этапов: 15 дн.' in text
+    assert 'от предыдущих этапов' not in text

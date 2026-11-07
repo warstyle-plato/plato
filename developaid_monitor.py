@@ -663,7 +663,8 @@ def work_facts(project: str, upto: str = "") -> dict[str, dict[str, Any]]:
         items = [item for item in items if item.stem <= upto]
     for path in items:
         for row in json.loads(path.read_text(encoding="utf-8")).get("rows", []):
-            out[str(row.get("id"))] = row
+            # The file name is the decision date; keep it as the value's origin.
+            out[str(row.get("id"))] = dict(row, recorded_day=path.stem.split(".", 1)[0])
     return out
 
 

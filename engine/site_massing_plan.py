@@ -122,7 +122,7 @@ def _plan_enabled() -> bool:
 
 def _plan_configured() -> bool:
     """Платон доступен этому серверу: прокси на Render или свой ключ."""
-    return bool(_PLATO_AI_URL or os.getenv("OPENAI_API_KEY", "").strip())
+    return bool(_PLATO_AI_URL or plato_provider.model_key_present())
 
 
 def _plan_hash(data: Any) -> str:

@@ -25,7 +25,7 @@ def test_save_reload_and_revoke_with_actual_monitor_script(width):
             current = state(**{key: body[key] for key in ['calendar_basis', 'rnv_chain_complete', 'note']},
                             revision=current['revision']+1, recorded_at='2026-11-06T12:00:00+00:00')
         route.fulfill(json=current)
-    with browser_page(width) as (page, responses, errors):
+    with browser_page(width, init='window.DEVELOPAID_PM_ENABLED=true') as (page, responses, errors):
         page.route('**/monitor/schedule-confirmation/*', respond)
         page.evaluate('void loadScheduleConfirmation()')
         expect(page.locator('#scheduleConfirmationSave')).to_be_enabled()
@@ -56,7 +56,7 @@ def test_save_reload_and_revoke_with_actual_monitor_script(width):
 
 def test_stale_read_after_project_change_or_logout_cannot_restore_private_form():
     from playwright.sync_api import expect
-    with browser_page() as (page, responses, errors):
+    with browser_page(init='window.DEVELOPAID_PM_ENABLED=true') as (page, responses, errors):
         held = []
         page.route('**/monitor/schedule-confirmation/view', lambda route: held.append(route))
         with page.expect_request('**/monitor/schedule-confirmation/view'):
@@ -76,7 +76,7 @@ def test_stale_read_after_project_change_or_logout_cannot_restore_private_form()
 
 def test_history_is_read_only_and_conflict_requires_a_fresh_read():
     from playwright.sync_api import expect
-    with browser_page() as (page, responses, errors):
+    with browser_page(init='window.DEVELOPAID_PM_ENABLED=true') as (page, responses, errors):
         page.evaluate('(state)=>renderScheduleConfirmation(state)', state(can_edit=False, note='Проверка на дату среза.'))
         expect(page.locator('#scheduleConfirmationSave')).to_be_disabled()
         expect(page.locator('#scheduleChain')).to_be_disabled()

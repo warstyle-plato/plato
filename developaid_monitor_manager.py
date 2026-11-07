@@ -223,6 +223,10 @@ def _baseline_status(project: str, upto: str = "") -> dict[str, dict[str, Any]]:
     # Еженедельный ГПР-факт несёт свежие проценты и статусы поверх baseline:
     # план не меняется, меняется выполнение. Без снимка работает сам baseline.
     rows = list(baseline.get("works") or [])
+    # Origin and date of every percent travel with it: the chart must say
+    # whether a number is the approved plan, a weekly file or a manual decision.
+    origins = {str(item.get("id") or item.get("wbs") or "").strip(): ("approved_gpr", None)
+               for item in rows}
     try:
         fact = monitor.latest_schedule_fact(project, upto)
     except Exception:
@@ -230,6 +234,9 @@ def _baseline_status(project: str, upto: str = "") -> dict[str, dict[str, Any]]:
     if fact:
         fresh = {str(item.get("id") or item.get("wbs") or "").strip(): item
                  for item in fact.get("works") or []}
+        for tid in fresh:
+            if tid in origins:
+                origins[tid] = ("weekly_gpr", fact.get("taken_at"))
         rows = [fresh.get(str(item.get("id") or item.get("wbs") or "").strip(),
                           item) for item in rows]
     # Точечные проценты со страницы — поверх всего: в акте РСС нет имени
@@ -239,6 +246,9 @@ def _baseline_status(project: str, upto: str = "") -> dict[str, dict[str, Any]]:
     except Exception:
         manual = {}
     if manual:
+        for tid, row in manual.items():
+            if tid in origins:
+                origins[tid] = ("manual", row.get("recorded_day"))
         rows = [dict(item, progress=manual[tid]["progress"],
                      status=manual[tid].get("status") or item.get("status"))
                 if (tid := str(item.get("id") or item.get("wbs") or "").strip())
@@ -260,13 +270,18 @@ def _baseline_status(project: str, upto: str = "") -> dict[str, dict[str, Any]]:
             "closed": "заверш" in status or (progress or 0.0) >= 0.999,
             "status": str(item.get("status") or ""),
             "progress": progress,
+            "progress_origin": origins.get(tid, ("approved_gpr", None))[0],
+            "progress_date": origins.get(tid, ("approved_gpr", None))[1],
         }
     return out
 
 
-def _sanitize_base_schedule(project: str, schedule: dict[str, Any]) -> None:
-    """Remove the old money-pace calendar forecast from base Monitor rows."""
-    statuses = _baseline_status(project)
+def _sanitize_base_schedule(project: str, schedule: dict[str, Any], upto: str = "") -> None:
+    """Remove the old money-pace calendar forecast from base Monitor rows.
+
+    ``upto`` is the cut: a past cut must not read a later weekly GPR file or a
+    later manual decision (the management summary already passes its date)."""
+    statuses = _baseline_status(project, upto)
     for row in schedule.get("rows") or []:
         tid = str(row.get("id") or row.get("wbs") or "").strip()
         meta = statuses.get(tid, {})
@@ -287,6 +302,10 @@ def _sanitize_base_schedule(project: str, schedule: dict[str, Any]) -> None:
             row["progress_kind"] = "accepted_cost_ratio"
             row["progress_label"] = "КС / EAC"
         row["rss_act_cost_rate_3m"] = row.get("rate_3m")
+        # The GPR file's own percent, kept apart from the KS/EAC blend above.
+        row["gpr_progress"] = own
+        row["gpr_progress_origin"] = meta.get("progress_origin")
+        row["gpr_progress_date"] = meta.get("progress_date")
         row["baseline_closed"] = bool(meta.get("closed"))
         row["baseline_status"] = meta.get("status", "")
         row["actual_progress"] = None
@@ -722,7 +741,7 @@ def _build(
     if rss is None:
         return view
 
-    _sanitize_base_schedule(project, view["schedule"])
+    _sanitize_base_schedule(project, view["schedule"], upto)
     _seed_rebaselines(project, view["schedule"])
 
     management = _management(project, rss, view["schedule"])

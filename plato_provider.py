@@ -52,6 +52,51 @@ def provider_name() -> str:
     return raw
 
 
+_KEY_ENV = {"openai": "OPENAI_API_KEY", "anthropic": "ANTHROPIC_API_KEY"}
+
+
+def key_env_name() -> str:
+    """Имя переменной с ключом выбранного поставщика."""
+    return _KEY_ENV[provider_name()]
+
+
+def model_key_present() -> bool:
+    """Задан ли ключ ВЫБРАННОГО поставщика. Один владелец ответа «можно звать модель».
+
+    Ключ другого поставщика не в счёт: при `anthropic` найденный OPENAI_API_KEY
+    не делает этот сервер способным думать, а его отсутствие — неспособным.
+    Неизвестный поставщик — ключа нет (причину называет `provider_name`).
+    """
+    try:
+        name = key_env_name()
+    except ProviderError:
+        return False
+    return bool((os.getenv(name, "") or "").strip())
+
+
+def active_model(openai_model: str) -> str:
+    """Модель, которой этот сервер фактически позовёт выбранного поставщика."""
+    if provider_name() == "anthropic":
+        return anthropic_model(openai_model)
+    return openai_model
+
+
+def describe(openai_model: str) -> dict[str, Any]:
+    """Поставщик, модель и ключ этого сервера — для статуса, без исключений."""
+    try:
+        provider = provider_name()
+    except ProviderError as exc:
+        return {"provider": None, "model": None, "key_env": None,
+                "key_present": False, "error": str(exc)}
+    return {
+        "provider": provider,
+        "model": active_model(openai_model),
+        "key_env": _KEY_ENV[provider],
+        "key_present": model_key_present(),
+        "error": "",
+    }
+
+
 def anthropic_model(default_model: str = "") -> str:
     """Модель Anthropic. Имя модели OpenAI сюда не подставляется.
 

@@ -26,7 +26,7 @@ def model(pm: dict, seeds: dict[str, dt.date], *, evidence: bool = False,
         return {'state': 'unknown', 'rows': [], 'edges': [], 'confirmation': pm.get('confirmation') or {}, 'rnv': {
             'state': 'unknown', 'approved': None, 'forecast': None, 'indicative_forecast': None,
             'delay_days': None, 'driving_chain': [],
-            'reasons': ['Выгрузка PM с подтверждёнными связями работ не загружена.']}}
+            'reasons': [pm.get('reason') or 'Выгрузка PM с подтверждёнными связями работ не загружена.']}}
     valid_types = {'FS', 'SS', 'FF', 'SF'}
     safe_tasks = {}
     for tid, task in tasks.items():
@@ -290,7 +290,7 @@ def overview_rows(block: dict) -> tuple[list[dict], str]:
 
 def render(block: dict, *, context: str = 'monitor') -> str:
     """A readable executive overview; raw PM evidence is opt-in and not printed."""
-    from developaid_schedule_visual import styles, lanes, legend, date_text, physical_summary
+    from developaid_schedule_visual import styles, date_text, physical_summary
     esc = lambda value: html.escape(str(value if value is not None else ''), quote=True)
     rnv = block.get('rnv') or {}
     state = rnv.get('state')
@@ -312,19 +312,13 @@ def render(block: dict, *, context: str = 'monitor') -> str:
         out.append('<p class="schedule-note">'+esc(reason)+'</p>')
     if len(reasons) > 3:
         out.append('<details class="schedule-reasons"><summary>Все причины неполного прогноза ('+str(len(reasons))+')</summary>'+''.join('<p class="schedule-note">'+esc(reason)+'</p>' for reason in reasons[3:])+'</details>')
-    selected, explanation = overview_rows(block)
-    physical = {row['task_id']: row for row in (block.get('physical') or {}).get('tasks') or []}
-    rows = []
-    for row in selected:
-        view = dict(row, forecast_label='Расчёт по известной сети' if state != 'complete' else 'Прогноз')
-        fact = physical.get(row['id']) or {}
-        if fact.get('mode') == 'quantities' and isinstance(fact.get('progress'), (int, float)):
-            view['physical_progress'] = fact['progress']
-        rows.append(view)
-    out.append('<p class="schedule-note">'+esc(explanation)+'</p>')
-    if rows:
-        out.append(lanes(rows))
-        out.append(legend(rows))
+    # Owner's decision: no dependency drawing in Monitor or the summary. The
+    # RNV cards, reasons, physical summary and calendar check stay; the chain
+    # lanes and the technical network view are not drawn. The model (rows,
+    # edges) stays in the cut. The work that drives the date is named as text.
+    chain = rnv.get('driving_chain') or []
+    if chain:
+        out.append('<p class="schedule-note"><b>Срок тянет:</b> '+esc(chain[-1].get('name') or '')+'</p>')
     out.append(physical_summary(block.get('physical')))
     if not block.get('history'):
         out.append('<p class="schedule-note">Изменение между версиями ГПР не рассчитано: данные сравнения не предоставлены.</p>')
@@ -335,9 +329,5 @@ def render(block: dict, *, context: str = 'monitor') -> str:
         chain = ('Полнота цепочки до РНВ подтверждена.'
                  if confirmation.get('rnv_chain_complete') else 'Полнота цепочки до РНВ не подтверждена.')
         out.append('<div class="schedule-confirmation-summary"><p class="schedule-note"><b>Проверка исходного графика</b> от '+esc(date_text(confirmation['recorded_at']))+'. '+esc(calendar+' '+chain)+'</p><p class="schedule-note">'+esc(confirmation.get('note'))+'</p></div>')
-    if context == 'monitor':
-        out.append('<details class="schedule-technical"><summary>Техническая сеть работ и исходные показания</summary>'+_technical_render(block)+'</details>')
-    else:
-        out.append('<p class="schedule-monitor-link"><a href="/monitor">Открыть подробный график в Мониторе</a></p>')
     out.append('</section>')
     return ''.join(out)

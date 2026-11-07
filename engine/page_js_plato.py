@@ -71,7 +71,7 @@ async function applyAgentProposal(idx){
 }
 function askAgentQuick(text,scenario){aiInput.value=text;sendAgentMessage(scenario)}
 function aiPollHeaders(){return {'X-Plato-Session':activeSession(),'X-Developaid-Admin-Key':projectsAdminKey||''}}
-async function refreshAgentStatus(){try{const r=await fetch('/agent/status'),s=await r.json();aiStatusDot.classList.toggle('ready',!!s.enabled);aiStatusDot.title=s.enabled?`AI готов · ${s.model} · думает через ${s.thinks_via||'этот сервер'}`:'AI не настроен: нет ни OPENAI_API_KEY, ни PLATO_AI_URL'}catch(e){aiStatusDot.classList.remove('ready')}}
+async function refreshAgentStatus(){try{const r=await fetch('/agent/status'),s=await r.json();aiStatusDot.classList.toggle('ready',!!s.enabled);aiStatusDot.title=s.enabled?`AI готов · ${s.model||'модель выбирает сервис модели'} · думает через ${s.thinks_via||'этот сервер'}`:'AI не настроен: на сервере нет ни ключа модели, ни адреса сервиса модели (PLATO_AI_URL)'}catch(e){aiStatusDot.classList.remove('ready')}}
 async function syncInputsForAgent(){document.querySelectorAll('[id^=f_]').forEach(el=>{const id=el.id.slice(2);inputs[id]=el.type==='checkbox'?el.checked:(el.type==='number'?Number(el.value):el.value)});if(document.getElementById('rateScenario'))inputs.rate_scenario=rateScenario.value||'base';generateRateCurve();repairParkingFromGlavapu();normalizeSocialObjectDates()}
 // Разбор присланного документа. Тизер, справка по участку, решение ГЗК — то,
 // что аналитик переписывает в модель руками, и ошибка переписывания на экране

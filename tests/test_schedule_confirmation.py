@@ -136,11 +136,11 @@ def test_pm_cache_and_confirmation_track_bytes_even_when_size_and_mtime_are_kept
     def parse(path, *, data):
         return dict(network(), source_sha256=hashlib.sha256(data).hexdigest())
     monkeypatch.setattr(graph, '_read_pm', parse)
-    before = graph._load_pm('Учебный проект')
+    before = graph._load_pm_file('Учебный проект')
     save()
     source.write_bytes(b'x' * stamp.st_size)
     os.utime(source, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
-    after = graph._load_pm('Учебный проект')
+    after = graph._load_pm_file('Учебный проект')
     assert after['source_sha256'] != before['source_sha256']
     assert not confirmation.qualify('Учебный проект', after, '2026-11-06')['calendar_confirmed']
 
@@ -177,6 +177,6 @@ def test_real_pm_parser_reports_hash_of_the_bytes_it_read(source):
     sheet.append([1, 'Учебный этап', day('2026-11-01'), day('2026-11-10'), ''])
     sheet.append([2, 'Получение РНВ', day('2026-11-10'), day('2026-11-20'), '1'])
     wb.save(source)
-    pm = graph._load_pm('Учебный проект')
+    pm = graph._load_pm_file('Учебный проект')
     assert pm['source_sha256'] == hashlib.sha256(source.read_bytes()).hexdigest()
     assert pm['rnv_id'] == '2' and len(pm['tasks']) == 2
