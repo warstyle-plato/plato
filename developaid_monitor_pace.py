@@ -19,6 +19,7 @@ import developaid_schedule_timeline as schedule_timeline
 import developaid_gpr_corpus as corpus_gpr
 import developaid_schedule_confirmation as schedule_confirmation
 import developaid_schedule_physical as schedule_physical
+import developaid_schedule_work_fact as schedule_work_fact
 
 _INSTALLED = False
 _ORIGINAL_BUILD = None
@@ -252,6 +253,8 @@ def _apply_pace(project: str, view: dict[str, Any], cut: datetime.date) -> dict[
             rnv_block['approved_source'] = 'утверждённый ГПР'
             schedule['dependency_timeline']['rnv'] = rnv_block
     schedule['physical_progress'] = physical
+    # One owner of both readiness facts per work, read by the chart and summary.
+    schedule['work_fact'] = schedule_work_fact.model(rows, physical)
     if isinstance((view.get("dashboard") or {}).get("schedule"), dict):
         view["dashboard"]["schedule"]["qualified_rnv"] = schedule["dependency_timeline"]["rnv"]
         # A prebuilt summary may have been produced before RNV qualification.
