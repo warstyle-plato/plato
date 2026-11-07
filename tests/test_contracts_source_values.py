@@ -240,18 +240,24 @@ def test_old_reference_without_cut_safety_metadata_requires_refresh():
 
 
 @pytest.mark.parametrize('width', [360, 390, 1440])
-def test_long_realistic_work_titles_and_scopes_have_bounded_previews_and_full_details(width):
+@pytest.mark.parametrize('with_subject', [True, False])
+def test_long_realistic_work_titles_and_scopes_have_bounded_previews_and_full_details(width, with_subject):
     with browser_page(width) as (page, responses, errors):
         row = annual_data(responses)[0]
         full = 'Подлинное наименование строительных работ ' * 20
-        row['subject'] = full
+        row['subject'] = full if with_subject else ''
         row['scope'] = [f'Участок {index}: ' + 'Сложная зона работ ' * 8 for index in range(9)]
         row['physical_items'] = [{'name': f'Исходная работа {index}: '+full,
                                   'scope': row['scope'][index % 9], 'warnings': []}
                                  for index in range(12)]
         page.locator('#contractsTab').click()
         work = page.locator('tr[data-contract-id] .contract-works')
-        expect(work).to_contain_text('Ещё работ: 10')
+        if with_subject:
+            expect(work).to_contain_text('Позиций ведомости: 12')
+            expect(work).not_to_contain_text('Ещё работ:')
+        else:
+            expect(work).to_contain_text('Позиции ведомости')
+            expect(work).to_contain_text('Ещё работ: 10')
         expect(work).to_contain_text('Ещё участков: 7')
         assert len(work.text_content()) < 500
         assert full not in work.text_content()
