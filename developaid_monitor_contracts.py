@@ -537,6 +537,13 @@ def _cumulative_money(physical: list[dict], warnings: list[str]) -> tuple[float 
         if item.get("completed_amount") is None:
             uncertain = True
         for period in item.get("periods") or []:
+            # An empty cell group is not an execution record. Only omit it
+            # after _physical has reconciled this item's monetary total;
+            # never turn a missing price for a stated quantity into zero.
+            if (item.get("completed_amount") is not None
+                    and all(period.get(field) is None
+                            for field in ("amount", "quantity", "material_quantity"))):
+                continue
             first, last = _date(period.get("date_start")), _date(period.get("date_end"))
             amount = _number(period.get("amount"))
             if not first or not last or amount is None or first > last:
@@ -640,7 +647,10 @@ def build(project: str, cut: str = "") -> dict:
         if summary_amount is not None and rss_amount is not None and abs(summary_amount-rss_amount) > .01:
             amount = None
             row_warnings.append("РСС и сводная дают разные полные суммы договора; действующая цена не выбрана автоматически.")
-        physical = [_physical(item, ledger, cut) for ledger in ledger_items for item in ledger.get("items") or []]
+        physical_sources = [(ledger, [_physical(item, ledger, cut)
+                                     for item in ledger.get("items") or []])
+                            for ledger in ledger_items]
+        physical = [item for _, views in physical_sources for item in views]
         completed, completed_basis = _cumulative_money(physical, row_warnings)
         if amount is None:
             row_warnings.append("Нет подтверждённой полной суммы договора. Итог года или отдельной ведомости не использован как цена всего договора.")
@@ -685,11 +695,15 @@ def build(project: str, cut: str = "") -> dict:
                 "source": _source(summary_items[0].get("source")), "source_date": archive_day,
                 "amount_basis": summary_amount_basis, "completed_basis": summary_completed_basis})
         references = []
-        for ledger in ledger_items:
+        for ledger, views in physical_sources:
             values = [_number(item.get("completed_amount")) for item in ledger.get("items") or []]
+            future_excluded = any(item.get("future_periods_excluded") for item in views)
             references.append({"source": _source(ledger.get("source"), "Накопительная ведомость"),
                 "period_year": ledger.get("period_year"), "source_date": archive_day,
-                "completed": sum(values) if values and all(v is not None for v in values) else None,
+                "completed": (sum(values) if not future_excluded and values
+                              and all(v is not None for v in values) else None),
+                "period_dates_known": bool(ledger.get("period_dates_known")),
+                "future_periods_excluded": future_excluded,
                 "label": "Сумма сохранённых итогов позиций этой ведомости; справочно, период закрытия не установлен"})
         row = {"id": identifier, "contractor": str(first.get("contractor") or ""),
                "customer": str(first.get("customer") or ""), "contract": str(first.get("contract") or ""),
