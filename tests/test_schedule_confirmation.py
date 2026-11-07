@@ -150,7 +150,7 @@ def test_confirmation_provenance_is_shared_by_monitor_and_report_and_escaped(sou
     saved = save(note='<img src=x onerror=alert(1)>')
     pm = confirmation.qualify('Учебный проект', dict(network(), source_sha256=saved['source_sha256']), '2026-11-06')
     block = timeline.model(pm, {'1': day('2026-12-10')}, evidence=True)
-    markup = timeline.render(block)
+    markup = timeline.render(block, context='report')
     assert '&lt;img' in markup and '<img' not in markup
     assert '06.11.2026' in markup
     assert markup in report._gantt_html({'gantt': {'state': 'missing', 'dependency_timeline': block}})

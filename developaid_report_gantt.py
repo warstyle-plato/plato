@@ -285,6 +285,39 @@ def notes(gantt: dict[str, Any], rnv: dict[str, Any] | None = None) -> list[str]
     return out
 
 
+def render(gantt: dict[str, Any], cut: Any = None) -> str:
+    """Executive corpus lanes; article detail remains opt-in, not a long PDF."""
+    if gantt.get('state') != 'ok':
+        return ''
+    from developaid_schedule_visual import styles, lanes, legend, date_text
+    out = [styles(), '<div class="chart gantt"><section class="schedule-overview"><h3>План и прогноз по корпусам</h3>']
+    if cut:
+        out.append('<p class="schedule-note">Срез на '+html.escape(date_text(cut))+'. Даты взяты из графика Монитора.</p>')
+    rows = [dict(corpus, id='corpus:'+str(i), forecast_label=(
+                    'По известным работам' if corpus.get('forecast_partial') else 'Прогноз'))
+            for i, corpus in enumerate(gantt.get('corpora') or [])]
+    out.append(lanes(rows))
+    out.append(legend(rows))
+    article_count = sum(len(corpus.get('articles') or []) for corpus in gantt.get('corpora') or [])
+    if article_count:
+        out.append('<details class="schedule-article-details schedule-article-tree"><summary>Этапы и статьи по корпусам ('+str(article_count)+')</summary>')
+    for corpus in gantt.get('corpora') or []:
+        articles = corpus.get('articles') or []
+        if not articles:
+            continue
+        out.append('<details class="schedule-article-details schedule-article-leaf"><summary>'+html.escape(str(corpus['name']))+
+                   ': этапы и статьи ('+str(len(articles))+')</summary>')
+        out.append(lanes([dict(article, id=str(article.get('code') or ''),
+                               forecast_label=('По известным работам' if article.get('forecast_partial') else 'Прогноз'))
+                          for article in articles]))
+        out.append('</details>')
+    if article_count:
+        out.append('</details>')
+    out.append('<p class="schedule-note">Процент физической готовности корпуса из денежных актов не выводится. '
+               'Если прогноз есть только по части работ, это явно указано у даты.</p></section></div>')
+    return ''.join(out)
+
+
 def text_lines(gantt: dict[str, Any]) -> list[str]:
     """Корпуса для сообщения: окончание по плану и по прогнозу."""
     out = []
