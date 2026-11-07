@@ -388,6 +388,15 @@ def store_schedule_fact(project: str, data: bytes, taken_at: Any) -> dict[str, A
     if not str(project or "").strip():
         raise ValueError("Не указан проект: впишите название проекта в поле «Проект» вверху "
                          "страницы и загрузите файл ещё раз.")
+    # Wide corpus GPR is a separate source snapshot, never a WBS percentage
+    # overlay. In particular it must not replace the latest ordinary fact file.
+    import developaid_gpr_corpus as corpus_gpr
+    corpus = corpus_gpr.read(data)
+    if corpus is not None:
+        saved = corpus_gpr.store(project, data, day, corpus)
+        return {"taken_at": day, "works": 0, "completed": 0,
+                "corpus_gpr": saved, "corpus_gpr_html": corpus_gpr.render(saved),
+                "message": saved["reason"]}
     try:
         parsed = _read_baseline_gpr_bytes(data)
     except ValueError:

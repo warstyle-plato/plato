@@ -67,7 +67,10 @@ def call(method: str, path: str, session: str = "", key: str = "",
     out: dict = {"project": "проверка", "session": session, "key": key,
                  "source": "проверка", "target": "проверка", "first": "a", "second": "b",
                  "date": "2026-10-22", "taken_at": "2026-10-22", "content_base64": "",
-                 "file_sha256": "a" * 64, "contract_date": "2024-07-03"}
+                 "file_sha256": "a" * 64, "contract_date": "2024-07-03",
+                 "source_sha256": "a" * 64, "pm_sha256": "a" * 64,
+                 "snapshot_id": "2026-10-22-" + "a" * 64,
+                 "calendar_basis": "unconfirmed"}
     route = _route(method, path)
     dependant = getattr(route, "dependant", None)
     if method == "GET":

@@ -1048,6 +1048,15 @@ def schedule(dashboard: dict[str, Any]) -> dict[str, Any]:
     if dashboard.get("error"):
         return _missing(f"Прогноз срока не посчитан: {dashboard['error']}")
     block = dashboard.get("schedule") or {}
+    qualified = block.get("qualified_rnv")
+    if qualified is not None:
+        return {"state": "ok", "approved": qualified.get("approved"),
+                "forecast": qualified.get("forecast"),
+                "known": qualified.get("state") == "complete",
+                "source": "; ".join(qualified.get("reasons") or []) or "PM-сеть",
+                "delay_days": qualified.get("delay_days") if qualified.get("state") == "complete" else None,
+                "qualification": qualified, "stalled": list(block.get("stalled") or []),
+                "driver": block.get("driver")}
     if not block.get("approved_finish") and not block.get("forecast_finish"):
         return _missing("Прогноз срока не посчитан: нет утверждённого срока и прогноза.")
     return {"state": "ok", "approved": block.get("approved_finish"),
@@ -1101,7 +1110,11 @@ def gantt(view: dict[str, Any], dashboard: dict[str, Any]) -> dict[str, Any]:
     """Сроки работ по корпусам — из дерева графика Монитора (`report_gantt`)."""
     if dashboard.get("error"):
         return _missing(f"Монитор не собрал срез: {dashboard['error']}")
-    return report_gantt.model((view.get("schedule") or {}).get("management") or [])
+    schedule_view = view.get("schedule") or {}
+    result = report_gantt.model(schedule_view.get("management") or [])
+    result["dependency_timeline"] = schedule_view.get("dependency_timeline")
+    result["corpus_gpr"] = schedule_view.get("corpus_gpr")
+    return result
 
 
 _SCENARIOS = ("pace", "fm")
@@ -1935,6 +1948,14 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
             text += " " + _stalled_words(block)
         add("Срок", text, "прогноз Монитора по темпу работ",
             "bad" if late else "")
+    elif block.get("qualification"):
+        qualified = block["qualification"]
+        text = ("Прогноз РНВ неполный. " if qualified.get("state") == "partial"
+                else "Прогноз РНВ не рассчитан. ")
+        text += " ".join(qualified.get("reasons") or [])
+        if block.get("stalled"):
+            text += " " + _stalled_words(block)
+        add("Срок", text, "прогноз Монитора по темпу работ", "missing")
     elif block.get("reason"):
         add("Срок", block["reason"], "", "missing")
     late = [corpus for corpus in (report.get("gantt") or {}).get("corpora") or []
@@ -3433,6 +3454,8 @@ table.articles tr.over td{background:#fdecea}table.articles tr.left td{backgroun
 .tile .n{font-size:10px;color:#475569}
 .tile .k .i{display:inline-block;width:12px;height:12px;line-height:12px;border-radius:50%;border:1px solid #5b6b7d;text-align:center;font-size:9px;font-style:italic;text-transform:none;cursor:help}
 @media print{.tile .k .i{display:none}}
+.dependency-timeline,.corpus-gpr-source{max-width:100%;overflow-wrap:anywhere}
+@media print{.dependency-timeline svg{min-width:0!important}.corpus-gpr-source table{min-width:0!important;table-layout:fixed;break-inside:auto;page-break-inside:auto}.corpus-gpr-source td,.corpus-gpr-source th{white-space:normal;overflow-wrap:anywhere;min-width:0}}
 ul.findings{margin:6px 0;padding-left:18px}ul.findings li{margin:5px 0;padding-left:2px}
 ul.findings li.bad::marker{color:#b42318}ul.findings li.missing{color:#5b6b7d}
 ul.findings li b{font-weight:700}ul.findings li.bad b{color:#b42318}
@@ -4038,6 +4061,12 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
 def _gantt_html(report: dict[str, Any]) -> str:
     block = report.get("gantt") or {}
     out = ["<h3>Сроки работ по корпусам</h3>"]
+    import developaid_schedule_timeline as dependency_timeline
+    import developaid_gpr_corpus as corpus_gpr
+    if block.get("dependency_timeline"):
+        out.append(dependency_timeline.render(block["dependency_timeline"]))
+    if block.get("corpus_gpr"):
+        out.append(corpus_gpr.render(block["corpus_gpr"]))
     if block.get("state") != "ok":
         out.append(f"<p class='note'>{html.escape(block.get('reason') or 'Графика работ нет.')}</p>")
         return "".join(out)
@@ -4523,8 +4552,9 @@ def render_html(report: dict[str, Any]) -> str:
         driver = _driver_words(block.get("driver"))
         if driver and isinstance(delay, (int, float)) and delay > 0:
             out.append(f"<p class='note warn'>{html.escape(driver[:1].upper() + driver[1:])}.</p>")
-        if block.get("stalled"):
-            out.append(f"<p class='note warn'>{html.escape(_stalled_words(block))}</p>")
+    if block.get("state") == "ok" and block.get("stalled"):
+        # A missing final RNV must not hide known near-zero-pace risk facts.
+        out.append(f"<p class='note warn'>{html.escape(_stalled_words(block))}</p>")
 
     out.append(_photos_html(report.get("photos") or {}, report["kind"]))
 
