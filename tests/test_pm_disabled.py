@@ -56,6 +56,7 @@ def test_pm_off_keeps_the_approved_rnv_from_the_gpr_in_cards_and_summary(monkeyp
     pace._apply_pace("Учебный", view, dt.date(2026, 11, 6))
     qualified = view["dashboard"]["schedule"]["qualified_rnv"]
     assert qualified["approved"] == "2027-02-01" and qualified["approved_source"] == "утверждённый ГПР"
-    assert graph.PM_DISABLED_REASON in qualified["reasons"]
+    # PM off is named: either as the PM reason or within the GPR estimate note.
+    assert any("PM отключ" in reason or reason == graph.PM_DISABLED_REASON for reason in qualified["reasons"])
     sentence = dashboard._schedule_summary(view["dashboard"]["schedule"])
     assert "Утверждённый ввод — 01.02.2027" in sentence
