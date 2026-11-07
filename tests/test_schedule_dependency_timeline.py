@@ -130,7 +130,8 @@ def test_monitor_report_html_pdf_share_model_and_escape_data():
     assert 'Своя: 0' in html and 'от этапов: 15' in html
     assert 'marker-end="url(#dependency-arrow)"' in html
     wrapped = report._gantt_html({'gantt': {'state': 'missing', 'dependency_timeline': block}})
-    assert html in wrapped
+    assert timeline.render(block, context='report') in wrapped
+    assert '<table class="schedule-all-tasks">' not in wrapped
 
 
 @pytest.mark.parametrize('raw', [None, '', 'НД', 'неизвестно', '—', False, 'нет 0 дней', 'NaN', '3 часа'])
