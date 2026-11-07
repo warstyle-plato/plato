@@ -7,6 +7,8 @@
 
 Вход: [AGENTS.md](../../AGENTS.md). Состояние задач: [registry.json](registry.json).
 Передача контроля: [CONTROL_HANDOFF.md](CONTROL_HANDOFF.md).
+Кто сейчас контроль: [CONTROL_ACTIVE](CONTROL_ACTIVE); второй поставщик — резерв:
+[основной и резервный контроль](RESERVE_CONTROL.md).
 Первый независимый проход продолжателей: [отчёт 04.11.2026](reviews/2026-11-04.md).
 
 ```mermaid
