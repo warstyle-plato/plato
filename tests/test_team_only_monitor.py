@@ -90,7 +90,8 @@ def call(method: str, path: str, session: str = "", key: str = "",
                 kind = getattr(field.annotation, "__origin__", None) or field.annotation
                 out[name] = _FILL.get(kind, "проверка")
         if getattr(model, "model_fields", None):
-            # A malformed harness must not hide admission behind FastAPI422.
+            # Невалидная заготовка не проверяет доступ: FastAPI вернёт 422
+            # ещё до вызова маршрута. Отличаем поломку стенда от отказа ключа.
             model.model_validate(out)
     return browser.post(path, json=out, headers=headers or {})
 

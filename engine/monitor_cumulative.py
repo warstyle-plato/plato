@@ -42,6 +42,16 @@ class MonitorContractsLink(MonitorContractsBuild):
     confirmed: bool = True
 
 
+class MonitorContractsHeaderDate(MonitorContractsBuild):
+    snapshot_id: str = _CumulativeField(min_length=1, max_length=100)
+    filename: str = _CumulativeField(min_length=1, max_length=240)
+    file_sha256: str = _CumulativeField(min_length=64, max_length=64)
+    sheet: str = _CumulativeField(min_length=1, max_length=200)
+    cell: str = _CumulativeField(min_length=1, max_length=10)
+    raw: str = _CumulativeField(min_length=1, max_length=20000)
+    contract_date: str = _CumulativeField(min_length=10, max_length=10)
+
+
 class MonitorCumulativeResult(MonitorCumulativeAuth):
     ticket: str = _CumulativeField(min_length=1, max_length=128)
 
@@ -69,7 +79,7 @@ class MonitorPhysicalSave(MonitorCumulativeProject):
 _CUMULATIVE_PATHS = frozenset({
     "/monitor/cumulative/upload", "/monitor/cumulative/result",
     "/monitor/cumulative/list", "/monitor/contracts/build",
-    "/monitor/contracts/result", "/monitor/contracts/term", "/monitor/contracts/link",
+    "/monitor/contracts/result", "/monitor/contracts/term", "/monitor/contracts/link", "/monitor/contracts/header-date",
     "/monitor/view", "/monitor/schedule-fact", "/monitor/gpr-corpus/view",
     "/monitor/schedule-confirmation/view", "/monitor/schedule-confirmation/save",
     "/monitor/schedule-physical/view", "/monitor/schedule-physical/save",
@@ -182,6 +192,8 @@ def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = 
         elif operation == "term":
             result = {"term": contracts.set_term(
                 payload["project"], payload["contract_id"], payload["deadline"], payload["note"])}
+        elif operation == "header-date":
+            result = {"header_date": contracts.confirm_header_date(**payload)}
         elif operation == "link":
             result = {"link": links.set_link(
                 payload["project"], payload["contract_id"], payload["evidence_id"],
@@ -228,6 +240,11 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
                     if req.deadline:
                         _monitor_cumulative_day(req.deadline)
                     payload.update(contract_id=req.contract_id, deadline=req.deadline, note=req.note)
+                elif operation == "header-date":
+                    _monitor_cumulative_day(req.contract_date)
+                    payload.update(snapshot_id=req.snapshot_id, filename=req.filename,
+                                   file_sha256=req.file_sha256, sheet=req.sheet, cell=req.cell,
+                                   raw=req.raw, contract_date=req.contract_date)
                 elif operation == "link":
                     payload.update(contract_id=req.contract_id, evidence_id=req.evidence_id,
                                    confirmed=req.confirmed)
@@ -299,3 +316,8 @@ def monitor_contracts_term(req: MonitorContractsTerm) -> Response:
 @app.post("/monitor/contracts/link", include_in_schema=False)
 def monitor_contracts_link(req: MonitorContractsLink) -> Response:
     return _monitor_cumulative_job(req, family="contracts", operation="link")
+
+
+@app.post("/monitor/contracts/header-date", include_in_schema=False)
+def monitor_contracts_header_date(req: MonitorContractsHeaderDate) -> Response:
+    return _monitor_cumulative_job(req, family="contracts", operation="header-date")

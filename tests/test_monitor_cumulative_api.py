@@ -46,6 +46,10 @@ def poll(client, ticket, family="contracts", **auth):
     ("contracts/result", {"ticket": "a" * 32}),
     ("contracts/term", {"project": "Fixture", "contract_id": "c1"}),
     ("contracts/link", {"project": "Fixture", "contract_id": "c1", "evidence_id": "e1"}),
+    ("contracts/header-date", {"project": "Fixture", "snapshot_id": "2026-11-06-"+"a"*64,
+                              "filename": "KS.xlsx", "file_sha256": "b"*64,
+                              "sheet": "Работы", "cell": "B4", "raw": "03.07.124",
+                              "contract_date": "2024-07-03"}),
 ])
 @pytest.mark.parametrize("key", ["", "wrong-key"])
 def test_current_key_is_required_even_without_bot_configuration(api, monkeypatch, path, data, key):
