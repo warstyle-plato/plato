@@ -179,11 +179,28 @@ def test_preview_has_no_network_or_implicit_write(monkeypatch, capsys):
 
 
 def test_bad_input_errors_never_echo_a_key(monkeypatch, capsys):
-    for raw in [json.dumps(report(admin_key='PRIVATE_VALUE')), 'PRIVATE_VALUE', 'PRIVATE_VALUE'*400]:
+    for raw in [json.dumps(report(admin_key='PRIVATE_VALUE')), 'PRIVATE_VALUE', 'PRIVATE_VALUE'*400,
+                '['*1100 + '0' + ']'*1100]:
         monkeypatch.setattr(sys, 'stdin', io.StringIO(raw))
         assert bridge.main(['submit']) == 1
         captured = capsys.readouterr()
         assert not captured.out and 'PRIVATE_VALUE' not in captured.err
+
+
+def test_deep_comment_cannot_crash_the_inbox():
+    body = bridge.MARKER + '['*1100 + '0' + ']'*1100 + bridge.FOOTER
+    rows = [comment(report())]
+    rows.append({'id': 2, 'body': body, 'user': rows[0]['user']})
+    assert len(bridge.events(rows)) == 1
+
+
+def test_old_gh_paginated_pages_are_all_read_without_slurp(monkeypatch):
+    page1, page2 = [comment(report(), 1)], [comment(report(head='b'*40), 2)]
+    def run(args, **kwargs):
+        assert '--paginate' in args and '--slurp' not in args
+        return subprocess.CompletedProcess(args, 0, json.dumps(page1)+'\n'+json.dumps(page2)+'\n', '')
+    monkeypatch.setattr(subprocess, 'run', run)
+    assert [row['comment_id'] for row in bridge.events(bridge.GitHub().comments())] == [1, 2]
 
 
 def test_gh_transport_uses_fixed_host_structured_input_and_does_not_echo_remote_errors(monkeypatch):

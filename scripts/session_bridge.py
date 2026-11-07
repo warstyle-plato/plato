@@ -96,7 +96,7 @@ def decode(body):
         if encode(event) != body:
             raise BridgeError('Noncanonical bridge event.')
         return event
-    except (ValueError, TypeError, KeyError):
+    except (ValueError, TypeError, KeyError, RecursionError):
         raise BridgeError('Invalid bridge event.') from None
 
 
@@ -109,14 +109,26 @@ class GitHub:
     def _request(self, path, *, data=None, paginate=False):
         args = ['gh', 'api', '--hostname', 'github.com', path]
         if paginate:
-            args += ['--paginate', '--slurp']
+            # --slurp is absent from still-supported gh2.46 installations.
+            args += ['--paginate']
         if data is not None:
             args += ['--method', 'POST', '--input', '-']
         try:
             result = subprocess.run(args, input=json.dumps(data) if data is not None else None,
                                     text=True, capture_output=True, timeout=45, check=True)
-            return json.loads(result.stdout)
-        except (OSError, subprocess.SubprocessError, ValueError):
+            if not paginate:
+                return json.loads(result.stdout)
+            decoder, pages, position = json.JSONDecoder(), [], 0
+            while position < len(result.stdout):
+                if result.stdout[position].isspace():
+                    position += 1
+                    continue
+                value, position = decoder.raw_decode(result.stdout, position)
+                pages.append(value)
+            if not pages:
+                raise ValueError('No pagination response')
+            return pages
+        except (OSError, subprocess.SubprocessError, ValueError, RecursionError):
             message = ('Ambiguous publication; inspect inbox before retrying.' if data is not None
                        else 'GitHub read unavailable; no raw response was printed.')
             raise BridgeError(message) from None
@@ -205,13 +217,13 @@ def main(argv=None):
         if args.command == 'inbox':
             out = {'state': 'reports_only', 'events': latest(events(GitHub().comments()))}
         else:
-            # Strict byte bound, field allowlist and enums before any output/network.
+            # Strict length bound, field allowlist and enums before output/network.
             raw = sys.stdin.read(4097)
             if len(raw) > 4096:
                 raise BridgeError('Event too large.')
             try:
                 event = validate(json.loads(raw))
-            except (ValueError, TypeError, KeyError):
+            except (ValueError, TypeError, KeyError, RecursionError):
                 raise BridgeError('Invalid event JSON.') from None
             out = publish(GitHub(), event) if args.publish else {'state': 'preview_only', 'event': event}
         print(json.dumps(out, sort_keys=True))
