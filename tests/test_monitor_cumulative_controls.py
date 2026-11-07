@@ -153,6 +153,8 @@ class Responses:
                 self.links.append(params)
                 evidence = self.data['rows'][0]['reconciliation']['daily_evidence'][0]
                 evidence['match_status'] = 'confirmed' if params['confirmed'] else 'proposed'
+                evidence['contract_id'] = params['contract_id'] if params['confirmed'] else ''
+                evidence['link_basis'] = 'manual' if params['confirmed'] else 'candidate'
                 return route.fulfill(json={'pending': False, 'ok': True, 'link': {}})
             data = copy.deepcopy(self.data)
             if data['rows']:
@@ -191,9 +193,10 @@ def test_contracts_render_exact_money_unknowns_and_separate_physics(width):
         expect(page.locator('#contractsRows')).to_contain_text('197,8%')
         row = page.locator(f'tr[data-contract-id="{CONTRACT}"]')
         expect(row).to_contain_text('1\u00a0000\u00a0000 ₽')
-        expect(row).to_contain_text('Не указан')
+        expect(row.locator('.term')).to_contain_text('Нужен срок')
         expect(page.locator(f'tr[data-contract-id="{OTHER}"]')).to_contain_text('0 ₽')
-        assert page.locator(f'tr[data-contract-id="{OTHER}"] td.numeric').all_text_contents() == ['—', '0 ₽', '—', '—']
+        assert page.locator(f'tr[data-contract-id="{OTHER}"] .contract-main-money').all_text_contents() == ['—', '0 ₽', '—']
+        expect(page.locator(f'tr[data-contract-id="{OTHER}"]')).to_contain_text('Доля не рассчитана')
         row.locator('.contract-open').click()
         expect(page.locator('#contractsDetails')).to_contain_text('35%')
         expect(page.locator('#contractsDetails')).to_contain_text('100 м²')
@@ -360,9 +363,9 @@ def test_undated_quantity_and_later_manual_deadline_are_only_references():
         page.locator('#contractsTab').click()
         row = page.locator(f'tr[data-contract-id="{CONTRACT}"]')
         row.wait_for()
-        expect(row.locator('.term')).to_contain_text('Не указан')
+        expect(row.locator('.term')).to_contain_text('Нужен срок')
         expect(row.locator('.term')).not_to_contain_text('01.02.2027')
-        expect(page.locator('#contractsRows .contract-scroll-hint')).to_be_visible()
+        assert page.evaluate('document.querySelector("#contractsRows").scrollWidth <= document.querySelector("#contractsRows").clientWidth')
         row.locator('.contract-open').click()
         main = page.locator('.contract-physical .physical-main')
         assert main.locator('td.numeric').all_text_contents() == ['100 м²', '—', '—', '—']
