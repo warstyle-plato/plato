@@ -92,6 +92,8 @@ from auction_search.krt_ranking import (
 from auction_search import krt_ranking as krt_ranking_rules
 from auction_search.krt_screening import build_krt_model_screening
 from auction_search.krt_screening import housing_measure_named
+from auction_search.krt_screening import market_only_screening
+from auction_search import krt_status
 from auction_search.models import LotKind
 from auction_search.preset_mapper import build_project_preset
 from auction_search.profile_fit import profile_fit
@@ -1701,7 +1703,8 @@ def install(app: FastAPI) -> None:
         за один проект (3 прохода по 24) и сохраняем тот же strict #485 result.
         Unknown не превращается в ноль: terminal missing остаётся missing.
         """
-        if core is None or project.get("early_unpublished") or not screening.get("available"):
+        if (krt_status.model_exclusion(project) is not None or core is None
+                or project.get("early_unpublished") or not screening.get("available")):
             return {}
         state: dict[str, Any] = {}
         for _ in range(3):
@@ -1834,6 +1837,20 @@ def install(app: FastAPI) -> None:
             krt_investment_score.DEFAULT_PRICE_TARGET_RUB_SQM)
         target = float(
             price_target_rub_sqm if price_target_rub_sqm is not None else shared_target)
+
+        if krt_status.model_exclusion(project) is not None:
+            # Even an old successful report does not authorize another burden
+            # model or a fresh persisted rating after the city changed status.
+            rating = krt_investment_score.score(
+                status_kind="running", llcr=None, market_rub_sqm=None,
+                target_rub_sqm=target)
+            return {
+                "rating": rating, "control_case": {},
+                "canonical": abs(target - float(shared_target)) < 0.5,
+                "canonical_target_rub_sqm": shared_target,
+                "burden_fields": {}, "fields": {},
+                "absorption": {},
+            }
 
         llcr = metrics.get("project_llcr_x")
         if llcr is None:
@@ -1976,12 +1993,7 @@ def install(app: FastAPI) -> None:
             if burden_entry is not None:
                 entry_capacity_mln = burden_entry
 
-        status_kind = str(project.get("status_kind") or "").strip().lower()
-        if not status_kind:
-            status_kind = (
-                "running" if _krt_status_kind(project.get("status")) == "running"
-                else "planned"
-            )
+        status_kind = krt_status.project_kind(project)
 
         # Факт и оценка разделены: coverage считает только реальные входы
         # площадки, а отсутствующий вход получает прозрачную медиану.
@@ -2231,7 +2243,8 @@ def install(app: FastAPI) -> None:
         # При массовом расчёте рейтинг обязан достроить отсутствующие рынок
         # и финансовую модель, а не просто прочитать пустой кэш. Тяжёлый путь
         # защищён кабинетом; сохранённый результат после этого виден всем.
-        need_model = not screening.get("available")
+        excluded = krt_status.model_exclusion(project) is not None
+        need_model = not excluded and not screening.get("available")
         if need_model and (ensure_model or project.get("early_unpublished")):
             market_cabinet.require_cabinet(request)
             try:
@@ -2262,7 +2275,7 @@ def install(app: FastAPI) -> None:
         # Явный пересчёт (массовая кнопка) достраивает четвёртый компонент
         # #485 — денежную нагрузку. Без него у всего каталога выходили 50/75%.
         burden_state: dict[str, Any] | None = None
-        if ensure_model and not project.get("early_unpublished") and screening.get("available"):
+        if not excluded and ensure_model and not project.get("early_unpublished") and screening.get("available"):
             try:
                 # Пустой ответ — попытки не было (движок не подключён), а не
                 # «нагрузки нет»: сохранённое остаётся как есть.
@@ -2288,9 +2301,9 @@ def install(app: FastAPI) -> None:
         # который пользователь крутит в карточке другим ориентиром, не должен
         # менять цифру у всех остальных; собранная явным пересчётом нагрузка —
         # факт площадки и пишется при любом ориентире.
-        if may_write and canonical:
+        if may_write and not excluded and canonical:
             await run_in_threadpool(krt_ranking.remember, slug, result["fields"])
-        elif may_write and burden_state is not None:
+        elif may_write and not excluded and burden_state is not None:
             await run_in_threadpool(krt_ranking.remember, slug, result["burden_fields"])
         return {
             "slug": slug,
@@ -2437,16 +2450,7 @@ def install(app: FastAPI) -> None:
     # Слово источника при этом остаётся словом источника: вид считается ОТ него,
     # а не подменяет его на экране.
     def _krt_status_kind(status: Any) -> str:
-        word = str(status or "").strip().casefold()
-        if not word:
-            return "draft"
-        if "планируем" in word:
-            return "planned"
-        if "реализац" in word:
-            return "running"
-        # Разбор карточки съехал на поле: статусом стал хвост адреса. Такой
-        # строке вид не присваивается — «не разобрано» не третий статус.
-        return "unparsed"
+        return krt_status.status_kind(status)
 
     @app.get("/auctions/krt")
     async def auction_krt_catalogue(refresh: bool = False) -> dict[str, Any]:
@@ -3183,13 +3187,17 @@ def install(app: FastAPI) -> None:
         project: dict[str, Any], *, allow_remote_geocode: bool = True,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Рынок + финансовая модель без платного поиска публикаций."""
-        if core is None or market is None:
+        excluded = krt_status.model_exclusion(project)
+        if market is None or (core is None and excluded is None):
             return ({"available": False,
                      "reason": "Финансовый движок DevelopAid не подключён"}, {})
         report = _krt_market_report(
             project, radius_km=3.0, peers_limit=12,
             allow_remote_geocode=allow_remote_geocode,
         )
+        market_only = market_only_screening(project, report)
+        if market_only is not None:
+            return market_only, report
         slug = str(project.get("slug") or "")
         try:
             requirements = _requirements_for(slug)
@@ -3264,7 +3272,7 @@ def install(app: FastAPI) -> None:
         Сборка рейтинга — та же `_investment_rating`, что у карточки и кнопки.
         """
         slug = str(project.get("slug") or "").strip()
-        if not slug or _krt_status_kind(project.get("status")) == "running":
+        if not slug or krt_status.model_exclusion(project) is not None:
             return None
         row = krt_ranking.stored_row(slug)
         stored = krt_ranking.report(slug) or {}
@@ -3290,7 +3298,7 @@ def install(app: FastAPI) -> None:
     app.state.krt_background_rating_fields = _cached_investment_rating_fields
 
     def _rating_needs_recount(project: dict[str, Any], row: dict[str, Any]) -> bool:
-        if _krt_status_kind(project.get("status")) == "running":
+        if krt_status.model_exclusion(project) is not None:
             return False
         target = krt_ranking.rating_target(
             krt_investment_score.DEFAULT_PRICE_TARGET_RUB_SQM)
@@ -3382,7 +3390,7 @@ def install(app: FastAPI) -> None:
         # сотни полных разборов ranking.json в минуту на воркер.
         rows = {str(item.get("slug") or ""): item for item in krt_ranking.rows()}
         for project in _krt_all_sites():
-            if _krt_status_kind(project.get("status")) == "running":
+            if krt_status.model_exclusion(project) is not None:
                 continue
             slug = str(project.get("slug") or "").strip()
             if not slug:
@@ -3428,6 +3436,17 @@ def install(app: FastAPI) -> None:
                         if not slug:
                             continue
                         row = dict(rows.get(slug) or {})
+                        if krt_status.model_exclusion(project) is not None:
+                            # Market freshness has its own clock. Refreshing
+                            # observations cannot pretend to be a model run.
+                            market_at = _positive_float(row.get("market_computed_at")) or 0
+                            failed_at = _positive_float(row.get("market_failed_at")) or 0
+                            retry_after = 10 * 60 if failed_at > market_at else krt_ranking.ttl_seconds
+                            if now - max(market_at, failed_at) >= retry_after:
+                                missing.append(project)
+                            if len(missing) >= 4:
+                                break
+                            continue
                         # Неудачный пересчёт не должен превращать stale-строку
                         # в бесконечную очередь повторных запросов. keep_computed
                         # оставляет последнюю удачную строку, а recompute_failed_at
@@ -5402,7 +5421,10 @@ def install(app: FastAPI) -> None:
                     raise ValueError("Территория КРТ не найдена")
                 report = _krt_market_report(
                     project, radius_km=radius_km, peers_limit=peers_limit)
-                if core is None:
+                market_only = market_only_screening(project, report)
+                if market_only is not None:
+                    screening = market_only
+                elif core is None:
                     screening = {
                         "available": False,
                         "reason": "Финансовый движок DevelopAid не подключён",
@@ -5437,7 +5459,9 @@ def install(app: FastAPI) -> None:
                 # разовое допущение аналитика, таблица показывала бы его всем и
                 # выглядела бы при этом посчитанной по методике.
                 custom_ratios = bool((screening.get("tep_ratios") or {}).get("custom"))
-                if project is not None and screening.get("available") is not None \
+                if screening.get("model_excluded"):
+                    krt_ranking.save_market_only(project, screening, _market_digest(report))
+                elif project is not None and screening.get("available") is not None \
                         and not custom_ratios:
                     stored = dict(screening)
                     krt_ranking.save_failure_or_report(slug, stored, {

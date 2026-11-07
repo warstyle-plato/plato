@@ -14,6 +14,7 @@ import copy
 import math
 from typing import Any
 
+from auction_search.krt_status import model_exclusion
 from market_search.krt_requirements import social_objects_from_decision
 # Основание ориентира объявляет price_hint; здесь оно читается, а не
 # пересказывается строковым литералом.
@@ -761,6 +762,34 @@ def _programme(
     }
 
 
+def market_only_screening(
+    project: dict[str, Any], market_report: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Current market observations for a project excluded from modelling."""
+    excluded = model_exclusion(project)
+    if excluded is None:
+        return None
+    if not market_report:
+        return {**excluded, "market_problem": "Источник рынка не вернул отчёт для обновления наблюдений"}
+    segment, start_price, market_price, basis = _market_inputs(market_report)
+    raw_pace = _verdict(market_report).get("units_per_month")
+    try:
+        pace = float(raw_pace)
+        pace_known = not isinstance(raw_pace, bool) and math.isfinite(pace) and pace >= 0
+    except (ValueError, TypeError):
+        pace, pace_known = 0.0, False
+    return {
+        **excluded,
+        "market": {
+            "recommended_segment": segment,
+            "start_price_rub_sqm": start_price or None,
+            "market_price_rub_sqm": market_price or None,
+            "basis": basis,
+        },
+        "absorption": {"available": pace_known, "market_units_per_month": pace if pace_known else None},
+    }
+
+
 def build_krt_model_screening(
     project: dict[str, Any] | None,
     market_report: dict[str, Any],
@@ -781,6 +810,9 @@ def build_krt_model_screening(
     """
     if not project:
         return {"available": False, "reason": "Проект КРТ не найден в официальном каталоге"}
+    excluded = model_exclusion(project)
+    if excluded is not None:
+        return excluded
     # Съехавшая карточка называет себя сама (`parse_problem`), и до модели она
     # доходить не должна. На «ул. Мусоргского» площадь участка вышла 26 500 «га»
     # — это метры, съехавшие на поле, — и на них расчёт выдал LLCR 1,10x, маржу

@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from market_search.http import load_json, save_json
+from auction_search.krt_status import model_exclusion
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,7 @@ CACHE_SCHEMA_VERSION = 1
 # — маркетинг, модель, рекомендация Платона, — а строка рейтинга живёт своей
 # жизнью. Чужая версия читается как «нет отчёта», а не как отчёт с дырами.
 REPORT_SCHEMA_VERSION = 1
+MARKET_REPORT_SCHEMA_VERSION = 1
 # Что каталог видел раньше. Нужно ровно для одного: отличить площадку, которая
 # появилась на этой неделе, от той, что лежит там полгода. Без этого «новое»
 # пришлось бы определять глазами по списку из ста двадцати строк.
@@ -412,6 +414,10 @@ def score_row(project: dict[str, Any], screening: dict[str, Any]) -> dict[str, A
     `build_krt_model_screening`, второй экономики тут нет.
     """
     slug = str(project.get("slug") or "")
+    excluded = model_exclusion(project)
+    if excluded is not None:
+        return {"slug": slug, **{key: project[key] for key in _CATALOGUE_FIELDS if key in project},
+                **excluded, "computed_at": 0}
     row: dict[str, Any] = {
         "slug": slug,
         "name": str(project.get("name") or slug),
@@ -1215,11 +1221,61 @@ class KrtRanking:
             cached = load_json(self.report_path(slug))
         except ValueError:
             return None
-        if not isinstance(cached, dict):
-            return None
-        if cached.get("schema_version") != REPORT_SCHEMA_VERSION:
-            return None
+        if not isinstance(cached, dict) or cached.get("schema_version") != REPORT_SCHEMA_VERSION:
+            cached = None
+        market_only = load_json(self._market_report_path(slug)) or {}
+        if (not isinstance(market_only, dict)
+                or market_only.get("schema_version") != MARKET_REPORT_SCHEMA_VERSION
+                or market_only.get("slug") != slug):
+            market_only = {}
+        if (_number(market_only.get("market_computed_at")) >
+                _number((cached or {}).get("computed_at"))):
+            # Observations have a separate cache and clock. Never overwrite or
+            # restamp the old financial report merely by refreshing its market.
+            cached = dict(cached or {
+                "schema_version": REPORT_SCHEMA_VERSION, "slug": slug,
+                "computed_at": 0, "screening": market_only.get("exclusion") or {},
+            })
+            cached.update({key: market_only[key] for key in
+                           ("project", "market", "market_computed_at", "exclusion")
+                           if key in market_only})
         return cached
+
+    def _market_report_path(self, slug: str) -> Path:
+        # Reuse the model report's validated slug, never a second path policy.
+        return self.path.parent / "market-reports" / self.report_path(slug).name
+
+    def save_market_only(
+        self, project: dict[str, Any], screening: dict[str, Any], market: dict[str, Any],
+    ) -> None:
+        """Persist observations without changing a model, score, or model date."""
+        excluded = model_exclusion(project)
+        if excluded is None:
+            raise ValueError("Отдельное обновление рынка требует исключённой из расчёта площадки")
+        slug = str(project.get("slug") or "").strip()
+        if not slug:
+            return
+        now = int(time.time())
+        save_json(self._market_report_path(slug), {
+            "schema_version": MARKET_REPORT_SCHEMA_VERSION, "slug": slug,
+            "project": project, "market": market,
+            "market_computed_at": now, "exclusion": excluded,
+        })
+        observed = screening.get("market") or {}
+        absorption = screening.get("absorption") or {}
+        price = _number(observed.get("market_price_rub_sqm"))
+        self.remember(slug, {
+            **{key: project[key] for key in _CATALOGUE_FIELDS if key in project},
+            **{key: screening[key] for key in ("card_facts", "press_facts")
+               if screening.get(key)},
+            "market_computed_at": now,
+            "model_excluded": True,
+            "model_exclusion_reason": excluded["reason"],
+            "market_failed_at": None, "market_failure_reason": "",
+            "surrounding_price_rub_sqm": round(price) if price > 0 else None,
+            "surrounding_sales_units_per_month": (
+                absorption.get("market_units_per_month") if absorption.get("available") else None),
+        })
 
     def save_report(
         self, slug: str, payload: dict[str, Any], *, computed_at: int | None = None
@@ -1365,7 +1421,7 @@ class KrtRanking:
             self._progress = {
                 "running": True, "done": 0, "total": len(projects), "current": "",
                 "started_at": time.time(), "finished_at": None, "failed": 0,
-                "stop_reason": "", "scheduled": bool(scheduled),
+                "stop_reason": "", "scheduled": bool(scheduled), "model_skipped": 0,
             }
         thread = threading.Thread(
             target=self._run, args=(projects, screen),
@@ -1407,8 +1463,31 @@ class KrtRanking:
                     site_failed = True
                     with self._lock:
                         self._progress["failed"] += 1
-                row = score_row(project, screening)
-                if row["slug"]:
+                excluded = model_exclusion(project)
+                if excluded is not None:
+                    slug = str(project.get("slug") or "")
+                    market = screening.pop("market_report", None)
+                    if market:
+                        self.save_market_only(project, screening, market)
+                    else:
+                        self.remember(slug, {
+                            **{key: project[key] for key in _CATALOGUE_FIELDS if key in project},
+                            "model_excluded": True, "model_exclusion_reason": excluded["reason"],
+                            "market_failed_at": int(time.time()),
+                            "market_failure_reason": (screening.get("market_problem")
+                                or (screening.get("reason") if not screening.get("model_excluded") else None)
+                                or "Источник рынка не вернул отчёт для обновления наблюдений"),
+                        })
+                        if not site_failed:
+                            site_failed = True
+                            with self._lock:
+                                self._progress["failed"] += 1
+                    with self._lock:
+                        self._progress["model_skipped"] += 1
+                    row = {"slug": slug}
+                else:
+                    row = score_row(project, screening)
+                if row["slug"] and excluded is None:
                     # Отчёт кладётся целиком, даже когда посчитать не вышло:
                     # «не посчитали и вот почему» — тоже ответ, и карточка
                     # должна показывать его, а не пустоту с кнопкой. Но если
