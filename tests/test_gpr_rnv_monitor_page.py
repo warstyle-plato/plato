@@ -17,16 +17,18 @@ def test_real_monitor_shows_inherited_delay_rnv_qualification_and_source(width):
     source = corpus.read(book(name='Монтаж фасада'))
     view = {'schedule': {'management': [], 'dependency_timeline': block,
                         'dependency_timeline_html': timeline.render(block),
-                        'corpus_gpr': source, 'corpus_gpr_html': corpus.render(source)},
+                        'corpus_gpr': source, 'corpus_gpr_html': corpus.render_overview(source, '2026-11-06')},
             'dashboard': {'schedule': {'qualified_rnv': block['rnv']}}}
     with browser_page(width) as (page, responses, errors):
         page.evaluate('(view)=>{++corpusSourceRequest;currentView=view;renderGantt(view);renderDash(view);renderCorpusGprSource({html:view.schedule.corpus_gpr_html})}', view)
         expect(page.locator('#dependencyTimelineCard')).to_be_visible()
-        expect(page.locator('#dependencyTimelineBody')).to_contain_text('Прогноз РНВ: неполный')
-        expect(page.locator('#dependencyTimelineBody')).to_contain_text('Своя: 0 · от этапов: 15')
+        expect(page.locator('#dependencyTimelineBody .schedule-rnv-cards')).to_contain_text('Прогноз РНВ')
+        expect(page.locator('#dependencyTimelineBody .schedule-rnv-cards')).to_contain_text('неполный')
+        expect(page.locator('#dependencyTimelineBody .schedule-lane[data-task-id="2"]')).to_contain_text('от предыдущих этапов: 15 дн.')
         assert page.locator('#dependencyTimelineBody svg path[marker-end]').count() == 3
         expect(page.locator('#corpusGprCard')).to_be_visible()
-        page.locator('#corpusGprBody summary').click()
+        page.locator('#corpusGprBody .schedule-source-packages>summary').click()
+        page.locator('#corpusGprBody .corpus-gpr-source details>summary').click()
         expect(page.locator('#corpusGprBody')).to_contain_text('31.06.2027')
         expect(page.locator('#corpusGprBody')).to_contain_text('нет числа')
         assert page.locator('#corpusGprBody script').count() == 0
