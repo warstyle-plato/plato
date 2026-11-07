@@ -24,14 +24,14 @@ def report(**changes):
 
 
 def comment(event, number=1, login='warstyle-plato', user_type='User'):
-    return {'id': number, 'body': bridge.encode(event), 'user': {'login': login, 'type': user_type}}
+    return {'id': number, 'body': bridge.encode(event), 'user': {'login': login, 'type': user_type, 'id': 1}}
 
 
 class FakeGitHub:
     def __init__(self):
         self.rows = []
         self.writes = []
-        self.actor = {'login': 'warstyle-plato', 'type': 'User'}
+        self.actor = {'login': 'warstyle-plato', 'type': 'User', 'id': 1}
         self.source = SHA
 
     def identity(self):
@@ -73,6 +73,20 @@ def test_lost_ack_retry_does_not_publish_the_same_report_twice():
     assert second['state'] == 'already_received'
     assert second['comment_id'] == first['comment_id']
     assert len(shared.writes) == 1
+
+
+def test_user_profile_extras_are_not_part_of_native_identity_or_public_report():
+    shared = FakeGitHub()
+    shared.actor['email'] = 'PRIVATE'
+    api = shared.api
+    def distinct_user_objects(path, **kwargs):
+        result = api(path, **kwargs)
+        if kwargs.get('data') is not None:
+            result['user'] = {k: v for k, v in shared.actor.items() if k != 'email'}
+        return result
+    shared.api = distinct_user_objects
+    assert bridge.publish(shared, report())['state'] == 'report_received'
+    assert 'PRIVATE' not in shared.writes[0][1]['body']
 
 
 def test_stale_source_rejected_before_any_publication():

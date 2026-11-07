@@ -32,6 +32,13 @@ def integer(value):
     return isinstance(value, int) and not isinstance(value, bool) and 0 < value < 10**12
 
 
+def actor_id(value):
+    if (isinstance(value, dict) and value.get('login') == 'warstyle-plato'
+            and value.get('type') == 'User' and integer(value.get('id'))):
+        return value['id']
+    return None
+
+
 def validate(event):
     if not isinstance(event, dict) or not set(event) <= FIELDS:
         raise BridgeError('Unexpected event fields.')
@@ -134,7 +141,7 @@ def events(comments):
         if not isinstance(comment, dict) or not integer(comment.get('id')):
             continue
         user = comment.get('user') or {}
-        if not isinstance(user, dict) or user.get('login') != 'warstyle-plato' or user.get('type') != 'User':
+        if actor_id(user) is None:
             continue
         try:
             event = decode(comment.get('body'))
@@ -149,8 +156,7 @@ def events(comments):
 def publish(github, event):
     validate(event)
     identity = github.identity()
-    if (not isinstance(identity, dict) or identity.get('login') != 'warstyle-plato'
-            or identity.get('type') != 'User'):
+    if actor_id(identity) is None:
         raise BridgeError('The connected GitHub identity is not accepted by this inbox.')
     issue_number = int(TASK.fullmatch(event['task']).group(1))
     issue = github.api(f'issues/{issue_number}')
@@ -173,7 +179,8 @@ def publish(github, event):
             return {'state': 'already_received', 'event_id': key, 'comment_id': row['comment_id']}
     result = github.api(f'issues/{INBOX}/comments', data={'body': encode(event)})
     if (not isinstance(result, dict) or not integer(result.get('id'))
-            or result.get('body') != encode(event) or result.get('user') != identity):
+            or result.get('body') != encode(event)
+            or actor_id(result.get('user')) != actor_id(identity)):
         raise BridgeError('Ambiguous publication; inspect inbox before retrying.')
     return {'state': 'report_received', 'event_id': key, 'comment_id': result['id']}
 
