@@ -122,14 +122,16 @@ def test_payments_join_by_exact_identity_and_cut_and_show_unworked_advance(proje
     view = contracts.build(project, CUT)
     row, = view["rows"]
     advance = row["advance"]
-    assert advance["paid"] == 500 and advance["payments_count"] == 2
-    assert advance["paid_advance_labelled"] == 400
-    assert advance["unworked"] == 200
+    assert advance["paid"] is None and advance["payments_count"] == 2
+    assert advance["confirmed_paid"] == 500
+    assert advance["confirmed_paid_advance_labelled"] == 400
+    assert advance["unworked"] is None
     assert advance["unmatched_candidates"] == 1 and advance["unmatched_amount"] == 55
     assert "без даты договора" in advance["reason"]
     summary = view["risk_summary"]
     assert summary["warning_count"] == 1 and summary["counts"]["late"] == 1
-    assert summary["unworked_at_risk_total"] == 200 and summary["unworked_at_risk_count"] == 1
+    assert summary["unworked_at_risk_total"] is None
+    assert summary["unworked_at_risk_unknown_count"] == 1
 
 
 def test_missing_payment_register_is_named_not_zero(project):
@@ -146,11 +148,16 @@ def test_missing_payment_register_is_named_not_zero(project):
 
 
 def test_execution_without_vat_is_not_compared_with_cash_payments():
+    import developaid_management_report as report
     row = {"contractor": "Builder A", "contract": "X", "contract_date": "2026-01-01", "completed": 300.0}
     paid = [{"contractor": "builder a", "contract": "x", "contract_date": dt.date(2026, 1, 1),
              "amount": 500.0, "date": dt.date(2026, 2, 1), "advance_label": True}]
-    result = risk.advance(row, paid, contract_number=contracts._contract_number, completed_basis="without_vat")
+    result = risk.advance(row, paid, reference_key=contracts._reference_key, completed_basis="without_vat")
     assert result["paid"] == 500 and result["unworked"] is None and "НДС" in result["reason"]
+    block = {'state': 'ok', 'total': 1, 'rows': [{**row, 'advance': result,
+             'risk': {'status': 'late', 'label': 'Не успевает к сроку'}}]}
+    assert 'НДС' in report._contract_risks_html(block)
+    assert 'переплата не определена' in ' '.join(report._contract_risk_lines(block))
 
 
 @pytest.mark.parametrize("width", [390, 1440])
@@ -245,3 +252,127 @@ def test_without_split_the_total_pace_is_named():
     result = risk.forecast(amount=1000, completed=300, comparable=True, periods=periods,
                            cut=dt.date(2026, 11, 6), deadline=dt.date(2027, 6, 1))
     assert result["pace_basis"] == "total" and "не разделены" in result["reason"]
+
+
+def payment(number='C-12/7', **changes):
+    return {'contractor': 'ООО «Учебный подрядчик»', 'contract': number,
+            'contract_date': dt.datetime(2026, 1, 1), 'date': dt.datetime(2026, 10, 31),
+            'amount': 500, 'purpose': 'Аванс', **changes}
+
+
+def alias_contract(number='C-12/7', **changes):
+    return contract(number, deadline=dt.datetime(2026, 11, 7)) | {
+        'contractor': 'ООО «Учебный подрядчик»', **changes}
+
+
+@pytest.mark.parametrize('full_party,decorated_number', [(True, False), (False, True), (True, True)])
+def test_payment_aliases_use_the_same_identity_as_rss_without_rekeying_headers(project, full_party, decorated_number):
+    number = 'C-12/7'
+    book(project, [alias_contract(number)], payments=[payment(number)],
+         acts={number: acts(('2026-10-31', 300))})
+    header = project.snapshots[-1]['ledgers'][0]
+    if full_party:
+        header['contractor'] = 'Общество с ограниченной ответственностью «Учебный подрядчик»'
+    if decorated_number:
+        header['contract'] = 'Договор подряда № C-12/7'
+    expected_id, = [key for key, _ in contracts._groups([header], project)]
+    row, = contracts.build(project, CUT)['rows']
+    assert row['id'] == expected_id
+    assert row['amount'] == 1000
+    assert row['advance']['paid'] == 500 and row['advance']['unworked'] == 200
+    assert row['advance']['sources'][0]['row'] == 10
+    assert row['advance']['sources'][0]['sheet'] == 'Реестр платежей'
+
+
+@pytest.mark.parametrize('different_customer', [True, False])
+def test_one_payment_is_not_allocated_to_two_legacy_contract_ids(project, different_customer):
+    first = alias_contract(customer='Developer A')
+    second = alias_contract(customer='Developer B' if different_customer else 'Developer A')
+    if not different_customer:
+        second['contractor'] = 'Общество с ограниченной ответственностью «Учебный подрядчик»'
+        second['contract'] = 'Договор подряда № C-12/7'
+    book(project, [first, second], payments=[payment()],
+         acts={first['contract']: acts(('2026-10-31', 300)),
+               second['contract']: acts(('2026-10-31', 300))})
+    view = contracts.build(project, CUT)
+    assert len({row['id'] for row in view['rows']}) == 2
+    for row in view['rows']:
+        assert row['advance']['paid'] is None and row['advance']['unworked'] is None
+        assert row['advance']['confirmed_paid'] is None
+        assert 'нескольким договорам' in row['advance']['reason']
+        assert row['advance']['sources']
+    assert view['risk_summary']['unworked_total'] is None
+    assert view['risk_summary']['unworked_unknown_count'] == 2
+
+
+@pytest.mark.parametrize('field,value', [
+    ('contractor', None), ('contract', None), ('contract_date', None), ('date', None),
+    ('amount', None), ('amount', 'не рассчитано'), ('amount', 'nan'), ('amount', False),
+])
+def test_incomplete_payment_source_is_unknown_instead_of_a_zero_fact(project, field, value):
+    book(project, [alias_contract()], payments=[payment(**{field: value})],
+         acts={'C-12/7': acts(('2026-10-31', 300))})
+    view = contracts.build(project, CUT)
+    row, = view['rows']
+    assert row['advance']['paid'] is None and row['advance']['unworked'] is None
+    assert row['advance']['reason'] and row['advance']['unmatched_candidates'] == 1
+    assert row['advance']['sources'][0]['row'] == 10
+    assert view['risk_summary']['unworked_at_risk_total'] is None
+    assert view['risk_summary']['unworked_at_risk_unknown_count'] == 1
+
+
+def test_future_incomplete_payment_is_excluded_before_it_can_obscure_the_cut(project):
+    book(project, [alias_contract()], payments=[payment(date=dt.datetime(2026, 12, 1), amount=None)],
+         acts={'C-12/7': acts(('2026-10-31', 300))})
+    row, = contracts.build(project, CUT)['rows']
+    assert row['advance']['paid'] == 0 and row['advance']['unworked'] == 0
+    assert not row['advance']['unmatched_candidates']
+
+
+def test_missing_payment_register_stays_unknown_in_tile_and_management_summary(project):
+    import developaid_management_report as report
+    from playwright.sync_api import expect
+    from test_monitor_cumulative_controls import browser_page
+    book(project, [alias_contract()], acts={'C-12/7': acts(('2026-10-31', 300))})
+    path = monitor._project_dir(project) / 'estimate' / f'{DAY}.xlsx'
+    wb = openpyxl.load_workbook(path)
+    del wb['Реестр платежей']
+    wb.save(path)
+    view = contracts.build(project, CUT)
+    assert view['risk_summary']['unworked_at_risk_total'] is None
+    with browser_page(390) as (page, responses, errors):
+        responses.data = view
+        page.locator('#contractsTab').click()
+        tile = page.locator('#contractsRisk button').nth(3)
+        expect(tile.locator('b')).to_have_text('—')
+        expect(tile).to_contain_text('итог неизвестен')
+        expect(page.locator('#contractsRows')).to_contain_text('итог не подтверждён')
+        assert not errors
+    block = report.contract_risks(project, dt.date.fromisoformat(CUT))
+    assert 'итог оплаты сверх выполнения неизвестен' in report._contract_risk_words(block)
+    assert 'Реестр платежей не прочитан' in report._contract_risks_html(block)
+
+
+def test_partial_payment_coverage_has_a_known_part_without_a_false_complete_total(project):
+    import developaid_management_report as report
+    book(project, [alias_contract('KNOWN'), alias_contract('UNKNOWN')],
+         payments=[payment('KNOWN'), payment('UNKNOWN', amount=None)],
+         acts={'KNOWN': acts(('2026-10-31', 300)), 'UNKNOWN': acts(('2026-10-31', 300))})
+    view = contracts.build(project, CUT)
+    rows = by_number(view)
+    assert rows['KNOWN']['advance']['paid'] == 500
+    assert rows['UNKNOWN']['advance']['paid'] is None
+    summary = view['risk_summary']
+    assert summary['unworked_at_risk_total'] is None
+    assert summary['unworked_at_risk_confirmed_total'] == 200
+    assert summary['unworked_at_risk_unknown_count'] == 1
+    words = report._contract_risk_words({'total': 2, 'summary': summary})
+    assert 'неизвестен' in words and 'известная часть' in words and '200' in words
+
+
+def test_unknown_forecast_is_not_reported_as_every_contract_being_on_time():
+    import developaid_management_report as report
+    words = report._contract_risk_words({'total': 1, 'summary': {
+        'counts': {'unknown': 1, 'no_deadline': 0}, 'warning_count': 0}})
+    assert 'не подтверждён' in words
+    assert 'ни один не отстаёт' not in words

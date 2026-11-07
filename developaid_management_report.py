@@ -4752,10 +4752,18 @@ def _contract_risk_words(block: dict[str, Any]) -> str:
     parts = [f"{label}: {counts[key]}" for key, label in (
         ("overdue", "срок прошёл, работы не завершены"), ("late", "не успевают к сроку"),
         ("stalled", "работы стоят")) if counts.get(key)]
-    if not parts:
-        return f"Из {block.get('total', 0)} договоров ни один не отстаёт от срока по текущему темпу накопительных."
-    text = "Договоры под угрозой срыва срока — " + "; ".join(parts) + "."
-    if summary.get("unworked_at_risk_total"):
+    text = ("Договоры под угрозой срыва срока — " + "; ".join(parts) + "." if parts else
+            "Подтверждённых предупреждений о срыве срока не найдено.")
+    missing = counts.get("unknown", 0) + counts.get("no_deadline", 0)
+    if missing:
+        text += f" По {missing} договорам прогноз или срок не подтверждён; отсутствие сигнала не означает, что они успевают."
+    unknown = summary.get("unworked_at_risk_unknown_count", 0)
+    if unknown:
+        text += f" По {unknown} договорам под угрозой итог оплаты сверх выполнения неизвестен."
+        known = summary.get("unworked_at_risk_confirmed_total")
+        if known:
+            text += f" По договорам с подтверждёнными данными известная часть — {_rub(known)}."
+    elif summary.get("unworked_at_risk_total"):
         text += (f" По ним оплачено сверх выполнения {_rub(summary['unworked_at_risk_total'])}"
                  " — риск неотработки аванса.")
     return text
@@ -4774,6 +4782,10 @@ def _contract_risk_lines(block: dict[str, Any]) -> list[str]:
                 + (f", прогноз {_day(risk['forecast_finish'])}" if risk.get("forecast_finish") else "")
                 + (f", сверх выполненных {'работ' if advance.get('basis') == 'works' else 'объёмов'} оплачено "
                    f"{_rub(advance['unworked'])}" if (advance.get("unworked") or 0) > 0 else "")
+                + (f", оплата не подтверждена: {esc(advance.get('reason') or 'недостаточно данных')}"
+                   if advance.get("paid") is None else "")
+                + (f", переплата не определена: {esc(advance.get('reason') or 'недостаточно данных')}"
+                   if advance.get("paid") is not None and advance.get("unworked") is None else "")
                 + ".")
         lines.append(line)
     return lines
@@ -4800,10 +4812,14 @@ def _contract_risks_html(block: dict[str, Any]) -> str:
             (_day(risk.get("forecast_finish")) if risk.get("forecast_finish") else "—")
             + (f"<br>+{int(delay)} дн" if delay and delay > 0 else ""),
             f"{_rub(row.get('completed'))} из {_rub(row.get('amount'))}",
-            _rub(advance.get("paid")),
+            _rub(advance.get("paid"))
+            + (f"<br><span style='color:#5b6b7d'>{esc(advance.get('reason') or 'Итог оплаты не подтверждён.')}</span>"
+               if advance.get("paid") is None else ""),
             (_rub(advance.get("unworked")) if advance.get("unworked") is not None else "—")
             + (f"<br><span style='color:#5b6b7d'>с материалами {_rub(advance['unworked_with_materials'])}</span>"
-               if advance.get("unworked_with_materials") is not None and (advance.get("unworked") or 0) > 0 else "")])
+               if advance.get("unworked_with_materials") is not None and (advance.get("unworked") or 0) > 0 else "")
+            + (f"<br><span style='color:#5b6b7d'>{esc(advance.get('reason') or 'Переплата не определена.')}</span>"
+               if advance.get("paid") is not None and advance.get("unworked") is None else "")])
     if rows:
         out.append("<table class='legal'>" + _row(["Подрядчик, договор", "Сигнал", "Срок", "Прогноз",
                                                    "Выполнено", "Оплачено", "Сверх выполненных работ"], True)

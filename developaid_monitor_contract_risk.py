@@ -139,58 +139,95 @@ def _norm(value: Any) -> str:
     return re.sub(r"\s+", " ", re.sub(r'[«»“”"]', "", value)).strip()
 
 
-def payments(path: Any, cut: dt.date, *, contract_number) -> tuple[list[dict] | None, list[str]]:
-    """Dated payments up to the cut; None when the register itself is not available."""
+def payment_identity(row: dict, *, reference_key) -> tuple:
+    """The same canonical party/number policy used for RSS, never persisted IDs."""
+    _, contractor, number = reference_key(row)
+    return contractor, number, _day(row.get("contract_date"))
+
+
+def payments(path: Any, cut: dt.date) -> tuple[list[dict] | None, list[str]]:
+    """Retain unresolved source rows instead of turning their absence into zero."""
     import developaid_actuals as actuals
+    from pathlib import Path
     if path is None:
         return None, ["Реестр платежей РСС не загружен; оплаты по договорам не показаны."]
     try:
-        rows = actuals.read_payments(path).get("rows") or []
+        rows = actuals.read_payments(path, include_incomplete=True).get("rows") or []
     except (KeyError, ValueError, OSError):
         return None, ["Реестр платежей в выбранном снимке РСС не прочитан; оплаты по договорам не показаны."]
     out, undated = [], 0
     for row in rows:
         day = _day(row.get("date"))
+        if day is not None and day > cut:
+            continue
         if day is None:
             undated += 1
-            continue
-        if day > cut:
-            continue
-        out.append({"contractor": _norm(row.get("contractor")),
-                    "contract": contract_number(row.get("contract")),
+        amount = row.get("amount")
+        try:
+            amount = None if amount is None or isinstance(amount, bool) else float(amount)
+        except (TypeError, ValueError):
+            amount = None
+        if amount is not None and not math.isfinite(amount):
+            amount = None
+        out.append({"contractor": row.get("contractor") or "",
+                    "contract": row.get("contract") or "",
                     "contract_date": _day(row.get("contract_date")),
-                    "amount": float(row.get("amount") or 0.0), "date": day,
-                    "advance_label": "аванс" in _norm(row.get("purpose"))})
-    warnings = ([f"В реестре платежей {undated} строк без даты платежа; они не учтены в оплатах по договорам."]
+                    "amount": amount, "date": day,
+                    "advance_label": "аванс" in _norm(row.get("purpose")),
+                    "source": {"label": "Реестр платежей РСС", "filename": Path(path).name,
+                               "sheet": actuals._PAYMENTS_SHEET, "row": row.get("source_row")}})
+    warnings = ([f"В реестре платежей {undated} строк без даты платежа; итог оплаты по подходящим договорам неизвестен."]
                 if undated else [])
     return out, warnings
 
 
-def advance(row: dict, paid_rows: list[dict] | None, *, contract_number, completed_basis: str) -> dict:
-    """Paid vs executed for one contract; exact identity only.
+def advance(row: dict, paid_rows: list[dict] | None, *, reference_key,
+            completed_basis: str, identity_counts: dict | None = None) -> dict:
+    """Allocate only complete, unique payment identities; retain unknown totals.
 
-    The main figure is paid over executed works (СМР); paid over works plus
-    delivered materials is a reference line. Without the split the total
-    execution is used and the reason says so."""
+    A known subset is separate from the authoritative total. An unresolved row
+    could add a payment, so neither total paid nor unworked advance becomes zero.
+    """
     result = {"paid": None, "paid_advance_labelled": None, "unworked": None, "payments_count": 0,
               "unworked_with_materials": None, "basis": "total",
-              "unmatched_candidates": 0, "unmatched_amount": None, "reason": ""}
+              "confirmed_paid": None, "confirmed_paid_advance_labelled": None,
+              "unmatched_candidates": 0, "unmatched_amount": None, "reason": "", "sources": []}
     if paid_rows is None:
         return dict(result, reason="Реестр платежей не прочитан.")
-    contractor, number = _norm(row.get("contractor")), contract_number(row.get("contract"))
-    contract_date = _day(row.get("contract_date"))
-    same = [p for p in paid_rows if p["contractor"] == contractor and p["contract"] == number]
-    exact = [p for p in same if p["contract_date"] == contract_date]
-    candidates = [p for p in same if p["contract_date"] is None]
-    paid = math.fsum(p["amount"] for p in exact)
-    result.update(paid=paid, payments_count=len(exact),
-                  paid_advance_labelled=math.fsum(p["amount"] for p in exact if p["advance_label"]),
-                  unmatched_candidates=len(candidates),
-                  unmatched_amount=math.fsum(p["amount"] for p in candidates) if candidates else None)
+    identity = payment_identity(row, reference_key=reference_key)
+    if not all(identity):
+        return dict(result, reason="Подрядчик, номер или дата договора не подтверждены; оплаты не сопоставлены.")
+
+    def compatible(key):
+        return all(not part or part == expected for part, expected in zip(key, identity))
+
+    related = [(payment, payment_identity(payment, reference_key=reference_key))
+               for payment in paid_rows]
+    related = [(payment, key) for payment, key in related if compatible(key)]
+    result["sources"] = [payment["source"] for payment, _ in related if payment.get("source")]
+    if identity_counts is not None and identity_counts.get(identity, 0) != 1:
+        return dict(result, unmatched_candidates=len(related),
+                    unmatched_amount=(math.fsum(p["amount"] for p, _ in related)
+                                      if related and all(p.get("amount") is not None for p, _ in related) else None),
+                    reason="Подрядчик, номер и дата подходят нескольким договорам из накопительных; "
+                           "платежи не распределены между разными карточками.")
+    exact = [payment for payment, key in related if all(key) and key == identity
+             and payment.get("date") is not None and payment.get("amount") is not None]
+    unresolved = [payment for payment, _ in related if payment not in exact]
+    confirmed = math.fsum(p["amount"] for p in exact)
+    confirmed_advance = math.fsum(p["amount"] for p in exact if p["advance_label"])
+    result.update(confirmed_paid=confirmed, confirmed_paid_advance_labelled=confirmed_advance,
+                  payments_count=len(exact), unmatched_candidates=len(unresolved),
+                  unmatched_amount=(math.fsum(p["amount"] for p in unresolved)
+                                    if unresolved and all(p.get("amount") is not None for p in unresolved) else None))
+    if unresolved:
+        missing_date = any(not p.get("contract_date") for p in unresolved)
+        return dict(result, reason=f"Ещё {len(unresolved)} подходящих строк реестра платежей "
+                    + ("без даты договора" if missing_date else "с неполными реквизитами, датой платежа или суммой")
+                    + "; итог оплаты и неотработанный аванс неизвестны. Проверьте исходные строки.")
+    paid = confirmed
+    result.update(paid=paid, paid_advance_labelled=confirmed_advance)
     notes = []
-    if candidates:
-        notes.append(f"Ещё {len(candidates)} платежей с тем же подрядчиком и номером, но без даты договора; "
-                     "в оплату не включены — проверьте реестр платежей.")
     completed = row.get("completed")
     if completed is None:
         notes.append("Выполнение по накопительным не подтверждено; переплата сверх выполнения не считается.")
@@ -211,16 +248,24 @@ def advance(row: dict, paid_rows: list[dict] | None, *, contract_number, complet
 
 
 def summary(rows: list[dict]) -> dict:
-    """Counters for the signal strip and the management summary."""
+    """Unknown or partial payment coverage never becomes a zero total."""
     risk = [r.get("risk") or {} for r in rows]
     unworked = [r.get("advance") or {} for r in rows]
     at_risk = [r for r in rows if (r.get("risk") or {}).get("status") in WARNING_STATUSES]
     exposed = [r for r in at_risk if ((r.get("advance") or {}).get("unworked") or 0) > 0]
+    unknown = sum(x.get("unworked") is None for x in unworked)
+    risk_unknown = sum((r.get("advance") or {}).get("unworked") is None for r in at_risk)
+    confirmed = math.fsum(x["unworked"] for x in unworked if x.get("unworked") is not None)
+    risk_confirmed = math.fsum(r["advance"]["unworked"] for r in exposed)
     return {
         "counts": {status: sum(1 for x in risk if x.get("status") == status) for status in STATUSES},
         "warning_count": len(at_risk),
-        "unworked_total": math.fsum((x.get("unworked") or 0) for x in unworked),
-        "unworked_at_risk_total": math.fsum((r["advance"].get("unworked") or 0) for r in exposed),
+        "unworked_total": None if unknown else confirmed,
+        "unworked_confirmed_total": confirmed,
+        "unworked_unknown_count": unknown,
+        "unworked_at_risk_total": None if risk_unknown else risk_confirmed,
+        "unworked_at_risk_confirmed_total": risk_confirmed,
+        "unworked_at_risk_unknown_count": risk_unknown,
         "unworked_at_risk_count": len(exposed),
     }
 

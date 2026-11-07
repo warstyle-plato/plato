@@ -647,10 +647,13 @@ def build(project: str, cut: str = "") -> dict:
     paid_rows = None
     if primary:
         paid_rows, payment_warnings = contract_risk.payments(
-            monitor._latest(project, "estimate", ".xlsx", cut), dt.date.fromisoformat(cut),
-            contract_number=_contract_number)
+            monitor._latest(project, "estimate", ".xlsx", cut), dt.date.fromisoformat(cut))
         warnings.extend(payment_warnings)
     groups = _groups(primary, project)
+    payment_identities: dict[tuple, int] = {}
+    for _, ledger_items in groups:
+        key = contract_risk.payment_identity(ledger_items[0], reference_key=_reference_key)
+        payment_identities[key] = payment_identities.get(key, 0) + 1
     claims: dict[int, int] = {}
     for _, ledger_items in groups:
         identity = _identity(ledger_items[0])
@@ -778,8 +781,9 @@ def build(project: str, cut: str = "") -> dict:
             cut=dt.date.fromisoformat(cut), deadline=dt.date.fromisoformat(deadline) if deadline else None,
             works=row["completed_works"] if row["works_materials_split"] else None,
             materials=row["completed_materials"] if row["works_materials_split"] else None)
-        row["advance"] = contract_risk.advance(row, paid_rows, contract_number=_contract_number,
-                                               completed_basis=completed_basis)
+        row["advance"] = contract_risk.advance(
+            row, paid_rows, reference_key=_reference_key,
+            identity_counts=payment_identities, completed_basis=completed_basis)
         rows.append(row)
     rows.sort(key=lambda r: (_norm(r["contractor"]), _norm(r["customer"]), _norm(r["contract"]), r["id"]))
     note = ("В списке только уникальные договоры из шапок загруженных накопительных: номер, дата, контрагент и заказчик. "
