@@ -104,7 +104,7 @@ def monitor_corpus_gpr_view(req: MonitorContractsBuild) -> Response:
     import developaid_gpr_corpus as corpus_gpr
     cut = _monitor_cumulative_day(req.cut)
     source = corpus_gpr.latest(req.project.strip(), cut)
-    return JSONResponse(content={"source": source, "html": corpus_gpr.render(source)}, headers=private)
+    return JSONResponse(content={"source": source, "html": corpus_gpr.render_overview(source, cut)}, headers=private)
 
 
 def _monitor_cumulative_day(value: str) -> str:
