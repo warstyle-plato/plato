@@ -144,7 +144,22 @@ def store_reference(
 _PM_CACHE: dict[tuple, dict[str, Any]] = {}
 
 
+# Owner's decision: the MS Project export is not representative and is not a
+# source for Monitor or the summary. Plan, dates and facts come from the GPR;
+# a stored pm.xlsx stays in the project archive and is not read.
+PM_DISABLED = True
+PM_DISABLED_REASON = ("Выгрузка MS Project (PM) отключена решением владельца: сроки и прогноз "
+                      "строятся по ГПР, перенос сдвигов по цепочкам PM не считается.")
+
+
 def _load_pm(project: str) -> dict[str, Any]:
+    if PM_DISABLED:
+        return {"known": False, "tasks": {}, "rnv_id": "", "source": "",
+                "disabled": True, "reason": PM_DISABLED_REASON}
+    return _load_pm_file(project)
+
+
+def _load_pm_file(project: str) -> dict[str, Any]:
     """PM-выгрузка, разобранная один раз на файл: baseline не меняется,
     а книга в полторы тысячи строк на 84 колонки стоит секунду разбора и
     читается дважды на каждый срез."""
@@ -431,7 +446,7 @@ def apply(project: str, view: dict[str, Any]) -> dict[str, Any]:
         schedule["dependency_graph"] = {
             "known": False,
             "forecast_known": False,
-            "reason": "не загружен сырой PM/ГРП",
+            "reason": pm.get("reason") or "не загружен сырой PM/ГРП",
         }
         return view
 
