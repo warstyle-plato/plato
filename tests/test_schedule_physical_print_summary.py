@@ -69,3 +69,19 @@ def test_partial_quantities_remain_in_real_pdf_without_raw_network():
     assert 'Состав работы и основание прогноза не подтверждены' in text
     assert 'недостаточно данных' in text
     assert 'Все работы исходной сети' not in text
+
+
+def test_confirmation_note_stays_visible_and_escaped_without_promoting_a_revocation():
+    data = payload(True)
+    block = data['gantt']['dependency_timeline']
+    block['confirmation'] = {'recorded_at': '2026-11-06T12:00:00+00:00',
+                             'calendar_basis': 'unconfirmed', 'rnv_chain_complete': False,
+                             'note': '<img src=x onerror=alert(1)> Проверка отозвана.'}
+    before = copy.deepcopy(data)
+    markup = report.render_html(data)
+    assert data == before
+    summary = markup.split('<div class="schedule-confirmation-summary">', 1)[1].split('</div>', 1)[0]
+    assert '06.11.2026' in summary and 'Проверка отозвана.' in summary
+    assert 'Календарь не подтверждён.' in summary
+    assert 'Полнота цепочки до РНВ не подтверждена.' in summary
+    assert '&lt;img' in summary and '<img' not in summary and '<details' not in summary

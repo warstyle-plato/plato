@@ -330,7 +330,11 @@ def render(block: dict, *, context: str = 'monitor') -> str:
         out.append('<p class="schedule-note">Изменение между версиями ГПР не рассчитано: данные сравнения не предоставлены.</p>')
     confirmation = block.get('confirmation') or {}
     if confirmation.get('recorded_at'):
-        out.append('<details class="schedule-provenance"><summary>Проверка исходного графика</summary><p class="schedule-note">Проверка от '+esc(date_text(confirmation['recorded_at']))+'. '+esc(confirmation.get('note'))+'</p></details>')
+        calendar = ('Расчёт в календарных днях подтверждён.'
+                    if confirmation.get('calendar_basis') == 'calendar_days' else 'Календарь не подтверждён.')
+        chain = ('Полнота цепочки до РНВ подтверждена.'
+                 if confirmation.get('rnv_chain_complete') else 'Полнота цепочки до РНВ не подтверждена.')
+        out.append('<div class="schedule-confirmation-summary"><p class="schedule-note"><b>Проверка исходного графика</b> от '+esc(date_text(confirmation['recorded_at']))+'. '+esc(calendar+' '+chain)+'</p><p class="schedule-note">'+esc(confirmation.get('note'))+'</p></div>')
     if context == 'monitor':
         out.append('<details class="schedule-technical"><summary>Техническая сеть работ и исходные показания</summary>'+_technical_render(block)+'</details>')
     else:
