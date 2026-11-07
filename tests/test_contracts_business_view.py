@@ -54,10 +54,19 @@ def test_real_business_register_keeps_core_facts_visible_and_sources_closed(widt
         sources.locator('summary').click()
         expect(sources.locator('.contract-source').filter(has_text='private-source-marker')).to_be_visible()
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
-        # Every business cell remains within the phone viewport, rather than being clipped.
-        for cell in first.locator('td').all():
-            box = cell.bounding_box()
-            assert box is not None and box['x'] >= 0 and box['x']+box['width'] <= width+1
+        # Owner's decision: a table everywhere. On a phone the register keeps its
+        # columns and its own wrapper scrolls sideways; the page itself does not.
+        assert page.locator('#contractsRows table.contract-register').evaluate(
+            '(t)=>getComputedStyle(t).display') == 'table'
+        assert first.locator('td').count() == 8
+        wrap = page.locator('#contractsRows .contract-register-wrap')
+        if width < 900:
+            assert wrap.evaluate('(w)=>w.scrollWidth > w.clientWidth')
+            expect(page.locator('#contractsRows .contract-scroll-hint')).to_be_visible()
+            last = first.locator('td').last
+            last.scroll_into_view_if_needed()
+            box = last.bounding_box()
+            assert box is not None and box['x'] >= -1 and box['x'] < width
         sources.locator('summary').click()
         second = page.locator(f'tr[data-contract-id="{OTHER}"]')
         assert second.locator('.contract-main-money').all_text_contents() == ['—', '—', '—']

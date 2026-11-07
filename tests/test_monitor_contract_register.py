@@ -542,3 +542,22 @@ def test_view_without_sources_is_empty_not_zero_contracts_with_fabricated_values
 def test_invalid_cut_rejected(project, cut):
     with pytest.raises(ValueError):
         contracts.build(project, cut)
+
+
+def test_rss_sheet_header_problems_are_named_to_the_user(project):
+    """A price column not called «сумма договора», a missing date column and an
+    unstated customer each reach the register warnings with their cause."""
+    rss(project, [{"contractor": "Builder A", "contract": "C-12/7", "contract_date": "2026-01-01",
+                   "amount": 500, "completed": 0}], headers={8: "Стоимость", 4: "Дата"})
+    path = monitor._project_dir(project) / "estimate" / "2026-04-01.xlsx"
+    wb = openpyxl.load_workbook(path)
+    wb.active["A1"].value = None
+    wb.active["B1"].value = None
+    wb.save(path)
+    view = contracts.build(project, "2026-04-01")
+    text = " ".join(view["warnings"])
+    assert "«Стоимость»" in text and "полная сумма договора из РСС не взята" in text
+    assert "нет колонки «Дата договора»" in text
+    assert "заказчик не указан" in text
+    row, = view["rows"]
+    assert row["amount"] is None and row["rss_match"]["status"] in {"differs", "not_found", "matched"}

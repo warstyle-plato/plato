@@ -261,7 +261,8 @@ def test_conflicting_party_evidence_is_visible_and_escaped_in_real_page(context,
         assert not errors
 
 
-@pytest.mark.parametrize('override', [{'customer': ''}, {'contract_date': None}, {'contract_date': '2026-01-02'}])
+@pytest.mark.parametrize('override', [{'customer': 'ООО «Другой заказчик»'}, {'contract_date': None},
+                                      {'contract_date': '2026-01-02'}])
 def test_incomplete_or_different_rss_identity_cannot_enrich_price(context, override):
     provide(context, parsed(), [rss_contract(**override)])
     row, = contracts.build('Example', '2026-11-06')['rows']
@@ -381,3 +382,64 @@ def test_amendment_reference_is_not_the_base_contract_header(context):
     view = contracts.build('Example', '2026-11-06')
     assert view['rows'] == [] and len(view['unresolved_sources']) == 1
     assert not snapshot['ledgers'][0]['contract']
+
+
+def test_rss_without_a_stated_customer_completes_the_contract_and_says_why(context):
+    provide(context, parsed(), [rss_contract(customer='')])
+    view = contracts.build('Example', '2026-11-06')
+    row, = view['rows']
+    assert row['amount'] == 1000 and row['rss_match']['status'] == 'matched'
+
+
+@pytest.mark.parametrize('rss_contractor,rss_number', [
+    ('Общество с ограниченной ответственностью «Подрядчик»', 'A-12'),
+    ('ООО «Подрядчик»', 'Договор подряда № A-12'),
+    ('ооо  "ПОДРЯДЧИК"', '№A-12')])
+def test_explicit_legal_form_and_number_sign_normalisation(context, rss_contractor, rss_number):
+    provide(context, parsed(), [rss_contract(contract=rss_number, contractor=rss_contractor)])
+    row, = contracts.build('Example', '2026-11-06')['rows']
+    assert row['amount'] == 1000
+
+
+@pytest.mark.parametrize('rss_contractor,rss_number', [('ООО «Подрядчик-2»', 'A-12'), ('ООО «Подрядчик»', 'A-121')])
+def test_similar_but_different_party_or_number_is_not_joined(context, rss_contractor, rss_number):
+    provide(context, parsed(), [rss_contract(contract=rss_number, contractor=rss_contractor)])
+    row, = contracts.build('Example', '2026-11-06')['rows']
+    assert row['amount'] is None
+
+
+def test_unmatched_contract_names_the_attribute_that_differed(context):
+    provide(context, parsed(), [rss_contract(contract_date='2026-01-02')])
+    row, = contracts.build('Example', '2026-11-06')['rows']
+    match = row['rss_match']
+    assert match['status'] == 'differs' and match['candidates'][0]['differences'] == ['дата договора']
+    assert 'дата договора' in match['text']
+
+
+def test_rss_row_fitting_two_cumulative_contracts_is_joined_to_neither(context):
+    snapshot = parsed(('One.xlsx', ks()), ('Two.xlsx', ks()))
+    snapshot['ledgers'][1]['customer'] = 'ООО «Второй заказчик»'
+    provide(context, snapshot, [rss_contract(customer='')])
+    view = contracts.build('Example', '2026-11-06')
+    assert len(view['rows']) == 2 and all(r['amount'] is None for r in view['rows'])
+    assert any('сразу к нескольким договорам' in w for w in view['warnings'])
+
+
+@pytest.mark.parametrize('width', [390, 1440])
+def test_real_page_is_a_table_and_shows_why_rss_did_not_complete(context, width):
+    from playwright.sync_api import expect
+    from test_monitor_cumulative_controls import browser_page
+    provide(context, parsed(), [rss_contract(contract_date='2026-01-02')])
+    view = contracts.build('Example', '2026-11-06')
+    with browser_page(width) as (page, responses, errors):
+        responses.data = view
+        page.locator('#contractsTab').click()
+        table = page.locator('#contractsRows table.contract-register')
+        expect(table).to_be_visible()
+        assert table.evaluate('(t)=>getComputedStyle(t).display') == 'table'
+        assert table.evaluate('(t)=>getComputedStyle(t.querySelector("thead")).position') != 'absolute'
+        expect(page.locator('#contractsRows .contract-rss-why')).to_contain_text('не совпало')
+        expect(page.locator('#contractsRows .contract-rss-why')).to_contain_text('дата договора')
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+        page.screenshot(path=f'/tmp/contracts-table-{width}.png', full_page=True)
+        assert not errors
