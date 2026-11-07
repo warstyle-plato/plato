@@ -524,6 +524,7 @@ function undergroundPairByHand(){
  return true;
 }
 function seedParkingByHand(){
+ if(partialTepMode())return;
  // Список приехал вместе с проектом — он и есть ответ, пересев затёр бы его:
  // заполненное нормой поле стало бы «тронутым руками» и замерло бы навсегда.
  if(Array.isArray(inputs._parking_by_hand))return;
@@ -737,8 +738,8 @@ function objectParkingFieldNote(prefix){
 function renderTep(){
  repairParkingFromGlavapu();
  const body=tepBody;body.innerHTML='';
- const importedParking=parkingRequirement();
- const groups=tepGroupRows();
+ const importedParking=partialTepMode()?null:parkingRequirement();
+ const groups=partialTepMode()?[{title:'Исходные ТЭП',keys:inputs._partial_tep.rows}]:tepGroupRows();
  groups.forEach(group=>{
   // Заголовок раздела рисуется, только когда разделов больше одного:
   // единственный раздел — это та же таблица с лишней строкой над ней.
@@ -759,7 +760,11 @@ function renderTep(){
    if(mkdLocked){
     label+=' <span class="tep-note">Нежилой проект: МКД в нём нет — строка обнулена и заперта. '+projectKindWhereNote()+'</span>';
    }
-   if(key==='underground_parking'&&inputs.underground_parking_disabled){
+   if(key==='underground_parking'&&partialTepMode()){
+     label+=' <span class="tep-note">Площадь гаража задаётся отдельно от площади отдельных мест. Пустая площадь не выводится из количества мест.</span>';
+     label+=`<label class="tep-note">Гостевых мест (входят в общее количество, не продаются)<input type="number" min="0" step="1" value="${inputDisplay(row.guest_units)}" onchange="tepCellChanged('underground_parking','guest_units',this.value)"></label>`;
+   }
+   else if(key==='underground_parking'&&inputs.underground_parking_disabled){
      const shortfall=undergroundShortfallNote();
      label+=` <span class="tep-note">Подземного паркинга нет — потребность закрывает наземный. Включить обратно: раздел «Подземный паркинг».</span>`;
      if(shortfall)label+=` <span class="tep-note bad">${shortfall}</span>`;
@@ -824,7 +829,7 @@ function renderTep(){
            ?'по нормативу Москвы (2151-ПП)':'по нормативу области (калькулятор МО) / поля'}. Чтобы вписать свою — `
          +`в блоке «Социальная нагрузка» выберите в поле «Как задаются соцобъекты» вариант «Ручной ввод».</span>`;
    }
-   if(TEP_RATIOS[key]){
+   if(TEP_RATIOS[key]&&!partialTepMode()){
      const own=tepNoteText(key);
      const text=own||tepRowComplaint(key,row);
      const tone=own?tepNoteTone(key):'bad';
@@ -861,7 +866,7 @@ function renderTep(){
    // как это понимать?» (владелец, 12.09.2026). Правило то же, что было
    // записано здесь с самого начала, просто число сменило колонку.
    const ratioField=col=>{
-    if(!chain)return '';
+    if(!chain||partialTepMode())return '';
     const which=col==='total_area'?'total':(col==='useful'?'saleable':'');
     if(!which)return '';
     const value=Math.round((which==='total'?chain[0]:chain[1])*1e4)/100;
@@ -885,7 +890,7 @@ function renderTep(){
      const socialLocked=!!TEP_SOCIAL_INPUTS[key]
        &&(String(inputs.social_area_source||'norm')!=='manual'
           ||!['gns','total_area'].includes(col));
-     const locked=mkdLocked||socialLocked||rowOff||(key==='underground_parking'&&(importedParking||inputs.underground_parking_disabled||Number(inputs.underground_manual_spaces||0)>0||Number(inputs.underground_manual_gns_sqm||0)>0)&&['gns','total_area','useful','saleable','transfer','units'].includes(col));
+     const locked=mkdLocked||socialLocked||rowOff||(!partialTepMode()&&key==='underground_parking'&&(importedParking||inputs.underground_parking_disabled||Number(inputs.underground_manual_spaces||0)>0||Number(inputs.underground_manual_gns_sqm||0)>0)&&['gns','total_area','useful','saleable','transfer','units'].includes(col));
      // Два атрибута style на одном input браузер не складывает — берёт первый,
      // и запертая ячейка теряла бы серый фон. Стиль собирается один.
      html+=`<td style="vertical-align:top"><input type="number" step="0.1" value="${inputDisplay(row[col])}" style="margin:0${locked?';background:#f3f3f1;color:#555':''}" ${locked?'readonly':''} onchange="tepCellChanged('${key}','${col}',this.value)">${locked?'':ratioField(col)}</td>`;
@@ -1318,6 +1323,7 @@ function rescaleApartmentUnits(){
 }
 
 function tepCellChanged(key,col,value){
+ if(partialTepEditCell(key,col,value))return;
  const was=Number(tep[key][col]||0);
  tep[key][col]=Number(value||0);
  markFieldManual('tep.'+key+'.'+col);
@@ -1392,6 +1398,7 @@ function tepCellChanged(key,col,value){
 }
 
 function updateTepTotals(){
+ if(partialTepMode())return partialTepTotals();
  repairParkingFromGlavapu();
  const sums={gns:0,total_area:0,useful:0,saleable:0,transfer:0,units:0};
  // ГНС — НАЗЕМНАЯ площадь здания: под землёй наружных стен не бывает. В движке
@@ -3799,6 +3806,7 @@ async function recalcFromTep(options){
 }
 
 function syncTep(rerender=true){
+ if(partialTepMode()){if(rerender)renderTep();return false}
  // Тип проекта — признак, а не разовое действие переключателя: жильё убирает
  // ТОТ ЖЕ пересчёт, через который проходит всякий писатель ТЭП — импорт
  // ГлавАПУ, расчёт от плотности, мост КРТ, загрузка проекта. Прежде оно

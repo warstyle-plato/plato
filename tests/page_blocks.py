@@ -93,6 +93,11 @@ def piece(name: str, page: str | None = None) -> str:
         return constant(name, page)
 
 
+def partial_tep_mode() -> str:
+    """Настоящий признак черновика для стендов, собирающих страницу вручную."""
+    return constant("PARTIAL_TEP_SCHEMA") + "\n" + function("partialTepMode")
+
+
 def krt_lock() -> str:
     """Замок «Требования КРТ» со списком запертых полей и общим писателем.
 
@@ -153,6 +158,10 @@ def tep_cell_stand() -> str:
         # выгрузки ГлавАПУ его потом не перезаписывает.
         function("fieldOrigins"),
         function("markFieldManual"),
+        # The real opt-in handler returns to the usual writer for legacy
+        # inputs. Load its real dependency, not a stub that disables drafts.
+        function("partialTepMode"),
+        function("partialTepEditCell"),
         function("tepCellChanged"),
         # Пересборка строки по долям — тот же путь, что правка ячейки:
         # «наши» и правка доли обязаны считать переданное так же.

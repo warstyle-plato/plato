@@ -23,6 +23,7 @@ def calculate_api(req: CalcRequest) -> dict:
     # выключен — проверять подпись нечем.
     # Право на участок (21.10.2026): после входа — бесплатный участок, дальше
     # оплата участка или подписка. Решает одна функция для всех поверхностей.
+    _partial_tep_preflight(req.inputs, req.tep)
     access = require_calc_access(req.session, req.access_key, "Расчёт экономики",
                                  inputs=req.inputs, free_consent=req.use_free)
     # Учёт шагов с сайта: без него от публикации на пятьсот человек остаётся

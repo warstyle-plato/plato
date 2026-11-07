@@ -1551,7 +1551,9 @@ def _apply_sales_chat(req: SalesChatRequest, project: str) -> dict[str, Any]:
                 found = sales_questions.questions(
                     updated, contracting.get("data"), contracting.get("at"), day,
                     set(sales_questions.load_asked(where, sales_project))
-                    | sales_dialogue.asked_keys(where, sales_project))
+                    | sales_dialogue.asked_keys(where, sales_project),
+                    snapshot=((kept.get("sources") or {}).get("chessboard") or {}).get("data"),
+                    report_text=req.text)
                 ask = sales_questions.message(found)
                 if ask:
                     # Сначала записать, потом отправить: несработавшая отправка
