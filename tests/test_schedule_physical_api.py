@@ -78,6 +78,20 @@ def test_source_replacement_and_project_isolation(sources):
     assert state['source_changed'] and not state['model']['physical_evidence']
 
 
+def test_physical_mapping_reads_the_same_archive_as_the_contract_register(api, monkeypatch):
+    """Clarified header dates and re-read parties must reach the mapping too."""
+    import developaid_monitor_contracts as contracts
+    from test_cumulative_header_date_confirmations import stored, fields
+    snapshot = stored('Fixture')
+    today = dt.date.today().isoformat()
+    contracts.confirm_header_date('Fixture', today, **fields(snapshot))
+    monkeypatch.setattr(graph, '_load_pm', lambda project: dict(network(), source_sha256='a'*64))
+    row, = contracts.build('Fixture', today)['rows']
+    catalog = physical.catalog('Fixture', today)
+    assert catalog['snapshot_id'] == snapshot['snapshot_id'] and catalog['items']
+    assert {(x['contractor'], x['contract'], x['contract_date']) for x in catalog['items']} == {
+        (row['contractor'], row['contract'], '2024-07-03')}
+
 def test_only_one_process_shared_revision_can_commit(sources):
     _,root,_,_=sources
     def save():
@@ -177,17 +191,3 @@ except physical.PhysicalProblem as error:
     assert outcomes.count('saved')==1 and outcomes.count('conflict')==3
     assert len(list(root.rglob('physical_schedule_links/*.json')))==1
 
-
-def test_physical_mapping_reads_the_same_archive_as_the_contract_register(api, monkeypatch):
-    """Clarified header dates and re-read parties must reach the mapping too."""
-    import developaid_monitor_contracts as contracts
-    from test_cumulative_header_date_confirmations import stored, fields
-    snapshot = stored('Fixture')
-    today = dt.date.today().isoformat()
-    contracts.confirm_header_date('Fixture', today, **fields(snapshot))
-    monkeypatch.setattr(graph, '_load_pm', lambda project: dict(network(), source_sha256='a'*64))
-    row, = contracts.build('Fixture', today)['rows']
-    catalog = physical.catalog('Fixture', today)
-    assert catalog['snapshot_id'] == snapshot['snapshot_id'] and catalog['items']
-    assert {(x['contractor'], x['contract'], x['contract_date']) for x in catalog['items']} == {
-        (row['contractor'], row['contract'], '2024-07-03')}
