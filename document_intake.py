@@ -500,7 +500,7 @@ def parse_intake(answer: str) -> dict[str, Any]:
                 written = str(one or "").strip()
                 if not written:
                     continue
-                found = re.findall(r"(?<!\\d)\\d{2}:\\d{2}:\\d{6,8}:\\d+(?!\\d)", written)
+                found = re.findall(r"(?<!\d)\d{2}:\d{2}:\d{5,8}:\d+(?!\d)", written)
                 candidates = found or [written]
                 for candidate in candidates:
                     if candidate not in numbers:
@@ -1073,3 +1073,21 @@ def _merge(payments: list[tuple[float, int]], base: float) -> dict[int, float]:
     for amount, month in payments:
         merged[month] = merged.get(month, 0.0) + amount
     return merged
+
+
+def extraction_schema() -> dict[str, Any]:
+    """Provider-enforced candidate shape; evidence is still checked server-side."""
+    def obj(properties):
+        return {"type": "object", "properties": properties,
+                "required": list(properties), "additionalProperties": False}
+    string = {"type": "string"}
+    option = obj({"label": string, "value": {"type": ["string", "null"]}, "unit": string})
+    return obj({
+        "fields": {"type": "array", "items": obj({
+            "key": {"type": "string", "enum": sorted(INTAKE_KEYS)},
+            "value": string, "unit": string, "quote": string})},
+        "questions": {"type": "array", "items": obj({
+            "key": string, "question": string,
+            "options": {"type": "array", "items": option}})},
+        "notes": {"type": "array", "items": string},
+    })

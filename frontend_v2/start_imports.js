@@ -65,7 +65,7 @@
 
     const lead = document.createElement('div');
     lead.className = 'v2-start-lead';
-    lead.innerHTML = '<strong>Начните с участка</strong><span>Поиск по кадастровому номеру или адресу — основной вход в новый проект. Если ТЭП уже есть, загрузите наш Excel-шаблон. Если есть тизер — DevelopAid сначала покажет, что прочитал, и применит только отмеченные значения.</span>';
+    lead.innerHTML = '<strong>Начните с участка</strong><span>Поиск по кадастровому номеру или адресу — основной вход в новый проект. Если ТЭП уже есть, загрузите наш Excel-шаблон. Если есть тизер — DevelopAid сначала покажет, что прочитал, и задаст вопросы и предложит подтвердить карточку.</span>';
     searchPanel.before(lead);
 
     const panel = document.createElement('article');
@@ -86,11 +86,11 @@
         </div>
         <div class="v2-import-card">
           <strong>Тизер проекта</strong>
-          <p>PDF разбирается тем же контуром документов, который уже работает в основном DevelopAid. Перед применением покажем значения и цитаты из файла.</p>
+          <p>PDF, фотография или публичная ссылка проходят общий разбор документа. Перед применением покажем значения и цитаты из файла.</p>
           <div class="v2-import-actions">
-            <button id="v2TeaserUploadButton" class="search-button" type="button">Загрузить тизер (.pdf)</button>
+            <button id="v2TeaserUploadButton" class="search-button" type="button">Загрузить PDF или фото</button>
           </div>
-          <input id="v2TeaserUpload" type="file" accept=".pdf,application/pdf" hidden>
+          <p><label>Ссылка на документ или страницу <input id="v2TeaserUrl" type="url" placeholder="https://…"></label> <button id="v2TeaserUrlButton" class="text-button" type="button">Прочитать ссылку</button></p><input id="v2TeaserUpload" type="file" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg" hidden>
         </div>
       </div>
       <div id="v2ImportStatus" class="v2-import-status"></div>
@@ -101,6 +101,7 @@
     document.getElementById('v2TeaserUploadButton').addEventListener('click', () => document.getElementById('v2TeaserUpload').click());
     document.getElementById('v2TemplateUpload').addEventListener('change', onTemplateFile);
     document.getElementById('v2TeaserUpload').addEventListener('change', onTeaserFile);
+    document.getElementById('v2TeaserUrlButton').onclick = () => readTeaser({source_url: document.getElementById('v2TeaserUrl').value.trim()});
   }
 
   function status(text, tone = '') {
@@ -240,106 +241,148 @@
     return [...found];
   }
 
+  let teaserBusy = false;
+
+  function cardRows(rows, value) {
+    return '<table class="v2-teaser-table"><tbody>' + rows.map(row =>
+      '<tr><td>' + esc(row.label) + '</td><td>' + value(row) + '</td></tr>').join('') + '</tbody></table>';
+  }
+
   function renderTeaserReview(data) {
     teaserExtraction = data;
     const host = document.getElementById('v2TeaserReview');
     if (!host) return;
-    const doc = data.document || {};
-    const fields = Array.isArray(data.fields) ? data.fields : [];
-    const questions = Array.isArray(data.questions) ? data.questions : [];
-    const rows = fields.map((field, index) => `
-      <tr>
-        <td><input type="checkbox" data-v2-teaser-index="${index}" checked></td>
-        <td><strong>${esc(field.label || field.key || 'Поле')}</strong><small>${esc(field.key || '')}</small></td>
-        <td><b>${esc(field.value)}</b> ${esc(field.unit || '')}</td>
-        <td><small>${doc.recognized ? 'OCR · ' : ''}«${esc(field.quote || '')}»</small></td>
-      </tr>`).join('');
-    const questionText = questions.map((question) => esc(question.question || question.text || question)).filter(Boolean);
     host.hidden = false;
-    host.innerHTML = `
-      <div class="v2-saved-head"><strong>${esc(doc.filename || 'Тизер')}</strong><span>${doc.pages ? `${esc(doc.pages)} стр.` : ''}</span></div>
-      ${fields.length ? `<table class="v2-teaser-table"><thead><tr><th></th><th>Поле</th><th>Значение</th><th>Откуда взято</th></tr></thead><tbody>${rows}</tbody></table>` : '<p>В документе не нашлось полей, которые можно перенести в модель.</p>'}
-      ${questionText.length ? `<div class="v2-teaser-questions"><strong>Чего не хватает:</strong><br>${questionText.join('<br>')}</div>` : ''}
-      ${fields.length ? '<button id="v2TeaserApply" class="search-button" type="button">Применить отмеченное</button>' : ''}`;
+    const card = data.card;
+    if (!card) {
+      host.textContent = data.reason || (data.document || {}).reason || 'Разбор не вернул карточку. Повторите загрузку.';
+      return;
+    }
+    const q = card.questions || {};
+    host.innerHTML = '<strong>' + esc(card.filename || 'Тизер') + '</strong>'
+      + (card.document_reason ? '<p>' + esc(card.document_reason) + '</p>' : '')
+      + '<h4>Что найдено в документе</h4>'
+      + cardRows(card.found || [], r => '<b>' + esc(Array.isArray(r.value) ? r.value.join(', ') : r.value) + '</b> '
+        + esc(r.unit) + '<small>' + esc(r.page_text) + ' · ' + esc(r.status) + '<br>«' + esc(r.quote) + '»</small>')
+      + '<h4>Что уйдёт в расчёт</h4>'
+      + cardRows(card.to_engine || [], r => '<b>' + esc(r.shown) + '</b><small>' + esc(r.origin) + '</small>')
+      + '<h4>Чего не хватает и что возьмётся вместо этого</h4>'
+      + cardRows(card.missing || [], r => esc(r.shown) + '<small>' + esc(r.origin) + '</small>')
+      + (card.refused || []).map(r => '<p>Не взято: ' + esc(r.label || r.key) + ' — ' + esc(r.reason) + '</p>').join('')
+      + (card.notes || []).map(note => '<p>' + esc(note) + '</p>').join('')
+      + '<div id="v2TeaserQuestion"></div>'
+      + (card.ready ? '<button id="v2TeaserApply" class="search-button" type="button">Всё верно, считать</button>'
+        : '<button id="v2TeaserQuestions" class="search-button" type="button">Перейти к вопросам (' + esc(q.total - q.index) + ')</button>');
     const apply = document.getElementById('v2TeaserApply');
-    if (apply) apply.addEventListener('click', applyTeaserSelection);
+    if (apply) apply.onclick = applyTeaserSelection;
+    const questions = document.getElementById('v2TeaserQuestions');
+    if (questions) questions.onclick = () => { questions.hidden = true; renderTeaserQuestion(card); };
+  }
+
+  function renderTeaserQuestion(card) {
+    const question = (card.questions || {}).card;
+    const host = document.getElementById('v2TeaserQuestion');
+    if (!question || !host) return;
+    host.innerHTML = '<p><strong>' + esc(question.question) + '</strong></p>'
+      + (question.options || []).map((o, index) => '<button class="text-button" data-teaser-choice="' + index + '">' + esc(o.label) + '</button>').join(' ')
+      + '<p><label>Своё значение ' + esc(question.unit || '') + ' <input id="v2TeaserAnswer" type="text"></label>'
+      + '<button id="v2TeaserAnswerButton" class="text-button">Ответить</button></p>'
+      + '<button id="v2TeaserSkip" class="text-button">Пропустить — оставить указанное в карточке</button>';
+    host.querySelectorAll('[data-teaser-choice]').forEach(button => {
+      button.onclick = () => answerTeaser(card, 'answer', Number(button.dataset.teaserChoice));
+    });
+    document.getElementById('v2TeaserAnswerButton').onclick = () => answerTeaser(card, 'answer', -1);
+    document.getElementById('v2TeaserSkip').onclick = () => answerTeaser(card, 'skip', -1);
+  }
+
+  async function answerTeaser(card, action, choice, mode = '') {
+    if (teaserBusy) return;
+    teaserBusy = true;
+    try {
+      const draft = currentDraft(await defaults());
+      const value = (document.getElementById('v2TeaserAnswer') || {}).value || '';
+      const response = await fetch('/agent/document/answer', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({intake_id: card.id, index: card.questions.index, action, choice, value, mode,
+          inputs: draft.inputs, tep: draft.tep, session: webSession()}),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || 'Ответ не сохранился.');
+      if (data.confirm) {
+        const host = document.getElementById('v2TeaserQuestion');
+        host.innerHTML = '<p>' + esc(data.confirm.label) + ': уже стоит ' + esc(data.confirm.current)
+          + ', из ответа ' + esc(data.confirm.adding) + ' ' + esc(data.confirm.unit) + '. Прибавить или заменить?</p>'
+          + '<button data-mode="add" class="text-button">Прибавить</button> '
+          + '<button data-mode="replace" class="text-button">Заменить</button>'
+          + '<input id="v2TeaserAnswer" type="hidden" value="' + esc(value) + '">';
+        host.querySelectorAll('[data-mode]').forEach(b => {
+          b.onclick = () => answerTeaser(card, action, choice, b.dataset.mode);
+        });
+        return;
+      }
+      renderTeaserReview({...teaserExtraction, card: data.card});
+      if (!data.card.ready) {
+        const next = document.getElementById('v2TeaserQuestions');
+        if (next) next.hidden = true;
+        renderTeaserQuestion(data.card);
+      }
+    } catch (error) { status(String(error.message || error), 'error'); }
+    finally { teaserBusy = false; }
+  }
+
+  async function readTeaser(payload) {
+    if (teaserBusy) return;
+    teaserBusy = true;
+    status('Читаю документ. Модель пока не меняется…');
+    try {
+      const draft = currentDraft(await defaults());
+      const data = await window.PlatoDocumentClient.read({...payload,
+        inputs: draft.inputs, tep: draft.tep, session: webSession()});
+      renderTeaserReview(data);
+      status(data.card ? 'Проверьте карточку и ответы перед расчётом.' : 'Документ не применён.', data.card ? 'ok' : 'error');
+    } catch (error) { status(String(error.message || error), 'error'); }
+    finally { teaserBusy = false; }
   }
 
   async function onTeaserFile(event) {
     const input = event.target;
     const file = input.files && input.files[0];
-    input.value = '';
     if (!file) return;
-    if (file.size > MAX_TEASER_BYTES) return status('Тизер больше 20 МБ. Пришлите нужные страницы отдельным PDF.', 'error');
-    status('Читаю тизер. Сначала покажу найденные значения — ничего не применяется автоматически…');
-    const review = document.getElementById('v2TeaserReview');
-    if (review) { review.hidden = true; review.innerHTML = ''; }
+    if (file.size > MAX_TEASER_BYTES) return status('Файл больше 20 МБ. Пришлите нужные страницы отдельно.', 'error');
     try {
-      const base = await defaults();
-      const draft = currentDraft(base);
-      const response = await fetch('/agent/document', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        cache: 'no-store',
-        body: JSON.stringify({
-          filename: file.name,
-          content_b64: arrayBufferToBase64(await file.arrayBuffer()),
-          inputs: draft.inputs,
-          tep: draft.tep,
-          session: webSession(),
-        }),
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.detail || 'Тизер не разобрался');
-      renderTeaserReview(data);
-      status('Тизер разобран. Проверьте цитаты и снимите галочки с того, что не нужно переносить.', 'ok');
-    } catch (error) {
-      teaserExtraction = null;
-      status(String(error.message || error), 'error');
-    }
+      const buffer = await file.arrayBuffer(); // Read before clearing the iOS file picker.
+      input.value = '';
+      await readTeaser({filename: file.name, content_b64: arrayBufferToBase64(buffer)});
+    } catch (error) { status(String(error.message || error), 'error'); }
   }
 
   async function applyTeaserSelection() {
-    if (!teaserExtraction) return;
-    const checked = Array.from(document.querySelectorAll('[data-v2-teaser-index]:checked'));
-    const fields = Array.isArray(teaserExtraction.fields) ? teaserExtraction.fields : [];
-    const accept = checked.map((node) => fields[Number(node.dataset.v2TeaserIndex)]).filter(Boolean).map((field) => field.key);
-    if (!accept.length) return status('Ничего не отмечено — применять нечего.', 'error');
-    status('Применяю подтверждённые значения и пересчитываю проект…');
+    if (teaserBusy || !teaserExtraction || !teaserExtraction.card || !teaserExtraction.card.ready) return;
+    teaserBusy = true;
+    status('Сверяю подтверждённую карточку…');
     try {
-      const base = await defaults();
-      const before = currentDraft(base);
-      const response = await fetch('/agent/document', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        cache: 'no-store',
-        body: JSON.stringify({
-          filename: ((teaserExtraction.document || {}).filename || ''),
-          accept,
-          extraction: teaserExtraction,
-          inputs: before.inputs,
-          tep: before.tep,
-          session: webSession(),
-        }),
+      const before = currentDraft(await defaults());
+      const card = teaserExtraction.card;
+      const response = await fetch('/agent/document/apply', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({intake_id: card.id, card_key: card.card_key,
+          inputs: before.inputs, tep: before.tep, session: webSession()}),
       });
-      const applied = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(applied.detail || 'Значения из тизера не применились');
-      const draft = {
-        inputs: { ...(before.inputs || {}), ...(applied.inputs || {}) },
-        tep: mergeTep(before.tep, applied.tep),
-        phasing: before.phasing,
-      };
-      const filename = (teaserExtraction.document || {}).filename || 'Тизер';
-      await calculateImported(draft, {
-        projectName: fileStem(filename),
-        cadastralNumbers: cadastralFromExtraction(teaserExtraction),
-        sourceLabel: 'Тизер · подтверждённый разбор документа',
-        message: 'Значения из тизера применены только по отмеченным строкам. Проверьте остальные вводные — отсутствующее в документе DevelopAid не угадывает.',
+      const applied = await response.json();
+      if (!response.ok) throw new Error(applied.detail || 'Карточка не применена.');
+      if (applied.stale) {
+        renderTeaserReview({...teaserExtraction, card: applied.card});
+        status('Вводные изменились. Проверьте обновлённую карточку и подтвердите её ещё раз.');
+        return;
+      }
+      await calculateImported({inputs: applied.inputs, tep: applied.tep, phasing: before.phasing}, {
+        projectName: fileStem(card.filename), cadastralNumbers: applied.cadastral_numbers,
+        sourceLabel: 'Тизер · подтверждённая карточка',
+        message: 'Применена подтверждённая карточка документа. Происхождение значений сохранено.',
       });
-      status('Подтверждённые значения из тизера применены. Открыты «Вводные» для проверки недостающих параметров.', 'ok');
-    } catch (error) {
-      status(String(error.message || error), 'error');
-    }
+      status('Карточка применена, проект пересчитан.', 'ok');
+    } catch (error) { status(String(error.message || error), 'error'); }
+    finally { teaserBusy = false; }
   }
 
   setInitialView();

@@ -27,6 +27,7 @@ import re
 from typing import Any
 
 import document_intake as di
+import intake_evidence
 
 # Найденное в тизере ложится в модель только через `di.apply_intake` — тот же
 # писатель, что и прежде; здесь он зовётся по одному полю, чтобы у каждой
@@ -227,9 +228,18 @@ def start(extraction: dict[str, Any], document: dict[str, Any], filename: str,
     галочкой в таблице. Класс жилья тизер не называет — он спрашивается
     последним.
     """
+    extraction = intake_evidence.validate(extraction, document)
     fields = locate_pages(list(extraction.get("fields") or []), str(document.get("text") or ""))
     found = {row["key"] for row in fields}
     cards, answered_by_document = [], []
+    for conflict in extraction.get("conflicts") or []:
+        key = conflict["key"]
+        alternatives = locate_pages(conflict["fields"], str(document.get("text") or ""))
+        cards.append({"kind": "source_conflict", "key": key,
+                      "label": plain_label(key), "unit": di.INTAKE_UNITS.get(key, ""),
+                      "question": f"В документе разные значения: {plain_label(key)}. Какое взять?",
+                      "options": [{"label": f"{row['value']} {row.get('unit', '')} · {page_text(row)} — «{row['quote']}»",
+                                   "field": row} for row in alternatives]})
     for item in extraction.get("questions") or []:
         key = str(item.get("key") or "").strip()
         if key and key in found:
@@ -244,11 +254,15 @@ def start(extraction: dict[str, Any], document: dict[str, Any], filename: str,
         "filename": filename,
         "pages": document.get("pages"),
         "recognized": bool(document.get("recognized")),
+        "document_reason": str(document.get("reason") or ""),
+        "page_coverage": document.get("page_coverage") or [],
+        "source": document.get("source") or {},
         "fields": fields,
         "not_asked": list(extraction.get("not_asked") or []),
         "answered_by_document": answered_by_document,
         "notes": [str(note) for note in (extraction.get("notes") or [])],
         "dropped": list(extraction.get("dropped") or []),
+        "unverified": list(extraction.get("unverified") or []),
         "reason": str(extraction.get("reason") or ""),
         "cards": cards, "index": 0, "answers": [],
     }
@@ -302,9 +316,19 @@ def replay(state: dict[str, Any], inputs: dict[str, Any], tep: dict[str, dict[st
                          # долями объекта, и карточка так и пишет.
                          "derived": path in DERIVED_PATHS, **origin}
 
-    for field in state.get("fields") or []:
+    selected_fields = list(state.get("fields") or [])
+    for answer in state.get("answers") or []:
+        index = int(answer.get("index") or 0)
+        cards = state.get("cards") or []
+        if answer.get("action") != "answer" or not 0 <= index < len(cards):
+            continue
+        conflict = cards[index]
+        choice = int(answer.get("choice") if answer.get("choice") is not None else -1)
+        if conflict.get("kind") == "source_conflict" and 0 <= choice < len(conflict["options"]):
+            selected_fields.append({**conflict["options"][choice]["field"], "conflict_chosen": True})
+    for field in selected_fields:
         key = field["key"]
-        if key == RELIEF_KEY:
+        if key == RELIEF_KEY and not field.get("conflict_chosen"):
             continue  # льгота ложится только ответом на свой вопрос
         source = {"source": "document", "field": key, "page": field.get("page"),
                   "page_checked": field.get("page_checked"),
@@ -337,6 +361,8 @@ def replay(state: dict[str, Any], inputs: dict[str, Any], tep: dict[str, dict[st
         if not 0 <= index < len(cards):
             continue
         card = cards[index]
+        if card.get("kind") == "source_conflict":
+            continue  # applied once, with its checked quote, above
         choice = int(answer.get("choice") if answer.get("choice") is not None else -1)
         option = (card.get("options") or [])[choice] if 0 <= choice < len(card.get("options") or []) else None
         said = str(answer.get("answer") or "")
@@ -419,7 +445,7 @@ def answer(state: dict[str, Any], inputs: dict[str, Any], tep: dict[str, dict[st
         said = " — ".join(part for part in ((option or {}).get("label") or "",
                                             str(value or "").strip()) if part)
         record.update(choice=choice, value=str(value or "").strip(), mode=mode, answer=said)
-        if card.get("kind") not in (CLASS_CARD_KIND, RELIEF_CARD_KIND):
+        if card.get("kind") not in (CLASS_CARD_KIND, RELIEF_CARD_KIND, "source_conflict"):
             # Прибавить или заменить решает человек — до записи ответа.
             before = replay(state, inputs, tep, spp_split=spp_split, presets=presets)
             probe = di.answer_card(card, before["inputs"], before["tep"], choice=choice,
@@ -431,6 +457,7 @@ def answer(state: dict[str, Any], inputs: dict[str, Any], tep: dict[str, dict[st
         elif option is None:
             record["refused"] = [{"key": card.get("key"), "label": card.get("label"),
                                   "value": said, "reason": "выберите вариант"}]
+            return {"answer": record, "invalid": True}
     state["answers"] = list(state.get("answers") or []) + [record]
     state["index"] = len(cards) if action == "stop" else current + 1
     return {"answer": record}
@@ -608,7 +635,10 @@ def build(state: dict[str, Any], inputs: dict[str, Any], tep: dict[str, dict[str
         "found": found,
         "to_engine": to_engine,
         "missing": missing,
-        "refused": got["refused"],
+        "refused": list(state.get("unverified") or []) + got["refused"],
+        "document_reason": state.get("document_reason") or "",
+        "page_coverage": state.get("page_coverage") or [],
+        "source": state.get("source") or {},
         "not_asked": state.get("not_asked") or [],
         "answered_by_document": state.get("answered_by_document") or [],
         "notes": state.get("notes") or [],
