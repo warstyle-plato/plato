@@ -2,13 +2,15 @@
 from __future__ import annotations
 
 import io
+import re
+import zipfile
 
 import openpyxl
 import pytest
 
 import developaid_monitor_contracts as contracts
 import developaid_monitor_ledgers as ledgers
-from test_monitor_cumulative_ledgers import book
+from test_monitor_cumulative_ledgers import archive, book
 from test_monitor_contract_register import project, primary_ledger  # noqa: F401  (fixture)
 
 
@@ -39,6 +41,110 @@ def test_swapped_labels_follow_the_labels_not_the_position():
     wb.save(out)
     item = parsed_ledger(out.getvalue())['items'][0]
     assert (item['completed_work_amount'], item['completed_material_amount']) == (500, 200)
+
+
+def dated_split_book(**cells):
+    wb = openpyxl.load_workbook(io.BytesIO(book(split=True)))
+    ws = wb.active
+    ws['H7'] = 'Выполнение (01.01.2026 - 31.01.2026)'
+    for address, value in cells.items():
+        ws[address] = value
+    out = io.BytesIO()
+    wb.save(out)
+    return out.getvalue()
+
+
+def source_row(project, data):
+    ledger = parsed_ledger(data)
+    project.snapshots.append({'taken_at': '2026-05-01', 'ledgers': [ledger], 'summary_contracts': []})
+    row, = contracts.build(project, '2026-05-01')['rows']
+    return ledger, row
+
+
+def test_swapped_labelled_money_reaches_register_without_losing_split(project):
+    ledger, row = source_row(project, dated_split_book(
+        J8='Стоимость СМР', K8='Стоимость материалы',
+        P8='Стоимость СМР', Q8='Стоимость материалы'))
+    assert ledger['items'][0]['amount_split']
+    assert ledger['items'][0]['periods'][0]['amount_split']
+    assert row['completed'] == 700
+    assert row['works_materials_split']
+    assert (row['completed_works'], row['completed_materials']) == (500, 200)
+
+
+def test_each_period_uses_its_own_labels_when_annual_pair_is_unlabelled(project):
+    ledger, row = source_row(project, dated_split_book(P8='Стоимость', Q8='Стоимость'))
+    assert not ledger['items'][0]['amount_split']
+    assert ledger['items'][0]['periods'][0]['amount_split']
+    assert row['completed'] == 700 and row['works_materials_split']
+    assert (row['completed_works'], row['completed_materials']) == (200, 500)
+
+
+@pytest.mark.parametrize('cells', [
+    {'J9': 'не рассчитано', 'P9': 'не рассчитано'},
+    {'J9': 'не рассчитано'},
+    {'P9': 'не рассчитано'},
+    {'K9': '#VALUE!', 'Q9': '#VALUE!'},
+])
+def test_nonempty_unreadable_half_cannot_become_zero_or_partial_total(project, cells):
+    ledger, row = source_row(project, dated_split_book(**cells))
+    item = ledger['items'][0]
+    assert row['completed'] is None
+    assert row['completed_works'] is None and row['completed_materials'] is None
+    assert not row['works_materials_split']
+    assert row['completion_ratio'] is None and row['remaining'] is None
+    assert any('не прочитано как число' in warning for warning in item['warnings'])
+    if 'P9' in cells or 'Q9' in cells:
+        assert item['completed_amount'] is None and not item['amount_split']
+    if 'J9' in cells or 'K9' in cells:
+        assert item['periods'][0]['amount'] is None
+        assert not item['periods'][0]['amount_split']
+
+
+def test_truly_empty_half_with_known_other_half_still_has_a_known_total(project):
+    _, row = source_row(project, dated_split_book(J9=None, P9=None))
+    assert row['completed'] == 200
+    assert row['works_materials_split']
+    assert (row['completed_works'], row['completed_materials']) == (200, 0)
+
+
+def zip_source_row(project, data):
+    parsed = ledgers.parse_archive(archive([('Учебная.xlsx', data)]))
+    ledger, = parsed['ledgers']
+    project.snapshots.append({'taken_at': '2026-05-01', 'ledgers': [ledger], 'summary_contracts': []})
+    row, = contracts.build(project, '2026-05-01')['rows']
+    return ledger, row
+
+
+def test_uncached_formula_is_not_a_truly_empty_money_half(project):
+    ledger, row = zip_source_row(project, dated_split_book(J9='=1+2', P9='=1+2'))
+    assert row['completed'] is None
+    assert row['completed_works'] is None and row['completed_materials'] is None
+    assert not row['works_materials_split']
+    assert any('Пересчитайте и сохраните книгу' in warning for warning in ledger['items'][0]['warnings'])
+
+
+@pytest.mark.parametrize('kind', ['empty', 'numeric_zero', 'cached_formula_zero'])
+def test_real_zip_reader_keeps_known_zero_and_empty_controls(project, kind):
+    value = {'empty': None, 'numeric_zero': 0, 'cached_formula_zero': '=0'}[kind]
+    data = dated_split_book(J9=value, P9=value)
+    if kind == 'cached_formula_zero':
+        out = io.BytesIO()
+        with zipfile.ZipFile(io.BytesIO(data)) as original, zipfile.ZipFile(out, 'w') as rebuilt:
+            for item in original.infolist():
+                payload = original.read(item.filename)
+                if item.filename == 'xl/worksheets/sheet1.xml':
+                    text = payload.decode()
+                    for cell in ('J9', 'P9'):
+                        pattern = r'(<c\b[^>]*\br="'+cell+r'"[^>]*>.*?<v>)(.*?)(</v>.*?</c>)'
+                        text, count = re.subn(pattern, lambda match: match[1]+'0'+match[3], text, flags=re.S)
+                        assert count == 1
+                    payload = text.encode()
+                rebuilt.writestr(item, payload)
+        data = out.getvalue()
+    _, row = zip_source_row(project, data)
+    assert row['completed'] == 200 and row['works_materials_split']
+    assert (row['completed_works'], row['completed_materials']) == (200, 0)
 
 
 def test_unlabelled_money_pair_is_not_split_by_position():
