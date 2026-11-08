@@ -221,6 +221,8 @@ def test_contracts_render_exact_money_unknowns_and_separate_physics(width):
 def test_archive_uses_one_admission_and_polls_without_executing_markup():
     from playwright.sync_api import expect
     with browser_page() as (page, responses, errors):
+        page.locator('#dataTab').click()
+        expect(page.locator('#setupCard')).to_be_visible()
         expect(page.locator('#setupCard')).to_have_class('card setup-card open')
         data = io.BytesIO()
         with zipfile.ZipFile(data, 'w') as z:
@@ -310,6 +312,8 @@ def test_wrong_current_key_clears_private_lists_and_deep_link_has_no_key():
 def test_failed_poll_does_not_restart_archive_upload():
     from playwright.sync_api import expect
     with browser_page() as (page, responses, errors):
+        page.locator('#dataTab').click()
+        expect(page.locator('#setupCard')).to_be_visible()
         expect(page.locator('#setupCard')).to_have_class('card setup-card open')
         page.locator('#cumulativeFile').set_input_files({'name': 'Снимок.zip', 'mimeType': 'application/zip', 'buffer': b'fake-zip'})
         responses.reject_poll = True
@@ -322,6 +326,8 @@ def test_failed_poll_does_not_restart_archive_upload():
 def test_failed_archive_shows_each_file_status_and_keeps_previous_snapshot():
     from playwright.sync_api import expect
     with browser_page() as (page, responses, errors):
+        page.locator('#dataTab').click()
+        expect(page.locator('#setupCard')).to_be_visible()
         expect(page.locator('#setupCard')).to_have_class('card setup-card open')
         page.locator('#cumulativeFile').set_input_files({'name': 'Годный.zip', 'mimeType': 'application/zip', 'buffer': b'good-synthetic'})
         page.locator('#cumulativeUpload').click()
