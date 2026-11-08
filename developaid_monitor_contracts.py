@@ -610,7 +610,7 @@ def _cumulative_money(physical: list[dict], warnings: list[str],
     return sum(value[0] for value in periods.values()), next(iter(bases)) if bases else "unspecified"
 
 
-def build(project: str, cut: str = "") -> dict:
+def build(project: str, cut: str = "", *, include_history: bool = True) -> dict:
     """The contract universe is exactly the uploaded cumulative ledger headers."""
     cut = _cut(cut)
     if not str(project or "").strip():
@@ -830,7 +830,7 @@ def build(project: str, cut: str = "") -> dict:
     rows.sort(key=lambda r: (_norm(r["contractor"]), _norm(r["customer"]), _norm(r["contract"]), r["id"]))
     note = ("В списке только уникальные договоры из шапок загруженных накопительных: номер, дата, контрагент и заказчик. "
             "Общий реестр РСС и несвязанные строки сводной в количество не входят.")
-    return {"cut": cut, "source_date": archive_day, "rows": rows,
+    result = {"cut": cut, "source_date": archive_day, "rows": rows,
             "unresolved_sources": unresolved,
             "counts": {"contracts_from_cumulative": len(rows), "cumulative_sheets": len((snapshot or {}).get("ledgers") or []),
                        "unresolved_headers": len(unresolved)},
@@ -843,6 +843,11 @@ def build(project: str, cut: str = "") -> dict:
             "risk_basis": ("Прогноз окончания — по денежному темпу накопительных за последние 90 дней; "
                            "это показатель выполнения, а не физическая готовность. Оплаты — «Реестр платежей» РСС "
                            "по точному подрядчику, номеру и дате договора.")}
+    if include_history:
+        import developaid_monitor_contract_history as progress_history
+        return progress_history.enrich(project, cut, result,
+            build_register=lambda previous_cut: build(project, previous_cut, include_history=False))
+    return result
 
 
 def _date_evidence(snapshot: dict, ledger: dict) -> list[dict]:

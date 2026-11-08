@@ -3594,6 +3594,15 @@ def _work_contract_missing(entry: dict[str, Any]) -> str:
 
 
 def _work_contract_progress(link: dict[str, Any]) -> str:
+    progress = link.get("progress") or {}
+    if progress.get("ratio") is not None:
+        label = f"{_pct(progress['ratio'])} {progress.get('basis_label') or 'по накопительным'}"
+        delta = progress.get("delta_percent_points")
+        if progress.get("comparison_state") == "comparable" and delta is not None:
+            change = "Корректировка" if progress.get("change_kind") == "correction" else "Изменение"
+            delta_text = f"{delta:+.1f}".replace('.', ',')
+            label += f". {change} {delta_text} п.п. за {progress.get('period_days')} дн."
+        return label
     ratio = link.get("completion_ratio")
     if ratio is not None:
         # Read the registry's comparable money ratio. Never infer a physical
@@ -3616,6 +3625,9 @@ def _work_contract_forecast(link: dict[str, Any]) -> str:
         return text + (". В срок" if link.get("deadline") else ". Срок договора не указан")
     if risk.get("status") == "done":
         return "Выполнено по накопительной"
+    progress = link.get("progress") or {}
+    if progress.get("origin") == "cumulative_statement" and progress.get("ratio") is not None:
+        return "Прогноз неизвестен: нужен темп выполнения работ по сопоставимым периодам"
     if link.get("amount") is None or link["amount"] <= 0:
         why = "нет полной суммы договора"
     elif link.get("completed") is None:
@@ -4819,7 +4831,7 @@ def contract_risks(project: str, end: Any) -> dict[str, Any]:
     at_risk = sorted((r for r in rows if (r.get("risk") or {}).get("status") in contract_risk.WARNING_STATUSES),
                      key=contract_risk.severity)
     keep = ("contractor", "contract", "contract_date", "deadline", "amount", "completed", "completion_ratio",
-            "completed_works", "completed_materials", "works_materials_split", "risk", "advance")
+            "completed_works", "completed_materials", "works_materials_split", "progress", "risk", "advance")
     return {"state": "ok", "total": len(rows), "summary": view.get("risk_summary") or {},
             "rows": [{k: r.get(k) for k in keep} for r in at_risk[:CONTRACT_RISK_LIMIT]],
             "omitted": max(0, len(at_risk) - CONTRACT_RISK_LIMIT),

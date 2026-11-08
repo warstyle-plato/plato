@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import calendar
 import contextlib
+from collections import OrderedDict
 import datetime as dt
 import hashlib
 import io
@@ -18,6 +19,7 @@ from pathlib import Path, PurePosixPath
 import re
 import stat
 import tempfile
+import threading
 import unicodedata
 import zipfile
 import xml.etree.ElementTree as ET
@@ -44,6 +46,10 @@ MAX_MATERIALIZED_TEXT_BYTES = 16 * 1024 * 1024
 SUPPORTED = {'.xlsx', '.xlsm', '.xls'}
 # Kept distinct from an actually empty cell; this is never evaluated.
 _UNCACHED_FORMULA = '=__uncached_formula__'
+_PARSE_CACHE = OrderedDict()
+_PARSE_CACHE_LOCK = threading.Lock()
+_PARSE_CACHE_ENTRIES = 2
+_PARSE_CACHE_BYTES = 4 * 1024 * 1024
 
 
 class LedgerProblem(ValueError):
@@ -1020,6 +1026,30 @@ def basis_metadata_current(snapshot: dict) -> bool:
         for field in ('planned_amount_basis', 'completed_amount_basis'))
 
 
+def _current_archive(data: bytes, digest: str, filename: str) -> dict:
+    """Bounded process cache of parsed evidence, never original bytes or state.
+
+    The caller verifies the ZIP hash on every read, including cache hits. JSON
+    gives each consumer its own copy and bounds retained private data to 8 MiB.
+    """
+    key = (PARSER_SCHEMA, digest, filename)
+    with _PARSE_CACHE_LOCK:
+        cached = _PARSE_CACHE.get(key)
+        if cached is not None:
+            _PARSE_CACHE.move_to_end(key)
+    if cached is not None:
+        return json.loads(cached)
+    parsed = parse_archive(data, filename)
+    encoded = json.dumps(parsed, ensure_ascii=False, allow_nan=False).encode('utf-8')
+    if len(encoded) <= _PARSE_CACHE_BYTES:
+        with _PARSE_CACHE_LOCK:
+            _PARSE_CACHE[key] = encoded
+            _PARSE_CACHE.move_to_end(key)
+            while len(_PARSE_CACHE) > _PARSE_CACHE_ENTRIES:
+                _PARSE_CACHE.popitem(last=False)
+    return parsed
+
+
 def read_snapshot(project: str, snapshot_id: str) -> dict:
     """Read one immutable import through the current source parser.
 
@@ -1044,7 +1074,7 @@ def read_snapshot(project: str, snapshot_id: str) -> dict:
                 raise LedgerProblem('Сохранённый исходный архив не читается.') from None
             if len(data) > MAX_ARCHIVE_BYTES or hashlib.sha256(data).hexdigest() != snapshot_id[11:]:
                 raise LedgerProblem('Исходный архив не совпадает с сохранённым отпечатком.')
-            parsed = parse_archive(data, snapshot.get('filename') or 'Накопительные.zip')
+            parsed = _current_archive(data, snapshot_id[11:], snapshot.get('filename') or 'Накопительные.zip')
             return {**snapshot, **parsed, 'source_parse_state': 'refreshed'}
         return {**_restore_period_dates(snapshot), 'source_parse_state': 'original_unavailable'}
     return {**_restore_period_dates(snapshot), 'source_parse_state': 'current'}

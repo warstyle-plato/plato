@@ -100,3 +100,33 @@ def test_ambiguous_or_missing_dates_stay_unknown(label, year):
 
 def test_month_heading_uses_calendar_boundaries_in_leap_year():
     assert ledgers._period_dates('февраль', year=2024) == ('2024-02-01', '2024-02-29')
+
+
+def test_old_import_cache_does_not_share_mutations_or_skip_original_hash(context):
+    imported = ledgers.store_archive('Example', archive([('Monthly.xlsx', monthly_book())]),
+                                    '2026-03-01', 'Cache-check.zip')
+    root = ledgers._root('Example')
+    path = root / (imported['snapshot_id'] + '.json')
+    saved = json.loads(path.read_text())
+    saved.pop('parser_schema')
+    path.write_text(json.dumps(saved, ensure_ascii=False))
+    original_json = path.read_bytes()
+    with ledgers._PARSE_CACHE_LOCK:
+        ledgers._PARSE_CACHE.clear()
+    calls = []
+    parser = ledgers.parse_archive
+
+    def count_parse(*args, **kwargs):
+        calls.append(1)
+        return parser(*args, **kwargs)
+
+    context.setattr(ledgers, 'parse_archive', count_parse)
+    first = ledgers.latest_snapshot('Example', '2026-03-01')
+    first['ledgers'][0]['items'][0]['plan_quantity'] = -999
+    second = ledgers.latest_snapshot('Example', '2026-03-01')
+    assert second['ledgers'][0]['items'][0]['plan_quantity'] == 10
+    assert len(calls) == 1 and path.read_bytes() == original_json
+    raw = root / (imported['snapshot_id'] + '.zip')
+    raw.write_bytes(raw.read_bytes() + b'changed')
+    with pytest.raises(ledgers.LedgerProblem, match='отпечатком'):
+        ledgers.latest_snapshot('Example', '2026-03-01')
