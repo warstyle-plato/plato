@@ -106,6 +106,7 @@ _GPR_STATUS = {
     "cumulative_quantities": "ПРОГНОЗ ПО НАКОПИТЕЛЬНЫМ", "plan": "ПО ПЛАНУ ГПР",
     "confirmed_completion": "ЗАВЕРШЕНИЕ ПОДТВЕРЖДЕНО", "cumulative_unknown": "НЕТ ТЕМПА ПО НАКОПИТЕЛЬНЫМ",
     "stalled": "СТОИТ: ПРОЦЕНТ НЕ РАСТЁТ", "stale": "НЕТ СВЕЖЕГО ГПР", "no_pace": "НЕТ ТЕМПА",
+    "source_conflict": "РАСХОЖДЕНИЕ ГПР И НАКОПИТЕЛЬНЫХ",
 }
 
 
@@ -175,6 +176,7 @@ def _apply_gpr(project: str, view: dict[str, Any], cut: datetime.date) -> dict[s
                    progress_reason=progress_reason,
                    forecast_finish=monitor._iso(finish) if finish else None,
                    forecast_known=finish is not None, forecast_source=item.get("method"),
+                   source_conflict=item.get("source_conflict"),
                    forecast_reason=item.get("reason"), delta_days=row["pace_delta_days"],
                    status=row["pace_status"])
         # The display and the side-by-side evidence model use one dated GPR
@@ -202,6 +204,7 @@ def _apply_gpr(project: str, view: dict[str, Any], cut: datetime.date) -> dict[s
                     "progress_source", "progress_reason", "gpr_progress", "gpr_progress_origin", "gpr_progress_date",
                     "forecast_finish", "forecast_known", "forecast_source", "forecast_reason", "delta_days", "status"):
             node[key] = src.get(key)
+        node["source_conflict"] = src.get("source_conflict")
         node.pop("dependencies", None)
         node.pop("delay_reason", None)
     _aggregate_gpr(schedule.get("management") or [])

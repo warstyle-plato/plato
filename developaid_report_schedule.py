@@ -76,7 +76,8 @@ def model(timeline: dict, *, stalled=None) -> dict:
     return {"state": state, "approved": rnv.get("approved"), "forecast": forecast,
             "forecast_label": qualification, "caveat": caveat,
             "delay_days": rnv.get("delay_days") if forecast else None,
-            "driver": driver.get("name") or "", "facts": facts, "source_status": status,
+            "driver": driver.get("name") or "", "driver_reason": driver.get("reason") or "",
+            "driver_method": driver.get("method"), "facts": facts, "source_status": status,
             "stalled_text": stalled_text(stalled or [], rnv.get("basis")),
             "action": action, "reasons": reasons,
             "source_label": "ГПР и накопительные" if any(f["kind"] == "quantity" for f in facts) else "ГПР",
@@ -157,6 +158,9 @@ def render(block):
 def details(block):
     esc = html.escape
     out = ['<div class="executive-source-content"><h3>Основания оценки сроков</h3>']
+    if block.get("driver_reason"):
+        out.append('<p class="note">Основание оценки работы «'+esc(str(block.get("driver") or ""))+
+                   '»: '+esc(str(block["driver_reason"]))+'</p>')
     if len(block.get("facts") or []) > 5:
         out.append('<h4>Все подтверждённые показания</h4><ul>')
         out.extend('<li>'+esc(fact_text(f))+'</li>' for f in block["facts"])

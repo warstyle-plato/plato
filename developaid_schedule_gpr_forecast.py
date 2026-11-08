@@ -19,6 +19,7 @@ latest no older than 45 days. Missing evidence stays unknown with its reason.
 from __future__ import annotations
 
 import datetime as dt
+import copy
 from collections import Counter
 import json
 import math
@@ -128,6 +129,65 @@ def history(project: str, cut: dt.date) -> dict[str, list[tuple[dt.date, float, 
     return out
 
 
+SOURCE_CONFLICT_ACTION = "Сверьте показания ГПР и накопительных по этой работе."
+
+
+def quantity_conflict(points: list, ks: dict, cut: dt.date) -> dict | None:
+    """A completed GPR and dated, explicitly bound unfinished quantities need review.
+
+    Neither source is declared wrong; different measurement dates remain explicit.
+    Component percentages are compared individually, never averaged.
+    """
+    if not ks.get("scope_confirmed") or ks.get("mode") != "quantities":
+        return None
+    dated = sorted((p for p in points if p[0] <= cut and _progress(p[1]) is not None), key=lambda p: p[0])
+    if not dated or dated[-1][1] < DONE:
+        return None
+    measurements = []
+    candidates = ks.get("components") or [{"progress": ks.get("progress"), "period_end": ks.get("progress_date")}]
+    for component in candidates:
+        progress, day = _progress(component.get("progress")), _day(component.get("period_end"))
+        if progress is not None and day and day <= cut:
+            measurements.append({"progress": progress, "date": day.isoformat(),
+                                 "component_id": component.get("component_id") or ""})
+    unfinished = [m for m in measurements if m["progress"] < DONE]
+    if not unfinished:
+        return None
+    gpr = {"progress": dated[-1][1], "date": dated[-1][0].isoformat(), "origin": dated[-1][2]}
+    date_text = lambda day: _day(day).strftime("%d.%m.%Y")
+    shown = "; ".join((m["component_id"] + ": " if m["component_id"] else "")
+                      + f"{m['progress'] * 100:g}% на {date_text(m['date'])}" for m in unfinished[:3])
+    heading = ("Даты и показания источников расходятся" if any(m["date"] != gpr["date"] for m in unfinished)
+               else "Показания источников расходятся")
+    reason = (f"{heading}: в ГПР от {date_text(gpr['date'])} — 100%, "
+              f"по накопительным — {shown}. Оценка окончания снята до сверки.")
+    return {"state": "source_conflict", "gpr": gpr, "quantities": measurements,
+            "reason": reason, "action": SOURCE_CONFLICT_ACTION}
+
+
+def qualify_quantities(model: dict, history: dict, cut: dt.date) -> dict:
+    """Qualify a built view only; never edit archives, configurations or events."""
+    model = copy.deepcopy(model)
+    conflicts = []
+    for task in model.get("tasks") or []:
+        conflict = task.get("source_conflict") or quantity_conflict(history.get(task["task_id"]) or [], task, cut)
+        if not conflict:
+            continue
+        reason = conflict["reason"] + " " + conflict["action"]
+        task.update(known=False, forecast_finish=None, forecast_state="source_conflict",
+                    source_conflict=conflict, reason=reason)
+        task.pop("actual_finish", None)
+        for component in task.get("components") or []:
+            component.update(known=False, forecast_finish=None, forecast_state="source_conflict", reason=reason)
+        model.get("seeds", {}).pop(task["task_id"], None)
+        model.get("actual_finishes", {}).pop(task["task_id"], None)
+        conflicts.append(dict(conflict, task_id=task["task_id"], name=task.get("name")))
+    if conflicts:
+        model.update(state="source_conflict", forecast_state="source_conflict", source_conflicts=conflicts)
+        model["reasons"] = list(dict.fromkeys(list(model.get("reasons") or []) + [c["reason"] for c in conflicts]))
+    return model
+
+
 def work(row: dict, points: list[tuple[dt.date, float, str]], cut: dt.date,
          ks: dict | None = None) -> dict[str, Any]:
     """Forecast of one GPR work with its method and reason."""
@@ -135,6 +195,11 @@ def work(row: dict, points: list[tuple[dt.date, float, str]], cut: dt.date,
     points = [point for point in points if point[0] <= cut and _progress(point[1]) is not None]
     result = {"forecast_finish": None, "method": "unknown", "reason": "", "progress": None,
               "progress_date": None, "progress_origin": None, "pace_per_day": None, "window": None}
+    conflict = (ks or {}).get("source_conflict") or (quantity_conflict(points, ks, cut) if ks else None)
+    if conflict:
+        return dict(result, method="source_conflict", source_conflict=conflict,
+                    progress=_progress(ks.get("progress")), progress_date=ks.get("progress_date"),
+                    progress_origin="cumulative_quantities", reason=conflict["reason"] + " " + conflict["action"])
     if ks and ks.get("forecast_finish"):
         completed = ks.get("mode") == "completed"
         method = "confirmed_completion" if completed else "cumulative_quantities"
@@ -219,8 +284,9 @@ def rnv(rows: list[dict], works: dict[str, dict], approved: Any) -> dict[str, An
         reasons.append(f"{outside} работ ГПР без статьи сметы (продажи, ходатайства и т. п.) в прогноз РНВ не входят.")
     if missing:
         names = ", ".join("«" + str(r.get("name") or "") + "»" for _, r, _ in missing[:5])
-        reasons.append(f"Без прогноза {len(missing)} строительных работ (стоят или нет данных): {names}"
+        reasons.append(f"Без оценки окончания {len(missing)} строительных работ: {names}"
                        + (" и др." if len(missing) > 5 else "") + ". Итоговая дата неполная.")
+        reasons.extend(item["reason"] for _, _, item in missing if item.get("method") == "source_conflict")
     if not known:
         return {"state": "unknown", "approved": monitor._iso(approved_day), "approved_source": "утверждённый ГПР",
                 "forecast": None,
