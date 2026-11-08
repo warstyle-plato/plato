@@ -17,8 +17,9 @@ RUN --mount=type=secret,id=proxy_ca \
 COPY scripts/plato_dispatcher/ /app/scripts/plato_dispatcher/
 COPY scripts/plato_dispatcher_deploy/start.sh /app/start-dispatcher.sh
 RUN chmod 755 /app/start-dispatcher.sh \
-    && mkdir -p /root/.codex /workspace \
-    && chmod 700 /root/.codex \
+    && mkdir -p /root/.codex /root/.ssh /workspace \
+    && chmod 700 /root/.codex /root/.ssh \
+    && usermod --unlock root \
     && git -C /workspace init -q
 
 # The default Codex home is mounted by the proposed Blueprint. No credentials
