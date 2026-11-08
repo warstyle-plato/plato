@@ -2,6 +2,7 @@
 import pytest
 
 from test_monitor_cumulative_controls import browser_page, KEY, MARKER
+from test_schedule_physical_print_summary import gpr_sources
 
 
 def state(**changes):
@@ -26,6 +27,7 @@ def test_save_reload_and_revoke_with_actual_monitor_script(width):
                             revision=current['revision']+1, recorded_at='2026-11-06T12:00:00+00:00')
         route.fulfill(json=current)
     with browser_page(width, init='window.DEVELOPAID_PM_ENABLED=true') as (page, responses, errors):
+        page.locator('#dataTab').click()
         page.route('**/monitor/schedule-confirmation/*', respond)
         page.evaluate('void loadScheduleConfirmation()')
         expect(page.locator('#scheduleConfirmationSave')).to_be_enabled()
@@ -38,6 +40,7 @@ def test_save_reload_and_revoke_with_actual_monitor_script(width):
         assert writes[0]['source_sha256'] == 'a'*64 and writes[0]['revision'] == 0
         assert writes[0]['rnv_chain_complete'] is True
         page.reload()
+        page.locator('#dataTab').click()
         expect(page.locator('#scheduleChain')).to_be_checked()
         expect(page.locator('#scheduleConfirmationNote')).to_have_value(MARKER)
         assert page.locator('#scheduleConfirmationCard img').count() == 0
@@ -77,6 +80,7 @@ def test_stale_read_after_project_change_or_logout_cannot_restore_private_form()
 def test_history_is_read_only_and_conflict_requires_a_fresh_read():
     from playwright.sync_api import expect
     with browser_page(init='window.DEVELOPAID_PM_ENABLED=true') as (page, responses, errors):
+        page.locator('#dataTab').click()
         page.evaluate('(state)=>renderScheduleConfirmation(state)', state(can_edit=False, note='Проверка на дату среза.'))
         expect(page.locator('#scheduleConfirmationSave')).to_be_disabled()
         expect(page.locator('#scheduleChain')).to_be_disabled()
@@ -89,21 +93,25 @@ def test_history_is_read_only_and_conflict_requires_a_fresh_read():
         assert not errors
 
 
-def test_real_report_pdf_contains_confirmation_provenance(tmp_path):
+def test_default_gpr_page_does_not_load_the_legacy_pm_confirmation():
+    from playwright.sync_api import expect
+    with browser_page() as (page, responses, errors):
+        page.locator('#dataTab').click()
+        page.evaluate('void loadScheduleConfirmation()')
+        expect(page.locator('#scheduleConfirmationCard')).to_be_hidden()
+        assert not any(path.startswith('/monitor/schedule-confirmation/') for path, *_ in responses.calls)
+        assert not errors
+
+
+def test_real_report_pdf_uses_gpr_provenance_without_legacy_pm_confirmation(tmp_path, gpr_sources):
     import fitz
     from playwright.sync_api import sync_playwright
     from browser import chromium_or_skip
     import developaid_management_report as report
-    import developaid_schedule_timeline as timeline
-    from test_schedule_dependency_timeline import day, network
-
-    pm = network()
-    pm['confirmation'] = state(calendar_basis='calendar_days', rnv_chain_complete=True,
-                               recorded_at='2026-11-06T12:00:00+00:00',
-                               note='Synthetic calendar evidence 2026')
-    block = timeline.model(pm, {'1': day('2026-12-10')}, evidence=True)
-    payload = {'project': 'Учебный проект', 'kind': 'week', 'start': '2026-11-01',
-               'end': '2026-11-06', 'gantt': {'state': 'missing', 'dependency_timeline': block}}
+    payload = gpr_sources('stale')
+    payload['gantt']['dependency_timeline']['confirmation'] = state(
+        calendar_basis='calendar_days', rnv_chain_complete=True,
+        recorded_at='2026-11-06T12:00:00+00:00', note='Synthetic calendar evidence 2026')
     path = tmp_path / 'synthetic-confirmation-report.pdf'
     with sync_playwright() as pw:
         browser = pw.chromium.launch(executable_path=str(chromium_or_skip()), headless=True, args=['--no-sandbox'])
@@ -114,5 +122,10 @@ def test_real_report_pdf_contains_confirmation_provenance(tmp_path):
         browser.close()
     with fitz.open(path) as pdf:
         text = ' '.join(page.get_text() for page in pdf)
-    assert 'Synthetic calendar evidence 2026' in text
-    assert '06.11.2026' in text and 'Проверка исходного графика' in text
+    text = ' '.join(text.split())
+    assert 'Сроки и выполнение работ' in text and '06.11.2026' in text
+    assert '50 из 100 м² на 28.02.2026' in text and 'План ввода 31.10.2026' in text
+    assert 'Основания оценки сроков' in text and 'ГПР' in text
+    assert 'Не определена' in text and payload['construction_summary']['forecast'] is None
+    assert 'Synthetic calendar evidence 2026' not in text
+    assert 'Проверка исходного графика' not in text
