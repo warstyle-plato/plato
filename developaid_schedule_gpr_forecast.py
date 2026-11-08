@@ -58,7 +58,12 @@ def _works(parsed: dict) -> dict[str, tuple[float | None, str]]:
         if tid:
             if tid in out:
                 duplicates.add(tid)
-            out[tid] = (_progress(item.get("progress")), str(item.get("status") or ""))
+            progress, status = _progress(item.get("progress")), str(item.get("status") or "")
+            # A dated, explicit completion status is a source fact. It is
+            # interpreted once here for baseline, weekly and report readers.
+            if item.get("progress") is None and "заверш" in status.lower():
+                progress = 1.0
+            out[tid] = (progress, status)
     for tid in duplicates:
         out.pop(tid, None)
     return out
@@ -106,9 +111,7 @@ def history(project: str, cut: dt.date) -> dict[str, list[tuple[dt.date, float, 
         # Older files cannot enter the pace window; keep one before it as context.
         keep = [p for p in files if _day(p.stem) >= earliest] or files[-1:]
         for path in keep:
-            for tid, (progress, status) in _weekly(project, path).items():
-                if progress is None and "заверш" in status.lower():
-                    progress = 1.0
+            for tid, (progress, _status) in _weekly(project, path).items():
                 add(tid, _day(path.stem), progress, "weekly_gpr")
     manual = folder / "work_fact"
     if manual.exists():

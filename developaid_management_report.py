@@ -100,8 +100,10 @@ def _weighted(items: list[tuple[float, float]]) -> float | None:
 
 
 def _snapshot_day(project: str, upto: datetime.date) -> str:
-    path = monitor._latest(project, "schedule_fact", ".xlsx", upto.isoformat())
-    return path.stem if path is not None else ""
+    statuses = manager._baseline_status(project, upto.isoformat())
+    return max((row["progress_date"] for row in statuses.values()
+                if row.get("progress") is not None and row.get("progress_origin") == "weekly_gpr"
+                and row.get("progress_date")), default="")
 
 
 def _physical_notes(block: dict[str, Any]) -> list[str]:
@@ -110,8 +112,10 @@ def _physical_notes(block: dict[str, Any]) -> list[str]:
     out = [f"Проценты — {source.get('label') or 'из графика работ'}: то же, что "
            "показывает Монитор на эту дату."]
     if not block.get("fact_snapshot"):
-        out.append("Недельный ГПР-факт с процентами в Монитор не загружали: выполнение "
-                   "взято из утверждённого ГПР и решений, принятых в Мониторе.")
+        out.append(("Однозначный недельный ГПР-факт для текущего выполнения не используется: "
+                    if source.get("weekly_present") else
+                    "Недельный ГПР-факт с процентами в Монитор не загружали: ") +
+                   "выполнение показано по указанным датированным источникам.")
     elif not block.get("fresh"):
         out.append(f"За этот период новый график с процентами не загружали, "
                    f"последний — от {_day(block['fact_snapshot'])}.")
@@ -131,42 +135,33 @@ def _packages_note(packages: dict[str, Any]) -> str:
             f"{packages.get('matched_packages', 0)} из {packages.get('packages', 0)}.")
 
 
-def _gpr_source(project: str, end: datetime.date, fact_day: str) -> dict[str, Any]:
-    """Откуда проценты: тот же набор, что у Монитора (`manager._baseline_status`).
-
-    Утверждённый ГПР, поверх — свежайший ГПР-факт не позднее даты, поверх —
-    точечные решения в Мониторе (в том числе «закрыть сомнительные»). Сводка
-    называет каждый слой с датой, чтобы число можно было сверить с Монитором.
-    """
-    meta = monitor._project_dir(project) / "baseline" / "meta.json"
-    try:
-        baseline_day = str(json.loads(meta.read_text(encoding="utf-8")).get("taken_at") or "")
-    except (OSError, ValueError):
-        found = monitor._baseline_file(project)
-        baseline_day = found.stem if found is not None and found.stem[:1].isdigit() else ""
-    folder = monitor._project_dir(project) / "work_fact"
-    days = sorted(path.stem.split(".", 1)[0] for path in folder.glob("*.json")) \
-        if folder.exists() else []
-    days = [day for day in days if day <= end.isoformat()]
-    manual = len(monitor.work_facts(project, end.isoformat()))
+def _gpr_source(project: str, end: datetime.date, statuses: dict[str, dict]) -> dict[str, Any]:
+    """Name the exact canonical readings used, not newer source filenames."""
+    used = [row for row in statuses.values() if row.get("progress") is not None
+            and row.get("progress_date") and row["progress_date"] <= end.isoformat()]
+    def latest(origin):
+        return max((row["progress_date"] for row in used if row.get("progress_origin") == origin), default="")
+    baseline_day, fact_day, manual_day = latest("approved_gpr"), latest("weekly_gpr"), latest("manual")
+    manual = sum(row.get("progress_origin") == "manual" for row in used)
     packages = None
     if fact_day:
         try:
-            packages = (monitor.latest_schedule_fact(project, end.isoformat()) or {}) \
+            packages = (monitor.latest_schedule_fact(project, fact_day) or {}) \
                 .get("packages")
         except Exception:  # noqa: BLE001 — нечитаемый снимок Монитор тоже пропускает
             packages = None
     label = (f"ГПР-факт{' по пакетам' if packages else ''} от {_day(fact_day)}" if fact_day else
-             f"утверждённый ГПР{' от ' + _day(baseline_day) if baseline_day else ''}")
+             f"утверждённый ГПР от {_day(baseline_day)}" if baseline_day else "")
     if manual:
-        label += (f" и решения в Мониторе по {manual} "
+        label += ((" и " if label else "") + f"решения в Мониторе по {manual} "
                   f"{_plural(manual, 'работе', 'работам', 'работам')} (последнее — "
-                  f"{_day(days[-1])})")
+                  f"{_day(manual_day)})")
     return {"baseline": baseline_day or None, "fact": fact_day or None,
-            "manual_works": manual, "manual_last": days[-1] if days else None,
-            "day": max(filter(None, [fact_day, days[-1] if days else "", baseline_day]),
+            "manual_works": manual, "manual_last": manual_day or None,
+            "weekly_present": monitor._latest(project, "schedule_fact", ".xlsx", end.isoformat()) is not None,
+            "day": max(filter(None, [fact_day, manual_day, baseline_day]),
                        default=""),
-            "label": label, "packages": packages}
+            "label": label or "нет датированных процентов на выбранную дату", "packages": packages}
 
 
 def _dated(baseline: dict[str, Any]) -> list[tuple[str, dict[str, Any], float]]:
@@ -265,11 +260,11 @@ def physical(project: str, kind: str, end: Any) -> dict[str, Any]:
         baseline = monitor._read_baseline_gpr(project)
     except FileNotFoundError:
         return _missing("Не загружен утверждённый ГПР проекта.")
-    now_day = _snapshot_day(project, bounds["end"])
-    source = _gpr_source(project, bounds["end"], now_day)
+    statuses = manager._baseline_status(project, bounds["end"].isoformat())
+    source = _gpr_source(project, bounds["end"], statuses)
+    now_day = source["fact"]
     works = _dated(baseline)
-    now = _progress(works, manager._baseline_status(project, bounds["end"].isoformat()),
-                    bounds["end"])
+    now = _progress(works, statuses, bounds["end"])
     if not now["works"]:
         return _missing(f"В графике ({source['label']}) нет процентов выполнения "
                         "ни у одной работы.")
@@ -307,9 +302,14 @@ def physical(project: str, kind: str, end: Any) -> dict[str, Any]:
 def _physical_series(project: str, works: list[tuple[str, dict[str, Any], float]],
                      end: datetime.date) -> dict[str, Any]:
     """S-кривая: план по утверждённому ГПР помесячно и факт каждого ГПР-факта."""
-    folder = monitor._project_dir(project) / "schedule_fact"
-    days = sorted(path.stem for path in folder.glob("*.xlsx")) if folder.exists() else []
-    days = [day for day in days if day <= end.isoformat()]
+    import developaid_schedule_gpr_forecast as gpr_forecast
+    from collections import Counter
+    counts = Counter(tid for tid, _, _ in works)
+    history = gpr_forecast.history(project, end)
+    # An ignored duplicate/unknown file is not a second measurement of an
+    # older percentage. Only real dated weekly readings create curve points.
+    days = sorted({day.isoformat() for tid, points in history.items() if counts.get(tid) == 1
+                   for day, _progress_value, origin in points if origin == "weekly_gpr"})
     facts = []
     for day in days:
         moment = _date(day)
@@ -1101,6 +1101,16 @@ def _stalled_words(block: dict[str, Any]) -> str:
     items = block.get("stalled") or []
     if not items:
         return ""
+    if ((block.get("qualification") or {}).get("basis") == "gpr"
+            or any(item.get("basis") == "gpr" for item in items)):
+        shown = "; ".join("«" + str(item["name"]) + "»" +
+                          (f" ({item['object']})" if item.get("object") else "") + ": " +
+                          str(item.get("reason") or "Нет измеренного прироста процента в ГПР.")
+                          for item in items[:3])
+        more = len(items) - 3
+        return (f"По ГПР нет прогноза у {len(items)} "
+                f"{_plural(len(items), 'работы', 'работ', 'работ')}: {shown}"
+                + (f" Ещё {more} работ без прогноза." if more > 0 else ""))
     shown = ", ".join(f"«{item['name']}»" + (f" ({item['object']})" if item.get("object") else "")
                       for item in items[:3])
     more = len(items) - 3

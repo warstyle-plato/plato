@@ -188,7 +188,8 @@ def _apply_gpr(project: str, view: dict[str, Any], cut: datetime.date) -> dict[s
             stalled.append({"id": tid, "name": str(row.get("name") or ""),
                             "object": str(row.get("object") or ""),
                             "plan_finish": monitor._iso(plan), "progress": item.get("progress"),
-                            "monthly_rate": None})
+                            "monthly_rate": None, "basis": "gpr", "method": item.get("method"),
+                            "reason": item.get("reason")})
     by_id = {str(r.get("id") or r.get("wbs") or "").strip(): r for r in rows}
     for node in _walk(schedule.get("management") or []):
         src = by_id.get(

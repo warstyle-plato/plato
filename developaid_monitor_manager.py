@@ -12,8 +12,7 @@ Important semantics:
 from __future__ import annotations
 
 import datetime
-import json
-import math
+from collections import Counter
 import re
 from pathlib import Path
 from typing import Any
@@ -213,75 +212,41 @@ def _metrics(
 
 
 def _baseline_status(project: str, upto: str = "") -> dict[str, dict[str, Any]]:
-    """Approved GPR status is schedule metadata, not physical RSS fact.
+    """The same dated, deduplicated GPR fact used by the forecast readers.
 
-    ``upto`` — дата ГГГГ-ММ-ДД: состояние на этот день (снимки не позднее него).
-    Сводка руководству сравнивает начало и конец периода одним и тем же счётом.
+    A future/undated baseline is still a plan; its percentage and status cannot
+    become a historical fact. Rejected duplicate weekly IDs do not overwrite
+    earlier valid evidence. Natural quantities stay in their separate model.
     """
+    import developaid_schedule_gpr_forecast as gpr_forecast
+
     try:
         baseline = monitor._read_baseline_gpr(project)
     except Exception:
         return {}
-    # Еженедельный ГПР-факт несёт свежие проценты и статусы поверх baseline:
-    # план не меняется, меняется выполнение. Без снимка работает сам baseline.
     rows = list(baseline.get("works") or [])
-    # Origin and date of every percent travel with it: the chart must say
-    # whether a number is the approved plan, a weekly file or a manual decision.
-    try:
-        base_day = json.loads((monitor._project_dir(project) / "baseline" / "meta.json").read_text(encoding="utf-8")).get("taken_at")
-    except (OSError, ValueError):
-        base_day = None
-    origins = {str(item.get("id") or item.get("wbs") or "").strip(): ("approved_gpr", base_day)
-               for item in rows}
-    try:
-        fact = monitor.latest_schedule_fact(project, upto)
-    except Exception:
-        fact = None
-    if fact:
-        fresh = {str(item.get("id") or item.get("wbs") or "").strip(): item
-                 for item in fact.get("works") or []}
-        for tid in fresh:
-            if tid in origins:
-                origins[tid] = ("weekly_gpr", fact.get("taken_at"))
-        rows = [fresh.get(str(item.get("id") or item.get("wbs") or "").strip(),
-                          item) for item in rows]
-    # Точечные проценты со страницы — поверх всего: в акте РСС нет имени
-    # работы, и последнее слово о конкретной работе остаётся за человеком.
-    try:
-        manual = monitor.work_facts(project, upto)
-    except Exception:
-        manual = {}
-    if manual:
-        for tid, row in manual.items():
-            if tid in origins:
-                origins[tid] = ("manual", row.get("recorded_day"))
-        rows = [dict(item, progress=manual[tid]["progress"],
-                     status=manual[tid].get("status") or item.get("status"))
-                if (tid := str(item.get("id") or item.get("wbs") or "").strip())
-                in manual else item
-                for item in rows]
+    cut = _as_date(upto) if upto else datetime.datetime.now(datetime.timezone.utc).date()
+    if cut is None:
+        raise ValueError("Не задана дата среза.")
+    points = gpr_forecast.history(project, cut)
+    counts = Counter(str(row.get("id") or row.get("wbs") or "").strip() for row in rows)
     out: dict[str, dict[str, Any]] = {}
     for item in rows:
         tid = str(item.get("id") or item.get("wbs") or "").strip()
         if not tid:
             continue
-        status = _norm(item.get("status"))
-        try:
-            progress = float(item.get("progress"))
-        except (TypeError, ValueError):
-            progress = None
-        if progress is not None and progress > 1.0:
-            progress = progress / 100.0
-        if progress is not None and (not math.isfinite(progress) or not 0 <= progress <= 1):
-            progress = None
-        if isinstance(item.get("progress"), bool):
-            progress = None
+        readings = points.get(tid) or []
+        last = readings[-1] if readings and counts[tid] == 1 else None
+        progress = last[1] if last else None
+        closed = progress is not None and progress >= .999
         out[tid] = {
-            "closed": "заверш" in status or (progress or 0.0) >= 0.999,
-            "status": str(item.get("status") or ""),
+            "closed": closed,
+            "status": "Завершено" if closed else "В работе" if progress is not None else "",
             "progress": progress,
-            "progress_origin": origins.get(tid, ("approved_gpr", None))[0],
-            "progress_date": origins.get(tid, ("approved_gpr", None))[1],
+            "progress_origin": last[2] if last else None,
+            "progress_date": last[0].isoformat() if last else None,
+            "progress_reason": ("Идентификатор работы повторяется в ГПР." if counts[tid] != 1 else
+                                "Нет датированного процента ГПР на выбранную дату." if last is None else ""),
         }
     return out
 
@@ -316,6 +281,7 @@ def _sanitize_base_schedule(project: str, schedule: dict[str, Any], upto: str = 
         row["gpr_progress"] = own
         row["gpr_progress_origin"] = meta.get("progress_origin")
         row["gpr_progress_date"] = meta.get("progress_date")
+        row["gpr_progress_reason"] = meta.get("progress_reason")
         row["baseline_closed"] = bool(meta.get("closed"))
         row["baseline_status"] = meta.get("status", "")
         row["actual_progress"] = None
