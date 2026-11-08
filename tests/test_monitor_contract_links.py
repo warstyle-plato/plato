@@ -318,22 +318,26 @@ def test_matching_complete_documented_corpus_enumeration_can_confirm(scope):
 
 
 @pytest.mark.parametrize("scope", ["Корпус 1/2", "Корпуса 1–2", "Корпус 1-2"])
-def test_ambiguous_corpus_notation_requires_clarification_instead_of_first_number(monkeypatch, scope):
+def test_a_sole_contract_is_identified_while_ambiguous_corpus_still_needs_review(monkeypatch, scope):
     install_register(monkeypatch)
     report(scope + " по договору A-12 бетонирование")
     result = evidence()
-    item = result["unmatched_works"][0]
-    assert item["scope_ambiguous"] and item["match_status"] != "confirmed"
+    assert result['unmatched_works'] == []
+    item, = result['rows'][0]['reconciliation']['daily_evidence']
+    assert item['scope_ambiguous'] and item['contract_id'] == FIRST
+    assert not item['scope_confirmed'] and 'объёмы' in item['scope_note']
     assert any("неоднозначно" in message for message in result["rows"][0]["reconciliation"]["issues"])
-    with pytest.raises(links.LinkProblem, match="неоднозначно"):
-        links.set_link(PROJECT, FIRST, item["id"], CUT)
+    assert links.set_link(PROJECT, FIRST, item["id"], CUT)['confirmed']
 
 
-def test_ambiguous_contract_corpus_scope_also_blocks_whole_line_confirmation():
+def test_ambiguous_contract_scope_does_not_erase_the_one_contract_identity():
     report("Корпус 1 по договору A-12 бетонирование")
     data = register()
     data["rows"][0]["scope"] = ["Корпус 1/2"]
-    assert evidence(data)["unmatched_works"][0]["match_status"] != "confirmed"
+    result = evidence(data)
+    assert result['unmatched_works'] == []
+    item, = result['rows'][0]['reconciliation']['daily_evidence']
+    assert item['contract_id'] == FIRST and not item['scope_confirmed']
 
 
 def test_concurrent_confirmations_do_not_lose_a_link(monkeypatch):
