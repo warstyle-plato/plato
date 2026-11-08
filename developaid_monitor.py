@@ -341,7 +341,7 @@ def _read_control_baseline(source: Any) -> dict[str, Any]:
                 "name": name,
                 "kind": "Работа",
                 "is_work": True,
-                "progress": actuals._money(cell("progress")),
+                "progress": actuals._schedule_progress(cell("progress")),
                 "start": start,
                 "finish": finish,
                 "status": "",

@@ -65,7 +65,8 @@ def model(rows: list[dict], physical: dict | None) -> dict[str, Any]:
         gpr = {"progress": gpr_progress, "origin": origin,
                "label": GPR_ORIGINS.get(origin or "", "файл ГПР"),
                "date": row.get("gpr_progress_date"),
-               "reason": "" if gpr_progress is not None else "В файле ГПР процент не указан."}
+               "reason": "" if gpr_progress is not None else
+                         row.get("gpr_progress_reason") or "В файле ГПР процент не указан."}
         ks = _ks(tasks.get(tid))
         gap = (abs(ks["progress"] - gpr_progress)
                if ks["progress"] is not None and gpr_progress is not None else None)

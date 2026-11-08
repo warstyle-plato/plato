@@ -1,9 +1,5 @@
-"""Regression guard for the Project Monitor operating contract.
-
-A project benchmark is fixed once. After that recurring inputs are a fresh RSS
-6.1.2 and sales. RSS accepted-work acts remain cost/evidence; the immutable
-baseline is never rewritten, while Monitor may use КС/EAC as an explicit pace
-proxy for a separate current forecast overlay.
+"""The approved baseline remains immutable. Weekly GPR records describe work
+progress; RSS accepted acts and payments remain separate monetary evidence.
 """
 
 from pathlib import Path
@@ -14,7 +10,7 @@ import developaid_monitor_page as page
 
 def test_monitor_page_exposes_fixed_benchmark_then_rss_and_sales():
     html = page.MONITOR_PAGE
-    assert "Benchmark" in html
+    assert "Утверждённый ГПР" in html
     assert 'id="gpr"' in html
     assert 'id="finance"' in html
     assert 'id="pm"' in html
@@ -25,7 +21,7 @@ def test_monitor_page_exposes_fixed_benchmark_then_rss_and_sales():
     assert 'id="programmeFile"' not in html
     assert 'id="proposalFile"' not in html
     assert "Реестр выполненных работ" in html
-    assert "proxy темпа" in html
+    assert "Выполнение работ смотрите по ГПР" in html
 
 
 def test_monitor_build_does_not_replace_baseline_with_legacy_programmes():

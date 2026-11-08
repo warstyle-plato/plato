@@ -40,6 +40,7 @@ import developaid_project_notes as project_notes
 import developaid_site_photos as site_photos
 import developaid_report_charts as charts
 import developaid_report_gantt as report_gantt
+import developaid_report_schedule as report_schedule
 from market_search import contracting, salesroom, sales_store, chessboard
 
 PERIODS = {"week": "неделю", "month": "месяц"}
@@ -100,8 +101,10 @@ def _weighted(items: list[tuple[float, float]]) -> float | None:
 
 
 def _snapshot_day(project: str, upto: datetime.date) -> str:
-    path = monitor._latest(project, "schedule_fact", ".xlsx", upto.isoformat())
-    return path.stem if path is not None else ""
+    statuses = manager._baseline_status(project, upto.isoformat())
+    return max((row["progress_date"] for row in statuses.values()
+                if row.get("progress") is not None and row.get("progress_origin") == "weekly_gpr"
+                and row.get("progress_date")), default="")
 
 
 def _physical_notes(block: dict[str, Any]) -> list[str]:
@@ -110,8 +113,10 @@ def _physical_notes(block: dict[str, Any]) -> list[str]:
     out = [f"Проценты — {source.get('label') or 'из графика работ'}: то же, что "
            "показывает Монитор на эту дату."]
     if not block.get("fact_snapshot"):
-        out.append("Недельный ГПР-факт с процентами в Монитор не загружали: выполнение "
-                   "взято из утверждённого ГПР и решений, принятых в Мониторе.")
+        out.append(("Однозначный недельный ГПР-факт для текущего выполнения не используется: "
+                    if source.get("weekly_present") else
+                    "Недельный ГПР-факт с процентами в Монитор не загружали: ") +
+                   "выполнение показано по указанным датированным источникам.")
     elif not block.get("fresh"):
         out.append(f"За этот период новый график с процентами не загружали, "
                    f"последний — от {_day(block['fact_snapshot'])}.")
@@ -131,42 +136,33 @@ def _packages_note(packages: dict[str, Any]) -> str:
             f"{packages.get('matched_packages', 0)} из {packages.get('packages', 0)}.")
 
 
-def _gpr_source(project: str, end: datetime.date, fact_day: str) -> dict[str, Any]:
-    """Откуда проценты: тот же набор, что у Монитора (`manager._baseline_status`).
-
-    Утверждённый ГПР, поверх — свежайший ГПР-факт не позднее даты, поверх —
-    точечные решения в Мониторе (в том числе «закрыть сомнительные»). Сводка
-    называет каждый слой с датой, чтобы число можно было сверить с Монитором.
-    """
-    meta = monitor._project_dir(project) / "baseline" / "meta.json"
-    try:
-        baseline_day = str(json.loads(meta.read_text(encoding="utf-8")).get("taken_at") or "")
-    except (OSError, ValueError):
-        found = monitor._baseline_file(project)
-        baseline_day = found.stem if found is not None and found.stem[:1].isdigit() else ""
-    folder = monitor._project_dir(project) / "work_fact"
-    days = sorted(path.stem.split(".", 1)[0] for path in folder.glob("*.json")) \
-        if folder.exists() else []
-    days = [day for day in days if day <= end.isoformat()]
-    manual = len(monitor.work_facts(project, end.isoformat()))
+def _gpr_source(project: str, end: datetime.date, statuses: dict[str, dict]) -> dict[str, Any]:
+    """Name the exact canonical readings used, not newer source filenames."""
+    used = [row for row in statuses.values() if row.get("progress") is not None
+            and row.get("progress_date") and row["progress_date"] <= end.isoformat()]
+    def latest(origin):
+        return max((row["progress_date"] for row in used if row.get("progress_origin") == origin), default="")
+    baseline_day, fact_day, manual_day = latest("approved_gpr"), latest("weekly_gpr"), latest("manual")
+    manual = sum(row.get("progress_origin") == "manual" for row in used)
     packages = None
     if fact_day:
         try:
-            packages = (monitor.latest_schedule_fact(project, end.isoformat()) or {}) \
+            packages = (monitor.latest_schedule_fact(project, fact_day) or {}) \
                 .get("packages")
         except Exception:  # noqa: BLE001 — нечитаемый снимок Монитор тоже пропускает
             packages = None
     label = (f"ГПР-факт{' по пакетам' if packages else ''} от {_day(fact_day)}" if fact_day else
-             f"утверждённый ГПР{' от ' + _day(baseline_day) if baseline_day else ''}")
+             f"утверждённый ГПР от {_day(baseline_day)}" if baseline_day else "")
     if manual:
-        label += (f" и решения в Мониторе по {manual} "
+        label += ((" и " if label else "") + f"решения в Мониторе по {manual} "
                   f"{_plural(manual, 'работе', 'работам', 'работам')} (последнее — "
-                  f"{_day(days[-1])})")
+                  f"{_day(manual_day)})")
     return {"baseline": baseline_day or None, "fact": fact_day or None,
-            "manual_works": manual, "manual_last": days[-1] if days else None,
-            "day": max(filter(None, [fact_day, days[-1] if days else "", baseline_day]),
+            "manual_works": manual, "manual_last": manual_day or None,
+            "weekly_present": monitor._latest(project, "schedule_fact", ".xlsx", end.isoformat()) is not None,
+            "day": max(filter(None, [fact_day, manual_day, baseline_day]),
                        default=""),
-            "label": label, "packages": packages}
+            "label": label or "нет датированных процентов на выбранную дату", "packages": packages}
 
 
 def _dated(baseline: dict[str, Any]) -> list[tuple[str, dict[str, Any], float]]:
@@ -265,11 +261,11 @@ def physical(project: str, kind: str, end: Any) -> dict[str, Any]:
         baseline = monitor._read_baseline_gpr(project)
     except FileNotFoundError:
         return _missing("Не загружен утверждённый ГПР проекта.")
-    now_day = _snapshot_day(project, bounds["end"])
-    source = _gpr_source(project, bounds["end"], now_day)
+    statuses = manager._baseline_status(project, bounds["end"].isoformat())
+    source = _gpr_source(project, bounds["end"], statuses)
+    now_day = source["fact"]
     works = _dated(baseline)
-    now = _progress(works, manager._baseline_status(project, bounds["end"].isoformat()),
-                    bounds["end"])
+    now = _progress(works, statuses, bounds["end"])
     if not now["works"]:
         return _missing(f"В графике ({source['label']}) нет процентов выполнения "
                         "ни у одной работы.")
@@ -307,9 +303,14 @@ def physical(project: str, kind: str, end: Any) -> dict[str, Any]:
 def _physical_series(project: str, works: list[tuple[str, dict[str, Any], float]],
                      end: datetime.date) -> dict[str, Any]:
     """S-кривая: план по утверждённому ГПР помесячно и факт каждого ГПР-факта."""
-    folder = monitor._project_dir(project) / "schedule_fact"
-    days = sorted(path.stem for path in folder.glob("*.xlsx")) if folder.exists() else []
-    days = [day for day in days if day <= end.isoformat()]
+    import developaid_schedule_gpr_forecast as gpr_forecast
+    from collections import Counter
+    counts = Counter(tid for tid, _, _ in works)
+    history = gpr_forecast.history(project, end)
+    # An ignored duplicate/unknown file is not a second measurement of an
+    # older percentage. Only real dated weekly readings create curve points.
+    days = sorted({day.isoformat() for tid, points in history.items() if counts.get(tid) == 1
+                   for day, _progress_value, origin in points if origin == "weekly_gpr"})
     facts = []
     for day in days:
         moment = _date(day)
@@ -1101,6 +1102,16 @@ def _stalled_words(block: dict[str, Any]) -> str:
     items = block.get("stalled") or []
     if not items:
         return ""
+    if ((block.get("qualification") or {}).get("basis") == "gpr"
+            or any(item.get("basis") == "gpr" for item in items)):
+        shown = "; ".join("«" + str(item["name"]) + "»" +
+                          (f" ({item['object']})" if item.get("object") else "") + ": " +
+                          str(item.get("reason") or "Нет измеренного прироста процента в ГПР.")
+                          for item in items[:3])
+        more = len(items) - 3
+        return (f"По ГПР нет прогноза у {len(items)} "
+                f"{_plural(len(items), 'работы', 'работ', 'работ')}: {shown}"
+                + (f" Ещё {more} работ без прогноза." if more > 0 else ""))
     shown = ", ".join(f"«{item['name']}»" + (f" ({item['object']})" if item.get("object") else "")
                       for item in items[:3])
     more = len(items) - 3
@@ -1119,6 +1130,11 @@ def gantt(view: dict[str, Any], dashboard: dict[str, Any]) -> dict[str, Any]:
     result = report_gantt.model(schedule_view.get("management") or [])
     result["dependency_timeline"] = schedule_view.get("dependency_timeline")
     result["corpus_gpr"] = schedule_view.get("corpus_gpr")
+    result["work_fact"] = schedule_view.get("work_fact")
+    result["version_comparison"] = {"state": "not_calculated"}
+    result["source"] = {"basis": schedule_view.get("basis"),
+                        "fact": schedule_view.get("fact_source"),
+                        "forecast": schedule_view.get("forecast_method")}
     return result
 
 
@@ -1803,6 +1819,8 @@ def build(project: str, kind: str, end: Any, sales_project: str | None = None,
     if declined:
         blocks["sales"] = _missing("Продажи в сводку не входят: так выбрано на "
                                    "странице «Сводка руководству».")
+    blocks["construction_summary"] = report_schedule.model(
+        (blocks.get("gantt") or {}).get("dependency_timeline") or {})
     blocks["findings"] = findings({"kind": kind, "end": bounds["end"].isoformat(), **blocks})
     return {"project": project, "kind": kind,
             "start": bounds["start"].isoformat(),
@@ -1880,7 +1898,7 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
     block = report.get("physical") or {}
     if block.get("state") == "ok":
         lag = block["lag"]
-        text = _sentence(f"Выполнено {_pct(block['fact'])} работ по графику при плане "
+        text = _sentence(f"По ГПР выполнено {_pct(block['fact'])} при плане "
                          f"{_pct(block['plan'])} — " + (f"отставание {_pp(-lag)[1:]}" if lag < 0
                                                        else f"опережение {_pp(lag)[1:]}"))
         if block.get("lag_before") is not None:
@@ -1937,36 +1955,17 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
             "bad")
 
     block = report.get("schedule") or {}
-    if block.get("state") == "ok" and block.get("forecast"):
-        delay = block.get("delay_days")
-        late = isinstance(delay, (int, float)) and delay > 0
-        if block.get("approved"):
-            text = (f"Ввод по утверждённому графику — {_day(block['approved'])}, "
-                    f"прогноз при нынешнем темпе — {_day(block['forecast'])}")
-            text += f": на {delay:.0f} дн. позже." if late else ": в срок."
-        else:
-            text = (f"Прогноз ввода при нынешнем темпе — {_day(block['forecast'])}; "
-                    "утверждённого срока ввода в данных Монитора нет, сравнить не с чем.")
-        driver = _driver_words(block.get("driver")) if late else ""
-        if driver:
-            text += " " + driver[:1].upper() + driver[1:] + "."
-        if block.get("stalled"):
-            text += " " + _stalled_words(block)
-        if block.get("estimate"):
-            driver = ((block.get("qualification") or {}).get("driving_chain") or [{}])[0]
-            if not late and driver.get("method") == "plan":
-                text = text.replace(": в срок.", ": по плану ГПР; роста процента для подтверждения темпа нет.")
-            text += " Это оценка по ГПР, без цепочки до получения разрешения."
-        add("Срок", text, "ГПР" if block.get("estimate") else "прогноз Монитора по темпу работ",
-            "bad" if late else "")
-    elif block.get("qualification"):
-        qualified = block["qualification"]
-        text = ("Прогноз РНВ неполный. " if qualified.get("state") == "partial"
-                else "Прогноз РНВ не рассчитан. ")
-        text += " ".join(qualified.get("reasons") or [])
-        if block.get("stalled"):
-            text += " " + _stalled_words(block)
-        add("Срок", text, "прогноз Монитора по темпу работ", "missing")
+    executive = _executive_schedule(report)
+    if block.get("qualification") or (report.get("gantt") or {}).get("dependency_timeline"):
+        text = report_schedule.conclusion(executive)
+        if executive.get("action"):
+            text += " " + executive["action"]
+        delay = executive.get("delay_days")
+        add("Срок", text, executive["source_label"],
+            "bad" if isinstance(delay, (int, float)) and delay > 0 else "missing" if not executive.get("forecast") else "")
+        if executive.get("facts"):
+            add("Натуральный факт", " ".join(report_schedule.fact_text(f) for f in executive["facts"][:3]),
+                "подтверждённые накопительные")
     elif block.get("reason"):
         add("Срок", block["reason"], "", "missing")
     late = [corpus for corpus in (report.get("gantt") or {}).get("corpora") or []
@@ -3441,6 +3440,12 @@ def render_text(report: dict[str, Any]) -> str:
 # --------------------------------------------------------------------------
 
 REPORT_STYLE = """
+.report-source-screen{margin:10px 0;color:#5b6b7d}
+.report-source-screen>summary{cursor:pointer;font-size:11px}
+.executive-action{padding:9px 12px;background:#fff6e6;border-left:3px solid #d59c38;font-size:12px;line-height:1.5}
+.executive-facts{padding-left:18px;font-size:13px;line-height:1.5}
+.executive-source-state{font-size:12px;line-height:1.5}
+
 body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#17202a;font-size:11.5px;line-height:1.4;margin:0}
 h1{font-size:20px;margin:0 0 2px;color:#0f2a4d}
 h2{break-after:avoid;page-break-after:avoid;font-size:15px;color:#1f4e8c;margin:20px 0 8px;border-bottom:2px solid #1f4e8c;padding-bottom:3px}
@@ -3928,12 +3933,12 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
     block = report.get("physical") or {}
     if block.get("state") == "ok":
         lag = block.get("lag")
-        add("Стройка: выполнено", _pct(block["fact"]),
+        add("Выполнение по ГПР", _pct(block["fact"]),
             f"план {_pct(block.get('plan'))}"
             + (f", {_pp(lag)}" if lag is not None else ""),
             "bad" if lag is not None and lag < -0.02 else "good")
     else:
-        add("Стройка: выполнено", None, "нет графика с процентами")
+        add("Выполнение по ГПР", None, "нет графика с процентами")
 
     block = report.get("crew") or {}
     now = (block.get("now") or {}) if block.get("state") == "ok" else {}
@@ -4140,13 +4145,28 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
     return out
 
 
+def _executive_schedule(report: dict[str, Any]) -> dict[str, Any]:
+    if report.get("construction_summary") is not None:
+        return report["construction_summary"]
+    timeline = (report.get("gantt") or {}).get("dependency_timeline") or {}
+    if not timeline:
+        schedule_block = report.get("schedule") or {}
+        timeline = {"rnv": schedule_block.get("qualification") or {
+            "state": "complete" if schedule_block.get("known") else "unknown",
+            "approved": schedule_block.get("approved"), "forecast": schedule_block.get("forecast"),
+            "delay_days": schedule_block.get("delay_days")}}
+    return report_schedule.model(timeline)
+
+
 def _gantt_html(report: dict[str, Any]) -> str:
     block = report.get("gantt") or {}
     out = ["<h3>Сроки работ по корпусам</h3>"]
-    import developaid_schedule_timeline as dependency_timeline
     import developaid_gpr_corpus as corpus_gpr
     if block.get("dependency_timeline"):
-        out.append(dependency_timeline.render(block["dependency_timeline"], context="report"))
+        executive = _executive_schedule(report)
+        out.append(report_schedule.render(executive))
+        out.append('<details class="report-source-screen"><summary>Источники и ограничения оценки</summary>'
+                   + _schedule_source_details(report) + '</details>')
     if block.get("corpus_gpr") and block.get("state") != "ok":
         out.append(corpus_gpr.render_overview(block["corpus_gpr"], str(report.get("end") or "")))
     elif block.get("corpus_gpr"):
@@ -4155,11 +4175,19 @@ def _gantt_html(report: dict[str, Any]) -> str:
     if block.get("state") != "ok":
         out.append(f"<p class='note'>{html.escape(block.get('reason') or 'Графика работ нет.')}</p>")
         return "".join(out)
-    rnv = report.get("schedule") if (report.get("schedule") or {}).get("state") == "ok" else {}
-    out.append(report_gantt.render(block, report.get("end")))
-    out.extend(f"<p class='note'>{html.escape(line)}</p>"
-               for line in report_gantt.notes(block, rnv))
+    out.append(report_gantt.render(block, report.get("end"), explanations=False))
     return "".join(out)
+
+
+def _schedule_source_details(report: dict[str, Any]) -> str:
+    content = report_schedule.details(_executive_schedule(report))
+    block = report.get("schedule") or {}
+    content += ''.join("<p class='note'>" + html.escape(line) + "</p>"
+                       for line in report_gantt.notes(report.get("gantt") or {}, block))
+    stalled = _stalled_words(block)
+    if stalled:
+        content += "<p class='note'>" + html.escape(stalled) + "</p>"
+    return content
 
 
 def tiles_footnote(report: dict[str, Any]) -> str:
@@ -4597,7 +4625,7 @@ def render_html(report: dict[str, Any]) -> str:
     block = report.get("physical") or {}
     if block.get("state") == "ok":
         out.append(_table(["", "План к дате", "Выполнено", "Отставание"], [[
-            "Весь проект", _pct(block["plan"]), _pct(block["fact"]),
+            "По процентам ГПР", _pct(block["plan"]), _pct(block["fact"]),
             _pp(block["fact"] - block["plan"]) if block.get("plan") is not None else "—"]]
             + [[esc(item["object"]), _pct(item["plan"]), _pct(item["fact"]),
                 _pp(item["fact"] - item["plan"]) if item.get("plan") is not None else "—"]
@@ -4610,8 +4638,8 @@ def render_html(report: dict[str, Any]) -> str:
             out.append("<p class='note'>Прирост за период посчитать не из чего: на начало "
                        "периода не было графика с процентами выполнения.</p>")
         notes = _physical_notes(block)
-        out.append(f"<p class='note'>{esc(notes[0])}</p>")
-        out.extend(f"<p class='note warn'>{esc(line)}</p>" for line in notes[1:])
+        out.append('<details class="report-source-screen"><summary>Источники выполнения по ГПР</summary>'
+                   + ''.join("<p class='note'>" + esc(line) + "</p>" for line in notes) + '</details>')
         shown = progress_charts_shown(block)
         if shown:
             out.append(_physical_chart(block))
@@ -4625,23 +4653,12 @@ def render_html(report: dict[str, Any]) -> str:
     out.append(_crew_html(report.get("crew") or {}, report["kind"]))
     out.append(_works_html(report.get("crew") or {}, report["kind"]))
     out.append(_gantt_html(report))
-    block = report.get("schedule") or {}
-    if block.get("state") == "ok" and block.get("forecast"):
-        delay = block.get("delay_days")
-        lead = (f"по утверждённому графику {_day(block['approved'])}, "
-                if block.get("approved") else "утверждённого срока в данных нет, ")
-        out.append(f"<p class='note'>Ввод: {lead}прогноз Монитора при нынешнем темпе "
-                   f"{_day(block['forecast'])}"
-                   + (f" — на {delay:.0f} дн. позже." if isinstance(delay, (int, float))
-                      and delay > 0 else ".")
-                   + (" Оценка по ГПР, без цепочки до получения разрешения."
-                      if block.get("estimate") else "") + "</p>")
-        driver = _driver_words(block.get("driver"))
-        if driver and isinstance(delay, (int, float)) and delay > 0:
-            out.append(f"<p class='note warn'>{html.escape(driver[:1].upper() + driver[1:])}.</p>")
-    if block.get("state") == "ok" and block.get("stalled"):
-        # A missing final RNV must not hide known near-zero-pace risk facts.
-        out.append(f"<p class='note warn'>{html.escape(_stalled_words(block))}</p>")
+    # The qualified executive block above is the sole date conclusion.
+    # Known stalled risks stay visible as work names, with causes in details.
+    stalled = (report.get("schedule") or {}).get("stalled") or []
+    if stalled:
+        names = ", ".join(str(item.get("name") or "") for item in stalled[:3])
+        out.append("<p class='note warn'>Требуют проверки темпа: " + esc(names) + ".</p>")
 
     out.append(_photos_html(report.get("photos") or {}, report["kind"]))
 
@@ -4753,6 +4770,12 @@ def render_html(report: dict[str, Any]) -> str:
             out.append(f"<div class='item'><b>{esc(note['topic'])}</b> — вопрос закрыт: "
                        f"{esc(note['text'])} <span class='note'>— {_day(note['at'])}, "
                        f"{esc(note['author'])}</span></div>")
+    if (report.get("gantt") or {}).get("dependency_timeline"):
+        out.append('<section class="report-source-appendix"><h2>Приложение. Источники и ограничения оценки</h2>'
+                   + _schedule_source_details(report)
+                   + (''.join("<p class='note'>" + esc(line) + "</p>"
+                              for line in _physical_notes(report["physical"]))
+                      if (report.get("physical") or {}).get("state") == "ok" else "") + '</section>')
     if _built_words(report):
         out.append(f"<p class='note built'>{esc(_built_words(report))}</p>")
     return "\n".join(_keep_headings([part for part in out if part]))
@@ -4827,7 +4850,7 @@ def _contract_risk_words(block: dict[str, Any]) -> str:
     summary = block.get("summary") or {}
     counts = summary.get("counts") or {}
     parts = [f"{label}: {counts[key]}" for key, label in (
-        ("overdue", "срок прошёл, работы не завершены"), ("late", "не успевают к сроку"),
+        ("overdue", "срок договора прошёл"), ("late", "не успевают к сроку"),
         ("stalled", "работы стоят")) if counts.get(key)]
     text = ("Договоры под угрозой срыва срока — " + "; ".join(parts) + "." if parts else
             "Подтверждённых предупреждений о срыве срока не найдено.")

@@ -162,9 +162,9 @@ def test_acceleration_recovers_current_delay_but_not_before_baseline():
 
 def test_monitor_v2_shows_scenario_comparison_in_primary_ui():
     from developaid_monitor_page import MONITOR_PAGE
-    assert "Cost control" in MONITOR_PAGE
-    assert "Управленческий Гант" in MONITOR_PAGE
-    assert "Платон · сценарный анализ" in MONITOR_PAGE
+    assert "Бюджет и оплаты" in MONITOR_PAGE
+    assert "График работ по ГПР" in MONITOR_PAGE
+    assert "Вопрос по проекту" in MONITOR_PAGE
     assert "data-scenario=\"current_pace\"" in MONITOR_PAGE
     assert "Текущий утверждённый план" in MONITOR_PAGE
 

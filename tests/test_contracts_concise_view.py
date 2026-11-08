@@ -86,13 +86,21 @@ def test_forecast_short_reason_distinguishes_missing_price_from_zero_pace(amount
 def test_contract_tab_hides_unrelated_navigation_and_monitor_restores_it(width):
     with browser_page(width) as (page, responses, errors):
         navigation = page.locator('nav.contour')
+        navigation_menu = page.locator('.monitor-app-nav')
+        expect(navigation_menu).to_be_visible()
+        expect(navigation).to_be_hidden()
+        navigation_menu.locator('summary').click()
         expect(navigation).to_be_visible()
         page.locator('#contractsTab').click()
         expect(page.locator('tr[data-contract-id]')).to_have_count(2)
+        expect(navigation_menu).to_be_hidden()
         expect(navigation).to_be_hidden()
         assert 'Коммерции' not in page.locator('body').inner_text()
         page.screenshot(path=f'/tmp/contracts-focused-{width}.png', full_page=True)
         page.locator('#monitorTab').click()
+        expect(navigation_menu).to_be_visible()
         expect(navigation).to_be_visible()
         expect(navigation).to_contain_text('Коммерции')
+        navigation_menu.locator('summary').click()
+        expect(navigation).to_be_hidden()
         assert not errors

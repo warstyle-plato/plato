@@ -1964,6 +1964,20 @@ _SCHEDULE_WORK = "работа"
 _SCHEDULE_OVERDUE = "просроч"
 
 
+def _schedule_progress(value: Any) -> float | None:
+    """A missing GPR reading is unknown, not financial-parser zero."""
+    if value is None or isinstance(value, bool):
+        return None
+    text = str(value).replace("\xa0", "").replace(" ", "").replace(",", ".")
+    percent = text.endswith("%")
+    try:
+        number = float(text[:-1] if percent else text)
+    except (TypeError, ValueError):
+        return None
+    import math
+    return (number / 100.0 if percent else number) if math.isfinite(number) else None
+
+
 def read_schedule(path: Any) -> dict[str, Any]:
     """ГПР: работы со сроками, статусом, процентом и кодом РСС."""
     rows: list[dict[str, Any]] = []
@@ -1986,7 +2000,7 @@ def read_schedule(path: Any) -> dict[str, Any]:
             "name": str(cell("name") or "").strip(),
             "kind": str(cell("kind") or "").strip(),
             "is_work": _SCHEDULE_WORK in _normalized(cell("kind")),
-            "progress": _money(cell("progress")),
+            "progress": _schedule_progress(cell("progress")),
             "start": _date(cell("start")),
             "finish": _date(cell("finish")),
             "status": status,

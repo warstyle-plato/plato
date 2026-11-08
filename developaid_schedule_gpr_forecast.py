@@ -19,6 +19,7 @@ latest no older than 45 days. Missing evidence stays unknown with its reason.
 from __future__ import annotations
 
 import datetime as dt
+from collections import Counter
 import json
 import math
 from pathlib import Path
@@ -37,6 +38,8 @@ def _day(value: Any) -> dt.date | None:
 
 
 def _progress(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
     try:
         number = float(value)
     except (TypeError, ValueError):
@@ -44,15 +47,25 @@ def _progress(value: Any) -> float | None:
     if not math.isfinite(number):
         return None
     # Same reading as manager._baseline_status: a file may store 60 or 0.6.
-    return number / 100.0 if number > 1.0 else number
+    number = number / 100.0 if number > 1.0 else number
+    return number if 0.0 <= number <= 1.0 else None
 
 
 def _works(parsed: dict) -> dict[str, tuple[float | None, str]]:
-    out = {}
+    out, duplicates = {}, set()
     for item in parsed.get("works") or []:
         tid = str(item.get("id") or item.get("wbs") or "").strip()
         if tid:
-            out[tid] = (_progress(item.get("progress")), str(item.get("status") or ""))
+            if tid in out:
+                duplicates.add(tid)
+            progress, status = _progress(item.get("progress")), str(item.get("status") or "")
+            # A dated, explicit completion status is a source fact. It is
+            # interpreted once here for baseline, weekly and report readers.
+            if item.get("progress") is None and "заверш" in status.lower():
+                progress = 1.0
+            out[tid] = (progress, status)
+    for tid in duplicates:
+        out.pop(tid, None)
     return out
 
 
@@ -98,9 +111,7 @@ def history(project: str, cut: dt.date) -> dict[str, list[tuple[dt.date, float, 
         # Older files cannot enter the pace window; keep one before it as context.
         keep = [p for p in files if _day(p.stem) >= earliest] or files[-1:]
         for path in keep:
-            for tid, (progress, status) in _weekly(project, path).items():
-                if progress is None and "заверш" in status.lower():
-                    progress = 1.0
+            for tid, (progress, _status) in _weekly(project, path).items():
                 add(tid, _day(path.stem), progress, "weekly_gpr")
     manual = folder / "work_fact"
     if manual.exists():
@@ -121,14 +132,23 @@ def work(row: dict, points: list[tuple[dt.date, float, str]], cut: dt.date,
          ks: dict | None = None) -> dict[str, Any]:
     """Forecast of one GPR work with its method and reason."""
     plan_start, plan_finish = _day(row.get("plan_start")), _day(row.get("plan_finish"))
+    points = [point for point in points if point[0] <= cut and _progress(point[1]) is not None]
     result = {"forecast_finish": None, "method": "unknown", "reason": "", "progress": None,
-              "progress_date": None, "pace_per_day": None, "window": None}
+              "progress_date": None, "progress_origin": None, "pace_per_day": None, "window": None}
     if ks and ks.get("forecast_finish"):
-        return dict(result, forecast_finish=ks["forecast_finish"], method="cumulative_quantities",
-                    progress=ks.get("progress"), reason="По натуральному темпу накопительных.")
+        completed = ks.get("mode") == "completed"
+        method = "confirmed_completion" if completed else "cumulative_quantities"
+        return dict(result, forecast_finish=ks["forecast_finish"], method=method,
+                    progress=_progress(ks.get("progress")), progress_origin=method,
+                    progress_date=ks.get("progress_date"), reason=("Дата завершения подтверждена вручную."
+                    if completed else "По натуральному темпу накопительных."))
+    if ks and ks.get("scope_confirmed") and ks.get("mode") in {"quantities", "completed"}:
+        return dict(result, method="cumulative_unknown", progress=_progress(ks.get("progress")),
+                    progress_origin="cumulative_quantities", progress_date=ks.get("progress_date"),
+                    reason=ks.get("reason") or "Натуральный темп этой работы не подтверждён.")
     if points:
         last = points[-1]
-        result.update(progress=last[1], progress_date=last[0].isoformat())
+        result.update(progress=last[1], progress_date=last[0].isoformat(), progress_origin=last[2])
         if last[1] >= DONE:
             first_done = next(p for p in points if p[1] >= DONE)
             return dict(result, forecast_finish=first_done[0].isoformat(), method="done",
@@ -155,6 +175,10 @@ def work(row: dict, points: list[tuple[dt.date, float, str]], cut: dt.date,
                             if started else "Работа по плану ещё не началась — показан план."))
     if points and (cut - points[-1][0]).days > STALE_DAYS:
         return dict(result, method="stale", reason="Последний процент в ГПР старше 45 дней; темп неизвестен.")
+    if not points:
+        return dict(result, method="unknown", reason="В ГПР нет датированных процентов этой работы.")
+    if len({p[0] for p in window}) < 2:
+        return dict(result, method="no_pace", reason="Нет двух свежих датированных процентов для определения темпа.")
     return dict(result, method="stalled",
                 reason="Срок по плану прошёл, а процент в ГПР за 90 дней не рос: работа стоит, прогноза нет.")
 
@@ -162,10 +186,16 @@ def work(row: dict, points: list[tuple[dt.date, float, str]], cut: dt.date,
 def forecasts(project: str, cut: dt.date, rows: list[dict], ks: dict | None = None) -> dict[str, dict]:
     points = history(project, cut)
     out = {}
+    ids = [str(row.get("id") or row.get("wbs") or "").strip() for row in rows]
+    duplicates = {tid for tid, count in Counter(ids).items() if tid and count > 1}
     for row in rows:
         tid = str(row.get("id") or row.get("wbs") or "").strip()
         if tid:
-            out[tid] = work(row, points.get(tid) or [], cut, (ks or {}).get(tid))
+            if tid in duplicates:
+                out[tid] = {"forecast_finish": None, "progress": None, "method": "unknown",
+                            "reason": "Идентификатор работы повторяется в ГПР; требуется уточнение."}
+            else:
+                out[tid] = work(row, points.get(tid) or [], cut, (ks or {}).get(tid))
     return out
 
 

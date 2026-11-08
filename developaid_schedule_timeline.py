@@ -296,6 +296,9 @@ def overview_rows(block: dict) -> tuple[list[dict], str]:
 
 def render(block: dict, *, context: str = 'monitor') -> str:
     """RNV text and physical evidence, without dependency drawings."""
+    if context == 'report':
+        import developaid_report_schedule as executive
+        return executive.render(executive.model(block))
     from developaid_schedule_visual import styles, date_text, physical_summary
     esc = lambda value: html.escape(str(value if value is not None else ''), quote=True)
     rnv = block.get('rnv') or {}
@@ -333,7 +336,7 @@ def render(block: dict, *, context: str = 'monitor') -> str:
         out.append('<p class="schedule-note"><b>Срок тянет:</b> '+esc(chain[-1].get('name') or '')+'</p>')
     out.append(physical_summary(block.get('physical')))
     if not block.get('history'):
-        out.append('<p class="schedule-note">Изменение между версиями ГПР не рассчитано: данные сравнения не предоставлены.</p>')
+        out.append('<p class="schedule-note">Сравнение версий ГПР пока не рассчитано.</p>')
     confirmation = block.get('confirmation') or {}
     if confirmation.get('recorded_at'):
         calendar = ('Расчёт в календарных днях подтверждён.'
