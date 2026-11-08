@@ -123,11 +123,12 @@ def test_the_chapters_come_from_the_crosswalk(tmp_path):
     assert "2.4.9" in got["chapters_reason"] and "не найдены" in got["chapters_reason"]
 
 
-def test_a_mixed_article_without_a_decision_goes_by_majority_and_says_so(tmp_path, monkeypatch):
+def test_a_mixed_article_without_a_monetary_decision_remains_unallocated(tmp_path, monkeypatch):
     monkeypatch.setattr(dashboard, "_FM_CHAPTER_DECIDED", {})
     got = _read(tmp_path, _finmodel())
-    # 2.3.4: две строки карты в главу 3, одна в главу 2 — глава большинства, и это сказано.
-    assert got["articles"]["2.3.4"]["chapter"] == "3"
+    # Counting map rows cannot assign the money of a mixed article.
+    assert got["articles"]["2.3.4"]["chapter"] == ""
+    assert got['chapter_flow']['']['sections']['2.3'] > 0
     assert "2.3.4" in got["chapters_reason"] and "разные главы" in got["chapters_reason"]
 
 

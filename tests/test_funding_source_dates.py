@@ -81,7 +81,7 @@ def test_distinct_source_dates_reach_all_views_and_visible_cards(tmp_path, monke
     tiles = {item["label"]: item for item in report.tiles(built)}
     for title, key in (("Утверждённый бюджет", "budget"), ("Лимит банка", "limit"),
                        ("Оплачено с начала проекта", "paid"), ("Выбрано у банка", "paid"),
-                       ("Остаток лимита банка", "left"), ("Нужно своих денег сверх сметы банка", "need")):
+                       ("Остаток лимита банка", "left"), ("Расчётная дополнительная потребность", "need")):
         assert expected[key] in tiles[title]["note"]  # printed, not only in a hidden tooltip
     assert "14.10.2026–20.10.2026" in tiles["Выбрано у банка"]["note"]
     assert "с начала месяца (01.10.2026–20.10.2026)" in tiles["Выбрано у банка"]["note"]
@@ -101,7 +101,7 @@ def test_missing_data_dates_are_not_replaced_by_upload_or_selection_day(tmp_path
     assert "23.09.2026" not in notes["schedule"]  # selected version is not a known data date
     assert "График финансирования от 23.09.2026" not in report.render_text(built)
     assert "графика от 23.09.2026" not in report._schedule_html(built["funding_schedule"])
-    assert "по графику финансирования (дата данных не указана)" in " ".join(report._own_money_lines(limit))
+    assert notes['schedule'] in " ".join(report._own_money_lines(limit))
     assert notes["budget"] in report.render_html(built) and notes["budget"] in report.render_text(built)
 
 
