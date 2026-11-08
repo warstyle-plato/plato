@@ -187,12 +187,36 @@ def _explicit_contract_numbers(text: str) -> set[str]:
                     r"секци(?:я|и|ю|ей|ям|ях)|пункт(?:а|ов|у|е|ом|ы)?|"
                     r"заявк(?:а|и|у|е|ой)|накладн(?:ая|ой|ую|ые|ых)|"
                     r"письм(?:о|а|у|е|ом)|строк(?:а|и|у|е|ой)")
-    pattern = (r"(?P<contract>\b(?:договор(?:у|а|ом)?\b|дог\.))"
+    marker = (r"№|#|\bномер(?:ом|у|а|е|ами|ов)?\b|\bном\."
+              r"|(?<!\w)n(?:o\.|[°º]|o?(?=\s|[:=]))")
+    pattern = (r"(?P<contract>\b(?:договор(?:у|а|ом|е|ы|ов|ам|ами|ах)?\b|дог\.))"
                r"|(?P<other>\b(?:" + other_entity + r")(?=\W|[0-9]|$))"
-               r"|(?P<marker>№|(?<!\w)n(?:o\.?)?(?=\s))"
+               r"|(?P<marker>" + marker + r")"
                r"|(?P<boundary>[;!?]|\.(?=\s|$))")
-    token_pattern = r"\s*[«\"“']?(?P<number>[0-9a-zа-я][0-9a-zа-я_./-]*)?"
+    token_pattern = (r"\s*[:=]?\s*[«\"“']?"
+                     r"(?P<number>[0-9a-zа-я][0-9a-zа-я_./-]*)?[»\"”']?")
     numbers = set()
+
+    def read_numbers(position: int, marked: bool) -> None:
+        """A reference can be a comma/semicolon/conjunction-separated list."""
+        while True:
+            value = re.match(token_pattern, normalized[position:])
+            token = (value.group("number") or "").rstrip(".") if value else ""
+            if not marked and not any(character.isdigit() for character in token):
+                return
+            numbers.add(_number(token))
+            if not value or not token:
+                return
+            position += value.end()
+            separator = re.match(r"\s*(?:[,;]|\b(?:и|или)\b)\s*", normalized[position:])
+            if separator is None:
+                return
+            position += separator.end()
+            next_marker = re.match(marker, normalized[position:])
+            marked = next_marker is not None
+            if next_marker:
+                position += next_marker.end()
+
     contract_phrase = False
     for match in re.finditer(pattern, normalized):
         if match.lastgroup in {"other", "boundary"}:
@@ -202,10 +226,7 @@ def _explicit_contract_numbers(text: str) -> set[str]:
             contract_phrase = True
         if not contract_phrase:
             continue
-        token_match = re.match(token_pattern, normalized[match.end():])
-        token = (token_match.group("number") or "").rstrip(".") if token_match else ""
-        if match.lastgroup == "marker" or any(character.isdigit() for character in token):
-            numbers.add(_number(token))
+        read_numbers(match.end(), match.lastgroup == "marker")
     return numbers
 
 
@@ -241,7 +262,10 @@ def _selectable_contracts(evidence: dict, rows: list[dict]) -> tuple[list[dict],
     scoped = [row for row in dated if _scope_covers(evidence, row)]
     if not scoped:
         return [], "Корпусный состав сообщения не подтверждён договором или указан неоднозначно. Уточните исходные данные."
-    if _explicit_contract_numbers(evidence["text"]):
+    references = _explicit_contract_numbers(evidence["text"])
+    if len(references) > 1:
+        return [], "В записи указано несколько номеров договоров. Уточните отдельные работы и их договоры."
+    if references:
         scoped = [row for row in scoped if _explicit_number(evidence["text"], row)]
         if not scoped:
             return [], "Указанный номер не совпадает с подходящими договорами подрядчика. Проверьте номер договора в сообщении."

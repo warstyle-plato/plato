@@ -176,6 +176,13 @@ def test_ordinary_words_after_contract_allow_both_unique_auto_and_manual_link(mo
     ('по договору подряда № A-12', 'A-12'),
     ('по договору строительного подряда № A-12', 'A-12'),
     ('по договору на выполнение работ № A-12', 'A-12'),
+    ('по договору номер A-12', 'A-12'),
+    ('по договору под номером A-12', 'A-12'),
+    ('по договору No. A-12', 'A-12'),
+    ('по договору N°A-12', 'A-12'),
+    ('по договору NºA-12', 'A-12'),
+    ('по договору #A-12', 'A-12'),
+    ('по договорам № A-12', 'A-12'),
 ])
 def test_real_number_signature_identifies_only_the_full_number(reference, number):
     data = register(two=True)
@@ -198,6 +205,12 @@ def test_real_number_signature_identifies_only_the_full_number(reference, number
     'по договору подряда № A-123',
     'по договору строительного подряда № A-123',
     'по договору на выполнение работ № A-123',
+    'по договору номер A-123',
+    'по договору под номером A-123',
+    'по договору No. A-123',
+    'по договору N°A-123',
+    'по договору NºA-123',
+    'по договору #A-123',
 ])
 def test_explicit_other_or_incomplete_number_cannot_fall_back_to_unique_party(monkeypatch, reference):
     data = install_register(monkeypatch)
@@ -224,6 +237,45 @@ def test_number_of_another_named_entity_is_not_a_contract_number(monkeypatch, re
     assert result['unmatched_works'] == []
     item, = result['rows'][0]['reconciliation']['daily_evidence']
     assert item['link_basis'] == 'exact_party' and item['contract_id'] == FIRST
+    assert links.set_link(PROJECT, FIRST, item['id'], CUT)['confirmed']
+
+
+@pytest.mark.parametrize('two', [False, True])
+@pytest.mark.parametrize('reference', [
+    'по договору № A-12 и договору № A-13',
+    'по договорам № A-12 и № A-13',
+    'по договорам № A-12, A-13',
+    'по договорам с номерами A-12 и A-13',
+    'по договору № A-12; № A-13',
+])
+def test_two_different_explicit_numbers_keep_whole_message_pending_and_block_manual(monkeypatch, two, reference):
+    data = install_register(monkeypatch, register(two=two))
+    report('Корпус 1 кладка ' + reference)
+    item, = evidence(data)['unmatched_works']
+    assert item['contract_id'] == ''
+    assert item['selectable_contract_ids'] == [] and item['suggested_contract_id'] == ''
+    assert 'несколько номеров договоров' in item['match_reason']
+    for row in data['rows']:
+        with pytest.raises(links.LinkProblem, match='несколько номеров договоров'):
+            links.set_link(PROJECT, row['id'], item['id'], CUT)
+    assert not links._path(PROJECT).exists()
+
+
+@pytest.mark.parametrize('reference', [
+    'по договору № A-12 и договору № a-12',
+    'по договору № A-12 и договору строительного подряда № A–12',
+    'по дог. № A-12 и договору N A-12',
+    'по договорам № A-12, A-12',
+    'по договорам с номерами A-12 и a-12',
+])
+def test_repeated_aliases_of_the_same_explicit_number_still_identify_one_contract(monkeypatch, reference):
+    data = install_register(monkeypatch)
+    report('Корпус 1 монтаж ' + reference)
+    assert links._explicit_contract_numbers(reference) == {'a-12'}
+    result = evidence(data)
+    assert result['unmatched_works'] == []
+    item, = result['rows'][0]['reconciliation']['daily_evidence']
+    assert item['contract_id'] == FIRST and item['link_basis'] == 'explicit_number'
     assert links.set_link(PROJECT, FIRST, item['id'], CUT)['confirmed']
 
 
