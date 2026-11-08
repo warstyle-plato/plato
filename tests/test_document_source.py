@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import io
 import socket
+import ssl
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 
@@ -318,16 +319,22 @@ def test_real_transport_connects_only_to_the_checked_ip_but_uses_hostname_for_tl
             calls.append(("connect", address))
         def close(self):
             calls.append(("close",))
-    class Context:
-        def wrap_socket(self, sock, *, server_hostname):
-            calls.append(("tls", server_hostname))
-            return sock
+    # HTTPSConnection on Python 3.11 also inspects verify_mode/check_hostname.
+    # Use the real verified context and replace only the network handshake.
+    context = ds.trust_context()
+    def wrap_socket(sock, *, server_hostname):
+        calls.append(("tls", server_hostname))
+        return sock
+    monkeypatch.setattr(context, "wrap_socket", wrap_socket)
     monkeypatch.setattr(ds.socket, "socket", lambda *args: Socket())
-    monkeypatch.setattr(ds, "trust_context", lambda: Context())
+    monkeypatch.setattr(ds, "trust_context", lambda: context)
     monkeypatch.setattr(ds.socket, "getaddrinfo", lambda *args, **kwargs: pytest.fail("a second DNS lookup would allow rebinding"))
     endpoint = (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("93.184.216.34", 443))
     conn = ds._PinnedHTTPS("files.example", (endpoint,), timeout=5)
     conn.connect()
+    assert conn._context is context
+    assert context.verify_mode == ssl.CERT_REQUIRED
+    assert context.check_hostname is True
     assert ("connect", ("93.184.216.34", 443)) in calls
     assert ("tls", "files.example") in calls
 
