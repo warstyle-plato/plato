@@ -1,7 +1,7 @@
 """Evidence links between contracts, cumulative ledgers and site reports.
 
 This module does not accept works, infer quantities from prose, or change money.
-A suggested contractor match remains a suggestion until a human confirms it.
+An exact contractor with one compatible contract identifies it automatically.
 Both Monitor and management reports use this resolver.
 """
 from __future__ import annotations
@@ -20,6 +20,7 @@ from urllib.parse import urlencode
 
 import developaid_monitor as monitor
 import developaid_monitor_daily as daily
+from developaid_monitor_contracts import _party_norm, _contract_number
 
 _MAX_TEXT = 20000
 _ID = re.compile(r"^[0-9a-f]{64}$")
@@ -76,12 +77,15 @@ def _party_identity(value: Any) -> str:
 
 def _same_party_exact(left: Any, right: Any) -> bool:
     """Omitted form can be shorthand; two different explicit forms cannot."""
-    first, second = _party_identity(left).split(), _party_identity(right).split()
-    if not first or not second or _party(left) != _party(right):
+    # Keep persisted work signatures unchanged; legal-form normalization is
+    # only for comparison, just as in the RSS contract resolver.
+    first, second = (_party_identity(_party_norm(value)).split() for value in (left, right))
+    if not first or not second:
         return False
     first_form = first[0] if first[0] in _LEGAL_FORMS else ""
     second_form = second[0] if second[0] in _LEGAL_FORMS else ""
-    return not first_form or not second_form or first_form == second_form
+    return (first[bool(first_form):] == second[bool(second_form):]
+            and (not first_form or not second_form or first_form == second_form))
 
 
 def _digest(value: Any) -> str:
@@ -161,9 +165,7 @@ def _scope_covers(evidence: dict, row: dict) -> bool:
 
 
 def _number(value: Any) -> str:
-    text = _text(value).replace("–", "-").replace("—", "-")
-    text = re.sub(r"^договор\s*", "", text).lstrip("№# ")
-    return text.split(" от ", 1)[0].strip()
+    return _contract_number(_text(value).replace("–", "-").replace("—", "-"), reference=True).lstrip("#")
 
 
 def _explicit_number(text: str, row: dict) -> bool:
@@ -341,8 +343,7 @@ def enrich(project: str, register: dict, cut: str, start: str = "", *,
     saved = _read(project).get("links") or {}
     for item in evidence:
         candidates = [row for row in rows if row.get("id") in unique
-                      and _party(item["contractor"])
-                      and _party(item["contractor"]) == _party(row.get("contractor"))
+                      and _same_party_exact(item["reported_contractor"] or item["contractor"], row.get("contractor"))
                       and _compatible(item, row)]
         direct = saved.get(item["id"])
         applicable = [record for record in saved.values()
@@ -351,8 +352,8 @@ def enrich(project: str, register: dict, cut: str, start: str = "", *,
         manual = direct or max(applicable, key=lambda r: (r.get("source_date") or "", r.get("confirmed_at") or ""), default={})
         blocked = {str(manual.get("contract_id") or "")} if manual.get("confirmed") is False else set()
         explicit = [row for row in candidates if item["party_exact"]
-                    and _same_party_exact(item["contractor"], row.get("contractor"))
                     and _same_party_exact(item["reported_contractor"], row.get("contractor"))
+                    and (not row.get("contract_date") or row["contract_date"] <= item["date"])
                     and _scope_covers(item, row)
                     and str(row["id"]) not in blocked and _explicit_number(item["text"], row)]
         # Bind to the exact work signature and the current project's registry.
@@ -370,6 +371,14 @@ def enrich(project: str, register: dict, cut: str, start: str = "", *,
             chosen, basis = manual_row, "manual"
         elif len(explicit) == 1:
             chosen, basis = explicit[0], "explicit_number"
+        elif (len(candidates) == 1 and item["party_exact"]
+              and _same_party_exact(item["reported_contractor"], candidates[0].get("contractor"))
+              and _scope_covers(item, candidates[0])
+              and str(candidates[0]["id"]) not in blocked
+              and (not candidates[0].get("contract_date") or candidates[0]["contract_date"] <= item["date"])
+              # A different explicitly stated number must never be ignored.
+              and not re.search(r"\b(?:договор(?:у|а|ом)?|дог\.)\s*(?:№|n)?\s*\S+", _text(item["text"]))):
+            chosen, basis = candidates[0], "exact_party"
         else:
             chosen, basis = None, "candidate" if candidates else "none"
         item["contract_id"] = str(chosen["id"]) if chosen else ""
@@ -380,6 +389,10 @@ def enrich(project: str, register: dict, cut: str, start: str = "", *,
         item["match_status"] = ("confirmed" if chosen else "ambiguous" if len(candidates) > 1
                                 else "proposed" if candidates else "unmatched")
         item["status"] = _STATUS[item["match_status"]]
+        item["match_reason"] = ("" if chosen else
+            "У подрядчика несколько договоров. Выберите нужный." if len(candidates) > 1 else
+            "Проверьте номер договора и корпус работ." if candidates else
+            "Договор этого подрядчика в накопительных не найден.")
         item.pop("signature", None)
         item.pop("party_exact", None)
     for row in rows:
@@ -447,8 +460,7 @@ def set_link(project: str, contract_id: str, evidence_id: str, cut: str,
         value = _read(project)
         signature = evidence["signature"]
         candidates = sorted({str(row["id"]) for row in register.get("rows") or []
-                             if _party(evidence["contractor"])
-                             and _party(evidence["contractor"]) == _party(row.get("contractor"))
+                             if _same_party_exact(evidence["reported_contractor"] or evidence["contractor"], row.get("contractor"))
                              and _compatible(evidence, row)})
         # One record per exact source preserves previous decisions when an
         # identically worded task later moves to another contract. A negative
@@ -500,7 +512,7 @@ def enrich_report_works(project: str, groups: list[dict], start: Any, end: Any, 
     for group in out:
         for entry in group.get("lines") or []:
             matches = [item for item in evidences.values()
-                       if _party(item["contractor"]) == _party(group.get("contractor"))
+                       if _same_party_exact(item["contractor"], group.get("contractor"))
                        and _text(item["text"]).strip(" ;.") == _text(entry.get("line")).strip(" ;.")
                        and item["date"] in entry.get("days", [])]
             links = {}
@@ -510,8 +522,34 @@ def enrich_report_works(project: str, groups: list[dict], start: Any, end: Any, 
                     links[row["id"]] = {"id": row["id"], "contract": str(row.get("contract") or ""),
                                         "label": f"Договор {row.get('contract') or 'без номера'}",
                                         "status": "confirmed", "source": item["link_basis"],
+                                        "completion_ratio": row.get("completion_ratio"),
+                                        "completed": row.get("completed"), "amount": row.get("amount"),
+                                        "completed_works": row.get("completed_works"),
+                                        "completed_materials": row.get("completed_materials"),
+                                        "works_materials_split": row.get("works_materials_split"),
+                                        "deadline": row.get("deadline"), "risk": copy.deepcopy(row.get("risk") or {}),
                                         "href": "/monitor#" + urlencode({"tab": "contracts", "project": project,
                                                                          "contract": row["id"]})}
+            unresolved_days = sorted(set(entry.get("days") or []) - {
+                item["date"] for item in matches if item["match_status"] == "confirmed"} | {
+                item["date"] for item in matches if item["match_status"] != "confirmed"})
+            if links and (unresolved_days or len(links) > 1):
+                for identifier, link in links.items():
+                    days = sorted({item["date"] for item in matches if item["contract_id"] == identifier})
+                    link["label"] += " (" + ", ".join(datetime.date.fromisoformat(day).strftime("%d.%m")
+                                                      for day in days) + ")"
             entry["contract_links"] = list(links.values())
-            entry["contract_status"] = "Договор определён" if links else "Договор не уточнён"
+            entry["contract_status"] = ("Договор уточнён не за все дни" if links and unresolved_days else
+                                        "Договор определён" if links else "Договор не уточнён")
+            entry["contract_match_reason"] = ("" if links else next(
+                (item.get("match_reason") for item in matches if item.get("match_reason")),
+                "Нет сопоставленного сообщения о работах."))
+            if links and unresolved_days:
+                dates = ", ".join(datetime.date.fromisoformat(day).strftime("%d.%m") for day in unresolved_days)
+                entry["contract_match_reason"] = f"За {dates} договор нужно уточнить."
+            entry["contract_candidates"] = [
+                {"id": identifier, "label": f"Договор {by_id[identifier].get('contract') or 'без номера'}"}
+                for identifier in sorted({identifier for item in matches
+                                          for identifier in item.get("candidate_contract_ids") or []
+                                          if identifier in by_id})]
     return out

@@ -214,7 +214,7 @@ def test_management_summary_reads_the_same_register_signals(project):
     main, = [f for f in payload["findings"] if f.get("topic") == "Договоры"]
     assert "не успевают к сроку: 1" in main["text"] and "200" in main["text"]
     html = report.render_html(payload)
-    assert "Договоры под угрозой срыва срока" in html and "24.02.2027" in html and "+86 дн" in html
+    assert "Договоры под угрозой срыва срока" in html and "24.02.2027" in html and "Задержка 86 дн." in html
     text = report.render_text(payload)
     assert "LATE" in text and "прогноз 24.02.2027" in text
 
