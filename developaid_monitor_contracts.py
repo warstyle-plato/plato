@@ -772,6 +772,10 @@ def build(project: str, cut: str = "") -> dict:
                                      and reported_planned is not None and reported_planned > 0
                                      and statement_comparable else None),
                 "monetary_comparable": statement_comparable,
+                "planned_amount_basis": ("conflicting" if len(planned_bases) > 1 else
+                                         next(iter(planned_bases)) if planned_bases else "unspecified"),
+                "completed_amount_basis": ("conflicting" if len(completed_bases) > 1 else
+                                           next(iter(completed_bases)) if completed_bases else "unspecified"),
                 "amount_scope": "statement",
                 "stated_contract_amount": _number(ledger.get("contract_amount")),
                 "works_materials_split": source_split,
