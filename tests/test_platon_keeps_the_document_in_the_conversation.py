@@ -193,9 +193,13 @@ def test_on_the_page_the_next_question_carries_the_document() -> None:
             page = browser.new_page()
             errors: list[str] = []
             page.on("pageerror", lambda exc: errors.append(str(exc)))
-            page.route("**/agent/document", lambda route: route.fulfill(
+            trace_id = "a" * 32
+            page.route("**/agent/document/start", lambda route: route.fulfill(
                 status=200, content_type="application/json",
-                body=json.dumps(intake, ensure_ascii=False)))
+                body=json.dumps({"pending": True, "trace_id": trace_id})))
+            page.route("**/agent/result/" + trace_id, lambda route: route.fulfill(
+                status=200, content_type="application/json",
+                body=json.dumps({**intake, "pending": False}, ensure_ascii=False)))
             page.route("**/agent/chat", on_chat)
             page.goto(f"http://127.0.0.1:{PORT}/", wait_until="networkidle")
             page.set_input_files("#aiFile", files=[{"name": "teaser.pdf",

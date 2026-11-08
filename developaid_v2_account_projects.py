@@ -63,7 +63,7 @@ def _teaser_payload(raw: str) -> bytes:
     try:
         payload = base64.b64decode(str(raw or ""), validate=True)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(400, f"Файл не прочитался: {exc}") from exc
+        raise HTTPException(400, "Файл не прочитался: неверный base64.") from exc
     if not payload:
         raise HTTPException(400, "Пустой файл")
     if len(payload) > _MAX_TEASER_BYTES:

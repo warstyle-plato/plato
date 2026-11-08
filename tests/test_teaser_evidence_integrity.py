@@ -168,6 +168,17 @@ def test_client_extraction_can_no_longer_bypass_source_validation(server):
     assert exc.value.status_code == 409
 
 
+def test_document_queue_failure_does_not_expose_server_details(server, monkeypatch):
+    core, _ = server
+    sentinel = "PRIVATE_SERVER_PATH_SENTINEL"
+    def fail(_queue):
+        raise OSError(sentinel)
+    monkeypatch.setattr(core, "_intake_queue_save", fail)
+    card = core._intake_queue_start("teaser.pdf", {"fields": []}, {"text": ""}, {}, {})
+    assert card.get("error")
+    assert sentinel not in json.dumps(card)
+
+
 @pytest.mark.parametrize("gns", [31000, 100.25, 100.26])
 def test_gns_import_updates_stale_dependants_in_the_actual_engine(server, gns):
     core, request = server

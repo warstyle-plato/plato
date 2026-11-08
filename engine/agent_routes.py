@@ -710,6 +710,7 @@ def agent_document(req: AgentDocumentRequest, request: Request) -> dict[str, Any
         from developaid_v2_account_projects import _quick_teaser_intake
         try:
             got = _quick_teaser_intake(data, filename, document=document)
+            got.pop("document", None)  # The primary reader owns coverage/trimming metadata.
             got.setdefault("notes", []).append(
                 "Применён резервный разбор явных подписей. Проверьте обязательства и недостающие поля.")
         except HTTPException:
@@ -854,7 +855,8 @@ def _intake_queue_start(filename: str, extraction: dict[str, Any], document: dic
     except OSError as exc:
         # Без диска карточку показать можно, а принять ответ в другом воркере —
         # нет. Говорим об этом прямо, а не теряем ответ на втором вопросе.
-        card["error"] = f"разбор не записался на диск, вопросы не задать: {exc}"
+        _PLATON_LOG.warning("document queue could not be saved (%s)", type(exc).__name__)
+        card["error"] = "Разбор не удалось сохранить на сервере. Повторите загрузку документа."
     return card
 
 
