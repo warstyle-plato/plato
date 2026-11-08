@@ -112,6 +112,16 @@ def build(own: dict, comp: dict, chapter_flow: dict, cut: str,
     outside_values = [number(f.get("total")) for ch, f in chapter_flow.items()
                       if ch and ch not in chapters]
     outside = sum(outside_values) if all(v is not None for v in outside_values) else None
+    def composition_total(predicate, fallback):
+        # chapter_flow's legacy floats cannot restore a missing source cell.
+        items = comp.get("budget_items")
+        if not isinstance(items, list):
+            return fallback if fields.get("total", True) else None
+        values = [number(item.get("total")) if (item.get("known_fields") or {}).get("total", True)
+                  else None for item in items if predicate(item.get("chapter") or "")]
+        return sum(values) if all(v is not None for v in values) else None
+    unmapped = composition_total(lambda ch: not ch, unmapped)
+    outside = composition_total(lambda ch: bool(ch) and ch not in chapters, outside)
     chapter_values = [(number((chapter_flow.get(r["chapter"]) or {}).get("total")),
                        number(r.get("paid")), number(r.get("left"))) for r in rows]
     totals_known = budget is not None and paid is not None and limit is not None and left is not None
@@ -150,13 +160,27 @@ def build(own: dict, comp: dict, chapter_flow: dict, cut: str,
         matches = False
     # These explain different source versions/compositions; they are never
     # plugs added to or subtracted from the approved-budget equation.
+    payments_known = own.get("payments_known", True) is True
+    programme_known = own.get("programme_known", True) is True
+    payment_difference_known = (payments_known and programme_known
+                                and all(fields.get(k, True) for k in ("total", "fact", "plan", "monthly")))
+    schedule_used = bool(schedule) or any(row.get("by_schedule") for row in rows)
+    schedule_difference_known = (fields.get("total", True) and payments_known and programme_known
+                                 and (schedule_policy or {}).get("programme_known", True) is True)
     components = [
         {"kind": "unallocated_budget", "amount": unmapped,
          "reason": "Включено в общий бюджет; денежная глава не подтверждена"},
-        {"kind": "schedule_difference", "amount": number(own.get("model_over_schedule")),
-         "reason": "Различие бюджета модели и программы графика; общий бюджет не уменьшает"},
-        {"kind": "payment_difference", "amount": number(own.get("accounting")),
-         "reason": "Факт финансовой базы и оплаты на дату различаются; в сверке использованы оплаты на дату"},
+        {"kind": "schedule_difference", "amount":
+             (number(own.get("model_over_schedule")) if schedule_difference_known else None)
+             if schedule_used else 0.0,
+         "reason": ("Различие бюджета модели и программы графика; общий бюджет не уменьшает"
+                    if schedule_difference_known or not schedule_used else
+                    "Разница модели и графика не определена: исходные суммы прочитаны не полностью")},
+        {"kind": "payment_difference", "amount":
+             number(own.get("accounting")) if payment_difference_known else None,
+         "reason": ("Факт финансовой базы и оплаты на дату различаются; в сверке использованы оплаты на дату"
+                    if payment_difference_known else
+                    "Разница финансовой базы и оплат не определена: исходные суммы прочитаны не полностью")},
         {"kind": "outside_bank_scope", "amount": outside,
          "reason": "Расходы вне выбранных банковских глав включены в общий бюджет"},
     ]
@@ -169,6 +193,10 @@ def build(own: dict, comp: dict, chapter_flow: dict, cut: str,
         reasons.append("Оплаты на дату не прочитаны для всего выбранного состава")
     if limit is None:
         reasons.append("Лимит не прочитан для всего выбранного состава")
+    source_completeness = own.get("source_completeness") or {}
+    if any("estimate_code" in row.get("fields", [])
+           for rows in (source_completeness.get("payments") or {}).values() for row in rows):
+        reasons.append("У части платежей не прочитан код РСС; принадлежность к выбранным главам неизвестна")
 
     policy = schedule_policy or {"state": "not_replaced", "items": [], "added_to_need": 0.0}
     schedule_known = (all(fields.get(k, True) for k in ("fact", "plan", "monthly"))
@@ -190,6 +218,7 @@ def build(own: dict, comp: dict, chapter_flow: dict, cut: str,
             "reasons": reasons, "admin_schedule": policy,
             "primary_source_gate": "BLOCKED", "financial_acceptance_performed": False,
             "payment_identity_verified": None, "source_dates": {},
+            "source_completeness": source_completeness,
             "unallocated_programme": {
                 "model_total": unmapped, "model_fact": number(unallocated.get("fact", 0.0)),
                 "model_plan": number(unallocated.get("plan", 0.0)),

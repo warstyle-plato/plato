@@ -920,7 +920,7 @@ def _rss_ch23(estimate: dict[str, Any], chapters: Any = ("2", "3")) -> dict[str,
 
 
 def payment_in_chapters(estimate: dict[str, Any], chapters: Any):
-    """Признак «платёж РСС относится к этим главам» — один для Монитора и сводки."""
+    """Tri-state scope: inside / proven outside / unreadable RSS code."""
     parents = {row["code"]: row.get("parent") for row in estimate.get("rows") or []}
     wanted = {str(c) for c in chapters}
 
@@ -934,7 +934,13 @@ def payment_in_chapters(estimate: dict[str, Any], chapters: Any):
             code = parent
         return code.split(".")[0] if code else ""
 
-    return lambda row: root(str(row.get("estimate_code") or "").rstrip(".")) in wanted
+    def classify(row: dict[str, Any]) -> bool | None:
+        code = actuals._code(row.get("estimate_code"))
+        # An unreadable code proves neither inclusion nor exclusion. Do not
+        # guess a bank chapter from the contractor, article or payment name.
+        return root(code) in wanted if code else None
+
+    return classify
 
 
 def _paid_in_chapters(rss: Path, estimate: dict[str, Any],
@@ -954,12 +960,15 @@ def _paid_in_chapters(rss: Path, estimate: dict[str, Any],
         if day is not None and ((cut is not None and day > cut)
                                 or (since is not None and day < since)):
             continue
-        if not keep(row):
+        scope = keep(row)
+        if scope is False:
             continue
         amount = actuals.money_value(row.get("amount"))
         errors = (["date"] if day is None and (cut is not None or since is not None) else [])
         if amount is None:
             errors.append("amount")
+        if scope is None:
+            errors.append("estimate_code")
         if errors:
             incomplete.append({"source_row": row.get("source_row"), "fields": errors})
         selected.append({**row, "amount": amount, "complete": not errors})

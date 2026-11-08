@@ -9,15 +9,15 @@ import developaid_actuals as actuals
 import developaid_monitor as monitor
 import developaid_monitor_dashboard as dashboard
 from test_management_report_model import _rss_book
-from test_the_approved_budget_says_what_it_is_made_of import _finmodel, SMETA
+from test_the_approved_budget_says_what_it_is_made_of import _finmodel, SMETA, ROWS
 
 CUT = datetime.date(2026, 10, 31)
 
 
-def source_case(tmp_path, monkeypatch, payments=(), limits=None):
+def source_case(tmp_path, monkeypatch, payments=(), limits=None, model_rows=None):
     monkeypatch.setattr(monitor, '_SNAPSHOT_DIR', tmp_path / 'monitor')
     model = tmp_path / 'model.xlsx'
-    model.write_bytes(_finmodel())
+    model.write_bytes(_finmodel(ROWS if model_rows is None else model_rows))
     # Both the budget and RSS are parsed by real readers. Only project file
     # lookup is isolated, never payment/estimate values or aggregation.
     baseline = dashboard._read_finance_baseline(model)
@@ -129,3 +129,90 @@ def test_confirmed_zero_payment_and_limit_stay_known(tmp_path, monkeypatch):
     assert r['bank_limit_total'] == 330_000
     assert r['calculated_additional'] == 1_110_000
     assert r['matches']
+
+
+@pytest.mark.parametrize('code', [None, 'код не прочитан'])
+@pytest.mark.parametrize('amount', [20_000, -5_000])
+def test_unknown_payment_scope_is_not_proven_outside(tmp_path, monkeypatch, code, amount):
+    rss, funding = source_case(tmp_path, monkeypatch, [(CUT, amount, code)])
+    estimate = actuals.read_estimate(rss)
+    row = actuals.read_payments(rss, include_incomplete=True)['rows'][0]
+    assert dashboard.payment_in_chapters(estimate, ('1', '2', '3'))(row) is None
+    r = funding['reconciliation']
+    assert r['budget'] == 1_440_000
+    assert r['paid_at_cut'] is None
+    assert r['calculated_additional'] is None
+    assert not r['matches']
+    assert r['state'] == 'needs_reconciliation'
+    assert any('код РСС' in reason for reason in r['reasons'])
+    assert r['source_completeness']['payments']['2'] == [
+        {'source_row': 10, 'fields': ['estimate_code']}]
+    assert dashboard._paid_since(rss, estimate, '2', datetime.date(2026, 10, 1), CUT) is None
+
+
+@pytest.mark.parametrize('day', [CUT, None])
+def test_explicit_outside_scope_is_excluded_before_completeness(tmp_path, monkeypatch, day):
+    rss, funding = source_case(tmp_path, monkeypatch, [(day, 'неизвестно', '4.1')])
+    estimate = actuals.read_estimate(rss)
+    row = actuals.read_payments(rss, include_incomplete=True)['rows'][0]
+    assert dashboard.payment_in_chapters(estimate, ('1', '2', '3'))(row) is False
+    r = funding['reconciliation']
+    assert r['paid_at_cut'] == 0
+    assert r['calculated_additional'] == 210_000
+    assert r['matches'] and not r['reasons']
+
+
+@pytest.mark.parametrize('code', [None, 'код не прочитан'])
+def test_future_unknown_scope_does_not_poison_the_selected_cut(tmp_path, monkeypatch, code):
+    rss, funding = source_case(tmp_path, monkeypatch, [
+        (CUT, 20_000, '2.6'), (datetime.date(2026, 11, 2), 'неизвестно', code)])
+    r = funding['reconciliation']
+    assert r['paid_at_cut'] == 20_000
+    assert r['calculated_additional'] == 210_000
+    assert r['matches'] and not r['reasons']
+    assert dashboard._paid_since(rss, actuals.read_estimate(rss), '2',
+                                 datetime.date(2026, 10, 1), CUT) == 20_000
+
+
+@pytest.mark.parametrize('missing_side', ['rss', 'model'])
+def test_diagnostic_payment_difference_requires_both_xlsx_sides(tmp_path, monkeypatch, missing_side):
+    model_rows = dict(ROWS)
+    payment_amount = 20_000
+    if missing_side == 'model':
+        model_rows['2.4.1'] = ('Управление', 40, None, 20)
+    else:
+        payment_amount = 'неизвестно'
+    _, funding = source_case(tmp_path, monkeypatch, [(CUT, payment_amount, '2.6')],
+                              model_rows=model_rows)
+    r = funding['reconciliation']
+    component = next(row for row in r['components'] if row['kind'] == 'payment_difference')
+    assert component['amount'] is None
+    assert 'не определена' in component['reason']
+    assert 'использованы оплаты' not in component['reason']
+    displayed = next(row for row in r['display_rows'] if row['key'] == 'payment_difference')
+    assert displayed['value'] is None
+    assert r['budget'] == 1_440_000
+    if missing_side == 'model':
+        assert funding['budget_composition']['known_fields']['fact'] is False
+        assert r['paid_at_cut'] == 20_000
+        assert r['calculated_additional'] == 210_000
+    else:
+        assert r['paid_at_cut'] is None and r['calculated_additional'] is None
+
+
+def test_actual_monitor_does_not_display_a_difference_from_unknown_payment(tmp_path, monkeypatch):
+    from test_monitor_cumulative_controls import browser_page
+    from playwright.sync_api import expect
+    _, funding = source_case(tmp_path, monkeypatch, [(CUT, 'неизвестно', '2.6')])
+    with browser_page(390) as (page, responses, errors):
+        page.evaluate("""r=>{
+          currentView={dashboard:{funding:{known:true,reconciliation:r}}};
+          renderDash(currentView);selectMonitorTab('money');
+        }""", funding['reconciliation'])
+        values = page.locator('#kpis .kpi').evaluate_all(
+            "rows=>Object.fromEntries(rows.map(x=>[x.querySelector('.l').textContent,x.querySelector('.n').textContent]))")
+        assert values['Несверенные оплаты'] == '—'
+        assert values['Оплачено с начала проекта'] == '—'
+        assert values['Расчётная дополнительная потребность'] == '—'
+        expect(page.locator('.funding-reconciliation')).to_contain_text('Несверенные оплаты')
+        assert not errors
