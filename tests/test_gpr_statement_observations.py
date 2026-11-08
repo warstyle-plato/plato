@@ -251,3 +251,38 @@ def test_row_reordering_projects_by_exact_identity_not_by_old_index():
     result = progress.project_configuration(previous, current, config())
     assert result['components'][0]['item_ids'] == ['0:1']
     assert (previous, current) == before
+
+
+def test_overrun_quantity_is_preserved_and_requires_reconciliation_through_consumers(site, monkeypatch):
+    _, snap, _ = site
+    snap.clear()
+    snap.update(snapshot(done=125))
+    history(monkeypatch, [snap])
+    task, = save()['model']['tasks']
+    assert task['progress'] == 1.25 and task['requires_reconciliation']
+    assert task['components'][0]['completed_quantity'] == 125
+    assert task['observation_history']['points'][-1]['progress'] == 1.25
+    assert task['observation_history']['state'] == 'requires_reconciliation'
+    assert not task['known'] and task['forecast_finish'] is None and 'actual_finish' not in task
+    row = monitor.build(PROJECT, CUT)['schedule']['rows'][0]
+    assert row['actual_progress'] == 1.25 and row['requires_reconciliation']
+    assert row['forecast_finish'] is None
+    fact = work_fact._ks(task)
+    assert fact['progress'] == 1.25 and fact['requires_reconciliation']
+
+
+def test_ambiguous_snapshot_date_is_a_gap_instead_of_a_skipped_observation(monkeypatch):
+    first = snapshot('2026-10-01', 20, token='c')
+    middle = snapshot('2026-10-15', 30, token='d')
+    current = snapshot()
+    history(monkeypatch, [first, middle, current])
+    manifests = progress.ledgers.list_snapshots(PROJECT)
+    manifests.append({'snapshot_id': '2026-10-15-'+'e'*64, 'taken_at': '2026-10-15'})
+    monkeypatch.setattr(progress.ledgers, 'list_snapshots', lambda _project: copy.deepcopy(manifests))
+    view = progress.quantity_views(current, CUT)['0:0']
+    index = progress.observation_index(PROJECT, CUT, current, [view['position_key']])
+    gap, = [record for record in index if record['date'] == '2026-10-15']
+    assert gap['source_ambiguous'] and gap['positions'] == {}
+    task, = physical.evaluate(source(), current, config(), CUT, observation_index=index)['tasks']
+    assert task['progress'] == .4 and not task['known'] and task['forecast_finish'] is None
+    assert task['observation_history']['state'] == 'comparison_gap'

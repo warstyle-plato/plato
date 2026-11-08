@@ -114,9 +114,10 @@ def _observation(view):
     done = contracts._number(view.get('completed_quantity'))
     if done is None:
         done = contracts._number(view.get('reported_completed_quantity'))
-    if plan is None or plan <= 0 or done is None or not 0 <= done <= plan + max(1e-6, plan * 1e-7):
+    if plan is None or plan <= 0 or done is None or done < 0:
         return None
-    return {'plan': plan, 'done': done, 'ratio': done / plan, 'unit': view.get('unit') or ''}
+    return {'plan': plan, 'done': done, 'ratio': done / plan, 'unit': view.get('unit') or '',
+            'requires_reconciliation': done > plan + max(1e-6, plan * 1e-7)}
 
 
 def observation_index(project, cut, snapshot, keys):
@@ -141,6 +142,8 @@ def observation_index(project, cut, snapshot, keys):
     sources = []
     for day in reversed(selected):
         if len(by_day[day]) != 1:
+            sources.append({'snapshot_id': None, 'taken_at': day, 'source_unavailable': True,
+                            'source_ambiguous': True, 'ledgers': []})
             continue
         manifest = by_day[day][0]
         if manifest.get('snapshot_id') == current_id:
@@ -176,7 +179,8 @@ def observation_index(project, cut, snapshot, keys):
         for key in duplicates:
             positions[key] = None
         out.append({'date': day, 'snapshot_id': source.get('snapshot_id'), 'positions': positions,
-                    'source_unavailable': source.get('source_unavailable') is True})
+                    'source_unavailable': source.get('source_unavailable') is True,
+                    'source_ambiguous': source.get('source_ambiguous') is True})
     if history_unavailable:
         out.append({'date': current_day, 'snapshot_id': None, 'positions': {}, 'source_unavailable': True})
     return sorted(out, key=lambda row: (row['date'], str(row['snapshot_id'])))
@@ -202,17 +206,19 @@ def component_history(keys, index, current, cut):
         if any(abs(value - current['plan_quantity']) > max(1e-6, current['plan_quantity'] * 1e-7) for value in plans):
             continue
         done = math.fsum(value['done'] for value in values)
-        if done > current['plan_quantity'] + max(1e-6, current['plan_quantity'] * 1e-7):
-            continue
         points.append({'date': record['date'], 'snapshot_id': record['snapshot_id'],
                        'completed_quantity': done, 'plan_quantity': current['plan_quantity'],
-                       'progress': done / current['plan_quantity'], 'date_basis': 'snapshot'})
+                       'progress': done / current['plan_quantity'], 'date_basis': 'snapshot',
+                       'requires_reconciliation': done > current['plan_quantity'] + max(1e-6, current['plan_quantity'] * 1e-7)})
     result['points'] = points
     current_day = current.get('observation_date')
     if not points or points[-1]['date'] != current_day:
         return dict(result, state='not_comparable',
                     reason='Текущий объём известен; позиции снимков не сопоставлены однозначно.')
     if len(points) < 2:
+        if points[-1].get('requires_reconciliation'):
+            return dict(result, state='requires_reconciliation', requires_reconciliation=True,
+                        reason='Ведомость показывает превышение полного объёма; требуется сверка.')
         if any(record.get('source_unavailable') for record in index):
             result.update(state='previous_unavailable', reason='Текущий объём известен; предыдущий снимок сейчас не читается.')
         return result
@@ -223,6 +229,9 @@ def component_history(keys, index, current, cut):
     delta = latest['completed_quantity'] - previous['completed_quantity']
     result.update(delta_quantity=delta, delta_progress=latest['progress'] - previous['progress'],
                   previous_date=previous['date'], date=latest['date'])
+    if latest.get('requires_reconciliation'):
+        return dict(result, state='requires_reconciliation', requires_reconciliation=True,
+                    reason='Ведомость показывает превышение полного объёма; требуется сверка.')
     if delta < -1e-7:
         return dict(result, state='correction', reason='Объём в последнем снимке уменьшился; нужна сверка корректировки.')
     if abs(delta) <= 1e-7:
@@ -234,6 +243,9 @@ def component_history(keys, index, current, cut):
             and any(record['positions'].get(key) is None for key in keys) for record in index):
         return dict(result, state='comparison_gap',
                     reason='Промежуточный снимок не сопоставлен по полному составу; темп для прогноза не подтверждён.')
+    if any(point.get('requires_reconciliation') for point in window):
+        return dict(result, state='requires_reconciliation', requires_reconciliation=True,
+                    reason='В истории ведомостей есть превышение полного объёма; темп для прогноза не подтверждён.')
     if (len(window) < 2 or (day - dt.date.fromisoformat(latest['date'])).days > STALE_DAYS
             or any(record.get('source_unavailable') and dt.date.fromisoformat(record['date']) >= day - dt.timedelta(days=WINDOW_DAYS)
                    for record in index)

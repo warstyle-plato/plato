@@ -48,6 +48,7 @@ def _ks(task: dict | None) -> dict[str, Any]:
         return {"progress": float(task["progress"]), "date": max(dates) if dates else None,
                 "origin": task.get("progress_origin") or "cumulative_quantities", "components": components,
                 "date_basis": task.get("progress_date_basis"), "label": task.get("progress_basis"),
+                "requires_reconciliation": task.get("requires_reconciliation") is True,
                 "observation_history": task.get("observation_history"), "reason": ""}
     if components and all(c.get("progress") is not None for c in components):
         reason = "Несколько компонентов разных объёмов: общий процент работы не выводится, доли — по компонентам."

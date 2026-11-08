@@ -179,6 +179,7 @@ def _apply_gpr(project: str, view: dict[str, Any], cut: datetime.date) -> dict[s
                                                         "date_basis": item.get("progress_date_basis")},
                    progress_date_basis=item.get("progress_date_basis"), progress_basis=item.get("progress_basis"),
                    observation_history=item.get("observation_history"),
+                   requires_reconciliation=item.get("requires_reconciliation") is True,
                    progress_reason=progress_reason,
                    forecast_finish=monitor._iso(finish) if finish else None,
                    forecast_known=finish is not None, forecast_source=item.get("method"),
@@ -209,6 +210,7 @@ def _apply_gpr(project: str, view: dict[str, Any], cut: datetime.date) -> dict[s
                     "actual_progress", "actual_equivalent_date", "progress_kind", "progress_label",
                     "progress_source", "progress_reason", "gpr_progress", "gpr_progress_origin", "gpr_progress_date",
                     "progress_date_basis", "progress_basis", "observation_history",
+                    "requires_reconciliation",
                     "forecast_finish", "forecast_known", "forecast_source", "forecast_reason", "delta_days", "status"):
             node[key] = src.get(key)
         node["source_conflict"] = src.get("source_conflict")

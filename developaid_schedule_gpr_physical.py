@@ -148,8 +148,7 @@ def _observed_component(component, result, items, views, snapshot, cut, observat
             return result
         values.append(value)
     done, plan = math.fsum(values), plans[0]
-    if done > plan + max(1e-6, plan*1e-7):
-        return result
+    overrun = done > plan + max(1e-6, plan*1e-7)
     result = dict(result, unit=selected[0]["unit"], plan_quantity=plan,
                   completed_quantity=done, progress=done/plan,
                   progress_origin="cumulative_statement", progress_date_basis="snapshot",
@@ -159,6 +158,9 @@ def _observed_component(component, result, items, views, snapshot, cut, observat
         [view.get("position_key") for view in observed], observation_index, result, cut)
     result["observation_history"] = history
     result["reason"] = history["reason"]
+    if overrun:
+        return dict(result, requires_reconciliation=True, known=False, forecast_finish=None,
+                    reason="По ведомости выполненный объём превышает полный план; требуется сверка.")
     if done >= plan - max(1e-6, plan*1e-7):
         return dict(result, reason="По ведомости объём выполнен; дата завершения не указана.")
     pace = history.get("rate_per_day")
@@ -202,6 +204,7 @@ def evaluate(source, snapshot, configuration, cut, *, observation_index=()):
                 result["progress_origin"] = "cumulative_statement" if observed else "cumulative_quantities"
                 result["progress_date_basis"] = "snapshot" if observed else "execution_period"
                 result["progress_basis"] = "По ведомости" if observed else "По датированным периодам"
+                result["requires_reconciliation"] = any(c.get("requires_reconciliation") for c in own)
                 result["progress_date"] = max((c.get("observation_date") or c.get("period_end") for c in own
                                                 if c.get("observation_date") or c.get("period_end")), default=None)
                 if len(own) == 1 and own[0].get("observation_history"):
