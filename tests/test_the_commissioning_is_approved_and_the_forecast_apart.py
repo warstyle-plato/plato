@@ -87,7 +87,31 @@ def test_the_forecast_is_told_apart_with_the_work_that_drives_it(monkeypatch):
     assert "срок тянет работа «Фасады»" in page and "2,03×" not in page
 
     found = {item["topic"]: item["text"] for item in built["findings"]}
-    assert "Срок тянет работа «Фасады» (Корпус 2; статья сметы 2.2.2.6)" in found["Срок"]
+    # The legacy, unqualified fixture still tests the funding compatibility
+    # above; it must not become the executive report's qualified date finding.
+    assert "Срок" not in found
+
+    # The current GPR estimate names its driver separately from the approved
+    # date, but cannot move loans or the escrow table until it is confirmed.
+    from developaid_schedule_gpr_forecast import ESTIMATE_NOTE
+    qualified = {"state": "estimate", "basis": "gpr", "approved": "2026-11-30",
+                 "forecast": "2027-06-30", "delay_days": 212, "reasons": [ESTIMATE_NOTE],
+                 "driving_chain": [{"id": "A", "name": "Фасады", "method": "gpr_pace",
+                                    "reason": "Оценка по измеренному росту процента ГПР."}]}
+    current = _built(monkeypatch, {"qualified_rnv": qualified}, fresh=False)
+    at = current["funding"]["escrow"]["queues"][0]["at_commissioning"]
+    assert (at["date"], at["source"]) == ("2026-11-30", "утверждённый срок")
+    assert at["keeping_escrow"] == pytest.approx((65 + 5 + 50 / 3) * M)
+    assert current["funding"]["commissioning_shift"] is None
+    assert current["funding"]["escrow"]["queues"][0]["at_forecast"] is None
+    assert [row["quarter"] for row in current["funding"]["escrow_track"]["rows"]] == [
+        "2026 Q3", "2026 Q4", "2027 Q1"]
+    current_found = {item["topic"]: item["text"] for item in current["findings"]}
+    assert "План ввода — 30.11.2026" in current_found["Срок"]
+    assert "Оценка окончания работ — 30.06.2027" in current_found["Срок"]
+    assert "На срок влияет работа «Фасады»" in current_found["Срок"]
+    assert "не подтверждает дату получения разрешения на ввод" in current_found["Срок"]
+    assert "статья сметы" not in current_found["Срок"]
 
 
 def test_no_forecast_line_when_the_forecast_is_not_later(monkeypatch):

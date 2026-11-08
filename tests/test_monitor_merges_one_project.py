@@ -101,9 +101,19 @@ def test_merging_keeps_the_main_project_and_adds_what_it_lacks():
     log = (monitor._SNAPSHOT_DIR / ".merged" / "log.jsonl").read_text(encoding="utf-8")
     assert json.loads(log)["by"] == "Иванов"
 
-    # Сводка главного видит ГПР-факт, загруженный под старым именем.
+    # Weekly history survives under the main name, with its real date/value.
+    weekly = report.physical(MAIN, "week", "2026-10-16")
+    assert weekly["fact_snapshot"] == weekly["snapshot"] == "2026-10-16"
+    assert weekly["source"]["fact"] == "2026-10-16"
+    assert weekly["fact"] == pytest.approx((180 * .55 + 89 * .40) / 269)
+    # Later manual facts from both projects supersede it, without pretending
+    # that the weekly file is the source of the current percentages.
     got = report.physical(MAIN, "week", "2026-10-18")
-    assert got["fact_snapshot"] == "2026-10-16"
+    assert got["snapshot"] == "2026-10-17" and got["fact_snapshot"] is None
+    assert got["source"]["manual_works"] == 2
+    assert got["source"]["manual_last"] == "2026-10-17"
+    assert got["source"]["weekly_present"] is True
+    assert got["fact"] == pytest.approx((180 * .7 + 89 * 1.0) / 269)
     assert [row["chat_id"] for row in mailing.subscribers(MAIN)] == [501]
     assert mailing.subscribe(token, 502, "Мария") == MAIN
 

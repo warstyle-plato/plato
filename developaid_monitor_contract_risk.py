@@ -34,7 +34,7 @@ STALE_AFTER_DAYS = 45
 
 # Order is severity; the page and the summary sort by it.
 STATUSES = {
-    "overdue": "Срок прошёл, работы не завершены",
+    "overdue": "Срок договора прошёл",
     "late": "Не успевает к сроку",
     "stalled": "Работы стоят",
     "unknown": "Прогноз неизвестен",
@@ -81,11 +81,13 @@ def forecast(*, amount: float | None, completed: float | None, comparable: bool,
         return dict(result, status=status, label=STATUSES[status], reason=reason, **values)
 
     if amount is None or amount <= 0:
-        reason = "Нет подтверждённой полной суммы договора, поэтому срок окончания не прогнозируется."
+        reason = ("Нет подтверждённой полной суммы договора. Завершение по накопительным неизвестно, "
+                  "срок окончания не прогнозируется.")
         return done("overdue" if deadline and deadline < cut else "unknown", reason)
     if completed is None or not comparable:
-        reason = ("Выполнение по накопительным на дату среза не подтверждено или имеет другую базу НДС; "
-                  "срок окончания не прогнозируется.")
+        reason = ("Выполнение по накопительным на дату среза не подтверждено." if completed is None else
+                  "Сумма договора и выполнение по накопительным имеют несопоставимую базу НДС.")
+        reason += " Завершение по накопительным неизвестно, срок окончания не прогнозируется."
         return done("overdue" if deadline and deadline < cut else "unknown", reason)
     remaining = amount - completed
     if remaining <= _tolerance(amount):

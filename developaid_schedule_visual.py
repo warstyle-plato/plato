@@ -18,6 +18,11 @@ def date_text(value):
     return value.strftime('%d.%m.%Y') if value else 'не указан'
 
 
+def unit_text(value):
+    """Typography only; keep the supplied unit and its scale in the model."""
+    return str(value or '').replace('м2', 'м²').replace('м3', 'м³')
+
+
 def styles():
     return '''<style>
 .schedule-overview{font-family:Arial,sans-serif;color:#172b45;max-width:100%;overflow-wrap:anywhere}
@@ -27,7 +32,7 @@ def styles():
 .schedule-rnv-cards>div{background:#f0f4f9;border:1px solid #d6e0eb;border-radius:8px;padding:12px}
 .schedule-rnv-cards span{display:block;font-size:12px;color:#526277}.schedule-rnv-cards strong{display:block;font-size:21px;margin-top:6px;line-height:1.25}
 .schedule-rnv-cards .schedule-warning{background:#fff6e6}.schedule-overview details{margin:10px 0}.schedule-overview summary{cursor:pointer;font-size:13px;font-weight:600}
-.schedule-chart{max-width:100%;margin:10px 0 16px}.schedule-axis{display:grid;grid-template-columns:minmax(140px,27%) minmax(0,1fr) minmax(150px,25%);gap:14px;margin:0 0 8px}
+.schedule-chart{max-width:100%;margin:10px 0 16px}.schedule-chart-start{break-inside:avoid;page-break-inside:avoid}.schedule-axis{display:grid;grid-template-columns:minmax(140px,27%) minmax(0,1fr) minmax(150px,25%);gap:14px;margin:0 0 8px;break-after:avoid;page-break-after:avoid}
 .schedule-axis-track{height:22px;position:relative}.schedule-tick{position:absolute;font-size:11px;white-space:nowrap;transform:translateX(-50%)}
 .schedule-tick:first-child{transform:none}.schedule-tick:last-child{transform:translateX(-100%)}
 .schedule-tick:only-child{transform:none}
@@ -45,7 +50,7 @@ def styles():
 </style>'''
 
 
-def lanes(rows, *, caption=''):
+def lanes(rows, *, caption='', heading=''):
     """Render supplied dates without shrinking text into a scaled SVG."""
     esc = lambda value: html.escape(str(value if value is not None else ''), quote=True)
     days = [value for row in rows for key in ('plan_start', 'plan_finish', 'forecast_start',
@@ -64,6 +69,10 @@ def lanes(rows, *, caption=''):
     ticks = [(max(month, first), month.strftime('%m.%y')) for i, month in enumerate(months)
              if i % step == 0 or i == len(months)-1]
     out = ['<div class="schedule-chart">']
+    # Keep only the heading, axis and first lane together. Later lanes remain
+    # free to flow across pages, including in a large management report.
+    if heading:
+        out.append('<div class="schedule-chart-start"><h3>'+esc(heading)+'</h3>')
     if caption:
         out.append('<p class="schedule-note">'+esc(caption)+'</p>')
     if days:
@@ -71,7 +80,7 @@ def lanes(rows, *, caption=''):
         for tick, label in ticks:
             out.append(f'<span class="schedule-tick" style="left:{pos(tick):.3f}%">'+esc(label)+'</span>')
         out.append('</div><div>Сроки и причины сдвига</div></div>')
-    for row in rows:
+    for index, row in enumerate(rows):
         out.append('<article class="schedule-lane" data-task-id="'+esc(row.get('id'))+'"><div class="schedule-label">'+esc(row.get('name')))
         if row.get('subtitle'):
             out.append('<small>'+esc(row['subtitle'])+'</small>')
@@ -118,6 +127,8 @@ def lanes(rows, *, caption=''):
         if isinstance(delta, (int, float)) and not isinstance(delta, bool):
             out.append('<span class="schedule-delay-note">Сдвиг работ с рассчитанным прогнозом: '+esc(f'{delta:+g} дн.')+'</span>')
         out.append('</div></article>')
+        if heading and index == 0:
+            out.append('</div>')
     out.append('</div>')
     return ''.join(out)
 
@@ -141,7 +152,7 @@ def physical_summary(block):
         return ''
     esc = lambda value: html.escape(str(value if value is not None else ''), quote=True)
     def number(value):
-        return (f'{value:g}' if isinstance(value, (int, float)) and not isinstance(value, bool)
+        return (f'{value:g}'.replace('.', ',') if isinstance(value, (int, float)) and not isinstance(value, bool)
                 and math.isfinite(value) else 'нет данных')
     out = ['<section class="schedule-physical-summary"><h3>Физическое выполнение по накопительным</h3>',
            '<div class="schedule-physical-grid">']
@@ -150,16 +161,16 @@ def physical_summary(block):
         for component in task.get('components') or []:
             displayed = True
             done, plan = number(component.get('completed_quantity')), number(component.get('plan_quantity'))
-            unit = esc(component.get('unit') or '')
+            unit = esc(unit_text(component.get('unit')))
             out.append('<article class="schedule-physical-item"><h4>'+esc(task.get('name') or task.get('task_id'))+'</h4><p>'+esc(component.get('component_id'))+'</p><p class="schedule-physical-value">'+esc(done+' / '+plan)+' '+unit+'</p>')
             progress = component.get('progress')
             if isinstance(progress, (int, float)) and not isinstance(progress, bool) and math.isfinite(progress):
-                out.append('<p>Доля полного объёма компонента: '+esc(f'{progress*100:g}%')+'</p>')
+                out.append('<p>Доля полного объёма компонента: '+esc(f'{progress*100:g}%'.replace('.', ','))+'</p>')
             if component.get('period_end'):
                 out.append('<p>Объём по '+esc(date_text(component['period_end']))+'</p>')
             pace = component.get('rate_per_day')
             if isinstance(pace, (int, float)) and not isinstance(pace, bool) and math.isfinite(pace):
-                out.append('<p>Темп: '+esc(number(pace))+' '+unit+'/день</p>')
+                out.append('<p>Темп: '+esc(f'{pace:.3g}'.replace('.', ','))+' '+unit+'/день</p>')
             if task.get('known') and component.get('known') and component.get('forecast_finish'):
                 out.append('<p>Расчётное окончание компонента: '+esc(date_text(component['forecast_finish']))+'</p>')
             if component.get('reason'):
@@ -172,6 +183,9 @@ def physical_summary(block):
             out.append('<article class="schedule-physical-item"><h4>'+esc(task.get('name') or task.get('task_id'))+'</h4><p>Подтверждённое окончание, факт: '+esc(date_text(task['actual_finish']))+'</p></article>')
     out.append('</div>')
     if not displayed:
-        out.append('<p class="schedule-note">Подтверждённые натуральные объёмы и фактические даты завершения не предоставлены.</p>')
+        status = block.get('evidence_status') or {}
+        out.append('<p class="schedule-note">'+esc(status.get('reason') or 'Подтверждённое выполнение по накопительным пока не определено.')+'</p>')
+        if status.get('action'):
+            out.append('<p class="schedule-note">'+esc(status['action'])+'</p>')
     out.append('<p class="schedule-note">Компоненты с разными единицами и объёмами показаны отдельно. Эти данные не являются средней готовностью всего корпуса.</p></section>')
     return ''.join(out)

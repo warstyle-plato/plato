@@ -106,6 +106,66 @@ def test_missing_price_execution_or_vat_basis_is_unknown_with_a_reason(amount, c
     assert result["status"] == "unknown" and result["forecast_finish"] is None and result["reason"]
 
 
+@pytest.mark.parametrize("amount,completed,comparable,why", [
+    (None, None, False, "полной суммы договора"),
+    (1000, None, True, "на дату среза не подтверждено"),
+    (1000, 0, False, "несопоставимую базу НДС"),
+])
+def test_past_deadline_does_not_turn_unknown_completion_into_unfinished_work(amount, completed, comparable, why):
+    result = risk.forecast(amount=amount, completed=completed, comparable=comparable, periods=[],
+                           cut=dt.date.fromisoformat(CUT), deadline=dt.date(2026, 9, 1))
+    assert result["status"] == "overdue" and result["label"] == "Срок договора прошёл"
+    assert why in result["reason"] and "Завершение по накопительным неизвестно" in result["reason"]
+    assert result["forecast_finish"] is None and result["delay_days"] is None
+    assert result["remaining"] is None and "не завершены" not in result["label"]
+
+
+@pytest.mark.parametrize("width", [390, 1440])
+def test_unknown_zero_and_full_monetary_completion_keep_distinct_deadline_evidence(project, width):
+    import developaid_management_report as report
+    from playwright.sync_api import expect
+    from test_monitor_cumulative_controls import browser_page
+
+    book(project, [contract("UNKNOWN", deadline=dt.datetime(2026, 9, 1), amount=None),
+                   contract("ZERO", deadline=dt.datetime(2026, 9, 1)),
+                   contract("DONE", deadline=dt.datetime(2026, 9, 1))],
+         acts={"ZERO": acts(("2026-10-31", 0)), "DONE": acts(("2026-10-31", 1000))})
+    view = contracts.build(project, CUT)
+    rows = by_number(view)
+    assert [rows[key]["completed"] for key in ("UNKNOWN", "ZERO", "DONE")] == [None, 0, 1000]
+    assert [rows[key]["completion_ratio"] for key in ("UNKNOWN", "ZERO", "DONE")] == [None, 0, 1]
+    assert rows["UNKNOWN"]["risk"]["remaining"] is None
+    zero = rows["ZERO"]["risk"]
+    assert zero["remaining"] == 1000 and zero["delay_days"] == 66
+    assert zero["forecast_finish"] is None and "неизвестно" not in zero["reason"]
+    assert rows["DONE"]["risk"]["status"] == "done"
+    assert rows["DONE"]["risk"]["remaining"] == 0
+    assert "по накопительным достигло полной суммы договора" in rows["DONE"]["risk"]["reason"]
+    assert view["risk_summary"]["counts"]["overdue"] == 2
+
+    block = report.contract_risks(project, dt.date.fromisoformat(CUT))
+    words = report._contract_risk_words(block)
+    assert "срок договора прошёл: 2" in words and "работы не завершены" not in words
+    assert "Срок прошёл на 66 дн." in report._contract_risks_html(block)
+    assert "Задержка" not in report._contract_risks_html(block)
+    assert all("не завершены" not in line for line in report._contract_risk_lines(block))
+
+    with browser_page(width) as (page, responses, errors):
+        responses.data = view
+        page.locator('#contractsTab').click()
+        expect(page.locator('#contractsRisk button').first).to_contain_text('Срок договора прошёл')
+        expect(page.locator('#contractsRisk button').first.locator('b')).to_have_text('2')
+        unknown_row = page.locator('#contractsRows tr', has_text='UNKNOWN')
+        zero_row = page.locator('#contractsRows tr', has_text='ZERO')
+        expect(unknown_row).to_contain_text('Для прогноза нужна полная сумма договора.')
+        expect(zero_row).to_contain_text('Срок прошёл на 66 дн.')
+        assert 'не завершены' not in page.locator('#contractsRisk').inner_text()
+        assert 'задержка' not in zero_row.inner_text().casefold()
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+        page.screenshot(path=f'/tmp/plato1030-risk-evidence-{width}.png', full_page=True)
+        assert not errors
+
+
 def test_payments_join_by_exact_identity_and_cut_and_show_unworked_advance(project):
     base = {"contractor": "Builder A", "contract": "LATE", "contract_date": dt.datetime(2026, 1, 1),
             "source": "Собственные средства"}

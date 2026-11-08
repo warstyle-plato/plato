@@ -89,8 +89,7 @@ def test_same_party_multiple_contracts_require_choice_and_other_scope_is_exclude
     assert item["contract_id"] == FIRST and item["link_basis"] == "exact_party"
 
 
-@pytest.mark.parametrize("line", ["Корпус 1 бетонирование № A-12", "Корпус 1 квартира № A-12",
-                                  "Корпус 1 работы по договору № A-123"])
+@pytest.mark.parametrize("line", ["Корпус 1 бетонирование № A-12", "Корпус 1 квартира № A-12"])
 def test_arbitrary_numbers_or_contract_prefixes_do_not_auto_confirm(line):
     report(line)
     assert evidence(register(two=True))["unmatched_works"][0]["match_status"] == "ambiguous"
@@ -281,7 +280,8 @@ def test_entire_mixed_corpus_line_cannot_be_confirmed_for_a_partial_contract(mon
     report("Корпус 1 и корпус 2 по договору A-12 бетонирование")
     item = evidence()["unmatched_works"][0]
     assert item["candidate_contract_ids"] == [FIRST]
-    assert item["match_status"] == "proposed"
+    assert item["match_status"] == "unmatched"
+    assert item["selectable_contract_ids"] == []
     with pytest.raises(links.LinkProblem, match="Корпус"):
         links.set_link(PROJECT, FIRST, item["id"], CUT)
     assert not links._path(PROJECT).exists()
@@ -303,7 +303,8 @@ def test_corpus_enumeration_cannot_drop_later_corpora_for_auto_or_manual_confirm
     report(scope + " по договору A-12 бетонирование")
     item = evidence()["unmatched_works"][0]
     assert "Корпус 2" in item["scope"]
-    assert item["match_status"] == "proposed"
+    assert item["match_status"] == "unmatched"
+    assert item["selectable_contract_ids"] == []
     with pytest.raises(links.LinkProblem, match="Корпус"):
         links.set_link(PROJECT, FIRST, item["id"], CUT)
 

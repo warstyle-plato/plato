@@ -81,7 +81,7 @@ def test_the_budget_is_uploaded_from_the_rendered_page(tmp_path, monkeypatch):
             tab.goto(f"{base}/monitor", wait_until="domcontentloaded")
             tab.fill("#project", "Гродненская")
             if not tab.is_visible("#budgetBtn"):
-                tab.click("#setupHead")
+                tab.click("#dataTab")
             assert tab.is_visible("#budgetBtn")
             assert tab.inner_text("#budgetBtn") == "Загрузить бюджет месяца"
 

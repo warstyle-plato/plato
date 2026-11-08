@@ -69,7 +69,9 @@ def test_findings_carry_numbers_and_sources():
                            "Бюджет месяца", "Продажи", "Финансирование", "Споры",
                            "Открытые вопросы"]
     assert "ГПР" == found["Срок"]["source"]
-    assert "без цепочки до получения разрешения" in found["Срок"]["text"]
+    assert "Оценка окончания работ" in found["Срок"]["text"]
+    assert "не подтверждает дату получения разрешения на ввод" in found["Срок"]["text"]
+    assert "PM" not in found["Срок"]["text"]
     lag = built["physical"]["lag"]
     assert f"отставание {report._pp(-lag)[1:]}" in found["Стройка"]["text"]
     assert "ГПР-факт от 16.10.2026" == found["Стройка"]["source"]

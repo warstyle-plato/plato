@@ -120,17 +120,21 @@ def test_own_gpr_percent_is_the_floor_of_task_readiness(monkeypatch):
     assert row["progress_kind"] == "accepted_cost_ratio_floor_gpr"
 
 
-def test_a_task_at_full_gpr_percent_is_closed_without_the_word(monkeypatch):
+def test_a_task_at_full_gpr_percent_is_closed_without_the_word(tmp_path, monkeypatch):
     """100% в ГПР значит «сделано», даже если статус забыли перевести."""
     import developaid_monitor as monitor
 
+    monkeypatch.setattr(monitor, "_SNAPSHOT_DIR", tmp_path)
+    folder = monitor._project_dir("demo") / "baseline"
+    folder.mkdir()
+    (folder / "meta.json").write_text('{"taken_at":"2026-07-23"}')
     monkeypatch.setattr(monitor, "_read_baseline_gpr", lambda _: {"works": [
         {"id": "7", "status": "Просрочено", "progress": 1.0},
         {"id": "8", "status": "В работе", "progress": 0.55},
         {"id": "9", "status": "Завершено", "progress": None},
     ]})
 
-    out = manager._baseline_status("demo")
+    out = manager._baseline_status("demo", "2026-08-01")
 
     assert out["7"]["closed"] is True
     assert out["8"]["closed"] is False
@@ -138,14 +142,18 @@ def test_a_task_at_full_gpr_percent_is_closed_without_the_word(monkeypatch):
     assert out["9"]["closed"] is True
 
 
-def test_gpr_percent_written_as_hundred_scale_is_normalized(monkeypatch):
+def test_gpr_percent_written_as_hundred_scale_is_normalized(tmp_path, monkeypatch):
     import developaid_monitor as monitor
 
+    monkeypatch.setattr(monitor, "_SNAPSHOT_DIR", tmp_path)
+    folder = monitor._project_dir("demo") / "baseline"
+    folder.mkdir()
+    (folder / "meta.json").write_text('{"taken_at":"2026-07-23"}')
     monkeypatch.setattr(monitor, "_read_baseline_gpr", lambda _: {"works": [
         {"id": "5", "status": "В работе", "progress": 86.0},
     ]})
 
-    out = manager._baseline_status("demo")
+    out = manager._baseline_status("demo", "2026-08-01")
 
     assert out["5"]["progress"] == pytest.approx(0.86)
     assert out["5"]["closed"] is False
