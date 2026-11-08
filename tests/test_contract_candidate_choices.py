@@ -147,6 +147,86 @@ def test_repeated_days_leave_only_real_ambiguities_in_the_pending_count():
     assert not links._path(PROJECT).exists()
 
 
+@pytest.mark.parametrize('wording', [
+    'по договору на устройство фасада',
+    'по договору подрядчика',
+    'по договору выполняются работы',
+    'по договору на 2026 год',
+    'по договору согласно графику',
+])
+def test_ordinary_words_after_contract_allow_both_unique_auto_and_manual_link(monkeypatch, wording):
+    data = install_register(monkeypatch)
+    report('Корпус 1 монтаж ' + wording)
+    result = evidence(data)
+    assert result['unmatched_works'] == []
+    item, = result['rows'][0]['reconciliation']['daily_evidence']
+    assert item['contract_id'] == FIRST and item['link_basis'] == 'exact_party'
+    assert item['selectable_contract_ids'] == [FIRST]
+    assert links.set_link(PROJECT, FIRST, item['id'], CUT)['confirmed']
+
+
+@pytest.mark.parametrize('reference,number', [
+    ('по договору № A-12', 'A-12'),
+    ('по договору A-12', 'A-12'),
+    ('по договору N A-12', 'A-12'),
+    ('по дог. A-12', 'A-12'),
+    ('по договору № «АБ-12/3»', 'АБ-12/3'),
+    ('по договором A-12.', 'A-12'),
+    ('по договору N123', 'N123'),
+    ('по договору подряда № A-12', 'A-12'),
+    ('по договору строительного подряда № A-12', 'A-12'),
+    ('по договору на выполнение работ № A-12', 'A-12'),
+])
+def test_real_number_signature_identifies_only_the_full_number(reference, number):
+    data = register(two=True)
+    data['rows'][0]['contract'] = number
+    data['rows'][1]['contract'] = '123' if number == 'N123' else number + '3'
+    report('Корпус 1 монтаж ' + reference)
+    result = evidence(data)
+    assert result['unmatched_works'] == []
+    item, = result['rows'][0]['reconciliation']['daily_evidence']
+    assert item['contract_id'] == FIRST and item['link_basis'] == 'explicit_number'
+    assert item['selectable_contract_ids'] == [FIRST]
+
+
+@pytest.mark.parametrize('reference', [
+    'по договору A-123',
+    'по договору A-12/1',
+    'по договору Б-12',
+    'по договору № ЧУЖОЙ',
+    'по договору №',
+    'по договору подряда № A-123',
+    'по договору строительного подряда № A-123',
+    'по договору на выполнение работ № A-123',
+])
+def test_explicit_other_or_incomplete_number_cannot_fall_back_to_unique_party(monkeypatch, reference):
+    data = install_register(monkeypatch)
+    report('Корпус 1 монтаж ' + reference)
+    item, = evidence(data)['unmatched_works']
+    assert item['contract_id'] == ''
+    assert item['selectable_contract_ids'] == []
+    assert 'номер' in item['match_reason']
+    with pytest.raises(links.LinkProblem, match='номер'):
+        links.set_link(PROJECT, FIRST, item['id'], CUT)
+
+
+@pytest.mark.parametrize('reference', [
+    'по договору на монтаж корпуса № 2',
+    'по договору выполняются работы на этаже № 3',
+    'по договору работы отражены в акте № 17',
+])
+def test_number_of_another_named_entity_is_not_a_contract_number(monkeypatch, reference):
+    data = register()
+    data['rows'][0].update(scope=['Корпус 1', 'Корпус 2'], physical_items=[])
+    install_register(monkeypatch, data)
+    report('Корпус 1 монтаж ' + reference)
+    result = evidence(data)
+    assert result['unmatched_works'] == []
+    item, = result['rows'][0]['reconciliation']['daily_evidence']
+    assert item['link_basis'] == 'exact_party' and item['contract_id'] == FIRST
+    assert links.set_link(PROJECT, FIRST, item['id'], CUT)['confirmed']
+
+
 @pytest.mark.parametrize("width", [390, 1440])
 def test_real_dropdown_contains_only_server_admitted_choices_and_counts_messages(width):
     from playwright.sync_api import expect
