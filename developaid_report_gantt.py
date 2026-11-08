@@ -87,7 +87,8 @@ def _summary(items: list[dict[str, Any]], known_of) -> dict[str, Any]:
         "plan_finish": plan_finish.isoformat() if plan_finish else None,
         "forecast_finish": forecast.isoformat() if forecast else None,
         "forecast_known": forecast is not None,
-        "forecast_partial": bool(known) and len(known) < len(items),
+        "forecast_partial": bool(known) and (len(known) < len(items)
+                                             or any(item.get("forecast_partial") for item in known)),
         "delta_days": max(deltas) if deltas else None,
     }
 
@@ -273,15 +274,14 @@ def notes(gantt: dict[str, Any], rnv: dict[str, Any] | None = None) -> list[str]
     out = []
     rnv = rnv or {}
     if not rnv.get("approved"):
-        out.append("Утверждённой даты РНВ в данных нет: она берётся из выгрузки "
-                   "планировщика с сетью работ, а её в Монитор не загружали.")
+        out.append("Утверждённой даты РНВ в данных нет: проверьте утверждённый ГПР проекта.")
     corpora = gantt.get("corpora") or []
     if any(item.get("forecast_partial") for corpus in corpora
            for item in [corpus, *corpus["articles"]]):
-        out.append("* Прогноз посчитан не по всем работам строки: у части работ темпа "
-                   "актов ещё нет, их срок не учтён.")
+        out.append("* Прогноз посчитан не по всем работам строки: у части работ нет "
+                   "актуального темпа по ГПР или подтверждённым объёмам, их срок не учтён.")
     if any(not article["forecast_known"] for corpus in corpora for article in corpus["articles"]):
-        out.append("«Нет прогноза» — по работам статьи ещё нет актов, темп считать не из чего.")
+        out.append("«Нет прогноза» — по работам нет актуального темпа выполнения.")
     return out
 
 

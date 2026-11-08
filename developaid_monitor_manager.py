@@ -5,13 +5,15 @@ Important semantics:
 * RSS accepted-work acts are a cost/evidence source. ``accepted / EAC`` is
   shown as an *act-cost ratio* and is never treated as a physical WBS percent.
 * Calendar forecast never extrapolates dates from the monetary pace of acts.
-  Dates come from the approved GPR/PM network and approved rebaselines.
+  The current GPR overlay owns forecasts; this module preserves crosswalks.
 * RSS codes remain the financial crosswalk. They do not define the temporal
   phase hierarchy: one financial code may span several WBS phases.
 """
 from __future__ import annotations
 
 import datetime
+import json
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -225,7 +227,11 @@ def _baseline_status(project: str, upto: str = "") -> dict[str, dict[str, Any]]:
     rows = list(baseline.get("works") or [])
     # Origin and date of every percent travel with it: the chart must say
     # whether a number is the approved plan, a weekly file or a manual decision.
-    origins = {str(item.get("id") or item.get("wbs") or "").strip(): ("approved_gpr", None)
+    try:
+        base_day = json.loads((monitor._project_dir(project) / "baseline" / "meta.json").read_text(encoding="utf-8")).get("taken_at")
+    except (OSError, ValueError):
+        base_day = None
+    origins = {str(item.get("id") or item.get("wbs") or "").strip(): ("approved_gpr", base_day)
                for item in rows}
     try:
         fact = monitor.latest_schedule_fact(project, upto)
@@ -266,6 +272,10 @@ def _baseline_status(project: str, upto: str = "") -> dict[str, dict[str, Any]]:
             progress = None
         if progress is not None and progress > 1.0:
             progress = progress / 100.0
+        if progress is not None and (not math.isfinite(progress) or not 0 <= progress <= 1):
+            progress = None
+        if isinstance(item.get("progress"), bool):
+            progress = None
         out[tid] = {
             "closed": "заверш" in status or (progress or 0.0) >= 0.999,
             "status": str(item.get("status") or ""),
@@ -478,11 +488,11 @@ def _summary(
 
 def _management(
     project: str,
-    rss: Path,
+    rss: Path | None,
     schedule: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    estimate = actuals.read_estimate(rss)
-    works = actuals.read_completed_works(rss)
+    estimate = actuals.read_estimate(rss) if rss else {"rows": [], "by_code": {}}
+    works = actuals.read_completed_works(rss) if rss else {"rows": []}
     mapping = _baseline_mapping(project)
     cut = _as_date(schedule.get("cut"))
     if cut is None:
@@ -506,7 +516,7 @@ def _management(
         task["eac"] = None
         task["progress_kind"] = "wbs_schedule"
 
-        codes = _codes(task.get("code"))
+        codes = _codes(task.get("code")) or [""]
         for code in codes:
             control, detail = _schedule_bucket(task, code)
             grouped.setdefault((control, detail, code), []).append(task)
@@ -730,18 +740,57 @@ def _attach_payments(nodes: list[dict[str, Any]], cash: dict[str, Any]) -> None:
         visit(node)
 
 
+def _schedule_only(project: str, cut: Any, upto: str = "") -> dict[str, Any]:
+    """Keep work monitoring available without inventing missing financial data."""
+    day = _as_date(cut)
+    if day is None:
+        raise ValueError("Не задана дата среза.")
+    try:
+        baseline = monitor._read_baseline_gpr(project)
+    except FileNotFoundError:
+        baseline = {"works": []}
+    rows = []
+    for item in baseline.get("works") or []:
+        start, finish = _as_date(item.get("start")), _as_date(item.get("finish"))
+        if not start or not finish:
+            continue
+        rows.append({"id": item.get("id", ""), "wbs": item.get("wbs", ""),
+                     "section": item.get("section", ""), "object": item.get("object", ""),
+                     "name": item.get("name", ""), "code": item.get("estimate_code", ""),
+                     "basis": item.get("basis", ""), "plan_start": start.isoformat(),
+                     "plan_finish": finish.isoformat(), "plan_progress": monitor._plan_progress(start, finish, day),
+                     "actual_progress": None, "forecast_finish": None, "delta_days": None,
+                     "status": "", "accepted": None, "eac": None})
+    schedule = {"cut": day.isoformat(), "rows": rows, "risks": 0, "forecast_end": None,
+                "baseline_end": max((r["plan_finish"] for r in rows), default=None),
+                "reason": "" if rows else "Утверждённый график работ не загружен."}
+    _sanitize_base_schedule(project, schedule, upto or day.isoformat())
+    schedule["management"] = monitor._plain(_management(project, None, schedule))
+    stack = list(schedule["management"])
+    while stack:
+        node = stack.pop()
+        stack.extend(node.get("children") or [])
+        node.update(accepted=None, eac=None)
+    missing = "Нет снимка РСС: финансовые показатели неизвестны."
+    return {"cut": day.isoformat(), "source": {"estimate": None, "baseline": bool(rows)},
+            "money": {key: None for key in ("estimate", "contracted", "paid", "accepted", "payment_fact", "contracts")},
+            "payments": {"known": False, "source": "", "rows": [], "fact_total": None, "reason": missing},
+            "schedule": schedule, "by_code": schedule["rows"],
+            "financial_state": {"state": "missing", "reason": missing}}
+
+
 def _build(
     project: str,
     cut: Any,
     programme: dict[str, Any] | None = None,
     upto: str = "",
 ) -> dict[str, Any]:
-    view = _ORIGINAL_BUILD(project, cut, programme=programme, upto=upto)
     rss = monitor._latest(project, "estimate", ".xlsx", upto)
     if rss is None:
-        return view
+        return _schedule_only(project, cut, upto)
+    view = _ORIGINAL_BUILD(project, cut, programme=programme, upto=upto)
 
-    _sanitize_base_schedule(project, view["schedule"], upto)
+    _sanitize_base_schedule(project, view["schedule"], upto or monitor._iso(cut))
     _seed_rebaselines(project, view["schedule"])
 
     management = _management(project, rss, view["schedule"])
@@ -762,7 +811,9 @@ def _build(
 
 
 def _gantt(project: str, cut: Any, upto: str = "") -> dict[str, Any]:
-    view = _build(project, cut, upto=upto)
+    # Resolve the final installed stack at call time. Calling this module's
+    # private _build bypasses the GPR overlay and revives stale RSS dates.
+    view = monitor.build(project, cut, upto=upto)
     schedule = view["schedule"]
     return {
         "cut": view["cut"],
@@ -772,11 +823,19 @@ def _gantt(project: str, cut: Any, upto: str = "") -> dict[str, Any]:
         "overdue": schedule.get("risks", 0),
         "baseline_end": schedule.get("baseline_end"),
         "forecast_end": schedule.get("forecast_end"),
+        "forecast_state": schedule.get("forecast_state"),
+        "indicative_forecast_end": schedule.get("indicative_forecast_end"),
+        "by_code": schedule.get("rows", []),
+        "work_fact": schedule.get("work_fact"),
+        "gpr_forecasts": schedule.get("gpr_forecasts"),
+        "corpus_gpr": schedule.get("corpus_gpr"),
+        "dependency_timeline": schedule.get("dependency_timeline"),
         "source": {
             "schedule": "fixed-baseline",
             "estimate": view["source"]["estimate"],
             "with_baseline": True,
-            "fact": "Реестр выполненных работ (КС / EAC)",
+            "fact": schedule.get("fact_source"),
+            "forecast": schedule.get("forecast_method"),
             "payments": "Реестр платежей",
         },
     }

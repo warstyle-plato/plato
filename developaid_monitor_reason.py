@@ -59,6 +59,10 @@ def delay_reason(node: dict[str, Any]) -> dict[str, Any] | None:
     delta = node.get("delta_days")
     if delta is None or _int(delta) <= 0:
         return None
+    if node.get("forecast_source") in {"gpr_pace", "cumulative_quantities", "confirmed_completion", "done", "plan", "gpr_children"}:
+        return {"kind": "gpr", "delay_days": _int(delta), "own_days": None,
+                "inherited_days": None, "predecessors": [],
+                "text": node.get("forecast_reason") or "Позднейшая дата работ раздела."}
     dependencies = node.get("dependencies") or {}
     own = _int(dependencies.get("own_delay_days"))
     inherited = _int(dependencies.get("inherited_delay_days"))

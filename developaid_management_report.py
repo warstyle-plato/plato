@@ -1119,6 +1119,10 @@ def gantt(view: dict[str, Any], dashboard: dict[str, Any]) -> dict[str, Any]:
     result = report_gantt.model(schedule_view.get("management") or [])
     result["dependency_timeline"] = schedule_view.get("dependency_timeline")
     result["corpus_gpr"] = schedule_view.get("corpus_gpr")
+    result["work_fact"] = schedule_view.get("work_fact")
+    result["source"] = {"basis": schedule_view.get("basis"),
+                        "fact": schedule_view.get("fact_source"),
+                        "forecast": schedule_view.get("forecast_method")}
     return result
 
 
