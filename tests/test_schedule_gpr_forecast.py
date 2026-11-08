@@ -124,7 +124,10 @@ def test_summary_shows_the_estimate_but_does_not_shift_loans():
     assert report._forecast_shift(dashboard, {"date": "2027-04-30"}) is None
     payload = {"project": "Учебный", "kind": "week", "start": "2026-11-01", "end": "2026-11-06", "schedule": block}
     text = " ".join(f["text"] for f in report.findings(payload) if f.get("topic") == "Срок")
-    assert "10.05.2027" in text and "без цепочки до получения разрешения" in text
+    assert "Оценка окончания работ — 10.05.2027" in text
+    assert "Оценка работ не подтверждает дату получения разрешения на ввод" in text
+    assert "PM" not in text and gpr.ESTIMATE_NOTE not in text
+    assert block['qualification'] == qualified  # presentation cannot qualify the estimate as final
 
 
 def test_monitor_card_shows_the_estimate_date_with_its_caveat():
@@ -152,7 +155,10 @@ def test_rnv_driven_by_a_plan_only_work_is_not_called_on_time():
     block = report.schedule({"schedule": {"qualified_rnv": qualified}})
     payload = {"project": "Учебный", "kind": "week", "start": "2026-11-01", "end": "2026-11-06", "schedule": block}
     text = " ".join(f["text"] for f in report.findings(payload) if f.get("topic") == "Срок")
-    assert "в срок" not in text and "по плану ГПР" in text and "накопительн" not in text
+    words = text.casefold()
+    assert "в срок" not in words and "в пределах плана" not in words
+    assert "по плану гпр" in words and "темп ещё не подтверждён" in words
+    assert "накопительн" not in words and "не подтверждает дату получения разрешения" in words
 
 
 @pytest.mark.parametrize('width', [390, 1440])
@@ -179,11 +185,19 @@ def test_gpr_rnv_driver_is_shown_once_without_restoring_pm_drawing(width):
         page.evaluate('(view)=>renderGantt(view)', view)
         body = page.locator('#dependencyTimelineBody')
         expect(body).to_be_visible()
-        expect(body).to_contain_text('10.05.2027 — оценка по ГПР')
-        expect(body).to_contain_text('Оценка по измеренному росту процента ГПР.')
+        estimate = body.locator('.schedule-rnv-cards>div').nth(1)
+        expect(estimate.locator('span')).to_have_text('Оценка по ГПР')
+        expect(estimate.locator('strong')).to_have_text('10.05.2027')
+        expect(body.get_by_text(
+            'Окончание строительных работ оценено по ГПР. Дата разрешения на ввод этим не подтверждается.',
+            exact=True)).to_be_visible()
         driver = body.locator('p.schedule-note').filter(has_text='Срок тянет')
         assert driver.count() == 1
+        expect(driver).to_be_hidden()
+        body.get_by_text('Основание и ограничения', exact=True).click()
+        expect(driver).to_be_visible()
         expect(driver).to_contain_text(name)
+        expect(driver).to_contain_text('Оценка по измеренному росту процента ГПР.')
         assert body.locator('.schedule-lane,.schedule-technical,svg,img').count() == 0
         assert page.evaluate('window.forecastXSS') is None
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
@@ -191,11 +205,19 @@ def test_gpr_rnv_driver_is_shown_once_without_restoring_pm_drawing(width):
             data = {'project': 'Учебный', 'kind': 'week', 'start': '2026-11-01',
                     'end': '2026-11-06', 'gantt': {'dependency_timeline': block}}
             page.set_content(report.render_html(data))
+            basis = 'Оценка по измеренному росту процента ГПР.'
+            expect(page.locator('.executive-schedule')).not_to_contain_text(basis)
+            source_details = page.locator('details.report-source-screen')
+            assert not source_details.get_attribute('open')
+            source_details.locator('summary').click()
+            expect(source_details.get_by_text(basis, exact=False)).to_be_visible()
             text = ' '.join(' '.join(p.extract_text() or '' for p in
                                     PdfReader(io.BytesIO(page.pdf(format='A4'))).pages).split())
-            assert '10.05.2027' in text and 'оценка по ГПР' in text
-            assert text.count('Срок тянет') == 1
+            assert '10.05.2027' in text and 'Оценка окончания работ' in text
+            assert 'Оценка работ не подтверждает дату получения разрешения на ввод' in text
+            assert text.count('На срок влияет') == 1
             assert 'Оценка по измеренному росту процента ГПР.' in text
+            assert text.count(basis) == 1  # one printed appendix, no duplicate main-method explanation
             assert 'Устаревшая техническая работа' not in text
             assert 'Техническая сеть работ' not in text
         assert not errors

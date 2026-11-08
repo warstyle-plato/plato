@@ -145,15 +145,32 @@ def test_pm_cache_and_confirmation_track_bytes_even_when_size_and_mtime_are_kept
     assert not confirmation.qualify('Учебный проект', after, '2026-11-06')['calendar_confirmed']
 
 
-def test_confirmation_provenance_is_shared_by_monitor_and_report_and_escaped(source):
+def test_legacy_confirmation_provenance_and_executive_forecast_are_escaped(source):
     import developaid_management_report as report
-    saved = save(note='<img src=x onerror=alert(1)>')
+    note = 'Архивная проверка календаря <img src=x onerror=alert(1)>'
+    saved = save(note=note)
     pm = confirmation.qualify('Учебный проект', dict(network(), source_sha256=saved['source_sha256']), '2026-11-06')
     block = timeline.model(pm, {'1': day('2026-12-10')}, evidence=True)
+    # The archived PM formatter retains the source-bound confirmation. It is
+    # not the executive report's current GPR source or its main explanation.
+    archive = timeline.render(block, context='monitor')
+    assert '&lt;img' in archive and '<img' not in archive
+    assert '06.11.2026' in archive
+    assert block['confirmation']['source_sha256'] == saved['source_sha256']
+    assert block['confirmation']['note'] == note
+
+    # Test escaping of data the executive view actually displays, rather than
+    # accepting an ignored unsafe note as proof that its output is safe.
+    name = 'Учебная работа <img src=x onerror=alert(2)>'
+    block['rnv']['driving_chain'][0]['name'] = name
+    payload = {'gantt': {'state': 'missing', 'dependency_timeline': block}}
+    executive = report._executive_schedule(payload)
+    assert executive['state'] == block['rnv']['state']
+    assert executive['forecast'] == block['rnv']['forecast']
     markup = timeline.render(block, context='report')
     assert '&lt;img' in markup and '<img' not in markup
-    assert '06.11.2026' in markup
-    assert markup in report._gantt_html({'gantt': {'state': 'missing', 'dependency_timeline': block}})
+    assert 'Архивная проверка календаря' not in markup
+    assert markup in report._gantt_html(payload)
 
 
 def test_failed_publish_preserves_previous_event_and_removes_temporary_file(source, monkeypatch):
