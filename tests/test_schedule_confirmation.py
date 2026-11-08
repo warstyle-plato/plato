@@ -163,14 +163,16 @@ def test_legacy_confirmation_provenance_and_executive_forecast_are_escaped(sourc
     # accepting an ignored unsafe note as proof that its output is safe.
     name = 'Учебная работа <img src=x onerror=alert(2)>'
     block['rnv']['driving_chain'][0]['name'] = name
+    original = copy.deepcopy(block)
     payload = {'gantt': {'state': 'missing', 'dependency_timeline': block}}
     executive = report._executive_schedule(payload)
-    assert executive['state'] == block['rnv']['state']
-    assert executive['forecast'] == block['rnv']['forecast']
+    assert executive['state'] == original['rnv']['state']
+    assert executive['forecast'] == original['rnv']['forecast']
     markup = timeline.render(block, context='report')
     assert '&lt;img' in markup and '<img' not in markup
     assert 'Архивная проверка календаря' not in markup
     assert markup in report._gantt_html(payload)
+    assert block == original
 
 
 def test_failed_publish_preserves_previous_event_and_removes_temporary_file(source, monkeypatch):

@@ -1,6 +1,7 @@
 """Work and RNV forecast from the GPR and cumulatives (PM off, no money pace). Synthetic data."""
 from __future__ import annotations
 
+import copy
 import datetime as dt
 
 import pytest
@@ -118,6 +119,7 @@ def test_summary_shows_the_estimate_but_does_not_shift_loans():
     import developaid_management_report as report
     qualified = {"state": "estimate", "approved": "2027-04-30", "forecast": "2027-05-10",
                  "delay_days": 10, "basis": "gpr", "reasons": [gpr.ESTIMATE_NOTE], "driving_chain": []}
+    expected_qualification = copy.deepcopy(qualified)
     dashboard = {"schedule": {"qualified_rnv": qualified}}
     block = report.schedule(dashboard)
     assert block["known"] and block["estimate"] and block["delay_days"] == 10
@@ -127,7 +129,8 @@ def test_summary_shows_the_estimate_but_does_not_shift_loans():
     assert "Оценка окончания работ — 10.05.2027" in text
     assert "Оценка работ не подтверждает дату получения разрешения на ввод" in text
     assert "PM" not in text and gpr.ESTIMATE_NOTE not in text
-    assert block['qualification'] == qualified  # presentation cannot qualify the estimate as final
+    assert block['qualification'] == expected_qualification
+    assert dashboard['schedule']['qualified_rnv'] == expected_qualification
 
 
 def test_monitor_card_shows_the_estimate_date_with_its_caveat():
