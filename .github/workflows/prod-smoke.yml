@@ -1,299 +1,394 @@
-name: Проверка прода после выката
+name: Диагностика договоров и исходных объёмов
+run-name: contracts-source-probe
 
-# Тест PR проверяет код, а не то, что видит пользователь: тизер КРТ Нагатино
-# рисовал 10 участков из 20, из выгрузки торгов пропали примечания, а CI был
-# зелёный. Здесь готовые поверхности живого прода проверяются на эталонном
-# проекте (scripts/prod_smoke_reference.json) сразу после выката.
-#
-# Только чтение и по одному запросу на поверхность: проекты пользователей не
-# трогаются, нагрузка — один эталонный проект.
-
-# Запускает её последний шаг сборки (build-yandex.yml, задание «Проверка прода
-# после выката»), а не `workflow_run`: сборку диспатчит release-merge токеном
-# GITHUB_TOKEN, а прогоны, порождённые этим токеном, `workflow_run` не будят —
-# ни один выпуск не проверился сам, пока триггер стоял здесь. Диспатч же от
-# GITHUB_TOKEN прогон создаёт. Второго триггера нет, чтобы один выпуск не
-# проверялся дважды и прогоны не снимали друг друга через concurrency.
 on:
   workflow_dispatch:
     inputs:
-      base:
-        description: Адрес прода
-        default: https://developaid.ru
-      expect_commit:
-        description: Коммит, который должен отдавать /health (пусто — не ждать)
-        default: ""
+      expected_commit:
+        description: Exact deployed runtime commit, verified before authorization
+        required: true
+        type: string
 
 permissions:
   contents: read
-  issues: write
 
 concurrency:
-  group: prod-smoke
-  cancel-in-progress: true
+  group: contracts-source-diagnostic
+  cancel-in-progress: false
 
 jobs:
-  smoke:
-    name: Поверхности прода
+  probe:
+    name: Проверить наличие данных без публикации содержимого
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-    env:
-      BASE: ${{ github.event.inputs.base || 'https://developaid.ru' }}
-      EXPECT_COMMIT: ${{ github.event.inputs.expect_commit }}
+    timeout-minutes: 8
     steps:
-      # Код проверки — с ветки, на которой запущен диспатч (сборка шлёт его
-      # на main), а не из ожидаемого коммита: у прогона есть секреты и право
-      # писать issue. Ожидаемый коммит — только строка, которую ждём в /health.
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 50
-
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.11"
-
-      - name: Зависимости
-        run: |
-          python -m pip install --upgrade pip
-          pip install openpyxl pypdf playwright
-
-      - name: Браузер для страницы «Итог»
-        run: python -m playwright install --with-deps chromium
-
-      - name: Последний слитый PR
-        id: pr
-        run: |
-          # Номер из заголовка merge/squash-коммита: «… (#541)».
-          last=$(git log -1 --format=%s | grep -oE '#[0-9]+' | tail -1 || true)
-          echo "last_pr=${last:-не определён} ($(git log -1 --format=%h))" >> "$GITHUB_OUTPUT"
-
-      - name: Проверка прода
-        id: smoke
+      - name: Проверка защищённых данных
         env:
-          LAST_PR: ${{ steps.pr.outputs.last_pr }}
-          # Тизер и экономика «Итога» — за входом; без ключа они пропускаются
-          # с этой причиной в итоге, а не зеленеют.
-          PROD_SMOKE_ADMIN_KEY: ${{ secrets.DEVELOPAID_ADMIN_KEY }}
-          # Торги закрыты входом, пока есть личные ключи; /auctions/login
-          # принимает ключ кабинета рынка или общий AUCTIONS_VIEW_KEY, но не
-          # ключ владельца. Без секрета шаг 3 пропускается с этой причиной.
-          PROD_SMOKE_AUCTIONS_KEY: ${{ secrets.PROD_SMOKE_AUCTIONS_KEY }}
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          PROBE_ADMIN_KEY: ${{ secrets.DEVELOPAID_ADMIN_KEY }}
         run: |
-          args=(--base "$BASE" --summary smoke-summary.md --json smoke-result.json
-                --out smoke-out --last-pr "$LAST_PR")
-          if [ -n "$EXPECT_COMMIT" ]; then
-            # Не проверять старый образ: ждём, пока прод отдаст этот коммит
-            # (а если /health commit пуст — версию из этого же коммита).
-            args+=(--wait-commit "$EXPECT_COMMIT" --wait-timeout 2400)
-            # Запасная сверка по версии (если /health не отдаёт commit) —
-            # только когда на руках тот самый коммит: иначе версия чужая.
-            if [ "$(git rev-parse HEAD)" = "$EXPECT_COMMIT" ]; then
-              version=$(grep -m1 '^VERSION = ' main_legacy.py | cut -d'"' -f2)
-              args+=(--wait-version "$version")
-            fi
-          fi
-          set +e
-          python3 scripts/prod_smoke.py "${args[@]}"
-          code=$?
-          set -e
-          # Скрипт пишет итог всегда; не записал — упал сам. Это тоже красный
-          # прогон с названной причиной, а не молчание: без файла итога шаг
-          # раньше падал на `cat`, и issue не создавался.
-          if [ ! -s smoke-summary.md ]; then
-            printf '## ❌ Прод: прогон упал без итога\n\n`scripts/prod_smoke.py` завершился с кодом %s и не записал таблицу итога; проверки после места падения не выполнены. Причина — в журнале шага «Проверка прода».\n' "$code" > smoke-summary.md
-            if [ "$code" = 0 ]; then code=1; fi
-          fi
-          echo "code=$code" >> "$GITHUB_OUTPUT"
-          cat smoke-summary.md >> "$GITHUB_STEP_SUMMARY"
-          exit $code
+          python3 - <<'PY'
+          import datetime
+          import json
+          import math
+          import os
+          import re
+          import signal
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+          from zoneinfo import ZoneInfo
 
-      - name: Результат прогона
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: prod-smoke
-          path: |
-            smoke-summary.md
-            smoke-result.json
-            smoke-out/
-          if-no-files-found: ignore
+          BASE = 'https://developaid.ru'
+          MAX_BYTES = 16 * 1024 * 1024
+          TOTAL_SECONDS = 360
+          HTTP_SECONDS = 15
+          POLL_SECONDS = 2
+          POST_PATHS = frozenset({
+              '/monitor/report/projects', '/monitor/contracts/build',
+              '/monitor/contracts/result',
+          })
+          REASONS = frozenset({
+              'invalid_expected_commit', 'deadline', 'redirect_denied', 'http_auth',
+              'http_capacity', 'http_failure', 'transport_failure', 'response_too_large',
+              'invalid_json', 'invalid_payload', 'runtime_mismatch', 'missing_secret',
+              'project_selection_unverified', 'invalid_ticket', 'ticket_changed',
+              'job_rejected', 'contracts_missing', 'report_missing', 'unexpected_error',
+          })
+          FLAG_NAMES = (
+              'contracts_present', 'any_contract_price', 'all_contract_prices',
+              'any_dated_money', 'all_dated_money',
+              'any_reference_money', 'all_rows_have_dated_or_reference_money',
+              'ratio_present', 'all_ratios', 'any_rss_financial_source',
+              'rss_snapshot_present', 'rss_read_failed',
+              'any_physical_positions', 'references_safety_metadata_complete',
+          )
 
-      - name: Issue prod-regression
-        # Красный шаг проверки — при любом исходе, в том числе без итога.
-        # Упавшие зависимости/браузер сюда не ведут: шаг проверки тогда пропущен.
-        if: failure() && steps.smoke.outcome == 'failure'
-        uses: actions/github-script@v9
-        with:
-          script: |
-            const fs = require('fs');
-            const body = fs.existsSync('smoke-summary.md')
-              ? fs.readFileSync('smoke-summary.md', 'utf8')
-              : '## ❌ Прод: прогон упал без итога\n\nТаблица итога не записана — причина в журнале шага «Проверка прода».';
-            const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const label = 'prod-regression';
-            try {
-              await github.rest.issues.getLabel({...context.repo, name: label});
-            } catch (e) {
-              await github.rest.issues.createLabel({...context.repo, name: label, color: 'b60205',
-                description: 'Проверка прода после выката нашла поломку'});
-            }
-            const open = await github.rest.issues.listForRepo({...context.repo, state: 'open', labels: label, per_page: 1});
-            if (open.data.length) {
-              // Открытая уже есть — дописываем прогон туда, новую не плодим.
-              await github.rest.issues.createComment({...context.repo, issue_number: open.data[0].number,
-                body: `Снова красно: ${run}\n\n${body}`});
-              return;
-            }
-            await github.rest.issues.create({...context.repo, title: 'Прод: проверка поверхностей после выката красная',
-              labels: [label], body: `Прогон: ${run}\n\n${body}`});
 
-  # Визуал: что человек видит на экране прода (scripts/prod_visual.py) —
-  # «undefined»/«NaN», пустые блоки, прочерк вместо числа, прокрутка вбок на
-  # телефоне, одно число по-разному на странице, в PDF и в тизере, жаргон.
-  # Тот же диспатч, что у проверки поверхностей, — один прогон на выкат; ждёт
-  # её, чтобы не нагружать прод двумя прогонами сразу. Не гейт: красным
-  # задание становится только от явной поломки, остальное — замечания.
-  # Новое после выката уходит комментарием в PR выката (его сессия-автор
-  # подписана на PR); давнее и то, чему автора нет, — одной issue владельцу.
-  visual:
-    name: Визуал прода
-    needs: smoke
-    # И при красной проверке поверхностей: экран смотрится независимо от неё.
-    if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    env:
-      BASE: ${{ github.event.inputs.base || 'https://developaid.ru' }}
-      EXPECT_COMMIT: ${{ github.event.inputs.expect_commit }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 50
+          class ProbeError(Exception):
+              def __init__(self, code):
+                  self.code = code if code in REASONS else 'unexpected_error'
+                  super().__init__(self.code)
 
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.11"
 
-      - name: Зависимости
-        run: |
-          python -m pip install --upgrade pip
-          pip install pypdf playwright
-          python -m playwright install --with-deps chromium
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  raise ProbeError('redirect_denied')
 
-      - name: PR выката
-        id: pr
-        run: |
-          # Номер из заголовка merge/squash-коммита выката: «… (#541)».
-          ref="${EXPECT_COMMIT:-HEAD}"
-          git cat-file -e "$ref^{commit}" 2>/dev/null || ref=HEAD
-          pr=$(git log -1 --format=%s "$ref" | grep -oE '#[0-9]+' | tail -1 | tr -d '#' || true)
-          echo "number=$pr" >> "$GITHUB_OUTPUT"
-          echo "label=${pr:+#$pr}${pr:-не определён} ($(git log -1 --format=%h "$ref"))" >> "$GITHUB_OUTPUT"
 
-      # База «что было до выката» — итог прошлого полного прогона.
-      - name: Прошлый прогон
-        uses: actions/cache/restore@v6
-        with:
-          path: visual-baseline.json
-          key: prod-visual-baseline-${{ github.run_id }}
-          restore-keys: prod-visual-baseline-
+          def records_or_ids(value, allowed=None):
+              if (not isinstance(value, list)
+                      or any(not isinstance(x, str) or re.fullmatch(r'[0-9a-f]{64}', x) is None for x in value)
+                      or len(set(value)) != len(value)
+                      or (allowed is not None and not set(value) <= allowed)):
+                  raise ProbeError('invalid_payload')
+              return value
 
-      - name: Визуальная проверка
-        id: visual
-        env:
-          PROD_SMOKE_ADMIN_KEY: ${{ secrets.DEVELOPAID_ADMIN_KEY }}
-        run: |
-          args=(--base "$BASE" --summary visual-summary.md --json visual-result.json
-                --author-note visual-author.md --out visual-out
-                --last-pr "${{ steps.pr.outputs.label }}" --baseline visual-baseline.json)
-          if [ -n "$EXPECT_COMMIT" ]; then
-            # Проверка поверхностей уже дождалась выката; здесь — только
-            # убедиться, что прод всё ещё отдаёт этот коммит.
-            args+=(--wait-commit "$EXPECT_COMMIT" --wait-timeout 600)
-          fi
-          set +e
-          python3 scripts/prod_visual.py "${args[@]}"
-          code=$?
-          set -e
-          if [ ! -s visual-summary.md ]; then
-            printf '## ❌ Визуал прода: прогон упал без итога\n\n`scripts/prod_visual.py` завершился с кодом %s; причина — в журнале шага «Визуальная проверка».\n' "$code" > visual-summary.md
-            if [ "$code" = 0 ]; then code=1; fi
-          fi
-          cat visual-summary.md >> "$GITHUB_STEP_SUMMARY"
-          if [ -s visual-result.json ] && python3 -c "import json,sys; sys.exit(0 if json.load(open('visual-result.json')).get('complete') else 1)"; then
-            cp visual-result.json visual-baseline.json
-            echo "baseline=1" >> "$GITHUB_OUTPUT"
-          fi
-          exit $code
 
-      - name: Запомнить прогон
-        if: always() && steps.visual.outputs.baseline == '1'
-        uses: actions/cache/save@v6
-        with:
-          path: visual-baseline.json
-          key: prod-visual-baseline-${{ github.run_id }}
+          def mapping(value):
+              if value is None:
+                  return {}
+              if not isinstance(value, dict):
+                  raise ProbeError('invalid_payload')
+              return value
 
-      - name: Снимки и замечания
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: prod-visual
-          path: |
-            visual-summary.md
-            visual-result.json
-            visual-author.md
-            visual-out/
-          if-no-files-found: ignore
 
-      - name: Замечания — автору и владельцу
-        if: always() && steps.visual.outcome != 'skipped'
-        uses: actions/github-script@v9
-        env:
-          PR_NUMBER: ${{ steps.pr.outputs.number }}
-        with:
-          script: |
-            const fs = require('fs');
-            const read = f => fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '';
-            const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const author = read('visual-author.md');
-            const summary = read('visual-summary.md');
-            const result = (() => { try { return JSON.parse(read('visual-result.json')); } catch (e) { return {}; } })();
-            const pr = Number(process.env.PR_NUMBER || 0);
-            let routed = false;
-            // Новое — автору выката, в его PR.
-            if (author && pr) {
-              try {
-                await github.rest.issues.createComment({...context.repo, issue_number: pr,
-                  body: `${author}\nПрогон и снимки: ${run}`});
-                routed = true;
-              } catch (e) { core.warning(`PR #${pr}: комментарий не записан — ${e.message}`); }
-            }
-            // Давнее и безадресное — одна issue владельцу, текст обновляется, новые не плодятся.
-            const label = 'prod-visual';
-            try { await github.rest.issues.getLabel({...context.repo, name: label}); }
-            catch (e) { await github.rest.issues.createLabel({...context.repo, name: label, color: 'fbca04',
-              description: 'Визуальная проверка прода: замечания без автора'}); }
-            const open = await github.rest.issues.listForRepo({...context.repo, state: 'open', labels: label, per_page: 1});
-            const issue = open.data[0];
-            const any = (result.findings || []).length > 0 || !result.findings;
-            const unrouted = author && !routed
-              ? '\n\n**Автора выката определить не удалось — новое тоже здесь.**\n' : '';
-            const body = `Прогон: ${run}${unrouted}\n\n${summary}`;
-            if (!any) {
-              // Закрывает только полный прогон: пропуск без ключа — не «чисто».
-              if (issue && result.complete) {
-                await github.rest.issues.createComment({...context.repo, issue_number: issue.number,
-                  body: `Замечаний больше нет: ${run}`});
-                await github.rest.issues.update({...context.repo, issue_number: issue.number, state: 'closed',
-                  state_reason: 'completed'});
-              }
-              return;
-            }
-            if (issue) {
-              await github.rest.issues.update({...context.repo, issue_number: issue.number, body});
-              if (author && !routed) await github.rest.issues.createComment({...context.repo,
-                issue_number: issue.number, body: `Новое после выката, автор не определён: ${run}\n\n${author}`});
-            } else {
-              await github.rest.issues.create({...context.repo, title: 'Прод: визуальные замечания на экране',
-                labels: [label], body});
-            }
+          def records(value):
+              if value is None:
+                  return []
+              if not isinstance(value, list) or any(not isinstance(x, dict) for x in value):
+                  raise ProbeError('invalid_payload')
+              return value
+
+
+          def number(value):
+              if not isinstance(value, (int, float)) or isinstance(value, bool):
+                  return False
+              try:
+                  return math.isfinite(value)
+              except (OverflowError, ValueError):
+                  return False
+
+
+          class Probe:
+              def __init__(self, expected, *, opener=None, clock=time.monotonic, sleep=time.sleep):
+                  if not isinstance(expected, str) or not re.fullmatch('[0-9a-f]{40}', expected):
+                      raise ProbeError('invalid_expected_commit')
+                  self.expected = expected
+                  self.opener = opener or urllib.request.build_opener(NoRedirect())
+                  self.clock, self.sleep = clock, sleep
+                  self.deadline = clock() + TOTAL_SECONDS
+
+              def remaining(self):
+                  remaining = self.deadline - self.clock()
+                  if remaining <= 0:
+                      raise ProbeError('deadline')
+                  return remaining
+
+              def request(self, path, body=None):
+                  if (body is None and path != '/health') or (body is not None and path not in POST_PATHS):
+                      raise ProbeError('invalid_payload')
+                  headers = {'Cache-Control': 'no-cache', 'User-Agent': 'PLATO-Monitor-Data-Probe/1'}
+                  raw = None
+                  if body is not None:
+                      if not isinstance(body, dict):
+                          raise ProbeError('invalid_payload')
+                      raw = json.dumps(body, ensure_ascii=False, allow_nan=False).encode('utf-8')
+                      headers['Content-Type'] = 'application/json'
+                  request = urllib.request.Request(BASE + path, data=raw, headers=headers,
+                                                   method='POST' if body is not None else 'GET')
+                  try:
+                      with self.opener.open(request, timeout=min(HTTP_SECONDS, self.remaining())) as response:
+                          if response.geturl() != BASE + path:
+                              raise ProbeError('redirect_denied')
+                          if response.status not in (200, 202):
+                              raise ProbeError('http_failure')
+                          chunks, size = [], 0
+                          # read1 avoids waiting for an entire 64KiB buffer on a slow stream.
+                          while True:
+                              self.remaining()
+                              chunk = response.read1(min(65536, MAX_BYTES - size + 1))
+                              self.remaining()
+                              if not chunk:
+                                  break
+                              size += len(chunk)
+                              if size > MAX_BYTES:
+                                  raise ProbeError('response_too_large')
+                              chunks.append(chunk)
+                          payload = b''.join(chunks)
+                      self.remaining()
+                  except urllib.error.HTTPError as exc:
+                      if exc.code in (301, 302, 303, 307, 308):
+                          raise ProbeError('redirect_denied') from None
+                      if exc.code in (401, 403):
+                          raise ProbeError('http_auth') from None
+                      if exc.code == 429:
+                          raise ProbeError('http_capacity') from None
+                      raise ProbeError('http_failure') from None
+                  except (urllib.error.URLError, OSError, TimeoutError):
+                      raise ProbeError('transport_failure') from None
+                  try:
+                      result = json.loads(payload)
+                  except (ValueError, UnicodeError):
+                      raise ProbeError('invalid_json') from None
+                  if not isinstance(result, dict):
+                      raise ProbeError('invalid_payload')
+                  return result
+
+              def health(self):
+                  payload = self.request('/health')
+                  version = payload.get('version')
+                  if (payload.get('status') != 'ok' or payload.get('commit') != self.expected
+                          or not isinstance(version, str)
+                          or not re.fullmatch(r'[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}', version)):
+                      raise ProbeError('runtime_mismatch')
+                  return version
+
+              def job(self, build_path, result_path, body, key):
+                  # Exactly one admission; no blind retries or business mutations.
+                  payload = self.request(build_path, {**body, 'key': key})
+                  ticket = None
+                  while True:
+                      if payload.get('ok') is False:
+                          raise ProbeError('job_rejected')
+                      pending = payload.get('pending')
+                      current = payload.get('ticket')
+                      if (type(pending) is not bool or not isinstance(current, str)
+                              or not re.fullmatch('[0-9a-f]{32}', current)):
+                          raise ProbeError('invalid_ticket')
+                      if ticket is not None and current != ticket:
+                          raise ProbeError('ticket_changed')
+                      ticket = current
+                      if not pending:
+                          return payload
+                      self.remaining()
+                      self.sleep(min(POLL_SECONDS, self.remaining()))
+                      self.remaining()
+                      payload = self.request(result_path, {'key': key, 'ticket': ticket})
+
+              def run(self, key_getter):
+                  first_version = self.health()
+                  # The key is not even read until the exact public runtime gate succeeds.
+                  key = key_getter()
+                  if not isinstance(key, str) or not key.strip() or len(key) > 4096:
+                      raise ProbeError('missing_secret')
+                  key = key.strip()
+                  projects = self.request('/monitor/report/projects', {'key': key})
+                  options = records(projects.get('projects'))
+                  eligible = []
+                  for option in options:
+                      kinds = option.get('data')
+                      if not isinstance(kinds, list) or any(not isinstance(k, str) for k in kinds):
+                          raise ProbeError('invalid_payload')
+                      if 'cumulative' in kinds:
+                          eligible.append(option)
+                  if len(eligible) != 1:
+                      raise ProbeError('project_selection_unverified')
+                  project = eligible[0].get('project')
+                  if not isinstance(project, str) or not project.strip() or len(project) > 200:
+                      raise ProbeError('project_selection_unverified')
+                  day = datetime.datetime.now(ZoneInfo('Europe/Moscow')).date().isoformat()
+                  result = self.job('/monitor/contracts/build', '/monitor/contracts/result',
+                                    {'project': project, 'cut': day}, key)
+                  register = result.get('register')
+                  if not isinstance(register, dict) or 'rows' not in register:
+                      raise ProbeError('contracts_missing')
+                  rows = records(register['rows'])
+                  all_refs = [ref for row in rows for ref in records(row.get('reported_performance_sources'))]
+                  rss_snapshot = mapping(register.get('snapshots')).get('rss')
+                  try:
+                      rss_snapshot_present = (isinstance(rss_snapshot, str)
+                          and datetime.date.fromisoformat(rss_snapshot).isoformat() == rss_snapshot)
+                  except ValueError:
+                      rss_snapshot_present = False
+                  source_warnings = register.get('warnings')
+                  if source_warnings is None:
+                      source_warnings = []
+                  if (not isinstance(source_warnings, list)
+                          or any(not isinstance(warning, str) for warning in source_warnings)):
+                      raise ProbeError('invalid_payload')
+
+                  def reference(row):
+                      return any(number(ref.get('completed'))
+                                 and ref.get('future_periods_excluded') is not True
+                                 for ref in records(row.get('reported_performance_sources')))
+
+                  flags = {
+                      'contracts_present': bool(rows),
+                      'any_contract_price': any(number(row.get('amount')) for row in rows),
+                      'all_contract_prices': bool(rows) and all(number(row.get('amount')) for row in rows),
+                      'any_dated_money': any(number(row.get('completed')) for row in rows),
+                      'all_dated_money': bool(rows) and all(number(row.get('completed')) for row in rows),
+                      'any_reference_money': any(reference(row) for row in rows),
+                      'all_rows_have_dated_or_reference_money': bool(rows) and all(
+                          number(row.get('completed')) or reference(row) for row in rows),
+                      'ratio_present': any(number(row.get('completion_ratio')) for row in rows),
+                      'all_ratios': bool(rows) and all(number(row.get('completion_ratio')) for row in rows),
+                      'any_rss_financial_source': any(
+                          isinstance(source.get('label'), str) and source['label'].startswith('РСС')
+                          for row in rows for source in records(row.get('financial_sources'))),
+                      'rss_snapshot_present': rss_snapshot_present,
+                      'rss_read_failed': any(warning in (
+                          'Реестр договоров в выбранном снимке РСС не прочитан.',
+                          'Строки реестра договоров РСС неоднозначны; денежные значения не объединены.',
+                      ) for warning in source_warnings),
+                      'any_physical_positions': any(bool(records(row.get('physical_items'))) for row in rows),
+                      'references_safety_metadata_complete': bool(all_refs) and all(
+                          type(ref.get('future_periods_excluded')) is bool
+                          and type(ref.get('period_dates_known')) is bool for ref in all_refs),
+                  }
+                  # Counts and booleans only. No private names, IDs, source paths,
+                  # percentages, monetary values, request bodies or artifacts leave memory.
+                  row_ids = records_or_ids([r.get('id') for r in rows])
+                  allowed = set(row_ids)
+                  pending_raw = records(register.get('unmatched_works'))
+                  evidence, signatures, pending_by_id = {}, {}, {}
+
+                  def add_evidence(item):
+                      identity = item.get('id')
+                      records_or_ids([identity])
+                      status = item.get('match_status')
+                      if status not in {'confirmed', 'ambiguous', 'proposed', 'unmatched'}:
+                          raise ProbeError('invalid_payload')
+                      choices = records_or_ids(item.get('selectable_contract_ids'), allowed)
+                      reason = item.get('match_reason') or ''
+                      if not isinstance(reason, str):
+                          raise ProbeError('invalid_payload')
+                      signature = (status, tuple(sorted(choices)), reason)
+                      if identity in signatures and signatures[identity] != signature:
+                          raise ProbeError('invalid_payload')
+                      signatures[identity] = signature
+                      evidence[identity] = item
+
+                  for row in rows:
+                      for item in records(mapping(row.get('reconciliation')).get('daily_evidence')):
+                          add_evidence(item)
+                  for item in pending_raw:
+                      add_evidence(item)
+                      if item['match_status'] == 'confirmed':
+                          raise ProbeError('invalid_payload')
+                      pending_by_id[item['id']] = item
+                  pending = list(pending_by_id.values())
+                  reason_prefixes = {
+                      'party_uncertain': 'Подрядчик в сообщении указан неоднозначно.',
+                      'party_missing': 'В сообщении не указан подрядчик.',
+                      'party_not_matched': 'Договор этого подрядчика в накопительных не найден.',
+                      'contract_after_message': 'Договоры подрядчика заключены после сообщения.',
+                      'scope_conflict': 'Корпусный состав сообщения не подтверждён',
+                      'multiple_numbers': 'В записи указано несколько номеров договоров.',
+                      'number_conflict': 'Указанный номер не совпадает',
+                      'multiple_contracts': 'У подрядчика несколько договоров.',
+                      'manual_review': 'Прежняя ручная связь требует проверки:',
+                      'single_suggestion': 'Проверьте предложенный договор и подтвердите связь.',
+                  }
+                  counts = {
+                      'contracts': len(rows),
+                      'unresolved_headers': len(records(register.get('unresolved_sources'))),
+                      'statement_sources': len(all_refs),
+                      'physical_positions': sum(len(records(r.get('physical_items'))) for r in rows),
+                      'physical_dated_percent_known': sum(number(i.get('completion_ratio'))
+                          for r in rows for i in records(r.get('physical_items'))),
+                      'physical_reference_percent_known': sum(number(i.get('reported_completion_ratio'))
+                          for r in rows for i in records(r.get('physical_items'))),
+                      'rows_with_all_position_percentages': sum(
+                          bool(records(r.get('physical_items'))) and all(
+                              number(i.get('completion_ratio')) or (
+                                  i.get('future_periods_excluded') is False
+                                  and number(i.get('reported_completion_ratio')))
+                              for i in records(r.get('physical_items'))) for r in rows),
+                      'rows_with_primary_progress': sum(number(mapping(r.get('progress')).get('ratio')) for r in rows),
+                      'rss_matched': sum(mapping(r.get('rss_match')).get('status') == 'matched' for r in rows),
+                      'unmatched_records': len(pending),
+                      'pending_zero_choices': sum(not records_or_ids(i.get('selectable_contract_ids'), allowed) for i in pending),
+                      'pending_one_choice': sum(len(records_or_ids(i.get('selectable_contract_ids'), allowed)) == 1 for i in pending),
+                      'pending_multiple_choices': sum(len(records_or_ids(i.get('selectable_contract_ids'), allowed)) > 1 for i in pending),
+                  }
+                  for status in ('confirmed', 'ambiguous', 'proposed', 'unmatched'):
+                      counts['evidence_' + status] = sum(i.get('match_status') == status for i in evidence.values())
+                  for name, prefix in reason_prefixes.items():
+                      counts['pending_reason_' + name] = sum(
+                          str(i.get('match_reason') or '').startswith(prefix) for i in pending)
+                  counts['pending_reason_other'] = sum(
+                      not any(str(i.get('match_reason') or '').startswith(prefix)
+                              for prefix in reason_prefixes.values()) for i in pending)
+                  if any(type(v) is not int or v < 0 or v > 1000000 for v in counts.values()):
+                      raise ProbeError('invalid_payload')
+                  if self.health() != first_version:
+                      raise ProbeError('runtime_mismatch')
+                  if set(flags) != set(FLAG_NAMES) or any(type(value) is not bool for value in flags.values()):
+                      raise ProbeError('invalid_payload')
+                  return {'status': 'ok', 'runtime_version': first_version,
+                          'runtime_commit': self.expected, **flags, **counts}
+
+
+          def main():
+              started = time.monotonic()
+
+              def expired(signum, frame):
+                  raise ProbeError('deadline')
+
+              # Linux runner: the alarm also bounds slow streaming/JSON parsing, not just polling.
+              signal.signal(signal.SIGALRM, expired)
+              signal.alarm(TOTAL_SECONDS)
+              try:
+                  probe = Probe(os.environ.get('EXPECTED_COMMIT', ''))
+                  result = probe.run(lambda: os.environ.get('PROBE_ADMIN_KEY', ''))
+                  code = 0
+              except ProbeError as exc:
+                  result = {'status': 'error', 'error_type': 'ProbeError', 'reason_code': exc.code}
+                  code = 1
+              except Exception:
+                  # Never print server bodies, request values, private identifiers, or exception text.
+                  result = {'status': 'error', 'error_type': 'UnexpectedError', 'reason_code': 'unexpected_error'}
+                  code = 1
+              finally:
+                  signal.alarm(0)
+              result['seconds'] = round(max(0, time.monotonic() - started), 3)
+              print(json.dumps(result, sort_keys=True, allow_nan=False))
+              return code
+
+
+          if __name__ == '__main__':
+              sys.exit(main())
+          PY
