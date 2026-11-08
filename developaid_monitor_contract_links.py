@@ -168,15 +168,50 @@ def _number(value: Any) -> str:
     return _contract_number(_text(value).replace("–", "-").replace("—", "-"), reference=True).lstrip("#")
 
 
+def _explicit_contract_numbers(text: str) -> set[str]:
+    """Read a contract reference, not an ordinary word after «по договору».
+
+    Without an explicit number marker the token must contain a digit, so
+    «на устройство фасада» and «подрядчика» cannot become bogus numbers.
+    The entire token is retained: A-12, A-123 and A-12/1 remain different.
+    An empty marked reference is retained as unknown, never ignored.
+    """
+    normalized = _text(text).replace("–", "-").replace("—", "-")
+    # A marked number can follow the kind/description of a contract. The next
+    # expressly numbered entity owns its own marker instead: «корпус № 2» or
+    # «акт № 3» is not a contract reference. This grammar is shared by all
+    # automatic, proposed and manual decisions below.
+    other_entity = (r"корпус(?:а|ов|у|е|ом)?|этаж(?:а|ей|у|е|ом|и)?|"
+                    r"акт(?:а|ов|у|е|ом|ы)?|счет(?:а|ов|у|е|ом|ы)?|"
+                    r"подъезд(?:а|ов|у|е|ом|ы)?|квартир(?:а|ы|у|е|ой)?|"
+                    r"секци(?:я|и|ю|ей|ям|ях)|пункт(?:а|ов|у|е|ом|ы)?|"
+                    r"заявк(?:а|и|у|е|ой)|накладн(?:ая|ой|ую|ые|ых)|"
+                    r"письм(?:о|а|у|е|ом)|строк(?:а|и|у|е|ой)")
+    pattern = (r"(?P<contract>\b(?:договор(?:у|а|ом)?\b|дог\.))"
+               r"|(?P<other>\b(?:" + other_entity + r")(?=\W|[0-9]|$))"
+               r"|(?P<marker>№|(?<!\w)n(?:o\.?)?(?=\s))"
+               r"|(?P<boundary>[;!?]|\.(?=\s|$))")
+    token_pattern = r"\s*[«\"“']?(?P<number>[0-9a-zа-я][0-9a-zа-я_./-]*)?"
+    numbers = set()
+    contract_phrase = False
+    for match in re.finditer(pattern, normalized):
+        if match.lastgroup in {"other", "boundary"}:
+            contract_phrase = False
+            continue
+        if match.lastgroup == "contract":
+            contract_phrase = True
+        if not contract_phrase:
+            continue
+        token_match = re.match(token_pattern, normalized[match.end():])
+        token = (token_match.group("number") or "").rstrip(".") if token_match else ""
+        if match.lastgroup == "marker" or any(character.isdigit() for character in token):
+            numbers.add(_number(token))
+    return numbers
+
+
 def _explicit_number(text: str, row: dict) -> bool:
     number = _number(row.get("contract"))
-    if not number:
-        return False
-    # An apartment/floor number does not identify a contract. Require the word
-    # договор/дог. immediately before the escaped number, with a token boundary.
-    pattern = (r"\b(?:договор(?:у|а|ом)?|дог\.)\s*(?:№|n)?\s*"
-               + re.escape(number) + r"(?![\w/-])")
-    return bool(re.search(pattern, _text(text).replace("–", "-").replace("—", "-")))
+    return bool(number and number in _explicit_contract_numbers(text))
 
 
 def _selectable_contracts(evidence: dict, rows: list[dict]) -> tuple[list[dict], str]:
@@ -206,7 +241,7 @@ def _selectable_contracts(evidence: dict, rows: list[dict]) -> tuple[list[dict],
     scoped = [row for row in dated if _scope_covers(evidence, row)]
     if not scoped:
         return [], "Корпусный состав сообщения не подтверждён договором или указан неоднозначно. Уточните исходные данные."
-    if re.search(r"\b(?:договор(?:у|а|ом)?|дог\.)\s*(?:№|n)?\s*\S+", _text(evidence["text"])):
+    if _explicit_contract_numbers(evidence["text"]):
         scoped = [row for row in scoped if _explicit_number(evidence["text"], row)]
         if not scoped:
             return [], "Указанный номер не совпадает с подходящими договорами подрядчика. Проверьте номер договора в сообщении."
@@ -423,7 +458,7 @@ def enrich(project: str, register: dict, cut: str, start: str = "", *,
               and _same_party_exact(item["reported_contractor"], selectable[0].get("contractor"))
               and str(selectable[0]["id"]) not in blocked
               # A different explicitly stated number must never be ignored.
-              and not re.search(r"\b(?:договор(?:у|а|ом)?|дог\.)\s*(?:№|n)?\s*\S+", _text(item["text"]))):
+              and not _explicit_contract_numbers(item["text"])):
             chosen, basis = selectable[0], "exact_party"
         else:
             chosen, basis = None, "candidate" if selectable else "none"
