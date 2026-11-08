@@ -179,6 +179,41 @@ def _explicit_number(text: str, row: dict) -> bool:
     return bool(re.search(pattern, _text(text).replace("–", "-").replace("—", "-")))
 
 
+def _selectable_contracts(evidence: dict, rows: list[dict]) -> tuple[list[dict], str]:
+    """One admission rule for the choices on screen and a new manual link.
+
+    Broad reconciliation candidates may overlap only part of a work's scope.
+    They are not permission to confirm the entire message against that row.
+    Existing saved decisions retain their own source and remain revocable.
+    """
+    if evidence.get("party_attribution_uncertain"):
+        return [], "Подрядчик в сообщении указан неоднозначно. Уточните исходное сообщение."
+    party = evidence.get("reported_contractor") or evidence.get("contractor")
+    if not party:
+        return [], "В сообщении не указан подрядчик. Уточните исходное сообщение."
+    counts: dict[str, int] = {}
+    for row in rows:
+        identifier = str(row.get("id") or "")
+        counts[identifier] = counts.get(identifier, 0) + 1
+    same_party = [row for row in rows if counts.get(str(row.get("id") or "")) == 1
+                  and row.get("id") and _same_party_exact(party, row.get("contractor"))]
+    if not same_party:
+        return [], "Договор этого подрядчика в накопительных не найден. Проверьте подрядчика и шапки ведомостей."
+    dated = [row for row in same_party if not row.get("contract_date")
+             or row["contract_date"] <= evidence["date"]]
+    if not dated:
+        return [], "Договоры подрядчика заключены после сообщения. Проверьте даты в источниках."
+    scoped = [row for row in dated if _scope_covers(evidence, row)]
+    if not scoped:
+        return [], "Корпусный состав сообщения не подтверждён договором или указан неоднозначно. Уточните исходные данные."
+    if re.search(r"\b(?:договор(?:у|а|ом)?|дог\.)\s*(?:№|n)?\s*\S+", _text(evidence["text"])):
+        scoped = [row for row in scoped if _explicit_number(evidence["text"], row)]
+        if not scoped:
+            return [], "Указанный номер не совпадает с подходящими договорами подрядчика. Проверьте номер договора в сообщении."
+    return scoped, ("У подрядчика несколько договоров. Выберите нужный."
+                    if len(scoped) > 1 else "Проверьте предложенный договор и подтвердите связь.")
+
+
 def _signature(evidence: dict, *, source_text: str, source_contractor: str, source_context: str = "") -> str:
     # Work identity is made from the complete source, before limiting UI text.
     # Preserve raw header identity too: a legal form/party change is not a
@@ -345,13 +380,14 @@ def enrich(project: str, register: dict, cut: str, start: str = "", *,
         candidates = [row for row in rows if row.get("id") in unique
                       and _same_party_exact(item["reported_contractor"] or item["contractor"], row.get("contractor"))
                       and _compatible(item, row)]
+        selectable, selection_reason = _selectable_contracts(item, rows)
         direct = saved.get(item["id"])
         applicable = [record for record in saved.values()
                       if record["signature"] == item["signature"]
                       and str(record.get("source_date") or "9999") <= item["date"]]
         manual = direct or max(applicable, key=lambda r: (r.get("source_date") or "", r.get("confirmed_at") or ""), default={})
         blocked = {str(manual.get("contract_id") or "")} if manual.get("confirmed") is False else set()
-        explicit = [row for row in candidates if item["party_exact"]
+        explicit = [row for row in selectable if item["party_exact"]
                     and _same_party_exact(item["reported_contractor"], row.get("contractor"))
                     and (not row.get("contract_date") or row["contract_date"] <= item["date"])
                     and _scope_covers(item, row)
@@ -366,33 +402,44 @@ def enrich(project: str, register: dict, cut: str, start: str = "", *,
         # a prior confirmation is not a perpetual contractor-wide permission.
         repeat_with_same_choices = (item["date"] >= str(manual.get("source_date") or "9999")
                                     and manual.get("candidate_contract_ids") == candidate_ids)
-        if (manual.get("confirmed") is True and manual_row is not None and _scope_covers(item, manual_row)
-                and (same_source or repeat_with_same_choices)):
+        manual_applies = manual.get("confirmed") is True and (same_source or repeat_with_same_choices)
+        manual_allowed = manual_row is not None and any(row["id"] == manual_row["id"] for row in selectable)
+        if manual_applies and manual_row is not None and not manual_allowed:
+            _, reason = _selectable_contracts(item, [manual_row])
+            item["manual_review_required"] = True
+            item["manual_contract_id"] = str(manual_row["id"])
+            item["manual_review_reason"] = reason
+            # Keep the persisted decision visible and revocable, but do not
+            # send its contract's money/progress to a mismatched work in reports.
+            if item["manual_contract_id"] not in candidate_ids:
+                candidate_ids.append(item["manual_contract_id"])
+        if item.get("manual_review_required"):
+            chosen, basis = None, "manual_review"
+        elif manual_applies and manual_allowed:
             chosen, basis = manual_row, "manual"
         elif len(explicit) == 1:
             chosen, basis = explicit[0], "explicit_number"
-        elif (len(candidates) == 1 and item["party_exact"]
-              and _same_party_exact(item["reported_contractor"], candidates[0].get("contractor"))
-              and _scope_covers(item, candidates[0])
-              and str(candidates[0]["id"]) not in blocked
-              and (not candidates[0].get("contract_date") or candidates[0]["contract_date"] <= item["date"])
+        elif (len(selectable) == 1 and item["party_exact"]
+              and _same_party_exact(item["reported_contractor"], selectable[0].get("contractor"))
+              and str(selectable[0]["id"]) not in blocked
               # A different explicitly stated number must never be ignored.
               and not re.search(r"\b(?:договор(?:у|а|ом)?|дог\.)\s*(?:№|n)?\s*\S+", _text(item["text"]))):
-            chosen, basis = candidates[0], "exact_party"
+            chosen, basis = selectable[0], "exact_party"
         else:
-            chosen, basis = None, "candidate" if candidates else "none"
+            chosen, basis = None, "candidate" if selectable else "none"
         item["contract_id"] = str(chosen["id"]) if chosen else ""
         item["candidate_contract_ids"] = candidate_ids
         if chosen and item["contract_id"] not in item["candidate_contract_ids"]:
             item["candidate_contract_ids"].append(item["contract_id"])
+        item["selectable_contract_ids"] = sorted(str(row["id"]) for row in selectable)
+        item["suggested_contract_id"] = str(selectable[0]["id"]) if not chosen and len(selectable) == 1 else ""
         item["link_basis"] = basis
-        item["match_status"] = ("confirmed" if chosen else "ambiguous" if len(candidates) > 1
-                                else "proposed" if candidates else "unmatched")
+        item["match_status"] = ("confirmed" if chosen else "ambiguous" if len(selectable) > 1
+                                else "proposed" if selectable else "unmatched")
         item["status"] = _STATUS[item["match_status"]]
         item["match_reason"] = ("" if chosen else
-            "У подрядчика несколько договоров. Выберите нужный." if len(candidates) > 1 else
-            "Проверьте номер договора и корпус работ." if candidates else
-            "Договор этого подрядчика в накопительных не найден.")
+            "Прежняя ручная связь требует проверки: " + item["manual_review_reason"]
+            if item.get("manual_review_required") else selection_reason)
         item.pop("signature", None)
         item.pop("party_exact", None)
     for row in rows:
@@ -456,6 +503,11 @@ def set_link(project: str, contract_id: str, evidence_id: str, cut: str,
     evidence = found[0]
     if confirmed and not _scope_covers(evidence, rows[0]):
         raise LinkProblem("Корпусный состав строки не подтверждён составом договора или указан неоднозначно. Проверьте исходные данные.")
+    if confirmed:
+        selectable, reason = _selectable_contracts(evidence, register.get("rows") or [])
+        if str(contract_id) not in {str(row["id"]) for row in selectable}:
+            raise LinkProblem(reason if not selectable else
+                              "Договор не входит в подходящие варианты этого подрядчика. Проверьте исходные данные.")
     with _locked(project):
         value = _read(project)
         signature = evidence["signature"]
@@ -550,6 +602,6 @@ def enrich_report_works(project: str, groups: list[dict], start: Any, end: Any, 
             entry["contract_candidates"] = [
                 {"id": identifier, "label": f"Договор {by_id[identifier].get('contract') or 'без номера'}"}
                 for identifier in sorted({identifier for item in matches
-                                          for identifier in item.get("candidate_contract_ids") or []
+                                          for identifier in item.get("selectable_contract_ids") or []
                                           if identifier in by_id})]
     return out

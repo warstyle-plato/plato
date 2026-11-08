@@ -53,6 +53,8 @@ def register(project='Учебный проект'):
                                                 'text': MARKER, 'contractor': 'Подрядчик',
                                                 'match_status': 'proposed',
                                                 'candidate_contract_ids': [CONTRACT],
+                                                'selectable_contract_ids': [CONTRACT],
+                                                'suggested_contract_id': CONTRACT,
                                                 'source': {'kind': 'daily_report', 'date': '2026-11-02', 'line_index': 1}}],
                             'issues': ['Текст сообщения не подтверждает приёмку']}},
         {'id': OTHER, 'contractor': 'Другой подрядчик', 'contract': 'Д-02',
@@ -286,7 +288,7 @@ def test_term_and_each_evidence_link_require_explicit_actions():
         assert responses.links[0]['evidence_id'] == 'evidence-01'
         assert responses.links[0]['confirmed'] is True
         page.locator('#contractsDetails .evidence-remove').click()
-        expect(page.locator('#contractsDetails')).to_contain_text('Предложено соответствие', timeout=10000)
+        expect(page.locator('#contractsDetails')).to_contain_text('Предложен договор:', timeout=10000)
         assert len(responses.links) == 2
         assert responses.links[1]['confirmed'] is False
         assert not errors
