@@ -1,4 +1,5 @@
 """Isolated host tests: no model calls, auth mutations, network, or app-server."""
+import errno
 import importlib
 from pathlib import Path
 import json
@@ -371,6 +372,157 @@ def test_host_preflight_rejects_custom_config_without_reading_auth(tmp_path, mon
     monkeypatch.setattr(runtime, "os", SimpleNamespace(environ=Env()))
     with pytest.raises(SafeError, match="host_configuration_blocked"):
         runtime.host_preflight(workspace, tmp_path / "store")
+
+
+@pytest.fixture
+def preflight_host(tmp_path, monkeypatch):
+    from scripts.plato_dispatcher import runtime
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(mode=0o700)
+    home = tmp_path / "root" / ".codex"
+    home.mkdir(mode=0o700, parents=True)
+    store = Store(home / "plato-state")
+    env = {"CODEX_HOME": str(home)}
+    monkeypatch.setattr(runtime, "os", SimpleNamespace(environ=env))
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home.parent))
+    # Inspect only this synthetic host, including config metadata. Never use
+    # the running executor's home, auth, or /etc/codex configuration.
+    exists, is_symlink = Path.exists, Path.is_symlink
+    monkeypatch.setattr(Path, "exists", lambda p: p.is_relative_to(tmp_path) and exists(p))
+    monkeypatch.setattr(Path, "is_symlink", lambda p: p.is_relative_to(tmp_path) and is_symlink(p))
+    return SimpleNamespace(runtime=runtime, workspace=workspace, home=home,
+                           store=store, env=env)
+
+
+@pytest.mark.parametrize("private", ["store", "home"])
+@pytest.mark.parametrize("spelling", ["direct", "parent-alias", "parent-dotdot", "same"])
+def test_host_preflight_rejects_canonical_private_containment(preflight_host, tmp_path, private, spelling):
+    host = preflight_host
+    if spelling == "parent-alias":
+        alias = tmp_path / "alias"
+        alias.symlink_to(host.workspace, target_is_directory=True)
+        path = alias / "private"
+    elif spelling == "parent-dotdot":
+        other = tmp_path / "other"
+        other.mkdir()
+        path = other / ".." / "workspace" / "private"
+    else:
+        path = host.workspace if spelling == "same" else host.workspace / "private"
+    if private == "store":
+        host.store = Store(path)
+        assert host.store.path.resolve().is_relative_to(host.workspace.resolve())
+        assert stat.S_IMODE(host.store.path.stat().st_mode) == 0o600
+    else:
+        path.mkdir(mode=0o700, exist_ok=True)
+        host.env["CODEX_HOME"] = str(path)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o700
+    with pytest.raises(SafeError, match="^private_workspace_required$"):
+        host.runtime.host_preflight(host.workspace, host.store.directory)
+
+
+@pytest.mark.parametrize("spelling", ["direct", "parent-alias", "parent-dotdot", "default-home", "workspace-alias"])
+def test_host_preflight_accepts_disjoint_blueprint_layout(preflight_host, tmp_path, spelling):
+    host = preflight_host
+    store = host.store.directory
+    if spelling == "parent-alias":
+        alias = tmp_path / "root-alias"
+        alias.symlink_to(host.home.parent, target_is_directory=True)
+        home = alias / ".codex"
+        host.env["CODEX_HOME"], store = str(home), home / "plato-state"
+    elif spelling == "parent-dotdot":
+        other = tmp_path / "other"
+        other.mkdir()
+        home = other / ".." / "root" / ".codex"
+        host.env["CODEX_HOME"], store = str(home), home / "plato-state"
+    elif spelling == "default-home":
+        host.env.clear()
+    workspace = host.workspace
+    if spelling == "workspace-alias":
+        workspace = tmp_path / "workspace-alias"
+        workspace.symlink_to(host.workspace, target_is_directory=True)
+    assert host.runtime.host_preflight(workspace, store) == host.workspace.resolve()
+
+
+@pytest.mark.parametrize("spelling", ["direct", "missing-dotdot", "relative-alias"])
+def test_host_preflight_allows_absent_disjoint_home(preflight_host, tmp_path, spelling):
+    host = preflight_host
+    home = tmp_path / "not-created" / ".codex"
+    if spelling == "missing-dotdot":
+        home = tmp_path / "missing" / ".." / "not-created" / ".codex"
+    elif spelling == "relative-alias":
+        home = tmp_path / "home-alias"
+        home.symlink_to(Path("not-created") / ".codex", target_is_directory=True)
+    host.env["CODEX_HOME"] = str(home)
+    assert host.runtime.host_preflight(host.workspace, host.store.directory) == host.workspace.resolve()
+
+
+@pytest.mark.parametrize("spelling", ["absolute-target", "relative-target", "missing-dotdot"])
+def test_host_preflight_rejects_absent_home_inside_workspace(preflight_host, tmp_path, spelling):
+    host = preflight_host
+    alias = tmp_path / "dangling-home"
+    target = host.workspace / "not-created" / ".codex"
+    if spelling == "relative-target":
+        target = Path("workspace") / "not-created" / ".codex"
+    if spelling == "missing-dotdot":
+        alias = tmp_path / "missing" / ".." / "workspace" / "not-created" / ".codex"
+    else:
+        alias.symlink_to(target, target_is_directory=True)
+    host.env["CODEX_HOME"] = str(alias)
+    with pytest.raises(SafeError, match="^private_workspace_required$"):
+        host.runtime.host_preflight(host.workspace, host.store.directory)
+
+
+@pytest.mark.parametrize("private", ["workspace", "store", "home"])
+@pytest.mark.parametrize("blocker", ["symlink-loop", "not-directory"])
+def test_host_preflight_fails_closed_on_unresolvable_paths(preflight_host, tmp_path, private, blocker):
+    host = preflight_host
+    path = tmp_path / "blocker"
+    if blocker == "symlink-loop":
+        path.symlink_to(path)
+    else:
+        path.write_text("synthetic regular file")
+    invalid = path / "private"
+    workspace, store = host.workspace, host.store.directory
+    if private == "workspace":
+        workspace = invalid
+    elif private == "store":
+        store = invalid
+    else:
+        host.env["CODEX_HOME"] = str(invalid)
+    with pytest.raises(SafeError, match="^private_workspace_required$"):
+        host.runtime.host_preflight(workspace, store)
+
+
+@pytest.mark.parametrize("private", ["workspace", "store", "home"])
+@pytest.mark.parametrize("error", [errno.EACCES, errno.EIO])
+def test_host_preflight_fails_closed_on_resolution_os_errors(preflight_host, tmp_path, monkeypatch, private, error):
+    host = preflight_host
+    blocked = tmp_path / "blocked"
+    blocked.mkdir(mode=0o700)
+    lstat = os.lstat
+    def inaccessible(path, *args, **kwargs):
+        if Path(path) == blocked:
+            raise OSError(error, "synthetic resolution failure")
+        return lstat(path, *args, **kwargs)
+    monkeypatch.setattr(os, "lstat", inaccessible)
+    workspace, store = host.workspace, host.store.directory
+    if private == "workspace":
+        workspace = blocked
+    elif private == "store":
+        store = blocked / "queue"
+    else:
+        host.env["CODEX_HOME"] = str(blocked / ".codex")
+    with pytest.raises(SafeError, match="^private_workspace_required$"):
+        host.runtime.host_preflight(workspace, store)
+
+
+def test_host_preflight_still_rejects_final_home_symlink(preflight_host, tmp_path):
+    host = preflight_host
+    alias = tmp_path / "home-alias"
+    alias.symlink_to(host.home, target_is_directory=True)
+    host.env["CODEX_HOME"] = str(alias)
+    with pytest.raises(SafeError, match="^private_permissions_required$"):
+        host.runtime.host_preflight(host.workspace, host.store.directory)
 
 
 def test_sigterm_during_active_cli_run_persists_attention(store, tmp_path, capsys, monkeypatch):

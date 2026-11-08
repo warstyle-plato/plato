@@ -1,6 +1,7 @@
 """Single local worker; never retries an uncertain remote turn."""
 from __future__ import annotations
 
+import errno
 from importlib.metadata import version
 import os
 from pathlib import Path
@@ -36,11 +37,38 @@ class StopRequested(Exception):
     pass
 
 
+def _canonical_private_path(path: Path) -> Path:
+    """Resolve aliases while allowing missing paths, but no other OS errors."""
+    try:
+        return path.resolve(strict=True)
+    except FileNotFoundError:
+        # Unlike strict=False, this preserves permission/IO failures. A missing
+        # suffix can still use dangling symlinks or parent traversals.
+        parent = _canonical_private_path(path.parent)
+        if path.name == "..":
+            return parent.parent
+        candidate = parent / path.name
+        try:
+            target = candidate.readlink()
+        except FileNotFoundError:
+            return candidate
+        except OSError as exc:
+            if exc.errno != errno.EINVAL:  # Existing non-symlink.
+                raise
+            return candidate
+        return _canonical_private_path(parent / target)
+
+
 def host_preflight(workspace: Path, store: Path):
     """Require a dedicated clean host; do not read/copy/change its auth content."""
-    workspace = workspace.resolve(strict=True)
     home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).absolute()
-    if workspace == store or workspace in store.parents or workspace == home or workspace in home.parents:
+    try:
+        workspace = workspace.resolve(strict=True)
+        # Keep the original home for the config and final-symlink checks below.
+        private_paths = tuple(_canonical_private_path(p) for p in (store, home))
+    except (OSError, RuntimeError):
+        raise SafeError("private_workspace_required") from None
+    if any(workspace == p or workspace in p.parents for p in private_paths):
         raise SafeError("private_workspace_required")
     # Existing custom configuration could launch MCP servers or inject tools.
     # This bounded pilot accepts the stock host only, rather than guessing how
