@@ -64,8 +64,72 @@ def quantity_views(snapshot, cut):
                                     contract_date=ledger.get('contract_date') or '',
                                     contractor=ledger.get('contractor') or '',
                                     customer=ledger.get('customer') or '',
-                                    position_key=position_identity(ledger, item))
+                                    position_key=position_identity(ledger, item),
+                                    planned_work_amount=item.get('planned_work_amount'),
+                                    planned_material_amount=item.get('planned_material_amount'),
+                                    planned_cost_split=item.get('planned_cost_split') is True,
+                                    planned_work_amount_basis=item.get('planned_work_amount_basis'),
+                                    valuation_key=((item.get('source') or {}).get('filename'),
+                                                   (item.get('source') or {}).get('sheet'), ledger.get('period_year')),
+                                    is_group=item.get('is_group') is True)
+            out[f'{li}:{ii}'].update(section_path=item.get('section_path') or [],
+                                     context_headings=item.get('context_headings') or [],
+                                     parent_row=item.get('parent_row'),
+                                     object_scope=item.get('object_scope') or ledger.get('object_scope'),
+                                     system_scope=item.get('system_scope') or ledger.get('system_scope'),
+                                     site_scope=item.get('site_scope') or ledger.get('site_scope'),
+                                     scope_evidence=ledger.get('scope_evidence') or {},
+                                     planned_cost_method=item.get('planned_cost_method'))
     return out
+
+
+def aggregate_quantities(members):
+    """One owner of heterogeneous natural progress, weighted only by explicit SMR.
+
+    A monetary completion percentage is a different metric. Materials never
+    weight these already calculated quantity fractions; a zero-price real leaf
+    remains part of coverage and of the all-complete decision.
+    """
+    leaves = [member for member in members if member.get('is_group') is not True]
+    result = {'ratio': None, 'basis': 'smr_cost_weighted_quantities',
+              'label': 'По объёмам работ с весом стоимости СМР', 'complete_coverage': False,
+              'member_keys': [member.get('member_key') for member in leaves],
+              'members': len(leaves), 'excluded_groups': len(members)-len(leaves),
+              'all_complete': False, 'requires_reconciliation': False, 'reason': ''}
+    if not leaves:
+        return dict(result, reason='Нет отдельных позиций работ для расчёта процента.')
+    ratios = [contracts._number(member.get('progress')) for member in leaves]
+    if any(ratio is None or ratio < 0 for ratio in ratios):
+        return dict(result, reason='В одной из позиций не подтверждён выполненный объём.')
+    units = [str(member.get('unit') or '').strip() for member in leaves]
+    if any(not unit for unit in units):
+        return dict(result, reason='В одной из позиций не указана единица измерения.')
+    result['all_complete'] = all(abs(ratio-1.0) <= 1e-7 for ratio in ratios)
+    result['requires_reconciliation'] = any(ratio > 1.0+1e-7 for ratio in ratios)
+    if len(leaves) == 1:
+        return dict(result, ratio=ratios[0], basis='natural_quantity', label='По объёму работы', complete_coverage=True)
+    weights = [contracts._number(member.get('planned_work_amount')) for member in leaves]
+    if any(member.get('planned_cost_split') is not True or weight is None or weight < 0
+           for member, weight in zip(leaves, weights)):
+        return dict(result, reason='Для общего процента не хватает явно выделенной полной стоимости СМР по каждой позиции.')
+    bases = {member.get('planned_work_amount_basis') for member in leaves} - {None, '', 'unspecified'}
+    if 'conflicting' in bases or len(bases) > 1:
+        return dict(result, reason='Позиции имеют разные основания НДС стоимости СМР; общий процент не рассчитан.')
+    valuations = {tuple(member.get('valuation_key') or ()) for member in leaves}
+    if len(valuations) > 1 and not bases:
+        return dict(result, reason='Для стоимостных весов разных ведомостей не подтверждена общая база.')
+    total = math.fsum(weights)
+    if total <= 0:
+        return dict(result, reason='Нет положительной полной стоимости СМР для весов общего процента.')
+    if any(weight == 0 and abs(ratio-1.0) > 1e-7 for weight, ratio in zip(weights, ratios)):
+        result['requires_reconciliation'] = True
+        result['reason'] = 'Есть незавершённые работы с нулевой стоимостью СМР; 100% стоимостного веса не подтверждают завершение всех работ.'
+    fingerprint = hashlib.sha256(json.dumps(sorted([(member.get('member_key'), weight,
+        member.get('planned_work_amount_basis'), member.get('valuation_key'))
+        for member, weight in zip(leaves, weights)], key=lambda value: str(value[0])),
+        ensure_ascii=False, sort_keys=True, default=list).encode()).hexdigest()
+    return dict(result, ratio=math.fsum(ratio*weight for ratio, weight in zip(ratios, weights))/total,
+                complete_coverage=True, planned_work_amount=total, weight_fingerprint=fingerprint)
 
 
 def project_configuration(previous, current, configuration):

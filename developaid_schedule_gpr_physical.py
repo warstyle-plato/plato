@@ -40,13 +40,30 @@ def _source(project, cut=""):
                 "state": "unapproved_corpus" if corpus else "missing"}
     data = path.read_bytes()
     parsed = monitor._read_baseline_gpr_bytes(data)
+    hierarchy = {}
+    for row in parsed.get("rows") or []:
+        wbs = str(row.get("wbs") or "").strip().rstrip(".")
+        if wbs:
+            hierarchy.setdefault(wbs, []).append(row)
     tasks = {}
     for row in parsed.get("works") or []:
         tid = str(row.get("id") or row.get("wbs") or "").strip()
         if not tid or tid in tasks:
             raise PhysicalProblem("В утверждённом ГПР нет уникальных идентификаторов работ.")
+        wbs = str(row.get("wbs") or "").strip().rstrip(".")
+        prefixes = [".".join(wbs.split(".")[:depth]) for depth in range(1, len(wbs.split(".")))]
+        ambiguous = any(len(hierarchy.get(prefix) or []) > 1 for prefix in prefixes)
+        parents = [hierarchy[prefix][0] for prefix in prefixes if len(hierarchy.get(prefix) or []) == 1]
         tasks[tid] = {"task_id": tid, "name": row.get("name") or tid,
                       "object": row.get("object") or "",
+                      "wbs": wbs, "section": row.get("section") or "",
+                      "estimate_code": row.get("estimate_code") or "",
+                      "estimate_name": row.get("estimate_name") or "",
+                      "parent_path": ([{"id": str(parent.get("id") or ""),
+                                        "wbs": str(parent.get("wbs") or ""),
+                                        "name": str(parent.get("name") or "")}
+                                       for parent in parents] if not ambiguous else []),
+                      "hierarchy_ambiguous": ambiguous,
                       "plan_start": monitor._iso(row.get("start")),
                       "plan_finish": monitor._iso(row.get("finish"))}
     return {"source_sha256": hashlib.sha256(data).hexdigest(), "tasks": tasks, "reason": "",
@@ -262,7 +279,11 @@ def catalog(project, cut, query="", offset=0):
             ("name", "scope", "unit", "plan_quantity", "completed_quantity", "period_year",
              "contract", "contract_date", "contractor", "source", "completion_ratio",
              "reported_completed_quantity", "reported_completion_ratio", "reported_material_quantity",
-             "snapshot_date", "quantity_date", "quantity_basis", "future_periods_excluded")})
+             "snapshot_date", "quantity_date", "quantity_basis", "future_periods_excluded", "position", "customer",
+             "section_path", "object_scope", "system_scope", "is_group", "parent_row",
+             "site_scope", "scope_evidence", "context_headings", "planned_cost_method",
+             "planned_work_amount", "planned_material_amount", "planned_cost_split",
+             "planned_work_amount_basis", "valuation_key")})
             for key, item in cumulative_progress.quantity_views(snapshot, cut).items()
             if not query or query in " ".join(str(item.get(k) or "") for k in
                                                ("name", "scope", "contract", "contractor")).casefold()]
