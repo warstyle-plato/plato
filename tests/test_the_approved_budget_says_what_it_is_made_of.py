@@ -186,9 +186,9 @@ def test_limit_is_paid_plus_left_and_budget_is_limit_plus_own_money(tmp_path):
     assert own["from"] == "2026-11-01"
 
     lines = dashboard.own_money_lines(own, report._rub)
-    assert lines[0] == ("Бюджет 1,4 млн ₽: оплачено на дату 720 000 ₽, остаток лимита "
-                        "510 000 ₽, расчётная дополнительная потребность 180 000 ₽.")
-    assert "Факт финансовой базы и оплаты на дату не совпадают: 30 000 ₽." in lines
+    assert lines[0] == ("Бюджет 1,4 млн ₽: оплачено на дату 720 000 ₽, доступный остаток лимита "
+                        "540 000 ₽, расчётная дополнительная потребность 180 000 ₽.")
+    assert "Факт финансовой базы и оплаты на дату различаются; в сверке использованы оплаты на дату: 30 000 ₽." in lines
     assert own['reconciliation']['budget'] == pytest.approx(own['reconciliation']['rhs'])
     assert own['reconciliation']['primary_source_gate'] == 'BLOCKED'
 
@@ -230,12 +230,12 @@ def test_the_tiles_add_up_on_the_page(tmp_path, monkeypatch):
     assert tiles["Оплачено с начала проекта"]["value"] == report._rub(own["paid"])
     assert tiles["Оплачено с начала проекта"]["note"] == (
         "На 2026-10-20. " + source_notes["paid"])
-    assert tiles["Остаток лимита банка"]["value"] == report._rub(own["left"])
-    assert tiles["Остаток лимита банка"]["note"] == (
-        "Лимит минус оплаченное. " + source_notes["left"])
+    assert tiles["Доступный остаток лимита банка"]["value"] == report._rub(own["reconciliation"]["available_bank_limit"])
+    assert tiles["Доступный остаток лимита банка"]["note"] == (
+        "Положительные остатки лимитов на ту же дату. " + source_notes["left"])
     need = tiles["Расчётная дополнительная потребность"]
     assert need["value"] == report._rub(own["need"])
-    assert "Финансовая сверка не завершена" in need["note"]
+    assert "Утверждённый бюджет минус оплаты" in need["note"]
     assert source_notes['need'] in need['note']
     for row in own['reconciliation']['display_rows']:
         assert tiles[row['label']]['value'] == report._rub(row['value'])
@@ -250,7 +250,7 @@ def test_the_tiles_add_up_on_the_page(tmp_path, monkeypatch):
     assert ("<div class='k'>Утверждённый бюджет <span class='i' tabindex='0' role='note' "
             "title='Утверждённый бюджет — сумма") in page
     assert "Сверка бюджета и финансирования" in report._funding_html(built)
-    assert "Факт финансовой базы и оплаты на дату не совпадают: 30 000 ₽" in report.render_text(built)
+    assert "Факт финансовой базы и оплаты на дату различаются; в сверке использованы оплаты на дату: 30 000 ₽" in report.render_text(built)
 
 
 # --- Нехватка не прыгает при смене месяца сводки.
@@ -378,7 +378,7 @@ def test_chapter_two_by_the_funding_schedule(tmp_path, monkeypatch):
     assert own["need"] == pytest.approx(own["budget"] - own["limit"] - 130 * K
                                         - own["accounting"])
     text = " ".join(dashboard.own_money_lines(own, report._rub))
-    assert 'Различие бюджета модели и проверяемого графика: 130 000 ₽' in text
+    assert 'Различие бюджета модели и программы графика; общий бюджет не уменьшает: 130 000 ₽' in text
     assert own['reconciliation']['admin_schedule']['state'] == 'incomplete'
     assert own['reconciliation']['confirmed_additional'] is None
 
@@ -398,6 +398,6 @@ def test_admin_expenses_are_named_apart_and_not_assumed_covered(tmp_path):
     assert "Административные расходы без налогов — 40 000 ₽" in text
     assert "ФАКТ финмодели 20 000 ₽, ПЛАН 20 000 ₽" in text
     assert "глава 2 — 40 000 ₽" in text
-    assert "Покрытие АХР и их включение в дефицит не подтверждены" in text
+    assert "Постатейное покрытие АХР и состав календарной программы не подтверждены" in text
     assert "уже входят" not in text
     assert "лимита не хватит" not in text

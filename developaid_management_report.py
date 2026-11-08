@@ -2096,16 +2096,16 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
         text = text[:1].upper() + text[1:] + "."
         own = limit.get("own_money") if limit.get("known") else None
         reconciliation = (own or {}).get("reconciliation")
-        short = (float(reconciliation.get("calculated_additional") or 0.0) if reconciliation else
+        short = (reconciliation.get("calculated_additional") if reconciliation else
                  float(own["need"]) if own
                  else float(limit.get("additional_financing") or 0) if limit.get("known") else 0.0)
         # Фраза «участок и проценты не входят» — про потребность банка по главам
         # 2–3; у «своих денег сверх сметы» участок входит, и её там нет.
-        if not own and short > 0 and _gap_note(limit):
+        if not own and short is not None and short > 0 and _gap_note(limit):
             text += " " + _gap_note(limit)
         add("Финансирование", text,
             f"РСС от {_day(block['rss'])}, расчёт Монитора, план финмодели",
-            "bad" if short > 0 else "")
+            "bad" if short is not None and short > 0 else "")
     else:
         add("Финансирование", block.get("reason") or "Данных нет.", "", "missing")
 
@@ -3960,7 +3960,7 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
             for row in reconciliation["display_rows"]:
                 if row["key"] not in {"budget", "bank_limit_total"}:
                     add(row["label"], _rub(row["value"]), row["note"],
-                        "missing" if row["key"] not in {"paid_at_cut", "remaining_bank_limit"} else "")
+                        "missing" if row["key"] not in {"paid_at_cut", "remaining_bank_limit", "available_bank_limit"} else "")
         else:
             add("Оплачено с начала проекта", _rub(own["paid"]),
                 f"из них кредитом {_rub(own['borrowed'])}, своими деньгами {_rub(own['own_paid'])}")
@@ -4032,6 +4032,7 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
         source_for = {"Утверждённый бюджет": "budget", "Лимит банка": "limit",
                       "Оплачено с начала проекта": "paid", "Выбрано у банка": "paid",
                       "Остаток лимита банка": "left",
+                      "Доступный остаток лимита банка": "left",
                       "Осталось по смете после всех оплат": "left",
                       "Нужно своих денег сверх сметы банка": "need",
                       "Расчётная дополнительная потребность": "need",

@@ -146,7 +146,7 @@ def test_admin_uncertainty_survives_real_html_and_pdf(tmp_path, monkeypatch, wid
     monkeypatch.setattr(report, '_monitor_view', lambda *a: {'dashboard': {'funding': funding}})
     built = report.build(PROJECT, 'week', '2026-10-31')
     html = report.render_html(built)
-    warning = 'Покрытие АХР и их включение в дефицит не подтверждены'
+    warning = 'Постатейное покрытие АХР и состав календарной программы не подтверждены'
     assert warning in report.render_text(built)
     chrome = str(chromium_or_skip())
     with sync_playwright() as pw:

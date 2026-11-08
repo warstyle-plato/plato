@@ -94,71 +94,99 @@ def admin_schedule_policy(comp: dict, schedule: dict | None, chapter: str,
 
 def build(own: dict, comp: dict, chapter_flow: dict, cut: str,
           schedule_policy: dict | None = None, schedule: dict | None = None) -> dict:
-    """Explain the same budget using independently calculated source components.
+    """Compare the complete approved budget with payments and available limits.
 
-    The bridge is B = paid + remaining limit + calculated additional + named
-    unresolved components - unused capacity. Additional is derived from chapter
-    needs, not assigned the unexplained residual of the equation.
+    The budget gap is a legitimate subtraction of independently read totals.
+    The schedule controls calendar comparisons, never the approved budget. A
+    missing article allocation cannot make known aggregate totals unknown.
     """
     fields = comp.get("known_fields") or {}
     budget = number(comp.get("total")) if fields.get("total", True) else None
     paid = number(own.get("paid")) if own.get("payments_known", True) else None
-    left = number(own.get("left")) if own.get("payments_known", True) and own.get("limits_known", True) else None
+    limit = number(own.get("limit")) if own.get("limits_known", True) else None
+    left = (number(own.get("left")) if paid is not None and limit is not None else None)
+    rows = [r for r in own.get("rows") or [] if r.get("chapter")]
+    chapters = {r["chapter"] for r in rows}
     unallocated = chapter_flow.get("") or {}
     unmapped = number(unallocated.get("total", 0.0))
-    rows = own.get("rows") or []
-    chapters = {row.get("chapter") for row in rows if row.get("chapter")}
-    amounts = [number(row.get("amount")) for row in rows if row.get("chapter")]
-    outside_values = [number(flow.get("total")) for ch, flow in chapter_flow.items()
+    outside_values = [number(f.get("total")) for ch, f in chapter_flow.items()
                       if ch and ch not in chapters]
     outside = sum(outside_values) if all(v is not None for v in outside_values) else None
-    # Unused capacity in one chapter cannot pay the positive shortage of a
-    # different chapter. Preserve both sides of that restriction in the bridge.
-    additional = sum(max(0.0, v) for v in amounts if v is not None)
-    unused = sum(max(0.0, -v) for v in amounts if v is not None)
+    chapter_values = [(number((chapter_flow.get(r["chapter"]) or {}).get("total")),
+                       number(r.get("paid")), number(r.get("left"))) for r in rows]
+    totals_known = budget is not None and paid is not None and limit is not None and left is not None
+    # Full limit includes payments. Only positive remainders are available;
+    # payments exceeding a chapter limit do not reduce another chapter's cash.
+    row_lefts = [number(r.get("left")) for r in rows]
+    available = (sum(max(0.0, v) for v in row_lefts) if totals_known and rows
+                 and all(v is not None for v in row_lefts) else
+                 max(0.0, left) if totals_known else None)
+    over_limit = (sum(max(0.0, -v) for v in row_lefts) if available is not None and rows
+                  and all(v is not None for v in row_lefts) else
+                  max(0.0, -left) if totals_known else None)
+    chapter_scope_known = (totals_known and bool(rows) and unmapped == 0 and outside == 0
+                           and all(all(v is not None for v in values) for values in chapter_values)
+                           and abs(sum(v[0] for v in chapter_values) - budget) <= 1e-6 * max(1., abs(budget))
+                           and abs(sum(v[1] for v in chapter_values) - paid) <= 1e-6 * max(1., abs(paid)))
+    # The economic article map is not a bank restriction. Moving the same
+    # admin cost between chapters must not change the aggregate budget gap.
+    # Chapter comparisons remain diagnostics until an independently verified
+    # restriction on using a limit is available.
+    if totals_known:
+        applicable = min(available, max(0., budget - paid))
+        additional = max(0., budget - paid - available)
+        paid_excess = max(0., paid - budget)
+    else:
+        applicable = additional = paid_excess = None
+    unused = available - applicable if available is not None and applicable is not None else None
+    rhs = paid + available + additional - unused - paid_excess if totals_known else None
+    matches = (abs(budget - rhs) <= 1e-6 * max(1., abs(budget))
+               if budget is not None and rhs is not None else False)
+    section_totals = [number(s.get("total")) for s in comp.get("sections") or []]
+    composition_matches = (all(v is not None for v in section_totals)
+                           and abs(sum(section_totals) - budget) <= 1e-6 * max(1., abs(budget))
+                           if section_totals and budget is not None else None)
+    if composition_matches is False:
+        matches = False
+    # These explain different source versions/compositions; they are never
+    # plugs added to or subtracted from the approved-budget equation.
     components = [
         {"kind": "unallocated_budget", "amount": unmapped,
-         "reason": "Расходы без подтверждённой денежной главы"},
+         "reason": "Включено в общий бюджет; денежная глава не подтверждена"},
         {"kind": "schedule_difference", "amount": number(own.get("model_over_schedule")),
-         "reason": "Различие бюджета модели и проверяемого графика"},
+         "reason": "Различие бюджета модели и программы графика; общий бюджет не уменьшает"},
         {"kind": "payment_difference", "amount": number(own.get("accounting")),
-         "reason": "Факт финансовой базы и оплаты на дату не совпадают"},
+         "reason": "Факт финансовой базы и оплаты на дату различаются; в сверке использованы оплаты на дату"},
         {"kind": "outside_bank_scope", "amount": outside,
-         "reason": "Оплаты и покрытие расходов вне выбранных банковских глав не сверены"},
+         "reason": "Расходы вне выбранных банковских глав включены в общий бюджет"},
     ]
-    policy = schedule_policy or {"state": "not_replaced", "items": [], "added_to_need": 0.0}
     reasons = []
-    if budget is None or any(not fields.get(k, True) for k in ("fact", "plan", "monthly")):
-        reasons.append("В финансовой базе есть неизвестные денежные значения")
-    if not own.get("payments_known", True):
-        reasons.append("Оплаты на дату не прочитаны для всех выбранных глав")
-    if not own.get("limits_known", True):
-        reasons.append("Лимит не прочитан для всех выбранных глав")
-    if unmapped is None or unmapped:
-        reasons.append("Часть бюджета не распределена по денежным главам")
-    if policy["state"] == "incomplete":
-        reasons.append("Требуется сверить включение АХР в график финансирования")
-    if any(r["amount"] is None or abs(r["amount"]) > 0.5 for r in components[1:]):
-        reasons.append("Бюджет, график и оплаты требуют сверки состава и дат")
-    amount_known = (budget is not None and all(fields.get(k, True) for k in ("fact", "plan", "monthly"))
-                    and policy.get("programme_known", True) is True
-                    and all(v is not None for v in amounts)
-                    and paid is not None and left is not None
-                    and (bool(rows) or budget == 0.0))
-    values = [paid, left, *[r["amount"] for r in components]]
-    rhs = (paid + left + additional + sum(r["amount"] for r in components) - unused
-           if amount_known and all(v is not None for v in values) else None)
-    matches = (abs(budget - rhs) <= 1e-6 * max(1.0, abs(budget))
-               if budget is not None and rhs is not None else False)
-    if not matches:
-        reasons.append("Состав исходных сумм не даёт арифметической сверки")
-    result = {"schema": 1, "cut": cut, "budget": budget, "paid_at_cut": paid,
-            "bank_limit_total": (number(own.get("limit")) if own.get("limits_known", True) else None),
-            "remaining_bank_limit": left,
-            "calculated_additional": additional if amount_known else None,
-            "confirmed_additional": None, "unused_capacity": unused if amount_known else None,
+    if composition_matches is False:
+        reasons.append("Итог утверждённого бюджета не равен сумме его разделов")
+    if budget is None:
+        reasons.append("Утверждённый бюджет не прочитан полностью")
+    if paid is None:
+        reasons.append("Оплаты на дату не прочитаны для всего выбранного состава")
+    if limit is None:
+        reasons.append("Лимит не прочитан для всего выбранного состава")
+
+    policy = schedule_policy or {"state": "not_replaced", "items": [], "added_to_need": 0.0}
+    schedule_known = (all(fields.get(k, True) for k in ("fact", "plan", "monthly"))
+                      and policy.get("programme_known", True) is True
+                      and totals_known)
+    result = {"schema": 2, "basis": "approved_budget", "cut": cut,
+            "budget": budget, "paid_at_cut": paid, "bank_limit_total": limit,
+            "remaining_bank_limit": left, "available_bank_limit": available,
+            "applicable_bank_coverage": applicable, "over_limit_paid": over_limit,
+            "calculated_additional": additional, "aggregate_additional":
+                max(0., budget - paid - available) if totals_known else None,
+            "confirmed_additional": None, "unused_capacity": unused,
+            "paid_above_budget": paid_excess,
+            "coverage_scope": "aggregate", "bank_chapters": sorted(chapters),
+            "chapter_mapping_complete": bool(chapter_scope_known),
             "components": components, "rhs": rhs, "matches": matches,
-            "state": "needs_reconciliation" if reasons else "arithmetically_reconciled",
+            "composition_matches": composition_matches,
+            "state": "arithmetically_reconciled" if matches else "needs_reconciliation",
             "reasons": reasons, "admin_schedule": policy,
             "primary_source_gate": "BLOCKED", "financial_acceptance_performed": False,
             "payment_identity_verified": None, "source_dates": {},
@@ -168,8 +196,13 @@ def build(own: dict, comp: dict, chapter_flow: dict, cut: str,
                 "monthly": dict(unallocated.get("monthly") or {}),
                 "paid_at_cut": None, "funding_coverage": None}}
     result["display_rows"] = display_rows(result)
-    result["need_breakdown"] = need_breakdown(own, comp, cut, amount_known, schedule)
-    result["need_breakdown"]["display_rows"] = breakdown_rows(result["need_breakdown"])
+    result["need_breakdown"] = need_breakdown(own, comp, cut, schedule_known, schedule)
+    detail = result["need_breakdown"]
+    detail["approved_budget_gap"] = additional
+    programme_gap = detail["calculated_chapter_total"]
+    detail["programme_vs_approved_gap"] = (programme_gap - additional
+                                           if programme_gap is not None and additional is not None else None)
+    detail["display_rows"] = breakdown_rows(detail)
     return result
 
 
@@ -214,11 +247,15 @@ def need_breakdown(own: dict, comp: dict, cut: str, known: bool,
         code = str(item.get("code") or "")
         items.append({"code": code, "name": item.get("name") or "", "chapter": item.get("chapter") or "",
                       "kind": "admin" if code == "2.4" or code.startswith("2.4.") else "model_article",
+                      "economic_kind": "admin" if code == "2.4" or code.startswith("2.4.") else "other",
+                      "bank_chapter": item.get("chapter") or None,
+                      "bank_chapter_candidates": list(item.get("chapter_candidates") or []),
+                      "bank_sources": list(item.get("bank_source_candidates") or []),
                       "source": item.get("source") or {},
                       "model_plan": number(item.get("plan")) if (item.get("known_fields") or {}).get("plan", True) else None,
                       "monthly_model_plan": dict(item.get("monthly") or {}),
                       "to_pay_at_cut": None, "covered": None, "uncovered": None,
-                      "reason": "Нет проверенной денежной привязки оплат и доступного лимита к этой строке"})
+                      "reason": "Покрытие отдельных работ из графика ещё не разобрано и не подтверждено"})
     details = []
     for item in (schedule or {}).get("detail_rows") or []:
         details.append({**item, "to_pay_at_cut": None, "covered": None, "uncovered": None,
@@ -237,9 +274,9 @@ def display_rows(r: dict) -> list[dict]:
     rows = [row("budget", "Утверждённый бюджет"),
             row("bank_limit_total", "Лимит банка", "Полный лимит уже включает оплаченное"),
             row("paid_at_cut", "Оплачено с начала проекта", "На " + r["cut"]),
-            row("remaining_bank_limit", "Остаток лимита банка", "Лимит минус оплаченное"),
+            row("available_bank_limit", "Доступный остаток лимита банка", "Положительные остатки лимитов на ту же дату"),
             row("calculated_additional", "Расчётная дополнительная потребность",
-                "Финансовая сверка не завершена. " + "; ".join(r["reasons"]))]
+                "Утверждённый бюджет минус оплаты и применимое доступное покрытие. " + "; ".join(r["reasons"]))]
     names = {"unallocated_budget": "Бюджет без денежной главы",
              "schedule_difference": "Разница модели и графика",
              "payment_difference": "Несверенные оплаты",
@@ -249,7 +286,13 @@ def display_rows(r: dict) -> list[dict]:
              for item in r["components"] if item["amount"] is None or abs(item["amount"]) > 0.5]
     if r["unused_capacity"] is not None and r["unused_capacity"] > 0.5:
         rows.append(row("unused_capacity", "Неиспользуемая часть лимита",
-                        "Вычитается из суммы источников в сверке бюджета"))
+                        "Не покрывает остаток утверждённого бюджета выбранного состава"))
+    if r["paid_above_budget"] is not None and r["paid_above_budget"] > 0.5:
+        rows.append(row("paid_above_budget", "Оплачено сверх бюджета главы",
+                        "Вычитается из источников при сверке утверждённого бюджета"))
+    if r["over_limit_paid"] is not None and r["over_limit_paid"] > 0.5:
+        rows.append(row("over_limit_paid", "Оплачено сверх лимитов глав",
+                        "Уже оплачено; не является доступным остатком"))
     return rows
 
 
@@ -263,7 +306,7 @@ def breakdown_rows(detail: dict) -> list[dict]:
                      "source_plan": None, "to_pay": ch["to_pay"], "covered": cover,
                      "uncovered": ch["calculated_uncovered"],
                      "note": ("Включает превышение лимита уже оплаченным; это не будущая работа"
-                              if ch["past_over_limit"] else "Расчёт по программе главы; по работам не распределён")})
+                              if ch["past_over_limit"] else "Программа главы; не является распределением общей доппотребности")})
         if ch["past_over_limit"]:
             rows.append({"kind": "past", "name": "Глава " + ch["chapter"],
                          "period": "Превышение лимита уже оплаченным", "source_plan": None,
@@ -271,7 +314,7 @@ def breakdown_rows(detail: dict) -> list[dict]:
                          "note": "Входит в итог главы; не относится к неоплаченным работам"})
         rows += [{"kind": "month", "name": "Глава " + ch["chapter"], "period": m["month"],
                   "source_plan": None, "to_pay": m["to_pay"], "covered": m["covered"],
-                  "uncovered": m["uncovered"], "note": "Часть итога главы, не дополнительная сумма"}
+                  "uncovered": m["uncovered"], "note": "Часть программы главы, не дополнительная сумма к общему дефициту"}
                  for m in ch["months"]]
     for item in detail["model_articles"]:
         source = item["source"]
@@ -294,11 +337,13 @@ def lines(reconciliation: dict | None, money: Any) -> list[str]:
         return []
     r = reconciliation
     out = [f"Бюджет {money(r['budget'])}: оплачено на дату {money(r['paid_at_cut'])}, "
-           f"остаток лимита {money(r['remaining_bank_limit'])}, расчётная дополнительная "
+           f"доступный остаток лимита {money(r['available_bank_limit'])}, расчётная дополнительная "
            f"потребность {money(r['calculated_additional'])}."]
     for item in r["components"]:
         if item["amount"] is None or abs(item["amount"]) > 0.5:
             out.append(item["reason"] + ": " + money(item["amount"]) + ".")
+    if r["paid_above_budget"] is not None and r["paid_above_budget"] > 0.5:
+        out.append("Оплачено сверх бюджета главы: " + money(r["paid_above_budget"]) + ".")
     if r["unused_capacity"] is not None and r["unused_capacity"] > 0.5:
         out.append("Неиспользуемая часть лимита: " + money(r["unused_capacity"]) + ".")
     if r["reasons"]:

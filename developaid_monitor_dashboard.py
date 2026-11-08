@@ -293,11 +293,10 @@ def _fm_is_tax(code: str) -> bool:
 # «по финмодели посчитали, сколько надо денег, вычитаем всё, что может дать
 # банк, — это и есть потребность в допфинансировании»).
 _FM_CREDIT_LABEL = "Поступления кредитов (ПФ)"
-# Разделы финмодели, которые банк финансирует по главам сметы (владелец,
-# 24.10.2026: «сколько надо ещё денег в банке взять, чтобы достроить и продать
-# (2–3 главы)»; «тогда по модели»). Явная карта: раздел → глава, подпись.
-# АХР и налоги (2.4) банк не финансирует, земля (2.1) — глава 1, в вопрос
-# владельца не входит.
+# Разделы прежнего вопроса о программе стройки и коммерции (главы 2–3).
+# Это календарный состав программы, не признак банковской финансируемости.
+# Экономические АХР могут входить в разные главы РСС; общая сверка всегда
+# берёт полный утверждённый состав бюджета, без повторного добавления АХР.
 # Подпись — именительный и винительный падеж («на стройку», «на коммерцию»).
 _FM_SECTIONS = {"2.2": ("2", "стройка", "стройку"), "2.3": ("3", "коммерция", "коммерцию")}
 # «Остаток к выполнению на 01.04.27» финкниги — для финмодели потребность с
@@ -641,6 +640,16 @@ def _read_finance_model(wb: Any, path: Path) -> dict[str, Any]:
          "known_fields": {name: known_money(meta["row"], column)
                           for name, column in (("total", total_col), ("fact", fact_col),
                                                ("plan", plan_col))},
+         "bank_source_candidates": [
+             {"bdds_code": item["bdds_code"], "rss_code": item["estimate_code"],
+              "bank_chapter": item["estimate_code"].split(".")[0],
+              "rss_name": item.get("estimate_name") or "",
+              "map_source": {"sheet": "статьи_БДДС", "bdds_column": 7, "rss_column": 9},
+              "amount": None, "money_share": None, "period": None,
+              "monetary_allocation_known": False}
+             for item in crosswalk if item.get("estimate_code") and
+             (item["bdds_code"] == meta["code"] or
+              item["bdds_code"].startswith(meta["code"] + "."))],
          "chapter_candidates": sorted({item["estimate_code"].split(".")[0]
              for item in crosswalk if item.get("estimate_code") and
              (item["bdds_code"] == meta["code"] or
@@ -672,6 +681,8 @@ def _read_finance_model(wb: Any, path: Path) -> dict[str, Any]:
                               if monitor._day(m) and monitor._day(m) >= _TAIL_FROM),
         "articles": articles,
         "chapters": list(chapters),
+        # Explicit full approved-project frame, independent of map destinations.
+        "funding_scope": {"chapters": list(CHAPTERS), "basis": "full_approved_project_budget"},
         "chapters_reason": "; ".join(reasons),
         "credit_plan": credit_plan,
         "sections": sections,
@@ -1485,13 +1496,13 @@ def admin_expense_lines(admin: dict[str, Any] | None, money: Any) -> list[str]:
     if parts:
         out.append("Денежная карта АХР: " + "; ".join(parts) + ". "
                    "Соответствие статье сметы не подтверждает кредитное покрытие.")
-    out.append("Покрытие АХР и их включение в дефицит не подтверждены: "
+    out.append("Постатейное покрытие АХР и состав календарной программы не подтверждены: "
                + "; ".join(admin["reasons"]) + ". "
                + (f"Неучтённый в графике подтверждённый план АХР {money(admin['added_to_need'])} "
                   "включён в потребность один раз. " if admin.get("added_to_need") else
                   "Непроверенная сумма отдельно не прибавлена, чтобы не задвоить расходы. ")
                +
-               "Итог финансирования требует сверки АХР; это не подтверждение, что лимита хватит.")
+               "АХР входят в утверждённый бюджет один раз. Проверка программы не меняет общий бюджетный расчёт.")
     return out
 
 
@@ -1849,11 +1860,18 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
         return unavailable(baseline.get("reason", "нет финансового baseline"))
 
     estimate = actuals.read_estimate(rss)
-    chapters = tuple(baseline.get("chapters") or ("2", "3"))
+    finmodel = baseline.get("kind") == "finmodel"
+    # Bank totals describe the same fixed selected scope independently of
+    # economic article classification or a missing monetary crosswalk.
+    frame = baseline.get("funding_scope") or {}
+    chapters = (tuple(frame.get("chapters") or CHAPTERS) if finmodel
+                else tuple(baseline.get("chapters") or ("2", "3")))
+    if (not chapters or len(set(chapters)) != len(chapters)
+            or any(ch not in CHAPTERS for ch in chapters)):
+        return unavailable("Не подтверждён банковский состав сверки бюджета")
     current = _rss_ch23(estimate, chapters)
     paid = _paid_in_chapters(rss, estimate, chapters)
     paid_actual = paid["total"]
-    finmodel = baseline.get("kind") == "finmodel"
     sections = baseline.get("sections") if finmodel else None
     if finmodel and not all(ch in (sections or {}) for ch in _FM_BANK_CHAPTERS):
         wanted = ", ".join(f"«{code}»" for code in _FM_SECTIONS)

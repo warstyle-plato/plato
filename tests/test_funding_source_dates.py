@@ -81,7 +81,7 @@ def test_distinct_source_dates_reach_all_views_and_visible_cards(tmp_path, monke
     tiles = {item["label"]: item for item in report.tiles(built)}
     for title, key in (("Утверждённый бюджет", "budget"), ("Лимит банка", "limit"),
                        ("Оплачено с начала проекта", "paid"), ("Выбрано у банка", "paid"),
-                       ("Остаток лимита банка", "left"), ("Расчётная дополнительная потребность", "need")):
+                       ("Доступный остаток лимита банка", "left"), ("Расчётная дополнительная потребность", "need")):
         assert expected[key] in tiles[title]["note"]  # printed, not only in a hidden tooltip
     assert "14.10.2026–20.10.2026" in tiles["Выбрано у банка"]["note"]
     assert "с начала месяца (01.10.2026–20.10.2026)" in tiles["Выбрано у банка"]["note"]
