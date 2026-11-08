@@ -22,6 +22,7 @@ import developaid_actuals as actuals
 import developaid_monitor as monitor
 import developaid_monitor_contract_risk as contract_risk
 from developaid_monitor_ledgers import amount_basis as _amount_basis
+from developaid_monitor_ledgers import basis_metadata_current as _basis_metadata_current
 
 
 class ContractProblem(ValueError):
@@ -755,7 +756,8 @@ def build(project: str, cut: str = "") -> dict:
             planned_bases = {item.get("planned_amount_basis") for item in source_items} - {None, "", "unspecified"}
             completed_bases = ({item.get("completed_amount_basis") for item in source_items}
                                | {p.get("amount_basis") for item in source_items for p in item.get("periods") or []}) - {None, "", "unspecified"}
-            statement_comparable = ("conflicting" not in planned_bases | completed_bases
+            statement_comparable = (_basis_metadata_current(snapshot)
+                                    and "conflicting" not in planned_bases | completed_bases
                                     and len(planned_bases) <= 1 and len(completed_bases) <= 1
                                     and not (planned_bases and completed_bases and planned_bases != completed_bases))
             source_split = bool(source_items) and all(item.get("amount_split")

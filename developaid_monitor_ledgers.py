@@ -26,6 +26,7 @@ from typing import Any
 import developaid_monitor as monitor
 
 MAX_ARCHIVE_BYTES = 20 * 1024 * 1024
+PARSER_SCHEMA = 1
 MAX_UNPACKED_BYTES = 100 * 1024 * 1024
 MAX_FILE_BYTES = 20 * 1024 * 1024
 MAX_FILES = 100
@@ -795,7 +796,8 @@ def parse_archive(data: bytes, filename: str = '') -> dict:
         raise LedgerProblem('Выберите ZIP-архив с накопительными книгами Excel.')
     members = _zip_members(data)
     budget = {'text_bytes': 0}
-    result = {'files': [], 'ledgers': [], 'summary_contracts': [], 'warnings': [], 'identity_schema': 4}
+    result = {'files': [], 'ledgers': [], 'summary_contracts': [], 'warnings': [],
+              'identity_schema': 4, 'parser_schema': PARSER_SCHEMA}
     if not members:
         raise LedgerProblem('Архив пуст. Добавьте накопительные книги Excel.')
     for name, payload in members:
@@ -1011,13 +1013,44 @@ def list_snapshots(project: str) -> list[dict]:
     return out
 
 
+def basis_metadata_current(snapshot: dict) -> bool:
+    return snapshot.get('parser_schema') == PARSER_SCHEMA and all(
+        item.get(field) in {'with_vat', 'without_vat', 'unspecified', 'conflicting'}
+        for ledger in snapshot.get('ledgers') or [] for item in ledger.get('items') or []
+        for field in ('planned_amount_basis', 'completed_amount_basis'))
+
+
+def read_snapshot(project: str, snapshot_id: str) -> dict:
+    """Read one immutable import through the current source parser.
+
+    Old manifests never need another upload. Reparse only the retained original
+    ZIP, verify its hash, and keep all snapshot bindings and stored bytes intact.
+    """
+    root = _root(project)
+    path = _snapshot_path(root, snapshot_id)
+    try:
+        snapshot = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        raise LedgerProblem('Сохранённый архив не читается. Обратитесь к администратору.') from None
+    if not basis_metadata_current(snapshot):
+        raw = root / (snapshot_id + '.zip')
+        if raw.resolve().parent != root.resolve():
+            raise LedgerProblem('Неверное расположение исходного архива.')
+        if raw.is_file():
+            try:
+                with raw.open('rb') as handle:
+                    data = handle.read(MAX_ARCHIVE_BYTES + 1)
+            except OSError:
+                raise LedgerProblem('Сохранённый исходный архив не читается.') from None
+            if len(data) > MAX_ARCHIVE_BYTES or hashlib.sha256(data).hexdigest() != snapshot_id[11:]:
+                raise LedgerProblem('Исходный архив не совпадает с сохранённым отпечатком.')
+            parsed = parse_archive(data, snapshot.get('filename') or 'Накопительные.zip')
+            return {**snapshot, **parsed, 'source_parse_state': 'refreshed'}
+        return {**_restore_period_dates(snapshot), 'source_parse_state': 'original_unavailable'}
+    return {**_restore_period_dates(snapshot), 'source_parse_state': 'current'}
+
+
 def latest_snapshot(project: str, cut: str = '') -> dict | None:
     cutoff = _iso(cut) if cut else dt.date.today().isoformat()
     snapshots = [s for s in list_snapshots(project) if s['taken_at'] <= cutoff]
-    if not snapshots:
-        return None
-    path = _snapshot_path(_root(project), snapshots[0]['snapshot_id'])
-    try:
-        return _restore_period_dates(json.loads(path.read_text(encoding='utf-8')))
-    except (OSError, ValueError):
-        raise LedgerProblem('Сохранённый архив не читается. Обратитесь к администратору.') from None
+    return read_snapshot(project, snapshots[0]['snapshot_id']) if snapshots else None
