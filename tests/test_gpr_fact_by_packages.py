@@ -210,7 +210,8 @@ def test_the_monitor_button_says_what_the_packages_gave(tmp_path, monkeypatch):
             tab.goto(f"{base}/monitor", wait_until="domcontentloaded")
             tab.wait_for_function("document.getElementById('gprFactBtn')!==null")
             if not tab.is_visible("#gprFactBtn"):
-                tab.click("#setupHead")
+                tab.click("#dataTab")
+            tab.locator("#gprFactBtn").wait_for(state="visible")
             tab.fill("#project", "")
             tab.evaluate("document.getElementById('cut').value='2026-10-20'")
             tab.set_input_files("#gprFact", str(upload))
@@ -352,7 +353,8 @@ def test_the_withdraw_button_on_the_rendered_page(tmp_path, monkeypatch):
             tab.goto(f"{base}/monitor", wait_until="domcontentloaded")
             tab.wait_for_function("document.getElementById('gprWithdrawBtn')!==null")
             if not tab.is_visible("#gprWithdrawBtn"):
-                tab.click("#setupHead")
+                tab.click("#dataTab")
+            tab.locator("#gprWithdrawBtn").wait_for(state="visible")
             tab.fill("#project", PROJECT)
             tab.evaluate("document.getElementById('cut').value='2026-10-20'")
             tab.on("dialog", lambda dialog: dialog.accept())
