@@ -79,12 +79,20 @@ def _same_party_exact(left: Any, right: Any) -> bool:
     """Omitted form can be shorthand; two different explicit forms cannot."""
     # Keep persisted work signatures unchanged; legal-form normalization is
     # only for comparison, just as in the RSS contract resolver.
-    first, second = (_party_identity(_party_norm(value)).split() for value in (left, right))
-    if not first or not second:
-        return False
-    first_form = first[0] if first[0] in _LEGAL_FORMS else ""
-    second_form = second[0] if second[0] in _LEGAL_FORMS else ""
-    return (first[bool(first_form):] == second[bool(second_form):]
+    def identity(value: Any) -> tuple[list[str], str]:
+        words = _party_identity(_party_norm(value)).split()
+        # Registers can put the form after the name: «НУР ООО». Only an
+        # explicit boundary form moves; inner name words and different forms
+        # remain significant. An explicit prefix takes priority: a legal-form
+        # word at the end of its company name is not stripped a second time.
+        if words and words[0] in _LEGAL_FORMS:
+            return words[1:], words[0]
+        if words and words[-1] in _LEGAL_FORMS:
+            return words[:-1], words[-1]
+        return words, ""
+
+    (first, first_form), (second, second_form) = (identity(value) for value in (left, right))
+    return (bool(first) and bool(second) and first == second
             and (not first_form or not second_form or first_form == second_form))
 
 
