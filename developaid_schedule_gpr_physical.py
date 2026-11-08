@@ -70,7 +70,7 @@ def _history(project):
 
 
 def _snapshot(project, cut):
-    snapshot = ledgers.latest_snapshot(project, cut)
+    snapshot = ledgers.effective_snapshot(project, cut)
     if snapshot is not None:
         sid = snapshot.get("snapshot_id") or ""
         if (not re.fullmatch(r"\d{4}-\d{2}-\d{2}-[0-9a-f]{64}", sid)
@@ -99,7 +99,8 @@ def _state(project, cut, source, snapshot):
         # older positive mapping. A different GPR revision cannot project.
         if candidate and candidate["configuration"]["tasks"]:
             try:
-                previous = ledgers.read_snapshot(project, candidate["snapshot_id"])
+                previous = ledgers.effective_snapshot(project, cut,
+                    snapshot=ledgers.read_snapshot(project, candidate["snapshot_id"]))
                 projected = cumulative_progress.project_configuration(previous, snapshot, candidate["configuration"])
             except (OSError, ValueError, KeyError, TypeError):
                 projected = None

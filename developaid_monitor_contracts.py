@@ -302,7 +302,7 @@ def _groups(entries: list[dict], project: str) -> list[tuple[str, list[dict]]]:
         for item in items:
             # A known date is always part of identity, even when the old and
             # reissued contracts occur in two different source snapshots.
-            date = _date(item.get("contract_date")) or "unknown-date"
+            date = _date(item.get("contract_date")) or _source_date_key(item)
             partitions.setdefault(date, []).append(item)
         for date, grouped in partitions.items():
             if not grouped:
@@ -416,13 +416,17 @@ def _summary_money(items: list[dict], cut: str, warnings: list[str]) -> tuple[fl
 
 def _physical(item: dict, ledger: dict, cut: str) -> dict:
     result = {k: item.get(k) for k in
-              ("position", "name", "scope", "unit", "plan_quantity", "planned_amount")}
+              ("position", "name", "scope", "unit", "plan_quantity", "planned_amount",
+               "section_path", "context_headings", "parent_row", "is_group", "planned_work_amount",
+               "planned_material_amount", "planned_cost_split", "planned_work_amount_basis", "planned_cost_method")}
     result["source"] = _source(item.get("source") or ledger.get("source"), "Накопительная ведомость работ")
     result["period_year"] = ledger.get("period_year")
     result["warnings"] = _warnings(item.get("warnings"))
     result["snapshot_date"] = _date(ledger.get("source_date"))
     periods = list(item.get("periods") or [])
-    included = [p for p in periods if _date(p.get("date_end"))
+    period_year = ledger.get("period_year")
+    future_year = type(period_year) is int and period_year > int(cut[:4])
+    included = [p for p in periods if not future_year and _date(p.get("date_end"))
                 and _date(p["date_end"]) <= cut
                 and (not _date(p.get("date_start"))
                      or _date(p["date_start"]) <= _date(p["date_end"]))]
@@ -430,12 +434,14 @@ def _physical(item: dict, ledger: dict, cut: str) -> dict:
     result["periods"] = included
     result["quantity_date"] = max((_date(p["date_end"]) for p in included), default=None)
     result["quantity_cut"] = cut
-    has_future_values = any(_date(p.get("date_end")) and _date(p["date_end"]) > cut
+    has_future_values = future_year or any(_date(p.get("date_end")) and _date(p["date_end"]) > cut
                             and any((_number(p.get(key)) or 0) != 0
                                     for key in ("quantity", "material_quantity", "amount"))
                             for p in periods)
 
     def asof(field: str, annual_field: str) -> tuple[float | None, str]:
+        if future_year:
+            return None, "Год ведомости позже выбранного среза; итог не использован как текущее выполнение."
         annual = _number(item.get(annual_field))
         if annual is None:
             return None, "Накопительный итог не подтверждён числом."
@@ -515,6 +521,29 @@ def _identity(item: dict) -> tuple | None:
     return (*base, date) if all(base) and date else None
 
 
+def _source_date_key(item: dict) -> str:
+    """Keep an unparsed source date as evidence, never invent a calendar year."""
+    supplied = item.get("source_date_key")
+    if isinstance(supplied, str) and re.fullmatch(r'(?:raw-date|unverified-source):[0-9a-f]{64}', supplied):
+        return supplied
+    dates = sorted({_norm(entry.get("raw")) for entry in
+                    (item.get("contract_date_evidence") or item.get("date_evidence") or [])
+                    if isinstance(entry, dict) and _norm(entry.get("raw"))})
+    source = item.get("source") or {}
+    value = dates if dates else [item.get("file_sha256"), source.get("filename"), source.get("sheet")]
+    digest = hashlib.sha256(json.dumps(value, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
+    return ('raw-date:' if dates else 'unverified-source:') + digest
+
+
+def _source_identity(item: dict) -> tuple | None:
+    """Source work identity; strict _identity still owns RSS/payment joins."""
+    exact = _identity(item)
+    if exact is not None:
+        return exact
+    base = _reference_key(item)
+    return (*base, _source_date_key(item)) if all(base) else None
+
+
 def _reference_differences(identity: tuple, entry: dict) -> list[str]:
     """Which identity attributes of a reference row (РСС, сводная) differ.
 
@@ -561,6 +590,8 @@ def _cumulative_money(physical: list[dict], warnings: list[str],
     periods, ranges, bases = {}, {}, set()
     uncertain = False
     for item in physical:
+        if item.get("is_group") is True:
+            continue
         work = _physical_key(item)
         if item.get("completed_amount") is None:
             uncertain = True
@@ -622,10 +653,10 @@ def build(project: str, cut: str = "", *, include_history: bool = True) -> dict:
         warnings.append("Дата накопительного архива не подтверждена или позже среза; архив не включён в этот срез.")
         snapshot, archive_day = None, None
     if snapshot:
-        import developaid_monitor_header_confirmations as confirmations
+        import developaid_monitor_ledgers as ledgers
         try:
-            snapshot = confirmations.apply(project, snapshot, cut)
-        except confirmations.ConfirmationProblem as exc:
+            snapshot = ledgers.effective_snapshot(project, cut, snapshot=snapshot)
+        except ledgers.LedgerProblem as exc:
             raise ContractProblem(str(exc)) from None
     primary, unresolved = [], []
     for original in (snapshot or {}).get("ledgers") or []:
@@ -645,6 +676,13 @@ def build(project: str, cut: str = "", *, include_history: bool = True) -> dict:
                 "date_confirmation": ledger.get("date_confirmation"),
                 "snapshot_id": (snapshot or {}).get("snapshot_id"), "file_sha256": ledger.get("file_sha256"),
                 "reason": "В шапке не подтверждены: " + ", ".join(missing) + ". Источник не потерян и не объединён по догадке."})
+            if missing == ["действительная дата договора"]:
+                # Known contractor + number are enough to display the source
+                # and its quantities. Date qualification stays explicit and
+                # cannot enrich RSS, payments or dated legal assertions.
+                ledger["contract_date_unverified"] = True
+                unresolved[-1]["included_in_register"] = True
+                primary.append(ledger)
             continue
         primary.append(ledger)
     rss, rss_day = [], None
@@ -745,7 +783,7 @@ def build(project: str, cut: str = "", *, include_history: bool = True) -> dict:
                 "amount_basis": summary_amount_basis, "completed_basis": summary_completed_basis})
         references = []
         for ledger, views in physical_sources:
-            source_items = ledger.get("items") or []
+            source_items = [item for item in ledger.get("items") or [] if item.get("is_group") is not True]
             values = [_number(item.get("completed_amount")) for item in source_items]
             planned_values = [_number(item.get("planned_amount")) for item in source_items]
             future_excluded = any(item.get("future_periods_excluded") for item in views)
@@ -772,6 +810,11 @@ def build(project: str, cut: str = "", *, include_history: bool = True) -> dict:
                                      and reported_planned is not None and reported_planned > 0
                                      and statement_comparable else None),
                 "monetary_comparable": statement_comparable,
+                "source_complete": bool(ledger.get("source_complete")) and all(
+                    _number(item.get(field)) is not None for item in source_items
+                    for field in ("plan_quantity", "planned_amount", "completed_quantity", "completed_amount")),
+                "unread_rows_count": ledger.get("unread_rows_count", 0),
+                "incomplete_rows_count": ledger.get("incomplete_rows_count", 0),
                 "planned_amount_basis": ("conflicting" if len(planned_bases) > 1 else
                                          next(iter(planned_bases)) if planned_bases else "unspecified"),
                 "completed_amount_basis": ("conflicting" if len(completed_bases) > 1 else
@@ -789,6 +832,8 @@ def build(project: str, cut: str = "", *, include_history: bool = True) -> dict:
         row = {"id": identifier, "contractor": str(first.get("contractor") or ""),
                "customer": str(first.get("customer") or ""), "contract": str(first.get("contract") or ""),
                "contract_date": _date(first.get("contract_date")),
+               "source_date_key": _source_date_key(first),
+               "contract_identity_kind": "source_header_date_unverified" if not _date(first.get("contract_date")) else "header",
                "identity_source": first.get("identity_source") or {},
                "date_confirmation": first.get("date_confirmation"),
                "date_confirmations": [x["date_confirmation"] for x in ledger_items if x.get("date_confirmation")],
@@ -831,6 +876,12 @@ def build(project: str, cut: str = "", *, include_history: bool = True) -> dict:
     note = ("В списке только уникальные договоры из шапок загруженных накопительных: номер, дата, контрагент и заказчик. "
             "Общий реестр РСС и несвязанные строки сводной в количество не входят.")
     result = {"cut": cut, "source_date": archive_day, "rows": rows,
+            "source_coverage": {"files": (snapshot or {}).get("files") or [],
+                "cumulative_sheets": len((snapshot or {}).get("ledgers") or []),
+                "source_complete": bool(snapshot) and all(ledger.get("source_complete") is True
+                                       for ledger in (snapshot or {}).get("ledgers") or []),
+                "incomplete_rows": sum(ledger.get("incomplete_rows_count") or 0
+                                       for ledger in (snapshot or {}).get("ledgers") or [])},
             "unresolved_sources": unresolved,
             "counts": {"contracts_from_cumulative": len(rows), "cumulative_sheets": len((snapshot or {}).get("ledgers") or []),
                        "unresolved_headers": len(unresolved)},

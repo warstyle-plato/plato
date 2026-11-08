@@ -116,7 +116,7 @@ def _history(project):
 
 
 def _sources(project, cut, pm=None):
-    return pm if pm is not None else graph._load_pm(project), ledgers.latest_snapshot(project, cut)
+    return pm if pm is not None else graph._load_pm(project), ledgers.effective_snapshot(project, cut)
 
 
 def _state(project, cut, pm, snapshot):

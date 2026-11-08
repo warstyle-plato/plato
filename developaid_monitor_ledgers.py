@@ -28,7 +28,7 @@ from typing import Any
 import developaid_monitor as monitor
 
 MAX_ARCHIVE_BYTES = 20 * 1024 * 1024
-PARSER_SCHEMA = 1
+PARSER_SCHEMA = 3
 MAX_UNPACKED_BYTES = 100 * 1024 * 1024
 MAX_FILE_BYTES = 20 * 1024 * 1024
 MAX_FILES = 100
@@ -321,6 +321,8 @@ def _contract(value: Any) -> str:
 def _metadata(rows: list[list[Any]], filename: str = "", sheet: str = "") -> dict:
     out = {'contractor': '', 'customer': '', 'contract': '', 'contract_date': None,
            'contract_amount': None, 'amount_scope': 'year_or_sheet',
+           'object_scope': '', 'system_scope': '', 'site_scope': '',
+           'scope_evidence': {'object_scope': [], 'system_scope': [], 'site_scope': []},
            'identity_source': {}, 'identity_warnings': [],
            'party_evidence': {'customer': [], 'contractor': []}}
     refs, dates = [], []
@@ -334,6 +336,12 @@ def _metadata(rows: list[list[Any]], filename: str = "", sheet: str = "") -> dic
                 out['party_evidence'][field].append({'value': _party(right[1]),
                     'raw': _text(right[1]), 'source': _source(filename, sheet, i+1,
                     cell=_cell(right[0]+1, i+1), label_cell=_cell(j+1, i+1), label=_text(value))})
+            elif label in {'объект', 'наименование объекта', 'система', 'наименование системы', 'стройка'} and right:
+                field = ('system_scope' if label in {'система', 'наименование системы'} else
+                         'site_scope' if label == 'стройка' else 'object_scope')
+                out['scope_evidence'][field].append({'raw': _text(right[1]),
+                    'source': _source(filename, sheet, i+1, cell=_cell(right[0]+1, i+1),
+                                      label_cell=_cell(j+1, i+1), label=_text(value))})
             elif re.fullmatch(r'договор(?:\s+подряда)?', label) and right:
                 if re.match(r'^(?:дс\b|доп(?:олнительное|\.)?\s*соглаш)', _norm(right[1])):
                     out['identity_warnings'].append('В поле договора указано допсоглашение; основной договор не установлен по догадке.')
@@ -361,6 +369,10 @@ def _metadata(rows: list[list[Any]], filename: str = "", sheet: str = "") -> dic
                 amount = next((_number(v) for v in row[j+1:] if _number(v) is not None), None)
                 if amount is not None:
                     out['contract_amount'] = amount
+    for field, evidence in out['scope_evidence'].items():
+        values = {_norm(item['raw']): item['raw'] for item in evidence if _norm(item['raw'])}
+        if len(values) == 1:
+            out[field] = next(iter(values.values()))
     for field, evidence in out['party_evidence'].items():
         candidates = {}
         for item in evidence:
@@ -471,9 +483,13 @@ def amount_basis(header: str) -> str:
     an amount. A label without an explicit qualifier stays unspecified.
     """
     text = _norm(header)
-    if re.search(r'без\s*ндс', text):
+    without = bool(re.search(r'без\s*ндс', text))
+    included = bool(re.search(r'(?:с\s*ндс|с\s+учетом\s+ндс|включая\s*ндс|в\s*том\s*числе\s*ндс|в\s*т\.?\s*ч\.?\s*ндс)', text))
+    if without and included:
+        return 'conflicting'
+    if without:
         return 'without_vat'
-    if re.search(r'(?:с\s*ндс|включая\s*ндс|в\s*том\s*числе\s*ндс|в\s*т\.?\s*ч\.?\s*ндс)', text):
+    if included:
         return 'with_vat'
     return 'unspecified'
 
@@ -556,13 +572,40 @@ def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
         raise LedgerProblem('Годовой итог накопительной не содержит количества.')
     split = 'матер' in qlabel and year_col+1 < len(qhead) and 'смр' in _norm(qhead[year_col+1])
     actual_col = year_col+1 if split else year_col
-    # Cost group can have material/work subcolumns; the rightmost one is labelled
-    # as the group's total. A plain one-column group ends at the first period.
-    cost_labels = [j for j, v in enumerate(head) if 'стоимость' in _norm(v)
-                   and ('договорн' in _norm(v) or 'сметн' in _norm(v))]
     first_period = min(j for j, v in enumerate(qhead) if j > plan_col and ('количеств' in _norm(v) or _norm(v) == 'кол-во'))
-    cost_col = first_period-1 if cost_labels else None
-    planned_amount_basis = _amount_basis(' '.join(_text(head[c]) for c in cost_labels))
+    # A planned total may be labelled in any row of the multi-row header.
+    # Price per unit and material/work subtotals are not a position total.
+    cost_labels, generic_cost_labels = set(), set()
+    for header_row in rows[hi:qi+1]:
+        for col in range(plan_col+1, min(first_period, len(header_row))):
+            label = _norm(header_row[col])
+            if (not re.search(r'стоимост|сумм', label)
+                    or re.search(r'за\s*(?:ед|единиц)|цен[аы]\s+(?:за\s+)?ед', label)
+                    or re.search(r'матер|мтр|оборуд|смр|пнр', label)):
+                continue
+            generic_cost_labels.add(col)
+            if re.search(r'договорн|сметн|итого|всего|общая|полная', label):
+                cost_labels.add(col)
+    # When the total group has multiple labelled subcolumns, its rightmost
+    # explicit total wins. Without a total label, only a single cost column is
+    # unambiguous. Never take the adjacent unit price just because it is last.
+    cost_col = max(cost_labels) if cost_labels else (
+        next(iter(generic_cost_labels)) if len(generic_cost_labels) == 1 else None)
+    # The planned cost heading can span rows/columns: an upper total label and
+    # a lower «Стоимость итого, с НДС». Unit prices and actual periods are
+    # separate groups; neither may supply the planned total's tax qualifier.
+    cost_group_start = min(cost_labels or generic_cost_labels) if (cost_labels or generic_cost_labels) else first_period
+    for header_row in rows[hi:qi+1]:
+        for col in range(plan_col+1, min(first_period, len(header_row))):
+            label = _norm(header_row[col])
+            if (('стоимост' in label and ('итого' in label or 'договорн' in label or 'сметн' in label))
+                    and not re.search(r'за\s*(?:ед|единиц)', label)):
+                cost_group_start = min(cost_group_start, col)
+    planned_bases = {_amount_basis(_text(header_row[col]))
+                     for header_row in rows[hi:qi+1]
+                     for col in range(cost_group_start, min(first_period, len(header_row)))} - {'unspecified'}
+    planned_amount_basis = ('conflicting' if 'conflicting' in planned_bases or len(planned_bases) > 1
+                            else next(iter(planned_bases)) if planned_bases else 'unspecified')
     amount_col = year_col+3 if split else year_col+1
     annual_money_cols = (year_col+2, year_col+3) if split else (year_col+1,)
     annual_bases = {_amount_basis(_text(qhead[c])) for c in annual_money_cols if c < len(qhead)} - {'unspecified'}
@@ -586,8 +629,36 @@ def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
     if split and not money_split:
         warnings.append('Колонки сумм материалов и СМР не распознаны по подписям; '
                         'выполнение работ и поставка материалов по деньгам не разделены.')
+    def labelled_parts(first, last):
+        found = {'work': set(), 'material': set()}
+        for col in range(first, last):
+            for header_row in reversed(rows[hi:qi+1]):
+                label = _norm(header_row[col]) if col < len(header_row) else ''
+                work = bool(re.search(r'смр|пнр|^(?:(?:стоимость|цена)\s+)?работ(?:а|ы)?\b', label))
+                material = bool(re.search(r'матер|мтр|оборуд', label))
+                if work != material:
+                    found['work' if work else 'material'].add(col)
+                    break
+        if all(len(columns) == 1 for columns in found.values()):
+            return {key: next(iter(columns)) for key, columns in found.items()}
+        return {}
+
+    planned_parts = labelled_parts(cost_group_start, first_period)
+    rate_parts = labelled_parts(plan_col+1, cost_group_start)
+    rate_bases = {_amount_basis(_text(header_row[col])) for header_row in rows[hi:qi+1]
+                  for col in rate_parts.values() if col < len(header_row)} - {'unspecified'}
+    rate_basis = ('conflicting' if 'conflicting' in rate_bases or len(rate_bases) > 1 else
+                  next(iter(rate_bases)) if rate_bases else 'unspecified')
+    weight_basis = planned_amount_basis
+    if not planned_parts and rate_parts:
+        if (rate_basis == 'conflicting' or (planned_amount_basis != 'unspecified'
+                and rate_basis != 'unspecified' and planned_amount_basis != rate_basis)):
+            weight_basis = 'conflicting'
+        elif weight_basis == 'unspecified':
+            weight_basis = rate_basis
     items = []
     scope = ''
+    section_stack, locations, context_headings = [], [], []
     errors = []
     for ri, row in enumerate(rows, start=1):
         for ci, value in enumerate(row, start=1):
@@ -598,25 +669,51 @@ def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
         def at(c):
             return row[c] if c is not None and c < len(row) else None
         name, unit = _text(at(name_col)), _text(at(unit_col))
-        if name and not unit and re.search('корпус|автостоян|раздел|этаж', name, re.I):
-            scope = name
+        position = _text(at(max(0, name_col-1)))
+        node = {'position': position, 'name': name,
+                'source': {'row': ri, 'cell': _cell(name_col+1, ri)}}
+        heading = bool(re.search(r'[a-zа-я]', name, re.I)) and unit.upper() in {'', 'X', 'Х'}
+        total = bool(re.match(r'^(?:итого|всего|в том числе ндс)', _norm(name)))
+        code = tuple(position.rstrip('.').split('.')) if re.fullmatch(r'\d+(?:\.\d+)*\.?', position) else ()
+        if heading and not total:
+            if re.search(r'корпус|секци|паркинг|автостоян', name, re.I):
+                locations, section_stack, context_headings = [node], [], []
+            elif re.search(r'этаж|подземн|уровень|отметк', name, re.I):
+                locations = locations[:1] + [node] if locations else [node]
+            elif not code:
+                context_headings = (context_headings + [node])[-4:]
+        if code and re.search(r'[a-zа-я]', name, re.I) and not total:
+            while section_stack and not (len(section_stack[-1][0]) < len(code)
+                    and code[:len(section_stack[-1][0])] == section_stack[-1][0]):
+                section_stack.pop()
+        parents, seen_rows = [], set()
+        for parent in [*locations, *(entry[1] for entry in section_stack)]:
+            if parent['source']['row'] != ri and parent['source']['row'] not in seen_rows:
+                parents.append(parent)
+                seen_rows.add(parent['source']['row'])
+        parents.sort(key=lambda parent: parent['source']['row'])
+        if code and re.search(r'[a-zа-я]', name, re.I) and not total:
+            section_stack.append((code, node))
+        scope = ' · '.join(parent['name'] for parent in locations)
+        if not scope and parents:
+            scope = parents[-1]['name']
         if (not name or unit.upper() in {'', 'X', 'Х'} or re.fullmatch(r'[\d., ]+', unit)
                 or re.match(r'^(?:итого|всего|в том числе ндс)', _norm(name))):
             continue
         plan, actual = _number(at(plan_col)), _number(at(actual_col))
+        item_warnings = []
         if plan is None:
             # A formula with no cached result is missing evidence, not zero.
             if not _text(at(plan_col)):
                 warnings.append(f'Строка {ri}: нет сохранённого планового количества.')
-            continue
-        item_warnings = []
+            item_warnings.append('Полное количество позиции не подтверждено; строка сохранена, процент не рассчитан.')
         if actual is None:
             item_warnings.append('Нет сохранённого выполненного количества: требуется пересчёт и сохранение книги в Excel.')
-        if actual is not None and (actual < -1e-6 or (plan >= 0 and actual > plan + max(1e-6, abs(plan)*1e-7))):
+        if actual is not None and (actual < -1e-6 or (plan is not None and plan >= 0 and actual > plan + max(1e-6, abs(plan)*1e-7))):
             item_warnings.append('Выполненное количество выходит за границы планового. Проверьте объём или состав работ.')
         if split and actual is not None:
             source_remaining = _number(at(year_col+4))
-            if (source_remaining is not None
+            if (plan is not None and source_remaining is not None
                     and abs(source_remaining-(plan-actual)) > max(1e-6, abs(plan)*1e-7)):
                 item_warnings.append('Остаток в книге отличается от остатка по монтажу. '
                                      'Поставку материалов нельзя вычитать как выполненный монтаж.')
@@ -668,11 +765,39 @@ def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
                     item_warnings.append('У формулы нет сохранённого результата. Пересчитайте и сохраните книгу в Excel; формула не вычислялась.')
         else:
             completed_amount = _number(at(amount_col))
-        items.append({'position': _text(at(max(0, name_col-1))), 'name': name,
+        planned_total = _number(at(cost_col))
+        plan_work = plan_material = None
+        plan_work_cell = plan_material_cell = None
+        planned_cost_method = ''
+        parts = planned_parts or rate_parts
+        if parts and (planned_parts or plan is not None):
+            raw_parts = {kind: at(col) for kind, col in parts.items()}
+            numeric = {kind: _number(value) for kind, value in raw_parts.items()}
+            if (any(value is not None for value in numeric.values())
+                    and not any(_text(raw_parts[kind]) and value is None for kind, value in numeric.items())):
+                multiplier = 1 if planned_parts else plan
+                work = (numeric['work'] or 0) * multiplier
+                material = (numeric['material'] or 0) * multiplier
+                if planned_total is not None and abs(work+material-planned_total) <= max(.01, abs(planned_total)*1e-7):
+                    plan_work, plan_material = work, material
+                    prefix = '' if planned_parts else _cell(plan_col+1, ri) + ' × '
+                    plan_work_cell = prefix + _cell(parts['work']+1, ri)
+                    plan_material_cell = prefix + _cell(parts['material']+1, ri)
+                    planned_cost_method = 'labelled_subtotals' if planned_parts else 'quantity_times_labelled_unit_price'
+                else:
+                    item_warnings.append('Подписанные плановые стоимости СМР и материалов не сходятся с полной стоимостью позиции; веса выполнения не использованы.')
+        items.append({'position': position, 'name': name,
                       'scope': scope, 'unit': unit, 'plan_quantity': plan,
+                      'section_path': parents, 'context_headings': list(context_headings),
+                      'parent_row': parents[-1]['source']['row'] if parents else None,
+                      'is_group': False,
                       'completed_quantity': actual, 'material_quantity': _number(at(year_col)) if split else None,
                       'quantity_kind': 'installation' if split else 'work_quantity',
                       'planned_amount': _number(at(cost_col)), 'completed_amount': completed_amount,
+                      'planned_work_amount': plan_work, 'planned_material_amount': plan_material,
+                      'planned_cost_split': plan_work is not None and plan_material is not None,
+                      'planned_work_amount_basis': weight_basis,
+                      'planned_cost_method': planned_cost_method,
                       'planned_amount_basis': planned_amount_basis,
                       'completed_amount_basis': completed_amount_basis,
                       'completed_work_amount': completed_work, 'completed_material_amount': completed_material,
@@ -683,6 +808,8 @@ def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
                                         completed_quantity_cell=_cell(actual_col+1, ri),
                                         material_quantity_cell=_cell(year_col+1, ri) if split else None,
                                         planned_amount_cell=_cell(cost_col+1, ri) if cost_col is not None else None,
+                                        planned_work_amount_cell=plan_work_cell,
+                                        planned_material_amount_cell=plan_material_cell,
                                         completed_amount_cell=(_cell(year_col+3, ri)+' + '+_cell(year_col+4, ri)
                                                                if split else _cell(amount_col+1, ri)))})
         if len(items) > MAX_ITEMS or len(items)*len(period_cols) > MAX_PERIOD_VALUES:
@@ -691,11 +818,40 @@ def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
         warnings.append('В книге есть ошибки формул Excel: ' + ', '.join(errors[:20]) + (', …' if len(errors)>20 else '') + '.')
     if not items:
         raise LedgerProblem('В накопительной не найдено строк с объёмами работ.')
+    by_row = {item['source']['row']: item for item in items}
+    descendants = {}
+    for item in items:
+        for parent in item['section_path']:
+            if parent['source']['row'] in by_row:
+                descendants.setdefault(parent['source']['row'], set()).add(item['source']['row'])
+    for row_number in sorted(descendants, key=lambda row: len(descendants[row])):
+        parent = by_row[row_number]
+        children = [by_row[row] for row in descendants[row_number] if not by_row[row]['is_group']]
+        amount, completed = _number(parent.get('planned_amount')), _number(parent.get('completed_amount'))
+        substantive_children = any((_number(child.get('planned_amount')) or 0) > 0 for child in children)
+        empty_heading = (amount is None and _number(parent.get('plan_quantity')) is None
+                         and all(_number(parent.get(field)) in {None, 0} for field in
+                                 ('completed_quantity', 'completed_amount')) and substantive_children)
+        zero_heading = amount == 0 and substantive_children
+        subtotal = (amount is not None and amount > 0 and completed is not None and children
+            and all(_number(child.get(field)) is not None for child in children
+                    for field in ('planned_amount', 'completed_amount'))
+            and abs(sum(child['planned_amount'] for child in children)-amount) <= max(.01, abs(amount)*1e-7)
+            and abs(sum(child['completed_amount'] for child in children)-completed) <= max(.01, abs(completed)*1e-7))
+        parent['is_group'] = bool(empty_heading or zero_heading or subtotal)
+        parent['group_basis'] = ('empty_structured_heading' if empty_heading else
+                                 'zero_cost_structured_heading' if zero_heading else
+                                 'reconciled_subtotal' if subtotal else '')
     if not any(p['date_end'] for item in items for p in item['periods']):
         warnings.append('Точные даты выполнения в книге не распознаны. Дата архива не является датой выполнения работ.')
     declared_form = 'ks6a' if any(re.search(r'кс[-\s]*6[-\s]*а', _norm(v))
                                  for row in top for v in row if isinstance(v, str)) else 'cumulative'
+    incomplete = sum(any(_number(item.get(field)) is None for field in
+                        ('plan_quantity', 'completed_quantity', 'planned_amount', 'completed_amount'))
+                     for item in items if not item['is_group'])
     return {**meta, 'document_form': declared_form, 'period_year': int(year_label[:4]), 'items': items,
+            'source_complete': incomplete == 0, 'incomplete_rows_count': incomplete,
+            'unread_rows_count': 0,
             'source': _source(filename, sheet, hi+1), 'warnings': warnings,
             'period_dates_known': any(p['date_end'] for item in items for p in item['periods'])}
 
@@ -1084,3 +1240,15 @@ def latest_snapshot(project: str, cut: str = '') -> dict | None:
     cutoff = _iso(cut) if cut else dt.date.today().isoformat()
     snapshots = [s for s in list_snapshots(project) if s['taken_at'] <= cutoff]
     return read_snapshot(project, snapshots[0]['snapshot_id']) if snapshots else None
+
+
+def effective_snapshot(project: str, cut: str = '', *, snapshot: dict | None = None) -> dict | None:
+    """One read-only header decision projection for contracts and quantities."""
+    snapshot = latest_snapshot(project, cut) if snapshot is None else snapshot
+    if snapshot is None:
+        return None
+    import developaid_monitor_header_confirmations as confirmations
+    try:
+        return confirmations.apply(project, snapshot, _iso(cut) if cut else dt.date.today().isoformat())
+    except confirmations.ConfirmationProblem as exc:
+        raise LedgerProblem(str(exc)) from None

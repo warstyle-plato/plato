@@ -3602,12 +3602,14 @@ def _work_contract_progress(link: dict[str, Any]) -> str:
             change = "Корректировка" if progress.get("change_kind") == "correction" else "Изменение"
             delta_text = f"{delta:+.1f}".replace('.', ',')
             label += f". {change} {delta_text} п.п. за {progress.get('period_days')} дн."
+        if link.get("scope_note"):
+            label += ". " + str(link["scope_note"])
         return label
     ratio = link.get("completion_ratio")
     if ratio is not None:
         # Read the registry's comparable money ratio. Never infer a physical
         # work's completion from the whole contract or sum unrelated units.
-        return f"{_pct(ratio)} суммы договора"
+        return f"{_pct(ratio)} суммы договора" + (". " + str(link['scope_note']) if link.get('scope_note') else "")
     if link.get("amount") is None or link["amount"] <= 0:
         return "Доля неизвестна: нет полной суммы договора"
     if link.get("completed") is None:

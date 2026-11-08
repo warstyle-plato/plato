@@ -34,10 +34,7 @@ def snapshot_date(snapshot):
 
 
 def contract_identity(ledger):
-    return (contracts._party_norm(ledger.get('customer')),
-            contracts._party_norm(ledger.get('contractor')),
-            contracts._contract_number(ledger.get('contract'), reference=True),
-            _day(ledger.get('contract_date')))
+    return contracts._source_identity(ledger) or ('', '', '', None)
 
 
 def position_identity(ledger, item):
@@ -150,7 +147,8 @@ def observation_index(project, cut, snapshot, keys):
             source = snapshot
         else:
             try:
-                source = ledgers.read_snapshot(project, manifest['snapshot_id'])
+                source = ledgers.effective_snapshot(project, day,
+                    snapshot=ledgers.read_snapshot(project, manifest['snapshot_id']))
             except (OSError, ValueError, KeyError, TypeError):
                 source = {'snapshot_id': manifest['snapshot_id'], 'taken_at': day,
                           'source_unavailable': True, 'ledgers': []}

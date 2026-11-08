@@ -49,8 +49,8 @@ def _basis_fingerprint(metric, denominator, first, second, year=None):
 
 def contract_identity(row):
     """Comparison identity only; existing contract ids and bindings stay intact."""
-    from developaid_monitor_contracts import _identity
-    return _identity(row)
+    from developaid_monitor_contracts import _source_identity
+    return _source_identity(row)
 
 
 def _source_key(source):
