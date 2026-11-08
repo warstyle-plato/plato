@@ -230,6 +230,10 @@ def component_history(keys, index, current, cut):
                     reason='Между сопоставимыми снимками прироста объёма нет.')
     day = dt.date.fromisoformat(cut)
     window = [p for p in points if dt.date.fromisoformat(p['date']) >= day - dt.timedelta(days=WINDOW_DAYS)]
+    if len(window) >= 2 and any(window[0]['date'] <= record['date'] <= window[-1]['date']
+            and any(record['positions'].get(key) is None for key in keys) for record in index):
+        return dict(result, state='comparison_gap',
+                    reason='Промежуточный снимок не сопоставлен по полному составу; темп для прогноза не подтверждён.')
     if (len(window) < 2 or (day - dt.date.fromisoformat(latest['date'])).days > STALE_DAYS
             or any(record.get('source_unavailable') and dt.date.fromisoformat(record['date']) >= day - dt.timedelta(days=WINDOW_DAYS)
                    for record in index)

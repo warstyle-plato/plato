@@ -231,3 +231,23 @@ def test_statement_source_conflict_qualifies_the_date_as_a_snapshot(monkeypatch)
     conflict = forecast.quantity_conflict([(dt.date(2026, 11, 6), 1.0, 'weekly_gpr')], task, dt.date(2026, 11, 6))
     assert conflict['quantities'][0]['date_basis'] == 'snapshot'
     assert '40% по ведомости от 06.11.2026' in conflict['reason']
+
+
+def test_intermediate_scope_change_cannot_produce_pace_across_the_gap(monkeypatch):
+    previous = snapshot('2026-10-01', 20, token='c')
+    intermediate = snapshot('2026-10-15', 30, token='d', plan_quantity=200)
+    task, = evaluate(monkeypatch, [previous, intermediate, snapshot()])['tasks']
+    assert task['progress'] == .4 and task['observation_history']['delta_quantity'] == 20
+    assert task['observation_history']['state'] == 'comparison_gap'
+    assert task['forecast_finish'] is None
+
+
+def test_row_reordering_projects_by_exact_identity_not_by_old_index():
+    previous, current = snapshot('2026-10-01', 20, token='c'), snapshot()
+    other = copy.deepcopy(current['ledgers'][0]['items'][0])
+    other.update(position='2', name='Другая работа')
+    current['ledgers'][0]['items'].insert(0, other)
+    before = copy.deepcopy((previous, current))
+    result = progress.project_configuration(previous, current, config())
+    assert result['components'][0]['item_ids'] == ['0:1']
+    assert (previous, current) == before
