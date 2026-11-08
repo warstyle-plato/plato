@@ -1,5 +1,5 @@
 name: Диагностика договоров и исходных объёмов
-run-name: contracts-source-probe
+run-name: contracts-source-private-check
 
 on:
   workflow_dispatch:
@@ -21,7 +21,11 @@ jobs:
     name: Проверить наличие данных без публикации содержимого
     runs-on: ubuntu-latest
     timeout-minutes: 8
+    if: github.actor == 'warstyle-plato'
     steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - name: Проверка защищённых данных
         env:
           EXPECTED_COMMIT: ${{ inputs.expected_commit }}
@@ -34,6 +38,8 @@ jobs:
           import os
           import re
           import signal
+          import subprocess
+          from pathlib import Path
           import sys
           import time
           import urllib.error
@@ -47,7 +53,8 @@ jobs:
           POLL_SECONDS = 2
           POST_PATHS = frozenset({
               '/monitor/report/projects', '/monitor/contracts/build',
-              '/monitor/contracts/result',
+              '/monitor/contracts/result', '/monitor/gpr-corpus/view',
+              '/monitor/schedule-gpr-physical/view',
           })
           REASONS = frozenset({
               'invalid_expected_commit', 'deadline', 'redirect_denied', 'http_auth',
@@ -356,6 +363,67 @@ jobs:
                       raise ProbeError('invalid_payload')
                   if self.health() != first_version:
                       raise ProbeError('runtime_mismatch')
+                  gpr_source = self.request('/monitor/gpr-corpus/view',
+                      {'project': project, 'cut': day, 'key': key})
+                  physical = self.request('/monitor/schedule-gpr-physical/view',
+                      {'project': project, 'cut': day, 'offset': 0, 'key': key})
+                  item_count = physical.get('item_count')
+                  if type(item_count) is not int or item_count < 0 or item_count > 2000:
+                      raise ProbeError('invalid_payload')
+                  if physical.get('snapshot_id') != mapping(register.get('snapshots')).get('cumulative_id'):
+                      raise ProbeError('runtime_mismatch')
+                  physical_items, item_ids = [], set()
+
+                  def accept_page(page, offset):
+                      if (page.get('offset') != offset
+                              or any(page.get(field) != physical.get(field) for field in
+                                     ('snapshot_id', 'source_sha256', 'revision', 'item_count'))):
+                          raise ProbeError('runtime_mismatch')
+                      items = records(page.get('items'))
+                      if len(items) != min(200, max(0, item_count-offset)):
+                          raise ProbeError('invalid_payload')
+                      for item in items:
+                          identity = item.get('item_id')
+                          if (not isinstance(identity, str) or re.fullmatch(r'\d{1,5}:\d{1,6}', identity) is None
+                                  or identity in item_ids):
+                              raise ProbeError('invalid_payload')
+                          item_ids.add(identity)
+                      physical_items.extend(items)
+
+                  accept_page(physical, 0)
+                  for offset in range(200, item_count, 200):
+                      page = self.request('/monitor/schedule-gpr-physical/view',
+                          {'project': project, 'cut': day, 'offset': offset, 'key': key})
+                      accept_page(page, offset)
+                  if len(physical_items) != item_count:
+                      raise ProbeError('invalid_payload')
+                  physical['items'] = physical_items
+                  gpr_end = self.request('/monitor/gpr-corpus/view',
+                      {'project': project, 'cut': day, 'key': key})
+                  if any(mapping(gpr_end.get('source')).get(field) != mapping(gpr_source.get('source')).get(field)
+                         for field in ('sha256', 'taken_at')) or self.health() != first_version:
+                      raise ProbeError('runtime_mismatch')
+                  # Only ciphertext is published. The fixed public recipient is
+                  # reviewed with this source; its private key stays in the control workspace.
+                  private_payload = json.dumps({'runtime_commit': self.expected,
+                      'run_id': os.environ.get('GITHUB_RUN_ID', ''),
+                      'project': project, 'register': register, 'gpr_source': gpr_source,
+                      'physical': physical}, ensure_ascii=False,
+                      allow_nan=False).encode('utf-8')
+                  target = Path(os.environ['RUNNER_TEMP']) / 'contracts-audit.cms'
+                  with target.open('wb') as encrypted:
+                      os.chmod(target, 0o600)
+                      result = subprocess.run(['openssl', 'cms', '-encrypt', '-aes-256-gcm',
+                          '-binary', '-outform', 'DER', '-recip',
+                          '.github/diagnostics/contract-audit-recipient.pem',
+                          '-keyopt', 'rsa_padding_mode:oaep', '-keyopt', 'rsa_oaep_md:sha256'],
+                          input=private_payload, stdout=encrypted,
+                          stderr=subprocess.DEVNULL, check=False, timeout=30,
+                          env={'PATH': os.environ.get('PATH', '/usr/bin:/bin')})
+                  if result.returncode != 0 or not target.is_file() or target.stat().st_size == 0:
+                      target.unlink(missing_ok=True)
+                      raise ProbeError('unexpected_error')
+                  del private_payload
                   if set(flags) != set(FLAG_NAMES) or any(type(value) is not bool for value in flags.values()):
                       raise ProbeError('invalid_payload')
                   return {'status': 'ok', 'runtime_version': first_version,
@@ -392,3 +460,12 @@ jobs:
           if __name__ == '__main__':
               sys.exit(main())
           PY
+      - name: Защищённый результат проверки
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: contracts-audit-encrypted
+          path: ${{ runner.temp }}/contracts-audit.cms
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
