@@ -49,11 +49,18 @@ def _unit(value):
 
 def _work(item):
     from developaid_monitor_contracts import _norm
-    path = item.get('section_path') or item.get('context_headings') or []
-    if isinstance(path, str):
-        path = [path]
+
+    def headings(value):
+        if isinstance(value, str):
+            value = [value]
+        # Row/cell coordinates are provenance, not physical work identity.
+        return tuple((_norm(node.get('position')), _norm(node.get('name')))
+                     if isinstance(node, dict) else ('', _norm(node))
+                     for node in value or [])
+
     return (tuple(_norm(item.get(field)) for field in ('position', 'name', 'scope'))
-            + (_unit(item.get('unit')), tuple(_norm(value) for value in path)))
+            + (_unit(item.get('unit')), headings(item.get('section_path')),
+               headings(item.get('context_headings'))))
 
 
 def _annual(item, reference, observation_year):
@@ -62,7 +69,8 @@ def _annual(item, reference, observation_year):
         return None, 'year_unknown'
     if year != reference.get('period_year'):
         return None, 'year_conflict'
-    if year > observation_year:
+    cut = _day(item.get('quantity_cut'))
+    if year > min(observation_year, cut.year if cut else observation_year):
         return None, 'future_year'
     if item.get('future_periods_excluded') is not False:
         return None, 'future_or_unverified_periods'

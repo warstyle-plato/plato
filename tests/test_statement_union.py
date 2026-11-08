@@ -128,6 +128,11 @@ def test_future_year_is_not_an_annual_fact_even_without_explicit_period_dates():
     assert result['ratio'] is None and result['problems'][0]['code'] == 'future_year'
 
 
+def test_an_explicit_earlier_cut_cannot_gain_the_later_annual_total():
+    result = union(row(source(quantity_cut='2025-12-31')))
+    assert result['ratio'] is None and result['problems'][0]['code'] == 'future_year'
+
+
 @pytest.mark.parametrize('change,code', [
     ({'source_complete': False}, 'partial_source'),
     ({'unread_rows_count': 1}, 'partial_source'),
@@ -163,6 +168,27 @@ def test_same_name_at_another_section_is_a_separate_work_not_a_duplicate():
     result = union(row(a, b))
     assert result['planned'] == 2000 and result['completed'] == 400
     assert result['position_count'] == 2 and result['duplicate_count'] == 0
+
+
+def test_hierarchy_source_row_changes_do_not_rekey_the_same_annual_work():
+    previous, current = source(2025, 'Old.xlsx'), source(2026, 'New.xlsx', done=300)
+    previous[1]['section_path'] = [{'position': '1', 'name': 'Монтаж сетей',
+                                   'source': {'row': 9, 'cell': 'C9'}}]
+    current[1]['section_path'] = [{'position': '1', 'name': 'Монтаж сетей',
+                                  'source': {'row': 19, 'cell': 'C19'}}]
+    result = union(row(previous, current))
+    assert result['planned'] == 1000 and result['completed'] == 500
+    assert result['position_count'] == 1
+
+
+def test_room_context_is_not_lost_when_a_structural_section_path_also_exists():
+    a, b = source(name='A.xlsx'), source(name='B.xlsx')
+    for _, item in (a, b):
+        item['section_path'] = [{'position': '1', 'name': 'Устройство полов'}]
+    a[1]['context_headings'] = [{'position': '', 'name': 'Помещение 101'}]
+    b[1]['context_headings'] = [{'position': '', 'name': 'Помещение 102'}]
+    result = union(row(a, b))
+    assert result['planned'] == 2000 and result['position_count'] == 2
 
 
 @pytest.mark.parametrize('done', [0, -100, 1200])
