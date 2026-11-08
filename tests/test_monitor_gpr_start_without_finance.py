@@ -121,6 +121,8 @@ def test_gpr_only_money_is_unknown_and_a_known_zero_remains_zero():
         expect(page.locator('#financeBars')).to_have_text('Выгрузка РСС ещё не загружена.')
         assert page.locator('#fundingCompare b').all_text_contents() == ['—', '—', '—']
         assert '0 млн' not in page.locator('#financeCard').inner_text()
+        assert page.locator('#kpis .kpi').evaluate_all('(xs)=>xs.every(x=>{const r=x.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth})')
+        expect(page.locator('#kpis')).to_contain_text('Оценка по ГПР')
         expect(page.locator('#moneyChart')).to_be_empty()
         page.screenshot(path='/tmp/plato1041-no-rss-money-390.png', full_page=True)
         view['money'] = {'known': True, 'payment_fact': 0}

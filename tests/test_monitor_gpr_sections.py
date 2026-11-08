@@ -170,3 +170,49 @@ def test_multiple_corps_show_works_zero_unknown_and_fact_source_without_extra_cl
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         page.screenshot(path=f'/tmp/plato1041-multiple-corps-{width}.png', full_page=True)
         assert not errors
+
+
+def test_known_cumulative_progress_survives_unknown_forecast_and_is_not_the_gpr_edit_value():
+    from playwright.sync_api import expect
+    view = monitor_view('partial')
+    task = view['schedule']['management'][0]['children'][0]['children'][0]['children'][0]
+    task.update(progress_kind='cumulative_quantities', actual_progress=.5, pace_progress=.5,
+                progress_source={'kind': 'cumulative_quantities', 'label': 'Накопительные', 'date': '2026-11-06'},
+                gpr_progress=.2, pace_forecast_method='cumulative_unknown', pace_forecast_known=False,
+                forecast_finish=None, forecast_reason='Нет свежего датированного темпа накопительных.')
+    with browser_page() as (page, responses, errors):
+        render(page, view)
+        row = page.locator('.g-row', has_text='Монтаж фасада')
+        expect(row).to_contain_text('Объём по накопительной: 50%')
+        expect(row).to_contain_text('Нет свежего датированного темпа накопительных')
+        assert row.locator('.forecastmark,.latebar').count() == 0
+        row.click()
+        expect(page.locator('#detailGrid')).to_contain_text('Объём по накопительной')
+        expect(page.locator('#detailGrid')).to_contain_text('50%')
+        expect(page.locator('#wfPct')).to_have_value('20')
+        expect(page.locator('#workFactBox')).to_contain_text('Уточнить выполнение в ГПР')
+        assert not errors
+
+
+def test_explicitly_confirmed_completion_is_a_dated_fact_without_a_forecast_tail():
+    from playwright.sync_api import expect
+    view = monitor_view()
+    task = view['schedule']['management'][0]['children'][0]['children'][0]['children'][0]
+    task.update(progress_kind='confirmed_completion', actual_progress=1, pace_progress=1,
+                progress_source={'kind': 'confirmed_completion', 'label': 'Подтверждённое завершение', 'date': '2026-11-06'},
+                gpr_progress=None, pace_forecast_method='confirmed_completion', pace_forecast_known=True,
+                forecast_finish='2026-11-06', delta_days=-25)
+    with browser_page() as (page, responses, errors):
+        render(page, view)
+        row = page.locator('.g-row', has_text='Монтаж фасада')
+        expect(row).to_contain_text('Завершение подтверждено')
+        expect(row).to_contain_text('Завершено 06.11.2026')
+        expect(row).to_contain_text('Выполнение подтверждено: 100%')
+        assert row.locator('.forecastmark,.latebar,.aheadbar').count() == 0
+        row.click()
+        expect(page.locator('#wfPct')).to_have_value('')
+        expect(page.locator('#detailGrid')).to_contain_text('Фактическое окончание')
+        page.locator('#wfSave').click()
+        expect(page.locator('#wfMsg')).to_contain_text('Введите процент выполнения в ГПР')
+        assert not any(path == '/monitor/work-fact' for path, *_ in responses.calls)
+        assert not errors
