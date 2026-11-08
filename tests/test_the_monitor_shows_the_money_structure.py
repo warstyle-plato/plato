@@ -311,7 +311,18 @@ def test_unknown_model_need_is_not_zero_and_known_zero_is_kept_on_screen(width) 
             else:
                 expect(required.locator("b")).to_have_text(need)
                 expect(deficit.locator("b")).to_have_text(gap)
+                if paid == 2e9:
+                    expect(page.locator("#fundingCompare .notice")).to_have_text(
+                        "Остаток потребности по утверждённому бюджету — 0 ₽.")
+                    expect(page.locator("#fundingCompare .batt")).to_have_count(0)
+                    visible = page.locator("#financeCard").inner_text()
+                    assert "не хватает -" not in visible and "не хватает −" not in visible
+                    assert "из 0 млн ₽" not in visible
+                else:
+                    expect(page.locator("#fundingCompare .batt-pct")).to_have_text("50% · 1 млрд ₽ из 2 млрд ₽")
+                    expect(page.locator("#fundingCompare")).to_contain_text("не хватает 1 млрд ₽")
             expect(top).to_be_visible()
+        page.screenshot(path=f"/tmp/plato-funding-zero-{width}.png", full_page=True)
         assert not errors
 
 

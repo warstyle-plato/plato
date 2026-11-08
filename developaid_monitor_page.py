@@ -213,6 +213,8 @@ function renderFinance(v,hasBook,approved,contracted,accepted,paid,remainingBudg
 $('fundingStructure').innerHTML=fundingStructure(f,hasBook,approved,paid,remainingBudget);
 $('fundingCompare').innerHTML=(needAll==null
   ?'<div class="notice">Для остатка потребности нужны утверждённый бюджет и сумма оплат.</div>'
+  :needAll===0
+  ?'<div class="notice">Остаток потребности по утверждённому бюджету — 0 ₽.</div>'
   :`<div class="batt"><div class="batt-label"><span data-hint="Все оставшиеся деньги проекта (остатки лимитов статей + резерв) против того, сколько надо достроить по утверждённой модели. Пустая часть и есть дефицит." tabindex="0">Чем закрыта потребность: остаток лимитов + резерв против надо по модели</span><span>${charge>=0.999?'хватает':`не хватает ${money(needAll-fuel)}`}</span></div><div class="batt-shell"><div class="batt-fill" style="width:${(charge*100).toFixed(0)}%;background:${chColor}"></div><span class="batt-pct">${(charge*100).toFixed(0)}% · ${money(fuel)} из ${money(needAll)}</span></div></div>`)}
 function mln(v){const n=Number(v)||0;return Math.abs(n)>=1e9?(n/1e9).toLocaleString('ru-RU',{maximumFractionDigits:1})+' млрд':(n/1e6).toLocaleString('ru-RU',{maximumFractionDigits:0})+' млн'}
 // Структура финансирования: РСС и утверждённый бюджет — разные контуры, и
