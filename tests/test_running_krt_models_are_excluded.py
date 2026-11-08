@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from auction_search import api, krt_investment_score, krt_ranking, krt_status
-from auction_search.krt_screening import build_krt_model_screening, market_only_screening
+from auction_search.krt_screening import SCREENING_RULES_VERSION, build_krt_model_screening, market_only_screening
 
 
 RUNNING = {"slug": "running", "name": "Synthetic running site", "status": "В реализации"}
@@ -147,6 +147,7 @@ def _app(tmp_path, monkeypatch, projects=None):
 
 def _keep_old_model(ranking):
     old = {"slug": "running", "status": "Планируемый", "available": True, "computed_at": 100,
+           "rules_version": SCREENING_RULES_VERSION - 1,
            "entry_capacity_mln": 123, "project_llcr_x": 1.25,
            "investment_rating": {"score": 77}, "investment_rating_computed_at": 101}
     ranking._persist({"running": old})
@@ -243,12 +244,14 @@ def test_the_real_weekly_pass_models_only_allowed_projects(tmp_path, monkeypatch
 def test_the_real_background_loop_uses_market_freshness_without_a_model(tmp_path, monkeypatch):
     _, ranking, loops, model_calls, market_calls, _ = _app(tmp_path, monkeypatch)
     old_bytes = _keep_old_model(ranking)
+    monkeypatch.setattr(krt_ranking, "model_needs_recount", forbidden)
     _synchronous_worker(monkeypatch, ranking)
     _one_pass(monkeypatch, loops["krt-rating-background"], background=True, passes=2)
     assert len(market_calls) == 1, "Fresh observations are not a stale model retry every minute"
     assert not model_calls
     assert ranking.report_path("running").read_bytes() == old_bytes
     assert ranking.stored_row("running")["investment_rating"] == {"score": 77}
+    assert ranking.stored_row("running")["rules_version"] == SCREENING_RULES_VERSION - 1
 
 
 def test_a_market_only_record_does_not_claim_a_model_was_computed(tmp_path):
