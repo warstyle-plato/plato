@@ -288,6 +288,7 @@ def _run_authoritative_model(
     rates: list[dict[str, Any]],
     phasing: dict[str, Any],
 ) -> dict[str, Any]:
+    _partial_tep_preflight(inputs, tep)
     x = copy.deepcopy(inputs)
     t = copy.deepcopy(tep)
     rr = copy.deepcopy(rates)
@@ -3874,6 +3875,11 @@ def _start_glavapu_warm_up() -> None:
                          daemon=True).start()
 
 
+def _plato_openai_agent_model() -> str:
+    """Модель OpenAI для Платона — одно место чтения OPENAI_AGENT_MODEL."""
+    return os.getenv("OPENAI_AGENT_MODEL", "gpt-5.6").strip() or "gpt-5.6"
+
+
 def _plato_route() -> str:
     """Куда уйдёт вызов модели: «render_pull», «render_proxy» или «local_openai».
 
@@ -4036,7 +4042,15 @@ def _plato_job_path(job_id: str, suffix: str = "json") -> Path:
     return _safe_child(_PLATO_STAGE_DIR, f"job_{job_id}.{suffix}")
 
 
-def _plato_puller_seen_touch() -> None:
+_PLATO_PULLER_LABEL_RE = re.compile(r"[^A-Za-z0-9._:-]")
+
+
+def _plato_puller_label(value: Any) -> str:
+    """Имя поставщика/модели из заголовка сервиса модели — только безопасные знаки."""
+    return _PLATO_PULLER_LABEL_RE.sub("", str(value or ""))[:64]
+
+
+def _plato_puller_seen_touch(provider: str = "", model: str = "") -> None:
     """Отметка «сервис модели приходил за заданием».
 
     Ядро знает про Render ровно одно: приходил он за очередью или нет. Без этой
@@ -4047,18 +4061,46 @@ def _plato_puller_seen_touch() -> None:
     """
     try:
         _PLATO_STAGE_DIR.mkdir(parents=True, exist_ok=True)
-        (_PLATO_STAGE_DIR / "puller.seen").write_text(str(time.time()), encoding="utf-8")
+        # Кем думает сервис модели, знает только он сам: ядро своей переменной
+        # PLATO_MODEL_PROVIDER не управляет ничем, и показывать её в статусе
+        # значило бы выдать умолчание ядра за выбор Render.
+        (_PLATO_STAGE_DIR / "puller.seen").write_text(json.dumps({
+            "at": time.time(),
+            "provider": _plato_puller_label(provider) or None,
+            "model": _plato_puller_label(model) or None,
+        }), encoding="utf-8")
     except OSError:
         pass
 
 
+def _plato_puller_seen_record() -> dict[str, Any]:
+    """Отметка сервиса модели: когда приходил и кем думает. Пусто — не приходил."""
+    try:
+        raw = (_PLATO_STAGE_DIR / "puller.seen").read_text(encoding="utf-8").strip()
+    except OSError:
+        return {}
+    try:
+        record = json.loads(raw)
+    except ValueError:
+        return {}
+    if isinstance(record, (int, float)):
+        # Отметка прежнего вида: только время, поставщика сервис ещё не называл.
+        return {"at": float(record), "provider": None, "model": None}
+    if not isinstance(record, dict):
+        return {}
+    try:
+        record["at"] = float(record.get("at"))
+    except (TypeError, ValueError):
+        return {}
+    return record
+
+
 def _plato_puller_seen_ago() -> float | None:
     """Сколько секунд назад приходил сервис модели. None — не приходил ни разу."""
-    try:
-        return max(0.0, time.time() - float(
-            (_PLATO_STAGE_DIR / "puller.seen").read_text(encoding="utf-8")))
-    except (OSError, ValueError):
+    record = _plato_puller_seen_record()
+    if not record:
         return None
+    return max(0.0, time.time() - record["at"])
 
 
 def _plato_puller_diagnosis() -> str:
@@ -4066,7 +4108,8 @@ def _plato_puller_diagnosis() -> str:
     ago = _plato_puller_seen_ago()
     if ago is None:
         return ("Сервис модели ни разу не приходил за заданием: разбор очереди на нём "
-                "не запущен. На Render нужны PLATO_PULL_URL и OPENAI_API_KEY, "
+                "не запущен. На Render нужны PLATO_PULL_URL и ключ выбранного поставщика "
+                "(OPENAI_API_KEY, а при PLATO_MODEL_PROVIDER=anthropic — ANTHROPIC_API_KEY), "
                 "а PLATO_AI_URL должен быть пуст.")
     if ago > 120:
         return (f"За очередью он последний раз приходил {int(ago // 60)} мин назад и "
@@ -4165,7 +4208,8 @@ def internal_plato_queue(request: Request, wait: float = 0.0) -> dict[str, Any]:
     либо частил бы опросом, либо отвечал бы с задержкой в целый интервал.
     """
     _plato_queue_guard(request)
-    _plato_puller_seen_touch()
+    _plato_puller_seen_touch(request.headers.get("X-Plato-Provider", ""),
+                             request.headers.get("X-Plato-Model", ""))
     limit = min(max(0.0, float(wait or 0.0)), _PLATO_QUEUE_WAIT_SECONDS)
     deadline = time.monotonic() + limit
     while True:
@@ -4253,6 +4297,11 @@ def _plato_pull_worker() -> None:
         "X-Plato-Secret": _PLATO_AI_PROXY_SECRET,
         "Connection": "close",
     }
+    # Ядру не видно, кем думает Render: он сам называет поставщика и модель.
+    reported = plato_provider.describe(_plato_openai_agent_model())
+    if reported["provider"]:
+        headers["X-Plato-Provider"] = str(reported["provider"])
+        headers["X-Plato-Model"] = str(reported["model"] or "")
     _PLATON_LOG.info("Platon pull worker started for %s", base)
     while True:
         try:
@@ -4264,8 +4313,12 @@ def _plato_pull_worker() -> None:
 
 @app.on_event("startup")
 def _start_plato_pull_worker() -> None:
-    """Очередь разбирает тот, у кого есть ключ и нет своего прокси, — Render."""
-    if _PLATO_PULL_URL and not _PLATO_AI_URL and os.getenv("OPENAI_API_KEY", "").strip():
+    """Очередь разбирает тот, у кого есть ключ и нет своего прокси, — Render.
+
+    Ключ — выбранного поставщика: при PLATO_MODEL_PROVIDER=anthropic и одном
+    ANTHROPIC_API_KEY разбор обязан стартовать, иначе Платон на ядре замолчит.
+    """
+    if _PLATO_PULL_URL and not _PLATO_AI_URL and plato_provider.model_key_present():
         threading.Thread(target=_plato_pull_worker, name="plato-pull", daemon=True).start()
 
 
@@ -4280,7 +4333,7 @@ def _plato_internal_guard(request: Request) -> None:
             status_code=503,
             detail=(
                 "Этот сервер сам обращается к AI-прокси и служебные вызовы не обслуживает. "
-                "Зовите /internal/plato/chat на Render — там задан OPENAI_API_KEY."
+                "Зовите /internal/plato/chat на Render — там задан ключ модели."
             ),
         )
     expected = _env_str("PLATO_AI_PROXY_SECRET", "").strip()
@@ -4337,7 +4390,7 @@ def _call_openai_tool_agent(
     bundle: dict[str, Any],
     trace_id: str = "",
 ) -> dict[str, Any]:
-    model = os.getenv("OPENAI_AGENT_MODEL", "gpt-5.6").strip() or "gpt-5.6"
+    model = _plato_openai_agent_model()
 
     # Keep only compact dialogue; model state comes through server tools, not a giant JSON dump.
     input_items: list[dict[str, Any]] = []

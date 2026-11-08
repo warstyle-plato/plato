@@ -53,6 +53,8 @@ def register(project='Учебный проект'):
                                                 'text': MARKER, 'contractor': 'Подрядчик',
                                                 'match_status': 'proposed',
                                                 'candidate_contract_ids': [CONTRACT],
+                                                'selectable_contract_ids': [CONTRACT],
+                                                'suggested_contract_id': CONTRACT,
                                                 'source': {'kind': 'daily_report', 'date': '2026-11-02', 'line_index': 1}}],
                             'issues': ['Текст сообщения не подтверждает приёмку']}},
         {'id': OTHER, 'contractor': 'Другой подрядчик', 'contract': 'Д-02',
@@ -153,15 +155,18 @@ class Responses:
                 self.links.append(params)
                 evidence = self.data['rows'][0]['reconciliation']['daily_evidence'][0]
                 evidence['match_status'] = 'confirmed' if params['confirmed'] else 'proposed'
+                evidence['contract_id'] = params['contract_id'] if params['confirmed'] else ''
+                evidence['link_basis'] = 'manual' if params['confirmed'] else 'candidate'
                 return route.fulfill(json={'pending': False, 'ok': True, 'link': {}})
             data = copy.deepcopy(self.data)
-            data['rows'][0]['contractor'] = 'Подрядчик ' + params['project']
+            if data['rows']:
+                data['rows'][0]['contractor'] = 'Подрядчик ' + params['project']
             return route.fulfill(json={'pending': False, 'ok': True, 'register': data})
         return route.fulfill(json={})
 
 
 @contextlib.contextmanager
-def browser_page(width=390, hash_=''):
+def browser_page(width=390, hash_='', init=''):
     from playwright.sync_api import sync_playwright
     chrome = chromium_or_skip()
     responses = Responses()
@@ -171,6 +176,8 @@ def browser_page(width=390, hash_=''):
         page = browser.new_page(viewport={'width': width, 'height': 950})
         page.set_default_timeout(5000)
         page.add_init_script(f"localStorage.setItem('plato_projects_key',{json.dumps(KEY)});localStorage.setItem('monitor_project','Учебный проект');")
+        if init:
+            page.add_init_script(init)
         page.route('**/monitor/**', responses)
         errors = []
         page.on('pageerror', lambda e: errors.append(str(e)))
@@ -190,9 +197,10 @@ def test_contracts_render_exact_money_unknowns_and_separate_physics(width):
         expect(page.locator('#contractsRows')).to_contain_text('197,8%')
         row = page.locator(f'tr[data-contract-id="{CONTRACT}"]')
         expect(row).to_contain_text('1\u00a0000\u00a0000 ₽')
-        expect(row).to_contain_text('Не указан')
+        expect(row.locator('.term')).to_contain_text('Нужен срок')
         expect(page.locator(f'tr[data-contract-id="{OTHER}"]')).to_contain_text('0 ₽')
-        assert page.locator(f'tr[data-contract-id="{OTHER}"] td.numeric').all_text_contents() == ['—', '0 ₽', '—', '—']
+        assert page.locator(f'tr[data-contract-id="{OTHER}"] .contract-main-money').all_text_contents() == ['—', '0 ₽', '—']
+        expect(page.locator(f'tr[data-contract-id="{OTHER}"]')).to_contain_text('Доля не рассчитана')
         row.locator('.contract-open').click()
         expect(page.locator('#contractsDetails')).to_contain_text('35%')
         expect(page.locator('#contractsDetails')).to_contain_text('100 м²')
@@ -213,6 +221,8 @@ def test_contracts_render_exact_money_unknowns_and_separate_physics(width):
 def test_archive_uses_one_admission_and_polls_without_executing_markup():
     from playwright.sync_api import expect
     with browser_page() as (page, responses, errors):
+        page.locator('#dataTab').click()
+        expect(page.locator('#setupCard')).to_be_visible()
         expect(page.locator('#setupCard')).to_have_class('card setup-card open')
         data = io.BytesIO()
         with zipfile.ZipFile(data, 'w') as z:
@@ -280,7 +290,7 @@ def test_term_and_each_evidence_link_require_explicit_actions():
         assert responses.links[0]['evidence_id'] == 'evidence-01'
         assert responses.links[0]['confirmed'] is True
         page.locator('#contractsDetails .evidence-remove').click()
-        expect(page.locator('#contractsDetails')).to_contain_text('Предложено соответствие', timeout=10000)
+        expect(page.locator('#contractsDetails')).to_contain_text('Предложен договор:', timeout=10000)
         assert len(responses.links) == 2
         assert responses.links[1]['confirmed'] is False
         assert not errors
@@ -302,6 +312,8 @@ def test_wrong_current_key_clears_private_lists_and_deep_link_has_no_key():
 def test_failed_poll_does_not_restart_archive_upload():
     from playwright.sync_api import expect
     with browser_page() as (page, responses, errors):
+        page.locator('#dataTab').click()
+        expect(page.locator('#setupCard')).to_be_visible()
         expect(page.locator('#setupCard')).to_have_class('card setup-card open')
         page.locator('#cumulativeFile').set_input_files({'name': 'Снимок.zip', 'mimeType': 'application/zip', 'buffer': b'fake-zip'})
         responses.reject_poll = True
@@ -314,6 +326,8 @@ def test_failed_poll_does_not_restart_archive_upload():
 def test_failed_archive_shows_each_file_status_and_keeps_previous_snapshot():
     from playwright.sync_api import expect
     with browser_page() as (page, responses, errors):
+        page.locator('#dataTab').click()
+        expect(page.locator('#setupCard')).to_be_visible()
         expect(page.locator('#setupCard')).to_have_class('card setup-card open')
         page.locator('#cumulativeFile').set_input_files({'name': 'Годный.zip', 'mimeType': 'application/zip', 'buffer': b'good-synthetic'})
         page.locator('#cumulativeUpload').click()
@@ -359,9 +373,9 @@ def test_undated_quantity_and_later_manual_deadline_are_only_references():
         page.locator('#contractsTab').click()
         row = page.locator(f'tr[data-contract-id="{CONTRACT}"]')
         row.wait_for()
-        expect(row.locator('.term')).to_contain_text('Не указан')
+        expect(row.locator('.term')).to_contain_text('Нужен срок')
         expect(row.locator('.term')).not_to_contain_text('01.02.2027')
-        expect(page.locator('#contractsRows .contract-scroll-hint')).to_be_visible()
+        assert page.evaluate('document.querySelector("#contractsRows").scrollWidth <= document.querySelector("#contractsRows").clientWidth')
         row.locator('.contract-open').click()
         main = page.locator('.contract-physical .physical-main')
         assert main.locator('td.numeric').all_text_contents() == ['100 м²', '—', '—', '—']

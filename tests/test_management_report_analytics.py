@@ -63,10 +63,15 @@ def test_the_lag_and_its_change_over_the_period():
 def test_findings_carry_numbers_and_sources():
     built = _full()
     found = {item["topic"]: item for item in built["findings"]}
+    # PM is off (owner): forecasts follow the GPR percent pace; both corpora run
+    # ahead of plan here, so no «Корпуса» delay finding.
     assert list(found) == ["Стройка", "Люди на площадке", "Отстающие работы", "Срок",
-                           "Корпуса", "Бюджет месяца", "Продажи", "Финансирование", "Споры",
+                           "Бюджет месяца", "Продажи", "Финансирование", "Споры",
                            "Открытые вопросы"]
-    assert "прогноз Монитора по темпу работ" == found["Срок"]["source"]
+    assert "ГПР" == found["Срок"]["source"]
+    assert "Оценка окончания работ" in found["Срок"]["text"]
+    assert "не подтверждает дату получения разрешения на ввод" in found["Срок"]["text"]
+    assert "PM" not in found["Срок"]["text"]
     lag = built["physical"]["lag"]
     assert f"отставание {report._pp(-lag)[1:]}" in found["Стройка"]["text"]
     assert "ГПР-факт от 16.10.2026" == found["Стройка"]["source"]

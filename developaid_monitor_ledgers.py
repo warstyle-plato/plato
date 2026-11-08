@@ -40,6 +40,8 @@ MAX_ISSUES = 100
 MAX_TEXT_CELL_CHARS = 20_000
 MAX_MATERIALIZED_TEXT_BYTES = 16 * 1024 * 1024
 SUPPORTED = {'.xlsx', '.xlsm', '.xls'}
+# Kept distinct from an actually empty cell; this is never evaluated.
+_UNCACHED_FORMULA = '=__uncached_formula__'
 
 
 class LedgerProblem(ValueError):
@@ -255,15 +257,29 @@ def _read_workbook(filename: str, data: bytes, budget: dict | None = None) -> li
     try:
         from openpyxl import load_workbook
         wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True, keep_links=False)
+        formula_wb = None
         try:
             if len(wb.worksheets) > MAX_SHEETS:
                 raise LedgerProblem('В книге слишком много листов.')
-            return [(sheet.title, [_bounded_row(r, budget) for r in sheet.iter_rows(
-                max_row=min(sheet.max_row or bound, bound),
-                max_col=min(sheet.max_column or MAX_COLUMNS, MAX_COLUMNS), values_only=True)])
-                    for sheet in wb.worksheets]
+            formula_wb = load_workbook(io.BytesIO(data), read_only=True, data_only=False, keep_links=False)
+            out = []
+            for sheet, formula_sheet in zip(wb.worksheets, formula_wb.worksheets):
+                bounds = {'max_row': min(sheet.max_row or bound, bound),
+                          'max_col': min(sheet.max_column or MAX_COLUMNS, MAX_COLUMNS)}
+                rows = []
+                for cached, source in zip(sheet.iter_rows(**bounds), formula_sheet.iter_rows(**bounds)):
+                    # Reading formula text only identifies unavailable cached values;
+                    # formulas/macros and external references are never executed.
+                    _bounded_row([cell.value for cell in source if cell.data_type == 'f'], budget)
+                    values = [_UNCACHED_FORMULA if cell.value is None and raw.data_type == 'f' else cell.value
+                              for cell, raw in zip(cached, source)]
+                    rows.append(_bounded_row(values, budget))
+                out.append((sheet.title, rows))
+            return out
         finally:
             wb.close()
+            if formula_wb is not None:
+                formula_wb.close()
     except LedgerProblem:
         raise
     except Exception:
@@ -282,32 +298,90 @@ def _party(value: Any) -> str:
                     text, maxsplit=1, flags=re.I)[0].strip(' ,;')
 
 
+def _party_key(value: str) -> str:
+    # Same legal name with case/quotes/ё differences is still one candidate.
+    # Preserve business punctuation: different legal names must not collapse.
+    return re.sub(r'\s+', ' ', re.sub(r'[«»“”"]', '', value.casefold().replace('ё', 'е'))).strip()
+
+
 def _contract(value: Any) -> str:
     text = _text(value)
     text = re.sub(r'^договор\s*(?:подряда\s*)?(?:№|N)?\s*', '', text, flags=re.I)
     return re.split(r'\s+от\s+', text, maxsplit=1, flags=re.I)[0].strip(' №')
 
 
-def _metadata(rows: list[list[Any]]) -> dict:
+def _metadata(rows: list[list[Any]], filename: str = "", sheet: str = "") -> dict:
     out = {'contractor': '', 'customer': '', 'contract': '', 'contract_date': None,
-           'contract_amount': None, 'amount_scope': 'year_or_sheet'}
-    contract_row = None
+           'contract_amount': None, 'amount_scope': 'year_or_sheet',
+           'identity_source': {}, 'identity_warnings': [],
+           'party_evidence': {'customer': [], 'contractor': []}}
+    refs, dates = [], []
     for i, row in enumerate(rows[:40]):
         for j, value in enumerate(row):
             label = _norm(value)
-            if label in {'подрядчик', 'субподрядчик'}:
-                out['contractor'] = _party(_value_right(row, j))
-            elif label in {'генподрядчик', 'заказчик'}:
-                out['customer'] = _party(_value_right(row, j))
-            elif re.fullmatch(r'договор(?:\s+подряда)?', label):
-                out['contract'] = _contract(_value_right(row, j))
-                contract_row = i
+            right = next(((k, v) for k, v in enumerate(row[j+1:], j+1)
+                          if v is not None and _text(v)), None)
+            if label in {'подрядчик', 'субподрядчик', 'генподрядчик', 'заказчик'} and right:
+                field = 'contractor' if label in {'подрядчик', 'субподрядчик'} else 'customer'
+                out['party_evidence'][field].append({'value': _party(right[1]),
+                    'raw': _text(right[1]), 'source': _source(filename, sheet, i+1,
+                    cell=_cell(right[0]+1, i+1), label_cell=_cell(j+1, i+1), label=_text(value))})
+            elif re.fullmatch(r'договор(?:\s+подряда)?', label) and right:
+                if re.match(r'^(?:дс\b|доп(?:олнительное|\.)?\s*соглаш)', _norm(right[1])):
+                    out['identity_warnings'].append('В поле договора указано допсоглашение; основной договор не установлен по догадке.')
+                    continue
+                refs.append((_contract(right[1]), _source(filename, sheet, i+1,
+                    cell=_cell(right[0]+1, i+1), label_cell=_cell(j+1, i+1), label='Договор')))
+                # Only a date explicitly attached to the contract reference is identity.
+                # An act/work period/file date must never supply a missing contract date.
+                if re.search(r'\bот\s+', _text(right[1]), re.I):
+                    dates.append((_day(right[1]), refs[-1][1], str(right[1])))
+                for ri in (i, i+1):
+                    if ri >= len(rows):
+                        continue
+                    date_row = rows[ri]
+                    for ci, date_label in enumerate(date_row):
+                        if _norm(date_label) not in {'дата', 'дата договора', 'дата заключения договора', 'от'}:
+                            continue
+                        found = next(((k, v) for k, v in enumerate(date_row[ci+1:], ci+1)
+                                      if v is not None and _text(v)), None)
+                        if found:
+                            dates.append((_day(found[1]), _source(filename, sheet, ri+1,
+                                cell=_cell(found[0]+1, ri+1), label_cell=_cell(ci+1, ri+1),
+                                label='Дата договора из шапки накопительной'), str(found[1])))
             elif 'сметная (договорная) стоимость' in label:
                 amount = next((_number(v) for v in row[j+1:] if _number(v) is not None), None)
                 if amount is not None:
                     out['contract_amount'] = amount
-        if contract_row is not None and i == contract_row+1:
-            out['contract_date'] = next((_day(v) for v in row if _day(v)), None)
+    for field, evidence in out['party_evidence'].items():
+        candidates = {}
+        for item in evidence:
+            key = _party_key(item['value'])
+            if key:
+                candidates.setdefault(key, item)
+        if len(candidates) == 1:
+            first = next(iter(candidates.values()))
+            out[field] = first['value']
+            out['identity_source'][field] = first['source']
+        elif len(candidates) > 1:
+            role = 'заказчика' if field == 'customer' else 'подрядчика'
+            out['identity_warnings'].append(
+                f'В шапке указаны разные наименования {role}; сторона договора не выбрана. Проверьте исходные ячейки.')
+    numbers = {number for number, _ in refs if number}
+    if len(numbers) == 1:
+        out['contract'] = next(iter(numbers))
+        out['identity_source']['contract'] = refs[0][1]
+    elif refs:
+        out['identity_warnings'].append('В шапке несколько разных номеров договора; договор не выбран.')
+    valid = {date for date, _, _ in dates if date}
+    if len(valid) == 1 and all(date for date, _, _ in dates):
+        out['contract_date'] = next(iter(valid))
+        out['identity_source']['contract_date'] = dates[0][1]
+    elif dates:
+        out['identity_warnings'].append('В шапке нет единственной действительной даты договора; проверьте поле даты, не дату акта или периода.')
+    if dates:
+        out['contract_date_evidence'] = [{'date': date, 'raw': text, 'source': source}
+                                         for date, source, text in dates]
     return out
 
 
@@ -339,6 +413,45 @@ def _full_contract_price(label: str) -> bool:
     text = _norm(label)
     return bool(re.search(r'(?:новая|итоговая|общая|полная)\s+(?:сумма|цена|стоимость)\s+(?:по\s+)?договора', text)
                 or re.search(r'(?:сумма|цена|стоимость)\s+договора\s+с\s+уч[её]том\b', text))
+
+
+def _money_kind(qhead: list[Any], column: int) -> str:
+    label = _norm(qhead[column]) if 0 <= column < len(qhead) else ''
+    if 'стоимост' not in label and 'сумм' not in label:
+        return ''
+    if 'матер' in label and 'смр' not in label:
+        return 'material'
+    if 'смр' in label and 'матер' not in label:
+        return 'work'
+    return ''
+
+
+def _money_pair_columns(qhead: list[Any], first: int) -> dict[str, int]:
+    kinds = {_money_kind(qhead, first): first, _money_kind(qhead, first+1): first+1}
+    return kinds if set(kinds) == {'work', 'material'} else {}
+
+
+def _money_pair_total(first: int, at) -> float | None:
+    raw = [at(first), at(first+1)]
+    values = [_number(value) for value in raw]
+    if any(_text(value) and number is None for value, number in zip(raw, values)):
+        return None
+    return sum(value or 0.0 for value in values) if any(value is not None for value in values) else None
+
+
+def _money_parts(qhead: list[Any], first: int, at) -> tuple[float | None, float | None]:
+    """(works, materials) money of a labelled pair; unlabelled pairs are unknown.
+
+    The book's total already counts an empty half as nothing when the other half
+    is a number, so the halves do the same and always add up to that total. Two
+    empty halves stay unknown."""
+    kinds = _money_pair_columns(qhead, first)
+    if not kinds or _money_pair_total(first, at) is None:
+        return None, None
+    work, material = _number(at(kinds['work'])), _number(at(kinds['material']))
+    if work is None and material is None:
+        return None, None
+    return work or 0.0, material or 0.0
 
 
 def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
@@ -379,8 +492,8 @@ def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
     period_cols = [j for j, v in enumerate(qhead) if plan_col < j < year_col
                    and ('количеств' in _norm(v) or _norm(v) == 'кол-во')
                    and not ('смр' in _norm(v) and split)]
-    meta = _metadata(rows)
-    warnings = []
+    meta = _metadata(rows, filename, sheet)
+    warnings = list(meta.get('identity_warnings') or [])
     if not meta['contractor'] or not meta['contract']:
         warnings.append('В шапке не распознаны контрагент или номер договора.')
     if not meta['contract_date']:
@@ -388,6 +501,12 @@ def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
     warnings.append('Сумма и количества этой книги относятся к её году или составу работ; это не подтверждение полной суммы договора.')
     if split:
         warnings.append('Материалы и монтаж учтены отдельно. Поставку не считать выполнением монтажа.')
+    # Works and materials money are told apart by their own column labels, never
+    # by position. An unlabelled pair stays a total with an explicit warning.
+    money_split = split and bool(_money_pair_columns(qhead, year_col+2))
+    if split and not money_split:
+        warnings.append('Колонки сумм материалов и СМР не распознаны по подписям; '
+                        'выполнение работ и поставка материалов по деньгам не разделены.')
     items = []
     scope = ''
     errors = []
@@ -430,20 +549,44 @@ def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
             start, end = _period_dates(label)
             pqty = _number(at(col+1 if split else col))
             pmat = _number(at(col)) if split else None
+            pwork = pmaterial = None
             if split:
-                parts = [_number(at(col+2)), _number(at(col+3))]
-                pamount = sum(p for p in parts if p is not None) if any(p is not None for p in parts) else None
+                pamount = _money_pair_total(col+2, at)
+                pwork, pmaterial = _money_parts(qhead, col+2, at)
+                bad = [c for c in (col+2, col+3) if _text(at(c)) and _number(at(c)) is None]
+                if bad:
+                    item_warnings.append('Не подтверждены суммы выполнения в ячейках '
+                                         + ', '.join(_cell(c+1, ri) for c in bad)
+                                         + ': непустое значение не прочитано как число; сумма периода неизвестна.')
+                    if any(at(c) == _UNCACHED_FORMULA for c in bad):
+                        item_warnings.append('У формулы нет сохранённого результата. Пересчитайте и сохраните книгу в Excel; формула не вычислялась.')
+                if not _money_pair_columns(qhead, col+2):
+                    item_warnings.append('Подписи сумм периода не разделяют материалы и СМР; '
+                                         'отдельные денежные показатели не определены.')
             else:
                 pamount = _number(at(col+1))
+            money_cols = (col+2, col+3) if split else (col+1,)
+            bases = {_amount_basis(_text(qhead[c])) for c in money_cols if c < len(qhead)} - {'unspecified'}
+            pamount_basis = 'conflicting' if len(bases) > 1 else next(iter(bases)) if bases else 'unspecified'
             periods.append({'label': label, 'quantity': pqty, 'material_quantity': pmat,
-                            'amount': pamount, 'date_start': start, 'date_end': end,
+                            'amount': pamount, 'work_amount': pwork, 'material_amount': pmaterial,
+                            'amount_split': split and pwork is not None and pmaterial is not None,
+                            'amount_basis': pamount_basis, 'date_start': start, 'date_end': end,
                             'source': _source(filename, sheet, ri,
                                               quantity_cell=_cell(col+(2 if split else 1), ri),
                                               amount_cell=(_cell(col+3, ri)+' + '+_cell(col+4, ri)
                                                            if split else _cell(col+2, ri)))})
+        completed_work = completed_material = None
         if split:
-            amount_parts = [_number(at(year_col+2)), _number(at(year_col+3))]
-            completed_amount = sum(v for v in amount_parts if v is not None) if any(v is not None for v in amount_parts) else None
+            completed_amount = _money_pair_total(year_col+2, at)
+            completed_work, completed_material = _money_parts(qhead, year_col+2, at)
+            bad = [c for c in (year_col+2, year_col+3) if _text(at(c)) and _number(at(c)) is None]
+            if bad:
+                item_warnings.append('Не подтверждены годовые суммы в ячейках '
+                                     + ', '.join(_cell(c+1, ri) for c in bad)
+                                     + ': непустое значение не прочитано как число; годовой итог неизвестен.')
+                if any(at(c) == _UNCACHED_FORMULA for c in bad):
+                    item_warnings.append('У формулы нет сохранённого результата. Пересчитайте и сохраните книгу в Excel; формула не вычислялась.')
         else:
             completed_amount = _number(at(amount_col))
         items.append({'position': _text(at(max(0, name_col-1))), 'name': name,
@@ -451,6 +594,8 @@ def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
                       'completed_quantity': actual, 'material_quantity': _number(at(year_col)) if split else None,
                       'quantity_kind': 'installation' if split else 'work_quantity',
                       'planned_amount': _number(at(cost_col)), 'completed_amount': completed_amount,
+                      'completed_work_amount': completed_work, 'completed_material_amount': completed_material,
+                      'amount_split': split and completed_work is not None and completed_material is not None,
                       'periods': periods, 'warnings': item_warnings,
                       'source': _source(filename, sheet, ri,
                                         plan_quantity_cell=_cell(plan_col+1, ri),
@@ -467,7 +612,9 @@ def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
         raise LedgerProblem('В накопительной не найдено строк с объёмами работ.')
     if not any(p['date_end'] for item in items for p in item['periods']):
         warnings.append('Точные даты выполнения в книге не распознаны. Дата архива не является датой выполнения работ.')
-    return {**meta, 'period_year': int(year_label[:4]), 'items': items,
+    declared_form = 'ks6a' if any(re.search(r'кс[-\s]*6[-\s]*а', _norm(v))
+                                 for row in top for v in row if isinstance(v, str)) else 'cumulative'
+    return {**meta, 'document_form': declared_form, 'period_year': int(year_label[:4]), 'items': items,
             'source': _source(filename, sheet, hi+1), 'warnings': warnings,
             'period_dates_known': any(p['date_end'] for item in items for p in item['periods'])}
 
@@ -522,7 +669,7 @@ def _summary(filename: str, sheet: str, rows: list[list[Any]]) -> list[dict] | N
                        'amount_scope': 'full_contract',
                        'amount_basis': _amount_basis(header_map['amount_header']),
                        'deadline': None, 'acts': [], 'amount_versions': [], 'warnings': [],
-                       'source': _source(filename, sheet, ri+1, amount_header=header_map['amount_header'])}
+                       'source': _source(filename, sheet, ri+1, cell=_cell(header_map['amount']+1, ri+1), amount_header=header_map['amount_header'])}
             contracts.append(current)
             if current['amount'] is not None:
                 current['amount_versions'].append({'amount': current['amount'], 'date': current['amount_date'],
@@ -574,7 +721,7 @@ def parse_archive(data: bytes, filename: str = '') -> dict:
         raise LedgerProblem('Выберите ZIP-архив с накопительными книгами Excel.')
     members = _zip_members(data)
     budget = {'text_bytes': 0}
-    result = {'files': [], 'ledgers': [], 'summary_contracts': [], 'warnings': []}
+    result = {'files': [], 'ledgers': [], 'summary_contracts': [], 'warnings': [], 'identity_schema': 4}
     if not members:
         raise LedgerProblem('Архив пуст. Добавьте накопительные книги Excel.')
     for name, payload in members:
@@ -598,6 +745,7 @@ def parse_archive(data: bytes, filename: str = '') -> dict:
             for title, rows in sheets:
                 ledger = _ledger(name, title, rows)
                 if ledger is not None:
+                    ledger['file_sha256'] = hashlib.sha256(payload).hexdigest()
                     result['ledgers'].append(ledger)
                     if (sum(len(l['items']) for l in result['ledgers']) > MAX_ITEMS
                             or sum(len(i['periods']) for l in result['ledgers'] for i in l['items']) > MAX_PERIOD_VALUES):
@@ -617,7 +765,7 @@ def parse_archive(data: bytes, filename: str = '') -> dict:
                 raise LedgerProblem('В книге не распознаны накопительные или сводная по закрытию.')
             result['files'].append({'filename': name, 'status': 'parsed', 'sheets': count,
                                     'recognized_sheets': recognized, 'companions': companions,
-                                    'warnings': sheet_warnings})
+                                    'warnings': sheet_warnings, 'sha256': hashlib.sha256(payload).hexdigest()})
             result['warnings'].extend(sheet_warnings)
         except LedgerProblem as exc:
             # File names are part of the authenticated import report, not logs.

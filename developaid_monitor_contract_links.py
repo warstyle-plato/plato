@@ -1,7 +1,7 @@
 """Evidence links between contracts, cumulative ledgers and site reports.
 
 This module does not accept works, infer quantities from prose, or change money.
-A suggested contractor match remains a suggestion until a human confirms it.
+An exact contractor with one compatible contract identifies it automatically.
 Both Monitor and management reports use this resolver.
 """
 from __future__ import annotations
@@ -20,6 +20,7 @@ from urllib.parse import urlencode
 
 import developaid_monitor as monitor
 import developaid_monitor_daily as daily
+from developaid_monitor_contracts import _party_norm, _contract_number
 
 _MAX_TEXT = 20000
 _ID = re.compile(r"^[0-9a-f]{64}$")
@@ -76,12 +77,15 @@ def _party_identity(value: Any) -> str:
 
 def _same_party_exact(left: Any, right: Any) -> bool:
     """Omitted form can be shorthand; two different explicit forms cannot."""
-    first, second = _party_identity(left).split(), _party_identity(right).split()
-    if not first or not second or _party(left) != _party(right):
+    # Keep persisted work signatures unchanged; legal-form normalization is
+    # only for comparison, just as in the RSS contract resolver.
+    first, second = (_party_identity(_party_norm(value)).split() for value in (left, right))
+    if not first or not second:
         return False
     first_form = first[0] if first[0] in _LEGAL_FORMS else ""
     second_form = second[0] if second[0] in _LEGAL_FORMS else ""
-    return not first_form or not second_form or first_form == second_form
+    return (first[bool(first_form):] == second[bool(second_form):]
+            and (not first_form or not second_form or first_form == second_form))
 
 
 def _digest(value: Any) -> str:
@@ -161,20 +165,112 @@ def _scope_covers(evidence: dict, row: dict) -> bool:
 
 
 def _number(value: Any) -> str:
-    text = _text(value).replace("–", "-").replace("—", "-")
-    text = re.sub(r"^договор\s*", "", text).lstrip("№# ")
-    return text.split(" от ", 1)[0].strip()
+    return _contract_number(_text(value).replace("–", "-").replace("—", "-"), reference=True).lstrip("#")
+
+
+def _explicit_contract_numbers(text: str) -> set[str]:
+    """Read a contract reference, not an ordinary word after «по договору».
+
+    Without an explicit number marker the token must contain a digit, so
+    «на устройство фасада» and «подрядчика» cannot become bogus numbers.
+    The entire token is retained: A-12, A-123 and A-12/1 remain different.
+    An empty marked reference is retained as unknown, never ignored.
+    """
+    normalized = _text(text).replace("–", "-").replace("—", "-")
+    # A marked number can follow the kind/description of a contract. The next
+    # expressly numbered entity owns its own marker instead: «корпус № 2» or
+    # «акт № 3» is not a contract reference. This grammar is shared by all
+    # automatic, proposed and manual decisions below.
+    other_entity = (r"корпус(?:а|ов|у|е|ом)?|этаж(?:а|ей|у|е|ом|и)?|"
+                    r"акт(?:а|ов|у|е|ом|ы)?|счет(?:а|ов|у|е|ом|ы)?|"
+                    r"подъезд(?:а|ов|у|е|ом|ы)?|квартир(?:а|ы|у|е|ой)?|"
+                    r"секци(?:я|и|ю|ей|ям|ях)|пункт(?:а|ов|у|е|ом|ы)?|"
+                    r"заявк(?:а|и|у|е|ой)|накладн(?:ая|ой|ую|ые|ых)|"
+                    r"письм(?:о|а|у|е|ом)|строк(?:а|и|у|е|ой)")
+    marker = (r"№|#|\bномер(?:ом|у|а|е|ами|ов)?\b|\bном\."
+              r"|(?<!\w)n(?:o\.|[°º]|o?(?=\s|[:=]))")
+    pattern = (r"(?P<contract>\b(?:договор(?:у|а|ом|е|ы|ов|ам|ами|ах)?\b|дог\.))"
+               r"|(?P<other>\b(?:" + other_entity + r")(?=\W|[0-9]|$))"
+               r"|(?P<marker>" + marker + r")"
+               r"|(?P<boundary>[;!?]|\.(?=\s|$))")
+    token_pattern = (r"\s*[:=]?\s*[«\"“']?"
+                     r"(?P<number>[0-9a-zа-я][0-9a-zа-я_./-]*)?[»\"”']?")
+    numbers = set()
+
+    def read_numbers(position: int, marked: bool) -> None:
+        """A reference can be a comma/semicolon/conjunction-separated list."""
+        while True:
+            value = re.match(token_pattern, normalized[position:])
+            token = (value.group("number") or "").rstrip(".") if value else ""
+            if not marked and not any(character.isdigit() for character in token):
+                return
+            numbers.add(_number(token))
+            if not value or not token:
+                return
+            position += value.end()
+            separator = re.match(r"\s*(?:[,;]|\b(?:и|или)\b)\s*", normalized[position:])
+            if separator is None:
+                return
+            position += separator.end()
+            next_marker = re.match(marker, normalized[position:])
+            marked = next_marker is not None
+            if next_marker:
+                position += next_marker.end()
+
+    contract_phrase = False
+    for match in re.finditer(pattern, normalized):
+        if match.lastgroup in {"other", "boundary"}:
+            contract_phrase = False
+            continue
+        if match.lastgroup == "contract":
+            contract_phrase = True
+        if not contract_phrase:
+            continue
+        read_numbers(match.end(), match.lastgroup == "marker")
+    return numbers
 
 
 def _explicit_number(text: str, row: dict) -> bool:
     number = _number(row.get("contract"))
-    if not number:
-        return False
-    # An apartment/floor number does not identify a contract. Require the word
-    # договор/дог. immediately before the escaped number, with a token boundary.
-    pattern = (r"\b(?:договор(?:у|а|ом)?|дог\.)\s*(?:№|n)?\s*"
-               + re.escape(number) + r"(?![\w/-])")
-    return bool(re.search(pattern, _text(text).replace("–", "-").replace("—", "-")))
+    return bool(number and number in _explicit_contract_numbers(text))
+
+
+def _selectable_contracts(evidence: dict, rows: list[dict]) -> tuple[list[dict], str]:
+    """One admission rule for the choices on screen and a new manual link.
+
+    Broad reconciliation candidates may overlap only part of a work's scope.
+    They are not permission to confirm the entire message against that row.
+    Existing saved decisions retain their own source and remain revocable.
+    """
+    if evidence.get("party_attribution_uncertain"):
+        return [], "Подрядчик в сообщении указан неоднозначно. Уточните исходное сообщение."
+    party = evidence.get("reported_contractor") or evidence.get("contractor")
+    if not party:
+        return [], "В сообщении не указан подрядчик. Уточните исходное сообщение."
+    counts: dict[str, int] = {}
+    for row in rows:
+        identifier = str(row.get("id") or "")
+        counts[identifier] = counts.get(identifier, 0) + 1
+    same_party = [row for row in rows if counts.get(str(row.get("id") or "")) == 1
+                  and row.get("id") and _same_party_exact(party, row.get("contractor"))]
+    if not same_party:
+        return [], "Договор этого подрядчика в накопительных не найден. Проверьте подрядчика и шапки ведомостей."
+    dated = [row for row in same_party if not row.get("contract_date")
+             or row["contract_date"] <= evidence["date"]]
+    if not dated:
+        return [], "Договоры подрядчика заключены после сообщения. Проверьте даты в источниках."
+    scoped = [row for row in dated if _scope_covers(evidence, row)]
+    if not scoped:
+        return [], "Корпусный состав сообщения не подтверждён договором или указан неоднозначно. Уточните исходные данные."
+    references = _explicit_contract_numbers(evidence["text"])
+    if len(references) > 1:
+        return [], "В записи указано несколько номеров договоров. Уточните отдельные работы и их договоры."
+    if references:
+        scoped = [row for row in scoped if _explicit_number(evidence["text"], row)]
+        if not scoped:
+            return [], "Указанный номер не совпадает с подходящими договорами подрядчика. Проверьте номер договора в сообщении."
+    return scoped, ("У подрядчика несколько договоров. Выберите нужный."
+                    if len(scoped) > 1 else "Проверьте предложенный договор и подтвердите связь.")
 
 
 def _signature(evidence: dict, *, source_text: str, source_contractor: str, source_context: str = "") -> str:
@@ -341,18 +437,18 @@ def enrich(project: str, register: dict, cut: str, start: str = "", *,
     saved = _read(project).get("links") or {}
     for item in evidence:
         candidates = [row for row in rows if row.get("id") in unique
-                      and _party(item["contractor"])
-                      and _party(item["contractor"]) == _party(row.get("contractor"))
+                      and _same_party_exact(item["reported_contractor"] or item["contractor"], row.get("contractor"))
                       and _compatible(item, row)]
+        selectable, selection_reason = _selectable_contracts(item, rows)
         direct = saved.get(item["id"])
         applicable = [record for record in saved.values()
                       if record["signature"] == item["signature"]
                       and str(record.get("source_date") or "9999") <= item["date"]]
         manual = direct or max(applicable, key=lambda r: (r.get("source_date") or "", r.get("confirmed_at") or ""), default={})
         blocked = {str(manual.get("contract_id") or "")} if manual.get("confirmed") is False else set()
-        explicit = [row for row in candidates if item["party_exact"]
-                    and _same_party_exact(item["contractor"], row.get("contractor"))
+        explicit = [row for row in selectable if item["party_exact"]
                     and _same_party_exact(item["reported_contractor"], row.get("contractor"))
+                    and (not row.get("contract_date") or row["contract_date"] <= item["date"])
                     and _scope_covers(item, row)
                     and str(row["id"]) not in blocked and _explicit_number(item["text"], row)]
         # Bind to the exact work signature and the current project's registry.
@@ -365,21 +461,44 @@ def enrich(project: str, register: dict, cut: str, start: str = "", *,
         # a prior confirmation is not a perpetual contractor-wide permission.
         repeat_with_same_choices = (item["date"] >= str(manual.get("source_date") or "9999")
                                     and manual.get("candidate_contract_ids") == candidate_ids)
-        if (manual.get("confirmed") is True and manual_row is not None and _scope_covers(item, manual_row)
-                and (same_source or repeat_with_same_choices)):
+        manual_applies = manual.get("confirmed") is True and (same_source or repeat_with_same_choices)
+        manual_allowed = manual_row is not None and any(row["id"] == manual_row["id"] for row in selectable)
+        if manual_applies and manual_row is not None and not manual_allowed:
+            _, reason = _selectable_contracts(item, [manual_row])
+            item["manual_review_required"] = True
+            item["manual_contract_id"] = str(manual_row["id"])
+            item["manual_review_reason"] = reason
+            # Keep the persisted decision visible and revocable, but do not
+            # send its contract's money/progress to a mismatched work in reports.
+            if item["manual_contract_id"] not in candidate_ids:
+                candidate_ids.append(item["manual_contract_id"])
+        if item.get("manual_review_required"):
+            chosen, basis = None, "manual_review"
+        elif manual_applies and manual_allowed:
             chosen, basis = manual_row, "manual"
         elif len(explicit) == 1:
             chosen, basis = explicit[0], "explicit_number"
+        elif (len(selectable) == 1 and item["party_exact"]
+              and _same_party_exact(item["reported_contractor"], selectable[0].get("contractor"))
+              and str(selectable[0]["id"]) not in blocked
+              # A different explicitly stated number must never be ignored.
+              and not _explicit_contract_numbers(item["text"])):
+            chosen, basis = selectable[0], "exact_party"
         else:
-            chosen, basis = None, "candidate" if candidates else "none"
+            chosen, basis = None, "candidate" if selectable else "none"
         item["contract_id"] = str(chosen["id"]) if chosen else ""
         item["candidate_contract_ids"] = candidate_ids
         if chosen and item["contract_id"] not in item["candidate_contract_ids"]:
             item["candidate_contract_ids"].append(item["contract_id"])
+        item["selectable_contract_ids"] = sorted(str(row["id"]) for row in selectable)
+        item["suggested_contract_id"] = str(selectable[0]["id"]) if not chosen and len(selectable) == 1 else ""
         item["link_basis"] = basis
-        item["match_status"] = ("confirmed" if chosen else "ambiguous" if len(candidates) > 1
-                                else "proposed" if candidates else "unmatched")
+        item["match_status"] = ("confirmed" if chosen else "ambiguous" if len(selectable) > 1
+                                else "proposed" if selectable else "unmatched")
         item["status"] = _STATUS[item["match_status"]]
+        item["match_reason"] = ("" if chosen else
+            "Прежняя ручная связь требует проверки: " + item["manual_review_reason"]
+            if item.get("manual_review_required") else selection_reason)
         item.pop("signature", None)
         item.pop("party_exact", None)
     for row in rows:
@@ -443,12 +562,16 @@ def set_link(project: str, contract_id: str, evidence_id: str, cut: str,
     evidence = found[0]
     if confirmed and not _scope_covers(evidence, rows[0]):
         raise LinkProblem("Корпусный состав строки не подтверждён составом договора или указан неоднозначно. Проверьте исходные данные.")
+    if confirmed:
+        selectable, reason = _selectable_contracts(evidence, register.get("rows") or [])
+        if str(contract_id) not in {str(row["id"]) for row in selectable}:
+            raise LinkProblem(reason if not selectable else
+                              "Договор не входит в подходящие варианты этого подрядчика. Проверьте исходные данные.")
     with _locked(project):
         value = _read(project)
         signature = evidence["signature"]
         candidates = sorted({str(row["id"]) for row in register.get("rows") or []
-                             if _party(evidence["contractor"])
-                             and _party(evidence["contractor"]) == _party(row.get("contractor"))
+                             if _same_party_exact(evidence["reported_contractor"] or evidence["contractor"], row.get("contractor"))
                              and _compatible(evidence, row)})
         # One record per exact source preserves previous decisions when an
         # identically worded task later moves to another contract. A negative
@@ -500,7 +623,7 @@ def enrich_report_works(project: str, groups: list[dict], start: Any, end: Any, 
     for group in out:
         for entry in group.get("lines") or []:
             matches = [item for item in evidences.values()
-                       if _party(item["contractor"]) == _party(group.get("contractor"))
+                       if _same_party_exact(item["contractor"], group.get("contractor"))
                        and _text(item["text"]).strip(" ;.") == _text(entry.get("line")).strip(" ;.")
                        and item["date"] in entry.get("days", [])]
             links = {}
@@ -510,8 +633,34 @@ def enrich_report_works(project: str, groups: list[dict], start: Any, end: Any, 
                     links[row["id"]] = {"id": row["id"], "contract": str(row.get("contract") or ""),
                                         "label": f"Договор {row.get('contract') or 'без номера'}",
                                         "status": "confirmed", "source": item["link_basis"],
+                                        "completion_ratio": row.get("completion_ratio"),
+                                        "completed": row.get("completed"), "amount": row.get("amount"),
+                                        "completed_works": row.get("completed_works"),
+                                        "completed_materials": row.get("completed_materials"),
+                                        "works_materials_split": row.get("works_materials_split"),
+                                        "deadline": row.get("deadline"), "risk": copy.deepcopy(row.get("risk") or {}),
                                         "href": "/monitor#" + urlencode({"tab": "contracts", "project": project,
                                                                          "contract": row["id"]})}
+            unresolved_days = sorted(set(entry.get("days") or []) - {
+                item["date"] for item in matches if item["match_status"] == "confirmed"} | {
+                item["date"] for item in matches if item["match_status"] != "confirmed"})
+            if links and (unresolved_days or len(links) > 1):
+                for identifier, link in links.items():
+                    days = sorted({item["date"] for item in matches if item["contract_id"] == identifier})
+                    link["label"] += " (" + ", ".join(datetime.date.fromisoformat(day).strftime("%d.%m")
+                                                      for day in days) + ")"
             entry["contract_links"] = list(links.values())
-            entry["contract_status"] = "Договор определён" if links else "Договор не уточнён"
+            entry["contract_status"] = ("Договор уточнён не за все дни" if links and unresolved_days else
+                                        "Договор определён" if links else "Договор не уточнён")
+            entry["contract_match_reason"] = ("" if links else next(
+                (item.get("match_reason") for item in matches if item.get("match_reason")),
+                "Нет сопоставленного сообщения о работах."))
+            if links and unresolved_days:
+                dates = ", ".join(datetime.date.fromisoformat(day).strftime("%d.%m") for day in unresolved_days)
+                entry["contract_match_reason"] = f"За {dates} договор нужно уточнить."
+            entry["contract_candidates"] = [
+                {"id": identifier, "label": f"Договор {by_id[identifier].get('contract') or 'без номера'}"}
+                for identifier in sorted({identifier for item in matches
+                                          for identifier in item.get("selectable_contract_ids") or []
+                                          if identifier in by_id})]
     return out

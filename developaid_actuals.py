@@ -1310,8 +1310,12 @@ def borrowed(source: Any) -> bool:
     return "заем" in str(source or "").lower().replace("ё", "е")
 
 
-def read_payments(path: str | Path) -> dict[str, Any]:
-    """Реестр платежей РСС: дата, сумма, код ССР, договор и источник средств."""
+def read_payments(path: str | Path, *, include_incomplete: bool = False) -> dict[str, Any]:
+    """Реестр платежей РСС: дата, сумма, код ССР, договор и источник средств.
+
+    The contract-risk reader retains incomplete rows to report unknown totals;
+    ordinary financial readers keep the existing nonzero-payment behaviour.
+    """
     rows: list[dict[str, Any]] = []
     for index, row in enumerate(_sheet(path, _PAYMENTS_SHEET), 1):
         if index < _PAYMENTS_FIRST_ROW:
@@ -1322,12 +1326,25 @@ def read_payments(path: str | Path) -> dict[str, Any]:
             return row[position] if position < len(row) else None
 
         amount = _money(cell("amount"))
-        if not amount:
+        if include_incomplete:
+            import math
+            if not any(cell(field) not in (None, "") for field in _PAYMENTS_COLUMNS):
+                continue
+            raw_amount = cell("amount")
+            try:
+                amount = (None if raw_amount is None or isinstance(raw_amount, bool) else
+                          float(str(raw_amount).replace("\xa0", "").replace(" ", "").replace(",", ".")))
+            except (TypeError, ValueError):
+                amount = None
+            if amount is not None and not math.isfinite(amount):
+                amount = None
+        elif not amount:
             continue
         source = str(cell("source") or "").strip()
-        rows.append({
+        item = {
             "contractor": str(cell("contractor") or "").strip(),
             "contract": str(cell("contract") or "").strip(),
+            "contract_date": _date(cell("contract_date")),
             "object": str(cell("object") or "").strip(),
             "purpose": str(cell("purpose") or "").strip(),
             "estimate_code": _code(cell("estimate_code")),
@@ -1336,13 +1353,19 @@ def read_payments(path: str | Path) -> dict[str, Any]:
             "amount": amount,
             "source": source,
             "own_funds": _OWN_FUNDS_MARKER in _normalized(source),
-        })
+        }
+        if include_incomplete:
+            item["source_row"] = index
+        rows.append(item)
     dated = [item for item in rows if item["date"]]
+    def total(items):
+        return (sum(item["amount"] for item in items)
+                if all(item["amount"] is not None for item in items) else None)
     return {
         "rows": rows,
-        "total": sum(item["amount"] for item in rows),
-        "undated": sum(item["amount"] for item in rows if not item["date"]),
-        "own_funds": sum(item["amount"] for item in rows if item["own_funds"]),
+        "total": total(rows),
+        "undated": total([item for item in rows if not item["date"]]),
+        "own_funds": total([item for item in rows if item["own_funds"]]),
         "first": min((item["date"] for item in dated), default=None),
         "last": max((item["date"] for item in dated), default=None),
     }
@@ -1941,6 +1964,20 @@ _SCHEDULE_WORK = "работа"
 _SCHEDULE_OVERDUE = "просроч"
 
 
+def _schedule_progress(value: Any) -> float | None:
+    """A missing GPR reading is unknown, not financial-parser zero."""
+    if value is None or isinstance(value, bool):
+        return None
+    text = str(value).replace("\xa0", "").replace(" ", "").replace(",", ".")
+    percent = text.endswith("%")
+    try:
+        number = float(text[:-1] if percent else text)
+    except (TypeError, ValueError):
+        return None
+    import math
+    return (number / 100.0 if percent else number) if math.isfinite(number) else None
+
+
 def read_schedule(path: Any) -> dict[str, Any]:
     """ГПР: работы со сроками, статусом, процентом и кодом РСС."""
     rows: list[dict[str, Any]] = []
@@ -1963,7 +2000,7 @@ def read_schedule(path: Any) -> dict[str, Any]:
             "name": str(cell("name") or "").strip(),
             "kind": str(cell("kind") or "").strip(),
             "is_work": _SCHEDULE_WORK in _normalized(cell("kind")),
-            "progress": _money(cell("progress")),
+            "progress": _schedule_progress(cell("progress")),
             "start": _date(cell("start")),
             "finish": _date(cell("finish")),
             "status": status,

@@ -1741,7 +1741,8 @@ def _consolidate_phase_results(
             "rve": max(r["dates"]["rve"] for r in results),
         },
         "tep": {
-            "rows": tep_rows, "total": tep_total,
+            "rows": tep_rows, "total": tep_total, "above_gns": project_gns,
+            "underground_products": list(underground_products(master_inputs)),
             "core_above_gns": sum(r["tep"]["core_above_gns"] for r in results),
             "core_under_gns": sum(r["tep"]["core_under_gns"] for r in results),
             "project_articles_sqm": sum(float(r["tep"].get("project_articles_sqm") or 0.0)
@@ -2181,10 +2182,15 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
     # список читают несколько мест, и каждое падало бы на своём .get.
     social_objects = [copy.deepcopy(obj) for obj in (phasing.get("social_objects") or [])
                       if isinstance(obj, dict)]
+    # A source draft explicitly declares the supported geometry, including
+    # absent social rows. Do not invent queue objects from unrelated form
+    # defaults: the single-phase declared-row calculation preserves those
+    # zeros too. Explicit social objects remain subject to the usual checks.
+    import partial_tep
     # Совмещённый режим тоже строит: без него реестр объектов оставался пустым,
     # стройка школы и садика в очередях исчезала, и соцнагрузка выходила нулевой.
     if (str(x_master.get("social_mode")) in ("Строительство", SOCIAL_MODE_BOTH)
-            and not social_objects):
+            and not social_objects and not partial_tep.active(x_master)):
         # Реестр объектов пуст — собираем его из вводных, чтобы нагрузка не потерялась.
         for typ, key in (("kindergarten", "kindergarten_places"), ("school", "school_places"),
                          ("clinic", "clinic_capacity")):
@@ -3177,6 +3183,7 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
     свода ещё не приведён к очередям (см. `_calculate_phased_with_carry`).
     Очереди решены своим `calculate`.
     """
+    _partial_tep_preflight(req.inputs, req.tep)
     migrations = migrate_growth_post(req.inputs)
     apply_office_classes(req.inputs)
     bundle = _calculate_phased_with_table(req)
@@ -3351,6 +3358,7 @@ def _calculate_phased_with_carry(req: PhasedCalcRequest) -> dict[str, Any]:
 @app.post("/calculate-phased")
 def calculate_phased_api(req: PhasedCalcRequest) -> dict[str, Any]:
     # Очерёдность — тот же расчёт экономики, и та же граница входа.
+    _partial_tep_preflight(req.inputs, req.tep)
     access = require_calc_access(req.session, req.access_key, "Расчёт экономики",
                                  inputs=req.inputs, free_consent=req.use_free)
     bundle = calculate_phased(req)

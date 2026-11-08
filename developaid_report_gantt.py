@@ -87,7 +87,8 @@ def _summary(items: list[dict[str, Any]], known_of) -> dict[str, Any]:
         "plan_finish": plan_finish.isoformat() if plan_finish else None,
         "forecast_finish": forecast.isoformat() if forecast else None,
         "forecast_known": forecast is not None,
-        "forecast_partial": bool(known) and len(known) < len(items),
+        "forecast_partial": bool(known) and (len(known) < len(items)
+                                             or any(item.get("forecast_partial") for item in known)),
         "delta_days": max(deltas) if deltas else None,
     }
 
@@ -273,16 +274,49 @@ def notes(gantt: dict[str, Any], rnv: dict[str, Any] | None = None) -> list[str]
     out = []
     rnv = rnv or {}
     if not rnv.get("approved"):
-        out.append("Утверждённой даты РНВ в данных нет: она берётся из выгрузки "
-                   "планировщика с сетью работ, а её в Монитор не загружали.")
+        out.append("Утверждённой даты РНВ в данных нет: проверьте утверждённый ГПР проекта.")
     corpora = gantt.get("corpora") or []
     if any(item.get("forecast_partial") for corpus in corpora
            for item in [corpus, *corpus["articles"]]):
-        out.append("* Прогноз посчитан не по всем работам строки: у части работ темпа "
-                   "актов ещё нет, их срок не учтён.")
+        out.append("* Прогноз посчитан не по всем работам строки: у части работ нет "
+                   "актуального темпа по ГПР или подтверждённым объёмам, их срок не учтён.")
     if any(not article["forecast_known"] for corpus in corpora for article in corpus["articles"]):
-        out.append("«Нет прогноза» — по работам статьи ещё нет актов, темп считать не из чего.")
+        out.append("«Нет прогноза» — по работам нет актуального темпа выполнения.")
     return out
+
+
+def render(gantt: dict[str, Any], cut: Any = None, *, explanations: bool = True) -> str:
+    """Executive corpus lanes; article detail remains opt-in, not a long PDF."""
+    if gantt.get('state') != 'ok':
+        return ''
+    from developaid_schedule_visual import styles, lanes, legend, date_text
+    out = [styles(), '<div class="chart gantt"><section class="schedule-overview">']
+    caption = 'Срез на '+date_text(cut)+'. Даты взяты из графика Монитора.' if cut else ''
+    rows = [dict(corpus, id='corpus:'+str(i), forecast_label=(
+                    'По известным работам' if corpus.get('forecast_partial') else 'Прогноз'))
+            for i, corpus in enumerate(gantt.get('corpora') or [])]
+    out.append(lanes(rows, heading='План и прогноз по корпусам', caption=caption))
+    out.append(legend(rows))
+    article_count = sum(len(corpus.get('articles') or []) for corpus in gantt.get('corpora') or [])
+    if article_count:
+        out.append('<details class="schedule-article-details schedule-article-tree"><summary>Этапы и статьи по корпусам ('+str(article_count)+')</summary>')
+    for corpus in gantt.get('corpora') or []:
+        articles = corpus.get('articles') or []
+        if not articles:
+            continue
+        out.append('<details class="schedule-article-details schedule-article-leaf"><summary>'+html.escape(str(corpus['name']))+
+                   ': этапы и статьи ('+str(len(articles))+')</summary>')
+        out.append(lanes([dict(article, id=str(article.get('code') or ''),
+                               forecast_label=('По известным работам' if article.get('forecast_partial') else 'Прогноз'))
+                          for article in articles]))
+        out.append('</details>')
+    if article_count:
+        out.append('</details>')
+    if explanations:
+        out.append('<p class="schedule-note">Процент физической готовности корпуса из денежных актов не выводится. '
+                   'Если прогноз есть только по части работ, это явно указано у даты.</p>')
+    out.append('</section></div>')
+    return ''.join(out)
 
 
 def text_lines(gantt: dict[str, Any]) -> list[str]:

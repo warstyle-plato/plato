@@ -104,6 +104,13 @@ def _known_party(prefix: str, known: list[str]) -> str:
     text = str(prefix or "").strip(" \t.,;:-—–")
     if not text:
         return ""
+    # A precise name must win over an earlier substring/acronym in the list.
+    # Reuse the contract resolver's strict comparison; fuzzy aliases below
+    # remain useful for display but cannot replace an explicitly named party.
+    from developaid_monitor_contract_links import _same_party_exact
+    for name in known:
+        if _same_party_exact(text, name):
+            return name
     for name in known:
         if crew.same_party(text, name):
             return name

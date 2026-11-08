@@ -42,14 +42,58 @@ class MonitorContractsLink(MonitorContractsBuild):
     confirmed: bool = True
 
 
+class MonitorContractsHeaderDate(MonitorContractsBuild):
+    snapshot_id: str = _CumulativeField(min_length=1, max_length=100)
+    filename: str = _CumulativeField(min_length=1, max_length=240)
+    file_sha256: str = _CumulativeField(min_length=64, max_length=64)
+    sheet: str = _CumulativeField(min_length=1, max_length=200)
+    cell: str = _CumulativeField(min_length=1, max_length=10)
+    raw: str = _CumulativeField(min_length=1, max_length=20000)
+    # Empty date revokes an earlier clarification; a correction needs a note.
+    contract_date: str = _CumulativeField(default="", max_length=10)
+    note: str = _CumulativeField(default="", max_length=500)
+
+
 class MonitorCumulativeResult(MonitorCumulativeAuth):
     ticket: str = _CumulativeField(min_length=1, max_length=128)
+
+
+class MonitorScheduleConfirmation(MonitorCumulativeProject):
+    source_sha256: str = _CumulativeField(pattern=r"^[0-9a-f]{64}$")
+    revision: int = _CumulativeField(ge=0, strict=True)
+    calendar_basis: str = _CumulativeField(pattern=r"^(unconfirmed|calendar_days)$")
+    rnv_chain_complete: bool = _CumulativeField(strict=True)
+    note: str = _CumulativeField(min_length=1, max_length=1000)
+
+
+class MonitorPhysicalView(MonitorContractsBuild):
+    query: str = _CumulativeField(default="", max_length=200)
+    offset: int = _CumulativeField(default=0, ge=0, le=100000, strict=True)
+
+
+class MonitorPhysicalSave(MonitorCumulativeProject):
+    pm_sha256: str = _CumulativeField(pattern=r"^[0-9a-f]{64}$")
+    snapshot_id: str = _CumulativeField(pattern=r"^\d{4}-\d{2}-\d{2}-[0-9a-f]{64}$")
+    revision: int = _CumulativeField(ge=0, strict=True)
+    configuration: dict[str, Any]
+
+
+class MonitorGprPhysicalSave(MonitorCumulativeProject):
+    source_kind: str = _CumulativeField(pattern=r"^gpr$")
+    source_sha256: str = _CumulativeField(pattern=r"^[0-9a-f]{64}$")
+    snapshot_id: str = _CumulativeField(pattern=r"^\d{4}-\d{2}-\d{2}-[0-9a-f]{64}$")
+    revision: int = _CumulativeField(ge=0, strict=True)
+    configuration: dict[str, Any]
 
 
 _CUMULATIVE_PATHS = frozenset({
     "/monitor/cumulative/upload", "/monitor/cumulative/result",
     "/monitor/cumulative/list", "/monitor/contracts/build",
-    "/monitor/contracts/result", "/monitor/contracts/term", "/monitor/contracts/link",
+    "/monitor/contracts/result", "/monitor/contracts/term", "/monitor/contracts/link", "/monitor/contracts/header-date",
+    "/monitor/view", "/monitor/gantt", "/monitor/schedule-fact", "/monitor/gpr-corpus/view",
+    "/monitor/schedule-confirmation/view", "/monitor/schedule-confirmation/save",
+    "/monitor/schedule-physical/view", "/monitor/schedule-physical/save",
+    "/monitor/schedule-gpr-physical/view", "/monitor/schedule-gpr-physical/save",
 })
 
 
@@ -59,6 +103,19 @@ async def monitor_cumulative_private_headers(request: Request, call_next):
     if request.url.path in _CUMULATIVE_PATHS:
         response.headers["Cache-Control"] = "private, no-store"
     return response
+
+
+@app.post("/monitor/gpr-corpus/view", include_in_schema=False)
+def monitor_corpus_gpr_view(req: MonitorContractsBuild) -> Response:
+    """Source preview works even before RSS and the approved baseline exist."""
+    private = {"Cache-Control": "private, no-store"}
+    _require_admin_key(req.key, "Монитор проекта", req.session)
+    if not req.project.strip():
+        raise HTTPException(400, "Выберите проект.", headers=private)
+    import developaid_gpr_corpus as corpus_gpr
+    cut = _monitor_cumulative_day(req.cut)
+    source = corpus_gpr.latest(req.project.strip(), cut)
+    return JSONResponse(content={"source": source, "html": corpus_gpr.render_overview(source, cut)}, headers=private)
 
 
 def _monitor_cumulative_day(value: str) -> str:
@@ -71,6 +128,90 @@ def _monitor_cumulative_day(value: str) -> str:
     if day.isoformat() != text:
         raise HTTPException(400, "Укажите дату в формате ГГГГ-ММ-ДД.")
     return text
+
+
+def _monitor_schedule_confirmation(req, *, save=False):
+    _require_admin_key(req.key, "Монитор проекта", req.session)
+    project = req.project.strip()
+    if not project:
+        raise HTTPException(400, "Выберите проект.")
+    import developaid_schedule_confirmation as confirmation
+    cut = "" if save else _monitor_cumulative_day(req.cut)
+    try:
+        result = (confirmation.save(project, req.source_sha256, req.revision,
+                                    req.calendar_basis, req.rnv_chain_complete, req.note)
+                  if save else confirmation.view(project, cut))
+        return JSONResponse(content=result)
+    except confirmation.ConfirmationProblem as exc:
+        raise HTTPException(exc.status, str(exc)) from None
+    except Exception as exc:
+        logging.getLogger("developaid.monitor").error("Schedule confirmation unavailable (%s)", type(exc).__name__)
+        raise HTTPException(503, "Подтверждения графика сейчас недоступны. Повторите запрос.") from None
+
+
+@app.post("/monitor/schedule-confirmation/view", include_in_schema=False)
+def monitor_schedule_confirmation_view(req: MonitorContractsBuild) -> Response:
+    return _monitor_schedule_confirmation(req)
+
+
+@app.post("/monitor/schedule-confirmation/save", include_in_schema=False)
+def monitor_schedule_confirmation_save(req: MonitorScheduleConfirmation) -> Response:
+    return _monitor_schedule_confirmation(req, save=True)
+
+
+def _monitor_schedule_physical(req, *, save=False):
+    _require_admin_key(req.key, "Монитор проекта", req.session)
+    if not req.project.strip():
+        raise HTTPException(400, "Выберите проект.")
+    import developaid_schedule_physical as physical
+    try:
+        result = (physical.save(req.project.strip(), req.pm_sha256, req.snapshot_id,
+                                req.revision, req.configuration) if save else
+                  physical.catalog(req.project.strip(), _monitor_cumulative_day(req.cut),
+                                   req.query, req.offset))
+        return JSONResponse(content=result)
+    except physical.PhysicalProblem as exc:
+        raise HTTPException(exc.status, str(exc)) from None
+    except Exception as exc:
+        logging.getLogger("developaid.monitor").error("Physical schedule unavailable (%s)", type(exc).__name__)
+        raise HTTPException(503, "Привязки накопительных сейчас недоступны. Повторите запрос.") from None
+
+
+@app.post("/monitor/schedule-physical/view", include_in_schema=False)
+def monitor_schedule_physical_view(req: MonitorPhysicalView) -> Response:
+    return _monitor_schedule_physical(req)
+
+
+@app.post("/monitor/schedule-physical/save", include_in_schema=False)
+def monitor_schedule_physical_save(req: MonitorPhysicalSave) -> Response:
+    return _monitor_schedule_physical(req, save=True)
+
+
+def _monitor_schedule_gpr_physical(req, *, save=False):
+    _require_admin_key(req.key, "Монитор проекта", req.session)
+    if not req.project.strip():
+        raise HTTPException(400, "Выберите проект.")
+    import developaid_schedule_gpr_physical as physical
+    try:
+        result = (physical.save(req.project.strip(), req.source_kind, req.source_sha256,
+                                req.snapshot_id, req.revision, req.configuration) if save else
+                  physical.catalog(req.project.strip(), _monitor_cumulative_day(req.cut), req.query, req.offset))
+        return JSONResponse(content=result)
+    except physical.PhysicalProblem as exc:
+        raise HTTPException(exc.status, str(exc)) from None
+    except Exception as exc:
+        logging.getLogger("developaid.monitor").error("GPR quantity mapping unavailable (%s)", type(exc).__name__)
+        raise HTTPException(503, "Привязки ГПР и накопительных сейчас недоступны. Повторите запрос.") from None
+
+
+@app.post("/monitor/schedule-gpr-physical/view", include_in_schema=False)
+def monitor_schedule_gpr_physical_view(req: MonitorPhysicalView) -> Response:
+    return _monitor_schedule_gpr_physical(req)
+
+
+@app.post("/monitor/schedule-gpr-physical/save", include_in_schema=False)
+def monitor_schedule_gpr_physical_save(req: MonitorGprPhysicalSave) -> Response:
+    return _monitor_schedule_gpr_physical(req, save=True)
 
 
 def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = b"") -> dict:
@@ -89,6 +230,8 @@ def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = 
         elif operation == "term":
             result = {"term": contracts.set_term(
                 payload["project"], payload["contract_id"], payload["deadline"], payload["note"])}
+        elif operation == "header-date":
+            result = {"header_date": contracts.confirm_header_date(**payload)}
         elif operation == "link":
             result = {"link": links.set_link(
                 payload["project"], payload["contract_id"], payload["evidence_id"],
@@ -135,6 +278,12 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
                     if req.deadline:
                         _monitor_cumulative_day(req.deadline)
                     payload.update(contract_id=req.contract_id, deadline=req.deadline, note=req.note)
+                elif operation == "header-date":
+                    if req.contract_date:
+                        _monitor_cumulative_day(req.contract_date)
+                    payload.update(snapshot_id=req.snapshot_id, filename=req.filename,
+                                   file_sha256=req.file_sha256, sheet=req.sheet, cell=req.cell,
+                                   raw=req.raw, contract_date=req.contract_date, note=req.note)
                 elif operation == "link":
                     payload.update(contract_id=req.contract_id, evidence_id=req.evidence_id,
                                    confirmed=req.confirmed)
@@ -206,3 +355,8 @@ def monitor_contracts_term(req: MonitorContractsTerm) -> Response:
 @app.post("/monitor/contracts/link", include_in_schema=False)
 def monitor_contracts_link(req: MonitorContractsLink) -> Response:
     return _monitor_cumulative_job(req, family="contracts", operation="link")
+
+
+@app.post("/monitor/contracts/header-date", include_in_schema=False)
+def monitor_contracts_header_date(req: MonitorContractsHeaderDate) -> Response:
+    return _monitor_cumulative_job(req, family="contracts", operation="header-date")

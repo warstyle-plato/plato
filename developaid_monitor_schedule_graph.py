@@ -9,7 +9,10 @@ not mislabeled as forecast.
 from __future__ import annotations
 
 import datetime
+import hashlib
+import io
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -70,6 +73,25 @@ def _days(value: Any) -> int:
     return int(round(float(m.group(0).replace(",", ".")))) if m else 0
 
 
+def _known_days(value: Any) -> int | None:
+    """A numeric day reserve is evidence; arbitrary nonempty text is not.
+
+    Do not extract digits from an error/note or silently convert hours to days:
+    the working calendar has not been confirmed. Explicit zero stays known.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    text = str(value).strip().replace("−", "-")
+    match = re.fullmatch(
+        r"([+-]?\d+(?:[.,]\d+)?)\s*(?:д(?:ень|ня|ней|н)?\.?|days?|d)?",
+        text, flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+    number = float(match.group(1).replace(",", "."))
+    return int(round(number)) if math.isfinite(number) else None
+
+
 def _parse_predecessors(value: Any) -> list[dict[str, Any]]:
     text = str(value or "").strip()
     if not text:
@@ -122,31 +144,47 @@ def store_reference(
 _PM_CACHE: dict[tuple, dict[str, Any]] = {}
 
 
+# Owner's decision: the MS Project export is not representative and is not a
+# source for Monitor or the summary. Plan, dates and facts come from the GPR;
+# a stored pm.xlsx stays in the project archive and is not read.
+PM_DISABLED = True
+PM_DISABLED_REASON = ("Выгрузка MS Project (PM) отключена решением владельца: сроки и прогноз "
+                      "строятся по ГПР, перенос сдвигов по цепочкам PM не считается.")
+
+
 def _load_pm(project: str) -> dict[str, Any]:
+    if PM_DISABLED:
+        return {"known": False, "tasks": {}, "rnv_id": "", "source": "",
+                "disabled": True, "reason": PM_DISABLED_REASON}
+    return _load_pm_file(project)
+
+
+def _load_pm_file(project: str) -> dict[str, Any]:
     """PM-выгрузка, разобранная один раз на файл: baseline не меняется,
     а книга в полторы тысячи строк на 84 колонки стоит секунду разбора и
     читается дважды на каждый срез."""
     import copy as _copy
-    import os as _os
-
     path = monitor._project_dir(project) / "baseline" / "pm.xlsx"
-    if not path.exists():
+    try:
+        data = path.read_bytes()
+    except FileNotFoundError:
         return {"known": False, "tasks": {}, "rnv_id": "", "source": ""}
-    stat = _os.stat(path)
-    key = (str(path), stat.st_mtime_ns, stat.st_size)
+    key = (str(path), hashlib.sha256(data).hexdigest())
     if key in _PM_CACHE:
         return _copy.deepcopy(_PM_CACHE[key])
-    result = _read_pm(path)
+    result = _read_pm(path, data=data)
     if len(_PM_CACHE) > 8:
         _PM_CACHE.clear()
     _PM_CACHE[key] = result
     return _copy.deepcopy(result)
 
 
-def _read_pm(path: Any) -> dict[str, Any]:
+def _read_pm(path: Any, *, data: bytes | None = None) -> dict[str, Any]:
     from openpyxl import load_workbook
 
-    wb = load_workbook(path, read_only=True, data_only=True)
+    if data is None:
+        data = path.read_bytes()
+    wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
     try:
         ws = wb["Таблица_задач1"] if "Таблица_задач1" in wb.sheetnames else wb[wb.sheetnames[0]]
         rows = ws.iter_rows(values_only=True)
@@ -169,6 +207,8 @@ def _read_pm(path: Any) -> dict[str, Any]:
                     break
         tasks: dict[str, dict[str, Any]] = {}
         rnv_id = ""
+        validation_issues: list[str] = []
+        rnv_candidates: list[str] = []
         for values in rows:
             def cell(key: str) -> Any:
                 i = idx.get(key, -1)
@@ -179,16 +219,26 @@ def _read_pm(path: Any) -> dict[str, Any]:
             start = _date(cell("start"))
             finish = _date(cell("finish"))
             if not tid or not name or not start or not finish:
+                if tid and name:
+                    validation_issues.append("В PM есть именованная работа без распознанных дат.")
                 continue
+            if tid in tasks:
+                validation_issues.append("В PM повторяется идентификатор работы.")
+            raw_pred = str(cell("pred") or "").strip()
+            parsed_pred = _parse_predecessors(raw_pred)
+            if len([token for token in re.split(r"[;,]", raw_pred) if token.strip()]) != len(parsed_pred):
+                validation_issues.append("Не все связи из колонки предшественников PM распознаны.")
+            total_float = _known_days(cell("total"))
             task = {
                 "id": tid,
                 "name": name,
                 "start": start,
                 "finish": finish,
                 "duration_days": max(0, (finish - start).days),
-                "predecessors": _parse_predecessors(cell("pred")),
+                "predecessors": parsed_pred,
                 "free_float_days": _days(cell("free")),
-                "total_float_days": _days(cell("total")),
+                "total_float_days": total_float if total_float is not None else 0,
+                "total_float_known": total_float is not None,
             }
             tasks[tid] = task
             low = _norm(name)
@@ -201,7 +251,11 @@ def _read_pm(path: Any) -> dict[str, Any]:
                 )
             ):
                 rnv_id = tid
-        return {"known": bool(tasks), "tasks": tasks, "rnv_id": rnv_id, "source": path.name}
+                rnv_candidates.append(tid)
+        return {"known": bool(tasks), "tasks": tasks, "rnv_id": rnv_id, "source": path.name,
+                "source_sha256": hashlib.sha256(data).hexdigest(),
+                "validation_issues": list(dict.fromkeys(validation_issues)),
+                "rnv_candidates": rnv_candidates}
     finally:
         wb.close()
 
@@ -255,8 +309,12 @@ def _constraint_start(
 
 
 def _propagate(
-    pm: dict[str, Any], seeds: dict[str, datetime.date]
+    pm: dict[str, Any], seeds: dict[str, datetime.date], *,
+    actual_finishes: dict[str, datetime.date] | None = None,
 ) -> dict[str, dict[str, Any]]:
+    # Monetary scenarios omit actual_finishes and retain their existing rules.
+    # A physical completion is a dated fact, not a movable forecast seed.
+    actual_finishes = actual_finishes or {}
     tasks = {
         tid: {
             **item,
@@ -287,6 +345,18 @@ def _propagate(
         task["forecast_finish"] = finish
         task["own_delay_days"] = shift
 
+    for tid, finish in actual_finishes.items():
+        task = tasks.get(tid)
+        if not task or not isinstance(finish, datetime.date):
+            continue
+        task["actual_finish"] = finish
+        task["forecast_finish"] = finish
+        # The completion record supplies no actual start. This internal bound
+        # must not be shown as a factual interval or certify SS/SF successors.
+        task["forecast_start"] = min(task["start"], finish)
+        task["own_delay_days"] = max(0, (finish-task["finish"]).days)
+        task["completion_conflicts"] = []
+
     queue = [tid for tid, deg in indegree.items() if deg == 0]
     order: list[str] = []
     while queue:
@@ -307,7 +377,22 @@ def _propagate(
             required = succ["forecast_start"]
             for edge in succ["predecessors"]:
                 pred = tasks[edge["id"]]
+                if pred.get("actual_finish") and edge["type"] in {"SS", "SF"}:
+                    # A finish alone cannot supply an actual start constraint.
+                    succ.setdefault("unknown_actual_starts", set()).add(edge["id"])
+                    continue
+                if succ.get("actual_finish"):
+                    anchor = (pred["forecast_start"] if edge["type"] in {"SS", "SF"}
+                              else pred["forecast_finish"])
+                    earliest = anchor + datetime.timedelta(days=edge["lag_days"])
+                    if earliest > succ["actual_finish"]:
+                        conflict = {"predecessor": edge["id"], "type": edge["type"]}
+                        if conflict not in succ["completion_conflicts"]:
+                            succ["completion_conflicts"].append(conflict)
+                    continue
                 required = max(required, _constraint_start(edge, pred, succ))
+            if succ.get("actual_finish"):
+                continue
             if required > succ["forecast_start"]:
                 delta = (required - succ["forecast_start"]).days
                 succ["forecast_start"] += datetime.timedelta(days=delta)
@@ -361,7 +446,7 @@ def apply(project: str, view: dict[str, Any]) -> dict[str, Any]:
         schedule["dependency_graph"] = {
             "known": False,
             "forecast_known": False,
-            "reason": "не загружен сырой PM/ГРП",
+            "reason": pm.get("reason") or "не загружен сырой PM/ГРП",
         }
         return view
 

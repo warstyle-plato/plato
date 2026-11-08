@@ -341,7 +341,7 @@ def _read_control_baseline(source: Any) -> dict[str, Any]:
                 "name": name,
                 "kind": "Работа",
                 "is_work": True,
-                "progress": actuals._money(cell("progress")),
+                "progress": actuals._schedule_progress(cell("progress")),
                 "start": start,
                 "finish": finish,
                 "status": "",
@@ -388,6 +388,15 @@ def store_schedule_fact(project: str, data: bytes, taken_at: Any) -> dict[str, A
     if not str(project or "").strip():
         raise ValueError("Не указан проект: впишите название проекта в поле «Проект» вверху "
                          "страницы и загрузите файл ещё раз.")
+    # Wide corpus GPR is a separate source snapshot, never a WBS percentage
+    # overlay. In particular it must not replace the latest ordinary fact file.
+    import developaid_gpr_corpus as corpus_gpr
+    corpus = corpus_gpr.read(data)
+    if corpus is not None:
+        saved = corpus_gpr.store(project, data, day, corpus)
+        return {"taken_at": day, "works": 0, "completed": 0,
+                "corpus_gpr": saved, "corpus_gpr_html": corpus_gpr.render(saved),
+                "message": saved["reason"]}
     try:
         parsed = _read_baseline_gpr_bytes(data)
     except ValueError:
@@ -654,7 +663,8 @@ def work_facts(project: str, upto: str = "") -> dict[str, dict[str, Any]]:
         items = [item for item in items if item.stem <= upto]
     for path in items:
         for row in json.loads(path.read_text(encoding="utf-8")).get("rows", []):
-            out[str(row.get("id"))] = row
+            # The file name is the decision date; keep it as the value's origin.
+            out[str(row.get("id"))] = dict(row, recorded_day=path.stem.split(".", 1)[0])
     return out
 
 

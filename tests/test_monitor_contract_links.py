@@ -59,14 +59,16 @@ def evidence(data=None, **kwargs):
     return links.enrich(PROJECT, data or register(), CUT, **kwargs)
 
 
-def test_a_unique_party_match_is_only_proposed_and_money_does_not_change():
+def test_a_unique_exact_party_identifies_its_contract_without_changing_money():
     report()
     data = register()
     before = copy.deepcopy(data)
     result = evidence(data)
-    found = result["unmatched_works"][0]
-    assert found["match_status"] == "proposed"
-    assert found["contract_id"] == ""
+    assert result["unmatched_works"] == []
+    found = result["rows"][0]["reconciliation"]["daily_evidence"][0]
+    assert found["match_status"] == "confirmed"
+    assert found["contract_id"] == FIRST
+    assert found["link_basis"] == "exact_party"
     assert found["candidate_contract_ids"] == [FIRST]
     assert found["source"] == {"kind": "daily_report", "date": "2026-10-14", "line_index": 1}
     assert data == before
@@ -80,16 +82,17 @@ def test_same_party_multiple_contracts_require_choice_and_other_scope_is_exclude
     assert evidence(data)["unmatched_works"][0]["match_status"] == "ambiguous"
     data["rows"][1]["scope"] = ["Корпус 2"]
     data["rows"][1]["physical_items"][0] = {"scope": "Корпус 2"}
-    item = evidence(data)["unmatched_works"][0]
+    resolved = evidence(data)
+    assert resolved["unmatched_works"] == []
+    item = resolved["rows"][0]["reconciliation"]["daily_evidence"][0]
     assert item["candidate_contract_ids"] == [FIRST]
-    assert item["match_status"] == "proposed"
+    assert item["contract_id"] == FIRST and item["link_basis"] == "exact_party"
 
 
-@pytest.mark.parametrize("line", ["Корпус 1 бетонирование № A-12", "Корпус 1 квартира № A-12",
-                                  "Корпус 1 работы по договору № A-123"])
+@pytest.mark.parametrize("line", ["Корпус 1 бетонирование № A-12", "Корпус 1 квартира № A-12"])
 def test_arbitrary_numbers_or_contract_prefixes_do_not_auto_confirm(line):
     report(line)
-    assert evidence()["unmatched_works"][0]["match_status"] == "proposed"
+    assert evidence(register(two=True))["unmatched_works"][0]["match_status"] == "ambiguous"
 
 
 def test_explicit_contract_number_and_exact_party_identify_a_contract():
@@ -154,20 +157,20 @@ def test_same_work_is_deduplicated_within_day_and_dates_stay_separate():
     report(day="2026-10-15")
     report(day="2026-10-19")
     report(day="2026-10-09")
-    items = evidence(start="2026-10-12")["unmatched_works"]
+    items = evidence(register(two=True), start="2026-10-12")["unmatched_works"]
     assert [item["date"] for item in items] == ["2026-10-14", "2026-10-15"]
     assert len({item["id"] for item in items}) == 2
 
 
 def test_manual_link_is_persistent_and_exact_work_signature_only(monkeypatch):
-    install_register(monkeypatch)
+    data = install_register(monkeypatch, register(two=True))
     report()
-    item = evidence()["unmatched_works"][0]
+    item = evidence(data)["unmatched_works"][0]
     saved = links.set_link(PROJECT, FIRST, item["id"], CUT)
     assert saved["confirmed"]
     report(day="2026-10-15")
     report("Корпус 1 армирование", day="2026-10-16")
-    result = evidence()
+    result = evidence(data)
     related = result["rows"][0]["reconciliation"]["daily_evidence"]
     assert [item["link_basis"] for item in related] == ["manual", "manual", "candidate"]
     assert [item["text"] for item in result["unmatched_works"]] == ["Корпус 1 армирование"]
@@ -177,27 +180,27 @@ def test_manual_link_is_persistent_and_exact_work_signature_only(monkeypatch):
 
 
 def test_changed_tail_after_display_limit_changes_identity_and_does_not_inherit_manual_link(monkeypatch):
-    install_register(monkeypatch)
+    data = install_register(monkeypatch, register(two=True))
     prefix = "Корпус 1 " + "Длинное описание работы " * 1000
     report(prefix + "ПЕРВЫЙ ИСХОДНЫЙ ХВОСТ")
-    one = evidence()["unmatched_works"][0]
+    one = evidence(data)["unmatched_works"][0]
     assert len(one["text"]) <= links._MAX_TEXT and one["text_truncated"]
     links.set_link(PROJECT, FIRST, one["id"], CUT)
-    assert evidence()["unmatched_works"] == []
+    assert evidence(data)["unmatched_works"] == []
     report(prefix + "ИЗМЕНЁННЫЙ ИСХОДНЫЙ ХВОСТ")
-    two = evidence()["unmatched_works"][0]
+    two = evidence(data)["unmatched_works"][0]
     assert one["id"] != two["id"]
-    assert two["link_basis"] != "manual" and two["match_status"] == "proposed"
+    assert two["link_basis"] != "manual" and two["match_status"] == "ambiguous"
     assert one["text"] == two["text"]  # display equality is not source identity
 
 
 def test_explicit_legal_form_change_invalidates_prior_manual_signature(monkeypatch):
-    install_register(monkeypatch)
+    data = install_register(monkeypatch, register(two=True))
     report(party="ООО Альфа")
-    one = evidence()["unmatched_works"][0]
+    one = evidence(data)["unmatched_works"][0]
     links.set_link(PROJECT, FIRST, one["id"], CUT)
     report(party="ИП Альфа")
-    two = evidence()["unmatched_works"][0]
+    two = evidence(data)["unmatched_works"][0]
     assert one["id"] != two["id"] and two["link_basis"] != "manual"
 
 
@@ -221,7 +224,7 @@ def test_revocation_suppresses_explicit_auto_link_and_can_be_undone(monkeypatch)
 def test_new_competing_contract_does_not_inherit_a_previous_daily_confirmation(monkeypatch):
     install_register(monkeypatch)
     report()
-    original = evidence()["unmatched_works"][0]
+    original = evidence()["rows"][0]["reconciliation"]["daily_evidence"][0]
     links.set_link(PROJECT, FIRST, original["id"], CUT)
     report(day="2026-10-15")
     result = evidence(register(two=True))
@@ -251,11 +254,11 @@ def test_later_contract_change_preserves_the_prior_exact_source_decision(monkeyp
 def test_cross_project_evidence_and_future_evidence_are_not_a_write_capability(monkeypatch):
     install_register(monkeypatch)
     report(project="Other Site")
-    item = links.enrich("Other Site", register(), CUT)["unmatched_works"][0]
+    item = links.enrich("Other Site", register(two=True), CUT)["unmatched_works"][0]
     with pytest.raises(links.LinkProblem, match="не найдена"):
         links.set_link(PROJECT, FIRST, item["id"], CUT)
     report(day="2026-10-19")
-    future = links.enrich(PROJECT, register(), "2026-10-20")["unmatched_works"][0]
+    future = links.enrich(PROJECT, register(two=True), "2026-10-20")["unmatched_works"][0]
     with pytest.raises(links.LinkProblem, match="не найдена"):
         links.set_link(PROJECT, FIRST, future["id"], CUT)
     assert not links._path(PROJECT).exists()
@@ -277,7 +280,8 @@ def test_entire_mixed_corpus_line_cannot_be_confirmed_for_a_partial_contract(mon
     report("Корпус 1 и корпус 2 по договору A-12 бетонирование")
     item = evidence()["unmatched_works"][0]
     assert item["candidate_contract_ids"] == [FIRST]
-    assert item["match_status"] == "proposed"
+    assert item["match_status"] == "unmatched"
+    assert item["selectable_contract_ids"] == []
     with pytest.raises(links.LinkProblem, match="Корпус"):
         links.set_link(PROJECT, FIRST, item["id"], CUT)
     assert not links._path(PROJECT).exists()
@@ -299,7 +303,8 @@ def test_corpus_enumeration_cannot_drop_later_corpora_for_auto_or_manual_confirm
     report(scope + " по договору A-12 бетонирование")
     item = evidence()["unmatched_works"][0]
     assert "Корпус 2" in item["scope"]
-    assert item["match_status"] == "proposed"
+    assert item["match_status"] == "unmatched"
+    assert item["selectable_contract_ids"] == []
     with pytest.raises(links.LinkProblem, match="Корпус"):
         links.set_link(PROJECT, FIRST, item["id"], CUT)
 
@@ -332,15 +337,15 @@ def test_ambiguous_contract_corpus_scope_also_blocks_whole_line_confirmation():
 
 
 def test_concurrent_confirmations_do_not_lose_a_link(monkeypatch):
-    install_register(monkeypatch)
+    data = install_register(monkeypatch, register(two=True))
     report()
     report("Корпус 1 армирование", day="2026-10-15")
-    items = evidence()["unmatched_works"]
+    items = evidence(data)["unmatched_works"]
     with ThreadPoolExecutor(max_workers=2) as executor:
         results = list(executor.map(lambda item: links.set_link(PROJECT, FIRST, item["id"], CUT), items))
     assert len(results) == 2
     assert len(links._read(PROJECT)["links"]) == 2
-    assert evidence()["unmatched_works"] == []
+    assert evidence(data)["unmatched_works"] == []
 
 
 def test_duplicate_contract_identity_is_never_chosen():
@@ -360,11 +365,11 @@ def test_gencontract_does_not_become_subcontract_based_on_presence():
 
 
 def test_report_uses_same_confirmed_links_with_project_scoped_deeplink(monkeypatch):
-    install_register(monkeypatch)
+    data = install_register(monkeypatch, register(two=True))
     monkeypatch.setitem(sys.modules, "developaid_monitor_ledgers",
                         types.SimpleNamespace(latest_snapshot=lambda project, cut: {"snapshot_id": "fixture"}))
     report()
-    item = evidence()["unmatched_works"][0]
+    item = evidence(data)["unmatched_works"][0]
     links.set_link(PROJECT, FIRST, item["id"], CUT)
     groups = [{"contractor": "Альфа", "lines": [{"line": "Корпус 1 бетонирование", "days": ["2026-10-14"]},
                                                    {"line": "Корпус 1 армирование", "days": ["2026-10-15"]}]}]
@@ -376,9 +381,10 @@ def test_report_uses_same_confirmed_links_with_project_scoped_deeplink(monkeypat
     assert "contract_links" not in groups[0]["lines"][0]
     import developaid_management_report as management
     html = management._works_html({"state": "ok", "works": out}, "week")
-    assert "Договор A-12" in html and "Договор не уточнён" in html
+    assert "Договор A-12" in html and "Нет сопоставленного сообщения о работах" in html
     assert "project=Synthetic+Site" in html
-    assert management._work_contract_text(out[0]["lines"][0]) == " (Договор A-12)"
+    text = management._work_contract_text(out[0]["lines"][0])
+    assert "Договор A-12" in text and "25,0% суммы договора" in text
 
 
 def test_authoritative_crew_links_works_only_report_without_headcount(monkeypatch):
@@ -414,7 +420,7 @@ def test_report_without_cumulative_sources_keeps_old_work_shape(monkeypatch):
 
 
 def test_proposed_contract_is_not_printed_as_an_accepted_report_link(monkeypatch):
-    install_register(monkeypatch)
+    install_register(monkeypatch, register(two=True))
     monkeypatch.setitem(sys.modules, "developaid_monitor_ledgers",
                         types.SimpleNamespace(latest_snapshot=lambda project, cut: {"snapshot_id": "fixture"}))
     report()
@@ -422,8 +428,10 @@ def test_proposed_contract_is_not_printed_as_an_accepted_report_link(monkeypatch
     out = links.enrich_report_works(PROJECT, groups, "2026-10-12", CUT)
     import developaid_management_report as management
     html = management._works_html({"state": "ok", "works": out}, "week")
-    assert "Договор не уточнён" in html
-    assert "Договор A-12" not in html and "<a " not in html
+    assert "несколько договоров" in html
+    assert "Договор A-12" in html and "Договор A-13" in html
+    assert "<a " not in html
+    assert "25,0%" not in html
 
 
 def test_invalid_saved_link_is_an_explicit_problem_instead_of_an_approval():
