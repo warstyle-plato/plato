@@ -10,6 +10,7 @@ on:
       - "developaid_monitor_schedule_graph.py"
       - "developaid_monitor_page.py"
       - "developaid_monitor_contract*.py"
+      - "developaid_monitor_statement*.py"
       - "developaid_monitor_ledgers.py"
       - "developaid_cumulative_progress.py"
       - "developaid_schedule*.py"
@@ -20,6 +21,8 @@ on:
       - "tests/test_weekly_monitor*.py"
       - "tests/test_contract*.py"
       - "tests/test_cumulative*.py"
+      - "tests/test_ledger*.py"
+      - "tests/test_statement*.py"
       - "tests/test_gpr*.py"
       - "tests/test_schedule*.py"
       - "tests/test_a_proposal_replaces_the_articles_plan.py"
@@ -53,6 +56,8 @@ jobs:
             tests/test_weekly_monitor*.py \
             tests/test_contract*.py \
             tests/test_cumulative*.py \
+            tests/test_ledger*.py \
+            tests/test_statement*.py \
             tests/test_gpr*.py \
             tests/test_schedule*.py \
             tests/test_a_proposal_replaces_the_articles_plan.py \

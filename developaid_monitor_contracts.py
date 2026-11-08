@@ -863,6 +863,8 @@ def build(project: str, cut: str = "", *, include_history: bool = True) -> dict:
                "scope": sorted({str(item.get("scope") or "") for item in physical if item.get("scope")}),
                "performance_basis": "Денежное выполнение только по загруженным накопительным и завершённым датированным периодам; не оплата и не физическая готовность",
                "performance_source_count": len(ledger_items), "reported_performance_sources": references}
+        from developaid_monitor_statement_union import statement_union
+        row["statement_progress"] = statement_union(row)
         row["risk"] = contract_risk.forecast(
             amount=amount, completed=completed, comparable=comparable, periods=dated_money,
             cut=dt.date.fromisoformat(cut), deadline=dt.date.fromisoformat(deadline) if deadline else None,

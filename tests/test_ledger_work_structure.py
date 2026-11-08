@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import copy
 
 import openpyxl
 import pytest
@@ -133,3 +134,42 @@ def test_future_year_never_becomes_current_zero_or_percentage(annual):
     assert view['future_periods_excluded'] is True
     assert view['completed_quantity'] is None and view['reported_completed_quantity'] is None
     assert view['completion_ratio'] is None and view['reported_completion_ratio'] is None
+
+
+def test_register_unions_annual_facts_and_exposes_the_exact_history_percentage(context):
+    snapshot = parsed_book()
+    old = copy.deepcopy(snapshot['ledgers'][0])
+    old['source']['filename'] = 'Previous-year.xlsx'
+    old['period_year'] = 2025
+    for item in old['items']:
+        item['source']['filename'] = 'Previous-year.xlsx'
+        item['completed_quantity'] = 1
+        item['completed_amount'] = 10
+    snapshot['ledgers'].append(old)
+    provide(context, snapshot)
+    row, = contracts.build('Example', '2026-11-06')['rows']
+    union = row['statement_progress']
+    assert union['state'] == 'known' and union['source_years'] == [2025, 2026]
+    assert union['planned'] == 300 and union['completed'] == 160
+    assert union['ratio'] == row['progress']['ratio'] == pytest.approx(160/300)
+    assert row['progress']['basis'] == 'statement_union'
+
+
+@pytest.mark.parametrize('width', [390, 1440])
+def test_canonical_source_percentage_and_history_are_visible_in_real_page(context, width):
+    from test_monitor_cumulative_controls import browser_page
+    from playwright.sync_api import expect
+    snapshot = parsed_book()
+    provide(context, snapshot)
+    view = contracts.build('Example', '2026-11-06')
+    row, = view['rows']
+    assert row['statement_progress']['ratio'] == row['progress']['ratio'] == pytest.approx(140/300)
+    with browser_page(width) as (page, responses, errors):
+        responses.data = view
+        page.locator('#contractsTab').click()
+        cell = page.locator('#contractsRows td[data-label="Выполнено по накопительным"]')
+        expect(cell).to_contain_text('46,7%')
+        expect(cell).to_contain_text('По накопительным')
+        page.locator('.contract-history summary').click()
+        expect(page.locator('.contract-history tbody')).to_contain_text('46,7%')
+        assert not errors
