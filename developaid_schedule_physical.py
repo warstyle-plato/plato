@@ -419,7 +419,9 @@ def render(block):
             out.append('<tr><td colspan="4">'+esc(task['reason'])+'</td></tr>')
         for c in task.get('components') or []:
             done, plan, pace = c.get('completed_quantity'), c.get('plan_quantity'), c.get('rate_per_day')
-            amount = 'неизвестно' if done is None or plan is None else f'{done:g} / {plan:g} {c.get("unit", "")} · по {c.get("period_end", "")}'
+            source_date = (('по ведомости от '+c['observation_date']) if c.get('progress_date_basis') == 'snapshot'
+                           and c.get('observation_date') else 'по '+str(c.get('period_end') or ''))
+            amount = 'неизвестно' if done is None or plan is None else f'{done:g} / {plan:g} {c.get("unit", "")} · {source_date}'
             rate = 'неизвестен' if pace is None else f'{pace:g} {c.get("unit", "")}/день · {c.get("rate_window_start", "")} — {c.get("rate_window_end", "")}'
             out.append('<tr><td>'+esc(c['component_id'])+'</td><td>'+esc(amount)+'</td><td>'+esc(rate)+'</td><td>'+esc(c.get('forecast_finish') or c.get('reason') or 'неизвестен')+'</td></tr>')
             for evidence in c.get('sources') or []:

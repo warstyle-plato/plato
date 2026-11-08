@@ -33,7 +33,9 @@ def _ks(task: dict | None) -> dict[str, Any]:
         return {"progress": None, "date": None, "origin": None,
                 "reason": "Для этой работы выбрана плановая длительность: натуральных объёмов нет."}
     components = [{"component_id": c.get("component_id"), "progress": c.get("progress"),
-                   "unit": c.get("unit"), "date": c.get("period_end"), "reason": c.get("reason") or ""}
+                   "unit": c.get("unit"), "date": c.get("observation_date") or c.get("period_end"),
+                   "date_basis": c.get("progress_date_basis"), "origin": c.get("progress_origin"),
+                   "reason": c.get("reason") or "", "observation_history": c.get("observation_history")}
                   for c in task.get("components") or []]
     if task.get("mode") == "completed":
         if task.get("known"):
@@ -44,7 +46,9 @@ def _ks(task: dict | None) -> dict[str, Any]:
     if task.get("progress") is not None:
         dates = [c["date"] for c in components if c.get("date")]
         return {"progress": float(task["progress"]), "date": max(dates) if dates else None,
-                "origin": "cumulative_quantities", "components": components, "reason": ""}
+                "origin": task.get("progress_origin") or "cumulative_quantities", "components": components,
+                "date_basis": task.get("progress_date_basis"), "label": task.get("progress_basis"),
+                "observation_history": task.get("observation_history"), "reason": ""}
     if components and all(c.get("progress") is not None for c in components):
         reason = "Несколько компонентов разных объёмов: общий процент работы не выводится, доли — по компонентам."
     else:
