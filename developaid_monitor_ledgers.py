@@ -6,6 +6,7 @@ ledger amounts are explicitly distinct from whole-contract amounts.
 """
 from __future__ import annotations
 
+import calendar
 import contextlib
 import datetime as dt
 import hashlib
@@ -385,9 +386,75 @@ def _metadata(rows: list[list[Any]], filename: str = "", sheet: str = "") -> dic
     return out
 
 
-def _period_dates(label: str) -> tuple[str | None, str | None]:
-    matches = re.findall(r'\d{1,2}[./]\d{1,2}[./]\d{4}', label)
-    return (_day(matches[0]), _day(matches[-1])) if matches else (None, None)
+_MONTH_NAMES = (
+    r'январ[ья]', r'феврал[ья]', r'март[а]?', r'апрел[ья]',
+    r'ма[йя]', r'июн[ья]', r'июл[ья]', r'август[а]?',
+    r'сентябр[ья]', r'октябр[ья]', r'ноябр[ья]', r'декабр[ья]',
+)
+
+
+def _period_dates(label: str, *, year: int | None = None) -> tuple[str | None, str | None]:
+    """Read explicit dates or one named calendar month, never an act number.
+
+    The ledger's labelled annual year can qualify a month-only heading. The
+    archive date and current year cannot. A month is the whole calendar period,
+    so a cut inside it does not claim its final quantity as completed.
+    """
+    text = _norm(label)
+    named = [month for month, pattern in enumerate(_MONTH_NAMES, 1)
+             for _ in re.finditer(r'(?<![а-я])(?:'+pattern+r')(?![а-я])', text)]
+    years = set(re.findall(r'(?<!\d)20\d\d(?!\d)', text))
+    matches = re.findall(r'(?<!\d)(?:\d{1,2}[./]\d{1,2}[./](?:\d{4}|\d{2})|20\d\d-\d{2}-\d{2})(?!\d)', text)
+    if matches:
+        dates = [_day(value) for value in matches]
+        if len(dates) > 2 or not all(dates) or dates[0] > dates[-1]:
+            return None, None
+        if years - {date[:4] for date in dates} or any(month not in {int(date[5:7]) for date in dates} for month in named):
+            return None, None
+        return dates[0], dates[-1]
+    if len(years) > 1:
+        return None, None
+    source_year = int(next(iter(years))) if years else year
+    if isinstance(source_year, bool) or not isinstance(source_year, int) or not 2000 <= source_year <= 2099:
+        return None, None
+    # A written day is not a whole-month heading. Do not silently widen it.
+    if any(re.search(r'(?<!\d)\d{1,2}\s*(?:'+pattern+r')(?![а-я])', text) for pattern in _MONTH_NAMES):
+        return None, None
+    numeric = re.findall(r'(?<![\d./])(\d{1,2})[./](20\d\d)(?!\d)', text)
+    months = named + [int(month) for month, _ in numeric]
+    if len(months) != 1 or not 1 <= months[0] <= 12:
+        return None, None
+    month = months[0]
+    first = dt.date(source_year, month, 1)
+    last = dt.date(source_year, month, calendar.monthrange(source_year, month)[1])
+    return first.isoformat(), last.isoformat()
+
+
+def _restore_period_dates(snapshot: dict) -> dict:
+    """Interpret preserved period labels in old imports without writing them.
+
+    Values, source bindings and snapshot identity stay intact. This shared read
+    path also serves physical progress, so it cannot disagree with contracts.
+    """
+    ledgers = []
+    for ledger in snapshot.get('ledgers') or []:
+        items = []
+        for item in ledger.get('items') or []:
+            periods = []
+            for period in item.get('periods') or []:
+                if not period.get('date_start') and not period.get('date_end'):
+                    first, last = _period_dates(period.get('label') or '', year=ledger.get('period_year'))
+                    if first and last:
+                        period = {**period, 'date_start': first, 'date_end': last}
+                periods.append(period)
+            items.append({**item, 'periods': periods})
+        known = any(p.get('date_end') for item in items for p in item['periods'])
+        warnings = list(ledger.get('warnings') or [])
+        if known:
+            warnings = [warning for warning in warnings if warning !=
+                        'Точные даты выполнения в книге не распознаны. Дата архива не является датой выполнения работ.']
+        ledgers.append({**ledger, 'items': items, 'period_dates_known': known, 'warnings': warnings})
+    return {**snapshot, 'ledgers': ledgers}
 
 
 def amount_basis(header: str) -> str:
@@ -488,7 +555,12 @@ def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
                    and ('договорн' in _norm(v) or 'сметн' in _norm(v))]
     first_period = min(j for j, v in enumerate(qhead) if j > plan_col and ('количеств' in _norm(v) or _norm(v) == 'кол-во'))
     cost_col = first_period-1 if cost_labels else None
+    planned_amount_basis = _amount_basis(' '.join(_text(head[c]) for c in cost_labels))
     amount_col = year_col+3 if split else year_col+1
+    annual_money_cols = (year_col+2, year_col+3) if split else (year_col+1,)
+    annual_bases = {_amount_basis(_text(qhead[c])) for c in annual_money_cols if c < len(qhead)} - {'unspecified'}
+    completed_amount_basis = ('conflicting' if len(annual_bases) > 1 else
+                              next(iter(annual_bases)) if annual_bases else 'unspecified')
     period_cols = [j for j, v in enumerate(qhead) if plan_col < j < year_col
                    and ('количеств' in _norm(v) or _norm(v) == 'кол-во')
                    and not ('смр' in _norm(v) and split)]
@@ -546,7 +618,7 @@ def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
             label = next((_text(rows[r][col]) for r in range(qi-1, hi-1, -1)
                           if col < len(rows[r]) and _text(rows[r][col])
                           and 'выполнено работ' not in _norm(rows[r][col])), '')
-            start, end = _period_dates(label)
+            start, end = _period_dates(label, year=int(year_label[:4]))
             pqty = _number(at(col+1 if split else col))
             pmat = _number(at(col)) if split else None
             pwork = pmaterial = None
@@ -594,6 +666,8 @@ def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
                       'completed_quantity': actual, 'material_quantity': _number(at(year_col)) if split else None,
                       'quantity_kind': 'installation' if split else 'work_quantity',
                       'planned_amount': _number(at(cost_col)), 'completed_amount': completed_amount,
+                      'planned_amount_basis': planned_amount_basis,
+                      'completed_amount_basis': completed_amount_basis,
                       'completed_work_amount': completed_work, 'completed_material_amount': completed_material,
                       'amount_split': split and completed_work is not None and completed_material is not None,
                       'periods': periods, 'warnings': item_warnings,
@@ -944,6 +1018,6 @@ def latest_snapshot(project: str, cut: str = '') -> dict | None:
         return None
     path = _snapshot_path(_root(project), snapshots[0]['snapshot_id'])
     try:
-        return json.loads(path.read_text(encoding='utf-8'))
+        return _restore_period_dates(json.loads(path.read_text(encoding='utf-8')))
     except (OSError, ValueError):
         raise LedgerProblem('Сохранённый архив не читается. Обратитесь к администратору.') from None

@@ -87,6 +87,7 @@ def _contract_number(value: Any, *, reference: bool = False) -> str:
 _LEGAL_FORMS = (
     ("общество с ограниченной ответственностью", "ооо"),
     ("публичное акционерное общество", "пао"),
+    ("открытое акционерное общество", "оао"),
     ("закрытое акционерное общество", "зао"),
     ("непубличное акционерное общество", "ао"),
     ("акционерное общество", "ао"),
@@ -98,7 +99,15 @@ def _party_norm(value: Any) -> str:
     text = _norm(value)
     for full, short in _LEGAL_FORMS:
         text = re.sub(r"(?<![а-я])" + full + r"(?![а-я])", short, text)
-    return re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"\s+", " ", text).strip()
+    words = text.split()
+    forms = {short for _, short in _LEGAL_FORMS}
+    # The source register also uses «НУР ООО». Move an explicit suffix only
+    # when no leading form exists: a final word inside an already qualified
+    # company name must remain part of that name. Persisted ids use _base_key.
+    if len(words) > 1 and words[0] not in forms and words[-1] in forms:
+        text = ' '.join([words[-1], *words[:-1]])
+    return text
 
 
 def _base_key(item: dict) -> tuple[str, str, str]:
@@ -735,12 +744,39 @@ def build(project: str, cut: str = "") -> dict:
                 "amount_basis": summary_amount_basis, "completed_basis": summary_completed_basis})
         references = []
         for ledger, views in physical_sources:
-            values = [_number(item.get("completed_amount")) for item in ledger.get("items") or []]
+            source_items = ledger.get("items") or []
+            values = [_number(item.get("completed_amount")) for item in source_items]
+            planned_values = [_number(item.get("planned_amount")) for item in source_items]
             future_excluded = any(item.get("future_periods_excluded") for item in views)
+            reported_completed = (sum(values) if not future_excluded and values
+                                  and all(v is not None for v in values) else None)
+            reported_planned = (sum(planned_values) if planned_values
+                                and all(v is not None for v in planned_values) else None)
+            planned_bases = {item.get("planned_amount_basis") for item in source_items} - {None, "", "unspecified"}
+            completed_bases = ({item.get("completed_amount_basis") for item in source_items}
+                               | {p.get("amount_basis") for item in source_items for p in item.get("periods") or []}) - {None, "", "unspecified"}
+            statement_comparable = ("conflicting" not in planned_bases | completed_bases
+                                    and len(planned_bases) <= 1 and len(completed_bases) <= 1
+                                    and not (planned_bases and completed_bases and planned_bases != completed_bases))
+            source_split = bool(source_items) and all(item.get("amount_split")
+                and _number(item.get("completed_work_amount")) is not None
+                and _number(item.get("completed_material_amount")) is not None for item in source_items)
             references.append({"source": _source(ledger.get("source"), "Накопительная ведомость"),
                 "period_year": ledger.get("period_year"), "source_date": archive_day,
-                "completed": (sum(values) if not future_excluded and values
-                              and all(v is not None for v in values) else None),
+                "completed": reported_completed,
+                "planned": reported_planned,
+                "completion_ratio": (reported_completed / reported_planned
+                                     if reported_completed is not None
+                                     and reported_planned is not None and reported_planned > 0
+                                     and statement_comparable else None),
+                "monetary_comparable": statement_comparable,
+                "amount_scope": "statement",
+                "stated_contract_amount": _number(ledger.get("contract_amount")),
+                "works_materials_split": source_split,
+                "completed_works": (sum(_number(item.get("completed_work_amount")) or 0 for item in source_items)
+                                    if source_split and reported_completed is not None else None),
+                "completed_materials": (sum(_number(item.get("completed_material_amount")) or 0 for item in source_items)
+                                        if source_split and reported_completed is not None else None),
                 "period_dates_known": bool(ledger.get("period_dates_known")),
                 "future_periods_excluded": future_excluded,
                 "label": "Сумма сохранённых итогов позиций этой ведомости; справочно, период закрытия не установлен"})
