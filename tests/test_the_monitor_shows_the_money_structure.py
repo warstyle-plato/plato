@@ -284,6 +284,14 @@ def test_the_screen_puts_the_model_against_the_bank() -> None:
 
 @pytest.mark.parametrize("width", [390, 1440])
 def test_unknown_model_need_is_not_zero_and_known_zero_is_kept_on_screen(width) -> None:
+    """Батарея меряет утверждённый бюджет минус оплату, а не колонку РСС.
+
+    Картинке верят быстрее, чем строке. «Может, батареи нагляднее как раз?»
+    (владелец, 30.08.2026). Прежняя батарея меряла банковской потребностью
+    и показывала благополучие при нехватке по утверждённой модели.
+    При неизвестной оплате потребность и дефицит неизвестны; известный ноль
+    потребности не даёт отрицательной нехватки и отношения к нулю.
+    """
     from playwright.sync_api import expect
     from test_monitor_cumulative_controls import browser_page
 

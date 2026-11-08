@@ -330,21 +330,6 @@ def test_the_table_shows_both_halves_and_says_what_is_an_estimate() -> None:
         assert f"n.need{arithmetic}" not in body
 
 
-def test_the_battery_measures_against_the_model_not_the_bank_column() -> None:
-    """Картинке верят быстрее, чем строке, — и она обязана мерить то же.
-
-    Заряд считался от `remaining_need`, то есть от банковской колонки
-    «Средства на завершение»: на Кутузов Сити 1,46 из 1,66 — 88% и
-    «хватает до конца» при дефиците 2,2 млрд ₽. Три строки структуры
-    говорили одно, батарея под ними — обратное. «Может, батареи нагляднее
-    как раз?» (владелец, 30.08.2026) — нагляднее, поэтому и врали громче.
-    """
-    block = PAGE[PAGE.index("$('fundingCompare').innerHTML=(needAll==null"):]
-    block = block[: block.index("\n}")]
-    assert "надо по модели" in block
-    assert "remaining_need" not in block, "заряд снова меряет банковской колонкой"
-    assert "Остаток потребности по утверждённому бюджету" not in block
-    assert "сказать нечем" in block
-    setup = PAGE[PAGE.index("const fuel=(Number(f.bank_remaining)"):]
-    setup = setup[: setup.index("\n")]
-    assert "needAll=hasBook?Math.max(0,Number(remainingBudget)||0):null" in setup
+# Батарея по потребности модели, включая unknown и известный ноль, проверяется
+# на реальной странице в test_the_monitor_shows_the_money_structure.py:
+# test_unknown_model_need_is_not_zero_and_known_zero_is_kept_on_screen (390/1440).
