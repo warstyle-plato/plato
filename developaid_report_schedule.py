@@ -11,7 +11,30 @@ def _number(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
-def model(timeline: dict) -> dict:
+def stalled_text(items, basis=None):
+    """Keep a known risk visible, with its supplied cause and no new forecast."""
+    if not items:
+        return ""
+    shown = []
+    for item in items[:3]:
+        name = "«" + str(item.get("name") or item.get("id") or "Работа") + "»"
+        if item.get("object"):
+            name += " (" + str(item["object"]) + ")"
+        reason = item.get("reason")
+        if not reason:
+            reason = ("В ГПР нет измеренного прироста процента выполнения."
+                      if item.get("basis") == "gpr" or basis == "gpr" else
+                      "Темп по актам слишком мал для надёжной оценки окончания."
+                      if _number(item.get("monthly_rate")) else
+                      "Подтверждённого темпа для прогноза нет.")
+        shown.append(name + ": " + str(reason).rstrip(". ") + ".")
+    text = "Работы почти стоят: " + " ".join(shown)
+    if len(items) > 3:
+        text += f" Ещё работ без прогноза: {len(items) - 3}."
+    return text
+
+
+def model(timeline: dict, *, stalled=None) -> dict:
     """Keep the qualification and known natural facts independent of pace."""
     rnv = timeline.get("rnv") or {}
     physical = timeline.get("physical") or {}
@@ -54,6 +77,7 @@ def model(timeline: dict) -> dict:
             "forecast_label": qualification, "caveat": caveat,
             "delay_days": rnv.get("delay_days") if forecast else None,
             "driver": driver.get("name") or "", "facts": facts, "source_status": status,
+            "stalled_text": stalled_text(stalled or [], rnv.get("basis")),
             "action": action, "reasons": reasons,
             "source_label": "ГПР и накопительные" if any(f["kind"] == "quantity" for f in facts) else "ГПР",
             # Comparison is a separate operation; no result does not imply no files.
@@ -88,6 +112,8 @@ def conclusion(block):
         parts.append(block["caveat"])
     if block.get("driver"):
         parts.append("На срок влияет работа «" + block["driver"] + "».")
+    if block.get("stalled_text"):
+        parts.append(block["stalled_text"])
     return " ".join(parts)
 
 
@@ -110,6 +136,8 @@ def render(block):
         out.append('<p class="schedule-note executive-qualification">'+esc(block["caveat"])+'</p>')
     if block.get("driver"):
         out.append('<p><b>На срок влияет:</b> '+esc(block["driver"])+'.</p>')
+    if block.get("stalled_text"):
+        out.append('<p class="executive-stalled">'+esc(block["stalled_text"])+'</p>')
     if block.get("facts"):
         out.append('<h4>Подтверждённое выполнение</h4><ul class="executive-facts">')
         out.extend('<li>'+esc(fact_text(f))+'</li>' for f in block["facts"][:5])

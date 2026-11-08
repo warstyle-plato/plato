@@ -1,4 +1,4 @@
-"""Project Monitor contract: fixed PM/GPR baseline, weekly RSS 6.1.2 only."""
+"""Fixed GPR facts and separate weekly RSS cost/payment evidence."""
 
 from __future__ import annotations
 
@@ -14,6 +14,8 @@ import developaid_monitor as monitor
 @pytest.fixture(autouse=True)
 def _isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(monitor, "_SNAPSHOT_DIR", tmp_path / "monitor")
+    # Exercise the production overlays even when this file runs on its own.
+    import developaid_monitor_page  # noqa: F401
 
 
 def _baseline_book() -> bytes:
@@ -113,10 +115,13 @@ def test_weekly_input_is_one_rss_file_for_cost_evidence_and_payments():
     view = monitor.build("Гродненская", cut="2026-08-15")
 
     work = view["schedule"]["rows"][0]
-    assert work["actual_progress"] is None
+    assert work["actual_progress"] == 0.0
     assert work["rss_accepted_ratio"] == pytest.approx(0.4)
-    assert work["progress_kind"] == "accepted_cost_ratio"
+    assert work["progress_kind"] == "gpr_percent"
+    assert work["progress_source"]["kind"] == "approved_gpr"
+    assert work["progress_source"]["date"] == "2026-07-01"
     assert work["forecast_finish"] == "2026-09-30"
+    assert work["forecast_source"] == "plan"
     assert view["money"]["accepted"] == pytest.approx(400e6)
     assert view["money"]["payment_fact"] == pytest.approx(240e6)
     cash = {row["month"]: row for row in view["payments"]["rows"]}
@@ -138,13 +143,37 @@ def test_next_rss_snapshot_updates_cost_evidence_without_touching_baseline():
 
     assert first["schedule"]["rows"][0]["plan_finish"] == "2026-09-30"
     assert second["schedule"]["rows"][0]["plan_finish"] == "2026-09-30"
-    assert first["schedule"]["rows"][0]["actual_progress"] is None
-    assert second["schedule"]["rows"][0]["actual_progress"] is None
+    for view in (first, second):
+        work = view["schedule"]["rows"][0]
+        assert work["actual_progress"] == 0.0
+        assert work["progress_kind"] == "gpr_percent"
+        assert work["progress_source"]["kind"] == "approved_gpr"
+        assert work["progress_source"]["date"] == "2026-07-01"
+        assert work["forecast_source"] == "plan"
     assert first["schedule"]["rows"][0]["rss_accepted_ratio"] == pytest.approx(0.2)
     assert second["schedule"]["rows"][0]["rss_accepted_ratio"] == pytest.approx(0.45)
     assert first["schedule"]["rows"][0]["forecast_finish"] == "2026-09-30"
     assert second["schedule"]["rows"][0]["forecast_finish"] == "2026-09-30"
     assert monitor.snapshots("Гродненская")["estimate"] == ["2026-07-31", "2026-08-31"]
+
+
+def test_rss_cost_evidence_does_not_fill_a_missing_gpr_percentage():
+    from openpyxl import load_workbook
+
+    book = load_workbook(io.BytesIO(_baseline_book()))
+    book["ГПР"]["G5"] = None
+    blob = io.BytesIO()
+    book.save(blob)
+    monitor.store_schedule("Гродненская", blob.getvalue(), None, "2026-07-01")
+    monitor.store_estimate("Гродненская", _rss_book(
+        acts=[("15.07.2026", 400e6)]), "2026-08-15")
+    work = monitor.build("Гродненская", cut="2026-08-15")["schedule"]["rows"][0]
+    assert work["rss_accepted_ratio"] == pytest.approx(0.4)
+    assert work["actual_progress"] is None and work["gpr_progress"] is None
+    assert work["progress_kind"] == "gpr_percent"
+    assert work["progress_source"]["kind"] is None
+    assert work["progress_source"]["date"] is None
+    assert work["progress_reason"]
 
 
 def test_a_weekly_rss_snapshot_is_never_overwritten():
