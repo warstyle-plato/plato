@@ -107,7 +107,29 @@ def _observation(row, register):
                                                   row.get('amount_basis'), row.get('completed_basis')), state='known',
                       reason='Выполнение по датированным накопительным.')
     else:
+        from developaid_monitor_statement_union import statement_union
+        supplied_union = isinstance(row.get('statement_progress'), dict)
+        union = row['statement_progress'] if supplied_union else statement_union(row)
+        union_ratio = _number(union.get('ratio'))
+        if union.get('state') == 'known' and union_ratio is not None:
+            result.update(ratio=union_ratio, basis='statement_union',
+                basis_label=union.get('basis_label') or 'стоимости работ по ведомостям',
+                origin='cumulative_statement', planned=union.get('planned'),
+                completed=union.get('completed'), remaining=union.get('remaining'),
+                scope_fingerprint=union.get('scope_fingerprint'),
+                basis_fingerprint=union.get('basis_signature'),
+                coverage=union.get('coverage'), source_years=union.get('source_years'),
+                coverage_basis=union.get('coverage_basis'), source_count=union.get('source_count'),
+                state='known', reason=union.get('why') or '',
+                requires_reconciliation=bool(union.get('requires_reconciliation'))
+                    or union_ratio < 0 or union_ratio > 1)
+            return result
+        if supplied_union:
+            result.update(state=union.get('state') or 'unknown',
+                          reason=union.get('why') or 'Общий процент по ведомостям не подтверждён.')
+            return result
         candidates = {}
+        qualified = 0
         references = row.get('reported_performance_sources') or []
         for reference in references:
             value = _number(reference.get('completion_ratio'))
@@ -118,6 +140,7 @@ def _observation(row, register):
                     or reference.get('monetary_comparable') is not True
                     or value is None or planned is None or planned <= 0 or done is None):
                 continue
+            qualified += 1
             scope = _scope(row, reference)
             basis = _basis_fingerprint('statement', planned, reference.get('planned_amount_basis'),
                                        reference.get('completed_amount_basis'), reference.get('period_year'))
@@ -125,7 +148,10 @@ def _observation(row, register):
             source = scope if scope else (_source_key(reference.get('source')),
                                           (reference.get('source') or {}).get('row'))
             candidates[(source, basis, value, done)] = (reference, value, scope, basis)
-        if len(candidates) == 1:
+        if qualified != len(references) and len(references) > 1:
+            result.update(state='partial_sources', reason=
+                'Проценты отдельных ведомостей известны, но не все источники квалифицированы для общего итога.')
+        elif len(candidates) == 1:
             reference, ratio, scope, basis = next(iter(candidates.values()))
             result.update(ratio=ratio, basis='statement', basis_label='стоимости ведомости',
                           origin='cumulative_statement', planned=reference['planned'],
@@ -164,7 +190,8 @@ def _observation(row, register):
 def _point(observation):
     return {key: observation.get(key) for key in (
         'ratio', 'basis', 'basis_label', 'origin', 'observation_date', 'date_basis',
-        'snapshot_id', 'scope_fingerprint', 'basis_fingerprint', 'state', 'reason')}
+        'snapshot_id', 'scope_fingerprint', 'basis_fingerprint', 'coverage', 'source_years',
+        'coverage_basis', 'state', 'reason')}
 
 
 def _selected_snapshots(project, current_day):
@@ -184,7 +211,7 @@ def _selected_snapshots(project, current_day):
 
 def _compare(progress):
     progress.update(delta_percent_points=None, period_days=None, previous_ratio=None,
-                    comparison_state='no_previous_snapshot', change_kind=None,
+                    comparison_state='no_previous_snapshot', change_kind=None, coverage_change=None,
                     comparison_reason='Предыдущего снимка для сравнения нет; текущий процент показан по источнику.')
     if progress['ratio'] is None:
         progress.update(comparison_state='current_unknown', comparison_reason=progress['reason'])
@@ -215,6 +242,18 @@ def _compare(progress):
         progress.update(comparison_state='basis_changed', comparison_reason=
                         'Цена или основание процента изменились; изменение не выдано за выполнение работ.')
         return
+    if progress['basis'] == 'statement_union':
+        previous_coverage, current_coverage = (_coverage(previous.get('coverage')),
+                                               _coverage(progress.get('coverage')))
+        if previous_coverage is None or current_coverage is None:
+            progress.update(comparison_state='coverage_unverified', comparison_reason=
+                            'Годовое покрытие работ для сравнения не подтверждено.')
+            return
+        if not previous_coverage <= current_coverage:
+            progress.update(comparison_state='coverage_changed', comparison_reason=
+                            'Охват годовых ведомостей изменился; сброс годового итога не считается изменением выполнения.')
+            return
+        progress['coverage_change'] = 'extended' if previous_coverage < current_coverage else 'unchanged'
     current_day, previous_day = _day(progress['observation_date']), _day(previous['observation_date'])
     if not current_day or not previous_day or current_day <= previous_day:
         progress.update(comparison_state='observation_date_unknown', comparison_reason=
@@ -227,7 +266,21 @@ def _compare(progress):
                'unchanged': 'В сопоставимых снимках ведомостей выполнение не изменилось.'}
     progress.update(delta_percent_points=delta, period_days=(current_day-previous_day).days,
                     previous_ratio=previous['ratio'], comparison_state='comparable',
-                    change_kind=kind, comparison_reason=reasons[kind])
+                    change_kind=kind, comparison_reason=(
+                        'С учётом добавленных годовых ведомостей. ' if progress['coverage_change'] == 'extended' else '') + reasons[kind])
+
+
+def _coverage(value):
+    if not isinstance(value, (list, tuple)) or not value:
+        return None
+    result = set()
+    for entry in value:
+        if (not isinstance(entry, (list, tuple)) or len(entry) != 2
+                or not isinstance(entry[0], str) or not isinstance(entry[1], int)
+                or isinstance(entry[1], bool)):
+            return None
+        result.add(tuple(entry))
+    return result
 
 
 def enrich(project: str, cut: str, register: dict, *, build_register: Callable[[str], dict]) -> dict:
