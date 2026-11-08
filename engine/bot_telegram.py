@@ -615,7 +615,7 @@ def _telegram_send_template(chat_id: int) -> Any:
 # Бот принимает не только шаблон ТЭП: тизер, справка по участку и решение ГЗК
 # приходят в чат тем же способом, и переписывать их в модель руками — та самая
 # работа, которую разбор снимает.
-_TELEGRAM_DOCUMENT_EXTENSIONS = (".xlsx", ".pdf")
+_TELEGRAM_DOCUMENT_EXTENSIONS = (".xlsx", ".pdf", ".png", ".jpg", ".jpeg")
 _TELEGRAM_DOCUMENT_MAX_BYTES = 20 * 1024 * 1024
 
 
@@ -1296,7 +1296,7 @@ def _telegram_platon_remember_document(chat_id: int, context: dict[str, Any]) ->
     return "разговор с Платоном в этом процессе не ведётся"
 
 
-def _telegram_handle_intake_document(chat_id: int, data: bytes, filename: str) -> None:
+def _telegram_handle_intake_document(chat_id: int, data: bytes, filename: str, document_override: dict[str, Any] | None = None) -> None:
     """Разбор присланного в чат тизера — тремя шагами, как на сайте.
 
     Первый шаг — карточка: что найдено (со страницей), что уйдёт в расчёт и
@@ -1305,7 +1305,9 @@ def _telegram_handle_intake_document(chat_id: int, data: bytes, filename: str) -
     приложение получает ровно строки карточки (`teaser_card.calc_overrides`).
     Карточку собирает тот же сборщик, что и для сайта (`teaser_card_view`).
     """
-    document = document_intake.extract_text(data, filename)
+    document = document_override if document_override is not None else document_intake.extract_text(data, filename)
+    if not document.get("source") and data:
+        document["source"] = {"kind": "upload", "sha256": hashlib.sha256(data).hexdigest()}
     if not document.get("text"):
         # Скан — не пустой документ. Сказать «ничего не нашли» значит соврать
         # про источник: там всё есть, просто картинкой. Признак скана гейтом
@@ -1372,6 +1374,11 @@ def _telegram_intake_card_text(card: dict[str, Any], *, first: bool, recognized:
     """Карточка разбора словами чата. Строки — из `teaser_card.build`."""
     lines = [("<b>Что я прочитал в тизере</b>" if first else "<b>Итог разбора перед расчётом</b>")
              + f" · «{html.escape(str(card.get('filename') or 'документ'))}»"]
+    if card.get("document_reason"):
+        lines.append("<i>" + html.escape(card["document_reason"]) + "</i>")
+    for refused in card.get("refused") or []:
+        lines.append("Не взято: " + html.escape(str(refused.get("label") or refused.get("key")))
+                     + " — " + html.escape(str(refused.get("reason") or "")))
     if recognized or card.get("recognized"):
         lines.append("<i>Документ — скан: текст распознан по картинке, сверьте числа с документом.</i>")
     lines.append("\n<b>1. Что найдено в тизере</b>")
@@ -1652,7 +1659,7 @@ def _telegram_handle_manual_document(chat_id: int, document: dict[str, Any]) -> 
         )
         return
     # PDF шаблоном ТЭП не бывает: это тизер, справка или решение ГЗК.
-    if filename.lower().endswith(".pdf"):
+    if filename.lower().endswith((".pdf", ".png", ".jpg", ".jpeg")):
         _telegram_handle_intake_document(chat_id, data, filename)
         return
     try:
@@ -2790,6 +2797,22 @@ def _telegram_handle_message(message: dict[str, Any]) -> None:
             "<code>Проект Северный. Участок 2,4 га. Квартиры — 42 000 м² продаваемой площади. "
             "Коммерция — 2 500 м². Подземный паркинг — 620 мест. ДОО — 150 мест.</code>",
         )
+        return
+    if message.get("photo"):
+        photo = max(message["photo"], key=lambda p: int(p.get("width") or 0) * int(p.get("height") or 0))
+        _telegram_handle_manual_document(chat_id, {**photo, "file_name": "тизер.jpg"})
+        return
+    if re.fullmatch(r"https://\S+", text):
+        import document_source
+        try:
+            loaded = document_source.read_url(text)
+            document = ({"text": loaded["text"], "pages": 1, "pages_read": 1,
+                         "filename": loaded["filename"], "recognized": False, "reason": ""}
+                        if "text" in loaded else document_intake.extract_text(loaded["data"], loaded["filename"]))
+            document["source"] = loaded["source"]
+            _telegram_handle_intake_document(chat_id, b"", loaded["filename"], document_override=document)
+        except document_source.DocumentSourceError as exc:
+            _telegram_send_message(chat_id, "Не удалось прочитать ссылку: " + html.escape(str(exc)))
         return
     document = message.get("document")
     if isinstance(document, dict):

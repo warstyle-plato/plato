@@ -33,7 +33,7 @@ import main_legacy as engine  # noqa: E402
 CHAT = 777
 NUMBER = "77:08:0010008:1049"
 TEXT = ("[стр. 1]\nТизер\n\n[стр. 2]\nофисы – 26 300 м2\n\n"
-        f"[стр. 4]\nКН {NUMBER}")
+        f"[стр. 4]\nКН {NUMBER}\nПлатёж 2,55 млрд руб. за SPV")
 EXTRACTION = {
     "fields": [
         {"key": "cadastral_numbers", "value": [NUMBER], "unit": "список", "quote": f"КН {NUMBER}"},
@@ -41,6 +41,7 @@ EXTRACTION = {
     ],
     "questions": [
         {"key": "", "question": "Платёж 2,55 млрд руб. за SPV — куда отнести?",
+         "quote": "Платёж 2,55 млрд руб. за SPV",
          "options": ["В цену сделки — платится на входе", "В соцнагрузку — идёт своей датой"]},
         {"key": "resettlement_cost_mln", "question": "Требуется ли расселение?",
          "options": ["Расселение не требуется — 0", "Требуется"]},
@@ -179,7 +180,9 @@ OTHER = "66:41:0000000:1"
 def _teaser_with(monkeypatch, numbers: list[str]) -> None:
     extraction = json.loads(json.dumps(EXTRACTION))
     extraction["fields"][0] = {"key": "cadastral_numbers", "value": numbers, "unit": "список",
-                               "quote": f"КН {NUMBER}"}
+                               "quote": "КН " + ", ".join(numbers)}
+    monkeypatch.setattr(document_intake, "extract_text",
+                        lambda _data, name: {"text": TEXT.replace(NUMBER, ", ".join(numbers)), "pages": 4, "filename": name})
     monkeypatch.setattr(engine, "plato_answer",
                         lambda *_a: {"answer": json.dumps(extraction, ensure_ascii=False)})
 

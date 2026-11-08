@@ -31,10 +31,11 @@ def test_v2_teaser_upload_keeps_the_existing_confirm_before_apply_flow():
     core = engine_source()
 
     assert "content_b64" in source
-    assert "'/agent/document'" in source
-    assert "data-v2-teaser-index" in source
-    assert "accept," in source
-    assert "extraction: teaserExtraction" in source
+    assert "PlatoDocumentClient.read" in source
+    assert "'/agent/document/apply'" in source
+    assert "'/agent/document/answer'" in source
+    assert "card_key: card.card_key" in source
+    assert "extraction: teaserExtraction" not in source
     assert '@app.post("/agent/document")' in core
     assert "Ничего не подставляется молча" in core
 

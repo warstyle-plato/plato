@@ -71,7 +71,7 @@ def test_real_pdf_parser_and_production_ocr_raster_path_keep_page_bounds(monkeyp
         calls.append((args, input, timeout))
         assert input.startswith(b'\x89PNG\r\n\x1a\n')
         assert capture_output is True
-        return SimpleNamespace(stdout=b'synthetic OCR\n')
+        return SimpleNamespace(returncode=0, stdout=b'synthetic OCR\n')
 
     # Tesseract/language availability is outside this library regression. PDF
     # opening, page limiting and rasterization run through the production function.

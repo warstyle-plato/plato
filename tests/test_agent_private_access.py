@@ -248,12 +248,31 @@ def test_private_key_rotation_during_run_prevents_result_release(monkeypatch):
 
 def test_real_document_reader_inherits_actor_and_does_not_send_credentials(monkeypatch):
     captures = fake_search(monkeypatch)
+    def extraction_reply(payload):
+        captures.append(payload)
+        return {"output": [{"type": "message", "content": [{"type": "output_text",
+            "text": '{"fields":[],"questions":[],"notes":[]}'}]}]}
+    monkeypatch.setattr(core, "_openai_responses_request", extraction_reply)
+    actors = []
+    original = core._agent_actor_current
+    def observe(req):
+        actor = original(req)
+        if getattr(req, "scenario", "") == "document_intake":
+            actors.append(actor)
+        return actor
+    monkeypatch.setattr(core, "_agent_actor_current", observe)
     monkeypatch.setattr(core.document_intake, "extract_text", lambda *a: {"text": "OWN_DOCUMENT", "filename": "own.txt"})
     client = TestClient(core.app)
     result = client.post("/agent/document", json={"access_key": KEY, "filename": "own.txt",
         "content_b64": base64.b64encode(b"own").decode()})
     assert result.status_code == 200, result.text
-    assert PRIVATE in json.dumps(captures)
+    assert result.json().get("card")
+    assert actors and all(a.private and a.surface == "web" and a.key == KEY for a in actors)
+    # Extraction reads only the uploaded source; it no longer has private
+    # knowledge tools. The ordinary agent's private lookup is tested above.
+    assert "OWN_DOCUMENT" in json.dumps(captures)
+    assert PRIVATE not in json.dumps(captures)
+    assert all(not payload.get("tools") for payload in captures)
     assert KEY not in json.dumps(captures)
 
 

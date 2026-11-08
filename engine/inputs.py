@@ -2894,6 +2894,7 @@ class AgentDocumentRequest(BaseModel):
     """
     filename: str = ""
     content_b64: str = ""
+    source_url: str = ""
     inputs: dict[str, Any] = {}
     tep: dict[str, dict[str, Any]] = {}
     # Числа класса жилья в ЭТОМ проекте (`classValue` страницы): карточка
@@ -2940,6 +2941,10 @@ class AgentDocumentCardRequest(BaseModel):
     class_profile: dict[str, Any] = {}
     session: str = ""
     access_key: str = ""
+
+
+class AgentDocumentApplyRequest(AgentDocumentCardRequest):
+    card_key: str
 
 
 class AgentChatRequest(BaseModel):

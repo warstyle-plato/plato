@@ -684,6 +684,7 @@ function renderTepBlock(block, host) {
   block.rows.forEach((row) => {
     const group = document.createElement('div');
     group.className = 'input-group';
+    group.dataset.rowKey = row.key;
     const title = document.createElement('h4');
     title.textContent = row.label;
     group.appendChild(title);

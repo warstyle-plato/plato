@@ -62,7 +62,8 @@ def _rasterizer_ready() -> bool:
     return True
 
 
-def text(pdf: bytes, pages: int = 3, dpi: int = DEFAULT_DPI) -> str:
+def text(pdf: bytes, pages: int = 3, dpi: int = DEFAULT_DPI, *,
+         page_indices: list[int] | None = None) -> str:
     """Распознать первые страницы документа.
 
     Сколько страниц — решает вызывающий: у распоряжения о торгах адрес, цена и
@@ -77,11 +78,25 @@ def text(pdf: bytes, pages: int = 3, dpi: int = DEFAULT_DPI) -> str:
     import pymupdf
 
     document = pymupdf.open(stream=pdf, filetype="pdf")
-    out: list[str] = []
-    for index in range(min(max(0, int(pages)), document.page_count)):
-        png = document[index].get_pixmap(dpi=dpi).tobytes("png")
-        done = subprocess.run(
-            ["tesseract", "stdin", "stdout", "-l", "rus", "--psm", "6"],
-            input=png, capture_output=True, timeout=PAGE_TIMEOUT_SECONDS)
-        out.append(done.stdout.decode("utf-8", errors="replace"))
-    return "\n".join(out)
+    try:
+        indices = (list(dict.fromkeys(page_indices)) if page_indices is not None
+                   else list(range(min(max(0, int(pages)), document.page_count))))
+        out: list[str] = []
+        for index in indices:
+            if not isinstance(index, int) or not 0 <= index < document.page_count:
+                raise ValueError("Номер страницы вне документа")
+            png = document[index].get_pixmap(dpi=dpi).tobytes("png")
+            done = subprocess.run(
+                ["tesseract", "stdin", "stdout", "-l", "rus", "--psm", "6"],
+                input=png, capture_output=True, timeout=PAGE_TIMEOUT_SECONDS)
+            if done.returncode:
+                raise Unavailable("Распознавание страницы не выполнилось; проверьте "
+                                  "Tesseract и наличие русского словаря на сервере.")
+            recognized = done.stdout.decode("utf-8", errors="replace")
+            # Legacy callers parse plain text. The document reader asks for exact
+            # page identities, including a scan on page 12 of a mixed PDF.
+            out.append((f"[стр. {index + 1}]\n" if page_indices is not None else "")
+                       + recognized)
+        return "\n".join(out)
+    finally:
+        document.close()
