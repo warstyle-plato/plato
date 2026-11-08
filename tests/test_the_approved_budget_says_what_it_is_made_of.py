@@ -284,7 +284,7 @@ def test_the_monitor_gap_is_the_same_in_october_and_in_november(monkeypatch):
     monkeypatch.setattr(dashboard, "_finance_baseline",
                         lambda project: {**reader(project), "plan_from": BOOK})
     # По реестру после даты книги оплачено 40 по каждой главе.
-    monkeypatch.setattr(dashboard, "_paid_since", lambda rss, est, ch, since: 40.0)
+    monkeypatch.setattr(dashboard, "_paid_since", lambda rss, est, ch, since, cut=None: 40.0)
     view = {"schedule": {"approved_end": "2027-09-30", "forecast_end": None}}
     got = {cut.month: dashboard._funding_risk("demo", Path("rss.xlsx"), cut, view)
            for cut in (datetime.date(2026, 10, 27), datetime.date(2026, 11, 2))}
@@ -354,7 +354,7 @@ def test_chapter_two_by_the_funding_schedule(tmp_path, monkeypatch):
     monkeypatch.setattr(funding_schedule, "sources", lambda project, upto="": {
         "versions": {"2026-09-23": {"path": path, "file": path.name}}, "looked": []})
     # По реестру с 01.09 по главе 2 оплачено 100 млн.
-    monkeypatch.setattr(dashboard, "_paid_since", lambda rss, est, ch, since: 100 * gf.M)
+    monkeypatch.setattr(dashboard, "_paid_since", lambda rss, est, ch, since, cut=None: 100 * gf.M)
     sch = dashboard._schedule_need("demo", Path("rss.xlsx"), {}, datetime.date(2026, 11, 3))
     planned = sum((row[6] or 0) + (row[7] or 0) for row in gf.ROWS) * gf.M
     assert sch["day"] == "2026-09-23" and sch["plan_from"] == "2026-09-01"

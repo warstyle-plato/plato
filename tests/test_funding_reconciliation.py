@@ -71,7 +71,7 @@ def test_proven_exclusion_adds_the_unpaid_admin_once_to_both_readers(tmp_path, m
                                       + r['calculated_additional'])
     assert r['components'][1]['amount'] == 0
     monkeypatch.setattr(dashboard, '_paid_in_chapters',
-                        lambda rss, estimate, chapters: paid[chapters[0]])
+                        lambda rss, estimate, chapters, **_: paid[chapters[0]])
     rows = dashboard._section_articles(model['sections'], {'by_code': {}}, None, CUT,
                                        chapter_flow=model['chapter_flow'], schedule=replacement,
                                        composition=model['budget_composition'])

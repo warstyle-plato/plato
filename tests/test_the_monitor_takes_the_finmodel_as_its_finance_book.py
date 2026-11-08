@@ -184,7 +184,7 @@ def _finmodel_funding(monkeypatch, sections: dict | None, estimate: dict, paid: 
     })
     monkeypatch.setattr(dashboard.actuals, "read_estimate", lambda _: {"rows": [], "by_code": estimate})
     monkeypatch.setattr(dashboard, "_paid_in_chapters",
-                        lambda rss, est, chapters=("2", "3"): {
+                        lambda rss, est, chapters=("2", "3"), **_: {
                             "total": sum(paid[c][0] for c in chapters),
                             "borrowed": sum(paid[c][1] for c in chapters)})
     # Оплаты РСС по кодам в статьи финмодели не кладутся вовсе.

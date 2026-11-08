@@ -904,15 +904,19 @@ def chapters_label(chapters: Any) -> str:
     return f"{got[0]}–{got[-1]}" if len(got) > 1 else got[0]
 
 
-def _rss_ch23(estimate: dict[str, Any], chapters: Any = ("2", "3")) -> dict[str, float]:
+def _rss_ch23(estimate: dict[str, Any], chapters: Any = ("2", "3")) -> dict[str, Any]:
     rows = estimate.get("by_code") or {}
-    return {
-        "limit": sum(float((rows.get(code) or {}).get("estimate") or 0.0) for code in chapters),
-        "by_chapter": {str(code): float((rows.get(code) or {}).get("estimate") or 0.0)
-                       for code in chapters},
-        "paid_bank_sheet": sum(float((rows.get(code) or {}).get("paid") or 0.0) for code in chapters),
-        "contracted": sum(float((rows.get(code) or {}).get("contracted") or 0.0) for code in chapters),
-    }
+    def values(field: str) -> dict[str, float | None]:
+        return {str(code): actuals.money_value(
+            (rows.get(str(code)) or {}).get("money_values", rows.get(str(code)) or {}).get(field))
+            for code in chapters}
+    def total(items: dict) -> float | None:
+        return sum(items.values()) if all(v is not None for v in items.values()) else None
+    limits = values("estimate")
+    return {"limit": total(limits), "by_chapter": limits,
+            "paid_bank_sheet": total(values("paid")), "contracted": total(values("contracted")),
+            "incomplete_limits": [{"chapter": ch, "source": (rows.get(ch) or {}).get("source") or {}}
+                                  for ch, amount in limits.items() if amount is None]}
 
 
 def payment_in_chapters(estimate: dict[str, Any], chapters: Any):
@@ -934,13 +938,39 @@ def payment_in_chapters(estimate: dict[str, Any], chapters: Any):
 
 
 def _paid_in_chapters(rss: Path, estimate: dict[str, Any],
-                      chapters: Any = ("2", "3")) -> dict[str, float]:
-    """Оплачено по главам: всего и та часть, что заплачена кредитом."""
+                      chapters: Any = ("2", "3"), *,
+                      cut: datetime.date | None = None,
+                      since: datetime.date | None = None) -> dict[str, Any]:
+    """Read actual payment rows in the date/scope interval before summing.
+
+    No deduplication or payment identity is inferred. A dated future row is
+    excluded before inspecting its amount. Unknown rows in the selected scope
+    remain visible and make the total unknown rather than disappearing.
+    """
     keep = payment_in_chapters(estimate, chapters)
-    rows = [row for row in actuals.read_payments(rss).get("rows") or [] if keep(row)]
-    return {"total": sum(float(row.get("amount") or 0.0) for row in rows),
-            "borrowed": sum(float(row.get("amount") or 0.0) for row in rows
-                            if actuals.borrowed(row.get("source")))}
+    selected, incomplete = [], []
+    for row in actuals.read_payments(rss, include_incomplete=True).get("rows") or []:
+        day = row.get("date")
+        if day is not None and ((cut is not None and day > cut)
+                                or (since is not None and day < since)):
+            continue
+        if not keep(row):
+            continue
+        amount = actuals.money_value(row.get("amount"))
+        errors = (["date"] if day is None and (cut is not None or since is not None) else [])
+        if amount is None:
+            errors.append("amount")
+        if errors:
+            incomplete.append({"source_row": row.get("source_row"), "fields": errors})
+        selected.append({**row, "amount": amount, "complete": not errors})
+    total = (sum(row["amount"] for row in selected)
+             if all(row["complete"] for row in selected) else None)
+    borrowed_rows = [row for row in selected if actuals.borrowed(row.get("source"))]
+    borrowed = (sum(row["amount"] for row in borrowed_rows)
+                if all(row["complete"] for row in borrowed_rows) else None)
+    return {"total": total, "borrowed": borrowed, "incomplete_rows": incomplete,
+            "cut": cut.isoformat() if cut else None,
+            "since": since.isoformat() if since else None}
 
 
 def _payment_by_code(rss: Path) -> dict[str, float]:
@@ -1385,9 +1415,15 @@ def _own_money(comp: dict[str, Any] | None, smeta: dict[str, float],
     explained = sum(row["amount"] for row in rows)
     result = {
         "budget": budget, "limit": limit, "paid": sum(paid.values()), "borrowed": borrowed,
+        "programme_known": all(funding_reconciliation.number(v) is not None
+                               for v in (paid_since or {}).values()),
         "payments_known": all(funding_reconciliation.number(
             (paid_by_chapter.get(ch) or {}).get("total")) is not None for ch in chapters),
         "limits_known": all(funding_reconciliation.number(smeta.get(ch)) is not None for ch in chapters),
+        "source_completeness": {
+            "payments": {ch: list((paid_by_chapter.get(ch) or {}).get("incomplete_rows") or [])
+                         for ch in chapters},
+            "limits": [ch for ch in chapters if funding_reconciliation.number(smeta.get(ch)) is None]},
         "own_paid": sum(paid.values()) - borrowed,
         "left": sum(left.values()), "left_by_chapter": left,
         "need": need, "model_over_schedule": over, "accounting": accounting,
@@ -1800,7 +1836,9 @@ def _remaining_check(limit: float, paid: float, waterfall: dict[str, Any],
     """
     remaining = float(waterfall.get("opening_bank_remaining") or 0.0)
     overpaid = float(waterfall.get("opening_article_deficit") or 0.0)
-    plain = float(limit or 0.0) - float(paid or 0.0)
+    if actuals.money_value(limit) is None or actuals.money_value(paid) is None:
+        return {"plain": None, "overpaid": None, "book_gap": None, "remaining": None}
+    plain = float(limit) - float(paid)
     return {"plain": plain, "overpaid": overpaid,
             "book_gap": remaining - plain - overpaid + float(reserve or 0.0),
             "remaining": remaining}
@@ -1870,8 +1908,10 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
             or any(ch not in CHAPTERS for ch in chapters)):
         return unavailable("Не подтверждён банковский состав сверки бюджета")
     current = _rss_ch23(estimate, chapters)
-    paid = _paid_in_chapters(rss, estimate, chapters)
+    paid = _paid_in_chapters(rss, estimate, chapters, cut=cut)
     paid_actual = paid["total"]
+    if not finmodel and (paid_actual is None or current["limit"] is None):
+        return unavailable("В РСС не прочитаны лимиты или оплаты выбранного состава на дату среза")
     sections = baseline.get("sections") if finmodel else None
     if finmodel and not all(ch in (sections or {}) for ch in _FM_BANK_CHAPTERS):
         wanted = ", ".join(f"«{code}»" for code in _FM_SECTIONS)
@@ -1914,14 +1954,14 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
     # «Лимит банка» и «Выбрано у банка».
     scope = None
     if finmodel:
-        scope_paid = _paid_in_chapters(rss, estimate, _FM_BANK_CHAPTERS)
+        scope_paid = _paid_in_chapters(rss, estimate, _FM_BANK_CHAPTERS, cut=cut)
         scope = {"chapters": chapters_label(_FM_BANK_CHAPTERS),
                  "limit": _rss_ch23(estimate, _FM_BANK_CHAPTERS)["limit"],
                  "paid": scope_paid["total"], "borrowed": scope_paid["borrowed"]}
     rnv = monitor._day(_current_forecast_end(view))
     if rnv is None:
         rnv = monitor._day((view.get("schedule") or {}).get("approved_end"))
-    reserve_inside = _reserve_inside(rss, estimate) if finmodel else None
+    reserve_inside = _reserve_inside(rss, estimate, cut) if finmodel else None
 
     reserve_start = waterfall["reserve_start"]
     reserve_exhaustion = waterfall["reserve_exhaustion"]
@@ -1949,8 +1989,10 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
     # У финмодели остаток и потребность считаются по главам 2–3; главу 1 сюда
     # не добавлять.
     if not finmodel and "1" not in chapters and one is not None:
-        one_limit = float(one.get("estimate") or 0.0)
-        one_paid = _paid_in_chapters(rss, estimate, ("1",))
+        one_limit = actuals.money_value(one.get("money_values", one).get("estimate"))
+        one_paid = _paid_in_chapters(rss, estimate, ("1",), cut=cut)
+        if one_limit is None or one_paid["total"] is None:
+            return unavailable("В РСС не прочитаны лимит или оплаты главы 1 на дату среза")
         chapter_one = {"limit": one_limit, "paid": one_paid["total"],
                        "borrowed": one_paid["borrowed"]}
         shown = ("1",) + tuple(chapters)
@@ -1967,13 +2009,13 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
     smeta = dict(current.get("by_chapter") or {})
     if chapter_one is not None:
         smeta["1"] = chapter_one["limit"]
-    paid_by_chapter = {str(ch): _paid_in_chapters(rss, estimate, (ch,)) for ch in shown}
+    paid_by_chapter = {str(ch): _paid_in_chapters(rss, estimate, (ch,), cut=cut) for ch in shown}
     own_money = None
     if finmodel:
         plan_from = monitor._day(baseline.get("plan_from"))
         own_money = _own_money(
             baseline.get("budget_composition"), smeta, paid_by_chapter, shown, cut, plan_from,
-            {str(ch): _paid_since(rss, estimate, str(ch), plan_from) for ch in shown},
+            {str(ch): _paid_since(rss, estimate, str(ch), plan_from, cut) for ch in shown},
             baseline.get("chapter_flow"), schedule_need)
     reconciliation = _limit_reconciliation(
         waterfall_book, current["limit"], shown, smeta_by_chapter=smeta,
@@ -2104,7 +2146,7 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
 _FM_BANK_CHAPTERS = tuple(sorted({ch for ch, _, _ in _FM_SECTIONS.values()}))
 
 
-def _reserve_inside(rss: Path, estimate: dict[str, Any]) -> dict[str, Any] | None:
+def _reserve_inside(rss: Path, estimate: dict[str, Any], cut: datetime.date | None = None) -> dict[str, Any] | None:
     """Остаток резервов 2.8/2.9 сметы РСС: лимит строки минус оплаченное по ней."""
     by_code = estimate.get("by_code") or {}
     parts: dict[str, float] = {}
@@ -2113,25 +2155,23 @@ def _reserve_inside(rss: Path, estimate: dict[str, Any]) -> dict[str, Any] | Non
         row = by_code.get(code)
         if row is None:
             continue
-        paid = float(_paid_in_chapters(rss, estimate, (code,))["total"])
-        parts[code] = max(0.0, float(row.get("estimate") or 0.0) - paid)
+        paid = _paid_in_chapters(rss, estimate, (code,), cut=cut)["total"]
+        limit = actuals.money_value(row.get("money_values", row).get("estimate"))
+        parts[code] = max(0.0, limit - paid) if limit is not None and paid is not None else None
         names[code] = str(row.get("article") or "").strip()
     if not parts:
         return None
     chapters = sorted({str((by_code.get(code) or {}).get("parent") or "") for code in parts} - {""})
-    return {"total": sum(parts.values()), "parts": parts, "names": names,
+    return {"total": sum(parts.values()) if all(v is not None for v in parts.values()) else None, "parts": parts, "names": names,
             "chapters": chapters_label(chapters) if chapters else ""}
 
 
 def _paid_since(rss: Path, estimate: dict[str, Any], chapter: str,
-                since: datetime.date | None) -> float:
-    """Оплачено по главе по реестру РСС начиная с `since` (дата книги)."""
+                since: datetime.date | None, cut: datetime.date | None = None) -> float | None:
+    """Payments in the closed baseline..cut interval, including refunds."""
     if since is None:
         return 0.0
-    keep = payment_in_chapters(estimate, (chapter,))
-    return sum(float(row.get("amount") or 0.0)
-               for row in actuals.read_payments(rss).get("rows") or []
-               if keep(row) and row.get("date") and row["date"] >= since)
+    return _paid_in_chapters(rss, estimate, (chapter,), since=since, cut=cut)["total"]
 
 
 def _plan_still_owed(monthly: dict[str, float], plan_from: datetime.date | None,
@@ -2148,13 +2188,16 @@ def _plan_still_owed(monthly: dict[str, float], plan_from: datetime.date | None,
     """
     cut_month = cut.replace(day=1)
     start = plan_from.replace(day=1) if plan_from else cut_month
-    left = max(0.0, float(paid_since or 0.0))
+    left = float(paid_since or 0.0)
     out: dict[str, float] = {}
     for key in sorted(monthly):
         month = monitor._day(key)
         if month is None or month < start:
             continue
         amount = max(0.0, float(monthly[key] or 0.0))
+        if left < 0:
+            amount -= left  # A refund restores the unpaid chapter programme.
+            left = 0.0
         covered = min(left, amount)
         left -= covered
         amount -= covered
@@ -2198,7 +2241,7 @@ def _schedule_need(project: str, rss: Path, estimate: dict[str, Any],
                 key = f"{month}-01"
                 monthly[key] = monthly.get(key, 0.0) + float(amount)
     start = datetime.date.fromisoformat(day[:7] + "-01")
-    paid_since = _paid_since(rss, estimate, chapter, start)
+    paid_since = _paid_since(rss, estimate, chapter, start, cut)
     owed = _plan_still_owed(monthly, start, paid_since, cut)
     path = Path(found[day]["path"])
     try:
@@ -2215,7 +2258,7 @@ def _schedule_need(project: str, rss: Path, estimate: dict[str, Any],
                              "source_remaining": row.get("remain"),
                              "monthly_plan": {m + "-01": value for m, value in row.get("plan", {}).items()}}
                             for row in rows],
-            "plan_known": all(amount is not None for row in rows
+            "plan_known": paid_since is not None and all(amount is not None for row in rows
                               for amount in row.get("plan", {}).values()),
             "monthly": owed, "owed": sum(owed.values()), "paid_since": paid_since,
             "plan_from": start.isoformat()}
@@ -2252,13 +2295,13 @@ def _section_articles(sections: dict[str, dict[str, Any]], estimate: dict[str, A
                 monthly[month] = monthly.get(month, 0.0) + amount
         elif cut is not None:
             monthly = _plan_still_owed(monthly, plan_from,
-                                       _paid_since(rss, estimate, chapter, plan_from), cut)
+                                       _paid_since(rss, estimate, chapter, plan_from, cut), cut)
         out[chapter] = {
             "code": chapter, "chapter": chapter,
             "name": f"{section['label'].capitalize()} — {section['name']} (финмодель) "
                     f"против главы {chapter} сметы",
             "rss_limit": float(row.get("estimate") or 0.0),
-            "paid_at_baseline": float(_paid_in_chapters(rss, estimate, (chapter,))["total"]),
+            "paid_at_baseline": _paid_in_chapters(rss, estimate, (chapter,), cut=cut)["total"],
             "has_programme": any((section.get("monthly") or {}).values()),
             "monthly_need": monthly,
         }

@@ -137,6 +137,18 @@ def _money(value: Any) -> float:
         return 0.0
 
 
+def money_value(value: Any) -> float | None:
+    """A saved monetary value; absence or an invalid value is not zero."""
+    import math
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        result = float(str(value).replace("\xa0", "").replace(" ", "").replace(",", "."))
+    except (TypeError, ValueError):
+        return None
+    return result if math.isfinite(result) else None
+
+
 def _code(value: Any) -> str:
     """Код РСС без хвостовой точки: «1.1.» и «1.1» — один код."""
     if value is None:
@@ -335,7 +347,7 @@ def read_estimate(path: str | Path) -> dict[str, Any]:
     """
     rows: list[dict[str, Any]] = []
     total: dict[str, float] = {}
-    for row in _sheet(path, _ESTIMATE_SHEET):
+    for source_row, row in enumerate(_sheet(path, _ESTIMATE_SHEET), 1):
         def cell(field: str) -> Any:
             index = _ESTIMATE_COLUMNS[field]
             return row[index] if index < len(row) else None
@@ -354,6 +366,13 @@ def read_estimate(path: str | Path) -> dict[str, Any]:
             "code": code,
             "article": str(article or "").strip(),
             "depth": code.count(".") + 1,
+            # Legacy callers retain numeric fields. Funding reads saved values
+            # before _money can turn missing/invalid cells into zeros.
+            "money_values": {field: money_value(cell(field))
+                             for field in ("estimate", "contracted", "paid", "completed")},
+            "source": {"sheet": _ESTIMATE_SHEET, "row": source_row,
+                       "columns": {field: _ESTIMATE_COLUMNS[field] + 1
+                                   for field in ("estimate", "contracted", "paid", "completed")}},
             **{field: _money(cell(field))
                for field in ("estimate", "contracted", "paid", "completed")},
         })
@@ -1314,7 +1333,8 @@ def read_payments(path: str | Path, *, include_incomplete: bool = False) -> dict
     """Реестр платежей РСС: дата, сумма, код ССР, договор и источник средств.
 
     The contract-risk reader retains incomplete rows to report unknown totals;
-    ordinary financial readers keep the existing nonzero-payment behaviour.
+    Legacy readers keep nonzero-payment behaviour; date/scope financial
+    reconciliation explicitly uses include_incomplete=True.
     """
     rows: list[dict[str, Any]] = []
     for index, row in enumerate(_sheet(path, _PAYMENTS_SHEET), 1):
@@ -1327,17 +1347,9 @@ def read_payments(path: str | Path, *, include_incomplete: bool = False) -> dict
 
         amount = _money(cell("amount"))
         if include_incomplete:
-            import math
             if not any(cell(field) not in (None, "") for field in _PAYMENTS_COLUMNS):
                 continue
-            raw_amount = cell("amount")
-            try:
-                amount = (None if raw_amount is None or isinstance(raw_amount, bool) else
-                          float(str(raw_amount).replace("\xa0", "").replace(" ", "").replace(",", ".")))
-            except (TypeError, ValueError):
-                amount = None
-            if amount is not None and not math.isfinite(amount):
-                amount = None
+            amount = money_value(cell("amount"))
         elif not amount:
             continue
         source = str(cell("source") or "").strip()

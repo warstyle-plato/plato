@@ -173,7 +173,7 @@ def build(own: dict, comp: dict, chapter_flow: dict, cut: str,
     policy = schedule_policy or {"state": "not_replaced", "items": [], "added_to_need": 0.0}
     schedule_known = (all(fields.get(k, True) for k in ("fact", "plan", "monthly"))
                       and policy.get("programme_known", True) is True
-                      and totals_known)
+                      and own.get("programme_known", True) is True and totals_known)
     result = {"schema": 2, "basis": "approved_budget", "cut": cut,
             "budget": budget, "paid_at_cut": paid, "bank_limit_total": limit,
             "remaining_bank_limit": left, "available_bank_limit": available,
