@@ -20,13 +20,12 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import developaid_monitor_reason as reason  # noqa: E402
-
-PAGE = (ROOT / "developaid_monitor_page.py").read_text(encoding="utf-8")
-
 
 def node(**kwargs):
     base = {"delta_days": 30, "pace_forecast_method": "rolling_3m_acts",
@@ -108,15 +107,40 @@ def test_every_late_node_of_the_view_is_annotated() -> None:
     assert view["schedule"]["rows"][0]["delay_reason"]["delay_days"] == 5
 
 
-def test_the_reason_is_attached_where_the_screen_draws_the_shift() -> None:
-    """Пояснение стоит рядом с хвостом, а не за отдельным запросом."""
+@pytest.mark.parametrize('width', [390, 1440])
+def test_the_reason_is_attached_where_the_screen_draws_the_shift(width) -> None:
+    """Current GPR tails explain their own source, not an archived PM chain."""
+    from playwright.sync_api import expect
+    from test_monitor_cumulative_controls import browser_page
+
     pace = (ROOT / "developaid_monitor_pace.py").read_text(encoding="utf-8")
     assert "reason.annotate(view)" in pace
-    assert 'id="detailWhy"' in PAGE
-    assert "Почему сдвиг +" in PAGE
-    # И на самой полосе: наведение отвечает без открытия карточки.
-    assert "n.delay_reason?' · '+n.delay_reason.text:''" in PAGE
-    assert "от предшественников" in PAGE
+    supplied = 'Оценка по росту процента выполнения ГПР за последние 60 дней.'
+    task = node(id='1', key='task:1', level='task', name='Монтаж фасада', object='Корпус 1',
+                plan_start='2026-09-01', plan_finish='2026-12-01', forecast_finish='2026-12-31',
+                forecast_source='gpr_pace', forecast_reason=supplied,
+                pace_forecast_method='gpr_pace', pace_forecast_known=True, pace_progress=.4,
+                progress_kind='gpr_percent', actual_progress=.4,
+                dependencies={'inherited_delay_days': 999, 'predecessors': [{'name': 'Старый PM'}]})
+    view = {'cut': '2026-11-06', 'schedule': {'management': [task], 'rows': []}}
+    reason.annotate(view)
+    assert task['delay_reason']['kind'] == 'gpr'
+    assert task['delay_reason']['text'] == supplied
+    assert task['delay_reason']['predecessors'] == []
+
+    with browser_page(width) as (page, responses, errors):
+        assert page.evaluate('PM_DISABLED') is True
+        page.evaluate('(v)=>{currentView=v;renderGantt(v)}', view)
+        shown = page.locator('.g-row[data-key="task:1"]')
+        expect(shown.locator('.latebar')).to_be_visible()
+        assert supplied in shown.locator('.latebar').get_attribute('title')
+        shown.locator('.g-label').click()
+        expect(page.locator('#detailWhy')).to_be_visible()
+        expect(page.locator('#detailWhy')).to_contain_text('Почему сдвиг +30 дн')
+        expect(page.locator('#detailWhy')).to_contain_text(supplied)
+        expect(page.locator('#detailWhy')).not_to_contain_text('предшественников')
+        expect(page.locator('#detailWhy')).not_to_contain_text('Старый PM')
+        assert not errors
 
 
 def test_the_model_is_not_asked_what_the_network_already_answers() -> None:

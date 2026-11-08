@@ -1,10 +1,9 @@
 """Real Monitor JS: source-bound mapping and one physical RNV across surfaces."""
-import copy
-
 import pytest
 
 from test_monitor_cumulative_controls import browser_page, KEY, MARKER
-from test_schedule_physical import config, CUT
+from test_schedule_physical import CUT
+from test_schedule_physical_print_summary import gpr_sources
 
 
 def state(**changes):
@@ -114,38 +113,42 @@ def test_physical_complete_forecast_cannot_render_old_cost_scenario():
         assert not errors
 
 
-@pytest.mark.parametrize('completed_conflict', [False, True])
-def test_report_pdf_contains_the_same_physical_quantities(tmp_path, completed_conflict):
+@pytest.mark.parametrize('scenario', ['confirmed', 'stale'])
+def test_report_pdf_contains_the_same_physical_quantities(tmp_path, scenario, gpr_sources):
     import fitz
     import developaid_management_report as report
-    import developaid_schedule_physical as physical
-    import developaid_schedule_timeline as timeline
-    from test_schedule_physical import snapshot
-    from test_schedule_dependency_timeline import network,day
+    import developaid_monitor as monitor
+    from test_schedule_physical_print_summary import PROJECT
     from browser import chromium_or_skip
     from playwright.sync_api import sync_playwright
-    pm=network();cfg=config()
-    if completed_conflict:
-        cfg['tasks'][1].update(mode='completed',actual_finish='2026-10-31')
-    model=physical.evaluate(pm,snapshot(),cfg,CUT)
-    block=timeline.model(pm,{tid:day(value) for tid,value in model['seeds'].items()},evidence=True,
-                         actual_finishes={tid:day(value) for tid,value in model['actual_finishes'].items()})
-    block['physical']=model
-    payload={'project':'Учебный проект','kind':'week','start':'2026-11-01','end':CUT,
-             'gantt':{'state':'missing','dependency_timeline':block}}
+    payload=gpr_sources(scenario)
+    view=monitor.build(PROJECT,CUT)
+    work=view['schedule']['rows'][0]
+    summary=payload['construction_summary']
+    assert work['actual_progress']==.5 and work['progress_kind']=='cumulative_quantities'
+    assert summary['facts'][0]['done']==50 and summary['facts'][0]['plan']==100
+    assert work['forecast_finish']==summary['forecast']
+    actual_date='28.02.2026' if scenario=='stale' else '31.10.2026'
     path=tmp_path/'physical.pdf'
     with sync_playwright() as pw:
         browser=pw.chromium.launch(executable_path=str(chromium_or_skip()),args=['--no-sandbox'])
         page=browser.new_page();page.route('**/*',lambda route:route.abort())
         page.set_content(report.render_html(payload),wait_until='load')
         page.pdf(path=str(path),format='A4');browser.close()
-    with fitz.open(path) as pdf:text=' '.join(page.get_text() for page in pdf)
-    assert 'Физическое выполнение' in text and '50 / 100' in text
-    if completed_conflict:
-        assert block['rnv']['forecast'] is None
-        assert 'противоречит' in text
+    with fitz.open(path) as pdf:text=' '.join(' '.join(page.get_text() for page in pdf).split())
+    main=text.split('Приложение. Источники и ограничения оценки',1)[0]
+    assert 'Сроки и выполнение работ' in main
+    assert 'План ввода 31.10.2026' in main and '06.11.2026' in main
+    assert '50 из 100 м² на '+actual_date in main
+    assert '13.02.2027' not in text and 'Все работы исходной сети' not in text
+    if scenario=='stale':
+        assert summary['forecast'] is None and work['forecast_source']=='cumulative_unknown'
+        assert 'Не определена' in main
+        assert summary['source_status']['reason'] in main
     else:
-        assert '13.02.2027' in text
+        assert summary['state']=='estimate' and summary['forecast']=='2027-01-06'
+        assert '06.01.2027' in main and 'Оценка окончания работ' in main
+        assert 'не подтверждает дату получения разрешения на ввод' in main
 
 
 def test_saved_revocation_cannot_leave_an_old_forecast_when_refresh_fails():

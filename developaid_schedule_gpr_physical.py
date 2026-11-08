@@ -16,6 +16,7 @@ import tempfile
 import developaid_monitor as monitor
 import developaid_monitor_ledgers as ledgers
 import developaid_schedule_physical as quantities
+import developaid_schedule_gpr_forecast as gpr_forecast
 
 PhysicalProblem = quantities.PhysicalProblem
 SOURCE_KIND = "gpr"
@@ -143,6 +144,12 @@ def evaluate(source, snapshot, configuration, cut):
             "reasons": reasons, "binding_state": "bound" if configuration["tasks"] else "unbound"}
 
 
+def _view_model(project, cut, source, snapshot, configuration):
+    return gpr_forecast.qualify_quantities(
+        evaluate(source, snapshot, configuration, cut),
+        gpr_forecast.history(project, quantities._day(cut)), quantities._day(cut))
+
+
 def catalog(project, cut, query="", offset=0):
     if not quantities._day(cut):
         raise PhysicalProblem("Укажите существующую дату среза.")
@@ -158,7 +165,7 @@ def catalog(project, cut, query="", offset=0):
     return dict(state, source_state=source["state"], source_reason=source["reason"],
                 tasks=list(source["tasks"].values()), items=rows[offset:offset+200],
                 item_count=len(rows), offset=offset,
-                model=evaluate(source, snapshot, state["configuration"], cut))
+                model=_view_model(project, cut, source, snapshot, state["configuration"]))
 
 
 def save(project, source_kind, source_sha256, snapshot_id, revision, configuration):
@@ -209,7 +216,7 @@ def build(project, cut):
     try:
         source, snapshot = _source(project, cut), _snapshot(project, cut)
         state = _state(project, cut, source, snapshot)
-        result = evaluate(source, snapshot, state["configuration"], cut)
+        result = _view_model(project, cut, source, snapshot, state["configuration"])
         return dict(result, evidence_status=evidence_status(project, cut, source, snapshot, state, result),
                     source_kind=SOURCE_KIND, source_sha256=state["source_sha256"],
                     snapshot_id=state["snapshot_id"], recorded_at=state["recorded_at"],
@@ -288,6 +295,10 @@ def evidence_status(project, cut, source, snapshot, state, model):
     if not measured:
         return finish("quantities_need_review", "Соответствия сохранены, но натуральный факт по ним пока не определён.",
                       "Команде: проверьте объёмы, единицы и даты выбранных позиций.", "confirmed")
+    if model.get("source_conflicts"):
+        conflict = model["source_conflicts"][0]
+        return finish("source_conflict", ("По работе «" + str(conflict.get("name") or conflict["task_id"])
+                      + "»: " + conflict["reason"]), "Команде: " + conflict["action"], "confirmed")
     if any(not t.get("known") for t in measured):
         return finish("pace_unknown", "Объём выполненных работ известен; текущего темпа для оценки окончания нет.",
                       "Команде: проверьте последние закрытые периоды и обновите оценку оставшихся работ.")

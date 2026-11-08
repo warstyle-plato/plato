@@ -279,7 +279,59 @@ def test_the_screen_puts_the_model_against_the_bank() -> None:
     # Структурный дефицит остаётся, но он про статьи внутри лимитов.
     assert "Нехватка по статьям РСС" in body
     # Без книги модель не выдумывается.
-    assert "сколько реально надо, сказать нечем" in body
+    assert "Остаток потребности неизвестен: нужны бюджет и сумма оплат." in body
+
+
+@pytest.mark.parametrize("width", [390, 1440])
+def test_unknown_model_need_is_not_zero_and_known_zero_is_kept_on_screen(width) -> None:
+    """Батарея меряет утверждённый бюджет минус оплату, а не колонку РСС.
+
+    Картинке верят быстрее, чем строке. «Может, батареи нагляднее как раз?»
+    (владелец, 30.08.2026). Прежняя батарея меряла банковской потребностью
+    и показывала благополучие при нехватке по утверждённой модели.
+    При неизвестной оплате потребность и дефицит неизвестны; известный ноль
+    потребности не даёт отрицательной нехватки и отношения к нулю.
+    """
+    from playwright.sync_api import expect
+    from test_monitor_cumulative_controls import browser_page
+
+    with browser_page(width) as (page, responses, errors):
+        page.locator("#moneyTab").click()
+        expect(page.locator("#moneyPanel")).to_be_visible()
+        for paid, need, gap in [(None, None, None), (0, "2 млрд ₽", "1 млрд ₽"),
+                                (2e9, "0 млн ₽", "0 млн ₽")]:
+            view = {"dashboard": {"construction": {"approved": 2e9},
+                "funding": {"known": True, "paid_actual": paid, "bank_remaining": 1e9,
+                            "reserve": 0, "remaining_need": 0.2e9}}}
+            page.evaluate("(v)=>renderDash(v)", view)
+            top = page.locator("#fundingStructure > .fundblock").first
+            required = top.locator(".funding-row", has_text="Надо достроить по утверждённой модели")
+            deficit = top.locator(".funding-row", has_text="ДЕФИЦИТ")
+            if need is None:
+                expect(top).to_contain_text("Остаток потребности неизвестен: нужны бюджет и сумма оплат.")
+                expect(required).to_have_count(0)
+                expect(deficit).to_have_count(0)
+                expect(page.locator("#financeBars .finrow", has_text="Остаток потребности")
+                       .locator(".finvalue")).to_have_text("—")
+                expect(page.locator("#fundingCompare .notice")).to_have_text(
+                    "Для остатка потребности нужны утверждённый бюджет и сумма оплат.")
+                expect(page.locator("#fundingCompare .batt")).to_have_count(0)
+            else:
+                expect(required.locator("b")).to_have_text(need)
+                expect(deficit.locator("b")).to_have_text(gap)
+                if paid == 2e9:
+                    expect(page.locator("#fundingCompare .notice")).to_have_text(
+                        "Остаток потребности по утверждённому бюджету — 0 ₽.")
+                    expect(page.locator("#fundingCompare .batt")).to_have_count(0)
+                    visible = page.locator("#financeCard").inner_text()
+                    assert "не хватает -" not in visible and "не хватает −" not in visible
+                    assert "из 0 млн ₽" not in visible
+                else:
+                    expect(page.locator("#fundingCompare .batt-pct")).to_have_text("50% · 1 млрд ₽ из 2 млрд ₽")
+                    expect(page.locator("#fundingCompare")).to_contain_text("не хватает 1 млрд ₽")
+            expect(top).to_be_visible()
+        page.screenshot(path=f"/tmp/plato-funding-zero-{width}.png", full_page=True)
+        assert not errors
 
 
 def test_the_structural_deficit_says_how_it_is_counted_and_from_what() -> None:

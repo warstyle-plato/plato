@@ -91,6 +91,79 @@ def test_real_source_states_and_values(scenario):
     assert "не предоставлены" not in report.render_html(built)
 
 
+def stalled_sources(partial):
+    rows = [(1, "Демонтаж башенных кранов К-1,2", .2, dt.date(2026, 9, 1),
+             dt.date(2026, 10, 31), "В работе", "2.2.1.1")]
+    if partial:
+        rows.append((2, "Фасад", .3, dt.date(2026, 9, 1), dt.date(2026, 12, 31),
+                     "В работе", "2.2.1.2"))
+    monitor.store_schedule(PROJECT, _gpr_book(rows), None, "2026-10-01")
+    monitor.store_schedule_fact(PROJECT, _gpr_book(rows), "2026-10-21")
+
+
+@pytest.mark.parametrize("partial", [False, True])
+def test_stalled_gpr_work_and_its_cause_remain_in_the_executive_conclusion(partial):
+    stalled_sources(partial)
+    built = report.build(PROJECT, "week", CUT)
+    assert built["construction_summary"]["state"] == ("partial" if partial else "unknown")
+    risk = built["construction_summary"]["stalled_text"]
+    assert "Демонтаж башенных кранов К-1,2" in risk
+    assert built["schedule"]["stalled"][0]["reason"] in risk
+    assert "процент в ГПР" in risk and "актов" not in risk
+    conclusion = next(item["text"] for item in built["findings"] if item["topic"] == "Срок")
+    assert risk in conclusion
+    if partial:
+        assert "Фасад" in conclusion  # the known driver does not erase the other risk
+    from developaid_report_schedule import render
+    assert risk in render(built["construction_summary"])
+    assert built["schedule"]["qualification"]["forecast"] is None
+
+
+def test_stalled_gpr_risk_is_visible_before_details_in_html_and_pdf(monkeypatch):
+    chrome = chromium_or_skip()
+    from playwright.sync_api import sync_playwright
+    from pypdf import PdfReader
+    import main_legacy as core
+
+    stalled_sources(True)
+    monkeypatch.setattr(core, "_require_web_access", lambda *_a, **_k: None)
+    with serve(core.app, 18844) as base, sync_playwright() as pw:
+        browser = pw.chromium.launch(executable_path=str(chrome))
+        try:
+            tab = browser.new_page(accept_downloads=True)
+            errors = []
+            tab.on("pageerror", lambda error: errors.append(str(error)))
+            tab.add_init_script(f"localStorage.setItem('plato_projects_key','{KEY}')")
+            tab.goto(base + "/report", wait_until="domcontentloaded")
+            tab.wait_for_selector(f"#project option[value='{PROJECT}']", state="attached")
+            tab.select_option("#project", PROJECT)
+            tab.fill("#cut", CUT)
+            tab.click("#reportBtn")
+            summary = tab.locator("#reportBox .executive-schedule")
+            summary.wait_for(state="visible")
+            for width in (390, 1440):
+                tab.set_viewport_size({"width": width, "height": 1000})
+                risk = summary.locator(".executive-stalled")
+                assert risk.is_visible()
+                text = risk.inner_text()
+                assert "Демонтаж башенных кранов К-1,2" in text and "процент в ГПР" in text
+                assert "актов" not in text
+                assert risk.evaluate("e=>e.scrollWidth<=e.clientWidth+1")
+                detail = tab.locator("#reportBox details.report-source-screen").filter(
+                    has_text="Источники и ограничения оценки")
+                assert not detail.get_attribute("open")
+            with tab.expect_download(timeout=90_000) as download:
+                tab.click("#reportPdfBtn")
+            raw = Path(download.value.path()).read_bytes()
+            text = " ".join(" ".join((page.extract_text() or "").split())
+                            for page in PdfReader(io.BytesIO(raw)).pages)
+            main = text.split("Приложение. Источники и ограничения оценки", 1)[0]
+            assert "Демонтаж башенных кранов К-1,2" in main and "процент в ГПР" in main
+            assert "2044" not in main and not errors, errors
+        finally:
+            browser.close()
+
+
 def test_status_distinguishes_unconfirmed_and_undated_quantities():
     sources("unmapped")
     state = physical.catalog(PROJECT, CUT)

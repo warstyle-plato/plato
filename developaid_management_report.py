@@ -1098,28 +1098,9 @@ def _driver_words(driver: dict[str, Any] | None) -> str:
 
 
 def _stalled_words(block: dict[str, Any]) -> str:
-    """Работы, которые почти стоят: прогноз ввода их не учитывает (Монитор)."""
-    items = block.get("stalled") or []
-    if not items:
-        return ""
-    if ((block.get("qualification") or {}).get("basis") == "gpr"
-            or any(item.get("basis") == "gpr" for item in items)):
-        shown = "; ".join("«" + str(item["name"]) + "»" +
-                          (f" ({item['object']})" if item.get("object") else "") + ": " +
-                          str(item.get("reason") or "Нет измеренного прироста процента в ГПР.")
-                          for item in items[:3])
-        more = len(items) - 3
-        return (f"По ГПР нет прогноза у {len(items)} "
-                f"{_plural(len(items), 'работы', 'работ', 'работ')}: {shown}"
-                + (f" Ещё {more} работ без прогноза." if more > 0 else ""))
-    shown = ", ".join(f"«{item['name']}»" + (f" ({item['object']})" if item.get("object") else "")
-                      for item in items[:3])
-    more = len(items) - 3
-    return (f"Прогноз не учитывает {len(items)} "
-            f"{_plural(len(items), 'работу', 'работы', 'работ')}, которые почти стоят: "
-            f"актов по ним так мало, что при нынешнем темпе они растянулись бы на годы, "
-            f"и такой темп не продлевается в будущее — {shown}"
-            + (f" и ещё {more}" if more > 0 else "") + ".")
+    """The same source-aware risk sentence in the conclusion and its details."""
+    return report_schedule.stalled_text(block.get("stalled") or [],
+                                       (block.get("qualification") or {}).get("basis"))
 
 
 def gantt(view: dict[str, Any], dashboard: dict[str, Any]) -> dict[str, Any]:
@@ -1819,8 +1800,7 @@ def build(project: str, kind: str, end: Any, sales_project: str | None = None,
     if declined:
         blocks["sales"] = _missing("Продажи в сводку не входят: так выбрано на "
                                    "странице «Сводка руководству».")
-    blocks["construction_summary"] = report_schedule.model(
-        (blocks.get("gantt") or {}).get("dependency_timeline") or {})
+    blocks["construction_summary"] = _executive_schedule(blocks)
     blocks["findings"] = findings({"kind": kind, "end": bounds["end"].isoformat(), **blocks})
     return {"project": project, "kind": kind,
             "start": bounds["start"].isoformat(),
@@ -4195,13 +4175,13 @@ def _executive_schedule(report: dict[str, Any]) -> dict[str, Any]:
     if report.get("construction_summary") is not None:
         return report["construction_summary"]
     timeline = (report.get("gantt") or {}).get("dependency_timeline") or {}
+    schedule_block = report.get("schedule") or {}
     if not timeline:
-        schedule_block = report.get("schedule") or {}
         timeline = {"rnv": schedule_block.get("qualification") or {
             "state": "complete" if schedule_block.get("known") else "unknown",
             "approved": schedule_block.get("approved"), "forecast": schedule_block.get("forecast"),
             "delay_days": schedule_block.get("delay_days")}}
-    return report_schedule.model(timeline)
+    return report_schedule.model(timeline, stalled=schedule_block.get("stalled"))
 
 
 def _gantt_html(report: dict[str, Any]) -> str:

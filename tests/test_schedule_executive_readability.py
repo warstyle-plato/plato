@@ -12,6 +12,7 @@ import developaid_management_report as report
 import developaid_report_gantt as gantt
 import developaid_schedule_timeline as timeline
 from test_schedule_dependency_timeline import network, task, day
+from test_schedule_physical_print_summary import gpr_sources
 
 
 def dense_schedule():
@@ -74,10 +75,17 @@ def test_incomplete_rnv_never_gets_a_confirmed_date_and_history_is_not_invented(
     block['rnv'].update(state=state, forecast=None, indicative_forecast='2027-02-16',
                         reasons=['Календарь не подтверждён.', 'Полнота цепочки не подтверждена.'])
     html = executive_html(block, grouped)
-    assert ('неполный' if state == 'partial' else 'недостаточно данных') in html
+    expected = ('<span>Оценка по части работ</span><strong>16.02.2027</strong>' if state == 'partial'
+                else '<span>Оценка окончания</span><strong>Не определена</strong>')
+    assert expected in html
+    if state == 'partial':
+        assert 'не подтверждает дату получения разрешения на ввод' in html
+    else:
+        assert 'Окончание работ пока не оценено.' in html
     assert 'Календарь не подтверждён.' in html
-    assert 'Изменение между версиями ГПР не рассчитано' in html
-    assert '<span>Прогноз РНВ</span><strong>16.02.2027' not in html
+    assert 'Сравнение версий ГПР пока не рассчитано.' in html
+    assert '<span>Прогноз ввода</span><strong>16.02.2027' not in html
+    assert block['rnv']['forecast'] is None
 
 
 def test_no_corpus_mapping_keeps_known_pm_dates_and_explains_the_gap():
@@ -102,7 +110,9 @@ def test_finished_delay_origin_is_kept_in_the_explanation():
 def test_unconfirmed_pm_still_shows_supplied_plan_without_renaming_it_forecast():
     block = timeline.model(network(), {}, evidence=False)
     html = timeline.render(block, context='report')
-    assert 'Прогноз РНВ</span><strong>недостаточно данных' in html
+    assert '<span>Оценка окончания</span><strong>Не определена</strong>' in html
+    assert 'Окончание работ пока не оценено.' in html
+    assert block['rnv']['forecast'] is None
     assert '01.02.2027' in html
     assert 'class="schedule-bar schedule-forecast"' not in html
 
@@ -172,7 +182,7 @@ def test_actual_executive_renderer_keeps_fonts_bars_and_height_at_realistic_dens
         engine.close()
 
 
-def test_real_monitor_all_raw_rows_are_reachable_but_closed_on_first_paint():
+def test_real_monitor_rejects_pm_dates_and_keeps_current_gpr_dates_and_works(gpr_sources):
     from playwright.sync_api import expect
     from test_monitor_cumulative_controls import browser_page
     block, roots, _ = dense_schedule()
@@ -180,7 +190,21 @@ def test_real_monitor_all_raw_rows_are_reachable_but_closed_on_first_paint():
              'dependency_timeline': block, 'dependency_timeline_html': timeline.render(block)}}
     with browser_page(390) as (page, responses, errors):
         page.evaluate('(v)=>renderGantt(v)', view)
-        expect(page.locator('#dependencyTimelineBody .schedule-rnv-cards')).to_contain_text('16.02.2027')
+        # A supplied PM response cannot become the default GPR forecast.
+        assert page.locator('#dependencyTimelineBody .schedule-rnv-cards').count() == 0
+        expect(page.locator('#forecastCard')).to_contain_text('Недостаточно данных')
+        expect(page.locator('#monitorPanel')).not_to_contain_text('16.02.2027')
+        expect(page.locator('#monitorPanel')).to_contain_text('Пакет работ 24')
+        assert page.get_by_text('Пакет работ 24', exact=True).count() == 4
+        # Positive control: a real saved GPR and confirmed natural mapping
+        # reaches the same production script with its own qualified dates.
+        current = gpr_sources(view=True)
+        page.evaluate('(v)=>renderGantt(v)', current)
+        cards = page.locator('#dependencyTimelineBody .schedule-rnv-cards')
+        expect(cards).to_contain_text('31.10.2026')
+        expect(cards).to_contain_text('06.01.2027')
+        expect(cards).to_contain_text('Оценка по ГПР')
+        assert current['schedule']['dependency_timeline']['rnv']['state'] == 'estimate'
         # Owner's decision: no dependency lanes and no technical network view.
         assert page.locator('#dependencyTimelineBody .schedule-lane').count() == 0
         assert page.locator('.schedule-technical').count() == 0
