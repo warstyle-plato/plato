@@ -1310,8 +1310,12 @@ def borrowed(source: Any) -> bool:
     return "заем" in str(source or "").lower().replace("ё", "е")
 
 
-def read_payments(path: str | Path) -> dict[str, Any]:
-    """Реестр платежей РСС: дата, сумма, код ССР, договор и источник средств."""
+def read_payments(path: str | Path, *, include_incomplete: bool = False) -> dict[str, Any]:
+    """Реестр платежей РСС: дата, сумма, код ССР, договор и источник средств.
+
+    The contract-risk reader retains incomplete rows to report unknown totals;
+    ordinary financial readers keep the existing nonzero-payment behaviour.
+    """
     rows: list[dict[str, Any]] = []
     for index, row in enumerate(_sheet(path, _PAYMENTS_SHEET), 1):
         if index < _PAYMENTS_FIRST_ROW:
@@ -1322,12 +1326,25 @@ def read_payments(path: str | Path) -> dict[str, Any]:
             return row[position] if position < len(row) else None
 
         amount = _money(cell("amount"))
-        if not amount:
+        if include_incomplete:
+            import math
+            if not any(cell(field) not in (None, "") for field in _PAYMENTS_COLUMNS):
+                continue
+            raw_amount = cell("amount")
+            try:
+                amount = (None if raw_amount is None or isinstance(raw_amount, bool) else
+                          float(str(raw_amount).replace("\xa0", "").replace(" ", "").replace(",", ".")))
+            except (TypeError, ValueError):
+                amount = None
+            if amount is not None and not math.isfinite(amount):
+                amount = None
+        elif not amount:
             continue
         source = str(cell("source") or "").strip()
-        rows.append({
+        item = {
             "contractor": str(cell("contractor") or "").strip(),
             "contract": str(cell("contract") or "").strip(),
+            "contract_date": _date(cell("contract_date")),
             "object": str(cell("object") or "").strip(),
             "purpose": str(cell("purpose") or "").strip(),
             "estimate_code": _code(cell("estimate_code")),
@@ -1336,13 +1353,19 @@ def read_payments(path: str | Path) -> dict[str, Any]:
             "amount": amount,
             "source": source,
             "own_funds": _OWN_FUNDS_MARKER in _normalized(source),
-        })
+        }
+        if include_incomplete:
+            item["source_row"] = index
+        rows.append(item)
     dated = [item for item in rows if item["date"]]
+    def total(items):
+        return (sum(item["amount"] for item in items)
+                if all(item["amount"] is not None for item in items) else None)
     return {
         "rows": rows,
-        "total": sum(item["amount"] for item in rows),
-        "undated": sum(item["amount"] for item in rows if not item["date"]),
-        "own_funds": sum(item["amount"] for item in rows if item["own_funds"]),
+        "total": total(rows),
+        "undated": total([item for item in rows if not item["date"]]),
+        "own_funds": total([item for item in rows if item["own_funds"]]),
         "first": min((item["date"] for item in dated), default=None),
         "last": max((item["date"] for item in dated), default=None),
     }

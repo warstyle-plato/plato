@@ -20,6 +20,7 @@ from typing import Any
 
 import developaid_actuals as actuals
 import developaid_monitor as monitor
+import developaid_monitor_contract_risk as contract_risk
 from developaid_monitor_ledgers import amount_basis as _amount_basis
 
 
@@ -145,7 +146,7 @@ def _archive(project: str, cut: str) -> dict | None:
     snapshot = ledgers.latest_snapshot(project, cut)
     if not snapshot:
         return snapshot
-    if snapshot.get("identity_schema") == 3 and all(
+    if snapshot.get("identity_schema") == 4 and all(
             re.fullmatch(r"[0-9a-f]{64}", str(x.get("file_sha256") or ""))
             and isinstance(x.get("identity_source"), dict)
             and isinstance(x.get("party_evidence"), dict) for x in snapshot.get("ledgers") or []):
@@ -167,7 +168,7 @@ def _archive(project: str, cut: str) -> dict | None:
                 parsed = ledgers.parse_archive(data, snapshot.get("filename") or "")
             except ledgers.LedgerProblem:
                 raise ContractProblem("Сохранённый архив накопительных не прочитан; проверьте исходный файл.") from None
-            return {**snapshot, **parsed, "identity_schema": 3}
+            return {**snapshot, **parsed, "identity_schema": 4}
     safe_ledgers = []
     for item in snapshot.get("ledgers") or []:
         if isinstance(item.get("party_evidence"), dict):
@@ -535,8 +536,16 @@ def _physical_key(item: dict) -> tuple:
     return tuple(_norm(item.get(key)) for key in ("position", "name", "scope", "unit"))
 
 
-def _cumulative_money(physical: list[dict], warnings: list[str]) -> tuple[float | None, str]:
-    """Sum dated, nonduplicated work-period evidence, never RSS closing or payments."""
+def _cumulative_money(physical: list[dict], warnings: list[str],
+                      parts: dict | None = None, dated: list | None = None) -> tuple[float | None, str]:
+    """Sum dated, nonduplicated work-period evidence, never RSS closing or payments.
+
+    ``parts`` receives works (СМР) and materials money of the same periods when
+    every period carries both labelled halves; otherwise they stay unknown.
+    ``dated`` receives (start, end, total, works or None) of the same periods for
+    the deadline pace; no second reading."""
+    if parts is not None:
+        parts.update(works=None, materials=None, split=False)
     if not physical:
         return None, "unspecified"
     periods, ranges, bases = {}, {}, set()
@@ -559,7 +568,9 @@ def _cumulative_money(physical: list[dict], warnings: list[str]) -> tuple[float 
                 uncertain = True
                 continue
             key = (*work, first, last)
-            evidence = (amount, _number(period.get("quantity")), _number(period.get("material_quantity")))
+            evidence = (amount, _number(period.get("quantity")), _number(period.get("material_quantity")),
+                        _number(period.get("work_amount")) if period.get("amount_split") else None,
+                        _number(period.get("material_amount")) if period.get("amount_split") else None)
             if key in periods and periods[key] != evidence:
                 uncertain = True
             periods[key] = evidence
@@ -578,6 +589,14 @@ def _cumulative_money(physical: list[dict], warnings: list[str]) -> tuple[float 
     if uncertain or not periods:
         warnings.append("Сумма выполнения по загруженным накопительным на срез не подтверждена: проверьте даты, пересечения периодов, сохранённые суммы и повторяющиеся позиции.")
         return None, "unspecified"
+    split = all(v[3] is not None and v[4] is not None for v in periods.values())
+    if parts is not None and split:
+        parts.update(works=sum(v[3] for v in periods.values()),
+                     materials=sum(v[4] for v in periods.values()), split=True)
+    if dated is not None:
+        dated.extend((dt.date.fromisoformat(key[-2]), dt.date.fromisoformat(key[-1]), value[0],
+                      value[3] if split else None)
+                     for key, value in periods.items())
     return sum(value[0] for value in periods.values()), next(iter(bases)) if bases else "unspecified"
 
 
@@ -610,7 +629,7 @@ def build(project: str, cut: str = "") -> dict:
             unresolved.append({"source": _source(ledger.get("source"), "Накопительная ведомость работ"),
                 "contractor": ledger.get("contractor") or "", "contract": ledger.get("contract") or "",
                 "contract_date": ledger.get("contract_date"),
-                "date_evidence": ledger.get("contract_date_evidence") or [],
+                "date_evidence": _date_evidence(snapshot, ledger),
                 "identity_warnings": ledger.get("identity_warnings") or [],
                 "party_evidence": ledger.get("party_evidence") or {},
                 "date_confirmation": ledger.get("date_confirmation"),
@@ -625,7 +644,16 @@ def build(project: str, cut: str = "") -> dict:
     extras = [*rss, *(dict(x, kind="summary", source_date=archive_day)
                        for x in (snapshot or {}).get("summary_contracts") or [])]
     terms, rows = (_read_terms(project) if primary else {}), []
+    paid_rows = None
+    if primary:
+        paid_rows, payment_warnings = contract_risk.payments(
+            monitor._latest(project, "estimate", ".xlsx", cut), dt.date.fromisoformat(cut))
+        warnings.extend(payment_warnings)
     groups = _groups(primary, project)
+    payment_identities: dict[tuple, int] = {}
+    for _, ledger_items in groups:
+        key = contract_risk.payment_identity(ledger_items[0], reference_key=_reference_key)
+        payment_identities[key] = payment_identities.get(key, 0) + 1
     claims: dict[int, int] = {}
     for _, ledger_items in groups:
         identity = _identity(ledger_items[0])
@@ -660,7 +688,9 @@ def build(project: str, cut: str = "") -> dict:
                                      for item in ledger.get("items") or []])
                             for ledger in ledger_items]
         physical = [item for _, views in physical_sources for item in views]
-        completed, completed_basis = _cumulative_money(physical, row_warnings)
+        money_parts: dict = {}
+        dated_money: list = []
+        completed, completed_basis = _cumulative_money(physical, row_warnings, money_parts, dated_money)
         if amount is None:
             row_warnings.append("Нет подтверждённой полной суммы договора. Итог года или отдельной ведомости не использован как цена всего договора.")
         comparable = (amount_basis != "conflicting" and completed_basis != "conflicting"
@@ -720,9 +750,18 @@ def build(project: str, cut: str = "") -> dict:
                "identity_source": first.get("identity_source") or {},
                "date_confirmation": first.get("date_confirmation"),
                "date_confirmations": [x["date_confirmation"] for x in ledger_items if x.get("date_confirmation")],
+               "date_evidence": [e for x in ledger_items for e in _date_evidence(snapshot, x)],
                "subject": str(next((x.get("subject") for x in items if x.get("subject")), "")),
                "amount": amount, "amount_source_label": amount_source,
                "completed": completed, "completion_ratio": ratio,
+               # Works (СМР) and materials supply are separate facts; delivery is
+               # not construction. Unknown when the books do not label both halves.
+               "completed_works": money_parts.get("works"),
+               "completed_materials": money_parts.get("materials"),
+               "works_materials_split": bool(money_parts.get("split")),
+               "works_materials_note": ("" if money_parts.get("split") or completed is None else
+                   "В накопительных этого договора суммы работ (СМР) и материалов не разделены; "
+                   "показано общее выполнение."),
                "amount_basis": amount_basis, "completed_basis": completed_basis,
                "monetary_comparable": comparable,
                "remaining": amount-completed if comparable and amount is not None and completed is not None else None,
@@ -737,6 +776,14 @@ def build(project: str, cut: str = "") -> dict:
                "scope": sorted({str(item.get("scope") or "") for item in physical if item.get("scope")}),
                "performance_basis": "Денежное выполнение только по загруженным накопительным и завершённым датированным периодам; не оплата и не физическая готовность",
                "performance_source_count": len(ledger_items), "reported_performance_sources": references}
+        row["risk"] = contract_risk.forecast(
+            amount=amount, completed=completed, comparable=comparable, periods=dated_money,
+            cut=dt.date.fromisoformat(cut), deadline=dt.date.fromisoformat(deadline) if deadline else None,
+            works=row["completed_works"] if row["works_materials_split"] else None,
+            materials=row["completed_materials"] if row["works_materials_split"] else None)
+        row["advance"] = contract_risk.advance(
+            row, paid_rows, reference_key=_reference_key,
+            identity_counts=payment_identities, completed_basis=completed_basis)
         rows.append(row)
     rows.sort(key=lambda r: (_norm(r["contractor"]), _norm(r["customer"]), _norm(r["contract"]), r["id"]))
     note = ("В списке только уникальные договоры из шапок загруженных накопительных: номер, дата, контрагент и заказчик. "
@@ -749,7 +796,18 @@ def build(project: str, cut: str = "") -> dict:
                                                    "В шапках накопительных пока нет полностью распознанных договоров." if not rows else ""),
             "snapshots": {"rss": rss_day, "cumulative": archive_day, "cumulative_id": (snapshot or {}).get("snapshot_id")},
             "warnings": _warnings(warnings + _warnings((snapshot or {}).get("warnings"))),
-            "performance_basis": "Выполнение по загруженным накопительным; реестр РСС и оплата не подменяют выполнение КС."}
+            "performance_basis": "Выполнение по загруженным накопительным; реестр РСС и оплата не подменяют выполнение КС.",
+            "risk_summary": contract_risk.summary(rows),
+            "risk_basis": ("Прогноз окончания — по денежному темпу накопительных за последние 90 дней; "
+                           "это показатель выполнения, а не физическая готовность. Оплаты — «Реестр платежей» РСС "
+                           "по точному подрядчику, номеру и дате договора.")}
+
+
+def _date_evidence(snapshot: dict, ledger: dict) -> list[dict]:
+    """Header date cells with the exact binding the page sends back to clarify."""
+    import developaid_monitor_header_confirmations as confirmations
+    return [dict(evidence, binding=confirmations.binding(snapshot, ledger, evidence))
+            for evidence in ledger.get("contract_date_evidence") or []]
 
 
 def _rss_match(identity: tuple | None, matched: list[dict], candidates: list[dict],
