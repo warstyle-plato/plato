@@ -233,8 +233,10 @@ def test_the_monitor_takes_the_file(monkeypatch, tmp_path):
             tab.add_init_script("localStorage.setItem('developaid_web_session','проба');localStorage.setItem('plato_projects_key','browser-admin-key')")
             tab.goto(f"{base}/monitor", wait_until="domcontentloaded")
             tab.fill("#project", PROJECT)
-            if not tab.is_visible("#fundingScheduleBtn"):
-                tab.click("#setupHead")
+            tab.get_by_role("tab", name="Данные и настройки").click()
+            from playwright.sync_api import expect
+            expect(tab.locator("#fundingSchedule")).to_be_visible()
+            expect(tab.locator("#fundingScheduleBtn")).to_be_visible()
             tab.set_input_files("#fundingSchedule", str(good))
             tab.fill("#fundingScheduleDate", "2026-09-23")
             tab.click("#fundingScheduleBtn")

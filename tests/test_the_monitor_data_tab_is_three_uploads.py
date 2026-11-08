@@ -57,7 +57,8 @@ def test_the_data_tab_on_the_rendered_page(monkeypatch):
             tab.goto(f"{base}/monitor", wait_until="domcontentloaded")
             tab.wait_for_function("document.getElementById('budgetBtn')!==null")
             if not tab.is_visible("#budgetBtn"):
-                tab.click("#setupHead")
+                tab.click("#dataTab")
+            tab.locator("#budgetBtn").wait_for(state="visible")
             titles = tab.eval_on_selector_all(
                 "#setupCard .box > b", "els=>els.map(e=>e.textContent)")
             shown = {name: tab.is_visible(f"#{name}") for name in VISIBLE + FOLDED}
@@ -69,7 +70,7 @@ def test_the_data_tab_on_the_rendered_page(monkeypatch):
             browser.close()
 
     assert not errors, errors
-    assert titles == ["ГПР и финансовая книга", "РСС · каждую неделю",
+    assert titles == ["Утверждённый план работ", "РСС · каждую неделю",
                       "Накопительные · КС-6а", "Бюджет месяца · раз в месяц"]
     assert all(shown[name] for name in VISIBLE), shown
     assert not any(shown[name] for name in FOLDED), shown

@@ -5,13 +5,14 @@ Important semantics:
 * RSS accepted-work acts are a cost/evidence source. ``accepted / EAC`` is
   shown as an *act-cost ratio* and is never treated as a physical WBS percent.
 * Calendar forecast never extrapolates dates from the monetary pace of acts.
-  Dates come from the approved GPR/PM network and approved rebaselines.
+  The current GPR overlay owns forecasts; this module preserves crosswalks.
 * RSS codes remain the financial crosswalk. They do not define the temporal
   phase hierarchy: one financial code may span several WBS phases.
 """
 from __future__ import annotations
 
 import datetime
+from collections import Counter
 import re
 from pathlib import Path
 from typing import Any
@@ -211,67 +212,41 @@ def _metrics(
 
 
 def _baseline_status(project: str, upto: str = "") -> dict[str, dict[str, Any]]:
-    """Approved GPR status is schedule metadata, not physical RSS fact.
+    """The same dated, deduplicated GPR fact used by the forecast readers.
 
-    ``upto`` — дата ГГГГ-ММ-ДД: состояние на этот день (снимки не позднее него).
-    Сводка руководству сравнивает начало и конец периода одним и тем же счётом.
+    A future/undated baseline is still a plan; its percentage and status cannot
+    become a historical fact. Rejected duplicate weekly IDs do not overwrite
+    earlier valid evidence. Natural quantities stay in their separate model.
     """
+    import developaid_schedule_gpr_forecast as gpr_forecast
+
     try:
         baseline = monitor._read_baseline_gpr(project)
     except Exception:
         return {}
-    # Еженедельный ГПР-факт несёт свежие проценты и статусы поверх baseline:
-    # план не меняется, меняется выполнение. Без снимка работает сам baseline.
     rows = list(baseline.get("works") or [])
-    # Origin and date of every percent travel with it: the chart must say
-    # whether a number is the approved plan, a weekly file or a manual decision.
-    origins = {str(item.get("id") or item.get("wbs") or "").strip(): ("approved_gpr", None)
-               for item in rows}
-    try:
-        fact = monitor.latest_schedule_fact(project, upto)
-    except Exception:
-        fact = None
-    if fact:
-        fresh = {str(item.get("id") or item.get("wbs") or "").strip(): item
-                 for item in fact.get("works") or []}
-        for tid in fresh:
-            if tid in origins:
-                origins[tid] = ("weekly_gpr", fact.get("taken_at"))
-        rows = [fresh.get(str(item.get("id") or item.get("wbs") or "").strip(),
-                          item) for item in rows]
-    # Точечные проценты со страницы — поверх всего: в акте РСС нет имени
-    # работы, и последнее слово о конкретной работе остаётся за человеком.
-    try:
-        manual = monitor.work_facts(project, upto)
-    except Exception:
-        manual = {}
-    if manual:
-        for tid, row in manual.items():
-            if tid in origins:
-                origins[tid] = ("manual", row.get("recorded_day"))
-        rows = [dict(item, progress=manual[tid]["progress"],
-                     status=manual[tid].get("status") or item.get("status"))
-                if (tid := str(item.get("id") or item.get("wbs") or "").strip())
-                in manual else item
-                for item in rows]
+    cut = _as_date(upto) if upto else datetime.datetime.now(datetime.timezone.utc).date()
+    if cut is None:
+        raise ValueError("Не задана дата среза.")
+    points = gpr_forecast.history(project, cut)
+    counts = Counter(str(row.get("id") or row.get("wbs") or "").strip() for row in rows)
     out: dict[str, dict[str, Any]] = {}
     for item in rows:
         tid = str(item.get("id") or item.get("wbs") or "").strip()
         if not tid:
             continue
-        status = _norm(item.get("status"))
-        try:
-            progress = float(item.get("progress"))
-        except (TypeError, ValueError):
-            progress = None
-        if progress is not None and progress > 1.0:
-            progress = progress / 100.0
+        readings = points.get(tid) or []
+        last = readings[-1] if readings and counts[tid] == 1 else None
+        progress = last[1] if last else None
+        closed = progress is not None and progress >= .999
         out[tid] = {
-            "closed": "заверш" in status or (progress or 0.0) >= 0.999,
-            "status": str(item.get("status") or ""),
+            "closed": closed,
+            "status": "Завершено" if closed else "В работе" if progress is not None else "",
             "progress": progress,
-            "progress_origin": origins.get(tid, ("approved_gpr", None))[0],
-            "progress_date": origins.get(tid, ("approved_gpr", None))[1],
+            "progress_origin": last[2] if last else None,
+            "progress_date": last[0].isoformat() if last else None,
+            "progress_reason": ("Идентификатор работы повторяется в ГПР." if counts[tid] != 1 else
+                                "Нет датированного процента ГПР на выбранную дату." if last is None else ""),
         }
     return out
 
@@ -306,6 +281,7 @@ def _sanitize_base_schedule(project: str, schedule: dict[str, Any], upto: str = 
         row["gpr_progress"] = own
         row["gpr_progress_origin"] = meta.get("progress_origin")
         row["gpr_progress_date"] = meta.get("progress_date")
+        row["gpr_progress_reason"] = meta.get("progress_reason")
         row["baseline_closed"] = bool(meta.get("closed"))
         row["baseline_status"] = meta.get("status", "")
         row["actual_progress"] = None
@@ -478,11 +454,11 @@ def _summary(
 
 def _management(
     project: str,
-    rss: Path,
+    rss: Path | None,
     schedule: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    estimate = actuals.read_estimate(rss)
-    works = actuals.read_completed_works(rss)
+    estimate = actuals.read_estimate(rss) if rss else {"rows": [], "by_code": {}}
+    works = actuals.read_completed_works(rss) if rss else {"rows": []}
     mapping = _baseline_mapping(project)
     cut = _as_date(schedule.get("cut"))
     if cut is None:
@@ -506,7 +482,7 @@ def _management(
         task["eac"] = None
         task["progress_kind"] = "wbs_schedule"
 
-        codes = _codes(task.get("code"))
+        codes = _codes(task.get("code")) or [""]
         for code in codes:
             control, detail = _schedule_bucket(task, code)
             grouped.setdefault((control, detail, code), []).append(task)
@@ -730,18 +706,57 @@ def _attach_payments(nodes: list[dict[str, Any]], cash: dict[str, Any]) -> None:
         visit(node)
 
 
+def _schedule_only(project: str, cut: Any, upto: str = "") -> dict[str, Any]:
+    """Keep work monitoring available without inventing missing financial data."""
+    day = _as_date(cut)
+    if day is None:
+        raise ValueError("Не задана дата среза.")
+    try:
+        baseline = monitor._read_baseline_gpr(project)
+    except FileNotFoundError:
+        baseline = {"works": []}
+    rows = []
+    for item in baseline.get("works") or []:
+        start, finish = _as_date(item.get("start")), _as_date(item.get("finish"))
+        if not start or not finish:
+            continue
+        rows.append({"id": item.get("id", ""), "wbs": item.get("wbs", ""),
+                     "section": item.get("section", ""), "object": item.get("object", ""),
+                     "name": item.get("name", ""), "code": item.get("estimate_code", ""),
+                     "basis": item.get("basis", ""), "plan_start": start.isoformat(),
+                     "plan_finish": finish.isoformat(), "plan_progress": monitor._plan_progress(start, finish, day),
+                     "actual_progress": None, "forecast_finish": None, "delta_days": None,
+                     "status": "", "accepted": None, "eac": None})
+    schedule = {"cut": day.isoformat(), "rows": rows, "risks": 0, "forecast_end": None,
+                "baseline_end": max((r["plan_finish"] for r in rows), default=None),
+                "reason": "" if rows else "Утверждённый график работ не загружен."}
+    _sanitize_base_schedule(project, schedule, upto or day.isoformat())
+    schedule["management"] = monitor._plain(_management(project, None, schedule))
+    stack = list(schedule["management"])
+    while stack:
+        node = stack.pop()
+        stack.extend(node.get("children") or [])
+        node.update(accepted=None, eac=None)
+    missing = "Нет снимка РСС: финансовые показатели неизвестны."
+    return {"cut": day.isoformat(), "source": {"estimate": None, "baseline": bool(rows)},
+            "money": {key: None for key in ("estimate", "contracted", "paid", "accepted", "payment_fact", "contracts")},
+            "payments": {"known": False, "source": "", "rows": [], "fact_total": None, "reason": missing},
+            "schedule": schedule, "by_code": schedule["rows"],
+            "financial_state": {"state": "missing", "reason": missing}}
+
+
 def _build(
     project: str,
     cut: Any,
     programme: dict[str, Any] | None = None,
     upto: str = "",
 ) -> dict[str, Any]:
-    view = _ORIGINAL_BUILD(project, cut, programme=programme, upto=upto)
     rss = monitor._latest(project, "estimate", ".xlsx", upto)
     if rss is None:
-        return view
+        return _schedule_only(project, cut, upto)
+    view = _ORIGINAL_BUILD(project, cut, programme=programme, upto=upto)
 
-    _sanitize_base_schedule(project, view["schedule"], upto)
+    _sanitize_base_schedule(project, view["schedule"], upto or monitor._iso(cut))
     _seed_rebaselines(project, view["schedule"])
 
     management = _management(project, rss, view["schedule"])
@@ -762,7 +777,9 @@ def _build(
 
 
 def _gantt(project: str, cut: Any, upto: str = "") -> dict[str, Any]:
-    view = _build(project, cut, upto=upto)
+    # Resolve the final installed stack at call time. Calling this module's
+    # private _build bypasses the GPR overlay and revives stale RSS dates.
+    view = monitor.build(project, cut, upto=upto)
     schedule = view["schedule"]
     return {
         "cut": view["cut"],
@@ -772,11 +789,19 @@ def _gantt(project: str, cut: Any, upto: str = "") -> dict[str, Any]:
         "overdue": schedule.get("risks", 0),
         "baseline_end": schedule.get("baseline_end"),
         "forecast_end": schedule.get("forecast_end"),
+        "forecast_state": schedule.get("forecast_state"),
+        "indicative_forecast_end": schedule.get("indicative_forecast_end"),
+        "by_code": schedule.get("rows", []),
+        "work_fact": schedule.get("work_fact"),
+        "gpr_forecasts": schedule.get("gpr_forecasts"),
+        "corpus_gpr": schedule.get("corpus_gpr"),
+        "dependency_timeline": schedule.get("dependency_timeline"),
         "source": {
             "schedule": "fixed-baseline",
             "estimate": view["source"]["estimate"],
             "with_baseline": True,
-            "fact": "Реестр выполненных работ (КС / EAC)",
+            "fact": schedule.get("fact_source"),
+            "forecast": schedule.get("forecast_method"),
             "payments": "Реестр платежей",
         },
     }

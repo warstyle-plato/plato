@@ -49,7 +49,9 @@ class MonitorContractsHeaderDate(MonitorContractsBuild):
     sheet: str = _CumulativeField(min_length=1, max_length=200)
     cell: str = _CumulativeField(min_length=1, max_length=10)
     raw: str = _CumulativeField(min_length=1, max_length=20000)
-    contract_date: str = _CumulativeField(min_length=10, max_length=10)
+    # Empty date revokes an earlier clarification; a correction needs a note.
+    contract_date: str = _CumulativeField(default="", max_length=10)
+    note: str = _CumulativeField(default="", max_length=500)
 
 
 class MonitorCumulativeResult(MonitorCumulativeAuth):
@@ -76,13 +78,22 @@ class MonitorPhysicalSave(MonitorCumulativeProject):
     configuration: dict[str, Any]
 
 
+class MonitorGprPhysicalSave(MonitorCumulativeProject):
+    source_kind: str = _CumulativeField(pattern=r"^gpr$")
+    source_sha256: str = _CumulativeField(pattern=r"^[0-9a-f]{64}$")
+    snapshot_id: str = _CumulativeField(pattern=r"^\d{4}-\d{2}-\d{2}-[0-9a-f]{64}$")
+    revision: int = _CumulativeField(ge=0, strict=True)
+    configuration: dict[str, Any]
+
+
 _CUMULATIVE_PATHS = frozenset({
     "/monitor/cumulative/upload", "/monitor/cumulative/result",
     "/monitor/cumulative/list", "/monitor/contracts/build",
     "/monitor/contracts/result", "/monitor/contracts/term", "/monitor/contracts/link", "/monitor/contracts/header-date",
-    "/monitor/view", "/monitor/schedule-fact", "/monitor/gpr-corpus/view",
+    "/monitor/view", "/monitor/gantt", "/monitor/schedule-fact", "/monitor/gpr-corpus/view",
     "/monitor/schedule-confirmation/view", "/monitor/schedule-confirmation/save",
     "/monitor/schedule-physical/view", "/monitor/schedule-physical/save",
+    "/monitor/schedule-gpr-physical/view", "/monitor/schedule-gpr-physical/save",
 })
 
 
@@ -176,6 +187,33 @@ def monitor_schedule_physical_save(req: MonitorPhysicalSave) -> Response:
     return _monitor_schedule_physical(req, save=True)
 
 
+def _monitor_schedule_gpr_physical(req, *, save=False):
+    _require_admin_key(req.key, "Монитор проекта", req.session)
+    if not req.project.strip():
+        raise HTTPException(400, "Выберите проект.")
+    import developaid_schedule_gpr_physical as physical
+    try:
+        result = (physical.save(req.project.strip(), req.source_kind, req.source_sha256,
+                                req.snapshot_id, req.revision, req.configuration) if save else
+                  physical.catalog(req.project.strip(), _monitor_cumulative_day(req.cut), req.query, req.offset))
+        return JSONResponse(content=result)
+    except physical.PhysicalProblem as exc:
+        raise HTTPException(exc.status, str(exc)) from None
+    except Exception as exc:
+        logging.getLogger("developaid.monitor").error("GPR quantity mapping unavailable (%s)", type(exc).__name__)
+        raise HTTPException(503, "Привязки ГПР и накопительных сейчас недоступны. Повторите запрос.") from None
+
+
+@app.post("/monitor/schedule-gpr-physical/view", include_in_schema=False)
+def monitor_schedule_gpr_physical_view(req: MonitorPhysicalView) -> Response:
+    return _monitor_schedule_gpr_physical(req)
+
+
+@app.post("/monitor/schedule-gpr-physical/save", include_in_schema=False)
+def monitor_schedule_gpr_physical_save(req: MonitorGprPhysicalSave) -> Response:
+    return _monitor_schedule_gpr_physical(req, save=True)
+
+
 def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = b"") -> dict:
     """Only validated calculation inputs enter the background worker."""
     from fastapi.encoders import jsonable_encoder
@@ -241,10 +279,11 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
                         _monitor_cumulative_day(req.deadline)
                     payload.update(contract_id=req.contract_id, deadline=req.deadline, note=req.note)
                 elif operation == "header-date":
-                    _monitor_cumulative_day(req.contract_date)
+                    if req.contract_date:
+                        _monitor_cumulative_day(req.contract_date)
                     payload.update(snapshot_id=req.snapshot_id, filename=req.filename,
                                    file_sha256=req.file_sha256, sheet=req.sheet, cell=req.cell,
-                                   raw=req.raw, contract_date=req.contract_date)
+                                   raw=req.raw, contract_date=req.contract_date, note=req.note)
                 elif operation == "link":
                     payload.update(contract_id=req.contract_id, evidence_id=req.evidence_id,
                                    confirmed=req.confirmed)

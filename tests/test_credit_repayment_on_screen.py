@@ -183,11 +183,14 @@ def test_the_monitor_card_runs_the_page_code():
             # Вошедший командой: ключ администратора в хранилище, как после входа.
             tab.evaluate("localStorage.setItem(ADMIN_KEY, 'kluch'); syncAuthUi()")
             tab.fill("#project", PROJECT)
+            tab.locator("#moneyTab").click()
+            tab.wait_for_selector("#moneyPanel")
             # Так карточку открывает «Обновить» после расчёта среза.
             tab.evaluate("renderCredit()")
             tab.wait_for_selector("#creditBody table.credit-table")
             tab.fill("#creditCut", "35")
-            tab.click("#creditRun")
+            with tab.expect_response("**/monitor/credit"):
+                tab.click("#creditRun")
             tab.wait_for_selector("#creditBody table.credit-table")
             assert tab.locator("#creditCard").is_visible()
             assert tab.locator("#creditState").inner_text() == "статус: красный"

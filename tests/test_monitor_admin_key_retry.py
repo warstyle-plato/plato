@@ -89,7 +89,8 @@ def test_rejected_rss_upload_keeps_file_project_and_date(monitor_server,page,mon
     saved(page)
     with page.expect_response('**/monitor/view'):
         page.goto(base+'/monitor')
-    if not page.locator('#rss').is_visible():page.locator('#setupHead').click()
+    page.locator('#dataTab').click()
+    expect(page.locator('#rss')).to_be_visible()
     page.locator('#rss').set_input_files({'name':'synthetic.xlsx','mimeType':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','buffer':b'synthetic'})
     page.locator('#rssDate').fill('2026-11-05')
     monkeypatch.setenv('DEVELOPAID_ADMIN_KEY', ROTATED)
@@ -107,7 +108,8 @@ def test_rejected_rss_upload_keeps_file_project_and_date(monitor_server,page,mon
     expect(page.locator('#project')).to_have_value('Синтетический проект')
     expect(page.locator('#rssDate')).to_have_value('2026-11-05')
     assert stored==[]  # Исправление ключа само не повторяет запись.
-    if not page.locator('#rssBtn').is_visible():page.locator('#setupHead').click()
+    page.locator('#dataTab').click()
+    expect(page.locator('#rssBtn')).to_be_visible()
     with page.expect_response('**/monitor/estimate') as uploaded:
         page.locator('#rssBtn').click()
     assert uploaded.value.status==200

@@ -53,6 +53,9 @@ def _gated_routes() -> list[tuple[str, str]]:
 
 ROUTES = _gated_routes()
 _FILL = {str: "проверка", int: 1, float: 1.0, bool: False, list: [], dict: {}}
+_ENDPOINT_PAYLOADS = {
+    ("POST", "/monitor/schedule-gpr-physical/save"): {"source_kind": "gpr"},
+}
 
 
 def _route(method: str, path: str):
@@ -71,6 +74,7 @@ def call(method: str, path: str, session: str = "", key: str = "",
                  "source_sha256": "a" * 64, "pm_sha256": "a" * 64,
                  "snapshot_id": "2026-10-22-" + "a" * 64,
                  "calendar_basis": "unconfirmed"}
+    out.update(_ENDPOINT_PAYLOADS.get((method, path), {}))
     route = _route(method, path)
     dependant = getattr(route, "dependant", None)
     if method == "GET":

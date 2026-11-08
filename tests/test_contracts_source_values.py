@@ -140,7 +140,11 @@ def test_source_known_money_is_visible_without_opening_details_or_creating_ratio
         assert cell.locator('.contract-progress').count() == 0
         assert '50%' not in cell.text_content()
         expect(row.locator('td').nth(2)).to_contain_text('Не подтверждена')
-        assert row.locator('td').nth(4).text_content().strip() == '—'
+        remaining = row.locator('td').nth(4)
+        expect(remaining.locator('.contract-main-money')).to_have_text('—')
+        expect(remaining).to_contain_text('Оплачено: — · итог не подтверждён')
+        expect(remaining).not_to_contain_text('50\u00a0000 ₽')
+        expect(remaining).not_to_contain_text('0 ₽')
         assert row.locator('.contract-sources').get_attribute('open') is None
         assert 'private-ledger' not in cell.text_content()
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')

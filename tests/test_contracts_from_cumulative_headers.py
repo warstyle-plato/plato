@@ -323,7 +323,8 @@ def test_real_monitor_shows_cumulative_count_sources_quarantine_and_printed_valu
         expect(page.locator('#contractsRows')).to_contain_text('Дата из шапки')
         expect(page.locator('#contractsRows')).to_contain_text('B4')
         expect(page.locator('#contractsRows')).to_contain_text('400 ₽')
-        expect(page.locator('#contractsSource')).to_contain_text('Общий реестр РСС')
+        expect(page.locator('#contractsSource')).to_contain_text('06.11.2026')
+        assert 'Общий реестр РСС' not in page.locator('#contractsPanel').inner_text()
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         if width == 1440:
             text = ' '.join(' '.join((x.extract_text() or '').split())

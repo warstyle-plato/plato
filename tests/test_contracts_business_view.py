@@ -96,7 +96,7 @@ def test_actual_print_is_a4_landscape_paginated_with_business_fields_only():
         # Even opened source evidence, term editor and unmatched details are excluded from print.
         page.locator('tr[data-contract-id]').first.locator('.contract-sources summary').click()
         page.locator('tr[data-contract-id]').first.locator('.contract-term').click()
-        page.locator('#contractsUnmatched summary').click()
+        page.locator('#contractsUnmatched > .contract-detail > summary').click()
         pdf = PdfReader(io.BytesIO(page.pdf(prefer_css_page_size=True, print_background=True)))
         assert len(pdf.pages) >= 3
         texts = []

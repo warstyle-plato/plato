@@ -161,8 +161,8 @@ def test_page_has_funding_and_correct_cost_evidence_language():
     from developaid_monitor_page import MONITOR_PAGE
     assert "Исчерпание резерва" in MONITOR_PAGE
     assert "Непокрытая потребность" in MONITOR_PAGE
-    assert "Cost control" in MONITOR_PAGE
-    assert "КС / EAC proxy" in MONITOR_PAGE
+    assert "Бюджет и оплаты" in MONITOR_PAGE
+    assert "Принято, % стоимости" in MONITOR_PAGE
     assert "Утверждённый РНВ" in MONITOR_PAGE
     assert "Прогноз РНВ" in MONITOR_PAGE
 

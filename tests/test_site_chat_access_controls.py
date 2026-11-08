@@ -26,6 +26,8 @@ def test_the_owner_authorizes_and_revokes_a_group_in_the_monitor(bot, width):
             page.on("request", lambda request: calls.append(request)
                     if "/monitor/site-chats/" in request.url else None)
             page.goto(base + "/monitor", wait_until="domcontentloaded")
+            page.locator("#dataTab").click()
+            expect(page.locator("#dataPanel")).to_be_visible()
             page.locator("#siteAccessCard > summary").click()
             page.locator("#siteChatId").fill(str(GROUP))
             title = '<img src="private-marker" onerror="window.groupXss=true">'
@@ -83,6 +85,8 @@ def test_bad_group_id_never_reaches_the_owner_api(bot):
             page.on("request", lambda request: calls.append(request)
                     if "/monitor/site-chats/" in request.url else None)
             page.goto(base + "/monitor", wait_until="domcontentloaded")
+            page.locator("#dataTab").click()
+            expect(page.locator("#dataPanel")).to_be_visible()
             page.locator("#siteAccessCard > summary").click()
             page.locator("#siteChatId").fill("100")
             page.locator("#siteAuthorizeBtn").click()
@@ -111,6 +115,8 @@ def test_old_group_access_result_cannot_repopulate_another_context(bot, width, c
             errors=[]
             page.on("pageerror",lambda error:errors.append(str(error)))
             page.goto(base+"/monitor",wait_until="domcontentloaded")
+            page.locator("#dataTab").click()
+            expect(page.locator("#dataPanel")).to_be_visible()
             page.locator("#siteAccessCard > summary").click()
             delayed=[]
             page.route("**/monitor/site-chats/access",lambda route:delayed.append(route))
