@@ -3456,6 +3456,16 @@ table.contract-performance th,table.contract-performance td{min-width:0;text-ali
 .contract-caption{font-size:10px;color:#5b6b7d;margin-top:4px}
 .contract-performance-details{font-size:10px;color:#5b6b7d;margin-top:5px}
 .contract-performance-details summary{cursor:pointer}.contract-performance-details ul{padding-left:15px}
+@media screen and (max-width:700px){
+ .contract-performance-scroll{overflow:visible}
+ table.contract-performance{display:block;min-width:0;width:100%;font-size:13px;line-height:1.4}
+ table.contract-performance>colgroup,table.contract-performance>thead{display:none}
+ table.contract-performance>tbody{display:block}
+ table.contract-performance>tbody>tr{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:14px 12px;border:1px solid #d6dde6;border-radius:6px;padding:12px;margin:0 0 12px}
+ table.contract-performance>tbody>tr>td{display:block;min-width:0;border:0;padding:0}
+ table.contract-performance>tbody>tr>td::before{content:attr(data-label);display:block;font-size:12px;font-weight:600;color:#5b6b7d;margin-bottom:4px}
+ .contract-performance .contract-caption,.contract-performance-details{font-size:12px}
+}
 @media print{.contract-performance-scroll{overflow:visible}table.contract-performance{min-width:0;font-size:9px}table.contract-performance thead{display:table-header-group}.contract-performance .contract-caption{font-size:8.5px}.contract-performance-details{display:none}}
 table.articles tr.chapter td{background:#f4f7fb;font-weight:600}
 table.articles tr.total td{border-top:2px solid #1f4e8c;font-weight:600}
@@ -5070,6 +5080,7 @@ def _contract_performance_details(row: dict[str, Any]) -> str:
 
 def _contract_performance_html(block: dict[str, Any]) -> str:
     esc = html.escape
+    columns = ('Подрядчик и договор', 'Выполнение, %', 'Изменение', 'Срок и прогноз')
     out = ['<h3>Договоры: выполнение и сроки</h3>']
     if block.get('state') != 'ok':
         return ''.join(out) + "<p class='missing'>" + esc(block.get('reason') or 'Данные договоров не собраны.') + '</p>'
@@ -5084,7 +5095,7 @@ def _contract_performance_html(block: dict[str, Any]) -> str:
     out.append("<div class='contract-performance-scroll' tabindex='0' aria-label='Договоры: выполнение и сроки'>"
                "<table class='contract-performance'><colgroup><col style='width:27%'><col style='width:25%'>"
                "<col style='width:24%'><col style='width:24%'></colgroup><thead>"
-               + _row(['Подрядчик и договор', 'Выполнение, %', 'Изменение', 'Срок и прогноз'], True) + '</thead><tbody>')
+               + _row(columns, True) + '</thead><tbody>')
     for row in records:
         name = '<b>'+esc(row.get('contractor') or 'Подрядчик не указан')+'</b><div>'+esc(row.get('contract') or 'Номер не указан')
         if row.get('contract_date'):
@@ -5099,8 +5110,9 @@ def _contract_performance_html(block: dict[str, Any]) -> str:
                 metric += "<div class='contract-caption'>"+esc(_contract_brief(reason))+'</div>'
         out.append("<tr data-contract-id='"+esc(str(row.get('id') or ''), quote=True)+"' data-source-kind='"
                    +esc(str(row.get('source_kind') or ''), quote=True)+"'>"
-                   +''.join('<td>'+cell+'</td>' for cell in (
-                       name, metric, _contract_performance_change(row), _contract_performance_term(row)))+'</tr>')
+                   +''.join('<td data-label="'+esc(label, quote=True)+'">'+cell+'</td>'
+                            for label, cell in zip(columns, (
+                                name, metric, _contract_performance_change(row), _contract_performance_term(row))))+'</tr>')
     out.append('</tbody></table></div>')
     return ''.join(out)
 

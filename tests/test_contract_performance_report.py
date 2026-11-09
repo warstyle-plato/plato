@@ -122,6 +122,10 @@ def test_full_compact_table_is_readable_on_screen_and_all_records_reach_pdf(monk
 
     rows = [record(i, 0 if i == 0 else 1 if i == 1 else .4) for i in range(35)]
     rows[2]['contractor'] = '<img src=x onerror="window.bad=true">'
+    rows[3] = record(3, None, reported_performance_sources=[
+        {'period_year': year, 'completion_ratio': value, 'amount_scope': 'statement',
+         'future_periods_excluded': False, 'monetary_comparable': True}
+        for year, value in [(2025, .25), (2026, .6)]])
     block = make_block(monkeypatch, rows)
     document = report_pdf.document(report._contract_risks_html(block), style=report.REPORT_STYLE,
                                    title='Договоры: выполнение и сроки')
@@ -144,10 +148,19 @@ def test_full_compact_table_is_readable_on_screen_and_all_records_reach_pdf(monk
             assert page.locator('img').count() == 0 and not page.evaluate('window.bad||false')
             assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
             if width == 390:
-                assert table.evaluate('(t)=>t.parentElement.scrollWidth>t.parentElement.clientWidth')
+                assert table.evaluate('(t)=>t.parentElement.scrollWidth<=t.parentElement.clientWidth')
+                cells = table.locator(':scope > tbody > tr > td')
+                assert cells.evaluate_all('(cells)=>cells.every(c=>{const b=c.getBoundingClientRect();return b.left>=0&&b.right<=innerWidth})')
+                assert cells.evaluate_all('(cells)=>cells.every(c=>parseFloat(getComputedStyle(c).fontSize)>=13)')
+                assert cells.nth(0).evaluate('(c)=>getComputedStyle(c,"::before").content') == '"Подрядчик и договор"'
+            else:
+                assert table.locator(':scope > tbody > tr').first.evaluate('(r)=>getComputedStyle(r).display') == 'table-row'
             expect(table.locator(':scope > tbody > tr').first).to_contain_text('0,0%')
             expect(table.locator(':scope > tbody > tr').nth(1)).to_contain_text('100,0%')
             expect(table.locator(':scope > tbody > tr').last).to_contain_text('КР034')
+            source_cell = table.locator(':scope > tbody > tr').nth(3).locator(':scope > td').nth(1)
+            expect(source_cell).to_contain_text('2025 — 25,0%')
+            expect(source_cell).to_contain_text('2026 — 60,0%')
             assert '0,0 п.п.' not in page.locator('body').inner_text()
             page.screenshot(path=str(tmp_path/f'contracts-{width}.png'), full_page=True)
         finally:
@@ -160,5 +173,6 @@ def test_full_compact_table_is_readable_on_screen_and_all_records_reach_pdf(monk
         assert row['contract'] in text
     assert 'INTERNAL-LONG-SOURCE-WARNING' not in text
     assert '0,0%' in text and '100,0%' in text
+    assert '25,0%' in text and '60,0%' in text
     assert all(0 <= word[0] < word[2] <= page.rect.width and 0 <= word[1] < word[3] <= page.rect.height
                for page in pdf for word in page.get_text('words'))
