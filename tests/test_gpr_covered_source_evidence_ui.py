@@ -63,3 +63,44 @@ def test_source_text_is_escaped_and_replacing_project_clears_covered_facts():
         page.evaluate('(v)=>renderGantt(v)', next_view)
         expect(host).to_be_hidden()
         assert host.inner_text() == '' and not errors
+
+
+def test_many_source_groups_keep_the_gpr_chart_accessible_and_expand_without_duplicating():
+    with browser_page(390) as (page, responses, errors):
+        value = covered_view()
+        groups = value['schedule']['physical_progress']['covered_source_groups']
+        base = groups[0]
+        groups[:] = [dict(copy.deepcopy(base), group_id=f'group-{i}', source_name=f'Раздел {i}') for i in range(7)]
+        page.evaluate('(v)=>renderGantt(v)', value)
+        host = page.locator('#ksSharedGroups')
+        expect(host.locator('.ks-covered-source')).to_have_count(7)
+        assert host.locator('.ks-covered-source:visible').count() == 3
+        expect(host.locator('.ks-covered-more > summary')).to_have_text('Ещё разделов КС: 4')
+        host.locator('.ks-covered-more > summary').click()
+        assert host.locator('.ks-covered-source:visible').count() == 7
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+        assert not errors
+
+
+@pytest.mark.parametrize('width', [390, 1440])
+def test_executive_render_and_pdf_name_covered_scope_and_construction_plan(width):
+    import developaid_report_schedule as report
+    with browser_page(width) as (page, responses, errors):
+        physical = covered_view()['schedule']['physical_progress']
+        timeline = {'rnv': {'state': 'partial', 'basis': 'gpr', 'approved': None,
+            'planned_construction_finish': '2027-02-01', 'plan_date': '2027-02-01',
+            'plan_label': 'План окончания работ', 'indicative_forecast': '2027-01-15'},
+            'physical': physical}
+        summary = report.model(timeline)
+        page.set_content(report.render(summary)+report.details(summary))
+        expect(page.locator('.schedule-rnv-cards > div:first-child > span')).to_have_text('План окончания работ')
+        expect(page.locator('.schedule-rnv-cards > div:first-child > strong')).to_have_text('01.02.2027')
+        expect(page.locator('.executive-facts')).to_contain_text('60% по объёмам охваченного раздела КС')
+        expect(page.locator('.executive-facts')).to_contain_text('Полнота всего пакета ГПР не подтверждена')
+        assert 'План ввода' not in page.locator('body').inner_text()
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+        if width == 1440:
+            text = ' '.join((s.extract_text() or '') for s in PdfReader(io.BytesIO(page.pdf())).pages)
+            assert 'План окончания работ' in text and '01.02.2027' in text
+            assert '60%' in text and 'охваченного раздела КС' in text
+        assert not errors

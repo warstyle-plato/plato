@@ -86,6 +86,33 @@ def model(timeline: dict, *, stalled=None) -> dict:
                                   "date": component.get("observation_date") or component.get("period_end"),
                                   "date_basis": component.get("progress_date_basis"),
                                   "shared_task_ids": cohort.get("task_ids") or []})
+    covered_summaries, covered_components = [], []
+    for group in physical.get('covered_source_groups') or []:
+        measured, coverage = group.get('model') or {}, group.get('coverage') or {}
+        context = {'name': group.get('source_name') or 'Раздел КС', 'source_scope': group.get('source_scope') or '',
+            'contractor': group.get('contractor'), 'contract': group.get('contract'), 'period_year': group.get('period_year'),
+            'source_group_id': group.get('group_id'), 'source_scope_only': True,
+            'target_scope_confirmed': False, 'scope_reason': group.get('scope_reason') or '',
+            'coverage': coverage, 'date': measured.get('progress_date'),
+            'date_basis': measured.get('progress_date_basis'), 'basis': measured.get('progress_basis'),
+            'observation_history': measured.get('observation_history')}
+        if _number(measured.get('progress')):
+            covered_summaries.append(dict(context, kind='covered_source_scope', progress=measured['progress']))
+        else:
+            for component in measured.get('components') or []:
+                if _number(component.get('completed_quantity')):
+                    covered_components.append(dict(context, kind='quantity',
+                        component=component.get('name') or component.get('component_id'),
+                        done=component['completed_quantity'], plan=component.get('plan_quantity'),
+                        unit=component.get('unit') or '', progress=component.get('progress'),
+                        date=component.get('observation_date') or component.get('period_end'),
+                        date_basis=component.get('progress_date_basis'),
+                        observation_history=component.get('observation_history')))
+    # Present ongoing known source measures first. The full, qualified list
+    # remains in the appendix; none of these is a whole-GPR-package fraction.
+    covered_summaries.sort(key=lambda fact: not (0 < fact['progress'] < 1))
+    facts.extend(covered_summaries)
+    facts.extend(covered_components)
     status = physical.get("evidence_status") or {
         "state": "unavailable", "reason": "Состояние натуральных объёмов пока не проверено.",
         "action": "Команде: проверьте источники и соответствия работ в Мониторе."}
@@ -101,6 +128,10 @@ def model(timeline: dict, *, stalled=None) -> dict:
         reasons = ["Оценка относится к строительным работам. Этапы получения разрешения на ввод ею не подтверждены."
                    if reason == ESTIMATE_NOTE else reason for reason in reasons]
     return {"state": state, "approved": rnv.get("approved"), "forecast": forecast,
+            "approved_source": rnv.get("approved_source"), "approved_rnv": rnv.get("approved_rnv", rnv.get("approved")),
+            "planned_construction_finish": rnv.get("planned_construction_finish"),
+            "plan_label": rnv.get("plan_label") or "План ввода",
+            "plan_date": rnv.get("plan_date") or rnv.get("approved"),
             "forecast_label": qualification, "caveat": caveat,
             "delay_days": rnv.get("delay_days") if forecast else None,
             "driver": driver.get("name") or "", "driver_reason": driver.get("reason") or "",
@@ -116,6 +147,13 @@ def fact_text(fact):
     if fact["kind"] == "done":
         return f"{fact['name']}: завершение подтверждено {date_text(fact['date'])}."
     number = lambda value: f"{value:g}".replace(".", ",")
+    if fact['kind'] == 'covered_source_scope':
+        identity = ' · '.join(str(value) for value in (fact.get('contractor'), fact.get('contract'), fact.get('period_year')) if value)
+        return (f"{fact['name']}: {number(fact['progress']*100)}% по объёмам охваченного раздела КС"
+                + (' от '+date_text(fact['date']) if fact.get('date') else '')
+                + ('; '+identity if identity else '')
+                + ('; '+fact['source_scope'] if fact.get('source_scope') else '')
+                + '. '+str(fact.get('scope_reason') or 'Полнота всего пакета ГПР не подтверждена.'))
     if fact["kind"] in {"source_cohort", "weighted_quantity"}:
         snapshot = fact.get("date_basis") == "snapshot"
         return (f"{fact['name']}: {number(fact['progress']*100)}% "
@@ -126,16 +164,20 @@ def fact_text(fact):
     amount = number(fact["done"])
     if fact.get("plan") is not None:
         amount += " из " + number(fact["plan"])
-    return (f"{fact['name']}: {amount} {unit_text(fact['unit'])}"
+    name = fact["name"] + (" / " + str(fact["component"]) if fact.get("source_scope_only") and fact.get("component") else "")
+    return (f"{name}: {amount} {unit_text(fact['unit'])}"
             + ((" по ведомости от " if fact.get("date_basis") == "snapshot" else " на ")
                + date_text(fact['date']) if fact.get("date") else "")
-            + ("; общий объём группы" if fact.get("shared_task_ids") else "") + ".")
+            + ("; общий объём группы" if fact.get("shared_task_ids") else "")
+            + ("; охваченная часть КС, полный пакет ГПР не подтверждён" if fact.get("source_scope_only") else "") + ".")
 
 
 def conclusion(block):
     parts = []
     if block.get("approved"):
         parts.append("План ввода — " + date_text(block["approved"]) + ".")
+    elif block.get("planned_construction_finish"):
+        parts.append("План окончания строительных работ — " + date_text(block["planned_construction_finish"]) + ". Срок РНВ в этом ГПР не указан.")
     if block.get("forecast"):
         parts.append(block["forecast_label"] + " — " + date_text(block["forecast"]) + ".")
         delay = block.get("delay_days")
@@ -164,7 +206,7 @@ def render(block):
                    '.report-source-appendix{display:block;break-before:page;page-break-before:always}}</style>')
     out = [styles(), print_style, '<section class="dependency-timeline schedule-overview executive-schedule">',
            '<h3>Сроки и выполнение работ</h3><div class="schedule-rnv-cards">',
-           '<div><span>План ввода</span><strong>'+esc(date_text(block.get("approved")))+'</strong></div>',
+           '<div><span>'+esc(block.get("plan_label") or "План ввода")+'</span><strong>'+esc(date_text(block.get("plan_date") or block.get("approved")))+'</strong></div>',
            '<div class="schedule-warning"><span>'+esc(block["forecast_label"])+
            '</span><strong>'+esc(forecast)+'</strong></div>',
            '<div><span>'+('Отклонение по части работ' if block["state"] == "partial" else 'Отклонение от плана')+

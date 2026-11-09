@@ -142,3 +142,64 @@ def test_independent_work_and_its_separately_budgeted_child_are_not_reclassified
     snap['ledgers'][0]['items'][0]['is_group'] = True
     group, = model(plan, snap)['covered_source_groups']
     assert group['model']['progress'] == .8 and len(group['model']['components']) == 1
+
+
+def test_executive_report_reads_the_same_covered_fraction_and_component_facts():
+    import developaid_report_schedule as report
+    plan, snap = evidence()
+    physical_model = model(plan, snap)
+    timeline = {'rnv': {'state': 'partial', 'basis': 'gpr', 'approved': None,
+        'planned_construction_finish': '2027-02-01', 'plan_date': '2027-02-01',
+        'plan_label': 'План окончания работ', 'indicative_forecast': '2027-01-15'},
+        'physical': physical_model}
+    summary = report.model(timeline)
+    fact, = summary['facts']
+    assert fact['kind'] == 'covered_source_scope' and fact['progress'] == pytest.approx(.6)
+    assert fact['date'] == CUT and fact['date_basis'] == 'snapshot'
+    assert not fact['target_scope_confirmed'] and fact['source_scope_only']
+    assert summary['approved'] is None and summary['planned_construction_finish'] == '2027-02-01'
+    assert 'План окончания работ' in report.render(summary)
+    assert 'План ввода' not in report.render(summary)
+    assert '60%' in report.fact_text(fact) and 'Полнота всего пакета ГПР' in report.fact_text(fact)
+    assert 'Срок РНВ в этом ГПР не указан' in report.conclusion(summary)
+    snap['ledgers'][0]['items'][1]['plan_quantity'] = None
+    unknown = report.model({'rnv': timeline['rnv'], 'physical': model(plan, snap)})
+    assert unknown['facts'] and all(f['source_scope_only'] for f in unknown['facts'])
+    assert any(f['done'] == 40 for f in unknown['facts'])
+    assert all('полный пакет ГПР не подтверждён' in report.fact_text(f) for f in unknown['facts'])
+
+
+def test_common_package_anchor_keeps_the_union_of_every_source_object_and_candidate():
+    plan, snap = evidence()
+    first, second = snap['ledgers'][0]['items']
+    common = {'name': 'Устройство монолитных железобетонных конструкций надземной части',
+              'source': {'row': 20, 'cell': 'C20'}}
+    first['section_path'] = [common, {'name': 'Корпус 4', 'source': {'row': 21, 'cell': 'C21'}}]
+    first['scope'] = 'Корпус 4'
+    second['section_path'] = [common, {'name': 'Корпус 5', 'source': {'row': 22, 'cell': 'C22'}}]
+    second['scope'] = 'Корпус 5'
+    group, = model(plan, snap)['covered_source_groups']
+    assert group['item_ids'] == ['0:0', '0:1']
+    assert 'Корпус 4' in group['source_scope'] and 'Корпус 5' in group['source_scope']
+    assert set(group['candidate_task_ids']) == {'package4', 'package5'}
+    assert group['model']['progress'] == pytest.approx(.6) and not group['target_scope_confirmed']
+    del plan['tasks']['package5']
+    group, = model(plan, snap)['covered_source_groups']
+    assert group['item_ids'] == ['0:0', '0:1']  # no hidden exclusion of an unrepresented source scope
+    assert 'Корпус 5' in group['source_scope'] and group['candidate_task_ids'] == ['package4']
+    assert group['model']['progress'] == pytest.approx(.6)
+
+
+def test_a_mixture_of_known_and_unknown_locations_is_explicit():
+    plan, snap = evidence()
+    first, second = snap['ledgers'][0]['items']
+    common = {'name': 'Устройство монолитных железобетонных конструкций надземной части',
+              'source': {'row': 20, 'cell': 'C20'}}
+    first['section_path'] = [common, {'name': 'Корпус 4', 'source': {'row': 21, 'cell': 'C21'}}]
+    first['scope'] = 'Корпус 4'
+    second['section_path'] = [common]
+    second['scope'] = ''
+    group, = model(plan, snap)['covered_source_groups']
+    assert group['unknown_location_positions'] == 1 and not group['location_known']
+    assert 'позиции без уточнения корпуса' in group['scope_reason']
+    assert group['coverage']['source_positions'] == 2

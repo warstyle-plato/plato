@@ -655,6 +655,7 @@ def covered_subtrees(source, snapshot, cut):
                 continue
             kind = _covered_package_kind(anchor['name'])
             named_scope = [heading.get('name') or '' for heading in ancestors]
+            named_scope.extend([_label(item.get('object_scope')), item.get('scope') or '', item.get('name') or ''])
             location, bad = _locations(' '.join(named_scope))
             candidates = []
             for tid, task in tasks.items():
@@ -666,8 +667,6 @@ def covered_subtrees(source, snapshot, cut):
                 if location and target_locations and not _covered_location_possible(location, target_locations):
                     continue
                 candidates.append(tid)
-            if not candidates:
-                continue
             origin = item.get('source') or {}
             coordinate = anchor.get('source') or {}
             identity = progress.contract_identity(ledger)
@@ -677,24 +676,41 @@ def covered_subtrees(source, snapshot, cut):
             if key not in groups:
                 gid = 'source-group:'+_digest((identity, origin['filename'], origin['sheet'], ledger.get('period_year'),
                                                coordinate['row'], anchor['name']))[:24]
-                scope_text = ' · '.join(dict.fromkeys(heading.get('name') or '' for heading in ancestors
-                    if _locations(heading.get('name') or '')[0]))
+                scope_text = ''
                 groups[key] = {'group_id': gid, 'kind': kind, 'source_name': anchor['name'],
                     'source_scope': scope_text, 'contractor': ledger.get('contractor'), 'contract': ledger.get('contract'),
                     'period_year': ledger.get('period_year'), 'snapshot_date': progress.snapshot_date(snapshot),
                     'source': {**origin, 'row': coordinate['row'], 'cell': coordinate.get('cell')},
                     'source_complete': ledger.get('source_complete') is True or ledger.get('unread_rows_count') == 0,
                     'ledger_source_complete': ledger.get('source_complete') is True,
-                    'candidate_task_ids': candidates, 'target_scope_confirmed': False,
-                    'location_known': bool(location), 'location_ambiguous': bad,
+                    'candidate_task_ids': [], 'target_scope_confirmed': False,
+                    'location_known': True, 'location_ambiguous': False, 'unknown_location_positions': 0,
+                    '_scope_names': [],
                     'scope_reason': ('Выполнение относится только к указанному разделу и участку КС. '
                                      'Полнота всего пакета ГПР и распределение по отдельным работам не подтверждены.'
                                      if location else 'Выполнение раздела КС известно по проекту; '
                                      'распределение между корпусами в источнике не выделено.'),
                     'item_ids': [], 'components': []}
             group = groups[key]
+            group['candidate_task_ids'] = sorted(set(group['candidate_task_ids']).union(candidates))
+            group['_scope_names'].extend(text for text in named_scope if _locations(text)[0])
+            group['location_known'] = group['location_known'] and bool(location)
+            group['location_ambiguous'] = group['location_ambiguous'] or bad
+            group['unknown_location_positions'] += int(not location)
             item_id = f'{li}:{ii}'
             group['item_ids'].append(item_id)
             group['components'].append({'component_id': group['group_id']+':'+str(ii),
                 'task_id': group['group_id'], 'item_ids': [item_id]})
-    return list(groups.values())
+    retained = []
+    for group in groups.values():
+        group['source_scope'] = ' · '.join(dict.fromkeys(group.pop('_scope_names')))
+        if not group['candidate_task_ids']:
+            continue
+        if group['unknown_location_positions']:
+            group['scope_reason'] = ('Выполнение раздела КС известно по проекту; распределение между корпусами в источнике не выделено.'
+                if not group['source_scope'] else 'В разделе КС объединены указанные участки и позиции без уточнения корпуса. '
+                'Полнота всего пакета ГПР и распределение по работам не подтверждены.')
+        else:
+            group['scope_reason'] = 'Выполнение относится только к указанному разделу и участкам КС. Полнота всего пакета ГПР и распределение по отдельным работам не подтверждены.'
+        retained.append(group)
+    return retained
