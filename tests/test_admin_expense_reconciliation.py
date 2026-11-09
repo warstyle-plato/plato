@@ -152,14 +152,14 @@ def test_admin_uncertainty_survives_real_html_and_pdf(tmp_path, monkeypatch, wid
             page = browser.new_page(viewport={'width': width, 'height': 1000})
             page.set_content(report_pdf.document(html, style=report.REPORT_STYLE,
                                                 title='Синтетическая сверка АХР'))
-            assert warning in page.locator('body').inner_text()
-            assert 'не распределено' in page.locator('body').inner_text()
+            assert 'АХР в составе бюджета' in page.locator('body').inner_text()
+            assert 'Банковская статья не уточнена' in page.locator('body').inner_text()
             if width == 1440:
                 raw = page.pdf(format='A4', print_background=True)
                 doc = pymupdf.open(stream=raw, filetype='pdf')
                 text = ' '.join(' '.join(p.get_text().split()) for p in doc)
-                assert warning in text
-                assert 'не распределено' in text
+                assert 'АХР в составе бюджета' in text
+                assert 'Банковская статья не уточнена' in text
         finally:
             browser.close()
 

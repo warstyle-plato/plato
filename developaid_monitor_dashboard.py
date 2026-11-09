@@ -1531,13 +1531,15 @@ def _admin_expenses(comp: dict[str, Any] | None,
         for item in items:
             candidates = item.get("chapter_candidates") or []
             allocation = item.get("money_allocation") or {}
-            if allocation.get("by_chapter") and all(item.get("known_fields", {}).get(f, True)
-                                                 for f in ("total", "fact", "plan")):
+            if allocation.get("by_chapter"):
                 for chapter, split in allocation["by_chapter"].items():
                     bucket = (chapters.setdefault(chapter, {"total": 0., "paid": 0., "to_pay": 0.})
                               if chapter else unallocated)
                     for target, source in (("total", "total"), ("paid", "fact"), ("to_pay", "plan")):
-                        if bucket[target] is not None:
+                        if not item.get("known_fields", {}).get(source, True):
+                            unknown_fields.add(source)
+                            bucket[target] = None
+                        elif bucket[target] is not None:
                             bucket[target] += split[source]
                 reasons.extend(allocation["reasons"])
                 continue
@@ -1608,14 +1610,14 @@ def admin_expense_lines(admin: dict[str, Any] | None, money: Any) -> list[str]:
 
 
 def own_money_lines(own: dict[str, Any] | None, money: Any,
-                    with_reconciliation: bool = True) -> list[str]:
+                    with_reconciliation: bool = True, with_admin: bool = True) -> list[str]:
     """«Нужно своих денег сверх сметы банка» словами — одна для сводки и Монитора."""
     if not own:
         return []
     if own.get("reconciliation"):
         r = own["reconciliation"]
         return (funding_reconciliation.lines(r, money)
-                + admin_expense_lines(own.get("admin"), money)
+                + (admin_expense_lines(own.get("admin"), money) if with_admin else [])
                 + (list(funding_source_notes({"source_dates": r["source_dates"],
                                              "need_basis": "model"}).values())
                    if r.get("source_dates") else []))
@@ -1650,7 +1652,8 @@ def own_money_lines(own: dict[str, Any] | None, money: Any,
     out.append("По главам: " + "; ".join(parts) + ".")
     if with_reconciliation:
         out.extend(own_budget_reconciliation_lines(own, money))
-    out.extend(admin_expense_lines(own.get("admin"), money))
+    if with_admin:
+        out.extend(admin_expense_lines(own.get("admin"), money))
     return out
 
 

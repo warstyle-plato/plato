@@ -154,6 +154,12 @@ def test_missing_aggregate_is_not_added_again_as_a_legacy_zero(cell, field):
     assert model['budget_composition']['admin_items'][0]['money_allocation']['by_chapter']['']['total'] == 7_500
     admin = dashboard._admin_expenses(model['budget_composition'], model['chapter_flow'])
     assert admin[{'total': 'total', 'fact': 'paid', 'plan': 'to_pay'}[field]] is None
+    if field != 'plan':
+        assert admin['by_chapter']['2']['to_pay'] == 200_000
+        assert admin['by_chapter']['3']['to_pay'] == 40_000
+    if field != 'fact':
+        assert admin['by_chapter']['2']['paid'] == 75_000
+        assert admin['by_chapter']['3']['paid'] == 37_500
 
 
 @pytest.mark.parametrize('total', [100, 500])
@@ -201,3 +207,42 @@ def test_a_review_record_cannot_put_an_entire_verified_split_plan_into_one_chapt
     result = admin_schedule_policy(comp, schedule, '2', '2026-02-28')
     assert result['items'][0]['state'] == 'unknown'
     assert result['added_to_need'] == 0
+
+
+@pytest.mark.parametrize('width', [390, 1440])
+def test_verified_admin_money_remains_visible_in_the_real_monitor_and_report(width):
+    import developaid_management_report as report
+    from test_monitor_cumulative_controls import browser_page
+
+    model = read(source())
+    own = dashboard._own_money(model['budget_composition'], {'1': 0, '2': 200_000, '3': 50_000},
+        {c: {'total': 0, 'borrowed': 0} for c in ('1', '2', '3')}, ['1', '2', '3'], dt.date(2026, 2, 28),
+        chapter_flow=model['chapter_flow'])
+    r = own['reconciliation']
+    assert r['admin_expenses']['rows'] == [
+        {'label': 'Всего АХР', 'total': 360_000, 'model_fact': 120_000, 'model_plan': 240_000},
+        {'label': 'Статьи главы 2', 'total': 275_000, 'model_fact': 75_000, 'model_plan': 200_000},
+        {'label': 'Статьи главы 3', 'total': 77_500, 'model_fact': 37_500, 'model_plan': 40_000},
+        {'label': 'Банковская статья не уточнена', 'total': 7_500, 'model_fact': 7_500, 'model_plan': 0}]
+    with browser_page(width) as (page, responses, errors):
+        page.evaluate('''r=>{
+          currentView={dashboard:{funding:{known:true,reconciliation:r}}};
+          renderDash(currentView);selectMonitorTab('money');
+        }''', r)
+        detail = page.locator('.funding-admin-breakdown')
+        detail.locator('summary').click()
+        rows = detail.locator('tbody tr').all_text_contents()
+        assert len(rows) == 4
+        assert 'Статьи главы 2' in rows[1] and 'Статьи главы 3' in rows[2]
+        assert 'Банковская статья не уточнена' in rows[3]
+        assert 'Факт модели' in detail.inner_text() and 'План модели' in detail.inner_text()
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+        assert not errors
+    funding = {'own_money': own, 'reconciliation': r}
+    block = {'kind': 'week', 'funding': {'state': 'ok', 'limit': funding, 'rss': None,
+        'draws': dict.fromkeys(('period', 'month', 'total')),
+        'interest': dict.fromkeys(('period', 'month', 'total'))}}
+    html = report._funding_html(block)
+    assert 'АХР в составе бюджета' in html and 'Факт модели' in html and 'План модели' in html
+    assert '275 000 ₽' in html and '77 500 ₽' in html and '7 500 ₽' in html
+    assert html.count('Статьи главы 2') == html.count('Статьи главы 3') == 1

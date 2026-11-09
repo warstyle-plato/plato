@@ -328,6 +328,12 @@ function fundingReconciliationBlock(f){
  html+='<p class="muted">Расчёт на '+esc(dt(r.cut))+'. Финансовая база: '+esc(dt(r.source_dates?.budget?.data_date))+'. РСС: '+esc(dt(r.source_dates?.rss?.data_date))+'.</p>';
  html+='<p class="notice">Финансовая сверка первичных источников не завершена.</p>';
  for(const reason of r.reasons||[])html+='<p class="muted">'+esc(reason)+'</p>';
+ const admin=r.admin_expenses;
+ if(admin?.rows?.length){
+   html+='<details class="fundmore funding-admin-breakdown"><summary>АХР в составе бюджета · '+value(admin.rows[0].total)+'</summary><div style="overflow-x:auto;max-width:100%"><table class="unspent"><thead><tr><th>АХР</th><th>Всего</th><th>Факт модели</th><th>План модели</th></tr></thead><tbody>';
+   for(const item of admin.rows)html+='<tr><td>'+esc(item.label)+'</td><td>'+value(item.total)+'</td><td>'+value(item.model_fact)+'</td><td>'+value(item.model_plan)+'</td></tr>';
+   html+='</tbody></table></div><p class="muted">'+esc(admin.note||'')+'</p></details>';
+ }
  const detail=r.need_breakdown||{},items=detail.display_rows||[];
  if(items.length){
    html+='<details class="fundmore funding-work-breakdown"><summary>По работам и месяцам</summary><p class="muted">Программа графика показана отдельно от общей сверки утверждённого бюджета. Покрытие отдельных работ из графика ещё не разобрано и не подтверждено. Остаток статьи сам по себе не является её дефицитом.</p>';

@@ -2877,11 +2877,12 @@ def _reconciliation_lines(limit: dict[str, Any]) -> list[str]:
     return dashboard.funding_reconciliation_lines(limit, _rub)
 
 
-def _own_money_lines(limit: dict[str, Any]) -> list[str]:
+def _own_money_lines(limit: dict[str, Any], with_admin: bool = True) -> list[str]:
     """«Нужно своих денег сверх сметы банка» — фразы Монитора, деньги сводки."""
     import developaid_monitor_dashboard as dashboard
 
-    return dashboard.own_money_lines(limit.get("own_money"), _rub, with_reconciliation=False)
+    return dashboard.own_money_lines(limit.get("own_money"), _rub, with_reconciliation=False,
+                                     with_admin=with_admin)
 
 
 def _month_word(key: str | None) -> str:
@@ -3217,7 +3218,14 @@ def _funding_html(report: dict[str, Any]) -> str:
     if reconciliation:
         rows = [[row["label"], _rub(row["value"])] for row in reconciliation["display_rows"]]
         out.append(_table(["Сверка бюджета и финансирования", "Сумма"], rows))
-        out.extend(f"<p class='note'>{esc(line)}</p>" for line in _own_money_lines(limit))
+        admin = reconciliation.get("admin_expenses") or {}
+        if admin.get("rows"):
+            out.append("<h4>АХР в составе бюджета</h4>" + _table(
+                ["АХР", "Всего", "Факт модели", "План модели"],
+                [[esc(row["label"]), _rub(row["total"]), _rub(row["model_fact"]), _rub(row["model_plan"])]
+                 for row in admin["rows"]]))
+            out.append(f"<p class='note'>{esc(admin.get('note') or '')}</p>")
+        out.extend(f"<p class='note'>{esc(line)}</p>" for line in _own_money_lines(limit, with_admin=not admin))
         detail = reconciliation.get("need_breakdown") or {}
         source_rows = detail.get("display_rows") or []
         if source_rows:

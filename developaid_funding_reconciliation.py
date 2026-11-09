@@ -240,6 +240,7 @@ def build(own: dict, comp: dict, chapter_flow: dict, cut: str,
             "primary_source_gate": "BLOCKED", "financial_acceptance_performed": False,
             "payment_identity_verified": None, "source_dates": {},
             "source_completeness": source_completeness,
+            "admin_expenses": admin_expense_breakdown(own.get("admin")),
             "unallocated_programme": {
                 "model_total": unmapped, "model_fact": number(unallocated.get("fact", 0.0)),
                 "model_plan": number(unallocated.get("plan", 0.0)),
@@ -345,6 +346,24 @@ def display_rows(r: dict) -> list[dict]:
         rows.append(row("over_limit_paid", "Оплачено сверх лимитов глав",
                         "Уже оплачено; не является доступным остатком"))
     return rows
+
+
+def admin_expense_breakdown(admin: dict | None) -> dict | None:
+    """Compact model amounts shared by Monitor and the management report."""
+    if not admin:
+        return None
+    def row(label, values, total="total", fact="paid", plan="to_pay"):
+        return {"label": label, "total": number(values.get(total)),
+                "model_fact": number(values.get(fact)), "model_plan": number(values.get(plan))}
+    rows = [row("Всего АХР", admin)]
+    rows.extend(row("Статьи главы " + chapter, values)
+                for chapter, values in sorted(admin.get("by_chapter", {}).items()))
+    unallocated = admin.get("unallocated") or {}
+    if any(number(unallocated.get(field)) is None or abs(number(unallocated.get(field))) > .005
+           for field in ("total", "paid", "to_pay")):
+        rows.append(row("Банковская статья не уточнена", unallocated))
+    return {"rows": rows, "allocation_known": admin.get("allocation_known") is True,
+            "note": "Факт и план финансовой модели. АХР уже включены в бюджет и повторно не прибавляются."}
 
 
 def breakdown_rows(detail: dict) -> list[dict]:
