@@ -60,7 +60,7 @@ def _source_key(source):
 
 def _scope(row, reference=None):
     from developaid_monitor_contracts import _norm
-    items = row.get('physical_items') or []
+    items = ledgers.aggregation_members(row.get('physical_items') or [])
     if reference is not None:
         key = _source_key(reference.get('source'))
         if not key[0]:

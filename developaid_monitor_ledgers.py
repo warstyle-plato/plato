@@ -28,7 +28,7 @@ from typing import Any
 import developaid_monitor as monitor
 
 MAX_ARCHIVE_BYTES = 20 * 1024 * 1024
-PARSER_SCHEMA = 4
+PARSER_SCHEMA = 5
 MAX_UNPACKED_BYTES = 100 * 1024 * 1024
 MAX_FILE_BYTES = 20 * 1024 * 1024
 MAX_FILES = 100
@@ -585,9 +585,214 @@ def _money_parts(qhead: list[Any], first: int, at) -> tuple[float | None, float 
     return work or 0.0, material or 0.0
 
 
+def _duplicate_key(item: dict) -> tuple:
+    source = item.get('source') or {}
+    source = source if isinstance(source, dict) else {}
+    return (source.get('filename') if isinstance(source.get('filename'), str) else None,
+            source.get('sheet') if isinstance(source.get('sheet'), str) else None,
+            item.get('period_year') if type(item.get('period_year')) is int else None,
+            source.get('row') if type(source.get('row')) is int else None)
+
+
+def _duplicate_values(item: dict) -> dict:
+    """Exact source semantics; coordinates and explanatory notes are provenance."""
+    values = {key: item.get(key) for key in (
+        'period_year', 'position', 'name', 'scope', 'unit', 'plan_quantity', 'planned_amount',
+        'completed_quantity', 'material_quantity', 'completed_amount',
+        'reported_completed_quantity', 'reported_material_quantity', 'reported_completed_amount',
+        'planned_work_amount', 'planned_material_amount', 'planned_cost_split',
+        'planned_work_amount_basis', 'planned_amount_basis', 'completed_amount_basis',
+        'completed_work_amount', 'completed_material_amount', 'amount_split', 'quantity_kind',
+        'object_scope', 'system_scope', 'site_scope', 'future_periods_excluded', 'quantity_cut')}
+    for field in ('section_path', 'context_headings'):
+        values[field] = [{key: node.get(key) for key in ('position', 'name')}
+                         if isinstance(node, dict) else node for node in item.get(field) or []]
+    values['periods'] = [{key: period.get(key) for key in (
+        'label', 'quantity', 'material_quantity', 'amount', 'work_amount', 'material_amount',
+        'amount_split', 'amount_basis', 'date_start', 'date_end')}
+        for period in item.get('periods') or []]
+    return values
+
+
+def _duplicate_fingerprint(item: dict) -> str:
+    try:
+        return hashlib.sha256(json.dumps(_duplicate_values(item), sort_keys=True, ensure_ascii=False,
+                                         separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+    except (TypeError, ValueError):
+        return ''
+
+
+def stamp_duplicate_view(item: dict) -> dict:
+    """Bind the immutable source proof to a qualified, possibly dated view."""
+    if item.get('duplicate_source_fingerprint'):
+        item['duplicate_view_fingerprint'] = _duplicate_fingerprint(item)
+    return item
+
+
+def _cell_coordinates(value: Any) -> tuple[int, int] | None:
+    match = re.fullmatch(r'([A-Z]+)([1-9]\d*)', str(value or '').replace('$', ''))
+    if not match:
+        return None
+    column = 0
+    for char in match[1]:
+        column = column*26 + ord(char)-64
+    row = int(match[2])
+    return (column-1, row) if column <= MAX_COLUMNS and row <= MAX_ROWS else None
+
+
+def _sum_row_range(formula: Any, column: int) -> tuple[int, int] | None:
+    text = re.sub(r'\s|\$', '', str(formula or '')).upper()
+    match = re.fullmatch(r'=SUM\(([A-Z]+[1-9]\d*):([A-Z]+[1-9]\d*)\)', text)
+    if not match:
+        return None
+    first, last = _cell_coordinates(match[1]), _cell_coordinates(match[2])
+    if first and last and first[0] == column == last[0] and first[1] <= last[1]:
+        return first[1], last[1]
+    return None
+
+
+def verified_duplicate_sources(items: list[dict]) -> dict[tuple, dict]:
+    """Recheck copy identity and both declared totals before excluding a row.
+
+    A flag, equal name, or identical amount alone never suppresses evidence.
+    The canonical counterpart must still be present in this source universe.
+    """
+    indexed = {}
+    for item in items:
+        indexed.setdefault(_duplicate_key(item), []).append(item)
+    verified = {}
+    for item in items:
+        if item.get('is_duplicate') is not True:
+            continue
+        key, original = _duplicate_key(item), item.get('duplicate_of') or {}
+        if not isinstance(original, dict):
+            continue
+        target = (original.get('filename'), original.get('sheet'), original.get('period_year'), original.get('row'))
+        if any(not isinstance(value, (str, int, type(None))) for value in target):
+            continue
+        candidates = indexed.get(target) or []
+        if (len(candidates) != 1 or len(indexed.get(key) or []) != 1 or key == target
+                or key[:3] != target[:3] or not all(key[:2])
+                or type(key[2]) is not int or not 2000 <= key[2] <= 2099
+                or type(key[3]) is not int or type(target[3]) is not int):
+            continue
+        canonical = candidates[0]
+        proof = item.get('duplicate_proof') or {}
+        if not isinstance(proof, dict):
+            continue
+        fingerprint = proof.get('source_fingerprint')
+        if (canonical.get('is_duplicate') is True or proof.get('kind') != 'grand_totals_exclude_exact_copy'
+                or proof.get('period_year') != key[2]
+                or proof.get('source') != {'filename': key[0], 'sheet': key[1]}
+                or not re.fullmatch(r'[0-9a-f]{64}', str(fingerprint or ''))
+                or item.get('duplicate_source_fingerprint') != fingerprint
+                or canonical.get('duplicate_source_fingerprint') != fingerprint):
+            continue
+        current = _duplicate_fingerprint(item)
+        if (not current or current != _duplicate_fingerprint(canonical)
+                or item.get('duplicate_view_fingerprint') != current
+                or canonical.get('duplicate_view_fingerprint') != current):
+            continue
+        plan, facts = proof.get('plan') or {}, proof.get('completed') or []
+        if not isinstance(plan, dict) or not isinstance(facts, list):
+            continue
+        plan_cell = _cell_coordinates(plan.get('cell'))
+        source_plan = _cell_coordinates((item.get('source') or {}).get('planned_amount_cell'))
+        canonical_plan = _cell_coordinates((canonical.get('source') or {}).get('planned_amount_cell'))
+        if not plan_cell or not source_plan or not canonical_plan:
+            continue
+        included = _sum_row_range(plan.get('formula'), plan_cell[0])
+        if (not included or plan_cell[0] != source_plan[0] or plan_cell[0] != canonical_plan[0]
+                or source_plan[1] != key[3] or canonical_plan[1] != target[3]
+                or not included[0] <= target[3] <= included[1] < key[3] < plan_cell[1]
+                or _number(plan.get('value')) is None or not isinstance(facts, list) or not facts):
+            continue
+        source_facts = [_cell_coordinates(text.strip()) for text in
+                        str((item.get('source') or {}).get('completed_amount_cell') or '').split('+')]
+        canonical_facts = [_cell_coordinates(text.strip()) for text in
+                           str((canonical.get('source') or {}).get('completed_amount_cell') or '').split('+')]
+        fact_cells = [_cell_coordinates(fact.get('cell')) for fact in facts if isinstance(fact, dict)]
+        if (len(fact_cells) != len(facts) or any(cell is None for cell in source_facts+canonical_facts+fact_cells)
+                or len(fact_cells) != len(source_facts) or len(fact_cells) != len(canonical_facts)
+                or {cell[0] for cell in fact_cells} != {cell[0] for cell in source_facts}
+                or {cell[0] for cell in fact_cells} != {cell[0] for cell in canonical_facts}
+                or any(cell[1] != key[3] for cell in source_facts)
+                or any(cell[1] != target[3] for cell in canonical_facts)
+                or any(cell[1] != plan_cell[1] or _sum_row_range(fact.get('formula'), cell[0]) != included
+                       or _number(fact.get('value')) is None for fact, cell in zip(facts, fact_cells))):
+            continue
+        verified[key] = dict(original)
+    return verified
+
+
+def aggregation_members(items: list[dict], *, include_groups: bool = False) -> list[dict]:
+    """One membership rule for money, quantities, history and GPR coverage."""
+    excluded = verified_duplicate_sources(items)
+    return [item for item in items if _duplicate_key(item) not in excluded
+            and (include_groups or item.get('is_group') is not True)]
+
+
+def _mark_source_duplicates(items, rows, *, name_col, cost_col, fact_columns, year, qi):
+    if cost_col is None:
+        return
+    signatures = {}
+    for item in items:
+        signatures.setdefault(_duplicate_fingerprint(item), []).append(item)
+    if not any(fingerprint and len(copies) > 1 for fingerprint, copies in signatures.items()):
+        return
+    formulas = getattr(rows, 'formulas', {})
+    for total_row, values in enumerate(rows, start=1):
+        if total_row <= qi+1 or name_col >= len(values) or not re.fullmatch(
+                r'(?:итого|всего)(?:\s+(?:с|без)\s+ндс.*)?', _norm(values[name_col])):
+            continue
+        plan_formula = formulas.get((total_row, cost_col))
+        included = _sum_row_range(plan_formula, cost_col)
+        if not included or included[1] >= total_row:
+            continue
+        totals = []
+        for column in (cost_col, *fact_columns):
+            formula = formulas.get((total_row, column))
+            value = _number(values[column]) if column < len(values) else None
+            source = [rows[row-1][column] if column < len(rows[row-1]) else None
+                      for row in range(included[0], included[1]+1)]
+            if (_sum_row_range(formula, column) != included or value is None
+                    or any(_text(v) and _number(v) is None for v in source)
+                    or abs(math.fsum(_number(v) or 0 for v in source)-value) > max(.02, abs(value)*1e-7)):
+                break
+            totals.append({'cell': _cell(column+1, total_row), 'formula': formula, 'value': value})
+        if len(totals) != 1+len(fact_columns):
+            continue
+        inside = [item for item in items if included[0] <= item['source']['row'] <= included[1]]
+        outside = [item for item in items if item['source']['row'] > included[1]
+                   and (item.get('unit') or any(_number(item.get(field)) not in {None, 0}
+                       for field in ('plan_quantity', 'planned_amount', 'completed_quantity', 'completed_amount')))]
+        matches = []
+        for item in outside:
+            copies = [candidate for candidate in signatures.get(_duplicate_fingerprint(item), [])
+                      if included[0] <= candidate['source']['row'] <= included[1]]
+            if (item['source']['row'] >= total_row or len(copies) != 1 or not item.get('unit')
+                    or _number(item.get('plan_quantity')) is None or item['plan_quantity'] <= 0):
+                break
+            matches.append((item, copies[0]))
+        else:
+            for item, canonical in matches:
+                fingerprint = _duplicate_fingerprint(item)
+                for member in (item, canonical):
+                    member['duplicate_source_fingerprint'] = fingerprint
+                    stamp_duplicate_view(member)
+                item.update(is_duplicate=True,
+                    duplicate_of={**{key: canonical['source'][key] for key in ('filename', 'sheet', 'row')},
+                                  'period_year': year},
+                    duplicate_proof={'kind': 'grand_totals_exclude_exact_copy', 'period_year': year,
+                                     'source': {key: item['source'][key] for key in ('filename', 'sheet')},
+                                     'source_fingerprint': fingerprint, 'plan': totals[0], 'completed': totals[1:]},
+                    duplicate_note='Дубликат исходника, повторно не учтён. Оригинал — строка '
+                                   + str(canonical['source']['row']) + '.')
+
+
 def group_basis(parent: dict, children: list[dict]) -> str:
     """Prove a source rollup without discarding independent execution."""
-    leaves = [child for child in children if child.get('is_group') is not True]
+    leaves = aggregation_members(children)
     if not leaves or not any((_number(child.get('planned_amount')) or 0) > 0 for child in leaves):
         return ''
 
@@ -1017,7 +1222,7 @@ def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
                         planned_cost_method = 'reconciled_residual'
                 else:
                     item_warnings.append('Подписанные плановые стоимости СМР и материалов не сходятся с полной стоимостью позиции; веса выполнения не использованы.')
-        items.append({'position': position, 'name': name,
+        items.append({'position': position, 'name': name, 'period_year': int(year_label[:4]),
                       'scope': scope, 'unit': unit if unit_known else '', 'plan_quantity': plan,
                       'section_path': parents, 'context_headings': list(context_headings),
                       'parent_row': parents[-1]['source']['row'] if parents else None,
@@ -1051,6 +1256,8 @@ def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
         warnings.append('В книге есть ошибки формул Excel: ' + ', '.join(errors[:20]) + (', …' if len(errors)>20 else '') + '.')
     if not items:
         raise LedgerProblem('В накопительной не найдено строк с объёмами работ.')
+    _mark_source_duplicates(items, rows, name_col=name_col, cost_col=cost_col,
+                            fact_columns=annual_money_cols, year=int(year_label[:4]), qi=qi)
     by_row = {item['source']['row']: item for item in items}
     descendants = {}
     for item in items:
@@ -1068,9 +1275,10 @@ def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
                                  for row in top for v in row if isinstance(v, str)) else 'cumulative'
     incomplete = sum(not item.get('unit') or any(_number(item.get(field)) is None for field in
                         ('plan_quantity', 'completed_quantity', 'planned_amount', 'completed_amount'))
-                     for item in items if not item['is_group'])
+                     for item in aggregation_members(items))
     return {**meta, 'document_form': declared_form, 'period_year': int(year_label[:4]), 'items': items,
             'source_complete': incomplete == 0, 'incomplete_rows_count': incomplete,
+            'duplicate_rows_count': len(verified_duplicate_sources(items)),
             'unread_rows_count': 0,
             'source': _source(filename, sheet, hi+1), 'warnings': warnings,
             'period_dates_known': any(p['date_end'] for item in items for p in item['periods'])}

@@ -59,6 +59,10 @@ def _items(snapshot):
                                     contract=ledger.get('contract') or '',
                                     contract_date=ledger.get('contract_date') or '',
                                     contractor=ledger.get('contractor') or '')
+            ledgers.stamp_duplicate_view(out[f'{li}:{ii}'])
+    duplicates = ledgers.verified_duplicate_sources(list(out.values()))
+    for item in out.values():
+        item['is_duplicate'] = ledgers._duplicate_key(item) in duplicates
     return out
 
 
@@ -141,7 +145,7 @@ def catalog(project, cut, query='', offset=0):
     query = query.casefold().strip()
     rows = [dict(item_id=key, **{field: item.get(field) for field in
             ('name', 'scope', 'unit', 'plan_quantity', 'completed_quantity', 'period_year',
-             'contract', 'contract_date', 'contractor', 'source')})
+             'contract', 'contract_date', 'contractor', 'source', 'is_duplicate', 'duplicate_of', 'duplicate_note')})
             for key, item in items.items()
             if not query or query in ' '.join(str(item.get(k) or '') for k in
                                                ('name', 'scope', 'contract', 'contractor')).casefold()]
@@ -201,6 +205,11 @@ def _component(component, items, cut):
         return dict(result, reason=reason)
     if not rows or any(row is None for row in rows):
         return unknown('Выбранная строка накопительной отсутствует.')
+    duplicates = ledgers.verified_duplicate_sources(list(items.values()))
+    excluded = [key for key in component['item_ids'] if ledgers._duplicate_key(items[key]) in duplicates]
+    if excluded:
+        return dict(result, excluded_duplicate_item_ids=excluded, requires_reconciliation=True,
+                    reason='Выбрана копия строки, исключённая итогами исходника. Прежняя привязка сохранена и требует проверки.')
     result['sources'] = [{'source': row.get('source') or {}, 'period_year': row.get('period_year'),
                           'contract': row.get('contract'), 'contract_date': row.get('contract_date')}
                          for row in rows]

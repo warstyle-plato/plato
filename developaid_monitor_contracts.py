@@ -482,12 +482,17 @@ def _summary_observation(items: list[dict], cut: str) -> dict:
         why='Денежное закрытие по итогам КС-2 из сводной; не физическая готовность и не объёмы КС-6а.')
 
 
-def _physical(item: dict, ledger: dict, cut: str) -> dict:
+def _physical(item: dict, ledger: dict, cut: str, *, _duplicates=None) -> dict:
+    import developaid_monitor_ledgers as ledgers
     result = {k: item.get(k) for k in
               ("position", "name", "scope", "unit", "plan_quantity", "planned_amount",
                "section_path", "context_headings", "parent_row", "is_group", "planned_work_amount",
                "planned_material_amount", "planned_cost_split", "planned_work_amount_basis", "planned_cost_method",
-               "completed_amount_derivation")}
+               "completed_amount_derivation", "duplicate_of", "duplicate_proof", "duplicate_note",
+               "duplicate_source_fingerprint")}
+    if _duplicates is None:
+        _duplicates = ledgers.verified_duplicate_sources(ledger.get('items') or []) if item.get('is_duplicate') else {}
+    result['is_duplicate'] = ledgers._duplicate_key(dict(item, period_year=ledger.get('period_year'))) in _duplicates
     result["source"] = _source(item.get("source") or ledger.get("source"), "Накопительная ведомость работ")
     result["period_year"] = ledger.get("period_year")
     result["warnings"] = _warnings(item.get("warnings"))
@@ -566,7 +571,7 @@ def _physical(item: dict, ledger: dict, cut: str) -> dict:
         result["warnings"].append("Отрицательное выполнение требует проверки.")
     if result["completion_ratio"] is not None and result["completion_ratio"] > 1.000001:
         result["warnings"].append("Выполнение превышает объём позиции; требуется сверка.")
-    return result
+    return ledgers.stamp_duplicate_view(result)
 
 
 def _terms_path(project: str) -> Path:
@@ -658,9 +663,8 @@ def _cumulative_money(physical: list[dict], warnings: list[str],
         return None, "unspecified"
     periods, ranges, bases = {}, {}, set()
     uncertain = False
-    for item in physical:
-        if item.get("is_group") is True:
-            continue
+    import developaid_monitor_ledgers as ledgers
+    for item in ledgers.aggregation_members(physical):
         work = _physical_key(item)
         if item.get("completed_amount") is None:
             uncertain = True
@@ -824,9 +828,14 @@ def build(project: str, cut: str = "", *, include_history: bool = True) -> dict:
         if summary_amount is not None and rss_amount is not None and abs(summary_amount-rss_amount) > .01:
             amount = None
             row_warnings.append("РСС и сводная дают разные полные суммы договора; действующая цена не выбрана автоматически.")
-        physical_sources = [(ledger, [_physical(item, ledger, cut)
-                                     for item in ledger.get("items") or []])
-                            for ledger in ledger_items if ledger.get('kind') == 'ledger']
+        physical_sources = []
+        for ledger in ledger_items:
+            if ledger.get('kind') != 'ledger':
+                continue
+            import developaid_monitor_ledgers as ledgers
+            duplicates = ledgers.verified_duplicate_sources(ledger.get('items') or [])
+            physical_sources.append((ledger, [_physical(item, ledger, cut, _duplicates=duplicates)
+                                              for item in ledger.get('items') or []]))
         physical = [item for _, views in physical_sources for item in views]
         money_parts: dict = {}
         dated_money: list = []
@@ -875,7 +884,7 @@ def build(project: str, cut: str = "", *, include_history: bool = True) -> dict:
                 "amount_basis": summary_amount_basis, "completed_basis": summary_completed_basis})
         references = []
         for ledger, views in physical_sources:
-            source_items = [item for item in ledger.get("items") or [] if item.get("is_group") is not True]
+            source_items = ledgers.aggregation_members(ledger.get('items') or [])
             values = [_number(item.get("completed_amount")) for item in source_items]
             planned_values = [_number(item.get("planned_amount")) for item in source_items]
             future_excluded = any(item.get("future_periods_excluded") for item in views)
