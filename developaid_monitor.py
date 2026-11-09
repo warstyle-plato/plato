@@ -269,7 +269,11 @@ def store_schedule(project: str, gpr: bytes, pm: bytes | None,
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
         raise ValueError("дата baseline нужна в виде ГГГГ-ММ-ДД")
     # Validate schedule before committing it as immutable baseline.
-    _read_baseline_gpr_bytes(gpr)
+    parsed_gpr = _read_baseline_gpr_bytes(gpr)
+    if parsed_gpr.get('source_format') == 'corpus-gpr-v1':
+        fact_days = {work.get('progress_date') for work in parsed_gpr['works'] if work.get('progress_date')}
+        if any(fact_day > day for fact_day in fact_days):
+            raise ValueError('Дата версии раньше даты факта в шапке ГПР.')
     folder = _project_dir(project) / "baseline"
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / "gpr.xlsx"
@@ -292,6 +296,10 @@ def store_schedule(project: str, gpr: bytes, pm: bytes | None,
 
 
 def _read_baseline_gpr_bytes(data: bytes) -> dict[str, Any]:
+    import developaid_gpr_corpus as corpus_gpr
+    corpus = corpus_gpr.read(data)
+    if corpus is not None:
+        return corpus_gpr.as_schedule(corpus)
     if _has_sheet(data, "ГПР"):
         return actuals.read_schedule(io.BytesIO(data))
     if _has_sheet(data, "BASELINE ГПР"):
@@ -821,7 +829,7 @@ def _schedule_plan_fact(project: str, rss_path: Path, cut: Any) -> dict[str, Any
             "id": item.get("id", ""), "wbs": item.get("wbs", ""),
             "section": item.get("section", ""), "object": item.get("object", ""),
             "name": item.get("name", ""), "code": item.get("estimate_code", ""),
-            "basis": item.get("basis", ""),
+            "basis": item.get("basis", ""), "construction_work": item.get("construction_work") is True,
             "plan_start": start, "plan_finish": finish,
             "plan_progress": plan, "actual_progress": fact,
             "actual_equivalent_date": fact_date,

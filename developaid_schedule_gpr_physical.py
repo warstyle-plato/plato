@@ -61,6 +61,9 @@ def _source(project, cut=""):
                       "wbs": wbs, "section": row.get("section") or "",
                       "estimate_code": row.get("estimate_code") or "",
                       "estimate_name": row.get("estimate_name") or "",
+                      "construction_work": row.get("construction_work") is True,
+                      "source_format": row.get("source_format") or "",
+                      "source_cells": row.get("source_cells"),
                       "parent_path": ([{"id": str(parent.get("id") or ""),
                                         "wbs": str(parent.get("wbs") or ""),
                                         "name": str(parent.get("name") or "")}
@@ -68,8 +71,17 @@ def _source(project, cut=""):
                       "hierarchy_ambiguous": ambiguous,
                       "plan_start": monitor._iso(row.get("start")),
                       "plan_finish": monitor._iso(row.get("finish"))}
-    return {"source_sha256": hashlib.sha256(data).hexdigest(), "tasks": tasks, "reason": "",
-            "state": "approved_gpr"}
+    sha = hashlib.sha256(data).hexdigest()
+    import developaid_gpr_corpus as corpus_gpr
+    available = corpus_gpr.for_view(project, cut, baseline_sha256=sha)
+    reason = ((available or {}).get('reason') or '') if (available or {}).get('working_source_state') == 'different_baseline' else ''
+    missing = [dict(id=task['task_id'], name=task['name'], object=task['object'], construction_work=True)
+               for task in tasks.values() if task['construction_work']
+               and not (quantities._day(task.get('plan_start')) and quantities._day(task.get('plan_finish')))]
+    return {"source_sha256": sha, "tasks": tasks, "reason": reason,
+            "state": "approved_gpr", 'calendar_missing': missing,
+            'available_corpus': ({field: available.get(field) for field in
+                                 ('sha256', 'taken_at', 'working_source_state', 'reason')} if available else None)}
 
 
 def _history(project):
@@ -416,6 +428,8 @@ def catalog(project, cut, query="", offset=0):
             if not query or query in " ".join(str(item.get(k) or "") for k in
                                                ("name", "scope", "contract", "contractor")).casefold()]
     return dict(state, source_state=source["state"], source_reason=source["reason"],
+                source_calendar_missing=source.get("calendar_missing") or [],
+                available_corpus=source.get("available_corpus"),
                 tasks=list(source["tasks"].values()), items=rows[offset:offset+200],
                 item_count=len(rows), offset=offset,
                 model=_view_model(project, cut, source, snapshot, state["configuration"], automatic=state["automatic_mapping"]))
@@ -478,7 +492,8 @@ def build(project, cut):
                     binding_source_snapshot_id=state["binding_source_snapshot_id"],
                     binding_projection_unresolved_tasks=state["binding_projection_unresolved_tasks"],
                     binding_automatic=state["binding_automatic"],
-                    source_reason=source["reason"])
+                    source_reason=source["reason"], source_calendar_missing=source.get("calendar_missing") or [],
+                    available_corpus=source.get("available_corpus"))
     except (OSError, ValueError, KeyError, TypeError, ArithmeticError):
         return {"state": "unknown", "basis": "gpr", "tasks": [], "seeds": {}, "actual_finishes": {},
                 "physical_evidence": False, "binding_state": "unavailable",

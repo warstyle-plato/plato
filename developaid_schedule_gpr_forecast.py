@@ -114,8 +114,13 @@ def history(project: str, cut: dt.date) -> dict[str, list[tuple[dt.date, float, 
         base_day = _day(meta.get("taken_at"))
     except (OSError, ValueError, FileNotFoundError):
         baseline, base_day = {"works": []}, None
+    baseline_dates = {str(work.get('id') or work.get('wbs') or '').strip():
+                      _day(work.get('progress_date')) for work in baseline.get('works') or []}
     for tid, (progress, _status) in _works(baseline).items():
-        add(tid, base_day, progress, "approved_gpr")
+        # Corpus percentages carry the explicit header date, not the upload day.
+        # An unavailable/future baseline date still cannot authorize past facts.
+        fact_day = baseline_dates.get(tid) if baseline.get('source_format') == 'corpus-gpr-v1' else base_day
+        add(tid, fact_day if base_day and base_day <= cut else None, progress, "approved_gpr")
     earliest = cut - dt.timedelta(days=WINDOW_DAYS + STALE_DAYS)
     weekly = folder / "schedule_fact"
     if weekly.exists():
@@ -339,20 +344,28 @@ ESTIMATE_NOTE = ("Оценка по ГПР без цепочки до получ
                  "строительных работ (со статьёй сметы РСС). PM отключён.")
 
 
-def rnv(rows: list[dict], works: dict[str, dict], approved: Any) -> dict[str, Any]:
+def rnv(rows: list[dict], works: dict[str, dict], approved: Any, *, missing_calendar=()) -> dict[str, Any]:
     """Qualified RNV of the GPR: plan, estimate and the work that drives it."""
     approved_day = _day(approved)
-    scope = [r for r in rows if str(r.get("code") or "").strip()]
-    reasons = [ESTIMATE_NOTE]
+    scope = [r for r in rows if str(r.get("code") or "").strip() or r.get('construction_work') is True]
+    source_missing = [row for row in missing_calendar if row.get("construction_work") is True]
+    scope.extend(source_missing)
+    corpus_scope = any(row.get('construction_work') is True for row in scope)
+    reasons = (["Оценка по строительным разделам утверждённого корпусного ГПР, без цепочки до получения разрешения."]
+               if corpus_scope else [ESTIMATE_NOTE])
     known, missing = [], []
     for row in scope:
         tid = str(row.get("id") or row.get("wbs") or "").strip()
         item = works.get(tid) or {}
         day = _day(item.get("forecast_finish"))
         (known if day else missing).append((day, row, item))
-    outside = len(rows) - len(scope)
+    if source_missing:
+        reasons.append(f"У {len(source_missing)} строительных работ исходные даты неполны или некорректны; "
+                       "эти работы сохранены в показаниях ГПР и не исключены из проверки полноты прогноза.")
+    outside = len(rows) - len(scope) + len(source_missing)
     if outside:
-        reasons.append(f"{outside} работ ГПР без статьи сметы (продажи, ходатайства и т. п.) в прогноз РНВ не входят.")
+        reasons.append(f"{outside} работ вне строительных разделов корпусного ГПР в эту оценку не входят." if corpus_scope else
+                       f"{outside} работ ГПР без статьи сметы (продажи, ходатайства и т. п.) в прогноз РНВ не входят.")
     if missing:
         names = ", ".join("«" + str(r.get("name") or "") + "»" for _, r, _ in missing[:5])
         reasons.append(f"Без оценки окончания {len(missing)} строительных работ: {names}"

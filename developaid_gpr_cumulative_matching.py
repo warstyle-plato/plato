@@ -325,9 +325,20 @@ def _descriptor(name, context, location_context=(), *, hierarchy_ambiguous=False
 
 def task_descriptor(task):
     context = _path(task.get('parent_path')) + [task.get('section') or '']
-    return _descriptor(task.get('name') or '', context, [task.get('object') or ''],
-                       hierarchy_ambiguous=task.get('hierarchy_ambiguous') is True,
-                       inherit_operation=_structural_task_name(task.get('name') or ''))
+    result = _descriptor(task.get('name') or '', context, [task.get('object') or ''],
+                         hierarchy_ambiguous=task.get('hierarchy_ambiguous') is True,
+                         inherit_operation=_structural_task_name(task.get('name') or ''))
+    # A corpus package may name the whole system while the KS names one part.
+    # Discovery is useful, but these families never authorize an aggregate or
+    # turn a part into the whole package's percentage.
+    if task.get('source_format') == 'corpus-gpr-v1':
+        name = _text(task.get('name'))
+        broad = ({'monolith_vertical', 'monolith_horizontal'} if name == 'монолит надземной части' else
+                 {'itp_thermomechanical', 'itp_automation'} if name in {'итп', 'индивидуальный тепловой пункт'} else
+                 {'facade_vertical', 'facade_horizontal'} if name == 'монтаж нвф' else set())
+        if broad:
+            result['candidate_families'] = frozenset(broad)
+    return result
 
 
 def item_descriptor(ledger, item):
@@ -347,7 +358,8 @@ def _equal_scope(source, target):
 
 
 def _candidate(source, target):
-    if not source['family'] or (source['family'] != target['family']
+    broad_candidate = source['family'] in target.get('candidate_families', ())
+    if not source['family'] or (source['family'] != target['family'] and not broad_candidate
             and (source['family'], target['family']) != ('pile_testing', 'trial_piles_and_testing')):
         return False
     for field in ('locations', 'floors', 'zones', 'systems'):

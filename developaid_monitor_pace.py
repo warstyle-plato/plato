@@ -220,8 +220,9 @@ def _apply_gpr(project: str, view: dict[str, Any], cut: datetime.date) -> dict[s
     _aggregate_gpr(schedule.get("management") or [])
     dash = view.setdefault("dashboard", {}).setdefault("schedule", {})
     approved = ((dash or {}).get("approved_finish") or schedule.get("approved_end")
-                or max((r.get("plan_finish") for r in rows if r.get("plan_finish") and str(r.get("code") or "").strip()), default=None))
-    qualified = gpr_forecast.rnv(rows, works, approved)
+                or max((r.get("plan_finish") for r in rows if r.get("plan_finish") and (str(r.get("code") or "").strip() or r.get("construction_work") is True)), default=None))
+    qualified = gpr_forecast.rnv(rows, works, approved,
+        missing_calendar=physical.get("source_calendar_missing") or [])
     schedule["dependency_timeline"] = {"state": "ok", "rows": [], "edges": [], "rnv": qualified,
                                        "confirmation": {}, "basis": "gpr", "physical": physical}
     schedule["physical_progress"] = physical
@@ -237,7 +238,8 @@ def _apply_gpr(project: str, view: dict[str, Any], cut: datetime.date) -> dict[s
                                and not row.get("forecast_known"))))
     view["by_code"] = rows
     schedule["dependency_timeline_html"] = schedule_timeline.render(schedule["dependency_timeline"])
-    schedule["corpus_gpr"] = corpus_gpr.latest(project, cut.isoformat())
+    schedule["corpus_gpr"] = corpus_gpr.for_view(project, cut.isoformat(),
+        baseline_sha256=physical.get("source_sha256") or "")
     schedule["corpus_gpr_html"] = corpus_gpr.render_overview(schedule["corpus_gpr"], cut.isoformat())
     if isinstance(dash, dict):
         driver = (qualified.get("driving_chain") or [None])[0]

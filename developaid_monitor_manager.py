@@ -723,7 +723,8 @@ def _schedule_only(project: str, cut: Any, upto: str = "") -> dict[str, Any]:
         rows.append({"id": item.get("id", ""), "wbs": item.get("wbs", ""),
                      "section": item.get("section", ""), "object": item.get("object", ""),
                      "name": item.get("name", ""), "code": item.get("estimate_code", ""),
-                     "basis": item.get("basis", ""), "plan_start": start.isoformat(),
+                     "basis": item.get("basis", ""), "construction_work": item.get("construction_work") is True,
+                     "plan_start": start.isoformat(),
                      "plan_finish": finish.isoformat(), "plan_progress": monitor._plan_progress(start, finish, day),
                      "actual_progress": None, "forecast_finish": None, "delta_days": None,
                      "status": "", "accepted": None, "eac": None})
