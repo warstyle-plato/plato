@@ -95,6 +95,20 @@ def _observation(row, register):
               'snapshot_id': (register.get('snapshots') or {}).get('cumulative_id'),
               'scope_fingerprint': None, 'basis_fingerprint': None,
               'state': 'unknown', 'reason': 'Общий процент по ведомости не рассчитан.'}
+    if row.get('source_kind') == 'closing_summary':
+        observation = row.get('summary_progress') or {}
+        ratio = _number(observation.get('ratio'))
+        result.update(basis='closing_summary_contract', basis_label='суммы КС-2 по сводной',
+            origin='closing_summary_statement', planned=observation.get('planned'),
+            completed=observation.get('completed'),
+            state=observation.get('state') or 'unknown',
+            reason=observation.get('why') or 'Денежный процент сводной не подтверждён.',
+            source=observation.get('source'), scope_fingerprint=observation.get('scope_fingerprint'),
+            basis_fingerprint=observation.get('basis_signature'),
+            requires_reconciliation=bool(observation.get('requires_reconciliation')))
+        if result['state'] == 'known' and ratio is not None:
+            result['ratio'] = ratio
+        return result
     ratio = _number(row.get('completion_ratio'))
     amount = _number(row.get('amount'))
     completed = _number(row.get('completed'))
@@ -265,6 +279,10 @@ def _compare(progress):
     reasons = {'growth': 'Рост выполнения между сопоставимыми снимками ведомостей.',
                'correction': 'Итог ведомости уменьшен; проверьте корректировку объёмов.',
                'unchanged': 'В сопоставимых снимках ведомостей выполнение не изменилось.'}
+    if progress.get('basis') == 'closing_summary_contract':
+        reasons = {'growth': 'Рост денежного закрытия КС-2 между сопоставимыми снимками сводной.',
+                   'correction': 'Денежный итог сводной уменьшен; проверьте корректировку актов.',
+                   'unchanged': 'В сопоставимых снимках сводной денежное закрытие КС-2 не изменилось.'}
     progress.update(delta_percent_points=delta, period_days=(current_day-previous_day).days,
                     previous_ratio=previous['ratio'], comparison_state='comparable',
                     change_kind=kind, comparison_reason=(
@@ -320,6 +338,8 @@ def observation_forecast(row: dict, cut: str) -> dict:
     if ratio is None or progress.get('state') != 'known':
         return blocked('current_unknown', progress.get('reason') or 'Текущий общий процент не подтверждён.')
     if progress.get('basis') != 'statement_union' or progress.get('origin') != 'cumulative_statement':
+        if progress.get('basis') == 'closing_summary_contract':
+            return blocked('closing_summary_observation', 'Показано денежное закрытие по сводной; прогноз физического окончания по нему не рассчитывается.')
         return blocked('not_statement_observation', 'Этот показатель не является объединённым наблюдением по годовым ведомостям.')
     if not latest_day:
         return blocked('observation_date_unknown', 'Дата текущего снимка не подтверждена.')
