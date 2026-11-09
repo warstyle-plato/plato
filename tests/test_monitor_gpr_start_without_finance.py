@@ -65,6 +65,10 @@ def test_upload_gpr_without_finance_then_archive_and_explicitly_confirm_quantiti
         page.locator('#physicalComponent').fill('Монтаж корпуса 1')
         page.locator('#physicalAddComponent').click()
         assert not writes  # the draft isn't a saved acceptance
+        # Changing the component set requires a fresh, explicit scope check.
+        expect(page.locator('#physicalScope')).not_to_be_checked()
+        page.locator('#physicalScope').check()
+        page.locator('#physicalApplyTask').click()
         page.locator('#physicalNote').fill('Проверен полный объём монтажа корпуса 1 по ведомости.')
         page.locator('#physicalSave').click()
         expect(page.locator('#physicalScheduleState')).to_contain_text('Последняя привязка сохранена')
