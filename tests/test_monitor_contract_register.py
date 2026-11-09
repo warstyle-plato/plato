@@ -267,7 +267,9 @@ def test_stable_identity_survives_snapshot_and_quantity_changes(project, monkeyp
 def test_missing_date_refinement_requires_fresh_manual_confirmation(project, monkeypatch):
     archive(monkeypatch, summaries=[summary(contract_date=None)])
     before = contracts.build(project)
-    assert before["rows"] == [] and before["unresolved_sources"]
+    assert len(before["rows"]) == 1 and before["unresolved_sources"]
+    assert before["rows"][0]["contract_date"] is None
+    assert before["rows"][0]["contract_identity_kind"] == "source_header_date_unverified"
     archive(monkeypatch, summaries=[summary(contract_date="2024-01-01")])
     after, = contracts.build(project)["rows"]
     assert after["contract_date"] == "2024-01-01"
