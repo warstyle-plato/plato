@@ -83,7 +83,10 @@ def test_a_single_itp_task_is_not_positive_evidence_of_plant_location():
     assert before['candidates'][0]['reason'] == 'location_unknown'
     snap['ledgers'][0]['object_scope'] = 'Индивидуальный тепловой пункт. Корпус 4'
     after = matching.suggest(plan, snap, CUT)
-    assert len(after['configuration']['tasks']) == 1
+    assert after['configuration']['tasks'] == []
+    assert after['candidates'][0]['source_metric']['ratio'] == .4
+    row['name'] = 'Монтаж ИТП. Тепломеханическая часть'
+    assert len(matching.suggest(plan, snap, CUT)['configuration']['tasks']) == 1
 
 
 def test_numbered_plants_and_negative_floor_are_not_collapsed():
@@ -144,7 +147,7 @@ def test_multi_component_binding_requires_explicit_compatible_smr_weights():
     snap = snapshot()
     first = snap['ledgers'][0]['items'][0]
     second = copy.deepcopy(first)
-    second.update(position='1.2', name=first['name']+' по проекту', unit='шт', planned_work_amount=300,
+    second.update(position='1.2', unit='шт', planned_work_amount=300,
                   completed_quantity=20, periods=[{'quantity': 20}], planned_amount=500)
     snap['ledgers'][0]['items'].append(second)
     result = matching.suggest(source(), snap, CUT)
@@ -179,7 +182,7 @@ def test_proven_groups_are_not_double_weighted_and_real_zero_leaf_blocks_done_cl
     group = copy.deepcopy(first)
     group.update(is_group=True, position='1', completed_quantity=0, periods=[{'quantity': 0}])
     zero = copy.deepcopy(first)
-    zero.update(position='1.3', name=first['name']+' по проекту', planned_work_amount=0,
+    zero.update(position='1.3', planned_work_amount=0,
                 completed_quantity=0, periods=[{'quantity': 0}])
     snap['ledgers'][0]['items'].extend([group, zero])
     metric = matching.suggest(source(), snap, CUT)['bindings']['floor4']['metric']
@@ -263,7 +266,7 @@ def multi_snapshot(done_first=40, done_second=20, *, day=CUT, weight=700):
     first = snap['ledgers'][0]['items'][0]
     first.update(completed_quantity=done_first, periods=[{'quantity': done_first}], planned_work_amount=weight)
     second = copy.deepcopy(first)
-    second.update(position='1.2', name=first['name']+' по проекту', unit='шт',
+    second.update(position='1.2', unit='шт',
                   planned_work_amount=300, completed_quantity=done_second, periods=[{'quantity': done_second}])
     snap['ledgers'][0]['items'].append(second)
     return snap
@@ -447,3 +450,44 @@ def test_saved_parent_and_one_child_keep_facts_but_cannot_become_a_partial_child
     assert configuration == before
     assert not any(fact['kind'] == 'weighted_quantity' for fact in report.model(
         {'rnv': {'state': 'unknown'}, 'physical': {'tasks': [measured]}})['facts'])
+
+
+@pytest.mark.parametrize('name,context,target', [
+    ('Устройство монолитных железобетонных вертикальных диафрагм жесткости 4-го этажа', '', '4-ый этаж верт констр'),
+    ('Устройство монолитных железобетонных вертикальных перегородок 4-го этажа', '', '4-ый этаж верт констр'),
+    ('Устройство монолитных железобетонных вертикальных конструкций лифтовой шахты 4-го этажа', '', '4-ый этаж верт констр'),
+    ('Диафрагмы жесткости 4-го этажа', 'Устройство монолитных железобетонных вертикальных конструкций 4-го этажа', '4-ый этаж верт констр'),
+    ('Теплообменник', 'Монтаж ИТП. Тепломеханическая часть', 'Монтаж ИТП. Тепломеханическая часть'),
+    ('Кабель', 'Монтаж ИТП. Автоматика', 'Монтаж ИТП. Автоматика'),
+    ('Устройство ростверков лифтовой шахты', '', 'Устройство ростверков'),
+    ('Бетонные блоки', 'Устройство фундаментной плиты', 'Устройство фундаментной плиты'),
+    ('Устройство монолитных железобетонных горизонтальных балконов 4-го этажа', '', '4-ый этаж ПП'),
+    ('Устройство монолитных железобетонных вертикальных конструкций (стен, колонн, пилонов и диафрагм) 4-го этажа', '', '4-ый этаж верт констр'),
+])
+def test_an_unknown_leaf_or_unconsumed_qualifier_is_not_a_closed_whole_package(name, context, target):
+    snap = snapshot()
+    snap['ledgers'][0]['items'][0].update(name=name, scope=(context+' Корпус 4').strip())
+    result = matching.suggest(source(task(name=target)), snap, CUT)
+    assert not result['bindings'] and not result['cohorts']
+    assert result['candidates'][0]['source_metric']['ratio'] == .4
+
+
+@pytest.mark.parametrize('name', [
+    'Устройство монолитных железобетонных вертикальных стен 4-го этажа',
+    'Монтаж ИТП. Тепломеханическая часть', 'Монтаж ИТП. Автоматика',
+])
+def test_exact_named_complete_subtype_or_whole_system_remains_positive(name):
+    snap = snapshot()
+    snap['ledgers'][0]['items'][0]['name'] = name
+    result = matching.suggest(source(task(name=name)), snap, CUT)
+    assert result['bindings']['floor4']['metric']['ratio'] == .4
+
+
+@pytest.mark.parametrize('prefix', ['(М4.1) ', 'Раздел 2. '])
+@pytest.mark.parametrize('name', ['Устройство монолитных железобетонных вертикальных конструкций 4-го этажа',
+                                 'Монтаж ИТП. Тепломеханическая часть'])
+def test_typed_reference_prefix_has_one_closed_normalization_in_classification_and_binding(prefix, name):
+    snap = snapshot()
+    snap['ledgers'][0]['items'][0]['name'] = prefix+name
+    result = matching.suggest(source(task(name=name)), snap, CUT)
+    assert result['bindings']['floor4']['metric']['ratio'] == .4

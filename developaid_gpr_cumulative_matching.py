@@ -16,7 +16,7 @@ import developaid_monitor_contract_links as links
 import developaid_monitor_contracts as contracts
 import developaid_schedule_physical as quantities
 
-RULE_VERSION = 2
+RULE_VERSION = 3
 SCOPE_FIELDS = ('locations', 'floors', 'zones', 'systems', 'materials', 'operation_parts')
 
 
@@ -80,11 +80,16 @@ def _systems(text):
     return frozenset('itp:'+number for group in matches for number in re.findall(r'\d+', group)) or frozenset({'itp'})
 
 
-def _operation(text):
-    """A deliberately closed operation taxonomy, independent of project names."""
+def _operation_name(text):
+    """One closed normalization for typed references, not descriptive text."""
     name = _text(text)
     name = re.sub(r'^\((?=[^)]*\d)[a-zа-я0-9][a-zа-я0-9_.-]{0,23}\)\s*', '', name)
-    name = re.sub(r'^раздел\s*(?:№\s*)?[\d.]+\s*[.:]?\s*', '', name)
+    return re.sub(r'^раздел\s*(?:№\s*)?[\d.]+\s*[.:]?\s*', '', name)
+
+
+def _operation(text):
+    """A deliberately closed operation taxonomy, independent of project names."""
+    name = _operation_name(text)
     if re.search(r'демонтаж|разборк|снятие', name):
         return None
     if re.search(r'этаж\s+верт\s+констр|^устройство\s+монолитн\w*\s+железобетонн\w*\s+вертикальн', name):
@@ -125,29 +130,73 @@ def _operation(text):
     return None
 
 
+def _operation_body(text):
+    """Remove only typed scope labels; retain every other qualifier."""
+    name = _operation_name(text)
+    name = re.sub(r'(\d+)[- ](?:ый|ой|ий|го|й|ого)\b', r'\1', name)
+    integers = r'\d{1,2}(?:\s*(?:[-–—,;]|и)\s*\d{1,2})*'
+    zones = r'\d+(?:\.\d+)?(?:\s*(?:[,;]|и)\s*\d+(?:\.\d+)?)*'
+    for pattern in (rf'(?<![\d/–—−-]){integers}\s*этаж(?:а|и|ей)?\b',
+                    rf'\bэтаж(?:а|и|ей)?\s*{integers}', r'\bтех(?:ническ(?:ий|ого))?\s*этаж(?:а)?\b',
+                    rf'\b(?:для\s+)?корпус(?:а|е|у|ом|ах)?\s*{integers}',
+                    rf'\bзахватк[аиоуе]?\s*{zones}',
+                    r'\b(?:подземн(?:ая|ой|ую)\s+)?автостоянк[аиуе]|\bпаркинг|\bстилобат'):
+        name = re.sub(pattern, ' ', name)
+    return _text(name).strip(' ,.;:')
+
+
+def _closed_parts(text, aliases):
+    """Every token of a composition list must be a known complete part."""
+    text = text.strip(' ():,;.')
+    if not text:
+        return frozenset()
+    parts = set()
+    for token in re.split(r'\s*(?:[,;()]|\bи\b)\s*', text):
+        if not token:
+            continue
+        part = next((part for part, pattern in aliases if re.fullmatch(pattern, token)), None)
+        if part is None:
+            return frozenset()
+        parts.add(part)
+    return frozenset(parts)
+
+
 def _operation_parts(text, family):
-    """Preserve whole-operation composition instead of collapsing subtypes."""
-    name = _text(text)
-    if family == 'foundations':
-        parts = set()
-        if re.search(r'ростверк', name):
-            parts.add('pile_caps')
-        if re.search(r'фундаментн\w*\s+плит', name):
-            parts.add('foundation_slabs')
-        if re.search(r'\bфундамент(?:ов|ы|а|ами|ах)?\b', name):
-            parts.add('footings')
-        return frozenset(parts)
-    if family == 'monolith_vertical':
-        parts = {part for part, pattern in [('walls', r'\bстен'), ('columns', r'колонн'), ('pylons', r'пилон')]
-                 if re.search(pattern, name)}
-        return frozenset(parts) if parts else frozenset({'walls', 'columns', 'pylons'})
-    if family == 'monolith_horizontal':
-        parts = {part for part, pattern in [('plates', r'плит\w*\s+(?:перекрыт|покрыт)'), ('beams', r'\bбал[ко]')]
-                 if re.search(pattern, name)}
-        return frozenset(parts) if parts else frozenset({'plates', 'beams'})
+    """A whole operation is a closed complete phrase, never an unknown subtype."""
+    name = _operation_name(text)
+    if family in {'foundations', 'monolith_vertical', 'monolith_horizontal'}:
+        body = _operation_body(name)
+        construction = r'(?:устройство\s+)?(?:монолитн(?:ых|ые|ой|ая)\s+)?(?:железобетонн(?:ых|ые|ой|ая)\s+)?'
+        body = re.sub('^'+construction, '', body)
+        if family == 'foundations':
+            return _closed_parts(body, [('pile_caps', r'ростверк(?:ов|и|а)?'),
+                ('foundation_slabs', r'фундаментн(?:ых|ые|ая|ой)\s+плит(?:ы|а)?'),
+                ('footings', r'фундамент(?:ов|ы|а|ами|ах)?')])
+        if family == 'monolith_vertical':
+            whole = frozenset({'walls', 'columns', 'pylons'})
+            if re.fullmatch(r'верт\.?\s+констр\.?', body):
+                return whole
+            prefix = r'вертикальн(?:ых|ые|ая|ой)\s+'
+            generic = re.fullmatch(prefix+r'конструкц(?:ий|ии|ия)(?:\s*(\(.*\)|:.*))?', body)
+            if generic:
+                return whole if not generic[1] else _closed_parts(generic[1], [
+                    ('walls', r'стен(?:ы|а)?'), ('columns', r'колонн(?:ы|а)?'), ('pylons', r'пилон(?:ов|ы|а)?')])
+            body = re.sub('^'+prefix, '', body)
+            return _closed_parts(body, [('walls', r'стен(?:ы|а)?'),
+                ('columns', r'колонн(?:ы|а)?'), ('pylons', r'пилон(?:ов|ы|а)?')])
+        whole = frozenset({'plates', 'beams'})
+        if body == 'пп':
+            return whole
+        prefix = r'горизонтальн(?:ых|ые|ая|ой)\s+'
+        generic = re.fullmatch(prefix+r'конструкц(?:ий|ии|ия)(?:\s*(\(.*\)|:.*))?', body)
+        if generic and not generic[1]:
+            return whole
+        body = generic[1] if generic else re.sub('^'+prefix, '', body)
+        body = body.replace('плит перекрытий и покрытий', 'плит перекрытий, плит покрытий')
+        return _closed_parts(body, [('plates', r'плит(?:ы|а)?\s+(?:перекрыти[йя]|покрыти[йя])'),
+                                    ('beams', r'бал(?:ок|ки|ка)')])
     if family in {'itp_thermomechanical', 'itp_automation'}:
         # Closed whole-system aliases; arbitrary extra operations are retained.
-        name = re.sub(r'^раздел\s*(?:№\s*)?[\d.]+\s*[.:]?\s*', '', name)
         name = name.replace('индивидуальный тепловой пункт', 'итп')
         name = re.sub(r'^(?:монтаж|устройство)\s+', '', name)
         name = re.sub(r'\bитп\s*(?:№\s*)?\d+(?:\s*(?:[/,;]|и)\s*\d+)*', 'итп', name)
@@ -218,7 +267,11 @@ def _descriptor(name, context, location_context=(), *, hierarchy_ambiguous=False
                 materials = found
             elif found and materials != found:
                 ambiguous = True
-    parts = _operation_parts(operation_source, family)
+    # An ancestor may classify the family, but cannot declare an unknown leaf
+    # subtype to be the whole construction package. Only a closed structural
+    # floor label delegates its operation description to that ancestor.
+    parts_source = operation_source if _structural_task_name(name) else name
+    parts = _operation_parts(parts_source, family)
     if family and not parts:
         ambiguous = True
     return {'family': family, 'operation_parts': parts, 'locations': location, 'floors': floors, 'zones': zones,
