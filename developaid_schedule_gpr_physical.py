@@ -158,6 +158,12 @@ def _state(project, cut, source, snapshot):
 
 def _observed_component(component, result, items, views, snapshot, cut, observation_index):
     """Retain known statement quantities when execution dates cannot give pace."""
+    suspect = [key for key in component['item_ids'] if (views.get(key) or {}).get('duplicate_marker_present') is True
+               and (views.get(key) or {}).get('is_duplicate') is not True]
+    if suspect:
+        return dict(result, progress=None, known=False, forecast_finish=None, requires_reconciliation=True,
+                    unverified_duplicate_item_ids=suspect,
+                    reason='Отметка о копии строки не подтверждена полным составом источника; прежняя привязка требует проверки.')
     if result.get("progress") is not None or result.get('excluded_duplicate_item_ids'):
         return result
     selected = [items.get(key) for key in component["item_ids"]]
@@ -423,6 +429,9 @@ def _view_model(project, cut, source, snapshot, configuration, *, automatic=None
             for component in measured['components']:
                 view = component_sources.get(component['component_id']) or {}
                 component.update(name=view.get('name') or '', source=view.get('source') or {})
+            if group.get('unverified_duplicate_item_ids'):
+                measured.update(progress=None, known=False, requires_reconciliation=True,
+                    reason='Отметка о копии строки не подтверждена полным составом источника; общий процент раздела требует проверки.')
             if not group['source_complete']:
                 measured.update(progress=None, known=False,
                     reason='Разбор источника неполон; известные позиции показаны отдельно, общий процент раздела не подтверждён.')
@@ -458,7 +467,9 @@ def catalog(project, cut, query="", offset=0):
     source, snapshot = _source(project, cut), _snapshot(project, cut)
     state = _state(project, cut, source, snapshot)
     query = query.casefold().strip()
-    rows = [dict(item_id=key, **{field: item.get(field) for field in
+    proof_fields = tuple(ledgers._duplicate_values({}).keys()) + ('duplicate_proof', 'duplicate_source_fingerprint',
+        'duplicate_view_fingerprint', 'duplicate_marker_present', 'completed_amount_derivation')
+    rows = [dict(item_id=key, **{field: item.get(field) for field in tuple(dict.fromkeys(proof_fields +
             ("name", "scope", "unit", "plan_quantity", "completed_quantity", "period_year",
              "contract", "contract_date", "contractor", "source", "completion_ratio",
              "reported_completed_quantity", "reported_completion_ratio", "reported_material_quantity",
@@ -468,7 +479,7 @@ def catalog(project, cut, query="", offset=0):
              "site_scope", "scope_evidence", "context_headings", "planned_cost_method",
              "contract_date_evidence", "source_date_key", "file_sha256", "ledger_source",
              "planned_work_amount", "planned_material_amount", "planned_cost_split",
-             "planned_work_amount_basis", "valuation_key")})
+             "planned_work_amount_basis", "valuation_key")))})
             for key, item in cumulative_progress.quantity_views(snapshot, cut).items()
             if not query or query in " ".join(str(item.get(k) or "") for k in
                                                ("name", "scope", "contract", "contractor")).casefold()]

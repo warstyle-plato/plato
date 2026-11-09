@@ -85,6 +85,7 @@ def position_view(ledger, item, cut, observation_date, *, _duplicates=None):
                 contract_date=ledger.get('contract_date') or '', contractor=ledger.get('contractor') or '',
                 customer=ledger.get('customer') or '', position_key=None if view.get('is_duplicate') else position_identity(ledger, item),
                 annual_work_key=annual_work_identity(ledger, item),
+                duplicate_marker_present=item.get('is_duplicate') is True,
                 source_date_key=contracts._source_date_key(ledger),
                 contract_date_evidence=ledger.get('contract_date_evidence') or ledger.get('date_evidence') or [],
                 file_sha256=ledger.get('file_sha256'), ledger_source=ledger.get('source') or {},
@@ -240,16 +241,30 @@ def project_configuration(previous, current, configuration):
     """
     old, old_seen, old_duplicates = {}, set(), set()
     for li, ledger in enumerate((previous or {}).get('ledgers') or []):
+        retained = {id(item) for item in ledgers.aggregation_members(ledger.get('items') or [], include_groups=True)}
         for ii, item in enumerate(ledger.get('items') or []):
+            if id(item) not in retained:
+                old[f'{li}:{ii}'] = None
+                continue
             key = position_identity(ledger, item)
+            if item.get('is_duplicate') is True:
+                old[f'{li}:{ii}'] = None
+                old_duplicates.add(key)
+                continue
             if key in old_seen:
                 old_duplicates.add(key)
             old_seen.add(key)
             old[f'{li}:{ii}'] = key
     new, duplicates = {}, set()
     for li, ledger in enumerate((current or {}).get('ledgers') or []):
+        retained = {id(item) for item in ledgers.aggregation_members(ledger.get('items') or [], include_groups=True)}
         for ii, item in enumerate(ledger.get('items') or []):
+            if id(item) not in retained:
+                continue
             key = position_identity(ledger, item)
+            if item.get('is_duplicate') is True:
+                duplicates.add(key)
+                continue
             if key in new:
                 duplicates.add(key)
             new[key] = f'{li}:{ii}'
@@ -269,7 +284,8 @@ def project_configuration(previous, current, configuration):
 
 
 def _observation(view):
-    if view.get('future_periods_excluded') is not False:
+    if (view.get('future_periods_excluded') is not False or view.get('is_duplicate') is True
+            or view.get('duplicate_marker_present') is True):
         return None
     plan = contracts._number(view.get('plan_quantity'))
     done = contracts._number(view.get('completed_quantity'))

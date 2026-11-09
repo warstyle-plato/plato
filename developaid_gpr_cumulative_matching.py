@@ -14,6 +14,7 @@ import re
 import developaid_cumulative_progress as progress
 import developaid_monitor_contract_links as links
 import developaid_monitor_contracts as contracts
+import developaid_monitor_ledgers as ledgers
 import developaid_schedule_physical as quantities
 
 RULE_VERSION = 4
@@ -408,7 +409,9 @@ def _compile(rows, tid, cut):
     invalid = None
     for component_key, annual_rows in annual.items():
         years = [row['ledger'].get('period_year') for row in annual_rows]
-        group_invalid = ('duplicate_annual_position' if len(set(years)) != len(years)
+        group_invalid = ('unverified_duplicate_marker' if any(row['item'].get('is_duplicate') is True
+                         or row['view'].get('duplicate_marker_present') is True for row in annual_rows) else
+                         'duplicate_annual_position' if len(set(years)) != len(years)
                          or any(type(year) is not int or year <= 0 for year in years) else None)
         plans = [contracts._number(row['item'].get('plan_quantity')) for row in annual_rows]
         if any(plan is None or plan <= 0 for plan in plans):
@@ -438,7 +441,9 @@ def _compile(rows, tid, cut):
         component_id = 'auto:'+_digest((tid, progress.contract_identity(rows[0]['ledger']), component_key))[:24]
         components.append({'component_id': component_id, 'task_id': tid,
                            'item_ids': [row['item_id'] for row in annual_rows]})
-        members.append({'member_key': component_id, 'progress': None if group_invalid else sum(done)/plan,
+        members.append({'member_key': component_id,
+                        'is_duplicate': any(row['item'].get('is_duplicate') is True or row['view'].get('duplicate_marker_present') is True for row in annual_rows),
+                        'progress': None if group_invalid else sum(done)/plan,
                         'unit': latest['view'].get('unit'),
                         **{field: latest['view'].get(field) for field in
                            ('planned_work_amount', 'planned_cost_split', 'planned_work_amount_basis', 'valuation_key')}})
@@ -475,6 +480,11 @@ def suggest_catalog(catalog, cut):
 
 
 def _suggest(source, snapshot, cut, records):
+    # Verify against the complete source universe before splitting by scope or
+    # annual component. Item IDs still refer to their original catalog rows.
+    universe = [record['item'] for record in records]
+    retained = {id(item) for item in ledgers.aggregation_members(universe, include_groups=True)}
+    records = [record for record in records if id(record['item']) in retained]
     configuration = {'tasks': [], 'components': [],
                      'note': 'Автоматически по точному типу работ и явно указанному полному участку исходников.'}
     result = {'configuration': configuration, 'rule_version': RULE_VERSION,
@@ -642,8 +652,9 @@ def covered_subtrees(source, snapshot, cut):
     groups = {}
     for li, ledger in enumerate((snapshot or {}).get('ledgers') or []):
         records = ledger.get('items') or []
+        retained = {id(item) for item in ledgers.aggregation_members(records)}
         for ii, item in enumerate(records):
-            if item.get('is_group') is True:
+            if id(item) not in retained:
                 continue
             # context_headings is bounded preceding context, not an ancestor
             # chain. Only its most recent heading can be the active chapter.
@@ -690,7 +701,7 @@ def covered_subtrees(source, snapshot, cut):
                                      'Полнота всего пакета ГПР и распределение по отдельным работам не подтверждены.'
                                      if location else 'Выполнение раздела КС известно по проекту; '
                                      'распределение между корпусами в источнике не выделено.'),
-                    'item_ids': [], 'components': []}
+                    'item_ids': [], 'components': [], 'unverified_duplicate_item_ids': []}
             group = groups[key]
             group['candidate_task_ids'] = sorted(set(group['candidate_task_ids']).union(candidates))
             group['_scope_names'].extend(text for text in named_scope if _locations(text)[0])
@@ -699,6 +710,8 @@ def covered_subtrees(source, snapshot, cut):
             group['unknown_location_positions'] += int(not location)
             item_id = f'{li}:{ii}'
             group['item_ids'].append(item_id)
+            if item.get('is_duplicate') is True:
+                group['unverified_duplicate_item_ids'].append(item_id)
             group['components'].append({'component_id': group['group_id']+':'+str(ii),
                 'task_id': group['group_id'], 'item_ids': [item_id]})
     retained = []
