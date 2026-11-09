@@ -1083,7 +1083,7 @@ def _summary_reference(value: Any) -> str:
     explicit = re.match(r'^(?:договор\b|дог\.|№)', text, re.I)
     bare = re.fullmatch(r'[^\s]+\s+от\s+.+', text, re.I)
     number = _contract(text)
-    return number if (explicit or bare) and re.search(r'\d', number) else ''
+    return number if number and (explicit or bare and re.search(r'\d', number)) else ''
 
 
 def _summary_sum_rows(formula: Any, column: int) -> set[int]:
@@ -1147,6 +1147,7 @@ def _summary(filename: str, sheet: str, rows: list[list[Any]]) -> list[dict] | N
                        or (reference_date and current.get('contract_date')
                            and reference_date != current['contract_date'])):
             current = {'contractor': contractor, 'customer': customer,
+                       'document_form': 'closing_summary',
                        'contract': number, 'contract_date': reference_date,
                        'contract_date_evidence': [{'raw': contract_text,
                            'source': _source(filename, sheet, ri+1, cell=_cell(header_map['contract']+1, ri+1))}],
@@ -1155,7 +1156,7 @@ def _summary(filename: str, sheet: str, rows: list[list[Any]]) -> list[dict] | N
                        'amount_scope': 'full_contract',
                        'amount_basis': _amount_basis(header_map['amount_header']),
                        'deadline': None, 'acts': [], 'amount_versions': [], 'warnings': [],
-                       '_total_candidates': [],
+                       '_total_candidates': [], '_amendment_warnings': [],
                        'source': _source(filename, sheet, ri+1, cell=_cell(header_map['amount']+1, ri+1), amount_header=header_map['amount_header'])}
             contracts.append(current)
             if current['amount'] is not None:
@@ -1196,7 +1197,7 @@ def _summary(filename: str, sheet: str, rows: list[list[Any]]) -> list[dict] | N
                                                    'date': current['amount_date'],
                                                    'label': contract_text, 'source': _source(filename, sheet, ri+1)})
                 if not declared_full:
-                    current['warnings'].append(f'Строка {ri+1}: сумма допсоглашения не подписана как полная новая сумма договора. '
+                    current['_amendment_warnings'].append(f'Строка {ri+1}: сумма допсоглашения не подписана как полная новая сумма договора. '
                                                'Действующая сумма договора требует подтверждения.')
         if current is None:
             continue
@@ -1244,15 +1245,19 @@ def _summary(filename: str, sheet: str, rows: list[list[Any]]) -> list[dict] | N
                 item['reported_amount_versions'] = item['amount_versions']
                 item['amount'] = total['amount']
                 item['amount_date'] = None
+                item['amount_date_basis'] = 'source_snapshot'
                 item['amount_scope'] = 'full_contract'
                 item['amount_versions'] = [{'amount': total['amount'], 'date': item['amount_date'],
                     'scope': 'full_contract', 'amount_basis': total['amount_basis'],
                     'label': 'Итог суммы договора в сводной', 'source': total['source']}]
         elif len(totals) > 1:
             item['warnings'].append('В разделе договора несколько разных итогов; общий денежный итог не выбран.')
+        amendment_warnings = item.pop('_amendment_warnings')
+        if (item.get('reported_total') or {}).get('planned') is None:
+            item['warnings'].extend(amendment_warnings)
         if not item['contractor']:
             item['warnings'].append('Не распознан контрагент договорного блока.')
-        if not item['amount_date']:
+        if not item['amount_date'] and not item.get('reported_total'):
             item['warnings'].append('У действующей суммы договора не распознана дата версии.')
         seen = set()
         for act in item['acts']:
@@ -1304,6 +1309,8 @@ def parse_archive(data: bytes, filename: str = '') -> dict:
                     continue
                 contracts = _summary(name, title, rows)
                 if contracts is not None:
+                    for contract in contracts:
+                        contract['file_sha256'] = hashlib.sha256(payload).hexdigest()
                     result['summary_contracts'].extend(contracts)
                     count += 1
                     recognized.append({'sheet': title, 'kind': 'summary'})
