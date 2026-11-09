@@ -3,12 +3,11 @@ from __future__ import annotations
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
-from pathlib import Path
 import sys
-from tempfile import TemporaryDirectory
 from threading import Thread
 
 from app import configure_webview, guard_navigation
+from smoke_profile import WebViewProfile
 
 
 class Page(BaseHTTPRequestHandler):
@@ -32,13 +31,14 @@ def main() -> int:
     configure_webview(webview)
     result = {name: False for name in ('native_webview2', 'session_storage',
               'no_python_api', 'navigation_guard', 'blocked_navigation', 'blocked_popup')}
-    with TemporaryDirectory(prefix='developaid-smoke-') as profile:
+    with WebViewProfile() as profile:
         server = ThreadingHTTPServer(('127.0.0.1', 0), Page)
         Thread(target=server.serve_forever, daemon=True).start()
         url = f'http://127.0.0.1:{server.server_port}/'
         # load_url requires the native shown event; exercise a visible window like the app.
         window = webview.create_window('DevelopAid smoke', url, hidden=False, js_api=None)
         guard = guard_navigation(window, local_origin=url)
+        profile.watch(window)
 
         def check():
             try:
@@ -78,7 +78,7 @@ def main() -> int:
 
         try:
             webview.start(check, gui='edgechromium', private_mode=False,
-                          storage_path=str(Path(profile) / 'WebView2'), debug=False)
+                          storage_path=str(profile.path / 'WebView2'), debug=False)
         finally:
             server.shutdown()
             server.server_close()
