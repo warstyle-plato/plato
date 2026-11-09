@@ -516,6 +516,7 @@ def _driver(pm: dict[str, Any], propagated: dict[str, dict[str, Any]],
             "rnv_delay_days": (network_rnv - baseline_rnv).days}
 
 
+@monitor.approved_schedule_read
 def _build(project: str, cut: Any, programme: dict[str, Any] | None = None, upto: str = "") -> dict[str, Any]:
     if _ORIGINAL_BUILD is None:
         raise RuntimeError("pace layer is not installed")

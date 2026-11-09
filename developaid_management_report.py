@@ -249,6 +249,7 @@ def _plan_curve(works: list[tuple[str, dict[str, Any], float]],
                        for _, work, w in works]) for day in days]
 
 
+@monitor.approved_schedule_read
 def physical(project: str, kind: str, end: Any) -> dict[str, Any]:
     """Физическое выполнение: факт ГПР на конец и начало периода против плана.
 
@@ -259,7 +260,7 @@ def physical(project: str, kind: str, end: Any) -> dict[str, Any]:
     """
     bounds = period_bounds(kind, end)
     try:
-        baseline = monitor._read_baseline_gpr(project)
+        baseline = monitor._read_baseline_gpr(project, bounds['end'])
     except FileNotFoundError:
         return _missing("Не загружен утверждённый ГПР проекта.")
     statuses = manager._baseline_status(project, bounds["end"].isoformat())

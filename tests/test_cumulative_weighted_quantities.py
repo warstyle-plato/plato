@@ -90,7 +90,7 @@ def test_gpr_source_retains_unambiguous_parent_hierarchy_and_article_fields(monk
     work = {'id': '11', 'wbs': '2.1.1', 'name': '1-ый этаж', 'section': 'Строительные работы',
             'object': 'Корпус 4', 'estimate_code': '2.3.4', 'estimate_name': 'Кладка',
             'start': dt.date(2026, 1, 1), 'finish': dt.date(2026, 2, 1)}
-    monkeypatch.setattr(physical.monitor, '_baseline_file', lambda _: path)
+    monkeypatch.setattr(physical.monitor, '_baseline_file', lambda _, cut='': path)
     monkeypatch.setattr(physical.monitor, '_read_baseline_gpr_bytes', lambda _: {'rows': [parent, work], 'works': [work]})
     task = physical._source('Synthetic')['tasks']['11']
     assert task['section'] == 'Строительные работы' and task['estimate_code'] == '2.3.4'

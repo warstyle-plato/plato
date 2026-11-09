@@ -198,11 +198,11 @@ def for_view(project: str, cut: str = '', *, baseline_sha256: str = '') -> dict 
     import developaid_monitor as monitor
     source = latest(project, cut)
     if source is None:
-        path = monitor._baseline_file(project)
+        selected = monitor._baseline_state(project, cut)
+        path = selected['path']
         if path is not None:
             try:
-                meta = json.loads((monitor._project_dir(project)/'baseline'/'meta.json').read_text())
-                taken_at = dt.date.fromisoformat(meta['taken_at']).isoformat()
+                taken_at = dt.date.fromisoformat(selected['taken_at']).isoformat()
             except (OSError, ValueError, KeyError, TypeError):
                 taken_at = ''
             if taken_at and (not cut or taken_at <= cut):

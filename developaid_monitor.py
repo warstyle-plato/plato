@@ -20,6 +20,8 @@ baseline sources. Legacy storage functions remain for API compatibility, but
 from __future__ import annotations
 
 import datetime
+import contextvars
+import functools
 import io
 import json
 import os
@@ -34,6 +36,21 @@ _SNAPSHOT_DIR = Path(
     os.getenv("DEVELOPAID_MONITOR_DIR", "").strip()
     or (_ROOT / "data" / "monitor")
 )
+_APPROVED_SCHEDULE_READ = contextvars.ContextVar('approved_schedule_read', default=None)
+
+
+def approved_schedule_read(function):
+    """One immutable source choice per project/cut throughout a single read."""
+    @functools.wraps(function)
+    def read(*args, **kwargs):
+        if _APPROVED_SCHEDULE_READ.get() is not None:
+            return function(*args, **kwargs)
+        token = _APPROVED_SCHEDULE_READ.set({})
+        try:
+            return function(*args, **kwargs)
+        finally:
+            _APPROVED_SCHEDULE_READ.reset(token)
+    return read
 
 
 # Разобранные РСС снимков кладутся рядом со снимками (`.parsed/`): каталог
@@ -269,6 +286,8 @@ def store_schedule(project: str, gpr: bytes, pm: bytes | None,
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
         raise ValueError("дата baseline нужна в виде ГГГГ-ММ-ДД")
     # Validate schedule before committing it as immutable baseline.
+    import developaid_schedule_versions as versions
+    versions.digest(gpr)
     parsed_gpr = _read_baseline_gpr_bytes(gpr)
     if parsed_gpr.get('source_format') == 'corpus-gpr-v1':
         fact_days = {work.get('progress_date') for work in parsed_gpr['works'] if work.get('progress_date')}
@@ -276,16 +295,17 @@ def store_schedule(project: str, gpr: bytes, pm: bytes | None,
             raise ValueError('Дата версии раньше даты факта в шапке ГПР.')
     folder = _project_dir(project) / "baseline"
     folder.mkdir(parents=True, exist_ok=True)
-    path = folder / "gpr.xlsx"
-    if path.exists():
-        raise FileExistsError("baseline проекта уже загружен; он не обновляется еженедельно")
-    path.write_bytes(gpr)
-    if pm:
-        (folder / "finance.xlsx").write_bytes(pm)
-    (folder / "meta.json").write_text(json.dumps({
-        "taken_at": day,
-        "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-    }, ensure_ascii=False), encoding="utf-8")
+    with versions.lock(folder):
+        path = folder / "gpr.xlsx"
+        if path.exists() or _legacy_baseline_file(project) is not None:
+            raise FileExistsError("baseline проекта уже загружен; новую версию нужно проверить и явно утвердить")
+        versions._atomic(path, gpr)
+        if pm:
+            versions._atomic(folder / "finance.xlsx", pm)
+        versions._atomic(folder / "meta.json", json.dumps({
+            "taken_at": day,
+            "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        }, ensure_ascii=False).encode())
     plan = _payment_baseline(project)
     return {
         "taken_at": day,
@@ -369,7 +389,7 @@ def _read_control_baseline(source: Any) -> dict[str, Any]:
         wb.close()
 
 
-def _baseline_file(project: str) -> Path | None:
+def _legacy_baseline_file(project: str) -> Path | None:
     modern = _project_dir(project) / "baseline" / "gpr.xlsx"
     if modern.exists():
         return modern
@@ -380,7 +400,91 @@ def _baseline_file(project: str) -> Path | None:
     return items[0] if items else None
 
 
-def store_schedule_fact(project: str, data: bytes, taken_at: Any) -> dict[str, Any]:
+def _baseline_state(project: str, cut: Any = "") -> dict[str, Any]:
+    import developaid_schedule_versions as versions
+    folder = _project_dir(project)/'baseline'
+    effective_cut = _iso(cut) or versions._now().date().isoformat()
+    read = _APPROVED_SCHEDULE_READ.get()
+    key = str(folder), effective_cut
+    if read is not None and key in read:
+        return read[key]
+    legacy = _legacy_baseline_file(project)
+    selected = versions.state(folder, legacy, effective_cut)
+    if selected['revision']:
+        taken_at = selected['effective_from']
+    else:
+        try:
+            meta = json.loads((folder/'meta.json').read_text(encoding='utf-8'))
+            taken_at = meta.get('taken_at') or '' if isinstance(meta, dict) else ''
+        except (OSError, ValueError, TypeError):
+            taken_at = legacy.stem if legacy and _day(legacy.stem) else ''
+    result = dict(selected, taken_at=taken_at)
+    if read is not None:
+        read[key] = result
+    return result
+
+
+def _baseline_file(project: str, cut: Any = "") -> Path | None:
+    return _baseline_state(project, cut)['path']
+
+
+def schedule_version_preview(project: str, data: bytes, effective_from: str) -> dict[str, Any]:
+    import developaid_schedule_versions as versions
+    if not str(project or '').strip():
+        raise ValueError('Выберите проект.')
+    sha = versions.digest(data)
+    day = versions._day(effective_from).isoformat()
+    if day < versions._now().date().isoformat():
+        raise ValueError('Новая версия может действовать с сегодняшней или будущей даты; прежние срезы сохраняются.')
+    import developaid_monitor_ledgers as ledgers
+    ledgers._xlsx_bounds(data)
+    parsed = _read_baseline_gpr_bytes(data)
+    if not parsed.get('works'):
+        raise ValueError('В выбранном файле нет применимых работ утверждённого ГПР.')
+    if any(str(work.get('progress_date') or '') > day for work in parsed['works']):
+        raise ValueError('Дата версии раньше даты факта в шапке ГПР.')
+    selected = _baseline_state(project)
+    return {'source_sha256': sha, 'expected_previous_sha256': selected['latest_source_sha256'],
+            'effective_from': day, 'works': len(parsed['works']),
+            'source_format': parsed.get('source_format') or 'gpr',
+            'current_revision': selected['revision'],
+            'requires_initial_baseline': selected['path'] is None,
+            'already_approved': sha == selected['latest_source_sha256'],
+            'approved_effective_from': selected['latest_effective_from'] or selected['taken_at'],
+            'message': 'Прежние версии и ручные связи сохранятся. Связи другой версии требуют отдельной проверки.'}
+
+
+def approve_schedule_version(project: str, data: bytes, effective_from: str, *,
+                             expected_previous_sha256: str, expected_source_sha256: str,
+                             author: str = '') -> dict[str, Any]:
+    import developaid_schedule_versions as versions
+    preview = schedule_version_preview(project, data, effective_from)
+    saved = versions.approve(_project_dir(project)/'baseline', _legacy_baseline_file(project), data,
+                             expected_previous_sha256=expected_previous_sha256,
+                             expected_source_sha256=expected_source_sha256,
+                             effective_from=preview['effective_from'], author=author)
+    return {key: saved[key] for key in ('revision', 'source_sha256', 'effective_from', 'approved_at', 'unchanged')}
+
+
+def _fact_matches_baseline(project: str, cut: str, fact_day: str, source_sha256: str = '') -> bool:
+    import developaid_schedule_versions as versions
+    return versions.accepts_fact(_project_dir(project)/'baseline', _legacy_baseline_file(project),
+                                 cut, fact_day, source_sha256, selected=_baseline_state(project, cut),
+                                 origin=_baseline_state(project, fact_day) if not source_sha256 else None)
+
+
+def _schedule_fact_matches_baseline(project: str, path: Path, cut: str) -> bool:
+    metadata = path.with_suffix('.source.json')
+    source_sha = ''
+    if metadata.exists():
+        try:
+            source_sha = json.loads(metadata.read_text(encoding='utf-8'))['source_sha256']
+        except (OSError, ValueError, KeyError, TypeError):
+            return False
+    return _fact_matches_baseline(project, cut, path.stem, source_sha)
+
+
+def store_schedule_fact(project: str, data: bytes, taken_at: Any, *, expected_source_sha256: str = '') -> dict[str, Any]:
     """Положить еженедельный ГПР-факт снимком: проценты и статусы поверх baseline.
 
     План проекта зафиксирован baseline и не меняется; меняется выполнение.
@@ -405,6 +509,10 @@ def store_schedule_fact(project: str, data: bytes, taken_at: Any) -> dict[str, A
         return {"taken_at": day, "works": 0, "completed": 0,
                 "corpus_gpr": saved, "corpus_gpr_html": corpus_gpr.render(saved),
                 "message": saved["reason"]}
+    selected = _baseline_state(project, day)
+    if ((selected['revision'] and not expected_source_sha256)
+            or (expected_source_sha256 and expected_source_sha256 != selected['source_sha256'])):
+        raise ValueError('Утверждённый план изменился. Обновите срез перед загрузкой ГПР-факта.')
     try:
         parsed = _read_baseline_gpr_bytes(data)
     except ValueError:
@@ -413,7 +521,7 @@ def store_schedule_fact(project: str, data: bytes, taken_at: Any) -> dict[str, A
     if not parsed["works"]:
         # Укрупнённый ГПР по пакетам («Раздел / пакет», «Факт <дата>»): работ
         # в нём нет, процент пакета разносится на работы утверждённого ГПР.
-        packages = _schedule_packages(project, data)
+        packages = _schedule_packages(project, data, day)
         if packages is None:
             import developaid_gpr_packages as gpr_packages
 
@@ -422,15 +530,29 @@ def store_schedule_fact(project: str, data: bytes, taken_at: Any) -> dict[str, A
                 "ни таблицы пакетов с колонками «Раздел / пакет» и «Факт <дата>». "
                 f"{gpr_packages.describe(data)} Справки по договорам и спорам загружают в "
                 "блок «Споры и претензии» на странице сводки.")
+    if selected['revision'] and packages is None:
+        approved = _read_baseline_gpr(project, day)
+        def definitions(works):
+            return {str(work.get('id') or work.get('wbs') or ''):
+                    tuple(_iso(work.get(key)) for key in ('name','object','section','wbs','start','finish'))
+                    for work in works}
+        if definitions(parsed['works']) != definitions(approved['works']):
+            raise ValueError('ГПР-факт относится к другому составу работ или плану. Загрузите файл текущей утверждённой версии.')
     folder = _project_dir(project) / "schedule_fact"
     folder.mkdir(parents=True, exist_ok=True)
     path = _inside(folder, f"{day}.xlsx")
-    if path.exists():
-        raise FileExistsError(
-            f"ГПР-факт на {_dotted(day)} уже загружен{_stored_fact_words(project, day)}. "
-            "Загруженный снимок не заменяется: уберите его кнопкой «Убрать ГПР-факт на эту "
-            "дату» или поставьте вверху страницы другую дату.")
-    path.write_bytes(data)
+    import developaid_schedule_versions as versions
+    with versions.lock(_project_dir(project)/'baseline'):
+        if selected['source_sha256'] != _baseline_state(project, day)['source_sha256']:
+            raise versions.ScheduleVersionConflict('Утверждённый план изменился во время загрузки. Обновите срез.')
+        if path.exists():
+            raise FileExistsError(
+                f"ГПР-факт на {_dotted(day)} уже загружен{_stored_fact_words(project, day)}. "
+                "Загруженный снимок не заменяется: уберите его кнопкой «Убрать ГПР-факт на эту "
+                "дату» или поставьте вверху страницы другую дату.")
+        versions._atomic(_inside(folder, f'{day}.source.json'), json.dumps({
+            'source_sha256': selected['source_sha256']}, ensure_ascii=False).encode())
+        versions._atomic(path, data)
     works = packages["works"] if packages else parsed["works"]
     out = {
         "taken_at": day,
@@ -499,7 +621,7 @@ def _stored_fact_words(project: str, day: str) -> str:
     return f": в нём работ ГПР — {len(stored.get('works') or [])}"
 
 
-def _schedule_packages(project: str, data: bytes) -> dict[str, Any] | None:
+def _schedule_packages(project: str, data: bytes, cut: str = '') -> dict[str, Any] | None:
     """ГПР-факт по пакетам → строки работ утверждённого ГПР; не пакеты — None."""
     import developaid_gpr_packages as gpr_packages
 
@@ -507,7 +629,7 @@ def _schedule_packages(project: str, data: bytes) -> dict[str, Any] | None:
     if found is None:
         return None
     try:
-        baseline = _read_baseline_gpr(project).get("works") or []
+        baseline = _read_baseline_gpr(project, cut).get("works") or []
     except FileNotFoundError:
         baseline = []
     if not baseline:
@@ -578,7 +700,7 @@ def finance_baseline_meta(project: str) -> dict[str, Any]:
 
 
 def store_work_fact(project: str, rows: list[dict[str, Any]],
-                    taken_at: Any) -> dict[str, Any]:
+                    taken_at: Any, *, expected_source_sha256: str = '') -> dict[str, Any]:
     """Точечный факт по работам ГПР — процент и статус, введённые со страницы.
 
     В акте РСС нет имени работы — только статья, поэтому автоматически акт
@@ -604,14 +726,21 @@ def store_work_fact(project: str, rows: list[dict[str, Any]],
         raise ValueError("ни в одной строке нет id и процента")
     folder = _project_dir(project) / "work_fact"
     folder.mkdir(parents=True, exist_ok=True)
-    path = _inside(folder, f"{day}.json")
-    stored = []
-    if path.exists():
-        stored = json.loads(path.read_text(encoding="utf-8")).get("rows", [])
-    merged = {row["id"]: row for row in stored}
-    merged.update({row["id"]: row for row in cleaned})
-    path.write_text(json.dumps({"taken_at": day, "rows": list(merged.values())},
-                               ensure_ascii=False), encoding="utf-8")
+    import developaid_schedule_versions as versions
+    with versions.lock(_project_dir(project)/'baseline'):
+        selected = _baseline_state(project, day)
+        if ((selected['revision'] and not expected_source_sha256)
+                or (expected_source_sha256 and expected_source_sha256 != selected['source_sha256'])):
+            raise ValueError('Утверждённый план изменился. Обновите срез перед записью процента.')
+        suffix = f".{selected['source_sha256']}" if selected['revision'] else ''
+        path = _inside(folder, f"{day}{suffix}.json")
+        stored = []
+        if path.exists():
+            stored = json.loads(path.read_text(encoding="utf-8")).get("rows", [])
+        merged = {row["id"]: row for row in stored}
+        merged.update({row["id"]: row for row in cleaned})
+        versions._atomic(path, json.dumps({'taken_at': day, 'rows': list(merged.values()),
+                                         'source_sha256': selected['source_sha256']}, ensure_ascii=False).encode())
     return {"taken_at": day, "works": len(cleaned)}
 
 
@@ -633,13 +762,13 @@ _FLOOR_MONOLITH = re.compile(
 
 
 def close_completed_stage(project: str, object_query: str,
-                          taken_at: Any) -> dict[str, Any]:
+                          taken_at: Any, *, expected_source_sha256: str = '') -> dict[str, Any]:
     """Экспертная разметка: закрыть сотней монолитный цикл объекта.
 
     Проценты пишутся точечными фактами поверх графика — сам baseline не
     трогается, и разметку видно снимком: кто, когда и что закрыл.
     """
-    baseline = _read_baseline_gpr(project)
+    baseline = _read_baseline_gpr(project, _iso(taken_at))
     query = str(object_query or "").strip().lower()
     rows = []
     for work in baseline["works"]:
@@ -657,7 +786,7 @@ def close_completed_stage(project: str, object_query: str,
                      "status": "Завершено (экспертная разметка)"})
     if not rows:
         return {"taken_at": _iso(taken_at), "works": 0}
-    return store_work_fact(project, rows, taken_at)
+    return store_work_fact(project, rows, taken_at, expected_source_sha256=expected_source_sha256)
 
 
 def work_facts(project: str, upto: str = "") -> dict[str, dict[str, Any]]:
@@ -668,9 +797,13 @@ def work_facts(project: str, upto: str = "") -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
     items = sorted(folder.glob("*.json"))
     if upto:
-        items = [item for item in items if item.stem <= upto]
+        items = [item for item in items if item.stem.split('.', 1)[0] <= upto]
     for path in items:
-        for row in json.loads(path.read_text(encoding="utf-8")).get("rows", []):
+        payload = json.loads(path.read_text(encoding='utf-8'))
+        if not _fact_matches_baseline(project, upto or datetime.date.today().isoformat(),
+                                      path.stem.split('.', 1)[0], payload.get('source_sha256') or ''):
+            continue
+        for row in payload.get("rows", []):
             # The file name is the decision date; keep it as the value's origin.
             out[str(row.get("id"))] = dict(row, recorded_day=path.stem.split(".", 1)[0])
     return out
@@ -687,15 +820,15 @@ def latest_schedule_fact(project: str, upto: str = "") -> dict[str, Any] | None:
     except ValueError:
         parsed = {"works": []}
     if not parsed["works"]:
-        packages = _schedule_packages(project, data)
+        packages = _schedule_packages(project, data, upto)
         if packages is not None:
             parsed = {"works": packages.pop("works"), "packages": packages}
     parsed["taken_at"] = path.stem
     return parsed
 
 
-def _read_baseline_gpr(project: str) -> dict[str, Any]:
-    path = _baseline_file(project)
+def _read_baseline_gpr(project: str, cut: Any = "") -> dict[str, Any]:
+    path = _baseline_file(project, cut)
     if path is None:
         raise FileNotFoundError("не загружен baseline ГПР")
     data = path.read_bytes()
@@ -792,7 +925,7 @@ def _schedule_plan_fact(project: str, rss_path: Path, cut: Any) -> dict[str, Any
     cut_date = _day(cut) or _day(rss_path.stem)
     if cut_date is None:
         raise ValueError("не задана дата среза")
-    baseline = _read_baseline_gpr(project)
+    baseline = _read_baseline_gpr(project, cut_date)
     estimate = actuals.read_estimate(rss_path)
     works = actuals.read_completed_works(rss_path)
     rows = []

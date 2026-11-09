@@ -81,9 +81,9 @@ def _works(parsed: dict) -> dict[str, tuple[float | None, str]]:
     return out
 
 
-def _weekly(project: str, path: Path) -> dict[str, tuple[float | None, str]]:
+def _weekly(project: str, path: Path, cut: str = '') -> dict[str, tuple[float | None, str]]:
     stat = path.stat()
-    key = (str(path), stat.st_mtime_ns, stat.st_size)
+    key = (str(path), stat.st_mtime_ns, stat.st_size, monitor._baseline_state(project, cut)['source_sha256'])
     if key not in _CACHE:
         data = path.read_bytes()
         try:
@@ -91,7 +91,7 @@ def _weekly(project: str, path: Path) -> dict[str, tuple[float | None, str]]:
         except ValueError:
             parsed = {"works": []}
         if not parsed.get("works"):
-            packages = monitor._schedule_packages(project, data)
+            packages = monitor._schedule_packages(project, data, cut)
             parsed = {"works": (packages or {}).get("works") or []}
         if len(_CACHE) > 64:
             _CACHE.clear()
@@ -99,6 +99,7 @@ def _weekly(project: str, path: Path) -> dict[str, tuple[float | None, str]]:
     return _CACHE[key]
 
 
+@monitor.approved_schedule_read
 def history(project: str, cut: dt.date) -> dict[str, list[tuple[dt.date, float, str]]]:
     """Dated GPR percents per work up to the cut: (date, progress, origin)."""
     out: dict[str, list[tuple[dt.date, float, str]]] = {}
@@ -109,9 +110,8 @@ def history(project: str, cut: dt.date) -> dict[str, list[tuple[dt.date, float, 
 
     folder = monitor._project_dir(project)
     try:
-        baseline = monitor._read_baseline_gpr(project)
-        meta = json.loads((folder / "baseline" / "meta.json").read_text(encoding="utf-8"))
-        base_day = _day(meta.get("taken_at"))
+        baseline = monitor._read_baseline_gpr(project, cut)
+        base_day = _day(monitor._baseline_state(project, cut)['taken_at'])
     except (OSError, ValueError, FileNotFoundError):
         baseline, base_day = {"works": []}, None
     baseline_dates = {str(work.get('id') or work.get('wbs') or '').strip():
@@ -128,15 +128,21 @@ def history(project: str, cut: dt.date) -> dict[str, list[tuple[dt.date, float, 
         # Older files cannot enter the pace window; keep one before it as context.
         keep = [p for p in files if _day(p.stem) >= earliest] or files[-1:]
         for path in keep:
-            for tid, (progress, _status) in _weekly(project, path).items():
+            if not monitor._schedule_fact_matches_baseline(project, path, cut.isoformat()):
+                continue
+            for tid, (progress, _status) in _weekly(project, path, cut.isoformat()).items():
                 add(tid, _day(path.stem), progress, "weekly_gpr")
     manual = folder / "work_fact"
     if manual.exists():
         for path in sorted(manual.glob("*.json")):
             day = _day(path.stem.split(".", 1)[0])
             try:
-                rows = json.loads(path.read_text(encoding="utf-8")).get("rows", [])
+                payload = json.loads(path.read_text(encoding='utf-8'))
+                rows = payload.get('rows', [])
             except (OSError, ValueError):
+                continue
+            if not day or not monitor._fact_matches_baseline(project, cut.isoformat(), day.isoformat(),
+                                                             payload.get('source_sha256') or ''):
                 continue
             for row in rows:
                 add(str(row.get("id")), day, _progress(row.get("progress")), "manual")

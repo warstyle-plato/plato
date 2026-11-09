@@ -31,7 +31,7 @@ def _now():
 
 
 def _source(project, cut=""):
-    path = monitor._baseline_file(project)
+    path = monitor._baseline_file(project, cut)
     if path is None:
         import developaid_gpr_corpus as corpus_gpr
         corpus = corpus_gpr.latest(project, cut)
@@ -451,6 +451,7 @@ def _view_model(project, cut, source, snapshot, configuration, *, automatic=None
     return model
 
 
+@monitor.approved_schedule_read
 def catalog(project, cut, query="", offset=0):
     if not quantities._day(cut):
         raise PhysicalProblem("Укажите существующую дату среза.")
@@ -522,6 +523,7 @@ def save(project, source_kind, source_sha256, snapshot_id, revision, configurati
     return catalog(project, cut)
 
 
+@monitor.approved_schedule_read
 def build(project, cut):
     """Fail closed for corrupt/missing source evidence without exposing it."""
     try:
