@@ -132,6 +132,15 @@ def test_a_net_zero_group_cannot_hide_delivery_or_monetary_corrections(parts):
     assert ledgers.group_basis(parent, [child]) == ''
 
 
+@pytest.mark.parametrize('changes', [{'plan_quantity': 200}, {'completed_quantity': 50}])
+def test_matching_money_subtotal_cannot_hide_a_different_natural_plan_or_fact(changes):
+    parent = {'unit': 'м²', 'planned_amount': 1000, 'completed_amount': 500,
+              'plan_quantity': 100, 'completed_quantity': 20, **changes}
+    child = {'unit': 'м²', 'planned_amount': 1000, 'completed_amount': 500,
+             'plan_quantity': 100, 'completed_quantity': 20}
+    assert ledgers.group_basis(parent, [child]) == ''
+
+
 @pytest.mark.parametrize('label', ['По разделу Корпус 1', 'В т. ч. НДС (22%)', 'В том числе НДС'])
 def test_explicit_summary_labels_do_not_become_unitless_work_positions(label):
     wb = openpyxl.load_workbook(io.BytesIO(structured_book()))
