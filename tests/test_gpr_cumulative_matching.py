@@ -144,7 +144,7 @@ def test_multi_component_binding_requires_explicit_compatible_smr_weights():
     snap = snapshot()
     first = snap['ledgers'][0]['items'][0]
     second = copy.deepcopy(first)
-    second.update(position='1.2', name=first['name']+' второго участка', unit='шт', planned_work_amount=300,
+    second.update(position='1.2', name=first['name']+' по проекту', unit='шт', planned_work_amount=300,
                   completed_quantity=20, periods=[{'quantity': 20}], planned_amount=500)
     snap['ledgers'][0]['items'].append(second)
     result = matching.suggest(source(), snap, CUT)
@@ -179,7 +179,7 @@ def test_proven_groups_are_not_double_weighted_and_real_zero_leaf_blocks_done_cl
     group = copy.deepcopy(first)
     group.update(is_group=True, position='1', completed_quantity=0, periods=[{'quantity': 0}])
     zero = copy.deepcopy(first)
-    zero.update(position='1.3', name=first['name']+' отдельного участка', planned_work_amount=0,
+    zero.update(position='1.3', name=first['name']+' по проекту', planned_work_amount=0,
                 completed_quantity=0, periods=[{'quantity': 0}])
     snap['ledgers'][0]['items'].extend([group, zero])
     metric = matching.suggest(source(), snap, CUT)['bindings']['floor4']['metric']
@@ -263,7 +263,7 @@ def multi_snapshot(done_first=40, done_second=20, *, day=CUT, weight=700):
     first = snap['ledgers'][0]['items'][0]
     first.update(completed_quantity=done_first, periods=[{'quantity': done_first}], planned_work_amount=weight)
     second = copy.deepcopy(first)
-    second.update(position='1.2', name=first['name']+' второго участка', unit='шт',
+    second.update(position='1.2', name=first['name']+' по проекту', unit='шт',
                   planned_work_amount=300, completed_quantity=done_second, periods=[{'quantity': done_second}])
     snap['ledgers'][0]['items'].append(second)
     return snap
@@ -330,10 +330,21 @@ def test_shared_ks_conflict_blocks_group_finish_and_preserves_every_original_gpr
     assert 'отдельным работам' in work_fact['ks']['reason']
 
 
-@pytest.mark.parametrize('changes', [{'gpr': (1., .9)}, {'gpr': (1., None)}, {'exact': False}, {'weighted_unknown': True}])
+@pytest.mark.parametrize('changes', [{'gpr': (1., .9)}, {'gpr': (1., None)}, {'exact': False}])
 def test_shared_source_conflict_requires_complete_exact_link_and_a_known_common_metric(monkeypatch, tmp_path, changes):
     _, _, _, model, _ = cohort_runtime(monkeypatch, tmp_path, **changes)
     assert not model.get('source_conflicts')
+
+
+def test_known_incomplete_cohort_positions_block_all_complete_even_without_a_combined_percentage(monkeypatch, tmp_path):
+    plan, _, _, model, points = cohort_runtime(monkeypatch, tmp_path, weighted_unknown=True)
+    assert model['source_cohorts'][0]['model']['progress'] is None
+    assert model['source_conflicts'][0]['progress'] is None
+    assert len(model['source_conflicts'][0]['incomplete_components']) == 2
+    assert 'общий процент не выделен' in model['source_conflicts'][0]['reason']
+    for measured in model['tasks']:
+        result = forecast.work(plan['tasks'][measured['task_id']], points[measured['task_id']], dt.date.fromisoformat(CUT), measured)
+        assert result['progress'] == 1 and result['forecast_finish'] is None
 
 
 def test_catalog_and_runtime_matcher_use_the_same_canonical_rows_even_with_raw_date_identity():
@@ -353,3 +364,86 @@ def test_new_explicit_scope_changes_the_stable_position_key_and_prevents_history
     before, after = snapshot(), snapshot(object_scope='Корпус 5')
     first, second = before['ledgers'][0], after['ledgers'][0]
     assert progress.position_identity(first, first['items'][0]) != progress.position_identity(second, second['items'][0])
+
+
+@pytest.mark.parametrize('target,reported,parent', [
+    ('Закупка материалов', 'Устройство отделки фасадов вертикальных поверхностей',
+     'Устройство отделки фасадов вертикальных поверхностей'),
+    ('Устройство ростверков', 'Устройство монолитной железобетонной фундаментной плиты', ''),
+    ('4-ый этаж верт констр', 'Устройство монолитных железобетонных вертикальных стен 4-го этажа', ''),
+    ('4-ый этаж верт констр', 'Устройство монолитных железобетонных вертикальных конструкций 3/4 этажа', ''),
+    ('4-ый этаж верт констр', 'Устройство монолитных железобетонных вертикальных конструкций с 3 по 4 этаж', ''),
+    ('Монтаж ИТП №1. Тепломеханическая часть', 'Монтаж ИТП №1/2. Тепломеханическая часть', ''),
+    ('Монтаж ИТП №1. Тепломеханическая часть', 'Монтаж ИТП №1 и 2. Тепломеханическая часть', ''),
+    ('Устройство фундаментной плиты захватка 1', 'Устройство фундаментной плиты захватки 1/2', ''),
+    ('Устройство фундаментной плиты захватка 1', 'Устройство фундаментной плиты захватки 1–2', ''),
+    ('Устройство полов МОП 4 этажа', 'Устройство полов квартир 4 этажа', ''),
+    ('Устройство полов из керамической плитки', 'Устройство полов из бетона', ''),
+    ('Устройство отделки стен штукатуркой', 'Устройство отделки стен окраской', ''),
+    ('4-ый этаж верт констр секция А', 'Устройство монолитных железобетонных вертикальных конструкций 4 этажа секция Б', ''),
+])
+def test_whole_operation_and_every_named_part_must_agree(target, reported, parent):
+    plan = source(task(name=target, parent_path=[{'name': parent}] if parent else []))
+    snap = snapshot()
+    snap['ledgers'][0]['items'][0]['name'] = reported
+    result = matching.suggest(plan, snap, CUT)
+    assert not result['bindings'] and not result['cohorts']
+    assert result['coverage']['candidate_positions'] == 1
+
+
+@pytest.mark.parametrize('target,reported,parent', [
+    ('Устройство ростверков', 'Устройство ростверков', ''),
+    ('Устройство фундаментной плиты', 'Устройство фундаментной плиты', ''),
+    ('4-ый этаж верт констр', 'Устройство монолитных железобетонных вертикальных конструкций (стен, колонн и пилонов) 4-го этажа', ''),
+    ('4-ый этаж', 'Устройство монолитных железобетонных вертикальных конструкций 4-го этажа',
+     'Устройство монолитных железобетонных вертикальных конструкций'),
+    ('Устройство полов МОП 4 этажа', 'Устройство полов МОП 4 этажа', ''),
+])
+def test_explicit_complete_equivalent_operations_still_bind(target, reported, parent):
+    plan = source(task(name=target, parent_path=[{'name': parent}] if parent else []))
+    snap = snapshot()
+    snap['ledgers'][0]['items'][0]['name'] = reported
+    result = matching.suggest(plan, snap, CUT)
+    assert result['bindings']['floor4']['metric']['ratio'] == .4
+
+
+@pytest.mark.parametrize('plan_quantity,unit,expected', [(100, 'м3', .6), (120, 'м3', None), (100, 'шт', None)])
+def test_annual_typography_is_normalized_but_a_changed_full_plan_or_unit_is_not_an_extra_weight(plan_quantity, unit, expected):
+    snap = snapshot(contract_date='2024-01-01')
+    annual = copy.deepcopy(snap['ledgers'][0])
+    annual['period_year'] = 2025
+    annual['items'][0].update(plan_quantity=plan_quantity, unit=unit, completed_quantity=20, periods=[{'quantity': 20}])
+    snap['ledgers'].append(annual)
+    result = matching.suggest(source(), snap, CUT)
+    if expected is None:
+        assert not result['bindings']
+        assert result['candidates'][0]['reason'] in {'annual_plan_changed', 'annual_unit_changed'}
+    else:
+        assert result['bindings']['floor4']['metric']['ratio'] == pytest.approx(expected)
+        assert len(result['configuration']['components']) == 1
+
+
+def test_saved_parent_and_one_child_keep_facts_but_cannot_become_a_partial_child_percentage():
+    snap = snapshot()
+    parent = snap['ledgers'][0]['items'][0]
+    parent.update(is_group=True, plan_quantity=200, completed_quantity=80, periods=[{'quantity': 80}],
+                  planned_work_amount=1400, source={'filename': 'synthetic.xlsx', 'sheet': 'КС', 'row': 10})
+    child = copy.deepcopy(parent)
+    child.update(position='1.1', is_group=False, parent_row=10, plan_quantity=100,
+                 planned_work_amount=700, source={'filename': 'synthetic.xlsx', 'sheet': 'КС', 'row': 11})
+    other = copy.deepcopy(child)
+    other.update(position='1.2', completed_quantity=0, periods=[{'quantity': 0}],
+                 source={'filename': 'synthetic.xlsx', 'sheet': 'КС', 'row': 12})
+    snap['ledgers'][0]['items'].extend([child, other])
+    configuration = {'tasks': [{'task_id': 'floor4', 'mode': 'quantities', 'scope_confirmed': True, 'actual_finish': ''}],
+        'components': [{'task_id': 'floor4', 'component_id': 'total', 'item_ids': ['0:0']},
+                       {'task_id': 'floor4', 'component_id': 'one leaf', 'item_ids': ['0:1']}], 'note': 'Прежнее решение'}
+    before = copy.deepcopy(configuration)
+    measured, = physical.evaluate(source(), snap, configuration, CUT)['tasks']
+    assert measured['progress'] is None and measured['quantity_metric']['ratio'] is None
+    assert measured['quantity_metric']['overlapping_item_ids'] == ['0:1']
+    assert [component['progress'] for component in measured['components']] == [.4, .8]
+    assert measured['requires_reconciliation'] and measured['forecast_finish'] is None
+    assert configuration == before
+    assert not any(fact['kind'] == 'weighted_quantity' for fact in report.model(
+        {'rnv': {'state': 'unknown'}, 'physical': {'tasks': [measured]}})['facts'])

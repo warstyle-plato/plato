@@ -14,8 +14,10 @@ import re
 import developaid_cumulative_progress as progress
 import developaid_monitor_contract_links as links
 import developaid_monitor_contracts as contracts
+import developaid_schedule_physical as quantities
 
-RULE_VERSION = 1
+RULE_VERSION = 2
+SCOPE_FIELDS = ('locations', 'floors', 'zones', 'systems', 'materials', 'operation_parts')
 
 
 def _text(value):
@@ -60,11 +62,11 @@ def _locations(text):
 def _zones(text):
     values = set()
     text = _text(text)
-    groups = [match[1] for match in re.finditer(r'захватк[аиоуе]?\s*([\d., и-]+)', text)]
+    groups = [match[1] for match in re.finditer(r'захватк[аиоуе]?\s*([\d., и/–—-]+)', text)]
     groups.extend(match[1] for match in re.finditer(r'(?<![\w.])([\d]+(?:[., ]+[\d]+)*)\s*захватк', text))
     for group in groups:
         # Ranges are retained as ambiguous rather than guessed as addresses.
-        if '-' in group:
+        if re.search(r'[-–—/]', group):
             return frozenset(), True
         values.update(re.findall(r'\d+(?:\.\d+)?', group))
     return frozenset(values), False
@@ -72,10 +74,10 @@ def _zones(text):
 
 def _systems(text):
     text = _text(text)
-    matches = re.findall(r'\bитп\s*(?:[-№]\s*)?(\d+)?', text)
+    matches = re.findall(r'\bитп\s*(?:[-№]\s*)?(\d+(?:\s*(?:[/,;]|и)\s*\d+)*)?', text)
     if not matches and 'индивидуальный тепловой пункт' not in text:
         return frozenset()
-    return frozenset('itp:'+number if number else 'itp' for number in matches) or frozenset({'itp'})
+    return frozenset('itp:'+number for group in matches for number in re.findall(r'\d+', group)) or frozenset({'itp'})
 
 
 def _operation(text):
@@ -89,7 +91,7 @@ def _operation(text):
         return 'monolith_vertical'
     if re.search(r'этаж\s+пп\b|^устройство\s+монолитн\w*\s+железобетонн\w*\s+горизонтальн', name):
         return 'monolith_horizontal'
-    if re.search(r'^устройство\s+(?:монолитн\w*\s+)?(?:железобетонн\w*\s+)?(?:ростверк|фундаментн\w*\s+плит)', name):
+    if re.search(r'^устройство\s+(?:монолитн\w*\s+)?(?:железобетонн\w*\s+)?(?:ростверк|фундаментн\w*\s+плит|фундамент(?:ов|ы|а|ами|ах)?\b)', name):
         return 'foundations'
     if re.search(r'^срубка\s+оголовков\s+свай|^вырубка\s+бетона\s+из\s+арматурного\s+каркаса\s+свай', name):
         return 'pile_head_cut'
@@ -123,13 +125,56 @@ def _operation(text):
     return None
 
 
-def _descriptor(name, context, location_context=(), *, hierarchy_ambiguous=False):
+def _operation_parts(text, family):
+    """Preserve whole-operation composition instead of collapsing subtypes."""
+    name = _text(text)
+    if family == 'foundations':
+        parts = set()
+        if re.search(r'ростверк', name):
+            parts.add('pile_caps')
+        if re.search(r'фундаментн\w*\s+плит', name):
+            parts.add('foundation_slabs')
+        if re.search(r'\bфундамент(?:ов|ы|а|ами|ах)?\b', name):
+            parts.add('footings')
+        return frozenset(parts)
+    if family == 'monolith_vertical':
+        parts = {part for part, pattern in [('walls', r'\bстен'), ('columns', r'колонн'), ('pylons', r'пилон')]
+                 if re.search(pattern, name)}
+        return frozenset(parts) if parts else frozenset({'walls', 'columns', 'pylons'})
+    if family == 'monolith_horizontal':
+        parts = {part for part, pattern in [('plates', r'плит\w*\s+(?:перекрыт|покрыт)'), ('beams', r'\bбал[ко]')]
+                 if re.search(pattern, name)}
+        return frozenset(parts) if parts else frozenset({'plates', 'beams'})
+    if family in {'itp_thermomechanical', 'itp_automation'}:
+        # Closed whole-system aliases; arbitrary extra operations are retained.
+        name = re.sub(r'^раздел\s*(?:№\s*)?[\d.]+\s*[.:]?\s*', '', name)
+        name = name.replace('индивидуальный тепловой пункт', 'итп')
+        name = re.sub(r'^(?:монтаж|устройство)\s+', '', name)
+        name = re.sub(r'\bитп\s*(?:№\s*)?\d+(?:\s*(?:[/,;]|и)\s*\d+)*', 'итп', name)
+        name = re.sub(r'[.,:;]', ' ', name)
+    # A broad family does not equate МОП with apartments, tile with concrete,
+    # painting with plastering, or any other unrecognised named composition.
+    return frozenset({'operation:'+_text(name)}) if family else frozenset()
+
+
+def _structural_task_name(name):
+    # Only a whole structural label may inherit its operation from WBS.
+    # A procurement, inspection or another unnamed activity cannot become a
+    # construction operation merely because its parent is a construction row.
+    return bool(re.fullmatch(r'(?:\d+(?:[- ](?:ый|ой|ий|го|й))?\s*этаж|этаж\s*\d+|тех(?:нический)?\s*этаж)', _text(name)))
+
+
+def _descriptor(name, context, location_context=(), *, hierarchy_ambiguous=False, inherit_operation=True):
     names = [name, *reversed(context)]
-    family = next((value for text in names if (value := _operation(text))), None)
-    if re.search(r'демонтаж|разборк|снятие|этаж\s+верт\s+пп\b', _text(name)):
+    operations = names if inherit_operation else [name]
+    operation_source = next((text for text in operations if _operation(text)), '')
+    family = _operation(operation_source)
+    if re.search(r'демонтаж|разборк|снятие|этаж\s+верт\s+пп\b|^(?:закупк|поставк|доставк|транспортировк|приемк|приёмк|проектирован|контроль|осмотр|обследован)', _text(name)):
         family = None
     location, floors, zones, systems = frozenset(), frozenset(), frozenset(), frozenset()
-    ambiguous = hierarchy_ambiguous
+    partial_name = re.sub(r'тепломеханическ\w*\s+часть', '', _text(name)) if family == 'itp_thermomechanical' else _text(name)
+    ambiguous = hierarchy_ambiguous or bool(re.search(
+        r'\bкроме\b|за исключением|не включая|частично|\bчасть\b|в части', partial_name))
     for text in [name, *reversed(context), *location_context]:
         found, bad = _locations(text)
         if found and not location:
@@ -156,7 +201,10 @@ def _descriptor(name, context, location_context=(), *, hierarchy_ambiguous=False
             ambiguous = ambiguous or found_systems != frozenset({'itp'})
         if (re.search(r'(?<!\d)[-−]\s*\d+[^.;]{0,40}\bэтаж|этаж\w*\s*[-−]\s*\d|подземн\w*\s+этаж', _text(text))
                 or (re.search(r'\bэтаж', _text(text)) and not found_floors)
-                or re.search(r'\bитп\s*(?:№\s*)?[a-zа-я]\b', _text(text))):
+                or re.search(r'\bитп\s*(?:№\s*)?[a-zа-я]\b', _text(text))
+                or re.search(r'\d+(?:-го)?\s*(?:/|по|до|или)\s*\d+(?:-го)?\s*этаж', _text(text))
+                or re.search(r'\bитп\s*(?:№\s*)?\d+\s*[-–—]\s*\d+', _text(text))
+                or re.search(r'\b(?:участк|секци|зон[аыуе]\b|осях\b|осям\b|оси\b|отметк)', _text(text))):
             ambiguous = True
     # A cross-product of floors and several buildings is not a proved scope.
     if len(location) > 1 and floors:
@@ -170,14 +218,18 @@ def _descriptor(name, context, location_context=(), *, hierarchy_ambiguous=False
                 materials = found
             elif found and materials != found:
                 ambiguous = True
-    return {'family': family, 'locations': location, 'floors': floors, 'zones': zones,
+    parts = _operation_parts(operation_source, family)
+    if family and not parts:
+        ambiguous = True
+    return {'family': family, 'operation_parts': parts, 'locations': location, 'floors': floors, 'zones': zones,
             'systems': systems, 'materials': materials, 'ambiguous': ambiguous}
 
 
 def task_descriptor(task):
     context = _path(task.get('parent_path')) + [task.get('section') or '']
     return _descriptor(task.get('name') or '', context, [task.get('object') or ''],
-                       hierarchy_ambiguous=task.get('hierarchy_ambiguous') is True)
+                       hierarchy_ambiguous=task.get('hierarchy_ambiguous') is True,
+                       inherit_operation=_structural_task_name(task.get('name') or ''))
 
 
 def item_descriptor(ledger, item):
@@ -188,7 +240,7 @@ def item_descriptor(ledger, item):
 
 
 def _scope_key(descriptor):
-    return tuple(tuple(sorted(descriptor[field])) for field in ('locations', 'floors', 'zones', 'systems', 'materials'))
+    return tuple(tuple(sorted(descriptor[field])) for field in SCOPE_FIELDS)
 
 
 def _equal_scope(source, target):
@@ -212,13 +264,13 @@ def _cohort_scope(source, targets):
         return False
     # Every declared source dimension must be exactly covered by the target
     # set. An omitted target dimension cannot allocate an explicit source part.
-    for field in ('locations', 'floors', 'zones', 'systems', 'materials'):
+    for field in SCOPE_FIELDS:
         if source[field] != frozenset().union(*(target[field] for target in targets)):
             return False
     # A union alone would accept duplicate leaves or an unknown relationship
     # between several floor/zone dimensions. Require a simple partition of one
     # declared dimension; every other dimension must be identical.
-    dimensions = ('locations', 'floors', 'zones', 'systems', 'materials')
+    dimensions = SCOPE_FIELDS
     partitioned = [field for field in dimensions if any(target[field] != source[field] for target in targets)]
     if len(partitioned) != 1:
         return False
@@ -241,13 +293,21 @@ def _compile(rows, tid, cut):
     for row in rows:
         item = row['item']
         component_key = (contracts._norm(item.get('position')), contracts._norm(item.get('name')),
-            contracts._norm(item.get('scope')), str(item.get('unit') or ''), contracts._number(item.get('plan_quantity')))
+                         contracts._norm(item.get('scope')))
         annual[component_key].append(row)
     invalid = None
     for component_key, annual_rows in annual.items():
         years = [row['ledger'].get('period_year') for row in annual_rows]
         group_invalid = ('duplicate_annual_position' if len(set(years)) != len(years)
                          or any(type(year) is not int or year <= 0 for year in years) else None)
+        plans = [contracts._number(row['item'].get('plan_quantity')) for row in annual_rows]
+        if any(plan is None or plan <= 0 for plan in plans):
+            group_invalid = group_invalid or 'plan_unknown'
+        elif any(abs(plan-plans[0]) > max(1e-6, abs(plans[0])*1e-7) for plan in plans):
+            group_invalid = group_invalid or 'annual_plan_changed'
+        units = {quantities._unit(row['item'].get('unit')) for row in annual_rows}
+        if len(units) != 1 or not all(units):
+            group_invalid = group_invalid or 'annual_unit_changed'
         if any(type(year) is int and year > int(cut[:4]) for year in years):
             group_invalid = group_invalid or 'future_annual_source'
         done = []
@@ -340,7 +400,7 @@ def _suggest(source, snapshot, cut, records):
         source_components, source_members, source_metric, source_error = _compile(rows, group_id, cut)
         details = {'item_ids': [row['item_id'] for row in rows], 'operation': family,
                    'source_metric': source_metric, 'source_components': source_components,
-                   'scope': {field: sorted(descriptor[field]) for field in ('locations', 'floors', 'zones', 'systems', 'materials')},
+                   'scope': {field: sorted(descriptor[field]) for field in SCOPE_FIELDS},
                    'candidate_task_ids': candidates, 'reason': reason,
                    'source_scope': rows[0]['item'].get('scope') or '',
                    'source_name': rows[0]['item'].get('name') or ''}

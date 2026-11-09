@@ -218,6 +218,7 @@ def evaluate(source, snapshot, configuration, cut, *, observation_index=()):
                                      items, views, snapshot, cut, observation_index)
                   for component in configuration["components"]]
     observation_date = cumulative_progress.snapshot_date(snapshot)
+    hierarchy = cumulative_progress.source_hierarchy(views)
     for component, binding in zip(components, configuration["components"]):
         selected = [views[key] for key in binding["item_ids"] if key in views]
         if not selected:
@@ -228,6 +229,8 @@ def evaluate(source, snapshot, configuration, cut, *, observation_index=()):
             if all(keys) else [snapshot.get("snapshot_id"), binding["item_ids"]], sort_keys=True).encode()).hexdigest()
         component["quantity_member"] = {"member_key": member_key, "item_keys": keys,
             "progress": component.get("progress"), "unit": component.get("unit") or latest.get("unit"),
+            "is_group": any(view.get("is_group") is True for view in selected),
+            "source_rows": [hierarchy[key] for key in binding["item_ids"] if key in hierarchy],
             **{field: latest.get(field) for field in
                ("planned_work_amount", "planned_cost_split", "planned_work_amount_basis", "valuation_key")}}
         if component.get("observation_history"):
@@ -264,7 +267,7 @@ def evaluate(source, snapshot, configuration, cut, *, observation_index=()):
                     result["reason"] = next((c["reason"] for c in own if c.get("reason")),
                                             "Нет подтверждённых натуральных объёмов этой работы.")
                 if len(own) > 1:
-                    metric = cumulative_progress.aggregate_quantities([c.get("quantity_member") or {} for c in own])
+                    metric = cumulative_progress.aggregate_bound_quantities([c.get("quantity_member") or {} for c in own])
                     result["quantity_metric"] = metric
                     if metric["ratio"] is not None:
                         result.update(progress=metric["ratio"], progress_origin="cumulative_statement",
@@ -351,17 +354,24 @@ def _view_model(project, cut, source, snapshot, configuration, *, automatic=None
         for cohort in model["source_cohorts"]:
             measurement = cohort.get("model") or {}
             ratio = measurement.get("progress")
-            incomplete = ratio is not None and (ratio < 1.0-1e-7 or measurement.get("requires_reconciliation"))
+            incomplete_components = [{"component_id": component.get("component_id"),
+                "progress": component.get("progress"),
+                "date": component.get("observation_date") or component.get("period_end")}
+                for component in measurement.get("components") or [] if component.get("progress") is not None
+                and (component["progress"] < 1.0-1e-7 or component.get("requires_reconciliation"))]
+            incomplete = bool(incomplete_components) or ratio is not None and (
+                ratio < 1.0-1e-7 or measurement.get("requires_reconciliation"))
             readings = {tid: (gpr_history.get(tid) or [])[-1] for tid in cohort["task_ids"] if gpr_history.get(tid)}
             if (not incomplete or len(readings) != len(cohort["task_ids"])
                     or any(reading[1] < gpr_forecast.DONE for reading in readings.values())):
                 continue
-            reason = ("В ГПР все работы общей группы отмечены как завершённые, а по ведомости от "
-                      + str(measurement.get("progress_date") or "") + " — " + f"{ratio*100:g}%"
-                      + ("; объёмы требуют сверки." if measurement.get("requires_reconciliation") else ".")
-                      + " Распределение по отдельным работам не задано; оценка окончания снята до сверки.")
+            reason = ("В ГПР все работы общей группы отмечены как завершённые. "
+                      + ("В общей КС есть незавершённые позиции; общий процент не выделен. " if ratio is None else
+                         "По ведомости от " + str(measurement.get("progress_date") or "") + " — " + f"{ratio*100:g}%. ")
+                      + "Распределение по отдельным работам не задано; оценка окончания снята до сверки.")
             conflict = {"state": "source_conflict", "scope": "source_cohort", "cohort_id": cohort["cohort_id"],
                         "task_ids": list(cohort["task_ids"]), "progress": ratio, "date_basis": "snapshot",
+                        "incomplete_components": incomplete_components,
                         "date": measurement.get("progress_date"), "reason": reason,
                         "action": "Сверьте завершение работ и общий объём КС по этой группе."}
             cohort["source_conflict"] = conflict

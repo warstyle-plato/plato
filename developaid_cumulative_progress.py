@@ -139,6 +139,49 @@ def aggregate_quantities(members):
                 complete_coverage=True, planned_work_amount=total, weight_fingerprint=fingerprint)
 
 
+def source_hierarchy(views):
+    """Read exact same-ledger ancestry; no name or row-number guess."""
+    rows = {}
+    for key, view in views.items():
+        source = view.get('source') or {}
+        coordinate = (key.split(':', 1)[0], source.get('filename'), source.get('sheet'), source.get('row'))
+        rows.setdefault(coordinate, []).append(key)
+    result = {}
+    for key, view in views.items():
+        source = view.get('source') or {}
+        coordinate = (key.split(':', 1)[0], source.get('filename'), source.get('sheet'), source.get('row'))
+        ancestors, seen, parent = [], {coordinate}, view.get('parent_row')
+        while parent is not None:
+            parent_coordinate = (*coordinate[:3], parent)
+            matches = rows.get(parent_coordinate) or []
+            if parent_coordinate in seen or len(matches) != 1:
+                break
+            ancestors.append(parent_coordinate)
+            seen.add(parent_coordinate)
+            parent = views[matches[0]].get('parent_row')
+        result[key] = {'item_id': key, 'source': dict(source), 'coordinate': coordinate,
+                       'parent_row': view.get('parent_row'), 'ancestors': ancestors,
+                       'is_group': view.get('is_group') is True}
+    return result
+
+
+def aggregate_bound_quantities(members):
+    """Do not silently turn a saved aggregate/child selection into one child."""
+    result = aggregate_quantities(members)
+    groups = [member for member in members if member.get('is_group') is True]
+    if len(members) <= 1 or not groups:
+        return result
+    group_rows = {tuple(row['coordinate']) for group in groups for row in group.get('source_rows') or []
+                  if row.get('is_group') is True}
+    overlaps = [row.get('item_id') for member in members for row in member.get('source_rows') or []
+                if any(tuple(parent) in group_rows for parent in row.get('ancestors') or [])]
+    reason = ('В привязке одновременно выбраны общий итог КС и его отдельные позиции; '
+              'общий процент не рассчитан до подтверждения полного отдельного состава.' if overlaps else
+              'В привязке есть общий итог КС; общий процент не рассчитан до его отдельной декомпозиции.')
+    return dict(result, ratio=None, complete_coverage=False, all_complete=False,
+                requires_reconciliation=True, overlapping_item_ids=overlaps, reason=reason)
+
+
 def project_configuration(previous, current, configuration):
     """Carry an explicit mapping only through unique exact source positions.
 
