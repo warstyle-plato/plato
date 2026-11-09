@@ -164,10 +164,16 @@ def _observed_component(component, result, items, views, snapshot, cut, observat
         return dict(result, progress=None, known=False, forecast_finish=None, requires_reconciliation=True,
                     unverified_duplicate_item_ids=suspect,
                     reason='Отметка о копии строки не подтверждена полным составом источника; прежняя привязка требует проверки.')
-    if result.get("progress") is not None or result.get('excluded_duplicate_item_ids'):
+    if result.get('excluded_duplicate_item_ids'):
         return result
     selected = [items.get(key) for key in component["item_ids"]]
     observed = [views.get(key) for key in component["item_ids"]]
+    qualification = cumulative_progress.annual_component_reason(observed)
+    def unqualified():
+        return dict(result, known=False, progress=None, plan_quantity=None, completed_quantity=None,
+                    forecast_finish=None, rate_per_day=None, requires_reconciliation=True, reason=qualification)
+    if result.get("progress") is not None:
+        return unqualified() if qualification else result
     day = cumulative_progress.snapshot_date(snapshot)
     if not day or day > cut or not selected or any(row is None for row in selected + observed):
         return result
@@ -178,6 +184,8 @@ def _observed_component(component, result, items, views, snapshot, cut, observat
             or any(abs(p-plans[0]) > max(1e-6, plans[0]*1e-7) for p in plans)
             or len(set(years)) != len(years) or any(type(y) is not int or y <= 0 or y > int(day[:4]) for y in years)):
         return result
+    if qualification:
+        return unqualified()
     if len(selected) > 1:
         # The protected canonical views retain customer and raw-date evidence;
         # _items is a minimal quantity dictionary and cannot qualify identity.

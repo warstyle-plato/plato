@@ -58,6 +58,28 @@ def annual_work_identity(ledger, item):
         ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
 
 
+def annual_component_reason(rows):
+    """Qualify one annual work before adding its execution quantities.
+
+    Preceding headings are not ancestry and cannot prove independence. If
+    they conflict without an equal proved section path, continuity is unknown.
+    A manual full-package checkbox cannot turn different source works into one
+    annual component with one denominator.
+    """
+    if len(rows) < 2:
+        return ''
+    keys = {row.get('annual_work_key') if row else None for row in rows}
+    if None in keys or len(keys) != 1:
+        return 'Строки не подтверждают один и тот же полный объём разных лет: различается или неизвестна идентичность работы КС.'
+    if not all(row.get('section_path') for row in rows):
+        contexts = {tuple((contracts._norm(entry.get('position')), contracts._norm(entry.get('name')))
+                          if isinstance(entry, dict) else ('', contracts._norm(entry))
+                          for entry in row.get('context_headings') or []) for row in rows}
+        if len(contexts) > 1:
+            return 'Различаются окружающие заголовки исходных строк; без доказанного общего раздела связь лет не подтверждена.'
+    return ''
+
+
 def position_identity(ledger, item):
     """A bounded fingerprint, not a fuzzy work-name or row-number match."""
     customer, contractor, number, contract_date = contract_identity(ledger)
