@@ -145,7 +145,8 @@ def _apply_gpr(project: str, view: dict[str, Any], cut: datetime.date) -> dict[s
     rows = schedule.get("rows") or []
     physical = gpr_physical.build(project, cut.isoformat())
     ks = {task["task_id"]: task for task in physical.get("tasks") or []
-          if task.get("scope_confirmed") and task.get("mode") in {"quantities", "completed"}}
+          if (task.get("scope_confirmed") and task.get("mode") in {"quantities", "completed"})
+          or (task.get("source_conflict") or {}).get("scope") == "source_cohort"}
     works = gpr_forecast.forecasts(project, cut, rows, ks)
     stalled = []
     for row in rows:

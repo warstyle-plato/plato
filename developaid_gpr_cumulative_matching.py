@@ -1,0 +1,415 @@
+"""Grounded initial GPR/KS associations, with explicit source-scope cohorts.
+
+Closed construction-operation rules and complete, equal location scopes can
+form an automatic leaf binding. Lexical similarity is not an authorization.
+Shared source volumes stay one cohort and are never copied to every floor.
+"""
+from __future__ import annotations
+
+from collections import defaultdict
+import hashlib
+import json
+import re
+
+import developaid_cumulative_progress as progress
+import developaid_monitor_contract_links as links
+import developaid_monitor_contracts as contracts
+
+RULE_VERSION = 1
+
+
+def _text(value):
+    return ' '.join(str(value or '').casefold().replace('ё', 'е').split())
+
+
+def _label(value):
+    return (value.get('name') or value.get('text') or '') if isinstance(value, dict) else str(value or '')
+
+
+def _path(values):
+    return [_label(value) for value in values or [] if _label(value)]
+
+
+def _floors(text):
+    text = _text(text)
+    text = re.sub(r'(\d+)[- ](?:ый|ой|ий|го|й|ого)\b', r'\1', text)
+    values = set()
+    chunks = [match[1] for match in re.finditer(
+        r'(?<![\d\-–—−])(\d{1,2}(?:\s*(?:[-–—,;]|и)\s*\d{1,2})*)\s*этаж', text)]
+    chunks += [match[1] for match in re.finditer(
+        r'этаж[аи]?\s*(\d{1,2}(?:\s*(?:[-–—,;]|и)\s*\d{1,2})*)', text)]
+    for chunk in chunks:
+        for match in re.finditer(r'(\d{1,2})(?:\s*[-–—]\s*(\d{1,2}))?', chunk):
+            first, last = int(match[1]), int(match[2] or match[1])
+            if 0 < first <= last <= 100:
+                values.update(str(number) for number in range(first, last+1))
+    if re.search(r'тех(?:ническ\w*)?\s*этаж', text):
+        values.add('technical')
+    return frozenset(values)
+
+
+def _locations(text):
+    text = re.sub(r'\bкорпус(?:е|у|ом|ах)\b', 'корпус', _text(text))
+    corps, ambiguous = links._scope_info(text)
+    values = {'corpus:'+number for number in corps}
+    if re.search(r'автостоян|паркинг|стилобат', text):
+        values.add('parking')
+    return frozenset(values), ambiguous
+
+
+def _zones(text):
+    values = set()
+    text = _text(text)
+    groups = [match[1] for match in re.finditer(r'захватк[аиоуе]?\s*([\d., и-]+)', text)]
+    groups.extend(match[1] for match in re.finditer(r'(?<![\w.])([\d]+(?:[., ]+[\d]+)*)\s*захватк', text))
+    for group in groups:
+        # Ranges are retained as ambiguous rather than guessed as addresses.
+        if '-' in group:
+            return frozenset(), True
+        values.update(re.findall(r'\d+(?:\.\d+)?', group))
+    return frozenset(values), False
+
+
+def _systems(text):
+    text = _text(text)
+    matches = re.findall(r'\bитп\s*(?:[-№]\s*)?(\d+)?', text)
+    if not matches and 'индивидуальный тепловой пункт' not in text:
+        return frozenset()
+    return frozenset('itp:'+number if number else 'itp' for number in matches) or frozenset({'itp'})
+
+
+def _operation(text):
+    """A deliberately closed operation taxonomy, independent of project names."""
+    name = _text(text)
+    name = re.sub(r'^\((?=[^)]*\d)[a-zа-я0-9][a-zа-я0-9_.-]{0,23}\)\s*', '', name)
+    name = re.sub(r'^раздел\s*(?:№\s*)?[\d.]+\s*[.:]?\s*', '', name)
+    if re.search(r'демонтаж|разборк|снятие', name):
+        return None
+    if re.search(r'этаж\s+верт\s+констр|^устройство\s+монолитн\w*\s+железобетонн\w*\s+вертикальн', name):
+        return 'monolith_vertical'
+    if re.search(r'этаж\s+пп\b|^устройство\s+монолитн\w*\s+железобетонн\w*\s+горизонтальн', name):
+        return 'monolith_horizontal'
+    if re.search(r'^устройство\s+(?:монолитн\w*\s+)?(?:железобетонн\w*\s+)?(?:ростверк|фундаментн\w*\s+плит)', name):
+        return 'foundations'
+    if re.search(r'^срубка\s+оголовков\s+свай|^вырубка\s+бетона\s+из\s+арматурного\s+каркаса\s+свай', name):
+        return 'pile_head_cut'
+    if re.search(r'^устройство\s+бетонной\s+подготовки', name):
+        return 'concrete_preparation'
+    if re.search(r'^устройство\s+свайного\s+основания|^вдавливание\s+(?:железобетонн\w*\s+)?свай', name):
+        return 'pile_installation'
+    if name.startswith('пробные сваи и испытания'):
+        return 'trial_piles_and_testing'
+    if re.search(r'^испытани[ея]\s+(?:натурн\w*\s+)?сва', name):
+        return 'pile_testing'
+    if ('итп' in name or 'индивидуальный тепловой пункт' in name) and 'тепломеханическ' in name:
+        return 'itp_thermomechanical'
+    if ('итп' in name or 'индивидуальный тепловой пункт' in name) and re.search(r'автоматик|автоматизац', name):
+        return 'itp_automation'
+    if re.search(r'устройство\s+(?:отделки\s+фасадов|нвф)', name):
+        if re.search(r'горизонтальн|подшивк', name):
+            return 'facade_horizontal'
+        if re.search(r'вертикальн', name):
+            return 'facade_vertical'
+    if re.search(r'^устройство\s+фасадов\s+со\s+штукатурк', name):
+        return 'facade_plaster'
+    if re.search(r'^(?:устройство\s+)?кладк[аи]\s+(?:стен|каменн)', name):
+        return 'masonry'
+    if re.search(r'^устройство\s+полов', name):
+        return 'floor_finishes'
+    if re.search(r'^устройство\s+(?:отделки\s+)?потолков', name):
+        return 'ceiling_finishes'
+    if re.search(r'^устройство\s+отделки\s+стен', name):
+        return 'wall_finishes'
+    return None
+
+
+def _descriptor(name, context, location_context=(), *, hierarchy_ambiguous=False):
+    names = [name, *reversed(context)]
+    family = next((value for text in names if (value := _operation(text))), None)
+    if re.search(r'демонтаж|разборк|снятие|этаж\s+верт\s+пп\b', _text(name)):
+        family = None
+    location, floors, zones, systems = frozenset(), frozenset(), frozenset(), frozenset()
+    ambiguous = hierarchy_ambiguous
+    for text in [name, *reversed(context), *location_context]:
+        found, bad = _locations(text)
+        if found and not location:
+            location, ambiguous = found, ambiguous or bad
+        elif found and location and not location <= found and not found <= location:
+            ambiguous = True
+        found_floors = _floors(text)
+        if found_floors and not floors:
+            floors = found_floors
+        elif found_floors and floors and not floors <= found_floors:
+            ambiguous = True
+        found_zones, bad = _zones(text)
+        ambiguous = ambiguous or bad
+        if found_zones and not zones:
+            zones = found_zones
+        elif found_zones and zones and not zones <= found_zones:
+            ambiguous = True
+        found_systems = _systems(text)
+        if found_systems and not systems:
+            systems = found_systems
+        elif found_systems and systems and not systems <= found_systems:
+            # An unnumbered ancestor names the same type of plant; a second
+            # numbered plant is a conflicting explicit source scope.
+            ambiguous = ambiguous or found_systems != frozenset({'itp'})
+        if (re.search(r'(?<!\d)[-−]\s*\d+[^.;]{0,40}\bэтаж|этаж\w*\s*[-−]\s*\d|подземн\w*\s+этаж', _text(text))
+                or (re.search(r'\bэтаж', _text(text)) and not found_floors)
+                or re.search(r'\bитп\s*(?:№\s*)?[a-zа-я]\b', _text(text))):
+            ambiguous = True
+    # A cross-product of floors and several buildings is not a proved scope.
+    if len(location) > 1 and floors:
+        ambiguous = True
+    materials = frozenset()
+    if family in {'facade_vertical', 'facade_horizontal'}:
+        for named in map(_text, names):
+            found = (frozenset({'aluminium_composite'}) if re.search(r'алюмокомпозит|композитн\w*\s+панел', named)
+                     else frozenset({'aluminium'}) if re.search(r'алюминиев\w*\s+панел', named) else frozenset())
+            if not materials:
+                materials = found
+            elif found and materials != found:
+                ambiguous = True
+    return {'family': family, 'locations': location, 'floors': floors, 'zones': zones,
+            'systems': systems, 'materials': materials, 'ambiguous': ambiguous}
+
+
+def task_descriptor(task):
+    context = _path(task.get('parent_path')) + [task.get('section') or '']
+    return _descriptor(task.get('name') or '', context, [task.get('object') or ''],
+                       hierarchy_ambiguous=task.get('hierarchy_ambiguous') is True)
+
+
+def item_descriptor(ledger, item):
+    context = [item.get('scope') or '', *_path(item.get('section_path'))]
+    locations = [_label(item.get('object_scope') or ledger.get('object_scope')),
+                 _label(item.get('system_scope') or ledger.get('system_scope'))]
+    return _descriptor(item.get('name') or '', context, locations)
+
+
+def _scope_key(descriptor):
+    return tuple(tuple(sorted(descriptor[field])) for field in ('locations', 'floors', 'zones', 'systems', 'materials'))
+
+
+def _equal_scope(source, target):
+    return (source['family'] == target['family'] and not source['ambiguous'] and not target['ambiguous'] and bool(source['locations'])
+            and _scope_key(source) == _scope_key(target))
+
+
+def _candidate(source, target):
+    if not source['family'] or (source['family'] != target['family']
+            and (source['family'], target['family']) != ('pile_testing', 'trial_piles_and_testing')):
+        return False
+    for field in ('locations', 'floors', 'zones', 'systems'):
+        if source[field] and target[field] and not target[field] <= source[field]:
+            return False
+    return True
+
+
+def _cohort_scope(source, targets):
+    if (source['ambiguous'] or not source['locations'] or not targets
+            or any(t['ambiguous'] or t['family'] != source['family'] for t in targets)):
+        return False
+    # Every declared source dimension must be exactly covered by the target
+    # set. An omitted target dimension cannot allocate an explicit source part.
+    for field in ('locations', 'floors', 'zones', 'systems', 'materials'):
+        if source[field] != frozenset().union(*(target[field] for target in targets)):
+            return False
+    # A union alone would accept duplicate leaves or an unknown relationship
+    # between several floor/zone dimensions. Require a simple partition of one
+    # declared dimension; every other dimension must be identical.
+    dimensions = ('locations', 'floors', 'zones', 'systems', 'materials')
+    partitioned = [field for field in dimensions if any(target[field] != source[field] for target in targets)]
+    if len(partitioned) != 1:
+        return False
+    field = partitioned[0]
+    seen = set()
+    for target in targets:
+        if not target[field] or seen.intersection(target[field]):
+            return False
+        seen.update(target[field])
+    return True
+
+
+def _digest(value):
+    return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, default=list).encode()).hexdigest()
+
+
+def _compile(rows, tid, cut):
+    components, members = [], []
+    annual = defaultdict(list)
+    for row in rows:
+        item = row['item']
+        component_key = (contracts._norm(item.get('position')), contracts._norm(item.get('name')),
+            contracts._norm(item.get('scope')), str(item.get('unit') or ''), contracts._number(item.get('plan_quantity')))
+        annual[component_key].append(row)
+    invalid = None
+    for component_key, annual_rows in annual.items():
+        years = [row['ledger'].get('period_year') for row in annual_rows]
+        group_invalid = ('duplicate_annual_position' if len(set(years)) != len(years)
+                         or any(type(year) is not int or year <= 0 for year in years) else None)
+        if any(type(year) is int and year > int(cut[:4]) for year in years):
+            group_invalid = group_invalid or 'future_annual_source'
+        done = []
+        for row in annual_rows:
+            view = row['view']
+            value = view.get('completed_quantity')
+            if value is None:
+                value = view.get('reported_completed_quantity')
+            number = contracts._number(value)
+            if view.get('future_periods_excluded') is not False or number is None or number < 0:
+                group_invalid = group_invalid or 'quantity_unknown_or_future'
+            else:
+                done.append(number)
+        latest = max(annual_rows, key=lambda row: row['ledger'].get('period_year') or 0)
+        plan = contracts._number(latest['view'].get('plan_quantity'))
+        if plan is None or plan <= 0:
+            group_invalid = group_invalid or 'plan_unknown'
+        component_id = 'auto:'+_digest((tid, progress.contract_identity(rows[0]['ledger']), component_key))[:24]
+        components.append({'component_id': component_id, 'task_id': tid,
+                           'item_ids': [row['item_id'] for row in annual_rows]})
+        members.append({'member_key': component_id, 'progress': None if group_invalid else sum(done)/plan,
+                        'unit': latest['view'].get('unit'),
+                        **{field: latest['view'].get(field) for field in
+                           ('planned_work_amount', 'planned_cost_split', 'planned_work_amount_basis', 'valuation_key')}})
+        invalid = invalid or group_invalid
+    metric = progress.aggregate_quantities(members)
+    return components, members, metric, invalid
+
+
+def suggest(source, snapshot, cut):
+    """Return current-source proposals and safe initial bindings; never write."""
+    views = progress.quantity_views(snapshot, cut)
+    records = []
+    for li, ledger in enumerate((snapshot or {}).get('ledgers') or []):
+        for ii, item in enumerate(ledger.get('items') or []):
+            key = f'{li}:{ii}'
+            records.append({'item_id': key, 'ledger': ledger, 'item': item, 'view': views[key]})
+    return _suggest(source, snapshot, cut, records)
+
+
+def suggest_catalog(catalog, cut):
+    """Audit the exact classifier against a protected canonical catalog read."""
+    source = {'state': catalog.get('source_state'), 'source_sha256': catalog.get('source_sha256'),
+              'tasks': {task['task_id']: task for task in catalog.get('tasks') or []}}
+    snapshot = {'snapshot_id': catalog.get('snapshot_id'),
+                'taken_at': str(catalog.get('snapshot_id') or '')[:10]}
+    records = []
+    for row in catalog.get('items') or []:
+        ledger = {field: row.get(field) for field in
+                  ('customer', 'contractor', 'contract', 'contract_date', 'period_year', 'object_scope', 'system_scope',
+                   'site_scope', 'scope_evidence', 'contract_date_evidence', 'source_date_key', 'file_sha256')}
+        ledger['source'] = row.get('ledger_source') or {}
+        records.append({'item_id': row['item_id'], 'ledger': ledger, 'item': row, 'view': row})
+    return _suggest(source, snapshot, cut, records)
+
+
+def _suggest(source, snapshot, cut, records):
+    configuration = {'tasks': [], 'components': [],
+                     'note': 'Автоматически по точному типу работ и явно указанному полному участку исходников.'}
+    result = {'configuration': configuration, 'rule_version': RULE_VERSION,
+              'source_sha256': source.get('source_sha256'), 'snapshot_id': (snapshot or {}).get('snapshot_id'),
+              'bindings': {}, 'cohorts': [], 'candidates': [], 'coverage': {}}
+    can_automate = (source.get('state') == 'approved_gpr'
+                    and re.fullmatch(r'[0-9a-f]{64}', str(source.get('source_sha256') or ''))
+                    and re.fullmatch(r'\d{4}-\d{2}-\d{2}-[0-9a-f]{64}', str((snapshot or {}).get('snapshot_id') or ''))
+                    and progress.snapshot_date(snapshot) and progress.snapshot_date(snapshot) <= cut)
+    tasks = source.get('tasks') or {}
+    descriptors = {tid: task_descriptor(task) for tid, task in tasks.items()}
+    groups = defaultdict(list)
+    for record in records:
+        ledger, item = record['ledger'], record['item']
+        if item.get('is_group') is True:
+            continue
+        descriptor = item_descriptor(ledger, item)
+        identity = progress.contract_identity(ledger)
+        key = (identity, descriptor['family'], _scope_key(descriptor), descriptor['ambiguous'])
+        groups[key].append(dict(record, descriptor=descriptor))
+    proposed_tasks = defaultdict(list)
+    reasons = defaultdict(int)
+    for key, rows in groups.items():
+        identity, family, scope, ambiguous = key
+        descriptor = rows[0]['descriptor']
+        candidates = [tid for tid, target in descriptors.items() if _candidate(descriptor, target)]
+        reason = ('operation_unknown' if not family else 'contract_identity_unknown' if not all(identity)
+                  else 'contract_date_after_cut' if contracts._date(rows[0]['ledger'].get('contract_date'))
+                      and contracts._date(rows[0]['ledger']['contract_date']) > cut
+                  else 'scope_ambiguous' if ambiguous else 'location_unknown' if not descriptor['locations']
+                  else 'no_matching_task' if not candidates else 'source_unapproved' if not can_automate else None)
+        group_id = 'cohort:'+_digest(key)[:24]
+        source_components, source_members, source_metric, source_error = _compile(rows, group_id, cut)
+        details = {'item_ids': [row['item_id'] for row in rows], 'operation': family,
+                   'source_metric': source_metric, 'source_components': source_components,
+                   'scope': {field: sorted(descriptor[field]) for field in ('locations', 'floors', 'zones', 'systems', 'materials')},
+                   'candidate_task_ids': candidates, 'reason': reason,
+                   'source_scope': rows[0]['item'].get('scope') or '',
+                   'source_name': rows[0]['item'].get('name') or ''}
+        if reason is None and len(candidates) == 1 and _equal_scope(descriptor, descriptors[candidates[0]]):
+            proposed_tasks[candidates[0]].append((rows, details))
+            continue
+        cohort = reason is None and len(candidates) > 1 and _cohort_scope(descriptor, [descriptors[tid] for tid in candidates])
+        if cohort:
+            details.update(cohort_id=group_id, task_ids=candidates,
+                           basis='shared_source_scope', leaf_allocation='not_provided')
+            result['cohorts'].append(details)
+        else:
+            details['reason'] = reason or 'incomplete_or_shared_target_scope'
+            result['candidates'].append(details)
+            reasons[details['reason']] += len(rows)
+    # Two source cohorts, or a cohort and a leaf, cannot both claim the same
+    # complete front. Different contracts need explicit front boundaries;
+    # nested source scopes need an explicit decomposition of those quantities.
+    claims = [('cohort', cohort, set(cohort['task_ids'])) for cohort in result['cohorts']]
+    claims += [('leaf', details, {tid}) for tid, proposals in proposed_tasks.items() for _, details in proposals]
+    blocked = set()
+    for i, (kind, details, tids) in enumerate(claims):
+        for other_kind, other, other_tids in claims[i+1:]:
+            if ((kind == 'cohort' or other_kind == 'cohort') and details['operation'] == other['operation']
+                    and tids.intersection(other_tids)):
+                blocked.update((id(details), id(other)))
+    if blocked:
+        retained = []
+        for cohort in result['cohorts']:
+            if id(cohort) in blocked:
+                cohort['reason'] = 'overlapping_source_scopes'
+                result['candidates'].append(cohort)
+                reasons[cohort['reason']] += len(cohort['item_ids'])
+            else:
+                retained.append(cohort)
+        result['cohorts'] = retained
+    # A task cannot silently combine several contracts that claim the same
+    # physical scope. The operator needs the distinct fronts, not a name guess.
+    for tid, proposals in proposed_tasks.items():
+        if any(id(details) in blocked for _, details in proposals):
+            for _, details in proposals:
+                details['reason'] = 'overlapping_source_scopes'
+                result['candidates'].append(details)
+                reasons[details['reason']] += len(details['item_ids'])
+            continue
+        rows = [row for group, _ in proposals for row in group]
+        identities = {progress.contract_identity(row['ledger']) for row in rows}
+        if len(identities) != 1:
+            for _, details in proposals:
+                details['reason'] = 'multiple_contract_scopes'
+                result['candidates'].append(details)
+                reasons[details['reason']] += len(details['item_ids'])
+            continue
+        components, members, metric, invalid = _compile(rows, tid, cut)
+        if invalid or metric['ratio'] is None:
+            for _, details in proposals:
+                details['reason'] = invalid or 'metric_basis_unknown'
+                result['candidates'].append(details)
+                reasons[details['reason']] += len(details['item_ids'])
+            continue
+        configuration['tasks'].append({'task_id': tid, 'mode': 'quantities', 'scope_confirmed': True, 'actual_finish': ''})
+        configuration['components'].extend(components)
+        result['bindings'][tid] = {'basis': 'closed_operation_and_exact_scope', 'rule_version': RULE_VERSION,
+                                  'operation': rows[0]['descriptor']['family'], 'metric': metric,
+                                  'members': members, 'item_ids': [row['item_id'] for row in rows]}
+    result['coverage'] = {'source_positions': sum(len(rows) for rows in groups.values()),
+                          'source_rows': len(records), 'excluded_source_groups': sum(row['item'].get('is_group') is True for row in records),
+                          'automatic_tasks': len(configuration['tasks']),
+                          'automatic_positions': sum(len(binding['item_ids']) for binding in result['bindings'].values()),
+                          'cohorts': len(result['cohorts']), 'cohort_positions': sum(len(c['item_ids']) for c in result['cohorts']),
+                          'candidate_positions': sum(len(c['item_ids']) for c in result['candidates']), 'reasons': dict(reasons)}
+    return result

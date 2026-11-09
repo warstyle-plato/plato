@@ -52,6 +52,11 @@ def model(timeline: dict, *, stalled=None) -> dict:
         if task.get("actual_finish"):
             facts.append({"name": task.get("name") or task.get("task_id"), "kind": "done",
                           "date": task["actual_finish"]})
+        if (task.get("quantity_metric") or {}).get("ratio") is not None:
+            facts.append({"name": task.get("name") or task.get("task_id"), "kind": "weighted_quantity",
+                          "progress": task["quantity_metric"]["ratio"], "basis": task["quantity_metric"]["label"],
+                          "date": task.get("progress_date"), "date_basis": "snapshot",
+                          "observation_history": task.get("observation_history")})
         for component in task.get("components") or []:
             done, plan = component.get("completed_quantity"), component.get("plan_quantity")
             if _number(done):
@@ -63,6 +68,24 @@ def model(timeline: dict, *, stalled=None) -> dict:
                               "date_basis": component.get("progress_date_basis"),
                               "progress": component.get("progress"),
                               "observation_history": component.get("observation_history")})
+    for cohort in physical.get("source_cohorts") or []:
+        measured = cohort.get("model") or {}
+        if _number(measured.get("progress")):
+            facts.append({"name": cohort.get("source_scope") or cohort.get("source_name") or "Общая группа КС",
+                          "kind": "source_cohort", "progress": measured["progress"],
+                          "date": measured.get("progress_date"), "date_basis": "snapshot",
+                          "basis": measured.get("progress_basis"), "task_ids": cohort.get("task_ids") or [],
+                          "observation_history": measured.get("observation_history"),
+                          "source_conflict": cohort.get("source_conflict")})
+        else:
+            for component in measured.get("components") or []:
+                if _number(component.get("completed_quantity")):
+                    facts.append({"name": cohort.get("source_scope") or cohort.get("source_name") or "Общая группа КС",
+                                  "kind": "quantity", "done": component["completed_quantity"],
+                                  "plan": component.get("plan_quantity"), "unit": component.get("unit") or "",
+                                  "date": component.get("observation_date") or component.get("period_end"),
+                                  "date_basis": component.get("progress_date_basis"),
+                                  "shared_task_ids": cohort.get("task_ids") or []})
     status = physical.get("evidence_status") or {
         "state": "unavailable", "reason": "Состояние натуральных объёмов пока не проверено.",
         "action": "Команде: проверьте источники и соответствия работ в Мониторе."}
@@ -84,7 +107,7 @@ def model(timeline: dict, *, stalled=None) -> dict:
             "driver_method": driver.get("method"), "facts": facts, "source_status": status,
             "stalled_text": stalled_text(stalled or [], rnv.get("basis")),
             "action": action, "reasons": reasons,
-            "source_label": "ГПР и накопительные" if any(f["kind"] == "quantity" for f in facts) else "ГПР",
+            "source_label": "ГПР и накопительные" if any(f["kind"] != "done" for f in facts) else "ГПР",
             # Comparison is a separate operation; no result does not imply no files.
             "version_comparison": timeline.get("version_comparison") or {"state": "not_calculated"}}
 
@@ -93,12 +116,18 @@ def fact_text(fact):
     if fact["kind"] == "done":
         return f"{fact['name']}: завершение подтверждено {date_text(fact['date'])}."
     number = lambda value: f"{value:g}".replace(".", ",")
+    if fact["kind"] in {"source_cohort", "weighted_quantity"}:
+        return (f"{fact['name']}: {number(fact['progress']*100)}% по ведомости"
+                + (" от " + date_text(fact["date"]) if fact.get("date") else "")
+                + (f"; общий объём для {len(fact['task_ids'])} работ, отдельные проценты не выделены"
+                   if fact["kind"] == "source_cohort" else "; " + str(fact.get("basis") or "")) + ".")
     amount = number(fact["done"])
     if fact.get("plan") is not None:
         amount += " из " + number(fact["plan"])
     return (f"{fact['name']}: {amount} {unit_text(fact['unit'])}"
             + ((" по ведомости от " if fact.get("date_basis") == "snapshot" else " на ")
-               + date_text(fact['date']) if fact.get("date") else "") + ".")
+               + date_text(fact['date']) if fact.get("date") else "")
+            + ("; общий объём группы" if fact.get("shared_task_ids") else "") + ".")
 
 
 def conclusion(block):
@@ -145,7 +174,7 @@ def render(block):
     if block.get("stalled_text"):
         out.append('<p class="executive-stalled">'+esc(block["stalled_text"])+'</p>')
     if block.get("facts"):
-        out.append('<h4>Подтверждённое выполнение</h4><ul class="executive-facts">')
+        out.append('<h4>Выполнение по источникам</h4><ul class="executive-facts">')
         out.extend('<li>'+esc(fact_text(f))+'</li>' for f in block["facts"][:5])
         out.append('</ul>')
         if len(block["facts"]) > 5:
@@ -171,7 +200,8 @@ def details(block):
         out.extend('<li>'+esc(fact_text(f))+'</li>' for f in block["facts"])
         out.append('</ul>')
     out.extend('<p class="note">'+esc(str(reason))+'</p>' for reason in block.get("reasons") or [])
-    out.append('<p class="note">Разные натуральные объёмы показаны отдельно; общего физического процента по ним нет.</p>')
+    out.append('<p class="note">Общий процент разных видов работ показан только при известных полных весах стоимости СМР. '
+               'Объём общей группы не распределяется между отдельными работами.</p>')
     comparison = block.get("version_comparison") or {}
     if comparison.get("state") == "not_calculated":
         out.append('<p class="note">Сравнение версий ГПР пока не рассчитано.</p>')

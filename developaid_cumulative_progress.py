@@ -46,41 +46,46 @@ def position_identity(ledger, item):
     name, scope = contracts._norm(item.get('name')), contracts._norm(item.get('scope'))
     position = contracts._norm(item.get('position'))
     if (not all((customer, contractor, number, contract_date, name, scope, unit, position))
-            or type(year) is not int or plan is None or plan <= 0):
+            or type(year) is not int or year <= 0 or plan is None or plan <= 0):
         return None
-    payload = (customer, contractor, number, contract_date, year, position, name, scope, unit, plan)
+    declared_scope = {field: item.get(field) or ledger.get(field) for field in
+                      ('object_scope', 'system_scope', 'site_scope')}
+    sections = [(row.get('position'), row.get('name')) if isinstance(row, dict) else row
+                for row in item.get('section_path') or []]
+    payload = (customer, contractor, number, contract_date, year, position, name, scope, unit, plan,
+               declared_scope, sections)
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
+
+
+def position_view(ledger, item, cut, observation_date):
+    """Canonical quantity plus explicit source metadata, with no new formula."""
+    view = contracts._physical(item, dict(ledger, source_date=observation_date), cut)
+    return dict(view, contract=ledger.get('contract') or '',
+                contract_date=ledger.get('contract_date') or '', contractor=ledger.get('contractor') or '',
+                customer=ledger.get('customer') or '', position_key=position_identity(ledger, item),
+                source_date_key=contracts._source_date_key(ledger),
+                contract_date_evidence=ledger.get('contract_date_evidence') or ledger.get('date_evidence') or [],
+                file_sha256=ledger.get('file_sha256'), ledger_source=ledger.get('source') or {},
+                planned_work_amount=item.get('planned_work_amount'),
+                planned_material_amount=item.get('planned_material_amount'),
+                planned_cost_split=item.get('planned_cost_split') is True,
+                planned_work_amount_basis=item.get('planned_work_amount_basis'),
+                valuation_key=((item.get('source') or {}).get('filename'),
+                               (item.get('source') or {}).get('sheet'), ledger.get('period_year')),
+                is_group=item.get('is_group') is True, section_path=item.get('section_path') or [],
+                context_headings=item.get('context_headings') or [], parent_row=item.get('parent_row'),
+                object_scope=item.get('object_scope') or ledger.get('object_scope'),
+                system_scope=item.get('system_scope') or ledger.get('system_scope'),
+                site_scope=item.get('site_scope') or ledger.get('site_scope'),
+                scope_evidence=ledger.get('scope_evidence') or {}, planned_cost_method=item.get('planned_cost_method'))
 
 
 def quantity_views(snapshot, cut):
     """Use the same position calculation as the contract table."""
-    out = {}
     day = snapshot_date(snapshot)
-    for li, ledger in enumerate((snapshot or {}).get('ledgers') or []):
-        context = dict(ledger, source_date=day)
-        for ii, item in enumerate(ledger.get('items') or []):
-            view = contracts._physical(item, context, cut)
-            out[f'{li}:{ii}'] = dict(view, contract=ledger.get('contract') or '',
-                                    contract_date=ledger.get('contract_date') or '',
-                                    contractor=ledger.get('contractor') or '',
-                                    customer=ledger.get('customer') or '',
-                                    position_key=position_identity(ledger, item),
-                                    planned_work_amount=item.get('planned_work_amount'),
-                                    planned_material_amount=item.get('planned_material_amount'),
-                                    planned_cost_split=item.get('planned_cost_split') is True,
-                                    planned_work_amount_basis=item.get('planned_work_amount_basis'),
-                                    valuation_key=((item.get('source') or {}).get('filename'),
-                                                   (item.get('source') or {}).get('sheet'), ledger.get('period_year')),
-                                    is_group=item.get('is_group') is True)
-            out[f'{li}:{ii}'].update(section_path=item.get('section_path') or [],
-                                     context_headings=item.get('context_headings') or [],
-                                     parent_row=item.get('parent_row'),
-                                     object_scope=item.get('object_scope') or ledger.get('object_scope'),
-                                     system_scope=item.get('system_scope') or ledger.get('system_scope'),
-                                     site_scope=item.get('site_scope') or ledger.get('site_scope'),
-                                     scope_evidence=ledger.get('scope_evidence') or {},
-                                     planned_cost_method=item.get('planned_cost_method'))
-    return out
+    return {f'{li}:{ii}': position_view(ledger, item, cut, day)
+            for li, ledger in enumerate((snapshot or {}).get('ledgers') or [])
+            for ii, item in enumerate(ledger.get('items') or [])}
 
 
 def aggregate_quantities(members):
@@ -180,7 +185,9 @@ def _observation(view):
     if plan is None or plan <= 0 or done is None or done < 0:
         return None
     return {'plan': plan, 'done': done, 'ratio': done / plan, 'unit': view.get('unit') or '',
-            'requires_reconciliation': done > plan + max(1e-6, plan * 1e-7)}
+            'requires_reconciliation': done > plan + max(1e-6, plan * 1e-7),
+            **{field: view.get(field) for field in ('period_year', 'planned_work_amount', 'planned_cost_split',
+                                                  'planned_work_amount_basis', 'valuation_key')}}
 
 
 def observation_index(project, cut, snapshot, keys):
@@ -230,7 +237,6 @@ def observation_index(project, cut, snapshot, keys):
         for li, ledger in enumerate(source.get('ledgers') or []):
             if type(ledger.get('period_year')) is not int or ledger['period_year'] > int(day[:4]):
                 continue
-            context = dict(ledger, source_date=day)
             for item in ledger.get('items') or []:
                 key = position_identity(ledger, item)
                 if key not in keys:
@@ -238,7 +244,7 @@ def observation_index(project, cut, snapshot, keys):
                 if key in positions:
                     duplicates.add(key)
                     continue
-                view = contracts._physical(item, context, day)
+                view = position_view(ledger, item, day, day)
                 positions[key] = _observation(view)
         for key in duplicates:
             positions[key] = None
@@ -322,3 +328,51 @@ def component_history(keys, index, current, cut):
     return dict(result, state='growing', rate_per_day=growth / elapsed,
                 rate_window_start=window[0]['date'], rate_window_end=window[-1]['date'],
                 forecast_eligible=True, reason='По изменению объёмов между сопоставимыми снимками ведомостей.')
+
+
+def weighted_history(components, index, current_metric, observation_date):
+    """Read the same aggregate at every snapshot; changed weights are explicit."""
+    result = {'basis': 'smr_cost_weighted_quantities', 'date_basis': 'snapshot', 'points': [],
+              'state': 'single_snapshot', 'delta_progress': None, 'delta_quantity': None,
+              'reason': 'Для динамики нужен предыдущий сопоставимый снимок ведомостей.'}
+    series = []
+    lookups = [{(point['date'], point.get('snapshot_id')): point
+                for point in (component.get('statement_history') or component.get('observation_history') or {}).get('points') or []}
+               for component in components]
+    for record in index:
+        members, invalid = [], False
+        for component, lookup in zip(components, lookups):
+            member = component.get('quantity_member') or {}
+            point = lookup.get((record['date'], record.get('snapshot_id')))
+            values = [record['positions'].get(key) for key in member.get('item_keys') or []]
+            if point is None or not values or any(value is None for value in values):
+                invalid = True
+                break
+            latest = max(values, key=lambda value: value.get('period_year') or 0)
+            members.append(dict(member, progress=point['progress'], **{field: latest.get(field) for field in
+                ('planned_work_amount', 'planned_cost_split', 'planned_work_amount_basis', 'valuation_key')}))
+        metric = aggregate_quantities(members) if not invalid else {'ratio': None, 'reason': 'Состав снимка не сопоставлен.'}
+        series.append({'date': record['date'], 'snapshot_id': record.get('snapshot_id'),
+                       'progress': metric['ratio'], 'basis_fingerprint': metric.get('weight_fingerprint'),
+                       'requires_reconciliation': metric.get('requires_reconciliation', False),
+                       'reason': metric.get('reason', ''), 'date_basis': 'snapshot'})
+    result['points'] = series
+    if len(series) < 2 or series[-1]['date'] != observation_date:
+        return result
+    previous, current = series[-2:]
+    if (previous['progress'] is None or current['progress'] is None
+            or current_metric.get('ratio') is None
+            or abs(current['progress']-current_metric['ratio']) > 1e-7):
+        return dict(result, state='comparison_gap', reason='Не подтверждён состав или полный вес одного из снимков.')
+    if any(point['requires_reconciliation'] for point in (previous, current)):
+        return dict(result, state='requires_reconciliation', reason='Объёмы требуют сверки; изменение общего процента не оценено.')
+    if (not previous['basis_fingerprint'] or not current['basis_fingerprint']
+            or previous['basis_fingerprint'] != current['basis_fingerprint']):
+        return dict(result, state='basis_changed', reason='Стоимостные веса СМР в снимках различаются; проценты не сравнены.')
+    days = (dt.date.fromisoformat(current['date'])-dt.date.fromisoformat(previous['date'])).days
+    if days <= 0:
+        return dict(result, state='comparison_gap', reason='Для динамики нужны снимки на разные даты.')
+    delta = current['progress']-previous['progress']
+    state = 'correction' if delta < -1e-7 else 'unchanged' if abs(delta) <= 1e-7 else 'growing'
+    return dict(result, state=state, delta_progress=delta, previous_date=previous['date'], date=current['date'],
+                reason='Изменение того же натурального показателя с неизменными весами СМР.')

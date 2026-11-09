@@ -221,6 +221,14 @@ def work(row: dict, points: list[tuple[dt.date, float, str]], cut: dt.date,
                ("progress_date_basis", "progress_basis", "observation_history", "requires_reconciliation")}
     conflict = (ks or {}).get("source_conflict") or (quantity_conflict(points, ks, cut) if ks else None)
     if conflict:
+        if conflict.get("scope") == "source_cohort":
+            # The shared KS ratio is not a reading of this leaf. Preserve its
+            # dated GPR reading while withholding a finish certification.
+            last = points[-1] if points else None
+            return dict(result, method="source_conflict", source_conflict=conflict,
+                        progress=last[1] if last else None, progress_origin=last[2] if last else None,
+                        progress_date=last[0].isoformat() if last else None,
+                        requires_reconciliation=True, reason=conflict["reason"] + " " + conflict["action"])
         return dict(result, method="source_conflict", source_conflict=conflict,
                     progress=_quantity_progress(ks.get("progress")), progress_date=ks.get("progress_date"),
                     progress_origin=ks_origin, reason=conflict["reason"] + " " + conflict["action"], **ks_meta)
