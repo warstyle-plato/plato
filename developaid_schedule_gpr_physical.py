@@ -95,7 +95,7 @@ def _history(project):
                 or not re.fullmatch(r"\d{4}-\d{2}-\d{2}-[0-9a-f]{64}", event.get("snapshot_id") or "")
                 or dt.datetime.fromisoformat(event["recorded_at"]).utcoffset() != dt.timedelta(0)):
             raise ValueError("invalid GPR quantity mapping history")
-        quantities._validate(event["configuration"])
+        quantities._validate(event["configuration"], max_bindings=quantities.MAX_ROWS)
         events.append(event)
     return events
 
@@ -474,6 +474,15 @@ def catalog(project, cut, query="", offset=0):
         raise PhysicalProblem("Укажите существующую дату среза.")
     source, snapshot = _source(project, cut), _snapshot(project, cut)
     state = _state(project, cut, source, snapshot)
+    import developaid_schedule_physical_review as review
+    previous = [event for event in _history(project)
+                if event['source_sha256'] == source['source_sha256']
+                and dt.datetime.fromisoformat(event['recorded_at']).date().isoformat() <= cut]
+    views = cumulative_progress.quantity_views(snapshot, cut)
+    review_model = review.build(quantities._items(snapshot), list(source['tasks'].values()),
+                               state['configuration'], cut,
+                               previous[-1].get('review_rules', []) if previous else [],
+                               snapshot=snapshot, views=views)
     query = query.casefold().strip()
     proof_fields = tuple(ledgers._duplicate_values({}).keys()) + ('duplicate_proof', 'duplicate_source_fingerprint',
         'duplicate_view_fingerprint', 'duplicate_marker_present', 'completed_amount_derivation')
@@ -488,7 +497,7 @@ def catalog(project, cut, query="", offset=0):
              "contract_date_evidence", "source_date_key", "file_sha256", "ledger_source",
              "planned_work_amount", "planned_material_amount", "planned_cost_split",
              "planned_work_amount_basis", "valuation_key")))})
-            for key, item in cumulative_progress.quantity_views(snapshot, cut).items()
+            for key, item in views.items()
             if not query or query in " ".join(str(item.get(k) or "") for k in
                                                ("name", "scope", "contract", "contractor")).casefold()]
     return dict(state, source_state=source["state"], source_reason=source["reason"],
@@ -496,13 +505,14 @@ def catalog(project, cut, query="", offset=0):
                 available_corpus=source.get("available_corpus"),
                 tasks=list(source["tasks"].values()), items=rows[offset:offset+200],
                 item_count=len(rows), offset=offset,
+                review=review_model,
                 model=_view_model(project, cut, source, snapshot, state["configuration"], automatic=state["automatic_mapping"]))
 
 
 def save(project, source_kind, source_sha256, snapshot_id, revision, configuration):
     if source_kind != SOURCE_KIND:
         raise PhysicalProblem("Выберите работу утверждённого ГПР; привязки MS Project не применяются.")
-    configuration = quantities._validate(configuration)
+    configuration = quantities._validate(configuration, max_bindings=quantities.MAX_ROWS)
     folder = monitor._project_dir(project) / "gpr_physical_links"
     folder.mkdir(parents=True, exist_ok=True, mode=0o700)
     import fcntl
@@ -527,9 +537,11 @@ def save(project, source_kind, source_sha256, snapshot_id, revision, configurati
             raise PhysicalProblem("Компоненты привязываются только к работам с натуральными объёмами.")
         if any(t["mode"] == "completed" and t["actual_finish"] > cut for t in configuration["tasks"]):
             raise PhysicalProblem("Дата завершения не может быть в будущем.")
+        import developaid_schedule_physical_review as review
         event = {"source_kind": SOURCE_KIND, "source_sha256": source_sha256, "snapshot_id": snapshot_id,
                  "revision": revision+1, "recorded_at": _now().isoformat(),
-                 "actor": "administrator", "configuration": configuration}
+                 "actor": "administrator", "configuration": configuration,
+                 "review_rules": review.rules(configuration, cumulative_progress.quantity_views(snapshot, cut))}
         fd, temporary = tempfile.mkstemp(prefix=".event-", dir=folder)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as stream:

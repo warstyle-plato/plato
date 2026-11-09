@@ -67,14 +67,14 @@ def _items(snapshot):
     return out
 
 
-def _validate(config):
+def _validate(config, *, max_bindings=MAX_BINDINGS):
     if not isinstance(config, dict) or set(config) != {'tasks', 'components', 'note'}:
         raise PhysicalProblem('Не удалось прочитать состав привязки. Обновите страницу.')
     tasks, components = config['tasks'], config['components']
     if (not isinstance(tasks, list) or not isinstance(components, list)
-            or len(tasks) > MAX_BINDINGS or len(components) > MAX_BINDINGS
+            or len(tasks) > max_bindings or len(components) > max_bindings
             or not isinstance(config['note'], str) or not 1 <= len(config['note'].strip()) <= 1000):
-        raise PhysicalProblem('Укажите основание привязки и не более 1000 работ или компонентов.')
+        raise PhysicalProblem(f'Укажите основание привязки и не более {max_bindings} работ или компонентов.')
     task_ids, component_ids, row_ids = set(), set(), set()
     for task in tasks:
         if (not isinstance(task, dict) or set(task) != {'task_id', 'mode', 'scope_confirmed', 'actual_finish'}
