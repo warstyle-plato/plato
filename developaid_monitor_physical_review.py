@@ -99,10 +99,10 @@ function renderPhysicalScopes(groups){
   const taskIds=new Set(members.map(t=>t.task_id)),packetIds=new Set(members.flatMap(t=>[...contractsByTask.get(t.task_id)]));
   const packets=(physicalState.review.contracts||[]).filter(p=>packetIds.has(p.contract_id));
   const components=physicalDraft.components.filter(c=>taskIds.has(c.task_id));
-  const pending=groups.filter(g=>physicalGroupState(g)!=='bound'&&(taskIds.has(physicalGroupTarget(g))||(g.candidates||[]).some(c=>taskIds.has(c.task_id))));
+  const pending=groups.filter(g=>physicalGroupState(g)!=='bound'&&(packetIds.has(g.contract_id||g.group_id)||taskIds.has(physicalGroupTarget(g))||(g.candidates||[]).some(c=>taskIds.has(c.task_id))));
   const box=document.createElement('div');box.className='physical-scope';box.dataset.taskIds=JSON.stringify([...taskIds]);
   box.append(physicalReviewText('b',packets.length?packets.map(p=>`${p.contractor}. Договор ${p.contract}`).join('; '):'Работы без определённого договора'));
-  box.append(physicalReviewText('p',`Работ ГПР в составе: ${members.length}. Добавлено групп объёмов: ${components.length}. Непривязанных групп с возможным соответствием: ${pending.length}.`,pending.length?'warn':'muted'));
+  box.append(physicalReviewText('p',`Работ ГПР в составе: ${members.length}. Добавлено групп объёмов: ${components.length}. Неразобранных объёмов по этим договорам и работам: ${pending.length}.`,pending.length?'warn':'muted'));
   const label=document.createElement('label'),check=document.createElement('input');check.type='checkbox';check.className='physical-scope-check';check.checked=members.every(t=>t.scope_confirmed);check.indeterminate=!check.checked&&members.some(t=>t.scope_confirmed);check.disabled=!physicalState?.can_edit||!components.length;
   check.onchange=()=>{for(const task of members)task.scope_confirmed=check.checked;physicalTaskFields();physicalBindingList();};
   check.disabled=check.disabled||pending.length>0;

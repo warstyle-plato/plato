@@ -56,7 +56,10 @@ def test_batch_proposals_across_pages_scope_and_save_are_separate_actions(width)
         assert page.evaluate('physicalDraft.tasks[0].scope_confirmed') is False
         assert page.evaluate('physicalDraft.tasks[0].task_id') == '1'
         expect(page.locator('#physicalReviewScopes')).to_contain_text('Добавлено групп объёмов: 30.')
-        page.locator('.physical-scope-check').check()
+        expect(page.locator('.physical-scope-check')).to_be_disabled()
+        page.locator('#physicalManual summary').click()
+        page.locator('#physicalScope').check()
+        page.locator('#physicalApplyTask').click()
         page.locator('#physicalNote').fill('Анна проверила договор, корпус и полный состав работы.')
         page.locator('#physicalSave').click()
         expect(page.locator('#physicalScheduleState')).to_contain_text('Последняя привязка')
@@ -198,7 +201,9 @@ def test_changed_draft_does_not_claim_the_saved_automatic_source_proof():
         page.locator('#physicalReviewApply').click()
         expect(page.locator('#physicalBindings')).not_to_contain_text('по точному участку КС')
         expect(page.locator('.physical-scope-check')).not_to_be_checked()
-        page.locator('.physical-scope-check').check()
+        expect(page.locator('.physical-scope-check')).to_be_disabled()
+        page.locator('#physicalScope').check()
+        page.locator('#physicalApplyTask').click()
         expect(page.locator('#physicalBindings')).not_to_contain_text('по точному участку КС')
         assert not errors
 

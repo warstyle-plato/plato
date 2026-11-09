@@ -156,3 +156,26 @@ def test_history_allows_reading_contract_works_without_enabling_mutations():
         expect(page.locator('.physical-group-check').first).to_be_disabled()
         assert page.evaluate('physicalDraft.components.length')==0
         assert not errors
+
+
+def test_an_unrecognized_volume_of_the_same_contract_blocks_batch_scope_approval():
+    from playwright.sync_api import expect
+    current=contract_state(3,1)
+    current['review']['groups'][0].update(status='unmatched',base_status='unmatched',
+        suggested_task_id='',candidates=[],name='Неразобранный объём того же договора')
+    with browser_page(1440) as (page,responses,errors):
+        page.route('**/monitor/schedule-gpr-physical/view',lambda route:route.fulfill(json=current))
+        page.evaluate('void loadPhysicalSchedule()')
+        page.locator('#dataTab').click()
+        page.get_by_role('button',name='Добавить предложения договора (2)',exact=True).click()
+        expect(page.locator('.physical-scope-check')).to_be_disabled()
+        expect(page.locator('#physicalReviewScopes')).to_contain_text('Неразобранных объёмов по этим договорам и работам: 1.')
+        assert not page.evaluate('physicalDraft.tasks[0].scope_confirmed')
+        page.get_by_role('button',name='Разобрать вопросы (1)',exact=True).click()
+        page.locator('.physical-group-target').select_option('3')
+        page.locator('.physical-group-check').check()
+        page.locator('#physicalReviewApply').click()
+        expect(page.locator('.physical-scope-check')).to_be_enabled()
+        page.locator('.physical-scope-check').check()
+        assert page.evaluate('physicalDraft.tasks.every(t=>t.scope_confirmed)')
+        assert not errors
