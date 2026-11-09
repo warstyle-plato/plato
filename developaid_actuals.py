@@ -767,6 +767,13 @@ def _sync_land_overlay(updated: dict, original: dict, actuals: dict, cut, notes:
         updated["capex_amounts"] = amounts
     land = dict(updated.get("land_rent") or {})
     if land:
+        # Keep these two already classified schedules for export admission.
+        # Their net can be zero while dated payments and refunds are known;
+        # the rounded public monthly table does not retain zero-net rows.
+        extra_land = {key: {month.isoformat(): value for month, value in articles[key].items()}
+                      for key in ("land_tax", "land_use_other") if key in articles}
+        if extra_land:
+            land["additional_land_costs"] = extra_land
         cash = dict(articles.get("land_rent") or {})
         land.update(applied_total=sum(cash.values()), cash_total=sum(cash.values()),
                     monthly={m.isoformat(): v for m, v in sorted(cash.items())})

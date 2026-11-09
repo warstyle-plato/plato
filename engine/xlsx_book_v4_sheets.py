@@ -542,6 +542,39 @@ def _v4_step_worksheet_xml(text: str, steps: list[tuple[float, float]],
     return _re.sub(r"<x:f>([^<]*'Вводные'!\$B\$28[^<]*)</x:f>", swap, text), counter
 
 
+def _v4_unrepresented_land_costs(result: dict[str, Any]) -> list[str]:
+    """Generic v4 cannot represent these known costs; never net away refunds.
+
+    Native hotel exports have their own additional-article source schedule.
+    This is an admission check, not a tax formula or a budget adjustment.
+    """
+    def nonzero_or_unknown(value: Any) -> bool:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return True
+        try:
+            return not math.isfinite(value) or value != 0
+        except (OverflowError, ValueError):
+            return True
+
+    amounts = result.get("capex") or {}
+    dated = (result.get("land_rent") or {}).get("additional_land_costs") or {}
+    costs = (result.get("monthly") or {}).get("costs") or []
+    missing = []
+    for key in ("land_tax", "land_use_other"):
+        found = key in amounts and nonzero_or_unknown(amounts[key])
+        if key in dated:
+            series = dated[key]
+            found = found or not isinstance(series, dict) or any(nonzero_or_unknown(value) for value in series.values())
+        for row in costs:
+            if isinstance(row, dict) and row.get("key") == key:
+                values = row.get("values")
+                found = found or ("total" in row and nonzero_or_unknown(row["total"]))
+                found = found or not isinstance(values, list) or any(nonzero_or_unknown(value) for value in values)
+        if found:
+            missing.append(_MONTHLY_CAPEX_LABELS[key])
+    return missing
+
+
 def _v4_finance_hints(bundle: dict[str, Any]) -> dict[str, Any]:
     """Контрольные числа книги из посчитанного движком — одно объявление.
 
@@ -551,6 +584,7 @@ def _v4_finance_hints(bundle: dict[str, Any]) -> dict[str, Any]:
     книга с сайта знала. Два достоверных на вид документа на одних вводных.
     """
     phases = (bundle.get("phases") or []) if isinstance(bundle, dict) else []
+    unrepresented_land = _v4_unrepresented_land_costs((bundle or {}).get("consolidated") or {})
     if phases:
         hints: dict[str, Any] = {
             "pf_limit_by_phase": [
@@ -561,7 +595,7 @@ def _v4_finance_hints(bundle: dict[str, Any]) -> dict[str, Any]:
     else:
         finance = ((bundle or {}).get("consolidated") or {}).get("finance") or {}
         if not finance:
-            return {}
+            return {"unrepresented_land_costs":unrepresented_land} if unrepresented_land else {}
         hints = {
             "pf_limit_by_phase": [float(finance.get("pf_limit", 0.0)) / 1e6],
             "bridge_peak_by_phase": [float(finance.get("peak_bridge", 0.0)) / 1e6],
@@ -584,6 +618,7 @@ def _v4_finance_hints(bundle: dict[str, Any]) -> dict[str, Any]:
     # ТЦ и офисы вне ДДУ: книга получает результат движка листом
     # «Нежильё — стратегия» (`v4_nonres_sheet`) — таблицу отчёта и месячные ряды.
     _consolidated = bundle.get("consolidated") or {}
+    hints["unrepresented_land_costs"] = unrepresented_land
     if isinstance(_consolidated.get("land_rent"), dict):
         hints["land_rent"] = copy.deepcopy(_consolidated["land_rent"])
         # The canonical common schedule is assigned to the earliest queue.

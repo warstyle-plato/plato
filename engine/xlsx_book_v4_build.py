@@ -494,6 +494,15 @@ def _build_project_workbook(
             finance_hints = {}
             missing.append("контрольные числа движка: " + _error_location(exc))
 
+    _unrepresented_land = list(dict.fromkeys([
+        *((finance_hints or {}).get("unrepresented_land_costs") or []),
+        *_v4_unrepresented_land_costs({"land_rent":(finance_hints or {}).get("land_rent") or {}}),
+    ]))
+    if _unrepresented_land:
+        raise HTTPException(422, "Книга v4 не выдана: " + "; ".join(_unrepresented_land) +
+                            " присутствуют в исходном расчёте, но эта книга пока не переносит их суммы и графики. "
+                            "Суммы в модели сохранены; нужна выгрузка с поддержкой этих статей.")
+
     # Книга считает по ТОМУ ЖЕ ТЭП, что и отчёт. Присланная страницей строка —
     # не то, на чём посчитано: `calculate` приводит её к вводным, и правки
     # книга не видела. Приобъектный паркинг в применённом ТЭП уже разложен,
