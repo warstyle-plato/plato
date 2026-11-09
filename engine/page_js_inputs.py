@@ -58,6 +58,8 @@ function resetTerritoryData(options){
  // импортировал участок, не заметил ноль, посчитал — и получил LLCR 1,08
  // вместо 1,02. Молчаливое обнуление врёт не меньше молчаливого переезда.
  territoryCleared=[];
+ // Lease terms and its cadastral base belong to this parcel/contract.
+ Object.keys(inputs).filter(key=>key.startsWith('land_rent_')).forEach(key=>{delete inputs[key]});
  TERRITORY_INPUT_KEYS.forEach(key=>{
   if(!(key in inputs))return;
   if(Number(inputs[key])>0)territoryCleared.push(key);
@@ -2116,6 +2118,7 @@ function renderInputs(){
  renderObjectParkingFieldNotes();
  renderUndergroundFieldNote();
  renderLandscapingRateNote();
+ renderLandRentEditor();
 }
 
 // --- гостиничный проект ----------------------------------------------------
@@ -2276,3 +2279,5 @@ function renderHotelReport(r){
 }
 
 """
+
+PAGE += (Path(__file__).resolve().parent / "land_rent_client.js").read_text(encoding="utf-8")

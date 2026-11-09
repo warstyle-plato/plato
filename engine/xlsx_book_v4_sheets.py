@@ -584,6 +584,16 @@ def _v4_finance_hints(bundle: dict[str, Any]) -> dict[str, Any]:
     # ТЦ и офисы вне ДДУ: книга получает результат движка листом
     # «Нежильё — стратегия» (`v4_nonres_sheet`) — таблицу отчёта и месячные ряды.
     _consolidated = bundle.get("consolidated") or {}
+    if isinstance(_consolidated.get("land_rent"), dict):
+        hints["land_rent"] = copy.deepcopy(_consolidated["land_rent"])
+        # The canonical common schedule is assigned to the earliest queue.
+        # It must not be recomputed from each queue's own start/RVE or indexed
+        # again by the construction-cost multiplier.
+        _rent_count = max(1, len(phases))
+        _rent_earliest = min(range(len(phases)), key=lambda k: (
+            float(phases[k].get("start_offset_months") or 0), k)) if phases else 0
+        hints["land_rent_phase_shares"] = [
+            1.0 if k == _rent_earliest else 0.0 for k in range(_rent_count)]
     _nonres_report = (_consolidated.get("report") or {}).get("nonres_strategy") or []
     if _nonres_report:
         hints["nonres"] = {

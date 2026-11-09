@@ -58,6 +58,7 @@
 from __future__ import annotations
 
 import collections
+import copy
 import datetime
 import hashlib
 import os
@@ -750,6 +751,81 @@ def _blend(
     return blended
 
 
+def _sync_land_overlay(updated: dict, original: dict, actuals: dict, cut, notes: list[str]) -> None:
+    """One final cash/amount/VAT refresh for article, aggregate and budget cuts.
+    Contract accruals remain separate from money paid for potentially other
+    periods. Old total allocations are never promoted to primary rent fact.
+    """
+    if not any(key in actuals for key in ("capex", "capex_by_article", "capex_budget")):
+        return
+    articles = updated.get("capex_by_article") or {}
+    amounts = dict(updated.get("capex_amounts") or {})
+    for key in ("land_rent", "land_tax", "land_use_other"):
+        if key in articles:
+            amounts[key] = sum(articles[key].values())
+    if any(key in amounts for key in ("land_rent", "land_tax", "land_use_other")):
+        updated["capex_amounts"] = amounts
+    land = dict(updated.get("land_rent") or {})
+    if land:
+        cash = dict(articles.get("land_rent") or {})
+        land.update(applied_total=sum(cash.values()), cash_total=sum(cash.values()),
+                    monthly={m.isoformat(): v for m, v in sorted(cash.items())})
+
+        def qualify(code: str, reason: str) -> None:
+            land["financial_complete"] = False
+            land["financial_missing"] = list(dict.fromkeys([*land.get("financial_missing", []), reason]))
+            land["financial_missing_codes"] = list(dict.fromkeys([*land.get("financial_missing_codes", []), code]))
+            if land.get("status") != "not_applicable":
+                land["status"] = "incomplete"
+
+        unclassified = ("capex_by_article" not in actuals and
+                        any(k in actuals for k in ("capex", "capex_budget")))
+        if unclassified and (land.get("status") != "not_applicable" or cash):
+            reason = "Сохранённый общий CAPEX или бюджет не подтверждает оплату аренды по периодам; её распределение остаётся модельной оценкой."
+            qualify("legacy_actuals", reason)
+            notes.append(reason)
+            land["historical"] = {"mode": "aggregate_unclassified", "cut": cut.isoformat()}
+        if amounts.get("land_use_other", 0.0):
+            qualify("other_land_vat", "НДС прочих платежей за пользование землёй не подтверждён; входной вычет по ним не включён.")
+        accrual = land.get("construction_total")
+        if accrual is not None and abs(land["applied_total"] - accrual) > 0.5:
+            qualify("payment_periods", "Платежи аренды отличаются от расчёта по ставкам: проверьте периоды авансов. Начисления не подогнаны под оплату.")
+        updated["land_rent"] = land
+    equity = _months(original.get("vri_equity") or {})
+    updated["debt_capex"] = {month: max(0.0, value-equity.get(month, 0.0))
+                            for month, value in (updated.get("capex") or {}).items()}
+    if original.get("nonres_plans"):
+        import developaid_nonres_strategy
+        plans = copy.deepcopy(original["nonres_plans"])
+        for key, plan in plans.items():
+            plan["capex"] = _months(articles.get(key, plan.get("capex") or {}))
+            for month, value in plan["capex"].items():
+                updated["debt_capex"][month] = max(0.0, updated["debt_capex"].get(month, 0.0) - value)
+        if original.get("common_on_object_loans"):
+            shares = original.get("common_capex_shares") or {}
+            if shares:
+                remaining, common = developaid_nonres_strategy.allocate_common_capex(
+                    updated["debt_capex"], articles, original.get("object_capex_keys") or (), shares)
+                updated["debt_capex"] = remaining
+                for key, series in common.items():
+                    plans[key]["common_capex"] = series
+            elif land and land.get("applied_total"):
+                reason = "Модель не передала распределение общих расходов по нежилым объектам; аренда в кредитном расчёте требует проверки."
+                land["financial_complete"] = False
+                land["financial_missing"] = [*land.get("financial_missing", []), reason]
+                land["financial_missing_codes"] = [*land.get("financial_missing_codes", []), "nonres_allocation"]
+                updated["land_rent"] = land
+        updated["nonres_plans"] = plans
+    if original.get("hotel_plan"):
+        hotel = dict(original["hotel_plan"])
+        hotel["capex"] = dict(updated.get("capex") or {})
+        for target, metadata in (("capex_land", "land_articles"), ("capex_vat_exempt", "vat_exempt_articles")):
+            if metadata in hotel:
+                hotel[target] = {m: sum(articles.get(k, {}).get(m, 0.0) for k in hotel[metadata])
+                                 for m in hotel["capex"]}
+        updated["hotel_plan"] = hotel
+
+
 def overlay(op: dict[str, Any], actuals: dict[str, Any]) -> dict[str, Any]:
     """Подменить ряды операционной модели фактом до даты среза.
 
@@ -831,8 +907,27 @@ def overlay(op: dict[str, Any], actuals: dict[str, Any]) -> dict[str, Any]:
     if "capex_by_article" in actuals:
         planned_articles = {a: dict(s) for a, s in (op.get("capex_by_article") or {}).items()}
         facts = {a: _months(s) for a, s in (actuals["capex_by_article"] or {}).items()}
+        legacy_land = ("land_rights" in facts and "land_rent" not in facts
+                       and actuals.get("land_rent_mapping_version") != 1)
         merged: dict[str, dict[datetime.date, float]] = {}
         for article in sorted(set(planned_articles) | set(facts)):
+            if article == "land_rent":
+                # Rent is a dated obligation, not a fixed budget whose past
+                # must be collected again in future months after an overlay.
+                scheduled = planned_articles.get(article, {})
+                if legacy_land:
+                    merged[article] = {m: v for m, v in scheduled.items() if m >= cut}
+                elif article in facts:
+                    observed = {m: v for m, v in facts[article].items() if m < cut}
+                    merged[article] = dict(scheduled)
+                    if observed:
+                        first, last = min(observed), max(observed)
+                        merged[article] = {m: v for m, v in scheduled.items()
+                                           if not first <= m <= last}
+                        merged[article].update(observed)
+                else:
+                    merged[article] = dict(scheduled)
+                continue
             merged[article] = _blend(
                 planned_articles.get(article, {}), facts.get(article, {}),
                 cut, f"CAPEX:{article}", notes)
@@ -845,17 +940,44 @@ def overlay(op: dict[str, Any], actuals: dict[str, Any]) -> dict[str, Any]:
         updated["capex"] = combined
         record("capex", plan_capex, combined)
         blended = combined
-
-    if "capex" in actuals or "capex_by_article" in actuals:
-        # Долговой CAPEX — тот же расход за вычетом доли ВРИ, которую закрывает
-        # капитал. Пересобираем из нового CAPEX, а не масштабируем отдельно:
-        # иначе связь между ними разъедется на второй же правке.
-        equity = _months(op.get("vri_equity") or {})
-        updated["debt_capex"] = {
-            month: max(0.0, value - equity.get(month, 0.0))
-            for month, value in updated["capex"].items()
-        }
-
+        land = dict(op.get("land_rent") or {})
+        land_amounts = dict(op.get("capex_amounts") or {})
+        for article in ("land_rent", "land_tax", "land_use_other"):
+            if article in merged:
+                land_amounts[article] = sum(merged[article].values())
+        updated["capex_amounts"] = land_amounts
+        if land:
+            land["applied_total"] = land_amounts.get("land_rent", 0.0)
+            land["cash_total"] = land["applied_total"]
+            land["monthly"] = {m.isoformat(): v for m, v in sorted(merged.get("land_rent", {}).items())}
+            land["notes"] = list(land.get("notes") or [])
+            if legacy_land:
+                reason = "Старый импорт объединяет ВРИ и пользование землёй. Прошлая аренда повторно не начислена; для разделения нужен исходный реестр с кодами БДДС."
+                notes.append(reason)
+                land["notes"].append(reason)
+                land["financial_missing"] = [*land.get("financial_missing", []), reason]
+                land["financial_missing_codes"] = [*land.get("financial_missing_codes", []), "legacy_actuals"]
+                land.update(status="incomplete", financial_complete=False)
+                land["historical"] = {"mode": "legacy_combined", "cut": cut.isoformat()}
+            elif "land_rent" in facts:
+                land["notes"].append("Аренда: подтверждённые месяцы заменены фактом, будущий график по ставкам сохранён без перенормировки.")
+                observed = {m: v for m, v in facts["land_rent"].items() if m < cut}
+                land["historical"] = {"mode": "classified", "cut": cut.isoformat(),
+                    "monthly": {m.isoformat(): v for m, v in sorted(observed.items())},
+                    "covered_from": min(observed).isoformat() if observed else None,
+                    "covered_to": max(observed).isoformat() if observed else None}
+            if land_amounts.get("land_use_other", 0.0):
+                reason = "НДС прочих платежей за пользование землёй не подтверждён; входной вычет по ним не включён."
+                land["notes"].append(reason)
+                land["financial_missing"] = [*land.get("financial_missing", []), reason]
+                land["financial_missing_codes"] = [*land.get("financial_missing_codes", []), "other_land_vat"]
+                land["financial_complete"] = False
+            if land.get("construction_total") is not None and abs(land["applied_total"] - land["construction_total"]) > 0.5:
+                reason = "Платежи аренды отличаются от расчёта по ставкам: проверьте периоды авансов. Начисления не подогнаны под оплату."
+                land["financial_missing"] = [*land.get("financial_missing", []), reason]
+                land["financial_missing_codes"] = [*land.get("financial_missing_codes", []), "payment_periods"]
+                land["financial_complete"] = False
+            updated["land_rent"] = land
     # --- коммерческие расходы ---------------------------------------------
     if "operating" in actuals:
         plan_operating = dict(op.get("operating") or {})
@@ -959,6 +1081,7 @@ def overlay(op: dict[str, Any], actuals: dict[str, Any]) -> dict[str, Any]:
                                  if m < cut),
         }
 
+    _sync_land_overlay(updated, op, actuals, cut, notes)
     return {"op": updated, "report": report}
 
 
@@ -1040,7 +1163,9 @@ _BDDS_TO_ARTICLE: tuple[tuple[str, str], ...] = (
     ("2.1.1.1", "purchase"),            # приобретение прав застройщика
     ("2.1.1.2", "purchase"),            # приобретение ЗУ под сети и прочих
     ("2.1.1.3", "land_rights"),         # межевание, смена ВРИ, нотариат
-    ("2.1.1.4", "land_rights"),         # аренда ЗУ, земельный налог
+    ("2.1.1.4.1", "land_rent"),         # текущие арендные платежи ЗУ
+    ("2.1.1.4.2", "land_tax"),          # земельный налог, не аренда и не ВРИ
+    ("2.1.1.4.3", "land_use_other"),    # прочие платежи за пользование ЗУ
     ("2.1.2", "social"),                # обременения и стройка соцобъектов
 
     # --- строительство -----------------------------------------------------
@@ -1206,6 +1331,7 @@ def articles_from_register(
         "unresolved": unresolved,
         "mapped": mapped,
         "total": register["paid"],
+        "land_rent_mapping_version": 1,
     }
 
 
@@ -1488,6 +1614,7 @@ def payments_by_article(
         "matched": matched,
         "mapped": sum(matched.values()),
         "total": payments["total"],
+        "land_rent_mapping_version": 1,
         # Как деньги одного кода РСС легли по нашим статьям на самом деле.
         # Этим потом делится смета того же кода: пропорция взята из факта, а не
         # выдумана.

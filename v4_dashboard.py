@@ -27,6 +27,7 @@ KPI читаются из колонки B блока паритета лист�
 from __future__ import annotations
 
 import re
+import v4_land_rent
 from typing import Any
 from xml.sax.saxutils import escape as _xml_escape
 
@@ -313,6 +314,7 @@ STRUCTURE_ITEMS: tuple[tuple[str, str], ...] = (
     ("Смена ВРИ / земельные права",
      _sheet_sum("ВРИ", "B", _VRI_PRINCIPAL_ROWS) + "+" + _sheet_sum("ВРИ", "B", _VRI_SECURITY_ROWS)),
     ("Проценты по рассрочке ВРИ", _sheet_sum("ВРИ", "B", _VRI_INTEREST_ROWS)),
+    ("Аренда земельного участка", _sheet_sum("CAPEX", "B", v4_land_rent.CAPEX_ROWS)),
     ("ИРД и проектирование", "{ird}+{design_p}+{design_rd}+{author_supervision}"),
     ("Основное строительство", "{preparation}+{main_above}+{main_under}+{utilities}+{landscaping}"
                                "+{commissioning}+{site_maintenance}+{gc_fee}"),
@@ -864,7 +866,7 @@ def build_dashboard_sheet(styles: Styles, drawing_rel_id: str, phased: bool,
 
     sh.band("DEVELOPAID · ИНВЕСТИЦИОННЫЙ ДАШБОРД", None, sh.title, 24)
     sh.band(None, data_cell("project_name"), sh.subtitle, 15)
-    sh.blank()
+    sh.band(None, "'Аренда ЗУ'!$L$13", sh.subtitle, 18)
 
     # Шесть карточек KPI — те же, что у тизера.
     cards = list(KPI_CATALOGUE[:CARD_COUNT])

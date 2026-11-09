@@ -599,6 +599,8 @@ async function sendTelegramResult(){
     total_expenses_mln:Number(s.total_expenses||0)/1e6,
    ebitda_mln:Number(s.ebitda||0)/1e6,
    net_profit_mln:Number(s.net_profit||0)/1e6,
+   preliminary:!!s.preliminary,
+   preliminary_reason:s.preliminary_reason||'',
    margin:Number(s.margin||0),
    irr_project:s.irr_project==null?null:Number(s.irr_project),
    irr_equity:s.irr_equity==null?null:Number(s.irr_equity),

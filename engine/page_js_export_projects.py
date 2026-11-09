@@ -444,6 +444,7 @@ function openLogin(){
 function projectSummaryForStore(){
  const s=(lastResult&&lastResult.summary)||{};
  return {revenue_mln:Number(s.revenue||0)/1e6,net_profit_mln:Number(s.net_profit||0)/1e6,
+         preliminary:!!s.preliminary,preliminary_reason:s.preliminary_reason||'',
          llcr:Number(s.llcr||0),purchase_price_mln:Number(inputs.purchase_price_mln||0)};
 }
 

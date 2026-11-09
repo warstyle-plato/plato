@@ -47,6 +47,8 @@ import site_position
 # Регион проекта: Москва, область или другой — один предикат на все модули.
 import project_regions
 import vri_benefits
+import developaid_land_rent
+import project_types
 # Профиль освоения стройки: им движок разносит СМР, им же отчёт о рынке считает
 # готовность дома по датам. Одна кривая на оба вопроса.
 import build_curve

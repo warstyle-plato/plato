@@ -33,6 +33,8 @@ from collections import defaultdict
 from datetime import date
 from typing import Any, Callable
 
+from developaid_finance_math import month_key, monthly_sum
+
 STRATEGY_DDU = "ddu"
 STRATEGY_DIRECT = "direct"
 STRATEGY_INCOME = "income"
@@ -458,6 +460,28 @@ def _choice(params: dict[str, Any], key: str, allowed: tuple[str, ...], default:
     return value if value in allowed else default
 
 
+def allocate_common_capex(debt_capex: dict, capex_by_article: dict,
+                          object_keys, plan_shares: dict[str, float]) -> tuple[dict, dict]:
+    """Existing common-project cost allocation, shared with actual overlays.
+
+    Object-specific loan capex has already been removed from debt_capex.
+    The supplied shares are the engine's declared cost shares, not inferred
+    bank coverage or a new allocation from historical payment names.
+    """
+    remaining = dict(debt_capex)
+    common_by_plan = {key: {} for key in plan_shares}
+    for month in list(remaining):
+        ddu_objects = sum((capex_by_article.get(key) or {}).get(month, 0.0)
+                          for key in object_keys if key not in plan_shares)
+        common = max(0.0, remaining[month] - ddu_objects)
+        if common <= 0:
+            continue
+        for key, share in plan_shares.items():
+            common_by_plan[key][month] = common * share
+        remaining[month] -= common * sum(plan_shares.values())
+    return remaining, common_by_plan
+
+
 def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
                  *, vat_rate: float) -> dict[str, Any]:
     """Денежный поток объекта при стратегии «прямая продажа» или «доход».
@@ -475,8 +499,9 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
     """
     strategy = plan["strategy"]
     params = plan.get("params") or {}
-    capex: dict[date, float] = {m: float(v) for m, v in (plan.get("capex") or {}).items() if v}
-    commissioning: date = plan["commissioning"]
+    # Monthly buckets are independent from the source commissioning date.
+    capex = monthly_sum({m: float(v) for m, v in (plan.get("capex") or {}).items() if v})
+    commissioning = month_key(plan["commissioning"])
     vat_share = vat_rate / (1.0 + vat_rate) if vat_rate > 0 else 0.0
     revenue_multiplier = float(plan.get("revenue_multiplier", 1.0) or 1.0)
     cost_multiplier = float(plan.get("cost_multiplier", 1.0) or 1.0)
@@ -502,10 +527,10 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
     # объект: в нежилом проекте банк кредитует долю ВСЕЙ стоимости. Они
     # финансируются кредитом, но не входят ни в НДС, ни в себестоимость
     # объекта — их учитывает проект.
-    common: dict[date, float] = {mm: float(v) for mm, v in (plan.get("common_capex") or {}).items() if v}
+    common = monthly_sum({mm: float(v) for mm, v in (plan.get("common_capex") or {}).items() if v})
     common_total = sum(common.values())
 
-    first = min([commissioning, *capex, *(plan.get("common_capex") or {})])
+    first = min([commissioning, *capex, *common])
     m = defaultdict(lambda: defaultdict(float))  # ряд → месяц → значение
     sold_share: dict[date, float] = {}
     horizon_end = commissioning
@@ -535,7 +560,7 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
             m["sale_revenue"][month] += base * revenue_multiplier
             m["selling_cost"][month] += base * float(plan.get("selling_share", 0.0) or 0.0) * cost_multiplier
             sold_share[month] = sold_share.get(month, 0.0) + weight
-        horizon_end = plan_horizon_end(plan)
+        horizon_end = month_key(plan_horizon_end(plan))
         # Налог на имущество — с непроданной доли готового здания; проданное
         # авансом до ввода в неё уже не входит.
         unsold = max(0.0, 1.0 - sum(share for when, share in sold_share.items()
@@ -692,7 +717,7 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
     # После последней выдачи линии остаток нулевой — плата кончается сама.
     # Без даты РнС в плане линия одна. Всё лежит в комиссиях (`loan_fee`):
     # поток, налог и итог объекта видят их сами.
-    permit: date = plan.get("permit") or min(m["loan_draw"] or [commissioning])
+    permit = month_key(plan.get("permit") or min(m["loan_draw"] or [commissioning]))
     lines = {"land": [mm for mm in months if mm < permit and m["loan_draw"][mm]],
              "build": [mm for mm in months if mm >= permit and m["loan_draw"][mm]]}
     limits = {name: sum(m["loan_draw"][mm] for mm in draws) for name, draws in lines.items()}
@@ -787,8 +812,8 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
     return {
         "strategy": strategy,
         "months": months,
-        "commissioning": commissioning,
-        "horizon_end": horizon_end,
+        "commissioning": plan["commissioning"],
+        "horizon_end": plan_horizon_end(plan),
         # Нули не несём: ряд — это месяцы, в которых что-то было.
         "monthly": {name: {month: value for month, value in series.items() if value}
                     for name, series in m.items()},

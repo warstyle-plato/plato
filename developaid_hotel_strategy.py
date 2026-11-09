@@ -47,7 +47,7 @@ from datetime import date
 from typing import Any, Callable
 
 from developaid_finance_math import (
-    equity_npv, monthly_irr, monthly_npv, profit_tax_schedule)
+    equity_npv, monthly_irr, monthly_npv, profit_tax_schedule, month_key, monthly_sum)
 
 # --- выборы -----------------------------------------------------------------
 
@@ -557,10 +557,12 @@ def hotel_flows(plan: dict[str, Any], key_rate: Callable[[date], float], *,
     missing = missing_fields(plan.get("params") or {})
     if missing:
         raise ValueError("не заданы: " + ", ".join(f.label for f in missing))
-    commissioning: date = plan["commissioning"]
-    capex = {m: float(v) for m, v in (plan.get("capex") or {}).items() if v}
-    capex_ffe = {m: float(v) for m, v in (plan.get("capex_ffe") or {}).items() if v}
-    capex_land = {m: float(v) for m, v in (plan.get("capex_land") or {}).items() if v}
+    # The calendar is monthly; retain the source commissioning date in metadata.
+    commissioning = month_key(plan["commissioning"])
+    capex = monthly_sum({m: float(v) for m, v in (plan.get("capex") or {}).items() if v})
+    capex_ffe = monthly_sum({m: float(v) for m, v in (plan.get("capex_ffe") or {}).items() if v})
+    capex_land = monthly_sum({m: float(v) for m, v in (plan.get("capex_land") or {}).items() if v})
+    capex_vat_exempt = monthly_sum({m: float(v) for m, v in (plan.get("capex_vat_exempt") or {}).items() if v})
     vat_share = vat_rate / (1.0 + vat_rate) if vat_rate > 0 else 0.0
     warnings: list[str] = []
 
@@ -588,7 +590,7 @@ def hotel_flows(plan: dict[str, Any], key_rate: Callable[[date], float], *,
     capex_total = sum(capex.values())
     land_total = sum(capex_land.values())
     ffe_total = sum(capex_ffe.values())
-    vat_bearing = max(0.0, capex_total - land_total)
+    vat_bearing = max(0.0, capex_total - land_total - sum(capex_vat_exempt.values()))
     capex_vat = vat_bearing * vat_share
     capex_net = capex_total - capex_vat
     ffe_net = ffe_total * (1.0 - vat_share)
@@ -603,7 +605,7 @@ def hotel_flows(plan: dict[str, Any], key_rate: Callable[[date], float], *,
         if mm > horizon_end:
             continue
         m["capex"][mm] = value
-        vat = max(0.0, value - capex_land.get(mm, 0.0)) * vat_share
+        vat = max(0.0, value - capex_land.get(mm, 0.0) - capex_vat_exempt.get(mm, 0.0)) * vat_share
         if vat:
             m["vat_refund"][min(add_months(mm, 3), horizon_end)] += vat
 
@@ -956,7 +958,7 @@ def hotel_flows(plan: dict[str, Any], key_rate: Callable[[date], float], *,
     return {
         "strategy": "hotel",
         "months": months,
-        "commissioning": commissioning,
+        "commissioning": plan["commissioning"],
         "horizon_end": horizon_end,
         "monthly": {name: {mm: value for mm, value in series.items() if value}
                     for name, series in m.items()},
