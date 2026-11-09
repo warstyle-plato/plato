@@ -101,7 +101,7 @@ def test_unique_named_contractor_reaches_work_table_with_registry_share_and_dela
     table.feed(document)
     headers = table.headers
     assert headers == ["Подрядчик", "Работы", "Дни в отчётах", "Договор",
-                       "По накопительной, % договора", "Прогноз срока"]
+                       "Выполнение, %", "Прогноз срока"]
     cells = table.cells
     assert cells[3] == "Договор А-12"
     assert cells[4] == "25,0% суммы договора"
@@ -339,7 +339,7 @@ def test_real_summary_table_and_a4_pdf_keep_six_columns_and_long_missing_reasons
     assert sheet.rect.width == pytest.approx(595.28, abs=1)
     assert sheet.rect.height == pytest.approx(841.89, abs=1)
     pdf_text = ' '.join(sheet.get_text().split())
-    for answer in ['Подрядчик', 'Договор А-12', 'Договор Б-10', 'По накопительной, % договора',
+    for answer in ['Подрядчик', 'Договор А-12', 'Договор Б-10', 'Выполнение, %',
                    'Прогноз срока', '25,0% суммы договора', '29.11.2026', 'Задержка 28 дн.',
                    'Доля неизвестна: нет полной суммы договора',
                    'Прогноз неизвестен: нет полной суммы договора']:

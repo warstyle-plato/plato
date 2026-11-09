@@ -312,7 +312,7 @@ def render(block: dict, *, context: str = 'monitor') -> str:
              and isinstance(delta, (int, float)) else 'не определён')
     out = [styles(), '<section class="dependency-timeline schedule-overview">',
            '<h3>РНВ и причины переноса срока</h3>',
-           '<div class="schedule-rnv-cards"><div><span>План РНВ</span><strong>'+esc(date_text(rnv.get('approved')))+'</strong></div>',
+           '<div class="schedule-rnv-cards"><div><span>'+esc(rnv.get('plan_label') or 'План РНВ')+'</span><strong>'+esc(date_text(rnv.get('plan_date') or rnv.get('approved')))+'</strong></div>',
            '<div class="'+('schedule-warning' if state != 'complete' else '')+'"><span>Прогноз РНВ</span><strong>'+esc(forecast)+'</strong></div>',
            '<div><span>Сдвиг РНВ'+(' по работам ГПР с прогнозом' if state == 'partial' and gpr else ' по известной части сети' if state == 'partial' else '')+'</span><strong>'+esc(delay)+'</strong></div></div>']
     if state == 'partial' and rnv.get('indicative_forecast'):
@@ -334,7 +334,7 @@ def render(block: dict, *, context: str = 'monitor') -> str:
     chain = rnv.get('driving_chain') or []
     if chain and not gpr:
         out.append('<p class="schedule-note"><b>Срок тянет:</b> '+esc(chain[-1].get('name') or '')+'</p>')
-    out.append(physical_summary(block.get('physical')))
+    out.append(physical_summary(block.get('physical'), include_covered=False))
     if not block.get('history'):
         out.append('<p class="schedule-note">Сравнение версий ГПР пока не рассчитано.</p>')
     confirmation = block.get('confirmation') or {}

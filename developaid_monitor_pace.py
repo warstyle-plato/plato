@@ -104,6 +104,8 @@ def _aggregate_management(nodes: list[dict[str, Any]]) -> None:
 _GPR_STATUS = {
     "done": "ЗАВЕРШЕНО ПО ГПР", "gpr_pace": "ПРОГНОЗ ПО ТЕМПУ ГПР",
     "cumulative_quantities": "ПРОГНОЗ ПО НАКОПИТЕЛЬНЫМ", "plan": "ПО ПЛАНУ ГПР",
+    "cumulative_statement": "ВЫПОЛНЕНИЕ ПО ВЕДОМОСТИ",
+    "cumulative_statement_pace": "ПРОГНОЗ ПО ДИНАМИКЕ ВЕДОМОСТЕЙ",
     "confirmed_completion": "ЗАВЕРШЕНИЕ ПОДТВЕРЖДЕНО", "cumulative_unknown": "НЕТ ТЕМПА ПО НАКОПИТЕЛЬНЫМ",
     "stalled": "СТОИТ: ПРОЦЕНТ НЕ РАСТЁТ", "stale": "НЕТ СВЕЖЕГО ГПР", "no_pace": "НЕТ ТЕМПА",
     "source_conflict": "РАСХОЖДЕНИЕ ГПР И НАКОПИТЕЛЬНЫХ",
@@ -143,7 +145,8 @@ def _apply_gpr(project: str, view: dict[str, Any], cut: datetime.date) -> dict[s
     rows = schedule.get("rows") or []
     physical = gpr_physical.build(project, cut.isoformat())
     ks = {task["task_id"]: task for task in physical.get("tasks") or []
-          if task.get("scope_confirmed") and task.get("mode") in {"quantities", "completed"}}
+          if (task.get("scope_confirmed") and task.get("mode") in {"quantities", "completed"})
+          or (task.get("source_conflict") or {}).get("scope") == "source_cohort"}
     works = gpr_forecast.forecasts(project, cut, rows, ks)
     stalled = []
     for row in rows:
@@ -159,20 +162,25 @@ def _apply_gpr(project: str, view: dict[str, Any], cut: datetime.date) -> dict[s
         row["pace_delta_days"] = (finish - plan).days if finish and plan else None
         row["pace_status"] = _GPR_STATUS.get(item.get("method"), "НЕТ ДАННЫХ ГПР")
         origin = item.get("progress_origin")
-        label = schedule_work_fact.GPR_ORIGINS.get(origin, "накопительные" if origin == "cumulative_quantities" else
+        label = schedule_work_fact.GPR_ORIGINS.get(origin, "по ведомости" if origin == "cumulative_statement" else
+                    "накопительные" if origin == "cumulative_quantities" else
                     "подтверждённое завершение" if origin == "confirmed_completion" else "ГПР")
         progress_reason = ""
         if item.get("progress") is None:
             bound = ks.get(tid) or {}
             progress_reason = ((bound.get("reason") or "Разные натуральные компоненты не складываются в общий процент.")
-                               if origin == "cumulative_quantities" else
+                               if origin in {"cumulative_quantities", "cumulative_statement"} else
                                item.get("reason") if item.get("method") == "unknown" else
                                "Нет датированного процента в ГПР.")
         # These public fields are the same facts as pace_*. Historical RSS
         # aliases must not keep a second forecast or a monetary physical fact.
         row.update(actual_progress=item.get("progress"), actual_equivalent_date=None,
-                   progress_kind=origin if origin in {"cumulative_quantities", "confirmed_completion"} else "gpr_percent",
-                   progress_label=label, progress_source={"kind": origin, "date": item.get("progress_date"), "label": label},
+                   progress_kind=origin if origin in {"cumulative_quantities", "cumulative_statement", "confirmed_completion"} else "gpr_percent",
+                   progress_label=label, progress_source={"kind": origin, "date": item.get("progress_date"), "label": label,
+                                                        "date_basis": item.get("progress_date_basis")},
+                   progress_date_basis=item.get("progress_date_basis"), progress_basis=item.get("progress_basis"),
+                   observation_history=item.get("observation_history"),
+                   requires_reconciliation=item.get("requires_reconciliation") is True,
                    progress_reason=progress_reason,
                    forecast_finish=monitor._iso(finish) if finish else None,
                    forecast_known=finish is not None, forecast_source=item.get("method"),
@@ -181,7 +189,7 @@ def _apply_gpr(project: str, view: dict[str, Any], cut: datetime.date) -> dict[s
                    status=row["pace_status"])
         # The display and the side-by-side evidence model use one dated GPR
         # reading, including an explicit unknown; never inherit an RSS ratio.
-        if origin not in {"cumulative_quantities", "confirmed_completion"}:
+        if origin not in {"cumulative_quantities", "cumulative_statement", "confirmed_completion"}:
             row.update(gpr_progress=item.get("progress"), gpr_progress_origin=origin,
                        gpr_progress_date=item.get("progress_date"))
         row.pop("dependencies", None)
@@ -202,6 +210,8 @@ def _apply_gpr(project: str, view: dict[str, Any], cut: datetime.date) -> dict[s
                     "pace_forecast_finish", "pace_delta_days", "pace_status", "pace_forecast_reason",
                     "actual_progress", "actual_equivalent_date", "progress_kind", "progress_label",
                     "progress_source", "progress_reason", "gpr_progress", "gpr_progress_origin", "gpr_progress_date",
+                    "progress_date_basis", "progress_basis", "observation_history",
+                    "requires_reconciliation",
                     "forecast_finish", "forecast_known", "forecast_source", "forecast_reason", "delta_days", "status"):
             node[key] = src.get(key)
         node["source_conflict"] = src.get("source_conflict")
@@ -210,8 +220,9 @@ def _apply_gpr(project: str, view: dict[str, Any], cut: datetime.date) -> dict[s
     _aggregate_gpr(schedule.get("management") or [])
     dash = view.setdefault("dashboard", {}).setdefault("schedule", {})
     approved = ((dash or {}).get("approved_finish") or schedule.get("approved_end")
-                or max((r.get("plan_finish") for r in rows if r.get("plan_finish") and str(r.get("code") or "").strip()), default=None))
-    qualified = gpr_forecast.rnv(rows, works, approved)
+                or max((r.get("plan_finish") for r in rows if r.get("plan_finish") and (str(r.get("code") or "").strip() or r.get("construction_work") is True)), default=None))
+    qualified = gpr_forecast.rnv(rows, works, approved,
+        missing_calendar=physical.get("source_calendar_missing") or [])
     schedule["dependency_timeline"] = {"state": "ok", "rows": [], "edges": [], "rnv": qualified,
                                        "confirmation": {}, "basis": "gpr", "physical": physical}
     schedule["physical_progress"] = physical
@@ -227,7 +238,8 @@ def _apply_gpr(project: str, view: dict[str, Any], cut: datetime.date) -> dict[s
                                and not row.get("forecast_known"))))
     view["by_code"] = rows
     schedule["dependency_timeline_html"] = schedule_timeline.render(schedule["dependency_timeline"])
-    schedule["corpus_gpr"] = corpus_gpr.latest(project, cut.isoformat())
+    schedule["corpus_gpr"] = corpus_gpr.for_view(project, cut.isoformat(),
+        baseline_sha256=physical.get("source_sha256") or "")
     schedule["corpus_gpr_html"] = corpus_gpr.render_overview(schedule["corpus_gpr"], cut.isoformat())
     if isinstance(dash, dict):
         driver = (qualified.get("driving_chain") or [None])[0]
@@ -504,6 +516,7 @@ def _driver(pm: dict[str, Any], propagated: dict[str, dict[str, Any]],
             "rnv_delay_days": (network_rnv - baseline_rnv).days}
 
 
+@monitor.approved_schedule_read
 def _build(project: str, cut: Any, programme: dict[str, Any] | None = None, upto: str = "") -> dict[str, Any]:
     if _ORIGINAL_BUILD is None:
         raise RuntimeError("pace layer is not installed")

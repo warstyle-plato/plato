@@ -6,7 +6,9 @@ ledger amounts are explicitly distinct from whole-contract amounts.
 """
 from __future__ import annotations
 
+import calendar
 import contextlib
+from collections import OrderedDict
 import datetime as dt
 import hashlib
 import io
@@ -17,6 +19,7 @@ from pathlib import Path, PurePosixPath
 import re
 import stat
 import tempfile
+import threading
 import unicodedata
 import zipfile
 import xml.etree.ElementTree as ET
@@ -25,6 +28,7 @@ from typing import Any
 import developaid_monitor as monitor
 
 MAX_ARCHIVE_BYTES = 20 * 1024 * 1024
+PARSER_SCHEMA = 5
 MAX_UNPACKED_BYTES = 100 * 1024 * 1024
 MAX_FILE_BYTES = 20 * 1024 * 1024
 MAX_FILES = 100
@@ -42,6 +46,20 @@ MAX_MATERIALIZED_TEXT_BYTES = 16 * 1024 * 1024
 SUPPORTED = {'.xlsx', '.xlsm', '.xls'}
 # Kept distinct from an actually empty cell; this is never evaluated.
 _UNCACHED_FORMULA = '=__uncached_formula__'
+_PARSE_CACHE = OrderedDict()
+_PARSE_CACHE_LOCK = threading.Lock()
+_PARSE_CACHE_ENTRIES = 2
+_PARSE_CACHE_BYTES = 4 * 1024 * 1024
+
+
+class _SheetRows(list):
+    """Transient workbook structure; source formulas are evidence, never run."""
+
+    def __init__(self, *, header_merges=()):
+        super().__init__()
+        self.header_merges = header_merges
+        self.formulas = {}
+        self.bold_text_cells = set()
 
 
 class LedgerProblem(ValueError):
@@ -172,9 +190,10 @@ def _zip_members(data: bytes, *, workbook: bool = False) -> list[tuple[str, byte
         raise LedgerProblem('ZIP не читается или повреждён. Пересоздайте архив с книгами Excel.') from None
 
 
-def _xlsx_bounds(data: bytes) -> int:
+def _xlsx_bounds(data: bytes, *, header_merges: dict | None = None) -> int:
     row_bound = 1
     count = 0
+    sheet_count = 0
     for name, raw in _zip_members(data, workbook=True):
         if not name.endswith('.xml'):
             continue
@@ -183,8 +202,24 @@ def _xlsx_bounds(data: bytes) -> int:
             raise LedgerProblem('Книга содержит неподдерживаемые XML-объявления.')
         if not re.fullmatch(r'xl/worksheets/sheet[^/]*\.xml', name):
             continue
+        sheet_count += 1
+        if sheet_count > MAX_SHEETS:
+            raise LedgerProblem('В книге слишком много листов.')
+        merges = []
         try:
             for _, element in ET.iterparse(io.BytesIO(raw), events=('end',)):
+                if element.tag.rsplit('}', 1)[-1] == 'mergeCell' and header_merges is not None:
+                    from openpyxl.utils.cell import range_boundaries
+                    try:
+                        left, top, right, bottom = range_boundaries(element.attrib.get('ref', ''))
+                        if (all(isinstance(value, int) for value in (left, top, right, bottom))
+                                and 1 <= top <= 45 and top <= bottom and 1 <= left <= right):
+                            merges.append((top-1, left-1, bottom-1, right-1))
+                            if len(merges) > 45 * MAX_COLUMNS:
+                                raise LedgerProblem('В книге слишком много объединений в шапке таблицы.')
+                    except (ValueError, TypeError):
+                        raise LedgerProblem('В книге не распознана объединённая шапка таблицы.') from None
+                    element.clear()
                 if element.tag.rsplit('}', 1)[-1] == 'c':
                     # Empty formatting at column 1000 is not business data.
                     nonempty = any(child.tag.rsplit('}', 1)[-1] in {'v', 'f', 'is'}
@@ -205,6 +240,8 @@ def _xlsx_bounds(data: bytes) -> int:
                     element.clear()
         except ET.ParseError:
             raise LedgerProblem('XML книги повреждён. Откройте и пересохраните книгу в Excel.') from None
+        if header_merges is not None:
+            header_merges[name] = merges
     return row_bound
 
 
@@ -253,7 +290,8 @@ def _read_workbook(filename: str, data: bytes, budget: dict | None = None) -> li
             raise LedgerProblem('На сервере не установлен модуль чтения XLS.') from None
         except Exception:
             raise LedgerProblem('Книга XLS не читается. Пересохраните её в Excel.') from None
-    bound = _xlsx_bounds(data)
+    header_merges = {}
+    bound = _xlsx_bounds(data, header_merges=header_merges)
     try:
         from openpyxl import load_workbook
         wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True, keep_links=False)
@@ -266,13 +304,18 @@ def _read_workbook(filename: str, data: bytes, budget: dict | None = None) -> li
             for sheet, formula_sheet in zip(wb.worksheets, formula_wb.worksheets):
                 bounds = {'max_row': min(sheet.max_row or bound, bound),
                           'max_col': min(sheet.max_column or MAX_COLUMNS, MAX_COLUMNS)}
-                rows = []
-                for cached, source in zip(sheet.iter_rows(**bounds), formula_sheet.iter_rows(**bounds)):
+                rows = _SheetRows(header_merges=header_merges.get(sheet._worksheet_path.lstrip('/'), ()))
+                for row_number, (cached, source) in enumerate(zip(
+                        sheet.iter_rows(**bounds), formula_sheet.iter_rows(**bounds)), start=1):
                     # Reading formula text only identifies unavailable cached values;
                     # formulas/macros and external references are never executed.
                     _bounded_row([cell.value for cell in source if cell.data_type == 'f'], budget)
                     values = [_UNCACHED_FORMULA if cell.value is None and raw.data_type == 'f' else cell.value
                               for cell, raw in zip(cached, source)]
+                    rows.formulas.update({(row_number, column): raw.value
+                                          for column, raw in enumerate(source) if raw.data_type == 'f'})
+                    rows.bold_text_cells.update((row_number, column) for column, cell in enumerate(cached)
+                                                if isinstance(cell.value, str) and cell.font.bold)
                     rows.append(_bounded_row(values, budget))
                 out.append((sheet.title, rows))
             return out
@@ -306,13 +349,21 @@ def _party_key(value: str) -> str:
 
 def _contract(value: Any) -> str:
     text = _text(value)
-    text = re.sub(r'^договор\s*(?:подряда\s*)?(?:№|N)?\s*', '', text, flags=re.I)
+    text = re.sub(r'^(?:договор\b|дог\.)\s*(?:подряда\s*)?(?:№|N)?\s*', '', text, flags=re.I)
     return re.split(r'\s+от\s+', text, maxsplit=1, flags=re.I)[0].strip(' №')
+
+
+def _contract_day(value: Any) -> str | None:
+    """A date inside a contract number is not its explicitly stated date."""
+    parts = re.split(r'\bот\s+', _text(value), maxsplit=1, flags=re.I)
+    return _day(parts[1]) if len(parts) == 2 else None
 
 
 def _metadata(rows: list[list[Any]], filename: str = "", sheet: str = "") -> dict:
     out = {'contractor': '', 'customer': '', 'contract': '', 'contract_date': None,
            'contract_amount': None, 'amount_scope': 'year_or_sheet',
+           'object_scope': '', 'system_scope': '', 'site_scope': '',
+           'scope_evidence': {'object_scope': [], 'system_scope': [], 'site_scope': []},
            'identity_source': {}, 'identity_warnings': [],
            'party_evidence': {'customer': [], 'contractor': []}}
     refs, dates = [], []
@@ -326,6 +377,12 @@ def _metadata(rows: list[list[Any]], filename: str = "", sheet: str = "") -> dic
                 out['party_evidence'][field].append({'value': _party(right[1]),
                     'raw': _text(right[1]), 'source': _source(filename, sheet, i+1,
                     cell=_cell(right[0]+1, i+1), label_cell=_cell(j+1, i+1), label=_text(value))})
+            elif label in {'объект', 'наименование объекта', 'система', 'наименование системы', 'стройка'} and right:
+                field = ('system_scope' if label in {'система', 'наименование системы'} else
+                         'site_scope' if label == 'стройка' else 'object_scope')
+                out['scope_evidence'][field].append({'raw': _text(right[1]),
+                    'source': _source(filename, sheet, i+1, cell=_cell(right[0]+1, i+1),
+                                      label_cell=_cell(j+1, i+1), label=_text(value))})
             elif re.fullmatch(r'договор(?:\s+подряда)?', label) and right:
                 if re.match(r'^(?:дс\b|доп(?:олнительное|\.)?\s*соглаш)', _norm(right[1])):
                     out['identity_warnings'].append('В поле договора указано допсоглашение; основной договор не установлен по догадке.')
@@ -335,7 +392,7 @@ def _metadata(rows: list[list[Any]], filename: str = "", sheet: str = "") -> dic
                 # Only a date explicitly attached to the contract reference is identity.
                 # An act/work period/file date must never supply a missing contract date.
                 if re.search(r'\bот\s+', _text(right[1]), re.I):
-                    dates.append((_day(right[1]), refs[-1][1], str(right[1])))
+                    dates.append((_contract_day(right[1]), refs[-1][1], str(right[1])))
                 for ri in (i, i+1):
                     if ri >= len(rows):
                         continue
@@ -353,6 +410,10 @@ def _metadata(rows: list[list[Any]], filename: str = "", sheet: str = "") -> dic
                 amount = next((_number(v) for v in row[j+1:] if _number(v) is not None), None)
                 if amount is not None:
                     out['contract_amount'] = amount
+    for field, evidence in out['scope_evidence'].items():
+        values = {_norm(item['raw']): item['raw'] for item in evidence if _norm(item['raw'])}
+        if len(values) == 1:
+            out[field] = next(iter(values.values()))
     for field, evidence in out['party_evidence'].items():
         candidates = {}
         for item in evidence:
@@ -385,9 +446,75 @@ def _metadata(rows: list[list[Any]], filename: str = "", sheet: str = "") -> dic
     return out
 
 
-def _period_dates(label: str) -> tuple[str | None, str | None]:
-    matches = re.findall(r'\d{1,2}[./]\d{1,2}[./]\d{4}', label)
-    return (_day(matches[0]), _day(matches[-1])) if matches else (None, None)
+_MONTH_NAMES = (
+    r'январ[ья]', r'феврал[ья]', r'март[а]?', r'апрел[ья]',
+    r'ма[йя]', r'июн[ья]', r'июл[ья]', r'август[а]?',
+    r'сентябр[ья]', r'октябр[ья]', r'ноябр[ья]', r'декабр[ья]',
+)
+
+
+def _period_dates(label: str, *, year: int | None = None) -> tuple[str | None, str | None]:
+    """Read explicit dates or one named calendar month, never an act number.
+
+    The ledger's labelled annual year can qualify a month-only heading. The
+    archive date and current year cannot. A month is the whole calendar period,
+    so a cut inside it does not claim its final quantity as completed.
+    """
+    text = _norm(label)
+    named = [month for month, pattern in enumerate(_MONTH_NAMES, 1)
+             for _ in re.finditer(r'(?<![а-я])(?:'+pattern+r')(?![а-я])', text)]
+    years = set(re.findall(r'(?<!\d)20\d\d(?!\d)', text))
+    matches = re.findall(r'(?<!\d)(?:\d{1,2}[./]\d{1,2}[./](?:\d{4}|\d{2})|20\d\d-\d{2}-\d{2})(?!\d)', text)
+    if matches:
+        dates = [_day(value) for value in matches]
+        if len(dates) > 2 or not all(dates) or dates[0] > dates[-1]:
+            return None, None
+        if years - {date[:4] for date in dates} or any(month not in {int(date[5:7]) for date in dates} for month in named):
+            return None, None
+        return dates[0], dates[-1]
+    if len(years) > 1:
+        return None, None
+    source_year = int(next(iter(years))) if years else year
+    if isinstance(source_year, bool) or not isinstance(source_year, int) or not 2000 <= source_year <= 2099:
+        return None, None
+    # A written day is not a whole-month heading. Do not silently widen it.
+    if any(re.search(r'(?<!\d)\d{1,2}\s*(?:'+pattern+r')(?![а-я])', text) for pattern in _MONTH_NAMES):
+        return None, None
+    numeric = re.findall(r'(?<![\d./])(\d{1,2})[./](20\d\d)(?!\d)', text)
+    months = named + [int(month) for month, _ in numeric]
+    if len(months) != 1 or not 1 <= months[0] <= 12:
+        return None, None
+    month = months[0]
+    first = dt.date(source_year, month, 1)
+    last = dt.date(source_year, month, calendar.monthrange(source_year, month)[1])
+    return first.isoformat(), last.isoformat()
+
+
+def _restore_period_dates(snapshot: dict) -> dict:
+    """Interpret preserved period labels in old imports without writing them.
+
+    Values, source bindings and snapshot identity stay intact. This shared read
+    path also serves physical progress, so it cannot disagree with contracts.
+    """
+    ledgers = []
+    for ledger in snapshot.get('ledgers') or []:
+        items = []
+        for item in ledger.get('items') or []:
+            periods = []
+            for period in item.get('periods') or []:
+                if not period.get('date_start') and not period.get('date_end'):
+                    first, last = _period_dates(period.get('label') or '', year=ledger.get('period_year'))
+                    if first and last:
+                        period = {**period, 'date_start': first, 'date_end': last}
+                periods.append(period)
+            items.append({**item, 'periods': periods})
+        known = any(p.get('date_end') for item in items for p in item['periods'])
+        warnings = list(ledger.get('warnings') or [])
+        if known:
+            warnings = [warning for warning in warnings if warning !=
+                        'Точные даты выполнения в книге не распознаны. Дата архива не является датой выполнения работ.']
+        ledgers.append({**ledger, 'items': items, 'period_dates_known': known, 'warnings': warnings})
+    return {**snapshot, 'ledgers': ledgers}
 
 
 def amount_basis(header: str) -> str:
@@ -397,9 +524,13 @@ def amount_basis(header: str) -> str:
     an amount. A label without an explicit qualifier stays unspecified.
     """
     text = _norm(header)
-    if re.search(r'без\s*ндс', text):
+    without = bool(re.search(r'без\s*ндс', text))
+    included = bool(re.search(r'(?:с\s*ндс|с\s+учетом\s+ндс|включая\s*ндс|в\s*том\s*числе\s*ндс|в\s*т\.?\s*ч\.?\s*ндс)', text))
+    if without and included:
+        return 'conflicting'
+    if without:
         return 'without_vat'
-    if re.search(r'(?:с\s*ндс|включая\s*ндс|в\s*том\s*числе\s*ндс|в\s*т\.?\s*ч\.?\s*ндс)', text):
+    if included:
         return 'with_vat'
     return 'unspecified'
 
@@ -454,6 +585,345 @@ def _money_parts(qhead: list[Any], first: int, at) -> tuple[float | None, float 
     return work or 0.0, material or 0.0
 
 
+def _duplicate_key(item: dict) -> tuple:
+    source = item.get('source') or {}
+    source = source if isinstance(source, dict) else {}
+    return (source.get('filename') if isinstance(source.get('filename'), str) else None,
+            source.get('sheet') if isinstance(source.get('sheet'), str) else None,
+            item.get('period_year') if type(item.get('period_year')) is int else None,
+            source.get('row') if type(source.get('row')) is int else None)
+
+
+def _duplicate_values(item: dict) -> dict:
+    """Exact source semantics; coordinates and explanatory notes are provenance."""
+    values = {key: item.get(key) for key in (
+        'period_year', 'position', 'name', 'scope', 'unit', 'plan_quantity', 'planned_amount',
+        'completed_quantity', 'material_quantity', 'completed_amount',
+        'reported_completed_quantity', 'reported_material_quantity', 'reported_completed_amount',
+        'planned_work_amount', 'planned_material_amount', 'planned_cost_split',
+        'planned_work_amount_basis', 'planned_amount_basis', 'completed_amount_basis',
+        'completed_work_amount', 'completed_material_amount', 'amount_split', 'quantity_kind',
+        'object_scope', 'system_scope', 'site_scope', 'future_periods_excluded', 'quantity_cut')}
+    for field in ('section_path', 'context_headings'):
+        values[field] = [{key: node.get(key) for key in ('position', 'name')}
+                         if isinstance(node, dict) else node for node in item.get(field) or []]
+    values['periods'] = [{key: period.get(key) for key in (
+        'label', 'quantity', 'material_quantity', 'amount', 'work_amount', 'material_amount',
+        'amount_split', 'amount_basis', 'date_start', 'date_end')}
+        for period in item.get('periods') or []]
+    return values
+
+
+def _duplicate_fingerprint(item: dict) -> str:
+    try:
+        return hashlib.sha256(json.dumps(_duplicate_values(item), sort_keys=True, ensure_ascii=False,
+                                         separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+    except (TypeError, ValueError):
+        return ''
+
+
+def stamp_duplicate_view(item: dict) -> dict:
+    """Bind the immutable source proof to a qualified, possibly dated view."""
+    if item.get('duplicate_source_fingerprint'):
+        item['duplicate_view_fingerprint'] = _duplicate_fingerprint(item)
+    return item
+
+
+def _cell_coordinates(value: Any) -> tuple[int, int] | None:
+    match = re.fullmatch(r'([A-Z]+)([1-9]\d*)', str(value or '').replace('$', ''))
+    if not match:
+        return None
+    column = 0
+    for char in match[1]:
+        column = column*26 + ord(char)-64
+    row = int(match[2])
+    return (column-1, row) if column <= MAX_COLUMNS and row <= MAX_ROWS else None
+
+
+def _sum_row_range(formula: Any, column: int) -> tuple[int, int] | None:
+    text = re.sub(r'\s|\$', '', str(formula or '')).upper()
+    match = re.fullmatch(r'=SUM\(([A-Z]+[1-9]\d*):([A-Z]+[1-9]\d*)\)', text)
+    if not match:
+        return None
+    first, last = _cell_coordinates(match[1]), _cell_coordinates(match[2])
+    if first and last and first[0] == column == last[0] and first[1] <= last[1]:
+        return first[1], last[1]
+    return None
+
+
+def verified_duplicate_sources(items: list[dict]) -> dict[tuple, dict]:
+    """Recheck copy identity and both declared totals before excluding a row.
+
+    A flag, equal name, or identical amount alone never suppresses evidence.
+    The canonical counterpart must still be present in this source universe.
+    """
+    indexed = {}
+    for item in items:
+        indexed.setdefault(_duplicate_key(item), []).append(item)
+    verified = {}
+    for item in items:
+        if item.get('is_duplicate') is not True:
+            continue
+        key, original = _duplicate_key(item), item.get('duplicate_of') or {}
+        if not isinstance(original, dict):
+            continue
+        target = (original.get('filename'), original.get('sheet'), original.get('period_year'), original.get('row'))
+        if any(not isinstance(value, (str, int, type(None))) for value in target):
+            continue
+        candidates = indexed.get(target) or []
+        if (len(candidates) != 1 or len(indexed.get(key) or []) != 1 or key == target
+                or key[:3] != target[:3] or not all(key[:2])
+                or type(key[2]) is not int or not 2000 <= key[2] <= 2099
+                or type(key[3]) is not int or type(target[3]) is not int):
+            continue
+        canonical = candidates[0]
+        proof = item.get('duplicate_proof') or {}
+        if not isinstance(proof, dict):
+            continue
+        fingerprint = proof.get('source_fingerprint')
+        if (canonical.get('is_duplicate') is True or proof.get('kind') != 'grand_totals_exclude_exact_copy'
+                or proof.get('period_year') != key[2]
+                or proof.get('source') != {'filename': key[0], 'sheet': key[1]}
+                or not re.fullmatch(r'[0-9a-f]{64}', str(fingerprint or ''))
+                or item.get('duplicate_source_fingerprint') != fingerprint
+                or canonical.get('duplicate_source_fingerprint') != fingerprint):
+            continue
+        current = _duplicate_fingerprint(item)
+        if (not current or current != _duplicate_fingerprint(canonical)
+                or item.get('duplicate_view_fingerprint') != current
+                or canonical.get('duplicate_view_fingerprint') != current):
+            continue
+        plan, facts = proof.get('plan') or {}, proof.get('completed') or []
+        if not isinstance(plan, dict) or not isinstance(facts, list):
+            continue
+        plan_cell = _cell_coordinates(plan.get('cell'))
+        source_plan = _cell_coordinates((item.get('source') or {}).get('planned_amount_cell'))
+        canonical_plan = _cell_coordinates((canonical.get('source') or {}).get('planned_amount_cell'))
+        if not plan_cell or not source_plan or not canonical_plan:
+            continue
+        included = _sum_row_range(plan.get('formula'), plan_cell[0])
+        if (not included or plan_cell[0] != source_plan[0] or plan_cell[0] != canonical_plan[0]
+                or source_plan[1] != key[3] or canonical_plan[1] != target[3]
+                or not included[0] <= target[3] <= included[1] < key[3] < plan_cell[1]
+                or _number(plan.get('value')) is None or not isinstance(facts, list) or not facts):
+            continue
+        source_facts = [_cell_coordinates(text.strip()) for text in
+                        str((item.get('source') or {}).get('completed_amount_cell') or '').split('+')]
+        canonical_facts = [_cell_coordinates(text.strip()) for text in
+                           str((canonical.get('source') or {}).get('completed_amount_cell') or '').split('+')]
+        fact_cells = [_cell_coordinates(fact.get('cell')) for fact in facts if isinstance(fact, dict)]
+        if (len(fact_cells) != len(facts) or any(cell is None for cell in source_facts+canonical_facts+fact_cells)
+                or len(fact_cells) != len(source_facts) or len(fact_cells) != len(canonical_facts)
+                or {cell[0] for cell in fact_cells} != {cell[0] for cell in source_facts}
+                or {cell[0] for cell in fact_cells} != {cell[0] for cell in canonical_facts}
+                or any(cell[1] != key[3] for cell in source_facts)
+                or any(cell[1] != target[3] for cell in canonical_facts)
+                or any(cell[1] != plan_cell[1] or _sum_row_range(fact.get('formula'), cell[0]) != included
+                       or _number(fact.get('value')) is None for fact, cell in zip(facts, fact_cells))):
+            continue
+        verified[key] = dict(original)
+    return verified
+
+
+def aggregation_members(items: list[dict], *, include_groups: bool = False) -> list[dict]:
+    """One membership rule for money, quantities, history and GPR coverage."""
+    excluded = verified_duplicate_sources(items)
+    return [item for item in items if _duplicate_key(item) not in excluded
+            and (include_groups or item.get('is_group') is not True)]
+
+
+def _mark_source_duplicates(items, rows, *, name_col, cost_col, fact_columns, year, qi):
+    if cost_col is None:
+        return
+    signatures = {}
+    for item in items:
+        signatures.setdefault(_duplicate_fingerprint(item), []).append(item)
+    if not any(fingerprint and len(copies) > 1 for fingerprint, copies in signatures.items()):
+        return
+    formulas = getattr(rows, 'formulas', {})
+    for total_row, values in enumerate(rows, start=1):
+        if total_row <= qi+1 or name_col >= len(values) or not re.fullmatch(
+                r'(?:итого|всего)(?:\s+(?:с|без)\s+ндс.*)?', _norm(values[name_col])):
+            continue
+        plan_formula = formulas.get((total_row, cost_col))
+        included = _sum_row_range(plan_formula, cost_col)
+        if not included or included[1] >= total_row:
+            continue
+        totals = []
+        for column in (cost_col, *fact_columns):
+            formula = formulas.get((total_row, column))
+            value = _number(values[column]) if column < len(values) else None
+            source = [rows[row-1][column] if column < len(rows[row-1]) else None
+                      for row in range(included[0], included[1]+1)]
+            if (_sum_row_range(formula, column) != included or value is None
+                    or any(_text(v) and _number(v) is None for v in source)
+                    or abs(math.fsum(_number(v) or 0 for v in source)-value) > max(.02, abs(value)*1e-7)):
+                break
+            totals.append({'cell': _cell(column+1, total_row), 'formula': formula, 'value': value})
+        if len(totals) != 1+len(fact_columns):
+            continue
+        inside = [item for item in items if included[0] <= item['source']['row'] <= included[1]]
+        outside = [item for item in items if item['source']['row'] > included[1]
+                   and (item.get('unit') or any(_number(item.get(field)) not in {None, 0}
+                       for field in ('plan_quantity', 'planned_amount', 'completed_quantity', 'completed_amount')))]
+        matches = []
+        for item in outside:
+            copies = [candidate for candidate in signatures.get(_duplicate_fingerprint(item), [])
+                      if included[0] <= candidate['source']['row'] <= included[1]]
+            if (item['source']['row'] >= total_row or len(copies) != 1 or not item.get('unit')
+                    or _number(item.get('plan_quantity')) is None or item['plan_quantity'] <= 0):
+                break
+            matches.append((item, copies[0]))
+        else:
+            for item, canonical in matches:
+                fingerprint = _duplicate_fingerprint(item)
+                for member in (item, canonical):
+                    member['duplicate_source_fingerprint'] = fingerprint
+                    stamp_duplicate_view(member)
+                item.update(is_duplicate=True,
+                    duplicate_of={**{key: canonical['source'][key] for key in ('filename', 'sheet', 'row')},
+                                  'period_year': year},
+                    duplicate_proof={'kind': 'grand_totals_exclude_exact_copy', 'period_year': year,
+                                     'source': {key: item['source'][key] for key in ('filename', 'sheet')},
+                                     'source_fingerprint': fingerprint, 'plan': totals[0], 'completed': totals[1:]},
+                    duplicate_note='Дубликат исходника, повторно не учтён. Оригинал — строка '
+                                   + str(canonical['source']['row']) + '.')
+
+
+def group_basis(parent: dict, children: list[dict]) -> str:
+    """Prove a source rollup without discarding independent execution."""
+    leaves = aggregation_members(children)
+    if not leaves or not any((_number(child.get('planned_amount')) or 0) > 0 for child in leaves):
+        return ''
+
+    def completed(item, field):
+        reported = _number(item.get('reported_' + field))
+        return reported if reported is not None else _number(item.get(field))
+
+    amount = _number(parent.get('planned_amount'))
+    done = completed(parent, 'completed_amount')
+    quantity = completed(parent, 'completed_quantity')
+    independent = ('completed_quantity', 'material_quantity', 'completed_work_amount', 'completed_material_amount')
+    empty_fact = (done in {None, 0} and quantity in {None, 0}
+                  and all(completed(parent, field) in {None, 0} for field in independent))
+    if amount is None and _number(parent.get('plan_quantity')) is None and empty_fact:
+        return 'empty_structured_heading'
+    if amount == 0 and empty_fact:
+        return 'zero_cost_structured_heading'
+    costs = [_number(child.get('planned_amount')) for child in leaves]
+    facts = [completed(child, 'completed_amount') for child in leaves]
+    # Net-zero totals do not erase a delivery or opposite monetary corrections.
+    # A nonzero part of a subtotal must be reconciled on its own source basis.
+    for field in ('plan_quantity', *independent):
+        value = completed(parent, field)
+        if value in {None, 0}:
+            continue
+        parts = [completed(child, field) for child in leaves]
+        if (any(part is None for part in parts)
+                or abs(sum(parts)-value) > max(1e-6, abs(value)*1e-7)):
+            return ''
+        if field in {'plan_quantity', 'completed_quantity', 'material_quantity'} and any(
+                _norm(child.get('unit')) != _norm(parent.get('unit')) for child in leaves):
+            return ''
+    if (amount is not None and amount > 0 and done is not None
+            and all(value is not None for value in costs + facts)
+            and abs(sum(costs)-amount) <= max(.01, abs(amount)*1e-7)
+            and abs(sum(facts)-done) <= max(.01, abs(done)*1e-7)):
+        return 'reconciled_subtotal'
+    return ''
+
+
+def _total_label(name: str) -> bool:
+    return bool(re.match(r'^(?:итого\b|всего\b|по\s+(?:разделу|смете)\b|'
+                         r'(?:в\s+том\s+числе\s+|в\s*т\.?\s*ч\.?\s*)?ндс\b)', _norm(name)))
+
+
+def _formula_columns(value: str, row: int, operator: str) -> set[int]:
+    """Read only same-row references from a declared sum/product, not evaluate it."""
+    text = re.sub(r'\s|\$', '', str(value or '')).upper().removeprefix('=')
+    rounded = re.fullmatch(r'ROUND\((.+),[0-6]\)', text)
+    if rounded:
+        text = rounded.group(1)
+    if operator == '+' and text.startswith('SUM(') and text.endswith(')'):
+        text = text[4:-1]
+        span = re.fullmatch(r'([A-Z]+)([1-9]\d*):([A-Z]+)([1-9]\d*)', text)
+        if span and int(span[2]) == row == int(span[4]):
+            coordinates = {_cell(col+1, row): col for col in range(MAX_COLUMNS)}
+            first, last = coordinates.get(span[1]+span[2]), coordinates.get(span[3]+span[4])
+            return set(range(first, last+1)) if first is not None and last is not None and first <= last else set()
+        text = text.replace(',', '+')
+    terms = text.split(operator)
+    if (len(terms) < 2 or len(terms) != len(set(terms))
+            or any(not re.fullmatch(r'[A-Z]+[1-9]\d*', term) for term in terms)):
+        return set()
+    coordinates = {_cell(col+1, row): col for col in range(MAX_COLUMNS)}
+    if any(term not in coordinates for term in terms):
+        return set()
+    return {coordinates[term] for term in terms}
+
+
+def _merged_cost_column(rows, hi: int, qi: int, plan_col: int, first_period: int,
+                        anchor: int | None) -> int | None:
+    """Resolve a merged money field using its values and declared formula links.
+
+    A merged caption does not label its leftmost cell as the position total.
+    A multi-value field needs proof of the full total; alignment is insufficient.
+    """
+    spans = [(top, left, bottom, right) for top, left, bottom, right in getattr(rows, 'header_merges', ())
+             if hi <= top <= qi and left == anchor and left < right]
+    if not spans:
+        return anchor
+    if len(set(spans)) != 1:
+        return None
+    top, left, bottom, right = spans[0]
+    if bottom > qi or right >= first_period or right >= MAX_COLUMNS:
+        return None
+    field = set(range(left, right+1))
+    price_columns = set()
+    for ri in range(hi, qi+1):
+        for ci in range(plan_col+1, left):
+            label = _norm(rows[ri][ci]) if ci < len(rows[ri]) else ''
+            if re.search(r'(?:цен[аы]|стоимост\w*)\s+за\s+(?:ед|единиц)', label):
+                price_columns.add(ci)
+                for top, start, bottom, end in getattr(rows, 'header_merges', ()):
+                    if top == ri and start == ci and end < left:
+                        price_columns.update(range(start, end+1))
+    formulas = getattr(rows, 'formulas', {})
+    populated, proven = set(), set()
+    unknown = False
+    for row_number, values in enumerate(rows, start=1):
+        if row_number <= qi+1 or plan_col >= len(values) or _number(values[plan_col]) is None:
+            continue
+        at = lambda col: _number(values[col]) if col < len(values) else None
+        populated.update(col for col in field if at(col) is not None)
+        unknown |= any(col < len(values) and _text(values[col]) and at(col) is None for col in field)
+        for col in field:
+            total = at(col)
+            if total in {None, 0}:
+                continue
+            formula = formulas.get((row_number, col), '')
+            summed = _formula_columns(formula, row_number, '+')
+            if (len(summed) >= 2 and summed == field-{col} and all(at(part) is not None for part in summed)
+                    and abs(total-sum(at(part) for part in summed)) <= max(.02, abs(total)*1e-7)):
+                proven.add(col)
+            product = _formula_columns(formula, row_number, '*')
+            rates = product-{plan_col}
+            if len(product) != 2 or plan_col not in product or len(rates) != 1:
+                continue
+            rate = next(iter(rates))
+            parts = _formula_columns(formulas.get((row_number, rate), ''), row_number, '+')
+            if (rate in price_columns and len(parts) >= 2 and parts == price_columns-{rate}
+                    and all(at(part) is not None for part in parts) and at(rate) is not None
+                    and abs(at(rate)-sum(at(part) for part in parts)) <= max(.01, abs(at(rate))*1e-7)
+                    and abs(total-at(plan_col)*at(rate)) <= max(.02, abs(total)*1e-7)):
+                proven.add(col)
+    if len(proven) == 1:
+        return next(iter(proven))
+    # One populated value in the entire declared field is unambiguous. Blank
+    # or zero companions provide no competing subtotal; an uncached formula does.
+    return next(iter(populated)) if not proven and len(populated) == 1 and not unknown else None
+
+
 def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
     # Recognize a labelled table, not the file's name or a particular contractor.
     top = rows[:45]
@@ -482,13 +952,46 @@ def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
         raise LedgerProblem('Годовой итог накопительной не содержит количества.')
     split = 'матер' in qlabel and year_col+1 < len(qhead) and 'смр' in _norm(qhead[year_col+1])
     actual_col = year_col+1 if split else year_col
-    # Cost group can have material/work subcolumns; the rightmost one is labelled
-    # as the group's total. A plain one-column group ends at the first period.
-    cost_labels = [j for j, v in enumerate(head) if 'стоимость' in _norm(v)
-                   and ('договорн' in _norm(v) or 'сметн' in _norm(v))]
     first_period = min(j for j, v in enumerate(qhead) if j > plan_col and ('количеств' in _norm(v) or _norm(v) == 'кол-во'))
-    cost_col = first_period-1 if cost_labels else None
+    # A planned total may be labelled in any row of the multi-row header.
+    # Price per unit and material/work subtotals are not a position total.
+    cost_labels, generic_cost_labels = set(), set()
+    for header_row in rows[hi:qi+1]:
+        for col in range(plan_col+1, min(first_period, len(header_row))):
+            label = _norm(header_row[col])
+            if (not re.search(r'стоимост|сумм', label)
+                    or re.search(r'за\s*(?:ед|единиц)|цен[аы]\s+(?:за\s+)?ед', label)
+                    or re.search(r'матер|мтр|оборуд|смр|пнр', label)):
+                continue
+            generic_cost_labels.add(col)
+            if re.search(r'договорн|сметн|итого|всего|общая|полная', label):
+                cost_labels.add(col)
+    # When the total group has multiple labelled subcolumns, its rightmost
+    # explicit total wins. Without a total label, only a single cost column is
+    # unambiguous. Never take the adjacent unit price just because it is last.
+    cost_col = max(cost_labels) if cost_labels else (
+        next(iter(generic_cost_labels)) if len(generic_cost_labels) == 1 else None)
+    cost_col = _merged_cost_column(rows, hi, qi, plan_col, first_period, cost_col)
+    # The planned cost heading can span rows/columns: an upper total label and
+    # a lower «Стоимость итого, с НДС». Unit prices and actual periods are
+    # separate groups; neither may supply the planned total's tax qualifier.
+    cost_group_start = min(cost_labels | generic_cost_labels) if (cost_labels or generic_cost_labels) else first_period
+    for header_row in rows[hi:qi+1]:
+        for col in range(plan_col+1, min(first_period, len(header_row))):
+            label = _norm(header_row[col])
+            if (('стоимост' in label and ('итого' in label or 'договорн' in label or 'сметн' in label))
+                    and not re.search(r'за\s*(?:ед|единиц)', label)):
+                cost_group_start = min(cost_group_start, col)
+    planned_bases = {_amount_basis(_text(header_row[col]))
+                     for header_row in rows[hi:qi+1]
+                     for col in range(cost_group_start, min(first_period, len(header_row)))} - {'unspecified'}
+    planned_amount_basis = ('conflicting' if 'conflicting' in planned_bases or len(planned_bases) > 1
+                            else next(iter(planned_bases)) if planned_bases else 'unspecified')
     amount_col = year_col+3 if split else year_col+1
+    annual_money_cols = (year_col+2, year_col+3) if split else (year_col+1,)
+    annual_bases = {_amount_basis(_text(qhead[c])) for c in annual_money_cols if c < len(qhead)} - {'unspecified'}
+    completed_amount_basis = ('conflicting' if len(annual_bases) > 1 else
+                              next(iter(annual_bases)) if annual_bases else 'unspecified')
     period_cols = [j for j, v in enumerate(qhead) if plan_col < j < year_col
                    and ('количеств' in _norm(v) or _norm(v) == 'кол-во')
                    and not ('смр' in _norm(v) and split)]
@@ -507,8 +1010,36 @@ def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
     if split and not money_split:
         warnings.append('Колонки сумм материалов и СМР не распознаны по подписям; '
                         'выполнение работ и поставка материалов по деньгам не разделены.')
+    def labelled_parts(first, last):
+        found = {'work': set(), 'material': set()}
+        for col in range(first, last):
+            for header_row in reversed(rows[hi:qi+1]):
+                label = _norm(header_row[col]) if col < len(header_row) else ''
+                work = bool(re.search(r'смр|пнр|^(?:(?:стоимость|цена)\s+)?работ(?:а|ы)?\b', label))
+                material = bool(re.search(r'матер|мтр|оборуд', label))
+                if work != material:
+                    found['work' if work else 'material'].add(col)
+                    break
+        if all(len(columns) == 1 for columns in found.values()):
+            return {key: next(iter(columns)) for key, columns in found.items()}
+        return {}
+
+    planned_parts = labelled_parts(cost_group_start, first_period)
+    rate_parts = labelled_parts(plan_col+1, cost_group_start)
+    rate_bases = {_amount_basis(_text(header_row[col])) for header_row in rows[hi:qi+1]
+                  for col in rate_parts.values() if col < len(header_row)} - {'unspecified'}
+    rate_basis = ('conflicting' if 'conflicting' in rate_bases or len(rate_bases) > 1 else
+                  next(iter(rate_bases)) if rate_bases else 'unspecified')
+    weight_basis = planned_amount_basis
+    if not planned_parts and rate_parts:
+        if (rate_basis == 'conflicting' or (planned_amount_basis != 'unspecified'
+                and rate_basis != 'unspecified' and planned_amount_basis != rate_basis)):
+            weight_basis = 'conflicting'
+        elif weight_basis == 'unspecified':
+            weight_basis = rate_basis
     items = []
     scope = ''
+    section_stack, locations, context_headings, structured_headings = [], [], [], []
     errors = []
     for ri, row in enumerate(rows, start=1):
         for ci, value in enumerate(row, start=1):
@@ -519,25 +1050,75 @@ def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
         def at(c):
             return row[c] if c is not None and c < len(row) else None
         name, unit = _text(at(name_col)), _text(at(unit_col))
-        if name and not unit and re.search('корпус|автостоян|раздел|этаж', name, re.I):
-            scope = name
-        if (not name or unit.upper() in {'', 'X', 'Х'} or re.fullmatch(r'[\d., ]+', unit)
-                or re.match(r'^(?:итого|всего|в том числе ндс)', _norm(name))):
+        raw_position = at(max(0, name_col-1))
+        position = (str(int(raw_position)) if isinstance(raw_position, (int, float))
+                    and not isinstance(raw_position, bool) and math.isfinite(raw_position)
+                    and raw_position == int(raw_position) else _text(raw_position))
+        node = {'position': position, 'name': name,
+                'source': {'row': ri, 'cell': _cell(name_col+1, ri)}}
+        heading = bool(re.search(r'[a-zа-я]', name, re.I)) and unit.upper() in {'', 'X', 'Х'}
+        total = _total_label(name)
+        code = tuple(position.rstrip('.').split('.')) if re.fullmatch(r'\d+(?:\.\d+)*\.?', position) else ()
+        declared_section = bool(re.match(r'^раздел\s+\d+\b', _norm(name)))
+        bold_empty_heading = (heading and (ri, name_col) in getattr(rows, 'bold_text_cells', ())
+                              and not _text(at(plan_col)) and not _text(at(cost_col))
+                              and all(_number(at(col)) in {None, 0} and (
+                                  not _text(at(col)) or _number(at(col)) is not None)
+                                      for col in ({actual_col, amount_col, year_col} |
+                                                  set(annual_money_cols))))
+        if heading and not total:
+            if re.search(r'корпус|секци|паркинг|автостоян', name, re.I):
+                locations, section_stack, context_headings, structured_headings = [node], [], [], []
+            elif re.search(r'этаж|подземн|уровень|отметк', name, re.I):
+                locations = locations[:1] + [node] if locations else [node]
+            elif declared_section or bold_empty_heading:
+                # Explicit section captions and source-formatted empty headings
+                # scope the following rows even when numbering is absent or bad.
+                section_stack = []
+                structured_headings = ([] if declared_section else
+                                       [parent for parent in structured_headings
+                                        if re.match(r'^раздел\s+\d+\b', _norm(parent['name']))][:1]) + [node]
+                context_headings = (context_headings + [node])[-4:]
+            elif not code:
+                context_headings = (context_headings + [node])[-4:]
+        if code and re.search(r'[a-zа-я]', name, re.I) and not total:
+            while section_stack and not (len(section_stack[-1][0]) < len(code)
+                    and code[:len(section_stack[-1][0])] == section_stack[-1][0]):
+                section_stack.pop()
+        parents, seen_rows = [], set()
+        for parent in [*locations, *structured_headings, *(entry[1] for entry in section_stack)]:
+            if parent['source']['row'] != ri and parent['source']['row'] not in seen_rows:
+                parents.append(parent)
+                seen_rows.add(parent['source']['row'])
+        parents.sort(key=lambda parent: parent['source']['row'])
+        if code and re.search(r'[a-zа-я]', name, re.I) and not total:
+            section_stack.append((code, node))
+        scope = ' · '.join(parent['name'] for parent in locations)
+        if not scope and parents:
+            scope = parents[-1]['name']
+        unit_known = bool(unit and unit.upper() not in {'X', 'Х'}
+                          and not re.fullmatch(r'[\d., ]+', unit))
+        numeric_work = (bool(re.search(r'[a-zа-я]', name, re.I)) and any(
+            _number(at(col)) is not None for col in (plan_col, actual_col, cost_col, amount_col)))
+        if (not name or (not unit_known and not numeric_work)
+                or total):
             continue
         plan, actual = _number(at(plan_col)), _number(at(actual_col))
+        item_warnings = []
+        if not unit_known:
+            item_warnings.append('Единица измерения не подтверждена; строка сохранена для проверки состава ведомости.')
         if plan is None:
             # A formula with no cached result is missing evidence, not zero.
             if not _text(at(plan_col)):
                 warnings.append(f'Строка {ri}: нет сохранённого планового количества.')
-            continue
-        item_warnings = []
+            item_warnings.append('Полное количество позиции не подтверждено; строка сохранена, процент не рассчитан.')
         if actual is None:
             item_warnings.append('Нет сохранённого выполненного количества: требуется пересчёт и сохранение книги в Excel.')
-        if actual is not None and (actual < -1e-6 or (plan >= 0 and actual > plan + max(1e-6, abs(plan)*1e-7))):
+        if actual is not None and (actual < -1e-6 or (plan is not None and plan >= 0 and actual > plan + max(1e-6, abs(plan)*1e-7))):
             item_warnings.append('Выполненное количество выходит за границы планового. Проверьте объём или состав работ.')
         if split and actual is not None:
             source_remaining = _number(at(year_col+4))
-            if (source_remaining is not None
+            if (plan is not None and source_remaining is not None
                     and abs(source_remaining-(plan-actual)) > max(1e-6, abs(plan)*1e-7)):
                 item_warnings.append('Остаток в книге отличается от остатка по монтажу. '
                                      'Поставку материалов нельзя вычитать как выполненный монтаж.')
@@ -546,7 +1127,7 @@ def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
             label = next((_text(rows[r][col]) for r in range(qi-1, hi-1, -1)
                           if col < len(rows[r]) and _text(rows[r][col])
                           and 'выполнено работ' not in _norm(rows[r][col])), '')
-            start, end = _period_dates(label)
+            start, end = _period_dates(label, year=int(year_label[:4]))
             pqty = _number(at(col+1 if split else col))
             pmat = _number(at(col)) if split else None
             pwork = pmaterial = None
@@ -589,19 +1170,84 @@ def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
                     item_warnings.append('У формулы нет сохранённого результата. Пересчитайте и сохраните книгу в Excel; формула не вычислялась.')
         else:
             completed_amount = _number(at(amount_col))
-        items.append({'position': _text(at(max(0, name_col-1))), 'name': name,
-                      'scope': scope, 'unit': unit, 'plan_quantity': plan,
+        planned_total = _number(at(cost_col))
+        completed_derivation = None
+        # A blank amount is not zero. An explicitly reported zero quantity can
+        # establish zero money only with a labelled, reconciled unit-price basis.
+        if (not split and completed_amount is None and not _text(at(amount_col))
+                and actual == 0 and unit_known and plan is not None and plan > 0
+                and planned_total is not None and all(
+                    period['quantity'] in {None, 0} and period['amount'] in {None, 0}
+                    for period in periods)):
+            product = _formula_columns(getattr(rows, 'formulas', {}).get((ri, cost_col), ''), ri, '*')
+            rates = product-{plan_col}
+            if len(product) == 2 and plan_col in product and len(rates) == 1:
+                rate_col = next(iter(rates))
+                rate = _number(at(rate_col))
+                labelled_rate = any(re.search(r'(?:цен[аы]|стоимост\w*)\s+за\s+(?:ед|единиц)',
+                                      _norm(header[rate_col])) for header in rows[hi:qi+1]
+                                    if rate_col < len(header))
+                if (plan_col < rate_col < cost_group_start and labelled_rate and rate is not None and rate >= 0
+                        and abs(planned_total-plan*rate) <= max(.01, abs(planned_total)*1e-7)):
+                    completed_amount = 0.0
+                    completed_derivation = {'method': 'zero_quantity_times_labelled_unit_price',
+                        'quantity_cell': _cell(actual_col+1, ri), 'quantity': actual,
+                        'unit_price_cell': _cell(rate_col+1, ri), 'unit_price': rate,
+                        'planned_amount_cell': _cell(cost_col+1, ri)}
+        plan_work = plan_material = None
+        plan_work_cell = plan_material_cell = None
+        planned_cost_method = ''
+        parts = planned_parts or rate_parts
+        if parts and (planned_parts or plan is not None):
+            raw_parts = {kind: at(col) for kind, col in parts.items()}
+            numeric = {kind: _number(value) for kind, value in raw_parts.items()}
+            if (any(value is not None for value in numeric.values())
+                    and not any(_text(raw_parts[kind]) and value is None for kind, value in numeric.items())):
+                multiplier = 1 if planned_parts else plan
+                work = (numeric['work'] or 0) * multiplier
+                material = (numeric['material'] or 0) * multiplier
+                if planned_total is not None and abs(work+material-planned_total) <= max(.01, abs(planned_total)*1e-7):
+                    plan_work, plan_material = work, material
+                    prefix = '' if planned_parts else _cell(plan_col+1, ri) + ' × '
+                    plan_work_cell = prefix + _cell(parts['work']+1, ri)
+                    plan_material_cell = prefix + _cell(parts['material']+1, ri)
+                    planned_cost_method = 'labelled_subtotals' if planned_parts else 'quantity_times_labelled_unit_price'
+                    # A blank half can be established as the reconciled residual,
+                    # but must not be presented as a value read from that blank.
+                    if numeric['work'] is None:
+                        plan_work_cell = _cell(cost_col+1, ri) + ' − ' + plan_material_cell
+                        planned_cost_method = 'reconciled_residual'
+                    if numeric['material'] is None:
+                        plan_material_cell = _cell(cost_col+1, ri) + ' − ' + plan_work_cell
+                        planned_cost_method = 'reconciled_residual'
+                else:
+                    item_warnings.append('Подписанные плановые стоимости СМР и материалов не сходятся с полной стоимостью позиции; веса выполнения не использованы.')
+        items.append({'position': position, 'name': name, 'period_year': int(year_label[:4]),
+                      'scope': scope, 'unit': unit if unit_known else '', 'plan_quantity': plan,
+                      'section_path': parents, 'context_headings': list(context_headings),
+                      'parent_row': parents[-1]['source']['row'] if parents else None,
+                      'is_group': False,
                       'completed_quantity': actual, 'material_quantity': _number(at(year_col)) if split else None,
                       'quantity_kind': 'installation' if split else 'work_quantity',
                       'planned_amount': _number(at(cost_col)), 'completed_amount': completed_amount,
+                      'completed_amount_derivation': completed_derivation,
+                      'planned_work_amount': plan_work, 'planned_material_amount': plan_material,
+                      'planned_cost_split': plan_work is not None and plan_material is not None,
+                      'planned_work_amount_basis': weight_basis,
+                      'planned_cost_method': planned_cost_method,
+                      'planned_amount_basis': planned_amount_basis,
+                      'completed_amount_basis': completed_amount_basis,
                       'completed_work_amount': completed_work, 'completed_material_amount': completed_material,
                       'amount_split': split and completed_work is not None and completed_material is not None,
                       'periods': periods, 'warnings': item_warnings,
                       'source': _source(filename, sheet, ri,
+                                        unit_cell=_cell(unit_col+1, ri),
                                         plan_quantity_cell=_cell(plan_col+1, ri),
                                         completed_quantity_cell=_cell(actual_col+1, ri),
                                         material_quantity_cell=_cell(year_col+1, ri) if split else None,
                                         planned_amount_cell=_cell(cost_col+1, ri) if cost_col is not None else None,
+                                        planned_work_amount_cell=plan_work_cell,
+                                        planned_material_amount_cell=plan_material_cell,
                                         completed_amount_cell=(_cell(year_col+3, ri)+' + '+_cell(year_col+4, ri)
                                                                if split else _cell(amount_col+1, ri)))})
         if len(items) > MAX_ITEMS or len(items)*len(period_cols) > MAX_PERIOD_VALUES:
@@ -610,13 +1256,53 @@ def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
         warnings.append('В книге есть ошибки формул Excel: ' + ', '.join(errors[:20]) + (', …' if len(errors)>20 else '') + '.')
     if not items:
         raise LedgerProblem('В накопительной не найдено строк с объёмами работ.')
+    _mark_source_duplicates(items, rows, name_col=name_col, cost_col=cost_col,
+                            fact_columns=annual_money_cols, year=int(year_label[:4]), qi=qi)
+    by_row = {item['source']['row']: item for item in items}
+    descendants = {}
+    for item in items:
+        for parent in item['section_path']:
+            if parent['source']['row'] in by_row:
+                descendants.setdefault(parent['source']['row'], set()).add(item['source']['row'])
+    for row_number in sorted(descendants, key=lambda row: len(descendants[row])):
+        parent = by_row[row_number]
+        children = [by_row[row] for row in descendants[row_number] if not by_row[row]['is_group']]
+        parent['group_basis'] = group_basis(parent, children)
+        parent['is_group'] = bool(parent['group_basis'])
     if not any(p['date_end'] for item in items for p in item['periods']):
         warnings.append('Точные даты выполнения в книге не распознаны. Дата архива не является датой выполнения работ.')
     declared_form = 'ks6a' if any(re.search(r'кс[-\s]*6[-\s]*а', _norm(v))
                                  for row in top for v in row if isinstance(v, str)) else 'cumulative'
+    incomplete = sum(not item.get('unit') or any(_number(item.get(field)) is None for field in
+                        ('plan_quantity', 'completed_quantity', 'planned_amount', 'completed_amount'))
+                     for item in aggregation_members(items))
     return {**meta, 'document_form': declared_form, 'period_year': int(year_label[:4]), 'items': items,
+            'source_complete': incomplete == 0, 'incomplete_rows_count': incomplete,
+            'duplicate_rows_count': len(verified_duplicate_sources(items)),
+            'unread_rows_count': 0,
             'source': _source(filename, sheet, hi+1), 'warnings': warnings,
             'period_dates_known': any(p['date_end'] for item in items for p in item['periods'])}
+
+
+def _summary_reference(value: Any) -> str:
+    text = _text(value)
+    if re.match(r'^(?:дс\b|доп\.?\s*соглаш)', text, re.I):
+        return ''
+    explicit = re.match(r'^(?:договор\b|дог\.|№)', text, re.I)
+    bare = re.fullmatch(r'[^\s]+\s+от\s+.+', text, re.I)
+    number = _contract(text)
+    return number if number and (explicit or bare and re.search(r'\d', number)) else ''
+
+
+def _summary_sum_rows(formula: Any, column: int) -> set[int]:
+    """The declared total range, without running a spreadsheet formula."""
+    text = re.sub(r'\s|\$', '', str(formula or '')).upper().removeprefix('=')
+    match = re.fullmatch(r'SUM\(([A-Z]+)([1-9]\d*):([A-Z]+)([1-9]\d*)\)', text)
+    letter = _cell(column+1, 1)[:-1]
+    if not match or match[1] != letter or match[3] != letter:
+        return set()
+    first, last = int(match[2]), int(match[4])
+    return set(range(first, last+1)) if first <= last <= MAX_ROWS else set()
 
 
 def _summary(filename: str, sheet: str, rows: list[list[Any]]) -> list[dict] | None:
@@ -626,7 +1312,8 @@ def _summary(filename: str, sheet: str, rows: list[list[Any]]) -> list[dict] | N
                and any('сумма по кс' in _norm(v) for v in r)]
     if not headers:
         return None
-    customer = next((_party(r[0]) for r in rows[:5] if r and re.match(r'^(?:ООО|АО|ПАО|ИП)\b', _text(r[0]), re.I)), '')
+    customer_row, customer = next(((i, _party(r[0])) for i, r in enumerate(rows[:5])
+        if r and re.match(r'^(?:ООО|АО|ПАО|ИП)\b', _text(r[0]), re.I)), (None, ''))
     contractor = ''
     current = None
     contracts = []
@@ -646,13 +1333,13 @@ def _summary(filename: str, sheet: str, rows: list[list[Any]]) -> list[dict] | N
                                 if column < len(rows[r]) and isinstance(rows[r][column], str))
             header_map['amount_header'] = basis_header(header_map['amount'])
             header_map['act_amount_header'] = basis_header(header_map['act_amount'])
+            current = None
             continue
         def at(field):
             c = header_map.get(field)
             return row[c] if c is not None and c < len(row) else None
         first = _text(row[0]) if row else ''
-        if (re.match(r'^(?:ООО|АО|ПАО|ИП)\b', first, re.I)
-                and not re.match(r'^(?:договор|дс|доп\.?\s*соглаш)\b', _text(at('contract')), re.I)):
+        if ri != customer_row and re.match(r'^(?:ООО|АО|ПАО|ИП)\b', first, re.I):
             contractor = _party(first)
             current = None
             continue
@@ -662,26 +1349,55 @@ def _summary(filename: str, sheet: str, rows: list[list[Any]]) -> list[dict] | N
                 contractor = _party(first)
             continue
         contract_text = _text(at('contract'))
-        if re.match(r'^договор\b', contract_text, re.I):
+        number = _summary_reference(contract_text)
+        reference_date = _contract_day(contract_text)
+        if number and (current is None or _norm(number) != _norm(current['contract'])
+                       or (reference_date and current.get('contract_date')
+                           and reference_date != current['contract_date'])):
             current = {'contractor': contractor, 'customer': customer,
-                       'contract': _contract(contract_text), 'contract_date': _day(contract_text),
-                       'amount': _number(at('amount')), 'amount_date': _day(contract_text),
+                       'document_form': 'closing_summary',
+                       'contract': number, 'contract_date': reference_date,
+                       'contract_date_evidence': [{'raw': contract_text,
+                           'source': _source(filename, sheet, ri+1, cell=_cell(header_map['contract']+1, ri+1))}],
+                       'subject': first,
+                       'amount': _number(at('amount')), 'amount_date': reference_date,
                        'amount_scope': 'full_contract',
                        'amount_basis': _amount_basis(header_map['amount_header']),
                        'deadline': None, 'acts': [], 'amount_versions': [], 'warnings': [],
+                       '_total_candidates': [], '_amendment_warnings': [],
                        'source': _source(filename, sheet, ri+1, cell=_cell(header_map['amount']+1, ri+1), amount_header=header_map['amount_header'])}
             contracts.append(current)
             if current['amount'] is not None:
                 current['amount_versions'].append({'amount': current['amount'], 'date': current['amount_date'],
                                                    'scope': 'full_contract', 'amount_basis': current['amount_basis'],
                                                    'label': contract_text, 'source': _source(filename, sheet, ri+1)})
+        elif current is not None and number:
+            # A repeated reference within one labelled contractor section is
+            # evidence about that contract, not a second contract with its acts.
+            current['contract_date_evidence'].append({'raw': contract_text,
+                'source': _source(filename, sheet, ri+1, cell=_cell(header_map['contract']+1, ri+1))})
+            value = _number(at('amount'))
+            if value is not None:
+                current['amount_versions'].append({'amount': value, 'date': reference_date,
+                    'scope': 'full_contract', 'amount_basis': current['amount_basis'],
+                    'label': contract_text, 'source': _source(filename, sheet, ri+1)})
+        elif current is not None and re.match(r'^от\s+', contract_text, re.I):
+            stated_date = _contract_day(contract_text)
+            if not current.get('contract_date') and stated_date:
+                current['contract_date'] = stated_date
+                current['amount_date'] = stated_date
+                for version in current['amount_versions']:
+                    if version.get('date') is None and version.get('label') == current['contract_date_evidence'][0]['raw']:
+                        version['date'] = stated_date
+            current['contract_date_evidence'].append({'raw': contract_text,
+                'source': _source(filename, sheet, ri+1, cell=_cell(header_map['contract']+1, ri+1))})
         elif current is not None and re.match(r'^(?:дс|доп\.?\s*соглаш)', contract_text, re.I):
             amount = _number(at('amount'))
             if amount is not None:
                 declared_full = _full_contract_price(first+' '+contract_text+' '+header_map['amount_header'])
                 scope = 'full_contract' if declared_full else 'ambiguous_amendment'
                 current['amount'] = amount if declared_full else None
-                current['amount_date'] = _day(contract_text)
+                current['amount_date'] = _contract_day(contract_text)
                 current['amount_scope'] = scope
                 current['amount_basis'] = _amount_basis(header_map['amount_header'])
                 current['amount_versions'].append({'amount': current['amount'], 'stated_amount': amount,
@@ -689,10 +1405,22 @@ def _summary(filename: str, sheet: str, rows: list[list[Any]]) -> list[dict] | N
                                                    'date': current['amount_date'],
                                                    'label': contract_text, 'source': _source(filename, sheet, ri+1)})
                 if not declared_full:
-                    current['warnings'].append(f'Строка {ri+1}: сумма допсоглашения не подписана как полная новая сумма договора. '
+                    current['_amendment_warnings'].append(f'Строка {ri+1}: сумма допсоглашения не подписана как полная новая сумма договора. '
                                                'Действующая сумма договора требует подтверждения.')
         if current is None:
             continue
+        row_number = ri+1
+        total_formula = getattr(rows, 'formulas', {}).get((row_number, header_map['act_amount']), '')
+        declared_range = _summary_sum_rows(total_formula, header_map['act_amount'])
+        if declared_range or re.match(r'^(?:итого|всего)\b', _norm(first)):
+            current['_total_candidates'].append({'amount': _number(at('amount')),
+                'completed': _number(at('act_amount')), 'amount_basis': current['amount_basis'],
+                'completed_basis': _amount_basis(header_map['act_amount_header']),
+                'range': declared_range, 'row': row_number,
+                'source': _source(filename, sheet, row_number,
+                    planned_amount_cell=_cell(header_map['amount']+1, row_number),
+                    completed_amount_cell=_cell(header_map['act_amount']+1, row_number)),
+                'formula': total_formula})
         number, amount = _text(at('number')), _number(at('act_amount'))
         if number and amount is not None and not re.match(r'^(?:итого|всего)', _norm(first)):
             date = _day(at('date'))
@@ -702,9 +1430,42 @@ def _summary(filename: str, sheet: str, rows: list[list[Any]]) -> list[dict] | N
                                     'amount_basis': _amount_basis(header_map['act_amount_header']),
                                     'source': _source(filename, sheet, ri+1, amount_header=header_map['act_amount_header'])})
     for item in contracts:
+        candidates = []
+        act_rows = {int(act['source']['row']) for act in item['acts']}
+        for candidate in item.pop('_total_candidates'):
+            if candidate['completed'] is None or any(row >= candidate['row'] for row in act_rows):
+                continue
+            if candidate['range'] and (not act_rows <= candidate['range']
+                    or item['source']['row'] not in candidate['range']):
+                continue
+            candidates.append(candidate)
+        totals = {(candidate['amount'], candidate['completed'], candidate['amount_basis'],
+                   candidate['completed_basis']) for candidate in candidates}
+        if len(totals) == 1:
+            total = candidates[-1]
+            item['reported_total'] = {'planned': total['amount'] if total['amount'] is not None else item['amount'],
+                'completed': total['completed'], 'planned_amount_basis': total['amount_basis'],
+                'completed_amount_basis': total['completed_basis'], 'source': total['source'],
+                'formula': total['formula'], 'basis': 'declared_contract_section_total'}
+            if total['amount'] is not None:
+                # An explicit final contract-section total can add named price
+                # components. It is distinct from guessing what an amendment means.
+                item['reported_amount_versions'] = item['amount_versions']
+                item['amount'] = total['amount']
+                item['amount_date'] = None
+                item['amount_date_basis'] = 'source_snapshot'
+                item['amount_scope'] = 'full_contract'
+                item['amount_versions'] = [{'amount': total['amount'], 'date': item['amount_date'],
+                    'scope': 'full_contract', 'amount_basis': total['amount_basis'],
+                    'label': 'Итог суммы договора в сводной', 'source': total['source']}]
+        elif len(totals) > 1:
+            item['warnings'].append('В разделе договора несколько разных итогов; общий денежный итог не выбран.')
+        amendment_warnings = item.pop('_amendment_warnings')
+        if (item.get('reported_total') or {}).get('planned') is None:
+            item['warnings'].extend(amendment_warnings)
         if not item['contractor']:
             item['warnings'].append('Не распознан контрагент договорного блока.')
-        if not item['amount_date']:
+        if not item['amount_date'] and not item.get('reported_total'):
             item['warnings'].append('У действующей суммы договора не распознана дата версии.')
         seen = set()
         for act in item['acts']:
@@ -721,7 +1482,8 @@ def parse_archive(data: bytes, filename: str = '') -> dict:
         raise LedgerProblem('Выберите ZIP-архив с накопительными книгами Excel.')
     members = _zip_members(data)
     budget = {'text_bytes': 0}
-    result = {'files': [], 'ledgers': [], 'summary_contracts': [], 'warnings': [], 'identity_schema': 4}
+    result = {'files': [], 'ledgers': [], 'summary_contracts': [], 'warnings': [],
+              'identity_schema': 4, 'parser_schema': PARSER_SCHEMA}
     if not members:
         raise LedgerProblem('Архив пуст. Добавьте накопительные книги Excel.')
     for name, payload in members:
@@ -755,6 +1517,8 @@ def parse_archive(data: bytes, filename: str = '') -> dict:
                     continue
                 contracts = _summary(name, title, rows)
                 if contracts is not None:
+                    for contract in contracts:
+                        contract['file_sha256'] = hashlib.sha256(payload).hexdigest()
                     result['summary_contracts'].extend(contracts)
                     count += 1
                     recognized.append({'sheet': title, 'kind': 'summary'})
@@ -937,13 +1701,116 @@ def list_snapshots(project: str) -> list[dict]:
     return out
 
 
+def basis_metadata_current(snapshot: dict) -> bool:
+    return snapshot.get('parser_schema') == PARSER_SCHEMA and all(
+        item.get(field) in {'with_vat', 'without_vat', 'unspecified', 'conflicting'}
+        for ledger in snapshot.get('ledgers') or [] for item in ledger.get('items') or []
+        for field in ('planned_amount_basis', 'completed_amount_basis'))
+
+
+def _current_archive(data: bytes, digest: str, filename: str) -> dict:
+    """Bounded process cache of parsed evidence, never original bytes or state.
+
+    The caller verifies the ZIP hash on every read, including cache hits. JSON
+    gives each consumer its own copy and bounds retained private data to 8 MiB.
+    """
+    key = (PARSER_SCHEMA, digest, filename)
+    with _PARSE_CACHE_LOCK:
+        cached = _PARSE_CACHE.get(key)
+        if cached is not None:
+            _PARSE_CACHE.move_to_end(key)
+    if cached is not None:
+        return json.loads(cached)
+    parsed = parse_archive(data, filename)
+    encoded = json.dumps(parsed, ensure_ascii=False, allow_nan=False).encode('utf-8')
+    if len(encoded) <= _PARSE_CACHE_BYTES:
+        with _PARSE_CACHE_LOCK:
+            _PARSE_CACHE[key] = encoded
+            _PARSE_CACHE.move_to_end(key)
+            while len(_PARSE_CACHE) > _PARSE_CACHE_ENTRIES:
+                _PARSE_CACHE.popitem(last=False)
+    return parsed
+
+
+def _preserve_source_indices(previous: dict, parsed: dict) -> dict:
+    """Keep persisted li:ii bindings on the same immutable source cells.
+
+    A newer parser may retain previously omitted work rows. Appending these
+    rows preserves existing ids without hiding the newly recovered evidence.
+    An old id with no unique source counterpart must fail rather than point to
+    a different work. Coordinates are safe here because the ZIP hash is fixed.
+    """
+    def source_key(value):
+        source = value.get('source') or {}
+        key = tuple(source.get(field) for field in ('filename', 'sheet', 'row'))
+        return key if all(key) else None
+
+    def ordered(old, new, *, ledger=False):
+        index = {}
+        for value in new:
+            key = source_key(value)
+            if key is None or key in index:
+                raise LedgerProblem('После обновления разбора источник позиции не определяется однозначно; прежние привязки не перенесены.')
+            index[key] = value
+        aligned, used = [], set()
+        for value in old:
+            key = source_key(value)
+            if key is None or key not in index or key in used:
+                raise LedgerProblem('После обновления разбора прежняя позиция не найдена в исходном архиве; привязки требуют проверки.')
+            current = index[key]
+            if ledger:
+                current['items'] = ordered(value.get('items') or [], current.get('items') or [])
+            aligned.append(current)
+            used.add(key)
+        return aligned + [value for value in new if source_key(value) not in used]
+
+    return dict(parsed, ledgers=ordered(previous.get('ledgers') or [], parsed.get('ledgers') or [], ledger=True))
+
+
+def read_snapshot(project: str, snapshot_id: str) -> dict:
+    """Read one immutable import through the current source parser.
+
+    Old manifests never need another upload. Reparse only the retained original
+    ZIP, verify its hash, and keep all snapshot bindings and stored bytes intact.
+    """
+    root = _root(project)
+    path = _snapshot_path(root, snapshot_id)
+    try:
+        snapshot = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        raise LedgerProblem('Сохранённый архив не читается. Обратитесь к администратору.') from None
+    if not basis_metadata_current(snapshot):
+        raw = root / (snapshot_id + '.zip')
+        if raw.resolve().parent != root.resolve():
+            raise LedgerProblem('Неверное расположение исходного архива.')
+        if raw.is_file():
+            try:
+                with raw.open('rb') as handle:
+                    data = handle.read(MAX_ARCHIVE_BYTES + 1)
+            except OSError:
+                raise LedgerProblem('Сохранённый исходный архив не читается.') from None
+            if len(data) > MAX_ARCHIVE_BYTES or hashlib.sha256(data).hexdigest() != snapshot_id[11:]:
+                raise LedgerProblem('Исходный архив не совпадает с сохранённым отпечатком.')
+            parsed = _current_archive(data, snapshot_id[11:], snapshot.get('filename') or 'Накопительные.zip')
+            parsed = _preserve_source_indices(snapshot, parsed)
+            return {**snapshot, **parsed, 'source_parse_state': 'refreshed'}
+        return {**_restore_period_dates(snapshot), 'source_parse_state': 'original_unavailable'}
+    return {**_restore_period_dates(snapshot), 'source_parse_state': 'current'}
+
+
 def latest_snapshot(project: str, cut: str = '') -> dict | None:
     cutoff = _iso(cut) if cut else dt.date.today().isoformat()
     snapshots = [s for s in list_snapshots(project) if s['taken_at'] <= cutoff]
-    if not snapshots:
+    return read_snapshot(project, snapshots[0]['snapshot_id']) if snapshots else None
+
+
+def effective_snapshot(project: str, cut: str = '', *, snapshot: dict | None = None) -> dict | None:
+    """One read-only header decision projection for contracts and quantities."""
+    snapshot = latest_snapshot(project, cut) if snapshot is None else snapshot
+    if snapshot is None:
         return None
-    path = _snapshot_path(_root(project), snapshots[0]['snapshot_id'])
+    import developaid_monitor_header_confirmations as confirmations
     try:
-        return json.loads(path.read_text(encoding='utf-8'))
-    except (OSError, ValueError):
-        raise LedgerProblem('Сохранённый архив не читается. Обратитесь к администратору.') from None
+        return confirmations.apply(project, snapshot, _iso(cut) if cut else dt.date.today().isoformat())
+    except confirmations.ConfirmationProblem as exc:
+        raise LedgerProblem(str(exc)) from None

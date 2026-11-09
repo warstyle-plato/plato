@@ -11,8 +11,10 @@
 - файл такой же — второй экземпляр не нужен;
 - журнал (`*.jsonl`: записи «Общей информации», фото) — дописываются строки,
   которых в главном нет;
-- точечные факты работ за один день (`work_fact/<день>.json`) — строки обоих,
-  при одной работе в обоих побеждает главный;
+- точечные факты работ за один день (`work_fact/<день>.json`) — строки обоих
+  только при доказанном одинаковом источнике ГПР; главный имеет приоритет;
+- другой источник факта и его история версий остаются в отдельном архиве,
+  не получают SHA главного плана и не активируются совпадением ID работ;
 - остальное разное (например, второй утверждённый ГПР) — не трогает главный,
   а кладётся рядом в `.merged-from-<имя>/` и называется в отчёте: выбрать между
   двумя утверждёнными графиками должен человек.
@@ -30,6 +32,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -38,21 +41,86 @@ from typing import Any
 import developaid_monitor as monitor
 
 
+def _legacy_sha(root: Path) -> str:
+    path = monitor._legacy_baseline_file(root.name)
+    return _digest(path) if path is not None else ''
+
+
+def _fact_day(path: Path) -> str:
+    value = path.name.split('.',1)[0]
+    parsed = monitor._day(value)
+    return value if parsed is not None and parsed.isoformat() == value else ''
+
+
+def _fact_sha(path: Path, root: Path) -> str:
+    """Keep the recorded source, including the immutable basis of legacy facts."""
+    metadata = path if path.suffix == '.json' else path.with_suffix('.source.json')
+    if metadata.exists():
+        try:
+            payload = json.loads(metadata.read_text(encoding='utf-8'))
+            if not isinstance(payload, dict):
+                return ''
+            if 'source_sha256' in payload:
+                value = payload['source_sha256']
+                return value if isinstance(value,str) and re.fullmatch('[0-9a-f]{64}',value) else ''
+        except (OSError,ValueError):
+            return ''
+    fact_day = _fact_day(path)
+    if not fact_day:
+        return ''
+    try:
+        legacy_sha = _legacy_sha(root)
+        origin = monitor._baseline_state(root.name,fact_day)
+    except (OSError,ValueError,KeyError,TypeError):
+        return ''
+    # Missing provenance is legacy evidence only when this very source used
+    # its initial plan on the fact date. Never rehabilitate an unbound record
+    # created after a revision (or under an unreadable revision history).
+    return (legacy_sha if legacy_sha and isinstance(origin,dict)
+            and type(origin.get('revision')) is int and origin['revision'] == 0
+            and origin.get('source_sha256') == legacy_sha else '')
+
+
+def _target_fact_sha(path: Path, source: Path, target: Path) -> str:
+    day = _fact_day(path)
+    if not day:
+        return ''
+    selected = monitor._baseline_state(target.name,day)
+    if selected['path'] is None:
+        selected = monitor._baseline_state(source.name,day)
+    return selected['source_sha256']
+
+
+def _gpr_authority(rel: Path) -> bool:
+    return (rel.parts[0] == 'schedule' or rel.parts[0] == 'baseline' and (
+        len(rel.parts) > 1 and rel.parts[1] in {'gpr.xlsx','meta.json','schedule_versions.json','schedule_sources'}))
+
+
 def _plan(source: Path, target: Path) -> list[dict[str, str]]:
     out = []
+    target_has_gpr = bool(_legacy_sha(target))
     for path in sorted(item for item in source.rglob("*") if item.is_file()):
         rel = path.relative_to(source)
         if any(part.startswith(".") for part in rel.parts) or path.name.endswith(".tmp"):
             continue  # кэши разбора и недописанные файлы — не данные проекта
         there = target / rel
-        if not there.exists():
-            action = "move"
-        elif _digest(path) == _digest(there):
+        fact = rel.parts[0] in {'work_fact','schedule_fact'} and path.suffix in {'.json','.xlsx'}
+        source_sha = _fact_sha(path,source) if fact else ''
+        target_sha = _target_fact_sha(path,source,target) if fact else ''
+        if there.exists() and _digest(path) == _digest(there):
             action = "same"
+        elif target_has_gpr and _gpr_authority(rel):
+            # A missing authority file is not permission to activate the other
+            # project's plan or version chain over the main project's source.
+            action = 'conflict'
+        elif fact and (not source_sha or source_sha != target_sha):
+            action = 'conflict'
+        elif not there.exists():
+            action = "move"
         elif path.suffix == ".jsonl":
             action = "append"
         elif rel.parts[0] == "work_fact" and path.suffix == ".json":
-            action = "combine"
+            action = 'combine' if _fact_sha(there,target) == source_sha else 'conflict'
         else:
             action = "conflict"
         out.append({"file": rel.as_posix(), "action": action})
@@ -80,12 +148,16 @@ def _append(source: Path, target: Path) -> None:
                       + "\n".join(extra) + "\n")
 
 
-def _combine(source: Path, target: Path) -> None:
+def _combine(source: Path, target: Path, source_root: Path, target_root: Path) -> None:
     mine = json.loads(target.read_text(encoding="utf-8"))
     theirs = json.loads(source.read_text(encoding="utf-8"))
+    source_sha = _fact_sha(source,source_root)
+    if not source_sha or _fact_sha(target,target_root) != source_sha:
+        raise ValueError('Ручные факты относятся к разным источникам ГПР; автоматическое объединение не выполнено.')
     rows = {str(row.get("id")): row for row in theirs.get("rows") or []}
     rows.update({str(row.get("id")): row for row in mine.get("rows") or []})
     mine["rows"] = list(rows.values())
+    mine['source_sha256'] = source_sha
     _write(target, json.dumps(mine, ensure_ascii=False))
 
 
@@ -123,7 +195,7 @@ def merge(source: str, target: str, author: str, apply: bool = False,
                 elif item["action"] == "append":
                     _append(here, there)
                 elif item["action"] == "combine":
-                    _combine(here, there)
+                    _combine(here, there,src,dst)
                 elif item["action"] == "conflict":
                     (aside / item["file"]).parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(here, aside / item["file"])

@@ -127,7 +127,13 @@ def test_source_only_corpus_fallback_displays_raw_progress_without_approving_it(
     assert 'Исходные показания ГПР по корпусам' in html
     assert 'Показание исходного ГПР: 50.0%' in html
     assert '01.02.2027' in html and 'Все пакеты исходного файла (2)' in html
-    assert 'не подтверждают утверждённый базовый график' in html
+    # The warning follows the actual source qualification, rather than an old
+    # hard-coded sentence. Raw readings never become approval or a forecast.
+    import html as html_text
+    assert html_text.escape(source['reason'],quote=True) in html
+    assert 'проценты не меняют утверждённый график' in source['reason']
+    assert 'не дают темп или прогноз РНВ' in source['reason']
+    assert 'class="schedule-bar schedule-forecast"' not in html
     assert source == before and not source['baseline_approved'] and not source['quantity_mapping_confirmed']
 
 
