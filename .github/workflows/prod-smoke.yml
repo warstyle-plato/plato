@@ -1,4 +1,4 @@
-name: Одноразовое утверждение проверенного ГПР
+name: Одноразовое утверждение согласованного ГПР и РНВ
 run-name: approved-gpr-source-apply-once
 
 # Explicit approval on this ops branch; main keeps its ordinary prod smoke.
@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   apply:
-    name: Явно утвердить один проверенный исходник
+    name: Явно утвердить согласованный ГПР и дату РНВ
     if: >-
       github.repository == 'warstyle-plato/plato' &&
       github.ref == 'refs/heads/ops/approve-corpus-gpr-once' &&

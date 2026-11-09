@@ -9,6 +9,7 @@ import base64
 import datetime as dt
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -23,11 +24,17 @@ import urllib.request
 ROOT = Path(__file__).resolve().parents[2]
 INPUT_PATH = ROOT/'.github/diagnostics/gpr-approval-input.cms'
 PUBLIC_RECIPIENT = ROOT/'.github/diagnostics/contract-audit-recipient.pem'
-INPUT_SHA256 = 'a19625c23fc3265f8dfe724c543bb75c0c41570904fb8fbaca88b574dce23ba8'
-PLAINTEXT_SHA256 = '0af1de9672f45aad90cd59311d96fe9bcf510c715420a8030eeb10c4ba06720a'
+# No real envelope is prepared by this protocol-only change. The control must
+# seal and independently review a new fixed input before either pin is set.
+INPUT_SHA256 = None
+PLAINTEXT_SHA256 = None
 RECIPIENT_SHA256 = 'e4fab796b7269e2d2e681dc46a317f126f78b8f89250ba368bb160ec1ba69d32'
-SOURCE_SHA256 = '2d383659382132cd1fee89e9b14660cd7d4d5f1c4d2d23f7c373f11d3204df72'
-SOURCE_BYTES = 188692
+SOURCE_SHA256 = 'f00b3ad4f4a77c47822adec0f31f79a36d9767b511df9bd80fd067ad12cf8d7b'
+SOURCE_BYTES = 189101
+OLD_SOURCE_SHA256 = '303a0f73671c978af1a29828a40b1ac9b0560677b90e1e51357bfcd6b69a7561'
+HISTORICAL_CUT = '2026-11-06'
+OWNER_RNV_DATE = '2027-09-30'
+BASELINE_SCOPE = 'remaining_work'
 EXPECTED_WORKS = 198
 BASE = 'https://developaid.ru'
 PREVIEW = '/monitor/schedule/version-preview'
@@ -57,6 +64,15 @@ def sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def digest(value, size=64):
+    return isinstance(value, str) and re.fullmatch('[0-9a-f]{'+str(size)+'}', value) is not None
+
+
+def input_ready():
+    if not digest(INPUT_SHA256) or not digest(PLAINTEXT_SHA256):
+        raise ApplyError(SETUP)
+
+
 def day(value):
     try:
         parsed = dt.date.fromisoformat(value)
@@ -77,8 +93,11 @@ def strict_json(raw):
         return result
     def nonfinite(_):
         raise ApplyError(RESPONSE)
+    def number(value):
+        parsed = float(value)
+        return parsed if math.isfinite(parsed) else nonfinite(value)
     try:
-        result = json.loads(raw, object_pairs_hook=pairs, parse_constant=nonfinite)
+        result = json.loads(raw, object_pairs_hook=pairs, parse_constant=nonfinite, parse_float=number)
     except (ValueError, UnicodeError, RecursionError):
         raise ApplyError(RESPONSE) from None
     if not isinstance(result, dict):
@@ -122,6 +141,7 @@ def trusted_checkout(environment, run=subprocess.run):
 
 
 def decrypt_bundle(envelope, key, runner_temp):
+    input_ready()
     if (not envelope or len(envelope) > MAX_INPUT or sha(envelope) != INPUT_SHA256
             or not isinstance(key, str) or not key.startswith('-----BEGIN PRIVATE KEY-----')
             or not 1000 <= len(key) <= 8192):
@@ -138,21 +158,31 @@ def decrypt_bundle(envelope, key, runner_temp):
         raise ApplyError(CRYPTO) from None
     if result.returncode or len(result.stdout) > MAX_INPUT or sha(result.stdout) != PLAINTEXT_SHA256:
         raise ApplyError(CRYPTO)
-    bundle = strict_json(result.stdout)
+    return validate_bundle(strict_json(result.stdout))
+
+
+def validate_bundle(bundle):
     required = {'schema', 'project', 'old_source_sha256', 'new_source_sha256', 'source_base64',
-                'old_cut', 'snapshot_id', 'source_as_of', 'baseline_proof_sha256', 'operation_nonce'}
-    if (set(bundle) != required or type(bundle['schema']) is not int or bundle['schema'] != 1
+                'old_cut', 'snapshot_id', 'source_as_of', 'baseline_proof_sha256', 'operation_nonce',
+                'expected_physical_revision', 'owner_rnv_date', 'owner_rnv_note',
+                'expected_owner_rnv_revision'}
+    if (not isinstance(bundle, dict) or set(bundle) != required
+            or type(bundle['schema']) is not int or bundle['schema'] != 2
             or not isinstance(bundle['project'], str) or not 1 <= len(bundle['project']) <= 200
             or bundle['project'] != bundle['project'].strip()
-            or not re.fullmatch('[0-9a-f]{64}', bundle['old_source_sha256'])
-            or bundle['old_source_sha256'] == SOURCE_SHA256
+            or bundle['old_source_sha256'] != OLD_SOURCE_SHA256
             or bundle['new_source_sha256'] != SOURCE_SHA256
-            or not re.fullmatch('[0-9a-f]{64}', bundle['baseline_proof_sha256'])
-            or not re.fullmatch('[0-9a-f]{64}', bundle['operation_nonce'])
-            or not re.fullmatch(r'\d{4}-\d{2}-\d{2}-[0-9a-f]{64}', bundle['snapshot_id'])
-            or bundle['snapshot_id'][:10] != bundle['old_cut']
-            or day(bundle['source_as_of']) > day(bundle['old_cut'])):
+            or not digest(bundle['baseline_proof_sha256']) or not digest(bundle['operation_nonce'])
+            or not isinstance(bundle['snapshot_id'], str)
+            or not re.fullmatch(HISTORICAL_CUT+r'-[0-9a-f]{64}', bundle['snapshot_id'])
+            or bundle['old_cut'] != HISTORICAL_CUT
+            or type(bundle['expected_physical_revision']) is not int or bundle['expected_physical_revision'] < 0
+            or type(bundle['expected_owner_rnv_revision']) is not int or bundle['expected_owner_rnv_revision'] != 0
+            or bundle['owner_rnv_date'] != OWNER_RNV_DATE
+            or not isinstance(bundle['owner_rnv_note'], str) or not 1 <= len(bundle['owner_rnv_note']) <= 1000
+            or bundle['owner_rnv_note'] != bundle['owner_rnv_note'].strip()):
         raise ApplyError(INPUT)
+    day(bundle['source_as_of'])
     try:
         source = base64.b64decode(bundle['source_base64'], validate=True)
     except (ValueError, TypeError):
@@ -178,8 +208,10 @@ class Operation:
         self.proof, self.key, self.bundle = {}, '', None
         self.runtime_version = None
         self.ready = False
+        self.executed = False
         self.summary = {'ok': False, 'write_attempted': False, 'write_response_verified': False,
                         'already_active': False, 'old_cut_verified': False,
+                        'historical_audit_verified': False, 'owner_rnv_verified': False,
                         'current_source_verified': False, 'runtime_verified': False,
                         'postflight_verified': False, 'outcome_unknown': False,
                         'requests': 0, 'preview_works': 0, 'error_code': 0}
@@ -197,9 +229,10 @@ class Operation:
         raw = None
         if body is not None:
             common = {'key', 'project'}
+            version = common|{'effective_from','gpr_base64','baseline_scope','owner_rnv_date','owner_rnv_note'}
             expected_keys = (common|{'cut','offset'} if path == PHYSICAL else
-                             common|{'effective_from','gpr_base64'} if path == PREVIEW else
-                             common|{'effective_from','gpr_base64','expected_previous_sha256','expected_source_sha256'})
+                             version|{'audit_cut'} if path == PREVIEW else
+                             version|{'expected_previous_sha256','expected_source_sha256','expected_owner_rnv_revision'})
             if (not isinstance(body, dict) or set(body) != expected_keys
                     or self.bundle is None or body.get('project') != self.bundle['project']
                     or not self.key or body.get('key') != self.key):
@@ -207,12 +240,18 @@ class Operation:
             if path == PHYSICAL:
                 if type(body['offset']) is not int or body['offset'] != 0 or body['cut'] not in {self.bundle['old_cut'], self.effective}:
                     raise ApplyError(FENCE)
-            elif (body['effective_from'] != self.effective or body['gpr_base64'] != self.bundle['source_base64']):
+            elif (body['effective_from'] != self.effective or body['gpr_base64'] != self.bundle['source_base64']
+                    or body['baseline_scope'] != BASELINE_SCOPE or body['owner_rnv_date'] != OWNER_RNV_DATE
+                    or body['owner_rnv_note'] != self.bundle['owner_rnv_note']):
+                raise ApplyError(FENCE)
+            if path == PREVIEW and body['audit_cut'] != HISTORICAL_CUT:
                 raise ApplyError(FENCE)
             if path == APPROVE:
                 if (not self.ready or self.summary['write_attempted']
                         or body['expected_previous_sha256'] != self.bundle['old_source_sha256']
-                        or body['expected_source_sha256'] != SOURCE_SHA256):
+                        or body['expected_source_sha256'] != SOURCE_SHA256
+                        or type(body['expected_owner_rnv_revision']) is not int
+                        or body['expected_owner_rnv_revision'] != self.bundle['expected_owner_rnv_revision']):
                     raise ApplyError(FENCE)
                 self.summary['write_attempted'] = True
                 self.summary['outcome_unknown'] = True
@@ -265,7 +304,8 @@ class Operation:
         result = self.request(PHYSICAL, {'key':self.key, 'project':self.bundle['project'], 'cut':cut, 'offset':0})
         if (result.get('source_kind') != 'gpr' or result.get('source_state') != 'approved_gpr'
                 or result.get('snapshot_id') != self.bundle['snapshot_id']
-                or type(result.get('revision')) is not int or result['revision'] < 0
+                or type(result.get('revision')) is not int
+                or result['revision'] != self.bundle['expected_physical_revision']
                 or type(result.get('source_changed')) is not bool
                 or type(result.get('offset')) is not int or result['offset'] != 0 or type(result.get('item_count')) is not int
                 or not 0 <= result['item_count'] <= 5000
@@ -286,38 +326,78 @@ class Operation:
 
     def preview(self):
         result = self.request(PREVIEW, {'key':self.key, 'project':self.bundle['project'],
-            'effective_from':self.effective, 'gpr_base64':self.bundle['source_base64']})
+            'effective_from':self.effective, 'gpr_base64':self.bundle['source_base64'],
+            'baseline_scope':BASELINE_SCOPE, 'audit_cut':HISTORICAL_CUT,
+            'owner_rnv_date':OWNER_RNV_DATE, 'owner_rnv_note':self.bundle['owner_rnv_note']})
+        capabilities = result.get('capabilities')
+        proposed = {'date':OWNER_RNV_DATE,'source':'owner_decision',
+                    'note':self.bundle['owner_rnv_note'],'effective_from':self.effective}
         if (result.get('source_sha256') != SOURCE_SHA256 or result.get('effective_from') != self.effective
                 or result.get('works') != EXPECTED_WORKS
                 or type(result.get('works')) is not int or result.get('source_format') != 'corpus-gpr-v1'
                 or result.get('requires_initial_baseline') is not False
                 or type(result.get('current_revision')) is not int or result['current_revision'] < 0
-                or type(result.get('already_approved')) is not bool):
+                or type(result.get('latest_source_revision')) is not int or result['latest_source_revision'] < 0
+                or not digest(result.get('active_source_sha256'))
+                or type(result.get('already_approved')) is not bool
+                or result.get('baseline_scope') != BASELINE_SCOPE
+                or not isinstance(capabilities,dict)
+                or any(capabilities.get(field) is not True for field in
+                       ('owner_rnv_v1','remaining_plan_v1','historical_fact_audit_v1'))
+                or 'owner_rnv' not in result or type(result.get('owner_rnv_revision')) is not int
+                or result['owner_rnv_revision'] < 0 or result.get('proposed_owner_rnv') != proposed):
             raise ApplyError(FENCE)
+        self.audit_fence(result.get('audit'))
         self.summary['preview_works'] = result['works']
         return result
 
-    @staticmethod
-    def old_projection(result):
-        def stable(value):
-            if isinstance(value, dict):
-                return {key: stable(item) for key,item in value.items()
-                        if key not in {'generated_at','computed_at','checked_at','duration_ms','request_id'}}
-            return [stable(item) for item in value] if isinstance(value,list) else value
-        fields = ('source_kind','source_sha256','snapshot_id','revision','recorded_at',
-                  'source_changed','configuration','source_state','item_count','offset','items','tasks','model')
-        return stable({key:result.get(key) for key in fields})
+    def audit_fence(self, audit):
+        fields = {'cut','known','archival_source_sha256','archival_source_revision',
+                  'snapshot_id','snapshot_sha256','physical_revision',
+                  'physical_configuration_sha256','factual_state_sha256'}
+        if (not isinstance(audit,dict) or set(audit) != fields or audit['known'] is not True
+                or audit['cut'] != HISTORICAL_CUT or audit['archival_source_sha256'] != OLD_SOURCE_SHA256
+                or type(audit['archival_source_revision']) is not int or audit['archival_source_revision'] != 0
+                or audit['snapshot_id'] != self.bundle['snapshot_id']
+                or audit['snapshot_sha256'] != self.bundle['snapshot_id'][11:]
+                or type(audit['physical_revision']) is not int
+                or audit['physical_revision'] != self.bundle['expected_physical_revision']
+                or not all(digest(audit[field]) for field in
+                           ('snapshot_sha256','physical_configuration_sha256','factual_state_sha256'))):
+            raise ApplyError(FENCE)
+
+    def owner_fence(self, owner, revision, effective):
+        try:
+            recorded = dt.datetime.fromisoformat(owner.get('recorded_at')) if isinstance(owner,dict) else None
+        except (TypeError,ValueError):
+            raise ApplyError(FENCE) from None
+        if (type(revision) is not int or revision != 1 or not isinstance(owner,dict)
+                or type(owner.get('revision')) is not int or owner['revision'] != revision
+                or owner.get('source') != 'owner_decision' or owner.get('date') != OWNER_RNV_DATE
+                or owner.get('note') != self.bundle['owner_rnv_note'] or owner.get('effective_from') != effective
+                or recorded is None or recorded.utcoffset() != dt.timedelta(0)
+                or recorded.date().isoformat() != effective
+                or not isinstance(owner.get('author'),str) or not 1 <= len(owner['author']) <= 200):
+            raise ApplyError(FENCE)
 
     def active_fence(self, preview, current):
         effective = day(preview.get('approved_effective_from'))
-        if (preview['current_revision'] != 1 or preview.get('expected_previous_sha256') != SOURCE_SHA256
+        if (preview['current_revision'] != 1 or preview['latest_source_revision'] != 1
+                or preview['active_source_sha256'] != SOURCE_SHA256
+                or preview.get('expected_previous_sha256') != SOURCE_SHA256
+                or preview.get('approved_previous_sha256') != OLD_SOURCE_SHA256
                 or preview['already_approved'] is not True
                 or not day(self.bundle['old_cut']) < effective <= day(self.effective)
                 or current.get('source_sha256') != SOURCE_SHA256
                 or len(current['tasks']) != EXPECTED_WORKS):
             raise ApplyError(FENCE)
+        self.owner_fence(preview['owner_rnv'],preview['owner_rnv_revision'],effective.isoformat())
 
     def execute(self, bundle, key):
+        if self.executed:
+            raise ApplyError(SETUP)
+        self.executed = True
+        bundle = validate_bundle(bundle)
         if not isinstance(key, str) or not key.strip() or len(key) > 4096:
             raise ApplyError(SETUP)
         self.key, self.bundle = key.strip(), bundle
@@ -327,8 +407,6 @@ class Operation:
         self.proof['input'] = {key:value for key,value in bundle.items() if key != 'source_base64'}
         old = self.physical(bundle['old_cut'])
         self.proof['old_before'] = old
-        if old.get('source_sha256') != bundle['old_source_sha256']:
-            raise ApplyError(FENCE)
         current = self.physical(self.effective)
         self.proof['current_before'] = current
         preview = self.preview()
@@ -336,11 +414,17 @@ class Operation:
         previous = preview.get('expected_previous_sha256')
         if previous == SOURCE_SHA256:
             self.active_fence(preview, current)
+            if old.get('source_sha256') != SOURCE_SHA256 or len(old['tasks']) != EXPECTED_WORKS:
+                raise ApplyError(FENCE)
             self.summary['already_active'] = True
         else:
             if (previous != bundle['old_source_sha256'] or preview['current_revision'] != 0
+                    or preview['latest_source_revision'] != 0
+                    or preview['active_source_sha256'] != OLD_SOURCE_SHA256
                     or preview['already_approved'] is not False
-                    or current.get('source_sha256') != bundle['old_source_sha256']):
+                    or current.get('source_sha256') != bundle['old_source_sha256']
+                    or old.get('source_sha256') != bundle['old_source_sha256']
+                    or preview['owner_rnv_revision'] != 0 or preview['owner_rnv'] is not None):
                 raise ApplyError(FENCE)
             self.proof['health_before_write'] = self.health()
             if self.today().isoformat() != self.effective:
@@ -348,7 +432,10 @@ class Operation:
             self.ready = True
             response = self.request(APPROVE, {'key':self.key, 'project':bundle['project'],
                 'effective_from':self.effective, 'gpr_base64':bundle['source_base64'],
-                'expected_previous_sha256':bundle['old_source_sha256'], 'expected_source_sha256':SOURCE_SHA256})
+                'expected_previous_sha256':bundle['old_source_sha256'], 'expected_source_sha256':SOURCE_SHA256,
+                'baseline_scope':BASELINE_SCOPE,'owner_rnv_date':OWNER_RNV_DATE,
+                'owner_rnv_note':bundle['owner_rnv_note'],
+                'expected_owner_rnv_revision':bundle['expected_owner_rnv_revision']})
             self.proof['approval_response'] = response
             try:
                 approved_at = dt.datetime.fromisoformat(response.get('approved_at'))
@@ -357,19 +444,25 @@ class Operation:
             if (type(response.get('revision')) is not int or response['revision'] != 1
                     or response.get('source_sha256') != SOURCE_SHA256
                     or response.get('effective_from') != self.effective or response.get('unchanged') is not False
+                    or response.get('baseline_scope') != BASELINE_SCOPE
                     or approved_at.utcoffset() != dt.timedelta(0) or approved_at.date().isoformat() != self.effective):
                 raise ApplyError(POSTFLIGHT)
+            self.owner_fence(response.get('owner_rnv'),response.get('owner_rnv_revision'),self.effective)
             self.summary['write_response_verified'] = True
         after_preview = self.preview()
         old_after, current_after = self.physical(bundle['old_cut']), self.physical(self.effective)
         self.proof.update(preview_after=after_preview, old_after=old_after, current_after=current_after)
-        if self.old_projection(old) != self.old_projection(old_after):
+        if preview['audit'] != after_preview['audit']:
             raise ApplyError(POSTFLIGHT)
         self.summary['old_cut_verified'] = True
+        self.summary['historical_audit_verified'] = True
         self.active_fence(after_preview, current_after)
+        if old_after.get('source_sha256') != SOURCE_SHA256 or len(old_after['tasks']) != EXPECTED_WORKS:
+            raise ApplyError(POSTFLIGHT)
         if not self.summary['already_active'] and after_preview.get('approved_effective_from') != self.effective:
             raise ApplyError(POSTFLIGHT)
         self.summary['current_source_verified'] = True
+        self.summary['owner_rnv_verified'] = True
         self.proof['health_after'] = self.health()
         self.summary.update(ok=True, runtime_verified=True, postflight_verified=True,outcome_unknown=False)
         return dict(self.summary)
@@ -413,6 +506,7 @@ def main():
     try:
         os.umask(0o077)
         trusted_checkout(os.environ)
+        input_ready()
         operation = Operation(os.environ.get('EXPECTED_RUNTIME_COMMIT',''))
         envelope = bounded_file(INPUT_PATH,MAX_INPUT)
         recipient = bounded_file(PUBLIC_RECIPIENT,16384)
