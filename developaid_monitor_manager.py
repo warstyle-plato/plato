@@ -119,7 +119,7 @@ def _schedule_bucket(task: dict[str, Any], code: str) -> tuple[str, str]:
 
 def _baseline_mapping(project: str, cut: Any = '') -> dict[str, dict[str, str]]:
     """RSS naming/crosswalk only; never a source of schedule fact."""
-    path = monitor._baseline_file(project, cut)
+    path = monitor._working_baseline_file(project, cut)
     if path is None:
         return {}
 
@@ -224,7 +224,7 @@ def _baseline_status(project: str, upto: str = "") -> dict[str, dict[str, Any]]:
     import developaid_schedule_gpr_forecast as gpr_forecast
 
     try:
-        baseline = monitor._read_baseline_gpr(project, upto)
+        baseline = monitor._read_working_baseline_gpr(project, upto)
     except Exception:
         return {}
     rows = list(baseline.get("works") or [])
@@ -259,8 +259,10 @@ def _sanitize_base_schedule(project: str, schedule: dict[str, Any], upto: str = 
 
     ``upto`` is the cut: a past cut must not read a later weekly GPR file or a
     later manual decision (the management summary already passes its date)."""
-    selected = monitor._baseline_state(project, upto)
+    selected = monitor._working_baseline_state(project, upto)
     schedule['approved_plan'] = {key: selected[key] for key in ('source_sha256', 'revision', 'taken_at')}
+    schedule['approved_plan'].update(owner_rnv_revision=selected.get('owner_rnv_revision', 0),
+        owner_rnv=selected.get('owner_rnv'), baseline_scope=selected.get('baseline_scope', 'full_schedule'))
     statuses = _baseline_status(project, upto)
     for row in schedule.get("rows") or []:
         tid = str(row.get("id") or row.get("wbs") or "").strip()
@@ -717,7 +719,7 @@ def _schedule_only(project: str, cut: Any, upto: str = "") -> dict[str, Any]:
     if day is None:
         raise ValueError("Не задана дата среза.")
     try:
-        baseline = monitor._read_baseline_gpr(project, day)
+        baseline = monitor._read_working_baseline_gpr(project, day)
     except FileNotFoundError:
         baseline = {"works": []}
     rows = []

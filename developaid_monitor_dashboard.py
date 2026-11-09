@@ -2157,7 +2157,9 @@ def _schedule_summary(schedule: dict[str, Any]) -> str | None:
             forecast = monitor._day(qualified.get("forecast"))
             delay = qualified.get("delay_days")
             driver = (qualified.get("driving_chain") or [{}])[0]
-            if isinstance(delay, (int, float)) and delay > 0:
+            if qualified.get('approved_source') == 'owner_decision' and delay is None:
+                drift = 'прогноз РНВ не подтверждён'
+            elif isinstance(delay, (int, float)) and delay > 0:
                 drift = f"на {delay} дней позже плана"
             elif driver.get("method") == "plan":
                 # The latest work carries only its plan: no growth to call it «on time».
@@ -2174,7 +2176,10 @@ def _schedule_summary(schedule: dict[str, Any]) -> str | None:
                 where = "По работам ГПР с прогнозом" if qualified.get("basis") == "gpr" else "По известной части сети"
                 known_part = (f" {where} — {indicative.strftime('%d.%m.%Y')};"
                               " это не подтверждённый итоговый срок РНВ." if indicative else "")
-                return "Срок. Прогноз РНВ неполный." + known_part
+                owner = monitor._day(qualified.get('approved'))
+                lead = ('Срок. План РНВ владельца — '+owner.strftime('%d.%m.%Y')+'. '
+                        if owner and qualified.get('approved_source') == 'owner_decision' else 'Срок. ')
+                return lead + "Прогноз РНВ неполный." + known_part
             approved = monitor._day(qualified.get("approved"))
             lead = f"Срок. Утверждённый ввод — {approved.strftime('%d.%m.%Y')}; " if approved else "Срок. "
             return lead + ("прогноз РНВ: недостаточно данных." if approved else "Прогноз РНВ: недостаточно данных.")
