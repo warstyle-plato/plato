@@ -75,17 +75,108 @@ def _party_identity(value: Any) -> str:
     return " ".join(re.findall(r"[0-9a-zа-я]+", _text(value)))
 
 
+def _party_parts(value: Any) -> tuple[list[str], str]:
+    """Comparison only: persisted source identities keep their original text."""
+    words = _party_identity(_party_norm(value)).split()
+    if words and words[0] in _LEGAL_FORMS:
+        return words[1:], words[0]
+    if words and words[-1] in _LEGAL_FORMS:
+        return words[:-1], words[-1]
+    return words, ""
+
+
 def _same_party_exact(left: Any, right: Any) -> bool:
     """Omitted form can be shorthand; two different explicit forms cannot."""
-    # Keep persisted work signatures unchanged; legal-form normalization is
-    # only for comparison, just as in the RSS contract resolver.
-    first, second = (_party_identity(_party_norm(value)).split() for value in (left, right))
-    if not first or not second:
-        return False
-    first_form = first[0] if first[0] in _LEGAL_FORMS else ""
-    second_form = second[0] if second[0] in _LEGAL_FORMS else ""
-    return (first[bool(first_form):] == second[bool(second_form):]
+    (first, first_form), (second, second_form) = (_party_parts(value) for value in (left, right))
+    return (bool(first) and bool(second) and first == second
             and (not first_form or not second_form or first_form == second_form))
+
+
+def _work_words(value: Any) -> set[str]:
+    """Small inflection normalization for a source's work annotation."""
+    result = set()
+    for word in re.findall(r"[а-яa-z]{4,}", _text(value)):
+        for ending in ("иями", "ями", "ами", "ого", "ому", "ыми", "ими", "ая", "яя",
+                       "ое", "ее", "ые", "ие", "ой", "ий", "ый", "ом", "ем", "а", "я",
+                       "ы", "и", "у", "ю", "е"):
+            if word.endswith(ending) and len(word) - len(ending) >= 4:
+                word = word[:-len(ending)]
+                break
+        result.add(word)
+    return result
+
+
+def _party_rows(party: Any, rows: list[dict]) -> tuple[list[dict], str]:
+    """Resolve report spelling against this register, without rewriting it.
+
+    The existing crew name keys supply possible aliases. Whole source words
+    must still identify a registered name: arbitrary substrings/acronyms and
+    explicitly different legal names never become contract identities.
+    """
+    exact = [row for row in rows if _same_party_exact(party, row.get("contractor"))]
+    if exact:
+        return exact, "exact"
+    source = str(party or "").strip()
+    annotation = re.fullmatch(r"(.+?)\s*\(([^()]*)\)\s*", source)
+    if annotation:
+        base, context = annotation.groups()
+        annotation_words = _work_words(context)
+        annotated = [row for row in rows if _same_party_exact(base, row.get("contractor"))]
+        if not annotated:
+            return [], "not_found"
+        # An annotation is work context only if this party's own ledger
+        # supplies that discipline; company-name parentheses are not noise.
+        supported = any(annotation_words and annotation_words <= _work_words(" ".join([
+            str(row.get("subject") or ""), *(str(x) for x in row.get("scope") or []),
+            *(str(x.get("name") or "") for x in row.get("physical_items") or []),
+        ])) for row in annotated)
+        if supported:
+            identities = {(_party_parts(row.get("contractor"))[1],
+                           tuple(_party_parts(row.get("contractor"))[0])) for row in annotated}
+            return annotated, "work_context" if len(identities) == 1 else "ambiguous_alias"
+        return [], "unresolved_context"
+    source_words, source_form = _party_parts(source)
+    if not source_words or source_form:
+        return [], "not_found"
+    import developaid_monitor_crew as crew
+    # The common provider already treats these organizational prefixes as
+    # display noise. Restrict removal to the name's beginning here.
+    organizational = {"ск", "гк", "тд", "сз"}
+    while source_words and source_words[0] in organizational:
+        source_words = source_words[1:]
+    if not source_words:
+        return [], "not_found"
+    source_key = crew.name_key(source)
+    aliases = []
+    for row in rows:
+        target, _ = _party_parts(row.get("contractor"))
+        while target and target[0] in organizational:
+            target = target[1:]
+        target_key = crew.name_key(row.get("contractor"))
+        # Use the provider's canonical key and full-word prefix path. Its
+        # recursive acronym inference is neither needed nor allowed here.
+        provider_alias = source_key == target_key or len(source_key) >= 4 and target_key.startswith(source_key)
+        if target[:len(source_words)] == source_words and provider_alias:
+            aliases.append(row)
+    identities = {(_party_parts(row.get("contractor"))[1],
+                   tuple(_party_parts(row.get("contractor"))[0])) for row in aliases}
+    return aliases, "short_name" if len(identities) == 1 else "ambiguous_alias" if aliases else "not_found"
+
+
+def _party_agrees(item: dict, row: dict, rows: list[dict]) -> bool:
+    """Automatic decisions need the source and displayed attribution to agree."""
+    source_rows, source_basis = _party_rows(item.get("reported_contractor"), rows)
+    displayed_rows, displayed_basis = _party_rows(item.get("contractor"), rows)
+    annotation = re.fullmatch(r"(.+?)\s*\(([^()]*)\)\s*", str(item.get("contractor") or "").strip())
+    if (annotation and _same_party_exact(annotation.group(1), item.get("reported_contractor"))
+            and displayed_basis in {"unresolved_context", "not_found"}):
+        # The source already identifies the party; a presentation annotation
+        # attached by the common daily attribution cannot erase that proof.
+        displayed_rows, displayed_basis = source_rows, source_basis
+    return (source_basis not in {"not_found", "unresolved_context", "ambiguous_alias"}
+            and displayed_basis not in {"not_found", "unresolved_context", "ambiguous_alias"}
+            and any(value.get("id") == row.get("id") for value in source_rows)
+            and any(value.get("id") == row.get("id") for value in displayed_rows))
 
 
 def _digest(value: Any) -> str:
@@ -96,7 +187,15 @@ def _project_key(project: str) -> str:
     return monitor._resolved_slug(project)
 
 
-def _scope_info(value: Any) -> tuple[set[str], bool]:
+def _floor_reference(value: str) -> bool:
+    return re.match(
+        r"[0-9]{1,3}(?: ?(?:[-–—]|[,;]{1,2}) ?[0-9]{1,3}| +и +[0-9]{1,3}){0,30}"
+        r"(?:-(?:го|й|ого|ом))? ?[,;]? ?(?:этаж(?:а|ей|ах|у|ом|е|и)?\b|эт\.(?=\s|$)|эт\b)",
+        value[:256],
+    ) is not None
+
+
+def _scope_info(value: Any, *, _legacy_identity: bool = False) -> tuple[set[str], bool]:
     """Read complete ordinary corpus lists, keeping ambiguous scope explicit.
 
     A slash or range may mean a section/address rather than another corpus;
@@ -109,7 +208,12 @@ def _scope_info(value: Any) -> tuple[set[str], bool]:
     ambiguous = False
     for prefix in _CORPUS_WORD.finditer(text):
         cursor = prefix.end()
+        continuation = False
         while True:
+            if not _legacy_identity and continuation and _floor_reference(text[cursor:]):
+                # «Корпуса 3, 2–13 этажа Корпуса 1» starts a new floor
+                # reference after the comma, not corpora 2 through 13.
+                break
             number = _CORPUS_NUMBER.match(text, cursor)
             if number is None:
                 ambiguous = True
@@ -119,6 +223,11 @@ def _scope_info(value: Any) -> tuple[set[str], bool]:
             if text[cursor:cursor + 1] == " ":
                 cursor += 1
             tail = text[cursor:cursor + 32]
+            if (not _legacy_identity and tail[:1] in {"-", "–", "—"}
+                    and _floor_reference(text[cursor + 1:].lstrip())):
+                # The dash in «Корпус 3 — 3,4,5 эт.» separates the place
+                # from the expressly named floors; it is not corpus 3–5.
+                break
             if (tail[:1] in {"/", "-", "–", "—"} and tail[1:].lstrip(" №").startswith(tuple("0123456789"))
                     or tail.startswith("или") and tail[3:].lstrip(" №").startswith(tuple("0123456789"))):
                 ambiguous = True
@@ -127,6 +236,7 @@ def _scope_info(value: Any) -> tuple[set[str], bool]:
             if separator is None:
                 break
             cursor = separator.end()
+            continuation = separator.group().lstrip()[:1] in {",", ";"}
     return found, ambiguous
 
 
@@ -162,6 +272,17 @@ def _scope_covers(evidence: dict, row: dict) -> bool:
     if evidence.get("scope_ambiguous") or unclear_actual or unclear_expected:
         return False
     return not actual or not expected or actual <= expected
+
+
+def _scope_qualification(evidence: dict, row: dict) -> str:
+    """Contract identity does not itself qualify a message's physical scope."""
+    actual, unclear_actual = _scope_info(evidence.get("scope"))
+    expected, unclear_expected = _contract_scope_info(row)
+    if actual and expected and not unclear_expected and not actual <= expected:
+        return "conflict"
+    if evidence.get("scope_ambiguous") or unclear_actual or unclear_expected:
+        return "review"
+    return "confirmed" if actual and expected else "not_stated"
 
 
 def _number(value: Any) -> str:
@@ -251,15 +372,18 @@ def _selectable_contracts(evidence: dict, rows: list[dict]) -> tuple[list[dict],
     for row in rows:
         identifier = str(row.get("id") or "")
         counts[identifier] = counts.get(identifier, 0) + 1
-    same_party = [row for row in rows if counts.get(str(row.get("id") or "")) == 1
-                  and row.get("id") and _same_party_exact(party, row.get("contractor"))]
+    party_rows, party_basis = _party_rows(party, rows)
+    same_party = [row for row in party_rows if counts.get(str(row.get("id") or "")) == 1 and row.get("id")]
     if not same_party:
+        if party_basis == "unresolved_context":
+            return [], "Пометка рядом с именем не подтверждена составом работ подрядчика в накопительных. Уточните имя или работы."
         return [], "Договор этого подрядчика в накопительных не найден. Проверьте подрядчика и шапки ведомостей."
     dated = [row for row in same_party if not row.get("contract_date")
              or row["contract_date"] <= evidence["date"]]
     if not dated:
         return [], "Договоры подрядчика заключены после сообщения. Проверьте даты в источниках."
-    scoped = [row for row in dated if _scope_covers(evidence, row)]
+    scoped = [row for row in dated if _scope_covers(evidence, row)
+              or len(dated) == 1 and _scope_qualification(evidence, row) == "review"]
     if not scoped:
         return [], "Корпусный состав сообщения не подтверждён договором или указан неоднозначно. Уточните исходные данные."
     references = _explicit_contract_numbers(evidence["text"])
@@ -269,6 +393,10 @@ def _selectable_contracts(evidence: dict, rows: list[dict]) -> tuple[list[dict],
         scoped = [row for row in scoped if _explicit_number(evidence["text"], row)]
         if not scoped:
             return [], "Указанный номер не совпадает с подходящими договорами подрядчика. Проверьте номер договора в сообщении."
+    if party_basis == "ambiguous_alias":
+        return scoped, "Краткое имя подходит нескольким подрядчикам. Уточните юридическое лицо и выберите договор."
+    if len(scoped) == 1 and _scope_qualification(evidence, scoped[0]) != "confirmed":
+        return scoped, "Договор подрядчика определён; корпусный состав работ требует уточнения."
     return scoped, ("У подрядчика несколько договоров. Выберите нужный."
                     if len(scoped) > 1 else "Проверьте предложенный договор и подтвердите связь.")
 
@@ -351,7 +479,10 @@ def _evidence(project: str, register: dict, cut: str, start: str = "", *,
                         "party_exact": exact_party}
             if scope_ambiguous:
                 evidence["scope_ambiguous"] = True
-            evidence["signature"] = _signature(evidence, source_text=source_text,
+            # The legacy scope interpretation was part of persisted source
+            # ids. Fix the meaning on screen without orphaning manual links.
+            old_scope = ", ".join(f"Корпус {n}" for n in sorted(_scope_info(line, _legacy_identity=True)[0]))
+            evidence["signature"] = _signature({**evidence, "scope": old_scope}, source_text=source_text,
                                                 source_contractor=source_contractor,
                                                 source_context=str(item.get("_contract_source_context") or ""))
             if item.get("_contract_party_uncertain"):
@@ -436,8 +567,8 @@ def enrich(project: str, register: dict, cut: str, start: str = "", *,
     evidence = _evidence(project, result, cut, start, reports=_reports, parties=_parties)
     saved = _read(project).get("links") or {}
     for item in evidence:
-        candidates = [row for row in rows if row.get("id") in unique
-                      and _same_party_exact(item["reported_contractor"] or item["contractor"], row.get("contractor"))
+        party_rows, party_basis = _party_rows(item["reported_contractor"] or item["contractor"], rows)
+        candidates = [row for row in party_rows if row.get("id") in unique
                       and _compatible(item, row)]
         selectable, selection_reason = _selectable_contracts(item, rows)
         direct = saved.get(item["id"])
@@ -446,10 +577,8 @@ def enrich(project: str, register: dict, cut: str, start: str = "", *,
                       and str(record.get("source_date") or "9999") <= item["date"]]
         manual = direct or max(applicable, key=lambda r: (r.get("source_date") or "", r.get("confirmed_at") or ""), default={})
         blocked = {str(manual.get("contract_id") or "")} if manual.get("confirmed") is False else set()
-        explicit = [row for row in selectable if item["party_exact"]
-                    and _same_party_exact(item["reported_contractor"], row.get("contractor"))
+        explicit = [row for row in selectable if _party_agrees(item, row, rows)
                     and (not row.get("contract_date") or row["contract_date"] <= item["date"])
-                    and _scope_covers(item, row)
                     and str(row["id"]) not in blocked and _explicit_number(item["text"], row)]
         # Bind to the exact work signature and the current project's registry.
         # Stale/deleted contracts and a changed contract scope do not revive links.
@@ -478,12 +607,11 @@ def enrich(project: str, register: dict, cut: str, start: str = "", *,
             chosen, basis = manual_row, "manual"
         elif len(explicit) == 1:
             chosen, basis = explicit[0], "explicit_number"
-        elif (len(selectable) == 1 and item["party_exact"]
-              and _same_party_exact(item["reported_contractor"], selectable[0].get("contractor"))
+        elif (len(selectable) == 1 and _party_agrees(item, selectable[0], rows)
               and str(selectable[0]["id"]) not in blocked
               # A different explicitly stated number must never be ignored.
               and not _explicit_contract_numbers(item["text"])):
-            chosen, basis = selectable[0], "exact_party"
+            chosen, basis = selectable[0], "exact_party" if party_basis == "exact" else "party_alias"
         else:
             chosen, basis = None, "candidate" if selectable else "none"
         item["contract_id"] = str(chosen["id"]) if chosen else ""
@@ -493,6 +621,11 @@ def enrich(project: str, register: dict, cut: str, start: str = "", *,
         item["selectable_contract_ids"] = sorted(str(row["id"]) for row in selectable)
         item["suggested_contract_id"] = str(selectable[0]["id"]) if not chosen and len(selectable) == 1 else ""
         item["link_basis"] = basis
+        item["party_match_basis"] = party_basis
+        item["scope_confirmed"] = bool(chosen and _scope_qualification(item, chosen) == "confirmed")
+        item["scope_note"] = ("" if not chosen or item["scope_confirmed"] else
+                              "Договор определён; корпусный состав сообщения требует уточнения. "
+                              "Связь не подтверждает объёмы отдельных работ.")
         item["match_status"] = ("confirmed" if chosen else "ambiguous" if len(selectable) > 1
                                 else "proposed" if selectable else "unmatched")
         item["status"] = _STATUS[item["match_status"]]
@@ -524,13 +657,14 @@ def enrich(project: str, register: dict, cut: str, start: str = "", *,
         if related and not row.get("physical_items"):
             issues.append("Накопительная с объёмами к этому договору не привязана.")
         if _contract_scope_info(row)[1] or any(item.get("scope_ambiguous") for item in related):
-            issues.append("Обозначение корпусов в источнике неоднозначно. Уточните его до подтверждения связи всей строки.")
+            issues.append("Обозначение корпусов в источнике неоднозначно. Договорная связь не подтверждает объёмы отдельных работ.")
         elif any(not _scope_covers(item, row) for item in related):
             issues.append("Сообщение охватывает корпуса за пределами известного состава договора. Связь всей строки не подтверждена.")
         if any(item["contract_id"] == row.get("id") and (not _scope(item.get("scope")) or not _contract_scopes(row))
                for item in related):
             issues.append("Договор определён, но корпус не указан в одном из источников. Соответствие состава работ требует проверки.")
-        if any(not _same_party_exact(item.get("reported_contractor"), row.get("contractor")) for item in related):
+        if any(not any(candidate.get("id") == row.get("id")
+                       for candidate in _party_rows(item.get("reported_contractor"), rows)[0]) for item in related):
             issues.append("Имя или юридическая форма контрагента в исходном отчёте отличается от договора. Проверьте источник сообщения.")
         if any(item.get("party_attribution_uncertain") for item in related):
             issues.append("Принадлежность части строк подрядчику неоднозначна после смены имени в тексте. Проверьте исходный ежедневный отчёт.")
@@ -560,8 +694,6 @@ def set_link(project: str, contract_id: str, evidence_id: str, cut: str,
     if len(found) != 1:
         raise LinkProblem("Строка ежедневного отчёта не найдена в выбранном проекте на эту дату.")
     evidence = found[0]
-    if confirmed and not _scope_covers(evidence, rows[0]):
-        raise LinkProblem("Корпусный состав строки не подтверждён составом договора или указан неоднозначно. Проверьте исходные данные.")
     if confirmed:
         selectable, reason = _selectable_contracts(evidence, register.get("rows") or [])
         if str(contract_id) not in {str(row["id"]) for row in selectable}:
@@ -570,9 +702,8 @@ def set_link(project: str, contract_id: str, evidence_id: str, cut: str,
     with _locked(project):
         value = _read(project)
         signature = evidence["signature"]
-        candidates = sorted({str(row["id"]) for row in register.get("rows") or []
-                             if _same_party_exact(evidence["reported_contractor"] or evidence["contractor"], row.get("contractor"))
-                             and _compatible(evidence, row)})
+        party_rows, _ = _party_rows(evidence["reported_contractor"] or evidence["contractor"], register.get("rows") or [])
+        candidates = sorted({str(row["id"]) for row in party_rows if _compatible(evidence, row)})
         # One record per exact source preserves previous decisions when an
         # identically worded task later moves to another contract. A negative
         # decision also suppresses number-based auto-linking until confirmed.
@@ -620,24 +751,51 @@ def enrich_report_works(project: str, groups: list[dict], start: Any, end: Any, 
     for item in register.get("unmatched_works") or []:
         evidences[item["id"]] = item
     out = copy.deepcopy(groups)
+    party_matches: dict[tuple[str, str], bool] = {}
+
+    def same_report_party(item: dict, name: Any) -> bool:
+        if _same_party_exact(item.get("contractor"), name):
+            return True
+        source = str(item.get("reported_contractor") or item.get("contractor") or "")
+        pair = (source, str(name or ""))
+        if pair not in party_matches:
+            party_matches[pair] = any(
+                _party_agrees({"reported_contractor": source, "contractor": name}, row,
+                              register.get("rows") or [])
+                for row in _party_rows(source, register.get("rows") or [])[0])
+        return party_matches[pair]
+
     for group in out:
         for entry in group.get("lines") or []:
             matches = [item for item in evidences.values()
-                       if _same_party_exact(item["contractor"], group.get("contractor"))
+                       if same_report_party(item, group.get("contractor"))
                        and _text(item["text"]).strip(" ;.") == _text(entry.get("line")).strip(" ;.")
                        and item["date"] in entry.get("days", [])]
             links = {}
             for item in matches:
                 if item["match_status"] == "confirmed" and item["contract_id"] in by_id:
                     row = by_id[item["contract_id"]]
+                    scope_dates = set(links.get(row["id"], {}).get("scope_review_dates") or [])
+                    if not item.get("scope_confirmed", _scope_qualification(item, row) == "confirmed"):
+                        scope_dates.add(item["date"])
                     links[row["id"]] = {"id": row["id"], "contract": str(row.get("contract") or ""),
                                         "label": f"Договор {row.get('contract') or 'без номера'}",
                                         "status": "confirmed", "source": item["link_basis"],
                                         "completion_ratio": row.get("completion_ratio"),
+                                        "source_kind": row.get("source_kind"),
+                                        "progress": copy.deepcopy(row.get("progress") or {}),
+                                        "summary_progress": copy.deepcopy(row.get("summary_progress") or {}),
+                                        "statement_progress": copy.deepcopy(row.get("statement_progress") or {}),
+                                        "reported_performance_sources": copy.deepcopy(row.get("reported_performance_sources") or []),
+                                        "observation_forecast": copy.deepcopy(row.get("observation_forecast") or {}),
                                         "completed": row.get("completed"), "amount": row.get("amount"),
                                         "completed_works": row.get("completed_works"),
                                         "completed_materials": row.get("completed_materials"),
                                         "works_materials_split": row.get("works_materials_split"),
+                                        "scope_confirmed": not scope_dates,
+                                        "scope_review_dates": sorted(scope_dates),
+                                        "scope_note": ("Договор определён; корпусный состав сообщений требует уточнения."
+                                                       if scope_dates else ""),
                                         "deadline": row.get("deadline"), "risk": copy.deepcopy(row.get("risk") or {}),
                                         "href": "/monitor#" + urlencode({"tab": "contracts", "project": project,
                                                                          "contract": row["id"]})}

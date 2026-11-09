@@ -260,13 +260,15 @@ def test_actual_page_and_pdf(scenario, tmp_path, monkeypatch):
             browser.close()
 
 
-def test_archive_without_dates_and_archive_after_cut_have_distinct_states():
+def test_known_undated_quantities_and_archive_after_cut_have_distinct_states():
     monitor.store_schedule(PROJECT, gpr(), None, "2026-11-01")
     ledgers.store_archive(PROJECT, archive([("Недатированные.xlsx", cumulative_book(split=True))]),
                           CUT, "Учебный архив.zip")
     status = physical.build(PROJECT, CUT)["evidence_status"]
-    assert status["archive"] == "available" and status["state"] == "no_dated_quantities"
-    assert "Архив загружен" in status["reason"]
+    assert status["archive"] == "available" and status["state"] == "unmapped"
+    assert status["reported_rows"] == 2 and status["dated_rows"] == 0
+    assert status["measured_tasks"] == 0 and status["mapping"] == "unbound"
+    assert "Накопительные загружены" in status["reason"]
     status = physical.build(PROJECT, "2026-11-05")["evidence_status"]
     assert status["state"] == "historical" and status["archive"] == "after_cut"
 

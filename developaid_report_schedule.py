@@ -58,7 +58,11 @@ def model(timeline: dict, *, stalled=None) -> dict:
                 facts.append({"name": task.get("name") or task.get("task_id"),
                               "component": component.get("component_id") or "", "kind": "quantity",
                               "done": done, "plan": plan if _number(plan) else None,
-                              "unit": component.get("unit") or "", "date": component.get("period_end")})
+                              "unit": component.get("unit") or "",
+                              "date": component.get("observation_date") or component.get("period_end"),
+                              "date_basis": component.get("progress_date_basis"),
+                              "progress": component.get("progress"),
+                              "observation_history": component.get("observation_history")})
     status = physical.get("evidence_status") or {
         "state": "unavailable", "reason": "Состояние натуральных объёмов пока не проверено.",
         "action": "Команде: проверьте источники и соответствия работ в Мониторе."}
@@ -93,7 +97,8 @@ def fact_text(fact):
     if fact.get("plan") is not None:
         amount += " из " + number(fact["plan"])
     return (f"{fact['name']}: {amount} {unit_text(fact['unit'])}"
-            + (f" на {date_text(fact['date'])}" if fact.get("date") else "") + ".")
+            + ((" по ведомости от " if fact.get("date_basis") == "snapshot" else " на ")
+               + date_text(fact['date']) if fact.get("date") else "") + ".")
 
 
 def conclusion(block):

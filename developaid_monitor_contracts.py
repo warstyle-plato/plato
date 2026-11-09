@@ -1,7 +1,7 @@
 """A source-backed contract view, not another financial register.
 
-Only contracts explicitly identified by uploaded cumulative ledger headers
-belong to this view. RSS and closing summaries can enrich an exact identity;
+Contracts explicitly identified by uploaded cumulative headers or labelled
+closing-summary sections belong to this view. RSS can enrich an exact identity;
 the RSS closing/payment column never supplies cumulative completion.
 Yearly book totals never become a full contract price. Authenticate first.
 """
@@ -22,6 +22,7 @@ import developaid_actuals as actuals
 import developaid_monitor as monitor
 import developaid_monitor_contract_risk as contract_risk
 from developaid_monitor_ledgers import amount_basis as _amount_basis
+from developaid_monitor_ledgers import basis_metadata_current as _basis_metadata_current
 
 
 class ContractProblem(ValueError):
@@ -87,6 +88,7 @@ def _contract_number(value: Any, *, reference: bool = False) -> str:
 _LEGAL_FORMS = (
     ("общество с ограниченной ответственностью", "ооо"),
     ("публичное акционерное общество", "пао"),
+    ("открытое акционерное общество", "оао"),
     ("закрытое акционерное общество", "зао"),
     ("непубличное акционерное общество", "ао"),
     ("акционерное общество", "ао"),
@@ -98,7 +100,15 @@ def _party_norm(value: Any) -> str:
     text = _norm(value)
     for full, short in _LEGAL_FORMS:
         text = re.sub(r"(?<![а-я])" + full + r"(?![а-я])", short, text)
-    return re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"\s+", " ", text).strip()
+    words = text.split()
+    forms = {short for _, short in _LEGAL_FORMS}
+    # The source register also uses «НУР ООО». Move an explicit suffix only
+    # when no leading form exists: a final word inside an already qualified
+    # company name must remain part of that name. Persisted ids use _base_key.
+    if len(words) > 1 and words[0] not in forms and words[-1] in forms:
+        text = ' '.join([words[-1], *words[:-1]])
+    return text
 
 
 def _base_key(item: dict) -> tuple[str, str, str]:
@@ -292,7 +302,7 @@ def _groups(entries: list[dict], project: str) -> list[tuple[str, list[dict]]]:
         for item in items:
             # A known date is always part of identity, even when the old and
             # reissued contracts occur in two different source snapshots.
-            date = _date(item.get("contract_date")) or "unknown-date"
+            date = _date(item.get("contract_date")) or _source_date_key(item)
             partitions.setdefault(date, []).append(item)
         for date, grouped in partitions.items():
             if not grouped:
@@ -341,6 +351,12 @@ def _summary_money(items: list[dict], cut: str, warnings: list[str]) -> tuple[fl
         return None, None, "unspecified", "unspecified"
     amount_rows = []
     for row in rows:
+        if any(_date(version.get('date')) and _date(version.get('date')) > cut
+               for version in row.get('reported_amount_versions') or []):
+            warnings.append('Итоговая цена сводной включает допсоглашение позже среза; текущая полная сумма не подтверждена.')
+            amount_rows.append({'amount': None, 'amount_date': None,
+                                'amount_scope': 'full_contract', 'amount_basis': row.get('amount_basis')})
+            continue
         versions = row.get("amount_versions") or []
         if versions:
             for version in versions:
@@ -360,7 +376,7 @@ def _summary_money(items: list[dict], cut: str, warnings: list[str]) -> tuple[fl
     amount = next(iter(values)) if len(values) == 1 else None
     price_bases = {_basis(r.get("amount_basis")) for r in candidates}
     explicit_price_bases = price_bases - {"unspecified"}
-    amount_basis = ("conflicting" if len(explicit_price_bases) > 1 else
+    amount_basis = ("conflicting" if len(explicit_price_bases) > 1 or any(r.get('amount_basis') == 'conflicting' for r in candidates) else
                     next(iter(explicit_price_bases)) if explicit_price_bases else "unspecified")
     if amount_basis == "conflicting":
         warnings.append("В источниках суммы договора различаются базы НДС; денежный процент требует сверки.")
@@ -389,7 +405,7 @@ def _summary_money(items: list[dict], cut: str, warnings: list[str]) -> tuple[fl
         number = _norm(act.get("number"))
         source = act.get("source") or {}
         key = (number, date) if number else ("source", date, json.dumps(source, sort_keys=True))
-        evidence = (value, _basis(act.get("amount_basis")))
+        evidence = (value, 'conflicting' if act.get('amount_basis') == 'conflicting' else _basis(act.get("amount_basis")))
         if key in by_key and by_key[key] != evidence:
             uncertain = True
         by_key[key] = evidence
@@ -397,22 +413,94 @@ def _summary_money(items: list[dict], cut: str, warnings: list[str]) -> tuple[fl
         warnings.append("Акты без даты, суммы или с конфликтующими значениями требуют сверки; выполнение не посчитано.")
         return amount, None, amount_basis, "unspecified"
     act_bases = {basis for _, basis in by_key.values() if basis != "unspecified"}
-    if len(act_bases) > 1:
+    if len(act_bases) > 1 or 'conflicting' in act_bases:
         warnings.append("В актах смешаны суммы с НДС и без НДС; они не сложены в единое выполнение.")
         return amount, None, amount_basis, "unspecified"
     completed_basis = next(iter(act_bases)) if act_bases else "unspecified"
     return amount, sum(value for value, _ in by_key.values()), amount_basis, completed_basis
 
 
-def _physical(item: dict, ledger: dict, cut: str) -> dict:
+def _summary_observation(items: list[dict], cut: str) -> dict:
+    """One qualified financial reading of the uploaded closing summary.
+
+    This is a source observation, not natural readiness or an execution date.
+    A printed final section total can establish zero without inventing act rows.
+    """
+    rows = [row for row in items if row.get('kind') == 'summary']
+    result = {'state': 'unknown', 'ratio': None, 'planned': None, 'completed': None,
+        'basis': 'closing_summary_contract', 'basis_label': 'суммы КС-2 по сводной',
+        'origin': 'closing_summary_statement', 'scope_fingerprint': None,
+        'basis_signature': None, 'requires_reconciliation': False,
+        'why': 'В сводной не подтверждены сопоставимые план и итог КС-2.'}
+    if not rows:
+        return result
+    if any(_date(act.get('date')) and _date(act.get('date')) > cut
+           for row in rows for act in row.get('acts') or []):
+        return dict(result, why='Итог сводной содержит акты позже выбранного среза; общий итог не использован.')
+    if any(_date(version.get('date')) and _date(version.get('date')) > cut
+           for row in rows for version in row.get('reported_amount_versions') or []):
+        return dict(result, why='Итог цены сводной включает допсоглашение позже среза; процент требует сверки.')
+    totals = [row.get('reported_total') for row in rows]
+    if any(not isinstance(total, dict) for total in totals):
+        return result
+    basis = lambda value: value if value in {'with_vat', 'without_vat', 'unspecified'} else 'conflicting'
+    values = {(_number(total.get('planned')), _number(total.get('completed')),
+               basis(total.get('planned_amount_basis')), basis(total.get('completed_amount_basis')))
+              for total in totals}
+    if len(values) != 1:
+        return dict(result, why='Сводные дают разные общие итоги договора; процент не выбран.')
+    planned, completed, first_basis, second_basis = next(iter(values))
+    if planned is None or planned <= 0:
+        return dict(result, completed=completed, planned=planned,
+                    why='В сводной не подтверждена положительная полная сумма договора; денежный процент не определён.')
+    if completed is None:
+        return dict(result, planned=planned, why='В сводной не подтверждён общий итог КС-2.')
+    if ('conflicting' in {first_basis, second_basis}
+            or first_basis != 'unspecified' and second_basis != 'unspecified' and first_basis != second_basis):
+        return dict(result, why='План и итог КС-2 сводной имеют разные основания НДС; процент не рассчитан.')
+    acts = {}
+    for row in rows:
+        source_acts = set()
+        for act in row.get('acts') or []:
+            key = _norm(act.get('number')), _date(act.get('date'))
+            if key in source_acts:
+                return dict(result, why='В одном разделе сводной повторяется номер и дата акта; итог требует сверки.')
+            source_acts.add(key)
+            if key in acts and acts[key] != _number(act.get('amount')):
+                return dict(result, why='В сводной конфликтуют суммы одного акта; итог требует сверки.')
+            acts[key] = _number(act.get('amount'))
+    identity = _source_identity(rows[0])
+    if not identity:
+        return dict(result, why='У денежного итога сводной не подтверждена договорная идентичность.')
+    digest = lambda value: hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
+        separators=(',', ':')).encode()).hexdigest()
+    return dict(result, state='known', ratio=completed/planned, planned=planned, completed=completed,
+        scope_fingerprint=digest(['closing_summary_contract', identity]),
+        basis_signature=digest(['closing_summary_contract', planned, first_basis, second_basis]),
+        requires_reconciliation=completed < 0 or completed > planned,
+        source=_source(totals[0].get('source')),
+        why='Денежное закрытие по итогам КС-2 из сводной; не физическая готовность и не объёмы КС-6а.')
+
+
+def _physical(item: dict, ledger: dict, cut: str, *, _duplicates=None) -> dict:
+    import developaid_monitor_ledgers as ledgers
     result = {k: item.get(k) for k in
-              ("position", "name", "scope", "unit", "plan_quantity", "planned_amount")}
+              ("position", "name", "scope", "unit", "plan_quantity", "planned_amount",
+               "section_path", "context_headings", "parent_row", "is_group", "planned_work_amount",
+               "planned_material_amount", "planned_cost_split", "planned_work_amount_basis", "planned_cost_method",
+               "completed_amount_derivation", "duplicate_of", "duplicate_proof", "duplicate_note",
+               "duplicate_source_fingerprint")}
+    if _duplicates is None:
+        _duplicates = ledgers.verified_duplicate_sources(ledger.get('items') or []) if item.get('is_duplicate') else {}
+    result['is_duplicate'] = ledgers._duplicate_key(dict(item, period_year=ledger.get('period_year'))) in _duplicates
     result["source"] = _source(item.get("source") or ledger.get("source"), "Накопительная ведомость работ")
     result["period_year"] = ledger.get("period_year")
     result["warnings"] = _warnings(item.get("warnings"))
     result["snapshot_date"] = _date(ledger.get("source_date"))
     periods = list(item.get("periods") or [])
-    included = [p for p in periods if _date(p.get("date_end"))
+    period_year = ledger.get("period_year")
+    future_year = type(period_year) is int and period_year > int(cut[:4])
+    included = [p for p in periods if not future_year and _date(p.get("date_end"))
                 and _date(p["date_end"]) <= cut
                 and (not _date(p.get("date_start"))
                      or _date(p["date_start"]) <= _date(p["date_end"]))]
@@ -420,12 +508,14 @@ def _physical(item: dict, ledger: dict, cut: str) -> dict:
     result["periods"] = included
     result["quantity_date"] = max((_date(p["date_end"]) for p in included), default=None)
     result["quantity_cut"] = cut
-    has_future_values = any(_date(p.get("date_end")) and _date(p["date_end"]) > cut
+    has_future_values = future_year or any(_date(p.get("date_end")) and _date(p["date_end"]) > cut
                             and any((_number(p.get(key)) or 0) != 0
                                     for key in ("quantity", "material_quantity", "amount"))
                             for p in periods)
 
     def asof(field: str, annual_field: str) -> tuple[float | None, str]:
+        if future_year:
+            return None, "Год ведомости позже выбранного среза; итог не использован как текущее выполнение."
         annual = _number(item.get(annual_field))
         if annual is None:
             return None, "Накопительный итог не подтверждён числом."
@@ -481,7 +571,7 @@ def _physical(item: dict, ledger: dict, cut: str) -> dict:
         result["warnings"].append("Отрицательное выполнение требует проверки.")
     if result["completion_ratio"] is not None and result["completion_ratio"] > 1.000001:
         result["warnings"].append("Выполнение превышает объём позиции; требуется сверка.")
-    return result
+    return ledgers.stamp_duplicate_view(result)
 
 
 def _terms_path(project: str) -> Path:
@@ -503,6 +593,29 @@ def _read_terms(project: str) -> dict:
 def _identity(item: dict) -> tuple | None:
     base, date = _reference_key(item), _date(item.get("contract_date"))
     return (*base, date) if all(base) and date else None
+
+
+def _source_date_key(item: dict) -> str:
+    """Keep an unparsed source date as evidence, never invent a calendar year."""
+    supplied = item.get("source_date_key")
+    if isinstance(supplied, str) and re.fullmatch(r'(?:raw-date|unverified-source):[0-9a-f]{64}', supplied):
+        return supplied
+    dates = sorted({_norm(entry.get("raw")) for entry in
+                    (item.get("contract_date_evidence") or item.get("date_evidence") or [])
+                    if isinstance(entry, dict) and _norm(entry.get("raw"))})
+    source = item.get("source") or {}
+    value = dates if dates else [item.get("file_sha256"), source.get("filename"), source.get("sheet")]
+    digest = hashlib.sha256(json.dumps(value, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
+    return ('raw-date:' if dates else 'unverified-source:') + digest
+
+
+def _source_identity(item: dict) -> tuple | None:
+    """Source work identity; strict _identity still owns RSS/payment joins."""
+    exact = _identity(item)
+    if exact is not None:
+        return exact
+    base = _reference_key(item)
+    return (*base, _source_date_key(item)) if all(base) else None
 
 
 def _reference_differences(identity: tuple, entry: dict) -> list[str]:
@@ -550,7 +663,8 @@ def _cumulative_money(physical: list[dict], warnings: list[str],
         return None, "unspecified"
     periods, ranges, bases = {}, {}, set()
     uncertain = False
-    for item in physical:
+    import developaid_monitor_ledgers as ledgers
+    for item in ledgers.aggregation_members(physical):
         work = _physical_key(item)
         if item.get("completed_amount") is None:
             uncertain = True
@@ -600,8 +714,8 @@ def _cumulative_money(physical: list[dict], warnings: list[str],
     return sum(value[0] for value in periods.values()), next(iter(bases)) if bases else "unspecified"
 
 
-def build(project: str, cut: str = "") -> dict:
-    """The contract universe is exactly the uploaded cumulative ledger headers."""
+def build(project: str, cut: str = "", *, include_history: bool = True) -> dict:
+    """The universe is the contracts explicitly present in uploaded documents."""
     cut = _cut(cut)
     if not str(project or "").strip():
         raise ContractProblem("Выберите проект.")
@@ -612,10 +726,10 @@ def build(project: str, cut: str = "") -> dict:
         warnings.append("Дата накопительного архива не подтверждена или позже среза; архив не включён в этот срез.")
         snapshot, archive_day = None, None
     if snapshot:
-        import developaid_monitor_header_confirmations as confirmations
+        import developaid_monitor_ledgers as ledgers
         try:
-            snapshot = confirmations.apply(project, snapshot, cut)
-        except confirmations.ConfirmationProblem as exc:
+            snapshot = ledgers.effective_snapshot(project, cut, snapshot=snapshot)
+        except ledgers.LedgerProblem as exc:
             raise ContractProblem(str(exc)) from None
     primary, unresolved = [], []
     for original in (snapshot or {}).get("ledgers") or []:
@@ -635,14 +749,44 @@ def build(project: str, cut: str = "") -> dict:
                 "date_confirmation": ledger.get("date_confirmation"),
                 "snapshot_id": (snapshot or {}).get("snapshot_id"), "file_sha256": ledger.get("file_sha256"),
                 "reason": "В шапке не подтверждены: " + ", ".join(missing) + ". Источник не потерян и не объединён по догадке."})
+            if missing == ["действительная дата договора"]:
+                # Known contractor + number are enough to display the source
+                # and its quantities. Date qualification stays explicit and
+                # cannot enrich RSS, payments or dated legal assertions.
+                ledger["contract_date_unverified"] = True
+                unresolved[-1]["included_in_register"] = True
+                primary.append(ledger)
             continue
         primary.append(ledger)
+    summary_sources = [dict(item, kind='summary', source_date=archive_day)
+                       for item in (snapshot or {}).get('summary_contracts') or []]
+    for summary in summary_sources:
+        if summary.get('document_form') != 'closing_summary':
+            continue  # Unqualified saved/RSS projections do not expand the universe.
+        missing = [label for field, label in (('customer', 'заказчик'), ('contractor', 'подрядчик'),
+                   ('contract', 'номер договора')) if not str(summary.get(field) or '').strip()]
+        if missing:
+            unresolved.append({'source': _source(summary.get('source'), 'Сводная по КС-2'),
+                'contractor': summary.get('contractor') or '', 'contract': summary.get('contract') or '',
+                'source_kind': 'closing_summary', 'reason': 'В сводной не подтверждены: ' + ', '.join(missing) + '.'})
+            continue
+        identity = _identity(summary)
+        if identity and any(_identity(ledger) and not _reference_differences(_identity(ledger), summary)
+                            for ledger in primary):
+            continue  # Enrich the existing cumulative id, never create a copy.
+        if _date(summary.get('contract_date')) and _date(summary['contract_date']) > cut:
+            continue
+        if not _date(summary.get('contract_date')):
+            unresolved.append({'source': _source(summary.get('source'), 'Сводная по КС-2'),
+                'contractor': summary.get('contractor') or '', 'contract': summary.get('contract') or '',
+                'source_kind': 'closing_summary', 'included_in_register': True,
+                'reason': 'В сводной не подтверждена дата договора; денежный источник сохранён отдельно.'})
+        primary.append(summary)
     rss, rss_day = [], None
     if primary:
         rss, rss_day, rss_warnings = _read_rss(project, cut)
         warnings.extend(rss_warnings)
-    extras = [*rss, *(dict(x, kind="summary", source_date=archive_day)
-                       for x in (snapshot or {}).get("summary_contracts") or [])]
+    extras = [*rss, *summary_sources]
     terms, rows = (_read_terms(project) if primary else {}), []
     paid_rows = None
     if primary:
@@ -667,7 +811,7 @@ def build(project: str, cut: str = "") -> dict:
     for identifier, ledger_items in groups:
         first = ledger_items[0]
         identity = _identity(first)
-        matched = [entry for entry in extras if identity and not _reference_differences(identity, entry)
+        matched = [entry for entry in extras if entry not in ledger_items and identity and not _reference_differences(identity, entry)
                    and claims.get(id(entry), 0) == 1]
         items = ledger_items + matched
         rss_candidates = [entry for entry in extras if entry.get("kind") == "rss" and identity
@@ -684,9 +828,14 @@ def build(project: str, cut: str = "") -> dict:
         if summary_amount is not None and rss_amount is not None and abs(summary_amount-rss_amount) > .01:
             amount = None
             row_warnings.append("РСС и сводная дают разные полные суммы договора; действующая цена не выбрана автоматически.")
-        physical_sources = [(ledger, [_physical(item, ledger, cut)
-                                     for item in ledger.get("items") or []])
-                            for ledger in ledger_items]
+        physical_sources = []
+        for ledger in ledger_items:
+            if ledger.get('kind') != 'ledger':
+                continue
+            import developaid_monitor_ledgers as ledgers
+            duplicates = ledgers.verified_duplicate_sources(ledger.get('items') or [])
+            physical_sources.append((ledger, [_physical(item, ledger, cut, _duplicates=duplicates)
+                                              for item in ledger.get('items') or []]))
         physical = [item for _, views in physical_sources for item in views]
         money_parts: dict = {}
         dated_money: list = []
@@ -735,18 +884,89 @@ def build(project: str, cut: str = "") -> dict:
                 "amount_basis": summary_amount_basis, "completed_basis": summary_completed_basis})
         references = []
         for ledger, views in physical_sources:
-            values = [_number(item.get("completed_amount")) for item in ledger.get("items") or []]
+            source_items = ledgers.aggregation_members(ledger.get('items') or [])
+            values = [_number(item.get("completed_amount")) for item in source_items]
+            planned_values = [_number(item.get("planned_amount")) for item in source_items]
             future_excluded = any(item.get("future_periods_excluded") for item in views)
+            reported_completed = (sum(values) if not future_excluded and values
+                                  and all(v is not None for v in values) else None)
+            reported_planned = (sum(planned_values) if planned_values
+                                and all(v is not None for v in planned_values) else None)
+            planned_bases = {item.get("planned_amount_basis") for item in source_items} - {None, "", "unspecified"}
+            completed_bases = ({item.get("completed_amount_basis") for item in source_items}
+                               | {p.get("amount_basis") for item in source_items for p in item.get("periods") or []}) - {None, "", "unspecified"}
+            statement_comparable = (_basis_metadata_current(snapshot)
+                                    and "conflicting" not in planned_bases | completed_bases
+                                    and len(planned_bases) <= 1 and len(completed_bases) <= 1
+                                    and not (planned_bases and completed_bases and planned_bases != completed_bases))
+            source_split = bool(source_items) and all(item.get("amount_split")
+                and _number(item.get("completed_work_amount")) is not None
+                and _number(item.get("completed_material_amount")) is not None for item in source_items)
+            financial_complete = bool(source_items) and all(
+                _number(item.get(field)) is not None for item in source_items
+                for field in ('planned_amount', 'completed_amount')) and not ledger.get('unread_rows_count')
+            natural_complete = bool(source_items) and all(item.get('unit') and all(
+                _number(item.get(field)) is not None for field in ('plan_quantity', 'completed_quantity'))
+                for item in source_items)
+            planned_split = bool(source_items) and all(item.get('planned_cost_split') is True and all(
+                _number(item.get(field)) is not None for field in ('planned_work_amount', 'planned_material_amount'))
+                and _number(item.get('planned_amount')) is not None
+                and abs(_number(item.get('planned_work_amount'))+_number(item.get('planned_material_amount'))
+                        -_number(item.get('planned_amount'))) <= max(.01, abs(_number(item.get('planned_amount')))*1e-7)
+                for item in source_items)
+            planned_works = sum(_number(item.get('planned_work_amount')) for item in source_items) if planned_split else None
+            planned_materials = sum(_number(item.get('planned_material_amount')) for item in source_items) if planned_split else None
+            completed_works = (sum(_number(item.get('completed_work_amount')) for item in source_items)
+                               if source_split and reported_completed is not None else None)
+            completed_materials = (sum(_number(item.get('completed_material_amount')) for item in source_items)
+                                   if source_split and reported_completed is not None else None)
+            part_bases = {item.get('planned_work_amount_basis') for item in source_items} - {None, '', 'unspecified'}
+            parts_comparable = (planned_split and source_split and financial_complete and _basis_metadata_current(snapshot)
+                and 'conflicting' not in part_bases | completed_bases and len(part_bases) <= 1
+                and len(completed_bases) <= 1 and not (part_bases and completed_bases and part_bases != completed_bases)
+                and all(_number(item.get(field)) >= 0 for item in source_items
+                        for field in ('planned_work_amount', 'planned_material_amount')))
             references.append({"source": _source(ledger.get("source"), "Накопительная ведомость"),
                 "period_year": ledger.get("period_year"), "source_date": archive_day,
-                "completed": (sum(values) if not future_excluded and values
-                              and all(v is not None for v in values) else None),
+                "completed": reported_completed,
+                "planned": reported_planned,
+                "completion_ratio": (reported_completed / reported_planned
+                                     if reported_completed is not None
+                                     and reported_planned is not None and reported_planned > 0
+                                     and statement_comparable else None),
+                "monetary_comparable": statement_comparable,
+                'financial_complete': financial_complete, 'natural_complete': natural_complete,
+                "source_complete": bool(ledger.get("source_complete")) and all(
+                    _number(item.get(field)) is not None for item in source_items
+                    for field in ("plan_quantity", "planned_amount", "completed_quantity", "completed_amount")),
+                "unread_rows_count": ledger.get("unread_rows_count", 0),
+                "incomplete_rows_count": ledger.get("incomplete_rows_count", 0),
+                "planned_amount_basis": ("conflicting" if len(planned_bases) > 1 else
+                                         next(iter(planned_bases)) if planned_bases else "unspecified"),
+                "completed_amount_basis": ("conflicting" if len(completed_bases) > 1 else
+                                           next(iter(completed_bases)) if completed_bases else "unspecified"),
+                "amount_scope": "statement",
+                "stated_contract_amount": _number(ledger.get("contract_amount")),
+                "works_materials_split": source_split,
+                'planned_cost_split': planned_split,
+                'planned_works': planned_works, 'planned_materials': planned_materials,
+                'completed_works': completed_works, 'completed_materials': completed_materials,
+                'parts_monetary_comparable': parts_comparable,
+                'works_completion_ratio': (completed_works/planned_works if parts_comparable
+                    and planned_works is not None and planned_works > 0 and completed_works is not None else None),
+                'materials_completion_ratio': (completed_materials/planned_materials if parts_comparable
+                    and planned_materials is not None and planned_materials > 0 and completed_materials is not None else None),
                 "period_dates_known": bool(ledger.get("period_dates_known")),
                 "future_periods_excluded": future_excluded,
                 "label": "Сумма сохранённых итогов позиций этой ведомости; справочно, период закрытия не установлен"})
+        summary_only = not any(ledger.get('kind') == 'ledger' for ledger in ledger_items)
         row = {"id": identifier, "contractor": str(first.get("contractor") or ""),
+               'source_kind': 'closing_summary' if summary_only else 'cumulative',
                "customer": str(first.get("customer") or ""), "contract": str(first.get("contract") or ""),
                "contract_date": _date(first.get("contract_date")),
+               "source_date_key": _source_date_key(first),
+               "contract_identity_kind": ('closing_summary_date_unverified' if not _date(first.get('contract_date')) else 'closing_summary')
+                   if summary_only else "source_header_date_unverified" if not _date(first.get("contract_date")) else "header",
                "identity_source": first.get("identity_source") or {},
                "date_confirmation": first.get("date_confirmation"),
                "date_confirmations": [x["date_confirmation"] for x in ledger_items if x.get("date_confirmation")],
@@ -767,15 +987,21 @@ def build(project: str, cut: str = "") -> dict:
                "remaining": amount-completed if comparable and amount is not None and completed is not None else None,
                "deadline": deadline, "deadline_source": deadline_source,
                "manual_deadline_reference": manual_reference, "deadline_passed": bool(deadline and deadline < cut),
-               "source": _source(first.get("source"), "Договор из шапки накопительной"),
+               "source": _source(first.get("source"), 'Договор из сводной КС-2' if summary_only else "Договор из шапки накопительной"),
                "source_date": archive_day, "warnings": _warnings(row_warnings),
                "requires_reconciliation": bool(row_warnings), "physical_items": physical,
                "sources": [_source(x.get("source")) for x in ledger_items],
                "financial_sources": financial,
                "rss_match": _rss_match(identity, rss_items, rss_candidates, rss_day),
                "scope": sorted({str(item.get("scope") or "") for item in physical if item.get("scope")}),
-               "performance_basis": "Денежное выполнение только по загруженным накопительным и завершённым датированным периодам; не оплата и не физическая готовность",
-               "performance_source_count": len(ledger_items), "reported_performance_sources": references}
+               "performance_basis": ('Денежное закрытие по КС-2 из сводной; не физическая готовность и не объёмы КС-6а'
+                   if summary_only else "Денежное выполнение только по загруженным накопительным и завершённым датированным периодам; не оплата и не физическая готовность"),
+               "performance_source_count": len(physical_sources), "reported_performance_sources": references}
+        if summary_only:
+            row['summary_progress'] = _summary_observation(summary_items, cut)
+        else:
+            from developaid_monitor_statement_union import statement_union
+            row["statement_progress"] = statement_union(row)
         row["risk"] = contract_risk.forecast(
             amount=amount, completed=completed, comparable=comparable, periods=dated_money,
             cut=dt.date.fromisoformat(cut), deadline=dt.date.fromisoformat(deadline) if deadline else None,
@@ -786,14 +1012,20 @@ def build(project: str, cut: str = "") -> dict:
             identity_counts=payment_identities, completed_basis=completed_basis)
         rows.append(row)
     rows.sort(key=lambda r: (_norm(r["contractor"]), _norm(r["customer"]), _norm(r["contract"]), r["id"]))
-    note = ("В списке только уникальные договоры из шапок загруженных накопительных: номер, дата, контрагент и заказчик. "
-            "Общий реестр РСС и несвязанные строки сводной в количество не входят.")
-    return {"cut": cut, "source_date": archive_day, "rows": rows,
+    note = ("Договоры из загруженных КС-6а и подписанных разделов сводной КС-2 показаны с источниками показателей. "
+            "Общий реестр РСС не расширяет этот список; разные реквизиты не объединяются автоматически.")
+    result = {"cut": cut, "source_date": archive_day, "rows": rows,
+            "source_coverage": {"files": (snapshot or {}).get("files") or [],
+                "cumulative_sheets": len((snapshot or {}).get("ledgers") or []),
+                "source_complete": bool(snapshot) and all(ledger.get("source_complete") is True
+                                       for ledger in (snapshot or {}).get("ledgers") or []),
+                "incomplete_rows": sum(ledger.get("incomplete_rows_count") or 0
+                                       for ledger in (snapshot or {}).get("ledgers") or [])},
             "unresolved_sources": unresolved,
-            "counts": {"contracts_from_cumulative": len(rows), "cumulative_sheets": len((snapshot or {}).get("ledgers") or []),
+            "counts": {"contracts_from_cumulative": sum(row.get('source_kind') == 'cumulative' for row in rows), "cumulative_sheets": len((snapshot or {}).get("ledgers") or []),
                        "unresolved_headers": len(unresolved)},
             "scope_note": note, "empty_reason": ("Загрузите архив накопительных: без него списка договоров нет." if not snapshot else
-                                                   "В шапках накопительных пока нет полностью распознанных договоров." if not rows else ""),
+                                                   "В загруженных документах пока нет распознанных договоров." if not rows else ""),
             "snapshots": {"rss": rss_day, "cumulative": archive_day, "cumulative_id": (snapshot or {}).get("snapshot_id")},
             "warnings": _warnings(warnings + _warnings((snapshot or {}).get("warnings"))),
             "performance_basis": "Выполнение по загруженным накопительным; реестр РСС и оплата не подменяют выполнение КС.",
@@ -801,10 +1033,21 @@ def build(project: str, cut: str = "") -> dict:
             "risk_basis": ("Прогноз окончания — по денежному темпу накопительных за последние 90 дней; "
                            "это показатель выполнения, а не физическая готовность. Оплаты — «Реестр платежей» РСС "
                            "по точному подрядчику, номеру и дате договора.")}
+    if any(item.get('document_form') == 'closing_summary' for item in summary_sources):
+        result['counts']['contracts_from_documents'] = len(rows)
+        result['counts']['contracts_from_closing_summary_only'] = sum(row['source_kind'] == 'closing_summary' for row in rows)
+        result['source_coverage']['closing_summary_sections'] = len(summary_sources)
+    if include_history:
+        import developaid_monitor_contract_history as progress_history
+        return progress_history.enrich(project, cut, result,
+            build_register=lambda previous_cut: build(project, previous_cut, include_history=False))
+    return result
 
 
 def _date_evidence(snapshot: dict, ledger: dict) -> list[dict]:
     """Header date cells with the exact binding the page sends back to clarify."""
+    if ledger.get('kind') == 'summary':
+        return [dict(evidence) for evidence in ledger.get('contract_date_evidence') or []]
     import developaid_monitor_header_confirmations as confirmations
     return [dict(evidence, binding=confirmations.binding(snapshot, ledger, evidence))
             for evidence in ledger.get("contract_date_evidence") or []]
