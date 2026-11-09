@@ -209,7 +209,7 @@ def _xlsx_bounds(data: bytes, *, header_merges: dict | None = None) -> int:
                     try:
                         left, top, right, bottom = range_boundaries(element.attrib.get('ref', ''))
                         if (all(isinstance(value, int) for value in (left, top, right, bottom))
-                                and 1 <= top <= bottom <= 45 and 1 <= left <= right <= MAX_COLUMNS):
+                                and 1 <= top <= 45 and top <= bottom and 1 <= left <= right):
                             merges.append((top-1, left-1, bottom-1, right-1))
                             if len(merges) > 45 * MAX_COLUMNS:
                                 raise LedgerProblem('В книге слишком много объединений в шапке таблицы.')
@@ -644,7 +644,8 @@ def _formula_columns(value: str, row: int, operator: str) -> set[int]:
             return set(range(first, last+1)) if first is not None and last is not None and first <= last else set()
         text = text.replace(',', '+')
     terms = text.split(operator)
-    if len(terms) < 2 or any(not re.fullmatch(r'[A-Z]+[1-9]\d*', term) for term in terms):
+    if (len(terms) < 2 or len(terms) != len(set(terms))
+            or any(not re.fullmatch(r'[A-Z]+[1-9]\d*', term) for term in terms)):
         return set()
     coordinates = {_cell(col+1, row): col for col in range(MAX_COLUMNS)}
     if any(term not in coordinates for term in terms):
@@ -659,13 +660,15 @@ def _merged_cost_column(rows, hi: int, qi: int, plan_col: int, first_period: int
     A merged caption does not label its leftmost cell as the position total.
     A multi-value field needs proof of the full total; alignment is insufficient.
     """
-    spans = [(left, right) for top, left, bottom, right in getattr(rows, 'header_merges', ())
-             if hi <= top <= qi and left == anchor and right < first_period and left < right]
+    spans = [(top, left, bottom, right) for top, left, bottom, right in getattr(rows, 'header_merges', ())
+             if hi <= top <= qi and left == anchor and left < right]
     if not spans:
         return anchor
     if len(set(spans)) != 1:
         return None
-    left, right = spans[0]
+    top, left, bottom, right = spans[0]
+    if bottom > qi or right >= first_period or right >= MAX_COLUMNS:
+        return None
     field = set(range(left, right+1))
     price_columns = set()
     for ri in range(hi, qi+1):
@@ -683,7 +686,7 @@ def _merged_cost_column(rows, hi: int, qi: int, plan_col: int, first_period: int
         if row_number <= qi+1 or plan_col >= len(values) or _number(values[plan_col]) is None:
             continue
         at = lambda col: _number(values[col]) if col < len(values) else None
-        populated.update(col for col in field if at(col) not in {None, 0})
+        populated.update(col for col in field if at(col) is not None)
         unknown |= any(col < len(values) and _text(values[col]) and at(col) is None for col in field)
         for col in field:
             total = at(col)

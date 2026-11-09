@@ -6,6 +6,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 
 import openpyxl
+import pytest
 import developaid_monitor_ledgers as ledgers
 from test_ledger_work_structure import structured_book
 from test_monitor_cumulative_ledgers import archive
@@ -102,3 +103,35 @@ def test_cross_row_or_external_formula_is_not_a_total_proof():
     assert not ledgers._formula_columns('=E12*H13', 12, '*')
     assert not ledgers._formula_columns("=E12*'Other'!H12", 12, '*')
     assert ledgers._formula_columns('=ROUND(SUM($F12:$G12),2)', 12, '+') == {5, 6}
+
+
+@pytest.mark.parametrize('reference', ['I6:M8', 'I6:ZZZ8', 'I6:K50'])
+def test_invalid_cost_merge_cannot_fall_back_to_its_first_component(reference):
+    data = cached_book()
+    out = io.BytesIO()
+    ns = {'s': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+    with zipfile.ZipFile(io.BytesIO(data)) as source, zipfile.ZipFile(out, 'w') as target:
+        for name in source.namelist():
+            raw = source.read(name)
+            if name == 'xl/worksheets/sheet1.xml':
+                xml = ET.fromstring(raw)
+                for cell in xml.findall('.//s:mergeCell', ns):
+                    if cell.get('ref') == 'I6:K8':
+                        cell.set('ref', reference)
+                raw = ET.tostring(xml)
+            target.writestr(name, raw)
+    ledger = parse(out.getvalue())
+    assert all(item['planned_amount'] is None for item in ledger['items'])
+    assert not ledger['source_complete']
+
+
+@pytest.mark.parametrize('formula,operator', [
+    ('=I12+I12+J12', '+'), ('=SUM(I12,I12,J12)', '+'), ('=E12*E12*H12', '*'),
+])
+def test_repeated_formula_operands_are_not_deduplicated_into_a_total(formula, operator):
+    assert not ledgers._formula_columns(formula, 12, operator)
+
+
+def test_single_explicit_zero_in_merged_cost_field_remains_a_known_zero():
+    ledger = parse(add_caches(cached_book(single_value=True), {'K12': 0, 'K14': 0}))
+    assert [item['planned_amount'] for item in ledger['items']] == [0, 0]
