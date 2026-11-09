@@ -24,10 +24,10 @@ import urllib.request
 ROOT = Path(__file__).resolve().parents[2]
 INPUT_PATH = ROOT/'.github/diagnostics/gpr-approval-input.cms'
 PUBLIC_RECIPIENT = ROOT/'.github/diagnostics/contract-audit-recipient.pem'
-# No real envelope is prepared by this protocol-only change. The control must
-# seal and independently review a new fixed input before either pin is set.
-INPUT_SHA256 = None
-PLAINTEXT_SHA256 = None
+# The control sealed this fixed corrected-source input for independent review.
+# Execution still requires the separately verified compatible runtime and gates.
+INPUT_SHA256 = '1432e5a70097d4a4512b32e62ee84d875dd7ad835904af29819088dbbe898cb8'
+PLAINTEXT_SHA256 = '5fc844a96953a69dccd26a49c66107d6be1aee31990df2b3e91ec33fe156d2b2'
 RECIPIENT_SHA256 = 'e4fab796b7269e2d2e681dc46a317f126f78b8f89250ba368bb160ec1ba69d32'
 SOURCE_SHA256 = 'f00b3ad4f4a77c47822adec0f31f79a36d9767b511df9bd80fd067ad12cf8d7b'
 SOURCE_BYTES = 189101
