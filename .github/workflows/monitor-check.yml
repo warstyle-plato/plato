@@ -9,9 +9,23 @@ on:
       - "developaid_monitor_dashboard.py"
       - "developaid_monitor_schedule_graph.py"
       - "developaid_monitor_page.py"
+      - "developaid_monitor_contract*.py"
+      - "developaid_monitor_statement*.py"
+      - "developaid_monitor_ledgers.py"
+      - "developaid_cumulative_progress.py"
+      - "developaid_schedule*.py"
+      - "developaid_management_report.py"
+      - "developaid_report_schedule.py"
       - "developaid_actuals.py"
       - "tests/test_monitor*.py"
       - "tests/test_weekly_monitor*.py"
+      - "tests/test_contract*.py"
+      - "tests/test_cumulative*.py"
+      - "tests/test_ledger*.py"
+      - "tests/test_statement*.py"
+      - "tests/test_gpr*.py"
+      - "tests/test_schedule*.py"
+      - "tests/test_report_executive_schedule.py"
       - "tests/test_a_proposal_replaces_the_articles_plan.py"
       - ".github/workflows/monitor-check.yml"
 
@@ -34,9 +48,19 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements-dev.txt
       - name: Monitor suite
+        env:
+          REQUIRE_BROWSER: "1"
         run: |
+          python -m playwright install --with-deps chromium
           python -m pytest \
             tests/test_monitor*.py \
             tests/test_weekly_monitor*.py \
+            tests/test_contract*.py \
+            tests/test_cumulative*.py \
+            tests/test_ledger*.py \
+            tests/test_statement*.py \
+            tests/test_gpr*.py \
+            tests/test_schedule*.py \
+            tests/test_report_executive_schedule.py \
             tests/test_a_proposal_replaces_the_articles_plan.py \
             -q
