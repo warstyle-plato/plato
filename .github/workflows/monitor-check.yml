@@ -6,6 +6,7 @@ on:
     paths:
       - "developaid_monitor.py"
       - "developaid_monitor_manager.py"
+      - "developaid_monitor_merge.py"
       - "developaid_monitor_dashboard.py"
       - "developaid_monitor_schedule_graph.py"
       - "developaid_monitor_page.py"
@@ -13,6 +14,7 @@ on:
       - "developaid_monitor_statement*.py"
       - "developaid_monitor_ledgers.py"
       - "developaid_cumulative_progress.py"
+      - "developaid_gpr*.py"
       - "developaid_schedule*.py"
       - "developaid_management_report.py"
       - "developaid_report_schedule.py"
@@ -25,6 +27,7 @@ on:
       - "tests/test_statement*.py"
       - "tests/test_gpr*.py"
       - "tests/test_schedule*.py"
+      - "tests/test_report_executive_schedule.py"
       - "tests/test_a_proposal_replaces_the_articles_plan.py"
       - ".github/workflows/monitor-check.yml"
 
@@ -60,5 +63,6 @@ jobs:
             tests/test_statement*.py \
             tests/test_gpr*.py \
             tests/test_schedule*.py \
+            tests/test_report_executive_schedule.py \
             tests/test_a_proposal_replaces_the_articles_plan.py \
             -q
