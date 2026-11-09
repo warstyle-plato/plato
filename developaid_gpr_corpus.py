@@ -196,19 +196,35 @@ def as_schedule(source: dict) -> dict:
 def for_view(project: str, cut: str = '', *, baseline_sha256: str = '') -> dict | None:
     """Retain visible corpus evidence and identify the explicitly used baseline."""
     import developaid_monitor as monitor
-    source = latest(project, cut)
-    if source is None:
-        selected = monitor._baseline_state(project, cut)
+    selected = monitor._working_baseline_state(project, cut)
+    def approved_source():
         path = selected['path']
         if path is not None:
             try:
                 taken_at = dt.date.fromisoformat(selected['taken_at']).isoformat()
             except (OSError, ValueError, KeyError, TypeError):
                 taken_at = ''
-            if taken_at and (not cut or taken_at <= cut):
+            if taken_at and (not cut or taken_at <= cut or selected.get('baseline_scope') == 'remaining_work'):
                 parsed = read(path.read_bytes())
                 if parsed is not None:
-                    source = dict(parsed, taken_at=taken_at)
+                    if parsed['sha256'] != selected['source_sha256']:
+                        raise ValueError('Отпечаток действующего ГПР не совпадает с утверждённым.')
+                    return dict(parsed, taken_at=taken_at)
+        return None
+    # An archived source upload must not displace the explicitly selected plan.
+    source = (approved_source() if selected.get('baseline_scope') == 'remaining_work'
+              or baseline_sha256 and selected['source_sha256'] == baseline_sha256 else None)
+    if selected.get('baseline_scope') == 'remaining_work':
+        # Operational history shows today's plan and historical facts, never
+        # an alternative archived plan when that plan is not a corpus file.
+        return (dict(source, baseline_approved=True, working_source_state='approved',
+                     reason='Этот файл используется как действующий утверждённый план. '
+                            'Завершённые работы показаны отдельно по подтверждённым фактам.')
+                if source is not None else None)
+    if source is None:
+        source = latest(project, cut)
+    if source is None:
+        source = approved_source()
     if source is None:
         return None
     same = bool(baseline_sha256 and source.get('sha256') == baseline_sha256)

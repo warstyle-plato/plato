@@ -30,8 +30,8 @@ def _now():
     return dt.datetime.now(dt.timezone.utc)
 
 
-def _source(project, cut=""):
-    path = monitor._baseline_file(project, cut)
+def _source(project, cut="", *, _archival=False):
+    path = (monitor._baseline_file(project, cut) if _archival else monitor._working_baseline_file(project, cut))
     if path is None:
         import developaid_gpr_corpus as corpus_gpr
         corpus = corpus_gpr.latest(project, cut)
@@ -73,7 +73,7 @@ def _source(project, cut=""):
                       "plan_finish": monitor._iso(row.get("finish"))}
     sha = hashlib.sha256(data).hexdigest()
     import developaid_gpr_corpus as corpus_gpr
-    available = corpus_gpr.for_view(project, cut, baseline_sha256=sha)
+    available = None if _archival else corpus_gpr.for_view(project, cut, baseline_sha256=sha)
     reason = ((available or {}).get('reason') or '') if (available or {}).get('working_source_state') == 'different_baseline' else ''
     missing = [dict(id=task['task_id'], name=task['name'], object=task['object'], construction_work=True)
                for task in tasks.values() if task['construction_work']
@@ -465,6 +465,10 @@ def _view_model(project, cut, source, snapshot, configuration, *, automatic=None
             'source_positions': len({key for group in covered for key in group['item_ids']}),
             'known_groups': sum(group['model'].get('progress') is not None for group in covered),
             'target_scope_confirmed': False}
+    import developaid_schedule_completed_facts as completed
+    import developaid_schedule_gpr_physical as module
+    model['completed_facts'] = completed.build(project, cut, snapshot, physical=module)
+    model['completed_facts_html'] = completed.render(model['completed_facts'])
     return model
 
 

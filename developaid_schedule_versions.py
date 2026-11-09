@@ -51,10 +51,10 @@ def _legacy(path):
     return digest(_read(path)) if path is not None else ''
 
 
-def _events(folder: Path, legacy_sha: str):
+def _journal(folder: Path, legacy_sha: str):
     path = folder/'schedule_versions.json'
     if not path.exists():
-        return []
+        return [], []
     try:
         payload = json.loads(path.read_text(encoding='utf-8'))
         events = payload['versions']
@@ -67,11 +67,27 @@ def _events(folder: Path, legacy_sha: str):
                     or type(event.get('revision')) is not int or event['revision'] != number
                     or not _SHA.fullmatch(event.get('source_sha256') or '')
                     or event.get('previous_source_sha256') != previous
+                    or event.get('baseline_scope', 'full_schedule') not in {'full_schedule','remaining_work'}
                     or _day(event['effective_from']).isoformat() < last_day
                     or dt.datetime.fromisoformat(event['approved_at']).utcoffset() != dt.timedelta(0)):
                 raise ValueError
             previous, last_day = event['source_sha256'], event['effective_from']
-        return events
+        owners = payload.get('owner_decisions', [])
+        if not isinstance(owners, list) or len(owners) > MAX_VERSIONS:
+            raise ValueError
+        last_day = ''
+        for number, owner in enumerate(owners, 1):
+            if (not isinstance(owner, dict) or type(owner.get('revision')) is not int or owner['revision'] != number
+                    or owner.get('source') != 'owner_decision'
+                    or _day(owner['effective_from']).isoformat() < last_day
+                    or _day(owner['date']).isoformat() != owner['date']
+                    or not isinstance(owner.get('note'), str) or not owner['note'].strip()
+                    or len(owner['note']) > 1000
+                    or owner['effective_from'] < owner['recorded_at'][:10]
+                    or dt.datetime.fromisoformat(owner['recorded_at']).utcoffset() != dt.timedelta(0)):
+                raise ValueError
+            last_day = owner['effective_from']
+        return events, owners
     except (OSError, ValueError, KeyError, TypeError):
         raise ValueError('История утверждённых версий ГПР не читается. Обратитесь к администратору.') from None
 
@@ -79,11 +95,12 @@ def _events(folder: Path, legacy_sha: str):
 def state(folder: Path, legacy: Path | None, cut: str = ''):
     """No process cache: both workers observe the same committed log."""
     legacy_sha = _legacy(legacy)
-    events = _events(folder, legacy_sha)
+    events, owners = _journal(folder, legacy_sha)
     if cut:
         _day(cut)
     applicable = [event for event in events if not cut or event['effective_from'] <= cut]
     event = applicable[-1] if applicable else None
+    active_owners = [owner for owner in owners if not cut or owner['effective_from'] <= cut]
     path = folder/'schedule_sources'/f"{event['source_sha256']}.xlsx" if event else legacy
     if event and digest(_read(path)) != event['source_sha256']:
         raise ValueError('Отпечаток сохранённой версии ГПР не совпадает с утверждённым.')
@@ -93,7 +110,11 @@ def state(folder: Path, legacy: Path | None, cut: str = ''):
             'approved_at': event['approved_at'] if event else '',
             'latest_source_sha256': events[-1]['source_sha256'] if events else legacy_sha,
             'latest_effective_from': events[-1]['effective_from'] if events else '',
-            'versions': events}
+            'versions': events,
+            'baseline_scope': event.get('baseline_scope', 'full_schedule') if event else 'full_schedule',
+            'latest_baseline_scope': events[-1].get('baseline_scope', 'full_schedule') if events else 'full_schedule',
+            'owner_rnv': active_owners[-1] if active_owners else None,
+            'owner_rnv_revision': len(owners), 'owner_decisions': owners}
 
 
 def accepts_fact(folder: Path, legacy: Path | None, cut: str, fact_day: str,
@@ -131,41 +152,79 @@ def _atomic(path: Path, data: bytes):
 
 
 def approve(folder: Path, legacy: Path | None, data: bytes, *, expected_previous_sha256: str,
-            expected_source_sha256: str, effective_from: str, author: str = ''):
+            expected_source_sha256: str, effective_from: str, author: str = '',
+            owner_rnv_date=None, owner_rnv_note=None, expected_owner_rnv_revision=None,
+            baseline_scope=None):
     source_sha = digest(data)
     if not _SHA.fullmatch(expected_previous_sha256 or '') or not _SHA.fullmatch(expected_source_sha256 or ''):
         raise ValueError('Сначала проверьте выбранную версию ГПР перед утверждением.')
     if source_sha != expected_source_sha256:
         raise ScheduleVersionConflict('Файл изменился после проверки. Проверьте его заново.')
     day = _day(effective_from)
+    owner_requested = owner_rnv_date is not None
+    if owner_requested:
+        _day(owner_rnv_date)
+        if not isinstance(owner_rnv_note, str) or not owner_rnv_note.strip() or len(owner_rnv_note) > 1000:
+            raise ValueError('Укажите основание плановой даты РНВ владельца (до 1000 знаков).')
+    elif owner_rnv_note is not None:
+        raise ValueError('Для решения владельца нужна плановая дата РНВ.')
+    if baseline_scope is not None and baseline_scope not in {'full_schedule','remaining_work'}:
+        raise ValueError('Укажите полный план или план оставшихся работ.')
     now = _now()
     if day < now.date():
         raise ValueError('Новая версия может действовать с сегодняшней или будущей даты; прежние срезы сохраняются.')
     with lock(folder):
+        now = _now()
+        if day < now.date():
+            raise ValueError('Новая версия или решение владельца не могут менять прошлые срезы.')
         current = state(folder, legacy)
         if not current['source_sha256']:
             raise ValueError('Сначала загрузите первый утверждённый план проекта.')
         if current['latest_source_sha256'] != expected_previous_sha256:
             raise ScheduleVersionConflict('Утверждённый план уже изменён другим запросом. Проверьте новую версию заново.')
-        if current['latest_effective_from'] and effective_from < current['latest_effective_from']:
+        if owner_requested and (type(expected_owner_rnv_revision) is not int
+                or expected_owner_rnv_revision != current['owner_rnv_revision']):
+            raise ScheduleVersionConflict('Решение о плановой дате РНВ уже изменено. Проверьте его заново.')
+        if (source_sha != expected_previous_sha256 and current['latest_effective_from']
+                and effective_from < current['latest_effective_from']):
             raise ValueError('Дата новой версии не может быть раньше уже утверждённой следующей версии.')
-        if source_sha == expected_previous_sha256:
+        source_changed = source_sha != expected_previous_sha256
+        if not source_changed and baseline_scope is not None and baseline_scope != current['latest_baseline_scope']:
+            raise ValueError('Изменение состава плана требует утверждения новой версии исходного файла.')
+        owners = current['owner_decisions']
+        if owner_requested and owners and effective_from < owners[-1]['effective_from']:
+            raise ValueError('Дата действия решения не может быть раньше уже записанного следующего решения владельца.')
+        same_owner = bool(owners and owner_requested and owners[-1]['date'] == owner_rnv_date
+                          and owners[-1]['note'] == owner_rnv_note.strip()
+                          and owners[-1]['effective_from'] == effective_from)
+        owner_changed = owner_requested and not same_owner
+        if not source_changed and not owner_changed:
             return dict(current, unchanged=True)
+        if owner_changed and len(owners) >= MAX_VERSIONS:
+            raise ValueError('Достигнут предел решений владельца. Обратитесь к администратору.')
         events = current['versions']
-        if len(events) >= MAX_VERSIONS:
+        if source_changed and len(events) >= MAX_VERSIONS:
             raise ValueError('Достигнут предел версий ГПР. Обратитесь к администратору.')
-        sources = folder/'schedule_sources'
-        sources.mkdir(exist_ok=True)
-        path = sources/f'{source_sha}.xlsx'
-        if path.exists():
-            if digest(_read(path)) != source_sha:
-                raise ValueError('Сохранённый исходник версии ГПР повреждён.')
-        else:
-            _atomic(path, data)
-        event = {'revision': len(events)+1, 'source_sha256': source_sha,
-                 'previous_source_sha256': expected_previous_sha256,
-                 'effective_from': effective_from, 'approved_at': now.isoformat(),
-                 'author': str(author or '')[:200]}
+        if source_changed:
+            sources = folder/'schedule_sources'
+            sources.mkdir(exist_ok=True)
+            path = sources/f'{source_sha}.xlsx'
+            if path.exists():
+                if digest(_read(path)) != source_sha:
+                    raise ValueError('Сохранённый исходник версии ГПР повреждён.')
+            else:
+                _atomic(path, data)
+            event = {'revision': len(events)+1, 'source_sha256': source_sha,
+                     'previous_source_sha256': expected_previous_sha256,
+                     'effective_from': effective_from, 'approved_at': now.isoformat(),
+                     'author': str(author or '')[:200],
+                     'baseline_scope': baseline_scope or current['latest_baseline_scope']}
+            events = [*events, event]
+        if owner_changed:
+            owners = [*owners, {'revision': len(owners)+1, 'source': 'owner_decision',
+                'date': owner_rnv_date, 'effective_from': effective_from,
+                'recorded_at': now.isoformat(), 'note': owner_rnv_note.strip(),
+                'author': str(author or 'administrator')[:200]}]
         _atomic(folder/'schedule_versions.json', json.dumps(
-            {'schema': 1, 'versions': [*events, event]}, ensure_ascii=False).encode())
+            {'schema': 1, 'versions': events, 'owner_decisions': owners}, ensure_ascii=False).encode())
         return dict(state(folder, legacy), unchanged=False)

@@ -228,7 +228,7 @@ def test_corpus_view_keeps_one_selected_plan_across_another_workers_approval(api
     client, _ = api
     monitor.store_schedule(PROJECT, book(), None, '2026-10-01')
     new = construction_book()
-    original = monitor._baseline_file
+    original = monitor._working_baseline_file
     switched = []
 
     def select_then_approve(project, cut=''):
@@ -239,7 +239,7 @@ def test_corpus_view_keeps_one_selected_plan_across_another_workers_approval(api
                 pool.submit(approve, new).result()
         return selected
 
-    monkeypatch.setattr(monitor, '_baseline_file', select_then_approve)
+    monkeypatch.setattr(monitor, '_working_baseline_file', select_then_approve)
     first = post(client, 'gpr-corpus/view', project=PROJECT, cut=TODAY)
     assert first.status_code == 200
     assert first.json() == {'source': None, 'html': ''}
