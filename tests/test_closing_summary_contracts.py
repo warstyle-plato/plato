@@ -208,6 +208,16 @@ def test_different_or_unknown_summary_date_never_rekeys_or_enriches_ks_identity(
     assert closing['progress']['ratio'] == .2
 
 
+def test_printed_total_with_future_amendment_does_not_supply_current_ks_contract_price(context):
+    snapshot = mixed_snapshot()
+    snapshot['summary_contracts'][0]['reported_amount_versions'][1]['date'] = '2027-01-01'
+    provide(context, snapshot)
+    row, = contracts.build('Example', '2026-11-06')['rows']
+    assert row['source_kind'] == 'cumulative'
+    assert row['amount'] is None
+    assert any('допсоглашение позже среза' in warning for warning in row['warnings'])
+
+
 @pytest.mark.parametrize('width', [390, 1440])
 def test_summary_money_percentage_and_scope_are_visible_in_real_page(context, width):
     from test_monitor_cumulative_controls import browser_page

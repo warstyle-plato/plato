@@ -351,6 +351,12 @@ def _summary_money(items: list[dict], cut: str, warnings: list[str]) -> tuple[fl
         return None, None, "unspecified", "unspecified"
     amount_rows = []
     for row in rows:
+        if any(_date(version.get('date')) and _date(version.get('date')) > cut
+               for version in row.get('reported_amount_versions') or []):
+            warnings.append('Итоговая цена сводной включает допсоглашение позже среза; текущая полная сумма не подтверждена.')
+            amount_rows.append({'amount': None, 'amount_date': None,
+                                'amount_scope': 'full_contract', 'amount_basis': row.get('amount_basis')})
+            continue
         versions = row.get("amount_versions") or []
         if versions:
             for version in versions:
