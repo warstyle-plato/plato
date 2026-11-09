@@ -117,10 +117,15 @@ def monitor_corpus_gpr_view(req: MonitorContractsBuild) -> Response:
     cut = _monitor_cumulative_day(req.cut)
     import hashlib as _corpus_hashlib
     import developaid_monitor as _corpus_monitor
-    baseline = _corpus_monitor._baseline_file(req.project.strip(), cut)
-    sha = _corpus_hashlib.sha256(baseline.read_bytes()).hexdigest() if baseline is not None else ""
-    source = corpus_gpr.for_view(req.project.strip(), cut, baseline_sha256=sha)
-    return JSONResponse(content={"source": source, "html": corpus_gpr.render_overview(source, cut)}, headers=private)
+
+    @_corpus_monitor.approved_schedule_read
+    def read():
+        baseline = _corpus_monitor._baseline_file(req.project.strip(), cut)
+        sha = _corpus_hashlib.sha256(baseline.read_bytes()).hexdigest() if baseline is not None else ""
+        source = corpus_gpr.for_view(req.project.strip(), cut, baseline_sha256=sha)
+        return JSONResponse(content={"source": source, "html": corpus_gpr.render_overview(source, cut)}, headers=private)
+
+    return read()
 
 
 def _monitor_cumulative_day(value: str) -> str:

@@ -224,6 +224,33 @@ def test_api_preview_and_exact_approval_apply_to_an_existing_project(api):
     assert stale.status_code == 409
 
 
+def test_corpus_view_keeps_one_selected_plan_across_another_workers_approval(api, monkeypatch):
+    client, _ = api
+    monitor.store_schedule(PROJECT, book(), None, '2026-10-01')
+    new = construction_book()
+    original = monitor._baseline_file
+    switched = []
+
+    def select_then_approve(project, cut=''):
+        selected = original(project, cut)
+        if not switched:
+            switched.append(True)
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                pool.submit(approve, new).result()
+        return selected
+
+    monkeypatch.setattr(monitor, '_baseline_file', select_then_approve)
+    first = post(client, 'gpr-corpus/view', project=PROJECT, cut=TODAY)
+    assert first.status_code == 200
+    assert first.json() == {'source': None, 'html': ''}
+    assert first.headers['cache-control'] == 'private, no-store'
+    next_read = post(client, 'gpr-corpus/view', project=PROJECT, cut=TODAY)
+    assert next_read.status_code == 200
+    assert next_read.json()['source']['sha256'] == hashlib.sha256(new).hexdigest()
+    assert next_read.json()['source']['baseline_approved']
+    assert next_read.json()['source']['working_source_state'] == 'approved'
+
+
 @pytest.mark.parametrize('width', [390, 1440])
 def test_real_page_reviews_exact_bytes_before_showing_explicit_approval(width):
     from playwright.sync_api import expect
