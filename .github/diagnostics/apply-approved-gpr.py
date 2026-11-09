@@ -377,7 +377,8 @@ class Operation:
                 or owner.get('note') != self.bundle['owner_rnv_note'] or owner.get('effective_from') != effective
                 or recorded is None or recorded.utcoffset() != dt.timedelta(0)
                 or recorded.date().isoformat() != effective
-                or not isinstance(owner.get('author'),str) or not 1 <= len(owner['author']) <= 200):
+                or not isinstance(owner.get('author'),str) or not 1 <= len(owner['author']) <= 200
+                or not owner['author'].strip()):
             raise ApplyError(FENCE)
 
     def active_fence(self, preview, current):
@@ -388,6 +389,7 @@ class Operation:
                 or preview.get('approved_previous_sha256') != OLD_SOURCE_SHA256
                 or preview['already_approved'] is not True
                 or not day(self.bundle['old_cut']) < effective <= day(self.effective)
+                or day(self.bundle['source_as_of']) > effective
                 or current.get('source_sha256') != SOURCE_SHA256
                 or len(current['tasks']) != EXPECTED_WORKS):
             raise ApplyError(FENCE)

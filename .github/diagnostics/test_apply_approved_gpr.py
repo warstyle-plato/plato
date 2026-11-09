@@ -41,7 +41,7 @@ def synthetic_input_only(monkeypatch,tmp_path):
 def bundle():
     return {'schema':2,'project':'Synthetic fixed project','old_source_sha256':OLD,
             'new_source_sha256':ops.SOURCE_SHA256,'source_base64':base64.b64encode(SOURCE).decode(),
-            'old_cut':OLD_CUT,'snapshot_id':OLD_CUT+'-'+'c'*64,'source_as_of':TODAY,
+            'old_cut':OLD_CUT,'snapshot_id':OLD_CUT+'-'+'c'*64,'source_as_of':OLD_CUT,
             'baseline_proof_sha256':'d'*64,'operation_nonce':'e'*64,'expected_physical_revision':7,
             'owner_rnv_date':ops.OWNER_RNV_DATE,'owner_rnv_note':'Synthetic explicit owner decision',
             'expected_owner_rnv_revision':0}
@@ -206,7 +206,7 @@ def test_source_only_already_active_is_not_success(field,value):
 
 @pytest.mark.parametrize('field,value',[
     ('date','2027-09-29'),('source','gpr'),('revision',True),('revision',2),('note','Other decision'),
-    ('effective_from','2026-11-08'),('recorded_at','2026-11-09T12:00:00'),('author',None),
+    ('effective_from','2026-11-08'),('recorded_at','2026-11-09T12:00:00'),('author',None),('author',' '),
 ])
 def test_idempotence_requires_the_entire_recorded_owner_decision(field,value):
     def mutate(server,path,body,result):
@@ -274,6 +274,13 @@ def test_already_new_is_not_a_sha_only_shortcut(effective,revision):
     with pytest.raises(ops.ApplyError):
         operation(server).execute(bundle(),KEY)
     assert server.approvals == 0
+
+
+def test_already_active_cannot_predate_the_manifest_observation():
+    data=bundle();data['source_as_of']=TODAY
+    server=Server(active=True,effective='2026-11-08')
+    with pytest.raises(ops.ApplyError):operation(server).execute(data,KEY)
+    assert server.approvals==0
 
 
 def test_an_uncertain_write_has_no_retry_or_success_claim():
