@@ -59,6 +59,7 @@ class _SheetRows(list):
         super().__init__()
         self.header_merges = header_merges
         self.formulas = {}
+        self.bold_text_cells = set()
 
 
 class LedgerProblem(ValueError):
@@ -309,6 +310,8 @@ def _read_workbook(filename: str, data: bytes, budget: dict | None = None) -> li
                               for cell, raw in zip(cached, source)]
                     rows.formulas.update({(row_number, column): raw.value
                                           for column, raw in enumerate(source) if raw.data_type == 'f'})
+                    rows.bold_text_cells.update((row_number, column) for column, cell in enumerate(cached)
+                                                if isinstance(cell.value, str) and cell.font.bold)
                     rows.append(_bounded_row(values, budget))
                 out.append((sheet.title, rows))
             return out
@@ -818,7 +821,7 @@ def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
             weight_basis = rate_basis
     items = []
     scope = ''
-    section_stack, locations, context_headings = [], [], []
+    section_stack, locations, context_headings, structured_headings = [], [], [], []
     errors = []
     for ri, row in enumerate(rows, start=1):
         for ci, value in enumerate(row, start=1):
@@ -829,17 +832,35 @@ def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
         def at(c):
             return row[c] if c is not None and c < len(row) else None
         name, unit = _text(at(name_col)), _text(at(unit_col))
-        position = _text(at(max(0, name_col-1)))
+        raw_position = at(max(0, name_col-1))
+        position = (str(int(raw_position)) if isinstance(raw_position, (int, float))
+                    and not isinstance(raw_position, bool) and math.isfinite(raw_position)
+                    and raw_position == int(raw_position) else _text(raw_position))
         node = {'position': position, 'name': name,
                 'source': {'row': ri, 'cell': _cell(name_col+1, ri)}}
         heading = bool(re.search(r'[a-zа-я]', name, re.I)) and unit.upper() in {'', 'X', 'Х'}
         total = _total_label(name)
         code = tuple(position.rstrip('.').split('.')) if re.fullmatch(r'\d+(?:\.\d+)*\.?', position) else ()
+        declared_section = bool(re.match(r'^раздел\s+\d+\b', _norm(name)))
+        bold_empty_heading = (heading and (ri, name_col) in getattr(rows, 'bold_text_cells', ())
+                              and not _text(at(plan_col)) and not _text(at(cost_col))
+                              and all(_number(at(col)) in {None, 0} and (
+                                  not _text(at(col)) or _number(at(col)) is not None)
+                                      for col in ({actual_col, amount_col, year_col} |
+                                                  set(annual_money_cols))))
         if heading and not total:
             if re.search(r'корпус|секци|паркинг|автостоян', name, re.I):
-                locations, section_stack, context_headings = [node], [], []
+                locations, section_stack, context_headings, structured_headings = [node], [], [], []
             elif re.search(r'этаж|подземн|уровень|отметк', name, re.I):
                 locations = locations[:1] + [node] if locations else [node]
+            elif declared_section or bold_empty_heading:
+                # Explicit section captions and source-formatted empty headings
+                # scope the following rows even when numbering is absent or bad.
+                section_stack = []
+                structured_headings = ([] if declared_section else
+                                       [parent for parent in structured_headings
+                                        if re.match(r'^раздел\s+\d+\b', _norm(parent['name']))][:1]) + [node]
+                context_headings = (context_headings + [node])[-4:]
             elif not code:
                 context_headings = (context_headings + [node])[-4:]
         if code and re.search(r'[a-zа-я]', name, re.I) and not total:
@@ -847,7 +868,7 @@ def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
                     and code[:len(section_stack[-1][0])] == section_stack[-1][0]):
                 section_stack.pop()
         parents, seen_rows = [], set()
-        for parent in [*locations, *(entry[1] for entry in section_stack)]:
+        for parent in [*locations, *structured_headings, *(entry[1] for entry in section_stack)]:
             if parent['source']['row'] != ri and parent['source']['row'] not in seen_rows:
                 parents.append(parent)
                 seen_rows.add(parent['source']['row'])
