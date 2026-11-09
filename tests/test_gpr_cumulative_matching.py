@@ -544,3 +544,26 @@ def test_different_contracts_keep_their_distinct_full_work_weights_in_a_manual_b
     assert views['0:0']['annual_work_key'] != views['1:0']['annual_work_key']
     measured, = physical.evaluate(source(), snap, configuration, CUT)['tasks']
     assert measured['progress'] == pytest.approx(.34) and not measured['requires_reconciliation']
+
+
+@pytest.mark.parametrize('target_object,source_object,expected', [
+    ('Подземный паркинг №1', 'Подземная автостоянка №2', False),
+    ('Паркинг', 'Автостоянка №1', False),
+    ('Подземный паркинг №1', 'Подземная автостоянка №1/2', False),
+    ('Наземный паркинг', 'Подземная автостоянка', False),
+    ('Паркинг', 'Подземная автостоянка', False),
+    ('Стилобат', 'Паркинг', False),
+    ('Паркинг', 'Открытая автостоянка', False),
+    ('Подземный паркинг №1', 'Подземная автостоянка №1', True),
+    ('Паркинг', 'Автостоянка', True),
+    ('Наземный паркинг', 'Наземная автостоянка', True),
+    ('Стилобат №1', 'Стилобат №1', True),
+])
+def test_a_whole_object_preserves_its_type_ground_and_explicit_number(target_object, source_object, expected):
+    snap = snapshot(object_scope=source_object)
+    snap['ledgers'][0]['items'][0].update(name='Устройство фундаментной плиты', scope='')
+    plan = source(task(name='Устройство фундаментной плиты', object=target_object))
+    result = matching.suggest(plan, snap, CUT)
+    assert bool(result['bindings']) is expected
+    if expected:
+        assert result['bindings']['floor4']['metric']['ratio'] == .4

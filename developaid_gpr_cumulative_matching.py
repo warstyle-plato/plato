@@ -16,8 +16,52 @@ import developaid_monitor_contract_links as links
 import developaid_monitor_contracts as contracts
 import developaid_schedule_physical as quantities
 
-RULE_VERSION = 3
+RULE_VERSION = 4
 SCOPE_FIELDS = ('locations', 'floors', 'zones', 'systems', 'materials', 'operation_parts')
+
+_GROUND = r'(?:подземн|наземн)(?:ый|ая|ое|ые|ых|ого|ой|ому|ую|ом|ыми)'
+_OBJECT_TYPE = r'(?:паркинг(?:а|е|у|ом|и|ов|ах)?|автостоянк(?:а|и|е|у|ой|ах)|стилобат(?:а|е|у|ом|ы|ов|ах)?)'
+_OBJECT_NUMBER = r'(?:№\s*)?\d+(?:\.\d+)*(?:[a-zа-я])?'
+_OBJECT_NUMBERS = _OBJECT_NUMBER+r'(?:\s*(?:[/,;–—-]|\bи\b|\bпо\b|\bдо\b)\s*'+_OBJECT_NUMBER+r')*'
+_OBJECT_LABEL = re.compile(r'(?:(?P<before>'+_GROUND+r')\s+)?(?P<type>'+_OBJECT_TYPE+r')\b'
+    r'(?:\s*\(?\s*(?P<after>'+_GROUND+r')\s*\)?)?'
+    r'(?:\s*(?:номер\s*)?(?P<numbers>'+_OBJECT_NUMBERS+r')(?![\w.]))?')
+
+
+def _object_scopes(text, *, whole_object=False):
+    """An object type, ground and explicit number are one indivisible scope."""
+    values, bad, matches = set(), False, list(_OBJECT_LABEL.finditer(text))
+    for match in matches:
+        kind = 'stylobate' if match['type'].startswith('стилобат') else 'parking'
+        grounds = {'underground' if value.startswith('подземн') else 'aboveground'
+                   for value in (match['before'], match['after']) if value}
+        bad = bad or len(grounds) > 1
+        ground = next(iter(grounds)) if len(grounds) == 1 else 'unspecified'
+        number = match['numbers']
+        if number and not re.fullmatch(_OBJECT_NUMBER, number):
+            bad = True
+            number = 'ambiguous'
+        elif number:
+            number = re.sub(r'[№\s]', '', number)
+        # Unparsed qualifying adjectives/numbers do not become generic objects.
+        previous = re.search(r'([\w-]+)\s*$', text[:match.start()])
+        following = re.match(r'\s*([\w-]+)', text[match.end():])
+        if previous and re.search(r'(?:ый|ая|ое|ые|ого|ой|ых|ую)$', previous[1]):
+            bad = True
+        if following and (re.search(r'(?:ый|ая|ое|ые|ого|ой|ых|ую)$', following[1])
+                          or re.match(r'[\d№]', following[1])):
+            bad = True
+        if re.match(r'\s*(?:№|номер|\d|[/–—-]\s*№?\d)', text[match.end():]):
+            bad = True
+        values.add('object:'+kind+':'+ground+':'+(number or 'unspecified'))
+    if re.search(r'паркинг|автостоян|стилобат', text) and not matches:
+        bad = True
+    if whole_object and matches:
+        remainder = _OBJECT_LABEL.sub(' ', text)
+        remainder = re.sub(r'\bкорпус(?:а|е|у|ом|ах)?\s*\d+(?:\s*[,;и-]\s*\d+)*', ' ', remainder)
+        remainder = re.sub(r'\bи\b|[\s,;/()+.:-]', '', remainder)
+        bad = bad or bool(remainder)
+    return frozenset(values), bad
 
 
 def _text(value):
@@ -50,13 +94,13 @@ def _floors(text):
     return frozenset(values)
 
 
-def _locations(text):
+def _locations(text, *, whole_object=False):
     text = re.sub(r'\bкорпус(?:е|у|ом|ах)\b', 'корпус', _text(text))
     corps, ambiguous = links._scope_info(text)
     values = {'corpus:'+number for number in corps}
-    if re.search(r'автостоян|паркинг|стилобат', text):
-        values.add('parking')
-    return frozenset(values), ambiguous
+    objects, bad = _object_scopes(text, whole_object=whole_object)
+    values.update(objects)
+    return frozenset(values), ambiguous or bad
 
 
 def _zones(text):
@@ -139,9 +183,9 @@ def _operation_body(text):
     for pattern in (rf'(?<![\d/–—−-]){integers}\s*этаж(?:а|и|ей)?\b',
                     rf'\bэтаж(?:а|и|ей)?\s*{integers}', r'\bтех(?:ническ(?:ий|ого))?\s*этаж(?:а)?\b',
                     rf'\b(?:для\s+)?корпус(?:а|е|у|ом|ах)?\s*{integers}',
-                    rf'\bзахватк[аиоуе]?\s*{zones}',
-                    r'\b(?:подземн(?:ая|ой|ую)\s+)?автостоянк[аиуе]|\bпаркинг|\bстилобат'):
+                    rf'\bзахватк[аиоуе]?\s*{zones}'):
         name = re.sub(pattern, ' ', name)
+    name = _OBJECT_LABEL.sub(' ', name)
     return _text(name).strip(' ,.;:')
 
 
@@ -224,8 +268,9 @@ def _descriptor(name, context, location_context=(), *, hierarchy_ambiguous=False
     partial_name = re.sub(r'тепломеханическ\w*\s+часть', '', _text(name)) if family == 'itp_thermomechanical' else _text(name)
     ambiguous = hierarchy_ambiguous or bool(re.search(
         r'\bкроме\b|за исключением|не включая|частично|\bчасть\b|в части', partial_name))
-    for text in [name, *reversed(context), *location_context]:
-        found, bad = _locations(text)
+    locations = [(text, False) for text in [name, *reversed(context)]] + [(text, True) for text in location_context]
+    for text, whole_object in locations:
+        found, bad = _locations(text, whole_object=whole_object)
         if found and not location:
             location, ambiguous = found, ambiguous or bad
         elif found and location and not location <= found and not found <= location:
