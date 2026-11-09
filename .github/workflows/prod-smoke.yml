@@ -33,6 +33,7 @@ jobs:
         run: |
           python3 - <<'PY'
           import datetime
+          import hashlib
           import json
           import math
           import os
@@ -44,17 +45,19 @@ jobs:
           import time
           import urllib.error
           import urllib.request
-          from zoneinfo import ZoneInfo
 
           BASE = 'https://developaid.ru'
           MAX_BYTES = 16 * 1024 * 1024
+          FINANCIAL_RUNTIME = '2061d1a01d7607eb44113bc2cc429abfaf4814de'
+          FINANCIAL_CUT = '2026-11-09'
+          FINANCIAL_RSS_DATE = '2026-11-05'
           TOTAL_SECONDS = 360
           HTTP_SECONDS = 15
           POLL_SECONDS = 2
           POST_PATHS = frozenset({
               '/monitor/report/projects', '/monitor/contracts/build',
               '/monitor/contracts/result', '/monitor/gpr-corpus/view',
-              '/monitor/schedule-gpr-physical/view',
+              '/monitor/schedule-gpr-physical/view', '/monitor/view',
           })
           REASONS = frozenset({
               'invalid_expected_commit', 'deadline', 'redirect_denied', 'http_auth',
@@ -62,6 +65,7 @@ jobs:
               'invalid_json', 'invalid_payload', 'runtime_mismatch', 'missing_secret',
               'project_selection_unverified', 'invalid_ticket', 'ticket_changed',
               'job_rejected', 'contracts_missing', 'report_missing', 'unexpected_error',
+              'financial_source_changed',
           })
           FLAG_NAMES = (
               'contracts_present', 'any_contract_price', 'all_contract_prices',
@@ -118,11 +122,74 @@ jobs:
                   return False
 
 
+          def fingerprint(value):
+              # Canonical finite JSON stays in RAM. No source values/hashes in stdout.
+              try:
+                  raw = json.dumps(value, ensure_ascii=False, sort_keys=True,
+                                   allow_nan=False).encode('utf-8')
+              except (TypeError, ValueError):
+                  raise ProbeError('invalid_payload') from None
+              return hashlib.sha256(raw).digest()
+
+
+          def financial_projection(payload, register):
+              snapshot = mapping(payload.get('snapshot'))
+              source = mapping(snapshot.get('source'))
+              dashboard = mapping(snapshot.get('dashboard'))
+              funding = mapping(dashboard.get('funding'))
+              dates = mapping(funding.get('source_dates'))
+              rss = mapping(dates.get('rss'))
+              if (snapshot.get('cut') != FINANCIAL_CUT
+                      or source.get('estimate') != FINANCIAL_RSS_DATE
+                      or mapping(register.get('snapshots')).get('rss') != FINANCIAL_RSS_DATE
+                      or dates.get('report_date') != FINANCIAL_CUT
+                      or rss.get('data_date') != FINANCIAL_RSS_DATE
+                      or type(funding.get('known')) is not bool):
+                  raise ProbeError('runtime_mismatch')
+              for kind in ('budget', 'rss', 'schedule'):
+                  item = mapping(dates.get(kind))
+                  day = item.get('data_date')
+                  if day is not None:
+                      try:
+                          valid = isinstance(day, str) and datetime.date.fromisoformat(day).isoformat() == day
+                      except ValueError:
+                          valid = False
+                      if not valid:
+                          raise ProbeError('invalid_payload')
+              if funding.get('own_money') is not None and not isinstance(funding['own_money'], dict):
+                  raise ProbeError('invalid_payload')
+              for node, fields in ((snapshot, ('money', 'payments')),
+                                   (dashboard, ('construction', 'funding', 'sources'))):
+                  if any(not isinstance(node.get(field), dict) or not node[field] for field in fields):
+                      raise ProbeError('invalid_payload')
+              if ('payment_fact' not in snapshot['money']
+                      or not {'approved', 'limit'} <= dashboard['construction'].keys()):
+                  raise ProbeError('invalid_payload')
+              own = mapping(funding.get('own_money'))
+              if funding.get('own_money') is not None and not {'budget', 'paid', 'limit', 'left', 'need', 'rows'} <= own.keys():
+                  raise ProbeError('invalid_payload')
+              for field in ('budget', 'paid', 'limit', 'left', 'need'):
+                  if own.get(field) is not None and not number(own[field]):
+                      raise ProbeError('invalid_payload')
+              records(own.get('rows'))
+              # Capture the existing financial answers, including own_money components
+              # and payment qualifications. No recomputation or new allocation is applied.
+              result = {'cut': snapshot['cut'], 'source': source,
+                        'money': mapping(snapshot.get('money')),
+                        'payments': mapping(snapshot.get('payments')),
+                        'dashboard': {'construction': mapping(dashboard.get('construction')),
+                                      'funding': funding,
+                                      'sources': mapping(dashboard.get('sources'))}}
+              fingerprint(result)
+              return result
+
+
           class Probe:
               def __init__(self, expected, *, opener=None, clock=time.monotonic, sleep=time.sleep):
-                  if not isinstance(expected, str) or not re.fullmatch('[0-9a-f]{40}', expected):
+                  if expected != FINANCIAL_RUNTIME:
                       raise ProbeError('invalid_expected_commit')
                   self.expected = expected
+                  self._financial_project = None
                   self.opener = opener or urllib.request.build_opener(NoRedirect())
                   self.clock, self.sleep = clock, sleep
                   self.deadline = clock() + TOTAL_SECONDS
@@ -140,6 +207,13 @@ jobs:
                   raw = None
                   if body is not None:
                       if not isinstance(body, dict):
+                          raise ProbeError('invalid_payload')
+                      if path == '/monitor/view' and (set(body) != {'project', 'cut', 'key'}
+                              or not self._financial_project
+                              or body.get('project') != self._financial_project
+                              or body.get('cut') != FINANCIAL_CUT
+                              or not isinstance(body.get('key'), str) or not body['key'].strip()
+                              or len(body['key']) > 4096):
                           raise ProbeError('invalid_payload')
                       raw = json.dumps(body, ensure_ascii=False, allow_nan=False).encode('utf-8')
                       headers['Content-Type'] = 'application/json'
@@ -235,12 +309,18 @@ jobs:
                   project = eligible[0].get('project')
                   if not isinstance(project, str) or not project.strip() or len(project) > 200:
                       raise ProbeError('project_selection_unverified')
-                  day = datetime.datetime.now(ZoneInfo('Europe/Moscow')).date().isoformat()
+                  self._financial_project = project
+                  day = FINANCIAL_CUT
                   result = self.job('/monitor/contracts/build', '/monitor/contracts/result',
                                     {'project': project, 'cut': day}, key)
                   register = result.get('register')
                   if not isinstance(register, dict) or 'rows' not in register:
                       raise ProbeError('contracts_missing')
+                  financial_view = self.request('/monitor/view',
+                      {'project': project, 'cut': day, 'key': key})
+                  financial = financial_projection(financial_view, register)
+                  financial_fingerprint = fingerprint(financial)
+                  del financial_view
                   rows = records(register['rows'])
                   all_refs = [ref for row in rows for ref in records(row.get('reported_performance_sources'))]
                   rss_snapshot = mapping(register.get('snapshots')).get('rss')
@@ -400,6 +480,11 @@ jobs:
                   physical['items'] = physical_items
                   gpr_end = self.request('/monitor/gpr-corpus/view',
                       {'project': project, 'cut': day, 'key': key})
+                  financial_end = financial_projection(self.request('/monitor/view',
+                      {'project': project, 'cut': day, 'key': key}), register)
+                  if fingerprint(financial_end) != financial_fingerprint:
+                      raise ProbeError('financial_source_changed')
+                  del financial_end, financial_fingerprint
                   if any(mapping(gpr_end.get('source')).get(field) != mapping(gpr_source.get('source')).get(field)
                          for field in ('sha256', 'taken_at')) or self.health() != first_version:
                       raise ProbeError('runtime_mismatch')
@@ -408,7 +493,7 @@ jobs:
                   private_payload = json.dumps({'runtime_commit': self.expected,
                       'run_id': os.environ.get('GITHUB_RUN_ID', ''),
                       'project': project, 'register': register, 'gpr_source': gpr_source,
-                      'physical': physical}, ensure_ascii=False,
+                      'physical': physical, 'financial_view': financial}, ensure_ascii=False,
                       allow_nan=False).encode('utf-8')
                   target = Path(os.environ['RUNNER_TEMP']) / 'contracts-audit.cms'
                   with target.open('wb') as encrypted:
@@ -426,8 +511,18 @@ jobs:
                   del private_payload
                   if set(flags) != set(FLAG_NAMES) or any(type(value) is not bool for value in flags.values()):
                       raise ProbeError('invalid_payload')
+                  funding = financial['dashboard']['funding']
+                  own = funding.get('own_money')
+                  financial_counts = {
+                      'financial_view_present': True, 'financial_sources_stable': True,
+                      'financial_funding_known': funding['known'],
+                      'financial_own_money_present': isinstance(own, dict),
+                      'financial_component_rows': len(records(mapping(own).get('rows'))),
+                      **{'financial_' + field + '_known': number(mapping(own).get(field))
+                         for field in ('budget', 'paid', 'limit', 'left', 'need')},
+                  }
                   return {'status': 'ok', 'runtime_version': first_version,
-                          'runtime_commit': self.expected, **flags, **counts}
+                          'runtime_commit': self.expected, **flags, **counts, **financial_counts}
 
 
           def main():
