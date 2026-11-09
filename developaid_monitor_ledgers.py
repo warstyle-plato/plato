@@ -1007,6 +1007,14 @@ def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
                     plan_work_cell = prefix + _cell(parts['work']+1, ri)
                     plan_material_cell = prefix + _cell(parts['material']+1, ri)
                     planned_cost_method = 'labelled_subtotals' if planned_parts else 'quantity_times_labelled_unit_price'
+                    # A blank half can be established as the reconciled residual,
+                    # but must not be presented as a value read from that blank.
+                    if numeric['work'] is None:
+                        plan_work_cell = _cell(cost_col+1, ri) + ' − ' + plan_material_cell
+                        planned_cost_method = 'reconciled_residual'
+                    if numeric['material'] is None:
+                        plan_material_cell = _cell(cost_col+1, ri) + ' − ' + plan_work_cell
+                        planned_cost_method = 'reconciled_residual'
                 else:
                     item_warnings.append('Подписанные плановые стоимости СМР и материалов не сходятся с полной стоимостью позиции; веса выполнения не использованы.')
         items.append({'position': position, 'name': name,

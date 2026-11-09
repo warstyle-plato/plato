@@ -235,6 +235,18 @@ def test_bad_explicit_subtotal_cannot_be_hidden_by_a_matching_unit_rate():
     assert any('не сходятся' in warning for warning in item['warnings'])
 
 
+def test_reconciled_blank_price_half_is_labelled_as_a_residual_not_a_raw_cell():
+    wb = openpyxl.load_workbook(io.BytesIO(structured_book(direct=False)))
+    wb.active['F12'], wb.active['G12'] = None, 10
+    out = io.BytesIO()
+    wb.save(out)
+    ledger, = ledgers.parse_archive(archive([('Example.xlsx', out.getvalue())]))['ledgers']
+    item = ledger['items'][0]
+    assert item['planned_work_amount'] == 100 and item['planned_material_amount'] == 0
+    assert item['planned_cost_method'] == 'reconciled_residual'
+    assert item['source']['planned_material_amount_cell'] == 'K12 − E12 × G12'
+
+
 def test_known_contract_and_quantities_are_not_dropped_for_unparsed_date(context):
     snapshot = parsed_book(bad_date=True)
     provide(context, snapshot)
