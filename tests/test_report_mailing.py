@@ -223,7 +223,9 @@ def test_the_bot_subscribes_sends_and_reports_back(monkeypatch):
     assert "больше не действует" in sent[-1][1]
     assert [row["chat_id"] for row in mailing.subscribers(PROJECT)] == [501]
 
-    mailing.build_due(_made([]))  # сегодня не срок — пусто
+    # An explicit off-schedule date keeps the setup independent of the real
+    # Monday/month-start clock used by CI.
+    assert mailing.build_due(_made([]), at("2026-10-21T12:00")) == []
     monkeypatch.setattr(mailing, "due", lambda now=None: [{
         "slot": "week-2026-11-01", "kind": "week", "end": "2026-11-01",
         "at": "2026-11-09T09:00:00+03:00"}])
