@@ -180,6 +180,53 @@ def test_missing_plan_row_is_kept_and_does_not_gain_zero_or_percentage():
     assert physical['reported_completion_ratio'] is None
 
 
+@pytest.mark.parametrize('position', [None, 3])
+def test_source_bold_empty_heading_scopes_following_flat_or_misnumbered_rows(position):
+    wb = openpyxl.load_workbook(io.BytesIO(structured_book()))
+    ws = wb.active
+    ws['B10'], ws['C10'] = position, 'Монтаж узла'
+    ws['C10'].font = openpyxl.styles.Font(bold=True)
+    ws['O10'], ws['P10'] = 0, 0
+    ws['B12'], ws['B14'] = '1.11', '1.12'
+    out = io.BytesIO()
+    wb.save(out)
+    ledger, = ledgers.parse_archive(archive([('Example.xlsx', out.getvalue())]))['ledgers']
+    heading = next(item for item in ledger['items'] if item['source']['row'] == 10)
+    assert heading['is_group'] and heading['group_basis'] == 'empty_structured_heading'
+    assert ledger['source_complete']
+    assert all(any(node['source']['row'] == 10 for node in item['section_path'])
+               for item in ledger['items'] if item['source']['row'] in {12, 14})
+
+
+def test_integer_numeric_position_is_not_a_fictitious_decimal_child_code():
+    wb = openpyxl.load_workbook(io.BytesIO(structured_book()))
+    ws = wb.active
+    ws['B10'], ws['C10'], ws['O10'], ws['P10'] = 2.0, 'Установка механизмов', 0, 0
+    ws['B11'], ws['B12'], ws['B13'], ws['B14'] = '2.1', '2.1.1', '2.2', '2.2.1'
+    out = io.BytesIO()
+    wb.save(out)
+    # BIFF readers expose integer position cells as floats, unlike openpyxl.
+    sheet, rows = ledgers._read_workbook('Example.xlsx', out.getvalue())[0]
+    rows[9][1] = 2.0
+    ledger = ledgers._ledger('Example.xlsx', sheet, rows)
+    parent = next(item for item in ledger['items'] if item['source']['row'] == 10)
+    assert parent['position'] == '2' and parent['is_group']
+
+
+def test_bold_monetary_line_with_no_unit_keeps_its_independent_execution():
+    wb = openpyxl.load_workbook(io.BytesIO(structured_book()))
+    ws = wb.active
+    ws['B10'], ws['C10'] = None, 'Основные материалы'
+    ws['C10'].font = openpyxl.styles.Font(bold=True)
+    ws['K10'], ws['O10'], ws['P10'] = 1000, 0, 500
+    out = io.BytesIO()
+    wb.save(out)
+    ledger, = ledgers.parse_archive(archive([('Example.xlsx', out.getvalue())]))['ledgers']
+    item = next(item for item in ledger['items'] if item['source']['row'] == 10)
+    assert not item['is_group'] and item['completed_amount'] == 500
+    assert ledger['source_complete'] is False
+
+
 def test_bad_explicit_subtotal_cannot_be_hidden_by_a_matching_unit_rate():
     ledger, = parsed_book(bad_parts=True)['ledgers']
     item = ledger['items'][0]
