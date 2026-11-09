@@ -76,7 +76,7 @@ class Server:
             self.health_count += 1
             result = {'status':'ok','commit':COMMIT,'version':'0.1.2','data_writable':True}
         elif path == ops.PREVIEW:
-            result = {'source_sha256':ops.SOURCE_SHA256,'works':198,'effective_from':body['effective_from'],
+            result = {'source_sha256':ops.SOURCE_SHA256,'works':213,'effective_from':body['effective_from'],
                       'source_format':'corpus-gpr-v1','requires_initial_baseline':False,
                       'current_revision':self.version_revision,
                       'latest_source_revision':self.version_revision,
@@ -99,7 +99,7 @@ class Server:
                       'snapshot_id':bundle()['snapshot_id'],'revision':7,'recorded_at':'2026-11-05T00:00:00+00:00',
                       'source_changed':False,'source_state':'approved_gpr','configuration':{'tasks':[]},
                       'item_count':2,'offset':0,'items':[{'item_id':'0:0'},{'item_id':'0:1'}],
-                      'tasks':[{'task_id':str(i)} for i in range(198 if current_new else 5)],
+                      'tasks':[{'task_id':str(i)} for i in range(213 if current_new else 5)],
                       'model':{'tasks':[{'task_id':'x','progress':.5}],'computed_at':len(self.calls)}}
         elif path == ops.APPROVE:
             self.approvals += 1
@@ -132,6 +132,31 @@ def test_initial_write_and_existing_new_have_distinct_version_fences():
     result = operation(existing).execute(bundle(),KEY)
     assert result['ok'] and result['already_active'] and not result['write_attempted']
     assert existing.approvals == 0
+
+
+@pytest.mark.parametrize('already_active',[False,True])
+def test_fixed_final_contract_accepts_literal_213_independent_of_the_server_fixture(already_active):
+    def final_contract(server,path,body,result):
+        if path==ops.PREVIEW:result['works']=213
+        if path==ops.PHYSICAL and server.active:
+            result['tasks']=[{'task_id':str(index)} for index in range(213)]
+        return result
+    server=Server(active=already_active,mutation=final_contract)
+    result=operation(server).execute(bundle(),KEY)
+    assert result['ok'] and result['preview_works']==213
+    assert server.approvals==(0 if already_active else 1)
+
+
+@pytest.mark.parametrize('old_surface',['preview','physical'])
+def test_superseded_198_count_cannot_pass_a_final_source_fence(old_surface):
+    def old_count(server,path,body,result):
+        if old_surface=='preview' and path==ops.PREVIEW:result['works']=198
+        if old_surface=='physical' and path==ops.PHYSICAL:
+            result['tasks']=[{'task_id':str(index)} for index in range(198)]
+        return result
+    server=Server(active=True,mutation=old_count)
+    with pytest.raises(ops.ApplyError):operation(server).execute(bundle(),KEY)
+    assert server.approvals==0
 
 
 @pytest.mark.parametrize('field,value',[
@@ -250,7 +275,7 @@ def test_an_uncertain_operation_cannot_reenter_even_read_only_preflight():
 
 
 @pytest.mark.parametrize('field,value',[
-    ('source_sha256','d'*64),('works',197),('works',True),('source_format','other'),
+    ('source_sha256','d'*64),('works',198),('works',True),('source_format','other'),
     ('effective_from','2026-11-12'),('current_revision',True),('requires_initial_baseline',True),
     ('expected_previous_sha256','e'*64),('already_approved',True),
     ('latest_source_revision',True),('latest_source_revision',1),('active_source_sha256',None),
