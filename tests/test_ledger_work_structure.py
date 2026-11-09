@@ -120,6 +120,18 @@ def test_zero_cost_parent_with_independent_execution_is_not_a_heading():
     assert ledgers.group_basis(parent, [child]) == ''
 
 
+@pytest.mark.parametrize('parts', [
+    {'material_quantity': 25},
+    {'completed_work_amount': -500, 'completed_material_amount': 500},
+    {'reported_material_quantity': 25},
+])
+def test_a_net_zero_group_cannot_hide_delivery_or_monetary_corrections(parts):
+    parent = {'planned_amount': 0, 'plan_quantity': 100,
+              'completed_quantity': 0, 'completed_amount': 0, **parts}
+    child = {'planned_amount': 1000, 'completed_amount': 0}
+    assert ledgers.group_basis(parent, [child]) == ''
+
+
 @pytest.mark.parametrize('label', ['По разделу Корпус 1', 'В т. ч. НДС (22%)', 'В том числе НДС'])
 def test_explicit_summary_labels_do_not_become_unitless_work_positions(label):
     wb = openpyxl.load_workbook(io.BytesIO(structured_book()))
