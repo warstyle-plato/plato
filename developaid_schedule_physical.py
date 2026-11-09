@@ -54,15 +54,16 @@ def _unit(value):
 def _items(snapshot):
     out = {}
     for li, ledger in enumerate((snapshot or {}).get('ledgers') or []):
+        duplicates = ledgers.verified_duplicate_sources(ledger.get('items') or [])
         for ii, item in enumerate(ledger.get('items') or []):
             out[f'{li}:{ii}'] = dict(item, period_year=ledger.get('period_year'),
                                     contract=ledger.get('contract') or '',
                                     contract_date=ledger.get('contract_date') or '',
                                     contractor=ledger.get('contractor') or '')
+            # Verify immutable source evidence before enrichment changes its
+            # fingerprint. A new view stamp cannot repair a stale source proof.
+            out[f'{li}:{ii}']['is_duplicate'] = ledgers._duplicate_key(out[f'{li}:{ii}']) in duplicates
             ledgers.stamp_duplicate_view(out[f'{li}:{ii}'])
-    duplicates = ledgers.verified_duplicate_sources(list(out.values()))
-    for item in out.values():
-        item['is_duplicate'] = ledgers._duplicate_key(item) in duplicates
     return out
 
 

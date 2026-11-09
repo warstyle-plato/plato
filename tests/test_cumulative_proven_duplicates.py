@@ -99,6 +99,19 @@ def test_forged_flag_and_both_mutated_copies_are_not_silently_excluded():
     assert any(item is duplicate for item in ledgers.aggregation_members(ledger['items']))
 
 
+@pytest.mark.parametrize('field,value', [('name', 'Изменённая работа'), ('plan_quantity', 20),
+                                         ('completed_quantity', 8)])
+def test_view_enrichment_cannot_revalidate_a_stale_raw_copy_proof(field, value):
+    source = snapshot()
+    items = source['ledgers'][0]['items']
+    items[0][field] = items[2][field] = value
+    assert ledgers._duplicate_key(items[2]) not in ledgers.verified_duplicate_sources(items)
+    before = copy.deepcopy(source)
+    assert not physical._items(source)['0:2'].get('is_duplicate')
+    assert not progress.quantity_views(source, '2026-11-06')['0:2'].get('is_duplicate')
+    assert source == before
+
+
 def test_contract_references_and_union_keep_ids_and_count_source_money_once(context):
     source = snapshot()
     provide(context, source)
