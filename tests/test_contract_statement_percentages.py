@@ -125,7 +125,10 @@ def test_primary_register_and_physical_rows_show_statement_percentages(context, 
         expect(row.locator('td').nth(3)).to_contain_text('Работы и материалы')
         assert 'суммы договора' not in row.locator('td').nth(3).inner_text()
         assert 'Уточнить полную сумму договора' not in row.inner_text()
-        expect(row.locator('.term')).to_contain_text('Для прогноза нужны даты КС-2 или предыдущий сопоставимый срез')
+        # This is an observation of the covered statements, so the forecast
+        # needs comparable snapshots rather than a whole-contract price/date.
+        expect(row.locator('.term')).to_contain_text('Для прогноза нужны два свежих наблюдения')
+        assert 'нужна полная сумма договора' not in row.locator('.term').inner_text()
         row.locator('.contract-open').click()
         work = page.locator('.physical-main').first
         expect(work.locator('td').nth(2)).to_contain_text('4 м2')
