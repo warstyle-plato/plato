@@ -61,11 +61,13 @@ def with_last_known_status(
     current = project_kind(out)
     if current in _KNOWN:
         out["status_kind"] = current
-        out["last_known_status_kind"] = current
+        out["last_known_status_kind"] = "running" if out.get("model_status_conflict") else current
         return out
     previous = previous or {}
     previous_history = str(previous.get("last_known_status_kind") or "").strip().casefold()
-    if previous_history in _KNOWN:
+    if previous.get("model_status_conflict"):
+        previous_history = "running"
+    elif previous_history in _KNOWN:
         prior_current = project_kind(previous)
         if prior_current in _KNOWN:
             previous_history = prior_current

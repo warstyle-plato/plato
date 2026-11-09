@@ -5421,8 +5421,10 @@
   "counts": {
     "raw_rows": 543,
     "unique_keys": 541,
-    "model_permitted_unique": 364,
     "excluded_unique": 177,
-    "conflicting_keys": 1
-  }
+    "conflicting_keys": 1,
+    "candidate_permitted_by_public_status": 364
+  },
+  "eligibility_limit": "Stored last-known status history and exact Sunday run input revision are not accessible; public candidates are not a verified run cohort",
+  "catalogue_retrieved_at": "2026-10-07T22:30:55Z"
 }

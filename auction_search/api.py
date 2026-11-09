@@ -2797,6 +2797,12 @@ def install(app: FastAPI) -> None:
             official = by_slug.get(official_slug)
             if not official:
                 continue
+            official = krt_ranking.model_project(official)
+            if krt_status.model_exclusion(official) is not None:
+                # Reading the canonical list must not touch the saved model,
+                # even through an old early-project market alias. Its market
+                # refresh uses the independent observations store instead.
+                continue
             current = krt_ranking.report(official_slug) or {}
             if current.get("market"):
                 continue
@@ -2851,7 +2857,7 @@ def install(app: FastAPI) -> None:
             logger.exception("KRT catalogue for siblings failed")
             catalogue = []
         decisions, decisions_whole = _decision_rows_state(catalogue)
-        official_rows = catalogue + decisions
+        official_rows = krt_status.model_cohort(catalogue + decisions)
         _inherit_early_market(official_rows)
         early = (krt_early_projects.projects(official_rows)
                  if callable(getattr(krt_registry, "projects", None)) else [])

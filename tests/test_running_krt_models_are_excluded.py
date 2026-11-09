@@ -573,3 +573,40 @@ def test_cross_page_status_conflict_is_not_lost_as_a_duplicate(tmp_path, monkeyp
     monkeypatch.setattr(source, "parse_catalogue", lambda text: ([rows[0]], None))
     later = registry.projects(refresh=True)
     assert len(later) == 1 and not krt_status.model_exclusion(later[0].to_dict())
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_unknown_after_a_source_conflict_stays_excluded_in_either_order(tmp_path, monkeypatch, reverse):
+    from market_search import krt_registry as source
+    rows = [source.KrtTerritory(slug="same", name="Synthetic", url="https://example.test/same", status=s)
+            for s in ["Планируемый", "В реализации"]]
+    if reverse:
+        rows.reverse()
+    monkeypatch.setattr(source, "parse_catalogue", lambda text: (rows, None))
+    registry = source.KrtRegistry(tmp_path, fetch=lambda url: b"synthetic")
+    conflict = registry.projects(refresh=True)
+    assert all(r.model_status_conflict for r in conflict)
+    for status, excluded in [("Нераспознанное значение", True), ("Планируемый", False),
+                              ("Другое нераспознанное значение", False)]:
+        row = source.KrtTerritory(slug="same", name="Synthetic", url="https://example.test/same", status=status)
+        monkeypatch.setattr(source, "parse_catalogue", lambda text: ([row], None))
+        actual = registry.projects(refresh=True)[0].to_dict()
+        assert actual["status"] == status
+        assert bool(krt_status.model_exclusion(actual)) == excluded
+
+
+@pytest.mark.parametrize("conflict", [False, True])
+def test_canonical_read_cannot_inherit_early_market_into_an_excluded_model(tmp_path, monkeypatch, conflict):
+    projects = [RUNNING] if not conflict else [{**PLANNED, "slug":"running"}, RUNNING]
+    app, ranking, loops, models, markets, _ = _app(tmp_path, monkeypatch, projects)
+    old = _keep_old_model(ranking)
+    ranking.save_report("early:synthetic", {"project":{"slug":"early:synthetic"},
+                        "market":copy.deepcopy(MARKET), "screening":{}}, computed_at=200)
+    monkeypatch.setattr(api.krt_early_projects, "published_aliases",
+                        lambda official: {"early:synthetic":"running"})
+    public = TestClient(app).get("/auctions/krt")
+    assert public.status_code == 200
+    assert ranking.report_path("running").read_bytes() == old
+    assert ranking.stored_row("running")["computed_at"] == 100
+    assert not ranking._market_report_path("running").exists()
+    assert not models and not markets
