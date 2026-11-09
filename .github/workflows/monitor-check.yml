@@ -25,6 +25,7 @@ on:
       - "tests/test_statement*.py"
       - "tests/test_gpr*.py"
       - "tests/test_schedule*.py"
+      - "tests/test_report_executive_schedule.py"
       - "tests/test_a_proposal_replaces_the_articles_plan.py"
       - ".github/workflows/monitor-check.yml"
 
@@ -60,5 +61,6 @@ jobs:
             tests/test_statement*.py \
             tests/test_gpr*.py \
             tests/test_schedule*.py \
+            tests/test_report_executive_schedule.py \
             tests/test_a_proposal_replaces_the_articles_plan.py \
             -q
