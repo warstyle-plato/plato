@@ -62,7 +62,7 @@ def _history(project):
                 or not re.fullmatch(r"\d{4}-\d{2}-\d{2}-[0-9a-f]{64}", event.get("snapshot_id") or "")
                 or dt.datetime.fromisoformat(event["recorded_at"]).utcoffset() != dt.timedelta(0)):
             raise ValueError("invalid GPR quantity mapping history")
-        quantities._validate(event["configuration"])
+        quantities._validate(event["configuration"], max_bindings=quantities.MAX_ROWS)
         events.append(event)
     return events
 
@@ -155,6 +155,13 @@ def catalog(project, cut, query="", offset=0):
         raise PhysicalProblem("Укажите существующую дату среза.")
     source, snapshot = _source(project, cut), _snapshot(project, cut)
     state = _state(project, cut, source, snapshot)
+    import developaid_schedule_physical_review as review
+    previous = [event for event in _history(project)
+                if event['source_sha256'] == source['source_sha256']
+                and dt.datetime.fromisoformat(event['recorded_at']).date().isoformat() <= cut]
+    review_model = review.build(quantities._items(snapshot), list(source['tasks'].values()),
+                               state['configuration'], cut,
+                               previous[-1].get('review_rules', []) if previous else [])
     query = query.casefold().strip()
     rows = [dict(item_id=key, **{field: item.get(field) for field in
             ("name", "scope", "unit", "plan_quantity", "completed_quantity", "period_year",
@@ -165,13 +172,14 @@ def catalog(project, cut, query="", offset=0):
     return dict(state, source_state=source["state"], source_reason=source["reason"],
                 tasks=list(source["tasks"].values()), items=rows[offset:offset+200],
                 item_count=len(rows), offset=offset,
+                review=review_model,
                 model=_view_model(project, cut, source, snapshot, state["configuration"]))
 
 
 def save(project, source_kind, source_sha256, snapshot_id, revision, configuration):
     if source_kind != SOURCE_KIND:
         raise PhysicalProblem("Выберите работу утверждённого ГПР; привязки MS Project не применяются.")
-    configuration = quantities._validate(configuration)
+    configuration = quantities._validate(configuration, max_bindings=quantities.MAX_ROWS)
     folder = monitor._project_dir(project) / "gpr_physical_links"
     folder.mkdir(parents=True, exist_ok=True, mode=0o700)
     import fcntl
@@ -196,9 +204,11 @@ def save(project, source_kind, source_sha256, snapshot_id, revision, configurati
             raise PhysicalProblem("Компоненты привязываются только к работам с натуральными объёмами.")
         if any(t["mode"] == "completed" and t["actual_finish"] > cut for t in configuration["tasks"]):
             raise PhysicalProblem("Дата завершения не может быть в будущем.")
+        import developaid_schedule_physical_review as review
         event = {"source_kind": SOURCE_KIND, "source_sha256": source_sha256, "snapshot_id": snapshot_id,
                  "revision": revision+1, "recorded_at": _now().isoformat(),
-                 "actor": "administrator", "configuration": configuration}
+                 "actor": "administrator", "configuration": configuration,
+                 "review_rules": review.rules(configuration, items)}
         fd, temporary = tempfile.mkstemp(prefix=".event-", dir=folder)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
