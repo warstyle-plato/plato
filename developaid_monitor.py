@@ -428,12 +428,35 @@ def _baseline_file(project: str, cut: Any = "") -> Path | None:
     return _baseline_state(project, cut)['path']
 
 
-def schedule_version_preview(project: str, data: bytes, effective_from: str) -> dict[str, Any]:
+def _working_baseline_state(project: str, cut: Any = '') -> dict[str, Any]:
+    """One active remaining plan; factual origin still uses _baseline_state."""
+    current = _baseline_state(project)
+    return current if current.get('baseline_scope') == 'remaining_work' else _baseline_state(project, cut)
+
+
+def _working_baseline_file(project: str, cut: Any = '') -> Path | None:
+    return _working_baseline_state(project, cut)['path']
+
+
+@approved_schedule_read
+def schedule_version_preview(project: str, data: bytes, effective_from: str, *,
+                             owner_rnv_date=None, owner_rnv_note=None, baseline_scope=None,
+                             audit_cut=None) -> dict[str, Any]:
     import developaid_schedule_versions as versions
     if not str(project or '').strip():
         raise ValueError('Выберите проект.')
     sha = versions.digest(data)
     day = versions._day(effective_from).isoformat()
+    if audit_cut is not None:
+        versions._day(audit_cut)
+    if owner_rnv_date is not None:
+        versions._day(owner_rnv_date)
+        if not isinstance(owner_rnv_note, str) or not owner_rnv_note.strip() or len(owner_rnv_note) > 1000:
+            raise ValueError('Укажите основание плановой даты РНВ владельца (до 1000 знаков).')
+    elif owner_rnv_note is not None:
+        raise ValueError('Для решения владельца нужна плановая дата РНВ.')
+    if baseline_scope is not None and baseline_scope not in {'full_schedule','remaining_work'}:
+        raise ValueError('Укажите полный план или план оставшихся работ.')
     if day < versions._now().date().isoformat():
         raise ValueError('Новая версия может действовать с сегодняшней или будущей даты; прежние срезы сохраняются.')
     import developaid_monitor_ledgers as ledgers
@@ -444,32 +467,52 @@ def schedule_version_preview(project: str, data: bytes, effective_from: str) -> 
     if any(str(work.get('progress_date') or '') > day for work in parsed['works']):
         raise ValueError('Дата версии раньше даты факта в шапке ГПР.')
     selected = _baseline_state(project)
-    return {'source_sha256': sha, 'expected_previous_sha256': selected['latest_source_sha256'],
+    result = {'source_sha256': sha, 'expected_previous_sha256': selected['latest_source_sha256'],
+            'active_source_sha256': selected['source_sha256'],
+            'approved_previous_sha256': (selected['versions'][-1]['previous_source_sha256']
+                                         if selected['versions'] else None),
+            'latest_source_revision': len(selected['versions']),
             'effective_from': day, 'works': len(parsed['works']),
             'source_format': parsed.get('source_format') or 'gpr',
             'current_revision': selected['revision'],
+            'owner_rnv_revision': selected['owner_rnv_revision'],
+            'owner_rnv': selected['owner_rnv'],
+            'proposed_owner_rnv': ({'date': owner_rnv_date, 'source': 'owner_decision',
+                'note': owner_rnv_note.strip(), 'effective_from': day} if owner_rnv_date is not None else None),
+            'baseline_scope': baseline_scope or selected['latest_baseline_scope'],
             'requires_initial_baseline': selected['path'] is None,
             'already_approved': sha == selected['latest_source_sha256'],
             'approved_effective_from': selected['latest_effective_from'] or selected['taken_at'],
             'message': 'Прежние версии и ручные связи сохранятся. Связи другой версии требуют отдельной проверки.'}
+    result['capabilities'] = {'owner_rnv_v1': True, 'remaining_plan_v1': True, 'historical_fact_audit_v1': True}
+    if audit_cut is not None:
+        from developaid_schedule_audit import projection
+        result['audit'] = projection(project, audit_cut)
+    return result
 
 
 def approve_schedule_version(project: str, data: bytes, effective_from: str, *,
                              expected_previous_sha256: str, expected_source_sha256: str,
-                             author: str = '') -> dict[str, Any]:
+                             author: str = '', owner_rnv_date=None, owner_rnv_note=None,
+                             expected_owner_rnv_revision=None, baseline_scope=None) -> dict[str, Any]:
     import developaid_schedule_versions as versions
-    preview = schedule_version_preview(project, data, effective_from)
+    preview = schedule_version_preview(project, data, effective_from, owner_rnv_date=owner_rnv_date,
+                                      owner_rnv_note=owner_rnv_note, baseline_scope=baseline_scope)
     saved = versions.approve(_project_dir(project)/'baseline', _legacy_baseline_file(project), data,
                              expected_previous_sha256=expected_previous_sha256,
                              expected_source_sha256=expected_source_sha256,
-                             effective_from=preview['effective_from'], author=author)
-    return {key: saved[key] for key in ('revision', 'source_sha256', 'effective_from', 'approved_at', 'unchanged')}
+                             effective_from=preview['effective_from'], author=author,
+                             owner_rnv_date=owner_rnv_date, owner_rnv_note=owner_rnv_note,
+                             expected_owner_rnv_revision=expected_owner_rnv_revision, baseline_scope=baseline_scope)
+    return {key: saved[key] for key in ('revision', 'source_sha256', 'effective_from', 'approved_at',
+                                       'unchanged', 'owner_rnv_revision', 'owner_rnv', 'baseline_scope')}
 
 
-def _fact_matches_baseline(project: str, cut: str, fact_day: str, source_sha256: str = '') -> bool:
+def _fact_matches_baseline(project: str, cut: str, fact_day: str, source_sha256: str = '', *, archival=False) -> bool:
     import developaid_schedule_versions as versions
     return versions.accepts_fact(_project_dir(project)/'baseline', _legacy_baseline_file(project),
-                                 cut, fact_day, source_sha256, selected=_baseline_state(project, cut),
+                                 cut, fact_day, source_sha256,
+                                 selected=(_baseline_state(project, cut) if archival else _working_baseline_state(project, cut)),
                                  origin=_baseline_state(project, fact_day) if not source_sha256 else None)
 
 
@@ -506,6 +549,13 @@ def store_schedule_fact(project: str, data: bytes, taken_at: Any, *, expected_so
     corpus = corpus_gpr.read(data)
     if corpus is not None:
         saved = corpus_gpr.store(project, data, day, corpus)
+        active = _working_baseline_state(project, day)
+        if active.get('baseline_scope') == 'remaining_work':
+            shown = corpus_gpr.for_view(project, day, baseline_sha256=active['source_sha256'])
+            return {'taken_at': day, 'works': 0, 'completed': 0, 'corpus_gpr': shown,
+                    'corpus_gpr_html': corpus_gpr.render_overview(shown, day),
+                    'archived_source_sha256': saved['sha256'],
+                    'message': 'Исходник сохранён для проверки. Действующий утверждённый план не изменён.'}
         return {"taken_at": day, "works": 0, "completed": 0,
                 "corpus_gpr": saved, "corpus_gpr_html": corpus_gpr.render(saved),
                 "message": saved["reason"]}
@@ -789,7 +839,7 @@ def close_completed_stage(project: str, object_query: str,
     return store_work_fact(project, rows, taken_at, expected_source_sha256=expected_source_sha256)
 
 
-def work_facts(project: str, upto: str = "") -> dict[str, dict[str, Any]]:
+def work_facts(project: str, upto: str = "", *, archival=False) -> dict[str, dict[str, Any]]:
     """Все точечные факты по работам, поздние поверх ранних."""
     folder = _project_dir(project) / "work_fact"
     if not folder.exists():
@@ -801,7 +851,7 @@ def work_facts(project: str, upto: str = "") -> dict[str, dict[str, Any]]:
     for path in items:
         payload = json.loads(path.read_text(encoding='utf-8'))
         if not _fact_matches_baseline(project, upto or datetime.date.today().isoformat(),
-                                      path.stem.split('.', 1)[0], payload.get('source_sha256') or ''):
+                                      path.stem.split('.', 1)[0], payload.get('source_sha256') or '', archival=archival):
             continue
         for row in payload.get("rows", []):
             # The file name is the decision date; keep it as the value's origin.
@@ -833,6 +883,13 @@ def _read_baseline_gpr(project: str, cut: Any = "") -> dict[str, Any]:
         raise FileNotFoundError("не загружен baseline ГПР")
     data = path.read_bytes()
     return _read_baseline_gpr_bytes(data)
+
+
+def _read_working_baseline_gpr(project: str, cut: Any = '') -> dict[str, Any]:
+    path = _working_baseline_file(project, cut)
+    if path is None:
+        raise FileNotFoundError('не загружен действующий ГПР')
+    return _read_baseline_gpr_bytes(path.read_bytes())
 
 
 def _latest(project: str, kind: str, suffix: str, upto: str = "") -> Path | None:
@@ -925,7 +982,7 @@ def _schedule_plan_fact(project: str, rss_path: Path, cut: Any) -> dict[str, Any
     cut_date = _day(cut) or _day(rss_path.stem)
     if cut_date is None:
         raise ValueError("не задана дата среза")
-    baseline = _read_baseline_gpr(project, cut_date)
+    baseline = _read_working_baseline_gpr(project, cut_date)
     estimate = actuals.read_estimate(rss_path)
     works = actuals.read_completed_works(rss_path)
     rows = []

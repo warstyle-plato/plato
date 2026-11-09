@@ -261,11 +261,14 @@ def physical(project: str, kind: str, end: Any) -> dict[str, Any]:
     """
     bounds = period_bounds(kind, end)
     try:
-        baseline = monitor._read_baseline_gpr(project, bounds['end'])
+        baseline = monitor._read_working_baseline_gpr(project, bounds['end'])
     except FileNotFoundError:
         return _missing("Не загружен утверждённый ГПР проекта.")
     statuses = manager._baseline_status(project, bounds["end"].isoformat())
     source = _gpr_source(project, bounds["end"], statuses)
+    if monitor._working_baseline_state(project, bounds['end'].isoformat()).get('baseline_scope') == 'remaining_work':
+        return {'state': 'not_aggregated', 'fact': None, 'plan': None, 'source': source,
+                'reason': 'Это план оставшихся работ. Без полной сопоставимой базы общий процент готовности проекта не рассчитан.'}
     now_day = source["fact"]
     works = _dated(baseline)
     now = _progress(works, statuses, bounds["end"])

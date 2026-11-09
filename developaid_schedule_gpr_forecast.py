@@ -83,7 +83,7 @@ def _works(parsed: dict) -> dict[str, tuple[float | None, str]]:
 
 def _weekly(project: str, path: Path, cut: str = '') -> dict[str, tuple[float | None, str]]:
     stat = path.stat()
-    key = (str(path), stat.st_mtime_ns, stat.st_size, monitor._baseline_state(project, cut)['source_sha256'])
+    key = (str(path), stat.st_mtime_ns, stat.st_size, monitor._working_baseline_state(project, cut)['source_sha256'], monitor._working_baseline_state(project, cut).get('owner_rnv_revision', 0))
     if key not in _CACHE:
         data = path.read_bytes()
         try:
@@ -110,8 +110,8 @@ def history(project: str, cut: dt.date) -> dict[str, list[tuple[dt.date, float, 
 
     folder = monitor._project_dir(project)
     try:
-        baseline = monitor._read_baseline_gpr(project, cut)
-        base_day = _day(monitor._baseline_state(project, cut)['taken_at'])
+        baseline = monitor._read_working_baseline_gpr(project, cut)
+        base_day = _day(monitor._working_baseline_state(project, cut)['taken_at'])
     except (OSError, ValueError, FileNotFoundError):
         baseline, base_day = {"works": []}, None
     baseline_dates = {str(work.get('id') or work.get('wbs') or '').strip():
@@ -348,6 +348,28 @@ def forecasts(project: str, cut: dt.date, rows: list[dict], ks: dict | None = No
 
 ESTIMATE_NOTE = ("Оценка по ГПР без цепочки до получения разрешения: самая поздняя прогнозная дата "
                  "строительных работ (со статьёй сметы РСС). PM отключён.")
+
+
+def owner_plan(qualified: dict, rows: list[dict], decision: dict | None) -> dict:
+    """A supplied owner milestone is a fixed plan, never a work-finish forecast."""
+    if not decision:
+        return qualified
+    target = _day(decision.get('date'))
+    if target is None or decision.get('source') != 'owner_decision':
+        raise ValueError('Плановая дата РНВ владельца не подтверждена.')
+    conflicts = [{'id': str(row.get('id') or ''), 'name': row.get('name'),
+                  'plan_finish': row['plan_finish']} for row in rows
+                 if _day(row.get('plan_finish')) and _day(row['plan_finish']) > target]
+    reasons = [reason for reason in qualified.get('reasons') or []
+               if not reason.startswith('Отдельный срок РНВ в корпусном ГПР не указан.')]
+    reasons.insert(0, 'План РНВ установлен решением владельца: '+target.strftime('%d.%m.%Y')+'.')
+    if conflicts:
+        reasons.append('У '+str(len(conflicts))+' работ плановое окончание позже даты РНВ владельца; требуется сверка плана.')
+    return dict(qualified, approved=target.isoformat(), approved_rnv=target.isoformat(),
+                approved_source='owner_decision', owner_rnv=dict(decision),
+                plan_label='План РНВ владельца', plan_date=target.isoformat(),
+                plan_conflicts=conflicts, reasons=reasons, rnv_forecast=None,
+                delay_days=None)
 
 
 def rnv(rows: list[dict], works: dict[str, dict], approved: Any, *, missing_calendar=()) -> dict[str, Any]:

@@ -80,11 +80,16 @@ class MonitorScheduleVersionPreviewRequest(BaseModel):
     gpr_base64: str = _ScheduleVersionField(min_length=1, max_length=28 * 1024 * 1024)
     session: str = _ScheduleVersionField(default='', max_length=4096)
     key: str = _ScheduleVersionField(default='', max_length=4096)
+    owner_rnv_date: str | None = _ScheduleVersionField(default=None, pattern=r'^\d{4}-\d{2}-\d{2}$')
+    owner_rnv_note: str | None = _ScheduleVersionField(default=None, max_length=1000)
+    baseline_scope: str | None = _ScheduleVersionField(default=None, pattern=r'^(full_schedule|remaining_work)$')
+    audit_cut: str | None = _ScheduleVersionField(default=None, pattern=r'^\d{4}-\d{2}-\d{2}$')
 
 
 class MonitorScheduleVersionApproveRequest(MonitorScheduleVersionPreviewRequest):
     expected_previous_sha256: str = _ScheduleVersionField(pattern=r'^[0-9a-f]{64}$')
     expected_source_sha256: str = _ScheduleVersionField(pattern=r'^[0-9a-f]{64}$')
+    expected_owner_rnv_revision: int | None = _ScheduleVersionField(default=None, strict=True, ge=0)
 
 
 class MonitorGanttRequest(BaseModel):
@@ -242,12 +247,20 @@ def _monitor_schedule_version(req, *, approve=False):
     import developaid_schedule_versions as versions
     try:
         data = base64.b64decode(req.gpr_base64, validate=True)
+        options = {key: getattr(req, key) for key in ('owner_rnv_date', 'owner_rnv_note', 'baseline_scope')
+                   if getattr(req, key) is not None}
+        if req.audit_cut is not None:
+            if approve:
+                raise ValueError('Историческая проверка выполняется только при предварительном просмотре.')
+            options['audit_cut'] = req.audit_cut
+        if approve and req.expected_owner_rnv_revision is not None:
+            options['expected_owner_rnv_revision'] = req.expected_owner_rnv_revision
         result = (developaid_monitor.approve_schedule_version(
             req.project, data, req.effective_from,
             expected_previous_sha256=req.expected_previous_sha256,
             expected_source_sha256=req.expected_source_sha256,
-            author=_monitor_note_author(req.session, req.key)) if approve else
-            developaid_monitor.schedule_version_preview(req.project, data, req.effective_from))
+            author=_monitor_note_author(req.session, req.key), **options) if approve else
+            developaid_monitor.schedule_version_preview(req.project, data, req.effective_from, **options))
         return JSONResponse(content=result, headers={'Cache-Control': 'private, no-store'})
     except versions.ScheduleVersionConflict as exc:
         raise HTTPException(409, str(exc)) from None

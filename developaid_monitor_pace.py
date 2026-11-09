@@ -223,9 +223,17 @@ def _apply_gpr(project: str, view: dict[str, Any], cut: datetime.date) -> dict[s
                 or max((r.get("plan_finish") for r in rows if r.get("plan_finish") and (str(r.get("code") or "").strip() or r.get("construction_work") is True)), default=None))
     qualified = gpr_forecast.rnv(rows, works, approved,
         missing_calendar=physical.get("source_calendar_missing") or [])
+    selected_plan = monitor._working_baseline_state(project, cut.isoformat())
+    qualified = gpr_forecast.owner_plan(qualified, rows, selected_plan.get('owner_rnv'))
+    schedule['baseline_scope'] = selected_plan.get('baseline_scope', 'full_schedule')
+    schedule['owner_rnv'] = selected_plan.get('owner_rnv')
+    schedule['owner_rnv_revision'] = selected_plan.get('owner_rnv_revision', 0)
+    if qualified.get('owner_rnv'):
+        schedule['approved_end'] = qualified['approved_rnv']
     schedule["dependency_timeline"] = {"state": "ok", "rows": [], "edges": [], "rnv": qualified,
                                        "confirmation": {}, "basis": "gpr", "physical": physical}
     schedule["physical_progress"] = physical
+    schedule["completed_facts"] = physical.get("completed_facts")
     schedule["work_fact"] = schedule_work_fact.model(rows, physical)
     schedule["gpr_forecasts"] = works
     schedule.update(basis="gpr", forecast_state=qualified["state"],
@@ -249,6 +257,9 @@ def _apply_gpr(project: str, view: dict[str, Any], cut: datetime.date) -> dict[s
                     forecast_source="ГПР, без цепочки до разрешения",
                     rnv_delay_days=qualified.get("delay_days") if qualified["state"] == "estimate" else None,
                     driver={"id": driver["id"], "name": driver["name"]} if driver else None)
+        if qualified.get('owner_rnv'):
+            dash['approved_finish'] = qualified['approved_rnv']
+            dash['approved_source'] = 'owner_decision'
         from developaid_monitor_dashboard import refresh_schedule_summary
         refresh_schedule_summary(view)
     return view
@@ -409,6 +420,7 @@ def _apply_pace(project: str, view: dict[str, Any], cut: datetime.date) -> dict[
             rnv_block['approved_source'] = 'утверждённый ГПР'
             schedule['dependency_timeline']['rnv'] = rnv_block
     schedule['physical_progress'] = physical
+    schedule['completed_facts'] = physical.get('completed_facts')
     # One owner of both readiness facts per work, read by the chart and summary.
     schedule['work_fact'] = schedule_work_fact.model(rows, physical)
     if isinstance((view.get("dashboard") or {}).get("schedule"), dict):
