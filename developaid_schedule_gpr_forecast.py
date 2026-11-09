@@ -143,33 +143,45 @@ def history(project: str, cut: dt.date) -> dict[str, list[tuple[dt.date, float, 
 SOURCE_CONFLICT_ACTION = "Сверьте показания ГПР и накопительных по этой работе."
 
 
-def quantity_conflict(points: list, ks: dict, cut: dt.date) -> dict | None:
-    """A completed GPR and dated, explicitly bound unfinished quantities need review.
+def quantity_readings(ks: dict, cut: dt.date) -> list[dict]:
+    """Keep the actual observation/period date; an archive date cannot replace it."""
+    measurements = []
+    snapshot = ks.get("progress_origin") == "cumulative_statement" or ks.get("progress_date_basis") == "snapshot"
+    candidates = ks.get("components") or [{"progress": ks.get("progress"),
+        "period_end": ks.get("progress_date") if not snapshot else None,
+        "observation_date": ks.get("progress_date") if snapshot else None,
+        "progress_origin": ks.get("progress_origin"), "progress_date_basis": ks.get("progress_date_basis")}]
+    for component in candidates:
+        statement = (component.get("progress_origin") == "cumulative_statement"
+                     or component.get("progress_date_basis") == "snapshot")
+        progress = _quantity_progress(component.get("progress"))
+        day = _day(component.get("observation_date") if statement else component.get("period_end"))
+        if progress is not None and day and day <= cut:
+            measurement = {"progress": progress, "date": day.isoformat(),
+                           "component_id": component.get("component_id") or "",
+                           "date_basis": "snapshot" if statement else "execution_period",
+                           "requires_reconciliation": component.get("requires_reconciliation") is True or progress > 1.0+1e-7}
+            measurements.append(measurement)
+    return measurements
 
-    Neither source is declared wrong; different measurement dates remain explicit.
-    Component percentages are compared individually, never averaged.
-    """
+
+def reading_not_older(reading: dict, gpr_dates: list, cut: dt.date) -> bool:
+    """One temporal rule for a direct work and an exactly shared source cohort."""
+    day = _day(reading.get("date"))
+    dates = [_day(value) for value in gpr_dates]
+    return bool(day and day <= cut and dates and all(value and value <= cut for value in dates)
+                and day >= max(dates))
+
+
+def quantity_conflict(points: list, ks: dict, cut: dt.date) -> dict | None:
+    """Only same-date or later unfinished KS can contradict a completed GPR."""
     if not ks.get("scope_confirmed") or ks.get("mode") != "quantities":
         return None
     dated = sorted((p for p in points if p[0] <= cut and _progress(p[1]) is not None), key=lambda p: p[0])
     if not dated or dated[-1][1] < DONE:
         return None
-    measurements = []
-    candidates = ks.get("components") or [{"progress": ks.get("progress"),
-        "period_end": ks.get("progress_date") if ks.get("progress_origin") != "cumulative_statement" else None,
-        "observation_date": ks.get("progress_date") if ks.get("progress_origin") == "cumulative_statement" else None,
-        "progress_origin": ks.get("progress_origin")}]
-    for component in candidates:
-        statement = component.get("progress_origin") == "cumulative_statement"
-        progress = _quantity_progress(component.get("progress"))
-        day = _day(component.get("observation_date") if statement else component.get("period_end"))
-        if progress is not None and day and day <= cut:
-            measurement = {"progress": progress, "date": day.isoformat(),
-                           "component_id": component.get("component_id") or ""}
-            if statement:
-                measurement["date_basis"] = "snapshot"
-            measurements.append(measurement)
-    unfinished = [m for m in measurements if m["progress"] < DONE]
+    measurements = quantity_readings(ks, cut)
+    unfinished = [m for m in measurements if m["progress"] < DONE and reading_not_older(m, [dated[-1][0]], cut)]
     if not unfinished:
         return None
     gpr = {"progress": dated[-1][1], "date": dated[-1][0].isoformat(), "origin": dated[-1][2]}
@@ -184,6 +196,29 @@ def quantity_conflict(points: list, ks: dict, cut: dt.date) -> dict | None:
               f"по накопительным — {shown}. Оценка окончания снята до сверки.")
     return {"state": "source_conflict", "gpr": gpr, "quantities": measurements,
             "reason": reason, "action": SOURCE_CONFLICT_ACTION}
+
+
+def _later_gpr_completion(points: list, ks: dict | None, cut: dt.date) -> dt.date | None:
+    """A bounded priority exception: verified 100% after every known KS reading."""
+    if (not ks or not ks.get("scope_confirmed") or ks.get("mode") != "quantities"
+            or ks.get("requires_reconciliation") or not points or points[-1][1] < DONE):
+        return None
+    measurements = quantity_readings(ks, cut)
+    if (not measurements or len(measurements) != len(ks.get("components") or [ks])
+            or any(m.get("requires_reconciliation") for m in measurements)
+            or not any(m["progress"] < DONE for m in measurements)):
+        return None
+    last_quantity_date = max(_day(m["date"]) for m in measurements)
+    return last_quantity_date if last_quantity_date < points[-1][0] <= cut else None
+
+
+def _done_by_gpr(result: dict, points: list, *, after: dt.date | None = None) -> dict:
+    last = points[-1]
+    first_done = next(p for p in points if p[1] >= DONE and (after is None or p[0] > after))
+    return dict(result, progress=last[1], progress_date=last[0].isoformat(), progress_origin=last[2],
+                forecast_finish=first_done[0].isoformat(), method="done",
+                reason=("Завершена по более позднему ГПР; дата — первая последующая запись со 100%."
+                        if after else "Завершена по ГПР; дата — первая запись со 100%."))
 
 
 def qualify_quantities(model: dict, history: dict, cut: dt.date) -> dict:
@@ -232,6 +267,9 @@ def work(row: dict, points: list[tuple[dt.date, float, str]], cut: dt.date,
         return dict(result, method="source_conflict", source_conflict=conflict,
                     progress=_quantity_progress(ks.get("progress")), progress_date=ks.get("progress_date"),
                     progress_origin=ks_origin, reason=conflict["reason"] + " " + conflict["action"], **ks_meta)
+    after = _later_gpr_completion(points, ks, cut)
+    if after is not None:
+        return _done_by_gpr(result, points, after=after)
     if ks and ks.get("forecast_finish"):
         completed = ks.get("mode") == "completed"
         method = ("confirmed_completion" if completed else
@@ -250,9 +288,7 @@ def work(row: dict, points: list[tuple[dt.date, float, str]], cut: dt.date,
         last = points[-1]
         result.update(progress=last[1], progress_date=last[0].isoformat(), progress_origin=last[2])
         if last[1] >= DONE:
-            first_done = next(p for p in points if p[1] >= DONE)
-            return dict(result, forecast_finish=first_done[0].isoformat(), method="done",
-                        reason="Завершена по ГПР; дата — первая запись со 100%.")
+            return _done_by_gpr(result, points)
     window = [p for p in points if p[0] >= cut - dt.timedelta(days=WINDOW_DAYS)]
     pace = None
     if len(window) >= 2 and (cut - window[-1][0]).days <= STALE_DAYS:

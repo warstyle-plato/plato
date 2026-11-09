@@ -73,7 +73,7 @@ def model(timeline: dict, *, stalled=None) -> dict:
         if _number(measured.get("progress")):
             facts.append({"name": cohort.get("source_scope") or cohort.get("source_name") or "Общая группа КС",
                           "kind": "source_cohort", "progress": measured["progress"],
-                          "date": measured.get("progress_date"), "date_basis": "snapshot",
+                          "date": measured.get("progress_date"), "date_basis": measured.get("progress_date_basis"),
                           "basis": measured.get("progress_basis"), "task_ids": cohort.get("task_ids") or [],
                           "observation_history": measured.get("observation_history"),
                           "source_conflict": cohort.get("source_conflict")})
@@ -117,8 +117,10 @@ def fact_text(fact):
         return f"{fact['name']}: завершение подтверждено {date_text(fact['date'])}."
     number = lambda value: f"{value:g}".replace(".", ",")
     if fact["kind"] in {"source_cohort", "weighted_quantity"}:
-        return (f"{fact['name']}: {number(fact['progress']*100)}% по ведомости"
-                + (" от " + date_text(fact["date"]) if fact.get("date") else "")
+        snapshot = fact.get("date_basis") == "snapshot"
+        return (f"{fact['name']}: {number(fact['progress']*100)}% "
+                + ("по ведомости" if snapshot else "по датированным периодам")
+                + ((" от " if snapshot else " на ") + date_text(fact["date"]) if fact.get("date") else "")
                 + (f"; общий объём для {len(fact['task_ids'])} работ, отдельные проценты не выделены"
                    if fact["kind"] == "source_cohort" else "; " + str(fact.get("basis") or "")) + ".")
     amount = number(fact["done"])

@@ -354,25 +354,25 @@ def _view_model(project, cut, source, snapshot, configuration, *, automatic=None
         for cohort in model["source_cohorts"]:
             measurement = cohort.get("model") or {}
             ratio = measurement.get("progress")
-            incomplete_components = [{"component_id": component.get("component_id"),
-                "progress": component.get("progress"),
-                "date": component.get("observation_date") or component.get("period_end")}
-                for component in measurement.get("components") or [] if component.get("progress") is not None
-                and (component["progress"] < 1.0-1e-7 or component.get("requires_reconciliation"))]
-            incomplete = bool(incomplete_components) or ratio is not None and (
-                ratio < 1.0-1e-7 or measurement.get("requires_reconciliation"))
             readings = {tid: (gpr_history.get(tid) or [])[-1] for tid in cohort["task_ids"] if gpr_history.get(tid)}
-            if (not incomplete or len(readings) != len(cohort["task_ids"])
+            incomplete_components = [reading for reading in gpr_forecast.quantity_readings(measurement, quantities._day(cut))
+                if (reading["progress"] < 1.0-1e-7 or reading.get("requires_reconciliation"))
+                and gpr_forecast.reading_not_older(reading, [point[0] for point in readings.values()], quantities._day(cut))]
+            if (not incomplete_components or len(readings) != len(cohort["task_ids"])
                     or any(reading[1] < gpr_forecast.DONE for reading in readings.values())):
                 continue
+            bases = {reading["date_basis"] for reading in incomplete_components}
+            proof_basis = next(iter(bases)) if len(bases) == 1 else "mixed"
+            proof_date = max(reading["date"] for reading in incomplete_components)
             reason = ("В ГПР все работы общей группы отмечены как завершённые. "
                       + ("В общей КС есть незавершённые позиции; общий процент не выделен. " if ratio is None else
-                         "По ведомости от " + str(measurement.get("progress_date") or "") + " — " + f"{ratio*100:g}%. ")
+                         "По ведомости от " + proof_date + " — " + f"{ratio*100:g}%. " if proof_basis == "snapshot" else
+                         "В датированных периодах КС на " + proof_date + " есть незавершённые позиции. ")
                       + "Распределение по отдельным работам не задано; оценка окончания снята до сверки.")
             conflict = {"state": "source_conflict", "scope": "source_cohort", "cohort_id": cohort["cohort_id"],
-                        "task_ids": list(cohort["task_ids"]), "progress": ratio, "date_basis": "snapshot",
+                        "task_ids": list(cohort["task_ids"]), "progress": ratio, "date_basis": proof_basis,
                         "incomplete_components": incomplete_components,
-                        "date": measurement.get("progress_date"), "reason": reason,
+                        "date": proof_date, "reason": reason,
                         "action": "Сверьте завершение работ и общий объём КС по этой группе."}
             cohort["source_conflict"] = conflict
             model.setdefault("cohort_source_conflicts", []).append(conflict)

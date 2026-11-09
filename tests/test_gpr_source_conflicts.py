@@ -25,7 +25,7 @@ def quantities(progress=.5, date='2026-10-31'):
 
 
 @pytest.mark.parametrize('progress', [0., .5])
-@pytest.mark.parametrize('date', ['2026-10-21', '2026-10-31', '2026-11-01'])
+@pytest.mark.parametrize('date', ['2026-10-21', '2026-10-31'])
 def test_completed_gpr_and_unfinished_natural_quantity_keep_both_dated_readings(progress, date):
     got = gpr.work({}, [(DAY(date), 1., 'weekly_gpr')], DAY(CUT), quantities(progress))
     assert got['method'] == 'source_conflict' and got['forecast_finish'] is None
@@ -92,7 +92,7 @@ def conflict_sources(gpr_sources, date='2026-10-31'):
          'Завершено', '2.2.1.1')]), date)
 
 
-@pytest.mark.parametrize('date', ['2026-10-31', '2026-11-01'])
+@pytest.mark.parametrize('date', ['2026-10-30', '2026-10-31'])
 def test_real_catalog_build_monitor_and_report_agree_without_editing_evidence(gpr_sources, date):
     conflict_sources(gpr_sources, date)
     folder = monitor._project_dir(PROJECT)
@@ -130,25 +130,25 @@ def test_real_conflict_reason_quantities_and_action_are_visible_in_monitor_repor
     from playwright.sync_api import expect
     from pypdf import PdfReader
     from test_monitor_cumulative_controls import browser_page
-    conflict_sources(gpr_sources, '2026-11-01')
+    conflict_sources(gpr_sources, '2026-10-30')
     view, built = monitor.build(PROJECT, CUT), report.build(PROJECT, 'week', CUT)
     with browser_page(width) as (page, responses, errors):
         page.evaluate('(view)=>renderGantt(view)', view)
         body = page.locator('#dependencyTimelineBody .schedule-physical-summary')
         expect(body).to_be_visible()
         visible = body.inner_text()
-        assert '50 / 100 м²' in visible and '31.10.2026' in visible and '01.11.2026' in visible
+        assert '50 / 100 м²' in visible and '31.10.2026' in visible and '30.10.2026' in visible
         assert 'Сверьте' in visible and '06.01.2027' not in visible
         page.set_content(report.render_html(built))
         main = page.locator('.executive-schedule')
         visible = main.inner_text()
-        assert '50 из 100 м²' in visible and '31.10.2026' in visible and '01.11.2026' in visible
+        assert '50 из 100 м²' in visible and '31.10.2026' in visible and '30.10.2026' in visible
         assert 'Сверьте' in visible and 'Не определена' in visible
         assert main.evaluate('(e)=>e.scrollWidth<=e.clientWidth+1')
         text = ' '.join(' '.join(p.extract_text() or '' for p in
                                 PdfReader(io.BytesIO(page.pdf(format='A4'))).pages).split())
         assert '50 из 100 м² на 31.10.2026' in text
-        assert '01.11.2026' in text and 'Сверьте' in text and '06.01.2027' not in text
+        assert '30.10.2026' in text and 'Сверьте' in text and '06.01.2027' not in text
         assert not errors
 
 
