@@ -88,6 +88,36 @@ def test_plans_cannot_change_just_because_source_year_changed():
     assert result['ratio'] is None and result['problems'][0]['code'] == 'plan_changed'
 
 
+@pytest.mark.parametrize('change,code', [
+    ({'plan': 2000}, 'plan_changed'), ({'quantity_plan': 200}, 'plan_changed'),
+    ({'unit': 'шт'}, 'unit_changed'),
+])
+def test_changed_free_text_captions_cannot_disguise_a_repeated_work_as_new_budget(change, code):
+    current = {'position': '5', 'name': 'Текущий раздел'}
+    first = source(2025, 'Old.xlsx', context_headings=[{'name': 'Предыдущий раздел'}, current])
+    second = source(2026, 'New.xlsx', context_headings=[{'name': 'Другой предыдущий раздел'}, current], **change)
+    value = row(first, second)
+    result = union(value)
+    assert result['ratio'] is None and result['problems'][0]['code'] == code
+    assert [ref['completion_ratio'] for ref in value['reported_performance_sources']] == [
+        first[0]['completion_ratio'], second[0]['completion_ratio']]
+
+
+def test_earlier_captions_do_not_multiply_a_work_with_unchanged_current_scope():
+    current = {'position': '5', 'name': 'Текущий раздел'}
+    result = union(row(source(2025, 'Old.xlsx', context_headings=[{'name': 'Первый раздел'}, current]),
+                       source(2026, 'New.xlsx', context_headings=[{'name': 'Другой раздел'}, current])))
+    assert result['state'] == 'known' and result['planned'] == 1000
+    assert result['completed'] == 400 and result['position_count'] == 1
+
+
+def test_room_identity_survives_a_later_operation_caption():
+    current = {'position': '', 'name': 'Устройство полов'}
+    result = union(row(source(name='A.xlsx', context_headings=[{'name': 'Помещение 101'}, current]),
+                       source(name='B.xlsx', context_headings=[{'name': 'Помещение 102'}, current])))
+    assert result['planned'] == 2000 and result['position_count'] == 2
+
+
 def test_group_costs_are_not_counted_twice_and_zero_cost_leaf_is_retained():
     reference, parent = source(done=500)
     parent.update(is_group=True, source={'filename': 'A.xlsx', 'sheet': 'Работы', 'row': 9})

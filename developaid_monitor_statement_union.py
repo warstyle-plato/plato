@@ -58,9 +58,23 @@ def _work(item):
                      if isinstance(node, dict) else ('', _norm(node))
                      for node in value or [])
 
+    context = headings(item.get('context_headings'))
+    # The reader retains recent captions as source evidence. Earlier operations
+    # do not identify the current work; retain the active caption and explicit
+    # physical locations (a room remains relevant below a system caption).
+    locations = {}
+    for node in context:
+        import re
+        role = re.match(r'^(корпус|секция|этаж|помещение|комната|паркинг|автостоянка)\b', node[1])
+        if role:
+            locations[role[1]] = node
+    active_context = tuple(locations[key] for key in sorted(locations))
+    if context and context[-1] not in active_context:
+        active_context += (context[-1],)
+
     return (tuple(_norm(item.get(field)) for field in ('position', 'name', 'scope'))
             + (_unit(item.get('unit')), headings(item.get('section_path')),
-               headings(item.get('context_headings'))))
+               active_context))
 
 
 def _annual(item, reference, observation_year):
