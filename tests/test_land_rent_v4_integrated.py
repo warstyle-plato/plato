@@ -68,6 +68,28 @@ def test_export_preserves_dates_and_excludes_public_rent_from_vat(phased_lease):
     assert ev.cell("ПРОВЕРКИ","B86") == pytest.approx(bundle["consolidated"]["finance"]["vat"]/1e6,abs=0.05)
 
 
+def test_land_relations_heading_groups_separate_vri_and_rent_without_another_expense(phased_lease):
+    import v4_dashboard
+    _,_,workbook,ev,_ = phased_lease
+    dashboard = workbook[v4_dashboard.DASHBOARD_SHEET]
+    headings = {cell.value:cell.row for row in dashboard for cell in row
+                if cell.data_type != "f" and isinstance(cell.value,str)}
+    assert v4_land_rent.BLOCK_TITLE in headings
+    assert headings[v4_land_rent.BLOCK_TITLE] < headings["Прочие расходы проекта"]
+    assert [label for label,_ in v4_dashboard.LAND_STRUCTURE_ITEMS] == [
+        "Плата за смену ВРИ и обеспечение", "Проценты по рассрочке ВРИ", "Аренда земельного участка"]
+    labels = [label for label,_ in v4_dashboard.STRUCTURE_ITEMS]
+    assert v4_land_rent.BLOCK_TITLE not in labels  # heading is never another monetary row
+    assert workbook[v4_land_rent.SHEET]["A1"].value == v4_land_rent.BLOCK_TITLE
+    assert "годовой расчёт" in workbook[v4_land_rent.SHEET]["A2"].value
+    for label,formula in v4_dashboard.LAND_STRUCTURE_ITEMS:
+        row = v4_dashboard.STRUCTURE_FIRST_ROW + labels.index(label)
+        assert workbook[v4_dashboard.DATA_SHEET][f"B{row}"].value == "="+formula
+    first,last = v4_dashboard.STRUCTURE_FIRST_ROW,v4_dashboard.STRUCTURE_TOTAL_ROW-1
+    assert ev.cell(v4_dashboard.DATA_SHEET,f"B{last+1}") == pytest.approx(sum(
+        ev.cell(v4_dashboard.DATA_SHEET,f"B{row}") for row in range(first,last+1)))
+
+
 def test_editing_only_object_months_changes_rent_without_moving_housing_rve(phased_lease):
     _,_,source,initial,_ = phased_lease
     workbook = copy.deepcopy(source)

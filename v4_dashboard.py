@@ -309,12 +309,15 @@ BRIDGE_LAST_ROW = BRIDGE_FIRST_ROW + len(BRIDGE_STEPS) - 1
 # Структура расходов проекта — статьи движка (`expense_groups`) из ячеек
 # книги. Порядок объявления; движок сортирует по убыванию, книга — нет:
 # формульный лист не переставляет строки.
-STRUCTURE_ITEMS: tuple[tuple[str, str], ...] = (
-    ("Цена приобретения", "'ОТЧЕТ'!B33"),
-    ("Смена ВРИ / земельные права",
+LAND_STRUCTURE_ITEMS: tuple[tuple[str, str], ...] = (
+    ("Плата за смену ВРИ и обеспечение",
      _sheet_sum("ВРИ", "B", _VRI_PRINCIPAL_ROWS) + "+" + _sheet_sum("ВРИ", "B", _VRI_SECURITY_ROWS)),
     ("Проценты по рассрочке ВРИ", _sheet_sum("ВРИ", "B", _VRI_INTEREST_ROWS)),
     ("Аренда земельного участка", _sheet_sum("CAPEX", "B", v4_land_rent.CAPEX_ROWS)),
+)
+STRUCTURE_ITEMS: tuple[tuple[str, str], ...] = (
+    ("Цена приобретения", "'ОТЧЕТ'!B33"),
+    *LAND_STRUCTURE_ITEMS,
     ("ИРД и проектирование", "{ird}+{design_p}+{design_rd}+{author_supervision}"),
     ("Основное строительство", "{preparation}+{main_above}+{main_under}+{utilities}+{landscaping}"
                                "+{commissioning}+{site_maintenance}+{gc_fee}"),
@@ -999,7 +1002,15 @@ def build_dashboard_sheet(styles: Styles, drawing_rel_id: str, phased: bool,
     # Структура расходов проекта.
     sh.section_row("СТРУКТУРА РАСХОДОВ ПРОЕКТА")
     sh.header(_G_TABLE_4, ["Статья", "млн ₽", "Доля", "тыс ₽/м² прод."])
-    for index in range(len(STRUCTURE_ITEMS)):
+    land_labels = {label for label,_ in LAND_STRUCTURE_ITEMS}
+    land_open = False
+    for index,(label,_formula) in enumerate(STRUCTURE_ITEMS):
+        in_land = label in land_labels
+        if in_land and not land_open:
+            sh.section_row(v4_land_rent.BLOCK_TITLE)
+        elif land_open and not in_land:
+            sh.section_row("Прочие расходы проекта")
+        land_open = in_land
         src = STRUCTURE_FIRST_ROW + index
         sh.line(_G_TABLE_4, [(None, _src("A", src), sh.td),
                              (None, _src("B", src), sh.value("млн ₽")),

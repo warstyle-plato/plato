@@ -19,6 +19,7 @@ import project_regions
 import project_types
 
 SHEET = "Аренда ЗУ"
+BLOCK_TITLE = "ВРИ и земельные отношения"
 SHEET_PATH = "xl/worksheets/sheetLandRent.xml"
 REL_ID = "RidLandRent0001"
 SHEET_ID = 904
@@ -218,8 +219,8 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
     source = result.get("source") or "Ставки и дата — по документам проекта"
     if isinstance(source, dict):
         source = source.get("label") or source.get("text") or str(source)
-    put(1, "A1", "Аренда земли: начисление и план оплаты")
-    put(2, "A2", "Жёлтые ячейки редактируются. Начисление — расчётная конвенция; сроки оплаты — по договору. После ввода аренда не считается прекращённой.")
+    put(1, "A1", BLOCK_TITLE)
+    put(2, "A2", "Аренда земли: годовой расчёт и план оплаты — отдельно от платы за ВРИ. Жёлтые ячейки редактируются. Начисление — расчётная конвенция; сроки оплаты — по договору. После ввода аренда не считается прекращённой.")
     for n, label in ((3, "Месяц"), (4, "Исходное начисление, млн ₽"),
                      (5, "Неполные интервалы"), (6, "Денежный поток с фактом, млн ₽" if history_mode else "Плановый платёж, млн ₽"),
                      (13, "Основание ставок"), (14, "Начало расчёта"), (15, "Ввод; граница исключается"),
