@@ -263,3 +263,13 @@ def test_uploading_an_archived_corpus_does_not_offer_it_as_an_active_alternative
     assert result['corpus_gpr']['sha256']==hashlib.sha256(active).hexdigest()
     assert 'Архивный альтернативный план' not in result['corpus_gpr_html']
     assert corpus.latest(PROJECT,TODAY)['sha256']==result['archived_source_sha256']
+
+
+@pytest.mark.parametrize('state',['estimate','partial'])
+def test_owner_plan_without_rnv_forecast_never_says_on_time_or_loses_the_target(state):
+    from developaid_monitor_dashboard import _schedule_summary
+    value={'state':state,'basis':'gpr','approved_source':'owner_decision','approved':TARGET,
+           'forecast':'2027-10-31' if state=='estimate' else None,
+           'indicative_forecast':'2027-10-31','delay_days':None,'driving_chain':[{'method':'gpr_pace'}]}
+    text=_schedule_summary({'qualified_rnv':value})
+    assert '30.09.2027' in text and 'в срок' not in text
