@@ -362,8 +362,11 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
     if preset:
         same_rates = [f'AND(COUNT(D{FIRST_YEAR_ROW+y-1})=1,ABS(D{FIRST_YEAR_ROW+y-1}-{rate})<0.0000000001)'
                       for y,rate in rates.items()]
+        # The source defines a year-to-rate mapping, not an unordered set
+        # of percentages. A manual year edit changes that provenance too.
+        same_years = [f'A{pre_first+y-1}={y}' for y in range(1,YEARS+1)]
         put(16, "I16", formula=(f'IF(AND(COUNT(D{pre_first}:D{pre_end})={len(rates)},'
-            + ",".join(same_rates) + ',$B$11="Повтор последней ставки"),"По источнику","Ставки изменены вручную")'))
+            + ",".join([*same_rates,*same_years]) + ',$B$11="Повтор последней ставки"),"По источнику","Ставки изменены вручную")'))
     else:
         put(16, "I16", "Введены вручную по договору")
     put(17, "H17", "Происхождение индексов МО")

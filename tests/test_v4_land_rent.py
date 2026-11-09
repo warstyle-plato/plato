@@ -437,3 +437,22 @@ def test_live_duplicate_calendar_index_keeps_prior_year_and_makes_conflict_unkno
     assert expected["known_total"] == pytest.approx(6.6e6)
     assert changed.cell(book.SHEET,"B17") == 0
     assert changed.cell(book.SHEET,"L17")*1e6 == pytest.approx(expected["known_total"],abs=.01)
+
+
+def test_preset_origin_follows_the_year_to_rate_mapping_after_manual_year_edits():
+    inputs = {**_msk_first_year(),"land_rent_termination_date":"2030-01-01"}
+    w, original, canonical = _build(inputs,start=dt.date(2029,1,1),rve=dt.date(2030,1,1))
+    assert canonical["financial_complete"]
+    assert original.cell(book.SHEET,"I16") == "По источнику"
+    assert original.cell(book.SHEET,"L17") == pytest.approx(3)
+    assert original.cell(book.SHEET,"L13") == ""
+    # Only the year labels move. The cash remains a valid manual scenario,
+    # but these percentages no longer apply to the years from the preset.
+    w[book.SHEET]["A24"] = 4
+    w[book.SHEET]["A25"] = 3
+    changed = Evaluator(w)
+    assert changed.cell(book.SHEET,"N12") == 1
+    assert changed.cell(book.SHEET,"L17") == pytest.approx(5)
+    assert changed.cell(book.SHEET,"B19") == pytest.approx(5)
+    assert changed.cell(book.SHEET,"L13") == ""
+    assert changed.cell(book.SHEET,"I16") == "Ставки изменены вручную"
