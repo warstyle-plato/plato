@@ -13,8 +13,8 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
           architecture: x64
@@ -26,7 +26,7 @@ jobs:
         run: |
           & ./desktop/windows/.venv/Scripts/python.exe ./desktop/windows/smoke_test.py
           if ($LASTEXITCODE -ne 0) { throw 'Native WebView2 smoke check failed' }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: DevelopAid-Windows-x64
           path: desktop/windows/dist/DevelopAid-Windows-x64.zip
