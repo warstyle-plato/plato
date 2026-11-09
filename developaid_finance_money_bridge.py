@@ -84,8 +84,11 @@ def _tables(raw: bytes) -> dict:
 
 
 class _Reader:
-    def __init__(self, raw: bytes, values: Any, sheet: str):
+    def __init__(self, raw: bytes, values: Any, sheet: str, bank_assignments=None):
         self.values, self.sheet, self.grids = values, sheet, {}
+        self.bank_assignments = bank_assignments or {}
+        import hashlib
+        self.source_sha256 = hashlib.sha256(raw).hexdigest()
         self.tables = _tables(raw)
         formulas = load_workbook(io.BytesIO(raw), read_only=True, data_only=False)
         try:
@@ -177,22 +180,38 @@ class _Reader:
             if amount is None:
                 raise ValueError('денежный диапазон содержит ошибку или нечисловое значение')
             amount *= factor * 1000 / denominator
-            bank = _code(self.cell(sheet, row, bank_col))
+            original = self.cell(sheet, row, bank_col)
+            missing = original is None or isinstance(original, str) and not original.strip()
+            bank = _code(original)
+            from developaid_finance_allocations import source_cell_id
+            identifier = source_cell_id(self.source_sha256, sheet, row, bank_col, col)
+            decision = self.bank_assignments.get(identifier)
+            if decision:
+                if (not missing or decision.get('row_id') != identifier
+                        or decision.get('source_sha256') != self.source_sha256
+                        or decision.get('basis') != 'owner_instruction'
+                        or decision.get('actor') != 'administrator'
+                        or not re.fullmatch(r'[123](?:\.[0-9]+)+', decision.get('bank_code', ''))):
+                    raise ValueError('решение владельца не соответствует пустой ячейке этого источника')
+                bank = decision['bank_code']
             amounts[bank] += amount
             if amount:
                 rows.append({'sheet': sheet, 'row': row, 'amount_column': col,
                              'bank_column': bank_col, 'bank_code': bank, 'amount': amount,
+                             'raw_bank_missing': missing, 'raw_bank_code': _code(original),
+                             'bank_code_origin': 'owner_instruction' if decision else 'workbook',
+                             'owner_decision': dict(decision) if decision else None,
                              'coefficient': factor, 'coefficient_sources': refs})
         return dict(amounts), rows
 
 
 def admin_allocations(raw: bytes, values: Any, sheet: str, header: int, items: list[dict],
-                      bank_chapters: tuple[str, ...] = ('1', '2', '3')) -> dict:
+                      bank_chapters: tuple[str, ...] = ('1', '2', '3'), bank_assignments=None) -> dict:
     """Return reconciled monthly parts, preserving every unsupported residual."""
     if header < 2:
         return {}
     try:
-        reader = _Reader(raw, values, sheet)
+        reader = _Reader(raw, values, sheet, bank_assignments)
     except (KeyError, ValueError, zipfile.BadZipFile, ET.ParseError, TypeError):
         return {}
     source = reader.grid(sheet)

@@ -207,6 +207,12 @@ def _finance_baseline(project: str) -> dict[str, Any]:
     return _copy.deepcopy(result)
 
 
+def _finance_for_cut(project: str, cut: Any = "") -> dict[str, Any]:
+    import developaid_finance_allocations as allocations
+    day = cut.isoformat() if isinstance(cut, datetime.date) else str(cut or "")
+    return allocations.qualify(project, _finance_baseline(project), day)
+
+
 class _Grid:
     """Лист, прочитанный одним проходом, с интерфейсом cell(row, col)."""
 
@@ -309,7 +315,7 @@ def finance_sheets_reason() -> str:
             "ни листа «cf_1_new» (финмодель)")
 
 
-def _read_finance_baseline(path: Path) -> dict[str, Any]:
+def _read_finance_baseline(path: Path, *, bank_assignments: dict | None = None) -> dict[str, Any]:
     from openpyxl import load_workbook
 
     # Parse and hash the same bytes, including the article map. A concurrent
@@ -322,7 +328,7 @@ def _read_finance_baseline(path: Path) -> dict[str, Any]:
         if FINANCE_BOOK_SHEET in wb.sheetnames:
             return _read_finance_book(wb, source)
         if FINANCE_MODEL_SHEET in wb.sheetnames:
-            result = _read_finance_model(wb, source)
+            result = _read_finance_model(wb, source, bank_assignments=bank_assignments)
             if result.get("budget_composition") is not None:
                 result["budget_composition"]["source_sha256"] = hashlib.sha256(raw).hexdigest()
             return result
@@ -437,7 +443,7 @@ def budget_hint_lines(funding: dict[str, Any], money: Any) -> list[str]:
     return out
 
 
-def _read_finance_model(wb: Any, path: Path) -> dict[str, Any]:
+def _read_finance_model(wb: Any, path: Path, *, bank_assignments: dict | None = None) -> dict[str, Any]:
     """Финмодель как финансовый baseline: лист «cf_1_new» + карта «статьи_БДДС».
 
     Утверждённый бюджет — «ИТОГО», оплачено — «ФАКТ», средства на завершение —
@@ -663,7 +669,7 @@ def _read_finance_model(wb: Any, path: Path) -> dict[str, Any]:
 
         raw = path.getvalue() if hasattr(path, "getvalue") else Path(path).read_bytes()
         allocations = admin_allocations(raw, wb, FINANCE_MODEL_SHEET, header_row,
-                                        composition["admin_items"])
+                                        composition["admin_items"], bank_assignments=bank_assignments)
         for item in composition["admin_items"]:
             allocation = allocations.get(item["code"])
             if not allocation:
@@ -1565,6 +1571,9 @@ def _admin_expenses(comp: dict[str, Any] | None,
     # Aggregate model FACT and chapter RSS payments have no common payment IDs.
     # Do not add them or claim a deduplicated current payment balance.
     reasons.append("ФАКТ финмодели не сверён с реестром оплат РСС и платежами БДДС по идентификаторам")
+    decisions = {source['owner_decision']['row_id']: source['owner_decision']
+                 for item in items or [] for proof in (item.get('money_allocation') or {}).get('proofs', [])
+                 for source in proof.get('sources', []) if source.get('owner_decision')}
     return {"name": section.get("name") or "Административные расходы",
             "total": None if "total" in unknown_fields else section["total"],
             "paid": None if "fact" in unknown_fields else section["fact"],
@@ -1572,7 +1581,8 @@ def _admin_expenses(comp: dict[str, Any] | None,
             "chapters": {ch: row["total"] for ch, row in chapters.items()},
             "by_chapter": chapters, "unallocated": unallocated,
             "allocation_known": allocation_known, "source": {"sheet": "cf_1_new", "section": "2.4"},
-            "items": list(items or []), "payment_basis": "financial_model_fact",
+            "items": list(items or []), "owner_decisions": list(decisions.values()),
+            "payment_basis": "financial_model_fact",
             "paid_at_cut": None, "bank_coverage": None,
             "included_in_replacement_schedule": None,
             "replacement_schedule_applies": replaced,
@@ -1599,6 +1609,8 @@ def admin_expense_lines(admin: dict[str, Any] | None, money: Any) -> list[str]:
     if parts:
         out.append("Денежная карта АХР: " + "; ".join(parts) + ". "
                    "Соответствие статье сметы не подтверждает кредитное покрытие.")
+    if admin.get("owner_decisions"):
+        out.append(funding_reconciliation.owner_decision_note(len(admin['owner_decisions'])))
     out.append("Постатейное покрытие АХР и состав календарной программы не подтверждены: "
                + "; ".join(admin["reasons"]) + ". "
                + (f"Неучтённый в графике подтверждённый план АХР {money(admin['added_to_need'])} "
@@ -1961,7 +1973,7 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
         result["limit_reconciliation_lines"] = [notes["paid"], notes["limit"]]
         return result
 
-    baseline = _finance_baseline(project)
+    baseline = _finance_for_cut(project, cut)
     if not baseline.get("known"):
         return unavailable(baseline.get("reason", "нет финансового baseline"))
 
@@ -2199,6 +2211,8 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
         result["reconciliation"]["source_dates"] = result["source_dates"]
         result["reconciliation"]["need_breakdown"]["source_dates"] = result["source_dates"]
         result["unallocated_programme"] = result["reconciliation"]["unallocated_programme"]
+        if baseline.get("allocation_problem"):
+            result["reconciliation"]["reasons"].append(baseline["allocation_problem"])
         result["remaining_need_scope"] = "bank_chapters_only"
         result["monthly_need_complete"] = not bool((baseline.get("chapter_flow") or {}).get(""))
     admin = (own_money or {}).get("admin")
@@ -2668,7 +2682,7 @@ def _summary(view: dict[str, Any], funding: dict[str, Any],
 
 def _dashboard(project: str, rss: Path, cut: datetime.date, view: dict[str, Any]) -> dict[str, Any]:
     estimate = actuals.read_estimate(rss)
-    finance = _finance_baseline(project)
+    finance = _finance_for_cut(project, cut)
     current = _rss_ch23(estimate, tuple(finance.get("chapters") or ("2", "3")))
     physical = _physical_smr(rss, estimate, cut)
     approved = float(finance.get("approved") or 0.0)

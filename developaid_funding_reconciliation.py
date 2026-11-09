@@ -362,8 +362,17 @@ def admin_expense_breakdown(admin: dict | None) -> dict | None:
     if any(number(unallocated.get(field)) is None or abs(number(unallocated.get(field))) > .005
            for field in ("total", "paid", "to_pay")):
         rows.append(row("Банковская статья не уточнена", unallocated))
+    count = len(admin.get("owner_decisions") or [])
+    note = "Факт и план финансовой модели. АХР уже включены в бюджет и повторно не прибавляются."
+    if count:
+        note += " " + owner_decision_note(count)
     return {"rows": rows, "allocation_known": admin.get("allocation_known") is True,
-            "note": "Факт и план финансовой модели. АХР уже включены в бюджет и повторно не прибавляются."}
+            "owner_decision_count": count, "note": note}
+
+
+def owner_decision_note(count: int) -> str:
+    noun = "строки" if count % 10 == 1 and count % 100 != 11 else "строк"
+    return f"Банковское отнесение {count} {noun} — по решению владельца."
 
 
 def breakdown_rows(detail: dict) -> list[dict]:

@@ -55,6 +55,8 @@ ROUTES = _gated_routes()
 _FILL = {str: "проверка", int: 1, float: 1.0, bool: False, list: [], dict: {}}
 _ENDPOINT_PAYLOADS = {
     ("POST", "/monitor/schedule-gpr-physical/save"): {"source_kind": "gpr"},
+    ("POST", "/monitor/finance-allocation/apply"): {
+        "assignments": [{"row_id": "a" * 64, "bank_code": "2.6"}]},
 }
 
 
@@ -94,6 +96,8 @@ def call(method: str, path: str, session: str = "", key: str = "",
                 kind = getattr(field.annotation, "__origin__", None) or field.annotation
                 out[name] = _FILL.get(kind, "проверка")
         if getattr(model, "model_fields", None):
+            if model.model_config.get("extra") == "forbid":
+                out = {name: value for name, value in out.items() if name in model.model_fields}
             # Невалидная заготовка не проверяет доступ: FastAPI вернёт 422
             # ещё до вызова маршрута. Отличаем поломку стенда от отказа ключа.
             model.model_validate(out)

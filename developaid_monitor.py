@@ -511,6 +511,13 @@ def _schedule_packages(project: str, data: bytes) -> dict[str, Any] | None:
 
 def replace_finance_baseline(project: str, data: bytes,
                              taken_at: Any, file_name: str = "") -> dict[str, Any]:
+    import developaid_finance_allocations as allocations
+    with allocations.source_lock(project):
+        return _replace_finance_baseline_locked(project, data, taken_at, file_name)
+
+
+def _replace_finance_baseline_locked(project: str, data: bytes,
+                                     taken_at: Any, file_name: str = "") -> dict[str, Any]:
     """Заменить финансовый baseline утверждённым пересчётом.
 
     Финкнигу пересчитывают решением — например, когда потребность фасадов
