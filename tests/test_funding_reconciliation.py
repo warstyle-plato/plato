@@ -124,7 +124,7 @@ def test_chapter_payments_cannot_be_assigned_to_admin_by_guess(tmp_path):
 def test_mixed_map_is_unallocated_in_admin_and_general_funding(tmp_path, monkeypatch):
     model = admin_fixture.read_with_map(tmp_path, monkeypatch, ['2.6', '2.6', '3.7'])
     admin = dashboard._admin_expenses(model['budget_composition'], model['chapter_flow'])
-    assert admin['unallocated']['total'] == 40_000
+    assert admin['unallocated']['total'] == 100_000
     assert model['chapter_flow']['2']['sections'].get('2.4', 0.0) == 0
     assert model['chapter_flow']['']['sections']['2.4'] == 40_000
     result = own(model, fixture.PAID)

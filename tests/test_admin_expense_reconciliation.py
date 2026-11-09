@@ -21,20 +21,17 @@ def read_with_map(tmp_path, monkeypatch, destinations):
     return fixture._read(tmp_path, fixture._finmodel(rows))
 
 
-@pytest.mark.parametrize('destinations, expected', [(['2.6'], {'2': 40_000., '3': 60_000.}),
-                                                     (['3.7'], {'3': 100_000.}),
-                                                     (['4.1'], {'4': 40_000., '3': 60_000.})])
-def test_only_monetary_leaves_are_allocated(tmp_path, monkeypatch, destinations, expected):
+@pytest.mark.parametrize('destinations', [['2.6'], ['3.7'], ['4.1']])
+def test_a_single_dictionary_chapter_is_not_monetary_evidence(tmp_path, monkeypatch, destinations):
     source = read_with_map(tmp_path, monkeypatch, destinations)
     admin = dashboard._admin_expenses(source['budget_composition'], source['chapter_flow'])
-    assert admin['chapters'] == expected
+    assert admin['chapters'] == {}
+    assert admin['unallocated'] == {'total': 100_000, 'paid': 30_000, 'to_pay': 70_000}
     assert admin['total'] == 100_000
     assert admin['paid'] == 30_000
     assert admin['to_pay'] == 70_000
-    assert sum(row['total'] for row in admin['by_chapter'].values()) == admin['total']
-    assert sum(row['paid'] for row in admin['by_chapter'].values()) == admin['paid']
-    assert sum(row['to_pay'] for row in admin['by_chapter'].values()) == admin['to_pay']
-    assert admin['allocation_known']
+    assert not admin['allocation_known']
+    assert source['approved'] == source['budget_composition']['total']
     assert all(item['source']['sheet'] == 'cf_1_new' for item in admin['items'])
     assert all(item['source']['row'] > 6 for item in admin['items'])
     assert admin['bank_coverage'] is None
@@ -46,13 +43,13 @@ def test_mixed_or_missing_crosswalk_is_not_a_monetary_split(tmp_path, monkeypatc
     source = read_with_map(tmp_path, monkeypatch, destinations)
     admin = dashboard._admin_expenses(source['budget_composition'], source['chapter_flow'])
     # Two map rows for chapter2 cannot turn into a 2/3 money share.
-    assert admin['chapters'] == {'3': 60_000}
-    assert admin['unallocated'] == {'total': 40_000, 'paid': 20_000, 'to_pay': 20_000}
+    assert admin['chapters'] == {}
+    assert admin['unallocated'] == {'total': 100_000, 'paid': 30_000, 'to_pay': 70_000}
     assert not admin['allocation_known']
     assert admin['bank_coverage'] is None
     assert admin['included_in_deficit'] is None
     text = ' '.join(dashboard.admin_expense_lines(admin, report._rub))
-    assert 'не распределено — 40 000 ₽' in text
+    assert 'не распределено — 100 000 ₽' in text
     assert 'не подтверждены' in text
 
 
@@ -115,7 +112,7 @@ def test_missing_cached_money_is_unknown_not_zero(tmp_path, monkeypatch):
     comp['admin_items'][0]['plan'] = 0.0
     admin = dashboard._admin_expenses(comp, source['chapter_flow'])
     assert admin['to_pay'] is None
-    assert admin['by_chapter']['2']['to_pay'] is None
+    assert admin['unallocated']['to_pay'] is None
     assert not admin['allocation_known']
     assert 'ПЛАН —' in ' '.join(dashboard.admin_expense_lines(admin, report._rub))
 

@@ -1484,9 +1484,7 @@ def _admin_expenses(comp: dict[str, Any] | None,
     else:
         for item in items:
             candidates = item.get("chapter_candidates") or []
-            bucket = (chapters.setdefault(candidates[0], {"total": 0.0, "paid": 0.0,
-                                                         "to_pay": 0.0})
-                      if len(candidates) == 1 else unallocated)
+            bucket = unallocated
             for target, source in (("total", "total"), ("paid", "fact"), ("to_pay", "plan")):
                 if not item.get("known_fields", {}).get(source, True):
                     unknown_fields.add(source)
@@ -1497,6 +1495,7 @@ def _admin_expenses(comp: dict[str, Any] | None,
                 reasons.append(f"статья {item['code']}: карта ведёт в разные главы без денежных долей")
             elif not candidates:
                 reasons.append(f"статья {item['code']}: глава по карте не установлена")
+        reasons.append("справочник статей не подтверждает денежное распределение ФАКТА и ПЛАНА АХР по главам")
     if unknown_fields:
         reasons.append("часть денежных ячеек листовых строк не содержит сохранённого значения")
     allocation_known = items is not None and not reasons

@@ -388,7 +388,8 @@ def test_admin_expenses_are_named_apart_and_not_assumed_covered(tmp_path):
     _, own = _own(tmp_path)
     admin = own["admin"]
     assert admin["total"] == pytest.approx(40 * K)
-    assert admin["chapters"] == {"2": pytest.approx(40 * K)}
+    assert admin["chapters"] == {}
+    assert admin["unallocated"]["total"] == pytest.approx(40 * K)
     assert admin["bank_coverage"] is None
     assert admin["included_in_deficit"] is None
     assert admin["paid_at_cut"] is None
@@ -397,7 +398,7 @@ def test_admin_expenses_are_named_apart_and_not_assumed_covered(tmp_path):
     text = " ".join(dashboard.own_money_lines(own, report._rub))
     assert "Административные расходы без налогов — 40 000 ₽" in text
     assert "ФАКТ финмодели 20 000 ₽, ПЛАН 20 000 ₽" in text
-    assert "глава 2 — 40 000 ₽" in text
+    assert "не распределено — 40 000 ₽" in text
     assert "Постатейное покрытие АХР и состав календарной программы не подтверждены" in text
     assert "уже входят" not in text
     assert "лимита не хватит" not in text
