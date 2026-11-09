@@ -334,7 +334,7 @@ def render(block: dict, *, context: str = 'monitor') -> str:
     chain = rnv.get('driving_chain') or []
     if chain and not gpr:
         out.append('<p class="schedule-note"><b>Срок тянет:</b> '+esc(chain[-1].get('name') or '')+'</p>')
-    out.append(physical_summary(block.get('physical')))
+    out.append(physical_summary(block.get('physical'), include_covered=False))
     if not block.get('history'):
         out.append('<p class="schedule-note">Сравнение версий ГПР пока не рассчитано.</p>')
     confirmation = block.get('confirmation') or {}

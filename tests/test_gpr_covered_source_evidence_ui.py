@@ -104,3 +104,72 @@ def test_executive_render_and_pdf_name_covered_scope_and_construction_plan(width
             assert 'План окончания работ' in text and '01.02.2027' in text
             assert '60%' in text and 'охваченного раздела КС' in text
         assert not errors
+
+
+def full_server_view(tmp_path, monkeypatch, *, no_calendar=False):
+    """Actual imports and Monitor, including its complete server timeline HTML."""
+    from openpyxl import load_workbook
+    import developaid_monitor as monitor
+    import developaid_monitor_ledgers as ledgers
+    from test_gpr_corpus_baseline import construction_book
+    from test_monitor_cumulative_ledgers import archive, book
+    monkeypatch.setattr(monitor, '_SNAPSHOT_DIR', tmp_path/'isolated-monitor')
+    project = 'Учебный полный серверный ГПР'
+    gpr_data = construction_book()
+    if no_calendar:
+        gpr = load_workbook(io.BytesIO(gpr_data))
+        for row in (5, 6):
+            for col in (6, 7, 9, 10, 12, 13):
+                gpr['ГПР'].cell(row, col).value = None
+        output = io.BytesIO(); gpr.save(output); gpr_data = output.getvalue()
+    monitor.store_schedule(project, gpr_data, None, '2026-11-09')
+    wb = load_workbook(io.BytesIO(book()))
+    ws = wb.active
+    ws.insert_rows(9, 2)
+    ws['B9'], ws['C9'] = '-', 'Корпус 1 этажи 2–3'
+    ws['B10'], ws['C10'] = '1', 'Устройство отделки фасадов (вертикальная часть)'
+    data = io.BytesIO(); wb.save(data)
+    ledgers.store_archive(project, archive([('Учебные объёмы.xlsx', data.getvalue())]),
+                          '2026-11-09', 'Учебный архив.zip')
+    return monitor.build(project, '2026-11-09')
+
+
+@pytest.mark.parametrize('width', [390, 1440])
+def test_full_monitor_build_has_one_covered_card_owner_and_preserves_report_sources(tmp_path, monkeypatch, width):
+    import developaid_report_schedule as report
+    import developaid_schedule_visual as visual
+    value = full_server_view(tmp_path, monkeypatch)
+    schedule = value['schedule']
+    physical = schedule['physical_progress']
+    count = len(physical['covered_source_groups'])
+    assert count == 1
+    assert schedule['dependency_timeline_html']  # this HTML used to supply a second complete grid
+    assert 'ks-covered-source' not in schedule['dependency_timeline_html']
+    assert visual.physical_summary(physical).count('ks-covered-source') == count
+    summary = report.model(schedule['dependency_timeline'])
+    assert summary['facts'] and all(f['source_scope_only'] for f in summary['facts'])
+    with browser_page(width) as (page, responses, errors):
+        page.evaluate('(v)=>renderGantt(v)', value)
+        expect(page.locator('.ks-covered-source')).to_have_count(count)
+        expect(page.locator('#ksSharedGroups .ks-covered-source')).to_have_count(count)
+        expect(page.locator('#dependencyTimelineBody .ks-covered-source')).to_have_count(0)
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+        if width == 1440:
+            page.set_content(report.render(summary)+report.details(summary))
+            text = ' '.join((s.extract_text() or '') for s in PdfReader(io.BytesIO(page.pdf())).pages)
+            assert 'охваченная часть КС' in text and 'полный пакет ГПР не подтверждён' in text
+        assert not errors
+
+
+def test_covered_facts_remain_visible_when_the_source_has_no_calendar_dates(tmp_path, monkeypatch):
+    value = full_server_view(tmp_path, monkeypatch, no_calendar=True)
+    assert value['schedule']['rows'] == [] and value['schedule']['management'] == []
+    assert len(value['schedule']['physical_progress']['covered_source_groups']) == 1
+    with browser_page(390) as (page, responses, errors):
+        page.evaluate('(v)=>renderGantt(v)', value)
+        expect(page.locator('#ganttCard')).to_be_visible()
+        expect(page.locator('.ks-covered-source')).to_have_count(1)
+        expect(page.locator('.ks-covered-source')).to_be_visible()
+        expect(page.locator('#gprEmptyText')).to_contain_text('нет полных плановых дат')
+        assert page.locator('#gantt').inner_text() == ''
+        assert not errors

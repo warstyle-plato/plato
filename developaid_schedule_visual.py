@@ -142,11 +142,13 @@ def legend(rows=()):
             '<span><i class="delay"></i>Сдвиг</span></div>')
 
 
-def physical_summary(block):
+def physical_summary(block, *, include_covered=True):
     """Print the supplied natural quantities and explicit facts, not PM rows.
 
     Components retain their own units and qualifications. There is no cross-work
     sum, average percentage, date inference or conversion from money here.
+    Monitor PAGE owns covered-source cards and requests only bound facts here;
+    standalone and report renderers keep the complete source presentation.
     """
     if not block:
         return ''
@@ -181,7 +183,7 @@ def physical_summary(block):
         if task.get('actual_finish'):
             displayed = True
             out.append('<article class="schedule-physical-item"><h4>'+esc(task.get('name') or task.get('task_id'))+'</h4><p>Подтверждённое окончание, факт: '+esc(date_text(task['actual_finish']))+'</p></article>')
-    for group in block.get('covered_source_groups') or []:
+    for group in (block.get('covered_source_groups') or []) if include_covered else []:
         measured, coverage = group.get('model') or {}, group.get('coverage') or {}
         displayed = True
         out.append('<article class="schedule-physical-item ks-covered-source"><h4>'+esc(group.get('source_name'))+'</h4>')
@@ -203,6 +205,10 @@ def physical_summary(block):
             out.append('<p>Других позиций: '+esc(len(components)-8)+'. Полный состав доступен в Мониторе.</p>')
         out.append('</article>')
     out.append('</div>')
+    if not displayed and not include_covered and block.get('covered_source_groups'):
+        # In Monitor PAGE owns these cards. Avoid both a second card grid
+        # and an empty duplicate section; standalone/report output keeps it.
+        return ''
     if not displayed:
         status = block.get('evidence_status') or {}
         out.append('<p class="schedule-note">'+esc(status.get('reason') or 'Подтверждённое выполнение по накопительным пока не определено.')+'</p>')
