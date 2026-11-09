@@ -887,6 +887,30 @@ def build(project: str, cut: str = "", *, include_history: bool = True) -> dict:
             source_split = bool(source_items) and all(item.get("amount_split")
                 and _number(item.get("completed_work_amount")) is not None
                 and _number(item.get("completed_material_amount")) is not None for item in source_items)
+            financial_complete = bool(source_items) and all(
+                _number(item.get(field)) is not None for item in source_items
+                for field in ('planned_amount', 'completed_amount')) and not ledger.get('unread_rows_count')
+            natural_complete = bool(source_items) and all(item.get('unit') and all(
+                _number(item.get(field)) is not None for field in ('plan_quantity', 'completed_quantity'))
+                for item in source_items)
+            planned_split = bool(source_items) and all(item.get('planned_cost_split') is True and all(
+                _number(item.get(field)) is not None for field in ('planned_work_amount', 'planned_material_amount'))
+                and _number(item.get('planned_amount')) is not None
+                and abs(_number(item.get('planned_work_amount'))+_number(item.get('planned_material_amount'))
+                        -_number(item.get('planned_amount'))) <= max(.01, abs(_number(item.get('planned_amount')))*1e-7)
+                for item in source_items)
+            planned_works = sum(_number(item.get('planned_work_amount')) for item in source_items) if planned_split else None
+            planned_materials = sum(_number(item.get('planned_material_amount')) for item in source_items) if planned_split else None
+            completed_works = (sum(_number(item.get('completed_work_amount')) for item in source_items)
+                               if source_split and reported_completed is not None else None)
+            completed_materials = (sum(_number(item.get('completed_material_amount')) for item in source_items)
+                                   if source_split and reported_completed is not None else None)
+            part_bases = {item.get('planned_work_amount_basis') for item in source_items} - {None, '', 'unspecified'}
+            parts_comparable = (planned_split and source_split and financial_complete and _basis_metadata_current(snapshot)
+                and 'conflicting' not in part_bases | completed_bases and len(part_bases) <= 1
+                and len(completed_bases) <= 1 and not (part_bases and completed_bases and part_bases != completed_bases)
+                and all(_number(item.get(field)) >= 0 for item in source_items
+                        for field in ('planned_work_amount', 'planned_material_amount')))
             references.append({"source": _source(ledger.get("source"), "Накопительная ведомость"),
                 "period_year": ledger.get("period_year"), "source_date": archive_day,
                 "completed": reported_completed,
@@ -896,6 +920,7 @@ def build(project: str, cut: str = "", *, include_history: bool = True) -> dict:
                                      and reported_planned is not None and reported_planned > 0
                                      and statement_comparable else None),
                 "monetary_comparable": statement_comparable,
+                'financial_complete': financial_complete, 'natural_complete': natural_complete,
                 "source_complete": bool(ledger.get("source_complete")) and all(
                     _number(item.get(field)) is not None for item in source_items
                     for field in ("plan_quantity", "planned_amount", "completed_quantity", "completed_amount")),
@@ -908,10 +933,14 @@ def build(project: str, cut: str = "", *, include_history: bool = True) -> dict:
                 "amount_scope": "statement",
                 "stated_contract_amount": _number(ledger.get("contract_amount")),
                 "works_materials_split": source_split,
-                "completed_works": (sum(_number(item.get("completed_work_amount")) or 0 for item in source_items)
-                                    if source_split and reported_completed is not None else None),
-                "completed_materials": (sum(_number(item.get("completed_material_amount")) or 0 for item in source_items)
-                                        if source_split and reported_completed is not None else None),
+                'planned_cost_split': planned_split,
+                'planned_works': planned_works, 'planned_materials': planned_materials,
+                'completed_works': completed_works, 'completed_materials': completed_materials,
+                'parts_monetary_comparable': parts_comparable,
+                'works_completion_ratio': (completed_works/planned_works if parts_comparable
+                    and planned_works is not None and planned_works > 0 and completed_works is not None else None),
+                'materials_completion_ratio': (completed_materials/planned_materials if parts_comparable
+                    and planned_materials is not None and planned_materials > 0 and completed_materials is not None else None),
                 "period_dates_known": bool(ledger.get("period_dates_known")),
                 "future_periods_excluded": future_excluded,
                 "label": "Сумма сохранённых итогов позиций этой ведомости; справочно, период закрытия не установлен"})

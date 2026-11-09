@@ -122,6 +122,9 @@ def statement_union(row: dict) -> dict:
             return fail('source_identity_unknown', 'Для одной ведомости не подтверждены файл и лист источника.')
         if reference.get('future_periods_excluded') is not False:
             return fail('future_or_unverified_periods', 'Общий итог содержит будущие или непроверенные периоды.', source=source)
+        if (reference.get('source_complete') is False and reference.get('financial_complete') is True
+                and reference.get('natural_complete') is False):
+            return fail('natural_identity_unverified', 'Денежные итоги ведомости известны; объёмы или единицы её позиций не подтверждены для объединения состава.', source=source)
         if reference.get('source_complete') is False or (_number(reference.get('unread_rows_count')) or 0) > 0:
             return fail('partial_source', 'Одна из ведомостей прочитана не полностью; общий процент не выбран.', source=source)
         bases = reference.get('planned_amount_basis'), reference.get('completed_amount_basis')
