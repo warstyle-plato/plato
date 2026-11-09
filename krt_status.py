@@ -8,6 +8,28 @@ from typing import Any
 _KNOWN = {"planned", "running"}
 
 
+def model_cohort(projects: list[dict[str, Any]], *, unique: bool = False) -> list[dict[str, Any]]:
+    """Keep raw statuses; conflicting identities cannot authorize a model.
+
+    A source may publish planned and running rows for the same slug. Neither
+    row is evidence of a transition while both coexist in one snapshot.
+    """
+    kinds: dict[str, set[str]] = {}
+    for project in projects:
+        slug = str(project.get("slug") or "")
+        kinds.setdefault(slug, set()).add(project_kind(project))
+    out, seen = [], set()
+    for project in projects:
+        row = dict(project)
+        slug = str(row.get("slug") or "")
+        if slug and "running" in kinds[slug] and len(kinds[slug]) > 1:
+            row["model_status_conflict"] = True
+        if not unique or not slug or slug not in seen:
+            out.append(row)
+        seen.add(slug)
+    return out
+
+
 def status_kind(status: Any) -> str:
     word = str(status or "").strip().casefold()
     if not word:
@@ -66,7 +88,11 @@ def model_exclusion(project: dict[str, Any]) -> dict[str, Any] | None:
     """Only confirmed running, or its unconfirmed transition, blocks models."""
     project = with_last_known_status(project)
     current = project_kind(project)
-    if running_kind(current):
+    if project.get("model_status_conflict"):
+        reason = ("В одном снимке источника для площадки указаны разные статусы, "
+                  "включая «В реализации». Переход статуса не подтверждён; "
+                  "модель и балл не пересчитываются до устранения противоречия.")
+    elif running_kind(current):
         reason = ("Площадка в реализации: финансовая модель и инвестиционный балл "
                   "не пересчитываются. Сведения о рынке можно обновлять отдельно.")
     elif current not in _KNOWN and running_kind(project.get("last_known_status_kind")):

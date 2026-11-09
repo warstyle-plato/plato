@@ -229,7 +229,7 @@ def _synchronous_worker(monkeypatch, ranking):
 def test_the_real_weekly_pass_models_only_allowed_projects(tmp_path, monkeypatch):
     app, ranking, loops, model_calls, market_calls, _ = _app(tmp_path, monkeypatch, [RUNNING, PLANNED])
     old_bytes = _keep_old_model(ranking)
-    monkeypatch.setattr(ranking, "due", lambda: True)
+    monkeypatch.setattr(ranking, "due", lambda *args: True)
     _synchronous_worker(monkeypatch, ranking)
     _one_pass(monkeypatch, loops["krt-weekly"])
     assert model_calls == ["planned"]
@@ -413,7 +413,7 @@ def test_a_recognized_planned_transition_replaces_the_old_running_history():
 def test_the_real_weekly_loop_preserves_a_model_during_an_unknown_running_transition(tmp_path, monkeypatch):
     _, ranking, loops, model_calls, _, requirements = _app(tmp_path, monkeypatch, [UNKNOWN_RUNNING])
     old_model = _keep_old_model(ranking)
-    monkeypatch.setattr(ranking, "due", lambda: True)
+    monkeypatch.setattr(ranking, "due", lambda *args: True)
     _synchronous_worker(monkeypatch, ranking)
     _one_pass(monkeypatch, loops["krt-weekly"])
     assert not model_calls and not requirements
@@ -466,7 +466,7 @@ def test_unknown_running_rating_refuses_truthfully_without_market_or_model(tmp_p
     assert ranking.report_path("running").read_bytes() == old_model
 
 
-def test_source_snapshot_retains_and_updates_status_history_without_running_models(tmp_path):
+def test_source_snapshot_retains_and_updates_status_history_without_running_models(tmp_path, monkeypatch):
     from market_search.krt_registry import KrtRegistry
 
     status = ["В реализации"]
@@ -486,7 +486,9 @@ def test_source_snapshot_retains_and_updates_status_history_without_running_mode
         row = registry.projects(refresh=True, max_pages=1)[0].to_dict()
         assert row["status"] == value and row["last_known_status_kind"] == last_known
         assert bool(krt_status.model_exclusion(row)) is excluded
-        reloaded = KrtRegistry(tmp_path, fetch=forbidden).catalogue()[0]
+        reader = KrtRegistry(tmp_path, fetch=forbidden)
+        monkeypatch.setattr(reader, "refresh_in_background", lambda: None)
+        reloaded = reader.catalogue()[0]
         assert reloaded["last_known_status_kind"] == last_known
         assert reloaded["status"] == value
 
@@ -502,3 +504,72 @@ def test_bad_old_history_does_not_block_a_successful_source_refresh(tmp_path, ol
     rows = registry.projects(refresh=True, max_pages=1)
     assert rows and rows[0].slug == "synthetic"
     assert rows[0].last_known_status_kind == "planned"
+
+
+def test_conflicting_source_rows_never_authorize_a_model(tmp_path, monkeypatch):
+    conflict = {**PLANNED, "slug": "running"}
+    projects = [conflict, RUNNING, PLANNED, dict(PLANNED)]
+    app, ranking, loops, models, markets, _ = _app(tmp_path, monkeypatch, projects)
+    old_bytes = _keep_old_model(ranking)
+    monkeypatch.setattr(ranking, "due", lambda *args: True)
+    _synchronous_worker(monkeypatch, ranking)
+    _one_pass(monkeypatch, loops["krt-weekly"])
+    assert models == ["planned"]
+    assert len(markets) == 2
+    assert ranking.progress()["model_skipped"] == 1
+    assert ranking.progress()["total"] == 2
+    assert ranking.report_path("running").read_bytes() == old_bytes
+    assert conflict["status"] == "Планируемый"
+
+
+def test_catalogue_conflict_reaches_find_and_all_model_readers(tmp_path):
+    from market_search.krt_registry import KrtRegistry
+    raw = [{**PLANNED, "slug": "same", "url": "https://example.test/same"},
+           {**RUNNING, "slug": "same", "url": "https://example.test/same"}]
+    rows = KrtRegistry._decode({"projects": raw})
+    assert len(rows) == 2
+    assert [r.status for r in rows] == ["Планируемый", "В реализации"]
+    for row in rows:
+        project = row.to_dict()
+        assert krt_status.model_exclusion(project)["model_excluded"]
+        assert build_krt_model_screening(project, {}, object())["model_excluded"]
+        assert krt_ranking.score_row(project, {})["model_excluded"]
+        assert krt_investment_score.generic_project_burden(object(), project, {})["model_excluded"]
+
+
+def test_weekly_includes_early_projects_from_the_canonical_list(tmp_path, monkeypatch):
+    app, ranking, loops, models, markets, _ = _app(tmp_path, monkeypatch, [PLANNED])
+    monkeypatch.setattr(api.krt_early_projects, "projects", lambda official=None: [
+        {"slug": "early:synthetic", "name": "Public early decision", "no_card": True}])
+    monkeypatch.setattr(ranking, "due", lambda *args: True)
+    _synchronous_worker(monkeypatch, ranking)
+    _one_pass(monkeypatch, loops["krt-weekly"])
+    assert models == ["planned"]  # Missing early TEP is an explicit skipped model.
+    assert ranking.stored_row("early:synthetic")["reason"]
+    assert ranking.progress()["done"] == ranking.progress()["total"] == 2
+
+
+def test_incomplete_catalogue_cannot_be_a_complete_weekly_run(tmp_path, monkeypatch):
+    app, ranking, loops, models, markets, _ = _app(tmp_path, monkeypatch, [PLANNED])
+    app.state.market_discovery_service.krt.status = lambda: {"complete": True, "refreshing": True}
+    monkeypatch.setattr(ranking, "due", lambda *args: True)
+    _one_pass(monkeypatch, loops["krt-weekly"])
+    assert not models and not markets
+    assert not ranking.schedule_status().get("last_completed_at")
+
+
+def test_cross_page_status_conflict_is_not_lost_as_a_duplicate(tmp_path, monkeypatch):
+    from market_search import krt_registry as source
+    rows = [source.KrtTerritory(slug="same", name="Synthetic", url="https://example.test/same", status=s)
+            for s in ["Планируемый", "В реализации"]]
+    def parse(text):
+        return ([rows[0]], "https://example.test/second") if text == "first" else ([rows[1]], None)
+    monkeypatch.setattr(source, "parse_catalogue", parse)
+    registry = source.KrtRegistry(tmp_path, fetch=lambda url: b"second" if url.endswith("second") else b"first")
+    actual = registry.projects(refresh=True)
+    assert len(actual) == 2 and all(r.model_status_conflict for r in actual)
+    assert all(krt_status.model_exclusion(r.to_dict()) for r in actual)
+    # A later complete, unambiguous planned source is a confirmed transition.
+    monkeypatch.setattr(source, "parse_catalogue", lambda text: ([rows[0]], None))
+    later = registry.projects(refresh=True)
+    assert len(later) == 1 and not krt_status.model_exclusion(later[0].to_dict())

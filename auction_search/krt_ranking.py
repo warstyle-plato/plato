@@ -43,7 +43,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from market_search.http import load_json, save_json
-from auction_search.krt_status import model_exclusion, project_kind, with_last_known_status
+from auction_search.krt_status import model_cohort, model_exclusion, project_kind, with_last_known_status
 
 logger = logging.getLogger(__name__)
 
@@ -1449,6 +1449,7 @@ class KrtRanking:
                 if not claimed:
                     self.release()
                 return False
+            projects = model_cohort(projects, unique=True)
             if scheduled:
                 projects = self._schedule_begin(projects)
             self._progress = {

@@ -1430,9 +1430,7 @@ def install(app: FastAPI) -> None:
                     pause = DUE_RETRY_SECONDS
                     if krt_ranking.claim():
                         try:
-                            projects = krt_registry.projects(refresh=True)
-                            rows = [row.to_dict() if hasattr(row, "to_dict") else row
-                                    for row in projects]
+                            krt_registry.projects(refresh=True)
                             # Площадки-решения идут тем же прогоном (владелец,
                             # 04.09.2026: «по решениям надо, раз в неделю как
                             # обычно»). Прогон публикаций по каталогу до них не
@@ -1442,8 +1440,13 @@ def install(app: FastAPI) -> None:
                             # него те же публикации; а когда в решении названо
                             # жильё, считается и та же модель — цифры площадки
                             # прочитаны из её PDF.
-                            rows = rows + _decision_rows_for_run()
-                            if not rows:
+                            rows, whole, _why = _krt_screen_state()
+                            if not whole:
+                                krt_ranking.note_schedule_failure(
+                                    "Канонический список КРТ ещё неполон или обновляется; "
+                                    "полный плановый прогон отложен")
+                                krt_ranking.release()
+                            elif not rows:
                                 krt_ranking.note_schedule_failure(
                                     "Каталог КРТ и список решений пришли пустыми — "
                                     "считать было нечего, повторю позже")
@@ -2875,7 +2878,7 @@ def install(app: FastAPI) -> None:
         walk = state.get("decisions_walk")
         if isinstance(walk, dict) and walk:
             why["decisions_walk"] = walk
-        return catalogue + decisions + early, catalogue_whole and decisions_whole, why
+        return krt_status.model_cohort(catalogue + decisions + early), catalogue_whole and decisions_whole, why
 
     def _krt_screen_list() -> tuple[list[dict[str, Any]], bool]:
         """Список экрана и полнота — тем же счётом, что и причина."""

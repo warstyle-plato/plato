@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 from urllib.parse import urljoin
 
-from krt_status import with_last_known_status
+from krt_status import model_cohort, with_last_known_status
 from .http import RemoteServiceError, fresh, load_json, request_bytes, save_json
 from .krt_requirements import (
     decision_intent,
@@ -217,6 +217,7 @@ class KrtTerritory:
     district: str | None = None
     status: str | None = None
     last_known_status_kind: str = ""
+    model_status_conflict: bool = False
     total_gfa_sqm: float | None = None
     housing_gfa_sqm: float | None = None
     nonresidential_gfa_sqm: float | None = None
@@ -469,7 +470,16 @@ class KrtRegistry:
             if isinstance(raw, dict) and raw.get("slug")
         }
         seen_urls: set[str] = set()
-        seen_slugs: set[str] = set()
+        seen_rows: set[tuple[str, str]] = set()
+
+        def unseen(page: list[KrtTerritory]) -> list[KrtTerritory]:
+            out = []
+            for row in page:
+                signature = (row.slug, str(row.status or ""))
+                if signature not in seen_rows:
+                    out.append(row)
+                    seen_rows.add(signature)
+            return out
         # Есть ли на диске ПОЛНЫЙ снимок. Пока этого вопроса не было, каждая
         # прочитанная страница переписывала файл усечённым списком: посреди
         # обхода каталог на экране падал с 282 строк до 84, а площадки, чьи
@@ -491,6 +501,9 @@ class KrtRegistry:
             rows[:] = [replace(row, last_known_status_kind=str(
                 with_last_known_status(row.to_dict(), previous_statuses.get(row.slug))
                 .get("last_known_status_kind") or "")) for row in rows]
+            flags = model_cohort([row.to_dict() for row in rows])
+            rows[:] = [replace(row, model_status_conflict=bool(flag.get("model_status_conflict")))
+                       for row, flag in zip(rows, flags)]
             if not complete and had_complete:
                 return
             save_json(self.path, {
@@ -517,9 +530,8 @@ class KrtRegistry:
                     # пустой разбор посреди обхода значит, что страница не
                     # прочиталась, и помечать усечённый список полным нельзя.
                     break
-                new_rows = [row for row in page if row.slug not in seen_slugs]
+                new_rows = unseen(page)
                 rows.extend(new_rows)
-                seen_slugs.update(row.slug for row in new_rows)
                 persist(complete=False)
         except (RemoteServiceError, OSError, UnicodeError):
             pass
@@ -552,9 +564,8 @@ class KrtRegistry:
                     persist(complete=True)
                     return rows
                 previous = slugs
-                new_rows = [row for row in page if row.slug not in seen_slugs]
+                new_rows = unseen(page)
                 rows.extend(new_rows)
-                seen_slugs.update(row.slug for row in new_rows)
                 persist(complete=False)
         except (RemoteServiceError, OSError, UnicodeError):
             pass
@@ -573,7 +584,9 @@ class KrtRegistry:
                 out.append(_checked(KrtTerritory(**clean)))
             except (TypeError, ValueError):
                 continue
-        return out
+        flags = model_cohort([row.to_dict() for row in out])
+        return [replace(row, model_status_conflict=bool(flag.get("model_status_conflict")))
+                for row, flag in zip(out, flags)]
 
     @staticmethod
     def _cache_current(payload: Any) -> bool:
