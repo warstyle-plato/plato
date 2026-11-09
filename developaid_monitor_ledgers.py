@@ -28,7 +28,7 @@ from typing import Any
 import developaid_monitor as monitor
 
 MAX_ARCHIVE_BYTES = 20 * 1024 * 1024
-PARSER_SCHEMA = 3
+PARSER_SCHEMA = 4
 MAX_UNPACKED_BYTES = 100 * 1024 * 1024
 MAX_FILE_BYTES = 20 * 1024 * 1024
 MAX_FILES = 100
@@ -50,6 +50,15 @@ _PARSE_CACHE = OrderedDict()
 _PARSE_CACHE_LOCK = threading.Lock()
 _PARSE_CACHE_ENTRIES = 2
 _PARSE_CACHE_BYTES = 4 * 1024 * 1024
+
+
+class _SheetRows(list):
+    """Transient workbook structure; source formulas are evidence, never run."""
+
+    def __init__(self, *, header_merges=()):
+        super().__init__()
+        self.header_merges = header_merges
+        self.formulas = {}
 
 
 class LedgerProblem(ValueError):
@@ -180,7 +189,7 @@ def _zip_members(data: bytes, *, workbook: bool = False) -> list[tuple[str, byte
         raise LedgerProblem('ZIP не читается или повреждён. Пересоздайте архив с книгами Excel.') from None
 
 
-def _xlsx_bounds(data: bytes) -> int:
+def _xlsx_bounds(data: bytes, *, header_merges: dict | None = None) -> int:
     row_bound = 1
     count = 0
     for name, raw in _zip_members(data, workbook=True):
@@ -191,8 +200,21 @@ def _xlsx_bounds(data: bytes) -> int:
             raise LedgerProblem('Книга содержит неподдерживаемые XML-объявления.')
         if not re.fullmatch(r'xl/worksheets/sheet[^/]*\.xml', name):
             continue
+        merges = []
         try:
             for _, element in ET.iterparse(io.BytesIO(raw), events=('end',)):
+                if element.tag.rsplit('}', 1)[-1] == 'mergeCell' and header_merges is not None:
+                    from openpyxl.utils.cell import range_boundaries
+                    try:
+                        left, top, right, bottom = range_boundaries(element.attrib.get('ref', ''))
+                        if (all(isinstance(value, int) for value in (left, top, right, bottom))
+                                and 1 <= top <= bottom <= 45 and 1 <= left <= right <= MAX_COLUMNS):
+                            merges.append((top-1, left-1, bottom-1, right-1))
+                            if len(merges) > 45 * MAX_COLUMNS:
+                                raise LedgerProblem('В книге слишком много объединений в шапке таблицы.')
+                    except (ValueError, TypeError):
+                        raise LedgerProblem('В книге не распознана объединённая шапка таблицы.') from None
+                    element.clear()
                 if element.tag.rsplit('}', 1)[-1] == 'c':
                     # Empty formatting at column 1000 is not business data.
                     nonempty = any(child.tag.rsplit('}', 1)[-1] in {'v', 'f', 'is'}
@@ -213,6 +235,8 @@ def _xlsx_bounds(data: bytes) -> int:
                     element.clear()
         except ET.ParseError:
             raise LedgerProblem('XML книги повреждён. Откройте и пересохраните книгу в Excel.') from None
+        if header_merges is not None:
+            header_merges[name] = merges
     return row_bound
 
 
@@ -261,7 +285,8 @@ def _read_workbook(filename: str, data: bytes, budget: dict | None = None) -> li
             raise LedgerProblem('На сервере не установлен модуль чтения XLS.') from None
         except Exception:
             raise LedgerProblem('Книга XLS не читается. Пересохраните её в Excel.') from None
-    bound = _xlsx_bounds(data)
+    header_merges = {}
+    bound = _xlsx_bounds(data, header_merges=header_merges)
     try:
         from openpyxl import load_workbook
         wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True, keep_links=False)
@@ -274,13 +299,16 @@ def _read_workbook(filename: str, data: bytes, budget: dict | None = None) -> li
             for sheet, formula_sheet in zip(wb.worksheets, formula_wb.worksheets):
                 bounds = {'max_row': min(sheet.max_row or bound, bound),
                           'max_col': min(sheet.max_column or MAX_COLUMNS, MAX_COLUMNS)}
-                rows = []
-                for cached, source in zip(sheet.iter_rows(**bounds), formula_sheet.iter_rows(**bounds)):
+                rows = _SheetRows(header_merges=header_merges.get(sheet._worksheet_path.lstrip('/'), ()))
+                for row_number, (cached, source) in enumerate(zip(
+                        sheet.iter_rows(**bounds), formula_sheet.iter_rows(**bounds)), start=1):
                     # Reading formula text only identifies unavailable cached values;
                     # formulas/macros and external references are never executed.
                     _bounded_row([cell.value for cell in source if cell.data_type == 'f'], budget)
                     values = [_UNCACHED_FORMULA if cell.value is None and raw.data_type == 'f' else cell.value
                               for cell, raw in zip(cached, source)]
+                    rows.formulas.update({(row_number, column): raw.value
+                                          for column, raw in enumerate(source) if raw.data_type == 'f'})
                     rows.append(_bounded_row(values, budget))
                 out.append((sheet.title, rows))
             return out
@@ -592,6 +620,89 @@ def _total_label(name: str) -> bool:
                          r'(?:в\s+том\s+числе\s+|в\s*т\.?\s*ч\.?\s*)?ндс\b)', _norm(name)))
 
 
+def _formula_columns(value: str, row: int, operator: str) -> set[int]:
+    """Read only same-row references from a declared sum/product, not evaluate it."""
+    text = re.sub(r'\s|\$', '', str(value or '')).upper().removeprefix('=')
+    rounded = re.fullmatch(r'ROUND\((.+),[0-6]\)', text)
+    if rounded:
+        text = rounded.group(1)
+    if operator == '+' and text.startswith('SUM(') and text.endswith(')'):
+        text = text[4:-1]
+        span = re.fullmatch(r'([A-Z]+)([1-9]\d*):([A-Z]+)([1-9]\d*)', text)
+        if span and int(span[2]) == row == int(span[4]):
+            coordinates = {_cell(col+1, row): col for col in range(MAX_COLUMNS)}
+            first, last = coordinates.get(span[1]+span[2]), coordinates.get(span[3]+span[4])
+            return set(range(first, last+1)) if first is not None and last is not None and first <= last else set()
+        text = text.replace(',', '+')
+    terms = text.split(operator)
+    if len(terms) < 2 or any(not re.fullmatch(r'[A-Z]+[1-9]\d*', term) for term in terms):
+        return set()
+    coordinates = {_cell(col+1, row): col for col in range(MAX_COLUMNS)}
+    if any(term not in coordinates for term in terms):
+        return set()
+    return {coordinates[term] for term in terms}
+
+
+def _merged_cost_column(rows, hi: int, qi: int, plan_col: int, first_period: int,
+                        anchor: int | None) -> int | None:
+    """Resolve a merged money field using its values and declared formula links.
+
+    A merged caption does not label its leftmost cell as the position total.
+    A multi-value field needs proof of the full total; alignment is insufficient.
+    """
+    spans = [(left, right) for top, left, bottom, right in getattr(rows, 'header_merges', ())
+             if hi <= top <= qi and left == anchor and right < first_period and left < right]
+    if not spans:
+        return anchor
+    if len(set(spans)) != 1:
+        return None
+    left, right = spans[0]
+    field = set(range(left, right+1))
+    price_columns = set()
+    for ri in range(hi, qi+1):
+        for ci in range(plan_col+1, left):
+            label = _norm(rows[ri][ci]) if ci < len(rows[ri]) else ''
+            if re.search(r'(?:цен[аы]|стоимост\w*)\s+за\s+(?:ед|единиц)', label):
+                price_columns.add(ci)
+                for top, start, bottom, end in getattr(rows, 'header_merges', ()):
+                    if top == ri and start == ci and end < left:
+                        price_columns.update(range(start, end+1))
+    formulas = getattr(rows, 'formulas', {})
+    populated, proven = set(), set()
+    unknown = False
+    for row_number, values in enumerate(rows, start=1):
+        if row_number <= qi+1 or plan_col >= len(values) or _number(values[plan_col]) is None:
+            continue
+        at = lambda col: _number(values[col]) if col < len(values) else None
+        populated.update(col for col in field if at(col) not in {None, 0})
+        unknown |= any(col < len(values) and _text(values[col]) and at(col) is None for col in field)
+        for col in field:
+            total = at(col)
+            if total in {None, 0}:
+                continue
+            formula = formulas.get((row_number, col), '')
+            summed = _formula_columns(formula, row_number, '+')
+            if (len(summed) >= 2 and summed == field-{col} and all(at(part) is not None for part in summed)
+                    and abs(total-sum(at(part) for part in summed)) <= max(.02, abs(total)*1e-7)):
+                proven.add(col)
+            product = _formula_columns(formula, row_number, '*')
+            rates = product-{plan_col}
+            if len(product) != 2 or plan_col not in product or len(rates) != 1:
+                continue
+            rate = next(iter(rates))
+            parts = _formula_columns(formulas.get((row_number, rate), ''), row_number, '+')
+            if (rate in price_columns and len(parts) >= 2 and parts == price_columns-{rate}
+                    and all(at(part) is not None for part in parts) and at(rate) is not None
+                    and abs(at(rate)-sum(at(part) for part in parts)) <= max(.01, abs(at(rate))*1e-7)
+                    and abs(total-at(plan_col)*at(rate)) <= max(.02, abs(total)*1e-7)):
+                proven.add(col)
+    if len(proven) == 1:
+        return next(iter(proven))
+    # One populated value in the entire declared field is unambiguous. Blank
+    # or zero companions provide no competing subtotal; an uncached formula does.
+    return next(iter(populated)) if not proven and len(populated) == 1 and not unknown else None
+
+
 def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
     # Recognize a labelled table, not the file's name or a particular contractor.
     top = rows[:45]
@@ -639,10 +750,11 @@ def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
     # unambiguous. Never take the adjacent unit price just because it is last.
     cost_col = max(cost_labels) if cost_labels else (
         next(iter(generic_cost_labels)) if len(generic_cost_labels) == 1 else None)
+    cost_col = _merged_cost_column(rows, hi, qi, plan_col, first_period, cost_col)
     # The planned cost heading can span rows/columns: an upper total label and
     # a lower «Стоимость итого, с НДС». Unit prices and actual periods are
     # separate groups; neither may supply the planned total's tax qualifier.
-    cost_group_start = min(cost_labels or generic_cost_labels) if (cost_labels or generic_cost_labels) else first_period
+    cost_group_start = min(cost_labels | generic_cost_labels) if (cost_labels or generic_cost_labels) else first_period
     for header_row in rows[hi:qi+1]:
         for col in range(plan_col+1, min(first_period, len(header_row))):
             label = _norm(header_row[col])
