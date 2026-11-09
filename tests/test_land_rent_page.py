@@ -27,6 +27,8 @@ def test_rental_editor_uses_real_page_retains_rates_and_recalculates(width, monk
                   land_rent_rates:[{year:1,rate_pct:1.5},{year:2,rate_pct:3}],
                   land_rent_tail_rule:'repeat_last',land_rent_vat_treatment:'public_exempt',
                   land_rent_source:'Синтетический договор — пример',
+                  _glavapu_import:{normalized:{cadastral_quarter:'77:01:0000001',site_area_ha:1},
+                    recognized:['77:01:0000001:11'],mappings:{inputs:{vri_region:'msk'}}},
                   project_start:'2027-01-01',ird_months:12,construction_months:12,
                   social_mode:'Денежная компенсация',social_compensation_mln:0});
                 renderInputs();await settledCalculate();
@@ -35,6 +37,7 @@ def test_rental_editor_uses_real_page_retains_rates_and_recalculates(width, monk
             assert page.locator("#landRentEditor").is_visible()
             assert page.locator("#f_land_rent_cadastral_mln").input_value() == "100"
             assert page.evaluate("lastResult.land_rent.construction_total") == pytest.approx(4.5e6)
+            page.locator('#landRentEditor details[data-land-rent-detail="conditions"] > summary').click()
             page.locator("#f_land_rent_mode").select_option("msk_mkd_3_2")
             browser.wait_for_result(page)
             assert "Подтвердите" in page.locator("#landRentSummary").inner_text()

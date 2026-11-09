@@ -341,7 +341,9 @@ async function applyMo(options){
  const status=document.getElementById('moStatus');
  if(!moResult){if(!silent)status.innerHTML='<span class="import-error">Сначала выполните расчёт.</span>';return}
  const incoming=moResult;
- resetTerritoryData({keepPhasing:silent});
+ const leaseTerritoryBefore=landRentMoTerritoryKey(inputs._mo_calc);
+ const keepLeaseTerms=silent&&!!leaseTerritoryBefore&&leaseTerritoryBefore===landRentMoTerritoryKey(incoming);
+ resetTerritoryData({keepPhasing:silent,keepLeaseTerms});
  moResult=incoming;
  Object.assign(inputs,moResult.inputs||{});
  // Площадь участка приходит в территории расчёта, а не во вводных.

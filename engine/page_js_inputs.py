@@ -48,6 +48,8 @@ function resetTerritoryData(options){
  // Очерёдность — решение пользователя, а не свойство территории. При тихом
  // пересчёте параметров Подмосковья участок тот же, и сбрасывать её нельзя.
  const keepPhasing=!!(options&&options.keepPhasing);
+ const keepLeaseTerms=options&&options.keepLeaseTerms===true;
+ const leaseOrigins=keepLeaseTerms?Object.fromEntries(Object.entries(inputs._field_origin||{}).filter(([key])=>key.startsWith('inputs.land_rent_')).map(([key,value])=>[key,cloneValue(value)])):{};
  Object.keys(tep).forEach(key=>{
   ['gns','total_area','useful','saleable','transfer','units'].forEach(field=>{
    if(field in tep[key])tep[key][field]=0;
@@ -59,7 +61,7 @@ function resetTerritoryData(options){
  // вместо 1,02. Молчаливое обнуление врёт не меньше молчаливого переезда.
  territoryCleared=[];
  // Lease terms and its cadastral base belong to this parcel/contract.
- Object.keys(inputs).filter(key=>key.startsWith('land_rent_')).forEach(key=>{delete inputs[key]});
+ if(!keepLeaseTerms)Object.keys(inputs).filter(key=>key.startsWith('land_rent_')).forEach(key=>{delete inputs[key]});
  TERRITORY_INPUT_KEYS.forEach(key=>{
   if(!(key in inputs))return;
   if(Number(inputs[key])>0)territoryCleared.push(key);
@@ -68,6 +70,7 @@ function resetTerritoryData(options){
   inputs[key]=SITE_ONLY_INPUTS.includes(key)?'':0;
  });
  TERRITORY_MARKERS.forEach(key=>{delete inputs[key]});
+ if(keepLeaseTerms)Object.assign(fieldOrigins(),leaseOrigins);
  STANDALONE_OBJECTS.forEach(o=>{inputs[o.prefix+'_enabled']=false});
  glavapuImport=null;
  cadastralAnalysis=null;
