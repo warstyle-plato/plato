@@ -10,6 +10,7 @@ function physicalTaskAutomatic(task){
 }
 function resetPhysicalReview(){
  physicalGroupSelection.clear();physicalGroupTargets.clear();physicalGroupPage=0;physicalContractFocus=null;physicalContractOpen.clear();physicalContractPages.clear();
+ $('physicalRetry').classList.add('hidden');
  $('physicalReviewView').value='contracts';$('physicalReviewUnfocus').classList.add('hidden');
  for(const id of ['physicalReviewGroups','physicalReviewScopes'])$(id).replaceChildren();
  for(const id of ['physicalReviewSummary','physicalReviewSelection','physicalReviewPagination'])$(id).textContent='';

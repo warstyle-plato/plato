@@ -241,3 +241,27 @@ def test_large_archive_read_is_not_abandoned_after_fifteen_seconds():
         expect(page.locator('.physical-contract')).to_have_count(1)
         expect(page.locator('#physicalMsg')).to_be_empty()
         assert not errors
+
+
+def test_failed_contract_read_has_a_visible_retry_without_opening_gpr_settings():
+    from playwright.sync_api import expect
+    attempts=[]
+    def respond(route):
+        attempts.append(1)
+        if len(attempts)==2:route.abort()
+        else:route.fulfill(json=contract_state(3,1))
+    with browser_page(390) as (page,responses,errors):
+        page.route('**/monitor/schedule-gpr-physical/view',respond)
+        page.evaluate('void loadPhysicalSchedule()')
+        page.locator('#dataTab').click()
+        expect(page.locator('.physical-contract')).to_have_count(1)
+        expect(page.locator('#physicalSaveSection')).to_be_hidden()
+        page.evaluate('void loadPhysicalSchedule()')
+        expect(page.locator('#physicalRetry')).to_be_visible()
+        expect(page.locator('#physicalRetry')).to_be_enabled()
+        expect(page.locator('#physicalMsg')).to_be_visible()
+        page.locator('#physicalRetry').click()
+        expect(page.locator('.physical-contract')).to_have_count(1)
+        expect(page.locator('#physicalRetry')).to_be_hidden()
+        assert not page.locator('#physicalManual').evaluate('(e)=>e.open')
+        assert not errors
