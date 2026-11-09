@@ -37,6 +37,49 @@ def contract_identity(ledger):
     return contracts._source_identity(ledger) or ('', '', '', None)
 
 
+def annual_work_identity(ledger, item):
+    """Physical work identity before annual quantities, plans or price weights.
+
+    A different filename, annual year, plan or unit does not prove that this is
+    a second independent work. An unknown source date cannot be replaced by a
+    filename-based date identity for this comparison.
+    """
+    identity = contract_identity(ledger)
+    name, position = contracts._norm(item.get('name')), contracts._norm(item.get('position'))
+    scope = contracts._norm(item.get('scope'))
+    declared = [(field, contracts._norm(item.get(field) or ledger.get(field)))
+                for field in ('object_scope', 'system_scope', 'site_scope')]
+    sections = [(contracts._norm(row.get('position')), contracts._norm(row.get('name')))
+                if isinstance(row, dict) else ('', contracts._norm(row)) for row in item.get('section_path') or []]
+    if (not all(identity) or str(identity[-1]).startswith('unverified-source:') or not name or not position
+            or not (scope or any(value for _, value in declared) or sections)):
+        return None
+    return hashlib.sha256(json.dumps((identity, position, name, scope, declared, sections),
+        ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
+
+
+def annual_component_reason(rows):
+    """Qualify one annual work before adding its execution quantities.
+
+    Preceding headings are not ancestry and cannot prove independence. If
+    they conflict without an equal proved section path, continuity is unknown.
+    A manual full-package checkbox cannot turn different source works into one
+    annual component with one denominator.
+    """
+    if len(rows) < 2:
+        return ''
+    keys = {row.get('annual_work_key') if row else None for row in rows}
+    if None in keys or len(keys) != 1:
+        return 'Строки не подтверждают один и тот же полный объём разных лет: различается или неизвестна идентичность работы КС.'
+    if not all(row.get('section_path') for row in rows):
+        contexts = {tuple((contracts._norm(entry.get('position')), contracts._norm(entry.get('name')))
+                          if isinstance(entry, dict) else ('', contracts._norm(entry))
+                          for entry in row.get('context_headings') or []) for row in rows}
+        if len(contexts) > 1:
+            return 'Различаются окружающие заголовки исходных строк; без доказанного общего раздела связь лет не подтверждена.'
+    return ''
+
+
 def position_identity(ledger, item):
     """A bounded fingerprint, not a fuzzy work-name or row-number match."""
     customer, contractor, number, contract_date = contract_identity(ledger)
@@ -46,42 +89,52 @@ def position_identity(ledger, item):
     name, scope = contracts._norm(item.get('name')), contracts._norm(item.get('scope'))
     position = contracts._norm(item.get('position'))
     if (not all((customer, contractor, number, contract_date, name, scope, unit, position))
-            or type(year) is not int or plan is None or plan <= 0):
+            or type(year) is not int or year <= 0 or plan is None or plan <= 0):
         return None
-    payload = (customer, contractor, number, contract_date, year, position, name, scope, unit, plan)
+    declared_scope = {field: item.get(field) or ledger.get(field) for field in
+                      ('object_scope', 'system_scope', 'site_scope')}
+    sections = [(row.get('position'), row.get('name')) if isinstance(row, dict) else row
+                for row in item.get('section_path') or []]
+    payload = (customer, contractor, number, contract_date, year, position, name, scope, unit, plan,
+               declared_scope, sections)
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
+
+
+def position_view(ledger, item, cut, observation_date, *, _duplicates=None):
+    """Canonical quantity plus explicit source metadata, with no new formula."""
+    view = contracts._physical(item, dict(ledger, source_date=observation_date), cut, _duplicates=_duplicates)
+    result = dict(view, contract=ledger.get('contract') or '',
+                contract_date=ledger.get('contract_date') or '', contractor=ledger.get('contractor') or '',
+                customer=ledger.get('customer') or '', position_key=None if view.get('is_duplicate') else position_identity(ledger, item),
+                annual_work_key=annual_work_identity(ledger, item),
+                duplicate_marker_present=item.get('is_duplicate') is True,
+                source_date_key=contracts._source_date_key(ledger),
+                contract_date_evidence=ledger.get('contract_date_evidence') or ledger.get('date_evidence') or [],
+                file_sha256=ledger.get('file_sha256'), ledger_source=ledger.get('source') or {},
+                planned_work_amount=item.get('planned_work_amount'),
+                planned_material_amount=item.get('planned_material_amount'),
+                planned_cost_split=item.get('planned_cost_split') is True,
+                planned_work_amount_basis=item.get('planned_work_amount_basis'),
+                valuation_key=((item.get('source') or {}).get('filename'),
+                               (item.get('source') or {}).get('sheet'), ledger.get('period_year')),
+                is_group=item.get('is_group') is True, section_path=item.get('section_path') or [],
+                context_headings=item.get('context_headings') or [], parent_row=item.get('parent_row'),
+                object_scope=item.get('object_scope') or ledger.get('object_scope'),
+                system_scope=item.get('system_scope') or ledger.get('system_scope'),
+                site_scope=item.get('site_scope') or ledger.get('site_scope'),
+                scope_evidence=ledger.get('scope_evidence') or {}, planned_cost_method=item.get('planned_cost_method'))
+    ledgers.stamp_duplicate_view(result)
+    return result
 
 
 def quantity_views(snapshot, cut):
     """Use the same position calculation as the contract table."""
-    out = {}
     day = snapshot_date(snapshot)
+    out = {}
     for li, ledger in enumerate((snapshot or {}).get('ledgers') or []):
-        context = dict(ledger, source_date=day)
         duplicates = ledgers.verified_duplicate_sources(ledger.get('items') or [])
         for ii, item in enumerate(ledger.get('items') or []):
-            view = contracts._physical(item, context, cut, _duplicates=duplicates)
-            out[f'{li}:{ii}'] = dict(view, contract=ledger.get('contract') or '',
-                                    contract_date=ledger.get('contract_date') or '',
-                                    contractor=ledger.get('contractor') or '',
-                                    customer=ledger.get('customer') or '',
-                                    position_key=(None if view.get('is_duplicate') else position_identity(ledger, item)),
-                                    planned_work_amount=item.get('planned_work_amount'),
-                                    planned_material_amount=item.get('planned_material_amount'),
-                                    planned_cost_split=item.get('planned_cost_split') is True,
-                                    planned_work_amount_basis=item.get('planned_work_amount_basis'),
-                                    valuation_key=((item.get('source') or {}).get('filename'),
-                                                   (item.get('source') or {}).get('sheet'), ledger.get('period_year')),
-                                    is_group=item.get('is_group') is True)
-            out[f'{li}:{ii}'].update(section_path=item.get('section_path') or [],
-                                     context_headings=item.get('context_headings') or [],
-                                     parent_row=item.get('parent_row'),
-                                     object_scope=item.get('object_scope') or ledger.get('object_scope'),
-                                     system_scope=item.get('system_scope') or ledger.get('system_scope'),
-                                     site_scope=item.get('site_scope') or ledger.get('site_scope'),
-                                     scope_evidence=ledger.get('scope_evidence') or {},
-                                     planned_cost_method=item.get('planned_cost_method'))
-            ledgers.stamp_duplicate_view(out[f'{li}:{ii}'])
+            out[f'{li}:{ii}'] = position_view(ledger, item, cut, day, _duplicates=duplicates)
     return out
 
 
@@ -140,6 +193,68 @@ def aggregate_quantities(members):
                 complete_coverage=True, planned_work_amount=total, weight_fingerprint=fingerprint)
 
 
+def source_hierarchy(views):
+    """Read exact same-ledger ancestry; no name or row-number guess."""
+    rows = {}
+    for key, view in views.items():
+        source = view.get('source') or {}
+        coordinate = (key.split(':', 1)[0], source.get('filename'), source.get('sheet'), source.get('row'))
+        rows.setdefault(coordinate, []).append(key)
+    result = {}
+    for key, view in views.items():
+        source = view.get('source') or {}
+        coordinate = (key.split(':', 1)[0], source.get('filename'), source.get('sheet'), source.get('row'))
+        ancestors, seen, parent = [], {coordinate}, view.get('parent_row')
+        while parent is not None:
+            parent_coordinate = (*coordinate[:3], parent)
+            matches = rows.get(parent_coordinate) or []
+            if parent_coordinate in seen or len(matches) != 1:
+                break
+            ancestors.append(parent_coordinate)
+            seen.add(parent_coordinate)
+            parent = views[matches[0]].get('parent_row')
+        result[key] = {'item_id': key, 'source': dict(source), 'coordinate': coordinate,
+                       'parent_row': view.get('parent_row'), 'ancestors': ancestors,
+                       'annual_work_key': view.get('annual_work_key'),
+                       'is_group': view.get('is_group') is True}
+    return result
+
+
+def aggregate_bound_quantities(members):
+    """Do not silently turn a saved aggregate/child selection into one child."""
+    result = aggregate_quantities(members)
+    groups = [member for member in members if member.get('is_group') is True]
+    if len(members) > 1 and groups:
+        group_rows = {tuple(row['coordinate']) for group in groups for row in group.get('source_rows') or []
+                      if row.get('is_group') is True}
+        overlaps = [row.get('item_id') for member in members for row in member.get('source_rows') or []
+                    if any(tuple(parent) in group_rows for parent in row.get('ancestors') or [])]
+        reason = ('В привязке одновременно выбраны общий итог КС и его отдельные позиции; '
+                  'общий процент не рассчитан до подтверждения полного отдельного состава.' if overlaps else
+                  'В привязке есть общий итог КС; общий процент не рассчитан до его отдельной декомпозиции.')
+        return dict(result, ratio=None, complete_coverage=False, all_complete=False,
+                    requires_reconciliation=True, overlapping_item_ids=overlaps, reason=reason)
+    if len(members) > 1:
+        claims, unknown = {}, False
+        for index, member in enumerate(members):
+            source_rows = member.get('source_rows') or []
+            unknown = unknown or not source_rows
+            for row in source_rows:
+                key = row.get('annual_work_key')
+                if key:
+                    claims.setdefault(key, set()).add(index)
+                else:
+                    unknown = True
+        repeated = [key for key, indexes in claims.items() if len(indexes) > 1]
+        if repeated or unknown:
+            reason = ('Одна работа КС выбрана в нескольких компонентах; полный план может учитываться дважды. '
+                      'Для общего процента объедините её годовые строки в один компонент.' if repeated else
+                      'Для объединения компонентов не подтверждена полная идентичность отдельных работ КС.')
+            return dict(result, ratio=None, complete_coverage=False, all_complete=False,
+                        requires_reconciliation=True, repeated_work_keys=repeated, reason=reason)
+    return result
+
+
 def project_configuration(previous, current, configuration):
     """Carry an explicit mapping only through unique exact source positions.
 
@@ -148,16 +263,30 @@ def project_configuration(previous, current, configuration):
     """
     old, old_seen, old_duplicates = {}, set(), set()
     for li, ledger in enumerate((previous or {}).get('ledgers') or []):
+        retained = {id(item) for item in ledgers.aggregation_members(ledger.get('items') or [], include_groups=True)}
         for ii, item in enumerate(ledger.get('items') or []):
+            if id(item) not in retained:
+                old[f'{li}:{ii}'] = None
+                continue
             key = position_identity(ledger, item)
+            if item.get('is_duplicate') is True:
+                old[f'{li}:{ii}'] = None
+                old_duplicates.add(key)
+                continue
             if key in old_seen:
                 old_duplicates.add(key)
             old_seen.add(key)
             old[f'{li}:{ii}'] = key
     new, duplicates = {}, set()
     for li, ledger in enumerate((current or {}).get('ledgers') or []):
+        retained = {id(item) for item in ledgers.aggregation_members(ledger.get('items') or [], include_groups=True)}
         for ii, item in enumerate(ledger.get('items') or []):
+            if id(item) not in retained:
+                continue
             key = position_identity(ledger, item)
+            if item.get('is_duplicate') is True:
+                duplicates.add(key)
+                continue
             if key in new:
                 duplicates.add(key)
             new[key] = f'{li}:{ii}'
@@ -177,7 +306,8 @@ def project_configuration(previous, current, configuration):
 
 
 def _observation(view):
-    if view.get('future_periods_excluded') is not False:
+    if (view.get('future_periods_excluded') is not False or view.get('is_duplicate') is True
+            or view.get('duplicate_marker_present') is True):
         return None
     plan = contracts._number(view.get('plan_quantity'))
     done = contracts._number(view.get('completed_quantity'))
@@ -186,7 +316,9 @@ def _observation(view):
     if plan is None or plan <= 0 or done is None or done < 0:
         return None
     return {'plan': plan, 'done': done, 'ratio': done / plan, 'unit': view.get('unit') or '',
-            'requires_reconciliation': done > plan + max(1e-6, plan * 1e-7)}
+            'requires_reconciliation': done > plan + max(1e-6, plan * 1e-7),
+            **{field: view.get(field) for field in ('period_year', 'planned_work_amount', 'planned_cost_split',
+                                                  'planned_work_amount_basis', 'valuation_key')}}
 
 
 def observation_index(project, cut, snapshot, keys):
@@ -236,7 +368,6 @@ def observation_index(project, cut, snapshot, keys):
         for li, ledger in enumerate(source.get('ledgers') or []):
             if type(ledger.get('period_year')) is not int or ledger['period_year'] > int(day[:4]):
                 continue
-            context = dict(ledger, source_date=day)
             source_duplicates = ledgers.verified_duplicate_sources(ledger.get('items') or [])
             for item in ledgers.aggregation_members(ledger.get('items') or []):
                 key = position_identity(ledger, item)
@@ -245,7 +376,7 @@ def observation_index(project, cut, snapshot, keys):
                 if key in positions:
                     duplicates.add(key)
                     continue
-                view = contracts._physical(item, context, day, _duplicates=source_duplicates)
+                view = position_view(ledger, item, day, day, _duplicates=source_duplicates)
                 positions[key] = _observation(view)
         for key in duplicates:
             positions[key] = None
@@ -329,3 +460,51 @@ def component_history(keys, index, current, cut):
     return dict(result, state='growing', rate_per_day=growth / elapsed,
                 rate_window_start=window[0]['date'], rate_window_end=window[-1]['date'],
                 forecast_eligible=True, reason='По изменению объёмов между сопоставимыми снимками ведомостей.')
+
+
+def weighted_history(components, index, current_metric, observation_date):
+    """Read the same aggregate at every snapshot; changed weights are explicit."""
+    result = {'basis': 'smr_cost_weighted_quantities', 'date_basis': 'snapshot', 'points': [],
+              'state': 'single_snapshot', 'delta_progress': None, 'delta_quantity': None,
+              'reason': 'Для динамики нужен предыдущий сопоставимый снимок ведомостей.'}
+    series = []
+    lookups = [{(point['date'], point.get('snapshot_id')): point
+                for point in (component.get('statement_history') or component.get('observation_history') or {}).get('points') or []}
+               for component in components]
+    for record in index:
+        members, invalid = [], False
+        for component, lookup in zip(components, lookups):
+            member = component.get('quantity_member') or {}
+            point = lookup.get((record['date'], record.get('snapshot_id')))
+            values = [record['positions'].get(key) for key in member.get('item_keys') or []]
+            if point is None or not values or any(value is None for value in values):
+                invalid = True
+                break
+            latest = max(values, key=lambda value: value.get('period_year') or 0)
+            members.append(dict(member, progress=point['progress'], **{field: latest.get(field) for field in
+                ('planned_work_amount', 'planned_cost_split', 'planned_work_amount_basis', 'valuation_key')}))
+        metric = aggregate_quantities(members) if not invalid else {'ratio': None, 'reason': 'Состав снимка не сопоставлен.'}
+        series.append({'date': record['date'], 'snapshot_id': record.get('snapshot_id'),
+                       'progress': metric['ratio'], 'basis_fingerprint': metric.get('weight_fingerprint'),
+                       'requires_reconciliation': metric.get('requires_reconciliation', False),
+                       'reason': metric.get('reason', ''), 'date_basis': 'snapshot'})
+    result['points'] = series
+    if len(series) < 2 or series[-1]['date'] != observation_date:
+        return result
+    previous, current = series[-2:]
+    if (previous['progress'] is None or current['progress'] is None
+            or current_metric.get('ratio') is None
+            or abs(current['progress']-current_metric['ratio']) > 1e-7):
+        return dict(result, state='comparison_gap', reason='Не подтверждён состав или полный вес одного из снимков.')
+    if any(point['requires_reconciliation'] for point in (previous, current)):
+        return dict(result, state='requires_reconciliation', reason='Объёмы требуют сверки; изменение общего процента не оценено.')
+    if (not previous['basis_fingerprint'] or not current['basis_fingerprint']
+            or previous['basis_fingerprint'] != current['basis_fingerprint']):
+        return dict(result, state='basis_changed', reason='Стоимостные веса СМР в снимках различаются; проценты не сравнены.')
+    days = (dt.date.fromisoformat(current['date'])-dt.date.fromisoformat(previous['date'])).days
+    if days <= 0:
+        return dict(result, state='comparison_gap', reason='Для динамики нужны снимки на разные даты.')
+    delta = current['progress']-previous['progress']
+    state = 'correction' if delta < -1e-7 else 'unchanged' if abs(delta) <= 1e-7 else 'growing'
+    return dict(result, state=state, delta_progress=delta, previous_date=previous['date'], date=current['date'],
+                reason='Изменение того же натурального показателя с неизменными весами СМР.')

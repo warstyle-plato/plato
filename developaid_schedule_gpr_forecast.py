@@ -81,9 +81,9 @@ def _works(parsed: dict) -> dict[str, tuple[float | None, str]]:
     return out
 
 
-def _weekly(project: str, path: Path) -> dict[str, tuple[float | None, str]]:
+def _weekly(project: str, path: Path, cut: str = '') -> dict[str, tuple[float | None, str]]:
     stat = path.stat()
-    key = (str(path), stat.st_mtime_ns, stat.st_size)
+    key = (str(path), stat.st_mtime_ns, stat.st_size, monitor._baseline_state(project, cut)['source_sha256'])
     if key not in _CACHE:
         data = path.read_bytes()
         try:
@@ -91,7 +91,7 @@ def _weekly(project: str, path: Path) -> dict[str, tuple[float | None, str]]:
         except ValueError:
             parsed = {"works": []}
         if not parsed.get("works"):
-            packages = monitor._schedule_packages(project, data)
+            packages = monitor._schedule_packages(project, data, cut)
             parsed = {"works": (packages or {}).get("works") or []}
         if len(_CACHE) > 64:
             _CACHE.clear()
@@ -99,6 +99,7 @@ def _weekly(project: str, path: Path) -> dict[str, tuple[float | None, str]]:
     return _CACHE[key]
 
 
+@monitor.approved_schedule_read
 def history(project: str, cut: dt.date) -> dict[str, list[tuple[dt.date, float, str]]]:
     """Dated GPR percents per work up to the cut: (date, progress, origin)."""
     out: dict[str, list[tuple[dt.date, float, str]]] = {}
@@ -109,13 +110,17 @@ def history(project: str, cut: dt.date) -> dict[str, list[tuple[dt.date, float, 
 
     folder = monitor._project_dir(project)
     try:
-        baseline = monitor._read_baseline_gpr(project)
-        meta = json.loads((folder / "baseline" / "meta.json").read_text(encoding="utf-8"))
-        base_day = _day(meta.get("taken_at"))
+        baseline = monitor._read_baseline_gpr(project, cut)
+        base_day = _day(monitor._baseline_state(project, cut)['taken_at'])
     except (OSError, ValueError, FileNotFoundError):
         baseline, base_day = {"works": []}, None
+    baseline_dates = {str(work.get('id') or work.get('wbs') or '').strip():
+                      _day(work.get('progress_date')) for work in baseline.get('works') or []}
     for tid, (progress, _status) in _works(baseline).items():
-        add(tid, base_day, progress, "approved_gpr")
+        # Corpus percentages carry the explicit header date, not the upload day.
+        # An unavailable/future baseline date still cannot authorize past facts.
+        fact_day = baseline_dates.get(tid) if baseline.get('source_format') == 'corpus-gpr-v1' else base_day
+        add(tid, fact_day if base_day and base_day <= cut else None, progress, "approved_gpr")
     earliest = cut - dt.timedelta(days=WINDOW_DAYS + STALE_DAYS)
     weekly = folder / "schedule_fact"
     if weekly.exists():
@@ -123,15 +128,21 @@ def history(project: str, cut: dt.date) -> dict[str, list[tuple[dt.date, float, 
         # Older files cannot enter the pace window; keep one before it as context.
         keep = [p for p in files if _day(p.stem) >= earliest] or files[-1:]
         for path in keep:
-            for tid, (progress, _status) in _weekly(project, path).items():
+            if not monitor._schedule_fact_matches_baseline(project, path, cut.isoformat()):
+                continue
+            for tid, (progress, _status) in _weekly(project, path, cut.isoformat()).items():
                 add(tid, _day(path.stem), progress, "weekly_gpr")
     manual = folder / "work_fact"
     if manual.exists():
         for path in sorted(manual.glob("*.json")):
             day = _day(path.stem.split(".", 1)[0])
             try:
-                rows = json.loads(path.read_text(encoding="utf-8")).get("rows", [])
+                payload = json.loads(path.read_text(encoding='utf-8'))
+                rows = payload.get('rows', [])
             except (OSError, ValueError):
+                continue
+            if not day or not monitor._fact_matches_baseline(project, cut.isoformat(), day.isoformat(),
+                                                             payload.get('source_sha256') or ''):
                 continue
             for row in rows:
                 add(str(row.get("id")), day, _progress(row.get("progress")), "manual")
@@ -143,33 +154,45 @@ def history(project: str, cut: dt.date) -> dict[str, list[tuple[dt.date, float, 
 SOURCE_CONFLICT_ACTION = "Сверьте показания ГПР и накопительных по этой работе."
 
 
-def quantity_conflict(points: list, ks: dict, cut: dt.date) -> dict | None:
-    """A completed GPR and dated, explicitly bound unfinished quantities need review.
+def quantity_readings(ks: dict, cut: dt.date) -> list[dict]:
+    """Keep the actual observation/period date; an archive date cannot replace it."""
+    measurements = []
+    snapshot = ks.get("progress_origin") == "cumulative_statement" or ks.get("progress_date_basis") == "snapshot"
+    candidates = ks.get("components") or [{"progress": ks.get("progress"),
+        "period_end": ks.get("progress_date") if not snapshot else None,
+        "observation_date": ks.get("progress_date") if snapshot else None,
+        "progress_origin": ks.get("progress_origin"), "progress_date_basis": ks.get("progress_date_basis")}]
+    for component in candidates:
+        statement = (component.get("progress_origin") == "cumulative_statement"
+                     or component.get("progress_date_basis") == "snapshot")
+        progress = _quantity_progress(component.get("progress"))
+        day = _day(component.get("observation_date") if statement else component.get("period_end"))
+        if progress is not None and day and day <= cut:
+            measurement = {"progress": progress, "date": day.isoformat(),
+                           "component_id": component.get("component_id") or "",
+                           "date_basis": "snapshot" if statement else "execution_period",
+                           "requires_reconciliation": component.get("requires_reconciliation") is True or progress > 1.0+1e-7}
+            measurements.append(measurement)
+    return measurements
 
-    Neither source is declared wrong; different measurement dates remain explicit.
-    Component percentages are compared individually, never averaged.
-    """
+
+def reading_not_older(reading: dict, gpr_dates: list, cut: dt.date) -> bool:
+    """One temporal rule for a direct work and an exactly shared source cohort."""
+    day = _day(reading.get("date"))
+    dates = [_day(value) for value in gpr_dates]
+    return bool(day and day <= cut and dates and all(value and value <= cut for value in dates)
+                and day >= max(dates))
+
+
+def quantity_conflict(points: list, ks: dict, cut: dt.date) -> dict | None:
+    """Only same-date or later unfinished KS can contradict a completed GPR."""
     if not ks.get("scope_confirmed") or ks.get("mode") != "quantities":
         return None
     dated = sorted((p for p in points if p[0] <= cut and _progress(p[1]) is not None), key=lambda p: p[0])
     if not dated or dated[-1][1] < DONE:
         return None
-    measurements = []
-    candidates = ks.get("components") or [{"progress": ks.get("progress"),
-        "period_end": ks.get("progress_date") if ks.get("progress_origin") != "cumulative_statement" else None,
-        "observation_date": ks.get("progress_date") if ks.get("progress_origin") == "cumulative_statement" else None,
-        "progress_origin": ks.get("progress_origin")}]
-    for component in candidates:
-        statement = component.get("progress_origin") == "cumulative_statement"
-        progress = _quantity_progress(component.get("progress"))
-        day = _day(component.get("observation_date") if statement else component.get("period_end"))
-        if progress is not None and day and day <= cut:
-            measurement = {"progress": progress, "date": day.isoformat(),
-                           "component_id": component.get("component_id") or ""}
-            if statement:
-                measurement["date_basis"] = "snapshot"
-            measurements.append(measurement)
-    unfinished = [m for m in measurements if m["progress"] < DONE]
+    measurements = quantity_readings(ks, cut)
+    unfinished = [m for m in measurements if m["progress"] < DONE and reading_not_older(m, [dated[-1][0]], cut)]
     if not unfinished:
         return None
     gpr = {"progress": dated[-1][1], "date": dated[-1][0].isoformat(), "origin": dated[-1][2]}
@@ -184,6 +207,29 @@ def quantity_conflict(points: list, ks: dict, cut: dt.date) -> dict | None:
               f"по накопительным — {shown}. Оценка окончания снята до сверки.")
     return {"state": "source_conflict", "gpr": gpr, "quantities": measurements,
             "reason": reason, "action": SOURCE_CONFLICT_ACTION}
+
+
+def _later_gpr_completion(points: list, ks: dict | None, cut: dt.date) -> dt.date | None:
+    """A bounded priority exception: verified 100% after every known KS reading."""
+    if (not ks or not ks.get("scope_confirmed") or ks.get("mode") != "quantities"
+            or ks.get("requires_reconciliation") or not points or points[-1][1] < DONE):
+        return None
+    measurements = quantity_readings(ks, cut)
+    if (not measurements or len(measurements) != len(ks.get("components") or [ks])
+            or any(m.get("requires_reconciliation") for m in measurements)
+            or not any(m["progress"] < DONE for m in measurements)):
+        return None
+    last_quantity_date = max(_day(m["date"]) for m in measurements)
+    return last_quantity_date if last_quantity_date < points[-1][0] <= cut else None
+
+
+def _done_by_gpr(result: dict, points: list, *, after: dt.date | None = None) -> dict:
+    last = points[-1]
+    first_done = next(p for p in points if p[1] >= DONE and (after is None or p[0] > after))
+    return dict(result, progress=last[1], progress_date=last[0].isoformat(), progress_origin=last[2],
+                forecast_finish=first_done[0].isoformat(), method="done",
+                reason=("Завершена по более позднему ГПР; дата — первая последующая запись со 100%."
+                        if after else "Завершена по ГПР; дата — первая запись со 100%."))
 
 
 def qualify_quantities(model: dict, history: dict, cut: dt.date) -> dict:
@@ -221,9 +267,20 @@ def work(row: dict, points: list[tuple[dt.date, float, str]], cut: dt.date,
                ("progress_date_basis", "progress_basis", "observation_history", "requires_reconciliation")}
     conflict = (ks or {}).get("source_conflict") or (quantity_conflict(points, ks, cut) if ks else None)
     if conflict:
+        if conflict.get("scope") == "source_cohort":
+            # The shared KS ratio is not a reading of this leaf. Preserve its
+            # dated GPR reading while withholding a finish certification.
+            last = points[-1] if points else None
+            return dict(result, method="source_conflict", source_conflict=conflict,
+                        progress=last[1] if last else None, progress_origin=last[2] if last else None,
+                        progress_date=last[0].isoformat() if last else None,
+                        requires_reconciliation=True, reason=conflict["reason"] + " " + conflict["action"])
         return dict(result, method="source_conflict", source_conflict=conflict,
                     progress=_quantity_progress(ks.get("progress")), progress_date=ks.get("progress_date"),
                     progress_origin=ks_origin, reason=conflict["reason"] + " " + conflict["action"], **ks_meta)
+    after = _later_gpr_completion(points, ks, cut)
+    if after is not None:
+        return _done_by_gpr(result, points, after=after)
     if ks and ks.get("forecast_finish"):
         completed = ks.get("mode") == "completed"
         method = ("confirmed_completion" if completed else
@@ -242,9 +299,7 @@ def work(row: dict, points: list[tuple[dt.date, float, str]], cut: dt.date,
         last = points[-1]
         result.update(progress=last[1], progress_date=last[0].isoformat(), progress_origin=last[2])
         if last[1] >= DONE:
-            first_done = next(p for p in points if p[1] >= DONE)
-            return dict(result, forecast_finish=first_done[0].isoformat(), method="done",
-                        reason="Завершена по ГПР; дата — первая запись со 100%.")
+            return _done_by_gpr(result, points)
     window = [p for p in points if p[0] >= cut - dt.timedelta(days=WINDOW_DAYS)]
     pace = None
     if len(window) >= 2 and (cut - window[-1][0]).days <= STALE_DAYS:
@@ -295,34 +350,55 @@ ESTIMATE_NOTE = ("Оценка по ГПР без цепочки до получ
                  "строительных работ (со статьёй сметы РСС). PM отключён.")
 
 
-def rnv(rows: list[dict], works: dict[str, dict], approved: Any) -> dict[str, Any]:
+def rnv(rows: list[dict], works: dict[str, dict], approved: Any, *, missing_calendar=()) -> dict[str, Any]:
     """Qualified RNV of the GPR: plan, estimate and the work that drives it."""
     approved_day = _day(approved)
-    scope = [r for r in rows if str(r.get("code") or "").strip()]
-    reasons = [ESTIMATE_NOTE]
+    scope = [r for r in rows if str(r.get("code") or "").strip() or r.get('construction_work') is True]
+    source_missing = [row for row in missing_calendar if row.get("construction_work") is True]
+    scope.extend(source_missing)
+    corpus_scope = any(row.get('construction_work') is True for row in scope)
+    corpus_plan = any(row.get('source_format') == 'corpus-gpr-v1' for row in rows)
+    plan_context = {'approved': monitor._iso(approved_day), 'approved_source': 'утверждённый ГПР'}
+    if corpus_plan:
+        # A construction finish is not the permit milestone. The wide source
+        # carries no explicit RNV row and cannot inherit one from an old WBS.
+        approved_day = None
+        planned = max((_day(row.get('plan_finish')) for row in scope if _day(row.get('plan_finish'))), default=None)
+        plan_context = {'approved': None, 'approved_rnv': None,
+            'approved_source': 'Отдельный срок РНВ в корпусном ГПР не указан.',
+            'planned_construction_finish': monitor._iso(planned),
+            'plan_label': 'План окончания работ', 'plan_date': monitor._iso(planned)}
+    reasons = (["Оценка по строительным разделам утверждённого корпусного ГПР, без цепочки до получения разрешения."]
+               if corpus_scope else [ESTIMATE_NOTE])
+    if corpus_plan:
+        reasons.insert(0, plan_context['approved_source']+' Дата окончания строительных работ не заменяет дату разрешения на ввод.')
     known, missing = [], []
     for row in scope:
         tid = str(row.get("id") or row.get("wbs") or "").strip()
         item = works.get(tid) or {}
         day = _day(item.get("forecast_finish"))
         (known if day else missing).append((day, row, item))
-    outside = len(rows) - len(scope)
+    if source_missing:
+        reasons.append(f"У {len(source_missing)} строительных работ исходные даты неполны или некорректны; "
+                       "эти работы сохранены в показаниях ГПР и не исключены из проверки полноты прогноза.")
+    outside = len(rows) - len(scope) + len(source_missing)
     if outside:
-        reasons.append(f"{outside} работ ГПР без статьи сметы (продажи, ходатайства и т. п.) в прогноз РНВ не входят.")
+        reasons.append(f"{outside} работ вне строительных разделов корпусного ГПР в эту оценку не входят." if corpus_scope else
+                       f"{outside} работ ГПР без статьи сметы (продажи, ходатайства и т. п.) в прогноз РНВ не входят.")
     if missing:
         names = ", ".join("«" + str(r.get("name") or "") + "»" for _, r, _ in missing[:5])
         reasons.append(f"Без оценки окончания {len(missing)} строительных работ: {names}"
                        + (" и др." if len(missing) > 5 else "") + ". Итоговая дата неполная.")
         reasons.extend(item["reason"] for _, _, item in missing if item.get("method") == "source_conflict")
     if not known:
-        return {"state": "unknown", "approved": monitor._iso(approved_day), "approved_source": "утверждённый ГПР",
+        return {"state": "unknown", **plan_context,
                 "forecast": None,
                 "indicative_forecast": None, "delay_days": None, "driving_chain": [],
                 "basis": "gpr", "reasons": reasons + ["Ни у одной строительной работы ГПР нет прогноза."]}
     day, row, item = max(known, key=lambda k: k[0])
     delay = (day - approved_day).days if approved_day else None
     state = "partial" if missing else "estimate"
-    return {"state": state, "approved": monitor._iso(approved_day), "approved_source": "утверждённый ГПР",
+    return {"state": state, **plan_context,
             "forecast": day.isoformat() if state == "estimate" else None,
             "indicative_forecast": day.isoformat(), "delay_days": delay,
             "driving_chain": [{"id": str(row.get("id") or row.get("wbs") or ""), "name": str(row.get("name") or ""),
