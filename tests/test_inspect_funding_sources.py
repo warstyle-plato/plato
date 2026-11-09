@@ -28,7 +28,10 @@ def test_existing_model_reader_is_used_without_disk_cache_or_source_changes(tmp_
     result = probe.inspect_source(path, "finance", CUT)
     assert result["parsed"] is True
     assert result["admin_leaf_count"] == 1
-    assert result["admin_chapter2_leaf_count"] == 1
+    assert result["admin_chapter2_leaf_count"] == 0
+    assert result["admin_dictionary_chapter2_leaf_count"] == 1
+    assert result["admin_verified_money_leaf_count"] == 0
+    assert result["admin_allocation_known"] is False
     assert result["admin_tax_code_in_parsed_items"] is False
     assert result["admin_allocation_total_identity"] is True
     assert result["admin_leaf_fact_plan_identity"] is True
@@ -61,7 +64,8 @@ def test_mixed_map_and_missing_cache_do_not_become_confirmed_allocation(tmp_path
     path = tmp_path / "finance.xlsx"
     path.write_bytes(_save(book))
     result = probe.inspect_source(path, "finance", CUT)
-    assert result["admin_mixed_leaf_count"] == 1
+    assert result["admin_mixed_leaf_count"] == 0
+    assert result["admin_dictionary_mixed_leaf_count"] == 1
     assert result["admin_allocation_known"] is False
     assert result["admin_missing_money_cells"] == 1
     assert result["admin_allocation_to_pay_identity"] is None

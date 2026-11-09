@@ -30,7 +30,7 @@ def schedule(model, state=None):
             'basis': 'reviewed_sources', 'cut': CUT.isoformat(),
             'budget_sha256': model['budget_composition']['source_sha256'],
             'schedule_sha256': result['source_sha256'],
-            'items': [{'code': item['code'], 'source_row': item['source']['row'], 'state': state}]}
+            'items': [{'code': item['code'], 'source_row': item['source']['row'], 'state': state, 'bank_chapter': '2'}]}
     return result
 
 
@@ -50,7 +50,9 @@ def test_unknown_schedule_coverage_preserves_the_exact_admin_gap(tmp_path):
     r = replaced['reconciliation']
     assert r['matches']
     assert r['budget'] == pytest.approx(r['rhs'])
-    assert r['components'][1]['amount'] == replaced['admin']['to_pay'] == 20_000
+    assert r['components'][1]['amount'] == 0
+    assert replaced['admin']['to_pay'] == 20_000
+    assert r['components'][0]['amount'] == 40_000
     assert r['admin_schedule']['items'][0]['state'] == 'unknown'
     assert r['admin_schedule']['items'][0]['model_remaining'] == 20_000
     assert r['confirmed_additional'] is None
@@ -69,7 +71,7 @@ def test_proven_exclusion_adds_the_unpaid_admin_once_to_both_readers(tmp_path, m
     assert result['admin']['added_to_deficit'] == 20_000
     assert r['budget'] == pytest.approx(r['paid_at_cut'] + r['available_bank_limit']
                                       + r['calculated_additional'])
-    assert r['components'][1]['amount'] == 0
+    assert r['components'][1]['amount'] == -20_000
     monkeypatch.setattr(dashboard, '_paid_in_chapters',
                         lambda rss, estimate, chapters, **_: paid[chapters[0]])
     rows = dashboard._section_articles(model['sections'], {'by_code': {}}, None, CUT,
@@ -89,7 +91,7 @@ def test_proven_inclusion_never_adds_admin_again(tmp_path):
     assert result['admin']['added_to_need'] == 0
     assert result['rows'][1]['to_pay'] == 620_000
     assert result['reconciliation']['matches']
-    assert result['reconciliation']['components'][1]['amount'] == 0
+    assert result['reconciliation']['components'][1]['amount'] == -20_000
 
 
 @pytest.mark.parametrize('tamper', ['budget_sha256', 'schedule_sha256', 'cut', 'source_row', 'duplicate'])
@@ -126,11 +128,11 @@ def test_mixed_map_is_unallocated_in_admin_and_general_funding(tmp_path, monkeyp
     admin = dashboard._admin_expenses(model['budget_composition'], model['chapter_flow'])
     assert admin['unallocated']['total'] == 100_000
     assert model['chapter_flow']['2']['sections'].get('2.4', 0.0) == 0
-    assert model['chapter_flow']['']['sections']['2.4'] == 40_000
+    assert model['chapter_flow']['']['sections']['2.4'] == 100_000
     result = own(model, fixture.PAID)
-    assert result['reconciliation']['components'][0]['amount'] == 40_000
-    assert result['reconciliation']['unallocated_programme']['model_plan'] == 20_000
-    assert sum(result['reconciliation']['unallocated_programme']['monthly'].values()) == 20_000
+    assert result['reconciliation']['components'][0]['amount'] == 100_000
+    assert result['reconciliation']['unallocated_programme']['model_plan'] == 70_000
+    assert sum(result['reconciliation']['unallocated_programme']['monthly'].values()) == 70_000
     assert result['reconciliation']['unallocated_programme']['funding_coverage'] is None
     assert result['reconciliation']['matches']
 
@@ -164,7 +166,7 @@ def test_accounting_difference_is_explained_not_plugged_into_additional(tmp_path
     model, _ = model_and_paid(tmp_path)
     result = own(model, fixture.PAID)
     r = result['reconciliation']
-    assert r['components'][2]['amount'] == 30_000
+    assert r['components'][2]['amount'] == 10_000
     assert r['budget'] == pytest.approx(r['rhs'])
     assert r['calculated_additional'] == max(0, r['budget'] - r['paid_at_cut'] - r['available_bank_limit'])
     assert r['calculated_additional'] != r['budget'] - r['bank_limit_total']
@@ -268,7 +270,7 @@ def test_admin_economic_tag_and_bank_classification_are_independent(tmp_path):
 def test_unallocated_admin_is_in_budget_without_automatic_own_funding(tmp_path, monkeypatch):
     model = admin_fixture.read_with_map(tmp_path, monkeypatch, ['2.6', '2.6', '3.7'])
     r = own(model, fixture.PAID)['reconciliation']
-    assert r['components'][0]['amount'] == 40_000
+    assert r['components'][0]['amount'] == 100_000
     assert r['calculated_additional'] == max(0, r['budget'] - r['paid_at_cut'] - r['available_bank_limit'])
     assert r['matches']
 

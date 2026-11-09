@@ -89,7 +89,7 @@ def test_the_budget_leaves_the_taxes_and_the_interest_aside(tmp_path):
     assert comp["interest_outside"] == [{"code": "3.1.4", "name": "Выплаты %% по кредитам и займам",
                                          "total": pytest.approx(90 * K)}]
     # Налоги не попадают ни в главы, ни в оплаченное, ни в остаток.
-    assert sum(got["approved_by_chapter"].values()) == pytest.approx(K_BUDGET)
+    assert sum(got["approved_by_chapter"].values()) + got["chapter_flow"][""]["total"] == pytest.approx(K_BUDGET)
     assert got["paid_at_baseline"] == pytest.approx(750 * K)
     assert got["completion_need_at_baseline"] == pytest.approx(690 * K)
     assert comp["fact"] + comp["plan"] == pytest.approx(got["approved"])
@@ -169,18 +169,17 @@ def test_limit_is_paid_plus_left_and_budget_is_limit_plus_own_money(tmp_path):
     assert own["limit"] == pytest.approx(own["paid"] + own["left"])
     assert own["left_by_chapter"] == {"1": pytest.approx(-30 * K), "2": pytest.approx(490 * K),
                                       "3": pytest.approx(50 * K)}
-    # Каждая глава одинаково: оплачено + осталось оплатить − лимит главы.
-    # 180 = глава 1: 280 + 0 − 250 + глава 2: 410 + 620 − 900 + глава 3: 30 + 70 − 80
+    # Диагностика глав хранит АХР без денежной главы отдельно. Общий gap
+    # ниже считается независимо по полному B, оплатам и доступному лимиту.
     rows = {row["chapter"]: row["amount"] for row in own["rows"]}
-    assert rows == {"1": pytest.approx(30 * K), "2": pytest.approx(130 * K),
-                    "3": pytest.approx(20 * K)}
-    assert own["need"] == pytest.approx(180 * K) == pytest.approx(sum(rows.values()))
-    # Карта «статьи_БДДС» кладёт административные расходы (2.4.1 → 2.6) в главу 2.
+    assert rows == {"1": pytest.approx(30 * K), "2": pytest.approx(110 * K),
+                    "3": pytest.approx(20 * K), "": pytest.approx(40 * K)}
+    assert own["need"] == pytest.approx(200 * K) == pytest.approx(sum(rows.values()))
+    # Единственная глава справочника не доказывает денежное отнесение АХР.
     assert own["rows"][1]["sections"] == {"2.2": pytest.approx(1_000 * K),
-                                          "2.4": pytest.approx(40 * K)}
-    # Бюджет − лимит (210) отличается от суммы глав на расхождение учёта прошлых
-    # оплат: финмодель записала оплаченным на 30 больше, чем реестр.
-    assert own["accounting"] == pytest.approx(30 * K)
+                                          "2.4": pytest.approx(0.)}
+    # Несверенная диагностика глав не подставляется в общий gap.
+    assert own["accounting"] == pytest.approx(10 * K)
     assert own["budget"] - own["limit"] - own["accounting"] == pytest.approx(own["need"])
     # Первый месяц — водопад глав: главе 2 не хватает в ноябре.
     assert own["from"] == "2026-11-01"
@@ -188,7 +187,7 @@ def test_limit_is_paid_plus_left_and_budget_is_limit_plus_own_money(tmp_path):
     lines = dashboard.own_money_lines(own, report._rub)
     assert lines[0] == ("Бюджет 1,4 млн ₽: оплачено на дату 720 000 ₽, доступный остаток лимита "
                         "540 000 ₽, расчётная дополнительная потребность 180 000 ₽.")
-    assert "Факт финансовой базы и оплаты на дату различаются; в сверке использованы оплаты на дату: 30 000 ₽." in lines
+    assert "Факт финансовой базы и оплаты на дату различаются; в сверке использованы оплаты на дату: 10 000 ₽." in lines
     assert own['reconciliation']['budget'] == pytest.approx(own['reconciliation']['rhs'])
     assert own['reconciliation']['primary_source_gate'] == 'BLOCKED'
 
@@ -234,12 +233,12 @@ def test_the_tiles_add_up_on_the_page(tmp_path, monkeypatch):
     assert tiles["Доступный остаток лимита банка"]["note"] == (
         "Положительные остатки лимитов на ту же дату. " + source_notes["left"])
     need = tiles["Расчётная дополнительная потребность"]
-    assert need["value"] == report._rub(own["need"])
+    assert need["value"] == report._rub(own["reconciliation"]["calculated_additional"])
     assert "Утверждённый бюджет минус оплаты" in need["note"]
     assert source_notes['need'] in need['note']
     for row in own['reconciliation']['display_rows']:
         assert tiles[row['label']]['value'] == report._rub(row['value'])
-    assert tiles['Несверенные оплаты']['value'] == report._rub(30 * K)
+    assert tiles['Несверенные оплаты']['value'] == report._rub(10 * K)
     for gone in ("Потребность в допфинансировании банка", "Осталось по смете после всех оплат",
                  "Можно ещё выбрать у банка"):
         assert gone not in tiles
@@ -250,7 +249,7 @@ def test_the_tiles_add_up_on_the_page(tmp_path, monkeypatch):
     assert ("<div class='k'>Утверждённый бюджет <span class='i' tabindex='0' role='note' "
             "title='Утверждённый бюджет — сумма") in page
     assert "Сверка бюджета и финансирования" in report._funding_html(built)
-    assert "Факт финансовой базы и оплаты на дату различаются; в сверке использованы оплаты на дату: 30 000 ₽" in report.render_text(built)
+    assert "Факт финансовой базы и оплаты на дату различаются; в сверке использованы оплаты на дату: 10 000 ₽" in report.render_text(built)
 
 
 # --- Нехватка не прыгает при смене месяца сводки.
@@ -335,7 +334,7 @@ def test_the_bank_commission_is_in_the_budget_and_out_of_the_interest(tmp_path):
     assert [item["code"] for item in comp["sections"]][-1] == "3.1.4.1.3"
     assert got["chapter_flow"]["3"]["total"] == pytest.approx(100 * K + 8 * K)
     # Строка комиссии после «2.…» не делает чужую статью «родителем»: 2.4.1 на месте.
-    assert got["chapter_flow"]["2"]["sections"]["2.4"] == pytest.approx(40 * K)
+    assert got["chapter_flow"][""]["sections"]["2.4"] == pytest.approx(40 * K)
     assert comp["interest_outside"][0]["total"] == pytest.approx((90 - 8) * K)
     text = " ".join(dashboard.budget_hint_lines({"budget_composition": comp}, report._rub))
     assert "без налогов плюс комиссия банка" in text
@@ -370,15 +369,15 @@ def test_chapter_two_by_the_funding_schedule(tmp_path, monkeypatch):
     two = own["rows"][1]
     # Глава 2: оплачено по реестру 410 + по графику осталось 500 − лимит 900 = 10.
     assert two["amount"] == pytest.approx(10 * K)
-    assert two["model_budget"] == pytest.approx(1_040 * K)
-    # Финмодель по главе 2 закладывает больше графика на 1 040 − 910 = 130 — и это названо.
-    assert own["model_over_schedule"] == pytest.approx(130 * K)
+    assert two["model_budget"] == pytest.approx(1_000 * K)
+    # По подтверждённому составу главы 2: 1 000 − 910 = 90; АХР остаются отдельно.
+    assert own["model_over_schedule"] == pytest.approx(90 * K)
     assert own["matches"]
     assert own["need"] == pytest.approx(sum(row["amount"] for row in own["rows"]))
-    assert own["need"] == pytest.approx(own["budget"] - own["limit"] - 130 * K
+    assert own["need"] == pytest.approx(own["budget"] - own["limit"] - 90 * K
                                         - own["accounting"])
     text = " ".join(dashboard.own_money_lines(own, report._rub))
-    assert 'Различие бюджета модели и программы графика; общий бюджет не уменьшает: 130 000 ₽' in text
+    assert 'Различие бюджета модели и программы графика; общий бюджет не уменьшает: 90 000 ₽' in text
     assert own['reconciliation']['admin_schedule']['state'] == 'incomplete'
     assert own['reconciliation']['confirmed_additional'] is None
 

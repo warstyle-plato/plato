@@ -445,8 +445,9 @@ def _read_finance_model(wb: Any, path: Path) -> dict[str, Any]:
     коды БДДС (2.2.2.3 «Подземная часть»), а лимиты, оплаты и плитки сводки
     живут по главам сметы РСС, поэтому глава статьи берётся из карты
     «статьи_БДДС» той же книги: по строкам карты под статьёй (2.2.2.3.x → код
-    РСС → глава). Смешанная карта без денежных долей остаётся явно
-    нераспределённой. Количество строк карты не является денежной долей.
+    РСС → глава). Для АХР справочник сохраняет только кандидатов: денежное
+    отнесение берётся из сверенных источников месячных формул. Смешанная
+    карта без денежных долей остаётся явно нераспределённой.
     """
     from collections import Counter
 
@@ -657,6 +658,51 @@ def _read_finance_model(wb: Any, path: Path) -> dict[str, Any]:
         for meta in rows if not meta["has_children"] and not _fm_is_tax(meta["code"])]
     composition["admin_items"] = [item for item in composition["budget_items"]
                                   if item["code"] == "2.4" or item["code"].startswith("2.4.")]
+    if composition["admin_items"]:
+        from developaid_finance_money_bridge import admin_allocations
+
+        raw = path.getvalue() if hasattr(path, "getvalue") else Path(path).read_bytes()
+        allocations = admin_allocations(raw, wb, FINANCE_MODEL_SHEET, header_row,
+                                        composition["admin_items"])
+        for item in composition["admin_items"]:
+            allocation = allocations.get(item["code"])
+            if not allocation:
+                allocation = {"by_chapter": {"": {"total": item["total"], "fact": item["fact"],
+                              "plan": item["plan"], "monthly": {m: a for m, a in item["monthly"].items()
+                                                                  if a is not None}}},
+                              "proofs": [], "parts": [], "allocation_known": False,
+                              "reasons": ["денежные источники АХР не распознаны"],
+                              "basis": "unverified_formula_sources"}
+            item["money_allocation"] = allocation
+            # Preserve the dictionary only as reference. With no supported
+            # monetary expression the whole economic leaf remains unallocated.
+            old = chapter_flow[item["chapter"]]
+            for field in ("total", "fact", "plan"):
+                old[field] -= item[field]
+            old["sections"]["2.4"] -= item["total"]
+            for month, amount in item["monthly"].items():
+                if amount is not None:
+                    old["monthly"][month] = old["monthly"].get(month, 0.) - amount
+            if item["chapter"]:
+                approved_by_chapter[item["chapter"]] -= item["total"]
+            for chapter, split in allocation["by_chapter"].items():
+                flow = chapter_flow.setdefault(chapter, {"total": 0., "fact": 0., "plan": 0.,
+                                                         "monthly": {}, "sections": {}})
+                for field in ("total", "fact", "plan"):
+                    flow[field] += split[field]
+                flow["sections"]["2.4"] = flow["sections"].get("2.4", 0.) + split["total"]
+                for month, amount in split["monthly"].items():
+                    flow["monthly"][month] = flow["monthly"].get(month, 0.) + amount
+                if chapter:
+                    approved_by_chapter[chapter] = approved_by_chapter.get(chapter, 0.) + split["total"]
+            item["dictionary_chapter_candidates"] = item["chapter_candidates"]
+            item["chapter_candidates"] = sorted(ch for ch, split in allocation["by_chapter"].items()
+                                                 if ch and any(split[f] for f in ("total", "fact", "plan")))
+            item["chapter"] = (item["chapter_candidates"][0]
+                               if allocation["allocation_known"] and len(item["chapter_candidates"]) == 1 else "")
+            if item["code"] in articles:
+                articles[item["code"]]["chapter"] = item["chapter"]
+        chapters = tuple(c for c in CHAPTERS if c in approved_by_chapter)
     reasons = []
     if mixed:
         reasons.append("статьи " + ", ".join(mixed)
@@ -1484,6 +1530,17 @@ def _admin_expenses(comp: dict[str, Any] | None,
     else:
         for item in items:
             candidates = item.get("chapter_candidates") or []
+            allocation = item.get("money_allocation") or {}
+            if allocation.get("by_chapter") and all(item.get("known_fields", {}).get(f, True)
+                                                 for f in ("total", "fact", "plan")):
+                for chapter, split in allocation["by_chapter"].items():
+                    bucket = (chapters.setdefault(chapter, {"total": 0., "paid": 0., "to_pay": 0.})
+                              if chapter else unallocated)
+                    for target, source in (("total", "total"), ("paid", "fact"), ("to_pay", "plan")):
+                        if bucket[target] is not None:
+                            bucket[target] += split[source]
+                reasons.extend(allocation["reasons"])
+                continue
             bucket = unallocated
             for target, source in (("total", "total"), ("paid", "fact"), ("to_pay", "plan")):
                 if not item.get("known_fields", {}).get(source, True):
@@ -1495,7 +1552,7 @@ def _admin_expenses(comp: dict[str, Any] | None,
                 reasons.append(f"статья {item['code']}: карта ведёт в разные главы без денежных долей")
             elif not candidates:
                 reasons.append(f"статья {item['code']}: глава по карте не установлена")
-        reasons.append("справочник статей не подтверждает денежное распределение ФАКТА и ПЛАНА АХР по главам")
+            reasons.append("справочник статей не подтверждает денежное распределение ФАКТА и ПЛАНА АХР по главам")
     if unknown_fields:
         reasons.append("часть денежных ячеек листовых строк не содержит сохранённого значения")
     allocation_known = items is not None and not reasons

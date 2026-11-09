@@ -112,6 +112,12 @@ def _finance(data: bytes, cut: str) -> dict:
                                          for item in items for field in fields),
         "admin_mixed_leaf_count": sum(len(item["chapter_candidates"]) > 1 for item in items),
         "admin_unmapped_leaf_count": sum(not item["chapter_candidates"] for item in items),
+        "admin_dictionary_mixed_leaf_count": sum(len(item.get("dictionary_chapter_candidates",
+                                                        item["chapter_candidates"])) > 1 for item in items),
+        "admin_dictionary_chapter2_leaf_count": sum(item.get("dictionary_chapter_candidates",
+                                                           item["chapter_candidates"]) == ["2"] for item in items),
+        "admin_verified_money_leaf_count": sum(bool((item.get("money_allocation") or {}).get("proofs"))
+                                              for item in items),
         "admin_allocation_known": admin["allocation_known"],
         "admin_tax_code_in_parsed_items": any(dashboard._fm_is_tax(item["code"]) for item in items),
         "admin_leaf_fact_plan_identity": _identity([admin["paid"], admin["to_pay"]], admin["total"]),

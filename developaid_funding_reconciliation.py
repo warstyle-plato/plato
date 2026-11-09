@@ -43,6 +43,16 @@ def admin_schedule_policy(comp: dict, schedule: dict | None, chapter: str,
     records = records if isinstance(records, list) else []
     for item in comp.get("admin_items") or []:
         candidates = item.get("chapter_candidates") or []
+        allocation = item.get("money_allocation") or {}
+        monetary_plan = (allocation.get("known_fields") or {}).get("plan") is True
+        plan_chapters = {ch for ch, split in allocation.get("by_chapter", {}).items()
+                         if number(split.get("plan")) not in (None, 0.)}
+        if monetary_plan and "" not in plan_chapters:
+            # A historical payment chapter cannot drag a future office plan
+            # from another chapter into this replacement schedule.
+            if chapter not in plan_chapters:
+                continue
+            candidates = sorted(plan_chapters)
         if chapter not in candidates and candidates:
             continue
         source_row = (item.get("source") or {}).get("row")
@@ -52,7 +62,11 @@ def admin_schedule_policy(comp: dict, schedule: dict | None, chapter: str,
                    and r.get("code") == item.get("code")
                    and r.get("source_row") == source_row]
         record = matches[0] if len(matches) == 1 else {}
-        state = record.get("state") if len(candidates) == 1 else "unknown"
+        # A source-bound human review may explicitly establish the monetary
+        # chapter; a dictionary destination alone cannot establish it.
+        reviewed_chapter = str(record.get("bank_chapter") or "")
+        state = (record.get("state") if reviewed_chapter == chapter
+                 and (not monetary_plan or plan_chapters == {chapter}) else "unknown")
         known = item.get("known_fields") or {}
         plan = number(item.get("plan")) if known.get("plan", True) else None
         row = {"code": item.get("code"), "source": item.get("source") or {},
@@ -84,7 +98,7 @@ def admin_schedule_policy(comp: dict, schedule: dict | None, chapter: str,
                         result["monthly_additions"].get(target, 0.0) + amount)
                 result["added_to_need"] += plan
         else:
-            row["reason"] = ("Денежная глава АХР не установлена" if len(candidates) != 1 else
+            row["reason"] = ("Денежная глава АХР не установлена" if reviewed_chapter != chapter else
                              "Включение АХР в график не подтверждено для этих версий и даты")
         if row["state"] == "unknown":
             result["state"] = "incomplete"
@@ -117,8 +131,15 @@ def build(own: dict, comp: dict, chapter_flow: dict, cut: str,
         items = comp.get("budget_items")
         if not isinstance(items, list):
             return fallback if fields.get("total", True) else None
-        values = [number(item.get("total")) if (item.get("known_fields") or {}).get("total", True)
-                  else None for item in items if predicate(item.get("chapter") or "")]
+        values = []
+        for item in items:
+            allocation = item.get("money_allocation") or {}
+            if allocation.get("by_chapter") and (item.get("known_fields") or {}).get("total", True):
+                values.extend(number(split.get("total")) for ch, split in allocation["by_chapter"].items()
+                              if predicate(ch))
+            elif predicate(item.get("chapter") or ""):
+                values.append(number(item.get("total"))
+                              if (item.get("known_fields") or {}).get("total", True) else None)
         return sum(values) if all(v is not None for v in values) else None
     unmapped = composition_total(lambda ch: not ch, unmapped)
     outside = composition_total(lambda ch: bool(ch) and ch not in chapters, outside)
@@ -280,6 +301,7 @@ def need_breakdown(own: dict, comp: dict, cut: str, known: bool,
                       "bank_chapter": item.get("chapter") or None,
                       "bank_chapter_candidates": list(item.get("chapter_candidates") or []),
                       "bank_sources": list(item.get("bank_source_candidates") or []),
+                      "monetary_bank_allocation": item.get("money_allocation") or {},
                       "source": item.get("source") or {},
                       "model_plan": number(item.get("plan")) if (item.get("known_fields") or {}).get("plan", True) else None,
                       "monthly_model_plan": dict(item.get("monthly") or {}),
