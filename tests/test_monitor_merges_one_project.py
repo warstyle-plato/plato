@@ -221,6 +221,70 @@ def test_merge_preserves_an_explicit_permit_row_in_the_main_source():
     assert max(row['finish'] for row in construction) == dt.date(2026,12,28)
 
 
+def _revised_source_with_shared_initial_plan(monkeypatch):
+    import datetime as dt
+    import developaid_schedule_versions as versions
+    monkeypatch.setattr(versions,'_now',lambda:dt.datetime(2026,11,9,12,tzinfo=dt.timezone.utc))
+    shared = _gpr_book({})
+    for project in (PROJECT,MAIN):
+        monitor.store_schedule(project,shared,None,'2026-10-01')
+    changed = _gpr_book({'1':.8,'2':.9})
+    preview = monitor.schedule_version_preview(PROJECT,changed,'2026-11-09')
+    monitor.approve_schedule_version(PROJECT,changed,'2026-11-09',
+        expected_previous_sha256=preview['expected_previous_sha256'],
+        expected_source_sha256=preview['source_sha256'])
+    return monitor._project_dir(PROJECT),shared,changed
+
+
+@pytest.mark.parametrize('case',['manual','weekly','corrupt-origin'])
+def test_unknown_origin_is_not_qualified_as_legacy_after_a_source_revision(monkeypatch,case):
+    import datetime as dt
+    import developaid_schedule_gpr_forecast as forecast
+    source,_,changed = _revised_source_with_shared_initial_plan(monkeypatch)
+    monitor.store_work_fact(MAIN,[{'id':'1','progress':.3}],'2026-11-09')
+    if case=='weekly':
+        folder = source/'schedule_fact';folder.mkdir()
+        path = folder/'2026-11-09.xlsx';path.write_bytes(changed)
+        assert not any(point[2]=='weekly_gpr' for points in forecast.history(PROJECT,dt.date(2026,11,9)).values()
+                       for point in points)
+    else:
+        folder = source/'work_fact';folder.mkdir()
+        path = folder/'2026-11-09.json'
+        path.write_text(json.dumps({'rows':[{'id':'2','progress':.99}]}))
+        if case=='corrupt-origin':
+            (source/'baseline'/'schedule_versions.json').write_text('{invalid-json')
+        else:
+            assert monitor.work_facts(PROJECT,'2026-11-09') == {}
+    original = path.read_bytes()
+    relative = path.relative_to(source)
+    result = merge.merge(PROJECT,MAIN,'Проверяющий',apply=True)
+    assert relative.as_posix() in result['conflicts']
+    assert (monitor._project_dir(MAIN)/'.merged-from-Гродненская'/relative).read_bytes() == original
+    assert '2' not in monitor.work_facts(MAIN,'2026-11-09')
+    if case=='weekly':
+        assert not any(point[2]=='weekly_gpr' for points in forecast.history(MAIN,dt.date(2026,11,9)).values()
+                       for point in points)
+
+
+@pytest.mark.parametrize('bound', [False,True])
+def test_supported_initial_plan_facts_survive_a_later_source_revision(monkeypatch,bound):
+    import hashlib
+    source,shared,_ = _revised_source_with_shared_initial_plan(monkeypatch)
+    # An explicit source remains authoritative even if another version is now
+    # active. Without it, only a date before that revision proves legacy origin.
+    date = '2026-11-09' if bound else '2026-11-08'
+    monitor.store_work_fact(MAIN,[{'id':'1','progress':.3}],date)
+    folder = source/'work_fact';folder.mkdir()
+    record = {'rows':[{'id':'2','progress':.8}]}
+    if bound:
+        record['source_sha256'] = hashlib.sha256(shared).hexdigest()
+    (folder/(date+'.json')).write_text(json.dumps(record))
+    result = merge.merge(PROJECT,MAIN,'Проверяющий',apply=True)
+    assert 'work_fact/'+date+'.json' not in result['conflicts']
+    current = monitor.work_facts(MAIN,'2026-11-09')
+    assert current['1']['progress'] == .3 and current['2']['progress'] == .8
+
+
 def test_the_route_names_an_unknown_project(monkeypatch):
     from fastapi import HTTPException
 

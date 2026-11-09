@@ -46,6 +46,12 @@ def _legacy_sha(root: Path) -> str:
     return _digest(path) if path is not None else ''
 
 
+def _fact_day(path: Path) -> str:
+    value = path.name.split('.',1)[0]
+    parsed = monitor._day(value)
+    return value if parsed is not None and parsed.isoformat() == value else ''
+
+
 def _fact_sha(path: Path, root: Path) -> str:
     """Keep the recorded source, including the immutable basis of legacy facts."""
     metadata = path if path.suffix == '.json' else path.with_suffix('.source.json')
@@ -59,12 +65,25 @@ def _fact_sha(path: Path, root: Path) -> str:
                 return value if isinstance(value,str) and re.fullmatch('[0-9a-f]{64}',value) else ''
         except (OSError,ValueError):
             return ''
-    return _legacy_sha(root)
+    fact_day = _fact_day(path)
+    if not fact_day:
+        return ''
+    try:
+        legacy_sha = _legacy_sha(root)
+        origin = monitor._baseline_state(root.name,fact_day)
+    except (OSError,ValueError,KeyError,TypeError):
+        return ''
+    # Missing provenance is legacy evidence only when this very source used
+    # its initial plan on the fact date. Never rehabilitate an unbound record
+    # created after a revision (or under an unreadable revision history).
+    return (legacy_sha if legacy_sha and isinstance(origin,dict)
+            and type(origin.get('revision')) is int and origin['revision'] == 0
+            and origin.get('source_sha256') == legacy_sha else '')
 
 
 def _target_fact_sha(path: Path, source: Path, target: Path) -> str:
-    day = path.name[:10]
-    if not monitor._day(day) or monitor._day(day).isoformat() != day:
+    day = _fact_day(path)
+    if not day:
         return ''
     selected = monitor._baseline_state(target.name,day)
     if selected['path'] is None:
