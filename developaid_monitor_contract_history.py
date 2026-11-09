@@ -16,6 +16,7 @@ import developaid_monitor_ledgers as ledgers
 
 MAX_RECENT_SNAPSHOTS = 12
 WINDOW_DAYS = 90
+STALE_AFTER_DAYS = 45
 _BASES = {'with_vat', 'without_vat', 'unspecified'}
 
 
@@ -191,7 +192,7 @@ def _point(observation):
     return {key: observation.get(key) for key in (
         'ratio', 'basis', 'basis_label', 'origin', 'observation_date', 'date_basis',
         'snapshot_id', 'scope_fingerprint', 'basis_fingerprint', 'coverage', 'source_years',
-        'coverage_basis', 'state', 'reason')}
+        'coverage_basis', 'requires_reconciliation', 'state', 'reason')}
 
 
 def _selected_snapshots(project, current_day):
@@ -283,6 +284,141 @@ def _coverage(value):
     return result
 
 
+def observation_forecast(row: dict, cut: str) -> dict:
+    """Indicative date for 100% of the uploaded statement *monetary* scope.
+
+    Two observations suffice for a linear estimate. The selected interval is a
+    contiguous suffix of qualified snapshots within ninety days, after any
+    scope/basis/coverage break. Every intermediate snapshot must qualify; any
+    correction within that interval blocks extrapolation. The latest source may
+    be at most forty-five days old. Remaining source cost is extrapolated from
+    ``cut``, without pretending that unobserved work happened since its snapshot.
+
+    This is not a physical/SMR pace, a KS execution date or a forecast of the
+    complete contract. It never replaces ``row['risk']`` or its dated forecast.
+    """
+    result = {'state': 'unknown', 'eligible': False, 'forecast_finish': None,
+        'scope': 'uploaded_statements', 'metric': 'statement_monetary_progress',
+        'origin': 'snapshot_observations', 'date_basis': 'snapshot', 'indicative': True,
+        'label': 'Прогноз по стоимости охваченных ведомостей', 'reason': '',
+        'pace_per_day': None, 'pace_percent_points_per_day': None, 'pace_window': None,
+        'remaining': None, 'remaining_ratio': None, 'point_count': 0,
+        'source_observation_date': None, 'calculated_at': cut,
+        'delay_days': None, 'deadline_relation': None, 'window_reset_reason': None}
+
+    def blocked(state, reason):
+        return dict(result, state=state, reason=reason)
+
+    if _day((row.get('risk') or {}).get('forecast_finish')):
+        return blocked('dated_forecast_available', 'Прогноз по датированным периодам сохранён отдельно.')
+    day = _day(cut)
+    progress = row.get('progress') or {}
+    latest_day = _day(progress.get('observation_date'))
+    ratio, planned = _number(progress.get('ratio')), _number(progress.get('planned'))
+    if not day:
+        return blocked('cut_unknown', 'Дата расчёта прогноза не подтверждена.')
+    if ratio is None or progress.get('state') != 'known':
+        return blocked('current_unknown', progress.get('reason') or 'Текущий общий процент не подтверждён.')
+    if progress.get('basis') != 'statement_union' or progress.get('origin') != 'cumulative_statement':
+        return blocked('not_statement_observation', 'Этот показатель не является объединённым наблюдением по годовым ведомостям.')
+    if not latest_day:
+        return blocked('observation_date_unknown', 'Дата текущего снимка не подтверждена.')
+    result['source_observation_date'] = latest_day.isoformat()
+    if latest_day > day:
+        return blocked('future_source', 'Дата снимка позже даты расчёта; будущий итог не экстраполируется.')
+    if (day-latest_day).days > STALE_AFTER_DAYS:
+        return blocked('stale', 'Последний снимок старше 45 дней; текущий темп неизвестен.')
+    if ratio < 0 or ratio > 1 or progress.get('requires_reconciliation') is not False:
+        return blocked('requires_reconciliation', 'Итоги ведомостей требуют сверки; прогноз не построен.')
+    if planned is None or planned <= 0:
+        return blocked('basis_unverified', 'Положительная стоимость охваченного состава работ не подтверждена.')
+    if ratio == 1:
+        return blocked('source_scope_complete', 'По ведомостям достигнута полная стоимость охваченных работ; дата фактического завершения не выдумывается.')
+    result.update(remaining_ratio=1-ratio, remaining=planned*(1-ratio))
+    coverage = _coverage(progress.get('coverage'))
+    scope, basis = progress.get('scope_fingerprint'), progress.get('basis_fingerprint')
+    if not coverage or not scope or not basis:
+        return blocked('coverage_unverified', 'Для прогноза не подтверждены полный состав источников и основание процента.')
+    series = progress.get('series') or []
+    if not isinstance(series, list) or not series:
+        return blocked('single_snapshot', 'Для прогноза нужны как минимум два сопоставимых снимка ведомостей.')
+    dated, previous, seen_ids = [], None, set()
+    for point in series:
+        date = _day(point.get('observation_date'))
+        if not date:
+            return blocked('observation_date_unknown', 'Дата одного наблюдения истории не подтверждена.')
+        if date > day or date > latest_day:
+            return blocked('future_source', 'В истории есть наблюдение позже текущего среза.')
+        if previous is not None and date <= previous:
+            return blocked('ambiguous_dates', 'Снимки истории не имеют единственного последовательного порядка дат.')
+        identifier = point.get('snapshot_id')
+        if identifier:
+            if not isinstance(identifier, str) or identifier in seen_ids:
+                return blocked('ambiguous_snapshots', 'Один снимок повторён под разными наблюдениями.')
+            seen_ids.add(identifier)
+        previous = date
+        if date >= day-dt.timedelta(days=WINDOW_DAYS):
+            dated.append((date, point))
+    if (not dated or dated[-1][0] != latest_day
+            or dated[-1][1].get('snapshot_id') != progress.get('snapshot_id')
+            or _number(dated[-1][1].get('ratio')) != ratio):
+        return blocked('current_binding_changed', 'Текущий процент не совпал с последним наблюдением выбранного источника.')
+
+    def qualification(date, point):
+        value = _number(point.get('ratio'))
+        if (point.get('state') != 'known' or value is None or not point.get('snapshot_id')
+                or point.get('date_basis') != 'snapshot' or point.get('origin') != 'cumulative_statement'):
+            return 'comparison_gap'
+        if value < 0 or value > 1 or point.get('requires_reconciliation') is not False:
+            return 'requires_reconciliation'
+        if point.get('scope_fingerprint') != scope or point.get('basis_fingerprint') != basis:
+            return 'basis_changed'
+        covered = _coverage(point.get('coverage'))
+        if covered != coverage:
+            return 'coverage_changed'
+        if any(year > date.year or year < 2000 for _, year in covered):
+            return 'future_year'
+        return None
+
+    window = []
+    for date, point in reversed(dated):
+        error = qualification(date, point)
+        if error:
+            result['window_reset_reason'] = error
+            break
+        window.append((date, point))
+    window.reverse()
+    result['point_count'] = len(window)
+    if len(window) < 2:
+        state = result['window_reset_reason'] or 'single_snapshot'
+        return blocked(state, 'Для прогноза нужны два свежих наблюдения с неизменным составом, базой и годовым покрытием без промежуточного разрыва.')
+    values = [_number(point['ratio']) for _, point in window]
+    if any(second < first for first, second in zip(values, values[1:])):
+        return blocked('correction', 'В сопоставимых снимках итог уменьшался; корректировка не превращается в отрицательный темп.')
+    if values[-1] <= values[-2]:
+        return blocked('no_recent_growth', 'В последних двух сопоставимых снимках нет прироста; прежний темп не экстраполируется.')
+    elapsed = (window[-1][0]-window[0][0]).days
+    rate = (values[-1]-values[0])/elapsed
+    if not math.isfinite(rate) or rate <= 0:
+        return blocked('no_positive_pace', 'Положительный сопоставимый темп не подтверждён.')
+    result.update(pace_per_day=planned*rate, pace_percent_points_per_day=rate*100,
+                  pace_window=[window[0][0].isoformat(), window[-1][0].isoformat()])
+    raw_days = (1-ratio)/rate
+    if not math.isfinite(raw_days) or raw_days > 36500:
+        return blocked('pace_too_low', 'При этом темпе охваченный остаток займёт больше 100 лет; дата прогноза не показана.')
+    days = max(1, math.ceil(raw_days-1e-10))
+    try:
+        finish = day+dt.timedelta(days=days)
+    except OverflowError:
+        return blocked('forecast_date_out_of_range', 'Расчётная дата выходит за допустимый календарный диапазон.')
+    deadline = _day(row.get('deadline'))
+    result.update(state='estimated', eligible=True, forecast_finish=finish.isoformat(),
+        delay_days=max(0, (finish-deadline).days) if deadline else None,
+        deadline_relation=('after' if finish > deadline else 'on_or_before') if deadline else None,
+        reason='По изменению денежного выполнения между сопоставимыми снимками. Даты снимков не являются датами КС; прогноз относится к стоимости охваченных ведомостей, а не к физической готовности или всему договору.')
+    return result
+
+
 def enrich(project: str, cut: str, register: dict, *, build_register: Callable[[str], dict]) -> dict:
     """Attach canonical observations and deltas without mutating source registers.
 
@@ -351,6 +487,7 @@ def enrich(project: str, cut: str, register: dict, *, build_register: Callable[[
             progress.update(comparison_state='history_unavailable', comparison_reason=
                             'История снимков не прочитана; текущий процент остаётся доступен.')
         progress['history_truncated'] = truncated
+        row['observation_forecast'] = observation_forecast(row, cut)
     result['progress_summary'] = {'known': sum(row['progress']['ratio'] is not None for row in rows),
         'unknown': sum(row['progress']['ratio'] is None for row in rows),
         'comparable': sum(row['progress']['comparison_state'] == 'comparable' for row in rows),
