@@ -23,6 +23,7 @@ import datetime
 import sys
 import html
 import json
+import math
 import os
 import re
 import tempfile
@@ -3593,23 +3594,65 @@ def _work_contract_missing(entry: dict[str, Any]) -> str:
     return reason
 
 
+def _work_statement_percentages(link: dict[str, Any]) -> str:
+    """Format the registry's qualified source ratios without recomputing them."""
+    known = []
+    for index, source in enumerate(link.get("reported_performance_sources") or [], start=1):
+        value = source.get("completion_ratio")
+        if (source.get("amount_scope") == "statement"
+                and source.get("future_periods_excluded") is False
+                and source.get("monetary_comparable") is True
+                and isinstance(value, (int, float)) and not isinstance(value, bool)
+                and math.isfinite(value)):
+            known.append((index, source))
+    if not known:
+        return ""
+    years = [source.get("period_year") for _, source in known]
+    parts = []
+    for index, source in known:
+        year = source.get("period_year")
+        label = (str(year) if type(year) is int and years.count(year) == 1 else
+                 f"{year}, ведомость {index}" if type(year) is int else f"Ведомость {index}")
+        parts.append(f"{label} — {_pct(source['completion_ratio'])}")
+    return "По стоимости ведомостей: " + "; ".join(parts)
+
+
+def _work_closing_summary(link: dict[str, Any]) -> bool:
+    return (link.get("source_kind") == "closing_summary" or
+            (link.get("progress") or {}).get("origin") in {"dated_closing_summary", "closing_summary_statement"})
+
+
 def _work_contract_progress(link: dict[str, Any]) -> str:
     progress = link.get("progress") or {}
-    if progress.get("ratio") is not None:
-        label = f"{_pct(progress['ratio'])} {progress.get('basis_label') or 'по накопительным'}"
-        delta = progress.get("delta_percent_points")
-        if progress.get("comparison_state") == "comparable" and delta is not None:
-            change = "Корректировка" if progress.get("change_kind") == "correction" else "Изменение"
+    statement = link.get("statement_progress") or {}
+    summary = link.get("summary_progress") or {}
+    selected = progress or (summary if summary.get("state") == "known" else
+                            statement if statement.get("state") == "known" else {})
+    if selected.get("ratio") is not None:
+        basis = selected.get("basis_label") or ("суммы КС-2 по сводной" if _work_closing_summary(link) else "по накопительным")
+        label = f"{_pct(selected['ratio'])} {basis}"
+        delta = selected.get("delta_percent_points")
+        if selected.get("comparison_state") == "comparable" and delta is not None:
+            change = "Корректировка" if selected.get("change_kind") == "correction" else "Изменение"
             delta_text = f"{delta:+.1f}".replace('.', ',')
-            label += f". {change} {delta_text} п.п. за {progress.get('period_days')} дн."
+            label += f". {change} {delta_text} п.п. за {selected.get('period_days')} дн."
         if link.get("scope_note"):
             label += ". " + str(link["scope_note"])
         return label
     ratio = link.get("completion_ratio")
-    if ratio is not None:
+    if not progress and ratio is not None:
         # Read the registry's comparable money ratio. Never infer a physical
         # work's completion from the whole contract or sum unrelated units.
-        return f"{_pct(ratio)} суммы договора" + (". " + str(link['scope_note']) if link.get('scope_note') else "")
+        basis = "суммы КС-2 по сводной" if _work_closing_summary(link) else "суммы договора"
+        return f"{_pct(ratio)} {basis}" + (". " + str(link['scope_note']) if link.get('scope_note') else "")
+    sources = _work_statement_percentages(link)
+    reason = progress.get("reason") or summary.get("why") or statement.get("why")
+    if sources or reason or progress or statement or summary:
+        label = sources or "Доля неизвестна"
+        label += ". " + str(reason or "Общий процент по ведомостям не подтверждён.")
+        if link.get("scope_note"):
+            label += ". " + str(link["scope_note"])
+        return label
     if link.get("amount") is None or link["amount"] <= 0:
         return "Доля неизвестна: нет полной суммы договора"
     if link.get("completed") is None:
@@ -3619,17 +3662,37 @@ def _work_contract_progress(link: dict[str, Any]) -> str:
 
 def _work_contract_forecast(link: dict[str, Any]) -> str:
     risk = link.get("risk") or {}
+    progress = link.get("progress") or {}
+    summary = _work_closing_summary(link)
     finish, delay = risk.get("forecast_finish"), risk.get("delay_days")
     if finish:
-        text = f"Окончание {_day(finish)}"
+        text = f"Прогноз закрытия по сводной: {_day(finish)}" if summary else f"Окончание {_day(finish)}"
         if delay and delay > 0:
             return text + f". Задержка {int(delay)} дн."
         return text + (". В срок" if link.get("deadline") else ". Срок договора не указан")
     if risk.get("status") == "done":
-        return "Выполнено по накопительной"
-    progress = link.get("progress") or {}
-    if progress.get("origin") == "cumulative_statement" and progress.get("ratio") is not None:
-        return "Прогноз неизвестен: нужен темп выполнения работ по сопоставимым периодам"
+        return "Закрыто по КС-2 из сводной" if summary else "Выполнено по накопительной"
+    prefix = f"Срок прошёл на {int(delay)} дн. " if risk.get("status") == "overdue" and delay else ""
+    if summary:
+        reason = ((progress.get("reason") or (link.get("summary_progress") or {}).get("why"))
+                  if progress.get("ratio") is None else None)
+        return prefix + "Прогноз закрытия не рассчитан. " + str(reason or
+            "Нужны сопоставимые датированные КС-2 из сводной.")
+    statement = link.get("statement_progress") or {}
+    source_observation = (progress.get("origin") == "cumulative_statement"
+                          or (progress.get("ratio") is None
+                              and (progress or link.get("completion_ratio") is None)
+                              and (progress or statement or _work_statement_percentages(link))))
+    observation = link.get("observation_forecast") or {}
+    if source_observation and observation.get("scope") == "uploaded_statements":
+        if observation.get("eligible") is True and observation.get("forecast_finish"):
+            return prefix + f"Ориентир 100% стоимости ведомостей: {_day(observation['forecast_finish'])}. По снимкам."
+        if observation.get("reason"):
+            return prefix + "Прогноз не рассчитан. " + str(observation["reason"])
+    if source_observation:
+        reason = ((progress.get("reason") or statement.get("why")) if progress.get("ratio") is None else None)
+        return prefix + "Прогноз не рассчитан. " + str(reason or
+            "Нужен темп изменения стоимости ведомостей по сопоставимым снимкам.")
     if link.get("amount") is None or link["amount"] <= 0:
         why = "нет полной суммы договора"
     elif link.get("completed") is None:
@@ -3642,7 +3705,6 @@ def _work_contract_forecast(link: dict[str, Any]) -> str:
         why = "текущего темпа недостаточно для окончания работ"
     else:
         why = "нет свежих данных о темпе"
-    prefix = f"Срок прошёл на {int(delay)} дн. " if risk.get("status") == "overdue" and delay else ""
     return prefix + "Прогноз неизвестен: " + why
 
 
@@ -3679,7 +3741,7 @@ def _works_html(block: dict[str, Any], kind: str) -> str:
                 if links and entry.get("contract_match_reason"):
                     cells[-3] += "<br>" + esc(_work_contract_missing(entry))
             rows.append(cells)
-    headings = ["Подрядчик", "Работы", "Дни в отчётах"] + (["Договор", "По накопительной, % договора", "Прогноз срока"] if linked else [])
+    headings = ["Подрядчик", "Работы", "Дни в отчётах"] + (["Договор", "Выполнение, %", "Прогноз срока"] if linked else [])
     warning = ("<p class='missing'>" + esc(block["contract_link_warning"]) + "</p>"
                if block.get("contract_link_warning") else "")
     table = ("<table class='works contract-works'><colgroup>"
@@ -4903,8 +4965,9 @@ def _contract_risks_html(block: dict[str, Any]) -> str:
             esc(risk.get("label") or "—"),
             _day(row.get("deadline")),
             esc(_work_contract_forecast(row)),
-            f"{_rub(row.get('completed'))} из {_rub(row.get('amount'))}<br>"
-            + esc(_work_contract_progress(row)),
+            (f"{_rub(row['completed'])}"
+             + (f" из {_rub(row['amount'])}" if row.get("amount") is not None else "") + "<br>"
+             if row.get("completed") is not None else "") + esc(_work_contract_progress(row)),
             _rub(advance.get("paid"))
             + (f"<br><span style='color:#5b6b7d'>{esc(advance.get('reason') or 'Итог оплаты не подтверждён.')}</span>"
                if advance.get("paid") is None else ""),
