@@ -134,7 +134,13 @@ def test_unknown_zero_and_full_monetary_completion_keep_distinct_deadline_eviden
     rows = by_number(view)
     assert [rows[key]["completed"] for key in ("UNKNOWN", "ZERO", "DONE")] == [None, 0, 1000]
     assert [rows[key]["completion_ratio"] for key in ("UNKNOWN", "ZERO", "DONE")] == [None, 0, 1]
-    assert rows["UNKNOWN"]["risk"]["remaining"] is None
+    unknown = rows["UNKNOWN"]
+    assert unknown["risk"]["remaining"] is None and unknown["risk"]["delay_days"] is None
+    assert unknown["risk"]["forecast_finish"] is None and "полной суммы договора" in unknown["risk"]["reason"]
+    assert unknown["progress"]["ratio"] is None and unknown["progress"]["state"] != "known"
+    unknown_forecast = unknown["observation_forecast"]
+    assert not unknown_forecast["eligible"] and unknown_forecast["forecast_finish"] is None
+    assert unknown_forecast["reason"] == unknown["progress"]["reason"]
     zero = rows["ZERO"]["risk"]
     assert zero["remaining"] == 1000 and zero["delay_days"] == 66
     assert zero["forecast_finish"] is None and "неизвестно" not in zero["reason"]
@@ -157,7 +163,13 @@ def test_unknown_zero_and_full_monetary_completion_keep_distinct_deadline_eviden
         expect(page.locator('#contractsRisk button').first.locator('b')).to_have_text('2')
         unknown_row = page.locator('#contractsRows tr', has_text='UNKNOWN')
         zero_row = page.locator('#contractsRows tr', has_text='ZERO')
-        expect(unknown_row).to_contain_text('Для прогноза нужны даты КС-2 или предыдущий сопоставимый срез.')
+        done_row = page.locator('#contractsRows tr', has_text='DONE')
+        expect(unknown_row.locator('.term')).to_contain_text(unknown_forecast["reason"])
+        expect(unknown_row.locator('td').nth(3)).not_to_contain_text('%')
+        assert 'Срок прошёл на 66 дн.' not in unknown_row.inner_text()
+        expect(zero_row.locator('td').nth(3)).to_contain_text('0% суммы договора')
+        expect(done_row.locator('td').nth(3)).to_contain_text('100% суммы договора')
+        expect(done_row.locator('.term')).to_contain_text('Выполнено')
         expect(zero_row).to_contain_text('Срок прошёл на 66 дн.')
         assert 'не завершены' not in page.locator('#contractsRisk').inner_text()
         assert 'задержка' not in zero_row.inner_text().casefold()

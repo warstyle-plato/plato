@@ -155,6 +155,8 @@ def test_the_report_uses_the_same_resolved_party_and_contract_progress():
 
 def test_a_sole_contract_identity_does_not_allocate_unqualified_work_quantities():
     data = own_register('ООО «Мастер Инж»')
+    data['rows'][0]['physical_items'] = [{'name': 'Бетонирование', 'scope': 'Корпус 3', 'unit': 'м3',
+                                         'plan_quantity': 10, 'completed_quantity': 8, 'completion_ratio': .8}]
     report('Корпус 3 — 2,4,6', party='Мастер')
     before = copy.deepcopy(data)
     resolved = evidence(data)
@@ -169,7 +171,10 @@ def test_a_sole_contract_identity_does_not_allocate_unqualified_work_quantities(
                                        context={'register': resolved})[0]['lines'][0]['contract_links']
     assert found['id'] == FIRST and found['completion_ratio'] == .25
     assert not found['scope_confirmed'] and found['scope_review_dates'] == [item['date']]
-    assert 'всему договору' in found['scope_note']
+    assert found['scope_note'] == 'Договор определён; корпусный состав сообщений требует уточнения.'
+    assert 'всему договору' not in found['scope_note']
+    assert not {'physical_items', 'plan_quantity', 'completed_quantity'} & found.keys()
+    assert resolved['rows'][0]['physical_items'] == before['rows'][0]['physical_items']
 
 
 def test_unknown_corpus_range_cannot_choose_between_two_same_party_contracts(monkeypatch):
