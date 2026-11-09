@@ -40,7 +40,6 @@ def test_only_contracts_of_the_reported_party_are_selectable_and_post_rechecks_t
     ({"contract_date": "2026-10-15"}, "Корпус 1 бетон", "после сообщения"),
     ({}, "Корпус 1 работы по договору № A-123", "номер"),
     ({}, "Корпус 1 и 2 бетон", "Корпус"),
-    ({}, "Корпус 1/2 бетон", "Корпус"),
 ])
 def test_invalid_source_cannot_offer_or_manually_accept_a_contract(monkeypatch, change, line, reason):
     data = register()

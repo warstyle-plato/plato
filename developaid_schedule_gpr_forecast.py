@@ -52,6 +52,17 @@ def _progress(value: Any) -> float | None:
     return number if 0.0 <= number <= 1.0 else None
 
 
+def _quantity_progress(value: Any) -> float | None:
+    """KS calculations already return a ratio; 1.25 means 125%, not 1.25%."""
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) and number >= 0 else None
+
+
 def _works(parsed: dict) -> dict[str, tuple[float | None, str]]:
     out, duplicates = {}, set()
     for item in parsed.get("works") or []:
@@ -144,19 +155,29 @@ def quantity_conflict(points: list, ks: dict, cut: dt.date) -> dict | None:
     if not dated or dated[-1][1] < DONE:
         return None
     measurements = []
-    candidates = ks.get("components") or [{"progress": ks.get("progress"), "period_end": ks.get("progress_date")}]
+    candidates = ks.get("components") or [{"progress": ks.get("progress"),
+        "period_end": ks.get("progress_date") if ks.get("progress_origin") != "cumulative_statement" else None,
+        "observation_date": ks.get("progress_date") if ks.get("progress_origin") == "cumulative_statement" else None,
+        "progress_origin": ks.get("progress_origin")}]
     for component in candidates:
-        progress, day = _progress(component.get("progress")), _day(component.get("period_end"))
+        statement = component.get("progress_origin") == "cumulative_statement"
+        progress = _quantity_progress(component.get("progress"))
+        day = _day(component.get("observation_date") if statement else component.get("period_end"))
         if progress is not None and day and day <= cut:
-            measurements.append({"progress": progress, "date": day.isoformat(),
-                                 "component_id": component.get("component_id") or ""})
+            measurement = {"progress": progress, "date": day.isoformat(),
+                           "component_id": component.get("component_id") or ""}
+            if statement:
+                measurement["date_basis"] = "snapshot"
+            measurements.append(measurement)
     unfinished = [m for m in measurements if m["progress"] < DONE]
     if not unfinished:
         return None
     gpr = {"progress": dated[-1][1], "date": dated[-1][0].isoformat(), "origin": dated[-1][2]}
     date_text = lambda day: _day(day).strftime("%d.%m.%Y")
     shown = "; ".join((m["component_id"] + ": " if m["component_id"] else "")
-                      + f"{m['progress'] * 100:g}% на {date_text(m['date'])}" for m in unfinished[:3])
+                      + f"{m['progress'] * 100:g}% "
+                      + ("по ведомости от " if m.get("date_basis") == "snapshot" else "на ")
+                      + date_text(m['date']) for m in unfinished[:3])
     heading = ("Даты и показания источников расходятся" if any(m["date"] != gpr["date"] for m in unfinished)
                else "Показания источников расходятся")
     reason = (f"{heading}: в ГПР от {date_text(gpr['date'])} — 100%, "
@@ -195,22 +216,28 @@ def work(row: dict, points: list[tuple[dt.date, float, str]], cut: dt.date,
     points = [point for point in points if point[0] <= cut and _progress(point[1]) is not None]
     result = {"forecast_finish": None, "method": "unknown", "reason": "", "progress": None,
               "progress_date": None, "progress_origin": None, "pace_per_day": None, "window": None}
+    ks_origin = (ks or {}).get("progress_origin") or "cumulative_quantities"
+    ks_meta = {key: (ks or {}).get(key) for key in
+               ("progress_date_basis", "progress_basis", "observation_history", "requires_reconciliation")}
     conflict = (ks or {}).get("source_conflict") or (quantity_conflict(points, ks, cut) if ks else None)
     if conflict:
         return dict(result, method="source_conflict", source_conflict=conflict,
-                    progress=_progress(ks.get("progress")), progress_date=ks.get("progress_date"),
-                    progress_origin="cumulative_quantities", reason=conflict["reason"] + " " + conflict["action"])
+                    progress=_quantity_progress(ks.get("progress")), progress_date=ks.get("progress_date"),
+                    progress_origin=ks_origin, reason=conflict["reason"] + " " + conflict["action"], **ks_meta)
     if ks and ks.get("forecast_finish"):
         completed = ks.get("mode") == "completed"
-        method = "confirmed_completion" if completed else "cumulative_quantities"
+        method = ("confirmed_completion" if completed else
+                  "cumulative_statement_pace" if ks_origin == "cumulative_statement" else "cumulative_quantities")
         return dict(result, forecast_finish=ks["forecast_finish"], method=method,
-                    progress=_progress(ks.get("progress")), progress_origin=method,
+                    progress=_quantity_progress(ks.get("progress")), progress_origin=(method if completed else ks_origin),
                     progress_date=ks.get("progress_date"), reason=("Дата завершения подтверждена вручную."
-                    if completed else "По натуральному темпу накопительных."))
+                    if completed else "По изменению объёмов между сопоставимыми снимками ведомостей."
+                    if ks_origin == "cumulative_statement" else "По натуральному темпу накопительных."), **ks_meta)
     if ks and ks.get("scope_confirmed") and ks.get("mode") in {"quantities", "completed"}:
-        return dict(result, method="cumulative_unknown", progress=_progress(ks.get("progress")),
-                    progress_origin="cumulative_quantities", progress_date=ks.get("progress_date"),
-                    reason=ks.get("reason") or "Натуральный темп этой работы не подтверждён.")
+        return dict(result, method=("cumulative_statement" if ks_origin == "cumulative_statement" else "cumulative_unknown"),
+                    progress=_quantity_progress(ks.get("progress")),
+                    progress_origin=ks_origin, progress_date=ks.get("progress_date"),
+                    reason=ks.get("reason") or "Натуральный темп этой работы не подтверждён.", **ks_meta)
     if points:
         last = points[-1]
         result.update(progress=last[1], progress_date=last[0].isoformat(), progress_origin=last[2])
