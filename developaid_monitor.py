@@ -258,6 +258,14 @@ def _has_sheet(data: bytes | Path, name: str) -> bool:
 
 def store_schedule(project: str, gpr: bytes, pm: bytes | None,
                    taken_at: Any) -> dict[str, Any]:
+    """Store the first GPR and compatible payment baseline under the source lock."""
+    import developaid_finance_allocations as allocations
+    with allocations.source_lock(project):
+        return _store_schedule_locked(project, gpr, pm, taken_at)
+
+
+def _store_schedule_locked(project: str, gpr: bytes, pm: bytes | None,
+                           taken_at: Any) -> dict[str, Any]:
     """Create the fixed project baseline once.
 
     ``gpr`` may be either the prepared cleaned GPR (sheet ``ГПР``) or our

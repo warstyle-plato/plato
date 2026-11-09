@@ -227,3 +227,27 @@ def test_owner_provenance_and_unchanged_total_reach_monitor_html_and_pdf(stored,
                 assert note in text and '282 500 ₽' in text and '77 500 ₽' in text
             finally:
                 browser.close()
+
+
+def test_legacy_schedule_payment_baseline_writer_uses_the_same_lock_and_sha_fence(stored):
+    import threading
+    from test_monitor_keeps_every_snapshot import _baseline_book
+    path, raw, state = stored
+    assign(state)
+    changed = raw + b' changed financial source'
+    started = threading.Event()
+    def upload():
+        started.set()
+        return monitor.store_schedule(PROJECT, _baseline_book(), changed, DAY)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with allocations.source_lock(PROJECT):
+            future = pool.submit(upload)
+            assert started.wait(2)
+            assert not future.done()
+            assert path.read_bytes() == raw
+        assert future.result(timeout=5)['baseline']
+    assert path.read_bytes() == changed
+    new = dashboard._read_finance_baseline(path)
+    qualified = allocations.qualify(PROJECT, new, DAY)
+    assert canonical(qualified)['admin']['unallocated']['total'] == 7500
+    assert not canonical(qualified)['admin']['owner_decisions']
