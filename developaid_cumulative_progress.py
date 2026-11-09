@@ -58,13 +58,14 @@ def quantity_views(snapshot, cut):
     day = snapshot_date(snapshot)
     for li, ledger in enumerate((snapshot or {}).get('ledgers') or []):
         context = dict(ledger, source_date=day)
+        duplicates = ledgers.verified_duplicate_sources(ledger.get('items') or [])
         for ii, item in enumerate(ledger.get('items') or []):
-            view = contracts._physical(item, context, cut)
+            view = contracts._physical(item, context, cut, _duplicates=duplicates)
             out[f'{li}:{ii}'] = dict(view, contract=ledger.get('contract') or '',
                                     contract_date=ledger.get('contract_date') or '',
                                     contractor=ledger.get('contractor') or '',
                                     customer=ledger.get('customer') or '',
-                                    position_key=position_identity(ledger, item),
+                                    position_key=(None if view.get('is_duplicate') else position_identity(ledger, item)),
                                     planned_work_amount=item.get('planned_work_amount'),
                                     planned_material_amount=item.get('planned_material_amount'),
                                     planned_cost_split=item.get('planned_cost_split') is True,
@@ -80,6 +81,7 @@ def quantity_views(snapshot, cut):
                                      site_scope=item.get('site_scope') or ledger.get('site_scope'),
                                      scope_evidence=ledger.get('scope_evidence') or {},
                                      planned_cost_method=item.get('planned_cost_method'))
+            ledgers.stamp_duplicate_view(out[f'{li}:{ii}'])
     return out
 
 
@@ -90,14 +92,18 @@ def aggregate_quantities(members):
     weight these already calculated quantity fractions; a zero-price real leaf
     remains part of coverage and of the all-complete decision.
     """
-    leaves = [member for member in members if member.get('is_group') is not True]
+    leaves = ledgers.aggregation_members(members)
     result = {'ratio': None, 'basis': 'smr_cost_weighted_quantities',
               'label': 'По объёмам работ с весом стоимости СМР', 'complete_coverage': False,
               'member_keys': [member.get('member_key') for member in leaves],
-              'members': len(leaves), 'excluded_groups': len(members)-len(leaves),
+              'members': len(leaves), 'excluded_groups': sum(member.get('is_group') is True for member in members),
+              'excluded_duplicates': len(members)-len(ledgers.aggregation_members(members, include_groups=True)),
               'all_complete': False, 'requires_reconciliation': False, 'reason': ''}
     if not leaves:
         return dict(result, reason='Нет отдельных позиций работ для расчёта процента.')
+    if any(member.get('is_duplicate') is True for member in leaves):
+        return dict(result, requires_reconciliation=True,
+                    reason='Отметка о копии строки не подтверждена полным составом источника; привязка требует проверки.')
     ratios = [contracts._number(member.get('progress')) for member in leaves]
     if any(ratio is None or ratio < 0 for ratio in ratios):
         return dict(result, reason='В одной из позиций не подтверждён выполненный объём.')
@@ -231,14 +237,15 @@ def observation_index(project, cut, snapshot, keys):
             if type(ledger.get('period_year')) is not int or ledger['period_year'] > int(day[:4]):
                 continue
             context = dict(ledger, source_date=day)
-            for item in ledger.get('items') or []:
+            source_duplicates = ledgers.verified_duplicate_sources(ledger.get('items') or [])
+            for item in ledgers.aggregation_members(ledger.get('items') or []):
                 key = position_identity(ledger, item)
                 if key not in keys:
                     continue
                 if key in positions:
                     duplicates.add(key)
                     continue
-                view = contracts._physical(item, context, day)
+                view = contracts._physical(item, context, day, _duplicates=source_duplicates)
                 positions[key] = _observation(view)
         for key in duplicates:
             positions[key] = None

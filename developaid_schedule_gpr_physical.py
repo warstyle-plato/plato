@@ -137,7 +137,7 @@ def _state(project, cut, source, snapshot):
 
 def _observed_component(component, result, items, views, snapshot, cut, observation_index):
     """Retain known statement quantities when execution dates cannot give pace."""
-    if result.get("progress") is not None:
+    if result.get("progress") is not None or result.get('excluded_duplicate_item_ids'):
         return result
     selected = [items.get(key) for key in component["item_ids"]]
     observed = [views.get(key) for key in component["item_ids"]]
@@ -281,6 +281,7 @@ def catalog(project, cut, query="", offset=0):
              "reported_completed_quantity", "reported_completion_ratio", "reported_material_quantity",
              "snapshot_date", "quantity_date", "quantity_basis", "future_periods_excluded", "position", "customer",
              "section_path", "object_scope", "system_scope", "is_group", "parent_row",
+             "is_duplicate", "duplicate_of", "duplicate_note",
              "site_scope", "scope_evidence", "context_headings", "planned_cost_method",
              "planned_work_amount", "planned_material_amount", "planned_cost_split",
              "planned_work_amount_basis", "valuation_key")})

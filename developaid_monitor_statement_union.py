@@ -106,6 +106,10 @@ def statement_union(row: dict) -> dict:
 
     references = row.get('reported_performance_sources') or []
     items = row.get('physical_items') or []
+    from developaid_monitor_ledgers import aggregation_members
+    filtered = aggregation_members(items, include_groups=True)
+    result['duplicate_count'] = len(items)-len(filtered)
+    items = filtered
     if not references or not items:
         return result
     observation = _day(row.get('source_date'))
