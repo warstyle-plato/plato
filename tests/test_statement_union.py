@@ -9,7 +9,7 @@ from developaid_monitor_statement_union import statement_union
 
 
 def source(year=2026, name='A.xlsx', *, done=200, plan=1000, position='1', scope='Корпус 1',
-           unit='м2', quantity_plan=100, quantity=None, **changes):
+           unit='м2', quantity_plan=100, quantity=None, work_name='Монтаж', **changes):
     ref = {'source': {'filename': name, 'sheet': 'Работы'}, 'period_year': year,
            'source_date': '2026-11-06', 'future_periods_excluded': False,
            'monetary_comparable': True, 'planned_amount_basis': 'unspecified',
@@ -17,7 +17,7 @@ def source(year=2026, name='A.xlsx', *, done=200, plan=1000, position='1', scope
            'source_complete': True, 'planned': plan, 'completed': done,
            'completion_ratio': done/plan if plan else None}
     item = {'source': {'filename': name, 'sheet': 'Работы', 'row': 10},
-            'period_year': year, 'position': position, 'name': 'Монтаж', 'scope': scope,
+            'period_year': year, 'position': position, 'name': work_name, 'scope': scope,
             'unit': unit, 'plan_quantity': quantity_plan, 'planned_amount': plan,
             'snapshot_date': '2026-11-06', 'future_periods_excluded': False,
             'completed_amount': None, 'reported_completed_amount': done,
@@ -59,7 +59,7 @@ def test_disjoint_years_add_execution_once_and_use_one_work_plan():
 
 def test_no_zero_is_invented_for_a_work_missing_in_another_year():
     result = union(row(source(2025, 'Old.xlsx', done=200),
-                       source(2026, 'New.xlsx', done=50, plan=500, position='2')))
+                       source(2026, 'New.xlsx', done=50, plan=500, position='2', work_name='Отдельная работа')))
     assert result['planned'] == 1500 and result['completed'] == 250
     assert result['annual_position_count'] == 2  # Not a fabricated 2x2 year/work grid.
     assert len(result['coverage']) == 2
@@ -116,6 +116,31 @@ def test_room_identity_survives_a_later_operation_caption():
     result = union(row(source(name='A.xlsx', context_headings=[{'name': 'Помещение 101'}, current]),
                        source(name='B.xlsx', context_headings=[{'name': 'Помещение 102'}, current])))
     assert result['planned'] == 2000 and result['position_count'] == 2
+
+
+@pytest.mark.parametrize('position,section_position', [('2', '1'), ('1', '7')])
+def test_changed_ordinal_codes_do_not_prove_disjoint_work_between_years(position, section_position):
+    first = source(2025, 'Old.xlsx', section_path=[{'position': '1', 'name': 'Монтаж сети'}])
+    second = source(2026, 'New.xlsx', position=position,
+                    section_path=[{'position': section_position, 'name': 'Монтаж сети'}])
+    result = union(row(first, second))
+    assert result['ratio'] is None and result['problems'][0]['code'] == 'work_numbering_changed'
+
+
+def test_physical_room_numbers_remain_distinct_without_a_space_after_the_label():
+    current = {'name': 'Устройство полов'}
+    result = union(row(source(name='A.xlsx', context_headings=[{'name': 'Помещение101'}, current]),
+                       source(name='B.xlsx', context_headings=[{'name': 'Помещение102'}, current])))
+    assert result['planned'] == 2000
+
+
+def test_a_stable_work_missing_from_one_year_is_order_independent():
+    values = [source(2025, 'Old1.xlsx', done=200),
+              source(2025, 'Old2.xlsx', done=50, plan=500, position='2'),
+              source(2026, 'New.xlsx', done=30)]
+    for parts in (values, list(reversed(values))):
+        result = union(row(*parts))
+        assert result['planned'] == 1500 and result['completed'] == 280
 
 
 def test_group_costs_are_not_counted_twice_and_zero_cost_leaf_is_retained():

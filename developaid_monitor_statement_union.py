@@ -10,6 +10,7 @@ import datetime as dt
 import hashlib
 import json
 import math
+import re
 
 _BASES = {'with_vat', 'without_vat', 'unspecified'}
 
@@ -64,8 +65,7 @@ def _work(item):
     # physical locations (a room remains relevant below a system caption).
     locations = {}
     for node in context:
-        import re
-        role = re.match(r'^(корпус|секция|этаж|помещение|комната|паркинг|автостоянка)\b', node[1])
+        role = re.match(r'^(корпус|секция|этаж|помещение|комната|паркинг|автостоянка)(?=\s|№|\d|$)', node[1])
         if role:
             locations[role[1]] = node
     active_context = tuple(locations[key] for key in sorted(locations))
@@ -164,7 +164,7 @@ def statement_union(row: dict) -> dict:
     tax_bases = {qualification[0] for qualification in qualifications.values()}
     if len(tax_bases) != 1:
         return fail('tax_basis_changed', 'Ведомости используют разные основания стоимостей; их итоги не сложены.')
-    observed_sources, works, evidence, work_units = set(), {}, {}, {}
+    observed_sources, works, evidence, work_units, semantic_years = set(), {}, {}, {}, {}
     for item in items:
         source = _source(item.get('source'))
         year = item.get('period_year')
@@ -200,6 +200,9 @@ def statement_union(row: dict) -> dict:
             return fail('planned_amount_unknown', 'Для позиции не подтверждена неотрицательная плановая стоимость.',
                         source=source, position=item.get('position'))
         definition = quantity_plan, amount_plan
+        semantic = (work[1], work[2], tuple(node[1] for node in work[4]), tuple(node[1] for node in work[5]))
+        yearly = semantic_years.setdefault(semantic, {})
+        yearly.setdefault(year, set()).add(work)
         if work in works and works[work] != definition:
             return fail('plan_changed', 'План или цена одной работы различаются между ведомостями; общий процент не выбран.',
                         source=source, position=item.get('position'))
@@ -223,6 +226,12 @@ def statement_union(row: dict) -> dict:
         return fail('source_positions_missing', 'Для одной ведомости не получены её позиции; общий процент не выбран.')
     if not works or not evidence:
         return fail('leaf_positions_missing', 'В годовых ведомостях не подтверждены отдельные позиции работ.')
+    for yearly in semantic_years.values():
+        identities = list(yearly.values())
+        if any(not (left <= right or right <= left)
+               for index, left in enumerate(identities) for right in identities[index+1:]):
+            return fail('work_numbering_changed',
+                        'Нумерация одной работы различается между годами; общая база требует сверки.')
     planned = sum(value[1] for value in works.values())
     if planned <= 0:
         return fail('nonpositive_price', 'Суммарная плановая стоимость равна нулю; денежный процент не определён.')
