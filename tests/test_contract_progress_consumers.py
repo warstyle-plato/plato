@@ -21,6 +21,11 @@ def test_real_register_shows_canonical_change_and_source_percentage(context, wid
     previous['snapshots'].update(cumulative='2026-10-06', cumulative_id='2026-10-06-'+'b'*64)
     for item in previous['rows'][0]['reported_performance_sources']:
         item.update(completion_ratio=.2, completed=204)
+    prior_row = previous['rows'][0]
+    prior_row['source_date'] = '2026-10-06'
+    prior_row['physical_items'][0]['reported_completed_amount'] = 204
+    from developaid_monitor_statement_union import statement_union
+    prior_row['statement_progress'] = statement_union(prior_row)
     current['snapshots']['cumulative_id'] = '2026-11-06-'+'a'*64
     monkeypatch.setattr(history.ledgers, 'list_snapshots', lambda _: [
         {'taken_at':'2026-10-06', 'snapshot_id':previous['snapshots']['cumulative_id']},
@@ -33,11 +38,12 @@ def test_real_register_shows_canonical_change_and_source_percentage(context, wid
         responses.data = view
         page.locator('#contractsTab').click()
         main = page.locator('tr[data-contract-id]').first
-        expect(main).to_contain_text('68,6% стоимости ведомости')
+        expect(main).to_contain_text('68,6%')
+        expect(main).to_contain_text('стоимости работ по ведомостям')
         expect(main).to_contain_text('Изменение: +48,6 п.п. за 31 дн.')
         main.locator('.contract-history summary').click()
         expect(main.locator('.contract-history')).to_contain_text('06.10.2026')
-        expect(main.locator('.contract-history')).to_contain_text('20% стоимости ведомости')
+        expect(main.locator('.contract-history')).to_contain_text('20% стоимости работ по ведомостям')
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         assert not errors
 
