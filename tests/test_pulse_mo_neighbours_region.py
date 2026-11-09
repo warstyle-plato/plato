@@ -31,11 +31,16 @@ class Site:
         self.prices = prices or {}
         self.refuse = refuse
         self.available = True
+        self.catalog_path = Path(__file__)
+        self.ttl_seconds = 86400
         self.errors: list[str] = []
         self.asked: list[tuple[str, str]] = []
 
     def projects(self, **kwargs):
         return list(self._projects)
+
+    def catalog_stamp(self):
+        return None
 
     def segments(self, **kwargs):
         return {item.complex_id: "Комфорт" for item in self._projects}

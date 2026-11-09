@@ -4,6 +4,7 @@ import ipaddress
 import json
 import os
 import socket
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -111,10 +112,20 @@ def load_json(path: Path) -> Any | None:
 
 def save_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with tmp.open("w", encoding="utf-8") as fh:
-        json.dump(payload, fh, ensure_ascii=False, separators=(",", ":"))
-    tmp.replace(path)
+    # Два воркера могут одновременно обновлять один каталог. Общий .tmp
+    # позволял одному переименовать файл, в который другой ещё пишет.
+    tmp: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent,
+            prefix=f".{path.name}.", suffix=".tmp", delete=False,
+        ) as fh:
+            tmp = Path(fh.name)
+            json.dump(payload, fh, ensure_ascii=False, separators=(",", ":"))
+        tmp.replace(path)
+    finally:
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)
 
 
 def fresh(path: Path, ttl_seconds: int) -> bool:

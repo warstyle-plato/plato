@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import json
 from datetime import date
+from dataclasses import asdict
 from pathlib import Path
 
 from market_search import price_hint_ui
+from market_search.http import save_json
 from market_search.pulse import PulseClient, PulseProject, _dates_from_project_html, _stage_from_payload
 from market_search.pulse_page import delivery_span, month_date, parse_project_page, remaining_figures
 
@@ -89,7 +91,7 @@ def test_dates_in_words_and_quarters() -> None:
 
 def _client(tmp_path: Path, page: str, table: dict | None = None) -> PulseClient:
     client = PulseClient(tmp_path, login="l", password="p")
-    client._projects = [PulseProject("1695", "ЗИЛАРТ", 55.70, 37.64)]
+    save_json(client.catalog_path, [asdict(PulseProject("1695", "ЗИЛАРТ", 55.70, 37.64))])
     client._post_json = lambda path, payload: dict(table or {})  # type: ignore[assignment]
     client._cookie = lambda name: "cookie"  # type: ignore[assignment]
     client._open = lambda path, **kwargs: page.encode("utf-8")  # type: ignore[assignment]
