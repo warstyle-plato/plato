@@ -902,7 +902,7 @@ function drawSiteAccess(data){
   const line=document.createElement('div');line.className='files';line.style.marginTop='8px';
   const label=document.createElement('span');label.textContent=[row.title||'Группа',String(row.chat_id),row.project||'Проект не задан',row.authorized?'Доступ разрешён':'Нужно разрешить ключом'].join(' · ');
   const choose=document.createElement('button');choose.type='button';choose.className='btn ghost';choose.textContent='Выбрать';
-  choose.onclick=()=>{if(row.project){$('project').value=row.project;$('project').dispatchEvent(new Event('change'));}$('siteChatId').value=String(row.chat_id);$('siteChatTitle').value=row.title||'';};
+  choose.onclick=()=>{if(row.project){$('project').value=row.project;$('project').dispatchEvent(new Event('input'));$('project').dispatchEvent(new Event('change'));}$('siteChatId').value=String(row.chat_id);$('siteChatTitle').value=row.title||'';};
   line.append(label,choose);box.append(line);
  }
 }

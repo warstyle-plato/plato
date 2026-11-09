@@ -67,3 +67,17 @@ def test_untrusted_source_text_is_escaped_and_replacing_project_clears_groups():
         expect(page.locator('#ksSharedGroups')).to_be_hidden()
         assert page.locator('#ksSharedGroups').inner_text() == ''
         assert not errors
+
+
+def test_selecting_project_from_group_access_invalidates_previous_gpr_and_ks_facts():
+    with browser_page(390) as (page, responses, errors):
+        page.evaluate('(v)=>renderGantt(v)', view())
+        page.locator('#dataTab').click()
+        page.locator('#siteAccessCard > summary').click()
+        page.evaluate('drawSiteAccess({chats:[{project:"Следующий проект",title:"Учебная группа",chat_id:-100123,authorized:true}]})')
+        page.locator('#siteAccessList button').click()
+        expect(page.locator('#project')).to_have_value('Следующий проект')
+        page.locator('#monitorTab').click()
+        assert page.locator('#ksSharedGroups').inner_text() == ''
+        expect(page.locator('#ganttCard')).to_be_hidden()
+        assert not errors
