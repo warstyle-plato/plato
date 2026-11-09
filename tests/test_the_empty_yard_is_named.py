@@ -37,7 +37,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from browser import chromium_or_skip, serve  # noqa: E402
+from browser import chromium_or_skip, serve, wait_for_result  # noqa: E402
 
 import main_legacy as core  # noqa: E402
 
@@ -186,6 +186,9 @@ def screen() -> dict:
                 "()=>lastResult&&lastResult.summary"
                 "&&lastResult.summary.project_kind==='nonresidential'",
                 timeout=60000)
+            # Подходящий прошлый результат не означает, что загрузка и новый
+            # расчёт закончились: поздний ответ затрёт подставленный ниже итог.
+            wait_for_result(page)
             page.evaluate("()=>{openTab('inputs');renderInputs();}")
             out["rate"] = page.evaluate(
                 "()=>{const e=document.getElementById('landscapingHouseRateNote');"
@@ -203,6 +206,7 @@ def screen() -> dict:
             empty_inputs, empty_tep = _empty_yard()
             empty = jsonable_encoder(core.calculate(core.CalcRequest(
                 inputs=empty_inputs, tep=empty_tep, rates=[])))
+            wait_for_result(page)
             page.evaluate("d=>{Object.assign(inputs,d.inputs);"
                           "Object.keys(d.tep).forEach(k=>{tep[k]=d.tep[k]});"
                           "lastResult=d.result;phaseBundle=null;renderResult();renderInputs();}",
