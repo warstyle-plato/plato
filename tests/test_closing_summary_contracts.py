@@ -220,7 +220,7 @@ def test_summary_money_percentage_and_scope_are_visible_in_real_page(context, wi
         expect(page.locator('#contractsRows')).to_contain_text('20%')
         expect(page.locator('#contractsRows')).to_contain_text('КС-2 по сводной')
         expect(page.locator('#contractsRows')).to_contain_text('не физическая готовность')
-        expect(page.locator('#contractsMsg')).to_contain_text('Договоров из документов: 1')
+        expect(page.locator('#contractsMsg')).to_contain_text('Источников договоров: 1')
         page.locator('.contract-open').click()
         expect(page.locator('#contractsDetails')).to_contain_text('Объёмы КС-6а к ней не привязаны')
         assert not errors
