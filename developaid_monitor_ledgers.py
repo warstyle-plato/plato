@@ -345,8 +345,14 @@ def _party_key(value: str) -> str:
 
 def _contract(value: Any) -> str:
     text = _text(value)
-    text = re.sub(r'^договор\s*(?:подряда\s*)?(?:№|N)?\s*', '', text, flags=re.I)
+    text = re.sub(r'^(?:договор\b|дог\.)\s*(?:подряда\s*)?(?:№|N)?\s*', '', text, flags=re.I)
     return re.split(r'\s+от\s+', text, maxsplit=1, flags=re.I)[0].strip(' №')
+
+
+def _contract_day(value: Any) -> str | None:
+    """A date inside a contract number is not its explicitly stated date."""
+    parts = re.split(r'\bот\s+', _text(value), maxsplit=1, flags=re.I)
+    return _day(parts[1]) if len(parts) == 2 else None
 
 
 def _metadata(rows: list[list[Any]], filename: str = "", sheet: str = "") -> dict:
@@ -382,7 +388,7 @@ def _metadata(rows: list[list[Any]], filename: str = "", sheet: str = "") -> dic
                 # Only a date explicitly attached to the contract reference is identity.
                 # An act/work period/file date must never supply a missing contract date.
                 if re.search(r'\bот\s+', _text(right[1]), re.I):
-                    dates.append((_day(right[1]), refs[-1][1], str(right[1])))
+                    dates.append((_contract_day(right[1]), refs[-1][1], str(right[1])))
                 for ri in (i, i+1):
                     if ri >= len(rows):
                         continue
@@ -1031,6 +1037,27 @@ def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
             'period_dates_known': any(p['date_end'] for item in items for p in item['periods'])}
 
 
+def _summary_reference(value: Any) -> str:
+    text = _text(value)
+    if re.match(r'^(?:дс\b|доп\.?\s*соглаш)', text, re.I):
+        return ''
+    explicit = re.match(r'^(?:договор\b|дог\.|№)', text, re.I)
+    bare = re.fullmatch(r'[^\s]+\s+от\s+.+', text, re.I)
+    number = _contract(text)
+    return number if (explicit or bare) and re.search(r'\d', number) else ''
+
+
+def _summary_sum_rows(formula: Any, column: int) -> set[int]:
+    """The declared total range, without running a spreadsheet formula."""
+    text = re.sub(r'\s|\$', '', str(formula or '')).upper().removeprefix('=')
+    match = re.fullmatch(r'SUM\(([A-Z]+)([1-9]\d*):([A-Z]+)([1-9]\d*)\)', text)
+    letter = _cell(column+1, 1)[:-1]
+    if not match or match[1] != letter or match[3] != letter:
+        return set()
+    first, last = int(match[2]), int(match[4])
+    return set(range(first, last+1)) if first <= last <= MAX_ROWS else set()
+
+
 def _summary(filename: str, sheet: str, rows: list[list[Any]]) -> list[dict] | None:
     headers = [(i, r) for i, r in enumerate(rows)
                if any('сумма договора' in _norm(v) for v in r)
@@ -1038,7 +1065,8 @@ def _summary(filename: str, sheet: str, rows: list[list[Any]]) -> list[dict] | N
                and any('сумма по кс' in _norm(v) for v in r)]
     if not headers:
         return None
-    customer = next((_party(r[0]) for r in rows[:5] if r and re.match(r'^(?:ООО|АО|ПАО|ИП)\b', _text(r[0]), re.I)), '')
+    customer_row, customer = next(((i, _party(r[0])) for i, r in enumerate(rows[:5])
+        if r and re.match(r'^(?:ООО|АО|ПАО|ИП)\b', _text(r[0]), re.I)), (None, ''))
     contractor = ''
     current = None
     contracts = []
@@ -1058,13 +1086,13 @@ def _summary(filename: str, sheet: str, rows: list[list[Any]]) -> list[dict] | N
                                 if column < len(rows[r]) and isinstance(rows[r][column], str))
             header_map['amount_header'] = basis_header(header_map['amount'])
             header_map['act_amount_header'] = basis_header(header_map['act_amount'])
+            current = None
             continue
         def at(field):
             c = header_map.get(field)
             return row[c] if c is not None and c < len(row) else None
         first = _text(row[0]) if row else ''
-        if (re.match(r'^(?:ООО|АО|ПАО|ИП)\b', first, re.I)
-                and not re.match(r'^(?:договор|дс|доп\.?\s*соглаш)\b', _text(at('contract')), re.I)):
+        if ri != customer_row and re.match(r'^(?:ООО|АО|ПАО|ИП)\b', first, re.I):
             contractor = _party(first)
             current = None
             continue
@@ -1074,26 +1102,54 @@ def _summary(filename: str, sheet: str, rows: list[list[Any]]) -> list[dict] | N
                 contractor = _party(first)
             continue
         contract_text = _text(at('contract'))
-        if re.match(r'^договор\b', contract_text, re.I):
+        number = _summary_reference(contract_text)
+        reference_date = _contract_day(contract_text)
+        if number and (current is None or _norm(number) != _norm(current['contract'])
+                       or (reference_date and current.get('contract_date')
+                           and reference_date != current['contract_date'])):
             current = {'contractor': contractor, 'customer': customer,
-                       'contract': _contract(contract_text), 'contract_date': _day(contract_text),
-                       'amount': _number(at('amount')), 'amount_date': _day(contract_text),
+                       'contract': number, 'contract_date': reference_date,
+                       'contract_date_evidence': [{'raw': contract_text,
+                           'source': _source(filename, sheet, ri+1, cell=_cell(header_map['contract']+1, ri+1))}],
+                       'subject': first,
+                       'amount': _number(at('amount')), 'amount_date': reference_date,
                        'amount_scope': 'full_contract',
                        'amount_basis': _amount_basis(header_map['amount_header']),
                        'deadline': None, 'acts': [], 'amount_versions': [], 'warnings': [],
+                       '_total_candidates': [],
                        'source': _source(filename, sheet, ri+1, cell=_cell(header_map['amount']+1, ri+1), amount_header=header_map['amount_header'])}
             contracts.append(current)
             if current['amount'] is not None:
                 current['amount_versions'].append({'amount': current['amount'], 'date': current['amount_date'],
                                                    'scope': 'full_contract', 'amount_basis': current['amount_basis'],
                                                    'label': contract_text, 'source': _source(filename, sheet, ri+1)})
+        elif current is not None and number:
+            # A repeated reference within one labelled contractor section is
+            # evidence about that contract, not a second contract with its acts.
+            current['contract_date_evidence'].append({'raw': contract_text,
+                'source': _source(filename, sheet, ri+1, cell=_cell(header_map['contract']+1, ri+1))})
+            value = _number(at('amount'))
+            if value is not None:
+                current['amount_versions'].append({'amount': value, 'date': reference_date,
+                    'scope': 'full_contract', 'amount_basis': current['amount_basis'],
+                    'label': contract_text, 'source': _source(filename, sheet, ri+1)})
+        elif current is not None and re.match(r'^от\s+', contract_text, re.I):
+            stated_date = _contract_day(contract_text)
+            if not current.get('contract_date') and stated_date:
+                current['contract_date'] = stated_date
+                current['amount_date'] = stated_date
+                for version in current['amount_versions']:
+                    if version.get('date') is None and version.get('label') == current['contract_date_evidence'][0]['raw']:
+                        version['date'] = stated_date
+            current['contract_date_evidence'].append({'raw': contract_text,
+                'source': _source(filename, sheet, ri+1, cell=_cell(header_map['contract']+1, ri+1))})
         elif current is not None and re.match(r'^(?:дс|доп\.?\s*соглаш)', contract_text, re.I):
             amount = _number(at('amount'))
             if amount is not None:
                 declared_full = _full_contract_price(first+' '+contract_text+' '+header_map['amount_header'])
                 scope = 'full_contract' if declared_full else 'ambiguous_amendment'
                 current['amount'] = amount if declared_full else None
-                current['amount_date'] = _day(contract_text)
+                current['amount_date'] = _contract_day(contract_text)
                 current['amount_scope'] = scope
                 current['amount_basis'] = _amount_basis(header_map['amount_header'])
                 current['amount_versions'].append({'amount': current['amount'], 'stated_amount': amount,
@@ -1105,6 +1161,18 @@ def _summary(filename: str, sheet: str, rows: list[list[Any]]) -> list[dict] | N
                                                'Действующая сумма договора требует подтверждения.')
         if current is None:
             continue
+        row_number = ri+1
+        total_formula = getattr(rows, 'formulas', {}).get((row_number, header_map['act_amount']), '')
+        declared_range = _summary_sum_rows(total_formula, header_map['act_amount'])
+        if declared_range or re.match(r'^(?:итого|всего)\b', _norm(first)):
+            current['_total_candidates'].append({'amount': _number(at('amount')),
+                'completed': _number(at('act_amount')), 'amount_basis': current['amount_basis'],
+                'completed_basis': _amount_basis(header_map['act_amount_header']),
+                'range': declared_range, 'row': row_number,
+                'source': _source(filename, sheet, row_number,
+                    planned_amount_cell=_cell(header_map['amount']+1, row_number),
+                    completed_amount_cell=_cell(header_map['act_amount']+1, row_number)),
+                'formula': total_formula})
         number, amount = _text(at('number')), _number(at('act_amount'))
         if number and amount is not None and not re.match(r'^(?:итого|всего)', _norm(first)):
             date = _day(at('date'))
@@ -1114,6 +1182,35 @@ def _summary(filename: str, sheet: str, rows: list[list[Any]]) -> list[dict] | N
                                     'amount_basis': _amount_basis(header_map['act_amount_header']),
                                     'source': _source(filename, sheet, ri+1, amount_header=header_map['act_amount_header'])})
     for item in contracts:
+        candidates = []
+        act_rows = {int(act['source']['row']) for act in item['acts']}
+        for candidate in item.pop('_total_candidates'):
+            if candidate['completed'] is None or any(row >= candidate['row'] for row in act_rows):
+                continue
+            if candidate['range'] and (not act_rows <= candidate['range']
+                    or item['source']['row'] not in candidate['range']):
+                continue
+            candidates.append(candidate)
+        totals = {(candidate['amount'], candidate['completed'], candidate['amount_basis'],
+                   candidate['completed_basis']) for candidate in candidates}
+        if len(totals) == 1:
+            total = candidates[-1]
+            item['reported_total'] = {'planned': total['amount'] if total['amount'] is not None else item['amount'],
+                'completed': total['completed'], 'planned_amount_basis': total['amount_basis'],
+                'completed_amount_basis': total['completed_basis'], 'source': total['source'],
+                'formula': total['formula'], 'basis': 'declared_contract_section_total'}
+            if total['amount'] is not None:
+                # An explicit final contract-section total can add named price
+                # components. It is distinct from guessing what an amendment means.
+                item['reported_amount_versions'] = item['amount_versions']
+                item['amount'] = total['amount']
+                item['amount_date'] = None
+                item['amount_scope'] = 'full_contract'
+                item['amount_versions'] = [{'amount': total['amount'], 'date': item['amount_date'],
+                    'scope': 'full_contract', 'amount_basis': total['amount_basis'],
+                    'label': 'Итог суммы договора в сводной', 'source': total['source']}]
+        elif len(totals) > 1:
+            item['warnings'].append('В разделе договора несколько разных итогов; общий денежный итог не выбран.')
         if not item['contractor']:
             item['warnings'].append('Не распознан контрагент договорного блока.')
         if not item['amount_date']:
