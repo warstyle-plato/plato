@@ -64,11 +64,13 @@ class Response:
 
 class Transport:
     def __init__(self, change=None):
-        self.calls, self.views, self.healths = [], 0, 0
+        self.calls, self.views, self.healths, self.timeouts = [], 0, 0, []
         self.change = change
     def open(self, request, timeout):
         self.calls.append(request)
-        assert 0 < timeout <= 15
+        path = urllib.parse.urlsplit(request.full_url).path
+        self.timeouts.append((path,timeout))
+        assert 0 < timeout <= (60 if path=='/monitor/view' else 15)
         assert request.full_url.startswith('https://developaid.ru/')
         path = urllib.parse.urlsplit(request.full_url).path
         body = json.loads(request.data) if request.data else None
@@ -89,11 +91,6 @@ class Transport:
                 if self.change == 'amount': funding['own_money']['budget'] += 1
                 if self.change == 'date': funding['source_dates']['budget']['data_date'] = '2026-10-02'
                 if self.change == 'revision': funding['source_dates']['budget']['uploaded_at'] = '2026-11-02T10:00:00Z'
-        elif path == '/monitor/gpr-corpus/view':
-            payload = {'source': {'sha256': 'c'*64, 'taken_at': '2026-11-06'}}
-        elif path == '/monitor/schedule-gpr-physical/view':
-            payload = {'offset': 0, 'item_count': 0, 'items': [], 'revision': 0,
-                       'source_sha256': 'c'*64, 'snapshot_id': register()['snapshots']['cumulative_id']}
         else: pytest.fail('Unexpected outbound path: '+path)
         return Response(payload, request.full_url)
 
@@ -117,11 +114,15 @@ def execute(probe, monkeypatch, tmp_path, change=None, encryption_ok=True):
 def test_success_encrypts_exact_financial_projection_and_only_publishes_flags(probe, monkeypatch, tmp_path, capsys):
     runner, transport, captured = execute(probe, monkeypatch, tmp_path)
     result = runner.run(lambda: KEY)
-    assert transport.views == 2 and transport.healths == 3
+    assert transport.views == 2 and transport.healths == 2
     assert len(captured) == 1
     private = captured[0]
     assert KEY not in json.dumps(private)
     projection = probe.financial_projection(view(), register())
+    assert set(private)=={'runtime_commit','run_id','project','cut','rss_date','financial_view'}
+    assert not any('gpr' in request.full_url or 'physical' in request.full_url for request in transport.calls)
+    assert {timeout for path,timeout in transport.timeouts if path=='/monitor/view'}=={60}
+    assert all(timeout<=15 for path,timeout in transport.timeouts if path!='/monitor/view')
     assert private['financial_view'] == projection
     assert private['financial_view']['dashboard']['funding']['own_money']['budget'] == 123456.78
     assert 'trend' not in projection and 'schedule' not in projection
@@ -152,7 +153,8 @@ def test_runtime_and_financial_source_drift_prevent_encrypted_publication(probe,
 
 
 @pytest.mark.parametrize('path', ['/monitor/estimate', '/monitor/contracts/link', '/monitor/view?url=elsewhere',
-                                 'https://elsewhere.invalid/monitor/view', '//elsewhere.invalid/monitor/view'])
+                                 'https://elsewhere.invalid/monitor/view', '//elsewhere.invalid/monitor/view',
+                                 '/monitor/gpr-corpus/view','/monitor/schedule-gpr-physical/view'])
 def test_existing_reader_allowlist_does_not_expand_to_writes_or_arbitrary_urls(probe, path):
     runner = probe.Probe(RUNTIME, opener=object())
     with pytest.raises(probe.ProbeError, match='invalid_payload'):
@@ -269,7 +271,84 @@ def test_real_entrypoint_redacts_failure_stdout_stderr_and_never_keeps_plaintext
     assert probe.main()==1
     out=capsys.readouterr();public=json.loads(out.out)
     assert public['status']=='error'
+    assert type(public['phase_code']) is int
+    assert public['phase_code']==(80 if failure=='encryption' else 30)
     assert public['reason_code']=={'auth':'http_auth','invalid-json':'invalid_json','encryption':'unexpected_error'}[failure]
     for forbidden in (KEY,PRIVATE,PROJECT,'123456.78'):
         assert forbidden not in out.out+out.err
     assert out.err=='' and list(tmp_path.iterdir())==[]
+
+
+@pytest.mark.parametrize('elapsed,path,expected',[(0,'/health',15),(0,'/monitor/view',60),
+    (345,'/monitor/view',15),(355,'/health',5)])
+def test_each_call_timeout_respects_both_route_budget_and_original_total_deadline(probe,elapsed,path,expected):
+    now=[0];seen=[]
+    class Budget:
+        def open(self,request,timeout):seen.append(timeout);return Response({},request.full_url)
+    runner=probe.Probe(RUNTIME,opener=Budget(),clock=lambda:now[0]);runner._financial_project=PROJECT
+    now[0]=elapsed
+    runner.request(path,{'project':PROJECT,'cut':'2026-11-09','key':KEY} if path=='/monitor/view' else None)
+    assert seen==[expected]
+    now[0]=360
+    with pytest.raises(probe.ProbeError,match='deadline'):
+        runner.request(path,{'project':PROJECT,'cut':'2026-11-09','key':KEY} if path=='/monitor/view' else None)
+    assert len(seen)==1
+
+
+def test_async_register_admitted_once_and_financial_reads_never_add_gpr_or_pagination_calls(probe,monkeypatch,tmp_path):
+    runner,transport,captured=execute(probe,monkeypatch,tmp_path);original=transport.open;polls=[]
+    def pending(request,timeout):
+        path=urllib.parse.urlsplit(request.full_url).path
+        if path=='/monitor/contracts/build':
+            transport.calls.append(request);return Response({'pending':True,'ticket':'b'*32},request.full_url)
+        if path=='/monitor/contracts/result':
+            transport.calls.append(request);polls.append(1)
+            return Response({'pending':len(polls)<2,'ticket':'b'*32,'register':register()},request.full_url)
+        return original(request,timeout)
+    transport.open=pending
+    runner.run(lambda:KEY)
+    paths=[urllib.parse.urlsplit(request.full_url).path for request in transport.calls]
+    assert paths.count('/monitor/contracts/build')==1 and paths.count('/monitor/contracts/result')==2
+    assert paths.count('/monitor/view')==2 and paths.count('/health')==2
+    assert set(paths)=={'/health','/monitor/report/projects','/monitor/contracts/build','/monitor/contracts/result','/monitor/view'}
+    assert len(captured)==1 and 'register' not in captured[0]
+
+
+@pytest.mark.parametrize('stage,expected_phase',[('start-health',10),('projects',30),('register',40),('first-view',50),('second-view',60),('end-health',70)])
+def test_transport_failure_reports_only_a_safe_phase_integer(probe,monkeypatch,tmp_path,capsys,stage,expected_phase):
+    _,transport,_=execute(probe,monkeypatch,tmp_path);original=transport.open;calls={'health':0,'view':0}
+    def fail(request,timeout):
+        path=urllib.parse.urlsplit(request.full_url).path
+        if path=='/health':calls['health']+=1
+        if path=='/monitor/view':calls['view']+=1
+        at=(stage=='start-health' and path=='/health' and calls['health']==1 or
+            stage=='end-health' and path=='/health' and calls['health']==2 or
+            stage=='projects' and path=='/monitor/report/projects' or
+            stage=='register' and path=='/monitor/contracts/build' or
+            stage=='first-view' and path=='/monitor/view' and calls['view']==1 or
+            stage=='second-view' and path=='/monitor/view' and calls['view']==2)
+        if at:raise TimeoutError(KEY+PROJECT+PRIVATE+'https://private.invalid')
+        return original(request,timeout)
+    transport.open=fail
+    monkeypatch.setattr(probe.urllib.request,'build_opener',lambda *args:transport)
+    monkeypatch.setenv('EXPECTED_COMMIT',RUNTIME);monkeypatch.setenv('PROBE_ADMIN_KEY',KEY)
+    monkeypatch.setattr(probe.signal,'signal',lambda *args:None);monkeypatch.setattr(probe.signal,'alarm',lambda *args:None)
+    assert probe.main()==1
+    out=capsys.readouterr();result=json.loads(out.out)
+    assert result['reason_code']=='transport_failure' and type(result['phase_code']) is int and result['phase_code']==expected_phase
+    assert all(value not in out.out+out.err for value in (KEY,PROJECT,PRIVATE,'https://'))
+    assert out.err=='' and list(tmp_path.iterdir())==[]
+
+
+def test_wrong_register_rss_rejects_before_any_heavy_financial_read(probe,monkeypatch,tmp_path):
+    runner,transport,captured=execute(probe,monkeypatch,tmp_path);original=transport.open
+    def drift(request,timeout):
+        if request.full_url.endswith('/monitor/contracts/build'):
+            transport.calls.append(request);r=register();r['snapshots']['rss']='2026-11-06'
+            return Response({'pending':False,'ticket':'b'*32,'register':r},request.full_url)
+        return original(request,timeout)
+    transport.open=drift
+    with pytest.raises(probe.ProbeError,match='runtime_mismatch'):
+        runner.run(lambda:KEY)
+    assert runner.phase_code==40 and transport.views==0 and captured==[]
+    assert not list(tmp_path.iterdir())

@@ -1,5 +1,5 @@
-name: Диагностика договоров и исходных объёмов
-run-name: contracts-source-private-check
+name: Защищённый финансовый снимок
+run-name: financial-view-private-check
 
 on:
   workflow_dispatch:
@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   probe:
-    name: Проверить наличие данных без публикации содержимого
+    name: Снять стабильный финансовый ответ без публикации данных
     runs-on: ubuntu-latest
     timeout-minutes: 8
     if: github.actor == 'warstyle-plato'
@@ -53,11 +53,12 @@ jobs:
           FINANCIAL_RSS_DATE = '2026-11-05'
           TOTAL_SECONDS = 360
           HTTP_SECONDS = 15
+          VIEW_HTTP_SECONDS = 60
+          PHASE_CODES = frozenset({0, 10, 20, 30, 40, 50, 60, 70, 80})
           POLL_SECONDS = 2
           POST_PATHS = frozenset({
               '/monitor/report/projects', '/monitor/contracts/build',
-              '/monitor/contracts/result', '/monitor/gpr-corpus/view',
-              '/monitor/schedule-gpr-physical/view', '/monitor/view',
+              '/monitor/contracts/result', '/monitor/view',
           })
           REASONS = frozenset({
               'invalid_expected_commit', 'deadline', 'redirect_denied', 'http_auth',
@@ -67,15 +68,6 @@ jobs:
               'job_rejected', 'contracts_missing', 'report_missing', 'unexpected_error',
               'financial_source_changed',
           })
-          FLAG_NAMES = (
-              'contracts_present', 'any_contract_price', 'all_contract_prices',
-              'any_dated_money', 'all_dated_money',
-              'any_reference_money', 'all_rows_have_dated_or_reference_money',
-              'ratio_present', 'all_ratios', 'any_rss_financial_source',
-              'rss_snapshot_present', 'rss_read_failed',
-              'any_physical_positions', 'references_safety_metadata_complete',
-          )
-
 
           class ProbeError(Exception):
               def __init__(self, code):
@@ -86,15 +78,6 @@ jobs:
           class NoRedirect(urllib.request.HTTPRedirectHandler):
               def redirect_request(self, req, fp, code, msg, headers, newurl):
                   raise ProbeError('redirect_denied')
-
-
-          def records_or_ids(value, allowed=None):
-              if (not isinstance(value, list)
-                      or any(not isinstance(x, str) or re.fullmatch(r'[0-9a-f]{64}', x) is None for x in value)
-                      or len(set(value)) != len(value)
-                      or (allowed is not None and not set(value) <= allowed)):
-                  raise ProbeError('invalid_payload')
-              return value
 
 
           def mapping(value):
@@ -189,6 +172,7 @@ jobs:
                   if expected != FINANCIAL_RUNTIME:
                       raise ProbeError('invalid_expected_commit')
                   self.expected = expected
+                  self.phase_code = 0
                   self._financial_project = None
                   self.opener = opener or urllib.request.build_opener(NoRedirect())
                   self.clock, self.sleep = clock, sleep
@@ -220,7 +204,8 @@ jobs:
                   request = urllib.request.Request(BASE + path, data=raw, headers=headers,
                                                    method='POST' if body is not None else 'GET')
                   try:
-                      with self.opener.open(request, timeout=min(HTTP_SECONDS, self.remaining())) as response:
+                      http_limit = VIEW_HTTP_SECONDS if path == '/monitor/view' else HTTP_SECONDS
+                      with self.opener.open(request, timeout=min(http_limit, self.remaining())) as response:
                           if response.geturl() != BASE + path:
                               raise ProbeError('redirect_denied')
                           if response.status not in (200, 202):
@@ -289,12 +274,15 @@ jobs:
                       payload = self.request(result_path, {'key': key, 'ticket': ticket})
 
               def run(self, key_getter):
+                  self.phase_code = 10
                   first_version = self.health()
-                  # The key is not even read until the exact public runtime gate succeeds.
+                  # The key is not read until the exact public runtime gate succeeds.
+                  self.phase_code = 20
                   key = key_getter()
                   if not isinstance(key, str) or not key.strip() or len(key) > 4096:
                       raise ProbeError('missing_secret')
                   key = key.strip()
+                  self.phase_code = 30
                   projects = self.request('/monitor/report/projects', {'key': key})
                   options = records(projects.get('projects'))
                   eligible = []
@@ -311,189 +299,35 @@ jobs:
                       raise ProbeError('project_selection_unverified')
                   self._financial_project = project
                   day = FINANCIAL_CUT
+                  self.phase_code = 40
                   result = self.job('/monitor/contracts/build', '/monitor/contracts/result',
                                     {'project': project, 'cut': day}, key)
                   register = result.get('register')
                   if not isinstance(register, dict) or 'rows' not in register:
                       raise ProbeError('contracts_missing')
-                  financial_view = self.request('/monitor/view',
-                      {'project': project, 'cut': day, 'key': key})
-                  financial = financial_projection(financial_view, register)
+                  contracts = len(records(register['rows']))
+                  if mapping(register.get('snapshots')).get('rss') != FINANCIAL_RSS_DATE:
+                      raise ProbeError('runtime_mismatch')
+                  self.phase_code = 50
+                  financial = financial_projection(self.request('/monitor/view',
+                      {'project': project, 'cut': day, 'key': key}), register)
                   financial_fingerprint = fingerprint(financial)
-                  del financial_view
-                  rows = records(register['rows'])
-                  all_refs = [ref for row in rows for ref in records(row.get('reported_performance_sources'))]
-                  rss_snapshot = mapping(register.get('snapshots')).get('rss')
-                  try:
-                      rss_snapshot_present = (isinstance(rss_snapshot, str)
-                          and datetime.date.fromisoformat(rss_snapshot).isoformat() == rss_snapshot)
-                  except ValueError:
-                      rss_snapshot_present = False
-                  source_warnings = register.get('warnings')
-                  if source_warnings is None:
-                      source_warnings = []
-                  if (not isinstance(source_warnings, list)
-                          or any(not isinstance(warning, str) for warning in source_warnings)):
-                      raise ProbeError('invalid_payload')
-
-                  def reference(row):
-                      return any(number(ref.get('completed'))
-                                 and ref.get('future_periods_excluded') is not True
-                                 for ref in records(row.get('reported_performance_sources')))
-
-                  flags = {
-                      'contracts_present': bool(rows),
-                      'any_contract_price': any(number(row.get('amount')) for row in rows),
-                      'all_contract_prices': bool(rows) and all(number(row.get('amount')) for row in rows),
-                      'any_dated_money': any(number(row.get('completed')) for row in rows),
-                      'all_dated_money': bool(rows) and all(number(row.get('completed')) for row in rows),
-                      'any_reference_money': any(reference(row) for row in rows),
-                      'all_rows_have_dated_or_reference_money': bool(rows) and all(
-                          number(row.get('completed')) or reference(row) for row in rows),
-                      'ratio_present': any(number(row.get('completion_ratio')) for row in rows),
-                      'all_ratios': bool(rows) and all(number(row.get('completion_ratio')) for row in rows),
-                      'any_rss_financial_source': any(
-                          isinstance(source.get('label'), str) and source['label'].startswith('РСС')
-                          for row in rows for source in records(row.get('financial_sources'))),
-                      'rss_snapshot_present': rss_snapshot_present,
-                      'rss_read_failed': any(warning in (
-                          'Реестр договоров в выбранном снимке РСС не прочитан.',
-                          'Строки реестра договоров РСС неоднозначны; денежные значения не объединены.',
-                      ) for warning in source_warnings),
-                      'any_physical_positions': any(bool(records(row.get('physical_items'))) for row in rows),
-                      'references_safety_metadata_complete': bool(all_refs) and all(
-                          type(ref.get('future_periods_excluded')) is bool
-                          and type(ref.get('period_dates_known')) is bool for ref in all_refs),
-                  }
-                  # Counts and booleans only. No private names, IDs, source paths,
-                  # percentages, monetary values, request bodies or artifacts leave memory.
-                  row_ids = records_or_ids([r.get('id') for r in rows])
-                  allowed = set(row_ids)
-                  pending_raw = records(register.get('unmatched_works'))
-                  evidence, signatures, pending_by_id = {}, {}, {}
-
-                  def add_evidence(item):
-                      identity = item.get('id')
-                      records_or_ids([identity])
-                      status = item.get('match_status')
-                      if status not in {'confirmed', 'ambiguous', 'proposed', 'unmatched'}:
-                          raise ProbeError('invalid_payload')
-                      choices = records_or_ids(item.get('selectable_contract_ids'), allowed)
-                      reason = item.get('match_reason') or ''
-                      if not isinstance(reason, str):
-                          raise ProbeError('invalid_payload')
-                      signature = (status, tuple(sorted(choices)), reason)
-                      if identity in signatures and signatures[identity] != signature:
-                          raise ProbeError('invalid_payload')
-                      signatures[identity] = signature
-                      evidence[identity] = item
-
-                  for row in rows:
-                      for item in records(mapping(row.get('reconciliation')).get('daily_evidence')):
-                          add_evidence(item)
-                  for item in pending_raw:
-                      add_evidence(item)
-                      if item['match_status'] == 'confirmed':
-                          raise ProbeError('invalid_payload')
-                      pending_by_id[item['id']] = item
-                  pending = list(pending_by_id.values())
-                  reason_prefixes = {
-                      'party_uncertain': 'Подрядчик в сообщении указан неоднозначно.',
-                      'party_missing': 'В сообщении не указан подрядчик.',
-                      'party_not_matched': 'Договор этого подрядчика в накопительных не найден.',
-                      'contract_after_message': 'Договоры подрядчика заключены после сообщения.',
-                      'scope_conflict': 'Корпусный состав сообщения не подтверждён',
-                      'multiple_numbers': 'В записи указано несколько номеров договоров.',
-                      'number_conflict': 'Указанный номер не совпадает',
-                      'multiple_contracts': 'У подрядчика несколько договоров.',
-                      'manual_review': 'Прежняя ручная связь требует проверки:',
-                      'single_suggestion': 'Проверьте предложенный договор и подтвердите связь.',
-                  }
-                  counts = {
-                      'contracts': len(rows),
-                      'unresolved_headers': len(records(register.get('unresolved_sources'))),
-                      'statement_sources': len(all_refs),
-                      'physical_positions': sum(len(records(r.get('physical_items'))) for r in rows),
-                      'physical_dated_percent_known': sum(number(i.get('completion_ratio'))
-                          for r in rows for i in records(r.get('physical_items'))),
-                      'physical_reference_percent_known': sum(number(i.get('reported_completion_ratio'))
-                          for r in rows for i in records(r.get('physical_items'))),
-                      'rows_with_all_position_percentages': sum(
-                          bool(records(r.get('physical_items'))) and all(
-                              number(i.get('completion_ratio')) or (
-                                  i.get('future_periods_excluded') is False
-                                  and number(i.get('reported_completion_ratio')))
-                              for i in records(r.get('physical_items'))) for r in rows),
-                      'rows_with_primary_progress': sum(number(mapping(r.get('progress')).get('ratio')) for r in rows),
-                      'rss_matched': sum(mapping(r.get('rss_match')).get('status') == 'matched' for r in rows),
-                      'unmatched_records': len(pending),
-                      'pending_zero_choices': sum(not records_or_ids(i.get('selectable_contract_ids'), allowed) for i in pending),
-                      'pending_one_choice': sum(len(records_or_ids(i.get('selectable_contract_ids'), allowed)) == 1 for i in pending),
-                      'pending_multiple_choices': sum(len(records_or_ids(i.get('selectable_contract_ids'), allowed)) > 1 for i in pending),
-                  }
-                  for status in ('confirmed', 'ambiguous', 'proposed', 'unmatched'):
-                      counts['evidence_' + status] = sum(i.get('match_status') == status for i in evidence.values())
-                  for name, prefix in reason_prefixes.items():
-                      counts['pending_reason_' + name] = sum(
-                          str(i.get('match_reason') or '').startswith(prefix) for i in pending)
-                  counts['pending_reason_other'] = sum(
-                      not any(str(i.get('match_reason') or '').startswith(prefix)
-                              for prefix in reason_prefixes.values()) for i in pending)
-                  if any(type(v) is not int or v < 0 or v > 1000000 for v in counts.values()):
-                      raise ProbeError('invalid_payload')
-                  if self.health() != first_version:
-                      raise ProbeError('runtime_mismatch')
-                  gpr_source = self.request('/monitor/gpr-corpus/view',
-                      {'project': project, 'cut': day, 'key': key})
-                  physical = self.request('/monitor/schedule-gpr-physical/view',
-                      {'project': project, 'cut': day, 'offset': 0, 'key': key})
-                  item_count = physical.get('item_count')
-                  if type(item_count) is not int or item_count < 0 or item_count > 2000:
-                      raise ProbeError('invalid_payload')
-                  if physical.get('snapshot_id') != mapping(register.get('snapshots')).get('cumulative_id'):
-                      raise ProbeError('runtime_mismatch')
-                  physical_items, item_ids = [], set()
-
-                  def accept_page(page, offset):
-                      if (page.get('offset') != offset
-                              or any(page.get(field) != physical.get(field) for field in
-                                     ('snapshot_id', 'source_sha256', 'revision', 'item_count'))):
-                          raise ProbeError('runtime_mismatch')
-                      items = records(page.get('items'))
-                      if len(items) != min(200, max(0, item_count-offset)):
-                          raise ProbeError('invalid_payload')
-                      for item in items:
-                          identity = item.get('item_id')
-                          if (not isinstance(identity, str) or re.fullmatch(r'\d{1,5}:\d{1,6}', identity) is None
-                                  or identity in item_ids):
-                              raise ProbeError('invalid_payload')
-                          item_ids.add(identity)
-                      physical_items.extend(items)
-
-                  accept_page(physical, 0)
-                  for offset in range(200, item_count, 200):
-                      page = self.request('/monitor/schedule-gpr-physical/view',
-                          {'project': project, 'cut': day, 'offset': offset, 'key': key})
-                      accept_page(page, offset)
-                  if len(physical_items) != item_count:
-                      raise ProbeError('invalid_payload')
-                  physical['items'] = physical_items
-                  gpr_end = self.request('/monitor/gpr-corpus/view',
-                      {'project': project, 'cut': day, 'key': key})
+                  self.phase_code = 60
                   financial_end = financial_projection(self.request('/monitor/view',
                       {'project': project, 'cut': day, 'key': key}), register)
                   if fingerprint(financial_end) != financial_fingerprint:
                       raise ProbeError('financial_source_changed')
                   del financial_end, financial_fingerprint
-                  if any(mapping(gpr_end.get('source')).get(field) != mapping(gpr_source.get('source')).get(field)
-                         for field in ('sha256', 'taken_at')) or self.health() != first_version:
+                  self.phase_code = 70
+                  if self.health() != first_version:
                       raise ProbeError('runtime_mismatch')
-                  # Only ciphertext is published. The fixed public recipient is
-                  # reviewed with this source; its private key stays in the control workspace.
+                  # The frame is an existing UI answer, not raw bank evidence.
+                  # Only RAM plaintext is encrypted to the same fixed PUBLIC cert.
+                  self.phase_code = 80
                   private_payload = json.dumps({'runtime_commit': self.expected,
-                      'run_id': os.environ.get('GITHUB_RUN_ID', ''),
-                      'project': project, 'register': register, 'gpr_source': gpr_source,
-                      'physical': physical, 'financial_view': financial}, ensure_ascii=False,
+                      'run_id': os.environ.get('GITHUB_RUN_ID', ''), 'project': project,
+                      'cut': day, 'rss_date': FINANCIAL_RSS_DATE,
+                      'financial_view': financial}, ensure_ascii=False,
                       allow_nan=False).encode('utf-8')
                   target = Path(os.environ['RUNNER_TEMP']) / 'contracts-audit.cms'
                   with target.open('wb') as encrypted:
@@ -509,8 +343,6 @@ jobs:
                       target.unlink(missing_ok=True)
                       raise ProbeError('unexpected_error')
                   del private_payload
-                  if set(flags) != set(FLAG_NAMES) or any(type(value) is not bool for value in flags.values()):
-                      raise ProbeError('invalid_payload')
                   funding = financial['dashboard']['funding']
                   own = funding.get('own_money')
                   financial_counts = {
@@ -522,7 +354,7 @@ jobs:
                          for field in ('budget', 'paid', 'limit', 'left', 'need')},
                   }
                   return {'status': 'ok', 'runtime_version': first_version,
-                          'runtime_commit': self.expected, **flags, **counts, **financial_counts}
+                          'runtime_commit': self.expected, 'contracts': contracts, **financial_counts}
 
 
           def main():
@@ -534,6 +366,7 @@ jobs:
               # Linux runner: the alarm also bounds slow streaming/JSON parsing, not just polling.
               signal.signal(signal.SIGALRM, expired)
               signal.alarm(TOTAL_SECONDS)
+              probe = None
               try:
                   probe = Probe(os.environ.get('EXPECTED_COMMIT', ''))
                   result = probe.run(lambda: os.environ.get('PROBE_ADMIN_KEY', ''))
@@ -547,6 +380,9 @@ jobs:
                   code = 1
               finally:
                   signal.alarm(0)
+              if code:
+                  phase = getattr(probe, 'phase_code', 0)
+                  result['phase_code'] = phase if type(phase) is int and phase in PHASE_CODES else 0
               result['seconds'] = round(max(0, time.monotonic() - started), 3)
               print(json.dumps(result, sort_keys=True, allow_nan=False))
               return code
