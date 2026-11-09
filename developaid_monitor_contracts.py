@@ -418,7 +418,8 @@ def _physical(item: dict, ledger: dict, cut: str) -> dict:
     result = {k: item.get(k) for k in
               ("position", "name", "scope", "unit", "plan_quantity", "planned_amount",
                "section_path", "context_headings", "parent_row", "is_group", "planned_work_amount",
-               "planned_material_amount", "planned_cost_split", "planned_work_amount_basis", "planned_cost_method")}
+               "planned_material_amount", "planned_cost_split", "planned_work_amount_basis", "planned_cost_method",
+               "completed_amount_derivation")}
     result["source"] = _source(item.get("source") or ledger.get("source"), "Накопительная ведомость работ")
     result["period_year"] = ledger.get("period_year")
     result["warnings"] = _warnings(item.get("warnings"))

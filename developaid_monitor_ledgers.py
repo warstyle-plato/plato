@@ -193,6 +193,7 @@ def _zip_members(data: bytes, *, workbook: bool = False) -> list[tuple[str, byte
 def _xlsx_bounds(data: bytes, *, header_merges: dict | None = None) -> int:
     row_bound = 1
     count = 0
+    sheet_count = 0
     for name, raw in _zip_members(data, workbook=True):
         if not name.endswith('.xml'):
             continue
@@ -201,6 +202,9 @@ def _xlsx_bounds(data: bytes, *, header_merges: dict | None = None) -> int:
             raise LedgerProblem('Книга содержит неподдерживаемые XML-объявления.')
         if not re.fullmatch(r'xl/worksheets/sheet[^/]*\.xml', name):
             continue
+        sheet_count += 1
+        if sheet_count > MAX_SHEETS:
+            raise LedgerProblem('В книге слишком много листов.')
         merges = []
         try:
             for _, element in ET.iterparse(io.BytesIO(raw), events=('end',)):
@@ -962,6 +966,29 @@ def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
         else:
             completed_amount = _number(at(amount_col))
         planned_total = _number(at(cost_col))
+        completed_derivation = None
+        # A blank amount is not zero. An explicitly reported zero quantity can
+        # establish zero money only with a labelled, reconciled unit-price basis.
+        if (not split and completed_amount is None and not _text(at(amount_col))
+                and actual == 0 and unit_known and plan is not None and plan > 0
+                and planned_total is not None and all(
+                    period['quantity'] in {None, 0} and period['amount'] in {None, 0}
+                    for period in periods)):
+            product = _formula_columns(getattr(rows, 'formulas', {}).get((ri, cost_col), ''), ri, '*')
+            rates = product-{plan_col}
+            if len(product) == 2 and plan_col in product and len(rates) == 1:
+                rate_col = next(iter(rates))
+                rate = _number(at(rate_col))
+                labelled_rate = any(re.search(r'(?:цен[аы]|стоимост\w*)\s+за\s+(?:ед|единиц)',
+                                      _norm(header[rate_col])) for header in rows[hi:qi+1]
+                                    if rate_col < len(header))
+                if (plan_col < rate_col < cost_group_start and labelled_rate and rate is not None and rate >= 0
+                        and abs(planned_total-plan*rate) <= max(.01, abs(planned_total)*1e-7)):
+                    completed_amount = 0.0
+                    completed_derivation = {'method': 'zero_quantity_times_labelled_unit_price',
+                        'quantity_cell': _cell(actual_col+1, ri), 'quantity': actual,
+                        'unit_price_cell': _cell(rate_col+1, ri), 'unit_price': rate,
+                        'planned_amount_cell': _cell(cost_col+1, ri)}
         plan_work = plan_material = None
         plan_work_cell = plan_material_cell = None
         planned_cost_method = ''
@@ -990,6 +1017,7 @@ def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
                       'completed_quantity': actual, 'material_quantity': _number(at(year_col)) if split else None,
                       'quantity_kind': 'installation' if split else 'work_quantity',
                       'planned_amount': _number(at(cost_col)), 'completed_amount': completed_amount,
+                      'completed_amount_derivation': completed_derivation,
                       'planned_work_amount': plan_work, 'planned_material_amount': plan_material,
                       'planned_cost_split': plan_work is not None and plan_material is not None,
                       'planned_work_amount_basis': weight_basis,

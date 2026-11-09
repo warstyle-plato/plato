@@ -135,3 +135,38 @@ def test_repeated_formula_operands_are_not_deduplicated_into_a_total(formula, op
 def test_single_explicit_zero_in_merged_cost_field_remains_a_known_zero():
     ledger = parse(add_caches(cached_book(single_value=True), {'K12': 0, 'K14': 0}))
     assert [item['planned_amount'] for item in ledger['items']] == [0, 0]
+
+
+def zero_quantity_book(*, actual=0, amount=None, rate_label=True, bad_price=False, other_period=False):
+    from test_monitor_cumulative_ledgers import book
+    wb = openpyxl.load_workbook(io.BytesIO(book(actual=0 if actual is None else actual)))
+    ws = wb.active
+    ws['N9'] = actual
+    ws['F6'] = 'Цена за единицу работ, руб.' if rate_label else 'Справочное число'
+    ws['G9'] = '=E9*F9'
+    ws['O9'] = amount
+    if not other_period:
+        for cell in ('H9', 'I9', 'J9', 'K9', 'L9', 'M9'):
+            ws[cell] = 0
+    out = io.BytesIO()
+    wb.save(out)
+    return add_caches(out.getvalue(), {'G9': 999 if bad_price else 1000})
+
+
+def test_explicit_zero_quantity_and_reconciled_rate_establish_zero_money_with_provenance():
+    item = parse(zero_quantity_book())['items'][0]
+    assert item['completed_amount'] == 0
+    assert item['source']['completed_amount_cell'] == 'O9'
+    assert item['completed_amount_derivation'] == {
+        'method': 'zero_quantity_times_labelled_unit_price', 'quantity_cell': 'N9', 'quantity': 0,
+        'unit_price_cell': 'F9', 'unit_price': 100, 'planned_amount_cell': 'G9'}
+
+
+@pytest.mark.parametrize('options', [
+    {'actual': None}, {'actual': 1}, {'amount': '=1-1'}, {'rate_label': False},
+    {'bad_price': True}, {'other_period': True},
+])
+def test_missing_money_stays_unknown_without_a_zero_quantity_price_proof(options):
+    item = parse(zero_quantity_book(**options))['items'][0]
+    assert item['completed_amount'] is None
+    assert item['completed_amount_derivation'] is None
