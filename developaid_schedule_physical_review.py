@@ -55,8 +55,8 @@ def _contract_packet(row, item_id):
         identity = ('incomplete', contracts._norm(row.get('customer')),
                     contracts._norm(row.get('contractor')), contracts._contract_number(row.get('contract')),
                     contracts._date(row.get('contract_date')) or contracts._source_date_key(row))
-        if not row.get('contractor') or not row.get('contract'):
-            identity += (item_id.split(':')[0],)
+        # An absent party is not proof that two ledgers name one contract.
+        identity += (item_id.split(':')[0],)
     return hashlib.sha256(json.dumps(identity, ensure_ascii=False).encode()).hexdigest()[:24]
 
 
@@ -168,6 +168,7 @@ def build(items, tasks, configuration, cut, previous_rules=(), *, snapshot=None,
         packet = packets.setdefault(contract_id, dict(contract_id=contract_id,
             customer=row.get('customer') or '', contractor=group['contractor'], contract=group['contract'],
             contract_date=group['contract_date'], date_verified=bool(contracts._date(group['contract_date'])),
+            identity_complete=bool(all(progress.contract_identity(row))),
             group_ids=[]))
         packet['group_ids'].append(gid)
         group['contract_id'] = contract_id

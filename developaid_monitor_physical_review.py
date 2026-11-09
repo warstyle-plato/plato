@@ -59,6 +59,7 @@ function physicalContractCard(packet){
  const questions=groups.filter(physicalGroupNeedsAttention);
  card.append(physicalReviewText('p',`Работ в договоре: ${packet.group_ids?.length||groups.length}. Показано: ${groups.length}. Связано с графиком: ${bound}. Готовых предложений: ${proposals.length}. Вопросов: ${questions.length}.`));
  if(packet.date_verified===false)card.append(physicalReviewText('p','Дата договора не подтверждена. Известные реквизиты сохранены из ведомости.','warn'));
+ if(packet.identity_complete===false)card.append(physicalReviewText('p','Реквизиты договора распознаны не полностью. Работы этого источника показаны отдельно.','warn'));
  const actions=document.createElement('div');actions.className='physical-tools';
  const add=physicalReviewText('button',`Добавить предложения договора (${proposals.length})`,'btn');add.type='button';
  add.disabled=!physicalState?.can_edit||!proposals.length;add.onclick=()=>applyPhysicalGroups(proposals);actions.append(add);

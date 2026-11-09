@@ -48,6 +48,16 @@ def test_unknown_contract_dates_preserve_source_boundaries_and_known_numbers():
     assert all(p['contract']=='Д-1' and not p['date_verified'] for p in result['contracts'])
 
 
+def test_unknown_customer_never_joins_contracts_from_independent_ledgers():
+    source=source_snapshot([(2026,item(position='1')),(2026,item(position='2'))])
+    for i,ledger in enumerate(source['ledgers']):
+        ledger.update(customer='',source={'filename':f'{i}.xlsx','sheet':'КС'},file_sha256=str(i)*64)
+    result=review.build(quantities._items(source),TASKS,EMPTY,CUT,snapshot=source,
+                        views=progress.quantity_views(source,CUT))
+    assert result['contract_count']==2
+    assert all(p['contract']=='Д-1' and not p['identity_complete'] for p in result['contracts'])
+
+
 @pytest.mark.parametrize('width',[390,1440])
 def test_default_contract_screen_is_compact_and_batch_action_keeps_each_work(width):
     from playwright.sync_api import expect
