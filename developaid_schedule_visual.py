@@ -181,6 +181,27 @@ def physical_summary(block):
         if task.get('actual_finish'):
             displayed = True
             out.append('<article class="schedule-physical-item"><h4>'+esc(task.get('name') or task.get('task_id'))+'</h4><p>Подтверждённое окончание, факт: '+esc(date_text(task['actual_finish']))+'</p></article>')
+    for group in block.get('covered_source_groups') or []:
+        measured, coverage = group.get('model') or {}, group.get('coverage') or {}
+        displayed = True
+        out.append('<article class="schedule-physical-item ks-covered-source"><h4>'+esc(group.get('source_name'))+'</h4>')
+        ratio = measured.get('progress')
+        out.append('<p class="schedule-physical-value">'+esc(f'{ratio*100:g}%'.replace('.', ',') if isinstance(ratio, (int, float)) else 'Общий процент не подтверждён')+'</p>')
+        out.append('<p>'+esc(' · '.join(str(value) for value in (group.get('contractor'), group.get('contract'), group.get('period_year')) if value))+'</p>')
+        if group.get('source_scope'):
+            out.append('<p>'+esc(group['source_scope'])+'</p>')
+        out.append('<p>'+esc(group.get('scope_reason'))+'</p><p>Известен объём '+esc(coverage.get('known_positions', 0))+' из '+esc(coverage.get('source_positions', 0))+' позиций раздела.</p>')
+        if measured.get('progress_date'):
+            out.append('<p>По ведомости от '+esc(date_text(measured['progress_date']))+'</p>')
+        if measured.get('reason'):
+            out.append('<p>'+esc(measured['reason'])+'</p>')
+        components = measured.get('components') or []
+        for component in components[:8] if ratio is None else []:
+            value = component.get('progress')
+            out.append('<p>'+esc(component.get('name') or component.get('component_id'))+': '+esc(f'{value*100:g}%'.replace('.', ',') if isinstance(value, (int, float)) else 'нет числа')+' · '+esc(number(component.get('completed_quantity'))+' / '+number(component.get('plan_quantity')))+' '+esc(unit_text(component.get('unit')))+'</p>')
+        if ratio is None and len(components) > 8:
+            out.append('<p>Других позиций: '+esc(len(components)-8)+'. Полный состав доступен в Мониторе.</p>')
+        out.append('</article>')
     out.append('</div>')
     if not displayed:
         status = block.get('evidence_status') or {}

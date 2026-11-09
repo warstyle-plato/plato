@@ -830,6 +830,7 @@ def _schedule_plan_fact(project: str, rss_path: Path, cut: Any) -> dict[str, Any
             "section": item.get("section", ""), "object": item.get("object", ""),
             "name": item.get("name", ""), "code": item.get("estimate_code", ""),
             "basis": item.get("basis", ""), "construction_work": item.get("construction_work") is True,
+            "source_format": item.get("source_format") or "", "source_cells": item.get("source_cells"),
             "plan_start": start, "plan_finish": finish,
             "plan_progress": plan, "actual_progress": fact,
             "actual_equivalent_date": fact_date,

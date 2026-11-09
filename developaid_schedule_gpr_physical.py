@@ -404,6 +404,50 @@ def _view_model(project, cut, source, snapshot, configuration, *, automatic=None
             model["reasons"] = list(dict.fromkeys([*(model.get("reasons") or []), reason]))
         # Cohort seeds are intentionally absent from the individual GPR work
         # forecasts. One shared quantity cannot certify every leaf's finish.
+    covered = cumulative_matching.covered_subtrees(source, snapshot, cut)
+    if covered:
+        covered_source = {"tasks": {group['group_id']: {'task_id': group['group_id'],
+                           'name': group['source_name']} for group in covered}}
+        covered_configuration = {"tasks": [{'task_id': group['group_id'], 'mode': 'quantities',
+            'scope_confirmed': True, 'actual_finish': ''} for group in covered],
+            "components": [component for group in covered for component in group['components']], 'note': ''}
+        covered_keys = {views[key].get('position_key') for group in covered for key in group['item_ids'] if key in views}
+        covered_index = cumulative_progress.observation_index(project, cut, snapshot, covered_keys)
+        covered_model = evaluate(covered_source, snapshot, covered_configuration, cut, observation_index=covered_index)
+        by_id = {task['task_id']: task for task in covered_model['tasks']}
+        # Source-only measures deliberately do not join seeds/actual_finishes
+        # and never set progress on any candidate GPR task.
+        for group in covered:
+            measured = by_id[group['group_id']]
+            component_sources = {component['component_id']: views.get(component['item_ids'][0]) or {} for component in group['components']}
+            for component in measured['components']:
+                view = component_sources.get(component['component_id']) or {}
+                component.update(name=view.get('name') or '', source=view.get('source') or {})
+            if not group['source_complete']:
+                measured.update(progress=None, known=False,
+                    reason='Разбор источника неполон; известные позиции показаны отдельно, общий процент раздела не подтверждён.')
+            group['model'] = {key: measured.get(key) for key in ('progress', 'progress_date', 'progress_origin',
+                'progress_date_basis', 'progress_basis', 'quantity_metric', 'observation_history', 'reason', 'requires_reconciliation')}
+            group['model']['components'] = [{key: component.get(key) for key in ('component_id', 'name', 'source',
+                'progress', 'plan_quantity', 'completed_quantity', 'unit', 'progress_origin', 'progress_date_basis',
+                'observation_date', 'period_end', 'observation_history', 'reason', 'requires_reconciliation')}
+                for component in measured['components']]
+            if group['model'].get('progress') is not None and not group['model'].get('requires_reconciliation'):
+                group['model']['reason'] = ''
+            group['coverage'] = {'source_positions': len(group['item_ids']),
+                'known_positions': sum(component.get('progress') is not None for component in measured['components']),
+                'source_complete': group['source_complete'], 'target_scope_confirmed': False}
+            group.pop('components', None)
+        for task in model['tasks']:
+            related = [group['group_id'] for group in covered if task['task_id'] in group['candidate_task_ids']]
+            task['covered_source_group_ids'] = related
+            if related and task.get('mode') == 'unknown':
+                task['reason'] = 'Выполнение охваченных разделов КС показано отдельно; полный состав и участок этой работы ГПР не подтверждены.'
+        model['covered_source_groups'] = covered
+        model['covered_source_coverage'] = {'groups': len(covered),
+            'source_positions': len({key for group in covered for key in group['item_ids']}),
+            'known_groups': sum(group['model'].get('progress') is not None for group in covered),
+            'target_scope_confirmed': False}
     return model
 
 
@@ -571,6 +615,9 @@ def evidence_status(project, cut, source, snapshot, state, model):
     if not configs and model.get("source_cohorts") and not model.get("source_conflicts"):
         return finish("shared_scope", "Общий объём КС сопоставлен с группами работ; проценты отдельных работ не выделены.",
                       "Команде: сравнивайте общий объём группы; для отдельных процентов нужен отдельный состав работ.", "cohort")
+    if not configs and any((group.get("coverage") or {}).get("known_positions") for group in model.get("covered_source_groups") or []):
+        return finish("covered_source_scope", "Выполнение известно по разделам КС; полный объём пакетов ГПР и распределение по работам не подтверждены.",
+                      "Сравнивайте показания охваченных разделов; процент всего пакета ГПР показан отдельно.", "source_scope_only")
     if not configs and not model.get("source_conflicts"):
         return finish("unmapped", "Накопительные загружены; позиции ещё не сопоставлены с работами ГПР.",
                       "Команде: сопоставьте позиции и подтвердите полный объём работ в Мониторе.")

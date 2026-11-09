@@ -351,8 +351,21 @@ def rnv(rows: list[dict], works: dict[str, dict], approved: Any, *, missing_cale
     source_missing = [row for row in missing_calendar if row.get("construction_work") is True]
     scope.extend(source_missing)
     corpus_scope = any(row.get('construction_work') is True for row in scope)
+    corpus_plan = any(row.get('source_format') == 'corpus-gpr-v1' for row in rows)
+    plan_context = {'approved': monitor._iso(approved_day), 'approved_source': 'утверждённый ГПР'}
+    if corpus_plan:
+        # A construction finish is not the permit milestone. The wide source
+        # carries no explicit RNV row and cannot inherit one from an old WBS.
+        approved_day = None
+        planned = max((_day(row.get('plan_finish')) for row in scope if _day(row.get('plan_finish'))), default=None)
+        plan_context = {'approved': None, 'approved_rnv': None,
+            'approved_source': 'Отдельный срок РНВ в корпусном ГПР не указан.',
+            'planned_construction_finish': monitor._iso(planned),
+            'plan_label': 'План окончания работ', 'plan_date': monitor._iso(planned)}
     reasons = (["Оценка по строительным разделам утверждённого корпусного ГПР, без цепочки до получения разрешения."]
                if corpus_scope else [ESTIMATE_NOTE])
+    if corpus_plan:
+        reasons.insert(0, plan_context['approved_source']+' Дата окончания строительных работ не заменяет дату разрешения на ввод.')
     known, missing = [], []
     for row in scope:
         tid = str(row.get("id") or row.get("wbs") or "").strip()
@@ -372,14 +385,14 @@ def rnv(rows: list[dict], works: dict[str, dict], approved: Any, *, missing_cale
                        + (" и др." if len(missing) > 5 else "") + ". Итоговая дата неполная.")
         reasons.extend(item["reason"] for _, _, item in missing if item.get("method") == "source_conflict")
     if not known:
-        return {"state": "unknown", "approved": monitor._iso(approved_day), "approved_source": "утверждённый ГПР",
+        return {"state": "unknown", **plan_context,
                 "forecast": None,
                 "indicative_forecast": None, "delay_days": None, "driving_chain": [],
                 "basis": "gpr", "reasons": reasons + ["Ни у одной строительной работы ГПР нет прогноза."]}
     day, row, item = max(known, key=lambda k: k[0])
     delay = (day - approved_day).days if approved_day else None
     state = "partial" if missing else "estimate"
-    return {"state": state, "approved": monitor._iso(approved_day), "approved_source": "утверждённый ГПР",
+    return {"state": state, **plan_context,
             "forecast": day.isoformat() if state == "estimate" else None,
             "indicative_forecast": day.isoformat(), "delay_days": delay,
             "driving_chain": [{"id": str(row.get("id") or row.get("wbs") or ""), "name": str(row.get("name") or ""),

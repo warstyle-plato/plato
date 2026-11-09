@@ -312,7 +312,7 @@ def render(block: dict, *, context: str = 'monitor') -> str:
              and isinstance(delta, (int, float)) else 'не определён')
     out = [styles(), '<section class="dependency-timeline schedule-overview">',
            '<h3>РНВ и причины переноса срока</h3>',
-           '<div class="schedule-rnv-cards"><div><span>План РНВ</span><strong>'+esc(date_text(rnv.get('approved')))+'</strong></div>',
+           '<div class="schedule-rnv-cards"><div><span>'+esc(rnv.get('plan_label') or 'План РНВ')+'</span><strong>'+esc(date_text(rnv.get('plan_date') or rnv.get('approved')))+'</strong></div>',
            '<div class="'+('schedule-warning' if state != 'complete' else '')+'"><span>Прогноз РНВ</span><strong>'+esc(forecast)+'</strong></div>',
            '<div><span>Сдвиг РНВ'+(' по работам ГПР с прогнозом' if state == 'partial' and gpr else ' по известной части сети' if state == 'partial' else '')+'</span><strong>'+esc(delay)+'</strong></div></div>']
     if state == 'partial' and rnv.get('indicative_forecast'):

@@ -572,13 +572,17 @@ function managementByCorpus(roots){const flat=collectOriginal(roots,[]),corps={}
 function toDate(v){if(v==null||v==='')return null;const d=new Date(v);return isNaN(d)?null:d}function allNodes(nodes,out=[]){for(const n of nodes||[]){out.push(n);allNodes(n.children||[],out)}return out}
 function plannedPct(n,cut){const start=toDate(n.plan_start),finish=toDate(n.plan_finish),day=toDate(cut);if(!start||!finish||!day)return null;if(day<=start)return 0;if(day>=finish)return 1;return Math.max(0,Math.min(1,(day-start)/Math.max(1,finish-start)))}
 function renderSharedQuantities(model){
- const host=$('ksSharedGroups');host.replaceChildren();const cohorts=model?.source_cohorts||[];host.classList.toggle('hidden',!cohorts.length);
- if(!cohorts.length)return;
- host.innerHTML='<h3 style="font-size:14px">Общие объёмы по накопительным</h3>'+cohorts.map(cohort=>{
+ const host=$('ksSharedGroups');host.replaceChildren();const cohorts=model?.source_cohorts||[],covered=model?.covered_source_groups||[];host.classList.toggle('hidden',!cohorts.length&&!covered.length);
+ if(!cohorts.length&&!covered.length)return;
+ host.innerHTML=(cohorts.length?'<h3 style="font-size:14px">Общие объёмы по накопительным</h3>':'')+cohorts.map(cohort=>{
   const measured=cohort.model||{},ratio=measured.progress,components=measured.components||[],count=(cohort.task_ids||[]).length;
   const heading=[cohort.source_scope,cohort.source_name].filter(Boolean).join(' · ')||'Общий объём работ';
   const conflict=cohort.source_conflict;
   return '<div class="box ks-source-group"><b>'+esc(heading)+'</b><div class="contract-main-money">'+esc(pct(ratio))+'</div><div>Общий объём для '+esc(count)+' работ; отдельные проценты не выделены.</div>'+(measured.progress_date?'<div class="contract-sub">По ведомости от '+esc(dt(measured.progress_date))+'</div>':'')+(conflict?'<div class="contract-warning">'+esc(conflict.reason||'ГПР и ведомость требуют сверки.')+'</div>':'')+'<details class="contract-sources"><summary>Состав и основание</summary>'+(ratio==null&&measured.reason?'<div>'+esc(measured.reason)+'</div>':'')+'<ul>'+components.map((component,index)=>'<li>'+esc(component.name||component.source_name||'Позиция '+(index+1))+': '+esc(pct(component.progress))+' · '+esc(numberWithUnit(component.completed_quantity,component.unit))+' из '+esc(numberWithUnit(component.plan_quantity,component.unit))+'</li>').join('')+'</ul></details></div>';
+ }).join('');
+ if(covered.length)host.innerHTML+='<h3 style="font-size:14px">Выполнение охваченных разделов КС</h3>'+covered.map(group=>{
+  const measured=group.model||{},coverage=group.coverage||{},components=measured.components||[];
+  return '<div class="box ks-covered-source" data-source-group="'+esc(group.group_id)+'"><b>'+esc(group.source_name)+'</b><div class="contract-main-money">'+esc(pct(measured.progress))+'</div><div>'+esc([group.contractor,group.contract,group.period_year?group.period_year+' год':''].filter(Boolean).join(' · '))+'</div>'+(group.source_scope?'<div>'+esc(group.source_scope)+'</div>':'')+'<div>'+esc(group.scope_reason)+'</div><div class="contract-sub">Известен объём '+esc(coverage.known_positions||0)+' из '+esc(coverage.source_positions||0)+' позиций раздела'+(measured.progress_date?' · ведомость от '+esc(dt(measured.progress_date)):'')+'</div>'+'<details class="contract-sources"><summary>Состав и основание</summary>'+(measured.reason?'<p>'+esc(measured.reason)+'</p>':'')+'<ul>'+components.map((component,index)=>'<li>'+esc(component.name||component.source_name||'Позиция '+(index+1))+': '+esc(pct(component.progress))+' · '+esc(numberWithUnit(component.completed_quantity,component.unit))+' из '+esc(numberWithUnit(component.plan_quantity,component.unit))+'</li>').join('')+'</ul></details></div>';
  }).join('');
 }
 function renderScheduleEvidence(v){

@@ -583,3 +583,118 @@ def _suggest(source, snapshot, cut, records):
                           'cohorts': len(result['cohorts']), 'cohort_positions': sum(len(c['item_ids']) for c in result['cohorts']),
                           'candidate_positions': sum(len(c['item_ids']) for c in result['candidates']), 'reasons': dict(reasons)}
     return result
+
+
+def _covered_package_kind(text):
+    """Recognize an explicit source heading, never an equipment/finish leaf."""
+    name = _operation_name(text)
+    if 'индивидуальный тепловой пункт' in name or re.match(r'^итп\b', name):
+        return 'itp'
+    if re.fullmatch(r'(?:устройство\s+)?монолитн\w*\s+(?:железобетонн\w*\s+)?конструкц\w*\s+надземной\s+части', name):
+        return 'monolith_above'
+    if re.fullmatch(r'(?:устройство\s+)?монолитн\w*\s+(?:железобетонн\w*\s+)?конструкц\w*\s+подземной\s+части(?:\s*\([^)]*\))?', name):
+        return 'monolith_below'
+    if re.fullmatch(r'монтаж\s+светопрозрачных\s+конструкций\s+(?:наружное\s+остекление\s+фасадов|внутреннее\s+остекление(?:\s*\([^)]*\))?)', name):
+        return 'glazing'
+    if re.fullmatch(r'устройство\s+отделки\s+фасадов\s*\((?:вертикальная|горизонтальная)\s+часть\)', name):
+        return 'nvf'
+    if re.match(r'^устройство\s+кладки\s+стен\s+и\s+перегородок\b', name):
+        return 'masonry'
+    return None
+
+
+def _target_package_kind(task):
+    if task.get('source_format') != 'corpus-gpr-v1':
+        return None
+    name = _text(task.get('name'))
+    return ({'итп': 'itp', 'индивидуальный тепловой пункт': 'itp',
+             'монолит надземной части': 'monolith_above',
+             'подземная часть — закрытие': 'monolith_below',
+             'подземная часть - закрытие': 'monolith_below',
+             'светопрозрачные конструкции': 'glazing', 'монтаж нвф': 'nvf',
+             'кладка стен и перегородок': 'masonry'}.get(name))
+
+
+
+def _covered_location_possible(source_locations, target_locations):
+    if source_locations.intersection(target_locations):
+        return True
+    for source in source_locations:
+        for target in target_locations:
+            left, right = source.split(':'), target.split(':')
+            if len(left) == len(right) == 4 and left[0] == right[0] == 'object' and left[1] == right[1]:
+                if all(a == b or 'unspecified' in (a, b) for a, b in zip(left[2:], right[2:])):
+                    return True
+    return False
+
+
+def covered_subtrees(source, snapshot, cut):
+    """Complete source subtrees shown beside their possible corpus packages.
+
+    This is explicitly *source-only* evidence. Equal source membership does
+    not prove coverage of a whole GPR package, the missing floors, or the
+    distribution of one plant between several buildings. These groups never
+    produce a task binding, a GPR seed or a certified finish.
+    """
+    if source.get('state') != 'approved_gpr' or not progress.snapshot_date(snapshot) or progress.snapshot_date(snapshot) > cut:
+        return []
+    tasks = source.get('tasks') or {}
+    groups = {}
+    for li, ledger in enumerate((snapshot or {}).get('ledgers') or []):
+        records = ledger.get('items') or []
+        for ii, item in enumerate(records):
+            if item.get('is_group') is True:
+                continue
+            # context_headings is bounded preceding context, not an ancestor
+            # chain. Only its most recent heading can be the active chapter.
+            contexts = item.get('context_headings') or []
+            ancestors = ([contexts[-1]] if contexts else []) + list(item.get('section_path') or [])
+            anchor = next((heading for heading in reversed(ancestors)
+                           if _covered_package_kind(heading.get('name'))), None)
+            if not anchor:
+                continue
+            kind = _covered_package_kind(anchor['name'])
+            named_scope = [heading.get('name') or '' for heading in ancestors]
+            location, bad = _locations(' '.join(named_scope))
+            candidates = []
+            for tid, task in tasks.items():
+                if _target_package_kind(task) != kind:
+                    continue
+                target_locations, _ = _locations(task.get('object') or '', whole_object=True)
+                # Location is a discovery boundary only. Unknown locations
+                # retain the project-wide source without claiming any object.
+                if location and target_locations and not _covered_location_possible(location, target_locations):
+                    continue
+                candidates.append(tid)
+            if not candidates:
+                continue
+            origin = item.get('source') or {}
+            coordinate = anchor.get('source') or {}
+            identity = progress.contract_identity(ledger)
+            if not all(identity) or not coordinate.get('row') or not origin.get('filename') or not origin.get('sheet'):
+                continue
+            key = (li, origin['filename'], origin['sheet'], coordinate['row'], kind)
+            if key not in groups:
+                gid = 'source-group:'+_digest((identity, origin['filename'], origin['sheet'], ledger.get('period_year'),
+                                               coordinate['row'], anchor['name']))[:24]
+                scope_text = ' · '.join(dict.fromkeys(heading.get('name') or '' for heading in ancestors
+                    if _locations(heading.get('name') or '')[0]))
+                groups[key] = {'group_id': gid, 'kind': kind, 'source_name': anchor['name'],
+                    'source_scope': scope_text, 'contractor': ledger.get('contractor'), 'contract': ledger.get('contract'),
+                    'period_year': ledger.get('period_year'), 'snapshot_date': progress.snapshot_date(snapshot),
+                    'source': {**origin, 'row': coordinate['row'], 'cell': coordinate.get('cell')},
+                    'source_complete': ledger.get('source_complete') is True or ledger.get('unread_rows_count') == 0,
+                    'ledger_source_complete': ledger.get('source_complete') is True,
+                    'candidate_task_ids': candidates, 'target_scope_confirmed': False,
+                    'location_known': bool(location), 'location_ambiguous': bad,
+                    'scope_reason': ('Выполнение относится только к указанному разделу и участку КС. '
+                                     'Полнота всего пакета ГПР и распределение по отдельным работам не подтверждены.'
+                                     if location else 'Выполнение раздела КС известно по проекту; '
+                                     'распределение между корпусами в источнике не выделено.'),
+                    'item_ids': [], 'components': []}
+            group = groups[key]
+            item_id = f'{li}:{ii}'
+            group['item_ids'].append(item_id)
+            group['components'].append({'component_id': group['group_id']+':'+str(ii),
+                'task_id': group['group_id'], 'item_ids': [item_id]})
+    return list(groups.values())

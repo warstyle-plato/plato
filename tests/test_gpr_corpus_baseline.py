@@ -102,9 +102,16 @@ def test_invalid_construction_dates_block_a_complete_rnv_estimate_without_hiding
     assert [r['actual_progress'] for r in schedule['rows']] == [0, .5]
     assert {r['progress_source']['date'] for r in schedule['rows']} == {'2026-11-06'}
     assert all(r['construction_work'] for r in schedule['rows'])
+    assert {node['name'] for node in schedule['management']} == {'Фасады'}
+    assert all(row['source_format'] == 'corpus-gpr-v1' and row['source_cells'] for row in schedule['rows'])
     qualification = schedule['dependency_timeline']['rnv']
     assert qualification['state'] == 'partial' and qualification['forecast'] is None
     assert qualification['indicative_forecast'] == '2027-02-01'
+    assert qualification['approved'] is None and qualification['approved_rnv'] is None
+    assert qualification['planned_construction_finish'] == '2027-02-01'
+    assert qualification['plan_label'] == 'План окончания работ'
+    assert qualification['delay_days'] is None
+    assert 'План окончания работ' in schedule['dependency_timeline_html']
     assert any('даты неполны' in reason for reason in qualification['reasons'])
     source = schedule['corpus_gpr']
     assert source['baseline_approved'] and source['packages'][0]['scopes'][0]['progress'] == .25

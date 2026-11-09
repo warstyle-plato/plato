@@ -94,6 +94,8 @@ def model(rows: list[dict], physical: dict | None) -> dict[str, Any]:
         works[tid] = {"gpr": gpr, "ks": ks, "gap": gap, "divergent": flag,
                       "source_conflict": (tasks.get(tid) or {}).get("source_conflict")}
     return {"works": works, "divergence_pp": DIVERGENCE_PP,
+            "covered_source_groups": (physical or {}).get("covered_source_groups") or [],
+            "covered_source_coverage": (physical or {}).get("covered_source_coverage") or {},
             "counts": {"works": len(works), "with_ks": bound, "divergent": divergent},
             "source_note": ("Два факта рядом: процент по файлу ГПР (утверждённый ГПР, еженедельный файл, "
                             "решения в Мониторе) и процент по натуральным объёмам накопительных для "

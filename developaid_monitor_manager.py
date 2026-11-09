@@ -96,6 +96,9 @@ def _schedule_bucket(task: dict[str, Any], code: str) -> tuple[str, str]:
     name = _norm(task.get("name"))
     section = _norm(task.get("section"))
     obj = _norm(task.get("object"))
+    if task.get("source_format") == "corpus-gpr-v1" and str(task.get("section") or "").strip():
+        group = str(task["section"]).strip()
+        return group, group
 
     if code.startswith("2.1"):
         if wbs.startswith("1.16.1.2"):
@@ -724,6 +727,7 @@ def _schedule_only(project: str, cut: Any, upto: str = "") -> dict[str, Any]:
                      "section": item.get("section", ""), "object": item.get("object", ""),
                      "name": item.get("name", ""), "code": item.get("estimate_code", ""),
                      "basis": item.get("basis", ""), "construction_work": item.get("construction_work") is True,
+                     "source_format": item.get("source_format") or "", "source_cells": item.get("source_cells"),
                      "plan_start": start.isoformat(),
                      "plan_finish": finish.isoformat(), "plan_progress": monitor._plan_progress(start, finish, day),
                      "actual_progress": None, "forecast_finish": None, "delta_days": None,
