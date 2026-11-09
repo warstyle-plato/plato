@@ -85,7 +85,7 @@ def test_report_link_retains_canonical_source_evidence_and_forecast():
     record['reconciliation'] = {'daily_evidence': [{
         'id': 'message', 'date': '2026-11-06', 'text': 'Монтаж',
         'contractor': record['contractor'], 'match_status': 'confirmed',
-        'contract_id': record['id'], 'link_basis': 'exact_party', 'scope_confirmed': True}]}
+        'contract_id': record['id'], 'link_basis': 'exact_party', 'scope_confirmed': False}]}
     context = {'register': {'rows': [record]}}
     groups = [{'contractor': record['contractor'], 'lines': [{'line': 'Монтаж', 'days': ['2026-11-06']}]}]
     original = copy.deepcopy((record, groups))
@@ -93,12 +93,26 @@ def test_report_link_retains_canonical_source_evidence_and_forecast():
     link, = linked[0]['lines'][0]['contract_links']
     for key in ('progress', 'statement_progress', 'reported_performance_sources', 'observation_forecast'):
         assert link[key] == record[key] and link[key] is not record[key]
+    assert link['scope_note'] == 'Договор определён; корпусный состав сообщений требует уточнения.'
     assert (record, groups) == original
     markup = report._works_html({'state': 'ok', 'works': linked}, 'week')
     text = report._work_contract_text(linked[0]['lines'][0])
     for output in (markup, text):
         assert '2026 — 75,0%' in output and UNION_REASON in output
         assert 'нет полной суммы' not in output
+        assert 'всему договору' not in output
+        assert 'Материалы включены' not in output
+
+
+def test_closing_summary_report_footer_does_not_expand_its_source_scope():
+    link = {'label': 'Договор А-12', 'source_kind': 'closing_summary',
+            'progress': {'ratio': .5, 'basis_label': 'суммы КС-2 по сводной',
+                         'origin': 'dated_closing_summary'}, 'risk': {}}
+    groups = [{'contractor': 'Учебный исполнитель', 'lines': [
+        {'line': 'Монтаж', 'days': ['2026-11-06'], 'contract_links': [link]}]}]
+    markup = report._works_html({'state': 'ok', 'works': groups}, 'week')
+    assert '50,0% суммы КС-2 по сводной' in markup
+    assert 'всему договору' not in markup and 'Материалы включены' not in markup
 
 
 def test_source_forecast_uses_canonical_money_scope_and_dated_risk_keeps_priority():

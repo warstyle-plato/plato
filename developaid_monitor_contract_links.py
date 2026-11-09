@@ -794,8 +794,8 @@ def enrich_report_works(project: str, groups: list[dict], start: Any, end: Any, 
                                         "works_materials_split": row.get("works_materials_split"),
                                         "scope_confirmed": not scope_dates,
                                         "scope_review_dates": sorted(scope_dates),
-                                        "scope_note": ("Договор определён; корпусный состав сообщений требует уточнения. "
-                                                       "Показатели относятся ко всему договору." if scope_dates else ""),
+                                        "scope_note": ("Договор определён; корпусный состав сообщений требует уточнения."
+                                                       if scope_dates else ""),
                                         "deadline": row.get("deadline"), "risk": copy.deepcopy(row.get("risk") or {}),
                                         "href": "/monitor#" + urlencode({"tab": "contracts", "project": project,
                                                                          "contract": row["id"]})}
