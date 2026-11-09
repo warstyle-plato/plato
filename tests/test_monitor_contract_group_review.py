@@ -179,3 +179,21 @@ def test_an_unrecognized_volume_of_the_same_contract_blocks_batch_scope_approval
         page.locator('.physical-scope-check').check()
         assert page.evaluate('physicalDraft.tasks.every(t=>t.scope_confirmed)')
         assert not errors
+
+
+def test_large_archive_read_is_not_abandoned_after_fifteen_seconds():
+    from playwright.sync_api import expect
+    held=[]
+    with browser_page(1440) as (page,responses,errors):
+        page.route('**/monitor/schedule-gpr-physical/view',lambda route:held.append(route))
+        page.clock.install()
+        with page.expect_request('**/monitor/schedule-gpr-physical/view'):
+            page.evaluate('void loadPhysicalSchedule()')
+        page.locator('#dataTab').click()
+        expect(page.locator('#physicalMsg')).to_contain_text('Собираю договоры и объёмы')
+        page.clock.fast_forward(16000)
+        expect(page.locator('#physicalMsg')).to_contain_text('Собираю договоры и объёмы')
+        held[-1].fulfill(json=contract_state(3,1))
+        expect(page.locator('.physical-contract')).to_have_count(1)
+        expect(page.locator('#physicalMsg')).to_be_empty()
+        assert not errors
