@@ -105,7 +105,10 @@ def test_questions_are_separate_and_do_not_reask_the_known_contract():
         page.evaluate('void loadPhysicalSchedule()')
         page.locator('#dataTab').click()
         expect(page.locator('.physical-contract')).to_have_count(1)
-        page.get_by_role('button',name='Разобрать вопросы (1)',exact=True).click()
+        expect(page.locator('.physical-contract')).to_contain_text('Повторно подтверждать договор не нужно.')
+        expect(page.locator('#physicalReviewSummary')).to_contain_text('Замечаний к данным: 0.')
+        expect(page.locator('#physicalReviewSummary')).not_to_contain_text('Вопросов по работам')
+        page.get_by_role('button',name='Настроить связи с ГПР (1)',exact=True).click()
         expect(page.locator('#physicalReviewView')).to_have_value('questions')
         expect(page.locator('.physical-group')).to_have_count(1)
         expect(page.locator('.physical-group')).to_contain_text('Договор Д-1')
@@ -117,6 +120,46 @@ def test_questions_are_separate_and_do_not_reask_the_known_contract():
         expect(page.locator('.physical-contract')).to_have_count(1)
         assert page.locator('#physicalReview img').count()==0
         assert not page.evaluate('window.untrustedRan||false')
+        assert not errors
+
+
+def test_source_data_issues_are_separate_from_missing_gpr_associations():
+    from playwright.sync_api import expect
+    current=contract_state(3,1)
+    groups=current['review']['groups']
+    groups[0].update(issues=['Полный план требует сверки.'],can_bind=False,status='review',base_status='review')
+    for group in groups[1:]:
+        group.update(status='unmatched',base_status='unmatched',suggested_task_id='',candidates=[])
+    with browser_page(390) as (page,responses,errors):
+        page.route('**/monitor/schedule-gpr-physical/view',lambda route:route.fulfill(json=current))
+        page.evaluate('void loadPhysicalSchedule()')
+        page.locator('#dataTab').click()
+        expect(page.locator('#physicalReviewSummary')).to_contain_text('Замечаний к данным: 1.')
+        expect(page.locator('#physicalScopeSection')).to_be_hidden()
+        expect(page.locator('#physicalSaveSection')).to_be_hidden()
+        page.get_by_role('button',name='Проверить данные (1)',exact=True).click()
+        expect(page.locator('#physicalReviewView')).to_have_value('source-issues')
+        expect(page.locator('.physical-group')).to_have_count(1)
+        expect(page.locator('.physical-group')).to_contain_text('Полный план требует сверки.')
+        expect(page.locator('.physical-group-check')).to_be_disabled()
+        assert not errors
+
+
+def test_reading_known_contracts_needs_no_gpr_confirmation_or_empty_save():
+    from playwright.sync_api import expect
+    current=contract_state(3,1)
+    for group in current['review']['groups']:
+        group.update(status='unmatched',base_status='unmatched',suggested_task_id='',candidates=[])
+    with browser_page(1440) as (page,responses,errors):
+        page.route('**/monitor/schedule-gpr-physical/view',lambda route:route.fulfill(json=current))
+        page.evaluate('void loadPhysicalSchedule()')
+        page.locator('#dataTab').click()
+        expect(page.locator('.physical-contract')).to_have_count(1)
+        expect(page.locator('#physicalReviewActions')).to_be_hidden()
+        expect(page.locator('#physicalScopeSection')).to_be_hidden()
+        expect(page.locator('#physicalSaveSection')).to_be_hidden()
+        page.locator('#physicalManual summary').click()
+        expect(page.locator('#physicalSaveSection')).to_be_visible()
         assert not errors
 
 
@@ -171,7 +214,7 @@ def test_an_unrecognized_volume_of_the_same_contract_blocks_batch_scope_approval
         expect(page.locator('.physical-scope-check')).to_be_disabled()
         expect(page.locator('#physicalReviewScopes')).to_contain_text('Неразобранных объёмов по этим договорам и работам: 1.')
         assert not page.evaluate('physicalDraft.tasks[0].scope_confirmed')
-        page.get_by_role('button',name='Разобрать вопросы (1)',exact=True).click()
+        page.get_by_role('button',name='Настроить связи с ГПР (1)',exact=True).click()
         page.locator('.physical-group-target').select_option('3')
         page.locator('.physical-group-check').check()
         page.locator('#physicalReviewApply').click()
@@ -191,6 +234,7 @@ def test_large_archive_read_is_not_abandoned_after_fifteen_seconds():
             page.evaluate('void loadPhysicalSchedule()')
         page.locator('#dataTab').click()
         expect(page.locator('#physicalMsg')).to_contain_text('Собираю договоры и объёмы')
+        expect(page.locator('#physicalMsg')).to_be_visible()
         page.clock.fast_forward(16000)
         expect(page.locator('#physicalMsg')).to_contain_text('Собираю договоры и объёмы')
         held[-1].fulfill(json=contract_state(3,1))

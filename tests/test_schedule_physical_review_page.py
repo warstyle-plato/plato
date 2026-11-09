@@ -69,7 +69,7 @@ def test_batch_proposals_across_pages_scope_and_save_are_separate_actions(width)
         assert not page.evaluate('window.untrustedRan||false')
         assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
         page.locator('#physicalReviewFilter').select_option('bound')
-        expect(page.locator('#physicalReviewSummary')).to_contain_text('Привязано работ: 30.')
+        expect(page.locator('.physical-contract')).to_contain_text('Связано с ГПР: 30.')
         page.locator('#physicalScheduleCard').screenshot(path=f'/tmp/volume-review-{width}.png')
         assert not errors
 

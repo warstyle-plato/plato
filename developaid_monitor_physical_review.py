@@ -31,6 +31,7 @@ function physicalReviewFiltered(){
   const status=physicalGroupState(g);
   return (!physicalContractFocus||g.contract_id===physicalContractFocus)&&
    ($('physicalReviewView').value!=='questions'||physicalGroupNeedsAttention(g))&&
+   ($('physicalReviewView').value!=='source-issues'||(g.issues||[]).length>0)&&
    (filter==='all'||filter==='pending'&&status!=='bound'||filter===status)&&
    (!q||[g.name,g.scope,g.contractor,g.contract,g.contract_date,...g.years,...(g.source_context||[])].join(' ').toLocaleLowerCase('ru').includes(q));
  });
@@ -57,14 +58,21 @@ function physicalContractCard(packet){
  const groups=packet.groups,bound=groups.filter(g=>physicalGroupState(g)==='bound').length;
  const proposals=groups.filter(g=>physicalGroupState(g)==='proposed'&&physicalGroupAvailable(g));
  const questions=groups.filter(physicalGroupNeedsAttention);
- card.append(physicalReviewText('p',`Работ в договоре: ${packet.group_ids?.length||groups.length}. Показано: ${groups.length}. Связано с графиком: ${bound}. Готовых предложений: ${proposals.length}. Вопросов: ${questions.length}.`));
+ const sourceIssues=groups.filter(g=>(g.issues||[]).length>0);
+ card.append(physicalReviewText('p',`Работ в договоре: ${packet.group_ids?.length||groups.length}. Показано: ${groups.length}. Замечаний к данным: ${sourceIssues.length}.`));
+ if(packet.identity_complete!==false)card.append(physicalReviewText('p','Работы отнесены к этому договору по накопительной. Повторно подтверждать договор не нужно.','sub'));
+ card.append(physicalReviewText('p',`Связано с ГПР: ${bound}. Готовых предложений для ГПР: ${proposals.length}.`,'sub'));
  if(packet.date_verified===false)card.append(physicalReviewText('p','Дата договора не подтверждена. Известные реквизиты сохранены из ведомости.','warn'));
  if(packet.identity_complete===false)card.append(physicalReviewText('p','Реквизиты договора распознаны не полностью. Работы этого источника показаны отдельно.','warn'));
  const actions=document.createElement('div');actions.className='physical-tools';
  const add=physicalReviewText('button',`Добавить предложения договора (${proposals.length})`,'btn');add.type='button';
- add.disabled=!physicalState?.can_edit||!proposals.length;add.onclick=()=>applyPhysicalGroups(proposals);actions.append(add);
+ add.disabled=!physicalState?.can_edit||!proposals.length;add.onclick=()=>applyPhysicalGroups(proposals);if(proposals.length)actions.append(add);
+ if(sourceIssues.length){
+  const inspect=physicalReviewText('button',`Проверить данные (${sourceIssues.length})`,'btn ghost');inspect.type='button';
+  inspect.onclick=()=>{physicalContractFocus=packet.contract_id;$('physicalReviewView').value='source-issues';$('physicalReviewFilter').value='all';physicalGroupPage=0;renderPhysicalReview();};actions.append(inspect);
+ }
  if(questions.length){
-  const resolve=physicalReviewText('button',`Разобрать вопросы (${questions.length})`,'btn ghost');resolve.type='button';
+  const resolve=physicalReviewText('button',`Настроить связи с ГПР (${questions.length})`,'btn ghost');resolve.type='button';
   resolve.onclick=()=>{physicalContractFocus=packet.contract_id;$('physicalReviewView').value='questions';$('physicalReviewFilter').value='all';physicalGroupPage=0;renderPhysicalReview();};actions.append(resolve);
  }
  const opened=physicalContractOpen.has(packet.contract_id),toggle=physicalReviewText('button',opened?'Скрыть работы':`Показать работы (${groups.length})`,'btn ghost');toggle.type='button';toggle.setAttribute('aria-expanded',String(opened));
@@ -154,7 +162,8 @@ function renderPhysicalReview(){
  if(!review)return;
  const bound=groups.filter(g=>physicalGroupState(g)==='bound').length;
  const proposed=groups.filter(g=>physicalGroupState(g)==='proposed').length;
- $('physicalReviewSummary').textContent=`Договоров: ${physicalReviewContracts(groups).length}. Работ внутри: ${groups.length}. Вопросов по работам: ${groups.filter(physicalGroupNeedsAttention).length}. Строк в архиве: ${review.row_count}. Привязано работ: ${bound}. Есть предложение: ${proposed}.`;
+ $('physicalReviewSummary').textContent=`Договоров: ${physicalReviewContracts(groups).length}. Работ внутри: ${groups.length}. Замечаний к данным: ${groups.filter(g=>(g.issues||[]).length>0).length}. Строк в архиве: ${review.row_count}.`;
+ if(['questions','works'].includes($('physicalReviewView').value))$('physicalReviewSummary').textContent+=` Связи с ГПР: привязано работ: ${bound}. Есть предложение: ${proposed}.`;
  if(review.excluded_group_rows||review.excluded_duplicate_rows)$('physicalReviewSummary').textContent+=` Заголовки разделов: ${review.excluded_group_rows||0}; доказанные копии: ${review.excluded_duplicate_rows||0}. Они сохранены в исходных строках и не включены в группы.`;
  const filtered=physicalReviewFiltered(),view=$('physicalReviewView').value,pageRows=view==='contracts'?physicalReviewContracts(filtered):filtered,size=25;
  $('physicalReviewUnfocus').classList.toggle('hidden',!physicalContractFocus);
@@ -174,9 +183,22 @@ function renderPhysicalReview(){
 function physicalReviewSelectionLabel(){
  $('physicalReviewSelection').textContent=`Выбрано групп: ${physicalGroupSelection.size}. Добавление изменяет черновик. Для расчёта нужны проверка состава работы и сохранение.`;
  $('physicalReviewApply').disabled=!physicalState?.can_edit||!physicalGroupSelection.size;
+ syncPhysicalReviewSections();
 }
+function syncPhysicalReviewSections(){
+ const contracts=$('physicalReviewView').value==='contracts';
+ const configured=(physicalDraft?.tasks||[]).length||(physicalState?.configuration?.tasks||[]).length;
+ const editing=!contracts||$('physicalManual').open||configured;
+ $('physicalScopeSection').classList.toggle('hidden',!editing);
+ $('physicalSaveSection').classList.toggle('hidden',!editing);
+ const proposals=(physicalState?.review?.groups||[]).some(g=>physicalGroupState(g)==='proposed'&&physicalGroupAvailable(g));
+ const actions=!contracts||proposals||physicalGroupSelection.size;
+ $('physicalReviewActions').classList.toggle('hidden',!actions);
+ $('physicalReviewSelection').classList.toggle('hidden',!actions);
+}
+$('physicalManual').addEventListener('toggle',syncPhysicalReviewSections);
 $('physicalReviewSearch').oninput=$('physicalReviewFilter').onchange=()=>{physicalGroupPage=0;renderPhysicalReview();};
-$('physicalReviewView').onchange=()=>{physicalContractFocus=null;physicalGroupPage=0;if($('physicalReviewView').value==='questions')$('physicalReviewFilter').value='all';renderPhysicalReview();};
+ $('physicalReviewView').onchange=()=>{physicalContractFocus=null;physicalGroupPage=0;if(['questions','source-issues'].includes($('physicalReviewView').value))$('physicalReviewFilter').value='all';renderPhysicalReview();};
 $('physicalReviewUnfocus').onclick=()=>{physicalContractFocus=null;$('physicalReviewView').value='contracts';physicalGroupPage=0;renderPhysicalReview();};
 $('physicalReviewPrevious').onclick=()=>{physicalGroupPage--;renderPhysicalReview();};
 $('physicalReviewNext').onclick=()=>{physicalGroupPage++;renderPhysicalReview();};
