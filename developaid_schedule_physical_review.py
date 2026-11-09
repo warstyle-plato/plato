@@ -8,6 +8,7 @@ import re
 import unicodedata
 
 import developaid_cumulative_progress as progress
+import developaid_monitor_contracts as contracts
 import developaid_gpr_cumulative_matching as matching
 import developaid_monitor_ledgers as ledgers
 import developaid_schedule_physical as quantities
@@ -45,6 +46,18 @@ def _scope_key(row):
     # Also works on generic source records. Production passes protected
     # position views, whose annual key was computed from the original ledger.
     return row.get('annual_work_key') or progress.annual_work_identity(row, row)
+
+
+def _contract_packet(row, item_id):
+    """A presentation group; it never supplies a quantity or a GPR binding."""
+    identity = progress.contract_identity(row)
+    if not all(identity):
+        identity = ('incomplete', contracts._norm(row.get('customer')),
+                    contracts._norm(row.get('contractor')), contracts._contract_number(row.get('contract')),
+                    contracts._date(row.get('contract_date')) or contracts._source_date_key(row))
+        if not row.get('contractor') or not row.get('contract'):
+            identity += (item_id.split(':')[0],)
+    return hashlib.sha256(json.dumps(identity, ensure_ascii=False).encode()).hexdigest()[:24]
 
 
 def _places(text):
@@ -146,11 +159,18 @@ def build(items, tasks, configuration, cut, previous_rules=(), *, snapshot=None,
             for fingerprint in rule.get('identities') or []:
                 rule_targets[fingerprint].add(rule['task_id'])
     linked = {i: c['task_id'] for c in configuration['components'] for i in c['item_ids']}
-    groups = []
+    groups, packets = [], {}
     for item_ids in buckets.values():
         row = views[item_ids[0]]
         gid = hashlib.sha256('|'.join(sorted(item_ids)).encode()).hexdigest()[:16]
         group = {k: row.get(k) or '' for k in ('name', 'scope', 'unit', 'contractor', 'contract', 'contract_date')}
+        contract_id = _contract_packet(row, item_ids[0])
+        packet = packets.setdefault(contract_id, dict(contract_id=contract_id,
+            customer=row.get('customer') or '', contractor=group['contractor'], contract=group['contract'],
+            contract_date=group['contract_date'], date_verified=bool(contracts._date(group['contract_date'])),
+            group_ids=[]))
+        packet['group_ids'].append(gid)
+        group['contract_id'] = contract_id
         group.update(group_id=gid, item_ids=item_ids, years=sorted({items[i]['period_year'] for i in item_ids
                      if type(items[i].get('period_year')) is int}),
                      component_id=(f"{group['scope']} — {group['name']}"[:98] + ' [' + gid + ']'),
@@ -206,7 +226,8 @@ def build(items, tasks, configuration, cut, previous_rules=(), *, snapshot=None,
             if group['status'] != 'bound':
                 group['issues'].append('Часть строк уже привязана. Проверьте состав в ручной настройке.')
         groups.append(group)
-    return {'groups': groups, 'row_count': len(items), 'eligible_row_count': sum(len(g['item_ids']) for g in groups),
+    return {'groups': groups, 'contracts': list(packets.values()), 'contract_count': len(packets),
+            'row_count': len(items), 'eligible_row_count': sum(len(g['item_ids']) for g in groups),
             'excluded_rows': excluded, 'excluded_group_rows': sum(row['is_group'] for row in excluded),
             'excluded_duplicate_rows': sum(row['is_duplicate'] for row in excluded),
             'group_count': len(groups), 'component_limit': quantities.MAX_ROWS}
