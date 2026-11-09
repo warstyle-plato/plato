@@ -44,6 +44,9 @@ def test_current_graph_and_pdf_keep_source_qualified_completion_markers(site,wid
         assert page.locator('#gantt .g-row').count()==0
         block=report.gantt(view,view['dashboard'])
         markup=report._gantt_html({'gantt':block,'end':TODAY})
+        # Keep pending Monitor callbacks on their own document while checking the report.
+        page=page.context.browser.new_page(viewport=page.viewport_size)
+        page.on('pageerror',lambda error:errors.append(str(error)))
         page.set_content('<html><head><meta charset="utf-8"></head><body>'+markup+'</body></html>')
         expect(page.locator('.completed-work-marker')).to_have_count(1)
         if width==1440:
@@ -86,6 +89,9 @@ def test_owner_plan_date_is_shared_by_current_past_fact_view_and_pdf(site,width)
         page.locator('#dataTab').click()
         expect(page.locator('#baselineBtn')).to_be_hidden()
         block=report.gantt(view,view['dashboard'])
+        # Keep pending Monitor callbacks on their own document while checking the report.
+        page=page.context.browser.new_page(viewport=page.viewport_size)
+        page.on('pageerror',lambda error:errors.append(str(error)))
         page.set_content('<html><head><meta charset="utf-8"></head><body>'+
             report._gantt_html({'gantt':block,'end':OLD_DAY})+'</body></html>')
         expect(page.locator('.schedule-rnv-cards')).to_contain_text('30.09.2027')
