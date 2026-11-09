@@ -182,6 +182,7 @@ def test_moscow_cabinet_projects_of_a_covered_region_do_not_double_the_neighbour
     russia, _ = _russia(tmp_path, monkeypatch)
     moscow = SimpleNamespace(
         base=MOSCOW, errors=[], available=True,
+        catalog_stamp=lambda: None, catalog_path=Path(__file__), ttl_seconds=86400,
         projects=lambda **kw: [
             PulseProject("4033", "Атлантис", 55.9066, 37.7255, address="МО, г. Мытищи, Новомытищинский пр-т", base=MOSCOW),
             PulseProject("8", "Ньютон", 55.92, 37.74, address="МО, Мытищи г. о., ул. Кирпичная", base=MOSCOW),

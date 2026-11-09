@@ -736,6 +736,7 @@ class PulseClient:
         self._jar: http.cookiejar.MozillaCookieJar | None = None
         self._opener: urllib.request.OpenerDirector | None = None
         self._projects: list[PulseProject] | None = None
+        self._projects_stamp: tuple[int, int, int] | None = None
         # Клиент, чья форма входа и чья банка кук обслуживают эту базу. У
         # поддомена (`russia.pulsprodaj.ru`) это корневая база: своей формы
         # входа для гостя у поддомена нет — он отдаёт 403 «в разработке», —
@@ -958,12 +959,15 @@ class PulseClient:
                     detail = exc.read(4000).decode("utf-8", errors="ignore").strip()
                 except Exception:  # noqa: BLE001 — тело ответа не обязано читаться
                     detail = ""
+                # Заглушка поддомена бывает и при истёкшей серверной сессии.
+                # Сначала один раз обновляем её на основной базе, затем
+                # называем окончательный отказ, если доступ не восстановлен.
+                if exc.code in (401, 403) and attempt == 1 and self.sign_in():
+                    continue
                 closed = self._closed(exc, detail)
                 if closed:
                     self.errors.append(f"{path}: {closed}")
                     return None
-                if exc.code in (401, 403) and attempt == 1 and self.sign_in():
-                    continue
                 self.errors.append(
                     f"{path}: {exc}" + (f" — {detail[:200]}" if detail else "")
                 )
@@ -972,7 +976,9 @@ class PulseClient:
                 self.errors.append(f"{path}: {exc}")
                 return None
             try:
-                return json.loads(body.decode("utf-8", errors="ignore"))
+                answer = json.loads(body.decode("utf-8", errors="ignore"))
+                self.access_closed = None
+                return answer
             except ValueError:
                 # Пришла HTML-страница входа вместо JSON — сессия протухла.
                 if attempt == 1 and self.sign_in():
@@ -993,9 +999,14 @@ class PulseClient:
         что от подсказки требовался список, который и так лежал на диске
         часом раньше.
         """
-        if self._projects is not None and not refresh:
+        path = self.catalog_path
+        stamp = self.catalog_stamp()
+        if (
+            self._projects is not None and not refresh
+            and stamp == self._projects_stamp
+            and (not fetch or fresh(path, self.ttl_seconds))
+        ):
             return self._projects
-        path = self.dir / "projects.json"
         cached = load_json(path) if (fresh(path, self.ttl_seconds) and not refresh) else None
         if not isinstance(cached, list) and not fetch:
             # Протухший кэш для подсказки лучше пустоты: список проектов за
@@ -1009,6 +1020,15 @@ class PulseClient:
             if cached is None:
                 return []
             save_json(path, cached)
+            # Читаем записанный файл: соседний процесс мог обновить его
+            # одновременно. Stamp снимается ДО чтения, чтобы следующее
+            # изменение не было ошибочно приписано старому содержимому.
+            stamp = self.catalog_stamp()
+            stored = load_json(path)
+            if isinstance(stored, list):
+                cached = stored
+            else:
+                stamp = None
         self._projects = [
             PulseProject(
                 complex_id=pulse_id(row["complex_id"]) or "",
@@ -1026,11 +1046,20 @@ class PulseClient:
             for row in cached
             if pulse_id(row.get("complex_id")) and row.get("latitude") is not None
         ]
+        self._projects_stamp = stamp
         return self._projects
 
     @property
     def catalog_path(self) -> Path:
         return self.dir / "projects.json"
+
+    def catalog_stamp(self) -> tuple[int, int, int] | None:
+        """Версия общего файла: replace заметен и при равных размере и дате."""
+        try:
+            stat = self.catalog_path.stat()
+            return stat.st_mtime_ns, stat.st_size, stat.st_ino
+        except OSError:
+            return None
 
     def _map_collection(self) -> dict[str, Any] | None:
         """Сырой GeoJSON карты — как он пришёл, без отбора полей.
@@ -1926,6 +1955,7 @@ class PulseNetwork:
             raise ValueError("нужна хотя бы одна база")
         self.sites = sites
         self._projects: list[PulseProject] | None = None
+        self._projects_stamps: tuple[Any, ...] | None = None
         self._owner: dict[str, PulseClient] = {}
         self._holders: dict[str, list[PulseClient]] = {}
         self.duplicates = 0
@@ -1958,7 +1988,14 @@ class PulseNetwork:
     # --- справочник ---------------------------------------------------------
 
     def projects(self, *, refresh: bool = False, fetch: bool = True) -> list[PulseProject]:
-        if self._projects is not None and not refresh:
+        # У процессов свои списки в памяти, но файлы общие. Одного refresh
+        # в диагностике достаточно: остальные перечитают изменившиеся базы.
+        stamps = tuple(site.catalog_stamp() for site in self.sites)
+        if (
+            self._projects is not None and not refresh
+            and stamps == self._projects_stamps
+            and (not fetch or all(fresh(site.catalog_path, site.ttl_seconds) for site in self.sites))
+        ):
             return self._projects
         owner: dict[str, PulseClient] = {}
         holders: dict[str, list[PulseClient]] = {}
@@ -1996,6 +2033,7 @@ class PulseNetwork:
         self.superseded = superseded
         # Пустой список не запоминается: база могла ещё не загрузиться.
         self._projects = merged or None
+        self._projects_stamps = stamps
         return merged
 
     @staticmethod
@@ -2053,8 +2091,8 @@ class PulseNetwork:
 
     def _site(self, complex_id: Any) -> PulseClient:
         wanted = pulse_id(complex_id) or ""
-        if wanted not in self._owner:
-            self.projects(fetch=False)
+        # Даже известный номер мог перейти к другой базе после обновления.
+        self.projects(fetch=False)
         return self._owner.get(wanted) or self.sites[0]
 
     def _ask(self, method: str, complex_id: Any, *args: Any, **kwargs: Any) -> Any:

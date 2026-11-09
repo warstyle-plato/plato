@@ -20,6 +20,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+import pytest
+
 from market_search.pulse import PulseClient, PulseNetwork, make_pulse_client
 
 RUSSIA = "https://russia.pulsprodaj.ru"
@@ -135,6 +137,50 @@ def test_an_ordinary_403_is_not_called_a_closed_subdomain(tmp_path: Path) -> Non
     assert client._closed(csrf) is None
     assert client._closed(urllib.error.URLError("timeout")) is None
     assert client.access_closed is None
+
+
+@pytest.mark.parametrize("payload", [None, {"entityType": "complex"}])
+def test_an_expired_server_session_is_renewed_on_the_root_before_rejecting_russia(tmp_path, payload):
+    from market_search.pulse_russia import PulseRussiaClient
+
+    root, _, calls = _pair(tmp_path, cookie_domain=".pulsprodaj.ru")
+    sub = PulseRussiaClient(tmp_path, login="l", password="p", base=RUSSIA, auth=root)
+    _set_cookie(root._jar, MOSCOW + "/", "sessionid=expired; Path=/; Domain=.pulsprodaj.ru")
+    _set_cookie(root._jar, MOSCOW + "/", "csrftoken=old; Path=/; Domain=.pulsprodaj.ru")
+    sub.access_closed = "прежний отказ"
+
+    def sub_open(path, **kwargs):
+        calls["sub"].append(path)
+        if sub._cookie("sessionid") != "s1":
+            raise _forbidden(RUSSIA + path, CLOSED_PAGE)
+        return b'{"content": {"1": {"name": "test"}}}'
+
+    sub._open = sub_open
+    assert sub._api("search/", payload) == {"content": {"1": {"name": "test"}}}
+    assert calls["root"] == ["/accounts/login/", "POST /accounts/login/"]
+    assert calls["sub"] == ["/api/v1/search/", "/api/v1/search/"]
+    assert sub.access_closed is None and sub.errors == []
+
+
+@pytest.mark.parametrize("payload", [None, {"entityType": "complex"}])
+def test_a_permanently_closed_russia_is_retried_only_once_and_keeps_the_reason(tmp_path, payload):
+    from market_search.pulse_russia import PulseRussiaClient
+
+    root, _, calls = _pair(tmp_path, cookie_domain=".pulsprodaj.ru")
+    sub = PulseRussiaClient(tmp_path, login="l", password="p", base=RUSSIA, auth=root)
+    _set_cookie(root._jar, MOSCOW + "/", "sessionid=expired; Path=/; Domain=.pulsprodaj.ru")
+    _set_cookie(root._jar, MOSCOW + "/", "csrftoken=old; Path=/; Domain=.pulsprodaj.ru")
+
+    def sub_open(path, **kwargs):
+        calls["sub"].append(path)
+        raise _forbidden(RUSSIA + path, CLOSED_PAGE)
+
+    sub._open = sub_open
+    assert sub._api("search/", payload) is None
+    assert calls["root"] == ["/accounts/login/", "POST /accounts/login/"]
+    assert len(calls["sub"]) == 2
+    assert "403 «Сайт находится в разработке»" in sub.errors[-1]
+    assert sub.access_closed and "сессия pulsprodaj.ru отправлена" in sub.access_closed
 
 
 def test_the_api_names_the_closed_subdomain_too(tmp_path: Path) -> None:
