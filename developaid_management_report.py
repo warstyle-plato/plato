@@ -3750,8 +3750,8 @@ def _works_html(block: dict[str, Any], kind: str) -> str:
     return (title + warning + ("<div class='work-contract-scroll' tabindex='0' aria-label='Работы и договоры'>" if linked else "")
             + table + _row(headings, True)
             + "".join("<tr>" + "".join(f"<td>{c}</td>" for c in row) + "</tr>" for row in rows)
-            + "</table>" + ("</div><p class='note'>Доля и прогноз относятся ко всему договору. "
-                            "Материалы включены в денежное выполнение.</p>" if linked else ""))
+            + "</table>" + ("</div><p class='note'>Денежное выполнение и прогноз показаны "
+                            "в пределах указанного источника.</p>" if linked else ""))
 
 
 def _photos_html(block: dict[str, Any], kind: str) -> str:
