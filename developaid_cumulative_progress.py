@@ -37,6 +37,27 @@ def contract_identity(ledger):
     return contracts._source_identity(ledger) or ('', '', '', None)
 
 
+def annual_work_identity(ledger, item):
+    """Physical work identity before annual quantities, plans or price weights.
+
+    A different filename, annual year, plan or unit does not prove that this is
+    a second independent work. An unknown source date cannot be replaced by a
+    filename-based date identity for this comparison.
+    """
+    identity = contract_identity(ledger)
+    name, position = contracts._norm(item.get('name')), contracts._norm(item.get('position'))
+    scope = contracts._norm(item.get('scope'))
+    declared = [(field, contracts._norm(item.get(field) or ledger.get(field)))
+                for field in ('object_scope', 'system_scope', 'site_scope')]
+    sections = [(contracts._norm(row.get('position')), contracts._norm(row.get('name')))
+                if isinstance(row, dict) else ('', contracts._norm(row)) for row in item.get('section_path') or []]
+    if (not all(identity) or str(identity[-1]).startswith('unverified-source:') or not name or not position
+            or not (scope or any(value for _, value in declared) or sections)):
+        return None
+    return hashlib.sha256(json.dumps((identity, position, name, scope, declared, sections),
+        ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
+
+
 def position_identity(ledger, item):
     """A bounded fingerprint, not a fuzzy work-name or row-number match."""
     customer, contractor, number, contract_date = contract_identity(ledger)
@@ -63,6 +84,7 @@ def position_view(ledger, item, cut, observation_date):
     return dict(view, contract=ledger.get('contract') or '',
                 contract_date=ledger.get('contract_date') or '', contractor=ledger.get('contractor') or '',
                 customer=ledger.get('customer') or '', position_key=position_identity(ledger, item),
+                annual_work_key=annual_work_identity(ledger, item),
                 source_date_key=contracts._source_date_key(ledger),
                 contract_date_evidence=ledger.get('contract_date_evidence') or ledger.get('date_evidence') or [],
                 file_sha256=ledger.get('file_sha256'), ledger_source=ledger.get('source') or {},
@@ -161,6 +183,7 @@ def source_hierarchy(views):
             parent = views[matches[0]].get('parent_row')
         result[key] = {'item_id': key, 'source': dict(source), 'coordinate': coordinate,
                        'parent_row': view.get('parent_row'), 'ancestors': ancestors,
+                       'annual_work_key': view.get('annual_work_key'),
                        'is_group': view.get('is_group') is True}
     return result
 
@@ -169,17 +192,35 @@ def aggregate_bound_quantities(members):
     """Do not silently turn a saved aggregate/child selection into one child."""
     result = aggregate_quantities(members)
     groups = [member for member in members if member.get('is_group') is True]
-    if len(members) <= 1 or not groups:
-        return result
-    group_rows = {tuple(row['coordinate']) for group in groups for row in group.get('source_rows') or []
-                  if row.get('is_group') is True}
-    overlaps = [row.get('item_id') for member in members for row in member.get('source_rows') or []
-                if any(tuple(parent) in group_rows for parent in row.get('ancestors') or [])]
-    reason = ('В привязке одновременно выбраны общий итог КС и его отдельные позиции; '
-              'общий процент не рассчитан до подтверждения полного отдельного состава.' if overlaps else
-              'В привязке есть общий итог КС; общий процент не рассчитан до его отдельной декомпозиции.')
-    return dict(result, ratio=None, complete_coverage=False, all_complete=False,
-                requires_reconciliation=True, overlapping_item_ids=overlaps, reason=reason)
+    if len(members) > 1 and groups:
+        group_rows = {tuple(row['coordinate']) for group in groups for row in group.get('source_rows') or []
+                      if row.get('is_group') is True}
+        overlaps = [row.get('item_id') for member in members for row in member.get('source_rows') or []
+                    if any(tuple(parent) in group_rows for parent in row.get('ancestors') or [])]
+        reason = ('В привязке одновременно выбраны общий итог КС и его отдельные позиции; '
+                  'общий процент не рассчитан до подтверждения полного отдельного состава.' if overlaps else
+                  'В привязке есть общий итог КС; общий процент не рассчитан до его отдельной декомпозиции.')
+        return dict(result, ratio=None, complete_coverage=False, all_complete=False,
+                    requires_reconciliation=True, overlapping_item_ids=overlaps, reason=reason)
+    if len(members) > 1:
+        claims, unknown = {}, False
+        for index, member in enumerate(members):
+            source_rows = member.get('source_rows') or []
+            unknown = unknown or not source_rows
+            for row in source_rows:
+                key = row.get('annual_work_key')
+                if key:
+                    claims.setdefault(key, set()).add(index)
+                else:
+                    unknown = True
+        repeated = [key for key, indexes in claims.items() if len(indexes) > 1]
+        if repeated or unknown:
+            reason = ('Одна работа КС выбрана в нескольких компонентах; полный план может учитываться дважды. '
+                      'Для общего процента объедините её годовые строки в один компонент.' if repeated else
+                      'Для объединения компонентов не подтверждена полная идентичность отдельных работ КС.')
+            return dict(result, ratio=None, complete_coverage=False, all_complete=False,
+                        requires_reconciliation=True, repeated_work_keys=repeated, reason=reason)
+    return result
 
 
 def project_configuration(previous, current, configuration):

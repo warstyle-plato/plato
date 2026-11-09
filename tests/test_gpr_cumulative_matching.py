@@ -491,3 +491,56 @@ def test_typed_reference_prefix_has_one_closed_normalization_in_classification_a
     snap['ledgers'][0]['items'][0]['name'] = prefix+name
     result = matching.suggest(source(task(name=name)), snap, CUT)
     assert result['bindings']['floor4']['metric']['ratio'] == .4
+
+
+@pytest.mark.parametrize('year,plan,unit', [(2025, 100, 'м³'), (2025, 100, 'м3'),
+                                         (2025, 120, 'м³'), (2025, 100, 'м²'), (2026, 100, 'м³')])
+def test_manual_split_of_one_physical_work_cannot_duplicate_its_full_plan(year, plan, unit):
+    snap = snapshot(contract_date='2024-01-01')
+    annual = copy.deepcopy(snap['ledgers'][0])
+    annual['period_year'] = year
+    annual['items'][0].update(plan_quantity=plan, unit=unit, completed_quantity=20, periods=[{'quantity': 20}],
+                              source={'filename': 'another-year-or-copy.xlsx', 'sheet': 'КС', 'row': 51})
+    snap['ledgers'].append(annual)
+    configuration = {'tasks': [{'task_id': 'floor4', 'mode': 'quantities', 'scope_confirmed': True, 'actual_finish': ''}],
+        'components': [{'task_id': 'floor4', 'component_id': 'current book', 'item_ids': ['0:0']},
+                       {'task_id': 'floor4', 'component_id': 'separate annual or copied book', 'item_ids': ['1:0']}],
+        'note': 'Прежнее ручное решение'}
+    before = copy.deepcopy(configuration)
+    views = progress.quantity_views(snap, CUT)
+    assert views['0:0']['annual_work_key'] == views['1:0']['annual_work_key']
+    measured, = physical.evaluate(source(), snap, configuration, CUT)['tasks']
+    assert measured['progress'] is None and measured['quantity_metric']['repeated_work_keys']
+    assert 'полный план' in measured['reason'] and measured['forecast_finish'] is None
+    assert [component['component_id'] for component in measured['components']] == ['current book', 'separate annual or copied book']
+    assert [component['progress'] for component in measured['components']] == pytest.approx([.4, 20/plan])
+    assert configuration == before
+
+
+def test_same_year_source_copy_still_blocks_duplicate_weight_when_an_independent_component_exists():
+    snap = snapshot(contract_date='2024-01-01')
+    copied = copy.deepcopy(snap['ledgers'][0])
+    copied['items'][0]['source']['filename'] = 'copied-source.xlsx'
+    snap['ledgers'].append(copied)
+    independent = copy.deepcopy(snap['ledgers'][0]['items'][0])
+    independent.update(position='1.2', completed_quantity=20, periods=[{'quantity': 20}], planned_work_amount=300)
+    snap['ledgers'][0]['items'].append(independent)
+    configuration = {'tasks': [{'task_id': 'floor4', 'mode': 'quantities', 'scope_confirmed': True, 'actual_finish': ''}],
+        'components': [{'task_id': 'floor4', 'component_id': key, 'item_ids': [key]} for key in ['0:0', '1:0', '0:1']], 'note': 'Ручной состав'}
+    measured, = physical.evaluate(source(), snap, configuration, CUT)['tasks']
+    assert measured['progress'] is None and len(measured['components']) == 3
+    assert measured['quantity_metric']['repeated_work_keys']
+
+
+def test_different_contracts_keep_their_distinct_full_work_weights_in_a_manual_binding():
+    snap = snapshot(contract_date='2024-01-01')
+    other = copy.deepcopy(snap['ledgers'][0])
+    other.update(contract='СИНТ-2', period_year=2025)
+    other['items'][0].update(completed_quantity=20, periods=[{'quantity': 20}], planned_work_amount=300)
+    snap['ledgers'].append(other)
+    configuration = {'tasks': [{'task_id': 'floor4', 'mode': 'quantities', 'scope_confirmed': True, 'actual_finish': ''}],
+        'components': [{'task_id': 'floor4', 'component_id': key, 'item_ids': [key]} for key in ['0:0', '1:0']], 'note': 'Два договора'}
+    views = progress.quantity_views(snap, CUT)
+    assert views['0:0']['annual_work_key'] != views['1:0']['annual_work_key']
+    measured, = physical.evaluate(source(), snap, configuration, CUT)['tasks']
+    assert measured['progress'] == pytest.approx(.34) and not measured['requires_reconciliation']
