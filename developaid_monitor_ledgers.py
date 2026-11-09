@@ -544,6 +544,39 @@ def _money_parts(qhead: list[Any], first: int, at) -> tuple[float | None, float 
     return work or 0.0, material or 0.0
 
 
+def group_basis(parent: dict, children: list[dict]) -> str:
+    """Prove a source rollup without discarding independent execution."""
+    leaves = [child for child in children if child.get('is_group') is not True]
+    if not leaves or not any((_number(child.get('planned_amount')) or 0) > 0 for child in leaves):
+        return ''
+
+    def completed(item, field):
+        reported = _number(item.get('reported_' + field))
+        return reported if reported is not None else _number(item.get(field))
+
+    amount = _number(parent.get('planned_amount'))
+    done = completed(parent, 'completed_amount')
+    quantity = completed(parent, 'completed_quantity')
+    empty_fact = done in {None, 0} and quantity in {None, 0}
+    if amount is None and _number(parent.get('plan_quantity')) is None and empty_fact:
+        return 'empty_structured_heading'
+    if amount == 0 and empty_fact:
+        return 'zero_cost_structured_heading'
+    costs = [_number(child.get('planned_amount')) for child in leaves]
+    facts = [completed(child, 'completed_amount') for child in leaves]
+    if (amount is not None and amount > 0 and done is not None
+            and all(value is not None for value in costs + facts)
+            and abs(sum(costs)-amount) <= max(.01, abs(amount)*1e-7)
+            and abs(sum(facts)-done) <= max(.01, abs(done)*1e-7)):
+        return 'reconciled_subtotal'
+    return ''
+
+
+def _total_label(name: str) -> bool:
+    return bool(re.match(r'^(?:итого\b|всего\b|по\s+(?:разделу|смете)\b|'
+                         r'(?:в\s+том\s+числе\s+|в\s*т\.?\s*ч\.?\s*)?ндс\b)', _norm(name)))
+
+
 def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
     # Recognize a labelled table, not the file's name or a particular contractor.
     top = rows[:45]
@@ -673,7 +706,7 @@ def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
         node = {'position': position, 'name': name,
                 'source': {'row': ri, 'cell': _cell(name_col+1, ri)}}
         heading = bool(re.search(r'[a-zа-я]', name, re.I)) and unit.upper() in {'', 'X', 'Х'}
-        total = bool(re.match(r'^(?:итого|всего|в том числе ндс)', _norm(name)))
+        total = _total_label(name)
         code = tuple(position.rstrip('.').split('.')) if re.fullmatch(r'\d+(?:\.\d+)*\.?', position) else ()
         if heading and not total:
             if re.search(r'корпус|секци|паркинг|автостоян', name, re.I):
@@ -697,11 +730,17 @@ def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
         scope = ' · '.join(parent['name'] for parent in locations)
         if not scope and parents:
             scope = parents[-1]['name']
-        if (not name or unit.upper() in {'', 'X', 'Х'} or re.fullmatch(r'[\d., ]+', unit)
-                or re.match(r'^(?:итого|всего|в том числе ндс)', _norm(name))):
+        unit_known = bool(unit and unit.upper() not in {'X', 'Х'}
+                          and not re.fullmatch(r'[\d., ]+', unit))
+        numeric_work = (bool(re.search(r'[a-zа-я]', name, re.I)) and any(
+            _number(at(col)) is not None for col in (plan_col, actual_col, cost_col, amount_col)))
+        if (not name or (not unit_known and not numeric_work)
+                or total):
             continue
         plan, actual = _number(at(plan_col)), _number(at(actual_col))
         item_warnings = []
+        if not unit_known:
+            item_warnings.append('Единица измерения не подтверждена; строка сохранена для проверки состава ведомости.')
         if plan is None:
             # A formula with no cached result is missing evidence, not zero.
             if not _text(at(plan_col)):
@@ -787,7 +826,7 @@ def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
                 else:
                     item_warnings.append('Подписанные плановые стоимости СМР и материалов не сходятся с полной стоимостью позиции; веса выполнения не использованы.')
         items.append({'position': position, 'name': name,
-                      'scope': scope, 'unit': unit, 'plan_quantity': plan,
+                      'scope': scope, 'unit': unit if unit_known else '', 'plan_quantity': plan,
                       'section_path': parents, 'context_headings': list(context_headings),
                       'parent_row': parents[-1]['source']['row'] if parents else None,
                       'is_group': False,
@@ -804,6 +843,7 @@ def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
                       'amount_split': split and completed_work is not None and completed_material is not None,
                       'periods': periods, 'warnings': item_warnings,
                       'source': _source(filename, sheet, ri,
+                                        unit_cell=_cell(unit_col+1, ri),
                                         plan_quantity_cell=_cell(plan_col+1, ri),
                                         completed_quantity_cell=_cell(actual_col+1, ri),
                                         material_quantity_cell=_cell(year_col+1, ri) if split else None,
@@ -827,26 +867,13 @@ def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
     for row_number in sorted(descendants, key=lambda row: len(descendants[row])):
         parent = by_row[row_number]
         children = [by_row[row] for row in descendants[row_number] if not by_row[row]['is_group']]
-        amount, completed = _number(parent.get('planned_amount')), _number(parent.get('completed_amount'))
-        substantive_children = any((_number(child.get('planned_amount')) or 0) > 0 for child in children)
-        empty_heading = (amount is None and _number(parent.get('plan_quantity')) is None
-                         and all(_number(parent.get(field)) in {None, 0} for field in
-                                 ('completed_quantity', 'completed_amount')) and substantive_children)
-        zero_heading = amount == 0 and substantive_children
-        subtotal = (amount is not None and amount > 0 and completed is not None and children
-            and all(_number(child.get(field)) is not None for child in children
-                    for field in ('planned_amount', 'completed_amount'))
-            and abs(sum(child['planned_amount'] for child in children)-amount) <= max(.01, abs(amount)*1e-7)
-            and abs(sum(child['completed_amount'] for child in children)-completed) <= max(.01, abs(completed)*1e-7))
-        parent['is_group'] = bool(empty_heading or zero_heading or subtotal)
-        parent['group_basis'] = ('empty_structured_heading' if empty_heading else
-                                 'zero_cost_structured_heading' if zero_heading else
-                                 'reconciled_subtotal' if subtotal else '')
+        parent['group_basis'] = group_basis(parent, children)
+        parent['is_group'] = bool(parent['group_basis'])
     if not any(p['date_end'] for item in items for p in item['periods']):
         warnings.append('Точные даты выполнения в книге не распознаны. Дата архива не является датой выполнения работ.')
     declared_form = 'ks6a' if any(re.search(r'кс[-\s]*6[-\s]*а', _norm(v))
                                  for row in top for v in row if isinstance(v, str)) else 'cumulative'
-    incomplete = sum(any(_number(item.get(field)) is None for field in
+    incomplete = sum(not item.get('unit') or any(_number(item.get(field)) is None for field in
                         ('plan_quantity', 'completed_quantity', 'planned_amount', 'completed_amount'))
                      for item in items if not item['is_group'])
     return {**meta, 'document_form': declared_form, 'period_year': int(year_label[:4]), 'items': items,
@@ -1206,6 +1233,41 @@ def _current_archive(data: bytes, digest: str, filename: str) -> dict:
     return parsed
 
 
+def _preserve_source_indices(previous: dict, parsed: dict) -> dict:
+    """Keep persisted li:ii bindings on the same immutable source cells.
+
+    A newer parser may retain previously omitted work rows. Appending these
+    rows preserves existing ids without hiding the newly recovered evidence.
+    An old id with no unique source counterpart must fail rather than point to
+    a different work. Coordinates are safe here because the ZIP hash is fixed.
+    """
+    def source_key(value):
+        source = value.get('source') or {}
+        key = tuple(source.get(field) for field in ('filename', 'sheet', 'row'))
+        return key if all(key) else None
+
+    def ordered(old, new, *, ledger=False):
+        index = {}
+        for value in new:
+            key = source_key(value)
+            if key is None or key in index:
+                raise LedgerProblem('После обновления разбора источник позиции не определяется однозначно; прежние привязки не перенесены.')
+            index[key] = value
+        aligned, used = [], set()
+        for value in old:
+            key = source_key(value)
+            if key is None or key not in index or key in used:
+                raise LedgerProblem('После обновления разбора прежняя позиция не найдена в исходном архиве; привязки требуют проверки.')
+            current = index[key]
+            if ledger:
+                current['items'] = ordered(value.get('items') or [], current.get('items') or [])
+            aligned.append(current)
+            used.add(key)
+        return aligned + [value for value in new if source_key(value) not in used]
+
+    return dict(parsed, ledgers=ordered(previous.get('ledgers') or [], parsed.get('ledgers') or [], ledger=True))
+
+
 def read_snapshot(project: str, snapshot_id: str) -> dict:
     """Read one immutable import through the current source parser.
 
@@ -1231,6 +1293,7 @@ def read_snapshot(project: str, snapshot_id: str) -> dict:
             if len(data) > MAX_ARCHIVE_BYTES or hashlib.sha256(data).hexdigest() != snapshot_id[11:]:
                 raise LedgerProblem('Исходный архив не совпадает с сохранённым отпечатком.')
             parsed = _current_archive(data, snapshot_id[11:], snapshot.get('filename') or 'Накопительные.zip')
+            parsed = _preserve_source_indices(snapshot, parsed)
             return {**snapshot, **parsed, 'source_parse_state': 'refreshed'}
         return {**_restore_period_dates(snapshot), 'source_parse_state': 'original_unavailable'}
     return {**_restore_period_dates(snapshot), 'source_parse_state': 'current'}

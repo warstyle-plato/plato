@@ -77,6 +77,12 @@ def test_unknown_tax_bases_from_distinct_valuations_are_not_assumed_equal():
     assert progress.aggregate_quantities(rows)['ratio'] is None
 
 
+def test_one_known_tax_basis_cannot_qualify_other_valuation_with_unknown_basis():
+    rows = [member('a'), member('b', planned_work_amount_basis='unspecified',
+                              valuation_key=('other.xlsx', 'КС', 2026))]
+    assert progress.aggregate_quantities(rows)['ratio'] is None
+
+
 def test_gpr_source_retains_unambiguous_parent_hierarchy_and_article_fields(monkeypatch, tmp_path):
     path = tmp_path/'gpr.xlsx'
     path.write_bytes(b'synthetic-source')

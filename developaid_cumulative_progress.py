@@ -115,8 +115,10 @@ def aggregate_quantities(members):
     bases = {member.get('planned_work_amount_basis') for member in leaves} - {None, '', 'unspecified'}
     if 'conflicting' in bases or len(bases) > 1:
         return dict(result, reason='Позиции имеют разные основания НДС стоимости СМР; общий процент не рассчитан.')
-    valuations = {tuple(member.get('valuation_key') or ()) for member in leaves}
-    if len(valuations) > 1 and not bases:
+    positive = [member for member, weight in zip(leaves, weights) if weight > 0]
+    valuations = {tuple(member.get('valuation_key') or ()) for member in positive}
+    if len(valuations) > 1 and any(member.get('planned_work_amount_basis') not in
+                                  {'with_vat', 'without_vat'} for member in positive):
         return dict(result, reason='Для стоимостных весов разных ведомостей не подтверждена общая база.')
     total = math.fsum(weights)
     if total <= 0:

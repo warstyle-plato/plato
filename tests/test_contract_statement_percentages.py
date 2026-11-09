@@ -121,7 +121,7 @@ def test_primary_register_and_physical_rows_show_statement_percentages(context, 
         row = page.locator('tr[data-contract-id]').first
         expect(row.locator('td').nth(2)).to_contain_text('В ведомости')
         expect(row.locator('td').nth(2)).to_contain_text('1\u00a0000 ₽')
-        expect(row.locator('td').nth(3)).to_contain_text('68,6% стоимости ведомости')
+        expect(row.locator('td').nth(3)).to_contain_text('68,6%')
         expect(row.locator('td').nth(3)).to_contain_text('Работы и материалы')
         assert 'суммы договора' not in row.locator('td').nth(3).inner_text()
         assert 'Уточнить полную сумму договора' not in row.inner_text()
@@ -137,5 +137,5 @@ def test_primary_register_and_physical_rows_show_statement_percentages(context, 
         if width == 1440:
             pdf = PdfReader(io.BytesIO(page.pdf(prefer_css_page_size=True)))
             content = ' '.join(' '.join(sheet.extract_text() or '' for sheet in pdf.pages).split())
-            assert '68,6%' in content and 'стоимости ведомости' in content
+            assert '68,6%' in content and 'стоимости работ по ведомостям' in content
         assert not errors

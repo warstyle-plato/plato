@@ -108,6 +108,25 @@ def test_a_group_marker_without_child_evidence_cannot_discard_a_position():
     assert result['ratio'] is None and result['problems'][0]['code'] == 'unproven_group'
 
 
+def test_group_marker_needs_reconciled_budget_and_execution_not_just_a_child():
+    reference, parent = source(done=500)
+    parent.update(is_group=True, source={'filename': 'A.xlsx', 'sheet': 'Работы', 'row': 9})
+    _, child = source(plan=100, done=200, position='1.1')
+    child.update(parent_row=9, source={'filename': 'A.xlsx', 'sheet': 'Работы', 'row': 10})
+    value = row((reference, parent))
+    value['physical_items'].append(child)
+    result = union(value)
+    assert result['ratio'] is None and result['problems'][0]['code'] == 'unproven_group'
+
+
+def test_changed_unit_of_same_work_does_not_create_a_second_plan():
+    first = source(2025, 'Old.xlsx')
+    second = source(2026, 'New.xlsx')
+    second[1]['unit'] = 'м3'
+    result = union(row(first, second))
+    assert result['ratio'] is None and result['problems'][0]['code'] == 'unit_changed'
+
+
 @pytest.mark.parametrize('changes,code', [
     ({'planned_amount': None}, 'planned_amount_unknown'),
     ({'planned_amount': -1}, 'planned_amount_unknown'),

@@ -143,7 +143,7 @@ def statement_union(row: dict) -> dict:
     tax_bases = {qualification[0] for qualification in qualifications.values()}
     if len(tax_bases) != 1:
         return fail('tax_basis_changed', 'Ведомости используют разные основания стоимостей; их итоги не сложены.')
-    observed_sources, works, evidence = set(), {}, {}
+    observed_sources, works, evidence, work_units = set(), {}, {}, {}
     for item in items:
         source = _source(item.get('source'))
         year = item.get('period_year')
@@ -152,16 +152,24 @@ def statement_union(row: dict) -> dict:
             return fail('position_source_unverified', 'Позиция не относится к квалифицированной годовой ведомости.',
                         source=source, position=item.get('position'))
         if item.get('is_group') is True:
+            from developaid_monitor_ledgers import group_basis
             parent = (item.get('source') or {}).get('row')
-            if not isinstance(parent, int) or not any(
-                    child.get('parent_row') == parent and child is not item
-                    and _source(child.get('source')) == source and child.get('period_year') == year
-                    for child in items):
+            same_source = [child for child in items if child is not item
+                           and _source(child.get('source')) == source and child.get('period_year') == year]
+            descendants = [child for child in same_source if child.get('parent_row') == parent
+                           or any((node.get('source') or {}).get('row') == parent
+                                  for node in child.get('section_path') or [] if isinstance(node, dict))]
+            if not isinstance(parent, int) or not group_basis(item, descendants):
                 return fail('unproven_group', 'Строка помечена итоговой группой без подтверждённых дочерних позиций.',
                             source=source, position=item.get('position'))
             continue
         observed_sources.add(key)
         work = _work(item)
+        base_work = work[:3] + work[4:]
+        if base_work in work_units and work_units[base_work] != work[3]:
+            return fail('unit_changed', 'Единица одной работы различается между ведомостями; её план нельзя учитывать дважды.',
+                        source=source, position=item.get('position'))
+        work_units[base_work] = work[3]
         quantity_plan = _number(item.get('plan_quantity'))
         amount_plan = _number(item.get('planned_amount'))
         if not work[1] or not work[3] or quantity_plan is None or quantity_plan <= 0:

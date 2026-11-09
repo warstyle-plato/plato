@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 import copy
+import json
 
 import openpyxl
 import pytest
@@ -73,6 +74,60 @@ def test_unit_price_never_becomes_planned_position_cost():
     ledger, = ledgers.parse_archive(archive([('Example.xlsx', out.getvalue())]))['ledgers']
     assert ledger['items'][0]['planned_amount'] is None
     assert ledger['source_complete'] is False
+
+
+@pytest.mark.parametrize('unit', [None, 'X', '4'])
+def test_work_row_with_unverified_unit_is_kept_and_coverage_is_incomplete(unit):
+    wb = openpyxl.load_workbook(io.BytesIO(structured_book()))
+    wb.active['D12'] = unit
+    out = io.BytesIO()
+    wb.save(out)
+    ledger, = ledgers.parse_archive(archive([('Example.xlsx', out.getvalue())]))['ledgers']
+    assert len(ledger['items']) == 2
+    assert ledger['items'][0]['plan_quantity'] == 10 and ledger['items'][0]['unit'] == ''
+    assert ledger['source_complete'] is False and ledger['incomplete_rows_count'] == 1
+
+
+def test_reparse_appends_recovered_rows_without_retargeting_old_source_indices(context):
+    import developaid_schedule_physical as physical
+    ledgers.store_archive('Example', archive([('Example.xlsx', structured_book())]), '2026-11-06', 'KS.zip')
+    path, = ledgers._root('Example').glob('*.json')
+    saved = json.loads(path.read_text())
+    saved['parser_schema'] = 1
+    saved['ledgers'][0]['items'].pop(0)  # Older parser had omitted the first work.
+    path.write_text(json.dumps(saved))
+    original = path.read_bytes()
+    refreshed = ledgers.read_snapshot('Example', saved['snapshot_id'])
+    items = physical._items(refreshed)
+    assert items['0:0']['source']['row'] == saved['ledgers'][0]['items'][0]['source']['row']
+    assert items['0:0']['plan_quantity'] == 20  # Existing binding still means the second work.
+    assert items['0:1']['plan_quantity'] == 10  # Recovered work receives a new id.
+    assert path.read_bytes() == original
+
+
+def test_reparse_refuses_to_retarget_an_old_position_with_no_source_counterpart():
+    parsed = parsed_book()
+    old = copy.deepcopy(parsed)
+    old['ledgers'][0]['items'][0]['source']['row'] = 999
+    with pytest.raises(ledgers.LedgerProblem, match='прежняя позиция не найдена'):
+        ledgers._preserve_source_indices(old, parsed)
+
+
+def test_zero_cost_parent_with_independent_execution_is_not_a_heading():
+    parent = {'planned_amount': 0, 'plan_quantity': 100,
+              'completed_quantity': 50, 'completed_amount': 500}
+    child = {'planned_amount': 1000, 'completed_amount': 200}
+    assert ledgers.group_basis(parent, [child]) == ''
+
+
+@pytest.mark.parametrize('label', ['По разделу Корпус 1', 'В т. ч. НДС (22%)', 'В том числе НДС'])
+def test_explicit_summary_labels_do_not_become_unitless_work_positions(label):
+    wb = openpyxl.load_workbook(io.BytesIO(structured_book()))
+    wb.active.append([7, None, label, None, None, None, None, None, None, None, 300])
+    out = io.BytesIO()
+    wb.save(out)
+    ledger, = ledgers.parse_archive(archive([('Example.xlsx', out.getvalue())]))['ledgers']
+    assert len(ledger['items']) == 2 and ledger['source_complete']
 
 
 @pytest.mark.parametrize('direct,method', [(True,'labelled_subtotals'),
@@ -172,4 +227,44 @@ def test_canonical_source_percentage_and_history_are_visible_in_real_page(contex
         expect(cell).to_contain_text('По накопительным')
         page.locator('.contract-history summary').click()
         expect(page.locator('.contract-history tbody')).to_contain_text('46,7%')
+        assert not errors
+
+
+def test_proven_source_groups_render_as_headings_without_a_false_zero(context):
+    from test_monitor_cumulative_controls import browser_page
+    from playwright.sync_api import expect
+    snapshot = parsed_book()
+    ledger = snapshot['ledgers'][0]
+    child = ledger['items'][0]
+    heading = copy.deepcopy(child)
+    heading.update(name='Раздел ведомости', is_group=True, group_basis='zero_cost_structured_heading',
+                   planned_amount=0, completed_amount=0, completed_quantity=0,
+                   source=dict(child['source'], row=11))
+    ledger['items'].append(heading)
+    provide(context, snapshot)
+    view = contracts.build('Example', '2026-11-06')
+    with browser_page(390) as (page, responses, errors):
+        responses.data = view
+        page.locator('#contractsTab').click()
+        page.locator('.contract-open').click()
+        expect(page.locator('.physical-main')).to_have_count(2)
+        expect(page.locator('.physical-group')).to_have_count(1)
+        expect(page.locator('.physical-group')).to_contain_text('Раздел ведомости')
+        assert '%' not in page.locator('.physical-group').inner_text()
+        assert not errors
+
+
+def test_source_cost_forecast_is_labelled_with_its_scope_in_history(context):
+    from test_monitor_cumulative_controls import browser_page
+    from playwright.sync_api import expect
+    provide(context, parsed_book())
+    view = contracts.build('Example', '2026-11-06')
+    view['rows'][0]['observation_forecast'] = {
+        'eligible': True, 'scope': 'uploaded_statements', 'forecast_finish': '2026-12-01'}
+    with browser_page(1440) as (page, responses, errors):
+        responses.data = view
+        page.locator('#contractsTab').click()
+        page.locator('.contract-history summary').click()
+        expect(page.locator('.contract-history')).to_contain_text('01.12.2026')
+        expect(page.locator('.contract-history')).to_contain_text('стоимости позиций ведомостей')
         assert not errors
