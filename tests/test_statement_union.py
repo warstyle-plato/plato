@@ -96,6 +96,7 @@ def test_group_costs_are_not_counted_twice_and_zero_cost_leaf_is_retained():
         _, child = source(plan=plan, done=done, position=f'1.{index}', name='A.xlsx')
         child.update(parent_row=9, source={'filename': 'A.xlsx', 'sheet': 'Работы', 'row': 9+index})
         children.append(child)
+    parent['plan_quantity'] = sum(child['plan_quantity'] for child in children)
     value = row((reference, parent))
     value['physical_items'].extend(children)
     result = union(value)

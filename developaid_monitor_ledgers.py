@@ -557,7 +557,7 @@ def group_basis(parent: dict, children: list[dict]) -> str:
     amount = _number(parent.get('planned_amount'))
     done = completed(parent, 'completed_amount')
     quantity = completed(parent, 'completed_quantity')
-    independent = ('material_quantity', 'completed_work_amount', 'completed_material_amount')
+    independent = ('completed_quantity', 'material_quantity', 'completed_work_amount', 'completed_material_amount')
     empty_fact = (done in {None, 0} and quantity in {None, 0}
                   and all(completed(parent, field) in {None, 0} for field in independent))
     if amount is None and _number(parent.get('plan_quantity')) is None and empty_fact:
@@ -568,7 +568,7 @@ def group_basis(parent: dict, children: list[dict]) -> str:
     facts = [completed(child, 'completed_amount') for child in leaves]
     # Net-zero totals do not erase a delivery or opposite monetary corrections.
     # A nonzero part of a subtotal must be reconciled on its own source basis.
-    for field in independent:
+    for field in ('plan_quantity', *independent):
         value = completed(parent, field)
         if value in {None, 0}:
             continue
@@ -576,7 +576,7 @@ def group_basis(parent: dict, children: list[dict]) -> str:
         if (any(part is None for part in parts)
                 or abs(sum(parts)-value) > max(1e-6, abs(value)*1e-7)):
             return ''
-        if field == 'material_quantity' and any(
+        if field in {'plan_quantity', 'completed_quantity', 'material_quantity'} and any(
                 _norm(child.get('unit')) != _norm(parent.get('unit')) for child in leaves):
             return ''
     if (amount is not None and amount > 0 and done is not None
