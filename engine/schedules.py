@@ -12,6 +12,7 @@
 Отдельно не импортировать: второй импорт поднял бы вторую копию движка.
 """
 # ruff: noqa
+from developaid_finance_math import month_key, monthly_sum
 
 def d(value: str | date) -> date:
     return value if isinstance(value, date) else date.fromisoformat(str(value))

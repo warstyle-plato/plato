@@ -247,6 +247,8 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
         "purchase_plan": sorted(plan.items()),
         "land_rights_gross_mln": n(x, "land_rights_cost_mln"),
         "land_rights_relief_mln": relief / 1_000_000,
+        "land_rent_inputs": copy.deepcopy(x),
+        "land_rent": copy.deepcopy(consolidated.get("land_rent") or op.get("land_rent") or {}),
         "vri_enabled": bool(vri.get("enabled")),
         "engine_articles": engine_articles,
         # Статьи без резерва — список движка, а не второй в книге.
@@ -325,6 +327,8 @@ def _nonres_project_workbook(inputs: dict[str, Any], tep: dict[str, Any],
     filename = f"DevelopAid_{kind}_{stem}_{date.today().isoformat()}.xlsx"
     return content, filename, {"missing": missing, "phased": phased, "class_deviations": [],
                                "nonres_book": True, "office_book": with_office,
+                               "land_rent": copy.deepcopy(consolidated.get("land_rent") or {}),
+                               "preliminary": bool((consolidated.get("summary") or {}).get("preliminary")),
                                "checks": report["verdict"], "comparisons": report["comparisons"]}
 
 
@@ -345,6 +349,8 @@ def _hotel_project_workbook(inputs: dict[str, Any], tep: dict[str, Any],
     missing += [f"Гостиница · {labels.get(key, key)}: исходный график движка, без формулы сметы"
                 for key, schedule in (spec.get("engine_articles") or {}).items() if schedule]
     return content, filename, {"missing": missing, "phased": False, "class_deviations": [],
+                               "land_rent": copy.deepcopy(consolidated.get("land_rent") or {}),
+                               "preliminary": bool((consolidated.get("summary") or {}).get("preliminary")),
                                "hotel_book": True}
 
 
@@ -487,6 +493,15 @@ def _build_project_workbook(
             # сошёлся». Причина уходит туда же, куда неопознанная формула.
             finance_hints = {}
             missing.append("контрольные числа движка: " + _error_location(exc))
+
+    _unrepresented_land = list(dict.fromkeys([
+        *((finance_hints or {}).get("unrepresented_land_costs") or []),
+        *_v4_unrepresented_land_costs({"land_rent":(finance_hints or {}).get("land_rent") or {}}),
+    ]))
+    if _unrepresented_land:
+        raise HTTPException(422, "Книга v4 не выдана: " + "; ".join(_unrepresented_land) +
+                            " присутствуют в исходном расчёте, но эта книга пока не переносит их суммы и графики. "
+                            "Суммы в модели сохранены; нужна выгрузка с поддержкой этих статей.")
 
     # Книга считает по ТОМУ ЖЕ ТЭП, что и отчёт. Присланная страницей строка —
     # не то, на чём посчитано: `calculate` приводит её к вводным, и правки
@@ -2431,6 +2446,54 @@ def _build_project_workbook(
     # может. Сбой оставляет книгу без значений и говорит об этом: выгрузка без
     # чисел хуже, чем с ними, но несобранная выгрузка хуже обеих.
     content = out.getvalue()
+    # Separate, editable lease accrual and contract payment plan. The amount
+    # is neither a second VRI payment nor a construction-cost percentage.
+    _rent_meta: dict[str, Any] = {}
+    try:
+        import developaid_land_rent
+        import v4_land_rent
+
+        _rent = copy.deepcopy((finance_hints or {}).get("land_rent") or {})
+        if not _rent:
+            if count > 1 and x.get("land_right", "ownership") != "ownership":
+                raise ValueError("движок не передал единый график аренды всех очередей")
+            _rent = developaid_land_rent.build(
+                x, _engine_op["project_start"], _engine_op["rve"], _engine_op["end"])
+        _rent_shares = list((finance_hints or {}).get("land_rent_phase_shares") or
+                            ([1.0] + [0.0] * (count - 1)))
+        _rent_start_refs = [f'IF(\'Параметры модели\'!$B${88+k}="Да",\'CF_{k+1}\'!$B$6,1000000)'
+                            for k in range(count)]
+        _rent_rve_refs = [f'IF(\'Параметры модели\'!$B${88+k}="Да",\'CF_{k+1}\'!$B$8,0)'
+                          for k in range(count)]
+        _rent_start_formula = "MIN(" + ",".join(_rent_start_refs) + ")"
+        _rent_housing_rve = "MAX(" + ",".join(_rent_rve_refs) + ")"
+        _rent_object_refs = []
+        for _rent_layout in _v4_layouts():
+            _h = _rent_layout.object_head
+            _rent_object_refs.append(
+                f'IF(AND(\'ОБЪЕКТЫ\'!$B${_h+1}="Да",'
+                f'MAX(\'ОБЪЕКТЫ\'!$B${_h+6},\'ОБЪЕКТЫ\'!$B${_h+22})>0),'
+                f'\'ОБЪЕКТЫ\'!$B${_h+4},0)')
+        _rent_objects_rve = "MAX(" + ",".join(_rent_object_refs or ["0"]) + ")"
+        _rent_rve_formula = (f"IF({_rent_objects_rve}>0,{_rent_objects_rve},{_rent_housing_rve})"
+                             if is_nonresidential(x) else
+                             f"MAX({_rent_housing_rve},{_rent_objects_rve})")
+        _rent_end = _v4_excel_serial(_rent.get("project_end")) or 0
+        _rent_meta = copy.deepcopy(_rent)
+        _rent_meta["workbook_supported"] = False
+        content = v4_land_rent.apply(
+            content, x, _rent, project_start_formula=_rent_start_formula,
+            rve_formula=_rent_rve_formula,
+            project_end_formula=f"MAX({_rent_end},EDATE('Аренда ЗУ'!$B$15,1))",
+            phase_shares=_rent_shares, hostvri_amount_formula="'Параметры модели'!$B$16")
+        _rent_meta["workbook_supported"] = True
+    except Exception as exc:
+        _rent_meta["workbook_supported"] = False
+        _rent_meta["workbook_error"] = _error_location(exc)
+        _rent_meta["workbook_reason"] = (str(exc).replace("cash_start", "исторических платежей")
+                                         if isinstance(exc, ValueError) else
+                                         "не удалось собрать расчёт аренды земли в книге")
+        missing.append("Аренда ЗУ · лист не собран: " + _rent_meta["workbook_error"])
     # Оформление по решениям владельца (ревизия 29.09.2026): порядок листов,
     # закрепления, печать, форматы по единице, скрытие того, чего нет в
     # проекте. Только стили и атрибуты — формулы не трогаются.
@@ -2466,7 +2529,9 @@ def _build_project_workbook(
 
     stem = _safe_file_stem(title, "project")
     filename = f"DevelopAid_модель_{stem}_{date.today().isoformat()}.xlsx"
-    return content, filename, {"missing": missing, "phased": count > 1,
+    return content, filename, {"missing": missing, "phased": count > 1, "land_rent": _rent_meta,
+                                      "preliminary": not bool(_rent_meta.get("financial_complete") and
+                                                              _rent_meta.get("workbook_supported")),
                                       "class_deviations": class_deviations}
 
 
@@ -2498,6 +2563,10 @@ def report_workbook(req: WorkbookExportRequest) -> Response:
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Не удалось собрать книгу: {exc}") from exc
+    rent_export = meta.get("land_rent") or {}
+    if rent_export.get("workbook_supported") is False:
+        raise HTTPException(422, "Книга не выдана: " + str(rent_export.get("workbook_reason") or
+                            "исторические данные аренды пока не поддержаны этой книгой"))
     if meta.get("missing"):
         # Молча пропущенное поле — потерянные данные: доносим в журнал.
         _TELEGRAM_RUNTIME["last_error"] = workbook_label(meta) + ", без соответствия: " + "; ".join(

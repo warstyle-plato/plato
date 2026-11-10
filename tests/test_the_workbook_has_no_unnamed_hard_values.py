@@ -96,10 +96,15 @@ def test_the_revision_actually_read_the_book(revision):
     formulas = sum(1 for cells in was.values() for kind, _ in cells.values() if kind == "f")
     assert len(was) >= 15, was.keys()
     assert formulas > 50_000, formulas
-    # Свой лист данных дашборда (Dashboard_Data) — наша добавка, а не лист
-    # шаблона: ревизия хардов сверяет листы владельца, и его она не судит.
+    # Свой лист данных дашборда (Dashboard_Data) и лист «Аренда ЗУ» — наши
+    # добавки, а не листы шаблона: сверять их клетка в клетку не с чем. Лист
+    # аренды поэтому судит своя ревизия ниже, а здесь он обязан быть — иначе
+    # исключение из сверки прятало бы и его отсутствие.
     import v4_dashboard
-    assert set(now) - {v4_dashboard.DATA_SHEET} == set(was), "в собранной книге не те листы"
+    import v4_land_rent
+    ours = {v4_dashboard.DATA_SHEET, v4_land_rent.SHEET}
+    assert ours <= set(now), set(now) & ours
+    assert set(now) - ours == set(was), "в собранной книге не те листы"
 
 
 def _replacements(was, now):
@@ -160,3 +165,76 @@ def test_the_book_reports_nothing_missing(revision):
     """Клетка без соответствия уходит в meta['missing'], а не молчит."""
     _, _, meta = revision
     assert list(meta.get("missing") or []) == [], meta.get("missing")
+
+
+# --- лист «Аренда ЗУ»: число стоит только во вводе --------------------------
+#
+# Шаблона у листа нет, и сверка «формула шаблона → число» его не видит. Его
+# собственное обещание напечатано во второй строке: «Жёлтые ячейки
+# редактируются». Значит, число на листе — либо жёлтый ввод договора, либо
+# номер года в первом столбце годовой таблицы; всё посчитанное — формула.
+# Число где-то ещё — это хард: правка ставки или даты его не сдвинет.
+
+LEASE_INPUT_FILL = "FFFFF2CC"
+
+
+def lease_sheet_hards(cells: dict[str, tuple[object, str | None]]) -> list[str]:
+    """Клетки листа аренды с числом не во вводе и не в номере года."""
+    import v4_land_rent
+
+    first, last = v4_land_rent.FIRST_YEAR_ROW, v4_land_rent.FIRST_YEAR_ROW + v4_land_rent.YEARS - 1
+    found = []
+    for coord, (value, fill) in cells.items():
+        if isinstance(value, str) or value is None or isinstance(value, bool):
+            continue
+        column = "".join(ch for ch in coord if ch.isalpha())
+        row = int("".join(ch for ch in coord if ch.isdigit()))
+        if column == "A" and first <= row <= last:
+            continue
+        if fill == LEASE_INPUT_FILL:
+            continue
+        found.append(coord)
+    return sorted(found)
+
+
+@pytest.fixture(scope="module")
+def lease_sheet():
+    """Книга с договором аренды и стартом не с первого числа месяца."""
+    import copy
+
+    import v4_land_rent
+
+    inputs = copy.deepcopy(core.DEFAULT_INPUTS)
+    inputs.update(project_start="2027-01-17", ird_months=12, land_right="lease",
+                  land_rent_mode="manual", land_rent_cadastral_mln=100,
+                  land_rent_regime_start="2027-01-17", land_rent_tail_rule="repeat_last",
+                  land_rent_rates=[{"year": 1, "rate_pct": 1.5}, {"year": 2, "rate_pct": 3}],
+                  land_rent_vat_treatment="public_exempt")
+    content, _, meta = core.build_project_workbook(
+        inputs, core.TEP_DEFAULT, [], {}, project_name="ревизия аренды", cache_values=False)
+    assert not meta.get("missing"), meta.get("missing")
+    book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
+    sheet = book[v4_land_rent.SHEET]
+    cells = {cell.coordinate: (cell.value,
+                               cell.fill.fgColor.rgb if cell.fill and cell.fill.fill_type else None)
+             for row in sheet.iter_rows() for cell in row if cell.value is not None}
+    book.close()
+    return cells
+
+
+def test_the_lease_sheet_holds_numbers_only_in_its_inputs(lease_sheet):
+    formulas = [c for c, (v, _) in lease_sheet.items() if isinstance(v, str) and v.startswith("=")]
+    inputs = [c for c, (v, fill) in lease_sheet.items()
+              if fill == LEASE_INPUT_FILL and not isinstance(v, str)]
+    # Предохранитель: пустой разбор и чистый лист выглядят одинаково.
+    assert len(formulas) > 5_000, len(formulas)
+    assert {"B9", "B10"} <= set(inputs), inputs  # база начисления и начало договора
+    assert lease_sheet_hards(lease_sheet) == []
+
+
+def test_the_lease_guard_catches_a_planted_hard(lease_sheet):
+    """Число на месте формулы листа аренды сторож обязан увидеть."""
+    coord = next(c for c, (v, _) in lease_sheet.items()
+                 if isinstance(v, str) and v.startswith("=") and not c.startswith("A"))
+    broken = {**lease_sheet, coord: (12.5, None)}
+    assert coord in lease_sheet_hards(broken), "подсунутый хард на листе аренды не виден"

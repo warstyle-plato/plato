@@ -181,6 +181,8 @@ def entry_price_verdict(bundle: dict[str, Any]) -> dict[str, str]:
     по показателю долга и его порогам из движка; без показателя — по прибыли."""
     result = bundle.get("consolidated") or {}
     summary = result.get("summary") or {}
+    if summary.get("preliminary"):
+        return {"title": "Предварительная экономика: уточните аренду земли", "tone": "edge"}
     metric = goal_seek_debt_metric(bundle)
     if not metric.get("key"):
         ok = float(summary.get("net_profit") or 0) > 0
@@ -284,6 +286,9 @@ def entry_price_tiles(bundle: dict[str, Any], inputs: dict[str, Any],
                    "note": f"Подбор цены при {name} {target_text} для этого документа не выполнялся."}
         margin = {"label": "Запас к цене", "value": "—", "wait": True,
                   "note": "Считается после подбора максимума."}
+    if summary.get("preliminary_reason"):
+        for tile in (cover, ceiling, margin):
+            tile["note"] = str(summary["preliminary_reason"]) + " " + str(tile.get("note") or "")
     return [cover, entry, ceiling, margin]
 
 

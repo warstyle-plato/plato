@@ -60,6 +60,8 @@ class MonitorViewRequest(BaseModel):
     programme_start: str = ""
     session: str = ""
     key: str = ""
+    background: bool = False
+    ticket: str = ""
 
 
 class MonitorScheduleRequest(BaseModel):
@@ -195,9 +197,56 @@ def monitor_snapshots(project: str, session: str = "", key: str = "") -> dict[st
     return developaid_monitor.snapshots(project)
 
 
+@app.post("/monitor/audit/sources", include_in_schema=False)
+async def monitor_audit_sources(request: Request) -> Response:
+    """Bounded original financial sources; strict owner key, no parsing/writes."""
+    private = {"Cache-Control": "private, no-store"}
+    try:
+        raw = bytearray()
+        async for chunk in request.stream():
+            if len(raw) + len(chunk) > 16384:
+                raw = bytearray()
+                break
+            raw.extend(chunk)
+        try:
+            initial = json.loads(raw)
+        except (ValueError, UnicodeError, RecursionError):
+            initial = {}
+        initial = initial if isinstance(initial, dict) else {}
+        key = initial.get("key", "")
+        session = initial.get("session", "")
+        key = key if isinstance(key, str) and len(key) <= 4096 else ""
+        session = session if isinstance(session, str) and len(session) <= 4096 else ""
+        # This exact existing gate has no team/demo/Telegram fallback.
+        _require_admin_key(key, "Монитор проекта", session)
+        import developaid_cached_source_audit as audit
+        from fastapi.concurrency import run_in_threadpool
+        try:
+            selected = audit.parse_request(bytes(raw), "finance")
+            result = await run_in_threadpool(
+                audit.capture_finance, Path(developaid_monitor._SNAPSHOT_DIR).absolute(),
+                runtime={"commit": COMMIT, "version": VERSION},
+                project=selected["project"], cut=selected["cut"],
+                slug_function=developaid_monitor._slug)
+            return JSONResponse(result, headers=private)
+        except audit.AuditError as exc:
+            limit = exc.code in {"file_too_large", "read_budget", "source_size_limit", "capture_too_large"}
+            status = 413 if limit else 400 if exc.code.startswith(("invalid_", "unsupported_")) else 409
+            return JSONResponse({"detail": "Закрытая выгрузка источников не сформирована.",
+                                 "code": exc.code}, status_code=status, headers=private)
+    except HTTPException as exc:
+        exc.headers = {**(exc.headers or {}), **private}
+        raise
+    except Exception:
+        return JSONResponse({"detail": "Закрытая выгрузка источников сейчас недоступна.",
+                             "code": "capture_unavailable"}, status_code=503, headers=private)
+
+
 @app.post("/monitor/view", include_in_schema=False)
 def monitor_view(req: MonitorViewRequest) -> dict[str, Any]:
     """Срез и тренд по нему. Считает сервер, страница только рисует."""
+    if req.background:
+        return _monitor_view_job(req, start=True)
     _require_team_access(req.session, req.key, "Монитор проекта", write=False)
     programme = _monitor_programme(req)
     try:
@@ -209,6 +258,66 @@ def monitor_view(req: MonitorViewRequest) -> dict[str, Any]:
         }
     except FileNotFoundError as exc:
         raise HTTPException(404, str(exc))
+
+
+class MonitorViewResultRequest(BaseModel):
+    ticket: str
+    session: str = ""
+    key: str = ""
+
+
+def _monitor_view_job(req, *, start: bool) -> Response:
+    """Short authenticated requests; the page needs one current view, not trend."""
+    import datetime as _dt
+    import secrets as _secrets
+    from fastapi.encoders import jsonable_encoder
+    import developaid_management_report_jobs as jobs
+
+    private = {"Cache-Control": "private, no-store"}
+    try:
+        _require_team_access(req.session, req.key, "Монитор проекта", write=False)
+        profile = "demo" if demo_session_chat(req.session) else "admin"
+        owner = jobs.owner_binding(_env_str("DEVELOPAID_ADMIN_KEY", "").strip(), req.session, profile)
+        store = jobs.Store(developaid_monitor._SNAPSHOT_DIR / ".view_jobs")
+        if start:
+            project = req.project.strip()
+            try:
+                cut = _dt.date.fromisoformat(req.cut).isoformat()
+                if cut != req.cut or not project or len(project) > 200:
+                    raise ValueError()
+            except ValueError:
+                raise HTTPException(400, "Выберите проект и существующую дату среза.") from None
+            # A fresh click may follow a source/fact change while an older
+            # calculation is running. Only retries of this ticket reuse it.
+            payload = {"project": project, "cut": cut,
+                       "click": req.ticket or _secrets.token_hex(16)}
+            def build():
+                return {"snapshot": jsonable_encoder(developaid_monitor.build(project, cut=cut))}
+            result = store.start(owner, profile, payload, build, req.ticket)
+        else:
+            result = store.poll(req.ticket, owner, profile)
+        if result["pending"]:
+            result["detail"] = "Готовлю план и факт проекта. Можно оставить страницу открытой."
+        return JSONResponse(status_code=202 if result["pending"] else 200,
+                            content=result, headers=private)
+    except HTTPException as exc:
+        exc.headers = {**(exc.headers or {}), **private}
+        raise
+    except jobs.JobProblem as exc:
+        messages = {400: "Неверный номер расчёта. Обновите срез.",
+                    404: "Расчёт не найден или срок хранения истёк. Обновите срез.",
+                    409: "Этот расчёт относится к другому проекту или дате. Обновите срез.",
+                    429: "Сервер занят другими расчётами. Повторите чуть позже."}
+        raise HTTPException(exc.status, messages.get(exc.status,
+            "Не удалось рассчитать план и факт проекта. Обновите срез."), headers=private) from None
+    except (OSError, ValueError):
+        raise HTTPException(503, "Расчёт Монитора сейчас недоступен. Повторите чуть позже.",
+                            headers=private) from None
+
+
+@app.post("/monitor/view/result", include_in_schema=False)
+def monitor_view_result(req: MonitorViewResultRequest) -> Response:
+    return _monitor_view_job(req, start=False)
 
 
 @app.get("/monitor/rewritten", include_in_schema=False)

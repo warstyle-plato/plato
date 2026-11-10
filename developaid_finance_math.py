@@ -16,6 +16,21 @@ from math import pow
 from typing import Any
 
 
+def month_key(value: str | date) -> date:
+    """Calendar key for monthly series; never replaces a business event date."""
+    value = value if isinstance(value, date) else date.fromisoformat(str(value))
+    return date(value.year, value.month, 1)
+
+
+def monthly_sum(series: dict[date, float]) -> dict[date, float]:
+    """Keep every amount when dated entries share a calendar month."""
+    result: dict[date, float] = {}
+    for when, value in series.items():
+        month = month_key(when)
+        result[month] = result.get(month, 0.0) + value
+    return result
+
+
 def monthly_npv(cashflows: list[float], annual_rate: float) -> float:
     if not cashflows:
         return 0.0
