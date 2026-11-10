@@ -750,7 +750,8 @@ def _schedule_only(project: str, cut: Any, upto: str = "") -> dict[str, Any]:
                      "status": "", "accepted": None, "eac": None})
     schedule = {"cut": day.isoformat(), "rows": rows, "risks": 0, "forecast_end": None,
                 "baseline_end": max((r["plan_finish"] for r in rows), default=None),
-                "reason": "" if rows else "Утверждённый график работ не загружен."}
+                "reason": "" if rows else "Утверждённый график работ не загружен.",
+                "undated_works": monitor._undated_works(baseline)}
     _sanitize_base_schedule(project, schedule, upto or day.isoformat())
     schedule["management"] = monitor._plain(_management(project, None, schedule))
     stack = list(schedule["management"])

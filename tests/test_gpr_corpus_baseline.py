@@ -133,3 +133,30 @@ def test_a_found_package_component_is_a_candidate_and_never_the_whole_package_pe
     assert result['bindings'] == {} and result['cohorts'] == []
     assert result['configuration']['tasks'] == []
     assert result['candidates'][0]['candidate_task_ids'] == ['package']
+
+
+def test_a_work_with_an_unreadable_date_is_named_with_its_cell_instead_of_leaving_the_gantt():
+    import developaid_monitor_page  # installs the real Monitor reader stack
+    parsed = corpus.read(construction_book())
+    assert any(i['cell'] == 'G5' and '«31.06.2027» не распознана' in i['message'] for i in parsed['issues'])
+    monitor.store_schedule(PROJECT, construction_book(), None, '2026-11-09')
+    schedule = monitor.build(PROJECT, '2026-11-09')['schedule']
+    placed = {(r['object'], r['name']) for r in schedule['rows']}
+    undated = schedule['undated_works']
+    assert len(undated) == 1 and (undated[0]['object'], undated[0]['name']) not in placed
+    assert undated[0]['object'] == 'КОРПУС 1' and undated[0]['section'] == 'Фасады'
+    assert undated[0]['reason'] == 'окончание «31.06.2027» не распознано (ячейка ГПР!G5)'
+
+
+def test_reversed_or_missing_dates_say_which_date_and_cell():
+    wb = load_workbook(io.BytesIO(construction_book()))
+    ws = wb['ГПР']
+    ws['F6'] = '10.02.2027'  # finish 01.02.2027 comes before it
+    ws['J6'] = None
+    stream = io.BytesIO(); wb.save(stream)
+    works = corpus.as_schedule(corpus.read(stream.getvalue()))['works']
+    problems = {w['source_cells']['progress']: w['date_problem'] for w in works if w['date_problem']}
+    assert problems == {'E5': 'окончание «31.06.2027» не распознано (ячейка ГПР!G5)',
+                        'E6': 'окончание 01.02.2027 раньше начала 10.02.2027 (ячейки ГПР!F6 и G6)',
+                        'H6': 'окончание не указано (ячейка ГПР!J6)'}
+    assert all(not w['date_problem'] for w in works if w['start'] and w['finish'])

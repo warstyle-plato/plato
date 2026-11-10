@@ -216,3 +216,27 @@ def test_explicitly_confirmed_completion_is_a_dated_fact_without_a_forecast_tail
         expect(page.locator('#wfMsg')).to_contain_text('Введите процент выполнения в ГПР')
         assert not any(path == '/monitor/work-fact' for path, *_ in responses.calls)
         assert not errors
+
+
+@pytest.mark.parametrize('width', [390, 1440])
+def test_works_left_out_for_unreadable_dates_are_named_above_the_gantt(width):
+    from playwright.sync_api import expect
+    view = monitor_view()
+    view['schedule']['undated_works'] = [
+        {'id': 'corpus:ГПР!E45', 'object': 'КОРПУС 1', 'section': 'Фасады', 'name': 'Каркас / Утеплитель',
+         'reason': 'окончание «31.06.2027» не распознано (ячейка ГПР!G45)'},
+        {'id': 'corpus:ГПР!H45', 'object': 'КОРПУС 2', 'section': 'Фасады', 'name': 'Каркас / Утеплитель',
+         'reason': 'окончание «31.06.2027» не распознано (ячейка ГПР!J45)'}]
+    with browser_page(width) as (page, responses, errors):
+        render(page, view)
+        notice = page.locator('#gprUndated')
+        expect(notice).to_be_visible()
+        expect(notice).to_contain_text('2 работы не попали в график: в утверждённом ГПР у них нет понятных дат.')
+        expect(notice).to_contain_text('КОРПУС 1 · Фасады · Каркас / Утеплитель: '
+                                       'окончание «31.06.2027» не распознано (ячейка ГПР!G45).')
+        expect(notice).to_contain_text('ячейка ГПР!J45')
+        box = notice.bounding_box()
+        assert box['x'] >= 0 and box['x'] + box['width'] <= width + 1
+        render(page, monitor_view())
+        expect(notice).to_be_hidden()
+        assert not errors
