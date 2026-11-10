@@ -54,6 +54,15 @@ class MonitorContractsHeaderDate(MonitorContractsBuild):
     note: str = _CumulativeField(default="", max_length=500)
 
 
+class MonitorContractDocuments(MonitorContractsBuild):
+    contract_id: str = _CumulativeField(pattern=r"^[0-9a-f]{64}$")
+
+
+class MonitorContractDocumentUpload(MonitorContractDocuments):
+    filename: str = _CumulativeField(default="", max_length=240)
+    content_base64: str = _CumulativeField(max_length=28 * 1024 * 1024)
+
+
 class MonitorCumulativeResult(MonitorCumulativeAuth):
     ticket: str = _CumulativeField(min_length=1, max_length=128)
 
@@ -91,6 +100,7 @@ _CUMULATIVE_PATHS = frozenset({
     "/monitor/cumulative/upload", "/monitor/cumulative/result",
     "/monitor/cumulative/list", "/monitor/contracts/build",
     "/monitor/contracts/result", "/monitor/contracts/term", "/monitor/contracts/link", "/monitor/contracts/header-date",
+    "/monitor/contracts/documents", "/monitor/contracts/document-upload",
     "/monitor/view", "/monitor/gantt", "/monitor/schedule-fact", "/monitor/gpr-corpus/view",
     "/monitor/schedule-confirmation/view", "/monitor/schedule-confirmation/save",
     "/monitor/schedule-physical/view", "/monitor/schedule-physical/save",
@@ -230,6 +240,7 @@ def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = 
     import developaid_monitor_ledgers as ledgers
     import developaid_monitor_contracts as contracts
     import developaid_monitor_contract_links as links
+    import developaid_contract_files as contract_files
     try:
         if operation == "upload":
             result = {"snapshot": ledgers.store_archive(
@@ -246,12 +257,23 @@ def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = 
             result = {"link": links.set_link(
                 payload["project"], payload["contract_id"], payload["evidence_id"],
                 payload["cut"], confirmed=payload["confirmed"])}
+        elif operation == "documents":
+            result = contract_files.listing(payload["project"], payload["contract_id"])
+        elif operation == "document-upload":
+            # The card's contract is checked against the register of the same cut:
+            # a document is never filed under an id the register does not show.
+            row = next((r for r in contracts.build(payload["project"], payload["cut"])["rows"]
+                        if r["id"] == payload["contract_id"]), None)
+            if row is None:
+                raise contracts.ContractProblem("Договор не найден в данных выбранного проекта на эту дату.")
+            result = {"document": contract_files.store(payload["project"], row, payload["filename"], archive),
+                      **contract_files.listing(payload["project"], payload["contract_id"])}
         else:
             raise RuntimeError("unknown monitor operation")
         return {"ok": True, **jsonable_encoder(result)}
     except ledgers.LedgerProblem as exc:
         return {"ok": False, "detail": str(exc), "files": exc.files}
-    except (contracts.ContractProblem, links.LinkProblem) as exc:
+    except (contracts.ContractProblem, links.LinkProblem, contract_files.ContractFilesProblem) as exc:
         # These exception classes contain deliberate user-facing diagnostics.
         return {"ok": False, "detail": str(exc)}
 
@@ -282,9 +304,20 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
                     raise HTTPException(400, "Архив не передан целиком. Выберите ZIP-файл заново.") from None
                 if not archive or len(archive) > 20 * 1024 * 1024:
                     raise HTTPException(413, "Выберите непустой ZIP-архив размером не больше 20 МБ.")
+            elif operation == "document-upload":
+                payload.update(cut=_monitor_cumulative_day(req.cut), contract_id=req.contract_id,
+                               filename=req.filename)
+                try:
+                    archive = base64.b64decode(req.content_base64, validate=True)
+                except (_binascii.Error, ValueError):
+                    raise HTTPException(400, "Файл не передан целиком. Выберите PDF заново.") from None
+                if not archive or len(archive) > 20 * 1024 * 1024:
+                    raise HTTPException(413, "Выберите непустой PDF размером не больше 20 МБ.")
             else:
                 payload["cut"] = _monitor_cumulative_day(req.cut)
-                if operation == "term":
+                if operation == "documents":
+                    payload["contract_id"] = req.contract_id
+                elif operation == "term":
                     if req.deadline:
                         _monitor_cumulative_day(req.deadline)
                     payload.update(contract_id=req.contract_id, deadline=req.deadline, note=req.note)
@@ -307,7 +340,9 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
                 return _monitor_cumulative_execute(operation, payload, archive)
             result = store.start(owner, profile, fingerprint, build, req.ticket)
         if result["pending"]:
-            result["detail"] = "Обрабатываю накопительные." if family == "upload" else "Готовлю договорную сверку."
+            result["detail"] = ("Обрабатываю накопительные." if family == "upload" else
+                                "Читаю документы договора." if operation.startswith("document") else
+                                "Готовлю договорную сверку.")
         return JSONResponse(status_code=202 if result["pending"] else 200, content=result, headers=private)
     except HTTPException as exc:
         exc.headers = {**(exc.headers or {}), **private}
@@ -370,3 +405,13 @@ def monitor_contracts_link(req: MonitorContractsLink) -> Response:
 @app.post("/monitor/contracts/header-date", include_in_schema=False)
 def monitor_contracts_header_date(req: MonitorContractsHeaderDate) -> Response:
     return _monitor_cumulative_job(req, family="contracts", operation="header-date")
+
+
+@app.post("/monitor/contracts/documents", include_in_schema=False)
+def monitor_contracts_documents(req: MonitorContractDocuments) -> Response:
+    return _monitor_cumulative_job(req, family="contracts", operation="documents")
+
+
+@app.post("/monitor/contracts/document-upload", include_in_schema=False)
+def monitor_contracts_document_upload(req: MonitorContractDocumentUpload) -> Response:
+    return _monitor_cumulative_job(req, family="contracts", operation="document-upload")

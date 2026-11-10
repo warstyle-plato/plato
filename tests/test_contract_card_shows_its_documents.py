@@ -1,0 +1,94 @@
+"""Карточка договора загружает PDF договора и показывает их разбор, исправления — красным.
+
+Ответ маршрута собран настоящим разбором нарисованных документов
+(`developaid_contract_files`), а не написан руками: страница проверяется на той
+форме записи, которую отдаёт сервер.
+"""
+from __future__ import annotations
+
+import base64
+import json
+
+import pytest
+
+import developaid_contract_files as files
+import developaid_monitor as monitor
+from test_monitor_cumulative_controls import CONTRACT, KEY, MARKER, browser_page
+from tests.test_contract_documents_are_read_from_their_tables import estimate_pdf, schedule_pdf
+
+ROW = {"id": CONTRACT, "contract": "12-ТСТ", "contract_date": "2025-09-01"}
+RED = "rgb(180, 35, 24)"
+
+
+@pytest.fixture
+def listing(monkeypatch, tmp_path):
+    monkeypatch.setattr(monitor, "_SNAPSHOT_DIR", tmp_path / "monitor")
+    files.store("Учебный", ROW, "ДС4.pdf", estimate_pdf())
+    files.store("Учебный", ROW, MARKER + ".pdf", schedule_pdf())
+    return files.listing("Учебный", CONTRACT)
+
+
+def _serve(page, listing, calls):
+    def handle(route):
+        body = route.request.post_data_json or {}
+        calls.append((route.request.url.rsplit("/", 1)[-1], body))
+        assert body.get("key") == KEY and body.get("contract_id") == CONTRACT
+        extra = {"document": {"already": False}} if body.get("content_base64") else {}
+        route.fulfill(json={"pending": False, "ok": True, **extra, **json.loads(json.dumps(listing))})
+    page.route("**/monitor/contracts/document*", handle)
+
+
+def _open(page):
+    page.locator("#contractsTab").click()
+    page.locator(f'tr[data-contract-id="{CONTRACT}"] .contract-open').click()
+
+
+@pytest.mark.parametrize("width", [390, 1440])
+def test_the_card_lists_documents_and_shows_schedule_corrections_in_red(listing, width):
+    from playwright.sync_api import expect
+    calls = []
+    with browser_page(width) as (page, _, errors):
+        _serve(page, listing, calls)
+        _open(page)
+        documents = page.locator("#contractDocuments")
+        expect(documents).to_contain_text("Дополнительное соглашение № 4 от 01.02.2026")
+        expect(documents).to_contain_text("Расчёт договорной стоимости на завершение работ")
+        expect(documents).to_contain_text("итог документа: 127 150 ₽")
+        correction = documents.locator("ul.contract-correction li").first
+        expect(correction).to_contain_text("у строки 2.3 «Стены»")
+        expect(correction).to_contain_text("Взяты даты полосы: 29.01.2026 — 31.01.2026.")
+        assert correction.evaluate("e => getComputedStyle(e).color") == RED
+        warning = documents.locator("ul.contract-warning li", has_text="Номер договора в документе не прочитан")
+        assert warning.evaluate("e => getComputedStyle(e).color") != RED
+        documents.get_by_text("Строки графика (7)").click()
+        fixed = documents.locator("tr.contract-correction", has_text="Стены")
+        expect(fixed).to_contain_text("Даты исправлены: по полосе диаграммы.")
+        expect(documents.locator("tr.contract-correction", has_text="Каркас")).to_contain_text(
+            "по срокам входящих работ")
+        assert fixed.evaluate("e => getComputedStyle(e).color") == RED
+        assert [name for name, _ in calls] == ["documents"]
+        assert page.evaluate("window.untrustedRan") is None and errors == []
+
+
+def test_a_pdf_is_uploaded_into_the_open_card_and_other_files_are_refused(listing):
+    from playwright.sync_api import expect
+    calls = []
+    with browser_page(1440) as (page, _, errors):
+        _serve(page, listing, calls)
+        _open(page)
+        expect(page.locator("#contractDocuments")).to_contain_text("ДС4.pdf")
+        page.locator("#contractDocumentFile").set_input_files(
+            {"name": "Таблица.xlsx", "mimeType": "application/vnd.ms-excel", "buffer": b"PK"})
+        page.locator("#contractDocumentUpload").click()
+        expect(page.locator("#contractDocumentsMsg")).to_have_text(
+            "Выберите PDF договора или дополнительного соглашения.")
+        pdf = b"%PDF-1.7 synthetic"
+        page.locator("#contractDocumentFile").set_input_files(
+            {"name": "ДС5.pdf", "mimeType": "application/pdf", "buffer": pdf})
+        page.locator("#contractDocumentUpload").click()
+        expect(page.locator("#contractDocumentsMsg")).to_have_text("Документ прочитан и сохранён.")
+        name, body = calls[-1]
+        assert name == "document-upload" and [n for n, _ in calls] == ["documents", "document-upload"]
+        assert base64.b64decode(body["content_base64"]) == pdf and body["filename"] == "ДС5.pdf"
+        assert body["project"] == "Учебный проект" and len(body["ticket"]) == 32
+        assert errors == []
