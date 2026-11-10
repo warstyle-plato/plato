@@ -129,6 +129,7 @@ def model(timeline: dict, *, stalled=None) -> dict:
                    if reason == ESTIMATE_NOTE else reason for reason in reasons]
     return {"state": state, "approved": rnv.get("approved"), "forecast": forecast,
             "approved_source": rnv.get("approved_source"), "approved_rnv": rnv.get("approved_rnv", rnv.get("approved")),
+            "owner_rnv": rnv.get("owner_rnv"), "plan_conflicts": rnv.get("plan_conflicts") or [],
             "planned_construction_finish": rnv.get("planned_construction_finish"),
             "plan_label": rnv.get("plan_label") or "План ввода",
             "plan_date": rnv.get("plan_date") or rnv.get("approved"),
@@ -136,6 +137,8 @@ def model(timeline: dict, *, stalled=None) -> dict:
             "delay_days": rnv.get("delay_days") if forecast else None,
             "driver": driver.get("name") or "", "driver_reason": driver.get("reason") or "",
             "driver_method": driver.get("method"), "facts": facts, "source_status": status,
+            "completed_facts": physical.get("completed_facts"),
+            "completed_facts_html": physical.get("completed_facts_html") or "",
             "stalled_text": stalled_text(stalled or [], rnv.get("basis")),
             "action": action, "reasons": reasons,
             "source_label": "ГПР и накопительные" if any(f["kind"] != "done" for f in facts) else "ГПР",
@@ -213,6 +216,7 @@ def render(block):
            '</span><strong>'+esc(delay)+'</strong></div></div>']
     if block.get("caveat"):
         out.append('<p class="schedule-note executive-qualification">'+esc(block["caveat"])+'</p>')
+    out.append(block.get('completed_facts_html') or '')
     if block.get("driver"):
         out.append('<p><b>На срок влияет:</b> '+esc(block["driver"])+'.</p>')
     if block.get("stalled_text"):
@@ -236,6 +240,14 @@ def render(block):
 def details(block):
     esc = html.escape
     out = ['<div class="executive-source-content"><h3>Основания оценки сроков</h3>']
+    owner = block.get('owner_rnv')
+    if owner:
+        out.append('<p>План РНВ владельца: '+esc(date_text(owner['date']))+'. '+
+                   esc(owner.get('note') or '')+'</p>')
+    inventory = block.get('completed_facts') or {}
+    if len(inventory.get('qualified_task_completions') or []) > 3:
+        from developaid_schedule_completed_facts import render as completed_render
+        out.append(completed_render(inventory, expanded=True))
     if block.get("driver_reason"):
         out.append('<p class="note">Основание оценки работы «'+esc(str(block.get("driver") or ""))+
                    '»: '+esc(str(block["driver_reason"]))+'</p>')
