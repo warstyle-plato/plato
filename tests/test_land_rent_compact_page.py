@@ -114,7 +114,10 @@ def test_real_blur_edit_keeps_unknown_zero_origins_and_mode_confirmation_separat
     page.locator('#f_land_rent_mode').select_option('msk_mkd_arch_confirmed')
     browser.wait_for_result(page)
     assert page.evaluate('inputs.land_rent_preset_confirmed') is False
-    expect(page.locator('.lr-status')).to_contain_text('Подтвердите')
+    # Counted, but preliminary until the regional rates are checked against the contract.
+    expect(page.locator('.lr-status')).to_contain_text('Предварительный расчёт')
+    expect(page.locator('.lr-status')).to_contain_text('договор с ними ещё не сверен')
+    assert page.evaluate('lastResult.land_rent.construction_total')>0
     conditions=open_detail(page,'conditions')
     conditions.locator('#f_land_rent_preset_confirmed').check()
     browser.wait_for_result(page)
@@ -214,7 +217,7 @@ def test_mo_unknown_indices_explicit_zero_forecast_and_other_form_collection(ren
 def test_region_comes_from_applied_territory_not_cadastral_prefix_or_a_region_switch(rental_page,territory_kind):
     page,view,errors=rental_page
     state=page.evaluate("""kind=>{
-        for(const key of ['_glavapu_import','_mo_calc','_other_region','_cadastral_analysis'])delete inputs[key];
+        for(const key of ['_glavapu_import','_mo_calc','_other_region','_cadastral_analysis','_land_lookup'])delete inputs[key];
         inputs.land_rent_mode='unspecified';inputs.land_rent_preset_confirmed=true;
         inputs.land_rent_cadastral_mln=null;delete inputs._field_origin['inputs.land_rent_cadastral_mln'];
         if(kind==='moscow77'||kind==='new_moscow50'){
@@ -222,6 +225,9 @@ def test_region_comes_from_applied_territory_not_cadastral_prefix_or_a_region_sw
           inputs._glavapu_import={normalized:{cadastral_quarter:prefix+':01:0000001',site_area_ha:1},
             recognized:[prefix+':01:0000001:11'],mappings:{inputs:{vri_region:'msk'}}};
           inputs._cadastral_analysis={territory:{inside_moscow:true}};
+          // ЕГРН lookup: the applied parcel and a stranger that is not part of the territory.
+          inputs._land_lookup={results:[{found:true,kind:'land',cadastral_number:prefix+':01:0000001:11',cadastral_value_mln:345.6},
+            {found:true,kind:'land',cadastral_number:prefix+':01:0000009:99',cadastral_value_mln:1000}]};
         }else if(kind==='mo50'){
           inputs.vri_region='mo';inputs._mo_calc={territory:{site_area_ha:1},
             vri:{parcels:[{cadastral_number:'50:01:0000001:11',cadastral_value_rub:123000000}]}};
@@ -239,7 +245,7 @@ def test_region_comes_from_applied_territory_not_cadastral_prefix_or_a_region_sw
     if territory_kind in ['moscow77','new_moscow50']:
         assert state['region']=='msk' and state['mode']=='msk_mkd_3_2'
         assert 'msk_mkd_3_2' in values and 'mo_housing_new_2026' not in values
-        assert state['base'] is None
+        assert state['base']==345.6  # Moscow is filled from ЕГРН too
     elif territory_kind=='mo50':
         assert state['region']=='mo' and state['mode']=='mo_housing_new_2026'
         assert 'mo_housing_new_2026' in values and not any(v.startswith('msk_') for v in values)
@@ -292,9 +298,21 @@ def test_unknown_preview_manual_import_and_explicit_zero_do_not_become_regional_
     value=page.evaluate("""()=>{
         inputs.land_rent_cadastral_mln=null;delete inputs._field_origin['inputs.land_rent_cadastral_mln'];
         inputs._mo_calc.vri.parcels.push({cadastral_number:'50:01:0000001:12',cadastral_value_rub:456000000});
-        renderInputs();return inputs.land_rent_cadastral_mln;
+        renderInputs();return {base:inputs.land_rent_cadastral_mln,origin:inputs._field_origin['inputs.land_rent_cadastral_mln'].text};
     }""")
-    assert value is None
+    assert value['base']==579 and '50:01:0000001:11, 50:01:0000001:12' in value['origin']
+    # A parcel that is not leased leaves the sum; the owner's typed value is never replaced.
+    page.locator('#landRentEditor [data-land-rent-parcel="50:01:0000001:11"]').uncheck()
+    page.wait_for_function("inputs.land_rent_cadastral_mln===456")
+    assert 'Не в аренде: 50:01:0000001:11' in page.evaluate("inputs._field_origin['inputs.land_rent_cadastral_mln'].text")
+    field=page.locator('#landRentEditor #f_land_rent_cadastral_mln')
+    field.fill('500');field.press('Tab')
+    page.locator('#landRentEditor [data-land-rent-parcel="50:01:0000001:11"]').check()
+    page.wait_for_function("(inputs.land_rent_parcels_excluded||[]).length===0")
+    assert page.evaluate('inputs.land_rent_cadastral_mln')==500
+    field=page.locator('#landRentEditor #f_land_rent_cadastral_mln')
+    field.fill('');field.press('Tab')
+    page.wait_for_function("inputs.land_rent_cadastral_mln===579")
     assert page.evaluate("()=>{inputs.vri_region='';return landRentTerritory().region}") is None
     fits(page)
 
@@ -374,3 +392,32 @@ def test_current_project_type_excludes_housing_presets_before_any_new_result(ren
     conditions=open_detail(page,'conditions')
     values=conditions.locator('#f_land_rent_mode option').evaluate_all('(opts)=>opts.map(o=>o.value)')
     assert values==['unspecified','manual','not_applicable']
+
+
+def test_queues_replace_the_single_cutoff_and_our_vri_fee_does_not_ask_about_the_premium(rental_page):
+    page,view,errors=rental_page
+    # Our VRI fee already contains the raised first-year part: no question.
+    page.evaluate("""async()=>{inputs.land_rights_cost_mln=50;delete inputs._field_origin['inputs.land_rights_cost_mln'];
+        renderInputs();await settledCalculate()}""")
+    browser.open_vri(page)
+    open_detail(page,'payments')
+    assert page.locator('#f_land_rent_premium_status').count()==0
+    assert page.locator('#f_land_rent_cadastral_target_mln').count()==1
+    # A fee typed by hand: whether the raised part is inside is the owner's answer.
+    page.evaluate("""async()=>{fieldOrigins()['inputs.land_rights_cost_mln']={source:'manual'};
+        renderInputs();await settledCalculate()}""")
+    browser.open_vri(page)
+    open_detail(page,'payments')
+    assert page.locator('#f_land_rent_premium_status').count()==1
+    scope=open_detail(page,'scope')
+    assert scope.locator('#f_land_rent_manual_cutoff').count()==1
+    page.evaluate("""async()=>{phasing=makeDefaultPhasing(2);phasing.enabled=true;phasing.user_enabled=true;
+        renderInputs();await settledCalculate()}""")
+    page.wait_for_function("()=>(landRentResult()?.phase_land||[]).length===2",timeout=60000)
+    browser.open_vri(page)
+    scope=open_detail(page,'scope')
+    assert scope.locator('#f_land_rent_manual_cutoff').count()==0
+    assert scope.locator('.lr-phases li',has_text='в аренде до').count()==2
+    expect_basis=scope.locator('.lr-phases').inner_text()
+    assert 'пропорционально площади зданий' in expect_basis
+    assert 'ещё не введены, в том числе ещё не начатыми' in scope.inner_text()

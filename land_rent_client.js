@@ -12,7 +12,7 @@ function landRentMoTerritoryKey(record){
 function landRentTerritory(){
  const accepted=[];
  const msk=inputs._glavapu_import;
- if(msk?.mappings&&msk.normalized&&(msk.normalized.cadastral_quarter||(msk.recognized||[]).length))accepted.push({region:'msk',label:'Москва',source:'Применённая территория ГлавАПУ',key:'msk:'+JSON.stringify([msk.normalized.cadastral_quarter,msk.recognized||[],msk.normalized.site_area_ha])});
+ if(msk?.mappings&&msk.normalized&&(msk.normalized.cadastral_quarter||(msk.recognized||[]).length))accepted.push({region:'msk',label:'Москва',source:'Применённая территория ГлавАПУ',key:'msk:'+JSON.stringify([msk.normalized.cadastral_quarter,msk.recognized||[],msk.normalized.site_area_ha]),numbers:(msk.recognized||[]).map(String).filter(n=>CADASTRAL_NUMBER_RE.test(n))});
  const mo=inputs._mo_calc;
  const moNumbers=landRentMoTerritoryKey(mo).split('|').filter(Boolean);
  if(moNumbers.length)accepted.push({region:'mo',label:'Московская область',source:'Применённый расчёт по участкам',key:'mo:'+moNumbers.join('|'),record:mo,numbers:moNumbers});
@@ -38,16 +38,57 @@ function landRentSyncTerritory(){
   inputs.land_rent_mode=withoutHousing()?'manual':territory.region==='msk'?'msk_mkd_3_2':territory.region==='mo'?'mo_housing_new_2026':'manual';
   inputs.land_rent_preset_confirmed=false;
  }
- const baseOrigin=(inputs._field_origin||{})['inputs.land_rent_cadastral_mln'];
- if(inputs.land_right==='lease'&&!baseOrigin&&(inputs.land_rent_cadastral_mln==null||inputs.land_rent_cadastral_mln==='')&&territory.numbers?.length===1){
-  const parcels=territory.record?.vri?.parcels||[];
-  const value=territory.region==='mo'&&parcels.length===1?Number(parcels[0].cadastral_value_rub)/1e6:territory.region==='other'?Number(territory.record.cadastral_value_mln):null;
-  if(value!=null&&Number.isFinite(value)&&value>0){
-   inputs.land_rent_cadastral_mln=value;
-   fieldOrigins()['inputs.land_rent_cadastral_mln']={source:'document',text:'ЕГРН принятого арендуемого участка '+territory.numbers[0]};
-  }
- }
+ landRentFillCadastral(territory);
  return territory;
+}
+// Parcels of the applied territory with their cadastral value from ЕГРН. The
+// Moscow Region calculation also knows each parcel's value after the VRI change.
+function landRentParcels(territory){
+ if(!territory?.key)return [];
+ const seen=new Set(),valid=n=>CADASTRAL_NUMBER_RE.test(n)&&!seen.has(n)&&seen.add(n);
+ const value=v=>v==null||v===''||!Number.isFinite(Number(v))||Number(v)<=0?null:Number(v);
+ const mo=territory.region==='mo'?(territory.record?.vri?.parcels||[]):[];
+ if(mo.length)return mo.filter(p=>valid(String(p.cadastral_number||''))).map(p=>({number:String(p.cadastral_number),
+  current_mln:value(p.cadastral_value_rub)==null?null:Number(p.cadastral_value_rub)/1e6,
+  target_mln:value(p.cadastral_value_new_rub)==null?null:Number(p.cadastral_value_new_rub)/1e6}));
+ const other=territory.region==='other'?territory.record:null;
+ if(other?.parcels?.length)return other.parcels.filter(p=>valid(String(p.cadastral_number||''))).map(p=>({number:String(p.cadastral_number),current_mln:value(p.cadastral_value_mln),target_mln:null}));
+ // An older saved territory keeps only the total: one value for all its parcels.
+ if(other&&(territory.numbers||[]).length===1&&value(other.cadastral_value_mln)!=null)return [{number:String(territory.numbers[0]),current_mln:value(other.cadastral_value_mln),target_mln:null}];
+ const wanted=new Set(territory.numbers||[]);
+ return ((inputs._land_lookup||{}).results||[]).filter(x=>x&&x.found&&x.kind==='land'&&(!wanted.size||wanted.has(String(x.cadastral_number)))&&valid(String(x.cadastral_number||'')))
+  .map(x=>({number:String(x.cadastral_number),current_mln:value(x.cadastral_value_mln),target_mln:null}));
+}
+const LAND_RENT_AUTO_FIELDS=['land_rent_cadastral_mln','land_rent_cadastral_target_mln'];
+function landRentOwnOrigin(path){
+ const o=(inputs._field_origin||{})[path];
+ return !o||o.kind==='land_rent_egrn'||/^ЕГРН принятого арендуемого участка/.test(o.text||'');
+}
+// The value is the sum over the leased parcels, recomputed while the owner has
+// not typed it. A parcel without a value in ЕГРН leaves the sum unknown, not partial.
+function landRentFillCadastral(territory){
+ if(inputs.land_right!=='lease'||(inputs.land_rent_base_kind||'cadastral_percent')!=='cadastral_percent')return;
+ const parcels=landRentParcels(territory),excluded=new Set(inputs.land_rent_parcels_excluded||[]);
+ const leased=parcels.filter(p=>!excluded.has(p.number)),out=parcels.filter(p=>excluded.has(p.number));
+ const fill=(key,field,label)=>{
+  const path='inputs.'+key;
+  if(!landRentOwnOrigin(path))return;
+  if(!leased.length||leased.some(p=>p[field]==null)){
+   if((inputs._field_origin||{})[path]){inputs[key]=null;delete inputs._field_origin[path]}
+   return;
+  }
+  inputs[key]=Math.round(leased.reduce((sum,p)=>sum+p[field],0)*1000)/1000;
+  fieldOrigins()[path]={source:'document',kind:'land_rent_egrn',
+   text:label+' '+leased.map(p=>p.number).join(', ')+(out.length?'. Не в аренде: '+out.map(p=>p.number).join(', '):'')};
+ };
+ fill('land_rent_cadastral_mln','current_mln','Из ЕГРН: сумма кадастровой стоимости участков');
+ if(Number(inputs.land_rights_cost_mln||0)>0)fill('land_rent_cadastral_target_mln','target_mln','Из расчёта смены ВРИ: стоимость после смены ВРИ, сумма по участкам');
+}
+function landRentParcelToggle(number,leased){
+ const excluded=new Set(inputs.land_rent_parcels_excluded||[]);
+ if(leased)excluded.delete(number);else excluded.add(number);
+ inputs.land_rent_parcels_excluded=[...excluded].sort();
+ landRentRefresh(true);
 }
 function landRentRefresh(rebuild=false){
  landRentNeedsRedraw=landRentNeedsRedraw||rebuild;
@@ -57,8 +98,11 @@ function landRentRefresh(rebuild=false){
 }
 function landRentSet(key,value){
  if(key==='land_rent_mode'&&value!==inputs.land_rent_mode)inputs.land_rent_preset_confirmed=false;
- inputs[key]=value;markFieldManual('inputs.'+key);
- landRentRefresh(['land_rent_mode','land_rent_base_kind','land_rent_first_year_relation','land_rent_payment_mode','land_rent_contract_date'].includes(key));
+ inputs[key]=value;
+ // A cleared cadastral value goes back to the sum from ЕГРН.
+ const refill=LAND_RENT_AUTO_FIELDS.includes(key)&&value==null;
+ if(refill)delete fieldOrigins()['inputs.'+key];else markFieldManual('inputs.'+key);
+ landRentRefresh(refill||['land_rent_mode','land_rent_base_kind','land_rent_first_year_relation','land_rent_payment_mode','land_rent_contract_date'].includes(key));
 }
 function landRentManualRates(){
  return Array.isArray(inputs.land_rent_rates)?inputs.land_rent_rates:[];
@@ -115,7 +159,6 @@ function landRentForecastIndices(){
 }
 function renderLandRentCalendarIndices(root){
  const grid=document.createElement('div');grid.className='fields lr-fields';root.appendChild(grid);
- landRentField(grid,'land_rent_mo_cadastral_unchanged','В этом сценарии кадастровая стоимость постоянна; при изменении нужен отдельный расчёт','checkbox');
  const years=landRentIndexYears(),indices=Array.isArray(inputs.land_rent_calendar_indices)?inputs.land_rent_calendar_indices:[];
  const table=document.createElement('div');table.className='scroll lr-index-table';
  table.innerHTML='<p class="lr-note">МО: базовая ставка '+escapeHtml(landRentPercent(LAND_RENT_SPEC.presets.mo_housing_new_2026.rates[0]))+' индексируется с 1 января года после заключения договора. Пустой индекс не считается нулевым.</p><table><thead><tr><th>Календарный год</th><th>Индекс, %</th><th>Источник</th></tr></thead><tbody>'+
@@ -135,7 +178,7 @@ function landRentField(box,key,label,type,options){
  if(type==='checkbox')el.checked=inputs[key]===true;else el.value=inputs[key]??(options?options[0][0]:'');
  el.onchange=()=>landRentSet(key,type==='checkbox'?el.checked:type==='number'?(el.value.trim()===''?null:Number(el.value)):el.value);
  wrap.appendChild(el);
- if(key==='land_rent_cadastral_mln'||key==='land_rent_annual_base_mln')wrap.insertAdjacentHTML('beforeend',fieldOriginNote('inputs.'+key));
+ if(LAND_RENT_AUTO_FIELDS.includes(key)||key==='land_rent_annual_base_mln')wrap.insertAdjacentHTML('beforeend',fieldOriginNote('inputs.'+key));
  box.appendChild(wrap);return el;
 }
 function landRentMoney(value){
@@ -152,8 +195,17 @@ function landRentSourceLabel(preset){return preset?(preset.short_source||preset.
 function landRentShownResult(){
  const territory=landRentTerritory();
  if(landRentCalculatedTerritoryKey!==undefined&&landRentCalculatedTerritoryKey!==territory.key)return null;
- if(LAND_RENT_SPEC.presets[inputs.land_rent_mode]&&inputs.land_rent_preset_confirmed!==true)return null;
  const r=landRentResult();return r&&r.mode===(inputs.land_rent_mode||'unspecified')?r:null;
+}
+function landRentPhased(){
+ const r=landRentResult();
+ return r?.cutoff_origin==='phases'||(typeof phasing!=='undefined'&&!!phasing.enabled&&Number(phasing.phase_count||1)>1);
+}
+function landRentPhaseHtml(r){
+ const land=r?.phase_land||[];
+ if(land.length<2)return 'Даты ввода очередей и их доли появятся после расчёта.';
+ const names=typeof phasing!=='undefined'?phasing.phases||[]:[];
+ return land.map((p,i)=>'<li>'+escapeHtml((names[i]||{}).name||('Очередь '+(i+1)))+': доля земли '+escapeHtml(new Intl.NumberFormat('ru-RU',{maximumFractionDigits:1}).format(100*Number(p.share)))+'%, в аренде до '+escapeHtml(landRentDate(p.rve))+', аренда '+escapeHtml(landRentMoney(p.cash_total))+'</li>').join('');
 }
 function landRentReasons(r){return [...new Set([...(r?.missing||[]),...(r?.financial_missing||[]),...(r?.notes||[])])]}
 function landRentPrimaryReason(r){
@@ -167,8 +219,8 @@ function landRentSummaryHtml(){
  const preliminary=r&&r.status!=='not_applicable'&&r.financial_complete!==true;
  let html='<div class="kpis lr-hero"><div class="kpi"><span class="lr-eyebrow">Начислено по ставкам:</span><b class="lr-amount" title="'+escapeHtml(total==null?'Сумма ещё не определена':new Intl.NumberFormat('ru-RU',{maximumFractionDigits:2}).format(total)+' ₽')+'">'+escapeHtml(landRentMoney(total))+'</b>';
  if(total==null&&r?.known_total>0)html+='<div class="lr-note">Известная часть: '+escapeHtml(landRentMoney(r.known_total))+'</div>';
- html+='</div><div class="kpi lr-cutoff"><span>Расчёт до</span><b>'+escapeHtml(landRentDate(r?.rve))+'</b><small>'+(r?.cutoff_origin==='manual'?'Подтверждённая дата ввода':'Последний ввод на участке')+'</small></div></div>';
- if(!r)html+='<p class="note warning lr-status">'+(preset&&inputs.land_rent_preset_confirmed!==true?'Подтвердите применимость выбранных условий к договору.':'Введите условия аренды. Результат появится после расчёта.')+'</p>';
+ html+='</div><div class="kpi lr-cutoff"><span>Расчёт до</span><b>'+escapeHtml(landRentDate(r?.rve))+'</b><small>'+(r?.cutoff_origin==='manual'?'Дата ввода, которую вы подтвердили':r?.cutoff_origin==='phases'?'Ввод последней очереди; земля каждой очереди выходит из аренды с её вводом':'Ввод последнего здания на участке')+'</small></div></div>';
+ if(!r)html+='<p class="note warning lr-status">Введите условия аренды. Результат появится после расчёта.</p>';
  else if(r.status==='not_applicable')html+='<p class="lr-status">'+escapeHtml(r.source||'Аренда не применяется')+'</p>';
  else if(preliminary)html+='<div class="note warning lr-status"><b>Предварительный расчёт</b><span>'+escapeHtml(landRentPrimaryReason(r))+'</span><a href="#landRentEditor" class="lr-link" onclick="event.preventDefault();const d=this.closest(\'#landRentEditor\').querySelector(\'[data-land-rent-detail=conditions]\');if(d)d.open=true">Условия и уточнения</a></div>';
  const annual=r?.annual_rows||[],manual=mode==='manual',rates=landRentManualRates();
@@ -215,6 +267,10 @@ function landRentRefreshDetails(root){
  if(reasons)reasons.innerHTML=landRentReasons(r).map(line=>'<li>'+escapeHtml(line)+'</li>').join('');
  const scope=root.querySelector('.lr-scope-result');
  if(scope)scope.textContent=r?(r.cutoff_basis||'Расчёт до ввода')+' · '+landRentDate(r.rve):'Дата расчёта появится после заполнения условий.';
+ const phases=root.querySelector('.lr-phases');
+ if(phases)phases.innerHTML=landRentPhaseHtml(r)+(r?.phase_share_basis_text?'<li>Доли земли посчитаны '+escapeHtml(r.phase_share_basis_text)+'.</li>':'');
+ const premium=root.querySelector('.lr-premium');
+ if(premium)premium.textContent=r?.premium?.derived?r.premium.source:'';
  const cash=root.querySelector('.lr-cash-result');
  if(cash)cash.textContent=r?.historical?'Денежный поток '+(r.historical.mode==='classified'?'с фактом аренды':'с сохранённым импортом')+': '+landRentMoney(r.applied_total??r.cash_total):r?'Денежный поток: '+landRentMoney(r.cash_total)+(r.cash_schedule_estimated?' · плановое начисление, сроки оплаты не подтверждены':' · по графику оплаты'):'';
  const periods=root.querySelector('.lr-periods');
@@ -271,8 +327,22 @@ function renderLandRentEditor(){
  if(String(inputs.land_right||'ownership')==='ownership')note(root,'Выбрана собственность на землю: сохранённые ставки аренды не начисляются. Для арендованного участка выберите право «Аренда».');
  if(mode!=='unspecified'&&mode!=='not_applicable'){
   if(mode==='manual'&&inputs.land_rent_base_kind==='annual_amount')landRentField(basis,'land_rent_annual_base_mln','Годовая сумма по договору, млн ₽ (100%)','number');
-  else landRentField(basis,'land_rent_cadastral_mln','Кадастровая стоимость арендуемой земли, млн ₽','number');
+  else{
+   landRentField(basis,'land_rent_cadastral_mln','Кадастровая стоимость арендуемой земли, млн ₽','number');
+  }
   landRentField(basis,'land_rent_regime_start','Начало срока аренды по договору','date');
+  if(inputs.land_rent_base_kind!=='annual_amount'){
+   const parcels=landRentParcels(territory),excluded=new Set(inputs.land_rent_parcels_excluded||[]);
+   if(parcels.length){
+    const list=document.createElement('div');list.className='lr-parcels';
+    list.innerHTML='<p class="lr-note">Участки из ЕГРН. Снимите отметку с участка, который не берётся в аренду: его стоимость не войдёт в сумму.'+
+     (isFieldManual('inputs.land_rent_cadastral_mln')?' Сейчас стоимость вписана вручную, поэтому отметки её не меняют. Очистите поле, чтобы вернуть сумму из ЕГРН.':'')+'</p>'+
+     parcels.map(p=>'<label class="lr-parcel"><input type="checkbox" data-land-rent-parcel="'+escapeHtml(p.number)+'"'+(excluded.has(p.number)?'':' checked')+
+      ' onchange="landRentParcelToggle(this.dataset.landRentParcel,this.checked)"> '+escapeHtml(p.number)+' — '+
+      escapeHtml(p.current_mln==null?'в ЕГРН нет кадастровой стоимости, впишите сумму вручную':landRentMoney(p.current_mln*1e6))+'</label>').join('');
+    root.appendChild(list);
+   }
+  }
  }
  const result=document.createElement('div');result.id='landRentSummary';result.innerHTML=landRentSummaryHtml();root.appendChild(result);
  const conditions=detail('conditions','Договор, источник и следующие ставки'),contract=fields(conditions);
@@ -284,7 +354,7 @@ function renderLandRentEditor(){
   if(preset){
    note(conditions,preset.source+'. '+preset.condition);
    if(/^https:\/\//.test(preset.url||'')){const link=document.createElement('a');link.href=preset.url;link.target='_blank';link.rel='noopener noreferrer';link.textContent='Открыть нормативный источник';conditions.appendChild(link)}
-   landRentField(contract,'land_rent_preset_confirmed','Подтверждаю применимость этих условий к моему договору','checkbox');
+   landRentField(contract,'land_rent_preset_confirmed','Ставки сверены с договором: в нём те же условия','checkbox');
    note(conditions,preset.rates.map((rate,index)=>(index+1)+'-й год: '+landRentPercent(rate)).join(' · '));
    note(conditions,mode==='mo_housing_new_2026'?'Базовая ставка '+landRentPercent(preset.rates[0])+'; сумма зависит от календарных индексов.':'После таблицы до ввода: '+landRentPercent(preset.tail_rate_pct)+' в пределах выбранного режима.');
   }else{
@@ -308,13 +378,20 @@ function renderLandRentEditor(){
    const segments=document.createElement('ul');segments.className='lr-segments';indices.appendChild(segments);
   }
   const payment=detail('payments','Первый год, ВРИ и график оплаты'),extra=fields(payment);
+  if(inputs.land_rent_base_kind!=='annual_amount'&&Number(inputs.land_rights_cost_mln||0)>0){
+   landRentField(extra,'land_rent_cadastral_target_mln','Кадастровая стоимость после смены ВРИ, млн ₽','number');
+   note(payment,'С даты смены ВРИ аренда считается от кадастровой стоимости после смены. Пока поле пустое, аренда до конца считается от нынешней стоимости, и расчёт остаётся предварительным.');
+  }
   landRentField(extra,'land_rent_first_year_relation','Первый год и ВРИ','select',[
    ['regular_only','Здесь обычная аренда; повышенная часть уточняется отдельно'],['full_year_in_vri','Вся аренда первого года уже включена в сумму ВРИ']]);
   if(inputs.land_rent_first_year_relation==='full_year_in_vri')landRentField(extra,'land_rent_first_year_confirmed','Подтверждаю: в ВРИ включены обычная аренда и повышенная часть первого года','checkbox');
   if(preset?.region==='msk'){
-   landRentField(extra,'land_rent_premium_status','Повышенная часть первого года (приложение 8 к 273-ПП)','select',[
-    ['unknown','Состав ещё не подтверждён'],['in_vri','Включена в указанную сумму ВРИ'],['separate_required','Требуется отдельный расчёт'],['not_applicable','Не применяется по подтверждённому основанию']]);
-   landRentField(extra,'land_rent_premium_source','Источник состава ВРИ / основание неприменения повышенной части','text');
+   // Our VRI fee already contains the raised first-year part; only a fee
+   // typed by hand needs the owner's answer (developaid_land_rent.vri_premium).
+   const feeTyped=isFieldManual('inputs.land_rights_cost_mln')||!(Number(inputs.land_rights_cost_mln||0)>0);
+   if(feeTyped)landRentField(extra,'land_rent_premium_status','В первый год аренды к обычной ставке добавляется повышенная часть. Входит ли она в плату за смену ВРИ?','select',[
+    ['unknown','Пока не знаю'],['in_vri','Да, входит в плату за смену ВРИ'],['separate_required','Нет, её нужно посчитать отдельно'],['not_applicable','К моему договору она не применяется']]);
+   const premium=note(payment,'');premium.className='lr-premium lr-note';
   }
   landRentField(extra,'land_rent_payment_mode','Когда оплачиваем аренду','select',[
    ['monthly_estimate','Плановое начисление помесячно (оценка)'],['manual','По датам и суммам договора']]);
@@ -325,7 +402,10 @@ function renderLandRentEditor(){
   const cash=note(payment,'');cash.className='lr-cash-result lr-note';
   const scope=detail('scope','Срок расчёта и объекты на участке'),dates=fields(scope);
   const scopeResult=note(scope,'');scopeResult.className='lr-scope-result lr-note';
-  landRentField(dates,'land_rent_manual_cutoff','Дата последнего ввода на арендуемой земле (если подтверждена отдельно)','date');
+  if(landRentPhased()){
+   note(scope,'Проект разбит на очереди: земля каждой очереди выходит из аренды с её вводом, даты берутся из настроек очередей. Аренда месяца делится между очередями, которые ещё не введены, в том числе ещё не начатыми.');
+   const phases=document.createElement('ul');phases.className='lr-phases lr-note';scope.appendChild(phases);
+  }else landRentField(dates,'land_rent_manual_cutoff','Дата ввода последнего здания на участке, если она известна точнее расчётной','date');
   landRentField(dates,'land_rent_termination_date','Подтверждённая дата прекращения аренды (если есть)','date');
   note(scope,'После ввода нужен отдельный расчёт аренды. Дата ввода сама по себе не прекращает обязательство.');
   note(scope,LAND_RENT_SPEC.convention);

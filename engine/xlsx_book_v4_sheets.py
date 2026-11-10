@@ -622,14 +622,17 @@ def _v4_finance_hints(bundle: dict[str, Any]) -> dict[str, Any]:
     hints["unrepresented_land_costs"] = unrepresented_land
     if isinstance(_consolidated.get("land_rent"), dict):
         hints["land_rent"] = copy.deepcopy(_consolidated["land_rent"])
-        # The canonical common schedule is assigned to the earliest queue.
-        # It must not be recomputed from each queue's own start/RVE or indexed
-        # again by the construction-cost multiplier.
+        # The canonical common schedule is split by the engine among the
+        # queues still leased (`phase_shares`); without queue land the whole
+        # schedule goes to the earliest queue. It must not be recomputed from
+        # each queue's own start/RVE or indexed by the construction multiplier.
         _rent_count = max(1, len(phases))
         _rent_earliest = min(range(len(phases)), key=lambda k: (
             float(phases[k].get("start_offset_months") or 0), k)) if phases else 0
-        hints["land_rent_phase_shares"] = [
-            1.0 if k == _rent_earliest else 0.0 for k in range(_rent_count)]
+        _rent_split = _consolidated["land_rent"].get("phase_shares")
+        hints["land_rent_phase_shares"] = (list(_rent_split)
+            if isinstance(_rent_split, list) and len(_rent_split) == _rent_count else
+            [1.0 if k == _rent_earliest else 0.0 for k in range(_rent_count)])
     _nonres_report = (_consolidated.get("report") or {}).get("nonres_strategy") or []
     if _nonres_report:
         hints["nonres"] = {

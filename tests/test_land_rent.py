@@ -62,12 +62,17 @@ def test_first_year_exclusion_requires_confirmation_and_does_not_erase_year_two(
     assert accepted["annual_rows"][0]["included_in_vri"]
 
 
-def test_preset_requires_applicability_confirmation_and_matching_region():
+def test_unconfirmed_preset_is_counted_as_preliminary_and_region_still_matters():
     x = settings(land_rent_mode="msk_mkd_3_2")
-    assert rent.build(x, date(2027, 1, 1), date(2034, 1, 1))["total"] is None
+    draft = rent.build(x, date(2027, 1, 1), date(2034, 1, 1))
     x["land_rent_preset_confirmed"] = True
     result = rent.build(x, date(2027, 1, 1), date(2034, 1, 1))
     assert [r["rate_pct"] for r in result["annual_rows"]] == [1.5, 1.5, 3, 5, 7, 8, 10]
+    # Not a missing input: the rent reaches costs, the result is preliminary.
+    assert draft["construction_total"] == pytest.approx(result["construction_total"]) and draft["construction_total"] > 0
+    assert not draft["missing"] and not draft["financial_complete"]
+    assert "conditions" in draft["financial_missing_codes"] and "conditions" not in result["financial_missing_codes"]
+    assert "Предварительный" in rent.disclosure(draft)
     x["vri_region"] = "mo"
     assert rent.build(x, date(2027, 1, 1), date(2028, 1, 1))["total"] is None
 
@@ -80,7 +85,7 @@ def test_housing_preset_cannot_override_known_project_kind(kind, preset):
     assert not result["housing_applicable"]
     assert not result["complete"] and result["total"] is None
     assert result["monthly"] == {}
-    assert any("Жилищная предустановка" in message for message in result["missing"])
+    assert any("под жильё" in message for message in result["missing"])
     manual = rent.build({**x, "land_rent_mode": "manual"}, date(2027, 1, 1), date(2028, 1, 1))
     assert manual["construction_total"] == pytest.approx(1.5e6)
 
@@ -132,8 +137,7 @@ def mo_settings(**kw):
     return settings(land_rent_mode="mo_housing_new_2026", vri_region="mo",
                     land_rent_contract_date="2027-01-01", land_rent_regime_start="2027-07-01",
                     land_rent_public_scope="regional", land_rent_grant_basis="ordinary_nonauction",
-                    land_rent_preset_confirmed=True, land_rent_mo_cadastral_unchanged=True,
-                    **kw)
+                    land_rent_preset_confirmed=True, **kw)
 
 
 def test_mo_index_changes_on_january_first_not_lease_anniversary():
@@ -175,7 +179,6 @@ def test_mo_full_calendar_year_has_exact_indexed_annual_amount_with_non_january_
     {"land_rent_contract_date": "2025-12-31"}, {"land_rent_public_scope": "municipal"},
     {"land_rent_contract_date": "2026-01-01"},
     {"_krt_site": True}, {"land_rent_grant_basis": "auction"},
-    {"land_rent_mo_cadastral_unchanged": False},
 ])
 def test_mo_special_or_unverified_contract_does_not_inherit_six_percent(change):
     x = mo_settings();x.update(change)
@@ -254,3 +257,72 @@ def test_manual_parcel_cutoff_has_origin_and_resolves_unlinked_late_social_scope
     assert fixed["rve"] == "2031-01-01" and fixed["derived_rve"] == "2028-01-01"
     assert fixed["cutoff_origin"] == "manual" and fixed["scope_complete"]
     assert fixed["construction_total"] == pytest.approx(10.5e6)
+
+
+def test_premium_is_derived_from_our_vri_fee_and_asked_only_for_a_typed_one():
+    x = settings(land_rent_mode="msk_mkd_3_2", land_rent_preset_confirmed=True, land_rights_cost_mln=100,
+                 _field_origin={"inputs.land_rights_cost_mln": {"source": "glavapu", "text": "ГлавАПУ"}})
+    derived = rent.build(x, date(2027, 1, 1), date(2028, 1, 1))
+    assert derived["premium"]["derived"] and derived["premium"]["status"] == "in_vri"
+    assert "premium" not in derived["financial_missing_codes"]
+    typed = {**x, "_field_origin": {"inputs.land_rights_cost_mln": {"source": "manual", "text": "Вручную"}}}
+    asked = rent.build(typed, date(2027, 1, 1), date(2028, 1, 1))
+    assert not asked["premium"]["derived"] and "premium" in asked["financial_missing_codes"]
+    answered = rent.build({**typed, "land_rent_premium_status": "in_vri"}, date(2027, 1, 1), date(2028, 1, 1))
+    assert "premium" not in answered["financial_missing_codes"]
+    assert answered["construction_total"] == asked["construction_total"] == pytest.approx(1.5e6)
+
+
+def test_missing_lease_start_is_assumed_from_project_start_and_disclosed():
+    x = settings(land_rent_regime_start=None)
+    result = rent.build(x, date(2027, 3, 1), date(2028, 3, 1))
+    assert result["regime_start"] == "2027-03-01" and result["regime_start_assumed"]
+    assert result["construction_total"] == pytest.approx(1.5e6)
+    assert "regime_start" in result["financial_missing_codes"] and result["assumptions"]
+    assert rent.build(settings(land_rent_regime_start="03/2027"), date(2027, 3, 1), date(2028, 3, 1))["missing"]
+
+
+def test_mo_unanswered_conditions_are_preliminary_but_contradictions_block():
+    x = mo_settings(land_rent_calendar_indices=[{"year": 2028, "index_pct": 0}])
+    for key in ("land_rent_public_scope", "land_rent_grant_basis", "land_rent_contract_date"):
+        x.pop(key)
+    result = rent.build(x, date(2027, 7, 1), date(2028, 7, 1))
+    assert result["construction_total"] == pytest.approx(6e6 * (184/365 + 182/366))
+    assert "conditions" in result["financial_missing_codes"] and not result["financial_complete"]
+    early = rent.build({**x, "land_rent_regime_start": "2025-07-01"}, date(2027, 7, 1), date(2028, 7, 1))
+    assert early["construction_total"] is None and early["missing"]
+
+
+def test_cadastral_value_switches_to_target_at_the_vri_date():
+    x = settings(land_rent_rates=[{"year": 1, "rate_pct": 1}], land_rent_cadastral_target_mln=300)
+    plain = rent.build(x, date(2027, 1, 1), date(2028, 1, 1))
+    assert plain["construction_total"] == pytest.approx(1e6) and plain["cadastral_switch"] is None
+    switched = rent.build(x, date(2027, 1, 1), date(2028, 1, 1), cadastral_switch=date(2027, 7, 1))
+    assert switched["construction_total"] == pytest.approx(1e6 * 181/365 + 3e6 * 184/365)
+    assert switched["monthly"]["2027-06-01"] == pytest.approx(1e6 * 30/365)
+    assert switched["monthly"]["2027-07-01"] == pytest.approx(3e6 * 31/365)
+    assert switched["cadastral_switch"]["date"] == "2027-07-01"
+
+
+def test_rent_decreases_as_queues_are_commissioned_and_is_split_among_the_leased_ones():
+    x = settings(land_rent_rates=[{"year": 1, "rate_pct": 1}])
+    land = [{"share": 0.25, "rve": "2028-01-01"}, {"share": 0.75, "rve": "2029-01-01"}]
+    result = rent.build(x, date(2027, 1, 1), date(2029, 1, 1), phase_land=land)
+    assert result["cutoff_origin"] == "phases" and result["rve"] == "2029-01-01"
+    assert result["construction_total"] == pytest.approx(1e6 + 0.75e6)  # the first queue's quarter leaves in 2028
+    assert [p["accrual_total"] for p in result["phase_land"]] == pytest.approx([0.25e6, 1.5e6])
+    assert result["phase_shares"] == pytest.approx([0.25e6/1.75e6, 1.5e6/1.75e6])
+    for month, value in result["monthly"].items():
+        assert sum(p[month] for p in result["phase_monthly"]) == pytest.approx(value)
+    assert result["phase_monthly"][0]["2027-06-01"] == pytest.approx(0.25 * result["monthly"]["2027-06-01"])
+    assert "2028-01-01" not in result["phase_monthly"][0] or result["phase_monthly"][0]["2028-01-01"] == 0
+    # A manual single cutoff is not used once the queues give their dates.
+    assert rent.build({**x, "land_rent_manual_cutoff": "2030-01-01"}, date(2027, 1, 1), date(2029, 1, 1),
+                      phase_land=land)["construction_total"] == pytest.approx(1.75e6)
+
+
+def test_phase_land_share_prefers_parcel_area_then_buildings():
+    assert rent.phase_land_shares([{"site_area_ha": 1}, {"site_area_ha": 3}], [5, 5]) == ([0.25, 0.75], "area")
+    assert rent.phase_land_shares([{"site_area_ha": 1}, {}], [1, 3]) == ([0.25, 0.75], "gns")
+    assert rent.phase_land_shares([{}, {}], [0, 0]) == ([0.5, 0.5], "equal")
+    assert rent.phase_release([date(2029, 1, 1), date(2031, 1, 1)], date(2032, 1, 1)) == [date(2029, 1, 1), date(2032, 1, 1)]

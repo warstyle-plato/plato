@@ -37,12 +37,15 @@ def phased_lease():
     return bundle, hints, workbook, Evaluator(workbook), meta
 
 
-def test_actual_export_assigns_common_lease_to_earliest_queue_once(phased_lease):
+def test_actual_export_splits_common_lease_among_leased_queues_once(phased_lease):
     bundle,hints,workbook,ev,meta = phased_lease
     canonical = bundle["consolidated"]["land_rent"]
-    assert hints["land_rent_phase_shares"] == [0,1]
-    assert ev.cell("CAPEX","B145") == 0
-    assert ev.cell("CAPEX","B146")*1e6 == pytest.approx(canonical["known_total"],abs=0.01)
+    own = [p["cash_total"] for p in canonical["phase_land"]]
+    assert hints["land_rent_phase_shares"] == pytest.approx([v/sum(own) for v in own])
+    for k,phase in enumerate(bundle["phases"]):
+        assert ev.cell("CAPEX",f"B{145+k}")*1e6 == pytest.approx(own[k],abs=0.01)
+        assert own[k] == pytest.approx(phase["result"]["capex"]["land_rent"])
+    assert sum(own) == pytest.approx(canonical["known_total"])
     assert ev.cell(v4_land_rent.SHEET,"B19")*1e6 == pytest.approx(canonical["known_total"],abs=0.01)
     assert meta["land_rent"]["complete"] == canonical["complete"]
     assert meta["land_rent"]["cash_total"] == canonical["cash_total"]
@@ -63,7 +66,8 @@ def test_export_preserves_dates_and_excludes_public_rent_from_vat(phased_lease):
         year,number = (int(p) for p in month.split("-")[:2])
         offset = (year-2027)*12+number-1
         col = openpyxl.utils.get_column_letter(4+offset)
-        assert ev.cell("CAPEX",f"{col}146")*1e6 == pytest.approx(canonical["monthly"].get(month,0),abs=0.01)
+        for k,own in enumerate(canonical["phase_monthly"]):
+            assert ev.cell("CAPEX",f"{col}{145+k}")*1e6 == pytest.approx(own.get(month,0),abs=0.01)
     assert "SUM('CAPEX'!$B$146)" in workbook["CF_2"]["D21"].value
     assert ev.cell("ПРОВЕРКИ","B86") == pytest.approx(bundle["consolidated"]["finance"]["vat"]/1e6,abs=0.05)
 
@@ -102,11 +106,34 @@ def test_editing_only_object_months_changes_rent_without_moving_housing_rve(phas
     housing_rve = initial.cell("CF_2","B8")
     editable("K28").value = 48
     changed = Evaluator(workbook)
-    assert changed.cell(v4_land_rent.SHEET,"B19")-before == pytest.approx(3.0,abs=0.000001)
+    # Only the queue commissioned last holds its land until the objects finish.
+    last = max(initial.cell(v4_land_rent.SHEET,f"B{r}") for r in _queue_rows(workbook))
+    assert changed.cell(v4_land_rent.SHEET,"B19")-before == pytest.approx(3.0*last,abs=0.000001)
     assert changed.cell("CF_2","B8") == housing_rve
     editable("K20").value = "Нет"
     disabled = Evaluator(workbook)
     assert disabled.cell(v4_land_rent.SHEET,"B19") < before
+
+
+def _queue_rows(workbook):
+    sheet = workbook[v4_land_rent.SHEET]
+    return [r for r in range(1,sheet.max_row+1) if str(sheet[f"A{r}"].value or "").startswith("Очередь ")
+            and ":" not in str(sheet[f"A{r}"].value)]
+
+
+def test_queue_commissioning_and_share_stay_editable_in_the_book(phased_lease):
+    _,_,source,initial,_ = phased_lease
+    workbook = copy.deepcopy(source)
+    sheet = workbook[v4_land_rent.SHEET]
+    rows = _queue_rows(workbook)
+    assert len(rows) == 2
+    before = [initial.cell("CAPEX",f"B{145+k}") for k in range(2)]
+    # A larger share of the early queue moves rent from the late one to it.
+    sheet[f"B{rows[0]}"], sheet[f"B{rows[1]}"] = 0.25, 0.75
+    moved = Evaluator(workbook)
+    assert moved.cell("CAPEX","B145") < before[0] and moved.cell("CAPEX","B146") > before[1]
+    sheet[f"B{rows[1]}"] = 0.5  # shares no longer sum to one: not a silent result
+    assert Evaluator(workbook).cell(v4_land_rent.SHEET,"I20") == "Не полны"
 
 
 def test_unsupported_historical_export_preserves_canonical_status_and_reports_limit():
