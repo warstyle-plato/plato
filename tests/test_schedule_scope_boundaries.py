@@ -60,14 +60,19 @@ def test_many_confirmed_works_share_one_review_pass_and_its_full_universe_proof(
     monkeypatch.setattr(physical, '_now', lambda: dt.datetime(2026, 11, 9, 8, tzinfo=dt.timezone.utc))
     save(TODAY, configuration)
     put(site, old, archive(NEW_ID, [ledger(copy.deepcopy(old_rows) + [work('Кладка стен', '7')])]))
-    calls, proofs = [], []
+    calls, active = [], []
     original_build, original_component = review.build, review.quantities._component
     def counted_build(*args, **kwargs):
-        calls.append(True)
-        return original_build(*args, **kwargs)
+        calls.append([])
+        active.append(calls[-1])
+        try:
+            return original_build(*args, **kwargs)
+        finally:
+            active.pop()
     def counted_component(*args, **kwargs):
-        if '_duplicates' in kwargs:
-            proofs.append(kwargs['_duplicates'])
+        if active:
+            assert '_duplicates' in kwargs
+            active[-1].append(kwargs['_duplicates'])
         return original_component(*args, **kwargs)
     monkeypatch.setattr(review, 'build', counted_build)
     monkeypatch.setattr(review.quantities, '_component', counted_component)
@@ -75,9 +80,9 @@ def test_many_confirmed_works_share_one_review_pass_and_its_full_universe_proof(
     state = physical.build(PROJECT, TODAY)
     assert len(state['binding_scope_revoked']) == 6
     assert len(calls) == 2  # Main view and archived completion evidence, never per task.
-    assert len(proofs) == 14  # Seven groups in each of those passes.
-    assert proofs[0] is proofs[6] and proofs[7] is proofs[13]
-    assert proofs[0] is not proofs[7]
+    assert [len(proofs) for proofs in calls] == [7, 7]
+    assert all(all(proof is proofs[0] for proof in proofs) for proofs in calls)
+    assert calls[0][0] is not calls[1][0]
     assert journal(site) == before
 
 
