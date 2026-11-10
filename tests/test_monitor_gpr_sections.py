@@ -2,6 +2,7 @@
 import pytest
 
 import developaid_schedule_timeline as timeline
+from browser import expand_gantt
 from test_monitor_cumulative_controls import browser_page
 
 
@@ -34,6 +35,7 @@ def monitor_view(state='estimate'):
 
 def render(page, view):
     page.evaluate("(v)=>{currentView=v;msg('viewMsg','');renderDash(v);renderGantt(v)}", view)
+    expand_gantt(page)
 
 
 @pytest.mark.parametrize('width', [390, 1440])
@@ -225,4 +227,22 @@ def test_explicitly_confirmed_completion_is_a_dated_fact_without_a_forecast_tail
         page.locator('#wfSave').click()
         expect(page.locator('#wfMsg')).to_contain_text('Введите процент выполнения в ГПР')
         assert not any(path == '/monitor/work-fact' for path, *_ in responses.calls)
+        assert not errors
+
+
+@pytest.mark.parametrize('width', [390, 1440])
+def test_gantt_opens_collapsed_to_corpora_and_expands_on_click(width):
+    """Владелец: по умолчанию всё свёрнуто; корпус и этап раскрываются нажатием."""
+    from playwright.sync_api import expect
+    with browser_page(width) as (page, responses, errors):
+        page.evaluate("(v)=>{currentView=v;msg('viewMsg','');renderDash(v);renderGantt(v)}", monitor_view())
+        corpora = page.locator('#gantt .g-row.lvl-corpus')
+        expect(corpora.first).to_be_visible()
+        assert page.locator('#gantt .g-row.lvl-stage, #gantt .g-row.lvl-task').count() == 0
+        expect(corpora.first.locator('.chev')).to_have_text('▸')
+        corpora.first.click()
+        expect(page.locator('#gantt .g-row.lvl-stage').first).to_be_visible()
+        assert page.locator('#gantt .g-row.lvl-task').count() == 0
+        page.locator('#gantt .g-row.lvl-stage').first.click()
+        expect(page.locator('#gantt .g-row.lvl-task').first).to_be_visible()
         assert not errors

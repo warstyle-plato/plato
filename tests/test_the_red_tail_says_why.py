@@ -131,6 +131,8 @@ def test_the_reason_is_attached_where_the_screen_draws_the_shift(width) -> None:
     with browser_page(width) as (page, responses, errors):
         assert page.evaluate('PM_DISABLED') is True
         page.evaluate('(v)=>{currentView=v;renderGantt(v)}', view)
+        from browser import expand_gantt
+        expand_gantt(page)
         shown = page.locator('.g-row[data-key="task:1"]')
         expect(shown.locator('.latebar')).to_be_visible()
         assert supplied in shown.locator('.latebar').get_attribute('title')

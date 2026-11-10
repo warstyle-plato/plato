@@ -11,6 +11,7 @@ import developaid_monitor_contract_links as contract_links
 import developaid_monitor_contract_history as history
 from test_contract_progress_history import calculate, register, row
 from test_contract_statement_percentages import context, source_view
+from browser import expand_gantt
 from test_monitor_cumulative_controls import browser_page
 
 
@@ -234,6 +235,7 @@ def test_monitor_gpr_shows_statement_observation_not_manual_gpr_percentage(width
          'progress_source':{'label':'Накопительная ведомость','date':'2026-11-06','date_basis':'snapshot'}}]}}
     with browser_page(width) as (page, responses, errors):
         page.evaluate('(v)=>renderGantt(v)', view)
+        expand_gantt(page)
         gantt = page.locator('#gantt')
         expect(gantt).to_contain_text('По ведомости: 40% от 06.11.2026')
         assert '80%' not in gantt.inner_text()
