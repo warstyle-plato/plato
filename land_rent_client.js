@@ -353,7 +353,7 @@ function renderLandRentEditor(){
  if(mode!=='unspecified'&&mode!=='not_applicable'){
   if(preset){
    note(conditions,preset.source+'. '+preset.condition);
-   if(/^https:\/\//.test(preset.url||'')){const link=document.createElement('a');link.href=preset.url;link.target='_blank';link.rel='noopener noreferrer';link.textContent='Открыть нормативный источник';conditions.appendChild(link)}
+   if(/^https:\/\//.test(preset.url||'')){const link=document.createElement('a');link.href=preset.url;link.target='_blank';link.rel='noopener noreferrer';link.textContent='Открыть текст акта: '+preset.url_label;conditions.appendChild(link)}
    landRentField(contract,'land_rent_preset_confirmed','Ставки сверены с договором: в нём те же условия','checkbox');
    note(conditions,preset.rates.map((rate,index)=>(index+1)+'-й год: '+landRentPercent(rate)).join(' · '));
    note(conditions,mode==='mo_housing_new_2026'?'Базовая ставка '+landRentPercent(preset.rates[0])+'; сумма зависит от календарных индексов.':'После таблицы до ввода: '+landRentPercent(preset.tail_rate_pct)+' в пределах выбранного режима.');

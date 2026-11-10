@@ -326,3 +326,15 @@ def test_phase_land_share_prefers_parcel_area_then_buildings():
     assert rent.phase_land_shares([{"site_area_ha": 1}, {}], [1, 3]) == ([0.25, 0.75], "gns")
     assert rent.phase_land_shares([{}, {}], [0, 0]) == ([0.5, 0.5], "equal")
     assert rent.phase_release([date(2029, 1, 1), date(2031, 1, 1)], date(2032, 1, 1)) == [date(2029, 1, 1), date(2032, 1, 1)]
+
+
+def test_preset_links_lead_to_the_act_page_kept_in_the_normatives_registry():
+    import json
+    from pathlib import Path
+    registry = {row["id"]: row for row in json.loads(
+        (Path(__file__).resolve().parent.parent / "data/normatives/registry.json").read_text(encoding="utf-8"))}
+    for preset in rent.PRESETS.values():
+        assert preset["url"] == registry[preset["normative_id"]]["act_page_url"]
+        assert "meganorm" not in preset["url"]
+    assert rent.PRESETS["msk_mkd_3_2"]["url"].startswith("https://www.mos.ru/")
+    assert rent.PRESETS["msk_mkd_3_2"]["url_label"] == "273-ПП на mos.ru"

@@ -95,6 +95,8 @@ def test_compact_actual_component_shows_one_table_status_and_readable_money(rent
     expect(conditions).to_contain_text('273-ПП')
     expect(conditions).to_contain_text('6-й год: 8%')
     assert conditions.locator('a[href^="https://"]').count()==1
+    assert conditions.locator('a[href^="https://www.mos.ru/authority/documents/"]').count()==1
+    expect(conditions).to_contain_text('Открыть текст акта: 273-ПП на mos.ru')
     page.evaluate("window.savedLandRentControl=document.getElementById('f_land_rent_cadastral_mln')")
     page.evaluate('async()=>{await settledCalculate()}')
     assert page.evaluate("savedLandRentControl===document.getElementById('f_land_rent_cadastral_mln')")

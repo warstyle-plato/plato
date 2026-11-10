@@ -11,7 +11,9 @@ import re
 from collections import defaultdict
 from datetime import date
 from typing import Any
+from urllib.parse import urlparse
 
+import normatives_registry
 import project_types
 import project_regions
 
@@ -21,7 +23,7 @@ PRESETS = {
         "region": "msk", "rates": [1.5, 1.5, 3, 5, 7, 8], "tail_rate_pct": 10,
         "short_source": "273-ПП, п. 3.2",
         "source": "273-ПП, пп. 3.1, 3.2, 3.2.1, 3.2.3; редакция 25.03.2026",
-        "url": "https://meganorm.ru/mega_doc/dop1/89/postanovlenie_pravitelstva_moskvy_ot_20_02_2013_N_99-pp_red/0/postanovlenie_pravitelstva_moskvy_ot_25_04_2006_N_273-pp_red.html",
+        "normative_id": "moscow-273pp-land-rent",
         "condition": "Режим пп. 3.1–3.2 подтверждён договором/допсоглашением. Не общий тариф для торгов, КРТ и льготных договоров.",
     },
     "msk_mkd_arch_confirmed": {
@@ -29,7 +31,7 @@ PRESETS = {
         "region": "msk", "rates": [1.35, 1.35, 2.7, 4.5, 6.3, 7.2], "tail_rate_pct": 9,
         "short_source": "273-ПП, п. 3.5(2)",
         "source": "273-ПП, п. 3.5(2), требования 305-ПП; редакция 25.03.2026",
-        "url": "https://meganorm.ru/mega_doc/dop1/89/postanovlenie_pravitelstva_moskvy_ot_20_02_2013_N_99-pp_red/0/postanovlenie_pravitelstva_moskvy_ot_25_04_2006_N_273-pp_red.html",
+        "normative_id": "moscow-273pp-land-rent",
         "condition": "Требования 305-ПП и обращение в ДГИ подтверждены. Не применяется только по названию проекта.",
     },
     "mo_housing_new_2026": {
@@ -37,10 +39,18 @@ PRESETS = {
         "region": "mo", "rates": [6], "tail_rate_pct": 6,
         "short_source": "23/96-ОЗ, ст. 14",
         "source": "23/96-ОЗ, ст. 14 ч. 5 и приложение, редакция 15.06.2026 (256/2025-ОЗ)",
-        "url": "https://meganorm.ru/mega_doc/dop1/99/postanovlenie_administratsii_munitsipalnogo_obrazovaniya/0/zakon_moskovskoy_oblasti_ot_07_06_1996_N_23_96-oz_red_ot_15.html",
+        "normative_id": "mo-23-96oz-land-rent",
         "condition": "Договор после 01.01.2026, областная или неразграниченная земля, без торгов и вне специальных правил КРТ. Подтверждён обычный жилой ВРИ без более высокой ставки смешанного использования; исключены специальные случаи граждан (ИЖС/сад). Старые и муниципальные договоры — вручную. Проверено по сводному тексту указанной редакции.",
     },
 }
+# Ссылка на акт — из реестра нормативной базы (/normatives): там страница
+# самого акта на портале органа власти и сводный текст, по которому сверена
+# редакция.
+for _preset in PRESETS.values():
+    _link = normatives_registry.official_link(_preset["normative_id"])
+    _preset["url"] = _link["url"]
+    _preset["url_label"] = (_preset["short_source"].split(",")[0] + " на "
+                            + urlparse(_link["url"]).hostname.removeprefix("www.")) if _link["url"] else ""
 CONVENTION = "Плановое начисление по фактическим дням: Москва и ручной режим — год аренды; МО — календарный год. Это не установленный законом график оплаты."
 
 
