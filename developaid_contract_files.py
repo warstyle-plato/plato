@@ -20,6 +20,7 @@ import logging
 import os
 import re
 import tempfile
+import threading
 from pathlib import Path
 
 import developaid_contract_act_dates as act_dates
@@ -63,8 +64,17 @@ def _now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat()
 
 
+_held = threading.local()
+
+
 @contextlib.contextmanager
 def _locked(folder: Path):
+    """One writer per card across both workers; a thread already holding the card's lock goes on."""
+    held = _held.__dict__.setdefault("folders", set())
+    key = str(folder)
+    if key in held:
+        yield
+        return
     folder.mkdir(parents=True, exist_ok=True, mode=0o700)
     try:
         import fcntl
@@ -73,7 +83,11 @@ def _locked(folder: Path):
     descriptor = os.open(folder / ".lock", os.O_CREAT | os.O_RDWR, 0o600)
     with os.fdopen(descriptor, "a+b") as handle:
         fcntl.flock(handle, fcntl.LOCK_EX)
-        yield
+        held.add(key)
+        try:
+            yield
+        finally:
+            held.discard(key)
 
 
 def _json(path: Path, value) -> None:
@@ -134,16 +148,32 @@ def store(project: str, row: dict, filename: str, content: bytes) -> dict:
     return {**_summary(record), "already": False, "restored": False}
 
 
-def _current(folder: Path, sha: str) -> dict:
-    """The stored read, read again from the PDF when the reader has changed since."""
-    path = folder / f"{sha}.json"
+def _stored(path: Path) -> dict:
     try:
-        record = json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8"))
     except (ValueError, OSError):
         raise ContractFilesProblem("Сохранённый документ договора не прочитан; проверьте хранилище проекта.") from None
+
+
+def _current(folder: Path, sha: str) -> dict:
+    """The stored read, read again from the PDF when the reader has changed since.
+
+    The new read is written under the card's lock over the record as it is then: a removal
+    written meanwhile by the other worker is kept, not overwritten by the older copy.
+    """
+    path = folder / f"{sha}.json"
+    record = _stored(path)
     if record.get("reader") == documents.READER_VERSION:
         return record
-    pdf = folder / f"{sha}.pdf"
+    with _locked(folder):
+        record = _stored(path)
+        if record.get("reader") == documents.READER_VERSION:
+            return record
+        return _reread(folder, sha, record)
+
+
+def _reread(folder: Path, sha: str, record: dict) -> dict:
+    path, pdf = folder / f"{sha}.json", folder / f"{sha}.pdf"
     if not pdf.exists():
         record.setdefault("warnings", []).insert(
             0, "Файл документа не сохранился: показан прежний разбор, перечитать его нечем.")
@@ -335,6 +365,9 @@ def save_links(project: str, contract_id: str, sha256: str, estimate: int, picke
                clear: bool = False, cut: str = "", acts: dict | None = None) -> dict:
     """Confirm, choose or clear links of positions of one estimate; all positions or none are saved."""
     folder = _directory(project, contract_id)
+    if not folder.is_dir():
+        # No documents, no card folder: an id without a card does not get an empty folder.
+        raise ContractFilesProblem("Расчёт не найден среди документов карточки: обновите карточку.")
     with _locked(folder):
         records = [r for r in _records(folder) if not r.get("removed_at")]
         found = next(((record, current, schedule) for record, index, current, schedule in _in_force(records)
