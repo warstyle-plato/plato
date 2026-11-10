@@ -238,7 +238,8 @@ def test_a_file_date_of_a_done_work_is_not_the_latest_date_of_its_stage_or_the_r
     assert stage["forecast_finish"] == "2026-09-01" and stage["observed_complete_by"] is None
     # Других сроков нет — дата раздела остаётся меткой «на дату», не окончанием.
     assert only["forecast_finish"] == "2026-10-01" and only["observed_complete_by"] == "2026-10-01"
-    rows = [{"id": "1", "name": "Котлован", "code": "2.2.1.1", "plan_finish": "2026-01-31"},
+    rows = [{"id": "1", "name": "Котлован", "code": "2.2.1.1", "plan_finish": "2026-01-31",
+             "observed_complete_by": "2026-10-01"},
             {"id": "2", "name": "Сваи", "code": "2.2.1.1", "plan_finish": "2026-09-06"}]
     works = {"1": {"forecast_finish": "2026-10-01", "method": "done"},
              "2": {"forecast_finish": "2026-09-01", "method": "confirmed_completion"}}
@@ -285,3 +286,17 @@ def test_a_confirmed_late_finish_is_finished_late_not_a_current_delay(tmp_path, 
     text = report.render_text(report.build(PROJECT, "week", CUT.isoformat()))
     assert "Сильнее всех опаздывает" not in text
     assert "закончено на 62 дн. позже плана" in text
+
+
+@pytest.mark.parametrize("item,done,reading", [
+    ({"method": "done"}, True, True),
+    ({"method": "confirmed_completion"}, True, False),
+    ({"method": "cumulative_quantities", "progress_origin": "confirmed_completion"}, True, False),
+    ({"method": "gpr_pace", "progress_origin": "gpr"}, False, False),
+    ({}, False, False),
+])
+def test_one_rule_says_a_work_is_done_and_whether_its_date_is_only_a_reading(item, done, reading):
+    import developaid_schedule_done as done_rule
+    assert done_rule.work_done(item) is done
+    assert done_rule.reading_only(item) is reading
+    assert done_rule.reading_only(item, "2026-09-01") is False  # подтверждённое окончание — не показание

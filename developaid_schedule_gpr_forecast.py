@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 import developaid_monitor as monitor
+import developaid_schedule_done as done_rule
 
 WINDOW_DAYS = 90
 STALE_DAYS = 45
@@ -419,7 +420,8 @@ def rnv(rows: list[dict], works: dict[str, dict], approved: Any, *, missing_cale
                 "basis": "gpr", "reasons": reasons + ["Ни у одной строительной работы ГПР нет прогноза."]}
     # «Завершено по ГПР» датировано показанием 100% (шапкой файла), а не
     # окончанием: срок по нему не ведётся, пока есть работы со своим сроком.
-    dated = [k for k in known if k[2].get("method") != "done"]
+    # Метку ставит слой темпа на строке (`observed_complete_by`).
+    dated = [k for k in known if not done_rule.observed_only(k[1])]
     if not dated:
         reasons.append("Все строительные работы с оценкой уже завершены по ГПР. Дата — когда "
                        "в ГПР последней из них впервые отмечено 100%, а не подтверждённое окончание.")

@@ -24,6 +24,8 @@ import html
 import re
 from typing import Any
 
+import developaid_schedule_done as done_rule
+
 # То же правило, что `corpusLabel` на странице Монитора; проверка держит
 # их одинаковыми (tests/test_report_gantt.py).
 CORPUS_PATTERN = r"(?:корпус|корп\.?|башня)\s*№?\s*([0-9A-Za-zА-Яа-я-]+)"
@@ -73,11 +75,6 @@ def _done(task: dict[str, Any]) -> bool:
     return task.get("work_done") is True
 
 
-def _observed_only(item: dict[str, Any]) -> bool:
-    """Дата — показание 100% в ГПР (шапка файла), а не окончание работы."""
-    return bool(item.get("observed_complete_by")) and not item.get("actual_finish")
-
-
 def finished_late_text(row: dict[str, Any]) -> str:
     """Опоздание уже законченных работ — та же фраза, что на странице Монитора."""
     days = row.get("finished_late_days")
@@ -89,7 +86,7 @@ def _summary(items: list[dict[str, Any]], known_of) -> dict[str, Any]:
     ends = [day for day in (_date(item.get("plan_finish")) for item in items) if day]
     known = [item for item in items if known_of(item)]
     forecasts = [day for day in (_date(item.get("forecast_finish")) for item in known
-                                 if not _observed_only(item)) if day]
+                                 if not done_rule.observed_only(item)) if day]
     plan_finish = max(ends) if ends else None
     forecast = max(forecasts) if forecasts else None
     # Опоздание — то, что Монитор записал строке (`delta_days`): у

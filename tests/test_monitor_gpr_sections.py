@@ -156,8 +156,8 @@ def test_multiple_corps_show_works_zero_unknown_and_fact_source_without_extra_cl
     view = monitor_view('partial')
     tasks = view['schedule']['management'][0]['children'][0]['children'][0]['children']
     tasks.extend([dict(tasks[0], id='4', wbs='2.1', object='Корпус 2', name='Кладка стен', actual_progress=None, pace_progress=None, pace_forecast_method='stale', pace_forecast_known=False),
-                  dict(tasks[0], id='5', wbs='2.2', object='Корпус 2', name='Подготовка площадки', actual_progress=1, pace_progress=1, pace_forecast_method='done', actual_finish='2026-11-06', forecast_finish='2026-11-06', delta_days=-25),
-                  dict(tasks[0], id='6', wbs='2.3', object='Корпус 2', name='Котлован', actual_progress=1, pace_progress=1, pace_forecast_method='done', pace_forecast_known=True, forecast_finish='2026-10-01', observed_complete_by='2026-10-01', delta_days=None),
+                  dict(tasks[0], id='5', wbs='2.2', object='Корпус 2', name='Подготовка площадки', actual_progress=1, pace_progress=1, pace_forecast_method='done', work_done=True, actual_finish='2026-11-06', forecast_finish='2026-11-06', delta_days=-25),
+                  dict(tasks[0], id='6', wbs='2.3', object='Корпус 2', name='Котлован', actual_progress=1, pace_progress=1, pace_forecast_method='done', work_done=True, pace_forecast_known=True, forecast_finish='2026-10-01', observed_complete_by='2026-10-01', delta_days=None),
                   dict(tasks[0], id='7', wbs='2.4', object='Корпус 2', name='Кровля', actual_progress=.5, pace_progress=.5, pace_forecast_method='gpr_pace', pace_forecast_known=True, forecast_finish='2026-12-13', delta_days=12)])
     with browser_page(width) as (page, responses, errors):
         render(page, view)
@@ -212,7 +212,7 @@ def test_explicitly_confirmed_completion_is_a_dated_fact_without_a_forecast_tail
     task = view['schedule']['management'][0]['children'][0]['children'][0]['children'][0]
     task.update(progress_kind='confirmed_completion', actual_progress=1, pace_progress=1,
                 progress_source={'kind': 'confirmed_completion', 'label': 'Подтверждённое завершение', 'date': '2026-11-06'},
-                gpr_progress=None, pace_forecast_method='confirmed_completion', pace_forecast_known=True,
+                gpr_progress=None, pace_forecast_method='confirmed_completion', work_done=True, pace_forecast_known=True,
                 forecast_finish='2026-11-06', delta_days=-25)
     with browser_page() as (page, responses, errors):
         render(page, view)
@@ -258,7 +258,7 @@ def test_stage_by_corpus_summary_sits_above_the_gantt_and_opens_the_tapped_stage
     base = tasks[0]
     tasks.extend([dict(base, id='4', wbs='2.1', object='Корпус 2', name='Кладка стен', actual_progress=None, pace_progress=None, pace_forecast_method='stale', pace_forecast_known=False),
                   dict(base, id='7', wbs='2.4', object='Корпус 2', name='Кровля', actual_progress=.5, pace_progress=.5, pace_forecast_method='gpr_pace', pace_forecast_known=True, forecast_finish='2026-12-13', delta_days=12),
-                  dict(base, id='8', wbs='3.1', object='Корпус 3', name='Монолит', actual_progress=1, pace_progress=1, pace_forecast_method='done', actual_finish='2026-10-01', forecast_finish='2026-10-01', delta_days=None)])
+                  dict(base, id='8', wbs='3.1', object='Корпус 3', name='Монолит', actual_progress=1, pace_progress=1, pace_forecast_method='done', work_done=True, actual_finish='2026-10-01', forecast_finish='2026-10-01', delta_days=None)])
     control['children'].insert(0, {'level': 'detail', 'name': 'Проектирование', 'children': [
         {'level': 'rss', 'name': 'Проект', 'code': '1.1', 'children': [
             dict(base, id='9', wbs='0.1', object='Корпус 1', name='Рабочая документация', pace_forecast_method='plan', pace_forecast_known=True, forecast_finish='2026-12-01', delta_days=0)]}]})
@@ -316,4 +316,27 @@ def test_cell_and_corpus_row_agree_on_finished_late_no_forecast_and_current_dela
         expect(corpus('Корпус 3')).to_contain_text('Закончено на 30 дн. позже плана')
         expand_gantt(page)
         expect(page.locator('#gantt .g-row.lvl-task', has_text='Котлован')).to_contain_text('Закончено на 50 дн. позже плана')
+        assert not errors
+
+
+def test_the_page_takes_done_from_the_server_and_keeps_a_100_percent_reading_out_of_the_section_date():
+    """«Работа закончена» решает сервер (`work_done`); дата показания 100%
+    (`observed_complete_by`) не становится сроком корпуса, как в движке и отчёте."""
+    from playwright.sync_api import expect
+    view = monitor_view('partial')
+    base = view['schedule']['management'][0]['children'][0]['children'][0]['children'][0]
+    view['schedule']['management'][0]['children'][0]['children'][0]['children'] = [
+        dict(base, id='1', object='Корпус 1', name='Котлован', actual_progress=1, pace_progress=1, pace_forecast_method='done',
+             work_done=True, forecast_finish='2026-10-01', observed_complete_by='2026-10-01', delta_days=None),
+        dict(base, id='2', object='Корпус 1', name='Монолит', forecast_finish='2026-09-15', delta_days=0),
+        # Метод «done» без решения сервера — не законченная работа.
+        dict(base, id='3', object='Корпус 2', name='Кровля', actual_progress=1, pace_progress=1, pace_forecast_method='done',
+             work_done=False, forecast_finish='2026-12-20', delta_days=19)]
+    with browser_page(1440) as (page, responses, errors):
+        page.evaluate("(v)=>{currentView=v;msg('viewMsg','');renderDash(v);renderGantt(v)}", view)
+        first = page.locator('#gantt .g-row.lvl-corpus', has_text='Корпус 1')
+        expect(first).to_contain_text('Оценка 15.09.2026')
+        expect(first).not_to_contain_text('01.10.2026')
+        cells = [c.inner_text().replace('\n', ' ') for c in page.locator('#gprMatrix tbody tr').nth(0).locator('td').all()]
+        assert cells == ['По сроку', '+19 дн.']
         assert not errors
