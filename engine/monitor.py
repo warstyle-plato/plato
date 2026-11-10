@@ -195,6 +195,51 @@ def monitor_snapshots(project: str, session: str = "", key: str = "") -> dict[st
     return developaid_monitor.snapshots(project)
 
 
+@app.post("/monitor/audit/sources", include_in_schema=False)
+async def monitor_audit_sources(request: Request) -> Response:
+    """Bounded original financial sources; strict owner key, no parsing/writes."""
+    private = {"Cache-Control": "private, no-store"}
+    try:
+        raw = bytearray()
+        async for chunk in request.stream():
+            if len(raw) + len(chunk) > 16384:
+                raw = bytearray()
+                break
+            raw.extend(chunk)
+        try:
+            initial = json.loads(raw)
+        except (ValueError, UnicodeError, RecursionError):
+            initial = {}
+        initial = initial if isinstance(initial, dict) else {}
+        key = initial.get("key", "")
+        session = initial.get("session", "")
+        key = key if isinstance(key, str) and len(key) <= 4096 else ""
+        session = session if isinstance(session, str) and len(session) <= 4096 else ""
+        # This exact existing gate has no team/demo/Telegram fallback.
+        _require_admin_key(key, "Монитор проекта", session)
+        import developaid_cached_source_audit as audit
+        from fastapi.concurrency import run_in_threadpool
+        try:
+            selected = audit.parse_request(bytes(raw), "finance")
+            result = await run_in_threadpool(
+                audit.capture_finance, Path(developaid_monitor._SNAPSHOT_DIR).absolute(),
+                runtime={"commit": COMMIT, "version": VERSION},
+                project=selected["project"], cut=selected["cut"],
+                slug_function=developaid_monitor._slug)
+            return JSONResponse(result, headers=private)
+        except audit.AuditError as exc:
+            limit = exc.code in {"file_too_large", "read_budget", "source_size_limit", "capture_too_large"}
+            status = 413 if limit else 400 if exc.code.startswith(("invalid_", "unsupported_")) else 409
+            return JSONResponse({"detail": "Закрытая выгрузка источников не сформирована.",
+                                 "code": exc.code}, status_code=status, headers=private)
+    except HTTPException as exc:
+        exc.headers = {**(exc.headers or {}), **private}
+        raise
+    except Exception:
+        return JSONResponse({"detail": "Закрытая выгрузка источников сейчас недоступна.",
+                             "code": "capture_unavailable"}, status_code=503, headers=private)
+
+
 @app.post("/monitor/view", include_in_schema=False)
 def monitor_view(req: MonitorViewRequest) -> dict[str, Any]:
     """Срез и тренд по нему. Считает сервер, страница только рисует."""

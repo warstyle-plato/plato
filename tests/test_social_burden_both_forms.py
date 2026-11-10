@@ -195,6 +195,7 @@ def test_no_sheet_was_lost_in_the_reorder():
 
     import v4_dashboard
     import v4_entry_sheet
+    import v4_land_rent
 
     with zipfile.ZipFile(core._V4_TEMPLATE_PATH) as source:
         template = re.findall(r'<x:sheet name="([^"]+)"',
@@ -202,7 +203,8 @@ def test_no_sheet_was_lost_in_the_reorder():
     assert len(template) >= 15, template
     expected = {v4_entry_sheet.PARAMS_SHEET if name == v4_entry_sheet.ENTRY_SHEET else name
                 for name in template}
-    expected |= {v4_entry_sheet.ENTRY_SHEET, v4_entry_sheet.GUIDE_SHEET, v4_dashboard.DATA_SHEET}
+    expected |= {v4_entry_sheet.ENTRY_SHEET, v4_entry_sheet.GUIDE_SHEET,
+                 v4_dashboard.DATA_SHEET, v4_land_rent.SHEET}
     names = workbook("Строительство").sheetnames
     assert len(names) == len(set(names)), "лист задвоился"
     assert set(names) == expected, (set(names) ^ expected)
