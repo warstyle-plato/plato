@@ -52,7 +52,7 @@ def test_gpr_is_default_and_money_uploads_and_contracts_have_their_own_sections(
         assert page.evaluate("managementByCorpus(currentView.schedule.management).every(x=>x.actual_progress===null)")
         expect(page.locator('#gantt')).to_contain_text('Выполнено по ГПР: 40%')
         expect(page.locator('#gantt')).to_contain_text('Работа стоит')
-        legacy = page.locator('.g-row', has_text='Старый денежный темп')
+        legacy = page.locator('.g-row.lvl-task', has_text='Старый денежный темп')
         assert legacy.locator('.factbar, .forecastmark, .latebar').count() == 0
         expect(legacy).not_to_contain_text('99%')
         expect(legacy).not_to_contain_text('2035')
@@ -155,16 +155,22 @@ def test_multiple_corps_show_works_zero_unknown_and_fact_source_without_extra_cl
     tasks = view['schedule']['management'][0]['children'][0]['children'][0]['children']
     tasks.extend([dict(tasks[0], id='4', wbs='2.1', object='Корпус 2', name='Кладка стен', actual_progress=None, pace_progress=None, pace_forecast_method='stale', pace_forecast_known=False),
                   dict(tasks[0], id='5', wbs='2.2', object='Корпус 2', name='Подготовка площадки', actual_progress=1, pace_progress=1, pace_forecast_method='done', actual_finish='2026-11-06', forecast_finish='2026-11-06', delta_days=-25),
-                  dict(tasks[0], id='6', wbs='2.3', object='Корпус 2', name='Котлован', actual_progress=1, pace_progress=1, pace_forecast_method='done', pace_forecast_known=True, forecast_finish='2026-10-01', observed_complete_by='2026-10-01', delta_days=None)])
+                  dict(tasks[0], id='6', wbs='2.3', object='Корпус 2', name='Котлован', actual_progress=1, pace_progress=1, pace_forecast_method='done', pace_forecast_known=True, forecast_finish='2026-10-01', observed_complete_by='2026-10-01', delta_days=None),
+                  dict(tasks[0], id='7', wbs='2.4', object='Корпус 2', name='Кровля', actual_progress=.5, pace_progress=.5, pace_forecast_method='gpr_pace', pace_forecast_known=True, forecast_finish='2026-12-13', delta_days=12)])
     with browser_page(width) as (page, responses, errors):
         render(page, view)
         expect(page.locator('#gantt')).to_contain_text('Корпус 1')
         expect(page.locator('#gantt')).to_contain_text('Корпус 2')
-        assert page.locator('#gantt .lvl-task:visible').count() == 6
-        observed = page.locator('.g-row', has_text='Котлован')
+        assert page.locator('#gantt .lvl-task:visible').count() == 7
+        observed = page.locator('.g-row.lvl-task', has_text='Котлован')
         expect(observed).to_contain_text('100% на дату 01.10.2026')
         expect(observed).not_to_contain_text('Позже плана')
-        done = page.locator('.g-row', has_text='Подготовка площадки')
+        corpus2 = page.locator('.g-row.lvl-corpus', has_text='Корпус 2')
+        expect(corpus2).to_contain_text('Срок корпуса пока не оценить: у 1 работы нет прогноза.')
+        expect(corpus2).to_contain_text('Без прогноза: Кладка стен.')
+        expect(corpus2).to_contain_text('Позже своего срока: 1 работа, больше всего — на 12 дн.')
+        expect(corpus2).not_to_contain_text('Позже плана')
+        done = page.locator('.g-row.lvl-task', has_text='Подготовка площадки')
         expect(done).to_contain_text('План до 01.12.2026. Завершено 06.11.2026')
         assert done.locator('.forecastmark,.latebar,.aheadbar').count() == 0
         expect(done).not_to_contain_text('Оценка 20.12.2026')
@@ -186,7 +192,7 @@ def test_known_cumulative_progress_survives_unknown_forecast_and_is_not_the_gpr_
                 forecast_finish=None, forecast_reason='Нет свежего датированного темпа накопительных.')
     with browser_page() as (page, responses, errors):
         render(page, view)
-        row = page.locator('.g-row', has_text='Монтаж фасада')
+        row = page.locator('.g-row.lvl-task', has_text='Монтаж фасада')
         expect(row).to_contain_text('Объём по накопительной: 50%')
         expect(row).to_contain_text('Нет свежего датированного темпа накопительных')
         assert row.locator('.forecastmark,.latebar').count() == 0
@@ -208,7 +214,7 @@ def test_explicitly_confirmed_completion_is_a_dated_fact_without_a_forecast_tail
                 forecast_finish='2026-11-06', delta_days=-25)
     with browser_page() as (page, responses, errors):
         render(page, view)
-        row = page.locator('.g-row', has_text='Монтаж фасада')
+        row = page.locator('.g-row.lvl-task', has_text='Монтаж фасада')
         expect(row).to_contain_text('Завершение подтверждено')
         expect(row).to_contain_text('Завершено 06.11.2026')
         expect(row).to_contain_text('Выполнение подтверждено: 100%')
