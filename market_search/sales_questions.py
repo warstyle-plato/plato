@@ -9,8 +9,10 @@
   эскроу меньше 5% его суммы (живой случай: договор на 124,5 млн ₽ без
   единого платежа и два договора с 0,5 млн ₽ из 36 млн);
 - **бронь пропала без договора** — квартира ушла из «Текущих броней», а
-  договора на неё в выгрузке нет, хотя выгрузка свежее ухода брони
-  (`salesroom.booking_outcomes`: исход «снята без сделки»);
+  договора на неё в выгрузке не видно. Спрашивается в день ухода брони; «договора
+  в выгрузке нет» говорится, только если выгрузка свежая и загружена не раньше
+  ухода брони (`salesroom.booking_outcomes`: исход «снята без сделки»), иначе
+  вопрос без этого утверждения;
 - **нетипичные условия** — вариант оплаты, который правило отчёта о продажах не
   узнаёт (`contracting.payment_variant`), и цена метра ниже средней по договорам
   той же комнатности за последние три месяца больше чем на 15%.
@@ -24,10 +26,11 @@
 источников (`<проект>.asked.json`), а не внутри источника: новая выгрузка чата
 или договоров заменяет источник целиком, и вопросы пошли бы по второму кругу.
 Сбор и запись идут под блокировкой файла: два воркера, получившие два отчёта
-разом, не зададут один вопрос дважды. Вопросы о деньгах и о
-пропавших бронях задаются, только если выгрузка договоров свежая: по старой
-выгрузке «денег нет» значит «мы их не видим», и спрашивать людей об этом —
-обвинять их в нашем пропуске.
+разом, не зададут один вопрос дважды. Вопросы о деньгах задаются, только если
+выгрузка договоров свежая: по старой выгрузке «денег нет» значит «мы их не
+видим», и спрашивать людей об этом — обвинять их в нашем пропуске. По той же
+причине без свежей выгрузки вопрос о пропавшей брони не утверждает, что
+договора нет, а спрашивает, подписан ли он.
 """
 
 from __future__ import annotations
@@ -131,25 +134,39 @@ def _cap(text: str) -> str:
     return text[:1].upper() + text[1:]
 
 
-def _dropped(read: dict[str, Any] | None, rows: list[dict[str, Any]], uploaded: str,
-             today: str) -> list[dict[str, Any]]:
+def _dropped(read: dict[str, Any] | None, rows: list[dict[str, Any]], uploaded: str | None,
+             today: str, fresh: bool) -> list[dict[str, Any]]:
+    """Брони, ушедшие из списка без видимого договора.
+
+    Владелец (10.11.2026, вариант «А»): спрашивать сразу, в день ухода брони, а
+    не ждать новой выгрузки договоров. Сказать «договора в выгрузке нет» можно
+    только по свежей выгрузке, загруженной не раньше ухода брони (исход
+    «dropped»); иначе вопрос о том же без этого утверждения. Договор на
+    квартиру в любой выгрузке — ответ, вопроса нет. Ключ у обоих вариантов
+    один: позже пришедшая выгрузка вопрос не повторит."""
     first = (_date(today) - datetime.timedelta(days=DROPPED_DAYS)).isoformat()
-    got = salesroom.booking_outcomes(read, rows, uploaded, first, today) or {}
+    got = salesroom.booking_outcomes(read, rows, uploaded or None, first, today) or {}
     out = []
     for item in got.get("period") or []:
-        if item.get("outcome") != "dropped" or not (first <= item["gone"] <= today):
+        if item.get("outcome") == "deal" or not (first <= item["gone"] <= today):
             continue
         where = ", ".join(x for x in (item.get("tower") or "",
                                       _area(item["area"]) if item.get("area") else "") if x)
         since, gone = _date(item["first"]), _date(item["gone"])
+        text = (f"Квартира № {item['apartment']}" + (f" ({where})" if where else "")
+                + f" была в списке броней с {_dm(since)}, а с {_dm(gone)} её там нет")
+        if item.get("outcome") == "dropped" and fresh and rows:
+            text += (f", и договора на неё в выгрузке на {_dm(_date(uploaded))} тоже нет. "
+                     "Бронь снята или договор ещё оформляется?")
+        else:
+            deal_day = _date(item.get("deal_day"))
+            text += ((f"; в отчёте стояла дата сделки {_dm(deal_day)}" if deal_day else "")
+                     + ". Договор подписан или бронь снята?")
         out.append({
             # Без площади: её уточняют, а квартира и день ухода брони — те же.
             "key": f"dropped:{item.get('tower') or ''}:{item['apartment']}:{item['gone']}",
             "kind": "dropped",
-            "text": (f"Квартира № {item['apartment']}" + (f" ({where})" if where else "")
-                     + f" была в списке броней с {_dm(since)}, а с {_dm(gone)} её там нет, "
-                     f"и договора на неё в выгрузке на {_dm(_date(uploaded))} тоже нет. "
-                     "Бронь снята или договор ещё оформляется?")})
+            "text": text})
     return out
 
 
@@ -214,7 +231,7 @@ def questions(read: dict[str, Any] | None, contracts: dict[str, Any] | None,
     found = chessboard.questions(snapshot, rows if fresh else [], report_text, today)
     if rows and fresh:
         found += _no_money(rows, loaded)
-        found += _dropped(read, rows, str(uploaded)[:10], today)
+    found += _dropped(read, rows, str(uploaded)[:10] if loaded else None, today, fresh)
     if rows and loaded:
         found += _unusual(chessboard.reconciled_contracts(rows)[0], loaded)
     seen = set(asked or ())
