@@ -159,7 +159,12 @@ def _apply_gpr(project: str, view: dict[str, Any], cut: datetime.date) -> dict[s
         row["pace_forecast_method"] = item.get("method")
         row["pace_forecast_reason"] = item.get("reason")
         row["pace_forecast_finish"] = monitor._iso(finish) if finish else None
-        row["pace_delta_days"] = (finish - plan).days if finish and plan else None
+        # «Завершено по ГПР»: дата — первое показание 100% (для новой версии
+        # плана — шапка её файла), не дата окончания работы. Отклонение от
+        # плана по ней не считается, пока окончание не подтверждено.
+        observed = item.get("method") == "done"
+        row["pace_delta_days"] = (finish - plan).days if finish and plan and not observed else None
+        row["observed_complete_by"] = monitor._iso(finish) if observed and finish else None
         row["pace_status"] = _GPR_STATUS.get(item.get("method"), "НЕТ ДАННЫХ ГПР")
         origin = item.get("progress_origin")
         label = schedule_work_fact.GPR_ORIGINS.get(origin, "по ведомости" if origin == "cumulative_statement" else

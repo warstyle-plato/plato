@@ -147,3 +147,27 @@ def test_unapproved_corpus_file_has_source_view_and_a_specific_mapping_blocker(t
 def test_corrupt_percent_cannot_become_work_readiness(value):
     import developaid_schedule_gpr_forecast as gpr
     assert gpr._progress(value) is None
+
+
+def test_first_hundred_percent_reading_is_not_a_late_finish(tmp_path, monkeypatch):
+    """Работа, давно законченная, получает 100% в шапке новой версии плана.
+
+    Дата показания — не дата окончания: ни работа, ни корпус не становятся
+    «позже плана» на разницу между сроком работы и датой файла.
+    """
+    monkeypatch.setattr(monitor, "_SNAPSHOT_DIR", tmp_path)
+    monitor.store_schedule(PROJECT, _gpr_book([
+        (1, "Котлован", 1., dt.date(2025, 11, 1), dt.date(2026, 1, 31), "Завершено", "2.2.1.1"),
+        (2, "Каркас", .2, dt.date(2026, 9, 1), dt.date(2027, 6, 30), "В работе", "2.2.1.1"),
+    ]), None, "2026-10-01")
+    import developaid_monitor_page  # noqa: F401
+    view = manager._schedule_only(PROJECT, CUT)
+    pace._apply_gpr(PROJECT, view, CUT)
+    rows = {r["id"]: r for r in view["schedule"]["rows"]}
+    assert rows["1"]["pace_forecast_method"] == "done"
+    assert rows["1"]["observed_complete_by"] == "2026-10-01"
+    assert rows["1"]["delta_days"] is None and rows["1"]["pace_delta_days"] is None
+    assert rows["2"]["observed_complete_by"] is None
+    assert view["schedule"]["risks"] == 0
+    for node in pace._walk(view["schedule"]["management"]):
+        assert not (node.get("delta_days") or 0) > 0, node.get("name")

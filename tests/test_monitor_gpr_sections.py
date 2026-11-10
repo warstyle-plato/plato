@@ -154,12 +154,16 @@ def test_multiple_corps_show_works_zero_unknown_and_fact_source_without_extra_cl
     view = monitor_view('partial')
     tasks = view['schedule']['management'][0]['children'][0]['children'][0]['children']
     tasks.extend([dict(tasks[0], id='4', wbs='2.1', object='Корпус 2', name='Кладка стен', actual_progress=None, pace_progress=None, pace_forecast_method='stale', pace_forecast_known=False),
-                  dict(tasks[0], id='5', wbs='2.2', object='Корпус 2', name='Подготовка площадки', actual_progress=1, pace_progress=1, pace_forecast_method='done', actual_finish='2026-11-06', forecast_finish='2026-11-06', delta_days=-25)])
+                  dict(tasks[0], id='5', wbs='2.2', object='Корпус 2', name='Подготовка площадки', actual_progress=1, pace_progress=1, pace_forecast_method='done', actual_finish='2026-11-06', forecast_finish='2026-11-06', delta_days=-25),
+                  dict(tasks[0], id='6', wbs='2.3', object='Корпус 2', name='Котлован', actual_progress=1, pace_progress=1, pace_forecast_method='done', pace_forecast_known=True, forecast_finish='2026-10-01', observed_complete_by='2026-10-01', delta_days=None)])
     with browser_page(width) as (page, responses, errors):
         render(page, view)
         expect(page.locator('#gantt')).to_contain_text('Корпус 1')
         expect(page.locator('#gantt')).to_contain_text('Корпус 2')
-        assert page.locator('#gantt .lvl-task:visible').count() == 5
+        assert page.locator('#gantt .lvl-task:visible').count() == 6
+        observed = page.locator('.g-row', has_text='Котлован')
+        expect(observed).to_contain_text('100% на дату 01.10.2026')
+        expect(observed).not_to_contain_text('Позже плана')
         done = page.locator('.g-row', has_text='Подготовка площадки')
         expect(done).to_contain_text('План до 01.12.2026. Завершено 06.11.2026')
         assert done.locator('.forecastmark,.latebar,.aheadbar').count() == 0
