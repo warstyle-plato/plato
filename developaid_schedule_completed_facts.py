@@ -167,7 +167,9 @@ def build(project, cut, snapshot, *, physical):
                 if task['mode'] == 'quantities':
                     # A retained mapping can measure a newly loaded archive.
                     # Its old save time is not the new reading's availability.
-                    observation = max(observation, _observation(observed, (basis or {}).get('loaded_at')))
+                    loaded = _observation(observed, (basis or {}).get('loaded_at'))
+                    observation = (loaded if (basis or {}).get('snapshot_id') != event['snapshot_id']
+                                   and not loaded[1] else max(observation, loaded))
                 if value is not None and abs(value-1) <= 1e-7 and not task.get('requires_reconciliation'):
                     actual = task.get('actual_finish') if task['mode'] == 'completed' else None
                     candidate = fact(sha, tid, observed, 'confirmed_completion' if actual else
