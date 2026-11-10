@@ -18,6 +18,8 @@
       headers: { 'Content-Type': 'application/json' },
       cache: 'no-store',
       body: JSON.stringify({
+        inputs: body.inputs || {}, tep: body.tep || {},
+        session: body.session || '', access_key: body.access_key || '',
         filename: body.filename || '',
         content_b64: body.content_b64 || '',
       }),

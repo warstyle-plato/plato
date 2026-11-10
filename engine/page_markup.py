@@ -14,6 +14,7 @@ engine/page_build.py. Стенды на node берут куски скрипт�
 """
 # ruff: noqa
 
+PAGE += "<script>" + (Path(__file__).resolve().parent / "document_client.js").read_text(encoding="utf-8") + "</script>"
 PAGE += r"""</head>
 <body>
 <div class="shell">
@@ -1053,7 +1054,7 @@ PAGE += r"""</head>
   <div id="aiMessages" class="ai-messages"><div id="aiHero" class="ai-hero"><img src="/assets/platon-hero.webp" alt="" width="260" height="298" loading="lazy"><div class="ai-hero-say"><b>Привет! Я Платон.</b><span>Помогу настроить отчёт и отвечу на вопросы.</span></div></div><div class="ai-msg system">Платон Сергеевич анализирует проект через расчётные инструменты DevelopAid. Цифры и подбор параметров считает движок модели, а не языковая модель.</div></div>
   <div class="ai-compose">
     <textarea id="aiInput" placeholder="Например: за сколько максимум можно купить проект, чтобы LLCR слабейшей очереди был не ниже 1,20?"></textarea>
-    <div class="ai-compose-row"><small><span data-needs="project_finance">Ориентир диагностики: LLCR 1,20x. </span>Методика конкретного банка может отличаться.</small><input type="file" id="aiFile" accept=".pdf,application/pdf" style="display:none" onchange="sendAgentDocument(this.files&&this.files[0])"><button id="aiFileBtn" class="btn" onclick="document.getElementById('aiFile').click()" title="Тизер, справка по участку, решение ГЗК — Платон прочитает и покажет, что можно взять в модель">Приложить документ</button><button id="aiSendBtn" class="btn dark" onclick="sendAgentMessage()">Отправить</button></div>
+    <div class="ai-compose-row"><small><span data-needs="project_finance">Ориентир диагностики: LLCR 1,20x. </span>Методика конкретного банка может отличаться.</small><input type="file" id="aiFile" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg" style="display:none" onchange="sendAgentDocument(this.files&&this.files[0])"><button id="aiFileBtn" class="btn" onclick="document.getElementById('aiFile').click()" title="Тизер, справка по участку, решение ГЗК — Платон прочитает и покажет, что можно взять в модель">Приложить документ</button><button class="btn" onclick="sendAgentDocumentUrl()">По ссылке</button><button id="aiSendBtn" class="btn dark" onclick="sendAgentMessage()">Отправить</button></div>
   </div>
 </aside>
 

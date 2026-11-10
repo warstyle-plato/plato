@@ -71,7 +71,7 @@ def test_confirmation_is_not_historical_source_truth(api):
     data = fields(snapshot)
     contracts.confirm_header_date('Fixture', dt.date.today().isoformat(), **data)
     before = contracts.build('Fixture', (dt.date.today()-dt.timedelta(days=1)).isoformat())
-    assert before['rows'] == []
+    assert len(before['rows']) == 1 and before['rows'][0]['contract_date'] is None
     unresolved, = before['unresolved_sources']
     assert unresolved['date_confirmation']['applicable_to_cut'] is False
     assert unresolved['date_confirmation']['contract_date'] == '2024-07-03'
@@ -207,7 +207,7 @@ def test_clarification_can_be_revoked_and_the_contract_returns_to_review(api):
                                            note='Уточнение внесено по ошибке.')
     assert record['contract_date'] is None and len(record['previous']) == 1
     view = contracts.build('Fixture', _days_ago(0))
-    assert view['rows'] == []
+    assert len(view['rows']) == 1 and view['rows'][0]['contract_date'] is None
     unresolved, = view['unresolved_sources']
     assert unresolved['date_confirmation']['revoked'] is True
     # The page receives the exact binding it must send back.

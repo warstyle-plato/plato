@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
+from starlette.requests import Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
@@ -26,6 +27,10 @@ _CADASTRAL = re.compile(r"\b\d{2}:\d{2}:\d{5,8}:\d+\b")
 class TeaserFallbackRequest(BaseModel):
     filename: str = ""
     content_b64: str = ""
+    session: str = ""
+    access_key: str = ""
+    inputs: dict[str, Any] = {}
+    tep: dict[str, dict[str, Any]] = {}
 
 
 class TepSyncRequest(BaseModel):
@@ -58,7 +63,7 @@ def _teaser_payload(raw: str) -> bytes:
     try:
         payload = base64.b64decode(str(raw or ""), validate=True)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(400, f"Файл не прочитался: {exc}") from exc
+        raise HTTPException(400, "Файл не прочитался: неверный base64.") from exc
     if not payload:
         raise HTTPException(400, "Пустой файл")
     if len(payload) > _MAX_TEASER_BYTES:
@@ -70,7 +75,7 @@ def _field(key: str, label: str, value: Any, unit: str, quote: str) -> dict[str,
     return {"key": key, "label": label, "value": value, "unit": unit, "quote": quote}
 
 
-def _quick_teaser_intake(payload: bytes, filename: str) -> dict[str, Any]:
+def _quick_teaser_intake(payload: bytes, filename: str, document: dict[str, Any] | None = None) -> dict[str, Any]:
     """Read common broker-teaser fields without depending on the LLM provider.
 
     This is deliberately narrow: it only copies values that have an explicit
@@ -79,7 +84,7 @@ def _quick_teaser_intake(payload: bytes, filename: str) -> dict[str, Any]:
     resilience path for provider/JSON failures and therefore must never invent
     missing economics.
     """
-    document = document_intake.extract_text(payload, filename)
+    document = document if document is not None else document_intake.extract_text(payload, filename)
     text = str(document.get("text") or "")
     if not text:
         raise HTTPException(422, document.get("reason") or "В документе нет читаемого текста")
@@ -91,7 +96,12 @@ def _quick_teaser_intake(payload: bytes, filename: str) -> dict[str, Any]:
 
     def add(item: dict[str, Any]) -> None:
         key = str(item.get("key") or "")
-        if key and key not in seen:
+        if key == "cadastral_numbers" and key in seen:
+            row = next(row for row in fields if row["key"] == key)
+            numbers = _CADASTRAL.findall(str(row["value"]) + ", " + str(item["value"]))
+            row["value"] = ", ".join(dict.fromkeys(numbers))
+            row["quote"] += " | " + item["quote"]
+        elif key and key not in seen:
             seen.add(key)
             fields.append(item)
 
@@ -464,11 +474,16 @@ def install(app: FastAPI) -> None:
         )
 
     @app.post("/api/v2/teaser-fallback", include_in_schema=False)
-    async def teaser_fallback(req: TeaserFallbackRequest) -> JSONResponse:
-        return JSONResponse(
-            _quick_teaser_intake(_teaser_payload(req.content_b64), req.filename),
-            headers=_NO_STORE,
-        )
+    def teaser_fallback(req: TeaserFallbackRequest, request: Request) -> JSONResponse:
+        core = _core()
+        core._require_web_access(req.session, req.access_key, "Разбор документа")
+        actor = core._agent_bind_actor(req, request, private_surface="web")
+        data = _teaser_payload(req.content_b64)
+        document = document_intake.extract_text(data, req.filename)
+        got = _quick_teaser_intake(data, req.filename, document=document)
+        got["card"] = core._intake_queue_start(req.filename, got, document,
+            req.inputs or dict(core.DEFAULT_INPUTS), req.tep or core.TEP_DEFAULT, actor=actor)
+        return JSONResponse(got, headers=_NO_STORE)
 
     @app.post("/api/v2/tep-sync", include_in_schema=False)
     async def tep_sync(req: TepSyncRequest) -> JSONResponse:
@@ -489,7 +504,7 @@ def install(app: FastAPI) -> None:
             raise RuntimeError("В index.html /v2 не найден app.js")
         injected = (
             '<script src="/v2/assets/upgrade.js" defer></script>\n  '
-            '<script src="/v2/assets/teaser-fallback.js" defer></script>\n  '
+            '<script src="/agent/document-client.js" defer></script>\n  '
             '<script src="/v2/assets/account-projects.js" defer></script>\n  '
             '<script src="/v2/assets/start-imports.js" defer></script>\n  '
             '<script src="/v2/assets/entry-layout.js" defer></script>\n  '

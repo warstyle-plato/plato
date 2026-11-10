@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import base64
+import copy
 import io
+import math
 import re
 import shutil
 import subprocess
@@ -35,6 +37,89 @@ class TepPhotoRequest(BaseModel):
     image_base64: str
     content_type: str = ""
     filename: str = ""
+
+
+class TepPhotoApplyRequest(BaseModel):
+    inputs: dict[str, Any] = {}
+    tep: dict[str, dict[str, Any]] = {}
+    selected: list[dict[str, Any]] = []
+
+
+def apply_photo_values(core: Any, req: TepPhotoApplyRequest) -> dict[str, Any]:
+    """Apply one reviewed table packet; derive only cells absent from it.
+
+    The engine's existing TEP writer owns the reverse mapping to inputs. All
+    source cells of a row are restored after deriving its missing neighbours;
+    a later asynchronous single-cell request cannot erase another source cell.
+    """
+    from developaid_v2_account_projects import (
+        TepSyncRequest, _row_to_inputs, _sync_tep, _underground_guests_follow,
+    )
+
+    block = next((item for item in form.form_description(core)["blocks"]
+                  if item.get("kind") == "tep"), {})
+    schema = {str(row["key"]): {str(field["key"]) for field in row.get("fields") or []}
+              for row in block.get("rows") or []}
+    if not req.selected or len(req.selected) > 200:
+        raise HTTPException(400, "Отметьте от одного до 200 значений фотографии.")
+    grouped: dict[str, dict[str, dict[str, Any]]] = {}
+    for item in req.selected:
+        row, field = str(item.get("row_key") or ""), str(item.get("field_key") or "")
+        value = item.get("value")
+        if row not in schema or field not in schema[row]:
+            raise HTTPException(400, "Поле фотографии не найдено в ТЭП проекта.")
+        try:
+            finite = math.isfinite(value)
+        except (OverflowError, TypeError):
+            finite = False
+        if (isinstance(value, bool) or not isinstance(value, (float, int))
+                or not finite or value < 0
+                or (field == "units" and value != int(value))):
+            raise HTTPException(400, "В фотографии есть недопустимое число; проверьте выбранные значения.")
+        previous = grouped.setdefault(row, {}).get(field)
+        if previous is not None and previous["value"] != value:
+            raise HTTPException(409, "Для одной ячейки выбраны разные числа фотографии.")
+        grouped[row][field] = {"value": value, "source_line": str(item.get("source_line") or "")[:1000]}
+    inputs, tep = copy.deepcopy(req.inputs), copy.deepcopy(req.tep)
+    if "_field_origin" in inputs and not isinstance(inputs["_field_origin"], dict):
+        raise HTTPException(400, "Происхождение полей проекта повреждено. Откройте проект заново.")
+    applied, notes = [], []
+    for row_key, cells in grouped.items():
+        anchor = next((field for field in ("gns", "total_area", "saleable", "units", "transfer", "useful")
+                       if field in cells), next(iter(cells)))
+        got = _sync_tep(core, TepSyncRequest(inputs=inputs, tep=tep, row_key=row_key,
+                                            field_key=anchor, value=cells[anchor]["value"]))
+        inputs, tep = got["inputs"], got["tep"]
+        origins = inputs.setdefault("_field_origin", {})
+        for field, rule in got["derived"].items():
+            origins[f"tep.{row_key}.{field}"] = {"source": "derived",
+                                                  "text": f"По данным фотографии: {rule}"}
+        for field, item in cells.items():
+            tep[row_key][field] = item["value"]
+            origins[f"tep.{row_key}.{field}"] = {
+                "source": "manual", "text": "Подтверждено пользователем по фотографии ТЭП: " + item["source_line"],
+            }
+            applied.append({"row_key": row_key, "field_key": field, "value": item["value"]})
+        notes.extend(_row_to_inputs(core, inputs, row_key, tep[row_key]))
+        if row_key == "underground_parking":
+            _underground_guests_follow(core, inputs, tep, {})
+        for field, input_key in core.tep_row_inputs(row_key).items():
+            if field in tep[row_key]:
+                origins[f"inputs.{input_key}"] = dict(origins.get(f"tep.{row_key}.{field}") or {
+                    "source": "manual", "text": "Подтверждено пользователем по фотографии ТЭП"})
+    for row_key, cells in grouped.items():
+        switch = next((obj.enabled_key for obj in core.STANDALONE_OBJECTS if obj.key == row_key), "")
+        if switch and not inputs.get(switch) and any(item["value"] > 0 for item in cells.values()):
+            raise HTTPException(409, "Объект из фотографии выключен в проекте. "
+                                "Включите его во вводных и повторите применение фотографии.")
+        if row_key in core.SOCIAL_TEP_FIELDS:
+            effective = core.social_tep_row(inputs, row_key)
+            if any(field in effective and not math.isclose(item["value"], effective[field], abs_tol=0.01)
+                   for field, item in cells.items()):
+                raise HTTPException(409, "Настройки социальной нагрузки меняют числа фотографии. "
+                                    "Проверьте нормативный или ручной режим площадей и повторите применение.")
+    inputs["_tep_source_packet"] = {"version": 1, "kind": "user_reviewed_photo"}
+    return {"inputs": inputs, "tep": tep, "applied": applied, "notes": list(dict.fromkeys(notes))}
 
 
 def _new_project(core: Any, sensitivity: bool = True) -> dict[str, Any]:
@@ -157,30 +242,33 @@ def _parse_number(raw: str) -> float | None:
         return None
 
 
-def _numbers(line: str, label: str) -> list[float]:
-    """2+ spaces/tabs separate columns; one space may be a thousands separator."""
-    cells = [cell.strip() for cell in re.split(r"\t+| {2,}", line) if cell.strip()]
-    values: list[float] = []
-    if len(cells) > 1:
-        for cell in cells:
-            matches = list(_CELL_NUMBER.finditer(cell))
-            if len(matches) == 1:
-                number = _parse_number(matches[0].group(0))
-                if number is not None:
-                    values.append(number)
-    else:
-        values = [
-            number for number in (_parse_number(m.group(0)) for m in _SIMPLE_NUMBER.finditer(line))
-            if number is not None
-        ]
+def _numbers(line: str, label: str) -> list[float | None]:
+    """Keep explicit empty cells; never infer a column from a numeric tail.
 
-    label_numbers = [
-        number for number in (_parse_number(m.group(0)) for m in _SIMPLE_NUMBER.finditer(label))
-        if number is not None
-    ]
-    while label_numbers and values and abs(values[0] - label_numbers[0]) < 1e-9:
-        values.pop(0)
-        label_numbers.pop(0)
+    Tesseract's preserved whitespace is only usable when all column boundaries
+    survive. A collapsed row is refused, rather than silently zipped left.
+    """
+    del label  # Row identity was matched separately, not by a digit in its name.
+    cells = [cell.strip() for cell in re.split(r"\t| {2,}", line.strip())]
+    if len(cells) < 2:
+        return []
+    values: list[float | None] = []
+    for cell in cells[1:]:
+        if cell in {"", "-", "—", "–"}:
+            values.append(None)
+            continue
+        match = re.fullmatch(
+            rf"({_CELL_NUMBER.pattern})\s*(?:м[²2]|шт\.?|мест(?:а|о)?|пос\.?/смену)?", cell)
+        if match is None:
+            return []
+        if re.fullmatch(r"[-+]?\d+[.,]\d{3}", match.group(1)):
+            # A lone three-digit suffix can mean a decimal or a thousands
+            # group. Label similarity gives no evidence to resolve that.
+            return []
+        number = _parse_number(match.group(1))
+        if number is None or not math.isfinite(number) or number < 0:
+            return []
+        values.append(number)
     return values
 
 
@@ -205,7 +293,9 @@ def _header_fields(lines: list[str], fields: list[dict[str, Any]]) -> list[dict[
                 found.append((min(positions), field))
         if len(found) > len(best):
             best = found
-    return [field for _, field in sorted(best)] if len(best) >= 2 else fields
+    # No header means no source evidence for column order. The order of fields
+    # in the form is not a substitute for the source table's schema.
+    return [field for _, field in sorted(best, key=lambda item: item[0])] if len(best) >= 2 else []
 
 
 def parse_tep_text(text: str, tep_block: dict[str, Any]) -> dict[str, Any]:
@@ -223,49 +313,69 @@ def parse_tep_text(text: str, tep_block: dict[str, Any]) -> dict[str, Any]:
     order = _header_fields(lines, fields)
 
     best: dict[str, tuple[float, str]] = {}
+    conflicting: set[str] = set()
     for line in lines:
         ranked = sorted(
             ((_label_score(str(row.get("label") or ""), line), row) for row in rows),
             key=lambda item: item[0], reverse=True,
         )
-        if not ranked or ranked[0][0] < 0.53:
+        if (not ranked or ranked[0][0] < 0.53
+                or (len(ranked) > 1 and ranked[0][0] - ranked[1][0] < 0.08)):
             continue
         score, row = ranked[0]
         key = str(row.get("key") or "")
+        if key in best and score == best[key][0]:
+            previous = _numbers(best[key][1], str(row.get("label") or ""))
+            current = _numbers(line, str(row.get("label") or ""))
+            if previous and current and previous != current:
+                conflicting.add(key)
         if key not in best or score > best[key][0]:
             best[key] = (score, line)
 
     suggestions: list[dict[str, Any]] = []
+    warnings: list[str] = []
     recognized_rows = 0
     for row in rows:
         row_key = str(row.get("key") or "")
         if row_key not in best:
             continue
         score, line = best[row_key]
+        if row_key in conflicting:
+            warnings.append(f"{row.get('label') or row_key}: найдены разные строки с одной подписью; "
+                            "значения не перенесены, выберите одну таблицу на фотографии.")
+            continue
         values = _numbers(line, str(row.get("label") or ""))
         row_fields = {str(f.get("key")): f for f in row.get("fields") or []}
-        ordered = [f for f in order if str(f.get("key")) in row_fields] or list(row.get("fields") or [])
-        if not values:
+        ordered = [f for f in order if str(f.get("key")) in row_fields]
+        if not ordered or len(values) != len(ordered):
+            warnings.append(f"{row.get('label') or row_key}: столбцы не определены однозначно; "
+                            "значения не перенесены. Нужен снимок с заголовками и границами ячеек.")
             continue
-        if len(values) > len(ordered):
-            values = values[-len(ordered):]
-        recognized_rows += 1
+        wrote = False
         for field, value in zip(ordered, values):
+            if value is None:
+                continue
+            if str(field.get("key")) == "units" and value != int(value):
+                warnings.append(f"{row.get('label') or row_key}: количество не целое; проверьте снимок.")
+                continue
             suggestions.append({
                 "row_key": row_key,
                 "row_label": str(row.get("label") or row_key),
                 "field_key": str(field.get("key") or ""),
                 "field_label": str(field.get("label") or field.get("key") or ""),
                 "value": value,
-                "confidence": round(score, 3),
+                "label_similarity": round(score, 3),
                 "source_line": line,
             })
+            wrote = True
+        recognized_rows += int(wrote)
     return {
         "text": text,
         "suggestions": suggestions,
         "recognized_rows": recognized_rows,
         "total_rows": len(rows),
         "field_order": [str(f.get("key") or "") for f in order],
+        "warnings": warnings,
     }
 
 
@@ -288,6 +398,10 @@ def _drop_get_routes(app: FastAPI, paths: set[str]) -> None:
 
 
 def install(app: FastAPI, core: Any) -> None:
+    @app.post("/api/v2/tep-photo/apply")
+    def tep_photo_apply(req: TepPhotoApplyRequest) -> JSONResponse:
+        return JSONResponse(apply_photo_values(core, req), headers=_NO_STORE)
+
     @app.get("/v2/assets/upgrade.js", include_in_schema=False)
     async def upgrade_script() -> FileResponse:
         return FileResponse(_FRONTEND / "upgrade.js",

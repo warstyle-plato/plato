@@ -185,6 +185,9 @@
   function maybeSyncTeaserImport() {
     const api = window.DevelopAidV2;
     if (!api || !api.state || !api.state.result || typeof form === 'undefined' || !form || !form.draft) return;
+    // Reviewed source cells and their dependants have already been applied
+    // atomically. The legacy single-GNS repair would overwrite that packet.
+    if ((form.draft.inputs || {})._tep_source_packet?.version === 1) return;
     const result = api.state.result;
     const project = result.project || {};
     const source = String(project.source_label || '');

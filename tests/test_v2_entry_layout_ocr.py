@@ -25,15 +25,15 @@ def test_photo_input_lives_on_search_and_keeps_tep_form_rendered_for_apply():
     assert "renderStep()" in source
 
 
-def test_v2_shell_loads_entry_layout_and_teaser_fallback_before_stock_app():
+def test_v2_shell_loads_entry_layout_and_shared_document_transport_before_stock_app():
     shell = (ROOT / "developaid_v2_account_projects.py").read_text(encoding="utf-8")
 
     assert '@app.get("/v2/assets/entry-layout.js"' in shell
     assert '@app.get("/v2/assets/teaser-fallback.js"' in shell
     assert '@app.post("/api/v2/teaser-fallback"' in shell
-    assert '<script src="/v2/assets/teaser-fallback.js" defer></script>' in shell
+    assert '<script src="/agent/document-client.js" defer></script>' in shell
     assert '<script src="/v2/assets/entry-layout.js" defer></script>' in shell
-    assert shell.index('<script src="/v2/assets/teaser-fallback.js" defer></script>') < shell.index('+ marker')
+    assert shell.index('<script src="/agent/document-client.js" defer></script>') < shell.index('+ marker')
     assert shell.index('<script src="/v2/assets/entry-layout.js" defer></script>') < shell.index('+ marker')
 
 

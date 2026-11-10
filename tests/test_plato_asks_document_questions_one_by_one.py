@@ -49,12 +49,14 @@ EXTRACTION = {
     "questions": [
         {"key": "demolition_area_sqm",
          "question": f"Существующее нежилое здание 2863,7 кв.м (кад. {NUMBER}) подлежит сносу?",
+         "quote": f"здание 2863,7 кв.м (кад. {NUMBER})",
          "options": ["Снос всего здания — 2863,7 м²", "Снос не предполагается / иная площадь"]},
         {"key": "resettlement_cost_mln",
          "question": "Требуется ли расселение/освобождение объекта от прав третьих лиц?",
          "options": ["Расселение не требуется — 0", "Требуется, сумма по оценке"]},
         {"key": "",
          "question": "Обязательства перед городом (КБО: школа 47 мест, ДОО 23 места) — куда отнести их цену?",
+         "quote": "КБО: школа 47 мест, ДОО 23 места",
          "options": ["В цену сделки — платится на входе", "В соцнагрузку — идёт своей датой"]},
     ],
     "notes": [],
@@ -65,7 +67,7 @@ def _stub_model(monkeypatch) -> None:
     monkeypatch.setattr(core, "_require_web_access", lambda *_a, **_k: None)
     monkeypatch.setattr(core, "usage_track", lambda *_a, **_k: None)
     monkeypatch.setattr(document_intake, "extract_text",
-                        lambda _data, name: {"text": "Тизер. Народного 29.", "pages": 1,
+                        lambda _data, name: {"text": "[стр. 1]\n" + "\n".join(row["quote"] for row in EXTRACTION["fields"]) + "\nКБО: школа 47 мест, ДОО 23 места", "pages": 1,
                                              "filename": name})
     monkeypatch.setattr(core, "plato_answer",
                         lambda *_a: {"answer": json.dumps(EXTRACTION, ensure_ascii=False)})

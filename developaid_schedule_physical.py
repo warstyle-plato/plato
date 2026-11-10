@@ -54,22 +54,27 @@ def _unit(value):
 def _items(snapshot):
     out = {}
     for li, ledger in enumerate((snapshot or {}).get('ledgers') or []):
+        duplicates = ledgers.verified_duplicate_sources(ledger.get('items') or [])
         for ii, item in enumerate(ledger.get('items') or []):
             out[f'{li}:{ii}'] = dict(item, period_year=ledger.get('period_year'),
                                     contract=ledger.get('contract') or '',
                                     contract_date=ledger.get('contract_date') or '',
                                     contractor=ledger.get('contractor') or '')
+            # Verify immutable source evidence before enrichment changes its
+            # fingerprint. A new view stamp cannot repair a stale source proof.
+            out[f'{li}:{ii}']['is_duplicate'] = ledgers._duplicate_key(out[f'{li}:{ii}']) in duplicates
+            ledgers.stamp_duplicate_view(out[f'{li}:{ii}'])
     return out
 
 
-def _validate(config):
+def _validate(config, *, max_bindings=MAX_BINDINGS):
     if not isinstance(config, dict) or set(config) != {'tasks', 'components', 'note'}:
         raise PhysicalProblem('Не удалось прочитать состав привязки. Обновите страницу.')
     tasks, components = config['tasks'], config['components']
     if (not isinstance(tasks, list) or not isinstance(components, list)
-            or len(tasks) > MAX_BINDINGS or len(components) > MAX_BINDINGS
+            or len(tasks) > max_bindings or len(components) > max_bindings
             or not isinstance(config['note'], str) or not 1 <= len(config['note'].strip()) <= 1000):
-        raise PhysicalProblem('Укажите основание привязки и не более 1000 работ или компонентов.')
+        raise PhysicalProblem(f'Укажите основание привязки и не более {max_bindings} работ или компонентов.')
     task_ids, component_ids, row_ids = set(), set(), set()
     for task in tasks:
         if (not isinstance(task, dict) or set(task) != {'task_id', 'mode', 'scope_confirmed', 'actual_finish'}
@@ -116,7 +121,7 @@ def _history(project):
 
 
 def _sources(project, cut, pm=None):
-    return pm if pm is not None else graph._load_pm(project), ledgers.latest_snapshot(project, cut)
+    return pm if pm is not None else graph._load_pm(project), ledgers.effective_snapshot(project, cut)
 
 
 def _state(project, cut, pm, snapshot):
@@ -141,7 +146,7 @@ def catalog(project, cut, query='', offset=0):
     query = query.casefold().strip()
     rows = [dict(item_id=key, **{field: item.get(field) for field in
             ('name', 'scope', 'unit', 'plan_quantity', 'completed_quantity', 'period_year',
-             'contract', 'contract_date', 'contractor', 'source')})
+             'contract', 'contract_date', 'contractor', 'source', 'is_duplicate', 'duplicate_of', 'duplicate_note')})
             for key, item in items.items()
             if not query or query in ' '.join(str(item.get(k) or '') for k in
                                                ('name', 'scope', 'contract', 'contractor')).casefold()]
@@ -201,6 +206,11 @@ def _component(component, items, cut):
         return dict(result, reason=reason)
     if not rows or any(row is None for row in rows):
         return unknown('Выбранная строка накопительной отсутствует.')
+    duplicates = ledgers.verified_duplicate_sources(list(items.values()))
+    excluded = [key for key in component['item_ids'] if ledgers._duplicate_key(items[key]) in duplicates]
+    if excluded:
+        return dict(result, excluded_duplicate_item_ids=excluded, requires_reconciliation=True,
+                    reason='Выбрана копия строки, исключённая итогами исходника. Прежняя привязка сохранена и требует проверки.')
     result['sources'] = [{'source': row.get('source') or {}, 'period_year': row.get('period_year'),
                           'contract': row.get('contract'), 'contract_date': row.get('contract_date')}
                          for row in rows]
@@ -419,7 +429,9 @@ def render(block):
             out.append('<tr><td colspan="4">'+esc(task['reason'])+'</td></tr>')
         for c in task.get('components') or []:
             done, plan, pace = c.get('completed_quantity'), c.get('plan_quantity'), c.get('rate_per_day')
-            amount = 'неизвестно' if done is None or plan is None else f'{done:g} / {plan:g} {c.get("unit", "")} · по {c.get("period_end", "")}'
+            source_date = (('по ведомости от '+c['observation_date']) if c.get('progress_date_basis') == 'snapshot'
+                           and c.get('observation_date') else 'по '+str(c.get('period_end') or ''))
+            amount = 'неизвестно' if done is None or plan is None else f'{done:g} / {plan:g} {c.get("unit", "")} · {source_date}'
             rate = 'неизвестен' if pace is None else f'{pace:g} {c.get("unit", "")}/день · {c.get("rate_window_start", "")} — {c.get("rate_window_end", "")}'
             out.append('<tr><td>'+esc(c['component_id'])+'</td><td>'+esc(amount)+'</td><td>'+esc(rate)+'</td><td>'+esc(c.get('forecast_finish') or c.get('reason') or 'неизвестен')+'</td></tr>')
             for evidence in c.get('sources') or []:

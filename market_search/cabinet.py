@@ -1993,7 +1993,7 @@ function blockCard(b,ctx){
   } else if(b.code==='rooms'){
     const ours=s.rooms||{}, m=s.mix||{};
     const sold=Object.values(ours).reduce((a,r)=>a+(r.sold||0),0);
-    kv=cell(sold||'—','продано лотов за месяц')
+    kv=cell(sold||'—',s.rooms_window?'продано лотов за '+num(s.rooms_window.months)+' мес.':'продано лотов за месяц')
       +cell(num(s.bands_deals)||'—','сделок в полосах')
       +cell(p.projects||'—','соседей с комнатностью')
       // Разложение разрыва — ответ на «а не в наборе ли квартир дело»: наш же

@@ -125,6 +125,7 @@ def _moscow(*items: PulseProject, asked: list | None = None):
 
     return SimpleNamespace(
         base=MOSCOW, errors=[], available=True, projects=lambda **kw: list(items), price=price,
+        catalog_stamp=lambda: None, catalog_path=Path(__file__), ttl_seconds=86400,
     )
 
 

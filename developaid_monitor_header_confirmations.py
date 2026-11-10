@@ -134,6 +134,15 @@ def apply(project: str, snapshot: dict, cut: str) -> dict:
     result = dict(snapshot, ledgers=[])
     for original in snapshot.get('ledgers') or []:
         ledger = dict(original)
+        # A caller can project an already effective view to an earlier cut or
+        # after revocation. Always start from the preserved raw header value.
+        if 'contract_date_original' in ledger:
+            ledger['contract_date'] = ledger.pop('contract_date_original')
+        ledger.pop('date_confirmation', None)
+        ledger['identity_warnings'] = [warning for warning in ledger.get('identity_warnings') or []
+            if warning not in {
+                'Дата договора уточнена администратором по исходной ячейке; исходный текст не исправлен.',
+                'Уточнения даты разных полей шапки противоречат друг другу.'}]
         matches = []
         for evidence in ledger.get('contract_date_evidence') or []:
             reference = binding(snapshot, ledger, evidence)
@@ -142,6 +151,7 @@ def apply(project: str, snapshot: dict, cut: str) -> dict:
                 if record['binding'] == reference:
                     matches.append(record)
         if matches:
+            ledger['contract_date_original'] = ledger.get('contract_date')
             effective = [(record, _effective(record, cut)) for record in matches]
             dates = {version['contract_date'] for _, version in effective if version}
             if len(dates) > 1:
@@ -158,7 +168,6 @@ def apply(project: str, snapshot: dict, cut: str) -> dict:
                                                'revoked': applicable and shown['contract_date'] is None,
                                                'applicable_to_cut': applicable}
                 if applicable and shown['contract_date'] is not None:
-                    ledger['contract_date_original'] = ledger.get('contract_date')
                     ledger['contract_date'] = shown['contract_date']
                     ledger['identity_warnings'] = [*(ledger.get('identity_warnings') or []),
                         'Дата договора уточнена администратором по исходной ячейке; исходный текст не исправлен.']

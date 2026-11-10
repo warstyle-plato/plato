@@ -128,7 +128,7 @@ def test_a_task_at_full_gpr_percent_is_closed_without_the_word(tmp_path, monkeyp
     folder = monitor._project_dir("demo") / "baseline"
     folder.mkdir()
     (folder / "meta.json").write_text('{"taken_at":"2026-07-23"}')
-    monkeypatch.setattr(monitor, "_read_baseline_gpr", lambda _: {"works": [
+    monkeypatch.setattr(monitor, "_read_working_baseline_gpr", lambda _, cut="": {"works": [
         {"id": "7", "status": "Просрочено", "progress": 1.0},
         {"id": "8", "status": "В работе", "progress": 0.55},
         {"id": "9", "status": "Завершено", "progress": None},
@@ -149,7 +149,7 @@ def test_gpr_percent_written_as_hundred_scale_is_normalized(tmp_path, monkeypatc
     folder = monitor._project_dir("demo") / "baseline"
     folder.mkdir()
     (folder / "meta.json").write_text('{"taken_at":"2026-07-23"}')
-    monkeypatch.setattr(monitor, "_read_baseline_gpr", lambda _: {"works": [
+    monkeypatch.setattr(monitor, "_read_working_baseline_gpr", lambda _, cut="": {"works": [
         {"id": "5", "status": "В работе", "progress": 86.0},
     ]})
 

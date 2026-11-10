@@ -101,6 +101,7 @@ class MonitorGprPhysicalSave(MonitorCumulativeProject):
 
 
 _CUMULATIVE_PATHS = frozenset({
+    '/monitor/schedule/version-preview', '/monitor/schedule/version-approve',
     "/monitor/cumulative/upload", "/monitor/cumulative/result",
     "/monitor/cumulative/list", "/monitor/contracts/build",
     "/monitor/contracts/result", "/monitor/contracts/term", "/monitor/contracts/link", "/monitor/contracts/header-date",
@@ -129,8 +130,17 @@ def monitor_corpus_gpr_view(req: MonitorContractsBuild) -> Response:
         raise HTTPException(400, "Выберите проект.", headers=private)
     import developaid_gpr_corpus as corpus_gpr
     cut = _monitor_cumulative_day(req.cut)
-    source = corpus_gpr.latest(req.project.strip(), cut)
-    return JSONResponse(content={"source": source, "html": corpus_gpr.render_overview(source, cut)}, headers=private)
+    import hashlib as _corpus_hashlib
+    import developaid_monitor as _corpus_monitor
+
+    @_corpus_monitor.approved_schedule_read
+    def read():
+        baseline = _corpus_monitor._working_baseline_file(req.project.strip(), cut)
+        sha = _corpus_hashlib.sha256(baseline.read_bytes()).hexdigest() if baseline is not None else ""
+        source = corpus_gpr.for_view(req.project.strip(), cut, baseline_sha256=sha)
+        return JSONResponse(content={"source": source, "html": corpus_gpr.render_overview(source, cut)}, headers=private)
+
+    return read()
 
 
 def _monitor_cumulative_day(value: str) -> str:

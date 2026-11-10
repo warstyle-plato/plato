@@ -120,17 +120,27 @@ async function sendAgentDocument(file){
   const bytes=new Uint8Array(buffer);let binary='';
   for(let i=0;i<bytes.length;i+=8192)binary+=String.fromCharCode.apply(null,bytes.subarray(i,i+8192));
   await syncInputsForAgent();
-  const r=await fetch('/agent/document',{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({filename:file.name,content_b64:btoa(binary),inputs,tep,class_profile:aiClassProfile(),
-    session:activeSession(),access_key:projectsAdminKey||''})});
-  const data=await r.json().catch(()=>({}));
+  const data=await window.PlatoDocumentClient.read({filename:file.name,content_b64:btoa(binary),inputs,tep,class_profile:aiClassProfile(),
+    session:activeSession(),access_key:projectsAdminKey||''});
   thinking.remove();
-  if(!r.ok){appendAiMessage('system',(serverDetail(data)||('Документ не разобрался: HTTP '+r.status))
-   +(aiDocument?'\nВ разговоре остаётся прежний документ «'+aiDocument.filename+'».':''));return}
   aiIntake=data;aiIntakeApplied=[];aiCard=data.card||null;
   renderAiIntakeFirst(data);rememberAiDocument(data);
  }catch(e){thinking.remove();appendAiMessage('system','Документ не разобрался: '+(e.message||e))}
  finally{document.getElementById('aiFile').value='';aiBusy=false;aiSendBtn.disabled=false;aiFileBtn.disabled=false}
+}
+async function sendAgentDocumentUrl(){
+ if(aiBusy)return;
+ const url=window.prompt('Публичная ссылка https:// на документ или страницу');
+ if(!url)return;
+ aiBusy=true;aiSendBtn.disabled=true;aiFileBtn.disabled=true;
+ appendAiMessage('user','Документ по ссылке: '+url);
+ try{
+  await syncInputsForAgent();
+  const data=await window.PlatoDocumentClient.read({source_url:url.trim(),inputs,tep,class_profile:aiClassProfile(),session:activeSession(),access_key:projectsAdminKey||''});
+  aiIntake=data;aiIntakeApplied=[];aiCard=data.card||null;
+  renderAiIntakeFirst(data);rememberAiDocument(data);
+ }catch(e){appendAiMessage('system','Ссылка не прочитана: '+(e.message||e))}
+ finally{aiBusy=false;aiSendBtn.disabled=false;aiFileBtn.disabled=false}
 }
 // Разбор тизера — три шага, одинаковых на сайте и в боте (владелец,
 // 25.10.2026). Первый — только карточка: найдено (со страницей), уйдёт в
@@ -172,6 +182,8 @@ function renderAiCard(card,opts){
   +(card.pages?'<span style="color:#888"> · страниц: '+aiEsc(card.pages)+'</span>':'');
  if(card.recognized)html+='<div style="margin-top:6px;color:#8a4b08">Документ — скан: текст распознан по картинке, поэтому сверьте числа с документом.</div>';
  if(opts.trimmed)html+='<div style="margin-top:6px;color:#8a4b08">Документ длинный: прочитаны первые '+aiEsc(opts.trimmed.read_chars)+' знаков из '+aiEsc(opts.trimmed.total_chars)+'.</div>';
+ if(card.document_reason)html+='<div style="margin-top:6px;color:#8a4b08">'+aiEsc(card.document_reason)+'</div>';
+ (card.refused||[]).forEach(r=>{html+='<div style="margin-top:6px;color:#8a4b08">Не взято: '+aiEsc(r.label||r.key)+' — '+aiEsc(r.reason)+'</div>'});
  if(card.error)html+='<div style="margin-top:6px;color:#8a4b08">'+aiEsc(card.error)+'</div>';
  const found=card.found||[];
  html+='<div class="ai-card-found" style="margin-top:8px"><b>1. Что найдено в тизере</b>';
@@ -380,32 +392,20 @@ async function confirmAiCard(shown,box){
  box.appendChild(status);status.textContent='Сверяю карточку с вводными…';
  try{
   await syncInputsForAgent();
-  const r=await fetch('/agent/document/card',{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({intake_id:shown.id,inputs,tep,class_profile:aiClassProfile(),session:activeSession(),access_key:projectsAdminKey||''})});
-  const card=await r.json().catch(()=>({}));
-  if(!r.ok){status.textContent='Расчёт не запущен: '+(serverDetail(card)||('HTTP '+r.status));return}
-  if(aiCardKey(card)!==aiCardKey(shown)){
+  const r=await fetch('/agent/document/apply',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({intake_id:shown.id,card_key:shown.card_key,inputs,tep,class_profile:aiClassProfile(),session:activeSession(),access_key:projectsAdminKey||''})});
+  const result=await r.json().catch(()=>({}));
+  if(!r.ok){status.textContent='Расчёт не запущен: '+(serverDetail(result)||('HTTP '+r.status));return}
+  const card=result.card;
+  if(result.stale){
    status.textContent='Вводные поменялись после загрузки тизера, поэтому карточка собрана заново. Проверьте её и нажмите «Всё верно, считать» ещё раз.';
    aiBusy=false;renderAiCard(card);return;
   }
   aiDocBaseline=aiSnapshot();
   const rows=card.to_engine||[];
-  // Класс — первым: его профиль ставит цены и ставки, а строки карточки
-  // затем пишут ровно свои числа.
-  const cls=rows.find(x=>x.path==='inputs.project_class');
-  // Вписанное руками класс не меняет: карточка это уже сказала, поэтому окно
-  // «заменить вписанное?» здесь отвечается «оставить».
-  if(cls&&cls.value!==inputs.project_class){
-   const ask=window.confirm;window.confirm=()=>false;
-   try{applyProjectClassPreset(cls.value)}finally{window.confirm=ask}
-  }
-  rows.forEach(row=>{
-   const p=row.path.split('.');
-   if(p[0]==='inputs')inputs[p[1]]=row.value;
-   else if(p[0]==='tep'){tep[p[1]]=tep[p[1]]||{};tep[p[1]][p[2]]=row.value}
-   else if(row.path==='land.cadastral_numbers'){applyAiCadastral({label:row.label,value:row.value},card.filename);return}
-   fieldOrigins()[row.path]={source:'document',text:row.origin||aiDocumentOrigin(card.filename).text};
-  });
+  Object.assign(inputs,result.inputs);
+  Object.keys(tep).forEach(k=>delete tep[k]);Object.assign(tep,result.tep);
+  rows.forEach(row=>{if(row.path==='land.cadastral_numbers')applyAiCadastral({label:row.label,value:row.value},card.filename)});
   syncTep(false);renderInputs();renderTep();syncProjectClassSelector();
   // Сверка после записи: если пересчёт страницы сдвинул число карточки,
   // это видно здесь, а не в расчёте молча.
@@ -415,7 +415,10 @@ async function confirmAiCard(shown,box){
    .map(row=>row.label+': в карточке '+aiNum(row.value)+', в расчёте '+aiNum(aiCardValueNow(row.path)));
   if(moved.length){
    const warn=document.createElement('div');warn.style.cssText='margin-top:6px;color:#8a4b08';
-   warn.textContent='Не совпало с карточкой — '+moved.join('; ')+'.';box.appendChild(warn);
+   warn.textContent='Расчёт не запущен: не совпало с карточкой — '+moved.join('; ')+'.';box.appendChild(warn);
+   Object.keys(inputs).forEach(k=>delete inputs[k]);Object.assign(inputs,cloneValue(aiDocBaseline.inputs));
+   Object.keys(tep).forEach(k=>delete tep[k]);Object.assign(tep,cloneValue(aiDocBaseline.tep));
+   renderInputs();renderTep();return;
   }
   aiBusy=false;
   await aiRecalcInto(status);

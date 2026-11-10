@@ -71,6 +71,27 @@ class MonitorScheduleRequest(BaseModel):
     key: str = ""
 
 
+from pydantic import Field as _ScheduleVersionField
+
+
+class MonitorScheduleVersionPreviewRequest(BaseModel):
+    project: str = _ScheduleVersionField(min_length=1, max_length=200)
+    effective_from: str = _ScheduleVersionField(pattern=r'^\d{4}-\d{2}-\d{2}$')
+    gpr_base64: str = _ScheduleVersionField(min_length=1, max_length=28 * 1024 * 1024)
+    session: str = _ScheduleVersionField(default='', max_length=4096)
+    key: str = _ScheduleVersionField(default='', max_length=4096)
+    owner_rnv_date: str | None = _ScheduleVersionField(default=None, pattern=r'^\d{4}-\d{2}-\d{2}$')
+    owner_rnv_note: str | None = _ScheduleVersionField(default=None, max_length=1000)
+    baseline_scope: str | None = _ScheduleVersionField(default=None, pattern=r'^(full_schedule|remaining_work)$')
+    audit_cut: str | None = _ScheduleVersionField(default=None, pattern=r'^\d{4}-\d{2}-\d{2}$')
+
+
+class MonitorScheduleVersionApproveRequest(MonitorScheduleVersionPreviewRequest):
+    expected_previous_sha256: str = _ScheduleVersionField(pattern=r'^[0-9a-f]{64}$')
+    expected_source_sha256: str = _ScheduleVersionField(pattern=r'^[0-9a-f]{64}$')
+    expected_owner_rnv_revision: int | None = _ScheduleVersionField(default=None, strict=True, ge=0)
+
+
 class MonitorGanttRequest(BaseModel):
     project: str
     cut: str
@@ -221,6 +242,44 @@ def monitor_store_schedule(req: MonitorScheduleRequest) -> dict[str, Any]:
         raise HTTPException(400, str(exc))
 
 
+def _monitor_schedule_version(req, *, approve=False):
+    _require_team_access(req.session, req.key, 'Монитор проекта', write=approve)
+    import developaid_schedule_versions as versions
+    try:
+        data = base64.b64decode(req.gpr_base64, validate=True)
+        options = {key: getattr(req, key) for key in ('owner_rnv_date', 'owner_rnv_note', 'baseline_scope')
+                   if getattr(req, key) is not None}
+        if req.audit_cut is not None:
+            if approve:
+                raise ValueError('Историческая проверка выполняется только при предварительном просмотре.')
+            options['audit_cut'] = req.audit_cut
+        if approve and req.expected_owner_rnv_revision is not None:
+            options['expected_owner_rnv_revision'] = req.expected_owner_rnv_revision
+        result = (developaid_monitor.approve_schedule_version(
+            req.project, data, req.effective_from,
+            expected_previous_sha256=req.expected_previous_sha256,
+            expected_source_sha256=req.expected_source_sha256,
+            author=_monitor_note_author(req.session, req.key), **options) if approve else
+            developaid_monitor.schedule_version_preview(req.project, data, req.effective_from, **options))
+        return JSONResponse(content=result, headers={'Cache-Control': 'private, no-store'})
+    except versions.ScheduleVersionConflict as exc:
+        raise HTTPException(409, str(exc)) from None
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    except OSError:
+        raise HTTPException(503, 'Версии утверждённого ГПР сейчас недоступны. Повторите запрос.') from None
+
+
+@app.post('/monitor/schedule/version-preview', include_in_schema=False)
+def monitor_schedule_version_preview(req: MonitorScheduleVersionPreviewRequest) -> Response:
+    return _monitor_schedule_version(req)
+
+
+@app.post('/monitor/schedule/version-approve', include_in_schema=False)
+def monitor_schedule_version_approve(req: MonitorScheduleVersionApproveRequest) -> Response:
+    return _monitor_schedule_version(req, approve=True)
+
+
 class MonitorNotesRequest(BaseModel):
     project: str
     note_id: str = ""
@@ -256,6 +315,7 @@ class MonitorScheduleFactRequest(BaseModel):
     project: str
     taken_at: str
     content_base64: str
+    expected_source_sha256: str = ''
     session: str = ""
     key: str = ""
 
@@ -271,6 +331,7 @@ class MonitorWorkFactRequest(BaseModel):
     project: str
     taken_at: str
     rows: list[dict[str, Any]] = []
+    expected_source_sha256: str = ''
     session: str = ""
     key: str = ""
 
@@ -281,7 +342,7 @@ def monitor_store_work_fact(req: MonitorWorkFactRequest) -> dict[str, Any]:
     _require_team_access(req.session, req.key, "Монитор проекта")
     try:
         return developaid_monitor.store_work_fact(
-            req.project, req.rows, req.taken_at)
+            req.project, req.rows, req.taken_at, expected_source_sha256=req.expected_source_sha256)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
 
@@ -290,6 +351,7 @@ class MonitorStageCloseRequest(BaseModel):
     project: str
     taken_at: str
     object_query: str = ""
+    expected_source_sha256: str = ''
     session: str = ""
     key: str = ""
 
@@ -538,7 +600,7 @@ def monitor_close_stage(req: MonitorStageCloseRequest) -> dict[str, Any]:
     _require_team_access(req.session, req.key, "Монитор проекта")
     try:
         return developaid_monitor.close_completed_stage(
-            req.project, req.object_query, req.taken_at)
+            req.project, req.object_query, req.taken_at, expected_source_sha256=req.expected_source_sha256)
     except FileNotFoundError as exc:
         raise HTTPException(404, str(exc))
     except ValueError as exc:
@@ -551,7 +613,8 @@ def monitor_store_schedule_fact(req: MonitorScheduleFactRequest) -> dict[str, An
     _require_team_access(req.session, req.key, "Монитор проекта")
     try:
         return developaid_monitor.store_schedule_fact(
-            req.project, base64.b64decode(req.content_base64), req.taken_at)
+            req.project, base64.b64decode(req.content_base64), req.taken_at,
+            expected_source_sha256=req.expected_source_sha256)
     except FileExistsError as exc:
         raise HTTPException(409, str(exc))
     except ValueError as exc:
