@@ -12,11 +12,14 @@
 копия `f00b3ad4f4a77c47822adec0f31f79a36d9767b511df9bd80fd067ad12cf8d7b`,
 189101 байт. Прежний вход из da75 заменён; прежний исходник не применяется.
 
-Для этого входа создан отдельный временный transport key. Он остаётся в
-закрытом рабочем каталоге контроля и не входит в репозиторий. Шифрование,
-точное совпадение после локальной дешифровки и отказ при повреждении
-ciphertext проверены. Публичный сертификат шифрования выходного свидетельства
-сохранён без изменений; его приватный ключ здесь не нужен.
+Прежний transport-key путь сохранён только как фиксированный offline/default
+путь протокола. Он требовал нового GitHub Secret, к управлению которым текущая
+интеграция не допущена. Текущий ops workflow вместо него создаёт временную
+RSA-3072 пару непосредственно в RUNNER_TEMP данного ручного запуска. Закрытый
+ключ не покидает runner, имеет режим0600 и удаляется always; публичный сертификат
+и generic run metadata публикуются отдельным artifact. Существующий
+DEVELOPAID_ADMIN_KEY используется только прежним административным API после
+расшифровки и проверки фиксированного входа. Новых Secrets/permissions нет.
 
 Независимая проверка закреплённого входа и точного ops HEAD выполняется
 отдельно от синтетической приёмки протокола. Подготовка не является запуском:
@@ -32,8 +35,10 @@ ciphertext проверены. Публичный сертификат шифр�
 30.09.2027; существующее иное решение не перезаписывается.
 
 Шифрование входа — CMS AuthEnvelopedData, AES-256-GCM, RSA-OAEP с SHA-256
-и MGF1/SHA-256. Фиксируются SHA ciphertext и всего authenticated plaintext,
-затем проверяются схема, реквизиты и точные байты нового источника. Произвольных
+и MGF1/SHA-256. В прежнем default-пути фиксируются SHA ciphertext и authenticated plaintext.
+В ephemeral-пути новый ciphertext может измениться только из-за нового ключа:
+неизменный полный PLAINTEXT_SHA256, схема, реквизиты и точные байты нового
+источника проверяются прежней функцией до чтения административного ключа. Произвольных
 project selector, файлов, URL или payload в workflow inputs нет.
 
 ## Контекст запуска и API
@@ -48,9 +53,12 @@ project selector, файлов, URL или payload в workflow inputs нет.
 tracked-файлы чисты. Разрешён только ручной dispatch с run_attempt=1.
 Права — contents:read; concurrency отдельная, cancel-in-progress=false.
 
-HTTP разрешён только на фиксированный origin помощника: health, существующие
-version-preview/version-approve и read-only schedule-gpr-physical/view.
-Redirect, discovery, произвольные адреса, скачивание файлов, model calls,
+При применении HTTP разрешён только на фиксированный origin помощника: health,
+существующие version-preview/version-approve и read-only schedule-gpr-physical/view.
+Отдельный read-only transport читает строго фиксированные ref/commit/contents
+пути api.github.com для того же репозитория. GITHUB_TOKEN не передаётся помощнику,
+openssl или в proof. Оба origin запрещают redirect и ограничивают ответы.
+Redirect, discovery, произвольные адреса, произвольное скачивание файлов, model calls,
 выпуск, rollback и mutation retry отсутствуют. Ответы ограничены по размеру
 и времени; неоднозначный JSON, нечисловые числовые значения и повтор ключа
 отклоняются без публикации тела ошибки.
@@ -125,3 +133,45 @@ Stdout содержит только booleans, счётчики и фиксир�
 производственные данные. Offline проверки: .github/diagnostics/test_apply_approved_gpr.py.
 Коды: setup=1,input=2,crypto=3,deadline=4,transport/HTTP=5/6,response=7,
 runtime=8,fence=9,postflight=10,protected proof=11.
+
+## Доставка через временный ключ без нового Secret
+
+Это тот же однократный manual workflow и та же ops-ветка, не новая очередь.
+Стартовый checkout и весь исполняемый код закреплены за GITHUB_SHA. Prepare
+проверяет прежние actor/ref/run_attempt/workflow SHA gates, создаёт private.pem,
+public.pem и public.json в RUNNER_TEMP/gpr-session-RUN_ID-1. Artifact
+`approved-gpr-input-public` содержит **ровно public.pem/public.json** и хранится
+один день; метаданные не содержат проекта или первички. До отправки контроль
+сверяет artifact/run/head по GitHub, а в public.json: schema1, repository, ref,
+run_id, run_attempt1, workflow_sha, expected_runtime_commit, certificate_sha256,
+nonce и created_utc. Субъект сертификата общий, без клиентского названия.
+
+Контроль шифрует уже проверенный неизменный manifest на public.pem:
+
+```sh
+openssl cms -encrypt -aes-256-gcm -binary -outform DER \
+  -recip public.pem -keyopt rsa_padding_mode:oaep \
+  -keyopt rsa_oaep_md:sha256 -keyopt rsa_mgf1_md:sha256 \
+  < PRIVATE_FIXED_MANIFEST > NEW_CIPHERTEXT.cms
+```
+
+В течение15мин контроль публикует **единственный прямой дочерний commit**
+стартового ops HEAD, меняющий только `.github/diagnostics/gpr-approval-input.cms`
+на новый ciphertext. Никакие другие файлы/коммиты не допускаются. Transport
+читает fixed ref, проверяет parent и состав commit, затем читает contents по
+неизменному SHA этого commit; checkout не меняется, git pull отсутствует.
+Проверяются blob SHA, размер, base64 и отличие от прежнего ciphertext. Новый
+конверт обязан расшифроваться только текущим временным ключом и дать прежний
+точный authenticated plaintext; прежний ключ/конверт успешной доставкой не
+считаются. Ошибка/неожиданный commit прекращают запуск без записи.
+
+Ожидание ограничено15мин и отдельным сигналом; read-only ответы читаются
+ограниченными кусками с deadline. Только после доставки создаётся прежний
+Operation и начинается отдельный240-секундный срок применения. До decrypt,
+private API, записи и после неё повторно проверяется актуальный runtime;
+UTC-дата и остальные guards прежние. На workflow выделено22мин. Итог по-прежнему
+различает attempted/verified/unknown; повторная запись или automatic retry
+не добавлены. Always cleanup удаляет gpr-session-* вместе с прежними gpr-input-*
+и gpr-proof-*. Независимая приёмка нового точного ops SHA обязательна.
+
+Offline transport-контрпримеры: `.github/diagnostics/test_ephemeral_gpr_transport.py`.

@@ -514,7 +514,7 @@ def test_workflow_has_only_explicit_fixed_scope_and_ciphertext_artifact():
     assert 'repository_owner' not in job['if'] and ops.BRANCH in job['if']
     checkout = job['steps'][0]
     assert checkout['with']['ref']=='${{ github.sha }}' and checkout['with']['persist-credentials'] is False
-    artifact = next(step for step in job['steps'] if str(step.get('uses','')).startswith('actions/upload-artifact'))
+    artifact = next(step for step in job['steps'] if step.get('with',{}).get('name')=='approved-gpr-apply-encrypted')
     assert artifact['if']=="always() && steps.apply.outputs.proof_created == 'true'"
     assert artifact['with']['path']=='${{ runner.temp }}/approved-gpr-apply-proof.cms'
     assert artifact['with']['retention-days']==1 and job['steps'][-1]['if']=='always()'

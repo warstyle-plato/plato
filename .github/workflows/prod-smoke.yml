@@ -27,20 +27,34 @@ jobs:
       github.triggering_actor == 'warstyle-plato' &&
       github.event_name == 'workflow_dispatch' && github.run_attempt == 1
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 22
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
           fetch-depth: 1
+      - name: Создать одноразовый открытый ключ для согласованного файла
+        env:
+          EXPECTED_RUNTIME_COMMIT: ${{ inputs.expected_runtime_commit }}
+        run: python3 .github/diagnostics/ephemeral-gpr-transport.py prepare
+      - name: Открытый сертификат и реквизиты текущего запуска
+        uses: actions/upload-artifact@v7
+        with:
+          name: approved-gpr-input-public
+          path: |
+            ${{ runner.temp }}/gpr-session-${{ github.run_id }}-1/public.pem
+            ${{ runner.temp }}/gpr-session-${{ github.run_id }}-1/public.json
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
       - name: Проверить границы и применить проверенную версию
         id: apply
         env:
           EXPECTED_RUNTIME_COMMIT: ${{ inputs.expected_runtime_commit }}
-          GPR_ONCE_TRANSPORT_KEY: ${{ secrets.PLATO_GPR_APPROVAL_ONCE_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
           APPLY_ADMIN_KEY: ${{ secrets.DEVELOPAID_ADMIN_KEY }}
-        run: python3 .github/diagnostics/apply-approved-gpr.py
+        run: python3 .github/diagnostics/ephemeral-gpr-transport.py apply
       - name: Зашифрованное свидетельство результата
         if: always() && steps.apply.outputs.proof_created == 'true'
         uses: actions/upload-artifact@v7
@@ -58,7 +72,7 @@ jobs:
           from pathlib import Path
           import shutil
           root = Path(os.environ['RUNNER_TEMP'])
-          for prefix in ('gpr-input-', 'gpr-proof-'):
+          for prefix in ('gpr-input-', 'gpr-proof-', 'gpr-session-'):
               for path in root.glob(prefix+'*'):
                   if path.is_symlink():
                       path.unlink()

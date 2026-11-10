@@ -140,9 +140,11 @@ def trusted_checkout(environment, run=subprocess.run):
         raise ApplyError(SETUP)
 
 
-def decrypt_bundle(envelope, key, runner_temp):
+def decrypt_bundle(envelope, key, runner_temp, *, envelope_sha256=None):
     input_ready()
-    if (not envelope or len(envelope) > MAX_INPUT or sha(envelope) != INPUT_SHA256
+    expected_envelope = INPUT_SHA256 if envelope_sha256 is None else envelope_sha256
+    if (not digest(expected_envelope) or not envelope or len(envelope) > MAX_INPUT
+            or sha(envelope) != expected_envelope
             or not isinstance(key, str) or not key.startswith('-----BEGIN PRIVATE KEY-----')
             or not 1000 <= len(key) <= 8192):
         raise ApplyError(INPUT)
@@ -498,7 +500,7 @@ def encrypt_proof(proof, recipient, target, runner_temp, secrets=()):
         raise ApplyError(PROOF) from None
 
 
-def main():
+def main(input_provider=None):
     started = time.monotonic()
     operation, proof_created = None, False
     summary = {'ok':False,'write_attempted':False,'write_response_verified':False,
@@ -509,21 +511,33 @@ def main():
         os.umask(0o077)
         trusted_checkout(os.environ)
         input_ready()
-        operation = Operation(os.environ.get('EXPECTED_RUNTIME_COMMIT',''))
-        envelope = bounded_file(INPUT_PATH,MAX_INPUT)
-        recipient = bounded_file(PUBLIC_RECIPIENT,16384)
-        if sha(envelope) != INPUT_SHA256 or sha(recipient) != RECIPIENT_SHA256:
-            raise ApplyError(INPUT)
         temporary = Path(os.environ['RUNNER_TEMP'])
         if not temporary.is_absolute() or not temporary.is_dir():
             raise ApplyError(SETUP)
         target = temporary/'approved-gpr-apply-proof.cms'
         if target.exists():
             raise ApplyError(SETUP)
+        recipient = bounded_file(PUBLIC_RECIPIENT,16384)
+        if sha(recipient) != RECIPIENT_SHA256:
+            raise ApplyError(INPUT)
+        if input_provider is None:
+            envelope = bounded_file(INPUT_PATH,MAX_INPUT)
+            if sha(envelope) != INPUT_SHA256:
+                raise ApplyError(INPUT)
+            transport_key = os.environ.pop('GPR_ONCE_TRANSPORT_KEY','')
+            envelope_hash = None
+        else:
+            # The pinned ephemeral provider waits before the four-minute apply clock.
+            # Authenticated plaintext identity and all operation gates stay fixed.
+            envelope, transport_key = input_provider(temporary)
+            envelope_hash = sha(envelope)
+        operation = Operation(os.environ.get('EXPECTED_RUNTIME_COMMIT',''))
         signal.signal(signal.SIGALRM,expired)
         signal.alarm(TOTAL_SECONDS)
         operation.proof['health_before'] = operation.health()
-        bundle = decrypt_bundle(envelope,os.environ.pop('GPR_ONCE_TRANSPORT_KEY',''),temporary)
+        bundle = (decrypt_bundle(envelope,transport_key,temporary) if envelope_hash is None else
+                  decrypt_bundle(envelope,transport_key,temporary,envelope_sha256=envelope_hash))
+        transport_key = ''
         operation.proof['health_before_private_requests'] = operation.health()
         operation.execute(bundle,os.environ.pop('APPLY_ADMIN_KEY',''))
     except ApplyError as exc:
