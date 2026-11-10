@@ -1252,9 +1252,13 @@ def projects() -> list[dict[str, Any]]:
     return out
 
 
+@approved_schedule_read
 def trend(project: str, cut: Any, programme: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     points = []
+    cutoff = _day(cut)
     for day in snapshots(project)["estimate"]:
+        if cutoff is not None and (_day(day) is None or _day(day) > cutoff):
+            continue
         try:
             point = build(project, cut=day, upto=day)
         except Exception:
