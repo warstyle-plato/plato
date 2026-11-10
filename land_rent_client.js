@@ -386,10 +386,14 @@ function renderLandRentEditor(){
    ['regular_only','Здесь обычная аренда; повышенная часть уточняется отдельно'],['full_year_in_vri','Вся аренда первого года уже включена в сумму ВРИ']]);
   if(inputs.land_rent_first_year_relation==='full_year_in_vri')landRentField(extra,'land_rent_first_year_confirmed','Подтверждаю: в ВРИ включены обычная аренда и повышенная часть первого года','checkbox');
   if(preset?.region==='msk'){
-   // Our VRI fee already contains the raised first-year part; only a fee
-   // typed by hand needs the owner's answer (developaid_land_rent.vri_premium).
-   const feeTyped=isFieldManual('inputs.land_rights_cost_mln')||!(Number(inputs.land_rights_cost_mln||0)>0);
-   if(feeTyped)landRentField(extra,'land_rent_premium_status','В первый год аренды к обычной ставке добавляется повышенная часть. Входит ли она в плату за смену ВРИ?','select',[
+   // Only the backend's amount-bound composition proof can answer this;
+   // a positive calculated/imported fee alone does not establish inclusion.
+   const premiumProof=landRentResult()?.premium;
+   const currentProof=(inputs._field_origin||{})['inputs.land_rights_cost_mln']?.rent_premium;
+   const sourceProved=premiumProof?.derived&&premiumProof.vri_amount_mln===Number(inputs.land_rights_cost_mln)
+    &&JSON.stringify(currentProof)===JSON.stringify(premiumProof.evidence)
+    &&(!inputs.land_rent_premium_status||inputs.land_rent_premium_status==='unknown');
+   if(!sourceProved)landRentField(extra,'land_rent_premium_status','В первый год аренды к обычной ставке добавляется повышенная часть. Входит ли она в плату за смену ВРИ?','select',[
     ['unknown','Пока не знаю'],['in_vri','Да, входит в плату за смену ВРИ'],['separate_required','Нет, её нужно посчитать отдельно'],['not_applicable','К моему договору она не применяется']]);
    const premium=note(payment,'');premium.className='lr-premium lr-note';
   }

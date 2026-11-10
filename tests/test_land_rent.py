@@ -259,18 +259,50 @@ def test_manual_parcel_cutoff_has_origin_and_resolves_unlinked_late_social_scope
     assert fixed["construction_total"] == pytest.approx(10.5e6)
 
 
-def test_premium_is_derived_from_our_vri_fee_and_asked_only_for_a_typed_one():
-    x = settings(land_rent_mode="msk_mkd_3_2", land_rent_preset_confirmed=True, land_rights_cost_mln=100,
-                 _field_origin={"inputs.land_rights_cost_mln": {"source": "glavapu", "text": "ГлавАПУ"}})
-    derived = rent.build(x, date(2027, 1, 1), date(2028, 1, 1))
-    assert derived["premium"]["derived"] and derived["premium"]["status"] == "in_vri"
-    assert "premium" not in derived["financial_missing_codes"]
-    typed = {**x, "_field_origin": {"inputs.land_rights_cost_mln": {"source": "manual", "text": "Вручную"}}}
-    asked = rent.build(typed, date(2027, 1, 1), date(2028, 1, 1))
+@pytest.mark.parametrize("origin", [None, {"source":"glavapu"}, {"source":"document"}, {"source":"manual"}])
+def test_positive_vri_fee_does_not_prove_premium_composition(origin):
+    x = settings(land_rent_mode="msk_mkd_3_2", land_rent_preset_confirmed=True, land_rights_cost_mln=100)
+    if origin:
+        x["_field_origin"] = {"inputs.land_rights_cost_mln":origin}
+    asked = rent.build(x, date(2027,1,1),date(2028,1,1))
     assert not asked["premium"]["derived"] and "premium" in asked["financial_missing_codes"]
-    answered = rent.build({**typed, "land_rent_premium_status": "in_vri"}, date(2027, 1, 1), date(2028, 1, 1))
+    answered = rent.build({**x, "land_rent_premium_status":"in_vri"},date(2027,1,1),date(2028,1,1))
     assert "premium" not in answered["financial_missing_codes"]
     assert answered["construction_total"] == asked["construction_total"] == pytest.approx(1.5e6)
+
+
+@pytest.mark.parametrize("included", [False, True])
+def test_amount_bound_source_composition_is_automatic_but_owner_decision_wins(included):
+    proof = {"schema":1,"included_in_vri":included,"fee_mln":100,"source":"Состав расчёта по документу"}
+    x = settings(land_rent_mode="msk_mkd_3_2",land_rent_preset_confirmed=True,land_rights_cost_mln=100,
+        _field_origin={"inputs.land_rights_cost_mln":{"source":"document","rent_premium":proof}})
+    result = rent.build(x,date(2027,1,1),date(2028,1,1))
+    assert result["premium"]["derived"] and result["premium"]["status"] == ("in_vri" if included else "separate_required")
+    assert ("premium" in result["financial_missing_codes"]) is (not included)
+    for status in ("in_vri","not_applicable","separate_required"):
+        own = rent.vri_premium({**x,"land_rent_premium_status":status})
+        assert own["status"] == status and not own["derived"]
+    assert rent.vri_premium({**x,"land_rights_cost_mln":101})["status"] == "unknown"
+    for invalid in ({**proof,"included_in_vri":"true"},{**proof,"schema":True},{**proof,"source":" "},
+                    {**proof,"extra":"unsupported"}):
+        bad = {**x,"_field_origin":{"inputs.land_rights_cost_mln":{"rent_premium":invalid}}}
+        assert rent.vri_premium(bad)["status"] == "unknown"
+
+
+def test_manual_vri_formula_declares_exclusion_without_inventing_the_raised_rent():
+    import main_legacy as core
+    fee = core.vri_manual_payment([{"type":"mkd", "spp_sqm":10000, "base_cost_rub":200000}],
+                                  .15, 1, land_right="lease")
+    assert fee["total_mln"] == pytest.approx(568.352)
+    assert fee["rent_premium"]["included_in_vri"] is False
+    assert fee["rent_premium"]["fee_mln"] == fee["total_mln"]
+    x = settings(land_rent_mode="msk_mkd_3_2",land_rent_preset_confirmed=True,
+        land_rights_cost_mln=fee["total_mln"],land_rent_payment_mode="manual",land_rent_payment_schedule="100%@0",
+        _field_origin={"inputs.land_rights_cost_mln":{"rent_premium":fee["rent_premium"]}})
+    result = rent.build(x,date(2027,1,1),date(2028,1,1))
+    assert result["premium"]["derived"] and result["premium"]["status"] == "separate_required"
+    assert not result["financial_complete"] and "premium" in result["financial_missing_codes"]
+    assert result["construction_total"] == pytest.approx(1.5e6)
 
 
 def test_missing_lease_start_is_assumed_from_project_start_and_disclosed():

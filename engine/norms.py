@@ -117,6 +117,10 @@ def vri_manual_payment(rows: list[dict[str, Any]], rent_coeff: float,
     return {
         "lines": lines,
         "total_mln": round(total / 1e6, 3),
+        "rent_premium": ({"schema": 1, "included_in_vri": False,
+                          "fee_mln": round(total / 1e6, 3),
+                          "source": "Расчёт vri_manual_payment: повышенная часть первого года аренды по 273-ПП в плату за смену ВРИ не входит."}
+                         if leased else None),
         "rent_coeff": rent,
         "index": factor,
         "index_date": _GLAVAPU_VRI_BASE_INDEXATION_DATE,

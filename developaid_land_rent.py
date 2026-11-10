@@ -192,28 +192,34 @@ def _payment_schedule(raw: Any, start: date, end: date, amount: float) -> tuple[
 
 
 def vri_premium(x: dict[str, Any]) -> dict[str, Any]:
-    """Whether the first-year raised part (273-PP app. 8) is inside the VRI fee.
+    """Use an explicit owner decision or amount-bound source semantics.
 
-    Our VRI fee — the GlavAPU import or the calculation for the parcel — is
-    built from the app. 8 rent coefficient and base costs, so such a fee
-    already contains that part. Only a fee typed by hand needs the owner's
-    answer; a free-text "source" is no longer asked.
+    A positive fee, a coefficient or an origin label does not establish its
+    composition. In particular ``norms.vri_manual_payment`` excludes the
+    raised rent. Missing or stale structured evidence remains unknown.
     """
     fee = _number(x.get("land_rights_cost_mln")) or 0.0
     origin = _mapping(_mapping(x.get("_field_origin")).get("inputs.land_rights_cost_mln"))
-    typed = origin.get("source") == "manual"
-    if fee > 0 and not typed:
-        where = "из расчёта ГлавАПУ" if origin.get("source") == "glavapu" else "рассчитана по участку"
-        return {"status": "in_vri", "derived": True,
-                "source": f"Плата за смену ВРИ {where} по ставкам приложения 8 к 273-ПП; повышенная часть первого года аренды в неё уже входит."}
     status = str(x.get("land_rent_premium_status") or "unknown")
     if status == "in_vri" and fee > 0:
         return {"status": status, "derived": False,
-                "source": "Вы подтвердили, что вписанная вручную плата за смену ВРИ включает повышенную часть первого года."}
+                "source": "Вы подтвердили, что плата за смену ВРИ включает повышенную часть первого года."}
     if status == "not_applicable":
         return {"status": status, "derived": False,
                 "source": "Вы подтвердили, что повышенная часть первого года к договору не применяется."}
-    return {"status": "separate_required" if status == "separate_required" else "unknown", "derived": False, "source": ""}
+    if status == "separate_required":
+        return {"status": status, "derived": False, "source": "Вы указали, что повышенная часть первого года оплачивается отдельно; её сумма ещё не определена."}
+    proof = _mapping(origin.get("rent_premium"))
+    proof_fee = _number(proof.get("fee_mln"))
+    source = proof.get("source")
+    if (set(proof) == {"schema", "included_in_vri", "fee_mln", "source"}
+            and type(proof.get("schema")) is int and proof["schema"] == 1
+            and type(proof.get("included_in_vri")) is bool
+            and fee > 0 and proof_fee is not None and math.isclose(proof_fee, fee, rel_tol=0, abs_tol=1e-9)
+            and isinstance(source, str) and source.strip()):
+        return {"status": "in_vri" if proof["included_in_vri"] else "separate_required", "derived": True,
+                "source": source.strip(), "evidence": dict(proof)}
+    return {"status": "unknown", "derived": False, "source": ""}
 
 
 def build(inputs: dict[str, Any], project_start: date, rve: date,
@@ -416,6 +422,9 @@ def build(inputs: dict[str, Any], project_start: date, rve: date,
         if tail not in ("unknown", "repeat_last"):
             missing.append("Выберите правило продолжения ставок после последнего заданного года.")
     accrual: dict[date, float] = defaultdict(float)
+    # Allocate within each rate/index/exclusion segment, before month totals
+    # lose that information. Payments and every consumer reuse these amounts.
+    phase_accrual = [defaultdict(float) for _ in release]
     indices: dict[int, float | None] = {}
     if mode == "mo_housing_new_2026":
         raw_indices = x.get("land_rent_calendar_indices") or []
@@ -499,7 +508,12 @@ def build(inputs: dict[str, Any], project_start: date, rve: date,
                 if amount is None:
                     row["amount"] = None
                 else:
-                    accrual[month.replace(day=1)] += amount
+                    month_key = month.replace(day=1)
+                    accrual[month_key] += amount
+                    if phased:
+                        whole = weighted(month, finish)
+                        for i, own in enumerate(phase_accrual):
+                            own[month_key] += amount * weighted(month, finish, only=i) / whole if whole else 0.0
                     construction_known += amount
                     row["known_amount"] += amount
                     if row["amount"] is not None:
@@ -514,8 +528,11 @@ def build(inputs: dict[str, Any], project_start: date, rve: date,
     premium = vri_premium(x)
     out["premium"] = {"required": premium_required, **premium,
                       "vri_amount_mln": _number(x.get("land_rights_cost_mln"))}
-    if premium_required and not premium["source"]:
-        out["financial_missing"].append("В первый год аренды в Москве к обычной ставке добавляется повышенная часть. Плата за смену ВРИ вписана вручную или не задана, поэтому неизвестно, входит ли эта часть в неё. Укажите это в разделе «Первый год, ВРИ и график оплаты».")
+    if premium_required and premium["status"] not in ("in_vri", "not_applicable"):
+        out["financial_missing"].append(
+            "Повышенная часть первого года аренды оплачивается отдельно; её сумма ещё не определена."
+            if premium["status"] == "separate_required" else
+            "В первый год аренды в Москве к обычной ставке добавляется повышенная часть. Состав платы за смену ВРИ не подтверждён. Укажите, входит ли эта часть в неё, в разделе «Первый год, ВРИ и график оплаты».")
         out["financial_missing_codes"].append("premium")
     after_unknown = False
     after_start = max(rve, project_start, anchor)
@@ -545,16 +562,8 @@ def build(inputs: dict[str, Any], project_start: date, rve: date,
     out["monthly"] = {m.isoformat(): value for m, value in sorted(payments.items())}
     out["cash_total"] = sum(payments.values())
     if phased:
-        # Each month's rent is split among the queues still on the lease (not
-        # yet commissioned, including the ones not yet started) by their
-        # weight in that month; a manual payment schedule — by accrual totals.
-        # The workbook repeats the same month fractions cell by cell.
-        def fractions(month: date) -> list[float]:
-            a, b = max(month, project_start), min(_next_month(month), boundary)
-            whole = weighted(a, b) if a < b else 0.0
-            return [weighted(a, b, only=i) / whole if whole else share for i, (share, _) in enumerate(release)]
-        split = {m: fractions(m) for m in sorted(accrual)}
-        phase_accrual = [{m: accrual[m] * f[i] for m, f in split.items()} for i in range(len(release))]
+        # A manual payment schedule follows each queue's exact accrued
+        # obligation, not a second monthly base-times-days approximation.
         known = out["known_total"]
         phase_cash = phase_accrual if out["cash_schedule_estimated"] else [
             {m: v * (sum(b.values()) / known if known else share) for m, v in sorted(payments.items())}

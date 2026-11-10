@@ -323,6 +323,10 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
     phase_end = phase_first + phase_count - 1
     g_month_row = phase_end + 2
     phase_month_first = g_month_row + 2
+    # Each phase allocates the existing monetary year/month cells on their
+    # exact intervals. Never redistribute an already aggregated month: rates
+    # or the excluded first year may change within it.
+    phase_segment_first = phase_month_first + 5 * phase_count + 3
     cutoff = 'IF(COUNT($F$10)=1,MIN($F$10,$B$15),$B$15)'
 
     def g_phase(t: str, r: int) -> str:
@@ -356,9 +360,19 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
         for space in (" ", "\t", "\n", "\r", "\u00a0"):
             source_text = f'SUBSTITUTE({source_text},"{space}","")'
         premium_relevant = f'AND($B$8="{preset["label"]}",MAX(0,MIN(EDATE($B$10,12),{cutoff_for_gate})-MAX($B$10,$B$14))>0)'
+        source_amount_gate = "1"
+        if premium.get("derived") and premium.get("status") == "in_vri":
+            # A source-proved inclusion is bound to the fee it described.
+            # Editing the explicit confirmation/source in the workbook is
+            # an owner decision; changing only the fee is not such proof.
+            proof = premium.get("evidence") or {}
+            proof_fee = _numeric(proof.get("fee_mln"))
+            proof_source = str(premium.get("source") or "").replace('"', '""')
+            source_amount_gate = (f'IF(AND($L$16="Учтена в ВРИ",$L$19="{proof_source}"),'
+                                  f'ABS($L$20-{proof_fee if proof_fee is not None else -1})<0.000000001,1)')
         premium_gate = (f'OR($B$8="Не применяется",$I$14="Собственность",{premium_relevant}=0,'
             f'AND(LEN({source_text})>0,OR($L$16="Не применяется по основанию",'
-            f'AND($L$16="Учтена в ВРИ",COUNT($L$20)=1,$L$20>0))))')
+            f'AND($L$16="Учтена в ВРИ",COUNT($L$20)=1,$L$20>0,{source_amount_gate}))))')
     social_dates = result.get("unlinked_social_dates") or {}
     social_serials = [_serial(value) for value in social_dates.values()] if isinstance(social_dates,dict) else []
     social_serials = [value for value in social_serials if value is not None]
@@ -593,7 +607,7 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
             put(r, f"E{r}", formula=f"SUM(D{base+3}:{last_col}{base+3})", style=styles["amount"])
             put(r, f"F{r}", formula=f"SUM(D{base+4}:{last_col}{base+4})", style=styles["amount"])
             for k, label in enumerate(("база × дни к началу месяца", "база × дни к концу месяца",
-                                       "доля в аренде месяца", "начисление, млн ₽", "платёж, млн ₽")):
+                                       "доля начисления месяца", "начисление, млн ₽", "платёж, млн ₽")):
                 put(base+k, f"A{base+k}", f"Очередь {p+1}: {label}")
             phase_cash_rows.append(base + 4)
         else:
@@ -607,18 +621,32 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
         put(g_month_row+1, f"{col}{g_month_row+1}", formula=g(f"EDATE({col}$3,1)"), style=styles["amount"])
         if not phased:
             continue
-        starts = [f"{col}{phase_month_first + 5*p}" for p in range(phase_count)]
-        ends = [f"{col}{phase_month_first + 5*p + 1}" for p in range(phase_count)]
-        whole = f'({"+".join(ends)})-({"+".join(starts)})'
         for p in range(phase_count):
             r, base = phase_first + p, phase_month_first + 5 * p
             put(base, f"{col}{base}", formula="IFERROR(" + g_phase(f"{col}$3", r) + ",0)", style=styles["amount"])
             put(base+1, f"{col}{base+1}", formula="IFERROR(" + g_phase(f"MIN(EDATE({col}$3,1),{cutoff})", r) + ",0)", style=styles["amount"])
-            # A month's rent is split among the queues still leased in it.
-            put(base+2, f"{col}{base+2}", formula=f'IF({whole}>0,({col}{base+1}-{col}{base})/({whole}),$B${r})')
-            put(base+3, f"{col}{base+3}", formula=f'{col}$4*{col}{base+2}', style=styles["amount"])
+            first = phase_segment_first + p * (YEARS + 2)
+            last = first + YEARS - 1
+            put(base+3, f"{col}{base+3}", formula=f'SUM({col}{first}:{col}{last})', style=styles["amount"])
+            put(base+2, f"{col}{base+2}", formula=f'IF({col}$4>0,{col}{base+3}/{col}$4,$B${r})')
             put(base+4, f"{col}{base+4}", formula=(f'IF(AND($F$16="Ручной график",$F$17=1),'
                 f'{col}$6*IF($L$17>0,$E${r}/$L$17,$B${r}),{col}$6*{col}{base+2})'), style=styles["amount"])
+            matrix = _col(10 + index)
+            for year in range(YEARS):
+                n, dest = pre_first + year, first + year
+                # The source cell already applies the rate, calendar index,
+                # unknown-year gate and first-year exclusion. Only its
+                # base-times-days integral is divided among the phases.
+                hi = f'MIN($C${n},EDATE({col}$3,1),{cutoff})'
+                lo = f'MAX($B${n},{col}$3,$B$14)'
+                own = f'MAX(0,({g_phase(hi,r)})-({g_phase(lo,r)}))'
+                total = (f'MAX(0,MIN(${g_end_col}${n},{col}${g_month_row+1},$B${g_hi_row})'
+                         f'-MAX(${g_start_col}${n},{col}${g_month_row}))')
+                amount = f'{matrix}{n}'
+                put(dest, f'{col}{dest}', formula=(f'IF(AND(COUNT({amount})=1,{total}>0),'
+                    f'{amount}*{own}/{total},0)'), style=styles["amount"])
+                if index == 0:
+                    put(dest, f'A{dest}', f'Очередь {p+1}, год {year+1}: начисление по общему расчёту')
     if layout is not None:
         layout["phase_cash_rows"] = phase_cash_rows
     put(pay_first-2, f"A{pay_first-2}", "РУЧНОЙ ГРАФИК ОПЛАТЫ — сумма должна совпасть с известной полной потребностью")

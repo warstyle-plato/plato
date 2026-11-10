@@ -268,10 +268,9 @@ def _msk_first_year(status="unknown",typed=False,vri=5):
         "land_rent_payment_mode":"manual","land_rent_payment_schedule":"100%@0"}
 
 
-# Our VRI fee already contains the raised first-year part; the owner answers
-# only for a fee typed by hand or a zero fee (developaid_land_rent.vri_premium).
+# A fee and its origin label do not establish the composition of that fee.
 @pytest.mark.parametrize("status,typed,vri,accepted", [
-    ("unknown",False,5,True),("separate_required",False,5,True),
+    ("unknown",False,5,False),("separate_required",False,5,False),
     ("unknown",True,5,False),("separate_required",True,5,False),("in_vri",True,5,True),
     ("in_vri",False,0,False),("in_vri",True,0,False),
     ("not_applicable",False,0,True),("unknown",False,0,False)])
@@ -296,6 +295,21 @@ def test_editing_premium_confirmation_uses_live_host_vri_input():
     missing = Evaluator(w)
     assert "доплата первого года" in missing.cell(book.SHEET,"L13").lower()
     assert missing.cell(book.SHEET,"L17") == pytest.approx(1.5)
+
+
+def test_source_proved_premium_inclusion_is_invalidated_by_a_fee_only_edit():
+    inputs = _msk_first_year()
+    inputs['_field_origin'] = {'inputs.land_rights_cost_mln':{'source':'document','rent_premium':{
+        'schema':1,'included_in_vri':True,'fee_mln':5,'source':'Состав подтверждённого документа'}}}
+    workbook,initial,result = _build(inputs,rve=dt.date(2028,1,1))
+    assert result['premium']['derived'] and initial.cell(book.SHEET,'L18') == 1
+    workbook['Параметры модели']['B4'] = 6
+    changed = Evaluator(workbook)
+    assert changed.cell(book.SHEET,'L18') == 0
+    assert changed.cell(book.SHEET,'L17') == pytest.approx(1.5)
+    # An explicit new confirmation is an editable owner decision.
+    workbook[book.SHEET]['L19'] = 'Проверен состав новой суммы'
+    assert Evaluator(workbook).cell(book.SHEET,'L18') == 1
 
 
 def test_premium_gate_does_not_follow_the_project_into_second_lease_year():

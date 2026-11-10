@@ -396,16 +396,25 @@ def test_current_project_type_excludes_housing_presets_before_any_new_result(ren
     assert values==['unspecified','manual','not_applicable']
 
 
-def test_queues_replace_the_single_cutoff_and_our_vri_fee_does_not_ask_about_the_premium(rental_page):
+def test_queues_replace_single_cutoff_and_premium_question_uses_composition_evidence(rental_page):
     page,view,errors=rental_page
-    # Our VRI fee already contains the raised first-year part: no question.
-    page.evaluate("""async()=>{inputs.land_rights_cost_mln=50;delete inputs._field_origin['inputs.land_rights_cost_mln'];
+    # A calculated fee with no composition evidence keeps the question visible.
+    page.evaluate("""async()=>{inputs.land_rights_cost_mln=50;inputs.land_rent_premium_status='unknown';delete inputs._field_origin['inputs.land_rights_cost_mln'];
         renderInputs();await settledCalculate()}""")
     browser.open_vri(page)
     open_detail(page,'payments')
-    assert page.locator('#f_land_rent_premium_status').count()==0
+    assert page.locator('#f_land_rent_premium_status').count()==1
     assert page.locator('#f_land_rent_cadastral_target_mln').count()==1
-    # A fee typed by hand: whether the raised part is inside is the owner's answer.
+    # Explicit source semantics answer composition without asking the owner.
+    page.evaluate("""async()=>{fieldOrigins()['inputs.land_rights_cost_mln']={source:'document',
+        rent_premium:{schema:1,included_in_vri:false,fee_mln:50,source:'Состав расчёта: доплата отдельно'}};
+        await settledCalculate();renderInputs()}""")
+    browser.open_vri(page)
+    open_detail(page,'payments')
+    assert page.locator('#f_land_rent_premium_status').count()==0
+    assert 'доплата отдельно' in page.locator('.lr-premium').inner_text()
+    # Removing the proof restores the editable owner answer.
+
     page.evaluate("""async()=>{fieldOrigins()['inputs.land_rights_cost_mln']={source:'manual'};
         renderInputs();await settledCalculate()}""")
     browser.open_vri(page)
