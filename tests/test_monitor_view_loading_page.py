@@ -49,7 +49,8 @@ def test_pending_job_polls_then_renders_full_view_instead_of_one_source_package(
         assert len(starts) == 1 and not errors
 
 
-def test_a_late_result_cannot_restore_the_previous_project_and_504_never_blames_fields():
+@pytest.mark.parametrize('change', ['project', 'date', 'auth'])
+def test_a_late_result_cannot_restore_the_previous_project_and_504_never_blames_fields(change):
     from playwright.sync_api import expect
     with browser_page() as (page, responses, errors):
         held = []
@@ -57,11 +58,19 @@ def test_a_late_result_cannot_restore_the_previous_project_and_504_never_blames_
         page.route('**/monitor/view/result', lambda route: held.append(route))
         with page.expect_request('**/monitor/view/result'):
             page.locator('#refresh').click()
-        page.locator('#project').fill('Новый проект')
+        if change == 'project':
+            page.locator('#project').fill('Новый проект')
+        elif change == 'date':
+            page.locator('#cut').fill('2026-11-10')
+        else:
+            page.locator('#logoutBtn').click()
         for route in held:
             route.fulfill(json={'pending': False, 'snapshot': monitor_view()})
         expect(page.locator('#gantt .lvl-task')).to_have_count(0)
+        expect(page.locator('#refresh')).to_be_enabled()
+        expect(page.locator('#refresh')).to_have_text('Обновить')
         page.route('**/monitor/test-504', lambda route: route.fulfill(status=504, body='Gateway timeout'))
         message = page.evaluate("post('/monitor/test-504',{}).catch(e=>e.message)")
         assert 'Сервер не успел' in message and 'поля' not in message
+        assert 'повторная загрузка файлов не требуется' not in message
         assert not errors
