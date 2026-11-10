@@ -17,6 +17,10 @@ reason — never silently (owner's decision: correct by the bar, show in red).
 Estimate checks compare quantity × price, material + work, and every section
 and grand total with the document's own totals. A repeated position number is
 reported, not merged: such positions need their name and unit to be told apart.
+An act of acceptance КС-2 brings no table of the plan: its header gives the
+act's number, date, reporting period and the contract, read by position under
+the printed labels of the unified form, and its last page the total by act.
+The agreement the act names is a reference, not an edition of the contract.
 Design and the next steps: docs/contract_schedule_control.md.
 """
 from __future__ import annotations
@@ -26,7 +30,7 @@ import datetime as dt
 import re
 
 # Raise when reading changes: stored documents are then read again from their PDF.
-READER_VERSION = 2
+READER_VERSION = 3
 MONTHS = {'январь': 1, 'февраль': 2, 'март': 3, 'апрель': 4, 'май': 5, 'июнь': 6, 'июль': 7,
           'август': 8, 'сентябрь': 9, 'октябрь': 10, 'ноябрь': 11, 'декабрь': 12}
 _CODE = re.compile(r'^\d+(?:\.\d+)*\.?$')
@@ -49,6 +53,12 @@ _TOTALS = ('итого', 'всего', 'по разделу')
 _STAMP = re.compile(r'ДОКУМЕНТ\s+ПОДПИСАН|ОТПРАВЛЕНО|УТВЕРЖДЕНО|Оператор\s+ЭДО|Сертификат|Идентификатор:')
 _STAMP_MARGIN = 10.0
 _TOLERANCE = 1.0
+# The form's title in capitals and its header labels: a contract only mentions such acts in its text.
+_ACT_FORM = (re.compile(r'АКТ\s+О\s+ПРИ[ЕЁ]МКЕ\s+ВЫПОЛНЕННЫХ\s+РАБОТ'), re.compile(r'Отч[её]тный\s+период', re.I),
+             re.compile(r'Дата\s+составления', re.I))
+# The values of the form's header stand on the line right under their labels, each in its label's column.
+_ACT_ROW = 14.0
+_ACT_COLUMN = 25.0
 
 
 def _space(text):
@@ -643,6 +653,109 @@ def _check_schedule(schedule):
                      f'{_shown(finish)}. Взяты сроки работ.')
 
 
+def _act_words(page):
+    """Words of the page once: a PDF printed twice over itself carries every word twice."""
+    seen, out = set(), []
+    for word in _words(page):
+        key = (round(word[0]), round(word[1]), word[4])
+        if key not in seen:
+            seen.add(key)
+            out.append(word)
+    return out
+
+
+def _middle(word):
+    return (word[0]+word[2])/2
+
+
+def _right_of(words, label, test=lambda text: True):
+    """The first word to the right of `label` on its line that passes `test`."""
+    found = sorted((w for w in words if w[0] > label[2] and abs(w[1]-label[1]) < 3 and test(w[4])),
+                   key=lambda w: w[0])
+    return found[0] if found else None
+
+
+def _below(words, label, test):
+    """The word under `label` on the next line, nearest to its middle, that passes `test`."""
+    found = [w for w in words if label[3]-2 < w[1] < label[3]+_ACT_ROW and abs(_middle(w)-_middle(label)) < _ACT_COLUMN
+             and test(w[4])]
+    return min(found, key=lambda w: abs(_middle(w)-_middle(label)), default=None)
+
+
+def _act_total(words):
+    """The amount right of «Итого по акту» on its line: the rightmost run of figures."""
+    for word in words:
+        if word[4].lower().rstrip(':') != 'акту':
+            continue
+        line = sorted((w for w in words if abs(w[1]-word[1]) < 3), key=lambda w: w[0])
+        before = [w[4].lower() for w in line if w[2] <= word[0]]
+        if before[-2:] != ['итого', 'по']:
+            continue
+        runs = []
+        for w in (w for w in line if w[0] > word[2]):
+            if runs and w[0]-runs[-1][-1][2] < 4:
+                runs[-1].append(w)
+            else:
+                runs.append([w])
+        for run in reversed(runs):
+            value = _amount(''.join(w[4] for w in run))
+            if value is not None:
+                return value
+    return None
+
+
+def _act(document, text):
+    """Number, date, reporting period and total of an act КС-2, or None for another document.
+
+    Each value is read under its label of the form's header: «Номер документа»,
+    «Дата составления», «Отчётный период с … по …». A label without its value
+    leaves the value None and a warning; nothing is guessed from the file name.
+    """
+    if not all(pattern.search(_space(text)) for pattern in _ACT_FORM):
+        return None
+    words = _act_words(document[0])
+    named = lambda text: [w for w in words if w[4].lower() == text]
+    act = {'number': None, 'date': None, 'start': None, 'finish': None, 'total': None, 'warnings': []}
+    contract = None
+    for label in named('договор'):
+        number = _right_of(words, label, lambda text: not _DATE.fullmatch(text))
+        dated = next((w for w in sorted(named('дата'), key=lambda w: w[1]) if 0 < w[1]-label[1] < _ACT_ROW), None)
+        when = dated and _right_of(words, dated, lambda text: bool(_DATE.fullmatch(text)))
+        if number:
+            contract = {'number': _contract_number(number[4]), 'date': when and _date(when[4])}
+            break
+    is_date = lambda text: bool(_DATE.fullmatch(text))
+    for key, label in (('number', 'документа'), ('date', 'составления')):
+        for found in named(label):
+            value = _below(words, found, (lambda text: not is_date(text) and bool(re.fullmatch(r'[\w/.-]+', text)))
+                           if key == 'number' else is_date)
+            if value:
+                act[key] = value[4] if key == 'number' else _date(value[4])
+                break
+    period = next((w for w in words if w[4].lower() in ('отчетный', 'отчётный')), None)
+    until = period and next((w for w in words if w[4].lower() == 'по' and 0 <= w[1]-period[1] < _ACT_ROW
+                             and w[0] > period[0]), None)
+    since = until and max((w for w in words if w[4].lower() == 'с' and abs(w[1]-until[1]) < 3
+                           and w[2] <= until[0]), key=lambda w: w[0], default=None)
+    for key, label in (('start', since), ('finish', until)):
+        value = label and _below(words, label, is_date)
+        act[key] = value and _date(value[4])
+    for page in document:
+        act['total'] = _act_total(_act_words(page))
+        if act['total'] is not None:
+            break
+    shown = {'number': 'номер документа', 'date': 'дата составления', 'start': 'начало отчётного периода',
+             'finish': 'окончание отчётного периода', 'total': 'итог по акту'}
+    missing = [shown[key] for key in shown if act[key] is None]
+    if missing:
+        act['warnings'].append('В акте КС-2 не прочитаны: ' + ', '.join(missing) + '.')
+    if act['start'] and act['finish'] and act['start'] > act['finish']:
+        act['warnings'].append(f'В акте КС-2 начало отчётного периода {_shown(act["start"])} позже его окончания '
+                               f'{_shown(act["finish"])}: период по акту не определён.')
+        act['start'] = act['finish'] = None
+    return {'contract': contract, 'act': act}
+
+
 def read(data: bytes) -> dict:
     """Read a contract or agreement PDF. Unreadable documents raise ValueError."""
     import pymupdf
@@ -654,6 +767,11 @@ def read(data: bytes) -> dict:
     if not any(_space(text) for text in texts):
         raise ValueError('В PDF нет текстового слоя: это скан. Графы расчёта и графика по скану не прочитать '
                          'надёжно; нужен PDF с текстом, например выгрузка из системы электронного документооборота.')
+    accepted = _act(document, texts[0])
+    if accepted is not None:
+        # The agreement an act names is the one it was signed under, not a new edition.
+        return {'contract': accepted['contract'], 'agreement': None, 'act': accepted['act'], 'estimates': [],
+                'schedule': None, 'warnings': accepted['act'].pop('warnings'), 'pages': len(texts)}
     out = dict(identity(texts[0]), estimates=[], schedule=None, warnings=[], pages=len(texts))
     estimate, layout, weekly, mentioned = None, None, None, set()
     for index, page in enumerate(document):

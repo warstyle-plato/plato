@@ -21,6 +21,7 @@ import re
 import tempfile
 from pathlib import Path
 
+import developaid_contract_act_dates as act_dates
 import developaid_contract_documents as documents
 import developaid_contract_control as control
 import developaid_contract_fact as fact
@@ -158,6 +159,11 @@ def _current(folder: Path, sha: str) -> dict:
 
 
 def _edition(record: dict) -> tuple:
+    act = record.get("act")
+    if act:
+        # An act of acceptance is no edition of the plan: it follows the contract and its agreements.
+        number = act.get("number") or ""
+        return (2, act.get("date") or "", int(number) if number.isdigit() else 0)
     agreement = record.get("agreement")
     if not agreement:
         return (0, (record.get("contract") or {}).get("date") or "", 0)
@@ -166,7 +172,9 @@ def _edition(record: dict) -> tuple:
 
 
 def _title(record: dict) -> str:
-    agreement, contract = record.get("agreement"), record.get("contract")
+    agreement, contract, act = record.get("agreement"), record.get("contract"), record.get("act")
+    if act:
+        return f"Акт КС-2 № {act.get('number') or 'без номера'} от {_shown(act.get('date'))}"
     if agreement:
         return f"Дополнительное соглашение № {agreement['number']} от {_shown(agreement.get('date'))}"
     if contract:
@@ -253,10 +261,12 @@ def listing(project: str, contract_id: str, cut: str = "", acts: dict | None = N
     folder = _directory(project, contract_id)
     cut = cut or dt.date.today().isoformat()
     if not folder.is_dir():
+        acts = act_dates.resolve(acts, [])
         return _with_control({"contract_id": contract_id, "documents": [], "removed": [],
-                              "plan": plan.build([], cut), "fact": fact.build([], None, acts, cut)}, acts, cut)
+                              "plan": plan.build([], cut), "fact": _fact([], None, acts, cut)}, acts, cut)
     every = _records(folder)
     records = [r for r in every if not r.get("removed_at")]
+    acts = act_dates.resolve(acts, records)
     for record in records:
         notes = []
         if not record.get("contract"):
@@ -264,8 +274,8 @@ def listing(project: str, contract_id: str, cut: str = "", acts: dict | None = N
                          "в карточке.")
         twins = [r["filename"] for r in records if r is not record and _edition(r) == _edition(record)]
         if twins:
-            notes.append(f"{record['title']} загружено ещё и файлом «{'», «'.join(twins)}». "
-                         "Проверьте, какой из файлов действующий.")
+            notes.append(f"{record['title']} загружен{'о' if record.get('agreement') else ''} ещё и файлом "
+                         f"«{'», «'.join(twins)}». Проверьте, какой из файлов действующий.")
         record["warnings"] = notes + list(record.get("warnings") or [])
     chosen = _choices(folder)
     for record, _, estimate, schedule in _in_force(records):
@@ -277,7 +287,12 @@ def listing(project: str, contract_id: str, cut: str = "", acts: dict | None = N
     editions = _editions(records, chosen)
     planned = plan.build(editions, cut)
     return _with_control({"contract_id": contract_id, "documents": records, "removed": removed, "plan": planned,
-                          "fact": fact.build(editions, planned["in_force"], acts, cut)}, acts, cut)
+                          "fact": _fact(editions, planned["in_force"], acts, cut)}, acts, cut)
+
+
+def _fact(editions, in_force, acts, cut):
+    """The fact on `cut` with the dates the acts КС-2 gave to the KS-6a periods."""
+    return {**fact.build(editions, in_force, acts, cut), "act_dates": (acts or {}).get("act_dates") or []}
 
 
 def _with_control(listed, acts, cut):

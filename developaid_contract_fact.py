@@ -50,14 +50,25 @@ def acts(row: dict | None) -> dict | None:
     """
     if row is None:
         return None
-    found, unread, works = [], [], []
+    found, unread, works, sums = [], [], [], {}
     for index, item in enumerate(row.get("physical_items") or []):
         if item.get("is_group") or item.get("is_duplicate"):
             continue  # A group sums its works; a verified duplicate repeats one.
+        periods = list(item.get("periods") or []) + list(item.get("undated_periods") or [])
+        for period in periods:
+            if period.get("amount") is not None:
+                sums[period.get("label") or ""] = sums.get(period.get("label") or "", 0.0) + period["amount"]
         if item.get("completed_quantity") is None:
+            # Periods named by an act only may still be dated by the act (developaid_contract_act_dates).
             unread.append({"number": item.get("position") or "", "name": item.get("name") or "",
                            "unit": item.get("unit") or "", "reason": item.get("quantity_basis") or "",
-                           "source": item.get("source") or {}})
+                           "source": item.get("source") or {}, "item": index,
+                           "plan_quantity": item.get("plan_quantity"),
+                           "reported_quantity": item.get("reported_completed_quantity"),
+                           "periods": [{"label": p.get("label") or "", "quantity": p.get("quantity"),
+                                        "amount": p.get("amount"), "start": p.get("date_start"),
+                                        "end": p.get("date_end"), "source": p.get("source") or {}}
+                                       for p in periods]})
             continue
         works.append({"item": index, "number": item.get("position") or "", "name": item.get("name") or "",
                       "unit": item.get("unit") or "", "plan_quantity": item.get("plan_quantity")})
@@ -70,7 +81,9 @@ def acts(row: dict | None) -> dict | None:
                           "end": period["date_end"], "label": period.get("label") or "",
                           "item": index,
                           "source": period.get("source") or item.get("source") or {}})
-    return {"acts": found, "unread": unread, "works": len(works), "items": works,
+    summary = [act for source in row.get("financial_sources") or [] for act in source.get("acts") or []]
+    return {"acts": found, "unread": unread, "works": len(works), "items": works, "period_amounts": sums,
+            "summary_acts": summary,
             "deadline": row.get("deadline"), "deadline_label": (row.get("deadline_source") or {}).get("label") or ""}
 
 

@@ -81,7 +81,7 @@ def test_a_pdf_is_uploaded_into_the_open_card_and_other_files_are_refused(listin
             {"name": "Таблица.xlsx", "mimeType": "application/vnd.ms-excel", "buffer": b"PK"})
         page.locator("#contractDocumentUpload").click()
         expect(page.locator("#contractDocumentsMsg")).to_have_text(
-            "Выберите PDF договора или дополнительного соглашения.")
+            "Выберите PDF договора, дополнительного соглашения или акта КС-2.")
         pdf = b"%PDF-1.7 synthetic"
         page.locator("#contractDocumentFile").set_input_files(
             {"name": "ДС5.pdf", "mimeType": "application/pdf", "buffer": pdf})
