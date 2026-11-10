@@ -278,7 +278,7 @@ def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = 
                 payload["project"], payload["contract_id"], payload["evidence_id"],
                 payload["cut"], confirmed=payload["confirmed"])}
         elif operation == "documents":
-            result = contract_files.listing(payload["project"], payload["contract_id"])
+            result = contract_files.listing(payload["project"], payload["contract_id"], payload["cut"])
         elif operation == "document-upload":
             # The card's contract is checked against the register of the same cut:
             # a document is never filed under an id the register does not show.
@@ -287,13 +287,14 @@ def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = 
             if row is None:
                 raise contracts.ContractProblem("Договор не найден в данных выбранного проекта на эту дату.")
             result = {"document": contract_files.store(payload["project"], row, payload["filename"], archive),
-                      **contract_files.listing(payload["project"], payload["contract_id"])}
+                      **contract_files.listing(payload["project"], payload["contract_id"], payload["cut"])}
         elif operation == "document-links":
             result = contract_files.save_links(payload["project"], payload["contract_id"], payload["sha256"],
-                                               payload["estimate"], payload["choices"], payload["clear"])
+                                               payload["estimate"], payload["choices"], payload["clear"],
+                                               payload["cut"])
         elif operation == "document-remove":
             result = contract_files.remove(payload["project"], payload["contract_id"], payload["sha256"],
-                                           restore=payload["restore"])
+                                           restore=payload["restore"], cut=payload["cut"])
         else:
             raise RuntimeError("unknown monitor operation")
         return {"ok": True, **jsonable_encoder(result)}

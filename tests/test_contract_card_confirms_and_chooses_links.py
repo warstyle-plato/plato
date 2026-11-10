@@ -48,20 +48,23 @@ def card(monkeypatch, tmp_path):
     return files.store(PROJECT, ROW, "ДС4.pdf", estimate_pdf(FIRST, SECOND))["sha256"]
 
 
-def _serve(page, calls):
+def _serve(page, calls, cut=""):
+    """The card's routes over the real store; `cut` stands for the date of the cut chosen on the page."""
     def handle(route):
         body = route.request.post_data_json or {}
         name = route.request.url.rsplit("/", 1)[-1]
         calls.append((name, body))
-        assert body.get("key") == KEY and body.get("contract_id") == CONTRACT
+        assert body.get("key") == KEY and body.get("contract_id") == CONTRACT and "cut" in body
+        day = cut or body["cut"]
         try:
             if name == "document-links":
                 answer = files.save_links(PROJECT, CONTRACT, body["sha256"], body["estimate"], body["choices"],
-                                          clear=body.get("clear", False))
+                                          clear=body.get("clear", False), cut=day)
             elif name == "document-remove":
-                answer = files.remove(PROJECT, CONTRACT, body["sha256"], restore=body.get("restore", False))
+                answer = files.remove(PROJECT, CONTRACT, body["sha256"], restore=body.get("restore", False),
+                                      cut=day)
             else:
-                answer = files.listing(PROJECT, CONTRACT)
+                answer = files.listing(PROJECT, CONTRACT, day)
         except files.ContractFilesProblem as problem:
             return route.fulfill(json={"pending": False, "ok": False, "detail": str(problem)})
         route.fulfill(json={"pending": False, "ok": True, **answer})
@@ -211,4 +214,38 @@ def test_a_refusal_of_the_server_is_shown_and_the_buttons_come_back(card):
         expect(page.locator("#contractDocumentsMsg")).to_have_text(
             "Расчёт не найден среди документов карточки: обновите карточку.")
         expect(button).to_be_enabled()
+        assert errors == []
+
+
+@pytest.mark.parametrize("width", [390, 1440])
+def test_the_plan_of_the_edition_in_force_follows_a_confirmation(card, width):
+    from playwright.sync_api import expect
+    with browser_page(width) as (page, _, errors):
+        _serve(page, [], cut="2026-02-02")
+        links = _open(page)
+        plan = page.locator("#contractDocuments .contract-plan")
+        expect(plan).to_contain_text("Дополнительное соглашение № 4 от 01.02.2026 · график: Документ без номера")
+        expect(plan.locator(".contract-plan-total")).to_have_text("По плану к 02.02.2026: 0 ₽ из 0 ₽")
+        expect(plan).to_contain_text("В плане пока нет ни одной строки: подтвердите связи позиций расчёта с графиком.")
+        expect(plan).to_contain_text("предложены, но не подтверждены — позиций: 2 на сумму 11 000 ₽")
+        links.get_by_text("Предложенные связи (2)").click()
+        links.get_by_role("button", name="Подтвердить все предложенные в разделе (2)").click()
+        expect(plan.locator(".contract-plan-total")).to_have_text(
+            "По плану к 02.02.2026: 7 000 ₽ из 11 000 ₽ (63,6 %)")
+        expect(plan).to_contain_text("составлен на завершение работ, поэтому план считается с 01.02.2026")
+        overdue = plan.locator("p.contract-plan-overdue")
+        expect(overdue).to_contain_text("Строк графика, срок которых по графику закончился до соглашения: 1.")
+        color = "e => getComputedStyle(e).color"
+        assert overdue.evaluate(color) != plan.evaluate(color), "предупреждение выделено цветом"
+        expect(plan).to_contain_text("на проверке — позиций: 2 на сумму 3 000 ₽")
+        expect(plan).not_to_contain_text("предложены, но не подтверждены")
+        plan.get_by_text("Строки плана (3)").click()
+        rows = plan.locator(".contract-plan-lines tbody tr")
+        expect(rows.nth(0)).to_contain_text("срок закончился до соглашения")
+        expect(rows.nth(1)).to_have_text("1.2Возведение стен 2-го этажа01.02.2026 — 05.02.20265 000 ₽2 000 ₽")
+        plan.get_by_text("План нарастающим итогом по месяцам (1)").click()
+        expect(plan.locator(".contract-plan-months tbody tr")).to_have_text(["февраль 2026 г.11 000 ₽"])
+        plan.get_by_text("Редакции плана (1)").click()
+        expect(plan.locator(".contract-plan-editions")).to_contain_text("с 01.02.2026 · действует на дату среза")
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
         assert errors == []

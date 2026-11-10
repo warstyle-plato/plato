@@ -23,6 +23,7 @@ from pathlib import Path
 
 import developaid_contract_documents as documents
 import developaid_contract_link_choices as choices
+import developaid_contract_plan as plan
 import developaid_contract_schedule_links as links
 import developaid_monitor as monitor
 
@@ -202,6 +203,36 @@ def _proposal(record: dict, estimate: dict, schedule: dict | None) -> dict:
     return links.propose(estimate, schedule and schedule["schedule"], agreement=bool(record.get("agreement")))
 
 
+def _date(record: dict) -> str | None:
+    return ((record.get("agreement") or record.get("contract")) or {}).get("date")
+
+
+def _editions(records: list[dict], chosen: dict) -> list[dict]:
+    """Documents that bring an estimate or a schedule, each with the latest of both at or before it."""
+    editions, schedule, source = [], None, None
+    for record in records:
+        brings_schedule = bool((record.get("schedule") or {}).get("lines"))
+        brings_estimate = any(e.get("scope") != "accepted" for e in record.get("estimates") or [])
+        schedule = record if brings_schedule else schedule
+        source = record if brings_estimate else source
+        if source is None or not (brings_schedule or brings_estimate):
+            continue
+        estimates = []
+        for estimate in source["estimates"]:
+            if estimate["links"]["schedule_sha256"] != (schedule["sha256"] if schedule else ""):
+                # A newer schedule without a new estimate: the links are carried onto it.
+                estimate = {**estimate, "links": choices.apply(_proposal(source, estimate, schedule), chosen,
+                                                               schedule and schedule["schedule"])}
+            estimates.append(estimate)
+        remaining = any(e.get("scope") == "remaining" for e in source["estimates"])
+        editions.append({"sha256": record["sha256"], "title": record["title"], "date": _date(record),
+                         "estimates": estimates, "estimate_title": source["title"],
+                         "schedule": schedule and schedule["schedule"],
+                         "schedule_title": schedule["title"] if schedule else "",
+                         "start": _date(source) if remaining else None})
+    return editions
+
+
 def _choices(folder: Path) -> dict:
     try:
         stored = json.loads((folder / CHOICES).read_text(encoding="utf-8"))
@@ -212,11 +243,12 @@ def _choices(folder: Path) -> dict:
     return stored.get("choices") or {}
 
 
-def listing(project: str, contract_id: str) -> dict:
-    """Every document in the card with proposed and confirmed links, and the removed files."""
+def listing(project: str, contract_id: str, cut: str = "") -> dict:
+    """Every document in the card with its links, the accumulated plan on `cut` and the removed files."""
     folder = _directory(project, contract_id)
+    cut = cut or dt.date.today().isoformat()
     if not folder.is_dir():
-        return {"contract_id": contract_id, "documents": [], "removed": []}
+        return {"contract_id": contract_id, "documents": [], "removed": [], "plan": plan.build([], cut)}
     every = _records(folder)
     records = [r for r in every if not r.get("removed_at")]
     for record in records:
@@ -236,11 +268,12 @@ def listing(project: str, contract_id: str) -> dict:
                              "schedule_sha256": schedule["sha256"] if schedule else ""}
     removed = [{"sha256": r["sha256"], "filename": r.get("filename", ""), "title": r["title"],
                 "removed_at": r["removed_at"]} for r in every if r.get("removed_at")]
-    return {"contract_id": contract_id, "documents": records, "removed": removed}
+    return {"contract_id": contract_id, "documents": records, "removed": removed,
+            "plan": plan.build(_editions(records, chosen), cut)}
 
 
 def save_links(project: str, contract_id: str, sha256: str, estimate: int, picked: list[dict],
-               clear: bool = False) -> dict:
+               clear: bool = False, cut: str = "") -> dict:
     """Confirm, choose or clear links of positions of one estimate; all positions or none are saved."""
     folder = _directory(project, contract_id)
     with _locked(folder):
@@ -266,10 +299,10 @@ def save_links(project: str, contract_id: str, sha256: str, estimate: int, picke
             except choices.LinkChoiceProblem as exc:
                 raise ContractFilesProblem(str(exc)) from None
         _json(folder / CHOICES, {"version": 1, "choices": stored})
-    return listing(project, contract_id)
+    return listing(project, contract_id, cut)
 
 
-def remove(project: str, contract_id: str, sha256: str, *, restore: bool = False) -> dict:
+def remove(project: str, contract_id: str, sha256: str, *, restore: bool = False, cut: str = "") -> dict:
     """Take a file out of the card, or return it; the file itself is kept."""
     folder = _directory(project, contract_id)
     if not re.fullmatch(r"[0-9a-f]{64}", str(sha256 or "")) or not (folder / f"{sha256}.json").exists():
@@ -281,4 +314,4 @@ def remove(project: str, contract_id: str, sha256: str, *, restore: bool = False
         else:
             record["removed_at"] = _now()
         _json(folder / f"{sha256}.json", record)
-    return listing(project, contract_id)
+    return listing(project, contract_id, cut)

@@ -234,9 +234,11 @@ LINES = (
 )
 
 
-def schedule_pdf(months=MONTHS, lines=LINES):
+def schedule_pdf(months=MONTHS, lines=LINES, title=()):
     document = pymupdf.open()
     page = _page(document)
+    for index, text in enumerate(title):
+        _text(page, 30, 14 + 9 * index, text)
     _text(page, 30, 40, "График производства работ")
     columns, top, header, height = SCHEDULE_COLUMNS, 60, 40, 16
     edges = [top, top + header] + [top + header + height * n for n in range(1, len(lines) + 1)]
