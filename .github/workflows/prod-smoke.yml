@@ -1,5 +1,5 @@
 name: Одноразовое утверждение согласованного ГПР и РНВ
-run-name: approved-gpr-source-apply-once
+run-name: approved-gpr-source-readonly-probe
 
 # Explicit approval on this ops branch; main keeps its ordinary prod smoke.
 on:
@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   apply:
-    name: Явно утвердить согласованный ГПР и дату РНВ
+    name: Проверить чтение ГПР без изменения данных
     if: >-
       github.repository == 'warstyle-plato/plato' &&
       github.ref == 'refs/heads/ops/approve-corpus-gpr-once' &&
@@ -48,13 +48,13 @@ jobs:
           retention-days: 1
           compression-level: 0
           if-no-files-found: error
-      - name: Проверить границы и применить проверенную версию
+      - name: Проверить чтение текущего и прошлого среза без записи
         id: apply
         env:
           EXPECTED_RUNTIME_COMMIT: ${{ inputs.expected_runtime_commit }}
           GITHUB_TOKEN: ${{ github.token }}
           APPLY_ADMIN_KEY: ${{ secrets.DEVELOPAID_ADMIN_KEY }}
-        run: python3 .github/diagnostics/ephemeral-gpr-transport.py apply
+        run: python3 .github/diagnostics/ephemeral-gpr-transport.py probe
       - name: Зашифрованное свидетельство результата
         if: always() && steps.apply.outputs.proof_created == 'true'
         uses: actions/upload-artifact@v7

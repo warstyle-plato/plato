@@ -175,3 +175,28 @@ UTC-дата и остальные guards прежние. На workflow выде
 и gpr-proof-*. Независимая приёмка нового точного ops SHA обязательна.
 
 Offline transport-контрпримеры: `.github/diagnostics/test_ephemeral_gpr_transport.py`.
+
+## Временная read-only диагностика PHYSICAL
+
+После первого запуска42783348053 зафиксирован HTTP error6 до approve:
+write_attempted=false и outcome_unknown=false. Автоматического повторения нет.
+Для выяснения HTTPstatus/timeout текущий workflow временно зовёт `probe`,
+run-name `approved-gpr-source-readonly-probe`; concurrency и единственный input
+expected_runtime_commit не меняются. Это диагностика, не применение источника.
+
+Транспорт/фиксированный plaintext проходят прежние проверки. После доставки
+начинается отдельный180-секундный probe deadline; HTTP timeout здесь60сек.
+`ReadOnlyProbe` конструирует только GET/health и POST фиксированного PHYSICAL
+для old_cut и текущего UTC-дня. Произвольный phase/path, version-preview,
+version-approve и другие адреса отклоняются до HTTP; Operation.execute не
+вызывается. Файл, source и дата РНВ этой диагностикой не записываются.
+Прежний apply-протокол и его15/240сек таймауты не менялись.
+
+В stdout идут только probe_only, неизменно false write_attempted/outcome_unknown,
+фиксированные фазы, целый HTTPstatus, timeout bool, elapsed seconds и booleans
+распознавания JSON/source/snapshot/revision/tasks. HTTPbody, project, source
+SHA, URL, исключения и ключи не публикуются. Неуспех old_cut позволяет отдельно
+проверить current_cut, если общий срок и runtime ещё допустимы. Ответы читаются
+ограниченными кусками без redirect, runtime проверяется до decrypt, перед
+чтениями и после них. Успех probe не означает согласование или запись ГПР.
+Always cleanup временной пары и остальных приватных файлов сохранён.

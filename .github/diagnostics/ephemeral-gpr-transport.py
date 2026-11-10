@@ -216,6 +216,12 @@ def main():
             prepare(os.environ)
             print('{"transport_prepared":true}')
             return 0
+        if sys.argv[1:]==['probe']:
+            probe_spec=importlib.util.spec_from_file_location('approved_gpr_readonly_probe',
+                Path(__file__).with_name('probe-approved-gpr.py'))
+            probe_module=importlib.util.module_from_spec(probe_spec)
+            probe_spec.loader.exec_module(probe_module)
+            return probe_module.main()
         if sys.argv[1:]==['apply']:
             # Existing main performs trusted checkout again; only this provider may wait.
             return ops.main(Delivery(os.environ).receive)
