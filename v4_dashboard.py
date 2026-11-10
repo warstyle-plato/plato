@@ -180,6 +180,10 @@ DATA_ITEMS: tuple[tuple[str, str, str, str], ...] = (
      "(жители, коммерция, объекты, соцобъекты; движок)", "м/м", ""),
     ("parking_provision", "Обеспеченность парковкой: все места проекта / вся потребность",
      "x", ""),
+    # Оговорка расчёта аренды ЗУ (пусто, когда условия подтверждены): дашборд
+    # печатает её под названием проекта и, как всё остальное, читает отсюда.
+    ("land_rent_status", "Аренда ЗУ: что не подтверждено в условиях", "текст",
+     f"'{v4_land_rent.SHEET}'!$L$13"),
 )
 DATA_ROWS: dict[str, int] = {item[0]: index + 2 for index, item in enumerate(DATA_ITEMS)}
 # Строки источника, которые несут ЧИСЛО движка, а не формулу книги: ключ
@@ -309,8 +313,11 @@ BRIDGE_LAST_ROW = BRIDGE_FIRST_ROW + len(BRIDGE_STEPS) - 1
 # Структура расходов проекта — статьи движка (`expense_groups`) из ячеек
 # книги. Порядок объявления; движок сортирует по убыванию, книга — нет:
 # формульный лист не переставляет строки.
+# Подписи — статьи движка дословно: книга сверяется с ним по подписи, и
+# переименованная здесь строка выпадала из сверки. Заголовок «ВРИ и земельные
+# отношения» группирует три отдельные статьи, а не заменяет их подписи.
 LAND_STRUCTURE_ITEMS: tuple[tuple[str, str], ...] = (
-    ("Плата за смену ВРИ и обеспечение",
+    ("Смена ВРИ / земельные права",
      _sheet_sum("ВРИ", "B", _VRI_PRINCIPAL_ROWS) + "+" + _sheet_sum("ВРИ", "B", _VRI_SECURITY_ROWS)),
     ("Проценты по рассрочке ВРИ", _sheet_sum("ВРИ", "B", _VRI_INTEREST_ROWS)),
     ("Аренда земельного участка", _sheet_sum("CAPEX", "B", v4_land_rent.CAPEX_ROWS)),
@@ -869,7 +876,7 @@ def build_dashboard_sheet(styles: Styles, drawing_rel_id: str, phased: bool,
 
     sh.band("DEVELOPAID · ИНВЕСТИЦИОННЫЙ ДАШБОРД", None, sh.title, 24)
     sh.band(None, data_cell("project_name"), sh.subtitle, 15)
-    sh.band(None, "'Аренда ЗУ'!$L$13", sh.subtitle, 18)
+    sh.band(None, data_cell("land_rent_status"), sh.subtitle, 18)
 
     # Шесть карточек KPI — те же, что у тизера.
     cards = list(KPI_CATALOGUE[:CARD_COUNT])

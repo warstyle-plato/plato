@@ -77,7 +77,7 @@ def test_land_relations_heading_groups_separate_vri_and_rent_without_another_exp
     assert v4_land_rent.BLOCK_TITLE in headings
     assert headings[v4_land_rent.BLOCK_TITLE] < headings["Прочие расходы проекта"]
     assert [label for label,_ in v4_dashboard.LAND_STRUCTURE_ITEMS] == [
-        "Плата за смену ВРИ и обеспечение", "Проценты по рассрочке ВРИ", "Аренда земельного участка"]
+        "Смена ВРИ / земельные права", "Проценты по рассрочке ВРИ", "Аренда земельного участка"]
     labels = [label for label,_ in v4_dashboard.STRUCTURE_ITEMS]
     assert v4_land_rent.BLOCK_TITLE not in labels  # heading is never another monetary row
     assert workbook[v4_land_rent.SHEET]["A1"].value == v4_land_rent.BLOCK_TITLE
