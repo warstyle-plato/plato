@@ -22,6 +22,7 @@ import tempfile
 from pathlib import Path
 
 import developaid_contract_documents as documents
+import developaid_contract_control as control
 import developaid_contract_fact as fact
 import developaid_contract_link_choices as choices
 import developaid_contract_plan as plan
@@ -252,8 +253,8 @@ def listing(project: str, contract_id: str, cut: str = "", acts: dict | None = N
     folder = _directory(project, contract_id)
     cut = cut or dt.date.today().isoformat()
     if not folder.is_dir():
-        return {"contract_id": contract_id, "documents": [], "removed": [], "plan": plan.build([], cut),
-                "fact": fact.build([], None, acts, cut)}
+        return _with_control({"contract_id": contract_id, "documents": [], "removed": [],
+                              "plan": plan.build([], cut), "fact": fact.build([], None, acts, cut)}, acts, cut)
     every = _records(folder)
     records = [r for r in every if not r.get("removed_at")]
     for record in records:
@@ -275,8 +276,15 @@ def listing(project: str, contract_id: str, cut: str = "", acts: dict | None = N
                 "removed_at": r["removed_at"]} for r in every if r.get("removed_at")]
     editions = _editions(records, chosen)
     planned = plan.build(editions, cut)
-    return {"contract_id": contract_id, "documents": records, "removed": removed, "plan": planned,
-            "fact": fact.build(editions, planned["in_force"], acts, cut)}
+    return _with_control({"contract_id": contract_id, "documents": records, "removed": removed, "plan": planned,
+                          "fact": fact.build(editions, planned["in_force"], acts, cut)}, acts, cut)
+
+
+def _with_control(listed, acts, cut):
+    """The deviation, lag and forecast of the listed plan and fact (step 7)."""
+    listed["control"] = control.build(listed["plan"], listed["fact"], (acts or {}).get("deadline"),
+                                      (acts or {}).get("deadline_label") or "", cut)
+    return listed
 
 
 def save_links(project: str, contract_id: str, sha256: str, estimate: int, picked: list[dict],

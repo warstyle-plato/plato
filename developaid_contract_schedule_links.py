@@ -158,7 +158,7 @@ def propose(estimate, schedule, *, agreement=False):
         floor = floors(position.get("name"))
         item = {"index": index, "key": position_key(position), "number": position.get("number"),
                 "name": position.get("name"), "unit": position.get("unit"), "section": position.get("section"),
-                "amount": (position.get("amount") or {}).get("total"),
+                "amount": (position.get("amount") or {}).get("total"), "quantity": position.get("quantity"),
                 "kind": label, "buildings": sorted(where), "part": side, "lines": [], "status": "review",
                 "reason": "", "assumption": ""}
         positions.append(item)

@@ -20,6 +20,7 @@ import calendar
 import datetime as dt
 
 import developaid_contract_schedule_links as links
+from developaid_monitor_statement_union import _unit
 
 EVEN_SPLIT = ("Стоимость строки распределена по дням её срока поровну: в графике нет сумм по месяцам, "
               "это допущение, а не данные графика.")
@@ -53,10 +54,18 @@ def _month_ends(first: dt.date, last: dt.date):
         year, month = (year + 1, 1) if month == 12 else (year, month + 1)
 
 
+def _volume(parts):
+    """Natural volume of a line: only when all its positions are measured in one unit with a quantity."""
+    if not parts or len({_unit(unit) for unit, _, _ in parts}) != 1 or any(q is None for _, q, _ in parts):
+        return None
+    return {"unit": parts[0][0], "quantity": sum(q * share for _, q, share in parts)}
+
+
 def edition(estimates: list[dict], schedule: dict | None, start: dt.date | None) -> dict:
     """Plan lines of linked `estimates` over `schedule`; `start` is the date of an estimate «на завершение»."""
     dated = {line["code"]: line for line in links.leaves(schedule)}
     money, outside, without = {}, {status: {"count": 0, "amount": 0.0} for status in _OUTSIDE}, 0
+    volumes = {}
     accepted = None
     for estimate in estimates:
         positions = (estimate.get("links") or {}).get("positions") or []
@@ -72,8 +81,10 @@ def edition(estimates: list[dict], schedule: dict | None, start: dt.date | None)
             elif position["status"] == "confirmed":
                 for line in position["lines"]:
                     money[line["code"]] = money.get(line["code"], 0.0) + position["amount"] * line["share"]
+                    volumes.setdefault(line["code"], []).append(
+                        (position.get("unit"), position.get("quantity"), line["share"]))
     lines = [{"code": code, "name": dated[code]["name"], "start": dated[code]["start"],
-              "finish": dated[code]["finish"], "amount": amount,
+              "finish": dated[code]["finish"], "amount": amount, "volume": _volume(volumes.get(code)),
               "overdue": bool(start and _day(dated[code]["finish"]) < start)}
              for code, amount in sorted(money.items(), key=lambda kv: list(dated).index(kv[0]))]
     return {"lines": lines, "total": sum(line["amount"] for line in lines), "outside": outside,

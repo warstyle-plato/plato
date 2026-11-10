@@ -44,7 +44,7 @@ def acts(row: dict | None) -> dict | None:
     """
     if row is None:
         return None
-    found, unread = [], []
+    found, unread, works = [], [], 0
     for item in row.get("physical_items") or []:
         if item.get("is_group") or item.get("is_duplicate"):
             continue  # A group sums its works; a verified duplicate repeats one.
@@ -53,6 +53,7 @@ def acts(row: dict | None) -> dict | None:
                            "unit": item.get("unit") or "", "reason": item.get("quantity_basis") or "",
                            "source": item.get("source") or {}})
             continue
+        works += 1
         for period in item.get("periods") or []:
             if not period.get("quantity"):
                 continue
@@ -61,12 +62,13 @@ def acts(row: dict | None) -> dict | None:
                           "act_amount": period.get("amount"), "start": period.get("date_start"),
                           "end": period["date_end"], "label": period.get("label") or "",
                           "source": period.get("source") or item.get("source") or {}})
-    return {"acts": found, "unread": unread}
+    return {"acts": found, "unread": unread, "works": works, "deadline": row.get("deadline"),
+            "deadline_label": (row.get("deadline_source") or {}).get("label") or ""}
 
 
 def unavailable(reason: str) -> dict:
     """No fact, because the register of the cut could not be built: `reason` says why."""
-    return {"acts": [], "unread": [], "problem": reason}
+    return {"acts": [], "unread": [], "works": 0, "problem": reason}
 
 
 def match(act: dict, estimates: list[dict]):
@@ -123,7 +125,7 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
     """The fact on `cut` by the lines of the edition `in_force` (sha256) of the plan."""
     result = {"cut": cut, "assumption": ASSUMPTION, "total": 0.0, "lines": [], "months": [], "positions": [],
               "outside": {status: {"count": 0, "amount": 0.0} for status in _STATUSES},
-              "before": None, "review": [], "unread": [], "price_differs": 0, "note": ""}
+              "before": None, "review": [], "unread": [], "price_differs": 0, "after_cut": 0, "note": ""}
     if found is None:
         result["note"] = "Накопительная КС-6а этого договора на дату среза не найдена: факт не рассчитан."
         return result
@@ -135,17 +137,22 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
     if current is None:
         result["note"] = "Нет редакции плана, действующей на дату среза: факт не с чем сопоставить."
         return result
-    if not found["acts"]:
+    if not found.get("works"):
+        # No work with a known quantity: a zero here would be a missing KS-6a, not an answer.
         result["note"] = "В накопительной КС-6а этого договора нет выполнения с датированными периодами до даты среза."
+        return result
     dated = sorted((e for e in editions if e.get("date")), key=lambda e: e["date"])
     start = _day(current["start"]) if current.get("start") else None
     if start:
         result["before"] = {"start": current["start"], "count": 0, "amount": 0.0, "unpriced": 0}
     links_now = {p["key"]: p for e in current["estimates"] if e.get("scope") != "accepted"
                  for p in (e.get("links") or {}).get("positions") or []}
-    lines, positions, dated_money = {}, {}, []
+    lines, volumes, positions, dated_money = {}, {}, {}, []
     for act in found["acts"]:
         end = _day(act["end"])
+        if end > _day(cut):
+            result["after_cut"] += 1
+            continue
         edition = next((e for e in reversed(dated) if _day(e["date"]) <= end), None)
         if start and end < start and edition is None:
             # Accepted before the agreement, in a period whose Расчёт is not in the card.
@@ -180,6 +187,9 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
             if place == "confirmed":
                 for line in link["lines"]:
                     lines[line["code"]] = lines.get(line["code"], 0.0) + money * line["share"]
+                    unit = volumes.setdefault(line["code"], {}).setdefault(
+                        _unit(position["unit"]), {"unit": position["unit"], "quantity": 0.0})
+                    unit["quantity"] += act["quantity"] * line["share"]
                 dated_money.append((end, money))
                 result["total"] += money
             else:
@@ -197,7 +207,8 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
         row["periods"] += 1
         row["last"] = max(row["last"], act["end"])
     order = [line["code"] for line in links.leaves(current.get("schedule"))]
-    result["lines"] = [{"code": code, "fact": lines[code]} for code in order if code in lines]
+    result["lines"] = [{"code": code, "fact": lines[code], "volumes": list(volumes[code].values())}
+                       for code in order if code in lines]
     result["positions"] = list(positions.values())
     if dated_money:
         day = _day(cut)
