@@ -1,4 +1,5 @@
 """Actual PAGE: one readable rental table with honest state and editable disclosures."""
+import re
 from pathlib import Path
 
 import pytest
@@ -10,18 +11,27 @@ core=main.core
 OUTPUT=Path('/tmp/plato-land-rent-compact-proof')
 
 
-@pytest.fixture(params=[390,1440])
+@pytest.fixture(params=[(390,'/'),(1440,'/'),(390,'/classic'),(1440,'/classic')],
+                ids=['390-main','1440-main','390-classic','1440-classic'])
 def rental_page(request,monkeypatch):
-    from playwright.sync_api import sync_playwright
+    from playwright.sync_api import expect, sync_playwright
+    from main_registry import app as registry_app
+    width,surface=request.param
+    view=f"{width}-{'main' if surface=='/' else 'classic'}"
     monkeypatch.setattr(core,'_telegram_token',lambda:'')
     monkeypatch.setattr(core,'require_calc_access',lambda *a,**k:{'allowed':True})
-    with browser.serve(core.app,18887) as base,sync_playwright() as pw:
+    with browser.serve(registry_app,18887) as base,sync_playwright() as pw:
         with pw.chromium.launch(executable_path=str(browser.chromium_or_skip())) as chromium:
-            page=chromium.new_page(viewport={'width':request.param,'height':1000},locale='ru-RU')
+            page=chromium.new_page(viewport={'width':width,'height':1000},locale='ru-RU')
             errors=[]
             page.on('pageerror',lambda error:errors.append(str(error)))
-            page.goto(base,wait_until='domcontentloaded')
+            page.goto(base.rstrip('/')+surface,wait_until='domcontentloaded')
             browser.wait_for_result(page)
+            # Поверхность та, что заказана: корень — со слоем IA, /classic — без.
+            if surface=='/':
+                expect(page.locator('body')).to_have_class(re.compile(r'\bia-on\b'))
+            else:
+                assert not page.locator('body.ia-on').count()
             page.clock.set_fixed_time('2026-11-09T12:00:00Z')
             page.evaluate("""async()=>{
                 Object.assign(inputs,{land_right:'lease',vri_region:'msk',land_rent_mode:'msk_mkd_3_2',
@@ -39,8 +49,8 @@ def rental_page(request,monkeypatch):
                   _field_origin:{'inputs.land_rent_cadastral_mln':{source:'document',text:'Из синтетического договора'}}});
                 renderInputs();await settledCalculate();
             }""")
-            page.locator("button[data-tab='vri']").click()
-            yield page,request.param,errors
+            browser.open_vri(page)
+            yield page,view,errors
             assert not errors,errors
 
 
@@ -58,7 +68,7 @@ def fits(page):
 
 def test_compact_actual_component_shows_one_table_status_and_readable_money(rental_page):
     from playwright.sync_api import expect
-    page,width,errors=rental_page
+    page,view,errors=rental_page
     root=page.locator('#landRentEditor')
     expect(root.locator('.lr-amount')).to_have_text('60 млн ₽')
     expect(root.locator('.lr-cutoff')).to_contain_text('01.01.2030')
@@ -78,9 +88,9 @@ def test_compact_actual_component_shows_one_table_status_and_readable_money(rent
     fits(page)
     assert root.bounding_box()['height']<1150
     OUTPUT.mkdir(mode=0o700,exist_ok=True)
-    root.screenshot(path=str(OUTPUT/f'actual-{width}.png'))
+    root.screenshot(path=str(OUTPUT/f'actual-{view}.png'))
     page.locator('#landRentEditor').scroll_into_view_if_needed()
-    page.screenshot(path=str(OUTPUT/f'context-vri-{width}.png'),full_page=True)
+    page.screenshot(path=str(OUTPUT/f'context-vri-{view}.png'),full_page=True)
     conditions=open_detail(page,'conditions')
     expect(conditions).to_contain_text('273-ПП')
     expect(conditions).to_contain_text('6-й год: 8%')
@@ -99,7 +109,7 @@ def test_compact_actual_component_shows_one_table_status_and_readable_money(rent
 
 def test_real_blur_edit_keeps_unknown_zero_origins_and_mode_confirmation_separate(rental_page):
     from playwright.sync_api import expect
-    page,width,errors=rental_page
+    page,view,errors=rental_page
     open_detail(page,'conditions')
     page.locator('#f_land_rent_mode').select_option('msk_mkd_arch_confirmed')
     browser.wait_for_result(page)
@@ -142,7 +152,7 @@ def test_real_blur_edit_keeps_unknown_zero_origins_and_mode_confirmation_separat
 
 def test_mo_unknown_indices_explicit_zero_forecast_and_other_form_collection(rental_page):
     from playwright.sync_api import expect
-    page,width,errors=rental_page
+    page,view,errors=rental_page
     page.evaluate("""async()=>{
         delete inputs._glavapu_import;
         Object.assign(inputs,{vri_region:'mo',land_rent_mode:'mo_housing_new_2026',
@@ -188,12 +198,12 @@ def test_mo_unknown_indices_explicit_zero_forecast_and_other_form_collection(ren
     assert [row.locator('td').last.inner_text() for row in page.locator('.lr-main-table tbody tr').all()]==['60 млн ₽','60 млн ₽','62,4 млн ₽']
     if conditions.evaluate('(e)=>e.open'):
         conditions.locator('summary').first.click()
-    page.locator('#landRentEditor').screenshot(path=str(OUTPUT/f'mo-expanded-{width}.png'))
+    page.locator('#landRentEditor').screenshot(path=str(OUTPUT/f'mo-expanded-{view}.png'))
     page.locator('#landRentEditor details[data-land-rent-detail="indices"] > summary').click()
-    page.locator('#landRentEditor').screenshot(path=str(OUTPUT/f'mo-collapsed-{width}.png'))
+    page.locator('#landRentEditor').screenshot(path=str(OUTPUT/f'mo-collapsed-{view}.png'))
     page.reload(wait_until='domcontentloaded')
     browser.wait_for_result(page)
-    page.locator("button[data-tab='vri']").click()
+    browser.open_vri(page)
     assert page.evaluate('landRentTerritory().region')=='mo'
     assert page.evaluate('inputs.land_rent_calendar_indices.find(r=>r.year===2028).index_pct')==0
     assert page.evaluate('inputs.land_rent_calendar_indices.find(r=>r.year===2029).index_pct')==4
@@ -202,7 +212,7 @@ def test_mo_unknown_indices_explicit_zero_forecast_and_other_form_collection(ren
 
 @pytest.mark.parametrize('territory_kind',['moscow77','new_moscow50','mo50','other66'])
 def test_region_comes_from_applied_territory_not_cadastral_prefix_or_a_region_switch(rental_page,territory_kind):
-    page,width,errors=rental_page
+    page,view,errors=rental_page
     state=page.evaluate("""kind=>{
         for(const key of ['_glavapu_import','_mo_calc','_other_region','_cadastral_analysis'])delete inputs[key];
         inputs.land_rent_mode='unspecified';inputs.land_rent_preset_confirmed=true;
@@ -243,7 +253,7 @@ def test_region_comes_from_applied_territory_not_cadastral_prefix_or_a_region_sw
 
 
 def test_unknown_preview_manual_import_and_explicit_zero_do_not_become_regional_defaults(rental_page):
-    page,width,errors=rental_page
+    page,view,errors=rental_page
     preview=page.evaluate("""()=>{
         inputs._cadastral_analysis={recognized:['50:01:0000001:12'],territory:{inside_moscow:false}};
         moResult={inputs:{vri_region:'mo'},vri:{parcels:[{cadastral_number:'50:01:0000001:12',cadastral_value_rub:456000000}]}};
@@ -291,7 +301,7 @@ def test_unknown_preview_manual_import_and_explicit_zero_do_not_become_regional_
 
 @pytest.mark.parametrize('new_silent',[False,True])
 def test_same_mo_silent_recalculation_keeps_contract_but_another_applied_parcel_clears_it(rental_page,new_silent):
-    page,width,errors=rental_page
+    page,view,errors=rental_page
     state=page.evaluate("""async()=>{
         delete inputs._glavapu_import;
         const parcel={cadastral_number:'50:01:0000001:11',cadastral_value_rub:123000000};
@@ -304,12 +314,16 @@ def test_same_mo_silent_recalculation_keeps_contract_but_another_applied_parcel_
         const savedTep=JSON.parse(JSON.stringify(tep));
         moResult={query:parcel.cadastral_number,inputs:{vri_region:'mo',land_right:'lease'},
           territory:{site_area_ha:1},vri:{parcels:[parcel]},tep:savedTep,density_sqm_per_ha:30000};
+        // Очерёдность — решение пользователя: тихий пересчёт того же участка её не сбрасывает.
+        phasing=makeDefaultPhasing(2);
         await applyMo({silent:true});
         return {mode:inputs.land_rent_mode,rates:inputs.land_rent_rates,base:inputs.land_rent_cadastral_mln,
-          start:inputs.land_rent_regime_start,origin:inputs._field_origin['inputs.land_rent_cadastral_mln']};
+          start:inputs.land_rent_regime_start,origin:inputs._field_origin['inputs.land_rent_cadastral_mln'],
+          phases:phasing.phase_count};
     }""")
     assert state=={'mode':'manual','rates':[{'year':1,'rate_pct':0},{'year':2,'rate_pct':None}],
-                   'base':321,'start':'2027-01-17','origin':{'source':'manual','text':'Моя подтверждённая база'}}
+                   'base':321,'start':'2027-01-17','origin':{'source':'manual','text':'Моя подтверждённая база'},
+                   'phases':2}
     state=page.evaluate("""async silent=>{
         const parcel={cadastral_number:'50:01:0000001:12',cadastral_value_rub:456000000};
         moResult={query:parcel.cadastral_number,inputs:{vri_region:'mo',land_right:'lease'},
@@ -322,9 +336,32 @@ def test_same_mo_silent_recalculation_keeps_contract_but_another_applied_parcel_
     fits(page)
 
 
+def test_opening_another_saved_project_keeps_its_own_confirmed_contract(rental_page):
+    """Открытый проект приносит свой участок и свой договор: это не смена участка.
+
+    Участок прошлого проекта (Москва) не должен доживать до открытого (МО):
+    иначе его подтверждённые условия читались бы как унаследованные от другого
+    участка и снимались, а расчёт аренды прятался бы как чужой.
+    """
+    page,view,errors=rental_page
+    assert page.evaluate('landRentTerritory().region')=='msk'
+    state=page.evaluate("""async()=>{
+        const other=JSON.parse(JSON.stringify(projectStorePayload().payload));
+        delete other.inputs._glavapu_import;
+        Object.assign(other.inputs,{vri_region:'mo',land_rent_mode:'mo_housing_new_2026',land_rent_preset_confirmed:true,
+          _mo_calc:{vri:{parcels:[{cadastral_number:'50:01:0000001:11',cadastral_value_rub:1000000000}]},territory:{site_area_ha:1}},
+          land_rent_contract_date:'2027-01-01',land_rent_public_scope:'regional',
+          land_rent_grant_basis:'ordinary_nonauction',land_rent_mo_cadastral_unchanged:true});
+        applyProjectSnapshot(other);await settledCalculate();
+        return {region:landRentTerritory().region,mode:inputs.land_rent_mode,
+          confirmed:inputs.land_rent_preset_confirmed,shown:landRentShownResult()?.mode||null};
+    }""")
+    assert state=={'region':'mo','mode':'mo_housing_new_2026','confirmed':True,'shown':'mo_housing_new_2026'}
+
+
 @pytest.mark.parametrize('kind',['hotel','nonresidential'])
 def test_current_project_type_excludes_housing_presets_before_any_new_result(rental_page,kind):
-    page,width,errors=rental_page
+    page,view,errors=rental_page
     state=page.evaluate("""kind=>{
         const previous=lastResult.land_rent.mode;
         inputs.project_kind=kind;renderInputs();

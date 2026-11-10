@@ -8,19 +8,29 @@ from tests import browser
 core = main.core
 
 
+# Корень прода — со слоем IA, /classic — прежний вид: проверяются оба, и какой
+# из них откроется, решает параметр, а не порядок сбора тестов.
+@pytest.mark.parametrize("surface", ["/", "/classic"], ids=["main", "classic"])
 @pytest.mark.parametrize("width", [390, 1440])
-def test_rental_editor_uses_real_page_retains_rates_and_recalculates(width, monkeypatch):
-    from playwright.sync_api import sync_playwright
+def test_rental_editor_uses_real_page_retains_rates_and_recalculates(width, surface, monkeypatch):
+    import re
+
+    from playwright.sync_api import expect, sync_playwright
+    from main_registry import app as registry_app
 
     monkeypatch.setattr(core, "_telegram_token", lambda: "")
     monkeypatch.setattr(core, "require_calc_access", lambda *a, **k: {"allowed": True})
     errors = []
-    with browser.serve(core.app, 18862) as base, sync_playwright() as pw:
+    with browser.serve(registry_app, 18862) as base, sync_playwright() as pw:
         with pw.chromium.launch(executable_path=str(browser.chromium_or_skip())) as chromium:
             page = chromium.new_page(viewport={"width": width, "height": 1000})
             page.on("pageerror", lambda exc: errors.append(str(exc)))
-            page.goto(base, wait_until="domcontentloaded")
+            page.goto(base.rstrip("/") + surface, wait_until="domcontentloaded")
             browser.wait_for_result(page)
+            if surface == "/":
+                expect(page.locator("body")).to_have_class(re.compile(r"\bia-on\b"))
+            else:
+                assert not page.locator("body.ia-on").count()
             page.evaluate("""async()=>{
                 Object.assign(inputs,{land_right:'lease',vri_region:'msk',land_rent_mode:'manual',
                   land_rent_cadastral_mln:100,land_rent_regime_start:'2027-01-01',
@@ -33,7 +43,7 @@ def test_rental_editor_uses_real_page_retains_rates_and_recalculates(width, monk
                   social_mode:'Денежная компенсация',social_compensation_mln:0});
                 renderInputs();await settledCalculate();
             }""")
-            page.locator("button[data-tab='vri']").click()
+            browser.open_vri(page)
             assert page.locator("#landRentEditor").is_visible()
             assert page.locator("#f_land_rent_cadastral_mln").input_value() == "100"
             assert page.evaluate("lastResult.land_rent.construction_total") == pytest.approx(4.5e6)
@@ -50,7 +60,7 @@ def test_rental_editor_uses_real_page_retains_rates_and_recalculates(width, monk
             assert page.evaluate("lastResult.land_rent.construction_total") == pytest.approx(5e6)
             page.reload(wait_until="domcontentloaded")
             browser.wait_for_result(page)
-            page.locator("button[data-tab='vri']").click()
+            browser.open_vri(page)
             assert page.evaluate("inputs.land_rent_rates[0].rate_pct") == 2
             assert page.locator("#f_land_rent_regime_start").input_value() == "2027-01-01"
             assert page.locator("#landRentSummary").get_by_text("Начислено по ставкам:", exact=False).count() > 0
@@ -58,7 +68,7 @@ def test_rental_editor_uses_real_page_retains_rates_and_recalculates(width, monk
                 assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 2")
             target = Path("/tmp/plato-land-rent-ui-acceptance")
             target.mkdir(mode=0o700, exist_ok=True)
-            page.locator("#landRentEditor").screenshot(path=str(target / f"land-rent-{width}.png"))
+            page.locator("#landRentEditor").screenshot(path=str(target / f"land-rent-{width}-{surface.strip('/') or 'main'}.png"))
             assert not errors, errors
 
 
