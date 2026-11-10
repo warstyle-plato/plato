@@ -791,7 +791,7 @@ def read(data: bytes) -> dict:
     try:
         document = pymupdf.open(stream=data, filetype='pdf')
     except (RuntimeError, ValueError) as error:
-        raise ValueError('Файл не открылся как PDF.') from error
+        raise ValueError('Файл не открылся как PDF. Сохраните документ в PDF заново, например выгрузкой из системы электронного документооборота, и загрузите ещё раз.') from error
     texts = [page.get_text() for page in document]
     if not any(_space(text) for text in texts):
         raise ValueError('В PDF нет текстового слоя: это скан. Графы расчёта и графика по скану не прочитать '

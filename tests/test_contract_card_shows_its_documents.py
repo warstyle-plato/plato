@@ -53,7 +53,7 @@ def test_the_card_lists_documents_and_shows_schedule_corrections_in_red(listing,
         documents = page.locator("#contractDocuments")
         expect(documents).to_contain_text("Дополнительное соглашение № 4 от 01.02.2026")
         expect(documents).to_contain_text("Расчёт договорной стоимости на завершение работ")
-        expect(documents).to_contain_text("итог документа: 127 150 ₽")
+        expect(documents).to_contain_text("Итог документа: 127 150 ₽.")
         correction = documents.locator("ul.contract-correction li").first
         expect(correction).to_contain_text("у строки 2.3 «Стены»")
         expect(correction).to_contain_text("Взяты даты полосы: 29.01.2026 — 31.01.2026.")

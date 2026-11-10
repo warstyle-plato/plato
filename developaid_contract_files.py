@@ -114,7 +114,7 @@ def store(project: str, row: dict, filename: str, content: bytes) -> dict:
     if not content or len(content) > MAX_BYTES:
         raise ContractFilesProblem("Выберите непустой PDF размером не больше 20 МБ.")
     if not content.startswith(b"%PDF"):
-        raise ContractFilesProblem("Файл не открылся как PDF.")
+        raise ContractFilesProblem("Файл не открылся как PDF. Сохраните документ в PDF заново, например выгрузкой из системы электронного документооборота, и загрузите ещё раз.")
     sha = hashlib.sha256(content).hexdigest()
     folder.mkdir(parents=True, exist_ok=True, mode=0o700)
     existing = folder / f"{sha}.json"

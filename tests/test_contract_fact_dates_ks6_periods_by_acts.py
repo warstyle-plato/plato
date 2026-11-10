@@ -226,7 +226,7 @@ def test_the_card_shows_the_dates_of_the_acts_and_the_missing_one_in_red(card):
         _open(page)
         documents_ = page.locator("#contractDocuments")
         expect(documents_.locator(".contract-act")).to_have_text(
-            "Отчётный период 01.02.2026 — 03.02.2026 · итого по акту 4 000 ₽")
+            "Отчётный период: 01.02.2026 — 03.02.2026. Итого по акту: 4 000 ₽.")
         block = documents_.locator(".contract-act-dates")
         block.get_by_text("Даты актов КС-2 (2)").click()
         expect(block.locator("tr", has_text="КС-2 № 2")).to_contain_text(
