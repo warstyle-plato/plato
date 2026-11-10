@@ -58,7 +58,7 @@ def test_real_business_register_keeps_core_facts_visible_and_sources_closed(widt
         # columns and its own wrapper scrolls sideways; the page itself does not.
         assert page.locator('#contractsRows table.contract-register').evaluate(
             '(t)=>getComputedStyle(t).display') == 'table'
-        assert first.locator('td').count() == 8
+        assert first.locator('td').count() == 11
         wrap = page.locator('#contractsRows .contract-register-wrap')
         if width < 900:
             assert wrap.evaluate('(w)=>w.scrollWidth > w.clientWidth')
@@ -69,7 +69,7 @@ def test_real_business_register_keeps_core_facts_visible_and_sources_closed(widt
             assert box is not None and box['x'] >= -1 and box['x'] < width
         sources.locator('summary').click()
         second = page.locator(f'tr[data-contract-id="{OTHER}"]')
-        assert second.locator('.contract-main-money').all_text_contents() == ['—', '—', '—']
+        assert second.locator('.contract-main-money').all_text_contents() == ['—', '—', '—', '—', '—', '—']
         expect(second).to_contain_text('Нужен срок')
         expect(second).to_contain_text('Работы не указаны')
         expect(second).not_to_contain_text('просрочен')

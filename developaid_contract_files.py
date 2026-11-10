@@ -16,6 +16,7 @@ import contextlib
 import datetime as dt
 import hashlib
 import json
+import logging
 import os
 import re
 import tempfile
@@ -300,6 +301,34 @@ def _with_control(listed, acts, cut):
     listed["control"] = control.build(listed["plan"], listed["fact"], (acts or {}).get("deadline"),
                                       (acts or {}).get("deadline_label") or "", cut)
     return listed
+
+
+def register_control(project: str, register: dict, cut: str) -> dict:
+    """Put the card's deviation, lag and forecast on every row of the register as `schedule_control`.
+
+    The numbers are the card's own (`listing`), not a second calculation; a card that fails keeps
+    the register and says why in its row.
+    """
+    for row in register.get("rows") or []:
+        try:
+            listed = listing(project, row["id"], cut, fact.acts(row))
+        except ContractFilesProblem as exc:
+            row["schedule_control"] = {"documents": None, "note": str(exc)}
+            continue
+        except Exception as exc:
+            logging.getLogger("developaid.monitor").error("Contract card control unavailable (%s)", type(exc).__name__)
+            row["schedule_control"] = {"documents": None, "note": "Отчёт по графику договора не построен: документы "
+                                       "карточки не прочитаны. Откройте карточку договора и обновите её."}
+            continue
+        found = listed["control"]
+        total, forecast = found["total"] or {}, found["forecast"] or {}
+        row["schedule_control"] = {
+            "documents": len(listed["documents"]),
+            "note": found["note"] if listed["documents"] else "ГПР и расчёт договора в карточку не загружены.",
+            **{k: total.get(k) for k in ("state", "lag_days", "ahead_days", "planned", "fact", "deviation", "percent")},
+            **{k: forecast.get(k) for k in ("finish", "deadline", "from_register", "done", "threat", "days_over",
+                                            "days_early", "passed")}}
+    return register
 
 
 def save_links(project: str, contract_id: str, sha256: str, estimate: int, picked: list[dict],

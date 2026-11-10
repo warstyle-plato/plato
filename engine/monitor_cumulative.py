@@ -267,7 +267,9 @@ def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = 
                 payload["project"], archive, payload["taken_at"], payload["filename"])}
         elif operation == "view":
             register = contracts.build(payload["project"], payload["cut"])
-            result = {"register": links.enrich(payload["project"], register, payload["cut"])}
+            register = links.enrich(payload["project"], register, payload["cut"])
+            # The table row shows the card's deviation, lag and forecast by the contract ГПР.
+            result = {"register": contract_files.register_control(payload["project"], register, payload["cut"])}
         elif operation == "term":
             result = {"term": contracts.set_term(
                 payload["project"], payload["contract_id"], payload["deadline"], payload["note"])}

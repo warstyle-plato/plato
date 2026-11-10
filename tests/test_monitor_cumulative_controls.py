@@ -199,7 +199,7 @@ def test_contracts_render_exact_money_unknowns_and_separate_physics(width):
         expect(row).to_contain_text('1\u00a0000\u00a0000 ₽')
         expect(row.locator('.term')).to_contain_text('Нужен срок')
         expect(page.locator(f'tr[data-contract-id="{OTHER}"]')).to_contain_text('0 ₽')
-        assert page.locator(f'tr[data-contract-id="{OTHER}"] .contract-main-money').all_text_contents() == ['—', '0 ₽', '—']
+        assert page.locator(f'tr[data-contract-id="{OTHER}"] .contract-main-money').all_text_contents() == ['—', '0 ₽', '—', '—', '—', '—']
         expect(page.locator(f'tr[data-contract-id="{OTHER}"]')).to_contain_text('Доля не рассчитана')
         row.locator('.contract-open').click()
         expect(page.locator('#contractsDetails')).to_contain_text('35%')
