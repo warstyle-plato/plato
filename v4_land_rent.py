@@ -515,7 +515,11 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
     put(17, "F17", formula=(f'IF(AND({raw_complete},$F$20="Да",COUNT(C{pay_first}:C{pay_end})>0,SUM(G{pay_first}:G{pay_end})=0,OR(COUNTIF(D{pay_first}:D{pay_end},"%")=0,AND(COUNTIF(D{pay_first}:D{pay_end},"%")=COUNT(C{pay_first}:C{pay_end}),ABS(SUMIF(D{pay_first}:D{pay_end},"%",C{pay_first}:C{pay_end})-100)<=0.0000001)),ABS(SUM(E{pay_first}:E{pay_end})-SUM($D$4:${last_col}$4))<=0.0000005),1,0)'))
     for index in range(months):
         col, matrix = _col(4 + index), _col(10 + index)
-        put(3, f"{col}3", formula=month_formulas[index] if month_formulas is not None else f"'Ставки'!{col}3", style=styles["date"])
+        # All default monthly keys and their period boundaries use day 1.
+        # Contract/project/RVE dates above retain their actual source days.
+        month_formula = (month_formulas[index] if month_formulas is not None else
+                         f"'Ставки'!{col}3-DAY('Ставки'!{col}3)+1")
+        put(3, f"{col}3", formula=month_formula, style=styles["date"])
         put(4, f"{col}4", formula=f'SUM({matrix}{pre_first}:{matrix}{pre_end})', style=styles["amount"])
         active = f'AND({col}3<$B$15,EDATE({col}3,1)>$B$14)'
         put(7, f"{col}7", formula=f'IF(OR($B$8="Не применяется",$I$14="Собственность"),0,IF(AND({active},OR({valid}=0,$N$12=0)),1,COUNTIF({matrix}{pre_first}:{matrix}{pre_end},"Не рассчитано")))')
