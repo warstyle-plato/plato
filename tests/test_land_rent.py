@@ -289,20 +289,39 @@ def test_amount_bound_source_composition_is_automatic_but_owner_decision_wins(in
         assert rent.vri_premium(bad)["status"] == "unknown"
 
 
-def test_manual_vri_formula_declares_exclusion_without_inventing_the_raised_rent():
+def test_vri_fee_by_territory_rates_already_holds_the_first_year_raised_rent():
+    """Для аренды плата за ВРИ — это и есть ставка приложения 8 к 273-ПП."""
     import main_legacy as core
     fee = core.vri_manual_payment([{"type":"mkd", "spp_sqm":10000, "base_cost_rub":200000}],
                                   .15, 1, land_right="lease")
     assert fee["total_mln"] == pytest.approx(568.352)
-    assert fee["rent_premium"]["included_in_vri"] is False
+    assert fee["rent_premium"]["included_in_vri"] is True
     assert fee["rent_premium"]["fee_mln"] == fee["total_mln"]
+    assert "повышенная часть" in fee["rent_premium"]["source"]
     x = settings(land_rent_mode="msk_mkd_3_2",land_rent_preset_confirmed=True,
         land_rights_cost_mln=fee["total_mln"],land_rent_payment_mode="manual",land_rent_payment_schedule="100%@0",
         _field_origin={"inputs.land_rights_cost_mln":{"rent_premium":fee["rent_premium"]}})
     result = rent.build(x,date(2027,1,1),date(2028,1,1))
-    assert result["premium"]["derived"] and result["premium"]["status"] == "separate_required"
-    assert not result["financial_complete"] and "premium" in result["financial_missing_codes"]
+    assert result["premium"]["derived"] and result["premium"]["status"] == "in_vri"
+    assert "premium" not in result["financial_missing_codes"]
     assert result["construction_total"] == pytest.approx(1.5e6)
+    # Правка суммы снимает доказательство: вопрос возвращается.
+    edited = rent.build({**x, "land_rights_cost_mln": fee["total_mln"] + 1}, date(2027,1,1), date(2028,1,1))
+    assert edited["premium"]["status"] == "unknown" and "premium" in edited["financial_missing_codes"]
+    own = core.vri_manual_payment([{"type":"mkd", "spp_sqm":10000, "base_cost_rub":200000}], .15, 1)
+    assert own["rent_premium"] is None
+
+
+def test_glavapu_import_and_recalc_carry_the_fee_composition():
+    import main_legacy as core
+    provenance = core._glavapu_provenance({"land_rights_cost_mln": 1289.919, "site_area_ha": 2.0}, {}, "2026-08-16")
+    proof = provenance["inputs.land_rights_cost_mln"]["rent_premium"]
+    assert proof["included_in_vri"] is True and proof["fee_mln"] == 1289.919
+    assert "rent_premium" not in provenance["inputs.site_area_ha"]
+    assert "rent_premium" not in core._glavapu_provenance({"land_rights_cost_mln": 0}, {}, None)["inputs.land_rights_cost_mln"]
+    x = settings(land_rent_mode="msk_mkd_3_2", land_rent_preset_confirmed=True, land_rights_cost_mln=1289.919,
+                 _field_origin={"inputs.land_rights_cost_mln": provenance["inputs.land_rights_cost_mln"]})
+    assert rent.vri_premium(x)["status"] == "in_vri"
 
 
 def test_missing_lease_start_is_assumed_from_project_start_and_disclosed():

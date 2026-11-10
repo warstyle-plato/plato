@@ -407,7 +407,7 @@ _GLAVAPU_TEP_SOURCE = {
 
 
 def _glavapu_provenance(input_mapping: dict[str, Any], tep_mapping: dict[str, dict[str, Any]],
-                        export_date: str | None) -> dict[str, dict[str, str]]:
+                        export_date: str | None) -> dict[str, dict[str, Any]]:
     """Происхождение каждого подставляемого значения: «ГлавАПУ, выгрузка от
     <дата>, лист «…», <строка>». Без даты в файле так и сказано."""
     when = f"выгрузка от {export_date}" if export_date else "выгрузка (дата в файле не указана)"
@@ -420,9 +420,12 @@ def _glavapu_provenance(input_mapping: dict[str, Any], tep_mapping: dict[str, di
         return {"source": "glavapu", "date": export_date or "", "sheet": sheet, "row": row,
                 "text": f"ГлавАПУ, {when}, лист «{sheet}», {row}"}
 
-    out: dict[str, dict[str, str]] = {}
+    out: dict[str, dict[str, Any]] = {}
     for key in input_mapping:
         out[f"inputs.{key}"] = one(_GLAVAPU_INPUT_SOURCE.get(key, key))
+    proof = vri_fee_rent_premium(input_mapping.get("land_rights_cost_mln"))
+    if proof:
+        out["inputs.land_rights_cost_mln"]["rent_premium"] = proof
     for obj, fields in tep_mapping.items():
         for field in fields:
             source_key = _GLAVAPU_TEP_SOURCE.get((obj, field))
