@@ -639,6 +639,7 @@ def _calculate_economics(req: CalcRequest) -> dict:
          op["capex_amounts"].get("land_rights", 0.0)
          + op["capex_amounts"].get("vri_security", 0.0)),
         ("Проценты по рассрочке ВРИ", op["capex_amounts"].get("vri_interest", 0.0)),
+        ("Аренда земельного участка", op["capex_amounts"].get("land_rent", 0.0)),
         ("ИРД и проектирование",
          op["capex_amounts"].get("ird", 0.0)
          + op["capex_amounts"].get("design_p", 0.0)
@@ -770,14 +771,14 @@ def _calculate_economics(req: CalcRequest) -> dict:
     # только в чистой прибыли, а потоки, из которых считаются NPV и IRR, его
     # не видели и завышали доходность (решение владельца, 13.10.2026).
     vat_ddu = {d(month): float(value) for month, value in (fin.get("vat_ddu_schedule") or {}).items()}
-    timeline = month_range(op["project_start"], op["end"])
+    timeline = month_range(op.get("cash_start", op["project_start"]), op["end"])
     # Налог уходит со счёта авансом по итогам квартала и доплатой года в марте
     # следующего (ст. 286, 287): уплата за последний год проекта приходится
     # на месяцы после его горизонта. Ряд потоков продлевается до неё нулями —
     # налог, обрезанный горизонтом, IRR и NPV не видели бы вовсе.
     tax_paid = {d(month): float(value)
                 for month, value in (fin.get("profit_tax_payment_schedule") or {}).items()}
-    cash_timeline = month_range(op["project_start"], max([op["end"], *tax_paid]))
+    cash_timeline = month_range(op.get("cash_start", op["project_start"]), max([op["end"], *tax_paid]))
     project_cf = []
     equity_cf = []
     for month in cash_timeline:
@@ -816,7 +817,7 @@ def _calculate_economics(req: CalcRequest) -> dict:
         # проекта по ДДУ выходил выше настоящего: на Вавилова, 67 +623 млн ₽
         # против −1 771 (владелец, 25.10.2026).
         escrow_release = float(fr.get("escrow_release", 0.0) or 0.0)
-        cash_revenue_to_equity = 0.0 if month < op["rve"] else revenue_m + escrow_release
+        cash_revenue_to_equity = 0.0 if month < month_key(op["rve"]) else revenue_m + escrow_release
         project_cf.append(cash_revenue_to_equity - capex_m - opex_m - tax - vat_m + nonres_project)
         # Кэш-свип уходит банку с поступлений этой очереди: её долг он не
         # гасит (линия закрыта), поэтому в pf_repay его нет, а из кассы он
@@ -839,7 +840,7 @@ def _calculate_economics(req: CalcRequest) -> dict:
 
     if equity_cf:
         equity_cf[0] -= fin["bridge_fee"]
-    permit_idx = months_between(op["project_start"], op["permit"])
+    permit_idx = months_between(op.get("cash_start", op["project_start"]), op["permit"])
     if 0 <= permit_idx < len(equity_cf):
         equity_cf[permit_idx] -= fin["pf_reservation_fee"]
 
@@ -1157,6 +1158,7 @@ def _calculate_economics(req: CalcRequest) -> dict:
         # страница их печатает, а не делит сама.
         "capex_units": capex_unit_rows(capex_articles, bases),
         "vri": {**op["vri"], "benefits": vri_benefits_for(x, t)},
+        "land_rent": op["land_rent"],
         # Смета каждого объекта вне ДДУ — его статья и начисленные от неё
         # генподряд, техзаказчик и резерв (`object_cost_parts`).
         "object_costs": op.get("object_cost_parts") or {},
@@ -1188,6 +1190,8 @@ def _calculate_economics(req: CalcRequest) -> dict:
             "total_label": DEAL_TOTAL_LABEL,
         },
         "summary": {
+            "preliminary": not op["land_rent"]["financial_complete"],
+            "preliminary_reason": developaid_land_rent.disclosure(op["land_rent"]),
             "revenue": total_revenue,
             "capex": total_capex,
             "commercial_costs": fin["commercial_costs"],
@@ -1479,6 +1483,9 @@ def _product_schedule_fields(notes: dict[str, dict[str, Any]], key: str) -> dict
 _MONTHLY_CAPEX_LABELS: dict[str, str] = {
     "purchase": "Покупка / цена входа",
     "land_rights": "Земельные правоотношения / смена ВРИ",
+    "land_rent": "Аренда земельного участка",
+    "land_tax": "Земельный налог",
+    "land_use_other": "Прочие платежи за пользование землёй",
     "vri_security": "Обеспечение обязательства по ВРИ",
     "vri_interest": "Проценты по рассрочке ВРИ",
     "ird": "ИРД и согласования",

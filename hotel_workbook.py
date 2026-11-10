@@ -30,12 +30,13 @@ from openpyxl.utils import get_column_letter
 import developaid_hotel_strategy as hs
 from developaid_finance_math import LOSS_CARRY_USE_LIMIT
 import hotel_workbook_capex as capex_book
+import native_land_rent_book as land_rent_book
 import hotel_workbook_sensitivity as sensitivity_book
 from xlsx_eval import Evaluator
 from v4_value_cache import with_cached_values
 
 CAPEX_INPUT_DEFAULTS = capex_book.INPUT_DEFAULTS
-FORMULA_CAPEX_ARTICLES = frozenset(capex_book.ARTICLES)
+FORMULA_CAPEX_ARTICLES = frozenset((*capex_book.ARTICLES, "land_rent"))
 
 ENGINE_FILL = PatternFill("solid", fgColor="FFF3E0")
 INPUT_FILL = PatternFill("solid", fgColor="FFFDE7")
@@ -135,6 +136,7 @@ DERIVED: tuple[tuple[str, str], ...] = (
     ("exit_value", "Стоимость гостиницы на выходе, ₽"),
     ("peak", "Пик долга, ₽"),
     ("rate_m", "Месячная ставка дисконтирования проекта (как NPV движка)"),
+    ("rent_vat_exempt_total", "Аренда ЗУ, не создающая входного НДС, ₽"),
 )
 _ROWS: dict[str, int] = {key: 4 + i for i, (key, _) in enumerate(MODEL)}
 _ROWS.update({key: 4 + len(MODEL) + 2 + i for i, (key, _) in enumerate(DERIVED)})
@@ -195,6 +197,7 @@ _COLUMN_LIST: tuple[tuple[str, str], ...] = (
     ("shield", "Налоговый щит процентов (вне FCFF)"),
     ("fcf_pre", "FCFF без оценки удержания"),
     ("gordon_base", "FCFF последних 12 мес. срока (база Гордона)"),
+    ("capex_vat_exempt", "в т.ч. аренда ЗУ без входного НДС, ₽"),
 )
 COLUMNS: dict[str, tuple[str, str]] = {
     key: (get_column_letter(i), label) for i, (key, label) in enumerate(_COLUMN_LIST, start=1)}
@@ -293,7 +296,7 @@ def _row_formulas(r: int) -> dict[str, str]:
                     f"-{v['tax']}-{v['shield']})"),
         "gordon_base": (f"=IF(AND({A}>{i('horizon')}-12,{A}<={i('horizon')}),"
                         f"{v['fcf_pre']},0)"),
-        "vatin": f"=IF({v['in_h']}=1,MAX(0,{v['capex']}-{v['capex_land']})*{i('vs')},0)",
+        "vatin": f"=IF({v['in_h']}=1,MAX(0,{v['capex']}-{v['capex_land']}-{v['capex_vat_exempt']})*{i('vs')},0)",
         "refund": (f"=IF({A}>{i('horizon')},0,IF({A}={i('horizon')},SUM({refund_window}),"
                    f"{refund_lag}))"),
         "rate": (f'=IF({i("financing")}="none",0,IF({i("financing")}="preferential",'
@@ -446,7 +449,7 @@ def _model_values(data: dict[str, Any], start: date) -> dict[str, Any]:
         "horizon": _index(start, hs.add_months(commissioning, hold * 12 - 1)),
         "hold": hold,
         "limit_th": 0.0 if limit_blank else _num(params, "loan_limit_th_per_key"),
-        "start": start, "price_date": _month(price_date),
+        "start": date.fromisoformat(str(data.get("start") or start)[:10]), "price_date": _month(price_date),
     }
 
 
@@ -512,11 +515,12 @@ def _inputs_sheet(book: Workbook, data: dict[str, Any], values: dict[str, Any],
         "capex_total": f"=SUMIF({col('in_h')},1,{col('capex')})",
         "land_total": f"=SUMIF({col('in_h')},1,{col('capex_land')})",
         "ffe_total": f"=SUMIF({col('in_h')},1,{col('capex_ffe')})",
-        "capex_vat": f"=MAX(0,{i('capex_total')}-{i('land_total')})*{i('vs')}",
+        "capex_vat": f"=MAX(0,{i('capex_total')}-{i('land_total')}-{i('rent_vat_exempt_total')})*{i('vs')}",
         "capex_net": f"={i('capex_total')}-{i('capex_vat')}",
         "ffe_net": f"={i('ffe_total')}*(1-{i('vs')})",
         "building_net": f"=MAX(0,{i('capex_net')}-{i('ffe_net')}-{i('land_total')})",
         "insurance_month": f"=({i('capex_net')}-{i('land_total')})*{i('insurance_rate')}/12",
+        "rent_vat_exempt_total": f"=SUMIF({col('in_h')},1,{col('capex_vat_exempt')})",
         "first_draw": f"=MIN({col('first_k')})",
         "maturity": (f"=IF({i('first_draw')}<{NO_DRAW},{i('first_draw')}+{i('term')},{NO_DRAW})"),
         "amort_start": (f"=IF({i('first_draw')}<{NO_DRAW},MAX({i('comm')},{i('first_draw')}"
@@ -596,13 +600,18 @@ def _calc_sheet(book: Workbook, data: dict[str, Any], start: date, values: dict[
         source = months[idx] if idx < len(months) else {}
         ws[f"{_c('k')}{r}"] = idx
         month_ref = f"{_c('month')}{r}"
-        ws[month_ref] = f"=EDATE({_in('start')},{_c('k')}{r})"
+        ws[month_ref] = f"=EDATE({_in('start')},{_c('k')}{r})-DAY({_in('start')})+1"
         ws[month_ref].number_format = "mmm yyyy"
         ws[f"{_c('year')}{r}"] = f"=YEAR({month_ref})"
         ws[f"{_c('days')}{r}"] = f"=EDATE({month_ref},1)-{month_ref}"
         for name, key in (("capex", "capex"), ("capex_ffe", "capex_ffe"),
-                          ("capex_land", "capex_land"), ("key_rate", "key_rate")):
+                          ("capex_land", "capex_land"), ("key_rate", "key_rate"),
+                          ("capex_vat_exempt", "capex_vat_exempt")):
             if capex_ref and name != "key_rate":
+                if name == "capex_vat_exempt":
+                    ws[f"{_c(name)}{r}"] = ("=" + land_rent_book.vat_exempt(capex_ref("land_rent", idx))
+                        if land_rent_book.SHEET in book.sheetnames else "=0")
+                    continue
                 parts = {"capex": ["total"], "capex_ffe": ["hotel_ffe"],
                          "capex_land": ["purchase", "land_rights", "vri_interest", "vri_security"]}[name]
                 ws[f"{_c(name)}{r}"] = "=" + "+".join(capex_ref(part, idx) for part in parts)
@@ -809,9 +818,17 @@ def build(result: dict[str, Any], project_name: str = "") -> bytes:
     _inputs_sheet(book, data, values, rows)
     capex_ref = None
     missing = []
+    rent_ref = None
+    if land_rent_book.requested(data.get("capex_spec") or {}):
+        start_ref = _in("start")
+        rve_ref = f"EDATE({start_ref},{_in('comm')})"
+        rent_ref = land_rent_book.add(book, data["capex_spec"], start=start_ref, rve=rve_ref,
+            end=land_rent_book.end_formula(data["capex_spec"], f"'{land_rent_book.SHEET}'!$B$15"),
+            month_formulas=[f"'{CALC_SHEET}'!{_c('month')}{FIRST_ROW + k}" for k in range(rows)],
+            input_fill=INPUT_FILL)
     if data.get("capex_spec"):
         capex_book.inputs(book, data["capex_spec"], sys.modules[__name__])
-        capex_ref, missing = capex_book.build(book, data["capex_spec"], rows, sys.modules[__name__])
+        capex_ref, missing = capex_book.build(book, data["capex_spec"], rows, sys.modules[__name__], rent_ref)
     _calc_sheet(book, data, start, values, rows, capex_ref)
     years = list(range(start.year, hs.add_months(start, rows - 13).year + 1))
     refs = _usali_sheet(book, years, rows)
@@ -821,6 +838,8 @@ def build(result: dict[str, Any], project_name: str = "") -> bytes:
     sheet["A1"] = f"DevelopAid · гостиница{(' · ' + project_name) if project_name else ''}"
     sheet["A1"].font = BOLD
     sheet["A2"] = "Финансовая модель гостиницы. Изменяйте жёлтые ячейки на «Вводных»: итоги пересчитываются."
+    if rent_ref:
+        land_rent_book.qualify(sheet)
     lines = (
         ("NPV проекта", "npv_project"),
         ("IRR проекта", "irr_project"),

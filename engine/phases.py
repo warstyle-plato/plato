@@ -611,7 +611,7 @@ def _escrow_cover(rows: list[dict[str, Any]], rve: Any = None) -> dict[str, Any]
     row = {}
     if rve is not None:
         row = next((item for item in rows
-                    if str(item.get("month") or "") == rve.isoformat()), {})
+                    if item.get("month") and month_key(item["month"]) == month_key(rve)), {})
     if row:
         repaid = float(row.get("pf_repayment", 0.0) or 0.0)
         unpaid = float(row.get("pf_balance", 0.0) or 0.0)
@@ -1102,10 +1102,10 @@ def _phase_recognized_base(result: dict[str, Any], fallback_gate: Any = None) ->
     `fallback_gate` — для строк без дат.
     """
     rve = (result.get("dates") or {}).get("rve") or fallback_gate
-    gate = d(rve).isoformat() if rve else None
+    gate = month_key(rve).isoformat() if rve else None
     out: dict[str, float] = {}
     for row in (result.get("finance") or {}).get("rows") or []:
-        month = d(row["month"]).isoformat()
+        month = month_key(row["month"]).isoformat()
         margin = float(row.get("taxable_margin", 0.0) or 0.0)
         financing = float(row.get("financing_tax_deduction", 0.0) or 0.0)
         target = gate if gate and month < gate else month
@@ -1127,9 +1127,9 @@ def _phase_margins_at_own_rve(results: list[dict[str, Any]]) -> dict[date, float
     margins: dict[date, float] = defaultdict(float)
     for result in results:
         rve = (result.get("dates") or {}).get("rve")
-        gate = d(rve) if rve else None
+        gate = month_key(rve) if rve else None
         for row in (result.get("finance") or {}).get("rows") or []:
-            month = d(row["month"])
+            month = month_key(row["month"])
             margin = float(row.get("taxable_margin", 0.0) or 0.0)
             margins[gate if gate is not None and month < gate else month] += margin
     return dict(margins)
@@ -2071,7 +2071,9 @@ def _consolidate_vri(phase_items: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
+def _calculate_phased_once(req: PhasedCalcRequest, *, _land_rent_cutoff: date | None = None) -> dict[str, Any]:
+    if req.actuals:
+        raise HTTPException(status_code=422, detail="Факт по очередям пока не поддерживается. Нужна подтверждённая привязка платежей к очередям; входные данные не применены.")
     x_master = copy.deepcopy(req.inputs)
     t_master = copy.deepcopy(req.tep)
     rates = copy.deepcopy(req.rates)
@@ -2165,6 +2167,20 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
     x_base["scenario_revenue_multiplier"] = 1.0
     base_op = build_operating_model(x_base, copy.deepcopy(t_master), rates)
     base_amounts = base_op["capex_amounts"]
+    # One leased parcel and one lease-year calendar, independent of the
+    # launches of its queues. Cash attribution is explicit, not bank cover.
+    rent_offsets = [int(cfg.get("start_offset_months", i * int(phasing.get("phase_gap_months", 12))))
+                    for i, cfg in enumerate(phases_cfg[:count])]
+    rent_queue = min(range(count), key=lambda i: (rent_offsets[i], i))
+    rent_rves = [add_months(project_permit_date({**x_master, "project_start": add_months(d(x_master["project_start"]), rent_offsets[i]).isoformat()}),
+                           int(cfg.get("construction_months", n(x_master, "construction_months", 24))))
+                 for i, cfg in enumerate(phases_cfg[:count])]
+    base_object_dates = {key: d(value) for key, value in (base_op["land_rent"].get("local_object_commissioning") or {}).items()}
+    rent_rve = _land_rent_cutoff or developaid_land_rent.construction_cutoff(max(rent_rves), base_object_dates, pure_nonres=is_nonresidential(x_master))
+    rent_end = add_months(rent_rve, max(int(n(x_master, "residual_sales_months", 6)) + 3, 12) + 1)
+    common_land_rent = developaid_land_rent.build(x_master, d(x_master["project_start"]), rent_rve, rent_end)
+    common_land_rent["allocation_policy"] = "Аренда общего участка посчитана один раз; платежи отнесены к самой ранней очереди. Это модельное распределение, не подтверждение банковского покрытия."
+    common_land_rent["phase_shares"] = [1.0 if i == rent_queue else 0.0 for i in range(count)]
     master_vri_obligation = _vri_settings(x_master, base_op["permit"])["obligation_date"]
     shared_base_mln = {
         "purchase": n(x_master, "purchase_price_mln"),
@@ -2258,6 +2274,12 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
         p_tep = copy.deepcopy(t_master)
         p_inputs["project_start"] = add_months(d(x_master["project_start"]), offset).isoformat()
         p_inputs["construction_months"] = int(cfg.get("construction_months", n(x_master,"construction_months",24)))
+        phase_rent = copy.deepcopy(common_land_rent)
+        if idx != rent_queue:
+            phase_rent.update(monthly={}, accrual_monthly={}, known_total=0.0,
+                              total=0.0 if phase_rent["total"] is not None else None,
+                              construction_total=0.0 if phase_rent["construction_total"] is not None else None)
+        p_inputs["_land_rent_phase_model"] = phase_rent
         p_inputs.pop("_glavapu_import", None)
         # Заданная руками ПЛОЩАДЬ двора — величина проекта: оставленная
         # очереди целиком, она благоустроила бы один и тот же двор столько раз,
@@ -2791,6 +2813,23 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
             "social_objects":[item["name"] for item in social_allocation if item["phase"] == idx + 1],
         })
 
+    actual_object_dates = {str(i) + ":" + key: d(value) for i, item in enumerate(phase_items)
+        for key, value in (item["result"]["land_rent"].get("local_object_commissioning") or {}).items()}
+    actual_cutoff = developaid_land_rent.construction_cutoff(max(rent_rves), actual_object_dates, pure_nonres=is_nonresidential(x_master))
+    if actual_cutoff != rent_rve and common_land_rent.get("status") != "not_applicable":
+        if _land_rent_cutoff is not None:
+            raise ValueError("Не стабилизировалась дата последнего ввода для аренды общего участка")
+        return _calculate_phased_once(req, _land_rent_cutoff=actual_cutoff)
+    if actual_cutoff != rent_rve:
+        common_land_rent = developaid_land_rent.build(x_master, d(x_master["project_start"]), actual_cutoff, max(rent_end, actual_cutoff))
+        common_land_rent["phase_shares"] = [1.0 if i == rent_queue else 0.0 for i in range(count)]
+    common_land_rent["object_commissioning"] = {key: value.isoformat() for key, value in actual_object_dates.items()}
+    common_land_rent["cutoff_includes_housing"] = not is_nonresidential(x_master)
+    if common_land_rent.get("cutoff_origin") != "manual":
+        common_land_rent["cutoff_basis"] = "Последний ввод основных объектов на общем участке; соцобъекты без подтверждённой связи с землёй не включены. Жилищный РВЭ и условия ПФ не изменены."
+    social_dates = {str(i) + ":" + key: d(value) for i, item in enumerate(phase_items)
+        for key, value in (item["result"]["land_rent"].get("unlinked_social_dates") or {}).items()}
+    developaid_land_rent.qualify_scope(common_land_rent, social_dates)
     phase_financing = _phase_financing_summary(
         phase_items, financing_strategy, project_cash_transfers)
     for phase_item, comparison_row, financing_row in zip(
@@ -2810,6 +2849,11 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
     vri_summary["totals"]["relief_basis"] = vri_relief_basis(x_master)
     vri_summary["benefits"] = vri_benefits_for(x_master, t_master)
     consolidated["vri"] = vri_summary
+    common_land_rent["applied_total"] = sum(float(item["result"]["capex"].get("land_rent") or 0.0) for item in phase_items)
+    common_land_rent["cash_total"] = common_land_rent["applied_total"]
+    consolidated["land_rent"] = common_land_rent
+    consolidated["summary"]["preliminary"] = not common_land_rent["financial_complete"]
+    consolidated["summary"]["preliminary_reason"] = developaid_land_rent.disclosure(common_land_rent)
     # Норматив приобъектной парковки — обязательство ОБЪЕКТА, то есть проекта:
     # офисник, разрезанный надвое, не становится двумя офисниками со своими
     # нормами (то же правило, что у ступени площади соцобъекта). У свода блока
