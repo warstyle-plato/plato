@@ -340,7 +340,7 @@ async function calculate(){
  // тот, кто число печатает (`renderLandscapingHouseRateValue`), и он же её
  // снимает, как только человек вписал своё. Набранное при этом не теряется:
  // `onchange` поля пишет вводную сам, до всякого пересчёта.
- document.querySelectorAll('[id^=f_]').forEach(el=>{if(el.dataset.derived==='1')return;const id=el.id.slice(2);inputs[id]=el.type==='checkbox'?el.checked:(el.type==='number'?Number(el.value):el.value)});
+ document.querySelectorAll('[id^=f_]').forEach(el=>{if(el.dataset.derived==='1'||el.dataset.inputOwner==='land-rent')return;const id=el.id.slice(2);inputs[id]=el.type==='checkbox'?el.checked:(el.type==='number'?Number(el.value):el.value)});
  if(document.getElementById('rateScenario'))inputs.rate_scenario=rateScenario.value||'base';
  // Класс офиса — тем же правилом, что движок (`apply_office_classes`): поле,
  // которое класс поменял, показывает новое число сразу.

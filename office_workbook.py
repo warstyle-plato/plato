@@ -31,6 +31,7 @@ from openpyxl.worksheet.properties import PageSetupProperties
 import developaid_nonres_strategy as ns
 from report_kpi_hints import REPORT_KPI_HINTS
 import site_massing_book as massing_book
+import native_land_rent_book as land_rent_book
 from v4_value_cache import with_cached_values
 from xlsx_eval import Evaluator
 
@@ -996,7 +997,7 @@ ENGINE_LABELS = {"landscaping": "Благоустройство", "social": "С�
 
 
 def _capex_sheet(book: _Book, spec: dict[str, Any], objects: list[dict[str, Any]], info: _Inputs,
-                 months: int) -> dict[str, Any]:
+                 months: int, land_rent_ref=None) -> dict[str, Any]:
     """Смета «ставка × база» и её график по месяцам (`build_operating_model`).
 
     Сумма статьи — в колонке B со сценарием затрат, ряд месяцев раскладывает
@@ -1120,6 +1121,12 @@ def _capex_sheet(book: _Book, spec: dict[str, Any], objects: list[dict[str, Any]
     for key in ("vri_interest", "vri_security"):
         if sum((engine.get(key) or {}).values()):
             article(key, ENGINE_LABELS[key], None)
+    if land_rent_ref:
+        # Ground rent is not inflated by the construction cost scenario and
+        # is added after the construction reserve, as in the engine.
+        article("land_rent", "Аренда земельного участка",
+                f"SUM('{land_rent_book.SHEET}'!$D$6:${book.last}$6)",
+                f"SUM(INDEX('{land_rent_book.SHEET}'!$D$6:${book.last}$6,1,{k}+1))")
 
     rows.section("Итоги по месяцам")
     for item in objects:
@@ -1601,6 +1608,8 @@ def _pf(book: _Book, rows: _Rows, path: dict[str, str], ddu: list[_Block], credi
                   if f"cx.{key}.amt" in book.reg)
     bearing = (f"{ref('cx.capex_total')}+SUM({P('operating', ':')})-{ref('in.purchase_price')}"
                f"-{ref('in.land_buyout')}{vri}-({credit_capex})")
+    if "cx.land_rent.amt" in book.reg:
+        bearing += "-" + land_rent_book.vat_exempt(ref("cx.land_rent.amt"))
     param("vat_due", "НДС продаж по ДДУ к уплате в РВЭ",
           f"=IF({ref('in.vat')}>0,MAX({revenue}*{gross}-({bearing})*{gross}*IF({revenue}>0,1,0),0),0)", "млн ₽")
     # LLCR — покрытие ПФ: выручка по ДДУ, расходы на продажу, налог на прибыль,
@@ -2918,7 +2927,23 @@ def build(result: dict[str, Any], spec: dict[str, Any], office_keys: set[str]) -
     info = _inputs_sheet(book, spec, objects)
     _time_sheet(book, objects)
     _tep_sheet(book, objects, info)
-    capex = _capex_sheet(book, spec, objects, info, months)
+    rent_ref = None
+    if land_rent_book.requested(spec):
+        start_ref = book.cell_ref("in.start")
+        rental = spec.get("land_rent") or {}
+        # The canonical model declares which enabled, positive-volume/cost
+        # objects belong to the parcel. Gifted objects are not filtered by
+        # disposition. Their start/duration cells remain editable here.
+        active = set(rental.get("local_object_commissioning") or rental.get("object_commissioning") or {})
+        cutoffs = [f"EDATE({book.cell_ref('in.' + item['code'] + '.start')},INT({book.cell_ref('in.' + item['code'] + '.months')}))"
+                   for item in objects if item["key"] in active]
+        if rental.get("cutoff_includes_housing", True) or not cutoffs:
+            cutoffs.append(f"EDATE({start_ref},{book.cell_ref('t.rve')})")
+        rve_ref = f"MAX({','.join(cutoffs)})"
+        rent_ref = land_rent_book.add(book.wb, spec, start=start_ref, rve=rve_ref,
+            end=land_rent_book.end_formula(spec, f"'{land_rent_book.SHEET}'!$B$15"),
+            month_formulas=[f"'{TIME_SHEET}'!{L(FIRST_COL + k)}{DATE_ROW}" for k in range(book.n)])
+    capex = _capex_sheet(book, spec, objects, info, months, rent_ref)
     _rate_sheet(book, info)
 
     focus_blocks: dict[str, list[_Block]] = {path["code"]: [] for path in book.paths}
@@ -2955,7 +2980,7 @@ def build(result: dict[str, Any], spec: dict[str, Any], office_keys: set[str]) -
     # В соседней группе объект остаётся ровно в своей исходной стратегии.
     compared_keys = set().union(*(g["keys"] for g in book.groups)) if book.groups else set()
     fixed_blocks, fixed_ddu, other_sheets = [], [], []
-    used = {INPUTS_SHEET, TEP_SHEET, TIME_SHEET, CAPEX_SHEET, RATE_SHEET, TAX_SHEET, GUIDE_SHEET,
+    used = {INPUTS_SHEET, TEP_SHEET, TIME_SHEET, CAPEX_SHEET, RATE_SHEET, TAX_SHEET, GUIDE_SHEET, land_rent_book.SHEET,
             CHECK_SHEET, SOURCES_SHEET, PF_SHEET, REPORT_SHEET, DASH_SHEET, *comparison_sheets,
             *(p["cf"] for p in book.paths), *(g["report"] for g in book.groups),
             *(g["dashboard"] for g in book.groups)}
@@ -3060,8 +3085,11 @@ def build(result: dict[str, Any], spec: dict[str, Any], office_keys: set[str]) -
                          for j in range(len(group["paths"])))
         checks.append((group["title"], "Число вариантов сравнения", count, len(data["paths"]), True))
     _check_sheet(book, checks, missing)
+    if rent_ref:
+        for name in [*dashboards, *reports]:
+            land_rent_book.qualify(book.wb[name])
     book.resolve()
-    order = [*dashboards, *reports, INPUTS_SHEET, GUIDE_SHEET, TEP_SHEET, TIME_SHEET, CAPEX_SHEET, RATE_SHEET,
+    order = [*dashboards, *reports, INPUTS_SHEET, *([land_rent_book.SHEET] if rent_ref else []), GUIDE_SHEET, TEP_SHEET, TIME_SHEET, CAPEX_SHEET, RATE_SHEET,
              *comparison_sheets, *other_sheets, *pf_sheets,
              *(path["cf"] for path in book.paths), TAX_SHEET, CHECK_SHEET, *([SOURCES_SHEET] if offices else [])]
     book.wb._sheets = [book.wb[name] for name in order]

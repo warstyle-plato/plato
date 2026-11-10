@@ -22,10 +22,6 @@ from __future__ import annotations
 
 import json
 import re
-import os
-import shutil
-import tempfile
-import subprocess
 import sys
 from pathlib import Path
 
@@ -93,7 +89,10 @@ function find(root,sel){
  return null;
 }
 const boxes={inputGroups:makeEl('div'),vriInputGroups:makeEl('div')};
+// Редактор аренды земли, который форма рисует последним, ставит свой стиль
+// в `head` один раз: подделке нужна эта точка вставки, а не пустышка компонента.
 const document={createElement:makeEl,getElementById:(id)=>boxes[id]||null,
+ head:makeEl('head'),
  querySelectorAll:(sel)=>sel==='details[data-group]'
    ?created.filter(n=>n.tagName==='details'&&n.dataset.group):[]};
 const phasing=__PHASING__;
@@ -119,10 +118,7 @@ def render(inputs: dict, tail: str = "console.log(JSON.stringify(groups()));",
     """Стенд один на всех, кто гоняет `renderInputs`: вторая копия подделки
     DOM разошлась бы с первой молча. Очередность — параметр, потому что
     часть полей при ней гасится."""
-    node = shutil.which("node")
-    if not node:
-        pytest.skip("node недоступен")
-    script = "\n".join([
+    prelude = "\n".join([
         page_const("FIELD_GROUPS"),
         # Заголовки смысловых блоков объекта — карта движка рядом с группами.
         page_const("FIELD_SECTIONS"),
@@ -130,10 +126,9 @@ def render(inputs: dict, tail: str = "console.log(JSON.stringify(groups()));",
         # Список приходит из движка вместе с самими полями: без него
         # `renderInputs` падает на «CLASS_ONLY_INPUTS is not defined», то
         # есть на неполноте стенда, а не на том, что он проверяет. Шестой
-        # раз в этом же месте — стенд перечисляет зависимости руками;
-        # перевод его на общий разрешитель (`page_blocks.run`) заведён
-        # отдельной задачей: заглушки стенда разрешитель добрал бы со
-        # страницы и подменил бы ими поведение соседних проверок.
+        # раз в этом же месте — стенд перечислял зависимости руками; теперь
+        # то, чего здесь нет, добирает общий разрешитель (`page_blocks.run`),
+        # а перечисленное остаётся явным порядком.
         page_const("CLASS_ONLY_INPUTS"),
         # Поля участка (К1, К2, расстояние, край нормы МО) рисует карточка
         # «Участок и плотность», и форма пропускает их тем же правилом.
@@ -246,20 +241,11 @@ def render(inputs: dict, tail: str = "console.log(JSON.stringify(groups()));",
         page_function("renderLandscapingRateNote"),
         DOM.replace("__PHASING__", json.dumps(phasing or {"enabled": False})),
         f"const inputs=Object.assign(structuredClone(INPUT_DEFAULT),{json.dumps(inputs)});",
-        "renderInputs();",
-        tail,
     ])
-    # Скрипт уезжает файлом, а не аргументом `-e`: с полями стратегии
-    # реализации форма переросла предел длины одного аргумента команды.
-    with tempfile.NamedTemporaryFile("w", suffix=".js", encoding="utf-8", delete=False) as handle:
-        handle.write(script)
-        where = handle.name
-    try:
-        done = subprocess.run([node, where], capture_output=True, text=True, timeout=60)
-    finally:
-        os.unlink(where)
-    assert done.returncode == 0, done.stderr
-    return json.loads(done.stdout)
+    # Остальное — в том числе редактор аренды земли, который `renderInputs`
+    # рисует в конце, — добирает общий разрешитель настоящими кусками
+    # страницы. Заглушки выше он не перебивает: уже объявленное не трогает.
+    return page_blocks.run_json(prelude, "renderInputs();\n" + tail)
 
 
 # --- открыта одна группа --------------------------------------------------------
