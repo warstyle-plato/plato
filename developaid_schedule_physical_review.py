@@ -232,3 +232,30 @@ def build(items, tasks, configuration, cut, previous_rules=(), *, snapshot=None,
             'excluded_rows': excluded, 'excluded_group_rows': sum(row['is_group'] for row in excluded),
             'excluded_duplicate_rows': sum(row['is_duplicate'] for row in excluded),
             'group_count': len(groups), 'component_limit': quantities.MAX_ROWS}
+
+
+def new_unbound(review_model, configuration, fresh):
+    """Confirmed quantity works with unbound volumes absent when the scope was confirmed.
+
+    The relation is the page's rule for pending volumes of the full-scope check:
+    a group of a contract already bound to the work, a partly bound group of the
+    work, or a group whose candidates name the work. It is a reason to check the
+    scope again, never a binding.
+    """
+    confirmed = {t['task_id'] for t in configuration['tasks'] if t['mode'] == 'quantities' and t['scope_confirmed']}
+    if not confirmed or not fresh:
+        return {}
+    groups = review_model.get('groups') or []
+    linked = {i: c['task_id'] for c in configuration['components'] for i in c['item_ids']}
+    by_contract = defaultdict(set)
+    for group in groups:
+        by_contract[group['contract_id']].update(linked[i] for i in group['item_ids'] if i in linked)
+    found = defaultdict(list)
+    for group in groups:
+        if not any(i in fresh and i not in linked for i in group['item_ids']):
+            continue
+        related = (by_contract[group['contract_id']] | {linked[i] for i in group['item_ids'] if i in linked}
+                   | {c['task_id'] for c in group.get('candidates') or []})
+        for tid in sorted(related & confirmed):
+            found[tid].append(group)
+    return dict(found)

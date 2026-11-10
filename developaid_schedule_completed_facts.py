@@ -120,7 +120,13 @@ def build(project, cut, snapshot, *, physical):
                 config = cumulative.project_configuration(previous, snapshot, config)
                 if config is None:
                     continue
-            allowed = [task for task in config['tasks'] if task['scope_confirmed']
+                # A new unbound volume of the work withdraws its full scope here too.
+                config = physical._revoke_scope(project, cut, {'source_sha256': sha, 'tasks': {
+                    tid: dict(row, task_id=tid, name=row.get('name') or tid) for tid, row in old.items()}},
+                    snapshot, {'binding_confirmed_snapshot_id': event['snapshot_id'],
+                               'snapshot_id': (snapshot or {}).get('snapshot_id'), 'configuration': config,
+                               'binding_carried_from_source_sha256': None})['configuration']
+            allowed =[task for task in config['tasks'] if task['scope_confirmed']
                        and task['mode'] in {'quantities', 'completed'}]
             config = dict(config, tasks=allowed, components=[c for c in config['components']
                 if c['task_id'] in {t['task_id'] for t in allowed}])
