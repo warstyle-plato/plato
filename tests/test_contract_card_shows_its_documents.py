@@ -135,3 +135,28 @@ def test_a_weekly_schedule_says_its_dates_are_precise_to_a_week(monkeypatch, tmp
         expect(page.locator("#contractDocuments .contract-schedule-assumption")).to_have_text(
             documents.WEEKS_ASSUMPTION)
         assert errors == []
+
+
+def test_a_total_not_reconciled_with_the_positions_says_so_in_the_card(listing):
+    from playwright.sync_api import expect
+    listing = json.loads(json.dumps(listing))
+    estimate = next(d for d in listing["documents"] if d.get("estimates"))["estimates"][0]
+    overall = next(t for t in estimate["totals"] if t["kind"] == "overall")
+    # The total that equals the positions is the document's total, even when another overall total follows it.
+    estimate["totals"].append({**overall, "label": "Итого без НДС", "amount": 105958.33, "checked": False,
+                               "reason": "с суммой позиций совпал другой общий итог документа"})
+    with browser_page(1440) as (page, _, errors):
+        _serve(page, listing, [])
+        _open(page)
+        documents = page.locator("#contractDocuments")
+        expect(documents).to_contain_text("Итог документа: 127 150 ₽.")
+        estimate["totals"].pop()
+        overall.update(checked=False, reason="сумма позиций 127 150,00 не равна итогу 127 000,00", amount=127000.0)
+        _serve(page, listing, [])
+        _open(page)
+        expect(documents).to_contain_text("Итог документа: 127 000 ₽, с суммой позиций не сверен.")
+        estimate["totals"] = [t for t in estimate["totals"] if t["kind"] != "overall"]
+        _serve(page, listing, [])
+        _open(page)
+        expect(documents).to_contain_text("Общий итог в документе не прочитан.")
+        assert errors == []

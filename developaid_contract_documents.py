@@ -17,7 +17,10 @@ A number printed on several schedule lines gives the later lines their own code
 («14.1, повтор»); the printed number is kept and the lines are listed in `repeats`.
 
 Estimate checks compare quantity × price, material + work, and every section
-and grand total with the document's own totals. A repeated position number is
+and grand total with the document's own totals; a total that cannot be checked
+(unread sum, a subsection, no section) carries its reason, and so does an
+estimate without a grand total. A printed figure or date the reader cannot take
+is named with its printed text, never dropped. A repeated position number is
 reported, not merged: such positions need their name and unit to be told apart.
 An act of acceptance КС-2 brings no table of the plan: its header gives the
 act's number, date, reporting period and the contract, read by position under
@@ -32,7 +35,7 @@ import datetime as dt
 import re
 
 # Raise when reading changes: stored documents are then read again from their PDF.
-READER_VERSION = 4
+READER_VERSION = 5
 MONTHS = {'январь': 1, 'февраль': 2, 'март': 3, 'апрель': 4, 'май': 5, 'июнь': 6, 'июль': 7,
           'август': 8, 'сентябрь': 9, 'октябрь': 10, 'ноябрь': 11, 'декабрь': 12}
 _CODE = re.compile(r'^\d+(?:\.\d+)*\.?$')
@@ -51,6 +54,8 @@ _SCHEDULE_TITLE = re.compile(r'График\s+производства', re.I)
 _SCOPES = (('на выполненные и принятые работы', 'accepted'), ('на завершение работ', 'remaining'))
 _ESTIMATE_COLUMNS = 10
 _TOTALS = ('итого', 'всего', 'по разделу')
+# Columns 5…9 of the estimate, named in the warning when the cell is printed but is no number.
+_UNREAD = ('цена материала', 'цена работы', 'цена', 'стоимость материала', 'стоимость работы')
 # Electronic-signature stamps of the document operator are printed over the table.
 _STAMP = re.compile(r'ДОКУМЕНТ\s+ПОДПИСАН|ОТПРАВЛЕНО|УТВЕРЖДЕНО|Оператор\s+ЭДО|Сертификат|Идентификатор:')
 _STAMP_MARGIN = 10.0
@@ -93,6 +98,15 @@ def _amount(text):
     if not re.fullmatch(r'-?\d+(?:\.\d+)?', text):
         return None
     return float(text)
+
+
+def _figure(value):
+    """A sum as the document prints it: 58 150,00."""
+    return f'{value:,.2f}'.replace(',', ' ').replace('.', ',')
+
+
+def _times(count):
+    return f'{count} раза' if count % 10 in (2, 3, 4) and count % 100 not in (12, 13, 14) else f'{count} раз'
 
 
 def _contract_number(text):
@@ -280,7 +294,13 @@ def _continues(grid, bounds):
     return all(any(abs(x-bound) <= 2 for x in grid.verticals) for bound in bounds)
 
 
+def _total_kind(label):
+    low = label.lower()
+    return 'subsection' if 'подраздел' in low else 'section' if 'раздел' in low else 'overall'
+
+
 def _estimate_rows(cells, page_number, state, warnings):
+    numbers = [str(n) for n in range(1, _ESTIMATE_COLUMNS+1)]
     for row in cells:
         if len(row) < _ESTIMATE_COLUMNS or not any(c.strip() for c in row):
             continue
@@ -289,17 +309,26 @@ def _estimate_rows(cells, page_number, state, warnings):
         price = [_amount(c) for c in row[4:7]]
         money = [_amount(c) for c in row[7:10]]
         label = _space(' '.join(row[:7]))
-        # A note under the table may be numbered «1. 2. 3. Примечание: …»; a continuation page repeats the header.
-        if re.match(r'(?:\d+\.\s*)*(?:в том числе|примечание|ндс)', label.lower()) or _labels(row):
+        # A note under the table may be numbered «1. 2. 3. Примечание: …»; a continuation page repeats the header,
+        # in words or as the row of column numbers.
+        if re.match(r'(?:\d+\.\s*)*(?:в том числе|примечание|ндс)', label.lower()) or _labels(row) or \
+                [_space(c) for c in row[:_ESTIMATE_COLUMNS]] == numbers:
             continue
         if label.lower().startswith(_TOTALS) or name.lower().startswith(_TOTALS):
+            kind = _total_kind(label)
             state['totals'].append({'label': label, 'amount': money[2], 'material': money[0],
-                                    'work': money[1], 'page': page_number,
-                                    'section': state['section'] if 'раздел' in label.lower() else None})
+                                    'work': money[1], 'page': page_number, 'kind': kind,
+                                    'section': state['section'] if kind == 'section' else None,
+                                    'printed': _space(row[9])})
             continue
         if unit and quantity is not None and money[2] is not None:
             if not _CODE.match(number):
                 warnings.append(f'Стр. {page_number}: у позиции «{name[:80]}» нет номера.')
+            unread = [f'{column} «{_space(text)}»' for column, text, value in zip(_UNREAD, row[4:9], price+money)
+                      if _space(text) and value is None]
+            if unread:
+                warnings.append(f'Стр. {page_number}: у позиции {number} не прочитано: {", ".join(unread)}. '
+                                'Сверка по этим графам не выполнена.')
             # Under several headings in a row the position belongs to the one its number is numbered under;
             # a title without a number heads the positions that follow it.
             prefixes = [number.rsplit('.', n)[0] for n in range(1, number.count('.')+1)]
@@ -337,7 +366,7 @@ def _check_estimate(estimate):
         pages.setdefault(position['number'], []).append(position['page'])
     for number, seen in pages.items():
         if len(seen) > 1:
-            warnings.append(f'Номер позиции {number} повторяется в расчёте {len(seen)} раза '
+            warnings.append(f'Номер позиции {number} повторяется в расчёте {_times(len(seen))} '
                             f'(стр. {", ".join(str(n) for n in sorted(set(seen)))}): по одному номеру такие '
                             'позиции не различить, нужны ещё название и единица измерения.')
     for position in estimate['positions']:
@@ -345,18 +374,51 @@ def _check_estimate(estimate):
         if price['total'] is not None:
             expected = position['quantity']*price['total']
             if abs(expected-amount['total']) > max(_TOLERANCE, abs(expected)*0.0005):
-                warnings.append(f'Позиция {position["number"]}: количество × цена = {expected:,.2f}, '
-                                f'а в графе «Всего» {amount["total"]:,.2f}.'.replace(',', ' '))
+                warnings.append(f'Позиция {position["number"]}: количество × цена = {_figure(expected)}, '
+                                f'а в графе «Всего» {_figure(amount["total"])}.')
         if amount['material'] is not None and amount['work'] is not None and \
                 abs(amount['material']+amount['work']-amount['total']) > _TOLERANCE:
             warnings.append(f'Позиция {position["number"]}: материал и работа не дают графу «Всего».')
+    _check_totals(estimate)
+
+
+def _check_totals(estimate):
+    """Each total is compared with the sum of its positions, or carries `reason` why it was not.
+
+    A document may print several overall totals (without and with VAT): one that
+    equals the sum of all positions settles the others, which are then only marked."""
+    warnings, positions = estimate['warnings'], estimate['positions']
+    everything = sum(p['amount']['total'] for p in positions)
+    mismatches = []
     for total in estimate['totals']:
-        if total['amount'] is not None and (total['section'] or total['label'].lower().startswith('всего')):
-            members = [p['amount']['total'] for p in estimate['positions']
-                       if not total['section'] or p['section'] == total['section']]
-            if abs(sum(members)-total['amount']) > _TOLERANCE*max(1, len(members)):
-                warnings.append(f'{total["label"][:80]}: сумма позиций {sum(members):,.2f} не равна итогу '
-                                f'{total["amount"]:,.2f}.'.replace(',', ' '))
+        printed = total.pop('printed', '')
+        total.update(checked=False, reason=None)
+        if total['amount'] is None:
+            total['reason'] = (f'сумма итога «{printed}» не прочитана' if printed else
+                               'в графе «Всего» у итога нет суммы')
+        elif total['kind'] == 'subsection':
+            total['reason'] = 'позиции подраздела в расчёте не выделены, итог подраздела со всем разделом не сверяется'
+        elif total['kind'] == 'section' and not total['section']:
+            total['reason'] = 'над итогом не найдено название раздела'
+        else:
+            members = [p['amount']['total'] for p in positions
+                       if total['kind'] == 'overall' or p['section'] == total['section']]
+            total['checked'] = abs(sum(members)-total['amount']) <= _TOLERANCE*max(1, len(members))
+            if not total['checked']:
+                mismatches.append((total, sum(members)))
+        if total['reason']:
+            warnings.append(f'{total["label"][:80]}: не сверено — {total["reason"]}.')
+    overall = [t for t in estimate['totals'] if t['kind'] == 'overall']
+    settled = any(t['checked'] for t in overall)
+    for total, members in mismatches:
+        if total['kind'] == 'overall' and settled:
+            total['reason'] = 'с суммой позиций совпал другой общий итог документа, этот итог посчитан на иной основе'
+            continue
+        total['reason'] = f'сумма позиций {_figure(members)} не равна итогу {_figure(total["amount"])}'
+        warnings.append(f'{total["label"][:80]}: {total["reason"]}.')
+    if positions and not overall:
+        warnings.append(f'В расчёте не найден общий итог («Всего» или «Итого» по расчёту): сумма позиций '
+                        f'{_figure(everything)} не сверена с документом.')
 
 
 def _estimate_meta(text):
@@ -445,15 +507,29 @@ def _schedule_page(page, page_number, schedule):
             continue
         start, finish = _date(row[2]), _date(row[3])
         bar = _bar(grid, index, fills, columns, dates, body=grid.rows[header+1])
-        line = {'code': code, 'name': name, 'start': start, 'finish': finish, 'dates_from': 'cells',
+        line = {'code': code, 'name': name, 'start': start, 'finish': finish,
+                'dates_from': {'start': 'cells', 'finish': 'cells'},
                 'cells': {'start': start, 'finish': finish}, 'corrected': False,
                 'bar': {'start': bar[0], 'finish': bar[1]} if bar else None,
                 'level': code.count('.')+1, 'parent': code.rsplit('.', 1)[0] if '.' in code else None,
                 'page': page_number}
+        # A printed date the reader cannot take (a year of two figures) is kept as printed, never dropped.
+        unread = {key: _space(text) for key, text, value in (('start', row[2], start), ('finish', row[3], finish))
+                  if _space(text) and value is None}
+        if unread:
+            line['unread'] = unread
         lines.append(line)
         reversed_dates = bool(start and finish and finish < start)
         if bar and (start is None or finish is None):
-            line.update(start=start or bar[0], finish=finish or bar[1], dates_from='bar')
+            used = {'start': start or bar[0], 'finish': finish or bar[1]}
+            basis = {key: 'cells' if line['cells'][key] else 'bar' for key in used}
+            if unread:
+                _correct(schedule, line, used['start'], used['finish'], basis,
+                         f'Стр. {page_number}: у строки {code} «{name[:60]}» {_unread(unread)}. '
+                         f'Взята {"дата" if len(unread) == 1 else "даты"} полосы: '
+                         + ' — '.join(_shown(used[key]) for key in unread) + '.')
+            else:
+                line.update(used, dates_from=basis)
         elif bar and (reversed_dates or _apart(start, bar[0]) or _apart(finish, bar[1])):
             problem = (f'окончание {_shown(finish)} раньше начала {_shown(start)}' if reversed_dates else
                        f'в графах дат {_shown(start)} — {_shown(finish)}, а полоса на диаграмме идёт '
@@ -577,7 +653,8 @@ def _weekly_page(page, page_number, schedule, layout=None):
                 parent = prefix
                 break
         line = {'code': code, 'name': name, 'start': bar and bar[0], 'finish': bar and bar[1],
-                'dates_from': 'bar', 'cells': {'start': None, 'finish': None}, 'corrected': False,
+                'dates_from': {'start': 'bar', 'finish': 'bar'}, 'cells': {'start': None, 'finish': None},
+                'corrected': False,
                 'bar': {'start': bar[0], 'finish': bar[1]} if bar else None,
                 'level': code.count('.')+1, 'parent': parent, 'section': schedule.get('section'),
                 'page': page_number}
@@ -590,19 +667,33 @@ def _apart(cell, bar):
     return abs((dt.date.fromisoformat(cell)-dt.date.fromisoformat(bar)).days) > 1
 
 
+def _unread(unread):
+    """The printed dates the reader could not take, named with their text."""
+    named = {'start': 'начала', 'finish': 'окончания'}
+    if len(unread) == 1:
+        ((key, text),) = unread.items()
+        return f'дата {named[key]} «{text}» не прочитана: нужна запись вида 01.02.2026'
+    return (f'даты начала «{unread["start"]}» и окончания «{unread["finish"]}» не прочитаны: '
+            'нужна запись вида 01.02.2026')
+
+
 def _correct(schedule, line, start, finish, basis, text):
     """Dates of the source replaced by the chart bar or by the works' span.
 
     The owner chose correction over a bare warning; the original cells stay on
-    the line and the correction is listed apart, to be shown in red."""
-    line.update(start=start, finish=finish, dates_from=basis, corrected=True)
+    the line and the correction is listed apart, to be shown in red. `basis` is
+    'bar' or 'works', or a mapping of each date to where it came from."""
+    dates_from = basis if isinstance(basis, dict) else {'start': basis, 'finish': basis}
+    line.update(start=start, finish=finish, dates_from=dates_from, corrected=True)
+    replaced = next(value for value in dates_from.values() if value != 'cells')
     record = next((item for item in schedule['corrections'] if item['code'] == line['code']), None)
     if record is None:
         schedule['corrections'].append({'code': line['code'], 'name': line['name'], 'page': line['page'],
                                         'cells': dict(line['cells']), 'used': {'start': start, 'finish': finish},
-                                        'basis': basis, 'text': text})
+                                        'basis': replaced, 'text': text, **({'unread': line['unread']}
+                                                                            if line.get('unread') else {})})
     else:
-        record.update(used={'start': start, 'finish': finish}, basis=basis, text=record['text']+' '+text)
+        record.update(used={'start': start, 'finish': finish}, basis=replaced, text=record['text']+' '+text)
 
 
 def _bar(grid, row, fills, columns, dates, first=4, body=0.0):
@@ -668,13 +759,20 @@ def _check_schedule(schedule):
     for line in sorted(lines, key=lambda item: -item['level']):
         children = [c for c in lines if c['parent'] == line['code'] and c['start'] and c['finish']]
         if not children:
-            if not (line['start'] and line['finish']):
+            if line.get('unread') and not (line['start'] and line['finish']):
+                warnings.append(f'Стр. {line["page"]}: у строки {line["code"]} «{line["name"][:60]}» '
+                                f'{_unread(line["unread"])}, а полосы на диаграмме нет: срок взять неоткуда.')
+            elif not (line['start'] and line['finish']):
                 warnings.append(f'Стр. {line["page"]}: у строки {line["code"]} «{line["name"][:80]}» '
                                 'нет дат начала и окончания.')
             continue
         start, finish = min(c['start'] for c in children), max(c['finish'] for c in children)
-        if not line['start'] and not line['finish']:
-            line.update(start=start, finish=finish, dates_from='works')
+        if not line['start'] and not line['finish'] and line.get('unread'):
+            _correct(schedule, line, start, finish, 'works',
+                     f'Строка {line["code"]} «{line["name"][:60]}»: {_unread(line["unread"])}. '
+                     f'Взяты сроки входящих в неё работ: {_shown(start)} — {_shown(finish)}.')
+        elif not line['start'] and not line['finish']:
+            line.update(start=start, finish=finish, dates_from={'start': 'works', 'finish': 'works'})
         elif (start, finish) != (line['start'], line['finish']):
             _correct(schedule, line, start, finish, 'works',
                      f'Строка {line["code"]} «{line["name"][:60]}»: в графике {_shown(line["start"])} — '

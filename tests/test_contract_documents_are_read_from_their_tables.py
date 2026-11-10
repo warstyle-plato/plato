@@ -184,9 +184,9 @@ def test_a_continuation_page_without_top_border_keeps_its_first_row():
 def test_section_total_mismatch_names_the_section_and_both_sums():
     second = [row if row[0] != "1.3" else row[:9] + ("5 000,00",) for row in SECOND_PAGE]
     warnings = documents.read(estimate_pdf(second=second))["estimates"][0]["warnings"]
-    assert any("Итого по Разделу № 1" in w and "58 150.00" in w and "57 150.00" in w for w in warnings)
-    assert any(w.startswith("ВСЕГО") and "128 150.00" in w for w in warnings)
-    assert any("Позиция 1.3: количество × цена = 4 000.00" in w for w in warnings)
+    assert any("Итого по Разделу № 1" in w and "58 150,00" in w and "57 150,00" in w for w in warnings)
+    assert any(w.startswith("ВСЕГО") and "128 150,00" in w for w in warnings)
+    assert any("Позиция 1.3: количество × цена = 4 000,00" in w for w in warnings)
 
 
 def test_a_row_without_unit_is_named_with_its_page_not_dropped_silently():
@@ -274,21 +274,21 @@ def test_schedule_dates_come_from_cells_bars_and_works():
     lines = {line["code"]: line for line in schedule["lines"]}
     assert list(lines) == ["1", "1.1", "1.2", "2", "2.1", "2.2", "2.3"]
     assert (lines["1"]["start"], lines["1"]["finish"], lines["1"]["dates_from"]) == \
-        ("2026-01-29", "2026-02-03", "works")
+        ("2026-01-29", "2026-02-03", {"start": "works", "finish": "works"})
     assert (lines["1.1"]["start"], lines["1.1"]["finish"], lines["1.1"]["dates_from"]) == \
-        ("2026-01-29", "2026-01-31", "cells")
+        ("2026-01-29", "2026-01-31", {"start": "cells", "finish": "cells"})
     assert lines["1.1"]["bar"] == {"start": "2026-01-29", "finish": "2026-01-31"}
     assert (lines["2.2"]["start"], lines["2.2"]["finish"], lines["2.2"]["dates_from"]) == \
-        ("2026-02-03", "2026-02-05", "bar")
+        ("2026-02-03", "2026-02-05", {"start": "bar", "finish": "bar"})
     assert (lines["2.1"]["level"], lines["2.1"]["parent"]) == (2, "2")
     assert schedule["warnings"] == []
     # Решение владельца: ошибка дат источника исправляется по полосе, а не только называется.
     assert (lines["2.3"]["start"], lines["2.3"]["finish"], lines["2.3"]["dates_from"]) == \
-        ("2026-01-29", "2026-01-31", "bar")
+        ("2026-01-29", "2026-01-31", {"start": "bar", "finish": "bar"})
     assert lines["2.3"]["cells"] == {"start": "2026-02-02", "finish": "2026-02-03"}
     # Группа берёт размах работ уже после исправления своих строк.
     assert (lines["2"]["start"], lines["2"]["finish"], lines["2"]["dates_from"]) == \
-        ("2026-01-29", "2026-02-05", "works")
+        ("2026-01-29", "2026-02-05", {"start": "works", "finish": "works"})
     assert [line["code"] for line in schedule["lines"] if line["corrected"]] == ["2", "2.3"]
     assert schedule["corrections"] == [
         {"code": "2.3", "name": "Стены", "page": 1, "basis": "bar",

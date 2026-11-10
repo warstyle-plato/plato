@@ -216,8 +216,8 @@ def test_a_weekly_chart_dates_each_line_by_its_weeks_across_hidden_months():
     assert spans["2.1.1"] == ("2026-01-26", "2026-07-12")
     # Полоса объединённой ячейки — полоса каждой строки под ней, и на странице продолжения.
     assert spans["3.1"] == spans["3.2"] == spans["3.3"] == ("2026-07-01", "2026-07-12")
-    assert (lines["1"]["dates_from"], spans["1"]) == ("works", ("2026-01-05", "2026-07-05"))
-    assert all(line["dates_from"] == "bar" and line["cells"] == {"start": None, "finish": None}
+    assert (lines["1"]["dates_from"], spans["1"]) == ({"start": "works", "finish": "works"}, ("2026-01-05", "2026-07-05"))
+    assert all(line["dates_from"] == {"start": "bar", "finish": "bar"} and line["cells"] == {"start": None, "finish": None}
                for code, line in lines.items() if code not in ("0", "1", "2", "3", "4"))
 
 
