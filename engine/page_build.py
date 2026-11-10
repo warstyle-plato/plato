@@ -126,6 +126,7 @@ PAGE = PAGE.replace(CAPEX_NAMES_PLACEHOLDER, json.dumps(
 PAGE = PAGE.replace("__DEVELOPAID_PROJECT_KINDS__",
                     json.dumps([list(pair) for pair in PROJECT_KINDS], ensure_ascii=False))
 PAGE = PAGE.replace("__DEVELOPAID_HOTEL__", json.dumps(hotel_page_spec(), ensure_ascii=False))
+PAGE = PAGE.replace("__DEVELOPAID_LAND_RENT_SPEC__", json.dumps(developaid_land_rent.page_spec(), ensure_ascii=False))
 PAGE = PAGE.replace("__DEVELOPAID_NONRESIDENTIAL_INPUTS__",
                     json.dumps(NONRESIDENTIAL_CLEARED_INPUTS, ensure_ascii=False))
 # Состав МКД — из движка, копии на странице нет.

@@ -28,7 +28,7 @@ import main_legacy as core  # noqa: E402
 openpyxl = pytest.importorskip("openpyxl")
 from xlsx_eval import Evaluator
 
-ALLOWED = {"IF", "IFERROR", "IRR", "INT", "AND", "OR", "MIN", "MAX", "SUM", "SUMIF", "COUNT", "COUNTIF", "ABS", "EDATE", "YEAR", "MONTH", "INDEX", "MATCH"}
+ALLOWED = {"IF", "IFERROR", "IRR", "INT", "AND", "OR", "MIN", "MAX", "SUM", "SUMIF", "COUNT", "COUNTIF", "ABS", "EDATE", "YEAR", "MONTH", "DAY", "INDEX", "MATCH"}
 
 
 def _project(preset: str | None = "hotel1", **over):

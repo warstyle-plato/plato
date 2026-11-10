@@ -201,12 +201,15 @@ def nonres_overlay(x: dict, rates: list[dict[str, Any]], op: dict) -> dict[str, 
         return rate_lookup(rates, month, scenario)
 
     for key, plan in plans.items():
+        # Preserve the source dates while the strategy and book share monthly cash.
+        plan = {**plan, **{field: monthly_sum(plan.get(field) or {})
+                          for field in ("capex", "common_capex")}}
         flows = nonres_strategy.object_flows(plan, key_rate, vat_rate=vat_rate)
         flows["title"] = plan.get("title") or key
         flows["params"] = dict(plan.get("params") or {})
         flows["financing"] = object_financing(flows)
         flows["result"] = object_result(
-            flows, start=op["project_start"],
+            flows, start=op.get("cash_start", op["project_start"]),
             discount_rate=n(x, "discount_rate_pct", 20) / 100,
             tax_rate=n(x, "profit_tax_pct", 25) / 100)
         # Исходные данные книги нежилого проекта: что движок дал объекту
@@ -263,7 +266,7 @@ def nonres_overlay(x: dict, rates: list[dict[str, Any]], op: dict) -> dict[str, 
                 "nonres_common_capex": float(flows["common_by_month"].get(month, 0.0) or 0.0),
             }
             for name, value in row.items():
-                monthly[name][month] += value
+                monthly[name][month_key(month)] += value
             # Строка объекта для книги: те же ряды плюс его собственный итог —
             # налог объекта и поток его капитала (`object_result`).
             object_rows.append({
@@ -398,7 +401,7 @@ def object_result(flows: dict[str, Any], *, start: date, discount_rate: float,
     common_recognized: dict[date, float] = {}
     for month in months:
         share = (get("cost_recognized", month) / cost_basis if cost_basis
-                 else (1.0 if month == flows["commissioning"] else 0.0))
+                 else (1.0 if month == month_key(flows["commissioning"]) else 0.0))
         common_recognized[month] = common_total * share
     margins = {mm: get("tax_margin", mm) - common_recognized[mm] for mm in months}
     financing = {mm: get("loan_interest_cap", mm) + get("loan_interest_paid", mm)
@@ -516,8 +519,8 @@ def object_financing(flows: dict[str, Any]) -> dict[str, Any]:
     series = flows["monthly"]
     params = flows.get("params") or {}
     months: list[date] = list(flows["months"])
-    commissioning: date = flows["commissioning"]
-    horizon_end: date = flows["horizon_end"]
+    commissioning = month_key(flows["commissioning"])
+    horizon_end = month_key(flows["horizon_end"])
     kpi = flows.get("kpi") or {}
     strategy = flows["strategy"]
 
@@ -609,8 +612,8 @@ def object_financing(flows: dict[str, Any]) -> dict[str, Any]:
         "term_years": int(num("loan_term_years", 10)) if scheme == nonres_strategy.REPAY_ANNUITY else None,
         "balloon_share": num("loan_balloon_pct", 20.0) / 100.0 if scheme == nonres_strategy.REPAY_ANNUITY else None,
         "maturity": maturity,
-        "horizon_end": horizon_end,
-        "commissioning": commissioning,
+        "horizon_end": flows["horizon_end"],
+        "commissioning": flows["commissioning"],
         "rate_at_commissioning": get("loan_rate", commissioning),
         "avg_rate": avg_rate,
         "draw_total": draw_total,
@@ -718,6 +721,9 @@ def hotel_overlay(x: dict, rates: list[dict[str, Any]], op: dict) -> dict[str, A
     if plan.get("missing"):
         return {**empty, "summary": {"computed": False, "missing": list(plan["missing"]),
                                      "commissioning": plan["commissioning"].isoformat()}}
+    # The book receives the same monthly cash buckets as hotel_flows; source dates stay intact.
+    plan = {**plan, **{field: monthly_sum(plan.get(field) or {})
+                      for field in ("capex", "capex_ffe", "capex_land")}}
     scenario = str(x.get("rate_scenario", "low"))
     vat_rate = max(0.0, n(x, "vat_pct", 22)) / 100
     tax_rate = n(x, "profit_tax_pct", 25) / 100
@@ -756,7 +762,8 @@ def hotel_overlay(x: dict, rates: list[dict[str, Any]], op: dict) -> dict[str, A
         }
         for name, value in row.items():
             if value:
-                monthly[name][month] = value
+                key = month_key(month)
+                monthly[name][key] = monthly[name].get(key, 0.0) + value
     # Исходные данные книги гостиницы: что движок дал расчёту (затраты по
     # месяцам, ключевая ставка, ставки проекта), — остальное книга считает
     # своими формулами и сверяет с итогом движка.
@@ -775,6 +782,11 @@ def hotel_overlay(x: dict, rates: list[dict[str, Any]], op: dict) -> dict[str, A
         # Книга считает смету от тех же вводных. Помесячные суммы ниже —
         # только контрольный снимок; они больше не являются базой её CAPEX.
         "capex_spec": {
+            "land_rent_inputs": copy.deepcopy(x),
+            "land_rent": copy.deepcopy(op.get("land_rent") or {}),
+            "vri_gross_mln": n(x, "land_rights_cost_mln"),
+            "vri_relief_mln": float((op.get("vri", {}).get("totals") or {}).get("relief") or 0.0) / 1e6,
+            "vri_relief_source": str((op.get("vri", {}).get("totals") or {}).get("relief_basis") or ""),
             "inputs": {key: n(x, key, default) for key, default in
                        hotel_workbook.CAPEX_INPUT_DEFAULTS.items()},
             "ird_min": IRD_MONTHS_MIN,
@@ -837,11 +849,15 @@ VAT_MKD_NONRES_PRODUCTS = ("ground_commercial", "underground_parking", "storage"
 
 
 def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) -> dict:
-    project_start = op["project_start"]
-    permit = op["permit"]
-    rve = op["rve"]
-    end = op["end"]
+    # Finance runs monthly; the operating model retains the actual event dates.
+    project_start = month_key(op.get("cash_start", op["project_start"]))
+    permit = month_key(op["permit"])
+    rve = month_key(op["rve"])
+    end = month_key(op["end"])
     months = month_range(project_start, end)
+    revenue = monthly_sum(op["revenue"])
+    debt_capex = monthly_sum(op["debt_capex"])
+    operating = monthly_sum(op["operating"])
     scenario = str(x.get("rate_scenario", "low"))
     interest_mode = str(x.get("bridge_interest_mode", "Капитализация в ПФ"))
 
@@ -854,7 +870,7 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     # бридж если по графику ясно, что часть будет уже в ПФ?»).
     def _before_permit(article: str) -> float:
         schedule = (op.get("capex_by_article") or {}).get(article) or {}
-        return sum(value for month, value in schedule.items() if month < permit)
+        return sum(value for month, value in schedule.items() if month_key(month) < permit)
 
     bridge_limit_parts = {
         "purchase": _before_permit("purchase"),
@@ -870,7 +886,7 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
         # в БРИДЖ значило бы просить лимит дважды. Дата платежа обрезана
         # методикой до «РнС − 1 мес.», но проверяется она здесь, а не
         # подразумевается: правило живёт у читателя.
-        if social_cash_payment_date(x, permit) < permit:
+        if month_key(social_cash_payment_date(x, op["permit"])) < permit:
             bridge_limit_parts["social"] = n(x, "social_compensation_mln") * 1_000_000
     # Чисто нежилой проект БРИДЖа не открывает: участок и проект в доле
     # кредита берёт НКЛ объектов (`object_flows`), и плата за резервирование
@@ -910,13 +926,14 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     bank_sweep_schedule: dict[date, float] = {}
     for raw_month, raw_value in (x.get("_phase_bank_sweep_schedule") or {}).items():
         try:
-            bank_sweep_schedule[d(raw_month)] = max(0.0, float(raw_value or 0.0))
+            month = month_key(raw_month)
+            bank_sweep_schedule[month] = bank_sweep_schedule.get(month, 0.0) + max(0.0, float(raw_value or 0.0))
         except Exception:
             continue
     project_cash_schedule: dict[date, float] = defaultdict(float)
     for raw_month, raw_value in (x.get("_phase_project_cash_schedule") or {}).items():
         try:
-            month = d(raw_month)
+            month = month_key(raw_month)
             value = max(0.0, float(raw_value or 0.0))
         except (TypeError, ValueError):
             continue
@@ -970,7 +987,7 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     # Месяцы до среза берут остатки из факта и не начисляют ничего; с месяца
     # среза расчёт идёт как обычно, но стартует не с нуля, а с этих остатков.
     financing_fact = op.get("financing_fact") or {}
-    fact_cut = financing_fact.get("cut")
+    fact_cut = month_key(financing_fact["cut"]) if financing_fact.get("cut") else None
 
     def run(pf_limit: float | None, cap: float | None = None) -> dict:
         own_funds_left = own_funds_total
@@ -1050,7 +1067,7 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
         _carried_at = str(x.get("_phase_carried_debt_month") or "").strip()
         if _carried_at:
             try:
-                carried_debt_month = max(permit, d(_carried_at))
+                carried_debt_month = max(permit, month_key(_carried_at))
             except Exception:
                 carried_debt_month = permit
         # Долг уходит из этой очереди в её же РВЭ: период доступности кончился,
@@ -1086,8 +1103,8 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
 
         for month in months:
             project_cash_available += project_cash_schedule.get(month, 0.0)
-            sales = op["revenue"].get(month, 0.0)
-            project_costs = op["debt_capex"].get(month, 0.0) + op["operating"].get(month, 0.0)
+            sales = revenue.get(month, 0.0)
+            project_costs = debt_capex.get(month, 0.0) + operating.get(month, 0.0)
 
             key_rate = rate_lookup(rates, month, scenario)
             bridge_rate = key_rate + n(x, "bridge_spread_pp") / 100
@@ -1345,7 +1362,7 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
                         # Условий реструктуризации мы не знаем, поэтому дальше
                         # считаем прежним допущением — остаток обслуживается
                         # продажами нераспроданного к вводу, — и называем его вслух.
-                        defaulted_at = month
+                        defaulted_at = op["rve"]
                 elif month == rve and not line_closed:
                     # Долга в РВЭ не осталось — НКЛ закрыт: дальше расходы
                     # очереди идут из её кассы, выборок и процентов нет.
@@ -1444,7 +1461,7 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
 
         return {
             "rows": rows,
-            "escrow_cover": _escrow_cover(rows, rve),
+            "escrow_cover": _escrow_cover(rows, op["rve"]),
             "calculated_bridge_limit": calculated_bridge_limit,
             # Из чего сложился лимит — считает движок, а не вычитают экран и
             # печать. Прежде обе поверхности выводили «Приобретение проекта»
@@ -1479,7 +1496,7 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
                 n(x, "rate_start_pct", 14.0) + n(x, "bridge_spread_pp")
             ) / 100,
             "bridge_rate_at_project_start": (
-                rate_lookup(rates, project_start, scenario)
+                rate_lookup(rates, op["project_start"], scenario)
                 + n(x, "bridge_spread_pp") / 100
             ),
 
@@ -1704,7 +1721,7 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     for key, schedule in tax_margin_schedules.items():
         tax_margin_by_product[key] = sum(schedule.values())
         for month, value in schedule.items():
-            tax_margin_by_month[month] += value
+            tax_margin_by_month[month_key(month)] += value
 
     # Проценты признаются на конец КАЖДОГО МЕСЯЦА, независимо от даты выплат
     # (п. 8 ст. 272 НК). Прежде база вычитала УПЛАЧЕННОЕ — `interest_payment`, —
@@ -1786,7 +1803,7 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
         value
         for key in VAT_MKD_NONRES_PRODUCTS
         for month, value in (revenue_schedules.get(key) or {}).items()
-        if month < rve
+        if month_key(month) < rve
     )
     vat_schedule: dict[date, float] = {}
     vat_charged = vat_input_deductible = 0.0
@@ -1824,6 +1841,8 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
             # очереди получают во вводных уже чистую плату, и свод расходился
             # с одиночным расчётом одного и того же правила).
             - op["capex_amounts"].get("land_rights", 0.0)
+            - sum(op["capex_amounts"].get(key, 0.0) for key in
+                  developaid_land_rent.excluded_input_vat_articles(op.get("land_rent") or {}))
             - op["capex_amounts"].get("vri_interest", 0.0)
             - op["capex_amounts"].get("vri_security", 0.0)
             # Входящий НДС объекта вне ДДУ принимает к вычету сам объект.
