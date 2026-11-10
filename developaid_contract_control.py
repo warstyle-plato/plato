@@ -4,7 +4,8 @@ The plan is the edition in force on the cut (`developaid_contract_plan`), the
 fact is the KS-6a priced by the estimate (`developaid_contract_fact`); both
 are money on the same ГПР lines. For every line and for the contract:
 
-- deviation = fact − plan on the cut, in money and in % of the plan;
+- deviation = fact − plan on the cut, in money and in % of the plan on the cut
+  (no percent when that plan is zero: nothing was due yet);
 - lag (owner's decision 5А) = days back from the cut to the day when the
   accumulated plan equalled today's fact; ahead = days forward to the day when
   the plan reaches it;
@@ -20,7 +21,8 @@ The forecast keeps the lag of each line until its end: an unfinished line
 behind the plan finishes later by its lag, a line on or ahead of the plan by
 its schedule, a finished line on its last KS period. The latest finish is
 compared with the contract deadline of the register, else with the end of the
-schedule. This is a separate report of the contract: it does not move the
+schedule. KS periods the fact could not take (its `review`) are named with their
+reasons, and the lag and the deviation are marked incomplete without them. This is a separate report of the contract: it does not move the
 project РНВ (6А).
 """
 from __future__ import annotations
@@ -93,7 +95,7 @@ def _volume(line, share, volumes):
 def build(planned: dict, fact: dict, deadline: str | None, deadline_label: str, cut: str) -> dict:
     """Deviation, lag and forecast of the edition in force of `planned` against `fact` on `cut`."""
     result = {"cut": cut, "assumption": ASSUMPTION, "note": "", "total": None, "lines": [], "behind": [],
-              "ahead": [], "done": [], "forecast": None}
+              "ahead": [], "done": [], "forecast": None, "left_out": _left_out(fact)}
     current = next((e for e in planned.get("editions") or [] if e.get("in_force")), None)
     if current is None:
         result["note"] = "Отклонение не рассчитано: на дату среза нет действующей редакции плана."
@@ -152,9 +154,17 @@ def build(planned: dict, fact: dict, deadline: str | None, deadline_label: str, 
                        if current["planned"] else None,
                        "state": state, "lag_days": lag, "ahead_days": ahead,
                        "behind_amount": max(current["planned"] - counted, 0.0),
-                       "shortfall": sum(r["shortfall"] for r in rows)}
+                       "shortfall": sum(r["shortfall"] for r in rows),
+                       # KS periods left out of the fact: the lag and the deviation are counted without them.
+                       "incomplete": bool(result["left_out"]["count"])}
     result["forecast"] = _forecast(finishes, deadline, deadline_label, last, current, day)
     return result
+
+
+def _left_out(fact):
+    """KS periods the fact could not take (`review`): their count and every reason once, in order."""
+    review = fact.get("review") or []
+    return {"count": len(review), "reasons": list(dict.fromkeys(r["reason"] for r in review))}
 
 
 def _forecast(finishes, deadline, deadline_label, last, current, day):

@@ -55,6 +55,10 @@ _SCOPES = (('на выполненные и принятые работы', 'acc
 _ESTIMATE_COLUMNS = 10
 _TOTALS = ('итого', 'всего', 'по разделу')
 # Columns 5…9 of the estimate, named in the warning when the cell is printed but is no number.
+# A ГПР with money (a cost column, sums printed by months) gives the plan its dates only.
+_MONEY_HEAD = re.compile(r'руб|стоимост|сумм', re.I)
+# A sum, not a day, a week «2-14», a date or a year: thousands by spaces, four figures and more, or kopecks.
+_MONEY = re.compile(r'(?<![\d.,-])(?:\d{1,3}(?:[ \u00a0]\d{3})+|(?!(?:19|20)\d\d(?![\d,]))\d{4,})(?:,\d{1,2})?(?![\d.,-])|(?<![\d.])\d+,\d{2}(?!\d)')
 _UNREAD = ('цена материала', 'цена работы', 'цена', 'стоимость материала', 'стоимость работы')
 # Electronic-signature stamps of the document operator are printed over the table.
 _STAMP = re.compile(r'ДОКУМЕНТ\s+ПОДПИСАН|ОТПРАВЛЕНО|УТВЕРЖДЕНО|Оператор\s+ЭДО|Сертификат|Идентификатор:')
@@ -485,6 +489,22 @@ def _month_words(page, top, bottom):
                 yield (month, year), word[0]
 
 
+def _sums(grid, header, rows, first, page_number, warnings):
+    """Say that money printed in the ГПР is not read, rather than drop it: the plan stays even by days."""
+    heads = [_space(cell) for cell in (grid.cells[header] if header is not None else []) if _MONEY_HEAD.search(cell)]
+    codes = [_space(grid.cells[index][0]).rstrip('.') or 'без номера' for index in rows
+             if any(_MONEY.search(cell) for cell in grid.cells[index][first:])]
+    if not heads and not codes:
+        return
+    found = []
+    if heads:
+        found.append(f'в шапке графика есть графа «{heads[0][:60]}»')
+    if codes:
+        found.append('на диаграмме напечатаны суммы у строк ' + ', '.join(codes[:5]) + (' и других' if len(codes) > 5 else ''))
+    warnings.append(f'Стр. {page_number}: {" и ".join(found)}. Помесячные суммы графика не прочитаны: план '
+                    'разложен по дням строк равномерно.')
+
+
 def _schedule_page(page, page_number, schedule):
     lines, warnings = schedule['lines'], schedule['warnings']
     grid = _Grid(page)
@@ -497,6 +517,7 @@ def _schedule_page(page, page_number, schedule):
         warnings.append(f'Стр. {page_number}: {problem} Полосы графика не прочитаны.')
     columns = grid.columns
     fills = _fills(page)
+    _sums(grid, header, range(header+1, len(grid.cells)), 4, page_number, warnings)
     for index in range(header+1, len(grid.cells)):
         row = grid.cells[index]
         code, name = row[0].strip().rstrip('.'), _space(row[1])
@@ -631,6 +652,7 @@ def _weekly_page(page, page_number, schedule, layout=None):
     body = grid.rows[rows.start] if rows else 0.0
     schedule['assumption'] = WEEKS_ASSUMPTION
     first, fills = layout['first'], _fills(page)
+    _sums(grid, rows.start - 1 if rows.start else None, rows, first, page_number, warnings)
     by_code = {line['code']: line for line in lines}
     for index in rows:
         row = grid.cells[index]

@@ -355,7 +355,9 @@ def register_control(project: str, register: dict, cut: str) -> dict:
         row["schedule_control"] = {
             "documents": len(listed["documents"]),
             "note": found["note"] if listed["documents"] else "ГПР и расчёт договора в карточку не загружены.",
-            **{k: total.get(k) for k in ("state", "lag_days", "ahead_days", "planned", "fact", "deviation", "percent")},
+            **{k: total.get(k) for k in ("state", "lag_days", "ahead_days", "planned", "fact", "deviation", "percent",
+                                         "incomplete")},
+            "left_out": found["left_out"],
             **{k: forecast.get(k) for k in ("finish", "deadline", "from_register", "done", "threat", "days_over",
                                             "days_early", "passed")}}
     return register

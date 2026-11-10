@@ -66,11 +66,15 @@ def edition(estimates: list[dict], schedule: dict | None, start: dt.date | None)
     dated = {line["code"]: line for line in links.leaves(schedule)}
     money, outside, without = {}, {status: {"count": 0, "amount": 0.0} for status in _OUTSIDE}, 0
     volumes = {}
-    accepted = None
+    accepted, accepted_without = None, 0
     for estimate in estimates:
         positions = (estimate.get("links") or {}).get("positions") or []
         if estimate.get("scope") == "accepted":
-            accepted = (accepted or 0.0) + sum(p["amount"] or 0.0 for p in positions)
+            # A position without a sum is named, not counted as zero: the sum is then of the others only.
+            known = [p["amount"] for p in positions if p["amount"] is not None]
+            accepted_without += len(positions) - len(known)
+            if known or not positions:
+                accepted = (accepted or 0.0) + sum(known)
             continue
         for position in positions:
             if position["amount"] is None:
@@ -88,7 +92,7 @@ def edition(estimates: list[dict], schedule: dict | None, start: dt.date | None)
               "overdue": bool(start and _day(dated[code]["finish"]) < start)}
              for code, amount in sorted(money.items(), key=lambda kv: list(dated).index(kv[0]))]
     return {"lines": lines, "total": sum(line["amount"] for line in lines), "outside": outside,
-            "without_amount": without, "accepted": accepted}
+            "without_amount": without, "accepted": accepted, "accepted_without_amount": accepted_without}
 
 
 def planned(plan: dict, day: dt.date, start: dt.date | None) -> float:

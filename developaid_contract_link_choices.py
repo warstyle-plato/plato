@@ -5,7 +5,8 @@ find it in every edition (owner's decision 3А). It holds in a newer edition onl
 while each chosen line is still a work line of the schedule in force under the
 same code and name; otherwise the proposal comes back with the reason, never a
 silent link to a renamed or removed line. Shares by duration are recomputed
-from the current dates; only shares entered by hand are kept as entered.
+from the current dates; only shares entered by hand are kept as entered, scaled to add
+up to exactly one (33,33 % three times is the whole position).
 """
 from __future__ import annotations
 
@@ -24,6 +25,12 @@ class LinkChoiceProblem(ValueError):
 def _same(left, right):
     return re.sub(r"\s+", " ", str(left or "")).strip().casefold() == \
         re.sub(r"\s+", " ", str(right or "")).strip().casefold()
+
+
+def _whole(shares):
+    """Shares that add up to exactly one: 33,33 % three times must not lose a part of the position."""
+    total = sum(shares)
+    return [share / total for share in shares]
 
 
 def decide(item: dict, schedule: dict | None, lines: list[str] | None, shares: list[float] | None,
@@ -49,7 +56,7 @@ def decide(item: dict, schedule: dict | None, lines: list[str] | None, shares: l
         if (len(shares) != len(codes) or not all(isinstance(s, (int, float)) and math.isfinite(s) and s > 0
                                                  for s in shares) or abs(sum(shares) - 100) > 0.05):
             raise LinkChoiceProblem("Доли строк должны быть больше нуля и в сумме давать 100 %.")
-        shares = [s / 100 for s in shares]
+        shares = _whole(shares)
     return {"position": {key: item.get(key) for key in ("number", "name", "unit")},
             "lines": [{"code": code, "name": current[code]["name"]} for code in codes],
             "shares": shares, "origin": "manual" if shares is not None else "duration",
@@ -72,7 +79,7 @@ def apply(result: dict, choices: dict, schedule: dict | None) -> dict:
             continue
         chosen = [current[line["code"]] for line in choice["lines"]]
         manual = choice["origin"] == "manual"
-        item.update(status="confirmed", lines=links.linked(chosen, choice["shares"] if manual else None),
+        item.update(status="confirmed", lines=links.linked(chosen, _whole(choice["shares"]) if manual else None),
                     reason="", suggested=[], fix=None, origin=choice["origin"], chosen=choice["chosen"], decided_at=choice["decided_at"],
                     assumption=(MANUAL_NOTE if manual else links.SHARE_ASSUMPTION) if len(chosen) > 1 else "")
     result.update(links.summary(result["positions"], schedule))

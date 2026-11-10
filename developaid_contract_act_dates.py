@@ -19,14 +19,16 @@ from __future__ import annotations
 
 import re
 
-_NUMBER = re.compile(r"КС\s*-?\s*2\b\D*?(\d+)|^\D*?№\s*(\d+)", re.I)
+# Only an explicit act number: «КС-2 № 3», «Акт № 3» or a label that is the number alone («№ 3»).
+# «Период № 3», «Этап № 2» and the date of «КС-2 от 15.03.2026» are no act numbers.
+_NUMBER = re.compile(r"КС\s*-?\s*2\b[^№\d]*№\s*(\d+)|\bакт\w*\s+№\s*(\d+)|^\s*№\s*(\d+)\s*$", re.I)
 _QUANTITY = 1e-6
 
 
 def number(label) -> str | None:
     """The act number of a KS-6a period label («КС-2 № 3» → "3"); None for a period named otherwise."""
     match = _NUMBER.search(str(label or ""))
-    return (match[1] or match[2]).lstrip("0") or "0" if match else None
+    return next(g for g in match.groups() if g).lstrip("0") or "0" if match else None
 
 
 def _act_number(value) -> str | None:
@@ -128,7 +130,7 @@ def resolve(found: dict | None, records: list[dict]) -> dict | None:
         result["items"].append({"item": work["item"], "number": work["number"], "name": work["name"],
                                 "unit": work["unit"], "plan_quantity": work.get("plan_quantity")})
         result["acts"].extend({"number": work["number"], "name": work["name"], "unit": work["unit"],
-                               "quantity": period["quantity"], "act_amount": period.get("amount"),
+                               "quantity": period.get("quantity") or None, "act_amount": period.get("amount"),
                                "start": period["start"], "end": period["end"], "label": period["label"],
                                "item": work["item"], "dated_by": period.get("dated_by") or "",
                                "source": period.get("source") or work.get("source") or {}} for period in dated)
@@ -144,8 +146,8 @@ def _dated(work: dict, dates: dict):
         return work.get("reason") or "", None
     out = []
     for period in periods:
-        if not period.get("quantity"):
-            continue
+        if not period.get("quantity") and not period.get("amount"):
+            continue  # A sum without a volume is dated too and goes to review in the fact.
         if period.get("end"):
             out.append(period)
             continue

@@ -157,7 +157,11 @@ def test_the_card_reports_lag_volume_and_the_threat_to_the_schedule_end(card):  
     assert got["behind"] == ["1.1", "1.3", "1.2"]
     assert got["total"] == {"amount": 11000.0, "planned": 10000.0, "fact": 5500.0, "deviation": -4500.0,
                             "percent": -0.45, "state": "behind", "lag_days": 2, "ahead_days": 0,
-                            "behind_amount": 4500.0, "shortfall": 0.0}
+                            "behind_amount": 4500.0, "shortfall": 0.0, "incomplete": True}
+    # Плиты в «т» и кладка № 9.9 не сопоставлены с расчётом: в факт не вошли, и отчёт это называет.
+    assert got["left_out"] == {"count": 2, "reasons": [
+        "В расчёте позиция № 1.2 измеряется в «м3», а в КС — в «т»: объём не пересчитать в деньги.",
+        "В расчёте нет позиции с этим номером или с таким же названием и единицей (№ 9.9)."]}
     forecast = got["forecast"]
     assert (forecast["deadline"], forecast["from_register"], forecast["finish"], forecast["days_over"],
             forecast["drivers"]) == ("2026-02-05", False, "2026-02-06", 1, ["1.2"])
@@ -237,7 +241,11 @@ def test_the_card_reports_the_lag_and_the_threat_in_plain_words(card, width):  #
         page.locator(f'tr[data-contract-id="{CONTRACT}"] .contract-open').click()
         report = page.locator("#contractDocuments .contract-control")
         expect(report.locator(".contract-plan-total")).to_have_text(
-            "На 04.02.2026: план 10 000 ₽, факт 5 500 ₽, отклонение −4 500 ₽ (−45 %)")
+            "На 04.02.2026: план 10 000 ₽, факт 5 500 ₽, отклонение −4 500 ₽ (−45 % от плана на дату среза)")
+        expect(report.locator(".contract-control-left-out")).to_have_text(
+            "2 периода КС не вошли в факт: В расчёте позиция № 1.2 измеряется в «м3», а в КС — в «т»: объём не "
+            "пересчитать в деньги. В расчёте нет позиции с этим номером или с таким же названием и единицей (№ 9.9). "
+            "Поэтому отставание и отклонение неполные: выполнение этих периодов в них не учтено.")
         state = report.locator(".contract-control-state")
         expect(state).to_have_text("Договор отстаёт от плана на 2 дня: столько дней назад план нарастающим итогом "
                                    "был равен сегодняшнему факту. Не выполнено по плану на дату среза: 4 500 ₽.")
@@ -257,7 +265,7 @@ def test_the_card_reports_the_lag_and_the_threat_in_plain_words(card, width):  #
         expect(rows.nth(0)).to_contain_text("3 дня")
         # На телефоне таблица становится карточками: у каждого числа видна его подпись.
         assert rows.nth(0).locator("td").nth(4).get_attribute("data-label") == "Отставание"
-        expect(rows.nth(2)).to_contain_text("−1 500 ₽−37,5 %")
+        expect(rows.nth(2)).to_contain_text("−1 500 ₽−37,5 % от плана на дату среза")
         expect(rows.nth(2)).to_contain_text("в натуре: 0,188 м3 из 0,5 м3 по плану")
         expect(rows.nth(2)).to_contain_text("06.02.2026")
         expect(report.locator(".contract-control-ahead")).to_have_count(0)

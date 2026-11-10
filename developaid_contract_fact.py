@@ -73,10 +73,10 @@ def acts(row: dict | None) -> dict | None:
         works.append({"item": index, "number": item.get("position") or "", "name": item.get("name") or "",
                       "unit": item.get("unit") or "", "plan_quantity": item.get("plan_quantity")})
         for period in item.get("periods") or []:
-            if not period.get("quantity"):
-                continue
+            if not period.get("quantity") and not period.get("amount"):
+                continue  # Nothing done in this period; a sum without a volume goes to review in `build`.
             found.append({"number": item.get("position") or "", "name": item.get("name") or "",
-                          "unit": item.get("unit") or "", "quantity": period["quantity"],
+                          "unit": item.get("unit") or "", "quantity": period.get("quantity") or None,
                           "act_amount": period.get("amount"), "start": period.get("date_start"),
                           "end": period["date_end"], "label": period.get("label") or "",
                           "item": index,
@@ -135,6 +135,10 @@ def _price(position):
     return price
 
 
+def _money(value):
+    return f"{value:,.2f}".replace(",", " ").replace(".", ",") + " ₽"
+
+
 def _month_ends(first: dt.date, last: dt.date):
     year, month = first.year, first.month
     while (year, month) <= (last.year, last.month):
@@ -175,10 +179,16 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
         if end > _day(cut):
             result["after_cut"] += 1
             continue
-        done_quantity[act["item"]] = done_quantity.get(act["item"], 0.0) + act["quantity"]
+        if act["quantity"] is None:
+            result["review"].append({**act, "reason": f"В периоде КС записана сумма {_money(act['act_amount'])}, "
+                                                      "а объём не записан (например, оплачена только поставка "
+                                                      "материалов): без объёма выполнение не пересчитать по цене "
+                                                      "расчёта."})
+            continue
         edition = next((e for e in reversed(dated) if _day(e["date"]) <= end), None)
         if start and end < start and edition is None:
             # Accepted before the agreement, in a period whose Расчёт is not in the card.
+            done_quantity[act["item"]] = done_quantity.get(act["item"], 0.0) + act["quantity"]
             result["before"]["count"] += 1
             result["before"]["unpriced"] += 1
             continue
@@ -197,6 +207,8 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
             result["review"].append({**act, "edition": edition["title"],
                                      "reason": f"У позиции № {position['number']} в расчёте не прочитана цена за единицу."})
             continue
+        # Only the volume that entered the fact counts toward a complete line: review volume is not known done.
+        done_quantity[act["item"]] = done_quantity.get(act["item"], 0.0) + act["quantity"]
         money = act["quantity"] * price
         if act["act_amount"] is not None and abs(act["act_amount"] - money) > max(1.0, abs(money) * 0.005):
             result["price_differs"] += 1

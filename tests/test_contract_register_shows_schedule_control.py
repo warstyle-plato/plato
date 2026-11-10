@@ -19,7 +19,11 @@ CUT = "2026-02-04"
 EMPTY = "f" * 64
 BEHIND = {"documents": 2, "note": "", "state": "behind", "lag_days": 2, "ahead_days": 0, "planned": 10000.0,
           "fact": 5500.0, "deviation": -4500.0, "percent": -0.45, "finish": "2026-02-06", "deadline": "2026-02-05",
-          "from_register": False, "done": False, "threat": True, "days_over": 1, "days_early": 0, "passed": False}
+          "from_register": False, "done": False, "threat": True, "days_over": 1, "days_early": 0, "passed": False,
+          # Две строки КС ведомости не сопоставлены с расчётом: отставание посчитано без них.
+          "incomplete": True, "left_out": {"count": 2, "reasons": [
+              "В расчёте позиция № 1.2 измеряется в «м3», а в КС — в «т»: объём не пересчитать в деньги.",
+              "В расчёте нет позиции с этим номером или с таким же названием и единицей (№ 9.9)."]}}
 
 
 def _register():
@@ -84,7 +88,8 @@ def test_the_table_shows_lag_deviation_and_forecast_in_plain_words(card, width):
         row = page.locator(f'tr[data-contract-id="{CONTRACT}"]')
         # The short row: one chip with the lag, the deviation and the forecast in a few words.
         brief = row.locator(".contract-schedule")
-        expect(brief).to_have_text("отстаёт на 2 дня−45 % от планапрогноз 06.02.2026, позже на 1 день")
+        expect(brief).to_have_text("отстаёт на 2 дня−45 % от плана на дату срезаотставание неполное: 2 периода КС "
+                                   "не вошли в фактпрогноз 06.02.2026, позже на 1 день")
         assert brief.get_attribute("data-label") == "График договора"
         head = page.locator(".contract-register thead th")
         expect(head).to_have_count(6)
@@ -97,13 +102,16 @@ def test_the_table_shows_lag_deviation_and_forecast_in_plain_words(card, width):
         # The detail keeps the full answer of the card.
         more = opened(page, CONTRACT)
         lag = more.locator(".contract-schedule-lag")
-        expect(lag).to_have_text("Отставание по ГПР договора2 дняотставание от плана")
+        expect(lag).to_have_text("Отставание по ГПР договора2 дняотставание от планаОтставание неполное. 2 периода КС "
+                                 "не вошли в факт: В расчёте позиция № 1.2 измеряется в «м3», а в КС — в «т»: объём "
+                                 "не пересчитать в деньги. В расчёте нет позиции с этим номером или с таким же "
+                                 "названием и единицей (№ 9.9).")
         assert lag.get_attribute("data-label") == "Отставание по ГПР договора"
         expect(more.locator(".contract-schedule-deviation")).to_have_text(
-            "Отклонение от плана−45 %−4 500 ₽план 10 000 ₽ · факт 5 500 ₽")
+            "Отклонение от плана−45 %от плана на дату среза−4 500 ₽план 10 000 ₽ · факт 5 500 ₽")
         forecast = more.locator(".contract-schedule-forecast")
         expect(forecast).to_have_text("Прогноз окончания по ГПР06.02.2026на 1 день позже срокаОкончание ГПР: 05.02.2026")
-        assert forecast.locator(".contract-main-money").evaluate(color) == lag.locator(".risktext").evaluate(
+        assert forecast.locator(".contract-main-money").evaluate(color) == lag.locator(".contract-main-money").evaluate(
             color) != row.evaluate(color)
         assert red != row.evaluate(color)
         other = page.locator(f'tr[data-contract-id="{OTHER}"]')

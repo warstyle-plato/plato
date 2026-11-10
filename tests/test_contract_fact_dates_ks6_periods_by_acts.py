@@ -203,10 +203,12 @@ def test_a_period_of_materials_only_is_dated_and_other_unread_works_keep_their_r
              "periods": [_period("КС-2 № 4", 1.0, 10.0, "2026-01-01", "2026-01-10")]}
     got = _resolved(_row(materials, unknown, mixed, summary=[("1", "2026-01-31", 720.0)]))
     assert [r["number"] for r in got["act_dates"]] == ["1"] and got["act_dates"][0]["warnings"] == []
-    # Только материалы: работа вошла в ведомость факта без смонтированного объёма.
+    # Только материалы: работа вошла в ведомость факта без смонтированного объёма, а её сумма без объёма —
+    # период факта с объёмом None, который факт отправит на проверку, а не пропустит молча.
     assert [w["number"] for w in got["items"]] == ["1.3", "1.5"]
-    assert [(a["number"], a["end"], a["dated_by"]) for a in got["acts"]] == [
-        ("1.5", "2026-01-10", ""), ("1.5", "2026-01-31", got["act_dates"][0]["basis"])]
+    basis = got["act_dates"][0]["basis"]
+    assert [(a["number"], a["end"], a["dated_by"], a["quantity"]) for a in got["acts"]] == [
+        ("1.3", "2026-01-31", basis, None), ("1.5", "2026-01-10", "", 1.0), ("1.5", "2026-01-31", basis, 1.0)]
     assert [(u["number"], u["reason"]) for u in got["unread"]] == [("1.4", "Накопительный итог не подтверждён числом.")]
     assert act_dates.number("КС-2 № 07") == "7" and act_dates.number("№ 3") == "3"
     assert act_dates.number("2026 год") is None and act_dates.number("01.02.2026 — 03.02.2026") is None

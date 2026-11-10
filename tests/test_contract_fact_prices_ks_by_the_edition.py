@@ -232,7 +232,9 @@ def test_the_card_shows_the_fact_beside_the_plan_with_what_stayed_outside(card, 
         shown.get_by_text("Позиции факта (3)").click()
         rows = shown.locator(".contract-fact-positions tbody tr")
         expect(rows.nth(0)).to_contain_text("1.1 Устройство стен")
-        expect(rows.nth(0)).to_contain_text("в КС: 4 100 ₽")
+        expect(rows.nth(0).locator(".contract-fact-both")).to_have_text("по расчёту 4 000 ₽ · по КС 4 100 ₽")
+        expect(rows.nth(0)).to_contain_text("Сумма по КС больше расчётной: возможно, в акт вошли работы или материалы "
+                                            "сверх расчёта. В факт вошла сумма по расчёту.")
         expect(rows.filter(has_text="сложено из более мелких строк КС")).to_contain_text("в факт по строкам графика")
         expect(rows.filter(has_text="2.1")).to_contain_text("не вошло: связь с графиком на проверке")
         shown.get_by_text("Не сопоставлено с расчётом (2)").click()
