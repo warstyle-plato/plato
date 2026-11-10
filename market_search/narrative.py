@@ -24,9 +24,10 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from .metrics import pace_comparison
 from .segments import _LADDER, normalize_segment
 from .stage import adjust as stage_adjust
-from .verdict import _median, _num, _pct
+from .verdict import PACE_BAND_RATIO, _median, _num, _pct
 
 MONTHS = ["январе", "феврале", "марте", "апреле", "мае", "июне", "июле",
           "августе", "сентябре", "октябре", "ноябре", "декабре"]
@@ -34,7 +35,7 @@ MONTHS = ["январе", "феврале", "марте", "апреле", "ма�
 # Во сколько раз темп должен отличаться, чтобы об этом стоило писать отдельным
 # выводом. Порог тот же, что у вердикта: за полутора разами шум перестаёт
 # объяснять разницу.
-PACE_GAP_RATIO = 1.5
+PACE_GAP_RATIO = PACE_BAND_RATIO
 # Насколько премия должна сдвинуться за наблюдаемый период, чтобы это было
 # движением, а не колебанием прайса.
 PREMIUM_SHIFT_PP = 5.0
@@ -306,21 +307,21 @@ def _kind_finding(subject, peers) -> dict[str, Any] | None:
             "headline": f"В выборке смешаны виды жилья, у проекта «{own}»", "text": text}
 
 
-def _pace_finding(subject, peers) -> dict[str, Any] | None:
+def _pace_finding(subject, peers, comparison=None) -> dict[str, Any] | None:
     """Темп против медианы — и кто именно продаёт быстрее и почём."""
     pace = subject.get("units_per_month")
     values = sorted(
-        (row for row in peers or [] if row.get("units_per_month")),
+        (row for row in peers or [] if row.get("units_per_month") is not None),
         key=lambda row: row["units_per_month"], reverse=True,
     )
-    if not pace or len(values) < 3:
+    if comparison is None:
+        comparison = pace_comparison(subject, peers)
+    if not pace or comparison.get("count", 0) < 3:
         return None
-    ordered = sorted(row["units_per_month"] for row in values)
-    middle = len(ordered) // 2
-    median = ordered[middle] if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / 2
+    median = comparison.get("median")
     if not median:
         return None
-    ratio = round(median / pace, 1) if pace else None
+    ratio = comparison["peer_median_over_subject"]
     three = subject.get("units_per_month_3m")
     if ratio and ratio >= PACE_GAP_RATIO:
         headline = f"Темп отстаёт от класса в {_num(ratio, 1)} раза"
@@ -686,11 +687,15 @@ def findings(
     дело и чем держится спрос. Пока их здесь не было, разделы стояли на экране
     таблицами, а вывод по ним читатель складывал сам.
     """
+    pace = _block(blocks, "pace")
     built = [
         _price_finding(subject, peers, segment),
         # Сразу за ценой: он отвечает не «дорого ли», а «с чем сравнили».
         _kind_finding(subject, peers),
-        _pace_finding(subject, peers),
+        _pace_finding(
+            subject, peers,
+            (pace.get("peers") or {}) if pace else None,
+        ),
         _product_finding(blocks),
         _money_finding(blocks),
         _installment_finding(blocks),
@@ -702,27 +707,26 @@ def findings(
     return [row for row in built if row]
 
 
-def _ceiling(peers: list[dict[str, Any]]) -> tuple[float | None, float | None]:
+def _ceiling(peers: list[dict[str, Any]], median_pace: float | None) -> float | None:
     """Цена, выше которой в этом радиусе темпа уже нет.
 
     Не теория, а наблюдение по выборке: самый дорогой из тех, кто продаёт
     быстрее медианы. Выше этой отметки быстрых нет ни одного — значит, там
     проходит граница, за которой покупатель здешнего радиуса не идёт.
+    Медиана приходит из общего сравнения темпа; известная цена нужна только
+    для самой ценовой границы и не меняет выборку сравнения продаж.
     """
     rows = [row for row in peers or []
-            if row.get("price_per_sqm") and row.get("units_per_month")]
-    if len(rows) < 4:
-        return None, None
-    paces = sorted(row["units_per_month"] for row in rows)
-    middle = len(paces) // 2
-    median = paces[middle] if len(paces) % 2 else (paces[middle - 1] + paces[middle]) / 2
-    quick = [row for row in rows if row["units_per_month"] >= median]
+            if row.get("price_per_sqm") and row.get("units_per_month") is not None]
+    if len(rows) < 4 or median_pace is None:
+        return None
+    quick = [row for row in rows if row["units_per_month"] >= median_pace]
     if not quick:
-        return None, median
-    return max(row["price_per_sqm"] for row in quick), median
+        return None
+    return max(row["price_per_sqm"] for row in quick)
 
 
-def _essay_project(subject, peers, segment, premium, cost) -> list[dict[str, Any]]:
+def _essay_project(subject, peers, segment, premium, cost, pace_context=None) -> list[dict[str, Any]]:
     """Разбор действующего проекта: цена, темп, разрыв, цена премии."""
     out: list[dict[str, Any]] = []
     price = subject.get("price_per_sqm")
@@ -768,9 +772,11 @@ def _essay_project(subject, peers, segment, premium, cost) -> list[dict[str, Any
         out.append({"code": "position", "headline": headline, "paragraphs": first})
 
     pace = subject.get("units_per_month")
-    ceiling, median_pace = _ceiling(peers)
-    if pace and median_pace:
-        ratio = round(median_pace / pace, 1) if pace else None
+    comparison = pace_comparison(subject, peers) if pace_context is None else pace_context
+    median_pace = comparison.get("median")
+    if pace and median_pace and comparison.get("count", 0) >= 4:
+        ceiling = _ceiling(peers, median_pace)
+        ratio = comparison["peer_median_over_subject"]
         slow = ratio and ratio >= PACE_GAP_RATIO
         second = [
             f"{_amount(pace, 'квартира', 'квартиры', 'квартир', 1)} в месяц против медианы "
@@ -786,7 +792,7 @@ def _essay_project(subject, peers, segment, premium, cost) -> list[dict[str, Any
             )
         if ceiling and price and ceiling < price:
             second.append(
-                f"Внутри выборки видна закономерность: быстрее медианы не продаёт никто "
+                f"Среди соседей с известной ценой быстрее медианы не продаёт никто "
                 f"дороже {_num(ceiling)} ₽/м². Граница, за которой темп в этом радиусе "
                 f"заметно падает, проходит примерно там; проект стоит на "
                 f"{_num(round((price / ceiling - 1) * 100, 1), 1)} % выше неё."
@@ -992,6 +998,7 @@ def analysis(
     cost: dict[str, Any] | None = None,
     site: dict[str, Any] | None = None,
     hint: dict[str, Any] | None = None,
+    blocks: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """«Разбор» — те же числа, но связанные между собой.
 
@@ -1001,5 +1008,9 @@ def analysis(
     у первого «платит ли рынок нашу цену», у второго «что здесь строить».
     """
     if subject.get("price_per_sqm"):
-        return _essay_project(subject, peers, segment, premium, cost)
+        pace = _block(blocks, "pace")
+        return _essay_project(
+            subject, peers, segment, premium, cost,
+            (pace.get("peers") or {}) if pace else None,
+        )
     return _essay_site(subject, peers, comparison, site, hint)

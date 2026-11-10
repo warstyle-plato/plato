@@ -103,6 +103,21 @@ def _peer_stats(rows: list[dict[str, Any]], key: str) -> dict[str, Any]:
     }
 
 
+def pace_comparison(subject: dict[str, Any], peers: list[dict[str, Any]]) -> dict[str, Any]:
+    """Одна выборка и одно отношение темпа для плиток, разбора и итога.
+
+    Ноль продаж — известный темп. Прайс не определяет наличие продаж, поэтому
+    отсутствие цены не исключает соседа из сравнения темпа.
+    """
+    stats = _peer_stats(peers, "units_per_month")
+    pace = subject.get("units_per_month")
+    median = stats.get("median")
+    return {
+        **stats,
+        "peer_median_over_subject": round(median / pace, 1) if pace and median else None,
+    }
+
+
 def _class_key(row: dict[str, Any]) -> str | None:
     """Ключ «своего класса»: метка источника, если он различает тоньше нашей лестницы.
 
@@ -290,13 +305,9 @@ def pace_block(subject: dict[str, Any], peers: list[dict[str, Any]], city: Mosco
         "sales_end_forecast": subject.get("sales_end_forecast"),
         "known_sales_for": subject.get("known_sales_for"),
     }
-    stats = _peer_stats(peers, "units_per_month")
+    stats = pace_comparison(subject, peers)
     if stats["count"]:
-        slower = None
-        if pace and stats["median"]:
-            slower = round(stats["median"] / pace, 1) if pace else None
-        block.peers = {**stats, "vs_median_pct": _ratio(pace, stats["median"]),
-                       "peer_median_over_subject": slower}
+        block.peers = {**stats, "vs_median_pct": _ratio(pace, stats["median"])}
     snapshot = city.snapshot(subject.get("segment"))
     if snapshot and snapshot.sold_median is not None:
         block.city = {

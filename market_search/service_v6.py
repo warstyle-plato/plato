@@ -1196,6 +1196,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
             cost=notes.get("price_of_premium"),
             site=notes.get("site"),
             hint=hint,
+            blocks=blocks,
         )
         # Сравнение сроков — после всех разделов: оно пишет `vs_ours` в
         # строки соседей и ничего в их числах не меняет.
