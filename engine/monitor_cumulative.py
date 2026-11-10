@@ -63,6 +63,25 @@ class MonitorContractDocumentUpload(MonitorContractDocuments):
     content_base64: str = _CumulativeField(max_length=28 * 1024 * 1024)
 
 
+class MonitorContractLinkChoice(BaseModel):
+    index: int = _CumulativeField(ge=0, le=100000, strict=True)
+    # No lines confirms the proposed link; shares are percents, none means by duration.
+    lines: list[str] | None = _CumulativeField(default=None, max_length=500)
+    shares: list[float] | None = _CumulativeField(default=None, max_length=500)
+
+
+class MonitorContractDocumentLinks(MonitorContractDocuments):
+    sha256: str = _CumulativeField(pattern=r"^[0-9a-f]{64}$")
+    estimate: int = _CumulativeField(ge=0, le=100, strict=True)
+    choices: list[MonitorContractLinkChoice] = _CumulativeField(min_length=1, max_length=5000)
+    clear: bool = False
+
+
+class MonitorContractDocumentRemove(MonitorContractDocuments):
+    sha256: str = _CumulativeField(pattern=r"^[0-9a-f]{64}$")
+    restore: bool = False
+
+
 class MonitorCumulativeResult(MonitorCumulativeAuth):
     ticket: str = _CumulativeField(min_length=1, max_length=128)
 
@@ -101,6 +120,7 @@ _CUMULATIVE_PATHS = frozenset({
     "/monitor/cumulative/list", "/monitor/contracts/build",
     "/monitor/contracts/result", "/monitor/contracts/term", "/monitor/contracts/link", "/monitor/contracts/header-date",
     "/monitor/contracts/documents", "/monitor/contracts/document-upload",
+    "/monitor/contracts/document-links", "/monitor/contracts/document-remove",
     "/monitor/view", "/monitor/gantt", "/monitor/schedule-fact", "/monitor/gpr-corpus/view",
     "/monitor/schedule-confirmation/view", "/monitor/schedule-confirmation/save",
     "/monitor/schedule-physical/view", "/monitor/schedule-physical/save",
@@ -268,6 +288,12 @@ def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = 
                 raise contracts.ContractProblem("Договор не найден в данных выбранного проекта на эту дату.")
             result = {"document": contract_files.store(payload["project"], row, payload["filename"], archive),
                       **contract_files.listing(payload["project"], payload["contract_id"])}
+        elif operation == "document-links":
+            result = contract_files.save_links(payload["project"], payload["contract_id"], payload["sha256"],
+                                               payload["estimate"], payload["choices"], payload["clear"])
+        elif operation == "document-remove":
+            result = contract_files.remove(payload["project"], payload["contract_id"], payload["sha256"],
+                                           restore=payload["restore"])
         else:
             raise RuntimeError("unknown monitor operation")
         return {"ok": True, **jsonable_encoder(result)}
@@ -317,6 +343,11 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
                 payload["cut"] = _monitor_cumulative_day(req.cut)
                 if operation == "documents":
                     payload["contract_id"] = req.contract_id
+                elif operation == "document-links":
+                    payload.update(contract_id=req.contract_id, sha256=req.sha256, estimate=req.estimate,
+                                   choices=[choice.model_dump() for choice in req.choices], clear=req.clear)
+                elif operation == "document-remove":
+                    payload.update(contract_id=req.contract_id, sha256=req.sha256, restore=req.restore)
                 elif operation == "term":
                     if req.deadline:
                         _monitor_cumulative_day(req.deadline)
@@ -415,3 +446,13 @@ def monitor_contracts_documents(req: MonitorContractDocuments) -> Response:
 @app.post("/monitor/contracts/document-upload", include_in_schema=False)
 def monitor_contracts_document_upload(req: MonitorContractDocumentUpload) -> Response:
     return _monitor_cumulative_job(req, family="contracts", operation="document-upload")
+
+
+@app.post("/monitor/contracts/document-links", include_in_schema=False)
+def monitor_contracts_document_links(req: MonitorContractDocumentLinks) -> Response:
+    return _monitor_cumulative_job(req, family="contracts", operation="document-links")
+
+
+@app.post("/monitor/contracts/document-remove", include_in_schema=False)
+def monitor_contracts_document_remove(req: MonitorContractDocumentRemove) -> Response:
+    return _monitor_cumulative_job(req, family="contracts", operation="document-remove")

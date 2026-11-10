@@ -6,10 +6,13 @@ frozen answer. A document that names another contract is refused: a schedule
 of a neighbouring contract must not become this one's plan. Each contract or
 supplementary agreement is an edition; two files of one edition are both kept
 and named, the choice is the owner's. Positions of each estimate are proposed
-links to the schedule of the latest edition at or before it. Authenticate first.
+links to the schedule of the latest edition at or before it; the owner's
+choices (`links.json`) are laid over the proposals. A removed file stays on
+disk with the time of removal and can be returned. Authenticate first.
 """
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import hashlib
 import json
@@ -19,10 +22,12 @@ import tempfile
 from pathlib import Path
 
 import developaid_contract_documents as documents
+import developaid_contract_link_choices as choices
 import developaid_contract_schedule_links as links
 import developaid_monitor as monitor
 
 MAX_BYTES = 20 * 1024 * 1024
+CHOICES = "links.json"
 
 
 class ContractFilesProblem(ValueError):
@@ -47,6 +52,27 @@ def _write(path: Path, data: bytes) -> None:
         os.replace(temporary, path)
     finally:
         Path(temporary).unlink(missing_ok=True)
+
+
+def _now() -> str:
+    return dt.datetime.now(dt.timezone.utc).isoformat()
+
+
+@contextlib.contextmanager
+def _locked(folder: Path):
+    folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        import fcntl
+    except ImportError:
+        raise ContractFilesProblem("Сохранение в карточке договора недоступно в этой среде.") from None
+    descriptor = os.open(folder / ".lock", os.O_CREAT | os.O_RDWR, 0o600)
+    with os.fdopen(descriptor, "a+b") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        yield
+
+
+def _json(path: Path, value) -> None:
+    _write(path, json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8"))
 
 
 def _shown(iso: str | None) -> str:
@@ -88,16 +114,19 @@ def store(project: str, row: dict, filename: str, content: bytes) -> dict:
     folder.mkdir(parents=True, exist_ok=True, mode=0o700)
     existing = folder / f"{sha}.json"
     if existing.exists() and (folder / f"{sha}.pdf").exists():
-        record = _current(folder, sha)
-        return {**_summary(record), "already": True}
-    record = _record(sha, Path(str(filename or "")).name[:240] or "документ.pdf", content,
-                     dt.datetime.now(dt.timezone.utc).isoformat())
+        with _locked(folder):
+            record = _current(folder, sha)
+            restored = bool(record.pop("removed_at", None))
+            if restored:
+                _json(existing, record)
+        return {**_summary(record), "already": True, "restored": restored}
+    record = _record(sha, Path(str(filename or "")).name[:240] or "документ.pdf", content, _now())
     reason = _same_contract(record.get("contract"), row)
     if reason:
         raise ContractFilesProblem(reason)
     _write(folder / f"{sha}.pdf", content)
-    _write(existing, json.dumps(record, ensure_ascii=False, allow_nan=False).encode("utf-8"))
-    return {**_summary(record), "already": False}
+    _json(existing, record)
+    return {**_summary(record), "already": False, "restored": False}
 
 
 def _current(folder: Path, sha: str) -> dict:
@@ -116,10 +145,12 @@ def _current(folder: Path, sha: str) -> dict:
         return record
     try:
         fresh = _record(sha, record.get("filename", ""), pdf.read_bytes(), record.get("uploaded_at", ""))
+        if record.get("removed_at"):
+            fresh["removed_at"] = record["removed_at"]
     except ContractFilesProblem as exc:
         fresh = {**record, "reader": documents.READER_VERSION, "estimates": [], "schedule": None,
                  "warnings": [str(exc)]}
-    _write(path, json.dumps(fresh, ensure_ascii=False, allow_nan=False).encode("utf-8"))
+    _json(path, fresh)
     return fresh
 
 
@@ -147,16 +178,48 @@ def _summary(record: dict) -> dict:
             "corrections": len(schedule.get("corrections") or [])}
 
 
-def listing(project: str, contract_id: str) -> dict:
-    """Every stored document of the contract, contract first, agreements by date."""
-    folder = _directory(project, contract_id)
-    if not folder.is_dir():
-        return {"contract_id": contract_id, "documents": []}
+def _records(folder: Path) -> list[dict]:
+    """Documents in the card, contract first, agreements by date; removed ones are not among them."""
     records = [_current(folder, path.stem) for path in sorted(folder.glob("*.json"))
                if re.fullmatch(r"[0-9a-f]{64}", path.stem)]
     records.sort(key=lambda r: (_edition(r), r.get("uploaded_at", ""), r["sha256"]))
     for record in records:
         record["title"] = _title(record)
+    return records
+
+
+def _in_force(records: list[dict]):
+    """Each estimate with the latest schedule at or before its edition."""
+    current = None
+    for record in records:
+        if (record.get("schedule") or {}).get("lines"):
+            current = record
+        for index, estimate in enumerate(record.get("estimates") or []):
+            yield record, index, estimate, current
+
+
+def _proposal(record: dict, estimate: dict, schedule: dict | None) -> dict:
+    return links.propose(estimate, schedule and schedule["schedule"], agreement=bool(record.get("agreement")))
+
+
+def _choices(folder: Path) -> dict:
+    try:
+        stored = json.loads((folder / CHOICES).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (ValueError, OSError):
+        raise ContractFilesProblem("Сохранённые связи с графиком не прочитаны; проверьте хранилище проекта.") from None
+    return stored.get("choices") or {}
+
+
+def listing(project: str, contract_id: str) -> dict:
+    """Every document in the card with proposed and confirmed links, and the removed files."""
+    folder = _directory(project, contract_id)
+    if not folder.is_dir():
+        return {"contract_id": contract_id, "documents": [], "removed": []}
+    every = _records(folder)
+    records = [r for r in every if not r.get("removed_at")]
+    for record in records:
         notes = []
         if not record.get("contract"):
             notes.append("Номер договора в документе не прочитан: документ привязан к договору по выбору "
@@ -166,17 +229,56 @@ def listing(project: str, contract_id: str) -> dict:
             notes.append(f"{record['title']} загружено ещё и файлом «{'», «'.join(twins)}». "
                          "Проверьте, какой из файлов действующий.")
         record["warnings"] = notes + list(record.get("warnings") or [])
-    _propose_links(records)
-    return {"contract_id": contract_id, "documents": records}
+    chosen = _choices(folder)
+    for record, _, estimate, schedule in _in_force(records):
+        result = choices.apply(_proposal(record, estimate, schedule), chosen, schedule and schedule["schedule"])
+        estimate["links"] = {**result, "schedule": schedule["title"] if schedule else "",
+                             "schedule_sha256": schedule["sha256"] if schedule else ""}
+    removed = [{"sha256": r["sha256"], "filename": r.get("filename", ""), "title": r["title"],
+                "removed_at": r["removed_at"]} for r in every if r.get("removed_at")]
+    return {"contract_id": contract_id, "documents": records, "removed": removed}
 
 
-def _propose_links(records: list[dict]) -> None:
-    """Each estimate against the schedule in force at its edition; proposed anew, never stored."""
-    current = None
-    for record in records:
-        if ((record.get("schedule") or {}).get("lines")):
-            current = record
-        for estimate in record.get("estimates") or []:
-            estimate["links"] = {
-                **links.propose(estimate, current and current["schedule"], agreement=bool(record.get("agreement"))),
-                "schedule": current["title"] if current else ""}
+def save_links(project: str, contract_id: str, sha256: str, estimate: int, picked: list[dict],
+               clear: bool = False) -> dict:
+    """Confirm, choose or clear links of positions of one estimate; all positions or none are saved."""
+    folder = _directory(project, contract_id)
+    with _locked(folder):
+        records = [r for r in _records(folder) if not r.get("removed_at")]
+        found = next(((record, current, schedule) for record, index, current, schedule in _in_force(records)
+                      if record["sha256"] == sha256 and index == estimate), None)
+        if found is None:
+            raise ContractFilesProblem("Расчёт не найден среди документов карточки: обновите карточку.")
+        record, current, schedule = found
+        positions = _proposal(record, current, schedule)["positions"]
+        stored, now = _choices(folder), _now()
+        for choice in picked:
+            index = choice.get("index")
+            if not isinstance(index, int) or not 0 <= index < len(positions):
+                raise ContractFilesProblem("Позиция не найдена в расчёте: обновите карточку.")
+            item = positions[index]
+            if clear:
+                stored.pop(item["key"], None)
+                continue
+            try:
+                stored[item["key"]] = choices.decide(item, schedule and schedule["schedule"], choice.get("lines"),
+                                                     choice.get("shares"), now)
+            except choices.LinkChoiceProblem as exc:
+                raise ContractFilesProblem(str(exc)) from None
+        _json(folder / CHOICES, {"version": 1, "choices": stored})
+    return listing(project, contract_id)
+
+
+def remove(project: str, contract_id: str, sha256: str, *, restore: bool = False) -> dict:
+    """Take a file out of the card, or return it; the file itself is kept."""
+    folder = _directory(project, contract_id)
+    if not re.fullmatch(r"[0-9a-f]{64}", str(sha256 or "")) or not (folder / f"{sha256}.json").exists():
+        raise ContractFilesProblem("Документ не найден в карточке: обновите карточку.")
+    with _locked(folder):
+        record = _current(folder, sha256)
+        if restore:
+            record.pop("removed_at", None)
+        else:
+            record["removed_at"] = _now()
+        _json(folder / f"{sha256}.json", record)
+    return listing(project, contract_id)

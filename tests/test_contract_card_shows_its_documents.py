@@ -106,7 +106,7 @@ def test_the_card_shows_proposed_links_shares_and_reasons(listing):
         part = page.locator("#contractDocuments .contract-links").first
         expect(part).to_contain_text("по графику: Договор · предложено: 4 · на проверку: 4 · "
                                      "дополнительный объём без срока: 1")
-        expect(part).to_contain_text("Пока они не подтверждены и в расчёт отставания не входят.")
+        expect(part).to_contain_text("В накопленный план войдут только подтверждённые связи.")
         part.get_by_text("Предложенные связи (4)").click()
         walls = part.locator(".contract-links-proposed tr", has_text="3.1.1")
         expect(walls).to_contain_text("3.1.3 Возведение вертикальных конструкций 2-ого этажа · 16.03.2026 — 20.03.2026"

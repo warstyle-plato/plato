@@ -17,6 +17,8 @@ is additional scope without a term (3А) and stays outside the accumulated plan.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import json
 import re
 
 # Order matters: the first kind found in the name wins.
@@ -87,6 +89,35 @@ def _days(line):
     return (finish - start).days + 1
 
 
+def duration_shares(lines):
+    total = sum(_days(line) for line in lines)
+    return [_days(line) / total for line in lines]
+
+
+def position_key(position):
+    """One position in every edition: its number, name and unit, not its place in a file."""
+    identity = [_text(position.get("number")), _text(position.get("name")).casefold(),
+                _text(position.get("unit")).casefold()]
+    return hashlib.sha256(json.dumps(identity, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def leaves(schedule):
+    """Dated work lines of the schedule: headings sum their works and take no position."""
+    lines = (schedule or {}).get("lines") or []
+    parents = {line.get("parent") for line in lines}
+    return [line for line in lines if line["code"] not in parents and line.get("start") and line.get("finish")]
+
+
+def summary(positions, schedule):
+    """Lines no position is linked to and the count of every status."""
+    used = {line["code"] for p in positions if p["status"] in ("confirmed", "proposed") for line in p["lines"]}
+    unlinked = [{"code": s["line"]["code"], "name": s["line"]["name"]}
+                for s in _line_signs((schedule or {}).get("lines") or []) if s["line"]["code"] not in used]
+    counts = {status: sum(1 for p in positions if p["status"] == status)
+              for status in ("confirmed", "proposed", "review", "extra")}
+    return {"lines_without_positions": unlinked, "counts": counts}
+
+
 def _codes(signs, shown=4):
     codes = [s["line"]["code"] for s in signs]
     rest = len(codes) - shown
@@ -114,8 +145,8 @@ def _line_signs(lines):
 def propose(estimate, schedule, *, agreement=False):
     """Links of every position of `estimate` to leaf lines of `schedule`."""
     lines = [line for line in (schedule or {}).get("lines") or []]
-    leaves = _line_signs(lines)
-    positions, used = [], set()
+    signs = _line_signs(lines)
+    positions = []
     for index, position in enumerate(estimate.get("positions") or []):
         group = (position.get("group") or {}).get("name")
         names = (position.get("name"), group, position.get("section"))
@@ -125,8 +156,9 @@ def propose(estimate, schedule, *, agreement=False):
         where = _first(buildings, *names) or set()
         side = _first(part, *names)
         floor = floors(position.get("name"))
-        item = {"index": index, "number": position.get("number"), "name": position.get("name"),
-                "unit": position.get("unit"), "amount": (position.get("amount") or {}).get("total"),
+        item = {"index": index, "key": position_key(position), "number": position.get("number"),
+                "name": position.get("name"), "unit": position.get("unit"), "section": position.get("section"),
+                "amount": (position.get("amount") or {}).get("total"),
                 "kind": label, "buildings": sorted(where), "part": side, "lines": [], "status": "review",
                 "reason": "", "assumption": ""}
         positions.append(item)
@@ -144,7 +176,7 @@ def propose(estimate, schedule, *, agreement=False):
             item["reason"] = ("Позиция относится к нескольким объектам (" + ", ".join(sorted(where))
                               + "): как разделить её между ними, расчёт не говорит.")
             continue
-        alike = [s for s in leaves if s["kind"] == key and s["buildings"] == where
+        alike = [s for s in signs if s["kind"] == key and s["buildings"] == where
                  and (not floor or s["floors"] & floor)
                  and s["line"].get("start") and s["line"].get("finish")]
         found = [s for s in alike if s["part"] == side] if side else alike
@@ -170,14 +202,14 @@ def propose(estimate, schedule, *, agreement=False):
                 item["reason"] = (f"В графике нет строки «{label}» для объекта «{place}»"
                                   + (f" в {_SIDE[side]} части" if side else "") + ".")
             continue
-        total = sum(_days(s["line"]) for s in found)
         item["status"] = "proposed"
-        item["lines"] = [{"code": s["line"]["code"], "name": s["line"]["name"], "start": s["line"]["start"],
-                          "finish": s["line"]["finish"], "share": _days(s["line"]) / total} for s in found]
+        item["lines"] = linked([s["line"] for s in found])
         if len(found) > 1:
             item["assumption"] = SHARE_ASSUMPTION
-        used |= {s["line"]["code"] for s in found}
-    unlinked = [{"code": s["line"]["code"], "name": s["line"]["name"]} for s in leaves
-                if s["line"]["code"] not in used]
-    counts = {status: sum(1 for p in positions if p["status"] == status) for status in ("proposed", "review", "extra")}
-    return {"positions": positions, "lines_without_positions": unlinked, "counts": counts}
+    return {"positions": positions, **summary(positions, schedule)}
+
+
+def linked(lines, shares=None):
+    shares = duration_shares(lines) if shares is None else shares
+    return [{"code": line["code"], "name": line["name"], "start": line["start"], "finish": line["finish"],
+             "share": share} for line, share in zip(lines, shares)]

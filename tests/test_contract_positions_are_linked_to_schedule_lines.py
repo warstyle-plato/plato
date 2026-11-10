@@ -87,7 +87,7 @@ def test_an_agreement_position_without_a_line_is_extra_scope_without_a_term():
     result = links.propose(ESTIMATE, SCHEDULE, agreement=True)
     ramp = _by_number(result)["6.1"]
     assert ramp["status"] == "extra" and ramp["reason"].startswith("Дополнительный объём без срока")
-    assert result["counts"] == {"proposed": 4, "review": 4, "extra": 1}
+    assert result["counts"] == {"confirmed": 0, "proposed": 4, "review": 4, "extra": 1}
 
 
 def test_schedule_lines_without_positions_are_listed():
@@ -103,8 +103,8 @@ def test_each_estimate_is_compared_with_the_schedule_in_force_at_its_edition():
     first, second = ({"positions": [_position("3.1", "Устройство стен", OVER)]} for _ in range(2))
     records = [{"title": "Договор № 1 от 01.09.2025", "estimates": [first]},
                {"title": "Дополнительное соглашение № 1 от 01.02.2026", "agreement": {"number": "1"},
-                "schedule": SCHEDULE, "estimates": [second]}]
-    files._propose_links(records)
-    assert first["links"]["schedule"] == "" and first["links"]["counts"]["proposed"] == 0
-    assert second["links"]["schedule"] == "Дополнительное соглашение № 1 от 01.02.2026"
-    assert second["links"]["counts"]["proposed"] == 1
+                "schedule": SCHEDULE, "estimates": [second]},
+               {"title": "Дополнительное соглашение № 2 от 01.03.2026", "agreement": {"number": "2"},
+                "estimates": [first]}]
+    in_force = [(r["title"][-10:], s and s["title"][-10:]) for r, _, _, s in files._in_force(records)]
+    assert in_force == [("01.09.2025", None), ("01.02.2026", "01.02.2026"), ("01.03.2026", "01.02.2026")]
