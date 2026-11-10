@@ -198,13 +198,13 @@ def as_schedule(source: dict) -> dict:
             problem = ''
             if start and finish and finish < start:
                 problem = ('окончание '+finish.strftime('%d.%m.%Y')+' раньше начала '+start.strftime('%d.%m.%Y')+
-                           ' (ячейки '+source['sheet']+'!'+refs['start']+' и '+refs['finish']+')')
+                           ' (лист «'+source['sheet']+'», ячейки '+refs['start']+' и '+refs['finish']+')')
                 start = finish = None
             elif not (start and finish):
                 # The calendar needs both dates; the work names its own cell.
                 problem = '; '.join(
                     label+(' «'+_text(raw.get(key))[:64]+'» не распознано' if _text(raw.get(key)) else ' не указано')+
-                    ' (ячейка '+source['sheet']+'!'+refs[key]+')'
+                    ' (лист «'+source['sheet']+'», ячейка '+refs[key]+')'
                     for key, label, value in (('start', 'начало', start), ('finish', 'окончание', finish))
                     if value is None)
             group = package.get('group') or ''

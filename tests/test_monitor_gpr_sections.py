@@ -224,19 +224,41 @@ def test_works_left_out_for_unreadable_dates_are_named_above_the_gantt(width):
     view = monitor_view()
     view['schedule']['undated_works'] = [
         {'id': 'corpus:ГПР!E45', 'object': 'КОРПУС 1', 'section': 'Фасады', 'name': 'Каркас / Утеплитель',
-         'reason': 'окончание «31.06.2027» не распознано (ячейка ГПР!G45)'},
+         'reason': 'окончание «31.06.2027» не распознано (лист «ГПР», ячейка G45)'},
         {'id': 'corpus:ГПР!H45', 'object': 'КОРПУС 2', 'section': 'Фасады', 'name': 'Каркас / Утеплитель',
-         'reason': 'окончание «31.06.2027» не распознано (ячейка ГПР!J45)'}]
+         'reason': 'окончание «31.06.2027» не распознано (лист «ГПР», ячейка J45)'}]
     with browser_page(width) as (page, responses, errors):
         render(page, view)
         notice = page.locator('#gprUndated')
         expect(notice).to_be_visible()
         expect(notice).to_contain_text('2 работы не попали в график: в утверждённом ГПР у них нет понятных дат.')
         expect(notice).to_contain_text('КОРПУС 1 · Фасады · Каркас / Утеплитель: '
-                                       'окончание «31.06.2027» не распознано (ячейка ГПР!G45).')
-        expect(notice).to_contain_text('ячейка ГПР!J45')
+                                       'окончание «31.06.2027» не распознано (лист «ГПР», ячейка G45).')
+        expect(notice).to_contain_text('лист «ГПР», ячейка J45')
         box = notice.bounding_box()
         assert box['x'] >= 0 and box['x'] + box['width'] <= width + 1
         render(page, monitor_view())
         expect(notice).to_be_hidden()
+        assert not errors
+
+
+def test_one_undated_work_reads_in_the_singular_and_an_empty_plan_has_one_reason():
+    from playwright.sync_api import expect
+    undated = [{'object': 'КОРПУС 1', 'section': 'Фасады', 'name': 'Монтаж НВФ',
+                'reason': 'окончание «31.06.2027» не распознано (лист «ГПР», ячейка G45)'}]
+    with browser_page(1440) as (page, responses, errors):
+        view = monitor_view()
+        view['schedule']['undated_works'] = undated
+        render(page, view)
+        notice = page.locator('#gprUndated')
+        expect(notice).to_contain_text('1 работа не попала в график: в утверждённом ГПР у неё нет понятной даты.')
+        expect(notice).to_contain_text('Пока дата не исправлена, у этой работы нет ни полосы на графике, ни прогноза.')
+        expect(notice).not_to_contain_text('ни у одной работы')
+        empty = {'cut': '2026-11-08', 'schedule': {'management': [], 'rows': [], 'undated_works': undated,
+                 'reason': 'График загружен, но ни у одной работы нет понятных дат.'}}
+        render(page, empty)
+        expect(notice).to_be_visible()
+        expect(notice).to_contain_text('График загружен, но ни у одной работы нет понятных дат, поэтому график пуст.')
+        expect(page.locator('#gprEmpty')).to_be_hidden()
+        assert 'нет работ утверждённого ГПР' not in page.locator('#monitorPanel').inner_text()
         assert not errors
