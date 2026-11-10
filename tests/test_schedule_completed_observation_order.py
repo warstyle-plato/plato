@@ -41,7 +41,8 @@ def test_saved_readings_order_by_observation_then_utc_save_time(
     assert before == {str(p): p.read_bytes() for p in site[0].rglob('*.json')}
 
 
-def test_new_snapshot_availability_orders_a_projected_reading(site, monkeypatch):
+@pytest.mark.parametrize('loaded_at', [TODAY+'T18:00:00+00:00', '', 'unproved'])
+def test_new_snapshot_availability_orders_a_projected_reading(site, monkeypatch, loaded_at):
     site[1]['current']['ledgers'][0]['customer'] = 'Учебный заказчик'
     site[1]['current']['ledgers'][0]['items'][0]['position'] = '1'
     save('2026-11-08', config())
@@ -51,7 +52,7 @@ def test_new_snapshot_availability_orders_a_projected_reading(site, monkeypatch)
     save(TODAY, config(TODAY))
     assert physical.catalog(PROJECT, TODAY)['model']['completed_facts']['counts']['confirmed_works'] == 1
     archive = copy.deepcopy(site[1]['current'])
-    archive.update(snapshot_id=TODAY+'-'+'c'*64, loaded_at=TODAY+'T18:00:00+00:00')
+    archive.update(snapshot_id=TODAY+'-'+'c'*64, loaded_at=loaded_at)
     archive['ledgers'][0]['items'][0].update(completed_quantity=60, periods=[])
     site[1]['current'] = site[1][archive['snapshot_id']] = archive
     before = {str(p): p.read_bytes() for p in site[0].rglob('*.json')}
