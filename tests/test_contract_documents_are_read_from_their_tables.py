@@ -279,20 +279,47 @@ def test_schedule_dates_come_from_cells_bars_and_works():
     assert (lines["2.2"]["start"], lines["2.2"]["finish"], lines["2.2"]["dates_from"]) == \
         ("2026-02-03", "2026-02-05", "bar")
     assert (lines["2.1"]["level"], lines["2.1"]["parent"]) == (2, "2")
-    assert sorted(schedule["warnings"]) == sorted([
-        "Стр. 1: у строки 2.3 в графах дат 02.02.2026 — 03.02.2026, "
-        "а полоса на диаграмме идёт 29.01.2026 — 31.01.2026.",
-        "Строка 2 «Каркас»: в графике 01.02.2026 — 02.02.2026, а входящие в неё работы идут "
-        "01.02.2026 — 05.02.2026. Проверьте дату в графике.",
-    ])
+    assert schedule["warnings"] == []
+    # Решение владельца: ошибка дат источника исправляется по полосе, а не только называется.
+    assert (lines["2.3"]["start"], lines["2.3"]["finish"], lines["2.3"]["dates_from"]) == \
+        ("2026-01-29", "2026-01-31", "bar")
+    assert lines["2.3"]["cells"] == {"start": "2026-02-02", "finish": "2026-02-03"}
+    # Группа берёт размах работ уже после исправления своих строк.
+    assert (lines["2"]["start"], lines["2"]["finish"], lines["2"]["dates_from"]) == \
+        ("2026-01-29", "2026-02-05", "works")
+    assert [line["code"] for line in schedule["lines"] if line["corrected"]] == ["2", "2.3"]
+    assert schedule["corrections"] == [
+        {"code": "2.3", "name": "Стены", "page": 1, "basis": "bar",
+         "cells": {"start": "2026-02-02", "finish": "2026-02-03"},
+         "used": {"start": "2026-01-29", "finish": "2026-01-31"},
+         "text": "Стр. 1: у строки 2.3 «Стены» в графах дат 02.02.2026 — 03.02.2026, а полоса на диаграмме "
+                 "идёт 29.01.2026 — 31.01.2026. Взяты даты полосы: 29.01.2026 — 31.01.2026."},
+        {"code": "2", "name": "Каркас", "page": 1, "basis": "works",
+         "cells": {"start": "2026-02-01", "finish": "2026-02-02"},
+         "used": {"start": "2026-01-29", "finish": "2026-02-05"},
+         "text": "Строка 2 «Каркас»: в графике 01.02.2026 — 02.02.2026, а входящие в неё работы идут "
+                 "29.01.2026 — 05.02.2026. Взяты сроки работ."},
+    ]
 
 
-def test_a_finish_before_start_is_reported_not_corrected():
-    lines = LINES[:1] + (("1.1", "Разметка", "31.01.2026", "29.01.2026", None),)
+def test_a_finish_before_start_takes_the_bar_and_without_a_bar_is_named():
+    lines = LINES[:1] + (("1.1", "Разметка", "31.01.2026", "29.01.2026", (0, 2)),
+                         ("1.2", "Ограждение", "03.02.2026", "01.02.2026", None))
     schedule = documents.read(schedule_pdf(lines=lines))["schedule"]
-    line = schedule["lines"][1]
-    assert (line["start"], line["finish"]) == ("2026-01-31", "2026-01-29")
-    assert "Стр. 1: у строки 1.1 окончание 29.01.2026 раньше начала 31.01.2026." in schedule["warnings"]
+    marking, fence = schedule["lines"][1:]
+    assert (marking["start"], marking["finish"], marking["corrected"]) == ("2026-01-29", "2026-01-31", True)
+    assert schedule["corrections"][0]["text"] == (
+        "Стр. 1: у строки 1.1 «Разметка» окончание 29.01.2026 раньше начала 31.01.2026. "
+        "Взяты даты полосы: 29.01.2026 — 31.01.2026.")
+    assert (fence["start"], fence["finish"], fence["corrected"]) == ("2026-02-03", "2026-02-01", False)
+    assert schedule["warnings"] == ["Стр. 1: у строки 1.2 окончание 01.02.2026 раньше начала 03.02.2026, "
+                                    "а полосы на диаграмме нет: исправить даты нечем."]
+
+
+def test_a_bar_within_a_day_of_the_cells_is_not_a_correction():
+    lines = (("1.1", "Разметка", "29.01.2026", "01.02.2026", (0, 2)),)
+    schedule = documents.read(schedule_pdf(lines=lines))["schedule"]
+    assert schedule["corrections"] == [] and schedule["lines"][0]["finish"] == "2026-02-01"
 
 
 def test_months_that_do_not_match_the_day_numbers_leave_bars_unread():

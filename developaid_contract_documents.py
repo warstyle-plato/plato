@@ -8,9 +8,11 @@ such. The reader returns positions and schedule lines with the page where each
 was seen; it builds neither a plan nor a fact.
 
 Schedule dates come from the start and finish cells. A bar of the chart gives
-dates only to a line whose cells are empty, and a bar that disagrees with the
-cells by more than a day is a warning. A group line whose dates differ from
-the span of its works is a warning as well; nothing is corrected silently.
+dates to a line whose cells are empty. A line whose cells disagree with its bar
+by more than a day, or end before they start, takes the bar's dates; a group
+line whose dates differ from the span of its works takes that span. Each such
+correction keeps the original cells and is listed in `corrections` with its
+reason — never silently (owner's decision: correct by the bar, show in red).
 
 Estimate checks compare quantity × price, material + work, and every section
 and grand total with the document's own totals. A repeated position number is
@@ -351,7 +353,8 @@ def _month_words(page, top, bottom):
                 yield (month, year), word[0]
 
 
-def _schedule_page(page, page_number, lines, warnings):
+def _schedule_page(page, page_number, schedule):
+    lines, warnings = schedule['lines'], schedule['warnings']
     grid = _Grid(page)
     header = next((i for i, row in enumerate(grid.cells)
                    if 'наименование' in ' '.join(row[:2]).lower() and 'дата' in ' '.join(row[2:4]).lower()), None)
@@ -372,21 +375,45 @@ def _schedule_page(page, page_number, lines, warnings):
             continue
         start, finish = _date(row[2]), _date(row[3])
         bar = _bar(grid, index, fills, columns, dates)
-        source = 'cells'
-        if (start is None or finish is None) and bar:
-            start, finish, source = start or bar[0], finish or bar[1], 'bar'
-        elif bar and start and finish and (abs((dt.date.fromisoformat(start)-dt.date.fromisoformat(bar[0])).days) > 1
-                                           or abs((dt.date.fromisoformat(finish)-dt.date.fromisoformat(bar[1])).days) > 1):
-            warnings.append(f'Стр. {page_number}: у строки {code} в графах дат {_shown(start)} — {_shown(finish)}, '
-                            f'а полоса на диаграмме идёт {_shown(bar[0])} — {_shown(bar[1])}.')
-        if start and finish and finish < start:
+        line = {'code': code, 'name': name, 'start': start, 'finish': finish, 'dates_from': 'cells',
+                'cells': {'start': start, 'finish': finish}, 'corrected': False,
+                'bar': {'start': bar[0], 'finish': bar[1]} if bar else None,
+                'level': code.count('.')+1, 'parent': code.rsplit('.', 1)[0] if '.' in code else None,
+                'page': page_number}
+        lines.append(line)
+        reversed_dates = bool(start and finish and finish < start)
+        if bar and (start is None or finish is None):
+            line.update(start=start or bar[0], finish=finish or bar[1], dates_from='bar')
+        elif bar and (reversed_dates or _apart(start, bar[0]) or _apart(finish, bar[1])):
+            problem = (f'окончание {_shown(finish)} раньше начала {_shown(start)}' if reversed_dates else
+                       f'в графах дат {_shown(start)} — {_shown(finish)}, а полоса на диаграмме идёт '
+                       f'{_shown(bar[0])} — {_shown(bar[1])}')
+            _correct(schedule, line, bar[0], bar[1], 'bar',
+                     f'Стр. {page_number}: у строки {code} «{name[:60]}» {problem}. '
+                     f'Взяты даты полосы: {_shown(bar[0])} — {_shown(bar[1])}.')
+        elif reversed_dates:
             warnings.append(f'Стр. {page_number}: у строки {code} окончание {_shown(finish)} раньше начала '
-                            f'{_shown(start)}.')
-        lines.append({'code': code, 'name': name, 'start': start, 'finish': finish, 'dates_from': source,
-                      'bar': {'start': bar[0], 'finish': bar[1]} if bar else None,
-                      'level': code.count('.')+1, 'parent': code.rsplit('.', 1)[0] if '.' in code else None,
-                      'page': page_number})
+                            f'{_shown(start)}, а полосы на диаграмме нет: исправить даты нечем.')
     return True
+
+
+def _apart(cell, bar):
+    return abs((dt.date.fromisoformat(cell)-dt.date.fromisoformat(bar)).days) > 1
+
+
+def _correct(schedule, line, start, finish, basis, text):
+    """Dates of the source replaced by the chart bar or by the works' span.
+
+    The owner chose correction over a bare warning; the original cells stay on
+    the line and the correction is listed apart, to be shown in red."""
+    line.update(start=start, finish=finish, dates_from=basis, corrected=True)
+    record = next((item for item in schedule['corrections'] if item['code'] == line['code']), None)
+    if record is None:
+        schedule['corrections'].append({'code': line['code'], 'name': line['name'], 'page': line['page'],
+                                        'cells': dict(line['cells']), 'used': {'start': start, 'finish': finish},
+                                        'basis': basis, 'text': text})
+    else:
+        record.update(used={'start': start, 'finish': finish}, basis=basis, text=record['text']+' '+text)
 
 
 def _bar(grid, row, fills, columns, dates):
@@ -427,9 +454,10 @@ def _check_schedule(schedule):
         if not line['start'] and not line['finish']:
             line.update(start=start, finish=finish, dates_from='works')
         elif (start, finish) != (line['start'], line['finish']):
-            warnings.append(f'Строка {line["code"]} «{line["name"][:60]}»: в графике {_shown(line["start"])} — '
-                            f'{_shown(line["finish"])}, а входящие в неё работы идут {_shown(start)} — '
-                            f'{_shown(finish)}. Проверьте дату в графике.')
+            _correct(schedule, line, start, finish, 'works',
+                     f'Строка {line["code"]} «{line["name"][:60]}»: в графике {_shown(line["start"])} — '
+                     f'{_shown(line["finish"])}, а входящие в неё работы идут {_shown(start)} — '
+                     f'{_shown(finish)}. Взяты сроки работ.')
 
 
 def read(data: bytes) -> dict:
@@ -448,8 +476,8 @@ def read(data: bytes) -> dict:
     for index, page in enumerate(document):
         number, text = index+1, texts[index]
         if _SCHEDULE_TITLE.search(text):
-            schedule = out['schedule'] or {'pages': [], 'lines': [], 'warnings': []}
-            if _schedule_page(page, number, schedule['lines'], schedule['warnings']):
+            schedule = out['schedule'] or {'pages': [], 'lines': [], 'warnings': [], 'corrections': []}
+            if _schedule_page(page, number, schedule):
                 estimate, out['schedule'] = None, schedule
                 schedule['pages'].append(number)
                 continue
