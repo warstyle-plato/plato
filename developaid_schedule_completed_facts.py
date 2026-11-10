@@ -85,7 +85,7 @@ def build(project, cut, snapshot, *, physical):
     for event in physical._history(project):
         if event['recorded_at'][:10] <= cut:
             decisions[event['source_sha256']] = event
-    candidates, blockers = {}, set()
+    candidates, blockers = {}, {}
 
     def fact(sha, tid, day, origin, actual_finish=None, sid=None, qualified_at=None):
         old = source(sha, qualified_at or day)
@@ -106,7 +106,7 @@ def build(project, cut, snapshot, *, physical):
             if candidate:
                 candidates[key] = candidate
         elif value is not None:
-            blockers.add(key)
+            blockers[key] = max(blockers.get(key, ''), day)
     for sha, event in decisions.items():
         day, config = event['recorded_at'][:10], event['configuration']
         old = source(sha, day)
@@ -140,10 +140,28 @@ def build(project, cut, snapshot, *, physical):
                     if candidate:
                         candidates[key] = candidate
                 elif value is not None or task.get('requires_reconciliation'):
-                    blockers.add(key)
+                    blockers[key] = max(blockers.get(key, ''), day)
         except (OSError, ValueError, KeyError, TypeError):
             unresolved += 1
-    works = [value for key, value in candidates.items() if key not in blockers]
+
+    # The same work under several plan versions (code, name, object, section
+    # and WBS unchanged) is one fact. A later partial reading in another
+    # version does not let the earlier hundred percent stand.
+    def work(key):
+        row = (identities.get(key[0]) or {}).get(key[1])
+        return physical.definition(row) if row else key
+    later = {}
+    for key, day in blockers.items():
+        later[work(key)] = max(later.get(work(key), ''), day)
+    chosen = {}
+    for key, value in candidates.items():
+        if key in blockers or later.get(work(key), '') > value['source']['recorded_day']:
+            continue
+        rank = lambda f: (not f['actual_finish'], f['actual_finish'] or f['observed_complete_by'], f['fact_id'])
+        best = chosen.get(work(key))
+        if best is None or rank(value) < rank(best):
+            chosen[work(key)] = value
+    works = list(chosen.values())
 
     snapshots = {}
     for meta in ledgers.list_snapshots(project):
