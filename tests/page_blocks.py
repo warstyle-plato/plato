@@ -547,7 +547,12 @@ def project_kind() -> str:
                        # Ставки зданий нежилого проекта — в «Строительстве»
                        # (владелец, 07.10.2026).
                        page_const("OBJECT_SMR"),
+                       function("movedToConstruction"),
+                       page_const("CONSTRUCTION_TAB"),
                        function("nonresBuildingRateFields"),
+                       function("nonresBuildingObject"),
+                       function("nonresConstructionTabs"),
+                       function("nonresConstructionTabsBar"),
                        function("movedToConstruction"),
                        function("projectKind"),
                        function("isNonResidential"),
