@@ -818,6 +818,11 @@ function forgetTerritoryState(){
  cadastralAnalysis=null;landLookup=null;otherRegionPending=null;landScreeningLast=null;LAND_MAP=null;
  calcWentWithoutContour=false;
  glavapuImport=null;moResult=null;
+ // Участок, к которому привязаны условия аренды, и участок последнего
+ // расчёта аренды — тоже про прошлый проект. Доживи они, и открытый проект
+ // со своим договором читался бы как «участок сменился»: подтверждение
+ // условий снималось бы, а расчёт аренды прятался как чужой.
+ landRentAppliedTerritoryKey=null;landRentCalculatedTerritoryKey=undefined;
  // Запрос района и ТТК по участку — тоже про участок: новый проект спрашивает свой.
  sitePositionRun={key:'',state:'',error:'',count:0};
  // Отложенный пересчёт ТЭП — тоже про участок: доживи он до нового проекта, и
@@ -1064,6 +1069,9 @@ async function deleteProject(id){
 // projectsCards — список сохранённого в хранилище, projectsSortRestored —
 // отметка, что порядок списка уже прочитан из браузера: кабинет, не проект.
 // demoBlockNames — названия разделов демо-ссылок с сервера для админки: не проект.
+// landRentRedrawQueued, landRentNeedsRedraw — очередь одной перерисовки
+// редактора аренды в микрозадаче: она гасится до следующего события, то есть
+// раньше, чем человек нажмёт «Сбросить», и проекта не хранит.
 const NON_PROJECT_STATE=['feedbackShown','feedbackCalcs','feedbackReportSeconds','feedbackReportTimer',
  'profileState','profileAskedOnResult','calcRequiresLogin','accessUseFree','calcRun','calcSettled','webLoginBusy',
  'projectsAdminKey','projectsStorageReady','projectsAcceptsKey','projectsAcceptsLogin',
@@ -1073,7 +1081,7 @@ const NON_PROJECT_STATE=['feedbackShown','feedbackCalcs','feedbackReportSeconds'
  'landScreeningRun','tepRunSequence','krtSiteRun','krtSiteBusy','glavapuScenarioRun','strategyCompareRound','landContourPending',
  'CLASS_OVERRIDES','CLASS_OVERRIDES_NOTE','CLASS_OVERRIDES_FROM_SERVER',
  'CLASS_STATS_BY','CLASS_STATS_KEY','CLASS_STATS_ERROR','CLASS_DETAIL_OPEN',
- 'PROJECT_KIND_WHERE','LAND_MAP_VIEWS','demoBlockNames'];
+ 'PROJECT_KIND_WHERE','LAND_MAP_VIEWS','demoBlockNames','landRentRedrawQueued','landRentNeedsRedraw'];
 
 function resetProjectState(){
  // Данные проекта, которые живут переменными страницы, а не полями формы.
