@@ -22,6 +22,7 @@ import tempfile
 from pathlib import Path
 
 import developaid_contract_documents as documents
+import developaid_contract_fact as fact
 import developaid_contract_link_choices as choices
 import developaid_contract_plan as plan
 import developaid_contract_schedule_links as links
@@ -243,12 +244,16 @@ def _choices(folder: Path) -> dict:
     return stored.get("choices") or {}
 
 
-def listing(project: str, contract_id: str, cut: str = "") -> dict:
-    """Every document in the card with its links, the accumulated plan on `cut` and the removed files."""
+def listing(project: str, contract_id: str, cut: str = "", acts: dict | None = None) -> dict:
+    """Every document in the card with its links, the accumulated plan and fact on `cut` and the removed files.
+
+    `acts` are the KS-6a works of the contract on `cut` (`fact.acts`); None when the register has none.
+    """
     folder = _directory(project, contract_id)
     cut = cut or dt.date.today().isoformat()
     if not folder.is_dir():
-        return {"contract_id": contract_id, "documents": [], "removed": [], "plan": plan.build([], cut)}
+        return {"contract_id": contract_id, "documents": [], "removed": [], "plan": plan.build([], cut),
+                "fact": fact.build([], None, acts, cut)}
     every = _records(folder)
     records = [r for r in every if not r.get("removed_at")]
     for record in records:
@@ -268,12 +273,14 @@ def listing(project: str, contract_id: str, cut: str = "") -> dict:
                              "schedule_sha256": schedule["sha256"] if schedule else ""}
     removed = [{"sha256": r["sha256"], "filename": r.get("filename", ""), "title": r["title"],
                 "removed_at": r["removed_at"]} for r in every if r.get("removed_at")]
-    return {"contract_id": contract_id, "documents": records, "removed": removed,
-            "plan": plan.build(_editions(records, chosen), cut)}
+    editions = _editions(records, chosen)
+    planned = plan.build(editions, cut)
+    return {"contract_id": contract_id, "documents": records, "removed": removed, "plan": planned,
+            "fact": fact.build(editions, planned["in_force"], acts, cut)}
 
 
 def save_links(project: str, contract_id: str, sha256: str, estimate: int, picked: list[dict],
-               clear: bool = False, cut: str = "") -> dict:
+               clear: bool = False, cut: str = "", acts: dict | None = None) -> dict:
     """Confirm, choose or clear links of positions of one estimate; all positions or none are saved."""
     folder = _directory(project, contract_id)
     with _locked(folder):
@@ -299,10 +306,11 @@ def save_links(project: str, contract_id: str, sha256: str, estimate: int, picke
             except choices.LinkChoiceProblem as exc:
                 raise ContractFilesProblem(str(exc)) from None
         _json(folder / CHOICES, {"version": 1, "choices": stored})
-    return listing(project, contract_id, cut)
+    return listing(project, contract_id, cut, acts)
 
 
-def remove(project: str, contract_id: str, sha256: str, *, restore: bool = False, cut: str = "") -> dict:
+def remove(project: str, contract_id: str, sha256: str, *, restore: bool = False, cut: str = "",
+           acts: dict | None = None) -> dict:
     """Take a file out of the card, or return it; the file itself is kept."""
     folder = _directory(project, contract_id)
     if not re.fullmatch(r"[0-9a-f]{64}", str(sha256 or "")) or not (folder / f"{sha256}.json").exists():
@@ -314,4 +322,4 @@ def remove(project: str, contract_id: str, sha256: str, *, restore: bool = False
         else:
             record["removed_at"] = _now()
         _json(folder / f"{sha256}.json", record)
-    return listing(project, contract_id, cut)
+    return listing(project, contract_id, cut, acts)

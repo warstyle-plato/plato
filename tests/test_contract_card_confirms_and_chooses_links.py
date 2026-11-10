@@ -48,8 +48,11 @@ def card(monkeypatch, tmp_path):
     return files.store(PROJECT, ROW, "ДС4.pdf", estimate_pdf(FIRST, SECOND))["sha256"]
 
 
-def _serve(page, calls, cut=""):
-    """The card's routes over the real store; `cut` stands for the date of the cut chosen on the page."""
+def _serve(page, calls, cut="", acts=None):
+    """The card's routes over the real store; `cut` stands for the date of the cut chosen on the page.
+
+    `acts` is the KS-6a fact of the register on that cut (`developaid_contract_fact.acts`).
+    """
     def handle(route):
         body = route.request.post_data_json or {}
         name = route.request.url.rsplit("/", 1)[-1]
@@ -59,12 +62,12 @@ def _serve(page, calls, cut=""):
         try:
             if name == "document-links":
                 answer = files.save_links(PROJECT, CONTRACT, body["sha256"], body["estimate"], body["choices"],
-                                          clear=body.get("clear", False), cut=day)
+                                          clear=body.get("clear", False), cut=day, acts=acts)
             elif name == "document-remove":
                 answer = files.remove(PROJECT, CONTRACT, body["sha256"], restore=body.get("restore", False),
-                                      cut=day)
+                                      cut=day, acts=acts)
             else:
-                answer = files.listing(PROJECT, CONTRACT, day)
+                answer = files.listing(PROJECT, CONTRACT, day, acts)
         except files.ContractFilesProblem as problem:
             return route.fulfill(json={"pending": False, "ok": False, "detail": str(problem)})
         route.fulfill(json={"pending": False, "ok": True, **answer})

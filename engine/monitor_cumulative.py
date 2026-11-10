@@ -277,24 +277,35 @@ def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = 
             result = {"link": links.set_link(
                 payload["project"], payload["contract_id"], payload["evidence_id"],
                 payload["cut"], confirmed=payload["confirmed"])}
-        elif operation == "documents":
-            result = contract_files.listing(payload["project"], payload["contract_id"], payload["cut"])
-        elif operation == "document-upload":
-            # The card's contract is checked against the register of the same cut:
-            # a document is never filed under an id the register does not show.
-            row = next((r for r in contracts.build(payload["project"], payload["cut"])["rows"]
-                        if r["id"] == payload["contract_id"]), None)
-            if row is None:
-                raise contracts.ContractProblem("Договор не найден в данных выбранного проекта на эту дату.")
-            result = {"document": contract_files.store(payload["project"], row, payload["filename"], archive),
-                      **contract_files.listing(payload["project"], payload["contract_id"], payload["cut"])}
-        elif operation == "document-links":
-            result = contract_files.save_links(payload["project"], payload["contract_id"], payload["sha256"],
-                                               payload["estimate"], payload["choices"], payload["clear"],
-                                               payload["cut"])
-        elif operation == "document-remove":
-            result = contract_files.remove(payload["project"], payload["contract_id"], payload["sha256"],
-                                           restore=payload["restore"], cut=payload["cut"])
+        elif operation.startswith("document"):
+            # The card's contract is the register's row of the same cut: a document is
+            # never filed under an id the register does not show, and its KS-6a is the fact.
+            import developaid_contract_fact as contract_fact
+            problem = ""
+            try:
+                rows = contracts.build(payload["project"], payload["cut"], include_history=False)["rows"]
+            except contracts.ContractProblem as exc:
+                if operation == "document-upload":
+                    raise
+                rows, problem = [], str(exc)
+            row = next((r for r in rows if r["id"] == payload["contract_id"]), None)
+            acts = contract_fact.unavailable(problem) if problem else contract_fact.acts(row)
+            if operation == "documents":
+                result = contract_files.listing(payload["project"], payload["contract_id"], payload["cut"], acts)
+            elif operation == "document-upload":
+                if row is None:
+                    raise contracts.ContractProblem("Договор не найден в данных выбранного проекта на эту дату.")
+                result = {"document": contract_files.store(payload["project"], row, payload["filename"], archive),
+                          **contract_files.listing(payload["project"], payload["contract_id"], payload["cut"], acts)}
+            elif operation == "document-links":
+                result = contract_files.save_links(payload["project"], payload["contract_id"], payload["sha256"],
+                                                   payload["estimate"], payload["choices"], payload["clear"],
+                                                   payload["cut"], acts)
+            elif operation == "document-remove":
+                result = contract_files.remove(payload["project"], payload["contract_id"], payload["sha256"],
+                                               restore=payload["restore"], cut=payload["cut"], acts=acts)
+            else:
+                raise RuntimeError("unknown monitor operation")
         else:
             raise RuntimeError("unknown monitor operation")
         return {"ok": True, **jsonable_encoder(result)}
