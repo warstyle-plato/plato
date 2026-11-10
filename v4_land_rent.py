@@ -595,7 +595,10 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
     for p in range(phase_count):
         r = phase_first + p
         put(r, f"A{r}", f"Очередь {p+1}" if phased else "Весь участок")
-        put(r, f"B{r}", float(phase_land[p]["share"]) if phased else 1.0, style=styles["input" if phased else "amount"])
+        if phased:
+            put(r, f"B{r}", float(phase_land[p]["share"]), style=styles["input"])
+        else:
+            put(r, f"B{r}", formula="1", style=styles["amount"])  # весь участок — одна доля, не ввод
         put(r, f"C{r}", formula=phase_rve_formulas[p] if phased else "$B$15", style=styles["date"])
         # The queue commissioned last holds its land up to the common cutoff
         # (developaid_land_rent.phase_release).
