@@ -211,3 +211,26 @@ def test_sealer_pins_artifact_session_plaintext_and_uses_only_public_cert(prepar
 
 
 def PROJECT_NOT_IN(result,project):return project not in json.dumps(result)
+
+
+def test_repository_recipient_matches_pin_and_is_a_3072_bit_rsa_certificate(cap):
+    cap.recipient_ready()
+    certificate=cap.RECIPIENT.read_bytes()
+    public=subprocess.run(['openssl','x509','-in',str(cap.RECIPIENT),'-pubkey','-noout'],
+        stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,check=True,timeout=20)
+    details=subprocess.run(['openssl','pkey','-pubin','-text','-noout'],input=public.stdout,
+        stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,check=True,timeout=20)
+    assert b'Public-Key: (3072 bit)' in details.stdout
+    assert b'Exponent: 65537' in details.stdout
+    assert b'PRIVATE KEY' not in certificate
+
+
+def test_another_valid_recipient_is_rejected_before_output_or_crypto(cap,monkeypatch,tmp_path,synthetic_crypto):
+    _,other_certificate=synthetic_crypto
+    assert cap.sha(other_certificate.read_bytes())!=cap.RECIPIENT_SHA256
+    monkeypatch.setattr(cap,'RECIPIENT',other_certificate)
+    monkeypatch.setattr(cap.subprocess,'run',lambda *a,**k:pytest.fail('crypto with unpinned recipient'))
+    target=tmp_path/'proof.cms'
+    with pytest.raises(cap.CaptureError,match='fence'):
+        cap.encrypt({'synthetic':'recipient mismatch'},target,lambda:20)
+    assert not target.exists()
