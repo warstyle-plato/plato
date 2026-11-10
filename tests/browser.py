@@ -241,3 +241,19 @@ def wait_for_result(page, timeout_ms: int = 60_000) -> None:
         state = page.evaluate(CALC_STATE_JS)
         raise AssertionError(f"расчёт закрыт входом: {state['locked']}")
     page.evaluate(SETTLED_CALCULATE_JS, timeout_ms)
+
+
+def open_vri(page):
+    """Открыть вкладку ВРИ так, как её открывает человек на этой поверхности.
+
+    Прод ставит на корень слой IA, и он прячет прежние вкладки: туда ведёт
+    «Экономика → ВРИ». Прежний вид — /classic с вкладкой ВРИ. Какой интерфейс
+    проверяется, решает параметр поверхности, а не порядок сбора тестов.
+    """
+    import re
+
+    if page.locator("body.ia-on").count():
+        page.locator(".ia-nav").get_by_role("button", name="Экономика", exact=True).click()
+        page.locator("#iaSub").get_by_role("button", name=re.compile(r"^ВРИ")).click()
+    else:
+        page.locator("button[data-tab='vri']").click()

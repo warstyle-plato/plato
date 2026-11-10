@@ -307,7 +307,9 @@ def evaluate(pm, snapshot, configuration, cut):
     tasks = pm.get('tasks') or {}
     items = _items(snapshot)
     configs = {row['task_id']: row for row in configuration['tasks']}
-    components = [_component(c, items, day) for c in configuration['components']]
+    duplicates = (ledgers.verified_duplicate_sources(list(items.values()))
+                  if configuration['components'] else {})
+    components = [_component(c, items, day, _duplicates=duplicates) for c in configuration['components']]
     # Only ancestors of the explicit RNV milestone can certify its forecast.
     required, pending = set(), [pm.get('rnv_id')]
     while pending:

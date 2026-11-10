@@ -332,7 +332,9 @@ def evaluate(source, snapshot, configuration, cut, *, observation_index=()):
     items = quantities._items(snapshot)
     views = cumulative_progress.quantity_views(snapshot, cut)
     configs = {row["task_id"]: row for row in configuration["tasks"]}
-    components = [_observed_component(component, quantities._component(component, items, day),
+    duplicates = (ledgers.verified_duplicate_sources(list(items.values()))
+                  if configuration['components'] else {})
+    components = [_observed_component(component, quantities._component(component, items, day, _duplicates=duplicates),
                                      items, views, snapshot, cut, observation_index)
                   for component in configuration["components"]]
     observation_date = cumulative_progress.snapshot_date(snapshot)
@@ -564,7 +566,6 @@ def _view_model(project, cut, source, snapshot, configuration, *, automatic=None
     return model
 
 
-@monitor.approved_schedule_read
 def _review(project, cut, source, snapshot, state, views):
     import developaid_schedule_physical_review as review
     carried_from = state['binding_carried_from_source_sha256']
@@ -636,6 +637,7 @@ def _explain_revoked(model, state):
     return model
 
 
+@monitor.approved_schedule_read
 def catalog(project, cut, query="", offset=0):
     if not quantities._day(cut):
         raise PhysicalProblem("Укажите существующую дату среза.")

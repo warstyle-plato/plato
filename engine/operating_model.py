@@ -190,6 +190,7 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     core_product("storage", storage_saleable_spaces(storage), n(x, "storage_price_th"))
 
     standalone_capex = {}
+    object_commissioning: dict[str, date] = {}
     # Гараж объекта копится ОТДЕЛЬНО от здания: удельная «на свою ГНС»
     # обязана воспроизводить вводную ставку, а гараж считается по подземному
     # метру. Сложенные в одно число, они дают третий показатель, который не
@@ -269,6 +270,8 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         if obj.garage:
             standalone_garage_capex[obj.key] = object_parking_capex(obj.key)
             standalone_capex[obj.key] += standalone_garage_capex[obj.key]
+        if standalone_capex[obj.key] > 0 or (volume > 0):
+            object_commissioning[obj.key] = add_months(build_start, months)
         # Признак продажи гасит ВЫРУЧКУ, а не стройку: переданный объект
         # строится за те же деньги и ведёт себя как соцобъект.
         if obj.sale_gate and not object_is_sold(x, obj):
@@ -879,6 +882,34 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     if dated_flows:
         end = max(end, max(dated_flows))
 
+    # Ground lease is a separate investment cost, not VRI or a construction
+    # rate. Its lease-year origin survives acquisition and phase starts.
+    rent_end = max([end, *[nonres_strategy.plan_horizon_end(p) for p in nonres_plans.values()]])
+    if is_hotel(x):
+        rent_end = max(rent_end, hotel_strategy.plan_horizon_end({
+            "commissioning": rve, "params": hotel_strategy.params_from_inputs(x)}))
+    rent_rve = developaid_land_rent.construction_cutoff(rve, object_commissioning, pure_nonres=is_nonresidential(x))
+    land_rent = copy.deepcopy(x.get("_land_rent_phase_model")) if x.get("_land_rent_phase_model") else developaid_land_rent.build(x, project_start, rent_rve, add_months(max(rent_end, rent_rve), 1))
+    land_rent["local_object_commissioning"] = {key: value.isoformat() for key, value in object_commissioning.items()}
+    land_rent["housing_rve"] = rve.isoformat()
+    land_rent["cutoff_includes_housing"] = not is_nonresidential(x)
+    if land_rent.get("cutoff_origin") != "manual":
+        land_rent["cutoff_basis"] = "Последний ввод основных объектов на общем участке; соцобъекты без подтверждённой связи с землёй не включены. Жилищный РВЭ и условия ПФ не изменены."
+    unlinked_social_dates = {key: add_months(d(x[f"{key}_start"]), int(n(x, f"{key}_months", 24)))
+        for key, value in social_construction_breakdown.items()
+        if value > 0 and social_mode in ("Строительство", SOCIAL_MODE_BOTH)}
+    developaid_land_rent.qualify_scope(land_rent, unlinked_social_dates)
+    rent_schedule = {d(month): float(value)
+                     for month, value in land_rent["monthly"].items()}
+    for month, value in rent_schedule.items():
+        add_capex("land_rent", month, value)
+    amounts["land_rent"] = sum(rent_schedule.values())
+    cash_start = min([project_start, *rent_schedule])
+    end = max([end, *rent_schedule])
+    land_rent["applied_total"] = amounts["land_rent"]
+    land_rent["cash_total"] = amounts["land_rent"]
+    land_rent["scenario_cost_multiplier"] = 1.0
+
     # Долговое финансирование видит все расходы проекта, кроме той части платы
     # за ВРИ, которую собственник закрывает капиталом: она не создаёт ни выборки
     # БРИДЖа, ни выборки ПФ.
@@ -902,23 +933,18 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     # уходят в кредит объектов вне ДДУ долей их стройки. Доля объектов на ДДУ
     # остаётся на ПФ — у них эскроу есть. В смешанном проекте общие затраты
     # несёт ПФ жилья, как прежде.
+    object_keys = {obj.key for obj in standalone_objects()}
+    common_capex_shares: dict[str, float] = {}
     if nonres_plans and is_nonresidential(x):
-        object_keys = {obj.key for obj in standalone_objects()}
         object_capex = {key: sum((capex_by_article.get(key) or {}).values()) for key in object_keys}
         objects_total = sum(object_capex.values())
         shares = {key: object_capex[key] / objects_total
                   for key in nonres_plans if objects_total > 0}
-        for month in list(debt_capex):
-            ddu_objects = sum((capex_by_article.get(key) or {}).get(month, 0.0)
-                              for key in object_keys if key not in nonres_plans)
-            common = max(0.0, debt_capex[month] - ddu_objects)
-            if common <= 0:
-                continue
-            for key, share in shares.items():
-                plan = nonres_plans[key]
-                plan.setdefault("common_capex", {})
-                plan["common_capex"][month] = common * share
-            debt_capex[month] -= common * sum(shares.values())
+        common_capex_shares = shares
+        debt_capex, common_by_plan = nonres_strategy.allocate_common_capex(
+            debt_capex, capex_by_article, object_keys, shares)
+        for key, common in common_by_plan.items():
+            nonres_plans[key]["common_capex"] = common
 
     # Гостиничный проект: всё, что проект тратит, — затраты гостиницы. Банк
     # ПФ её не кредитует (эскроу нет); кредит — свой, гостиничный, и его
@@ -936,6 +962,12 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
             "capex": {month: value for month, value in capex.items() if value},
             "capex_ffe": dict(capex_by_article.get("hotel_ffe") or {}),
             "capex_land": dict(land),
+            # Construction rent forms building investment cost; its public
+            # budget VAT exemption does not turn it into a land asset.
+            "capex_vat_exempt": {month: sum((capex_by_article.get(key) or {}).get(month, 0.0)
+                for key in developaid_land_rent.excluded_input_vat_articles(land_rent)) for month in capex},
+            "land_articles": list(HOTEL_LAND_ARTICLES),
+            "vat_exempt_articles": list(developaid_land_rent.excluded_input_vat_articles(land_rent)),
             "params": hotel_params,
             "revenue_multiplier": revenue_multiplier,
             "missing": [f.label for f in hotel_strategy.missing_fields(
@@ -946,25 +978,29 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
 
     return {
         "project_start": project_start,
+        "cash_start": cash_start,
         "permit": permit,
         "sales_start": sales_start,
         "rve": rve,
         "end": end,
-        "revenue": dict(revenue),
+        # Only monthly series use calendar keys. Milestones above keep their day.
+        "revenue": monthly_sum(revenue),
         "revenue_by_product": revenue_by_product,
-        "revenue_product_schedules": revenue_product_schedules,
-        "quantity_product_schedules": quantity_product_schedules,
-        "capex": dict(capex),
-        "capex_by_article": {article: dict(schedule) for article, schedule in capex_by_article.items()},
-        "debt_capex": debt_capex,
+        "revenue_product_schedules": {key: monthly_sum(series) for key, series in revenue_product_schedules.items()},
+        "quantity_product_schedules": {key: monthly_sum(series) for key, series in quantity_product_schedules.items()},
+        "capex": monthly_sum(capex),
+        "capex_by_article": {article: monthly_sum(schedule) for article, schedule in capex_by_article.items()},
+        "debt_capex": monthly_sum(debt_capex),
         "nonres_plans": nonres_plans,
+        "common_capex_shares": common_capex_shares,
+        "object_capex_keys": sorted(object_keys),
         "hotel_plan": hotel_plan,
         # Общие затраты (участок, проект, сети) кредитует НКЛ объектов, а не
         # БРИДЖ и ПФ: так устроен чисто нежилой проект. Читает финансирование —
         # лимит БРИДЖа такому проекту не считается. Гостиничный проект так же:
         # все его затраты несёт кредит гостиницы (`hotel_plan`).
         "common_on_object_loans": bool((nonres_plans and is_nonresidential(x)) or hotel_plan),
-        "operating": dict(operating),
+        "operating": monthly_sum(operating),
         "capex_amounts": amounts,
         # Гараж объекта внутри его статьи, но со своей базой: здание меряется
         # своей ГНС, гараж — подземным метром. Без этой пары удельная объекта
@@ -1016,5 +1052,6 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         "social_cash_date": social_cash_date,
         "imported_social_compensation": imported_social_compensation,
         "vri": vri,
-        "vri_equity": dict(vri_equity_by_month),
+        "land_rent": land_rent,
+        "vri_equity": monthly_sum(vri_equity_by_month),
     }

@@ -2494,22 +2494,18 @@ def sports_is_sold(inputs: dict[str, Any] | None) -> bool:
 # «жилое или нежилое помещение, машино-место»), значит эскроу, покрытие и
 # лестница ставки ПФ остаются теми же, а оговорка «механика здесь не та» была
 # бы неправдой на экране.
-PROJECT_KIND_MIXED = "mixed"
-PROJECT_KIND_NONRESIDENTIAL = "nonresidential"
+PROJECT_KIND_MIXED = project_types.MIXED
+PROJECT_KIND_NONRESIDENTIAL = project_types.NONRESIDENTIAL
 # Гостиница — ОТДЕЛЬНЫЙ тип проекта, а не объект внутри жилого проекта или
 # КРТ (владелец, 05.10.2026). Жилья, соцнагрузки и объектов у него нет, как у
 # нежилого; деньги — номера, департаменты и USALI (`developaid_hotel_strategy`).
-PROJECT_KIND_HOTEL = "hotel"
-PROJECT_KINDS: tuple[tuple[str, str], ...] = (
-    (PROJECT_KIND_MIXED, "Жильё"),
-    (PROJECT_KIND_NONRESIDENTIAL, "Нежилое"),
-    (PROJECT_KIND_HOTEL, "Гостиница"),
-)
+PROJECT_KIND_HOTEL = project_types.HOTEL
+PROJECT_KINDS: tuple[tuple[str, str], ...] = project_types.KINDS
 # Типы проекта без жилья. Один ответ на «считает ли проект дом»: нежилой и
 # гостиничный обнуляют МКД и соцнагрузку одним и тем же правилом
 # (`residential_excluded`), а называют остаток одной функцией
 # (`nonresidential_leftovers`).
-PROJECT_KINDS_WITHOUT_HOUSING = frozenset({PROJECT_KIND_NONRESIDENTIAL, PROJECT_KIND_HOTEL})
+PROJECT_KINDS_WITHOUT_HOUSING = project_types.WITHOUT_HOUSING
 
 # Что принадлежит ЖИЛЬЮ и в нежилом проекте не живёт. Список объявлен один
 # раз: по нему страница обнуляет и называет убранное, по нему же движок ищет
@@ -2573,9 +2569,7 @@ def project_kind(inputs: dict[str, Any] | None) -> str:
     """Тип проекта. Незнакомое значение читается как жилой: умолчание годится
     там, где оно значит «не задано», а «не задано» здесь — это тот проект,
     который считался всегда."""
-    value = str((inputs or {}).get("project_kind")
-                or PROJECT_KIND_MIXED).strip().lower()
-    return value if value in dict(PROJECT_KINDS) else PROJECT_KIND_MIXED
+    return project_types.kind(inputs)
 
 
 def is_nonresidential(inputs: dict[str, Any] | None) -> bool:
@@ -2590,7 +2584,7 @@ def is_hotel(inputs: dict[str, Any] | None) -> bool:
 
 def without_housing(inputs: dict[str, Any] | None) -> bool:
     """Проект без жилья: нежилой или гостиничный. Решает, считается ли дом."""
-    return project_kind(inputs) in PROJECT_KINDS_WITHOUT_HOUSING
+    return project_types.without_housing(project_kind(inputs))
 
 
 # Ставки объектов, которые в чисто нежилом проекте значат СМР здания:
@@ -2865,6 +2859,9 @@ class PhasedCalcRequest(BaseModel):
     session: str = ""
     access_key: str = ""
     use_free: bool = False
+    # Retain the field so unsupported facts are explicitly rejected rather
+    # than silently discarded by BaseModel's default extra-field policy.
+    actuals: dict[str, Any] = {}
 
 
 class SensitivityRequest(BaseModel):
