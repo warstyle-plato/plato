@@ -246,3 +246,44 @@ def test_gantt_opens_collapsed_to_corpora_and_expands_on_click(width):
         page.locator('#gantt .g-row.lvl-stage').first.click()
         expect(page.locator('#gantt .g-row.lvl-task').first).to_be_visible()
         assert not errors
+
+
+@pytest.mark.parametrize('width', [390, 1440])
+def test_stage_by_corpus_summary_sits_above_the_gantt_and_opens_the_tapped_stage(width):
+    """Владелец: над графиком — сводка «этап × корпус»; клетка открывает этап."""
+    from playwright.sync_api import expect
+    view = monitor_view('partial')
+    control = view['schedule']['management'][0]
+    tasks = control['children'][0]['children'][0]['children']
+    base = tasks[0]
+    tasks.extend([dict(base, id='4', wbs='2.1', object='Корпус 2', name='Кладка стен', actual_progress=None, pace_progress=None, pace_forecast_method='stale', pace_forecast_known=False),
+                  dict(base, id='7', wbs='2.4', object='Корпус 2', name='Кровля', actual_progress=.5, pace_progress=.5, pace_forecast_method='gpr_pace', pace_forecast_known=True, forecast_finish='2026-12-13', delta_days=12),
+                  dict(base, id='8', wbs='3.1', object='Корпус 3', name='Монолит', actual_progress=1, pace_progress=1, pace_forecast_method='done', actual_finish='2026-10-01', forecast_finish='2026-10-01', delta_days=None)])
+    control['children'].insert(0, {'level': 'detail', 'name': 'Проектирование', 'children': [
+        {'level': 'rss', 'name': 'Проект', 'code': '1.1', 'children': [
+            dict(base, id='9', wbs='0.1', object='Корпус 1', name='Рабочая документация', pace_forecast_method='plan', pace_forecast_known=True, forecast_finish='2026-12-01', delta_days=0)]}]})
+    with browser_page(width) as (page, responses, errors):
+        page.evaluate("(v)=>{currentView=v;msg('viewMsg','');renderDash(v);renderGantt(v)}", view)
+        matrix = page.locator('#gprMatrix table')
+        expect(matrix).to_be_visible()
+        assert matrix.bounding_box()['y'] < page.locator('#gantt').bounding_box()['y']
+        heads = matrix.locator('thead th')
+        assert heads.all_inner_texts() == ['Этап', 'Корпус 1', 'Корпус 2', 'Корпус 3']
+        rows = matrix.locator('tbody tr')
+        assert [r.locator('th').inner_text() for r in rows.all()] == ['Весь корпус', 'Проектирование', 'Строительные работы']
+        cells = lambda i: [c.inner_text().replace('\n', ' ') for c in rows.nth(i).locator('td').all()]
+        assert cells(0) == ['+19 дн. без прогноза: 2', '+12 дн. без прогноза: 1', 'Готово']
+        assert cells(1) == ['По сроку', '—', '—']
+        assert cells(2) == ['+19 дн. без прогноза: 2', '+12 дн. без прогноза: 1', 'Готово']
+        assert page.locator('#gantt .g-row.lvl-task').count() == 0  # the Gantt itself stays collapsed
+        page.locator('#gprMatrix').screenshot(path=f'/tmp/plato-gpr-matrix-top-{width}.png')
+        done = page.locator('#gantt .g-row.lvl-corpus', has_text='Корпус 3')
+        expect(done).to_contain_text('Все работы завершены')  # the row agrees with the «Готово» cell
+        expect(done).not_to_contain_text('Оценка')
+        rows.nth(2).locator('td').nth(1).locator('button').click()
+        expect(page.locator('#gantt .g-row.lvl-task', has_text='Кровля')).to_be_visible()
+        assert page.locator('#gantt .g-row.lvl-task').count() == 2  # only Корпус 2 · Строительные работы
+        expect(page.locator('#gantt .g-row.selected')).to_contain_text('Строительные работы')
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+        page.screenshot(path=f'/tmp/plato-gpr-matrix-{width}.png', full_page=False)
+        assert not errors
