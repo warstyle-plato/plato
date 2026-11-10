@@ -13,6 +13,11 @@ The money of a position reaches the ГПР lines through the confirmed link of t
 same position (number, name and unit) in the edition in force on the cut. Work
 of an estimate «на завершение работ» counts from its agreement date: earlier
 work was accepted before the agreement and is shown beside the plan, not in it.
+
+A line is complete by volume (owner's decision А) when every position linked to
+it has KS-6a works and each of them reached its full volume of the statement by
+the cut; the money of a complete line may stay below its cost in the estimate.
+The last day of the line is the end of its last KS period up to the cut.
 """
 from __future__ import annotations
 
@@ -24,6 +29,7 @@ import developaid_contract_schedule_links as links
 from developaid_monitor_contracts import _norm
 from developaid_monitor_statement_union import _unit
 
+_QUANTITY = 1e-6  # Quantities of the KS and the statement are the same printed numbers: only float noise differs.
 ASSUMPTION = ("Работы периода КС относятся к редакции расчёта, которая действовала в последний день периода. "
               "Деньги факта — объём КС × цена за единицу этой редакции, а не сумма, записанная в КС.")
 _STATUSES = ("proposed", "review", "extra", "missing")
@@ -44,8 +50,8 @@ def acts(row: dict | None) -> dict | None:
     """
     if row is None:
         return None
-    found, unread, works = [], [], 0
-    for item in row.get("physical_items") or []:
+    found, unread, works = [], [], []
+    for index, item in enumerate(row.get("physical_items") or []):
         if item.get("is_group") or item.get("is_duplicate"):
             continue  # A group sums its works; a verified duplicate repeats one.
         if item.get("completed_quantity") is None:
@@ -53,7 +59,8 @@ def acts(row: dict | None) -> dict | None:
                            "unit": item.get("unit") or "", "reason": item.get("quantity_basis") or "",
                            "source": item.get("source") or {}})
             continue
-        works += 1
+        works.append({"item": index, "number": item.get("position") or "", "name": item.get("name") or "",
+                      "unit": item.get("unit") or "", "plan_quantity": item.get("plan_quantity")})
         for period in item.get("periods") or []:
             if not period.get("quantity"):
                 continue
@@ -61,14 +68,15 @@ def acts(row: dict | None) -> dict | None:
                           "unit": item.get("unit") or "", "quantity": period["quantity"],
                           "act_amount": period.get("amount"), "start": period.get("date_start"),
                           "end": period["date_end"], "label": period.get("label") or "",
+                          "item": index,
                           "source": period.get("source") or item.get("source") or {}})
-    return {"acts": found, "unread": unread, "works": works, "deadline": row.get("deadline"),
-            "deadline_label": (row.get("deadline_source") or {}).get("label") or ""}
+    return {"acts": found, "unread": unread, "works": len(works), "items": works,
+            "deadline": row.get("deadline"), "deadline_label": (row.get("deadline_source") or {}).get("label") or ""}
 
 
 def unavailable(reason: str) -> dict:
     """No fact, because the register of the cut could not be built: `reason` says why."""
-    return {"acts": [], "unread": [], "works": 0, "problem": reason}
+    return {"acts": [], "unread": [], "works": 0, "items": [], "problem": reason}
 
 
 def match(act: dict, estimates: list[dict]):
@@ -148,11 +156,13 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
     links_now = {p["key"]: p for e in current["estimates"] if e.get("scope") != "accepted"
                  for p in (e.get("links") or {}).get("positions") or []}
     lines, volumes, positions, dated_money = {}, {}, {}, []
+    last, done_quantity = {}, {}
     for act in found["acts"]:
         end = _day(act["end"])
         if end > _day(cut):
             result["after_cut"] += 1
             continue
+        done_quantity[act["item"]] = done_quantity.get(act["item"], 0.0) + act["quantity"]
         edition = next((e for e in reversed(dated) if _day(e["date"]) <= end), None)
         if start and end < start and edition is None:
             # Accepted before the agreement, in a period whose Расчёт is not in the card.
@@ -190,6 +200,7 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
                     unit = volumes.setdefault(line["code"], {}).setdefault(
                         _unit(position["unit"]), {"unit": position["unit"], "quantity": 0.0})
                     unit["quantity"] += act["quantity"] * line["share"]
+                    last[line["code"]] = max(last.get(line["code"], act["end"]), act["end"])
                 dated_money.append((end, money))
                 result["total"] += money
             else:
@@ -207,7 +218,27 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
         row["periods"] += 1
         row["last"] = max(row["last"], act["end"])
     order = [line["code"] for line in links.leaves(current.get("schedule"))]
-    result["lines"] = [{"code": code, "fact": lines[code], "volumes": list(volumes[code].values())}
+    # Every work of the statement, done or not yet, belongs to its position of the edition in force.
+    items_of = {}
+    for work in found.get("items") or []:
+        found_at = match(work, current["estimates"])
+        if not isinstance(found_at, str):
+            e, i, _ = found_at
+            items_of.setdefault(links.position_key(current["estimates"][e]["positions"][i]), []).append(work)
+    full = lambda work: bool(work["plan_quantity"]) and (
+        done_quantity.get(work["item"], 0.0) >= work["plan_quantity"] - _QUANTITY)
+    keys_of = {}
+    for key, link in links_now.items():
+        if link["status"] == "confirmed":
+            for line in link["lines"]:
+                keys_of.setdefault(line["code"], []).append(key)
+
+    def complete(code):
+        keys = keys_of.get(code) or []
+        return bool(keys) and all(items_of.get(key) and all(full(work) for work in items_of[key]) for key in keys)
+
+    result["lines"] = [{"code": code, "fact": lines[code], "volumes": list(volumes[code].values()),
+                        "last": last[code], "complete": complete(code)}
                        for code in order if code in lines]
     result["positions"] = list(positions.values())
     if dated_money:

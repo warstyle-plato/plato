@@ -97,9 +97,12 @@ def test_the_fact_of_the_card_is_priced_by_the_estimate_and_laid_on_confirmed_li
     assert got["note"] == "" and got["assumption"] == fact.ASSUMPTION
     # Стены: 0,5 × 8 000 по долям 3/8 и 5/8; армирование плит — более мелкая строка позиции 1.2.
     assert got["lines"] == [
-        {"code": "1.1", "fact": 1500.0, "volumes": [{"unit": "м3", "quantity": 0.1875}]},
-        {"code": "1.2", "fact": 2500.0, "volumes": [{"unit": "м3", "quantity": 0.3125}]},
-        {"code": "1.3", "fact": 1500.0, "volumes": [{"unit": "м3", "quantity": 0.5}]}]
+        {"code": "1.1", "fact": 1500.0, "volumes": [{"unit": "м3", "quantity": 0.1875}], "last": "2026-02-03",
+         "complete": False},
+        {"code": "1.2", "fact": 2500.0, "volumes": [{"unit": "м3", "quantity": 0.3125}], "last": "2026-02-03",
+         "complete": False},
+        {"code": "1.3", "fact": 1500.0, "volumes": [{"unit": "м3", "quantity": 0.5}], "last": "2026-02-02",
+         "complete": False}]
     assert got["total"] == 5500.0
     assert got["before"] == {"start": "2026-02-01", "count": 1, "amount": 0.0, "unpriced": 1}
     assert got["outside"]["review"] == {"count": 1, "amount": 1000.0}
