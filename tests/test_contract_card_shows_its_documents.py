@@ -92,3 +92,31 @@ def test_a_pdf_is_uploaded_into_the_open_card_and_other_files_are_refused(listin
         assert base64.b64decode(body["content_base64"]) == pdf and body["filename"] == "ДС5.pdf"
         assert body["project"] == "Учебный проект" and len(body["ticket"]) == 32
         assert errors == []
+
+
+def test_the_card_shows_proposed_links_shares_and_reasons(listing):
+    from playwright.sync_api import expect
+    from test_contract_positions_are_linked_to_schedule_lines import ESTIMATE, SCHEDULE
+    import developaid_contract_schedule_links as links
+    agreement = next(d for d in listing["documents"] if d.get("agreement"))
+    agreement["estimates"][0]["links"] = {**links.propose(ESTIMATE, SCHEDULE, agreement=True), "schedule": "Договор"}
+    with browser_page(1440) as (page, _, errors):
+        _serve(page, listing, [])
+        _open(page)
+        part = page.locator("#contractDocuments .contract-links").first
+        expect(part).to_contain_text("по графику: Договор · предложено: 4 · на проверку: 4 · "
+                                     "дополнительный объём без срока: 1")
+        expect(part).to_contain_text("Пока они не подтверждены и в расчёт отставания не входят.")
+        part.get_by_text("Предложенные связи (4)").click()
+        walls = part.locator(".contract-links-proposed tr", has_text="3.1.1")
+        expect(walls).to_contain_text("3.1.3 Возведение вертикальных конструкций 2-ого этажа · 16.03.2026 — 20.03.2026"
+                                      " · доля 33,3 % ≈ 500 ₽")
+        expect(walls).to_contain_text(links.SHARE_ASSUMPTION)
+        part.get_by_text("На проверку (4)").click()
+        expect(part.locator(".contract-links-review tr", has_text="Устройство стен")).to_contain_text(
+            "строки пронумерованы под разделом 4, а самого раздела в графике нет.")
+        part.get_by_text("Дополнительный объём без срока (1)").click()
+        expect(part.locator(".contract-links-extra")).to_contain_text("Устройство пандуса")
+        expect(part.locator(".contract-links-free summary")).to_have_text("Строки графика без позиций расчёта (6)")
+        assert "₽ ₽" not in page.locator("#contractDocuments").inner_text()
+        assert errors == []

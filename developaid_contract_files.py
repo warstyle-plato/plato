@@ -5,7 +5,8 @@ next to its read result, so a newer reader reads it again instead of serving a
 frozen answer. A document that names another contract is refused: a schedule
 of a neighbouring contract must not become this one's plan. Each contract or
 supplementary agreement is an edition; two files of one edition are both kept
-and named, the choice is the owner's. Authenticate first.
+and named, the choice is the owner's. Positions of each estimate are proposed
+links to the schedule of the latest edition at or before it. Authenticate first.
 """
 from __future__ import annotations
 
@@ -18,6 +19,7 @@ import tempfile
 from pathlib import Path
 
 import developaid_contract_documents as documents
+import developaid_contract_schedule_links as links
 import developaid_monitor as monitor
 
 MAX_BYTES = 20 * 1024 * 1024
@@ -164,4 +166,17 @@ def listing(project: str, contract_id: str) -> dict:
             notes.append(f"{record['title']} загружено ещё и файлом «{'», «'.join(twins)}». "
                          "Проверьте, какой из файлов действующий.")
         record["warnings"] = notes + list(record.get("warnings") or [])
+    _propose_links(records)
     return {"contract_id": contract_id, "documents": records}
+
+
+def _propose_links(records: list[dict]) -> None:
+    """Each estimate against the schedule in force at its edition; proposed anew, never stored."""
+    current = None
+    for record in records:
+        if ((record.get("schedule") or {}).get("lines")):
+            current = record
+        for estimate in record.get("estimates") or []:
+            estimate["links"] = {
+                **links.propose(estimate, current and current["schedule"], agreement=bool(record.get("agreement"))),
+                "schedule": current["title"] if current else ""}
