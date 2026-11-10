@@ -287,3 +287,33 @@ def test_stage_by_corpus_summary_sits_above_the_gantt_and_opens_the_tapped_stage
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         page.screenshot(path=f'/tmp/plato-gpr-matrix-{width}.png', full_page=False)
         assert not errors
+
+
+def test_cell_and_corpus_row_agree_on_finished_late_no_forecast_and_current_delay():
+    """Владелец (п.3, вариант А): законченная позже плана работа — «Закончено на
+    N дн. позже плана» и в клетке сводки, и в строке корпуса; текущим
+    опозданием она не считается. Корпус без единого прогноза — «Нет прогноза»."""
+    from playwright.sync_api import expect
+    view = monitor_view('partial')
+    base = view['schedule']['management'][0]['children'][0]['children'][0]['children'][0]
+    done = dict(base, pace_progress=1, actual_progress=1, pace_forecast_method='confirmed_completion',
+                progress_kind='confirmed_completion', work_done=True, observed_complete_by=None)
+    view['schedule']['management'][0]['children'][0]['children'][0]['children'] = [
+        dict(base, id='1', object='Корпус 1', name='Кладка', pace_forecast_method='stale', pace_forecast_known=False, delta_days=None),
+        dict(done, id='2', object='Корпус 2', name='Котлован', actual_finish='2026-11-20', forecast_finish='2026-11-20', delta_days=50, finished_late_days=50),
+        dict(base, id='3', object='Корпус 2', name='Монолит', delta_days=0, forecast_finish='2026-12-01'),
+        dict(done, id='4', object='Корпус 3', name='Сваи', actual_finish='2026-12-31', forecast_finish='2026-12-31', delta_days=30, finished_late_days=30)]
+    with browser_page(1440) as (page, responses, errors):
+        page.evaluate("(v)=>{currentView=v;msg('viewMsg','');renderDash(v);renderGantt(v)}", view)
+        rows = page.locator('#gprMatrix tbody tr')
+        assert [c.inner_text().replace('\n', ' ') for c in rows.nth(0).locator('td').all()] == [
+            'Нет прогноза', 'По сроку Закончено на 50 дн. позже плана', 'Готово Закончено на 30 дн. позже плана']
+        corpus = lambda name: page.locator('#gantt .g-row.lvl-corpus', has_text=name)
+        expect(corpus('Корпус 2')).to_contain_text('По сроку')
+        expect(corpus('Корпус 2')).to_contain_text('Закончено на 50 дн. позже плана')
+        expect(corpus('Корпус 2')).not_to_contain_text('Позже плана на')
+        expect(corpus('Корпус 3')).to_contain_text('Все работы завершены')
+        expect(corpus('Корпус 3')).to_contain_text('Закончено на 30 дн. позже плана')
+        expand_gantt(page)
+        expect(page.locator('#gantt .g-row.lvl-task', has_text='Котлован')).to_contain_text('Закончено на 50 дн. позже плана')
+        assert not errors

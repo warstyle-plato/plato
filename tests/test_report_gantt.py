@@ -38,10 +38,14 @@ def _isolated(tmp_path, monkeypatch):
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
 
 
-def _task(name, obj, start, finish, forecast=None, known=False):
+def _task(name, obj, start, finish, forecast=None, known=False, **extra):
+    # Как слой темпа Монитора: отклонение записано строке, а не выводится здесь.
+    import datetime as _dt
+    delta = ((_dt.date.fromisoformat(forecast) - _dt.date.fromisoformat(finish)).days
+             if known and forecast else None)
     return {"level": "task", "name": name, "object": obj, "plan_start": start,
             "plan_finish": finish, "forecast_finish": forecast or finish,
-            "pace_forecast_known": known}
+            "pace_forecast_known": known, "delta_days": delta, **extra}
 
 
 def _rss(code, name, *tasks):

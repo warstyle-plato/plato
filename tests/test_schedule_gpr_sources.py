@@ -171,3 +171,117 @@ def test_first_hundred_percent_reading_is_not_a_late_finish(tmp_path, monkeypatc
     assert view["schedule"]["risks"] == 0
     for node in pace._walk(view["schedule"]["management"]):
         assert not (node.get("delta_days") or 0) > 0, node.get("name")
+
+
+def test_done_label_and_no_delay_reach_the_gantt_tree_and_the_report(tmp_path, monkeypatch):
+    """Настоящий путь: загрузка ГПР → срез Монитора → дерево Ганта и сводка.
+
+    Метка «100% на дату» живёт на строке работы; Гант и сводка руководству
+    читают дерево `schedule.management`, поэтому метка обязана дойти туда, а
+    дата файла не должна становиться ни сроком раздела, ни опозданием корпуса.
+    """
+    import developaid_report_gantt as report_gantt
+    monkeypatch.setattr(monitor, "_SNAPSHOT_DIR", tmp_path)
+    monitor.store_schedule(PROJECT, _gpr_book([
+        (1, "Котлован", 1., dt.date(2025, 11, 1), dt.date(2026, 1, 31), "Завершено", "2.2.1.1"),
+        (2, "Каркас", .2, dt.date(2026, 9, 1), dt.date(2027, 6, 30), "В работе", "2.2.1.1"),
+    ]), None, "2026-10-01")
+    import developaid_monitor_page  # noqa: F401
+    view = monitor.build(PROJECT, CUT)
+    tasks = {n.get("id"): n for n in pace._walk(view["schedule"]["management"]) if n.get("level") == "task"}
+    assert tasks["1"]["observed_complete_by"] == "2026-10-01"
+    assert tasks["1"]["delta_days"] is None
+    assert tasks["2"]["observed_complete_by"] is None
+    for node in pace._walk(view["schedule"]["management"]):
+        if node.get("level") != "task" and node.get("forecast_finish") == "2026-10-01":
+            # Если других сроков нет, дата раздела — та же метка «на дату».
+            assert node["observed_complete_by"] == "2026-10-01", node.get("name")
+    gantt = report_gantt.model(view["schedule"]["management"])
+    for item in [row for corpus in gantt["corpora"] for row in [corpus, *corpus["articles"]]]:
+        assert not (item["delta_days"] or 0) > 0, item
+        assert item["forecast_finish"] != "2026-10-01", item
+    rnv = view["schedule"]["dependency_timeline"]["rnv"]
+    assert rnv.get("indicative_forecast") != "2026-10-01"
+    text = report.render_text(report.build(PROJECT, "week", CUT.isoformat()))
+    assert "Сильнее всех опаздывает" not in text and "+243" not in text
+
+
+def test_the_report_late_rule_is_the_row_delta_not_file_date_minus_plan():
+    import developaid_report_gantt as report_gantt
+    done = {"level": "task", "name": "Котлован", "object": "Корпус 1", "plan_start": "2025-11-01",
+            "plan_finish": "2026-01-31", "forecast_finish": "2026-10-01", "pace_forecast_known": True,
+            "pace_forecast_method": "done", "observed_complete_by": "2026-10-01", "delta_days": None,
+            "work_done": True}
+    late = dict(done, name="Каркас", plan_finish="2026-09-01", forecast_finish="2026-12-01",
+                pace_forecast_method="gpr_pace", observed_complete_by=None, delta_days=91, work_done=False)
+    corpus = report_gantt.model([done])["corpora"][0]
+    for item in (corpus, *corpus["articles"]):
+        assert item["all_done"] is True and item["delta_days"] is None and item["forecast_finish"] is None
+    assert report_gantt.text_lines({"corpora": [corpus]}) == [
+        "Корпус 1: окончание работ по графику 31.01.2026, все работы завершены."]
+    corpus = report_gantt.model([done, late])["corpora"][0]
+    assert corpus["delta_days"] == 91 and corpus["forecast_finish"] == "2026-12-01"
+    # Нет отклонения — не «в срок».
+    unknown = dict(corpus, delta_days=None, all_done=False, forecast_partial=False)
+    assert report_gantt.text_lines({"corpora": [unknown]})[0].endswith("отклонение от графика не посчитано.")
+
+
+def test_a_file_date_of_a_done_work_is_not_the_latest_date_of_its_stage_or_the_rnv():
+    import developaid_schedule_gpr_forecast as gpr
+    done = {"level": "task", "id": "1", "name": "Котлован", "forecast_known": True,
+            "forecast_finish": "2026-10-01", "observed_complete_by": "2026-10-01", "delta_days": None}
+    closed = {"level": "task", "id": "2", "name": "Сваи", "forecast_known": True,
+              "forecast_finish": "2026-09-01", "actual_finish": "2026-09-01", "delta_days": -5}
+    stage = {"level": "stage", "name": "Подземная часть", "children": [done, closed]}
+    only = {"level": "stage", "name": "Земляные работы", "children": [dict(done)]}
+    pace._aggregate_gpr([stage, only])
+    assert stage["forecast_finish"] == "2026-09-01" and stage["observed_complete_by"] is None
+    # Других сроков нет — дата раздела остаётся меткой «на дату», не окончанием.
+    assert only["forecast_finish"] == "2026-10-01" and only["observed_complete_by"] == "2026-10-01"
+    rows = [{"id": "1", "name": "Котлован", "code": "2.2.1.1", "plan_finish": "2026-01-31"},
+            {"id": "2", "name": "Сваи", "code": "2.2.1.1", "plan_finish": "2026-09-06"}]
+    works = {"1": {"forecast_finish": "2026-10-01", "method": "done"},
+             "2": {"forecast_finish": "2026-09-01", "method": "confirmed_completion"}}
+    assert gpr.rnv(rows, works, "2026-12-31")["indicative_forecast"] == "2026-09-01"
+    alone = gpr.rnv(rows[:1], {"1": works["1"]}, "2026-12-31")
+    assert alone["indicative_forecast"] == "2026-10-01"
+    assert any("впервые отмечено 100%" in reason for reason in alone["reasons"])
+
+
+def test_a_confirmed_late_finish_is_finished_late_not_a_current_delay(tmp_path, monkeypatch):
+    """Владелец (п.3, вариант А): подтверждённо законченная позже плана работа —
+    «Закончено на N дн. позже плана» везде; отстающим корпус делают только
+    незаконченные работы, и сводка руководству законченные не берёт."""
+    import developaid_report_gantt as report_gantt
+    monkeypatch.setattr(monitor, "_SNAPSHOT_DIR", tmp_path)
+    monitor.store_schedule(PROJECT, _gpr_book([
+        (1, "Котлован", 1., dt.date(2025, 11, 1), dt.date(2026, 1, 31), "Завершено", "2.2.1.1"),
+        (2, "Каркас", .2, dt.date(2026, 9, 1), dt.date(2027, 6, 30), "В работе", "2.2.1.1"),
+    ]), None, "2026-10-01")
+    import developaid_monitor_page  # noqa: F401
+    real = pace.gpr_forecast.forecasts
+
+    def confirmed(*args, **kwargs):
+        works = real(*args, **kwargs)
+        works["1"] = dict(works.get("1") or {}, method="confirmed_completion", progress=1.,
+                          progress_origin="confirmed_completion", forecast_finish="2026-04-03")
+        works["2"] = dict(works.get("2") or {}, method="gpr_pace", progress=.2, forecast_finish="2027-06-20")
+        return works
+    monkeypatch.setattr(pace.gpr_forecast, "forecasts", confirmed)
+    view = monitor.build(PROJECT, CUT)
+    nodes = pace._walk(view["schedule"]["management"])
+    tasks = {n.get("id"): n for n in nodes if n.get("level") == "task"}
+    assert tasks["1"]["work_done"] is True and tasks["1"]["finished_late_days"] == 62
+    assert tasks["2"]["work_done"] is False and tasks["2"]["finished_late_days"] is None
+    assert view["schedule"]["risks"] == 0
+    for node in nodes:
+        if node.get("level") != "task":
+            assert node["finished_late_days"] == 62 and not (node["delta_days"] or 0) > 0, node.get("name")
+    gantt = report_gantt.model(view["schedule"]["management"])
+    corpus = gantt["corpora"][0]
+    assert corpus["finished_late_days"] == 62 and corpus["delta_days"] == -10
+    assert "среди законченных работ: закончено на 62 дн. позже плана" in report_gantt.text_lines(gantt)[0]
+    assert "Закончено на 62 дн. позже плана" in report_gantt.render(gantt, CUT)
+    text = report.render_text(report.build(PROJECT, "week", CUT.isoformat()))
+    assert "Сильнее всех опаздывает" not in text
+    assert "закончено на 62 дн. позже плана" in text

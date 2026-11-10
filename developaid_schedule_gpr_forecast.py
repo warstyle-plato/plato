@@ -417,7 +417,13 @@ def rnv(rows: list[dict], works: dict[str, dict], approved: Any, *, missing_cale
                 "forecast": None,
                 "indicative_forecast": None, "delay_days": None, "driving_chain": [],
                 "basis": "gpr", "reasons": reasons + ["Ни у одной строительной работы ГПР нет прогноза."]}
-    day, row, item = max(known, key=lambda k: k[0])
+    # «Завершено по ГПР» датировано показанием 100% (шапкой файла), а не
+    # окончанием: срок по нему не ведётся, пока есть работы со своим сроком.
+    dated = [k for k in known if k[2].get("method") != "done"]
+    if not dated:
+        reasons.append("Все строительные работы с оценкой уже завершены по ГПР. Дата — когда "
+                       "в ГПР последней из них впервые отмечено 100%, а не подтверждённое окончание.")
+    day, row, item = max(dated or known, key=lambda k: k[0])
     delay = (day - approved_day).days if approved_day else None
     state = "partial" if missing else "estimate"
     return {"state": state, **plan_context,
