@@ -87,9 +87,15 @@ def _value_hash(value):
 
 def _safe_text(value):
     if not isinstance(value,str) or len(value)>640:return None
-    if re.search(r'\b(sk-(?:proj-)?|gh[pousr]_|AIza|AKIA)',value):raise AuditError('sensitive_field')
+    if (re.search(r'\b(sk-(?:proj-)?|gh[pousr]_|github_pat_|AIza|AKIA|ASIA|xox[baprs]-)',value,re.I)
+            or re.search(r'\b[0-9]{6,12}:[A-Za-z0-9_-]{30,}\b',value)):
+        raise AuditError('sensitive_field')
     if any(token in value.casefold() for token in ('private key','bearer ','api_key','token=', 'secret=')):
         raise AuditError('sensitive_field')
+    for found in re.finditer(r'https?://[^\s<>"\']+',value,re.I):
+        try:parts=urlsplit(found.group())
+        except ValueError:raise AuditError('sensitive_field') from None
+        if parts.username or parts.password or parts.query:raise AuditError('sensitive_field')
     if any(ord(char)<32 for char in value):raise AuditError('invalid_field')
     return value
 
@@ -97,8 +103,16 @@ def _safe_text(value):
 def _metadata(value):
     if not isinstance(value,dict):return {'object_known':False}
     result={'object_known':True}
+    grammars={'engine_version':r'[0-9]+\.[0-9]+\.[0-9]+',
+              'model_fingerprint':r'[a-f0-9]{32,128}',
+              'investment_rating_version':r'issue-[0-9]+-krt-rating-4x100-v[0-9]+'}
     for key in sorted(TEXT_FIELDS):
-        if key in value:result[key]=_safe_text(value[key])
+        if key in value:
+            text=_safe_text(value[key])
+            if key in grammars and (text is None or not re.fullmatch(grammars[key],text)):
+                result.setdefault('metadata_schema_unknown_fields',[]).append(key)
+                text=None
+            result[key]=text
     # Original official URLs are needed for decision-publication identity.
     # Never export an authenticated/query-bearing/provider URL from a cache.
     for key in ('url','pdf_url'):
@@ -128,9 +142,17 @@ def _metadata(value):
             result[key+'_sha256']=_value_hash(value[key])
     rating=value.get('investment_rating')
     if isinstance(rating,dict):
-        result['rating_metadata']={k:rating[k] for k in ('available','computed_at','version')
-            if k in rating and (type(rating[k]) in (bool,int,float) or
-                (k=='version' and isinstance(rating[k],str) and _safe_text(rating[k]) is not None))}
+        meta={}
+        if 'available' in rating:meta['available']=rating['available'] if type(rating['available']) is bool else None
+        if 'computed_at' in rating:
+            stamp=rating['computed_at']
+            meta['computed_at']=stamp if type(stamp) in (int,float) and math.isfinite(stamp) else None
+        if 'version' in rating:
+            version=_safe_text(rating['version'])
+            meta['version']=(version if version is not None and
+                re.fullmatch(grammars['investment_rating_version'],version) else None)
+            if meta['version'] is None:result.setdefault('metadata_schema_unknown_fields',[]).append('rating_metadata.version')
+        result['rating_metadata']=meta
     return result
 
 
@@ -309,6 +331,11 @@ def capture_krt(root:Path,*,runtime:dict[str,Any],now:dt.datetime|None=None,proc
         refresh_flags=[process_observation[key] for key in ('catalogue_refreshing','decisions_refreshing')]
         if any(flag is None for flag in refresh_flags):gaps.append('runtime_refresh_flags_not_captured')
         if any(flag is True for flag in refresh_flags):gaps.append('observed_worker_refreshing')
+        replay_complete=None
+        if purpose=='krt_cached_replay_v1':
+            statuses=[record['projection']['structured_blocks'].get('projection_status',{}) for record in files]
+            replay_complete=all(status.get('complete') is True for status in statuses)
+            if not replay_complete:gaps.append('structured_replay_fields_omitted_or_unknown')
         missing_required=[name for name in missing if name in REQUIRED_FILES]
         missing_optional=[name for name in missing if name not in REQUIRED_FILES]
         if missing_required:gaps.append('required_saved_files_missing')
@@ -325,6 +352,7 @@ def capture_krt(root:Path,*,runtime:dict[str,Any],now:dt.datetime|None=None,proc
             'captured_at_utc':now.isoformat(),'target_sunday':TARGET_DAY,'target_period':TARGET_PERIOD,
             'coherent':True,'files':files,'missing_files':missing,
             'missing_required_files':missing_required,'missing_optional_files':missing_optional,'gaps':gaps,
+            'replay_projection_complete':replay_complete,
             'evidence_complete':False,'production_acceptance':False,
             'reads_only':True,'models_or_scores_computed':False,'source_files_written':False}
         encoded=json.dumps(output,ensure_ascii=False,allow_nan=False).encode()
@@ -354,49 +382,240 @@ FORBIDDEN_KEYS=frozenset({'auth','authorization','headers','cookies','credential
     'token','secret','password','private_key','prompt','prompts','messages','instructions',
     'system_prompt','request_body','response_body','conversation','thread_id','session','session_id',
     'text','headline','quote','note','notes','content','body','raw','raw_text','source_text'})
-SENSITIVE_FRAGMENTS=('prompt','credential','secret','password','private_key','authorization',
-    'access_token','refresh_token','api_key','cookie','request_header','response_header','raw_request',
-    'raw_response','thread_id','session_id')
 FORBIDDEN_COMPACT=frozenset(re.sub(r'[^a-z0-9]','',key) for key in FORBIDDEN_KEYS)
 
 
-def _scrub(value,depth=0,budget=None):
+# Frozen native field grammar reviewed against engine/inputs.py and the KRT
+# screening/investment-score schemas at main 1e43c468. Runtime never imports
+# these modules to enlarge the export. A new/unknown field is omitted with an
+# explicit projection gap until this schema is reviewed; it cannot grant export.
+REPLAY_SCHEMA = 'native-economic-fields-v1'
+NATIVE_REPLAY_FIELDS = frozenset((
+    'above_parking above_parking_enabled absorption absorption_ratio_stops absorption_unit actual '
+    'address all_interest_and_fees_mln amount_mln anchor answers apartment_price_th apartments '
+    'area_ha area_per_space_sqm area_sqm arithmetic asked_at assumptions at_asking_price auction '
+    'author_supervision_pct automatic available average_saleable_sqm balance base baseline basis '
+    'benchmark book_twin bridge_cap_spread_pp bridge_interest_mln bridge_interest_mode '
+    'bridge_principal_mln bridge_repay_lag_months bridge_spread_pp building_footprint_sqm burden '
+    'burden_mln burden_pct burden_pct_stops burden_score business business_gfa_sqm buyout by '
+    'by_norm_places by_project cache_root cadastral_buyout cadastral_buyout_mln cadastral_complete '
+    'cadastral_number cadastral_numbers cadastral_numbers_source cadastral_unknown_count '
+    'cadastral_unknown_numbers cadastral_value_rub capex capex_mln capped_at_five checked_at '
+    'choices chosen chunk city class classes clinic clinic_capacity clinic_cost_mln_per_unit '
+    'clinic_months clinic_start comfort commercial_gba_sqm commercial_negative commercial_price_th '
+    'commissioning_th_per_sqm component components components_equal conditional_area_sqm '
+    'conditional_known_area_objects conditional_objects conservative construction '
+    'construction_months cost cost_inflation_pct cost_mln_per_space cost_stack cost_th_per_sqm '
+    'count counted_rub coverage coverage_pct coverage_step_pct criterion custom deadlines '
+    'debt_repayment decision decision_available declared_sum_sqm default default_months defaults '
+    'deferred demolition_area_sqm demolition_basis demolition_cost_th_per_sqm '
+    'demolition_known_area_objects demolition_mln demolition_objects demolition_rate_th_per_sqm '
+    'design design_p_th_per_sqm design_rd_th_per_sqm detail difference_sqm discount_rate_pct '
+    'display_score district duplicable early_partial_burden elite empty_label enabled encoding '
+    'entry_capacity entry_capacity_mln entry_capacity_note entry_price_rub_sqm '
+    'estimated_units_per_phase examples exclusions explanations extra family field fields flags '
+    'followed formula found from gap_months gba_sqm gc_fee_pct gns gross_capacity_mln '
+    'ground_commercial group group_label groups growth_post_default growth_pre_default '
+    'growth_stage1_pct growth_stage2_pct growth_stage3_pct growth_stage4_pct headline hidden_groups '
+    'hint hints housing housing_gfa_sqm housing_sqm id imputation imputed inflation_after_rve_pct '
+    'inputs ird_months ird_th_per_sqm issue key kind kindergarten kindergarten_cost_mln_per_place '
+    'kindergarten_months kindergarten_places kindergarten_start known_fixed_burden_mln '
+    'known_paid_mln label land_buyout_mln land_price_mln land_right land_rights_cost_mln '
+    'land_rights_mln landscaping_area_per_person_sqm landscaping_area_sqm '
+    'landscaping_gns_th_per_sqm landscaping_th_per_sqm limit_fee_pct linear_interpolation llcr '
+    'llcr_at_start_x llcr_score llcr_stops llcr_x loan_balloon_pct loan_term_years loan_years '
+    'lookup_failed main_above_th_per_sqm main_under_th_per_sqm margin_pct market '
+    'market_price_rub_sqm market_units_per_month marketing_pct matches max_krt_right_price_mln '
+    'max_storeys_allowed meaning mentioned message method_note methodology metrics '
+    'min_median_sample min_scored_components missing missing_cadastral_value missing_reason mo '
+    'model_class model_class_label model_inputs monthly_growth_pre_pct '
+    'moscow_cadastral_excluded_mln moscow_property moscow_zero_count moscow_zero_numbers name '
+    'needed_when net_profit_mln nonres nonres_field nonres_profile nonresidential_from_ground '
+    'nonresidential_gfa_sqm nonresidential_ground_sqm norm norm_after_named norm_is_the_citys '
+    'norm_sqm_per_place not_counted_reason note numbered numbers '
+    'object_parking_over_area_per_space_sqm off office_class offices offices_enabled '
+    'offices_gba_sqm offices_price_th_per_sqm offices_saleable_sqm on only_user_scenario_parameter '
+    'optimistic ordinary_capex_mln origin origins_key other other_mandatory owner ownership '
+    'pace_adjustment_pct paid_count paid_numbers parking_design_mode parking_district '
+    'parking_inside_ttk parking_k1 parking_k2 parking_price_th parking_rail_distance_m passes '
+    'passes_1_20 path peak_bridge_mln peak_pf_mln pending permitted_uses pf_draw_mln '
+    'pf_interest_and_fees_mln pf_limit_approved_mln pf_special_pct pf_special_steps pf_spread_pp '
+    'phase_count phase_gap_months phase_llcr phases phasing places population pre_pf_own_funds_mln '
+    'prefix prefixes preliminary preparation preparation_th_per_sqm preservation_area_sqm '
+    'preservation_known_area_objects preservation_objects preset preset_aliases presets preview '
+    'price price_basis price_mln price_mln_per_space price_ratio_stops price_target_default_rub_sqm '
+    'price_target_rub_sqm price_th_per_sqm problem products profit_tax_pct programme project_class '
+    'project_kind project_llcr_x project_management_pct project_start purchase_price_mln '
+    'purchase_right_mln purchase_schedule purpose purposes quote quotes ranges rankable rate_cost '
+    'rate_curve_shape rate_normalization_months rate_price rate_scenario rate_start_date '
+    'rate_start_pct rate_target_base_pct rate_target_high_pct rate_target_low_pct rates ratio raw '
+    'read reason recommended_segment reconstruction_area_sqm reconstruction_known_area_objects '
+    'reconstruction_objects region renovation rent_th_per_sqm_year required requirements '
+    'reservation_fee_pct reserve_after_cadastral_mln reserve_pct reserve_to_limit_mln resettlement '
+    'resettlement_cost_mln resettlement_mentions resettlement_mln residential_storeys_typical '
+    'residual_months residual_sales_months restored_from_flats retail_enabled retail_gba_sqm '
+    'retail_price_th_per_sqm retail_saleable_sqm retry_after_seconds revenue_mln row rows '
+    'rub_per_housing_sqm rules running sale_gate saleable saleable_lost_sqm saleable_of_gns '
+    'saleable_sqm sales_lag_months sales_price_inflation_pct sales_profile sales_start scale '
+    'scenario_cost_multiplier scenario_revenue_multiplier schema_version school '
+    'school_cost_mln_per_place school_months school_places school_start scope score score_value '
+    'seasonal_reduction_pct selected_view selling_pct sellout_months_per_phase share '
+    'share_before_rve_pct shared_cash site_coverage_max_pct site_driveways_pct '
+    'site_maintenance_th_per_sqm site_setback_m social social_area_source social_cash_mln '
+    'social_clinic_gba_sqm social_clinic_norm_sqm social_comp_date social_compensation_mln '
+    'social_dou_gba_sqm social_dou_norm_sqm social_from_decision social_gba_sqm social_mln '
+    'social_mode social_objects social_population_method social_school_gba_sqm '
+    'social_school_norm_sqm source source_level spaces sports sports_enabled spp_sqm sqm '
+    'standalone_retail start start_offset_months start_price_mln start_price_rub_sqm status_code '
+    'storage storage_area_per_unit_sqm storage_placement storage_price_th strategies '
+    'surface_parking_spaces surface_parking_sqm_per_space tail target_llcr_x target_saleable_sqm '
+    'target_size_sqm technical_supervision_pct tep tep_label tep_ratios tep_ratios_custom territory '
+    'text title tone total total_acquisition_capacity_mln total_area total_field total_gfa_sqm '
+    'total_known_mln total_label total_of_gns total_published traffic_light transfer transient '
+    'underground_area_per_space_sqm underground_contour_use_factor underground_level2_markup_pct '
+    'underground_level3_markup_pct underground_levels underground_manual_gns_sqm '
+    'underground_manual_spaces underground_parking underground_parking_disabled '
+    'underground_rate_is_level1 unit units unknown_numbers unmodelled_construction updated_at '
+    'upper_bound_mln useful user_enabled utilities utilities_th_per_sqm utility_gfa_sqm value '
+    'value_label value_rub values vat_pct version view volume volumes vri_early_repay_after_pf '
+    'vri_financing_mode vri_in_bank_budget vri_initial_pct vri_installment_years '
+    'vri_interest_enabled vri_interest_spread_pp vri_months_after_purchase vri_obligation_date '
+    'vri_obligation_date_mode vri_payment_mode vri_periodicity_months vri_pf_open_date vri_region '
+    'vri_relief_mln vri_relief_mode vri_relief_pct vri_required vri_schedule_mode '
+    'vri_security_cost_mln vri_share_bridge_pct vri_share_equity_pct vri_share_pf_pct '
+    'vri_transfer_offset_mln warning warnings weakest_phase_llcr_x weights when_label where '
+    'whole_site zone_two zones '
+).split()) | SCREENING_BLOCKS | RATING_BLOCKS
+# Native repeatable objects expand a fixed set of economic suffixes for the
+# five supported instances. This is a finite field set, not a prefix escape.
+_OBJECT_REPLAY_PREFIXES=frozenset(
+    prefix+instance for prefix in ('offices','retail','above_parking','sports')
+    for instance in ('','2','3','4','5'))
+_OBJECT_REPLAY_SUFFIXES=frozenset(('area_per_space_sqm cost_mln_per_space cost_th_per_sqm '
+    'debt_repayment depreciation_years direct_sale_curve direct_sale_months direct_sale_offset_months '
+    'disposition enabled exit_cap_pct exit_cost_pct exit_mode gba_sqm growth_post_pct growth_pre_pct '
+    'growth_stage1_pct growth_stage2_pct growth_stage3_pct growth_stage4_pct hold_years leaseup_months '
+    'loan_balloon_pct loan_fee_pct loan_share_pct loan_spread_pp loan_term_years months '
+    'occupancy_stable_pct occupancy_start_pct office_class opex_pct parking_guest_pct '
+    'parking_over_price_mln_per_space parking_over_spaces parking_rent_th_month '
+    'parking_under_price_mln_per_space parking_under_spaces presale_end_months presale_start_months '
+    'price_mln_per_space price_th_per_sqm property_tax_pct purpose rent_date rent_index_pct '
+    'rent_th_per_sqm_month residual_months saleable_sqm sales_profile sales_start '
+    'share_before_rve_pct spaces start strategy').split())
+NATIVE_REPLAY_FIELDS=NATIVE_REPLAY_FIELDS | frozenset(
+    prefix+'_'+suffix for prefix in _OBJECT_REPLAY_PREFIXES for suffix in _OBJECT_REPLAY_SUFFIXES
+) | _OBJECT_REPLAY_PREFIXES | frozenset({'guest_units','transfer_units',
+    'standalone_retail2','standalone_retail3','standalone_retail4','standalone_retail5'})
+# Numeric output of the authoritative _result_snapshot used by KRT screening.
+NATIVE_REPLAY_FIELDS=NATIVE_REPLAY_FIELDS | frozenset(('commercial_costs_mln '
+    'financing_cost_mln profit_tax_mln npv_mln irr_project_pct irr_equity_pct irr_equity_label equity_returns_na '
+    'pf_draw_total_mln full_cost_per_saleable_th_per_sqm full_cost_per_total_area_th_per_sqm '
+    'capex_per_total_area_th_per_sqm construction_cost_per_gns_th_per_sqm '
+    'construction_cost_per_saleable_th_per_sqm average_apartment_price_th_per_sqm').split())
+# Strings are not arbitrary exportable leaves. Only these closed economic
+# enums and canonical date fields survive. Other text is an explicit omission.
+REPLAY_ENUMS = {
+    'project_class': frozenset({'comfort','business','elite'}),
+    'project_kind': frozenset({'mixed','nonresidential','hotel'}),
+    'vri_region': frozenset({'msk','mo','other'}),
+    'land_right': frozenset({'ownership','lease'}),
+    'rate_scenario': frozenset({'base','high','low'}),
+    'social_mode': frozenset({'Строительство','Компенсация'}),
+    'storage_placement': frozenset({'underground','above'}),
+    'vri_obligation_date_mode': frozenset({'before_rns_1m','at_rns','before_rns_3m','after_purchase','manual'}),
+    'vri_payment_mode': frozenset({'lump','installment'}),
+    'vri_periodicity_months': frozenset({'1','3','6','12'}),
+    'vri_schedule_mode': frozenset({'auto','manual'}),
+    'vri_interest_enabled': frozenset({'','1','0'}),
+    'vri_financing_mode': frozenset({'auto','shares'}),
+    'vri_relief_mode': frozenset({'none','percent','amount','off'}),
+    'social_population_method': frozenset({'rngp_area','flats_household'}),
+    'social_area_source': frozenset({'norm','manual'}),
+    'parking_inside_ttk': frozenset({'','inside','outside'}),
+    'parking_design_mode': frozenset({'maximum','minimum'}),
+    'bridge_interest_mode': frozenset({'Капитализация в ПФ'}),
+    'design': frozenset({'volume','equal'}),
+    'preparation': frozenset({'volume','equal'}),
+    'utilities': frozenset({'volume','equal'}),
+}
+REPLAY_DATE_FIELDS = frozenset({'project_start','social_comp_date','kindergarten_start',
+    'school_start','clinic_start','rate_start_date','vri_obligation_date','vri_pf_open_date'})
+_OMITTED = object()
+
+
+def _secret_field(key):
+    compact=re.sub(r'[^a-z0-9]','',key.casefold())
+    return (compact in FORBIDDEN_COMPACT or
+        any(fragment in compact for fragment in ('token','secret','password','privatekey',
+            'credential','authorization','apikey','cookie','prompt','conversation','chatmessage',
+            'threadid','sessionid','requestheader','responseheader','rawrequest','rawresponse')) or
+        compact.startswith('auth') and compact.endswith(('data','key','header','headers')))
+
+
+def _scrub(value,depth=0,budget=None,stats=None,field=''):
+    """Closed typed projection, not a blacklist-based recursive object dump.
+
+    Unknown keys and unsupported text/types are omitted explicitly. If a list
+    item cannot be represented, omit the whole list instead of shifting its
+    indices or inventing null/zero placeholders.
+    """
     if budget is None:budget=[300000]
+    if stats is None:stats={'unknown_fields':0,'unsupported_values':0}
     budget[0]-=1
     if budget[0]<0 or depth>64:raise AuditError('structured_limit')
     if isinstance(value,dict):
         out={}
         for key,item in value.items():
-            word=str(key).casefold().replace('-','_')
-            compact=re.sub(r'[^a-z0-9]','',word)
-            if (word in FORBIDDEN_KEYS or compact in FORBIDDEN_COMPACT
-                    or any(fragment in word for fragment in SENSITIVE_FRAGMENTS)
-                    or compact.startswith('auth') and compact.endswith(('token','key','header','headers','secret'))
-                    or any(fragment in compact for fragment in ('prompt','credential','password','privatekey',
-                        'authorization','accesstoken','refreshtoken','apikey','cookie','threadid','sessionid'))):continue
-            out[key]=_scrub(item,depth+1,budget)
+            if not isinstance(key,str) or _secret_field(key) or key not in NATIVE_REPLAY_FIELDS:
+                stats['unknown_fields']+=1
+                continue
+            projected=_scrub(item,depth+1,budget,stats,key)
+            if projected is not _OMITTED:out[key]=projected
         return out
-    if isinstance(value,list):return [_scrub(item,depth+1,budget) for item in value]
+    if isinstance(value,list):
+        projected=[_scrub(item,depth+1,budget,stats,field) for item in value]
+        return _OMITTED if any(item is _OMITTED for item in projected) else projected
+    if value is None or type(value) is bool:return value
+    if type(value) in (int,float) and math.isfinite(value):return value
     if isinstance(value,str):
-        if (any(marker in value.casefold() for marker in ('private key','bearer ','secret=','api_key='))
-                or re.search(r'\b(sk-(?:proj-)?|gh[pousr]_|AIza|AKIA)',value)):
-            raise AuditError('sensitive_field')
-    return value
+        if value=='':return value
+        if field in REPLAY_ENUMS and value in REPLAY_ENUMS[field]:return value
+        if field in REPLAY_DATE_FIELDS:
+            try:day=dt.date.fromisoformat(value)
+            except ValueError:day=None
+            if day is not None and day.isoformat()==value:return value
+        if field=='name' and re.fullmatch(r'О[1-5]',value):return value
+    stats['unsupported_values']+=1
+    return _OMITTED
+
+
+def _projection_status(stats):
+    return {'schema':REPLAY_SCHEMA,'complete':not any(stats.values()),**stats,
+            'omissions_are_not_zero_or_reconstructed_inputs':True}
 
 
 def _replay_blocks(relative,value):
     if not isinstance(value,dict):return {'known':False}
+    stats={'unknown_fields':0,'unsupported_values':0}
+    result={}
     if relative=='ranking.json':
         rows=value.get('rows')
-        return {'rows':None if not isinstance(rows,list) else [
+        if isinstance(rows,list):
+            metadata_keys=TEXT_FIELDS | NUMBER_FIELDS | BOOL_FIELDS | {
+                'url','pdf_url','reason','stop_reason','stale_reason','market_failure_reason','model','screening'}
+            stats['unknown_fields']+=sum(len(set(row)-RATING_BLOCKS-metadata_keys)
+                for row in rows if isinstance(row,dict))
+        result={'rows':None if not isinstance(rows,list) else [
             {'slug':_safe_text(row.get('slug')),
-             'rating_and_model':_scrub({k:row[k] for k in RATING_BLOCKS if k in row})}
+             'rating_and_model':_scrub({k:row[k] for k in RATING_BLOCKS if k in row},stats=stats)}
             if isinstance(row,dict) else {'known':False} for row in rows]}
-    if relative.startswith('reports/'):
+    elif relative.startswith('reports/'):
         screening=value.get('screening')
-        return {'screening':None if not isinstance(screening,dict) else
-            _scrub({k:screening[k] for k in SCREENING_BLOCKS if k in screening})}
-    return {}
+        if isinstance(screening,dict):stats['unknown_fields']+=len(set(screening)-SCREENING_BLOCKS)
+        result={'screening':None if not isinstance(screening,dict) else
+            _scrub({k:screening[k] for k in SCREENING_BLOCKS if k in screening},stats=stats)}
+    result['projection_status']=_projection_status(stats)
+    return result
 
 
 def _process_metadata(value):

@@ -189,10 +189,27 @@ def test_unknown_model_timestamp_is_none_not_zero(saved):
     assert projection['computed_at'] is None and projection['available'] is None
 
 
-@pytest.mark.parametrize('bad',['-----BEGIN PRIVATE KEY-----','Bearer abc123','secret=abc','sk-proj-SYNTHETIC'])
+@pytest.mark.parametrize('bad',['-----BEGIN PRIVATE KEY-----','Bearer abc123','secret=abc','sk-proj-SYNTHETIC',
+    'github_pat_SYNTHETIC_CREDENTIAL','12345678:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefgh'])
 def test_credential_markers_in_allowed_text_fields_fail_closed(saved,bad):
     put(saved,'reports/running-site.json',{'slug':'running-site','engine_version':bad})
     with pytest.raises(audit.AuditError,match='sensitive_field'):collect(saved)
+
+
+@pytest.mark.parametrize('bad',['https://operator:synthetic-password@provider.example/data',
+    'Текст https://provider.example/data?apiToken=SYNTHETIC с параметрами'])
+def test_authenticated_urls_do_not_escape_even_in_metadata_labels(saved,bad):
+    put(saved,'reports/running-site.json',{'slug':'running-site','project':{'name':bad}})
+    with pytest.raises(audit.AuditError,match='sensitive_field'):collect(saved)
+
+
+def test_unknown_version_metadata_is_explicit_unknown_not_arbitrary_text():
+    result=audit._metadata({'engine_version':'private-arbitrary-value','model_fingerprint':'unknown',
+        'investment_rating':{'available':1,'computed_at':False,'version':'unreviewed-format'}})
+    assert result['engine_version'] is None and result['model_fingerprint'] is None
+    assert result['rating_metadata']=={'available':None,'computed_at':None,'version':None}
+    assert set(result['metadata_schema_unknown_fields'])=={'engine_version','model_fingerprint','rating_metadata.version'}
+    assert 'private-arbitrary' not in json.dumps(result)
 
 
 def test_capture_limit_is_enforced_after_projection(saved,monkeypatch):

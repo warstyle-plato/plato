@@ -272,6 +272,84 @@ def test_replay_scrubs_camelcase_credential_fields_without_fake_model_values():
     assert 'CANARY' not in json.dumps(scrubbed)
 
 
+@pytest.mark.parametrize('block',['model_inputs','metrics','entry_capacity','phasing','investment_rating'])
+@pytest.mark.parametrize('field',['telegram_bot_token','telegramBotToken','apiToken','bearerToken',
+    'client_secret','privateClientKey','chatMessages','conversationHistory','unreviewed_economic_field'])
+def test_closed_replay_schema_omits_unknown_credentials_text_and_numeric_aliases(block,field):
+    value={block:{'inputs':{field:123456,'land_price_mln':17}}} if block=='model_inputs' else {block:{field:'CANARY-CLOSED-EXPORT','llcr':1.17}}
+    stats={'unknown_fields':0,'unsupported_values':0}
+    projected=audit._scrub(value,stats=stats)
+    assert field not in json.dumps(projected) and 'CANARY' not in json.dumps(projected)
+    assert stats['unknown_fields']>0
+    assert (projected[block]['inputs']['land_price_mln'] if block=='model_inputs' else projected[block]['llcr']) in {17,1.17}
+
+
+def test_numeric_native_inputs_tep_and_phasing_are_preserved_without_default_reconstruction():
+    def numeric_leaves(value,path=()):
+        if isinstance(value,dict):
+            return {**{p:v for k,item in value.items() for p,v in numeric_leaves(item,path+(k,)).items()}}
+        if isinstance(value,list):
+            return {p:v for i,item in enumerate(value) for p,v in numeric_leaves(item,path+(i,)).items()}
+        return {path:value} if value is None or type(value) in {int,float,bool} else {}
+    native={'model_inputs':{'inputs':core.DEFAULT_INPUTS,'tep':core.TEP_DEFAULT,
+        'phasing':{'phase_count':2,'phases':[{'name':'О1','start_offset_months':0,'construction_months':24,'products':{}}]}}}
+    projected=audit._scrub(native)
+    before=numeric_leaves(native);after=numeric_leaves(projected)
+    assert set(before)<=set(after),sorted(set(before)-set(after))
+    assert all(after[path]==value for path,value in before.items())
+
+
+def test_authoritative_snapshot_numeric_metrics_are_preserved_including_null():
+    native=core._result_snapshot({'summary':{'revenue':123000000,'net_profit':10000000,
+        'npv':None,'irr_project':0.23,'irr_equity':None,'llcr':1.21},'finance':{}})
+    projected=audit._scrub({'metrics':native})['metrics']
+    numeric={key:value for key,value in native.items() if value is None or type(value) in {int,float,bool}}
+    assert all(key in projected and projected[key]==value for key,value in numeric.items()),set(numeric)-set(projected)
+    assert projected['npv_mln'] is None and projected['irr_equity_pct'] is None
+
+
+def test_unsupported_values_are_omitted_explicitly_without_shifting_lists_or_inventing_null(tmp_path):
+    write(tmp_path,'reports/a.json',{'screening':{'model_inputs':{'inputs':{
+        'purchase_price_mln':12.5,'unreviewed_future_metric':99,'project_class':'CANARY-UNKNOWN-ENUM'}},
+        'metrics':{'llcr':None,'scale':[1,'CANARY-NONNUMERIC-ITEM',3]}}})
+    result=audit.capture_krt(tmp_path,runtime=RUNTIME,now=NOW,purpose='krt_cached_replay_v1')
+    projection=result['files'][0]['projection']['structured_blocks']
+    assert projection['screening']['model_inputs']['inputs']=={'purchase_price_mln':12.5}
+    assert projection['screening']['metrics']=={'llcr':None}
+    assert not projection['projection_status']['complete'] and projection['projection_status']['unknown_fields']>0
+    assert projection['projection_status']['unsupported_values']>0
+    assert not result['replay_projection_complete']
+    assert 'structured_replay_fields_omitted_or_unknown' in result['gaps']
+    assert 'CANARY' not in json.dumps(result)
+
+
+def test_only_closed_native_enum_date_and_phase_name_strings_survive():
+    projected=audit._scrub({'model_inputs':{'inputs':{'project_class':'business','project_start':'2027-01-01',
+        'vri_obligation_date':'2027-02-31','purchase_schedule':'CANARY-PRIVATE-TEXT'},
+        'phasing':{'phases':[{'name':'О1','construction_months':24}]}}})
+    assert projected['model_inputs']['inputs']=={'project_class':'business','project_start':'2027-01-01'}
+    assert projected['model_inputs']['phasing']['phases']==[{'name':'О1','construction_months':24}]
+
+
+def test_actual_native_kind_and_budget_enums_are_not_replaced_by_defaults():
+    fields={'project_kind':'hotel','vri_payment_mode':'installment','vri_schedule_mode':'manual',
+        'vri_financing_mode':'shares','vri_relief_mode':'amount','vri_obligation_date_mode':'at_rns',
+        'social_area_source':'manual','parking_design_mode':'minimum',
+        'bridge_interest_mode':'Капитализация в ПФ','purchase_schedule':''}
+    assert audit._scrub({'inputs':fields})['inputs']==fields
+
+
+@pytest.mark.parametrize('relative,value',[
+    ('reports/a.json',{'screening':{'available':True,'future_metric_mln':12.5}}),
+    ('ranking.json',{'rows':[{'slug':'a','future_metric_mln':12.5}]}),
+])
+def test_unknown_outer_numeric_fields_also_have_an_explicit_projection_gap(relative,value):
+    projected=audit._replay_blocks(relative,value)
+    assert projected['projection_status']['unknown_fields']==1
+    assert not projected['projection_status']['complete']
+    assert 'future_metric_mln' not in json.dumps(projected)
+
+
 @pytest.mark.parametrize('path',[FINANCE,KRT])
 def test_private_posts_do_not_touch_market_admission_before_owner_gate(client,monkeypatch,path):
     from auction_search import access_keys
