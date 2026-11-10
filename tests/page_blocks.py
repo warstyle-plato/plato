@@ -68,6 +68,13 @@ def constant(name: str, page: str | None = None) -> str:
         if start >= 0:
             break
     else:
+        # `let x;` — переменная страницы без начального значения: она
+        # объявлена так же настоящей строкой, и стенд без неё падал бы на
+        # «x is not defined», то есть на своей неполноте.
+        for keyword in ("let ", "var "):
+            start = page.find(f"\n{keyword}{name};")
+            if start >= 0:
+                return page[start + 1:page.index(";", start) + 1]
         raise AssertionError(f"на странице нет константы {name}")
     depth = 0
     for position in range(start, len(page)):

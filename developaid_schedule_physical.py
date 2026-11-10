@@ -197,7 +197,7 @@ def save(project, pm_sha256, snapshot_id, revision, configuration):
     return catalog(project, cut)
 
 
-def _component(component, items, cut):
+def _component(component, items, cut, *, _duplicates=None):
     result = {'component_id': component['component_id'], 'task_id': component['task_id'],
               'known': False, 'progress': None, 'forecast_finish': None,
               'rate_per_day': None, 'reason': ''}
@@ -206,7 +206,8 @@ def _component(component, items, cut):
         return dict(result, reason=reason)
     if not rows or any(row is None for row in rows):
         return unknown('Выбранная строка накопительной отсутствует.')
-    duplicates = ledgers.verified_duplicate_sources(list(items.values()))
+    duplicates = (ledgers.verified_duplicate_sources(list(items.values()))
+                  if _duplicates is None else _duplicates)
     excluded = [key for key in component['item_ids'] if ledgers._duplicate_key(items[key]) in duplicates]
     if excluded:
         return dict(result, excluded_duplicate_item_ids=excluded, requires_reconciliation=True,
@@ -306,7 +307,9 @@ def evaluate(pm, snapshot, configuration, cut):
     tasks = pm.get('tasks') or {}
     items = _items(snapshot)
     configs = {row['task_id']: row for row in configuration['tasks']}
-    components = [_component(c, items, day) for c in configuration['components']]
+    duplicates = (ledgers.verified_duplicate_sources(list(items.values()))
+                  if configuration['components'] else {})
+    components = [_component(c, items, day, _duplicates=duplicates) for c in configuration['components']]
     # Only ancestors of the explicit RNV milestone can certify its forecast.
     required, pending = set(), [pm.get('rnv_id')]
     while pending:
