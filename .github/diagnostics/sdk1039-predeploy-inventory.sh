@@ -1,6 +1,13 @@
 #!/bin/sh
 # Fixed private operator check; no file upload/helper installation.
-cd /app || exit 2
+if [ "${RENDER_SERVICE_ID:-}" != "srv-dbo2libm8hqs73fcuut0" ]; then
+  printf '%s\n' '{"status":"wrong_service_or_unknown","expected_service":"plato-session-dispatcher-8qv0","inventory_executed":false}'
+  exit 0
+fi
+if ! cd /app 2>/dev/null; then
+  printf '%s\n' '{"status":"runtime_layout_unavailable","inventory_executed":false}'
+  exit 0
+fi
 python -B - <<'PLATO_SDK_OPERATOR_PY'
 """Private fixed-purpose operator checks. No CLI paths or source imports for inventory."""
 from __future__ import annotations
