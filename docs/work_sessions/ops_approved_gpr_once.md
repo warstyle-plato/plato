@@ -216,3 +216,49 @@ owner/nonce/one-write/unknown-outcome не изменён. Probe остаётс�
 read-only функцией для диагностики; текущий workflow его не вызывает. Новый
 manual запуск требует свежих runtime/state gates и отдельной exact-SHA приёмки;
 автоматического повторения не добавлено.
+
+## Read-only проверка поверхностей после отдельного принятого применения
+
+Подготовлен отдельный helper `verify-gpr-surfaces.py` и mode `verify` того же
+закреплённого ephemeral-транспорта. Этот candidate нельзя запускать до проверки
+отдельного результата применения. Его workflow называется
+`approved-gpr-source-surface-verify`, использует те же input, actor/ref guards,
+concurrency, существующий admin secret и права contents:read. Код приложения,
+apply/CAS/owner/source контур и действующий ciphertext не меняются.
+
+После fixed-manifest decrypt разрешены только GET/health и три строго
+фиксированных POST: `/monitor/view` с key/project/cut, `/monitor/report` и
+`/monitor/report.pdf` с key/project/kind=week/end=cut. sales_project не передаётся:
+обычный сохранённый контекст связи продаж используется как у пользовательской
+кнопки сводки/PDF, без изменения этой связи. Cut —
+только закреплённый исторический или текущий UTC-день. Произвольные URL/path,
+preview/approve/link/mailing/save и другие операции отвергаются до HTTP.
+HTTPtimeout120сек, отдельный verifydeadline900сек после ожидания, job35мин.
+Все ответы bounded/noRedirect; runtime и UTC-день проверяются повторно.
+
+Stdout содержит probe_only=true, write_attempted=false/outcome_unknown=false,
+целые statuses/counts, elapsed и booleans. Отсутствие данных не даёт PASS.
+Monitor должен явно вернуть approved_plan с новым source SHA/revision1/
+remaining_work и решением РНВ; corpus SHA тоже новый, rows непустые. Сводка
+проверяется по реальным report.gantt/owner/date/corpus и реальному серверному
+HTML блока «Сроки работ по корпусам». Финансовые snapshot.money/payments/trend
+и полная финансовая JSON-сводка в proof не сохраняются. Из GPR-проекции удаляется
+только raw completed_ks_positions, включая дубли в timeline; qualified_task_completions
+и counts сохраняются полностью.
+
+Private proof содержит whitelist полного GPR-содержимого Monitor.schedule,
+report.gantt/report.schedule и серверный GPR HTML до фото/следующего блока,
+а также **реальные байты PDF, возвращённые сервером**, для обоих срезов.
+PDF обязаны иметь HTTP200, application/pdf, PDFmagic/EOF и ограниченный размер.
+Локальная перерисовка или вычисление PDF не используются. Два полученных PDF
+не означают визуальную приёмку: после дешифрования независимый страж должен
+проверить их текст/страницы и отсутствие старых вариантов отдельно.
+
+Proof зашифрован прежним `ops.encrypt_proof` на неизменный закреплённый
+публичный recipient; отдельный capturebudget24MiB внутри неизменного corecap64MiB, ответы max16MB каждый. Даже частичный результат
+после ошибки сохраняется только зашифрованным; ошибка шифрования не считается
+успехом. Admin/GitHub keys и PRIVATE KEY markers запрещены в response/proof.
+Artifact/always cleanup остаются прежними, новых секретов и очереди нет.
+Offline проверки: `.github/diagnostics/test_verify_gpr_surfaces.py` вместе с
+прежними apply/transport/probe профилями. Подготовка этого candidate не является
+его запуском, записью источника или утверждением видимого результата.

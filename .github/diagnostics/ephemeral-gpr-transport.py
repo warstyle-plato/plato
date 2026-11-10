@@ -216,6 +216,12 @@ def main():
             prepare(os.environ)
             print('{"transport_prepared":true}')
             return 0
+        if sys.argv[1:]==['verify']:
+            verify_spec=importlib.util.spec_from_file_location('approved_gpr_surface_verify',
+                Path(__file__).with_name('verify-gpr-surfaces.py'))
+            verify_module=importlib.util.module_from_spec(verify_spec)
+            verify_spec.loader.exec_module(verify_module)
+            return verify_module.main()
         if sys.argv[1:]==['probe']:
             probe_spec=importlib.util.spec_from_file_location('approved_gpr_readonly_probe',
                 Path(__file__).with_name('probe-approved-gpr.py'))
