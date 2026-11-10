@@ -205,3 +205,24 @@ def test_one_management_article_is_visible_without_relabeling_bank_rows(stored, 
     assert 'управленческая статья 2.6' in html
     assert 'Статьи главы 3' in html and 'Банковская статья не уточнена' in html
     assert 'Все экономические АХР: факт и план' in html
+    if width == 1440:
+        from browser import chromium_or_skip
+        from market_search import report_pdf
+        from playwright.sync_api import sync_playwright
+        import pymupdf
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(executable_path=str(chromium_or_skip()))
+            try:
+                page = browser.new_page()
+                page.set_content(report_pdf.document(html, style=report.REPORT_STYLE,
+                                                      title='Synthetic AHR management article'))
+                pdf = page.pdf(format='A4')
+                document = pymupdf.open(stream=pdf, filetype='pdf')
+                text = ' '.join(' '.join(sheet.get_text().split()) for sheet in document)
+                for expected in ('управленческая статья 2.6', 'Статьи главы 3',
+                                 'Банковская статья не уточнена',
+                                 'Все экономические АХР: факт и план'):
+                    assert expected in text
+                (out / 'management-report.pdf').write_bytes(pdf)
+            finally:
+                browser.close()
