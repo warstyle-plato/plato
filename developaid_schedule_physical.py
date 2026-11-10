@@ -197,7 +197,7 @@ def save(project, pm_sha256, snapshot_id, revision, configuration):
     return catalog(project, cut)
 
 
-def _component(component, items, cut):
+def _component(component, items, cut, *, _duplicates=None):
     result = {'component_id': component['component_id'], 'task_id': component['task_id'],
               'known': False, 'progress': None, 'forecast_finish': None,
               'rate_per_day': None, 'reason': ''}
@@ -206,7 +206,8 @@ def _component(component, items, cut):
         return dict(result, reason=reason)
     if not rows or any(row is None for row in rows):
         return unknown('Выбранная строка накопительной отсутствует.')
-    duplicates = ledgers.verified_duplicate_sources(list(items.values()))
+    duplicates = (ledgers.verified_duplicate_sources(list(items.values()))
+                  if _duplicates is None else _duplicates)
     excluded = [key for key in component['item_ids'] if ledgers._duplicate_key(items[key]) in duplicates]
     if excluded:
         return dict(result, excluded_duplicate_item_ids=excluded, requires_reconciliation=True,

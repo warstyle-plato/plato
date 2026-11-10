@@ -108,7 +108,7 @@ function renderPhysicalScopes(groups){
   const taskIds=new Set(members.map(t=>t.task_id)),packetIds=new Set(members.flatMap(t=>[...contractsByTask.get(t.task_id)]));
   const packets=(physicalState.review.contracts||[]).filter(p=>packetIds.has(p.contract_id));
   const components=physicalDraft.components.filter(c=>taskIds.has(c.task_id));
-  const pending=groups.filter(g=>physicalGroupState(g)!=='bound'&&(packetIds.has(g.contract_id||g.group_id)||taskIds.has(physicalGroupTarget(g))||(g.candidates||[]).some(c=>taskIds.has(c.task_id))));
+  const pending=groups.filter(g=>physicalGroupState(g)!=='bound'&&members.some(t=>!(g.known_disjoint_task_ids||[]).includes(t.task_id)&&(contractsByTask.get(t.task_id).has(g.contract_id||g.group_id)||physicalGroupTarget(g)===t.task_id||(g.candidates||[]).some(c=>c.task_id===t.task_id))));
   const box=document.createElement('div');box.className='physical-scope';box.dataset.taskIds=JSON.stringify([...taskIds]);
   box.append(physicalReviewText('b',packets.length?packets.map(p=>`${p.contractor}. Договор ${p.contract}`).join('; '):'Работы без определённого договора'));
   box.append(physicalReviewText('p',`Работ ГПР в составе: ${members.length}. Добавлено групп объёмов: ${components.length}. Неразобранных объёмов по этим договорам и работам: ${pending.length}.`,pending.length?'warn':'muted'));

@@ -106,6 +106,17 @@ def _tokens(text):
             if t not in {'работа', 'работы', 'устройство', 'строительство', 'корпус', 'секция', 'этаж'}}
 
 
+def _known_disjoint_tasks(group, task_scopes):
+    """Only proved, disjoint buildings exclude a possible full-scope relation."""
+    # Use the explicit identity fields. A generic operation such as «Фасад
+    # корпуса» cannot erase the known building in its structured object field.
+    places, uncertain = _places(group['scope'])
+    if uncertain or not places['corpus']:
+        return []
+    return [tid for tid, (other, other_uncertain) in task_scopes.items()
+            if not other_uncertain and other['corpus'] and places['corpus'].isdisjoint(other['corpus'])]
+
+
 def _candidates(group, prepared_tasks):
     label = ' '.join([group['scope'], group['name'], *(group.get('source_context') or [])])
     (places, uncertain), tokens = _places(label), _tokens(group['name'])
@@ -135,6 +146,10 @@ def build(items, tasks, configuration, cut, previous_rules=(), *, snapshot=None,
     views = views if views is not None else items
     prepared_tasks = [(task, *_places(str(task.get('object') or '') + ' ' + task['name']),
                        _tokens(task['name']), matching._operation_body(task['name'])) for task in tasks]
+    task_scopes = {task['task_id']: _places(task.get('object')) for task in tasks}
+    # Every component must see duplicate proof from the same full universe.
+    # Reuse that immutable proof within this pass, not across requests.
+    duplicates = ledgers.verified_duplicate_sources(list(items.values()))
     buckets = defaultdict(list)
     # Run the shared eligibility owner on the full universe, before detaching
     # groups. A duplicate flag alone is not proof and must remain reviewable.
@@ -184,8 +199,9 @@ def build(items, tasks, configuration, cut, previous_rules=(), *, snapshot=None,
             [row.get('object_scope'), row.get('system_scope'), row.get('site_scope'),
              *[(section.get('name') if isinstance(section, dict) else section)
                for section in row.get('section_path') or []]] if value))
+        group['known_disjoint_task_ids'] = _known_disjoint_tasks(group, task_scopes)
         component = {'component_id': gid, 'task_id': '', 'item_ids': item_ids}
-        evaluated = quantities._component(component, items, quantities._day(cut))
+        evaluated = quantities._component(component, items, quantities._day(cut), _duplicates=duplicates)
         if snapshot is not None:
             # Reuse the accepted GPR observation path for known undated source
             # quantities. No new percentage, completion date or pace formula.
@@ -256,6 +272,6 @@ def new_unbound(review_model, configuration, fresh):
             continue
         related = (by_contract[group['contract_id']] | {linked[i] for i in group['item_ids'] if i in linked}
                    | {c['task_id'] for c in group.get('candidates') or []})
-        for tid in sorted(related & confirmed):
+        for tid in sorted((related & confirmed) - set(group.get('known_disjoint_task_ids') or [])):
             found[tid].append(group)
     return dict(found)
