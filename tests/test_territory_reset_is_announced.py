@@ -49,7 +49,8 @@ def run(inputs: dict) -> dict:
         pytest.skip("node недоступен")
     keys = page_fragment("let territoryCleared=[];", "const TERRITORY_MARKERS")
     labels = page_fragment("const TERRITORY_CLEARED_LABELS=", "function resetTerritoryData(")
-    reset = page_fragment(" territoryCleared=[];\n TERRITORY_INPUT_KEYS.forEach",
+    # The fresh declaration above initializes the list; lease cleanup is a separate operation.
+    reset = page_fragment(" TERRITORY_INPUT_KEYS.forEach",
                           "\n TERRITORY_MARKERS.forEach")
     prelude = "\n".join([keys, labels,
                          f"const inputs={json.dumps(inputs, ensure_ascii=False)};"])

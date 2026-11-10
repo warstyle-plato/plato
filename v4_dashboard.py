@@ -27,6 +27,7 @@ KPI читаются из колонки B блока паритета лист�
 from __future__ import annotations
 
 import re
+import v4_land_rent
 from typing import Any
 from xml.sax.saxutils import escape as _xml_escape
 
@@ -179,6 +180,10 @@ DATA_ITEMS: tuple[tuple[str, str, str, str], ...] = (
      "(жители, коммерция, объекты, соцобъекты; движок)", "м/м", ""),
     ("parking_provision", "Обеспеченность парковкой: все места проекта / вся потребность",
      "x", ""),
+    # Оговорка расчёта аренды ЗУ (пусто, когда условия подтверждены): дашборд
+    # печатает её под названием проекта и, как всё остальное, читает отсюда.
+    ("land_rent_status", "Аренда ЗУ: что не подтверждено в условиях", "текст",
+     f"'{v4_land_rent.SHEET}'!$L$13"),
 )
 DATA_ROWS: dict[str, int] = {item[0]: index + 2 for index, item in enumerate(DATA_ITEMS)}
 # Строки источника, которые несут ЧИСЛО движка, а не формулу книги: ключ
@@ -308,11 +313,18 @@ BRIDGE_LAST_ROW = BRIDGE_FIRST_ROW + len(BRIDGE_STEPS) - 1
 # Структура расходов проекта — статьи движка (`expense_groups`) из ячеек
 # книги. Порядок объявления; движок сортирует по убыванию, книга — нет:
 # формульный лист не переставляет строки.
-STRUCTURE_ITEMS: tuple[tuple[str, str], ...] = (
-    ("Цена приобретения", "'ОТЧЕТ'!B33"),
+# Подписи — статьи движка дословно: книга сверяется с ним по подписи, и
+# переименованная здесь строка выпадала из сверки. Заголовок «ВРИ и земельные
+# отношения» группирует три отдельные статьи, а не заменяет их подписи.
+LAND_STRUCTURE_ITEMS: tuple[tuple[str, str], ...] = (
     ("Смена ВРИ / земельные права",
      _sheet_sum("ВРИ", "B", _VRI_PRINCIPAL_ROWS) + "+" + _sheet_sum("ВРИ", "B", _VRI_SECURITY_ROWS)),
     ("Проценты по рассрочке ВРИ", _sheet_sum("ВРИ", "B", _VRI_INTEREST_ROWS)),
+    ("Аренда земельного участка", _sheet_sum("CAPEX", "B", v4_land_rent.CAPEX_ROWS)),
+)
+STRUCTURE_ITEMS: tuple[tuple[str, str], ...] = (
+    ("Цена приобретения", "'ОТЧЕТ'!B33"),
+    *LAND_STRUCTURE_ITEMS,
     ("ИРД и проектирование", "{ird}+{design_p}+{design_rd}+{author_supervision}"),
     ("Основное строительство", "{preparation}+{main_above}+{main_under}+{utilities}+{landscaping}"
                                "+{commissioning}+{site_maintenance}+{gc_fee}"),
@@ -864,7 +876,7 @@ def build_dashboard_sheet(styles: Styles, drawing_rel_id: str, phased: bool,
 
     sh.band("DEVELOPAID · ИНВЕСТИЦИОННЫЙ ДАШБОРД", None, sh.title, 24)
     sh.band(None, data_cell("project_name"), sh.subtitle, 15)
-    sh.blank()
+    sh.band(None, data_cell("land_rent_status"), sh.subtitle, 18)
 
     # Шесть карточек KPI — те же, что у тизера.
     cards = list(KPI_CATALOGUE[:CARD_COUNT])
@@ -997,7 +1009,15 @@ def build_dashboard_sheet(styles: Styles, drawing_rel_id: str, phased: bool,
     # Структура расходов проекта.
     sh.section_row("СТРУКТУРА РАСХОДОВ ПРОЕКТА")
     sh.header(_G_TABLE_4, ["Статья", "млн ₽", "Доля", "тыс ₽/м² прод."])
-    for index in range(len(STRUCTURE_ITEMS)):
+    land_labels = {label for label,_ in LAND_STRUCTURE_ITEMS}
+    land_open = False
+    for index,(label,_formula) in enumerate(STRUCTURE_ITEMS):
+        in_land = label in land_labels
+        if in_land and not land_open:
+            sh.section_row(v4_land_rent.BLOCK_TITLE)
+        elif land_open and not in_land:
+            sh.section_row("Прочие расходы проекта")
+        land_open = in_land
         src = STRUCTURE_FIRST_ROW + index
         sh.line(_G_TABLE_4, [(None, _src("A", src), sh.td),
                              (None, _src("B", src), sh.value("млн ₽")),

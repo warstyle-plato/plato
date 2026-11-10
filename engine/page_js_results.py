@@ -22,6 +22,7 @@ PAGE += r"""function renderResult(){
  // Место — здесь, а не внутри подписи паркинга: к паркингу она отношения не
  // имеет, а чужая связь ломает стенды, перечисляющие куски руками.
  renderLandscapingRateNote();
+ renderLandRentSummary();
  hideCalcLocked();
  if(typeof feedbackCalcs!=='undefined'){feedbackCalcs+=1;feedbackMaybeAsk()}
 
@@ -41,12 +42,14 @@ PAGE += r"""function renderResult(){
  // Полная оговорка стоит один раз, у прибыли; маржинальность и NPV — та же
  // величина в другом виде, и повторять им фразу целиком значит превратить её
  // в фон, который перестают читать.
- const conditionalNote=modelDefault
+ const rentQualifier=(r.summary||{}).preliminary_reason||'';
+ const rentNote=rentQualifier?note(escapeHtml(rentQualifier)):'';
+ const conditionalNote=rentNote+(modelDefault
   ?note(`условная: в модели дефолт`
    +`${modelDefault.name?' на '+escapeHtml(modelDefault.name):''}`
    +`${modelDefault.when?' в '+modelDefault.when:''}`)
-  :'';
- const conditionalShort=modelDefault?note('при том же допущении'):'';
+  :'');
+ const conditionalShort=rentQualifier?note('предварительно: уточняется аренда земли'):modelDefault?note('при том же допущении'):'';
 
  // Какой поток стоит за NPV, решает движок (`report.layout.npv_basis`).
  const npvHint=reportLayout(r).npv_basis==='hotel'?'npv_hotel':'npv';

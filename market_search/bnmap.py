@@ -1169,7 +1169,8 @@ def clone_report(data_dir: Any, query: str, *, base: str = "msk", date: str = ""
             premium=notes.get("premium_series"), blocks=blocks)
         notes["analysis"] = narrative.analysis(
             subject, peers, comparison, segment=segment,
-            premium=notes.get("premium_series"), cost=notes.get("price_of_premium"))
+            premium=notes.get("premium_series"), cost=notes.get("price_of_premium"),
+            blocks=blocks)
 
     tools = session.call("v1.toolAccess.getActiveToolsFull") or {}
     # Свод по объекту из службы отчётов. Он открыт там, где платформа отвечает
