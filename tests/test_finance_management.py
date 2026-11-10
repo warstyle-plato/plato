@@ -59,7 +59,7 @@ def test_all_ahr_fact_and_future_plan_tagged_bank_sources_and_every_money_field_
     assert path.read_bytes() == raw
     comp = qualified['budget_composition']
     for item in comp['admin_items']:
-        assert item['management_article'] == '2.6'
+        assert item.get('management_article') == '2.6'
         assert item['management_article_origin'] == 'owner_instruction'
         assert item['management_policy_revision'] == 1
         assert set(item['money_allocation']['by_chapter']) == {'', '2', '3'}
