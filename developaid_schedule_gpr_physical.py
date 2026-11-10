@@ -240,7 +240,9 @@ def evaluate(source, snapshot, configuration, cut, *, observation_index=()):
     items = quantities._items(snapshot)
     views = cumulative_progress.quantity_views(snapshot, cut)
     configs = {row["task_id"]: row for row in configuration["tasks"]}
-    components = [_observed_component(component, quantities._component(component, items, day),
+    duplicates = (ledgers.verified_duplicate_sources(list(items.values()))
+                  if configuration['components'] else {})
+    components = [_observed_component(component, quantities._component(component, items, day, _duplicates=duplicates),
                                      items, views, snapshot, cut, observation_index)
                   for component in configuration["components"]]
     observation_date = cumulative_progress.snapshot_date(snapshot)
