@@ -80,6 +80,15 @@ class MonitorFinanceAllocationApply(MonitorContractsBuild):
     note: str = _CumulativeField(min_length=1, max_length=1000)
 
 
+class MonitorFinanceManagementApply(MonitorContractsBuild):
+    model_config = {"extra": "forbid"}
+    source_sha256: str = _CumulativeField(pattern=r"^[0-9a-f]{64}$")
+    revision: int = _CumulativeField(ge=0, strict=True)
+    item_ids: list[str] = _CumulativeField(min_length=1, max_length=1000)
+    management_article: str = _CumulativeField(pattern=r"^(?:2\.6)?$")
+    note: str = _CumulativeField(min_length=1, max_length=1000)
+
+
 class MonitorPhysicalView(MonitorContractsBuild):
     query: str = _CumulativeField(default="", max_length=200)
     offset: int = _CumulativeField(default=0, ge=0, le=100000, strict=True)
@@ -110,6 +119,7 @@ _CUMULATIVE_PATHS = frozenset({
     "/monitor/schedule-physical/view", "/monitor/schedule-physical/save",
     "/monitor/schedule-gpr-physical/view", "/monitor/schedule-gpr-physical/save",
     "/monitor/finance-allocation/view", "/monitor/finance-allocation/apply", "/monitor/finance-allocation/result",
+    "/monitor/finance-management/view", "/monitor/finance-management/apply", "/monitor/finance-management/result",
 })
 
 
@@ -242,6 +252,14 @@ def monitor_schedule_gpr_physical_save(req: MonitorGprPhysicalSave) -> Response:
 def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = b"") -> dict:
     """Only validated calculation inputs enter the background worker."""
     from fastapi.encoders import jsonable_encoder
+    if operation in {"finance-management-view", "finance-management-apply"}:
+        import developaid_finance_management as management
+        try:
+            result = (management.view(payload["project"], payload["cut"])
+                      if operation == "finance-management-view" else management.apply(**payload))
+            return {"ok": True, "management": jsonable_encoder(result)}
+        except management.AllocationProblem as exc:
+            return {"ok": False, "status": exc.status, "detail": str(exc)}
     if operation in {"finance-allocation-view", "finance-allocation-apply"}:
         import developaid_finance_allocations as allocations
         try:
@@ -323,6 +341,9 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
                 elif operation == "finance-allocation-apply":
                     payload.update(source_sha256=req.source_sha256, revision=req.revision,
                                    assignments=[item.model_dump() for item in req.assignments], note=req.note)
+                elif operation == "finance-management-apply":
+                    payload.update(source_sha256=req.source_sha256, revision=req.revision,
+                                   item_ids=list(req.item_ids), management_article=req.management_article, note=req.note)
             # The store persists only the fingerprint, not these private inputs.
             # A fresh click must not reuse another running view of older data.
             # Retrying the same admission keeps its exact ticket and fingerprint.
@@ -333,7 +354,8 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
                 return _monitor_cumulative_execute(operation, payload, archive)
             result = store.start(owner, profile, fingerprint, build, req.ticket)
         if result["pending"]:
-            result["detail"] = ("Проверяю банковское отнесение АХР." if family == "finance-allocation" else
+            result["detail"] = ("Проверяю управленческую статью АХР." if family == "finance-management" else
+                                "Проверяю банковское отнесение АХР." if family == "finance-allocation" else
                                 "Обрабатываю накопительные." if family == "upload" else "Готовлю договорную сверку.")
         return JSONResponse(status_code=202 if result["pending"] else 200, content=result, headers=private)
     except HTTPException as exc:
@@ -414,3 +436,18 @@ def monitor_finance_allocation_apply(req: MonitorFinanceAllocationApply) -> Resp
 @app.post("/monitor/finance-allocation/result", include_in_schema=False)
 def monitor_finance_allocation_result(req: MonitorCumulativeResult) -> Response:
     return _monitor_cumulative_job(req, family="finance-allocation")
+
+
+@app.post("/monitor/finance-management/view", include_in_schema=False)
+def monitor_finance_management_view(req: MonitorContractsBuild) -> Response:
+    return _monitor_cumulative_job(req, family="finance-management", operation="finance-management-view")
+
+
+@app.post("/monitor/finance-management/apply", include_in_schema=False)
+def monitor_finance_management_apply(req: MonitorFinanceManagementApply) -> Response:
+    return _monitor_cumulative_job(req, family="finance-management", operation="finance-management-apply")
+
+
+@app.post("/monitor/finance-management/result", include_in_schema=False)
+def monitor_finance_management_result(req: MonitorCumulativeResult) -> Response:
+    return _monitor_cumulative_job(req, family="finance-management")

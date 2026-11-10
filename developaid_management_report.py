@@ -3226,7 +3226,9 @@ def _funding_html(report: dict[str, Any]) -> str:
         out.append(_table(["Сверка бюджета и финансирования", "Сумма"], rows))
         admin = reconciliation.get("admin_expenses") or {}
         if admin.get("rows"):
-            out.append("<h4>АХР в составе бюджета</h4>" + _table(
+            article = admin.get("management_article")
+            admin_title = "АХР" + (f" · управленческая статья {article}" if article else "") + " в составе бюджета"
+            out.append(f"<h4>{esc(admin_title)}</h4>" + _table(
                 ["АХР", "Всего", "Факт модели", "План модели"],
                 [[esc(row["label"]), _rub(row["total"]), _rub(row["model_fact"]), _rub(row["model_plan"])]
                  for row in admin["rows"]]))

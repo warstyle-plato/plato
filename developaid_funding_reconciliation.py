@@ -366,8 +366,24 @@ def admin_expense_breakdown(admin: dict | None) -> dict | None:
     note = "Факт и план финансовой модели. АХР уже включены в бюджет и повторно не прибавляются."
     if count:
         note += " " + owner_decision_note(count)
+    management = admin.get("management_allocation") or {}
+    article = (management.get("management_article") if management.get("state") == "active"
+               and management.get("scope") == "all_economic_admin_total_fact_plan" else None)
+    if article:
+        note += " " + management_decision_note(management)
     return {"rows": rows, "allocation_known": admin.get("allocation_known") is True,
-            "owner_decision_count": count, "note": note}
+            "owner_decision_count": count, "management_article": article,
+            "management_article_origin": "owner_instruction" if article else None,
+            "management_revision": management.get("revision") if article else None, "note": note}
+
+
+def management_decision_note(policy: dict | None) -> str:
+    policy = policy or {}
+    if (policy.get("state") != "active" or policy.get("scope") != "all_economic_admin_total_fact_plan"
+            or policy.get("management_article") != "2.6"):
+        return ""
+    return ("Все экономические АХР: факт и план — управленческая статья 2.6 по решению владельца. "
+            "Банковские источники сохранены отдельно.")
 
 
 def owner_decision_note(count: int) -> str:

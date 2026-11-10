@@ -352,7 +352,7 @@ function fundingReconciliationBlock(f){
  for(const reason of r.reasons||[])html+='<p class="muted">'+esc(reason)+'</p>';
  const admin=r.admin_expenses;
  if(admin?.rows?.length){
-   html+='<details class="fundmore funding-admin-breakdown"><summary>АХР в составе бюджета · '+value(admin.rows[0].total)+'</summary><div style="overflow-x:auto;max-width:100%"><table class="unspent"><thead><tr><th>АХР</th><th>Всего</th><th>Факт модели</th><th>План модели</th></tr></thead><tbody>';
+   html+='<details class="fundmore funding-admin-breakdown"><summary>АХР'+(admin.management_article?' · управленческая статья '+esc(admin.management_article):'')+' в составе бюджета · '+value(admin.rows[0].total)+'</summary><div style="overflow-x:auto;max-width:100%"><table class="unspent"><thead><tr><th>АХР</th><th>Всего</th><th>Факт модели</th><th>План модели</th></tr></thead><tbody>';
    for(const item of admin.rows)html+='<tr><td>'+esc(item.label)+'</td><td>'+value(item.total)+'</td><td>'+value(item.model_fact)+'</td><td>'+value(item.model_plan)+'</td></tr>';
    html+='</tbody></table></div><p class="muted">'+esc(admin.note||'')+'</p></details>';
  }

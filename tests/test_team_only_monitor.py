@@ -57,6 +57,8 @@ _ENDPOINT_PAYLOADS = {
     ("POST", "/monitor/schedule-gpr-physical/save"): {"source_kind": "gpr"},
     ("POST", "/monitor/finance-allocation/apply"): {
         "assignments": [{"row_id": "a" * 64, "bank_code": "2.6"}]},
+    ("POST", "/monitor/finance-management/apply"): {
+        "item_ids": ["a" * 64], "management_article": "2.6"},
     ("POST", "/monitor/schedule/version-preview"): {
         "effective_from": "2026-10-22", "gpr_base64": "eA=="},
     ("POST", "/monitor/schedule/version-approve"): {

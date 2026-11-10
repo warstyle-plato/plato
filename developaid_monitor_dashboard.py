@@ -210,7 +210,8 @@ def _finance_baseline(project: str) -> dict[str, Any]:
 def _finance_for_cut(project: str, cut: Any = "") -> dict[str, Any]:
     import developaid_finance_allocations as allocations
     day = cut.isoformat() if isinstance(cut, datetime.date) else str(cut or "")
-    return allocations.qualify(project, _finance_baseline(project), day)
+    import developaid_finance_management as management
+    return management.qualify(project, allocations.qualify(project, _finance_baseline(project), day), day)
 
 
 class _Grid:
@@ -1582,6 +1583,7 @@ def _admin_expenses(comp: dict[str, Any] | None,
             "by_chapter": chapters, "unallocated": unallocated,
             "allocation_known": allocation_known, "source": {"sheet": "cf_1_new", "section": "2.4"},
             "items": list(items or []), "owner_decisions": list(decisions.values()),
+            "management_allocation": (comp or {}).get("management_allocation"),
             "payment_basis": "financial_model_fact",
             "paid_at_cut": None, "bank_coverage": None,
             "included_in_replacement_schedule": None,
@@ -1597,6 +1599,9 @@ def admin_expense_lines(admin: dict[str, Any] | None, money: Any) -> list[str]:
     out = [f"Административные расходы без налогов — {money(admin['total'])}: "
            f"ФАКТ финмодели {money(admin['paid'])}, ПЛАН {money(admin['to_pay'])}. "
            "Это суммы книги, а не подтверждённая сверка оплат на дату среза."]
+    management_note = funding_reconciliation.management_decision_note(admin.get("management_allocation"))
+    if management_note:
+        out.append(management_note)
     parts = []
     for ch, row in sorted(admin["by_chapter"].items()):
         label = f"глава {ch}" if ch in CHAPTERS else f"вне глав 1–3 (код главы {ch})"
@@ -2211,8 +2216,9 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
         result["reconciliation"]["source_dates"] = result["source_dates"]
         result["reconciliation"]["need_breakdown"]["source_dates"] = result["source_dates"]
         result["unallocated_programme"] = result["reconciliation"]["unallocated_programme"]
-        if baseline.get("allocation_problem"):
-            result["reconciliation"]["reasons"].append(baseline["allocation_problem"])
+        for field in ("allocation_problem", "management_allocation_problem"):
+            if baseline.get(field):
+                result["reconciliation"]["reasons"].append(baseline[field])
         result["remaining_need_scope"] = "bank_chapters_only"
         result["monthly_need_complete"] = not bool((baseline.get("chapter_flow") or {}).get(""))
     admin = (own_money or {}).get("admin")
