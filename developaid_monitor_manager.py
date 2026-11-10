@@ -263,6 +263,18 @@ def _sanitize_base_schedule(project: str, schedule: dict[str, Any], upto: str = 
     schedule['approved_plan'] = {key: selected[key] for key in ('source_sha256', 'revision', 'taken_at')}
     schedule['approved_plan'].update(owner_rnv_revision=selected.get('owner_rnv_revision', 0),
         owner_rnv=selected.get('owner_rnv'), baseline_scope=selected.get('baseline_scope', 'full_schedule'))
+    # The page names the version it compares against and why a newer approved
+    # version is not applied yet; the version journal owns that answer.
+    latest = (selected.get('versions') or [{}])[-1]
+    schedule['approved_plan'].update(
+        effective_from=selected.get('effective_from', ''), approved_at=selected.get('approved_at', ''),
+        latest_revision=latest.get('revision', 0), latest_effective_from=latest.get('effective_from', ''),
+        latest_baseline_scope=latest.get('baseline_scope', 'full_schedule'))
+    if latest.get('revision', 0) > selected.get('revision', 0):
+        import developaid_schedule_versions as versions
+        today = versions._now().date().isoformat()
+        schedule['approved_plan']['latest_pending'] = (
+            'future' if latest.get('effective_from', '') > today else 'earlier_cut')
     statuses = _baseline_status(project, upto)
     for row in schedule.get("rows") or []:
         tid = str(row.get("id") or row.get("wbs") or "").strip()

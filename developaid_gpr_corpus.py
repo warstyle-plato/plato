@@ -14,6 +14,9 @@ from typing import Any
 
 import developaid_monitor_ledgers as ledgers
 
+_READ_CACHE_ENTRIES = 8
+_READ_CACHE_BYTES = 16 * 1024 * 1024
+
 
 def _text(value: Any) -> str:
     return str(value if value is not None else '').strip()
@@ -41,6 +44,29 @@ def _raw(value: Any) -> Any:
 
 
 def read(data: bytes) -> dict | None:
+    """Share bounded source parsing within one coherent read, never decisions.
+
+    Exact bytes own the cache key. Encoded results give each reader its own
+    mutable copy; the approved-read context is discarded at the request end.
+    """
+    import developaid_monitor as monitor
+
+    context = monitor._APPROVED_SCHEDULE_READ.get()
+    if context is None:
+        return _read_uncached(data)
+    cache = context.setdefault(('corpus-source-parses',), {})
+    key = hashlib.sha256(data).digest()
+    if key in cache:
+        return json.loads(cache[key])
+    result = _read_uncached(data)
+    encoded = json.dumps(result, ensure_ascii=False, allow_nan=False).encode()
+    if (len(cache) < _READ_CACHE_ENTRIES
+            and sum(map(len, cache.values())) + len(encoded) <= _READ_CACHE_BYTES):
+        cache[key] = encoded
+    return result
+
+
+def _read_uncached(data: bytes) -> dict | None:
     """Recognize only the selected ГПР sheet and bounded two-row corpus schema."""
     sheets = ledgers._read_workbook('gpr.xlsx', data)
     rows = next((rows for name, rows in sheets if name.strip().casefold() == 'гпр'), None)

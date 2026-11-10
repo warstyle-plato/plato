@@ -290,6 +290,12 @@ def telegram_result(req: TelegramResultRequest,
         f"• {html.escape(purchase_assessment['text'])}\n\n"
         "<i>Вывод предварительный и основан только на текущих вводных DevelopAid; цены, сроки и себестоимость можно изменить в модели.</i>"
     )
+    report_result = (summary.get("report_payload") or {}).get("result") or {}
+    report_result = report_result.get("consolidated") or report_result
+    rent_qualification = str(summary.get("preliminary_reason") or
+        (report_result.get("summary") or {}).get("preliminary_reason") or "").strip()
+    if rent_qualification:
+        text = "<b>" + html.escape(rent_qualification) + "</b>\n\n" + text
     button = {
         "inline_keyboard": [[{
             "text": "Открыть и изменить расчёт",
