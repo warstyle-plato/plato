@@ -11,6 +11,11 @@ Schedule dates come from the start and finish cells. A bar of the chart gives
 dates only to a line whose cells are empty, and a bar that disagrees with the
 cells by more than a day is a warning. A group line whose dates differ from
 the span of its works is a warning as well; nothing is corrected silently.
+
+Estimate checks compare quantity × price, material + work, and every section
+and grand total with the document's own totals. A repeated position number is
+reported, not merged: such positions need their name and unit to be told apart.
+Design and the next steps: docs/contract_schedule_control.md.
 """
 from __future__ import annotations
 
