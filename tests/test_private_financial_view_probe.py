@@ -1,275 +1,310 @@
-"""Offline, credential-free execution of the exact protected workflow script."""
-from __future__ import annotations
-import ast
+"""Credential-free checks for the exact finite read-only encrypted source transport."""
+import base64
+import copy
+import datetime as dt
+import hashlib
+import importlib.util
 import io
 import json
 from pathlib import Path
+import stat
+import subprocess
 import types
 import urllib.error
-import urllib.parse
+from urllib.parse import urlsplit
+import zipfile
+
 import pytest
 
-ROOT = Path(__file__).resolve().parents[1]
-WORKFLOW = ROOT / '.github/workflows/prod-smoke.yml'
-RUNTIME = '2061d1a01d7607eb44113bc2cc429abfaf4814de'
-PROJECT = 'Synthetic private project'
-KEY = 'synthetic-key-must-never-appear-in-output'
-PRIVATE = 'synthetic-private-financial-source'
-
-
-def script():
-    text = WORKFLOW.read_text()
-    raw = text.split("          python3 - <<'PY'\n", 1)[1].split('\n          PY', 1)[0]
-    return '\n'.join(line[10:] if line.startswith(' '*10) else line for line in raw.splitlines())
-
+ROOT=Path(__file__).resolve().parents[1]
+SCRIPT=ROOT/'.github/diagnostics/cached-source-capture.py'
+RUNTIME='a'*40
+KEY='synthetic-secret-\"-ü-must-not-leak'
+PROJECT='Synthetic private project'
+CONTEXT={'schema':1,'project':PROJECT,'cut':'2026-11-09','nonce':'b'*64}
 
 @pytest.fixture
-def probe():
-    namespace = {'__name__': 'offline_private_financial_probe'}
-    exec(compile(script(), str(WORKFLOW), 'exec'), namespace)
-    return types.SimpleNamespace(**namespace)
+def cap():
+    spec=importlib.util.spec_from_file_location('capture_under_test',SCRIPT)
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    return module
+
+class Response(io.BytesIO):
+    def __init__(self,value,url,*,status=200,headers=None):
+        super().__init__(value if isinstance(value,bytes) else json.dumps(value).encode())
+        self.status=status;self.url=url
+        self.headers={'Cache-Control':'private, no-store','Content-Type':'application/json',**(headers or {})}
+    def geturl(self):return self.url
+    def read1(self,n):return self.read(n)
 
 
-def view():
-    return {'snapshot': {'cut': '2026-11-09', 'source': {'estimate': '2026-11-05'},
-        'money': {'payment_fact': 2468.13}, 'payments': {'unknown_count': 59},
-        'dashboard': {'construction': {'approved': 120000.99, 'limit': 90000.01},
-          'funding': {'known': True, 'own_money': {
-              'budget': 123456.78, 'paid': 2468.13, 'limit': 100000.01,
-              'left': 97531.88, 'need': 23456.77,
-              'rows': [{'chapter': '2', 'amount': 20000.01}, {'chapter': '3', 'amount': 3456.76}]},
-            'source_dates': {'report_date': '2026-11-09',
-                'rss': {'data_date': '2026-11-05', 'file': PRIVATE+'.xlsx'},
-                'budget': {'data_date': '2026-10-01', 'uploaded_at': '2026-11-01T10:00:00Z'},
-                'schedule': {'data_date': None}}}, 'sources': {'financial_baseline': PRIVATE}},
-        'schedule': {'irrelevant_schedule_private_data': 'not required'}},
-        'trend': [{'irrelevant_historical_private_data': 'not required'}]}
+def payload(cap,purpose):
+    value={'schema':1,'purpose':purpose,'runtime':{'commit':RUNTIME,'version':'0.0.1'},
+           'coherent':True,'reads_only':True,'source_files_written':False,'evidence_complete':False,
+           'files':[],'gaps':['known_gap']}
+    if purpose==cap.PURPOSES[0]:
+        value.update(project=PROJECT,cut=CONTEXT['cut'],financial_acceptance=False,
+                     paid_through_date=None,paid_through_not_inferred_from_upload_or_filename=True)
+        for slot,path in [('finance','baseline/finance.xlsx'),('bank_rss','estimate/2026-11-05.xlsx')]:
+            raw=('original synthetic XLSX bytes '+slot).encode()
+            value['files'].append({'slot':slot,'logical_path':path,'bytes':len(raw),'sha256':cap.sha(raw),
+                                   'content_base64':base64.b64encode(raw).decode()})
+    else:
+        value.update(production_acceptance=False,models_or_scores_computed=False)
+        value['files']=[{'logical_path':'krt/catalogue.json','bytes':19,'sha256':'c'*64,'projection':{}}]
+    return value
 
-
-def register():
-    return {'snapshots': {'rss': '2026-11-05', 'cumulative_id': '2026-11-06-'+'a'*64},
-            'rows': [{'id': '1'*64}], 'unmatched_works': []}
-
-
-class Response:
-    status = 200
-    def __init__(self, payload, url):
-        self.stream = io.BytesIO(payload if isinstance(payload, bytes) else json.dumps(payload).encode())
-        self.url = url
-    def geturl(self): return self.url
-    def read1(self, count): return self.stream.read(count)
-    def __enter__(self): return self
-    def __exit__(self, *args): pass
-
-
-class Transport:
-    def __init__(self, change=None):
-        self.calls, self.views, self.healths = [], 0, 0
-        self.change = change
-    def open(self, request, timeout):
+class Server:
+    def __init__(self,cap,change=None):self.cap=cap;self.calls=[];self.change=change
+    def open(self,request,timeout):
         self.calls.append(request)
-        assert 0 < timeout <= 15
-        assert request.full_url.startswith('https://developaid.ru/')
-        path = urllib.parse.urlsplit(request.full_url).path
-        body = json.loads(request.data) if request.data else None
-        if path == '/health':
-            self.healths += 1
-            payload = {'status': 'ok', 'commit': RUNTIME, 'version': '0.28.84'}
-            if self.change == 'runtime' and self.healths > 1: payload['commit'] = 'f'*40
-        elif path == '/monitor/report/projects':
-            payload = {'projects': [{'project': PROJECT, 'data': ['cumulative', 'estimate']}]}
-        elif path == '/monitor/contracts/build':
-            payload = {'pending': False, 'ticket': 'b'*32, 'register': register()}
-        elif path == '/monitor/view':
-            self.views += 1
-            assert body == {'project': PROJECT, 'cut': '2026-11-09', 'key': KEY}
-            payload = view()
-            if self.views == 2:
-                funding = payload['snapshot']['dashboard']['funding']
-                if self.change == 'amount': funding['own_money']['budget'] += 1
-                if self.change == 'date': funding['source_dates']['budget']['data_date'] = '2026-10-02'
-                if self.change == 'revision': funding['source_dates']['budget']['uploaded_at'] = '2026-11-02T10:00:00Z'
-        elif path == '/monitor/gpr-corpus/view':
-            payload = {'source': {'sha256': 'c'*64, 'taken_at': '2026-11-06'}}
-        elif path == '/monitor/schedule-gpr-physical/view':
-            payload = {'offset': 0, 'item_count': 0, 'items': [], 'revision': 0,
-                       'source_sha256': 'c'*64, 'snapshot_id': register()['snapshots']['cumulative_id']}
-        else: pytest.fail('Unexpected outbound path: '+path)
-        return Response(payload, request.full_url)
+        assert 0<timeout<=60
+        assert request.full_url.startswith(self.cap.BASE+'/')
+        path=urlsplit(request.full_url).path
+        if path=='/health':
+            value={'status':'ok','commit':RUNTIME,'version':'0.0.1'}
+            if self.change=='health':value['commit']='f'*40
+            return Response(value,request.full_url)
+        assert request.get_method()=='POST'
+        body=json.loads(request.data);assert body['key']==KEY
+        value=payload(self.cap,body['purpose'])
+        if self.change: value=self.change(value) if callable(self.change) else value
+        return Response(value,request.full_url)
+
+@pytest.fixture
+def encrypted(cap,monkeypatch):
+    captured=[]
+    def fake(args,**kwargs):
+        assert args[:4]==['openssl','cms','-encrypt','-aes-256-gcm']
+        assert args[-2:]==['-keyopt','rsa_mgf1_md:sha256']
+        assert set(kwargs['env'])=={'PATH'} and kwargs['timeout']<=30
+        value=json.loads(kwargs['input']);captured.append(value)
+        assert KEY not in json.dumps(value,ensure_ascii=False)
+        kwargs['stdout'].write(b'CiphertextOnly'+str(len(captured)).encode())
+        return types.SimpleNamespace(returncode=0)
+    monkeypatch.setattr(cap.subprocess,'run',fake)
+    return captured
 
 
-def execute(probe, monkeypatch, tmp_path, change=None, encryption_ok=True):
-    transport = Transport(change)
-    captured = []
-    def encrypt(args, **kwargs):
-        assert args == ['openssl', 'cms', '-encrypt', '-aes-256-gcm', '-binary', '-outform', 'DER',
-                        '-recip', '.github/diagnostics/contract-audit-recipient.pem',
-                        '-keyopt', 'rsa_padding_mode:oaep', '-keyopt', 'rsa_oaep_md:sha256']
-        assert set(kwargs['env']) == {'PATH'} and kwargs['timeout'] == 30
-        captured.append(json.loads(kwargs['input']))
-        kwargs['stdout'].write(b'SyntheticCiphertextOnly')
-        return types.SimpleNamespace(returncode=0 if encryption_ok else 1)
-    monkeypatch.setattr(probe.subprocess, 'run', encrypt)
-    monkeypatch.setenv('RUNNER_TEMP', str(tmp_path))
-    return probe.Probe(RUNTIME, opener=transport, clock=lambda: 0, sleep=lambda _: None), transport, captured
+def test_exact_reads_encrypt_original_bytes_and_public_result_is_private(cap,encrypted,tmp_path,capsys):
+    server=Server(cap);result=cap.Capture(RUNTIME,transport=server).run(CONTEXT,lambda:KEY,tmp_path/'cipher')
+    assert result['captured'] and result['ciphertext_count']==4
+    assert not result['acceptance_performed'] and result['krt_same_sources']
+    assert len(encrypted)==4
+    assert encrypted[0]['capture']['gaps']==['known_gap']
+    for record in encrypted[0]['capture']['files']:
+        raw=base64.b64decode(record['content_base64'])
+        assert record['sha256']==cap.sha(raw) and record['bytes']==len(raw)
+    private=json.dumps(result)
+    for forbidden in (KEY,PROJECT,CONTEXT['cut'],'original synthetic','catalogue.json'):
+        assert forbidden not in private and forbidden not in capsys.readouterr().out
+    posts=[r for r in server.calls if r.get_method()=='POST']
+    assert [json.loads(r.data)['purpose'] for r in posts]==list(cap.PURPOSES)
+    assert [urlsplit(r.full_url).path for r in posts]==[cap.FINANCE_PATH,cap.KRT_PATH,cap.KRT_PATH]
+    assert all(r.get_method()=='POST' or r.full_url==cap.BASE+'/health' for r in server.calls)
+    assert all(stat.S_IMODE(p.stat().st_mode)==0o600 for p in (tmp_path/'cipher').iterdir())
+    assert sorted(p.suffix for p in (tmp_path/'cipher').iterdir())==['.cms']*4
+
+@pytest.mark.parametrize('value',['','f'*39,'f'*40+'?x',None,True])
+def test_bad_expected_runtime_before_any_transport(cap,value):
+    with pytest.raises(cap.CaptureError):cap.Capture(value,transport=object())
+
+@pytest.mark.parametrize('path',['/monitor/view','/monitor/estimate','/auctions/krt/watch','/auctions/krt/ranking',
+    '/monitor/audit/sources?x=1','https://evil.invalid/monitor/audit/sources','//evil.invalid'])
+def test_no_credential_to_arbitrary_or_mutating_route(cap,path):
+    client=cap.Capture(RUNTIME,transport=object());client._key=KEY;client._context=CONTEXT
+    with pytest.raises(cap.CaptureError):client.post(path,{'key':KEY,'purpose':cap.PURPOSES[0]})
+
+@pytest.mark.parametrize('change',[{'project':'different'},{'cut':'2026-11-10'},{'purpose':'invalid'},
+    {'session':'claimed-owner'},{'url':'https://evil.invalid'},{'offset':1},{'key':'other'}])
+def test_fixed_body_cannot_be_extended_or_changed(cap,change):
+    runner=cap.Capture(RUNTIME,transport=object());runner._key=KEY;runner._context=CONTEXT
+    body={'project':PROJECT,'cut':CONTEXT['cut'],'purpose':cap.PURPOSES[0],'key':KEY};body.update(change)
+    with pytest.raises(cap.CaptureError):runner.post(cap.FINANCE_PATH,body)
+
+@pytest.mark.parametrize('change',[{'schema':True},{'cut':'2026-11-10'},{'project':'../x'},{'project':' x '},
+    {'key':KEY},{'nonce':'short'}])
+def test_pinned_minimal_context_rejects_selectors_and_credentials(cap,change):
+    context={**CONTEXT,**change}
+    with pytest.raises(cap.CaptureError):cap.validate_context(context)
 
 
-def test_success_encrypts_exact_financial_projection_and_only_publishes_flags(probe, monkeypatch, tmp_path, capsys):
-    runner, transport, captured = execute(probe, monkeypatch, tmp_path)
-    result = runner.run(lambda: KEY)
-    assert transport.views == 2 and transport.healths == 3
-    assert len(captured) == 1
-    private = captured[0]
-    assert KEY not in json.dumps(private)
-    projection = probe.financial_projection(view(), register())
-    assert private['financial_view'] == projection
-    assert private['financial_view']['dashboard']['funding']['own_money']['budget'] == 123456.78
-    assert 'trend' not in projection and 'schedule' not in projection
-    public = json.dumps(result)
-    assert all(type(value) in (bool, int) for key, value in result.items() if key.startswith('financial_'))
-    assert result['financial_component_rows'] == 2
-    for forbidden in (KEY, PROJECT, PRIVATE, '123456.78', '2026-11-09', '2026-11-05'):
-        assert forbidden not in public and forbidden not in capsys.readouterr().out
-    files = list(tmp_path.iterdir())
-    assert [p.name for p in files] == ['contracts-audit.cms']
-    assert files[0].read_bytes() == b'SyntheticCiphertextOnly'
-    assert files[0].stat().st_mode & 0o777 == 0o600
-    assert all(request.method == ('GET' if request.full_url.endswith('/health') else 'POST') for request in transport.calls)
+def test_runtime_gate_before_secret_read(cap,tmp_path):
+    server=Server(cap,'health')
+    with pytest.raises(cap.CaptureError,match='runtime'):
+        cap.Capture(RUNTIME,transport=server).run(CONTEXT,lambda:pytest.fail('secret read'),tmp_path/'cipher')
+    assert len(server.calls)==1 and not (tmp_path/'cipher').exists()
+
+@pytest.mark.parametrize('field,value',[('coherent',False),('reads_only',False),('source_files_written',True),
+    ('evidence_complete',True),('runtime',{'commit':'f'*40,'version':'0.0.1'}),('purpose','other'),
+    ('files',[{}]),('gaps',[1])])
+def test_bad_server_contract_stops_once_and_leaves_no_artifact(cap,encrypted,tmp_path,field,value):
+    def change(response):response[field]=value;return response
+    server=Server(cap,change)
+    with pytest.raises(cap.CaptureError):cap.Capture(RUNTIME,transport=server).run(CONTEXT,lambda:KEY,tmp_path/'cipher')
+    assert len([r for r in server.calls if r.get_method()=='POST'])==1
+    assert not (tmp_path/'cipher').exists()
+
+@pytest.mark.parametrize('kind',['len','hash','base64','echo','escaped_echo','binary_echo'])
+def test_raw_binary_hash_and_secret_echo_fences(cap,encrypted,tmp_path,kind):
+    def change(value):
+        record=value['files'][0]
+        if kind=='len':record['bytes']+=1
+        if kind=='hash':record['sha256']='0'*64
+        if kind=='base64':record['content_base64']='*'
+        if kind=='echo':value['private_echo']=KEY
+        if kind=='escaped_echo':value['private_echo']={'nested':KEY}
+        if kind=='binary_echo':
+            raw=KEY.encode();record.update(content_base64=base64.b64encode(raw).decode(),sha256=cap.sha(raw),bytes=len(raw))
+        return value
+    with pytest.raises(cap.CaptureError):cap.Capture(RUNTIME,transport=Server(cap,change)).run(CONTEXT,lambda:KEY,tmp_path/'cipher')
+    assert not encrypted and not (tmp_path/'cipher').exists()
+
+@pytest.mark.parametrize('kind',['duplicate','blank','badsha','badbytes'])
+def test_krt_record_identity_is_real_and_unique(cap,kind):
+    value=payload(cap,cap.PURPOSES[1]);runner=cap.Capture(RUNTIME,transport=object());runner._context=CONTEXT
+    if kind=='duplicate':value['files'].append(copy.deepcopy(value['files'][0]))
+    if kind=='blank':value['files'][0]['logical_path']=''
+    if kind=='badsha':value['files'][0]['sha256']=None
+    if kind=='badbytes':value['files'][0]['bytes']=True
+    with pytest.raises(cap.CaptureError):runner.validate(value,cap.PURPOSES[1],value['runtime'])
+
+@pytest.mark.parametrize('change',['changed','empty'])
+def test_two_coherent_captures_do_not_claim_same_cohort_on_drift_or_absence(cap,encrypted,tmp_path,change):
+    def mutate(value):
+        if value['purpose'] in cap.PURPOSES[1:]:
+            if change=='empty':value['files']=[]
+            elif value['purpose']==cap.PURPOSES[2]:value['files'][0]['sha256']='d'*64
+        return value
+    result=cap.Capture(RUNTIME,transport=Server(cap,mutate)).run(CONTEXT,lambda:KEY,tmp_path/'cipher')
+    assert not result['krt_same_sources'] and not encrypted[-1]['krt_same_sources_between_reads']
+    assert encrypted[-1]['transport_gaps'] and not result['acceptance_performed']
+
+@pytest.mark.parametrize('status',[301,302,303,307,308,401,403,409,413,429,500,503])
+def test_http_errors_never_leak_body_or_retry(cap,tmp_path,status):
+    calls=[]
+    class Bad:
+        def open(self,request,timeout):
+            calls.append(request);raise urllib.error.HTTPError(request.full_url,status,'PRIVATE '+KEY,{},io.BytesIO(KEY.encode()))
+    runner=cap.Capture(RUNTIME,transport=Bad())
+    with pytest.raises(cap.CaptureError) as caught:runner.health()
+    assert caught.value.status==status and KEY not in str(caught.value) and len(calls)==1
+
+@pytest.mark.parametrize('kind',['url','length','encoding','no_store','content_type','invalid_json','duplicate_json','nonfinite'])
+def test_unsafe_transport_and_json_are_rejected(cap,kind):
+    runner=cap.Capture(RUNTIME,transport=object());runner._key=KEY;runner._context=CONTEXT
+    class Bad:
+        def open(self,request,timeout):
+            raw=payload(cap,cap.PURPOSES[1]);headers={};url=request.full_url
+            if kind=='url':url='https://evil.invalid/'
+            if kind=='length':headers['Content-Length']=str(cap.MAX_RESPONSE+1)
+            if kind=='encoding':headers['Content-Encoding']='gzip'
+            if kind=='no_store':headers['Cache-Control']='public'
+            if kind=='content_type':headers['Content-Type']='text/html'
+            if kind=='invalid_json':raw=b'bad'
+            if kind=='duplicate_json':raw=b'{"x":1,"x":2}'
+            if kind=='nonfinite':raw=b'{"x":NaN}'
+            return Response(raw,url,headers=headers)
+    runner.client=Bad()
+    with pytest.raises(cap.CaptureError):runner.post(cap.KRT_PATH,{'key':KEY,'purpose':cap.PURPOSES[1]})
+
+@pytest.mark.parametrize('error',[TimeoutError('PRIVATE '+KEY),urllib.error.URLError(TimeoutError('PRIVATE')),OSError('PRIVATE')])
+def test_timeout_is_distinct_and_safe(cap,error):
+    class Bad:
+        def open(self,*a,**k):raise error
+    with pytest.raises(cap.CaptureError) as caught:cap.Capture(RUNTIME,transport=Bad()).health()
+    assert caught.value.timeout==isinstance(getattr(error,'reason',error),TimeoutError)
+    assert KEY not in str(caught.value)
 
 
-@pytest.mark.parametrize('runtime', ['', 'f'*40, RUNTIME+'?query', None])
-def test_wrong_runtime_rejected_before_transport_or_key_access(probe, runtime):
-    with pytest.raises(probe.ProbeError, match='invalid_expected_commit'):
-        probe.Probe(runtime, opener=object())
+def test_expired_capture_stops_before_http(cap):
+    now=[0];runner=cap.Capture(RUNTIME,transport=object(),clock=lambda:now[0]);now[0]=cap.CAPTURE_SECONDS+1
+    with pytest.raises(cap.CaptureError,match='deadline'):runner.health()
 
 
-@pytest.mark.parametrize('change', ['amount', 'date', 'revision', 'runtime'])
-def test_runtime_and_financial_source_drift_prevent_encrypted_publication(probe, monkeypatch, tmp_path, change):
-    runner, transport, captured = execute(probe, monkeypatch, tmp_path, change)
-    with pytest.raises(probe.ProbeError, match='runtime_mismatch' if change=='runtime' else 'financial_source_changed'):
-        runner.run(lambda: KEY)
-    assert captured == [] and list(tmp_path.iterdir()) == []
+def test_wrong_recipient_and_encryption_failure_cannot_publish(cap,monkeypatch,tmp_path):
+    wrong=tmp_path/'recipient.pem';wrong.write_text('invalid');monkeypatch.setattr(cap,'RECIPIENT',wrong)
+    with pytest.raises(cap.CaptureError):cap.encrypt({},tmp_path/'failed.cms',lambda:10)
+    assert not (tmp_path/'failed.cms').exists()
 
 
-@pytest.mark.parametrize('path', ['/monitor/estimate', '/monitor/contracts/link', '/monitor/view?url=elsewhere',
-                                 'https://elsewhere.invalid/monitor/view', '//elsewhere.invalid/monitor/view'])
-def test_existing_reader_allowlist_does_not_expand_to_writes_or_arbitrary_urls(probe, path):
-    runner = probe.Probe(RUNTIME, opener=object())
-    with pytest.raises(probe.ProbeError, match='invalid_payload'):
-        runner.request(path, {'key': KEY})
+def test_failed_encrypt_removes_only_its_created_file(cap,monkeypatch,tmp_path):
+    def fail(*a,**k):k['stdout'].write(b'partial');return types.SimpleNamespace(returncode=1)
+    monkeypatch.setattr(cap.subprocess,'run',fail)
+    target=tmp_path/'failed.cms'
+    with pytest.raises(cap.CaptureError):cap.encrypt({},target,lambda:10)
+    assert not target.exists()
+    target.write_bytes(b'prior')
+    with pytest.raises(cap.CaptureError):cap.encrypt({},target,lambda:10)
+    assert target.read_bytes()==b'prior'
 
 
-@pytest.mark.parametrize('change', ['cut', 'rss', 'register-rss', 'report-date', 'funding-type', 'money-type', 'nan', 'bad-date'])
-def test_unqualified_dates_types_or_nonfinite_financial_values_fail_closed(probe, change):
-    payload, reg = view(), register()
-    snapshot = payload['snapshot']; funding = snapshot['dashboard']['funding']
-    if change == 'cut': snapshot['cut'] = '2026-11-10'
-    if change == 'rss': snapshot['source']['estimate'] = '2026-11-06'
-    if change == 'register-rss': reg['snapshots']['rss'] = '2026-11-06'
-    if change == 'report-date': funding['source_dates']['report_date'] = '2026-11-10'
-    if change == 'funding-type': funding['known'] = 1
-    if change == 'money-type': funding['own_money']['budget'] = True
-    if change == 'nan': funding['own_money']['budget'] = float('nan')
-    if change == 'bad-date': funding['source_dates']['budget']['data_date'] = '2026-02-31'
-    with pytest.raises(probe.ProbeError): probe.financial_projection(payload, reg)
+def test_existing_output_not_reused_or_deleted(cap,encrypted,tmp_path):
+    out=tmp_path/'cipher';out.mkdir()
+    with pytest.raises(cap.CaptureError):cap.Capture(RUNTIME,transport=Server(cap)).run(CONTEXT,lambda:KEY,out)
+    assert out.is_dir() and not list(out.iterdir())
 
 
-def test_unknown_money_stays_unknown_and_zero_stays_zero(probe):
-    payload = view(); funding = payload['snapshot']['dashboard']['funding']
-    funding['own_money']['need'] = 0; funding['own_money']['left'] = None
-    projected = probe.financial_projection(payload, register())['dashboard']['funding']['own_money']
-    assert projected['need'] == 0 and projected['left'] is None
-    funding['own_money'] = None; funding['known'] = False
-    assert probe.financial_projection(payload, register())['dashboard']['funding']['own_money'] is None
+def test_workflow_only_has_existing_admin_secret_and_fixed_modes(cap):
+    text=(ROOT/'.github/workflows/prod-smoke.yml').read_text()
+    assert text.count('secrets.')==1 and 'secrets.DEVELOPAID_ADMIN_KEY' in text
+    assert 'prepare' in text and ' capture' in text and ' probe' not in text and ' apply' not in text
+    assert 'private.pem' not in text and 'source-audit-cipher/*.cms' in text
+    assert 'public.pem' in text and 'public.json' in text and 'retention-days: 1' in text
+    assert 'github.run_attempt == 1' in text and 'persist-credentials: false' in text
+    assert 'contents: read' in text and 'contents: write' not in text
+    assert cap.POST_PATHS==frozenset(('/monitor/audit/sources','/auctions/krt/audit/cached'))
+    assert 'project:' not in text and 'cut:' not in text
+
+@pytest.mark.parametrize('mode',[[],['apply'],['probe'],['verify'],['capture','anything']])
+def test_no_default_or_legacy_mode(cap,mode,capsys):
+    assert cap.main({},mode)==1
+    result=json.loads(capsys.readouterr().out)
+    assert result['captured'] is False and result['error_code']=='setup'
+
+@pytest.mark.parametrize('stage',[2,3])
+def test_later_unknown_transport_stops_once_and_removes_prior_ciphertexts(cap,encrypted,tmp_path,stage):
+    class Later(Server):
+        def open(self,request,timeout):
+            if request.get_method()=='POST' and len([r for r in self.calls if r.get_method()=='POST'])+1==stage:
+                self.calls.append(request);raise TimeoutError('PRIVATE '+KEY)
+            return super().open(request,timeout)
+    server=Later(cap);runner=cap.Capture(RUNTIME,transport=server)
+    with pytest.raises(cap.CaptureError) as caught:runner.run(CONTEXT,lambda:KEY,tmp_path/'cipher')
+    assert caught.value.phase==('krt_metadata' if stage==2 else 'krt_replay') and caught.value.timeout
+    assert len([r for r in server.calls if r.get_method()=='POST'])==stage
+    assert not (tmp_path/'cipher').exists() and runner._key==''
 
 
-def test_redirect_and_oversized_response_are_rejected_without_credentials_in_exception(probe):
-    class Redirect:
-        def open(self, request, timeout): return Response({}, 'https://elsewhere.invalid/')
-    runner = probe.Probe(RUNTIME, opener=Redirect()); runner._financial_project = PROJECT
-    body = {'project': PROJECT, 'cut': '2026-11-09', 'key': KEY}
-    with pytest.raises(probe.ProbeError, match='redirect_denied') as exc:
-        runner.request('/monitor/view', body)
-    assert KEY not in str(exc.value)
-    class Large:
-        def open(self, request, timeout): return Response(b'x'*(probe.MAX_BYTES+1), request.full_url)
-    runner = probe.Probe(RUNTIME, opener=Large()); runner._financial_project = PROJECT
-    with pytest.raises(probe.ProbeError, match='response_too_large'):
-        runner.request('/monitor/view', body)
+def test_final_health_drift_prevents_any_ciphertext_publication(cap,encrypted,tmp_path):
+    class Drift(Server):
+        def open(self,request,timeout):
+            response=super().open(request,timeout)
+            if request.full_url.endswith('/health') and len(self.calls)==8:
+                return Response({'status':'ok','commit':RUNTIME,'version':'0.0.2'},request.full_url)
+            return response
+    with pytest.raises(cap.CaptureError,match='runtime'):
+        cap.Capture(RUNTIME,transport=Drift(cap)).run(CONTEXT,lambda:KEY,tmp_path/'cipher')
+    assert not (tmp_path/'cipher').exists()
 
 
-@pytest.mark.parametrize('change', ['programme', 'extra', 'project', 'cut', 'missing-key', 'unbound-project'])
-def test_financial_transport_schema_cannot_be_used_as_a_generic_monitor_request(probe, change):
-    runner = probe.Probe(RUNTIME, opener=object()); runner._financial_project = PROJECT
-    body = {'project': PROJECT, 'cut': '2026-11-09', 'key': KEY}
-    if change == 'programme': body['programme_base64'] = 'not permitted'
-    if change == 'extra': body['upto'] = ''
-    if change == 'project': body['project'] = 'Another project'
-    if change == 'cut': body['cut'] = '2026-11-10'
-    if change == 'missing-key': body.pop('key')
-    if change == 'unbound-project': runner._financial_project = None
-    with pytest.raises(probe.ProbeError, match='invalid_payload'):
-        runner.request('/monitor/view', body)
+def test_streaming_response_over_cap_or_deadline_is_not_accepted(cap):
+    now=[0];runner=cap.Capture(RUNTIME,transport=object(),clock=lambda:now[0])
+    class Slow(Response):
+        def read1(self,n):now[0]=cap.CAPTURE_SECONDS+1;return b'{}'
+    class Fake:
+        def open(self,request,timeout):return Slow({},request.full_url)
+    runner.client=Fake()
+    with pytest.raises(cap.CaptureError,match='deadline'):runner.health()
+    with pytest.raises(cap.CaptureError):
+        cap.read_response(Response(b'x'*100,cap.BASE+'/health'),cap.BASE+'/health',16,lambda:10)
 
 
-@pytest.mark.parametrize('node,field', [('snapshot','money'),('snapshot','payments'),
-    ('dashboard','construction'),('dashboard','sources'),('own_money','budget'),('own_money','rows')])
-def test_required_financial_evidence_is_not_silently_replaced_with_an_empty_mapping(probe,node,field):
-    payload = view();snapshot=payload['snapshot'];dashboard=snapshot['dashboard']
-    parent={'snapshot':snapshot,'dashboard':dashboard,'own_money':dashboard['funding']['own_money']}[node]
-    parent.pop(field)
-    with pytest.raises(probe.ProbeError, match='invalid_payload'):
-        probe.financial_projection(payload,register())
-
-
-def test_deadline_is_total_and_encryption_failure_drops_the_artifact(probe, monkeypatch, tmp_path):
-    ticks = iter([0, probe.TOTAL_SECONDS+1])
-    class NeverTransport:
-        def open(self, *args, **kwargs): pytest.fail('Expired operation reached transport')
-    runner = probe.Probe(RUNTIME, opener=NeverTransport(), clock=lambda: next(ticks))
-    with pytest.raises(probe.ProbeError, match='deadline'): runner.request('/health')
-    runner, _, _ = execute(probe, monkeypatch, tmp_path, encryption_ok=False)
-    with pytest.raises(probe.ProbeError, match='unexpected_error'): runner.run(lambda: KEY)
-    assert list(tmp_path.iterdir()) == []
-
-
-def test_route_is_the_actual_readonly_schema_and_the_recipient_is_only_public():
-    module = ast.parse((ROOT/'engine/monitor.py').read_text())
-    request = next(n for n in module.body if isinstance(n, ast.ClassDef) and n.name=='MonitorViewRequest')
-    fields = {n.target.id for n in request.body if isinstance(n, ast.AnnAssign)}
-    assert {'project', 'cut', 'key'} <= fields
-    handler = next(n for n in module.body if isinstance(n, ast.FunctionDef) and n.name=='monitor_view')
-    calls = [n for n in ast.walk(handler) if isinstance(n, ast.Call)]
-    access = next(n for n in calls if isinstance(n.func, ast.Name) and n.func.id=='_require_team_access')
-    assert any(k.arg=='write' and isinstance(k.value, ast.Constant) and k.value.value is False for k in access.keywords)
-    monitor_calls = [n.func.attr for n in calls if isinstance(n.func, ast.Attribute) and isinstance(n.func.value, ast.Name) and n.func.value.id=='developaid_monitor']
-    assert set(monitor_calls) == {'build', 'trend'}
-    cert = (ROOT/'.github/diagnostics/contract-audit-recipient.pem').read_text()
-    assert 'BEGIN CERTIFICATE' in cert and 'PRIVATE KEY' not in cert
-    assert 'workflow_dispatch:' in WORKFLOW.read_text()
-    assert 'runs-on: ubuntu-latest' in WORKFLOW.read_text()
-    assert 'retention-days: 1' in WORKFLOW.read_text()
-
-
-@pytest.mark.parametrize('failure', ['auth', 'invalid-json', 'encryption'])
-def test_real_entrypoint_redacts_failure_stdout_stderr_and_never_keeps_plaintext(probe,monkeypatch,tmp_path,capsys,failure):
-    _, transport, _ = execute(probe,monkeypatch,tmp_path,encryption_ok=failure!='encryption')
-    original = transport.open
-    def fail(request,timeout):
-        if not request.full_url.endswith('/health') and failure in {'auth','invalid-json'}:
-            if failure == 'auth':
-                raise urllib.error.HTTPError(request.full_url,403,KEY+PRIVATE,None,io.BytesIO(PROJECT.encode()))
-            return Response((KEY+PRIVATE+PROJECT).encode(),request.full_url)
-        return original(request,timeout)
-    transport.open = fail
-    monkeypatch.setattr(probe.urllib.request,'build_opener',lambda *args:transport)
-    monkeypatch.setenv('EXPECTED_COMMIT',RUNTIME);monkeypatch.setenv('PROBE_ADMIN_KEY',KEY)
-    monkeypatch.setattr(probe.signal,'signal',lambda *args:None)
-    monkeypatch.setattr(probe.signal,'alarm',lambda *args:None)
-    assert probe.main()==1
-    out=capsys.readouterr();public=json.loads(out.out)
-    assert public['status']=='error'
-    assert public['reason_code']=={'auth':'http_auth','invalid-json':'invalid_json','encryption':'unexpected_error'}[failure]
-    for forbidden in (KEY,PRIVATE,PROJECT,'123456.78'):
-        assert forbidden not in out.out+out.err
-    assert out.err=='' and list(tmp_path.iterdir())==[]
+def test_reads_slower_than_old_fifteen_second_limit_complete_exactly_once(cap,encrypted,tmp_path):
+    now=[0]
+    class Slow(Server):
+        def open(self,request,timeout):
+            assert timeout>17
+            response=super().open(request,timeout);now[0]+=18.5;return response
+    server=Slow(cap);result=cap.Capture(RUNTIME,transport=server,clock=lambda:now[0]).run(CONTEXT,lambda:KEY,tmp_path/'cipher')
+    assert result['captured'] and len([r for r in server.calls if r.get_method()=='POST'])==3
