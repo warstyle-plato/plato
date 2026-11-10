@@ -11,6 +11,7 @@ import pytest
 from playwright.sync_api import expect
 from pypdf import PdfReader
 
+from contract_rows import opened
 from test_monitor_cumulative_controls import browser_page, CONTRACT, OTHER, KEY
 
 
@@ -39,16 +40,25 @@ def test_real_business_register_keeps_core_facts_visible_and_sources_closed(widt
         business_data(responses)
         page.locator('#contractsTab').click()
         first = page.locator(f'tr[data-contract-id="{CONTRACT}"]')
+        # The short row answers the main questions: amount, share done, overrun, term and what needs attention.
         expect(first).to_contain_text('1\u00a0000\u00a0000 ₽')
-        expect(first).to_contain_text('1\u00a0977\u00a0700 ₽')
         expect(first).to_contain_text('197,8%')
-        expect(first).to_contain_text('-977\u00a0700 ₽')
-        expect(first).to_contain_text('Сумма превышена')
-        expect(first).to_contain_text('Связей с договором: 1 · проверить: 1')
+        expect(first).to_contain_text('Сумма превышена на 977\u00a0700 ₽')
         expect(first).to_contain_text('01.11.2026')
-        expect(first).not_to_contain_text('Договор исполнен')
+        expect(first.locator('.contract-attention .contract-risk')).to_have_text(
+            ['Сумма превышена', 'Срок прошёл', 'Есть замечания', 'ещё 1'])
+        more = page.locator(f'tr[data-contract-detail="{CONTRACT}"]')
+        expect(more).to_be_hidden()
+        assert first.evaluate('(r)=>r.getBoundingClientRect().height') <= (110 if width < 900 else 80)
+        more = opened(page, CONTRACT)
+        expect(more).to_contain_text('1\u00a0977\u00a0700 ₽')
+        expect(more).to_contain_text('-977\u00a0700 ₽')
+        expect(more).to_contain_text('Связей с договором: 1 · проверить: 1')
+        expect(more).to_contain_text('Проверить исполнение: срок прошёл. Есть замечания к данным. Проверить связь с работами')
+        for shown in (first, more):
+            expect(shown).not_to_contain_text('Договор исполнен')
         # Source evidence remains accessible, with no technical filename on the default surface.
-        sources = first.locator('.contract-sources')
+        sources = more.locator('.contract-sources')
         assert not sources.evaluate('(el)=>el.open')
         expect(sources.locator('.contract-source').filter(has_text='private-source-marker')).to_be_hidden()
         sources.locator('summary').click()
@@ -58,7 +68,7 @@ def test_real_business_register_keeps_core_facts_visible_and_sources_closed(widt
         # columns and its own wrapper scrolls sideways; the page itself does not.
         assert page.locator('#contractsRows table.contract-register').evaluate(
             '(t)=>getComputedStyle(t).display') == 'table'
-        assert first.locator('td').count() == 11
+        assert first.locator('td').count() == 6
         wrap = page.locator('#contractsRows .contract-register-wrap')
         if width < 900:
             assert wrap.evaluate('(w)=>w.scrollWidth > w.clientWidth')
@@ -67,9 +77,14 @@ def test_real_business_register_keeps_core_facts_visible_and_sources_closed(widt
             last.scroll_into_view_if_needed()
             box = last.bounding_box()
             assert box is not None and box['x'] >= -1 and box['x'] < width
+            # The opened detail stays on the screen while the table scrolls sideways.
+            part = more.locator('.contract-more-part').first.bounding_box()
+            assert part is not None and part['x'] >= 0 and part['x'] + part['width'] <= width
         sources.locator('summary').click()
         second = page.locator(f'tr[data-contract-id="{OTHER}"]')
-        assert second.locator('.contract-main-money').all_text_contents() == ['—', '—', '—', '—', '—', '—']
+        assert second.locator('.contract-main-money').all_text_contents() == ['—']
+        expect(second).to_contain_text('полная сумма не подтверждена')
+        expect(second).to_contain_text('выполнение не подтверждено')
         expect(second).to_contain_text('Нужен срок')
         expect(second).to_contain_text('Работы не указаны')
         expect(second).not_to_contain_text('просрочен')
@@ -77,7 +92,8 @@ def test_real_business_register_keeps_core_facts_visible_and_sources_closed(widt
         # 100% does not erase a missing contractual deadline or promise legal fulfilment.
         third = page.locator('tr[data-contract-id="'+'c'*64+'"]')
         expect(third).to_contain_text('100%')
-        expect(third).to_contain_text('Уточнить срок')
+        expect(third.locator('.contract-attention')).to_have_text('Нужен срок')
+        expect(opened(page, 'c'*64)).to_contain_text('Уточнить срок')
         expect(page.locator('#contractsSummary')).to_contain_text('Выполнение 100% суммы договора')
         assert not errors
 
@@ -94,8 +110,9 @@ def test_actual_print_is_a4_landscape_paginated_with_business_fields_only():
         page.locator('#contractsTab').click()
         expect(page.locator('tr[data-contract-id]')).to_have_count(30)
         # Even opened source evidence, term editor and unmatched details are excluded from print.
-        page.locator('tr[data-contract-id]').first.locator('.contract-sources summary').click()
-        page.locator('tr[data-contract-id]').first.locator('.contract-term').click()
+        more = opened(page)
+        more.locator('.contract-sources summary').click()
+        more.locator('.contract-term').click()
         page.locator('#contractsUnmatched > .contract-detail > summary').click()
         pdf = PdfReader(io.BytesIO(page.pdf(prefer_css_page_size=True, print_background=True)))
         assert len(pdf.pages) >= 3
@@ -105,12 +122,15 @@ def test_actual_print_is_a4_landscape_paginated_with_business_fields_only():
             assert float(sheet.mediabox.height) == pytest.approx(595.28, abs=2)
             text = ' '.join((sheet.extract_text() or '').split())
             texts.append(text)
-            assert 'Подрядчик / договор' in text and 'Связь со стройкой' in text
+            assert 'Договор' in text and 'График договора' in text and 'Внимание' in text
         text = ' '.join(texts)
         assert all(f'DEMO-{index:02d}' in text for index in range(30))
-        for necessary in ['Учебный проект', '06.11.2026', '05.11.2026', '1 000 000', '197,8%', '977 700', '01.11.2026', 'не оплата']:
+        # Print opens the detail of every contract: no business field is left behind a click.
+        for necessary in ['Учебный проект', '06.11.2026', '05.11.2026', '1 000 000', '197,8%', '977 700', '01.11.2026', 'не оплата',
+                          '1 977 700', 'Связь со стройкой', 'Есть совпадения — проверьте', 'Проверить исполнение: срок прошёл']:
             assert necessary in text
-        for private_or_control in [KEY, 'private-source-marker', 'Указать срок', 'Изменить срок', 'Сохранить срок', 'Ключ администратора', 'Разделы проекта']:
+            assert text.count(necessary) >= (30 if necessary.startswith('Проверить') else 1)
+        for private_or_control in [KEY, 'private-source-marker', 'Указать срок', 'Изменить срок', 'Сохранить срок', 'Ключ администратора', 'Разделы проекта', 'Открыть']:
             assert private_or_control not in text
         assert not errors
 
@@ -135,8 +155,10 @@ def test_daily_candidates_do_not_inherit_confirmation_for_another_contract():
         evidence[1].update(contract_id=OTHER, link_basis='explicit_number')
         page.locator('#contractsTab').click()
         first = page.locator(f'tr[data-contract-id="{CONTRACT}"]')
-        expect(first).to_contain_text('Есть совпадения — проверьте')
-        expect(first).not_to_contain_text('Связей с договором:')
+        expect(first.locator('.contract-attention .contract-risk').last).to_have_attribute('title', 'Сверить с работами')
+        more = opened(page, CONTRACT)
+        expect(more).to_contain_text('Есть совпадения — проверьте')
+        expect(more).not_to_contain_text('Связей с договором:')
         first.locator('.contract-open').click()
         expect(page.locator('#contractsDetails')).to_contain_text('Сообщение связано с другим договором')
         assert page.locator('#contractsDetails .evidence-remove').count() == 0
@@ -168,11 +190,14 @@ def test_passed_contract_deadline_stays_in_attention_count_filter_and_next_step(
         page.locator('#contractsTab').click()
         expect(page.locator('#contractsSummary b').nth(1)).to_have_text('1')
         passed = page.locator(f'tr[data-contract-id="{CONTRACT}"]')
-        expect(passed.locator('.contract-next')).to_have_text(
+        expect(passed.locator('.contract-attention')).to_have_text('Срок прошёл')
+        more = opened(page, CONTRACT)
+        expect(more.locator('.contract-next')).to_have_text(
             'Проверить исполнение: срок прошёл')
-        expect(passed).to_contain_text('Срок прошёл; проверьте исполнение')
-        expect(passed).not_to_contain_text('Договор не исполнен')
-        expect(passed).not_to_contain_text('Нарушение договора')
+        expect(more).to_contain_text('Срок прошёл; проверьте исполнение')
+        for shown in (passed, more):
+            expect(shown).not_to_contain_text('Договор не исполнен')
+            expect(shown).not_to_contain_text('Нарушение договора')
         page.locator('#contractsFilter').select_option('warnings')
         expect(page.locator('tr[data-contract-id]')).to_have_count(1)
         expect(passed).to_be_visible()

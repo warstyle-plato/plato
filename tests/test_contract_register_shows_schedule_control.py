@@ -72,6 +72,7 @@ def test_the_register_view_of_the_monitor_brings_the_schedule_control(card, monk
 def test_the_table_shows_lag_deviation_and_forecast_in_plain_words(card, width):  # noqa: F811
     from playwright.sync_api import expect
 
+    from contract_rows import opened
     from test_monitor_cumulative_controls import OTHER, browser_page
     with browser_page(width) as (page, responses, errors):
         shown = files.register_control(PROJECT, {"rows": [
@@ -81,23 +82,36 @@ def test_the_table_shows_lag_deviation_and_forecast_in_plain_words(card, width):
             row["schedule_control"] = next(x["schedule_control"] for x in shown if x["id"] == row["id"])
         page.locator("#contractsTab").click()
         row = page.locator(f'tr[data-contract-id="{CONTRACT}"]')
-        lag = row.locator(".contract-schedule-lag")
-        expect(lag).to_have_text("2 дняотставание от плана")
-        assert lag.get_attribute("data-label") == "Отставание по ГПР договора"
-        if width > 900:
-            head = page.locator(".contract-register thead th")
-            names = [" ".join(x.split()) for x in head.evaluate_all("hs => hs.map(h => h.innerText)")]
-            assert names[5:9] == ["Срок договора", "Отставание по ГПР договора", "Отклонение от плана",
-                                  "Прогноз окончания по ГПР"]
-        expect(row.locator(".contract-schedule-deviation")).to_have_text(
-            "−45 %−4 500 ₽план 10 000 ₽ · факт 5 500 ₽")
-        forecast = row.locator(".contract-schedule-forecast")
-        expect(forecast).to_have_text("06.02.2026на 1 день позже срокаОкончание ГПР: 05.02.2026")
+        # The short row: one chip with the lag, the deviation and the forecast in a few words.
+        brief = row.locator(".contract-schedule")
+        expect(brief).to_have_text("отстаёт на 2 дня−45 % от планапрогноз 06.02.2026, позже на 1 день")
+        assert brief.get_attribute("data-label") == "График договора"
+        head = page.locator(".contract-register thead th")
+        expect(head).to_have_count(6)
+        names = [" ".join(x.split()) for x in head.evaluate_all("hs => hs.map(h => h.textContent)")]
+        assert names == ["Договор", "Сумма и выполнение", "Срок", "График договора", "Внимание", "Открыть"]
         color = "e => getComputedStyle(e).color"
-        red = lag.locator(".risktext").evaluate(color)
-        assert forecast.locator(".contract-main-money").evaluate(color) == red != row.evaluate(color)
+        red = brief.locator(".contract-risk").evaluate(color)
+        assert brief.locator(".contract-sub").nth(1).evaluate(color) == brief.locator(".contract-sub").first.evaluate(
+            color) != row.evaluate(color)
+        # The detail keeps the full answer of the card.
+        more = opened(page, CONTRACT)
+        lag = more.locator(".contract-schedule-lag")
+        expect(lag).to_have_text("Отставание по ГПР договора2 дняотставание от плана")
+        assert lag.get_attribute("data-label") == "Отставание по ГПР договора"
+        expect(more.locator(".contract-schedule-deviation")).to_have_text(
+            "Отклонение от плана−45 %−4 500 ₽план 10 000 ₽ · факт 5 500 ₽")
+        forecast = more.locator(".contract-schedule-forecast")
+        expect(forecast).to_have_text("Прогноз окончания по ГПР06.02.2026на 1 день позже срокаОкончание ГПР: 05.02.2026")
+        assert forecast.locator(".contract-main-money").evaluate(color) == lag.locator(".risktext").evaluate(
+            color) != row.evaluate(color)
+        assert red != row.evaluate(color)
         other = page.locator(f'tr[data-contract-id="{OTHER}"]')
-        expect(other.locator(".contract-schedule-lag")).to_have_text(
-            "—ГПР и расчёт договора в карточку не загружены.")
-        expect(other.locator(".contract-schedule-forecast")).to_have_text("—")
+        expect(other.locator(".contract-schedule")).to_have_text("ГПР не загружен")
+        assert other.locator(".contract-schedule .contract-risk").get_attribute("title") == (
+            "ГПР и расчёт договора в карточку не загружены.")
+        more = opened(page, OTHER)
+        expect(more.locator(".contract-schedule-lag")).to_have_text(
+            "Отставание по ГПР договора—ГПР и расчёт договора в карточку не загружены.")
+        expect(more.locator(".contract-schedule-forecast")).to_have_text("Прогноз окончания по ГПР—")
         assert errors == []

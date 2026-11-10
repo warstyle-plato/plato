@@ -198,9 +198,12 @@ def test_contracts_render_exact_money_unknowns_and_separate_physics(width):
         row = page.locator(f'tr[data-contract-id="{CONTRACT}"]')
         expect(row).to_contain_text('1\u00a0000\u00a0000 ₽')
         expect(row.locator('.term')).to_contain_text('Нужен срок')
-        expect(page.locator(f'tr[data-contract-id="{OTHER}"]')).to_contain_text('0 ₽')
-        assert page.locator(f'tr[data-contract-id="{OTHER}"] .contract-main-money').all_text_contents() == ['—', '0 ₽', '—', '—', '—', '—']
-        expect(page.locator(f'tr[data-contract-id="{OTHER}"]')).to_contain_text('Доля не рассчитана')
+        from contract_rows import opened
+        expect(page.locator(f'tr[data-contract-id="{OTHER}"]')).to_contain_text('выполнено 0 ₽')
+        assert page.locator(f'tr[data-contract-id="{OTHER}"] .contract-main-money').all_text_contents() == ['—']
+        other = opened(page, OTHER)
+        assert other.locator('.contract-main-money').all_text_contents() == ['—', '—', '0 ₽', '—', '—', '—']
+        expect(other).to_contain_text('Доля не рассчитана')
         row.locator('.contract-open').click()
         expect(page.locator('#contractsDetails')).to_contain_text('35%')
         expect(page.locator('#contractsDetails')).to_contain_text('100 м²')
@@ -270,7 +273,8 @@ def test_term_and_each_evidence_link_require_explicit_actions():
         row = page.locator(f'tr[data-contract-id="{CONTRACT}"]')
         row.wait_for()
         assert responses.links == []
-        row.locator('.contract-term').click()
+        from contract_rows import opened
+        opened(page, CONTRACT).locator('.contract-term').click()
         assert page.locator('#contractsTermDate').input_value() == ''
         page.locator('#contractsTermDate').fill('2027-02-01')
         page.locator('#contractsTermNote').fill('Пункт 4.2 договора')
@@ -391,7 +395,8 @@ def test_undated_quantity_and_later_manual_deadline_are_only_references():
         expect(manual).to_contain_text('01.02.2027')
         expect(manual).to_contain_text('не подтверждает срок договора на выбранную дату среза')
         assert manual.locator('img').count() == 0
-        row.locator('.contract-term').click()
+        from contract_rows import opened
+        opened(page, CONTRACT).locator('.contract-term').click()
         assert page.locator('#contractsTermDate').input_value() == '2027-02-01'
         expect(page.locator('#contractsTermMsg')).to_contain_text('текущую ручную отметку')
         assert not errors
