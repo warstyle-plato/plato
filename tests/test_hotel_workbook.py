@@ -2,7 +2,7 @@
 
 Формулы листа «Расчёт» — построчный пересказ
 `developaid_hotel_strategy.hotel_flows`; «USALI по годам» и «Итоги» — их
-свод; «Сверка» сравнивает итоги книги с движком. Формулы вычисляет pycel —
+свод; «Сверка» сравнивает итоги книги с движком. Формулы вычисляет xlsx_eval —
 без Excel. Проверка обязана падать на подделке (испорченная вводная книги).
 
 Запуск: python3 -m pytest tests/test_hotel_workbook.py -q
@@ -28,7 +28,7 @@ import main_legacy as core  # noqa: E402
 openpyxl = pytest.importorskip("openpyxl")
 from xlsx_eval import Evaluator
 
-ALLOWED = {"IF", "IFERROR", "IRR", "INT", "AND", "OR", "MIN", "MAX", "SUM", "SUMIF", "COUNT", "COUNTIF", "ABS", "EDATE", "YEAR", "MONTH", "INDEX", "MATCH"}
+ALLOWED = {"IF", "IFERROR", "IRR", "INT", "AND", "OR", "MIN", "MAX", "SUM", "SUMIF", "COUNT", "COUNTIF", "ABS", "EDATE", "YEAR", "MONTH", "DAY", "INDEX", "MATCH"}
 
 
 def _project(preset: str | None = "hotel1", **over):

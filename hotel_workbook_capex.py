@@ -72,7 +72,7 @@ def inputs(book, spec, hw) -> None:
     ws["G74"] = f'=COUNTIF(G77:G{76+len(editable_plan)},">0")'
 
 
-def build(book, spec, rows, hw):
+def build(book, spec, rows, hw, land_rent_ref=None):
     """Постатейная смета и денежный график; возвращает ссылки для расчёта."""
     ws = book.create_sheet(SHEET)
     ws["A1"] = "Затраты гостиницы — смета и график оплаты"
@@ -144,15 +144,17 @@ def build(book, spec, rows, hw):
     ws["F24"] = "=SUM(F5:F22)"
     # Дополнительные статьи не скрываются за «сошлось»: они поименованы,
     # лежат в отдельном исходном графике и перечислены в ограничениях книги.
-    engine = {key: schedule for key, schedule in spec.get("engine_articles", {}).items() if schedule}
+    engine = {key: schedule for key, schedule in spec.get("engine_articles", {}).items()
+              if schedule and not (key == "land_rent" and land_rent_ref)}
     if engine:
         ws["A26"] = "Дополнительные статьи: исходный график движка (не пересчитывается сметой)"
-    monthly_keys = list(ARTICLES) + [key for key in engine if key not in ARTICLES]
+    monthly_keys = list(ARTICLES) + (["land_rent"] if land_rent_ref else []) + [key for key in engine if key not in ARTICLES]
     letters = {key: get_column_letter(3 + index) for index, key in enumerate(monthly_keys)}
     total_col = get_column_letter(3 + len(monthly_keys))
     ws[f"A{FIRST-1}"], ws[f"B{FIRST-1}"] = "k", "Месяц"
     for key, col in letters.items():
-        ws[f"{col}{FIRST-1}"] = definitions[key][0] if key in definitions else spec.get("article_labels", {}).get(key, key)
+        ws[f"{col}{FIRST-1}"] = ("Аренда земельного участка" if key == "land_rent" else definitions[key][0]
+                               if key in definitions else spec.get("article_labels", {}).get(key, key))
     ws[f"{total_col}{FIRST-1}"] = "Итого CAPEX"
     plan_last = 76 + max(12, len(spec.get("purchase_plan") or [(0, 1.0)]))
     plan_k = f"'Вводные'!$F$77:$F${plan_last}"
@@ -175,6 +177,9 @@ def build(book, spec, rows, hw):
         ws[f"B{r}"].number_format = "mmm yyyy"
         for key in monthly_keys:
             cell = f"{letters[key]}{r}"
+            if key == "land_rent" and land_rent_ref:
+                ws[cell] = f"=SUM({land_rent_ref(k)})*1000000"
+                continue
             if key in engine:
                 ws[cell] = float(engine[key].get(k, 0.0))
                 ws[cell].fill = hw.ENGINE_FILL
@@ -204,6 +209,9 @@ def build(book, spec, rows, hw):
             ws[cell] = "=" + formula
         ws[f"{total_col}{r}"] = "=" + "+".join(f"{col}{r}" for col in letters.values())
     ws["F24"] = f"=SUM({total_col}{FIRST}:{total_col}{FIRST+rows-1})"
+    if land_rent_ref:
+        ws["A23"] = "Аренда ЗУ (изменяется на листе «Аренда ЗУ»)"
+        ws["F23"] = f"=SUM({col_range('land_rent')})"
     ws.freeze_panes = "B5"
     ws.column_dimensions["A"].width = 44
     for col in range(2, 9):
