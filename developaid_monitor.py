@@ -1242,8 +1242,11 @@ def projects() -> list[dict[str, Any]]:
     for folder in sorted(_SNAPSHOT_DIR.iterdir(), key=lambda item: item.name.lower()):
         if not folder.is_dir() or folder.name.startswith("."):
             continue
+        # Lock files can be created by a read or baseline replacement. They
+        # are operational metadata, not a saved source or allocation decision.
         kinds = sorted(part.name for part in folder.iterdir()
-                       if part.is_dir() and any(part.iterdir()))
+                       if part.is_dir() and any(not item.name.startswith(".")
+                                                for item in part.iterdir()))
         if not kinds:
             continue
         label = folder.name.replace("-", " ")
