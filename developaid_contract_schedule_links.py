@@ -11,7 +11,9 @@ A position numbered and named like a line of the schedule (4.1 «(В-3) Витр
 система …» in both) gets that line; so does a position under a heading of the
 estimate numbered and named like a line. Such a match decides alone: a number
 repeated in the schedule, or a line of another building or part, is a review item, not
-a link by the kind of work. Otherwise a position whose signs are all read gets
+a link by the kind of work. A repeated number is linked by the owner's hand, the line
+named alike ticked in advance; a line of another building carries the schedule's object
+as a `fix` the owner may take for the whole estimate at once. Otherwise a position whose signs are all read gets
 every leaf line with the same signs.
 Spread over several lines, its cost is divided by their duration, and this is
 labelled as an assumption (owner's decision 2А). Anything less certain is a
@@ -147,16 +149,18 @@ def _numbered(position, signs, lines):
     Returns those lines and how many lines of the schedule carry that number; nothing when
     neither the position nor its heading is in the schedule by number and name.
     """
-    counts = {}
-    for line in lines:
-        counts[line["code"]] = counts.get(line["code"], 0) + 1
     group = position.get("group") or {}
     for number, name in ((position.get("number"), position.get("name")), (group.get("number"), group.get("name"))):
         number = _text(number).rstrip(".")
-        found = [s for s in signs if number and s["line"]["code"] == number and _same_name(s["line"]["name"], name)]
+        found = [s for s in signs if number and printed(s["line"]) == number and _same_name(s["line"]["name"], name)]
         if found:
-            return found, counts[number]
-    return [], 0
+            return found, [line for line in lines if printed(line) == number]
+    return [], []
+
+
+def printed(line):
+    """The number printed in the schedule: a repeated one gets its own code from the reader."""
+    return line.get("printed") or line["code"]
 
 
 def _places(where):
@@ -201,24 +205,34 @@ def propose(estimate, schedule, *, agreement=False):
                 "name": position.get("name"), "unit": position.get("unit"), "section": position.get("section"),
                 "amount": (position.get("amount") or {}).get("total"), "quantity": position.get("quantity"),
                 "kind": label, "buildings": sorted(where), "part": side, "lines": [], "status": "review",
-                "reason": "", "assumption": ""}
+                "reason": "", "assumption": "", "suggested": [], "fix": None}
         positions.append(item)
         if not lines:
             item["reason"] = ("График производства работ этой или прежней редакции не загружен: "
                               "сопоставить позицию не с чем.")
             continue
-        same, repeated = _numbered(position, signs, lines)
+        same, numbered = _numbered(position, signs, lines)
         if same:
             line = same[0]["line"]
             there = same[0]["buildings"]
+            repeated = len(numbered)
             if repeated > 1:
+                # Owner's decision А: the owner picks the line; the line named alike is only ticked in advance.
                 lines_word = "строки" if repeated % 10 in (2, 3, 4) and repeated % 100 not in (12, 13, 14) else "строк"
-                item["reason"] = (f"В графике {repeated} {lines_word} с номером {line['code']}: номер повторяется, "
-                                  "поэтому связь по нему не определить, пока в графике не исправят нумерацию.")
+                alike = [s["line"]["code"] for s in same]
+                item["suggested"] = alike
+                item["reason"] = (f"В графике {repeated} {lines_word} с номером {printed(line)}: "
+                                  + "; ".join(f"«{x['code']}» {_text(x['name'])[:60]}" for x in numbered)
+                                  + ". По номеру связь не определить: выберите строку вручную"
+                                  + (f" — по названию подходит «{alike[0]}»" if len(alike) == 1 else "")
+                                  + ". Подрядчика попросите исправить нумерацию графика.")
             elif where and there and where != there:
                 item["reason"] = (f"Строка графика {line['code']} совпадает с позицией по номеру и названию, но в "
                                   f"графике она относится к объекту «{_places(there)}», а в расчёте позиция стоит "
                                   f"в разделе объекта «{_places(where)}».")
+                # Which object is right is the owner's answer: one button takes the schedule's object.
+                if line.get("start") and line.get("finish"):
+                    item["fix"] = {"lines": [line["code"]], "object": _places(there), "estimate": _places(where)}
             elif side and same[0]["part"] and side != same[0]["part"]:
                 item["reason"] = (f"Строка графика {line['code']} совпадает с позицией по номеру и названию, но в "
                                   f"графике она относится к {_SIDE[same[0]['part']]} части, а в расчёте позиция стоит "

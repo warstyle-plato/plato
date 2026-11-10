@@ -73,7 +73,7 @@ def apply(result: dict, choices: dict, schedule: dict | None) -> dict:
         chosen = [current[line["code"]] for line in choice["lines"]]
         manual = choice["origin"] == "manual"
         item.update(status="confirmed", lines=links.linked(chosen, choice["shares"] if manual else None),
-                    reason="", origin=choice["origin"], chosen=choice["chosen"], decided_at=choice["decided_at"],
+                    reason="", suggested=[], fix=None, origin=choice["origin"], chosen=choice["chosen"], decided_at=choice["decided_at"],
                     assumption=(MANUAL_NOTE if manual else links.SHARE_ASSUMPTION) if len(chosen) > 1 else "")
     result.update(links.summary(result["positions"], schedule))
     return result

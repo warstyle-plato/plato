@@ -13,6 +13,8 @@ by more than a day, or end before they start, takes the bar's dates; a group
 line whose dates differ from the span of its works takes that span. Each such
 correction keeps the original cells and is listed in `corrections` with its
 reason — never silently (owner's decision: correct by the bar, show in red).
+A number printed on several schedule lines gives the later lines their own code
+(«14.1, повтор»); the printed number is kept and the lines are listed in `repeats`.
 
 Estimate checks compare quantity × price, material + work, and every section
 and grand total with the document's own totals. A repeated position number is
@@ -30,7 +32,7 @@ import datetime as dt
 import re
 
 # Raise when reading changes: stored documents are then read again from their PDF.
-READER_VERSION = 3
+READER_VERSION = 4
 MONTHS = {'январь': 1, 'февраль': 2, 'март': 3, 'апрель': 4, 'май': 5, 'июнь': 6, 'июль': 7,
           'август': 8, 'сентябрь': 9, 'октябрь': 10, 'ноябрь': 11, 'декабрь': 12}
 _CODE = re.compile(r'^\d+(?:\.\d+)*\.?$')
@@ -627,14 +629,41 @@ def _bar(grid, row, fills, columns, dates, first=4, body=0.0):
     return (min(d[0] for d in covered).isoformat(), max(d[1] for d in covered).isoformat()) if covered else None
 
 
+def _repeat_code(number, count):
+    return f'{number}, повтор' + (f' {count-1}' if count > 2 else '')
+
+
+def _separate_repeats(schedule):
+    """A number printed on several lines: the later lines get their own code, the number stays in `printed`.
+
+    A line belongs to the nearest heading above it with its parent's number, so the
+    works under a repeated heading stay under that heading. Which line a position of
+    the estimate means is the owner's choice (decision А), never the first one found.
+    """
+    count, last, repeats = {}, {}, {}
+    for line in schedule['lines']:
+        number = line['code']
+        count[number] = count.get(number, 0) + 1
+        if count[number] > 1:
+            line.update(code=_repeat_code(number, count[number]), printed=number)
+            repeats.setdefault(number, [last[number]]).append(line)
+        if line.get('parent') in last:
+            line['parent'] = last[line['parent']]['code']
+        last[number] = line
+    schedule['repeats'] = [{'number': number, 'lines': [{'code': x['code'], 'name': x['name'], 'page': x.get('page')}
+                                                        for x in found]}
+                           for number, found in repeats.items()]
+    for repeat in schedule['repeats']:
+        shown = ' и '.join(f'«{x["code"]}» (стр. {x["page"]})' for x in repeat['lines'])
+        schedule['warnings'].append(f'Номер строки графика {repeat["number"]} повторяется: строки показаны как '
+                                    f'{shown}. Позиции расчёта с этим номером свяжите со строкой вручную, а '
+                                    'подрядчика попросите исправить нумерацию графика.')
+
+
 def _check_schedule(schedule):
-    lines, warnings = schedule['lines'], schedule['warnings']
-    seen = {}
-    for line in lines:
-        if line['code'] in seen:
-            warnings.append(f'Номер строки графика {line["code"]} повторяется (стр. {seen[line["code"]]["page"]} '
-                            f'и {line["page"]}).')
-        seen.setdefault(line['code'], line)
+    lines = schedule['lines']
+    _separate_repeats(schedule)
+    warnings = schedule['warnings']
     # Deepest lines first, so a heading without dates spans its works' spans.
     for line in sorted(lines, key=lambda item: -item['level']):
         children = [c for c in lines if c['parent'] == line['code'] and c['start'] and c['finish']]
