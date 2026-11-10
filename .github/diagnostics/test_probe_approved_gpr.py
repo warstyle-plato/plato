@@ -182,14 +182,14 @@ def test_utc_date_change_rejects_further_private_read(setup):
     assert error.value.code==ops.FENCE and not server.calls
 
 
-def test_workflow_is_temporarily_probe_only_with_one_runtime_input():
+def test_workflow_restores_only_fixed_approved_apply_with_one_runtime_input():
     import yaml
     workflow=yaml.safe_load((SCRIPT.parents[1]/'workflows/prod-smoke.yml').read_text())
     triggers=workflow.get('on',workflow.get(True))
     assert set(triggers)=={'workflow_dispatch'}
     assert set(triggers['workflow_dispatch']['inputs'])=={'expected_runtime_commit'}
     assert workflow['permissions']=={'contents':'read'}
-    assert workflow['run-name']=='approved-gpr-source-readonly-probe'
+    assert workflow['run-name']=='approved-gpr-source-apply-once'
     apply=next(s for s in workflow['jobs']['apply']['steps'] if s.get('id')=='apply')
-    assert apply['run']=='python3 .github/diagnostics/ephemeral-gpr-transport.py probe'
-    assert not any(s.get('run','').endswith('transport.py apply') for s in workflow['jobs']['apply']['steps'])
+    assert apply['run']=='python3 .github/diagnostics/ephemeral-gpr-transport.py apply'
+    assert not any(s.get('run','').endswith('transport.py probe') for s in workflow['jobs']['apply']['steps'])

@@ -249,7 +249,7 @@ def test_workflow_reuses_only_existing_admin_secret_and_cleans_private_session()
     assert set(triggers['workflow_dispatch']['inputs'])=={'expected_runtime_commit'}
     assert workflow['permissions']=={'contents':'read'}
     job=workflow['jobs']['apply'];steps=job['steps']
-    assert job['timeout-minutes']==22
+    assert job['timeout-minutes']==28
     public=next(step for step in steps if step.get('with',{}).get('name')=='approved-gpr-input-public')
     assert public['with']['path'].splitlines()==[
         '${{ runner.temp }}/gpr-session-${{ github.run_id }}-1/public.pem',

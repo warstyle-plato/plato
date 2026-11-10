@@ -44,8 +44,8 @@ POST_PATHS = frozenset({PREVIEW, APPROVE, PHYSICAL})
 MAX_INPUT = 1024*1024
 MAX_RESPONSE = 16*1024*1024
 MAX_PROOF = 64*1024*1024
-HTTP_SECONDS = 15
-TOTAL_SECONDS = 240
+HTTP_SECONDS = 60
+TOTAL_SECONDS = 600
 BRANCH = 'refs/heads/ops/approve-corpus-gpr-once'
 REPOSITORY = 'warstyle-plato/plato'
 ACTOR = 'warstyle-plato'  # Explicit human login; never inferred from the org.
@@ -527,7 +527,7 @@ def main(input_provider=None):
             transport_key = os.environ.pop('GPR_ONCE_TRANSPORT_KEY','')
             envelope_hash = None
         else:
-            # The pinned ephemeral provider waits before the four-minute apply clock.
+            # The pinned ephemeral provider waits before the separate apply clock.
             # Authenticated plaintext identity and all operation gates stay fixed.
             envelope, transport_key = input_provider(temporary)
             envelope_hash = sha(envelope)

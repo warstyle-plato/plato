@@ -167,9 +167,9 @@ openssl cms -encrypt -aes-256-gcm -binary -outform DER \
 
 Ожидание ограничено15мин и отдельным сигналом; read-only ответы читаются
 ограниченными кусками с deadline. Только после доставки создаётся прежний
-Operation и начинается отдельный240-секундный срок применения. До decrypt,
+Operation и начинается отдельный600-секундный срок применения. До decrypt,
 private API, записи и после неё повторно проверяется актуальный runtime;
-UTC-дата и остальные guards прежние. На workflow выделено22мин. Итог по-прежнему
+UTC-дата и остальные guards прежние. На workflow выделено28мин. Итог по-прежнему
 различает attempted/verified/unknown; повторная запись или automatic retry
 не добавлены. Always cleanup удаляет gpr-session-* вместе с прежними gpr-input-*
 и gpr-proof-*. Независимая приёмка нового точного ops SHA обязательна.
@@ -190,7 +190,7 @@ expected_runtime_commit не меняются. Это диагностика, н
 для old_cut и текущего UTC-дня. Произвольный phase/path, version-preview,
 version-approve и другие адреса отклоняются до HTTP; Operation.execute не
 вызывается. Файл, source и дата РНВ этой диагностикой не записываются.
-Прежний apply-протокол и его15/240сек таймауты не менялись.
+На момент probe прежний apply-протокол и его15/240сек таймауты не менялись.
 
 В stdout идут только probe_only, неизменно false write_attempted/outcome_unknown,
 фиксированные фазы, целый HTTPstatus, timeout bool, elapsed seconds и booleans
@@ -200,3 +200,19 @@ SHA, URL, исключения и ключи не публикуются. Неу
 ограниченными кусками без redirect, runtime проверяется до decrypt, перед
 чтениями и после них. Успех probe не означает согласование или запись ГПР.
 Always cleanup временной пары и остальных приватных файлов сохранён.
+
+## Возврат к применению после проверенной read-only диагностики
+
+Probe42784665794 успешно прочитал оба фиксированных PHYSICAL среза: HTTP200,
+17.871 и18.543сек. Источник остался прежним; snapshot и physical revision
+совпали, runtime подтверждён. write_attempted=false. Это установило причину
+первого отказа:15-секундный HTTPtimeout был короче нормального чтения.
+
+Текущий workflow снова запускает только `apply` и называется
+`approved-gpr-source-apply-once`. HTTPtimeout применения увеличен до60сек,
+общий отдельный apply deadline — до600сек, весь job —28мин (15мин на транспорт,
+10мин на применение и запас на cleanup). Контур `Operation`, CAS/audit/source/
+owner/nonce/one-write/unknown-outcome не изменён. Probe остаётся отдельной
+read-only функцией для диагностики; текущий workflow его не вызывает. Новый
+manual запуск требует свежих runtime/state gates и отдельной exact-SHA приёмки;
+автоматического повторения не добавлено.

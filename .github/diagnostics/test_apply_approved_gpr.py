@@ -518,3 +518,40 @@ def test_workflow_has_only_explicit_fixed_scope_and_ciphertext_artifact():
     assert artifact['if']=="always() && steps.apply.outputs.proof_created == 'true'"
     assert artifact['with']['path']=='${{ runner.temp }}/approved-gpr-apply-proof.cms'
     assert artifact['with']['retention-days']==1 and job['steps'][-1]['if']=='always()'
+
+
+@pytest.mark.parametrize('read_seconds',[18,45])
+def test_realistic_slow_reads_complete_once_with_bounded_new_timeouts(read_seconds):
+    now=[0.0]
+    class SlowReads(Server):
+        def open(self,request,timeout):
+            path=request.full_url.removeprefix(ops.BASE)
+            delay=read_seconds if path in {ops.PHYSICAL,ops.PREVIEW} else 0
+            assert 0<timeout<=60
+            if timeout<delay:
+                now[0]+=timeout
+                raise TimeoutError('Synthetic slow fixed read')
+            now[0]+=delay
+            return super().open(request,timeout)
+    server=SlowReads()
+    value=ops.Operation(COMMIT,opener=server,clock=lambda:now[0],
+        today=lambda:dt.date.fromisoformat(TODAY))
+    value.health();value.health()
+    result=value.execute(bundle(),KEY)
+    assert result['ok'] and result['postflight_verified'] and server.approvals==1
+    assert result['write_attempted'] and result['write_response_verified'] and not result['outcome_unknown']
+    assert now[0]<ops.TOTAL_SECONDS
+    if read_seconds==45:assert now[0]>240  # Old total clock fails despite healthy individual reads.
+
+
+def test_extended_apply_clock_still_refuses_http_after_expiry():
+    now=[0.0];server=Server()
+    value=ops.Operation(COMMIT,opener=server,clock=lambda:now[0],
+        today=lambda:dt.date.fromisoformat(TODAY))
+    now[0]=601
+    with pytest.raises(ops.ApplyError) as error:value.execute(bundle(),KEY)
+    assert error.value.code==ops.DEADLINE and server.approvals==0 and not server.calls
+
+
+def test_apply_timeouts_remain_explicitly_bounded():
+    assert ops.HTTP_SECONDS==60 and ops.TOTAL_SECONDS==600
