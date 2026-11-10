@@ -26,18 +26,25 @@ import datetime as dt
 import re
 
 # Raise when reading changes: stored documents are then read again from their PDF.
-READER_VERSION = 1
+READER_VERSION = 2
 MONTHS = {'январь': 1, 'февраль': 2, 'март': 3, 'апрель': 4, 'май': 5, 'июнь': 6, 'июль': 7,
           'август': 8, 'сентябрь': 9, 'октябрь': 10, 'ноябрь': 11, 'декабрь': 12}
 _CODE = re.compile(r'^\d+(?:\.\d+)*\.?$')
 _DATE = re.compile(r'(\d\d)\.(\d\d)\.(\d{4})')
-_CONTRACT = re.compile(r'Договор\w*\s+подряда\s+№\s*(.+?)\s+от\s+(\d\d\.\d\d\.\d{4})', re.I)
-_AGREEMENT = re.compile(r'Дополнительн\w+\s+соглашени\w+\s+№\s*(\d+)\s+от\s+(\d\d\.\d\d\.\d{4})', re.I)
+_GENITIVE = {'января': 1, 'февраля': 2, 'марта': 3, 'апреля': 4, 'мая': 5, 'июня': 6, 'июля': 7,
+             'августа': 8, 'сентября': 9, 'октября': 10, 'ноября': 11, 'декабря': 12}
+# A date in figures (16.03.2026) or in words («16» марта 2026 г.).
+_WHEN = (r'(?:\d\d\.\d\d\.\d{4}|[«"“]?\d{1,2}[»"”]?\s+(?:' + '|'.join(_GENITIVE) + r')\s+\d{4})')
+_CONTRACT = re.compile(r'Договор\w*\s+подряда\s+№\s*(.+?)\s+(?:от\s+(' + _WHEN + r')|на\s+выполнение)', re.I)
+_AGREEMENT = re.compile(r'Дополнительн\w+\s+соглашени\w+\s+№\s*(\d+)(?:\s+от\s+(' + _WHEN + r'))?', re.I)
+# The date line under the title («г. Москва «16» марта 2026 г.») follows it closely.
+_DATELINE = 400
 _ANNEX = re.compile(r'Приложение\s*№\s*(\d+(?:\.\d+)*)')
 _ESTIMATE_TITLE = re.compile(r'Расч[её]т\s+договорной\s+стоимости', re.I)
 _SCHEDULE_TITLE = re.compile(r'График\s+производства', re.I)
 _SCOPES = (('на выполненные и принятые работы', 'accepted'), ('на завершение работ', 'remaining'))
 _ESTIMATE_COLUMNS = 10
+_TOTALS = ('итого', 'всего', 'по разделу')
 # Electronic-signature stamps of the document operator are printed over the table.
 _STAMP = re.compile(r'ДОКУМЕНТ\s+ПОДПИСАН|ОТПРАВЛЕНО|УТВЕРЖДЕНО|Оператор\s+ЭДО|Сертификат|Идентификатор:')
 _STAMP_MARGIN = 10.0
@@ -49,11 +56,17 @@ def _space(text):
 
 
 def _date(text):
-    match = _DATE.fullmatch(_space(text))
-    if not match:
+    text = _space(text)
+    match = _DATE.fullmatch(text)
+    words = re.fullmatch(r'[«"“]?(\d{1,2})[»"”]?\s+(\w+)\s+(\d{4})', text)
+    if words and words[2].lower() in _GENITIVE:
+        day, month, year = int(words[1]), _GENITIVE[words[2].lower()], int(words[3])
+    elif match:
+        day, month, year = int(match[1]), int(match[2]), int(match[3])
+    else:
         return None
     try:
-        return dt.date(int(match[3]), int(match[2]), int(match[1])).isoformat()
+        return dt.date(year, month, day).isoformat()
     except ValueError:
         return None
 
@@ -64,7 +77,7 @@ def _shown(iso):
 
 
 def _amount(text):
-    text = _space(text).replace(' ', '').replace(',', '.')
+    text = re.sub(r'(?:₽|руб\.?)$', '', _space(text).replace(' ', '').replace(',', '.'))
     if not re.fullmatch(r'-?\d+(?:\.\d+)?', text):
         return None
     return float(text)
@@ -74,13 +87,29 @@ def _contract_number(text):
     return re.sub(r'\s*[–—-]\s*', '-', _space(text)).strip(' ,.;')
 
 
+def _dated(text, start):
+    """The first date of the date line after `start`: a title without «от» is dated under it."""
+    match = re.search(_WHEN, text[start:start+_DATELINE])
+    return _date(match[0]) if match else None
+
+
 def identity(text):
-    """Contract and agreement named on the first page; absent parts stay None."""
+    """Contract and agreement named on the first page; absent parts stay None.
+
+    «Договор подряда № … на выполнение работ …» and «Дополнительное соглашение
+    № 1 к Договору …» carry their own date in the date line below the title,
+    after the contract they name."""
     text = _space(text)
     agreement = _AGREEMENT.search(text)
-    contract = _CONTRACT.search(text[agreement.end():] if agreement else text) or _CONTRACT.search(text)
-    return {'contract': {'number': _contract_number(contract[1]), 'date': _date(contract[2])} if contract else None,
-            'agreement': {'number': agreement[1], 'date': _date(agreement[2])} if agreement else None}
+    after = agreement.end() if agreement else 0
+    contract = _CONTRACT.search(text, after) or _CONTRACT.search(text)
+    contract_date = _date(contract[2]) if contract and contract[2] else contract and _dated(text, contract.end())
+    agreement_date = None
+    if agreement:
+        own = agreement[2] and _date(agreement[2])
+        agreement_date = own or _dated(text, contract.end() if contract and contract.start() >= after else after)
+    return {'contract': {'number': _contract_number(contract[1]), 'date': contract_date} if contract else None,
+            'agreement': {'number': agreement[1], 'date': agreement_date} if agreement else None}
 
 
 def _merge(values, tolerance=0.8):
@@ -207,16 +236,28 @@ class _Grid:
         return self.rows[row], self.rows[row+1]
 
 
+def _labels(cells):
+    """Header of the estimate named in words, without a row of column numbers."""
+    low = [_space(cell).lower() for cell in cells]
+    return (len(low) == _ESTIMATE_COLUMNS and low[0].startswith('№') and low[1].startswith('наименован')
+            and low[2].startswith('ед') and low[3].startswith('кол'))
+
+
 def _estimate_header(grid):
-    """Row of the column numbers 1…10 and the rules bounding those ten columns.
+    """Row of the column numbers 1…10, or else of the column names, and the rules bounding those ten columns.
 
     A stray rule inside a column (a merged name cell, a margin line) joins the
     numbered column to its left instead of shifting every later column."""
-    for index, row in enumerate(grid.cells):
-        filled = [(column, cell.strip()) for column, cell in enumerate(row) if cell.strip()]
-        if [cell for _, cell in filled] != [str(n) for n in range(1, _ESTIMATE_COLUMNS+1)]:
-            continue
+    rows = [(index, [(column, cell.strip()) for column, cell in enumerate(row) if cell.strip()])
+            for index, row in enumerate(grid.cells)]
+    numbers = [str(n) for n in range(1, _ESTIMATE_COLUMNS+1)]
+    named = [(index, filled) for index, filled in rows if [cell for _, cell in filled] == numbers] or \
+        [(index, filled) for index, filled in rows if _labels([cell for _, cell in filled])]
+    for index, filled in named[:1]:
+        numbered = [cell for _, cell in filled] == numbers
         bounds = [grid.columns[column] for column, _ in filled] + [grid.columns[filled[-1][0]+1]]
+        if not numbered:
+            return index, bounds, True
         above = ' '.join(' '.join(cell for column, cell in enumerate(r) if filled[2][0] <= column < filled[4][0])
                          for r in grid.cells[:index]).lower()
         return index, bounds, 'ед' in above and 'кол' in above
@@ -236,10 +277,10 @@ def _estimate_rows(cells, page_number, state, warnings):
         price = [_amount(c) for c in row[4:7]]
         money = [_amount(c) for c in row[7:10]]
         label = _space(' '.join(row[:7]))
-        # A note under the table may be numbered «1. 2. 3. Примечание: …».
-        if re.match(r'(?:\d+\.\s*)*(?:в том числе|примечание|ндс)', label.lower()):
+        # A note under the table may be numbered «1. 2. 3. Примечание: …»; a continuation page repeats the header.
+        if re.match(r'(?:\d+\.\s*)*(?:в том числе|примечание|ндс)', label.lower()) or _labels(row):
             continue
-        if label.lower().startswith(('итого', 'всего')) or name.lower().startswith(('итого', 'всего')):
+        if label.lower().startswith(_TOTALS) or name.lower().startswith(_TOTALS):
             state['totals'].append({'label': label, 'amount': money[2], 'material': money[0],
                                     'work': money[1], 'page': page_number,
                                     'section': state['section'] if 'раздел' in label.lower() else None})
@@ -247,17 +288,32 @@ def _estimate_rows(cells, page_number, state, warnings):
         if unit and quantity is not None and money[2] is not None:
             if not _CODE.match(number):
                 warnings.append(f'Стр. {page_number}: у позиции «{name[:80]}» нет номера.')
+            # Under several headings in a row the position belongs to the one its number is numbered under;
+            # a title without a number heads the positions that follow it.
+            prefixes = [number.rsplit('.', n)[0] for n in range(1, number.count('.')+1)]
+            untitled = state['group'] and not state['group']['number']
+            group = state['group'] if untitled else next(
+                (state['headings'][p] for p in prefixes if p in state['headings']), state['group'])
+            state['untitled'] = None
             state['positions'].append({'number': number, 'name': name, 'unit': unit, 'quantity': quantity,
                                        'unit_price': {'material': price[0], 'work': price[1], 'total': price[2]},
                                        'amount': {'material': money[0], 'work': money[1], 'total': money[2]},
-                                       'section': state['section'], 'group': state['group'], 'page': page_number})
+                                       'section': state['section'], 'group': group, 'page': page_number})
             continue
-        if not unit and quantity is None and all(v is None for v in price+money):
-            title = _space(' '.join(row[1:7]))
+        if all(v is None for v in price+money) and (not unit and quantity is None or _CODE.match(number)):
+            # A numbered heading may give the volume of its works and leave the cost to them.
+            title = _space(' '.join(row[1:7]) if not unit else row[1])
             if title.lower().startswith('раздел'):
-                state['section'], state['group'] = title, None
+                state['section'], state['group'], state['headings'] = title, None, {}
             elif title:
+                # A title without a number heads the positions under it, unless numbered groups follow:
+                # then it names their section («Корпус 1 …»).
+                if _CODE.match(number) and state['untitled']:
+                    state['section'], state['headings'] = state['untitled'], {}
+                state['untitled'] = None if _CODE.match(number) else title
                 state['group'] = {'number': number if _CODE.match(number) else '', 'name': title}
+                if state['group']['number']:
+                    state['headings'][number] = state['group']
             continue
         warnings.append(f'Стр. {page_number}: строка «{label[:100]}» не распознана как позиция: '
                         'не хватает единицы, количества или стоимости.')
@@ -294,7 +350,7 @@ def _check_estimate(estimate):
 def _estimate_meta(text):
     text = _space(text)
     annex = _ANNEX.search(text)
-    edition = re.search(r'в\s+редакции\s+Дополнительного\s+соглашения\s+№\s*(\d+)\s+от\s+(\d\d\.\d\d\.\d{4})', text, re.I)
+    edition = re.search(r'в\s+редакции\s+Дополнительного\s+соглашения\s+№\s*(\d+)\s+от\s+(' + _WHEN + ')', text, re.I)
     scope = next((kind for phrase, kind in _SCOPES if phrase in text.lower()), 'full')
     return {'annex': annex[1] if annex else None, 'scope': scope,
             'edition': {'number': edition[1], 'date': _date(edition[2])} if edition else None}
@@ -338,7 +394,7 @@ def _calendar(grid, first, page, bottom):
     for segment, (_, (month, year)) in zip(segments, headers):
         for column, day in segment:
             try:
-                dates[column] = dt.date(year, month, day)
+                dates[column] = (dt.date(year, month, day),)*2
             except ValueError:
                 return None, f'В шапке графика нет дня {day:02d}.{month:02d}.{year}.'
     return dates, None
@@ -376,7 +432,7 @@ def _schedule_page(page, page_number, schedule):
             warnings.append(f'Стр. {page_number}: у строки графика «{name[:80]}» нет номера.')
             continue
         start, finish = _date(row[2]), _date(row[3])
-        bar = _bar(grid, index, fills, columns, dates)
+        bar = _bar(grid, index, fills, columns, dates, body=grid.rows[header+1])
         line = {'code': code, 'name': name, 'start': start, 'finish': finish, 'dates_from': 'cells',
                 'cells': {'start': start, 'finish': finish}, 'corrected': False,
                 'bar': {'start': bar[0], 'finish': bar[1]} if bar else None,
@@ -399,6 +455,125 @@ def _schedule_page(page, page_number, schedule):
     return True
 
 
+_WEEK = re.compile(r'(?<![\d.])(\d{1,2})\s*-\s*(\d{1,2})(?![\d.])')
+_MONTH = re.compile(r'(янв|фев|мар|апр|ма[йя]|июн|июл|авг|сен|окт|ноя|дек)\w*\.?\s*(\d{2})$', re.I)
+_SHORT = {'янв': 1, 'фев': 2, 'мар': 3, 'апр': 4, 'май': 5, 'мая': 5, 'июн': 6, 'июл': 7, 'авг': 8, 'сен': 9,
+          'окт': 10, 'ноя': 11, 'дек': 12}
+WEEKS_ASSUMPTION = ('В графике нет граф с датами, только полосы по неделям: начало работы — первый день первой '
+                    'закрашенной недели, окончание — последний день последней. Это допущение, а не даты графика.')
+
+
+def _weekly_header(grid):
+    """Header of a chart by weeks: «№», «Наименование», «Примечание», then a column per week («5-11»).
+
+    Returns the row, the rules bounding those columns (a stray rule inside the
+    name column joins it) and the index of the first week column."""
+    for index, row in enumerate(grid.cells):
+        filled = [(column, _space(cell)) for column, cell in enumerate(row) if _space(cell)]
+        if len(filled) < 5 or not filled[0][1].startswith('№') or \
+                not filled[1][1].lower().startswith('наименован') or not _WEEK.search(filled[-1][1]):
+            continue
+        first = next((i for i, (_, cell) in enumerate(filled) if _WEEK.search(cell)), None)
+        if first not in (2, 3):
+            continue
+        bounds = [grid.columns[column] for column, _ in filled] + [grid.columns[filled[-1][0]+1]]
+        return index, bounds, first
+    return None, None, None
+
+
+def _weeks(grid, header, first, page):
+    """First and last day of each week column, by the month headers over them.
+
+    The days of the weeks start again in each month; a month header stands over
+    its own weeks, so months hidden from the chart are not counted."""
+    columns = grid.columns
+    weeks = []
+    for column in range(first, len(columns)-1):
+        found = _WEEK.search(grid.cells[header][column])
+        if not found:
+            return None, f'У столбца графика {column-first+1} нет недели в шапке.'
+        weeks.append((column, int(found[1]), int(found[2])))
+    top, bottom = grid.band(header)
+    months = sorted(((w[0]+w[2])/2, _MONTH.match(w[4])) for w in _words(page)
+                    if top-30 <= (w[1]+w[3])/2 <= bottom and columns[first] <= (w[0]+w[2])/2 <= columns[-1]
+                    and _MONTH.match(w[4]))
+    segments = []
+    for week in weeks:
+        if not segments or week[1] <= segments[-1][-1][2]:
+            segments.append([])
+        segments[-1].append(week)
+    if len(segments) != len(months):
+        return None, f'Месяцы графика не совпали с неделями: месяцев {len(months)}, отрезков недель {len(segments)}.'
+    dates = {}
+    for segment, (x, month) in zip(segments, months):
+        if not columns[segment[0][0]] - 2 <= x <= columns[segment[-1][0]+1] + 2:
+            return None, f'Месяц «{month[0]}» в шапке графика стоит не над своими неделями.'
+        number, year = _SHORT[month[1].lower()], 2000+int(month[2])
+        for column, start, finish in segment:
+            try:
+                dates[column] = (dt.date(year, number, start), dt.date(year, number, finish))
+            except ValueError:
+                return None, f'В шапке графика нет недели {start}-{finish} в месяце {number:02d}.{year}.'
+    return dates, None
+
+
+def _weekly_page(page, page_number, schedule, layout=None):
+    """A chart by weeks without date cells, its first page or (with `layout`) a page continuing it.
+
+    A line takes the dates of its bars (WEEKS_ASSUMPTION). A numbered line with
+    a bar is a work even when deeper lines are numbered under it (4.1 and
+    4.1.1 are two works of the estimate); its heading is the nearest line above
+    it by the numbering that has no bar. A line without a number is the title
+    of the following lines («Корпус 1 этаж 1-9»), or a total that is skipped."""
+    lines, warnings = schedule['lines'], schedule['warnings']
+    if layout is None:
+        grid = _Grid(page)
+        header, bounds, first = _weekly_header(grid)
+        if header is None:
+            return None
+        grid = _Grid(page, bounds)
+        dates, problem = _weeks(grid, header, first, page)
+        if problem:
+            warnings.append(f'Стр. {page_number}: {problem} Полосы графика не прочитаны.')
+        layout = {'bounds': bounds, 'first': first, 'dates': dates}
+        rows = range(header+1, len(grid.cells))
+    else:
+        grid = _Grid(page, layout['bounds'])
+        rows = range(len(grid.cells))
+    body = grid.rows[rows.start] if rows else 0.0
+    schedule['assumption'] = WEEKS_ASSUMPTION
+    first, fills = layout['first'], _fills(page)
+    by_code = {line['code']: line for line in lines}
+    for index in rows:
+        row = grid.cells[index]
+        code, name = re.sub(r'\s+', '', row[0]).rstrip('.'), _space(row[1])
+        if not code and not name:
+            continue
+        if not code:
+            # A total closes its building: lines after it are not of that building until the next title.
+            schedule['section'] = None if name.lower().startswith(_TOTALS) else name
+            continue
+        if not _CODE.match(code):
+            warnings.append(f'Стр. {page_number}: у строки графика «{name[:80]}» нет номера.')
+            continue
+        bar = _bar(grid, index, fills, grid.columns, layout['dates'], first, body)
+        parent, prefix = None, code
+        while '.' in prefix:
+            prefix = prefix.rsplit('.', 1)[0]
+            parent = parent or prefix
+            if prefix in by_code and not by_code[prefix]['bar']:
+                parent = prefix
+                break
+        line = {'code': code, 'name': name, 'start': bar and bar[0], 'finish': bar and bar[1],
+                'dates_from': 'bar', 'cells': {'start': None, 'finish': None}, 'corrected': False,
+                'bar': {'start': bar[0], 'finish': bar[1]} if bar else None,
+                'level': code.count('.')+1, 'parent': parent, 'section': schedule.get('section'),
+                'page': page_number}
+        lines.append(line)
+        by_code.setdefault(code, line)
+    return layout
+
+
 def _apart(cell, bar):
     return abs((dt.date.fromisoformat(cell)-dt.date.fromisoformat(bar)).days) > 1
 
@@ -418,13 +593,19 @@ def _correct(schedule, line, start, finish, basis, text):
         record.update(used={'start': start, 'finish': finish}, basis=basis, text=record['text']+' '+text)
 
 
-def _bar(grid, row, fills, columns, dates):
+def _bar(grid, row, fills, columns, dates, first=4, body=0.0):
+    """Start and finish of the chart bars in `row`: `dates` give each chart column its first and last day.
+
+    Several bars of one line (stages of one work) give one span, from the first to the last. `body` is
+    the top of the table under its header: a fill of the header is never a bar."""
     if not dates:
         return None
     top, bottom = grid.band(row)
-    left, right = columns[4], columns[-1]
+    left, right = columns[first], columns[-1]
+    # A bar of merged cells is one fill over several rows: it is the bar of each row it covers.
     inside = [(colour, rect) for colour, rect in fills
-              if rect.y0 >= top-0.5 and rect.y1 <= bottom+0.5 and rect.x1 > left+0.5]
+              if (rect.y0 >= top-0.5 and rect.y1 <= bottom+0.5 or rect.y0 <= top+0.5 and rect.y1 >= bottom-0.5)
+              and rect.y0 >= body-0.5 and rect.x1 > left+0.5]
     name = (columns[1]+columns[2])/2
     background = {colour for colour, rect in inside if rect.x0 <= name <= rect.x1}
     marks = [rect for colour, rect in inside
@@ -432,8 +613,8 @@ def _bar(grid, row, fills, columns, dates):
     if not marks:
         return None
     x0, x1 = min(r.x0 for r in marks), max(r.x1 for r in marks)
-    covered = sorted(day for column, day in dates.items() if x0 <= (columns[column]+columns[column+1])/2 <= x1)
-    return (covered[0].isoformat(), covered[-1].isoformat()) if covered else None
+    covered = [days for column, days in dates.items() if x0 <= (columns[column]+columns[column+1])/2 <= x1]
+    return (min(d[0] for d in covered).isoformat(), max(d[1] for d in covered).isoformat()) if covered else None
 
 
 def _check_schedule(schedule):
@@ -474,12 +655,22 @@ def read(data: bytes) -> dict:
         raise ValueError('В PDF нет текстового слоя: это скан. Графы расчёта и графика по скану не прочитать '
                          'надёжно; нужен PDF с текстом, например выгрузка из системы электронного документооборота.')
     out = dict(identity(texts[0]), estimates=[], schedule=None, warnings=[], pages=len(texts))
-    estimate, layout, mentioned = None, None, set()
+    estimate, layout, weekly, mentioned = None, None, None, set()
     for index, page in enumerate(document):
         number, text = index+1, texts[index]
+        if weekly is not None and not _SCHEDULE_TITLE.search(text) and _continues(_Grid(page), weekly['bounds']):
+            _weekly_page(page, number, out['schedule'], weekly)
+            out['schedule']['pages'].append(number)
+            continue
+        weekly = None
         if _SCHEDULE_TITLE.search(text):
             schedule = out['schedule'] or {'pages': [], 'lines': [], 'warnings': [], 'corrections': []}
             if _schedule_page(page, number, schedule):
+                estimate, out['schedule'] = None, schedule
+                schedule['pages'].append(number)
+                continue
+            weekly = _weekly_page(page, number, schedule)
+            if weekly is not None:
                 estimate, out['schedule'] = None, schedule
                 schedule['pages'].append(number)
                 continue
@@ -496,7 +687,7 @@ def read(data: bytes) -> dict:
                 estimate = None
                 continue
             estimate = dict(_estimate_meta(text), pages=[number], positions=[], totals=[], warnings=[],
-                            section=None, group=None)
+                            section=None, group=None, headings={}, untitled=None)
             out['estimates'].append(estimate)
             layout = bounds
             _estimate_rows(_Grid(page, bounds).cells[header+1:], number, estimate, estimate['warnings'])
@@ -509,11 +700,12 @@ def read(data: bytes) -> dict:
                 continue
             estimate = None
     for item in out['estimates']:
-        item.pop('section'), item.pop('group')
+        item.pop('section'), item.pop('group'), item.pop('headings'), item.pop('untitled')
         _check_estimate(item)
         if not item['positions']:
             item['warnings'].append('В расчёте не найдено ни одной позиции с единицей, количеством и стоимостью.')
     if out['schedule']:
+        out['schedule'].pop('section', None)
         _check_schedule(out['schedule'])
         if not out['schedule']['lines']:
             out['schedule']['warnings'].append('В графике не найдено ни одной строки работ.')

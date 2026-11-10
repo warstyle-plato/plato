@@ -23,7 +23,7 @@ LINES = (
     ("1.2", "Возведение стен 2-го этажа", "01.02.2026", "05.02.2026", (3, 7)),
     ("1.3", "Устройство плит перекрытия", "01.02.2026", "03.02.2026", (3, 5)),
     ("2", "Корпус 2", "", "", None),
-    ("2.1", "Устройство лестниц", "02.02.2026", "03.02.2026", (4, 5)),
+    ("2.1", "Лестницы", "02.02.2026", "03.02.2026", (4, 5)),
 )
 
 
@@ -141,7 +141,7 @@ def test_lines_are_chosen_from_a_searchable_list_with_shares_by_hand(card):
         editor.get_by_role("searchbox").fill("стен")
         expect(options.filter(visible=True)).to_have_count(2)
         editor.get_by_role("searchbox").fill("2.1")
-        expect(options.filter(visible=True)).to_have_text(["2.1 Устройство лестниц · 02.02.2026 — 03.02.2026"])
+        expect(options.filter(visible=True)).to_have_text(["2.1 Лестницы · 02.02.2026 — 03.02.2026"])
         editor.get_by_role("button", name="Сохранить связь").click()
         expect(page.locator("#contractDocumentsMsg")).to_have_text("Выберите хотя бы одну строку графика.")
         editor.get_by_role("checkbox").filter(visible=True).check()
@@ -164,7 +164,7 @@ def test_lines_are_chosen_from_a_searchable_list_with_shares_by_hand(card):
         links.get_by_text("Подтверждённые связи (1)").click()
         row = links.locator(".contract-links-confirmed tr", has_text="Устройство лестниц")
         expect(row).to_contain_text("строки выбраны вручную")
-        expect(row).to_contain_text("2.1 Устройство лестниц · 02.02.2026 — 03.02.2026 · доля 60 % ≈ 1 200 ₽")
+        expect(row).to_contain_text("2.1 Лестницы · 02.02.2026 — 03.02.2026 · доля 60 % ≈ 1 200 ₽")
         row.get_by_role("button", name="Изменить").click()
         editor = links.locator(".contract-link-editor-row")
         expect(editor.get_by_label("Задать доли вручную, %")).to_be_checked()

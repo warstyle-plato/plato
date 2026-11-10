@@ -7,7 +7,12 @@ inherits building and part from its headings; a position from its group and
 section, when its own name is silent. A floor named by the position narrows
 the lines to that floor.
 
-A position whose signs are all read gets every leaf line with the same signs.
+A position numbered and named like a line of the schedule (4.1 «(В-3) Витражная
+система …» in both) gets that line; so does a position under a heading of the
+estimate numbered and named like a line. Such a match decides alone: a number
+repeated in the schedule, or a line of another building or part, is a review item, not
+a link by the kind of work. Otherwise a position whose signs are all read gets
+every leaf line with the same signs.
 Spread over several lines, its cost is divided by their duration, and this is
 labelled as an assumption (owner's decision 2А). Anything less certain is a
 review item with its reason, never a guess: several buildings, an unread kind,
@@ -124,6 +129,40 @@ def _codes(signs, shown=4):
     return ", ".join(codes[:shown]) + (f" и ещё {rest}" if rest > 0 else "")
 
 
+def _words(name):
+    return re.findall(r"[0-9a-zа-я]+", _text(name).casefold().replace("ё", "е"))
+
+
+def _same_name(one, other, words=6):
+    """The first words of the shorter name run on in the other: a schedule cuts long names short."""
+    one, other = _words(one), _words(other)
+    short, long = sorted((one, other), key=len)
+    head = short[:words]
+    return bool(head) and any(long[i:i + len(head)] == head for i in range(len(long) - len(head) + 1))
+
+
+def _numbered(position, signs, lines):
+    """Leaf lines numbered and named like the position, else like the heading it is numbered under.
+
+    Returns those lines and how many lines of the schedule carry that number; nothing when
+    neither the position nor its heading is in the schedule by number and name.
+    """
+    counts = {}
+    for line in lines:
+        counts[line["code"]] = counts.get(line["code"], 0) + 1
+    group = position.get("group") or {}
+    for number, name in ((position.get("number"), position.get("name")), (group.get("number"), group.get("name"))):
+        number = _text(number).rstrip(".")
+        found = [s for s in signs if number and s["line"]["code"] == number and _same_name(s["line"]["name"], name)]
+        if found:
+            return found, counts[number]
+    return [], 0
+
+
+def _places(where):
+    return ", ".join(sorted(where))
+
+
 def _line_signs(lines):
     by_code = {line["code"]: line for line in lines}
     parents = {line["parent"] for line in lines if line.get("parent")}
@@ -135,6 +174,8 @@ def _line_signs(lines):
         while code in by_code:
             chain.append(by_code[code]["name"])
             code = by_code[code].get("parent")
+        # A schedule by buildings names the building in an unnumbered title over its lines.
+        chain.append(line.get("section"))
         signs.append({"line": line, "kind": kind(line["name"])[0], "buildings": _first(buildings, *chain) or set(),
                       "part": _first(part, *chain), "floors": floors(line["name"]),
                       # A heading named by the numbering but absent from the schedule (4.1 without 4).
@@ -165,6 +206,27 @@ def propose(estimate, schedule, *, agreement=False):
         if not lines:
             item["reason"] = ("График производства работ этой или прежней редакции не загружен: "
                               "сопоставить позицию не с чем.")
+            continue
+        same, repeated = _numbered(position, signs, lines)
+        if same:
+            line = same[0]["line"]
+            there = same[0]["buildings"]
+            if repeated > 1:
+                lines_word = "строки" if repeated % 10 in (2, 3, 4) and repeated % 100 not in (12, 13, 14) else "строк"
+                item["reason"] = (f"В графике {repeated} {lines_word} с номером {line['code']}: номер повторяется, "
+                                  "поэтому связь по нему не определить, пока в графике не исправят нумерацию.")
+            elif where and there and where != there:
+                item["reason"] = (f"Строка графика {line['code']} совпадает с позицией по номеру и названию, но в "
+                                  f"графике она относится к объекту «{_places(there)}», а в расчёте позиция стоит "
+                                  f"в разделе объекта «{_places(where)}».")
+            elif side and same[0]["part"] and side != same[0]["part"]:
+                item["reason"] = (f"Строка графика {line['code']} совпадает с позицией по номеру и названию, но в "
+                                  f"графике она относится к {_SIDE[same[0]['part']]} части, а в расчёте позиция стоит "
+                                  f"в {_SIDE[side]} части.")
+            elif not (line.get("start") and line.get("finish")):
+                item["reason"] = f"У строки графика {line['code']} нет дат начала и окончания."
+            else:
+                item.update(status="proposed", lines=linked([line]))
             continue
         if key is None:
             item["reason"] = "Вид работ по названию позиции не определён."

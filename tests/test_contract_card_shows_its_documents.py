@@ -120,3 +120,18 @@ def test_the_card_shows_proposed_links_shares_and_reasons(listing):
         expect(part.locator(".contract-links-free summary")).to_have_text("Строки графика без позиций расчёта (6)")
         assert "₽ ₽" not in page.locator("#contractDocuments").inner_text()
         assert errors == []
+
+
+def test_a_weekly_schedule_says_its_dates_are_precise_to_a_week(monkeypatch, tmp_path):
+    from playwright.sync_api import expect
+    import developaid_contract_documents as documents
+    from tests.test_contract_documents_of_the_weekly_layout import weekly_pdf
+    monkeypatch.setattr(monitor, "_SNAPSHOT_DIR", tmp_path / "monitor")
+    files.store("Учебный", ROW, "ГПР.pdf", weekly_pdf())
+    weekly = files.listing("Учебный", CONTRACT)
+    with browser_page(1440) as (page, _, errors):
+        _serve(page, weekly, [])
+        _open(page)
+        expect(page.locator("#contractDocuments .contract-schedule-assumption")).to_have_text(
+            documents.WEEKS_ASSUMPTION)
+        assert errors == []
