@@ -120,7 +120,8 @@ def test_weekly_input_is_one_rss_file_for_cost_evidence_and_payments():
     assert work["progress_kind"] == "gpr_percent"
     assert work["progress_source"]["kind"] == "approved_gpr"
     assert work["progress_source"]["date"] == "2026-07-01"
-    assert work["forecast_finish"] == "2026-09-30"
+    # Темпа нет, показан лишь план: срок плана не выдаётся за прогноз.
+    assert work["forecast_finish"] is None and work["forecast_known"] is False
     assert work["forecast_source"] == "plan"
     assert view["money"]["accepted"] == pytest.approx(400e6)
     assert view["money"]["payment_fact"] == pytest.approx(240e6)
@@ -152,8 +153,8 @@ def test_next_rss_snapshot_updates_cost_evidence_without_touching_baseline():
         assert work["forecast_source"] == "plan"
     assert first["schedule"]["rows"][0]["rss_accepted_ratio"] == pytest.approx(0.2)
     assert second["schedule"]["rows"][0]["rss_accepted_ratio"] == pytest.approx(0.45)
-    assert first["schedule"]["rows"][0]["forecast_finish"] == "2026-09-30"
-    assert second["schedule"]["rows"][0]["forecast_finish"] == "2026-09-30"
+    assert first["schedule"]["rows"][0]["forecast_finish"] is None
+    assert second["schedule"]["rows"][0]["forecast_finish"] is None
     assert monitor.snapshots("Гродненская")["estimate"] == ["2026-07-31", "2026-08-31"]
 
 

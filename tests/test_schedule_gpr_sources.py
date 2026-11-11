@@ -288,15 +288,17 @@ def test_a_confirmed_late_finish_is_finished_late_not_a_current_delay(tmp_path, 
     assert "закончено на 62 дн. позже плана" in text
 
 
-@pytest.mark.parametrize("item,done,reading", [
-    ({"method": "done"}, True, True),
-    ({"method": "confirmed_completion"}, True, False),
-    ({"method": "cumulative_quantities", "progress_origin": "confirmed_completion"}, True, False),
-    ({"method": "gpr_pace", "progress_origin": "gpr"}, False, False),
-    ({}, False, False),
+@pytest.mark.parametrize("item,done,reading,plan", [
+    ({"method": "done"}, True, True, False),
+    ({"method": "confirmed_completion"}, True, False, False),
+    ({"method": "cumulative_quantities", "progress_origin": "confirmed_completion"}, True, False, False),
+    ({"method": "gpr_pace", "progress_origin": "gpr"}, False, False, False),
+    ({"method": "plan"}, False, False, True),
+    ({}, False, False, False),
 ])
-def test_one_rule_says_a_work_is_done_and_whether_its_date_is_only_a_reading(item, done, reading):
+def test_one_rule_says_a_work_is_done_and_whether_its_date_is_only_a_reading(item, done, reading, plan):
     import developaid_schedule_done as done_rule
+    assert done_rule.plan_only(item) is plan  # только план, темпа нет — не прогноз
     assert done_rule.work_done(item) is done
     assert done_rule.reading_only(item) is reading
     assert done_rule.reading_only(item, "2026-09-01") is False  # подтверждённое окончание — не показание

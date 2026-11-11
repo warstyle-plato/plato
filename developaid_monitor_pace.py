@@ -104,7 +104,7 @@ def _aggregate_management(nodes: list[dict[str, Any]]) -> None:
 
 _GPR_STATUS = {
     "done": "ЗАВЕРШЕНО ПО ГПР", "gpr_pace": "ПРОГНОЗ ПО ТЕМПУ ГПР",
-    "cumulative_quantities": "ПРОГНОЗ ПО НАКОПИТЕЛЬНЫМ", "plan": "ПО ПЛАНУ ГПР",
+    "cumulative_quantities": "ПРОГНОЗ ПО НАКОПИТЕЛЬНЫМ", "plan": "НЕТ ТЕМПА: ПОКАЗАН ПЛАН",
     "cumulative_statement": "ВЫПОЛНЕНИЕ ПО ВЕДОМОСТИ",
     "cumulative_statement_pace": "ПРОГНОЗ ПО ДИНАМИКЕ ВЕДОМОСТЕЙ",
     "confirmed_completion": "ЗАВЕРШЕНИЕ ПОДТВЕРЖДЕНО", "cumulative_unknown": "НЕТ ТЕМПА ПО НАКОПИТЕЛЬНЫМ",
@@ -161,7 +161,10 @@ def _apply_gpr(project: str, view: dict[str, Any], cut: datetime.date) -> dict[s
     for row in rows:
         tid = str(row.get("id") or row.get("wbs") or "").strip()
         item = works.get(tid) or {}
-        finish = monitor._day(item.get("forecast_finish"))
+        # Работа только с планом (темпа нет) прогноза не имеет: срок плана не
+        # выдаётся за оценку, и в клетке, строке корпуса и сводке руководству
+        # она «без прогноза», а не «по сроку» (решение владельца, п. А).
+        finish = None if done_rule.plan_only(item) else monitor._day(item.get("forecast_finish"))
         plan = monitor._day(row.get("plan_finish"))
         row["pace_progress"] = item.get("progress")
         row["pace_forecast_known"] = finish is not None
