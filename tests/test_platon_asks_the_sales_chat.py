@@ -117,11 +117,66 @@ def test_the_questions_name_what_does_not_add_up():
             "Подскажите, какая это схема оплаты?") in texts
 
 
-def test_an_old_export_does_not_ask_about_money_or_bookings():
-    """По выгрузке недельной давности «денег нет» значит «мы их не видим»."""
+def test_an_old_export_does_not_ask_about_money_or_claim_no_contract():
+    """По выгрузке недельной давности «денег нет» значит «мы их не видим»: о
+    деньгах молчим, а о брони спрашиваем, не утверждая, что договора нет."""
     found = sales_questions.questions(_chat(), {"rows": ROWS}, "2026-10-25T09:00:00+00:00",
                                       "2026-11-02")
-    assert {item["kind"] for item in found} <= {"price", "terms"}
+    assert {item["kind"] for item in found} <= {"price", "terms", "dropped"}
+    [dropped] = [item for item in found if item["kind"] == "dropped"]
+    assert dropped["text"] == ("Квартира № 20 (башня Гармония, 90,2 м²) была в списке броней "
+                               "с 25.10, а с 01.11 её там нет. Договор подписан или бронь снята?")
+    fresh = sales_questions.questions(_chat(), {"rows": ROWS}, UPLOADED, "2026-11-02")
+    assert [item["key"] for item in fresh if item["kind"] == "dropped"] == [dropped["key"]]
+
+
+KUTUZOV_LOTS = [
+    "- квартира № 20, башня Гармония, 5 этаж, 90,2 кВ.м. Цена лота 64 913 192 р. Цена за кВ.м. "
+    "719  658 р. , дата сделки 10.11.2026 г. продажа своей квартиры через наших партнеров "
+    "ТрейдИн АГЕНТСКАЯ (Помазанова Александра)",
+    "- квартира № 107, башня Созидание, 5 этаж, 99,2 кВ.м. Цена лота 55 621 440 р. Длительная "
+    "бронь до 10.11.2026 г. АГЕНТСКАЯ (Кочеткова Мария )",
+    "- квартира № 96, башня Созидание, 4 этаж, 68.7 кВ.м. Цена лота 44 002 350 р. Платное "
+    "бронирование до 15.11.2026 г. АГЕНТСКАЯ (Кочеткова Мария)",
+]
+
+
+def _kutuzov(today_lots: list[str]) -> dict:
+    read = salesroom.append_message(None, "2026-11-09", "Дежурный",
+                                    _report("09.11.2026", KUTUZOV_LOTS))
+    return salesroom.append_message(read, "2026-11-10", "Дежурный",
+                                    _report("10.11.2026", today_lots))
+
+
+@pytest.mark.parametrize("uploaded", ["2026-11-09T09:00:00+00:00", "2026-10-20T09:00:00+00:00",
+                                      None])
+def test_a_booking_gone_today_is_asked_about_today(uploaded):
+    """Владелец (10.11.2026): почему бот не спросил о пропавшей брони? Выгрузка
+    договоров старше ухода брони (или её нет) — вопрос всё равно в тот же вечер."""
+    contracts = {"rows": ROWS} if uploaded else None
+    found = sales_questions.questions(_kutuzov(KUTUZOV_LOTS[1:]), contracts, uploaded,
+                                      "2026-11-10")
+    assert [item["text"] for item in found if item["kind"] == "dropped"] == [
+        "Квартира № 20 (башня Гармония, 90,2 м²) была в списке броней с 09.11, а с 10.11 её там "
+        "нет; в отчёте стояла дата сделки 10.11. Договор подписан или бронь снята?"]
+
+
+def test_no_booking_question_when_nothing_left_or_the_contract_is_seen():
+    stayed = sales_questions.questions(_kutuzov(KUTUZOV_LOTS), {"rows": ROWS}, UPLOADED,
+                                       "2026-11-10")
+    assert not [item for item in stayed if item["kind"] == "dropped"]
+    deal = dict(_row("2026-11-10", "корп 2 кв.20", "3К", 90.2, 64.9 * M, 0.0))
+    signed = sales_questions.questions(_kutuzov(KUTUZOV_LOTS[1:]), {"rows": [deal]},
+                                       "2026-11-10T19:00:00+00:00", "2026-11-10")
+    assert not [item for item in signed if item["kind"] == "dropped"]
+
+
+def test_a_booking_deadline_is_not_a_deal_date():
+    """«Длительная бронь до 10.11» — срок брони, а не назначенная сделка."""
+    found = sales_questions.questions(_kutuzov([KUTUZOV_LOTS[0], KUTUZOV_LOTS[2]]), None, None,
+                                      "2026-11-10")
+    [dropped] = [item for item in found if item["kind"] == "dropped"]
+    assert "дата сделки" not in dropped["text"] and "№ 107" in dropped["text"]
 
 
 def test_the_message_is_short_polite_and_asked_once():
