@@ -133,3 +133,66 @@ def test_a_found_package_component_is_a_candidate_and_never_the_whole_package_pe
     assert result['bindings'] == {} and result['cohorts'] == []
     assert result['configuration']['tasks'] == []
     assert result['candidates'][0]['candidate_task_ids'] == ['package']
+
+
+def test_a_work_with_an_unreadable_date_is_named_with_its_cell_instead_of_leaving_the_gantt():
+    import developaid_monitor_page  # installs the real Monitor reader stack
+    parsed = corpus.read(construction_book())
+    assert any(i['cell'] == 'G5' and '«31.06.2027» не распознана' in i['message'] for i in parsed['issues'])
+    monitor.store_schedule(PROJECT, construction_book(), None, '2026-11-09')
+    schedule = monitor.build(PROJECT, '2026-11-09')['schedule']
+    placed = {(r['object'], r['name']) for r in schedule['rows']}
+    undated = schedule['undated_works']
+    assert len(undated) == 1 and (undated[0]['object'], undated[0]['name']) not in placed
+    assert undated[0]['object'] == 'КОРПУС 1' and undated[0]['section'] == 'Фасады'
+    assert undated[0]['reason'] == 'окончание «31.06.2027» не распознано (лист «ГПР», ячейка G5)'
+
+
+def test_reversed_or_missing_dates_say_which_date_and_cell():
+    wb = load_workbook(io.BytesIO(construction_book()))
+    ws = wb['ГПР']
+    ws['F6'] = '10.02.2027'  # finish 01.02.2027 comes before it
+    ws['J6'] = None
+    stream = io.BytesIO(); wb.save(stream)
+    works = corpus.as_schedule(corpus.read(stream.getvalue()))['works']
+    problems = {w['source_cells']['progress']: w['date_problem'] for w in works if w['date_problem']}
+    assert problems == {'E5': 'окончание «31.06.2027» не распознано (лист «ГПР», ячейка G5)',
+                        'E6': 'окончание 01.02.2027 раньше начала 10.02.2027 (лист «ГПР», ячейки F6 и G6)',
+                        'H6': 'окончание не указано (лист «ГПР», ячейка J6)'}
+    assert all(not w['date_problem'] for w in works if w['start'] and w['finish'])
+
+
+def test_the_rss_path_names_the_same_undated_work():
+    """With a weekly RSS the Monitor builds rows in _schedule_plan_fact; the
+    work with an unreadable date must be named there too."""
+    import developaid_monitor_page  # installs the real Monitor reader stack
+    import developaid_monitor_manager as manager
+    from test_monitor_keeps_every_snapshot import _rss_book
+    monitor.store_schedule(PROJECT, construction_book(), None, '2026-11-09')
+    monitor.store_estimate(PROJECT, _rss_book(), '2026-11-09')
+    called = []
+    original = monitor._schedule_plan_fact
+    def spy(*args, **kwargs):
+        called.append(1)
+        return original(*args, **kwargs)
+    import pytest as _pytest
+    with _pytest.MonkeyPatch.context() as patch:
+        patch.setattr(monitor, '_schedule_plan_fact', spy)
+        schedule = monitor.build(PROJECT, '2026-11-09')['schedule']
+    assert called, 'the RSS path was not taken'
+    assert [(w['object'], w['reason']) for w in schedule['undated_works']] == [
+        ('КОРПУС 1', 'окончание «31.06.2027» не распознано (лист «ГПР», ячейка G5)')]
+
+
+def test_a_plan_where_no_work_has_dates_says_so_instead_of_not_loaded():
+    import developaid_monitor_page  # installs the real Monitor reader stack
+    import developaid_monitor_manager as manager
+    wb = load_workbook(io.BytesIO(construction_book()))
+    ws = wb['ГПР']
+    for cell in ('G6', 'J6'):
+        ws[cell] = '31.06.2027'
+    stream = io.BytesIO(); wb.save(stream)
+    monitor.store_schedule(PROJECT, stream.getvalue(), None, '2026-11-09')
+    schedule = manager._schedule_only(PROJECT, '2026-11-09')['schedule']
+    assert schedule['rows'] == [] and len(schedule['undated_works']) == 3
+    assert schedule['reason'] == 'График загружен, но ни у одной работы нет понятных дат.'

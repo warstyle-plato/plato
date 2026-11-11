@@ -146,7 +146,7 @@ def _read_uncached(data: bytes) -> dict | None:
             for key in ('start', 'finish'):
                 if _text(values[key]) and not parsed[key]:
                     issues.append({'cell': refs[key], 'code': 'invalid_date',
-                                   'message': 'Некорректная дата сохранена как в источнике; срок не подставлен.'})
+                                   'message': 'Дата «'+_text(values[key])[:64]+'» не распознана; срок не подставлен.'})
             if parsed['start'] and parsed['finish'] and parsed['finish'] < parsed['start']:
                 issues.append({'cell': refs['finish'], 'code': 'reversed_dates',
                                'message': 'Окончание раньше начала.'})
@@ -195,8 +195,18 @@ def as_schedule(source: dict) -> dict:
             refs = scope['source_cells']
             start = dt.date.fromisoformat(scope['start']) if scope.get('start') else None
             finish = dt.date.fromisoformat(scope['finish']) if scope.get('finish') else None
+            problem = ''
             if start and finish and finish < start:
+                problem = ('окончание '+finish.strftime('%d.%m.%Y')+' раньше начала '+start.strftime('%d.%m.%Y')+
+                           ' (лист «'+source['sheet']+'», ячейки '+refs['start']+' и '+refs['finish']+')')
                 start = finish = None
+            elif not (start and finish):
+                # The calendar needs both dates; the work names its own cell.
+                problem = '; '.join(
+                    label+(' «'+_text(raw.get(key))[:64]+'» не распознано' if _text(raw.get(key)) else ' не указано')+
+                    ' (лист «'+source['sheet']+'», ячейка '+refs[key]+')'
+                    for key, label, value in (('start', 'начало', start), ('finish', 'окончание', finish))
+                    if value is None)
             group = package.get('group') or ''
             construction = bool(re.match(
                 r'конструктив|фасад|отделка|внутренние инженерные|вис[. ]|наружные сети', group.casefold()))
@@ -211,7 +221,8 @@ def as_schedule(source: dict) -> dict:
                 'basis': source['sheet']+'!'+refs['start']+'; '+source['sheet']+'!'+refs['finish'],
                 'source_format': source['format'], 'source_sha256': source['sha256'],
                 'source_id': package['source_id'], 'source_cells': dict(refs),
-                'source_group': package.get('group_source'), 'construction_work': construction})
+                'source_group': package.get('group_source'), 'construction_work': construction,
+                'date_problem': problem})
     if not works:
         raise ValueError('В корпусном ГПР нет явно заполненных пар работы и объекта.')
     return {'rows': works, 'works': works, 'overdue': [], 'without_code': works,
