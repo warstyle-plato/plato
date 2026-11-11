@@ -273,3 +273,16 @@ def expand_gantt(page) -> None:
         clicked = True
     if clicked and page.locator('#detailCard:not(.hidden)').count():
         page.locator('#detailClose').dispatch_event('click')
+
+
+def open_ks_calculation(page) -> None:
+    """Раскрыть блок «Как посчитан процент выполнения (по КС)» под графиком
+    нажатием на его заголовок, как сделал бы человек. До нажатия блок обязан
+    быть свёрнут, а его содержимое — невидимо; после — открыт и видим."""
+    box = page.locator('#ksSharedBox')
+    assert box.is_visible(), 'блок расчёта по КС не показан'
+    assert box.get_attribute('open') is None, 'блок расчёта по КС раскрыт без нажатия'
+    assert not page.locator('#ksSharedGroups').is_visible(), 'содержимое свёрнутого блока видно'
+    box.locator(':scope > summary').click()
+    assert box.get_attribute('open') is not None
+    assert page.locator('#ksSharedGroups').is_visible()

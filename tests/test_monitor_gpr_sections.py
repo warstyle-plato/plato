@@ -336,7 +336,8 @@ def test_the_page_takes_done_from_the_server_and_keeps_a_100_percent_reading_out
         page.evaluate("(v)=>{currentView=v;msg('viewMsg','');renderDash(v);renderGantt(v)}", view)
         first = page.locator('#gantt .g-row.lvl-corpus', has_text='Корпус 1')
         expect(first).to_contain_text('Оценка 15.09.2026')
-        expect(first).not_to_contain_text('01.10.2026')
+        expect(first.locator('.g-metrics')).to_contain_text('Оценка 15.09.2026')
+        expect(first.locator('.g-metrics')).not_to_contain_text('01.10.2026')
         cells = [c.inner_text().replace('\n', ' ') for c in page.locator('#gprMatrix tbody tr').nth(0).locator('td').all()]
         assert cells == ['По сроку', '+19 дн.']
         assert not errors
@@ -437,7 +438,7 @@ def test_one_undated_work_reads_in_the_singular_and_an_empty_plan_has_one_reason
         expect(notice).to_contain_text('Пока дата не исправлена, у этой работы нет ни полосы на графике, ни прогноза.')
         expect(notice).not_to_contain_text('ни у одной работы')
         empty = {'cut': '2026-11-08', 'schedule': {'management': [], 'rows': [], 'undated_works': undated,
-                 'reason': 'График загружен, но ни у одной работы нет понятных дат.'}}
+                 'reason': 'График загружен, но ни у одной работы нет понятных дат, поэтому график пуст.'}}
         render(page, empty)
         expect(notice).to_be_visible()
         expect(notice).to_contain_text('График загружен, но ни у одной работы нет понятных дат, поэтому график пуст.')
