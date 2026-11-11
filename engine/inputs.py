@@ -1753,15 +1753,15 @@ def office_class_rows(inputs: dict[str, Any] | None) -> list[dict[str, str]]:
             text = f"{choice['office_class']} — выбран у офиса"
         elif nonres and choice["source"] == nonres_strategy.OFFICE_CLASS_BY_PROJECT_SOURCE:
             # Класс у офиса не выбран — он идёт за профилем проекта в шапке.
-            text = (f"{choice['office_class']} — по профилю проекта: класс у этого офиса "
-                    "не выбран")
+            text = (f"{choice['office_class']}: класс у этого офиса не выбран, поэтому взят "
+                    "по профилю проекта")
         elif choice["source"] == nonres_strategy.OFFICE_CLASS_BY_PROJECT_SOURCE and nonres_class:
             text = f"{choice['office_class']} — класс проекта"
         elif choice["source"] == nonres_strategy.OFFICE_CLASS_BY_PROJECT_SOURCE:
             text = f"{choice['office_class']} — как у класса проекта «{project_label}»"
         elif nonres:
-            text = (f"{choice['office_class']} — класс у офиса не выбран, взят класс по умолчанию; "
-                    "выберите его в блоке офиса")
+            text = (f"{choice['office_class']}: класс у этого офиса не выбран, поэтому взят класс "
+                    "по умолчанию. Его можно выбрать в блоке офиса")
         else:
             text = f"{choice['office_class']} — по умолчанию: у проекта нет класса"
         rows.append({"prefix": obj.prefix, "title": obj.group_label,

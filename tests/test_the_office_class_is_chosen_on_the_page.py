@@ -190,7 +190,7 @@ def walk() -> dict:
 
 
 def test_the_office_has_a_class_choice_with_a_plus(walk) -> None:
-    assert walk["comfort"]["options"] == [["", "Как у класса проекта"], ["B", "B"], ["B+", "B+"],
+    assert walk["comfort"]["options"] == [["", "По профилю проекта"], ["B", "B"], ["B+", "B+"],
                                           ["A", "A"], ["A+", "A+"]]
     assert walk["comfort"]["value"] == ""
     assert walk["errors"] == []
@@ -366,6 +366,8 @@ def test_a_nonresidential_project_chooses_a_pair_profile(kinds) -> None:
     # Бизнес — профиль пары B+; класс офиса выбирается у самого офиса.
     assert got["value"] == "profile:B+"
     assert got["office"] == "", "шапка нежилого проекта класс офиса не ставит"
+    # Подпись под выбором — того же профиля, а не «Пользовательские значения».
+    assert got["preview"] != "Пользовательские значения" and "м/м" in got["preview"], got["preview"]
 
 
 def test_a_plus_takes_the_elite_garage_and_its_own_office_step(kinds) -> None:
@@ -373,6 +375,7 @@ def test_a_plus_takes_the_elite_garage_and_its_own_office_step(kinds) -> None:
     # Профиль A+ в шапке — пара «элитный» и ступень A+ для офисов без своего
     # выбора (`nonres_office_class`); класс, выбранный у офиса, сильнее.
     assert (got["value"], got["project_class"], got["nonres"]) == ("profile:A+", "elite", "A+")
+    assert "м/м" in got["preview"] and got["preview"] != kinds["nonres"]["preview"], got["preview"]
     # Класс A+ у самого офиса: цена метра — ступень A+, а подземная ставка
     # проекта — своя, от класса проекта, а не от класса офиса.
     assert got["rent"] == _step("A+")["offices_rent_th_per_sqm_month"]

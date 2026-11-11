@@ -553,7 +553,6 @@ def project_kind() -> str:
                        function("nonresBuildingObject"),
                        function("nonresConstructionTabs"),
                        function("nonresConstructionTabsBar"),
-                       function("movedToConstruction"),
                        function("projectKind"),
                        function("isNonResidential"),
                        function("isHotel"),

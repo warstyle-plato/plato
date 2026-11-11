@@ -129,6 +129,30 @@ def test_the_class_of_an_office_goes_with_its_own_pair_profile() -> None:
     assert (x["offices_cost_th_per_sqm"], x["offices2_cost_th_per_sqm"]) == (120.0, 240.0)
 
 
+def test_the_cost_of_an_office_without_own_number_is_the_step_of_its_class() -> None:
+    """Себестоимость офиса без своего числа — СМР ступени ЕГО класса.
+
+    A+ у второго офиса при профиле «комфорт»: 250 «под ключ», переведённые в
+    СМР здания на ставках пары своего класса (элитный). Первый офис без выбора
+    идёт за профилем — ступень B. Страница (`classValueForKind`) даёт те же числа.
+    """
+    nonres = core.PROJECT_KIND_NONRESIDENTIAL
+    x = {"project_kind": nonres, "project_class": "comfort", "offices_enabled": True,
+         "offices2_enabled": True, "object_instances": ["offices2"], "offices2_office_class": "A+"}
+    base = core.class_base_preset("comfort", "msk", nonres, x)
+    cost = lambda cls, pair: core.object_smr_rate(  # noqa: E731
+        ns.OFFICE_CLASS_SCALE[cls]["cost_th_per_sqm"], core.class_base_preset(pair, "msk", nonres))
+    assert base["offices2_cost_th_per_sqm"] == cost("A+", ns.NONRES_CLASS_PROFILE["A+"])
+    assert base["offices_cost_th_per_sqm"] == cost("B", "comfort")
+    assert base["offices_cost_th_per_sqm"] < base["offices2_cost_th_per_sqm"]
+    prelude = (PRELUDE + "const inputs=" + json.dumps(x) + ";\n"
+               + page_blocks.page_const("OFFICE_CLASS") + "\n"
+               + page_blocks.page_const("CLASS_REGION_BASES") + "\n")
+    out, _ = page_blocks.run(prelude, "process.stdout.write(JSON.stringify(['offices','offices2'].map("
+                             "p=>classValueForKind('comfort',p+'_cost_th_per_sqm','nonresidential'))));")
+    assert json.loads(out) == [base["offices_cost_th_per_sqm"], base["offices2_cost_th_per_sqm"]]
+
+
 def test_a_typed_cost_beats_the_class_and_is_kept() -> None:
     x, _ = _two_offices(offices2_cost_th_per_sqm=260.0)
     x["_class_manual"] = ["offices2_cost_th_per_sqm"]
@@ -199,6 +223,7 @@ const bar=nonresConstructionTabsBar();
 const tabs=nonresConstructionTabs();
 process.stdout.write(JSON.stringify({tabs:bar?Number(bar.dataset.buttons):0,
   objects:tabs?tabs.objects.map(o=>o.key):[], shown:(tabs||{}).shown||'',
+  labels:bar?bar.children.map(b=>b.textContent):[],
   fields:nonresBuildingRateFields().map(f=>f[0])}));
 """
 
@@ -218,6 +243,9 @@ def test_construction_gets_tabs_when_objects_are_several() -> None:
     assert got["tabs"] == 3, got
     assert got["objects"] == ["standalone_retail", "offices", "offices2"], got
     assert got["shown"] == "standalone_retail"
+    # Вкладка подписана именем объекта, а не сквозным «Объект 1»: в блоке
+    # офисов «Объект 1» — первый офис, а здесь первым стоит ТЦ.
+    assert got["labels"] == ["Коммерция ОСЗ", "Офисы", "Офисы 2"], got
     assert got["fields"] == ["retail_cost_th_per_sqm"]
 
 
