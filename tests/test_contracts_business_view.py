@@ -49,7 +49,8 @@ def test_real_business_register_keeps_core_facts_visible_and_sources_closed(widt
             ['Сумма превышена', 'Срок прошёл', 'Есть замечания', 'ещё 1'])
         more = page.locator(f'tr[data-contract-detail="{CONTRACT}"]')
         expect(more).to_be_hidden()
-        assert first.evaluate('(r)=>r.getBoundingClientRect().height') <= (110 if width < 900 else 80)
+        # A phone card stacks six signed cells; a table row stays short.
+        assert first.evaluate('(r)=>r.getBoundingClientRect().height') <= (420 if width <= 640 else 110 if width < 900 else 80)
         more = opened(page, CONTRACT)
         expect(more).to_contain_text('1\u00a0977\u00a0700 ₽')
         expect(more).to_contain_text('-977\u00a0700 ₽')
@@ -64,20 +65,14 @@ def test_real_business_register_keeps_core_facts_visible_and_sources_closed(widt
         sources.locator('summary').click()
         expect(sources.locator('.contract-source').filter(has_text='private-source-marker')).to_be_visible()
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
-        # Owner's decision: a table everywhere. On a phone the register keeps its
-        # columns and its own wrapper scrolls sideways; the page itself does not.
-        assert page.locator('#contractsRows table.contract-register').evaluate(
-            '(t)=>getComputedStyle(t).display') == 'table'
+        # A table on a wide screen; on a phone every row is a signed card without
+        # sideways scroll (test_contract_register_cards_on_phone.py).
         assert first.locator('td').count() == 6
         wrap = page.locator('#contractsRows .contract-register-wrap')
-        if width < 900:
-            assert wrap.evaluate('(w)=>w.scrollWidth > w.clientWidth')
-            expect(page.locator('#contractsRows .contract-scroll-hint')).to_be_visible()
-            last = first.locator('td').last
-            last.scroll_into_view_if_needed()
-            box = last.bounding_box()
-            assert box is not None and box['x'] >= -1 and box['x'] < width
-            # The opened detail stays on the screen while the table scrolls sideways.
+        assert wrap.evaluate('(w)=>w.scrollWidth <= w.clientWidth')
+        assert page.locator('#contractsRows table.contract-register').evaluate(
+            '(t)=>getComputedStyle(t).display') == ('block' if width <= 640 else 'table')
+        if width <= 640:
             part = more.locator('.contract-more-part').first.bounding_box()
             assert part is not None and part['x'] >= 0 and part['x'] + part['width'] <= width
         sources.locator('summary').click()
