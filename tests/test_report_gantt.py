@@ -7,7 +7,7 @@
 - корпус определяется тем же правилом, что в Ганте Монитора;
 - статья корпуса — работы одной статьи РСС: план — от первого начала до
   последнего окончания, прогноз — по работам с известным темпом;
-- неизвестный прогноз — «нет прогноза», а не плановая дата;
+- неизвестный прогноз — «срок пока не оценить», а не плановая дата;
 - сводка берёт дерево из среза Монитора: сроки корпусов те же, что у него;
 - в документе — SVG с полосами плана и прогноза и вехой РНВ, в сообщении —
   строка на корпус.
@@ -102,15 +102,18 @@ def test_svg_draws_plan_forecast_and_rnv():
     assert picture.startswith("<svg") and picture.endswith("</svg>")
     assert picture.count('stroke-dasharray="4 2"') >= 6   # план — пунктир у каждой строки
     assert "РНВ (разрешение на ввод)" in picture and "+46 дн." in picture
-    assert "нет прогноза" in picture and "сегодня" in picture
+    assert "срок пока не оценить" in picture and "сегодня" in picture
+    assert "нет прогноза<" not in picture
     assert "+19 дн." in picture
     without_plan = gantt.notes(model, {"forecast": "2027-08-15"})
     assert any("Утверждённой даты РНВ" in line for line in without_plan)
     lines = gantt.text_lines(model)
-    assert lines[0].endswith("по известным — опоздание до 19 дн.")
+    # Те же слова, что на странице Монитора.
+    assert lines[0].endswith("; срок пока не оценить: у 1 работы нет прогноза (у остальных опоздание до 19 дн.).")
     assert lines[1] == ("Корпус 2: окончание работ по графику 30.11.2026, прогноз "
                         "20.11.2026 (раньше на 10 дн.).")
-    assert lines[2].endswith("прогноза пока нет.")
+    assert lines[2].endswith("; срок пока не оценить: у 1 работы нет прогноза.")
+    assert not any("по известным" in line or "прогноза пока нет" in line for line in lines)
 
 
 def test_empty_tree_is_a_named_gap():
@@ -138,3 +141,32 @@ def test_the_report_takes_the_monitor_tree():
     assert "Корпус 2: окончание работ по графику 29.11.2026, прогноз 30.10.2026 (раньше на 30 дн.)." in text
     # No corpus is late by the GPR pace, so there is no delay finding.
     assert not [item for item in got["findings"] if item["topic"] == "Корпуса"]
+
+
+def test_stalled_and_plan_only_works_are_counted_with_the_page_words():
+    tree = [{"level": "control", "name": "Объекты", "children": [_rss("2.2.2.5", "Фасады",
+        _task("Фасад", "Корпус 1", "2026-07-01", "2026-12-28", "2026-12-28", True),
+        _task("Окна", "Корпус 1", "2026-07-01", "2026-12-28", pace_forecast_method="stalled"),
+        _task("Лифты", "Корпус 1", "2026-07-01", "2026-12-28", pace_forecast_method="stale"),
+        _task("Кровля", "Корпус 2", "2026-07-01", "2026-12-28", pace_forecast_method="plan"))]}]
+    lines = gantt.text_lines(gantt.model(tree))
+    assert lines[0].endswith("; срок пока не оценить: у 2 работ нет прогноза, 1 стоит (остальные идут по сроку).")
+    assert lines[1].endswith("; срок пока не оценить: у 1 работы нет данных о темпе.")
+
+
+def test_finished_late_short_label_has_a_footnote_and_every_label_fits_the_picture():
+    from test_monitor_cumulative_controls import browser_page
+    done = dict(work_done=True, all_done=True, finished_late_days=12)
+    tree = [{"level": "control", "name": "Объекты", "children": [_rss("2.2.2.5", "Фасады",
+        _task("Фасад", "Корпус 1", "2026-07-01", "2026-12-28", "2027-01-09", True, **done),
+        _task("Окна", "Корпус 2", "2026-07-01", "2026-12-28"))]}]
+    model = gantt.model(tree)
+    picture = gantt.svg(model, "2026-10-18")
+    assert "закончено +12 дн." in picture and "срок пока не оценить" in picture
+    assert "«Закончено +N дн.» — работы закончены на N дн. позже плана." in gantt.notes(model)
+    assert not any("Закончено +N" in n for n in gantt.notes(gantt.model(TREE)))
+    with browser_page(1440) as (page, responses, errors):
+        page.set_content(picture)
+        right = page.evaluate("""()=>{const s=document.querySelector('svg'),k=s.getBoundingClientRect().width/s.viewBox.baseVal.width;
+            return Math.max(...[...s.querySelectorAll('text')].map(t=>(t.getBoundingClientRect().right-s.getBoundingClientRect().left)/k))}""")
+        assert right <= gantt.WIDTH, right
