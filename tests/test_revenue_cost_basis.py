@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import copy
+import re
 import sys
 from pathlib import Path
 
@@ -143,7 +144,12 @@ def test_reset_keeps_the_analyst_assumptions():
 def test_silent_mo_recalc_keeps_the_phasing():
     """Правка плотности — тот же участок: настроенную очерёдность терять нельзя."""
     page = main.PAGE
-    assert "resetTerritoryData({keepPhasing:silent})" in page
+    # Вызов несёт и другие признаки того же участка (условия аренды), поэтому
+    # проверяется сам признак очерёдности в вызове `applyMo`, а не вся строка.
+    # Поведение на настоящей странице — в tests/test_land_rent_compact_page.py.
+    body = page[page.index("async function applyMo("):]
+    body = body[:body.index("\n}\n")]
+    assert re.search(r"resetTerritoryData\(\{keepPhasing:silent[,}]", body)
     assert "if(!keepPhasing)phasing=makeDefaultPhasing(1);" in page
 
 

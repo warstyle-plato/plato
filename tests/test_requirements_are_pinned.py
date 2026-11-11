@@ -13,10 +13,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# pycel (только тесты) требует networkx<2.7, pymupdf на проде получает 3.x.
-# Других расхождений быть не должно: тесты проверяют версии прода.
-ALLOWED_DIVERGENCE = {"networkx"}
-
 _PIN = re.compile(r"^([A-Za-z0-9_.\-]+)==([^\s\\]+)", re.M)
 
 
@@ -70,7 +66,7 @@ def test_tests_run_on_the_versions_of_prod():
     prod, dev = pins(_read("requirements.txt")), pins(_read("requirements-dev.txt"))
     assert set(prod) <= set(dev), "тестам не хватает пакетов прода"
     differ = {k for k in prod if prod[k] != dev[k]}
-    assert differ <= ALLOWED_DIVERGENCE, {k: (prod[k], dev[k]) for k in differ}
+    assert not differ, {k: (prod[k], dev[k]) for k in differ}
 
 
 def test_the_image_installs_the_lock():

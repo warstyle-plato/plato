@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import datetime as dt
 
 import developaid_monitor as monitor
 import developaid_monitor_ledgers as ledgers
@@ -22,6 +23,25 @@ def _number(value):
     except (ValueError, TypeError):
         return None
     return number if math.isfinite(number) else None
+
+
+def _observation(day, recorded_at=''):
+    """Observation time first; saving an old reading does not make it newer."""
+    observed = monitor._day(day)
+    try:
+        saved = dt.datetime.fromisoformat(recorded_at.replace('Z', '+00:00'))
+        recorded = saved.astimezone(dt.timezone.utc).isoformat() if saved.tzinfo else ''
+    except (ValueError, TypeError, AttributeError):
+        recorded = ''
+    return (observed.isoformat() if observed else '', recorded)
+
+
+def _supersedes(partial, complete):
+    if partial[0] != complete[0]:
+        return partial[0] > complete[0]
+    # Legacy manual facts have no save timestamp. A same-day contradiction
+    # without a proved order must not leave an unqualified hundred percent.
+    return not partial[1] or not complete[1] or partial[1] >= complete[1]
 
 
 def build(project, cut, snapshot, *, physical):
@@ -85,7 +105,10 @@ def build(project, cut, snapshot, *, physical):
     for event in physical._history(project):
         if event['recorded_at'][:10] <= cut:
             decisions[event['source_sha256']] = event
-    candidates, blockers = {}, set()
+    candidates, observations, blockers = {}, {}, {}
+
+    def block(key, observed):
+        blockers.setdefault(key, []).append(observed)
 
     def fact(sha, tid, day, origin, actual_finish=None, sid=None, qualified_at=None):
         old = source(sha, qualified_at or day)
@@ -105,8 +128,9 @@ def build(project, cut, snapshot, *, physical):
             candidate = fact(*key, day, 'manual')
             if candidate:
                 candidates[key] = candidate
+                observations[key] = _observation(day)
         elif value is not None:
-            blockers.add(key)
+            block(key, _observation(day))
     for sha, event in decisions.items():
         day, config = event['recorded_at'][:10], event['configuration']
         old = source(sha, day)
@@ -120,7 +144,13 @@ def build(project, cut, snapshot, *, physical):
                 config = cumulative.project_configuration(previous, snapshot, config)
                 if config is None:
                     continue
-            allowed = [task for task in config['tasks'] if task['scope_confirmed']
+                # A new unbound volume of the work withdraws its full scope here too.
+                config = physical._revoke_scope(project, cut, {'source_sha256': sha, 'tasks': {
+                    tid: dict(row, task_id=tid, name=row.get('name') or tid) for tid, row in old.items()}},
+                    snapshot, {'binding_confirmed_snapshot_id': event['snapshot_id'],
+                               'snapshot_id': (snapshot or {}).get('snapshot_id'), 'configuration': config,
+                               'binding_carried_from_source_sha256': None})['configuration']
+            allowed =[task for task in config['tasks'] if task['scope_confirmed']
                        and task['mode'] in {'quantities', 'completed'}]
             config = dict(config, tasks=allowed, components=[c for c in config['components']
                 if c['task_id'] in {t['task_id'] for t in allowed}])
@@ -132,18 +162,44 @@ def build(project, cut, snapshot, *, physical):
                 if task.get('mode') not in {'quantities', 'completed'} or not task['scope_confirmed']:
                     continue
                 key = sha, tid
+                observed = task.get('progress_date') or cumulative.snapshot_date(basis) or day
+                observation = _observation(observed, event['recorded_at'])
+                if task['mode'] == 'quantities':
+                    # A retained mapping can measure a newly loaded archive.
+                    # Its old save time is not the new reading's availability.
+                    loaded = _observation(observed, (basis or {}).get('loaded_at'))
+                    observation = (loaded if (basis or {}).get('snapshot_id') != event['snapshot_id']
+                                   and not loaded[1] else max(observation, loaded))
                 if value is not None and abs(value-1) <= 1e-7 and not task.get('requires_reconciliation'):
                     actual = task.get('actual_finish') if task['mode'] == 'completed' else None
-                    observed = task.get('progress_date') or cumulative.snapshot_date(basis) or day
                     candidate = fact(sha, tid, observed, 'confirmed_completion' if actual else
                                      'cumulative_quantities', actual, (basis or {}).get('snapshot_id'), day)
                     if candidate:
                         candidates[key] = candidate
+                        observations[key] = observation
                 elif value is not None or task.get('requires_reconciliation'):
-                    blockers.add(key)
+                    block(key, observation)
         except (OSError, ValueError, KeyError, TypeError):
             unresolved += 1
-    works = [value for key, value in candidates.items() if key not in blockers]
+
+    # The same work under several plan versions (code, name, object, section
+    # and WBS unchanged) is one fact. A later partial reading in another
+    # version does not let the earlier hundred percent stand.
+    def work(key):
+        row = (identities.get(key[0]) or {}).get(key[1])
+        return physical.definition(row) if row else key
+    later = {}
+    for key, readings in blockers.items():
+        later.setdefault(work(key), []).extend(readings)
+    chosen = {}
+    for key, value in candidates.items():
+        if any(_supersedes(reading, observations[key]) for reading in later.get(work(key), [])):
+            continue
+        rank = lambda f: (not f['actual_finish'], f['actual_finish'] or f['observed_complete_by'], f['fact_id'])
+        best = chosen.get(work(key))
+        if best is None or rank(value) < rank(best):
+            chosen[work(key)] = value
+    works = list(chosen.values())
 
     snapshots = {}
     for meta in ledgers.list_snapshots(project):
