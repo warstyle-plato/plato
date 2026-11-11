@@ -302,7 +302,9 @@ def test_canonical_source_percentage_and_history_are_visible_in_real_page(contex
     with browser_page(width) as (page, responses, errors):
         responses.data = view
         page.locator('#contractsTab').click()
-        cell = page.locator('#contractsRows td[data-label="Выполнено по накопительным"]')
+        from contract_rows import opened
+        expect(page.locator('tr[data-contract-id] .contract-money')).to_contain_text('46,7%')
+        cell = opened(page).locator('[data-label="Выполнено по накопительным"]')
         expect(cell).to_contain_text('46,7%')
         expect(cell).to_contain_text('По накопительным')
         page.locator('.contract-history summary').click()
@@ -344,7 +346,8 @@ def test_source_cost_forecast_is_labelled_with_its_scope_in_history(context):
     with browser_page(1440) as (page, responses, errors):
         responses.data = view
         page.locator('#contractsTab').click()
-        page.locator('.contract-history summary').click()
+        from contract_rows import opened
+        opened(page).locator('.contract-history summary').click()
         expect(page.locator('.contract-history')).to_contain_text('01.12.2026')
         expect(page.locator('.contract-history')).to_contain_text('стоимости позиций ведомостей')
         assert not errors
