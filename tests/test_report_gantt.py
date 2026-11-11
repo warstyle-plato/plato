@@ -154,6 +154,15 @@ def test_stalled_and_plan_only_works_are_counted_with_the_page_words():
     assert lines[1].endswith("; срок пока не оценить: у 1 работы нет данных о темпе.")
 
 
+def test_a_stalled_work_beside_a_plan_only_work_is_not_counted_as_no_pace():
+    """Только «план» и «стоит»: «нет данных о темпе» было бы неправдой о стоящей работе."""
+    tree = [{"level": "control", "name": "Объекты", "children": [_rss("2.2.2.5", "Фасады",
+        _task("Фасад", "Корпус 1", "2026-07-01", "2026-12-28", pace_forecast_method="plan"),
+        _task("Окна", "Корпус 1", "2026-07-01", "2026-12-28", pace_forecast_method="stalled"))]}]
+    lines = gantt.text_lines(gantt.model(tree))
+    assert lines[0].endswith("; срок пока не оценить: у 2 работ нет прогноза, 1 стоит."), lines[0]
+
+
 def test_finished_late_short_label_has_a_footnote_and_every_label_fits_the_picture():
     from test_monitor_cumulative_controls import browser_page
     done = dict(work_done=True, all_done=True, finished_late_days=12)
@@ -163,8 +172,9 @@ def test_finished_late_short_label_has_a_footnote_and_every_label_fits_the_pictu
     model = gantt.model(tree)
     picture = gantt.svg(model, "2026-10-18")
     assert "закончено +12 дн." in picture and "срок пока не оценить" in picture
-    assert "«Закончено +N дн.» — работы закончены на N дн. позже плана." in gantt.notes(model)
-    assert not any("Закончено +N" in n for n in gantt.notes(gantt.model(TREE)))
+    # Сноски идут в документ, где график рисуют полосы (`render`), а не `svg`:
+    # сноски к подписи, которой в документе нет, быть не должно.
+    assert not any("Закончено +N" in n for n in gantt.notes(model))
     with browser_page(1440) as (page, responses, errors):
         page.set_content(picture)
         right = page.evaluate("""()=>{const s=document.querySelector('svg'),k=s.getBoundingClientRect().width/s.viewBox.baseVal.width;

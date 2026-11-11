@@ -323,9 +323,6 @@ def notes(gantt: dict[str, Any], rnv: dict[str, Any] | None = None) -> list[str]
     if any(not article["forecast_known"] and not article["all_done"]
            for corpus in corpora for article in corpus["articles"]):
         out.append("«Срок пока не оценить» — по работам нет актуального темпа выполнения.")
-    if any(item.get("all_done") and item.get("finished_late_days")
-           for corpus in corpora for item in [corpus, *corpus["articles"]]):
-        out.append("«Закончено +N дн.» — работы закончены на N дн. позже плана.")
     return out
 
 

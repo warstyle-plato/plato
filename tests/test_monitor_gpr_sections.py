@@ -481,8 +481,19 @@ def test_corpus_names_why_each_work_has_no_forecast_with_the_work_row_words():
         work = lambda name: page.locator('#gantt .g-row.lvl-task', has_text=name).locator('.m-main')
         expect(work('Фасад')).to_have_text('Срок пока не оценить: нет данных о темпе.')
         expect(work('Окна')).to_have_text('Работа стоит. Прогноз неизвестен.')
-        expect(work('Лифты')).to_have_text('Нужно свежее выполнение ГПР')
+        expect(work('Лифты')).to_have_text('Нужно свежее выполнение ГПР.')
         expect(work('Кровля')).to_contain_text('По сроку')
+        assert not errors
+    # Только «план» и «стоит»: стоящая работа не прячется в «нет данных о темпе».
+    view['schedule']['management'][0]['children'][0]['children'][0]['children'] = [
+        dict(none, id='1', name='Фасад', pace_forecast_method='plan'),
+        dict(none, id='2', name='Окна', pace_forecast_method='stalled')]
+    with browser_page(1440) as (page, responses, errors):
+        page.evaluate("(v)=>{currentView=v;msg('viewMsg','');renderDash(v);renderGantt(v)}", view)
+        cell = page.locator('#gprMatrix tbody tr').nth(0).locator('td').first
+        assert cell.inner_text().replace('\n', ' ') == 'Срок пока не оценить у 2 работ нет прогноза, 1 стоит'
+        corpus = page.locator('#gantt .g-row.lvl-corpus')
+        expect(corpus).to_contain_text('Без прогноза: Фасад — нет данных о темпе; Окна — работа стоит.')
         assert not errors
 
 
