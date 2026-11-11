@@ -196,19 +196,18 @@ def test_the_office_has_a_class_choice_with_a_plus(walk) -> None:
     assert walk["errors"] == []
 
 
-def test_by_default_the_class_is_not_chosen_in_a_nonres_project(walk) -> None:
-    """Нежилой проект: без класса у офиса — ступень по умолчанию, а не шапка.
+def test_by_default_the_office_follows_the_profile_of_a_nonres_project(walk) -> None:
+    """Нежилой проект: без класса у офиса — ступень профиля проекта в шапке.
 
-    Шапка нежилого проекта класс офиса больше не выбирает (владелец,
-    10.11.2026); профиль пары меняет м/м и подземную ставку, но не класс
-    здания. Появление класса — дело офиса, и его подпись это говорит.
+    Класс выбирается у каждого офиса (владелец, 10.11.2026); пока выбора нет,
+    офис идёт за профилем шапки (владелец, 11.11.2026, 1А), и подпись говорит,
+    что класс у офиса не выбран.
     """
     assert walk["comfort"]["shown"] == _step("B")
     assert walk["comfort"]["value"] == ""
-    assert walk["business"]["shown"] == _step("B")
-    assert "выберите" in walk["comfort"]["note"] or "не задан" in walk["comfort"]["note"]
-    # Профиль пары B+ шапки ставит машино-место и подземную ставку — не класс.
-    assert walk["business"]["price"] == ns.OFFICE_CLASS_SCALE["B"]["price_th_per_sqm"]
+    assert walk["business"]["shown"] == _step("B+")
+    assert "не выбран" in walk["business"]["note"] and "Профиль B+" in walk["business"]["note"]
+    assert walk["business"]["price"] == ns.OFFICE_CLASS_SCALE["B+"]["price_th_per_sqm"]
 
 
 def test_a_chosen_class_sets_the_scale_price_and_cost(walk) -> None:
@@ -233,7 +232,8 @@ def test_a_typed_field_survives_a_class_change(walk) -> None:
 def test_back_to_no_class_returns_the_default_step(walk) -> None:
     got = walk["back"]
     assert got["value"] == ""
-    assert got["shown"]["offices_rent_th_per_sqm_month"] == _step("B")["offices_rent_th_per_sqm_month"]
+    # Выбор снят — офис снова идёт за профилем проекта B+ в шапке.
+    assert got["shown"]["offices_rent_th_per_sqm_month"] == _step("B+")["offices_rent_th_per_sqm_month"]
     assert got["shown"]["offices_exit_cap_pct"] == 8
     # Поле очищено — класс офиса не задан, и в поле цены остаётся прежнее число
     # человека (750), а не ступень класса: класс не возвращается сам.
@@ -254,7 +254,7 @@ def test_the_engine_reads_the_same_class_as_the_page(walk) -> None:
         f"offices_{k}": page_inputs[f"offices_{k}"] for k in FIELDS}
     rows = walk["engine"]["office_classes"]
     assert [(r["prefix"], r["office_class"], r["source"]) for r in rows] == [
-        ("offices", "B", ns.OFFICE_CLASS_DEFAULT_SOURCE)]
+        ("offices", "B+", ns.OFFICE_CLASS_BY_PROJECT_SOURCE)]
 
 
 def test_an_unmarked_number_of_another_class_is_somebodys_own() -> None:
@@ -370,10 +370,9 @@ def test_a_nonresidential_project_chooses_a_pair_profile(kinds) -> None:
 
 def test_a_plus_takes_the_elite_garage_and_its_own_office_step(kinds) -> None:
     got = kinds["a_plus"]
-    # Явно выбранный профиль пары хранит проект как `custom`: пресет шапки не
-    # переписывает класс жилья, а класс офиса живёт у офиса.
-    assert (got["value"], got["project_class"]) == ("profile:A+", "custom")
-    assert got["nonres"] == ""
+    # Профиль A+ в шапке — пара «элитный» и ступень A+ для офисов без своего
+    # выбора (`nonres_office_class`); класс, выбранный у офиса, сильнее.
+    assert (got["value"], got["project_class"], got["nonres"]) == ("profile:A+", "elite", "A+")
     # Класс A+ у самого офиса: цена метра — ступень A+, а подземная ставка
     # проекта — своя, от класса проекта, а не от класса офиса.
     assert got["rent"] == _step("A+")["offices_rent_th_per_sqm_month"]

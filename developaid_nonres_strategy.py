@@ -105,8 +105,8 @@ OFFICE_CLASS_FOLLOWED: tuple[str, ...] = (
 # конкретного объекта, а не наверху»). Второй ответ на вопрос «какой класс у
 # офиса» — класс проекта в шапке — больше не выбирается и не читается как
 # класс офиса (`nonres_project_class`); вводная `nonres_office_class` осталась
-# ключом сохранённых проектов и открывается переносом в поле каждого офиса
-# (`apply_office_classes`).
+# ступенью профиля в шапке: офис без своего выбора идёт за ней
+# (`office_class_choice`, владелец 11.11.2026).
 #
 # Класс проекта у нежилого проекта по-прежнему нужен профилю пары — машино-
 # месту и подземной ставке: B — комфорт, B+ — бизнес, A и A+ — элитный
@@ -121,11 +121,9 @@ def nonres_project_class(inputs: dict[str, Any] | None) -> str | None:
     """Ступень класса офиса из класса проекта — только у сохранённых проектов.
 
     Шапка нежилого проекта класс офиса больше не выбирает. Ответ остался для
-    двух читателей: (1) перенос старой вводной `nonres_office_class` в поля
-    офисов и (2) прежние поверхности, которые спрашивают «какая ступень у
+    двух читателей: (1) класс офиса без своего выбора и (2) прежние поверхности, которые спрашивают «какая ступень у
     класса проекта» (`project_class_view`, профиль пары). Класс КОНКРЕТНОГО
-    офиса отвечает `office_class_choice`, и шапку он не читает, если у офиса
-    класса нет, кроме ступени класса проекта.
+    офиса отвечает `office_class_choice`: без выбора у офиса — эта же ступень.
     """
     x = inputs or {}
     if str(x.get("project_kind") or "") != PROJECT_KIND_NONRESIDENTIAL:
@@ -160,22 +158,27 @@ def office_class_choice(inputs: dict[str, Any] | None, prefix: str) -> dict[str,
     и непонятное значение — не выбор: класс идёт за классом проекта, а у
     пользовательского класса проекта — ступень по умолчанию.
 
-    В НЕЖИЛОМ проекте класс проекта офиса не задаёт (владелец, 10.11.2026):
-    класс выбирается у каждого офиса, и поле без выбора — не «по классу
-    проекта», а «не задан». Это единственный ответ на «какой класс у офиса»:
-    шапка в нежилом проекте класс офиса не выбирает.
+    В НЕЖИЛОМ проекте класс выбирается у каждого офиса (владелец, 10.11.2026).
+    Пока у офиса выбора нет, класс идёт за профилем проекта в шапке (B — комфорт,
+    B+ — бизнес, A — элитный) или за прежней вводной `nonres_office_class`
+    сохранённого проекта (владелец, 11.11.2026, 1А): отсутствие выбора не
+    становится ступенью B, и сохранённый проект открывается теми же числами.
+    Ступень по умолчанию — только у пользовательского профиля. Это
+    единственный ответ на «какой класс у офиса»; страница читает тот же.
     """
     x = inputs or {}
     raw = str(x.get(f"{prefix}_{OFFICE_CLASS_FIELD}") or "").strip()
     if raw in OFFICE_CLASSES:
         return {"office_class": raw, "source": OFFICE_CLASS_CHOSEN, "text": "выбран"}
     if str(x.get("project_kind") or "") == PROJECT_KIND_NONRESIDENTIAL:
-        legacy = legacy_office_class(x)
-        if legacy:
-            return {"office_class": legacy, "source": OFFICE_CLASS_BY_PROJECT_SOURCE,
-                    "text": "прежний класс проекта"}
+        # Шапка пишет ступень профиля в `nonres_office_class`; у проекта,
+        # сохранённого до неё, профиль — сам класс проекта (`nonres_project_class`).
+        by_profile = nonres_project_class(x)
+        if by_profile:
+            return {"office_class": by_profile, "source": OFFICE_CLASS_BY_PROJECT_SOURCE,
+                    "text": "по профилю проекта"}
         return {"office_class": DEFAULT_OFFICE_CLASS, "source": OFFICE_CLASS_DEFAULT_SOURCE,
-                "text": "не задан — по классу проекта"}
+                "text": "не выбран — по умолчанию"}
     by_project = nonres_project_class(x) or OFFICE_CLASS_BY_PROJECT.get(str(x.get("project_class") or ""))
     if by_project:
         return {"office_class": by_project, "source": OFFICE_CLASS_BY_PROJECT_SOURCE,
@@ -244,19 +247,6 @@ def apply_office_class(x: dict[str, Any], prefix: str) -> dict[str, str]:
             "text": f"по классу офиса {choice['office_class']}"}
     x["_field_origin"] = origins
     return choice
-
-
-def legacy_office_class(inputs: dict[str, Any] | None) -> str | None:
-    """Прежний класс нежилого проекта (`nonres_office_class`), если он был выбран.
-
-    До 10.11.2026 класс нежилого проекта выбирался один на всех офисов.
-    Теперь он — у каждого офиса; эта вводная осталась ключом сохранённых
-    проектов, и `office_class_choice` читает её, пока у офиса своего класса
-    нет. Проект, сохранённый со старой вводной, открывается той же ступенью,
-    а новый — не задаёт класса вовсе.
-    """
-    raw = str((inputs or {}).get(NONRES_CLASS_FIELD) or "").strip()
-    return raw if raw in OFFICE_CLASSES else None
 
 
 # Поля стратегии у объекта: суффикс → (умолчание офиса, умолчание ТЦ).

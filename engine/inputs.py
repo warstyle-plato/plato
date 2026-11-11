@@ -1729,17 +1729,6 @@ def apply_office_classes(x: dict[str, Any]) -> dict[str, dict[str, str]]:
     """
     if not isinstance(x, dict):
         return {}
-    # Прежний класс нежилого проекта (`nonres_office_class`) — в поле каждого
-    # офиса, у которого класса ещё нет: проект, сохранённый до 10.11.2026,
-    # открывается той же ступенью. Дальше решает человек (см.
-    # `nonres_strategy.legacy_office_class`).
-    legacy = nonres_strategy.legacy_office_class(x)
-    if (legacy and str(x.get("project_kind") or "") == project_types.NONRESIDENTIAL
-            and legacy is not None):
-        for obj in STANDALONE_OBJECTS:
-            key = f"{obj.prefix}_{nonres_strategy.OFFICE_CLASS_FIELD}"
-            if obj.product == "offices" and key not in x:
-                x[key] = legacy
     return {obj.prefix: nonres_strategy.apply_office_class(x, obj.prefix)
             for obj in STANDALONE_OBJECTS if obj.product == "offices"}
 
@@ -1763,16 +1752,16 @@ def office_class_rows(inputs: dict[str, Any] | None) -> list[dict[str, str]]:
         if choice["source"] == nonres_strategy.OFFICE_CLASS_CHOSEN:
             text = f"{choice['office_class']} — выбран у офиса"
         elif nonres and choice["source"] == nonres_strategy.OFFICE_CLASS_BY_PROJECT_SOURCE:
-            # Нежилой проект: класс офиса выбирается у самого офиса; «по классу
-            # проекта» здесь — только старый проект, перенесённый из прежней
-            # вводной `nonres_office_class`.
-            text = f"{choice['office_class']} — прежний класс проекта, перенесён в офис"
+            # Класс у офиса не выбран — он идёт за профилем проекта в шапке.
+            text = (f"{choice['office_class']} — по профилю проекта: класс у этого офиса "
+                    "не выбран")
         elif choice["source"] == nonres_strategy.OFFICE_CLASS_BY_PROJECT_SOURCE and nonres_class:
             text = f"{choice['office_class']} — класс проекта"
         elif choice["source"] == nonres_strategy.OFFICE_CLASS_BY_PROJECT_SOURCE:
             text = f"{choice['office_class']} — как у класса проекта «{project_label}»"
         elif nonres:
-            text = f"{choice['office_class']} — класс не задан: выберите его в блоке офиса"
+            text = (f"{choice['office_class']} — класс у офиса не выбран, взят класс по умолчанию; "
+                    "выберите его в блоке офиса")
         else:
             text = f"{choice['office_class']} — по умолчанию: у проекта нет класса"
         rows.append({"prefix": obj.prefix, "title": obj.group_label,

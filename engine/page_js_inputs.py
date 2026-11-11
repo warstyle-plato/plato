@@ -1170,7 +1170,7 @@ function syncProjectClassSelector(){
 function applyProjectClassChoice(value){
  const v=String(value||'');
  if(v.startsWith('profile:')||v.startsWith('office:')){
-  const cls=v.slice(7);
+  const cls=v.slice(v.indexOf(':')+1);
   return applyProjectClassPreset(OFFICE_CLASS.nonres_profile[cls]||'custom',cls);
  }
  return applyProjectClassPreset(v);
@@ -1307,9 +1307,9 @@ function nonresProjectClass(c){
 function officeClassFor(prefix,c){
  const raw=String(inputs[prefix+'_'+OFFICE_CLASS.field]||'').trim();
  if(OFFICE_CLASS.classes.includes(raw))return {cls:raw,source:OFFICE_CLASS.chosen};
- // Нежилой проект: класс офиса выбирается у самого офиса, и шапка его не
- // задаёт (владелец, 10.11.2026). «project» здесь — только прежний класс
- // проекта (`nonres_office_class`), который сохранённый проект принёс с собой.
+ // Нежилой проект: класс выбирается у самого офиса (владелец, 10.11.2026);
+ // без выбора — профиль проекта в шапке (`nonres_office_class`, у старого
+ // проекта — класс проекта), как у движка (`office_class_choice`, 11.11.2026).
  if(projectKind()==='nonresidential'){
   const legacy=nonresProjectClass(c);
   return legacy?{cls:legacy,source:'project'}:{cls:OFFICE_CLASS.default,source:'default'};
@@ -1389,8 +1389,8 @@ function officeClassNoteText(prefix){
  const choice=officeClassFor(prefix);
  const step=OFFICE_CLASS.values[choice.cls];
  const head=choice.source===OFFICE_CLASS.chosen?`Класс офиса ${choice.cls} выбран вами.`
-  :isNonResidential()&&choice.source==='project'?`Сейчас класс офиса ${choice.cls}: он перенесён из прежнего класса проекта — выберите класс этого офиса, если он другой.`
-  :isNonResidential()?`Класс офиса не задан — выберите его здесь: у каждого офиса он свой.`
+  :isNonResidential()&&choice.source==='project'?`Сейчас класс офиса ${choice.cls}: у этого офиса класс не выбран, поэтому он взят по профилю проекта «Профиль ${choice.cls}». Выберите класс этого офиса, если он другой.`
+  :isNonResidential()?`Класс у этого офиса не выбран, поэтому взят класс ${choice.cls} по умолчанию. Выберите класс здесь: у каждого офиса он свой.`
   :choice.source==='project'?`Сейчас класс офиса ${choice.cls}: он идёт за классом проекта «${(PROJECT_CLASS_PRESETS[inputs.project_class]||{}).label||inputs.project_class}».`
   :`Сейчас класс офиса ${choice.cls}: у проекта нет класса, поэтому взят класс по умолчанию.`;
  const rent=Number(step.rent_th_per_sqm_year).toLocaleString('ru-RU',{maximumFractionDigits:1});

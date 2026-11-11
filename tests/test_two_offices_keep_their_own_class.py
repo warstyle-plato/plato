@@ -73,17 +73,34 @@ def _two_offices(**over) -> tuple[dict, dict]:
 
 # --- движок: один ответ на «какой класс у офиса» --------------------------------
 
-def test_the_header_does_not_choose_the_office_class_in_a_nonres_project() -> None:
-    """Шапка нежилого проекта не задаёт класс офиса: без поля офиса — ступень.
+def test_an_office_without_a_choice_follows_the_profile_of_the_project() -> None:
+    """Офис без своего класса идёт за профилем проекта, а не за ступенью B.
 
-    Класс проекта `business` в нежилом прежде давал B+ всем офисам. Теперь офис
-    без своего класса получает ступень по умолчанию, а `business` двигает
-    только профиль пары (машино-место, подземная ставка).
+    Владелец, 11.11.2026 (1А): отсутствие выбора не становится решением.
+    Нежилой проект с профилем «бизнес» прежде давал офисам B+ и даёт B+ сейчас;
+    ступень по умолчанию — только у пользовательского профиля.
     """
-    choice = ns.office_class_choice(
-        {"project_kind": core.PROJECT_KIND_NONRESIDENTIAL, "project_class": "business"}, "offices")
-    assert choice["office_class"] == ns.DEFAULT_OFFICE_CLASS
-    assert choice["source"] == ns.OFFICE_CLASS_DEFAULT_SOURCE
+    nonres = {"project_kind": core.PROJECT_KIND_NONRESIDENTIAL}
+    choice = ns.office_class_choice({**nonres, "project_class": "business"}, "offices")
+    assert (choice["office_class"], choice["source"]) == ("B+", ns.OFFICE_CLASS_BY_PROJECT_SOURCE)
+    assert ns.office_class_choice({**nonres, "project_class": "elite"}, "offices")["office_class"] == "A"
+    custom = ns.office_class_choice({**nonres, "project_class": "custom"}, "offices")
+    assert (custom["office_class"], custom["source"]) == (ns.DEFAULT_OFFICE_CLASS, ns.OFFICE_CLASS_DEFAULT_SOURCE)
+    # Выбор у офиса сильнее профиля.
+    chosen = ns.office_class_choice({**nonres, "project_class": "elite", "offices_office_class": "B"}, "offices")
+    assert (chosen["office_class"], chosen["source"]) == ("B", ns.OFFICE_CLASS_CHOSEN)
+
+
+def test_the_page_and_the_engine_name_the_same_class_without_a_choice() -> None:
+    """Страница (`officeClassFor`) отвечает тем же классом, что движок."""
+    for project_class in ("comfort", "business", "elite", "custom"):
+        state = {"project_kind": core.PROJECT_KIND_NONRESIDENTIAL, "project_class": project_class}
+        prelude = (PRELUDE + "const inputs=" + json.dumps(state) + ";\n"
+                   + page_blocks.page_const("OFFICE_CLASS") + "\n")
+        out, _ = page_blocks.run(prelude, "process.stdout.write(JSON.stringify(officeClassFor('offices')));")
+        page = json.loads(out)
+        engine = ns.office_class_choice(state, "offices")
+        assert page["cls"] == engine["office_class"], (project_class, page, engine)
 
 
 def test_each_office_answers_with_its_own_class() -> None:
@@ -119,13 +136,19 @@ def test_a_typed_cost_beats_the_class_and_is_kept() -> None:
     assert x["offices2_cost_th_per_sqm"] == 260.0
 
 
-def test_a_legacy_project_class_moves_into_the_office_field() -> None:
-    """Проект, сохранённый с `nonres_office_class`, открывается той же ступенью."""
-    x, _ = _two_offices(offices_office_class="", offices2_office_class="", nonres_office_class="A")
+def test_a_saved_project_class_keeps_the_class_of_its_offices() -> None:
+    """Сохранённый проект с `nonres_office_class` открывается той же ступенью.
+
+    Поле офиса при этом не заполняется: класс идёт за профилем, пока человек
+    не выбрал его у офиса, и смена профиля двигает такой офис.
+    """
+    x, _ = _two_offices(nonres_office_class="A")
     del x["offices_office_class"], x["offices2_office_class"]
     core.apply_office_classes(x)
-    assert x["offices_office_class"] == "A" and x["offices2_office_class"] == "A"
-    assert ns.office_class_choice(x, "offices2")["source"] == ns.OFFICE_CLASS_CHOSEN
+    assert "offices_office_class" not in x
+    choice = ns.office_class_choice(x, "offices2")
+    assert (choice["office_class"], choice["source"]) == ("A", ns.OFFICE_CLASS_BY_PROJECT_SOURCE)
+    assert x["offices2_exit_cap_pct"] == pytest.approx(ns.OFFICE_CLASS_SCALE["A"]["exit_cap_pct"])
 
 
 # --- страница: шапка и вкладки «Строительства» -----------------------------------
