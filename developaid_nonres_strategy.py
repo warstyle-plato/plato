@@ -31,6 +31,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import date
+from math import fsum, isclose
 from typing import Any, Callable
 
 from developaid_finance_math import month_key, monthly_sum
@@ -498,15 +499,29 @@ def allocate_common_capex(debt_capex: dict, capex_by_article: dict,
     """
     remaining = dict(debt_capex)
     common_by_plan = {key: {} for key in plan_shares}
+    if not plan_shares:
+        return remaining, common_by_plan
+    share_total = fsum(plan_shares.values())
+    # Когда вся стройка на кредитах объектов, сумма долей математически 1.
+    # Остаток машинного деления не должен открывать ПФ с лимитом 10 млн.
+    # Наличие даже очень маленькой настоящей стройки по ДДУ исключает эту
+    # ветку; явно неполная доля также сохраняет свою потребность в ПФ.
+    fully_allocated = (isclose(share_total, 1.0, rel_tol=1e-15)
+                       and not any(value for key in object_keys if key not in plan_shares
+                                   for value in (capex_by_article.get(key) or {}).values()))
+    balance_key = max(plan_shares, key=plan_shares.get)
     for month in list(remaining):
-        ddu_objects = sum((capex_by_article.get(key) or {}).get(month, 0.0)
-                          for key in object_keys if key not in plan_shares)
+        ddu_objects = fsum((capex_by_article.get(key) or {}).get(month, 0.0)
+                           for key in object_keys if key not in plan_shares)
         common = max(0.0, remaining[month] - ddu_objects)
         if common <= 0:
             continue
-        for key, share in plan_shares.items():
-            common_by_plan[key][month] = common * share
-        remaining[month] -= common * sum(plan_shares.values())
+        allocated = common if fully_allocated else common * share_total
+        parts = {key: common * share for key, share in plan_shares.items() if key != balance_key}
+        parts[balance_key] = allocated - fsum(parts.values())
+        for key, amount in parts.items():
+            common_by_plan[key][month] = amount
+        remaining[month] -= allocated
     return remaining, common_by_plan
 
 

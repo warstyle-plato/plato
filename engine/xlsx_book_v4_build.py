@@ -30,6 +30,13 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
     покраснеет, а не промолчит.
     """
     x, t, rates = prepared["x"], prepared["t"], prepared["rates"] or []
+    office_cost_scale = {}
+    for cls, pair in nonres_strategy.NONRES_CLASS_PROFILE.items():
+        pair_rates = class_base_preset(pair, class_region(x), PROJECT_KIND_NONRESIDENTIAL)
+        extra, markup = object_smr_conversion(pair_rates)
+        office_cost_scale[cls] = {
+            "extra": extra, "markup": markup,
+            "smr": object_smr_rate(nonres_strategy.OFFICE_CLASS_SCALE[cls]["cost_th_per_sqm"], pair_rates)}
     op = build_operating_model(x, t, rates)
     start = op["project_start"]
     months = [d(m) for m in (consolidated.get("cashflow") or {}).get("months") or []]
@@ -95,6 +102,19 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
         # Класс офиса — из вводных (`office_class_choice`), а не угадан по числам.
         if obj.product == "offices":
             item["office_class"] = nonres_strategy.office_class_choice(x, obj.prefix)["office_class"]
+            origins = x.get("_field_origin") if isinstance(x.get("_field_origin"), dict) else {}
+            manual_keys = x.get("_class_manual") if isinstance(x.get("_class_manual"), list) else []
+            manual_fields = []
+            for field, suffix in office_workbook.CLASS_INPUT_FIELDS.items():
+                key = f"{obj.prefix}_{suffix}"
+                origin = origins.get(f"inputs.{key}") or {}
+                foreign = (isinstance(origin, dict) and origin.get("source")
+                           and origin["source"] != nonres_strategy.OFFICE_CLASS_ORIGIN)
+                if (key in manual_keys or foreign
+                        or (suffix in nonres_strategy.OFFICE_CLASS_FOLLOWED
+                            and not nonres_strategy.office_field_follows(x, obj.prefix, suffix))):
+                    manual_fields.append(field)
+            item["office_manual_fields"] = manual_fields
         # Продукт мест гаража объекта — его выручка и маржа по ДДУ сверяются
         # вместе с объектом.
         item["parking_product_key"] = object_parking_product_key(obj.key)
@@ -203,6 +223,7 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
     steps = pf_special_steps(x.get("pf_special_steps"))
     return {
         "name": project_name,
+        "office_cost_scale": office_cost_scale,
         "start": start, "months": months,
         "ird_months": int(n(x, "ird_months", 18)), "ird_min": IRD_MONTHS_MIN,
         "construction_months": int(n(x, "construction_months", 24)),
@@ -2485,7 +2506,8 @@ def _build_project_workbook(
             content, x, _rent, project_start_formula=_rent_start_formula,
             rve_formula=_rent_rve_formula,
             project_end_formula=f"MAX({_rent_end},EDATE('Аренда ЗУ'!$B$15,1))",
-            phase_shares=_rent_shares, hostvri_amount_formula="'Параметры модели'!$B$16")
+            phase_shares=_rent_shares, hostvri_amount_formula="'Параметры модели'!$B$16",
+            phase_rve_formulas=_rent_rve_refs if len(_rent.get("phase_land") or []) > 1 else None)
         _rent_meta["workbook_supported"] = True
     except Exception as exc:
         _rent_meta["workbook_supported"] = False
