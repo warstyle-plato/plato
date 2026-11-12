@@ -27,6 +27,7 @@ import datetime as dt
 import hashlib
 import json
 import re
+from collections import Counter
 
 # Order matters: the first kind found in the name wins.
 _KINDS = (
@@ -92,13 +93,18 @@ def _first(read, *names):
 
 
 def _days(line):
-    start, finish = dt.date.fromisoformat(line["start"]), dt.date.fromisoformat(line["finish"])
-    return (finish - start).days + 1
+    try:
+        start, finish = dt.date.fromisoformat(line["start"]), dt.date.fromisoformat(line["finish"])
+    except (KeyError, TypeError, ValueError):
+        return 0
+    return max(0, (finish - start).days + 1)
 
 
 def duration_shares(lines):
-    total = sum(_days(line) for line in lines)
-    return [_days(line) / total for line in lines]
+    days = [_days(line) for line in lines]
+    if not days or any(value <= 0 for value in days):
+        raise ValueError("У строки графика нет корректного срока: проверьте даты начала и окончания.")
+    return [value / sum(days) for value in days]
 
 
 def position_key(position):
@@ -112,7 +118,9 @@ def leaves(schedule):
     """Dated work lines of the schedule: headings sum their works and take no position."""
     lines = (schedule or {}).get("lines") or []
     parents = {line.get("parent") for line in lines}
-    return [line for line in lines if line["code"] not in parents and line.get("start") and line.get("finish")]
+    ambiguous = _ambiguous_codes(lines)
+    return [line for line in lines if line["code"] not in parents
+            and line["code"] not in ambiguous and _days(line) > 0]
 
 
 def summary(positions, schedule):
@@ -167,15 +175,31 @@ def _places(where):
     return ", ".join(sorted(where))
 
 
+def _ambiguous_codes(lines):
+    """Legacy parses can reuse an identity; neither it nor its children are safe links.
+
+    Do not renumber a saved parse without its PDF: existing owner choices use
+    these identities, and a repeated heading's child cannot recover its parent.
+    """
+    repeated = {code for code, count in Counter(line["code"] for line in lines).items() if count > 1}
+    while True:
+        children = {line["code"] for line in lines if line.get("parent") in repeated}
+        if children <= repeated:
+            return repeated
+        repeated.update(children)
+
+
 def _line_signs(lines):
-    by_code = {line["code"]: line for line in lines}
+    ambiguous = _ambiguous_codes(lines)
+    by_code = {line["code"]: line for line in lines if line["code"] not in ambiguous}
     parents = {line["parent"] for line in lines if line.get("parent")}
     signs = []
     for line in lines:
-        if line["code"] in parents:
+        if line["code"] in parents or line["code"] in ambiguous:
             continue
-        chain, code = [], line["code"]
-        while code in by_code:
+        chain, code, seen = [], line["code"], set()
+        while code in by_code and code not in seen:
+            seen.add(code)
             chain.append(by_code[code]["name"])
             code = by_code[code].get("parent")
         # A schedule by buildings names the building in an unnumbered title over its lines.
@@ -191,6 +215,11 @@ def propose(estimate, schedule, *, agreement=False):
     """Links of every position of `estimate` to leaf lines of `schedule`."""
     lines = [line for line in (schedule or {}).get("lines") or []]
     signs = _line_signs(lines)
+    ambiguous = _ambiguous_codes(lines)
+    ambiguous_reason = ("В сохранённом разборе графика повторяются коды строк: "
+                        + ", ".join(sorted(ambiguous))
+                        + ". Связь по этим кодам неоднозначна: нужен повторный разбор исходного PDF. "
+                        "Прежние связи с такими строками не применяются.") if ambiguous else ""
     positions = []
     for index, position in enumerate(estimate.get("positions") or []):
         group = (position.get("group") or {}).get("name")
@@ -210,6 +239,11 @@ def propose(estimate, schedule, *, agreement=False):
         if not lines:
             item["reason"] = ("График производства работ этой или прежней редакции не загружен: "
                               "сопоставить позицию не с чем.")
+            continue
+        numbers = {_text(position.get("number")).rstrip("."),
+                   _text((position.get("group") or {}).get("number")).rstrip(".")}
+        if any(line["code"] in ambiguous and printed(line) in numbers for line in lines):
+            item["reason"] = ambiguous_reason
             continue
         same, numbered = _numbered(position, signs, lines)
         if same:
@@ -231,7 +265,7 @@ def propose(estimate, schedule, *, agreement=False):
                                   f"графике она относится к объекту «{_places(there)}», а в расчёте позиция стоит "
                                   f"в разделе объекта «{_places(where)}».")
                 # Which object is right is the owner's answer: one button takes the schedule's object.
-                if line.get("start") and line.get("finish"):
+                if _days(line) > 0:
                     item["fix"] = {"lines": [line["code"]], "object": _places(there), "estimate": _places(where)}
             elif side and same[0]["part"] and side != same[0]["part"]:
                 item["reason"] = (f"Строка графика {line['code']} совпадает с позицией по номеру и названию, но в "
@@ -239,6 +273,9 @@ def propose(estimate, schedule, *, agreement=False):
                                   f"в {_SIDE[side]} части.")
             elif not (line.get("start") and line.get("finish")):
                 item["reason"] = f"У строки графика {line['code']} нет дат начала и окончания."
+            elif _days(line) <= 0:
+                item["reason"] = (f"У строки графика {line['code']} нет корректного срока: "
+                                  "проверьте даты начала и окончания.")
             else:
                 item.update(status="proposed", lines=linked([line]))
             continue
@@ -253,8 +290,7 @@ def propose(estimate, schedule, *, agreement=False):
                               + "): как разделить её между ними, расчёт не говорит.")
             continue
         alike = [s for s in signs if s["kind"] == key and s["buildings"] == where
-                 and (not floor or s["floors"] & floor)
-                 and s["line"].get("start") and s["line"].get("finish")]
+                 and (not floor or s["floors"] & floor)]
         found = [s for s in alike if s["part"] == side] if side else alike
         unsure = [s for s in alike if s["part"] is None] if side else []
         place = next(iter(where), "вся площадка")
@@ -271,12 +307,18 @@ def propose(estimate, schedule, *, agreement=False):
                               f"для объекта «{place}» есть в графике в обеих частях.")
             continue
         if not found:
-            if agreement:
+            if ambiguous:
+                item["reason"] = ambiguous_reason
+            elif agreement:
                 item.update(status="extra", reason="Дополнительный объём без срока: в графике нет строки "
                                                    "для этой работы, в накопленный план позиция не входит.")
             else:
                 item["reason"] = (f"В графике нет строки «{label}» для объекта «{place}»"
                                   + (f" в {_SIDE[side]} части" if side else "") + ".")
+            continue
+        if any(_days(s["line"]) <= 0 for s in found):
+            item["reason"] = (f"У строк графика {_codes(found)} нет корректного срока: "
+                              "проверьте даты начала и окончания.")
             continue
         item["status"] = "proposed"
         item["lines"] = linked([s["line"] for s in found])

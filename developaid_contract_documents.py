@@ -35,7 +35,7 @@ import datetime as dt
 import re
 
 # Raise when reading changes: stored documents are then read again from their PDF.
-READER_VERSION = 5
+READER_VERSION = 6
 MONTHS = {'январь': 1, 'февраль': 2, 'март': 3, 'апрель': 4, 'май': 5, 'июнь': 6, 'июль': 7,
           'август': 8, 'сентябрь': 9, 'октябрь': 10, 'ноябрь': 11, 'декабрь': 12}
 _CODE = re.compile(r'^\d+(?:\.\d+)*\.?$')
@@ -512,6 +512,10 @@ def _schedule_page(page, page_number, schedule):
                    if 'наименование' in ' '.join(row[:2]).lower() and 'дата' in ' '.join(row[2:4]).lower()), None)
     if header is None:
         return False
+    if len(grid.cells[header]) < 4:
+        warnings.append(f'Стр. {page_number}: в таблице графика не хватает граф начала и окончания. '
+                        'Сроки работ не прочитаны: нужен график с обеими графами дат.')
+        return True
     dates, problem = _calendar(grid, 4, page, grid.rows[header+1])
     if problem:
         warnings.append(f'Стр. {page_number}: {problem} Полосы графика не прочитаны.')
@@ -541,7 +545,16 @@ def _schedule_page(page, page_number, schedule):
             line['unread'] = unread
         lines.append(line)
         reversed_dates = bool(start and finish and finish < start)
-        if bar and (start is None or finish is None):
+        if bar and (reversed_dates or (start and _apart(start, bar[0]))
+                    or (finish and _apart(finish, bar[1]))
+                    or (finish or bar[1]) < (start or bar[0])):
+            problem = (f'окончание {_shown(finish)} раньше начала {_shown(start)}' if reversed_dates else
+                       f'в графах дат {_shown(start)} — {_shown(finish)}, а полоса на диаграмме идёт '
+                       f'{_shown(bar[0])} — {_shown(bar[1])}')
+            _correct(schedule, line, bar[0], bar[1], 'bar',
+                     f'Стр. {page_number}: у строки {code} «{name[:60]}» {problem}. '
+                     f'Взяты даты полосы: {_shown(bar[0])} — {_shown(bar[1])}.')
+        elif bar and (start is None or finish is None):
             used = {'start': start or bar[0], 'finish': finish or bar[1]}
             basis = {key: 'cells' if line['cells'][key] else 'bar' for key in used}
             if unread:
@@ -551,13 +564,6 @@ def _schedule_page(page, page_number, schedule):
                          + ' — '.join(_shown(used[key]) for key in unread) + '.')
             else:
                 line.update(used, dates_from=basis)
-        elif bar and (reversed_dates or _apart(start, bar[0]) or _apart(finish, bar[1])):
-            problem = (f'окончание {_shown(finish)} раньше начала {_shown(start)}' if reversed_dates else
-                       f'в графах дат {_shown(start)} — {_shown(finish)}, а полоса на диаграмме идёт '
-                       f'{_shown(bar[0])} — {_shown(bar[1])}')
-            _correct(schedule, line, bar[0], bar[1], 'bar',
-                     f'Стр. {page_number}: у строки {code} «{name[:60]}» {problem}. '
-                     f'Взяты даты полосы: {_shown(bar[0])} — {_shown(bar[1])}.')
         elif reversed_dates:
             warnings.append(f'Стр. {page_number}: у строки {code} окончание {_shown(finish)} раньше начала '
                             f'{_shown(start)}, а полосы на диаграмме нет: исправить даты нечем.')
