@@ -14,7 +14,18 @@ engine/page_build.py. Стенды на node берут куски скрипт�
 """
 # ruff: noqa
 
-PAGE += r"""function renderResult(){
+PAGE += r"""// Строка «Аренда земли участка» в «Параметрах проекта». Применимость и
+// полноту решает движок (`land_rent.status`), страница их только читает.
+function landRentResultRow(r){
+ const rent=(r&&r.land_rent)||{};
+ if(!rent.status||rent.status==='not_applicable')return '';
+ const amount=money(Number(((r.capex)||{}).land_rent||0));
+ return row('Аренда земли участка',rent.status==='incomplete'
+  ?amount+' <span style="color:#777;font-weight:400">известна не вся сумма: не хватает условий аренды</span>'
+  :amount);
+}
+
+function renderResult(){
  if(!lastResult)return;const r=lastResult,f=r.finance;
  renderObjectParkingNote();
  // Подпись под ставкой благоустройства зовётся и формой, и результатом:
@@ -265,7 +276,9 @@ PAGE += r"""function renderResult(){
    +(vriRelief>0?' <span style="color:#777;font-weight:400">льгота '+money(vriRelief)+'</span>':''))+
   // Аренда земли — отдельная статья земельных правоотношений: она раньше не
   // попадала в «Результат», хотя движок её считает и кладёт в поток CAPEX.
-  row('Аренда земли участка',money(Number(r.capex.land_rent||0)))+
+  // Своя земля — строки нет: ноль читался бы «аренда бесплатна». Не вся
+  // сумма известна — число с оговоркой, а не как окончательное.
+  landRentResultRow(r)+
   (hotelProject?'':row(r.summary.social_payment_mode==='Строительство'?'Строительство соцобъектов':'Социальная компенсация',socialMoney(r.summary.social_payment)))+
   row('Проектирование П и РД',money((r.capex.design_p||0)+(r.capex.design_rd||0)))+
   (hotelProject
