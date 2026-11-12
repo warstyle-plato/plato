@@ -72,3 +72,16 @@ def test_new_all_undated_source_replaces_previous_calendar_without_inventing_pla
         expect(page.locator('#gprUndated')).to_be_visible()
         assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
         assert not errors
+
+
+@pytest.mark.parametrize('width',[390,1440])
+def test_source_diagnostics_and_archive_do_not_claim_current_corpus_facts(width):
+    with browser_page(width) as (page,responses,errors):
+        page.evaluate("()=>{currentView={schedule:{management:[]}};renderGantt(currentView);renderCorpusGprSource({source:null,source_state:{candidates:[{kind:'corpus_fact_parse'}]},html:'<p>Архив сохранённых источников</p>'})}")
+        expect(page.locator('#gprEmpty')).to_be_visible()
+        expect(page.locator('#gprEmpty')).not_to_contain_text('Показания ГПР доступны')
+        expect(page.locator('#corpusGprCard>summary')).to_have_text('Сохранённые источники и состояние плана')
+        assert page.locator('#corpusGprCard').get_attribute('open') is None
+        expect(page.locator('#corpusGprBody')).not_to_be_visible()
+        assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+        assert not errors
