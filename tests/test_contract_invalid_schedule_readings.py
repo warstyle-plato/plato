@@ -61,7 +61,8 @@ def test_a_partial_cell_cannot_make_the_bar_backwards(start, finish, cells):
     assert correction["cells"] == cells
     assert correction["basis"] == "bar" and "полос" in correction["text"]
     # Пустая графа названа словами, а не пропуском между тире.
-    assert "— —" not in correction["text"] and "не прочитана" in correction["text"]
+    assert "— —" not in correction["text"] and "даты нет" in correction["text"]
+    assert "не прочитана" not in correction["text"]
 
 
 def test_even_a_tolerated_one_day_difference_cannot_reverse_a_partial_interval():

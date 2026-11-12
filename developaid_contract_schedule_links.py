@@ -282,13 +282,13 @@ def propose(estimate, schedule, *, agreement=False):
         if same:
             line = same[0]["line"]
             there = same[0]["buildings"]
-            repeated = len(numbered)
-            if repeated > 1:
+            copies = len(numbered)
+            if copies > 1:
                 # Owner's decision А: the owner picks the line; the line named alike is only ticked in advance.
-                lines_word = "строки" if repeated % 10 in (2, 3, 4) and repeated % 100 not in (12, 13, 14) else "строк"
+                lines_word = "строки" if copies % 10 in (2, 3, 4) and copies % 100 not in (12, 13, 14) else "строк"
                 alike = [s["line"]["code"] for s in same]
                 item["suggested"] = alike
-                item["reason"] = (f"В графике {repeated} {lines_word} с номером {printed(line)}: "
+                item["reason"] = (f"В графике {copies} {lines_word} с номером {printed(line)}: "
                                   + "; ".join(f"«{x['code']}» {_text(x['name'])[:60]}" for x in numbered)
                                   + ". По номеру связь не определить: выберите строку вручную"
                                   + (f" — по названию подходит «{alike[0]}»" if len(alike) == 1 else "")
