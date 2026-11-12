@@ -37,7 +37,7 @@ def test_the_card_shows_the_three_multipliers():
     assert start > 0, "в карточке нет расшифровки основания платы"
     block = source[start - 400:start + 400]
     assert "vri_msk" in block, "основание должно стоять рядом с самой платой"
-    assert "коэфф. аренды" in block
+    assert "коэфф. аренды квартала" in block
     assert "базовая стоимость" in block
     assert "1,8964" in block
 

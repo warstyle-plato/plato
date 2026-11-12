@@ -993,6 +993,18 @@ def _undated_works(baseline: dict[str, Any]) -> list[dict[str, Any]]:
             for item in baseline.get("works") or [] if not item.get("start") or not item.get("finish")]
 
 
+def _schedule_reason(baseline: dict[str, Any], rows: list[dict[str, Any]]) -> str:
+    """Why the GPR calendar is empty — the one phrase every surface shows.
+
+    Both schedule paths (plan only and plan with the RSS) set it; the page
+    prints it as is instead of composing its own wording."""
+    if rows:
+        return ""
+    if baseline.get("works"):
+        return "График загружен, но ни у одной работы нет понятных дат, поэтому график пуст."
+    return "Утверждённый график работ не загружен."
+
+
 def _schedule_plan_fact(project: str, rss_path: Path, cut: Any) -> dict[str, Any]:
     cut_date = _day(cut) or _day(rss_path.stem)
     if cut_date is None:
@@ -1055,7 +1067,7 @@ def _schedule_plan_fact(project: str, rss_path: Path, cut: Any) -> dict[str, Any
     baseline_end = max((r["plan_finish"] for r in rows), default=None)
     return {"cut": cut_date, "rows": rows, "risks": len(risks),
             "baseline_end": baseline_end, "forecast_end": forecast_end,
-            "undated_works": _undated_works(baseline)}
+            "reason": _schedule_reason(baseline, rows), "undated_works": _undated_works(baseline)}
 
 
 def _payment_baseline_from_file(path: Path) -> dict[str, Any]:

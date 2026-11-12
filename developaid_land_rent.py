@@ -11,7 +11,9 @@ import re
 from collections import defaultdict
 from datetime import date
 from typing import Any
+from urllib.parse import urlparse
 
+import normatives_registry
 import project_types
 import project_regions
 
@@ -21,7 +23,7 @@ PRESETS = {
         "region": "msk", "rates": [1.5, 1.5, 3, 5, 7, 8], "tail_rate_pct": 10,
         "short_source": "273-ПП, п. 3.2",
         "source": "273-ПП, пп. 3.1, 3.2, 3.2.1, 3.2.3; редакция 25.03.2026",
-        "url": "https://meganorm.ru/mega_doc/dop1/89/postanovlenie_pravitelstva_moskvy_ot_20_02_2013_N_99-pp_red/0/postanovlenie_pravitelstva_moskvy_ot_25_04_2006_N_273-pp_red.html",
+        "normative_id": "moscow-273pp-land-rent",
         "condition": "Режим пп. 3.1–3.2 подтверждён договором/допсоглашением. Не общий тариф для торгов, КРТ и льготных договоров.",
     },
     "msk_mkd_arch_confirmed": {
@@ -29,7 +31,7 @@ PRESETS = {
         "region": "msk", "rates": [1.35, 1.35, 2.7, 4.5, 6.3, 7.2], "tail_rate_pct": 9,
         "short_source": "273-ПП, п. 3.5(2)",
         "source": "273-ПП, п. 3.5(2), требования 305-ПП; редакция 25.03.2026",
-        "url": "https://meganorm.ru/mega_doc/dop1/89/postanovlenie_pravitelstva_moskvy_ot_20_02_2013_N_99-pp_red/0/postanovlenie_pravitelstva_moskvy_ot_25_04_2006_N_273-pp_red.html",
+        "normative_id": "moscow-273pp-land-rent",
         "condition": "Требования 305-ПП и обращение в ДГИ подтверждены. Не применяется только по названию проекта.",
     },
     "mo_housing_new_2026": {
@@ -37,10 +39,18 @@ PRESETS = {
         "region": "mo", "rates": [6], "tail_rate_pct": 6,
         "short_source": "23/96-ОЗ, ст. 14",
         "source": "23/96-ОЗ, ст. 14 ч. 5 и приложение, редакция 15.06.2026 (256/2025-ОЗ)",
-        "url": "https://meganorm.ru/mega_doc/dop1/99/postanovlenie_administratsii_munitsipalnogo_obrazovaniya/0/zakon_moskovskoy_oblasti_ot_07_06_1996_N_23_96-oz_red_ot_15.html",
+        "normative_id": "mo-23-96oz-land-rent",
         "condition": "Договор после 01.01.2026, областная или неразграниченная земля, без торгов и вне специальных правил КРТ. Подтверждён обычный жилой ВРИ без более высокой ставки смешанного использования; исключены специальные случаи граждан (ИЖС/сад). Старые и муниципальные договоры — вручную. Проверено по сводному тексту указанной редакции.",
     },
 }
+# Ссылка на акт — из реестра нормативной базы (/normatives): там страница
+# самого акта на портале органа власти и сводный текст, по которому сверена
+# редакция.
+for _preset in PRESETS.values():
+    _link = normatives_registry.official_link(_preset["normative_id"])
+    _preset["url"] = _link["url"]
+    _preset["url_label"] = (_preset["short_source"].split(",")[0] + " на "
+                            + urlparse(_link["url"]).hostname.removeprefix("www.")) if _link["url"] else ""
 CONVENTION = "Плановое начисление по фактическим дням: Москва и ручной режим — год аренды; МО — календарный год. Это не установленный законом график оплаты."
 
 
@@ -63,6 +73,140 @@ def construction_cutoff(housing_rve: date, object_dates: dict[str, date], *, pur
     """Common-parcel assumption, not a change of the housing PF/RVE date."""
     dates = list(object_dates.values())
     return max(dates) if pure_nonres and dates else max([housing_rve, *dates])
+
+
+def queue_total_area(tep: dict[str, Any], *, skip: tuple[str, ...] = ()) -> tuple[float | None, list[str]]:
+    """«Общая площадь» объектов очереди — сумма колонки ``total_area`` строк
+    её ТЭП. Каждая строка ТЭП — свой объект, подытогов в ТЭП нет, поэтому
+    встроенная часть не считается дважды. Строка, у которой есть здание
+    (ГНС, места или продаваемые метры), а общей площади нет, — неизвестность,
+    а не ноль: её подпись возвращается, сумма — ``None``. ``skip`` — строки,
+    которые в очереди не строятся (соцобъекты при денежной компенсации)."""
+    total, missing = 0.0, []
+    for key, row in (tep or {}).items():
+        if key in skip or not isinstance(row, dict):
+            continue
+        area = _number(row.get("total_area"))
+        if area is not None and area > 0:
+            total += area
+        elif any((_number(row.get(col)) or 0) > 0 for col in ("gns", "units", "saleable")):
+            missing.append(str(row.get("label") or key))
+    return (None if missing else total), missing
+
+
+def phase_land_shares(phases: list[dict[str, Any]], total_areas: list[float | None] | None,
+                      gns: list[float]) -> tuple[list[float], str]:
+    """Share of the leased parcel under each queue (owner's rule, 11.11.2026):
+    its land area when every queue has one, otherwise the total area of its
+    objects (``queue_total_area``). Until both are known the split is only
+    preliminary: by floor area, or equal when nothing is known; the basis is
+    returned for the disclosure and the ``phase_shares`` completeness code."""
+    areas = [_number((cfg or {}).get("site_area_ha")) for cfg in phases]
+    if areas and all(a is not None and a > 0 for a in areas):
+        total = sum(areas)
+        return [a / total for a in areas], "area"
+    known = list(total_areas or [])
+    if len(known) == len(phases) and all(a is not None and a >= 0 for a in known) and sum(known) > 0:
+        total = sum(known)
+        return [a / total for a in known], "total_area"
+    total = sum(max(0.0, float(g or 0.0)) for g in gns)
+    if len(gns) == len(phases) and total > 0:
+        return [max(0.0, float(g or 0.0)) / total for g in gns], "gns_preliminary"
+    return [1 / len(phases)] * len(phases), "equal_preliminary"
+
+
+PHASE_SHARE_BASIS = {
+    "area": "пропорционально площади участка каждой очереди",
+    "total_area": "пропорционально общей площади объектов каждой очереди, потому что площадь участка указана не у каждой очереди",
+    "gns_preliminary": "предварительно по ГНС очередей, потому что не известны ни площадь участка очередей, ни общая площадь их объектов",
+    "equal_preliminary": "предварительно поровну, потому что не известны ни площадь участка очередей, ни площадь их объектов",
+}
+
+
+def phase_release(rves: list[date], cutoff: date,
+                  overrides: list[Any] | None = None) -> tuple[list[date], list[str]]:
+    """Date each queue's land leaves the lease: its commissioning. The last
+    queue holds the parcel until the common cutoff (objects on the parcel
+    may finish later); the workbook repeats this rule cell by cell.
+
+    ``overrides`` — the date the owner typed for the rent only
+    (``land_rent_release_date`` of a queue). It moves the queue's land out of
+    the investment calculation and changes neither its commissioning nor
+    its PF or sales. Returns the dates and their origin per queue
+    (``derived`` / ``manual`` / ``invalid``: an unreadable date keeps the
+    derived one and is named)."""
+    latest = max(rves)
+    out, origins = [], []
+    for i, r in enumerate(rves):
+        derived = cutoff if r == latest else min(r, cutoff)
+        raw = (overrides or [None] * len(rves))[i] if i < len(overrides or []) else None
+        typed = _date(raw) if raw else None
+        if raw and (typed is None or not 1900 <= typed.year <= 2200):
+            out.append(derived); origins.append("invalid")
+        elif typed is not None:
+            out.append(typed); origins.append("manual")
+        else:
+            out.append(derived); origins.append("derived")
+    return out, origins
+
+
+def describe_phase_land(result: dict[str, Any], *, basis: str,
+                        areas: list[tuple[float | None, list[str]]] | None,
+                        site_areas: list[Any], names: list[str], commissioning: list[date],
+                        release_origin: list[str], social_skipped: bool = False,
+                        derived_release: list[date] | None = None) -> dict[str, Any]:
+    """Name the basis of each queue's share and the origin of its exit date.
+
+    A preliminary split (``gns_preliminary`` / ``equal_preliminary``) keeps
+    the common rent intact but moves money between queues, so it is named as
+    incomplete with the queues and TEP rows whose total area is missing."""
+    result["phase_share_basis"] = basis
+    result["phase_share_basis_text"] = PHASE_SHARE_BASIS[basis]
+    result["allocation_policy"] = (
+        "Аренда общего участка посчитана один раз. Пока очередь не введена (в том числе пока она ещё не начата), "
+        "её земля в аренде, и аренда за каждый месяц делится между такими очередями "
+        + PHASE_SHARE_BASIS[basis] + ". Это модельное распределение, не подтверждение банковского покрытия.")
+    known = list(areas or [])
+    for i, item in enumerate(result.get("phase_land") or []):
+        area, missing = known[i] if i < len(known) else (None, [])
+        item.update({
+            "name": names[i] if i < len(names) else f"О{i+1}",
+            "commissioning": commissioning[i].isoformat() if i < len(commissioning) else None,
+            "release_origin": release_origin[i] if i < len(release_origin) else "derived",
+            # Дата по экономике: к ней возвращает очищенное поле очереди.
+            "derived_rve": (derived_release[i].isoformat() if derived_release and i < len(derived_release)
+                            else item.get("rve")),
+            "site_area_ha": _number(site_areas[i]) if i < len(site_areas) else None,
+            "total_area": area, "total_area_missing": list(missing),
+        })
+    if result.get("status") == "not_applicable":
+        return result
+    reasons, codes = [], []
+    if basis in ("gns_preliminary", "equal_preliminary"):
+        gaps = []
+        for i, name in enumerate(names):
+            area, missing = known[i] if i < len(known) else (None, [])
+            if area is None:
+                gaps.append(name + (" (нет общей площади: " + ", ".join(missing) + ")" if missing else " (ТЭП ещё не собран)"))
+            elif area == 0:
+                gaps.append(name + " (общая площадь объектов равна нулю)")
+        tail = "; ".join(gaps) if gaps else "площадь участка очередей не указана"
+        reasons.append("Доли земли очередей посчитаны " + PHASE_SHARE_BASIS[basis]
+                       + ". Укажите площадь участка каждой очереди или общую площадь объектов: " + tail + ".")
+        codes.append("phase_shares")
+    bad = [names[i] for i, origin in enumerate(release_origin) if origin == "invalid" and i < len(names)]
+    if bad:
+        reasons.append("Не распознана дата выхода земли из аренды у очереди " + ", ".join(bad)
+                       + "; взята дата её ввода.")
+        codes.append("phase_release")
+    if social_skipped:
+        result["phase_share_note"] = "Соцобъекты при денежной компенсации не строятся и в общую площадь очереди не входят."
+    if reasons:
+        result["financial_complete"] = False
+        result["financial_missing"] = [*result.get("financial_missing", []), *reasons]
+        result["financial_missing_codes"] = list(dict.fromkeys([*result.get("financial_missing_codes", []), *codes]))
+        result["status"] = "preliminary" if result.get("complete") else "incomplete"
+    return result
 
 
 def qualify_scope(result: dict[str, Any], social_dates: dict[str, date]) -> dict[str, Any]:
@@ -152,18 +296,80 @@ def _payment_schedule(raw: Any, start: date, end: date, amount: float) -> tuple[
     return dict(schedule), []
 
 
+PREMIUM_PROOF_KEYS = {"schema", "included_in_vri", "fee_mln", "method", "land_right", "source"}
+# Те же способы, что у ``norms.vri_fee_rent_premium`` (``VRI_PREMIUM_METHODS``).
+PREMIUM_PROOF_METHODS = ("glavapu_baseline_rescale", "vri_manual_payment")
+PREMIUM_PROOF_MODES = ("msk_mkd_3_2", "msk_mkd_arch_confirmed")
+
+
+def vri_premium(x: dict[str, Any]) -> dict[str, Any]:
+    """Use an explicit owner decision or amount-bound source semantics.
+
+    A positive fee, a coefficient or an origin label does not establish its
+    composition. Evidence is bound to the amount, the calculation method and
+    the lease right, and holds only for a Moscow housing lease regime where
+    appendix 8 is part of the first year. Missing, stale or misfit evidence
+    remains unknown; a misfit is named in ``misfit``.
+    """
+    fee = _number(x.get("land_rights_cost_mln")) or 0.0
+    origin = _mapping(_mapping(x.get("_field_origin")).get("inputs.land_rights_cost_mln"))
+    status = str(x.get("land_rent_premium_status") or "unknown")
+    if status == "in_vri" and fee > 0:
+        return {"status": status, "derived": False,
+                "source": "Вы подтвердили, что плата за смену ВРИ включает повышенную часть первого года."}
+    if status == "not_applicable":
+        return {"status": status, "derived": False,
+                "source": "Вы подтвердили, что повышенная часть первого года к договору не применяется."}
+    if status == "separate_required":
+        return {"status": status, "derived": False, "source": "Вы указали, что повышенная часть первого года оплачивается отдельно; её сумма ещё не определена."}
+    proof = _mapping(origin.get("rent_premium"))
+    proof_fee = _number(proof.get("fee_mln"))
+    source = proof.get("source")
+    if not (set(proof) == PREMIUM_PROOF_KEYS
+            and type(proof.get("schema")) is int and proof["schema"] == 2
+            and type(proof.get("included_in_vri")) is bool
+            and proof.get("method") in PREMIUM_PROOF_METHODS and proof.get("land_right") == "lease"
+            and fee > 0 and proof_fee is not None and math.isclose(proof_fee, fee, rel_tol=0, abs_tol=1e-9)
+            and isinstance(source, str) and source.strip()):
+        return {"status": "unknown", "derived": False, "source": ""}
+    # Доказательство верно для того права и режима, под которые плата
+    # посчитана. Ставка приложения 8 входит в первый год по абзацу первому
+    # п. 3.2.1 (и п. 3.5(1).1) — для участка в аренде под жилой дом в
+    # московском режиме договора. Иначе вопрос остаётся у владельца.
+    misfit = ("участок сейчас не в аренде" if x.get("land_right") != "lease" else
+              "в проекте нет жилья, а повышенная часть по приложению 8 считается для жилого дома"
+              if project_types.without_housing(x) else
+              "режим договора аренды не московский обычный (п. 3.2.1 или 3.5(1))"
+              if str(x.get("land_rent_mode") or "") not in PREMIUM_PROOF_MODES else "")
+    if misfit:
+        return {"status": "unknown", "derived": False, "source": "",
+                "misfit": f"Расчёт платы за ВРИ не подтверждает состав первого года: {misfit}."}
+    return {"status": "in_vri" if proof["included_in_vri"] else "separate_required", "derived": True,
+            "source": source.strip(), "evidence": dict(proof)}
+
+
 def build(inputs: dict[str, Any], project_start: date, rve: date,
-          project_end: date | None = None) -> dict[str, Any]:
+          project_end: date | None = None, *, cadastral_switch: date | None = None,
+          phase_land: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """Known accrual parts are usable; unknown total is always None.
 
     All returned date keys are ISO strings, suitable for saved/public API.
     The engine converts only monthly keys to date. Post-RVE unknowns are
     separate from completeness of the owner's construction-period question.
+
+    ``cadastral_switch`` — the VRI change date: from it the base is the
+    cadastral value after the change. ``phase_land`` — queues' shares of the
+    parcel with the dates their land leaves the lease (``phase_release``).
     """
     x = inputs or {}
     end = project_end or rve
     derived_rve = rve
-    raw_manual_cutoff = x.get("land_rent_manual_cutoff")
+    release = [(float(p["share"]), _date(p["rve"])) for p in (phase_land or [])]
+    phased = len(release) > 1
+    if phased:
+        rve = max(r for _, r in release)
+        end = max(end, rve)
+    raw_manual_cutoff = None if phased else x.get("land_rent_manual_cutoff")
     manual_cutoff = _date(raw_manual_cutoff) if raw_manual_cutoff else None
     invalid_manual_cutoff = bool(raw_manual_cutoff) and (manual_cutoff is None or not 1900 <= manual_cutoff.year <= 2200)
     if manual_cutoff is not None and not invalid_manual_cutoff:
@@ -185,11 +391,18 @@ def build(inputs: dict[str, Any], project_start: date, rve: date,
         "region": project_regions.region_of(x),
         "region_origin": _mapping(x.get("_field_origin")).get("inputs.vri_region"),
         "rve": rve.isoformat(), "project_end": end.isoformat(),
-        "derived_rve": derived_rve.isoformat(), "cutoff_origin": "manual" if manual_cutoff else "derived",
-        "cutoff_basis": "Подтверждённая пользователем дата последнего ввода на арендуемой земле" if manual_cutoff else "Последний ввод основных объектов общего участка",
+        "derived_rve": derived_rve.isoformat(),
+        "cutoff_origin": "phases" if phased else "manual" if manual_cutoff else "derived",
+        "cutoff_basis": ("Даты ввода взяты из настроек очередей: аренда уменьшается по мере ввода каждой очереди" if phased else
+                         "Дата ввода последнего здания на участке, которую вы указали" if manual_cutoff else
+                         "Расчётная дата ввода последнего основного здания на участке"),
         "cutoff_field_origin": _mapping(x.get("_field_origin")).get("inputs.land_rent_manual_cutoff"),
+        "assumptions": [],
     }
     missing = out["missing"]
+    # Unconfirmed but not contradicted conditions: the rent is counted and
+    # the result is preliminary, instead of silently leaving it out of costs.
+    preliminary: list[tuple[str, str]] = []
     if mode == "not_applicable" or x.get("land_right", "ownership") == "ownership":
         out.update(status="not_applicable", complete=True, financial_complete=True,
                    total=0.0, construction_total=0.0, cash_schedule_estimated=False,
@@ -204,25 +417,30 @@ def build(inputs: dict[str, Any], project_start: date, rve: date,
         missing.append("Режим аренды не распознан. Выберите ставки по договору.")
         return out
     preset = PRESETS.get(mode)
+    contract_date = None
     if preset:
         if not out["housing_applicable"]:
-            missing.append("Жилищная предустановка аренды не применяется к гостинице или нежилому проекту. Задайте условия аренды по договору вручную.")
+            missing.append("Ставки аренды под жильё не подходят для гостиницы или нежилого проекта. Введите ставки из договора аренды вручную.")
         if x.get("land_rent_preset_confirmed") is not True:
-            missing.append("Подтвердите применимость выбранного норматива к договору.")
+            preliminary.append(("conditions", "Ставки аренды взяты из правил региона, договор с ними ещё не сверен. Если в договоре другие ставки, введите их вручную."))
         if out["region"] != preset["region"]:
-            missing.append("Выбранный норматив аренды не соответствует региону проекта.")
+            missing.append("Выбранные правила аренды относятся к другому региону, а не к региону проекта.")
         if preset["region"] == "msk" and (x.get("_krt_site") or x.get("land_rent_grant_basis") in ("auction", "krt", "special")):
-            missing.append("Для КРТ, аукциона или специального договора задайте подтверждённые ставки вручную; обычный московский режим автоматически не применяется.")
+            missing.append("Для участка КРТ, участка с торгов или особого договора обычные московские ставки не действуют. Введите ставки из договора вручную.")
         if mode == "mo_housing_new_2026":
             contract_date = _date(x.get("land_rent_contract_date"))
-            if contract_date is None or contract_date <= date(2026, 1, 1):
-                missing.append("Для нового режима МО нужен договор после 01.01.2026; иной договор считайте по его условиям.")
-            if x.get("land_rent_public_scope") not in ("regional", "undelimited"):
-                missing.append("Режим МО применим только к областной или неразграниченной земле.")
-            if x.get("_krt_site") or x.get("land_rent_grant_basis") != "ordinary_nonauction":
-                missing.append("Специальный КРТ или аукцион не наследует обычную ставку МО.")
-            if x.get("land_rent_mo_cadastral_unchanged") is not True:
-                missing.append("Для этого режима МО подтвердите постоянную кадастровую стоимость в сценарии. Её изменение требует отдельного расчёта по основанию изменения.")
+            if contract_date is not None and contract_date <= date(2026, 1, 1):
+                missing.append("Ставка 6% действует для договоров, заключённых после 1 января 2026 года. Для более раннего договора введите его ставки вручную.")
+            scope = x.get("land_rent_public_scope")
+            if scope in (None, ""):
+                preliminary.append(("conditions", "Не указано, чья земля. Ставка 6% действует для земли Московской области и государственной земли, которая не разграничена."))
+            elif scope not in ("regional", "undelimited"):
+                missing.append("Ставка 6% действует только для земли Московской области и неразграниченной государственной земли. Для муниципальной и другой земли введите ставки из договора.")
+            grant = x.get("land_rent_grant_basis")
+            if x.get("_krt_site") or grant not in (None, "", "ordinary_nonauction"):
+                missing.append("Для участка КРТ или участка с торгов обычная ставка Московской области не действует. Введите ставки из договора вручную.")
+            elif grant in (None, ""):
+                preliminary.append(("conditions", "Не указано, как предоставлен участок. Ставка 6% действует для обычного договора без торгов и не для КРТ."))
         out["source"] = preset["source"]
         out["source_url"] = preset["url"]
     else:
@@ -239,10 +457,15 @@ def build(inputs: dict[str, Any], project_start: date, rve: date,
     if base_kind not in ("cadastral_percent", "annual_amount") or (preset and base_kind != "cadastral_percent"):
         missing.append("Для выбранного режима не подтверждена база аренды.")
     if base is None or base <= 0:
-        missing.append("Укажите стоимость именно арендуемой земли" + (" (кадастровую)." if base_kind == "cadastral_percent" else " — годовую сумму по договору."))
-    anchor = _date(x.get("land_rent_regime_start"))
+        missing.append("Укажите кадастровую стоимость арендуемой земли." if base_kind == "cadastral_percent" else "Укажите годовую сумму аренды по договору.")
+    raw_anchor = x.get("land_rent_regime_start")
+    anchor = _date(raw_anchor) if raw_anchor not in (None, "") else None
+    if raw_anchor in (None, ""):
+        anchor = project_start
+        out["regime_start_assumed"] = True
+        preliminary.append(("regime_start", f"Дата начала аренды по договору не указана, поэтому принят старт проекта {anchor:%d.%m.%Y}. Укажите дату из договора, если она другая."))
     if anchor is None:
-        missing.append("Укажите начало срока аренды или строительного режима из договора/допсоглашения.")
+        missing.append("Не распознана дата начала аренды по договору.")
     elif not 1900 <= anchor.year <= 2200 or (end.year - anchor.year) > 100:
         missing.append("Дата режима аренды вне поддерживаемого столетнего горизонта.")
     if (project_start > rve and manual_cutoff is None) or rve > end:
@@ -257,10 +480,50 @@ def build(inputs: dict[str, Any], project_start: date, rve: date,
     out["termination_date"] = termination.isoformat() if termination else None
     if termination_raw and termination is None:
         missing.append("Не распознана подтверждённая дата прекращения аренды.")
+    out["regime_start"] = anchor.isoformat() if anchor else None
+    if mode == "mo_housing_new_2026" and contract_date is None and anchor is not None:
+        contract_date = anchor
+        if anchor <= date(2026, 1, 1):
+            missing.append("Ставка 6% действует для договоров после 1 января 2026 года. Укажите дату договора: начало аренды раньше этой даты.")
+        else:
+            preliminary.append(("conditions", f"Дата договора не указана: индексация считается от начала аренды {anchor:%d.%m.%Y}."))
+    # VRI change: before the change date the base is the current cadastral
+    # value, from it — the value after the change (owner's decision).
+    target = _number(x.get("land_rent_cadastral_target_mln")) if base_kind == "cadastral_percent" else None
+    switch = cadastral_switch if target and base and target > 0 and abs(target - base) > 1e-9 else None
+    out["cadastral_switch"] = ({"date": switch.isoformat(), "current_mln": base, "target_mln": target,
+                                "origin": _mapping(x.get("_field_origin")).get("inputs.land_rent_cadastral_target_mln")}
+                               if switch else None)
+    if target and target > 0 and base and abs(target - base) > 1e-9 and switch is None:
+        out["notes"].append("Кадастровая стоимость после смены ВРИ не применена: в проекте нет платы за смену ВРИ, поэтому нет и даты смены.")
+    if cadastral_switch and base_kind == "cadastral_percent" and not (target and target > 0):
+        preliminary.append(("cadastral_change", "Кадастровая стоимость участка после смены ВРИ не указана, поэтому аренда и после смены ВРИ считается от нынешней стоимости. Впишите новую стоимость, когда она станет известна."))
+    if switch and mode == "mo_housing_new_2026":
+        preliminary.append(("cadastral_change", "После смены ВРИ ставка 6% считается от новой кадастровой стоимости, индексация продолжается без перерыва. Порядок индексации новой стоимости зависит от основания её изменения — сверьте с договором."))
     if missing:
         return out
     assert anchor is not None and base is not None
     out["financial_missing_codes"] = []
+    for code, text in preliminary:
+        if text not in out["financial_missing"]:
+            out["financial_missing"].append(text)
+        out["financial_missing_codes"].append(code)
+        if code == "regime_start":
+            out["assumptions"].append(text)
+    out["financial_missing_codes"] = list(dict.fromkeys(out["financial_missing_codes"]))
+    shares_release = release if phased else [(1.0, None)]
+    breaks = sorted({r for _, r in shares_release if r} | ({switch} if switch else set()))
+
+    def weighted(a: date, b: date, only: int | None = None) -> float:
+        """Base (mln) × days still leased on [a, b): queues not yet
+        commissioned, the cadastral value valid at each day."""
+        cuts = [a, *[c for c in breaks if a < c < b], b]
+        items = shares_release if only is None else [shares_release[only]]
+        total = 0.0
+        for u, v in zip(cuts, cuts[1:]):
+            share = sum(s for s, r in items if r is None or r > u)
+            total += share * (target if switch and u >= switch else base) * (v - u).days
+        return total
     rates: dict[int, float | None] = {}
     if preset:
         rates = {i + 1: float(value) for i, value in enumerate(preset["rates"])}
@@ -285,6 +548,9 @@ def build(inputs: dict[str, Any], project_start: date, rve: date,
         if tail not in ("unknown", "repeat_last"):
             missing.append("Выберите правило продолжения ставок после последнего заданного года.")
     accrual: dict[date, float] = defaultdict(float)
+    # Allocate within each rate/index/exclusion segment, before month totals
+    # lose that information. Payments and every consumer reuse these amounts.
+    phase_accrual = [defaultdict(float) for _ in release]
     indices: dict[int, float | None] = {}
     if mode == "mo_housing_new_2026":
         raw_indices = x.get("land_rent_calendar_indices") or []
@@ -304,12 +570,15 @@ def build(inputs: dict[str, Any], project_start: date, rve: date,
             indices[int(iy)] = _number(entry.get("index_pct"))
         out["calendar_indices"] = [dict(year=y, index_pct=value) for y, value in sorted(indices.items())]
         out["indices_origin"] = x.get("land_rent_indices_origin")
-        out["notes"].append("МО: базовый Кд 6%; индексация с 1 января года после заключения договора. Кадастровая стоимость в этом сценарии постоянна.")
+        out["notes"].append("Московская область: аренда — 6% кадастровой стоимости в год, с 1 января года после заключения договора сумма индексируется."
+                            + (" После смены ВРИ ставка считается от новой кадастровой стоимости." if switch else ""))
         origins = _mapping(x.get("land_rent_indices_origin"))
         assumed = [y for y, value in sorted(indices.items()) if value is not None and
                    (y > date.today().year or _mapping(origins.get(str(y)) or origins.get(y)).get("source") == "forecast")]
-        out["assumptions"] = (["Индексы на " + ", ".join(map(str, assumed)) + " гг. заданы пользователем для сценария; это не подтверждение будущего нормативного размера аренды."] if assumed else [])
-        out["notes"].extend(out["assumptions"])
+        if assumed:
+            text = "Индексы на " + ", ".join(map(str, assumed)) + " гг. — ваш прогноз для сценария, а не утверждённый размер аренды."
+            out["assumptions"].append(text)
+            out["notes"].append(text)
 
     def calendar_factor(year: int) -> float | None:
         if mode != "mo_housing_new_2026":
@@ -361,11 +630,16 @@ def build(inputs: dict[str, Any], project_start: date, rve: date,
                 finish = min(hi, _next_month(month))
                 factor = calendar_factor(month.year)
                 denominator = (366 if calendar.isleap(month.year) else 365) if mode == "mo_housing_new_2026" else (year_end-year_start).days
-                amount = None if factor is None else annual * factor * (finish - month).days / denominator
+                amount = None if factor is None else 1e6 * rate / 100 * factor * weighted(month, finish) / denominator
                 if amount is None:
                     row["amount"] = None
                 else:
-                    accrual[month.replace(day=1)] += amount
+                    month_key = month.replace(day=1)
+                    accrual[month_key] += amount
+                    if phased:
+                        whole = weighted(month, finish)
+                        for i, own in enumerate(phase_accrual):
+                            own[month_key] += amount * weighted(month, finish, only=i) / whole if whole else 0.0
                     construction_known += amount
                     row["known_amount"] += amount
                     if row["amount"] is not None:
@@ -377,20 +651,17 @@ def build(inputs: dict[str, Any], project_start: date, rve: date,
         out["annual_rows"].append(row)
     out["construction_total"] = None if missing else construction_known
     premium_required = bool(preset and preset["region"] == "msk" and any(row["year"] == 1 for row in out["annual_rows"]))
-    premium_status = str(x.get("land_rent_premium_status") or "unknown")
-    premium_source = str(x.get("land_rent_premium_source") or "").strip()
-    out["premium"] = {"required": premium_required, "status": premium_status,
-                      "source": premium_source, "vri_amount_mln": _number(x.get("land_rights_cost_mln"))}
-    if premium_required:
-        if premium_status == "in_vri":
-            if not premium_source or not (_number(x.get("land_rights_cost_mln")) or 0) > 0:
-                out["financial_missing"].append("Подтвердите состав положительной суммы ВРИ: включена ли в неё повышенная часть первого года по приложению 8 к 273-ПП.")
-        elif premium_status == "not_applicable" and premium_source:
-            pass
-        else:
-            out["financial_missing"].append("Обычная аренда первого года рассчитана. Повышенная часть по приложению 8 к 273-ПП требует отдельного подтверждения состава ВРИ или основания неприменения.")
-        if out["financial_missing"]:
-            out["financial_missing_codes"].append("premium")
+    premium = vri_premium(x)
+    out["premium"] = {"required": premium_required, **premium,
+                      "vri_amount_mln": _number(x.get("land_rights_cost_mln"))}
+    if premium_required and premium["status"] not in ("in_vri", "not_applicable"):
+        out["financial_missing"].append(
+            "Повышенная часть первого года аренды оплачивается отдельно; её сумма ещё не определена."
+            if premium["status"] == "separate_required" else
+            "В первый год аренды в Москве к обычной ставке добавляется повышенная часть. Состав платы за смену ВРИ не подтверждён. "
+            + (premium["misfit"] + " " if premium.get("misfit") else "")
+            + "Укажите, входит ли эта часть в неё, в разделе «Первый год, ВРИ и график оплаты».")
+        out["financial_missing_codes"].append("premium")
     after_unknown = False
     after_start = max(rve, project_start, anchor)
     after_end = min(end, termination) if termination else end
@@ -418,6 +689,20 @@ def build(inputs: dict[str, Any], project_start: date, rve: date,
         out["notes"].append("Не распознан порядок оплаты аренды; показано плановое начисление.")
     out["monthly"] = {m.isoformat(): value for m, value in sorted(payments.items())}
     out["cash_total"] = sum(payments.values())
+    if phased:
+        # A manual payment schedule follows each queue's exact accrued
+        # obligation, not a second monthly base-times-days approximation.
+        known = out["known_total"]
+        phase_cash = phase_accrual if out["cash_schedule_estimated"] else [
+            {m: v * (sum(b.values()) / known if known else share) for m, v in sorted(payments.items())}
+            for b, (share, _) in zip(phase_accrual, release)]
+        out["phase_accrual_monthly"] = [{m.isoformat(): v for m, v in b.items()} for b in phase_accrual]
+        out["phase_monthly"] = [{m.isoformat(): v for m, v in b.items()} for b in phase_cash]
+        out["phase_land"] = [{"share": share, "rve": r.isoformat(), "accrual_total": sum(b.values()),
+                              "cash_total": sum(c.values())}
+                             for (share, r), b, c in zip(release, phase_accrual, phase_cash)]
+        cash = out["cash_total"]
+        out["phase_shares"] = [p["cash_total"] / cash if cash else share for p, (share, _) in zip(out["phase_land"], release)]
     out["financial_complete"] = out["complete"] and not after_unknown and not out["cash_schedule_estimated"] and not tax_unknown and not out["financial_missing"]
     out["financial_missing_codes"] = list(dict.fromkeys([*out["financial_missing_codes"],
         *(["inputs"] if missing else []), *(["post_rve"] if after_unknown else []),
