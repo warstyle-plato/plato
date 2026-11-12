@@ -155,3 +155,38 @@ def test_inventory_has_explicit_bounds_and_prepare_does_not_read_unrelated_appro
     assert prepared['data']==current['path'].read_bytes()
     assert all(path==current['path'] for path in called)
     assert prepared['manifest']['scan_incomplete']
+
+
+def test_native_excel_dates_survive_saved_json_reconstruction_and_explicit_date_correction(sources):
+    current,_=sources
+    wb=load_workbook(io.BytesIO(book()))
+    ws=wb['ГПР']
+    dates={'F5':dt.datetime(2026,11,1),'F6':dt.datetime(2026,12,20),
+           'G6':dt.datetime(2027,2,1),'I6':dt.datetime(2026,12,1),'J6':dt.datetime(2027,2,1)}
+    for cell,value in dates.items():
+        ws[cell]=value
+    stream=io.BytesIO();wb.save(stream);wb.close()
+    raw=stream.getvalue();source=corpus.read(raw)
+    saved=corpus.store(PROJECT,raw,'2026-11-08',source)
+    path=monitor._project_dir(PROJECT)/'gpr_corpus'/'2026-11-08.json'
+    original=path.read_bytes()
+    assert saved['packages'][0]['scopes'][0]['raw']['start']=='2026-11-01T00:00:00'
+    result=prepare.prepare(PROJECT,source['sha256'],expected_active_sha256=current['source_sha256'],
+        expected_revision=current['revision'],corrections=[{'cell':'G5','expected_raw':'31.06.2027',
+            'value':'30.06.2027','note':'Explicit synthetic correction'}])
+    assert not result['manifest']['original_bytes_verified']
+    rebuilt=corpus.as_schedule(corpus.read(result['data']))
+    before={w['id']:w for w in corpus.as_schedule(source)['works']}
+    after={w['id']:w for w in rebuilt['works']}
+    assert before.keys()==after.keys()
+    for key in before:
+        for field in ['name','object','section','progress','progress_date','source_cells','start']:
+            assert before[key][field]==after[key][field]
+        if key!='corpus:ГПР!E5':
+            assert before[key]['finish']==after[key]['finish']
+    assert after['corpus:ГПР!E5']['finish']==dt.date(2027,6,30)
+    assert path.read_bytes()==original
+    rebuilt_wb=load_workbook(io.BytesIO(result['data']),read_only=True,data_only=False)
+    for cell,value in dates.items():
+        assert rebuilt_wb['ГПР'][cell].value==value
+    rebuilt_wb.close()

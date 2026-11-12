@@ -6,6 +6,7 @@ and calls the ordinary schedule-version approval function on the server.
 from __future__ import annotations
 
 import copy
+import datetime as dt
 import io
 import hashlib
 import json
@@ -154,6 +155,17 @@ def prepare(project: str, source_sha256: str, *, expected_active_sha256: str,
             ws.cell(header+1, col+1, 'Старт'); ws.cell(header+1, col+2, 'Финиш')
             for key, cell in scope['source_cells'].items():
                 value = scope['raw'].get(key)
+                # The source reader serializes native Excel datetimes as ISO
+                # text in its immutable JSON. Rehydrate only known-valid date
+                # cells; writing that text literally would lose the plan date
+                # on the next read. Invalid or explicitly corrected strings
+                # keep their own values and the final signature still governs.
+                if (key in {'start', 'finish'} and scope.get(key) and isinstance(value, str)
+                        and re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?', value)):
+                    native = dt.datetime.fromisoformat(value)
+                    if native.date().isoformat() != scope[key]:
+                        raise ValueError('Исходная дата и сохранённый разбор расходятся.')
+                    value = native
                 if value is not None:
                     ws[cell] = value
                     # Source text must remain literal, never an Excel formula.
