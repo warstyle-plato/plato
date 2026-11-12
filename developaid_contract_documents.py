@@ -553,11 +553,10 @@ def _schedule_page(page, page_number, schedule):
                     or (finish or bar[1]) < (start or bar[0])):
             problem = (f'окончание {_shown(finish)} раньше начала {_shown(start)}' if reversed_dates else
                        (f'в графах дат {_shown(start)} — {_shown(finish)}' if start and finish else
-                        f'в графе начала {_shown(start)}, дата окончания не прочитана' if start else
-                        f'дата начала не прочитана, в графе окончания {_shown(finish)}')
+                        _cells(line['cells'], unread))
                        + f', а полоса на диаграмме идёт {_shown(bar[0])} — {_shown(bar[1])}')
             if unread:
-                problem = _unread(unread) + '. ' + problem
+                problem = _unread(unread) + '; ' + problem
             _correct(schedule, line, bar[0], bar[1], 'bar',
                      f'Стр. {page_number}: у строки {code} «{name[:60]}» {problem}. '
                      f'Взяты даты полосы: {_shown(bar[0])} — {_shown(bar[1])}.')
@@ -700,6 +699,14 @@ def _weekly_page(page, page_number, schedule, layout=None):
 
 def _apart(cell, bar):
     return abs((dt.date.fromisoformat(cell)-dt.date.fromisoformat(bar)).days) > 1
+
+
+def _cells(cells, unread):
+    """What the date cells of a line hold; an unread date is named by _unread, an empty cell as empty."""
+    named = {'start': 'начала', 'finish': 'окончания'}
+    said = [f'в графе {named[key]} {_shown(cells[key])}' if cells[key] else f'в графе {named[key]} даты нет'
+            for key in ('start', 'finish') if key not in unread]
+    return ', '.join(said) or 'в графах дат ничего не прочитано'
 
 
 def _unread(unread):
