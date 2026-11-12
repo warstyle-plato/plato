@@ -12,6 +12,7 @@ from pypdf import PdfReader
 
 import developaid_monitor_contracts as contracts
 from test_contracts_from_cumulative_headers import ARCHIVE_READER, context, parsed, provide
+from contract_rows import opened
 from test_monitor_cumulative_controls import browser_page
 from test_monitor_cumulative_ledgers import archive, book
 import developaid_monitor_ledgers as ledgers
@@ -119,16 +120,22 @@ def test_primary_register_and_physical_rows_show_statement_percentages(context, 
         responses.data = copy.deepcopy(register)
         page.locator('#contractsTab').click()
         row = page.locator('tr[data-contract-id]').first
-        expect(row.locator('td').nth(2)).to_contain_text('В ведомости')
-        expect(row.locator('td').nth(2)).to_contain_text('1\u00a0000 ₽')
-        expect(row.locator('td').nth(3)).to_contain_text('68,6%')
-        expect(row.locator('td').nth(3)).to_contain_text('Работы и материалы')
-        assert 'суммы договора' not in row.locator('td').nth(3).inner_text()
-        assert 'Уточнить полную сумму договора' not in row.inner_text()
+        expect(row.locator('.contract-money')).to_contain_text('1\u00a0000 ₽')
+        expect(row.locator('.contract-money')).to_contain_text('сумма по ведомости')
+        expect(row.locator('.contract-money')).to_contain_text('68,6%')
+        more = opened(page)
+        amount, done = more.locator('[data-label="Сумма договора"]'), more.locator('[data-label="Выполнено по накопительным"]')
+        expect(amount).to_contain_text('В ведомости')
+        expect(amount).to_contain_text('1\u00a0000 ₽')
+        expect(done).to_contain_text('68,6%')
+        expect(done).to_contain_text('Работы и материалы')
+        assert 'суммы договора' not in done.inner_text()
+        assert 'Уточнить полную сумму договора' not in row.inner_text() + more.inner_text()
+        assert 'Нет полной суммы' not in row.inner_text()
         # This is an observation of the covered statements, so the forecast
         # needs comparable snapshots rather than a whole-contract price/date.
-        expect(row.locator('.term')).to_contain_text('Для прогноза нужны два свежих наблюдения')
-        assert 'нужна полная сумма договора' not in row.locator('.term').inner_text()
+        expect(more.locator('.contract-more-term')).to_contain_text('Для прогноза нужны два свежих наблюдения')
+        assert 'нужна полная сумма договора' not in more.locator('.contract-more-term').inner_text()
         row.locator('.contract-open').click()
         work = page.locator('.physical-main').first
         expect(work.locator('td').nth(2)).to_contain_text('4 м2')

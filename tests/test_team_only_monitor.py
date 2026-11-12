@@ -55,6 +55,11 @@ ROUTES = _gated_routes()
 _FILL = {str: "проверка", int: 1, float: 1.0, bool: False, list: [], dict: {}}
 _ENDPOINT_PAYLOADS = {
     ("POST", "/monitor/schedule-gpr-physical/save"): {"source_kind": "gpr"},
+    ("POST", "/monitor/contracts/documents"): {"contract_id": "a" * 64},
+    ("POST", "/monitor/contracts/document-upload"): {"contract_id": "a" * 64},
+    ("POST", "/monitor/contracts/document-links"): {
+        "contract_id": "a" * 64, "sha256": "b" * 64, "estimate": 0, "choices": [{"index": 0}]},
+    ("POST", "/monitor/contracts/document-remove"): {"contract_id": "a" * 64, "sha256": "b" * 64},
     ("POST", "/monitor/schedule/version-preview"): {
         "effective_from": "2026-10-22", "gpr_base64": "eA=="},
     ("POST", "/monitor/schedule/version-approve"): {

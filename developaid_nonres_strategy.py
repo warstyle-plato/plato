@@ -100,20 +100,31 @@ OFFICE_CLASS_DEFAULT_SOURCE = "default"
 # (`office_class_rate`), а не этот список.
 OFFICE_CLASS_FOLLOWED: tuple[str, ...] = (
     "rent_th_per_sqm_month", "occupancy_stable_pct", "leaseup_months", "opex_pct", "exit_cap_pct")
-# В НЕЖИЛОМ проекте класс проекта — это класс офиса B / B+ / A / A+
-# (владелец, 25.10.2026): вводная `nonres_office_class`. Профиль класса
-# проекта (машино-место, подземная ставка) берётся у пары: B — комфорт,
-# B+ — бизнес, A и A+ — элитный (A+ — «как у A», владелец 25.10.2026).
-# Пусто — класс выводится из класса проекта (`OFFICE_CLASS_BY_PROJECT`):
-# нежилой проект, сохранённый до решения, открывается с тем же результатом.
+# Класс здания в НЕЖИЛОМ проекте выбирается в блоке КАЖДОГО офиса
+# (владелец, 10.11.2026: «класс должен в нежилье выбираться в блоке каждого
+# конкретного объекта, а не наверху»). Второй ответ на вопрос «какой класс у
+# офиса» — класс проекта в шапке — больше не выбирается и не читается как
+# класс офиса (`nonres_project_class`); вводная `nonres_office_class` осталась
+# ступенью профиля в шапке: офис без своего выбора идёт за ней
+# (`office_class_choice`, владелец 11.11.2026).
+#
+# Класс проекта у нежилого проекта по-прежнему нужен профилю пары — машино-
+# месту и подземной ставке: B — комфорт, B+ — бизнес, A и A+ — элитный
+# (A+ — «как у A», владелец 25.10.2026). Поле `project_class` хранит пару, а
+# ступень класса офиса живёт у объекта.
 NONRES_CLASS_FIELD = "nonres_office_class"
 NONRES_CLASS_PROFILE: dict[str, str] = {"B": "comfort", "B+": "business", "A": "elite", "A+": "elite"}
 PROJECT_KIND_NONRESIDENTIAL = "nonresidential"
 
 
 def nonres_project_class(inputs: dict[str, Any] | None) -> str | None:
-    """Класс нежилого проекта (ступень класса офиса); `None` — проект не
-    нежилой или класс не задан ни выбором, ни классом проекта."""
+    """Ступень класса офиса из класса проекта — только у сохранённых проектов.
+
+    Шапка нежилого проекта класс офиса больше не выбирает. Ответ остался для
+    двух читателей: (1) класс офиса без своего выбора и (2) прежние поверхности, которые спрашивают «какая ступень у
+    класса проекта» (`project_class_view`, профиль пары). Класс КОНКРЕТНОГО
+    офиса отвечает `office_class_choice`: без выбора у офиса — эта же ступень.
+    """
     x = inputs or {}
     if str(x.get("project_kind") or "") != PROJECT_KIND_NONRESIDENTIAL:
         return None
@@ -146,11 +157,28 @@ def office_class_choice(inputs: dict[str, Any] | None, prefix: str) -> dict[str,
     Выбранная ступень сильнее класса проекта. Пустое поле, отсутствующее поле
     и непонятное значение — не выбор: класс идёт за классом проекта, а у
     пользовательского класса проекта — ступень по умолчанию.
+
+    В НЕЖИЛОМ проекте класс выбирается у каждого офиса (владелец, 10.11.2026).
+    Пока у офиса выбора нет, класс идёт за профилем проекта в шапке (B — комфорт,
+    B+ — бизнес, A — элитный) или за прежней вводной `nonres_office_class`
+    сохранённого проекта (владелец, 11.11.2026, 1А): отсутствие выбора не
+    становится ступенью B, и сохранённый проект открывается теми же числами.
+    Ступень по умолчанию — только у пользовательского профиля. Это
+    единственный ответ на «какой класс у офиса»; страница читает тот же.
     """
     x = inputs or {}
     raw = str(x.get(f"{prefix}_{OFFICE_CLASS_FIELD}") or "").strip()
     if raw in OFFICE_CLASSES:
         return {"office_class": raw, "source": OFFICE_CLASS_CHOSEN, "text": "выбран"}
+    if str(x.get("project_kind") or "") == PROJECT_KIND_NONRESIDENTIAL:
+        # Шапка пишет ступень профиля в `nonres_office_class`; у проекта,
+        # сохранённого до неё, профиль — сам класс проекта (`nonres_project_class`).
+        by_profile = nonres_project_class(x)
+        if by_profile:
+            return {"office_class": by_profile, "source": OFFICE_CLASS_BY_PROJECT_SOURCE,
+                    "text": "по профилю проекта"}
+        return {"office_class": DEFAULT_OFFICE_CLASS, "source": OFFICE_CLASS_DEFAULT_SOURCE,
+                "text": "не выбран — по умолчанию"}
     by_project = nonres_project_class(x) or OFFICE_CLASS_BY_PROJECT.get(str(x.get("project_class") or ""))
     if by_project:
         return {"office_class": by_project, "source": OFFICE_CLASS_BY_PROJECT_SOURCE,

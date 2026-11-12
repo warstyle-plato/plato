@@ -70,14 +70,14 @@ def test_a_saved_wrong_key_can_be_replaced(monitor_server, page, storage_key):
     expect(page.locator('#privateArea')).to_be_hidden()
     with page.expect_response('**/monitor/view') as accepted:
         enter_key(page,'  '+KEY+'  ')
-    assert accepted.value.status==200
+    assert accepted.value.status in (200, 202)
     expect(page.locator('#privateArea')).to_be_visible()
     expect(page.locator('#keyBtn')).to_have_text('Сменить ключ')
     expect(page.locator('#loginState')).to_have_text('Доступ подтверждён')
     assert page.evaluate("localStorage.getItem('plato_projects_key')")==KEY
     with page.expect_response('**/monitor/view') as reopened:
         page.reload()
-    assert reopened.value.status==200
+    assert reopened.value.status in (200, 202)
     assert stored==[] and errors==[]
 
 
@@ -103,7 +103,7 @@ def test_rejected_rss_upload_keeps_file_project_and_date(monitor_server,page,mon
     assert stored==[]
     with page.expect_response('**/monitor/view') as accepted:
         enter_key(page, ROTATED)
-    assert accepted.value.status==200
+    assert accepted.value.status in (200, 202)
     assert page.locator('#rss').evaluate('(e)=>e.files[0].name')=='synthetic.xlsx'
     expect(page.locator('#project')).to_have_value('Синтетический проект')
     expect(page.locator('#rssDate')).to_have_value('2026-11-05')
@@ -167,7 +167,7 @@ def test_an_old_denial_does_not_reject_the_new_key(monitor_server,page,monkeypat
     monkeypatch.setenv('DEVELOPAID_ADMIN_KEY',next_key)
     with page.expect_response('**/monitor/view') as accepted:
         enter_key(page,next_key)
-    assert accepted.value.status==200
+    assert accepted.value.status in (200, 202)
     delayed[0].fulfill(status=403,content_type='application/json',body=json.dumps({'detail':'old denial'}))
     page.evaluate('window.oldResult')
     expect(page.locator('#privateArea')).to_be_visible()

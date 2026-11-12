@@ -506,6 +506,8 @@ def _physical(item: dict, ledger: dict, cut: str, *, _duplicates=None) -> dict:
                      or _date(p["date_start"]) <= _date(p["date_end"]))]
     # A period ending after cut is never returned as a fact for the cut.
     result["periods"] = included
+    # Periods named by an act only («КС-2 № 2»): the contract card may date them by the act itself.
+    result["undated_periods"] = [] if future_year else [p for p in periods if not _date(p.get("date_end"))]
     result["quantity_date"] = max((_date(p["date_end"]) for p in included), default=None)
     result["quantity_cut"] = cut
     has_future_values = future_year or any(_date(p.get("date_end")) and _date(p["date_end"]) > cut
@@ -881,7 +883,10 @@ def build(project: str, cut: str = "", *, include_history: bool = True) -> dict:
             financial.append({"label": "Сводная — справочная сверка", "amount": summary_amount,
                 "completed": summary_completed, "completed_label": "Сумма актов сводной; не подмена выполнения по накопительным",
                 "source": _source(summary_items[0].get("source")), "source_date": archive_day,
-                "amount_basis": summary_amount_basis, "completed_basis": summary_completed_basis})
+                "amount_basis": summary_amount_basis, "completed_basis": summary_completed_basis,
+                "acts": [{"number": act.get("number"), "date": _date(act.get("date")), "amount": _number(act.get("amount")),
+                          "source": _source(act.get("source"))}
+                         for summary in summary_items for act in summary.get("acts") or []]})
         references = []
         for ledger, views in physical_sources:
             source_items = ledgers.aggregation_members(ledger.get('items') or [])

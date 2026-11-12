@@ -897,6 +897,9 @@ _TOWER = re.compile(r"башн\w*\s+[^\s,.;]+", re.I)
 # Порядок слов пишут по-разному («Мария Вольпи» и «Вольпи Мария») — это один
 # человек: ключ — набор слов, имя — как написано впервые.
 _MANAGER = re.compile(r"\(\s*([А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+){1,2})\s*\)")
+# Назначенная сделка — только явной пометкой «дата сделки 10.11.2026 г.»; срок
+# брони («бронь до 10.11.2026») — не дата сделки.
+_DEAL_DAY = re.compile(r"дат\w*\s+сделки\s*[:\-–—]?\s*(\d{1,2})\.(\d{1,2})\.(\d{4})", re.I)
 _UNIT_NUMBER = re.compile(r"кв\.?\s*(\d{1,4})", re.I)
 # Площадь в чате и в договоре округлены по-разному; метр разницы — та же
 # квартира, больше — другая.
@@ -931,6 +934,18 @@ def booking_channel(piece: str) -> str:
     return ""
 
 
+def _deal_day(piece: str) -> str:
+    """«дата сделки 10.11.2026» → «2026-11-10»; нет пометки или дата не дата — «»."""
+    found = _DEAL_DAY.search(piece or "")
+    if not found:
+        return ""
+    day, month, year = (int(x) for x in found.groups())
+    try:
+        return datetime.date(year, month, day).isoformat()
+    except ValueError:
+        return ""
+
+
 def booked_lots(text: str) -> list[dict[str, Any]] | None:
     """Брони из списка под «Текущих броней». Нет раздела — ``None``: это «не
     сказано», а не «броней нет»."""
@@ -952,7 +967,8 @@ def booked_lots(text: str) -> list[dict[str, Any]] | None:
                     "area": float(area.group(1).replace(",", ".")) if area else None,
                     "tower": tower.group(0) if tower else "",
                     "manager": " ".join(manager.group(1).split()) if manager else "",
-                    "channel": booking_channel(piece)})
+                    "channel": booking_channel(piece),
+                    "deal_day": _deal_day(piece)})
     return out
 
 

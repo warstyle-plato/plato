@@ -1,7 +1,7 @@
 """Embedded group-review UI, using the same source-bound draft as manual editing."""
 
 SCRIPT = r"""
-let physicalGroupSelection=new Set(),physicalGroupTargets=new Map(),physicalGroupPage=0,physicalContractFocus=null,physicalContractOpen=new Set(),physicalContractPages=new Map();
+let physicalBulk=new Map(),physicalGroupSelection=new Set(),physicalGroupTargets=new Map(),physicalGroupPage=0,physicalContractFocus=null,physicalContractOpen=new Set(),physicalContractPages=new Map();
 function physicalTaskAutomatic(task){
  if(!task.scope_confirmed||!physicalState?.model?.automatic_bindings?.[task.task_id])return false;
  const signature=configuration=>JSON.stringify((configuration?.components||[]).filter(c=>c.task_id===task.task_id)
@@ -9,7 +9,7 @@ function physicalTaskAutomatic(task){
  return signature(physicalDraft)===signature(physicalState.configuration);
 }
 function resetPhysicalReview(){
- physicalGroupSelection.clear();physicalGroupTargets.clear();physicalGroupPage=0;physicalContractFocus=null;physicalContractOpen.clear();physicalContractPages.clear();
+ physicalBulk.clear();physicalGroupSelection.clear();physicalGroupTargets.clear();physicalGroupPage=0;physicalContractFocus=null;physicalContractOpen.clear();physicalContractPages.clear();
  $('physicalRetry').classList.add('hidden');
  $('physicalReviewView').value='contracts';$('physicalReviewUnfocus').classList.add('hidden');
  for(const id of ['physicalReviewGroups','physicalReviewScopes'])$(id).replaceChildren();
@@ -78,6 +78,7 @@ function physicalContractCard(packet){
  }
  const opened=physicalContractOpen.has(packet.contract_id),toggle=physicalReviewText('button',opened?'Скрыть работы':`Показать работы (${groups.length})`,'btn ghost');toggle.type='button';toggle.setAttribute('aria-expanded',String(opened));
  toggle.onclick=()=>{if(opened)physicalContractOpen.delete(packet.contract_id);else physicalContractOpen.add(packet.contract_id);renderPhysicalReview();};actions.append(toggle);card.append(actions);
+ card.append(physicalBulkBox(packet));
  if(opened){
   let page=Math.min(physicalContractPages.get(packet.contract_id)||0,Math.max(0,Math.ceil(groups.length/25)-1));
   const details=document.createElement('div');details.className='physical-contract-works';
@@ -94,6 +95,78 @@ function physicalContractCard(packet){
  }
  return card;
 }
+// Owner decision: every work of one contract for one building or site is
+// bound to one GPR work in one action, after its full composition is shown.
+// The draft keeps one component per source work; units are never summed.
+function physicalBulkPlan(contractId,scope,taskId){
+ const groups=(physicalState?.review?.groups||[]).filter(g=>(g.contract_id||g.group_id)===contractId&&g.scope===scope);
+ const used=new Set((physicalDraft?.components||[]).flatMap(c=>c.item_ids)),task=(physicalDraft?.tasks||[]).find(t=>t.task_id===taskId);
+ const included=[],excluded=[];
+ for(const group of groups){
+  const reason=physicalGroupState(group)==='bound'?'Работа уже привязана к графику.':
+   group.item_ids.some(i=>used.has(i))?'Часть строк уже привязана. Проверьте эту работу в ручной настройке.':
+   !group.can_bind?((group.issues||[])[0]||group.quantity_reason||'Объём работы не определён.'):'';
+  if(reason)excluded.push({group,reason});else included.push(group);
+ }
+ return {groups,included,excluded,blocked:task&&task.mode!=='quantities'?'Для этой работы графика уже выбрано другое основание прогноза. Измените его в ручной настройке.':''};
+}
+function physicalBulkKey(contractId,choice){
+ const plan=physicalBulkPlan(contractId,choice.scope,choice.task);
+ return JSON.stringify([choice.scope,choice.task,plan.included.map(g=>g.group_id),plan.excluded.map(x=>[x.group.group_id,x.reason]),plan.blocked]);
+}
+function physicalBulkBox(packet){
+ const box=document.createElement('div');box.className='physical-bulk';
+ const all=(physicalState?.review?.groups||[]).filter(g=>(g.contract_id||g.group_id)===packet.contract_id);
+ const scopes=[...new Set(all.map(g=>g.scope).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'ru',{numeric:true}));
+ if(!physicalState?.can_edit||!physicalDraft||!scopes.length)return box;
+ const choice=physicalBulk.get(packet.contract_id)||{scope:scopes.length===1?scopes[0]:'',task:'',shown:''};
+ if(!scopes.includes(choice.scope))Object.assign(choice,{scope:'',shown:''});
+ physicalBulk.set(packet.contract_id,choice);
+ box.append(physicalReviewText('b','Привязать все работы корпуса или участка по договору к одной работе графика'));
+ const scope=document.createElement('select');scope.className='physical-bulk-scope';scope.setAttribute('aria-label','Корпус или участок по договору');
+ scope.append(new Option('Выберите корпус или участок',''));
+ for(const value of scopes)scope.append(new Option(`${value} (работ: ${all.filter(g=>g.scope===value).length})`,value));
+ scope.value=choice.scope;
+ const hits=new Map();
+ for(const group of all.filter(g=>g.scope===choice.scope))for(const c of group.candidates||[])hits.set(c.task_id,(hits.get(c.task_id)||0)+1);
+ const task=document.createElement('select');task.className='physical-bulk-task';task.setAttribute('aria-label','Работа графика для всего корпуса или участка');
+ task.append(new Option('Выберите работу графика',''));
+ for(const t of [...(physicalState.tasks||[])].sort((a,b)=>(hits.get(b.task_id)||0)-(hits.get(a.task_id)||0)))
+  task.append(new Option([t.object,t.name].filter(Boolean).join(' — ')||t.task_id,t.task_id));
+ task.value=choice.task;
+ scope.onchange=()=>{choice.scope=scope.value;choice.shown='';renderPhysicalReview();};
+ task.onchange=()=>{choice.task=task.value;choice.shown='';renderPhysicalReview();};
+ const show=physicalReviewText('button','Показать состав','btn ghost');show.type='button';show.disabled=!choice.scope||!choice.task;
+ show.onclick=()=>{choice.shown=physicalBulkKey(packet.contract_id,choice);renderPhysicalReview();};
+ const tools=document.createElement('div');tools.className='physical-tools';tools.append(scope,task,show);box.append(tools);
+ if(!choice.shown)return box;
+ if(choice.shown!==physicalBulkKey(packet.contract_id,choice)){
+  choice.shown='';box.append(physicalReviewText('p','Состав изменился. Нажмите «Показать состав» ещё раз.','warn'));return box;
+ }
+ const plan=physicalBulkPlan(packet.contract_id,choice.scope,choice.task),source=(physicalState.tasks||[]).find(t=>t.task_id===choice.task);
+ const target=[source?.object,source?.name||choice.task].filter(Boolean).join(' — ');
+ const list=document.createElement('div');list.className='physical-bulk-list';
+ list.append(physicalReviewText('p',`В привязку к работе «${target}» войдут работы: ${plan.included.length} из ${plan.groups.length}. Строк накопительной: ${plan.included.reduce((n,g)=>n+g.item_ids.length,0)}. Каждая работа останется отдельной группой со своим планом и единицей.`));
+ for(const group of plan.included){
+  const offered=(group.candidates||[]).some(c=>c.task_id===choice.task);
+  list.append(physicalReviewText('p',`${group.name}. План: ${numberWithUnit(group.plan_quantity,group.unit)}. Выполнено: ${numberWithUnit(group.completed_quantity,group.unit)}.${offered?'':' Эту работу графика для неё не предлагали — проверьте.'}`,offered?'physical-bulk-row':'physical-bulk-row warn'));
+ }
+ if(plan.excluded.length){
+  list.append(physicalReviewText('p',`Не войдут: ${plan.excluded.length}.`,'warn'));
+  for(const row of plan.excluded)list.append(physicalReviewText('p',`${row.group.name}: ${row.reason}`,'physical-bulk-skip muted'));
+ }
+ box.append(list);
+ if(plan.blocked){box.append(physicalReviewText('p',plan.blocked,'bad'));return box;}
+ if(!plan.included.length){box.append(physicalReviewText('p','Добавить нечего: все работы уже привязаны или требуют проверки.','muted'));return box;}
+ const apply=physicalReviewText('button',`Привязать работы (${plan.included.length}) к «${target}»`,'btn');apply.type='button';
+ apply.onclick=()=>{
+  if(choice.shown!==physicalBulkKey(packet.contract_id,choice)){choice.shown='';renderPhysicalReview();return msg('physicalMsg','Состав изменился. Проверьте его ещё раз перед привязкой.','bad');}
+  const selected=physicalBulkPlan(packet.contract_id,choice.scope,choice.task).included;
+  for(const group of selected)physicalGroupTargets.set(group.group_id,choice.task);
+  choice.shown='';applyPhysicalGroups(selected);
+ };
+ box.append(apply);return box;
+}
 function renderPhysicalScopes(groups){
  const host=$('physicalReviewScopes');host.replaceChildren();
  const tasks=(physicalDraft?.tasks||[]).filter(t=>t.mode==='quantities'),parents=new Map(tasks.map(t=>[t.task_id,t.task_id]));
@@ -108,7 +181,7 @@ function renderPhysicalScopes(groups){
   const taskIds=new Set(members.map(t=>t.task_id)),packetIds=new Set(members.flatMap(t=>[...contractsByTask.get(t.task_id)]));
   const packets=(physicalState.review.contracts||[]).filter(p=>packetIds.has(p.contract_id));
   const components=physicalDraft.components.filter(c=>taskIds.has(c.task_id));
-  const pending=groups.filter(g=>physicalGroupState(g)!=='bound'&&(packetIds.has(g.contract_id||g.group_id)||taskIds.has(physicalGroupTarget(g))||(g.candidates||[]).some(c=>taskIds.has(c.task_id))));
+  const pending=groups.filter(g=>physicalGroupState(g)!=='bound'&&members.some(t=>!(g.known_disjoint_task_ids||[]).includes(t.task_id)&&(contractsByTask.get(t.task_id).has(g.contract_id||g.group_id)||physicalGroupTarget(g)===t.task_id||(g.candidates||[]).some(c=>c.task_id===t.task_id))));
   const box=document.createElement('div');box.className='physical-scope';box.dataset.taskIds=JSON.stringify([...taskIds]);
   box.append(physicalReviewText('b',packets.length?packets.map(p=>`${p.contractor}. Договор ${p.contract}`).join('; '):'Работы без определённого договора'));
   box.append(physicalReviewText('p',`Работ ГПР в составе: ${members.length}. Добавлено групп объёмов: ${components.length}. Неразобранных объёмов по этим договорам и работам: ${pending.length}.`,pending.length?'warn':'muted'));

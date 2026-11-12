@@ -146,7 +146,7 @@ def _read_uncached(data: bytes) -> dict | None:
             for key in ('start', 'finish'):
                 if _text(values[key]) and not parsed[key]:
                     issues.append({'cell': refs[key], 'code': 'invalid_date',
-                                   'message': 'Некорректная дата сохранена как в источнике; срок не подставлен.'})
+                                   'message': 'Дата «'+_text(values[key])[:64]+'» не распознана; срок не подставлен.'})
             if parsed['start'] and parsed['finish'] and parsed['finish'] < parsed['start']:
                 issues.append({'cell': refs['finish'], 'code': 'reversed_dates',
                                'message': 'Окончание раньше начала.'})
@@ -195,8 +195,18 @@ def as_schedule(source: dict) -> dict:
             refs = scope['source_cells']
             start = dt.date.fromisoformat(scope['start']) if scope.get('start') else None
             finish = dt.date.fromisoformat(scope['finish']) if scope.get('finish') else None
+            problem = ''
             if start and finish and finish < start:
+                problem = ('окончание '+finish.strftime('%d.%m.%Y')+' раньше начала '+start.strftime('%d.%m.%Y')+
+                           ' (лист «'+source['sheet']+'», ячейки '+refs['start']+' и '+refs['finish']+')')
                 start = finish = None
+            elif not (start and finish):
+                # The calendar needs both dates; the work names its own cell.
+                problem = '; '.join(
+                    label+(' «'+_text(raw.get(key))[:64]+'» не распознано' if _text(raw.get(key)) else ' не указано')+
+                    ' (лист «'+source['sheet']+'», ячейка '+refs[key]+')'
+                    for key, label, value in (('start', 'начало', start), ('finish', 'окончание', finish))
+                    if value is None)
             group = package.get('group') or ''
             construction = bool(re.match(
                 r'конструктив|фасад|отделка|внутренние инженерные|вис[. ]|наружные сети', group.casefold()))
@@ -211,7 +221,8 @@ def as_schedule(source: dict) -> dict:
                 'basis': source['sheet']+'!'+refs['start']+'; '+source['sheet']+'!'+refs['finish'],
                 'source_format': source['format'], 'source_sha256': source['sha256'],
                 'source_id': package['source_id'], 'source_cells': dict(refs),
-                'source_group': package.get('group_source'), 'construction_work': construction})
+                'source_group': package.get('group_source'), 'construction_work': construction,
+                'date_problem': problem})
     if not works:
         raise ValueError('В корпусном ГПР нет явно заполненных пар работы и объекта.')
     return {'rows': works, 'works': works, 'overdue': [], 'without_code': works,
@@ -337,30 +348,22 @@ def render_overview(source: dict | None, cut: str = '') -> str:
     packages = source.get('packages') or []
     if not packages:
         return ''
-    reference = day(cut)
-    def rank(package):
-        scopes = package.get('scopes') or []
-        active = any(isinstance(scope.get('progress'), (int, float)) and 0 < scope['progress'] < 1
-                     for scope in scopes)
-        dates = [value for scope in scopes if (value := day(scope.get('finish')))]
-        distance = min((abs((value-reference).days) for value in dates), default=10**9) if reference else 0
-        return (not active, distance, str(package.get('source_id') or ''))
-    selected = min(packages, key=rank)
-    rows = []
-    for scope in selected.get('scopes') or []:
-        rows.append({'id': str(selected.get('source_id') or '')+':'+str(scope.get('corpus') or ''),
-                     'name': scope.get('corpus') or 'Объект не указан',
-                     'subtitle': ('Показание на '+date_text(scope.get('fact_day'))
-                                  if day(scope.get('fact_day')) else 'Дата показания не распознана'),
-                     'plan_start': scope.get('start'), 'plan_finish': scope.get('finish'),
-                     'source_progress': scope.get('progress')})
     esc = lambda value: html.escape(str(value if value is not None else ''), quote=True)
     out = [styles(), '<section class="schedule-overview corpus-gpr-overview"><h3>Исходные показания ГПР по корпусам</h3>',
            '<p class="schedule-note">'+esc(source.get('reason') or 'Связи ГПР с КС проверяются отдельно.')+'</p>',
-           '<h4>'+esc(selected.get('name') or 'Пакет без названия')+'</h4>',
-           '<p class="schedule-note">Для просмотра выбран пакет с промежуточными показаниями и ближайшими исходными сроками, если они есть. Это не автоматическое определение текущего этапа.</p>',
-           lanes(rows), legend(rows),
-           '<details class="schedule-source-packages"><summary>Все пакеты исходного файла ('+str(len(packages))+')</summary>']
+           '<p class="schedule-note">Пакетов в исходном файле: '+str(len(packages))+'. '
+           'Выберите работу, чтобы открыть показания по корпусам. Эти показания не заменяют полный план и факт проекта.</p>']
+    for package in packages:
+        rows = [{'id': str(package.get('source_id') or '')+':'+str(scope.get('corpus') or ''),
+                 'name': scope.get('corpus') or 'Объект не указан',
+                 'subtitle': ('Показание на '+date_text(scope.get('fact_day'))
+                              if day(scope.get('fact_day')) else 'Дата показания не распознана'),
+                 'plan_start': scope.get('start'), 'plan_finish': scope.get('finish'),
+                 'source_progress': scope.get('progress')}
+                for scope in package.get('scopes') or []]
+        out.append('<details class="corpus-gpr-package" data-source-id="'+esc(package.get('source_id'))+'">'
+                   '<summary>'+esc(package.get('name') or 'Пакет без названия')+'</summary>'+lanes(rows)+legend(rows)+'</details>')
+    out.append('<details class="schedule-source-packages"><summary>Все пакеты исходного файла ('+str(len(packages))+')</summary>')
     out.append(render(source))
     out.append('</details></section>')
     return ''.join(out)

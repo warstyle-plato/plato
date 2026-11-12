@@ -5,7 +5,7 @@
   "source": "Live GitHub and scoped successor reviews; a dated snapshot, not an automated queue.",
   "control": {
     "id": "control",
-    "location": "current_owner_conversation_in_codex",
+    "location": "current_owner_conversation_in_claude",
     "authority": "current_owner_instructions",
     "previous_claude_sessions": "closed_by_owner",
     "automatic_background_monitoring": false,
