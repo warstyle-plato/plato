@@ -932,8 +932,11 @@ def _act_rows(cells, columns, page_number, act, state):
                 if any(v is not None for v in parts):
                     _settle_heading(act, state)
                     state['table_total'] = fsum(v for v in parts if v is not None)
+            elif _SECTION_TOTAL.match(label):
+                _settle_heading(act, state)
             elif label.startswith('раздел'):
                 # «Итого по разделу» closes a section, not the table; the next section names itself.
+                _settle_heading(act, state)
                 state['section'], state['group'] = _space(' '.join(cell for cell in row if _space(cell))), None
             continue
         number = _space(row[columns['number']]).rstrip('.')
@@ -1086,7 +1089,12 @@ def _act(document, text):
         act['total'] = act['table_total']
     elif act['positions'] and (act['table_total'] is None or abs(act['table_total']-act['total']) > _TOLERANCE):
         listed = fsum(p['amount']['total'] for p in act['positions'])
-        if abs(listed-act['total']) > _TOLERANCE*max(1, len(act['positions'])):
+        if act['table_total'] is not None and abs(listed-act['table_total']) <= _TOLERANCE*max(1, len(act['positions'])):
+            # Every row is read: the total of the act differs from the table by itself (VAT, coefficients).
+            act['warnings'].append(f'Строка «Итого» таблицы акта {_figure(act["table_total"])} не равна строке '
+                                   f'«Итого по акту» {_figure(act["total"])}. Позиции прочитаны все; разница '
+                                   'может быть налогом или коэффициентом — проверьте акт.')
+        elif abs(listed-act['total']) > _TOLERANCE*max(1, len(act['positions'])):
             act['warnings'].append(f'Сумма позиций акта {_figure(listed)} не равна строке «Итого по акту» '
                                    f'{_figure(act["total"])}: проверьте, все ли строки прочитаны.')
     shown = {'number': 'номер документа', 'date': 'дата составления', 'start': 'начало отчётного периода',

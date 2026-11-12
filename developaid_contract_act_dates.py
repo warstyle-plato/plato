@@ -60,6 +60,13 @@ def _dates(n: str, records: list[dict], summary: list[dict], notes: dict | None 
     for record in pdfs:
         if (notes or {}).get(record.get("sha256")):
             out["warnings"].append(notes[record.get("sha256")])
+    periods = sorted({(r["act"].get("start"), r["act"]["finish"]) for r in read}, key=lambda p: p[1])
+    if len(periods) > 1:
+        # Editions of one act are already chosen: these are different acts («1/2026», «2/2026») named alike.
+        out["reason"] = (f"в карточке несколько актов КС-2 № {n} с разными отчётными периодами ("
+                         + "; ".join(f"{_shown(a)} — {_shown(b)}" for a, b in periods)
+                         + "): к какому из них относится период КС-6а, не ясно")
+        return out
     if read:
         record = read[0]
         act = record["act"]

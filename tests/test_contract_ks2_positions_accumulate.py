@@ -240,3 +240,94 @@ def test_without_a_date_on_every_edition_the_edition_uploaded_last_is_in_force()
     note = got["replaced"]["a" * 64]
     assert note.startswith("Заменён: в карточке есть загруженная позже редакция акта КС-2 № 2")
     assert "действующей считается загруженная последней" in note
+
+
+NOT_HEADING = ("Стр. 1: у строки № 2 акта «Кладка перегородок» есть единица и объём, но нет цены и стоимости. "
+               "Это не позиция, и это не заголовок группы: следующая строка не входит в неё по номеру. "
+               "Её объём не учтён.")
+
+
+@pytest.mark.parametrize("table_total", [None, ""])
+def test_a_row_with_a_volume_and_no_cost_at_the_end_of_the_table_is_named(table_total):
+    # С «Итого» таблицы заголовок решается на нём, без «Итого» — в конце таблицы.
+    rows = (("1", "1.1", "Устройство стен", "м3", "0,5", "8 000,00", "4 000,00"),
+            ("2", "2.1", "Кладка перегородок", "м2", "10,0", "", ""))
+    got = _act(rows=rows, table_total=table_total)
+    assert _rows(got["act"]) == [(1, "1.1", "м3", 0.5, "work", 4000.0)]
+    assert NOT_HEADING in got["warnings"]
+
+
+@pytest.mark.parametrize("closing", [("", "", "Раздел № 2. Кровля", "", "", "", ""),
+                                     ("", "", "Итого по разделу 1", "", "", "", "")])
+def test_a_new_section_or_a_section_total_settles_a_row_with_a_volume_and_no_cost(closing):
+    rows = (("1", ".", "Группа А", "", "", "", ""),
+            ("2", "2.1", "Кладка перегородок", "м2", "10,0", "", ""),
+            closing,
+            # Номер позиции продолжает строку 2.1, но раздел уже закрыт: заголовком она не становится.
+            ("3", "2.1.1", "Устройство кровли", "м2", "5,0", "800,00", "4 000,00"))
+    got = _act(rows=rows)
+    position, = got["act"]["positions"]
+    assert NOT_HEADING in got["warnings"]
+    if closing[2].startswith("Раздел"):
+        assert (position["section"], position["group"]) == ("Раздел № 2. Кровля", None)
+    else:
+        assert position["group"] == "Группа А"
+
+
+def test_acts_with_one_last_number_in_a_longer_number_are_two_acts():
+    one = _record("a", "1/2026", "2026-01-31", [(*WALLS, 1.0, 100.0)])
+    two = _record("b", "2/2026", "2026-02-28", [(*WALLS, 2.0, 200.0)])
+    again = _record("c", "№ 02/2026", "2026-02-28", [(*WALLS, 2.0, 200.0)], uploaded="2026-02-11T10:00:00")
+    got = acts.accumulated([one, two, again], "2026-03-31")
+    assert got["replaced"] == {} and list(got["copies"]) == ["b" * 64]
+    walls, = got["positions"]
+    assert walls["quantity"] == 3.0
+    # Период КС-6а «КС-2 № 2026» к двум разным актам не подставляется.
+    import developaid_contract_act_dates as act_dates
+    dated = act_dates._dates("2026", [one, two], [])
+    assert dated["end"] is None and dated["reason"].startswith("в карточке несколько актов КС-2 № 2026")
+
+
+def _in_section(record, section):
+    for p in record["act"]["positions"]:
+        p["section"] = section
+    return record
+
+
+def test_one_section_printed_with_another_ending_is_one_section_and_a_position_without_it_joins_it():
+    records = [_in_section(_record("a", "1", "2026-01-31", [(*WALLS, 1.0, 100.0)]), "Раздел № 5. Монтаж конструкций"),
+               _in_section(_record("b", "2", "2026-02-28", [(*WALLS, 2.0, 200.0)]), "Раздел № 5. Монтаж конструкции"),
+               _in_section(_record("c", "3", "2026-02-28", [(*WALLS, 4.0, 400.0)]), None)]
+    got = acts.accumulated(records, "2026-03-31")
+    walls, = got["positions"]
+    assert (walls["quantity"], [x["act"] for x in walls["parts"]]) == (7.0, ["1", "2", "3"])
+    assert got["warnings"] == []
+
+
+def test_a_position_without_its_section_is_not_guessed_between_two_sections():
+    records = [_in_section(_record("a", "1", "2026-01-31", [(*WALLS, 1.0, 100.0)]), "Раздел № 1. Корпус 1"),
+               _in_section(_record("b", "2", "2026-02-28", [(*WALLS, 2.0, 200.0)]), "Раздел № 2. Корпус 2"),
+               _in_section(_record("c", "3", "2026-02-28", [(*WALLS, 4.0, 400.0)]), None)]
+    got = acts.accumulated(records, "2026-03-31")
+    assert sorted(p["quantity"] for p in got["positions"]) == [1.0, 2.0, 4.0]
+    assert got["warnings"] == ["Позиция 1.1 «Устройство стен» в акте № 3 прочитана без раздела, а в карточке она "
+                               "есть в разделах Раздел № 1. Корпус 1, Раздел № 2. Корпус 2: к какому разделу "
+                               "отнести её объём, не ясно, он показан отдельно."]
+
+
+def test_a_table_total_before_tax_is_named_as_such_and_not_as_unread_rows():
+    got = _act(total="4 880,00", table_total="4 000,00")
+    assert got["act"]["total"] == 4880.0 and got["act"]["table_total"] == 4000.0
+    assert ("Строка «Итого» таблицы акта 4 000,00 не равна строке «Итого по акту» 4 880,00. Позиции прочитаны "
+            "все; разница может быть налогом или коэффициентом — проверьте акт.") in got["warnings"]
+    assert not any(w.startswith("Сумма позиций акта") for w in got["warnings"])
+
+
+def test_a_numbered_position_printed_with_another_name_is_summed_by_its_number_and_named():
+    records = [_record("a", "1", "2026-01-31", [("1.1", "Устройство стен", "м3", 1.0, 100.0)]),
+               _record("b", "2", "2026-02-28", [("1.1", "Устройство стены", "м3", 2.0, 200.0)])]
+    got = acts.accumulated(records, "2026-03-31")
+    walls, = got["positions"]
+    assert walls["quantity"] == 3.0 and walls["name"] == "Устройство стен"
+    assert got["warnings"] == ["У позиции 1.1 в актах разное название: «Устройство стен» — № 1; «Устройство стены» "
+                               "— № 2. Объёмы сложены по номеру позиции по смете; проверьте, одна ли это работа."]

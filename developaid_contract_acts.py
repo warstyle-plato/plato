@@ -30,6 +30,28 @@ def number(act: dict | None) -> str | None:
     return digits[-1].lstrip("0") or "0" if digits else None
 
 
+def edition(act: dict | None) -> str | None:
+    """The act's full number, by which its editions are told apart: «№ 01/2026» → "1/2026"; None when not read.
+
+    `number` keeps only the last group of digits to match a KS-6a period label; acts «1/2026» and «2/2026»
+    are two acts, not two editions of one.
+    """
+    text = re.sub(r"^[№#]+", "", "".join(str((act or {}).get("number") or "").split()).lower())
+    return re.sub(r"\d+", lambda m: m.group().lstrip("0") or "0", text) or None
+
+
+_SECTION = re.compile(r"раздел\w*\s*№?\s*(\d+(?:\.\d+)*)", re.I)
+
+
+def section(text) -> str:
+    """The key of a section: its number («Раздел № 5. …» → "5"), its text when it has none, "" when unread.
+
+    The same section is printed with different endings in different acts; its number is what they share.
+    """
+    match = _SECTION.search(str(text or ""))
+    return match.group(1) if match else _name(text)
+
+
 def _shown(iso):
     return ".".join(reversed(iso.split("-"))) if iso else "—"
 
@@ -62,7 +84,7 @@ def in_force(records: list[dict]) -> dict:
     groups: dict[str, list[dict]] = {}
     alone = []
     for record in sorted((r for r in records if r.get("act")), key=uploaded):
-        n = number(record["act"])
+        n = edition(record["act"])
         if n is None:
             alone.append(record)
         else:
@@ -138,21 +160,45 @@ def accumulated(records: list[dict], cut: str) -> dict:
             continue
         acts.append(row)
         for p in act["positions"]:
+            # A numbered position is the estimate's position: a name printed otherwise in one act is named below.
             own = () if p.get("number") else (record.get("sha256"), p.get("row"))
-            key = (p.get("number") or "", _name(p.get("name")), p.get("unit") or "", p.get("quantity_basis") or "work",
-                   _name(p.get("section")), *own)
+            key = (p.get("number") or "", "" if p.get("number") else _name(p.get("name")), p.get("unit") or "",
+                   p.get("quantity_basis") or "work", section(p.get("section")), *own)
             found = positions.setdefault(key, {
                 "number": key[0], "name": p.get("name") or "", "unit": key[2], "basis": key[3],
                 "section": p.get("section"), "group": p.get("group"), "parts": []})
-            found["parts"].append({"act": act.get("number"), "day": day, "preliminary": bool(preliminary),
+            found["parts"].append({"act": act.get("number"), "name": p.get("name") or "", "day": day,
+                                   "preliminary": bool(preliminary),
                                    "quantity": p["quantity"], "amount": p["amount"]["total"]})
+    warnings = []
+    for key in [k for k in positions if k[0] and not k[4]]:
+        # A position read without its section joins the one section of the card with the same position.
+        homes = [k for k in positions if k[:4] == key[:4] and k[4]]
+        if len(homes) == 1:
+            positions[homes[0]]["parts"] += positions.pop(key)["parts"]
+        elif homes:
+            item = positions[key]
+            warnings.append(f"Позиция {item['number']} «{item['name'][:80]}» в "
+                            + ", ".join(f"акте № {x['act'] or 'без номера'}" for x in item["parts"])
+                            + " прочитана без раздела, а в карточке она есть в разделах "
+                            + ", ".join(sorted(positions[k]["section"] or k[4] for k in homes))
+                            + ": к какому разделу отнести её объём, не ясно, он показан отдельно.")
     out = []
     for item in positions.values():
         parts = item["parts"]
+        names = {}
+        for x in parts:
+            names.setdefault(_name(x["name"]), []).append(x["act"] or "без номера")
+        if len(names) > 1:
+            warnings.append(f"У позиции {item['number']} в актах разное название: "
+                            + "; ".join(f"«{next(x['name'] for x in parts if _name(x['name']) == n)[:80]}» — "
+                                        + ", ".join(f"№ {a}" for a in acts_of) for n, acts_of in names.items())
+                            + ". Объёмы сложены по номеру позиции по смете; проверьте, одна ли это работа.")
         out.append({**item, "quantity": fsum(x["quantity"] for x in parts),
                     "amount": fsum(x["amount"] for x in parts),
                     "preliminary": any(x["preliminary"] for x in parts)})
     preliminary = any(a["preliminary"] for a in acts)
     return {"cut": cut, "acts": acts, "positions": out, "excluded": excluded, "later": later,
-            "replaced": chosen["replaced"], "copies": chosen["copies"], "notes": chosen["notes"], "preliminary": preliminary,
+            "replaced": chosen["replaced"], "copies": chosen["copies"], "notes": chosen["notes"], "warnings": warnings,
+            "preliminary": preliminary,
             "note": PRELIMINARY if preliminary else ""}
