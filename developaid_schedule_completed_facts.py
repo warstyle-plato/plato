@@ -267,10 +267,9 @@ def render(inventory, *, expanded=False):
            '<section class="completed-work-facts"><h3>Подтверждённое выполнение</h3>']
     if works:
         out.append('<p>Завершённых работ с подтверждённым составом: '+str(len(works))+'.</p>')
-        out.append('<ul>'+''.join(marker(fact) for fact in (works if expanded else works[:3]))+'</ul>')
-        if len(works) > 3 and not expanded:
-            out.append('<details><summary>Ещё завершённых работ: '+str(len(works)-3)+'</summary><ul>'+
-                       ''.join(marker(fact) for fact in works[3:])+'</ul></details>')
+        markers = '<ul>'+''.join(marker(fact) for fact in works)+'</ul>'
+        out.append(markers if expanded else '<details><summary>История завершённых работ ('+
+                   str(len(works))+')</summary>'+markers+'</details>')
     if counts.get('ks_positions'):
         out.append('<p>Позиций КС с выполненным объёмом: '+str(counts['ks_positions'])+
                    '. Это позиции ведомостей, а не число завершённых работ ГПР. Подробности — в договорах.</p>')

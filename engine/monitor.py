@@ -389,6 +389,69 @@ def monitor_schedule_version_approve(req: MonitorScheduleVersionApproveRequest) 
     return _monitor_schedule_version(req, approve=True)
 
 
+class MonitorGprDateCorrection(BaseModel):
+    model_config = {'extra': 'forbid'}
+    cell: str
+    expected_raw: str | None
+    value: str
+    note: str
+
+
+class MonitorSavedGprSourceRequest(BaseModel):
+    model_config = {'extra': 'forbid'}
+    project: str
+    source_sha256: str
+    expected_active_sha256: str
+    expected_revision: int
+    effective_from: str
+    corrections: list[MonitorGprDateCorrection] = []
+    expected_prepared_sha256: str = ''
+    session: str = ''
+    key: str = ''
+
+
+@developaid_monitor.approved_schedule_read
+def _monitor_saved_gpr_source(req, *, approve=False):
+    """Server-known source identity only; no workbook/path crosses the wire."""
+    private = {'Cache-Control': 'private, no-store'}
+    import developaid_schedule_versions as versions
+    try:
+        _require_team_access(req.session, req.key, 'Монитор проекта', write=approve)
+        if not req.project.strip() or len(req.project) > 200 or len(req.corrections) > 100:
+            raise ValueError('Выберите проект и не более 100 явных исправлений дат.')
+        import developaid_gpr_source_prepare as prepare
+        result = prepare.prepare(req.project.strip(), req.source_sha256,
+            expected_active_sha256=req.expected_active_sha256, expected_revision=req.expected_revision,
+            corrections=[c.model_dump() for c in req.corrections])
+        preview = developaid_monitor.schedule_version_preview(req.project.strip(), result['data'], req.effective_from)
+        if approve:
+            saved = developaid_monitor.approve_schedule_version(req.project.strip(), result['data'], req.effective_from,
+                expected_previous_sha256=req.expected_active_sha256,
+                expected_source_sha256=req.expected_prepared_sha256,
+                expected_revision=req.expected_revision, author=_monitor_note_author(req.session, req.key))
+            return JSONResponse(content={'saved': saved, 'review': result['manifest'], 'applied': True}, headers=private)
+        return JSONResponse(content={'preview': preview, 'review': result['manifest'], 'applied': False}, headers=private)
+    except HTTPException as exc:
+        exc.headers = {**(exc.headers or {}), **private}
+        raise
+    except versions.ScheduleVersionConflict as exc:
+        raise HTTPException(409, str(exc), headers=private) from None
+    except ValueError as exc:
+        raise HTTPException(400, str(exc), headers=private) from None
+    except OSError:
+        raise HTTPException(503, 'Сохранённые источники сейчас недоступны.', headers=private) from None
+
+
+@app.post('/monitor/schedule/saved-source-preview', include_in_schema=False)
+def monitor_saved_gpr_source_preview(req: MonitorSavedGprSourceRequest) -> Response:
+    return _monitor_saved_gpr_source(req)
+
+
+@app.post('/monitor/schedule/saved-source-approve', include_in_schema=False)
+def monitor_saved_gpr_source_approve(req: MonitorSavedGprSourceRequest) -> Response:
+    return _monitor_saved_gpr_source(req, approve=True)
+
+
 class MonitorNotesRequest(BaseModel):
     project: str
     note_id: str = ""

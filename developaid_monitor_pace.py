@@ -152,13 +152,16 @@ def _apply_gpr(project: str, view: dict[str, Any], cut: datetime.date) -> dict[s
     """PM is off (owner): forecasts from the GPR and cumulative KS, never money."""
     schedule = view.setdefault("schedule", {})
     rows = schedule.get("rows") or []
+    # Calendar omissions remain works with dated factual evidence. They do not
+    # enter the calendar/RNV calculation, whose missing-calendar guard remains.
+    display_rows = rows + (schedule.get("undated_works") or [])
     physical = gpr_physical.build(project, cut.isoformat())
     ks = {task["task_id"]: task for task in physical.get("tasks") or []
           if (task.get("scope_confirmed") and task.get("mode") in {"quantities", "completed"})
           or (task.get("source_conflict") or {}).get("scope") == "source_cohort"}
-    works = gpr_forecast.forecasts(project, cut, rows, ks)
+    works = gpr_forecast.forecasts(project, cut, display_rows, ks)
     stalled = []
-    for row in rows:
+    for row in display_rows:
         tid = str(row.get("id") or row.get("wbs") or "").strip()
         item = works.get(tid) or {}
         # Работа только с планом (темпа нет) прогноза не имеет: срок плана не

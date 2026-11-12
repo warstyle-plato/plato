@@ -122,6 +122,7 @@ _CUMULATIVE_PATHS = frozenset({
     "/monitor/contracts/documents", "/monitor/contracts/document-upload",
     "/monitor/contracts/document-links", "/monitor/contracts/document-remove",
     "/monitor/view", "/monitor/gantt", "/monitor/schedule-fact", "/monitor/gpr-corpus/view",
+    "/monitor/schedule/saved-source-preview", "/monitor/schedule/saved-source-approve",
     "/monitor/schedule-confirmation/view", "/monitor/schedule-confirmation/save",
     "/monitor/schedule-physical/view", "/monitor/schedule-physical/save",
     "/monitor/schedule-gpr-physical/view", "/monitor/schedule-gpr-physical/save",
@@ -153,7 +154,10 @@ def monitor_corpus_gpr_view(req: MonitorContractsBuild) -> Response:
         baseline = _corpus_monitor._working_baseline_file(req.project.strip(), cut)
         sha = _corpus_hashlib.sha256(baseline.read_bytes()).hexdigest() if baseline is not None else ""
         source = corpus_gpr.for_view(req.project.strip(), cut, baseline_sha256=sha)
-        return JSONResponse(content={"source": source, "html": corpus_gpr.render_overview(source, cut)}, headers=private)
+        import developaid_gpr_source_state as source_state
+        state = source_state.inspect(req.project.strip(), cut)
+        return JSONResponse(content={"source": source, "source_state": state,
+            "html": corpus_gpr.render_overview(source, cut)+source_state.render(state)}, headers=private)
 
     return read()
 
