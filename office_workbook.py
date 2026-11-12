@@ -142,6 +142,7 @@ SPACES = "места"
 # множитель к числу шкалы). Ставка аренды у шкалы — в год, у движка — в месяц.
 CLASS_ROWS: tuple[tuple[str, str, str, str, str, float], ...] = (
     ("price_th_per_sqm", "price", "Цена продажи блоками", "тыс ₽/м² с НДС", NUM0, 1.0),
+    ("cost_th_per_sqm", "cost", "Стоимость стройки «под ключ»", "тыс ₽/м² с НДС", NUM, 1.0),
     ("rent_th_per_sqm_year", "rent_year", "Ставка аренды «всё включено»", "тыс ₽/м² в год", NUM, 1.0),
     ("occupancy_stable_pct", "occ_stable", "Заполняемость после заполнения", "", PCT, 0.01),
     ("leaseup_months", "leaseup", "Срок заполнения", "мес.", INT, 1.0),
@@ -477,7 +478,7 @@ OBJECT_BLOCKS: tuple[tuple[str, tuple[tuple[str, str, str, str], ...]], ...] = (
         ("volume", "Наземная площадь здания (наземный паркинг — мест)", "м² / мест", NUM0),
         ("total_area", "Общая площадь", "м²", NUM0),
         ("saleable", "Продаваемая и арендопригодная площадь", "м²", NUM0),
-        ("rate_cost", "Стоимость стройки здания (места — млн ₽ за место)", "тыс ₽/м²", NUM),
+        ("rate_cost", "Стоимость стройки здания (у офиса пусто — по классу; места — млн ₽ за место)", "тыс ₽/м²", NUM),
         ("turnkey", "Ставка «под ключ»: статьи проекта, генподряд и техзаказчик уже в ней", "", "@"),
         ("under_gns", "Подземный гараж объекта", "м²", NUM0),
         ("start", "Начало стройки", "", DATE),
@@ -538,7 +539,10 @@ OBJECT_BLOCKS: tuple[tuple[str, tuple[tuple[str, str, str, str], ...]], ...] = (
 # Поля, которые у офиса задаёт класс: ключ книги → поле шкалы.
 CLASS_FIELDS = {"price": "price_th_per_sqm", "rent": "rent_th_per_sqm_year",
                 "occ_stable": "occupancy_stable_pct", "leaseup": "leaseup_months",
-                "opex": "opex_pct", "cap": "exit_cap_pct"}
+                "opex": "opex_pct", "cap": "exit_cap_pct", "rate_cost": "cost_th_per_sqm"}
+# Поля проекта для передачи происхождения в книгу; у аренды движок хранит месяц.
+CLASS_INPUT_FIELDS = {key: ("rent_th_per_sqm_month" if key == "rent" else field)
+                      for key, field in CLASS_FIELDS.items()}
 LISTS = {"measure": ("м²", SPACES), "turnkey": (YES, NO), "in_tax_pool": (YES, NO),
          "curve": tuple(CURVE.values()), "exit_mode": tuple(EXIT.values()),
          "repayment": tuple(REPAY.values())}
@@ -603,21 +607,28 @@ def _same(a: Any, b: Any) -> bool:
         return False
 
 
-def office_class_of(values: dict[str, Any], chosen: str | None = None) -> tuple[str, dict[str, Any]]:
+def office_class_of(values: dict[str, Any], chosen: str | None = None, *,
+                    manual_fields=(), cost_defaults: dict[str, float] | None = None) -> tuple[str, dict[str, Any]]:
     """Класс офиса и поля, заданные вручную.
 
     Класс — тот, что у офиса в проекте (`chosen`, `office_class_choice`).
     Без него (спецификация без класса) берётся ступень, с которой совпало
     больше полей, при равенстве — та, чья цена совпала, затем младшая. Поле,
-    отличное от ступени, уходит в «Вручную»: правка руками сильнее класса и видна.
+    отличное от ступени, уходит в «Вручную». Явное ручное происхождение сильнее
+    совпадения со шкалой; себестоимость сравнивается со ставкой СМР своего класса.
     """
+    def base(cls: str, key: str) -> float:
+        if key == "rate_cost" and cost_defaults is not None:
+            return cost_defaults[cls]
+        return _class_value(cls, CLASS_FIELDS[key])
+
     def score(cls: str) -> tuple[int, int, int]:
-        hits = sum(_same(values.get(key), _class_value(cls, field)) for key, field in CLASS_FIELDS.items())
+        hits = sum(_same(values.get(key), base(cls, key)) for key in CLASS_FIELDS)
         price = int(_same(values.get("price"), _class_value(cls, "price_th_per_sqm")))
         return hits, price, -ns.OFFICE_CLASSES.index(cls)
     best = chosen if chosen in ns.OFFICE_CLASSES else max(ns.OFFICE_CLASSES, key=score)
-    manual = {key: values.get(key) for key, field in CLASS_FIELDS.items()
-              if not _same(values.get(key), _class_value(best, field))}
+    manual = {key: values.get(key) for key in CLASS_FIELDS
+              if key in manual_fields or not _same(values.get(key), base(best, key))}
     return best, manual
 
 
@@ -751,6 +762,34 @@ def _inputs_sheet(book: _Book, spec: dict[str, Any], objects: list[dict[str, Any
             rows.r += 1
         rows.note("Ставка аренды в расчёте — в месяц: год / 12 с точностью до 0,001 тыс ₽, как в движке. "
                   "Источники — на листе «Источники».")
+        cost_scale = spec.get("office_cost_scale") or {}
+        if cost_scale:
+            cost_rows = {}
+            for field, label, unit in (
+                    ("extra", "Статьи проекта и надбавки сверх СМР в ставке «под ключ»", "тыс ₽/м²"),
+                    ("markup", "Множитель СМР: генподряд, техзаказчик и управление", "×")):
+                cost_rows[field] = rows.r
+                ws.cell(rows.r, 1, label).alignment = Alignment(wrap_text=True)
+                ws.row_dimensions[rows.r].height = 30
+                for j, cls in enumerate(ns.OFFICE_CLASSES):
+                    cell = ws.cell(rows.r, 2 + j, cost_scale[cls][field])
+                    cell.number_format, cell.fill, cell.font = NUM3, _fill(INPUT), _fnt(color="0000FF")
+                ws.cell(rows.r, 6, unit).font = _fnt(color=GREY)
+                rows.r += 1
+            ws.cell(rows.r, 1, "СМР здания по классу — в расчёт")
+            for j, cls in enumerate(ns.OFFICE_CLASSES):
+                column = L(2 + j)
+                turnkey = f"INDEX({info.class_rows['cost_th_per_sqm']},1,{j + 1})"
+                cell = ws.cell(rows.r, 2 + j,
+                               f"=MAX(0,ROUND(({turnkey}-{column}{cost_rows['extra']})/"
+                               f"{column}{cost_rows['markup']},1))")
+                cell.number_format, cell.fill = NUM, _fill(LIGHT)
+            ws.cell(rows.r, 6, "тыс ₽/м²").font = _fnt(color=GREY)
+            info.class_rows["cost_smr"] = f"'{INPUTS_SHEET}'!$B${rows.r}:$E${rows.r}"
+            rows.r += 1
+            rows.note("СМР = (ставка «под ключ» − статьи сверх СМР) / множитель СМР. "
+                      "Коэффициенты — профиль класса офиса; общие ставки проекта ниже задаются отдельно. "
+                      "Вписанная у объекта стоимость сильнее класса. Очистите её, чтобы вернуть расчёт по классу.")
 
     # Объекты — колонками.
     for i, item in enumerate(objects):
@@ -764,7 +803,15 @@ def _inputs_sheet(book: _Book, spec: dict[str, Any], objects: list[dict[str, Any
     ws.add_data_validation(class_list)
     values = {item["code"]: _object_values(item) for item in objects}
     for item in offices:
-        cls, manual = office_class_of(values[item["code"]], item.get("office_class"))
+        cost_scale = spec.get("office_cost_scale") or {}
+        manual_fields = list(item.get("office_manual_fields") or [])
+        # Спецификация без шкалы СМР сохраняет свою введённую стоимость.
+        if not cost_scale:
+            manual_fields.append("rate_cost")
+        defaults = ({cls: (ns.OFFICE_CLASS_SCALE[cls]["cost_th_per_sqm"] if item["turnkey"]
+                           else cost_scale[cls]["smr"]) for cls in ns.OFFICE_CLASSES} if cost_scale else None)
+        cls, manual = office_class_of(values[item["code"]], item.get("office_class"),
+                                      manual_fields=manual_fields, cost_defaults=defaults)
         info.office_class[item["code"]] = cls
         for key in CLASS_FIELDS:
             values[item["code"]][key] = manual.get(key)
@@ -1054,7 +1101,8 @@ def _capex_sheet(book: _Book, spec: dict[str, Any], objects: list[dict[str, Any]
         o, title = item["code"], item["title"]
         w = f"{ref(f'w.{o}')}/SUM({ref(f'w.{o}', ':')})"
         article(f"{o}.building", f"{title}: здание",
-                f'{i(o, "volume")}*{i(o, "rate_cost")}*IF({i(o, "measure")}="{SPACES}",1,0.001)*{mult}',
+                f'{i(o, "volume")}*({_class_pick(info, item, "rate_cost")})'
+                f'*IF({i(o, "measure")}="{SPACES}",1,0.001)*{mult}',
                 f"{ref(f'cx.{o}.building.amt')}*{w}")
         article(f"{o}.garage", f"{title}: подземный гараж",
                 f"{i(o, 'under_gns')}*{ref('in.main_under_th')}*{depth}*0.001*{mult}",
@@ -1201,6 +1249,9 @@ def _class_pick(info: _Inputs, item: dict[str, Any], key: str) -> str:
         return manual
     field = CLASS_FIELDS[key]
     pick = f"INDEX({info.class_rows[field]},1,MATCH({ref(f'in.{o}.class')},{info.class_head},0))"
+    if key == "rate_cost" and "cost_smr" in info.class_rows:
+        smr = f"INDEX({info.class_rows['cost_smr']},1,MATCH({ref(f'in.{o}.class')},{info.class_head},0))"
+        pick = f'IF({ref(f"in.{o}.turnkey")}="{YES}",{pick},{smr})'
     if key == "rent":
         pick = f"ROUND({pick}/12,3)"
     return f'IF({manual}<>"",{manual},{pick})'
@@ -2514,9 +2565,11 @@ def _sources_sheet(book: _Book) -> None:
         ws.cell(r, 7, origin.get(field, "стартовое допущение класса; правится на «Вводных»")).alignment = Alignment(
             wrap_text=True)
     r += 2
-    for text in ("Класс офиса по умолчанию идёт за классом проекта: комфорт — B, бизнес — B+, элитный — A.",
+    for text in ("У каждого офиса своя клетка класса на «Вводных». Класс, не выбранный у офиса, идёт за профилем "
+                 "проекта: комфорт — B, бизнес — B+, элитный — A.",
                  "Ставка аренды дана на 12.2025 и до ввода растёт на индексацию аренды, как цена продажи растёт до "
-                 "ввода. Стоимость стройки в шкалу класса не входит: она идёт статьями сметы на листе CAPEX.",
+                 "ввода. Стоимость стройки по классу переводится в СМР на «Вводных» и читается формулами CAPEX; "
+                 "ручная стоимость у офиса сильнее класса.",
                  "Здесь — справка: расчёт читает шкалу с «Вводных»."):
         ws.cell(r, 1, text).font = _fnt(i=True, color=GREY)
         r += 1

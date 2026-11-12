@@ -50,7 +50,7 @@ def test_rental_editor_uses_real_page_retains_rates_and_recalculates(width, surf
             page.locator('#landRentEditor details[data-land-rent-detail="conditions"] > summary').click()
             page.locator("#f_land_rent_mode").select_option("msk_mkd_3_2")
             browser.wait_for_result(page)
-            assert "Подтвердите" in page.locator("#landRentSummary").inner_text()
+            assert "договор с ними ещё не сверен" in page.locator("#landRentSummary").inner_text()
             page.locator("#f_land_rent_mode").select_option("manual")
             browser.wait_for_result(page)
             assert page.evaluate("inputs.land_rent_rates") == [{"year": 1, "rate_pct": 1.5}, {"year": 2, "rate_pct": 3}]

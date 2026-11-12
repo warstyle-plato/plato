@@ -39,6 +39,10 @@ _SNAPSHOT_DIR = Path(
 _APPROVED_SCHEDULE_READ = contextvars.ContextVar('approved_schedule_read', default=None)
 
 
+class ApprovedScheduleMissing(FileNotFoundError):
+    """No approved GPR is selected; an unreadable selected file is an error."""
+
+
 def approved_schedule_read(function):
     """One immutable source choice per project/cut throughout a single read."""
     @functools.wraps(function)
@@ -888,7 +892,7 @@ def _read_baseline_gpr(project: str, cut: Any = "") -> dict[str, Any]:
 def _read_working_baseline_gpr(project: str, cut: Any = '') -> dict[str, Any]:
     path = _working_baseline_file(project, cut)
     if path is None:
-        raise FileNotFoundError('не загружен действующий ГПР')
+        raise ApprovedScheduleMissing('не загружен действующий ГПР')
     return _read_baseline_gpr_bytes(path.read_bytes())
 
 
@@ -989,11 +993,28 @@ def _undated_works(baseline: dict[str, Any]) -> list[dict[str, Any]]:
             for item in baseline.get("works") or [] if not item.get("start") or not item.get("finish")]
 
 
+def _schedule_reason(baseline: dict[str, Any], rows: list[dict[str, Any]]) -> str:
+    """Why the GPR calendar is empty — the one phrase every surface shows.
+
+    Both schedule paths (plan only and plan with the RSS) set it; the page
+    prints it as is instead of composing its own wording."""
+    if rows:
+        return ""
+    if baseline.get("works"):
+        return "График загружен, но ни у одной работы нет понятных дат, поэтому график пуст."
+    return "Утверждённый график работ не загружен."
+
+
 def _schedule_plan_fact(project: str, rss_path: Path, cut: Any) -> dict[str, Any]:
     cut_date = _day(cut) or _day(rss_path.stem)
     if cut_date is None:
         raise ValueError("не задана дата среза")
-    baseline = _read_working_baseline_gpr(project, cut_date)
+    try:
+        baseline = _read_working_baseline_gpr(project, cut_date)
+    except ApprovedScheduleMissing:
+        return {"cut": cut_date, "rows": [], "risks": 0,
+                "baseline_end": None, "forecast_end": None, "undated_works": [],
+                "reason": "Утверждённый график работ не загружен."}
     estimate = actuals.read_estimate(rss_path)
     works = actuals.read_completed_works(rss_path)
     rows = []
@@ -1046,7 +1067,7 @@ def _schedule_plan_fact(project: str, rss_path: Path, cut: Any) -> dict[str, Any
     baseline_end = max((r["plan_finish"] for r in rows), default=None)
     return {"cut": cut_date, "rows": rows, "risks": len(risks),
             "baseline_end": baseline_end, "forecast_end": forecast_end,
-            "undated_works": _undated_works(baseline)}
+            "reason": _schedule_reason(baseline, rows), "undated_works": _undated_works(baseline)}
 
 
 def _payment_baseline_from_file(path: Path) -> dict[str, Any]:

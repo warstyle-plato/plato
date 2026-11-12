@@ -184,15 +184,53 @@ def test_the_rss_path_names_the_same_undated_work():
         ('КОРПУС 1', 'окончание «31.06.2027» не распознано (лист «ГПР», ячейка G5)')]
 
 
-def test_a_plan_where_no_work_has_dates_says_so_instead_of_not_loaded():
+REASON = 'График загружен, но ни у одной работы нет понятных дат, поэтому график пуст.'
+
+
+@pytest.mark.parametrize('with_rss', [False, True])
+def test_a_plan_where_no_work_has_dates_says_so_on_both_paths_and_the_page_prints_it(with_rss):
+    """The reason has one owner: both schedule paths set it on the server and
+    the page shows exactly that phrase instead of composing its own."""
     import developaid_monitor_page  # installs the real Monitor reader stack
-    import developaid_monitor_manager as manager
+    from test_monitor_cumulative_controls import browser_page
+    from playwright.sync_api import expect
     wb = load_workbook(io.BytesIO(construction_book()))
     ws = wb['ГПР']
     for cell in ('G6', 'J6'):
         ws[cell] = '31.06.2027'
     stream = io.BytesIO(); wb.save(stream)
     monitor.store_schedule(PROJECT, stream.getvalue(), None, '2026-11-09')
-    schedule = manager._schedule_only(PROJECT, '2026-11-09')['schedule']
+    called = []
+    original = monitor._schedule_plan_fact
+    def spy(*args, **kwargs):
+        called.append(1)
+        return original(*args, **kwargs)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(monitor, '_schedule_plan_fact', spy)
+        if with_rss:
+            from test_monitor_keeps_every_snapshot import _rss_book
+            monitor.store_estimate(PROJECT, _rss_book(), '2026-11-09')
+        view = monitor.build(PROJECT, '2026-11-09')
+    assert bool(called) == with_rss, 'взят не тот путь графика'
+    schedule = view['schedule']
     assert schedule['rows'] == [] and len(schedule['undated_works']) == 3
-    assert schedule['reason'] == 'График загружен, но ни у одной работы нет понятных дат.'
+    assert schedule['reason'] == REASON
+    with browser_page(390) as (page, responses, errors):
+        page.evaluate('(v)=>{currentView=v;renderGantt(v)}', view)
+        notice = page.locator('#gprUndated')
+        expect(notice.locator('b').first).to_have_text(REASON)
+        # Страница печатает причину сервера, а не свою формулировку.
+        page.evaluate("(v)=>{v.schedule.reason='Причина с сервера.';renderGantt(v)}", view)
+        expect(notice.locator('b').first).to_have_text('Причина с сервера.')
+        expect(notice).not_to_contain_text('ни у одной работы')
+        assert not errors
+
+
+def test_both_paths_leave_the_reason_empty_when_works_are_placed():
+    import developaid_monitor_page  # installs the real Monitor reader stack
+    from test_monitor_keeps_every_snapshot import _rss_book
+    monitor.store_schedule(PROJECT, construction_book(), None, '2026-11-09')
+    assert monitor.build(PROJECT, '2026-11-09')['schedule']['reason'] == ''
+    monitor.store_estimate(PROJECT, _rss_book(), '2026-11-09')
+    schedule = monitor.build(PROJECT, '2026-11-09')['schedule']
+    assert schedule['rows'] and schedule['reason'] == ''
