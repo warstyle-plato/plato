@@ -24,6 +24,8 @@ import html
 import re
 from typing import Any
 
+import developaid_schedule_done as done_rule
+
 # То же правило, что `corpusLabel` на странице Монитора; проверка держит
 # их одинаковыми (tests/test_report_gantt.py).
 CORPUS_PATTERN = r"(?:корпус|корп\.?|башня)\s*№?\s*([0-9A-Za-zА-Яа-я-]+)"
@@ -68,20 +70,52 @@ def _known(task: dict[str, Any]) -> bool:
             or task.get("forecast_source") == "approved_rebaseline")
 
 
+def _done(task: dict[str, Any]) -> bool:
+    """Работа закончена — так её отметил слой темпа Монитора (`work_done`)."""
+    return task.get("work_done") is True
+
+
+def finished_late_text(row: dict[str, Any]) -> str:
+    """Опоздание уже законченных работ — та же фраза, что на странице Монитора."""
+    days = row.get("finished_late_days")
+    return f"Закончено на {days} дн. позже плана" if days else ""
+
+
+def missing_text(row: dict[str, Any]) -> str:
+    """«у K работ нет прогноза[, N стоит]» — те же слова, что в клетке страницы.
+    Если у всех K есть только план, то «нет данных о темпе» (решение владельца)."""
+    missing = row.get("missing_forecast") or []
+    k, stopped = len(missing), missing.count("stalled")
+    if not k:
+        return ""
+    works = "работы" if k % 10 == 1 and k % 100 != 11 else "работ"
+    what = "данных о темпе" if all(m == "plan" for m in missing) else "прогноза"
+    stand = ("" if not stopped else
+             f", {stopped} {'стоит' if stopped % 10 == 1 and stopped % 100 != 11 else 'стоят'}")
+    return f"у {k} {works} нет {what}{stand}"
+
+
 def _summary(items: list[dict[str, Any]], known_of) -> dict[str, Any]:
     starts = [day for day in (_date(item.get("plan_start")) for item in items) if day]
     ends = [day for day in (_date(item.get("plan_finish")) for item in items) if day]
     known = [item for item in items if known_of(item)]
-    forecasts = [day for day in (_date(item.get("forecast_finish")) for item in known) if day]
+    forecasts = [day for day in (_date(item.get("forecast_finish")) for item in known
+                                 if not done_rule.observed_only(item)) if day]
     plan_finish = max(ends) if ends else None
     forecast = max(forecasts) if forecasts else None
-    # Опоздание — по строкам, где прогноз известен, каждой против её же плана.
-    # Сравнить общий прогноз с общим планом нельзя: работа без прогноза
-    # (не начатое благоустройство) отодвигает план, но не прогноз, и корпус
-    # с опозданием выглядел бы опережающим.
-    deltas = [(_date(item.get("forecast_finish")) - _date(item.get("plan_finish"))).days
-              for item in known
-              if _date(item.get("forecast_finish")) and _date(item.get("plan_finish"))]
+    # Опоздание — то, что Монитор записал строке (`delta_days`): у
+    # завершённой по ГПР работы его нет, разница «дата файла − план» не
+    # опоздание. Сравнить общий прогноз с общим планом тоже нельзя: работа без
+    # прогноза (не начатое благоустройство) отодвигает план, но не прогноз.
+    # Законченная работа не опаздывает сейчас; её опоздание — отдельно,
+    # «закончено на N дн. позже плана» (`finished_late_days`).
+    deltas = [item["delta_days"] for item in known
+              if item.get("delta_days") is not None and not _done(item)]
+    finished_late = [item["finished_late_days"] for item in items if item.get("finished_late_days")]
+    # Работы без прогноза срока — та же выборка, что у страницы (`missing_forecast`):
+    # у строки статьи/корпуса — сумма по вложенным, у работы — она сама.
+    missing = [m for item in items for m in (item["missing_forecast"] if "missing_forecast" in item else
+               [] if known_of(item) or _done(item) else [item.get("pace_forecast_method") or ""])]
     return {
         "plan_start": min(starts).isoformat() if starts else None,
         "plan_finish": plan_finish.isoformat() if plan_finish else None,
@@ -90,6 +124,9 @@ def _summary(items: list[dict[str, Any]], known_of) -> dict[str, Any]:
         "forecast_partial": bool(known) and (len(known) < len(items)
                                              or any(item.get("forecast_partial") for item in known)),
         "delta_days": max(deltas) if deltas else None,
+        "finished_late_days": max(finished_late) if finished_late else None,
+        "all_done": bool(items) and all(item.get("all_done") is True or _done(item) for item in items),
+        "missing_forecast": missing,
     }
 
 
@@ -114,7 +151,7 @@ def model(management: list[dict[str, Any]]) -> dict[str, Any]:
             articles.append(dict(row, code=code, name=label,
                                  note="по актам этой статьи прогноз окончания не строится"
                                  if mixed else ""))
-        out.append(dict(_summary(articles, lambda item: item["forecast_known"]),
+        out.append(dict(_summary(articles, lambda item: item["forecast_known"] or item["all_done"]),
                         name=corpus, articles=articles))
     return {"state": "ok", "corpora": out}
 
@@ -125,7 +162,7 @@ def model(management: list[dict[str, Any]]) -> dict[str, Any]:
 
 WIDTH = 680
 LABEL = 228
-RIGHT = 80
+RIGHT = 112  # «срок пока не оценить» помещается целиком
 ROW = 19
 TOP = 30
 PLAN = "#555"
@@ -217,7 +254,8 @@ def svg(gantt: dict[str, Any], cut: Any = None, rnv: dict[str, Any] | None = Non
             out.append(f'<rect x="{x(start):.1f}" y="{y + 3:.1f}" '
                        f'width="{max(x(plan_end) - x(start), 2):.1f}" height="6" fill="#fff" '
                        f'stroke="{PLAN}" stroke-width="1" stroke-dasharray="4 2"/>')
-        note = "нет прогноза"
+        note = ((f"закончено +{row['finished_late_days']} дн." if row.get("finished_late_days")
+                 else "завершено") if row.get("all_done") else "срок пока не оценить")
         if start and forecast:
             out.append(f'<rect x="{x(start):.1f}" y="{y + 10:.1f}" '
                        f'width="{max(x(forecast) - x(start), 2):.1f}" height="6" '
@@ -227,7 +265,9 @@ def svg(gantt: dict[str, Any], cut: Any = None, rnv: dict[str, Any] | None = Non
                 out.append(f'<rect x="{x(plan_end):.1f}" y="{y + 10:.1f}" '
                            f'width="{max(x(forecast) - x(plan_end), 1):.1f}" height="6" '
                            f'fill="{LATE}"/>')
-            note = (f"+{delta} дн." if isinstance(delta, int) and delta > 0
+            note = ((f"закончено +{row['finished_late_days']} дн." if row.get("finished_late_days")
+                     else "завершено") if row.get("all_done")
+                    else f"+{delta} дн." if isinstance(delta, int) and delta > 0
                     else f"−{-delta} дн." if isinstance(delta, int) and delta < 0
                     else "в срок" if isinstance(delta, int) else "")
             if row.get("forecast_partial"):
@@ -280,8 +320,9 @@ def notes(gantt: dict[str, Any], rnv: dict[str, Any] | None = None) -> list[str]
            for item in [corpus, *corpus["articles"]]):
         out.append("* Прогноз посчитан не по всем работам строки: у части работ нет "
                    "актуального темпа по ГПР или подтверждённым объёмам, их срок не учтён.")
-    if any(not article["forecast_known"] for corpus in corpora for article in corpus["articles"]):
-        out.append("«Нет прогноза» — по работам нет актуального темпа выполнения.")
+    if any(not article["forecast_known"] and not article["all_done"]
+           for corpus in corpora for article in corpus["articles"]):
+        out.append("«Срок пока не оценить» — по работам нет актуального темпа выполнения.")
     return out
 
 
@@ -293,7 +334,9 @@ def render(gantt: dict[str, Any], cut: Any = None, *, explanations: bool = True)
     out = [styles(), '<div class="chart gantt"><section class="schedule-overview">']
     caption = 'Срез на '+date_text(cut)+'. Даты взяты из графика Монитора.' if cut else ''
     rows = [dict(corpus, id='corpus:'+str(i), forecast_label=(
-                    'По известным работам' if corpus.get('forecast_partial') else 'Прогноз'))
+                    'По известным работам' if corpus.get('forecast_partial') else 'Прогноз'),
+                 subtitle='. '.join(part for part in ('Все работы завершены' if corpus.get('all_done') else '',
+                                                      finished_late_text(corpus)) if part))
             for i, corpus in enumerate(gantt.get('corpora') or [])]
     out.append(lanes(rows, heading='План и прогноз по корпусам', caption=caption))
     out.append(legend(rows))
@@ -327,18 +370,25 @@ def text_lines(gantt: dict[str, Any]) -> list[str]:
         if not plan:
             continue
         line = f"{corpus['name']}: окончание работ по графику {_day(plan)}"
-        if forecast and corpus.get("forecast_partial"):
-            delta = corpus.get("delta_days") or 0
-            line += ("; прогноз есть не по всем работам, по известным — "
-                     + (f"опоздание до {delta} дн." if delta > 0 else "в срок."))
-            out.append(line)
-            continue
-        if forecast:
-            delta = corpus.get("delta_days") or 0
+        # Нет отклонения — значит, его не посчитали, а не «в срок».
+        delta = corpus.get("delta_days")
+        late = finished_late_text(corpus)
+        if corpus.get("all_done"):
+            line += ", все работы завершены" + (". " + late if late else "")
+        elif forecast and corpus.get("forecast_partial"):
+            line += ("; срок пока не оценить: " + (missing_text(corpus) or "прогноз есть не по всем работам")
+                     + (f" (у остальных опоздание до {delta} дн.)" if delta is not None and delta > 0
+                        else " (остальные идут по сроку)" if delta is not None
+                        else " (у остальных отклонение от графика не посчитано)"))
+        elif forecast:
             line += (f", прогноз {_day(forecast)}"
-                     + (f" (+{delta} дн.)" if delta > 0
-                        else f" (раньше на {-delta} дн.)" if delta < 0 else " — в срок"))
+                     + (f" (+{delta} дн.)" if delta is not None and delta > 0
+                        else f" (раньше на {-delta} дн.)" if delta is not None and delta < 0
+                        else " — в срок" if delta is not None
+                        else "; отклонение от графика не посчитано"))
         else:
-            line += ", прогноза пока нет"
+            line += "; срок пока не оценить" + (": " + missing_text(corpus) if missing_text(corpus) else "")
+        if late and not corpus.get("all_done"):
+            line += "; среди законченных работ: " + late[0].lower() + late[1:]
         out.append(line + ".")
     return out

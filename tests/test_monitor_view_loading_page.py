@@ -3,6 +3,7 @@ import pytest
 
 import developaid_gpr_corpus as corpus
 from test_gpr_corpus_preview import book
+from browser import expand_gantt
 from test_monitor_cumulative_controls import browser_page
 from test_monitor_gpr_sections import monitor_view
 
@@ -43,9 +44,11 @@ def test_pending_job_polls_then_renders_full_view_instead_of_one_source_package(
         assert starts[0]['background'] is True
         for route in held:
             route.fulfill(json={'pending': False, 'snapshot': monitor_view()})
+        expect(page.locator('#gantt .lvl-corpus').first).to_be_visible()
+        expect(page.locator('#refresh')).to_be_enabled()
+        expand_gantt(page)
         expect(page.locator('#gantt .lvl-task')).to_have_count(3)
         expect(page.locator('#gantt')).to_contain_text('Внутренние работы')
-        expect(page.locator('#refresh')).to_be_enabled()
         assert len(starts) == 1 and not errors
 
 

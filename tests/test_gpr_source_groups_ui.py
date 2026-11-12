@@ -5,6 +5,7 @@ import io
 import pytest
 from playwright.sync_api import expect
 from pypdf import PdfReader
+from browser import expand_gantt
 from test_monitor_cumulative_controls import browser_page, MARKER
 
 
@@ -33,6 +34,7 @@ def view(known=True, conflict=False):
 def test_shared_fact_scope_and_individual_readings_remain_distinct(width, known, conflict):
     with browser_page(width) as (page, responses, errors):
         page.evaluate('(v)=>renderGantt(v)', view(known, conflict))
+        expand_gantt(page)
         groups = page.locator('#ksSharedGroups')
         expect(groups.locator('.ks-source-group')).to_have_count(1)
         expect(groups).to_contain_text('Общий объём для 2 работ; отдельные проценты не выделены.')
@@ -72,6 +74,7 @@ def test_untrusted_source_text_is_escaped_and_replacing_project_clears_groups():
 def test_selecting_project_from_group_access_invalidates_previous_gpr_and_ks_facts():
     with browser_page(390) as (page, responses, errors):
         page.evaluate('(v)=>renderGantt(v)', view())
+        expand_gantt(page)
         page.locator('#dataTab').click()
         page.locator('#siteAccessCard > summary').click()
         page.evaluate('drawSiteAccess({chats:[{project:"Следующий проект",title:"Учебная группа",chat_id:-100123,authorized:true}]})')

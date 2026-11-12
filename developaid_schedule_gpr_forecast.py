@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 import developaid_monitor as monitor
+import developaid_schedule_done as done_rule
 
 WINDOW_DAYS = 90
 STALE_DAYS = 45
@@ -417,7 +418,14 @@ def rnv(rows: list[dict], works: dict[str, dict], approved: Any, *, missing_cale
                 "forecast": None,
                 "indicative_forecast": None, "delay_days": None, "driving_chain": [],
                 "basis": "gpr", "reasons": reasons + ["Ни у одной строительной работы ГПР нет прогноза."]}
-    day, row, item = max(known, key=lambda k: k[0])
+    # «Завершено по ГПР» датировано показанием 100% (шапкой файла), а не
+    # окончанием: срок по нему не ведётся, пока есть работы со своим сроком.
+    # Метку ставит слой темпа на строке (`observed_complete_by`).
+    dated = [k for k in known if not done_rule.observed_only(k[1])]
+    if not dated:
+        reasons.append("Все строительные работы с оценкой уже завершены по ГПР. Дата — когда "
+                       "в ГПР последней из них впервые отмечено 100%, а не подтверждённое окончание.")
+    day, row, item = max(dated or known, key=lambda k: k[0])
     delay = (day - approved_day).days if approved_day else None
     state = "partial" if missing else "estimate"
     return {"state": state, **plan_context,
