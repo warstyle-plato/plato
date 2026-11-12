@@ -534,8 +534,9 @@ def test_real_page_is_a_table_and_shows_why_rss_did_not_complete(context, width)
         page.locator('#contractsTab').click()
         table = page.locator('#contractsRows table.contract-register')
         expect(table).to_be_visible()
-        assert table.evaluate('(t)=>getComputedStyle(t).display') == 'table'
-        assert table.evaluate('(t)=>getComputedStyle(t.querySelector("thead")).position') != 'absolute'
+        # A table on a wide screen, a card per row on a phone.
+        assert table.evaluate('(t)=>getComputedStyle(t).display') == ('block' if width <= 640 else 'table')
+        assert table.evaluate('(t)=>getComputedStyle(t.querySelector("thead")).display') == ('none' if width <= 640 else 'table-header-group')
         expect(page.locator('#contractsRows .contract-rss-why')).to_contain_text('не совпало')
         expect(page.locator('#contractsRows .contract-rss-why')).to_contain_text('дата договора')
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')

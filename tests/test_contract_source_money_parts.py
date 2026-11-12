@@ -65,7 +65,8 @@ def test_visible_card_distinguishes_work_money_material_money_and_total(context,
     with browser_page(width) as (page, responses, errors):
         responses.data = view
         page.locator('#contractsTab').click()
-        cell = page.locator('#contractsRows td[data-label="Выполнено по накопительным"]')
+        from contract_rows import opened
+        cell = opened(page).locator('[data-label="Выполнено по накопительным"]')
         expect(cell).to_contain_text('СМР: 47,6% стоимости работ')
         expect(cell).to_contain_text('Материалы: 83,3% стоимости материалов')
         expect(cell).to_contain_text('68,6%')

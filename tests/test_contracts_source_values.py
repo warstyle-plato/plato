@@ -13,6 +13,7 @@ from playwright.sync_api import expect
 from pypdf import PdfReader
 
 import developaid_monitor_contracts as contracts
+from contract_rows import opened
 from test_monitor_cumulative_controls import browser_page, CONTRACT, KEY
 from test_contracts_from_cumulative_headers import context, parsed, provide, rss_contract
 
@@ -120,14 +121,20 @@ def annual_data(responses, count=1):
 
 
 @pytest.mark.parametrize('width', [360, 390, 1440])
-def test_source_known_money_is_visible_without_opening_details_or_creating_ratio(width):
+def test_source_known_money_is_shown_in_the_row_detail_without_creating_ratio(width):
     with browser_page(width) as (page, responses, errors):
         rows = annual_data(responses)
         rows[0]['remaining'] = 50_000
         rows[0]['completion_ratio'] = .5  # A stale/contradictory ratio cannot price an annual total.
         page.locator('#contractsTab').click()
         row = page.locator('tr[data-contract-id]').first
-        cell = row.locator('td').nth(3)
+        # The short row says the statement sums are only a reference and prices no share.
+        brief = row.locator('.contract-money')
+        expect(brief).to_contain_text('суммы ведомостей — справочно, в подробностях')
+        assert brief.locator('.contract-progress').count() == 0 and '%' not in brief.text_content()
+        assert row.locator('.contract-main-money').all_text_contents() == ['—']
+        more = opened(page)
+        cell = more.locator('[data-label="Выполнено по накопительным"]')
         expect(cell).to_contain_text('125\u00a0001 ₽')
         expect(cell).to_contain_text('230\u00a0002 ₽')
         expect(cell).to_contain_text('2025 год')
@@ -139,13 +146,13 @@ def test_source_known_money_is_visible_without_opening_details_or_creating_ratio
         expect(cell).not_to_contain_text('355\u00a0003')
         assert cell.locator('.contract-progress').count() == 0
         assert '50%' not in cell.text_content()
-        expect(row.locator('td').nth(2)).to_contain_text('Не подтверждена')
-        remaining = row.locator('td').nth(4)
+        expect(more.locator('[data-label="Сумма договора"]')).to_contain_text('Не подтверждена')
+        remaining = more.locator('[data-label="Остаток и оплата"]')
         expect(remaining.locator('.contract-main-money')).to_have_text('—')
         expect(remaining).to_contain_text('Оплачено: — · итог не подтверждён')
         expect(remaining).not_to_contain_text('50\u00a0000 ₽')
         expect(remaining).not_to_contain_text('0 ₽')
-        assert row.locator('.contract-sources').get_attribute('open') is None
+        assert more.locator('.contract-sources').get_attribute('open') is None
         assert 'private-ledger' not in cell.text_content()
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         assert not errors
@@ -158,10 +165,13 @@ def test_explicit_zero_reference_is_visible_but_absent_reference_is_unknown():
         rows[0]['reported_performance_sources'][1]['completed'] = None
         rows[1]['reported_performance_sources'] = []
         page.locator('#contractsTab').click()
-        cells = page.locator('tr[data-contract-id] td:nth-child(4)')
-        expect(cells.nth(0)).to_contain_text('0 ₽')
-        expect(cells.nth(1)).to_contain_text('Данные выполнения не подтверждены')
-        expect(cells.nth(1)).not_to_contain_text('0 ₽')
+        done = '[data-label="Выполнено по накопительным"]'
+        expect(opened(page, rows[0]['id']).locator(done)).to_contain_text('0 ₽')
+        second = opened(page, rows[1]['id']).locator(done)
+        expect(second).to_contain_text('Данные выполнения не подтверждены')
+        expect(second).not_to_contain_text('0 ₽')
+        expect(page.locator(f'tr[data-contract-id="{rows[1]["id"]}"] .contract-money')).to_contain_text(
+            'выполнение не подтверждено')
         assert not errors
 
 
@@ -170,7 +180,7 @@ def test_dated_execution_uses_the_confirmed_money_instead_of_annual_references()
         row = annual_data(responses)[0]
         row.update(amount=200_000, completed=100_000, completion_ratio=.5, remaining=100_000)
         page.locator('#contractsTab').click()
-        cell = page.locator('tr[data-contract-id] td:nth-child(4)')
+        cell = opened(page).locator('[data-label="Выполнено по накопительным"]')
         expect(cell).to_contain_text('100\u00a0000 ₽')
         expect(cell).to_contain_text('50% суммы договора')
         expect(cell).not_to_contain_text('125\u00a0001')
@@ -220,7 +230,7 @@ def test_reference_source_year_and_metadata_do_not_expose_a_known_future_total()
         row = annual_data(responses)[0]
         row['reported_performance_sources'][0]['future_periods_excluded'] = True
         page.locator('#contractsTab').click()
-        cell = page.locator('tr[data-contract-id] td:nth-child(4)')
+        cell = opened(page).locator('[data-label="Выполнено по накопительным"]')
         expect(cell).not_to_contain_text('125\u00a0001')
         expect(cell).to_contain_text('230\u00a0002')
         expect(cell).to_contain_text('Ведомость 2')
@@ -237,7 +247,7 @@ def test_old_reference_without_cut_safety_metadata_requires_refresh():
         for ref in row['reported_performance_sources']:
             ref.pop('future_periods_excluded')
         page.locator('#contractsTab').click()
-        cell = page.locator('tr[data-contract-id] td:nth-child(4)')
+        cell = opened(page).locator('[data-label="Выполнено по накопительным"]')
         expect(cell).to_contain_text('Обновите договоры, чтобы проверить периоды источников')
         expect(cell).not_to_contain_text('125\u00a0001')
         assert not errors
@@ -255,7 +265,10 @@ def test_long_realistic_work_titles_and_scopes_have_bounded_previews_and_full_de
                                   'scope': row['scope'][index % 9], 'warnings': []}
                                  for index in range(12)]
         page.locator('#contractsTab').click()
-        work = page.locator('tr[data-contract-id] .contract-works')
+        brief = page.locator('tr[data-contract-id] .contract-works-line')
+        assert len(brief.text_content()) <= 180 and full not in brief.text_content()
+        assert brief.evaluate('(e)=>e.scrollHeight <= e.clientHeight + 1')
+        work = opened(page).locator('.contract-works')
         if with_subject:
             expect(work).to_contain_text('Позиций ведомости: 12')
             expect(work).not_to_contain_text('Ещё работ:')

@@ -9,6 +9,7 @@ from playwright.sync_api import expect
 import developaid_management_report as report
 import developaid_monitor_contract_links as contract_links
 import developaid_monitor_contract_history as history
+from contract_rows import opened
 from test_contract_progress_history import calculate, register, row
 from test_contract_statement_percentages import context, source_view
 from browser import expand_gantt
@@ -165,15 +166,17 @@ def test_monitor_forecast_reuses_canonical_reason_and_source_scope(context, widt
     with browser_page(width) as (page, responses, errors):
         responses.data = current
         page.locator('#contractsTab').click()
+        # The forecast lives in the row's detail; neither the row nor the detail says the stale reason.
         main = page.locator('tr[data-contract-id]').first
+        more = opened(page)
         if mode == 'unknown':
-            expect(main).to_contain_text(UNION_REASON)
+            expect(more).to_contain_text(UNION_REASON)
         elif mode == 'source_forecast':
-            expect(main).to_contain_text('Ориентир 100% стоимости ведомостей: 11.12.2026. По снимкам.')
+            expect(more).to_contain_text('Ориентир 100% стоимости ведомостей: 11.12.2026. По снимкам.')
         else:
-            expect(main).to_contain_text('Прогноз закрытия по сводной: 01.12.2026')
-            assert 'Прогноз окончания: 01.12.2026' not in main.inner_text()
-        assert 'Для прогноза нужна полная сумма договора.' not in main.inner_text()
+            expect(more).to_contain_text('Прогноз закрытия по сводной: 01.12.2026')
+            assert 'Прогноз окончания: 01.12.2026' not in main.inner_text() + more.inner_text()
+        assert 'Для прогноза нужна полная сумма договора.' not in main.inner_text() + more.inner_text()
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         assert not errors
 
@@ -203,12 +206,14 @@ def test_real_register_shows_canonical_change_and_source_percentage(context, wid
         responses.data = view
         page.locator('#contractsTab').click()
         main = page.locator('tr[data-contract-id]').first
-        expect(main).to_contain_text('68,6%')
-        expect(main).to_contain_text('стоимости работ по ведомостям')
-        expect(main).to_contain_text('Изменение: +48,6 п.п. за 31 дн.')
-        main.locator('.contract-history summary').click()
-        expect(main.locator('.contract-history')).to_contain_text('06.10.2026')
-        expect(main.locator('.contract-history')).to_contain_text('20% стоимости работ по ведомостям')
+        expect(main.locator('.contract-money')).to_contain_text('68,6%')
+        more = opened(page)
+        expect(more).to_contain_text('68,6%')
+        expect(more).to_contain_text('стоимости работ по ведомостям')
+        expect(more).to_contain_text('Изменение: +48,6 п.п. за 31 дн.')
+        more.locator('.contract-history summary').click()
+        expect(more.locator('.contract-history')).to_contain_text('06.10.2026')
+        expect(more.locator('.contract-history')).to_contain_text('20% стоимости работ по ведомостям')
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         assert not errors
 
