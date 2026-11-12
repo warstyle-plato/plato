@@ -162,9 +162,14 @@ def test_the_changed_class_still_matches_the_engine_in_all_five_cash_models(two_
             engine["npv"] / 1e6, rel=1e-6, abs=1e-6)
 
 
-def test_two_non_ddu_offices_do_not_open_a_project_finance_line(two_office_book):
+# Без площади: доли ровно 1. С площадью и ставкой второго офиса 7001 м² и
+# 138,3 доли в сумме машинно 0.9999999999999999 — прежнее распределение
+# открывало ПФ на 10 млн.
+@pytest.mark.parametrize("second", [None, {"offices2_gba_sqm": 7001, "offices2_cost_th_per_sqm": 138.3}])
+def test_two_non_ddu_offices_do_not_open_a_project_finance_line(two_office_book, second):
     x, t, _, _, _ = two_office_book
-    x, t = copy.deepcopy((x, t))
+    x, t = copy.deepcopy((x, t)) if second is None else _two_offices(retail_enabled=False)
+    x.update(second or {})
     for prefix in ("offices", "offices2"):
         core.apply_path(x, prefix, ns.PATH_PRESALE)
     prepared = core.prepared_calculation(x, t, [])
@@ -174,6 +179,19 @@ def test_two_non_ddu_offices_do_not_open_a_project_finance_line(two_office_book)
     assert all(value == 0 for value in op["debt_capex"].values())
     for key in ("pf_draw_total", "pf_limit", "peak_pf", "pf_reservation_fee", "pf_limit_fee"):
         assert fin[key] == 0, (key, fin[key])
+
+
+def test_float_shares_of_a_full_split_leave_no_remainder():
+    month = date(2027, 1, 1)
+    # Доли трёх объектов по их стройке: в сумме машинно 0.9999999999999999.
+    cost = {"a": 2331.611418125469, "b": 2309.434548868302, "c": 2188.5915923395482}
+    total = sum(cost.values())
+    shares = {key: value / total for key, value in cost.items()}
+    assert sum(shares.values()) != 1.0
+    remaining, allocated = ns.allocate_common_capex(
+        {month: 3e9}, {key: {month: value} for key, value in cost.items()}, set(cost), shares)
+    assert remaining[month] == 0
+    assert sum(allocated[key][month] for key in shares) == pytest.approx(3e9)
 
 
 @pytest.mark.parametrize("ddu_cost", [0.01, 0.0000001])
