@@ -39,6 +39,10 @@ _SNAPSHOT_DIR = Path(
 _APPROVED_SCHEDULE_READ = contextvars.ContextVar('approved_schedule_read', default=None)
 
 
+class ApprovedScheduleMissing(FileNotFoundError):
+    """No approved GPR is selected; an unreadable selected file is an error."""
+
+
 def approved_schedule_read(function):
     """One immutable source choice per project/cut throughout a single read."""
     @functools.wraps(function)
@@ -890,7 +894,7 @@ def _read_baseline_gpr(project: str, cut: Any = "") -> dict[str, Any]:
 def _read_working_baseline_gpr(project: str, cut: Any = '') -> dict[str, Any]:
     path = _working_baseline_file(project, cut)
     if path is None:
-        raise FileNotFoundError('не загружен действующий ГПР')
+        raise ApprovedScheduleMissing('не загружен действующий ГПР')
     return _read_baseline_gpr_bytes(path.read_bytes())
 
 
@@ -1009,7 +1013,12 @@ def _schedule_plan_fact(project: str, rss_path: Path, cut: Any) -> dict[str, Any
     cut_date = _day(cut) or _day(rss_path.stem)
     if cut_date is None:
         raise ValueError("не задана дата среза")
-    baseline = _read_working_baseline_gpr(project, cut_date)
+    try:
+        baseline = _read_working_baseline_gpr(project, cut_date)
+    except ApprovedScheduleMissing:
+        return {"cut": cut_date, "rows": [], "risks": 0,
+                "baseline_end": None, "forecast_end": None, "undated_works": [],
+                "reason": "Утверждённый график работ не загружен."}
     estimate = actuals.read_estimate(rss_path)
     works = actuals.read_completed_works(rss_path)
     rows = []
