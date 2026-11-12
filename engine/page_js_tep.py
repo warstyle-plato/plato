@@ -3770,10 +3770,14 @@ async function recalcFromTep(options){
   clinic_capacity:d.places.clinic};
  if(d.compensation_mln>0)derived.social_compensation_mln=d.compensation_mln;
  if(d.vri_total_mln>0)derived.land_rights_cost_mln=d.vri_total_mln;
- applyDerivedInputs(derived);
+ // Доказательство состава едет только с суммой, которую пересчёт записал
+ // сам: запертая сумма, случайно равная расчётной, остаётся со своим
+ // происхождением — равенство денег не говорит, из чего она состоит.
+ let vriWritten=false;
+ applyDerivedInputs(derived,{written:key=>{if(key==='land_rights_cost_mln')vriWritten=true}});
  // Плата по ставкам территории уже содержит повышенную часть первого года
  // аренды (norms.vri_fee_rent_premium); доказательство привязано к сумме.
- if(derived.land_rights_cost_mln&&inputs.land_rights_cost_mln===derived.land_rights_cost_mln&&d.rent_premium)
+ if(vriWritten&&d.rent_premium)
   fieldOrigins()['inputs.land_rights_cost_mln']=Object.assign({},fieldOrigins()['inputs.land_rights_cost_mln']||{},{rent_premium:d.rent_premium});
  // Отчёт строится ПОСЛЕ подстановки и читает поля: приписка «не тронуто»
  // здесь больше не нужна — каждая строка сама говорит, что в поле стоит и
