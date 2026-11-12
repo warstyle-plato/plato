@@ -70,6 +70,22 @@ def test_even_a_tolerated_one_day_difference_cannot_reverse_a_partial_interval()
     assert row["cells"] == {"start": "2026-01-30", "finish": None}
 
 
+@pytest.mark.parametrize("start,finish,unread", [
+    ("29.01.26", "05.02.2026", {"start": "29.01.26"}),
+    ("05.02.2026", "31.01.26", {"finish": "31.01.26"}),
+])
+def test_conflicting_bar_correction_names_the_unread_printed_date(start, finish, unread):
+    schedule = documents.read(schedule_pdf(lines=(("1", NAME, start, finish, (0, 2)),)))["schedule"]
+    row, = schedule["lines"]
+    correction, = schedule["corrections"]
+    assert (row["start"], row["finish"]) == ("2026-01-29", "2026-01-31")
+    assert row["unread"] == correction["unread"] == unread
+    # The card renders correction.text; keeping the source in metadata alone is insufficient.
+    assert all(value in correction["text"] for value in unread.values())
+    assert "не прочитана" in correction["text"] and "нужна запись вида" in correction["text"]
+    assert "Взяты даты полосы" in correction["text"]
+
+
 @pytest.mark.parametrize("start,finish", [
     ("2026-02-02", "2026-02-01"),  # zero inclusive duration
     ("2026-02-03", "2026-02-01"),  # negative duration

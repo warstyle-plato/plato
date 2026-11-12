@@ -551,6 +551,8 @@ def _schedule_page(page, page_number, schedule):
             problem = (f'окончание {_shown(finish)} раньше начала {_shown(start)}' if reversed_dates else
                        f'в графах дат {_shown(start)} — {_shown(finish)}, а полоса на диаграмме идёт '
                        f'{_shown(bar[0])} — {_shown(bar[1])}')
+            if unread:
+                problem = _unread(unread) + '. ' + problem
             _correct(schedule, line, bar[0], bar[1], 'bar',
                      f'Стр. {page_number}: у строки {code} «{name[:60]}» {problem}. '
                      f'Взяты даты полосы: {_shown(bar[0])} — {_shown(bar[1])}.')
