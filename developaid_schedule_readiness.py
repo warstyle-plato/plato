@@ -120,6 +120,8 @@ def preview(project, configuration, *, expected_source_sha256, expected_source_r
     excluded = _ids(cfg.get('excluded_ids', []), 'исключения')
     if not included or included & excluded or included | excluded != set(full):
         raise ValueError('Состав показателя и явные исключения должны без пересечений покрывать выбранный полный источник.')
+    if cfg['scope_kind'] == 'gpr_all' and excluded:
+        raise ValueError('Показатель gpr_all должен включать весь полный ГПР без исключений.')
     # Exact unique definitions are used immediately. Only exceptions need an override.
     by_definition = {physical.definition(row): key for key, row in full.items()}
     links = {key: by_definition[physical.definition(row)] for key, row in remaining.items()

@@ -278,3 +278,28 @@ def test_summary_uses_statement_primary_and_never_money_or_the_secondary_gpr_val
     row['progress_kind']='accepted_cost_ratio';row['actual_progress']=.99
     row.pop('gpr_progress')
     assert work_fact.primary_fact(row)['value'] is None
+
+
+def gpr_all_configuration(site):
+    cfg,opts=site;cfg=copy.deepcopy(cfg)
+    cfg['scope_kind']='gpr_all';cfg['basis']='smr_cost'
+    cfg['weights']=[{'full_id':str(i),'value':weight,'planned_cost_split':True,'basis':'with_vat',
+        'valuation_key':['Synthetic full GPR costs',2026],'position_keys':['full-cost-'+str(i)]}
+        for i,weight in [(1,600),(2,200),(3,200)]]
+    return cfg,opts
+
+
+def test_whole_gpr_scope_cannot_exclude_a_work_and_inflate_the_project_percentage(site):
+    cfg,opts=gpr_all_configuration(site)
+    cfg['included_ids']=['1','2'];cfg['excluded_ids']=['3'];cfg['weights']=cfg['weights'][:2]
+    with pytest.raises(ValueError,match='весь полный'):
+        ready.preview(PROJECT,cfg,**opts)
+    assert ready._events(PROJECT)==[]
+
+
+def test_whole_gpr_scope_without_exclusions_uses_the_entire_declared_source(site):
+    cfg,opts=gpr_all_configuration(site)
+    activate((cfg,opts));state=monitor.build(PROJECT,DAY)['schedule']['readiness']
+    assert state['full_scope_confirmed'] and state['scope_label']=='Готовность работ по ГПР'
+    assert state['excluded_works']==0 and state['project']['total']==3
+    assert state['project']['progress']==pytest.approx(.7)
