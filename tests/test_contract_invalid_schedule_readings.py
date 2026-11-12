@@ -60,6 +60,8 @@ def test_a_partial_cell_cannot_make_the_bar_backwards(start, finish, cells):
     correction, = schedule["corrections"]
     assert correction["cells"] == cells
     assert correction["basis"] == "bar" and "полос" in correction["text"]
+    # Пустая графа названа словами, а не пропуском между тире.
+    assert "— —" not in correction["text"] and "не прочитана" in correction["text"]
 
 
 def test_even_a_tolerated_one_day_difference_cannot_reverse_a_partial_interval():
@@ -142,7 +144,9 @@ def test_legacy_duplicate_identity_does_not_become_both_buildings_or_a_saved_cho
     assert "повтор" in row["reason"].lower()
     assert stored.read_bytes() == raw and not (folder / ("a" * 64 + ".pdf")).exists()
     assert document["reader"] == 4
-    assert document["schedule"] == schedule
+    # Список отдаёт сохранённый график как есть и добавляет причины непригодных строк.
+    assert {k: v for k, v in document["schedule"].items() if k != "unfit"} == schedule
+    assert "повторяется" in document["schedule"]["unfit"]["1"]
 
 
 def test_an_unambiguous_line_is_usable_beside_legacy_duplicate_identities():
@@ -174,3 +178,93 @@ def test_a_saved_reversed_pdf_returns_the_card_with_a_review_gap(tmp_path, monke
     listed = files.listing("Synthetic", card["id"], "2026-02-04")
     result = next(d for d in listed["documents"] if d["estimates"])["estimates"][0]["links"]
     assert result["counts"]["review"] == 1 and result["positions"][0]["lines"] == []
+
+
+def test_a_choice_of_a_line_with_a_bad_term_names_the_term_not_a_missing_line():
+    """Строка в графике есть, но срок неверен: отказ и прежний выбор говорят об этом."""
+    schedule = {"lines": [line(code="5"), line(code="6", start="2026-02-01", finish="2026-02-03")]}
+    proposed = links.propose({"positions": [position("9")]}, schedule)
+    item = proposed["positions"][0]
+    with pytest.raises(choices.LinkChoiceProblem) as refused:
+        choices.decide(item, schedule, ["5"], None, "2026-02-01")
+    assert "нет корректного срока" in str(refused.value) and "нет среди работ" not in str(refused.value)
+    stored = {item["key"]: {"lines": [{"code": "5", "name": NAME}], "origin": "duration", "shares": None,
+                            "chosen": True, "decided_at": "2026-02-01"}}
+    carried = choices.apply(proposed, stored, schedule)["positions"][0]
+    assert "строка есть в графике" in carried["carry"] and "нет корректного срока" in carried["carry"]
+    assert "нет строки" not in carried["carry"]
+
+
+def test_a_choice_of_a_repeated_number_names_the_repeat():
+    schedule = {"lines": [line(code="7", building=1, start="2026-02-01", finish="2026-02-03"),
+                          line(code="7", building=2, start="2026-02-01", finish="2026-02-03"),
+                          line(code="8", building=3, start="2026-02-01", finish="2026-02-03")]}
+    proposed = links.propose({"positions": [position("9", 2)]}, schedule)
+    item = proposed["positions"][0]
+    with pytest.raises(choices.LinkChoiceProblem) as refused:
+        choices.decide(item, schedule, ["7"], None, "2026-02-01")
+    assert "повторяется" in str(refused.value)
+    stored = {item["key"]: {"lines": [{"code": "7", "name": "Стены корпус 2 подземная часть"}],
+                            "origin": "duration", "shares": None, "chosen": True, "decided_at": "2026-02-01"}}
+    carried = choices.apply(proposed, stored, schedule)["positions"][0]
+    assert "повторяется" in carried["carry"] and "нет строки" not in carried["carry"]
+
+
+def test_a_loaded_schedule_without_a_usable_line_is_not_called_missing():
+    schedule = {"lines": [line(code="5")]}
+    item = links.propose({"positions": [position("9")]}, schedule)["positions"][0]
+    with pytest.raises(choices.LinkChoiceProblem) as refused:
+        choices.decide(item, schedule, ["5"], None, "2026-02-01")
+    assert "загрузите график" not in str(refused.value)
+    assert "нет корректного срока" in str(refused.value)
+
+
+def test_repeated_heading_reason_names_the_repeat_and_its_children_apart():
+    schedule = {"lines": [line(code="1", building=1, start=None, finish=None),
+                          line(code="1", building=2, start=None, finish=None),
+                          {**line(code="1.1", start="2026-02-01", finish="2026-02-02", parent="1"),
+                           "name": "Стены подземная часть"}]}
+    row, = links.propose({"positions": [position("9", 2)]}, schedule)["positions"]
+    assert "повторяются коды строк: 1 (с ними неоднозначны и строки их разделов: 1.1)" in row["reason"]
+    unfit = links.unfit(schedule)
+    assert "повторяется" in unfit["1"] and "входит в раздел" in unfit["1.1"]
+
+
+def test_unfit_and_leaves_are_one_rule():
+    schedule = {"lines": [line(code="1", building=1, start=None, finish=None),
+                          line(code="1", building=2, start=None, finish=None),
+                          {**line(code="1.1", start="2026-02-01", finish="2026-02-02", parent="1")},
+                          line(code="2"), line(code="3", start="2026-02-01", finish="2026-02-05"),
+                          line(code="4", start=None, finish="2026-02-05"),
+                          line(code="5", start="2026-02-01", finish="2026-02-01")]}
+    lines = schedule["lines"]
+    parents = {x.get("parent") for x in lines}
+    unfit = links.unfit(schedule)
+    assert [x["code"] for x in links.leaves(schedule)] == [
+        x["code"] for x in lines if x["code"] not in parents and x["code"] not in unfit] == ["3", "5"]
+
+
+def test_the_card_does_not_offer_a_line_without_a_term_and_says_why(monkeypatch, tmp_path):
+    from playwright.sync_api import expect
+    from test_monitor_cumulative_controls import browser_page
+    from tests import test_contract_card_confirms_and_chooses_links as card
+    reversed_lines = tuple(("1.2", x[1], "05.02.2026", "01.02.2026", None) if x[0] == "1.2" else x
+                           for x in card.LINES)
+    monkeypatch.setattr(monitor, "_SNAPSHOT_DIR", tmp_path / "monitor")
+    files.store(card.PROJECT, card.ROW, "ГПР.pdf", schedule_pdf(lines=reversed_lines))
+    files.store(card.PROJECT, card.ROW, "ДС4.pdf", card.estimate_pdf(card.FIRST, card.SECOND))
+    calls = []
+    with browser_page(1440) as (page, _, errors):
+        card._serve(page, calls)
+        page.locator("#contractsTab").click()
+        page.locator(f'tr[data-contract-id="{card.CONTRACT}"] .contract-open').click()
+        box = page.locator("#contractDocuments .contract-links")
+        box.get_by_text("На проверку (3)").click()
+        box.locator(".contract-links-review tr", has_text="Устройство лестниц").get_by_role(
+            "button", name="Выбрать строки").click()
+        editor = box.locator(".contract-link-editor-row")
+        expect(editor.locator(".contract-link-option")).to_have_count(3)
+        assert [x.split()[0] for x in editor.locator(".contract-link-option").all_inner_texts()] == ["1.1", "1.3", "2.1"]
+        expect(editor.locator(".contract-link-unfit")).to_contain_text(
+            "у строки 1.2 нет корректного срока: проверьте даты начала и окончания")
+        assert errors == []

@@ -118,9 +118,34 @@ def leaves(schedule):
     """Dated work lines of the schedule: headings sum their works and take no position."""
     lines = (schedule or {}).get("lines") or []
     parents = {line.get("parent") for line in lines}
+    bad = unfit(schedule)
+    return [line for line in lines if line["code"] not in parents and line["code"] not in bad]
+
+
+def unfit(schedule):
+    """Lines of the schedule no position can be linked to, by code, with the reason.
+
+    The one rule behind `leaves`: the page, a stored choice and a refusal read it
+    here, so «строки нет» is never said of a line that is there with a bad term
+    or a repeated number.
+    """
+    lines = (schedule or {}).get("lines") or []
+    parents = {line.get("parent") for line in lines}
+    repeated = _repeated_codes(lines)
     ambiguous = _ambiguous_codes(lines)
-    return [line for line in lines if line["code"] not in parents
-            and line["code"] not in ambiguous and _days(line) > 0]
+    reasons = {}
+    for line in lines:
+        code = line["code"]
+        if code in repeated:
+            reasons[code] = (f"номер {code} повторяется в графике, и связь по нему неоднозначна: "
+                             "нужен повторный разбор исходного PDF")
+        elif code in ambiguous:
+            reasons[code] = (f"строка {code} входит в раздел, номер которого повторяется в графике, "
+                             "и связь по ней неоднозначна: нужен повторный разбор исходного PDF")
+        elif code not in parents and _days(line) <= 0:
+            reasons[code] = (f"у строки {code} нет корректного срока: "
+                             "проверьте даты начала и окончания")
+    return reasons
 
 
 def summary(positions, schedule):
@@ -175,13 +200,17 @@ def _places(where):
     return ", ".join(sorted(where))
 
 
+def _repeated_codes(lines):
+    return {code for code, count in Counter(line["code"] for line in lines).items() if count > 1}
+
+
 def _ambiguous_codes(lines):
     """Legacy parses can reuse an identity; neither it nor its children are safe links.
 
     Do not renumber a saved parse without its PDF: existing owner choices use
     these identities, and a repeated heading's child cannot recover its parent.
     """
-    repeated = {code for code, count in Counter(line["code"] for line in lines).items() if count > 1}
+    repeated = _repeated_codes(lines)
     while True:
         children = {line["code"] for line in lines if line.get("parent") in repeated}
         if children <= repeated:
@@ -216,8 +245,12 @@ def propose(estimate, schedule, *, agreement=False):
     lines = [line for line in (schedule or {}).get("lines") or []]
     signs = _line_signs(lines)
     ambiguous = _ambiguous_codes(lines)
+    repeated = _repeated_codes(lines)
+    inner = ambiguous - repeated
     ambiguous_reason = ("В сохранённом разборе графика повторяются коды строк: "
-                        + ", ".join(sorted(ambiguous))
+                        + ", ".join(sorted(repeated))
+                        + (" (с ними неоднозначны и строки их разделов: " + ", ".join(sorted(inner)) + ")"
+                           if inner else "")
                         + ". Связь по этим кодам неоднозначна: нужен повторный разбор исходного PDF. "
                         "Прежние связи с такими строками не применяются.") if ambiguous else ""
     positions = []

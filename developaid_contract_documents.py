@@ -549,8 +549,10 @@ def _schedule_page(page, page_number, schedule):
                     or (finish and _apart(finish, bar[1]))
                     or (finish or bar[1]) < (start or bar[0])):
             problem = (f'окончание {_shown(finish)} раньше начала {_shown(start)}' if reversed_dates else
-                       f'в графах дат {_shown(start)} — {_shown(finish)}, а полоса на диаграмме идёт '
-                       f'{_shown(bar[0])} — {_shown(bar[1])}')
+                       (f'в графах дат {_shown(start)} — {_shown(finish)}' if start and finish else
+                        f'в графе начала {_shown(start)}, дата окончания не прочитана' if start else
+                        f'дата начала не прочитана, в графе окончания {_shown(finish)}')
+                       + f', а полоса на диаграмме идёт {_shown(bar[0])} — {_shown(bar[1])}')
             if unread:
                 problem = _unread(unread) + '. ' + problem
             _correct(schedule, line, bar[0], bar[1], 'bar',

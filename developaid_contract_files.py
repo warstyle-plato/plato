@@ -308,6 +308,9 @@ def listing(project: str, contract_id: str, cut: str = "", acts: dict | None = N
             notes.append(f"{record['title']} загружен{'о' if record.get('agreement') else ''} ещё и файлом "
                          f"«{'», «'.join(twins)}». Проверьте, какой из файлов действующий.")
         record["warnings"] = notes + list(record.get("warnings") or [])
+        if record.get("schedule"):
+            # Редактор связей предлагает строки по тому же правилу, что сервер.
+            record["schedule"] = {**record["schedule"], "unfit": links.unfit(record["schedule"])}
     chosen = _choices(folder)
     for record, _, estimate, schedule in _in_force(records):
         result = choices.apply(_proposal(record, estimate, schedule), chosen, schedule and schedule["schedule"])
