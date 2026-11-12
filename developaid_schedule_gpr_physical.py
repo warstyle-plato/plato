@@ -242,6 +242,8 @@ def _state(project, cut, source, snapshot):
             "binding_projection_unresolved_tasks": unresolved_projection,
             "binding_carried_from_source_sha256": carried_from,
             "binding_not_carried": carry_skipped,
+            "binding_confirmed_snapshot_id": latest["snapshot_id"] if latest else None,
+            "binding_scope_revoked": [],
             "can_edit": bool(sha and sid and source["tasks"]) and cut == _now().date().isoformat(),
             "configuration": configuration}
 
@@ -564,12 +566,7 @@ def _view_model(project, cut, source, snapshot, configuration, *, automatic=None
     return model
 
 
-@monitor.approved_schedule_read
-def catalog(project, cut, query="", offset=0):
-    if not quantities._day(cut):
-        raise PhysicalProblem("Укажите существующую дату среза.")
-    source, snapshot = _source(project, cut), _snapshot(project, cut)
-    state = _state(project, cut, source, snapshot)
+def _review(project, cut, source, snapshot, state, views):
     import developaid_schedule_physical_review as review
     carried_from = state['binding_carried_from_source_sha256']
     previous = [event for event in _history(project)
@@ -579,10 +576,76 @@ def catalog(project, cut, query="", offset=0):
     if carried_from:
         kept = {task['task_id'] for task in state['configuration']['tasks']}
         rules = [rule for rule in rules if rule.get('task_id') in kept]
+    return review.build(quantities._items(snapshot), list(source['tasks'].values()),
+                        state['configuration'], cut, rules, snapshot=snapshot, views=views)
+
+
+def _presence(view):
+    # A row without an exact source identity is compared by its visible fields.
+    return view.get("position_key") or json.dumps([str(view.get(field) or "") for field in
+        ("customer", "contractor", "contract", "contract_date", "period_year", "position",
+         "name", "scope", "unit", "plan_quantity")], ensure_ascii=False)
+
+
+def _fresh_rows(project, cut, state, views):
+    """Rows absent from the archive the saved scope was confirmed on; None when unknown."""
+    try:
+        previous = ledgers.effective_snapshot(project, cut,
+            snapshot=ledgers.read_snapshot(project, state["binding_confirmed_snapshot_id"]))
+        known = {_presence(view) for view in cumulative_progress.quantity_views(previous, cut).values()}
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return {key for key, view in views.items() if _presence(view) not in known}
+
+
+def _revoke_scope(project, cut, source, snapshot, state, views=None, review_model=None):
+    """Owner decision: a new unbound volume of a confirmed work withdraws its full-scope mark.
+
+    Read-only: the page draft carries the withdrawn mark and the next save
+    records it. Volumes that were already visible at confirmation do not count.
+    """
+    confirmed_on = state["binding_confirmed_snapshot_id"]
+    if (not snapshot or not confirmed_on or confirmed_on == state["snapshot_id"]
+            or not any(t["mode"] == "quantities" and t["scope_confirmed"] for t in state["configuration"]["tasks"])):
+        return state
+    import developaid_schedule_physical_review as review
+    views = views if views is not None else cumulative_progress.quantity_views(snapshot, cut)
+    fresh = _fresh_rows(project, cut, state, views)
+    review_model = review_model or _review(project, cut, source, snapshot, state, views)
+    found = review.new_unbound(review_model, state["configuration"], set(views) if fresh is None else fresh)
+    if not found:
+        return state
+    reason = ("После подтверждения полного состава в накопительной появились непривязанные объёмы, "
+              "которые могут относиться к этой работе." if fresh is not None else
+              "Архив накопительных, на котором подтверждён полный состав, сейчас не читается, "
+              "а по этой работе есть непривязанные объёмы.") + \
+        " Отметка полного состава снята: разберите эти объёмы и подтвердите состав заново."
+    revoked = [{"task_id": tid, "name": (source["tasks"].get(tid) or {}).get("name") or tid, "reason": reason,
+                "work_count": len(groups),
+                "works": [{field: group.get(field) or "" for field in ("name", "scope", "unit", "contractor", "contract")}
+                          for group in groups[:10]]} for tid, groups in found.items()]
+    configuration = dict(state["configuration"], tasks=[dict(task, scope_confirmed=False) if task["task_id"] in found
+                                                        else task for task in state["configuration"]["tasks"]])
+    return dict(state, configuration=configuration, binding_scope_revoked=revoked)
+
+
+def _explain_revoked(model, state):
+    reasons = {row["task_id"]: row["reason"] for row in state["binding_scope_revoked"]}
+    for task in model.get("tasks") or []:
+        if task.get("task_id") in reasons:
+            task["reason"] = reasons[task["task_id"]]
+    return model
+
+
+@monitor.approved_schedule_read
+def catalog(project, cut, query="", offset=0):
+    if not quantities._day(cut):
+        raise PhysicalProblem("Укажите существующую дату среза.")
+    source, snapshot = _source(project, cut), _snapshot(project, cut)
+    state = _state(project, cut, source, snapshot)
     views = cumulative_progress.quantity_views(snapshot, cut)
-    review_model = review.build(quantities._items(snapshot), list(source['tasks'].values()),
-                               state['configuration'], cut, rules,
-                               snapshot=snapshot, views=views)
+    review_model = _review(project, cut, source, snapshot, state, views)
+    state = _revoke_scope(project, cut, source, snapshot, state, views, review_model)
     query = query.casefold().strip()
     proof_fields = tuple(ledgers._duplicate_values({}).keys()) + ('duplicate_proof', 'duplicate_source_fingerprint',
         'duplicate_view_fingerprint', 'duplicate_marker_present', 'completed_amount_derivation')
@@ -606,7 +669,8 @@ def catalog(project, cut, query="", offset=0):
                 tasks=list(source["tasks"].values()), items=rows[offset:offset+200],
                 item_count=len(rows), offset=offset,
                 review=review_model,
-                model=_view_model(project, cut, source, snapshot, state["configuration"], automatic=state["automatic_mapping"]))
+                model=_explain_revoked(_view_model(project, cut, source, snapshot, state["configuration"],
+                                                   automatic=state["automatic_mapping"]), state))
 
 
 def save(project, source_kind, source_sha256, snapshot_id, revision, configuration):
@@ -659,8 +723,9 @@ def build(project, cut):
     """Fail closed for corrupt/missing source evidence without exposing it."""
     try:
         source, snapshot = _source(project, cut), _snapshot(project, cut)
-        state = _state(project, cut, source, snapshot)
-        result = _view_model(project, cut, source, snapshot, state["configuration"], automatic=state["automatic_mapping"])
+        state = _revoke_scope(project, cut, source, snapshot, _state(project, cut, source, snapshot))
+        result = _explain_revoked(_view_model(project, cut, source, snapshot, state["configuration"],
+                                              automatic=state["automatic_mapping"]), state)
         return dict(result, evidence_status=evidence_status(project, cut, source, snapshot, state, result),
                     source_kind=SOURCE_KIND, source_sha256=state["source_sha256"],
                     snapshot_id=state["snapshot_id"], recorded_at=state["recorded_at"],
@@ -669,6 +734,7 @@ def build(project, cut):
                     binding_source_snapshot_id=state["binding_source_snapshot_id"],
                     binding_carried_from_source_sha256=state["binding_carried_from_source_sha256"],
                     binding_not_carried=state["binding_not_carried"],
+                    binding_scope_revoked=state["binding_scope_revoked"],
                     binding_projection_unresolved_tasks=state["binding_projection_unresolved_tasks"],
                     binding_automatic=state["binding_automatic"],
                     source_reason=source["reason"], source_calendar_missing=source.get("calendar_missing") or [],

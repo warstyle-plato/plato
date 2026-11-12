@@ -201,7 +201,8 @@ def test_real_page_shows_works_and_materials_lines(project, width):
     with browser_page(width) as (page, responses, errors):
         responses.data = view
         page.locator('#contractsTab').click()
-        cell = page.locator('#contractsRows td[data-label="Выполнено по накопительным"]').first
+        from contract_rows import opened
+        cell = opened(page).locator('[data-label="Выполнено по накопительным"]')
         expect(cell).to_contain_text('Работы (СМР): 100 ₽')
         expect(cell).to_contain_text('Поставлено материалов: 400 ₽')
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')

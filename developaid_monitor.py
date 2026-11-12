@@ -978,6 +978,17 @@ def _forecast_finish(cut: datetime.date, progress: float | None,
     return None
 
 
+def _undated_works(baseline: dict[str, Any]) -> list[dict[str, Any]]:
+    """Works of the approved GPR the calendar cannot place, with the reason.
+
+    Schedule rows require both plan dates; a work left out of them must stay
+    visible with its own source cell instead of silently leaving the Gantt."""
+    return [{"id": item.get("id", ""), "wbs": item.get("wbs", ""), "name": item.get("name", ""),
+             "object": item.get("object", ""), "section": item.get("section", ""),
+             "reason": item.get("date_problem") or "в утверждённом ГПР нет даты начала или окончания"}
+            for item in baseline.get("works") or [] if not item.get("start") or not item.get("finish")]
+
+
 def _schedule_plan_fact(project: str, rss_path: Path, cut: Any) -> dict[str, Any]:
     cut_date = _day(cut) or _day(rss_path.stem)
     if cut_date is None:
@@ -1034,7 +1045,8 @@ def _schedule_plan_fact(project: str, rss_path: Path, cut: Any) -> dict[str, Any
     forecast_end = max((r["forecast_finish"] for r in rows if r["forecast_finish"]), default=None)
     baseline_end = max((r["plan_finish"] for r in rows), default=None)
     return {"cut": cut_date, "rows": rows, "risks": len(risks),
-            "baseline_end": baseline_end, "forecast_end": forecast_end}
+            "baseline_end": baseline_end, "forecast_end": forecast_end,
+            "undated_works": _undated_works(baseline)}
 
 
 def _payment_baseline_from_file(path: Path) -> dict[str, Any]:
