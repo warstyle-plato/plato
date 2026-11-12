@@ -186,7 +186,8 @@ async function obtainOtherRegionTep(rejectedNote){
  const uses=[...new Set(parcels.map(x=>String(x.permitted_use||'').trim()).filter(Boolean))];
  otherRegionPending={region:otherRegionName(parcels),
   numbers:parcels.map(x=>x.cadastral_number),area_ha:area,
-  cadastral_value_mln:Math.round(value*1000)/1000,permitted_use:uses.join('; ')};
+  cadastral_value_mln:Math.round(value*1000)/1000,permitted_use:uses.join('; '),
+  parcels:parcels.map(x=>({cadastral_number:x.cadastral_number,cadastral_value_mln:x.cadastral_value_mln??null}))};
  status.innerHTML='<span class="import-ok">Участок найден: '+escapeHtml(otherRegionPending.region)+', '+
   landNum(area,4)+' га'+(uses.length?', разрешённое использование — '+escapeHtml(uses.join('; ')):'')+
   (value>0?', кадастровая стоимость '+landNum(value,1)+' млн ₽':'')+'.</span> '+
