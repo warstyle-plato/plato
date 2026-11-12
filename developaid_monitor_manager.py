@@ -732,7 +732,7 @@ def _schedule_only(project: str, cut: Any, upto: str = "") -> dict[str, Any]:
         raise ValueError("Не задана дата среза.")
     try:
         baseline = monitor._read_working_baseline_gpr(project, day)
-    except FileNotFoundError:
+    except monitor.ApprovedScheduleMissing:
         baseline = {"works": []}
     rows = []
     for item in baseline.get("works") or []:
