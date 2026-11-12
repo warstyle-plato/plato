@@ -33,9 +33,10 @@ from __future__ import annotations
 import bisect
 import datetime as dt
 import re
+from math import fsum
 
 # Raise when reading changes: stored documents are then read again from their PDF.
-READER_VERSION = 6
+READER_VERSION = 7
 MONTHS = {'январь': 1, 'февраль': 2, 'март': 3, 'апрель': 4, 'май': 5, 'июнь': 6, 'июль': 7,
           'август': 8, 'сентябрь': 9, 'октябрь': 10, 'ноябрь': 11, 'декабрь': 12}
 _CODE = re.compile(r'^\d+(?:\.\d+)*\.?$')
@@ -67,8 +68,10 @@ _TOLERANCE = 1.0
 # The form's title in capitals and its header labels: a contract only mentions such acts in its text.
 _ACT_FORM = (re.compile(r'АКТ\s+О\s+ПРИ[ЕЁ]МКЕ\s+ВЫПОЛНЕННЫХ\s+РАБОТ'), re.compile(r'Отч[её]тный\s+период', re.I),
              re.compile(r'Дата\s+составления', re.I))
-# The values of the form's header stand on the line right under their labels, each in its label's column.
+# The values of the form's header stand on the first line under their labels, each in its label's column;
+# a label printed in two lines («№» over «документа») leaves a wider gap.
 _ACT_ROW = 14.0
+_ACT_BELOW = 30.0
 _ACT_COLUMN = 25.0
 
 
@@ -835,10 +838,10 @@ def _right_of(words, label, test=lambda text: True):
 
 
 def _below(words, label, test):
-    """The word under `label` on the next line, nearest to its middle, that passes `test`."""
-    found = [w for w in words if label[3]-2 < w[1] < label[3]+_ACT_ROW and abs(_middle(w)-_middle(label)) < _ACT_COLUMN
-             and test(w[4])]
-    return min(found, key=lambda w: abs(_middle(w)-_middle(label)), default=None)
+    """The word under `label` on the nearest line below, nearest to its middle, that passes `test`."""
+    found = [w for w in words if label[3]-2 < w[1] < label[3]+_ACT_BELOW
+             and abs(_middle(w)-_middle(label)) < _ACT_COLUMN and test(w[4])]
+    return min(found, key=lambda w: (round(w[1]), abs(_middle(w)-_middle(label))), default=None)
 
 
 def _act_total(words):
@@ -863,8 +866,140 @@ def _act_total(words):
     return None
 
 
+def _act_layout(cells):
+    """Columns of the act's table from its row of labels: (row index, columns) or (None, None).
+
+    The form prints «по порядку», «позиции по смете», the name, «Единица измерения»,
+    one quantity or two («(материал)», «(СМР)») and then the money: a price and a cost,
+    a price of materials and of work and one cost, or both price and cost so split."""
+    for index, row in enumerate(cells):
+        low = [_space(cell).lower() for cell in row]
+        order = next((n for n, cell in enumerate(low) if cell.startswith('по поряд')), None)
+        place = next((n for n, cell in enumerate(low) if cell.startswith('позиции по смете')), None)
+        unit = next((n for n, cell in enumerate(low) if cell.startswith(('единица', 'ед.'))), None)
+        counts = [n for n, cell in enumerate(low) if cell.startswith(('количество', 'кол-во', 'кол.'))]
+        if None in (order, place, unit) or not counts or not order < place < unit < counts[0]:
+            continue
+        money = [n for n in range(counts[-1]+1, len(low)) if low[n]]
+        work = next((n for n in counts if 'смр' in low[n]), None)
+        material = next((n for n in counts if 'материал' in low[n]), None)
+        if len(counts) == 1:
+            work, material = counts[0], None
+        if work is None or len(money) not in (2, 3, 4):
+            return index, None
+        return index, {'order': order, 'number': place, 'name': list(range(place+1, unit)), 'unit': unit,
+                       'work': work, 'material': material, 'money': money}
+    return None, None
+
+
+def _act_rows(cells, columns, page_number, act, state):
+    """Positions of the act: a row with its number by order, unit, volume and cost; headings name their section."""
+    money = columns['money']
+    costs = money[len(money)//2:] if len(money) != 3 else money[2:]
+    for row in cells:
+        if len(row) <= money[-1] or not any(cell.strip() for cell in row):
+            continue
+        if state['table_total'] is not None:
+            return  # The table of works ends at its total; the list of the customer's materials follows.
+        order, label = _space(row[columns['order']]), _space(' '.join(row)).lower()
+        filled = [_space(cell) for cell in row if _space(cell)]
+        if filled == [str(n) for n in range(1, len(filled)+1)]:
+            continue  # The row of column numbers under the labels.
+        if not order.isdigit():
+            if label.startswith(('итого', 'всего')) and 'в том числе' not in label:
+                parts = [_amount(row[n]) for n in costs]
+                if any(v is not None for v in parts):
+                    state['table_total'] = fsum(v for v in parts if v is not None)
+            continue
+        number = _space(row[columns['number']]).rstrip('.')
+        name = _space(' '.join(row[n] for n in columns['name']))
+        unit = _space(row[columns['unit']])
+        work = _amount(row[columns['work']])
+        material = _amount(row[columns['material']]) if columns['material'] is not None else None
+        values = [_amount(row[n]) for n in money]
+        if len(values) == 2:
+            price = {'material': None, 'work': None, 'total': values[0]}
+            amount = {'material': None, 'work': None, 'total': values[1]}
+        elif len(values) == 3:
+            parts = [v for v in values[:2] if v is not None]
+            price = {'material': values[0], 'work': values[1], 'total': fsum(parts) if parts else None}
+            amount = {'material': None, 'work': None, 'total': values[2]}
+        else:
+            parts = [v for v in values[2:] if v is not None]
+            price = {'material': values[0], 'work': values[1], 'total': None}
+            amount = {'material': values[2], 'work': values[3], 'total': fsum(parts) if parts else None}
+        quantity = work if work is not None else material
+        if all(v is None and _space(row[n]) in ('', '-') for n, v in zip(money, values)):
+            # A heading may give the volume of its works and leave the cost to them.
+            if name.lower().startswith('раздел'):
+                state['section'], state['group'] = name, None
+            elif name:
+                state['group'] = name
+            continue
+        if not unit or quantity is None or amount['total'] is None:
+            act['warnings'].append(f'Стр. {page_number}: строка № {order} акта «{name[:80]}» не распознана как '
+                                   'позиция: не хватает единицы, объёма или стоимости.')
+            continue
+        if not _CODE.match(number):
+            act['warnings'].append(f'Стр. {page_number}: у строки № {order} акта «{name[:80]}» нет номера позиции '
+                                   'по смете: с расчётом договорной стоимости её не связать по номеру.')
+        act['positions'].append({'row': int(order), 'number': number if _CODE.match(number) else '', 'name': name,
+                                 'unit': unit, 'quantity': quantity,
+                                 'quantity_basis': 'work' if work is not None else 'material',
+                                 'quantity_material': material, 'unit_price': price, 'amount': amount,
+                                 'section': state['section'], 'group': state['group'], 'page': page_number})
+
+
+def _act_positions(document, act):
+    """The table of the act page by page: a continuation page without labels keeps the columns of the first."""
+    state = {'section': None, 'group': None, 'table_total': None}
+    columns, bounds, found = None, None, False
+    for index, page in enumerate(document):
+        if state['table_total'] is not None:
+            break
+        # A PDF printed twice over itself carries every word twice: the cells take each word once.
+        page._contract_words = _act_words(page)
+        grid = _Grid(page)
+        header, layout = _act_layout(grid.cells)
+        if header is not None:
+            found = True
+            if layout is None:
+                act['warnings'].append(f'Стр. {index+1}: в таблице акта КС-2 не распознаны графы объёма, цены и '
+                                       'стоимости: позиции акта не прочитаны.')
+                columns = None
+                continue
+            columns, bounds = layout, grid.columns
+            _act_rows(grid.cells[header+1:], columns, index+1, act, state)
+        elif columns is not None and _continues(grid, bounds):
+            _act_rows(_Grid(page, bounds).cells, columns, index+1, act, state)
+        else:
+            columns = None
+    if not found:
+        act['warnings'].append('В акте КС-2 не найдена таблица выполненных работ: позиции и объёмы не прочитаны.')
+        return
+    act['table_total'] = state['table_total']
+    for position in act['positions']:
+        price, amount = position['unit_price'], position['amount']
+        for part in ('total', 'material', 'work'):
+            volume = position['quantity_material'] if part == 'material' else position['quantity']
+            if price[part] is None or amount[part] is None or volume is None:
+                continue
+            expected = volume*price[part]
+            if abs(expected-amount[part]) > max(_TOLERANCE, abs(expected)*0.0005):
+                act['warnings'].append(f'Строка № {position["row"]} акта (позиция {position["number"] or "без номера"}): '
+                                       f'объём × цена = {_figure(expected)}, а в графе стоимости '
+                                       f'{_figure(amount[part])}.')
+    if act['positions'] and act['table_total'] is not None:
+        listed = fsum(p['amount']['total'] for p in act['positions'])
+        if abs(listed-act['table_total']) > _TOLERANCE*max(1, len(act['positions'])):
+            act['warnings'].append(f'Сумма позиций акта {_figure(listed)} не равна строке «Итого» таблицы '
+                                   f'{_figure(act["table_total"])}: проверьте, все ли строки прочитаны.')
+    if not act['positions']:
+        act['warnings'].append('В таблице акта КС-2 не найдено ни одной позиции с единицей, объёмом и стоимостью.')
+
+
 def _act(document, text):
-    """Number, date, reporting period and total of an act КС-2, or None for another document.
+    """Number, date, reporting period, total and positions of an act КС-2, or None for another document.
 
     Each value is read under its label of the form's header: «Номер документа»,
     «Дата составления», «Отчётный период с … по …». A label without its value
@@ -874,7 +1009,8 @@ def _act(document, text):
         return None
     words = _act_words(document[0])
     named = lambda text: [w for w in words if w[4].lower() == text]
-    act = {'number': None, 'date': None, 'start': None, 'finish': None, 'total': None, 'warnings': []}
+    act = {'number': None, 'date': None, 'start': None, 'finish': None, 'total': None, 'positions': [],
+           'table_total': None, 'warnings': []}
     contract = None
     for label in named('договор'):
         number = _right_of(words, label, lambda text: not _DATE.fullmatch(text))
@@ -891,9 +1027,18 @@ def _act(document, text):
             if value:
                 act[key] = value[4] if key == 'number' else _date(value[4])
                 break
+    composed = next(iter(named('составления')), None)
+    if act['number'] is None and composed:
+        # Some forms print the label of the number as «№» alone, left of «Дата составления».
+        for sign in sorted(named('№'), key=lambda w: composed[0]-w[2]):
+            if abs(sign[1]-composed[1]) < _ACT_ROW and 0 < composed[0]-sign[2] < 3*_ACT_COLUMN:
+                value = _below(words, sign, lambda text: not is_date(text) and bool(re.fullmatch(r'[\w/.-]+', text)))
+                if value:
+                    act['number'] = value[4]
+                    break
     period = next((w for w in words if w[4].lower() in ('отчетный', 'отчётный')), None)
-    until = period and next((w for w in words if w[4].lower() == 'по' and 0 <= w[1]-period[1] < _ACT_ROW
-                             and w[0] > period[0]), None)
+    until = period and min((w for w in words if w[4].lower() == 'по' and 0 <= w[1]-period[1] < _ACT_BELOW
+                            and w[0] > period[0]), key=lambda w: (w[1], w[0]), default=None)
     since = until and max((w for w in words if w[4].lower() == 'с' and abs(w[1]-until[1]) < 3
                            and w[2] <= until[0]), key=lambda w: w[0], default=None)
     for key, label in (('start', since), ('finish', until)):
@@ -903,6 +1048,10 @@ def _act(document, text):
         act['total'] = _act_total(_act_words(page))
         if act['total'] is not None:
             break
+    _act_positions(document, act)
+    if act['total'] is None:
+        # Without «Итого по акту» the total row of the act's own table is its total.
+        act['total'] = act['table_total']
     shown = {'number': 'номер документа', 'date': 'дата составления', 'start': 'начало отчётного периода',
              'finish': 'окончание отчётного периода', 'total': 'итог по акту'}
     missing = [shown[key] for key in shown if act[key] is None]
