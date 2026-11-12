@@ -2,6 +2,7 @@
 под ней подписаны даты начала и окончания, над корпусами — шкала дат
 с отметкой среза. На широком экране график прежний."""
 import copy
+import datetime as dt
 
 import pytest
 from playwright.sync_api import expect
@@ -106,4 +107,61 @@ def test_phone_axis_says_today_only_when_the_cut_is_today(cut, label):
         view['cut'] = cut or page.evaluate("new Date().toLocaleDateString('sv')")
         page.evaluate("(v)=>{currentView=v;renderGantt(v)}", view)
         expect(page.locator('#gantt .axis .al-today')).to_have_text(label)
+        assert not errors
+
+
+@pytest.mark.parametrize('width', [390, 1440])
+@pytest.mark.parametrize('cut_kind', ['historical', 'today'])
+@pytest.mark.parametrize('calendar', ['before', 'within', 'after', 'one-day'])
+def test_cut_label_stays_on_axis_without_changing_dates_or_marker(width, cut_kind, calendar, monkeypatch, tmp_path):
+    import developaid_monitor as monitor
+    from test_monitor_management_gantt import _gpr_book
+
+    monkeypatch.setattr(monitor, '_SNAPSHOT_DIR', tmp_path / 'monitor')
+    cut = dt.date(2026, 11, 8) if cut_kind == 'historical' else dt.date(2026, 11, 12)
+    start, finish = {
+        'before': (dt.date(2027, 1, 10), dt.date(2027, 3, 1)),
+        'within': (dt.date(2026, 10, 1), dt.date(2026, 12, 1)),
+        'after': (dt.date(2026, 7, 1), dt.date(2026, 8, 1)),
+        'one-day': (cut, cut),
+    }[calendar]
+    data = _gpr_book([(1, 'Работа с границами', 0, start, finish, 'В работе', '2.2.1.1')])
+    project = 'Учебный график среза'
+    monitor.store_schedule(project, data, None, min(start,cut).isoformat())
+    view = monitor.build(project, cut.isoformat())
+    # The existing axis has 15 days of padding and clamps the marker to it.
+    # These independent date expectations must survive a label-only fix.
+    first, last = start - dt.timedelta(days=15), finish + dt.timedelta(days=15)
+    position = lambda day: max(0, min(100, (day-first).days / (last-first).days * 100))
+    with browser_page(width) as (page, responses, errors):
+        page.clock.set_fixed_time('2026-11-12T12:00:00Z')
+        page.evaluate('(v)=>{currentView=v;renderDash(v);renderGantt(v)}', view)
+        expand_gantt(page)
+        axis = page.locator('#gantt .g-axis .axis')
+        marker = axis.locator('.cut')
+        label = axis.locator('.al-today')
+        expect(label).to_have_text('сегодня' if cut_kind == 'today' else 'на 08.11.2026')
+        assert marker.evaluate('e=>parseFloat(e.style.left)') == pytest.approx(position(cut), abs=.0001)
+        task = page.locator('#gantt .g-row.lvl-task', has_text='Работа с границами')
+        expect(task.locator('.planbar')).to_be_visible()
+        plan = task.locator('.planbar').evaluate('e=>({left:parseFloat(e.style.left),width:parseFloat(e.style.width)})')
+        assert plan['left'] == pytest.approx(position(start), abs=.0001)
+        assert plan['width'] == pytest.approx(max(1, position(finish)-position(start)), abs=.0001)
+        assert axis.locator('.tick').evaluate_all('(es)=>es.map(e=>parseFloat(e.style.left))') == pytest.approx([i/6*100 for i in range(7)], abs=.0001)
+        if width == 390:
+            expect(label).to_be_visible()
+            frame, cut_box, text = box(axis), box(marker), box(label)
+            ideal = max(frame['x'], min(cut_box['x']-text['width']/2, frame['x']+frame['width']-text['width']))
+            assert abs(text['x']-ideal) < 1, {'axis':frame,'cut':cut_box,'label':text}
+            assert text['x'] >= frame['x']-.5
+            assert text['x']+text['width'] <= frame['x']+frame['width']+.5
+            assert label.evaluate('e=>e.scrollWidth<=e.clientWidth && getComputedStyle(e).whiteSpace==="nowrap"')
+            expect(task.locator('.g-dates')).to_have_text(
+                f'начало {start:%d.%m.%Y}окончание {finish:%d.%m.%Y}')
+        else:
+            expect(label).to_be_hidden()
+            expect(axis.locator('.al-cut')).to_be_visible()
+            assert len(page.locator('#gantt .g-axis').evaluate('e=>getComputedStyle(e).gridTemplateColumns').split()) == 3
+            expect(task.locator('.g-dates')).to_be_hidden()
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         assert not errors
