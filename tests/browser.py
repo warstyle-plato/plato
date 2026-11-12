@@ -257,3 +257,32 @@ def open_vri(page):
         page.locator("#iaSub").get_by_role("button", name=re.compile(r"^ВРИ")).click()
     else:
         page.locator("button[data-tab='vri']").click()
+
+
+def expand_gantt(page) -> None:
+    """Раскрыть свёрнутый по умолчанию график Монитора обработчиком самой
+    страницы: нажатие на каждый свёрнутый корпус и этап. Нажатие на строку
+    открывает и карточку подробностей; если она открылась, помощник закрывает
+    её кнопкой «✕», как сделал бы человек, чтобы вернуться к графику.
+    Видимость строк проверяют сами тесты; помощник только раскрывает."""
+    collapsed = page.locator('#gantt .g-row:is(.lvl-corpus,.lvl-stage)',
+                             has=page.locator('.chev', has_text='▸'))
+    clicked = False
+    while collapsed.count():
+        collapsed.first.dispatch_event('click')
+        clicked = True
+    if clicked and page.locator('#detailCard:not(.hidden)').count():
+        page.locator('#detailClose').dispatch_event('click')
+
+
+def open_ks_calculation(page) -> None:
+    """Раскрыть блок «Как посчитан процент выполнения (по КС)» под графиком
+    нажатием на его заголовок, как сделал бы человек. До нажатия блок обязан
+    быть свёрнут, а его содержимое — невидимо; после — открыт и видим."""
+    box = page.locator('#ksSharedBox')
+    assert box.is_visible(), 'блок расчёта по КС не показан'
+    assert box.get_attribute('open') is None, 'блок расчёта по КС раскрыт без нажатия'
+    assert not page.locator('#ksSharedGroups').is_visible(), 'содержимое свёрнутого блока видно'
+    box.locator(':scope > summary').click()
+    assert box.get_attribute('open') is not None
+    assert page.locator('#ksSharedGroups').is_visible()

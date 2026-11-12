@@ -6,6 +6,7 @@ import pytest
 import developaid_monitor as monitor
 import developaid_management_report as report
 from test_schedule_completed_facts import site, book, approve, confirm, PROJECT, TODAY, OLD_DAY  # noqa: F401
+from browser import open_ks_calculation
 from test_monitor_cumulative_controls import browser_page
 
 
@@ -26,6 +27,7 @@ def test_current_graph_and_pdf_keep_source_qualified_completion_markers(site,wid
         'source_scope':'Корпус 1','model':{'progress':.4,'components':[]}}]
     with browser_page(width) as (page,responses,errors):
         page.evaluate('(v)=>{currentView=v;renderGantt(v)}',view)
+        open_ks_calculation(page)
         marker=page.locator('#ksSharedGroups .completed-work-marker')
         expect(marker).to_have_count(1)
         expect(marker).to_contain_text('Завершённый фасад')

@@ -404,7 +404,9 @@ def project_class_deviations(inputs: dict[str, Any]) -> dict[str, Any]:
                 "base": float(base),
                 "actual": actual,
             })
-    # В нежилом проекте класс проекта — класс офиса (`nonres_project_class`).
+    # В нежилом проекте класс проекта — пара профиля (машино-место, подземная
+    # ставка); класс КАЖДОГО офиса — своё поле офиса. Подпись называет пару
+    # класса офиса — она одна на проект, — а не класс одного из офисов.
     label = nonres_strategy.nonres_project_class(inputs) or str(preset.get("label") or key)
     return {"class": key, "label": label, "rows": rows}
 
@@ -1686,8 +1688,8 @@ def office_class_rates(inputs: dict[str, Any], key: str, kind: str | None,
 
     В жилом проекте класс офиса, идущий за классом проекта, ставит те же
     числа, что профиль класса проекта, и здесь не повторяется. В нежилом
-    класс офиса — класс проекта (`nonres_project_class`), и ступень ставит
-    числа всегда: у A+ своя ступень при профиле элитного. Цена продажи
+    класс офиса выбирается у КАЖДОГО офиса (владелец, 10.11.2026), и ступень
+    ставит числа всегда: у A+ своя ступень при профиле элитного. Цена продажи
     класса — только в нежилом проекте; там же себестоимость — СМР здания
     (`object_smr_rate` на ставках `rates`), как у профиля.
     """
@@ -1700,9 +1702,18 @@ def office_class_rates(inputs: dict[str, Any], key: str, kind: str | None,
             {**inputs, "project_class": key, "project_kind": kind or inputs.get("project_kind")}, obj.prefix)
         if choice["source"] != nonres_strategy.OFFICE_CLASS_CHOSEN and not nonres:
             continue
+        # В нежилом проекте база класса — класса ОФИСА, а не проекта: у второго
+        # офиса своя ступень, и её числа идут от своего профиля пары
+        # (`NONRES_CLASS_PROFILE`), а не от профиля шапки.
+        base = rates
+        if nonres:
+            pair = nonres_strategy.NONRES_CLASS_PROFILE.get(choice["office_class"])
+            pair_preset = class_base_preset(pair, class_region(inputs), kind) if pair else None
+            if pair_preset:
+                base = pair_preset
         scale = nonres_strategy.OFFICE_CLASS_SCALE[choice["office_class"]]
         cost = float(scale["cost_th_per_sqm"])
-        out[obj.rate_cost] = (object_smr_rate(cost, rates)
+        out[obj.rate_cost] = (object_smr_rate(cost, base or rates)
                               if nonres and obj.rate_cost in OBJECT_SMR_RATE_DEFAULTS else cost)
         if nonres:
             out[obj.rate_price] = float(scale["price_th_per_sqm"])
@@ -1734,15 +1745,23 @@ def office_class_rows(inputs: dict[str, Any] | None) -> list[dict[str, str]]:
     nonres_class = nonres_strategy.nonres_project_class(x)
     project_label = str((PROJECT_CLASS_PRESETS.get(str(x.get("project_class") or "")) or {})
                         .get("label") or "")
+    nonres = is_nonresidential(x)
     rows = []
     for obj in offices:
         choice = nonres_strategy.office_class_choice(x, obj.prefix)
         if choice["source"] == nonres_strategy.OFFICE_CLASS_CHOSEN:
             text = f"{choice['office_class']} — выбран у офиса"
+        elif nonres and choice["source"] == nonres_strategy.OFFICE_CLASS_BY_PROJECT_SOURCE:
+            # Класс у офиса не выбран — он идёт за профилем проекта в шапке.
+            text = (f"{choice['office_class']}: класс у этого офиса не выбран, поэтому взят "
+                    "по профилю проекта")
         elif choice["source"] == nonres_strategy.OFFICE_CLASS_BY_PROJECT_SOURCE and nonres_class:
             text = f"{choice['office_class']} — класс проекта"
         elif choice["source"] == nonres_strategy.OFFICE_CLASS_BY_PROJECT_SOURCE:
             text = f"{choice['office_class']} — как у класса проекта «{project_label}»"
+        elif nonres:
+            text = (f"{choice['office_class']}: класс у этого офиса не выбран, поэтому взят класс "
+                    "по умолчанию. Его можно выбрать в блоке офиса")
         else:
             text = f"{choice['office_class']} — по умолчанию: у проекта нет класса"
         rows.append({"prefix": obj.prefix, "title": obj.group_label,
