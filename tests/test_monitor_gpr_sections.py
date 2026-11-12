@@ -168,8 +168,9 @@ def test_multiple_corps_show_works_zero_unknown_and_fact_source_without_extra_cl
         expect(observed).to_contain_text('100% на дату 01.10.2026')
         expect(observed).not_to_contain_text('Позже плана')
         corpus2 = page.locator('.g-row.lvl-corpus', has_text='Корпус 2')
-        expect(corpus2).to_contain_text('Срок корпуса пока не оценить: у 1 работы нет данных о темпе.')
-        expect(corpus2).to_contain_text('Без данных о темпе: Кладка стен.')
+        # Устаревший ГПР — не «нет данных о темпе»: причина та же, что у строки работы.
+        expect(corpus2).to_contain_text('Срок корпуса пока не оценить: у 1 работы нет прогноза срока.')
+        expect(corpus2).to_contain_text('Без прогноза: Кладка стен — нужен свежий ГПР.')
         expect(corpus2).to_contain_text('Позже своего срока: 1 работа, больше всего — на 12 дн.')
         expect(corpus2).not_to_contain_text('Позже плана')
         done = page.locator('.g-row.lvl-task', has_text='Подготовка площадки')
@@ -224,6 +225,7 @@ def test_explicitly_confirmed_completion_is_a_dated_fact_without_a_forecast_tail
         row.click()
         expect(page.locator('#wfPct')).to_have_value('')
         expect(page.locator('#detailGrid')).to_contain_text('Фактическое окончание')
+        expect(page.locator('#detailGrid')).not_to_contain_text('100% в ГПР на дату')
         page.locator('#wfSave').click()
         expect(page.locator('#wfMsg')).to_contain_text('Введите процент выполнения в ГПР')
         assert not any(path == '/monitor/work-fact' for path, *_ in responses.calls)
@@ -272,9 +274,10 @@ def test_stage_by_corpus_summary_sits_above_the_gantt_and_opens_the_tapped_stage
         rows = matrix.locator('tbody tr')
         assert [r.locator('th').inner_text() for r in rows.all()] == ['Весь корпус', 'Проектирование', 'Строительные работы']
         cells = lambda i: [c.inner_text().replace('\n', ' ') for c in rows.nth(i).locator('td').all()]
-        assert cells(0) == ['+19 дн. у 3 работ нет данных о темпе', '+12 дн. у 1 работы нет данных о темпе', 'Готово']
+        # Без прогноза: стоящая, старый денежный темп, только план (Корпус 1), устаревший ГПР (Корпус 2).
+        assert cells(0) == ['+19 дн. у 3 работ нет прогноза, 1 стоит', '+12 дн. у 1 работы нет прогноза', 'Готово']
         assert cells(1) == ['Срок пока не оценить у 1 работы нет данных о темпе', '—', '—']
-        assert cells(2) == ['+19 дн. у 2 работ нет данных о темпе', '+12 дн. у 1 работы нет данных о темпе', 'Готово']
+        assert cells(2) == ['+19 дн. у 2 работ нет прогноза, 1 стоит', '+12 дн. у 1 работы нет прогноза', 'Готово']
         assert page.locator('#gantt .g-row.lvl-task').count() == 0  # the Gantt itself stays collapsed
         page.locator('#gprMatrix').screenshot(path=f'/tmp/plato-gpr-matrix-top-{width}.png')
         done = page.locator('#gantt .g-row.lvl-corpus', has_text='Корпус 3')
@@ -307,13 +310,17 @@ def test_cell_and_corpus_row_agree_on_finished_late_no_forecast_and_current_dela
         page.evaluate("(v)=>{currentView=v;msg('viewMsg','');renderDash(v);renderGantt(v)}", view)
         rows = page.locator('#gprMatrix tbody tr')
         assert [c.inner_text().replace('\n', ' ') for c in rows.nth(0).locator('td').all()] == [
-            'Срок пока не оценить у 1 работы нет данных о темпе', 'По сроку Закончено на 50 дн. позже плана', 'Готово Закончено на 30 дн. позже плана']
+            'Срок пока не оценить у 1 работы нет прогноза',
+            'По сроку Среди законченных работ: закончено на 50 дн. позже плана',
+            'Готово Среди законченных работ: закончено на 30 дн. позже плана']
         corpus = lambda name: page.locator('#gantt .g-row.lvl-corpus', has_text=name)
         expect(corpus('Корпус 2')).to_contain_text('По сроку')
-        expect(corpus('Корпус 2')).to_contain_text('Закончено на 50 дн. позже плана')
+        # У корпуса — «среди законченных работ», чтобы не читалось как окончание всего корпуса.
+        expect(corpus('Корпус 2')).to_contain_text('Среди законченных работ: закончено на 50 дн. позже плана.')
+        expect(corpus('Корпус 2')).not_to_contain_text('Закончено на')
         expect(corpus('Корпус 2')).not_to_contain_text('Позже плана на')
         expect(corpus('Корпус 3')).to_contain_text('Все работы завершены')
-        expect(corpus('Корпус 3')).to_contain_text('Закончено на 30 дн. позже плана')
+        expect(corpus('Корпус 3')).to_contain_text('Среди законченных работ: закончено на 30 дн. позже плана')
         expand_gantt(page)
         expect(page.locator('#gantt .g-row.lvl-task', has_text='Котлован')).to_contain_text('Закончено на 50 дн. позже плана')
         assert not errors
@@ -376,14 +383,16 @@ def test_a_work_with_only_a_plan_and_no_pace_is_not_on_time(tmp_path, monkeypatc
     assert tasks['1']['forecast_known'] is False and tasks['1']['pace_forecast_known'] is False
     assert tasks['1']['forecast_finish'] is None and tasks['1']['delta_days'] is None
     assert tasks['2']['forecast_known'] is True and tasks['2']['delta_days'] == 0
+    assert tasks['1']['pace_status'] == 'Темп неизвестен: прогноза нет'
     for node in nodes:
         if node.get('level') != 'task':
             assert node['forecast_partial'] is True and node['forecast_finish'] == '2027-05-31', node.get('name')
     line = report_gantt.text_lines(report_gantt.model(view['schedule']['management']))[0]
-    assert 'прогноз есть не по всем работам, по известным — в срок' in line, line
-    assert '— в срок' not in line.replace('по известным — в срок', '')
+    # Отчёт говорит словами страницы: работа только с планом — «нет данных о темпе».
+    assert line.endswith('; срок пока не оценить: у 1 работы нет данных о темпе (остальные идут по сроку).'), line
+    assert 'в срок' not in line and 'по известным' not in line
     text = report.render_text(report.build(project, 'week', cut.isoformat()))
-    assert 'прогноз есть не по всем работам, по известным — в срок' in text
+    assert 'срок пока не оценить: у 1 работы нет данных о темпе (остальные идут по сроку).' in text
     with browser_page(1440) as (page, responses, errors):
         page.evaluate("(v)=>{currentView=v;msg('viewMsg','');renderGantt(v)}",
                       {'cut': cut.isoformat(), 'schedule': {'management': view['schedule']['management']}})
@@ -395,7 +404,7 @@ def test_a_work_with_only_a_plan_and_no_pace_is_not_on_time(tmp_path, monkeypatc
         expect(corpus).not_to_contain_text('По сроку')
         expand_gantt(page)
         work = page.locator('#gantt .g-row.lvl-task', has_text='Каркас')
-        expect(work).to_contain_text('Срок пока не оценить: нет данных о темпе')
+        expect(work).to_contain_text('Срок пока не оценить: нет данных о темпе.')
         expect(work).not_to_contain_text('По сроку')
         expect(page.locator('#gantt .g-row.lvl-task', has_text='Кровля')).to_contain_text('По сроку')
         assert not errors
@@ -444,4 +453,60 @@ def test_one_undated_work_reads_in_the_singular_and_an_empty_plan_has_one_reason
         expect(notice).to_contain_text('График загружен, но ни у одной работы нет понятных дат, поэтому график пуст.')
         expect(page.locator('#gprEmpty')).to_be_hidden()
         assert 'нет работ утверждённого ГПР' not in page.locator('#monitorPanel').inner_text()
+        assert not errors
+
+
+def test_corpus_names_why_each_work_has_no_forecast_with_the_work_row_words():
+    """Проверка интерфейса #1078: «нет данных о темпе» — только для работ с одним
+    планом; стоящая работа и устаревший ГПР называются своей причиной — той
+    же, что пишет строка самой работы."""
+    from playwright.sync_api import expect
+    view = monitor_view('partial')
+    base = view['schedule']['management'][0]['children'][0]['children'][0]['children'][0]
+    none = dict(base, pace_forecast_known=False, forecast_finish=None, delta_days=None)
+    view['schedule']['management'][0]['children'][0]['children'][0]['children'] = [
+        dict(none, id='1', name='Фасад', pace_forecast_method='plan'),
+        dict(none, id='2', name='Окна', pace_forecast_method='stalled'),
+        dict(none, id='3', name='Лифты', pace_forecast_method='stale'),
+        dict(base, id='4', name='Кровля', delta_days=0, forecast_finish='2026-12-01')]
+    with browser_page(1440) as (page, responses, errors):
+        page.evaluate("(v)=>{currentView=v;msg('viewMsg','');renderDash(v);renderGantt(v)}", view)
+        cell = page.locator('#gprMatrix tbody tr').nth(0).locator('td').first
+        assert cell.inner_text().replace('\n', ' ') == 'Срок пока не оценить у 3 работ нет прогноза, 1 стоит'
+        corpus = page.locator('#gantt .g-row.lvl-corpus')
+        expect(corpus).to_contain_text('Срок корпуса пока не оценить: у 3 работ нет прогноза срока.')
+        expect(corpus).to_contain_text(
+            'Без прогноза: Фасад — нет данных о темпе; Окна — работа стоит; Лифты — нужен свежий ГПР.')
+        expect(corpus).not_to_contain_text('По сроку')
+        expand_gantt(page)
+        work = lambda name: page.locator('#gantt .g-row.lvl-task', has_text=name).locator('.m-main')
+        expect(work('Фасад')).to_have_text('Срок пока не оценить: нет данных о темпе.')
+        expect(work('Окна')).to_have_text('Работа стоит. Прогноз неизвестен.')
+        expect(work('Лифты')).to_have_text('Нужно свежее выполнение ГПР.')
+        expect(work('Кровля')).to_contain_text('По сроку')
+        assert not errors
+    # Только «план» и «стоит»: стоящая работа не прячется в «нет данных о темпе».
+    view['schedule']['management'][0]['children'][0]['children'][0]['children'] = [
+        dict(none, id='1', name='Фасад', pace_forecast_method='plan'),
+        dict(none, id='2', name='Окна', pace_forecast_method='stalled')]
+    with browser_page(1440) as (page, responses, errors):
+        page.evaluate("(v)=>{currentView=v;msg('viewMsg','');renderDash(v);renderGantt(v)}", view)
+        cell = page.locator('#gprMatrix tbody tr').nth(0).locator('td').first
+        assert cell.inner_text().replace('\n', ' ') == 'Срок пока не оценить у 2 работ нет прогноза, 1 стоит'
+        corpus = page.locator('#gantt .g-row.lvl-corpus')
+        expect(corpus).to_contain_text('Без прогноза: Фасад — нет данных о темпе; Окна — работа стоит.')
+        assert not errors
+
+
+def test_detail_card_names_a_100_percent_reading_as_a_reading_not_an_actual_finish():
+    from playwright.sync_api import expect
+    view = monitor_view()
+    task = view['schedule']['management'][0]['children'][0]['children'][0]['children'][0]
+    task.update(actual_progress=1, pace_progress=1, pace_forecast_method='done', work_done=True,
+                pace_forecast_known=True, forecast_finish='2026-11-06', observed_complete_by='2026-11-06', delta_days=None)
+    with browser_page(1440) as (page, responses, errors):
+        render(page, view)
+        page.locator('.g-row.lvl-task', has_text='Монтаж фасада').click()
+        expect(page.locator('#detailGrid')).to_contain_text('100% в ГПР на дату')
+        expect(page.locator('#detailGrid')).not_to_contain_text('Фактическое окончание')
         assert not errors

@@ -4,6 +4,7 @@ from __future__ import annotations
 import pytest
 from playwright.sync_api import expect
 
+from contract_rows import opened
 from test_monitor_cumulative_controls import CONTRACT, browser_page
 
 
@@ -32,11 +33,15 @@ def test_contract_answers_are_visible_and_calculation_details_are_optional(width
             assert private not in visible
         assert 'Что входит в реестр' not in page.locator('#contractsPanel').inner_text()
         assert len(page.locator('.contract-register-note').inner_text()) < 110
-        first.locator('.contract-sources > summary').click()
-        expect(first.locator('.contract-sources')).to_contain_text('technical-source.xlsx')
-        assert 'Темп работ' in first.inner_text()
-        assert 'Проверочное основание расчёта срока.' in first.inner_text()
-        first.locator('.contract-sources > summary').click()
+        more = opened(page, CONTRACT)
+        shown = more.inner_text()
+        for private in ('technical-source.xlsx', 'Темп работ', 'Проверочное основание'):
+            assert private not in shown
+        more.locator('.contract-sources > summary').click()
+        expect(more.locator('.contract-sources')).to_contain_text('technical-source.xlsx')
+        assert 'Темп работ' in more.inner_text()
+        assert 'Проверочное основание расчёта срока.' in more.inner_text()
+        more.locator('.contract-sources > summary').click()
         first.locator('.contract-open').click()
         details = page.locator('#contractsDetails')
         assert '35%' in details.inner_text() and '100 м²' in details.inner_text()
@@ -59,8 +64,11 @@ def test_missing_forecast_inputs_have_short_specific_explanations():
                        'reason': 'Длинное техническое пояснение. ' * 20}
         page.locator('#contractsTab').click()
         first = page.locator(f'tr[data-contract-id="{CONTRACT}"]')
-        expect(first.locator('.term')).to_contain_text('Для прогноза нужна полная сумма договора.')
-        assert 'Длинное техническое пояснение' not in first.inner_text()
+        assert first.locator('.term .contract-risk').get_attribute('title') == 'Для прогноза нужна полная сумма договора.'
+        more = opened(page, CONTRACT)
+        expect(more.locator('.contract-more-term')).to_contain_text('Для прогноза нужна полная сумма договора.')
+        for shown in (first, more):
+            assert 'Длинное техническое пояснение' not in shown.inner_text()
         assert not errors
 
 
@@ -76,7 +84,7 @@ def test_forecast_short_reason_distinguishes_missing_price_from_zero_pace(amount
         row.update(amount=amount, completed=0, completion_ratio=None, remaining=None)
         row['risk'] = {'status': 'unknown', 'label': 'Прогноз неизвестен', 'reason': reason}
         page.locator('#contractsTab').click()
-        term = page.locator(f'tr[data-contract-id="{CONTRACT}"] .term')
+        term = opened(page, CONTRACT).locator('.contract-more-term')
         expect(term).to_contain_text(expected)
         assert 'свежие данные' not in term.inner_text()
         assert not errors

@@ -104,7 +104,7 @@ def _aggregate_management(nodes: list[dict[str, Any]]) -> None:
 
 _GPR_STATUS = {
     "done": "ЗАВЕРШЕНО ПО ГПР", "gpr_pace": "ПРОГНОЗ ПО ТЕМПУ ГПР",
-    "cumulative_quantities": "ПРОГНОЗ ПО НАКОПИТЕЛЬНЫМ", "plan": "НЕТ ТЕМПА: ПОКАЗАН ПЛАН",
+    "cumulative_quantities": "ПРОГНОЗ ПО НАКОПИТЕЛЬНЫМ", "plan": "Темп неизвестен: прогноза нет",
     "cumulative_statement": "ВЫПОЛНЕНИЕ ПО ВЕДОМОСТИ",
     "cumulative_statement_pace": "ПРОГНОЗ ПО ДИНАМИКЕ ВЕДОМОСТЕЙ",
     "confirmed_completion": "ЗАВЕРШЕНИЕ ПОДТВЕРЖДЕНО", "cumulative_unknown": "НЕТ ТЕМПА ПО НАКОПИТЕЛЬНЫМ",
