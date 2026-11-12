@@ -400,8 +400,12 @@ def test_the_nonresidential_rates_are_entered_in_one_block() -> None:
       });
       return groups;
     }"""
+    # Вкладка «Строительства» стоит на первом объекте: его ставка — на карточке,
+    # остальные — своими вкладками (владелец, 10.11.2026).
     show = ("k=>{inputs.project_class='comfort';Object.assign(inputs,k.inputs);"
-            "inputs.project_kind=k.kind;renderInputs();}")
+            "if(!k.inputs.retail_enabled)inputs.retail_enabled=false;"
+            "else if(k.kind==='nonresidential')inputs.retail_enabled=true;"
+            "inputs.project_kind=k.kind;CONSTRUCTION_TAB.construction='offices';renderInputs();}")
     with serve(wrapper.app, PORT + 1):
         with sync_playwright() as pw:
             browser = pw.chromium.launch(executable_path=chromium_or_skip())
@@ -416,6 +420,12 @@ def test_the_nonresidential_rates_are_entered_in_one_block() -> None:
             page.evaluate(show, {"kind": "nonresidential",
                                  "inputs": {"offices_enabled": True, "retail_enabled": True}})
             two = page.evaluate(probe)
+            # Вкладки «Строительства» — те же ключи, что объекты: по одной на
+            # каждый объект с СМР (владелец, 10.11.2026).
+            construction_tabs = page.evaluate(
+                "()=>Array.from(document.querySelectorAll("
+                "'details[data-group=\"Строительство\"] .construction-tabs .object-tab'))"
+                ".map(b=>b.dataset.construction)")
             page.evaluate(show, {"kind": "mixed",
                                  "inputs": {"offices_enabled": True, "retail_enabled": False}})
             mixed = page.evaluate(probe)
@@ -433,10 +443,14 @@ def test_the_nonresidential_rates_are_entered_in_one_block() -> None:
     assert keys.index("offices_cost_th_per_sqm") < keys.index("main_under_th_per_sqm")
     assert not where(one, "main_above_th_per_sqm")
     assert "гараж объектов" in dict(one[build])["main_under_th_per_sqm"]
-    # Два объекта — строка на каждый, обе в «Строительстве».
-    for key in ("offices_cost_th_per_sqm", "retail_cost_th_per_sqm"):
-        [(group, label)] = where(two, key)
-        assert group == build and "наземная часть, " in label, label
+    # Два объекта — вкладка на каждый в «Строительстве»: на карточке стоит
+    # ставка выбранного объекта, а второй объект — второй вкладкой, не второй
+    # строкой. Оба своих поля есть в блоке вкладок.
+    [(group, label)] = where(two, "offices_cost_th_per_sqm")
+    assert group == build and label.startswith("Основное строительство — наземная часть")
+    # Одна вкладка на каждый объект с СМР — тот же состав, что у блоков объектов.
+    assert len(construction_tabs) == 2, construction_tabs
+    assert construction_tabs[0] in {"offices", "standalone_retail"}, construction_tabs
     # Смешанный проект: ставка — в блоке объекта «под ключ», МКД — в «Строительстве».
     [(group, label)] = where(mixed, "offices_cost_th_per_sqm")
     assert group != build and core.OBJECT_TURNKEY_HINT in label

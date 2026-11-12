@@ -42,5 +42,6 @@ def test_the_class_preview_names_the_office_class() -> None:
                "let inputs={project_class:'business',offices_enabled:true};\n")
     out, _ = page_blocks.run(prelude, "renderProjectClassPreview();"
                              "process.stdout.write(box.textContent);")
-    assert "офисы класса B+ и A−" in out
+    # В жилом проекте класс нежилого нет — подпись называет ступень офиса.
+    assert "офисы класса B+" in out
     assert "здание офиса 200" in out

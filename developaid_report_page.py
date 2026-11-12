@@ -142,6 +142,9 @@ $('reportBox').addEventListener('click',e=>{const b=e.target.closest('.switch-ch
 async function renderReport(quiet){
  const seq=++reportSeq,p=$('project').value;if(!p){reportJob=null;$('reportBox').innerHTML='<div class="muted">Выберите проект и нажмите «Показать».</div>';return msg('reportMsg','Выберите проект в списке.','bad')}
  const payload=reportPayload(),signature=JSON.stringify(payload);
+ // Плашки предыдущего проекта/среза не относятся к выбранным вводным,
+ // даже пока новый документ ещё собирается. Поздние ответы отсеивает seq.
+ $('reportBox').innerHTML='<div class="muted">Собираю сводку для выбранного проекта и даты…</div>';
  if(!reportJob||reportJob.signature!==signature||reportJob.done)reportJob={signature,ticket:newReportTicket(),done:false};
  const job=reportJob;msg('reportMsg','Собираю сводку…','warn');
  try{
@@ -167,7 +170,7 @@ async function renderReport(quiet){
   }
   if(typeof r.html!=='string'||!r.html.trim())throw Object.assign(new Error('Сервер не вернул сводку. Повторите запрос.'),{status:500});
   job.done=true;$('reportBox').innerHTML=r.html;msg('reportMsg','','');
- }catch(e){if(seq!==reportSeq)return;if(e.status)reportJob=null;msg('reportMsg',e.message,'bad')}
+ }catch(e){if(seq!==reportSeq)return;if(e.status)reportJob=null;$('reportBox').innerHTML='';msg('reportMsg',e.message,'bad')}
  renderNotes();loadMailing();loadLegal();if(!quiet)loadPhotos()
 }
 const photoUrls={};

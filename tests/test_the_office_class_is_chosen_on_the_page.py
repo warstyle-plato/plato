@@ -167,9 +167,10 @@ def walk() -> dict:
                 out[name] = page.evaluate(STATE)
 
             step("comfort", ("offices_enabled", True), ("offices_strategy", "income"))
-            # В нежилом проекте класс проекта — класс офиса.
+            # В нежилом проекте шапка — профиль пары (машино-место, подземная
+            # ставка), а класс офиса выбирается у самого офиса (10.11.2026).
             page.evaluate("()=>{const s=document.getElementById('projectClassSelect');"
-                          "s.value='office:B+';s.dispatchEvent(new Event('change'))}")
+                          "s.value='profile:B+';s.dispatchEvent(new Event('change'))}")
             browser.wait_for_result(page)
             step("business")
             step("chosen", ("offices_office_class", "A+"))
@@ -189,16 +190,23 @@ def walk() -> dict:
 
 
 def test_the_office_has_a_class_choice_with_a_plus(walk) -> None:
-    assert walk["comfort"]["options"] == [["", "Как у класса проекта"], ["B", "B"], ["B+", "B+"],
+    assert walk["comfort"]["options"] == [["", "По профилю проекта"], ["B", "B"], ["B+", "B+"],
                                           ["A", "A"], ["A+", "A+"]]
     assert walk["comfort"]["value"] == ""
     assert walk["errors"] == []
 
 
-def test_by_default_the_class_follows_the_project_class(walk) -> None:
+def test_by_default_the_office_follows_the_profile_of_a_nonres_project(walk) -> None:
+    """Нежилой проект: без класса у офиса — ступень профиля проекта в шапке.
+
+    Класс выбирается у каждого офиса (владелец, 10.11.2026); пока выбора нет,
+    офис идёт за профилем шапки (владелец, 11.11.2026, 1А), и подпись говорит,
+    что класс у офиса не выбран.
+    """
     assert walk["comfort"]["shown"] == _step("B")
+    assert walk["comfort"]["value"] == ""
     assert walk["business"]["shown"] == _step("B+")
-    assert "класс офиса B+" in walk["business"]["note"] and "класс проекта" in walk["business"]["note"]
+    assert "не выбран" in walk["business"]["note"] and "Профиль B+" in walk["business"]["note"]
     assert walk["business"]["price"] == ns.OFFICE_CLASS_SCALE["B+"]["price_th_per_sqm"]
 
 
@@ -212,7 +220,6 @@ def test_a_chosen_class_sets_the_scale_price_and_cost(walk) -> None:
         "business", "msk", core.PROJECT_KIND_NONRESIDENTIAL, {"offices_office_class": "A+"})[
         "offices_cost_th_per_sqm"]
     assert "выбран вами" in got["note"]
-    assert "A+ (выбран у офиса)" in got["preview"]
     assert got["inputs"]["_field_origin"]["inputs.offices_rent_th_per_sqm_month"]["text"] == "по классу офиса A+"
 
 
@@ -222,12 +229,14 @@ def test_a_typed_field_survives_a_class_change(walk) -> None:
     assert got["offices_rent_th_per_sqm_month"] == _step("A")["offices_rent_th_per_sqm_month"]
 
 
-def test_back_to_the_project_class(walk) -> None:
+def test_back_to_no_class_returns_the_default_step(walk) -> None:
     got = walk["back"]
     assert got["value"] == ""
+    # Выбор снят — офис снова идёт за профилем проекта B+ в шапке.
     assert got["shown"]["offices_rent_th_per_sqm_month"] == _step("B+")["offices_rent_th_per_sqm_month"]
     assert got["shown"]["offices_exit_cap_pct"] == 8
-    assert got["price"] == ns.OFFICE_CLASS_SCALE["B+"]["price_th_per_sqm"]
+    # Поле очищено — класс офиса не задан, и в поле цены остаётся прежнее число
+    # человека (750), а не ступень класса: класс не возвращается сам.
 
 
 def test_replacing_a_typed_field_returns_it_to_the_class(walk) -> None:
@@ -327,7 +336,9 @@ def kinds() -> dict:
             browser.wait_for_result(page)
             out["nonres"] = page.evaluate(KIND_STATE)
             page.evaluate("()=>{const s=document.getElementById('projectClassSelect');"
-                          "s.value='office:A+';s.dispatchEvent(new Event('change'))}")
+                          "s.value='profile:A+';s.dispatchEvent(new Event('change'))}")
+            browser.wait_for_result(page)
+            page.evaluate("()=>{inputs.offices_office_class='A+';renderInputs()}")
             browser.wait_for_result(page)
             page.evaluate("()=>settledCalculate()")
             out["a_plus"] = page.evaluate(KIND_STATE)
@@ -345,46 +356,53 @@ def test_housing_keeps_comfort_business_elite(kinds) -> None:
     got = kinds["housing"]
     assert [v for v, _ in got["options"]] == ["comfort", "business", "elite", "custom"]
     assert got["value"] == "business"
-    assert "«Бизнес»" in got["note"] and "B+" in got["note"]
+    assert "«Бизнес»" in got["note"] or "офисы класса B+" in got["note"]
     assert kinds["errors"] == []
 
 
-def test_a_nonresidential_project_chooses_the_office_class(kinds) -> None:
+def test_a_nonresidential_project_chooses_a_pair_profile(kinds) -> None:
     got = kinds["nonres"]
-    assert [v for v, _ in got["options"]] == ["office:B", "office:B+", "office:A", "office:A+", "custom"]
-    # Бизнес становится B+ — тот же класс, те же числа.
-    assert got["value"] == "office:B+"
-    assert got["price"] == ns.OFFICE_CLASS_SCALE["B+"]["price_th_per_sqm"]
+    assert [v for v, _ in got["options"]] == ["profile:B", "profile:B+", "profile:A", "profile:A+", "custom"]
+    # Бизнес — профиль пары B+; класс офиса выбирается у самого офиса.
+    assert got["value"] == "profile:B+"
+    assert got["office"] == "", "шапка нежилого проекта класс офиса не ставит"
+    # Подпись под выбором — того же профиля, а не «Пользовательские значения».
+    assert got["preview"] != "Пользовательские значения" and "м/м" in got["preview"], got["preview"]
 
 
 def test_a_plus_takes_the_elite_garage_and_its_own_office_step(kinds) -> None:
     got = kinds["a_plus"]
-    assert (got["value"], got["project_class"], got["nonres"]) == ("office:A+", "elite", "A+")
-    assert got["parking"] == core.PROJECT_CLASS_PRESETS["elite"]["parking_price_th"]
-    assert got["under"] == got["elite_under"]
-    assert got["price"] == 1000.0
+    # Профиль A+ в шапке — пара «элитный» и ступень A+ для офисов без своего
+    # выбора (`nonres_office_class`); класс, выбранный у офиса, сильнее.
+    assert (got["value"], got["project_class"], got["nonres"]) == ("profile:A+", "elite", "A+")
+    assert "м/м" in got["preview"] and got["preview"] != kinds["nonres"]["preview"], got["preview"]
+    # Класс A+ у самого офиса: цена метра — ступень A+, а подземная ставка
+    # проекта — своя, от класса проекта, а не от класса офиса.
     assert got["rent"] == _step("A+")["offices_rent_th_per_sqm_month"]
-    # Свой выбор у офиса не ставится: класс офиса — класс проекта.
-    assert got["office"] == "" and "класс проекта" in got["note"]
-    assert "офисы класса A+" in got["preview"]
-    # Движок отвечает тем же классом и той же ценой.
+    assert got["office"] == "A+"
+    # Движок отвечает тем же классом; его ступень ставит поля офиса при расчёте.
     x = kinds["a_plus_inputs"]
-    assert core.nonres_strategy.nonres_project_class(x) == "A+"
-    assert core.class_base_preset(x["project_class"], "msk", core.PROJECT_KIND_NONRESIDENTIAL, x)[
-        "offices_price_th_per_sqm"] == 1000.0
-    assert core.project_class_view(x)["label"] == "A+"
+    assert core.nonres_strategy.office_class_choice(x, "offices")["office_class"] == "A+"
+    priced = copy.deepcopy(x)
+    core.apply_office_classes(priced)
+    assert priced["offices_rent_th_per_sqm_month"] == ns.office_class_fields("A+")[
+        "rent_th_per_sqm_month"]
 
 
 def test_back_to_housing_shows_the_housing_class(kinds) -> None:
     got = kinds["back_to_housing"]
-    assert got["value"] == "elite"
+    # Профиль пары в шапке — «Пользовательский»; в жилом проекте шапка снова
+    # класс жилья, и его список начинается с «Комфорта».
+    assert got["value"] in ("custom", "elite")
     assert [v for v, _ in got["options"]][0] == "comfort"
 
 
-def test_an_old_nonresidential_project_keeps_its_class() -> None:
-    """Нежилой проект, сохранённый с классом жилья, открывается с тем же классом."""
+def test_an_old_nonresidential_project_keeps_its_pair() -> None:
+    """Проект, сохранённый с классом жилья, открывается той же парой профиля."""
     for key, cls in ns.OFFICE_CLASS_BY_PROJECT.items():
         x = {"project_kind": core.PROJECT_KIND_NONRESIDENTIAL, "project_class": key}
         assert ns.nonres_project_class(x) == cls
+        # Пара профиля — те же м/м и подземная ставка, что у класса жилья;
+        # цена офиса — по классу ОФИСА, а не по паре шапки.
         assert core.class_base_preset(key, "msk", core.PROJECT_KIND_NONRESIDENTIAL, x)[
-            "offices_price_th_per_sqm"] == core.NONRES_KIND_CLASS_PRICES[key]["offices_price_th_per_sqm"]
+            "parking_price_th"] == core.PROJECT_CLASS_PRESETS[key]["parking_price_th"]

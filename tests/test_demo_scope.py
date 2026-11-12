@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 import sys
@@ -81,6 +82,9 @@ def claim(code: str) -> tuple[str, TestClient]:
 
 
 _FILL = {str: "проверка", int: 1, float: 1.0, bool: True, list: [], dict: {}}
+_REQUIRED_EXAMPLES = {"effective_from": "2026-11-10",
+                      "expected_previous_sha256": "0" * 64,
+                      "expected_source_sha256": "1" * 64}
 
 
 def body(session: str, path: str = "") -> dict:
@@ -95,7 +99,7 @@ def body(session: str, path: str = "") -> dict:
         for name, field in getattr(model, "model_fields", {}).items():
             if field.is_required() and name not in out:
                 kind = getattr(field.annotation, "__origin__", None) or field.annotation
-                out[name] = _FILL.get(kind, "проверка")
+                out[name] = _REQUIRED_EXAMPLES.get(name, _FILL.get(kind, "проверка"))
     return out
 
 
@@ -178,26 +182,61 @@ def test_the_report_projects_are_for_the_admin_key_only():
 
 # --- запись: отказ всегда, и ничего не записано ------------------------------------
 
-_GATE = re.compile(
-    r'@app\.(get|post)\("(?P<path>/monitor[^"]*)".*?\n(?:.*\n){0,40}?.*?'
-    r'_require_team_access\((?P<args>[^)]*)\)', re.MULTILINE)
-
-
 def monitor_routes() -> dict[str, bool]:
-    """Маршрут монитора → «только читает» по тексту его проверки."""
+    """Маршрут → «только читает» по своей проверке или вызванному обработчику.
+
+    Поиск не должен переходить в следующий маршрут: фоновый обработчик
+    проверяет доступ в общем helper, а не заимствует проверку своего соседа.
+    """
     text = (ROOT / "engine" / "monitor.py").read_text(encoding="utf-8")
+    functions = {node.name: node for node in ast.parse(text).body
+                 if isinstance(node, ast.FunctionDef)}
+
+    def gate(function, seen):
+        calls = [node for node in ast.walk(function)
+                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)]
+        direct = next((call for call in calls
+                       if call.func.id == "_require_team_access"), None)
+        if direct is not None:
+            return direct
+        for call in calls:
+            name = call.func.id
+            if name in functions and name not in seen:
+                found = gate(functions[name], seen | {name})
+                if found is not None:
+                    return found
+        return None
+
     routes = {}
-    for match in _GATE.finditer(text):
-        args = match.group("args")
-        routes[match.group("path")] = "write=False" in args.replace(" ", "")
+    for function in functions.values():
+        for decorator in function.decorator_list:
+            if not (isinstance(decorator, ast.Call)
+                    and isinstance(decorator.func, ast.Attribute)
+                    and isinstance(decorator.func.value, ast.Name)
+                    and decorator.func.value.id == "app"
+                    and decorator.func.attr in {"get", "post"}
+                    and decorator.args
+                    and isinstance(decorator.args[0], ast.Constant)):
+                continue
+            path = decorator.args[0].value
+            if not isinstance(path, str) or not path.startswith("/monitor/"):
+                continue
+            access = gate(function, {function.name})
+            assert access is not None, f"Маршрут {path} не проверяет доступ"
+            routes[path] = any(keyword.arg == "write"
+                               and isinstance(keyword.value, ast.Constant)
+                               and keyword.value.value is False
+                               for keyword in access.keywords)
     return routes
 
 
 # Чтение монитора и сводки — названо явно. Новый маршрут попадает в запись,
 # пока его не перенесли сюда; лишнее «чтение» в коде роняет эту проверку.
-MONITOR_READS = {"/monitor/snapshots", "/monitor/view", "/monitor/rewritten", "/monitor/ask",
+MONITOR_READS = {"/monitor/snapshots", "/monitor/view", "/monitor/view/result",
+                 "/monitor/rewritten", "/monitor/ask",
                  "/monitor/doubts", "/monitor/crew", "/monitor/daily/summary",
                  "/monitor/photo", "/monitor/report/projects", "/monitor/report",
+                 "/monitor/report/build", "/monitor/report/result",
                  "/monitor/report.pdf", "/monitor/gantt", "/monitor/scenario"}
 # Чтение или запись по содержимому запроса: отметка снимка, новая запись.
 MONITOR_MIXED = {"/monitor/photos", "/monitor/notes"}
@@ -208,6 +247,22 @@ def test_the_monitor_reads_are_exactly_the_named_ones():
     assert len(routes) > 30, "разбор маршрутов монитора не нашёл их"
     reads = {path for path, read in routes.items() if read}
     assert reads == MONITOR_READS
+
+
+def test_monitor_route_inventory_never_borrows_the_next_routes_gate(tmp_path, monkeypatch):
+    (tmp_path / "engine").mkdir()
+    (tmp_path / "engine" / "monitor.py").write_text('''
+@app.post("/monitor/unguarded")
+def unguarded(req):
+    return {}
+
+@app.post("/monitor/guarded")
+def guarded(req):
+    _require_team_access(req.session, req.key, "Монитор проекта", write=False)
+''', encoding="utf-8")
+    monkeypatch.setattr(sys.modules[__name__], "ROOT", tmp_path)
+    with pytest.raises(AssertionError, match="/monitor/unguarded"):
+        monitor_routes()
 
 
 WRITES = sorted(path for path, read in monitor_routes().items()

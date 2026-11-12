@@ -60,6 +60,8 @@ class MonitorViewRequest(BaseModel):
     programme_start: str = ""
     session: str = ""
     key: str = ""
+    background: bool = False
+    ticket: str = ""
 
 
 class MonitorScheduleRequest(BaseModel):
@@ -243,6 +245,8 @@ async def monitor_audit_sources(request: Request) -> Response:
 @app.post("/monitor/view", include_in_schema=False)
 def monitor_view(req: MonitorViewRequest) -> dict[str, Any]:
     """Срез и тренд по нему. Считает сервер, страница только рисует."""
+    if req.background:
+        return _monitor_view_job(req, start=True)
     _require_team_access(req.session, req.key, "Монитор проекта", write=False)
     programme = _monitor_programme(req)
     try:
@@ -254,6 +258,66 @@ def monitor_view(req: MonitorViewRequest) -> dict[str, Any]:
         }
     except FileNotFoundError as exc:
         raise HTTPException(404, str(exc))
+
+
+class MonitorViewResultRequest(BaseModel):
+    ticket: str
+    session: str = ""
+    key: str = ""
+
+
+def _monitor_view_job(req, *, start: bool) -> Response:
+    """Short authenticated requests; the page needs one current view, not trend."""
+    import datetime as _dt
+    import secrets as _secrets
+    from fastapi.encoders import jsonable_encoder
+    import developaid_management_report_jobs as jobs
+
+    private = {"Cache-Control": "private, no-store"}
+    try:
+        _require_team_access(req.session, req.key, "Монитор проекта", write=False)
+        profile = "demo" if demo_session_chat(req.session) else "admin"
+        owner = jobs.owner_binding(_env_str("DEVELOPAID_ADMIN_KEY", "").strip(), req.session, profile)
+        store = jobs.Store(developaid_monitor._SNAPSHOT_DIR / ".view_jobs")
+        if start:
+            project = req.project.strip()
+            try:
+                cut = _dt.date.fromisoformat(req.cut).isoformat()
+                if cut != req.cut or not project or len(project) > 200:
+                    raise ValueError()
+            except ValueError:
+                raise HTTPException(400, "Выберите проект и существующую дату среза.") from None
+            # A fresh click may follow a source/fact change while an older
+            # calculation is running. Only retries of this ticket reuse it.
+            payload = {"project": project, "cut": cut,
+                       "click": req.ticket or _secrets.token_hex(16)}
+            def build():
+                return {"snapshot": jsonable_encoder(developaid_monitor.build(project, cut=cut))}
+            result = store.start(owner, profile, payload, build, req.ticket)
+        else:
+            result = store.poll(req.ticket, owner, profile)
+        if result["pending"]:
+            result["detail"] = "Готовлю план и факт проекта. Можно оставить страницу открытой."
+        return JSONResponse(status_code=202 if result["pending"] else 200,
+                            content=result, headers=private)
+    except HTTPException as exc:
+        exc.headers = {**(exc.headers or {}), **private}
+        raise
+    except jobs.JobProblem as exc:
+        messages = {400: "Неверный номер расчёта. Обновите срез.",
+                    404: "Расчёт не найден или срок хранения истёк. Обновите срез.",
+                    409: "Этот расчёт относится к другому проекту или дате. Обновите срез.",
+                    429: "Сервер занят другими расчётами. Повторите чуть позже."}
+        raise HTTPException(exc.status, messages.get(exc.status,
+            "Не удалось рассчитать план и факт проекта. Обновите срез."), headers=private) from None
+    except (OSError, ValueError):
+        raise HTTPException(503, "Расчёт Монитора сейчас недоступен. Повторите чуть позже.",
+                            headers=private) from None
+
+
+@app.post("/monitor/view/result", include_in_schema=False)
+def monitor_view_result(req: MonitorViewResultRequest) -> Response:
+    return _monitor_view_job(req, start=False)
 
 
 @app.get("/monitor/rewritten", include_in_schema=False)
