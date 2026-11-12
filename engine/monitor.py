@@ -452,6 +452,60 @@ def monitor_saved_gpr_source_approve(req: MonitorSavedGprSourceRequest) -> Respo
     return _monitor_saved_gpr_source(req, approve=True)
 
 
+from pydantic import Field as _ReadinessField
+
+
+class MonitorReadinessProfileRequest(BaseModel):
+    model_config = {'extra': 'forbid'}
+    project: str
+    configuration: dict
+    expected_source_sha256: str
+    expected_source_revision: int = _ReadinessField(strict=True, ge=0)
+    expected_revision: int = _ReadinessField(strict=True, ge=0)
+    expected_profile_sha256: str = ''
+    key: str = ''
+    session: str = ''
+
+
+@developaid_monitor.approved_schedule_read
+def _monitor_readiness_profile(req, *, save=False):
+    private = {'Cache-Control': 'private, no-store'}
+    import developaid_schedule_readiness as readiness
+    import developaid_schedule_versions as versions
+    try:
+        _require_team_access(req.session, req.key, 'Монитор проекта', write=save)
+        if not req.project.strip() or len(req.project) > 200 or len(json.dumps(req.configuration)) > 2*1024*1024:
+            raise ValueError('Укажите проект и ограниченный профиль состава и весов.')
+        options = dict(expected_source_sha256=req.expected_source_sha256,
+                       expected_source_revision=req.expected_source_revision, expected_revision=req.expected_revision)
+        if save:
+            result = readiness.save(req.project.strip(), req.configuration, **options,
+                expected_profile_sha256=req.expected_profile_sha256, author=_monitor_note_author(req.session, req.key))
+        else:
+            prepared = readiness.preview(req.project.strip(), req.configuration, **options)
+            result = {key: value for key, value in prepared.items() if key != 'profile'}
+        return JSONResponse(content=result, headers=private)
+    except HTTPException as exc:
+        exc.headers = {**(exc.headers or {}), **private}
+        raise
+    except versions.ScheduleVersionConflict as exc:
+        raise HTTPException(409, str(exc), headers=private) from None
+    except ValueError as exc:
+        raise HTTPException(400, str(exc), headers=private) from None
+    except OSError:
+        raise HTTPException(503, 'Профиль готовности сейчас недоступен.', headers=private) from None
+
+
+@app.post('/monitor/readiness/profile-preview', include_in_schema=False)
+def monitor_readiness_profile_preview(req: MonitorReadinessProfileRequest) -> Response:
+    return _monitor_readiness_profile(req)
+
+
+@app.post('/monitor/readiness/profile-save', include_in_schema=False)
+def monitor_readiness_profile_save(req: MonitorReadinessProfileRequest) -> Response:
+    return _monitor_readiness_profile(req, save=True)
+
+
 class MonitorNotesRequest(BaseModel):
     project: str
     note_id: str = ""

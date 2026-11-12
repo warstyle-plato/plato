@@ -218,6 +218,7 @@ def _apply_gpr(project: str, view: dict[str, Any], cut: datetime.date) -> dict[s
         if origin not in {"cumulative_quantities", "cumulative_statement", "confirmed_completion"}:
             row.update(gpr_progress=item.get("progress"), gpr_progress_origin=origin,
                        gpr_progress_date=item.get("progress_date"))
+        row['display_progress'] = schedule_work_fact.primary_fact(row)
         row.pop("dependencies", None)
         row.pop("delay_reason", None)
         if item.get("method") == "stalled":
@@ -238,7 +239,7 @@ def _apply_gpr(project: str, view: dict[str, Any], cut: datetime.date) -> dict[s
                     "progress_source", "progress_reason", "gpr_progress", "gpr_progress_origin", "gpr_progress_date",
                     "progress_date_basis", "progress_basis", "observation_history",
                     "requires_reconciliation", "observed_complete_by", "work_done", "finished_late_days",
-                    "forecast_finish", "forecast_known", "forecast_source", "forecast_reason", "delta_days", "status"):
+                    "forecast_finish", "forecast_known", "forecast_source", "forecast_reason", "delta_days", "status", "display_progress"):
             node[key] = src.get(key)
         node["source_conflict"] = src.get("source_conflict")
         node.pop("dependencies", None)
@@ -260,7 +261,13 @@ def _apply_gpr(project: str, view: dict[str, Any], cut: datetime.date) -> dict[s
                                        "confirmation": {}, "basis": "gpr", "physical": physical}
     schedule["physical_progress"] = physical
     schedule["completed_facts"] = physical.get("completed_facts")
-    schedule["work_fact"] = schedule_work_fact.model(rows, physical)
+    schedule["work_fact"] = schedule_work_fact.model(display_rows, physical)
+    import developaid_schedule_readiness as readiness
+    schedule['readiness'] = readiness.build(project, cut.isoformat(), schedule)
+    schedule['readiness_html'] = readiness.render(schedule['readiness'])
+    if schedule.get('completed_facts') is not None:
+        schedule['completed_facts']['overall_progress'] = schedule['readiness']['project']['progress']
+        schedule['completed_facts']['overall_progress_basis'] = schedule['readiness']['scope_label']
     schedule["gpr_forecasts"] = works
     schedule.update(basis="gpr", forecast_state=qualified["state"],
                     forecast_end=qualified.get("forecast"), pace_forecast_end=qualified.get("forecast"),
