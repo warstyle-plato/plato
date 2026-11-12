@@ -107,7 +107,8 @@ def test_editing_only_object_months_changes_rent_without_moving_housing_rve(phas
     editable("K28").value = 48
     changed = Evaluator(workbook)
     # Only the queue commissioned last holds its land until the objects finish.
-    last = max(initial.cell(v4_land_rent.SHEET,f"B{r}") for r in _queue_rows(workbook))
+    late = max(_queue_rows(workbook), key=lambda r: initial.cell(v4_land_rent.SHEET,f"C{r}"))
+    last = initial.cell(v4_land_rent.SHEET,f"B{late}")
     assert changed.cell(v4_land_rent.SHEET,"B19")-before == pytest.approx(3.0*last,abs=0.000001)
     assert changed.cell("CF_2","B8") == housing_rve
     editable("K20").value = "Нет"
@@ -171,3 +172,31 @@ def test_http_export_rejects_unsupported_writer_but_allows_supported_preliminary
         response = core.report_workbook(request)
         assert response.status_code == 200
         assert response.body == b"synthetic"
+
+
+def test_book_queue_share_follows_its_metres_and_rent_only_exit_date(phased_lease):
+    bundle,_,workbook,ev,_ = phased_lease
+    canonical = bundle["consolidated"]["land_rent"]
+    ws = workbook[v4_land_rent.SHEET]
+    head = next(r for r in range(1, ws.max_row+1)
+                if ws[f"A{r}"].value == "Очередь" and ws[f"B{r}"].value == "Доля участка")
+    first = head + 1
+    assert canonical["phase_share_basis"] == "total_area"
+    assert ws[f"H{head}"].value == "Общая площадь объектов очереди, м²"
+    for k, p in enumerate(canonical["phase_land"]):
+        assert ws[f"H{first+k}"].value == pytest.approx(p["total_area"])
+        assert ev.cell(v4_land_rent.SHEET, f"B{first+k}") == pytest.approx(p["share"])
+        assert ev.cell(v4_land_rent.SHEET, f"D{first+k}") == pytest.approx(v4_land_rent._serial(p["rve"]))
+    assert ev.cell(v4_land_rent.SHEET, "B15") == pytest.approx(v4_land_rent._serial(canonical["rve"]))
+    saved = [ws[f"H{first}"].value, ws[f"I{first}"].value]
+    try:
+        # Равные метры — равные доли; ручная дата выхода — только у этой очереди.
+        ws[f"H{first}"] = ws[f"H{first+1}"].value
+        ws[f"I{first}"] = v4_land_rent._serial("2027-06-01")
+        fresh = Evaluator(workbook)
+        assert fresh.cell(v4_land_rent.SHEET, f"B{first}") == pytest.approx(0.5)
+        assert fresh.cell(v4_land_rent.SHEET, f"D{first}") == pytest.approx(v4_land_rent._serial("2027-06-01"))
+        assert fresh.cell(v4_land_rent.SHEET, f"C{first}") == pytest.approx(ev.cell(v4_land_rent.SHEET, f"C{first}"))
+        assert fresh.cell(v4_land_rent.SHEET, f"D{first+1}") == pytest.approx(ev.cell(v4_land_rent.SHEET, f"D{first+1}"))
+    finally:
+        ws[f"H{first}"], ws[f"I{first}"] = saved

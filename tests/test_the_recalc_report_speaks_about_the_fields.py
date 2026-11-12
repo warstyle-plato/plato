@@ -185,7 +185,7 @@ def test_an_open_field_is_substituted_and_the_line_shows_what_stands_in_it():
 def test_the_recalculated_vri_fee_keeps_its_composition_proof():
     """Плата по ставкам территории уже содержит повышенную часть первого года
     аренды: доказательство едет в происхождение поля вместе с суммой."""
-    proof = core.vri_fee_rent_premium(10166.6)
+    proof = core.vri_fee_rent_premium(10166.6, method="glavapu_baseline_rescale", land_right="lease")
     got = _run({**KRT, "social_area_source": "norm"}, {**ANSWER, "rent_premium": proof})
     origin = got["fields"]["_field_origin"]["inputs.land_rights_cost_mln"]
     assert origin["rent_premium"] == proof

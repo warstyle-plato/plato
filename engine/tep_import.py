@@ -423,9 +423,8 @@ def _glavapu_provenance(input_mapping: dict[str, Any], tep_mapping: dict[str, di
     out: dict[str, dict[str, Any]] = {}
     for key in input_mapping:
         out[f"inputs.{key}"] = one(_GLAVAPU_INPUT_SOURCE.get(key, key))
-    proof = vri_fee_rent_premium(input_mapping.get("land_rights_cost_mln"))
-    if proof:
-        out["inputs.land_rights_cost_mln"]["rent_premium"] = proof
+    # Состав платы из выгрузки для аренды не доказан: калькулятор считает её
+    # для собственности. Доказательство даёт только пересчёт под аренду.
     for obj, fields in tep_mapping.items():
         for field in fields:
             source_key = _GLAVAPU_TEP_SOURCE.get((obj, field))

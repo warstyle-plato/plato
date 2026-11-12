@@ -407,7 +407,7 @@ def test_queues_replace_single_cutoff_and_premium_question_uses_composition_evid
     assert page.locator('#f_land_rent_cadastral_target_mln').count()==1
     # Explicit source semantics answer composition without asking the owner.
     page.evaluate("""async()=>{fieldOrigins()['inputs.land_rights_cost_mln']={source:'document',
-        rent_premium:{schema:1,included_in_vri:false,fee_mln:50,source:'Состав расчёта: доплата отдельно'}};
+        rent_premium:{schema:2,included_in_vri:false,fee_mln:50,method:'vri_manual_payment',land_right:'lease',source:'Состав расчёта: доплата отдельно'}};
         await settledCalculate();renderInputs()}""")
     browser.open_vri(page)
     open_detail(page,'payments')
@@ -428,7 +428,67 @@ def test_queues_replace_single_cutoff_and_premium_question_uses_composition_evid
     browser.open_vri(page)
     scope=open_detail(page,'scope')
     assert scope.locator('#f_land_rent_manual_cutoff').count()==0
-    assert scope.locator('.lr-phases li',has_text='в аренде до').count()==2
+    assert scope.locator('.lr-phase-table tbody tr').count()==2
     expect_basis=scope.locator('.lr-phases').inner_text()
-    assert 'пропорционально площади зданий' in expect_basis
+    assert 'пропорционально общей площади объектов каждой очереди' in expect_basis
+    assert 'м² общей площади' in expect_basis
     assert 'ещё не введены, в том числе ещё не начатыми' in scope.inner_text()
+
+
+def test_default_dates_follow_the_economics_until_typed_and_queues_add_up(rental_page):
+    page,view,errors=rental_page
+    set_value="""([sel,v])=>{const el=document.querySelector(sel);el.value=v;el.dispatchEvent(new Event('change',{bubbles:true}))}"""
+    page.evaluate("""async()=>{delete inputs.land_rent_regime_start;delete inputs.land_rent_manual_cutoff;
+        renderInputs();await settledCalculate()}""")
+    browser.open_vri(page)
+    # Начало аренды видно в поле, но во вводные не пишется и следует за стартом проекта.
+    assert page.locator('#f_land_rent_regime_start').input_value()=='2027-01-01'
+    assert 'По умолчанию — дата начала проекта' in page.locator('#landRentEditor').inner_text()
+    page.evaluate("""async()=>{inputs.project_start='2027-03-01';renderInputs();await settledCalculate()}""")
+    browser.open_vri(page)
+    assert page.locator('#f_land_rent_regime_start').input_value()=='2027-03-01'
+    assert page.evaluate("()=>inputs.land_rent_regime_start")is None
+    assert page.evaluate("()=>landRentResult().regime_start")=='2027-03-01'
+    page.evaluate(set_value,['#f_land_rent_regime_start','2027-05-01'])
+    page.evaluate("async()=>{await settledCalculate()}")
+    assert page.evaluate("()=>inputs.land_rent_regime_start")=='2027-05-01'
+    browser.open_vri(page)
+    page.evaluate(set_value,['#f_land_rent_regime_start',''])
+    page.evaluate("async()=>{await settledCalculate()}")
+    browser.open_vri(page)
+    assert page.evaluate("()=>inputs.land_rent_regime_start")is None
+    assert page.locator('#f_land_rent_regime_start').input_value()=='2027-03-01'
+    # «Учитывать аренду до» показывает дату ввода из экономики.
+    scope=open_detail(page,'scope')
+    derived=page.evaluate("()=>landRentResult().derived_rve")
+    assert derived and scope.locator('#f_land_rent_manual_cutoff').input_value()==derived
+    assert page.evaluate("()=>inputs.land_rent_manual_cutoff")is None
+    assert 'граница расчёта, а не прекращение договора' in scope.inner_text()
+    # Очереди: таблица долей с метрами, итог по участку равен сумме очередей.
+    page.evaluate("""async()=>{phasing=makeDefaultPhasing(2);phasing.enabled=true;phasing.user_enabled=true;
+        renderInputs();await settledCalculate()}""")
+    page.wait_for_function("()=>(landRentResult()?.phase_land||[]).length===2",timeout=60000)
+    rent=page.evaluate("()=>landRentResult()")
+    assert rent['phase_share_basis']=='total_area'
+    assert sum(p['share'] for p in rent['phase_land'])==pytest.approx(1)
+    assert sum(p['accrual_total'] for p in rent['phase_land'])==pytest.approx(rent['known_total'])
+    assert sum(p['cash_total'] for p in rent['phase_land'])==pytest.approx(rent['cash_total'])
+    browser.open_vri(page)
+    scope=open_detail(page,'scope')
+    assert scope.locator('.lr-phase-table tbody tr').count()==2
+    assert scope.locator('.lr-phase-years tbody tr').count()>=1
+    first=rent['phase_land'][0]
+    assert scope.locator('[data-land-rent-release="0"]').input_value()==first['derived_rve']
+    # Дата выхода доли — только для аренды: ввод очереди не меняется, очистка возвращает его.
+    page.evaluate(set_value,['[data-land-rent-release="0"]','2027-12-01'])
+    page.evaluate("async()=>{await settledCalculate()}")
+    moved=page.evaluate("()=>landRentResult().phase_land[0]")
+    assert moved['rve']=='2027-12-01' and moved['release_origin']=='manual'
+    assert moved['commissioning']==first['commissioning']
+    browser.open_vri(page)
+    open_detail(page,'scope')
+    page.evaluate(set_value,['[data-land-rent-release="0"]',''])
+    page.evaluate("async()=>{await settledCalculate()}")
+    back=page.evaluate("()=>[phasing.phases[0].land_rent_release_date,landRentResult().phase_land[0]]")
+    assert back[0] is None and back[1]['release_origin']=='derived' and back[1]['rve']==first['rve']
+    assert not page.evaluate("()=>document.documentElement.scrollWidth>window.innerWidth")

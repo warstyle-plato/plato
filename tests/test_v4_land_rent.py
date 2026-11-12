@@ -300,7 +300,8 @@ def test_editing_premium_confirmation_uses_live_host_vri_input():
 def test_source_proved_premium_inclusion_is_invalidated_by_a_fee_only_edit():
     inputs = _msk_first_year()
     inputs['_field_origin'] = {'inputs.land_rights_cost_mln':{'source':'document','rent_premium':{
-        'schema':1,'included_in_vri':True,'fee_mln':5,'source':'Состав подтверждённого документа'}}}
+        'schema':2,'included_in_vri':True,'fee_mln':5,'method':'vri_manual_payment','land_right':'lease',
+        'source':'Состав подтверждённого расчёта'}}}
     workbook,initial,result = _build(inputs,rve=dt.date(2028,1,1))
     assert result['premium']['derived'] and initial.cell(book.SHEET,'L18') == 1
     workbook['Параметры модели']['B4'] = 6

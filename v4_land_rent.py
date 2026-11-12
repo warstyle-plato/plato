@@ -245,6 +245,8 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
     manual_cutoff = inputs.get("land_rent_manual_cutoff")
     if phased:
         # Queues give their own commissioning dates; one manual date is not used.
+        # The formula is completed below, once the queue rows are known: a
+        # queue's rent-only exit date may end the calculation later or earlier.
         put(15, "B15", formula=rve_formula, style=styles["date"])
         put(15, "K15", "Ввод очередей — в таблице очередей ниже; одна общая дата не задаётся")
         put(15, "L15", None)
@@ -588,23 +590,44 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
     put(shares_row, f"C{shares_row}", "Должно быть ровно 1")
     put(g_hi_row, f"A{g_hi_row}", "База × дни аренды к концу расчёта")
     put(g_hi_row, f"B{g_hi_row}", formula=g(cutoff), style=styles["amount"])
-    for c, label in enumerate(("Очередь", "Доля участка", "Ввод очереди", "Земля выходит из аренды",
-                               "Начислено, млн ₽", "Оплачено, млн ₽", "База × дни к концу расчёта"), 1):
+    basis = str(result.get("phase_share_basis") or "")
+    headers = ["Очередь", "Доля участка", "Ввод очереди", "Земля выходит из аренды",
+               "Начислено, млн ₽", "Оплачено, млн ₽", "База × дни к концу расчёта"]
+    if phased:
+        headers += [{"area": "Площадь участка очереди, га"}.get(basis, "Общая площадь объектов очереди, м²"),
+                    "Аренда доли до — вручную", "Основание доли"]
+    for c, label in enumerate(headers, 1):
         put(phase_first-1, f"{_col(c)}{phase_first-1}", label)
+    if phased:
+        # Последняя дата выхода доли — граница всего расчёта (phase_release:
+        # последняя очередь держит участок до общей даты, ручная дата — своя).
+        next(c for c in rows[15] if c.get("r") == "B15").find(_tag("f")).text = "MAX(" + ",".join(
+            f"IF(COUNT($I${phase_first+p})=1,$I${phase_first+p},{rve_formula})" for p in range(phase_count)) + ")"
+    metres = [phase_land[p].get("site_area_ha" if basis == "area" else "total_area") if phased else None
+              for p in range(phase_count)]
     phase_cash_rows = []
     for p in range(phase_count):
         r = phase_first + p
         put(r, f"A{r}", f"Очередь {p+1}" if phased else "Весь участок")
         if phased:
-            put(r, f"B{r}", float(phase_land[p]["share"]), style=styles["input"])
+            # Доля — формула метров колонки H; пока метры известны не у всех
+            # очередей, стоит предварительная доля расчёта (основание — в J).
+            put(r, f"B{r}", formula=(f'IF(AND(COUNT($H${phase_first}:$H${phase_end})={phase_count},'
+                                     f'SUM($H${phase_first}:$H${phase_end})>0),H{r}/SUM($H${phase_first}:$H${phase_end}),'
+                                     f'{float(phase_land[p]["share"])!r})'), style=styles["amount"])
         else:
             put(r, f"B{r}", formula="1", style=styles["amount"])  # весь участок — одна доля, не ввод
         put(r, f"C{r}", formula=phase_rve_formulas[p] if phased else "$B$15", style=styles["date"])
         # The queue commissioned last holds its land up to the common cutoff
-        # (developaid_land_rent.phase_release).
-        put(r, f"D{r}", formula=(f'IF(C{r}=MAX($C${phase_first}:$C${phase_end}),$B$15,MIN(C{r},$B$15))'
+        # (developaid_land_rent.phase_release); a rent-only date in I wins.
+        put(r, f"D{r}", formula=(f'IF(COUNT(I{r})=1,I{r},IF(C{r}=MAX($C${phase_first}:$C${phase_end}),{rve_formula},MIN(C{r},{rve_formula})))'
                                  if phased else "$B$15"), style=styles["date"])
         put(r, f"G{r}", formula="IFERROR(" + g_phase(cutoff, r) + ",0)", style=styles["amount"])
+        if phased:
+            typed = phase_land[p].get("rve") if phase_land[p].get("release_origin") == "manual" else None
+            put(r, f"H{r}", float(metres[p]) if metres[p] is not None else None, style=styles["input"])
+            put(r, f"I{r}", _serial(typed) if typed else None, style=styles["input_date"])
+            put(r, f"J{r}", str(result.get("phase_share_basis_text") or ""))
         if phased:
             base = phase_month_first + 5 * p
             put(r, f"E{r}", formula=f"SUM(D{base+3}:{last_col}{base+3})", style=styles["amount"])

@@ -273,7 +273,8 @@ def test_positive_vri_fee_does_not_prove_premium_composition(origin):
 
 @pytest.mark.parametrize("included", [False, True])
 def test_amount_bound_source_composition_is_automatic_but_owner_decision_wins(included):
-    proof = {"schema":1,"included_in_vri":included,"fee_mln":100,"source":"Состав расчёта по документу"}
+    proof = {"schema":2,"included_in_vri":included,"fee_mln":100,"method":"vri_manual_payment",
+             "land_right":"lease","source":"Состав расчёта по своим метрам"}
     x = settings(land_rent_mode="msk_mkd_3_2",land_rent_preset_confirmed=True,land_rights_cost_mln=100,
         _field_origin={"inputs.land_rights_cost_mln":{"source":"document","rent_premium":proof}})
     result = rent.build(x,date(2027,1,1),date(2028,1,1))
@@ -284,7 +285,8 @@ def test_amount_bound_source_composition_is_automatic_but_owner_decision_wins(in
         assert own["status"] == status and not own["derived"]
     assert rent.vri_premium({**x,"land_rights_cost_mln":101})["status"] == "unknown"
     for invalid in ({**proof,"included_in_vri":"true"},{**proof,"schema":True},{**proof,"source":" "},
-                    {**proof,"extra":"unsupported"}):
+                    {**proof,"extra":"unsupported"},{**proof,"schema":1},{**proof,"method":"glavapu_export"},
+                    {**proof,"land_right":"ownership"},{k: v for k, v in proof.items() if k != "method"}):
         bad = {**x,"_field_origin":{"inputs.land_rights_cost_mln":{"rent_premium":invalid}}}
         assert rent.vri_premium(bad)["status"] == "unknown"
 
@@ -312,16 +314,44 @@ def test_vri_fee_by_territory_rates_already_holds_the_first_year_raised_rent():
     assert own["rent_premium"] is None
 
 
-def test_glavapu_import_and_recalc_carry_the_fee_composition():
+def test_glavapu_export_alone_does_not_prove_the_fee_composition():
+    """Калькулятор ГлавАПУ считает выгрузку для собственности: её сумма
+    повышенную часть аренды не доказывает. Доказывает пересчёт под аренду."""
     import main_legacy as core
     provenance = core._glavapu_provenance({"land_rights_cost_mln": 1289.919, "site_area_ha": 2.0}, {}, "2026-08-16")
-    proof = provenance["inputs.land_rights_cost_mln"]["rent_premium"]
-    assert proof["included_in_vri"] is True and proof["fee_mln"] == 1289.919
-    assert "rent_premium" not in provenance["inputs.site_area_ha"]
-    assert "rent_premium" not in core._glavapu_provenance({"land_rights_cost_mln": 0}, {}, None)["inputs.land_rights_cost_mln"]
+    assert "rent_premium" not in provenance["inputs.land_rights_cost_mln"]
     x = settings(land_rent_mode="msk_mkd_3_2", land_rent_preset_confirmed=True, land_rights_cost_mln=1289.919,
                  _field_origin={"inputs.land_rights_cost_mln": provenance["inputs.land_rights_cost_mln"]})
+    assert rent.vri_premium(x)["status"] == "unknown"
+    assert "premium" in rent.build(x, date(2027,1,1), date(2028,1,1))["financial_missing_codes"]
+
+
+def test_the_fee_composition_proof_holds_only_for_its_method_right_and_regime():
+    """Отрицательные случаи независимой проверки: плата не по ставкам
+    территории, плата под собственность и смена права потом, режим без
+    приложения 8, проект без жилья."""
+    import main_legacy as core
+    assert core.vri_fee_rent_premium(100, method="document", land_right="lease") is None
+    assert core.vri_fee_rent_premium(100, method="glavapu_export", land_right="lease") is None
+    assert core.vri_fee_rent_premium(100, method="vri_manual_payment", land_right="ownership") is None
+    assert core.vri_fee_rent_premium(0, method="vri_manual_payment", land_right="lease") is None
+    assert set(core.VRI_PREMIUM_METHODS) == set(rent.PREMIUM_PROOF_METHODS)
+    proof = core.vri_fee_rent_premium(100, method="glavapu_baseline_rescale", land_right="lease")
+    x = settings(land_rent_mode="msk_mkd_3_2", land_rent_preset_confirmed=True, land_rights_cost_mln=100,
+                 _field_origin={"inputs.land_rights_cost_mln": {"rent_premium": proof}})
     assert rent.vri_premium(x)["status"] == "in_vri"
+    assert rent.vri_premium({**x, "land_rent_mode": "msk_mkd_arch_confirmed"})["status"] == "in_vri"
+    for misfit, why in (({"land_rent_mode": "manual"}, "режим"),
+                        ({"project_kind": "nonresidential"}, "нет жилья"), ({"project_kind": "hotel"}, "нет жилья"),
+                        ({"land_right": "ownership"}, "не в аренде")):
+        got = rent.vri_premium({**x, **misfit})
+        assert got["status"] == "unknown" and not got["derived"] and why in got["misfit"]
+    # Плата под собственность, потом право сменили на аренду: доказательства нет.
+    own_fee = core.vri_manual_payment([{"type": "mkd", "spp_sqm": 10000, "base_cost_rub": 200000}], .15, 1)
+    switched = settings(land_rent_mode="msk_mkd_3_2", land_rent_preset_confirmed=True,
+                        land_rights_cost_mln=own_fee["total_mln"],
+                        _field_origin={"inputs.land_rights_cost_mln": {"rent_premium": own_fee["rent_premium"]}})
+    assert own_fee["rent_premium"] is None and rent.vri_premium(switched)["status"] == "unknown"
 
 
 def test_missing_lease_start_is_assumed_from_project_start_and_disclosed():
@@ -372,11 +402,55 @@ def test_rent_decreases_as_queues_are_commissioned_and_is_split_among_the_leased
                       phase_land=land)["construction_total"] == pytest.approx(1.75e6)
 
 
-def test_phase_land_share_prefers_parcel_area_then_buildings():
-    assert rent.phase_land_shares([{"site_area_ha": 1}, {"site_area_ha": 3}], [5, 5]) == ([0.25, 0.75], "area")
-    assert rent.phase_land_shares([{"site_area_ha": 1}, {}], [1, 3]) == ([0.25, 0.75], "gns")
-    assert rent.phase_land_shares([{}, {}], [0, 0]) == ([0.5, 0.5], "equal")
-    assert rent.phase_release([date(2029, 1, 1), date(2031, 1, 1)], date(2032, 1, 1)) == [date(2029, 1, 1), date(2032, 1, 1)]
+def test_phase_land_share_prefers_parcel_area_then_total_area_of_the_queue_objects():
+    two = [{"site_area_ha": 1}, {"site_area_ha": 3}]
+    assert rent.phase_land_shares(two, [9.0, 1.0], [5, 5]) == ([0.25, 0.75], "area")
+    # Площадь участка не у всех — общая площадь объектов очереди, а не ГНС соседа.
+    assert rent.phase_land_shares([{"site_area_ha": 1}, {}], [1000.0, 3000.0], [9, 1]) == ([0.25, 0.75], "total_area")
+    assert rent.phase_land_shares([{}, {}, {}], [1000.0, 0.0, 1000.0], [1, 1, 1]) == ([0.5, 0.0, 0.5], "total_area")
+    # Общая площадь хотя бы одной очереди неизвестна — только предварительно.
+    assert rent.phase_land_shares([{}, {}], [1000.0, None], [1, 3]) == ([0.25, 0.75], "gns_preliminary")
+    assert rent.phase_land_shares([{}, {}], None, [0, 0]) == ([0.5, 0.5], "equal_preliminary")
+    assert set(rent.PHASE_SHARE_BASIS) == {"area", "total_area", "gns_preliminary", "equal_preliminary"}
+
+
+def test_queue_total_area_names_rows_that_have_a_building_but_no_total_area():
+    tep = {"housing": {"label": "Жильё", "gns": 10, "total_area": 12}, "office": {"label": "Офис", "gns": 5},
+           "kindergarten": {"label": "ДОО", "units": 100, "total_area": 3}, "empty": {"label": "Пусто"}}
+    assert rent.queue_total_area(tep) == (None, ["Офис"])
+    assert rent.queue_total_area({**tep, "office": {"label": "Офис", "gns": 5, "total_area": 6}}) == (21.0, [])
+    assert rent.queue_total_area(tep, skip=("office", "kindergarten")) == (12.0, [])
+
+
+def test_queue_exit_date_from_the_lease_is_derived_unless_typed_and_a_bad_date_is_named():
+    rves, cutoff = [date(2029, 1, 1), date(2031, 1, 1)], date(2032, 1, 1)
+    assert rent.phase_release(rves, cutoff) == ([date(2029, 1, 1), date(2032, 1, 1)], ["derived", "derived"])
+    assert rent.phase_release(rves, cutoff, ["2028-06-01", None]) == (
+        [date(2028, 6, 1), date(2032, 1, 1)], ["manual", "derived"])
+    # Очищенное поле возвращает выведенную дату; нечитаемое — тоже, но с отметкой.
+    assert rent.phase_release(rves, cutoff, ["", "мусор"]) == (
+        [date(2029, 1, 1), date(2032, 1, 1)], ["derived", "invalid"])
+
+
+def test_preliminary_queue_shares_are_named_with_the_missing_metres():
+    x = settings(land_rent_rates=[{"year": 1, "rate_pct": 1}])
+    land = [{"share": 0.5, "rve": "2028-01-01"}, {"share": 0.5, "rve": "2029-01-01"}]
+    result = rent.build(x, date(2027, 1, 1), date(2029, 1, 1), phase_land=land)
+    rent.describe_phase_land(result, basis="equal_preliminary", areas=[(None, ["Офис"]), (500.0, [])],
+                             site_areas=[None, None], names=["О1", "О2"],
+                             commissioning=[date(2028, 1, 1), date(2029, 1, 1)], release_origin=["derived", "invalid"])
+    assert result["financial_complete"] is False and result["status"] == "preliminary"
+    assert {"phase_shares", "phase_release"} <= set(result["financial_missing_codes"])
+    text = " ".join(result["financial_missing"])
+    assert "О1 (нет общей площади: Офис)" in text and "О2" in text and "О2 (" not in text
+    assert result["phase_land"][1]["release_origin"] == "invalid" and result["phase_land"][1]["total_area"] == 500.0
+    sound = rent.build(x, date(2027, 1, 1), date(2029, 1, 1), phase_land=land)
+    before = (sound["financial_complete"], list(sound["financial_missing"]))
+    rent.describe_phase_land(sound, basis="total_area", areas=[(500.0, []), (500.0, [])], site_areas=[None, None],
+                             names=["О1", "О2"], commissioning=[date(2028, 1, 1), date(2029, 1, 1)],
+                             release_origin=["derived", "manual"])
+    assert (sound["financial_complete"], sound["financial_missing"]) == before
+    assert sound["phase_land"][1]["release_origin"] == "manual"
 
 
 def test_preset_links_lead_to_the_act_page_kept_in_the_normatives_registry():

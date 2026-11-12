@@ -55,28 +55,44 @@ VRI_USE_TYPES: list[list[str]] = [
 ]
 
 
-def vri_fee_rent_premium(fee_mln: Any) -> dict[str, Any] | None:
-    """Состав платы за смену ВРИ, посчитанной по ставкам территории.
+# Способы, которые считают плату за смену ВРИ по ставкам территории для
+# участка в аренде (делитель аренды 1,001). Выгрузка ГлавАПУ сюда не входит:
+# калькулятор считает её для собственности, и её состав для аренды не доказан.
+VRI_PREMIUM_METHODS = {
+    "glavapu_baseline_rescale": "пересчёт по параметрам исходного расчёта ГлавАПУ",
+    "vri_manual_payment": "расчёт платы за ВРИ по своим метрам и базовым стоимостям",
+}
+
+
+def vri_fee_rent_premium(fee_mln: Any, *, method: str, land_right: str) -> dict[str, Any] | None:
+    """Состав платы за смену ВРИ, посчитанной по ставкам территории для аренды.
 
     Калькулятор ГлавАПУ для аренды считает её по 273-ПП (``calcRent``,
     «Стоимость смены ВРИ — аренда»): (P × S ÷ 1,001) × Кр × k1 × Кд. Это
     формула приложения 8 к 273-ПП — той самой повышенной части арендной
-    платы первого года (п. 3.2.1: ставка приложения 1 плюс ставка
-    приложения 8). У 593-ПП для собственности та же сумма Pi × Si (таблица 1
-    приложения 8), отличается только делитель. Значит, такая плата уже
-    содержит повышенную часть; прибавлять её второй раз нельзя.
-    Доказательство привязано к сумме: правка платы его снимает.
+    платы первого года (абз. 1 п. 3.2.1 для жилого здания: ставка приложения 1
+    плюс ставка приложения 8). Значит, такая плата уже содержит повышенную
+    часть; прибавлять её второй раз нельзя.
+
+    Доказательство выдаётся только известному способу расчёта
+    (``VRI_PREMIUM_METHODS``) и только для аренды; оно привязано к сумме,
+    способу и праву. Подходит ли оно режиму договора, решает читатель
+    (``developaid_land_rent.vri_premium``) по текущим вводным.
     """
+    if method not in VRI_PREMIUM_METHODS or str(land_right or "").strip().lower() != "lease":
+        return None
     try:
         fee = float(fee_mln)
     except (TypeError, ValueError):
         return None
     if not math.isfinite(fee) or fee <= 0:
         return None
-    return {"schema": 1, "included_in_vri": True, "fee_mln": fee,
-            "source": "Плата за смену ВРИ посчитана по ставкам территории, как в калькуляторе ГлавАПУ "
-                      "(приложение 8 к 273-ПП). Для участка в аренде эта сумма и есть повышенная часть "
-                      "арендной платы первого года, поэтому отдельно она не добавляется."}
+    return {"schema": 2, "included_in_vri": True, "fee_mln": fee,
+            "method": method, "land_right": "lease",
+            "source": f"Плата за смену ВРИ посчитана по ставкам территории для участка в аренде "
+                      f"({VRI_PREMIUM_METHODS[method]}; приложение 8 к 273-ПП). Для жилого дома "
+                      f"эта сумма и есть повышенная часть арендной платы первого года "
+                      f"(абзац первый п. 3.2.1), поэтому отдельно она не добавляется."}
 
 
 def vri_manual_payment(rows: list[dict[str, Any]], rent_coeff: float,
@@ -141,7 +157,8 @@ def vri_manual_payment(rows: list[dict[str, Any]], rent_coeff: float,
     return {
         "lines": lines,
         "total_mln": round(total / 1e6, 3),
-        "rent_premium": vri_fee_rent_premium(round(total / 1e6, 3)) if leased else None,
+        "rent_premium": vri_fee_rent_premium(round(total / 1e6, 3), method="vri_manual_payment",
+                                             land_right="lease" if leased else "ownership"),
         "rent_coeff": rent,
         "index": factor,
         "index_date": _GLAVAPU_VRI_BASE_INDEXATION_DATE,
@@ -1269,7 +1286,8 @@ def recalculate_from_glavapu_baseline(baseline: dict[str, Any],
                     "regime": regime, "basis": parking_basis},
         "vri_lines": vri_lines,
         "vri_total_mln": round(vri_total, 3),
-        "rent_premium": vri_fee_rent_premium(round(vri_total, 3)),
+        "rent_premium": vri_fee_rent_premium(round(vri_total, 3), method="glavapu_baseline_rescale",
+                                             land_right="lease" if leased else "ownership"),
         "vri_available": vri_available,
         "land_right": land_right,
         "land_right_factor": right_factor,
