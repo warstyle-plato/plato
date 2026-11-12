@@ -48,6 +48,24 @@ def _load_registry() -> list[dict[str, Any]]:
     return [row for row in raw if isinstance(row, dict)]
 
 
+def official_link(entry_id: str) -> dict[str, str]:
+    """Адрес первоисточника акта для ссылок из расчёта.
+
+    Страница самого акта на портале органа власти (`act_page_url`) важнее
+    стороннего сводного текста: сводный текст — то, по чему сверяли редакцию,
+    он остаётся в карточке /normatives. Нет страницы акта — берётся источник
+    карточки. Ссылку на акт держит реестр, а не каждый модуль своей строкой.
+    """
+    entry = next((row for row in _load_registry() if row.get("id") == entry_id), None)
+    if entry is None:
+        raise KeyError(f"В реестре нормативной базы нет акта {entry_id}")
+    for url_key, label_key in (("act_page_url", "act_page_label"), ("source_url", "source_label")):
+        url = str(entry.get(url_key) or "").strip()
+        if url.startswith("https://"):
+            return {"url": url, "label": str(entry.get(label_key) or "Текст акта").strip()}
+    return {"url": "", "label": ""}
+
+
 def _load_state() -> dict[str, Any]:
     with _STATE_LOCK:
         try:

@@ -503,8 +503,9 @@ def test_a_leased_plot_still_pays_but_by_its_own_divisor():
     assert leased["vri_lines"], "строки платы остаются, а не исчезают"
     ratio = leased["vri_total_mln"] / owned["vri_total_mln"]
     assert abs(ratio - 1.00001 / 1.001) < 1e-6, ratio
-    # Разница 0,099% — её называют, а не прячут.
-    assert any("аренда" in text and "1,001" in text for text in leased["warnings"])
+    # Разница 0,1% — её называют простыми словами, а не прячут.
+    assert any("в аренде" in text and "0,1%" in text for text in leased["warnings"])
+    assert not any("делитель" in text for text in leased["warnings"])
     # Повышенная составляющая первого года по 273-ПП здесь не считается, и это
     # сказано вслух: молчание читалось бы как «других платежей нет».
     assert any("273-ПП" in text for text in leased["warnings"])
@@ -520,7 +521,7 @@ def test_the_page_substitutes_the_lease_payment_too():
     # Тело запроса собирает помощник, общий с переключателем населения.
     assert "baselineRecalcBody()" in body
     assert "land_right:String(inputs.land_right" in page_blocks.function("baselineRecalcBody", page)
-    assert "делитель 1,001" in body, "право видно в строке «было → стало»"
+    assert "участок в аренде: плата примерно на 0,1% меньше" in body, "право видно в строке «было → стало»"
     # Прежде это была одна строка присваивания. Теперь пересчёт пишет вводные
     # общим правилом — оно же не трогает то, что вписано требованием КРТ, — но
     # утверждение прежнее: посчитанная плата обязана доехать до поля.

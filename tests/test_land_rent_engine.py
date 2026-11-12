@@ -42,19 +42,26 @@ def test_construction_cost_scenario_does_not_change_contractual_rent():
 
 
 @pytest.mark.parametrize("count", [2, 3])
-def test_common_parcel_is_counted_once_through_latest_queue_rve(count):
+def test_common_parcel_rent_decreases_as_queues_are_commissioned(count):
     x = inputs(apartment_price_th=2000)
-    phases = [{"name": str(i+1), "start_offset_months": i*24, "construction_months": 12} for i in range(count)]
+    phases = [{"name": str(i+1), "start_offset_months": i*24, "construction_months": 12,
+               "site_area_ha": i+1} for i in range(count)]
     result = core.calculate_phased(core.PhasedCalcRequest(inputs=x, tep=copy.deepcopy(core.TEP_DEFAULT), rates=[],
         phasing={"enabled": True, "mode": "phased", "phase_count": count, "user_enabled": True, "phases": phases}))
+    rent = result["consolidated"]["land_rent"]
+    shares = [(i+1) / sum(range(1, count+1)) for i in range(count)]
+    # Queue i keeps its land on lease from 2027 to its own RVE (2 + 2i years).
+    own = [1.5e6 * share * (2 + 2*i) for i, share in enumerate(shares)]
     total = result["consolidated"]["capex"]["land_rent"]
-    assert total == pytest.approx((2 + 2*(count-1))*1.5e6)
-    assert sum(p["result"]["capex"]["land_rent"] for p in result["phases"]) == pytest.approx(total)
-    assert result["consolidated"]["land_rent"]["applied_total"] == pytest.approx(total)
-    assert [p["result"]["capex"]["land_rent"] > 0 for p in result["phases"]] == [True] + [False]*(count-1)
+    assert total == pytest.approx(sum(own)) and total < (2 + 2*(count-1))*1.5e6
+    assert [p["result"]["capex"]["land_rent"] for p in result["phases"]] == pytest.approx(own)
+    assert rent["applied_total"] == pytest.approx(total)
+    assert rent["phase_share_basis"] == "area" and rent["cutoff_origin"] == "phases"
+    assert [p["rve"] for p in rent["phase_land"]] == [f"{2029 + 2*i}-01-01" for i in range(count)]
     first = result["phases"][0]["result"]
-    late = [r for r in first["finance"]["rows"] if r["month"] > first["dates"]["rve"]]
-    assert any(r["project_costs"] > 0 for r in late)
+    assert not [m for m, v in first["land_rent"]["monthly"].items() if v and m >= first["dates"]["rve"]]
+    last = result["phases"][-1]["result"]
+    assert last["land_rent"]["monthly"]["2027-01-01"] > 0  # a not-yet-started queue's land is leased too
     # The first queue's repaid credit must not be fictitiously reopened.
     repaid = False
     for row in first["finance"]["rows"]:
@@ -149,7 +156,8 @@ def test_actual_cash_is_canonical_without_rewriting_accruals_for_other_payment_p
 
 @pytest.mark.parametrize("source", ["aggregate", "budget"])
 def test_old_total_or_budget_overlays_refresh_every_cash_consumer_and_qualify_unknown_rent(source):
-    x = inputs(land_rent_cadastral_mln=120, land_rent_rates=[{"year": 1, "rate_pct": 4}],
+    x = inputs(land_rent_cadastral_mln=120, land_rent_cadastral_target_mln=120,
+        land_rent_rates=[{"year": 1, "rate_pct": 4}],
         land_rent_payment_mode="manual", land_rent_payment_schedule="100%@0", land_rent_termination_date="2029-01-01")
     baseline = op(x)
     assert baseline["land_rent"]["financial_complete"]
@@ -214,3 +222,34 @@ def test_saved_manual_rent_does_not_charge_owned_land_or_change_native_vri_polic
     assert model["capex_amounts"]["land_rent"] == 0
     assert model["land_rent"]["status"] == "not_applicable"
     assert model["capex_amounts"].get("land_rights", 0) == 0
+
+
+def test_unconfirmed_regional_rates_still_reach_project_costs():
+    x = inputs(land_rent_mode="msk_mkd_3_2", land_rent_regime_start=None, land_rent_rates=None)
+    result = core.calculate(core.CalcRequest(inputs=x, tep=copy.deepcopy(core.TEP_DEFAULT), rates=[]))
+    assert result["capex"]["land_rent"] > 0
+    assert result["land_rent"]["applied_total"] == pytest.approx(result["capex"]["land_rent"])
+    assert {"conditions", "regime_start"} <= set(result["land_rent"]["financial_missing_codes"])
+    assert result["summary"]["preliminary"]
+
+
+def test_target_cadastral_value_applies_from_the_vri_obligation_date():
+    x = inputs(land_rent_cadastral_target_mln=300, land_rights_cost_mln=50,
+               vri_obligation_date="2027-07-01")
+    model = op(x)
+    switch = model["land_rent"]["cadastral_switch"]
+    assert switch and switch["date"] == "2027-07-01" and switch["target_mln"] == 300
+    without_vri = op(inputs(land_rent_cadastral_target_mln=300, land_rights_cost_mln=0))
+    assert without_vri["land_rent"]["cadastral_switch"] is None
+    assert model["capex_amounts"]["land_rent"] > without_vri["capex_amounts"]["land_rent"]
+
+
+def test_unknown_value_after_vri_change_is_preliminary_not_silently_current():
+    model = op(inputs(land_rights_cost_mln=50, vri_obligation_date="2027-07-01",
+                      land_rent_payment_mode="manual", land_rent_payment_schedule="100%@0",
+                      land_rent_termination_date="2029-01-01"))
+    assert "cadastral_change" in model["land_rent"]["financial_missing_codes"]
+    assert model["capex_amounts"]["land_rent"] > 0
+    same = op(inputs(land_rights_cost_mln=50, vri_obligation_date="2027-07-01",
+                     land_rent_cadastral_target_mln=100))
+    assert "cadastral_change" not in same["land_rent"]["financial_missing_codes"]
