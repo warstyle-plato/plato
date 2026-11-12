@@ -551,10 +551,10 @@ def _schedule_page(page, page_number, schedule):
         if bar and (reversed_dates or (start and _apart(start, bar[0]))
                     or (finish and _apart(finish, bar[1]))
                     or (finish or bar[1]) < (start or bar[0])):
+            said = (f'в графах дат {_shown(start)} — {_shown(finish)}' if start and finish else
+                    _cells(line['cells'], unread))
             problem = (f'окончание {_shown(finish)} раньше начала {_shown(start)}' if reversed_dates else
-                       (f'в графах дат {_shown(start)} — {_shown(finish)}' if start and finish else
-                        _cells(line['cells'], unread))
-                       + f', а полоса на диаграмме идёт {_shown(bar[0])} — {_shown(bar[1])}')
+                       (f'{said}, а ' if said else '') + f'полоса на диаграмме идёт {_shown(bar[0])} — {_shown(bar[1])}')
             if unread:
                 problem = _unread(unread) + '; ' + problem
             _correct(schedule, line, bar[0], bar[1], 'bar',
@@ -566,7 +566,7 @@ def _schedule_page(page, page_number, schedule):
             if unread:
                 _correct(schedule, line, used['start'], used['finish'], basis,
                          f'Стр. {page_number}: у строки {code} «{name[:60]}» {_unread(unread)}. '
-                         f'Взята {"дата" if len(unread) == 1 else "даты"} полосы: '
+                         + ('Взята дата полосы: ' if len(unread) == 1 else 'Взяты даты полосы: ')
                          + ' — '.join(_shown(used[key]) for key in unread) + '.')
             else:
                 line.update(used, dates_from=basis)
@@ -706,7 +706,7 @@ def _cells(cells, unread):
     named = {'start': 'начала', 'finish': 'окончания'}
     said = [f'в графе {named[key]} {_shown(cells[key])}' if cells[key] else f'в графе {named[key]} даты нет'
             for key in ('start', 'finish') if key not in unread]
-    return ', '.join(said) or 'в графах дат ничего не прочитано'
+    return ', '.join(said)
 
 
 def _unread(unread):
@@ -899,6 +899,20 @@ def _act_layout(cells):
     return None, None
 
 
+_SECTION_TOTAL = re.compile(r'(?:итого|всего)\s+по\s+(?:под)?(?:раздел|глав)')
+
+
+def _settle_heading(act, state, number=''):
+    """A row with a volume but no cost is a heading only when the next row is numbered inside it (6.1 → 6.1.1)."""
+    heading, state['heading'] = state['heading'], None
+    if heading is None or (heading['number'] and number.startswith(heading['number'] + '.')):
+        return
+    state['group'] = heading['previous']
+    act['warnings'].append(f'Стр. {heading["page"]}: у строки № {heading["order"]} акта «{heading["name"][:80]}» '
+                           'есть единица и объём, но нет цены и стоимости. Это не позиция, и это не заголовок '
+                           'группы: следующая строка не входит в неё по номеру. Её объём не учтён.')
+
+
 def _act_rows(cells, columns, page_number, act, state):
     """Positions of the act: a row with its number by order, unit, volume and cost; headings name their section."""
     money = columns['money']
@@ -913,10 +927,14 @@ def _act_rows(cells, columns, page_number, act, state):
         if filled == [str(n) for n in range(1, len(filled)+1)]:
             continue  # The row of column numbers under the labels.
         if not order.isdigit():
-            if label.startswith(('итого', 'всего')) and 'в том числе' not in label:
+            if label.startswith(('итого', 'всего')) and 'в том числе' not in label and not _SECTION_TOTAL.match(label):
                 parts = [_amount(row[n]) for n in costs]
                 if any(v is not None for v in parts):
+                    _settle_heading(act, state)
                     state['table_total'] = fsum(v for v in parts if v is not None)
+            elif label.startswith('раздел'):
+                # «Итого по разделу» closes a section, not the table; the next section names itself.
+                state['section'], state['group'] = _space(' '.join(cell for cell in row if _space(cell))), None
             continue
         number = _space(row[columns['number']]).rstrip('.')
         name = _space(' '.join(row[n] for n in columns['name']))
@@ -938,11 +956,17 @@ def _act_rows(cells, columns, page_number, act, state):
         quantity = work if work is not None else material
         if all(v is None and _space(row[n]) in ('', '-') for n, v in zip(money, values)):
             # A heading may give the volume of its works and leave the cost to them.
+            _settle_heading(act, state, number)
+            previous = state['group']
             if name.lower().startswith('раздел'):
                 state['section'], state['group'] = name, None
             elif name:
                 state['group'] = name
+            if unit or quantity is not None:
+                state['heading'] = {'order': order, 'number': number if _CODE.match(number) else '', 'name': name,
+                                    'page': page_number, 'previous': previous}
             continue
+        _settle_heading(act, state, number)
         if not unit or quantity is None or amount['total'] is None:
             act['warnings'].append(f'Стр. {page_number}: строка № {order} акта «{name[:80]}» не распознана как '
                                    'позиция: не хватает единицы, объёма или стоимости.')
@@ -959,7 +983,7 @@ def _act_rows(cells, columns, page_number, act, state):
 
 def _act_positions(document, act):
     """The table of the act page by page: a continuation page without labels keeps the columns of the first."""
-    state = {'section': None, 'group': None, 'table_total': None}
+    state = {'section': None, 'group': None, 'table_total': None, 'heading': None}
     columns, bounds, found = None, None, False
     for index, page in enumerate(document):
         if state['table_total'] is not None:
@@ -984,6 +1008,7 @@ def _act_positions(document, act):
     if not found:
         act['warnings'].append('В акте КС-2 не найдена таблица выполненных работ: позиции и объёмы не прочитаны.')
         return
+    _settle_heading(act, state)
     act['table_total'] = state['table_total']
     for position in act['positions']:
         price, amount = position['unit_price'], position['amount']
@@ -1059,6 +1084,11 @@ def _act(document, text):
     if act['total'] is None:
         # Without «Итого по акту» the total row of the act's own table is its total.
         act['total'] = act['table_total']
+    elif act['positions'] and (act['table_total'] is None or abs(act['table_total']-act['total']) > _TOLERANCE):
+        listed = fsum(p['amount']['total'] for p in act['positions'])
+        if abs(listed-act['total']) > _TOLERANCE*max(1, len(act['positions'])):
+            act['warnings'].append(f'Сумма позиций акта {_figure(listed)} не равна строке «Итого по акту» '
+                                   f'{_figure(act["total"])}: проверьте, все ли строки прочитаны.')
     shown = {'number': 'номер документа', 'date': 'дата составления', 'start': 'начало отчётного периода',
              'finish': 'окончание отчётного периода', 'total': 'итог по акту'}
     missing = [shown[key] for key in shown if act[key] is None]

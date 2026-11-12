@@ -6,11 +6,15 @@ Owner's decisions of 12.11.2026 (see docs/contract_schedule_control.md):
    its volumes to those of the earlier acts, from the start of the construction.
 2. An act number loaded twice with different content: the later act (by the date of
    the act, then by the upload) is in force; the earlier one stays in the card and is
-   shown as replaced. The same content in another file is one act, counted once.
+   shown as replaced. When the date of one of them is not read, the order of the acts
+   is not known from the documents: the last upload is in force and the note says so.
+   The same content in another file is one act, counted once.
 3. An act is dated by the end of its reporting period. Without the period it is dated
    by the date of the act, and every result built on it is preliminary.
 
 An act without a read number stands on its own: whether it repeats another is not known.
+A position of the act without its number in the estimate stays with its act: whether it
+is the same work as a position of another act is not known from its name.
 """
 from __future__ import annotations
 
@@ -49,38 +53,46 @@ def _label(record: dict) -> str:
 def in_force(records: list[dict]) -> dict:
     """The acts in force and, for every other act of the same number, why it is not.
 
-    Returns {"acts": [record, …], "replaced": {sha256: note}, "notes": {sha256: note}}:
-    `replaced` names the act that replaced the record or that it copies, `notes` tells the
-    act in force which earlier edition it replaced.
+    Returns {"acts": [record, …], "replaced": {sha256: note}, "copies": {sha256: note},
+    "notes": {sha256: note}}: `replaced` names the act that replaced the record, `copies`
+    the act in force that the record repeats, `notes` tells the act in force which earlier
+    edition it replaced.
     """
-    acts = sorted((r for r in records if r.get("act")),
-                  key=lambda r: (r["act"].get("date") or "", r.get("uploaded_at") or "", r.get("sha256") or ""))
+    uploaded = lambda r: (r.get("uploaded_at") or "", r.get("sha256") or "")
     groups: dict[str, list[dict]] = {}
     alone = []
-    for record in acts:
+    for record in sorted((r for r in records if r.get("act")), key=uploaded):
         n = number(record["act"])
         if n is None:
             alone.append(record)
         else:
             groups.setdefault(n, []).append(record)
-    out = {"acts": list(alone), "replaced": {}, "notes": {}}
+    out = {"acts": list(alone), "replaced": {}, "copies": {}, "notes": {}}
     for n, group in groups.items():
+        dated = all(r["act"].get("date") for r in group)
+        if dated:
+            group.sort(key=lambda r: (r["act"]["date"], *uploaded(r)))
         current = group[-1]
         out["acts"].append(current)
         earlier = []
         for record in group[:-1]:
             if _content(record["act"]) == _content(current["act"]):
-                out["replaced"][record.get("sha256")] = (
+                out["copies"][record.get("sha256")] = (
                     f"Тот же акт КС-2 № {n} загружен ещё и файлом «{current.get('filename') or ''}»: "
                     "его объёмы учтены один раз.")
                 continue
             earlier.append(record)
+            later = "более поздняя редакция" if dated else "загруженная позже редакция"
             out["replaced"][record.get("sha256")] = (
-                f"Заменён: в карточке есть более поздняя редакция акта КС-2 № {n} — {_label(current)}. "
-                "В накоплении объёмов действует она, этот файл сохранён в карточке.")
+                f"Заменён: в карточке есть {later} акта КС-2 № {n} — {_label(current)}. "
+                + ("" if dated else "Дата составления прочитана не у всех редакций, поэтому действующей "
+                   "считается загруженная последней; если это не так, загрузите нужную редакцию ещё раз. ")
+                + "В накоплении объёмов действует она, этот файл сохранён в карточке.")
         if earlier:
             out["notes"][current.get("sha256")] = (
-                f"Действует вместо прежней редакции акта № {n}: " + "; ".join(_label(r) for r in earlier) + ".")
+                f"Действует вместо прежней редакции акта № {n}: " + "; ".join(_label(r) for r in earlier) + "."
+                + ("" if dated else " Дата составления прочитана не у всех редакций: действующей считается "
+                   "загруженная последней."))
     out["acts"].sort(key=lambda r: (r["act"].get("finish") or r["act"].get("date") or "", r.get("sha256") or ""))
     return out
 
@@ -99,7 +111,9 @@ def accumulated(records: list[dict], cut: str) -> dict:
 
     An act counts on the end of its reporting period (or the date of the act, preliminary);
     an act that ends after `cut` is not counted on `cut`. A position is one number, name,
-    unit and kind of volume (work or materials): different units are never added together.
+    unit and kind of volume (work or materials) in one section of the act: different units
+    and different sections are never added together. A position without its number in the
+    estimate is not added to the positions of other acts.
     """
     chosen = in_force(records)
     positions: dict[tuple, dict] = {}
@@ -124,7 +138,9 @@ def accumulated(records: list[dict], cut: str) -> dict:
             continue
         acts.append(row)
         for p in act["positions"]:
-            key = (p.get("number") or "", _name(p.get("name")), p.get("unit") or "", p.get("quantity_basis") or "work")
+            own = () if p.get("number") else (record.get("sha256"), p.get("row"))
+            key = (p.get("number") or "", _name(p.get("name")), p.get("unit") or "", p.get("quantity_basis") or "work",
+                   _name(p.get("section")), *own)
             found = positions.setdefault(key, {
                 "number": key[0], "name": p.get("name") or "", "unit": key[2], "basis": key[3],
                 "section": p.get("section"), "group": p.get("group"), "parts": []})
@@ -138,5 +154,5 @@ def accumulated(records: list[dict], cut: str) -> dict:
                     "preliminary": any(x["preliminary"] for x in parts)})
     preliminary = any(a["preliminary"] for a in acts)
     return {"cut": cut, "acts": acts, "positions": out, "excluded": excluded, "later": later,
-            "replaced": chosen["replaced"], "notes": chosen["notes"], "preliminary": preliminary,
+            "replaced": chosen["replaced"], "copies": chosen["copies"], "notes": chosen["notes"], "preliminary": preliminary,
             "note": PRELIMINARY if preliminary else ""}

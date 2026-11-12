@@ -309,11 +309,12 @@ def listing(project: str, contract_id: str, cut: str = "", acts: dict | None = N
         # Of the acts of one number the later is in force (`acts_in_card.in_force`); other documents name twins.
         twins = [r["filename"] for r in records if r is not record and _edition(r) == _edition(record)
                  and not acts_in_card.number(record.get("act"))]
-        for found in (performed["replaced"], performed["notes"]):
+        for found in (performed["replaced"], performed["copies"], performed["notes"]):
             if found.get(record["sha256"]):
                 notes.append(found[record["sha256"]])
         if record.get("act"):
-            record["act_state"] = "replaced" if record["sha256"] in performed["replaced"] else "in_force"
+            record["act_state"] = ("replaced" if record["sha256"] in performed["replaced"] else
+                                   "copy" if record["sha256"] in performed["copies"] else "in_force")
         if twins:
             notes.append(f"{record['title']} загружен{'о' if record.get('agreement') else ''} ещё и файлом "
                          f"«{'», «'.join(twins)}». Проверьте, какой из файлов действующий.")

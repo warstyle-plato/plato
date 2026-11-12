@@ -168,3 +168,11 @@ def test_a_bar_correction_names_an_unread_date_once_and_an_empty_cell_as_empty(f
     (correction,) = _schedule(lines)["corrections"]
     assert correction["text"] == (f"Стр. 1: у строки 1.2 «Ограждение» {said}, а полоса на диаграмме идёт "
                                   "01.02.2026 — 03.02.2026. Взяты даты полосы: 01.02.2026 — 03.02.2026.")
+
+
+def test_a_bar_correction_with_both_dates_unread_names_them_once():
+    lines = LINES[:2] + (("1.2", "Ограждение", "29.01.26", "03.02.26", (3, 5)),)
+    (correction,) = _schedule(lines)["corrections"]
+    assert correction["text"] == ("Стр. 1: у строки 1.2 «Ограждение» даты начала «29.01.26» и окончания "
+                                  "«03.02.26» не прочитаны: нужна запись вида 01.02.2026. Взяты даты полосы: "
+                                  "01.02.2026 — 03.02.2026.")

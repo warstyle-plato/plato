@@ -15,7 +15,7 @@ import developaid_contract_documents as documents
 import developaid_contract_files as files
 import developaid_monitor as monitor
 from tests.test_contract_card_confirms_and_chooses_links import CONTRACT, ROW
-from tests.test_contract_fact_dates_ks6_periods_by_acts import act_pdf
+from tests.test_contract_fact_dates_ks6_periods_by_acts import KS2_ROWS, act_pdf
 
 pytest.importorskip("pymupdf")
 PROJECT = "Учебный"
@@ -36,30 +36,30 @@ def test_a_price_of_materials_and_of_work_with_one_cost_and_a_heading_with_its_v
     columns = (30, 75, 145, 330, 390, 440, 520, 600, 680)
     numbers = ("1", "2", "3", "4", "5", "6", "7", "8")
     rows = (numbers,
-            ("1", "6.1", "Витражная система", "м2", "79,60", "", "", ""),
-            ("2", "6.1.1", "Монтаж каркаса", "м2", "79,60", "-", "8 000,00", "636 800,00"),
-            ("3", "6.5.1", "Монтаж стеклопакета", "м2", "2,00", "20 000,00", "7 000,00", "54 000,00"))
-    got = _act(header=header, columns=columns, rows=rows, total="690 800,00")
+            ("1", "3.2", "Каменная кладка", "м2", "52,40", "", "", ""),
+            ("2", "3.2.1", "Кладка стен", "м2", "52,40", "-", "3 000,00", "157 200,00"),
+            ("3", "3.4.1", "Монтаж перемычек", "шт", "2,00", "1 500,00", "500,00", "4 000,00"))
+    got = _act(header=header, columns=columns, rows=rows, total="161 200,00")
     act = got["act"]
     # Строка номеров граф и раздел с объёмом без цены — не позиции.
-    assert _rows(act) == [(2, "6.1.1", "м2", 79.6, "work", 636800.0), (3, "6.5.1", "м2", 2.0, "work", 54000.0)]
-    assert act["positions"][0]["group"] == "Витражная система"
-    assert act["table_total"] == 690800.0 and got["warnings"] == []
+    assert _rows(act) == [(2, "3.2.1", "м2", 52.4, "work", 157200.0), (3, "3.4.1", "шт", 2.0, "work", 4000.0)]
+    assert act["positions"][0]["group"] == "Каменная кладка"
+    assert act["table_total"] == 161200.0 and got["warnings"] == []
 
 
 def test_quantities_of_materials_and_of_work_and_costs_split_in_two():
     header = ("по порядку", "позиции по смете", "Наименование", "Ед. изм.", "кол-во (материал)", "кол-во (СМР)",
               "цена материал", "цена СМР", "сумма материал", "сумма СМР")
     columns = (10, 60, 135, 215, 255, 330, 395, 455, 520, 600, 680)
-    rows = (("1", "4.5.1", "Монтаж каркаса", "м2", "42,84", "40,00", "21 000,00", "7 000,00",
-             "899 640,00", "280 000,00"),
-            ("2", "4.6.1", "Монтаж откосов", "м2", "-", "10,00", "-", "1 000,00", "-", "10 000,00"))
-    got = _act(header=header, columns=columns, rows=rows, total="1 189 640,00")
+    rows = (("1", "2.3.1", "Монтаж лесов", "м2", "31,50", "30,00", "12 000,00", "4 000,00",
+             "378 000,00", "120 000,00"),
+            ("2", "2.4.1", "Монтаж откосов", "м2", "-", "10,00", "-", "1 000,00", "-", "10 000,00"))
+    got = _act(header=header, columns=columns, rows=rows, total="508 000,00")
     act = got["act"]
-    assert _rows(act) == [(1, "4.5.1", "м2", 40.0, "work", 1179640.0), (2, "4.6.1", "м2", 10.0, "work", 10000.0)]
+    assert _rows(act) == [(1, "2.3.1", "м2", 30.0, "work", 498000.0), (2, "2.4.1", "м2", 10.0, "work", 10000.0)]
     first = act["positions"][0]
-    assert first["quantity_material"] == 42.84 and first["amount"] == {
-        "material": 899640.0, "work": 280000.0, "total": 1179640.0}
+    assert first["quantity_material"] == 31.5 and first["amount"] == {
+        "material": 378000.0, "work": 120000.0, "total": 498000.0}
     assert got["warnings"] == []
 
 
@@ -132,7 +132,8 @@ def test_the_later_act_of_one_number_replaces_the_earlier_and_a_copy_counts_once
     assert [(p["quantity"], p["amount"]) for p in got["positions"]] == [(6.0, 600.0)]
     assert got["replaced"]["a" * 64].startswith("Заменён: в карточке есть более поздняя редакция акта КС-2 № 2")
     assert "копия.pdf" in got["replaced"]["a" * 64]
-    assert got["replaced"]["b" * 64] == "Тот же акт КС-2 № 2 загружен ещё и файлом «копия.pdf»: его объёмы учтены один раз."
+    assert "b" * 64 not in got["replaced"]
+    assert got["copies"]["b" * 64] == "Тот же акт КС-2 № 2 загружен ещё и файлом «копия.pdf»: его объёмы учтены один раз."
     assert got["notes"]["c" * 64] == ("Действует вместо прежней редакции акта № 2: акт КС-2 № 2 от 28.02.2026 "
                                       "(файл «прежний.pdf»).")
 
@@ -156,7 +157,7 @@ def test_the_card_lists_the_accumulated_volumes_and_names_the_replaced_act(card)
     files.store(PROJECT, ROW, "КС-2 1.pdf", act_pdf(number="1", date="31.01.2026", start="01.01.2026",
                                                     finish="31.01.2026"))
     first = files.store(PROJECT, ROW, "КС-2 2.pdf", act_pdf())["sha256"]
-    rows = (("1", "1.1", "Устройство стен", "м3", "0,75", "8 000,00", "6 000,00"),)
+    rows = (KS2_ROWS[0], ("2", "1.1", "Устройство стен", "м3", "0,75", "8 000,00", "6 000,00"))
     fixed = files.store(PROJECT, ROW, "КС-2 2 исправленный.pdf", act_pdf(rows=rows, total="6 000,00"))["sha256"]
     listed = files.listing(PROJECT, CONTRACT, "2026-02-04")
     performed = listed["performed"]
@@ -168,3 +169,74 @@ def test_the_card_lists_the_accumulated_volumes_and_names_the_replaced_act(card)
     assert documents_by_sha[first]["warnings"][0].startswith("Заменён: в карточке есть более поздняя редакция")
     assert documents_by_sha[fixed]["act_state"] == "in_force"
     assert documents_by_sha[fixed]["warnings"][0].startswith("Действует вместо прежней редакции акта № 2")
+
+
+def test_a_copy_of_the_act_in_force_is_named_a_copy_in_the_card(card, monkeypatch):
+    times = iter(["2026-02-10T10:00:00", "2026-02-11T10:00:00"])
+    monkeypatch.setattr(files, "_now", lambda: next(times))
+    first = files.store(PROJECT, ROW, "КС-2 2.pdf", act_pdf())["sha256"]
+    # Тот же акт, напечатанный в файл иначе: другой файл, то же содержание.
+    again = files.store(PROJECT, ROW, "КС-2 2 копия.pdf", act_pdf(twice=True))["sha256"]
+    listed = files.listing(PROJECT, CONTRACT, "2026-02-04")
+    states = {d["sha256"]: d["act_state"] for d in listed["documents"]}
+    assert states == {first: "copy", again: "in_force"}
+    walls, = listed["performed"]["positions"]
+    assert walls["quantity"] == 0.5
+
+
+SECTIONS = (("1", ".", "Раздел № 1. Подземная часть", "", "", "", ""),
+            ("2", "1.1", "Устройство стен", "м3", "0,5", "8 000,00", "4 000,00"),
+            ("", "", "Итого по разделу 1", "", "", "", "4 000,00"),
+            ("", "", "Раздел № 2. Надземная часть", "", "", "", ""),
+            ("3", "1.1", "Устройство стен", "м3", "1,0", "8 000,00", "8 000,00"),
+            ("", "", "Итого по разделу 2", "", "", "", "8 000,00"))
+
+
+def test_a_section_total_does_not_end_the_table_and_one_number_in_two_sections_stays_two():
+    got = _act(rows=SECTIONS, total="12 000,00")
+    act = got["act"]
+    assert [(p["row"], p["number"], p["quantity"], p["section"]) for p in act["positions"]] == [
+        (2, "1.1", 0.5, "Раздел № 1. Подземная часть"), (3, "1.1", 1.0, "Раздел № 2. Надземная часть")]
+    assert act["table_total"] == 12000.0 and got["warnings"] == []
+    record = {"sha256": "e" * 64, "filename": "КС-2 2.pdf", "uploaded_at": "2026-02-10T10:00:00",
+              "title": "Акт КС-2 № 2", "act": act}
+    summed = acts.accumulated([record], "2026-03-31")
+    assert sorted((p["quantity"], p["amount"]) for p in summed["positions"]) == [(0.5, 4000.0), (1.0, 8000.0)]
+
+
+def test_without_the_total_row_of_the_table_the_positions_are_checked_against_the_total_of_the_act():
+    got = _act(total="5 000,00", table_total="")
+    assert got["act"]["table_total"] is None and got["act"]["total"] == 5000.0
+    assert ("Сумма позиций акта 4 000,00 не равна строке «Итого по акту» 5 000,00: проверьте, все ли строки "
+            "прочитаны.") in got["warnings"]
+
+
+def test_a_row_with_a_volume_and_no_cost_that_heads_nothing_is_named_and_not_counted():
+    rows = (("1", "2.1", "Кладка перегородок", "м2", "10,0", "", ""),
+            ("2", "1.1", "Устройство стен", "м3", "0,5", "8 000,00", "4 000,00"))
+    got = _act(rows=rows)
+    assert _rows(got["act"]) == [(2, "1.1", "м3", 0.5, "work", 4000.0)]
+    assert got["act"]["positions"][0]["group"] is None
+    assert ("Стр. 1: у строки № 1 акта «Кладка перегородок» есть единица и объём, но нет цены и стоимости. "
+            "Это не позиция, и это не заголовок группы: следующая строка не входит в неё по номеру. "
+            "Её объём не учтён.") in got["warnings"]
+
+
+def test_positions_without_a_number_are_not_merged_across_acts():
+    records = [_record("c", "3", "2026-02-28", [("", "Устройство стен", "м3", 1.0, 100.0)]),
+               _record("d", "4", "2026-02-28", [("", "Устройство стен", "м3", 2.0, 200.0)])]
+    got = acts.accumulated(records, "2026-03-31")
+    assert sorted(p["quantity"] for p in got["positions"]) == [1.0, 2.0]
+
+
+def test_without_a_date_on_every_edition_the_edition_uploaded_last_is_in_force():
+    earlier = _record("a", "2", "2026-02-28", [(*WALLS, 5.0, 500.0)], date="2026-03-05",
+                      uploaded="2026-03-01T09:00:00", filename="прежний.pdf")
+    later = _record("b", "2", "2026-02-28", [(*WALLS, 6.0, 600.0)], uploaded="2026-03-02T09:00:00",
+                    filename="без даты.pdf")
+    later["act"]["date"] = None
+    got = acts.accumulated([later, earlier], "2026-03-31")
+    assert [p["quantity"] for p in got["positions"]] == [6.0]
+    note = got["replaced"]["a" * 64]
+    assert note.startswith("Заменён: в карточке есть загруженная позже редакция акта КС-2 № 2")
+    assert "действующей считается загруженная последней" in note
