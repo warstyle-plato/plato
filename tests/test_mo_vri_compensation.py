@@ -1,0 +1,196 @@
+"""МО: плата за смену ВРИ уменьшается на сумму компенсации по соглашению (Ксу*).
+
+Поправка № 1310-ПП вычитает Ксу* из платы в пп. 4.1 и 4.8: П = … − Ксу*.
+Ксу* — денежная сумма, не множитель; плата не ниже 1 ₽ (п. 5.2). Берётся
+сумма компенсации по соглашению целиком, банковская гарантия в сумме не
+участвует (решение владельца 12.11.2026).
+
+Сумма — вводная проекта: она едет в проект с расчётом, пересчёт ТЭП шлёт её
+снова, а новый участок её сбрасывает. Стенды гоняют настоящие
+`applyNormativeTep` и `resetTerritoryData`, ответ `/mo/calculate` берут у
+самого сервера.
+
+Запуск: python3 -m pytest tests/test_mo_vri_compensation.py -q
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+import main_legacy as core  # noqa: E402
+from tests import page_blocks  # noqa: E402
+
+PARCEL = [{"cadastral_number": "50:00:0000000:1", "area_sqm": 3000.0,
+           "permitted_use": "Для индивидуального жилищного строительства",
+           "cadastral_value_rub": 1_000_000.0}]
+
+
+def _fee(**over):
+    args = dict(upks_target=8000.0, upks_average_oks=100_000.0,
+                apartments_sqm=9000.0, market_price_rub_per_sqm=200_000.0, kd=0.1)
+    args.update(over)
+    return core.mo_vri_payment(PARCEL, **args)
+
+
+def test_the_compensation_is_subtracted_in_rubles_and_named():
+    full = _fee()
+    reduced = _fee(compensation_rub=50_000_000.0)
+    gross = full["payment_used_rub"]
+    assert reduced["payment_before_compensation_rub"] == pytest.approx(gross)
+    assert reduced["payment_used_rub"] == pytest.approx(gross - 50_000_000.0)
+    assert reduced["payment_used_mln"] == pytest.approx((gross - 50_000_000.0) / 1e6)
+    assert reduced["compensation_rub"] == pytest.approx(50_000_000.0)
+    assert reduced["compensation_applied_rub"] == pytest.approx(50_000_000.0)
+    assert reduced["compensation_basis"], "у вычета нет происхождения"
+    assert reduced["payment_basis"].endswith("за вычетом компенсации по соглашению")
+    said = [w for w in reduced["warnings"] if "компенсации по соглашению" in w]
+    assert len(said) == 1 and "1310-ПП" in said[0] and "вычтено 50,0 млн ₽" in said[0]
+    assert "подтверждает только соглашение" in said[0]
+
+
+def test_without_an_agreement_nothing_changes():
+    for none in (None, 0.0, -5.0):
+        vri = _fee(compensation_rub=none)
+        assert vri["compensation_rub"] is None and vri["compensation_applied_rub"] is None
+        assert vri["payment_used_rub"] == pytest.approx(_fee()["payment_used_rub"])
+        assert vri["payment_used_mln"] == _fee()["payment_used_mln"]
+        assert not any("компенсации по соглашению" in w for w in vri["warnings"])
+
+
+def test_the_fee_does_not_go_below_one_ruble():
+    gross = _fee()["payment_used_rub"]
+    vri = _fee(compensation_rub=gross * 10)
+    assert vri["payment_used_rub"] == pytest.approx(1.0)
+    assert vri["compensation_applied_rub"] == pytest.approx(gross - 1.0)
+    # Три знака дали бы 0,0 млн ₽, а ноль страница читает как «не рассчитана».
+    assert vri["payment_used_mln"] > 0
+    assert any("осталось 1 ₽" in w for w in vri["warnings"])
+
+
+def test_a_compensation_without_a_fee_says_there_is_nothing_to_reduce():
+    vri = _fee(kd=None, compensation_rub=50_000_000.0)
+    assert vri["payment_used_rub"] is None and vri["compensation_applied_rub"] is None
+    assert any("уменьшать нечего" in w for w in vri["warnings"])
+
+
+@pytest.fixture(scope="module")
+def server():
+    from fastapi.testclient import TestClient
+    import main_registry
+
+    def ask(compensation_rub):
+        answer = TestClient(main_registry.app).post("/mo/calculate", json={
+            "query": "", "limit": 30, "site_area_ha": 6.6667, "density_sqm_per_ha": 30000,
+            "district": "Мытищи", "market_price_rub_per_sqm": 0, "vri_kd": 0,
+            "vri_compensation_rub": compensation_rub, "average_flat_sqm": 58.8,
+        })
+        assert answer.status_code == 200, answer.text
+        return answer.json()
+    return ask
+
+
+def test_the_route_sends_the_reduced_fee_and_the_sum_into_the_project(server):
+    full, reduced = server(0), server(50_000_000)
+    assert reduced["inputs"]["land_rights_cost_mln"] == pytest.approx(
+        full["inputs"]["land_rights_cost_mln"] - 50.0, abs=0.001)
+    assert reduced["inputs"]["mo_vri_compensation_mln"] == pytest.approx(50.0)
+    assert full["inputs"]["mo_vri_compensation_mln"] == 0
+
+
+def _stand(server_answer, tail):
+    prelude = "\n".join([
+        "let inputs={site_area_ha:6.6667,vri_region:'mo',mo_vri_compensation_mln:50,"
+        "land_rights_cost_mln:1,_mo_calc:{territory:{district:'Мытищи'}}};",
+        "let tep=" + json.dumps(core.TEP_DEFAULT, ensure_ascii=False) + ";",
+        "const SERVER=" + json.dumps(server_answer, ensure_ascii=False) + ";",
+        "let cadastralAnalysis=null,moResult=null,glavapuImport=null;",
+        "let bodies=[];",
+        "async function fetch(url,opts){bodies.push(JSON.parse(opts.body));return {ok:true,json:async()=>SERVER}}",
+        "const notes={};",
+        "const document={getElementById(id){return notes[id]||(notes[id]={style:{},innerHTML:'',value:''})},"
+        "activeElement:null};",
+        "function renderTep(){}",
+        "function renderInputs(){}",
+        "function updateTepTotals(){}",
+        "function renderPhasing(){}",
+        "async function calculate(){}",
+        "function syncTep(){}",
+        "function escapeHtml(s){return String(s)}",
+        "function num(v){return Number(v||0).toFixed(1)}",
+        "function landNum(v,d){return Number(v||0).toFixed(d===undefined?1:d)}",
+    ])
+    out, taken = page_blocks.run(prelude, tail)
+    return json.loads(out), taken
+
+
+def test_the_tep_recalc_sends_the_sum_again_and_keeps_it(server):
+    answer = server(50_000_000)
+    shown, taken = _stand(answer, "\n".join([
+        "(async()=>{",
+        " await applyNormativeTep();",
+        " console.log(JSON.stringify({sent:bodies.map(b=>b.vri_compensation_rub),",
+        "  fee:inputs.land_rights_cost_mln,sum:inputs.mo_vri_compensation_mln}));",
+        "})().catch(e=>{console.error(e);process.exit(1)});",
+    ]))
+    assert "applyNormativeTep" in taken
+    assert shown["sent"] == [50_000_000], "пересчёт ТЭП потерял сумму компенсации"
+    assert shown["fee"] == pytest.approx(answer["inputs"]["land_rights_cost_mln"])
+    assert shown["sum"] == pytest.approx(50.0)
+
+
+def test_a_new_parcel_drops_the_agreement_and_says_so(server):
+    shown, taken = _stand(server(0), "\n".join([
+        "resetTerritoryData();",
+        "console.log(JSON.stringify({sum:inputs.mo_vri_compensation_mln,cleared:territoryCleared,",
+        " note:territoryClearedNote()}));",
+    ]))
+    assert "resetTerritoryData" in taken
+    assert not shown["sum"], "соглашение прежнего участка перешло на новый"
+    assert "mo_vri_compensation_mln" in shown["cleared"]
+    assert "компенсация по соглашению" in shown["note"]
+
+
+def test_the_page_field_reads_and_writes_the_project_value():
+    shown, _ = page_blocks.run("\n".join([
+        "let inputs={mo_vri_compensation_mln:12.5};",
+        "const notes={moCompensation:{value:''}};",
+        "const document={getElementById(id){return notes[id]||null}};",
+    ]), "\n".join([
+        "syncMoCompensation();",
+        "const shownValue=notes.moCompensation.value;",
+        "notes.moCompensation.value='';",
+        "const empty=moCompensationRub();",
+        "notes.moCompensation.value='7';",
+        "console.log(JSON.stringify({shownValue,empty,typed:moCompensationRub()}));",
+    ]))
+    result = json.loads(shown)
+    assert result == {"shownValue": "12.5", "empty": 0, "typed": 7_000_000}
+
+
+def _book_text(**over) -> str:
+    import copy, html, io, re, zipfile
+    x = dict(core.DEFAULT_INPUTS, vri_region="mo", land_rights_cost_mln=100.0, **over)
+    content, _, _meta = core.build_project_workbook(
+        x, copy.deepcopy(core.TEP_DEFAULT), [], None, project_name="Компенсация ВРИ")
+    texts: list[str] = []
+    with zipfile.ZipFile(io.BytesIO(content)) as book:
+        for name in book.namelist():
+            if name.startswith("xl/worksheets/") and name.endswith(".xml"):
+                xml = book.read(name).decode("utf-8")
+                texts.extend(html.unescape(a or b) for a, b in
+                             re.findall(r"<x:t[^>]*>(.*?)</x:t>|<x:v>(.*?)</x:v>", xml, re.S))
+    return " ".join(texts)
+
+
+def test_the_book_names_the_deduction_only_when_there_is_one():
+    named = "Плата уменьшена на сумму компенсации по соглашению с областью (1310-ПП, Ксу*)"
+    with_sum = _book_text(mo_vri_compensation_mln=1250.5)
+    assert named in with_sum and "1 250,5 млн ₽, но не ниже 1 ₽" in with_sum
+    assert named not in _book_text()

@@ -25,6 +25,7 @@ PAGE += r"""const TERRITORY_MARKERS=['_glavapu_import','_other_region','_field_o
 const TERRITORY_CLEARED_LABELS={
  purchase_price_mln:'цена входа', land_rights_cost_mln:'плата за смену ВРИ',
  social_compensation_mln:'социальная компенсация', site_area_ha:'площадь участка',
+ mo_vri_compensation_mln:'компенсация по соглашению о плате за смену ВРИ',
  site_density_sqm_per_ha:'плотность', kindergarten_places:'места в ДОО',
  school_places:'места в школе', clinic_capacity:'мощность поликлиники',
  social_dou_gba_sqm:'площадь ДОО', social_school_gba_sqm:'площадь школы',

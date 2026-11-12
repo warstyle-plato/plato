@@ -1,11 +1,11 @@
-"""A reviewed amendment text is not a proved commencement date or a working money formula."""
+"""A reviewed amendment text is not a proved commencement date; the deduction is a user-entered sum."""
 import json
 
 import pytest
 
 import normatives_registry as registry
 
-WARNING = "Уменьшение Ксу* в расчёте пока не реализовано"
+WARNING = "Уменьшение Ксу* в расчёте — по сумме компенсации, которую вписал пользователь"
 COMMENCEMENT = "Настоящее постановление вступает в силу на следующий день после дня его официального опубликования."
 
 
@@ -40,7 +40,7 @@ def test_the_amendment_card_quotes_the_rule_and_names_its_nonmonetary_changes():
 
 @pytest.mark.parametrize("admin", [False, True])
 @pytest.mark.parametrize("width", [390, 1440])
-def test_reader_and_admin_see_nonimplementation_before_opening_and_the_exact_quote_after(monkeypatch, admin, width):
+def test_reader_and_admin_see_how_the_deduction_is_counted_before_opening_and_the_exact_quote_after(monkeypatch, admin, width):
     from types import SimpleNamespace
     from playwright.sync_api import sync_playwright, expect
     from browser import chromium_or_skip

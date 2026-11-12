@@ -2279,6 +2279,7 @@ async function applyNormativeTep(densityOverride,keepRows){
    district:district,
    market_price_rub_per_sqm:0,
    vri_kd:0,
+   vri_compensation_rub:Math.max(0,Number(inputs.mo_vri_compensation_mln||0))*1e6,
    average_flat_sqm:Number((document.getElementById('moFlat')||{}).value||0)||AVERAGE_FLAT.mo.sqm
   };
   const response=await fetch('/mo/calculate',{method:'POST',headers:{'Content-Type':'application/json'},

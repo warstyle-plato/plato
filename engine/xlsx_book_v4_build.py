@@ -1144,10 +1144,18 @@ def _build_project_workbook(
             sources_xml, "G7",
             text="1745-ПП, таблица 3: коэффициент доходности Кд по городским "
                  "округам (10 / 5 / 1 %), плата считается по методике области")
+        # Сумма в B16 уже за вычетом компенсации по соглашению о Ксу*: книга
+        # называет вычет, иначе плата выглядела бы полной по методике.
+        _compensation_mln = max(0.0, n(x, "mo_vri_compensation_mln"))
+        _compensation_text = f"{_compensation_mln:,.1f}".replace(",", " ").replace(".", ",")
         sources_xml, _ = _v4_set_cell(
             sources_xml, "I7",
             text="Сумма платы приходит из расчёта; порядок, ставки и рассрочка — "
-                 "областные, московские здесь не применяются")
+                 "областные, московские здесь не применяются"
+                 + (f". Плата уменьшена на сумму компенсации по соглашению с областью "
+                    f"(1310-ПП, Ксу*), вписанную пользователем: "
+                    f"{_compensation_text} млн ₽, но не ниже 1 ₽"
+                    if _compensation_mln > 0 else ""))
     calculation_id = _calculation_fingerprint(inputs, calculation_source_tep, phasing)
     sources_xml, _ = _v4_set_cell(
         sources_xml, "C16", text=f"Сборка DevelopAid {VERSION}")
