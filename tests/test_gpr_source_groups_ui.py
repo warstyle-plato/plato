@@ -5,7 +5,7 @@ import io
 import pytest
 from playwright.sync_api import expect
 from pypdf import PdfReader
-from browser import expand_gantt
+from browser import expand_gantt, open_ks_calculation
 from test_monitor_cumulative_controls import browser_page, MARKER
 
 
@@ -35,6 +35,7 @@ def test_shared_fact_scope_and_individual_readings_remain_distinct(width, known,
     with browser_page(width) as (page, responses, errors):
         page.evaluate('(v)=>renderGantt(v)', view(known, conflict))
         expand_gantt(page)
+        open_ks_calculation(page)
         groups = page.locator('#ksSharedGroups')
         expect(groups.locator('.ks-source-group')).to_have_count(1)
         expect(groups).to_contain_text('Общий объём для 2 работ; отдельные проценты не выделены.')
