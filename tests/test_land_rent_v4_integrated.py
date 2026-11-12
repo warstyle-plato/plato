@@ -200,3 +200,18 @@ def test_book_queue_share_follows_its_metres_and_rent_only_exit_date(phased_leas
         assert fresh.cell(v4_land_rent.SHEET, f"D{first+1}") == pytest.approx(ev.cell(v4_land_rent.SHEET, f"D{first+1}"))
     finally:
         ws[f"H{first}"], ws[f"I{first}"] = saved
+    # Ручная дата последней очереди раньше общей границы: «Расчёт до» (B15)
+    # идёт за фактическими датами выхода, как rve движка, а не за границей.
+    n = len(canonical["phase_land"])
+    exits = [ev.cell(v4_land_rent.SHEET, f"D{first+k}") for k in range(n)]
+    last = max(range(n), key=lambda k: exits[k])
+    early = exits[last] - 100
+    saved = ws[f"I{first+last}"].value
+    try:
+        ws[f"I{first+last}"] = early
+        fresh = Evaluator(workbook)
+        expected = max([early] + [exits[k] for k in range(n) if k != last])
+        assert fresh.cell(v4_land_rent.SHEET, "B15") == pytest.approx(expected)
+        assert expected < exits[last]
+    finally:
+        ws[f"I{first+last}"] = saved

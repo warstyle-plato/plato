@@ -237,6 +237,7 @@ function landRentReleaseEdit(index,value){
  else phasing.phases[index].land_rent_release_date=value;
  if(typeof calculate==='function')calculate();
 }
+const LAND_RENT_MANUAL_DATE_HINT='Дата указана вручную. Очистите поле, чтобы вернуть значение по умолчанию.';
 function landRentDateField(box,key,label,auto,caption){
  // Значение по умолчанию видно в поле, но во вводные не пишется: пока поле
  // не изменено вручную, оно следует за экономикой; очистка возвращает его.
@@ -247,7 +248,7 @@ function landRentDateField(box,key,label,auto,caption){
   landRentSet(key,el.value);
  };
  const hint=document.createElement('p');hint.className='lr-note lr-date-hint';hint.dataset.landRentHint=key;
- hint.textContent=inputs[key]?'Дата указана вручную. Очистите поле, чтобы вернуть значение по умолчанию.':caption;
+ hint.dataset.caption=caption;hint.textContent=inputs[key]?LAND_RENT_MANUAL_DATE_HINT:caption;
  el.closest('.field').appendChild(hint);return el;
 }
 function landRentDateDefaults(r){
@@ -317,6 +318,7 @@ function landRentRefreshDetails(root){
  if(phases&&!phases.contains(document.activeElement))phases.innerHTML=landRentPhaseHtml(r);
  const defaults=landRentDateDefaults(r);
  root.querySelectorAll('[data-land-rent-auto]').forEach(el=>{const key=el.dataset.landRentAuto;if(!inputs[key]&&document.activeElement!==el)el.value=defaults[key]||''});
+ root.querySelectorAll('[data-land-rent-hint]').forEach(el=>{const key=el.dataset.landRentHint;if(!el.dataset.caption)el.dataset.caption=el.textContent;el.textContent=inputs[key]?LAND_RENT_MANUAL_DATE_HINT:el.dataset.caption});
  const premium=root.querySelector('.lr-premium');
  if(premium)premium.textContent=r?.premium?.derived?r.premium.source:(r?.premium?.misfit||'');
  const cash=root.querySelector('.lr-cash-result');
@@ -462,6 +464,8 @@ function renderLandRentEditor(){
    note(scope,'Проект разбит на очереди. Аренда общего участка начинается с начала проекта, а земля каждой очереди выходит из расчёта с её вводом. Аренда месяца делится между очередями, которые ещё не введены, в том числе ещё не начатыми.');
    const phases=document.createElement('div');phases.className='lr-phases';scope.appendChild(phases);
    phases.addEventListener('change',e=>{const i=e.target?.dataset?.landRentRelease;if(i!=null)landRentReleaseEdit(Number(i),e.target.value)});
+   // Пока дата в фокусе, таблицу не перерисовывают; после ухода фокуса — сразу.
+   phases.addEventListener('focusout',()=>setTimeout(()=>{if(!phases.contains(document.activeElement))phases.innerHTML=landRentPhaseHtml(landRentShownResult())},0));
   }else landRentDateField(dates,'land_rent_manual_cutoff','Учитывать аренду до',landRentDateDefaults(landRentResult()).land_rent_manual_cutoff,'По умолчанию — дата ввода из экономики; можно изменить. Это граница расчёта, а не прекращение договора.');
   landRentField(dates,'land_rent_termination_date','Подтверждённая дата прекращения аренды (если есть)','date');
   note(scope,'После ввода нужен отдельный расчёт аренды. Дата ввода сама по себе не прекращает обязательство.');

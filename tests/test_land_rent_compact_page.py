@@ -452,6 +452,7 @@ def test_default_dates_follow_the_economics_until_typed_and_queues_add_up(rental
     page.evaluate(set_value,['#f_land_rent_regime_start','2027-05-01'])
     page.evaluate("async()=>{await settledCalculate()}")
     assert page.evaluate("()=>inputs.land_rent_regime_start")=='2027-05-01'
+    assert 'Дата указана вручную' in page.locator('[data-land-rent-hint="land_rent_regime_start"]').inner_text()
     browser.open_vri(page)
     page.evaluate(set_value,['#f_land_rent_regime_start',''])
     page.evaluate("async()=>{await settledCalculate()}")
@@ -480,15 +481,24 @@ def test_default_dates_follow_the_economics_until_typed_and_queues_add_up(rental
     first=rent['phase_land'][0]
     assert scope.locator('[data-land-rent-release="0"]').input_value()==first['derived_rve']
     # Дата выхода доли — только для аренды: ввод очереди не меняется, очистка возвращает его.
-    page.evaluate(set_value,['[data-land-rent-release="0"]','2027-12-01'])
+    # Вводим как человек: поле в фокусе, потом уход из него; таблица на экране
+    # обязана обновиться без повторного открытия блока.
+    field=scope.locator('[data-land-rent-release="0"]')
+    field.fill('2027-12-01')
     page.evaluate("async()=>{await settledCalculate()}")
     moved=page.evaluate("()=>landRentResult().phase_land[0]")
     assert moved['rve']=='2027-12-01' and moved['release_origin']=='manual'
     assert moved['commissioning']==first['commissioning']
-    browser.open_vri(page)
-    open_detail(page,'scope')
-    page.evaluate(set_value,['[data-land-rent-release="0"]',''])
+    field.blur()
+    row=scope.locator('.lr-phase-table tbody tr').first
+    page.wait_for_function("()=>document.querySelector('.lr-phase-table tbody tr').innerText.includes('Ваша дата')",timeout=10000)
+    assert page.evaluate("()=>landRentMoney(landRentResult().phase_land[0].accrual_total)") in row.inner_text()
+    assert scope.locator('[data-land-rent-release="0"]').input_value()=='2027-12-01'
+    scope.locator('[data-land-rent-release="0"]').fill('')
     page.evaluate("async()=>{await settledCalculate()}")
+    scope.locator('[data-land-rent-release="0"]').blur()
     back=page.evaluate("()=>[phasing.phases[0].land_rent_release_date,landRentResult().phase_land[0]]")
     assert back[0] is None and back[1]['release_origin']=='derived' and back[1]['rve']==first['rve']
+    page.wait_for_function("d=>document.querySelector('[data-land-rent-release=\"0\"]').value===d",arg=first['derived_rve'],timeout=10000)
+    assert 'Ваша дата' not in scope.locator('.lr-phase-table tbody tr').first.inner_text()
     assert not page.evaluate("()=>document.documentElement.scrollWidth>window.innerWidth")

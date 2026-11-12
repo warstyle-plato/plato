@@ -599,10 +599,11 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
     for c, label in enumerate(headers, 1):
         put(phase_first-1, f"{_col(c)}{phase_first-1}", label)
     if phased:
-        # Последняя дата выхода доли — граница всего расчёта (phase_release:
-        # последняя очередь держит участок до общей даты, ручная дата — своя).
-        next(c for c in rows[15] if c.get("r") == "B15").find(_tag("f")).text = "MAX(" + ",".join(
-            f"IF(COUNT($I${phase_first+p})=1,$I${phase_first+p},{rve_formula})" for p in range(phase_count)) + ")"
+        # Граница всего расчёта — последняя фактическая дата выхода доли
+        # (колонка D, как rve движка): ручная дата последней очереди может
+        # быть и раньше общей даты. D ссылается на rve_formula, не на B15.
+        next(c for c in rows[15] if c.get("r") == "B15").find(_tag("f")).text = (
+            f"MAX($D${phase_first}:$D${phase_end})")
     metres = [phase_land[p].get("site_area_ha" if basis == "area" else "total_area") if phased else None
               for p in range(phase_count)]
     phase_cash_rows = []
