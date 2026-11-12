@@ -26,7 +26,8 @@ def production(request):
     x={**copy.deepcopy(core.DEFAULT_INPUTS),"project_start":start.isoformat(),
        "ird_months":12,"construction_months":24,"land_right":"lease",
        "land_rights_cost_mln":132,"land_rent_mode":"manual",
-       "land_rent_cadastral_mln":100,"land_rent_regime_start":start.isoformat(),
+       "land_rent_cadastral_mln":100,"land_rent_cadastral_target_mln":100,
+       "land_rent_regime_start":start.isoformat(),
        "land_rent_rates":[{"year":1,"rate_pct":3}],"land_rent_tail_rule":"repeat_last",
        "land_rent_payment_mode":"manual","land_rent_payment_schedule":"100%@0",
        "land_rent_vat_treatment":"public_exempt","land_rent_termination_date":rve.isoformat()}

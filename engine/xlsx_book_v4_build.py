@@ -2506,7 +2506,8 @@ def _build_project_workbook(
             content, x, _rent, project_start_formula=_rent_start_formula,
             rve_formula=_rent_rve_formula,
             project_end_formula=f"MAX({_rent_end},EDATE('Аренда ЗУ'!$B$15,1))",
-            phase_shares=_rent_shares, hostvri_amount_formula="'Параметры модели'!$B$16")
+            phase_shares=_rent_shares, hostvri_amount_formula="'Параметры модели'!$B$16",
+            phase_rve_formulas=_rent_rve_refs if len(_rent.get("phase_land") or []) > 1 else None)
         _rent_meta["workbook_supported"] = True
     except Exception as exc:
         _rent_meta["workbook_supported"] = False

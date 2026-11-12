@@ -7,6 +7,7 @@ import io
 import pytest
 from playwright.sync_api import expect
 from pypdf import PdfReader
+from browser import open_ks_calculation
 from test_gpr_source_groups_ui import view
 from test_monitor_cumulative_controls import browser_page, MARKER
 
@@ -31,6 +32,8 @@ def covered_view(known=True):
 def test_covered_source_percent_and_components_do_not_become_individual_gpr_percent(width, known):
     with browser_page(width) as (page, responses, errors):
         page.evaluate('(v)=>renderGantt(v)', covered_view(known))
+        expect(page.locator('#ksSharedBox > summary')).to_have_text('Как посчитан процент выполнения (по КС)')
+        open_ks_calculation(page)
         host = page.locator('#ksSharedGroups')
         expect(host.locator('.ks-covered-source')).to_have_count(1)
         expect(host.locator('.ks-source-group')).to_have_count(0)
@@ -48,6 +51,19 @@ def test_covered_source_percent_and_components_do_not_become_individual_gpr_perc
         assert not errors
 
 
+def test_collapsed_ks_calculation_still_prints_and_stays_collapsed_after_printing():
+    with browser_page(1440) as (page, responses, errors):
+        page.evaluate('(v)=>renderGantt(v)', covered_view())
+        box = page.locator('#ksSharedBox')
+        assert box.get_attribute('open') is None
+        # Блок стоит под графиком, а не над ним.
+        assert page.evaluate("!!($('gantt').compareDocumentPosition($('ksSharedBox'))&Node.DOCUMENT_POSITION_FOLLOWING)")
+        text = ' '.join((s.extract_text() or '') for s in PdfReader(io.BytesIO(page.pdf())).pages)
+        assert 'Как посчитан процент выполнения' in text and 'Полнота всего пакета ГПР' in text
+        assert box.get_attribute('open') is None
+        assert not errors
+
+
 def test_source_text_is_escaped_and_replacing_project_clears_covered_facts():
     with browser_page(390) as (page, responses, errors):
         value = covered_view()
@@ -62,6 +78,7 @@ def test_source_text_is_escaped_and_replacing_project_clears_covered_facts():
         next_view['schedule']['physical_progress'] = {}
         page.evaluate('(v)=>renderGantt(v)', next_view)
         expect(host).to_be_hidden()
+        expect(page.locator('#ksSharedBox')).to_be_hidden()
         assert host.inner_text() == '' and not errors
 
 
@@ -72,6 +89,7 @@ def test_many_source_groups_keep_the_gpr_chart_accessible_and_expand_without_dup
         base = groups[0]
         groups[:] = [dict(copy.deepcopy(base), group_id=f'group-{i}', source_name=f'Раздел {i}') for i in range(7)]
         page.evaluate('(v)=>renderGantt(v)', value)
+        open_ks_calculation(page)
         host = page.locator('#ksSharedGroups')
         expect(host.locator('.ks-covered-source')).to_have_count(7)
         assert host.locator('.ks-covered-source:visible').count() == 3
@@ -169,6 +187,8 @@ def test_covered_facts_remain_visible_when_the_source_has_no_calendar_dates(tmp_
         page.evaluate('(v)=>renderGantt(v)', value)
         expect(page.locator('#ganttCard')).to_be_visible()
         expect(page.locator('.ks-covered-source')).to_have_count(1)
+        # Без календаря график пуст: расчёт по КС — единственное содержание, он раскрыт сразу.
+        assert page.locator('#ksSharedBox').get_attribute('open') is not None
         expect(page.locator('.ks-covered-source')).to_be_visible()
         expect(page.locator('#gprEmptyText')).to_contain_text('нет полных плановых дат')
         assert page.locator('#gantt').inner_text() == ''
