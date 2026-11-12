@@ -572,7 +572,7 @@ SOCIAL_KINDERGARTEN_PLACES = _rule(
     effective_from=PP_1420["effective_from"],
     official_source=PP_1420["official_source"],
     quote="в абзаце первом цифры «65» заменить цифрами «50»",
-    example="300 × 50 / 1000 = 15 мест",
+    example="300 × 50 ÷ 1000 = 15 мест",
     status="CONFIRMED_PRIMARY",
 )
 
@@ -593,7 +593,7 @@ SOCIAL_SCHOOL_PLACES = _rule(
     effective_from=PP_1420["effective_from"],
     official_source=PP_1420["official_source"],
     quote="в абзаце втором цифры «135» заменить цифрами «109»",
-    example="300 × 109 / 1000 = 33 места",
+    example="300 × 109 ÷ 1000 = 33 места",
     status="CONFIRMED_PRIMARY",
 )
 
