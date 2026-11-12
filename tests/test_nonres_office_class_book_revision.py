@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import io
 from datetime import date
+from math import fsum
 
 import pytest
 import openpyxl
@@ -183,11 +184,13 @@ def test_two_non_ddu_offices_do_not_open_a_project_finance_line(two_office_book,
 
 def test_float_shares_of_a_full_split_leave_no_remainder():
     month = date(2027, 1, 1)
-    # Доли трёх объектов по их стройке: в сумме машинно 0.9999999999999999.
+    # Доли трёх объектов по их стройке: точная сумма (`fsum`, как в движке)
+    # машинно 0.9999999999999999. Встроенный `sum` тут не годится: в 3.11 он
+    # складывает подряд и даёт ровно 1.0, в 3.12 — с компенсацией.
     cost = {"a": 2331.611418125469, "b": 2309.434548868302, "c": 2188.5915923395482}
     total = sum(cost.values())
     shares = {key: value / total for key, value in cost.items()}
-    assert sum(shares.values()) != 1.0
+    assert fsum(shares.values()) != 1.0
     remaining, allocated = ns.allocate_common_capex(
         {month: 3e9}, {key: {month: value} for key, value in cost.items()}, set(cost), shares)
     assert remaining[month] == 0
