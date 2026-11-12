@@ -263,6 +263,9 @@ PAGE += r"""function renderResult(){
    :'')+
   row('Стоимость смены ВРИ / права',money(Number(r.capex.land_rights||0))
    +(vriRelief>0?' <span style="color:#777;font-weight:400">льгота '+money(vriRelief)+'</span>':''))+
+  // Аренда земли — отдельная статья земельных правоотношений: она раньше не
+  // попадала в «Результат», хотя движок её считает и кладёт в поток CAPEX.
+  row('Аренда земли участка',money(Number(r.capex.land_rent||0)))+
   (hotelProject?'':row(r.summary.social_payment_mode==='Строительство'?'Строительство соцобъектов':'Социальная компенсация',socialMoney(r.summary.social_payment)))+
   row('Проектирование П и РД',money((r.capex.design_p||0)+(r.capex.design_rd||0)))+
   (hotelProject

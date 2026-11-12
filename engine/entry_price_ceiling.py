@@ -181,7 +181,14 @@ def entry_price_verdict(bundle: dict[str, Any]) -> dict[str, str]:
     по показателю долга и его порогам из движка; без показателя — по прибыли."""
     result = bundle.get("consolidated") or {}
     summary = result.get("summary") or {}
-    if summary.get("preliminary"):
+    land_rent = result.get("land_rent") or {}
+    # «Уточните аренду земли» уместно, только когда сумма аренды ещё не
+    # определена. Если аренда уже посчитана, а предварительным остаётся лишь
+    # график оплаты или НДС, карточка должна говорить об экономике по факту,
+    # а оговорку несёт подпись под плитками (`preliminary_reason`).
+    rent_unknown = summary.get("preliminary") and not (
+        land_rent.get("complete") and land_rent.get("total") is not None)
+    if rent_unknown:
         return {"title": "Предварительная экономика: уточните аренду земли", "tone": "edge"}
     metric = goal_seek_debt_metric(bundle)
     if not metric.get("key"):
