@@ -177,12 +177,30 @@ def _entry_price_weakest(bundle: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def entry_price_verdict(bundle: dict[str, Any]) -> dict[str, str]:
+    """Сумма аренды уже в модели — показываем результат с явной оговоркой.
+
+    Неизвестную аренду нельзя принять за нулевые затраты. Известное начисление
+    тоже не означает, что договор, НДС и сроки оплаты уже подтверждены.
+    """
+    result = bundle.get("consolidated") or {}
+    summary = result.get("summary") or {}
+    preliminary = bool(summary.get("preliminary"))
+    rent = result.get("land_rent") or {}
+    if preliminary and (rent.get("complete") is not True or rent.get("construction_total") is None):
+        return {"title": "Предварительная экономика: уточните аренду земли", "tone": "edge"}
+    verdict = _entry_price_metric_verdict(bundle)
+    if preliminary:
+        verdict["title"] = "Предварительно: " + verdict["title"][0].lower() + verdict["title"][1:]
+        if verdict["tone"] == "pass":
+            verdict["tone"] = "edge"
+    return verdict
+
+
+def _entry_price_metric_verdict(bundle: dict[str, Any]) -> dict[str, str]:
     """Заголовок карточки решения: проходит / на границе / не проходит —
     по показателю долга и его порогам из движка; без показателя — по прибыли."""
     result = bundle.get("consolidated") or {}
     summary = result.get("summary") or {}
-    if summary.get("preliminary"):
-        return {"title": "Предварительная экономика: уточните аренду земли", "tone": "edge"}
     metric = goal_seek_debt_metric(bundle)
     if not metric.get("key"):
         ok = float(summary.get("net_profit") or 0) > 0

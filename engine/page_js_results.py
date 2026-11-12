@@ -248,6 +248,10 @@ PAGE += r"""function renderResult(){
  const hotelProject=pc.kind==='hotel';
  const hk=(((r.finance||{}).hotel||{}).kpi)||{};
  const dealWithBuyout=!!(r.deal&&Number(r.deal.buyout_mln)>0);
+ const rent=r.land_rent||{},rentCost=expenseGroup('Аренда земельного участка');
+ const rentValue=rent.status==='not_applicable'?'Не применяется':
+  rent.construction_total==null?'Не определена'+(rentCost>0?note('Учтена известная часть: '+escapeHtml(landRentMoney(rentCost))):''):
+  escapeHtml(landRentMoney(rentCost));
  projectParamsTable.innerHTML=
   (r.summary.phase_count?row('Очередность',r.summary.phase_count+' очереди'):'')+
   row(escapeHtml(pc.title||'Класс проекта'),escapeHtml(pc.label||'—'))+
@@ -263,6 +267,7 @@ PAGE += r"""function renderResult(){
    :'')+
   row('Стоимость смены ВРИ / права',money(Number(r.capex.land_rights||0))
    +(vriRelief>0?' <span style="color:#777;font-weight:400">льгота '+money(vriRelief)+'</span>':''))+
+  row('Аренда земли в затратах',rentValue+(rent.status==='not_applicable'?'':rentNote))+
   (hotelProject?'':row(r.summary.social_payment_mode==='Строительство'?'Строительство соцобъектов':'Социальная компенсация',socialMoney(r.summary.social_payment)))+
   row('Проектирование П и РД',money((r.capex.design_p||0)+(r.capex.design_rd||0)))+
   (hotelProject
