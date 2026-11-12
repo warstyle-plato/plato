@@ -76,8 +76,8 @@ def test_phone_rows_have_full_width_bar_with_signed_dates_under_a_date_axis():
                 expand_gantt(page)
 
         first, second = row(page, 'Монтаж фасада'), row(page, 'Кровля')
-        expect(first.locator('.g-dates')).to_have_text('начало 01.10.2026окончание 01.12.2026')
-        expect(second.locator('.g-dates')).to_have_text('начало 10.01.2027окончание 01.03.2027')
+        expect(first.locator('.g-dates')).to_have_text('по плану: начало 01.10.2026окончание 01.12.2026')
+        expect(second.locator('.g-dates')).to_have_text('по плану: начало 10.01.2027окончание 01.03.2027')
         # Полосы привязаны к общей шкале: поздняя работа начинается правее конца ранней.
         a, b = box(first.locator('.planbar')), box(second.locator('.planbar'))
         assert b['x'] > a['x'] + a['width']

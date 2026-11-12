@@ -334,7 +334,7 @@ def test_the_page_takes_done_from_the_server_and_keeps_a_100_percent_reading_out
     base = view['schedule']['management'][0]['children'][0]['children'][0]['children'][0]
     view['schedule']['management'][0]['children'][0]['children'][0]['children'] = [
         dict(base, id='1', object='Корпус 1', name='Котлован', actual_progress=1, pace_progress=1, pace_forecast_method='done',
-             work_done=True, forecast_finish='2026-10-01', observed_complete_by='2026-10-01', delta_days=None),
+             work_done=True, forecast_finish='2026-10-07', observed_complete_by='2026-10-07', delta_days=None),
         dict(base, id='2', object='Корпус 1', name='Монолит', forecast_finish='2026-09-15', delta_days=0),
         # Метод «done» без решения сервера — не законченная работа.
         dict(base, id='3', object='Корпус 2', name='Кровля', actual_progress=1, pace_progress=1, pace_forecast_method='done',
@@ -344,7 +344,9 @@ def test_the_page_takes_done_from_the_server_and_keeps_a_100_percent_reading_out
         first = page.locator('#gantt .g-row.lvl-corpus', has_text='Корпус 1')
         expect(first).to_contain_text('Оценка 15.09.2026')
         expect(first.locator('.g-metrics')).to_contain_text('Оценка 15.09.2026')
-        expect(first.locator('.g-metrics')).not_to_contain_text('01.10.2026')
+        # Дата показания 100% (07.10) отлична от плановых дат образца и не
+        # появляется нигде в строке корпуса, включая подписи дат телефона.
+        expect(first).not_to_contain_text('07.10.2026')
         cells = [c.inner_text().replace('\n', ' ') for c in page.locator('#gprMatrix tbody tr').nth(0).locator('td').all()]
         assert cells == ['По сроку', '+19 дн.']
         assert not errors
