@@ -935,13 +935,17 @@ def install(app: FastAPI) -> MarketDiscoveryService:
     def _cabinet_dir() -> Path:
         return sales_store.default_dir()
 
-    def _sales_view(kept: dict[str, Any]) -> dict[str, Any]:
+    def _sales_view(kept: dict[str, Any], project: str) -> dict[str, Any]:
         """Свод продаж из того, что лежит на складе.
 
         Собирается ОДНОЙ функцией и для загрузки файла, и для открытия
         кабинета: два сборщика на один проект однажды разойдутся, и обе
         картинки будут выглядеть верными.
         """
+        # Следующая загрузка должна вернуться в открытый сохранённый проект.
+        # Имя внутри контрактации может быть пустым или прежним; у старого
+        # безымянного импорта адресом служит ключ, по которому его открыли.
+        project = kept.get("project") or project
         sources = kept.get("sources") or {}
 
         def part(kind: str) -> Any:
@@ -950,7 +954,7 @@ def install(app: FastAPI) -> MarketDiscoveryService:
         contracts = part("contracting")
         if not contracts:
             stock = chessboard.overlay(part("chessboard"), None, datetime.date.today().isoformat())
-            return {"project": kept.get("project") or "",
+            return {"project": project,
                     "sources": [{"kind": kind, "name": sales_store.KINDS.get(kind, kind),
                                  "at": value.get("at"), "file": value.get("file")}
                                 for kind, value in sources.items()],
@@ -964,6 +968,7 @@ def install(app: FastAPI) -> MarketDiscoveryService:
         except ValueError:
             until = None
         got = contracting.summarise(contracts, part("ledger") or {}, until=until)
+        got["project"] = project
         fm, bank, pool = part("fm_plan"), part("bank_plan"), part("pool")
         got["chessboard"] = chessboard.overlay(part("chessboard"), contracts.get("rows") or [],
                                                datetime.date.today().isoformat(), contracts.get("coverage"))
@@ -1115,7 +1120,7 @@ def install(app: FastAPI) -> MarketDiscoveryService:
                 sales_store.save, _cabinet_dir(), project, parts, name)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
-        got = _sales_view(kept)
+        got = _sales_view(kept, project)
         for line in notes:
             got.setdefault("read_notes", []).append(line)
         return got
@@ -1131,7 +1136,7 @@ def install(app: FastAPI) -> MarketDiscoveryService:
             return {"project": "", "sources": [], "known": known,
                     "missing": ["источники не загружены"], "empty": True}
         kept = await run_in_threadpool(sales_store.load, _cabinet_dir(), project)
-        got = _sales_view(kept)
+        got = _sales_view(kept, project)
         got["known"] = known
         return got
 
