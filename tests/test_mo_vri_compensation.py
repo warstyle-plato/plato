@@ -313,3 +313,20 @@ def test_the_phased_result_also_says_why():
     vri = bundle["consolidated"]["vri"]
     assert vri["totals"]["transfer_offset_replaced"] is True
     assert vri["warnings"].count(core.VRI_TRANSFER_OFFSET_REPLACED) == 1
+
+
+def test_the_reason_names_the_entered_sum_not_a_deduction():
+    # Сумма компенсации выключает зачёт и тогда, когда уменьшать было нечего:
+    # причина не утверждает вычета, которого могло не быть.
+    assert "уже уменьшена" not in core.VRI_TRANSFER_OFFSET_REPLACED
+    assert "вписана сумма компенсации" in core.VRI_TRANSFER_OFFSET_REPLACED
+
+
+def test_a_compensation_without_an_offset_has_nothing_to_replace():
+    x = {"vri_region": "mo", "mo_vri_compensation_mln": 50.0}
+    assert core.vri_transfer_offset_replaced(x) is False
+    for empty in (0.0, None, ""):
+        assert core.vri_transfer_offset_replaced(dict(x, vri_transfer_offset_mln=empty)) is False
+    result = _result(x)
+    assert result["vri"]["totals"]["transfer_offset_replaced"] is False
+    assert core.VRI_TRANSFER_OFFSET_REPLACED not in result["vri"]["warnings"]
