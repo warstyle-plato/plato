@@ -462,8 +462,7 @@ def editor(project, *, full_source_sha256=''):
                 unmatched=[dict(id=key, name=row.get('name') or key, object=row.get('object') or 'Общие работы') for key, row in remaining.items() if key not in automatic],
                 outside=[dict(id=key, name=full[key].get('name') or key, object=full[key].get('object') or 'Общие работы') for key in sorted(outside)],
                 history=[dict(revision=e['revision'], recorded_at=e['recorded_at'], author=e['author'],
-                              internal_methods=sorted({elements.internal.LABELS[a['weight']['basis']]
-                                  for a in (e['profile'].get('element_profile') or {}).get('assignments', {}).values() if a.get('weight')}),
+                              internal_methods=elements.internal.methods((e['profile'].get('element_profile') or {}).get('assignments', {})),
                               overrides=(e['profile'].get('element_profile') or {}).get('overrides', {})) for e in events if e['profile']['full_source_sha256'] == sha])
 
 

@@ -1,4 +1,4 @@
-"""Internal element weights from full planned measures, never task counts."""
+"""Internal weight provenance and full planned measures, never task counts."""
 from __future__ import annotations
 
 import math
@@ -6,8 +6,16 @@ import re
 
 LABELS = {'smr_cost': 'Полная плановая стоимость СМР',
           'planned_quantity': 'Проектный объём однородных работ'}
+EXPERT_LABEL = 'Экспертная оценка внутренних долей'
 FIELDS = {'basis', 'value', 'unit', 'source_reference', 'valuation_key',
           'cost_basis', 'position_keys', 'full_scope'}
+
+
+def methods(assignments):
+    labels = {LABELS[assignment['weight']['basis']] for assignment in assignments.values() if assignment.get('weight')}
+    if any(assignment.get('share') is not None for assignment in assignments.values()):
+        labels.add(EXPERT_LABEL)
+    return sorted(labels)
 
 
 def validate(weight):
@@ -51,7 +59,7 @@ def shares(members):
     if any(not node for node in nodes):
         return {}, 'Не для всех работ элемента задан полный план; равные веса не подставляются.'
     if any(assignment.get('share') is not None for _, assignment in members):
-        return {}, 'Полные плановые показатели не смешиваются с ранее заданными внутренними долями.'
+        return {}, 'В одном элементе экспертные доли не смешиваются с расчётом по полному плану.'
     for node in nodes:
         validate(node)
     kinds = {node['basis'] for node in nodes}

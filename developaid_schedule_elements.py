@@ -58,7 +58,7 @@ def validate(config, full):
         if value.get('weight') is not None:
             internal.validate(value['weight'])
             if share is not None:
-                raise ValueError('Расчётный вес не смешивается с ранее заданной внутренней долей.')
+                raise ValueError('Экспертная доля и расчётный вес не используются одновременно.')
 
 
 def weights(config, rows):
@@ -212,8 +212,7 @@ def projection(entries, config, *, cut, confirmed):
                 matrix=matrix, matrix_objects=shown_objects, matrix_truncated=len(objects)>32 or len(stages)>100,
                 share_total=nominal, manual=bool(config['overrides']),
                 project_weight_basis=corpus_basis,
-                internal_weight_methods=sorted({internal.LABELS[(a.get('weight') or {})['basis']]
-                    for a in config['assignments'].values() if a.get('weight')}))
+                internal_weight_methods=internal.methods(config['assignments']))
 
 
 def render_matrix(state):
