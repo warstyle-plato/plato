@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import html
 import math
+import developaid_schedule_internal_weights as internal
 
 PROFILE_ID = 'residential-monolith-unfinished-v1'
 TITLE = 'Монолитный жилой корпус без отделки квартир'
@@ -48,11 +49,16 @@ def validate(config, full):
     if not isinstance(assignments, dict) or set(assignments)-set(full):
         raise ValueError('Сопоставление относится к неизвестной работе полного ГПР.')
     for value in assignments.values():
-        if not isinstance(value, dict) or set(value) != {'element_id', 'share'} or not isinstance(value['element_id'], str) or value['element_id'] not in ids:
+        if (not isinstance(value, dict) or not {'element_id', 'share'} <= set(value)
+                or set(value)-{'element_id', 'share', 'weight'} or not isinstance(value['element_id'], str) or value['element_id'] not in ids):
             raise ValueError('Выберите элемент для работы.')
         share = value['share']
         if share is not None and (isinstance(share, bool) or not isinstance(share, (int, float)) or not math.isfinite(share) or not 0 <= share <= 100):
             raise ValueError('Внутренняя доля должна быть числом от 0 до 100 или оставаться неизвестной.')
+        if value.get('weight') is not None:
+            internal.validate(value['weight'])
+            if share is not None:
+                raise ValueError('Расчётный вес не смешивается с ранее заданной внутренней долей.')
 
 
 def weights(config, rows):
@@ -62,12 +68,26 @@ def weights(config, rows):
         obj = row.get('object') or 'Общие работы'
         assignment = config['assignments'].get(key)
         if config['objects'].get(obj) == 'residential' and assignment:
-            groups.setdefault((obj, assignment['element_id']), []).append((key, assignment['share']))
+            groups.setdefault((obj, assignment['element_id']), []).append((key, assignment))
     values = {r['id']: r['value'] for r in catalog(config['overrides'])}
     result, reasons = {}, {}
-    for (obj, element), members in groups.items():
-        if len(members) == 1 and members[0][1] is None:
-            members = [(members[0][0], 100)]
+    overlaps = internal.overlapping(config['assignments'])
+    for (obj, element), assignments in groups.items():
+        if any(key in overlaps for key, _ in assignments):
+            for key, _ in assignments:
+                reasons[key] = 'Плановая позиция источника повторно распределена между работами или корпусами.'
+            continue
+        if any(assignment.get('weight') is not None for _, assignment in assignments):
+            split, reason = internal.shares(assignments)
+            if reason:
+                for key, _ in assignments:
+                    reasons[key] = reason
+                continue
+            members = list(split.items())
+        else:
+            members = [(key, assignment['share']) for key, assignment in assignments]
+            if len(members) == 1 and members[0][1] is None:
+                members = [(members[0][0], 100)]
         if any(share is None for _, share in members) or not math.isclose(math.fsum(share or 0 for _, share in members), 100, abs_tol=1e-6):
             for key, _ in members:
                 reasons[key] = 'Не подтверждены внутренние доли элемента «'+dict((k, n) for k, n, _ in ELEMENTS)[element]+'» (нужно 100%).'
@@ -123,6 +143,8 @@ def projection(entries, config, *, cut, confirmed):
                 weight = weight_map[key]
                 known_weight += weight
                 weighted.append(weight*min(1, value))
+                if weight == 0 and value < 1:
+                    problems.append((row.get('name') or key)+': работа не завершена и имеет нулевой вес; это не подтверждает полную готовность.')
                 if weight > 0:
                     dates.add(day)
                     sources.add(fact.get('label') or 'Источник работы')
@@ -156,7 +178,9 @@ def projection(entries, config, *, cut, confirmed):
     matrix = [dict(stage=stage, cells=[group(obj, indexed.get((obj, stage), [])) for obj in shown_objects]) for stage in shown_stages]
     return dict(project=group('Проект', entries, True), corpora=[group(obj, by_object[obj], True) for obj in objects],
                 matrix=matrix, matrix_objects=shown_objects, matrix_truncated=len(objects)>32 or len(stages)>100,
-                share_total=nominal, manual=bool(config['overrides']))
+                share_total=nominal, manual=bool(config['overrides']),
+                internal_weight_methods=sorted({internal.LABELS[(a.get('weight') or {})['basis']]
+                    for a in config['assignments'].values() if a.get('weight')}))
 
 
 def render_matrix(state):

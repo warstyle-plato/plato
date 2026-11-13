@@ -434,6 +434,15 @@ def editor(project, *, full_source_sha256=''):
     links.update({link['remaining_id']: link['full_id'] for link in cfg['crosswalk']})
     outside = set(full)-set(links.values())
     shares = elements.catalog(cfg['element_profile']['overrides'])
+    weights, weight_reasons = elements.weights(cfg['element_profile'], {k: row for k, row in full.items() if k in cfg['included_ids']})
+    element_values = {row['id']: row['value'] for row in shares}
+    def work_editor(key, row):
+        assignment = cfg['element_profile']['assignments'].get(key) or {}
+        element_value = element_values.get(assignment.get('element_id'), 0)
+        share = weights[key]/element_value*100 if key in weights and element_value > 0 else None
+        return dict(id=key, name=row.get('name') or key, object=row.get('object') or 'Общие работы',
+                    section=row.get('section') or 'Без этапа', calculated_share=share,
+                    weight_reason=weight_reasons.get(key, ''))
     for share in shares:
         changes, previous_override = [], None
         for e in events:
@@ -449,10 +458,12 @@ def editor(project, *, full_source_sha256=''):
             share.update(author=change['author'], recorded_at=change['recorded_at'])
     return dict(available=True, configuration=cfg, options=dict(expected_source_sha256=current['source_sha256'], expected_source_revision=current['revision'], expected_revision=len(events)),
                 sources=choices, elements=shares, profile_id=elements.PROFILE_ID, title=elements.TITLE, source=elements.SOURCE, source_url=elements.SOURCE_URL, accepted_on=elements.ACCEPTED_ON,
-                works=[dict(id=key, name=row.get('name') or key, object=row.get('object') or 'Общие работы', section=row.get('section') or 'Без этапа') for key, row in full.items()],
+                works=[work_editor(key, row) for key, row in full.items()],
                 unmatched=[dict(id=key, name=row.get('name') or key, object=row.get('object') or 'Общие работы') for key, row in remaining.items() if key not in automatic],
                 outside=[dict(id=key, name=full[key].get('name') or key, object=full[key].get('object') or 'Общие работы') for key in sorted(outside)],
                 history=[dict(revision=e['revision'], recorded_at=e['recorded_at'], author=e['author'],
+                              internal_methods=sorted({elements.internal.LABELS[a['weight']['basis']]
+                                  for a in (e['profile'].get('element_profile') or {}).get('assignments', {}).values() if a.get('weight')}),
                               overrides=(e['profile'].get('element_profile') or {}).get('overrides', {})) for e in events if e['profile']['full_source_sha256'] == sha])
 
 
@@ -487,6 +498,8 @@ def render(state):
     out.append('<p>'+esc(facts(project))+'</p><p>'+esc(evidence(project))+'</p>')
     if state.get('estimated'):
         out.append('<p>Оценка по удельным весам видов работ'+(' с ручными долями' if state.get('manual') else '')+', не по объёмам этого проекта.</p>')
+    if state.get('internal_weight_methods'):
+        out.append('<p>Внутри разделов: '+esc('; '.join(state['internal_weight_methods']))+'. Число задач вес не определяет.</p>')
     if known:
         out.append('<p>'+esc(state.get('profile_label'))+' · '+esc(state.get('basis_label'))+'</p><div class="readiness-grid">'+''.join(card(row) for row in state['corpora'])+'</div>')
     else:
