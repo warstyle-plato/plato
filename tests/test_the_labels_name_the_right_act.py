@@ -192,14 +192,15 @@ def test_the_market_price_example_names_the_current_order() -> None:
     assert "№ 89-Р на III–IV кварталы 2025" not in text
 
 
-# --- T10: 135 мест — показатель без сведений о демографии ---------------------
+# --- T10: 109 мест (прежде 135) — показатель без сведений о демографии ---------
 
 def test_the_school_fallback_is_called_a_fallback() -> None:
     from engine_source import engine_source
     text = engine_source()
-    head = text.index('"school_places_per_1000": 135.0')
+    head = text.index('"school_places_per_1000": 109.0')
     assert "при отсутствии сведений о демографическом составе" in text[head - 600:head]
     assert "п. 5.18" in text[head - 600:head]
+    assert "1420-ПП" in text[head - 600:head]
 
 
 # --- книга: один раз на модуль ---------------------------------------------------

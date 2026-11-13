@@ -59,7 +59,7 @@ def test_the_behind_volume_is_shown_in_its_unit_only_when_the_line_has_one():
     got = control.build(_plan("2026-03-05", LINE), _fact(("3.1", 300.0, [{"unit": "м³", "quantity": 6.0}])),
                         None, "", "2026-03-05")
     assert got["lines"][0]["volume"] == {"unit": "м3", "quantity": 20.0, "planned": 10.0, "fact": 6.0,
-                                         "behind": 4.0}
+                                         "behind": 4.0, "deviation": -4.0}
     assert got["lines"][0]["percent"] == pytest.approx(-0.4)
     mixed = control.build(_plan("2026-03-05", LINE), _fact(("3.1", 300.0, [{"unit": "т", "quantity": 6.0}])),
                           None, "", "2026-03-05")
@@ -138,7 +138,7 @@ def test_without_a_plan_or_a_fact_the_deviation_says_why():
     assert missing["note"] == ("Отклонение от плана не рассчитано, потому что нет факта. "
                                "Факт не рассчитан: Выберите проект.")
     empty = control.build(_plan("2026-03-05"), _fact(), None, "", "2026-03-05")
-    assert empty["note"] == "Отклонение не рассчитано: в плане нет ни одной строки с подтверждённой связью."
+    assert empty["note"] == "Отклонение не рассчитано: в плане нет ни одной строки, связанной с графиком."
 
 
 # --- карточка договора --------------------------------------------------------------
@@ -153,11 +153,17 @@ def test_the_card_reports_lag_volume_and_the_threat_to_the_schedule_end(card):  
         ("1.1", 3000.0, 1500.0, 3, "2026-02-04"), ("1.2", 4000.0, 2500.0, 1, "2026-02-06"),
         ("1.3", 3000.0, 1500.0, 2, "2026-02-05")]
     assert rows["1.2"]["volume"] == {"unit": "м3", "quantity": 0.625, "planned": 0.5, "fact": 0.3125,
-                                     "behind": 0.1875}
+                                     "behind": 0.1875, "deviation": -0.1875}
     assert got["behind"] == ["1.1", "1.3", "1.2"]
-    assert got["total"] == {"amount": 11000.0, "planned": 10000.0, "fact": 5500.0, "deviation": -4500.0,
-                            "percent": -0.45, "state": "behind", "lag_days": 2, "ahead_days": 0,
-                            "behind_amount": 4500.0, "shortfall": 0.0, "incomplete": True}
+    # Готовность договора — 5 500 из 11 000 по стоимости работ, по плану к срезу — 10 000 из 11 000.
+    assert got["total"] == pytest.approx({
+        "amount": 11000.0, "planned": 10000.0, "fact": 5500.0, "deviation": -4500.0,
+        "readiness": 0.5, "plan_share": 10 / 11, "plan_done": 0.55, "percent": -0.45, "state": "behind",
+        "lag_days": 2, "ahead_days": 0, "behind_amount": 4500.0, "shortfall": 0.0, "by_volume": 3, "by_money": 0,
+        "auto": 0, "overdue_works": 2, "preliminary": False, "incomplete": True, "overdue_days": 0})
+    # Срок 1.1 (01.02) и 1.3 прошёл, а работа не закончена: это просрочка, отдельно от отставания.
+    assert [(c, rows[c]["overdue_days"]) for c in ("1.1", "1.2", "1.3")] == [("1.1", 3), ("1.2", 0), ("1.3", 1)]
+    assert got["overdue"] == ["1.1", "1.3"]
     # Плиты в «т» и кладка № 9.9 не сопоставлены с расчётом: в факт не вошли, и отчёт это называет.
     assert got["left_out"] == {"count": 2, "reasons": [
         "В расчёте позиция № 1.2 измеряется в «м3», а в КС — в «т»: объём не пересчитать в деньги.",
@@ -184,7 +190,7 @@ def test_the_register_deadline_is_the_limit_and_a_ks_without_work_yet_is_a_zero_
     got = files.listing("Учебный", CONTRACT, "2026-02-04", fact.acts(idle))
     assert got["fact"]["note"] == "" and got["fact"]["total"] == 0.0
     empty = files.listing("Учебный", CONTRACT, "2026-02-04", fact.acts({**ROW, "physical_items": []}))
-    assert empty["fact"]["note"].startswith("В накопительной КС-6а этого договора нет выполнения")
+    assert empty["fact"]["note"].startswith("Актов КС-2 в карточке нет, а в накопительной КС-6а этого договора нет выполнения")
 
 
 FINISHED_ROW = {**ROW, "physical_items": [
@@ -241,34 +247,56 @@ def test_the_card_reports_the_lag_and_the_threat_in_plain_words(card, width):  #
         page.locator(f'tr[data-contract-id="{CONTRACT}"] .contract-open').click()
         report = page.locator("#contractDocuments .contract-control")
         expect(report.locator(".contract-plan-total")).to_have_text(
-            "На 04.02.2026: план 10 000 ₽, факт 5 500 ₽, отклонение −4 500 ₽ (−45 % от плана на дату среза)")
+            "На 04.02.2026: готовность договора 50 %, выполнение плана 55 %")
+        expect(report.locator(".contract-control-money")).to_have_text(
+            "По плану к этой дате — 90,9 % работ договора. План 10 000 ₽, факт 5 500 ₽, отклонение −4 500 ₽ (−45 %).")
         expect(report.locator(".contract-control-left-out")).to_have_text(
             "2 периода КС не вошли в факт: В расчёте позиция № 1.2 измеряется в «м3», а в КС — в «т»: объём не "
             "пересчитать в деньги. В расчёте нет позиции с этим номером или с таким же названием и единицей (№ 9.9). "
             "Поэтому отставание и отклонение неполные: выполнение этих периодов в них не учтено.")
         state = report.locator(".contract-control-state")
         expect(state).to_have_text("Договор отстаёт от плана на 2 дня: столько дней назад план нарастающим итогом "
-                                   "был равен сегодняшнему факту. Не выполнено по плану на дату среза: 4 500 ₽.")
+                                   "был равен сегодняшней готовности. Не выполнено по плану на дату среза: 4 500 ₽.")
+        # Просрочка — от срока самой работы, отдельно от отставания от плана.
+        expect(report.locator(".contract-control-overdue")).to_have_text(
+            "Срок по графику прошёл, а работа не закончена: 1.1 Возведение стен 1-го этажа — просрочка 3 дня; "
+            "1.3 Устройство плит перекрытия — просрочка 1 день. Просрочка считается от срока работы и не совпадает "
+            "с отставанием от плана.")
         expect(report).to_contain_text("Срок договора в реестре не указан, поэтому прогноз сравнивается с окончанием "
-                                       "графика действующей редакции — 05.02.2026.")
+                                       "расчётного плана по действующему ГПР — 05.02.2026.")
         threat = report.locator(".contract-control-forecast")
         expect(threat).to_have_text("Есть угроза сроку: если отставание сохранится, работы закончатся 06.02.2026 — "
                                     "на 1 день позже срока. Позже срока заканчиваются: "
                                     "1.2 Возведение стен 2-го этажа — 06.02.2026.")
         color = "e => getComputedStyle(e).color"
         assert threat.evaluate(color) == state.evaluate(color) != report.evaluate(color), "угроза выделена красным"
-        expect(report).to_contain_text("Позиции расчёта без подтверждённой связи с графиком (2) в план и прогноз")
+        expect(report).to_contain_text("Позиции расчёта, связь которых с графиком не определена (2), в план и прогноз")
+        expect(report).to_contain_text("Готовность каждой работы посчитана по объёму в её единицах.")
         expect(report).to_contain_text("не меняет прогноз срока ввода проекта")
-        report.get_by_text("Отстают от плана (3)").click()
-        rows = report.locator(".contract-control-behind tbody tr")
+        report.get_by_text("Работы договора (3)").click()
+        works = report.locator(".contract-control-works")
+        names = [" ".join(x.split()) for x in works.locator("thead th").evaluate_all("hs => hs.map(h => h.textContent)")]
+        assert names == ["Работа", "Ед.", "Объём", "План на дату среза", "Факт", "Выполнение плана", "Готовность",
+                         "Отклонение", "Отставание", "Просрочка", "Прогноз окончания"]
+        rows = works.locator("tbody tr")
         expect(rows.nth(0)).to_contain_text("1.1 Возведение стен 1-го этажа")
-        expect(rows.nth(0)).to_contain_text("3 дня")
+        cells = rows.nth(0).locator("td")
+        expect(cells.nth(8)).to_have_text("3 дня")
+        expect(cells.nth(9)).to_have_text("3 дня")
         # На телефоне таблица становится карточками: у каждого числа видна его подпись.
-        assert rows.nth(0).locator("td").nth(4).get_attribute("data-label") == "Отставание"
-        expect(rows.nth(2)).to_contain_text("−1 500 ₽−37,5 % от плана на дату среза")
-        expect(rows.nth(2)).to_contain_text("в натуре: 0,188 м3 из 0,5 м3 по плану")
-        expect(rows.nth(2)).to_contain_text("06.02.2026")
-        expect(report.locator(".contract-control-ahead")).to_have_count(0)
+        assert cells.nth(8).get_attribute("data-label") == "Отставание"
+        assert cells.nth(9).get_attribute("data-label") == "Просрочка"
+        # Стены 2-го этажа: объём в натуре первым, деньги — под ним; три процента работы.
+        slabs = rows.nth(2).locator("td")
+        expect(slabs.nth(1)).to_have_text("м3")
+        expect(slabs.nth(3)).to_have_text("0,5 м34 000 ₽")
+        expect(slabs.nth(4)).to_have_text("0,313 м32 500 ₽")
+        expect(slabs.nth(5)).to_have_text("62,5 %")
+        expect(slabs.nth(6)).to_have_text("50 %")
+        expect(slabs.nth(7)).to_have_text("−37,5 %−0,188 м3")
+        expect(slabs.nth(9)).to_have_text("—")
+        expect(slabs.nth(10)).to_have_text("06.02.2026")
+        assert "risktext" in slabs.nth(5).get_attribute("class")
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
         assert errors == []
 
@@ -286,6 +314,7 @@ def test_a_finished_contract_says_when_its_work_ended_against_the_deadline(card,
         page.locator("#contractsTab").click()
         page.locator(f'tr[data-contract-id="{CONTRACT}"] .contract-open').click()
         report = page.locator("#contractDocuments .contract-control")
+        expect(report.locator(".contract-control-overdue")).to_have_count(0)
         expect(report.locator(".contract-control-state")).to_have_text(
             "Все работы плана закончены. Стоимость выполненного по КС меньше расчёта на 5 500 ₽.")
         ended = report.locator(".contract-control-forecast")

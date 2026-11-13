@@ -106,7 +106,7 @@ def test_the_card_shows_proposed_links_shares_and_reasons(listing):
         part = page.locator("#contractDocuments .contract-links").first
         expect(part).to_contain_text("по графику: Договор · предложено: 4 · на проверку: 4 · "
                                      "дополнительный объём без срока: 1")
-        expect(part).to_contain_text("В накопленный план войдут только подтверждённые связи.")
+        expect(part).to_contain_text("В накопленный план входят подтверждённые связи и предложенные однозначно")
         part.get_by_text("Предложенные связи (4)").click()
         walls = part.locator(".contract-links-proposed tr", has_text="3.1.1")
         expect(walls).to_contain_text("3.1.3 Возведение вертикальных конструкций 2-ого этажа · 16.03.2026 — 20.03.2026"
@@ -159,4 +159,38 @@ def test_a_total_not_reconciled_with_the_positions_says_so_in_the_card(listing):
         _serve(page, listing, [])
         _open(page)
         expect(documents).to_contain_text("Общий итог в документе не прочитан.")
+        assert errors == []
+
+
+def test_a_scan_shows_its_recognised_header_and_posts_it_confirmed(monkeypatch, tmp_path):
+    """Скан показывает распознанную шапку полями; подтверждение уходит с видом документа и его полями."""
+    from playwright.sync_api import expect
+
+    import developaid_contract_scan as scan
+    import pdf_ocr
+    from tests.test_contract_scan_header_is_confirmed import ACT, scan_pdf
+    monkeypatch.setattr(monitor, "_SNAPSHOT_DIR", tmp_path / "monitor")
+    monkeypatch.setattr(pdf_ocr, "unavailable_reason", lambda: None)
+    monkeypatch.setattr(pdf_ocr, "text", lambda data, **_: "[стр. 1]\n" + ACT)
+    sha = files.store("Учебный", ROW, "КС-2 скан.pdf", scan_pdf())["sha256"]
+    listed, calls = files.listing("Учебный", CONTRACT), []
+    with browser_page(390) as (page, _, errors):
+        _serve(page, listed, calls)
+        _open(page)
+        form = page.locator(f'#contractDocuments [data-scan="{sha}"]')
+        expect(page.locator("#contractDocuments")).to_contain_text(scan.CHECK)
+        expect(form.locator("[data-scan-kind]")).to_have_value("act")
+        expect(form.locator('[data-scan-field="act_start"]')).to_have_value("2026-02-01")
+        expect(form.locator('[data-scan-field="agreement_date"]')).to_be_hidden()
+        form.locator("[data-scan-kind]").select_option("agreement")
+        expect(form.locator('[data-scan-field="agreement_date"]')).to_be_visible()
+        expect(form.locator('[data-scan-field="act_start"]')).to_be_hidden()
+        form.locator("[data-scan-kind]").select_option("act")
+        form.locator('[data-scan-field="act_start"]').fill("2026-01-30")
+        form.locator("[data-document-confirm]").click()
+        expect(page.locator("#contractDocumentsMsg")).to_contain_text("Шапка скана подтверждена")
+        name, body = calls[-1]
+        assert name == "document-confirm" and body["sha256"] == sha and body["kind"] == "act"
+        assert body["values"] == {"contract_number": "12-ТСТ", "contract_date": "2025-09-01", "act_number": "2",
+                                  "act_date": "2026-02-03", "act_start": "2026-01-30", "act_finish": "2026-02-03"}
         assert errors == []
