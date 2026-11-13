@@ -348,7 +348,32 @@ def _with_control(listed, acts, cut):
     """The deviation, lag and forecast of the listed plan and fact (step 7)."""
     listed["control"] = control.build(listed["plan"], listed["fact"], (acts or {}).get("deadline"),
                                       (acts or {}).get("deadline_label") or "", cut)
+    # Known source dates are useful even before money/fact can be matched.
+    # They are a source-plan interval, never a legal deadline or a forecast.
+    if listed["control"].get("total") is None:
+        source = _schedule_source(listed.get("documents") or [], cut)
+        if source:
+            listed["control"]["schedule_source"] = source
     return listed
+
+
+def _schedule_source(records, cut):
+    eligible = [r for r in records if not r.get('removed_at') and not r.get('act')
+                and not (r.get('scan') and not r['scan'].get('confirmed_at'))
+                and (r.get('schedule') or {}).get('lines') and _date(r) and _date(r) <= cut]
+    if not eligible:
+        return None
+    record = max(eligible, key=_edition)
+    if sum(_edition(r) == _edition(record) for r in eligible) > 1:
+        return None  # Conflicting documents of one edition need an explicit choice.
+    lines = record['schedule']['lines']
+    dated = [r for r in lines if r.get('start') and r.get('finish') and r['start'] <= r['finish']]
+    if not dated:
+        return None
+    return {'start': min(r['start'] for r in dated), 'finish': max(r['finish'] for r in dated),
+            'title': record.get('title') or _title(record), 'date': _date(record),
+            'sha256': record['sha256'], 'dated': len(dated), 'undated': len(lines)-len(dated),
+            'assumption': record['schedule'].get('assumption') or '', 'basis': 'source_gpr'}
 
 
 def register_control(project: str, register: dict, cut: str) -> dict:
@@ -380,6 +405,8 @@ def register_control(project: str, register: dict, cut: str) -> dict:
             "left_out": found["left_out"],
             **{k: forecast.get(k) for k in ("finish", "deadline", "from_register", "done", "threat", "days_over",
                                             "days_early", "passed")}}
+        if found.get('schedule_source'):
+            row['schedule_control']['schedule_source'] = found['schedule_source']
     return register
 
 
