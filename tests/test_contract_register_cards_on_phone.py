@@ -45,7 +45,12 @@ def test_each_register_row_is_a_signed_card_on_a_phone():
         more = detail(page, row)
         row.locator('td.contract-attention').click()
         expect(more).to_be_visible()
-        part = more.locator('.contract-card-pill').first.bounding_box()
+        # Loading the documents replaces the summary; measure its settled DOM.
+        expect(page.locator('#contractDocumentUpload')).to_be_enabled()
+        pill = more.locator('.contract-card-pill').first
+        expect(pill).to_be_visible()
+        part = pill.bounding_box()
+        assert part is not None
         assert part['x'] >= 0 and part['x'] + part['width'] <= 390
         assert wrap.evaluate('(w) => w.scrollWidth <= w.clientWidth')
         page.locator('#contractDialogClose').click()
