@@ -55,7 +55,7 @@ def test_a_repeated_number_gets_its_own_code_and_its_works_stay_under_their_head
     assert ("Номер строки графика 1.1 повторяется: строки показаны как «1.1» (стр. 1) и «1.1, повтор» (стр. 1). "
             "Позиции расчёта с этим номером свяжите со строкой вручную, а подрядчика попросите исправить нумерацию "
             "графика.") in schedule["warnings"]
-    assert documents.READER_VERSION == 6
+    assert documents.READER_VERSION == 7
 
 
 def _proposed():
