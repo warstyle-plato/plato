@@ -245,63 +245,79 @@ def test_the_book_names_the_deduction_only_when_there_is_one():
                                    _mo_calc={"vri": dict(calc["vri"], payment_used_mln=40.0)})
 
 
-# Решение владельца 13.11.2026 («Б»): в Московской области вписанная сумма
-# компенсации по соглашению о Ксу* и зачёт переданных муниципалитету площадей —
-# либо одно, либо другое. Одна сумма соглашения не вычитается дважды.
+# Решение владельца 13.11.2026 («А»): в Московской области компенсация по
+# соглашению о Ксу* и зачёт переданных муниципалитету площадей вычитаются оба.
+# Ксу* уже срезан в плате из расчёта по области (не ниже 1 ₽), зачёт метров
+# вычитается после и может довести плату до нуля; если вписаны оба, расчёт
+# предупреждает о двойном счёте одних и тех же метров.
 MO_OFFSET = {"vri_region": "mo", "vri_transfer_offset_mln": 300.0}
 
 
-def test_the_agreement_replaces_the_transfer_offset_in_the_region():
-    assert core.vri_relief(MO_OFFSET, 1000e6) == (pytest.approx(300e6), pytest.approx(700e6))
+def test_the_offset_still_counts_next_to_the_agreement():
     relief, net = core.vri_relief(dict(MO_OFFSET, mo_vri_compensation_mln=50.0), 1000e6)
-    assert relief == 0.0 and net == pytest.approx(1000e6), "зачёт вычтен поверх Ксу*"
-    # Пустое поле компенсации и Москва зачёт не трогают.
-    assert core.vri_transfer_offset_applies(dict(MO_OFFSET, mo_vri_compensation_mln=0))
-    assert core.vri_transfer_offset_applies({"vri_region": "msk", "mo_vri_compensation_mln": 50.0})
+    assert relief == pytest.approx(300e6) and net == pytest.approx(700e6), \
+        "метры отданы, а зачёт за них пропал"
+    # Зачёт больше оставшейся после Ксу* платы доводит её до нуля, а не ниже.
+    relief, net = core.vri_relief(dict(MO_OFFSET, mo_vri_compensation_mln=50.0), 1.0)
+    assert net == 0.0
 
 
-def _result(extra: dict) -> dict:
+def test_the_warning_needs_both_fields_in_the_region():
+    assert core.vri_offset_with_compensation(dict(MO_OFFSET, mo_vri_compensation_mln=50.0))
+    assert not core.vri_offset_with_compensation(MO_OFFSET)
+    for empty in (0.0, None, ""):
+        assert not core.vri_offset_with_compensation(dict(MO_OFFSET, mo_vri_compensation_mln=empty))
+        assert not core.vri_offset_with_compensation(
+            {"vri_region": "mo", "mo_vri_compensation_mln": 50.0, "vri_transfer_offset_mln": empty})
+    assert not core.vri_offset_with_compensation(
+        {"vri_region": "msk", "mo_vri_compensation_mln": 50.0, "vri_transfer_offset_mln": 300.0})
+
+
+def _result(extra: dict, tep: dict | None = None) -> dict:
     import copy
     x = {**core.DEFAULT_INPUTS, "vri_required": True, "land_rights_cost_mln": 1000.0, **extra}
-    return core.calculate(core.CalcRequest(inputs=x, tep=copy.deepcopy(core.TEP_DEFAULT)))
+    return core.calculate(core.CalcRequest(inputs=x, tep=copy.deepcopy(tep or core.TEP_DEFAULT)))
 
 
-def test_the_result_says_why_the_offset_is_not_counted():
-    replaced = _result(dict(MO_OFFSET, mo_vri_compensation_mln=50.0))
-    counted = _result(MO_OFFSET)
-    assert replaced["vri"]["totals"]["transfer_offset_replaced"] is True
-    assert core.VRI_TRANSFER_OFFSET_REPLACED in replaced["vri"]["warnings"]
-    assert counted["vri"]["totals"]["transfer_offset_replaced"] is False
-    assert core.VRI_TRANSFER_OFFSET_REPLACED not in counted["vri"]["warnings"]
-    assert replaced["summary"]["net_profit"] < counted["summary"]["net_profit"]
+def test_the_given_metres_leave_sales_and_keep_their_offset():
+    import copy
+    tep = copy.deepcopy(core.TEP_DEFAULT)
+    tep["apartments"]["transfer"] = 2000
+    both = _result(dict(MO_OFFSET, mo_vri_compensation_mln=50.0), tep)
+    offset = _result(MO_OFFSET, tep)
+    none = _result({"vri_region": "mo"}, tep)
+    assert both["summary"]["revenue"] == pytest.approx(none["summary"]["revenue"])
+    assert both["vri"]["totals"]["relief"] == pytest.approx(300e6)
+    assert both["summary"]["net_profit"] == pytest.approx(offset["summary"]["net_profit"])
+    assert both["vri"]["totals"]["offset_with_compensation"] is True
+    assert core.VRI_OFFSET_WITH_COMPENSATION in both["vri"]["warnings"]
+    assert offset["vri"]["totals"]["offset_with_compensation"] is False
+    assert core.VRI_OFFSET_WITH_COMPENSATION not in offset["vri"]["warnings"]
 
 
-def test_the_offset_field_names_why_it_is_not_counted():
+def test_the_offset_field_warns_about_counting_twice():
     shown, taken = page_blocks.run("\n".join([
         "let inputs={};",
-        "let lastResult={vri:{totals:{transfer_offset_replaced:true}}};",
+        "let lastResult={vri:{totals:{offset_with_compensation:true}}};",
     ]), "\n".join([
-        "const replaced=classFieldUnitText('vri_transfer_offset_mln','млн ₽; по соглашению — уменьшает плату за ВРИ');",
-        "lastResult={vri:{totals:{transfer_offset_replaced:false}}};",
-        "console.log(JSON.stringify({replaced,counted:classFieldUnitText('vri_transfer_offset_mln','млн ₽')}));",
+        "const both=classFieldUnitText('vri_transfer_offset_mln','млн ₽');",
+        "lastResult={vri:{totals:{offset_with_compensation:false}}};",
+        "console.log(JSON.stringify({both,alone:classFieldUnitText('vri_transfer_offset_mln','млн ₽')}));",
     ]))
     result = json.loads(shown)
     assert "classFieldUnitText" in taken
-    assert result["replaced"].startswith("млн ₽. Не применяется") and "Ксу*" in result["replaced"]
-    # Базовая подпись «по соглашению — уменьшает плату» рядом с отказом спорила бы с ним.
-    assert "уменьшает плату за ВРИ" not in result["replaced"]
-    # Причина — вписанная сумма, а не вычет: уменьшать бывает и нечего.
-    assert "уже уменьшена" not in result["replaced"]
-    assert result["counted"] == "млн ₽"
+    assert result["both"].startswith("млн ₽. Вычитается вместе с компенсацией") and "Ксу*" in result["both"]
+    assert "не применяется" not in result["both"].lower()
+    assert result["alone"] == "млн ₽"
 
 
-def test_the_book_says_the_offset_is_not_counted():
-    note = "Не применяется: вписана компенсация по соглашению о Ксу*"
+def test_the_book_says_the_offset_is_counted_with_the_agreement():
+    note = "Вычтен вместе с компенсацией по соглашению о Ксу*"
     assert note in _book_text(vri_transfer_offset_mln=300.0, mo_vri_compensation_mln=50.0)
     assert note not in _book_text(vri_transfer_offset_mln=300.0)
 
 
-def test_the_phased_result_also_says_why():
+def test_the_phased_result_also_warns_once():
     import copy
     x = {**core.DEFAULT_INPUTS, "vri_required": True, "land_rights_cost_mln": 1000.0,
          **MO_OFFSET, "mo_vri_compensation_mln": 50.0}
@@ -311,22 +327,5 @@ def test_the_phased_result_also_says_why():
                  "phases": [{"name": "О1", "start_offset_months": 0},
                             {"name": "О2", "start_offset_months": 12}]}))
     vri = bundle["consolidated"]["vri"]
-    assert vri["totals"]["transfer_offset_replaced"] is True
-    assert vri["warnings"].count(core.VRI_TRANSFER_OFFSET_REPLACED) == 1
-
-
-def test_the_reason_names_the_entered_sum_not_a_deduction():
-    # Сумма компенсации выключает зачёт и тогда, когда уменьшать было нечего:
-    # причина не утверждает вычета, которого могло не быть.
-    assert "уже уменьшена" not in core.VRI_TRANSFER_OFFSET_REPLACED
-    assert "вписана сумма компенсации" in core.VRI_TRANSFER_OFFSET_REPLACED
-
-
-def test_a_compensation_without_an_offset_has_nothing_to_replace():
-    x = {"vri_region": "mo", "mo_vri_compensation_mln": 50.0}
-    assert core.vri_transfer_offset_replaced(x) is False
-    for empty in (0.0, None, ""):
-        assert core.vri_transfer_offset_replaced(dict(x, vri_transfer_offset_mln=empty)) is False
-    result = _result(x)
-    assert result["vri"]["totals"]["transfer_offset_replaced"] is False
-    assert core.VRI_TRANSFER_OFFSET_REPLACED not in result["vri"]["warnings"]
+    assert vri["totals"]["offset_with_compensation"] is True
+    assert vri["warnings"].count(core.VRI_OFFSET_WITH_COMPENSATION) == 1

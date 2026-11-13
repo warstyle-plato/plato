@@ -297,7 +297,7 @@ function renderVri(vri){
  if(sitePositionWanted(vri&&vri.benefits,reliefBasis))resolveSitePosition();
  renderVriBenefits(vri&&vri.benefits,reliefBasis);
  fillVriReliefOffer();
- // Подпись поля зачёта площадей читает итог расчёта: заменил ли его Ксу*.
+ // Подпись поля зачёта площадей читает итог расчёта: вписан ли рядом Ксу*.
  if(typeof refreshClassFieldUnit==='function'&&typeof document.querySelector==='function')refreshClassFieldUnit('vri_transfer_offset_mln');
  renderKrtVriFooter();
  syncVriRequiredBox();
