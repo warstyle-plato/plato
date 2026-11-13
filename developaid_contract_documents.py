@@ -3,8 +3,8 @@
 One reader serves the contract and its supplementary agreements (ДС). A table
 is read by its ruled grid: rows lie between horizontal rules, columns between
 vertical rules. An unrecognised grid, header or row is a warning or an error
-with its page, never an empty success. A scan without a text layer is named as
-such. The reader returns positions and schedule lines with the page where each
+with its page, never an empty success. A scan without a text layer gives only
+its recognised header, held until the user confirms it (`developaid_contract_scan`). The reader returns positions and schedule lines with the page where each
 was seen; it builds neither a plan nor a fact.
 
 Schedule dates come from the start and finish cells. A bar of the chart gives
@@ -1201,14 +1201,14 @@ def read(data: bytes) -> dict:
         if document.page_count > MAX_PAGES:
             raise ValueError(f'В документе страниц: {document.page_count}, а читается не больше {MAX_PAGES}. '
                              'Загрузите договор, соглашения и акты отдельными файлами.')
-        return _read(document)
+        return _read(document, data)
 
 
-def _read(document) -> dict:
+def _read(document, data: bytes = b'') -> dict:
     texts = [page.get_text() for page in document]
     if not any(_space(text) for text in texts):
-        raise ValueError('В PDF нет текстового слоя: это скан. Графы расчёта и графика по скану не прочитать '
-                         'надёжно; нужен PDF с текстом, например выгрузка из системы электронного документооборота.')
+        import developaid_contract_scan as scan
+        return scan.read(data, len(texts))
     accepted = _act(document, texts[0])
     if accepted is not None:
         # The agreement an act names is the one it was signed under, not a new edition.
