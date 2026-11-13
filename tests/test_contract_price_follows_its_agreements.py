@@ -274,3 +274,43 @@ def test_unknown_vat_never_appears_as_a_known_rebased_percentage_on_the_page_or_
         expect(actual).to_contain_text('НДС')
         expect(actual).not_to_contain_text('15 %')
         assert not errors and page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+
+
+@pytest.mark.parametrize('width',[390,1440])
+def test_coverage_percent_keeps_its_own_basis_next_to_a_new_price_in_every_consumer(context,width):  # noqa: F811
+    import developaid_management_report as report
+    from playwright.sync_api import expect
+    from tests.test_monitor_cumulative_controls import CONTRACT,browser_page
+    from tests.contract_rows import opened
+    provide(context,parsed(),rss=[rss_contract(amount=1000,amount_basis='with_vat')])
+    before, = contracts.build('Example','2026-11-06')['rows']
+    files.store('Example',before,'Договор.pdf',_pdf('Договор подряда № A-12 от 01.01.2026',
+        '3.1. Цена Договора составляет 2 000 рублей с НДС.'))
+    row, = contracts.build('Example','2026-11-06')['rows']
+    assert row['amount'] == 2000 and row['completion_ratio'] is None
+    assert row['statement_progress']['planned'] == 1020 and row['statement_progress']['completed'] == 400
+    metric = report._work_contract_progress(row,include_change=False)
+    assert 'стоимости работ по ведомостям' in metric and 'база 1 020 ₽' in metric
+    markup = report._contract_performance_html({'state':'ok','performance_rows':[row]})
+    assert 'стоимости работ по ведомостям' in markup and 'база 1 020 ₽' in markup
+    with browser_page(width) as (page,responses,errors):
+        row['id'] = CONTRACT
+        responses.data['rows'] = [copy.deepcopy(row)]
+        page.locator('#contractsTab').click()
+        shown = page.locator(f'tr[data-contract-id="{CONTRACT}"]')
+        brief = shown.locator('.contract-money')
+        expect(brief).to_contain_text('2 000 ₽')
+        expect(brief).to_contain_text('39,2%')
+        expect(brief.locator('.contract-share-basis')).to_have_text('От стоимости работ по ведомостям · база 1 020 ₽')
+        expect(brief.locator('.contract-full-share-unknown')).to_have_text('Доля полной цены договора не подтверждена')
+        more = opened(page,CONTRACT)
+        detail = more.locator('[data-label="Выполнено по накопительным"]')
+        expect(detail).to_contain_text('400 ₽ из 1 020 ₽')
+        expect(detail.locator('.contract-share-basis')).to_have_text('От стоимости работ по ведомостям')
+        expect(detail.locator('.contract-full-share-unknown')).to_be_visible()
+        assert not errors and page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+        page.screenshot(path=f'/tmp/price-basis-labelled-{width}.png',full_page=True)
+        page.emulate_media(media='print')
+        expect(brief.locator('.contract-share-basis')).to_be_visible()
+        expect(brief.locator('.contract-share-basis')).to_contain_text('1 020 ₽')
+        expect(brief.locator('.contract-full-share-unknown')).to_be_visible()

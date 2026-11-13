@@ -3673,6 +3673,9 @@ def _work_contract_progress(link: dict[str, Any], *, include_change: bool = True
     if selected.get("ratio") is not None:
         basis = selected.get("basis_label") or ("суммы КС-2 по сводной" if _work_closing_summary(link) else "по накопительным")
         label = f"{_pct(selected['ratio'])} {basis}"
+        if (link.get('amount_documents') and selected.get('basis') in {'statement', 'statement_union'}
+                and selected.get('planned') is not None):
+            label += f" (база {_rub(selected['planned'])})"
         delta = selected.get("delta_percent_points")
         if include_change and selected.get("comparison_state") == "comparable" and delta is not None:
             change = "Корректировка" if selected.get("change_kind") == "correction" else "Изменение"
