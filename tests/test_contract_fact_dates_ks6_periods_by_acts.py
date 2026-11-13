@@ -150,9 +150,12 @@ def test_the_act_in_the_card_dates_its_period_and_the_summary_dates_the_rest(car
     assert second["source"]["filename"] == "КС-2 2.pdf"
     assert second["warnings"] == ["В сводной акт № 2 датирован 04.02.2026, а в PDF акта — 03.02.2026: взят PDF акта."]
     assert got["unread"] == [] and got["note"] == ""
-    # Период № 1 закончился до соглашения № 4 (01.02): принят раньше и в план не входит.
-    assert got["before"] == {"start": "2026-02-01", "count": 1, "amount": 0.0, "unpriced": 1}
-    assert got["total"] == 4000.0
+    # Факт — акт КС-2 № 2 карточки (этап 3); КС-6а с датами из актов и сводной сверяется с ним:
+    # по КС-6а с начала стройки 0,75 м3, по актам карточки — 0,5 (акта № 1 в карточке нет).
+    assert got["source"] == "ks2" and got["total"] == 4000.0
+    assert got["before"] == {"start": "2026-02-01", "count": 0, "amount": 0.0, "unpriced": 0}
+    assert [(r["number"], r["ks2"], r["ks6a"], r["same"]) for r in got["reconciliation"]["rows"]] == [
+        ("1.1", 0.5, 0.75, False)]
     assert [(p["number"], p["quantity"], p["amount"], p["place"]) for p in got["positions"]] == [
         ("1.1", 0.5, 4000.0, "confirmed")]
 
