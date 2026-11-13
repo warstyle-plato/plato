@@ -173,6 +173,32 @@ def test_revocation_closes_and_scrubs_the_modal():
 
 
 @pytest.mark.parametrize('width',[390,1440])
+def test_reopening_before_native_close_event_keeps_current_modal(compared,width):
+    from playwright.sync_api import expect
+    with browser_page(width) as (page,_,errors):
+        _serve(page,compared,[])
+        page.locator('#contractsTab').click()
+        page.locator(f'tr[data-contract-id="{CONTRACT}"] .contract-open').click()
+        expect(page.get_by_role('dialog')).to_be_visible()
+        # close() queues a native event. Reopen in the same task, before that
+        # old event arrives, as can happen with immediate keyboard activation.
+        page.evaluate('''id=>{
+            window.nativeDialogClosures=0;
+            document.getElementById('contractDialog').addEventListener('close',()=>window.nativeDialogClosures++);
+            closeContractDialog();
+            openContractDetails(id);
+        }''',CONTRACT)
+        page.wait_for_function('window.nativeDialogClosures>=1')
+        expect(page.get_by_role('dialog')).to_be_visible()
+        expect(page.locator('#contractComparisonRows tr[data-comparison-code]')).to_have_count(len(compared['comparison']['lines']))
+        # An actual external close still scrubs the active card and its forms.
+        page.locator('#contractDialog').evaluate('d=>d.close()')
+        expect(page.get_by_role('dialog')).not_to_be_visible()
+        expect(page.locator('#contractsDetails')).to_be_empty()
+        assert not errors
+
+
+@pytest.mark.parametrize('width',[390,1440])
 def test_prints_current_comparison_or_register_without_private_source_sections(compared,width):
     from playwright.sync_api import expect
     with browser_page(width) as (page,_,errors):

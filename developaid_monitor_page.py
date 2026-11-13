@@ -903,7 +903,7 @@ function closeContractDialog(restore=true){const dialog=$('contractDialog'),open
 $('contractDialogClose').onclick=()=>closeContractDialog();
 $('contractDialogDocuments').onclick=()=>{const docs=$('contractDocumentList'),upload=$('contractUploadArea');if(docs&&upload){docs.open=true;upload.scrollIntoView({block:'start',behavior:'smooth'})}};
 $('contractDialog').addEventListener('cancel',e=>{e.preventDefault();closeContractDialog()});
-$('contractDialog').addEventListener('close',()=>{if(contractDialogContext||$('contractsDetails').childNodes.length)closeContractDialog()});
+$('contractDialog').addEventListener('close',()=>{if(!$('contractDialog').open&&(contractDialogContext||$('contractsDetails').childNodes.length))closeContractDialog()});
 $('contractDialog').addEventListener('click',e=>{const d=$('contractDialog'),r=d.getBoundingClientRect();if(e.target===d&&(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom))closeContractDialog()});
 function contractCardSummary(r,d=null){
  const total=d?.control?.total||r.schedule_control||{},fc=d?.control?.forecast||r.schedule_control||{},p=d?.price,t=d?.terms;
