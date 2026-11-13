@@ -1,4 +1,4 @@
-"""A reviewed amendment text is not a proved commencement date; the deduction is a user-entered sum."""
+"""A proved commencement date does not prove project eligibility; the deduction is a user-entered sum."""
 import json
 
 import pytest
@@ -14,17 +14,20 @@ def cards():
             if row["id"] in {"mo-1745-vri-kd", "mo-1310-vri-ksu"}}
 
 
-def test_the_two_cards_end_in_a_proven_unknown_without_an_invented_commencement_date():
+def test_the_cards_keep_unknown_legal_scope_and_the_reviewed_commencement_date():
     for row in cards().values():
         assert row["status"] == "not_confirmed"
         assert row["unconfirmed_reason"] and row["to_confirm"]
         assert not registry.verdict_problems(row)
-        text = json.dumps(row, ensure_ascii=False)
-        assert "16.10.2026" not in text and "2026-10-16" not in text
-        assert "опубликовано 15.10.2026" not in text
         assert row["affects"][0].startswith(WARNING)
     assert cards()["mo-1310-vri-ksu"]["adopted_at"] == "2026-10-15"
-    assert cards()["mo-1310-vri-ksu"]["effective_from"] == ""
+    amendment = cards()["mo-1310-vri-ksu"]
+    assert amendment["effective_from"] == "2026-10-16"
+    assert "опубликован 15.10.2026" in amendment["verification"]["edition"]
+    assert any("Официальная карточка: публикация 15.10.2026 в 18:45" == source["label"]
+               and source["url"].startswith("https://mosreg.ru/")
+               for source in amendment["verification"]["sources"])
+    assert "право и размер уменьшения" in amendment["to_confirm"]
 
 
 def test_the_amendment_card_quotes_the_rule_and_names_its_nonmonetary_changes():
@@ -66,6 +69,6 @@ def test_reader_and_admin_see_how_the_deduction_is_counted_before_opening_and_th
             expect(proof).to_contain_text(COMMENCEMENT)
             expect(proof.get_by_text(COMMENCEMENT, exact=False)).to_be_visible()
             if admin:
-                expect(card.locator(".probe").filter(has_text="Не подтверждено:")).to_contain_text("официального опубликования")
+                expect(card.locator(".probe").filter(has_text="Не подтверждено:")).to_contain_text("консолидированная редакция")
         finally:
             browser.close()
