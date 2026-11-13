@@ -152,10 +152,10 @@ def test_report_preserves_known_rss_date_when_monitor_funding_fails(tmp_path, mo
     assert "20.10.2026" in tiles["Выбрано у банка"]["note"]
 
 
-def test_later_budget_version_is_explicit_without_rewriting_money(tmp_path, monkeypatch):
+def test_later_budget_version_is_retained_without_claiming_historical_money(tmp_path, monkeypatch):
     built, view = source_case(tmp_path, monkeypatch)
     limit = view["dashboard"]["funding"]
-    before = {k: limit["own_money"][k] for k in ("budget", "paid", "left", "need")}
+    before = dashboard._finance_baseline(PROJECT)
     meta_path = monitor._project_dir(PROJECT) / "baseline" / monitor.FINANCE_META
     meta = json.loads(meta_path.read_text())
     meta["taken_at"] = "2026-10-25"
@@ -167,4 +167,5 @@ def test_later_budget_version_is_explicit_without_rewriting_money(tmp_path, monk
     note = dashboard.funding_source_notes(updated)["budget"]
     assert "версия от 25.10.2026" in note and "позже даты расчётного среза" in note
     assert note in report.render_html(built)
-    assert before == {k: updated["own_money"][k] for k in before}
+    assert not updated["known"] and "позже выбранной даты" in updated["reason"]
+    assert dashboard._finance_baseline(PROJECT) == before  # Stored amounts are unchanged.

@@ -50,6 +50,7 @@ def _finmodel(crosswalk: bool = True, credit: bool = True) -> bytes:
     ws = book.active
     ws.title = "ОТЧЕТ"
     cf = book.create_sheet("cf_1_new")
+    cf["B2"] = "Все суммы в тыс. руб."
     cf.cell(6, 9, "ИТОГО"), cf.cell(6, 10, "ФАКТ"), cf.cell(6, 11, "ПЛАН")
     # факт закрыт сентябрём, план — с октября
     cf.cell(5, 13, "факт"), cf.cell(6, 13, datetime.datetime(2026, 9, 1))

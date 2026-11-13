@@ -69,13 +69,25 @@ def _stored_funding_source(project: str, path: Path) -> dict[str, Any]:
 
 
 def _funding_source_dates(project: str, rss: Path, cut: datetime.date,
-                          schedule: dict[str, Any] | None = None) -> dict[str, Any]:
-    return {"report_date": cut.isoformat(),
-            "budget": _stored_funding_source(project, _finance_file(project)),
+                          schedule: dict[str, Any] | None = None, *,
+                          budget_source: dict | None = None) -> dict[str, Any]:
+    dates = {"report_date": cut.isoformat(),
+            "budget": (dict(budget_source) if budget_source is not None else
+                       _stored_funding_source(project, _finance_file(project))),
             "rss": _stored_funding_source(project, rss), "schedule_used": schedule is not None,
             "schedule": ((schedule or {}).get("source_dates", {
                 "data_date": _source_day((schedule or {}).get("day")),
                 "file": (schedule or {}).get("file") or ""}) if schedule else {})}
+    budget_day = dates["budget"].get("data_date")
+    dates["observation_scope"] = "raw_saved_sources"
+    dates["payments_complete_through_cut"] = None
+    dates["source_scope_note"] = (
+        "Расчёт по сохранённым источникам. "
+        + ("Дата версии финансовой модели не указана. " if not budget_day else
+           "Версия финансовой модели: " + budget_day + ". ")
+        + "Полнота оплат на выбранную дату не подтверждена; суммы и расчётная потребность "
+          "не являются подтверждённым финансовым состоянием на эту дату.")
+    return dates
 
 
 def funding_source_notes(funding: dict[str, Any]) -> dict[str, str]:
@@ -120,6 +132,9 @@ def funding_source_notes(funding: dict[str, Any]) -> dict[str, str]:
         notes["schedule"] = "График финансирования: " + version(schedule) + "." + file_note(schedule)
         sources.append("график финансирования: " + version(schedule))
     notes["need"] = report_note + " Источники расчёта: " + "; ".join(sources) + "."
+    scope_note = dates.get("source_scope_note")
+    if scope_note:
+        notes = {key: value + " " + scope_note for key, value in notes.items()}
     return notes
 
 
@@ -211,7 +226,28 @@ def _finance_for_cut(project: str, cut: Any = "") -> dict[str, Any]:
     import developaid_finance_allocations as allocations
     day = cut.isoformat() if isinstance(cut, datetime.date) else str(cut or "")
     import developaid_finance_management as management
-    return management.qualify(project, allocations.qualify(project, _finance_baseline(project), day), day)
+    # Use the same source lock as the baseline writer: amount/date metadata
+    # cannot acquire each other's identity during a concurrent replacement.
+    with allocations.source_lock(project):
+        model = _finance_baseline(project)
+        meta = monitor.finance_baseline_meta(project)
+        version = monitor._day(meta.get("taken_at"))
+        selected_cut = monitor._day(day)
+        sha = (model.get("budget_composition") or {}).get("source_sha256")
+        if sha and meta.get("source_sha256") and sha != meta["source_sha256"]:
+            return {"known": False, "reason": "Версия финансовой модели изменилась; суммы и дата источника не совпадают."}
+        if version is not None and selected_cut is not None and version > selected_cut:
+            return {"known": False,
+                    "reason": "Версия финансовой модели " + version.isoformat()
+                        + " позже выбранной даты " + selected_cut.isoformat()
+                        + "; её суммы не являются историческим бюджетом на эту дату.",
+                    "raw_saved_baseline": model, "source_date": version.isoformat()}
+        result = management.qualify(project, allocations.qualify(project, model, day), day)
+        result["finance_source_observation"] = {
+            "data_date": _source_day(meta.get("taken_at")), "uploaded_at": meta.get("uploaded_at"),
+            "file": meta.get("file_name") or model.get("source") or "finance.xlsx",
+            "source_sha256": sha, "metadata_bound_to_bytes": bool(sha and meta.get("source_sha256") == sha)}
+        return result
 
 
 class _Grid:
@@ -463,12 +499,29 @@ def _read_finance_model(wb: Any, path: Path, *, bank_assignments: dict | None = 
     for r, values in enumerate(ws.iter_rows(values_only=True), 1):
         labels = {_norm(v): c for c, v in enumerate(values, 1) if _norm(v)}
         if {"итого", "факт", "план"} <= set(labels):
+            counts = Counter(_norm(value) for value in values)
+            if any(counts[label] != 1 for label in ("итого", "факт", "план")):
+                return {"known": False, "reason": "В шапке финмодели неоднозначны колонки «ИТОГО | ФАКТ | ПЛАН»."}
             header = (r, labels["итого"], labels["факт"], labels["план"])
             break
     if header is None:
         return {"known": False,
                 "reason": "в листе «cf_1_new» не найдена шапка «ИТОГО | ФАКТ | ПЛАН»"}
     header_row, total_col, fact_col, plan_col = header
+    import developaid_admin_expenses_source as source_proof
+    evidence = source_proof._HeaderEvidence(ws.max_column)
+    try:
+        for index, cells in enumerate(wb[FINANCE_MODEL_SHEET].iter_rows(max_row=header_row), 1):
+            evidence.add(index, cells)
+    except source_proof.SourceProblem:
+        return {"known": False, "reason": "Не удалось проверить ограниченную шапку денежных единиц финмодели."}
+    units = evidence.result()
+    units["context"]["sheet"] = FINANCE_MODEL_SHEET
+    unit_scale = {"руб.": 1.0, "тыс. руб.": 1000.0, "млн руб.": 1000000.0}.get(
+        units.get("recognized_unit")) if units["state"] == "observed" else None
+    if unit_scale is None:
+        return {"known": False, "reason": "Единицы денежных сумм в шапке финмодели не указаны или неоднозначны.",
+                "unit_evidence": units}
     kind_row = header_row - 1
     month_columns: list[tuple[int, datetime.date]] = []
     for c in range(plan_col + 1, ws.max_column + 1):
@@ -486,56 +539,54 @@ def _read_finance_model(wb: Any, path: Path, *, bank_assignments: dict | None = 
                           "нельзя разложить по главам сметы РСС"}
 
     rows: list[dict[str, Any]] = []
-    stack: list[dict[str, Any]] = []
     interest: list[dict[str, Any]] = []
     credit_plan = None
     for r in range(header_row + 1, ws.max_row + 1):
         if _norm(ws.cell(r, _FM_NAME_COL).value) == _norm(_FM_CREDIT_LABEL) and credit_plan is None:
             credit_plan = {
                 "label": _FM_CREDIT_LABEL,
-                "total": actuals._money(ws.cell(r, total_col).value) * _FM_THOUSANDS,
-                "drawn": actuals._money(ws.cell(r, fact_col).value) * _FM_THOUSANDS,
-                "plan": actuals._money(ws.cell(r, plan_col).value) * _FM_THOUSANDS,
+                "total": actuals._money(ws.cell(r, total_col).value) * unit_scale,
+                "drawn": actuals._money(ws.cell(r, fact_col).value) * unit_scale,
+                "plan": actuals._money(ws.cell(r, plan_col).value) * unit_scale,
                 "monthly": {month.isoformat(): max(0.0, actuals._money(ws.cell(r, c).value)
-                                                  * _FM_THOUSANDS)
+                                                  * unit_scale)
                             for c, month in month_columns},
             }
         code = actuals._code(ws.cell(r, _FM_CODE_COL).value)
         name = str(ws.cell(r, _FM_NAME_COL).value or "").strip()
         if code == _FM_INTEREST_CODE and not interest:
             interest.append({"code": code, "name": name,
-                             "total": actuals._money(ws.cell(r, total_col).value) * _FM_THOUSANDS})
+                             "total": actuals._money(ws.cell(r, total_col).value) * unit_scale})
         if code == _FM_COMMISSION_CODE and interest:
             # Комиссия уходит в бюджет — из справки о процентах её вычитаем.
-            interest[0]["total"] -= actuals._money(ws.cell(r, total_col).value) * _FM_THOUSANDS
+            interest[0]["total"] -= actuals._money(ws.cell(r, total_col).value) * unit_scale
             interest[0]["commission_excluded"] = True
         if not code or not _fm_in_budget(code):
             continue
         depth = code.count(".") + 1
-        # Родитель — строка, чей код — начало этого кода, а не просто строка
-        # выше и мельче: комиссия банка (3.1.4.1.3) стоит после строк «2.…» и
-        # иначе стала бы «дочерней» у чужой статьи.
-        while stack and not code.startswith(stack[-1]["code"] + "."):
-            stack.pop()
         row = {"row": r, "code": code, "depth": depth, "has_children": False,
                "name": str(ws.cell(r, _FM_NAME_COL).value or "").strip()}
-        if stack:
-            stack[-1]["has_children"] = True
         rows.append(row)
-        stack.append(row)
     if not rows:
         return {"known": False,
                 "reason": "в листе «cf_1_new» нет строк расходов с кодами «2.…» в колонке C"}
+    codes = Counter(meta["code"] for meta in rows)
+    if any(count > 1 for count in codes.values()):
+        return {"known": False, "reason": "В листе «cf_1_new» повторяются коды расходов; денежный состав неоднозначен."}
+    parents = {".".join(parts[:i]) for code in codes
+               for parts in [code.split(".")] for i in range(1, len(parts))}
+    for meta in rows:
+        meta["has_children"] = meta["code"] in parents
 
     def money(r: int, c: int) -> float:
-        return actuals._money(ws.cell(r, c).value) * _FM_THOUSANDS
+        return actuals._money(ws.cell(r, c).value) * unit_scale
 
     def known_money(r: int, c: int) -> bool:
         value = ws.cell(r, c).value
         if value is None or isinstance(value, bool):
             return False
         try:
-            return math.isfinite(float(str(value).replace("\xa0", "").replace(" ", "").replace(",", ".")))
+            return math.isfinite(float(str(value).replace("\xa0", "").replace("\u202f", "").replace(" ", "").replace(",", ".")))
         except (TypeError, ValueError):
             return False
 
@@ -625,6 +676,8 @@ def _read_finance_model(wb: Any, path: Path, *, bank_assignments: dict | None = 
     chapters = tuple(c for c in CHAPTERS if c in approved_by_chapter)
     composition = _budget_composition(rows, money, total_col, fact_col, plan_col,
                                       month_columns, interest)
+    composition["unit_evidence"] = units
+    composition["unit_scale"] = unit_scale
     composition["known_fields"] = {
         name: all(known_money(meta["row"], column)
                   for meta in rows if not meta["has_children"] and not _fm_is_tax(meta["code"]))
@@ -670,7 +723,8 @@ def _read_finance_model(wb: Any, path: Path, *, bank_assignments: dict | None = 
 
         raw = path.getvalue() if hasattr(path, "getvalue") else Path(path).read_bytes()
         allocations = admin_allocations(raw, wb, FINANCE_MODEL_SHEET, header_row,
-                                        composition["admin_items"], bank_assignments=bank_assignments)
+                                        composition["admin_items"], bank_assignments=bank_assignments,
+                                        unit_scale=unit_scale)
         for item in composition["admin_items"]:
             allocation = allocations.get(item["code"])
             if not allocation:
@@ -958,9 +1012,11 @@ def chapters_label(chapters: Any) -> str:
 
 
 def _rss_ch23(estimate: dict[str, Any], chapters: Any = ("2", "3")) -> dict[str, Any]:
+    from collections import Counter
     rows = estimate.get("by_code") or {}
+    counts = Counter(row["code"] for row in estimate.get("rows") or [])
     def values(field: str) -> dict[str, float | None]:
-        return {str(code): actuals.money_value(
+        return {str(code): None if counts[str(code)] > 1 else actuals.money_value(
             (rows.get(str(code)) or {}).get("money_values", rows.get(str(code)) or {}).get(field))
             for code in chapters}
     def total(items: dict) -> float | None:
@@ -974,24 +1030,34 @@ def _rss_ch23(estimate: dict[str, Any], chapters: Any = ("2", "3")) -> dict[str,
 
 def payment_in_chapters(estimate: dict[str, Any], chapters: Any):
     """Tri-state scope: inside / proven outside / unreadable RSS code."""
-    parents = {row["code"]: row.get("parent") for row in estimate.get("rows") or []}
+    from collections import Counter
+    source_rows = estimate.get("rows") or []
+    counts = Counter(row["code"] for row in source_rows)
+    parents = {row["code"]: row.get("parent") for row in source_rows}
     wanted = {str(c) for c in chapters}
 
-    def root(code: str) -> str:
+    def root(code: str) -> str | None:
+        original = code
         seen = set()
         while code and code not in seen:
+            if counts[code] != 1:
+                return None
             seen.add(code)
             parent = str(parents.get(code) or "")
             if not parent:
-                return code.split(".")[0]
+                # Preserve RSS's nonstandard within-chapter numbering, but a
+                # source hierarchy contradicting the explicit chapter is not
+                # a monetary allocation. Missing/double codes stay unknown.
+                return code if "." not in code and original.split(".")[0] == code else None
             code = parent
-        return code.split(".")[0] if code else ""
+        return None
 
     def classify(row: dict[str, Any]) -> bool | None:
         code = actuals._code(row.get("estimate_code"))
         # An unreadable code proves neither inclusion nor exclusion. Do not
         # guess a bank chapter from the contractor, article or payment name.
-        return root(code) in wanted if code else None
+        chapter = root(code) if code else None
+        return chapter in wanted if chapter is not None else None
 
     return classify
 
@@ -2210,9 +2276,17 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
             "автоматически не кросс-финансируют дефицит"
         ),
     }
-    result["source_dates"] = _funding_source_dates(project, rss, cut, schedule_need)
+    result["source_dates"] = _funding_source_dates(project, rss, cut, schedule_need,
+        budget_source=baseline.get("finance_source_observation"))
+    result.update(observation_scope="raw_saved_sources", payments_complete_through_cut=None,
+                  financial_acceptance=False, amounts_at_selected_cut=None,
+                  source_scope_note=result["source_dates"]["source_scope_note"])
     result["reconciliation"] = (own_money or {}).get("reconciliation")
     if result["reconciliation"] is not None:
+        result["reconciliation"].update(
+            observation_scope="raw_saved_sources", payments_complete_through_cut=None,
+            source_scope_note=result["source_scope_note"], amounts_at_selected_cut=None)
+        result["reconciliation"]["display_rows"] = funding_reconciliation.display_rows(result["reconciliation"])
         result["reconciliation"]["source_dates"] = result["source_dates"]
         result["reconciliation"]["need_breakdown"]["source_dates"] = result["source_dates"]
         result["unallocated_programme"] = result["reconciliation"]["unallocated_programme"]

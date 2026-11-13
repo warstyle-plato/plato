@@ -356,7 +356,8 @@ function fundingReconciliationBlock(f){
  const row=(name,v)=>`<div class="funding-row"><span>${esc(name)}</span><b>${value(v)}</b></div>`;
  let html='<div class="fundblock funding-reconciliation"><b>Сверка бюджета и финансирования</b>';
  for(const item of r.display_rows||[])html+=row(item.label,item.value);
- html+='<p class="muted">Расчёт на '+esc(dt(r.cut))+'. Финансовая база: '+esc(dt(r.source_dates?.budget?.data_date))+'. РСС: '+esc(dt(r.source_dates?.rss?.data_date))+'.</p>';
+ html+='<p class="muted">'+(r.observation_scope==='raw_saved_sources'?'Выбранная дата: ':'Расчёт на ')+esc(dt(r.cut))+'. Финансовая база: '+esc(dt(r.source_dates?.budget?.data_date))+'. РСС: '+esc(dt(r.source_dates?.rss?.data_date))+'.</p>';
+ if(r.source_scope_note)html+='<p class="notice funding-source-scope">'+esc(r.source_scope_note)+'</p>';
  html+='<p class="notice">Финансовая сверка первичных источников не завершена.</p>';
  for(const reason of r.reasons||[])html+='<p class="muted">'+esc(reason)+'</p>';
  const admin=r.admin_expenses;

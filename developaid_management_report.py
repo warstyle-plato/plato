@@ -2984,7 +2984,7 @@ def _funding_text(report: dict[str, Any]) -> list[str]:
                          if need["deficit"] > 0 else " — хватает")
             lines.append(line + ".")
         else:
-            lines.append("Утверждённый бюджет не загружен (нет финансовой книги): дефицит "
+            lines.append(limit.get("reason") or "Утверждённый бюджет не загружен (нет финансовой книги): дефицит "
                          "посчитан только по РСС.")
         extra = float(limit.get("additional_financing") or 0.0)
         source = "По финмодели" if credit else "По РСС"
@@ -3314,8 +3314,9 @@ def _funding_html(report: dict[str, Any]) -> str:
                  "—" if need["deficit"] is None
                  else (_rub(need["deficit"]) if need["deficit"] > 0 else "хватает")]]))
         else:
-            out.append("<p class='missing'>Утверждённый бюджет не загружен (финансовая книга, "
-                       "нет финансовой книги): дефицит посчитан только по РСС.</p>")
+            out.append("<p class='missing'>" + esc(limit.get("reason") or
+                       "Утверждённый бюджет не загружен (финансовая книга, нет финансовой книги): "
+                       "дефицит посчитан только по РСС.") + "</p>")
     else:
         out.append(f"<p class='missing'>Лимит и дефицит не посчитаны: "
                    f"{esc(limit.get('reason') or 'нет данных')}.</p>")
@@ -4140,7 +4141,7 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
          if sections else
          (_by_chapter_words(limit.get("approved_by_chapter")) or "по финмодели")) if need
         else ("; ".join((limit.get("reconciliation") or {}).get("reasons") or [])
-              or "финансовая книга не загружена"),
+              or limit.get("reason") or "финансовая книга не загружена"),
         hint=" ".join(_budget_hint(limit)) if limit.get("known") else "")
     draws = block.get("draws") if block.get("state") == "ok" else None
     # Плашки складываются (владелец, 02.11.2026): «лимит банка» — смета, в неё
@@ -4241,7 +4242,7 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
             f"остатка лимитов и резерва ({_rub(need['fuel'])})",
             "bad" if need["deficit"] > 0 else "good")
     else:
-        add("Дефицит на достройку", None, "утверждённый бюджет не загружен")
+        add("Дефицит на достройку", None, limit.get("reason") or "утверждённый бюджет не загружен")
     if limit.get("known") or limit.get("source_dates"):
         import developaid_monitor_dashboard as dashboard
 
@@ -4257,7 +4258,11 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
         for item in out:
             key = source_for.get(item["label"])
             if key:
-                item["note"] = item["note"].rstrip(" .;") + ". " + notes[key]
+                source_note = notes[key]
+                scope_note = limit.get("source_scope_note")
+                if scope_note and scope_note in item["note"]:
+                    item["note"] = item["note"].replace(scope_note, "").strip()
+                item["note"] = item["note"].rstrip(" .;") + ". " + source_note
     # Хватит ли эскроу на платежи по НКЛ с процентами — тот же вывод, что над
     # таблицей погашения: одно число на всю сводку (владелец, 27.10.2026).
     due = report.get("credit_due") or {}

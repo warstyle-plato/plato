@@ -322,11 +322,14 @@ def need_breakdown(own: dict, comp: dict, cut: str, known: bool,
 def display_rows(r: dict) -> list[dict]:
     """Shared labels and values; the browser never reconstructs the equation."""
     def row(key: str, label: str, note: str = "") -> dict:
-        return {"key": key, "label": label, "value": r[key], "note": note}
+        warning = r.get("source_scope_note", "")
+        return {"key": key, "label": label, "value": r[key],
+                "note": " ".join(part for part in (note, warning) if part)}
+    raw_saved = r.get("observation_scope") == "raw_saved_sources"
     rows = [row("budget", "Утверждённый бюджет"),
             row("bank_limit_total", "Лимит банка", "Полный лимит уже включает оплаченное"),
-            row("paid_at_cut", "Оплачено с начала проекта", "На " + r["cut"]),
-            row("available_bank_limit", "Доступный остаток лимита банка", "Положительные остатки лимитов на ту же дату"),
+            row("paid_at_cut", "Оплачено с начала проекта", "Учтённые оплаты сохранённого источника до выбранной даты" if raw_saved else "На " + r["cut"]),
+            row("available_bank_limit", "Доступный остаток лимита банка", "Положительные остатки лимитов за вычетом учтённых оплат источника" if raw_saved else "Положительные остатки лимитов на ту же дату"),
             row("calculated_additional", "Расчётная дополнительная потребность",
                 "Утверждённый бюджет минус оплаты и применимое доступное покрытие. " + "; ".join(r["reasons"]))]
     names = {"unallocated_budget": "Бюджет без денежной главы",
@@ -434,6 +437,9 @@ def lines(reconciliation: dict | None, money: Any) -> list[str]:
     out = [f"Бюджет {money(r['budget'])}: оплачено на дату {money(r['paid_at_cut'])}, "
            f"доступный остаток лимита {money(r['available_bank_limit'])}, расчётная дополнительная "
            f"потребность {money(r['calculated_additional'])}."]
+    if r.get("observation_scope") == "raw_saved_sources":
+        out[0] = out[0].replace("оплачено на дату", "учтённые оплаты источника")
+        out.append(r["source_scope_note"])
     for item in r["components"]:
         if item["amount"] is None or abs(item["amount"]) > 0.5:
             out.append(item["reason"] + ": " + money(item["amount"]) + ".")

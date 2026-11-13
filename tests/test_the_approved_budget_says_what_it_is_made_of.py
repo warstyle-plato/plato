@@ -50,10 +50,11 @@ CROSSWALK = [("2.1.1.1", "Участок", "1.1"), ("2.2.1.1", "Вырубка",
              ("2.4.5.1.1", "Имущество", "2.6"), ("2.4.5.2.1", "Земля", "1.2")]
 
 
-def _finmodel(rows: dict = ROWS) -> bytes:
+def _finmodel(rows: dict = ROWS, *, unit: str | None = "тыс. руб.") -> bytes:
     book = openpyxl.Workbook()
     book.active.title = "ОТЧЕТ"
     cf = book.create_sheet("cf_1_new")
+    cf["B2"] = "Все суммы в " + unit if unit else None
     cf.cell(6, 9, "ИТОГО"), cf.cell(6, 10, "ФАКТ"), cf.cell(6, 11, "ПЛАН")
     cf.cell(5, 14, "план"), cf.cell(6, 14, datetime.datetime(2026, 11, 1))
     for r, (code, (name, total, fact, plan)) in enumerate(rows.items(), 7):

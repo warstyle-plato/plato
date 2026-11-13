@@ -28,7 +28,8 @@ def source_case(tmp_path, monkeypatch, payments=(), limits=None, model_rows=None
     sheet.delete_rows(1, sheet.max_row)
     limits = dict(SMETA) if limits is None else limits
     for offset, (code, parent) in enumerate([('1', ''), ('1.1', '1'), ('2', ''),
-                                            ('2.6', '2'), ('3', ''), ('3.7', '3')], 10):
+                                            ('2.6', '2'), ('3', ''), ('3.7', '3'),
+                                            ('4', ''), ('4.1', '4')], 10):
         sheet.cell(offset, 1, code)
         sheet.cell(offset, 4, 'Учебная статья ' + code)
         value = limits.get(code if not parent else parent)

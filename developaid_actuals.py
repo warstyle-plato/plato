@@ -131,7 +131,7 @@ def _money(value: Any) -> float:
         return 0.0
     if isinstance(value, (int, float)):
         return float(value)
-    text = str(value).replace("\xa0", "").replace(" ", "").replace(",", ".")
+    text = str(value).replace("\xa0", "").replace("\u202f", "").replace(" ", "").replace(",", ".")
     try:
         return float(text)
     except ValueError:
@@ -144,7 +144,7 @@ def money_value(value: Any) -> float | None:
     if value is None or isinstance(value, bool):
         return None
     try:
-        result = float(str(value).replace("\xa0", "").replace(" ", "").replace(",", "."))
+        result = float(str(value).replace("\xa0", "").replace("\u202f", "").replace(" ", "").replace(",", "."))
     except (TypeError, ValueError):
         return None
     return result if math.isfinite(result) else None

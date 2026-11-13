@@ -11,10 +11,11 @@ from openpyxl.worksheet.table import Table
 import developaid_monitor_dashboard as dashboard
 
 
-def source(*, coefficient=.25, formula_suffix=None, cached_fact=None, invalid_bank=False, amount=100_000, plan_formula=None, missing_aggregate=None, total_override=None, bank_code=None, future_bank='2.6'):
+def source(*, coefficient=.25, formula_suffix=None, cached_fact=None, invalid_bank=False, amount=100_000, plan_formula=None, missing_aggregate=None, total_override=None, bank_code=None, future_bank='2.6', unit='тыс. руб.'):
     wb = openpyxl.Workbook()
     cf = wb.active
     cf.title = 'cf_1_new'
+    cf['B2'] = 'Все суммы в ' + unit
     cf['I6'], cf['J6'], cf['K6'] = 'ИТОГО', 'ФАКТ', 'ПЛАН'
     cf['M5'], cf['N5'] = 'факт', 'план'
     cf['M6'], cf['N6'] = dt.datetime(2026, 1, 1), dt.datetime(2026, 2, 1)

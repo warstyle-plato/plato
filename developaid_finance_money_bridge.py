@@ -84,7 +84,8 @@ def _tables(raw: bytes) -> dict:
 
 
 class _Reader:
-    def __init__(self, raw: bytes, values: Any, sheet: str, bank_assignments=None):
+    def __init__(self, raw: bytes, values: Any, sheet: str, bank_assignments=None, *, unit_scale=1000.0):
+        self.unit_scale = unit_scale
         self.values, self.sheet, self.grids = values, sheet, {}
         self.bank_assignments = bank_assignments or {}
         import hashlib
@@ -179,7 +180,7 @@ class _Reader:
             amount = 0. if raw is None else _number(raw)
             if amount is None:
                 raise ValueError('денежный диапазон содержит ошибку или нечисловое значение')
-            amount *= factor * 1000 / denominator
+            amount *= factor * self.unit_scale / denominator
             original = self.cell(sheet, row, bank_col)
             missing = original is None or isinstance(original, str) and not original.strip()
             bank = _code(original)
@@ -206,12 +207,15 @@ class _Reader:
 
 
 def admin_allocations(raw: bytes, values: Any, sheet: str, header: int, items: list[dict],
-                      bank_chapters: tuple[str, ...] = ('1', '2', '3'), bank_assignments=None) -> dict:
+                      bank_chapters: tuple[str, ...] = ('1', '2', '3'), bank_assignments=None, *,
+                      unit_scale=1000.0) -> dict:
     """Return reconciled monthly parts, preserving every unsupported residual."""
     if header < 2:
         return {}
     try:
-        reader = _Reader(raw, values, sheet, bank_assignments)
+        if unit_scale not in (1.0, 1000.0, 1000000.0) or isinstance(unit_scale, bool):
+            return {}
+        reader = _Reader(raw, values, sheet, bank_assignments, unit_scale=unit_scale)
     except (KeyError, ValueError, zipfile.BadZipFile, ET.ParseError, TypeError):
         return {}
     source = reader.grid(sheet)
@@ -238,7 +242,7 @@ def admin_allocations(raw: bytes, values: Any, sheet: str, header: int, items: l
                     supported = False
                     reasons.append(f'{label}: отсутствует сохранённая сумма месяца')
                     continue
-                expected *= 1000
+                expected *= unit_scale
                 try:
                     formula = reader.formulas[row - 1][column - 1]
                     split, evidence = reader.split(formula, item['code'], day)
