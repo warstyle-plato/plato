@@ -81,8 +81,11 @@ def test_a_newer_reader_reads_the_kept_pdf_again(store, monkeypatch):
     assert calls == [1], "перечитанный разбор сохраняется"
 
 
-def test_a_scan_is_refused_with_the_reason(store):
+def test_a_scan_without_recognition_is_refused_with_the_reason(store, monkeypatch):
     import pymupdf
+
+    import pdf_ocr
+    monkeypatch.setattr(pdf_ocr, "unavailable_reason", lambda: "нет программы распознавания")
     document = pymupdf.open()
     document.new_page().draw_rect(pymupdf.Rect(40, 40, 400, 400), fill=(0.5, 0.5, 0.5))
     with pytest.raises(files.ContractFilesProblem, match="скан"):

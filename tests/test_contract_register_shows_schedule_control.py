@@ -18,7 +18,9 @@ from tests.test_contract_fact_prices_ks_by_the_edition import REGISTER_ROW, card
 CUT = "2026-02-04"
 EMPTY = "f" * 64
 BEHIND = {"documents": 2, "note": "", "state": "behind", "lag_days": 2, "ahead_days": 0, "planned": 10000.0,
-          "fact": 5500.0, "deviation": -4500.0, "percent": -0.45, "finish": "2026-02-06", "deadline": "2026-02-05",
+          "fact": 5500.0, "deviation": -4500.0, "percent": pytest.approx(-0.45), "readiness": 0.5,
+          "plan_share": pytest.approx(10 / 11), "plan_done": pytest.approx(0.55), "overdue_days": 0, "overdue_works": 2,
+          "auto": 0, "source": "ks6a", "preliminary": False, "finish": "2026-02-06", "deadline": "2026-02-05",
           "from_register": False, "done": False, "threat": True, "days_over": 1, "days_early": 0, "passed": False,
           # Две строки КС ведомости не сопоставлены с расчётом: отставание посчитано без них.
           "incomplete": True, "left_out": {"count": 2, "reasons": [
@@ -35,16 +37,15 @@ def test_the_row_carries_the_card_numbers_and_says_why_they_are_missing(card):  
     assert rows[0]["schedule_control"] == BEHIND
     # Тот же итог, что в карточке договора: строка таблицы читает карточку.
     own = files.listing(PROJECT, CONTRACT, CUT, fact.acts(REGISTER_ROW))["control"]
-    assert (own["total"]["lag_days"], own["total"]["percent"], own["forecast"]["finish"]) == (2, -0.45, "2026-02-06")
+    assert (own["total"]["lag_days"], own["total"]["percent"], own["forecast"]["finish"]) == (2, pytest.approx(-0.45), "2026-02-06")
     assert rows[1]["schedule_control"]["documents"] == 0
     assert rows[1]["schedule_control"]["note"] == "ГПР и расчёт договора в карточку не загружены."
-    # Документы есть, но связи не подтверждены: причина карточки, а не «не загружены».
+    # Подтверждения сняты: однозначные связи остаются в расчёте (правило 3), строка называет их число.
     listed = files.listing(PROJECT, CONTRACT, CUT)
     positions = next(d for d in listed["documents"] if d["sha256"] == card)["estimates"][0]["links"]["positions"]
     files.save_links(PROJECT, CONTRACT, card, 0, [{"index": p["index"]} for p in positions], clear=True, cut=CUT)
     got = files.register_control(PROJECT, _register(), CUT)["rows"][0]["schedule_control"]
-    assert got["documents"] == 2 and got["state"] is None
-    assert got["note"] == "Отклонение не рассчитано: в плане нет ни одной строки с подтверждённой связью."
+    assert got["documents"] == 2 and got["note"] == "" and got["state"] == "behind" and got["auto"] > 0
 
 
 def test_a_card_that_fails_keeps_the_register_and_names_the_failure(card, monkeypatch):  # noqa: F811
@@ -88,8 +89,8 @@ def test_the_table_shows_lag_deviation_and_forecast_in_plain_words(card, width):
         row = page.locator(f'tr[data-contract-id="{CONTRACT}"]')
         # The short row: one chip with the lag, the deviation and the forecast in a few words.
         brief = row.locator(".contract-schedule")
-        expect(brief).to_have_text("отстаёт на 2 дня−45 % от плана на дату срезаотставание неполное: 2 периода КС "
-                                   "не вошли в фактпрогноз 06.02.2026, позже на 1 день")
+        expect(brief).to_have_text("отстаёт на 2 дняготовность 50 %, выполнение плана 55 %просрочено работ: 2"
+                                   "отставание неполное: 2 периода КС не вошли в фактпрогноз 06.02.2026, позже на 1 день")
         assert brief.get_attribute("data-label") == "График договора"
         head = page.locator(".contract-register thead th")
         expect(head).to_have_count(6)
@@ -102,13 +103,15 @@ def test_the_table_shows_lag_deviation_and_forecast_in_plain_words(card, width):
         # The detail keeps the full answer of the card.
         more = opened(page, CONTRACT)
         lag = more.locator(".contract-schedule-lag")
-        expect(lag).to_have_text("Отставание по ГПР договора2 дняотставание от планаОтставание неполное. 2 периода КС "
+        expect(lag).to_have_text("Отставание по ГПР договора2 дняотставание от планаПросрочено работ: 2."
+                                 "Отставание неполное. 2 периода КС "
                                  "не вошли в факт: В расчёте позиция № 1.2 измеряется в «м3», а в КС — в «т»: объём "
                                  "не пересчитать в деньги. В расчёте нет позиции с этим номером или с таким же "
                                  "названием и единицей (№ 9.9).")
         assert lag.get_attribute("data-label") == "Отставание по ГПР договора"
         expect(more.locator(".contract-schedule-deviation")).to_have_text(
-            "Отклонение от плана−45 %от плана на дату среза−4 500 ₽план 10 000 ₽ · факт 5 500 ₽")
+            "Готовность и выполнение плана50 %готовность договоравыполнение плана на дату среза — 55 %"
+            "отклонение −45 % · −4 500 ₽план 10 000 ₽ · факт 5 500 ₽")
         forecast = more.locator(".contract-schedule-forecast")
         expect(forecast).to_have_text("Прогноз окончания по ГПР06.02.2026на 1 день позже срокаОкончание ГПР: 05.02.2026")
         assert forecast.locator(".contract-main-money").evaluate(color) == lag.locator(".contract-main-money").evaluate(
