@@ -57,6 +57,7 @@ ROUTES = {
     "document-upload": {"filename": "ДС4.pdf", "content_base64": base64.b64encode(b"%PDF-1.7").decode()},
     "document-links": {"sha256": SHA, "estimate": 0, "choices": [{"index": 0}]},
     "document-remove": {"sha256": SHA},
+    "document-confirm": {"sha256": SHA, "kind": "act", "values": {}},
 }
 
 
@@ -64,7 +65,7 @@ ROUTES = {
 def untouched(monkeypatch):
     """The card module must not be reached: any call is recorded."""
     calls = []
-    for name in ("listing", "store", "save_links", "remove"):
+    for name in ("listing", "store", "save_links", "remove", "confirm_scan"):
         monkeypatch.setattr(files, name, lambda *a, _name=name, **k: calls.append(_name) or {})
     return calls
 
@@ -78,7 +79,7 @@ def test_the_route_refuses_a_contract_id_before_the_job(api, untouched, route, b
     assert response.headers["cache-control"] == "private, no-store"
 
 
-@pytest.mark.parametrize("route", ["document-links", "document-remove"])
+@pytest.mark.parametrize("route", ["document-links", "document-remove", "document-confirm"])
 @pytest.mark.parametrize("bad", [f"../{OTHER}/{SHA}"[:64], "/" + "a" * 63, "a" * 63 + "\x00", "g" * 64,
                                  "a" * 64 + "\n"])
 def test_the_route_refuses_a_file_id_before_the_job(api, untouched, route, bad):  # noqa: F811

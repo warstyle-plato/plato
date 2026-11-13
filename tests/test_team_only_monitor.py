@@ -60,6 +60,8 @@ _ENDPOINT_PAYLOADS = {
     ("POST", "/monitor/contracts/document-links"): {
         "contract_id": "a" * 64, "sha256": "b" * 64, "estimate": 0, "choices": [{"index": 0}]},
     ("POST", "/monitor/contracts/document-remove"): {"contract_id": "a" * 64, "sha256": "b" * 64},
+    ("POST", "/monitor/contracts/document-confirm"): {
+        "contract_id": "a" * 64, "sha256": "b" * 64, "kind": "act", "values": {}},
     ("POST", "/monitor/schedule/version-preview"): {
         "effective_from": "2026-10-22", "gpr_base64": "eA=="},
     ("POST", "/monitor/schedule/version-approve"): {
