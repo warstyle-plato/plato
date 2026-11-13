@@ -215,6 +215,17 @@ def test_the_page_field_reads_and_writes_the_project_value():
     assert result == {"shownValue": "12.5", "empty": 0, "typed": 7_000_000}
 
 
+@pytest.mark.parametrize("rubles", [1_234_567, 50_000_001, 1])
+def test_a_server_result_keeps_the_exact_compensation_for_the_next_request(rubles):
+    shown, taken = page_blocks.run(
+        "let inputs={}; const fields={}; const document={getElementById(id){"
+        "return fields[id]||(fields[id]={value:'',checked:false})}};",
+        f"syncMoParams({{vri:{{compensation_rub:{rubles}}}}});"
+        "console.log(JSON.stringify({next:moCompensationRub()}));")
+    assert "syncMoParams" in taken and "moCompensationRub" in taken
+    assert json.loads(shown)["next"] == pytest.approx(rubles, rel=0, abs=0.000001)
+
+
 def _book_text(**over) -> str:
     import copy, html, io, re, zipfile
     x = dict(core.DEFAULT_INPUTS, vri_region="mo", land_rights_cost_mln=100.0, **over)

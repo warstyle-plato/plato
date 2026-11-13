@@ -277,7 +277,7 @@ function syncMoParams(data){
  const area=document.getElementById('moArea');
  if(area&&t.site_area_ha)area.placeholder=landNum(t.site_area_ha,4)+' га из ЕГРН';
  const compensation=document.getElementById('moCompensation');
- if(compensation)compensation.value=v.compensation_rub!=null?String(Math.round(v.compensation_rub/1e3)/1e3):'';
+ if(compensation)compensation.value=v.compensation_rub!=null?String(v.compensation_rub/1e6):'';
 }
 
 // Дефицит рабочих мест — это будущий объект, а не строка справки. РНГП МО
