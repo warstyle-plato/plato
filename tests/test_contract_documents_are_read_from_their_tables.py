@@ -206,7 +206,10 @@ def test_contract_text_naming_the_annex_is_not_a_broken_table():
     assert result["warnings"] == ["Расчёт договорной стоимости упомянут, но его таблица не найдена."]
 
 
-def test_a_scan_and_a_non_pdf_are_refused_with_the_reason():
+def test_a_scan_without_recognition_and_a_non_pdf_are_refused_with_the_reason(monkeypatch):
+    import pdf_ocr
+    # Шапку скана распознаёт `developaid_contract_scan`; без распознавания на сервере скан не принимается.
+    monkeypatch.setattr(pdf_ocr, "unavailable_reason", lambda: "нет программы распознавания")
     document = pymupdf.open()
     page = document.new_page()
     page.draw_rect(pymupdf.Rect(40, 40, 400, 400), color=(0, 0, 0), fill=(0.5, 0.5, 0.5))
