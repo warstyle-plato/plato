@@ -1215,8 +1215,7 @@ def _read(document) -> dict:
         return {'contract': accepted['contract'], 'agreement': None, 'act': accepted['act'], 'estimates': [],
                 'schedule': None, 'warnings': accepted['act'].pop('warnings'), 'pages': len(texts)}
     import developaid_contract_terms as terms
-    out = dict(identity(texts[0]), estimates=[], schedule=None, warnings=[], pages=len(texts),
-               terms=terms.read(texts))
+    out = dict(identity(texts[0]), estimates=[], schedule=None, warnings=[], pages=len(texts))
     estimate, layout, weekly, mentioned = None, None, None, set()
     for index, page in enumerate(document):
         number, text = index+1, texts[index]
@@ -1275,6 +1274,21 @@ def _read(document) -> dict:
         out['warnings'].append('Расчёт договорной стоимости упомянут, но его таблица не найдена.')
     if 'schedule' in mentioned and not out['schedule']:
         out['warnings'].append('График производства работ упомянут, но его таблица не найдена.')
+    # A PDF's text stream may print an entire date column after its heading.
+    # Dates inside the recognised GPR/RDS are work rows, not legal clauses.
+    # Keep contract paragraphs outside the table, including on the same page.
+    table_pages = set((out['schedule'] or {}).get('pages') or [])
+    table_pages.update(n for e in out['estimates'] for n in e['pages'])
+    table_pages.update(n for n, text in enumerate(texts, 1)
+                       if (_SCHEDULE_TITLE.search(text) or _ESTIMATE_TITLE.search(text))
+                       and _Grid(document[n-1]).rows)
+    condition_texts = list(texts)
+    for number in table_pages:
+        page = document[number-1]
+        grid = _Grid(page)
+        condition_texts[number-1] = ' '.join(w[4] for w in _words(page)
+            if grid.rows and not grid.rows[0] <= (w[1]+w[3])/2 <= grid.rows[-1])
+    out['terms'] = terms.read(condition_texts)
     out['warnings'].extend(out['terms']['warnings'])
     if not out['estimates'] and not out['schedule'] and not mentioned and not out['terms']['changes_deadline']:
         out['warnings'].append('В документе нет таблиц расчёта договорной стоимости и графика производства работ: '

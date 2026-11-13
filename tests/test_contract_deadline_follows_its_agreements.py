@@ -154,3 +154,71 @@ def test_a_source_date_does_not_need_an_estimate_or_fact(context):  # noqa: F811
     assert listed['control']['total'] is None
     assert listed['terms']['deadline'] == '2027-03-20'
     assert listed['terms']['source']['clause'] == '2.3.2'
+
+
+@pytest.mark.parametrize('verb',['Перенести','Изменить'])
+def test_an_explicit_transfer_uses_the_new_date_not_the_old_one(verb):
+    later=_record(1,'2026-02-01',verb+' срок окончания работ с 20.03.2027 на 30.04.2027.')
+    got=terms.resolve([_record(),later],'2026-11-13')
+    assert got['deadline']=='2027-04-30' and len(got['history'])==2
+
+
+def test_an_unread_transfer_does_not_silently_preserve_the_old_deadline():
+    later=_record(1,'2026-02-01','Перенести срок окончания работ на дату передачи последнего этажа.')
+    got=terms.resolve([_record(),later],'2026-11-13')
+    assert got['deadline'] is None and got['warnings']
+
+
+@pytest.mark.parametrize('word',['продлевается до','переносится на','изменяется на','установлен до'])
+def test_the_change_verb_can_follow_the_completion_term(word):
+    later=_record(1,'2026-02-01','Срок окончания работ '+word+' 30.04.2027.')
+    assert terms.resolve([_record(),later],'2026-11-13')['deadline']=='2027-04-30'
+
+
+def test_a_relative_extension_after_the_term_requires_its_trigger():
+    later=_record(1,'2026-02-01','Срок окончания работ продлевается на 30 дней после передачи площадки.')
+    got=terms.resolve([_record(),later],'2026-11-13')
+    assert got['deadline'] is None and got['warnings']
+
+
+def test_a_calendar_date_is_not_a_clause_number():
+    got=terms.read(['Договор от 01.01.2026. Окончание работ — 20.03.2027.'])
+    assert got['deadline']['clause']==''
+
+
+@pytest.mark.parametrize('assumption',['Недельные границы оценены по полосам.',
+                                      documents.CHART_DATES_ASSUMPTION])
+def test_an_estimated_bar_chart_does_not_supply_a_legal_deadline(assumption):
+    later=_record(1,'2026-02-01','Окончание Работ — согласно Графику производства работ.')
+    graph=_record(1,'2026-02-01','График производства работ')
+    graph['schedule']={'assumption':assumption,'lines':[{'start':'2026-02-01','finish':'2027-05-31'}]}
+    got=terms.resolve([_record(),later,graph],'2026-11-13')
+    assert got['deadline'] is None and got['warnings']
+
+
+@pytest.mark.parametrize('clause',[None,'2.3.2. Окончание работ — 20.03.2027.'])
+def test_column_major_table_dates_are_not_legal_terms_but_a_paragraph_above_is(clause):
+    with pymupdf.open() as doc:
+        page=_page(doc)
+        _text(page,30,25,'Дополнительное соглашение № 1 от 01.02.2026')
+        _text(page,30,40,'к Договору подряда № A-12 от 01.01.2026')
+        _text(page,30,55,'График производства работ')
+        if clause:
+            _text(page,30,70,clause)
+        cols=(30,60,300,400,500);ys=(80,105,130,155)
+        for x in cols:page.draw_line((x,ys[0]),(x,ys[-1]))
+        for y in ys:page.draw_line((cols[0],y),(cols[-1],y))
+        # Valid PDFs may store each column consecutively rather than each row.
+        for text,y in [('Окончание Работ',95),('30.04.2027',120),('20.03.2027',145)]:
+            _text(page,402,y,text)
+        for text,y in [('Дата нач.',95),('01.02.2026',120),('01.02.2026',145)]:
+            _text(page,302,y,text)
+        for code,name,y in [('№','Наименование работ',95),('1.1','Кладка',120),('1.2','Стены',145)]:
+            _text(page,32,y,code);_text(page,62,y,name)
+        parsed=documents.read(doc.tobytes())
+    assert parsed['schedule'] and len(parsed['schedule']['lines'])==2
+    assert parsed['terms']['changes_deadline']==bool(clause)
+    if clause:
+        assert parsed['terms']['deadline']['clause']=='2.3.2'
+    got=terms.resolve([_record(),{'sha256':'b'*64,**parsed}],'2026-11-13')
+    assert got['deadline']=='2027-03-20'

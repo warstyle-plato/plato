@@ -11,7 +11,8 @@ import re
 
 _END = (r'(?:срок\s+)?(?:окончани[ея]|завершени[ея])\s+(?:всех\s+)?работ'
         r'(?:\s+по\s+(?:настоящему\s+)?договору)?')
-_SEP = r'\s*(?:[–—:\-]\s*)?(?:(?:установлен\w*\s+)?(?:до|не\s+позднее)\s+)?'
+_SEP = (r'\s*(?:[–—:\-]\s*)?(?:(?:установ\w*|определ\w*|продл\w*|перенос\w*|измен\w*)\s+)?'
+        r'(?:(?:до|на|не\s+позднее)\s+)?')
 
 
 def read(texts: list[str]) -> dict:
@@ -21,18 +22,21 @@ def read(texts: list[str]) -> dict:
 
     candidates, warnings = [], []
     exact = re.compile(_END + _SEP + '(' + _WHEN + ')', re.I)
+    moved = re.compile(_END + r'\s+с\s+(' + _WHEN + r')\s+на\s+(' + _WHEN + ')', re.I)
     for page, raw in enumerate(texts, 1):
         text = _space(raw)
         parsed_starts = set()
-        for match in exact.finditer(text):
+        for match, date_text in ([(m, m[1]) for m in exact.finditer(text)] +
+                                 [(m, m[2]) for m in moved.finditer(text)]):
             parsed_starts.add(match.start())
-            value = _date(match[1])
+            value = _date(date_text)
             before = text[max(0, match.start()-100):match.start()]
-            clauses = list(re.finditer(r'(?<!\d)(\d+(?:\.\d+)+)\.?\s+', before))
+            clauses = [m for m in re.finditer(r'(?<![\d.])(\d+(?:\.\d+)+)\.?\s+', before)
+                       if not _date(m[1])]
             clause = clauses[-1][1] if clauses else ''
             quote = text[match.start():min(len(text), match.end()+300)]
             if not value:
-                warnings.append(f'Стр. {page}: дата окончания работ «{match[1]}» не распознана.')
+                warnings.append(f'Стр. {page}: дата окончания работ «{date_text}» не распознана.')
             candidates.append({'value': value, 'page': page, 'clause': clause, 'quote': quote,
                                'conditional': bool(re.search(r'при\s+условии', quote, re.I))})
         # A later relative condition cannot silently retain an earlier absolute
@@ -53,6 +57,20 @@ def read(texts: list[str]) -> dict:
                                    'conditional': True})
                 warnings.append(f'Стр. {page}: окончание работ задано условием; календарная дата '
                                 'не рассчитана без указанного основания.')
+        known_starts = parsed_starts | {m.start() for m in references} | {
+            m.start() for m in relative.finditer(text)}
+        for match in re.finditer(_END, text, re.I):
+            if match.start() in known_starts:
+                continue
+            before = text[max(0, match.start()-50):match.start()]
+            after = text[match.end():match.end()+80]
+            if re.search(r'(?:перенест\w*|измен\w*|продл\w*|установ\w*)\s*$', before, re.I) or \
+                    re.match(r'\s*(?:[–—:\-]\s*)?(?:перенос\w*|измен\w*|продл\w*|установ\w*)\b',after,re.I):
+                candidates.append({'value': None, 'page': page, 'clause': '',
+                                   'quote': text[max(0, match.start()-50):match.end()+200],
+                                   'conditional': True})
+                warnings.append(f'Стр. {page}: условие окончания работ изменено, но новая '
+                                'календарная дата не прочитана; прежний срок не подставлен.')
     dates = {c['value'] for c in candidates if c['value']}
     if len(dates) > 1:
         warnings.append('В тексте документа указаны разные даты окончания работ; срок не выбран автоматически.')
@@ -98,6 +116,8 @@ def _referenced_schedule(records, cut):
     if len(graphs) != 1:
         return None
     graph = graphs[0]
+    if graph['schedule'].get('assumption'):
+        return None  # Estimated bar/week boundaries cannot become a legal date.
     lines = graph['schedule']['lines']
     if any(not _day(r.get('start')) or not _day(r.get('finish')) or r['start'] > r['finish']
            or r.get('date_precision') == 'chart_marks' for r in lines):
