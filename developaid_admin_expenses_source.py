@@ -25,9 +25,22 @@ MAX_ROWS = 20000
 MAX_COLUMNS = 1000
 MAX_LEAVES = 400
 MAX_OUTPUT = 256 * 1024
+MAX_HEADER_ROWS = 80
+MAX_HEADER_CELL_CHARS = 32768
+MAX_HEADER_CHARS = 65536
+MAX_HEADER_CELLS = MAX_HEADER_ROWS * MAX_COLUMNS
+MAX_UNIT_TOKENS = 64
 FIELDS = (("total", "итого"), ("fact", "факт"), ("plan", "план"))
 _UNIT = re.compile(r"(?<![\w])(?:(?P<scale>тыс\.?|тысяч(?:ах|и|а)?|млн\.?|миллион(?:ах|ов|а|ы)?)"
                    r"\s{0,8})?(?:руб(?:лей|ля|ль|ли|\.)?|р\.|₽)(?![\w])", re.I)
+_NUMERIC_TEXT = re.compile(r"[+-]?(?:[0-9]+(?:[.,][0-9]*)?|[.,][0-9]+)(?:[eE][+-]?[0-9]+)?\Z")
+_PER_UNIT = re.compile(
+    r"[.,;:]?\s{0,32}(?:[/\\]|(?:за|на)(?=\s|[0-9])\s{0,16}"
+    r"(?:(?:[0-9]{1,8}(?:[.,][0-9]{1,6})?|один|одно|одну|одного|одной)\s{0,16})?"
+    r"(?:(?:кв\.?\s{0,8}|квадратн\w{0,8}\s{1,8})?(?:м(?:²|\^?2)?\.?|метр\w{0,8})"
+    r"|га|гектар\w{0,8}|площад\w{0,8}|(?:рабоч\w{0,4}\s{1,8})?мест\w{0,8}"
+    r"|машино[- ]?мест\w{0,8}|единиц\w{0,8}\s{1,8}площад\w{0,8})(?!\w))", re.I)
+_LONG_UNIT_GAP = re.compile(r"[.,;:]?\s{33}")
 
 
 class SourceProblem(ValueError):
@@ -115,6 +128,14 @@ def _copy(project):
             aliases_reader.close()
 
 
+def _value_hash(value):
+    text = value if isinstance(value, str) else str(value)
+    digest = hashlib.sha256()
+    for start in range(0, len(text), 4096):
+        digest.update(text[start:start+4096].encode())
+    return digest.hexdigest()
+
+
 def _raw(cell):
     value = cell.value
     if value is None:
@@ -122,45 +143,83 @@ def _raw(cell):
     if isinstance(value, bool):
         kind = "boolean"
     elif isinstance(value, (int, float)):
-        if not math.isfinite(value):
-            return {"cached_value": None, "value_type": "invalid_nonfinite"}
-        kind = "number"
+        try:
+            finite = math.isfinite(value)
+        except OverflowError:
+            finite = False
+        if finite:
+            return {"cached_value": value, "value_type": "number"}
+        kind = "invalid_nonfinite"
     elif isinstance(value, str):
         if len(value) > 128:
-            return {"cached_value": None, "value_type": "text_too_long"}
-        kind = "error" if cell.data_type == "e" else "text"
+            kind = "text_too_long"
+        else:
+            compact = value.strip().replace(" ", "").replace("\xa0", "").replace("\u202f", "")
+            if cell.data_type != "e" and _NUMERIC_TEXT.fullmatch(compact) \
+                    and math.isfinite(float(compact.replace(",", "."))):
+                return {"cached_value": value, "value_type": "numeric_text"}
+            kind = "error" if cell.data_type == "e" else "text"
     elif isinstance(value, (dt.datetime, dt.date, dt.time)):
-        value, kind = value.isoformat(), "date"
+        kind = "date"
     else:
-        return {"cached_value": None, "value_type": "unsupported"}
-    return {"cached_value": value, "value_type": kind}
+        kind = "unsupported"
+    # Monetary columns are not an arbitrary-text export channel. Types and
+    # hashes preserve the reason for unknown without exposing cached text.
+    return {"cached_value": None, "value_type": kind, "value_sha256": _value_hash(value)}
 
 
-def _unit_evidence(rows, column_count):
-    """Quote currency tokens in the fixed header, never infer a scale from code."""
-    tokens, sample, count = [], [], 0
-    for _, cells in rows:
+class _HeaderEvidence:
+    """Scan a bounded header, retaining only a fixed number of token records."""
+    def __init__(self, column_count):
+        self.column_count = column_count
+        self.tokens, self.sample, self.kinds = [], [], set()
+        self.found = self.nonempty = self.characters = self.cells = self.last_row = 0
+
+    def add(self, row, cells):
+        if row > MAX_HEADER_ROWS:
+            raise SourceProblem("header_size_limit")
+        self.last_row = row
         for cell in cells:
+            self.cells += 1
+            if self.cells > MAX_HEADER_CELLS:
+                raise SourceProblem("header_size_limit")
             if cell.value is None:
                 continue
-            count += 1
-            if len(sample) < 24:
-                sample.append({"cell": cell.coordinate, "type": cell.data_type,
-                    "value_sha256": hashlib.sha256(str(cell.value).encode()).hexdigest()})
+            text = cell.value if isinstance(cell.value, str) else str(cell.value)
+            self.characters += len(text)
+            if len(text) > MAX_HEADER_CELL_CHARS or self.characters > MAX_HEADER_CHARS:
+                raise SourceProblem("header_size_limit")
+            self.nonempty += 1
+            if len(self.sample) < 24:
+                self.sample.append({"cell": cell.coordinate, "type": cell.data_type,
+                                    "value_sha256": _value_hash(text)})
             if not isinstance(cell.value, str) or "://" in cell.value:
                 continue
             for match in _UNIT.finditer(cell.value):
-                if cell.value[match.end():].lstrip().startswith(("/", "\\")):
-                    continue  # Rubles per square metre are not the money-column scale.
+                if _PER_UNIT.match(cell.value, match.end()) or _LONG_UNIT_GAP.match(cell.value, match.end()):
+                    continue  # Currency per area/place is not a global money scale.
                 scale = (match["scale"] or "").lower()
                 unit = "тыс. руб." if scale.startswith("тыс") else "млн руб." if scale else "руб."
-                tokens.append({"cell": cell.coordinate, "raw_token": match[0], "recognized_unit": unit})
-    kinds = {item["recognized_unit"] for item in tokens}
-    return {"state": "missing" if not kinds else "observed" if len(kinds) == 1 else "ambiguous",
-            "recognized_unit": next(iter(kinds)) if len(kinds) == 1 else None,
-            "tokens": tokens[:64], "tokens_found": len(tokens), "omitted_tokens": max(0, len(tokens)-64),
-            "context": {"sheet": "cf_1_new", "first_row": 1, "last_row": rows[-1][0],
-                        "column_count": column_count, "nonempty_cells": count, "cell_hash_sample": sample}}
+                self.found += 1
+                self.kinds.add(unit)
+                if len(self.tokens) < MAX_UNIT_TOKENS:
+                    self.tokens.append({"cell": cell.coordinate, "raw_token": match[0], "recognized_unit": unit})
+
+    def result(self):
+        return {"state": "missing" if not self.kinds else "observed" if len(self.kinds) == 1 else "ambiguous",
+                "recognized_unit": next(iter(self.kinds)) if len(self.kinds) == 1 else None,
+                "tokens": self.tokens, "tokens_found": self.found,
+                "omitted_tokens": self.found-len(self.tokens),
+                "context": {"sheet": "cf_1_new", "first_row": 1, "last_row": self.last_row,
+                    "column_count": self.column_count, "nonempty_cells": self.nonempty,
+                    "cell_hash_sample": self.sample}}
+
+
+def _unit_evidence(rows, column_count):
+    collector = _HeaderEvidence(column_count)
+    for row, cells in rows:
+        collector.add(row, cells)
+    return collector.result()
 
 
 def _cells(data):
@@ -177,9 +236,10 @@ def _cells(data):
         sheet = book["cf_1_new"]
         if sheet.max_row > MAX_ROWS or sheet.max_column > MAX_COLUMNS:
             raise SourceProblem("worksheet_size_limit")
-        header, columns, header_rows = None, None, []
-        for index, cells in enumerate(sheet.iter_rows(max_row=min(sheet.max_row, 80)), 1):
-            header_rows.append((index, cells))
+        header, columns = None, None
+        evidence = _HeaderEvidence(sheet.max_column)
+        for index, cells in enumerate(sheet.iter_rows(max_row=min(sheet.max_row, MAX_HEADER_ROWS)), 1):
+            evidence.add(index, cells)  # Bound strings before normalising header labels.
             labels = [str(c.value or "").strip().lower().replace("ё", "е") for c in cells]
             if all(name in labels for _, name in FIELDS):
                 if any(labels.count(name) != 1 for _, name in FIELDS):
@@ -189,7 +249,7 @@ def _cells(data):
                 break
         if columns is None:
             raise SourceProblem("columns_missing")
-        units = _unit_evidence(header_rows, sheet.max_column)
+        units = evidence.result()
         items, all_codes = [], []
         for row, cells in enumerate(sheet.iter_rows(min_row=header+1, max_col=max(2, *columns.values())+1),
                                     header+1):
@@ -245,6 +305,7 @@ def capture(project, cut, *, runtime):
               "cut": cut, "source": source, "rows": [], "header_cells": {},
               "unit_evidence": {"state": "not_read", "recognized_unit": None, "tokens": []},
               "values_are_raw_cached_cells": True, "financial_acceptance": False}
+    result["nonnumeric_values_redacted"] = True
     if version is None:
         result["state"] = "source_date_unknown"
     elif version > day:

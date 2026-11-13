@@ -7,6 +7,7 @@ import json
 import multiprocessing
 from pathlib import Path
 import time
+from types import SimpleNamespace
 import xml.etree.ElementTree as ET
 import zipfile
 
@@ -110,13 +111,60 @@ def test_conflicting_units_and_per_area_labels_do_not_invent_thousands(source):
     assert {x["cell"] for x in got["tokens"]}=={"B2","B3"}
 
 
+@pytest.mark.parametrize("suffix",["за м²","на м2","за 1 кв.м","на 1 кв. м", "на 100 м²",
+    "на квадратный метр", "на единицу площади", "на место", "за 1 место", "на рабочее место",
+    "за машино-место", "на площадь", "за гектар", "на1м2"])
+def test_per_area_or_per_place_words_do_not_confirm_global_currency_units(source,suffix):
+    changed(source,lambda sheet:setattr(sheet["B2"],"value","Стоимость: тыс. руб. "+suffix))
+    got=capture()["unit_evidence"]
+    assert got["state"]=="missing" and got["recognized_unit"] is None
+
+
+def test_unit_token_collector_is_bounded_while_scanning_and_late_units_remain_ambiguous():
+    cell=SimpleNamespace(value="руб. "*6000+"тыс. руб.",coordinate="B2",data_type="s")
+    collector=proof._HeaderEvidence(2)
+    collector.add(2,[cell])
+    assert len(collector.tokens)==proof.MAX_UNIT_TOKENS
+    assert collector.found==6001 and collector.kinds=={"руб.","тыс. руб."}
+    got=collector.result()
+    assert got["state"]=="ambiguous" and got["recognized_unit"] is None
+    assert got["tokens_found"]==6001 and got["omitted_tokens"]==6001-proof.MAX_UNIT_TOKENS
+
+
+@pytest.mark.parametrize("limit",["cell","total","cells"])
+def test_header_scan_limits_fail_before_retaining_or_normalising_oversized_text(source,monkeypatch,limit):
+    changed(source,lambda sheet:setattr(sheet["B2"],"value","руб. "*30))
+    monkeypatch.setattr(proof,{"cell":"MAX_HEADER_CELL_CHARS","total":"MAX_HEADER_CHARS",
+                              "cells":"MAX_HEADER_CELLS"}[limit],100 if limit!="cells" else 10)
+    with pytest.raises(proof.SourceProblem,match="header_size_limit"):capture()
+
+
 @pytest.mark.parametrize("value,kind", [(None,"missing"),(0,"number"),(False,"boolean"),
     ("неизвестно","text"),("#REF!","error"),("=1+2","missing")])
 def test_cached_unknown_zero_boolean_error_and_uncalculated_formula_remain_distinct(source,value,kind):
     changed(source, lambda sheet: setattr(sheet["J14"], "value", value))
     cell = capture()["rows"][0]["cells"]["fact"]
     assert cell["value_type"] == kind and cell["formula"] == (value == "=1+2")
-    assert cell["cached_value"] == (None if value == "=1+2" else value)
+    assert cell["cached_value"] == (value if kind=="number" else None)
+    if value is not None and kind in {"boolean","text","error"}:
+        assert cell["value_sha256"]==hashlib.sha256(str(value).encode()).hexdigest()
+
+
+@pytest.mark.parametrize("value",["1 234,50","1\u00a0234.50","1\u202f234,50","0","-12,5","+.5","1.25e3"," 0 "])
+def test_numeric_cached_text_preserves_its_representation_without_becoming_arbitrary_text(source,value):
+    changed(source,lambda sheet:setattr(sheet["J14"],"value",value))
+    cell=capture()["rows"][0]["cells"]["fact"]
+    assert cell["cached_value"]==value and cell["value_type"]=="numeric_text"
+
+
+@pytest.mark.parametrize("value",["https://synthetic.invalid/private?token=CANARY", "token=PRIVATE-CREDENTIAL",
+    "PRIVATE-EXPENSE-NAME", "123abc", "NaN", "Infinity", "1e309"])
+def test_nonnumeric_cached_text_is_only_a_typed_missing_value_and_hash(source,value):
+    changed(source,lambda sheet:setattr(sheet["J14"],"value",value))
+    got=capture();cell=got["rows"][0]["cells"]["fact"]
+    assert cell["cached_value"] is None and cell["value_type"]=="text"
+    assert cell["value_sha256"]==hashlib.sha256(value.encode()).hexdigest()
+    assert value not in json.dumps(got)
 
 
 def test_formula_text_and_external_urls_are_not_projected(source):
