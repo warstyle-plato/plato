@@ -2847,6 +2847,10 @@ def _calculate_phased_once(req: PhasedCalcRequest, *, _land_rent_cutoff: date | 
     vri_summary["totals"]["gross"] = round(base_amounts.get("land_rights_gross", 0.0), 2)
     vri_summary["totals"]["relief"] = round(base_amounts.get("land_rights_relief", 0.0), 2)
     vri_summary["totals"]["relief_basis"] = vri_relief_basis(x_master)
+    vri_summary["totals"]["transfer_offset_replaced"] = vri_transfer_offset_replaced(x_master)
+    if (vri_summary["totals"]["transfer_offset_replaced"]
+            and VRI_TRANSFER_OFFSET_REPLACED not in vri_summary.setdefault("warnings", [])):
+        vri_summary["warnings"].append(VRI_TRANSFER_OFFSET_REPLACED)
     vri_summary["benefits"] = vri_benefits_for(x_master, t_master)
     consolidated["vri"] = vri_summary
     common_land_rent["applied_total"] = sum(float(item["result"]["capex"].get("land_rent") or 0.0) for item in phase_items)

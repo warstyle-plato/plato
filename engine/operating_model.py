@@ -734,8 +734,7 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
             vri.setdefault("warnings", []).append(_benefits["mpt_reason"])
     # Зачёт площадей вписан, но его заменила компенсация по соглашению о Ксу*:
     # причина видна в карточке платы и у самого поля, а не только в сумме.
-    vri["totals"]["transfer_offset_replaced"] = bool(
-        n(x, "vri_transfer_offset_mln", 0.0) > 0 and not vri_transfer_offset_applies(x))
+    vri["totals"]["transfer_offset_replaced"] = vri_transfer_offset_replaced(x)
     if vri["totals"]["transfer_offset_replaced"]:
         vri.setdefault("warnings", []).append(VRI_TRANSFER_OFFSET_REPLACED)
     if vri_relief_amount > 0 and not vri["enabled"]:

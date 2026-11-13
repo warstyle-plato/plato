@@ -281,17 +281,35 @@ def test_the_offset_field_names_why_it_is_not_counted():
         "let inputs={};",
         "let lastResult={vri:{totals:{transfer_offset_replaced:true}}};",
     ]), "\n".join([
-        "const replaced=classFieldUnitText('vri_transfer_offset_mln','млн ₽');",
+        "const replaced=classFieldUnitText('vri_transfer_offset_mln','млн ₽; по соглашению — уменьшает плату за ВРИ');",
         "lastResult={vri:{totals:{transfer_offset_replaced:false}}};",
         "console.log(JSON.stringify({replaced,counted:classFieldUnitText('vri_transfer_offset_mln','млн ₽')}));",
     ]))
     result = json.loads(shown)
     assert "classFieldUnitText" in taken
     assert result["replaced"].startswith("млн ₽. Не применяется") and "Ксу*" in result["replaced"]
+    # Базовая подпись «по соглашению — уменьшает плату» рядом с отказом спорила бы с ним.
+    assert "уменьшает плату за ВРИ" not in result["replaced"]
+    # Причина — вписанная сумма, а не вычет: уменьшать бывает и нечего.
+    assert "уже уменьшена" not in result["replaced"]
     assert result["counted"] == "млн ₽"
 
 
 def test_the_book_says_the_offset_is_not_counted():
-    note = "Не применяется: плата уменьшена по соглашению о Ксу*"
+    note = "Не применяется: вписана компенсация по соглашению о Ксу*"
     assert note in _book_text(vri_transfer_offset_mln=300.0, mo_vri_compensation_mln=50.0)
     assert note not in _book_text(vri_transfer_offset_mln=300.0)
+
+
+def test_the_phased_result_also_says_why():
+    import copy
+    x = {**core.DEFAULT_INPUTS, "vri_required": True, "land_rights_cost_mln": 1000.0,
+         **MO_OFFSET, "mo_vri_compensation_mln": 50.0}
+    bundle = core.calculate_phased(core.PhasedCalcRequest(
+        inputs=x, tep=copy.deepcopy(core.TEP_DEFAULT),
+        phasing={"enabled": True, "phase_count": 2,
+                 "phases": [{"name": "О1", "start_offset_months": 0},
+                            {"name": "О2", "start_offset_months": 12}]}))
+    vri = bundle["consolidated"]["vri"]
+    assert vri["totals"]["transfer_offset_replaced"] is True
+    assert vri["warnings"].count(core.VRI_TRANSFER_OFFSET_REPLACED) == 1

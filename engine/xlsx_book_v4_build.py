@@ -1513,8 +1513,8 @@ def _build_project_workbook(
           "master": "Срезана в расчёте проекта"}.get(vri_relief_basis(x), "Нет льготы")),
         ("Льгота — доля", "vri_relief_pct", "% платы", n(x, "vri_relief_pct", 0.0) / 100.0),
         ("Зачёт переданных метров", "vri_transfer_offset_mln",
-         "млн ₽" if vri_transfer_offset_applies(x) or n(x, "vri_transfer_offset_mln", 0.0) <= 0
-         else "млн ₽. Не применяется: плата уменьшена по соглашению о Ксу*",
+         "млн ₽. Не применяется: вписана компенсация по соглашению о Ксу*"
+         if vri_transfer_offset_replaced(x) else "млн ₽",
          n(x, "vri_transfer_offset_mln", 0.0)),
     )
     # Колонка одна — E–H: I–L в этих строках заняты блоком паркинга и кладовых,
