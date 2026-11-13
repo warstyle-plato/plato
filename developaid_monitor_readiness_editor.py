@@ -1,0 +1,79 @@
+"""Readiness editor embedded into the real Monitor page."""
+
+SCRIPT = r"""
+let readinessEditorState=null,readinessEditorRequest=0,readinessEditorContext=null;
+const readinessEditor=$('readinessEditor'),readinessEditorBody=$('readinessEditorBody');
+function resetReadinessEditor(){readinessEditorRequest++;readinessEditorState=null;readinessEditorContext=null;readinessEditorBody.textContent='Откройте список, чтобы загрузить сохранённые доли.';}
+function readinessNumber(value,label){if(value.trim()==='')throw Error(label+': пустое поле не равно нулю.');const number=Number(value.replace(',','.'));if(!Number.isFinite(number)||number<0)throw Error(label+': нужно неотрицательное число.');return number;}
+function readinessWorkWeight(w,a){
+ const weight=a?.weight,basis=weight?.basis||(a?.share!=null?'expert':''),option=(key,label)=>`<option value="${key}"${basis===key?' selected':''}>${label}</option>`;
+ return `<label>Основание внутреннего веса <select data-work-weight-basis>${option('','Не задано / единственная работа элемента')}${option('expert','Экспертная оценка')}${option('smr_cost','Полная плановая стоимость СМР')}${option('planned_quantity','Проектный объём однородных работ')}</select></label>
+ <div data-weight-expert${basis==='expert'?'':' hidden'}><label>Экспертная доля внутри раздела, % <input type="number" min="0" max="100" step="any" inputmode="decimal" data-work-share value="${a?.share??''}"></label><p>Сумма долей работ одного раздела и корпуса — 100%. При дроблении работы её долю делят между подзадачами.</p></div>
+ <div data-weight-measure${['smr_cost','planned_quantity'].includes(basis)?'':' hidden'}>
+ <label>Полный план работы <input type="number" min="0" step="any" inputmode="decimal" data-work-weight-value value="${weight?.value??''}"></label>
+ <label>Единица измерения <input data-work-weight-unit maxlength="32" value="${esc(weight?.unit||'')}"></label>
+ <label data-weight-vat>База стоимости <select data-work-cost-basis><option value="">Не подтверждена</option><option value="with_vat"${weight?.cost_basis==='with_vat'?' selected':''}>С НДС</option><option value="without_vat"${weight?.cost_basis==='without_vat'?' selected':''}>Без НДС</option></select></label>
+ <label>Общая база сравнения: версия и уровень цен сметы либо один вид однородных работ <input data-work-valuation maxlength="300" value="${esc(weight?.valuation_key||'')}"></label>
+ <label>Источник полного плана: документ, лист и строки <input data-work-weight-source maxlength="1000" value="${esc(weight?.source_reference||'')}"></label>
+ <label>Строки источника: документ, лист и коды конечных позиций; разделите их точкой с запятой. Итоги вместе с их дочерними позициями не включаются. <input data-work-weight-positions value="${esc((weight?.position_keys||[]).join('; '))}"></label>
+ <label><input type="checkbox" data-work-weight-full${weight?.full_scope?' checked':''}> Подтверждён полный план этой работы. Оплаты, авансы и остаток на завершение не являются весом.</label></div>
+ <p data-work-calculated-share>${w.calculated_share!=null?'Доля работы внутри элемента: '+Number(w.calculated_share).toLocaleString('ru-RU',{maximumFractionDigits:4})+'%.':esc(w.weight_reason||'Задайте экспертные доли либо полные сопоставимые плановые показатели.')}</p>`;
+}
+function syncReadinessWeight(card){
+ const basis=card.querySelector('[data-work-weight-basis]').value;
+ card.querySelector('[data-weight-expert]').hidden=basis!=='expert';card.querySelector('[data-weight-measure]').hidden=!['smr_cost','planned_quantity'].includes(basis);
+ card.querySelector('[data-weight-vat]').hidden=basis!=='smr_cost';const unit=card.querySelector('[data-work-weight-unit]');unit.readOnly=basis==='smr_cost';if(basis==='smr_cost')unit.value='руб.';else if(basis==='planned_quantity'&&['RUB','руб.'].includes(unit.value))unit.value='';
+}
+function readinessWorkAssignment(card,element){
+ const basis=card.querySelector('[data-work-weight-basis]').value;
+ if(!basis)return{element_id:element,share:null};
+ if(basis==='expert')return{element_id:element,share:readinessNumber(card.querySelector('[data-work-share]').value,'Экспертная доля')};
+ const value=card.querySelector('[data-work-weight-value]').value;
+ return{element_id:element,share:null,weight:{basis,value:value.trim()===''?null:readinessNumber(value,'Полный план'),unit:basis==='smr_cost'?'RUB':card.querySelector('[data-work-weight-unit]').value.trim(),source_reference:card.querySelector('[data-work-weight-source]').value.trim(),valuation_key:card.querySelector('[data-work-valuation]').value.trim(),cost_basis:basis==='smr_cost'?card.querySelector('[data-work-cost-basis]').value:'',position_keys:card.querySelector('[data-work-weight-positions]').value.split(/[;\n]+/).map(x=>x.trim()).filter(Boolean),full_scope:card.querySelector('[data-work-weight-full]').checked}};
+}
+function readinessTotal(){if(!readinessEditorState?.available)return;let total=0;try{for(const input of readinessEditorBody.querySelectorAll('[data-element-weight]'))total+=readinessNumber(input.value,'Доля');$('readinessTotal').textContent='Сумма долей: '+total.toLocaleString('ru-RU')+'%.'+(Math.abs(total-100)>1e-6?' Сумма отличается от 100%; расчёт нормируется по учтённым весам.':'');}catch(e){$('readinessTotal').textContent=e.message;}}
+function renderReadinessEditor(state){
+ readinessEditorState=state;
+ if(!state?.available){readinessEditorBody.textContent=state?.reason||'Профиль пока недоступен.';return;}
+ const cfg=state.configuration,profile=cfg.element_profile,options=(list,value)=>'<option value="">Не подтверждено</option>'+list.map(([key,label])=>`<option value="${esc(key)}"${key===value?' selected':''}>${esc(label)}</option>`).join('');
+ const objects=[...new Set(state.works.map(w=>w.object))];
+ readinessEditorBody.innerHTML=`<p>${esc(state.title)}. <a href="${esc(state.source_url)}" target="_blank" rel="noopener">${esc(state.source)}</a> Это оценка, принятая ${esc(state.accepted_on)}, а не нормативные доли.</p><label>Полный сохранённый ГПР <select id="readinessFullSource">${state.sources.map(s=>`<option value="${esc(s.sha256)}"${s.sha256===cfg.full_source_sha256?' selected':''}>${esc(s.label)}</option>`).join('')}</select></label><p>Работы сопоставляются только явным выбором. Паркинг и другие здания требуют отдельного профиля.</p>
+ <div class="readiness-edit-grid">${state.elements.map(e=>`<div class="readiness-share"><label>${esc(e.name)} <input type="number" min="0" step="any" inputmode="decimal" data-element-weight="${esc(e.id)}" aria-label="Доля: ${esc(e.name)}" value="${e.value}"></label><small data-origin="${esc(e.id)}">${e.origin==='manual'?'Изменено вручную: '+esc(e.author||'администратор')+', '+esc(e.recorded_at||'')+'. Исходная оценка '+e.default+'%.': 'Оценка: '+e.default+'%.'}${e.value===0?' Явно исключено из веса.':''}</small><button type="button" class="btn ghost" data-reset-element="${esc(e.id)}">Вернуть оценочную долю</button></div>`).join('')}</div><p id="readinessTotal"></p>
+ <details><summary>Соответствия работ и внутренние доли</summary><p>Вес раздела в готовности МКД сохраняется. Внутренние доли можно задать экспертно с суммой 100% по разделу и корпусу либо рассчитать по полной плановой стоимости СМР. Проектные объёмы допустимы только для однородных работ в одинаковых единицах. Число строк ГПР вес не определяет. У единственной работы — весь вес элемента.</p>${objects.map(obj=>`<label class="readiness-object">${esc(obj)} <select data-readiness-object="${esc(obj)}">${options([['residential','Монолитный жилой корпус без отделки квартир'],['separate','Паркинг / отдельный состав: нужен другой профиль']],profile.objects[obj])}</select></label>`).join('')}
+ <div class="readiness-works">${state.works.map(w=>{const a=profile.assignments[w.id];return `<div class="readiness-work"><b>${esc(w.object)} · ${esc(w.section)} · ${esc(w.name)}</b><label>Элемент <select data-work-element="${esc(w.id)}">${options([['__excluded__','Не входит в строительную готовность'],...state.elements.map(e=>[e.id,e.name])],cfg.excluded_ids.includes(w.id)?'__excluded__':a?.element_id)}</select></label>${readinessWorkWeight(w,a)}</div>`;}).join('')}</div>
+ ${state.unmatched.length?'<h4>Соответствия действующего ГПР полному составу</h4>'+state.unmatched.map(w=>`<label>${esc(w.object)} · ${esc(w.name)} <select data-readiness-crosswalk="${esc(w.id)}">${options(state.works.filter(f=>f.object===w.object).map(f=>[f.id,f.name]),cfg.crosswalk.find(c=>c.remaining_id===w.id)?.full_id)}</select></label>`).join(''):''}</details>
+ <label><input type="checkbox" id="readinessScopeConfirmed"${cfg.full_scope_confirmed?' checked':''}> Подтверждаю полный состав выбранного ГПР. Без подтверждения сохраняется черновик без общего процента.</label>
+ ${state.outside.length?`<details><summary>Работы вне действующего остаточного перечня: ${state.outside.length}</summary><ul>${state.outside.map(w=>'<li>'+esc(w.object)+' · '+esc(w.name)+'</li>').join('')}</ul><label><input type="checkbox" id="readinessOutsideConfirmed"${cfg.outside_completed_ids.length===state.outside.length?' checked':''}> Подтверждаю выполнение перечисленных работ на дату действия профиля (это не создаёт дату окончания).</label></details>`:''}
+ <label>Основание подтверждения <input id="readinessOwnerNote" maxlength="1000" value="${esc(cfg.owner_note||'')}"></label><label>Дата действия <input type="date" id="readinessEffectiveFrom" value="${esc(cfg.effective_from)}"></label>
+ <div class="files"><button type="button" class="btn" id="readinessSave">Сохранить доли и пересчитать</button><button type="button" class="btn ghost" id="readinessReload">Перечитать сохранённые</button></div><p id="readinessEditorMsg" role="status"></p>
+ <details><summary>История профиля (${state.history.length})</summary>${state.history.map(h=>'<p>Версия '+h.revision+' · '+esc(h.recorded_at)+' · '+esc(h.author||'администратор')+' · '+esc((h.internal_methods||[]).join('; '))+' · '+state.elements.map(e=>esc(e.name)+': '+(Object.hasOwn(h.overrides,e.id)?h.overrides[e.id]+'% вручную':e.default+'% оценка')).join('; ')+'</p>').join('')||'<p>Сохранённых правок пока нет.</p>'}</details>`;
+ for(const button of readinessEditorBody.querySelectorAll('[data-reset-element]'))button.onclick=()=>{const id=button.dataset.resetElement,e=state.elements.find(e=>e.id===id);delete profile.overrides[id];readinessEditorBody.querySelector(`[data-element-weight="${id}"]`).value=e.default;readinessEditorBody.querySelector(`[data-origin="${id}"]`).textContent='Оценка: '+e.default+'%. Возврат будет сохранён кнопкой ниже.';readinessTotal();};
+ for(const input of readinessEditorBody.querySelectorAll('[data-element-weight]'))input.oninput=()=>{const e=state.elements.find(e=>e.id===input.dataset.elementWeight);profile.overrides[e.id]=input.value;readinessEditorBody.querySelector(`[data-origin="${e.id}"]`).textContent='Вручную (ещё не сохранено). Исходная оценка '+e.default+'%.';readinessTotal();};
+ $('readinessFullSource').onchange=()=>loadReadinessEditor($('readinessFullSource').value);
+ $('readinessReload').onclick=()=>loadReadinessEditor(cfg.full_source_sha256);
+ $('readinessSave').onclick=saveReadinessEditor;readinessTotal();
+ for(const card of readinessEditorBody.querySelectorAll('.readiness-work')){syncReadinessWeight(card);card.addEventListener('input',()=>{card.querySelector('[data-work-calculated-share]').textContent='Изменения ещё не сохранены; расчёт обновится после сохранения.';});card.querySelector('[data-work-weight-basis]').onchange=()=>{for(const selector of ['[data-work-share]','[data-work-weight-value]','[data-work-weight-unit]','[data-work-valuation]','[data-work-weight-source]','[data-work-weight-positions]','[data-work-cost-basis]'])card.querySelector(selector).value='';card.querySelector('[data-work-weight-full]').checked=false;syncReadinessWeight(card);};}
+}
+async function loadReadinessEditor(fullSource=''){
+ if(!hasAuth()||keyRejected)return;const c=cumulativeContext(),n=++readinessEditorRequest;readinessEditorContext=c;readinessEditorBody.textContent='Загружаю доли и сохранённый состав…';
+ try{const state=await post('/monitor/readiness/editor',{project:c.project,full_source_sha256:fullSource},{timeout:60000});if(n!==readinessEditorRequest||!sameCumulativeContext(c))return;renderReadinessEditor(state);}catch(e){if(n===readinessEditorRequest&&sameCumulativeContext(c)){readinessEditorState=null;readinessEditorBody.textContent=e.message;const retry=document.createElement('button');retry.type='button';retry.className='btn ghost';retry.textContent='Повторить загрузку';retry.onclick=()=>loadReadinessEditor(fullSource);readinessEditorBody.append(retry);}}
+}
+async function saveReadinessEditor(){
+ const state=readinessEditorState,c=readinessEditorContext,n=readinessEditorRequest;if(!state?.available||!c||!sameCumulativeContext(c))return;
+ const cfg=JSON.parse(JSON.stringify(state.configuration)),profile=cfg.element_profile;
+ try{
+  for(const input of readinessEditorBody.querySelectorAll('[data-element-weight]'))if(Object.hasOwn(profile.overrides,input.dataset.elementWeight))profile.overrides[input.dataset.elementWeight]=readinessNumber(input.value,'Доля');
+  profile.objects={};for(const select of readinessEditorBody.querySelectorAll('[data-readiness-object]'))if(select.value)profile.objects[select.dataset.readinessObject]=select.value;
+  const excluded=new Set();profile.assignments={};for(const select of readinessEditorBody.querySelectorAll('[data-work-element]'))if(select.value){if(select.value==='__excluded__'||profile.objects[state.works.find(w=>w.id===select.dataset.workElement)?.object]==='separate'){excluded.add(select.dataset.workElement);continue;}profile.assignments[select.dataset.workElement]=readinessWorkAssignment(select.closest('.readiness-work'),select.value);}
+  cfg.crosswalk=[];for(const select of readinessEditorBody.querySelectorAll('[data-readiness-crosswalk]'))if(select.value)cfg.crosswalk.push({remaining_id:select.dataset.readinessCrosswalk,full_id:select.value});
+  cfg.included_ids=state.works.filter(w=>profile.objects[w.object]!=='separate'&&!excluded.has(w.id)).map(w=>w.id);cfg.excluded_ids=state.works.filter(w=>profile.objects[w.object]==='separate'||excluded.has(w.id)).map(w=>w.id);
+  cfg.full_scope_confirmed=$('readinessScopeConfirmed').checked;cfg.outside_completed_ids=$('readinessOutsideConfirmed')?.checked?state.outside.map(w=>w.id).filter(id=>!cfg.crosswalk.some(c=>c.full_id===id)):[];cfg.owner_note=$('readinessOwnerNote').value.trim();cfg.effective_from=$('readinessEffectiveFrom').value;
+  const payload={project:c.project,configuration:cfg,...state.options};
+  $('readinessSave').disabled=true;msg('readinessEditorMsg','Проверяю и сохраняю доли…','warn');
+  const preview=await post('/monitor/readiness/profile-preview',payload,{timeout:60000});if(n!==readinessEditorRequest||!sameCumulativeContext(c))return;
+  await post('/monitor/readiness/profile-save',{...payload,expected_profile_sha256:preview.profile_sha256},{timeout:60000});if(n!==readinessEditorRequest||!sameCumulativeContext(c))return;
+  msg('readinessEditorMsg','Доли сохранены. Пересчитываю готовность…','good');await refresh();if(sameCumulativeContext(c))await loadReadinessEditor(cfg.full_source_sha256);
+ }catch(e){if(n===readinessEditorRequest&&sameCumulativeContext(c)){msg('readinessEditorMsg',e.status===409?e.message+' Перечитайте сохранённые: чужая версия не перезаписана.':e.message,'bad');if($('readinessSave'))$('readinessSave').disabled=false;}}
+}
+readinessEditor.addEventListener('toggle',()=>{if(readinessEditor.open&&!readinessEditorState)loadReadinessEditor();});
+"""

@@ -127,6 +127,7 @@ def build(editions: list[dict], cut: str) -> dict:
                  "estimate": item.get("estimate_title") or item["title"],
                  "until": (_day(later) - dt.timedelta(days=1)).isoformat() if later else None,
                  "schedule": item.get("schedule_title") or "", "start": item.get("start"),
+                 "schedule_sha256": item.get("schedule_sha256") or "",
                  "in_force": item is in_force, **plan}
         # The plan on the cut belongs to the edition in force: an older one would answer with a superseded plan.
         for line in entry["lines"]:
