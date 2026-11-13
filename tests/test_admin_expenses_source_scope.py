@@ -113,6 +113,11 @@ def test_current_snapshot_scope_stays_visible_and_private_context_changes_scrub_
         page.evaluate("v=>{currentView=v;renderDash(v);selectMonitorTab('money')}", view)
         card = page.locator('#adminExpensesCard')
         expect(card).to_be_visible()
+        assert card.evaluate('(element) => element.previousElementSibling.id') == 'dashCard'
+        assert card.locator('.admin-expenses > div > div').count() == 3
+        assert card.locator('details .admin-expenses > div > div').count() == 0
+        expect(page.locator('#financeBars')).to_have_text(model['availability_note'])
+        expect(page.locator('#financeBars')).not_to_contain_text('загрузите финансовую книгу')
         expect(card).to_contain_text('Дата версии текущей сохранённой финмодели не указана')
         assert card.locator('small').filter(has_text='не отнесены к выбранной дате').count() == 3
         assert not page.evaluate('currentView.admin_expenses.financial_acceptance')
@@ -151,3 +156,17 @@ def test_an_invalid_metadata_date_is_not_repaired_from_a_date_prefix():
     result = admin.read(workbook('тыс. руб.'), taken_at='2026-11-01-not-a-version-date', cut='2026-11-13')
     assert result['source_date_state'] == 'unknown' and result['source']['taken_at'] == ''
     assert result['cut_eligibility'] == 'unknown' and result['amounts_at_cut']['total'] is None
+
+
+@pytest.mark.parametrize('separator', [' ', '\u00a0', '\u202f'])
+def test_every_numeric_text_separator_accepted_by_the_source_keeps_its_value(separator):
+    wb = openpyxl.load_workbook(io.BytesIO(workbook('руб.')))
+    ws = wb['cf_1_new']
+    for coordinate, text in [('I14', f'1{separator}234,50'), ('J14', f'1{separator}000,25'), ('K14', '234,25')]:
+        ws[coordinate] = text
+    out = io.BytesIO(); wb.save(out); wb.close()
+    rows, _, _ = proof._cells(out.getvalue())
+    assert all(cell['value_type'] == 'numeric_text' for cell in rows[0]['cells'].values())
+    result = admin.read(out.getvalue(), taken_at='2026-11-01', cut='2026-11-13')
+    assert (result['total'], result['fact'], result['plan']) == (1234.50, 1000.25, 234.25)
+    assert result['difference'] == 0

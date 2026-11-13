@@ -17,17 +17,19 @@ def _number(value, factor):
     if value is None or isinstance(value, bool) or factor is None:
         return None
     try:
-        rubles = float(str(value).replace('\xa0', '').replace(' ', '').replace(',', '.')) * factor
+        rubles = float(str(value).replace('\xa0', '').replace('\u202f', '').replace(' ', '').replace(',', '.')) * factor
     except (ValueError, TypeError, OverflowError):
         return None
     return rubles if math.isfinite(rubles) else None
 
 
 def unavailable(reason, source=None):
-    return {"state": "missing", "reason": reason, "rows": [], "source": source or {},
+    result = {"state": "missing", "reason": reason, "rows": [], "source": source or {},
             "scope": "raw_saved_snapshot", "cut_eligibility": "unknown",
             "financial_acceptance": False, "total": None, "fact": None, "plan": None,
             "note": NOTE, "bank_note": BANK_NOTE}
+    result['availability_note'] = availability_note(result)
+    return result
 
 
 def _projection_model(projection, cut="", filename=""):
@@ -99,6 +101,7 @@ def _projection_model(projection, cut="", filename=""):
         result['difference'] = None
     # A raw saved-snapshot amount is never silently promoted to a dated fact.
     result['amounts_at_cut'] = {key: result[key] if eligible is True else None for key, _ in FIELDS}
+    result['availability_note'] = availability_note(result)
     return result
 
 
