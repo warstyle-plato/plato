@@ -130,4 +130,13 @@ def test_the_result_shows_the_rent_row_only_where_the_engine_says_it_applies():
     assert got["none"][0][1] == ("Не определена. Для арендуемой земли не заданы кадастровая база, дата и годовые "
                                  "ставки аренды."), got["none"]
     assert got["silent"][0][1].replace(" ", " ") == (
-        "2,5 млрд ₽ Это известная часть суммы, она ещё уточнится. Сумма аренды не определена."), got["silent"]
+        "2,5 млрд ₽ Это известная часть суммы, она ещё уточнится. Расчёт не назвал, каких данных для неё "
+        "не хватает."), got["silent"]
+
+
+def test_an_unnamed_reason_does_not_repeat_the_row():
+    # Строка уже пишет «Не определена.» — запасная причина не повторяет её.
+    import developaid_land_rent
+    state = developaid_land_rent.sum_state({"status": "lease", "complete": False})
+    assert state["known"] is False
+    assert "не определена" not in state["reason"].lower() and state["reason"]
