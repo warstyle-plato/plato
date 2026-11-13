@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any
 
 import developaid_actuals as actuals
+import developaid_admin_expenses as admin_expenses
 import developaid_credit_repayment as credit_repayment
 import developaid_monitor as monitor
 import developaid_funding_schedule as funding_schedule
@@ -1770,6 +1771,8 @@ def build(project: str, kind: str, end: Any, sales_project: str | None = None,
         view = {}
         dashboard = {"error": f"{type(exc).__name__}: {exc}"}
     for name, collect in (
+            ("admin_expenses", lambda: view.get("admin_expenses") or
+                admin_expenses.for_project(project, bounds["end"].isoformat())),
             ("physical", lambda: physical(project, kind, bounds["end"])),
             ("crew", lambda: crew(project, kind, bounds["end"])),
             ("schedule", lambda: schedule(dashboard)),
@@ -3377,6 +3380,12 @@ def render_text(report: dict[str, Any]) -> str:
         lines.append(esc(block.get("reason") or "Данных нет."))
 
     lines += ["", "<b>Финансирование</b>"]
+    admin = report.get("admin_expenses") or admin_expenses.unavailable("Расшифровка АХР не получена.")
+    lines.append("<b>Административные расходы · статья 2.6</b>")
+    lines.extend(f"{esc(item['label'])}: {esc(item['value'])}. {esc(item['note'])}"
+                 for item in admin_expenses.tiles(admin))
+    lines.append(esc(admin_expenses.NOTE))
+    lines.append(esc(admin_expenses.BANK_NOTE))
     lines += [esc(line) for line in _funding_text(report)]
     lines.append(esc("Погашение кредитов: " + credit_main(report.get("credit_due") or {})))
 
@@ -4235,6 +4244,8 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
                 "bad" if hit or line["share"] > elapsed + 0.1 else "")
         else:
             add(f"{label} за месяц", None, "плана месяца нет")
+    out.extend(admin_expenses.tiles(report.get("admin_expenses") or
+        admin_expenses.unavailable("Расшифровка АХР не получена.")))
     return out
 
 
@@ -4705,6 +4716,8 @@ def render_html(report: dict[str, Any]) -> str:
         return f"<p class='missing'>{esc(block.get('reason') or 'Данных нет.')}</p>"
 
     out.append(_tiles_html(tiles(report), tiles_footnote(report)))
+    out.append(admin_expenses.render(report.get("admin_expenses") or
+        admin_expenses.unavailable("Расшифровка АХР не получена."), show_tiles=False))
     out.append(_block_heading("main") + "<ul class='findings'>")
     for item in report.get("findings") or []:
         tone = f" {item['tone']}" if item.get("tone") else ""
