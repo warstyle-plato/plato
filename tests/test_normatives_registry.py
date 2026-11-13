@@ -358,7 +358,7 @@ def test_the_october_revision_is_dated_and_its_chains_agree_with_the_history() -
         row = rows[key]
         assert row["current_as_of"] >= "2026-10-16", key
         if key == "mo-713-30":
-            continue  # ряд 713/30 — 29 поправок, история ведётся с 774-ПП
+            continue  # ряд 713/30 — 30 поправок, история ведётся с 774-ПП
         history = " ".join(row.get("amendment_history") or [])
         for number, step in _chain(row).items():
             assert number in history, f"{key}: {number} есть в ряду, но не в истории"
