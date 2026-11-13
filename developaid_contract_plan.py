@@ -3,8 +3,10 @@
 An edition of the plan is a document of the card that brings a «Расчёт» or a
 schedule: the latest estimate and the latest schedule at or before it make the
 plan from its date until the next edition (owner's decision 7А: an agreement
-recalculates the accumulated plan). Only confirmed links enter the plan; a
-proposed, reviewed or extra position is counted outside it with its money.
+recalculates the accumulated plan). A confirmed link and an unambiguous proposed
+one enter the plan at once (methodology of 12.11.2026, rule 3: checking a link
+by hand is an option, not a gate); a position on review or an extra one is
+counted outside it with its money, and the reason stays with the position.
 
 The schedule has no monthly sums, so the money of a line is spread evenly over
 the days of its bar, and this is labelled as an assumption (2А). An estimate
@@ -24,7 +26,8 @@ from developaid_monitor_statement_union import _unit
 
 EVEN_SPLIT = ("Стоимость строки распределена по дням её срока поровну: в графике нет сумм по месяцам, "
               "это допущение, а не данные графика.")
-_OUTSIDE = ("proposed", "review", "extra")
+_OUTSIDE = ("review", "extra")
+_LINKED = ("confirmed", "proposed")
 
 
 def _day(iso):
@@ -65,7 +68,7 @@ def edition(estimates: list[dict], schedule: dict | None, start: dt.date | None)
     """Plan lines of linked `estimates` over `schedule`; `start` is the date of an estimate «на завершение»."""
     dated = {line["code"]: line for line in links.leaves(schedule)}
     money, outside, without = {}, {status: {"count": 0, "amount": 0.0} for status in _OUTSIDE}, 0
-    volumes = {}
+    volumes, auto, auto_positions = {}, {}, 0
     accepted, accepted_without = None, 0
     for estimate in estimates:
         positions = (estimate.get("links") or {}).get("positions") or []
@@ -82,16 +85,21 @@ def edition(estimates: list[dict], schedule: dict | None, start: dt.date | None)
             elif position["status"] in _OUTSIDE:
                 outside[position["status"]]["count"] += 1
                 outside[position["status"]]["amount"] += position["amount"]
-            elif position["status"] == "confirmed":
+            elif position["status"] in _LINKED:
+                # A position split over several lines is one automatic link, not one per line.
+                auto_positions += position["status"] == "proposed"
                 for line in position["lines"]:
                     money[line["code"]] = money.get(line["code"], 0.0) + position["amount"] * line["share"]
+                    auto[line["code"]] = auto.get(line["code"], 0) + (position["status"] == "proposed")
                     volumes.setdefault(line["code"], []).append(
                         (position.get("unit"), position.get("quantity"), line["share"]))
     lines = [{"code": code, "name": dated[code]["name"], "start": dated[code]["start"],
               "finish": dated[code]["finish"], "amount": amount, "volume": _volume(volumes.get(code)),
+              "auto": auto.get(code, 0),
               "overdue": bool(start and _day(dated[code]["finish"]) < start)}
              for code, amount in sorted(money.items(), key=lambda kv: list(dated).index(kv[0]))]
     return {"lines": lines, "total": sum(line["amount"] for line in lines), "outside": outside,
+            "auto": auto_positions,
             "without_amount": without, "accepted": accepted, "accepted_without_amount": accepted_without}
 
 

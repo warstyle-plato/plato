@@ -294,9 +294,10 @@ def listing(project: str, contract_id: str, cut: str = "", acts: dict | None = N
     cut = cut or dt.date.today().isoformat()
     if not folder.is_dir():
         acts = act_dates.resolve(acts, [])
+        performed = acts_in_card.accumulated([], cut)
         return _with_control({"contract_id": contract_id, "documents": [], "removed": [],
-                              "plan": plan.build([], cut), "fact": _fact([], None, acts, cut),
-                              "performed": acts_in_card.accumulated([], cut)}, acts, cut)
+                              "plan": plan.build([], cut), "fact": _fact([], None, acts, cut, performed),
+                              "performed": performed}, acts, cut)
     every = _records(folder)
     records = [r for r in every if not r.get("removed_at")]
     acts = act_dates.resolve(acts, records)
@@ -332,13 +333,15 @@ def listing(project: str, contract_id: str, cut: str = "", acts: dict | None = N
     editions = _editions(records, chosen)
     planned = plan.build(editions, cut)
     return _with_control({"contract_id": contract_id, "documents": records, "removed": removed, "plan": planned,
-                          "fact": _fact(editions, planned["in_force"], acts, cut), "performed": performed},
+                          "fact": _fact(editions, planned["in_force"], acts, cut, performed),
+                          "performed": performed},
                          acts, cut)
 
 
-def _fact(editions, in_force, acts, cut):
-    """The fact on `cut` with the dates the acts КС-2 gave to the KS-6a periods."""
-    return {**fact.build(editions, in_force, acts, cut), "act_dates": (acts or {}).get("act_dates") or []}
+def _fact(editions, in_force, acts, cut, performed):
+    """The fact on `cut`: the acts КС-2 of the card, else the KS-6a with the dates the acts gave its periods."""
+    return {**fact.build(editions, in_force, acts, cut, performed),
+            "act_dates": (acts or {}).get("act_dates") or []}
 
 
 def _with_control(listed, acts, cut):
@@ -371,7 +374,9 @@ def register_control(project: str, register: dict, cut: str) -> dict:
             "documents": len(listed["documents"]),
             "note": found["note"] if listed["documents"] else "ГПР и расчёт договора в карточку не загружены.",
             **{k: total.get(k) for k in ("state", "lag_days", "ahead_days", "planned", "fact", "deviation", "percent",
-                                         "incomplete")},
+                                         "readiness", "plan_share", "plan_done", "overdue_days", "overdue_works",
+                                         "auto", "incomplete")},
+            "source": found.get("source"), "preliminary": bool(found.get("preliminary")),
             "left_out": found["left_out"],
             **{k: forecast.get(k) for k in ("finish", "deadline", "from_register", "done", "threat", "days_over",
                                             "days_early", "passed")}}
