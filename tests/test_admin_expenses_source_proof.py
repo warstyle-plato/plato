@@ -91,7 +91,9 @@ def test_only_raw_leaf_cells_coordinates_and_bounded_provenance_leave_the_source
 
 
 @pytest.mark.parametrize("text,unit",[("Все суммы в тыс. руб.","тыс. руб."),
-    ("млн руб.","млн руб."),("Единица измерения: руб.","руб.")])
+    ("млн руб.","млн руб."),("Единица измерения: руб.","руб."),
+    ("Все показатели в тыс. руб. с НДС","тыс. руб."),
+    ("тыс. руб., в т.ч. НДС","тыс. руб."),("тыс. руб. в том числе НДС","тыс. руб.")])
 def test_units_are_quoted_from_the_fixed_header_instead_of_assumed(source,text,unit):
     changed(source,lambda sheet:setattr(sheet["B2"],"value",text))
     got=capture()["unit_evidence"]
@@ -116,6 +118,26 @@ def test_conflicting_units_and_per_area_labels_do_not_invent_thousands(source):
     "за машино-место", "на площадь", "за гектар", "на1м2"])
 def test_per_area_or_per_place_words_do_not_confirm_global_currency_units(source,suffix):
     changed(source,lambda sheet:setattr(sheet["B2"],"value","Стоимость: тыс. руб. "+suffix))
+    got=capture()["unit_evidence"]
+    assert got["state"]=="missing" and got["recognized_unit"] is None
+
+
+@pytest.mark.parametrize("quantity",["1 000","1\u00a0000","1\u202f000","1 000 000", "1,5", "1.5", "1/2", "½", "1,5 тыс."])
+@pytest.mark.parametrize("unit",["м²","м³","место"])
+def test_quantity_and_denominator_grammar_never_turns_a_rate_into_a_global_scale(source,quantity,unit):
+    changed(source,lambda sheet:setattr(sheet["B2"],"value","Стоимость: тыс. руб. на "+quantity+" "+unit))
+    got=capture()["unit_evidence"]
+    assert got["state"]=="missing" and got["recognized_unit"] is None
+
+
+@pytest.mark.parametrize("caption",["тыс. руб. за м3", "тыс. руб. за 100 м^3", "тыс. руб. за куб. м",
+    "тыс. руб. за 1 000 кг", "тыс. руб. на 100 шт.", "тыс. руб. в месяц", "тыс. руб. на 01.11.2026",
+    "тыс. руб. на неизвестный показатель", "тыс. руб. из расчёта на услугу", "м²/тыс. руб.",
+    "Стоимость 1 м³ в тыс. руб.", "Стоимость за тонну, тыс. руб.", "Цена 1 000 кг, тыс. руб.",
+    "Стоимость на жителя, тыс. руб.", "Стоимость на неизвестный показатель, тыс. руб.",
+    "Цена килограмма, тыс. руб.", "Стоимость человеко-часа, тыс. руб.", "Цена штуки, тыс. руб."])
+def test_specific_or_ambiguous_context_cannot_fall_back_to_a_global_currency_label(source,caption):
+    changed(source,lambda sheet:setattr(sheet["B2"],"value",caption))
     got=capture()["unit_evidence"]
     assert got["state"]=="missing" and got["recognized_unit"] is None
 

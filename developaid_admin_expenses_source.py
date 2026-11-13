@@ -34,12 +34,33 @@ FIELDS = (("total", "итого"), ("fact", "факт"), ("plan", "план"))
 _UNIT = re.compile(r"(?<![\w])(?:(?P<scale>тыс\.?|тысяч(?:ах|и|а)?|млн\.?|миллион(?:ах|ов|а|ы)?)"
                    r"\s{0,8})?(?:руб(?:лей|ля|ль|ли|\.)?|р\.|₽)(?![\w])", re.I)
 _NUMERIC_TEXT = re.compile(r"[+-]?(?:[0-9]+(?:[.,][0-9]*)?|[.,][0-9]+)(?:[eE][+-]?[0-9]+)?\Z")
-_PER_UNIT = re.compile(
-    r"[.,;:]?\s{0,32}(?:[/\\]|(?:за|на)(?=\s|[0-9])\s{0,16}"
-    r"(?:(?:[0-9]{1,8}(?:[.,][0-9]{1,6})?|один|одно|одну|одного|одной)\s{0,16})?"
-    r"(?:(?:кв\.?\s{0,8}|квадратн\w{0,8}\s{1,8})?(?:м(?:²|\^?2)?\.?|метр\w{0,8})"
-    r"|га|гектар\w{0,8}|площад\w{0,8}|(?:рабоч\w{0,4}\s{1,8})?мест\w{0,8}"
-    r"|машино[- ]?мест\w{0,8}|единиц\w{0,8}\s{1,8}площад\w{0,8})(?!\w))", re.I)
+_QUANTITY = (r"(?:[+-]?[0-9]{1,12}(?:[ \u00a0\u202f][0-9]{3}){0,6}"
+             r"(?:[.,][0-9]{1,6})?(?:\s{0,8}/\s{0,8}[0-9]{1,8})?"
+             r"|[¼½¾]|один|одно|одну|одного|одной)")
+_QUANTITY_SCALE = r"(?:(?:тыс|млн)\.?\s{0,8})?"
+_METRE = r"(?:(?:[кдс]?м|m|cm|km)(?:[²³23]|\s{0,4}\^\s{0,4}[23])?\.?|метр[а-я]{0,8})"
+_AREA_VOLUME_PLACE = (r"(?:(?:кв\.?|куб\.?|квадратн[а-я]{0,8}|кубическ[а-я]{0,8})\s{0,8}" + _METRE +
+    r"|(?:[кдс]?м|m|cm|km)(?:[²³23]|\s{0,4}\^\s{0,4}[23])\.?"
+    r"|метр[а-я]{0,8}|площад(?:ь|и|ью|ей|ям|ями|ях)|га|гектар[а-я]{0,6}|сотк[а-я]{0,4}"
+    r"|(?:машино[- ]?)?мест(?:о|а|у|ом|е|ам|ами|ах)?)")
+_MEASURE = (r"(?:" + _AREA_VOLUME_PLACE + "|" + _METRE +
+    r"|л|литр[а-я]{0,6}|тонн[а-я]{0,6}|т\.?|кг|грамм[а-я]{0,6}|г\.?|шт\.?|штук[а-я]{0,4}"
+    r"|ед\.?|единиц[а-я]{0,6}|чел\.?|человек[а-я]{0,6}|номер[а-я]{0,6}|квартир[а-я]{0,6}"
+    r"|час[а-я]{0,6}|ч\.?|сут(?:ки|ок)|день|дня|дней|дн\.?|смен[а-я]{0,4}"
+    r"|мес\.?|месяц[а-я]{0,6}|год[а-я]{0,4}|лет)")
+_SPECIFIC_WORD = (r"(?:килограмм[а-я]{0,6}|тонн[а-я]{0,6}|литр[а-я]{0,6}|штук[а-я]{0,6}"
+    r"|человек[а-я]{0,6}|человеко[- ]?час[а-я]{0,6}|сут(?:ки|ок)|час(?:а|ов)?|день|дня|дней)")
+_MEASURED_CONTEXT = re.compile(
+    r"(?<![A-Za-zА-Яа-яЁё_])(?:" + _AREA_VOLUME_PLACE + "|" + _SPECIFIC_WORD + r")(?!\w)"
+    r"|(?<!\w)" + _QUANTITY + r"\s{0,8}" + _QUANTITY_SCALE + _MEASURE + r"(?!\w)"
+    r"|(?<!\w)(?:(?:на|за)(?=\s|[0-9])|в(?=\s|[0-9])(?!\s{1,8}т\.\s{0,8}ч\.))"
+    r"\s{0,8}(?:" + _QUANTITY + r"\s{0,8})?" +
+    _QUANTITY_SCALE + _MEASURE + r"(?!\w)", re.I)
+_RELATIVE_CONTEXT = re.compile(r"(?<!\w)(?:на|за|per)(?=\s|[0-9+.,\-¼½¾])", re.I)
+_RELATIVE_AFTER = re.compile(r"[.,;:]?\s{0,32}(?:[/\\]|(?:на|за|в|из|per)(?=\s|[0-9+.,\-¼½¾]))", re.I)
+_DIVIDED_BEFORE = re.compile(r"[/\\]\s{0,32}\Z")
+_VAT_AFTER = re.compile(r"[.,;:]?\s{0,32}в\s{1,8}(?:том\s{1,8}числе|т\.\s{0,8}ч\.)"
+                        r"\s{0,8}ндс[.,;:)\s]{0,8}\Z", re.I)
 _LONG_UNIT_GAP = re.compile(r"[.,;:]?\s{33}")
 
 
@@ -195,9 +216,18 @@ class _HeaderEvidence:
                                     "value_sha256": _value_hash(text)})
             if not isinstance(cell.value, str) or "://" in cell.value:
                 continue
+            measured = _MEASURED_CONTEXT.search(cell.value) is not None \
+                or _RELATIVE_CONTEXT.search(cell.value) is not None
             for match in _UNIT.finditer(cell.value):
-                if _PER_UNIT.match(cell.value, match.end()) or _LONG_UNIT_GAP.match(cell.value, match.end()):
-                    continue  # Currency per area/place is not a global money scale.
+                # Quantities share one lexical grammar: grouped numbers,
+                # decimals, fractions and optional thousand/million labels.
+                # An unfamiliar "на/за/..." context is unknown, never a
+                # fallback global scale because its denominator was unparsed.
+                if measured or _DIVIDED_BEFORE.search(cell.value[max(0, match.start()-34):match.start()]) \
+                        or _LONG_UNIT_GAP.match(cell.value, match.end()) \
+                        or (_RELATIVE_AFTER.match(cell.value, match.end())
+                            and not _VAT_AFTER.fullmatch(cell.value, match.end())):
+                    continue
                 scale = (match["scale"] or "").lower()
                 unit = "тыс. руб." if scale.startswith("тыс") else "млн руб." if scale else "руб."
                 self.found += 1
