@@ -600,17 +600,34 @@ def _dated_bar_page(page, page_number, schedule):
     grid = _Grid(page)
     for header, row in enumerate(grid.cells):
         filled = [(i, _space(cell)) for i, cell in enumerate(row) if _space(cell)]
-        if (len(filled) < 6 or not filled[0][1].startswith('№')
+        if (len(filled) < 5 or not filled[0][1].startswith('№')
                 or not filled[1][1].lower().startswith('наименован')
                 or not filled[2][1].lower().startswith('ед')
                 or not filled[3][1].lower().replace('ё', 'е').startswith(('объем', 'кол'))):
             continue
-        marks = [_CHART_DATE.findall(cell) for _, cell in filled[4:]]
-        if any(len(found) != 1 for found in marks):
+        if not any(_CHART_DATE.search(cell) for _, cell in filled[4:]):
             continue
+        # Keep every physical calendar column, including one without a label.
+        # Only the four metadata columns may merge stray rules through their text.
+        # The table's horizontal border excludes a separate signature border.
+        across, _ = _rules(page)
+        first_calendar = filled[3][0]+1
+        top, bottom = grid.band(header)
+        right_edges = [x1 for y, x0, x1 in across
+                       if (abs(y-top) <= 1 or abs(y-bottom) <= 1)
+                       and x0 <= grid.columns[0]+1 and x1 > grid.columns[first_calendar]]
+        right = max(right_edges, default=grid.columns[filled[-1][0]+1])
+        calendar = [i for i in range(first_calendar, len(grid.columns)-1)
+                    if grid.columns[i] < right-1]
+        bounds = [grid.columns[i] for i, _ in filled[:4]] + [grid.columns[first_calendar]] + [
+            grid.columns[i+1] for i in calendar]
+        marks = [_CHART_DATE.findall(_space(row[i])) for i in calendar]
         dates, problem = {}, None
         previous = None
         for column, found in enumerate(marks, 4):
+            if len(found) != 1:
+                problem = 'В шапке графика не прочитана дата календарного столбца.'
+                break
             try:
                 text = found[0]
                 day = dt.datetime.strptime(text, '%d.%m.%Y' if len(text.rsplit('.', 1)[1]) == 4
@@ -623,7 +640,6 @@ def _dated_bar_page(page, page_number, schedule):
                 break
             dates[column] = (day, day)
             previous = day
-        bounds = [grid.columns[i] for i, _ in filled] + [grid.columns[filled[-1][0]+1]]
         if problem:
             schedule['warnings'].append(f'Стр. {page_number}: {problem} Сроки полос не прочитаны.')
         schedule['warnings'].append(CHART_DATES_ASSUMPTION)

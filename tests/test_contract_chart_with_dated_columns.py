@@ -81,9 +81,14 @@ def test_full_years_are_read_without_reinterpreting_the_labels_as_period_ends():
     (('10.05.26','31.02.26','30.05.26','10.06.26'),'недопустимая календарная дата'),
     (('10.05.26','30.05.26','20.05.26','10.06.26'),'не возрастают'),
     (('10.05.26','20.05.26','20.05.26','10.06.26'),'не возрастают'),
+    (('10.05.26','','30.05.26','10.06.26'),'не прочитана дата'),
+    (('','','30.05.26','10.06.26'),'не прочитана дата'),
+    (('10.05.26','20.05.26','30.05.26',''),'не прочитана дата'),
+    (('','','','10.06.26'),'не прочитана дата'),
 ])
 def test_invalid_or_non_monotonic_labels_keep_rows_but_never_fabricate_dates(marks,reason):
     schedule=documents.read(pdf(marks))['schedule']
     assert len(schedule['lines']) == 2
+    assert [line['code'] for line in schedule['lines']] == ['1.1','1.2']
     assert all(line['start'] is None and line['finish'] is None for line in schedule['lines'])
     assert any(reason in warning for warning in schedule['warnings'])
