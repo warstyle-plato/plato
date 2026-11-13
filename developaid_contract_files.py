@@ -30,6 +30,7 @@ import developaid_contract_control as control
 import developaid_contract_fact as fact
 import developaid_contract_link_choices as choices
 import developaid_contract_plan as plan
+import developaid_contract_scan as scan
 import developaid_contract_schedule_links as links
 import developaid_monitor as monitor
 
@@ -114,6 +115,18 @@ def _same_contract(found: dict | None, row: dict) -> str:
             "Загрузите документ этого договора.")
 
 
+def awaits_confirmation(record: dict) -> bool:
+    """A scan whose recognised header the user has not confirmed: shown in the card, counted nowhere."""
+    return bool(record.get("scan")) and not record["scan"].get("confirmed_at")
+
+
+def _named_in_scan(record: dict, row: dict) -> bool:
+    """The card's contract number stands in the recognised text of the scan."""
+    from developaid_monitor_contracts import _contract_number
+    expected = _contract_number(row.get("contract"), reference=True)
+    return bool(expected) and expected in _contract_number((record.get("scan") or {}).get("text"))
+
+
 def _record(sha: str, filename: str, content: bytes, uploaded_at: str) -> dict:
     try:
         read = documents.read(content)
@@ -141,9 +154,13 @@ def store(project: str, row: dict, filename: str, content: bytes) -> dict:
                 _json(existing, record)
         return {**_summary(record), "already": True, "restored": restored}
     record = _record(sha, Path(str(filename or "")).name[:240] or "документ.pdf", content, _now())
-    reason = _same_contract(record.get("contract"), row)
-    if reason:
-        raise ContractFilesProblem(reason)
+    if record.get("scan"):
+        # A misread number does not refuse a scan: the contract is checked again when it is confirmed.
+        record["scan"]["card_number_found"] = _named_in_scan(record, row)
+    else:
+        reason = _same_contract(record.get("contract"), row)
+        if reason:
+            raise ContractFilesProblem(reason)
     _write(folder / f"{sha}.pdf", content)
     _json(existing, record)
     return {**_summary(record), "already": False, "restored": False}
@@ -164,7 +181,8 @@ def _current(folder: Path, sha: str) -> dict:
     """
     path = folder / f"{sha}.json"
     record = _stored(path)
-    if record.get("reader") == documents.READER_VERSION:
+    # A scan is not recognised again by a newer reader of text: its confirmed header stays as confirmed.
+    if record.get("reader") == documents.READER_VERSION or record.get("scan"):
         return record
     with _locked(folder):
         record = _stored(path)
@@ -299,10 +317,12 @@ def listing(project: str, contract_id: str, cut: str = "", acts: dict | None = N
                               "performed": acts_in_card.accumulated([], cut)}, acts, cut)
     every = _records(folder)
     records = [r for r in every if not r.get("removed_at")]
-    acts = act_dates.resolve(acts, records)
-    performed = acts_in_card.accumulated(records, cut)
+    # An unconfirmed scan is listed with its proposal; the plan, the fact and the act dates do not see it.
+    counted = [r for r in records if not awaits_confirmation(r)]
+    acts = act_dates.resolve(acts, counted)
+    performed = acts_in_card.accumulated(counted, cut)
     for record in records:
-        notes = []
+        notes = _scan_notes(record) if record.get("scan") else []
         if not record.get("contract"):
             notes.append("Номер договора в документе не прочитан: документ привязан к договору по выбору "
                          "в карточке.")
@@ -323,17 +343,99 @@ def listing(project: str, contract_id: str, cut: str = "", acts: dict | None = N
             # Редактор связей предлагает строки по тому же правилу, что сервер.
             record["schedule"] = {**record["schedule"], "unfit": links.unfit(record["schedule"])}
     chosen = _choices(folder)
-    for record, _, estimate, schedule in _in_force(records):
+    for record, _, estimate, schedule in _in_force(counted):
         result = choices.apply(_proposal(record, estimate, schedule), chosen, schedule and schedule["schedule"])
         estimate["links"] = {**result, "schedule": schedule["title"] if schedule else "",
                              "schedule_sha256": schedule["sha256"] if schedule else ""}
     removed = [{"sha256": r["sha256"], "filename": r.get("filename", ""), "title": r["title"],
                 "removed_at": r["removed_at"]} for r in every if r.get("removed_at")]
-    editions = _editions(records, chosen)
+    editions = _editions(counted, chosen)
     planned = plan.build(editions, cut)
     return _with_control({"contract_id": contract_id, "documents": records, "removed": removed, "plan": planned,
                           "fact": _fact(editions, planned["in_force"], acts, cut), "performed": performed},
                          acts, cut)
+
+
+_SCAN_FIELDS = (("contract", "number", "номер договора"), ("contract", "date", "дата договора"),
+                ("agreement", "number", "номер соглашения"), ("agreement", "date", "дата соглашения"),
+                ("act", "number", "номер акта"), ("act", "date", "дата акта"),
+                ("act", "start", "начало отчётного периода"), ("act", "finish", "конец отчётного периода"))
+
+
+def _scan_notes(record: dict) -> list[str]:
+    """What the card says of a scan: to be checked, or confirmed with the values the user changed."""
+    found = record["scan"]
+    # The recognised text stays in the store for the contract check; the page gets the header only.
+    record["scan"] = {key: value for key, value in found.items() if key != "text"}
+    if not found.get("confirmed_at"):
+        number = "" if found.get("card_number_found") else (
+            " Номер договора из карточки в распознанном тексте не найден: убедитесь, что это документ "
+            "этого договора.")
+        return [scan.CHECK + number]
+    changed = found.get("corrected") or []
+    return [f"Шапка прочитана со скана и подтверждена {_shown(found['confirmed_at'][:10])}"
+            + (f"; исправлено вручную: {', '.join(changed)}." if changed else "; исправлений не было.")]
+
+
+def confirm_scan(project: str, row: dict, sha256: str, kind: str, values: dict, cut: str = "",
+                 acts: dict | None = None) -> dict:
+    """Take the checked header of a scan into the card: from now on it counts like a read document.
+
+    `kind` is what the document is (contract, agreement, act) and `values` its header as the user
+    confirmed it; each value that differs from the recognised one is named as corrected by hand.
+    """
+    folder = _directory(project, row.get("id"))
+    if not re.fullmatch(r"[0-9a-f]{64}", str(sha256 or "")) or not (folder / f"{sha256}.json").exists():
+        raise ContractFilesProblem("Документ не найден в карточке: обновите карточку.")
+    if kind not in ("contract", "agreement", "act"):
+        raise ContractFilesProblem("Выберите, что это за документ: договор, дополнительное соглашение или акт КС-2.")
+    text = lambda key: str(values.get(key) or "").strip()[:80]
+    day = lambda key: _day(text(key))
+    header = {"contract": {"number": documents._contract_number(text("contract_number")) or None,
+                           "date": day("contract_date")}, "agreement": None, "act": None}
+    if kind == "agreement":
+        header["agreement"] = {"number": text("agreement_number") or "б/н", "date": day("agreement_date")}
+        if not header["agreement"]["date"]:
+            raise ContractFilesProblem("Впишите дату дополнительного соглашения: по ней соглашение встаёт "
+                                       "в ряд редакций договора.")
+    elif kind == "act":
+        header["act"] = {"number": text("act_number") or None, "date": day("act_date"), "start": day("act_start"),
+                         "finish": day("act_finish"), "total": None, "positions": [], "table_total": None}
+        found = header["act"]
+        if not (found["number"] and found["date"] and found["start"] and found["finish"]):
+            raise ContractFilesProblem("Впишите номер акта, его дату и обе даты отчётного периода: по ним "
+                                       "датируется выполнение в накопительной КС-6а.")
+        if found["start"] > found["finish"]:
+            raise ContractFilesProblem("Начало отчётного периода позже его конца: проверьте даты акта.")
+    elif not (header["contract"]["number"] and header["contract"]["date"]):
+        raise ContractFilesProblem("Впишите номер и дату договора.")
+    if header["contract"]["number"]:
+        reason = _same_contract(header["contract"], row)
+        if reason:
+            raise ContractFilesProblem(reason)
+    else:
+        header["contract"] = None
+    with _locked(folder):
+        record = _current(folder, sha256)
+        if not record.get("scan"):
+            raise ContractFilesProblem("Этот документ прочитан из текста PDF, подтверждать его не нужно.")
+        read = record["scan"].get("read") or {}
+        record.update(header)
+        # What recognition missed is now filled in by the user; only the tables stay unread.
+        record["warnings"] = [scan.TABLES_NOT_READ]
+        record["scan"].update(confirmed_at=_now(), kind=kind, corrected=[
+            label for part, key, label in _SCAN_FIELDS
+            if (header.get(part) or {}).get(key) != (read.get(part) or {}).get(key)
+            and (header.get(part) or {}).get(key) is not None])
+        _json(folder / f"{sha256}.json", record)
+    return listing(project, row.get("id"), cut, acts)
+
+
+def _day(text: str) -> str | None:
+    try:
+        return dt.date.fromisoformat(text).isoformat() if text else None
+    except ValueError:
+        raise ContractFilesProblem(f"Дата «{text}» не прочитана: выберите её в календаре.") from None
 
 
 def _fact(editions, in_force, acts, cut):
