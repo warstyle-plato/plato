@@ -327,7 +327,7 @@ def _pace_finding(subject, peers, comparison=None) -> dict[str, Any] | None:
         headline = f"Темп отстаёт от класса в {_num(ratio, 1)} раза"
         text = (f"{_amount(pace, 'квартира', 'квартиры', 'квартир', 1)} в месяц "
                 f"против медианы {_num(median, 1)} по выборке.")
-        if three:
+        if three and (subject.get("pace_reference") or {}).get("basis") != "calendar_average":
             steady = abs(three - pace) / pace < 0.3 if pace else False
             text += (
                 f" За последние три месяца — {_num(three, 1)}, то есть "
@@ -366,6 +366,8 @@ def _pace_finding(subject, peers, comparison=None) -> dict[str, Any] | None:
             f"{_num(median, 1)} по выборке — разница меньше полутора раз, в пределах разброса."
         )
         tone = "flat"
+    if comparison.get("period_label"):
+        text = f"База сравнения — {comparison['period_label']}. " + text
     return {"code": "pace", "headline": headline, "text": text, "tone": tone}
 
 
@@ -477,6 +479,14 @@ def _horizon_finding(subject) -> dict[str, Any] | None:
     months = round(remaining / pace)
     years = round(months / 12, 1)
     years_text = _num(int(years), 0) if years == int(years) else _num(years, 1)
+    reference = subject.get("pace_reference") or {}
+    if reference.get("basis") == "calendar_average":
+        return {"code": "horizon", "headline": "Остаток при среднем темпе за три месяца",
+                "text": f"При темпе за {reference['label']} ({_num(pace, 1)} ДДУ/мес) "
+                        f"остатка {_num(remaining)} квартир хватит на {_num(months)} мес. "
+                        "Это продолжение среднего темпа за три месяца. "
+                        f"Отдельный прогноз источника — {_month_year(forecast)}.",
+                "tone": "watch"}
     return {
         "code": "horizon",
         "headline": "Остаток уходит дольше, чем строится дом",
@@ -784,7 +794,7 @@ def _essay_project(subject, peers, segment, premium, cost, pace_context=None) ->
             + (f" — медленнее в {_num(ratio, 1)} раза." if slow else ".")
         ]
         three = subject.get("units_per_month_3m")
-        if three:
+        if three and (subject.get("pace_reference") or {}).get("basis") != "calendar_average":
             second[0] += (
                 f" За последние три месяца — {_num(three, 1)}: "
                 + ("уровень устойчивый, а не провал одного месяца."
@@ -808,6 +818,8 @@ def _essay_project(subject, peers, segment, premium, cost, pace_context=None) ->
                         else "Темп продаж премию выдерживает",
             "paragraphs": second,
         })
+        if comparison.get("period_label"):
+            second.insert(0, f"База сравнения — {comparison['period_label']}.")
 
     points = [row for row in premium or [] if row.get("premium_pct") is not None]
     if len(points) >= 3:

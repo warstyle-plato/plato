@@ -140,7 +140,10 @@ def pace_note(block: dict[str, Any]) -> dict[str, Any]:
         elif ratio and ratio > 0:
             lines.append(f"Медиана соседей {_num(peers['median'], 1)} — проект идёт вровень с рынком.")
     recent = subject.get("units_per_month_3m")
-    if recent is not None and pace:
+    reference = subject.get("pace_reference") or {}
+    if reference.get("basis") == "calendar_average":
+        lines.insert(0, f"Сравнение за {reference['label']}.")
+    elif recent is not None and pace:
         delta = (recent / pace - 1) * 100 if pace else None
         if delta is not None and abs(delta) >= 10:
             lines.append(
@@ -919,4 +922,9 @@ def build_notes(blocks: list[dict[str, Any]], series: list[dict[str, Any]] | Non
         notes[str(code)] = (
             builder(block, series) if code == "price" else builder(block)  # type: ignore[call-arg]
         )
-    return {"blocks": notes, "overall": overall(blocks, notes), "caveats": list(CAVEATS)}
+    conclusion = overall(blocks, notes)
+    pace = next((b for b in blocks if b.get("code") == "pace"), {})
+    reference = (pace.get("subject") or {}).get("pace_reference") or {}
+    if reference.get("basis") == "calendar_average" and conclusion.get("text"):
+        conclusion["text"] = f"Сравнение темпа за {reference['label']}. " + conclusion["text"]
+    return {"blocks": notes, "overall": conclusion, "caveats": list(CAVEATS)}
