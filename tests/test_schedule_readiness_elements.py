@@ -49,6 +49,17 @@ def test_real_projection_excludes_separate_parking_and_shares_monitor_report_sou
     assert 'gprMatrix' in view['schedule']['readiness_html']
 
 
+def test_partial_weighted_fraction_is_not_exported_as_overall_completion(site):
+    cfg,opts=element_site(site)
+    del cfg['element_profile']['assignments']['1']
+    activate((cfg,opts))
+    schedule=monitor.build(PROJECT,DAY)['schedule']
+    assert schedule['readiness']['project']['progress']==pytest.approx(.5)
+    assert schedule['readiness']['project']['partial']
+    assert schedule['completed_facts']['overall_progress'] is None
+    assert 'не сопоставлена' in schedule['completed_facts']['overall_progress_reason']
+
+
 def reading(key, value, *, obj='Корпус 1', date=DAY, name='Надземный монолит'):
     return dict(id=key, name=name, object=obj, section='Этап', primary=dict(value=value, date=date, label='По ведомости'))
 
@@ -60,6 +71,8 @@ def test_unknown_names_weights_and_internal_shares_are_never_guessed_or_zero():
     assert state['project']['progress'] is None
     assert state['project']['coverage'] == 0
     assert state['project']['counts']['unknown'] == 1
+    assert state['project']['eligible_readings'] == 1
+    assert state['project']['known_readings'] == 0
     assert 'не сопоставлена' in state['project']['reason']
     config['assignments']={key:dict(element_id='frame',share=None) for key in ('one','two')}
     assert elements.projection(rows,config,cut=DAY,confirmed=True)['project']['progress'] is None
@@ -212,4 +225,29 @@ def test_page_configures_a_saved_full_source_explicitly_and_reports_conflict(sit
         expect(page.locator('#readinessEditorMsg')).to_contain_text('Перечитайте сохранённые')
         expect(page.locator('#readinessSummary .readiness-project-value')).to_have_text('66,2%')
         assert len(ready._events(PROJECT))==1
+        assert not errors
+
+
+@pytest.mark.parametrize('width',[390,1440])
+def test_multi_building_matrix_is_readable_and_known_unweighted_facts_are_not_missing(width):
+    rows=[reading(str(i),.5,obj='Корпус '+str(i)) for i in range(1,5)]
+    config=dict(id=elements.PROFILE_ID,overrides={},assignments={},objects={})
+    wf={'works':{r['id']:r for r in rows}}
+    state=ready.model(wf,cut=DAY,baseline_scope='full_schedule',source_sha256='a'*64)
+    # A saved draft has dated observations even before weights are assigned.
+    state.update(elements.projection(rows,config,cut=DAY,confirmed=False))
+    markup=ready.render(state)
+    with browser_page(width) as (page,responses,errors):
+        from test_monitor_gpr_sections import monitor_view
+        view=monitor_view();view['schedule']['readiness_html']=markup
+        page.evaluate('(v)=>{currentView=v;renderGantt(v)}',view)
+        expect(page.locator('#readinessSummary')).to_contain_text('Пригодные показания: 4 из 4')
+        expect(page.locator('#readinessSummary')).to_contain_text('включено во взвешенный расчёт: 0')
+        cells=page.locator('#gprMatrix tbody td[data-object]')
+        expect(cells).to_have_count(4)
+        for i in range(4):
+            box=cells.nth(i).bounding_box()
+            assert box['width'] >= (width-90 if width==390 else 150)
+            assert cells.nth(i).get_attribute('data-object')=='Корпус '+str(i+1)
+        assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
         assert not errors

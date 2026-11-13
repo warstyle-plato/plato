@@ -266,8 +266,12 @@ def _apply_gpr(project: str, view: dict[str, Any], cut: datetime.date) -> dict[s
     schedule['readiness'] = readiness.build(project, cut.isoformat(), schedule)
     schedule['readiness_html'] = readiness.render(schedule['readiness'])
     if schedule.get('completed_facts') is not None:
-        schedule['completed_facts']['overall_progress'] = schedule['readiness']['project']['progress']
+        summary = schedule['readiness']['project']
+        # This legacy field means the whole scope. A known weighted fraction
+        # stays in readiness with its coverage, never masquerades as the whole.
+        schedule['completed_facts']['overall_progress'] = None if summary.get('partial') else summary['progress']
         schedule['completed_facts']['overall_progress_basis'] = schedule['readiness']['scope_label']
+        schedule['completed_facts']['overall_progress_reason'] = summary.get('reason') or ''
     schedule["gpr_forecasts"] = works
     schedule.update(basis="gpr", forecast_state=qualified["state"],
                     forecast_end=qualified.get("forecast"), pace_forecast_end=qualified.get("forecast"),

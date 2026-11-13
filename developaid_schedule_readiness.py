@@ -400,7 +400,7 @@ def editor(project, *, full_source_sha256=''):
     legacy_sha = base['versions'][0]['previous_source_sha256'] if base['versions'] else base['source_sha256']
     choices = []
     if legacy_sha and monitor._legacy_baseline_file(project) is not None:
-        choices.append({'sha256': legacy_sha, 'label': 'Первый сохранённый полный ГПР'})
+        choices.append({'sha256': legacy_sha, 'label': 'Первый сохранённый ГПР — полноту нужно подтвердить'})
     today = versions._now().date().isoformat()
     for event in base['versions']:
         if event.get('baseline_scope', 'full_schedule') == 'full_schedule' and event['effective_from'] <= today and event['source_sha256'] not in {c['sha256'] for c in choices}:
@@ -466,7 +466,9 @@ def render(state):
         c = row['counts']
         return 'Завершено: '+str(c['completed'])+' · в работе: '+str(c['in_progress'])+' · не начато: '+str(c['not_started'])+' · неизвестно: '+str(c['unknown'])
     def evidence(row):
-        return 'Пригодные показания: '+str(row['known_readings'])+' из '+str(row['total'])+' · веса полного состава: '+str(row['known_weights'])+' из '+str(row['total'])+'. Даты источников: '+(', '.join(date_text(day) for day in row['source_dates']) or 'не указаны')+'. '+', '.join(row['sources'])
+        eligible = row.get('eligible_readings', row['known_readings'])
+        weighted = ' · включено во взвешенный расчёт: '+str(row['known_readings']) if 'eligible_readings' in row else ''
+        return 'Пригодные показания: '+str(eligible)+' из '+str(row['total'])+weighted+' · веса полного состава: '+str(row['known_weights'])+' из '+str(row['total'])+'. Даты учтённых источников: '+(', '.join(date_text(day) for day in row['source_dates']) or 'нет учтённых показаний')+'. '+', '.join(row['sources'])
     def card(row):
         value = 'Не определена' if row['progress'] is None else f"{row['progress']*100:.1f}%".replace('.', ',')
         partial = '<p>По известным данным; состав учтён не полностью.</p>' if row.get('partial') and row['progress'] is not None else ''
@@ -494,5 +496,6 @@ def render(state):
     else:
         out.append('<details class="readiness-history-note"><summary>Завершённые работы из других источников</summary><p>Исторических подтверждений: '+str(state['historical_completed_works'])+'. Они не прибавлены к полному составу автоматически.</p></details>')
     if 'matrix' in state:
+        out.append('<style>@media(max-width:640px){.readiness-matrix table,.readiness-matrix tbody,.readiness-matrix tr,.readiness-matrix tbody th,.readiness-matrix td{display:block;width:auto}.readiness-matrix thead{display:none}.readiness-matrix tbody tr{border:1px solid #dce3ed;border-radius:7px;margin:10px 0;overflow:hidden}.readiness-matrix tbody th{text-align:left;background:#f3f6fa}.readiness-matrix td{border-width:1px 0 0;overflow-wrap:break-word}.readiness-matrix td::before{content:attr(data-object);display:block;font-weight:700;margin-bottom:5px}.readiness-matrix .readiness-cell-empty{display:none}}</style>')
         out.append(elements.render_matrix(state))
     return ''.join(out)+'</section>'

@@ -89,7 +89,7 @@ def projection(entries, config, *, cut, confirmed):
     def group(name, members, whole=False):
         counts = dict(completed=0, in_progress=0, not_started=0, unknown=0)
         problems, dates, sources, weighted = [], set(), set(), []
-        known_weight, known, numeric, mapped = 0, 0, 0, 0
+        known_weight, known, numeric, mapped, eligible_readings = 0, 0, 0, 0, 0
         for row in members:
             key, fact = row['id'], row.get('primary') or {}
             obj = row.get('object') or 'Общие работы'
@@ -106,6 +106,7 @@ def projection(entries, config, *, cut, confirmed):
             except (ValueError, TypeError):
                 day = None
             eligible = valid and day is not None and day <= cut and not fact.get('requires_reconciliation')
+            eligible_readings += eligible
             counts['unknown' if not eligible else 'completed' if value >= 1 else 'not_started' if value == 0 else 'in_progress'] += 1
             if config['objects'].get(obj) != 'residential':
                 problems.append(obj+': не подтверждён тип здания.')
@@ -140,7 +141,7 @@ def projection(entries, config, *, cut, confirmed):
             problems.append('Нет положительного веса с пригодным показанием; процент пока не определён.')
         progress = math.fsum(weighted)/known_weight if confirmed and known_weight > 0 else None
         return dict(name=name, progress=progress, counts=counts, total=len(members), known_readings=known,
-                    numeric_readings=numeric, known_weights=mapped, requires_reconciliation=sum(bool((row.get('primary') or {}).get('requires_reconciliation')) for row in members),
+                    numeric_readings=numeric, eligible_readings=eligible_readings, known_weights=mapped, requires_reconciliation=sum(bool((row.get('primary') or {}).get('requires_reconciliation')) for row in members),
                     source_dates=sorted(dates), sources=sorted(sources), reason=' '.join(dict.fromkeys(problems)),
                     coverage=100*known_weight/denominator if denominator > 0 and (whole or not unknown_weight) else None,
                     known_weight=known_weight, partial=bool(problems), oldest_date=min(dates) if dates else None)
@@ -162,10 +163,10 @@ def render_matrix(state):
     esc = lambda value: html.escape(str(value), quote=True)
     def cell(row):
         if not row['total']:
-            return '<td>—</td>'
+            return '<td class="readiness-cell-empty">—</td>'
         pct = 'Пока не определено' if row['progress'] is None else f"{row['progress']*100:.1f}%".replace('.', ',')+(' · по известным данным' if row['partial'] else '')
         coverage = 'неизвестно' if row['coverage'] is None else f"{row['coverage']:.1f}%".replace('.', ',')
         date = row['oldest_date'] or 'не указана'
-        return '<td><strong>'+esc(pct)+'</strong><div>Учтено '+str(row['known_readings'])+' из '+str(row['total'])+' работ; покрытие веса: '+esc(coverage)+'.</div><div>Самое старое показание: '+esc(date)+'.</div>'+('<details><summary>Что не учтено</summary>'+esc(row['reason'])+'</details>' if row['reason'] else '')+'</td>'
+        return '<td data-object="'+esc(row['name'])+'"><strong>'+esc(pct)+'</strong><div>Учтено '+str(row['known_readings'])+' из '+str(row['total'])+' работ; покрытие веса: '+esc(coverage)+'.</div><div>Самое старое учтённое показание: '+esc(date)+'.</div>'+('<details><summary>Что не учтено</summary>'+esc(row['reason'])+'</details>' if row['reason'] else '')+'</td>'
     limit = '<p>Матрица показывает первые 100 этапов и 32 корпуса из-за размера источника. Полный список работ остаётся в Ганте; общая готовность учитывает весь подтверждённый состав.</p>' if state.get('matrix_truncated') else ''
     return '<section id="gprMatrix"><h3>Готовность по этапам и корпусам</h3><p>Оценка по удельным весам видов работ'+(' с ручными долями' if state.get('manual') else '')+', не по объёмам этого проекта.</p>'+limit+'<div class="readiness-matrix"><table><thead><tr><th>Этап</th>'+''.join('<th>'+esc(obj)+'</th>' for obj in state['matrix_objects'])+'</tr></thead><tbody>'+''.join('<tr><th>'+esc(row['stage'])+'</th>'+''.join(cell(c) for c in row['cells'])+'</tr>' for row in state['matrix'])+'</tbody></table></div></section>'
