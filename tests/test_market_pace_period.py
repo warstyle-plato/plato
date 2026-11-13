@@ -222,11 +222,14 @@ def test_actual_page_and_print_use_the_same_three_month_values(width, tmp_path):
         finally:
             browser.close()
     if width == 1280:
-        import subprocess
+        import pymupdf
         from market_search import report_pdf
         document = report_pdf.document(printable, style='\n'.join(style), title='Проверка темпа за три месяца')
         pdf = tmp_path / 'pace.pdf'
         pdf.write_bytes(report_pdf.render(document, footer='Проверка данных PDF 13.11.2026'))
-        read = subprocess.run(['pdftotext', '-layout', str(pdf), '-'], capture_output=True, text=True, check=True)
-        assert '17,7' in read.stdout and '22,5' in read.stdout
-        assert 'август–октябрь 2026' in read.stdout
+        # Parse the actual Chromium-produced PDF with the pinned runtime reader;
+        # an undeclared system pdftotext executable is not part of the CI image.
+        with pymupdf.open(pdf) as printed:
+            text = '\n'.join(page.get_text() for page in printed)
+        assert '17,7' in text and '22,5' in text
+        assert 'август–октябрь 2026' in text
