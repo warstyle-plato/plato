@@ -506,6 +506,33 @@ def monitor_readiness_profile_save(req: MonitorReadinessProfileRequest) -> Respo
     return _monitor_readiness_profile(req, save=True)
 
 
+class MonitorReadinessEditorRequest(BaseModel):
+    model_config = {'extra': 'forbid'}
+    project: str
+    full_source_sha256: str = ''
+    key: str = ''
+    session: str = ''
+
+
+@app.post('/monitor/readiness/editor', include_in_schema=False)
+@developaid_monitor.approved_schedule_read
+def monitor_readiness_editor(req: MonitorReadinessEditorRequest) -> Response:
+    private = {'Cache-Control': 'private, no-store'}
+    try:
+        _require_team_access(req.session, req.key, 'Монитор проекта')
+        if not req.project.strip() or len(req.project) > 200:
+            raise ValueError('Выберите проект.')
+        import developaid_schedule_readiness as readiness
+        return JSONResponse(content=readiness.editor(req.project.strip(), full_source_sha256=req.full_source_sha256), headers=private)
+    except HTTPException as exc:
+        exc.headers = {**(exc.headers or {}), **private}
+        raise
+    except ValueError as exc:
+        raise HTTPException(400, str(exc), headers=private) from None
+    except OSError:
+        raise HTTPException(503, 'Сохранённый полный ГПР или профиль пока недоступен.', headers=private) from None
+
+
 class MonitorNotesRequest(BaseModel):
     project: str
     note_id: str = ""

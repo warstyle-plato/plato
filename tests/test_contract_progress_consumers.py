@@ -243,10 +243,10 @@ def test_monitor_gpr_shows_statement_observation_not_manual_gpr_percentage(width
         expand_gantt(page)
         gantt = page.locator('#gantt')
         expect(gantt).to_contain_text('По ведомости: 40% от 06.11.2026')
-        # Current owner brief keeps both facts; the source-qualified statement
-        # remains the primary fill and never inherits the separate GPR value.
         work = gantt.locator('.lvl-task')
-        expect(work.locator('.work-progress')).to_contain_text('ГПР: 80% от 04.11.2026')
+        assert '80%' not in work.inner_text()
+        work.locator('.work-evidence summary').click()
+        assert '80%' not in work.inner_text()
         expect(work.locator('.work-progress')).to_contain_text('Накопительная ведомость')
         expect(work.locator('.factbar')).to_have_attribute('title','По ведомости: 40%')
         plan, fact = work.locator('.planbar').bounding_box(), work.locator('.factbar').bounding_box()

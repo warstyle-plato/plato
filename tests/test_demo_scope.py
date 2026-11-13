@@ -95,6 +95,8 @@ def body(session: str, path: str = "") -> dict:
     if path in {'/monitor/schedule/saved-source-preview', '/monitor/schedule/saved-source-approve'}:
         return {'project': 'проверка', 'session': session, 'source_sha256': 'a'*64,
                 'expected_active_sha256': 'b'*64, 'expected_revision': 0, 'effective_from': '2026-11-12'}
+    if path == '/monitor/readiness/editor':
+        return {'project': 'проверка', 'session': session}
     if path in {'/monitor/readiness/profile-preview', '/monitor/readiness/profile-save'}:
         return {'project': 'проверка', 'session': session, 'configuration': {},
                 'expected_source_sha256': 'a'*64, 'expected_source_revision': 0, 'expected_revision': 0}

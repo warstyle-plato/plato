@@ -124,6 +124,7 @@ _CUMULATIVE_PATHS = frozenset({
     "/monitor/view", "/monitor/gantt", "/monitor/schedule-fact", "/monitor/gpr-corpus/view",
     "/monitor/schedule/saved-source-preview", "/monitor/schedule/saved-source-approve",
     "/monitor/readiness/profile-preview", "/monitor/readiness/profile-save",
+    "/monitor/readiness/editor",
     "/monitor/schedule-confirmation/view", "/monitor/schedule-confirmation/save",
     "/monitor/schedule-physical/view", "/monitor/schedule-physical/save",
     "/monitor/schedule-gpr-physical/view", "/monitor/schedule-gpr-physical/save",

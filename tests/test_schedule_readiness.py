@@ -137,7 +137,8 @@ def test_actual_monitor_and_report_share_readiness_without_an_empty_matrix(site,
         expect(summary).to_contain_text('Нет подтверждённого полного состава и весов')
         assert summary.locator('.readiness-grid').count()==0
         assert summary.locator('.readiness-corpus-counts').get_attribute('open') is None
-        assert summary.bounding_box()['height']<350
+        expect(summary.locator('#gprMatrix')).to_be_visible()
+        expect(summary.locator('#gprMatrix')).to_contain_text('покрытие веса')
         activate(site);view=monitor.build(PROJECT,DAY)
         page.evaluate('(v)=>{currentView=v;renderGantt(v)}',view)
         expect(summary.locator('.readiness-project-value')).to_have_text('70,0%')
