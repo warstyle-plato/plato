@@ -138,8 +138,10 @@ def test_the_card_takes_the_object_of_the_schedule_and_the_line_the_owner_picked
     assert got["3.1"]["fix"] is None and got["1.1"]["suggested"] == []
     plan = files.listing(PROJECT, CONTRACT, "2026-02-04")["plan"]
     current = next(e for e in plan["editions"] if e["in_force"])
-    assert {x["code"]: x["amount"] for x in current["lines"]} == {"1.1, повтор": 8000.0, "3.1": 2000.0,
-                                                                   "3.2": 1000.0}
+    # Оставшаяся предложенная связь (1.2) однозначна и входит в план без подтверждения.
+    assert {x["code"]: x["amount"] for x in current["lines"]} == {"1.1, повтор": 8000.0, "1.2": 3000.0,
+                                                                   "3.1": 2000.0, "3.2": 1000.0}
+    assert current["auto"] == 1
 
 
 def test_a_fixed_numbering_brings_the_choice_back_to_the_owner(card):

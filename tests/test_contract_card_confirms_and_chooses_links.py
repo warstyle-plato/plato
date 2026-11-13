@@ -228,13 +228,14 @@ def test_the_plan_of_the_edition_in_force_follows_a_confirmation(card, width):
         links = _open(page)
         plan = page.locator("#contractDocuments .contract-plan")
         expect(plan).to_contain_text("Дополнительное соглашение № 4 от 01.02.2026 · график: Документ без номера")
-        expect(plan.locator(".contract-plan-total")).to_have_text("По плану к 02.02.2026: 0 ₽ из 0 ₽")
-        expect(plan).to_contain_text("В плане пока нет ни одной строки: подтвердите связи позиций расчёта с графиком.")
-        expect(plan).to_contain_text("предложены, но не подтверждены — позиций: 2 на сумму 11 000 ₽")
+        # Однозначные предложенные связи входят в план сразу; подтверждение снимает только подпись.
+        total = "По плану к 02.02.2026: 7 000 ₽ из 11 000 ₽ (63,6 %)"
+        expect(plan.locator(".contract-plan-total")).to_have_text(total)
+        expect(plan).to_contain_text("Позиций со связью, принятой автоматически, потому что она однозначна: 2.")
         links.get_by_text("Предложенные связи (2)").click()
         links.get_by_role("button", name="Подтвердить все предложенные в разделе (2)").click()
-        expect(plan.locator(".contract-plan-total")).to_have_text(
-            "По плану к 02.02.2026: 7 000 ₽ из 11 000 ₽ (63,6 %)")
+        expect(plan).not_to_contain_text("принятой автоматически")
+        expect(plan.locator(".contract-plan-total")).to_have_text(total)
         expect(plan).to_contain_text("составлен на завершение работ, поэтому план считается с 01.02.2026")
         overdue = plan.locator("p.contract-plan-overdue")
         expect(overdue).to_contain_text("Строк графика, срок которых по графику закончился до соглашения: 1.")
