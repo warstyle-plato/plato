@@ -96,7 +96,8 @@ def acts(row: dict | None) -> dict | None:
     summary = [act for source in row.get("financial_sources") or [] for act in source.get("acts") or []]
     return {"acts": found, "unread": unread, "works": len(works), "items": works, "period_amounts": sums,
             "summary_acts": summary,
-            "deadline": row.get("deadline"), "deadline_label": (row.get("deadline_source") or {}).get("label") or ""}
+            "deadline": row.get("deadline"), "deadline_label": (row.get("deadline_source") or {}).get("label") or "",
+            "deadline_manual": (row.get("deadline_source") or {}).get("label") == "Указан вручную"}
 
 
 def unavailable(reason: str) -> dict:

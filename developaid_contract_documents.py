@@ -36,7 +36,7 @@ import re
 from math import fsum
 
 # Raise when reading changes: stored documents are then read again from their PDF.
-READER_VERSION = 8
+READER_VERSION = 9
 MONTHS = {'январь': 1, 'февраль': 2, 'март': 3, 'апрель': 4, 'май': 5, 'июнь': 6, 'июль': 7,
           'август': 8, 'сентябрь': 9, 'октябрь': 10, 'ноябрь': 11, 'декабрь': 12}
 _CODE = re.compile(r'^\d+(?:\.\d+)*\.?$')
@@ -1214,7 +1214,9 @@ def _read(document) -> dict:
         # The agreement an act names is the one it was signed under, not a new edition.
         return {'contract': accepted['contract'], 'agreement': None, 'act': accepted['act'], 'estimates': [],
                 'schedule': None, 'warnings': accepted['act'].pop('warnings'), 'pages': len(texts)}
-    out = dict(identity(texts[0]), estimates=[], schedule=None, warnings=[], pages=len(texts))
+    import developaid_contract_terms as terms
+    out = dict(identity(texts[0]), estimates=[], schedule=None, warnings=[], pages=len(texts),
+               terms=terms.read(texts))
     estimate, layout, weekly, mentioned = None, None, None, set()
     for index, page in enumerate(document):
         number, text = index+1, texts[index]
@@ -1273,7 +1275,8 @@ def _read(document) -> dict:
         out['warnings'].append('Расчёт договорной стоимости упомянут, но его таблица не найдена.')
     if 'schedule' in mentioned and not out['schedule']:
         out['warnings'].append('График производства работ упомянут, но его таблица не найдена.')
-    if not out['estimates'] and not out['schedule'] and not mentioned:
+    out['warnings'].extend(out['terms']['warnings'])
+    if not out['estimates'] and not out['schedule'] and not mentioned and not out['terms']['changes_deadline']:
         out['warnings'].append('В документе нет таблиц расчёта договорной стоимости и графика производства работ: '
                                'он их не меняет, или таблицы не распознаны.')
     return out

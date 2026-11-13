@@ -31,6 +31,7 @@ import developaid_contract_fact as fact
 import developaid_contract_link_choices as choices
 import developaid_contract_plan as plan
 import developaid_contract_schedule_links as links
+import developaid_contract_terms as terms
 import developaid_monitor as monitor
 
 MAX_BYTES = 20 * 1024 * 1024
@@ -285,6 +286,12 @@ def _choices(folder: Path) -> dict:
     return stored.get("choices") or {}
 
 
+def document_terms(project: str, contract_id: str, cut: str) -> dict:
+    """Source-bound conditions, read from the same saved PDFs as the card."""
+    folder = _directory(project, contract_id)
+    return terms.resolve(_records(folder) if folder.is_dir() else [], cut)
+
+
 def listing(project: str, contract_id: str, cut: str = "", acts: dict | None = None) -> dict:
     """Every document in the card with its links, the accumulated plan and fact on `cut` and the removed files.
 
@@ -346,8 +353,15 @@ def _fact(editions, in_force, acts, cut, performed):
 
 def _with_control(listed, acts, cut):
     """The deviation, lag and forecast of the listed plan and fact (step 7)."""
-    listed["control"] = control.build(listed["plan"], listed["fact"], (acts or {}).get("deadline"),
-                                      (acts or {}).get("deadline_label") or "", cut)
+    conditions = terms.resolve(listed.get('documents') or [], cut)
+    deadline, label = (acts or {}).get('deadline'), (acts or {}).get('deadline_label') or ''
+    if conditions['history']:
+        listed['terms'] = conditions
+        manual = (acts or {}).get('deadline_manual')
+        if not manual:
+            deadline = conditions['deadline']
+            label = (conditions['source'] or {}).get('label') or ''
+    listed["control"] = control.build(listed["plan"], listed["fact"], deadline, label, cut)
     # Known source dates are useful even before money/fact can be matched.
     # They are a source-plan interval, never a legal deadline or a forecast.
     if listed["control"].get("total") is None:

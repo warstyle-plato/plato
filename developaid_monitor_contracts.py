@@ -857,6 +857,19 @@ def build(project: str, cut: str = "", *, include_history: bool = True) -> dict:
         deadline_source = {"label": "Срок из источника"} if deadline else None
         if len(deadlines) > 1:
             row_warnings.append("В источниках указаны разные сроки договора; срок не выбран автоматически.")
+        # A condition explicitly amended by a dated agreement supersedes its
+        # earlier text. An agreement changing only prices does not erase it.
+        from developaid_contract_files import document_terms, ContractFilesProblem
+        try:
+            deadline_documents = document_terms(project, identifier, cut)
+        except ContractFilesProblem as exc:
+            deadline_documents = None
+            row_warnings.append(str(exc))
+        if deadline_documents and deadline_documents['history']:
+            deadline = deadline_documents['deadline']
+            deadline_source = deadline_documents['source']
+        if deadline_documents:
+            row_warnings.extend(deadline_documents['warnings'])
         manual = terms.get(identifier)
         manual_reference = None
         if isinstance(manual, dict) and _date(manual.get("deadline")):
@@ -1002,6 +1015,8 @@ def build(project: str, cut: str = "", *, include_history: bool = True) -> dict:
                "performance_basis": ('Денежное закрытие по КС-2 из сводной; не физическая готовность и не объёмы КС-6а'
                    if summary_only else "Денежное выполнение только по загруженным накопительным и завершённым датированным периодам; не оплата и не физическая готовность"),
                "performance_source_count": len(physical_sources), "reported_performance_sources": references}
+        if deadline_documents and deadline_documents['history']:
+            row['deadline_documents'] = deadline_documents
         if summary_only:
             row['summary_progress'] = _summary_observation(summary_items, cut)
         else:
