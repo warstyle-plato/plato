@@ -542,6 +542,7 @@
   "summary.irr_equity": null,
   "summary.irr_equity_raw": null,
   "summary.irr_project": -0.7565,
+  "summary.land_rent_sum.known": true,
   "summary.landscaping_area_sqm": 0.0,
   "summary.landscaping_by_class_th": 0.0,
   "summary.landscaping_by_rate": true,

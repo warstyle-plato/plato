@@ -1191,6 +1191,8 @@ def _calculate_economics(req: CalcRequest) -> dict:
         },
         "summary": {
             "preliminary": not op["land_rent"]["financial_complete"],
+            # Сумма аренды определена или нет — решает движок аренды; страница и карточка читают это.
+            "land_rent_sum": developaid_land_rent.sum_state(op["land_rent"]),
             "preliminary_reason": developaid_land_rent.disclosure(op["land_rent"]),
             "revenue": total_revenue,
             "capex": total_capex,

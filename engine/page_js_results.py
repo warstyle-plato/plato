@@ -14,7 +14,23 @@ engine/page_build.py. Стенды на node берут куски скрипт�
 """
 # ruff: noqa
 
-PAGE += r"""function renderResult(){
+PAGE += r"""// Строка «Аренда земли участка» в «Параметрах проекта». Применимость решает
+// движок (`land_rent.status`), определена ли сумма и почему нет — тоже он
+// (`summary.land_rent_sum`, тот же ответ читает карточка «Инвестиционное
+// решение»). Страница только читает.
+function landRentResultRow(r){
+ const rent=(r&&r.land_rent)||{},sum=((r&&r.summary)||{}).land_rent_sum||{};
+ if(!rent.status||rent.status==='not_applicable')return '';
+ const amount=Number(((r.capex)||{}).land_rent||0),note=t=>' <span style="color:#777;font-weight:400">'+escapeHtml(t)+'</span>';
+ if(sum.known)return row('Аренда земли участка',money(amount));
+ const reason=String(sum.reason||'Расчёт не назвал, каких данных для неё не хватает.');
+ // Ноль при неопределённой сумме — не «аренда бесплатна», а отсутствие данных.
+ return row('Аренда земли участка',amount>0
+  ?money(amount)+note('Это известная часть суммы, она ещё уточнится. '+reason)
+  :'Не определена.'+note(reason));
+}
+
+function renderResult(){
  if(!lastResult)return;const r=lastResult,f=r.finance;
  renderObjectParkingNote();
  // Подпись под ставкой благоустройства зовётся и формой, и результатом:
@@ -263,6 +279,11 @@ PAGE += r"""function renderResult(){
    :'')+
   row('Стоимость смены ВРИ / права',money(Number(r.capex.land_rights||0))
    +(vriRelief>0?' <span style="color:#777;font-weight:400">льгота '+money(vriRelief)+'</span>':''))+
+  // Аренда земли — отдельная статья земельных правоотношений: она раньше не
+  // попадала в «Результат», хотя движок её считает и кладёт в поток CAPEX.
+  // Своя земля — строки нет: ноль читался бы «аренда бесплатна». Не вся
+  // сумма известна — число с оговоркой, а не как окончательное.
+  landRentResultRow(r)+
   (hotelProject?'':row(r.summary.social_payment_mode==='Строительство'?'Строительство соцобъектов':'Социальная компенсация',socialMoney(r.summary.social_payment)))+
   row('Проектирование П и РД',money((r.capex.design_p||0)+(r.capex.design_rd||0)))+
   (hotelProject
