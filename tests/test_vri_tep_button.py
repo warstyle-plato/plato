@@ -42,14 +42,15 @@ def test_the_mo_branch_counts_vri_and_returns_a_readable_file():
     assert sheet.max_row == 91, "формат неполный — калькулятор ГлавАПУ ведёт 91 строку"
     labels = {str(sheet.cell(row=r, column=1).value): r for r in range(2, 92)}
     assert sheet.cell(row=labels["44"], column=4).value == "4 643,921"
-    assert sheet.cell(row=labels["18"], column=4).value == "453"
-    assert sheet.cell(row=labels["22"], column=4).value == "950"
+    # Места по 1420-ПП: ДОО 50 и СОШ 109 на 1000 жителей.
+    assert sheet.cell(row=labels["18"], column=4).value == "349"
+    assert sheet.cell(row=labels["22"], column=4).value == "775"
     parsed = core.parse_glavapu_xlsx(result["file"], result["filename"])
     normalized = parsed["normalized"]
     assert normalized["site_area_ha"] == pytest.approx(22.423)
     assert normalized["apartment_area_sqm"] == pytest.approx(195080.0, rel=0.001)
     assert normalized["change_vri_mln"] == pytest.approx(4643.921, rel=0.001)
-    assert normalized["actual_kindergarten_places"] == pytest.approx(453)
+    assert normalized["actual_kindergarten_places"] == pytest.approx(349)
 
 
 def test_the_msk_branch_reproduces_the_calculator_export(monkeypatch):
@@ -228,7 +229,7 @@ def test_both_branches_attach_the_filled_developaid_template(monkeypatch):
     parsed = core.parse_manual_tep_xlsx(mo["template_file"], mo["template_filename"])
     assert parsed["inputs"]["land_rights_cost_mln"] == pytest.approx(4643.921, rel=0.001)
     assert parsed["tep"]["apartments"]["saleable"] == pytest.approx(195080.1, rel=0.001)
-    assert parsed["tep"]["kindergarten"]["units"] == pytest.approx(453)
+    assert parsed["tep"]["kindergarten"]["units"] == pytest.approx(349)
     # Квартиры Подмосковья меряет РНГП области, а не число без источника: было
     # 3 321 по литералу 58,75 (он не брался ниоткуда), стало 3 318 по 28 м² на
     # человека при размере домовладения 2,1. Утверждение — про ДЕЛИТЕЛЬ, а не
