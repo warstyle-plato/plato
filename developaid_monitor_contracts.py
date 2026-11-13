@@ -866,7 +866,14 @@ def build(project: str, cut: str = "", *, include_history: bool = True) -> dict:
         comparable = (amount_basis != "conflicting" and completed_basis != "conflicting"
                       and not (amount_basis != "unspecified" and completed_basis != "unspecified"
                                and amount_basis != completed_basis))
-        if not comparable:
+        if amount_documents and amount_documents['history']:
+            # A new denominator needs an established basis on both sides.
+            # Existing source observations retain their earlier qualification.
+            comparable = amount_basis == completed_basis and amount_basis in {'with_vat', 'without_vat'}
+            if not comparable:
+                row_warnings.append('Для процента по новой полной цене договора нужно подтвердить базу НДС '
+                                    'этой цены и выполнения. Прежний показатель источника сохранён справочно.')
+        if not comparable and not (amount_documents and amount_documents['history']):
             row_warnings.append("Полная сумма договора и выполнение по накопительным имеют разные базы НДС; процент и остаток не рассчитаны.")
         ratio = completed / amount if comparable and amount is not None and amount > 0 and completed is not None else None
         if ratio is not None and (ratio < 0 or ratio > 1.000001):

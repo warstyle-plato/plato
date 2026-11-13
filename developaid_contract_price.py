@@ -22,6 +22,37 @@ _MONEY = re.compile(r'([\-−]?\d[\d \u00a0]*(?:[,.]\d{1,2})?)(?!\d)\s*'
                     r'(?:,?\s*(\d{1,2})\s*коп(?:еек|ейка|ейки|\.)?)?', re.I)
 _CHANGE = re.compile(r'(?:увеличить|уменьшить|изменить)\s+Цену\s+Договора\b|'
                      r'Цена\s+Договора\s+(?:увеличивается|уменьшается|изменяется)\b', re.I)
+_PART = re.compile(r'\b(?:по|на|за|для)\s+(?:(?:перв\w*|втор\w*|треть\w*|четверт\w*|пят\w*|'
+                   r'\d+(?:[-–]\w+)?|[ivx]+)\s+)?(?:этап\w*|раздел\w*|корпус\w*|очеред\w*)\b|'
+                   r'в\s+части|на\s+завершение|дополнительн\w*\s+работ', re.I)
+_TAX_START = re.compile(r'(?:в\s*том\s*числе|в\s*т\.?\s*ч\.?|включая|с\s+уч[её]том|с|без)\s*НДС(?![а-я])', re.I)
+_OTHER_OBLIGATION = re.compile(r'\b(?:сумм[аы]|размер|аванс\w*|плат[её]ж\w*|оплат\w*|неустойк\w*|'
+                               r'штраф\w*|пени|гаранти\w*|стоимость)\b|'
+                               r'\bи\s+определен\w*|\bна\s+основании|\b\d+\.\d+\.', re.I)
+
+
+def _tax_context(text, start):
+    """Only the VAT qualification immediately attached to this price.
+
+    A following VAT-only sentence can qualify the price. A new obligation or
+    monetary object cannot lend its tax basis to the preceding contract price.
+    Decimal points and руб./коп./в т. ч. keep their spelling and positions.
+    """
+    fragment = text[start:start+2000]
+    leading = re.match(r'\s*(?:[,.:()–—-]\s*)*', fragment).end()
+    if not _TAX_START.match(fragment, leading):
+        return ''
+    masked = list(fragment)
+    for match in re.finditer(r'(?<=\d)\.(?=\d)|\b(?:руб|коп)\.|\bв\s*т\.\s*ч\.', fragment, re.I):
+        for index in range(match.start(), match.end()):
+            if masked[index] == '.':
+                masked[index] = '~'
+    boundary = re.search(r'[.!?;»]', ''.join(masked[leading:]))
+    end = leading + boundary.start() if boundary else len(fragment)
+    other = _OTHER_OBLIGATION.search(fragment, leading)
+    if other:
+        end = min(end, other.start())
+    return fragment[:end]
 
 
 def _value(match):
@@ -43,7 +74,7 @@ def _value(match):
 
 
 def read(texts):
-    from developaid_contract_documents import _space
+    from developaid_contract_documents import _date, _space
     candidates, warnings = [], []
     for page, raw in enumerate(texts, 1):
         text = _space(raw)
@@ -52,17 +83,16 @@ def read(texts):
             found = _MONEY.match(text, declaration.end())
             value, reason = _value(found)
             before = text[max(0, declaration.start()-120):declaration.start()]
-            clauses = list(re.finditer(r'(?<!\d)(\d+(?:\.\d+)+)\.?\s+', before))
+            clauses = [m for m in re.finditer(r'(?<![\d.])(\d+(?:\.\d+)+)\.?\s+', before)
+                       if not _date(m[1]) and not re.fullmatch(r'\d{1,2}\.\d{1,2}\.\d{4}',m[1])]
             clause = clauses[-1][1] if clauses else ''
             end = found.end() if found else declaration.end()
-            after = text[end:end+220]
-            tax = re.split(r'\bи\s+определен\w*|\bна\s+основании|[;»]|\b\d+\.\d+\.', after,
-                           maxsplit=1, flags=re.I)[0]
+            tax = _tax_context(text, end)
             quote = text[declaration.start():min(len(text), end+len(tax))]
             provisional = re.search(r'(?:предварительн\w*|ориентировочн\w*)\s*$', before, re.I)
             if provisional:
                 quote = before[provisional.start():]+quote
-            if re.search(r'по\s+(?:этапу|разделу)|в\s+части|на\s+завершение|дополнительн\w*\s+работ', declaration[0], re.I):
+            if _PART.search(declaration[0]):
                 value, reason = None, 'Условие цены относится к отдельной части работ; новая полная цена договора не подтверждена.'
             basis = amount_basis(tax)
             if basis == 'conflicting':
@@ -75,8 +105,11 @@ def read(texts):
             candidates.append({'value': value, 'amount_basis': basis, 'vat_rate': float(rate[1].replace(',', '.')) if rate else None,
                                'vat_text': tax.strip(), 'page': page, 'clause': clause, 'quote': quote,
                                'reason': reason})
-        if not declarations and _CHANGE.search(text):
-            change = _CHANGE.search(text)
+        for change in _CHANGE.finditer(text):
+            # A price condition explicitly stating its new full value can
+            # contain «изменяется и составляет». A separate delta is not it.
+            if any(d.start() <= change.start() and change.end() <= d.end() for d in declarations):
+                continue
             candidates.append({'value': None, 'amount_basis': 'unspecified', 'vat_rate': None, 'vat_text': '',
                 'page': page, 'clause': '', 'quote': text[max(0,change.start()-50):change.end()+250],
                 'reason': 'Цена договора изменена, но новая полная цена не указана или не прочитана.'})
@@ -128,18 +161,22 @@ def rebase_summary(observation, condition):
     The printed summary observation is retained as evidence. Its snapshot date
     does not become an execution date, and amounts of individual acts are not added.
     """
-    result = {**observation, 'reported_observation': dict(observation), 'price_source': condition['source']}
+    result = {**observation, 'reported_observation': dict(observation), 'price_source': condition['source'],
+              'planned_amount_basis': condition['amount_basis']}
     known = condition['state'] == 'known' and condition['amount'] is not None and condition['amount'] > 0
     first, second = condition['amount_basis'], observation.get('completed_amount_basis') or 'unspecified'
-    comparable = first != 'conflicting' and second != 'conflicting' and not (
-        first != 'unspecified' and second != 'unspecified' and first != second)
+    result['completed_amount_basis'] = second
+    comparable = first == second and first in {'with_vat', 'without_vat'}
     if observation.get('state') != 'known' or not known or not comparable:
         return dict(result, ratio=None, planned=condition['amount'], state='unknown',
+                    monetary_comparable=False, requires_reconciliation=True,
+                    basis_signature=None, basis_label='суммы договора по КС-2 сводной',
                     why='Полная цена из договора и итог КС-2 сводной не подтверждены на сопоставимой базе НДС.')
     completed = observation['completed']
     signature = hashlib.sha256(json.dumps(['explicit_contract_price', condition['amount'], first, second],
                                           ensure_ascii=False).encode()).hexdigest()
     return dict(result, ratio=completed/condition['amount'], planned=condition['amount'],
+                monetary_comparable=True,
                 basis_signature=signature, basis_label='суммы договора по КС-2 сводной',
                 requires_reconciliation=completed < 0 or completed > condition['amount'],
                 why='Итог КС-2 взят из сводной, полная цена — из действующего договора или ДС. '
