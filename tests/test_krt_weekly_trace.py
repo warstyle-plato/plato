@@ -356,3 +356,52 @@ def test_ambiguous_saved_ranking_does_not_supply_a_preservation_claim(stored, ro
     put(stored, 'ranking.json', {'schema_version': 1, 'rows': rows})
     with pytest.raises(trace.TraceProblem):
         trace.observe(stored, 'running')
+
+
+@pytest.mark.parametrize('slot', ['finished_at', 'created_at', 'period', 'retrieved_at',
+                                'visited_at', 'model_at', 'rating_at', 'rating_inner_at'])
+def test_oversized_integer_timestamp_cannot_crash_cached_trace_capture(stored, slot):
+    begin(stored, PERIOD, [PROJECT], RUNTIME)
+    observation = trace.observe(stored, 'running')
+    trace.visit(stored, PERIOD, PROJECT, observation, observation)
+    trace.end(stored, PERIOD, True)
+    path = stored/'.weekly-trace'/f'{PERIOD}.json'
+    value = json.loads(path.read_text())
+    if slot in {'created_at', 'period'}:
+        value['header'][slot] = 10**1000
+    elif slot == 'retrieved_at':
+        value['header']['source_revisions']['catalogue'][slot] = 10**1000
+    elif slot == 'finished_at':
+        value[slot] = 10**1000
+    else:
+        visit = next(iter(value['visits'].values()))
+        if slot == 'visited_at':
+            visit[slot] = 10**1000
+        else:
+            visit['before'][slot] = 10**1000
+    value['header_sha256'] = trace._digest(value['header'])
+    path.write_text(json.dumps(value))
+    with pytest.raises(trace.TraceProblem):
+        trace.read(stored, PERIOD)
+    result = audit.capture_krt(stored, runtime=RUNTIME)
+    assert result['prospective_weekly_trace'] == {'state': 'unavailable'}
+    assert result['production_acceptance'] is False
+
+
+def test_oversized_native_source_and_observation_stamps_remain_unknown(stored):
+    put(stored, 'catalogue.json', {'schema_version': 3, 'retrieved_at': 10**1000,
+                                'complete': True, 'projects': [PROJECT]})
+    sources, gaps = trace.source_revision(stored)
+    assert sources['catalogue']['retrieved_at'] is None and 'source_stale' in gaps
+    put(stored, 'ranking.json', {'schema_version': 1, 'rows': [{
+        'slug': 'running', 'computed_at': 10**1000,
+        'investment_rating_computed_at': 10**1000,
+        'investment_rating': {'computed_at': 10**1000}}]})
+    observed = trace.observe(stored, 'running')
+    assert all(observed[key] is None for key in ('model_at', 'rating_at', 'rating_inner_at'))
+
+
+@pytest.mark.parametrize('value', [10**1000, -(10**1000), True, float('inf'), float('nan'), 1e308])
+def test_invalid_period_never_uses_an_unsafe_number_conversion(value):
+    with pytest.raises(trace.TraceProblem):
+        trace._period(value)

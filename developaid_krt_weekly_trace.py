@@ -58,11 +58,17 @@ def _encode(value):
 
 
 def _stamp(value):
-    return value if type(value) in (int, float) and math.isfinite(value) and value >= 0 else None
+    # JSON integers can be arbitrarily large. Bound them without converting
+    # to float: math.isfinite(10**1000) raises OverflowError before validation.
+    if type(value) is int:
+        return value if 0 <= value <= 4102444800 else None
+    if type(value) is float:
+        return value if math.isfinite(value) and 0 <= value <= 4102444800 else None
+    return None
 
 
 def _period(value):
-    if type(value) not in (int, float) or not math.isfinite(value) or int(value) != value:
+    if _stamp(value) is None or value < 946684800 or int(value) != value:
         raise TraceProblem()
     value = int(value)
     if not 946684800 <= value <= 4102444800:
