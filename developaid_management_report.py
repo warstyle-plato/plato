@@ -4103,7 +4103,7 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
             if not (limit.get("budget_composition") or {}).get("interest_rows") else "")
          if sections else
          (_by_chapter_words(limit.get("approved_by_chapter")) or "по финмодели")) if need
-        else "финансовая книга не загружена",
+        else admin_expenses.availability_note(report.get("admin_expenses") or {}),
         hint=" ".join(_budget_hint(limit)) if limit.get("known") else "")
     draws = block.get("draws") if block.get("state") == "ok" else None
     # Плашки складываются (владелец, 02.11.2026): «лимит банка» — смета, в неё
@@ -4197,6 +4197,8 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
             "bad" if need["deficit"] > 0 else "good")
     else:
         add("Дефицит на достройку", None, "утверждённый бюджет не загружен")
+    out.extend(admin_expenses.tiles(report.get("admin_expenses") or
+        admin_expenses.unavailable("Расшифровка АХР не получена.")))
     if limit.get("known") or limit.get("source_dates"):
         import developaid_monitor_dashboard as dashboard
 
@@ -4247,8 +4249,6 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
                 "bad" if hit or line["share"] > elapsed + 0.1 else "")
         else:
             add(f"{label} за месяц", None, "плана месяца нет")
-    out.extend(admin_expenses.tiles(report.get("admin_expenses") or
-        admin_expenses.unavailable("Расшифровка АХР не получена.")))
     return out
 
 
@@ -4719,8 +4719,6 @@ def render_html(report: dict[str, Any]) -> str:
         return f"<p class='missing'>{esc(block.get('reason') or 'Данных нет.')}</p>"
 
     out.append(_tiles_html(tiles(report), tiles_footnote(report)))
-    out.append(admin_expenses.render(report.get("admin_expenses") or
-        admin_expenses.unavailable("Расшифровка АХР не получена."), show_tiles=False))
     out.append(_block_heading("main") + "<ul class='findings'>")
     for item in report.get("findings") or []:
         tone = f" {item['tone']}" if item.get("tone") else ""
@@ -4821,6 +4819,8 @@ def render_html(report: dict[str, Any]) -> str:
         out.append(_sales_depth_html(report["sales"], report["kind"]))
 
     out.append(_block_heading("funding"))
+    out.append(admin_expenses.render(report.get("admin_expenses") or
+        admin_expenses.unavailable("Расшифровка АХР не получена."), show_tiles=False))
     out.append(_funding_html(report))
     out.append(_funding_chart(report))
     out.append(_funding_depth_html(report))

@@ -8,7 +8,16 @@ import developaid_admin_expenses as admin
 import developaid_management_report as report
 import developaid_monitor as monitor
 import developaid_monitor_dashboard as dashboard
-from test_the_approved_budget_says_what_it_is_made_of import ROWS, _finmodel
+from test_the_approved_budget_says_what_it_is_made_of import ROWS, _finmodel as _base_finmodel
+
+
+def _finmodel(rows=ROWS):
+    # This fixture declares its units just as an accepted source must.
+    raw = _base_finmodel(rows)
+    wb = openpyxl.load_workbook(io.BytesIO(raw))
+    wb['cf_1_new']['B2'] = 'Все суммы в тыс. руб.'
+    target = io.BytesIO(); wb.save(target); wb.close()
+    return target.getvalue()
 
 
 def book(change=None):
@@ -29,7 +38,7 @@ def test_leaf_totals_exclude_parent_and_taxes_without_any_bank_dictionary():
     assert (got['total'], got['fact'], got['plan']) == (40000, 20000, 20000)
     assert [r['code'] for r in got['rows']] == ['2.4.1']
     assert got['management_article'] == '2.6'
-    assert got['difference'] == 0 and got['source']['unit'] == 'тыс. ₽'
+    assert got['difference'] == 0 and got['source']['unit'] == 'тыс. руб.'
     assert {'bank_limit', 'gap', 'additional_financing'}.isdisjoint(got)
 
 
@@ -130,9 +139,9 @@ def test_real_monitor_shows_source_and_ahr_without_financial_readiness_and_clear
         expect(card).to_contain_text('40 000 ₽')
         expect(card).to_contain_text('20 000 ₽')
         expect(card).to_contain_text('повторно к расходам или дефициту не прибавляются')
-        expect(page.locator('#kpis')).to_contain_text('финмодель прочитана')
+        expect(page.locator('#kpis')).to_contain_text('финмодель сохранена')
         assert card.locator('img').count() == 0 and page.evaluate('window.unsafeAhr') is None
-        card.locator('summary').click()
+        card.get_by_text('Состав АХР без налогов', exact=True).click()
         expect(card.locator('tbody tr')).to_have_count(1)
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         page.screenshot(path=str(tmp_path / f'ahr-{width}.png'), full_page=True)
