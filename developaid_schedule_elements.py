@@ -105,8 +105,38 @@ def projection(entries, config, *, cut, confirmed):
     nominal = math.fsum(row['value'] for row in shares)
     objects = sorted({row.get('object') or 'Общие работы' for row in entries})
     stages = sorted({row.get('section') or 'Без этапа' for row in entries})
+    included = [row for row in entries if config['objects'].get(row.get('object') or 'Общие работы') != 'separate']
+    included_objects = {row.get('object') or 'Общие работы' for row in included}
+    corpus_shares, corpus_reason, corpus_basis = {}, '', ''
+    if len(included_objects) > 1:
+        # Nominal element percentages describe one building, not its size in
+        # the project. Retain the full comparable plan before normalizing the
+        # element shares; counting buildings would silently assign equal size.
+        members = [(row['id'], config['assignments'].get(row['id'], {})) for row in included]
+        plan_shares, problem = internal.shares(members)
+        if internal.overlapping(dict(members)):
+            problem = 'Плановая позиция источника повторно распределена между работами или корпусами.'
+        if not problem:
+            required = {element['id'] for element in shares if element['value'] > 0}
+            for obj in sorted(included_objects):
+                present = {config['assignments'][row['id']]['element_id'] for row in included
+                           if (row.get('object') or 'Общие работы') == obj}
+                if required-present:
+                    problem = obj+': полный план не содержит всех учитываемых разделов; общий масштаб корпуса неизвестен.'
+                    break
+        if problem:
+            corpus_reason = ('Не определён общий вес корпусов: нужен полный сопоставимый план каждой работы. '
+                             + problem.replace('элемента', 'объявленного состава'))
+        else:
+            corpus_shares = {obj: math.fsum(plan_shares[row['id']]/100 for row in included
+                            if (row.get('object') or 'Общие работы') == obj) for obj in included_objects}
+            corpus_basis = internal.LABELS[members[0][1]['weight']['basis']]
 
-    def group(name, members, whole=False):
+    def group(name, members, whole=False, project=False):
+        project_scaled = project and len(included_objects) > 1
+        current_weights = ({key: value*corpus_shares[rows[key].get('object') or 'Общие работы']
+                            for key, value in weight_map.items()} if project_scaled and not corpus_reason
+                           else {} if project_scaled else weight_map)
         counts = dict(completed=0, in_progress=0, not_started=0, unknown=0)
         problems, dates, sources, weighted = [], set(), set(), []
         known_weight, known, numeric, mapped, eligible_readings = 0, 0, 0, 0, 0
@@ -134,13 +164,13 @@ def projection(entries, config, *, cut, confirmed):
                 problems.append((row.get('name') or key)+': работа не сопоставлена с элементом.')
             elif key in weight_reasons:
                 problems.append(weight_reasons[key])
-            if key in weight_map:
+            if key in current_weights:
                 mapped += 1
             if not eligible:
                 problems.append((row.get('name') or key)+': нет пригодного датированного показания'+(' (требуется сверка).' if fact.get('requires_reconciliation') else '.'))
-            elif key in weight_map:
+            elif key in current_weights:
                 known += 1
-                weight = weight_map[key]
+                weight = current_weights[key]
                 known_weight += weight
                 weighted.append(weight*min(1, value))
                 if weight == 0 and value < 1:
@@ -149,8 +179,8 @@ def projection(entries, config, *, cut, confirmed):
                     dates.add(day)
                     sources.add(fact.get('label') or 'Источник работы')
         residential = {row.get('object') or 'Общие работы' for row in members if config['objects'].get(row.get('object') or 'Общие работы') != 'separate'}
-        denominator = nominal*len(residential) if whole else math.fsum(weight_map.get(row['id'], 0) for row in members)
-        unknown_weight = any(row['id'] not in weight_map and config['objects'].get(row.get('object') or 'Общие работы') != 'separate' for row in members)
+        denominator = (nominal*math.fsum(corpus_shares.values()) if project_scaled else nominal*len(residential)) if whole else math.fsum(current_weights.get(row['id'], 0) for row in members)
+        unknown_weight = any(row['id'] not in current_weights and config['objects'].get(row.get('object') or 'Общие работы') != 'separate' for row in members)
         if whole:
             for obj in sorted(residential):
                 present = {config['assignments'][row['id']]['element_id'] for row in members if (row.get('object') or 'Общие работы') == obj and row['id'] in config['assignments']}
@@ -159,13 +189,15 @@ def projection(entries, config, *, cut, confirmed):
                         problems.append(obj+': нет сопоставления элемента «'+element['name']+'».')
         if not confirmed:
             problems.insert(0, 'Полный состав и сопоставление с действующим ГПР ещё не подтверждены.')
+        if project_scaled and corpus_reason:
+            problems.insert(0, corpus_reason)
         if known_weight <= 0:
             problems.append('Нет положительного веса с пригодным показанием; процент пока не определён.')
         progress = math.fsum(weighted)/known_weight if confirmed and known_weight > 0 else None
         return dict(name=name, progress=progress, counts=counts, total=len(members), known_readings=known,
                     numeric_readings=numeric, eligible_readings=eligible_readings, known_weights=mapped, requires_reconciliation=sum(bool((row.get('primary') or {}).get('requires_reconciliation')) for row in members),
                     source_dates=sorted(dates), sources=sorted(sources), reason=' '.join(dict.fromkeys(problems)),
-                    coverage=100*known_weight/denominator if denominator > 0 and (whole or not unknown_weight) else None,
+                    coverage=100*known_weight/denominator if denominator > 0 and (whole or not unknown_weight) and not (project_scaled and corpus_reason) else None,
                     known_weight=known_weight, partial=bool(problems), oldest_date=min(dates) if dates else None)
     indexed = {}
     by_object = {}
@@ -176,9 +208,10 @@ def projection(entries, config, *, cut, confirmed):
     # A malformed source must not turn a bounded work list into millions of cells.
     shown_objects, shown_stages = objects[:32], stages[:100]
     matrix = [dict(stage=stage, cells=[group(obj, indexed.get((obj, stage), [])) for obj in shown_objects]) for stage in shown_stages]
-    return dict(project=group('Проект', entries, True), corpora=[group(obj, by_object[obj], True) for obj in objects],
+    return dict(project=group('Проект', entries, True, project=True), corpora=[group(obj, by_object[obj], True) for obj in objects],
                 matrix=matrix, matrix_objects=shown_objects, matrix_truncated=len(objects)>32 or len(stages)>100,
                 share_total=nominal, manual=bool(config['overrides']),
+                project_weight_basis=corpus_basis,
                 internal_weight_methods=sorted({internal.LABELS[(a.get('weight') or {})['basis']]
                     for a in config['assignments'].values() if a.get('weight')}))
 

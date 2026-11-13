@@ -500,6 +500,9 @@ def render(state):
         out.append('<p>Оценка по удельным весам видов работ'+(' с ручными долями' if state.get('manual') else '')+', не по объёмам этого проекта.</p>')
     if state.get('internal_weight_methods'):
         out.append('<p>Внутри разделов: '+esc('; '.join(state['internal_weight_methods']))+'. Число задач вес не определяет.</p>')
+    if state.get('project_weight_basis'):
+        out.append('<p>Доли корпусов в общей готовности определены по полному сопоставимому плану: '
+                   +esc(state['project_weight_basis'])+'. Оценочные доли разделов внутри корпуса сохранены.</p>')
     if known:
         out.append('<p>'+esc(state.get('profile_label'))+' · '+esc(state.get('basis_label'))+'</p><div class="readiness-grid">'+''.join(card(row) for row in state['corpora'])+'</div>')
     else:
