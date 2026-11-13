@@ -179,6 +179,15 @@ def test_known_new_price_also_corrects_its_vat_metadata():
     assert got['ratio'] == .15 and got['reported_observation'] == observation
 
 
+def test_known_summary_basis_does_not_get_a_warning_from_an_absent_cumulative(context):
+    row=_stored_closing(context)
+    assert row['source_kind']=='closing_summary'
+    assert row['summary_progress']['state']=='known'
+    assert row['summary_progress']['monetary_comparable']
+    assert row['summary_progress']['ratio']==.15
+    assert not any('подтвердить базу НДС' in warning for warning in row['warnings'])
+
+
 def test_unknown_vat_keeps_the_price_visible_but_blocks_new_cumulative_percent(context):  # noqa: F811
     provide(context,parsed(),rss=[rss_contract(amount=1000,amount_basis='with_vat')])
     before, = contracts.build('Example','2026-11-06')['rows']

@@ -870,7 +870,7 @@ def build(project: str, cut: str = "", *, include_history: bool = True) -> dict:
             # A new denominator needs an established basis on both sides.
             # Existing source observations retain their earlier qualification.
             comparable = amount_basis == completed_basis and amount_basis in {'with_vat', 'without_vat'}
-            if not comparable:
+            if not comparable and physical_sources:
                 row_warnings.append('Для процента по новой полной цене договора нужно подтвердить базу НДС '
                                     'этой цены и выполнения. Прежний показатель источника сохранён справочно.')
         if not comparable and not (amount_documents and amount_documents['history']):
