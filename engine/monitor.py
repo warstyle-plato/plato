@@ -260,6 +260,90 @@ def monitor_view(req: MonitorViewRequest) -> dict[str, Any]:
         raise HTTPException(404, str(exc))
 
 
+async def _monitor_admin_expenses_source_job(request: Request, *, start: bool) -> Response:
+    """Explicit admin-only source proof, independent of the financial widget."""
+    import secrets as _secrets
+    import datetime as _dt
+    import developaid_management_report_jobs as jobs
+
+    private = {"Cache-Control": "private, no-store"}
+    try:
+        raw = bytearray()
+        async for chunk in request.stream():
+            if len(raw)+len(chunk) > 12288:
+                raise HTTPException(413, "Запрос проверки источника слишком большой.")
+            raw.extend(chunk)
+        try:
+            initial = json.loads(raw)
+        except (ValueError, UnicodeError, RecursionError):
+            initial = {}
+        initial = initial if isinstance(initial, dict) else {}
+        key, session = initial.get("key", ""), initial.get("session", "")
+        key = key if isinstance(key, str) and len(key) <= 4096 else ""
+        session = session if isinstance(session, str) and len(session) <= 4096 else ""
+        _require_admin_key(key, "Проверка источника АХР", session)
+        # Source readers and job storage are entered only after the strict key
+        # gate. Extra fields cannot turn this into a file/range export API.
+        import developaid_cached_source_audit as audit
+        import developaid_admin_expenses_source as source
+        try:
+            params = audit._json(bytes(raw))
+            allowed = {"key", "session", "ticket"} | ({"project", "cut"} if start else set())
+            if not isinstance(params, dict) or set(params)-allowed:
+                raise ValueError()
+            if not isinstance(params.get("session", ""), str) or len(params.get("session", "")) > 4096:
+                raise ValueError()
+            ticket = params.get("ticket", "")
+            if not isinstance(ticket, str) or ticket and not jobs.TICKET.fullmatch(ticket):
+                raise ValueError()
+            if start:
+                project, cut = params.get("project"), params.get("cut")
+                if not isinstance(project, str) or not project.strip() or len(project) > 200:
+                    raise ValueError()
+                if not isinstance(cut, str) or _dt.date.fromisoformat(cut).isoformat() != cut:
+                    raise ValueError()
+            elif not ticket:
+                raise ValueError()
+        except (ValueError, TypeError, audit.AuditError):
+            raise HTTPException(400, "Проверьте проект, дату и номер проверки источника.") from None
+        profile = source.PURPOSE
+        owner = jobs.owner_binding(_env_str("DEVELOPAID_ADMIN_KEY", "").strip(), session, profile)
+        store = jobs.Store(developaid_monitor._SNAPSHOT_DIR / ".admin_ahr_source_jobs")
+        if start:
+            def collect():
+                try:
+                    return {"ok": True, "source_projection": source.capture(project.strip(), cut,
+                        runtime={"version": VERSION, "commit": COMMIT})}
+                except source.SourceProblem as exc:
+                    return {"ok": False, "code": exc.code,
+                            "detail": "Ограниченная проверка источника АХР не сформирована."}
+            result = store.start(owner, profile, {"project": project.strip(), "cut": cut,
+                "purpose": profile, "click": ticket or _secrets.token_hex(16)}, collect, ticket)
+        else:
+            result = store.poll(ticket, owner, profile)
+        if result["pending"]:
+            result["detail"] = "Читаю исходные ячейки АХР. Финансовый расчёт не запускается."
+        return JSONResponse(result, status_code=202 if result["pending"] else 200, headers=private)
+    except HTTPException as exc:
+        exc.headers = {**(exc.headers or {}), **private}
+        raise
+    except jobs.JobProblem as exc:
+        raise HTTPException(exc.status, "Проверка источника не найдена или временно недоступна.",
+                            headers=private) from None
+    except (OSError, ValueError):
+        raise HTTPException(503, "Проверка источника временно недоступна.", headers=private) from None
+
+
+@app.post("/monitor/audit/admin-expenses", include_in_schema=False)
+async def monitor_admin_expenses_source(request: Request) -> Response:
+    return await _monitor_admin_expenses_source_job(request, start=True)
+
+
+@app.post("/monitor/audit/admin-expenses/result", include_in_schema=False)
+async def monitor_admin_expenses_source_result(request: Request) -> Response:
+    return await _monitor_admin_expenses_source_job(request, start=False)
+
+
 class MonitorViewResultRequest(BaseModel):
     ticket: str
     session: str = ""

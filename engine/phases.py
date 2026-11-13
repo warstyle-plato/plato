@@ -2071,7 +2071,8 @@ def _consolidate_vri(phase_items: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _calculate_phased_once(req: PhasedCalcRequest, *, _land_rent_cutoff: date | None = None) -> dict[str, Any]:
+def _calculate_phased_once(req: PhasedCalcRequest, *, _land_rent_cutoff: date | None = None,
+                           _land_rent_areas: list[tuple[float | None, list[str]]] | None = None) -> dict[str, Any]:
     if req.actuals:
         raise HTTPException(status_code=422, detail="Факт по очередям пока не поддерживается. Нужна подтверждённая привязка платежей к очередям; входные данные не применены.")
     x_master = copy.deepcopy(req.inputs)
@@ -2171,17 +2172,39 @@ def _calculate_phased_once(req: PhasedCalcRequest, *, _land_rent_cutoff: date | 
     # launches of its queues. Cash attribution is explicit, not bank cover.
     rent_offsets = [int(cfg.get("start_offset_months", i * int(phasing.get("phase_gap_months", 12))))
                     for i, cfg in enumerate(phases_cfg[:count])]
-    rent_queue = min(range(count), key=lambda i: (rent_offsets[i], i))
     rent_rves = [add_months(project_permit_date({**x_master, "project_start": add_months(d(x_master["project_start"]), rent_offsets[i]).isoformat()}),
                            int(cfg.get("construction_months", n(x_master, "construction_months", 24))))
                  for i, cfg in enumerate(phases_cfg[:count])]
     base_object_dates = {key: d(value) for key, value in (base_op["land_rent"].get("local_object_commissioning") or {}).items()}
     rent_rve = _land_rent_cutoff or developaid_land_rent.construction_cutoff(max(rent_rves), base_object_dates, pure_nonres=is_nonresidential(x_master))
     rent_end = add_months(rent_rve, max(int(n(x_master, "residual_sales_months", 6)) + 3, 12) + 1)
-    common_land_rent = developaid_land_rent.build(x_master, d(x_master["project_start"]), rent_rve, rent_end)
-    common_land_rent["allocation_policy"] = "Аренда общего участка посчитана один раз; платежи отнесены к самой ранней очереди. Это модельное распределение, не подтверждение банковского покрытия."
-    common_land_rent["phase_shares"] = [1.0 if i == rent_queue else 0.0 for i in range(count)]
     master_vri_obligation = _vri_settings(x_master, base_op["permit"])["obligation_date"]
+    # Each queue's land leaves the lease at its own commissioning; the queue
+    # that is commissioned last holds its land up to the common cutoff.
+    # Общая площадь объектов очереди известна только по её собранному ТЭП:
+    # первый проход делит предварительно, второй — по площадям первого.
+    rent_release_overrides = [(cfg or {}).get("land_rent_release_date") for cfg in phases_cfg[:count]]
+    rent_social_skip = (("kindergarten", "school", "clinic")
+                        if str(x_master.get("social_mode")) == "Денежная компенсация" else ())
+
+    def _common_land_rent(cutoff: date, horizon: date,
+                          areas: list[tuple[float | None, list[str]]] | None) -> dict[str, Any]:
+        shares, basis = developaid_land_rent.phase_land_shares(
+            phases_cfg[:count], [a for a, _ in areas] if areas else None, queue_base_gns)
+        release, release_origin = developaid_land_rent.phase_release(rent_rves, cutoff, rent_release_overrides)
+        result = developaid_land_rent.build(
+            x_master, d(x_master["project_start"]), cutoff, horizon, cadastral_switch=rent_switch,
+            phase_land=[{"share": share, "rve": r.isoformat()} for share, r in zip(shares, release)])
+        developaid_land_rent.describe_phase_land(
+            result, basis=basis, areas=areas, site_areas=[(cfg or {}).get("site_area_ha") for cfg in phases_cfg[:count]],
+            names=[str((cfg or {}).get("name") or f"О{i+1}") for i, cfg in enumerate(phases_cfg[:count])],
+            commissioning=rent_rves, release_origin=release_origin, social_skipped=bool(rent_social_skip),
+            derived_release=developaid_land_rent.phase_release(rent_rves, cutoff)[0])
+        result.setdefault("phase_shares", list(shares))
+        return result
+
+    rent_switch = master_vri_obligation if base_amounts.get("land_rights", 0.0) > 0 else None
+    common_land_rent = _common_land_rent(rent_rve, rent_end, _land_rent_areas)
     shared_base_mln = {
         "purchase": n(x_master, "purchase_price_mln"),
         "land_rights": base_amounts.get("land_rights", 0.0) / 1_000_000,
@@ -2275,10 +2298,13 @@ def _calculate_phased_once(req: PhasedCalcRequest, *, _land_rent_cutoff: date | 
         p_inputs["project_start"] = add_months(d(x_master["project_start"]), offset).isoformat()
         p_inputs["construction_months"] = int(cfg.get("construction_months", n(x_master,"construction_months",24)))
         phase_rent = copy.deepcopy(common_land_rent)
-        if idx != rent_queue:
-            phase_rent.update(monthly={}, accrual_monthly={}, known_total=0.0,
-                              total=0.0 if phase_rent["total"] is not None else None,
-                              construction_total=0.0 if phase_rent["construction_total"] is not None else None)
+        # One queue (or an incomplete rent without accrual) keeps the whole.
+        own_accrual = (phase_rent.get("phase_accrual_monthly") or [phase_rent["accrual_monthly"]] * count)[idx]
+        own_total = sum(own_accrual.values())
+        phase_rent.update(monthly=dict((phase_rent.get("phase_monthly") or [phase_rent["monthly"]] * count)[idx]),
+                          accrual_monthly=dict(own_accrual), known_total=own_total,
+                          total=own_total if phase_rent["total"] is not None else None,
+                          construction_total=own_total if phase_rent["construction_total"] is not None else None)
         p_inputs["_land_rent_phase_model"] = phase_rent
         p_inputs.pop("_glavapu_import", None)
         # Заданная руками ПЛОЩАДЬ двора — величина проекта: оставленная
@@ -2816,17 +2842,21 @@ def _calculate_phased_once(req: PhasedCalcRequest, *, _land_rent_cutoff: date | 
     actual_object_dates = {str(i) + ":" + key: d(value) for i, item in enumerate(phase_items)
         for key, value in (item["result"]["land_rent"].get("local_object_commissioning") or {}).items()}
     actual_cutoff = developaid_land_rent.construction_cutoff(max(rent_rves), actual_object_dates, pure_nonres=is_nonresidential(x_master))
-    if actual_cutoff != rent_rve and common_land_rent.get("status") != "not_applicable":
+    actual_areas = [developaid_land_rent.queue_total_area(item["tep"], skip=rent_social_skip) for item in phase_items]
+    # Деньги очередей зависят от долей, только если аренда что-то начислила.
+    rent_moves_money = bool(common_land_rent.get("known_total") or common_land_rent.get("cash_total"))
+    areas_changed = common_land_rent.get("phase_share_basis") != "area" and actual_areas != _land_rent_areas
+    if common_land_rent.get("status") != "not_applicable" and (
+            actual_cutoff != rent_rve or (areas_changed and rent_moves_money)):
         if _land_rent_cutoff is not None:
-            raise ValueError("Не стабилизировалась дата последнего ввода для аренды общего участка")
-        return _calculate_phased_once(req, _land_rent_cutoff=actual_cutoff)
-    if actual_cutoff != rent_rve:
-        common_land_rent = developaid_land_rent.build(x_master, d(x_master["project_start"]), actual_cutoff, max(rent_end, actual_cutoff))
-        common_land_rent["phase_shares"] = [1.0 if i == rent_queue else 0.0 for i in range(count)]
+            raise ValueError("Не стабилизировались дата последнего ввода или доли очередей для аренды общего участка")
+        return _calculate_phased_once(req, _land_rent_cutoff=actual_cutoff, _land_rent_areas=actual_areas)
+    if actual_cutoff != rent_rve or areas_changed:
+        common_land_rent = _common_land_rent(actual_cutoff, max(rent_end, actual_cutoff), actual_areas)
     common_land_rent["object_commissioning"] = {key: value.isoformat() for key, value in actual_object_dates.items()}
     common_land_rent["cutoff_includes_housing"] = not is_nonresidential(x_master)
-    if common_land_rent.get("cutoff_origin") != "manual":
-        common_land_rent["cutoff_basis"] = "Последний ввод основных объектов на общем участке; соцобъекты без подтверждённой связи с землёй не включены. Жилищный РВЭ и условия ПФ не изменены."
+    if common_land_rent.get("cutoff_origin") not in ("manual", "phases"):
+        common_land_rent["cutoff_basis"] = "Аренда считается до ввода последнего основного здания на участке. Социальные объекты, связь которых с этой землёй не подтверждена, не учитываются. Дата ввода жилья и условия проектного финансирования от этого не меняются."
     social_dates = {str(i) + ":" + key: d(value) for i, item in enumerate(phase_items)
         for key, value in (item["result"]["land_rent"].get("unlinked_social_dates") or {}).items()}
     developaid_land_rent.qualify_scope(common_land_rent, social_dates)
@@ -2858,6 +2888,7 @@ def _calculate_phased_once(req: PhasedCalcRequest, *, _land_rent_cutoff: date | 
     consolidated["land_rent"] = common_land_rent
     consolidated["summary"]["preliminary"] = not common_land_rent["financial_complete"]
     consolidated["summary"]["preliminary_reason"] = developaid_land_rent.disclosure(common_land_rent)
+    consolidated["summary"]["land_rent_sum"] = developaid_land_rent.sum_state(common_land_rent)
     # Норматив приобъектной парковки — обязательство ОБЪЕКТА, то есть проекта:
     # офисник, разрезанный надвое, не становится двумя офисниками со своими
     # нормами (то же правило, что у ступени площади соцобъекта). У свода блока

@@ -166,12 +166,11 @@ def test_a_repeated_number_another_building_or_part_or_no_dates_go_to_review_not
     assert found["6.1.2"]["reason"] == (
         "Строка графика 6.1 совпадает с позицией по номеру и названию, но в графике она относится к объекту "
         "«корпус 2», а в расчёте позиция стоит в разделе объекта «корпус 1».")
-    # Повтор номера решает владелец (решение А): строка с тем же названием только отмечена заранее.
-    assert found["7.1"]["reason"] == (
-        "В графике 2 строки с номером 7.1: «7.1» (ОГ-4) Ограждение кровли; «7.1» (В-1) Витраж из алюминиевого "
-        "профиля. По номеру связь не определить: выберите строку вручную — по названию подходит «7.1». Подрядчика "
-        "попросите исправить нумерацию графика.")
-    assert found["7.1"]["lines"] == [] and found["7.1"]["suggested"] == ["7.1"]
+    # This old parse has colliding identities, unlike a current reader's unique «…, повтор» codes.
+    # A manual choice cannot distinguish these rows until the original PDF is read again.
+    assert "повторяются коды строк: 7.1" in found["7.1"]["reason"]
+    assert "повторный разбор исходного PDF" in found["7.1"]["reason"]
+    assert found["7.1"]["lines"] == [] and found["7.1"]["suggested"] == []
     assert found["8.1"]["reason"] == "У строки графика 8.1 нет дат начала и окончания."
     assert found["5.1"]["status"] == "review" and found["5.1"]["reason"] == (
         "Строка графика 5.1 совпадает с позицией по номеру и названию, но в графике она относится к надземной "

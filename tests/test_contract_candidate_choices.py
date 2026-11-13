@@ -295,11 +295,14 @@ def test_real_dropdown_contains_only_server_admitted_choices_and_counts_messages
     assert len(resolved['unmatched_works']) == 2
     with browser_page(width) as (page, responses, errors):
         responses.data = resolved
+        own = next(r for r in resolved['rows'] if r['id'] == FIRST)
+        own['reconciliation']['daily_evidence'] = copy.deepcopy(resolved['unmatched_works'])
         page.locator('#contractsTab').click()
-        pending = page.locator('#contractsUnmatched')
-        expect(pending).to_contain_text('Записи о работах: уточнить договор (2)')
+        expect(page.locator('#contractsUnmatched')).to_be_empty()
+        page.locator(f'tr[data-contract-id="{FIRST}"] .contract-open').click()
+        pending = page.locator('.contract-chat-evidence')
+        assert not pending.evaluate('(el)=>el.open')
         pending.locator('summary').first.click()
-        expect(pending).to_contain_text('Одинаковая работа за разные дни считается отдельно')
         for choice in pending.locator('select').all():
             options = choice.locator('option[value]:not([value=""])')
             assert options.evaluate_all('(items)=>items.map(x=>x.value)') == [FIRST, OTHER]
@@ -326,8 +329,12 @@ def test_real_proposal_names_the_contract_and_no_candidates_means_no_fake_action
                        selectable_contract_ids=[], suggested_contract_id='',
                        match_reason='Договор этого подрядчика в накопительных не найден.')
         responses.data['unmatched_works'] = [copy.deepcopy(proposed), missing]
+        responses.data['rows'][0]['reconciliation']['daily_evidence'] = [proposed, missing]
         page.locator('#contractsTab').click()
-        pending = page.locator('#contractsUnmatched')
+        expect(page.locator('#contractsUnmatched')).to_be_empty()
+        page.locator(f'tr[data-contract-id="{CONTRACT}"] .contract-open').click()
+        pending = page.locator('.contract-chat-evidence')
+        assert not pending.evaluate('(el)=>el.open')
         pending.locator('summary').first.click()
         expect(pending).to_contain_text('Предложен договор: Подрядчик Учебный проект · Д-01')
         expect(pending).to_contain_text('Договор этого подрядчика в накопительных не найден')
@@ -350,8 +357,12 @@ def test_real_legacy_warning_keeps_revocation_without_offering_the_foreign_contr
                     manual_review_reason='Договор относится к другому подрядчику.',
                     selectable_contract_ids=[CONTRACT], suggested_contract_id=CONTRACT)
         responses.data['unmatched_works'] = [item]
+        responses.data['rows'][0]['reconciliation']['daily_evidence'] = [item]
         page.locator('#contractsTab').click()
-        pending = page.locator('#contractsUnmatched')
+        expect(page.locator('#contractsUnmatched')).to_be_empty()
+        page.locator(f'tr[data-contract-id="{CONTRACT}"] .contract-open').click()
+        pending = page.locator('.contract-chat-evidence')
+        assert not pending.evaluate('(el)=>el.open')
         pending.locator('summary').first.click()
         expect(pending).to_contain_text('Прежняя ручная связь с договором Другой подрядчик · Д-02 требует проверки')
         expect(pending).to_contain_text('Подходит договор: Подрядчик Учебный проект · Д-01')

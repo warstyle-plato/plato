@@ -16,6 +16,7 @@ import developaid_monitor_schedule_graph as schedule_graph
 import developaid_schedule_timeline as schedule_timeline
 import developaid_gpr_corpus as corpus_gpr
 import developaid_schedule_confirmation as schedule_confirmation
+import developaid_schedule_done as done_rule
 import developaid_schedule_gpr_forecast as gpr_forecast
 import developaid_schedule_gpr_physical as gpr_physical
 import developaid_schedule_physical as schedule_physical
@@ -103,7 +104,7 @@ def _aggregate_management(nodes: list[dict[str, Any]]) -> None:
 
 _GPR_STATUS = {
     "done": "ЗАВЕРШЕНО ПО ГПР", "gpr_pace": "ПРОГНОЗ ПО ТЕМПУ ГПР",
-    "cumulative_quantities": "ПРОГНОЗ ПО НАКОПИТЕЛЬНЫМ", "plan": "ПО ПЛАНУ ГПР",
+    "cumulative_quantities": "ПРОГНОЗ ПО НАКОПИТЕЛЬНЫМ", "plan": "Темп неизвестен: прогноза нет",
     "cumulative_statement": "ВЫПОЛНЕНИЕ ПО ВЕДОМОСТИ",
     "cumulative_statement_pace": "ПРОГНОЗ ПО ДИНАМИКЕ ВЕДОМОСТЕЙ",
     "confirmed_completion": "ЗАВЕРШЕНИЕ ПОДТВЕРЖДЕНО", "cumulative_unknown": "НЕТ ТЕМПА ПО НАКОПИТЕЛЬНЫМ",
@@ -121,10 +122,16 @@ def _aggregate_gpr(nodes: list[dict[str, Any]]) -> None:
             continue
         known = [child for child in children if child.get("forecast_known")
                  and monitor._day(child.get("forecast_finish"))]
-        finish = max((child["forecast_finish"] for child in known), default=None)
+        # «Завершено по ГПР» несёт дату показания 100% (шапку файла), а не
+        # окончание: в позднейший срок раздела она не входит. Если других
+        # сроков нет, дата раздела остаётся такой же меткой «на дату».
+        dated = [child for child in known if not done_rule.observed_only(child)]
+        finish = max((child["forecast_finish"] for child in dated or known), default=None)
         partial = bool(known) and any(not child.get("forecast_known") or child.get("forecast_partial")
                                       for child in children)
-        deltas = [child["delta_days"] for child in known if child.get("delta_days") is not None]
+        deltas = [child["delta_days"] for child in known
+                  if child.get("delta_days") is not None and not child.get("work_done")]
+        finished_late = [child["finished_late_days"] for child in children if child.get("finished_late_days")]
         node.update(actual_progress=None, actual_equivalent_date=None, pace_progress=None,
                     progress_kind="not_aggregated", progress_label="",
                     progress_reason="Разные работы не складываются в общий физический процент.",
@@ -132,11 +139,13 @@ def _aggregate_gpr(nodes: list[dict[str, Any]]) -> None:
                     forecast_finish=finish, pace_forecast_finish=finish,
                     forecast_known=bool(known), pace_forecast_known=bool(known), forecast_partial=partial,
                     delta_days=max(deltas) if deltas else None,
+                    finished_late_days=max(finished_late) if finished_late else None,
                     forecast_source="gpr_children", pace_forecast_method="gpr_children",
                     forecast_reason=("Не у всех работ есть прогноз." if partial else
                                      "Позднейшая дата работ раздела." if known else
                                      "По работам раздела нет прогноза."))
         node["pace_forecast_reason"] = node["forecast_reason"]
+        node["observed_complete_by"] = finish if known and not dated else None
 
 
 def _apply_gpr(project: str, view: dict[str, Any], cut: datetime.date) -> dict[str, Any]:
@@ -152,14 +161,28 @@ def _apply_gpr(project: str, view: dict[str, Any], cut: datetime.date) -> dict[s
     for row in rows:
         tid = str(row.get("id") or row.get("wbs") or "").strip()
         item = works.get(tid) or {}
-        finish = monitor._day(item.get("forecast_finish"))
+        # Работа только с планом (темпа нет) прогноза не имеет: срок плана не
+        # выдаётся за оценку, и в клетке, строке корпуса и сводке руководству
+        # она «без прогноза», а не «по сроку» (решение владельца, п. А).
+        finish = None if done_rule.plan_only(item) else monitor._day(item.get("forecast_finish"))
         plan = monitor._day(row.get("plan_finish"))
         row["pace_progress"] = item.get("progress")
         row["pace_forecast_known"] = finish is not None
         row["pace_forecast_method"] = item.get("method")
         row["pace_forecast_reason"] = item.get("reason")
         row["pace_forecast_finish"] = monitor._iso(finish) if finish else None
-        row["pace_delta_days"] = (finish - plan).days if finish and plan else None
+        # «Завершено по ГПР»: дата — первое показание 100% (для новой версии
+        # плана — шапка её файла), не дата окончания работы. Отклонение от
+        # плана по ней не считается, пока окончание не подтверждено.
+        observed = done_rule.reading_only(item, row.get("actual_finish"))
+        row["pace_delta_days"] = (finish - plan).days if finish and plan and not observed else None
+        row["observed_complete_by"] = monitor._iso(finish) if observed and finish else None
+        # Законченная работа не отстаёт сейчас: её опоздание — «Закончено на N
+        # дн. позже плана», и его читают клетка, строка корпуса и сводка.
+        done = done_rule.work_done(item)
+        row["work_done"] = done
+        row["finished_late_days"] = (row["pace_delta_days"] if done and (row["pace_delta_days"] or 0) > 0
+                                     else None)
         row["pace_status"] = _GPR_STATUS.get(item.get("method"), "НЕТ ДАННЫХ ГПР")
         origin = item.get("progress_origin")
         label = schedule_work_fact.GPR_ORIGINS.get(origin, "по ведомости" if origin == "cumulative_statement" else
@@ -211,7 +234,7 @@ def _apply_gpr(project: str, view: dict[str, Any], cut: datetime.date) -> dict[s
                     "actual_progress", "actual_equivalent_date", "progress_kind", "progress_label",
                     "progress_source", "progress_reason", "gpr_progress", "gpr_progress_origin", "gpr_progress_date",
                     "progress_date_basis", "progress_basis", "observation_history",
-                    "requires_reconciliation",
+                    "requires_reconciliation", "observed_complete_by", "work_done", "finished_late_days",
                     "forecast_finish", "forecast_known", "forecast_source", "forecast_reason", "delta_days", "status"):
             node[key] = src.get(key)
         node["source_conflict"] = src.get("source_conflict")
@@ -241,7 +264,7 @@ def _apply_gpr(project: str, view: dict[str, Any], cut: datetime.date) -> dict[s
                     indicative_forecast_end=qualified.get("indicative_forecast"),
                     fact_source="Проценты ГПР, решения в Мониторе и явно сопоставленные натуральные накопительные.",
                     forecast_method="По собственному темпу работ ГПР, без MS Project и денежного темпа КС.",
-                    risks=sum(1 for row in rows if (row.get("delta_days") or 0) > 0 or
+                    risks=sum(1 for row in rows if (not row.get("work_done") and (row.get("delta_days") or 0) > 0) or
                               (monitor._day(row.get("plan_finish")) and monitor._day(row["plan_finish"]) < cut
                                and not row.get("forecast_known"))))
     view["by_code"] = rows

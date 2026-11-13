@@ -152,12 +152,15 @@ def test_manual_payments_reconcile_without_normalising(schedule, valid):
         assert ev.cell(book.SHEET, f"{col}6")*1e6 == pytest.approx(canonical["monthly"].get(month,0),abs=0.01)
 
 
-def test_unconfirmed_preset_does_not_claim_statutory_rates():
-    inputs = {**_base(), "land_rent_mode": "msk_mkd_3_2"}
-    _, ev, canonical = _build(inputs)
-    assert not canonical["complete"]
-    assert ev.cell(book.SHEET, "B17") == 0
-    assert ev.cell(book.SHEET, "B19") == 0
+def test_unconfirmed_preset_is_counted_but_not_claimed_as_final():
+    inputs = {**_base(), "land_rent_mode": "msk_mkd_3_2", "land_rent_premium_status": "not_applicable"}
+    w, ev, canonical = _build(inputs)
+    assert canonical["complete"] and not canonical["financial_complete"]
+    assert "conditions" in canonical["financial_missing_codes"]
+    assert ev.cell(book.SHEET, "B19")*1e6 == pytest.approx(canonical["cash_total"], abs=0.01)
+    assert ev.cell(book.SHEET, "L18") == 0  # preliminary until the rates are checked
+    w[book.SHEET]["F14"] = "Да"
+    assert Evaluator(w).cell(book.SHEET, "L18") == 1
 
 
 @pytest.mark.parametrize("changes", [{"land_right":"ownership"}, {"land_rent_cadastral_mln":0}])
@@ -257,20 +260,22 @@ def test_known_signed_actuals_are_not_hidden_by_an_unknown_future_rate():
     assert ev.cell("CAPEX","B145")*1e6 == pytest.approx(canonical["applied_total"],abs=0.01)
 
 
-def _msk_first_year(status="unknown",source="",vri=5):
+def _msk_first_year(status="unknown",typed=False,vri=5):
     return {**_base(),"land_rent_mode":"msk_mkd_3_2","land_rent_preset_confirmed":True,
         "land_rent_regime_start":"2027-01-01","land_rights_cost_mln":vri,
-        "land_rent_premium_status":status,"land_rent_premium_source":source,
+        "land_rent_premium_status":status,
+        "_field_origin":{"inputs.land_rights_cost_mln":{"source":"manual"}} if typed else {},
         "land_rent_payment_mode":"manual","land_rent_payment_schedule":"100%@0"}
 
 
-@pytest.mark.parametrize("status,source,vri,accepted", [
-    ("unknown","",5,False),("separate_required","расчёт отдельно",5,False),
-    ("in_vri","договор и расчёт ДГИ",5,True),("in_vri","",5,False),
-    ("in_vri","   ",5,False),("in_vri","договор",0,False),
-    ("not_applicable","основание по договору",0,True),("not_applicable","",0,False)])
-def test_premium_is_qualified_without_adding_or_erasing_base_rent(status,source,vri,accepted):
-    _,ev,canonical = _build(_msk_first_year(status,source,vri),rve=dt.date(2028,1,1))
+# A fee and its origin label do not establish the composition of that fee.
+@pytest.mark.parametrize("status,typed,vri,accepted", [
+    ("unknown",False,5,False),("separate_required",False,5,False),
+    ("unknown",True,5,False),("separate_required",True,5,False),("in_vri",True,5,True),
+    ("in_vri",False,0,False),("in_vri",True,0,False),
+    ("not_applicable",False,0,True),("unknown",False,0,False)])
+def test_premium_is_qualified_without_adding_or_erasing_base_rent(status,typed,vri,accepted):
+    _,ev,canonical = _build(_msk_first_year(status,typed,vri),rve=dt.date(2028,1,1))
     assert canonical["premium"]["required"]
     assert canonical["financial_complete"] == accepted
     assert ev.cell(book.SHEET,"L17") == pytest.approx(1.5)
@@ -280,7 +285,7 @@ def test_premium_is_qualified_without_adding_or_erasing_base_rent(status,source,
 
 
 def test_editing_premium_confirmation_uses_live_host_vri_input():
-    w,_,_ = _build(_msk_first_year(),rve=dt.date(2028,1,1))
+    w,_,_ = _build(_msk_first_year(typed=True),rve=dt.date(2028,1,1))
     w[book.SHEET]["L16"] = "Учтена в ВРИ"
     w[book.SHEET]["L19"] = "Договор и расчёт"
     confirmed = Evaluator(w)
@@ -290,6 +295,22 @@ def test_editing_premium_confirmation_uses_live_host_vri_input():
     missing = Evaluator(w)
     assert "доплата первого года" in missing.cell(book.SHEET,"L13").lower()
     assert missing.cell(book.SHEET,"L17") == pytest.approx(1.5)
+
+
+def test_source_proved_premium_inclusion_is_invalidated_by_a_fee_only_edit():
+    inputs = _msk_first_year()
+    inputs['_field_origin'] = {'inputs.land_rights_cost_mln':{'source':'document','rent_premium':{
+        'schema':2,'included_in_vri':True,'fee_mln':5,'method':'vri_manual_payment','land_right':'lease',
+        'source':'Состав подтверждённого расчёта'}}}
+    workbook,initial,result = _build(inputs,rve=dt.date(2028,1,1))
+    assert result['premium']['derived'] and initial.cell(book.SHEET,'L18') == 1
+    workbook['Параметры модели']['B4'] = 6
+    changed = Evaluator(workbook)
+    assert changed.cell(book.SHEET,'L18') == 0
+    assert changed.cell(book.SHEET,'L17') == pytest.approx(1.5)
+    # An explicit new confirmation is an editable owner decision.
+    workbook[book.SHEET]['L19'] = 'Проверен состав новой суммы'
+    assert Evaluator(workbook).cell(book.SHEET,'L18') == 1
 
 
 def test_premium_gate_does_not_follow_the_project_into_second_lease_year():
@@ -303,7 +324,7 @@ def test_premium_gate_does_not_follow_the_project_into_second_lease_year():
 @pytest.mark.parametrize("conditions", [{"_krt_site":{"id":"synthetic"}},
     {"land_rent_grant_basis":"auction"},{"land_rent_grant_basis":"special"}])
 def test_known_special_grant_does_not_inherit_moscow_ordinary_rates(conditions):
-    _,ev,canonical = _build({**_msk_first_year("in_vri","договор",5),**conditions},rve=dt.date(2028,1,1))
+    _,ev,canonical = _build({**_msk_first_year("in_vri",True,5),**conditions},rve=dt.date(2028,1,1))
     assert not canonical["complete"]
     assert ev.cell(book.SHEET,"B17") == 0
     assert ev.cell(book.SHEET,"L17") == 0
@@ -403,7 +424,7 @@ def test_editing_a_year_into_a_duplicate_keeps_only_nonconflicting_known_costs()
 
 @pytest.mark.parametrize("kind", ["hotel","nonresidential"])
 def test_housing_preset_is_unavailable_for_known_native_project_kind_but_manual_rates_work(kind):
-    inputs = {**_msk_first_year("not_applicable","По основанию",0),"project_kind":kind}
+    inputs = {**_msk_first_year("not_applicable",False,0),"project_kind":kind}
     w, initial, canonical = _build(inputs,rve=dt.date(2028,1,1))
     assert not canonical["housing_applicable"]
     assert initial.cell(book.SHEET,"B17") == 0
@@ -413,7 +434,7 @@ def test_housing_preset_is_unavailable_for_known_native_project_kind_but_manual_
 
 
 def test_lease_workbook_uses_the_shared_normalized_project_region():
-    _,ev,canonical = _build({**_msk_first_year("not_applicable","По основанию",0),"vri_region":"Москва"},
+    _,ev,canonical = _build({**_msk_first_year("not_applicable",False,0),"vri_region":"Москва"},
         rve=dt.date(2028,1,1))
     assert canonical["region"] == "msk"
     assert ev.cell(book.SHEET,"I12") == "msk"

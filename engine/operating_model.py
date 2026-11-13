@@ -894,12 +894,15 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         rent_end = max(rent_end, hotel_strategy.plan_horizon_end({
             "commissioning": rve, "params": hotel_strategy.params_from_inputs(x)}))
     rent_rve = developaid_land_rent.construction_cutoff(rve, object_commissioning, pure_nonres=is_nonresidential(x))
-    land_rent = copy.deepcopy(x.get("_land_rent_phase_model")) if x.get("_land_rent_phase_model") else developaid_land_rent.build(x, project_start, rent_rve, add_months(max(rent_end, rent_rve), 1))
+    # The cadastral value after the VRI change applies from the VRI date.
+    rent_switch = vri_obligation_date(x, permit)[0] if amounts.get("land_rights", 0.0) > 0 else None
+    land_rent = copy.deepcopy(x.get("_land_rent_phase_model")) if x.get("_land_rent_phase_model") else developaid_land_rent.build(
+        x, project_start, rent_rve, add_months(max(rent_end, rent_rve), 1), cadastral_switch=rent_switch)
     land_rent["local_object_commissioning"] = {key: value.isoformat() for key, value in object_commissioning.items()}
     land_rent["housing_rve"] = rve.isoformat()
     land_rent["cutoff_includes_housing"] = not is_nonresidential(x)
-    if land_rent.get("cutoff_origin") != "manual":
-        land_rent["cutoff_basis"] = "Последний ввод основных объектов на общем участке; соцобъекты без подтверждённой связи с землёй не включены. Жилищный РВЭ и условия ПФ не изменены."
+    if land_rent.get("cutoff_origin") not in ("manual", "phases"):
+        land_rent["cutoff_basis"] = "Аренда считается до ввода последнего основного здания на участке. Социальные объекты, связь которых с этой землёй не подтверждена, не учитываются. Дата ввода жилья и условия проектного финансирования от этого не меняются."
     unlinked_social_dates = {key: add_months(d(x[f"{key}_start"]), int(n(x, f"{key}_months", 24)))
         for key, value in social_construction_breakdown.items()
         if value > 0 and social_mode in ("Строительство", SOCIAL_MODE_BOTH)}

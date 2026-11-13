@@ -546,8 +546,8 @@ function undergroundShortfallNote(){
 function renderProjectClassPreview(){
  const select=document.getElementById('projectClassSelect');
  const raw=select?select.value:(inputs.project_class||'comfort');
- // Класс офиса нежилого проекта — со своим профилем класса (`NONRES_CLASS_PROFILE`).
- const key=String(raw).startsWith('office:')?(OFFICE_CLASS.nonres_profile[String(raw).slice(7)]||'custom'):raw;
+ // Профиль нежилого проекта — со своей парой класса (`NONRES_CLASS_PROFILE`).
+ const key=projectClassChoiceParts(raw).key;
  const p=PROJECT_CLASS_PRESETS[key];
  const box=document.getElementById('projectClassPreview');
  if(!box)return;
@@ -575,15 +575,20 @@ function renderProjectClassPreview(){
  // Класс проекта — это и класс офисника (владелец, 27.09.2026): подпись
  // называет его и себестоимость здания офиса, которую класс теперь двигает.
  // Класс, выбранный у офиса своим, сильнее класса проекта — подпись называет его.
+ // Класс нежилого проекта — пара профиля (машино-место, подземная ставка),
+ // а класс КАЖДОГО офиса выбирается у самого офиса (владелец, 10.11.2026).
+ // Подпись называет поэтому пару и то, что она двигает в нежилом: м/м,
+ // подземную ставку и цену метра ОСЗ. Класс и себестоимость здания офиса
+ // стоят у офиса и подписаны там же, в блоке офиса.
  const office=OFFICE_CLASS_BY_PROJECT_CLASS[key];
  const ownOffice=officeClassFor('offices',key);
  const officeLabel=ownOffice.source===OFFICE_CLASS.chosen?`${ownOffice.cls} (выбран у офиса)`
-  :nonresProjectClass(key)?ownOffice.cls:office&&office.office_class;
- const officeText=office&&(isNonResidential()||inputs.offices_enabled)
+  :ownOffice.source==='project'?ownOffice.cls:office&&office.office_class;
+ const officeText=office&&!isNonResidential()&&inputs.offices_enabled
   ? ` · офисы класса ${officeLabel}, здание офиса ${classValue(key,'offices_cost_th_per_sqm').toLocaleString('ru-RU')}`
   : '';
  box.textContent=isNonResidential()
-  ? `Офисы/ТЦ ${classValue(key,'offices_price_th_per_sqm').toLocaleString('ru-RU')} · м/м ${classValue(key,'parking_price_th').toLocaleString('ru-RU')} · подземные ${classValue(key,'main_under_th_per_sqm').toLocaleString('ru-RU')}${officeText} тыс. ₽`
+  ? `Офисы/ТЦ ${classValue(key,'offices_price_th_per_sqm').toLocaleString('ru-RU')} · м/м ${classValue(key,'parking_price_th').toLocaleString('ru-RU')} · подземные ${classValue(key,'main_under_th_per_sqm').toLocaleString('ru-RU')} тыс. ₽`
   : `Кв/комм ${classValue(key,'apartment_price_th').toLocaleString('ru-RU')} · м/м ${classValue(key,'parking_price_th').toLocaleString('ru-RU')} · себес. ${classValue(key,'main_above_th_per_sqm').toLocaleString('ru-RU')}/${classValue(key,'main_under_th_per_sqm').toLocaleString('ru-RU')}${officeText} тыс. ₽`;
 }
 
@@ -646,11 +651,23 @@ function objectRateUnit(id,unit){
 // один — строка «наземная часть», объектов несколько — строка на каждый.
 // Объект «под ключ» (наземный паркинг, ставка за место) остаётся в своём
 // блоке: его ставка — не СМР здания (`OBJECT_SMR.defaults` — только СМР).
+// Объектов несколько — вкладки «Объект 1 / 2…» те же, что в блоке объекта
+// (`objectTabsBar`): строка «наземная часть» отвечает выбранной вкладкой, а
+// не подписью «Офисы 2». Ставка остаётся полем своего объекта.
+const CONSTRUCTION_TAB={};
+function nonresBuildingObject(){
+ const tabs=nonresConstructionTabs();
+ if(tabs)return tabs.shown;
+ const objs=projectObjects().filter(o=>inputOn(inputs[o.prefix+'_enabled'])
+  &&Object.prototype.hasOwnProperty.call(OBJECT_SMR.defaults,o.prefix+'_cost_th_per_sqm'));
+ return objs.length?objs[0].key:null;
+}
 function nonresBuildingRateFields(){
  if(!isNonResidential())return [];
  const objs=projectObjects().filter(o=>inputOn(inputs[o.prefix+'_enabled'])
   &&Object.prototype.hasOwnProperty.call(OBJECT_SMR.defaults,o.prefix+'_cost_th_per_sqm'));
- return objs.map(o=>{
+ const picked=objs.filter(o=>o.key===nonresBuildingObject());
+ return picked.map(o=>{
   const key=o.prefix+'_cost_th_per_sqm';
   let unit='тыс. ₽/м² GBA';
   for(const g of allFieldGroups())for(const f of g[1])if(f[0]===key)unit=f[2];
@@ -658,6 +675,44 @@ function nonresBuildingRateFields(){
    +(objs.length>1?', '+(o.tep_label||o.label||o.group_label):'');
   return [key,label,unit,'number'];
  });
+}
+// Вкладки «Строительства»: те же имена и то же место, что у блоков объектов
+// (владелец, 10.11.2026: «Строительство» с такими же вкладками, если объектов
+// несколько). Объект вкладки — его группа вводных: строка «наземная часть»
+// отвечает выбранной вкладкой, а не подписью «Офисы 2». Пусто — вкладок нет.
+function nonresConstructionTabs(){
+ if(!isNonResidential())return null;
+ const smr=projectObjects().filter(o=>inputOn(inputs[o.prefix+'_enabled'])
+  &&Object.prototype.hasOwnProperty.call(OBJECT_SMR.defaults,o.prefix+'_cost_th_per_sqm'));
+ if(smr.length<2)return null;
+ // Вкладки — по КАЖДОМУ объекту с СМР, в порядке реестра, как у блоков
+ // объектов (владелец, 10.11.2026: «с такими же вкладками, как блоки
+ // объектов, если их несколько»). Строка «наземная часть» отвечает
+ // выбранной вкладкой.
+ const type='construction';
+ return {type:type,objects:smr,
+  shown:(CONSTRUCTION_TAB[type]&&smr.some(o=>o.key===CONSTRUCTION_TAB[type])
+  ?CONSTRUCTION_TAB[type]:smr[0].key)};
+}
+function nonresConstructionTabsBar(){
+ const tabs=nonresConstructionTabs();
+ if(!tabs)return null;
+ const bar=document.createElement('div');bar.className='object-tabs construction-tabs';
+ bar.dataset.type='__construction__';
+ // Вкладка подписана именем объекта из ТЭП («Коммерция ОСЗ», «Офисы»,
+ // «Офисы 2»): сквозное «Объект 1, 2, 3» указывало бы на другое здание, чем
+ // «Объект 1» в блоке офисов. Кнопки расставляются окном и подписью, а не
+ // строкой разметки.
+ const buttons=tabs.objects.map(o=>{
+  const btn=document.createElement('button');btn.type='button';
+  btn.className='object-tab'+(o.key===tabs.shown?' active':'');
+  btn.dataset.construction=o.key;btn.textContent=o.tep_label||o.label;
+  btn.onclick=()=>{CONSTRUCTION_TAB[tabs.type]=btn.dataset.construction;renderInputs();refreshGroupPeeks()};
+  bar.appendChild(btn);return btn;
+ });
+ bar.dataset.tabs='|'+tabs.objects.map(o=>o.key).join('|')+'|';
+ bar.dataset.buttons=String(buttons.length);
+ return bar;
 }
 function movedToConstruction(id){
  return isNonResidential()&&Object.prototype.hasOwnProperty.call(OBJECT_SMR.defaults,String(id));
@@ -1089,18 +1144,21 @@ function applyProjectKind(key){
  else closeProjectKindDialog();
 }
 
-// В нежилом проекте на месте класса жилья — класс офиса B / B+ / A / A+
-// (владелец, 25.10.2026); в жилом — комфорт / бизнес / элитный.
+// В жилом проекте на месте класса — комфорт / бизнес / элитный. В нежилом
+// класс КАЖДОГО офиса выбирается в блоке офиса (владелец, 10.11.2026), а шапка
+// называет только пару профиля проекта: какое машино-место и какая подземная
+// ставка. Пара — не ступень класса офиса, и подпись это говорит словом
+// «профиль», а не «Офисы B+».
 const HOUSING_CLASS_OPTIONS=[['comfort','Комфорт'],['business','Бизнес'],['elite','Элитный'],['custom','Пользовательский']];
 function projectClassOptions(){
  return projectKind()==='nonresidential'
-  ?OFFICE_CLASS.classes.map(cls=>['office:'+cls,'Офисы '+cls]).concat([['custom','Пользовательский']])
+  ?OFFICE_CLASS.classes.map(cls=>['profile:'+cls,'Профиль '+cls]).concat([['custom','Пользовательский']])
   :HOUSING_CLASS_OPTIONS;
 }
 function projectClassSelectValue(){
  const housing=inputs.project_class&&PROJECT_CLASS_PRESETS[inputs.project_class]?inputs.project_class:'custom';
- const nonres=housing==='custom'?null:nonresProjectClass();
- return nonres?'office:'+nonres:housing;
+ if(projectKind()==='nonresidential')return housing==='custom'?'custom':'profile:'+nonresProjectClass();
+ return housing;
 }
 function syncProjectClassSelector(){
  const select=document.getElementById('projectClassSelect');
@@ -1113,15 +1171,22 @@ function syncProjectClassSelector(){
  select.value=projectClassSelectValue();
  renderProjectClassPreview();
 }
-// Выбор в шапке: класс жилья или, в нежилом проекте, класс офиса — с
-// профилем своей пары (`NONRES_CLASS_PROFILE`).
-function applyProjectClassChoice(value){
+// Выбор в шапке: класс жилья или, в нежилом проекте, профиль проекта — пара
+// класса офиса (`NONRES_CLASS_PROFILE`). Классов офисов шапка не ставит.
+// Значение выбора в шапке → класс проекта и ступень офиса. Нежилой проект
+// выбирает «profile:B+» (прежде «office:B+»); жилой — сам класс. Один разбор
+// на применение выбора и подпись под ним.
+function projectClassChoiceParts(value){
  const v=String(value||'');
- if(v.startsWith('office:')){
-  const cls=v.slice(7);
-  return applyProjectClassPreset(OFFICE_CLASS.nonres_profile[cls]||'custom',cls);
+ if(v.startsWith('profile:')||v.startsWith('office:')){
+  const cls=v.slice(v.indexOf(':')+1);
+  return {key:OFFICE_CLASS.nonres_profile[cls]||'custom',cls:cls};
  }
- return applyProjectClassPreset(v);
+ return {key:v,cls:undefined};
+}
+function applyProjectClassChoice(value){
+ const parts=projectClassChoiceParts(value);
+ return parts.cls===undefined?applyProjectClassPreset(parts.key):applyProjectClassPreset(parts.key,parts.cls);
 }
 
 // Значение этого поля ставит выбранный класс. Список — САМ ПРОФИЛЬ, а не
@@ -1217,10 +1282,13 @@ function classValueForKind(c,k,kind,profileOnly){
  const office=!profileOnly&&OFFICE_CLASS.rates[k];
  if(office){
   const choice=officeClassFor(office.prefix,c);
-  // В нежилом проекте ступень ставит числа всегда (`office_class_rates`).
+  // В нежилом проекте ступень ставит числа всегда (`office_class_rates`), и
+  // класс — класса ОФИСА: у второго офиса своя ступень, её числа идут от
+  // профиля своей пары (`OFFICE_CLASS.nonres_profile`), а не от профиля шапки.
   if(choice.source===OFFICE_CLASS.chosen||kind==='nonresidential'){
    const step=OFFICE_CLASS.values[choice.cls];
-   if(office.kind==='cost')return objectRateForKind(c,k,step.cost_th_per_sqm,kind);
+   const pair=kind==='nonresidential'?(OFFICE_CLASS.nonres_profile[choice.cls]||c):c;
+   if(office.kind==='cost')return objectRateForKind(pair,k,step.cost_th_per_sqm,kind);
    if(kind==='nonresidential')return Number(step.price_th_per_sqm);
   }
  }
@@ -1234,8 +1302,9 @@ function classValueForKind(c,k,kind,profileOnly){
 }
 function classValue(c,k){return classValueForKind(c,k,projectKind())}
 function classProfileValue(c,k){return classValueForKind(c,k,projectKind(),true)}
-// Класс офиса — свой у каждого офиса (владелец, 25.10.2026): пусто — за
-// классом проекта. Шкала, список полей и правило «поле идёт за классом» —
+// Класс офиса — свой у каждого офиса: в жилом проекте поле пусто — за классом
+// проекта, в нежилом — у каждого офиса свой (владелец, 10.11.2026). Шкала,
+// список полей и правило «поле идёт за классом» —
 // из движка (`office_class_page_data`, `apply_office_classes`): страница
 // применяет тот же ответ, а не держит свой.
 const OFFICE_CLASS=__DEVELOPAID_OFFICE_CLASS_SCALE__;
@@ -1251,7 +1320,14 @@ function nonresProjectClass(c){
 function officeClassFor(prefix,c){
  const raw=String(inputs[prefix+'_'+OFFICE_CLASS.field]||'').trim();
  if(OFFICE_CLASS.classes.includes(raw))return {cls:raw,source:OFFICE_CLASS.chosen};
- const by=nonresProjectClass(c)||OFFICE_CLASS.by_project[c===undefined?inputs.project_class:c];
+ // Нежилой проект: класс выбирается у самого офиса (владелец, 10.11.2026);
+ // без выбора — профиль проекта в шапке (`nonres_office_class`, у старого
+ // проекта — класс проекта), как у движка (`office_class_choice`, 11.11.2026).
+ if(projectKind()==='nonresidential'){
+  const legacy=nonresProjectClass(c);
+  return legacy?{cls:legacy,source:'project'}:{cls:OFFICE_CLASS.default,source:'default'};
+ }
+ const by=OFFICE_CLASS.by_project[c===undefined?inputs.project_class:c];
  return by?{cls:by,source:'project'}:{cls:OFFICE_CLASS.default,source:'default'};
 }
 // Поле, поставленное классом, идёт за ним, пока в нём число этого класса; с
@@ -1326,7 +1402,8 @@ function officeClassNoteText(prefix){
  const choice=officeClassFor(prefix);
  const step=OFFICE_CLASS.values[choice.cls];
  const head=choice.source===OFFICE_CLASS.chosen?`Класс офиса ${choice.cls} выбран вами.`
-  :choice.source==='project'&&nonresProjectClass()?`Сейчас класс офиса ${choice.cls} — это класс проекта, он выбран вверху страницы.`
+  :isNonResidential()&&choice.source==='project'?`Сейчас класс офиса ${choice.cls}: у этого офиса класс не выбран, поэтому он взят по профилю проекта «Профиль ${choice.cls}». Выберите класс этого офиса, если он другой.`
+  :isNonResidential()?`Класс у этого офиса не выбран, поэтому взят класс ${choice.cls} по умолчанию. Выберите класс здесь: у каждого офиса он свой.`
   :choice.source==='project'?`Сейчас класс офиса ${choice.cls}: он идёт за классом проекта «${(PROJECT_CLASS_PRESETS[inputs.project_class]||{}).label||inputs.project_class}».`
   :`Сейчас класс офиса ${choice.cls}: у проекта нет класса, поэтому взят класс по умолчанию.`;
  const rent=Number(step.rent_th_per_sqm_year).toLocaleString('ru-RU',{maximumFractionDigits:1});
@@ -1860,6 +1937,14 @@ function renderInputs(){
    if(peek){const hint=document.createElement('span');hint.className='group-peek';hint.textContent=peek;sum.appendChild(hint)}
    det.appendChild(sum);
    let fields=grp[1];
+   // Нежилой проект, объектов с СМР несколько: «Строительство» получает те же
+   // вкладки, что блоки объектов (владелец, 10.11.2026). Ставка здания на
+   // карточке — выбранного вкладкой объекта, остальные объекты ставятся
+   // своими вкладками там же.
+   if(!grpObj&&grp[0]==='Строительство'){
+     const cbar=nonresConstructionTabsBar();
+     if(cbar)det.appendChild(cbar);
+   }
    // У недублируемого типа (ФОК) вкладок и кнопки «Добавить объект» нет.
    if(grpObj&&grpObj.duplicable){
     const shown=objectTabObject(grpObj.key);
@@ -1993,7 +2078,11 @@ function renderInputs(){
      // ниже: `innerHTML+=` пересоздал бы уже вставленное поле без обработчиков.
      if(id==='vri_required'){wrap.appendChild(vriNoteNode('vriRequiredNote',vriRequiredNote()));wrap.appendChild(vriFeeGoNode())}
      if(id==='vri_share_equity_pct')wrap.appendChild(vriNoteNode('vriSharesNote',vriSharesNote()));
-     if(OFFICE_CLASS_FIELDS[id])wrap.appendChild(vriNoteNode('officeClassNote_'+OFFICE_CLASS_FIELDS[id],officeClassNoteText(OFFICE_CLASS_FIELDS[id])));
+     if(OFFICE_CLASS_FIELDS[id]){
+      // В нежилом проекте офис без выбора идёт за профилем шапки (1А, 11.11.2026).
+      if(isNonResidential()&&el.options&&el.options[0]&&el.options[0].value==='')el.options[0].textContent='По профилю проекта';
+      wrap.appendChild(vriNoteNode('officeClassNote_'+OFFICE_CLASS_FIELDS[id],officeClassNoteText(OFFICE_CLASS_FIELDS[id])));
+     }
      // Итог переключателя населения — под ним; стенды без блока ТЭП его не несут.
      if(id==='social_population_method'&&typeof socialPopulationNoteText==='string')
       wrap.appendChild(vriNoteNode('socialPopulationNote',socialPopulationNoteText));

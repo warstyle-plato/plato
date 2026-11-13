@@ -17,39 +17,54 @@ import developaid_contract_fact as fact
 import developaid_contract_files as files
 import developaid_monitor as monitor
 from tests.test_contract_card_confirms_and_chooses_links import CONTRACT, LINES, ROW, FIRST, SECOND
-from tests.test_contract_documents_are_read_from_their_tables import _page, estimate_pdf, schedule_pdf
+from tests.test_contract_documents_are_read_from_their_tables import _page, _table, estimate_pdf, schedule_pdf
 
 RED = "rgb(180, 35, 24)"
 
 
+KS2_COLUMNS = (30, 75, 145, 330, 390, 440, 520, 600)
+KS2_HEADER = ("по порядку", "позиции по смете", "Наименование работ", "Единица измерения", "количество",
+              "цена за единицу, руб.", "стоимость, руб.")
+KS2_ROWS = (("1", ".", "Раздел № 1. Корпус 1. Надземная часть", "", "", "", ""),
+            ("2", "1.1", "Устройство стен", "м3", "0,5", "8 000,00", "4 000,00"))
+
+
 def act_pdf(number="2", date="03.02.2026", start="01.02.2026", finish="03.02.2026", total="4 000,00", *,
-            contract="12-ТСТ", contract_date="01.09.2025", twice=False):
-    """Акт по унифицированной форме КС-2: значения шапки стоят строкой ниже своих подписей."""
+            contract="12-ТСТ", contract_date="01.09.2025", twice=False, rows=KS2_ROWS, header=KS2_HEADER,
+            columns=KS2_COLUMNS, table_total=None, number_label=("Номер", "документа"), after=()):
+    """Акт по унифицированной форме КС-2: значения шапки стоят строкой ниже своих подписей, под шапкой —
+    таблица выполненных работ со строкой «ИТОГО»."""
     document = pymupdf.open()
     page = _page(document)
     words = [(600, 100, "Договор"), (640, 100, contract), (610, 109, "дата"), (640, 109, contract_date),
              (540, 118, "Дополнительное соглашение"), (650, 118, "4"), (610, 127, "дата"), (640, 127, "01.02.2026"),
-             (420, 150, "Номер"), (418, 158, "документа"), (480, 154, "Дата составления"),
+             (420, 150, number_label[0]), (418, 158, number_label[1]), (480, 154, "Дата составления"),
              (580, 150, "Отчетный период"), (575, 158, "с"), (640, 158, "по"),
              (150, 168, "АКТ О ПРИЕМКЕ ВЫПОЛНЕННЫХ РАБОТ"),
              (430, 168, number), (482, 168, date), (560, 168, start), (625, 168, finish),
-             (40, 190, "Справка к акту"), (660, 190, "9 999,00"),
-             (40, 200, "1 Устройство стен м3 0,5 8 000,00 4 000,00"),
-             (40, 220, "ИТОГО"), (600, 220, "1 000,00"), (660, 220, "3 000,00"),
+             (40, 300, "Справка к акту"), (660, 300, "9 999,00"),
+             (40, 320, "ИТОГО"), (600, 320, "1 000,00"), (660, 320, "3 000,00"),
              # Итог — самое правое число строки «Итого по акту», левее может стоять другая графа.
-             (40, 230, "Итого по акту:"), (560, 230, "1 000,00" if total else ""), (660, 230, total), (40, 240, "в том числе НДС (22%)"), (660, 240, "721,31")]
+             (40, 330, "Итого по акту:"), (560, 330, "1 000,00" if total else ""), (660, 330, total),
+             (40, 340, "в том числе НДС (22%)"), (660, 340, "721,31")]
+    closing = ("", "", "ИТОГО") + ("",) * (len(header) - 4) + (total if table_total is None else table_total,)
     for _ in range(2 if twice else 1):
         for x, y, text in words:
             if text:
                 page.insert_text((x, y), text, fontsize=7, fontname="cyr")
+        _table(page, [header, *rows, closing, *after], 180, columns=columns, height=14)
     return document.tobytes()
 
 
 @pytest.mark.parametrize("twice", [False, True])
 def test_an_act_is_read_by_the_labels_of_its_header_and_names_no_edition(twice):
     got = documents.read(act_pdf(twice=twice))
+    positions = got["act"].pop("positions")
     assert got["act"] == {"number": "2", "date": "2026-02-03", "start": "2026-02-01", "finish": "2026-02-03",
-                          "total": 4000.0}
+                          "total": 4000.0, "table_total": 4000.0}
+    assert [(p["row"], p["number"], p["name"], p["unit"], p["quantity"], p["amount"]["total"], p["section"])
+            for p in positions] == [(2, "1.1", "Устройство стен", "м3", 0.5, 4000.0,
+                                     "Раздел № 1. Корпус 1. Надземная часть")]
     # Соглашение, названное в шапке акта, — то, по которому он подписан, а не новая редакция.
     assert got["contract"] == {"number": "12-ТСТ", "date": "2025-09-01"} and got["agreement"] is None
     assert got["warnings"] == [] and got["estimates"] == [] and got["schedule"] is None
@@ -135,9 +150,12 @@ def test_the_act_in_the_card_dates_its_period_and_the_summary_dates_the_rest(car
     assert second["source"]["filename"] == "КС-2 2.pdf"
     assert second["warnings"] == ["В сводной акт № 2 датирован 04.02.2026, а в PDF акта — 03.02.2026: взят PDF акта."]
     assert got["unread"] == [] and got["note"] == ""
-    # Период № 1 закончился до соглашения № 4 (01.02): принят раньше и в план не входит.
-    assert got["before"] == {"start": "2026-02-01", "count": 1, "amount": 0.0, "unpriced": 1}
-    assert got["total"] == 4000.0
+    # Факт — акт КС-2 № 2 карточки (этап 3); КС-6а с датами из актов и сводной сверяется с ним:
+    # по КС-6а с начала стройки 0,75 м3, по актам карточки — 0,5 (акта № 1 в карточке нет).
+    assert got["source"] == "ks2" and got["total"] == 4000.0
+    assert got["before"] == {"start": "2026-02-01", "count": 0, "amount": 0.0, "unpriced": 0}
+    assert [(r["number"], r["ks2"], r["ks6a"], r["same"]) for r in got["reconciliation"]["rows"]] == [
+        ("1.1", 0.5, 0.75, False)]
     assert [(p["number"], p["quantity"], p["amount"], p["place"]) for p in got["positions"]] == [
         ("1.1", 0.5, 4000.0, "confirmed")]
 
@@ -161,14 +179,20 @@ def test_a_period_without_an_act_keeps_its_work_out_of_the_fact_with_the_reason(
         ("1", "2026-01-31", ""), ("2", None, "в карточке договора нет акта КС-2 № 2, и в сводной по закрытию его тоже нет")]
 
 
-def test_two_acts_of_one_number_with_different_periods_date_nothing():
-    records = [_record("2", "2026-02-01", "2026-02-03"), _record("2", "2026-02-02", "2026-02-05")]
+def test_of_two_acts_of_one_number_the_later_dates_the_period_and_names_the_replaced():
+    """Решение владельца 12.11.2026: более поздний акт действует, прежний сохранён и назван."""
+    records = [{**_record("2", "2026-02-01", "2026-02-03", name="КС-2 прежний.pdf"), "sha256": "a" * 64},
+               {**_record("2", "2026-02-02", "2026-02-05", name="КС-2 новый.pdf"), "sha256": "b" * 64}]
     got = _resolved(_row(WALLS, summary=[("1", "2026-01-31", 2000.0), ("2", "2026-02-03", 4000.0)]), records)
     two = got["act_dates"][1]
-    assert two["end"] is None and two["reason"] == (
-        "в карточке несколько актов КС-2 № 2 с разными отчётными периодами (01.02.2026 — 03.02.2026; "
-        "02.02.2026 — 05.02.2026): какой из них верный, не ясно")
-    assert got["unread"][0]["reason"].startswith("Период «КС-2 № 2» без даты: в карточке несколько актов")
+    assert (two["start"], two["end"], two["reason"]) == ("2026-02-02", "2026-02-05", "")
+    assert two["source"]["filename"] == "КС-2 новый.pdf"
+    assert ("Действует вместо прежней редакции акта № 2: акт КС-2 № 2 от 03.02.2026 (файл «КС-2 прежний.pdf»)."
+            in two["warnings"])
+    assert got["unread"] == []
+
+
+def test_two_summary_dates_of_one_act_date_nothing():
     twice = _resolved(_row(WALLS, summary=[("1", "2026-01-31", 2000.0), ("1", "2026-02-01", 2000.0),
                                            ("2", "2026-02-03", 4000.0)]))
     assert twice["act_dates"][0]["reason"] == (

@@ -55,6 +55,46 @@ VRI_USE_TYPES: list[list[str]] = [
 ]
 
 
+# Способы, которые считают плату за смену ВРИ по ставкам территории для
+# участка в аренде (делитель аренды 1,001). Выгрузка ГлавАПУ сюда не входит:
+# калькулятор считает её для собственности, и её состав для аренды не доказан.
+VRI_PREMIUM_METHODS = {
+    "glavapu_baseline_rescale": "пересчёт по параметрам исходного расчёта ГлавАПУ",
+    "vri_manual_payment": "расчёт платы за ВРИ по своим метрам и базовым стоимостям",
+}
+
+
+def vri_fee_rent_premium(fee_mln: Any, *, method: str, land_right: str) -> dict[str, Any] | None:
+    """Состав платы за смену ВРИ, посчитанной по ставкам территории для аренды.
+
+    Калькулятор ГлавАПУ для аренды считает её по 273-ПП (``calcRent``,
+    «Стоимость смены ВРИ — аренда»): (P × S ÷ 1,001) × Кр × k1 × Кд. Это
+    формула приложения 8 к 273-ПП — той самой повышенной части арендной
+    платы первого года (абз. 1 п. 3.2.1 для жилого здания: ставка приложения 1
+    плюс ставка приложения 8). Значит, такая плата уже содержит повышенную
+    часть; прибавлять её второй раз нельзя.
+
+    Доказательство выдаётся только известному способу расчёта
+    (``VRI_PREMIUM_METHODS``) и только для аренды; оно привязано к сумме,
+    способу и праву. Подходит ли оно режиму договора, решает читатель
+    (``developaid_land_rent.vri_premium``) по текущим вводным.
+    """
+    if method not in VRI_PREMIUM_METHODS or str(land_right or "").strip().lower() != "lease":
+        return None
+    try:
+        fee = float(fee_mln)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(fee) or fee <= 0:
+        return None
+    return {"schema": 2, "included_in_vri": True, "fee_mln": fee,
+            "method": method, "land_right": "lease",
+            "source": f"Плата за смену ВРИ посчитана по ставкам территории для участка в аренде "
+                      f"({VRI_PREMIUM_METHODS[method]}; приложение 8 к 273-ПП). Для жилого дома "
+                      f"эта сумма и есть повышенная часть арендной платы первого года "
+                      f"(абзац первый п. 3.2.1), поэтому отдельно она не добавляется."}
+
+
 def vri_manual_payment(rows: list[dict[str, Any]], rent_coeff: float,
                        index: float | None = None, *,
                        land_right: str = "ownership") -> dict[str, Any]:
@@ -65,8 +105,8 @@ def vri_manual_payment(rows: list[dict[str, Any]], rent_coeff: float,
     Она линейна по СПП, поэтому считается построчно и складывается.
 
     Делитель зависит от права на участок: собственность 1,00001, аренда 1,001.
-    Аренда платит — просто по своему делителю, на 0,099% меньше; повышенная
-    составляющая первого года по 273-ПП здесь не считается и названа вслух.
+    Аренда платит по своему делителю, на 0,099% меньше; для аренды эта плата
+    и есть повышенная составляющая первого года по 273-ПП (vri_fee_rent_premium).
 
     Нулевая базовая стоимость — это «за этот вид не платят», а не «данных нет»:
     так в выгрузке стоят производство и социальные объекты. Отсутствующая
@@ -110,12 +150,15 @@ def vri_manual_payment(rows: list[dict[str, Any]], rent_coeff: float,
     notes: list[str] = []
     if leased:
         notes.append(
-            "право на участок — аренда: делитель 1,001 вместо 1,00001, плата ниже "
-            "на 0,099%. Повышенная составляющая первого года по 273-ПП — отдельный "
-            "платёж, здесь не считается")
+            "Участок в аренде, поэтому плата за смену ВРИ немного меньше, чем для "
+            "участка в собственности (примерно на 0,1%). Для участка в аренде эта "
+            "плата и есть повышенная часть арендной платы первого года по "
+            "постановлению 273-ПП: отдельно она не добавляется")
     return {
         "lines": lines,
         "total_mln": round(total / 1e6, 3),
+        "rent_premium": vri_fee_rent_premium(round(total / 1e6, 3), method="vri_manual_payment",
+                                             land_right="lease" if leased else "ownership"),
         "rent_coeff": rent,
         "index": factor,
         "index_date": _GLAVAPU_VRI_BASE_INDEXATION_DATE,
@@ -1078,9 +1121,10 @@ def recalculate_from_glavapu_baseline(baseline: dict[str, Any],
                     if leased else 1.0)
     if leased:
         warnings.append(
-            "право на участок — аренда: ставка снята с расчёта для собственности, "
-            "к плате применён делитель аренды 1,001 (разница 0,099%). Повышенная "
-            "составляющая первого года по 273-ПП — отдельный платёж, здесь не считается")
+            "Участок в аренде, поэтому плата за смену ВРИ немного меньше, чем для "
+            "участка в собственности (примерно на 0,1%). Для участка в аренде эта "
+            "плата и есть повышенная часть арендной платы первого года по "
+            "постановлению 273-ПП: отдельно она не добавляется")
     vri_available = True
     residential_payment = vri_rate * (res_spp + built_in_spp) * right_factor
     if residential_payment:
@@ -1242,6 +1286,8 @@ def recalculate_from_glavapu_baseline(baseline: dict[str, Any],
                     "regime": regime, "basis": parking_basis},
         "vri_lines": vri_lines,
         "vri_total_mln": round(vri_total, 3),
+        "rent_premium": vri_fee_rent_premium(round(vri_total, 3), method="glavapu_baseline_rescale",
+                                             land_right="lease" if leased else "ownership"),
         "vri_available": vri_available,
         "land_right": land_right,
         "land_right_factor": right_factor,

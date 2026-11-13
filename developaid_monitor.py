@@ -39,6 +39,10 @@ _SNAPSHOT_DIR = Path(
 _APPROVED_SCHEDULE_READ = contextvars.ContextVar('approved_schedule_read', default=None)
 
 
+class ApprovedScheduleMissing(FileNotFoundError):
+    """No approved GPR is selected; an unreadable selected file is an error."""
+
+
 def approved_schedule_read(function):
     """One immutable source choice per project/cut throughout a single read."""
     @functools.wraps(function)
@@ -301,7 +305,7 @@ def store_schedule(project: str, gpr: bytes, pm: bytes | None,
             raise FileExistsError("baseline проекта уже загружен; новую версию нужно проверить и явно утвердить")
         versions._atomic(path, gpr)
         if pm:
-            versions._atomic(folder / "finance.xlsx", pm)
+            _write_finance_pair(folder, pm, day, "")
         versions._atomic(folder / "meta.json", json.dumps({
             "taken_at": day,
             "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -713,14 +717,27 @@ def replace_finance_baseline(project: str, data: bytes,
     finally:
         wb.close()
     folder = _project_dir(project) / "baseline"
-    folder.mkdir(parents=True, exist_ok=True)
-    path = folder / "finance.xlsx"
-    if path.exists():
-        history = _project_dir(project) / "finance_history"
-        history.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d%H%M%S")
-        (history / f"replaced-{stamp}.xlsx").write_bytes(path.read_bytes())
-    path.write_bytes(data)
+    import developaid_schedule_versions as versions
+    with versions.lock(folder):
+        path = folder / "finance.xlsx"
+        if path.exists():
+            history = _project_dir(project) / "finance_history"
+            history.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d%H%M%S")
+            versions._atomic(history / f"replaced-{stamp}.xlsx", path.read_bytes())
+        meta = _write_finance_pair(folder, data, day, file_name)
+    return {"taken_at": day, "replaced": True, "file_name": meta["file_name"]}
+
+
+def _write_finance_pair(folder: Path, data: bytes, day: str, file_name: str) -> dict:
+    """Publish a source-bound pair while the caller holds the baseline file lock.
+
+    Metadata goes first and carries the new source hash. If a writer stops
+    before replacing the book, a reader rejects the mismatched pair instead
+    of presenting a new book under the previous source's date and filename.
+    """
+    import hashlib
+    import developaid_schedule_versions as versions
     # Книга хранится под общим именем, поэтому исходное имя файла и время
     # загрузки записываются рядом: подсказка плитки «Утверждённый бюджет»
     # называет источник (владелец, 02.11.2026). Пустое имя — так и пишется:
@@ -728,9 +745,10 @@ def replace_finance_baseline(project: str, data: bytes,
     # Браузер на Windows может прислать путь с «\», имя — последняя часть.
     meta = {"file_name": re.split(r"[\\/]", str(file_name or "").strip())[-1],
             "uploaded_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            "taken_at": day}
-    (folder / FINANCE_META).write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
-    return {"taken_at": day, "replaced": True, "file_name": meta["file_name"]}
+            "taken_at": day, "source_sha256": hashlib.sha256(data).hexdigest()}
+    versions._atomic(folder / FINANCE_META, json.dumps(meta, ensure_ascii=False).encode("utf-8"))
+    versions._atomic(folder / "finance.xlsx", data)
+    return meta
 
 
 # Имя исходного файла финансовой базы и время её загрузки.
@@ -888,7 +906,7 @@ def _read_baseline_gpr(project: str, cut: Any = "") -> dict[str, Any]:
 def _read_working_baseline_gpr(project: str, cut: Any = '') -> dict[str, Any]:
     path = _working_baseline_file(project, cut)
     if path is None:
-        raise FileNotFoundError('не загружен действующий ГПР')
+        raise ApprovedScheduleMissing('не загружен действующий ГПР')
     return _read_baseline_gpr_bytes(path.read_bytes())
 
 
@@ -989,11 +1007,28 @@ def _undated_works(baseline: dict[str, Any]) -> list[dict[str, Any]]:
             for item in baseline.get("works") or [] if not item.get("start") or not item.get("finish")]
 
 
+def _schedule_reason(baseline: dict[str, Any], rows: list[dict[str, Any]]) -> str:
+    """Why the GPR calendar is empty — the one phrase every surface shows.
+
+    Both schedule paths (plan only and plan with the RSS) set it; the page
+    prints it as is instead of composing its own wording."""
+    if rows:
+        return ""
+    if baseline.get("works"):
+        return "График загружен, но ни у одной работы нет понятных дат, поэтому график пуст."
+    return "Утверждённый график работ не загружен."
+
+
 def _schedule_plan_fact(project: str, rss_path: Path, cut: Any) -> dict[str, Any]:
     cut_date = _day(cut) or _day(rss_path.stem)
     if cut_date is None:
         raise ValueError("не задана дата среза")
-    baseline = _read_working_baseline_gpr(project, cut_date)
+    try:
+        baseline = _read_working_baseline_gpr(project, cut_date)
+    except ApprovedScheduleMissing:
+        return {"cut": cut_date, "rows": [], "risks": 0,
+                "baseline_end": None, "forecast_end": None, "undated_works": [],
+                "reason": "Утверждённый график работ не загружен."}
     estimate = actuals.read_estimate(rss_path)
     works = actuals.read_completed_works(rss_path)
     rows = []
@@ -1046,7 +1081,7 @@ def _schedule_plan_fact(project: str, rss_path: Path, cut: Any) -> dict[str, Any
     baseline_end = max((r["plan_finish"] for r in rows), default=None)
     return {"cut": cut_date, "rows": rows, "risks": len(risks),
             "baseline_end": baseline_end, "forecast_end": forecast_end,
-            "undated_works": _undated_works(baseline)}
+            "reason": _schedule_reason(baseline, rows), "undated_works": _undated_works(baseline)}
 
 
 def _payment_baseline_from_file(path: Path) -> dict[str, Any]:

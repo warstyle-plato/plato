@@ -732,7 +732,7 @@ def _schedule_only(project: str, cut: Any, upto: str = "") -> dict[str, Any]:
         raise ValueError("Не задана дата среза.")
     try:
         baseline = monitor._read_working_baseline_gpr(project, day)
-    except FileNotFoundError:
+    except monitor.ApprovedScheduleMissing:
         baseline = {"works": []}
     rows = []
     for item in baseline.get("works") or []:
@@ -750,9 +750,7 @@ def _schedule_only(project: str, cut: Any, upto: str = "") -> dict[str, Any]:
                      "status": "", "accepted": None, "eac": None})
     schedule = {"cut": day.isoformat(), "rows": rows, "risks": 0, "forecast_end": None,
                 "baseline_end": max((r["plan_finish"] for r in rows), default=None),
-                "reason": ("" if rows else
-                           "График загружен, но ни у одной работы нет понятных дат." if baseline.get("works") else
-                           "Утверждённый график работ не загружен."),
+                "reason": monitor._schedule_reason(baseline, rows),
                 "undated_works": monitor._undated_works(baseline)}
     _sanitize_base_schedule(project, schedule, upto or day.isoformat())
     schedule["management"] = monitor._plain(_management(project, None, schedule))

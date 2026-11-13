@@ -247,17 +247,17 @@ def test_the_flat_norm_declares_its_narrow_scope():
 def test_the_status_names_the_revision_and_the_check_date():
     """Редакция — та, что в силе; прежняя названа рядом, а не заменена.
 
-    1080-ПП переиздал отдельные абзацы п. 5.12 и п. 10.4, а не пункты целиком:
-    большинство норм здесь по-прежнему прочитано из 774-ПП. Поэтому состояние
-    называет обе поправки — иначе редакция подписала бы собой текст, которого
-    не трогала.
+    1420-ПП и 1080-ПП переиздали отдельные абзацы, а не пункты целиком:
+    парковки здесь по-прежнему прочитаны из 774-ПП и 1080-ПП. Поэтому
+    состояние называет и последнюю поправку, и ту, что была перед ней, —
+    иначе редакция подписала бы собой текст, которого не трогала.
     """
     state = ref.reference_status()
-    assert state["effective_from"] == "01.09.2026"
-    assert state["in_force_since"] == "2026-09-03"
-    assert "1080-ПП" in state["amended_by"]
-    assert "774-ПП" in state["previous_amendment"]
-    assert state["previous_in_force_since"] == "2026-07-03"
+    assert state["effective_from"] == "26.10.2026"
+    assert state["in_force_since"] == "2026-10-26"
+    assert "1420-ПП" in state["amended_by"]
+    assert "1080-ПП" in state["previous_amendment"]
+    assert state["previous_in_force_since"] == "2026-09-03"
     assert state["official_source"].startswith("http")
     date.fromisoformat(state["verified_at"])
     assert state["rules_unresolved"] == len(ref.UNRESOLVED)
@@ -270,7 +270,7 @@ def test_the_reference_registers_in_the_freshness_list():
     rows = {item["key"]: item for item in core.reference_freshness()}
     assert "mo_rngp" in rows
     entry = rows["mo_rngp"]
-    assert "01.09.2026" in entry["current"]
+    assert "26.10.2026" in entry["current"]
     assert entry["source"].startswith("Постановление Правительства Московской области")
 
 
@@ -349,9 +349,10 @@ def test_the_registry_row_names_the_new_redaction():
     rows = {row["id"]: row for row in json.loads(
         (ROOT / "data" / "normatives" / "registry.json").read_text(encoding="utf-8"))}
     row = rows["mo-713-30"]
-    assert "1080-ПП" in row["latest_amendment"]
-    assert "1080-ПП" in row["watch_terms"]
-    assert row["source_url"].endswith("5000202609020006")
+    assert "1420-ПП" in row["latest_amendment"]
+    assert "1420-ПП" in row["watch_terms"] and "1080-ПП" in row["watch_terms"]
+    assert row["source_url"].endswith(ref.PP_1420["official_source"].split("/")[-1])
+    assert any("1420-ПП" in line for line in row["amendment_history"])
     assert any("1080-ПП" in line for line in row["amendment_history"])
     # Обрывок имени в падеже реестра на странице публикатора не находится
     # никогда: акт называет «нормативы», реестр — «нормативов». Маркер обязан

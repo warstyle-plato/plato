@@ -1,4 +1,4 @@
-"""Накопленный план договора: деньги подтверждённых связей по дням строк ГПР, по редакциям.
+"""Накопленный план договора: деньги подтверждённых и однозначных связей по дням строк ГПР, по редакциям.
 
 Расчёт и график выдуманы: репозиторий публичный, документы владельца в него не попадают.
 """
@@ -45,7 +45,7 @@ def _edition(sha, date, estimates, start=None, schedule=SCHEDULE):
             "schedule": schedule, "schedule_title": "График", "start": start}
 
 
-def test_only_confirmed_links_enter_the_plan_of_the_edition_in_force():
+def test_confirmed_and_unambiguous_proposed_links_enter_the_plan_of_the_edition_in_force():
     contract = _edition("a", "2025-12-01", [_linked(ESTIMATE, SCHEDULE, ["1.1", "3.1"])])
     agreement = _edition("b", "2026-03-11", [_linked(ESTIMATE, SCHEDULE, ["2.1"], "accepted"),
                                              _linked(ESTIMATE, SCHEDULE, ["1.1", "3.1", "3.2"], "remaining")],
@@ -54,22 +54,25 @@ def test_only_confirmed_links_enter_the_plan_of_the_edition_in_force():
     first, second = early["editions"]
     assert early["in_force"] == "a" * 64 and first["in_force"] and second["planned"] is None
     assert first["until"] == "2026-03-10" and second["until"] is None
-    assert [(line["code"], line["amount"]) for line in first["lines"]] == [
-        ("1.1", 1000.0), ("3.1.1", 1000.0), ("3.1.3", 500.0)]
-    # 1.1 закончена, 3.1.1 — 5 дней из 10, 3.1.3 ещё не начата.
-    assert first["planned"] == pytest.approx(1000 + 500)
-    assert first["outside"]["proposed"] == {"count": 2, "amount": 2000.0}
+    # Однозначная предложенная связь входит в план без подтверждения (правило 3) и считается «автоматической».
+    assert [(line["code"], line["amount"], line["auto"]) for line in first["lines"]] == [
+        ("1.1", 1000.0, 0), ("2.1.1", 1000.0, 1), ("3.1.1", 1000.0, 0), ("3.1.3", 1500.0, 1)]
+    assert first["auto"] == 2
+    # 1.1 и 2.1.1 закончены, 3.1.1 — 5 дней из 10, 3.1.3 ещё не начата.
+    assert first["planned"] == pytest.approx(1000 + 1000 + 500)
+    assert "proposed" not in first["outside"]
     assert first["outside"]["review"] == {"count": 5, "amount": 5000.0}
-    assert first["months"][-1] == {"month": "2026-03", "planned": pytest.approx(2500.0)}
+    assert first["months"][-1] == {"month": "2026-03", "planned": pytest.approx(4500.0)}
 
     later = plan.build([contract, agreement], "2026-03-16")
     current = later["editions"][1]
     assert later["in_force"] == "b" * 64 and later["editions"][0]["planned"] is None
     assert current["accepted"] == 9500.0 and current["start"] == "2026-03-11"
-    # 1.1 и 3.1.1 закончились до соглашения: их остаток — на 11.03; 3.1.3 — 1 день из 5.
-    assert [line["overdue"] for line in current["lines"]] == [True, True, False]
-    assert current["overdue"] == 2
-    assert current["planned"] == pytest.approx(1000 + 1000 + (500 + 1000) * 1 / 5)
+    # 1.1, 2.1.1 и 3.1.1 закончились до соглашения: их остаток — на 11.03; 3.1.3 — 1 день из 5.
+    assert [(line["code"], line["overdue"]) for line in current["lines"]] == [
+        ("1.1", True), ("2.1.1", True), ("3.1.1", True), ("3.1.3", False)]
+    assert current["overdue"] == 3
+    assert current["planned"] == pytest.approx(1000 + 1000 + 1000 + 1500 * 1 / 5)
     assert [m["month"] for m in current["months"]] == ["2026-03"]
 
 
@@ -106,11 +109,14 @@ def _confirm_all(sha, cut):
 
 
 def test_the_card_plan_follows_confirmations_a_new_schedule_and_removal(card):
-    empty = files.listing("Учебный", CONTRACT, "2026-02-02")["plan"]
-    (edition,) = empty["editions"]
-    assert edition["in_force"] and edition["lines"] == [] and edition["total"] == 0
-    assert edition["outside"]["proposed"] == {"count": 2, "amount": 11000.0}
+    proposed = files.listing("Учебный", CONTRACT, "2026-02-02")["plan"]
+    (edition,) = proposed["editions"]
+    # Однозначные связи уже в плане; подтверждение меняет только отметку «связано автоматически».
+    assert edition["in_force"] and edition["total"] == 11000.0 and edition["auto"] == 2
     confirmed = _confirm_all(card, "2026-02-02")["plan"]["editions"][0]
+    assert [line["auto"] for line in confirmed["lines"]] == [0, 0, 0] and confirmed["auto"] == 0
+    assert [(line["code"], line["amount"]) for line in edition["lines"]] == [
+        (line["code"], line["amount"]) for line in confirmed["lines"]]
     assert confirmed["start"] == "2026-02-01" and confirmed["schedule"] == "Документ без номера договора и соглашения"
     assert [(line["code"], line["amount"], line["overdue"]) for line in confirmed["lines"]] == [
         ("1.1", 3000.0, True), ("1.2", 5000.0, False), ("1.3", 3000.0, False)]
