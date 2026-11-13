@@ -51,6 +51,18 @@ def ours():
     return core.mo_social_program(200000.0)
 
 
+# Эталон посчитан до 1420-ПП (26.10.2026): места в ДОО и СОШ в нём по прежней
+# редакции п. 5.18 — 65 и 135 на 1000. Методику сверяем на тех нормах, что
+# стояли в книге; что действующая редакция расходится с книгой ровно в
+# отношении 50/65 и 109/135, проверяет `test_the_new_edition_moves_only_the_rate`.
+EDITION_762 = {"kindergarten_places_per_1000": 65.0, "school_places_per_1000": 135.0}
+
+
+@pytest.fixture(scope="module")
+def ours_762():
+    return core.mo_social_program(200000.0, EDITION_762)
+
+
 def _premise(ours, label: str) -> float:
     return next(p["gba_sqm"] for p in ours["public_premises"] if p["label"] == label)
 
@@ -59,8 +71,6 @@ def _premise(ours, label: str) -> float:
 MATCHES = [
     ("Целевой показатель", MAIN, "D", lambda o: o["apartments_sqm"], 0),
     ("население", MAIN, "D", lambda o: o["population"], 0),
-    ("места в ДОО", MAIN, "D", lambda o: o["kindergarten"]["required_places"], 1e-3),
-    ("места в СОШ", MAIN, "D", lambda o: o["school"]["required_places"], 1e-3),
     ("поликлиника", MAIN, "D", lambda o: o["clinic"]["required_capacity"], 1e-3),
     ("места хранения автотранспорта (постоянные)", MAIN, "D",
      lambda o: o["parking"]["permanent_spaces"], 0),
@@ -112,6 +122,27 @@ KNOWN_GAPS = [
 def test_the_norm_matches_the_book(book, ours, label, sheet, column, get, tol):
     want = row_value(book[sheet], label, column)
     assert get(ours) == pytest.approx(want, abs=tol), f"«{label}»: книга {want}, у нас {get(ours)}"
+
+
+# Места в ДОО и СОШ: книга считала по 65 и 135 (до 1420-ПП).
+EDUCATION = [
+    ("места в ДОО", "kindergarten", "kindergarten_places_per_1000", 50.0, 65.0),
+    ("места в СОШ", "school", "school_places_per_1000", 109.0, 135.0),
+]
+
+
+@pytest.mark.parametrize("label,key,norm,new,old", EDUCATION, ids=[e[0] for e in EDUCATION])
+def test_the_education_method_matches_the_book_on_its_edition(book, ours_762, label, key, norm, new, old):
+    want = row_value(book[MAIN], label, "D")
+    assert ours_762[key]["required_places"] == pytest.approx(want, abs=1e-3), label
+
+
+@pytest.mark.parametrize("label,key,norm,new,old", EDUCATION, ids=[e[0] for e in EDUCATION])
+def test_the_new_edition_moves_only_the_rate(book, ours, label, key, norm, new, old):
+    """Действующая норма — 1420-ПП; от книги отличается только ставка."""
+    assert core.MO_NORMS_DEFAULT[norm] == new
+    want = row_value(book[MAIN], label, "D") * new / old
+    assert ours[key]["required_places"] == pytest.approx(want, abs=1e-3), label
 
 
 @pytest.mark.parametrize("label,column,ours_label", PREMISES, ids=[p[0] for p in PREMISES])
