@@ -475,6 +475,7 @@ def _summary_observation(items: list[dict], cut: str) -> dict:
     digest = lambda value: hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
         separators=(',', ':')).encode()).hexdigest()
     return dict(result, state='known', ratio=completed/planned, planned=planned, completed=completed,
+        planned_amount_basis=first_basis, completed_amount_basis=second_basis,
         scope_fingerprint=digest(['closing_summary_contract', identity]),
         basis_signature=digest(['closing_summary_contract', planned, first_basis, second_basis]),
         requires_reconciliation=completed < 0 or completed > planned,
@@ -827,9 +828,27 @@ def build(project: str, cut: str = "", *, include_history: bool = True) -> dict:
         amount, amount_basis = (summary_amount, summary_amount_basis) if summary_items else (rss_amount, rss_amount_basis)
         amount_source = ("Сводная: полная сумма договора" if summary_amount is not None else
                          "РСС: полная сумма договора" if rss_amount is not None else "Полная сумма договора не подтверждена")
+        from developaid_contract_files import document_prices, ContractFilesProblem
+        try:
+            amount_documents = document_prices(project, identifier, cut)
+        except ContractFilesProblem as exc:
+            amount_documents = None
+            row_warnings.append(str(exc))
         if summary_amount is not None and rss_amount is not None and abs(summary_amount-rss_amount) > .01:
             amount = None
-            row_warnings.append("РСС и сводная дают разные полные суммы договора; действующая цена не выбрана автоматически.")
+            row_warnings.append("РСС и сводная дают разные полные суммы договора; " +
+                ("действующая цена взята из договора или ДС." if amount_documents and amount_documents['state'] == 'known'
+                 else "действующая цена не выбрана автоматически."))
+        if amount_documents:
+            row_warnings.extend(amount_documents['warnings'])
+            if amount_documents['history']:
+                old_amount = amount
+                amount, amount_basis = amount_documents['amount'], amount_documents['amount_basis']
+                amount_source = ((amount_documents['source'] or {}).get('label') or
+                                 'Полная цена действующего договора или ДС не прочитана')
+                if old_amount is not None and amount is not None and abs(old_amount-amount) > .005:
+                    row_warnings.append('Полная цена из действующего договора или ДС отличается от суммы '
+                                        'в сводной или РСС. В расчёте использована цена договора; источник сохранён для сверки.')
         physical_sources = []
         for ledger in ledger_items:
             if ledger.get('kind') != 'ledger':
@@ -847,7 +866,14 @@ def build(project: str, cut: str = "", *, include_history: bool = True) -> dict:
         comparable = (amount_basis != "conflicting" and completed_basis != "conflicting"
                       and not (amount_basis != "unspecified" and completed_basis != "unspecified"
                                and amount_basis != completed_basis))
-        if not comparable:
+        if amount_documents and amount_documents['history']:
+            # A new denominator needs an established basis on both sides.
+            # Existing source observations retain their earlier qualification.
+            comparable = amount_basis == completed_basis and amount_basis in {'with_vat', 'without_vat'}
+            if not comparable and physical_sources:
+                row_warnings.append('Для процента по новой полной цене договора нужно подтвердить базу НДС '
+                                    'этой цены и выполнения. Прежний показатель источника сохранён справочно.')
+        if not comparable and not (amount_documents and amount_documents['history']):
             row_warnings.append("Полная сумма договора и выполнение по накопительным имеют разные базы НДС; процент и остаток не рассчитаны.")
         ratio = completed / amount if comparable and amount is not None and amount > 0 and completed is not None else None
         if ratio is not None and (ratio < 0 or ratio > 1.000001):
@@ -1017,8 +1043,14 @@ def build(project: str, cut: str = "", *, include_history: bool = True) -> dict:
                "performance_source_count": len(physical_sources), "reported_performance_sources": references}
         if deadline_documents and deadline_documents['history']:
             row['deadline_documents'] = deadline_documents
+        if amount_documents and amount_documents['history']:
+            row['amount_documents'] = amount_documents
+            row['amount_source'] = amount_documents['source']
         if summary_only:
             row['summary_progress'] = _summary_observation(summary_items, cut)
+            if amount_documents and amount_documents['history']:
+                from developaid_contract_price import rebase_summary
+                row['summary_progress'] = rebase_summary(row['summary_progress'], amount_documents)
         else:
             from developaid_monitor_statement_union import statement_union
             row["statement_progress"] = statement_union(row)

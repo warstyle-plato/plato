@@ -33,6 +33,7 @@ import developaid_contract_plan as plan
 import developaid_contract_scan as scan
 import developaid_contract_schedule_links as links
 import developaid_contract_terms as terms
+import developaid_contract_price as price
 import developaid_monitor as monitor
 
 MAX_BYTES = 20 * 1024 * 1024
@@ -310,6 +311,12 @@ def document_terms(project: str, contract_id: str, cut: str) -> dict:
     return terms.resolve(_records(folder) if folder.is_dir() else [], cut)
 
 
+def document_prices(project: str, contract_id: str, cut: str) -> dict:
+    """Explicit full price from saved clauses; never an estimate's maximum total."""
+    folder = _directory(project, contract_id)
+    return price.resolve(_records(folder) if folder.is_dir() else [], cut)
+
+
 def listing(project: str, contract_id: str, cut: str = "", acts: dict | None = None) -> dict:
     """Every document in the card with its links, the accumulated plan and fact on `cut` and the removed files.
 
@@ -456,6 +463,9 @@ def _fact(editions, in_force, acts, cut, performed):
 def _with_control(listed, acts, cut):
     """The deviation, lag and forecast of the listed plan and fact (step 7)."""
     conditions = terms.resolve(listed.get('documents') or [], cut)
+    price_condition = price.resolve(listed.get('documents') or [], cut)
+    if price_condition['history']:
+        listed['price'] = price_condition
     deadline, label = (acts or {}).get('deadline'), (acts or {}).get('deadline_label') or ''
     if conditions['history']:
         listed['terms'] = conditions

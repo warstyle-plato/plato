@@ -36,7 +36,7 @@ import re
 from math import fsum
 
 # Raise when reading changes: stored documents are then read again from their PDF.
-READER_VERSION = 9
+READER_VERSION = 10
 MONTHS = {'январь': 1, 'февраль': 2, 'март': 3, 'апрель': 4, 'май': 5, 'июнь': 6, 'июль': 7,
           'август': 8, 'сентябрь': 9, 'октябрь': 10, 'ноябрь': 11, 'декабрь': 12}
 _CODE = re.compile(r'^\d+(?:\.\d+)*\.?$')
@@ -1215,6 +1215,7 @@ def _read(document, data: bytes = b'') -> dict:
         return {'contract': accepted['contract'], 'agreement': None, 'act': accepted['act'], 'estimates': [],
                 'schedule': None, 'warnings': accepted['act'].pop('warnings'), 'pages': len(texts)}
     import developaid_contract_terms as terms
+    import developaid_contract_price as price
     out = dict(identity(texts[0]), estimates=[], schedule=None, warnings=[], pages=len(texts))
     estimate, layout, weekly, mentioned = None, None, None, set()
     for index, page in enumerate(document):
@@ -1289,8 +1290,11 @@ def _read(document, data: bytes = b'') -> dict:
         condition_texts[number-1] = ' '.join(w[4] for w in _words(page)
             if grid.rows and not grid.rows[0] <= (w[1]+w[3])/2 <= grid.rows[-1])
     out['terms'] = terms.read(condition_texts)
+    out['price'] = price.read(condition_texts)
     out['warnings'].extend(out['terms']['warnings'])
-    if not out['estimates'] and not out['schedule'] and not mentioned and not out['terms']['changes_deadline']:
+    out['warnings'].extend(out['price']['warnings'])
+    if not out['estimates'] and not out['schedule'] and not mentioned \
+            and not out['terms']['changes_deadline'] and not out['price']['changes_price']:
         out['warnings'].append('В документе нет таблиц расчёта договорной стоимости и графика производства работ: '
                                'он их не меняет, или таблицы не распознаны.')
     return out
