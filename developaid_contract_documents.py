@@ -613,10 +613,16 @@ def _dated_bar_page(page, page_number, schedule):
         across, _ = _rules(page)
         first_calendar = filled[3][0]+1
         top, bottom = grid.band(header)
-        right_edges = [x1 for y, x0, x1 in across
-                       if (abs(y-top) <= 1 or abs(y-bottom) <= 1)
-                       and x0 <= grid.columns[0]+1 and x1 > grid.columns[first_calendar]]
-        right = max(right_edges, default=grid.columns[filled[-1][0]+1])
+        segments = sorted((x0, x1) for y, x0, x1 in across
+                          if abs(y-top) <= 1 or abs(y-bottom) <= 1)
+        right = grid.columns[0]
+        for x0, x1 in segments:
+            if x0 <= right+1:
+                right = max(right, x1)
+        if right <= grid.columns[first_calendar]:
+            # With no usable border keep the physical grid; an unread label
+            # then makes dates unknown rather than removing calendar columns.
+            right = grid.columns[-1]
         calendar = [i for i in range(first_calendar, len(grid.columns)-1)
                     if grid.columns[i] < right-1]
         bounds = [grid.columns[i] for i, _ in filled[:4]] + [grid.columns[first_calendar]] + [

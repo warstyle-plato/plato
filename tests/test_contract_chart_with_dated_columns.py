@@ -27,7 +27,7 @@ def _body(page, top, rows):
         page.draw_line((BOUNDS[0], y), (BOUNDS[-1], y), width=.5)
 
 
-def pdf(marks=('10.05.26', '20.05.26', '30.05.26', '10.06.26')):
+def pdf(marks=('10.05.26', '20.05.26', '30.05.26', '10.06.26'),segmented=False):
     document = pymupdf.open()
     page = _page(document)
     _text(page, 30, 25, 'Приложение № 2 к Договору подряда № 8-ТСТ от 01.05.2026')
@@ -39,7 +39,11 @@ def pdf(marks=('10.05.26', '20.05.26', '30.05.26', '10.06.26')):
     page.draw_line((190, top), (190, bottom), width=.5)
     page.draw_line((600, top), (600, bottom+200), width=.5)
     for y in (top, bottom):
-        page.draw_line((BOUNDS[0], y), (BOUNDS[-1], y), width=.5)
+        if segmented:
+            for left,right in zip(BOUNDS,BOUNDS[1:]):
+                page.draw_line((left,y),(right,y),width=.5)
+        else:
+            page.draw_line((BOUNDS[0], y), (BOUNDS[-1], y), width=.5)
     for col, text in enumerate(('№ п/п', 'Наименование', 'Ед. изм.', 'Объём')):
         _text(page, BOUNDS[col]+2, top+16, text)
     for i, mark in enumerate(marks):
@@ -86,8 +90,9 @@ def test_full_years_are_read_without_reinterpreting_the_labels_as_period_ends():
     (('10.05.26','20.05.26','30.05.26',''),'не прочитана дата'),
     (('','','','10.06.26'),'не прочитана дата'),
 ])
-def test_invalid_or_non_monotonic_labels_keep_rows_but_never_fabricate_dates(marks,reason):
-    schedule=documents.read(pdf(marks))['schedule']
+@pytest.mark.parametrize('segmented',[False,True])
+def test_invalid_or_non_monotonic_labels_keep_rows_but_never_fabricate_dates(marks,reason,segmented):
+    schedule=documents.read(pdf(marks,segmented))['schedule']
     assert len(schedule['lines']) == 2
     assert [line['code'] for line in schedule['lines']] == ['1.1','1.2']
     assert all(line['start'] is None and line['finish'] is None for line in schedule['lines'])
