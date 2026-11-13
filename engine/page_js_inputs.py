@@ -70,6 +70,7 @@ function resetTerritoryData(options){
   // району → 1,0): пустое поле — не ноль, и сброс ставит пустоту.
   inputs[key]=SITE_ONLY_INPUTS.includes(key)?'':0;
  });
+ syncMoCompensation();
  TERRITORY_MARKERS.forEach(key=>{delete inputs[key]});
  if(keepLeaseTerms)Object.assign(fieldOrigins(),leaseOrigins);
  STANDALONE_OBJECTS.forEach(o=>{inputs[o.prefix+'_enabled']=false});

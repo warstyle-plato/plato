@@ -378,6 +378,7 @@ async function applyMo(options){
  resetTerritoryData({keepPhasing:silent,keepLeaseTerms});
  moResult=incoming;
  Object.assign(inputs,moResult.inputs||{});
+ syncMoCompensation();
  // Площадь участка приходит в территории расчёта, а не во вводных.
  {
   const moArea=Number(((moResult.territory)||{}).site_area_ha||0);
@@ -425,13 +426,13 @@ async function applyMo(options){
 }
 
 function renderStoredMo(){
+ syncMoCompensation();
  const stored=inputs._mo_calc;
  if(!stored)return;
  const query=document.getElementById('moQuery');
  if(query)query.value=stored.query||'';
  const density=document.getElementById('moDensity');
  if(density&&stored.density_sqm_per_ha)density.value=stored.density_sqm_per_ha;
- syncMoCompensation();
  const status=document.getElementById('moStatus');
  if(status)status.innerHTML='<span class="import-ok">В проекте сохранён расчёт по Подмосковью: '+
   escapeHtml((stored.territory&&stored.territory.district)||'округ не определён')+'.</span> Нажмите «Рассчитать», чтобы обновить.';

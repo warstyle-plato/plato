@@ -198,6 +198,53 @@ def test_a_new_parcel_drops_the_agreement_and_says_so(server):
     assert "компенсация по соглашению" in shown["note"]
 
 
+def test_a_new_parcel_also_clears_the_compensation_field_and_next_request():
+    shown, _ = _stand({}, "\n".join([
+        "inputs.mo_vri_compensation_mln=1.234567;",
+        "notes.moCompensation={value:'1.234567'};",
+        "resetTerritoryData();",
+        "console.log(JSON.stringify({input:inputs.mo_vri_compensation_mln,",
+        " field:notes.moCompensation.value,next:moCompensationRub()}));",
+    ]))
+    assert shown == {"input": 0, "field": "", "next": 0}
+
+
+@pytest.mark.parametrize("has_saved_calculation", [False, True])
+@pytest.mark.parametrize("saved_sum", [None, 2.345678])
+def test_project_loading_syncs_its_own_compensation_or_keeps_legacy_absence(
+        has_saved_calculation, saved_sum):
+    saved = {"vri_region": "mo"}
+    if has_saved_calculation:
+        saved["_mo_calc"] = {"territory": {"district": "Контрольный округ"}}
+    if saved_sum is not None:
+        saved["mo_vri_compensation_mln"] = saved_sum
+    shown, _ = _stand({}, "\n".join([
+        "notes.moCompensation={value:'1.234567'};",
+        "inputs=" + json.dumps(saved, ensure_ascii=False) + ";",
+        "const before=JSON.stringify(inputs);renderStoredMo();",
+        "console.log(JSON.stringify({field:notes.moCompensation.value,",
+        " next:moCompensationRub(),unchanged:before===JSON.stringify(inputs),",
+        " present:Object.hasOwn(inputs,'mo_vri_compensation_mln')}));",
+    ]))
+    assert shown["unchanged"] and shown["present"] == (saved_sum is not None)
+    assert shown["field"] == (str(saved_sum) if saved_sum is not None else "")
+    assert shown["next"] == pytest.approx((saved_sum or 0) * 1e6, rel=0, abs=0.000001)
+
+
+def test_a_same_parcel_recalculation_keeps_the_incoming_compensation():
+    shown, _ = _stand({}, "\n".join([
+        "inputs.mo_vri_compensation_mln=1.234567;",
+        "notes.moCompensation={value:'1.234567'};",
+        "moResult={inputs:{vri_region:'mo',mo_vri_compensation_mln:1.234567},",
+        " territory:{},tep:{},vri:{compensation_rub:1234567}};",
+        "(async()=>{await applyMo({silent:true});",
+        "console.log(JSON.stringify({input:inputs.mo_vri_compensation_mln,",
+        " field:notes.moCompensation.value,next:moCompensationRub()}));})()",
+    ]))
+    assert shown["input"] == 1.234567 and shown["field"] == "1.234567"
+    assert shown["next"] == 1_234_567
+
+
 def test_the_page_field_reads_and_writes_the_project_value():
     shown, _ = page_blocks.run("\n".join([
         "let inputs={mo_vri_compensation_mln:12.5};",
