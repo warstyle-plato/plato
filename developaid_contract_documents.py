@@ -3,8 +3,8 @@
 One reader serves the contract and its supplementary agreements (ДС). A table
 is read by its ruled grid: rows lie between horizontal rules, columns between
 vertical rules. An unrecognised grid, header or row is a warning or an error
-with its page, never an empty success. A scan without a text layer is named as
-such. The reader returns positions and schedule lines with the page where each
+with its page, never an empty success. A scan without a text layer gives only
+its recognised header, held until the user confirms it (`developaid_contract_scan`). The reader returns positions and schedule lines with the page where each
 was seen; it builds neither a plan nor a fact.
 
 Schedule dates come from the start and finish cells. A bar of the chart gives
@@ -36,7 +36,7 @@ import re
 from math import fsum
 
 # Raise when reading changes: stored documents are then read again from their PDF.
-READER_VERSION = 7
+READER_VERSION = 10
 MONTHS = {'январь': 1, 'февраль': 2, 'март': 3, 'апрель': 4, 'май': 5, 'июнь': 6, 'июль': 7,
           'август': 8, 'сентябрь': 9, 'октябрь': 10, 'ноябрь': 11, 'декабрь': 12}
 _CODE = re.compile(r'^\d+(?:\.\d+)*\.?$')
@@ -583,6 +583,78 @@ _SHORT = {'янв': 1, 'фев': 2, 'мар': 3, 'апр': 4, 'май': 5, 'ма
 WEEKS_ASSUMPTION = ('В графике нет граф с датами, только полосы по неделям: начало работы — первый день первой '
                     'закрашенной недели, окончание — последний день последней. Это допущение, а не даты графика.')
 
+_CHART_DATE = re.compile(r'(?<!\d)(\d{1,2}\.\d{2}\.(?:\d{4}|\d{2}))(?!\d)')
+CHART_DATES_ASSUMPTION = (
+    'Отдельных граф начала и окончания нет. Границы полос прочитаны по первой и последней '
+    'подписанной дате закрашенных столбцов. Точность — до отметок диаграммы; '
+    'это оценка по графику, а не отдельно указанные даты начала и окончания работ.')
+
+
+def _dated_bar_page(page, page_number, schedule):
+    """A chart with number/name/unit/volume and dated columns, including rotated labels.
+
+    Rebuild the column bounds from the labelled header: a stray rule through
+    the name and the signature's right border are not extra data columns.
+    Dates are source labels (point bounds), never invented ten-day periods.
+    """
+    grid = _Grid(page)
+    for header, row in enumerate(grid.cells):
+        filled = [(i, _space(cell)) for i, cell in enumerate(row) if _space(cell)]
+        if (len(filled) < 5 or not filled[0][1].startswith('№')
+                or not filled[1][1].lower().startswith('наименован')
+                or not filled[2][1].lower().startswith('ед')
+                or not filled[3][1].lower().replace('ё', 'е').startswith(('объем', 'кол'))):
+            continue
+        if not any(_CHART_DATE.search(cell) for _, cell in filled[4:]):
+            continue
+        # Keep every physical calendar column, including one without a label.
+        # Only the four metadata columns may merge stray rules through their text.
+        # The table's horizontal border excludes a separate signature border.
+        across, _ = _rules(page)
+        first_calendar = filled[3][0]+1
+        top, bottom = grid.band(header)
+        segments = sorted((x0, x1) for y, x0, x1 in across
+                          if abs(y-top) <= 1 or abs(y-bottom) <= 1)
+        right = grid.columns[0]
+        for x0, x1 in segments:
+            if x0 <= right+1:
+                right = max(right, x1)
+        if right <= grid.columns[first_calendar]:
+            # With no usable border keep the physical grid; an unread label
+            # then makes dates unknown rather than removing calendar columns.
+            right = grid.columns[-1]
+        calendar = [i for i in range(first_calendar, len(grid.columns)-1)
+                    if grid.columns[i] < right-1]
+        bounds = [grid.columns[i] for i, _ in filled[:4]] + [grid.columns[first_calendar]] + [
+            grid.columns[i+1] for i in calendar]
+        marks = [_CHART_DATE.findall(_space(row[i])) for i in calendar]
+        dates, problem = {}, None
+        previous = None
+        for column, found in enumerate(marks, 4):
+            if len(found) != 1:
+                problem = 'В шапке графика не прочитана дата календарного столбца.'
+                break
+            try:
+                text = found[0]
+                day = dt.datetime.strptime(text, '%d.%m.%Y' if len(text.rsplit('.', 1)[1]) == 4
+                                            else '%d.%m.%y').date()
+            except ValueError:
+                problem = 'В шапке графика есть недопустимая календарная дата.'
+                break
+            if previous is not None and day <= previous:
+                problem = 'Подписанные даты графика не возрастают слева направо.'
+                break
+            dates[column] = (day, day)
+            previous = day
+        if problem:
+            schedule['warnings'].append(f'Стр. {page_number}: {problem} Сроки полос не прочитаны.')
+        schedule['warnings'].append(CHART_DATES_ASSUMPTION)
+        layout = {'bounds': bounds, 'first': 4, 'dates': None if problem else dates,
+                  'page': page_number, 'body_row': header+1,
+                  'assumption': CHART_DATES_ASSUMPTION, 'date_precision': 'chart_marks'}
+        return _weekly_page(page, page_number, schedule, layout)
+    return None
+
 
 def _weekly_header(grid):
     """Header of a chart by weeks: «№», «Наименование», «Примечание», then a column per week («5-11»).
@@ -660,14 +732,16 @@ def _weekly_page(page, page_number, schedule, layout=None):
         rows = range(header+1, len(grid.cells))
     else:
         grid = _Grid(page, layout['bounds'])
-        rows = range(len(grid.cells))
+        rows = range(layout.get('body_row', 0) if layout.get('page') == page_number else 0, len(grid.cells))
     body = grid.rows[rows.start] if rows else 0.0
-    schedule['assumption'] = WEEKS_ASSUMPTION
+    schedule['assumption'] = layout.get('assumption') or WEEKS_ASSUMPTION
     first, fills = layout['first'], _fills(page)
     _sums(grid, rows.start - 1 if rows.start else None, rows, first, page_number, warnings)
     by_code = {line['code']: line for line in lines}
     for index in rows:
         row = grid.cells[index]
+        if all(_space(cell) == str(i+1) for i, cell in enumerate(row)):
+            continue  # Printed column numbers are not a work with code1 and name2.
         code, name = re.sub(r'\s+', '', row[0]).rstrip('.'), _space(row[1])
         if not code and not name:
             continue
@@ -692,6 +766,8 @@ def _weekly_page(page, page_number, schedule, layout=None):
                 'bar': {'start': bar[0], 'finish': bar[1]} if bar else None,
                 'level': code.count('.')+1, 'parent': parent, 'section': schedule.get('section'),
                 'page': page_number}
+        if layout.get('date_precision'):
+            line['date_precision'] = layout['date_precision']
         lines.append(line)
         by_code.setdefault(code, line)
     return layout
@@ -754,7 +830,7 @@ def _bar(grid, row, fills, columns, dates, first=4, body=0.0):
     name = (columns[1]+columns[2])/2
     background = {colour for colour, rect in inside if rect.x0 <= name <= rect.x1}
     marks = [rect for colour, rect in inside
-             if colour not in background and min(colour) < 0.97 and rect.x0 >= left-0.5 and rect.x1 <= right+0.5]
+             if colour not in background and min(colour) < 0.97 and rect.x0 >= left-1.0 and rect.x1 <= right+1.0]
     if not marks:
         return None
     x0, x1 = min(r.x0 for r in marks), max(r.x1 for r in marks)
@@ -1125,19 +1201,21 @@ def read(data: bytes) -> dict:
         if document.page_count > MAX_PAGES:
             raise ValueError(f'В документе страниц: {document.page_count}, а читается не больше {MAX_PAGES}. '
                              'Загрузите договор, соглашения и акты отдельными файлами.')
-        return _read(document)
+        return _read(document, data)
 
 
-def _read(document) -> dict:
+def _read(document, data: bytes = b'') -> dict:
     texts = [page.get_text() for page in document]
     if not any(_space(text) for text in texts):
-        raise ValueError('В PDF нет текстового слоя: это скан. Графы расчёта и графика по скану не прочитать '
-                         'надёжно; нужен PDF с текстом, например выгрузка из системы электронного документооборота.')
+        import developaid_contract_scan as scan
+        return scan.read(data, len(texts))
     accepted = _act(document, texts[0])
     if accepted is not None:
         # The agreement an act names is the one it was signed under, not a new edition.
         return {'contract': accepted['contract'], 'agreement': None, 'act': accepted['act'], 'estimates': [],
                 'schedule': None, 'warnings': accepted['act'].pop('warnings'), 'pages': len(texts)}
+    import developaid_contract_terms as terms
+    import developaid_contract_price as price
     out = dict(identity(texts[0]), estimates=[], schedule=None, warnings=[], pages=len(texts))
     estimate, layout, weekly, mentioned = None, None, None, set()
     for index, page in enumerate(document):
@@ -1153,7 +1231,7 @@ def _read(document) -> dict:
                 estimate, out['schedule'] = None, schedule
                 schedule['pages'].append(number)
                 continue
-            weekly = _weekly_page(page, number, schedule)
+            weekly = _weekly_page(page, number, schedule) or _dated_bar_page(page, number, schedule)
             if weekly is not None:
                 estimate, out['schedule'] = None, schedule
                 schedule['pages'].append(number)
@@ -1197,7 +1275,26 @@ def _read(document) -> dict:
         out['warnings'].append('Расчёт договорной стоимости упомянут, но его таблица не найдена.')
     if 'schedule' in mentioned and not out['schedule']:
         out['warnings'].append('График производства работ упомянут, но его таблица не найдена.')
-    if not out['estimates'] and not out['schedule'] and not mentioned:
+    # A PDF's text stream may print an entire date column after its heading.
+    # Dates inside the recognised GPR/RDS are work rows, not legal clauses.
+    # Keep contract paragraphs outside the table, including on the same page.
+    table_pages = set((out['schedule'] or {}).get('pages') or [])
+    table_pages.update(n for e in out['estimates'] for n in e['pages'])
+    table_pages.update(n for n, text in enumerate(texts, 1)
+                       if (_SCHEDULE_TITLE.search(text) or _ESTIMATE_TITLE.search(text))
+                       and _Grid(document[n-1]).rows)
+    condition_texts = list(texts)
+    for number in table_pages:
+        page = document[number-1]
+        grid = _Grid(page)
+        condition_texts[number-1] = ' '.join(w[4] for w in _words(page)
+            if grid.rows and not grid.rows[0] <= (w[1]+w[3])/2 <= grid.rows[-1])
+    out['terms'] = terms.read(condition_texts)
+    out['price'] = price.read(condition_texts)
+    out['warnings'].extend(out['terms']['warnings'])
+    out['warnings'].extend(out['price']['warnings'])
+    if not out['estimates'] and not out['schedule'] and not mentioned \
+            and not out['terms']['changes_deadline'] and not out['price']['changes_price']:
         out['warnings'].append('В документе нет таблиц расчёта договорной стоимости и графика производства работ: '
                                'он их не меняет, или таблицы не распознаны.')
     return out

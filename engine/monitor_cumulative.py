@@ -58,6 +58,11 @@ class MonitorContractDocuments(MonitorContractsBuild):
     contract_id: str = _CumulativeField(pattern=r"^[0-9a-f]{64}$")
 
 
+class MonitorContractSourceReview(MonitorContractDocuments):
+    # This operation never accepts a filename, worksheet, range, path or URL.
+    model_config = {"extra": "forbid"}
+
+
 class MonitorContractDocumentUpload(MonitorContractDocuments):
     filename: str = _CumulativeField(default="", max_length=240)
     content_base64: str = _CumulativeField(max_length=28 * 1024 * 1024)
@@ -80,6 +85,23 @@ class MonitorContractDocumentLinks(MonitorContractDocuments):
 class MonitorContractDocumentRemove(MonitorContractDocuments):
     sha256: str = _CumulativeField(pattern=r"^[0-9a-f]{64}$")
     restore: bool = False
+
+
+class MonitorContractScanHeader(BaseModel):
+    contract_number: str = _CumulativeField(default="", max_length=80)
+    contract_date: str = _CumulativeField(default="", max_length=10)
+    agreement_number: str = _CumulativeField(default="", max_length=80)
+    agreement_date: str = _CumulativeField(default="", max_length=10)
+    act_number: str = _CumulativeField(default="", max_length=80)
+    act_date: str = _CumulativeField(default="", max_length=10)
+    act_start: str = _CumulativeField(default="", max_length=10)
+    act_finish: str = _CumulativeField(default="", max_length=10)
+
+
+class MonitorContractDocumentConfirm(MonitorContractDocuments):
+    sha256: str = _CumulativeField(pattern=r"^[0-9a-f]{64}$")
+    kind: str = _CumulativeField(pattern=r"^(contract|agreement|act)$")
+    values: MonitorContractScanHeader
 
 
 class MonitorCumulativeResult(MonitorCumulativeAuth):
@@ -119,8 +141,10 @@ _CUMULATIVE_PATHS = frozenset({
     "/monitor/cumulative/upload", "/monitor/cumulative/result",
     "/monitor/cumulative/list", "/monitor/contracts/build",
     "/monitor/contracts/result", "/monitor/contracts/term", "/monitor/contracts/link", "/monitor/contracts/header-date",
+    "/monitor/contracts/source-review",
     "/monitor/contracts/documents", "/monitor/contracts/document-upload",
     "/monitor/contracts/document-links", "/monitor/contracts/document-remove",
+    "/monitor/contracts/document-confirm",
     "/monitor/view", "/monitor/gantt", "/monitor/schedule-fact", "/monitor/gpr-corpus/view",
     "/monitor/schedule/saved-source-preview", "/monitor/schedule/saved-source-approve",
     "/monitor/readiness/profile-preview", "/monitor/readiness/profile-save",
@@ -281,6 +305,10 @@ def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = 
                 payload["project"], payload["contract_id"], payload["deadline"], payload["note"])}
         elif operation == "header-date":
             result = {"header_date": contracts.confirm_header_date(**payload)}
+        elif operation == "source-review":
+            import developaid_contract_source_review as source_review
+            result = {"source_review": source_review.review(**payload),
+                      "runtime": {"version": VERSION, "commit": COMMIT}}
         elif operation == "link":
             result = {"link": links.set_link(
                 payload["project"], payload["contract_id"], payload["evidence_id"],
@@ -309,6 +337,11 @@ def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = 
                 result = contract_files.save_links(payload["project"], payload["contract_id"], payload["sha256"],
                                                    payload["estimate"], payload["choices"], payload["clear"],
                                                    payload["cut"], acts)
+            elif operation == "document-confirm":
+                if row is None:
+                    raise contracts.ContractProblem("Договор не найден в данных выбранного проекта на эту дату.")
+                result = contract_files.confirm_scan(payload["project"], row, payload["sha256"], payload["kind"],
+                                                     payload["values"], payload["cut"], acts)
             elif operation == "document-remove":
                 result = contract_files.remove(payload["project"], payload["contract_id"], payload["sha256"],
                                                restore=payload["restore"], cut=payload["cut"], acts=acts)
@@ -368,6 +401,9 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
                                    choices=[choice.model_dump() for choice in req.choices], clear=req.clear)
                 elif operation == "document-remove":
                     payload.update(contract_id=req.contract_id, sha256=req.sha256, restore=req.restore)
+                elif operation == "document-confirm":
+                    payload.update(contract_id=req.contract_id, sha256=req.sha256, kind=req.kind,
+                                   values=req.values.model_dump())
                 elif operation == "term":
                     if req.deadline:
                         _monitor_cumulative_day(req.deadline)
@@ -378,6 +414,8 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
                     payload.update(snapshot_id=req.snapshot_id, filename=req.filename,
                                    file_sha256=req.file_sha256, sheet=req.sheet, cell=req.cell,
                                    raw=req.raw, contract_date=req.contract_date, note=req.note)
+                elif operation == "source-review":
+                    payload.update(contract_id=req.contract_id)
                 elif operation == "link":
                     payload.update(contract_id=req.contract_id, evidence_id=req.evidence_id,
                                    confirmed=req.confirmed)
@@ -463,6 +501,11 @@ def monitor_contracts_documents(req: MonitorContractDocuments) -> Response:
     return _monitor_cumulative_job(req, family="contracts", operation="documents")
 
 
+@app.post("/monitor/contracts/source-review", include_in_schema=False)
+def monitor_contract_source_review(req: MonitorContractSourceReview) -> Response:
+    return _monitor_cumulative_job(req, family="contracts", operation="source-review")
+
+
 @app.post("/monitor/contracts/document-upload", include_in_schema=False)
 def monitor_contracts_document_upload(req: MonitorContractDocumentUpload) -> Response:
     return _monitor_cumulative_job(req, family="contracts", operation="document-upload")
@@ -476,3 +519,8 @@ def monitor_contracts_document_links(req: MonitorContractDocumentLinks) -> Respo
 @app.post("/monitor/contracts/document-remove", include_in_schema=False)
 def monitor_contracts_document_remove(req: MonitorContractDocumentRemove) -> Response:
     return _monitor_cumulative_job(req, family="contracts", operation="document-remove")
+
+
+@app.post("/monitor/contracts/document-confirm", include_in_schema=False)
+def monitor_contracts_document_confirm(req: MonitorContractDocumentConfirm) -> Response:
+    return _monitor_cumulative_job(req, family="contracts", operation="document-confirm")

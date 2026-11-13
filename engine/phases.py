@@ -2884,6 +2884,7 @@ def _calculate_phased_once(req: PhasedCalcRequest, *, _land_rent_cutoff: date | 
     consolidated["land_rent"] = common_land_rent
     consolidated["summary"]["preliminary"] = not common_land_rent["financial_complete"]
     consolidated["summary"]["preliminary_reason"] = developaid_land_rent.disclosure(common_land_rent)
+    consolidated["summary"]["land_rent_sum"] = developaid_land_rent.sum_state(common_land_rent)
     # Норматив приобъектной парковки — обязательство ОБЪЕКТА, то есть проекта:
     # офисник, разрезанный надвое, не становится двумя офисниками со своими
     # нормами (то же правило, что у ступени площади соцобъекта). У свода блока
