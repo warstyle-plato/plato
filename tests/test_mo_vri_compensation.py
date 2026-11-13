@@ -243,3 +243,55 @@ def test_the_book_names_the_deduction_only_when_there_is_one():
     # Плату в проекте переписали руками поверх расчёта — это уже не плата за вычетом.
     assert named not in _book_text(mo_vri_compensation_mln=1300.0,
                                    _mo_calc={"vri": dict(calc["vri"], payment_used_mln=40.0)})
+
+
+# Решение владельца 13.11.2026 («Б»): в Московской области вписанная сумма
+# компенсации по соглашению о Ксу* и зачёт переданных муниципалитету площадей —
+# либо одно, либо другое. Одна сумма соглашения не вычитается дважды.
+MO_OFFSET = {"vri_region": "mo", "vri_transfer_offset_mln": 300.0}
+
+
+def test_the_agreement_replaces_the_transfer_offset_in_the_region():
+    assert core.vri_relief(MO_OFFSET, 1000e6) == (pytest.approx(300e6), pytest.approx(700e6))
+    relief, net = core.vri_relief(dict(MO_OFFSET, mo_vri_compensation_mln=50.0), 1000e6)
+    assert relief == 0.0 and net == pytest.approx(1000e6), "зачёт вычтен поверх Ксу*"
+    # Пустое поле компенсации и Москва зачёт не трогают.
+    assert core.vri_transfer_offset_applies(dict(MO_OFFSET, mo_vri_compensation_mln=0))
+    assert core.vri_transfer_offset_applies({"vri_region": "msk", "mo_vri_compensation_mln": 50.0})
+
+
+def _result(extra: dict) -> dict:
+    import copy
+    x = {**core.DEFAULT_INPUTS, "vri_required": True, "land_rights_cost_mln": 1000.0, **extra}
+    return core.calculate(core.CalcRequest(inputs=x, tep=copy.deepcopy(core.TEP_DEFAULT)))
+
+
+def test_the_result_says_why_the_offset_is_not_counted():
+    replaced = _result(dict(MO_OFFSET, mo_vri_compensation_mln=50.0))
+    counted = _result(MO_OFFSET)
+    assert replaced["vri"]["totals"]["transfer_offset_replaced"] is True
+    assert core.VRI_TRANSFER_OFFSET_REPLACED in replaced["vri"]["warnings"]
+    assert counted["vri"]["totals"]["transfer_offset_replaced"] is False
+    assert core.VRI_TRANSFER_OFFSET_REPLACED not in counted["vri"]["warnings"]
+    assert replaced["summary"]["net_profit"] < counted["summary"]["net_profit"]
+
+
+def test_the_offset_field_names_why_it_is_not_counted():
+    shown, taken = page_blocks.run("\n".join([
+        "let inputs={};",
+        "let lastResult={vri:{totals:{transfer_offset_replaced:true}}};",
+    ]), "\n".join([
+        "const replaced=classFieldUnitText('vri_transfer_offset_mln','млн ₽');",
+        "lastResult={vri:{totals:{transfer_offset_replaced:false}}};",
+        "console.log(JSON.stringify({replaced,counted:classFieldUnitText('vri_transfer_offset_mln','млн ₽')}));",
+    ]))
+    result = json.loads(shown)
+    assert "classFieldUnitText" in taken
+    assert result["replaced"].startswith("млн ₽. Не применяется") and "Ксу*" in result["replaced"]
+    assert result["counted"] == "млн ₽"
+
+
+def test_the_book_says_the_offset_is_not_counted():
+    note = "Не применяется: плата уменьшена по соглашению о Ксу*"
+    assert note in _book_text(vri_transfer_offset_mln=300.0, mo_vri_compensation_mln=50.0)
+    assert note not in _book_text(vri_transfer_offset_mln=300.0)
