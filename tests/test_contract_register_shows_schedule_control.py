@@ -113,7 +113,7 @@ def test_the_table_shows_lag_deviation_and_forecast_in_plain_words(card, width):
             "Готовность и выполнение плана50 %готовность договоравыполнение плана на дату среза — 55 %"
             "отклонение −45 % · −4 500 ₽план 10 000 ₽ · факт 5 500 ₽")
         forecast = more.locator(".contract-schedule-forecast")
-        expect(forecast).to_have_text("Прогноз окончания по ГПР06.02.2026на 1 день позже срокаОкончание ГПР: 05.02.2026")
+        expect(forecast).to_have_text("Прогноз окончания по ГПР06.02.2026на 1 день позже срокаОкончание плана по ГПР: 05.02.2026")
         assert forecast.locator(".contract-main-money").evaluate(color) == lag.locator(".contract-main-money").evaluate(
             color) != row.evaluate(color)
         assert red != row.evaluate(color)

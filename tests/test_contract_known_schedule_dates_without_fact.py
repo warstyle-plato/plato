@@ -64,7 +64,7 @@ def test_real_page_shows_known_plan_dates_when_forecast_is_unavailable(source_ca
         line=page.locator(f'tr[data-contract-id="{CONTRACT}"]')
         expect(line).to_contain_text('Прогноз не рассчитан')
         expect(line).to_contain_text('План по ГПР: 29.01.2026 — 05.02.2026')
-        expect(line.locator('.term')).to_contain_text('Окончание ГПР: 05.02.2026')
+        expect(line.locator('.term')).to_contain_text('Окончание исходного ГПР: 05.02.2026')
         expect(line.locator('.term')).to_contain_text('Прогноз по ГПР не рассчитан')
         expect(line.locator('.term')).not_to_contain_text('Прогноз неизвестен')
         line.locator('.contract-open').click()
@@ -89,10 +89,16 @@ def test_known_gpr_forecast_is_the_same_in_the_term_tile_and_schedule(width,cont
         row['schedule_control'].update(percent=-0.45,plan_share=10/11,plan_done=0.55)
         if contract_deadline:
             row['schedule_control'].update(deadline=contract_deadline,from_register=True,days_over=3)
+            source={'label':'ДС № 1 · стр. 2 · п. 2.3.2','quote':'Окончание Работ — 03.02.2026.'}
+            row['deadline_source']=source
+            row['deadline_documents']={'history':[
+                {'deadline':'2026-01-15','source':{'label':'Договор · стр. 3 · п. 2.3.2',
+                                                'quote':'Окончание Работ — 15.01.2026.'}},
+                {'deadline':contract_deadline,'source':source}], 'warnings':[]}
         page.locator('#contractsTab').click()
         line=page.locator(f'tr[data-contract-id="{CONTRACT}"]')
         term=line.locator('.term')
-        target='Срок договора: 03.02.2026' if contract_deadline else 'Окончание ГПР: 05.02.2026'
+        target='Срок договора: 03.02.2026' if contract_deadline else 'Окончание плана по ГПР: 05.02.2026'
         expect(term).to_contain_text(target)
         expect(term).to_contain_text('Прогноз по ГПР: 06.02.2026')
         expect(term).not_to_contain_text('Прогноз неизвестен')
@@ -105,6 +111,15 @@ def test_known_gpr_forecast_is_the_same_in_the_term_tile_and_schedule(width,cont
         if not contract_deadline:
             expect(term).to_contain_text('Срок договора не указан')
             expect(more.locator('.contract-term')).to_have_text('Указать срок')
+        else:
+            expect(term).to_contain_text('ДС № 1 · стр. 2 · п. 2.3.2')
+            more.locator('.contract-action > .contract-sources > summary').click()
+            history=more.locator('.contract-deadline-history')
+            assert history.evaluate('e=>!e.open')
+            history.locator('summary').click()
+            expect(history).to_contain_text('15.01.2026')
+            expect(history).to_contain_text('03.02.2026')
+            expect(history).to_contain_text('Окончание Работ — 03.02.2026.')
         if width==1440 and contract_deadline is None:
             page.screenshot(path='/tmp/contracts-known-gpr-term-1440.png',full_page=True)
         assert not errors and page.evaluate('document.documentElement.scrollWidth<=innerWidth')
