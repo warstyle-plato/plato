@@ -1440,6 +1440,7 @@ def install(app: FastAPI) -> None:
                             # него те же публикации; а когда в решении названо
                             # жильё, считается и та же модель — цифры площадки
                             # прочитаны из её PDF.
+                            trace_sources_before = krt_ranking._weekly_trace('sources')
                             rows, whole, _why = _krt_screen_state()
                             if not whole:
                                 krt_ranking.note_schedule_failure(
@@ -1452,7 +1453,8 @@ def install(app: FastAPI) -> None:
                                     "считать было нечего, повторю позже")
                                 krt_ranking.release()
                             elif not krt_ranking.start(
-                                    rows, _screen_for_background, scheduled=True, claimed=True):
+                                    rows, _screen_for_background, scheduled=True, claimed=True,
+                                    trace_sources_before=trace_sources_before):
                                 krt_ranking.release()
                         except Exception as exc:  # noqa: BLE001
                             logger.exception("weekly KRT ranking failed")

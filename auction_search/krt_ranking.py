@@ -739,7 +739,45 @@ class KrtRanking:
         except OSError:
             logger.exception("KRT schedule state write failed")
 
-    def _schedule_begin(self, projects: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _weekly_trace(self, operation: str, *args):
+        """Prospective metadata only; audit failure never changes model work."""
+        import sys
+        trace = None
+        try:
+            import developaid_krt_weekly_trace as trace
+            root = self.path.parent.absolute()
+            period = getattr(self, '_weekly_trace_period', self.last_scheduled_moment())
+            if operation == 'sources':
+                return trace.source_revision(root)
+            if operation == 'begin':
+                self._weekly_trace_period = period
+                previous = {r.get('slug'): r for r in self.rows()}
+                projects = [with_last_known_status(p, previous.get(p.get('slug'))) for p in args[0]]
+                core = sys.modules.get('developaid_core') or sys.modules.get('main_legacy')
+                return trace.begin(root, period, projects,
+                    {'commit': getattr(core, 'COMMIT', None), 'version': getattr(core, 'VERSION', None)},
+                    raw_projects=args[1] if len(args) > 1 else None,
+                    source_before=args[2] if len(args) > 2 else None)
+            if operation == 'observe':
+                # These are the exact nonfinancial fields the existing excluded
+                # market-only path is allowed to refresh; all other row values
+                # are bound by a hash, without exporting their contents.
+                mutable = _CATALOGUE_FIELDS + (
+                    'model_excluded', 'model_exclusion_reason', 'market_computed_at',
+                    'market_failed_at', 'market_failure_reason',
+                    'surrounding_price_rub_sqm', 'surrounding_sales_units_per_month')
+                return trace.observe(root, args[0], mutable)
+            if operation == 'visit':
+                return trace.visit(root, period, *args)
+            if operation == 'end':
+                return trace.end(root, period, *args)
+        except Exception as exc:  # Audit is a separate, explicitly incomplete result.
+            code = getattr(exc, 'code', 'trace_unavailable')
+            code = code if code in getattr(trace, 'GAPS', ()) else 'trace_unavailable'
+            logger.warning('KRT weekly metadata trace incomplete: %s', code)
+        return {'state': 'unavailable'} if operation == 'observe' else None
+
+    def _schedule_begin(self, projects: list[dict[str, Any]], *, raw_projects=None, trace_sources_before=None) -> list[dict[str, Any]]:
         """Начать или продолжить плановый прогон этого срока.
 
         Посчитанные в этот срок площадки второй раз не считаются: прогон,
@@ -763,6 +801,8 @@ class KrtRanking:
             "finished_at": None,
             "stop_reason": "",
         })
+        self._weekly_trace_period = period
+        self._weekly_trace('begin', projects, raw_projects, trace_sources_before)
         return remaining
 
     def _schedule_mark(self, slug: str, failed: bool) -> None:
@@ -1429,6 +1469,7 @@ class KrtRanking:
         *,
         scheduled: bool = False,
         claimed: bool = False,
+        trace_sources_before=None,
     ) -> bool:
         """Запустить прогон. Повторный вызов на ходу ничего не запускает.
 
@@ -1449,9 +1490,11 @@ class KrtRanking:
                 if not claimed:
                     self.release()
                 return False
+            raw_projects = projects
             projects = model_cohort(projects, unique=True)
             if scheduled:
-                projects = self._schedule_begin(projects)
+                projects = self._schedule_begin(projects, raw_projects=raw_projects,
+                                                trace_sources_before=trace_sources_before)
             self._progress = {
                 "running": True, "done": 0, "total": len(projects), "current": "",
                 "started_at": time.time(), "finished_at": None, "failed": 0,
@@ -1484,6 +1527,8 @@ class KrtRanking:
         try:
             for index, project in enumerate(projects, start=1):
                 project = self.model_project(project)
+                trace_before = (self._weekly_trace('observe', str(project.get('slug') or ''))
+                                if catalogue_run and model_exclusion(project) is not None else None)
                 name = str(project.get("name") or project.get("slug") or "")
                 site_failed = False
                 with self._lock:
@@ -1537,6 +1582,9 @@ class KrtRanking:
                     })
                     self._persist({row["slug"]: row})
                 if catalogue_run and row["slug"]:
+                    if excluded is not None:
+                        trace_after = self._weekly_trace('observe', row['slug'])
+                        self._weekly_trace('visit', project, trace_before, trace_after)
                     self._schedule_mark(row["slug"], site_failed)
                 with self._lock:
                     self._progress["done"] = index
@@ -1562,6 +1610,7 @@ class KrtRanking:
                 stamp = False
                 stop_reason = stop_reason or "Не удалось записать итог прогона на диск"
             if catalogue_run:
+                self._weekly_trace('end', stamp)
                 self._schedule_end(completed=stamp, reason=stop_reason)
             # Замок отпускается ровно здесь: держать его до протухания значило
             # бы, что после первого же прогона неделя превращается в шесть часов
