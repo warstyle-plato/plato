@@ -98,7 +98,7 @@ def _observation(row, register):
     if row.get('source_kind') == 'closing_summary':
         observation = row.get('summary_progress') or {}
         ratio = _number(observation.get('ratio'))
-        result.update(basis='closing_summary_contract', basis_label='суммы КС-2 по сводной',
+        result.update(basis='closing_summary_contract', basis_label=observation.get('basis_label') or 'суммы КС-2 по сводной',
             origin='closing_summary_statement', planned=observation.get('planned'),
             completed=observation.get('completed'),
             state=observation.get('state') or 'unknown',

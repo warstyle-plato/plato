@@ -185,8 +185,9 @@ def entry_price_verdict(bundle: dict[str, Any]) -> dict[str, str]:
     result = bundle.get("consolidated") or {}
     summary = result.get("summary") or {}
     preliminary = bool(summary.get("preliminary"))
-    rent = result.get("land_rent") or {}
-    if preliminary and (rent.get("complete") is not True or rent.get("construction_total") is None):
+    # Keep the canonical sum-state shared by the result row and all verdicts.
+    # A construction subtotal alone does not resolve post-RVE or VRI costs.
+    if preliminary and not (summary.get("land_rent_sum") or {}).get("known"):
         return {"title": "Предварительная экономика: уточните аренду земли", "tone": "edge"}
     verdict = _entry_price_metric_verdict(bundle)
     if preliminary:

@@ -33,11 +33,19 @@ def _whole(shares):
     return [share / total for share in shares]
 
 
+def _reasons(reasons: dict) -> str:
+    return "; ".join(reasons.values())
+
+
 def decide(item: dict, schedule: dict | None, lines: list[str] | None, shares: list[float] | None,
            decided_at: str) -> dict:
     """A stored choice for the proposed `item`; `lines` None confirms the proposal itself."""
     current = {line["code"]: line for line in links.leaves(schedule)}
+    bad = links.unfit(schedule)
     if not current:
+        if bad:
+            raise LinkChoiceProblem("В графике нет строки работы, с которой можно связать позицию: "
+                                    + _reasons(bad) + ".")
         raise LinkChoiceProblem("Сначала загрузите график производства работ этой или прежней редакции.")
     if lines is None:
         if item["status"] != "proposed":
@@ -48,6 +56,10 @@ def decide(item: dict, schedule: dict | None, lines: list[str] | None, shares: l
         codes = list(dict.fromkeys(str(code) for code in lines))
     if not codes:
         raise LinkChoiceProblem("Выберите хотя бы одну строку графика.")
+    refused = {code: bad[code] for code in codes if code not in current and code in bad}
+    if refused:
+        raise LinkChoiceProblem("С этой строкой графика позицию связать нельзя: " + _reasons(refused)
+                                + ". Исправьте график или выберите другую строку.")
     unknown = [code for code in codes if code not in current]
     if unknown:
         raise LinkChoiceProblem(f"Строк {', '.join(unknown)} нет среди работ действующего графика: выберите "
@@ -66,9 +78,15 @@ def decide(item: dict, schedule: dict | None, lines: list[str] | None, shares: l
 def apply(result: dict, choices: dict, schedule: dict | None) -> dict:
     """Proposals of `links.propose` with the owner's choices laid over them."""
     current = {line["code"]: line for line in links.leaves(schedule)}
+    bad = links.unfit(schedule)
     for item in result["positions"]:
         choice = choices.get(item["key"])
         if not choice:
+            continue
+        refused = {line["code"]: bad[line["code"]] for line in choice["lines"] if line["code"] in bad}
+        if refused:
+            item["carry"] = ("Подтверждённая ранее связь не применена: строка есть в графике, но "
+                             + _reasons(refused) + ". Исправьте график или выберите другую строку.")
             continue
         gone = [line for line in choice["lines"]
                 if line["code"] not in current or not _same(current[line["code"]]["name"], line["name"])]

@@ -157,3 +157,22 @@ def test_each_date_of_a_line_says_where_it_came_from():
     marking = _schedule(lines)["lines"][1]
     assert (marking["start"], marking["finish"], marking["corrected"]) == ("2026-01-29", "2026-01-31", False)
     assert marking["dates_from"] == {"start": "bar", "finish": "cells"}
+
+
+@pytest.mark.parametrize("finish, said", [
+    ("03.02.26", "дата окончания «03.02.26» не прочитана: нужна запись вида 01.02.2026; в графе начала 29.01.2026"),
+    ("", "в графе начала 29.01.2026, в графе окончания даты нет"),
+])
+def test_a_bar_correction_names_an_unread_date_once_and_an_empty_cell_as_empty(finish, said):
+    lines = LINES[:2] + (("1.2", "Ограждение", "29.01.2026", finish, (3, 5)),)
+    (correction,) = _schedule(lines)["corrections"]
+    assert correction["text"] == (f"Стр. 1: у строки 1.2 «Ограждение» {said}, а полоса на диаграмме идёт "
+                                  "01.02.2026 — 03.02.2026. Взяты даты полосы: 01.02.2026 — 03.02.2026.")
+
+
+def test_a_bar_correction_with_both_dates_unread_names_them_once():
+    lines = LINES[:2] + (("1.2", "Ограждение", "29.01.26", "03.02.26", (3, 5)),)
+    (correction,) = _schedule(lines)["corrections"]
+    assert correction["text"] == ("Стр. 1: у строки 1.2 «Ограждение» даты начала «29.01.26» и окончания "
+                                  "«03.02.26» не прочитаны: нужна запись вида 01.02.2026. Взяты даты полосы: "
+                                  "01.02.2026 — 03.02.2026.")

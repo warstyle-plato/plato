@@ -17,6 +17,7 @@ def rental_inputs(**overrides):
             "project_start": "2027-01-01", "ird_months": 12, "construction_months": 12,
             "land_rent_rates": [{"year": 1, "rate_pct": 1.5}],
             "land_rent_tail_rule": "repeat_last", "land_rent_vat_treatment": "public_exempt",
+            "land_rent_termination_date": "2029-01-01", "land_rent_cadastral_target_mln": 120,
             **overrides}
 
 
@@ -29,7 +30,7 @@ def rental_inputs(**overrides):
     (None, None, "экономика проходит по прибыли", "edge"),
 ])
 def test_known_rent_names_the_economic_result_but_keeps_it_provisional(metric, value, title, tone):
-    result = {"summary": {"preliminary": True, "llcr": value, "net_profit": 1},
+    result = {"summary": {"preliminary": True, "llcr": value, "net_profit": 1, "land_rent_sum": {"known": True, "reason": ""}},
               "land_rent": {"complete": True, "construction_total": 3e6},
               "report": {"layout": {"debt_metric": {"key": metric, "value": value}}}}
     assert core.entry_price_verdict({"consolidated": result}) == {
@@ -45,7 +46,7 @@ def test_missing_rent_does_not_pass_as_a_free_site(rent):
 
 
 def test_known_zero_is_not_missing_and_confirmed_economics_keeps_normal_verdict():
-    result = {"summary": {"preliminary": True, "llcr": 1.3},
+    result = {"summary": {"preliminary": True, "llcr": 1.3, "land_rent_sum": {"known": True, "reason": ""}},
               "land_rent": {"complete": True, "construction_total": 0}}
     assert core.entry_price_verdict({"consolidated": result}) == {
         "title": "Предварительно: экономика проходит", "tone": "edge"}
@@ -54,9 +55,25 @@ def test_known_zero_is_not_missing_and_confirmed_economics_keeps_normal_verdict(
         "title": "Экономика проходит", "tone": "pass"}
 
 
+
+def test_raw_construction_total_cannot_override_the_canonical_unknown_sum():
+    result = {"summary": {"preliminary": True, "llcr": 9,
+                           "land_rent_sum": {"known": False, "reason": "Аренда после ввода требует отдельного расчёта."}},
+              "land_rent": {"complete": True, "construction_total": 3e6}}
+    assert core.entry_price_verdict({"consolidated": result}) == {
+        "title": "Предварительная экономика: уточните аренду земли", "tone": "edge"}
+
+
+def test_the_canonical_known_zero_does_not_require_a_duplicate_raw_rent_payload():
+    result = {"summary": {"preliminary": True, "llcr": 1.3,
+                           "land_rent_sum": {"known": True, "reason": ""}}}
+    assert core.entry_price_verdict({"consolidated": result}) == {
+        "title": "Предварительно: экономика проходит", "tone": "edge"}
+
+
 def test_default_mo_indices_are_an_estimate_until_replaced_with_contract_inputs():
     x = rental_inputs(vri_region="mo", land_rent_mode="mo_housing_new_2026",
-        land_rent_contract_date="2027-01-01", land_rent_preset_confirmed=True,
+        land_rent_contract_date="2027-01-01", land_rent_termination_date="2030-01-01", land_rent_preset_confirmed=True,
         land_rent_public_scope="regional", land_rent_grant_basis="ordinary_nonauction",
         land_rent_calendar_indices=[{"year": 2028, "index_pct": 0}, {"year": 2029, "index_pct": 0}],
         land_rent_indices_origin={"2028": {"source": "default_estimate"}, "2029": {"source": "default_estimate"}})
@@ -114,9 +131,9 @@ def test_real_results_show_cost_unknown_zero_and_owned_land(width, monkeypatch):
                 Object.assign(inputs,x);renderInputs();await settledCalculate();
             }""", rental_inputs())
             page.locator(".ia-nav").get_by_role("button", name="Результат", exact=True).click()
-            line = page.locator("#projectParamsTable tr").filter(has=page.get_by_text("Аренда земли в затратах", exact=True))
+            line = page.locator("#projectParamsTable tr").filter(has=page.get_by_text("Аренда земли участка", exact=True))
             expect(line).to_contain_text("3 млн")
-            expect(line).to_contain_text("Предварительный расчёт")
+            assert page.evaluate("lastResult.summary.preliminary") is True
             expect(page.locator("#iaVerdictTitle")).to_have_text(
                 page.evaluate("lastResult.report.entry_price_verdict.title"))
             assert page.locator("#iaVerdict").evaluate("e=>!e.classList.contains('pass')")
@@ -128,10 +145,12 @@ def test_real_results_show_cost_unknown_zero_and_owned_land(width, monkeypatch):
             for values, text in [
                 ({"land_rent_cadastral_mln": None}, "Не определена"),
                 ({"land_rent_cadastral_mln": 100, "land_rent_rates": [{"year": 1, "rate_pct": 0}]}, "0 ₽"),
-                ({"land_right": "ownership"}, "Не применяется"),
+
             ]:
                 page.evaluate("async x=>{Object.assign(inputs,x);renderInputs();await settledCalculate()}", values)
                 expect(line).to_contain_text(text)
+            page.evaluate("async ()=>{inputs.land_right='ownership';renderInputs();await settledCalculate()}")
+            expect(line).to_have_count(0)
             assert not errors, errors
 
 
