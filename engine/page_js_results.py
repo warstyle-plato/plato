@@ -23,7 +23,7 @@ function landRentResultRow(r){
  if(!rent.status||rent.status==='not_applicable')return '';
  const amount=Number(((r.capex)||{}).land_rent||0),note=t=>' <span style="color:#777;font-weight:400">'+escapeHtml(t)+'</span>';
  if(sum.known)return row('Аренда земли участка',money(amount));
- const reason=String(sum.reason||'Сумма аренды не определена.');
+ const reason=String(sum.reason||'Расчёт не назвал, каких данных для неё не хватает.');
  // Ноль при неопределённой сумме — не «аренда бесплатна», а отсутствие данных.
  return row('Аренда земли участка',amount>0
   ?money(amount)+note('Это известная часть суммы, она ещё уточнится. '+reason)

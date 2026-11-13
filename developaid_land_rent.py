@@ -731,7 +731,8 @@ def sum_state(result: dict[str, Any]) -> dict[str, Any]:
     reasons = [*(result.get("missing") or []), *(result.get("financial_missing") or [])]
     if not reasons and result.get("post_rve_unknown"):
         reasons = ["Аренда после ввода требует отдельного расчёта."]
-    return {"known": False, "reason": str(reasons[0]) if reasons else "Сумма аренды не определена."}
+    return {"known": False,
+            "reason": str(reasons[0]) if reasons else "Расчёт не назвал, каких данных для неё не хватает."}
 
 
 def disclosure(result: dict[str, Any]) -> str:
