@@ -202,9 +202,12 @@ def test_contracts_render_exact_money_unknowns_and_separate_physics(width):
         expect(page.locator(f'tr[data-contract-id="{OTHER}"]')).to_contain_text('выполнено 0 ₽')
         assert page.locator(f'tr[data-contract-id="{OTHER}"] .contract-main-money').all_text_contents() == ['—']
         other = opened(page, OTHER)
-        assert other.locator('.contract-main-money').all_text_contents() == ['—', '—', '0 ₽', '—', '—', '—']
+        expect(other.locator('#contractCardSummary [data-label="Сумма договора"]')).to_contain_text('Не подтверждена')
+        expect(other.locator('[data-label="Выполнено по накопительным"]')).to_contain_text('0 ₽')
         expect(other).to_contain_text('Доля не рассчитана')
-        row.locator('.contract-open').click()
+        opened(page, CONTRACT)
+        page.locator('#contractPhysicalSources > summary').click()
+        page.locator('.contract-chat-evidence > summary').click()
         expect(page.locator('#contractsDetails')).to_contain_text('35%')
         expect(page.locator('#contractsDetails')).to_contain_text('100 м²')
         expect(page.locator('#contractsDetails')).to_contain_text('не заменяет акт приёмки')
@@ -214,6 +217,7 @@ def test_contracts_render_exact_money_unknowns_and_separate_physics(width):
         assert page.evaluate('window.untrustedRan') is None
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         page.screenshot(path=f'/tmp/monitor-contracts-{width}.png', full_page=True)
+        page.locator('#contractDialogClose').click()
         page.locator('#contractsSearch').fill('Другой')
         expect(page.locator('#contractsRows')).not_to_contain_text('Д-01')
         expect(page.locator('#contractsRows')).to_contain_text('Д-02')
@@ -305,7 +309,8 @@ def test_term_and_each_evidence_link_require_explicit_actions():
 def test_wrong_current_key_clears_private_lists_and_deep_link_has_no_key():
     from playwright.sync_api import expect
     with browser_page(hash_=f'#tab=contracts&project=Учебный%20проект&contract={CONTRACT}') as (page, responses, errors):
-        expect(page.locator('#contractsDetails')).to_contain_text('Д-01', timeout=10000)
+        expect(page.locator('#contractDialogTitle')).to_contain_text('Д-01', timeout=10000)
+        page.locator('#contractDialogClose').click()
         responses.reject_key = True
         page.locator('#contractsRefresh').click()
         expect(page.locator('#privateArea')).to_be_hidden()
@@ -383,6 +388,8 @@ def test_undated_quantity_and_later_manual_deadline_are_only_references():
         expect(row.locator('.term')).not_to_contain_text('01.02.2027')
         assert page.evaluate('document.querySelector("#contractsRows").scrollWidth <= document.querySelector("#contractsRows").clientWidth')
         row.locator('.contract-open').click()
+        page.locator('#contractPhysicalSources > summary').click()
+        page.locator('#contractRecordSources > summary').click()
         main = page.locator('.contract-physical .physical-main')
         expect(main.locator('td.numeric').nth(0)).to_have_text('100 м²')
         expect(main.locator('td.numeric').nth(1)).to_contain_text('50 м²')
@@ -417,6 +424,7 @@ def test_dated_quantity_stays_at_cut_and_future_total_never_replaces_it():
                     reported_completion_ratio=1.0)
         page.locator('#contractsTab').click()
         page.locator(f'tr[data-contract-id="{CONTRACT}"] .contract-open').click()
+        page.locator('#contractPhysicalSources > summary').click()
         main = page.locator('.contract-physical .physical-main')
         assert main.locator('td.numeric').all_text_contents() == ['100 м²', '35 м²', '40 м²', '35%']
         expect(main.locator('.physical-source')).to_contain_text('Последний учтённый период: 20.10.2026')
