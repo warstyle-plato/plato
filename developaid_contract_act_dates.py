@@ -9,8 +9,9 @@ dates. Such a period gets its dates from the act itself (owner's decision А):
 3. otherwise the period stays without a date: its volume is left out of the fact
    and the reason says which act is missing.
 
-Two acts with one number and different periods, or two summary dates of one act,
-date nothing: which is right is not known. The money of a period in the KS-6a is
+Of two acts with one number in the card the later one is in force
+(`developaid_contract_acts.in_force`, owner's decision of 12.11.2026); two summary
+dates of one act date nothing: which is right is not known. The money of a period in the KS-6a is
 compared with the total of its act; a difference is a warning, not a correction.
 A work enters the fact only when every period with its volume is dated and the
 volumes of its periods add up to its cumulative total.
@@ -18,6 +19,8 @@ volumes of its periods add up to its cumulative total.
 from __future__ import annotations
 
 import re
+
+import developaid_contract_acts as acts_in_card
 
 # Only an explicit act number: «КС-2 № 3», «Акт № 3» or a label that is the number alone («№ 3»).
 # «Период № 3», «Этап № 2» and the date of «КС-2 от 15.03.2026» are no act numbers.
@@ -32,8 +35,7 @@ def number(label) -> str | None:
 
 
 def _act_number(value) -> str | None:
-    digits = re.findall(r"\d+", str(value or ""))
-    return digits[-1].lstrip("0") or "0" if digits else None
+    return acts_in_card.number({"number": value})
 
 
 def _shown(iso):
@@ -48,20 +50,24 @@ def _differs(one, other):
     return abs(one - other) > max(1.0, abs(other) * 1e-6)
 
 
-def _dates(n: str, records: list[dict], summary: list[dict]) -> dict:
+def _dates(n: str, records: list[dict], summary: list[dict], notes: dict | None = None) -> dict:
     """Dates of the act `n`: from the card's КС-2, else the summary, else none with the reason."""
     out = {"number": n, "start": None, "end": None, "basis": "", "source": {}, "act_amount": None,
            "warnings": [], "reason": ""}
     pdfs = [r for r in records if _act_number((r.get("act") or {}).get("number")) == n]
     noted = [a for a in summary if _act_number(a.get("number")) == n]
     read = [r for r in pdfs if r["act"].get("finish")]
+    for record in pdfs:
+        if (notes or {}).get(record.get("sha256")):
+            out["warnings"].append(notes[record.get("sha256")])
     periods = sorted({(r["act"].get("start"), r["act"]["finish"]) for r in read}, key=lambda p: p[1])
     if len(periods) > 1:
+        # Editions of one act are already chosen: these are different acts («1/2026», «2/2026») named alike.
         out["reason"] = (f"в карточке несколько актов КС-2 № {n} с разными отчётными периодами ("
                          + "; ".join(f"{_shown(a)} — {_shown(b)}" for a, b in periods)
-                         + "): какой из них верный, не ясно")
+                         + "): к какому из них относится период КС-6а, не ясно")
         return out
-    if periods:
+    if read:
         record = read[0]
         act = record["act"]
         out.update(start=act.get("start"), end=act["finish"], act_amount=act.get("total"),
@@ -111,8 +117,8 @@ def resolve(found: dict | None, records: list[dict]) -> dict | None:
             n = number(period["label"]) if not period.get("end") else None
             if n and (period.get("quantity") or period.get("amount")):
                 labels.setdefault(n, period["label"])
-    acts = [r for r in records if r.get("act")]
-    dates = {n: _dates(n, acts, found.get("summary_acts") or []) for n in labels}
+    chosen = acts_in_card.in_force(records)
+    dates = {n: _dates(n, chosen["acts"], found.get("summary_acts") or [], chosen["notes"]) for n in labels}
     for n, row in dates.items():
         row["label"] = labels[n]
         row["ks6_amount"] = (found.get("period_amounts") or {}).get(labels[n])

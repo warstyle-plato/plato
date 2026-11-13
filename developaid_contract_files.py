@@ -24,6 +24,7 @@ import threading
 from pathlib import Path
 
 import developaid_contract_act_dates as act_dates
+import developaid_contract_acts as acts_in_card
 import developaid_contract_documents as documents
 import developaid_contract_control as control
 import developaid_contract_fact as fact
@@ -294,20 +295,33 @@ def listing(project: str, contract_id: str, cut: str = "", acts: dict | None = N
     if not folder.is_dir():
         acts = act_dates.resolve(acts, [])
         return _with_control({"contract_id": contract_id, "documents": [], "removed": [],
-                              "plan": plan.build([], cut), "fact": _fact([], None, acts, cut)}, acts, cut)
+                              "plan": plan.build([], cut), "fact": _fact([], None, acts, cut),
+                              "performed": acts_in_card.accumulated([], cut)}, acts, cut)
     every = _records(folder)
     records = [r for r in every if not r.get("removed_at")]
     acts = act_dates.resolve(acts, records)
+    performed = acts_in_card.accumulated(records, cut)
     for record in records:
         notes = []
         if not record.get("contract"):
             notes.append("Номер договора в документе не прочитан: документ привязан к договору по выбору "
                          "в карточке.")
-        twins = [r["filename"] for r in records if r is not record and _edition(r) == _edition(record)]
+        # Of the acts of one number the later is in force (`acts_in_card.in_force`); other documents name twins.
+        twins = [r["filename"] for r in records if r is not record and _edition(r) == _edition(record)
+                 and not acts_in_card.number(record.get("act"))]
+        for found in (performed["replaced"], performed["copies"], performed["notes"]):
+            if found.get(record["sha256"]):
+                notes.append(found[record["sha256"]])
+        if record.get("act"):
+            record["act_state"] = ("replaced" if record["sha256"] in performed["replaced"] else
+                                   "copy" if record["sha256"] in performed["copies"] else "in_force")
         if twins:
             notes.append(f"{record['title']} загружен{'о' if record.get('agreement') else ''} ещё и файлом "
                          f"«{'», «'.join(twins)}». Проверьте, какой из файлов действующий.")
         record["warnings"] = notes + list(record.get("warnings") or [])
+        if record.get("schedule"):
+            # Редактор связей предлагает строки по тому же правилу, что сервер.
+            record["schedule"] = {**record["schedule"], "unfit": links.unfit(record["schedule"])}
     chosen = _choices(folder)
     for record, _, estimate, schedule in _in_force(records):
         result = choices.apply(_proposal(record, estimate, schedule), chosen, schedule and schedule["schedule"])
@@ -318,7 +332,8 @@ def listing(project: str, contract_id: str, cut: str = "", acts: dict | None = N
     editions = _editions(records, chosen)
     planned = plan.build(editions, cut)
     return _with_control({"contract_id": contract_id, "documents": records, "removed": removed, "plan": planned,
-                          "fact": _fact(editions, planned["in_force"], acts, cut)}, acts, cut)
+                          "fact": _fact(editions, planned["in_force"], acts, cut), "performed": performed},
+                         acts, cut)
 
 
 def _fact(editions, in_force, acts, cut):
