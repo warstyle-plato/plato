@@ -404,7 +404,9 @@ def project_class_deviations(inputs: dict[str, Any]) -> dict[str, Any]:
                 "base": float(base),
                 "actual": actual,
             })
-    # В нежилом проекте класс проекта — класс офиса (`nonres_project_class`).
+    # В нежилом проекте класс проекта — пара профиля (машино-место, подземная
+    # ставка); класс КАЖДОГО офиса — своё поле офиса. Подпись называет пару
+    # класса офиса — она одна на проект, — а не класс одного из офисов.
     label = nonres_strategy.nonres_project_class(inputs) or str(preset.get("label") or key)
     return {"class": key, "label": label, "rows": rows}
 
@@ -1686,8 +1688,8 @@ def office_class_rates(inputs: dict[str, Any], key: str, kind: str | None,
 
     В жилом проекте класс офиса, идущий за классом проекта, ставит те же
     числа, что профиль класса проекта, и здесь не повторяется. В нежилом
-    класс офиса — класс проекта (`nonres_project_class`), и ступень ставит
-    числа всегда: у A+ своя ступень при профиле элитного. Цена продажи
+    класс офиса выбирается у КАЖДОГО офиса (владелец, 10.11.2026), и ступень
+    ставит числа всегда: у A+ своя ступень при профиле элитного. Цена продажи
     класса — только в нежилом проекте; там же себестоимость — СМР здания
     (`object_smr_rate` на ставках `rates`), как у профиля.
     """
@@ -1700,9 +1702,18 @@ def office_class_rates(inputs: dict[str, Any], key: str, kind: str | None,
             {**inputs, "project_class": key, "project_kind": kind or inputs.get("project_kind")}, obj.prefix)
         if choice["source"] != nonres_strategy.OFFICE_CLASS_CHOSEN and not nonres:
             continue
+        # В нежилом проекте база класса — класса ОФИСА, а не проекта: у второго
+        # офиса своя ступень, и её числа идут от своего профиля пары
+        # (`NONRES_CLASS_PROFILE`), а не от профиля шапки.
+        base = rates
+        if nonres:
+            pair = nonres_strategy.NONRES_CLASS_PROFILE.get(choice["office_class"])
+            pair_preset = class_base_preset(pair, class_region(inputs), kind) if pair else None
+            if pair_preset:
+                base = pair_preset
         scale = nonres_strategy.OFFICE_CLASS_SCALE[choice["office_class"]]
         cost = float(scale["cost_th_per_sqm"])
-        out[obj.rate_cost] = (object_smr_rate(cost, rates)
+        out[obj.rate_cost] = (object_smr_rate(cost, base or rates)
                               if nonres and obj.rate_cost in OBJECT_SMR_RATE_DEFAULTS else cost)
         if nonres:
             out[obj.rate_price] = float(scale["price_th_per_sqm"])
@@ -1734,15 +1745,23 @@ def office_class_rows(inputs: dict[str, Any] | None) -> list[dict[str, str]]:
     nonres_class = nonres_strategy.nonres_project_class(x)
     project_label = str((PROJECT_CLASS_PRESETS.get(str(x.get("project_class") or "")) or {})
                         .get("label") or "")
+    nonres = is_nonresidential(x)
     rows = []
     for obj in offices:
         choice = nonres_strategy.office_class_choice(x, obj.prefix)
         if choice["source"] == nonres_strategy.OFFICE_CLASS_CHOSEN:
             text = f"{choice['office_class']} — выбран у офиса"
+        elif nonres and choice["source"] == nonres_strategy.OFFICE_CLASS_BY_PROJECT_SOURCE:
+            # Класс у офиса не выбран — он идёт за профилем проекта в шапке.
+            text = (f"{choice['office_class']}: класс у этого офиса не выбран, поэтому взят "
+                    "по профилю проекта")
         elif choice["source"] == nonres_strategy.OFFICE_CLASS_BY_PROJECT_SOURCE and nonres_class:
             text = f"{choice['office_class']} — класс проекта"
         elif choice["source"] == nonres_strategy.OFFICE_CLASS_BY_PROJECT_SOURCE:
             text = f"{choice['office_class']} — как у класса проекта «{project_label}»"
+        elif nonres:
+            text = (f"{choice['office_class']}: класс у этого офиса не выбран, поэтому взят класс "
+                    "по умолчанию. Его можно выбрать в блоке офиса")
         else:
             text = f"{choice['office_class']} — по умолчанию: у проекта нет класса"
         rows.append({"prefix": obj.prefix, "title": obj.group_label,
@@ -2494,22 +2513,18 @@ def sports_is_sold(inputs: dict[str, Any] | None) -> bool:
 # «жилое или нежилое помещение, машино-место»), значит эскроу, покрытие и
 # лестница ставки ПФ остаются теми же, а оговорка «механика здесь не та» была
 # бы неправдой на экране.
-PROJECT_KIND_MIXED = "mixed"
-PROJECT_KIND_NONRESIDENTIAL = "nonresidential"
+PROJECT_KIND_MIXED = project_types.MIXED
+PROJECT_KIND_NONRESIDENTIAL = project_types.NONRESIDENTIAL
 # Гостиница — ОТДЕЛЬНЫЙ тип проекта, а не объект внутри жилого проекта или
 # КРТ (владелец, 05.10.2026). Жилья, соцнагрузки и объектов у него нет, как у
 # нежилого; деньги — номера, департаменты и USALI (`developaid_hotel_strategy`).
-PROJECT_KIND_HOTEL = "hotel"
-PROJECT_KINDS: tuple[tuple[str, str], ...] = (
-    (PROJECT_KIND_MIXED, "Жильё"),
-    (PROJECT_KIND_NONRESIDENTIAL, "Нежилое"),
-    (PROJECT_KIND_HOTEL, "Гостиница"),
-)
+PROJECT_KIND_HOTEL = project_types.HOTEL
+PROJECT_KINDS: tuple[tuple[str, str], ...] = project_types.KINDS
 # Типы проекта без жилья. Один ответ на «считает ли проект дом»: нежилой и
 # гостиничный обнуляют МКД и соцнагрузку одним и тем же правилом
 # (`residential_excluded`), а называют остаток одной функцией
 # (`nonresidential_leftovers`).
-PROJECT_KINDS_WITHOUT_HOUSING = frozenset({PROJECT_KIND_NONRESIDENTIAL, PROJECT_KIND_HOTEL})
+PROJECT_KINDS_WITHOUT_HOUSING = project_types.WITHOUT_HOUSING
 
 # Что принадлежит ЖИЛЬЮ и в нежилом проекте не живёт. Список объявлен один
 # раз: по нему страница обнуляет и называет убранное, по нему же движок ищет
@@ -2573,9 +2588,7 @@ def project_kind(inputs: dict[str, Any] | None) -> str:
     """Тип проекта. Незнакомое значение читается как жилой: умолчание годится
     там, где оно значит «не задано», а «не задано» здесь — это тот проект,
     который считался всегда."""
-    value = str((inputs or {}).get("project_kind")
-                or PROJECT_KIND_MIXED).strip().lower()
-    return value if value in dict(PROJECT_KINDS) else PROJECT_KIND_MIXED
+    return project_types.kind(inputs)
 
 
 def is_nonresidential(inputs: dict[str, Any] | None) -> bool:
@@ -2590,7 +2603,7 @@ def is_hotel(inputs: dict[str, Any] | None) -> bool:
 
 def without_housing(inputs: dict[str, Any] | None) -> bool:
     """Проект без жилья: нежилой или гостиничный. Решает, считается ли дом."""
-    return project_kind(inputs) in PROJECT_KINDS_WITHOUT_HOUSING
+    return project_types.without_housing(project_kind(inputs))
 
 
 # Ставки объектов, которые в чисто нежилом проекте значат СМР здания:
@@ -2865,6 +2878,9 @@ class PhasedCalcRequest(BaseModel):
     session: str = ""
     access_key: str = ""
     use_free: bool = False
+    # Retain the field so unsupported facts are explicitly rejected rather
+    # than silently discarded by BaseModel's default extra-field policy.
+    actuals: dict[str, Any] = {}
 
 
 class SensitivityRequest(BaseModel):

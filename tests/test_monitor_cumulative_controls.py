@@ -198,9 +198,12 @@ def test_contracts_render_exact_money_unknowns_and_separate_physics(width):
         row = page.locator(f'tr[data-contract-id="{CONTRACT}"]')
         expect(row).to_contain_text('1\u00a0000\u00a0000 ₽')
         expect(row.locator('.term')).to_contain_text('Нужен срок')
-        expect(page.locator(f'tr[data-contract-id="{OTHER}"]')).to_contain_text('0 ₽')
-        assert page.locator(f'tr[data-contract-id="{OTHER}"] .contract-main-money').all_text_contents() == ['—', '0 ₽', '—']
-        expect(page.locator(f'tr[data-contract-id="{OTHER}"]')).to_contain_text('Доля не рассчитана')
+        from contract_rows import opened
+        expect(page.locator(f'tr[data-contract-id="{OTHER}"]')).to_contain_text('выполнено 0 ₽')
+        assert page.locator(f'tr[data-contract-id="{OTHER}"] .contract-main-money').all_text_contents() == ['—']
+        other = opened(page, OTHER)
+        assert other.locator('.contract-main-money').all_text_contents() == ['—', '—', '0 ₽', '—', '—', '—']
+        expect(other).to_contain_text('Доля не рассчитана')
         row.locator('.contract-open').click()
         expect(page.locator('#contractsDetails')).to_contain_text('35%')
         expect(page.locator('#contractsDetails')).to_contain_text('100 м²')
@@ -270,7 +273,8 @@ def test_term_and_each_evidence_link_require_explicit_actions():
         row = page.locator(f'tr[data-contract-id="{CONTRACT}"]')
         row.wait_for()
         assert responses.links == []
-        row.locator('.contract-term').click()
+        from contract_rows import opened
+        opened(page, CONTRACT).locator('.contract-term').click()
         assert page.locator('#contractsTermDate').input_value() == ''
         page.locator('#contractsTermDate').fill('2027-02-01')
         page.locator('#contractsTermNote').fill('Пункт 4.2 договора')
@@ -279,6 +283,7 @@ def test_term_and_each_evidence_link_require_explicit_actions():
         assert len(responses.terms) == 1
         assert responses.terms[0]['contract_id'] == CONTRACT
         row.locator('.contract-open').click()
+        page.locator('.contract-chat-evidence > summary').click()
         choice = page.locator('#contractsDetails .evidence-choice')
         assert choice.locator('select').input_value() == ''
         choice.locator('button').click()
@@ -289,6 +294,7 @@ def test_term_and_each_evidence_link_require_explicit_actions():
         assert len(responses.links) == 1
         assert responses.links[0]['evidence_id'] == 'evidence-01'
         assert responses.links[0]['confirmed'] is True
+        page.locator('.contract-chat-evidence > summary').click()
         page.locator('#contractsDetails .evidence-remove').click()
         expect(page.locator('#contractsDetails')).to_contain_text('Предложен договор:', timeout=10000)
         assert len(responses.links) == 2
@@ -378,20 +384,21 @@ def test_undated_quantity_and_later_manual_deadline_are_only_references():
         assert page.evaluate('document.querySelector("#contractsRows").scrollWidth <= document.querySelector("#contractsRows").clientWidth')
         row.locator('.contract-open').click()
         main = page.locator('.contract-physical .physical-main')
-        assert main.locator('td.numeric').all_text_contents() == ['100 м²', '—', '—', '—']
+        expect(main.locator('td.numeric').nth(0)).to_have_text('100 м²')
+        expect(main.locator('td.numeric').nth(1)).to_contain_text('50 м²')
+        expect(main.locator('td.numeric').nth(2)).to_contain_text('80 м²')
+        expect(main.locator('td.numeric').nth(3)).to_contain_text('50%')
+        assert all('По ведомости' in cell for cell in main.locator('td.numeric').all_text_contents()[1:])
         expect(main.locator('.physical-source')).to_contain_text('Дата выполнения не подтверждена')
         expect(main.locator('.physical-source')).to_contain_text('Архив от 06.11.2026')
         expect(main.locator('.physical-source')).to_contain_text('не дата выполнения')
-        reference = page.locator('.physical-reference')
-        expect(reference).to_contain_text('Итог ведомости — справочно')
-        expect(reference).to_contain_text('выполнение 50 м²')
-        expect(reference).to_contain_text('материалы 80 м²')
-        expect(reference).to_contain_text('доля объёма 50%')
+        assert page.locator('.physical-reference').count() == 0
         manual = page.locator('.manual-deadline-reference')
         expect(manual).to_contain_text('01.02.2027')
         expect(manual).to_contain_text('не подтверждает срок договора на выбранную дату среза')
         assert manual.locator('img').count() == 0
-        row.locator('.contract-term').click()
+        from contract_rows import opened
+        opened(page, CONTRACT).locator('.contract-term').click()
         assert page.locator('#contractsTermDate').input_value() == '2027-02-01'
         expect(page.locator('#contractsTermMsg')).to_contain_text('текущую ручную отметку')
         assert not errors

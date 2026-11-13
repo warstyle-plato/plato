@@ -1522,6 +1522,12 @@ def install(app: FastAPI) -> None:
 
     async def _auctions_view_gate(request: Request, call_next):
         path = request.url.path.rstrip("/") or "/"
+        # These two private POSTs apply their own owner admission before any
+        # source I/O. Market/demo/scoped-cookie admission is not their realm.
+        if request.method == "POST" and path in {
+            "/auctions/krt/audit/cached", "/monitor/audit/sources"
+        }:
+            return await call_next(request)
         # Личный ключ «auctions» ограничивает ВЕСЬ сайт, а не только /auctions:
         # с ним открыт раздел торгов и нужные ему запросы карты, остальное —
         # отказ на сервере. Отозванный ключ не действует: браузер становится
@@ -4678,6 +4684,65 @@ def install(app: FastAPI) -> None:
             "rings_merc": rings,
             "centre_merc": centre,
         }
+
+    @app.post("/auctions/krt/audit/cached", include_in_schema=False)
+    async def auction_krt_cached_audit(request: Request) -> Response:
+        """Saved KRT evidence only; no refresh, models, source reads or writes."""
+        private = {"Cache-Control": "private, no-store"}
+        try:
+            raw = bytearray()
+            async for chunk in request.stream():
+                if len(raw) + len(chunk) > 16384:
+                    raw = bytearray()
+                    break
+                raw.extend(chunk)
+            try:
+                initial = json.loads(raw)
+            except (ValueError, UnicodeError, RecursionError):
+                initial = {}
+            initial = initial if isinstance(initial, dict) else {}
+            key = initial.get("key", "")
+            session = initial.get("session", "")
+            key = key if isinstance(key, str) and len(key) <= 4096 else ""
+            session = session if isinstance(session, str) and len(session) <= 4096 else ""
+            if not key:
+                key = str(request.headers.get("X-Developaid-Admin-Key") or "")[:4096]
+            owner_gate = getattr(core, "_require_admin", None) if core is not None else None
+            knows_owner = core is not None and (
+                bool(getattr(core, "usage_admin_ids", lambda: [])()) or
+                bool((getattr(core, "_env_str", lambda *a: "")("DEVELOPAID_ADMIN_KEY", "") or "").strip()))
+            if not callable(owner_gate) or not knows_owner:
+                raise HTTPException(403, "Закрытая проверка КРТ доступна только владельцу сервиса.")
+            owner_gate(session, key, "Закрытая проверка сохранённых КРТ")
+            import developaid_cached_source_audit as audit
+            try:
+                selected = audit.parse_request(bytes(raw), "krt")
+                # Reuse configured existing stores. Never construct a reader that refreshes.
+                root = Path(krt_ranking.path).parent.absolute()
+                if os.path.normpath(root) != os.path.normpath(Path(krt_registry.path).parent.absolute()):
+                    raise audit.AuditError("storage_roots_disagree")
+                screening_module = sys.modules.get("auction_search.krt_screening")
+                process = {
+                    "catalogue_refreshing": getattr(krt_registry, "_refreshing", None),
+                    "decisions_refreshing": getattr(krt_registry, "_decisions_refreshing", None),
+                    "model_fingerprint_cached": getattr(krt_ranking_rules, "_MODEL_FINGERPRINT", None),
+                    "screening_rules_version": getattr(screening_module, "SCREENING_RULES_VERSION", None),
+                }
+                result = await run_in_threadpool(audit.capture_krt, root,
+                    runtime={"commit": getattr(core, "COMMIT", ""), "version": getattr(core, "VERSION", "")},
+                    process=process, purpose=selected["purpose"])
+                return JSONResponse(result, headers=private)
+            except audit.AuditError as exc:
+                limit = exc.code in {"file_too_large", "read_budget", "source_size_limit", "capture_too_large", "structured_limit"}
+                status = 413 if limit else 400 if exc.code.startswith(("invalid_", "unsupported_")) else 409
+                return JSONResponse({"detail": "Закрытая проверка КРТ не сформирована.",
+                                     "code": exc.code}, status_code=status, headers=private)
+        except HTTPException as exc:
+            exc.headers = {**(exc.headers or {}), **private}
+            raise
+        except Exception:
+            return JSONResponse({"detail": "Закрытая проверка КРТ сейчас недоступна.",
+                                 "code": "capture_unavailable"}, status_code=503, headers=private)
 
     @app.get("/auctions/krt/watch")
     async def auction_krt_watch() -> dict[str, Any]:

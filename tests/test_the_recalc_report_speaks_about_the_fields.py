@@ -182,6 +182,26 @@ def test_an_open_field_is_substituted_and_the_line_shows_what_stands_in_it():
     assert _line(got, "Плата за ВРИ") == "Плата за ВРИ, млн ₽: 10 166,6"
 
 
+def test_the_recalculated_vri_fee_keeps_its_composition_proof():
+    """Плата по ставкам территории уже содержит повышенную часть первого года
+    аренды: доказательство едет в происхождение поля вместе с суммой."""
+    proof = core.vri_fee_rent_premium(10166.6, method="glavapu_baseline_rescale", land_right="lease")
+    got = _run({**KRT, "social_area_source": "norm"}, {**ANSWER, "rent_premium": proof})
+    origin = got["fields"]["_field_origin"]["inputs.land_rights_cost_mln"]
+    assert origin["rent_premium"] == proof
+    # Запертое поле суммы не получило — доказательства у него нет.
+    locked = _run(KRT, {**ANSWER, "rent_premium": proof})
+    assert "rent_premium" not in (locked["fields"].get("_field_origin") or {}).get(
+        "inputs.land_rights_cost_mln", {})
+    # Запертая ручная сумма случайно равна расчётной: пересчёт её не писал,
+    # и равенство денег не доказывает состав — происхождение остаётся ручным.
+    same = _run({**KRT, "land_rights_cost_mln": 10166.6,
+                 "_field_origin": {"inputs.land_rights_cost_mln": {"source": "manual"}}},
+                {**ANSWER, "rent_premium": proof})
+    assert same["fields"]["land_rights_cost_mln"] == 10166.6
+    assert same["fields"]["_field_origin"]["inputs.land_rights_cost_mln"] == {"source": "manual"}
+
+
 def test_a_field_the_method_did_not_offer_says_exactly_that():
     """«Заперто» и «метод числа не дал» лечатся разным.
 

@@ -108,19 +108,25 @@ class PulseRussiaClient(PulseClient):
                     headers={"Content-Type": "application/json", "Referer": f"{self.base}/map"},
                 )
             except urllib.error.HTTPError as exc:
-                closed = self._closed(exc)
+                try:
+                    detail = exc.read(4000).decode("utf-8", errors="ignore")
+                except Exception:  # тело ошибки может оборваться при чтении
+                    detail = ""
+                if exc.code in (401, 403) and attempt == 1 and self.sign_in():
+                    continue
+                closed = self._closed(exc, detail)
                 if closed:
                     self.errors.append(f"{API}{path}: {closed}")
                     return None
-                if exc.code in (401, 403) and attempt == 1 and self.sign_in():
-                    continue
                 self.errors.append(f"{API}{path}: {exc}")
                 return None
             except (urllib.error.URLError, OSError) as exc:
                 self.errors.append(f"{API}{path}: {exc}")
                 return None
             try:
-                return json.loads(body.decode("utf-8", errors="ignore"))
+                answer = json.loads(body.decode("utf-8", errors="ignore"))
+                self.access_closed = None
+                return answer
             except ValueError:
                 if attempt == 1 and self.sign_in():
                     continue

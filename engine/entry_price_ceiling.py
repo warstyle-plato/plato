@@ -181,6 +181,14 @@ def entry_price_verdict(bundle: dict[str, Any]) -> dict[str, str]:
     по показателю долга и его порогам из движка; без показателя — по прибыли."""
     result = bundle.get("consolidated") or {}
     summary = result.get("summary") or {}
+    # «Уточните аренду земли» уместно, только когда сумма аренды ещё не
+    # определена. Решает движок аренды (`summary.land_rent_sum`, тот же ответ
+    # читает строка «Аренда земли участка» на странице). Если предварительны
+    # лишь график оплаты или НДС, карточка говорит об экономике по факту,
+    # а оговорку несёт подпись под плитками (`preliminary_reason`).
+    # Нет ответа движка — сумма не считается определённой.
+    if summary.get("preliminary") and not (summary.get("land_rent_sum") or {}).get("known"):
+        return {"title": "Предварительная экономика: уточните аренду земли", "tone": "edge"}
     metric = goal_seek_debt_metric(bundle)
     if not metric.get("key"):
         ok = float(summary.get("net_profit") or 0) > 0
@@ -284,6 +292,9 @@ def entry_price_tiles(bundle: dict[str, Any], inputs: dict[str, Any],
                    "note": f"Подбор цены при {name} {target_text} для этого документа не выполнялся."}
         margin = {"label": "Запас к цене", "value": "—", "wait": True,
                   "note": "Считается после подбора максимума."}
+    if summary.get("preliminary_reason"):
+        for tile in (cover, ceiling, margin):
+            tile["note"] = str(summary["preliminary_reason"]) + " " + str(tile.get("note") or "")
     return [cover, entry, ceiling, margin]
 
 

@@ -20,9 +20,11 @@
 from __future__ import annotations
 
 import datetime
+import copy
 import sys
 import html
 import json
+import math
 import os
 import re
 import tempfile
@@ -248,6 +250,7 @@ def _plan_curve(works: list[tuple[str, dict[str, Any], float]],
                        for _, work, w in works]) for day in days]
 
 
+@monitor.approved_schedule_read
 def physical(project: str, kind: str, end: Any) -> dict[str, Any]:
     """Физическое выполнение: факт ГПР на конец и начало периода против плана.
 
@@ -258,11 +261,14 @@ def physical(project: str, kind: str, end: Any) -> dict[str, Any]:
     """
     bounds = period_bounds(kind, end)
     try:
-        baseline = monitor._read_baseline_gpr(project)
+        baseline = monitor._read_working_baseline_gpr(project, bounds['end'])
     except FileNotFoundError:
         return _missing("Не загружен утверждённый ГПР проекта.")
     statuses = manager._baseline_status(project, bounds["end"].isoformat())
     source = _gpr_source(project, bounds["end"], statuses)
+    if monitor._working_baseline_state(project, bounds['end'].isoformat()).get('baseline_scope') == 'remaining_work':
+        return {'state': 'not_aggregated', 'fact': None, 'plan': None, 'source': source,
+                'reason': 'Это план оставшихся работ. Без полной сопоставимой базы общий процент готовности проекта не рассчитан.'}
     now_day = source["fact"]
     works = _dated(baseline)
     now = _progress(works, statuses, bounds["end"])
@@ -3447,6 +3453,23 @@ table.works.contract-works{table-layout:fixed;width:100%;min-width:780px}
 table.works.contract-works th:first-child,table.works.contract-works td:first-child{min-width:0}
 .work-contract-scroll{max-width:100%;overflow-x:auto}
 @media print{.work-contract-scroll{overflow:visible}table.works.contract-works{min-width:0;break-inside:auto;page-break-inside:auto}}
+.contract-performance-scroll{max-width:100%;overflow-x:auto}
+table.contract-performance{table-layout:fixed;min-width:680px;font-size:10.5px;break-inside:auto;page-break-inside:auto}
+table.contract-performance th,table.contract-performance td{min-width:0;text-align:left;vertical-align:top;white-space:normal;overflow-wrap:anywhere;padding:6px 8px}
+.contract-caption{font-size:10px;color:#5b6b7d;margin-top:4px}
+.contract-performance-details{font-size:10px;color:#5b6b7d;margin-top:5px}
+.contract-performance-details summary{cursor:pointer}.contract-performance-details ul{padding-left:15px}
+@media screen and (max-width:700px){
+ .contract-performance-scroll{overflow:visible}
+ table.contract-performance{display:block;min-width:0;width:100%;font-size:13px;line-height:1.4}
+ table.contract-performance>colgroup,table.contract-performance>thead{display:none}
+ table.contract-performance>tbody{display:block}
+ table.contract-performance>tbody>tr{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:14px 12px;border:1px solid #d6dde6;border-radius:6px;padding:12px;margin:0 0 12px}
+ table.contract-performance>tbody>tr>td{display:block;min-width:0;border:0;padding:0}
+ table.contract-performance>tbody>tr>td::before{content:attr(data-label);display:block;font-size:12px;font-weight:600;color:#5b6b7d;margin-bottom:4px}
+ .contract-performance .contract-caption,.contract-performance-details{font-size:12px}
+}
+@media print{.contract-performance-scroll{overflow:visible}table.contract-performance{min-width:0;font-size:9px}table.contract-performance thead{display:table-header-group}.contract-performance .contract-caption{font-size:8.5px}.contract-performance-details{display:none}}
 table.articles tr.chapter td{background:#f4f7fb;font-weight:600}
 table.articles tr.total td{border-top:2px solid #1f4e8c;font-weight:600}
 table.articles tr.over td{background:#fdecea}table.articles tr.left td{background:#fff6dd}
@@ -3593,12 +3616,83 @@ def _work_contract_missing(entry: dict[str, Any]) -> str:
     return reason
 
 
-def _work_contract_progress(link: dict[str, Any]) -> str:
-    ratio = link.get("completion_ratio")
-    if ratio is not None:
-        # Read the registry's comparable money ratio. Never infer a physical
-        # work's completion from the whole contract or sum unrelated units.
-        return f"{_pct(ratio)} суммы договора"
+def _work_statement_sources(link: dict[str, Any]) -> list[tuple[int, dict[str, Any]]]:
+    """The registry already owns these qualified monetary percentages."""
+    known = []
+    for index, source in enumerate(link.get("reported_performance_sources") or [], start=1):
+        value = source.get("completion_ratio")
+        if (source.get("amount_scope") == "statement"
+                and source.get("future_periods_excluded") is False
+                and source.get("monetary_comparable") is True
+                and isinstance(value, (int, float)) and not isinstance(value, bool)
+                and math.isfinite(value)):
+            known.append((index, source))
+    return known
+
+
+def _work_statement_percentages(link: dict[str, Any]) -> str:
+    """Format the registry's qualified source ratios without recomputing them."""
+    known = _work_statement_sources(link)
+    if not known:
+        return ""
+    years = [source.get("period_year") for _, source in known]
+    parts = []
+    for index, source in known:
+        year = source.get("period_year")
+        label = (str(year) if type(year) is int and years.count(year) == 1 else
+                 f"{year}, ведомость {index}" if type(year) is int else f"Ведомость {index}")
+        parts.append(f"{label} — {_pct(source['completion_ratio'])}")
+    return "По стоимости ведомостей: " + "; ".join(parts)
+
+
+def _work_closing_summary(link: dict[str, Any]) -> bool:
+    return (link.get("source_kind") == "closing_summary" or
+            (link.get("progress") or {}).get("origin") in {"dated_closing_summary", "closing_summary_statement"})
+
+
+def _work_contract_metric(link: dict[str, Any]) -> dict[str, Any]:
+    """Select the existing qualified observation, including explicit unknowns."""
+    progress = link.get("progress") or {}
+    statement = link.get("statement_progress") or {}
+    summary = link.get("summary_progress") or {}
+    selected = progress or (summary if summary.get("state") == "known" else
+                            statement if statement.get("state") == "known" else {})
+    if selected.get('ratio') is not None:
+        return selected
+    if not progress and link.get('completion_ratio') is not None:
+        return {'ratio': link['completion_ratio'], 'basis_label':
+                'суммы КС-2 по сводной' if _work_closing_summary(link) else 'суммы договора'}
+    return selected
+
+
+def _work_contract_progress(link: dict[str, Any], *, include_change: bool = True,
+                            include_reason: bool = True) -> str:
+    progress = link.get("progress") or {}
+    statement, summary = link.get('statement_progress') or {}, link.get('summary_progress') or {}
+    selected = _work_contract_metric(link)
+    if selected.get("ratio") is not None:
+        basis = selected.get("basis_label") or ("суммы КС-2 по сводной" if _work_closing_summary(link) else "по накопительным")
+        label = f"{_pct(selected['ratio'])} {basis}"
+        if (link.get('amount_documents') and selected.get('basis') in {'statement', 'statement_union'}
+                and selected.get('planned') is not None):
+            label += f" (база {_rub(selected['planned'])})"
+        delta = selected.get("delta_percent_points")
+        if include_change and selected.get("comparison_state") == "comparable" and delta is not None:
+            change = "Корректировка" if selected.get("change_kind") == "correction" else "Изменение"
+            delta_text = f"{delta:+.1f}".replace('.', ',')
+            label += f". {change} {delta_text} п.п. за {selected.get('period_days')} дн."
+        if link.get("scope_note"):
+            label += ". " + str(link["scope_note"])
+        return label
+    sources = _work_statement_percentages(link)
+    reason = progress.get("reason") or summary.get("why") or statement.get("why")
+    if sources or reason or progress or statement or summary:
+        label = sources or "Доля неизвестна"
+        if include_reason:
+            label += ". " + str(reason or "Общий процент по ведомостям не подтверждён.")
+        if link.get("scope_note"):
+            label += ". " + str(link["scope_note"])
+        return label
     if link.get("amount") is None or link["amount"] <= 0:
         return "Доля неизвестна: нет полной суммы договора"
     if link.get("completed") is None:
@@ -3608,14 +3702,37 @@ def _work_contract_progress(link: dict[str, Any]) -> str:
 
 def _work_contract_forecast(link: dict[str, Any]) -> str:
     risk = link.get("risk") or {}
+    progress = link.get("progress") or {}
+    summary = _work_closing_summary(link)
     finish, delay = risk.get("forecast_finish"), risk.get("delay_days")
     if finish:
-        text = f"Окончание {_day(finish)}"
+        text = f"Прогноз закрытия по сводной: {_day(finish)}" if summary else f"Окончание {_day(finish)}"
         if delay and delay > 0:
             return text + f". Задержка {int(delay)} дн."
         return text + (". В срок" if link.get("deadline") else ". Срок договора не указан")
     if risk.get("status") == "done":
-        return "Выполнено по накопительной"
+        return "Закрыто по КС-2 из сводной" if summary else "Выполнено по накопительной"
+    prefix = f"Срок прошёл на {int(delay)} дн. " if risk.get("status") == "overdue" and delay else ""
+    if summary:
+        reason = ((progress.get("reason") or (link.get("summary_progress") or {}).get("why"))
+                  if progress.get("ratio") is None else None)
+        return prefix + "Прогноз закрытия не рассчитан. " + str(reason or
+            "Нужны сопоставимые датированные КС-2 из сводной.")
+    statement = link.get("statement_progress") or {}
+    source_observation = (progress.get("origin") == "cumulative_statement"
+                          or (progress.get("ratio") is None
+                              and (progress or link.get("completion_ratio") is None)
+                              and (progress or statement or _work_statement_percentages(link))))
+    observation = link.get("observation_forecast") or {}
+    if source_observation and observation.get("scope") == "uploaded_statements":
+        if observation.get("eligible") is True and observation.get("forecast_finish"):
+            return prefix + f"Ориентир 100% стоимости ведомостей: {_day(observation['forecast_finish'])}. По снимкам."
+        if observation.get("reason"):
+            return prefix + "Прогноз не рассчитан. " + str(observation["reason"])
+    if source_observation:
+        reason = ((progress.get("reason") or statement.get("why")) if progress.get("ratio") is None else None)
+        return prefix + "Прогноз не рассчитан. " + str(reason or
+            "Нужен темп изменения стоимости ведомостей по сопоставимым снимкам.")
     if link.get("amount") is None or link["amount"] <= 0:
         why = "нет полной суммы договора"
     elif link.get("completed") is None:
@@ -3628,7 +3745,6 @@ def _work_contract_forecast(link: dict[str, Any]) -> str:
         why = "текущего темпа недостаточно для окончания работ"
     else:
         why = "нет свежих данных о темпе"
-    prefix = f"Срок прошёл на {int(delay)} дн. " if risk.get("status") == "overdue" and delay else ""
     return prefix + "Прогноз неизвестен: " + why
 
 
@@ -3665,7 +3781,7 @@ def _works_html(block: dict[str, Any], kind: str) -> str:
                 if links and entry.get("contract_match_reason"):
                     cells[-3] += "<br>" + esc(_work_contract_missing(entry))
             rows.append(cells)
-    headings = ["Подрядчик", "Работы", "Дни в отчётах"] + (["Договор", "По накопительной, % договора", "Прогноз срока"] if linked else [])
+    headings = ["Подрядчик", "Работы", "Дни в отчётах"] + (["Договор", "Выполнение, %", "Прогноз срока"] if linked else [])
     warning = ("<p class='missing'>" + esc(block["contract_link_warning"]) + "</p>"
                if block.get("contract_link_warning") else "")
     table = ("<table class='works contract-works'><colgroup>"
@@ -3674,8 +3790,8 @@ def _works_html(block: dict[str, Any], kind: str) -> str:
     return (title + warning + ("<div class='work-contract-scroll' tabindex='0' aria-label='Работы и договоры'>" if linked else "")
             + table + _row(headings, True)
             + "".join("<tr>" + "".join(f"<td>{c}</td>" for c in row) + "</tr>" for row in rows)
-            + "</table>" + ("</div><p class='note'>Доля и прогноз относятся ко всему договору. "
-                            "Материалы включены в денежное выполнение.</p>" if linked else ""))
+            + "</table>" + ("</div><p class='note'>Денежное выполнение и прогноз показаны "
+                            "в пределах указанного источника.</p>" if linked else ""))
 
 
 def _photos_html(block: dict[str, Any], kind: str) -> str:
@@ -4803,10 +4919,18 @@ def _legal_lines(block: dict[str, Any]) -> list[str]:
 
 
 CONTRACT_RISK_LIMIT = 30
+_CONTRACT_PERFORMANCE_FIELDS = (
+    'id', 'source_kind', 'contractor', 'customer', 'contract', 'contract_date', 'contract_identity_kind',
+    'source_date', 'source', 'sources', 'subject', 'deadline', 'deadline_source', 'deadline_passed',
+    'manual_deadline_reference', 'amount', 'amount_basis', 'amount_source_label', 'amount_source', 'amount_documents',
+    'completed', 'completed_basis',
+    'completion_ratio', 'monetary_comparable', 'completed_works', 'completed_materials', 'works_materials_split',
+    'works_materials_note', 'progress', 'statement_progress', 'summary_progress', 'reported_performance_sources',
+    'observation_forecast', 'risk', 'advance', 'warnings', 'performance_basis', 'date_evidence', 'rss_match')
 
 
 def contract_risks(project: str, end: Any) -> dict[str, Any]:
-    """Contracts at risk of missing their deadline, from the Monitor register.
+    """Complete performance records plus the existing bounded alert selection.
 
     The register is the one owner of the forecast and payments; the summary
     only selects and orders its rows."""
@@ -4815,15 +4939,27 @@ def contract_risks(project: str, end: Any) -> dict[str, Any]:
     view = contracts.build(project, _date(end).isoformat())
     rows = view.get("rows") or []
     if not rows:
-        return _missing(view.get("empty_reason") or "Договоров из накопительных на дату сводки нет.")
+        return dict(_missing(view.get("empty_reason") or "Договоров из накопительных на дату сводки нет."),
+                    performance_rows=[], performance_summary={'records': 0, 'primary_known': 0,
+                    'source_only_known': 0, 'unknown': 0, 'source_percentages': 0})
     at_risk = sorted((r for r in rows if (r.get("risk") or {}).get("status") in contract_risk.WARNING_STATUSES),
                      key=contract_risk.severity)
-    keep = ("contractor", "contract", "contract_date", "deadline", "amount", "completed", "completion_ratio",
-            "completed_works", "completed_materials", "works_materials_split", "risk", "advance")
+    def project_record(row):
+        return copy.deepcopy({key: row.get(key) for key in _CONTRACT_PERFORMANCE_FIELDS})
+
+    performance = [project_record(row) for row in rows]
+    known = sum(_work_contract_metric(row).get('ratio') is not None for row in performance)
+    source_only = sum(_work_contract_metric(row).get('ratio') is None and bool(_work_statement_sources(row))
+                      for row in performance)
     return {"state": "ok", "total": len(rows), "summary": view.get("risk_summary") or {},
-            "rows": [{k: r.get(k) for k in keep} for r in at_risk[:CONTRACT_RISK_LIMIT]],
+            "rows": [project_record(row) for row in at_risk[:CONTRACT_RISK_LIMIT]],
             "omitted": max(0, len(at_risk) - CONTRACT_RISK_LIMIT),
-            "basis": view.get("risk_basis") or ""}
+            "basis": view.get("risk_basis") or "",
+            'performance_rows': performance,
+            'performance_summary': {'records': len(performance), 'primary_known': known,
+                'source_only_known': source_only, 'unknown': len(performance)-known-source_only,
+                'source_percentages': sum(len(_work_statement_sources(row)) for row in performance)},
+            'performance_source_date': view.get('source_date')}
 
 
 def _contract_risk_words(block: dict[str, Any]) -> str:
@@ -4871,7 +5007,135 @@ def _contract_risk_lines(block: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _contract_brief(value: Any, limit: int = 130) -> str:
+    text = re.sub(r'\s+', ' ', str(value or '')).strip()
+    # The cause can follow a positive first clause ("totals are known; the
+    # constituent quantities are not"). Keep both clauses when shortening.
+    text = text.rstrip('. ')
+    return text if len(text) <= limit else text[:limit-1].rsplit(' ', 1)[0] + '…'
+
+
+def _contract_performance_change(row: dict[str, Any]) -> str:
+    progress = row.get('progress') or {}
+    delta = progress.get('delta_percent_points')
+    if progress.get('comparison_state') == 'comparable' and delta is not None:
+        label = 'Корректировка' if progress.get('change_kind') == 'correction' else 'Изменение'
+        value = f'{delta:+.1f}'.replace('.', ',') if delta else '0,0'
+        text = f'{label}: {value} п.п.'
+        if progress.get('period_days') is not None:
+            text += f" за {progress['period_days']} дн."
+    elif len(progress.get('series') or []) == 1:
+        text = 'Один снимок; изменения пока не определены'
+    else:
+        text = _contract_brief(progress.get('comparison_reason')) or 'Нет сопоставимых снимков'
+    date = progress.get('observation_date')
+    return html.escape(text) + (f"<div class='contract-caption'>Снимок {_day(date)}</div>" if date else '')
+
+
+def _contract_performance_term(row: dict[str, Any]) -> str:
+    risk, observation = row.get('risk') or {}, row.get('observation_forecast') or {}
+    term = 'Срок ' + _day(row['deadline']) if row.get('deadline') else 'Срок не указан'
+    if risk.get('forecast_finish') or risk.get('status') == 'done' or (
+            observation.get('scope') == 'uploaded_statements' and observation.get('eligible') is True):
+        signal = _work_contract_forecast(row)
+    elif risk.get('status') == 'overdue':
+        delay = risk.get('delay_days')
+        signal = f'Срок прошёл на {int(delay)} дн.' if delay and delay > 0 else 'Срок договора прошёл'
+    elif risk.get('status') == 'stalled':
+        signal = 'Свежий темп не подтверждён'
+    elif risk.get('status') == 'late':
+        signal = risk.get('label') or 'Есть риск сдвига срока'
+    else:
+        signal = 'Прогноз не рассчитан'
+    return html.escape(term) + "<div class='contract-caption'>" + html.escape(signal) + '</div>'
+
+
+def _contract_performance_details(row: dict[str, Any]) -> str:
+    esc = html.escape
+    progress, risk, advance = row.get('progress') or {}, row.get('risk') or {}, row.get('advance') or {}
+    messages = list(dict.fromkeys(str(value) for value in [
+        row.get('performance_basis'), progress.get('reason'),
+        (row.get('statement_progress') or {}).get('why'), (row.get('summary_progress') or {}).get('why'),
+        progress.get('comparison_reason'), risk.get('reason'),
+        (row.get('observation_forecast') or {}).get('reason'), advance.get('reason'),
+        *(row.get('warnings') or [])] if value))
+    sources = row.get('sources') or ([row['source']] if row.get('source') else [])
+    body = ''.join('<div>' + esc(' · '.join(str(source.get(key)) for key in ('filename', 'sheet', 'row')
+                                         if source.get(key))) + '</div>' for source in sources)
+    if row.get('amount_documents'):
+        body += '<div>Полная цена: '+esc(str(row.get('amount_source_label') or 'Договор или ДС'))+'</div>'
+        source = row.get('amount_source') or {}
+        if source.get('quote'):
+            body += '<blockquote>'+esc(str(source['quote']))+'</blockquote>'
+    for index, source in _work_statement_sources(row):
+        year = f" за {source['period_year']} год" if source.get('period_year') else ''
+        body += f"<div class='contract-source-percentage'>Ведомость {index}" + esc(year) + ': ' + _pct(source['completion_ratio']) + ' стоимости ведомости.</div>'
+    if advance.get('paid') is not None:
+        body += '<div>Оплачено по реестру: '+_rub(advance['paid'])+'.</div>'
+    if advance.get('unworked') is not None:
+        body += '<div>Оплачено сверх выполнения: '+_rub(advance['unworked'])+'.</div>'
+    if messages:
+        body += '<ul>' + ''.join('<li>'+esc(value)+'</li>' for value in messages) + '</ul>'
+    series = progress.get('series') or []
+    if series:
+        body += '<table><thead><tr><th>Снимок</th><th>Показатель источника</th></tr></thead><tbody>'
+        for point in series:
+            value = _pct(point.get('ratio')) + ' ' + str(point.get('basis_label') or '')
+            body += '<tr><td>'+_day(point.get('observation_date'))+'</td><td>'+esc(value)
+            if point.get('ratio') is None and point.get('reason'):
+                body += '<div>'+esc(point['reason'])+'</div>'
+            body += '</td></tr>'
+        body += '</tbody></table>'
+    return ("<details class='contract-performance-details'><summary>Источники и замечания</summary>"
+            + body + '</details>') if body else ''
+
+
+def _contract_performance_html(block: dict[str, Any]) -> str:
+    esc = html.escape
+    columns = ('Подрядчик и договор', 'Выполнение, %', 'Изменение', 'Срок и прогноз')
+    out = ['<h3>Договоры: выполнение и сроки</h3>']
+    if block.get('state') != 'ok':
+        return ''.join(out) + "<p class='missing'>" + esc(block.get('reason') or 'Данные договоров не собраны.') + '</p>'
+    records = block.get('performance_rows') or []
+    summary = block.get('performance_summary') or {}
+    words = f"Записей источников: {len(records)}. Общий процент известен: {summary.get('primary_known', 0)}."
+    if summary.get('source_only_known'):
+        words += f" Ещё у {summary['source_only_known']} показаны проценты отдельных ведомостей."
+    if summary.get('unknown'):
+        words += f" Не подтверждён показатель: {summary['unknown']}."
+    out.append("<p class='contract-performance-summary'>"+esc(words)+'</p>')
+    out.append("<div class='contract-performance-scroll' tabindex='0' aria-label='Договоры: выполнение и сроки'>"
+               "<table class='contract-performance'><colgroup><col style='width:27%'><col style='width:25%'>"
+               "<col style='width:24%'><col style='width:24%'></colgroup><thead>"
+               + _row(columns, True) + '</thead><tbody>')
+    for row in records:
+        name = '<b>'+esc(row.get('contractor') or 'Подрядчик не указан')+'</b><div>'+esc(row.get('contract') or 'Номер не указан')
+        if row.get('contract_date'):
+            name += ' от '+_day(row['contract_date'])
+        name += '</div><div class="contract-caption">'+('КС-2 по сводной' if _work_closing_summary(row) else 'Накопительные КС-6а')+'</div>'
+        name += _contract_performance_details(row)
+        metric = esc(_work_contract_progress(row, include_change=False, include_reason=False)).replace('; ', '<br>')
+        if _work_contract_metric(row).get('ratio') is None:
+            reason = ((row.get('progress') or {}).get('reason') or (row.get('summary_progress') or {}).get('why')
+                      or (row.get('statement_progress') or {}).get('why'))
+            if reason:
+                metric += "<div class='contract-caption'>"+esc(_contract_brief(reason))+'</div>'
+        out.append("<tr data-contract-id='"+esc(str(row.get('id') or ''), quote=True)+"' data-source-kind='"
+                   +esc(str(row.get('source_kind') or ''), quote=True)+"'>"
+                   +''.join('<td data-label="'+esc(label, quote=True)+'">'+cell+'</td>'
+                            for label, cell in zip(columns, (
+                                name, metric, _contract_performance_change(row), _contract_performance_term(row))))+'</tr>')
+    out.append('</tbody></table></div>')
+    return ''.join(out)
+
+
 def _contract_risks_html(block: dict[str, Any]) -> str:
+    if 'performance_rows' in block:
+        return _contract_performance_html(block)
+    return _contract_alerts_html(block)
+
+
+def _contract_alerts_html(block: dict[str, Any]) -> str:
     esc = html.escape
     out = ["<h3>Договоры под угрозой срыва срока</h3>"]
     if block.get("state") != "ok":
@@ -4889,8 +5153,9 @@ def _contract_risks_html(block: dict[str, Any]) -> str:
             esc(risk.get("label") or "—"),
             _day(row.get("deadline")),
             esc(_work_contract_forecast(row)),
-            f"{_rub(row.get('completed'))} из {_rub(row.get('amount'))}<br>"
-            + esc(_work_contract_progress(row)),
+            (f"{_rub(row['completed'])}"
+             + (f" из {_rub(row['amount'])}" if row.get("amount") is not None else "") + "<br>"
+             if row.get("completed") is not None else "") + esc(_work_contract_progress(row)),
             _rub(advance.get("paid"))
             + (f"<br><span style='color:#5b6b7d'>{esc(advance.get('reason') or 'Итог оплаты не подтверждён.')}</span>"
                if advance.get("paid") is None else ""),

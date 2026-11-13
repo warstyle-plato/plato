@@ -14,6 +14,9 @@ from typing import Any
 
 import developaid_monitor_ledgers as ledgers
 
+_READ_CACHE_ENTRIES = 8
+_READ_CACHE_BYTES = 16 * 1024 * 1024
+
 
 def _text(value: Any) -> str:
     return str(value if value is not None else '').strip()
@@ -41,6 +44,29 @@ def _raw(value: Any) -> Any:
 
 
 def read(data: bytes) -> dict | None:
+    """Share bounded source parsing within one coherent read, never decisions.
+
+    Exact bytes own the cache key. Encoded results give each reader its own
+    mutable copy; the approved-read context is discarded at the request end.
+    """
+    import developaid_monitor as monitor
+
+    context = monitor._APPROVED_SCHEDULE_READ.get()
+    if context is None:
+        return _read_uncached(data)
+    cache = context.setdefault(('corpus-source-parses',), {})
+    key = hashlib.sha256(data).digest()
+    if key in cache:
+        return json.loads(cache[key])
+    result = _read_uncached(data)
+    encoded = json.dumps(result, ensure_ascii=False, allow_nan=False).encode()
+    if (len(cache) < _READ_CACHE_ENTRIES
+            and sum(map(len, cache.values())) + len(encoded) <= _READ_CACHE_BYTES):
+        cache[key] = encoded
+    return result
+
+
+def _read_uncached(data: bytes) -> dict | None:
     """Recognize only the selected ГПР sheet and bounded two-row corpus schema."""
     sheets = ledgers._read_workbook('gpr.xlsx', data)
     rows = next((rows for name, rows in sheets if name.strip().casefold() == 'гпр'), None)
@@ -78,15 +104,22 @@ def read(data: bytes) -> dict | None:
                            'code': 'invalid_fact_day',
                            'message': 'Дата показания в шапке некорректна; дата среза не подставлена.'})
     group = ''
+    headings = []
     for ri, row in enumerate(rows[header+1:], header+2):
         def cell(col):
             return row[col] if col < len(row) else None
         name = _text(cell(name_col))
-        if not name:
-            if _text(cell(0)) and not _text(cell(0)).isdigit():
-                group = _text(cell(0))
+        number_raw = _text(cell(0))
+        if number_raw and not re.fullmatch(r'[1-9]\d*(?:\.0)?', number_raw):
+            # A group is identified by its own non-numeric label in column A.
+            # Residual text in the name column must not keep the previous group.
+            group = number_raw
+            headings.append({'name': group, 'source_row': ri, 'cell': ledgers._cell(1, ri)})
+            excluded_rows.append(ri)
             continue
-        if not re.fullmatch(r'[1-9]\d*(?:\.0)?', _text(cell(0))):
+        if not name:
+            continue
+        if not re.fullmatch(r'[1-9]\d*(?:\.0)?', number_raw):
             excluded_rows.append(ri)
             continue
         scopes = []
@@ -113,7 +146,7 @@ def read(data: bytes) -> dict | None:
             for key in ('start', 'finish'):
                 if _text(values[key]) and not parsed[key]:
                     issues.append({'cell': refs[key], 'code': 'invalid_date',
-                                   'message': 'Некорректная дата сохранена как в источнике; срок не подставлен.'})
+                                   'message': 'Дата «'+_text(values[key])[:64]+'» не распознана; срок не подставлен.'})
             if parsed['start'] and parsed['finish'] and parsed['finish'] < parsed['start']:
                 issues.append({'cell': refs['finish'], 'code': 'reversed_dates',
                                'message': 'Окончание раньше начала.'})
@@ -123,7 +156,8 @@ def read(data: bytes) -> dict | None:
                            'applicability': 'unconfirmed', 'mapping_status': 'unconfirmed',
                            'source_cells': refs, 'raw': {k: _raw(v) for k, v in values.items()}})
         packages.append({'source_row': ri, 'source_id': 'ГПР!'+ledgers._cell(name_col+1, ri),
-                         'number_raw': _text(cell(0)), 'name': name, 'group': group,
+                         'number_raw': number_raw, 'name': name, 'group': group,
+                         'group_source': dict(headings[-1]) if headings else None,
                          'stage': _text(cell(2)), 'status': _text(cell(3)), 'scopes': scopes})
         if len(packages) > 1000:
             raise ValueError('В корпусном ГПР слишком много пакетов: допустимо не более 1000.')
@@ -139,6 +173,105 @@ def read(data: bytes) -> dict | None:
     if len(json.dumps(result, ensure_ascii=False, allow_nan=False).encode()) > 8*1024*1024:
         raise ValueError('Результат разбора корпусного ГПР слишком большой.')
     return result
+
+
+
+def as_schedule(source: dict) -> dict:
+    """Adapt explicit package/object pairs only on the approved-baseline path.
+
+    No RSS code, dependency, duration or WBS is fabricated. A zero without any
+    plan date is not proof that a package applies to that object. Known readings
+    with incomplete/invalid dates stay in the source and the physical catalog;
+    calendar consumers independently require both dates.
+    """
+    works = []
+    for package in source.get('packages') or []:
+        for scope in package.get('scopes') or []:
+            raw = scope.get('raw') or {}
+            has_date = any(_text(raw.get(key)) for key in ('start', 'finish'))
+            if not has_date and not (isinstance(scope.get('progress'), (int, float))
+                                     and scope['progress'] > 0):
+                continue
+            refs = scope['source_cells']
+            start = dt.date.fromisoformat(scope['start']) if scope.get('start') else None
+            finish = dt.date.fromisoformat(scope['finish']) if scope.get('finish') else None
+            problem = ''
+            if start and finish and finish < start:
+                problem = ('окончание '+finish.strftime('%d.%m.%Y')+' раньше начала '+start.strftime('%d.%m.%Y')+
+                           ' (лист «'+source['sheet']+'», ячейки '+refs['start']+' и '+refs['finish']+')')
+                start = finish = None
+            elif not (start and finish):
+                # The calendar needs both dates; the work names its own cell.
+                problem = '; '.join(
+                    label+(' «'+_text(raw.get(key))[:64]+'» не распознано' if _text(raw.get(key)) else ' не указано')+
+                    ' (лист «'+source['sheet']+'», ячейка '+refs[key]+')'
+                    for key, label, value in (('start', 'начало', start), ('finish', 'окончание', finish))
+                    if value is None)
+            group = package.get('group') or ''
+            construction = bool(re.match(
+                r'конструктив|фасад|отделка|внутренние инженерные|вис[. ]|наружные сети', group.casefold()))
+            tid = 'corpus:' + source['sheet'] + '!' + refs['progress']
+            works.append({'id': tid, 'wbs': '', 'name': package['name'],
+                'object': scope['corpus'], 'section': group, 'kind': 'Работа', 'is_work': True,
+                'progress': scope.get('progress'), 'progress_date': scope.get('fact_day'),
+                'start': start, 'finish': finish,
+                'status': package.get('status') or '', 'overdue': False,
+                'duration': (finish-start).days+1 if start and finish else None,
+                'predecessors': '', 'estimate_code': '', 'estimate_name': '',
+                'basis': source['sheet']+'!'+refs['start']+'; '+source['sheet']+'!'+refs['finish'],
+                'source_format': source['format'], 'source_sha256': source['sha256'],
+                'source_id': package['source_id'], 'source_cells': dict(refs),
+                'source_group': package.get('group_source'), 'construction_work': construction,
+                'date_problem': problem})
+    if not works:
+        raise ValueError('В корпусном ГПР нет явно заполненных пар работы и объекта.')
+    return {'rows': works, 'works': works, 'overdue': [], 'without_code': works,
+            'source_format': source['format'], 'source_sha256': source['sha256'],
+            'corpus_source': source}
+
+
+def for_view(project: str, cut: str = '', *, baseline_sha256: str = '') -> dict | None:
+    """Retain visible corpus evidence and identify the explicitly used baseline."""
+    import developaid_monitor as monitor
+    selected = monitor._working_baseline_state(project, cut)
+    def approved_source():
+        path = selected['path']
+        if path is not None:
+            try:
+                taken_at = dt.date.fromisoformat(selected['taken_at']).isoformat()
+            except (OSError, ValueError, KeyError, TypeError):
+                taken_at = ''
+            if taken_at and (not cut or taken_at <= cut or selected.get('baseline_scope') == 'remaining_work'):
+                parsed = read(path.read_bytes())
+                if parsed is not None:
+                    if parsed['sha256'] != selected['source_sha256']:
+                        raise ValueError('Отпечаток действующего ГПР не совпадает с утверждённым.')
+                    return dict(parsed, taken_at=taken_at)
+        return None
+    # An archived source upload must not displace the explicitly selected plan.
+    source = (approved_source() if selected.get('baseline_scope') == 'remaining_work'
+              or baseline_sha256 and selected['source_sha256'] == baseline_sha256 else None)
+    if selected.get('baseline_scope') == 'remaining_work':
+        # Operational history shows today's plan and historical facts, never
+        # an alternative archived plan when that plan is not a corpus file.
+        return (dict(source, baseline_approved=True, working_source_state='approved',
+                     reason='Этот файл используется как действующий утверждённый план. '
+                            'Завершённые работы показаны отдельно по подтверждённым фактам.')
+                if source is not None else None)
+    if source is None:
+        source = latest(project, cut)
+    if source is None:
+        source = approved_source()
+    if source is None:
+        return None
+    same = bool(baseline_sha256 and source.get('sha256') == baseline_sha256)
+    reason = ('Этот файл используется как утверждённый план. Показания ГПР и объёмы КС сохраняют свои основания; '
+              'их связь проверяется отдельно.' if same else
+              'Корпусный ГПР загружен, но рабочий план использует другую версию. '
+              'Чтобы считать по этому файлу, примените его как утверждённый план; показания ниже уже доступны.'
+              if baseline_sha256 else source.get('reason') or '')
+    return dict(source, baseline_approved=same, reason=reason,
+                working_source_state='approved' if same else 'different_baseline' if baseline_sha256 else 'source_only')
 
 
 def store(project: str, data: bytes, taken_at: str, parsed: dict) -> dict:
@@ -215,30 +348,22 @@ def render_overview(source: dict | None, cut: str = '') -> str:
     packages = source.get('packages') or []
     if not packages:
         return ''
-    reference = day(cut)
-    def rank(package):
-        scopes = package.get('scopes') or []
-        active = any(isinstance(scope.get('progress'), (int, float)) and 0 < scope['progress'] < 1
-                     for scope in scopes)
-        dates = [value for scope in scopes if (value := day(scope.get('finish')))]
-        distance = min((abs((value-reference).days) for value in dates), default=10**9) if reference else 0
-        return (not active, distance, str(package.get('source_id') or ''))
-    selected = min(packages, key=rank)
-    rows = []
-    for scope in selected.get('scopes') or []:
-        rows.append({'id': str(selected.get('source_id') or '')+':'+str(scope.get('corpus') or ''),
-                     'name': scope.get('corpus') or 'Объект не указан',
-                     'subtitle': ('Показание на '+date_text(scope.get('fact_day'))
-                                  if day(scope.get('fact_day')) else 'Дата показания не распознана'),
-                     'plan_start': scope.get('start'), 'plan_finish': scope.get('finish'),
-                     'source_progress': scope.get('progress')})
     esc = lambda value: html.escape(str(value if value is not None else ''), quote=True)
     out = [styles(), '<section class="schedule-overview corpus-gpr-overview"><h3>Исходные показания ГПР по корпусам</h3>',
-           '<p class="schedule-note">Эти показания не подтверждают утверждённый базовый график, привязку КС к работам или прогноз РНВ.</p>',
-           '<h4>'+esc(selected.get('name') or 'Пакет без названия')+'</h4>',
-           '<p class="schedule-note">Для просмотра выбран пакет с промежуточными показаниями и ближайшими исходными сроками, если они есть. Это не автоматическое определение текущего этапа.</p>',
-           lanes(rows), legend(rows),
-           '<details class="schedule-source-packages"><summary>Все пакеты исходного файла ('+str(len(packages))+')</summary>']
+           '<p class="schedule-note">'+esc(source.get('reason') or 'Связи ГПР с КС проверяются отдельно.')+'</p>',
+           '<p class="schedule-note">Пакетов в исходном файле: '+str(len(packages))+'. '
+           'Выберите работу, чтобы открыть показания по корпусам. Эти показания не заменяют полный план и факт проекта.</p>']
+    for package in packages:
+        rows = [{'id': str(package.get('source_id') or '')+':'+str(scope.get('corpus') or ''),
+                 'name': scope.get('corpus') or 'Объект не указан',
+                 'subtitle': ('Показание на '+date_text(scope.get('fact_day'))
+                              if day(scope.get('fact_day')) else 'Дата показания не распознана'),
+                 'plan_start': scope.get('start'), 'plan_finish': scope.get('finish'),
+                 'source_progress': scope.get('progress')}
+                for scope in package.get('scopes') or []]
+        out.append('<details class="corpus-gpr-package" data-source-id="'+esc(package.get('source_id'))+'">'
+                   '<summary>'+esc(package.get('name') or 'Пакет без названия')+'</summary>'+lanes(rows)+legend(rows)+'</details>')
+    out.append('<details class="schedule-source-packages"><summary>Все пакеты исходного файла ('+str(len(packages))+')</summary>')
     out.append(render(source))
     out.append('</details></section>')
     return ''.join(out)

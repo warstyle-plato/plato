@@ -311,6 +311,11 @@ def _v4_lines(core: Any, book: Any, consolidated: dict) -> list[Line]:
     for label, keys in V4_CAPEX:
         lines.append(Line(f"CAPEX: {label}", totals.get(label, 0.0),
                           sum(float(capex.get(k) or 0.0) for k in keys) / MLN))
+    import v4_land_rent
+    rent_values = [ev.cell("CAPEX", f"B{row}") for row in v4_land_rent.CAPEX_ROWS]
+    lines.append(Line("CAPEX: Аренда земельного участка — известная часть",
+                      sum(float(v) for v in rent_values if _num(v)),
+                      float(capex.get("land_rent") or 0.0) / MLN))
     return lines
 
 

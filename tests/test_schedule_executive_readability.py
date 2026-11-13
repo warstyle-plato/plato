@@ -11,6 +11,7 @@ import pytest
 import developaid_management_report as report
 import developaid_report_gantt as gantt
 import developaid_schedule_timeline as timeline
+from browser import expand_gantt
 from test_schedule_dependency_timeline import network, task, day
 from test_schedule_physical_print_summary import gpr_sources
 
@@ -127,7 +128,13 @@ def test_source_only_corpus_fallback_displays_raw_progress_without_approving_it(
     assert 'Исходные показания ГПР по корпусам' in html
     assert 'Показание исходного ГПР: 50.0%' in html
     assert '01.02.2027' in html and 'Все пакеты исходного файла (2)' in html
-    assert 'не подтверждают утверждённый базовый график' in html
+    # The warning follows the actual source qualification, rather than an old
+    # hard-coded sentence. Raw readings never become approval or a forecast.
+    import html as html_text
+    assert html_text.escape(source['reason'],quote=True) in html
+    assert 'проценты не меняют утверждённый график' in source['reason']
+    assert 'не дают темп или прогноз РНВ' in source['reason']
+    assert 'class="schedule-bar schedule-forecast"' not in html
     assert source == before and not source['baseline_approved'] and not source['quantity_mapping_confirmed']
 
 
@@ -190,6 +197,7 @@ def test_real_monitor_rejects_pm_dates_and_keeps_current_gpr_dates_and_works(gpr
              'dependency_timeline': block, 'dependency_timeline_html': timeline.render(block)}}
     with browser_page(390) as (page, responses, errors):
         page.evaluate('(v)=>renderGantt(v)', view)
+        expand_gantt(page)
         # A supplied PM response cannot become the default GPR forecast.
         assert page.locator('#dependencyTimelineBody .schedule-rnv-cards').count() == 0
         expect(page.locator('#forecastCard')).to_contain_text('Недостаточно данных')

@@ -60,6 +60,8 @@ class MonitorViewRequest(BaseModel):
     programme_start: str = ""
     session: str = ""
     key: str = ""
+    background: bool = False
+    ticket: str = ""
 
 
 class MonitorScheduleRequest(BaseModel):
@@ -69,6 +71,27 @@ class MonitorScheduleRequest(BaseModel):
     pm_base64: str = ""
     session: str = ""
     key: str = ""
+
+
+from pydantic import Field as _ScheduleVersionField
+
+
+class MonitorScheduleVersionPreviewRequest(BaseModel):
+    project: str = _ScheduleVersionField(min_length=1, max_length=200)
+    effective_from: str = _ScheduleVersionField(pattern=r'^\d{4}-\d{2}-\d{2}$')
+    gpr_base64: str = _ScheduleVersionField(min_length=1, max_length=28 * 1024 * 1024)
+    session: str = _ScheduleVersionField(default='', max_length=4096)
+    key: str = _ScheduleVersionField(default='', max_length=4096)
+    owner_rnv_date: str | None = _ScheduleVersionField(default=None, pattern=r'^\d{4}-\d{2}-\d{2}$')
+    owner_rnv_note: str | None = _ScheduleVersionField(default=None, max_length=1000)
+    baseline_scope: str | None = _ScheduleVersionField(default=None, pattern=r'^(full_schedule|remaining_work)$')
+    audit_cut: str | None = _ScheduleVersionField(default=None, pattern=r'^\d{4}-\d{2}-\d{2}$')
+
+
+class MonitorScheduleVersionApproveRequest(MonitorScheduleVersionPreviewRequest):
+    expected_previous_sha256: str = _ScheduleVersionField(pattern=r'^[0-9a-f]{64}$')
+    expected_source_sha256: str = _ScheduleVersionField(pattern=r'^[0-9a-f]{64}$')
+    expected_owner_rnv_revision: int | None = _ScheduleVersionField(default=None, strict=True, ge=0)
 
 
 class MonitorGanttRequest(BaseModel):
@@ -174,9 +197,56 @@ def monitor_snapshots(project: str, session: str = "", key: str = "") -> dict[st
     return developaid_monitor.snapshots(project)
 
 
+@app.post("/monitor/audit/sources", include_in_schema=False)
+async def monitor_audit_sources(request: Request) -> Response:
+    """Bounded original financial sources; strict owner key, no parsing/writes."""
+    private = {"Cache-Control": "private, no-store"}
+    try:
+        raw = bytearray()
+        async for chunk in request.stream():
+            if len(raw) + len(chunk) > 16384:
+                raw = bytearray()
+                break
+            raw.extend(chunk)
+        try:
+            initial = json.loads(raw)
+        except (ValueError, UnicodeError, RecursionError):
+            initial = {}
+        initial = initial if isinstance(initial, dict) else {}
+        key = initial.get("key", "")
+        session = initial.get("session", "")
+        key = key if isinstance(key, str) and len(key) <= 4096 else ""
+        session = session if isinstance(session, str) and len(session) <= 4096 else ""
+        # This exact existing gate has no team/demo/Telegram fallback.
+        _require_admin_key(key, "Монитор проекта", session)
+        import developaid_cached_source_audit as audit
+        from fastapi.concurrency import run_in_threadpool
+        try:
+            selected = audit.parse_request(bytes(raw), "finance")
+            result = await run_in_threadpool(
+                audit.capture_finance, Path(developaid_monitor._SNAPSHOT_DIR).absolute(),
+                runtime={"commit": COMMIT, "version": VERSION},
+                project=selected["project"], cut=selected["cut"],
+                slug_function=developaid_monitor._slug)
+            return JSONResponse(result, headers=private)
+        except audit.AuditError as exc:
+            limit = exc.code in {"file_too_large", "read_budget", "source_size_limit", "capture_too_large"}
+            status = 413 if limit else 400 if exc.code.startswith(("invalid_", "unsupported_")) else 409
+            return JSONResponse({"detail": "Закрытая выгрузка источников не сформирована.",
+                                 "code": exc.code}, status_code=status, headers=private)
+    except HTTPException as exc:
+        exc.headers = {**(exc.headers or {}), **private}
+        raise
+    except Exception:
+        return JSONResponse({"detail": "Закрытая выгрузка источников сейчас недоступна.",
+                             "code": "capture_unavailable"}, status_code=503, headers=private)
+
+
 @app.post("/monitor/view", include_in_schema=False)
 def monitor_view(req: MonitorViewRequest) -> dict[str, Any]:
     """Срез и тренд по нему. Считает сервер, страница только рисует."""
+    if req.background:
+        return _monitor_view_job(req, start=True)
     _require_team_access(req.session, req.key, "Монитор проекта", write=False)
     programme = _monitor_programme(req)
     try:
@@ -188,6 +258,150 @@ def monitor_view(req: MonitorViewRequest) -> dict[str, Any]:
         }
     except FileNotFoundError as exc:
         raise HTTPException(404, str(exc))
+
+
+async def _monitor_admin_expenses_source_job(request: Request, *, start: bool) -> Response:
+    """Explicit admin-only source proof, independent of the financial widget."""
+    import secrets as _secrets
+    import datetime as _dt
+    import developaid_management_report_jobs as jobs
+
+    private = {"Cache-Control": "private, no-store"}
+    try:
+        raw = bytearray()
+        async for chunk in request.stream():
+            if len(raw)+len(chunk) > 12288:
+                raise HTTPException(413, "Запрос проверки источника слишком большой.")
+            raw.extend(chunk)
+        try:
+            initial = json.loads(raw)
+        except (ValueError, UnicodeError, RecursionError):
+            initial = {}
+        initial = initial if isinstance(initial, dict) else {}
+        key, session = initial.get("key", ""), initial.get("session", "")
+        key = key if isinstance(key, str) and len(key) <= 4096 else ""
+        session = session if isinstance(session, str) and len(session) <= 4096 else ""
+        _require_admin_key(key, "Проверка источника АХР", session)
+        # Source readers and job storage are entered only after the strict key
+        # gate. Extra fields cannot turn this into a file/range export API.
+        import developaid_cached_source_audit as audit
+        import developaid_admin_expenses_source as source
+        try:
+            params = audit._json(bytes(raw))
+            allowed = {"key", "session", "ticket"} | ({"project", "cut"} if start else set())
+            if not isinstance(params, dict) or set(params)-allowed:
+                raise ValueError()
+            if not isinstance(params.get("session", ""), str) or len(params.get("session", "")) > 4096:
+                raise ValueError()
+            ticket = params.get("ticket", "")
+            if not isinstance(ticket, str) or ticket and not jobs.TICKET.fullmatch(ticket):
+                raise ValueError()
+            if start:
+                project, cut = params.get("project"), params.get("cut")
+                if not isinstance(project, str) or not project.strip() or len(project) > 200:
+                    raise ValueError()
+                if not isinstance(cut, str) or _dt.date.fromisoformat(cut).isoformat() != cut:
+                    raise ValueError()
+            elif not ticket:
+                raise ValueError()
+        except (ValueError, TypeError, audit.AuditError):
+            raise HTTPException(400, "Проверьте проект, дату и номер проверки источника.") from None
+        profile = source.PURPOSE
+        owner = jobs.owner_binding(_env_str("DEVELOPAID_ADMIN_KEY", "").strip(), session, profile)
+        store = jobs.Store(developaid_monitor._SNAPSHOT_DIR / ".admin_ahr_source_jobs")
+        if start:
+            def collect():
+                try:
+                    return {"ok": True, "source_projection": source.capture(project.strip(), cut,
+                        runtime={"version": VERSION, "commit": COMMIT})}
+                except source.SourceProblem as exc:
+                    return {"ok": False, "code": exc.code,
+                            "detail": "Ограниченная проверка источника АХР не сформирована."}
+            result = store.start(owner, profile, {"project": project.strip(), "cut": cut,
+                "purpose": profile, "click": ticket or _secrets.token_hex(16)}, collect, ticket)
+        else:
+            result = store.poll(ticket, owner, profile)
+        if result["pending"]:
+            result["detail"] = "Читаю исходные ячейки АХР. Финансовый расчёт не запускается."
+        return JSONResponse(result, status_code=202 if result["pending"] else 200, headers=private)
+    except HTTPException as exc:
+        exc.headers = {**(exc.headers or {}), **private}
+        raise
+    except jobs.JobProblem as exc:
+        raise HTTPException(exc.status, "Проверка источника не найдена или временно недоступна.",
+                            headers=private) from None
+    except (OSError, ValueError):
+        raise HTTPException(503, "Проверка источника временно недоступна.", headers=private) from None
+
+
+@app.post("/monitor/audit/admin-expenses", include_in_schema=False)
+async def monitor_admin_expenses_source(request: Request) -> Response:
+    return await _monitor_admin_expenses_source_job(request, start=True)
+
+
+@app.post("/monitor/audit/admin-expenses/result", include_in_schema=False)
+async def monitor_admin_expenses_source_result(request: Request) -> Response:
+    return await _monitor_admin_expenses_source_job(request, start=False)
+
+
+class MonitorViewResultRequest(BaseModel):
+    ticket: str
+    session: str = ""
+    key: str = ""
+
+
+def _monitor_view_job(req, *, start: bool) -> Response:
+    """Short authenticated requests; the page needs one current view, not trend."""
+    import datetime as _dt
+    import secrets as _secrets
+    from fastapi.encoders import jsonable_encoder
+    import developaid_management_report_jobs as jobs
+
+    private = {"Cache-Control": "private, no-store"}
+    try:
+        _require_team_access(req.session, req.key, "Монитор проекта", write=False)
+        profile = "demo" if demo_session_chat(req.session) else "admin"
+        owner = jobs.owner_binding(_env_str("DEVELOPAID_ADMIN_KEY", "").strip(), req.session, profile)
+        store = jobs.Store(developaid_monitor._SNAPSHOT_DIR / ".view_jobs")
+        if start:
+            project = req.project.strip()
+            try:
+                cut = _dt.date.fromisoformat(req.cut).isoformat()
+                if cut != req.cut or not project or len(project) > 200:
+                    raise ValueError()
+            except ValueError:
+                raise HTTPException(400, "Выберите проект и существующую дату среза.") from None
+            # A fresh click may follow a source/fact change while an older
+            # calculation is running. Only retries of this ticket reuse it.
+            payload = {"project": project, "cut": cut,
+                       "click": req.ticket or _secrets.token_hex(16)}
+            def build():
+                return {"snapshot": jsonable_encoder(developaid_monitor.build(project, cut=cut))}
+            result = store.start(owner, profile, payload, build, req.ticket)
+        else:
+            result = store.poll(req.ticket, owner, profile)
+        if result["pending"]:
+            result["detail"] = "Готовлю план и факт проекта. Можно оставить страницу открытой."
+        return JSONResponse(status_code=202 if result["pending"] else 200,
+                            content=result, headers=private)
+    except HTTPException as exc:
+        exc.headers = {**(exc.headers or {}), **private}
+        raise
+    except jobs.JobProblem as exc:
+        messages = {400: "Неверный номер расчёта. Обновите срез.",
+                    404: "Расчёт не найден или срок хранения истёк. Обновите срез.",
+                    409: "Этот расчёт относится к другому проекту или дате. Обновите срез.",
+                    429: "Сервер занят другими расчётами. Повторите чуть позже."}
+        raise HTTPException(exc.status, messages.get(exc.status,
+            "Не удалось рассчитать план и факт проекта. Обновите срез."), headers=private) from None
+    except (OSError, ValueError):
+        raise HTTPException(503, "Расчёт Монитора сейчас недоступен. Повторите чуть позже.",
+                            headers=private) from None
+
+
+@app.post("/monitor/view/result", include_in_schema=False)
+def monitor_view_result(req: MonitorViewResultRequest) -> Response:
+    return _monitor_view_job(req, start=False)
 
 
 @app.get("/monitor/rewritten", include_in_schema=False)
@@ -219,6 +433,44 @@ def monitor_store_schedule(req: MonitorScheduleRequest) -> dict[str, Any]:
         raise HTTPException(409, str(exc))
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+
+
+def _monitor_schedule_version(req, *, approve=False):
+    _require_team_access(req.session, req.key, 'Монитор проекта', write=approve)
+    import developaid_schedule_versions as versions
+    try:
+        data = base64.b64decode(req.gpr_base64, validate=True)
+        options = {key: getattr(req, key) for key in ('owner_rnv_date', 'owner_rnv_note', 'baseline_scope')
+                   if getattr(req, key) is not None}
+        if req.audit_cut is not None:
+            if approve:
+                raise ValueError('Историческая проверка выполняется только при предварительном просмотре.')
+            options['audit_cut'] = req.audit_cut
+        if approve and req.expected_owner_rnv_revision is not None:
+            options['expected_owner_rnv_revision'] = req.expected_owner_rnv_revision
+        result = (developaid_monitor.approve_schedule_version(
+            req.project, data, req.effective_from,
+            expected_previous_sha256=req.expected_previous_sha256,
+            expected_source_sha256=req.expected_source_sha256,
+            author=_monitor_note_author(req.session, req.key), **options) if approve else
+            developaid_monitor.schedule_version_preview(req.project, data, req.effective_from, **options))
+        return JSONResponse(content=result, headers={'Cache-Control': 'private, no-store'})
+    except versions.ScheduleVersionConflict as exc:
+        raise HTTPException(409, str(exc)) from None
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    except OSError:
+        raise HTTPException(503, 'Версии утверждённого ГПР сейчас недоступны. Повторите запрос.') from None
+
+
+@app.post('/monitor/schedule/version-preview', include_in_schema=False)
+def monitor_schedule_version_preview(req: MonitorScheduleVersionPreviewRequest) -> Response:
+    return _monitor_schedule_version(req)
+
+
+@app.post('/monitor/schedule/version-approve', include_in_schema=False)
+def monitor_schedule_version_approve(req: MonitorScheduleVersionApproveRequest) -> Response:
+    return _monitor_schedule_version(req, approve=True)
 
 
 class MonitorNotesRequest(BaseModel):
@@ -256,6 +508,7 @@ class MonitorScheduleFactRequest(BaseModel):
     project: str
     taken_at: str
     content_base64: str
+    expected_source_sha256: str = ''
     session: str = ""
     key: str = ""
 
@@ -271,6 +524,7 @@ class MonitorWorkFactRequest(BaseModel):
     project: str
     taken_at: str
     rows: list[dict[str, Any]] = []
+    expected_source_sha256: str = ''
     session: str = ""
     key: str = ""
 
@@ -281,7 +535,7 @@ def monitor_store_work_fact(req: MonitorWorkFactRequest) -> dict[str, Any]:
     _require_team_access(req.session, req.key, "Монитор проекта")
     try:
         return developaid_monitor.store_work_fact(
-            req.project, req.rows, req.taken_at)
+            req.project, req.rows, req.taken_at, expected_source_sha256=req.expected_source_sha256)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
 
@@ -290,6 +544,7 @@ class MonitorStageCloseRequest(BaseModel):
     project: str
     taken_at: str
     object_query: str = ""
+    expected_source_sha256: str = ''
     session: str = ""
     key: str = ""
 
@@ -538,7 +793,7 @@ def monitor_close_stage(req: MonitorStageCloseRequest) -> dict[str, Any]:
     _require_team_access(req.session, req.key, "Монитор проекта")
     try:
         return developaid_monitor.close_completed_stage(
-            req.project, req.object_query, req.taken_at)
+            req.project, req.object_query, req.taken_at, expected_source_sha256=req.expected_source_sha256)
     except FileNotFoundError as exc:
         raise HTTPException(404, str(exc))
     except ValueError as exc:
@@ -551,7 +806,8 @@ def monitor_store_schedule_fact(req: MonitorScheduleFactRequest) -> dict[str, An
     _require_team_access(req.session, req.key, "Монитор проекта")
     try:
         return developaid_monitor.store_schedule_fact(
-            req.project, base64.b64decode(req.content_base64), req.taken_at)
+            req.project, base64.b64decode(req.content_base64), req.taken_at,
+            expected_source_sha256=req.expected_source_sha256)
     except FileExistsError as exc:
         raise HTTPException(409, str(exc))
     except ValueError as exc:

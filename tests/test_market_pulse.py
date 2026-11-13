@@ -7,9 +7,11 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 from pathlib import Path
 
 from market_search.pulse import PulseClient, PulseProject, _balanced_json
+from market_search.http import save_json
 
 
 def _map_page(features: list[dict]) -> str:
@@ -83,10 +85,10 @@ def test_project_index_is_read_from_the_map_page(tmp_path: Path) -> None:
 def test_radius_is_measured_not_guessed(tmp_path: Path) -> None:
     """Расстояние считаем сами, от координат проекта."""
     client = PulseClient(tmp_path, login="l", password="p")
-    client._projects = [
+    save_json(client.catalog_path, [asdict(project) for project in [
         PulseProject(3372, "Саввинская 17", 55.73445, 37.56574),
         PulseProject(5924, "Кутузов Сити", 55.72564, 37.42891),
-    ]
+    ]])
     near = client.near(55.7295, 37.5665, 3.0)
     assert [item.name for _, item in near] == ["Саввинская 17"]
     distance = near[0][0]
@@ -425,7 +427,7 @@ def test_a_forbidden_answer_asks_to_sign_in_again(monkeypatch, tmp_path) -> None
 def test_project_dates_come_from_live_pulse_table(tmp_path: Path) -> None:
     """Дата стадии берётся из ЛК тем же клиентом, что и текущая цена."""
     client = PulseClient(tmp_path, login="l", password="p")
-    client._projects = [PulseProject(7, "Дом", 55.7, 37.5)]
+    save_json(client.catalog_path, [asdict(PulseProject(7, "Дом", 55.7, 37.5))])
     client._post_json = lambda path, payload: {  # type: ignore[assignment]
         "sales_start_date": "2026-08-01",
         "planned_commissioning": "2028-06-30",
@@ -449,7 +451,7 @@ def test_project_dates_come_from_live_pulse_table(tmp_path: Path) -> None:
 def test_project_dates_fall_back_to_the_live_project_page(tmp_path: Path) -> None:
     """Если API карточки молчит, читается сама авторизованная страница ЖК."""
     client = PulseClient(tmp_path, login="l", password="p")
-    client._projects = [PulseProject(7, "Дом", 55.7, 37.5)]
+    save_json(client.catalog_path, [asdict(PulseProject(7, "Дом", 55.7, 37.5))])
     client._post_json = lambda path, payload: {}  # type: ignore[assignment]
     client._cookie = lambda name: "cookie"  # type: ignore[assignment]
     page = """
@@ -465,7 +467,7 @@ def test_project_dates_fall_back_to_the_live_project_page(tmp_path: Path) -> Non
 
 def test_project_dates_aggregate_all_buildings_and_split_quarter(tmp_path: Path) -> None:
     client = PulseClient(tmp_path, login="l", password="p")
-    client._projects = [PulseProject(7, "Дом", 55.7, 37.5)]
+    save_json(client.catalog_path, [asdict(PulseProject(7, "Дом", 55.7, 37.5))])
     client._post_json = lambda path, payload: {  # type: ignore[assignment]
         "buildings": [
             {"sales_start_date": "2026-08-01", "planned_commissioning": "2027-12-31"},

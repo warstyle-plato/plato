@@ -118,7 +118,9 @@ def test_act_date_cannot_supply_a_missing_contract_date(context):
     snapshot = parsed(('ActDate.xlsx', ks(header='Дата акта', date=dt.date(2026, 3, 31))))
     provide(context, snapshot)
     view = contracts.build('Example', '2026-11-06')
-    assert view['rows'] == [] and len(view['unresolved_sources']) == 1
+    assert len(view['rows']) == 1 and len(view['unresolved_sources']) == 1
+    assert view['rows'][0]['contract_date'] is None
+    assert contracts._identity(view['rows'][0]) is None
     assert 'дата договора' in view['unresolved_sources'][0]['reason']
     inline = parsed(('Inline.xlsx', ks(header='Дата акта', date=dt.date(2026, 3, 31), inline=True)))
     assert inline['ledgers'][0]['contract_date'] == '2026-01-01'
@@ -127,7 +129,9 @@ def test_act_date_cannot_supply_a_missing_contract_date(context):
 def test_invalid_saved_text_date_remains_visible_with_its_source_cell(context):
     provide(context, parsed(('BrokenDate.xlsx', ks(date='03.07.124'))))
     view = contracts.build('Example', '2026-11-06')
-    assert view['rows'] == []
+    assert len(view['rows']) == 1
+    assert view['rows'][0]['contract_date'] is None
+    assert view['rows'][0]['contract_identity_kind'] == 'source_header_date_unverified'
     item, = view['unresolved_sources']
     assert item['contract'] == 'A-12' and item['contractor']
     assert item['date_evidence'][0]['raw'] == '03.07.124'
@@ -141,7 +145,11 @@ def test_incomplete_identity_is_visible_and_cannot_guess_a_join(context, bad_fie
     snapshot['ledgers'][0][bad_field] = None
     provide(context, snapshot, [rss_contract()])
     view = contracts.build('Example', '2026-11-06')
-    assert view['rows'] == [] and len(view['unresolved_sources']) == 1
+    assert len(view['rows']) == (1 if bad_field == 'contract_date' else 0)
+    assert len(view['unresolved_sources']) == 1
+    if view['rows']:
+        assert contracts._identity(view['rows'][0]) is None
+        assert view['rows'][0]['amount'] is None  # No RSS join without the date.
 
 
 def _repeated_party_book(header, value):
@@ -314,12 +322,14 @@ def test_real_monitor_shows_cumulative_count_sources_quarantine_and_printed_valu
     with browser_page(width) as (page, responses, errors):
         responses.data = view
         page.locator('#contractsTab').click()
-        expect(page.locator('#contractsMsg')).to_contain_text('Договоров из накопительных: 2')
+        expect(page.locator('#contractsMsg')).to_contain_text('Договоров из накопительных: 3')
         expect(page.locator('#contractsMsg')).to_contain_text('Листов накопительных: 3')
         expect(page.locator('#contractsWarnings')).to_contain_text('03.07.124')
         expect(page.locator('#contractsWarnings')).to_contain_text('Unresolved.xlsx')
         expect(page.locator('#contractsRows')).to_contain_text('A-12')
         expect(page.locator('#contractsRows')).to_contain_text('B-24')
+        expect(page.locator('#contractsRows')).to_contain_text('C-1')
+        expect(page.locator('#contractsRows')).to_contain_text('дата не подтверждена')
         expect(page.locator('#contractsRows')).to_contain_text('Дата из шапки')
         expect(page.locator('#contractsRows')).to_contain_text('B4')
         expect(page.locator('#contractsRows')).to_contain_text('400 ₽')
@@ -524,8 +534,9 @@ def test_real_page_is_a_table_and_shows_why_rss_did_not_complete(context, width)
         page.locator('#contractsTab').click()
         table = page.locator('#contractsRows table.contract-register')
         expect(table).to_be_visible()
-        assert table.evaluate('(t)=>getComputedStyle(t).display') == 'table'
-        assert table.evaluate('(t)=>getComputedStyle(t.querySelector("thead")).position') != 'absolute'
+        # A table on a wide screen, a card per row on a phone.
+        assert table.evaluate('(t)=>getComputedStyle(t).display') == ('block' if width <= 640 else 'table')
+        assert table.evaluate('(t)=>getComputedStyle(t.querySelector("thead")).display') == ('none' if width <= 640 else 'table-header-group')
         expect(page.locator('#contractsRows .contract-rss-why')).to_contain_text('не совпало')
         expect(page.locator('#contractsRows .contract-rss-why')).to_contain_text('дата договора')
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')

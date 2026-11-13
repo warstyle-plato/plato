@@ -54,6 +54,51 @@ class MonitorContractsHeaderDate(MonitorContractsBuild):
     note: str = _CumulativeField(default="", max_length=500)
 
 
+class MonitorContractDocuments(MonitorContractsBuild):
+    contract_id: str = _CumulativeField(pattern=r"^[0-9a-f]{64}$")
+
+
+class MonitorContractDocumentUpload(MonitorContractDocuments):
+    filename: str = _CumulativeField(default="", max_length=240)
+    content_base64: str = _CumulativeField(max_length=28 * 1024 * 1024)
+
+
+class MonitorContractLinkChoice(BaseModel):
+    index: int = _CumulativeField(ge=0, le=100000, strict=True)
+    # No lines confirms the proposed link; shares are percents, none means by duration.
+    lines: list[str] | None = _CumulativeField(default=None, max_length=500)
+    shares: list[float] | None = _CumulativeField(default=None, max_length=500)
+
+
+class MonitorContractDocumentLinks(MonitorContractDocuments):
+    sha256: str = _CumulativeField(pattern=r"^[0-9a-f]{64}$")
+    estimate: int = _CumulativeField(ge=0, le=100, strict=True)
+    choices: list[MonitorContractLinkChoice] = _CumulativeField(min_length=1, max_length=5000)
+    clear: bool = False
+
+
+class MonitorContractDocumentRemove(MonitorContractDocuments):
+    sha256: str = _CumulativeField(pattern=r"^[0-9a-f]{64}$")
+    restore: bool = False
+
+
+class MonitorContractScanHeader(BaseModel):
+    contract_number: str = _CumulativeField(default="", max_length=80)
+    contract_date: str = _CumulativeField(default="", max_length=10)
+    agreement_number: str = _CumulativeField(default="", max_length=80)
+    agreement_date: str = _CumulativeField(default="", max_length=10)
+    act_number: str = _CumulativeField(default="", max_length=80)
+    act_date: str = _CumulativeField(default="", max_length=10)
+    act_start: str = _CumulativeField(default="", max_length=10)
+    act_finish: str = _CumulativeField(default="", max_length=10)
+
+
+class MonitorContractDocumentConfirm(MonitorContractDocuments):
+    sha256: str = _CumulativeField(pattern=r"^[0-9a-f]{64}$")
+    kind: str = _CumulativeField(pattern=r"^(contract|agreement|act)$")
+    values: MonitorContractScanHeader
+
+
 class MonitorCumulativeResult(MonitorCumulativeAuth):
     ticket: str = _CumulativeField(min_length=1, max_length=128)
 
@@ -87,9 +132,13 @@ class MonitorGprPhysicalSave(MonitorCumulativeProject):
 
 
 _CUMULATIVE_PATHS = frozenset({
+    '/monitor/schedule/version-preview', '/monitor/schedule/version-approve',
     "/monitor/cumulative/upload", "/monitor/cumulative/result",
     "/monitor/cumulative/list", "/monitor/contracts/build",
     "/monitor/contracts/result", "/monitor/contracts/term", "/monitor/contracts/link", "/monitor/contracts/header-date",
+    "/monitor/contracts/documents", "/monitor/contracts/document-upload",
+    "/monitor/contracts/document-links", "/monitor/contracts/document-remove",
+    "/monitor/contracts/document-confirm",
     "/monitor/view", "/monitor/gantt", "/monitor/schedule-fact", "/monitor/gpr-corpus/view",
     "/monitor/schedule-confirmation/view", "/monitor/schedule-confirmation/save",
     "/monitor/schedule-physical/view", "/monitor/schedule-physical/save",
@@ -114,8 +163,17 @@ def monitor_corpus_gpr_view(req: MonitorContractsBuild) -> Response:
         raise HTTPException(400, "Выберите проект.", headers=private)
     import developaid_gpr_corpus as corpus_gpr
     cut = _monitor_cumulative_day(req.cut)
-    source = corpus_gpr.latest(req.project.strip(), cut)
-    return JSONResponse(content={"source": source, "html": corpus_gpr.render_overview(source, cut)}, headers=private)
+    import hashlib as _corpus_hashlib
+    import developaid_monitor as _corpus_monitor
+
+    @_corpus_monitor.approved_schedule_read
+    def read():
+        baseline = _corpus_monitor._working_baseline_file(req.project.strip(), cut)
+        sha = _corpus_hashlib.sha256(baseline.read_bytes()).hexdigest() if baseline is not None else ""
+        source = corpus_gpr.for_view(req.project.strip(), cut, baseline_sha256=sha)
+        return JSONResponse(content={"source": source, "html": corpus_gpr.render_overview(source, cut)}, headers=private)
+
+    return read()
 
 
 def _monitor_cumulative_day(value: str) -> str:
@@ -220,13 +278,16 @@ def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = 
     import developaid_monitor_ledgers as ledgers
     import developaid_monitor_contracts as contracts
     import developaid_monitor_contract_links as links
+    import developaid_contract_files as contract_files
     try:
         if operation == "upload":
             result = {"snapshot": ledgers.store_archive(
                 payload["project"], archive, payload["taken_at"], payload["filename"])}
         elif operation == "view":
             register = contracts.build(payload["project"], payload["cut"])
-            result = {"register": links.enrich(payload["project"], register, payload["cut"])}
+            register = links.enrich(payload["project"], register, payload["cut"])
+            # The table row shows the card's deviation, lag and forecast by the contract ГПР.
+            result = {"register": contract_files.register_control(payload["project"], register, payload["cut"])}
         elif operation == "term":
             result = {"term": contracts.set_term(
                 payload["project"], payload["contract_id"], payload["deadline"], payload["note"])}
@@ -236,12 +297,46 @@ def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = 
             result = {"link": links.set_link(
                 payload["project"], payload["contract_id"], payload["evidence_id"],
                 payload["cut"], confirmed=payload["confirmed"])}
+        elif operation.startswith("document"):
+            # The card's contract is the register's row of the same cut: a document is
+            # never filed under an id the register does not show, and its KS-6a is the fact.
+            import developaid_contract_fact as contract_fact
+            problem = ""
+            try:
+                rows = contracts.build(payload["project"], payload["cut"], include_history=False)["rows"]
+            except contracts.ContractProblem as exc:
+                if operation == "document-upload":
+                    raise
+                rows, problem = [], str(exc)
+            row = next((r for r in rows if r["id"] == payload["contract_id"]), None)
+            acts = contract_fact.unavailable(problem) if problem else contract_fact.acts(row)
+            if operation == "documents":
+                result = contract_files.listing(payload["project"], payload["contract_id"], payload["cut"], acts)
+            elif operation == "document-upload":
+                if row is None:
+                    raise contracts.ContractProblem("Договор не найден в данных выбранного проекта на эту дату.")
+                result = {"document": contract_files.store(payload["project"], row, payload["filename"], archive),
+                          **contract_files.listing(payload["project"], payload["contract_id"], payload["cut"], acts)}
+            elif operation == "document-links":
+                result = contract_files.save_links(payload["project"], payload["contract_id"], payload["sha256"],
+                                                   payload["estimate"], payload["choices"], payload["clear"],
+                                                   payload["cut"], acts)
+            elif operation == "document-confirm":
+                if row is None:
+                    raise contracts.ContractProblem("Договор не найден в данных выбранного проекта на эту дату.")
+                result = contract_files.confirm_scan(payload["project"], row, payload["sha256"], payload["kind"],
+                                                     payload["values"], payload["cut"], acts)
+            elif operation == "document-remove":
+                result = contract_files.remove(payload["project"], payload["contract_id"], payload["sha256"],
+                                               restore=payload["restore"], cut=payload["cut"], acts=acts)
+            else:
+                raise RuntimeError("unknown monitor operation")
         else:
             raise RuntimeError("unknown monitor operation")
         return {"ok": True, **jsonable_encoder(result)}
     except ledgers.LedgerProblem as exc:
         return {"ok": False, "detail": str(exc), "files": exc.files}
-    except (contracts.ContractProblem, links.LinkProblem) as exc:
+    except (contracts.ContractProblem, links.LinkProblem, contract_files.ContractFilesProblem) as exc:
         # These exception classes contain deliberate user-facing diagnostics.
         return {"ok": False, "detail": str(exc)}
 
@@ -272,9 +367,28 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
                     raise HTTPException(400, "Архив не передан целиком. Выберите ZIP-файл заново.") from None
                 if not archive or len(archive) > 20 * 1024 * 1024:
                     raise HTTPException(413, "Выберите непустой ZIP-архив размером не больше 20 МБ.")
+            elif operation == "document-upload":
+                payload.update(cut=_monitor_cumulative_day(req.cut), contract_id=req.contract_id,
+                               filename=req.filename)
+                try:
+                    archive = base64.b64decode(req.content_base64, validate=True)
+                except (_binascii.Error, ValueError):
+                    raise HTTPException(400, "Файл не передан целиком. Выберите PDF заново.") from None
+                if not archive or len(archive) > 20 * 1024 * 1024:
+                    raise HTTPException(413, "Выберите непустой PDF размером не больше 20 МБ.")
             else:
                 payload["cut"] = _monitor_cumulative_day(req.cut)
-                if operation == "term":
+                if operation == "documents":
+                    payload["contract_id"] = req.contract_id
+                elif operation == "document-links":
+                    payload.update(contract_id=req.contract_id, sha256=req.sha256, estimate=req.estimate,
+                                   choices=[choice.model_dump() for choice in req.choices], clear=req.clear)
+                elif operation == "document-remove":
+                    payload.update(contract_id=req.contract_id, sha256=req.sha256, restore=req.restore)
+                elif operation == "document-confirm":
+                    payload.update(contract_id=req.contract_id, sha256=req.sha256, kind=req.kind,
+                                   values=req.values.model_dump())
+                elif operation == "term":
                     if req.deadline:
                         _monitor_cumulative_day(req.deadline)
                     payload.update(contract_id=req.contract_id, deadline=req.deadline, note=req.note)
@@ -297,7 +411,9 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
                 return _monitor_cumulative_execute(operation, payload, archive)
             result = store.start(owner, profile, fingerprint, build, req.ticket)
         if result["pending"]:
-            result["detail"] = "Обрабатываю накопительные." if family == "upload" else "Готовлю договорную сверку."
+            result["detail"] = ("Обрабатываю накопительные." if family == "upload" else
+                                "Читаю документы договора." if operation.startswith("document") else
+                                "Готовлю договорную сверку.")
         return JSONResponse(status_code=202 if result["pending"] else 200, content=result, headers=private)
     except HTTPException as exc:
         exc.headers = {**(exc.headers or {}), **private}
@@ -360,3 +476,28 @@ def monitor_contracts_link(req: MonitorContractsLink) -> Response:
 @app.post("/monitor/contracts/header-date", include_in_schema=False)
 def monitor_contracts_header_date(req: MonitorContractsHeaderDate) -> Response:
     return _monitor_cumulative_job(req, family="contracts", operation="header-date")
+
+
+@app.post("/monitor/contracts/documents", include_in_schema=False)
+def monitor_contracts_documents(req: MonitorContractDocuments) -> Response:
+    return _monitor_cumulative_job(req, family="contracts", operation="documents")
+
+
+@app.post("/monitor/contracts/document-upload", include_in_schema=False)
+def monitor_contracts_document_upload(req: MonitorContractDocumentUpload) -> Response:
+    return _monitor_cumulative_job(req, family="contracts", operation="document-upload")
+
+
+@app.post("/monitor/contracts/document-links", include_in_schema=False)
+def monitor_contracts_document_links(req: MonitorContractDocumentLinks) -> Response:
+    return _monitor_cumulative_job(req, family="contracts", operation="document-links")
+
+
+@app.post("/monitor/contracts/document-remove", include_in_schema=False)
+def monitor_contracts_document_remove(req: MonitorContractDocumentRemove) -> Response:
+    return _monitor_cumulative_job(req, family="contracts", operation="document-remove")
+
+
+@app.post("/monitor/contracts/document-confirm", include_in_schema=False)
+def monitor_contracts_document_confirm(req: MonitorContractDocumentConfirm) -> Response:
+    return _monitor_cumulative_job(req, family="contracts", operation="document-confirm")

@@ -31,7 +31,10 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import date
+from math import fsum, isclose
 from typing import Any, Callable
+
+from developaid_finance_math import month_key, monthly_sum
 
 STRATEGY_DDU = "ddu"
 STRATEGY_DIRECT = "direct"
@@ -98,20 +101,31 @@ OFFICE_CLASS_DEFAULT_SOURCE = "default"
 # (`office_class_rate`), а не этот список.
 OFFICE_CLASS_FOLLOWED: tuple[str, ...] = (
     "rent_th_per_sqm_month", "occupancy_stable_pct", "leaseup_months", "opex_pct", "exit_cap_pct")
-# В НЕЖИЛОМ проекте класс проекта — это класс офиса B / B+ / A / A+
-# (владелец, 25.10.2026): вводная `nonres_office_class`. Профиль класса
-# проекта (машино-место, подземная ставка) берётся у пары: B — комфорт,
-# B+ — бизнес, A и A+ — элитный (A+ — «как у A», владелец 25.10.2026).
-# Пусто — класс выводится из класса проекта (`OFFICE_CLASS_BY_PROJECT`):
-# нежилой проект, сохранённый до решения, открывается с тем же результатом.
+# Класс здания в НЕЖИЛОМ проекте выбирается в блоке КАЖДОГО офиса
+# (владелец, 10.11.2026: «класс должен в нежилье выбираться в блоке каждого
+# конкретного объекта, а не наверху»). Второй ответ на вопрос «какой класс у
+# офиса» — класс проекта в шапке — больше не выбирается и не читается как
+# класс офиса (`nonres_project_class`); вводная `nonres_office_class` осталась
+# ступенью профиля в шапке: офис без своего выбора идёт за ней
+# (`office_class_choice`, владелец 11.11.2026).
+#
+# Класс проекта у нежилого проекта по-прежнему нужен профилю пары — машино-
+# месту и подземной ставке: B — комфорт, B+ — бизнес, A и A+ — элитный
+# (A+ — «как у A», владелец 25.10.2026). Поле `project_class` хранит пару, а
+# ступень класса офиса живёт у объекта.
 NONRES_CLASS_FIELD = "nonres_office_class"
 NONRES_CLASS_PROFILE: dict[str, str] = {"B": "comfort", "B+": "business", "A": "elite", "A+": "elite"}
 PROJECT_KIND_NONRESIDENTIAL = "nonresidential"
 
 
 def nonres_project_class(inputs: dict[str, Any] | None) -> str | None:
-    """Класс нежилого проекта (ступень класса офиса); `None` — проект не
-    нежилой или класс не задан ни выбором, ни классом проекта."""
+    """Ступень класса офиса из класса проекта — только у сохранённых проектов.
+
+    Шапка нежилого проекта класс офиса больше не выбирает. Ответ остался для
+    двух читателей: (1) класс офиса без своего выбора и (2) прежние поверхности, которые спрашивают «какая ступень у
+    класса проекта» (`project_class_view`, профиль пары). Класс КОНКРЕТНОГО
+    офиса отвечает `office_class_choice`: без выбора у офиса — эта же ступень.
+    """
     x = inputs or {}
     if str(x.get("project_kind") or "") != PROJECT_KIND_NONRESIDENTIAL:
         return None
@@ -144,11 +158,28 @@ def office_class_choice(inputs: dict[str, Any] | None, prefix: str) -> dict[str,
     Выбранная ступень сильнее класса проекта. Пустое поле, отсутствующее поле
     и непонятное значение — не выбор: класс идёт за классом проекта, а у
     пользовательского класса проекта — ступень по умолчанию.
+
+    В НЕЖИЛОМ проекте класс выбирается у каждого офиса (владелец, 10.11.2026).
+    Пока у офиса выбора нет, класс идёт за профилем проекта в шапке (B — комфорт,
+    B+ — бизнес, A — элитный) или за прежней вводной `nonres_office_class`
+    сохранённого проекта (владелец, 11.11.2026, 1А): отсутствие выбора не
+    становится ступенью B, и сохранённый проект открывается теми же числами.
+    Ступень по умолчанию — только у пользовательского профиля. Это
+    единственный ответ на «какой класс у офиса»; страница читает тот же.
     """
     x = inputs or {}
     raw = str(x.get(f"{prefix}_{OFFICE_CLASS_FIELD}") or "").strip()
     if raw in OFFICE_CLASSES:
         return {"office_class": raw, "source": OFFICE_CLASS_CHOSEN, "text": "выбран"}
+    if str(x.get("project_kind") or "") == PROJECT_KIND_NONRESIDENTIAL:
+        # Шапка пишет ступень профиля в `nonres_office_class`; у проекта,
+        # сохранённого до неё, профиль — сам класс проекта (`nonres_project_class`).
+        by_profile = nonres_project_class(x)
+        if by_profile:
+            return {"office_class": by_profile, "source": OFFICE_CLASS_BY_PROJECT_SOURCE,
+                    "text": "по профилю проекта"}
+        return {"office_class": DEFAULT_OFFICE_CLASS, "source": OFFICE_CLASS_DEFAULT_SOURCE,
+                "text": "не выбран — по умолчанию"}
     by_project = nonres_project_class(x) or OFFICE_CLASS_BY_PROJECT.get(str(x.get("project_class") or ""))
     if by_project:
         return {"office_class": by_project, "source": OFFICE_CLASS_BY_PROJECT_SOURCE,
@@ -458,6 +489,42 @@ def _choice(params: dict[str, Any], key: str, allowed: tuple[str, ...], default:
     return value if value in allowed else default
 
 
+def allocate_common_capex(debt_capex: dict, capex_by_article: dict,
+                          object_keys, plan_shares: dict[str, float]) -> tuple[dict, dict]:
+    """Existing common-project cost allocation, shared with actual overlays.
+
+    Object-specific loan capex has already been removed from debt_capex.
+    The supplied shares are the engine's declared cost shares, not inferred
+    bank coverage or a new allocation from historical payment names.
+    """
+    remaining = dict(debt_capex)
+    common_by_plan = {key: {} for key in plan_shares}
+    if not plan_shares:
+        return remaining, common_by_plan
+    share_total = fsum(plan_shares.values())
+    # Когда вся стройка на кредитах объектов, сумма долей математически 1.
+    # Остаток машинного деления не должен открывать ПФ с лимитом 10 млн.
+    # Наличие даже очень маленькой настоящей стройки по ДДУ исключает эту
+    # ветку; явно неполная доля также сохраняет свою потребность в ПФ.
+    fully_allocated = (isclose(share_total, 1.0, rel_tol=1e-15)
+                       and not any(value for key in object_keys if key not in plan_shares
+                                   for value in (capex_by_article.get(key) or {}).values()))
+    balance_key = max(plan_shares, key=plan_shares.get)
+    for month in list(remaining):
+        ddu_objects = fsum((capex_by_article.get(key) or {}).get(month, 0.0)
+                           for key in object_keys if key not in plan_shares)
+        common = max(0.0, remaining[month] - ddu_objects)
+        if common <= 0:
+            continue
+        allocated = common if fully_allocated else common * share_total
+        parts = {key: common * share for key, share in plan_shares.items() if key != balance_key}
+        parts[balance_key] = allocated - fsum(parts.values())
+        for key, amount in parts.items():
+            common_by_plan[key][month] = amount
+        remaining[month] -= allocated
+    return remaining, common_by_plan
+
+
 def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
                  *, vat_rate: float) -> dict[str, Any]:
     """Денежный поток объекта при стратегии «прямая продажа» или «доход».
@@ -475,8 +542,9 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
     """
     strategy = plan["strategy"]
     params = plan.get("params") or {}
-    capex: dict[date, float] = {m: float(v) for m, v in (plan.get("capex") or {}).items() if v}
-    commissioning: date = plan["commissioning"]
+    # Monthly buckets are independent from the source commissioning date.
+    capex = monthly_sum({m: float(v) for m, v in (plan.get("capex") or {}).items() if v})
+    commissioning = month_key(plan["commissioning"])
     vat_share = vat_rate / (1.0 + vat_rate) if vat_rate > 0 else 0.0
     revenue_multiplier = float(plan.get("revenue_multiplier", 1.0) or 1.0)
     cost_multiplier = float(plan.get("cost_multiplier", 1.0) or 1.0)
@@ -502,10 +570,10 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
     # объект: в нежилом проекте банк кредитует долю ВСЕЙ стоимости. Они
     # финансируются кредитом, но не входят ни в НДС, ни в себестоимость
     # объекта — их учитывает проект.
-    common: dict[date, float] = {mm: float(v) for mm, v in (plan.get("common_capex") or {}).items() if v}
+    common = monthly_sum({mm: float(v) for mm, v in (plan.get("common_capex") or {}).items() if v})
     common_total = sum(common.values())
 
-    first = min([commissioning, *capex, *(plan.get("common_capex") or {})])
+    first = min([commissioning, *capex, *common])
     m = defaultdict(lambda: defaultdict(float))  # ряд → месяц → значение
     sold_share: dict[date, float] = {}
     horizon_end = commissioning
@@ -535,7 +603,7 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
             m["sale_revenue"][month] += base * revenue_multiplier
             m["selling_cost"][month] += base * float(plan.get("selling_share", 0.0) or 0.0) * cost_multiplier
             sold_share[month] = sold_share.get(month, 0.0) + weight
-        horizon_end = plan_horizon_end(plan)
+        horizon_end = month_key(plan_horizon_end(plan))
         # Налог на имущество — с непроданной доли готового здания; проданное
         # авансом до ввода в неё уже не входит.
         unsold = max(0.0, 1.0 - sum(share for when, share in sold_share.items()
@@ -692,7 +760,7 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
     # После последней выдачи линии остаток нулевой — плата кончается сама.
     # Без даты РнС в плане линия одна. Всё лежит в комиссиях (`loan_fee`):
     # поток, налог и итог объекта видят их сами.
-    permit: date = plan.get("permit") or min(m["loan_draw"] or [commissioning])
+    permit = month_key(plan.get("permit") or min(m["loan_draw"] or [commissioning]))
     lines = {"land": [mm for mm in months if mm < permit and m["loan_draw"][mm]],
              "build": [mm for mm in months if mm >= permit and m["loan_draw"][mm]]}
     limits = {name: sum(m["loan_draw"][mm] for mm in draws) for name, draws in lines.items()}
@@ -787,8 +855,8 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
     return {
         "strategy": strategy,
         "months": months,
-        "commissioning": commissioning,
-        "horizon_end": horizon_end,
+        "commissioning": plan["commissioning"],
+        "horizon_end": plan_horizon_end(plan),
         # Нули не несём: ряд — это месяцы, в которых что-то было.
         "monthly": {name: {month: value for month, value in series.items() if value}
                     for name, series in m.items()},

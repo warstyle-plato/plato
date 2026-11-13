@@ -2241,7 +2241,7 @@ async function applyNormativeTep(densityOverride,keepRows){
  // Нормативный пересчёт ручного и кадастрового ТЭП: квартиры = площадь ×
  // плотность, остальное — от населения нормативами региона. Чьи нормативы,
  // решает `classRegion()`: Москва — свои (`applyMoscowNormativeTep`), область
- // — калькулятор Подмосковья ниже: население 28 м²/чел, ДОО 65 и СОШ 135
+ // — калькулятор Подмосковья ниже: население 28 м²/чел, ДОО 50 и СОШ 109 (1420-ПП)
  // мест на 1000 жителей, поликлиника 17,75 пос./смену, паркинг 356 м/м на
  // 1000 (90% постоянные, подземные 35 м²/место), рабочие места 50%
  // населения → офисы. Раньше ручной и кадастровый ТЭП считались долями 94/6,
@@ -3759,7 +3759,7 @@ async function recalcFromTep(options){
  (d.warnings||[]).forEach(w=>context.push('⚠ '+w));
  // Вопрос задаётся о НАМЕРЕНИИ: здесь подстановки ещё не было.
  const proposal=['Плата за ВРИ, млн ₽: по ставке территории '+num(d.vri_total_mln)
-   +(d.land_right_factor&&d.land_right_factor!==1?' (аренда: делитель 1,001)':''),
+   +(d.land_right_factor&&d.land_right_factor!==1?' (участок в аренде: плата примерно на 0,1% меньше, чем в собственности)':''),
   'Соцкомпенсация, млн ₽: по ставке территории '+num(d.compensation_mln)].concat(context);
  // Спрашивать на каждой правке ТЭП нечего: человек уже сказал, чего хочет,
  // изменив метры. Подтверждение осталось у явного нажатия кнопки.
@@ -3770,7 +3770,15 @@ async function recalcFromTep(options){
   clinic_capacity:d.places.clinic};
  if(d.compensation_mln>0)derived.social_compensation_mln=d.compensation_mln;
  if(d.vri_total_mln>0)derived.land_rights_cost_mln=d.vri_total_mln;
- applyDerivedInputs(derived);
+ // Доказательство состава едет только с суммой, которую пересчёт записал
+ // сам: запертая сумма, случайно равная расчётной, остаётся со своим
+ // происхождением — равенство денег не говорит, из чего она состоит.
+ let vriWritten=false;
+ applyDerivedInputs(derived,{written:key=>{if(key==='land_rights_cost_mln')vriWritten=true}});
+ // Плата по ставкам территории уже содержит повышенную часть первого года
+ // аренды (norms.vri_fee_rent_premium); доказательство привязано к сумме.
+ if(vriWritten&&d.rent_premium)
+  fieldOrigins()['inputs.land_rights_cost_mln']=Object.assign({},fieldOrigins()['inputs.land_rights_cost_mln']||{},{rent_premium:d.rent_premium});
  // Отчёт строится ПОСЛЕ подстановки и читает поля: приписка «не тронуто»
  // здесь больше не нужна — каждая строка сама говорит, что в поле стоит и
  // почему. Признак «предлагалось ли число» берётся у того же `derived`,

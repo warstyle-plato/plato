@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 
@@ -27,6 +28,12 @@ DEFAULT_DPI = 200
 # Сколько ждём распознавание ОДНОЙ страницы. Человек ждёт ответа в окне, и
 # зависшая страница не имеет права держать его до конца бесконечности.
 PAGE_TIMEOUT_SECONDS = 60
+# Сколько русских слов от четырёх букв должно найтись на странице, чтобы
+# считать её стоящей прямо. Акт КС-2 и график сканируют альбомным листом,
+# положенным боком: прямо такая страница даёт два-три десятка обрывков,
+# повёрнутая — больше сотни слов.
+UPRIGHT_WORDS = 80
+_WORD = re.compile(r"[А-Яа-яЁё]{4,}")
 
 
 class Unavailable(RuntimeError):
@@ -62,13 +69,31 @@ def _rasterizer_ready() -> bool:
     return True
 
 
+def _words(text: str) -> int:
+    return len(_WORD.findall(text))
+
+
+def _recognized(png: bytes) -> str:
+    done = subprocess.run(
+        ["tesseract", "stdin", "stdout", "-l", "rus", "--psm", "6"],
+        input=png, capture_output=True, timeout=PAGE_TIMEOUT_SECONDS)
+    if done.returncode:
+        raise Unavailable("Распознавание страницы не выполнилось; проверьте "
+                          "Tesseract и наличие русского словаря на сервере.")
+    return done.stdout.decode("utf-8", errors="replace")
+
+
 def text(pdf: bytes, pages: int = 3, dpi: int = DEFAULT_DPI, *,
-         page_indices: list[int] | None = None) -> str:
+         page_indices: list[int] | None = None, upright: bool = False) -> str:
     """Распознать первые страницы документа.
 
     Сколько страниц — решает вызывающий: у распоряжения о торгах адрес, цена и
     задаток стоят в начале, у тизера числа рассыпаны по всему листу. Общего
     правильного числа тут нет, поэтому умолчание маленькое, а не щедрое.
+
+    `upright` — страница могла лечь боком: если прямо слов меньше
+    `UPRIGHT_WORDS`, она читается ещё повёрнутой на четверть оборота в обе
+    стороны, и остаётся чтение, где слов больше.
     """
     reason = unavailable_reason()
     if reason:
@@ -85,14 +110,14 @@ def text(pdf: bytes, pages: int = 3, dpi: int = DEFAULT_DPI, *,
         for index in indices:
             if not isinstance(index, int) or not 0 <= index < document.page_count:
                 raise ValueError("Номер страницы вне документа")
-            png = document[index].get_pixmap(dpi=dpi).tobytes("png")
-            done = subprocess.run(
-                ["tesseract", "stdin", "stdout", "-l", "rus", "--psm", "6"],
-                input=png, capture_output=True, timeout=PAGE_TIMEOUT_SECONDS)
-            if done.returncode:
-                raise Unavailable("Распознавание страницы не выполнилось; проверьте "
-                                  "Tesseract и наличие русского словаря на сервере.")
-            recognized = done.stdout.decode("utf-8", errors="replace")
+            page = document[index]
+            recognized = _recognized(page.get_pixmap(dpi=dpi).tobytes("png"))
+            if upright and _words(recognized) < UPRIGHT_WORDS:
+                for turn in (90, 270):
+                    matrix = pymupdf.Matrix(dpi / 72, dpi / 72).prerotate(turn)
+                    turned = _recognized(page.get_pixmap(matrix=matrix).tobytes("png"))
+                    if _words(turned) > _words(recognized):
+                        recognized = turned
             # Legacy callers parse plain text. The document reader asks for exact
             # page identities, including a scan on page 12 of a mixed PDF.
             out.append((f"[стр. {index + 1}]\n" if page_indices is not None else "")
