@@ -283,6 +283,7 @@ def test_term_and_each_evidence_link_require_explicit_actions():
         assert len(responses.terms) == 1
         assert responses.terms[0]['contract_id'] == CONTRACT
         row.locator('.contract-open').click()
+        page.locator('.contract-chat-evidence > summary').click()
         choice = page.locator('#contractsDetails .evidence-choice')
         assert choice.locator('select').input_value() == ''
         choice.locator('button').click()
@@ -293,6 +294,7 @@ def test_term_and_each_evidence_link_require_explicit_actions():
         assert len(responses.links) == 1
         assert responses.links[0]['evidence_id'] == 'evidence-01'
         assert responses.links[0]['confirmed'] is True
+        page.locator('.contract-chat-evidence > summary').click()
         page.locator('#contractsDetails .evidence-remove').click()
         expect(page.locator('#contractsDetails')).to_contain_text('Предложен договор:', timeout=10000)
         assert len(responses.links) == 2

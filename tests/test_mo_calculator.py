@@ -74,14 +74,48 @@ def program():
     return main.mo_social_program(SAMPLE_APARTMENTS_SQM)
 
 
+# ППТ заказчика посчитан до 1420-ПП: ДОО и СОШ в нём по 65 и 135 мест на 1000.
+# Методику сверяем на его редакции, действующие нормы — отдельной строкой ниже.
+@pytest.fixture(scope="module")
+def program_762():
+    return main.mo_social_program(SAMPLE_APARTMENTS_SQM, {
+        "kindergarten_places_per_1000": 65.0, "school_places_per_1000": 135.0})
+
+
 @pytest.mark.parametrize("path, expected", [
-    ("population", 7143),
     ("kindergarten.required_places", 464.295),
     ("kindergarten.places", 465),
     ("kindergarten.site_ha", 1.767),
     ("school.required_places", 964.305),
     ("school.places", 975),
     ("school.site_ha", 3.0225),
+])
+def test_education_matches_ppt_sample_on_its_edition(program_762, path, expected):
+    value = program_762
+    for key in path.split("."):
+        value = value[key]
+    assert value == pytest.approx(expected, abs=0.01)
+
+
+@pytest.mark.parametrize("path, expected", [
+    # Действующая редакция п. 5.18 (1420-ПП): 7 143 × 50 / 1000 и × 109 / 1000;
+    # школа — шагом 25 мест, участки — 38 и 31 м² на место.
+    ("kindergarten.required_places", 357.15),
+    ("kindergarten.places", 358),
+    ("kindergarten.site_ha", 1.3604),
+    ("school.required_places", 778.587),
+    ("school.places", 800),
+    ("school.site_ha", 2.48),
+])
+def test_education_follows_the_1420_edition(program, path, expected):
+    value = program
+    for key in path.split("."):
+        value = value[key]
+    assert value == pytest.approx(expected, abs=0.01)
+
+
+@pytest.mark.parametrize("path, expected", [
+    ("population", 7143),
     ("clinic.required_capacity", 126.788),
     ("clinic.capacity", 127),
     ("parking.permanent_spaces", 2289),

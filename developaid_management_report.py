@@ -3718,6 +3718,9 @@ def _work_contract_progress(link: dict[str, Any], *, include_change: bool = True
     if selected.get("ratio") is not None:
         basis = selected.get("basis_label") or ("суммы КС-2 по сводной" if _work_closing_summary(link) else "по накопительным")
         label = f"{_pct(selected['ratio'])} {basis}"
+        if (link.get('amount_documents') and selected.get('basis') in {'statement', 'statement_union'}
+                and selected.get('planned') is not None):
+            label += f" (база {_rub(selected['planned'])})"
         delta = selected.get("delta_percent_points")
         if include_change and selected.get("comparison_state") == "comparable" and delta is not None:
             change = "Корректировка" if selected.get("change_kind") == "correction" else "Изменение"
@@ -4975,7 +4978,8 @@ CONTRACT_RISK_LIMIT = 30
 _CONTRACT_PERFORMANCE_FIELDS = (
     'id', 'source_kind', 'contractor', 'customer', 'contract', 'contract_date', 'contract_identity_kind',
     'source_date', 'source', 'sources', 'subject', 'deadline', 'deadline_source', 'deadline_passed',
-    'manual_deadline_reference', 'amount', 'amount_basis', 'amount_source_label', 'completed', 'completed_basis',
+    'manual_deadline_reference', 'amount', 'amount_basis', 'amount_source_label', 'amount_source', 'amount_documents',
+    'completed', 'completed_basis',
     'completion_ratio', 'monetary_comparable', 'completed_works', 'completed_materials', 'works_materials_split',
     'works_materials_note', 'progress', 'statement_progress', 'summary_progress', 'reported_performance_sources',
     'observation_forecast', 'risk', 'advance', 'warnings', 'performance_basis', 'date_evidence', 'rss_match')
@@ -5114,6 +5118,11 @@ def _contract_performance_details(row: dict[str, Any]) -> str:
     sources = row.get('sources') or ([row['source']] if row.get('source') else [])
     body = ''.join('<div>' + esc(' · '.join(str(source.get(key)) for key in ('filename', 'sheet', 'row')
                                          if source.get(key))) + '</div>' for source in sources)
+    if row.get('amount_documents'):
+        body += '<div>Полная цена: '+esc(str(row.get('amount_source_label') or 'Договор или ДС'))+'</div>'
+        source = row.get('amount_source') or {}
+        if source.get('quote'):
+            body += '<blockquote>'+esc(str(source['quote']))+'</blockquote>'
     for index, source in _work_statement_sources(row):
         year = f" за {source['period_year']} год" if source.get('period_year') else ''
         body += f"<div class='contract-source-percentage'>Ведомость {index}" + esc(year) + ': ' + _pct(source['completion_ratio']) + ' стоимости ведомости.</div>'

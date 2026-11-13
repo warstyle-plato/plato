@@ -165,3 +165,22 @@ def test_cut_label_stays_on_axis_without_changing_dates_or_marker(width, cut_kin
             expect(task.locator('.g-dates')).to_be_hidden()
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         assert not errors
+
+
+def test_a_browser_without_container_units_keeps_the_cut_label_centred_on_the_marker():
+    # Браузер без cqw не применяет правило под @supports; убираем его и проверяем прежний вид.
+    with browser_page(390) as (page, responses, errors):
+        view = two_corpus_view()
+        view['cut'] = '2026-11-08'
+        page.evaluate("(v)=>{currentView=v;renderGantt(v)}", view)
+        removed = page.evaluate("""()=>{let n=0;for(const sheet of document.styleSheets){const rules=[...sheet.cssRules];
+          for(let i=rules.length-1;i>=0;i--){const r=rules[i];
+            if(r instanceof CSSSupportsRule&&/cqw/.test(r.conditionText)&&/al-today/.test(r.cssText)){sheet.deleteRule(i);n++}}}
+          return n}""")
+        assert removed == 1, 'прижатие подписи к краям шкалы должно стоять под @supports(cqw)'
+        label = page.locator('#gantt .axis .al-today')
+        marker = page.locator('#gantt .axis .cut')
+        expect(label).to_be_visible()
+        text, cut = box(label), box(marker)
+        assert abs(text['x'] + text['width'] / 2 - (cut['x'] + cut['width'] / 2)) < 1, {'label': text, 'cut': cut}
+        assert not errors

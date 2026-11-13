@@ -526,7 +526,7 @@ def test_the_page_substitutes_the_lease_payment_too():
     # общим правилом — оно же не трогает то, что вписано требованием КРТ, — но
     # утверждение прежнее: посчитанная плата обязана доехать до поля.
     assert "derived.land_rights_cost_mln=d.vri_total_mln" in body
-    assert "applyDerivedInputs(derived)" in body
+    assert "applyDerivedInputs(derived," in body, "посчитанная плата пишется общим правилом вводных"
 
 
 def test_editing_apartments_recalculates_the_derived_loads_by_itself():

@@ -193,6 +193,13 @@ def test_the_recalculated_vri_fee_keeps_its_composition_proof():
     locked = _run(KRT, {**ANSWER, "rent_premium": proof})
     assert "rent_premium" not in (locked["fields"].get("_field_origin") or {}).get(
         "inputs.land_rights_cost_mln", {})
+    # Запертая ручная сумма случайно равна расчётной: пересчёт её не писал,
+    # и равенство денег не доказывает состав — происхождение остаётся ручным.
+    same = _run({**KRT, "land_rights_cost_mln": 10166.6,
+                 "_field_origin": {"inputs.land_rights_cost_mln": {"source": "manual"}}},
+                {**ANSWER, "rent_premium": proof})
+    assert same["fields"]["land_rights_cost_mln"] == 10166.6
+    assert same["fields"]["_field_origin"]["inputs.land_rights_cost_mln"] == {"source": "manual"}
 
 
 def test_a_field_the_method_did_not_offer_says_exactly_that():

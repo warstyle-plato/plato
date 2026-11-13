@@ -54,6 +54,7 @@ def _gated_routes() -> list[tuple[str, str]]:
 ROUTES = _gated_routes()
 _FILL = {str: "проверка", int: 1, float: 1.0, bool: False, list: [], dict: {}}
 _ENDPOINT_PAYLOADS = {
+    ("POST", "/monitor/contracts/source-review"): {"contract_id": "a" * 64},
     ("POST", "/monitor/schedule-gpr-physical/save"): {"source_kind": "gpr"},
     ("POST", "/monitor/finance-allocation/apply"): {
         "assignments": [{"row_id": "a" * 64, "bank_code": "2.6"}]},
@@ -64,6 +65,8 @@ _ENDPOINT_PAYLOADS = {
     ("POST", "/monitor/contracts/document-links"): {
         "contract_id": "a" * 64, "sha256": "b" * 64, "estimate": 0, "choices": [{"index": 0}]},
     ("POST", "/monitor/contracts/document-remove"): {"contract_id": "a" * 64, "sha256": "b" * 64},
+    ("POST", "/monitor/contracts/document-confirm"): {
+        "contract_id": "a" * 64, "sha256": "b" * 64, "kind": "act", "values": {}},
     ("POST", "/monitor/schedule/version-preview"): {
         "effective_from": "2026-10-22", "gpr_base64": "eA=="},
     ("POST", "/monitor/schedule/version-approve"): {
