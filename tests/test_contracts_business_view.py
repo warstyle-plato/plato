@@ -46,7 +46,7 @@ def test_real_business_register_keeps_core_facts_visible_and_sources_closed(widt
         expect(first).to_contain_text('Сумма превышена на 977\u00a0700 ₽')
         expect(first).to_contain_text('01.11.2026')
         expect(first.locator('.contract-attention .contract-risk')).to_have_text(
-            ['Сумма превышена', 'Срок прошёл', 'Есть замечания', 'ещё 1'])
+            ['Сумма превышена', 'Срок прошёл', 'Есть замечания'])
         more = page.locator(f'tr[data-contract-detail="{CONTRACT}"]')
         expect(more).to_be_hidden()
         # A phone card stacks six signed cells; a table row stays short.
@@ -54,8 +54,8 @@ def test_real_business_register_keeps_core_facts_visible_and_sources_closed(widt
         more = opened(page, CONTRACT)
         expect(more).to_contain_text('1\u00a0977\u00a0700 ₽')
         expect(more).to_contain_text('-977\u00a0700 ₽')
-        expect(more).to_contain_text('Связей с договором: 1 · проверить: 1')
-        expect(more).to_contain_text('Проверить исполнение: срок прошёл. Есть замечания к данным. Проверить связь с работами')
+        expect(more).not_to_contain_text('Связь со стройкой')
+        expect(more).to_contain_text('Проверить исполнение: срок прошёл. Есть замечания к данным')
         for shown in (first, more):
             expect(shown).not_to_contain_text('Договор исполнен')
         # Source evidence remains accessible, with no technical filename on the default surface.
@@ -108,7 +108,7 @@ def test_actual_print_is_a4_landscape_paginated_with_business_fields_only():
         more = opened(page)
         more.locator('.contract-sources summary').click()
         more.locator('.contract-term').click()
-        page.locator('#contractsUnmatched > .contract-detail > summary').click()
+        expect(page.locator('#contractsUnmatched')).to_be_empty()
         pdf = PdfReader(io.BytesIO(page.pdf(prefer_css_page_size=True, print_background=True)))
         assert len(pdf.pages) >= 3
         texts = []
@@ -122,10 +122,10 @@ def test_actual_print_is_a4_landscape_paginated_with_business_fields_only():
         assert all(f'DEMO-{index:02d}' in text for index in range(30))
         # Print opens the detail of every contract: no business field is left behind a click.
         for necessary in ['Учебный проект', '06.11.2026', '05.11.2026', '1 000 000', '197,8%', '977 700', '01.11.2026', 'не оплата',
-                          '1 977 700', 'Связь со стройкой', 'Есть совпадения — проверьте', 'Проверить исполнение: срок прошёл']:
+                          '1 977 700', 'Проверить исполнение: срок прошёл']:
             assert necessary in text
             assert text.count(necessary) >= (30 if necessary.startswith('Проверить') else 1)
-        for private_or_control in [KEY, 'private-source-marker', 'Указать срок', 'Изменить срок', 'Сохранить срок', 'Ключ администратора', 'Разделы проекта', 'Открыть']:
+        for private_or_control in ['Связь со стройкой', 'Записи о работах: уточнить договор', 'Дополнительная проверка по сообщениям', KEY, 'private-source-marker', 'Указать срок', 'Изменить срок', 'Сохранить срок', 'Ключ администратора', 'Разделы проекта', 'Открыть']:
             assert private_or_control not in text
         assert not errors
 
@@ -150,9 +150,9 @@ def test_daily_candidates_do_not_inherit_confirmation_for_another_contract():
         evidence[1].update(contract_id=OTHER, link_basis='explicit_number')
         page.locator('#contractsTab').click()
         first = page.locator(f'tr[data-contract-id="{CONTRACT}"]')
-        expect(first.locator('.contract-attention .contract-risk').last).to_have_attribute('title', 'Сверить с работами')
+        expect(first.locator('.contract-attention')).not_to_contain_text('Сверить с работами')
         more = opened(page, CONTRACT)
-        expect(more).to_contain_text('Есть совпадения — проверьте')
+        expect(more).not_to_contain_text('Связь со стройкой')
         expect(more).not_to_contain_text('Связей с договором:')
         first.locator('.contract-open').click()
         expect(page.locator('#contractsDetails')).to_contain_text('Сообщение связано с другим договором')
@@ -166,6 +166,45 @@ def test_daily_candidates_do_not_inherit_confirmation_for_another_contract():
         expect(page.locator('#contractsDetails')).to_contain_text('Договор определён по номеру в сообщении')
         assert page.locator('#contractsDetails .evidence-remove').count() == 1
         assert not errors
+
+
+@pytest.mark.parametrize('width', [390, 1440])
+def test_chat_messages_do_not_create_mandatory_contract_tasks_or_a_global_queue(width):
+    with browser_page(width) as (page, responses, errors):
+        row = responses.data['rows'][0]
+        row.update(amount=1_000_000, completed=500_000, completion_ratio=.5,
+                   remaining=500_000, deadline='2026-12-01', deadline_passed=False,
+                   warnings=[])
+        row['reconciliation']['issues'] = ['Связь сообщений с договором требует подтверждения.']
+        responses.data['rows'] = [row]
+        responses.data['unmatched_works'] *= 68
+        page.locator('#contractsTab').click()
+        expect(page.locator('#contractsSummary b').nth(1)).to_have_text('0')
+        line = page.locator(f'tr[data-contract-id="{CONTRACT}"]')
+        expect(line.locator('.contract-attention')).to_have_text('Данные заполнены')
+        expect(page.locator('#contractsUnmatched')).to_be_empty()
+        more = opened(page, CONTRACT)
+        expect(more).not_to_contain_text('Связь со стройкой')
+        expect(more.locator('.contract-next')).to_have_text('Данные заполнены')
+        page.locator('#contractsFilter').select_option('warnings')
+        expect(page.locator('tr[data-contract-id]')).to_have_count(0)
+        page.locator('#contractsFilter').select_option('all')
+        line.locator('.contract-open').click()
+        chat = page.locator('.contract-chat-evidence')
+        assert not chat.evaluate('(el)=>el.open')
+        expect(chat.locator('.evidence-choice')).to_be_hidden()
+        chat.locator('summary').first.click()
+        expect(chat).to_contain_text('Сообщения служат дополнительной справкой')
+        expect(chat.locator('.evidence-choice')).to_be_visible()
+        assert responses.links == []
+        # Refresh reads saved inputs. Neither linking nor an AI request is automatic.
+        page.locator('#contractsRefresh').click()
+        expect(page.locator('#contractsSummary b').nth(1)).to_have_text('0')
+        expect(page.locator('#contractsUnmatched')).to_be_empty()
+        assert len(responses.data['unmatched_works']) == 68
+        assert responses.links == []
+        assert not any('agent' in path or 'analy' in path for path, _, _ in responses.calls)
+        assert not errors and page.evaluate('document.documentElement.scrollWidth <= innerWidth')
 
 
 @pytest.mark.parametrize('width', [390, 1440])
