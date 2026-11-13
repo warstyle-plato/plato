@@ -3041,7 +3041,7 @@ function salesChartBlock(d){
 // Три полосы одной ширины — доли внутри каждой считает сервер (`pool.bands`).
 function salesMixBlock(d){
   const bands=((d.pool||{}).bands)||[];
-  // Без квартирографии книги пул неизвестен, но размерность проданного
+  // Без квартирографии книги пул неизвестен, но площадь проданного
   // известна всегда: показываем её нашими полосами и говорим, чего нет.
   // Пустой блок и отсутствующий выглядят одинаково, а значат разное.
   if(!bands.length) return salesSizesOnly(d);
@@ -3078,13 +3078,16 @@ function salesSizesOnly(d){
   if(!(d.by_size||[]).length) return '';
   return salesShareBar(d.by_size, x=>x.band)
     +'<details style="margin-top:8px"><summary>Полосы числами</summary>'
-    +salesTable(['Размер','Лотов','м²','млн ₽','₽/м²'],
+    +salesTable(['Площадь квартиры','Лотов','м²','млн ₽','₽/м²'],
       d.by_size.map(x=>[esc(x.band), num(x.contracts), num(x.area),
         num(x.amount/1e6,1), x.area?num(x.price_per_sqm):'—']))
     +'</details>'
     +'<div class="muted" style="font-size:12.5px;margin-top:6px">'
-    +'Полосы наши, а не проектные: квартирография книги не загружена, '
-    +'поэтому пул и остаток витрины показать не из чего.</div>';
+    +'Квартиры сгруппированы по площади, а не по числу комнат. '
+    +'Квартира ровно на границе относится к следующему диапазону. '
+    +'Это общие диапазоны площади, а не состав квартир проекта. '
+    +'Квартирография проекта не загружена, поэтому общее число квартир '
+    +'и остаток по диапазонам неизвестны.</div>';
 }
 
 // Комнатность проданного. Соседний блок режет метражными полосами книги, и в
@@ -3539,7 +3542,8 @@ function salesShareBar(items, label){
   const rows=(items||[]).filter(x=>x.amount>0);
   if(!rows.length) return '';
   const total=rows.reduce((sum,x)=>sum+x.amount,0);
-  let bar='<div style="display:flex;height:18px;border-radius:4px;overflow:hidden;margin:8px 0 6px">';
+  let bar='<div class="muted" style="font-size:12px">Доли по выручке</div>'
+    +'<div style="display:flex;height:18px;border-radius:4px;overflow:hidden;margin:8px 0 6px">';
   rows.forEach((x,i)=>{
     const w=(x.amount/total*100).toFixed(2);
     bar+=`<div style="width:${w}%;background:${SALES_COLORS[i%SALES_COLORS.length]}"`
@@ -3930,7 +3934,7 @@ function renderSales(d){
     salesMetricButtons('saleschart', salesMetric, SALES_METRICS));
 
   html+=salesSection('sb-mix',
-    (pool.bands||[]).length?'Квартирография: пул, продажи, остаток':'Размерность проданного',
+    (pool.bands||[]).length?'Квартирография: пул, продажи, остаток':'Продажи по площади квартир',
     salesMixBlock(d), salesNote(d,'bands'));
 
   if((d.by_rooms||[]).length){
@@ -4299,7 +4303,7 @@ function salesDigest(d, limit){
       add('план банка', lines, 6);
     }
   }
-  add('размерность', (d.by_size||[]).map(x=>`РАЗМЕР ${x.band}: ${num(x.contracts)} шт, ${num(x.area)} м², ${num(x.amount/1e6,1)} млн ₽`));
+  add('площадь квартир', (d.by_size||[]).map(x=>`ПЛОЩАДЬ КВАРТИРЫ ${x.band}: ${num(x.contracts)} шт, ${num(x.area)} м², ${num(x.amount/1e6,1)} млн ₽`));
   // Комнатность — своя строка, а не пересказ размерности: полоса 28,3-40 м²
   // держит и студию, и однокомнатную. Границу говорим в самой сводке — иначе
   // Платон сравнит наши доли с чьим-нибудь пулом, которого у нас нет.
@@ -4413,7 +4417,7 @@ function salesDigest(d, limit){
   // же «почему не покупают», только числами витрины, и вытеснять их новой
   // темой значит менять один ответ на другой, а не добавлять.
   const ORDER=['выводы','не прочитано','чат: воронка от встреч','оплата','каналы',
-    'пул и вымывание','условия рынка','чат: о чём говорят','размерность','комнатность','продукты',
+    'пул и вымывание','условия рынка','чат: о чём говорят','площадь квартир','комнатность','продукты',
     'воронка обращений','план ФМ','план банка','расторжения','динамика'];
   const rank=name=>(ORDER.indexOf(name)+1)||99;
   groups.sort((a,b)=>rank(a.name)-rank(b.name));

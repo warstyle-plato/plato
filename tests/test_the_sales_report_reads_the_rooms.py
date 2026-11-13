@@ -158,8 +158,6 @@ def test_the_rooms_section_is_drawn_by_the_report_itself() -> None:
     import browser_launch
 
     page = cabinet_page("sales").replace("__DEVELOPAID_VERSION__", "test")
-    file = Path(__file__).resolve().parent / "_rooms_page.html"
-    file.write_text(page, encoding="utf-8")
     payload = {
         "project": "Кутузов Сити",
         "total": {"contracts": 3.0, "units": 3.0, "area": 168.0, "amount": 110_000_000.0,
@@ -176,29 +174,27 @@ def test_the_rooms_section_is_drawn_by_the_report_itself() -> None:
         "dynamics": [], "by_product": [], "by_payment": [], "by_channel": [],
         "by_size": [], "terminated": [], "sources": [],
     }
-    try:
-        with play.sync_playwright() as pw:
-            try:
-                browser = browser_launch.launch(pw)
-            except Exception as exc:  # noqa: BLE001
-                pytest.skip(f"Chromium недоступен: {exc}")
-            try:
-                tab = browser.new_page()
-                errors: list[str] = []
-                tab.on("pageerror", lambda exc: errors.append(str(exc)))
-                tab.route("**/*", lambda route: route.abort()
-                          if route.request.url.startswith("http") else route.continue_())
-                tab.goto(file.as_uri())
-                drawn = tab.evaluate(
-                    """d => { let box=document.querySelector('#sales');
-                              if(!box){ box=document.createElement('div'); box.id='sales';
-                                        document.body.appendChild(box); }
-                              renderSales(d); return box.innerHTML; }""", payload)
-                tab.close()
-            finally:
-                browser.close()
-    finally:
-        file.unlink(missing_ok=True)
+    with play.sync_playwright() as pw:
+        try:
+            browser = browser_launch.launch(pw)
+        except Exception as exc:  # noqa: BLE001
+            pytest.skip(f"Chromium недоступен: {exc}")
+        try:
+            tab = browser.new_page()
+            errors: list[str] = []
+            tab.on("pageerror", lambda exc: errors.append(str(exc)))
+            tab.route("**/*", lambda route: route.abort())
+            # Chromium в управляемой среде может запрещать file://.
+            # Исполняется та же настоящая страница, без временного файла.
+            tab.set_content(page)
+            drawn = tab.evaluate(
+                """d => { let box=document.querySelector('#sales');
+                          if(!box){ box=document.createElement('div'); box.id='sales';
+                                    document.body.appendChild(box); }
+                          renderSales(d); return box.innerHTML; }""", payload)
+            tab.close()
+        finally:
+            browser.close()
     assert not errors, errors
     assert 'id="sb-rms"' in drawn, "раздел комнатности до экрана не доехал"
     assert "Комнатность проданного" in drawn
