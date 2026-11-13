@@ -1145,16 +1145,28 @@ def _build_project_workbook(
             text="1745-ПП, таблица 3: коэффициент доходности Кд по городским "
                  "округам (10 / 5 / 1 %), плата считается по методике области")
         # Сумма в B16 уже за вычетом компенсации по соглашению о Ксу*: книга
-        # называет вычет, иначе плата выглядела бы полной по методике.
-        _compensation_mln = max(0.0, n(x, "mo_vri_compensation_mln"))
+        # называет вычет, иначе плата выглядела бы полной по методике. Вычет
+        # берётся из расчёта МО (сколько вычтено на деле), и только пока плата
+        # в проекте — та, что этот расчёт дал: вписанная поверх сумма — уже
+        # не плата за вычетом, а введённая сумма вычетом не была. Служебные
+        # ключи с «_» в `x` не попадают, поэтому расчёт МО читается из `inputs`.
+        _mo_calc = (inputs or {}).get("_mo_calc")
+        _mo_vri = (_mo_calc.get("vri") or {}) if isinstance(_mo_calc, dict) else {}
+        _applied_rub = _mo_vri.get("compensation_applied_rub")
+        _used_mln = _mo_vri.get("payment_used_mln")
+        _compensation_mln = (
+            max(0.0, float(_applied_rub)) / 1_000_000.0
+            if (_applied_rub is not None and _used_mln is not None
+                and abs(n(x, "land_rights_cost_mln") - float(_used_mln)) < 1e-6)
+            else 0.0)
         _compensation_text = f"{_compensation_mln:,.1f}".replace(",", " ").replace(".", ",")
         sources_xml, _ = _v4_set_cell(
             sources_xml, "I7",
             text="Сумма платы приходит из расчёта; порядок, ставки и рассрочка — "
                  "областные, московские здесь не применяются"
                  + (f". Плата уменьшена на сумму компенсации по соглашению с областью "
-                    f"(1310-ПП, Ксу*), вписанную пользователем: "
-                    f"{_compensation_text} млн ₽, но не ниже 1 ₽"
+                    f"(1310-ПП, Ксу*), вписанную пользователем: вычтено "
+                    f"{_compensation_text} млн ₽, плата не ниже 1 ₽"
                     if _compensation_mln > 0 else ""))
     calculation_id = _calculation_fingerprint(inputs, calculation_source_tep, phasing)
     sources_xml, _ = _v4_set_cell(

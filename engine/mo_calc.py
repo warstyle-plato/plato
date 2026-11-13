@@ -663,12 +663,20 @@ def mo_vri_payment(
     if compensation is not None and compensation <= 0:
         compensation = None
     used = gross
+    # Уменьшают только положительную плату больше рубля: нулевая плата от
+    # компенсации не становится рублём, а плата меньше рубля не растёт до него.
+    applied = compensation is not None and gross is not None and gross > 1.0
     if compensation is not None:
         fmt_mln = lambda rub: f"{rub / 1e6:,.1f}".replace(",", " ").replace(".", ",")
         if gross is None:
             warnings.append(
                 f"Сумма компенсации по соглашению ({fmt_mln(compensation)} млн ₽) введена, но плата "
                 "за смену ВРИ не рассчитана, поэтому уменьшать нечего."
+            )
+        elif not applied:
+            warnings.append(
+                f"Сумма компенсации по соглашению ({fmt_mln(compensation)} млн ₽) введена, но плата "
+                "за смену ВРИ не больше одного рубля, поэтому уменьшать нечего."
             )
         else:
             used = max(1.0, gross - compensation)
@@ -716,8 +724,7 @@ def mo_vri_payment(
         "payment_before_compensation_rub": round(gross, 2) if gross is not None else None,
         # Сумма компенсации по соглашению, как её ввели, и сколько из неё вычтено.
         "compensation_rub": round(compensation, 2) if compensation is not None else None,
-        "compensation_applied_rub": (round(gross - used, 2)
-                                     if (compensation is not None and gross is not None) else None),
+        "compensation_applied_rub": round(gross - used, 2) if applied else None,
         "compensation_basis": "введена пользователем по соглашению о применении Ксу*" if compensation is not None else "",
         # Что берётся в модель: плата за вычетом компенсации.
         "payment_used_rub": round(used, 2) if used is not None else None,
@@ -729,8 +736,7 @@ def mo_vri_payment(
             ("методика по участкам ЕГРН" if payment is not None
              else ("прямая формула Кср × площадь квартир × Кд" if payment_direct is not None
                    else ("Кд не установлен" if kd is None else "не определена")))
-            + (" за вычетом компенсации по соглашению"
-               if (compensation is not None and gross is not None) else "")
+            + (" за вычетом компенсации по соглашению" if applied else "")
         ),
         "warnings": warnings,
     }

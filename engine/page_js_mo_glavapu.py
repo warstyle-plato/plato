@@ -145,6 +145,14 @@ function moCompensationRub(){
  return mln>0?mln*1e6:0;
 }
 
+// Плата после уменьшения бывает 1 ₽: в миллионах с одним знаком это «0,0»,
+// и строка читалась бы как отсутствие платы. Малую сумму пишем в рублях.
+function moFeeText(v){
+ const rub=v.payment_used_rub;
+ if(rub!=null&&rub>0&&rub<100000)return landNum(rub,0)+' ₽';
+ return v.payment_used_mln!=null?landNum(v.payment_used_mln,1)+' млн ₽':'—';
+}
+
 function syncMoCompensation(){
  const field=document.getElementById('moCompensation');
  if(!field)return;
@@ -298,7 +306,7 @@ function renderMo(data){
   ['Площадь участка',landNum(t.site_area_ha,4)+' га'],
   ['Площадь квартир',landNum(s.apartments_sqm,0)+' м²'],
   ['Население',landNum(s.population,0)+' чел.'],
-  ['Плата за смену ВРИ',v.payment_used_mln!=null?landNum(v.payment_used_mln,1)+' млн ₽':'—']
+  ['Плата за смену ВРИ',moFeeText(v)]
  ].map(x=>`<div><small>${escapeHtml(x[0])}</small><b>${escapeHtml(x[1])}</b></div>`).join('');
  const tables=[];
  tables.push(moTable('Территория',[
@@ -342,7 +350,7 @@ function renderMo(data){
    ['Компенсация по соглашению',landNum(v.compensation_rub/1e6,1)+' млн ₽ · '+(v.compensation_basis||'')+
      (v.compensation_applied_rub!=null?' · вычтено '+landNum(v.compensation_applied_rub/1e6,1)+' млн ₽':'')]
   ]:[]),
-  ['Плата за смену ВРИ',(v.payment_used_mln!=null?landNum(v.payment_used_mln,1)+' млн ₽':'—')+' · '+(v.payment_basis||'')]
+  ['Плата за смену ВРИ',moFeeText(v)+' · '+(v.payment_basis||'')]
  ]));
  if((v.parcels||[]).length){
   tables.push(moTable('Кадастровая стоимость участков (ЕГРН)',

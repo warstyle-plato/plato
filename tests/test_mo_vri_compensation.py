@@ -145,6 +145,47 @@ def test_the_tep_recalc_sends_the_sum_again_and_keeps_it(server):
     assert shown["sum"] == pytest.approx(50.0)
 
 
+def test_the_calculation_sends_the_typed_sum(server):
+    # Ошибку внутри своего try расчёт пишет в статус, а не бросает — стенд
+    # такое имя сам не доберёт, поэтому константа берётся со страницы явно.
+    shown, taken = _stand(server(50_000_000), "\n".join([
+        page_blocks.page_const("AVERAGE_FLAT"),
+        "notes.moArea={value:'6.6667'};notes.moCompensation={value:'50'};",
+        "(async()=>{",
+        " await calculateMo('');",
+        " console.log(JSON.stringify({sent:bodies.map(b=>b.vri_compensation_rub),status:notes.cadastralStatus.innerHTML}));",
+        "})().catch(e=>{console.error(e);process.exit(1)});",
+    ]))
+    assert "calculateMo" in taken
+    assert shown["sent"] == [50_000_000], f"расчёт МО не отправил вписанную сумму: {shown}"
+
+
+def test_a_zero_fee_does_not_become_one_ruble():
+    vri = _fee(apartments_sqm=0.0, compensation_rub=5_000_000.0)
+    assert vri["payment_used_rub"] == pytest.approx(0.0)
+    assert vri["compensation_applied_rub"] is None
+    assert not vri["payment_basis"].endswith("за вычетом компенсации по соглашению")
+    assert any("уменьшать нечего" in w for w in vri["warnings"])
+    assert not any("осталось 1 ₽" in w for w in vri["warnings"])
+
+
+def test_a_fee_below_one_ruble_is_not_raised_to_it():
+    vri = _fee(apartments_sqm=0.00004, compensation_rub=5_000_000.0)
+    gross = vri["payment_before_compensation_rub"]
+    assert 0 < gross < 1.0
+    assert vri["payment_used_rub"] == pytest.approx(gross)
+    assert vri["compensation_applied_rub"] is None
+
+
+def test_the_block_shows_one_ruble_not_zero():
+    shown, taken = page_blocks.run(
+        "function landNum(v,d){return Number(v||0).toFixed(d===undefined?1:d)}",
+        "console.log(JSON.stringify([moFeeText({payment_used_rub:1,payment_used_mln:0.000001}),"
+        "moFeeText({payment_used_rub:12500000,payment_used_mln:12.5}),moFeeText({})]))")
+    assert "moFeeText" in taken
+    assert json.loads(shown) == ["1 ₽", "12.5 млн ₽", "—"]
+
+
 def test_a_new_parcel_drops_the_agreement_and_says_so(server):
     shown, taken = _stand(server(0), "\n".join([
         "resetTerritoryData();",
@@ -191,6 +232,14 @@ def _book_text(**over) -> str:
 
 def test_the_book_names_the_deduction_only_when_there_is_one():
     named = "Плата уменьшена на сумму компенсации по соглашению с областью (1310-ПП, Ксу*)"
-    with_sum = _book_text(mo_vri_compensation_mln=1250.5)
-    assert named in with_sum and "1 250,5 млн ₽, но не ниже 1 ₽" in with_sum
+    calc = {"vri": {"compensation_applied_rub": 1_250_500_000.0, "payment_used_mln": 100.0}}
+    with_sum = _book_text(mo_vri_compensation_mln=1300.0, _mo_calc=calc)
+    assert named in with_sum and "вычтено 1 250,5 млн ₽, плата не ниже 1 ₽" in with_sum
     assert named not in _book_text()
+    # Сумма вписана, но расчёт её не вычел (платы не было) — книга молчит.
+    assert named not in _book_text(mo_vri_compensation_mln=1300.0,
+                                   _mo_calc={"vri": {"compensation_applied_rub": None,
+                                                     "payment_used_mln": 100.0}})
+    # Плату в проекте переписали руками поверх расчёта — это уже не плата за вычетом.
+    assert named not in _book_text(mo_vri_compensation_mln=1300.0,
+                                   _mo_calc={"vri": dict(calc["vri"], payment_used_mln=40.0)})
