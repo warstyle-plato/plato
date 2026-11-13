@@ -713,6 +713,27 @@ def build(inputs: dict[str, Any], project_start: date, rve: date,
     return out
 
 
+def sum_state(result: dict[str, Any]) -> dict[str, Any]:
+    """Whether the rent sum itself is determined, and if not, why.
+
+    The one answer for every reader: the row «Аренда земли участка» of the page
+    and the title of «Инвестиционное решение». A payment schedule by the plan
+    accrual and unconfirmed VAT leave the sum determined. A missing input, the
+    rent after commissioning or an unconfirmed condition that changes the sum
+    (`financial_missing`: rates, the first-year premium, the cadastral value
+    after the VRI change, the scope, the land shares of the phases) do not.
+    """
+    if result.get("status") == "not_applicable":
+        return {"known": True, "reason": ""}
+    known = bool(result.get("complete")) and result.get("total") is not None and not result.get("financial_missing")
+    if known:
+        return {"known": True, "reason": ""}
+    reasons = [*(result.get("missing") or []), *(result.get("financial_missing") or [])]
+    if not reasons and result.get("post_rve_unknown"):
+        reasons = ["Аренда после ввода требует отдельного расчёта."]
+    return {"known": False, "reason": str(reasons[0]) if reasons else "Сумма аренды не определена."}
+
+
 def disclosure(result: dict[str, Any]) -> str:
     """One concise qualifier for UI, documents and investment conclusions."""
     if result.get("financial_complete"):

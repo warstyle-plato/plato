@@ -181,14 +181,13 @@ def entry_price_verdict(bundle: dict[str, Any]) -> dict[str, str]:
     по показателю долга и его порогам из движка; без показателя — по прибыли."""
     result = bundle.get("consolidated") or {}
     summary = result.get("summary") or {}
-    land_rent = result.get("land_rent") or {}
     # «Уточните аренду земли» уместно, только когда сумма аренды ещё не
-    # определена. Если аренда уже посчитана, а предварительным остаётся лишь
-    # график оплаты или НДС, карточка должна говорить об экономике по факту,
+    # определена. Решает движок аренды (`summary.land_rent_sum`, тот же ответ
+    # читает строка «Аренда земли участка» на странице). Если предварительны
+    # лишь график оплаты или НДС, карточка говорит об экономике по факту,
     # а оговорку несёт подпись под плитками (`preliminary_reason`).
-    rent_unknown = summary.get("preliminary") and not (
-        land_rent.get("complete") and land_rent.get("total") is not None)
-    if rent_unknown:
+    # Нет ответа движка — сумма не считается определённой.
+    if summary.get("preliminary") and not (summary.get("land_rent_sum") or {}).get("known"):
         return {"title": "Предварительная экономика: уточните аренду земли", "tone": "edge"}
     metric = goal_seek_debt_metric(bundle)
     if not metric.get("key"):

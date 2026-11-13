@@ -14,15 +14,20 @@ engine/page_build.py. Стенды на node берут куски скрипт�
 """
 # ruff: noqa
 
-PAGE += r"""// Строка «Аренда земли участка» в «Параметрах проекта». Применимость и
-// полноту решает движок (`land_rent.status`), страница их только читает.
+PAGE += r"""// Строка «Аренда земли участка» в «Параметрах проекта». Применимость решает
+// движок (`land_rent.status`), определена ли сумма и почему нет — тоже он
+// (`summary.land_rent_sum`, тот же ответ читает карточка «Инвестиционное
+// решение»). Страница только читает.
 function landRentResultRow(r){
- const rent=(r&&r.land_rent)||{};
+ const rent=(r&&r.land_rent)||{},sum=((r&&r.summary)||{}).land_rent_sum||{};
  if(!rent.status||rent.status==='not_applicable')return '';
- const amount=money(Number(((r.capex)||{}).land_rent||0));
- return row('Аренда земли участка',rent.status==='incomplete'
-  ?amount+' <span style="color:#777;font-weight:400">известна не вся сумма: не хватает условий аренды</span>'
-  :amount);
+ const amount=Number(((r.capex)||{}).land_rent||0),note=t=>' <span style="color:#777;font-weight:400">'+escapeHtml(t)+'</span>';
+ if(sum.known)return row('Аренда земли участка',money(amount));
+ const reason=String(sum.reason||'Сумма аренды не определена.');
+ // Ноль при неопределённой сумме — не «аренда бесплатна», а отсутствие данных.
+ return row('Аренда земли участка',amount>0
+  ?money(amount)+note('Это известная часть суммы, она ещё уточнится. '+reason)
+  :'Не определена.'+note(reason));
 }
 
 function renderResult(){
