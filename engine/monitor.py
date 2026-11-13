@@ -260,7 +260,8 @@ def monitor_view(req: MonitorViewRequest) -> dict[str, Any]:
         raise HTTPException(404, str(exc))
 
 
-async def _monitor_admin_expenses_source_job(request: Request, *, start: bool) -> Response:
+async def _monitor_admin_expenses_source_job(request: Request, *, start: bool,
+                                           saved_snapshot: bool = False) -> Response:
     """Explicit admin-only source proof, independent of the financial widget."""
     import secrets as _secrets
     import datetime as _dt
@@ -288,7 +289,8 @@ async def _monitor_admin_expenses_source_job(request: Request, *, start: bool) -
         import developaid_admin_expenses_source as source
         try:
             params = audit._json(bytes(raw))
-            allowed = {"key", "session", "ticket"} | ({"project", "cut"} if start else set())
+            fields = {"project"} if saved_snapshot else {"project", "cut"}
+            allowed = {"key", "session", "ticket"} | (fields if start else set())
             if not isinstance(params, dict) or set(params)-allowed:
                 raise ValueError()
             if not isinstance(params.get("session", ""), str) or len(params.get("session", "")) > 4096:
@@ -300,29 +302,35 @@ async def _monitor_admin_expenses_source_job(request: Request, *, start: bool) -
                 project, cut = params.get("project"), params.get("cut")
                 if not isinstance(project, str) or not project.strip() or len(project) > 200:
                     raise ValueError()
-                if not isinstance(cut, str) or _dt.date.fromisoformat(cut).isoformat() != cut:
+                if not saved_snapshot and (not isinstance(cut, str) or _dt.date.fromisoformat(cut).isoformat() != cut):
                     raise ValueError()
             elif not ticket:
                 raise ValueError()
         except (ValueError, TypeError, audit.AuditError):
             raise HTTPException(400, "Проверьте проект, дату и номер проверки источника.") from None
-        profile = source.PURPOSE
+        profile = source.SAVED_PURPOSE if saved_snapshot else source.PURPOSE
         owner = jobs.owner_binding(_env_str("DEVELOPAID_ADMIN_KEY", "").strip(), session, profile)
         store = jobs.Store(developaid_monitor._SNAPSHOT_DIR / ".admin_ahr_source_jobs")
         if start:
             def collect():
                 try:
-                    return {"ok": True, "source_projection": source.capture(project.strip(), cut,
-                        runtime={"version": VERSION, "commit": COMMIT})}
+                    if saved_snapshot:
+                        projection = source.capture_saved_snapshot(project.strip(), runtime={"version": VERSION, "commit": COMMIT})
+                    else:
+                        projection = source.capture(project.strip(), cut, runtime={"version": VERSION, "commit": COMMIT})
+                    return {"ok": True, "source_projection": projection}
                 except source.SourceProblem as exc:
                     return {"ok": False, "code": exc.code,
                             "detail": "Ограниченная проверка источника АХР не сформирована."}
-            result = store.start(owner, profile, {"project": project.strip(), "cut": cut,
-                "purpose": profile, "click": ticket or _secrets.token_hex(16)}, collect, ticket)
+            context = {"project": project.strip(), "purpose": profile, "click": ticket or _secrets.token_hex(16)}
+            if not saved_snapshot:
+                context['cut'] = cut
+            result = store.start(owner, profile, context, collect, ticket)
         else:
             result = store.poll(ticket, owner, profile)
         if result["pending"]:
-            result["detail"] = "Читаю исходные ячейки АХР. Финансовый расчёт не запускается."
+            result["detail"] = ("Читаю сохранённые ячейки АХР без утверждения их даты и исторической применимости."
+                if saved_snapshot else "Читаю исходные ячейки АХР. Финансовый расчёт не запускается.")
         return JSONResponse(result, status_code=202 if result["pending"] else 200, headers=private)
     except HTTPException as exc:
         exc.headers = {**(exc.headers or {}), **private}
@@ -427,6 +435,16 @@ async def monitor_budget_funding_source(request: Request) -> Response:
 @app.post("/monitor/audit/budget-funding/result", include_in_schema=False)
 async def monitor_budget_funding_source_result(request: Request) -> Response:
     return await _monitor_budget_funding_source_job(request, start=False)
+
+
+@app.post("/monitor/audit/admin-expenses/saved-snapshot", include_in_schema=False)
+async def monitor_admin_expenses_saved_snapshot(request: Request) -> Response:
+    return await _monitor_admin_expenses_source_job(request, start=True, saved_snapshot=True)
+
+
+@app.post("/monitor/audit/admin-expenses/saved-snapshot/result", include_in_schema=False)
+async def monitor_admin_expenses_saved_snapshot_result(request: Request) -> Response:
+    return await _monitor_admin_expenses_source_job(request, start=False, saved_snapshot=True)
 
 
 class MonitorViewResultRequest(BaseModel):
