@@ -32,6 +32,8 @@ from pathlib import Path
 from typing import Any
 
 import developaid_actuals as actuals
+import developaid_admin_expenses as admin_expenses
+import developaid_admin_expenses_cash as admin_cash
 import developaid_credit_repayment as credit_repayment
 import developaid_monitor as monitor
 import developaid_funding_schedule as funding_schedule
@@ -1771,6 +1773,10 @@ def build(project: str, kind: str, end: Any, sales_project: str | None = None,
         view = {}
         dashboard = {"error": f"{type(exc).__name__}: {exc}"}
     for name, collect in (
+            ("admin_expenses", lambda: view.get("admin_expenses") or
+                admin_expenses.for_project(project, bounds["end"].isoformat())),
+            ("admin_expenses_cash", lambda: view.get("admin_expenses_cash") or
+                admin_cash.for_project(project, bounds["end"].isoformat())),
             ("physical", lambda: physical(project, kind, bounds["end"])),
             ("crew", lambda: crew(project, kind, bounds["end"])),
             ("schedule", lambda: schedule(dashboard)),
@@ -3378,6 +3384,13 @@ def render_text(report: dict[str, Any]) -> str:
         lines.append(esc(block.get("reason") or "Данных нет."))
 
     lines += ["", "<b>Финансирование</b>"]
+    admin = report.get("admin_expenses") or admin_expenses.unavailable("Расшифровка АХР не получена.")
+    lines.append("<b>Административные расходы</b>")
+    cash = report.get('admin_expenses_cash') or {}
+    lines.extend(f"{esc(item['label'])}: {esc(item['value'])}. {esc(item['note'])}"
+                 for item in admin_cash.tiles(cash))
+    lines.append(esc(admin_expenses.NOTE))
+    lines.append(esc(admin_expenses.BANK_NOTE))
     lines += [esc(line) for line in _funding_text(report)]
     lines.append(esc("Погашение кредитов: " + credit_main(report.get("credit_due") or {})))
 
@@ -4095,7 +4108,7 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
             if not (limit.get("budget_composition") or {}).get("interest_rows") else "")
          if sections else
          (_by_chapter_words(limit.get("approved_by_chapter")) or "по финмодели")) if need
-        else "финансовая книга не загружена",
+        else admin_expenses.availability_note(report.get("admin_expenses") or {}),
         hint=" ".join(_budget_hint(limit)) if limit.get("known") else "")
     draws = block.get("draws") if block.get("state") == "ok" else None
     # Плашки складываются (владелец, 02.11.2026): «лимит банка» — смета, в неё
@@ -4189,6 +4202,7 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
             "bad" if need["deficit"] > 0 else "good")
     else:
         add("Дефицит на достройку", None, "утверждённый бюджет не загружен")
+    out.extend(admin_cash.tiles(report.get("admin_expenses_cash") or {}))
     if limit.get("known") or limit.get("source_dates"):
         import developaid_monitor_dashboard as dashboard
 
@@ -4816,6 +4830,9 @@ def render_html(report: dict[str, Any]) -> str:
         out.append(_sales_depth_html(report["sales"], report["kind"]))
 
     out.append(_block_heading("funding"))
+    out.append(admin_cash.render(report.get("admin_expenses_cash") or {},
+        admin_expenses.render(report.get("admin_expenses") or
+        admin_expenses.unavailable("Расшифровка АХР не получена.")), show_tiles=False))
     out.append(_funding_html(report))
     out.append(_funding_chart(report))
     out.append(_funding_depth_html(report))
