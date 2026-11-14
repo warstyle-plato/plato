@@ -1,10 +1,11 @@
 """Synthetic bounded lineage, preserving accepted classifier and every cash value."""
 import copy
 import datetime as dt
+from decimal import Decimal
+import hashlib
 import json
+import math
 from pathlib import Path
-import subprocess
-import types
 
 import pytest
 
@@ -13,6 +14,9 @@ import developaid_admin_expenses_cash as cash
 import developaid_admin_expenses_classification_audit as audit
 
 BASE='762b0850ae08420ba490aaf7cf3b92146731af27'
+FIXTURE_SHA256='bac0e6f82fbc443deba51afcec65b1f09d1b0101ce9a81243e204f88d81b6644'
+SOURCE_SHA256={'developaid_actuals.py':'09b3cb69373c66767b90a32897a8702c8077373c525ab02264ccb2ea20d8777d',
+               'developaid_admin_expenses_cash.py':'6e7dd38e4e4e6cd96d876b0596989baf34fe11a9d47041df969c8bbfa211e857'}
 REG={'rows':[{'counterparty':'Admin','contract':'A','estimate_code':'2.6','bdds_code':'2.4.1'}]}
 OFFICIAL={'articles_by_estimate_code':{'2.6':{'project_management'}}}
 
@@ -28,13 +32,36 @@ def calculate(rows=None,reg=None,crosswalk=OFFICIAL,bdds=None):
 
 @pytest.fixture(scope='module')
 def accepted():
-    result=[]
-    for file,name in [('developaid_actuals.py','accepted_actuals'),('developaid_admin_expenses_cash.py','accepted_cash')]:
-        raw=subprocess.check_output(['git','show',BASE+':'+file],text=True)
-        module=types.ModuleType(name);module.__file__=str(Path(file).absolute())
-        exec(compile(raw,'<accepted '+file+'>','exec'),module.__dict__);result.append(module)
-    result[1].actuals=result[0]
+    raw=(Path(__file__).parent/'fixtures'/'admin_expenses_classification_base44.json').read_bytes()
+    assert hashlib.sha256(raw).hexdigest()==FIXTURE_SHA256
+    result=json.loads(raw)
+    assert result['schema']=='admin_expenses_accepted_oracle_v1'
+    assert result['base_commit']==BASE and result['source_sha256']==SOURCE_SHA256
     return result
+
+
+def _canonical(value):
+    """Preserve types and date keys without calculating financial expectations."""
+    if value is None:return ['none']
+    if type(value)is bool:return ['bool',value]
+    if type(value)is int:return ['int',value]
+    if type(value)is float:
+        assert math.isfinite(value)
+        return ['float',value.hex()]
+    if type(value)is str:return ['str',value]
+    if type(value)is dt.datetime:return ['datetime',value.isoformat()]
+    if type(value)is dt.date:return ['date',value.isoformat()]
+    if type(value)is Decimal:return ['decimal',str(value)]
+    if type(value)is dict:
+        items=[[_canonical(key),_canonical(item)]for key,item in value.items()]
+        items.sort(key=lambda item:json.dumps(item[0],sort_keys=True,ensure_ascii=True,separators=(',',':')))
+        return ['dict',items]
+    if type(value)in (list,tuple):return [type(value).__name__,[_canonical(item)for item in value]]
+    if type(value)in (set,frozenset):
+        items=[_canonical(item)for item in value]
+        items.sort(key=lambda item:json.dumps(item,sort_keys=True,ensure_ascii=True,separators=(',',':')))
+        return [type(value).__name__,items]
+    raise TypeError('unsupported synthetic oracle type: '+type(value).__name__)
 
 
 @pytest.mark.parametrize('mode',['contract','party','code','mixed','tax','refund','missing_amount','undated','blank'])
@@ -54,14 +81,13 @@ def test_default_mapper_legacy_events_and_all_cash_fields_equal_accepted(accepte
     elif mode=='blank':
         reg['rows'][0].update(counterparty='—',contract='№')
         for row in rows:row.update(contractor='—',contract='№')
-    old_events=[];new_events=[];payments={'rows':rows,'total':None}
-    old=accepted[0].payments_by_article(copy.deepcopy(payments),copy.deepcopy(reg),crosswalk=copy.deepcopy(crosswalk),classification_observer=old_events.append)
+    new_events=[];payments={'rows':rows,'total':None};expected=accepted['cases'][mode]
+    assert _canonical({'payments':payments,'register':reg,'crosswalk':crosswalk,'budget':{'budget':1000},'bdds':{},'cut':'2023-02-15'})==expected['inputs']
     new=actuals.payments_by_article(copy.deepcopy(payments),copy.deepcopy(reg),crosswalk=copy.deepcopy(crosswalk),classification_observer=new_events.append)
-    assert old==new and old_events==new_events
-    old_cash=accepted[1].calculate({'budget':1000},copy.deepcopy(payments),copy.deepcopy(reg),copy.deepcopy(crosswalk),{},'2023-02-15')
+    assert _canonical(new)==expected['default_mapper'] and _canonical(new_events)==expected['legacy_observer']
     new_cash=cash.calculate({'budget':1000},copy.deepcopy(payments),copy.deepcopy(reg),copy.deepcopy(crosswalk),{},'2023-02-15')
     new_cash.pop('classification_audit')
-    assert json.dumps(old_cash,sort_keys=True,allow_nan=False)==json.dumps(new_cash,sort_keys=True,allow_nan=False)
+    assert _canonical(new_cash)==expected['cash']
 
 
 @pytest.mark.parametrize('official,state',[(None,'unavailable'),({},'missing'),
@@ -190,8 +216,8 @@ def test_diagnostic_failure_never_changes_known_cash_or_classifier_results(monke
     def fail(*args,**kwargs):raise RuntimeError('PRIVATE-DIAGNOSTIC-ERROR')
     monkeypatch.setattr(audit.AuditEvents,method,fail)
     result=calculate();detail=result.pop('classification_audit')
-    expected=accepted[1].calculate({'budget':1000},{'rows':[pay(),pay(row=11)]},REG,OFFICIAL,{},'2023-02-15')
-    assert result==expected and detail['state']=='diagnostic_unavailable'
+    expected=accepted['diagnostic_failure_expected']
+    assert _canonical(result)==expected and detail['state']=='diagnostic_unavailable'
     assert 'PRIVATE' not in json.dumps(detail)
 
 
