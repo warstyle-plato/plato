@@ -19,6 +19,7 @@ import zipfile
 import developaid_cached_source_audit as audit
 
 PURPOSE = "ahr_cached_cells_v1"
+SAVED_PURPOSE = "ahr_raw_saved_snapshot_cells_v1"
 MAX_SOURCE = 16 * 1024 * 1024
 MAX_EXPANDED = 128 * 1024 * 1024
 MAX_ROWS = 20000
@@ -354,4 +355,44 @@ def capture(project, cut, *, runtime):
         raise SourceProblem("source_changed")
     if len(json.dumps(result, ensure_ascii=False, allow_nan=False).encode()) > MAX_OUTPUT:
         raise SourceProblem("projection_size_limit")
+    return result
+
+
+def capture_saved_snapshot(project, *, runtime):
+    """Inspect current saved cells explicitly, without a historical cut claim.
+
+    A missing effective date is not repaired, inferred from mtime/upload time,
+    or waived by the historical capture path. This separate diagnostic scope
+    only exposes the same bounded leaf/header projection for primary review.
+    """
+    if not isinstance(project, str) or not project.strip() or len(project) > 200 \
+            or any(char in project for char in ('/', '\\', '\0')):
+        raise SourceProblem('request_invalid')
+    data, meta, source = _copy(project.strip())
+    try:
+        version = dt.date.fromisoformat(meta.get('taken_at'))
+    except (TypeError, ValueError):
+        version = None
+    source.update(sheet='cf_1_new', version_date=version.isoformat() if version else None,
+        selection_basis='current_stored_bytes_not_a_historical_cut')
+    try:
+        rows, headers, units = _cells(data)
+    except SourceProblem:
+        raise
+    except Exception:
+        raise SourceProblem('workbook_unreadable') from None
+    result = {'schema': 1, 'purpose': SAVED_PURPOSE, 'scope': 'raw_saved_snapshot',
+        'state': 'raw_saved_snapshot_read', 'captured_at': dt.datetime.now(dt.timezone.utc).isoformat(),
+        'runtime': {key: str(runtime.get(key) or '')[:64] for key in ('version', 'commit')},
+        'source': source, 'source_date_state': 'unknown' if version is None else 'declared_in_metadata',
+        'historical_cut': None, 'historical_eligibility_evaluated': False,
+        'financial_acceptance': False, 'values_are_raw_cached_cells': True,
+        'nonnumeric_values_redacted': True, 'source_files_written': False,
+        'rows': rows, 'header_cells': headers, 'unit_evidence': units}
+    _, again_meta, again_source = _copy(project.strip())
+    identity = ('sha256', 'namespace_sha256', 'aliases_sha256', 'metadata_sha256')
+    if meta != again_meta or any(source[key] != again_source[key] for key in identity):
+        raise SourceProblem('source_changed')
+    if len(json.dumps(result, ensure_ascii=False, allow_nan=False).encode()) > MAX_OUTPUT:
+        raise SourceProblem('projection_size_limit')
     return result
