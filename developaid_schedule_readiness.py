@@ -535,6 +535,8 @@ def render(state):
     if project['progress'] is not None:
         out.append('<h4>Всего по жилым корпусам</h4>' if state.get('estimated') else '<h4>Общая готовность</h4>')
         out.append('<strong class="readiness-project-value">'+esc(f"{project['progress']*100:.1f}%".replace('.', ','))+'</strong>')
+        if project.get('coverage') is not None:
+            out.append('<p class="readiness-project-coverage">Расчёт охватывает '+esc(f"{project['coverage']:.1f}%".replace('.', ','))+' оценочного веса разделов.</p>')
         if state.get('project_weight_estimated'):
             out.append('<p class="readiness-corpus-assumption">'+esc(state['project_weight_basis'])+'. Допущение для общей оценки СМР; ПИР и паркинг в неё не включены.</p>')
         forecast = project.get('forecast') or {}
