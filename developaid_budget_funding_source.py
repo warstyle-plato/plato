@@ -184,13 +184,186 @@ def _book(raw):
         raise SourceProblem('workbook_unreadable') from None
 
 
+class _BoundedWorksheetView:
+    """Read-only bounds proved from the complete XML, never a source edit."""
+    def __init__(self, sheet, rows, columns):
+        self._sheet = sheet
+        self.title = sheet.title
+        self.max_row = rows
+        self.max_column = columns
+
+    def iter_rows(self, **kwargs):
+        requested = kwargs.get('max_row')
+        if requested is not None and (type(requested) is not int or requested < 1):
+            raise ValueError('invalid_bounded_row')
+        kwargs['max_row'] = min(requested, self.max_row) if requested is not None else self.max_row
+        if kwargs.get('max_col') is None:
+            kwargs['max_col'] = self.max_column
+        column = kwargs['max_col']
+        if type(column) is not int or not 1 <= column <= MAX_COLUMNS or kwargs['max_row'] * column > MAX_CELLS:
+            raise ValueError('invalid_bounded_column')
+        for key in ('min_row', 'min_col'):
+            if key in kwargs and (type(kwargs[key]) is not int or kwargs[key] < 1):
+                raise ValueError('invalid_bounded_minimum')
+        if kwargs.get('min_row', 1) > kwargs['max_row'] or kwargs.get('min_col', 1) > column:
+            return iter(())
+        return self._sheet.iter_rows(**kwargs)
+
+    def cell(self, row, column):
+        # The complete proof established that coordinates beyond payload extent
+        # are blank. Preserve the native blank-cell protocol within old bounds.
+        if (type(row) is not int or type(column) is not int
+                or not 1 <= row <= MAX_ROWS or not 1 <= column <= MAX_COLUMNS
+                or row * column > MAX_CELLS):
+            raise ValueError('cell_outside_read_bounds')
+        return self._sheet.cell(row, column)
+
+
+class _ExtentStream:
+    def __init__(self, stream):
+        self.stream = stream
+        self.bytes = 0
+
+    def read(self, size=65536):
+        size = min(size, 65536) if size >= 0 else 65536
+        chunk = self.stream.read(size)
+        self.bytes += len(chunk)
+        if self.bytes > ahr.MAX_EXPANDED:
+            raise ValueError('extent_read_limit')
+        return chunk
+
+
+def _extent_coordinate(value):
+    if not isinstance(value, str):
+        raise ValueError('coordinate_missing')
+    match = re.fullmatch(r'([A-Z]{1,3})([1-9][0-9]{0,6})', value)
+    if match is None:
+        raise ValueError('coordinate_invalid')
+    column = 0
+    for letter in match[1]:
+        column = column * 26 + ord(letter) - ord('A') + 1
+    row = int(match[2])
+    if row > 1048576 or column > 16384:
+        raise ValueError('coordinate_outside_excel')
+    return row, column
+
+
+def _verified_payload_extent(sheet):
+    """A failed/ambiguous proof returns None, never an empty successful sheet.
+
+    Values/formula text are not inspected or retained. All payload coordinates,
+    including uncached/shared formulas, are checked before a bounded view exists.
+    """
+    try:
+        from lxml import etree
+        namespace = '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}'
+        worksheet, data, row_tag, cell_tag = (namespace + name for name in ('worksheet', 'sheetData', 'row', 'c'))
+        stack = []
+        data_seen = False
+        active_row = None
+        previous_row = previous_column = 0
+        active_cell = None
+        max_row = max_column = nodes = cells = 0
+
+        def include(row, column):
+            nonlocal max_row, max_column
+            max_row, max_column = max(max_row, row), max(max_column, column)
+            if max_row > MAX_ROWS or max_column > MAX_COLUMNS or max_row * max_column > MAX_CELLS:
+                raise ValueError('payload_size_limit')
+
+        with sheet._get_source() as raw:
+            stream = _ExtentStream(raw)
+            parsed = etree.iterparse(stream, events=('start', 'end'), resolve_entities=False,
+                load_dtd=False, no_network=True, recover=False, huge_tree=False)
+            for event, element in parsed:
+                tag = element.tag
+                if not isinstance(tag, str):
+                    raise ValueError('entity_or_unknown_node')
+                local = tag.rsplit('}', 1)[-1]
+                if event == 'start':
+                    parent = stack[-1] if stack else None
+                    stack.append(tag)
+                    nodes += 1
+                    if len(stack) > 64 or nodes > MAX_CELLS * 8:
+                        raise ValueError('xml_resource_limit')
+                    if len(stack) == 1:
+                        if tag != worksheet or element.getroottree().docinfo.doctype:
+                            raise ValueError('worksheet_namespace_or_doctype')
+                    if local in ('sheetData', 'row', 'c', 'v', 'f', 'is') and tag != namespace + local:
+                        raise ValueError('payload_namespace_unknown')
+                    if tag == data:
+                        if parent != worksheet or data_seen:
+                            raise ValueError('sheet_data_ambiguous')
+                        data_seen = True
+                    elif tag == row_tag:
+                        reference = element.get('r', '')
+                        if parent != data or not re.fullmatch(r'[1-9][0-9]{0,6}', reference):
+                            raise ValueError('row_reference_unknown')
+                        active_row = int(reference)
+                        if not previous_row < active_row <= 1048576:
+                            raise ValueError('row_reference_order')
+                        previous_row, previous_column = active_row, 0
+                    elif tag == cell_tag:
+                        if parent != row_tag or active_row is None or active_cell is not None:
+                            raise ValueError('cell_structure_unknown')
+                        row, column = _extent_coordinate(element.get('r'))
+                        if row != active_row or column <= previous_column:
+                            raise ValueError('cell_reference_order')
+                        previous_column = column
+                        cells += 1
+                        if cells > MAX_CELLS:
+                            raise ValueError('xml_cell_resource_limit')
+                        active_cell = {'row': row, 'column': column,
+                            'payload': element.get('t', 'n') != 'n' or bool(set(element.attrib) - {'r', 's', 't'})}
+                    elif active_cell is not None:
+                        # Even empty v/f/is and unknown cell children are not
+                        # proven formatting-only. Formula areas are also bounded.
+                        active_cell['payload'] = True
+                        if tag == namespace + 'f' and 'ref' in element.attrib:
+                            area = element.get('ref').split(':')
+                            if not 1 <= len(area) <= 2:
+                                raise ValueError('formula_area_unknown')
+                            first = _extent_coordinate(area[0])
+                            last = _extent_coordinate(area[-1])
+                            if first[0] > last[0] or first[1] > last[1]:
+                                raise ValueError('formula_area_order')
+                            include(*last)
+                    elif local in ('v', 'f', 'is'):
+                        raise ValueError('payload_outside_cell')
+                else:
+                    if not stack or stack.pop() != tag:
+                        raise ValueError('xml_structure_unknown')
+                    if element.tail and element.tail.strip():
+                        raise ValueError('mixed_worksheet_content')
+                    if tag in (cell_tag, row_tag, data) and element.text and element.text.strip():
+                        raise ValueError('mixed_cell_or_row_content')
+                    if tag == cell_tag:
+                        if active_cell['payload'] or len(element):
+                            include(active_cell['row'], active_cell['column'])
+                        active_cell = None
+                    elif tag == row_tag:
+                        active_row = None
+                    element.clear()
+                    while element.getprevious() is not None:
+                        del element.getparent()[0]
+            # Complete parse and read through ZIP EOF/CRC, not an XML prefix.
+            if stream.read(1) or stack or not data_seen or not max_row or not max_column:
+                raise ValueError('extent_not_proven')
+        return max_row, max_column
+    except Exception:
+        return None
+
+
 def _sheet(book, name):
     if name not in book.sheetnames:
         raise SourceProblem('required_sheet_missing')
     sheet = book[name]
     if sheet.max_row > MAX_ROWS or sheet.max_column > MAX_COLUMNS \
             or sheet.max_row * sheet.max_column > MAX_CELLS:
-        raise _WorksheetSizeProblem(name, sheet.max_row, sheet.max_column)
+        extent = _verified_payload_extent(sheet)
+        if extent is None:
+            raise _WorksheetSizeProblem(name, sheet.max_row, sheet.max_column)
+        return _BoundedWorksheetView(sheet, *extent)
     return sheet
 
 
