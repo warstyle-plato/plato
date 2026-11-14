@@ -459,6 +459,7 @@ def enrich(project: str, cut: str, register: dict, *, build_register: Callable[[
         if current_day and cutoff and current_day > cutoff:
             row['progress'].update(ratio=None, state='future_source', reason=
                                    'Дата источника позже выбранного среза; процент не использован.')
+    seen_observations = {id(row): set() for row in rows}
     errors, truncated = 0, False
     try:
         selected, truncated = (_selected_snapshots(project, current_day)
@@ -498,7 +499,17 @@ def enrich(project: str, cut: str, register: dict, *, build_register: Callable[[
             elif not candidates:
                 state, reason = 'previous_contract_missing', 'В предыдущем снимке этот договор не представлен; отсутствие не считается нулём.'
             else:
-                row['progress']['series'].append(_point(_observation(candidates[0], previous)))
+                candidate = candidates[0]
+                point = _point(_observation(candidate, previous))
+                if point.get('snapshot_id') and _day(point.get('observation_date')):
+                    # A union register on another archive date can carry this
+                    # exact own-source observation again. It is not new progress.
+                    sources = sorted(_source_key(source) for source in candidate.get('sources') or [])
+                    observation_key = _digest([identity, sources, point])
+                    if observation_key in seen_observations[id(row)]:
+                        continue
+                    seen_observations[id(row)].add(observation_key)
+                row['progress']['series'].append(point)
                 continue
             row['progress']['series'].append({'ratio': None, 'observation_date': date,
                 'snapshot_id': identifiers[0] if len(identifiers) == 1 else None,

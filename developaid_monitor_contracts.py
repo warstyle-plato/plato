@@ -853,8 +853,25 @@ def _composition(project: str, cut: str, cache: dict | None = None) -> dict:
     primary, summaries, unresolved, carried = [], [], [], []
     newer: dict[tuple, set] = {}
     newer_sources: set[tuple] = set()
+    selected_sheets, reduced_sheets = {}, {}
     for position, archive in enumerate(archives):
         items, sources, notes, owners = _qualify(archive, cut)
+        archive_sheets = {}
+        for item in items:
+            identity = _identity(item)
+            if identity:
+                sheets = archive_sheets.setdefault(identity, set())
+                if item.get("kind") == "ledger":
+                    filename, sheet = _source_place(item.get("source"))
+                    sheets.add((item.get("file_sha256") or filename, sheet))
+        for identity, sheets in archive_sheets.items():
+            if identity in selected_sheets and identity not in reduced_sheets:
+                day, selected = selected_sheets[identity]
+                if len(sheets) > len(selected):
+                    reduced_sheets[identity] = (
+                        f"В архиве от {_ru_date(day)} листов ведомостей этого договора меньше: "
+                        f"{len(selected)} вместо {len(sheets)} в архиве от {_ru_date(archive.get('taken_at'))}. "
+                        "Использованы только данные выбранного архива; прежние листы не добавлены.")
         if position:
             decisions = {id(item): _carry(item, newer) for item in [*items, *sources]}
             day = _date(archive.get("taken_at"))
@@ -882,13 +899,16 @@ def _composition(project: str, cut: str, cache: dict | None = None) -> dict:
         unresolved.extend(notes)
         for item in items:
             newer.setdefault(_base_key(item), set()).add(_date(item.get("contract_date")))
+            identity = _identity(item)
+            if identity and identity not in selected_sheets:
+                selected_sheets[identity] = (archive.get("taken_at"), archive_sheets[identity])
         newer_sources.update(_source_place(record.get("source"))
                              for record in [*(archive.get("ledgers") or []), *(archive.get("summary_contracts") or [])])
     snapshot = archives[0] if archives else None
     return {"snapshot": snapshot, "source_date": (snapshot or {}).get("taken_at"),
             "by_snapshot": {archive.get("snapshot_id"): archive for archive in archives},
             "primary": primary, "summaries": summaries, "unresolved": unresolved,
-            "carried": carried, "warnings": warnings}
+            "carried": carried, "warnings": warnings, "reduced_sheets": reduced_sheets}
 
 
 def _source_place(source: Any) -> tuple[str, str]:
@@ -955,6 +975,8 @@ def build(project: str, cut: str = "", *, include_history: bool = True,
         rss_items = [x for x in items if x.get("kind") == "rss"]
         summary_items = [x for x in items if x.get("kind") == "summary"]
         row_warnings = _warnings([v for x in items for v in [*(x.get("warnings") or []), *(x.get("identity_warnings") or [])]])
+        if identity in composition["reduced_sheets"]:
+            row_warnings.append(composition["reduced_sheets"][identity])
         rss_amount, rss_completed, rss_amount_basis, rss_completed_basis = _rss_money(items, row_warnings)
         summary_amount, summary_completed, summary_amount_basis, summary_completed_basis = _summary_money(items, cut, row_warnings)
         amount, amount_basis = (summary_amount, summary_amount_basis) if summary_items else (rss_amount, rss_amount_basis)

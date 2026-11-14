@@ -214,3 +214,87 @@ def test_upload_message_names_contracts_kept_from_earlier_archives(width, monkey
         expect(message).to_contain_text('Договоров в этом архиве: 1.', timeout=10000)
         expect(message).to_contain_text('Ещё договоров из прежних архивов остаются в реестре: 2 — в этом архиве их нет')
         assert message.is_visible() and not errors
+
+
+def test_other_contract_archives_do_not_repeat_a_carried_observation_before_its_update(context):  # noqa: F811
+    context.setattr(contracts, '_archive', ARCHIVE_READER)
+    days = [(TODAY - dt.timedelta(days=n)).isoformat() for n in (12, 8, 4, 0)]
+    first = ledgers.store_archive(PROJECT, archive([('A.xlsx', ks())]), days[0])
+    ledgers.store_archive(PROJECT, archive([('B.xlsx', ks(number='B-24'))]), days[1])
+    ledgers.store_archive(PROJECT, archive([('C.xlsx', ks(number='C-36'))]), days[2])
+    latest = ledgers.store_archive(PROJECT, archive([('A.xlsx', grown())]), days[3])
+    row = by_number(contracts.build(PROJECT, days[3]))['A-12']
+    points = row['progress']['series']
+    assert [(p['observation_date'], p['snapshot_id']) for p in points] == [
+        (days[0], first['snapshot_id']), (days[3], latest['snapshot_id'])]
+    assert row['progress']['previous_ratio'] == pytest.approx(400/1020)
+    assert row['progress']['ratio'] == pytest.approx(500/1020)
+    assert row['observation_forecast']['state'] == 'estimated'
+    assert row['observation_forecast']['point_count'] == 2
+
+
+def test_an_unchanged_amount_in_a_new_own_archive_is_still_a_real_observation(context):  # noqa: F811
+    context.setattr(contracts, '_archive', ARCHIVE_READER)
+    first = ledgers.store_archive(PROJECT, archive([('A.xlsx', ks())]), FIRST)
+    ledgers.store_archive(PROJECT, archive([('B.xlsx', ks(number='B-24'))]), MIDDLE)
+    latest = ledgers.store_archive(PROJECT, archive([('A.xlsx', ks())]), SECOND)
+    row = by_number(contracts.build(PROJECT, SECOND))['A-12']
+    assert [p['snapshot_id'] for p in row['progress']['series']] == [first['snapshot_id'], latest['snapshot_id']]
+    assert row['progress']['change_kind'] == 'unchanged'
+    assert row['observation_forecast']['state'] == 'no_recent_growth'
+
+
+def test_fewer_new_sheets_are_named_without_adding_the_previous_month(context):  # noqa: F811
+    context.setattr(contracts, '_archive', ARCHIVE_READER)
+    ledgers.store_archive(PROJECT, archive([
+        ('A-January.xlsx', ks(period='jan')), ('A-February.xlsx', ks(period='feb'))]), FIRST)
+    latest = ledgers.store_archive(PROJECT, archive([('A-January.xlsx', ks(period='jan'))]), SECOND)
+    row = by_number(contracts.build(PROJECT, SECOND, include_history=False))['A-12']
+    assert row['completed'] == 200 and len(row['sources']) == 1
+    assert row['source_snapshot_id'] == latest['snapshot_id'] and row['source_date'] == SECOND
+    assert any(f'1 вместо 2 в архиве от {ru(FIRST)}' in reason and 'прежние листы не добавлены' in reason
+               for reason in row['warnings'])
+
+
+def test_another_partial_archive_does_not_silently_confirm_the_reduced_sheet_set(context):  # noqa: F811
+    context.setattr(contracts, '_archive', ARCHIVE_READER)
+    ledgers.store_archive(PROJECT, archive([
+        ('A-January.xlsx', ks(period='jan')), ('A-February.xlsx', ks(period='feb'))]), FIRST)
+    ledgers.store_archive(PROJECT, archive([('A-January.xlsx', ks(period='jan'))]), MIDDLE)
+    ledgers.store_archive(PROJECT, archive([('A-January.xlsx', ks(period='jan'))]), SECOND)
+    row = by_number(contracts.build(PROJECT, SECOND, include_history=False))['A-12']
+    assert row['completed'] == 200 and len(row['sources']) == 1
+    assert any(f'1 вместо 2 в архиве от {ru(FIRST)}' in reason for reason in row['warnings'])
+
+
+def test_identical_workbook_copies_are_not_a_false_sheet_loss(context):  # noqa: F811
+    context.setattr(contracts, '_archive', ARCHIVE_READER)
+    same = ks()
+    ledgers.store_archive(PROJECT, archive([('A.xlsx', same), ('A-copy.xlsx', same)]), FIRST)
+    ledgers.store_archive(PROJECT, archive([('A.xlsx', same)]), SECOND)
+    row = by_number(contracts.build(PROJECT, SECOND, include_history=False))['A-12']
+    assert not any('листов ведомостей этого договора меньше' in reason for reason in row['warnings'])
+
+
+@pytest.mark.parametrize('width', [390, 1440])
+def test_reduced_sheet_warning_is_visible_in_the_existing_card_sources(context, width):  # noqa: F811
+    from playwright.sync_api import expect
+    from test_monitor_cumulative_controls import browser_page
+    from tests.contract_rows import row as contract_row
+    context.setattr(contracts, '_archive', ARCHIVE_READER)
+    ledgers.store_archive(PROJECT, archive([
+        ('A-January.xlsx', ks(period='jan')), ('A-February.xlsx', ks(period='feb'))]), FIRST)
+    ledgers.store_archive(PROJECT, archive([('A-January.xlsx', ks(period='jan'))]), SECOND)
+    view = contracts.build(PROJECT, SECOND, include_history=False)
+    current = by_number(view)['A-12']
+    with browser_page(width) as (page, responses, errors):
+        responses.data = view
+        page.locator('#contractsTab').click()
+        line = contract_row(page, current['id'])
+        expect(line.locator('.contract-attention')).to_contain_text('Есть замечания')
+        line.locator('.contract-open').click()
+        page.locator('#contractRecordSources > summary').click()
+        page.locator('#contractRecordSources > .contract-sources > summary').click()
+        warning = page.locator('#contractRecordSources .contract-warning')
+        expect(warning).to_contain_text(f'1 вместо 2 в архиве от {ru(FIRST)}')
+        assert warning.is_visible() and not errors
