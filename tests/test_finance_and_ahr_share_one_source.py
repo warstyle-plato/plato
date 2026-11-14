@@ -95,3 +95,36 @@ def test_real_monitor_keeps_ahr_before_canonical_financial_return_and_clears_the
         assert card.inner_text() == ''
         assert page.evaluate('!currentView || (!currentView.admin_expenses && !currentView.admin_expenses_html)')
         assert not errors
+
+
+@pytest.mark.parametrize('width', [390, 1440])
+@pytest.mark.parametrize('canonical', [False, True])
+def test_financial_source_reason_is_inert_text_in_kpis_and_plain_text_in_fallback(tmp_path, monkeypatch, width, canonical):
+    from playwright.sync_api import expect
+    from test_monitor_cumulative_controls import browser_page
+    import developaid_funding_reconciliation as reconciliation_module
+    _, view, _ = composed(tmp_path, monkeypatch, unknown_payment=True)
+    funding = view['dashboard']['funding']
+    payload = 'Источник A&B: <svg onload="window.financeSourceInjected=true"></svg>'
+    funding['reason'] = payload
+    if canonical:
+        funding['reconciliation']['budget'] = None
+        funding['reconciliation']['display_rows'] = reconciliation_module.display_rows(funding['reconciliation'])
+    else:
+        funding.pop('reconciliation', None)
+        funding['known'] = False
+        view['dashboard']['construction']['approved'] = None
+    with browser_page(width) as (page, responses, errors):
+        page.evaluate("view=>{currentView=view;renderDash(view);selectMonitorTab('money')}", view)
+        expect(page.locator('#adminExpensesCard')).to_be_visible()
+        assert page.locator('#kpis svg').count() == 0
+        assert page.evaluate('window.financeSourceInjected') is None
+        assert payload in page.locator('#kpis').inner_text()  # Encoded exactly once at HTML sinks.
+        reason_card = page.locator('#kpis .kpi').filter(
+            has=page.locator('.l', has_text='КС / утверждённый бюджет'))
+        assert reason_card.inner_text().count('A&B') == 1
+        if not canonical:
+            expect(page.locator('#financeBars')).to_contain_text(payload)  # textContent is not HTML-encoded.
+            assert page.locator('#financeBars').inner_text().count('A&B') == 1
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+        assert not errors
