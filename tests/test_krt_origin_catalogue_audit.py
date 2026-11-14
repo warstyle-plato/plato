@@ -295,6 +295,29 @@ def test_nested_named_anchors_preserve_adjacent_status_observations(mock_origin)
     assert result['quality_gaps'] == ['duplicate_slug', 'conflicting_status']
 
 
+@pytest.mark.parametrize('inner_href', ['/other', '#details', ''])
+def test_malformed_nested_anchor_has_typed_coverage_failure(mock_origin, inner_href):
+    body = (f'<a href="/projects/same-site"><a href="{inner_href}">Named card</a></a>'
+            '<p>Статус: Планируемый</p>').encode()
+    calls, _ = mock_origin(lambda request: httpx2.Response(200, content=body))
+    result = capture()
+    assert len(calls) == 1 and not result['walk_complete'] and not result['complete']
+    assert result['gaps'] == ['project_identity_coverage_incomplete'] and result['roster'] == []
+    assert result['pages'][0]['body_complete'] and result['pages'][0]['sha256'] == hashlib.sha256(body).hexdigest()
+
+
+def test_later_malformed_anchor_keeps_prior_observed_receipt(mock_origin):
+    first = page('site-one', next_url='/projects/?PAGEN_1=2')
+    second = '<a href="/projects/same-site"><a href="/other">Name</a></a><p>Статус: Планируемый</p>'.encode()
+    calls, _ = mock_origin(lambda request: httpx2.Response(200, content=first if not request.url.query else second))
+    result = capture()
+    assert len(calls) == 2 and not result['walk_complete'] and not result['complete']
+    assert result['gaps'] == ['project_identity_coverage_incomplete']
+    assert result['roster'] == [{'slug': 'site-one', 'status': 'В реализации'}]
+    assert result['observed_occurrence_count'] == result['observed_unique_slug_count'] == 1
+    assert [p['sha256'] for p in result['pages']] == [hashlib.sha256(first).hexdigest(), hashlib.sha256(second).hexdigest()]
+
+
 def test_conflicting_status_labels_within_one_occurrence_are_observed_not_silently_overwritten(mock_origin):
     first = page('same-site', 'Планируемый', next_url='/projects/?PAGEN_1=2')
     first += '<p>Статус: В реализации</p>'.encode()

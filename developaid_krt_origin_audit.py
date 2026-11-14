@@ -184,6 +184,8 @@ def _page_rows(raw):
             if len(occurrence) != 1 or occurrence[0].slug != slug:
                 return [], None, "project_identity_coverage_incomplete"
             rows.extend(occurrence)
+    if len(rows) != len(markers.named_projects) or len(rows) != len(markers.status_observations):
+        return [], None, "project_identity_coverage_incomplete"
     if markers.project_slugs != {row.slug for row in rows}:
         return [], None, "project_identity_coverage_incomplete"
     if markers.links and (len(markers.links) != 1 or not markers.links[0] or not next_url):
