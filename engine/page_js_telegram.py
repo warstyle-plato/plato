@@ -37,7 +37,8 @@ async function loadTelegramSessionData(){
  });
  const payload=await response.json();
  if(!response.ok)throw new Error(serverDetail(payload)||'Telegram-сессия недействительна');
- return payload||{};
+ if(!payload||typeof payload!=='object'||Array.isArray(payload))throw new Error('Параметры ссылки не проверены. Вернитесь к карточке в чате.');
+ return payload;
 }
 
 // Тот ли это проект, что в открытой карточке. Сверяем площадь квартир и
@@ -207,7 +208,11 @@ async function runTelegramLaunch(){
  if(telegramSession){
   try{
    sessionData=await loadTelegramSessionData();
-   telegramOverridesReviewRequired=sessionData.overrides_review_required===true;
+   const suppliedOverrides=sessionData.calc_overrides;
+   const overrideRecord=suppliedOverrides!==null&&typeof suppliedOverrides==='object'&&!Array.isArray(suppliedOverrides);
+   const legacyEmpty=suppliedOverrides==null||(overrideRecord&&Object.keys(suppliedOverrides).length===0);
+   telegramOverridesReviewRequired=!(sessionData.overrides_review_required===false&&overrideRecord)
+    &&!(sessionData.overrides_review_required===undefined&&legacyEmpty);
    telegramCalcOverrides=telegramOverridesReviewRequired?{}:(sessionData.calc_overrides||{});
    if(telegramOverridesReviewRequired){telegramOverridesReviewNotice();return}
   }catch(e){

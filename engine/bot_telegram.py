@@ -1167,7 +1167,7 @@ def _telegram_handle_dialog_text(chat_id: int, text: str) -> bool:
                     _telegram_send_message(chat_id, "Чтение документа отменено.")
                 return True
             _telegram_send_message(chat_id,
-                "Документ ещё читается; ответ на предыдущую карточку пока не принят. "
+                "Разбор ещё не завершён; ответ на предыдущую карточку пока не принят. "
                 "Команда /cancel отменит чтение."
                 if (dialog.get("document_read") or {}).get("status") == "loading" else
                 "Разбор документа не завершён. Предыдущие ответы сохранены; "
@@ -1219,6 +1219,12 @@ def _telegram_handle_dialog_text(chat_id: int, text: str) -> bool:
                 return True
             index = int(queue.get("index") or 0)
             said = str(text or "").strip()
+            try:
+                _telegram_intake_expect_shown(queue, intake)
+            except HTTPException as exc:
+                if exc.status_code != 409:raise
+                _telegram_intake_queue_conflict(chat_id, dialog, {"index":index,"action":"answer","value":said})
+                return True
             pending = intake.get("pending_choice") or {}
             choice = int(pending.get("choice", -1)) if int(pending.get("index", -1)) == index else -1
             legacy = choice >= 0 and pending.get("intake_id") != queue.get("id")
@@ -1257,10 +1263,11 @@ def _telegram_handle_dialog_text(chat_id: int, text: str) -> bool:
                 return True
             if (not said and 0 <= choice < len(options) and options[choice].get("target")
                     and options[choice].get("value") is None):
-                intake["pending_choice"] = {"index": index, "choice": choice, "intake_id": queue["id"]}
+                intake["pending_choice"] = {"index": index, "choice": choice, "intake_id": queue["id"],
+                    **_telegram_intake_queue_binding(queue)}
                 dialog["intake"] = intake
                 _telegram_dialog_save(chat_id, dialog)
-                _telegram_intake_amount_prompt(chat_id, cards[index], index, choice, queue["id"])
+                _telegram_intake_amount_prompt(chat_id, cards[index], index, choice, queue["id"], _intake_question_token(queue))
                 return True
             _telegram_intake_answer(chat_id, dialog, index=index, action="answer",
                                     choice=choice, value=said)
@@ -1810,7 +1817,43 @@ def _telegram_intake_card(chat_id: int, dialog: dict[str, Any]) -> dict[str, Any
     return queue
 
 
-def _telegram_intake_amount_prompt(chat_id: int, ask: dict, index: int, choice: int, intake_id: str) -> None:
+def _telegram_intake_queue_binding(queue: dict[str, Any]) -> dict[str, Any]:
+    return {"queue_revision": queue.get("revision", 0),
+            "question_token": _intake_question_token(queue)}
+
+
+def _telegram_intake_expect_shown(queue: dict[str, Any], intake: dict[str, Any],
+                                  pending: dict[str, Any] | None = None) -> None:
+    binding = pending if pending is not None else {
+        "queue_revision": intake.get("shown_queue_revision"),
+        "question_token": intake.get("shown_question_token")}
+    _intake_queue_expect(queue, binding.get("queue_revision"), binding.get("question_token"))
+
+
+@_telegram_intake_serialized
+def _telegram_intake_queue_conflict(chat_id: int, dialog: dict[str, Any], proposal: dict[str, Any]) -> None:
+    # Preserve only a bounded unapplied proposal in the existing dialog. It is
+    # never replayed into the queue or automatically retried after a conflict.
+    current = _telegram_dialog_get(chat_id) or {}
+    if (current.get("intake") or {}).get("id") != (dialog.get("intake") or {}).get("id"):
+        _telegram_send_message(chat_id, "Текущий документ уже изменился. Предыдущий ответ не применён; откройте его карточку через /calc.")
+        return
+    intake = current.get("intake") or {}
+    kept = {key: proposal.get(key) for key in ("index", "choice", "action", "mode") if key in proposal}
+    kept["value"] = str(proposal.get("value") or "")[:512]
+    kept["status"] = "not_applied_queue_changed"
+    if intake.get("pending_choice"):
+        kept["route_proposal"] = copy.deepcopy(intake["pending_choice"])
+    intake["unapplied_answer"] = kept
+    for key in ("pending_choice", "pending", "shown_queue_revision", "shown_question_token"):
+        intake.pop(key, None)
+    current["intake"] = intake
+    _telegram_dialog_save(chat_id, current)
+    _telegram_send_message(chat_id, "Карточка уже изменилась. Этот ответ сохранён только как предложение и не применён. Подтвердите текущий вопрос заново.")
+    _telegram_intake_ask_next(chat_id, current)
+
+
+def _telegram_intake_amount_prompt(chat_id: int, ask: dict, index: int, choice: int, intake_id: str, question_token: str) -> None:
     option = (ask.get("options") or [])[choice]
     text = (html.escape(str(ask.get("question") or "")) + "\n\nВыбрано: <b>"
         + html.escape(str(option.get("label") or "")) + "</b>.\n\n"
@@ -1820,8 +1863,8 @@ def _telegram_intake_amount_prompt(chat_id: int, ask: dict, index: int, choice: 
         "Выбранный способ учёта сохранится; обязательство пока не добавится в денежный расчёт.\n\n"
         "«Не знаю» или «-» — отложить оценку; «стоп» — закончить остальные вопросы.")
     _telegram_send_intake_text(chat_id, text, reply_markup={"inline_keyboard": [
-        [{"text": "Уточнить стоимость позже", "callback_data": _telegram_intake_callback_data(intake_id, "defer", index, choice)}],
-        [{"text": "Вернуться к вариантам", "callback_data": _telegram_intake_callback_data(intake_id, "rechoose", index)}]]})
+        [{"text": "Уточнить стоимость позже", "callback_data": _telegram_intake_callback_data(intake_id, "defer", index, choice, question_token[:8])}],
+        [{"text": "Вернуться к вариантам", "callback_data": _telegram_intake_callback_data(intake_id, "rechoose", index, question_token[:8])}]]})
 
 
 def _telegram_intake_confirmation_prompt(chat_id: int, pending: dict, intake_id: str) -> None:
@@ -1858,7 +1901,19 @@ def _telegram_intake_ask_next(chat_id: int, dialog: dict[str, Any]) -> None:
     queue = _telegram_intake_card(chat_id, dialog)
     if queue is None:
         return
-    pending = (dialog.get("intake") or {}).get("pending_choice") or {}
+    binding = _telegram_intake_queue_binding(queue)
+    intake = dialog.setdefault("intake", {})
+    intake["shown_queue_revision"] = binding["queue_revision"]
+    intake["shown_question_token"] = binding["question_token"]
+    for key in ("pending_choice", "pending"):
+        saved = intake.get(key) or {}
+        if saved and (saved.get("queue_revision") != binding["queue_revision"]
+                      or saved.get("question_token") != binding["question_token"]):
+            intake["unapplied_answer"] = {"status":"not_applied_queue_changed",
+                "route_proposal":copy.deepcopy(saved),"value":str(saved.get("value") or "")[:512]}
+            intake.pop(key,None)
+    _telegram_dialog_save(chat_id, dialog)
+    pending = intake.get("pending_choice") or {}
     index = int(queue.get("index") or 0)
     cards = queue.get("cards") or []
     confirm = (dialog.get("intake") or {}).get("pending") or {}
@@ -1889,10 +1944,10 @@ def _telegram_intake_ask_next(chat_id: int, dialog: dict[str, Any]) -> None:
                     + "\n\nРанее выбранный способ учёта сохранён как предложение. "
                       "Для этого документа он ещё не подтверждён; деньги не добавлены. Выберите вариант заново.",
                     reply_markup={"inline_keyboard": [[{"text":str(o.get("label") or "")[:60],
-                        "callback_data":_telegram_intake_callback_data(queue["id"],"opt",index,n)}]
+                        "callback_data":_telegram_intake_callback_data(queue["id"],"opt",index,n,binding["question_token"][:8])}]
                         for n,o in enumerate(options)]})
                 return
-            _telegram_intake_amount_prompt(chat_id, cards[index], index, choice, queue["id"])
+            _telegram_intake_amount_prompt(chat_id, cards[index], index, choice, queue["id"], _intake_question_token(queue))
             return
     region = str((dialog.get("intake") or {}).get("region") or "")
     card = teaser_card_view(queue, dict(DEFAULT_INPUTS),
@@ -1916,7 +1971,7 @@ def _telegram_intake_ask_next(chat_id: int, dialog: dict[str, Any]) -> None:
     index, total = card["questions"]["index"], card["questions"]["total"]
     text = f"<b>Вопрос {index + 1} из {total}</b>\n" + html.escape(str(ask.get("question")))
     buttons = [[{"text": str(option.get("label"))[:60],
-                 "callback_data": _telegram_intake_callback_data(queue["id"], "opt", index, number)}]
+                 "callback_data": _telegram_intake_callback_data(queue["id"], "opt", index, number, binding["question_token"][:8])}]
                for number, option in enumerate(ask.get("options") or [])]
     hint = "Выберите вариант кнопкой"
     if not ask.get("kind") and ask.get("key"):
@@ -1933,6 +1988,13 @@ def _telegram_intake_answer(chat_id: int, dialog: dict[str, Any], *, index: int,
     queue = _telegram_intake_card(chat_id, dialog)
     if queue is None:
         return
+    unapplied = {"index":index,"choice":choice,"action":action,"value":value,"mode":mode}
+    try:
+        _telegram_intake_expect_shown(queue, dialog.get("intake") or {})
+    except HTTPException as exc:
+        if exc.status_code != 409:raise
+        _telegram_intake_queue_conflict(chat_id, dialog, unapplied)
+        return
     inputs = dict(DEFAULT_INPUTS)
     tep = {key: dict(item) for key, item in TEP_DEFAULT.items()}
     got = teaser_card.answer(queue, inputs, tep, index=index, action=action, choice=choice,
@@ -1946,7 +2008,8 @@ def _telegram_intake_answer(chat_id: int, dialog: dict[str, Any], *, index: int,
         c = got["confirm"]
         dialog["intake"] = {**(dialog.get("intake") or {}),
                             "pending": {"index": index, "choice": choice, "value": value,
-                                        "nonce": os.urandom(4).hex(), "confirm": c,"intake_id":queue["id"]}}
+                                        "nonce": os.urandom(4).hex(), "confirm": c,"intake_id":queue["id"],
+                                        **_telegram_intake_queue_binding(queue)}}
         _telegram_dialog_save(chat_id, dialog)
         _telegram_intake_confirmation_prompt(chat_id, dialog["intake"]["pending"], queue["id"])
         return
@@ -1962,7 +2025,12 @@ def _telegram_intake_answer(chat_id: int, dialog: dict[str, Any], *, index: int,
         record["refused"] = [{"key":"", "label":"Предыдущий способ учёта", "value":"",
             "reason":"Предыдущий выбор сохранён как неподтверждённое предложение; "
                      "денежная оценка не принята и в расчёт не включена."}]
-    _intake_queue_save(queue)
+    try:
+        _intake_queue_save(queue)
+    except HTTPException as exc:
+        if exc.status_code != 409:raise
+        _telegram_intake_queue_conflict(chat_id, dialog, unapplied)
+        return
     (dialog.get("intake") or {}).pop("pending_choice", None)
     (dialog.get("intake") or {}).pop("pending", None)
     _telegram_dialog_save(chat_id, dialog)
@@ -1991,7 +2059,7 @@ def _telegram_intake_callback(chat_id: int, data: str) -> None:
     """Кнопки разбора тизера: к вопросам, вариант ответа, прибавить/заменить."""
     dialog = _telegram_dialog_get(chat_id) or {}
     if (dialog.get("document_read") or {}).get("status") == "loading":
-        _telegram_send_message(chat_id, "Документ ещё читается. Кнопка предыдущей карточки не применена; /cancel отменит чтение.")
+        _telegram_send_message(chat_id, "Результат разбора ещё не получен. Кнопка предыдущей карточки не применена; /cancel отменит ожидание.")
         return
     if not (dialog.get("intake") or {}).get("id"):
         _telegram_send_message(chat_id, "Разбор этого тизера не найден. Пришлите документ заново.")
@@ -2006,6 +2074,23 @@ def _telegram_intake_callback(chat_id: int, data: str) -> None:
             "Эта старая кнопка не подтверждает текущий документ. Показываю его вопрос заново; ответы сохранены.")
         _telegram_intake_ask_next(chat_id, dialog)
         return
+    action = parts[0].removeprefix("intake2_")
+    if action in {"opt","defer","rechoose","mode"}:
+        intake = dialog.get("intake") or {}
+        pending = intake.get("pending") or {} if action == "mode" else None
+        expected_token = str((pending or {}).get("question_token") if action == "mode"
+                             else intake.get("shown_question_token") or "")
+        supplied_token = parts[-1] if action != "mode" and len(parts) >= 4 else None
+        try:
+            if action != "mode" and (not re.fullmatch(r"[0-9a-f]{8}", str(supplied_token or ""))
+                                       or supplied_token != expected_token[:8]):
+                raise HTTPException(409, "Вопрос уже изменился")
+            _telegram_intake_expect_shown(queue, intake, pending)
+        except HTTPException as exc:
+            if exc.status_code != 409:raise
+            _telegram_intake_queue_conflict(chat_id, dialog, {"action":action,"value":""})
+            return
+        if action != "mode":parts=parts[:-1]
     data = ":".join([parts[0].replace("intake2_", "intake_", 1), *parts[2:]])
     if data == "intake_questions":
         _telegram_intake_ask_next(chat_id, dialog)
@@ -2054,6 +2139,12 @@ def _telegram_intake_callback(chat_id: int, data: str) -> None:
         queue = _telegram_intake_card(chat_id, dialog)
         if queue is None:
             return
+        try:
+            _telegram_intake_expect_shown(queue, dialog.get("intake") or {})
+        except HTTPException as exc:
+            if exc.status_code != 409:raise
+            _telegram_intake_queue_conflict(chat_id, dialog, {"index":index,"choice":choice,"action":"answer","value":""})
+            return
         cards = queue.get("cards") or []
         if index != int(queue.get("index") or 0) or not 0 <= index < len(cards):
             _telegram_send_message(chat_id, "Этот вопрос уже изменился. Продолжаю с текущего.")
@@ -2067,7 +2158,8 @@ def _telegram_intake_callback(chat_id: int, data: str) -> None:
         option = options[choice] if 0 <= choice < len(options) else {}
         if data.startswith("intake_defer:"):
             pending = dialog["intake"].get("pending_choice") or {}
-            if (pending != {"index": index, "choice": choice, "intake_id": queue["id"]} or ask.get("kind")
+            if (any(pending.get(k) != v for k,v in {"index":index,"choice":choice,"intake_id":queue["id"],
+                    **_telegram_intake_queue_binding(queue)}.items()) or ask.get("kind")
                     or not ask.get("adds") or not option.get("target") or option.get("value") is not None):
                 _telegram_intake_ask_next(chat_id, dialog)
                 return
@@ -2077,11 +2169,12 @@ def _telegram_intake_callback(chat_id: int, data: str) -> None:
                 and option.get("value") is None):
             # У варианта нет числа: его впишет человек следующим сообщением.
             dialog["intake"] = {**dialog["intake"], "pending_choice": {
-                "index": index, "choice": choice, "intake_id": queue["id"]}}
+                "index": index, "choice": choice, "intake_id": queue["id"],
+                **_telegram_intake_queue_binding(queue)}}
             dialog["intake"].pop("pending", None)
             dialog["step"] = "await_intake_answer"
             _telegram_dialog_save(chat_id, dialog)
-            _telegram_intake_amount_prompt(chat_id, ask, index, choice, queue["id"])
+            _telegram_intake_amount_prompt(chat_id, ask, index, choice, queue["id"], _intake_question_token(queue))
             return
         _telegram_intake_answer(chat_id, dialog, index=index, action="answer", choice=choice)
 

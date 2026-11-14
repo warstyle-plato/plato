@@ -149,11 +149,16 @@ const applyTelegramManualTep=()=>{throw Error('import before review')};
 
 
 @pytest.mark.parametrize('width',[390,1440])
-def test_real_page_legacy_link_shows_review_and_never_calculates(native,width):
+@pytest.mark.parametrize('legacy_response',[False,True])
+def test_real_page_legacy_link_shows_review_and_never_calculates(native,width,legacy_response):
     from playwright.sync_api import sync_playwright
     import browser_launch
     token=native._telegram_session(17,[],calc_overrides={'purchase_price_mln':180})
     session_data=data(token)
+    if legacy_response:
+        # The exact pre-gate native shape: signed parameters, no review flag.
+        session_data.pop('overrides_review_required')
+        session_data['calc_overrides']=native._telegram_verify_session(token)['calc_overrides']
     calls=[]
     errors=[]
     def respond(route):
@@ -208,3 +213,52 @@ def test_valid_proof_cannot_authorize_nonfinite_or_huge_confirmed_changes(native
     for unsafe in [float('nan'),float('inf'),10**1000,True,'180 м²']:
         changed=dict(session['calc_overrides'],purchase_price_mln=unsafe)
         assert native._telegram_confirmed_patch_proof(session,changed,{'purchase_price_mln':unsafe})is None
+
+
+@pytest.mark.parametrize('flag',['missing',None,True,'false',0,{},[]])
+def test_old_or_malformed_server_flag_never_promotes_nonempty_overrides(flag):
+    # Missing/unknown flags do not attest application safety.
+    response={'calc_overrides':{'purchase_price_mln':180}}
+    if flag!='missing':response['overrides_review_required']=flag
+    body=function('runTelegramLaunch')
+    js="""const assert=require('assert');let telegramSession='synthetic',telegramMode='intake';
+let telegramOverridesReviewRequired=true,telegramCalcOverrides={};let notices=0;
+const window={};const loadTelegramSessionData=async()=>(RESPONSE);
+const telegramOverridesReviewNotice=()=>{notices++};
+const resetAll=()=>{throw Error('reset before review')};
+""".replace('RESPONSE',json.dumps(response))
+    js+=body+"""
+(async()=>{await runTelegramLaunch();assert.equal(telegramOverridesReviewRequired,true);
+assert.deepEqual(telegramCalcOverrides,{});assert.equal(notices,1)})().catch(e=>{console.error(e);process.exit(1)});"""
+    done=subprocess.run([shutil.which('node'),'-e',js],capture_output=True,text=True,timeout=10)
+    assert done.returncode==0,done.stderr
+
+
+def test_empty_legacy_response_without_new_flag_keeps_its_access_path():
+    body=function('runTelegramLaunch')
+    js="""const assert=require('assert');let telegramSession='synthetic',telegramMode='calc',telegramCad='';
+let telegramOverridesReviewRequired=true,telegramCalcOverrides={};
+const window={};const loadTelegramSessionData=async()=>({calc_overrides:{}});
+const telegramOverridesReviewNotice=()=>{throw Error('empty legacy link blocked')};
+"""
+    js+=body+"""
+(async()=>{await runTelegramLaunch();assert.equal(telegramOverridesReviewRequired,false);
+assert.deepEqual(telegramCalcOverrides,{})})().catch(e=>{console.error(e);process.exit(1)});"""
+    done=subprocess.run([shutil.which('node'),'-e',js],capture_output=True,text=True,timeout=10)
+    assert done.returncode==0,done.stderr
+
+
+@pytest.mark.parametrize('bad_overrides',[[],[180],180,'180',None])
+def test_false_flag_requires_an_actual_override_record(bad_overrides):
+    response={'calc_overrides':bad_overrides,'overrides_review_required':False}
+    body=function('runTelegramLaunch')
+    js="""const assert=require('assert');let telegramSession='synthetic',telegramMode='intake';
+let telegramOverridesReviewRequired=true,telegramCalcOverrides={};let notices=0;
+const window={};const loadTelegramSessionData=async()=>(RESPONSE);
+const telegramOverridesReviewNotice=()=>{notices++};
+const resetAll=()=>{throw Error('invalid new response reached reset')};
+""".replace('RESPONSE',json.dumps(response))
+    js+=body+"""\n(async()=>{await runTelegramLaunch();assert.equal(telegramOverridesReviewRequired,true);
+assert.deepEqual(telegramCalcOverrides,{});assert.equal(notices,1)})().catch(e=>{console.error(e);process.exit(1)});"""
+    done=subprocess.run([shutil.which('node'),'-e',js],capture_output=True,text=True,timeout=10)
+    assert done.returncode==0,done.stderr
