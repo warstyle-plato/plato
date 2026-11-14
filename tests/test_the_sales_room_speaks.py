@@ -160,7 +160,7 @@ def test_the_funnel_carries_its_numbers_under_the_chart(tmp_path) -> None:
             tab = browser.new_page()
             tab.route("**/*", lambda route: route.abort()
                       if route.request.url.startswith("http") else route.continue_())
-            tab.goto(file.as_uri())
+            tab.set_content(file.read_text(encoding="utf-8"))
             markup = tab.evaluate("(d)=>{renderSales(d); return salesPrintHtml()}", got)
         finally:
             browser.close()
