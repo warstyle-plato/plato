@@ -1879,6 +1879,19 @@ def internal_report_sent(req: ReportMailingInternalRequest) -> dict[str, Any]:
     return {"ok": True}
 
 
+@app.post("/monitor/gpr-view", include_in_schema=False)
+def monitor_gpr_view(req: MonitorGanttRequest) -> Response:
+    """Read the canonical schedule while the larger financial view is pending."""
+    _require_team_access(req.session, req.key, "Монитор проекта", write=False)
+    from fastapi.encoders import jsonable_encoder
+    import developaid_monitor_pace as pace
+    try:
+        view = pace.schedule_view(req.project, req.cut)
+        return JSONResponse(content=jsonable_encoder(view), headers={"Cache-Control":"private, no-store"})
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(400, str(exc), headers={"Cache-Control":"private, no-store"}) from None
+
+
 @app.post("/monitor/gantt", include_in_schema=False)
 def monitor_gantt(req: MonitorGanttRequest) -> dict[str, Any]:
     """Гант по последнему снимку графика. Считает сервер, страница рисует."""
