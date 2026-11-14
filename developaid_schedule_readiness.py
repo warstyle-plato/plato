@@ -375,6 +375,8 @@ def model(work_fact, *, cut, baseline_scope, source_sha256, profile=None, full_r
             group['partial'] = True
             group['reason'] = ' '.join(filter(None, (CURRENT_ESTIMATE_NOTE, group['reason'])))
         result['reason'] = result['project']['reason']
+    if not active:
+        result['forecast_scope'] = {}  # An old profile cannot scope current rows.
     # Projection groups use full-source IDs for an active profile. Display
     # rows retain current-source IDs, even when the same strings mean other
     # works. Only the validated crosswalk may bridge those namespaces.

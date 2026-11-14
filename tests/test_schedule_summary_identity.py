@@ -21,7 +21,7 @@ def deadline(key, finish='2027-02-01'):
                 plan_pace_scenario=dict(finish=finish,source_date='2026-11-06'))
 
 
-def full_state(full, current, links, *, outside=(), assignments=None, objects=None):
+def full_state(full, current, links, *, outside=(), assignments=None, objects=None, source_sha256='a'*64):
     assignments=assignments or {key:dict(element_id='frame',share=100/len(full)) for key in full}
     config=dict(id=elements.PROFILE_ID,
         overrides={key:100 if key=='frame' else 0 for key,_,_ in elements.ELEMENTS},
@@ -33,7 +33,7 @@ def full_state(full, current, links, *, outside=(), assignments=None, objects=No
         weights=[dict(full_id=k,value=100/len(full))for k in full],element_profile=config,
         label='Synthetic source',source_reference='Synthetic reference')
     return ready.model(dict(works=current),cut=DAY,baseline_scope='remaining_work',
-        source_sha256='a'*64,profile=profile,full_rows=full)
+        source_sha256=source_sha256,profile=profile,full_rows=full)
 
 
 def test_colliding_full_and_current_ids_follow_crosswalk_without_mutating_facts():
@@ -111,3 +111,18 @@ def test_plan_only_and_100_observation_never_become_an_actual_finish():
     assert result['total']==2 and result['covered']==1 and result['finish'] is None
     assert result['gaps']==[dict(work_id='plan',remaining_id='plan',kind='unknown_time')]
     assert state['project']['progress'] is None and values==before
+
+
+def test_source_change_cannot_apply_the_previous_profiles_calendar_exclusions():
+    full={'home':record('home'),'separate':record('separate',obj='Корпус 2')}
+    current={'r':record('r',obj='Корпус 2')}
+    state=full_state(full,current,{key:key for key in full},
+        objects={'Корпус 1':'residential','Корпус 2':'separate'},
+        assignments={'home':dict(element_id='frame',share=100)},source_sha256='c'*64)
+    assert not state['full_scope_confirmed'] and state['project']['progress'] is None
+    assert state['forecast_identity']['id_scope']=='current_source'
+    scenario.decorate_readiness(state,[deadline('r','2027-08-01')])
+    result=state['project']['forecast']
+    assert result['total']==1 and result['covered']==1 and result['finish']=='2027-08-01'
+    assert result['excluded']==[] and result['gaps']==[]
+    assert result['source_sha256']=='c'*64 and result['full_source_sha256'] is None
