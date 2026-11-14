@@ -23,6 +23,9 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
+import math
 import re
 from typing import Any
 
@@ -231,7 +234,9 @@ def start(extraction: dict[str, Any], document: dict[str, Any], filename: str,
     extraction = intake_evidence.validate(extraction, document)
     fields = locate_pages(list(extraction.get("fields") or []), str(document.get("text") or ""))
     found = {row["key"] for row in fields}
-    cards, answered_by_document = [], []
+    cards, answered_by_document, duplicate_questions = [], [], []
+    obligation_keys = set()
+    flat_document = " ".join(str(document.get("text") or "").split()).casefold()
     for conflict in extraction.get("conflicts") or []:
         key = conflict["key"]
         alternatives = locate_pages(conflict["fields"], str(document.get("text") or ""))
@@ -245,7 +250,24 @@ def start(extraction: dict[str, Any], document: dict[str, Any], filename: str,
         if key and key in found:
             answered_by_document.append(str(item.get("question") or ""))
             continue
-        cards.append(di.question_card(item))
+        card = di.question_card(item)
+        quote = " ".join(str(card.get("source_quote") or "").split()).casefold()
+        targets = {option.get("target") for option in card.get("options") or []}
+        if (card.get("adds") and not card.get("requires_manual") and quote
+                and flat_document.count(quote) == 1
+                and targets == {"purchase_price_mln", "social_compensation_mln"}):
+            # Only an identical question bound to one unambiguous source span
+            # is a duplicate. Equal amounts from distinct obligations are not.
+            identity = [quote, " ".join(str(card.get("question") or "").split()),
+                        card.get("options")]
+            fingerprint = hashlib.sha256(json.dumps(identity, ensure_ascii=False,
+                sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+            card["source_obligation_id"] = fingerprint
+            if fingerprint in obligation_keys:
+                duplicate_questions.append({"question":card["question"],"source_obligation_id":fingerprint})
+                continue
+            obligation_keys.add(fingerprint)
+        cards.append(card)
     relief = next((row for row in fields if row["key"] == RELIEF_KEY), None)
     if relief is not None:
         cards.append(relief_question(relief))
@@ -260,12 +282,134 @@ def start(extraction: dict[str, Any], document: dict[str, Any], filename: str,
         "fields": fields,
         "not_asked": list(extraction.get("not_asked") or []),
         "answered_by_document": answered_by_document,
-        "notes": [str(note) for note in (extraction.get("notes") or [])],
+        "duplicate_questions": duplicate_questions,
+        "notes": [str(note) for note in (extraction.get("notes") or [])] + ([
+            "Повтор одного вопроса по тому же фрагменту документа снят, чтобы обязательство не увеличило сумму дважды."
+        ] if duplicate_questions else []),
         "dropped": list(extraction.get("dropped") or []),
         "unverified": list(extraction.get("unverified") or []),
         "reason": str(extraction.get("reason") or ""),
         "cards": cards, "index": 0, "answers": [],
+        "validation_schema": 2,
     }
+
+
+def _finite_value(value: Any) -> bool:
+    if isinstance(value, bool) or value is None or isinstance(value, str):
+        return True
+    if isinstance(value, (int, float)):
+        try:
+            return math.isfinite(value)
+        except (ValueError, OverflowError):
+            return False
+    if isinstance(value, list):
+        return all(_finite_value(v) for v in value)
+    if isinstance(value, dict):
+        return all(_finite_value(v) for v in value.values())
+    return False
+
+
+def _next_unanswered(state: dict[str, Any]) -> int:
+    cards = state.get("cards") or []
+    answered = {a.get("index") for a in state.get("answers") or []}
+    stops = [a["index"] for a in state.get("answers") or [] if a.get("action") == "stop"]
+    allowed = set(range((min(stops)+1) if stops else len(cards))) | set(state.get("review_indices") or [])
+    return next((i for i in range(len(cards)) if i in allowed and i not in answered), len(cards))
+
+
+def _review_history_value(value: Any) -> Any:
+    if isinstance(value,(int,float)) and not isinstance(value,bool) and not _finite_value(value):
+        return {"unverified_number":str(value)[:96],"not_a_model_value":True}
+    if isinstance(value,list):
+        return [_review_history_value(item) for item in value]
+    if isinstance(value,dict):
+        return {key:_review_history_value(item)for key,item in value.items()}
+    return value
+
+
+def review_saved_state(state: dict[str, Any]) -> None:
+    """Rebuild an old *draft* from its retained answers; never change a model."""
+    if state.get("validation_schema") == 2:
+        return
+    cards = state.get("cards") or []
+    history = list(state.get("legacy_review_history") or [])
+    changed, review = set(), set()
+    for i, original in enumerate(list(cards)):
+        if original.get("kind"):
+            continue
+        rebuilt = di.question_card(original)
+        old = [(o.get("target"), o.get("value")) for o in original.get("options") or []]
+        new = [(o.get("target"), o.get("value")) for o in rebuilt.get("options") or []]
+        if old != new or not _finite_value(original.get("options") or []):
+            history.append({"index":i, "card":copy.deepcopy(original), "reason":"saved_option_revalidated"})
+            cards[i] = rebuilt
+            changed.add(i)
+    answers = []
+    for answer in state.get("answers") or []:
+        i = answer.get("index")
+        if type(i) is not int or not 0 <= i < len(cards):
+            history.append({"answer":copy.deepcopy(answer), "reason":"saved_answer_index_unverified"})
+            continue
+        card = cards[i]
+        if answer.get("action") != "answer" or card.get("kind"):
+            restored = copy.deepcopy(answer)
+            if (answer.get("action") in {"skip", "stop"} and card.get("adds")
+                    and any(o.get("target") in di._MONEY_FIELDS for o in card.get("options") or [])):
+                restored.update(deferred=True, refused=[{"key":"", "label":"Обязательство из документа", "value":"",
+                    "reason":"Способ учёта обязательства не подтверждён; его стоимость в денежный расчёт не включена."}])
+            answers.append(restored)
+            continue
+        choice = answer.get("choice", -1)
+        choice = choice if type(choice) is int else -1
+        option = (card.get("options") or [])[choice] if 0 <= choice < len(card.get("options") or []) else {}
+        target = option.get("target") or card.get("key") or ""
+        invalid = False
+        if target in di._MONEY_FIELDS:
+            typed = str(answer.get("value") or "")
+            probe = di.answer_card(card, {}, {}, choice=choice, typed=typed)
+            invalid = bool(probe.get("refused")) or not _finite_value(probe.get("applied") or [])
+            if not typed and i in changed:
+                invalid = True
+        if invalid:
+            history.append({"index":i, "answer":copy.deepcopy(answer), "reason":"saved_valuation_requires_review"})
+            review.add(i)
+        else:
+            answers.append(answer)
+    state["answers"] = answers
+    for field in state.get("fields") or []:
+        invalid_field = not _finite_value(field.get("value"))
+        if field.get("key") in di._MONEY_FIELDS and field.get("checked", True):
+            checked = intake_evidence.validate({"fields":[field],"questions":[]},
+                {"text":str(field.get("quote") or "")})
+            invalid_field = invalid_field or not checked.get("fields")
+        if invalid_field:
+            history.append({"field":copy.deepcopy(field), "reason":"saved_field_nonfinite"})
+            field["value"], field["checked"] = None, False
+            key = field.get("key")
+            manual_answer = False
+            for a in answers:
+                c = cards[a["index"]]
+                options = c.get("options") or []
+                choice = a.get("choice", -1)
+                selected = options[choice] if type(choice) is int and 0 <= choice < len(options) else {}
+                if (a.get("action") == "answer" and str(a.get("value") or "").strip()
+                        and (selected.get("target") or c.get("key")) == key):
+                    manual_answer = True
+            if key in di.ASKABLE_KEYS and not manual_answer:
+                review.add(len(cards))
+                cards.append({"key":key,"question":"Перепроверьте сохранённое значение: "+plain_label(key),
+                    "requires_manual":True,"adds":False,"options":[],"unit":di.INTAKE_UNITS.get(key,"")})
+    state["cards"] = cards
+    state["legacy_review_history"] = _review_history_value(history)
+    state["review_indices"] = sorted(review)
+    state["validation_schema"] = 2
+    if review:
+        state["index"] = _next_unanswered(state)
+        state["notes"] = list(state.get("notes") or []) + [
+            "В сохранённых ответах есть непроверенная оценка. Перепроверьте указанный вопрос; остальные ответы сохранены."]
+    elif history:
+        state["notes"] = list(state.get("notes") or []) + [
+            "Сохранённая карточка перепроверена по исходным ответам. Подтвердите обновлённые вводные перед расчётом."]
 
 
 # --- значения: модель до тизера + найденное + ответы ---------------------------
@@ -291,6 +435,7 @@ def replay(state: dict[str, Any], inputs: dict[str, Any], tep: dict[str, dict[st
     Возвращает вводные и ТЭП, происхождение каждого записанного пути
     (`origins`) и то, что найдено, но не записано (`refused`, с причиной).
     """
+    review_saved_state(state)
     filename = str(state.get("filename") or "документ")
     new_inputs = copy.deepcopy(dict(inputs or {}))
     new_tep = copy.deepcopy({key: dict(value) for key, value in (tep or {}).items()})
@@ -355,6 +500,9 @@ def replay(state: dict[str, Any], inputs: dict[str, Any], tep: dict[str, dict[st
     ledger: dict[str, Any] = {}
     kept: list[dict[str, Any]] = []
     for answer in state.get("answers") or []:
+        if answer.get("deferred") or answer.get("pending_proposal"):
+            refused.extend(copy.deepcopy(answer.get("refused") or []))
+            continue
         if answer.get("action") != "answer":
             continue
         index = int(answer.get("index") or 0)
@@ -366,7 +514,7 @@ def replay(state: dict[str, Any], inputs: dict[str, Any], tep: dict[str, dict[st
         choice = int(answer.get("choice") if answer.get("choice") is not None else -1)
         option = (card.get("options") or [])[choice] if 0 <= choice < len(card.get("options") or []) else None
         said = str(answer.get("answer") or "")
-        mine = {"source": "manual" if card.get("requires_manual") else "document",
+        mine = {"source": "manual" if card.get("requires_manual") or str(answer.get("value") or "").strip() else "document",
                 "text": f"ваш ответ на вопрос по тизеру «{filename}»: «{_quote(said, 90)}»"}
         if card.get("kind") == CLASS_CARD_KIND:
             key = str((option or {}).get("value") or "")
@@ -432,6 +580,7 @@ def answer(state: dict[str, Any], inputs: dict[str, Any], tep: dict[str, dict[st
     уже своё число и надо решить, прибавить или заменить; иначе ответ
     записан, и `state["index"]` указывает на следующий вопрос.
     """
+    review_saved_state(state)
     cards = state.get("cards") or []
     current = int(state.get("index") or 0)
     if index != current or current >= len(cards):
@@ -439,9 +588,23 @@ def answer(state: dict[str, Any], inputs: dict[str, Any], tep: dict[str, dict[st
     card = cards[current]
     action = action if action in ("answer", "skip", "stop") else "answer"
     record: dict[str, Any] = {"index": current, "action": action, "question": card.get("question")}
+    options = card.get("options") or []
+    option = options[choice] if 0 <= choice < len(options) else None
+    if (action in ("skip", "stop") and card.get("adds") and not card.get("kind")
+            and option and option.get("target") and option.get("value") is None):
+        # Classification is still an answer when its monetary valuation is
+        # deferred. It remains visible, without writing zero or any cash value.
+        record.update(choice=choice, value="", answer=str(option.get("label") or ""), deferred=True,
+            refused=[{"key": option["target"], "label": di.INTAKE_LABELS.get(option["target"], "Обязательство"),
+                "value": str(option.get("label") or ""),
+                "reason": "Способ учёта сохранён. Денежная оценка обязательства пока не задана; "
+                          "в денежный расчёт оно не включено."}])
+    elif (action in ("skip", "stop") and card.get("adds") and not card.get("kind")
+            and any(o.get("target") in {"purchase_price_mln", "social_compensation_mln"} for o in options)):
+        record.update(choice=-1, value="", answer="Способ учёта обязательства пока не выбран", deferred=True,
+            refused=[{"key":"", "label":"Обязательство из документа", "value":"",
+                "reason":"Способ учёта обязательства не подтверждён; его стоимость в денежный расчёт не включена."}])
     if action == "answer":
-        options = card.get("options") or []
-        option = options[choice] if 0 <= choice < len(options) else None
         said = " — ".join(part for part in ((option or {}).get("label") or "",
                                             str(value or "").strip()) if part)
         record.update(choice=choice, value=str(value or "").strip(), mode=mode, answer=said)
@@ -452,7 +615,9 @@ def answer(state: dict[str, Any], inputs: dict[str, Any], tep: dict[str, dict[st
                                    typed=str(value or ""), ledger=before["ledger"], mode=mode)
             if probe.get("confirm"):
                 return {"confirm": probe["confirm"], "answer": said}
-            if probe.get("refused") and card.get("requires_manual"):
+            if probe.get("refused") and (card.get("requires_manual")
+                    or ((option or {}).get("target") or card.get("key")) in di._MONEY_FIELDS or
+                    (card.get("adds") and option and option.get("target") and option.get("value") is None)):
                 record["refused"] = probe["refused"]
                 return {"answer": record, "invalid": True}
             record["refused"] = probe.get("refused") or []
@@ -462,7 +627,7 @@ def answer(state: dict[str, Any], inputs: dict[str, Any], tep: dict[str, dict[st
                                   "value": said, "reason": "выберите вариант"}]
             return {"answer": record, "invalid": True}
     state["answers"] = list(state.get("answers") or []) + [record]
-    state["index"] = len(cards) if action == "stop" else current + 1
+    state["index"] = len(cards) if action == "stop" else _next_unanswered(state)
     return {"answer": record}
 
 
@@ -654,6 +819,9 @@ def build(state: dict[str, Any], inputs: dict[str, Any], tep: dict[str, dict[str
                                    "answer": a.get("answer") or "",
                                    "action": a.get("action")}
                                   for a in state.get("answers") or []]},
+        "calculation_caveats": [r["reason"] for a in state.get("answers") or []
+            if a.get("deferred") or a.get("pending_proposal") for r in a.get("refused") or []],
+        "conditional": any(a.get("deferred") or a.get("pending_proposal") for a in state.get("answers") or []),
         "ready": question is None,
         "inputs": pending_inputs,
         "tep": pending_tep,
@@ -672,13 +840,25 @@ def calc_overrides(card: dict[str, Any]) -> dict[str, Any]:
     for row in card.get("to_engine") or []:
         path = str(row["path"])
         parts = path.split(".")
+        if not _finite_value(row.get("value")):
+            raise ValueError("Сохранённая карточка содержит непроверенное число. Перепроверьте ответ перед расчётом.")
+        if len(parts) == 2 and parts[0] == "inputs" and parts[1] in di._MONEY_FIELDS:
+            number, why = di._option_number(parts[1], row.get("value"), str(row.get("unit") or ""))
+            original = di.to_number(row.get("value"))
+            typed_number, typed_why = original, ""
+            if isinstance(row.get("value"), str):
+                typed_number, typed_why, _ = di._typed_number({"requires_manual":True}, parts[1], row["value"])
+            if (why or typed_why or number is None or original is None or typed_number is None
+                    or not math.isclose(number, original, rel_tol=1e-12)
+                    or not math.isclose(typed_number, original, rel_tol=1e-12)):
+                raise ValueError("Единица денежного значения не подтверждена. Перепроверьте сохранённую карточку.")
         if parts[0] == "inputs":
             out[parts[1]] = row["value"]
         elif parts[0] == "tep" and len(parts) == 3:
             tep.setdefault(parts[1], {})[parts[2]] = row["value"]
         else:
             continue
-        origin[path] = {"source": "document", "text": _quote(row.get("origin"), 160)}
+        origin[path] = {"source": str(row.get("source") or "document"), "text": _quote(row.get("origin"), 160)}
     if tep:
         out["_tep"] = tep
     if origin:

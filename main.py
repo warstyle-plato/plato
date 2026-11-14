@@ -2799,6 +2799,17 @@ def _handle_message(message: dict[str, Any]) -> None:
     if command in {"/vritep", "/vri", "/ври"}:
         _start_vritep(chat_id)
         return
+    if command == "/cancel":
+        if _dialog_active(chat_id):
+            _dialog_stop(chat_id)
+        _ORIGINAL_HANDLE_MESSAGE(message)
+        return
+    # A saved document question owns its answer before older Platon/model
+    # conversations. In particular a numeric valuation must not call the LLM.
+    if text and (core._telegram_dialog_get(chat_id) or {}).get("step") in {
+            "await_intake_answer", "intake_document_reading", "intake_document_failed"}:
+        _ORIGINAL_HANDLE_MESSAGE(message)
+        return
     # Ответ на анкету идёт раньше разбора адресов и вопросов: «дорого и
     # непонятно» — это комментарий, а не кадастровый номер.
     if text and not command and _feedback_pending_text(chat_id, text):
