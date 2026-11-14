@@ -126,15 +126,17 @@ def test_the_rules_version_rises_with_the_answer():
 # 5 — 24.09.2026: цена окружения больше не наследуется от одного ЖК внутри
 # площадки и публикуется только из устойчивого price_hint. Состав строки не
 # изменился, но смысл и числа изменились — сохранённые строки надо пересчитать.
-ROW_KEYS_AT_RULES_VERSION = (6, (
+# 7 — строка несёт текущий и последний подтверждённый вид статуса, чтобы
+# неизвестное новое значение не снимало запрет расчёта реализуемой площадки.
+ROW_KEYS_AT_RULES_VERSION = (7, (
     "area_ha", "at_asking_price", "available", "card_facts", "computed_at",
     "district", "engine_version", "entry_capacity_mln", "entry_capacity_reason",
     "entry_capacity_rub_per_sqm", "entry_capacity_upper_bound_mln",
-    "entry_capacity_upper_bound_rub_per_sqm", "housing_gfa_sqm", "margin_pct",
+    "entry_capacity_upper_bound_rub_per_sqm", "housing_gfa_sqm", "last_known_status_kind", "margin_pct",
     "model_fingerprint", "name", "net_profit_mln", "okrug", "parse_problem",
     "phase_count", "press_facts", "project_llcr_x", "renovation", "requirements",
     "rules_version", "saleable_sqm", "segment", "slug", "start_price_rub_sqm",
-    "status", "surrounding_price_rub_sqm", "surrounding_sales_units_per_month",
+    "status", "status_kind", "surrounding_price_rub_sqm", "surrounding_sales_units_per_month",
     "traffic_light", "weakest_phase_llcr_x",
 ))
 
@@ -177,4 +179,4 @@ def test_running_krt_still_refreshes_market_but_gets_no_investment_rating():
     assert '_krt_status_kind(project.get("status")) == "running"' not in body
     rating_start = source.index("    def _fill_cached_investment_ratings(")
     rating_body = source[rating_start:source.index("\n    def _rating_background_loop(", rating_start)]
-    assert '_krt_status_kind(project.get("status")) == "running"' in rating_body
+    assert 'krt_status.model_exclusion(project) is not None' in rating_body
