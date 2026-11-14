@@ -342,7 +342,7 @@ def test_the_empty_sales_chart_names_its_own_reason() -> None:
     две разные причины назвала бы второму источнику чужую.
     """
     page = cabinet.cabinet_page("market")
-    assert "function salesChart(rows, key, unit, digits, note)" in page
+    assert "function salesChart(rows, key, unit, digits, note, windowMonths)" in page
     assert "salesChart(ctx.sales,'sold','ДДУ',0,ctx.salesNote)" in page
     script = re.search(r"<script>(.*?)</script>", bnmap_ui.markup(), re.S).group(1)
     note = re.search(r"salesNote:\s*'((?:[^']|\\')*)'", script)
@@ -632,7 +632,7 @@ def test_the_tab_draws_the_map_and_the_neighbours_in_a_real_browser(tmp_path) ->
             tab.on("pageerror", lambda exc: errors.append(str(exc)))
             tab.route("**/*", lambda route: route.abort()
                       if route.request.url.startswith("http") else route.continue_())
-            tab.goto(file.as_uri())
+            tab.set_content(page)
             tab.evaluate(
                 "answer => { window.fetch = () => Promise.resolve("
                 "{ok:true, status:200, text:() => Promise.resolve(JSON.stringify(answer))}); }",

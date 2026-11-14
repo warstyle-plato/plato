@@ -561,6 +561,7 @@ def mo_vri_payment(
     market_price_rub_per_sqm: float | None,
     kd: float | None,
     kd_missing_reason: str = "",
+    compensation_rub: float | None = None,
 ) -> dict[str, Any]:
     """Плата за изменение ВРИ по методике приложенного расчёта.
 
@@ -576,6 +577,13 @@ def mo_vri_payment(
     квартального нет. Пока оба были окружными, их отношение всегда давало 1 и
     плата не зависела от квартала, а по акту зависит (решение владельца
     25.10.2026: брать квартал, если он есть).
+
+    `compensation_rub` — сумма компенсации по соглашению о применении Ксу*
+    (поправка 1310-ПП к пп. 4.1 и 4.8: П = … − Ксу*). Ксу* — денежная сумма,
+    а не множитель; берётся стоимость засчитываемых обязательств целиком,
+    банковская гарантия в сумме не участвует (решение владельца 12.11.2026:
+    «важно понимать сумму компенсации в целом»). Плата не ниже 1 ₽ (п. 5.2).
+    None или ноль — суммы нет, и плата не уменьшается.
     """
     rows: list[dict[str, Any]] = []
     total_area = 0.0
@@ -656,6 +664,39 @@ def mo_vri_payment(
                 "доходности. Прямой нормы для такого случая в постановлении нет — "
                 "сумма взята по решению владельца сервиса."
             )
+    gross = payment if payment is not None else payment_direct
+    compensation = _land_float(compensation_rub)
+    if compensation is not None and compensation <= 0:
+        compensation = None
+    used = gross
+    # Уменьшают только положительную плату больше рубля: нулевая плата от
+    # компенсации не становится рублём, а плата меньше рубля не растёт до него.
+    applied = compensation is not None and gross is not None and gross > 1.0
+    if compensation is not None:
+        fmt_mln = lambda rub: f"{rub / 1e6:,.1f}".replace(",", " ").replace(".", ",")
+        if gross is None:
+            warnings.append(
+                f"Сумма компенсации по соглашению ({fmt_mln(compensation)} млн ₽) введена, но плата "
+                "за смену ВРИ не рассчитана, поэтому уменьшать нечего."
+            )
+        elif not applied:
+            warnings.append(
+                f"Сумма компенсации по соглашению ({fmt_mln(compensation)} млн ₽) введена, но плата "
+                "за смену ВРИ не больше одного рубля, поэтому уменьшать нечего."
+            )
+        else:
+            used = max(1.0, gross - compensation)
+            floor = gross - compensation < 1.0
+            warnings.append(
+                f"Плата за смену ВРИ уменьшена на сумму компенсации по соглашению с областью: "
+                f"было {fmt_mln(gross)} млн ₽, вычтено {fmt_mln(gross - used)} млн ₽, "
+                + ("осталось 1 ₽: компенсация не меньше платы, а ниже одного рубля "
+                   "постановление плату не уменьшает" if floor
+                   else f"осталось {fmt_mln(used)} млн ₽")
+                + " (поправка № 1310-ПП к порядку № 1745-ПП). Сумму вписали вы; право на "
+                "уменьшение и его размер подтверждает только соглашение с областью, здесь "
+                "они не проверяются."
+            )
     if not target:
         warnings.append("Для округа нет УПКС земель жилой застройки — целевая кадастровая стоимость не рассчитана.")
     if not upks_avg:
@@ -685,13 +726,23 @@ def mo_vri_payment(
         "payment_rub": round(payment, 2) if payment is not None else None,
         "payment_mln": round(payment / 1_000_000.0, 3) if payment is not None else None,
         "payment_direct_rub": round(payment_direct, 2) if payment_direct is not None else None,
-        # Что берётся в модель: методика по участкам, иначе прямая формула.
-        "payment_used_rub": round(used, 2) if (used := (payment if payment is not None else payment_direct)) is not None else None,
-        "payment_used_mln": round(used / 1_000_000.0, 3) if used is not None else None,
+        # До вычета компенсации: методика по участкам, иначе прямая формула.
+        "payment_before_compensation_rub": round(gross, 2) if gross is not None else None,
+        # Сумма компенсации по соглашению, как её ввели, и сколько из неё вычтено.
+        "compensation_rub": round(compensation, 2) if compensation is not None else None,
+        "compensation_applied_rub": round(gross - used, 2) if applied else None,
+        "compensation_basis": "введена пользователем по соглашению о применении Ксу*" if compensation is not None else "",
+        # Что берётся в модель: плата за вычетом компенсации.
+        "payment_used_rub": round(used, 2) if used is not None else None,
+        # После вычета плата бывает и 1 ₽: три знака дали бы ноль, а ноль
+        # страница читает как «не рассчитана» и оставляет прежнюю сумму.
+        "payment_used_mln": (round(used / 1_000_000.0, 6 if used != gross else 3)
+                             if used is not None else None),
         "payment_basis": (
-            "методика по участкам ЕГРН" if payment is not None
-            else ("прямая формула Кср × площадь квартир × Кд" if payment_direct is not None
-                  else ("Кд не установлен" if kd is None else "не определена"))
+            ("методика по участкам ЕГРН" if payment is not None
+             else ("прямая формула Кср × площадь квартир × Кд" if payment_direct is not None
+                   else ("Кд не установлен" if kd is None else "не определена")))
+            + (" за вычетом компенсации по соглашению" if applied else "")
         ),
         "warnings": warnings,
     }
@@ -1143,6 +1194,8 @@ class MoCalculateRequest(BaseModel):
     district: str = ""
     market_price_rub_per_sqm: float = 0.0
     vri_kd: float = 0.0   # 0 — определить по округу из таблицы 3 постановления № 1745
+    # Сумма компенсации по соглашению о применении Ксу* (1310-ПП), ₽; 0 — нет соглашения.
+    vri_compensation_rub: float = 0.0
     average_flat_sqm: float = 0.0   # 0 — РНГП области, `average_flat_sqm('mo')`
     norms: dict[str, Any] = {}
     limit: int = 30
@@ -1436,6 +1489,7 @@ def mo_calculate(req: MoCalculateRequest) -> dict[str, Any]:
         market_price_rub_per_sqm=market_price,
         kd=kd,
         kd_missing_reason=kd_missing_reason,
+        compensation_rub=req.vri_compensation_rub,
     )
     vri["kd_basis"] = kd_basis
     vri["kd_document"] = kd_document
@@ -1454,6 +1508,11 @@ def mo_calculate(req: MoCalculateRequest) -> dict[str, Any]:
     # ключа нет вовсе, и страница не затирает ранее вписанную сумму нулём.
     if vri.get("payment_used_mln") is not None:
         inputs_patch["land_rights_cost_mln"] = vri["payment_used_mln"]
+    # Сумма компенсации — вводная проекта: она едет с расчётом в проект, и
+    # пересчёт ТЭП шлёт её снова, иначе плата молча вернулась бы к полной.
+    inputs_patch["mo_vri_compensation_mln"] = (
+        round(vri["compensation_rub"] / 1_000_000.0, 6) if vri.get("compensation_rub") is not None else 0
+    )
     balance = _mo_territory_balance(social, site_area_ha, norms)
     if balance["remaining_ha"] < 0:
         warnings.append(

@@ -101,7 +101,7 @@ function bindMoParams(){
   const note=document.getElementById('moFlatBasis');
   if(note)note.textContent=AVERAGE_FLAT.mo.basis;
  }
- ['moDensity','moArea','moFlat','moPrice','moKd'].forEach(id=>{
+ ['moDensity','moArea','moFlat','moPrice','moKd','moCompensation'].forEach(id=>{
   const el=document.getElementById(id);
   if(el&&!el._moBound){el._moBound=true;el.addEventListener('change',recalcMo)}
  });
@@ -134,6 +134,30 @@ function syncMoKd(){
   field.value='';
   if(unit)unit.textContent='доля. Определится по округу участка';
  }
+}
+
+// Сумма компенсации по соглашению о Ксу* — вводная проекта
+// (`inputs.mo_vri_compensation_mln`): поле показывает её, расчёт шлёт её.
+// Пустое поле — соглашения нет, а не «ноль по соглашению».
+function moCompensationRub(){
+ const field=document.getElementById('moCompensation');
+ const mln=field?Number(field.value||0):Number(inputs.mo_vri_compensation_mln||0);
+ return mln>0?mln*1e6:0;
+}
+
+// Плата после уменьшения бывает 1 ₽: в миллионах с одним знаком это «0,0»,
+// и строка читалась бы как отсутствие платы. Малую сумму пишем в рублях.
+function moFeeText(v){
+ const rub=v.payment_used_rub;
+ if(rub!=null&&rub>0&&rub<100000)return landNum(rub,0)+' ₽';
+ return v.payment_used_mln!=null?landNum(v.payment_used_mln,1)+' млн ₽':'—';
+}
+
+function syncMoCompensation(){
+ const field=document.getElementById('moCompensation');
+ if(!field)return;
+ const mln=Number(inputs.mo_vri_compensation_mln||0);
+ field.value=mln>0?String(mln):'';
 }
 
 function toggleMoKd(){
@@ -209,6 +233,7 @@ async function calculateMo(queryText){
      ? Number(document.getElementById('moPrice').value||0)||0 : 0,
     vri_kd:(document.getElementById('moKdManual')||{}).checked
      ? Number(document.getElementById('moKd').value||0)||0 : 0,
+    vri_compensation_rub:moCompensationRub(),
     average_flat_sqm:Number(document.getElementById('moFlat').value||0)||AVERAGE_FLAT.mo.sqm
    })
   });
@@ -251,6 +276,8 @@ function syncMoParams(data){
  if(kd&&v.kd!=null&&!(kdManual&&kdManual.checked))kd.value=v.kd;
  const area=document.getElementById('moArea');
  if(area&&t.site_area_ha)area.placeholder=landNum(t.site_area_ha,4)+' га из ЕГРН';
+ const compensation=document.getElementById('moCompensation');
+ if(compensation)compensation.value=v.compensation_rub!=null?String(v.compensation_rub/1e6):'';
 }
 
 // Дефицит рабочих мест — это будущий объект, а не строка справки. РНГП МО
@@ -279,7 +306,7 @@ function renderMo(data){
   ['Площадь участка',landNum(t.site_area_ha,4)+' га'],
   ['Площадь квартир',landNum(s.apartments_sqm,0)+' м²'],
   ['Население',landNum(s.population,0)+' чел.'],
-  ['Плата за смену ВРИ',v.payment_used_mln!=null?landNum(v.payment_used_mln,1)+' млн ₽':'—']
+  ['Плата за смену ВРИ',moFeeText(v)]
  ].map(x=>`<div><small>${escapeHtml(x[0])}</small><b>${escapeHtml(x[1])}</b></div>`).join('');
  const tables=[];
  tables.push(moTable('Территория',[
@@ -318,7 +345,12 @@ function renderMo(data){
   ['Кср / Кд',(v.market_price_rub_per_sqm!=null?landNum(v.market_price_rub_per_sqm,0)+' ₽/м²':'—')+' · '+landNum(v.kd,2)+
     (v.market_price_source?' · '+v.market_price_source:'')+(v.market_price_period?' · '+v.market_price_period:'')],
   ['К1 / К',(v.k1!=null?landNum(v.k1,4):'—')+' · '+(v.k!=null?landNum(v.k,4):'—')],
-  ['Плата за смену ВРИ',(v.payment_used_mln!=null?landNum(v.payment_used_mln,1)+' млн ₽':'—')+' · '+(v.payment_basis||'')]
+  ...(v.compensation_rub!=null?[
+   ['Плата до уменьшения',v.payment_before_compensation_rub!=null?landNum(v.payment_before_compensation_rub/1e6,1)+' млн ₽':'—'],
+   ['Компенсация по соглашению',landNum(v.compensation_rub/1e6,1)+' млн ₽ · '+(v.compensation_basis||'')+
+     (v.compensation_applied_rub!=null?' · вычтено '+landNum(v.compensation_applied_rub/1e6,1)+' млн ₽':'')]
+  ]:[]),
+  ['Плата за смену ВРИ',moFeeText(v)+' · '+(v.payment_basis||'')]
  ]));
  if((v.parcels||[]).length){
   tables.push(moTable('Кадастровая стоимость участков (ЕГРН)',
@@ -346,6 +378,7 @@ async function applyMo(options){
  resetTerritoryData({keepPhasing:silent,keepLeaseTerms});
  moResult=incoming;
  Object.assign(inputs,moResult.inputs||{});
+ syncMoCompensation();
  // Площадь участка приходит в территории расчёта, а не во вводных.
  {
   const moArea=Number(((moResult.territory)||{}).site_area_ha||0);
@@ -393,6 +426,7 @@ async function applyMo(options){
 }
 
 function renderStoredMo(){
+ syncMoCompensation();
  const stored=inputs._mo_calc;
  if(!stored)return;
  const query=document.getElementById('moQuery');
@@ -673,6 +707,8 @@ const TERRITORY_INPUT_KEYS=[
  // по цене предыдущего проекта, и это не бросалось в глаза.
  'purchase_price_mln',
  'site_area_ha','site_density_sqm_per_ha','land_rights_cost_mln','social_compensation_mln',
+ // Соглашение о Ксу* заключают на конкретный участок.
+ 'mo_vri_compensation_mln',
  'kindergarten_places','school_places','clinic_capacity',
  'social_dou_gba_sqm','social_school_gba_sqm','social_clinic_gba_sqm',
  // Метры и места отдельно стоящих объектов — из реестра движка
