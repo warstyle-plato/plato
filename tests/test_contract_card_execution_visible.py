@@ -84,7 +84,7 @@ def test_summary_money_is_visible_without_a_plan_and_uses_the_register_reader(no
         expect(execution).to_contain_text('99 000 ₽ из 360 000 ₽')
         expect(execution).to_contain_text('КС-2 по сводной')
         expect(execution).to_contain_text('Источник на 08.04.2026')
-        expect(execution).to_contain_text('не является физической готовностью')
+        expect(execution).to_contain_text('Денежное закрытие; не физическая готовность')
         expect(execution).to_contain_text('Объёмы КС-6а к этой записи не привязаны')
         # This is the actual shared PAGE helper, not a copied calculation.
         assert execution.evaluate("""(e,id)=>{const expected=document.createElement('div');
