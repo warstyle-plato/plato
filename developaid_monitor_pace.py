@@ -267,6 +267,10 @@ def _apply_gpr(project: str, view: dict[str, Any], cut: datetime.date) -> dict[s
     schedule['plan_pace_scenarios'] = scenario_summary(display_rows)
     import developaid_schedule_readiness as readiness
     schedule['readiness'] = readiness.build(project, cut.isoformat(), schedule)
+    from developaid_schedule_plan_scenario import decorate_readiness
+    from developaid_schedule_groups import metadata as group_metadata
+    schedule['display_groups'] = group_metadata(display_rows)
+    decorate_readiness(schedule['readiness'], display_rows)
     schedule['readiness_html'] = readiness.render(schedule['readiness'])
     if schedule.get('completed_facts') is not None:
         summary = schedule['readiness']['project']
