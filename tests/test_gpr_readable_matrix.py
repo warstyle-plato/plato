@@ -51,6 +51,34 @@ def settled(page, view):
     page.evaluate('(v)=>{currentView=v;renderGantt(v)}', view)
 
 
+@pytest.mark.parametrize('stage_count', [1, 2])
+def test_expand_all_opens_hidden_work_tails_even_when_all_stages_are_open(monkeypatch, stage_count):
+    view = matrix_view(8)
+    tasks = view['schedule']['management'][0]['children'][0]['children'][0]['children']
+    if stage_count == 1:
+        for task in tasks:
+            task['section'] = 'Единственный этап'
+    serve_view(monkeypatch, view)
+    with browser_page() as (page, _, errors):
+        settled(page, view)
+        stages = page.locator('#gprFactMatrix .gpr-matrix-stage')
+        expect(stages).to_have_count(stage_count)
+        for stage in stages.all():
+            if stage.get_attribute('open') is None:
+                stage.locator(':scope > summary').click()
+        expect(page.locator('.gpr-matrix-stage[open]')).to_have_count(stage_count)
+        expect(page.locator('.gpr-matrix-tail[hidden]')).to_have_count(stage_count)
+        assert page.locator('#gprFactMatrix [data-work-id]:visible').count() < len(tasks)
+        button = page.get_by_role('button', name='Раскрыть все этапы', exact=True)
+        for _ in range(2):
+            button.click()
+            expect(stages.locator('[data-work-id]:visible')).to_have_count(len(tasks))
+            expect(page.locator('.gpr-matrix-stage[open]')).to_have_count(stage_count)
+            expect(page.locator('.gpr-matrix-tail[hidden]')).to_have_count(0)
+            expect(button).to_have_text('Раскрыть все этапы')
+        assert not errors
+
+
 @pytest.mark.parametrize('width', [390, 1440])
 def test_matrix_keeps_zero_unknown_duplicate_and_explicit_object(monkeypatch, width):
     view = matrix_view()
