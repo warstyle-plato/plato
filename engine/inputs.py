@@ -2932,6 +2932,9 @@ class AgentDocumentAnswerRequest(BaseModel):
     """
     intake_id: str
     index: int
+    # Missing legacy clients must refresh; revision zero is explicit.
+    queue_revision: int | None = None
+    question_token: str = ""
     action: str = "answer"  # answer | skip | stop
     choice: int = -1
     value: str = ""

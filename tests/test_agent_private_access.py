@@ -210,7 +210,8 @@ def test_ownerless_run_and_intake_are_never_served(monkeypatch):
     client = TestClient(core.app)
     assert client.get("/agent/result/" + trace).status_code == 404
     assert client.get("/agent/trace/" + trace).status_code == 404
-    core._intake_queue_save({"id": trace, "filename": PRIVATE})
+    # A raw legacy ownerless file may exist, but cannot be served or saved.
+    core._intake_queue_path(trace).write_text(json.dumps({"id": trace, "filename": PRIVATE}))
     response = client.post("/agent/document/card", json={"intake_id": trace, "session": session()})
     assert response.status_code == 404
     assert PRIVATE not in response.text

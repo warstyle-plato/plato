@@ -270,13 +270,14 @@ function renderAiQuestion(card){
  aiCard=card;
  const q=card.questions||{};
  if(!q.card){renderAiCard(card);return}
- aiQuestion={id:card.id,index:q.index,total:q.total,card:q.card,filename:card.filename};
+ aiQuestion={id:card.id,index:q.index,total:q.total,card:q.card,filename:card.filename,
+  queue_revision:card.queue_revision,question_token:card.question_token};
  const ask=q.card;
  const box=document.createElement('div');box.className='ai-msg system ai-question';
  let html='<b>Вопрос '+aiEsc(q.index+1)+' из '+aiEsc(q.total)+'</b><div style="margin-top:4px">'+aiEsc(ask.question)+'</div>';
  html+='<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px">';
  (ask.options||[]).forEach((o,i)=>{
-  html+='<button class="btn ai-question-option" data-choice="'+i+'" onclick="answerAiQuestion('+i+')">'+aiEsc(o.label)+'</button>';
+  html+='<button class="btn ai-question-option" data-choice="'+i+'" >'+aiEsc(o.label)+'</button>';
  });
  html+='</div>';
  const unit=ask.unit||((ask.options||[]).find(o=>o.target)||{}).unit||'';
@@ -284,14 +285,19 @@ function renderAiQuestion(card){
  if(typed)
   html+='<div style="display:flex;gap:6px;margin-top:8px;align-items:center"><input class="ai-question-value" inputmode="decimal" placeholder="своё значение'
    +(unit?', '+aiEsc(unit):'')+'" style="flex:1;min-width:0;padding:6px 8px;border:1px solid #ccc;border-radius:6px">'
-   +(ask.key?'<button class="btn dark" onclick="answerAiQuestion(-1)">Ответить</button>':'')+'</div>';
- html+='<div style="margin-top:8px;font-size:12px"><a href="#" data-action="skip" onclick="answerAiQuestion(-1,this.dataset.action);return false">Пропустить</a> · '
-  +'<a href="#" data-action="stop" onclick="answerAiQuestion(-1,this.dataset.action);return false">Закончить вопросы</a></div>';
+   +(ask.key?'<button class="btn dark" data-answer="typed">Ответить</button>':'')+'</div>';
+ html+='<div style="margin-top:8px;font-size:12px"><a href="#" data-action="skip" >Пропустить</a> · '
+  +'<a href="#" data-action="stop" >Закончить вопросы</a></div>';
  box.innerHTML=html;aiMessages.appendChild(box);aiMessages.scrollTop=aiMessages.scrollHeight;
  aiQuestion.box=box;
+ const shown=aiQuestion;
+ box.querySelectorAll('button[data-choice]').forEach(b=>b.onclick=()=>answerAiQuestion(Number(b.dataset.choice),'','',shown));
+ const typedButton=box.querySelector('[data-answer="typed"]');
+ if(typedButton)typedButton.onclick=()=>answerAiQuestion(-1,'','',shown);
+ box.querySelectorAll('a[data-action]').forEach(a=>a.onclick=()=>{answerAiQuestion(-1,a.dataset.action,'',shown);return false});
 }
-async function answerAiQuestion(choice,action,mode){
- const queue=aiQuestion;if(!queue||!queue.card||aiBusy)return;
+async function answerAiQuestion(choice,action,mode,shown){
+ const queue=shown||aiQuestion;if(!queue||queue!==aiQuestion||!queue.card||aiBusy)return;
  const box=queue.box;const typedEl=box&&box.querySelector('.ai-question-value');
  const typed=action?'':(mode?queue.typed||'':String(typedEl&&typedEl.value||'').trim());
  const option=(queue.card.options||[])[choice];
@@ -303,9 +309,21 @@ async function answerAiQuestion(choice,action,mode){
  try{
   await syncInputsForAgent();
   const r=await fetch('/agent/document/answer',{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({intake_id:queue.id,index:queue.index,action:action||'answer',choice,value:typed,
+   body:JSON.stringify({intake_id:queue.id,index:queue.index,queue_revision:queue.queue_revision,question_token:queue.question_token,
+    action:action||'answer',choice,value:typed,
     mode:mode||'',inputs,tep,class_profile:aiClassProfile(),session:activeSession(),access_key:projectsAdminKey||''})});
   const data=await r.json().catch(()=>({}));
+  if(r.status===409&&data.detail&&data.detail.code==='intake_queue_changed'){
+   queue.unapplied_answer={index:queue.index,choice,action:action||'answer',value:typed,mode:mode||''};
+   const kept=document.createElement('div');kept.className='ai-msg system ai-unapplied-answer';
+   const selected=(queue.card.options||[])[choice];
+   kept.textContent='Карточка уже изменилась. Ответ не применён. Ваш ответ сохранён как предложение: '
+    +[selected&&selected.label,typed,action==='skip'?'пропустить':action==='stop'?'закончить вопросы':''].filter(Boolean).join(' — ')
+    +'. Проверьте текущий вопрос и подтвердите ответ заново.';
+   aiMessages.appendChild(kept);
+   aiQuestion=null;
+   renderAiQuestion(data.detail.card);return;
+  }
   if(!r.ok){appendAiMessage('system','Ответ не принят: '+(serverDetail(data)||('HTTP '+r.status)));
    if(box)box.querySelectorAll('button,input,a').forEach(el=>{el.disabled=false;el.style.pointerEvents=''});return}
   if(data.stale){appendAiMessage('system','На этот вопрос уже ответили. Продолжаю с текущего.');
@@ -337,7 +355,7 @@ function renderAiConfirm(queue,choice,c){
   +'<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px">'
   +'<button class="btn dark" data-mode="add">Прибавить: будет '+aiEsc(aiNum(Number(c.current)+Number(c.adding)))+' '+aiEsc(c.unit)+'</button>'
   +'<button class="btn" data-mode="replace">Заменить: будет '+aiEsc(aiNum(c.adding))+' '+aiEsc(c.unit)+'</button></div>';
- box.querySelectorAll('button').forEach(b=>b.onclick=()=>{box.querySelectorAll('button').forEach(x=>x.disabled=true);answerAiQuestion(choice,'',b.dataset.mode)});
+ box.querySelectorAll('button').forEach(b=>b.onclick=()=>{box.querySelectorAll('button').forEach(x=>x.disabled=true);answerAiQuestion(choice,'',b.dataset.mode,queue)});
  aiMessages.appendChild(box);aiMessages.scrollTop=aiMessages.scrollHeight;
 }
 // Состояние модели до документа — для «было → стало» итога и для отмены

@@ -402,6 +402,12 @@ def _plato_chat_launch(
     def _work() -> dict[str, Any]:
         _agent_actor_current(req)
         if str(req.scenario or "") == "document_intake":
+            import document_processing
+            document_deadline = getattr(req,'_document_deadline',None)
+            budget = (document_deadline-time.monotonic() if document_deadline is not None
+                      else document_processing.DEFAULT_SECONDS)
+            if budget <= 0:
+                raise HTTPException(504,document_processing.Expired.public_message)
             # Extraction has no project economics and no calculation tools.
             response = _openai_responses_request({
                 "model": _plato_openai_agent_model(),
@@ -413,9 +419,11 @@ def _plato_chat_launch(
                 "text": {"format": {"type": "json_schema", "name": "plato_document_intake",
                                     "strict": True, "schema": document_intake.extraction_schema()}},
                 "max_output_tokens": 7000, "store": False,
-            })
-            if response.get("status") == "incomplete":
-                raise HTTPException(502, "Ответ разбора документа оборвался. Повторите разбор.")
+            }, budget_seconds=budget)
+            document_error = document_intake.model_error(response)
+            if document_error:
+                return {'answer':'','document_error':document_error,'tools_used':[],
+                        'proposals':[],'source':'document_extraction'}
             return {"answer": _extract_openai_text(response), "tools_used": [], "proposals": [],
                     "model": _plato_openai_agent_model(), "source": "document_extraction"}
         _plato_trace_write(trace_id, "model", "Пересчитываю модель DevelopAid")
@@ -638,10 +646,14 @@ def plato_answer(req: AgentChatRequest, request: Request) -> dict[str, Any]:
     в телеграме получил бы вместо ответа пустоту.
     """
     trace_id, done, outcome = _plato_chat_launch(req, request)
-    if not done.wait(_PLATO_AGENT_WAIT_SECONDS):
+    wait = _PLATO_AGENT_WAIT_SECONDS
+    document_deadline = getattr(req,'_document_deadline',None)
+    if str(req.scenario or '') == 'document_intake' and document_deadline is not None:
+        wait = min(wait,max(0,document_deadline-time.monotonic()))
+    if not done.wait(wait):
         raise HTTPException(
             status_code=504,
-            detail=(f"Платон Сергеевич не ответил за {int(_PLATO_AGENT_WAIT_SECONDS)} с. "
+            detail=(f"Платон Сергеевич не ответил за {int(wait)} с. "
                     "Повторите вопрос."))
     _agent_actor_current(req)
     return _plato_chat_result(trace_id, outcome)
@@ -744,7 +756,15 @@ def document_intake_read(document: dict[str, Any], request: Any) -> dict[str, An
     actor = request.scope.get("plato_actor")
     if isinstance(actor, _agent_access.Actor):
         object.__setattr__(payload, "_agent_actor", actor)
+    import document_processing
+    document_processing.check()
+    object.__setattr__(payload,'_document_deadline',document_processing.deadline()
+                       or time.monotonic()+document_processing.DEFAULT_SECONDS)
     answer = plato_answer(payload, request)
+    document_processing.check()
+    if (answer or {}).get('document_error') in document_intake.DOCUMENT_MODEL_ERRORS:
+        return {'fields':[],'questions':[],'not_asked':[],'notes':[],
+                'reason':document_intake.DOCUMENT_MODEL_ERRORS[answer['document_error']]}
     import intake_evidence
     return intake_evidence.validate(document_intake.parse_intake(
         str((answer or {}).get("answer") or "")), document)
@@ -756,39 +776,274 @@ def document_intake_read(document: dict[str, Any], request: Any) -> dict[str, An
 _INTAKE_QUEUE_TTL = 3 * 24 * 3600
 
 
+# CAS snapshots are process-local attributes, never JSON or client fields.
+# Revision zero is also the explicit version of legacy records without a revision.
+from contextlib import contextmanager as _intake_contextmanager
+
+
+class _IntakeQueue(dict):
+    pass
+
+
 def _intake_queue_path(intake_id: str) -> Path:
-    if not _TRACE_ID_RE.match(str(intake_id or "")):
-        raise HTTPException(status_code=400, detail="Неверный номер очереди вопросов")
+    if not re.fullmatch(r"[0-9a-f]{32}", str(intake_id or "")):
+        raise HTTPException(400, "Неверный номер очереди вопросов")
     return _safe_child(_PLATO_STAGE_DIR, f"intake_{intake_id}.json")
 
 
-def _intake_queue_save(queue: dict[str, Any]) -> None:
-    path = _intake_queue_path(queue["id"])
-    _PLATO_STAGE_DIR.mkdir(parents=True, exist_ok=True)
-    # Complete atomic records, with the same private permissions as run state.
-    _agent_access.write_json(path, queue)
-    cutoff = time.time() - _INTAKE_QUEUE_TTL
-    for stale in _PLATO_STAGE_DIR.glob("intake_*.json"):
+def _intake_queue_conflict() -> HTTPException:
+    return HTTPException(409, {"code": "intake_queue_changed", "message":
+        "Карточка уже изменилась. Ответ не применён. Проверьте текущий вопрос и подтвердите ответ заново."})
+
+
+@_intake_contextmanager
+def _intake_queue_directory(*, create: bool = False):
+    """Anchor all queue operations to directory FDs; reject symlink parents."""
+    fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for part in Path(os.path.abspath(_PLATO_STAGE_DIR)).parts[1:]:
+            try:
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            except FileNotFoundError:
+                if not create:
+                    raise
+                try:
+                    os.mkdir(part, 0o700, dir_fd=fd)
+                except FileExistsError:
+                    pass
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        yield fd
+    finally:
+        os.close(fd)
+
+
+@_intake_contextmanager
+def _intake_queue_lock(directory: int, intake_id: str, *, wait: bool = True):
+    """The same inode stays in place after cleanup; never unlink a lock file."""
+    import fcntl
+    import stat
+    name = f"intake_{intake_id}.lock"
+    fd = os.open(name, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=directory)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise OSError("Queue lock is not a private regular file")
+        fcntl.flock(fd, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
+        named = os.stat(name, dir_fd=directory, follow_symlinks=False)
+        if (named.st_dev, named.st_ino) != (info.st_dev, info.st_ino) or named.st_nlink != 1:
+            raise OSError("Queue lock identity changed")
+        os.fchmod(fd, 0o600)
+        yield
+    finally:
+        os.close(fd)
+
+
+def _intake_queue_read_file(directory: int, name: str) -> bytes:
+    import stat
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise OSError("Queue record is not a private regular file")
+        with os.fdopen(fd, "rb", closefd=False) as source:
+            return source.read()
+    finally:
+        os.close(fd)
+
+
+def _intake_queue_metadata(directory: int, intake_id: str) -> tuple[dict, bytes]:
+    access = os.open("intake_access", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+    try:
+        raw = _intake_queue_read_file(access, f"access_{intake_id}.json")
+        metadata = json.loads(raw)
+        if not isinstance(metadata, dict) or metadata.get("version") != 1:
+            raise ValueError("Invalid document owner")
+        return metadata, raw
+    finally:
+        os.close(access)
+
+
+def _intake_queue_write_file(directory: int, name: str, raw: bytes, *, initial: bool = False) -> None:
+    """Publish a complete private file; initial publication never replaces."""
+    temporary = "." + name + "." + secrets.token_hex(16) + ".tmp"
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+    try:
+        with os.fdopen(fd, "wb") as output:
+            output.write(raw)
+            output.flush()
+            os.fsync(output.fileno())
+        if initial:
+            os.link(temporary, name, src_dir_fd=directory, dst_dir_fd=directory, follow_symlinks=False)
+        else:
+            os.replace(temporary, name, src_dir_fd=directory, dst_dir_fd=directory)
+    finally:
         try:
-            if stale.stat().st_mtime < cutoff:
-                stale.unlink()
-                (_PLATO_STAGE_DIR / "intake_access" /
-                 ("access_" + stale.stem.removeprefix("intake_") + ".json")).unlink(missing_ok=True)
-        except OSError:
+            os.unlink(temporary, dir_fd=directory)
+        except FileNotFoundError:
             pass
+
+
+def _intake_queue_revision(queue: dict) -> int:
+    revision = queue.get("revision", 0)
+    if type(revision) is not int or revision < 0:
+        raise ValueError("Invalid document revision")
+    return revision
+
+
+def _intake_question_token(queue: dict[str, Any]) -> str:
+    index = int(queue.get("index") or 0)
+    cards = queue.get("cards") or []
+    binding = {"id": queue["id"], "revision": _intake_queue_revision(queue), "index": index,
+               "question": cards[index] if 0 <= index < len(cards) else None}
+    return hashlib.sha256(json.dumps(binding, ensure_ascii=False, sort_keys=True,
+                                    separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _intake_queue_expect(queue: dict[str, Any], revision, question_token) -> None:
+    """Only an explicitly shown version/question can receive an answer."""
+    if (type(revision) is not int or revision != _intake_queue_revision(queue)
+            or not isinstance(question_token, str) or not re.fullmatch(r"[0-9a-f]{64}", question_token)
+            or not secrets.compare_digest(question_token, _intake_question_token(queue))):
+        raise _intake_queue_conflict()
+
+
+def _intake_queue_save(queue: dict[str, Any]) -> None:
+    snapshot = getattr(queue, "_intake_snapshot", None)
+    if not isinstance(queue, _IntakeQueue) or not snapshot:
+        raise _intake_queue_conflict()
+    intake_id = snapshot["id"]
+    if queue.get("id") != intake_id or snapshot["root"] != os.path.abspath(_PLATO_STAGE_DIR):
+        raise _intake_queue_conflict()
+    path = _intake_queue_path(intake_id)
+    # All expensive parsing, card construction and IO happen before/after this
+    # short lock. It guards only local record comparison and publication.
+    with _intake_queue_directory(create=True) as directory, _intake_queue_lock(directory, intake_id):
+        initial = snapshot["sha256"] is None
+        directory_info = os.fstat(directory)
+        directory_identity = (directory_info.st_dev, directory_info.st_ino)
+        if not initial and snapshot["directory_identity"] != directory_identity:
+            raise _intake_queue_conflict()
+        if initial:
+            if _intake_queue_revision(queue) != 0:
+                raise _intake_queue_conflict()
+            try:
+                os.stat(path.name, dir_fd=directory, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                raise _intake_queue_conflict()
+            actor = snapshot.get("actor")
+            metadata_raw = None
+            if isinstance(actor, _agent_access.Actor):
+                if actor.private and not _agent_key_valid(actor.key):
+                    raise HTTPException(403, "Нужен действующий ключ администратора.")
+                try:
+                    os.mkdir("intake_access", 0o700, dir_fd=directory)
+                except FileExistsError:
+                    pass
+                access = os.open("intake_access", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+                try:
+                    metadata_raw = json.dumps(actor.metadata(), ensure_ascii=False).encode("utf-8")
+                    try:
+                        _intake_queue_write_file(access, f"access_{intake_id}.json", metadata_raw, initial=True)
+                    except FileExistsError:
+                        raise _intake_queue_conflict() from None
+                finally:
+                    os.close(access)
+            revision = 0
+        else:
+            try:
+                metadata, metadata_raw = _intake_queue_metadata(directory, intake_id)
+                current_raw = _intake_queue_read_file(directory, path.name)
+                current = json.loads(current_raw)
+                if current.get("id") != intake_id:
+                    raise ValueError("Invalid document ID")
+                revision = _intake_queue_revision(current)
+            except (OSError, ValueError, AttributeError):
+                raise HTTPException(404, "Разбор этого документа не найден. Приложите документ заново.") from None
+            actor = snapshot.get("actor")
+            if metadata != actor.metadata():
+                raise HTTPException(403, "Этот запрос недоступен.")
+            if actor.private and not _agent_key_valid(actor.key):
+                raise HTTPException(403, "Нужен действующий ключ администратора.")
+            if (hashlib.sha256(current_raw).hexdigest() != snapshot["sha256"]
+                    or hashlib.sha256(metadata_raw).hexdigest() != snapshot["owner_sha256"]
+                    or revision != snapshot["revision"] or _intake_queue_revision(queue) != revision):
+                raise _intake_queue_conflict()
+            revision += 1
+        persisted = {**queue, "revision": revision}
+        raw = json.dumps(persisted, ensure_ascii=False).encode("utf-8")
+        try:
+            _intake_queue_write_file(directory, path.name, raw, initial=initial)
+        except FileExistsError:
+            raise _intake_queue_conflict() from None
+        queue["revision"] = revision
+        queue._intake_snapshot = {**snapshot, "sha256": hashlib.sha256(raw).hexdigest(),
+                                  "revision": revision, "directory_identity": directory_identity, "owner_sha256":
+                                  hashlib.sha256(metadata_raw).hexdigest() if metadata_raw else None}
+    import document_processing
+    if not document_processing.short_publication():
+        _intake_queue_cleanup()
+
+
+def _intake_queue_cleanup() -> None:
+    """Bounded TTL sweep with the same lock as writers; no stale resurrection."""
+    cutoff = time.time() - _INTAKE_QUEUE_TTL
+    try:
+        with _intake_queue_directory() as directory:
+            for index, stale in enumerate(_PLATO_STAGE_DIR.glob("intake_*.json")):
+                if index >= 128:
+                    break
+                intake_id = stale.stem.removeprefix("intake_")
+                if not re.fullmatch(r"[0-9a-f]{32}", intake_id):
+                    continue
+                try:
+                    with _intake_queue_lock(directory, intake_id, wait=False):
+                        # Refuse links/nonregular files before checking/unlinking.
+                        _intake_queue_read_file(directory, stale.name)
+                        if os.stat(stale.name, dir_fd=directory, follow_symlinks=False).st_mtime >= cutoff:
+                            continue
+                        os.unlink(stale.name, dir_fd=directory)
+                        access = os.open("intake_access", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+                        try:
+                            os.unlink(f"access_{intake_id}.json", dir_fd=access)
+                        finally:
+                            os.close(access)
+                except OSError:
+                    pass
+    except OSError:
+        pass
 
 
 def _intake_queue_load(intake_id: str, req=None, request: Request | None = None) -> dict[str, Any]:
     if request is None:
         raise HTTPException(403, "Не определён владелец документа.")
-    metadata = _agent_access.load(_PLATO_STAGE_DIR / "intake_access", intake_id)
-    _agent_check_metadata(metadata, req, request)
+    if not re.fullmatch(r"[0-9a-f]{32}", str(intake_id or "")):
+        raise HTTPException(400, "Неверный номер очереди вопросов")
     try:
-        return json.loads(_intake_queue_path(intake_id).read_text(encoding="utf-8"))
+        with _intake_queue_directory() as directory:
+            metadata, _ = _intake_queue_metadata(directory, intake_id)
+            _agent_check_metadata(metadata, req, request)  # ACL before any private queue read.
+            with _intake_queue_lock(directory, intake_id):
+                metadata, owner_raw = _intake_queue_metadata(directory, intake_id)
+                actor = _agent_check_metadata(metadata, req, request)
+                raw = _intake_queue_read_file(directory, _intake_queue_path(intake_id).name)
+                state = json.loads(raw)
+                if not isinstance(state, dict) or state.get("id") != intake_id:
+                    raise ValueError("Invalid document record")
+                revision = _intake_queue_revision(state)
+                queue = _IntakeQueue(state)
+                queue["revision"] = revision
+                queue._intake_snapshot = {"id": intake_id, "root": os.path.abspath(_PLATO_STAGE_DIR),
+                    "sha256": hashlib.sha256(raw).hexdigest(), "revision": revision,
+                    "directory_identity": (os.fstat(directory).st_dev, os.fstat(directory).st_ino),
+                    "owner_sha256": hashlib.sha256(owner_raw).hexdigest(), "actor": actor}
+                return queue
     except (OSError, ValueError):
-        raise HTTPException(status_code=404, detail=(
-            "Разбор этого документа не найден на сервере: прошло больше трёх дней "
-            "или сервер перезапущен с чистого диска. Приложите документ заново."))
+        raise HTTPException(404, "Разбор этого документа не найден на сервере: прошло больше трёх дней "
+                            "или сервер перезапущен с чистого диска. Приложите документ заново.") from None
 
 
 def teaser_card_view(queue: dict[str, Any], inputs: dict[str, Any],
@@ -830,6 +1085,8 @@ def teaser_card_view(queue: dict[str, Any], inputs: dict[str, Any],
         if parts[0] == "tep" and len(parts) == 3 and not row.get("derived"):
             card["tep"].setdefault(parts[1], {})[parts[2]] = row["value"]
     card["id"] = queue["id"]
+    card["queue_revision"] = _intake_queue_revision(queue)
+    card["question_token"] = _intake_question_token(queue)
     # Version covers both the proposed changes and the unchanged assumptions.
     card["card_key"] = hashlib.sha256(json.dumps(
         {"card": card, "inputs": inputs, "tep": tep, "class_profile": class_profile or {}},
@@ -837,26 +1094,45 @@ def teaser_card_view(queue: dict[str, Any], inputs: dict[str, Any],
     return card
 
 
-def _intake_queue_start(filename: str, extraction: dict[str, Any], document: dict[str, Any],
+def _intake_queue_prepare(filename: str, extraction: dict[str, Any], document: dict[str, Any],
                         inputs: dict[str, Any], tep: dict[str, dict[str, Any]],
                         *, by_parcel: bool = False, parcel_region: str = "moscow",
-                        class_profile: dict[str, Any] | None = None, actor=None) -> dict[str, Any]:
-    """Завести состояние разбора и отдать карточку первого шага."""
-    queue = {"id": os.urandom(16).hex(),
+                        class_profile: dict[str, Any] | None = None, actor=None) -> tuple[dict,dict]:
+    """Prepare the existing queue/card without publishing any file or pointer."""
+    queue = _IntakeQueue({"id": os.urandom(16).hex(), "revision": 0, 'callback_schema':2,
              **teaser_card.start(extraction, document, filename,
                                  presets=PROJECT_CLASS_PRESETS,
-                                 current_class=str(inputs.get("project_class") or ""))}
-    if isinstance(actor, _agent_access.Actor):
-        _agent_access.claim(_PLATO_STAGE_DIR / "intake_access", queue["id"], actor)
+                                 current_class=str(inputs.get("project_class") or ""))})
+    queue._intake_snapshot = {"id": queue["id"], "root": os.path.abspath(_PLATO_STAGE_DIR),
+                              "sha256": None, "revision": 0, "actor": actor}
     card = teaser_card_view(queue, inputs, tep, by_parcel=by_parcel, parcel_region=parcel_region,
                             class_profile=class_profile)
+    return queue,card
+
+
+def _intake_queue_publish(queue,actor=None,*,short: bool = False) -> None:
+    """Publish the existing queue only after a caller's current-source check."""
     try:
-        _intake_queue_save(queue)
+        snapshot = getattr(queue, "_intake_snapshot", None)
+        if not snapshot or snapshot["sha256"] is not None:
+            raise _intake_queue_conflict()
+        snapshot["actor"] = actor
+        import document_processing
+        with document_processing.publication(short=short):
+            _intake_queue_save(queue)
     except OSError as exc:
-        # Без диска карточку показать можно, а принять ответ в другом воркере —
-        # нет. Говорим об этом прямо, а не теряем ответ на втором вопросе.
+        # Without durable state no continue/calculation action can be offered.
         _PLATON_LOG.warning("document queue could not be saved (%s)", type(exc).__name__)
-        card["error"] = "Разбор не удалось сохранить на сервере. Повторите загрузку документа."
+        raise HTTPException(503,'Разбор не удалось сохранить на сервере. Продолжение и расчёт не начаты; повторите загрузку.') from None
+
+
+def _intake_queue_start(filename: str, extraction: dict[str, Any], document: dict[str, Any],
+                        inputs: dict[str, Any], tep: dict[str, dict[str, Any]],
+                        *, by_parcel: bool = False, parcel_region: str = 'moscow',
+                        class_profile: dict[str, Any] | None = None, actor=None) -> dict[str, Any]:
+    queue,card = _intake_queue_prepare(filename,extraction,document,inputs,tep,
+        by_parcel=by_parcel,parcel_region=parcel_region,class_profile=class_profile,actor=actor)
+    _intake_queue_publish(queue,actor)
     return card
 
 
@@ -872,32 +1148,47 @@ def agent_document_card(req: AgentDocumentCardRequest, request: Request) -> dict
                             class_profile=req.class_profile)
 
 
+def _intake_queue_answer_conflict(req, request: Request) -> None:
+    # Return only the freshly authorized queue; never the losing mutation.
+    current = _intake_queue_load(req.intake_id, req, request)
+    detail = dict(_intake_queue_conflict().detail)
+    detail["card"] = teaser_card_view(current, req.inputs or {}, req.tep or {},
+                                      class_profile=req.class_profile)
+    detail["unapplied_answer"] = {"index": req.index, "choice": req.choice,
+        "action": req.action, "mode": req.mode, "value": req.value,
+        "status": "not_applied_queue_changed"}
+    detail["applied"] = []
+    raise HTTPException(409, detail)
+
+
 @app.post("/agent/document/answer")
 def agent_document_answer(req: AgentDocumentAnswerRequest, request: Request) -> dict[str, Any]:
-    """Ответ на текущий вопрос: записать в разбор и отдать обновлённую карточку.
-
-    Модель не меняется: ответ правит карточку, а в расчёт карточка уходит
-    только кнопкой «Всё верно, считать».
-    """
+    """Apply one explicitly shown question, then publish with snapshot CAS."""
     _require_web_access(req.session, req.access_key, "Разбор документа")
     queue = _intake_queue_load(req.intake_id, req, request)
     inputs, tep = req.inputs or {}, req.tep or {}
-    got = teaser_card.answer(queue, inputs, tep, index=req.index,
-                             action=str(req.action or "answer"), choice=req.choice,
-                             value=req.value, mode=str(req.mode or ""), spp_split=MKD_SPP_SPLIT,
-                             presets=teaser_card.class_presets(PROJECT_CLASS_PRESETS,
-                                                               req.class_profile))
+    try:
+        # Revalidate old drafts using the shared reader before comparing the
+        # shown question. This is memory-only until a successful CAS save.
+        card = teaser_card_view(queue, inputs, tep, class_profile=req.class_profile)
+        _intake_queue_expect(queue, req.queue_revision, req.question_token)
+        got = teaser_card.answer(queue, inputs, tep, index=req.index,
+                                 action=str(req.action or "answer"), choice=req.choice,
+                                 value=req.value, mode=str(req.mode or ""), spp_split=MKD_SPP_SPLIT,
+                                 presets=teaser_card.class_presets(PROJECT_CLASS_PRESETS,
+                                                                   req.class_profile))
+        if got.get("stale"):
+            raise _intake_queue_conflict()
+        if got.get("confirm"):
+            return {"confirm": got["confirm"], "answer": got["answer"], "card": card,
+                    "applied": [], "refused": []}
+        if not got.get("invalid"):
+            _intake_queue_save(queue)
+    except HTTPException as exc:
+        if exc.status_code != 409:
+            raise
+        _intake_queue_answer_conflict(req, request)
     card = teaser_card_view(queue, inputs, tep, class_profile=req.class_profile)
-    if got.get("stale"):
-        # Двойное нажатие или вторая вкладка: отвечали на вопрос, который уже
-        # закрыт. Чужой вопрос этим ответом не закрываем — отдаём текущий.
-        return {"stale": True, "card": card, "applied": [], "refused": []}
-    if got.get("confirm"):
-        # В поле уже своё число: прибавить или заменить — решает человек,
-        # и вопрос остаётся открытым, пока он не ответит.
-        return {"confirm": got["confirm"], "answer": got["answer"], "card": card,
-                "applied": [], "refused": []}
-    _intake_queue_save(queue)
     usage_track("document_answer", surface="site", text=str(queue.get("filename") or ""))
     record = got["answer"]
     return {"card": card, "answer": record.get("answer") or "",

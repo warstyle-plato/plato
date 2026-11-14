@@ -28,6 +28,8 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
@@ -88,8 +90,11 @@ def _parse(monkeypatch) -> dict:
 
 
 def _answer(card: dict, **kw) -> dict:
+    shown = core.agent_document_card(core.AgentDocumentCardRequest(
+        intake_id=card["id"], inputs=dict(core.DEFAULT_INPUTS), tep=core.TEP_DEFAULT), request)
     return core.agent_document_answer(core.AgentDocumentAnswerRequest(
-        intake_id=card["id"], inputs=dict(core.DEFAULT_INPUTS), tep=core.TEP_DEFAULT, **kw), request)
+        intake_id=card["id"], queue_revision=shown["queue_revision"], question_token=shown["question_token"],
+        inputs=dict(core.DEFAULT_INPUTS), tep=core.TEP_DEFAULT, **kw), request)
 
 
 # --- карточка: один сборщик, страница у каждого числа -------------------------
@@ -157,11 +162,12 @@ def test_the_class_shows_this_projects_numbers_and_keeps_typed_ones(monkeypatch)
     inputs = {**core.DEFAULT_INPUTS, "_class_manual": ["parking_price_th"], "parking_price_th": 3200}
     profile = {"business": {"apartment_price_th": 480}}
     for index in range(3):
-        core.agent_document_answer(core.AgentDocumentAnswerRequest(
-            intake_id=card["id"], index=index, action="skip", inputs=inputs, tep=core.TEP_DEFAULT), request)
+        card = core.agent_document_answer(core.AgentDocumentAnswerRequest(
+            intake_id=card["id"], index=index, action="skip", inputs=inputs, tep=core.TEP_DEFAULT,
+            queue_revision=card["queue_revision"], question_token=card["question_token"]), request)["card"]
     got = core.agent_document_answer(core.AgentDocumentAnswerRequest(
         intake_id=card["id"], index=3, choice=1, inputs=inputs, tep=core.TEP_DEFAULT,
-        class_profile=profile), request)["card"]
+        class_profile=profile, queue_revision=card["queue_revision"], question_token=card["question_token"]), request)["card"]
     engine = {row["path"]: row["value"] for row in got["to_engine"]}
     assert engine["inputs.apartment_price_th"] == 480, "карточка показала базу, а не цену проекта"
     assert "inputs.parking_price_th" not in engine, "класс затёр вписанное руками"
@@ -172,8 +178,10 @@ def test_the_class_shows_this_projects_numbers_and_keeps_typed_ones(monkeypatch)
 def test_a_repeated_click_does_not_answer_the_next_question(monkeypatch) -> None:
     card = _parse(monkeypatch)["card"]
     _answer(card, index=0, choice=0)
-    again = _answer(card, index=0, choice=1)
-    assert again["stale"] is True and again["card"]["questions"]["index"] == 1
+    with pytest.raises(core.HTTPException) as conflict:
+        _answer(card, index=0, choice=1)
+    assert conflict.value.status_code == 409
+    assert conflict.value.detail["card"]["questions"]["index"] == 1
 
 
 def test_the_bot_overrides_are_exactly_the_card_rows(monkeypatch) -> None:

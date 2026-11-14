@@ -137,7 +137,8 @@ def test_apply_uses_the_owned_ready_card_and_rechecks_all_inputs(server):
     with pytest.raises(core.HTTPException, match="") as exc:
         core.agent_document_apply(core.AgentDocumentApplyRequest(intake_id=card["id"], card_key=card["card_key"], inputs=inputs, tep=tep), request)
     assert exc.value.status_code == 409
-    core.agent_document_answer(core.AgentDocumentAnswerRequest(intake_id=card["id"], index=0, choice=0, inputs=inputs, tep=tep), request)
+    core.agent_document_answer(core.AgentDocumentAnswerRequest(intake_id=card["id"], index=0, choice=0, inputs=inputs, tep=tep,
+        queue_revision=card["queue_revision"], question_token=card["question_token"]), request)
     card = core.agent_document_card(core.AgentDocumentCardRequest(intake_id=card["id"], inputs=inputs, tep=tep), request)
     req = core.AgentDocumentApplyRequest(intake_id=card["id"], card_key=card["card_key"], inputs=inputs, tep=tep)
     applied = core.agent_document_apply(req, request)
@@ -174,9 +175,10 @@ def test_document_queue_failure_does_not_expose_server_details(server, monkeypat
     def fail(_queue):
         raise OSError(sentinel)
     monkeypatch.setattr(core, "_intake_queue_save", fail)
-    card = core._intake_queue_start("teaser.pdf", {"fields": []}, {"text": ""}, {}, {})
-    assert card.get("error")
-    assert sentinel not in json.dumps(card)
+    with pytest.raises(core.HTTPException) as failed:
+        core._intake_queue_start("teaser.pdf", {"fields": []}, {"text": ""}, {}, {})
+    assert failed.value.status_code == 503
+    assert sentinel not in str(failed.value.detail)
 
 
 @pytest.mark.parametrize("gns", [31000, 100.25, 100.26])
@@ -188,7 +190,8 @@ def test_gns_import_updates_stale_dependants_in_the_actual_engine(server, gns):
     quote = f"Квартиры {gns} м²"
     card = core._intake_queue_start("teaser.pdf", {"fields": [field(gns, quote, "apartments_gns_sqm", "м²")]},
         {"text": "[стр. 1]\n" + quote}, inputs, tep, actor=actor)
-    core.agent_document_answer(core.AgentDocumentAnswerRequest(intake_id=card["id"], index=0, choice=0, inputs=inputs, tep=tep), request)
+    core.agent_document_answer(core.AgentDocumentAnswerRequest(intake_id=card["id"], index=0, choice=0, inputs=inputs, tep=tep,
+        queue_revision=card["queue_revision"], question_token=card["question_token"]), request)
     card = core.agent_document_card(core.AgentDocumentCardRequest(intake_id=card["id"], inputs=inputs, tep=tep), request)
     applied = core.agent_document_apply(core.AgentDocumentApplyRequest(intake_id=card["id"], card_key=card["card_key"], inputs=inputs, tep=tep), request)
     assert applied["tep"]["apartments"]["gns"] == gns
@@ -204,7 +207,8 @@ def test_document_extraction_has_no_calculation_or_agent_tools(server, monkeypat
     monkeypatch.setattr(core, "_agent_rate_limit", lambda *_a: None)
     monkeypatch.setattr(core, "_run_authoritative_model", lambda *_a: pytest.fail("extraction calculated project economics"))
     payloads = []
-    def model(payload):
+    def model(payload, *, budget_seconds=None):
+        assert 0 < budget_seconds <= 240
         payloads.append(payload)
         return {"status": "completed", "output": [{"type": "message", "content": [
             {"type": "output_text", "text": '{"fields":[],"questions":[],"notes":[]}'}]}]}
