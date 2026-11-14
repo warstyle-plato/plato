@@ -135,9 +135,9 @@ def test_the_card_shows_the_ks2_fact_and_the_reconciliation_in_plain_words(card,
         _serve(page, [], cut="2026-02-04", acts=fact.acts(REGISTER_ROW))
         page.locator("#contractsTab").click()
         page.locator(f'tr[data-contract-id="{CONTRACT}"] .contract-open').click()
-        facts = page.locator("#contractDocuments .contract-fact")
-        expect(facts.locator(".contract-fact-source")).to_have_text(
-            "Это выполнение по актам КС-2 карточки, которое легло на строки графика через связи позиций расчёта.")
+        page.locator("#contractComparisonMethodology > details > summary").click()
+        facts = page.locator(".contract-fact-audit")
+        expect(page.locator("#contractComparisonInfo")).to_contain_text("Факт по КС-2 — по периодам выполнения.")
         state = facts.locator(".contract-fact-reconcile-state")
         expect(state).to_have_text("Акты КС-2 и накопительная КС-6а расходятся: позиций с разным объёмом — 1, "
                                    "только в актах КС-2 — 0, только в КС-6а — 4. Факт считается по актам КС-2.")
@@ -147,8 +147,7 @@ def test_the_card_shows_the_ks2_fact_and_the_reconciliation_in_plain_words(card,
         expect(first.nth(3)).to_have_text("0,75")
         expect(first.nth(4)).to_have_text("объём разный")
         assert first.nth(3).get_attribute("data-label") == "По КС-6а"
-        report = page.locator("#contractDocuments .contract-control")
-        expect(report.locator(".contract-plan-total")).to_have_text(
-            "На 04.02.2026: готовность договора 36,4 %, выполнение плана 40 %")
+        expect(page.locator("#contractCardSummary")).to_contain_text("40 %")
+        expect(page.locator("#contractCardSummary")).to_contain_text("Готовность сопоставленных работ: 36,4 %")
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
         assert errors == []

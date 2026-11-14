@@ -55,6 +55,9 @@ def rental_page(request,monkeypatch):
 
 
 def open_detail(page,name):
+    advanced=page.locator('#landRentEditor [data-land-rent-advanced]')
+    if not advanced.evaluate('(e)=>e.open'):
+        advanced.locator('summary').first.click()
     target=page.locator(f'#landRentEditor details[data-land-rent-detail="{name}"]')
     if not target.evaluate('(e)=>e.open'):
         target.locator('summary').first.click()

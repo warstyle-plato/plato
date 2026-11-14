@@ -2174,7 +2174,7 @@ padding:9px 14px;border-radius:10px;background:#fff}}h1{{font-size:34px;line-hei
 .filters{{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px}}
 .filters button{{border:1px solid var(--line);background:#fff;border-radius:999px;padding:8px 12px;cursor:pointer}}
 .filters button.active{{background:var(--accent);color:#fff;border-color:var(--accent)}}
-.ncard{{background:#fff;border:1px solid var(--line);border-radius:18px;padding:22px;margin-bottom:14px}}
+.ncard{{background:#fff;border:1px solid var(--line);border-radius:18px;padding:22px;margin-bottom:14px;overflow-wrap:anywhere}}
 .ncard>summary{{cursor:pointer;list-style:none}}
 .ncard>summary::-webkit-details-marker{{display:none}}
 .ncard[open]>summary{{border-bottom:1px solid var(--line);padding-bottom:14px;margin-bottom:4px}}

@@ -447,6 +447,16 @@ async def monitor_admin_expenses_saved_snapshot_result(request: Request) -> Resp
     return await _monitor_admin_expenses_source_job(request, start=False, saved_snapshot=True)
 
 
+@app.post("/monitor/audit/admin-expenses/saved-snapshot", include_in_schema=False)
+async def monitor_admin_expenses_saved_snapshot(request: Request) -> Response:
+    return await _monitor_admin_expenses_source_job(request, start=True, saved_snapshot=True)
+
+
+@app.post("/monitor/audit/admin-expenses/saved-snapshot/result", include_in_schema=False)
+async def monitor_admin_expenses_saved_snapshot_result(request: Request) -> Response:
+    return await _monitor_admin_expenses_source_job(request, start=False, saved_snapshot=True)
+
+
 class MonitorViewResultRequest(BaseModel):
     ticket: str
     session: str = ""

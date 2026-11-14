@@ -53,6 +53,7 @@ def run(inputs: dict) -> dict:
     reset = page_fragment(" TERRITORY_INPUT_KEYS.forEach",
                           "\n TERRITORY_MARKERS.forEach")
     prelude = "\n".join([keys, labels,
+                         "const document={getElementById:()=>null};",
                          f"const inputs={json.dumps(inputs, ensure_ascii=False)};"])
     tail = (reset + "\nconsole.log(JSON.stringify({cleared:territoryCleared,"
             "note:territoryClearedNote(),inputs}));")
