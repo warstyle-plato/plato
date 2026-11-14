@@ -47,7 +47,7 @@ def _original(project, snapshot_id, *, directory_fd=None):
             raise SourceReviewProblem('Исходный архив находится вне частного хранилища; проверка остановлена.')
     try:
         handle = path.open('rb') if directory_fd is None else os.fdopen(os.open(
-            snapshot_id+'.zip', os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd), 'rb')
+            snapshot_id+'.zip', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory_fd), 'rb')
         with handle:
             if directory_fd is not None and not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
                 raise SourceReviewProblem('Исходный архив не является обычным файлом.')
@@ -505,8 +505,8 @@ def _project_audit(project, cut, root, directory_fd, guard, snapshots):
                 info=os.stat(sid+'.zip',dir_fd=directory_fd,follow_symlinks=False)
             except FileNotFoundError:
                 info=None
-            if info is not None and stat.S_ISLNK(info.st_mode):
-                raise SourceReviewProblem('Ссылка вместо исходного архива; чтение остановлено.')
+            if info is not None and not stat.S_ISREG(info.st_mode):
+                raise SourceReviewProblem('Исходный архив не является обычным файлом; чтение остановлено.')
             if info is not None and total_bytes + info.st_size > MAX_TOTAL_ARCHIVE_BYTES:
                 entry['reason'] = 'Достигнут общий предел байтов исходных архивов.'
                 continue

@@ -368,3 +368,70 @@ def test_global_text_budget_stops_remaining_workbook_decodes_with_visible_status
     result=review.project_audit(PROJECT,CUT)
     assert not result['read_complete'] and len(calls)==1
     assert all(f['read_state']=='not_read_budget' for f in result['archives'][0]['files'])
+
+
+def test_special_original_is_rejected_before_opening_it(api,monkeypatch):
+    import os
+    sid=retain(archive([('Known.xlsx',ks())]),'2036-08-01')
+    path=ledgers._root(PROJECT)/(sid+'.zip')
+    path.unlink();os.mkfifo(path)
+    monkeypatch.setattr(review,'_original',lambda *a,**k:pytest.fail('nonregular archive reached source open'))
+    result=review.project_audit(PROJECT,CUT)
+    assert result['state']=='partial' and not result['read_complete']
+    assert result['archives'][0]['state']=='error'
+    assert not result['archives'][0]['original_sha_verified'] and result['books']==[]
+
+
+def test_regular_to_fifo_race_requires_nonblocking_open_and_never_reads(api,monkeypatch):
+    import os
+    import stat
+    sid=retain(archive([('Known.xlsx',ks())]),'2036-08-01')
+    path=ledgers._root(PROJECT)/(sid+'.zip')
+    original_review,original_open,original_fdopen=review._original,os.open,os.fdopen
+    calls=[]
+    class NoRead:
+        def __init__(self,handle):self.handle=handle
+        def __enter__(self):return self
+        def __exit__(self,*args):self.handle.close()
+        def fileno(self):return self.handle.fileno()
+        def read(self,*args):pytest.fail('FIFO data read attempted')
+    def safe_open(name,flags,*args,**kwargs):
+        if name==sid+'.zip':
+            # The unchanged parent fails this assertion before any potentially
+            # blocking syscall; the child can safely open the temp FIFO.
+            assert flags & os.O_NONBLOCK
+            calls.append(flags)
+        return original_open(name,flags,*args,**kwargs)
+    def checked_fdopen(fd,mode,*args,**kwargs):
+        value=original_fdopen(fd,mode,*args,**kwargs)
+        return NoRead(value) if mode=='rb' and stat.S_ISFIFO(os.fstat(fd).st_mode) else value
+    def raced(project,snapshot_id,**kwargs):
+        path.unlink();os.mkfifo(path)
+        return original_review(project,snapshot_id,**kwargs)
+    monkeypatch.setattr(review,'_original',raced)
+    monkeypatch.setattr(review.os,'open',safe_open)
+    monkeypatch.setattr(review.os,'fdopen',checked_fdopen)
+    result=review.project_audit(PROJECT,CUT)
+    assert len(calls)==1 and result['archives'][0]['state']=='error'
+    assert not result['read_complete'] and result['books']==[]
+
+
+@pytest.mark.parametrize('kind',['directory','device_metadata'])
+def test_other_nonregular_original_types_fail_before_any_source_open(api,monkeypatch,kind):
+    import stat
+    from types import SimpleNamespace
+    sid=retain(archive([('Known.xlsx',ks())]),'2036-08-01')
+    path=ledgers._root(PROJECT)/(sid+'.zip')
+    if kind=='directory':
+        path.unlink();path.mkdir()
+    else:
+        original_stat=review.os.stat
+        def device_stat(name,*args,**kwargs):
+            if name==sid+'.zip' and kwargs.get('dir_fd') is not None:
+                return SimpleNamespace(st_mode=stat.S_IFCHR|0o600)
+            return original_stat(name,*args,**kwargs)
+        monkeypatch.setattr(review.os,'stat',device_stat)
+    monkeypatch.setattr(review,'_original',lambda *a,**k:pytest.fail('nonregular original opened'))
+    result=review.project_audit(PROJECT,CUT)
+    assert result['archives'][0]['state']=='error' and not result['read_complete']
+    assert result['books']==[] and result['counts']['verified_original_bytes']==0
