@@ -253,7 +253,8 @@ def test_the_card_shows_the_dates_of_the_acts_and_the_missing_one_in_red(card):
         documents_ = page.locator("#contractDocuments")
         expect(documents_.locator(".contract-act")).to_have_text(
             "Отчётный период: 01.02.2026 — 03.02.2026. Итого по акту: 4 000 ₽.")
-        block = documents_.locator(".contract-act-dates")
+        page.locator('#contractComparisonMethodology > details > summary').click()
+        block = page.locator('.contract-act-dates')
         block.get_by_text("Даты актов КС-2 (2)").click()
         expect(block.locator("tr", has_text="КС-2 № 2")).to_contain_text(
             "01.02.2026 — 03.02.2026Отчётный период из акта КС-2 № 2КС-2 2.pdf")
@@ -261,5 +262,6 @@ def test_the_card_shows_the_dates_of_the_acts_and_the_missing_one_in_red(card):
         expect(missing).to_have_text("Даты нет: в карточке договора нет акта КС-2 № 3, и в сводной по закрытию его "
                                      "тоже нет. Объём этого периода в факт не входит.")
         assert missing.evaluate("e => getComputedStyle(e).color") == RED
-        expect(documents_.locator(".contract-fact-unread")).to_contain_text("Период «КС-2 № 3» без даты")
+        page.locator('.contract-fact-audit').get_by_text('Не вошло в сопоставление (1)').click()
+        expect(page.locator('.contract-fact-audit')).to_contain_text('Период «КС-2 № 3» без даты')
         assert errors == []

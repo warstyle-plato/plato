@@ -1,8 +1,4 @@
-"""Строка таблицы «Договоры» и её раскрытая часть на отрисованной странице.
-
-Строка реестра короткая; подробности договора открываются щелчком по строке. Тест, которому нужны
-подробности, раскрывает строку так же, как посетитель, и читает раскрытую часть.
-"""
+"""Contract rows open the same modal by click, arrow or the Open button."""
 from __future__ import annotations
 
 
@@ -18,13 +14,16 @@ def named(page, text):
 
 
 def opened(page, contract_id=None):
-    """Раскрыть строку договора (без `contract_id` — первую) и вернуть её подробности."""
+    """Open the modal and its financial evidence for source-consumer assertions.
+
+    Default collapsed-state checks use the modal tests directly. These callers
+    inspect financial evidence, so they deliberately open that source section.
+    """
+    if page.locator('#contractDialog').evaluate('d=>d.open'):
+        page.locator('#contractDialogClose').click()
     main = row(page, contract_id) if contract_id else page.locator('tr[data-contract-id]').first
     main.wait_for()
-    toggle = main.locator('.contract-more-toggle')
-    if toggle.get_attribute('aria-expanded') != 'true':
-        main.locator('td.party').click()
-    found = main.get_attribute('data-contract-id')
-    more = page.locator(f'tr[data-contract-detail="{found}"]')
-    more.wait_for(state='visible')
-    return more
+    main.locator('td.party').click()
+    page.locator('#contractDialog').wait_for(state='visible')
+    page.locator('#contractFinancialSources > summary').click()
+    return page.locator('#contractsDetails')
