@@ -308,7 +308,7 @@ def telegram_result(req: TelegramResultRequest,
             )},
         }]]
     }
-    _telegram_send_message(chat_id, text, reply_markup=button)
+    _telegram_send_intake_text(chat_id, text, reply_markup=button)
     report_payload=summary.get("report_payload")
     if isinstance(report_payload,dict) and isinstance(report_payload.get("result"),dict):
         # PDF и Excel-модель собираются десятки секунд, и пока они собирались,

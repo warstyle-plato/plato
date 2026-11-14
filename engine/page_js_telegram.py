@@ -98,7 +98,7 @@ async function submitTelegramEditedResult(){
   persistLocalSilently();
   telegramResultSent=false;
   await sendTelegramResult();
-  if(!telegramResultSent)throw new Error('Не удалось отправить обновлённый расчёт в Telegram');
+  if(!telegramResultSent)throw new Error(sendTelegramResult.failure||'Не удалось отправить обновлённый расчёт в Telegram');
   finishTelegramSession('Обновлённый расчёт отправлен в чат.');
  }catch(e){
   const status=document.getElementById('glavapuStatus');

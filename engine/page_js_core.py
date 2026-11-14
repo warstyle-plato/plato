@@ -1215,7 +1215,7 @@ async function telegramRecalculateAndFinish(tab){
   telegramProgress('Готов. Отправляю в чат…');
   telegramResultSent=false;
   await sendTelegramResult();
-  if(!telegramResultSent)throw new Error('Не удалось отправить расчёт в Telegram');
+  if(!telegramResultSent)throw new Error(sendTelegramResult.failure||'Не удалось отправить расчёт в Telegram');
   finishTelegramSession('Результат отправлен в чат.');
  }catch(e){
   telegramProgress('');
