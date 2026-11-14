@@ -467,11 +467,12 @@ def editor(project, *, full_source_sha256=''):
 
 
 def render(state):
-    """Shared HTML; missing inputs stay compact so the Gantt remains primary."""
+    """One compact state and substantive corpus facts before the work chart."""
     if not state:
         return ''
     esc = lambda value: html.escape(str(value if value is not None else ''), quote=True)
     from developaid_schedule_visual import date_text
+    project = state['project']
     def facts(row):
         c = row['counts']
         return 'Завершено: '+str(c['completed'])+' · в работе: '+str(c['in_progress'])+' · не начато: '+str(c['not_started'])+' · неизвестно: '+str(c['unknown'])
@@ -479,38 +480,36 @@ def render(state):
         eligible = row.get('eligible_readings', row['known_readings'])
         weighted = ' · включено во взвешенный расчёт: '+str(row['known_readings']) if 'eligible_readings' in row else ''
         return 'Пригодные показания: '+str(eligible)+' из '+str(row['total'])+weighted+' · веса полного состава: '+str(row['known_weights'])+' из '+str(row['total'])+'. Даты учтённых источников: '+(', '.join(date_text(day) for day in row['source_dates']) or 'нет учтённых показаний')+'. '+', '.join(row['sources'])
-    def card(row):
-        value = 'Не определена' if row['progress'] is None else f"{row['progress']*100:.1f}%".replace('.', ',')
-        partial = '<p>По известным данным; состав учтён не полностью.</p>' if row.get('partial') and row['progress'] is not None else ''
-        return '<article class="readiness-item"><h4>'+esc(row['name'])+'</h4><strong>'+esc(value)+'</strong>'+partial+'<details><summary>Состав и данные</summary><p>'+esc(facts(row))+'</p><p>'+esc(evidence(row))+'</p><p>'+esc(row['reason'])+'</p></details></article>'
-    project = state['project']
-    known = project['progress'] is not None or any(row['progress'] is not None for row in state['corpora'])
-    heading = state['scope_label']+(' · оценочный профиль' if state['estimated'] else '')
-    out = ['<style>.readiness-matrix{max-width:100%;overflow-x:auto}.readiness-matrix table{width:100%;table-layout:fixed;border-collapse:collapse;font-size:12px}.readiness-matrix th,.readiness-matrix td{padding:7px;border:1px solid #dce3ed;overflow-wrap:anywhere;vertical-align:top}.readiness-summary{padding:12px 16px;border-bottom:1px solid #dce3ed;overflow-wrap:anywhere}.readiness-summary h3{font-size:15px;margin:0 0 7px}.readiness-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(250px,100%),1fr));gap:10px;margin-top:10px}.readiness-item{border:1px solid #dce3ed;border-radius:7px;padding:10px}.readiness-item h4{margin:0 0 7px}.readiness-item strong{font-size:20px}.readiness-project-value{display:block;font-size:30px;line-height:1.1;margin:8px 0}.readiness-item details{margin-top:7px}@media(max-width:640px){.readiness-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.readiness-item{padding:9px}.readiness-item h4{font-size:13px}.readiness-item summary{font-size:11px}}.readiness-item p,.readiness-summary p{font-size:12px;line-height:1.5;margin:5px 0}.readiness-summary summary{cursor:pointer;font-size:12px}</style>',
-           '<section class="readiness-summary"><h3>'+esc(heading)+'</h3>']
+    out = ['<style>.readiness-summary{padding:12px 16px;border-bottom:1px solid #dce3ed;overflow-wrap:anywhere}.readiness-summary h3{font-size:15px;margin:0 0 7px}.readiness-summary p{font-size:12px;line-height:1.45;margin:5px 0}.readiness-summary summary{cursor:pointer;font-size:12px}.readiness-project-value{display:block;font-size:24px;margin:5px 0}.readiness-corpus-table,.readiness-estimate-table{width:100%;border-collapse:collapse;font-size:12px;margin:9px 0}.readiness-corpus-table th,.readiness-corpus-table td,.readiness-estimate-table th,.readiness-estimate-table td{padding:7px 4px;border-bottom:1px solid #dce3ed;text-align:right;vertical-align:top}.readiness-corpus-table th:first-child,.readiness-estimate-table th{text-align:left;overflow-wrap:anywhere}.readiness-corpus-table thead th{font-weight:600;font-size:11px}.readiness-corpus-table tbody th{max-width:120px}.readiness-estimate-reference{margin-top:9px}.readiness-estimate-reference p{max-width:850px}.readiness-matrix{max-width:100%;overflow-x:auto}.readiness-matrix table{width:100%;table-layout:fixed;border-collapse:collapse;font-size:12px}.readiness-matrix th,.readiness-matrix td{padding:7px;border:1px solid #dce3ed;overflow-wrap:anywhere;vertical-align:top}@media(max-width:640px){.readiness-summary{padding:10px 12px}.readiness-corpus-table{font-size:11px}.readiness-corpus-table th,.readiness-corpus-table td{padding:6px 3px}.readiness-corpus-table thead th{font-size:10px}}</style>',
+           '<section class="readiness-summary"><h3>'+esc(state['scope_label'])+'</h3>']
     if project['progress'] is not None:
         out.append('<strong class="readiness-project-value">'+esc(f"{project['progress']*100:.1f}%".replace('.', ','))+'</strong>')
         if project.get('partial'):
             out.append('<p>По известным данным; это не готовность всего состава. '+esc(project['reason'])+'</p>')
     else:
-        out.append('<p class="readiness-gap">Общая готовность пока не определена. '+esc(state['reason'])+'</p>')
-    out.append('<p>'+esc(facts(project))+'</p><p>'+esc(evidence(project))+'</p>')
+        out.append('<p class="readiness-gap">Общая готовность пока не определена. '+esc(state.get('reason'))+'</p>')
+    eligible = project.get('eligible_readings', project['known_readings'])
+    dates = ', '.join(date_text(day) for day in project['source_dates']) or 'дата не указана'
+    out.append('<p class="readiness-work-coverage"><b>Пригодные показания: '+str(eligible)+' из '+str(project['total'])+'</b> · '+esc(dates)+'. Процент каждой работы доступен в графике ниже.</p>')
+    corps = [row for row in state['corpora'] if row['total']]
+    weighted = any(row['progress'] is not None for row in corps)
+    unknown = any(row['counts']['unknown'] for row in corps)
+    out.append('<table class="readiness-corpus-table"><thead><tr><th scope="col">Корпус</th><th scope="col">Работ</th><th scope="col">Завершено</th><th scope="col">В работе</th><th scope="col">Не начато</th>'+('<th scope="col">Нет данных</th>' if unknown else '')+('<th scope="col">Готовность</th>' if weighted else '')+'</tr></thead><tbody>')
+    for row in corps:
+        counts = row['counts']
+        value = '—' if row['progress'] is None else f"{row['progress']*100:.1f}%".replace('.', ',')+(' · частично' if row.get('partial') else '')
+        out.append('<tr data-corpus-facts-object="'+esc(row['name'])+'"><th scope="row">'+esc(row['name'])+'</th><td>'+str(row['total'])+'</td>'+''.join('<td>'+str(counts[k])+'</td>' for k in ('completed','in_progress','not_started'))+('<td>'+str(counts['unknown'])+'</td>' if unknown else '')+('<td>'+esc(value)+'</td>' if weighted else '')+'</tr>')
+    out.append('</tbody></table>')
+    out.append('<details class="readiness-corpus-counts"><summary>Основание общей готовности и источники</summary><p>'+esc(state.get('reason'))+'</p><p>'+esc(evidence(project))+'</p><p>'+esc(facts(project))+'</p></details>')
     if state.get('estimated'):
         out.append('<p>Оценка по удельным весам видов работ'+(' с ручными долями' if state.get('manual') else '')+', не по объёмам этого проекта.</p>')
     if state.get('internal_weight_methods'):
         out.append('<p>Внутри разделов: '+esc('; '.join(state['internal_weight_methods']))+'. Число задач вес не определяет.</p>')
     if state.get('project_weight_basis'):
-        out.append('<p>Доли корпусов в общей готовности определены по полному сопоставимому плану: '
-                   +esc(state['project_weight_basis'])+'. Оценочные доли разделов внутри корпуса сохранены.</p>')
-    if known:
-        out.append('<p>'+esc(state.get('profile_label'))+' · '+esc(state.get('basis_label'))+'</p><div class="readiness-grid">'+''.join(card(row) for row in state['corpora'])+'</div>')
-    else:
-        out.append('<details class="readiness-corpus-counts"><summary>Текущий состав по корпусам</summary>'+''.join('<p><b>'+esc(row['name'])+'</b>: '+esc(facts(row))+'. '+esc(evidence(row))+'</p>' for row in state['corpora'])+'</details>')
-    if state['full_scope_confirmed']:
-        out.append('<p>Вне состава показателя: '+str(state['excluded_works'])+' работ. '+esc(state.get('source_reference'))+'</p>')
-    else:
-        out.append('<details class="readiness-history-note"><summary>Завершённые работы из других источников</summary><p>Исторических подтверждений: '+str(state['historical_completed_works'])+'. Они не прибавлены к полному составу автоматически.</p></details>')
-    if 'matrix' in state:
-        out.append('<style>@media(max-width:640px){.readiness-matrix table,.readiness-matrix tbody,.readiness-matrix tr,.readiness-matrix tbody th,.readiness-matrix td{display:block;width:auto}.readiness-matrix thead{display:none}.readiness-matrix tbody tr{border:1px solid #dce3ed;border-radius:7px;margin:10px 0;overflow:hidden}.readiness-matrix tbody th{text-align:left;background:#f3f6fa}.readiness-matrix td{border-width:1px 0 0;overflow-wrap:break-word}.readiness-matrix td::before{content:attr(data-object);display:block;font-weight:700;margin-bottom:5px}.readiness-matrix .readiness-cell-empty{display:none}}</style>')
+        out.append('<p>Доли корпусов в общей готовности определены по полному сопоставимому плану: '+esc(state['project_weight_basis'])+'. Оценочные доли разделов внутри корпуса сохранены.</p>')
+    # A matrix full of unknown weights adds no information to known work facts.
+    meaningful = any(cell.get('progress') is not None for stage in state.get('matrix', []) for cell in stage['cells'])
+    if meaningful:
         out.append(elements.render_matrix(state))
+    out.append('<details class="readiness-estimate-reference"><summary>Оценочные доли видов работ</summary><p>'+esc(elements.TITLE)+'. '+('Исходная карта; применение и ручные изменения показаны в настройке состава.' if state['full_scope_confirmed'] else 'Карта пока не применена к этому проекту: соответствия работ и полный состав не подтверждены.')+'</p><table class="readiness-estimate-table"><tbody>'+''.join('<tr><th scope="row">'+esc(row['name'])+'</th><td>'+str(row['default'])+'%</td></tr>' for row in elements.catalog())+'</tbody></table><p><a href="'+esc(elements.SOURCE_URL)+'">'+esc(elements.SOURCE)+'</a></p></details>')
     return ''.join(out)+'</section>'

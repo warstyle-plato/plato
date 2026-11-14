@@ -243,11 +243,11 @@ def test_multi_building_matrix_is_readable_and_known_unweighted_facts_are_not_mi
         page.evaluate('(v)=>{currentView=v;renderGantt(v)}',view)
         expect(page.locator('#readinessSummary')).to_contain_text('Пригодные показания: 4 из 4')
         expect(page.locator('#readinessSummary')).to_contain_text('включено во взвешенный расчёт: 0')
-        cells=page.locator('#gprMatrix tbody td[data-object]')
-        expect(cells).to_have_count(4)
+        expect(page.locator('#readinessSummary #gprMatrix')).to_have_count(0)
+        rows=page.locator('.readiness-corpus-table tbody tr')
+        expect(rows).to_have_count(4)
         for i in range(4):
-            box=cells.nth(i).bounding_box()
-            assert box['width'] >= (width-90 if width==390 else 150)
-            assert cells.nth(i).get_attribute('data-object')=='Корпус '+str(i+1)
+            expect(rows.nth(i)).to_contain_text('Корпус '+str(i+1))
+            expect(rows.nth(i).locator('td').first).to_have_text('1')
         assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
         assert not errors

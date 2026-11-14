@@ -7,7 +7,7 @@ import io
 import pytest
 from playwright.sync_api import expect
 from pypdf import PdfReader
-from browser import open_ks_calculation
+from browser import open_ks_calculation, expand_gantt
 from test_gpr_source_groups_ui import view
 from test_monitor_cumulative_controls import browser_page, MARKER
 
@@ -191,6 +191,8 @@ def test_covered_facts_remain_visible_when_the_source_has_no_calendar_dates(tmp_
         expect(page.locator('.ks-covered-source')).to_be_visible()
         expect(page.locator('#gprUndated')).to_contain_text('нет полных корректных дат')
         expect(page.locator('#gprEmpty')).to_be_hidden()
+        expect(page.locator('#gprFactMatrix [data-work-id]')).to_have_count(len(value['schedule']['undated_works']))
+        expand_gantt(page)
         expect(page.locator('#gantt .lvl-task').first).to_be_visible()
         expect(page.locator('#gantt')).to_contain_text('Выполнено по ГПР')
         assert page.locator('#gantt .planbar,#gantt .factbar').count() == 0
