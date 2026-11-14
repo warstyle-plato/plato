@@ -2594,7 +2594,7 @@ def test_the_pdf_button_falls_back_to_the_browser_dialog() -> None:
     button = button[: button.index("\n});") + 4]
     assert "printPdf({" in button
     # Разметка уходит та же, что на экране: считать заново нечего.
-    assert "html:out?out.innerHTML:''" in button
+    assert "html:marketPrintHtml()" in button
 
     printer = CABINET_PAGE[CABINET_PAGE.index("async function printPdf("):]
     printer = printer[: printer.index("\n}\n")]
