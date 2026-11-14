@@ -29,6 +29,7 @@ MAX_BUDGET_LEAVES = 2000
 MAX_SECTIONS = 32
 MAX_ISSUES = 64
 MAX_OUTPUT = 128 * 1024
+MAX_FAILURE_DIAGNOSTIC = 2 * 1024
 CHAPTERS = ('1', '2', '3')
 ESTIMATE = 'Расчет стоимости строительства'
 PAYMENTS = 'Реестр платежей'
@@ -49,6 +50,55 @@ _ROLE_WORD = re.compile(r'(?<![а-яa-z])(?:код[а-я]*|дат[а-я]*|сме
                         r'опла[а-я]*|сумм[а-я]*|платеж[а-я]*)(?![а-яa-z])')
 _UNIT_SUFFIX = re.compile(r'(?:[,;:]?\s*\(?\s*(?:(?:тыс|млн)\.?\s*)?'
                           r'(?:руб\.?|рублей|р\.|₽)\s*\)?[.,;:]*)$')
+
+
+class _WorksheetSizeProblem(SourceProblem):
+    """A rejected sheet's metadata, not a successful source observation."""
+    def __init__(self, name, rows, columns):
+        super().__init__('worksheet_size_limit')
+        self.stage = {'cf_1_new': 'fm_cf', ESTIMATE: 'rss_estimate', PAYMENTS: 'rss_payments'}.get(name)
+        self.declared_rows = rows
+        self.declared_columns = columns
+        self.captured_source = None
+
+
+def failure_diagnostic(exc):
+    """Closed, bounded allowlist. Never serialise arbitrary exception/context."""
+    if type(exc) is not _WorksheetSizeProblem:
+        return None
+    try:
+        if exc.stage not in {'fm_cf', 'rss_estimate', 'rss_payments'}:
+            return None
+        source = exc.captured_source
+        if (type(source) is not dict or not isinstance(source.get('sha256'), str)
+                or not re.fullmatch('[0-9a-f]{64}', source['sha256'])
+                or type(source.get('bytes')) is not int or not 0 <= source['bytes'] <= MAX_SOURCE):
+            return None
+        raw_rows, raw_columns = exc.declared_rows, exc.declared_columns
+        rows = raw_rows if type(raw_rows) is int and 1 <= raw_rows <= 1048576 else None
+        columns = raw_columns if type(raw_columns) is int and 1 <= raw_columns <= 16384 else None
+        rectangle = rows * columns if rows is not None and columns is not None else None
+        result = {
+            'schema': 1, 'scope': 'rejected_workbook_dimensions_at_read_time', 'stage': exc.stage,
+            'source_identity': {'kind': 'fm' if exc.stage == 'fm_cf' else 'rss',
+                                'sha256': source['sha256'], 'bytes': source['bytes']},
+            'declared_max_row': rows, 'declared_max_column': columns,
+            'declared_rectangle_cells': rectangle,
+            'dimension_basis': 'worksheet_metadata_not_verified_content_extents',
+            'dimension_state': 'observed' if rectangle is not None else 'partial_or_outside_excel_range',
+            'failed_bounds': {
+                'rows': raw_rows > MAX_ROWS if type(raw_rows) is int and raw_rows >= 1 else None,
+                'columns': raw_columns > MAX_COLUMNS if type(raw_columns) is int and raw_columns >= 1 else None,
+                'rectangle_cells': rectangle > MAX_CELLS if rectangle is not None else None},
+            'limits': {'rows': MAX_ROWS, 'columns': MAX_COLUMNS, 'rectangle_cells': MAX_CELLS},
+            'identity_captured_before_failure_not_pair_confirmation': True,
+            'complete_projection': False, 'financial_acceptance': False,
+        }
+        if len(json.dumps(result, ensure_ascii=False, allow_nan=False).encode()) <= MAX_FAILURE_DIAGNOSTIC:
+            return result
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        pass
+    return None
 
 
 def _digest(value):
@@ -140,7 +190,7 @@ def _sheet(book, name):
     sheet = book[name]
     if sheet.max_row > MAX_ROWS or sheet.max_column > MAX_COLUMNS \
             or sheet.max_row * sheet.max_column > MAX_CELLS:
-        raise SourceProblem('worksheet_size_limit')
+        raise _WorksheetSizeProblem(name, sheet.max_row, sheet.max_column)
     return sheet
 
 
@@ -417,9 +467,16 @@ def capture(project, cut, *, runtime):
     # is explicit in the projection rather than guessed from an upload date.
     eligibility = ('source_date_unknown' if version is None else
                    'source_after_cut' if version > day else 'eligible_version')
-    result['finance'] = {**_finance(fm), 'source_temporal_state': eligibility,
-        'amounts_at_cut': None, 'historical_financial_acceptance': False}
-    result['bank'] = _bank(rss, day) if rss is not None else {'state': 'source_missing_at_cut'}
+    try:
+        result['finance'] = {**_finance(fm), 'source_temporal_state': eligibility,
+            'amounts_at_cut': None, 'historical_financial_acceptance': False}
+        result['bank'] = _bank(rss, day) if rss is not None else {'state': 'source_missing_at_cut'}
+    except _WorksheetSizeProblem as exc:
+        # The existing post-read coherent-pair checks below have not run.
+        source = fm_source if exc.stage == 'fm_cf' else rss_source
+        exc.captured_source = ({'sha256': source.get('sha256'), 'bytes': source.get('bytes')}
+                               if type(source) is dict else None)
+        raise
     _, again_meta, again_fm_source = ahr._copy(project)
     _, again_rss_meta, again_rss_source = _rss_copy(project, cut)
     if meta != again_meta or fm_source != again_fm_source or rss_meta != again_rss_meta or rss_source != again_rss_source:
