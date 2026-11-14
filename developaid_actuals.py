@@ -196,7 +196,7 @@ def _normalized(text: Any) -> str:
     return re.sub(r"\s+", " ", str(text or "").replace("ё", "е")).strip().lower()
 
 
-def _sheet(path: Any, name: str) -> Any:
+def _sheet(path: Any, name: str, *, max_col: int | None = None) -> Any:
     """Строки листа. Источником может быть путь или уже прочитанные байты.
 
     Веб-сервис принимает файл телом запроса и на диск его кладёт сам; заставлять
@@ -209,7 +209,9 @@ def _sheet(path: Any, name: str) -> Any:
     try:
         if name not in workbook.sheetnames:
             raise KeyError(f"в книге нет листа «{name}»: {workbook.sheetnames}")
-        for row in workbook[name].iter_rows(values_only=True):
+        # Native callers opt into their fixed schema. Generic proposals may
+        # reuse these sheet names and retain every month/column by default.
+        for row in workbook[name].iter_rows(values_only=True, max_col=max_col):
             yield row
     finally:
         workbook.close()
@@ -400,7 +402,7 @@ def read_register(path: str | Path) -> dict[str, Any]:
     """Реестр договоров финансовой модели: платежи, акты и обе кодировки."""
     rows: list[dict[str, Any]] = []
     unmapped_paid = 0.0
-    for index, row in enumerate(_sheet(path, _REGISTER_SHEET), 1):
+    for index, row in enumerate(_sheet(path, _REGISTER_SHEET, max_col=max(_REGISTER_COLUMNS.values()) + 1), 1):
         if index <= _REGISTER_HEADER_ROW:
             continue
 
@@ -1381,7 +1383,7 @@ def read_article_crosswalk(path: str | Path) -> dict[str, Any]:
     «неоднозначное». Лист — источник, реестр — данные.
     """
     rows: list[dict[str, Any]] = []
-    for index, row in enumerate(_sheet(path, _CROSSWALK_SHEET), 1):
+    for index, row in enumerate(_sheet(path, _CROSSWALK_SHEET, max_col=max(_CROSSWALK_COLUMNS.values()) + 1), 1):
         if index < _CROSSWALK_FIRST_ROW:
             continue
 
@@ -1450,7 +1452,7 @@ def read_payments(path: str | Path, *, include_incomplete: bool = False) -> dict
     ordinary financial readers keep the existing nonzero-payment behaviour.
     """
     rows: list[dict[str, Any]] = []
-    for index, row in enumerate(_sheet(path, _PAYMENTS_SHEET), 1):
+    for index, row in enumerate(_sheet(path, _PAYMENTS_SHEET, max_col=max(_PAYMENTS_COLUMNS.values()) + 1), 1):
         if index < _PAYMENTS_FIRST_ROW:
             continue
 
@@ -1509,6 +1511,7 @@ def payments_by_article(
     register: dict[str, Any],
     gns: dict[str, Any] | None = None,
     crosswalk: dict[str, Any] | None = None,
+    *, classification_observer=None,
 ) -> dict[str, Any]:
     """Разнести платежи по статьям движка, подтянув код БДДС по договору.
 
@@ -1553,8 +1556,24 @@ def payments_by_article(
 
     observed: dict[str, dict[str, float]] = {}
     current_code = {"value": ""}
+    current_item = {}
 
-    def put(article: str, month: datetime.date, amount: float) -> None:
+    def observe(article, amount, basis, reason=""):
+        if classification_observer is None:
+            return
+        item = current_item.get('value') or {}
+        pair = _party_key(item.get('contractor'), item.get('contract'))
+        exact = by_pair.get((pair,item.get('estimate_code')),set()) or by_pair_any.get(pair,set())
+        candidates = {article_for(code)[0] for code in exact} if exact else set()
+        official = ssr_articles.get(item.get('estimate_code'),set())
+        if not exact:
+            candidates = set(official) if official else {None}
+        classification_observer({'source_row':item.get('source_row'), 'date':item.get('date'),
+            'amount':amount,'article':article,'basis':basis,'reason':reason,
+            'possible_articles':sorted(a for a in candidates if a), 'scope_unknown':None in candidates,
+            'estimate_code':item.get('estimate_code')})
+
+    def put(article: str, month: datetime.date, amount: float, how: str) -> None:
         target = other if article in _NON_CAPEX_ARTICLES else capex
         target.setdefault(article, {})
         target[article][month] = target[article].get(month, 0.0) + amount
@@ -1562,26 +1581,32 @@ def payments_by_article(
         if code:
             observed.setdefault(code, {})
             observed[code][article] = observed[code].get(article, 0.0) + amount
+        observe(article, amount, how)
 
     def place(code: str, month: datetime.date, amount: float, how: str) -> bool:
         split = _gns_split_for(code)
         if split:
             if not shares:
                 return False
-            put(split[0], month, amount * shares[0])
-            put(split[1], month, amount * shares[1])
+            put(split[0], month, amount * shares[0], how)
+            put(split[1], month, amount * shares[1], how)
             matched[how] = matched.get(how, 0.0) + amount
             return True
         article, _ = article_for(code)
         if article is None:
             return False
-        put(article, month, amount)
+        put(article, month, amount, how)
         matched[how] = matched.get(how, 0.0) + amount
         return True
 
     for item in payments["rows"]:
+        current_item['value'] = item
         amount, month = item["amount"], item["date"]
+        if amount is None:
+            observe(None, None, 'unresolved', 'платёж без суммы')
+            continue
         if month is None:
+            observe(None, amount, 'unresolved', 'платёж без даты')
             unresolved["платёж без даты"] = unresolved.get("платёж без даты", 0.0) + amount
             continue
         month = month.replace(day=1)
@@ -1606,13 +1631,14 @@ def payments_by_article(
         # долями нельзя: это уже не факт.
         articles = ssr_articles.get(item["estimate_code"], set())
         if len(articles) == 1:
-            put(next(iter(articles)), month, amount)
+            put(next(iter(articles)), month, amount, "по коду РСС")
             matched["по коду РСС"] = matched.get("по коду РСС", 0.0) + amount
             continue
         reason = (f"код РСС {item['estimate_code'] or '—'} ведёт к нескольким статьям"
                   if articles else
                   f"договор не опознан, код РСС {item['estimate_code'] or '—'} неизвестен")
         unresolved[reason] = unresolved.get(reason, 0.0) + amount
+        observe(None, amount, 'unresolved', reason)
 
     return {
         "capex_by_article": capex,

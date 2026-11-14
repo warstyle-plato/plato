@@ -16,6 +16,8 @@ import developaid_schedule_elements as elements
 
 MAX_MEMBERS = 3000
 BASIS = {'smr_cost': 'Полная стоимость СМР', 'estimated_elements': 'Оценочные доли строительных элементов'}
+CURRENT_ESTIMATE = 'construction_estimate'
+CURRENT_ESTIMATE_NOTE = 'Оценка по известным работам действующего ГПР. Полный состав строительства не подтверждён.'
 CONFIG_FIELDS = {'label', 'scope_kind', 'scope_note', 'basis', 'source_reference', 'building_type',
                  'full_source_sha256', 'effective_from', 'full_scope_confirmed', 'included_ids', 'excluded_ids',
                  'crosswalk', 'outside_completed_ids', 'owner_note', 'weights', 'element_profile'}
@@ -104,9 +106,9 @@ def preview(project, configuration, *, expected_source_sha256, expected_source_r
     for name in ('label', 'scope_note', 'source_reference'):
         if not isinstance(cfg.get(name), str) or not cfg[name].strip() or len(cfg[name]) > 1000:
             raise ValueError('Укажите название, границы состава и источник весов.')
-    if not isinstance(cfg.get('basis'), str) or not isinstance(cfg.get('scope_kind'), str) or cfg['basis'] not in BASIS or cfg['scope_kind'] not in {'construction', 'gpr_all'}:
+    if not isinstance(cfg.get('basis'), str) or not isinstance(cfg.get('scope_kind'), str) or cfg['basis'] not in BASIS or cfg['scope_kind'] not in {'construction', 'gpr_all', CURRENT_ESTIMATE}:
         raise ValueError('Выберите сметные веса или оценочные доли и явно назовите состав.')
-    if cfg['basis'] == 'estimated_elements' and (cfg['scope_kind'] != 'construction' or not isinstance(cfg.get('building_type'), str) or not cfg['building_type'].strip()):
+    if cfg['basis'] == 'estimated_elements' and (cfg['scope_kind'] not in {'construction', CURRENT_ESTIMATE} or not isinstance(cfg.get('building_type'), str) or not cfg['building_type'].strip()):
         raise ValueError('Для оценочных долей нужны тип здания и отдельный строительный состав.')
     day = versions._day(cfg.get('effective_from'))
     if day < versions._now().date():
@@ -117,7 +119,11 @@ def preview(project, configuration, *, expected_source_sha256, expected_source_r
         raise versions.ScheduleVersionConflict('Источник или профиль готовности изменён. Перечитайте состояние.')
     if not isinstance(cfg.get('full_source_sha256'), str) or not versions._SHA.fullmatch(cfg['full_source_sha256']):
         raise ValueError('Укажите отпечаток одного полного ГПР.')
-    full = _catalog(project, cfg['full_source_sha256'], full=True, effective_from=cfg['effective_from'])
+    current_estimate = cfg['scope_kind'] == CURRENT_ESTIMATE
+    if current_estimate and (cfg['basis'] != 'estimated_elements' or cfg.get('element_profile') is None
+                             or cfg['full_source_sha256'] != current['source_sha256'] or cfg.get('full_scope_confirmed') is not False):
+        raise ValueError('Оценка по текущему ГПР использует его собственный источник и не подтверждает полный состав строительства.')
+    full = _catalog(project, cfg['full_source_sha256'], full=not current_estimate, effective_from=cfg['effective_from'])
     remaining = _catalog(project, current['source_sha256'])
     element_profile = cfg.get('element_profile')
     if element_profile is not None:
@@ -259,7 +265,10 @@ def model(work_fact, *, cut, baseline_scope, source_sha256, profile=None, full_r
     works = work_fact.get('works') or {}
     entries = [dict(value, id=key, primary=value.get('primary') or {}) for key, value in works.items()]
     reason = 'Нет подтверждённого полного состава и весов. Показан текущий остаточный перечень.' if baseline_scope == 'remaining_work' else 'Нет подтверждённого профиля полного состава и весов.'
-    active = bool(profile and profile.get('full_scope_confirmed') is True and profile.get('remaining_source_sha256') == source_sha256
+    current_estimate = bool(profile and profile.get('scope_kind') == CURRENT_ESTIMATE)
+    active = bool(profile and (profile.get('full_scope_confirmed') is True or current_estimate)
+                  and (not current_estimate or profile.get('full_source_sha256') == source_sha256)
+                  and profile.get('remaining_source_sha256') == source_sha256
                   and profile['effective_from'] <= cut and full_rows)
     if active:
         links = profile['crosswalk']
@@ -268,6 +277,7 @@ def model(work_fact, *, cut, baseline_scope, source_sha256, profile=None, full_r
         if (len(matched) != len(links) or {link['remaining_id'] for link in links} != set(works)
                 or len({link['remaining_id'] for link in links}) != len(links)
                 or matched-set(full_rows) or set(profile['outside_completed_ids']) != outside
+                or (current_estimate and outside)
                 or set(profile['included_ids']) & set(profile['excluded_ids'])
                 or set(profile['included_ids']) | set(profile['excluded_ids']) != set(full_rows)):
             active = False
@@ -342,7 +352,8 @@ def model(work_fact, *, cut, baseline_scope, source_sha256, profile=None, full_r
         corpora.setdefault(row.get('object') or 'Общие работы', []).append(row)
     project = group('Проект', entries, project_group=True)
     result = {'project': project, 'corpora': [group(name, rows) for name, rows in sorted(corpora.items())],
-            'full_scope_confirmed': active, 'scope_label': ('Строительная готовность СМР' if profile['scope_kind'] == 'construction' else 'Готовность работ по ГПР') if active else 'Текущий остаточный перечень' if baseline_scope == 'remaining_work' else 'Текущий ГПР',
+            'full_scope_confirmed': active and not current_estimate,
+            'scope_label': ('Оценочная готовность по текущему ГПР' if current_estimate else 'Строительная готовность СМР' if profile['scope_kind'] == 'construction' else 'Готовность работ по ГПР') if active else 'Текущий остаточный перечень' if baseline_scope == 'remaining_work' else 'Текущий ГПР',
             'basis_label': BASIS[profile['basis']] if active else None, 'estimated': active and profile['basis'] == 'estimated_elements',
             'profile_label': profile.get('label') if active else None, 'source_reference': profile.get('source_reference') if active else None,
             'excluded_works': len(profile['excluded_ids']) if active else 0,
@@ -356,6 +367,13 @@ def model(work_fact, *, cut, baseline_scope, source_sha256, profile=None, full_r
         result.update(project=projection['project'], corpora=projection['corpora'], reason=projection['project']['reason'],
                       source_reference=elements.SOURCE, estimated=True, profile_label=elements.TITLE,
                       basis_label=BASIS['estimated_elements'])
+    if active and current_estimate:
+        groups = [result['project'], *result['corpora'],
+                  *(cell for row in result['matrix'] for cell in row['cells'])]
+        for group in groups:
+            group['partial'] = True
+            group['reason'] = ' '.join(filter(None, (CURRENT_ESTIMATE_NOTE, group['reason'])))
+        result['reason'] = result['project']['reason']
     return result
 
 
@@ -370,7 +388,7 @@ def build(project, cut, schedule):
     error = None
     if profile:
         try:
-            full = _catalog(project, profile['full_source_sha256'], full=True, effective_from=profile['effective_from'])
+            full = _catalog(project, profile['full_source_sha256'], full=profile.get('scope_kind') != CURRENT_ESTIMATE, effective_from=profile['effective_from'])
             if _fingerprint(full) != profile['full_fingerprint']:
                 raise ValueError('Полный состав изменился после подтверждения.')
         except (OSError, ValueError) as exc:
@@ -405,13 +423,21 @@ def editor(project, *, full_source_sha256=''):
     for event in base['versions']:
         if event.get('baseline_scope', 'full_schedule') == 'full_schedule' and event['effective_from'] <= today and event['source_sha256'] not in {c['sha256'] for c in choices}:
             choices.append({'sha256': event['source_sha256'], 'label': 'Полный ГПР от '+event['effective_from']})
+    if current.get('baseline_scope') == 'remaining_work' and current.get('source_sha256'):
+        choices.append({'sha256': current['source_sha256'], 'label': 'Действующий ГПР — оценка по известным работам',
+                        'scope_kind': CURRENT_ESTIMATE})
     latest = events[-1] if events else None
-    sha = full_source_sha256 or ((latest or {}).get('profile') or {}).get('full_source_sha256') or (choices[-1]['sha256'] if choices else '')
+    previous_sha = ((latest or {}).get('profile') or {}).get('full_source_sha256')
+    if previous_sha not in {choice['sha256'] for choice in choices}:
+        previous_sha = None
+    sha = full_source_sha256 or previous_sha or (current.get('source_sha256') if choices else '')
     if not sha:
         return {'available': False, 'reason': 'Среди сохранённых источников нет подтверждённого полного ГПР. Остаточный перечень не заменяет полный состав.'}
     if not isinstance(sha, str) or not versions._SHA.fullmatch(sha):
         raise ValueError('Выберите отпечаток сохранённого полного ГПР.')
-    full = _catalog(project, sha, full=True, effective_from=today)
+    selected_choice = next((choice for choice in reversed(choices) if choice['sha256'] == sha), {})
+    scope_kind = selected_choice.get('scope_kind', 'construction')
+    full = _catalog(project, sha, full=scope_kind != CURRENT_ESTIMATE, effective_from=today)
     remaining = _catalog(project, current['source_sha256'])
     previous = next((e for e in reversed(events) if e['profile']['full_source_sha256'] == sha and e['profile'].get('element_profile')), None)
     if previous:
@@ -420,7 +446,8 @@ def editor(project, *, full_source_sha256=''):
         if previous['profile']['remaining_source_sha256'] != current['source_sha256']:
             cfg.update(full_scope_confirmed=False, outside_completed_ids=[], owner_note='', crosswalk=[])
     else:
-        cfg = dict(label=elements.TITLE, scope_kind='construction', scope_note='Явно подтверждённый строительный состав жилых корпусов; паркинг отдельно.',
+        cfg = dict(label=elements.TITLE, scope_kind=scope_kind,
+                   scope_note=CURRENT_ESTIMATE_NOTE if scope_kind == CURRENT_ESTIMATE else 'Явно подтверждённый строительный состав жилых корпусов; паркинг отдельно.',
                    basis='estimated_elements', source_reference=elements.SOURCE, building_type=elements.TITLE,
                    full_source_sha256=sha, full_scope_confirmed=False, included_ids=list(full), excluded_ids=[],
                    outside_completed_ids=[], owner_note='', crosswalk=[], weights=[],
@@ -479,15 +506,41 @@ def render(state):
     def evidence(row):
         eligible = row.get('eligible_readings', row['known_readings'])
         weighted = ' · включено во взвешенный расчёт: '+str(row['known_readings']) if 'eligible_readings' in row else ''
-        return 'Пригодные показания: '+str(eligible)+' из '+str(row['total'])+weighted+' · веса полного состава: '+str(row['known_weights'])+' из '+str(row['total'])+'. Даты учтённых источников: '+(', '.join(date_text(day) for day in row['source_dates']) or 'нет учтённых показаний')+'. '+', '.join(row['sources'])
+        weight_label = 'веса полного состава' if state['full_scope_confirmed'] else 'работы с заданным весом'
+        return 'Пригодные показания: '+str(eligible)+' из '+str(row['total'])+weighted+' · '+weight_label+': '+str(row['known_weights'])+' из '+str(row['total'])+'. Даты учтённых источников: '+(', '.join(date_text(day) for day in row['source_dates']) or 'нет учтённых показаний')+'. '+', '.join(row['sources'])
+    def card(row):
+        value = 'Не определена' if row['progress'] is None else f"{row['progress']*100:.1f}%".replace('.', ',')
+        partial = '<p>По известным данным; состав учтён не полностью.</p>' if row.get('partial') and row['progress'] is not None else ''
+        coverage = ('<p>Покрытие веса: '+esc(f"{row['coverage']:.1f}%".replace('.', ','))+
+                    (' · показания от '+esc(date_text(row['oldest_date'])) if row.get('oldest_date') else '')+'</p>') if row.get('coverage') is not None else ''
+        bar = '' if row['progress'] is None else '<span class="readiness-meter" aria-hidden="true"><i style="width:'+str(max(0,min(100,row['progress']*100)))+'%"></i></span>'
+        return '<article class="readiness-item"><h4>'+esc(row['name'])+'</h4><strong>'+esc(value)+'</strong>'+bar+'<details><summary>Данные</summary>'+partial+coverage+'<p>'+esc(facts(row))+'</p><p>'+esc(evidence(row))+'</p><p>'+esc(row['reason'])+'</p></details></article>'
+    known = project['progress'] is not None or any(row['progress'] is not None for row in state['corpora'])
+    heading = state['scope_label']+(' · оценочный профиль' if state['estimated'] and not state['scope_label'].startswith('Оценочная') else '')
     out = ['<style>.readiness-summary{padding:12px 16px;border-bottom:1px solid #dce3ed;overflow-wrap:anywhere}.readiness-summary h3{font-size:15px;margin:0 0 7px}.readiness-summary p{font-size:12px;line-height:1.45;margin:5px 0}.readiness-summary summary{cursor:pointer;font-size:12px}.readiness-project-value{display:block;font-size:24px;margin:5px 0}.readiness-corpus-table,.readiness-estimate-table{width:100%;border-collapse:collapse;font-size:12px;margin:9px 0}.readiness-corpus-table th,.readiness-corpus-table td,.readiness-estimate-table th,.readiness-estimate-table td{padding:7px 4px;border-bottom:1px solid #dce3ed;text-align:right;vertical-align:top}.readiness-corpus-table th:first-child,.readiness-estimate-table th{text-align:left;overflow-wrap:anywhere}.readiness-corpus-table thead th{font-weight:600;font-size:11px}.readiness-corpus-table tbody th{max-width:120px}.readiness-estimate-reference{margin-top:9px}.readiness-estimate-reference p{max-width:850px}.readiness-matrix{max-width:100%;overflow-x:auto}.readiness-matrix table{width:100%;table-layout:fixed;border-collapse:collapse;font-size:12px}.readiness-matrix th,.readiness-matrix td{padding:7px;border:1px solid #dce3ed;overflow-wrap:anywhere;vertical-align:top}@media(max-width:640px){.readiness-summary{padding:10px 12px}.readiness-corpus-table{font-size:11px}.readiness-corpus-table th,.readiness-corpus-table td{padding:6px 3px}.readiness-corpus-table thead th{font-size:10px}}</style>',
-           '<section class="readiness-summary"><h3>'+esc(state['scope_label'])+'</h3>']
+           '<section class="readiness-summary"><h3>'+esc(heading)+'</h3>']
+    out.append('<style>@media print{.readiness-project-gap::details-content{content-visibility:visible!important;display:block!important}}</style>')
+    out.append('''<style>
+.readiness-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(250px,100%),1fr));gap:10px}.readiness-item{border:1px solid #dce3ed;border-radius:7px;padding:10px}.readiness-item h4{margin:0 0 7px}.readiness-item strong{font-size:20px}.readiness-item details{margin-top:7px}
+.readiness-meter{display:block;height:5px;border-radius:4px;background:#e6edf5;overflow:hidden;margin-top:7px}.readiness-meter i{display:block;height:100%;background:#34567a;border-radius:4px}
+.readiness-matrix table{min-width:calc(90px + var(--readiness-columns)*70px)}.readiness-matrix th:first-child{width:30%}.readiness-matrix td{text-align:center;vertical-align:middle}.readiness-matrix td strong{white-space:nowrap;font-size:14px}.readiness-matrix .readiness-total{background:#eaf1fa}.readiness-total strong{font-size:17px!important}.readiness-matrix-evidence{margin-top:10px}.readiness-matrix-evidence article{border-bottom:1px solid #dce3ed;padding:6px 0}.readiness-matrix-evidence h4{font-size:12px;margin:4px 0}.readiness-method{margin:8px 0}.readiness-grid{margin:8px 0 10px}
+@media(max-width:640px){.readiness-summary{padding:10px}.readiness-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}.readiness-item{padding:8px 6px}.readiness-item h4{font-size:11px}.readiness-item strong{font-size:21px}.readiness-item:has(details[open]){grid-column:1/-1}.readiness-matrix th,.readiness-matrix td{padding:7px 4px}.readiness-matrix th{font-size:11px}.readiness-matrix th:first-child{width:30%}.readiness-matrix td strong{font-size:13px}.readiness-total strong{font-size:14px!important}}
+@media print{.readiness-summary details::details-content{content-visibility:visible!important;display:block!important}body.gpr-print-mode .readiness-summary .readiness-weighted-evidence{display:block!important}}
+</style>''')
+    if known:
+        if any(row.get('partial') for row in state['corpora']):
+            out.append('<p>По известным данным · состав учтён не полностью.</p>')
+        out.append('<div class="readiness-grid">'+''.join(card(row) for row in state['corpora'])+'</div>')
     if project['progress'] is not None:
         out.append('<strong class="readiness-project-value">'+esc(f"{project['progress']*100:.1f}%".replace('.', ','))+'</strong>')
         if project.get('partial'):
             out.append('<p>По известным данным; это не готовность всего состава. '+esc(project['reason'])+'</p>')
+    elif known:
+        out.append('<details class="readiness-project-gap readiness-gap"><summary>Общий показатель проекта пока не определён</summary><p>'+esc(state['reason'])+'</p><p>'+esc(facts(project))+'</p><p>'+esc(evidence(project))+'</p></details>')
     else:
         out.append('<p class="readiness-gap">Общая готовность пока не определена. '+esc(state.get('reason'))+'</p>')
+    if known:
+        out.append('<details class="readiness-corpus-counts readiness-weighted-evidence"><summary>Состав и показания по корпусам</summary>')
     eligible = project.get('eligible_readings', project['known_readings'])
     dates = ', '.join(date_text(day) for day in project['source_dates']) or 'дата не указана'
     out.append('<p class="readiness-work-coverage"><b>Пригодные показания: '+str(eligible)+' из '+str(project['total'])+'</b> · '+esc(dates)+'. Процент каждой работы доступен в графике ниже.</p>')
@@ -498,18 +551,28 @@ def render(state):
     for row in corps:
         counts = row['counts']
         value = '—' if row['progress'] is None else f"{row['progress']*100:.1f}%".replace('.', ',')+(' · частично' if row.get('partial') else '')
+        if row.get('coverage') is not None and row['progress'] is not None:
+            value += ' · покрытие веса '+f"{row['coverage']:.1f}%".replace('.', ',')
+            if row.get('oldest_date'):
+                value += ' · показания от '+date_text(row['oldest_date'])
         out.append('<tr data-corpus-facts-object="'+esc(row['name'])+'"><th scope="row">'+esc(row['name'])+'</th><td>'+str(row['total'])+'</td>'+''.join('<td>'+str(counts[k])+'</td>' for k in ('completed','in_progress','not_started'))+('<td>'+str(counts['unknown'])+'</td>' if unknown else '')+('<td>'+esc(value)+'</td>' if weighted else '')+'</tr>')
     out.append('</tbody></table>')
-    out.append('<details class="readiness-corpus-counts"><summary>Основание общей готовности и источники</summary><p>'+esc(state.get('reason'))+'</p><p>'+esc(evidence(project))+'</p><p>'+esc(facts(project))+'</p></details>')
+    if not known:
+        out.append('<details class="readiness-corpus-counts"><summary>Основание общей готовности и источники</summary>')
+    out.append('<p>'+esc(state.get('reason'))+'</p><p>'+esc(evidence(project))+'</p><p>'+esc(facts(project))+'</p></details>')
+    out.append('<details class="readiness-method"><summary>Как рассчитана готовность</summary>')
     if state.get('estimated'):
         out.append('<p>Оценка по удельным весам видов работ'+(' с ручными долями' if state.get('manual') else '')+', не по объёмам этого проекта.</p>')
     if state.get('internal_weight_methods'):
         out.append('<p>Внутри разделов: '+esc('; '.join(state['internal_weight_methods']))+'. Число задач вес не определяет.</p>')
     if state.get('project_weight_basis'):
         out.append('<p>Доли корпусов в общей готовности определены по полному сопоставимому плану: '+esc(state['project_weight_basis'])+'. Оценочные доли разделов внутри корпуса сохранены.</p>')
+    if state.get('profile_label') or state.get('basis_label'):
+        out.append('<p>'+esc(state.get('profile_label'))+' · '+esc(state.get('basis_label'))+'</p>')
+    out.append('</details>')
     # A matrix full of unknown weights adds no information to known work facts.
     meaningful = any(cell.get('progress') is not None for stage in state.get('matrix', []) for cell in stage['cells'])
     if meaningful:
         out.append(elements.render_matrix(state))
-    out.append('<details class="readiness-estimate-reference"><summary>Оценочные доли видов работ</summary><p>'+esc(elements.TITLE)+'. '+('Исходная карта; применение и ручные изменения показаны в настройке состава.' if state['full_scope_confirmed'] else 'Карта пока не применена к этому проекту: соответствия работ и полный состав не подтверждены.')+'</p><table class="readiness-estimate-table"><tbody>'+''.join('<tr><th scope="row">'+esc(row['name'])+'</th><td>'+str(row['default'])+'%</td></tr>' for row in elements.catalog())+'</tbody></table><p><a href="'+esc(elements.SOURCE_URL)+'">'+esc(elements.SOURCE)+'</a></p></details>')
+    out.append('<details class="readiness-estimate-reference"><summary>Оценочные доли видов работ</summary><p>'+esc(elements.TITLE)+'. '+('Исходная карта; применение и ручные изменения показаны в настройке состава.' if state['full_scope_confirmed'] or state.get('estimated') else 'Карта пока не применена к этому проекту: соответствия работ и полный состав не подтверждены.')+'</p><table class="readiness-estimate-table"><tbody>'+''.join('<tr><th scope="row">'+esc(row['name'])+'</th><td>'+str(row['default'])+'%</td></tr>' for row in elements.catalog())+'</tbody></table><p><a href="'+esc(elements.SOURCE_URL)+'">'+esc(elements.SOURCE)+'</a></p></details>')
     return ''.join(out)+'</section>'

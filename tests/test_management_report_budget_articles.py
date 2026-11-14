@@ -206,7 +206,8 @@ def test_months_without_data_are_not_zero():
 def test_the_tiles_lead_the_first_page():
     built = _setup()
     items = report.tiles(built)
-    assert len(items) == 12
+    assert len(items) == 16
+    assert len([item for item in items if item.get('group') == 'admin_expenses_cash']) == 4
     by_label = {item["label"]: item for item in items}
     build = by_label["Бюджет стройки за месяц"]
     assert build["value"] == "33,6%"
