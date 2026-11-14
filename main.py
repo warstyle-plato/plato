@@ -89,16 +89,49 @@ def _state_write(name: str, payload: dict[str, Any]) -> str:
         path = _state_file(name)
         # Пишем через временный файл: соседний воркер не должен прочитать
         # половину записи.
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-        tmp.replace(path)
-        cutoff = time.time() - _STATE_TTL_SECONDS
-        for stale in _STATE_DIR.glob("*.json"):
+        import tempfile
+        import fcntl
+        import stat
+        fd, name = tempfile.mkstemp(prefix="." + path.name + ".", suffix=".tmp", dir=_STATE_DIR)
+        tmp = Path(name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as out:
+                json.dump(payload, out, ensure_ascii=False)
+                out.flush()
+                os.fsync(out.fileno())
+            # Publication and retention share one brief filesystem claim:
+            # cleanup must not stat an old inode, then unlink a fresh replace.
+            claim = os.open(_STATE_DIR / ".state-fs.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
             try:
-                if stale.stat().st_mtime < cutoff:
-                    stale.unlink()
-            except OSError:
-                pass
+                info = os.fstat(claim)
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_mode & 0o077:
+                    raise OSError("state filesystem claim unavailable")
+                deadline = time.monotonic() + 5.0
+                while True:
+                    try:
+                        fcntl.flock(claim, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        if time.monotonic() >= deadline:
+                            raise OSError("state filesystem is busy") from None
+                        time.sleep(0.01)
+                os.replace(tmp, path)
+                cutoff = time.time() - _STATE_TTL_SECONDS
+                for stale in _STATE_DIR.glob("*.json"):
+                    try:
+                        if stale.stat().st_mtime < cutoff:
+                            stale.unlink()
+                    except OSError:
+                        pass
+                directory = os.open(_STATE_DIR, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
+            finally:
+                os.close(claim)
+        finally:
+            tmp.unlink(missing_ok=True)
     except Exception as exc:
         # Диск — подстраховка, а не единственный источник: продолжаем, а
         # причину отдаём тому, кому она важна (истории Платона).
