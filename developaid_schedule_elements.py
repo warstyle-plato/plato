@@ -254,7 +254,12 @@ def render_matrix(state):
         from developaid_schedule_visual import date_text
         text = 'Выполнено' if value.get('all_complete') else date_text(value['finish']) if value.get('finish') else 'Нет срока'
         title = value.get('note', '')+' Учтено '+str(value['covered'])+' из '+str(value['total'])+' работ.'
-        return '<small class="readiness-forecast-label">'+esc(value.get('label') or 'При плановом темпе')+'</small><span class="readiness-cell-forecast" title="'+esc(title)+'">'+esc(text)+'</span><small class="readiness-forecast-coverage">'+str(value['covered'])+'/'+str(value['total'])+' работ</small>'
+        plan = date_text(value['plan_finish']) if value.get('plan_finish') else 'нет даты'
+        missing_plan = value.get('plan_covered', 0) < value['total']
+        plan_text = 'План: <time>'+esc(plan)+'</time>'+(' · '+str(value.get('plan_covered', 0))+'/'+str(value['total']) if missing_plan else '')
+        basis = value.get('label') or 'При плановом темпе'
+        basis = 'Плановый темп' if basis == 'При плановом темпе' else basis
+        return '<span class="readiness-cell-plan">'+plan_text+'</span><small class="readiness-forecast-label">Оценка</small><span class="readiness-cell-forecast" title="'+esc(title)+'">'+esc(text)+'</span><small class="readiness-forecast-basis">'+esc(basis)+'</small><small class="readiness-forecast-coverage">'+str(value['covered'])+'/'+str(value['total'])+' работ</small>'
     def cell(row):
         if not row['total']:
             return '<td class="readiness-cell-empty">—</td>'
@@ -276,4 +281,4 @@ def render_matrix(state):
         totals = '<tr class="readiness-project-total"><th scope="row">Всего по жилым корпусам</th><td colspan="'+str(len(state['matrix_objects']))+'"><strong>'+esc(f"{project['progress']*100:.1f}%".replace('.', ','))+'</strong>'+forecast(project)+'</td></tr>'+totals
     rows = ''.join('<tr class="readiness-stage-row"><th scope="row">'+esc(row['stage'])+'</th>'+''.join(cell(c) for c in row['cells'])+'</tr>' for row in state['matrix'])
     details = ''.join(evidence(row['stage'], c) for row in state['matrix'] for c in row['cells'])
-    return '<section id="gprMatrix"><h3>Готовность и сроки по корпусам</h3><p>Процент — по оценочным весам разделов; дата под ним — условное окончание при плановом темпе. Учтён известный состав, это не прогноз РНВ.</p>'+limit+'<div class="readiness-matrix" style="--readiness-columns:'+str(len(state['matrix_objects']))+'"><table><thead><tr><th scope="col">Этап</th>'+''.join('<th scope="col">'+esc(obj)+'</th>' for obj in state['matrix_objects'])+'</tr></thead><tbody>'+totals+rows+'</tbody></table></div><details class="readiness-matrix-evidence"><summary>Состав, даты и ограничения расчёта</summary>'+details+'</details></section>'
+    return '<section id="gprMatrix"><h3>Готовность и сроки по корпусам</h3><p>План — позднейшая плановая дата учтённых работ. Оценка окончания — условная дата при плановом темпе. Учтён известный состав, это не прогноз РНВ.</p>'+limit+'<div class="readiness-matrix" style="--readiness-columns:'+str(len(state['matrix_objects']))+'"><table><thead><tr><th scope="col">Этап</th>'+''.join('<th scope="col">'+esc(obj)+'</th>' for obj in state['matrix_objects'])+'</tr></thead><tbody>'+totals+rows+'</tbody></table></div><details class="readiness-matrix-evidence"><summary>Состав, даты и ограничения расчёта</summary>'+details+'</details></section>'
