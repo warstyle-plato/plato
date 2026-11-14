@@ -112,8 +112,11 @@ def _parse(monkeypatch) -> dict:
 
 
 def _answer(card: dict, index: int, inputs: dict, **kw) -> dict:
+    shown = client.post("/agent/document/card", json={"intake_id": card["id"],
+        "inputs": inputs, "tep": {}}).json()
     return client.post("/agent/document/answer", json=core.AgentDocumentAnswerRequest(
-        intake_id=card["id"], index=index, inputs=inputs, tep={}, **kw).model_dump()).json()
+        intake_id=card["id"], index=index, queue_revision=shown["queue_revision"],
+        question_token=shown["question_token"], inputs=inputs, tep={}, **kw).model_dump()).json()
 
 
 def _engine(card: dict) -> dict:

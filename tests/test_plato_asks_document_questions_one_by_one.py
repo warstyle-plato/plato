@@ -80,8 +80,11 @@ def _parse(monkeypatch) -> dict:
 
 
 def _answer(card: dict, index: int, **kw) -> dict:
+    shown = client.post("/agent/document/card", json={"intake_id": card["id"],
+        "inputs": {"demolition_area_sqm": 0}, "tep": {}}).json()
     return client.post("/agent/document/answer", json=core.AgentDocumentAnswerRequest(
-        intake_id=card["id"], index=index, inputs={"demolition_area_sqm": 0}, tep={}, **kw).model_dump()).json()
+        intake_id=card["id"], index=index, queue_revision=shown["queue_revision"],
+        question_token=shown["question_token"], inputs={"demolition_area_sqm": 0}, tep={}, **kw).model_dump()).json()
 
 
 def _engine(card: dict) -> dict:
@@ -135,8 +138,9 @@ def test_a_repeated_click_does_not_answer_the_next_question(monkeypatch) -> None
     card = _parse(monkeypatch)["card"]
     _answer(card, 0, choice=0)
     again = _answer(card, 0, choice=0)
-    assert again["stale"] is True and again["card"]["questions"]["index"] == 1
-    assert not again["applied"]
+    assert again["detail"]["code"] == "intake_queue_changed"
+    assert again["detail"]["card"]["questions"]["index"] == 1
+    assert not again["detail"]["applied"]
 
 
 def test_the_cadastral_number_is_applied_to_the_site_not_just_noted() -> None:

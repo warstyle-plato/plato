@@ -137,7 +137,8 @@ def test_apply_uses_the_owned_ready_card_and_rechecks_all_inputs(server):
     with pytest.raises(core.HTTPException, match="") as exc:
         core.agent_document_apply(core.AgentDocumentApplyRequest(intake_id=card["id"], card_key=card["card_key"], inputs=inputs, tep=tep), request)
     assert exc.value.status_code == 409
-    core.agent_document_answer(core.AgentDocumentAnswerRequest(intake_id=card["id"], index=0, choice=0, inputs=inputs, tep=tep), request)
+    core.agent_document_answer(core.AgentDocumentAnswerRequest(intake_id=card["id"], index=0, choice=0, inputs=inputs, tep=tep,
+        queue_revision=card["queue_revision"], question_token=card["question_token"]), request)
     card = core.agent_document_card(core.AgentDocumentCardRequest(intake_id=card["id"], inputs=inputs, tep=tep), request)
     req = core.AgentDocumentApplyRequest(intake_id=card["id"], card_key=card["card_key"], inputs=inputs, tep=tep)
     applied = core.agent_document_apply(req, request)
@@ -189,7 +190,8 @@ def test_gns_import_updates_stale_dependants_in_the_actual_engine(server, gns):
     quote = f"Квартиры {gns} м²"
     card = core._intake_queue_start("teaser.pdf", {"fields": [field(gns, quote, "apartments_gns_sqm", "м²")]},
         {"text": "[стр. 1]\n" + quote}, inputs, tep, actor=actor)
-    core.agent_document_answer(core.AgentDocumentAnswerRequest(intake_id=card["id"], index=0, choice=0, inputs=inputs, tep=tep), request)
+    core.agent_document_answer(core.AgentDocumentAnswerRequest(intake_id=card["id"], index=0, choice=0, inputs=inputs, tep=tep,
+        queue_revision=card["queue_revision"], question_token=card["question_token"]), request)
     card = core.agent_document_card(core.AgentDocumentCardRequest(intake_id=card["id"], inputs=inputs, tep=tep), request)
     applied = core.agent_document_apply(core.AgentDocumentApplyRequest(intake_id=card["id"], card_key=card["card_key"], inputs=inputs, tep=tep), request)
     assert applied["tep"]["apartments"]["gns"] == gns
