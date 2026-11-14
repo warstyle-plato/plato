@@ -40,6 +40,7 @@ class Recorder:
         self.error = error
         self.requests: list[dict] = []
         self.messages: list[str] = []
+        self.photos: list[dict] = []
 
     def core(self, query, limit=30):
         self.requests.append({"query": query, "limit": limit})
@@ -50,6 +51,9 @@ class Recorder:
     def send(self, chat_id, text, **kwargs):
         self.messages.append(text)
         return {"ok": True}
+
+    def territory_photo(self, chat_id, numbers):
+        self.photos.append({"chat_id": chat_id, "numbers": list(numbers)})
 
 
 def sample_response(parcel_count: int) -> dict:
@@ -87,6 +91,7 @@ def bot(monkeypatch):
         rec = Recorder(response, error)
         monkeypatch.setattr(main, "mo_calculate_via_core", rec.core)
         monkeypatch.setattr(main, "_telegram_send_message", rec.send)
+        monkeypatch.setattr(main, "_telegram_territory_photo_async", rec.territory_photo)
         monkeypatch.setattr(main, "_telegram_send_tep_review", lambda *a, **k: None)
         return rec
     return make
@@ -108,6 +113,17 @@ def test_twenty_two_parcels_go_as_one_request(bot):
     assert len(rec.requests) == 1
     assert rec.requests[0]["query"] == TWENTY_TWO
     assert rec.requests[0]["limit"] >= 22
+    assert rec.photos == [{"chat_id": 1, "numbers": numbers}]
+
+
+def test_bot_fixture_records_photo_dispatch_without_starting_a_worker(bot, monkeypatch):
+    def forbidden(*args, **kwargs):
+        pytest.fail("the remote-core bot fixture must not start a territory-photo worker")
+    monkeypatch.setattr(main.threading, "Thread", forbidden)
+    rec = bot(sample_response(22))
+    numbers = main._parse_cadastral_numbers(TWENTY_TWO)
+    main._telegram_handle_mo_numbers(1, numbers, TWENTY_TWO)
+    assert rec.photos == [{"chat_id": 1, "numbers": numbers}]
 
 
 def test_address_is_forwarded_untouched(bot):
