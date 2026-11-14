@@ -77,6 +77,12 @@ def fm_budget(data):
         'budget_definition':'non-tax leaf2.4; parent is diagnostic only; financing excluded'}
 
 
+def _budget_provenance(origin):
+    # Only source identity/date cross the model boundary. Re-pin paths and
+    # other internal parser state must not reach nested month provenance.
+    return {key: origin[key] for key in ('sha256', 'file') if key in origin} if isinstance(origin, dict) else None
+
+
 def selected_months(parsed_files):
     """Files arrive in canonical newest-upload order. Latest NULL is final."""
     selected={}
@@ -84,7 +90,7 @@ def selected_months(parsed_files):
         for month,value in parsed.get('months',{}).items():
             if month not in selected:
                 selected[month]={'fact':(value.get('extra',{}).get('admin')or{}).get('fact'),
-                    'plan':(value.get('extra',{}).get('admin')or{}).get('plan'),'source':{k:v for k,v in origin.items() if not k.startswith('_')},
+                    'plan':(value.get('extra',{}).get('admin')or{}).get('plan'),'source':_budget_provenance(origin),
                     'basis':'monthly_budget_admin_fact','monthly_semantics':'explicit month header + FACT subcolumn'}
     return selected
 
@@ -143,7 +149,7 @@ def calculate(budget, payments, register, crosswalk, bdds, cut):
         chosen.append({'month':month,'source':origin,'paid':scalar(amount),'coverage_known':complete,
             'budget_fact':scalar(booked),'budget_fact_included':origin=='budget_month_fact',
             'budget_current_month_not_dated':not closed and booked is not None,
-            'budget_source':doc.get('source') if doc else None,
+            'budget_source':_budget_provenance(doc.get('source')) if doc else None,
             'rss_observed_context':scalar(cash['amount']) if cash else None,
             'rss_classification_basis':{k:scalar(v)for k,v in (cash or{}).get('basis',{}).items()},
             'possible_ahr_unresolved_rows':uncertain.get(month,0),'duplicate_suspected':month in duplicate_months})
@@ -329,7 +335,7 @@ def for_project(project,cut):
             result['remaining_need']=None;result['state']='partial'
             result['warning']='Часть сохранённых источников не прочитана. Известные бюджет и оплаты сохранены. '+result['warning']
         result['sources']={'fm':{**identity,'version_date':meta.get('taken_at')},'rss':rss_id,
-            'budget_files':[{k:v for k,v in item.items() if not k.startswith('_')} for item in origins],'registry_available':registry_known,'crosswalk_available':crosswalk_known}
+            'budget_files':[_budget_provenance(item) for item in origins],'registry_available':registry_known,'crosswalk_available':crosswalk_known}
         return result
     except Exception:
         return {'state':'missing','budget':None,'paid_observed_net':None,'balance_after_observed_payments':None,

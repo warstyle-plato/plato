@@ -259,3 +259,12 @@ def test_generic_proposal_keeps_all_columns_despite_reusing_native_sheet_name(sh
     stream=io.BytesIO();book.save(stream);book.close()
     result=actuals.read_proposal(io.BytesIO(stream.getvalue()),sheet,'2024-01','2.2.2.6')
     assert len(result['months'])==40 and result['payments_total']==440
+
+
+def test_nested_month_provenance_allows_only_source_digest_and_date():
+    origin = {'sha256': 'a'*64, 'file': '2026-11-01',
+              '_path': '/server-private/budget.xlsx', 'url': 'https://private.invalid/source'}
+    result = calc(bdds={'2026-10-01': {'fact': 10, 'source': origin}})
+    text = json.dumps(result, ensure_ascii=False)
+    assert '/server-private' not in text and 'private.invalid' not in text
+    assert result['months'][0]['budget_source'] == {'sha256': 'a'*64, 'file': '2026-11-01'}
