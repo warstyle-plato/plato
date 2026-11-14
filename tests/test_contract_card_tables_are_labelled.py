@@ -34,10 +34,11 @@ def test_every_cell_of_the_card_tables_names_its_column_on_the_phone(card, width
         _serve(page, [], cut="2026-02-04", acts=fact.acts(REGISTER_ROW))
         page.locator("#contractsTab").click()
         page.locator(f'tr[data-contract-id="{CONTRACT}"] .contract-open').click()
-        expect(page.locator("#contractDocuments .contract-control")).to_be_visible()
+        expect(page.locator("#contractComparison[aria-busy=\"false\"]")).to_be_visible()
         _open_every_table(page)
         tables = page.locator("#contractsDetails .contract-detail table.contract-table")
-        assert tables.count() >= 6, "расчёт, график, связи, план, факт и отклонение"
+        assert tables.count() >= 3, "исходный расчёт, график и связи остаются доступны; план/факт объединены"
+        expect(page.locator(".contract-comparison")).to_have_count(1)
         if width == 390:
             assert page.evaluate(UNLABELLED) == []
             head = tables.first.locator("thead")
@@ -59,7 +60,7 @@ def test_a_broken_connection_during_upload_says_the_file_may_be_kept(card):  # n
         page.route("**/monitor/contracts/document-upload", lambda route: route.abort())
         page.locator("#contractsTab").click()
         page.locator(f'tr[data-contract-id="{CONTRACT}"] .contract-open').click()
-        expect(page.locator("#contractDocuments .contract-document").first).to_be_visible()
+        expect(page.locator("#contractComparison[aria-busy=\"false\"]")).to_be_visible()
         page.locator("#contractDocumentFile").set_input_files(
             {"name": "ДС5.pdf", "mimeType": "application/pdf", "buffer": b"%PDF-1.7 synthetic"})
         page.locator("#contractDocumentUpload").click()

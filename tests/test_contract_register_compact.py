@@ -18,44 +18,45 @@ def show(page, responses):
 
 
 def detail(page, row):
-    return page.locator(f'tr[data-contract-detail="{row.get_attribute("data-contract-id")}"]')
+    return page.locator('#contractDialog')
 
 
 @pytest.mark.parametrize('width', [390, 1440])
 def test_detail_opens_by_row_and_by_keyboard_and_says_so_to_screen_readers(width):
     with browser_page(width) as (page, responses, errors):
         row = show(page, responses)
-        more, toggle = detail(page, row), row.locator('.contract-more-toggle')
-        expect(more).to_be_hidden()
-        expect(toggle).to_have_attribute('aria-expanded', 'false')
-        assert toggle.get_attribute('aria-controls') == more.get_attribute('id')
+        modal, toggle = detail(page,row),row.locator('.contract-more-toggle')
+        expect(modal).to_be_hidden()
+        expect(toggle).to_have_attribute('aria-haspopup','dialog')
+        assert toggle.get_attribute('aria-controls')==modal.get_attribute('id')
         row.locator('td.contract-attention').click()
-        expect(more).to_be_visible()
-        expect(toggle).to_have_attribute('aria-expanded', 'true')
+        expect(modal).to_be_visible()
+        page.keyboard.press('Escape')
+        expect(modal).to_be_hidden()
         toggle.focus()
         page.keyboard.press('Enter')
-        expect(more).to_be_hidden()
-        expect(toggle).to_have_attribute('aria-expanded', 'false')
+        expect(modal).to_be_visible()
+        page.locator('#contractDialogClose').click()
+        expect(toggle).to_be_focused()
         page.keyboard.press('Space')
-        expect(more).to_be_visible()
-        # The button «Открыть» opens the card and leaves the row as it was.
+        expect(modal).to_be_visible()
+        page.locator('#contractDialogClose').click()
         row.locator('.contract-open').click()
-        expect(more).to_be_visible()
+        expect(modal).to_be_visible()
         assert not errors
 
 
-def test_open_detail_stays_open_when_the_search_redraws_the_table():
-    with browser_page(1440) as (page, responses, errors):
-        row = show(page, responses)
+def test_search_redraw_happens_after_the_modal_is_closed():
+    with browser_page(1440) as (page,responses,errors):
+        row=show(page,responses)
         row.locator('td.party').click()
-        expect(detail(page, row)).to_be_visible()
-        contract = row.locator('.contract-identity').text_content().split(' · ')[0]
+        expect(detail(page,row)).to_be_visible()
+        contract=row.locator('.contract-identity').text_content().split(' · ')[0]
+        page.locator('#contractDialogClose').click()
         page.locator('#contractsSearch').fill(contract)
         expect(page.locator('tr[data-contract-id]')).to_have_count(1)
-        row = page.locator('tr[data-contract-id]').first
-        expect(detail(page, row)).to_be_visible()
-        expect(row.locator('.contract-more-toggle')).to_have_attribute('aria-expanded', 'true')
-        expect(row).to_have_class('contract-row open')
+        expect(page.locator('#contractDialog')).to_be_hidden()
+        expect(page.locator('#contractsDetails')).to_be_empty()
         assert not errors
 
 

@@ -27,16 +27,14 @@ def test_a_ks_sum_below_the_estimate_shows_both_sums_and_why(card, width):  # no
         _serve(page, [], cut="2026-02-04", acts=fact.acts(BELOW))
         page.locator("#contractsTab").click()
         page.locator(f'tr[data-contract-id="{CONTRACT}"] .contract-open').click()
-        shown = page.locator("#contractDocuments .contract-fact")
-        expect(shown.locator(".contract-plan-total")).to_have_text("Факт к 04.02.2026: 4 000 ₽")
-        expect(shown).to_contain_text("В периодах КС (1) сумма в акте отличается")
-        shown.get_by_text("Позиции факта (1)").click()
-        cost = shown.locator(".contract-fact-positions tbody tr").first.locator("td").nth(4)
-        expect(cost.locator(".contract-fact-both")).to_have_text("по расчёту 4 000 ₽ · по КС 1 000 ₽")
-        expect(cost.locator(".contract-fact-why")).to_have_text(WHY)
-        assert cost.get_attribute("data-label") == "Стоимость"
-        if width == 390:
-            label = cost.evaluate("e => getComputedStyle(e, '::before').content")
-            assert "Стоимость" in label, label
-            assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        page.locator('#contractComparisonMethodology > details > summary').click()
+        shown=page.locator('.contract-fact-audit')
+        expect(page.locator('.contract-comparison-money')).to_contain_text('факт 4 000 ₽')
+        expect(shown).to_contain_text('Сумма КС отличается от расчёта в периодах: 1.')
+        shown.get_by_text('Позиции факта (1)').click()
+        position=shown.locator('.contract-fact-source-positions li').first
+        expect(position.locator('.contract-fact-both')).to_have_text('по расчёту 4 000 ₽ · по КС 1 000 ₽')
+        expect(position.locator('.contract-fact-why')).to_have_text(WHY)
+        if width==390:
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         assert errors == []
