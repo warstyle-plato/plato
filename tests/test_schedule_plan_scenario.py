@@ -75,7 +75,7 @@ def test_actual_page_displays_a_scenario_label_beside_unknown_pace(width):
         expect(page.locator('.plan-scenario-summary')).to_be_visible()
         expect(page.locator('.plan-scenario-summary')).to_contain_text('условная оценка')
         cell=page.locator('#gprFactMatrix [data-work-id="2"]')
-        expect(cell.locator('.gpr-cell-forecast')).to_have_text('Нет прогноза')
+        expect(cell.locator('.gpr-cell-forecast')).to_have_text('При плановом темпе: 08.01.2027')
         expect(cell.locator('.gpr-cell-scenario')).to_have_text('При плановом темпе: 08.01.2027')
         expand_gantt(page)
         line=page.locator('.g-row.lvl-task').filter(has_text='Внутренние работы')

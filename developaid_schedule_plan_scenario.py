@@ -67,3 +67,30 @@ def summary(rows):
                            oldest_source_date=min(sources,default=None),
                            all_complete=all((r.get('plan_pace_scenario') or {}).get('complete') for r in members)))
     return result
+
+
+def group(rows):
+    """Latest known finish is bounded by coverage; it never certifies an RNV."""
+    ends, covered, completed, sources = [], 0, 0, []
+    for row in rows:
+        scenario = row.get('plan_pace_scenario') or {}
+        measured = row.get('forecast_finish') if row.get('forecast_known') and not row.get('observed_complete_by') else None
+        done = bool(scenario.get('complete') or row.get('work_done'))
+        finish = (measured or scenario.get('finish')) if not done else None
+        covered += bool(done or finish)
+        completed += done
+        if finish:
+            ends.append(finish)
+        if (done or finish) and _day(scenario.get('source_date')):
+            sources.append(scenario['source_date'])
+    return dict(finish=max(ends, default=None), covered=covered, total=len(rows),
+                all_complete=bool(rows) and completed == len(rows), partial=True,
+                oldest_source_date=min(sources, default=None), label=LABEL,
+                note='Условная оценка по известным работам; не подтверждённый прогноз РНВ.')
+
+
+def decorate_readiness(state, rows):
+    by_id = {str(row['id']): row for row in rows}
+    groups = [state['project'], *state['corpora'], *(cell for stage in state.get('matrix', []) for cell in stage['cells'])]
+    for item in groups:
+        item['forecast'] = group([by_id[key] for key in item.get('work_ids', []) if key in by_id])
