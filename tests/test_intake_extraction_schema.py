@@ -18,6 +18,8 @@ import document_intake as di
     ({'questions': [{'question': 'Как поступить?', 'options': [{'label': 'Вариант', 'value': {}}]}]}, 'questions[].options[].value'),
     ({'questions': [{'question': 'Как поступить?', 'options': [{'label': 'Вариант', 'value': float('nan')}]}]}, 'questions[].options[].value'),
     ({'fields': [{'key': 'purchase_price_mln', 'value': float('inf')}]}, 'fields[].value'),
+    ({'fields': [{'key': 'purchase_price_mln', 'value': 10**400}]}, 'fields[].value'),
+    ({'questions': [{'question': 'Как поступить?', 'options': [{'label': 'Вариант', 'value': 10**400}]}]}, 'questions[].options[].value'),
     ({'notes': 23}, 'notes'), ({'notes': 'note'}, 'notes'),
     ({'notes': [{}]}, 'notes[]'),
 ])

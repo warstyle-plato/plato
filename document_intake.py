@@ -516,6 +516,12 @@ def parse_intake(answer: str) -> dict[str, Any]:
                 "parse_error": {"code": "invalid_extraction_shape", "path": path},
                 "unverified": [{"reason": reason}]}
 
+    def finite_numeric(value: Any) -> bool:
+        try:
+            return math.isfinite(value)
+        except OverflowError:
+            return False
+
     for name in ("fields", "questions", "notes"):
         if name in data and not isinstance(data[name], list):
             return shape_error(name)
@@ -530,7 +536,7 @@ def parse_intake(answer: str) -> dict[str, Any]:
                 return shape_error("fields[].value")
         elif value is not None and (isinstance(value, bool) or not isinstance(value, (str, int, float))):
             return shape_error("fields[].value")
-        elif isinstance(value, float) and not math.isfinite(value):
+        elif isinstance(value, (int, float)) and not finite_numeric(value):
             return shape_error("fields[].value")
     for row in data.get("questions", []):
         if not isinstance(row, dict):
@@ -549,7 +555,7 @@ def parse_intake(answer: str) -> dict[str, Any]:
             value = option.get("value")
             if value is not None and (isinstance(value, bool) or not isinstance(value, (str, int, float))):
                 return shape_error("questions[].options[].value")
-            if isinstance(value, float) and not math.isfinite(value):
+            if isinstance(value, (int, float)) and not finite_numeric(value):
                 return shape_error("questions[].options[].value")
     if any(not isinstance(note, str) for note in data.get("notes", [])):
         return shape_error("notes[]")
@@ -653,7 +659,10 @@ _NUMBER_RE = re.compile(r"-?\d[\d\s ]*(?:[.,]\d+)?")
 def to_number(value: Any) -> float | None:
     """Число из того, как его пишет документ: «11 385,6», «400 млн. руб.»."""
     if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return float(value)
+        try:
+            return float(value)
+        except OverflowError:
+            return None
     match = _NUMBER_RE.search(str(value or ""))
     if not match:
         return None
@@ -907,12 +916,17 @@ _AMOUNT_RE = re.compile(
     r"(?<![\d.,])(\d[\d\s\u00a0]*(?:[.,]\d+)?)\s*"
     r"(млрд|миллиард\w*|млн|миллион\w*|тыс\.?|тысяч\w*)\s*(?:руб\w*\.?|₽)?",
     re.I)
+_FOREIGN_CURRENCY_RE = re.compile(
+    r"[$€£¥₺₸]|(?<![a-z])(?:USD|EUR|CNY|RMB|GBP|JPY|KZT|AED|BYN|CHF|TRY)(?![a-z])|"
+    r"доллар\w*|евро\b|юан\w*|тенге|фунт\w*", re.I)
 
 
 def question_amounts(text: str) -> list[dict[str, Any]]:
     """Денежные суммы вопроса в миллионах рублей, с тем, как они написаны."""
     out = []
     text = str(text or "")
+    if _FOREIGN_CURRENCY_RE.search(text):
+        return []  # Do not turn a mixed-currency obligation into a partial RUB total.
     for match in _AMOUNT_RE.finditer(text):
         tail = text[match.end():]
         if re.match(r"\s*(?:м\s*[²23]|кв\.?\s*м|га\b|гект|мест|шт\b|человек|жител|"
@@ -936,8 +950,16 @@ def area_transfer(card: dict[str, Any]) -> bool:
                 and re.search(r"\d\s*(?:(?:млн\.?|тыс\.?)\s*)?(?:м\s*[²2]|кв\.?\s*м|га\b|гект)", text, re.I))
 
 
+def _question_has_foreign_currency(card: dict[str, Any]) -> bool:
+    parts = [str(card.get(key) or "") for key in ("question", "source_quote", "quote")]
+    for option in card.get("choices") or card.get("options") or []:
+        parts.append(" ".join(str(option.get(k) or "") for k in ("label", "value", "unit"))
+                     if isinstance(option, dict) else str(option))
+    return bool(_FOREIGN_CURRENCY_RE.search(" ".join(parts)))
+
+
 def _related_question_amounts(card: dict[str, Any]) -> list[dict[str, Any]]:
-    if card.get("requires_manual"):
+    if card.get("requires_manual") or _question_has_foreign_currency(card):
         return []
     if not area_transfer(card):
         return question_amounts(str(card.get("source_quote") or card.get("question") or ""))
@@ -1024,6 +1046,7 @@ def question_card(item: dict[str, Any]) -> dict[str, Any]:
     field = key if key in ASKABLE_KEYS and key != "cadastral_numbers" else ""
     amounts = _related_question_amounts(item)
     transfer = area_transfer(item)
+    foreign = _question_has_foreign_currency(item)
     options = []
     for raw in item.get("choices") or item.get("options") or []:
         if isinstance(raw, dict) and "value" in raw:
@@ -1038,6 +1061,8 @@ def question_card(item: dict[str, Any]) -> dict[str, Any]:
         target = field or obligation_target(label)
         number, why = (_option_number(target, value, unit) if target
                        else (None, "у ответа нет поля в модели — записан в разговор"))
+        if target in _MONEY_FIELDS and (foreign or item.get("requires_manual")):
+            number, why = None, "Укажите подтверждённую денежную сумму в рублях. Другую валюту автоматически не переводим."
         if transfer and target in _MONEY_FIELDS and number is not None:
             if not any(math.isclose(number, a["mln"], rel_tol=1e-10, abs_tol=1e-8) for a in amounts):
                 number, why = None, "Денежная оценка передаваемой площади не названа. Укажите её отдельно в рублях."
@@ -1049,7 +1074,7 @@ def question_card(item: dict[str, Any]) -> dict[str, Any]:
                         "unit": INTAKE_UNITS.get(target, ""), "why": why,
                         **({"from_question": from_question} if from_question else {})})
     return {"question": str(item.get("question") or ""), "key": field,
-            "requires_manual": bool(item.get("requires_manual") or (transfer and not amounts)),
+            "requires_manual": bool(item.get("requires_manual") or foreign or (transfer and not amounts)),
             "source_quote": str(item.get("source_quote") or ""),
             "label": INTAKE_LABELS.get(field, ""), "unit": INTAKE_UNITS.get(field, ""),
             # Обязательство складывается с тем, что уже стоит в поле: три
@@ -1074,6 +1099,7 @@ def _typed_number(card: dict[str, Any], target: str, said: str) -> tuple[float |
                       r"(?:\s*(?:руб(?:ль|ля|лей)?\.?|₽|rub))?|руб(?:ль|ля|лей)?\.?|₽|rub)")
         if suffix is None or (suffix and not re.fullmatch(money_unit, suffix)):
             return None, "Нужна одна неотрицательная денежная сумма в рублях, без площади, другой валюты или ставки. Например: 2,5 млн ₽.", ""
+        said = written  # Convert exactly the normalized numeric literal we validated.
         if suffix:
             unit = ""  # Explicit typed units take precedence over the field hint.
     bare = not re.search(r"[a-zа-яё₽]", said.lower())
