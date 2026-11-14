@@ -64,7 +64,7 @@ def _canonical(value):
     raise TypeError('unsupported synthetic oracle type: '+type(value).__name__)
 
 
-@pytest.mark.parametrize('mode',['contract','party','code','mixed','tax','refund','missing_amount','undated','blank'])
+@pytest.mark.parametrize('mode',['contract','party','code','mixed','tax','refund','missing_amount','undated'])
 def test_default_mapper_legacy_events_and_all_cash_fields_equal_accepted(accepted,mode):
     reg=copy.deepcopy(REG);rows=[pay(),pay(row=11)];crosswalk=copy.deepcopy(OFFICIAL)
     if mode=='party':
@@ -78,9 +78,6 @@ def test_default_mapper_legacy_events_and_all_cash_fields_equal_accepted(accepte
     elif mode=='refund':rows[1]['amount']=-5
     elif mode=='missing_amount':rows[1]['amount']=None
     elif mode=='undated':rows[1]['date']=None
-    elif mode=='blank':
-        reg['rows'][0].update(counterparty='—',contract='№')
-        for row in rows:row.update(contractor='—',contract='№')
     new_events=[];payments={'rows':rows,'total':None};expected=accepted['cases'][mode]
     assert _canonical({'payments':payments,'register':reg,'crosswalk':crosswalk,'budget':{'budget':1000},'bdds':{},'cut':'2023-02-15'})==expected['inputs']
     new=actuals.payments_by_article(copy.deepcopy(payments),copy.deepcopy(reg),crosswalk=copy.deepcopy(crosswalk),classification_observer=new_events.append)
@@ -88,6 +85,28 @@ def test_default_mapper_legacy_events_and_all_cash_fields_equal_accepted(accepte
     new_cash=cash.calculate({'budget':1000},copy.deepcopy(payments),copy.deepcopy(reg),copy.deepcopy(crosswalk),{},'2023-02-15')
     new_cash.pop('classification_audit')
     assert _canonical(new_cash)==expected['cash']
+
+
+def test_accepted_blank_oracle_stays_frozen_but_invalid_identity_no_longer_joins(accepted):
+    reg=copy.deepcopy(REG);reg['rows'][0].update(counterparty='—',contract='№')
+    rows=[pay(party='—',contract='№'),pay(row=11,party='—',contract='№')]
+    payments={'rows':rows,'total':None};crosswalk=copy.deepcopy(OFFICIAL)
+    expected=accepted['cases']['blank']
+    assert _canonical({'payments':payments,'register':reg,'crosswalk':crosswalk,'budget':{'budget':1000},'bdds':{},'cut':'2023-02-15'})==expected['inputs']
+    def saved_field(node,name):
+        assert node[0]=='dict'
+        return next(value for key,value in node[1] if key==['str',name])
+    # Keep the old result as a causal oracle, including its incorrect strong basis.
+    assert saved_field(expected['default_mapper'],'matched')==_canonical({'по договору и коду РСС':20.0})
+    assert saved_field(expected['legacy_observer'][1][0],'basis')==_canonical('по договору и коду РСС')
+    events=[]
+    current=actuals.payments_by_article(payments,reg,crosswalk=crosswalk,classification_observer=events.append)
+    assert current['matched']=={'по коду РСС':20.0} and _canonical(current)!=expected['default_mapper']
+    assert all(event['basis']=='по коду РСС'for event in events)
+    model=calculate(rows,reg,crosswalk)
+    for key in ('budget','paid_known_part','paid_observed_net','balance_after_observed_payments'):
+        assert _canonical(model[key])==saved_field(expected['cash'],key)
+    assert model['coverage']['classified_not_strong_months']==['2023-01-01']
 
 
 @pytest.mark.parametrize('official,state',[(None,'unavailable'),({},'missing'),
@@ -153,7 +172,10 @@ def test_blank_placeholder_binding_is_visible_without_showing_the_text():
     flags=detail['cases'][0]['binding_flags']
     assert flags=={'party_present':True,'contract_present':True,'party_normalized_empty':True,
                    'contract_normalized_empty':True,'pair_normalized_empty':True}
-    assert detail['cases'][0]['selected_basis']=='contract_and_estimate'
+    assert detail['cases'][0]['selected_basis']=='estimate_code'
+    assert detail['cases'][0]['exact_pair_estimate']['total_codes']==0
+    assert detail['cases'][0]['whole_contract']['total_codes']==0
+    assert detail['cases'][0]['party_when_used'] is None
 
 
 def test_party_candidate_is_only_present_when_that_basis_is_selected():
