@@ -31,8 +31,9 @@ def test_financial_fallback_labels_are_literal_text_without_markup(width, field)
         assert kpis.locator('svg, img').count() == 0
         expect(kpis).to_contain_text(MARKER)
         assert page.evaluate('window.financeReasonExecuted || false') is False
-        # textContent consumes the raw label; escaping it here would display &amp;.
-        expect(page.locator('#financeBars')).to_have_text(model['availability_note'])
+        # The composed view preserves the actual reason before availability;
+        # both cases retain MARKER literally, without HTML-encoding textContent.
+        expect(page.locator('#financeBars')).to_have_text(MARKER)
         assert page.locator('#financeBars svg, #financeBars img').count() == 0
         card = page.locator('#adminExpensesCard')
         expect(card).to_be_visible()
