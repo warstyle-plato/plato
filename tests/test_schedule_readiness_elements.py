@@ -200,6 +200,11 @@ def test_page_configures_a_saved_full_source_explicitly_and_reports_conflict(sit
         page.locator('#project').fill(PROJECT);page.locator('#cut').fill(DAY)
         page.evaluate('(v)=>{currentView=v;renderGantt(v)}',monitor.build(PROJECT,DAY))
         page.locator('#readinessEditor>summary').click()
+        # The new editor opens today's remaining source, not an unrelated old
+        # full book. This case deliberately chooses the historical reference.
+        expect(page.locator('[data-work-element]')).to_have_count(2)
+        page.locator('#readinessFullSource').select_option(site[0]['full_source_sha256'])
+        expect(page.locator('[data-work-element]')).to_have_count(3)
         expect(page.locator('[data-element-weight="frame"]')).to_have_value('25')
         for key,_,_ in elements.ELEMENTS:
             if key not in {'underground','frame'}:

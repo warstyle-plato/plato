@@ -113,8 +113,13 @@ class Responses:
         except Exception:
             body = {}
         self.calls.append((path, body, route.request.url))
-        if self.reject_key or body.get('key') != KEY:
+        request_key = body.get('key')
+        if path == '/monitor/daily/summary' and route.request.method == 'GET':
+            request_key = route.request.headers.get('x-developaid-admin-key')
+        if self.reject_key or request_key != KEY:
             return route.fulfill(status=403, json={'detail': 'Нужен ключ администратора'})
+        if path == '/monitor/daily/summary':
+            return route.fulfill(json={'rows': []})
         if path == '/monitor/view':
             return route.fulfill(status=400, json={'detail': 'Для учебного проекта ещё нет ГПР'})
         if path == '/monitor/cumulative/list':
