@@ -81,6 +81,9 @@ def _funding_source_dates(project: str, rss: Path, cut: datetime.date,
     budget_day = dates["budget"].get("data_date")
     dates["observation_scope"] = "raw_saved_sources"
     dates["payments_complete_through_cut"] = None
+    dates["source_scope_short_note"] = (
+        "Сохранённые данные; " + ("дата ФМ неизвестна; " if not budget_day else "")
+        + "полнота оплат на выбранную дату не подтверждена.")
     dates["source_scope_note"] = (
         "Расчёт по сохранённым источникам. "
         + ("Дата версии финансовой модели не указана. " if not budget_day else
@@ -132,10 +135,23 @@ def funding_source_notes(funding: dict[str, Any]) -> dict[str, str]:
         notes["schedule"] = "График финансирования: " + version(schedule) + "." + file_note(schedule)
         sources.append("график финансирования: " + version(schedule))
     notes["need"] = report_note + " Источники расчёта: " + "; ".join(sources) + "."
-    scope_note = dates.get("source_scope_note")
-    if scope_note:
-        notes = {key: value + " " + scope_note for key, value in notes.items()}
     return notes
+
+
+def funding_source_tile_notes(funding: dict[str, Any]) -> dict[str, str]:
+    """Compact visible tile captions; full source limits remain in Funding."""
+    dates = funding.get("source_dates") or {}
+    short = dates.get("source_scope_short_note")
+    if not short:
+        return funding_source_notes(funding)
+    def date_of(key):
+        value = monitor._day((dates.get(key) or {}).get("data_date"))
+        return value.strftime("%d.%m.%Y") if value else "дата не указана"
+    return {"budget": "Версия ФМ: " + date_of("budget") + ". " + short,
+            "limit": "Смета РСС: " + date_of("rss") + ". " + short,
+            "paid": "Учтённые оплаты РСС: " + date_of("rss") + ". " + short,
+            "left": "РСС: " + date_of("rss") + "; остаток по учтённым оплатам. " + short,
+            "need": "Расчёт по сохранённым суммам. " + short}
 
 
 def funding_reconciliation_lines(funding: dict[str, Any], money: Any) -> list[str]:
@@ -143,7 +159,8 @@ def funding_reconciliation_lines(funding: dict[str, Any], money: Any) -> list[st
     if funding.get("reconciliation"):
         return (list(funding_source_notes(funding).values())
                 + funding_reconciliation.lines(funding["reconciliation"], money))
-    return (list(funding_source_notes(funding).values())
+    scope_note = (funding.get("source_dates") or {}).get("source_scope_note")
+    return (list(funding_source_notes(funding).values()) + ([scope_note] if scope_note else [])
             + reconciliation_lines(funding.get("limit_reconciliation") or {}, money)
             + own_budget_reconciliation_lines(funding.get("own_money"), money))
 
@@ -2041,7 +2058,8 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
         result = {"known": False, "reason": reason, **extra,
                   "source_dates": _funding_source_dates(project, rss, cut)}
         notes = funding_source_notes(result)
-        result["limit_reconciliation_lines"] = [notes["paid"], notes["limit"]]
+        result["limit_reconciliation_lines"] = [notes["paid"], notes["limit"],
+            result["source_dates"]["source_scope_note"]]
         return result
 
     baseline = _finance_for_cut(project, cut)
@@ -2280,12 +2298,14 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
         budget_source=baseline.get("finance_source_observation"))
     result.update(observation_scope="raw_saved_sources", payments_complete_through_cut=None,
                   financial_acceptance=False, amounts_at_selected_cut=None,
-                  source_scope_note=result["source_dates"]["source_scope_note"])
+                  source_scope_note=result["source_dates"]["source_scope_note"],
+                  source_scope_short_note=result["source_dates"]["source_scope_short_note"])
     result["reconciliation"] = (own_money or {}).get("reconciliation")
     if result["reconciliation"] is not None:
         result["reconciliation"].update(
             observation_scope="raw_saved_sources", payments_complete_through_cut=None,
-            source_scope_note=result["source_scope_note"], amounts_at_selected_cut=None)
+            source_scope_note=result["source_scope_note"], source_scope_short_note=result["source_scope_short_note"],
+            amounts_at_selected_cut=None)
         result["reconciliation"]["display_rows"] = funding_reconciliation.display_rows(result["reconciliation"])
         result["reconciliation"]["source_dates"] = result["source_dates"]
         result["reconciliation"]["need_breakdown"]["source_dates"] = result["source_dates"]

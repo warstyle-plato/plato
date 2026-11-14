@@ -142,14 +142,16 @@ def test_undated_raw_source_scope_is_visible_in_canonical_rows_and_every_funding
     assert not result['financial_acceptance_performed']
     assert result['amounts_at_selected_cut'] is None
     note = result['source_scope_note']
+    short = result['source_scope_short_note']
     assert 'Дата версии' in note and 'не указана' in note and 'Полнота оплат' in note
     rows = {row['key']: row for row in result['display_rows']}
     for key in ('budget', 'paid_at_cut', 'available_bank_limit', 'calculated_additional'):
-        assert note in rows[key]['note']
+        assert short in rows[key]['note']
     tiles = {row['label']: row for row in report.tiles(built)}
     for label in ('Утверждённый бюджет', 'Лимит банка', 'Оплачено с начала проекта',
                   'Доступный остаток лимита банка', 'Расчётная дополнительная потребность'):
-        assert tiles[label]['note'].count(note) == 1
+        assert tiles[label]['note'].count(short) == 1
+    assert 'дата ФМ неизвестна' in short and 'полнота оплат' in short
     assert note in report.render_text(built) and note in report.render_html(built)
 
 

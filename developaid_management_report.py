@@ -485,21 +485,55 @@ def _borrowed_rows(rss: Path, chapters: Any):
 
 
 def _sums(rows: list[dict[str, Any]], bounds: dict[str, datetime.date],
-          keep) -> dict[str, float]:
-    """За период, с начала месяца конца периода и с начала проекта."""
+          keep) -> dict[str, Any]:
+    """Accounted source sums; an unreadable selected row is never zero."""
     month_start = bounds["end"].replace(day=1)
-    out = {"period": 0.0, "month": 0.0, "total": 0.0}
+    known_part = {"period": 0.0, "month": 0.0, "total": 0.0}
+    known = dict.fromkeys(known_part, True)
+    monthly, monthly_known, issues = {}, {}, []
+    undated = False
     for row in rows:
         day = row.get("date")
-        if not day or day > bounds["end"] or not keep(row):
+        if day is not None and day > bounds["end"]:
             continue
-        amount = float(row.get("amount") or 0.0)
-        out["total"] += amount
-        if day >= month_start:
-            out["month"] += amount
-        if day >= bounds["start"]:
-            out["period"] += amount
-    return out
+        scope = keep(row)
+        if scope is False:
+            continue
+        amount = actuals.money_value(row.get("amount"))
+        fields = (["scope"] if scope is None else []) + (["date"] if day is None else []) \
+                 + (["amount"] if amount is None else [])
+        targets = ["total"] + (["month"] if day is None or day >= month_start else []) \
+                  + (["period"] if day is None or day >= bounds["start"] else [])
+        if fields:
+            for key in targets:
+                known[key] = False
+            issues.append({"source_row": row.get("source_row"), "fields": fields})
+        else:
+            for key in targets:
+                known_part[key] += amount
+        if day is None:
+            undated = True
+        else:
+            month = day.strftime("%Y-%m")
+            monthly.setdefault(month, 0.0)
+            monthly_known[month] = monthly_known.get(month, True) and not fields
+            if not fields:
+                monthly[month] += amount
+    return {**{key: value if known[key] else None for key, value in known_part.items()},
+            "state": "observed" if all(known.values()) else "incomplete",
+            "known_fields": known, "known_part": known_part, "incomplete_rows": issues,
+            "by_month": {month: amount if monthly_known[month] and not undated else None
+                         for month, amount in monthly.items()},
+            "by_month_known_part": monthly, "unallocated_undated_rows": undated,
+            "observation_scope": "accounted_saved_payments", "payments_complete_through_cut": None}
+
+
+def _payment_observation_note(observation: dict[str, Any]) -> str:
+    if observation.get("state") != "incomplete":
+        return ""
+    return ("Выборка кредита не определена полностью: не прочитан состав, дата или сумма части оплат. "
+            "Известная часть учтённых оплат — " + _rub((observation.get("known_part") or {}).get("total"))
+            + "; это не полный итог выбранного состава.")
 
 
 def _monitor_view(project: str, end: datetime.date) -> dict[str, Any]:
@@ -789,7 +823,7 @@ def funding(project: str, kind: str, end: Any, sales_project: str = "",
     if rss is None:
         return _missing("Не загружен ни один отчёт РСС с реестром платежей "
                         f"на {bounds['end']:%d.%m.%Y}.")
-    payments = actuals.read_payments(rss)["rows"]
+    payments = actuals.read_payments(rss, include_incomplete=True)["rows"]
     previous = previous_bounds(kind, bounds)
     if dashboard is not None:
         limit = dashboard.get("funding") or {
@@ -809,17 +843,13 @@ def funding(project: str, kind: str, end: Any, sales_project: str = "",
     # 22.10.2026: «лимит 4,64, выбрано 4,80, остаток 1,00 — так не
     # сходится»). Лимит не посчитан — все главы, как раньше.
     keep = _borrowed_rows(rss, limit.get("chapters") if limit.get("known") else None)
-    monthly: dict[str, float] = {}
-    for row in payments:
-        day = row.get("date")
-        if day and day <= bounds["end"] and keep(row):
-            key = day.strftime("%Y-%m")
-            monthly[key] = monthly.get(key, 0.0) + float(row.get("amount") or 0.0)
+    draws = _sums(payments, bounds, keep)
     out: dict[str, Any] = {
         "state": "ok", "rss": rss.stem,
-        "draws": _sums(payments, bounds, keep),
+        "draws": draws,
         "draws_previous": _sums(payments, previous, keep)["period"],
-        "draws_monthly": monthly,
+        "draws_monthly": draws["by_month"],
+        "draws_monthly_known_part": draws["by_month_known_part"],
         "interest": _sums(payments, bounds, lambda row: monthly_budget._under(
             str(row.get("estimate_code") or "").rstrip("."), "3.5")),
         "limit": limit,
@@ -3009,11 +3039,18 @@ def _funding_text(report: dict[str, Any]) -> list[str]:
             lines.extend(recon)
     else:
         lines.append(f"Лимит и дефицит не посчитаны: {limit.get('reason') or 'нет данных'}.")
+        import developaid_monitor_dashboard as funding_dashboard
+        lines.extend(funding_dashboard.funding_source_notes(limit).values())
+        scope_note = (limit.get("source_dates") or {}).get("source_scope_note")
+        if scope_note:
+            lines.append(scope_note)
     period = PERIODS[report["kind"]]
     draws, interest = block["draws"], block["interest"]
     lines.append(f"Выборка кредита: за {period} "
                  f"{_rub(draws['period'])}, с начала месяца {_rub(draws['month'])}, "
                  f"с начала проекта {_rub(draws['total'])}.")
+    if _payment_observation_note(draws):
+        lines.append(_payment_observation_note(draws))
     lines.append(f"Комиссии и услуги банка: за {period} "
                  f"{_rub(interest['period'])}, с начала месяца {_rub(interest['month'])}, "
                  f"с начала проекта {_rub(interest['total'])}.")
@@ -3320,7 +3357,15 @@ def _funding_html(report: dict[str, Any]) -> str:
     else:
         out.append(f"<p class='missing'>Лимит и дефицит не посчитаны: "
                    f"{esc(limit.get('reason') or 'нет данных')}.</p>")
+        import developaid_monitor_dashboard as funding_dashboard
+        out.extend("<p class='note'>" + esc(line) + "</p>"
+                   for line in funding_dashboard.funding_source_notes(limit).values())
+        scope_note = (limit.get("source_dates") or {}).get("source_scope_note")
+        if scope_note:
+            out.append("<p class='note funding-source-scope'>" + esc(scope_note) + "</p>")
     draws, interest = block["draws"], block["interest"]
+    if _payment_observation_note(draws):
+        out.append("<p class='missing'>" + esc(_payment_observation_note(draws)) + "</p>")
     out.append(_table(["", f"За {PERIODS[report['kind']]}", "С начала месяца", "С начала проекта"], [
         ["Выборка кредита", _rub(draws["period"]),
          _rub(draws["month"]), _rub(draws["total"])],
@@ -4166,10 +4211,13 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
                 f"({month_start:%d.%m.%Y}–{bounds['end']:%d.%m.%Y}) {_rub(draws['month'])}"
                 if report["kind"] != "month" else
                 f"из них с начала месяца ({span}) {_rub(draws['period'])}")
-        over = draws["total"] - float(limit.get("bank_limit") or 0.0)
-        if limit.get("known") and over > 0:
+        total_drawn = draws.get("total")
+        over = total_drawn - float(limit.get("bank_limit") or 0.0) if total_drawn is not None else None
+        if limit.get("known") and over is not None and over > 0:
             note += f"; больше лимита на {_rub(over)}"
-        add("Выбрано у банка", _rub(draws["total"]), note, "bad" if limit.get("known") and over > 0 else "")
+        note = " ".join(part for part in (note, _payment_observation_note(draws)) if part)
+        add("Выбрано у банка", _rub(draws["total"]) if total_drawn is not None else None, note,
+            "bad" if limit.get("known") and over is not None and over > 0 else "")
     else:
         add("Выбрано у банка", None, "отчёт РСС не загружен")
     if own:
@@ -4207,7 +4255,7 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
         # названа; разбор по частям — в разделе «Финансирование».
         bridge = (limit.get("limit_reconciliation") or {}).get("tiles") or {}
         remaining = float(limit.get("bank_remaining") or 0.0)
-        if draws:
+        if draws and draws.get("total") is not None:
             can_draw = float(limit.get("bank_limit") or 0.0) - float(draws["total"])
             gap = can_draw - remaining
             add("Можно ещё выбрать у банка", _rub(can_draw),
@@ -4246,7 +4294,7 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
     if limit.get("known") or limit.get("source_dates"):
         import developaid_monitor_dashboard as dashboard
 
-        notes = dashboard.funding_source_notes(limit)
+        notes = dashboard.funding_source_tile_notes(limit)
         source_for = {"Утверждённый бюджет": "budget", "Лимит банка": "limit",
                       "Оплачено с начала проекта": "paid", "Выбрано у банка": "paid",
                       "Остаток лимита банка": "left",
@@ -4259,7 +4307,7 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
             key = source_for.get(item["label"])
             if key:
                 source_note = notes[key]
-                scope_note = limit.get("source_scope_note")
+                scope_note = limit.get("source_scope_short_note") or limit.get("source_scope_note")
                 if scope_note and scope_note in item["note"]:
                     item["note"] = item["note"].replace(scope_note, "").strip()
                 item["note"] = item["note"].rstrip(" .;") + ". " + source_note
@@ -4678,6 +4726,18 @@ def _cumulative(monthly: dict[str, float], months: list[str]) -> list[float]:
     return out
 
 
+def _cumulative_observed(monthly: dict[str, float | None], months: list[str], *, undated=False) -> list[float | None]:
+    """An unknown payment month cannot become a known cumulative zero."""
+    prefix = [value for month, value in monthly.items() if months and month < months[0]]
+    total = None if undated or any(value is None for value in prefix) else sum(prefix)
+    output = []
+    for month in months:
+        value = monthly.get(month, 0.0)
+        total = total + value if total is not None and value is not None else None
+        output.append(total)
+    return output
+
+
 def _funding_chart(report: dict[str, Any]) -> str:
     block = report.get("funding") or {}
     if block.get("state") != "ok":
@@ -4690,7 +4750,8 @@ def _funding_chart(report: dict[str, Any]) -> str:
     if not months:
         return ""
     lines = [{"name": "Выборка кредита, факт",
-              "values": _cumulative(block.get("draws_monthly") or {}, months)}]
+              "values": _cumulative_observed(block.get("draws_monthly") or {}, months,
+                  undated=(block.get("draws") or {}).get("unallocated_undated_rows", False))}]
     if escrow.get("state") == "ok":
         lines.append({"name": "Кредит по плану ФМ",
                       "values": [escrow["plan_pf"].get(m) for m in months]})

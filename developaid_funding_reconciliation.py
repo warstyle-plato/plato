@@ -322,7 +322,7 @@ def need_breakdown(own: dict, comp: dict, cut: str, known: bool,
 def display_rows(r: dict) -> list[dict]:
     """Shared labels and values; the browser never reconstructs the equation."""
     def row(key: str, label: str, note: str = "") -> dict:
-        warning = r.get("source_scope_note", "")
+        warning = r.get("source_scope_short_note") or r.get("source_scope_note", "")
         return {"key": key, "label": label, "value": r[key],
                 "note": " ".join(part for part in (note, warning) if part)}
     raw_saved = r.get("observation_scope") == "raw_saved_sources"

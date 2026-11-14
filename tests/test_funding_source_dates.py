@@ -79,10 +79,11 @@ def test_distinct_source_dates_reach_all_views_and_visible_cards(tmp_path, monke
         assert line in html and line in text
         assert line in limit["limit_reconciliation_lines"]
     tiles = {item["label"]: item for item in report.tiles(built)}
+    tile_notes = dashboard.funding_source_tile_notes(limit)
     for title, key in (("Утверждённый бюджет", "budget"), ("Лимит банка", "limit"),
                        ("Оплачено с начала проекта", "paid"), ("Выбрано у банка", "paid"),
                        ("Доступный остаток лимита банка", "left"), ("Расчётная дополнительная потребность", "need")):
-        assert expected[key] in tiles[title]["note"]  # printed, not only in a hidden tooltip
+        assert tile_notes[key] in tiles[title]["note"]  # compact qualifier is printed, not hidden
     assert "14.10.2026–20.10.2026" in tiles["Выбрано у банка"]["note"]
     assert "с начала месяца (01.10.2026–20.10.2026)" in tiles["Выбрано у банка"]["note"]
     bridge = dashboard.own_budget_reconciliation_lines(limit["own_money"], report._rub)
