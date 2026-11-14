@@ -249,7 +249,8 @@ def test_private_key_rotation_during_run_prevents_result_release(monkeypatch):
 
 def test_real_document_reader_inherits_actor_and_does_not_send_credentials(monkeypatch):
     captures = fake_search(monkeypatch)
-    def extraction_reply(payload):
+    def extraction_reply(payload, *, budget_seconds):
+        assert 0 < budget_seconds <= 240
         captures.append(payload)
         return {"output": [{"type": "message", "content": [{"type": "output_text",
             "text": '{"fields":[],"questions":[],"notes":[]}'}]}]}

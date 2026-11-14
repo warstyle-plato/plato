@@ -113,7 +113,9 @@ def test_the_first_message_is_a_card_and_asks_nothing(bot):
     assert "Чего нет в тизере" in card["text"]
     assert "Вопрос 1" not in card["text"], "первый шаг уже спрашивает"
     assert "offices_gba_sqm" not in card["text"], "в карточке ключ вместо подписи"
-    assert [b["callback_data"] for b in _buttons(card)] == ["intake_questions"]
+    shown = [b["callback_data"] for b in _buttons(card)]
+    intake_id = engine._telegram_dialog_get(CHAT)["intake"]["id"]
+    assert shown == [engine._telegram_intake_callback_data(intake_id, "questions")]
     assert not bot.parcels, "расчёт участка начался без кнопки"
 
 
@@ -282,12 +284,15 @@ def test_long_first_card_keeps_its_complete_text_before_the_questions_button(bot
         return original_send(chat_id, text, **kwargs)
     monkeypatch.setattr(engine, '_telegram_send_message', validate_send)
     engine._telegram_handle_intake_document(CHAT, b'%PDF', 'synthetic.pdf')
-    parts = bot[1:]
+    first_card = next(i for i, message in enumerate(bot) if 'Что я прочитал в тизере' in message['text'])
+    assert first_card > 0 and all(not _buttons(message) for message in bot[:first_card])
+    parts = bot[first_card:]
     assert len(parts) > 1
     assert 'Что я прочитал в тизере' in parts[0]['text']
     assert 'Первое чтение 23' in ''.join(p['text'] for p in parts)
     assert all(not _buttons(p) for p in parts[:-1])
-    assert _buttons(parts[-1])[0]['callback_data'] == 'intake_questions'
+    intake_id = engine._telegram_dialog_get(CHAT)['intake']['id']
+    assert _buttons(parts[-1])[0]['callback_data'] == engine._telegram_intake_callback_data(intake_id, 'questions')
     assert not bot.parcels
 
 
@@ -461,11 +466,13 @@ def test_foreign_chat_web_identity_and_forged_bot_claim_cannot_read_or_answer_in
     assert denied.value.status_code == 403
     # A different Telegram chat cannot answer even after obtaining an intake ID.
     foreign_dialog = copy.deepcopy(dialog)
-    # This fixture deliberately creates a fresh foreign-chat pointer; copying
-    # a loaded dialogue's CAS metadata would be refused before the ACL probe.
-    foreign_dialog.pop('_revision', None)
-    foreign_dialog.pop('_source_sha256', None)
-    engine._telegram_dialog_save(CHAT + 1, foreign_dialog)
+    # A copied owner/source revision must be refused, never resurrected.
+    with pytest.raises(RuntimeError, match="Шаг уже изменился"):
+        engine._telegram_dialog_save(CHAT + 1, foreign_dialog)
+    assert engine._intake_queue_path(intake_id).read_bytes() == before
+    # A fresh foreign-chat fixture knows only the document ID. The queue ACL
+    # must still reject it before any answer or private read.
+    engine._telegram_dialog_save(CHAT + 1, {"step": "await_intake_answer", "intake": {"id": intake_id}})
     engine._telegram_handle_update({"callback_query": {
         "id": "", "data": "intake_opt:0:0", "from": {"id": CHAT + 1},
         "message": {"chat": {"id": CHAT + 1, "type": "private"}}}})
