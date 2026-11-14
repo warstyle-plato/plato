@@ -7,8 +7,10 @@ import hashlib
 import json
 import re
 import time
+from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from urllib.parse import parse_qsl, urlsplit
+from urllib.request import getproxies_environment, proxy_bypass_environment
 
 import httpx2
 
@@ -74,10 +76,67 @@ def _runtime(value):
     return dict(value)
 
 
-def _new_client():
-    # No inherited proxy credentials, cookies, auth, redirects or retry transport.
+@dataclass(frozen=True)
+class _ProxyPolicy:
+    proxy: str | None = field(default=None, repr=False)
+    configured: bool = False
+    bypassed: bool = False
+    refusal: str = "none"
+
+    def observation(self):
+        refused = self.refusal != "none"
+        selected = self.proxy is not None and not refused
+        mode = ("proxy_refused" if refused else "proxy_bypassed" if self.bypassed
+                else "configured_https_proxy" if selected else "direct")
+        return {"mode": mode, "configured": self.configured, "selected": selected,
+                "bypassed": self.bypassed, "refused": refused, "refusal": self.refusal}
+
+
+class _ProxyConfigurationRefused(ValueError):
+    pass
+
+
+def _proxy_policy():
+    # Linux urllib uses these same environment selection/bypass routines.
+    # Take one snapshot per walk: no PAC, requests, mutable global or pagewise
+    # re-reading of credentials/configuration. Values never enter diagnostics.
+    proxies = getproxies_environment()
+    value = proxies.get("https")
+    if not value:
+        return _ProxyPolicy()
+    bypassed = bool(proxy_bypass_environment("api.krt.mos.ru", proxies))
+
+    def refuse(reason):
+        return _ProxyPolicy(configured=True, bypassed=bypassed, refusal=reason)
+
+    if (not isinstance(value, str) or len(value) > 2048
+            or any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in value)):
+        return refuse("invalid")
+    try:
+        parts = urlsplit(value)
+        if parts.username is not None or parts.password is not None:
+            return refuse("credentials")
+        if (parts.scheme not in ("http", "https") or not parts.hostname
+                or not parts.netloc or "%" in parts.netloc or "\\" in value
+                or parts.path not in ("", "/") or "?" in value or "#" in value
+                or parts.port is not None and not 1 <= parts.port <= 65535):
+            return refuse("invalid")
+        url = httpx2.URL(value)
+        if not url.host or url.userinfo:
+            return refuse("invalid")
+    except (ValueError, httpx2.InvalidURL):
+        return refuse("invalid")
+    return _ProxyPolicy(proxy=None if bypassed else str(url), configured=True,
+                        bypassed=bypassed)
+
+
+def _new_client(proxy=None):
+    # Only the validated credential-free explicit proxy is permitted. Other
+    # inherited proxy/auth/cookie settings remain disabled.
+    context = trust_context()
     return httpx2.AsyncClient(
-        verify=trust_context(), trust_env=False, follow_redirects=False,
+        verify=context, trust_env=False, follow_redirects=False,
+        proxy=httpx2.Proxy(proxy, ssl_context=context) if proxy is not None else None,
         timeout=httpx2.Timeout(MAX_SECONDS), headers=HEADERS,
         limits=httpx2.Limits(max_connections=1, max_keepalive_connections=1),
     )
@@ -274,6 +333,7 @@ async def capture(*, runtime: dict) -> dict:
     """One bounded walk, in memory; the caller has already admitted the owner."""
     runtime = _runtime(runtime)
     started = time.monotonic()
+    policy = _proxy_policy()
     result = {
         "purpose": PURPOSE, "scope": "current_official_catalogue_response_not_historical",
         "runtime": runtime,
@@ -291,6 +351,7 @@ async def capture(*, runtime: dict) -> dict:
         "transport": None,
         "transport_failure": None,
         "transport_observation": "httpcore_phase_names_only_v1",
+        "transport_policy": policy.observation(),
     }
 
     def gap(code):
@@ -317,7 +378,9 @@ async def capture(*, runtime: dict) -> dict:
 
     try:
         async with asyncio.timeout(MAX_SECONDS):
-            async with _new_client() as client:
+            if policy.refusal != "none":
+                raise _ProxyConfigurationRefused()
+            async with _new_client(policy.proxy) as client:
                 for index in range(MAX_PAGES):
                     if url in seen_urls:
                         gap("repeated_next_link")
@@ -410,6 +473,8 @@ async def capture(*, runtime: dict) -> dict:
                     url = next_url
                 else:
                     gap("page_limit")
+    except _ProxyConfigurationRefused:
+        gap("proxy_configuration_refused")
     except TimeoutError as exc:
         transport_failure(exc)
         gap("total_time_limit")
