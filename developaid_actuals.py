@@ -1562,16 +1562,40 @@ def payments_by_article(
         if classification_observer is None:
             return
         item = current_item.get('value') or {}
-        pair = _party_key(item.get('contractor'), item.get('contract'))
+        pair = current_item.get('pair')
+        if pair is None:
+            pair = _party_key(item.get('contractor'), item.get('contract'))
+            current_item['pair'] = pair
         exact = by_pair.get((pair,item.get('estimate_code')),set()) or by_pair_any.get(pair,set())
         candidates = {article_for(code)[0] for code in exact} if exact else set()
         official = ssr_articles.get(item.get('estimate_code'),set())
         if not exact:
             candidates = set(official) if official else {None}
-        classification_observer({'source_row':item.get('source_row'), 'date':item.get('date'),
+        event = {'source_row':item.get('source_row'), 'date':item.get('date'),
             'amount':amount,'article':article,'basis':basis,'reason':reason,
             'possible_articles':sorted(a for a in candidates if a), 'scope_unknown':None in candidates,
-            'estimate_code':item.get('estimate_code')})
+            'estimate_code':item.get('estimate_code')}
+        record = getattr(classification_observer, 'record_candidates', None)
+        if callable(record):
+            party = current_item.get('party')
+            if party is None:
+                party = _party_key(item.get('contractor'))
+                current_item['party'] = party
+            contract = pair.partition('|')[2] if '|' in pair else None
+            try:
+                record(event, exact_codes=by_pair.get((pair, item.get('estimate_code')), set()),
+                    contract_codes=by_pair_any.get(pair, set()),
+                    party_codes=by_party.get(party, set()) if basis == 'по контрагенту' else None,
+                    official_articles=ssr_articles.get(item.get('estimate_code'), set()) if crosswalk else None,
+                    normalized_pair=pair, normalized_contract=contract,
+                    flags={'party_present': bool(str(item.get('contractor') or '').strip()),
+                        'contract_present': bool(str(item.get('contract') or '').strip()),
+                        'party_normalized_empty': not party, 'contract_normalized_empty': not contract,
+                        'pair_normalized_empty': not party and not contract})
+            except Exception:
+                failed = getattr(classification_observer, 'record_failure', None)
+                if callable(failed):failed()
+        classification_observer(event)
 
     def put(article: str, month: datetime.date, amount: float, how: str) -> None:
         target = other if article in _NON_CAPEX_ARTICLES else capex
@@ -1600,7 +1624,7 @@ def payments_by_article(
         return True
 
     for item in payments["rows"]:
-        current_item['value'] = item
+        current_item.update(value=item, pair=None, party=None)
         amount, month = item["amount"], item["date"]
         if amount is None:
             observe(None, None, 'unresolved', 'платёж без суммы')
@@ -1613,10 +1637,12 @@ def payments_by_article(
         current_code["value"] = item["estimate_code"]
 
         pair = _party_key(item["contractor"], item["contract"])
+        party = _party_key(item["contractor"])
+        current_item.update(pair=pair, party=party)
         attempts = (
             ("по договору и коду РСС", by_pair.get((pair, item["estimate_code"]), set())),
             ("по договору", by_pair_any.get(pair, set())),
-            ("по контрагенту", by_party.get(_party_key(item["contractor"]), set())),
+            ("по контрагенту", by_party.get(party, set())),
         )
         placed = False
         for how, codes in attempts:
