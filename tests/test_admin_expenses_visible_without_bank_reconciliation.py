@@ -140,7 +140,7 @@ def test_real_monitor_shows_source_and_ahr_without_financial_readiness_and_clear
         expect(card).to_contain_text('20 000 ₽')
         expect(card).to_contain_text('повторно к расходам или дефициту не прибавляются')
         expect(page.locator('#kpis')).to_contain_text(model['availability_note'])
-        expect(page.locator('#financeBars')).to_have_text(model['availability_note'])
+        expect(page.locator('#financeBars')).to_have_text('РСС не загружена ' + model['availability_note'])
         assert card.locator('img').count() == 0 and page.evaluate('window.unsafeAhr') is None
         card.get_by_text('Состав АХР без налогов', exact=True).click()
         expect(card.locator('tbody tr')).to_have_count(1)
