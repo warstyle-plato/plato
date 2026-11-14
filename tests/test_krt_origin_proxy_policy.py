@@ -122,6 +122,26 @@ def test_selected_proxy_and_origin_share_verified_context_without_environment_au
     assert "auth" not in observed and "cookies" not in observed
 
 
+@pytest.mark.parametrize("scheme", ["http", "https"])
+def test_real_proxy_constructor_assigns_TLS_only_to_encrypted_proxy_transport(scheme, monkeypatch):
+    context = audit.trust_context()
+    monkeypatch.setattr(audit, "trust_context", lambda: context)
+    # Construct the real httpx2/httpcore2 transports; do not make requests.
+    native = audit._new_client(scheme + "://constructor-proxy.invalid:8080")
+    try:
+        assert native._transport._pool._ssl_context is context
+        pools = [transport._pool for transport in native._mounts.values() if transport is not None]
+        assert len(pools) == 1
+        proxy = pools[0]
+        assert proxy._ssl_context is context
+        assert proxy._proxy_ssl_context is (context if scheme == "https" else None)
+        assert proxy._proxy_url.scheme == scheme.encode()
+        assert proxy._proxy_headers == []
+        assert context.check_hostname and context.verify_mode.name == "CERT_REQUIRED"
+    finally:
+        asyncio.run(native.aclose())
+
+
 def memory_factory(monkeypatch, respond):
     actual = httpx2.AsyncClient
     calls, proxies = [], []

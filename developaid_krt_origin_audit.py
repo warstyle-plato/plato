@@ -136,7 +136,7 @@ def _new_client(proxy=None):
     context = trust_context()
     return httpx2.AsyncClient(
         verify=context, trust_env=False, follow_redirects=False,
-        proxy=httpx2.Proxy(proxy, ssl_context=context) if proxy is not None else None,
+        proxy=httpx2.Proxy(proxy, ssl_context=context if httpx2.URL(proxy).scheme == "https" else None) if proxy is not None else None,
         timeout=httpx2.Timeout(MAX_SECONDS), headers=HEADERS,
         limits=httpx2.Limits(max_connections=1, max_keepalive_connections=1),
     )
