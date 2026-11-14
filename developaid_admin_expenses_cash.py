@@ -164,7 +164,7 @@ def calculate(budget, payments, register, crosswalk, bdds, cut):
         'months':chosen,'fm':budget,'financial_acceptance':False,
         'paid_classification_basis':{m:{k:scalar(v)for k,v in cell['basis'].items()}for m,cell in rss_months.items()},
         'source_preference':'closed-month BDDS admin FACT replaces RSS month; otherwise dated RSS known part; never add both',
-        'warning':'Показан остаток после учтённых оплат. Неполные периоды и неоднозначные платежи могут изменить его; это не подтверждённая потребность и не граница оценки.' if not complete else
+        'warning':'Расчёт предварительный: часть периодов или платежей ещё не сверена. Подробности — в составе оплат.' if not complete else
                   'Расчёт по загруженным данным; полнота с начала проекта отдельно не подтверждена.'}
 
 

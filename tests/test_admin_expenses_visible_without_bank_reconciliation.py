@@ -5,6 +5,7 @@ import openpyxl
 import pytest
 
 import developaid_admin_expenses as admin
+import developaid_admin_expenses_cash as cash
 import developaid_management_report as report
 import developaid_monitor as monitor
 import developaid_monitor_dashboard as dashboard
@@ -111,15 +112,25 @@ def test_dashboard_without_rss_or_gpr_keeps_ahr_and_source_bytes(stored, monkeyp
 def test_report_shows_the_same_ahr_when_financial_and_schedule_blocks_are_missing(stored, monkeypatch):
     path, raw = stored
     model = admin.for_project('Учебный АХР', '2026-11-13')
-    monkeypatch.setattr(report, '_monitor_view', lambda *_a: {'admin_expenses': model})
+    cash_model = cash.for_project('Учебный АХР', '2026-11-13')
+    monkeypatch.setattr(report, '_monitor_view', lambda *_a: {
+        'admin_expenses': model, 'admin_expenses_cash': cash_model})
     got = report.build('Учебный АХР', 'week', '2026-11-13')
     assert got['admin_expenses'] is model
-    actual = [t for t in report.tiles(got) if t['label'].startswith('АХР —')]
-    assert actual == admin.tiles(model)
+    assert got['admin_expenses_cash'] is cash_model
+    actual = [t for t in report.tiles(got) if t.get('group') == 'admin_expenses_cash']
+    assert len(actual) == 4 and actual == cash.tiles(cash_model)
+    assert cash_model['budget'] == model['total'] == 40000
+    assert cash_model['paid_observed_net'] is None  # FM FACT is not paid cash.
+    assert cash_model['balance_after_observed_payments'] is None
+    assert cash_model['remaining_need'] is None
     output = report.render_html(got)
-    assert admin.render(model, show_tiles=False) in output
+    assert '<details class="admin-fm-source" open><summary>Данные ФМ</summary>' in output
+    assert admin.render(model) in output  # All three truthful FM columns remain context.
     assert '40 000 ₽' in output and 'Повторно' not in output
-    assert 'АХР — всего: 40 000 ₽' in report.render_text(got)
+    text = report.render_text(got)
+    assert 'Бюджет АХР по сохранённой ФМ: 40 000,00 ₽' in text
+    assert 'Учтено оплат АХР: нет данных' in text
     assert path.read_bytes() == raw
 
 
