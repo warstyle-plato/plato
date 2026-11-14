@@ -128,6 +128,31 @@ def test_non_ijk_money_columns_preserve_old_rows_and_skip_format_access(source, 
     assert diag['cell_samples'] == []
 
 
+def test_wide_non_ijk_rows_are_not_retained_for_a_skipped_diagnostic(source, monkeypatch):
+    def edit(sheet):
+        for column in (9, 10, 11):
+            sheet.cell(6, column).value = None
+        for column, name, value in ((998, 'ИТОГО', 40), (999, 'ФАКТ', 20), (1000, 'ПЛАН', 20)):
+            sheet.cell(6, column, name); sheet.cell(14, column, value)
+    changed(source, edit)
+    data = (source[0] / 'finance.xlsx').read_bytes()
+    legacy_rows, legacy_headers, legacy_units = proof._cells(data)
+    original, calls = hints.observe, []
+    def observed(leaves, row_cells, header_cells, columns, currency):
+        calls.append(True)
+        assert columns == {'total': 997, 'fact': 998, 'plan': 999}
+        assert row_cells == {}
+        return original(leaves, row_cells, header_cells, columns, currency)
+    monkeypatch.setattr(hints, 'observe', observed)
+    monkeypatch.setattr(ReadOnlyCell, 'number_format', property(lambda cell: pytest.fail('out-of-scope style access')))
+    rows, headers, units = proof._cells(data, observe_units=True)
+    diag = units.pop('_observability')
+    assert calls == [True]
+    assert (rows, headers, units) == (legacy_rows, legacy_headers, legacy_units)
+    assert rows[0]['cells']['total']['cell'] == 'ALJ14'
+    assert diag['gaps'] == ['money_columns_outside_diagnostic_scope'] and diag['cell_samples'] == []
+
+
 def test_bad_number_format_property_is_per_cell_unknown_not_workbook_failure(source, monkeypatch):
     edit_book(source)
     def fail(cell):

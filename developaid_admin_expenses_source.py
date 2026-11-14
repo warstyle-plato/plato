@@ -296,7 +296,7 @@ def _cells(data, *, observe_units=False):
             items.append({"code": code, "row": row, "raw_code": _raw(cells[2]),
                 "cells": {key: {"cell": f"{get_column_letter(column+1)}{row}", **_raw(cells[column])}
                           for key, column in columns.items()}})
-            if observe_units:
+            if observe_units and columns == {'total': 8, 'fact': 9, 'plan': 10}:
                 observed_cells[row] = cells
         if len({item["code"] for item in items}) != len(items):
             raise SourceProblem("codes_ambiguous")
