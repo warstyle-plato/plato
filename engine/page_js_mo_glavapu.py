@@ -667,8 +667,11 @@ async function sendTelegramResult(){
    queue_count:(phaseBundle&&phaseBundle.mode==='phased'&&(phaseBundle.comparison||[]).length)||1,
     report_payload:currentPdfReportPayload(cads)
  };
+ let requestStarted=false;
+ const previousUnknown=!!sendTelegramResult.uncertain;
  try{
    sendTelegramResult.pending=true;
+   sendTelegramResult.failure='';
    telegramProgress('Готов. Отправляю в чат…');
    // Если ответ задерживается, надпись не должна выглядеть зависшей: в чате
    // к этому моменту уже может быть всё, и человек ждёт впустую.
@@ -679,6 +682,7 @@ async function sendTelegramResult(){
      if(controller)controller.abort();
    },20000)});
    const request=(async()=>{
+     requestStarted=true;
      const response=await fetch('/telegram/result',{
        method:'POST',
        headers:{'Content-Type':'application/json'},
@@ -706,9 +710,10 @@ async function sendTelegramResult(){
    }
  }catch(e){
    telegramProgress('');
-   sendTelegramResult.uncertain=e.deliveryUnknown!==false;
+   sendTelegramResult.uncertain=previousUnknown||(requestStarted&&e.deliveryUnknown!==false);
+   sendTelegramResult.failure=String(e.message||e)+(sendTelegramResult.uncertain?' Доставка неизвестна. Проверьте чат перед повторной отправкой.':'');
    const status=document.getElementById('glavapuStatus');
-   if(status)status.innerHTML+=' <span class="import-error">Не удалось отправить итог в Telegram: '+escapeHtml(String(e.message||e))+(sendTelegramResult.uncertain?' Доставка неизвестна. Проверьте чат перед повторной отправкой.':'')+'</span>';
+   if(status)status.innerHTML+=' <span class="import-error">Не удалось отправить итог в Telegram: '+escapeHtml(sendTelegramResult.failure)+'</span>';
  }finally{
    sendTelegramResult.pending=false;
  }

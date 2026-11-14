@@ -16,7 +16,7 @@ def send_source():
     return core.PAGE[start:core.PAGE.index('\n}\n',start)+3]
 
 
-def probe(mode, *, repeat=False, explicit=False):
+def probe(mode, *, repeat=False, explicit=False, caller=None):
     script = '''
 let inputs={_manual_tep_import:{project_name:'Synthetic'}},tep={},lastResult={summary:{},report:{financing:{}}};
 let telegramSession='synthetic',telegramResultSent=false,telegramMode='',cadastralAnalysis=null,phaseBundle=null,telegramEditSubmitting=false;
@@ -35,6 +35,7 @@ function telegramProgress(x){progress.push(x)}
 function finishTelegramSession(x){finished.push(x)}
 function setTimeout(fn,ms){const id=++nextTimer;timers.set(id,{fn,ms});return id}
 function clearTimeout(id){timers.delete(id)}
+function showTelegramResendButton(){} async function calculate(){} function openTab(){}
 '''
     responses = {
         'pending': 'return new Promise(()=>{})',
@@ -46,16 +47,21 @@ function clearTimeout(id){timers.delete(id)}
         'success': 'return Promise.resolve({ok:true,json:()=>Promise.resolve({ok:true})})',
     }
     script += 'function fetch(){calls++;'+responses[mode]+'}\n'+send_source()+'\n'
+    if caller:
+        import page_blocks
+        script += page_blocks.function(caller,core.PAGE)+'\n'
     script += '''
 async function flush(){for(let i=0;i<30;i++)await Promise.resolve()}
 (async()=>{
  let settled=false;
- const first=sendTelegramResult().then(()=>settled=true);
+ const first=CALL.then(()=>settled=true);
  await flush();
  for(const [id,timer]of Array.from(timers)){if(timers.has(id)){timers.delete(id);timer.fn()}}
  await flush();
  const afterFirst={settled,sent:telegramResultSent,progress:[...progress],finished:[...finished],status:status.innerHTML,calls,uncertain:!!sendTelegramResult.uncertain};
 '''
+    invocation = "telegramRecalculateAndFinish('report')" if caller=='telegramRecalculateAndFinish' else 'submitTelegramEditedResult()' if caller else 'sendTelegramResult()'
+    script=script.replace('CALL',invocation)
     if repeat:
         script += 'telegramEditSubmitting='+json.dumps(explicit)+';\n'
         if explicit:
@@ -125,3 +131,13 @@ def test_final_server_reply_uses_canonical_html_splitter_and_last_part_button(mo
     assert sum(text.count('🌳')for text,_ in delivered) == 3000
     assert all(markup is None for _,markup in delivered[:-1])
     assert delivered[-1][1]['inline_keyboard']
+
+
+@pytest.mark.parametrize('caller',['telegramRecalculateAndFinish','submitTelegramEditedResult'])
+@pytest.mark.parametrize('mode',['pending','body_pending'])
+def test_actual_entry_callers_preserve_the_unknown_delivery_reason(caller,mode):
+    outcome = probe(mode,caller=caller)
+    assert outcome['first']['settled'] and not outcome['sent'] and not outcome['finished']
+    assert outcome['first']['uncertain']
+    assert 'Доставка неизвестна' in outcome['first']['status']
+    assert 'проверьте чат' in outcome['first']['status'].lower()
