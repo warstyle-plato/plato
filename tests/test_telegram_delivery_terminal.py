@@ -16,7 +16,7 @@ def send_source():
     return core.PAGE[start:core.PAGE.index('\n}\n',start)+3]
 
 
-def probe(mode, *, repeat=False, explicit=False, caller=None):
+def probe(mode, *, repeat=False, explicit=False, caller=None, cycle=False, prior_unknown=False):
     script = '''
 let inputs={_manual_tep_import:{project_name:'Synthetic'}},tep={},lastResult={summary:{},report:{financing:{}}};
 let telegramSession='synthetic',telegramResultSent=false,telegramMode='',cadastralAnalysis=null,phaseBundle=null,telegramEditSubmitting=false;
@@ -46,7 +46,11 @@ function showTelegramResendButton(){} async function calculate(){} function open
         'invalid_schema': 'return Promise.resolve({ok:true,json:()=>Promise.resolve({})})',
         'success': 'return Promise.resolve({ok:true,json:()=>Promise.resolve({ok:true})})',
     }
+    if cycle:
+        script+="currentPdfReportPayload=function(){const value={};value.self=value;return value};\n"
     script += 'function fetch(){calls++;'+responses[mode]+'}\n'+send_source()+'\n'
+    if prior_unknown:
+        script+="sendTelegramResult.uncertain=true;\n"
     if caller:
         import page_blocks
         script += page_blocks.function(caller,core.PAGE)+'\n'
@@ -141,3 +145,13 @@ def test_actual_entry_callers_preserve_the_unknown_delivery_reason(caller,mode):
     assert outcome['first']['uncertain']
     assert 'Доставка неизвестна' in outcome['first']['status']
     assert 'проверьте чат' in outcome['first']['status'].lower()
+
+
+@pytest.mark.parametrize('caller',['telegramRecalculateAndFinish','submitTelegramEditedResult'])
+@pytest.mark.parametrize('prior_unknown',[False,True])
+def test_serialization_failure_is_before_fetch_and_preserves_prior_unknown(caller,prior_unknown):
+    outcome = probe('success',caller=caller,cycle=True,prior_unknown=prior_unknown)
+    assert outcome['first']['settled'] and not outcome['sent'] and not outcome['finished']
+    assert outcome['calls'] == 0
+    assert outcome['first']['uncertain'] is prior_unknown
+    assert ('Доставка неизвестна' in outcome['first']['status']) is prior_unknown

@@ -682,11 +682,12 @@ async function sendTelegramResult(){
      if(controller)controller.abort();
    },20000)});
    const request=(async()=>{
+     const body=JSON.stringify({session:telegramSession,summary:payload});
      requestStarted=true;
      const response=await fetch('/telegram/result',{
        method:'POST',
        headers:{'Content-Type':'application/json'},
-       body:JSON.stringify({session:telegramSession,summary:payload}),
+       body,
        ...(controller?{signal:controller.signal}:{})
      });
      const result=await response.json();
