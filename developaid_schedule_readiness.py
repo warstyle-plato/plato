@@ -518,12 +518,13 @@ def render(state):
     heading = state['scope_label']+(' · оценочный профиль' if state['estimated'] else '')
     out = ['<style>.readiness-matrix{max-width:100%;overflow-x:auto}.readiness-matrix table{width:100%;table-layout:fixed;border-collapse:collapse;font-size:12px}.readiness-matrix th,.readiness-matrix td{padding:7px;border:1px solid #dce3ed;overflow-wrap:anywhere;vertical-align:top}.readiness-summary{padding:12px 16px;border-bottom:1px solid #dce3ed;overflow-wrap:anywhere}.readiness-summary h3{font-size:15px;margin:0 0 7px}.readiness-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(250px,100%),1fr));gap:10px;margin-top:10px}.readiness-item{border:1px solid #dce3ed;border-radius:7px;padding:10px}.readiness-item h4{margin:0 0 7px}.readiness-item strong{font-size:20px}.readiness-project-value{display:block;font-size:30px;line-height:1.1;margin:8px 0}.readiness-item details{margin-top:7px}@media(max-width:640px){.readiness-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.readiness-item{padding:9px}.readiness-item h4{font-size:13px}.readiness-item summary{font-size:11px}}.readiness-item p,.readiness-summary p{font-size:12px;line-height:1.5;margin:5px 0}.readiness-summary summary{cursor:pointer;font-size:12px}</style>',
            '<section class="readiness-summary"><h3>'+esc(heading)+'</h3>']
+    out.append('<style>@media print{.readiness-project-gap::details-content{content-visibility:visible!important;display:block!important}}</style>')
     if project['progress'] is not None:
         out.append('<strong class="readiness-project-value">'+esc(f"{project['progress']*100:.1f}%".replace('.', ','))+'</strong>')
         if project.get('partial'):
             out.append('<p>По известным данным; это не готовность всего состава. '+esc(project['reason'])+'</p>')
     elif known:
-        out.append('<details class="readiness-project-gap"><summary>Общий показатель проекта пока не определён</summary><p>'+esc(state['reason'])+'</p><p>'+esc(facts(project))+'</p><p>'+esc(evidence(project))+'</p></details>')
+        out.append('<details class="readiness-project-gap readiness-gap"><summary>Общий показатель проекта пока не определён</summary><p>'+esc(state['reason'])+'</p><p>'+esc(facts(project))+'</p><p>'+esc(evidence(project))+'</p></details>')
     else:
         out.append('<p class="readiness-gap">Общая готовность пока не определена. '+esc(state['reason'])+'</p>')
     if project['progress'] is not None or not known:
