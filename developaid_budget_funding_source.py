@@ -210,8 +210,12 @@ class _BoundedWorksheetView:
         return self._sheet.iter_rows(**kwargs)
 
     def cell(self, row, column):
-        if type(row) is not int or type(column) is not int or not 1 <= row <= self.max_row or not 1 <= column <= self.max_column:
-            raise ValueError('cell_outside_proven_extent')
+        # The complete proof established that coordinates beyond payload extent
+        # are blank. Preserve the native blank-cell protocol within old bounds.
+        if (type(row) is not int or type(column) is not int
+                or not 1 <= row <= MAX_ROWS or not 1 <= column <= MAX_COLUMNS
+                or row * column > MAX_CELLS):
+            raise ValueError('cell_outside_read_bounds')
         return self._sheet.cell(row, column)
 
 

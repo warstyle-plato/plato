@@ -187,12 +187,13 @@ def test_bounded_view_cannot_be_reopened_with_zero_or_oversized_iteration_limits
     class Native:
         title='Synthetic'
         def iter_rows(self,**kwargs):pytest.fail('invalid bounds reached native iterator')
-        def cell(self,*args):pytest.fail('out-of-proof cell reached native iterator')
+        def cell(self,*args):pytest.fail('out-of-bounds cell reached native iterator')
     view=proof._BoundedWorksheetView(Native(),10,7)
     for kwargs in ({'max_row':0},{'max_col':0},{'max_col':1001},{'min_row':0}):
         with pytest.raises(ValueError):list(view.iter_rows(**kwargs))
     assert list(view.iter_rows(min_row=11))==[]
-    with pytest.raises(ValueError):view.cell(11,1)
+    for row,column in ((0,1),(1,0),(True,1),(20001,1),(1,1001),(20000,101)):
+        with pytest.raises(ValueError):view.cell(row,column)
 
 
 def with_long_xml_tail(raw):
@@ -239,3 +240,19 @@ def test_original_expanded_archive_gate_is_not_replaced_by_extent_proof(monkeypa
 def test_literal_or_unknown_cell_content_is_not_proven_style_only(far_cell):
     content='<row r="1"><c r="A1"><v>1</v></c></row><row r="900000">'+far_cell+'</row>'
     assert proof._verified_payload_extent(FakeSheet(xml(content))) is None
+
+
+@pytest.mark.parametrize('row,column',[(10,5),(100,5)])
+def test_recovered_sheet_preserves_native_blank_cell_reads_beyond_payload_extent(row,column):
+    import openpyxl
+    book=openpyxl.Workbook();sheet=book.active;sheet.title=proof.ESTIMATE
+    sheet['A1']=1;sheet['B2']='Synthetic header'
+    stream=io.BytesIO();book.save(stream);book.close();compact=stream.getvalue()
+    styled=inflated(compact,payload=f'<row xmlns="{NS}" r="900000"><c r="GR900000" s="0"/></row>')
+    with proof._book(compact) as normal,proof._book(styled) as formatted:
+        native=proof._sheet(normal,proof.ESTIMATE)
+        recovered=proof._sheet(formatted,proof.ESTIMATE)
+        assert isinstance(recovered,proof._BoundedWorksheetView)
+        assert (recovered.max_row,recovered.max_column)==(2,2)
+        assert recovered.cell(row,column).value is native.cell(row,column).value is None
+        assert (formatted[proof.ESTIMATE].max_row,formatted[proof.ESTIMATE].max_column)==(900000,200)
