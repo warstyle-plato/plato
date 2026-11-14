@@ -295,6 +295,11 @@ def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = 
         if operation == "upload":
             result = {"snapshot": ledgers.store_archive(
                 payload["project"], archive, payload["taken_at"], payload["filename"])}
+            # A new archive supplements the register; say which contracts stay from earlier ones.
+            try:
+                result["contracts"] = contracts.archive_summary(payload["project"], payload["taken_at"])
+            except (contracts.ContractProblem, ledgers.LedgerProblem) as exc:
+                result["contracts"] = {"error": str(exc)}
         elif operation == "view":
             register = contracts.build(payload["project"], payload["cut"])
             register = links.enrich(payload["project"], register, payload["cut"])

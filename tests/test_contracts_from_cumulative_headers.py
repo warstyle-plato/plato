@@ -65,7 +65,8 @@ def test_770_rss_rows_cannot_expand_two_cumulative_contracts(context):
     provide(context, snapshot, rss)
     view = contracts.build('Example', '2026-11-06')
     assert len(view['rows']) == 2
-    assert view['counts'] == {'contracts_from_cumulative': 2, 'cumulative_sheets': 2, 'unresolved_headers': 0}
+    assert view['counts'] == {'contracts_from_cumulative': 2, 'cumulative_sheets': 2, 'unresolved_headers': 0,
+                              'contracts_from_newest_archive': 2, 'contracts_carried': 0}
     assert {x['contract'] for x in view['rows']} == {'A-12', 'B-24'}
     assert all(x['completed'] == 400 for x in view['rows'])  # Never RSS L=900.
     assert all(x['amount'] == 1000 and x['completion_ratio'] == .4 for x in view['rows'])
