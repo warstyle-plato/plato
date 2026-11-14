@@ -13,6 +13,7 @@ from typing import Callable
 
 DEFAULT_SECONDS = 240.0
 _CURRENT = contextvars.ContextVar('document_processing_budget', default=None)
+_NOTIFICATION = contextvars.ContextVar('document_failure_notification',default=None)
 _SHORT_PUBLICATION = contextvars.ContextVar('document_short_publication',default=False)
 
 
@@ -43,6 +44,9 @@ class Budget:
 
 
 def remaining(cap: float | None = None) -> float | None:
+    notice = _NOTIFICATION.get()
+    if notice is not None:
+        return notice.remaining(cap)
     budget = _CURRENT.get()
     return budget.remaining(cap) if budget is not None else cap
 
@@ -56,7 +60,42 @@ def deadline() -> float | None:
 
 
 def check() -> None:
+    if _NOTIFICATION.get() is not None:
+        raise Cancelled('A closed-source notification cannot start source processing')
     remaining()
+
+
+def delivery_check() -> None:
+    delivery_remaining()
+
+
+def delivery_remaining(cap: float | None = None) -> float | None:
+    notice = _NOTIFICATION.get()
+    return notice.remaining(cap) if notice is not None else remaining(cap)
+
+
+def delivery_deadline() -> float | None:
+    notice = _NOTIFICATION.get()
+    if notice is not None:
+        notice.remaining()
+        return notice.deadline
+    return deadline()
+
+
+def notification_active() -> bool:
+    return _NOTIFICATION.get() is not None
+
+
+@contextlib.contextmanager
+def notification(*, current: Callable[[],bool]):
+    """Only delivery can use this15s context; the source budget stays closed."""
+    notice = Budget(time.monotonic()+15,current)
+    token = _NOTIFICATION.set(notice)
+    try:
+        notice.remaining()
+        yield
+    finally:
+        _NOTIFICATION.reset(token)
 
 
 def short_publication() -> bool:

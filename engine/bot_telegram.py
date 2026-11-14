@@ -139,7 +139,7 @@ def _telegram_document_read_response(response, deadline: float, max_bytes: int) 
         raise RuntimeError('Ограниченное потоковое чтение ответа Telegram недоступно.')
     chunks,size=[],0
     while True:
-        document_processing.check()
+        document_processing.delivery_check()
         left = deadline-time.monotonic()
         if left <= 0:raise TimeoutError('Telegram response deadline')
         stream=response
@@ -151,7 +151,7 @@ def _telegram_document_read_response(response, deadline: float, max_bytes: int) 
             stream=getattr(stream,'fp',None)
             if stream is None:break
         chunk=read(min(64*1024,max_bytes+1-size))
-        document_processing.check()
+        document_processing.delivery_check()
         if time.monotonic() >= deadline:raise TimeoutError('Telegram response deadline')
         if not chunk:break
         size += len(chunk)
@@ -173,7 +173,9 @@ def _telegram_api(method: str, payload: dict[str, Any] | None = None, *, timeout
         method="POST",
     )
     import document_processing
-    document_deadline = document_processing.deadline()
+    if document_processing.notification_active() and method != 'sendMessage':
+        raise document_processing.Cancelled('A failure notice cannot download or read a source')
+    document_deadline = document_processing.delivery_deadline()
     until = time.monotonic()+timeout
     if document_deadline is not None:
         until = min(until,document_deadline)
@@ -1312,18 +1314,29 @@ def _telegram_document_current(operation: dict, *, allow_failed: bool = False) -
             _telegram_intake_current(operation['chat_id'],operation['nonce'],allow_failed=allow_failed))
 
 
+def _telegram_document_closed(operation: dict) -> bool:
+    if not _telegram_document_current(operation,allow_failed=True):
+        return False
+    read = (_telegram_dialog_get(operation['chat_id']) or {}).get('document_read') or {}
+    return read.get('id') == operation['nonce'] and read.get('status') in {'failed','interrupted'}
+
+
 def _telegram_document_reply(operation: dict, text: str, *, reply_markup=None, allow_failed=False) -> bool:
     import document_processing
     from telegram_intake_text import split_intake_html
-    if not _telegram_document_current(operation,allow_failed=allow_failed):
+    current = (lambda:_telegram_document_closed(operation)) if allow_failed else (
+        lambda:_telegram_document_current(operation))
+    if not current():
         return False
     parts = split_intake_html(text)
     try:
         # Failed processing is already closed in state. Its best-effort error
         # notification still has the native15s send budget, never a new read.
-        with document_processing.operation(current=lambda:_telegram_document_current(operation,allow_failed=allow_failed),seconds=15):
+        scope = (document_processing.notification(current=current) if allow_failed else
+                 document_processing.operation(current=current,seconds=15))
+        with scope:
             for index,part in enumerate(parts):
-                if not _telegram_document_current(operation,allow_failed=allow_failed):
+                if not current():
                     return False
                 _telegram_send_intake_text(operation['chat_id'],part,
                     reply_markup=reply_markup if index==len(parts)-1 else None)
@@ -1387,6 +1400,10 @@ def _telegram_document_fail(operation, reason: str, heading: str = 'Разбор
                 raise error  # Saved card: preserve native send-error/429 handling above.
         _telegram_document_interrupted(operation)
         return
+    if error is not None:
+        where = _error_location(error)
+        if '429' in where or 'Too Many Requests' in where:
+            raise error  # Native top-level rate-limit handling must not send again.
     _telegram_document_reply(operation,'<b>'+html.escape(heading)+'</b>\n'+html.escape(reason)
         +'\n\nДанные этого чтения в расчёт не приняты. Повторите загрузку или введите данные вручную.',allow_failed=True)
 

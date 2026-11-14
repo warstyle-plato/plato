@@ -289,3 +289,68 @@ def test_cancelled_url_download_cannot_create_a_card(document_chat,monkeypatch):
     core._telegram_handle_intake_url(chat,'https://example.invalid/synthetic')
     assert core._telegram_dialog_get(chat) is None
     assert all(markup is None for _,markup in document_chat)
+
+
+@pytest.mark.parametrize('failure',['refusal','incomplete','failed'])
+def test_typed_model_failure_reaches_the_user_after_the_source_is_closed(document_chat,monkeypatch,failure):
+    calls=[]
+    monkeypatch.setattr(core,'plato_answer',lambda *_:
+        calls.append(True) or {'answer':'','document_error':failure})
+    core._telegram_handle_intake_document(900000003,b'synthetic','source.pdf')
+    dialog=core._telegram_dialog_get(900000003)
+    assert dialog['document_read']['status']=='failed'
+    assert document_intake.DOCUMENT_MODEL_ERRORS[failure] in document_chat[-1][0]
+    assert calls==[True] and all(markup is None for _,markup in document_chat)
+
+
+@pytest.mark.parametrize('reason',['Synthetic OCR unavailable','PDF защищён паролем'])
+def test_unread_document_has_a_terminal_notice_inside_the_original_source_context(document_chat,monkeypatch,reason):
+    monkeypatch.setattr(document_intake,'extract_text',lambda *a,**k:
+        {'text':'','pages':1,'reason':reason})
+    monkeypatch.setattr(core,'plato_answer',lambda *_:pytest.fail('Unread source called model'))
+    core._telegram_handle_intake_document(900000003,b'synthetic','source.pdf')
+    assert reason in document_chat[-1][0]
+    assert core._telegram_dialog_get(900000003)['document_read']['status']=='failed'
+
+
+def test_failure_notification_never_reopens_the_source_budget(document_chat,monkeypatch):
+    current=[True]
+    request=core._telegram_agent_request(900000003)
+    monkeypatch.setattr(core,'plato_answer',lambda *_:pytest.fail('Notification retried provider'))
+    monkeypatch.setattr(core,'_telegram_token',lambda:'synthetic')
+    with processing.operation(current=lambda:current[0]):
+        current[0]=False
+        with processing.notification(current=lambda:True):
+            assert 0 < processing.delivery_remaining() <= 15
+            with pytest.raises(processing.Cancelled):processing.check()
+            with pytest.raises(processing.Cancelled):
+                core.document_intake_read({'text':'Synthetic source'},request)
+            with pytest.raises(processing.Cancelled):
+                core._telegram_api('getFile',{'file_id':'synthetic'})
+        with pytest.raises(processing.Cancelled):processing.check()
+
+
+def test_failure_notice_requires_closed_status_and_the_current_nonce(document_chat):
+    operation=core._telegram_document_begin(900000003,'source.pdf')
+    before=len(document_chat)
+    assert core._telegram_document_reply(operation,'not a failure',allow_failed=True) is False
+    assert len(document_chat)==before
+    core._telegram_document_publish(operation,'source.pdf')
+    assert core._telegram_document_reply(operation,'not a failure',allow_failed=True) is False
+    core._telegram_dialog_clear(900000003)
+    assert core._telegram_document_reply(operation,'cancelled',allow_failed=True) is False
+    assert len(document_chat)==before
+
+
+def test_telegram_rate_limit_does_not_trigger_a_second_failure_message(document_chat,monkeypatch):
+    calls=[]
+    def limited(chat,text,**kwargs):
+        calls.append(text)
+        raise RuntimeError('Telegram API: HTTP 429: Too Many Requests')
+    monkeypatch.setattr(core,'_telegram_send_message',limited)
+    monkeypatch.setattr(core,'_telegram_handle_update',lambda update:
+        core._telegram_handle_intake_document(900000003,b'synthetic','source.pdf'))
+    core._telegram_process_update({'message':{'chat':{'id':900000003,'type':'private'}}})
+    assert len(calls)==1
+    assert '429' in core._TELEGRAM_RUNTIME['last_error']
+    assert core._telegram_dialog_get(900000003)['document_read']['status']=='failed'

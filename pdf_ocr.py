@@ -76,6 +76,7 @@ def _words(text: str) -> int:
 
 
 def _recognized(png: bytes) -> str:
+    document_processing.check()
     timeout = document_processing.remaining(PAGE_TIMEOUT_SECONDS)
     done = subprocess.run(
         ["tesseract", "stdin", "stdout", "-l", "rus", "--psm", "6"],
