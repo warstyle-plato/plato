@@ -71,8 +71,8 @@ def test_undated_unknown_money_and_formula_stay_unknown_and_formula_text_never_l
 
 def test_source_change_while_reading_raw_scope_is_rejected(source,monkeypatch):
     undated(source);original=proof._cells
-    def cells(data):
-        got=original(data);changed(source,lambda s:setattr(s['I14'],'value',80));return got
+    def cells(data, **kwargs):
+        got=original(data, **kwargs);changed(source,lambda s:setattr(s['I14'],'value',80));return got
     monkeypatch.setattr(proof,'_cells',cells)
     with pytest.raises(proof.SourceProblem,match='source_changed'):raw()
 
