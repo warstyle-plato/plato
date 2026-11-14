@@ -750,6 +750,7 @@ def sum_state(result: dict[str, Any]) -> dict[str, Any]:
     if (result.get("complete") and _number(result.get("total")) is not None
             and not result.get("missing") and not result.get("post_rve_unknown")
             and result.get("regime_start_assumed") is True
+            and _date(result.get("regime_start")) is not None
             and len(result.get("financial_missing") or []) == 1
             and "regime_start" in codes and codes <= {"regime_start", "payments", "vat"}):
         state["reason_code"] = "regime_start"

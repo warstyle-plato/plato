@@ -55,6 +55,19 @@ def test_only_the_narrow_computed_start_assumption_gets_the_specific_reason(sour
     assert state['known'] is False and 'reason_code' not in state
 
 
+@pytest.mark.parametrize('accepted_start', [None, 'not-a-date'])
+def test_an_assumed_start_flag_without_a_valid_accepted_date_keeps_the_generic_warning(accepted_start):
+    source = calculated()['land_rent']
+    source['regime_start'] = accepted_start
+    before = copy.deepcopy(source)
+    state = rent.sum_state(source)
+    assert state == {'known': False, 'reason': source['financial_missing'][0]}
+    assert source == before
+    assert core.entry_price_verdict({'consolidated': {
+        'summary': {'preliminary': True, 'land_rent_sum': state}, 'land_rent': source,
+    }}) == {'title': ASK_RENT, 'tone': 'edge'}
+
+
 @pytest.mark.parametrize('width', [390, 1440])
 def test_native_page_names_assumed_date_but_missing_rate_keeps_the_rent_warning(width, monkeypatch):
     from playwright.sync_api import expect, sync_playwright
