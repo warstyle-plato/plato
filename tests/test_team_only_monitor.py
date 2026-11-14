@@ -56,6 +56,10 @@ _FILL = {str: "проверка", int: 1, float: 1.0, bool: False, list: [], dic
 _ENDPOINT_PAYLOADS = {
     ("POST", "/monitor/contracts/source-review"): {"contract_id": "a" * 64},
     ("POST", "/monitor/schedule-gpr-physical/save"): {"source_kind": "gpr"},
+    ("POST", "/monitor/finance-allocation/apply"): {
+        "assignments": [{"row_id": "a" * 64, "bank_code": "2.6"}]},
+    ("POST", "/monitor/finance-management/apply"): {
+        "item_ids": ["a" * 64], "management_article": "2.6"},
     ("POST", "/monitor/contracts/documents"): {"contract_id": "a" * 64},
     ("POST", "/monitor/contracts/document-upload"): {"contract_id": "a" * 64},
     ("POST", "/monitor/contracts/document-links"): {
@@ -88,6 +92,14 @@ def call(method: str, path: str, session: str = "", key: str = "",
                  "snapshot_id": "2026-10-22-" + "a" * 64,
                  "calendar_basis": "unconfirmed"}
     out.update(_ENDPOINT_PAYLOADS.get((method, path), {}))
+    if path in {'/monitor/schedule/saved-source-preview', '/monitor/schedule/saved-source-approve'}:
+        out = {'project': 'проверка', 'session': session, 'key': key, 'source_sha256': 'a'*64,
+               'expected_active_sha256': 'b'*64, 'expected_revision': 0, 'effective_from': '2026-11-12'}
+    elif path == '/monitor/readiness/editor':
+        out = {'project': 'проверка', 'session': session, 'key': key}
+    elif path in {'/monitor/readiness/profile-preview', '/monitor/readiness/profile-save'}:
+        out = {'project': 'проверка', 'session': session, 'key': key, 'configuration': {},
+               'expected_source_sha256': 'a'*64, 'expected_source_revision': 0, 'expected_revision': 0}
     route = _route(method, path)
     dependant = getattr(route, "dependant", None)
     if method == "GET":
@@ -107,8 +119,8 @@ def call(method: str, path: str, session: str = "", key: str = "",
                 kind = getattr(field.annotation, "__origin__", None) or field.annotation
                 out[name] = _FILL.get(kind, "проверка")
         if getattr(model, "model_fields", None):
-            if model.model_config.get('extra') == 'forbid':
-                out = {k: v for k, v in out.items() if k in model.model_fields}
+            if model.model_config.get("extra") == "forbid":
+                out = {name: value for name, value in out.items() if name in model.model_fields}
             # Невалидная заготовка не проверяет доступ: FastAPI вернёт 422
             # ещё до вызова маршрута. Отличаем поломку стенда от отказа ключа.
             model.model_validate(out)

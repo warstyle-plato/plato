@@ -491,6 +491,150 @@ def monitor_schedule_version_approve(req: MonitorScheduleVersionApproveRequest) 
     return _monitor_schedule_version(req, approve=True)
 
 
+class MonitorGprDateCorrection(BaseModel):
+    model_config = {'extra': 'forbid'}
+    cell: str
+    expected_raw: str | None
+    value: str
+    note: str
+
+
+class MonitorSavedGprSourceRequest(BaseModel):
+    model_config = {'extra': 'forbid'}
+    project: str
+    source_sha256: str
+    expected_active_sha256: str
+    expected_revision: int
+    effective_from: str
+    corrections: list[MonitorGprDateCorrection] = []
+    expected_prepared_sha256: str = ''
+    session: str = ''
+    key: str = ''
+
+
+@developaid_monitor.approved_schedule_read
+def _monitor_saved_gpr_source(req, *, approve=False):
+    """Server-known source identity only; no workbook/path crosses the wire."""
+    private = {'Cache-Control': 'private, no-store'}
+    import developaid_schedule_versions as versions
+    try:
+        _require_team_access(req.session, req.key, 'Монитор проекта', write=approve)
+        if not req.project.strip() or len(req.project) > 200 or len(req.corrections) > 100:
+            raise ValueError('Выберите проект и не более 100 явных исправлений дат.')
+        import developaid_gpr_source_prepare as prepare
+        result = prepare.prepare(req.project.strip(), req.source_sha256,
+            expected_active_sha256=req.expected_active_sha256, expected_revision=req.expected_revision,
+            corrections=[c.model_dump() for c in req.corrections])
+        preview = developaid_monitor.schedule_version_preview(req.project.strip(), result['data'], req.effective_from)
+        if approve:
+            saved = developaid_monitor.approve_schedule_version(req.project.strip(), result['data'], req.effective_from,
+                expected_previous_sha256=req.expected_active_sha256,
+                expected_source_sha256=req.expected_prepared_sha256,
+                expected_revision=req.expected_revision, author=_monitor_note_author(req.session, req.key))
+            return JSONResponse(content={'saved': saved, 'review': result['manifest'], 'applied': True}, headers=private)
+        return JSONResponse(content={'preview': preview, 'review': result['manifest'], 'applied': False}, headers=private)
+    except HTTPException as exc:
+        exc.headers = {**(exc.headers or {}), **private}
+        raise
+    except versions.ScheduleVersionConflict as exc:
+        raise HTTPException(409, str(exc), headers=private) from None
+    except ValueError as exc:
+        raise HTTPException(400, str(exc), headers=private) from None
+    except OSError:
+        raise HTTPException(503, 'Сохранённые источники сейчас недоступны.', headers=private) from None
+
+
+@app.post('/monitor/schedule/saved-source-preview', include_in_schema=False)
+def monitor_saved_gpr_source_preview(req: MonitorSavedGprSourceRequest) -> Response:
+    return _monitor_saved_gpr_source(req)
+
+
+@app.post('/monitor/schedule/saved-source-approve', include_in_schema=False)
+def monitor_saved_gpr_source_approve(req: MonitorSavedGprSourceRequest) -> Response:
+    return _monitor_saved_gpr_source(req, approve=True)
+
+
+from pydantic import Field as _ReadinessField
+
+
+class MonitorReadinessProfileRequest(BaseModel):
+    model_config = {'extra': 'forbid'}
+    project: str
+    configuration: dict
+    expected_source_sha256: str
+    expected_source_revision: int = _ReadinessField(strict=True, ge=0)
+    expected_revision: int = _ReadinessField(strict=True, ge=0)
+    expected_profile_sha256: str = ''
+    key: str = ''
+    session: str = ''
+
+
+@developaid_monitor.approved_schedule_read
+def _monitor_readiness_profile(req, *, save=False):
+    private = {'Cache-Control': 'private, no-store'}
+    import developaid_schedule_readiness as readiness
+    import developaid_schedule_versions as versions
+    try:
+        _require_team_access(req.session, req.key, 'Монитор проекта', write=save)
+        if not req.project.strip() or len(req.project) > 200 or len(json.dumps(req.configuration)) > 2*1024*1024:
+            raise ValueError('Укажите проект и ограниченный профиль состава и весов.')
+        options = dict(expected_source_sha256=req.expected_source_sha256,
+                       expected_source_revision=req.expected_source_revision, expected_revision=req.expected_revision)
+        if save:
+            result = readiness.save(req.project.strip(), req.configuration, **options,
+                expected_profile_sha256=req.expected_profile_sha256, author=_monitor_note_author(req.session, req.key))
+        else:
+            prepared = readiness.preview(req.project.strip(), req.configuration, **options)
+            result = {key: value for key, value in prepared.items() if key != 'profile'}
+        return JSONResponse(content=result, headers=private)
+    except HTTPException as exc:
+        exc.headers = {**(exc.headers or {}), **private}
+        raise
+    except versions.ScheduleVersionConflict as exc:
+        raise HTTPException(409, str(exc), headers=private) from None
+    except ValueError as exc:
+        raise HTTPException(400, str(exc), headers=private) from None
+    except OSError:
+        raise HTTPException(503, 'Профиль готовности сейчас недоступен.', headers=private) from None
+
+
+@app.post('/monitor/readiness/profile-preview', include_in_schema=False)
+def monitor_readiness_profile_preview(req: MonitorReadinessProfileRequest) -> Response:
+    return _monitor_readiness_profile(req)
+
+
+@app.post('/monitor/readiness/profile-save', include_in_schema=False)
+def monitor_readiness_profile_save(req: MonitorReadinessProfileRequest) -> Response:
+    return _monitor_readiness_profile(req, save=True)
+
+
+class MonitorReadinessEditorRequest(BaseModel):
+    model_config = {'extra': 'forbid'}
+    project: str
+    full_source_sha256: str = ''
+    key: str = ''
+    session: str = ''
+
+
+@app.post('/monitor/readiness/editor', include_in_schema=False)
+@developaid_monitor.approved_schedule_read
+def monitor_readiness_editor(req: MonitorReadinessEditorRequest) -> Response:
+    private = {'Cache-Control': 'private, no-store'}
+    try:
+        _require_team_access(req.session, req.key, 'Монитор проекта')
+        if not req.project.strip() or len(req.project) > 200:
+            raise ValueError('Выберите проект.')
+        import developaid_schedule_readiness as readiness
+        return JSONResponse(content=readiness.editor(req.project.strip(), full_source_sha256=req.full_source_sha256), headers=private)
+    except HTTPException as exc:
+        exc.headers = {**(exc.headers or {}), **private}
+        raise
+    except ValueError as exc:
+        raise HTTPException(400, str(exc), headers=private) from None
+    except OSError:
+        raise HTTPException(503, 'Сохранённый полный ГПР или профиль пока недоступен.', headers=private) from None
+
+
 class MonitorNotesRequest(BaseModel):
     project: str
     note_id: str = ""

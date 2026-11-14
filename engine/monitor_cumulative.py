@@ -116,6 +116,29 @@ class MonitorScheduleConfirmation(MonitorCumulativeProject):
     note: str = _CumulativeField(min_length=1, max_length=1000)
 
 
+class MonitorFinanceAllocationRow(BaseModel):
+    model_config = {"extra": "forbid"}
+    row_id: str = _CumulativeField(pattern=r"^[0-9a-f]{64}$")
+    bank_code: str = _CumulativeField(pattern=r"^(?:[123](?:\.[0-9]+)+)?$")
+
+
+class MonitorFinanceAllocationApply(MonitorContractsBuild):
+    model_config = {"extra": "forbid"}
+    source_sha256: str = _CumulativeField(pattern=r"^[0-9a-f]{64}$")
+    revision: int = _CumulativeField(ge=0, strict=True)
+    assignments: list[MonitorFinanceAllocationRow] = _CumulativeField(min_length=1, max_length=1000)
+    note: str = _CumulativeField(min_length=1, max_length=1000)
+
+
+class MonitorFinanceManagementApply(MonitorContractsBuild):
+    model_config = {"extra": "forbid"}
+    source_sha256: str = _CumulativeField(pattern=r"^[0-9a-f]{64}$")
+    revision: int = _CumulativeField(ge=0, strict=True)
+    item_ids: list[str] = _CumulativeField(min_length=1, max_length=1000)
+    management_article: str = _CumulativeField(pattern=r"^(?:2\.6)?$")
+    note: str = _CumulativeField(min_length=1, max_length=1000)
+
+
 class MonitorPhysicalView(MonitorContractsBuild):
     query: str = _CumulativeField(default="", max_length=200)
     offset: int = _CumulativeField(default=0, ge=0, le=100000, strict=True)
@@ -146,9 +169,14 @@ _CUMULATIVE_PATHS = frozenset({
     "/monitor/contracts/document-links", "/monitor/contracts/document-remove",
     "/monitor/contracts/document-confirm",
     "/monitor/view", "/monitor/gantt", "/monitor/schedule-fact", "/monitor/gpr-corpus/view",
+    "/monitor/schedule/saved-source-preview", "/monitor/schedule/saved-source-approve",
+    "/monitor/readiness/profile-preview", "/monitor/readiness/profile-save",
+    "/monitor/readiness/editor",
     "/monitor/schedule-confirmation/view", "/monitor/schedule-confirmation/save",
     "/monitor/schedule-physical/view", "/monitor/schedule-physical/save",
     "/monitor/schedule-gpr-physical/view", "/monitor/schedule-gpr-physical/save",
+    "/monitor/finance-allocation/view", "/monitor/finance-allocation/apply", "/monitor/finance-allocation/result",
+    "/monitor/finance-management/view", "/monitor/finance-management/apply", "/monitor/finance-management/result",
 })
 
 
@@ -177,7 +205,10 @@ def monitor_corpus_gpr_view(req: MonitorContractsBuild) -> Response:
         baseline = _corpus_monitor._working_baseline_file(req.project.strip(), cut)
         sha = _corpus_hashlib.sha256(baseline.read_bytes()).hexdigest() if baseline is not None else ""
         source = corpus_gpr.for_view(req.project.strip(), cut, baseline_sha256=sha)
-        return JSONResponse(content={"source": source, "html": corpus_gpr.render_overview(source, cut)}, headers=private)
+        import developaid_gpr_source_state as source_state
+        state = source_state.inspect(req.project.strip(), cut)
+        return JSONResponse(content={"source": source, "source_state": state,
+            "html": corpus_gpr.render_overview(source, cut)+source_state.render(state)}, headers=private)
 
     return read()
 
@@ -281,6 +312,22 @@ def monitor_schedule_gpr_physical_save(req: MonitorGprPhysicalSave) -> Response:
 def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = b"") -> dict:
     """Only validated calculation inputs enter the background worker."""
     from fastapi.encoders import jsonable_encoder
+    if operation in {"finance-management-view", "finance-management-apply"}:
+        import developaid_finance_management as management
+        try:
+            result = (management.view(payload["project"], payload["cut"])
+                      if operation == "finance-management-view" else management.apply(**payload))
+            return {"ok": True, "management": jsonable_encoder(result)}
+        except management.AllocationProblem as exc:
+            return {"ok": False, "status": exc.status, "detail": str(exc)}
+    if operation in {"finance-allocation-view", "finance-allocation-apply"}:
+        import developaid_finance_allocations as allocations
+        try:
+            result = (allocations.view(payload["project"], payload["cut"])
+                      if operation == "finance-allocation-view" else allocations.apply(**payload))
+            return {"ok": True, "allocation": jsonable_encoder(result)}
+        except allocations.AllocationProblem as exc:
+            return {"ok": False, "status": exc.status, "detail": str(exc)}
     import developaid_monitor_ledgers as ledgers
     import developaid_monitor_contracts as contracts
     import developaid_monitor_contract_links as links
@@ -413,6 +460,12 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
                 elif operation == "link":
                     payload.update(contract_id=req.contract_id, evidence_id=req.evidence_id,
                                    confirmed=req.confirmed)
+                elif operation == "finance-allocation-apply":
+                    payload.update(source_sha256=req.source_sha256, revision=req.revision,
+                                   assignments=[item.model_dump() for item in req.assignments], note=req.note)
+                elif operation == "finance-management-apply":
+                    payload.update(source_sha256=req.source_sha256, revision=req.revision,
+                                   item_ids=list(req.item_ids), management_article=req.management_article, note=req.note)
             # The store persists only the fingerprint, not these private inputs.
             # A fresh click must not reuse another running view of older data.
             # Retrying the same admission keeps its exact ticket and fingerprint.
@@ -423,7 +476,9 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
                 return _monitor_cumulative_execute(operation, payload, archive)
             result = store.start(owner, profile, fingerprint, build, req.ticket)
         if result["pending"]:
-            result["detail"] = ("Обрабатываю накопительные." if family == "upload" else
+            result["detail"] = ("Проверяю управленческую статью АХР." if family == "finance-management" else
+                                "Проверяю банковское отнесение АХР." if family == "finance-allocation" else
+                                "Обрабатываю накопительные." if family == "upload" else
                                 "Читаю документы договора." if operation.startswith("document") else
                                 "Готовлю договорную сверку.")
         return JSONResponse(status_code=202 if result["pending"] else 200, content=result, headers=private)
@@ -441,7 +496,9 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
                             headers=private) from None
     except Exception as exc:
         logging.getLogger("developaid.monitor").error("Cumulative operation unavailable (%s)", type(exc).__name__)
-        raise HTTPException(503, "Договорная сверка сейчас недоступна. Повторите запрос.", headers=private) from None
+        message = ("Банковское отнесение АХР сейчас недоступно. Повторите запрос."
+                   if family == "finance-allocation" else "Договорная сверка сейчас недоступна. Повторите запрос.")
+        raise HTTPException(503, message, headers=private) from None
 
 
 @app.post("/monitor/cumulative/upload", include_in_schema=False)
@@ -488,6 +545,36 @@ def monitor_contracts_link(req: MonitorContractsLink) -> Response:
 @app.post("/monitor/contracts/header-date", include_in_schema=False)
 def monitor_contracts_header_date(req: MonitorContractsHeaderDate) -> Response:
     return _monitor_cumulative_job(req, family="contracts", operation="header-date")
+
+
+@app.post("/monitor/finance-allocation/view", include_in_schema=False)
+def monitor_finance_allocation_view(req: MonitorContractsBuild) -> Response:
+    return _monitor_cumulative_job(req, family="finance-allocation", operation="finance-allocation-view")
+
+
+@app.post("/monitor/finance-allocation/apply", include_in_schema=False)
+def monitor_finance_allocation_apply(req: MonitorFinanceAllocationApply) -> Response:
+    return _monitor_cumulative_job(req, family="finance-allocation", operation="finance-allocation-apply")
+
+
+@app.post("/monitor/finance-allocation/result", include_in_schema=False)
+def monitor_finance_allocation_result(req: MonitorCumulativeResult) -> Response:
+    return _monitor_cumulative_job(req, family="finance-allocation")
+
+
+@app.post("/monitor/finance-management/view", include_in_schema=False)
+def monitor_finance_management_view(req: MonitorContractsBuild) -> Response:
+    return _monitor_cumulative_job(req, family="finance-management", operation="finance-management-view")
+
+
+@app.post("/monitor/finance-management/apply", include_in_schema=False)
+def monitor_finance_management_apply(req: MonitorFinanceManagementApply) -> Response:
+    return _monitor_cumulative_job(req, family="finance-management", operation="finance-management-apply")
+
+
+@app.post("/monitor/finance-management/result", include_in_schema=False)
+def monitor_finance_management_result(req: MonitorCumulativeResult) -> Response:
+    return _monitor_cumulative_job(req, family="finance-management")
 
 
 @app.post("/monitor/contracts/documents", include_in_schema=False)

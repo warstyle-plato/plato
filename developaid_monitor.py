@@ -279,6 +279,14 @@ def _has_sheet(data: bytes | Path, name: str) -> bool:
 
 def store_schedule(project: str, gpr: bytes, pm: bytes | None,
                    taken_at: Any) -> dict[str, Any]:
+    """Store the first GPR and compatible payment baseline under the source lock."""
+    import developaid_finance_allocations as allocations
+    with allocations.source_lock(project):
+        return _store_schedule_locked(project, gpr, pm, taken_at)
+
+
+def _store_schedule_locked(project: str, gpr: bytes, pm: bytes | None,
+                           taken_at: Any) -> dict[str, Any]:
     """Create the fixed project baseline once.
 
     ``gpr`` may be either the prepared cleaned GPR (sheet ``ГПР``) or our
@@ -498,7 +506,8 @@ def schedule_version_preview(project: str, data: bytes, effective_from: str, *,
 def approve_schedule_version(project: str, data: bytes, effective_from: str, *,
                              expected_previous_sha256: str, expected_source_sha256: str,
                              author: str = '', owner_rnv_date=None, owner_rnv_note=None,
-                             expected_owner_rnv_revision=None, baseline_scope=None) -> dict[str, Any]:
+                             expected_owner_rnv_revision=None, baseline_scope=None,
+                             expected_revision=None) -> dict[str, Any]:
     import developaid_schedule_versions as versions
     preview = schedule_version_preview(project, data, effective_from, owner_rnv_date=owner_rnv_date,
                                       owner_rnv_note=owner_rnv_note, baseline_scope=baseline_scope)
@@ -507,7 +516,8 @@ def approve_schedule_version(project: str, data: bytes, effective_from: str, *,
                              expected_source_sha256=expected_source_sha256,
                              effective_from=preview['effective_from'], author=author,
                              owner_rnv_date=owner_rnv_date, owner_rnv_note=owner_rnv_note,
-                             expected_owner_rnv_revision=expected_owner_rnv_revision, baseline_scope=baseline_scope)
+                             expected_owner_rnv_revision=expected_owner_rnv_revision, baseline_scope=baseline_scope,
+                             expected_revision=expected_revision)
     return {key: saved[key] for key in ('revision', 'source_sha256', 'effective_from', 'approved_at',
                                        'unchanged', 'owner_rnv_revision', 'owner_rnv', 'baseline_scope')}
 
@@ -695,6 +705,13 @@ def _schedule_packages(project: str, data: bytes, cut: str = '') -> dict[str, An
 
 def replace_finance_baseline(project: str, data: bytes,
                              taken_at: Any, file_name: str = "") -> dict[str, Any]:
+    import developaid_finance_allocations as allocations
+    with allocations.source_lock(project):
+        return _replace_finance_baseline_locked(project, data, taken_at, file_name)
+
+
+def _replace_finance_baseline_locked(project: str, data: bytes,
+                                     taken_at: Any, file_name: str = "") -> dict[str, Any]:
     """Заменить финансовый baseline утверждённым пересчётом.
 
     Финкнигу пересчитывают решением — например, когда потребность фасадов
@@ -1003,6 +1020,8 @@ def _undated_works(baseline: dict[str, Any]) -> list[dict[str, Any]]:
     visible with its own source cell instead of silently leaving the Gantt."""
     return [{"id": item.get("id", ""), "wbs": item.get("wbs", ""), "name": item.get("name", ""),
              "object": item.get("object", ""), "section": item.get("section", ""),
+             "level": "task", "plan_start": _iso(item.get("start")), "plan_finish": _iso(item.get("finish")),
+             "construction_work": item.get("construction_work"), "source_cells": item.get("source_cells"),
              "reason": item.get("date_problem") or "в утверждённом ГПР нет даты начала или окончания"}
             for item in baseline.get("works") or [] if not item.get("start") or not item.get("finish")]
 
@@ -1015,7 +1034,7 @@ def _schedule_reason(baseline: dict[str, Any], rows: list[dict[str, Any]]) -> st
     if rows:
         return ""
     if baseline.get("works"):
-        return "График загружен, но ни у одной работы нет понятных дат, поэтому график пуст."
+        return "В ГПР нет полных корректных дат. Работы и известные проценты доступны; плановые полосы пока построить нельзя."
     return "Утверждённый график работ не загружен."
 
 
@@ -1274,8 +1293,11 @@ def projects() -> list[dict[str, Any]]:
     for folder in sorted(_SNAPSHOT_DIR.iterdir(), key=lambda item: item.name.lower()):
         if not folder.is_dir() or folder.name.startswith("."):
             continue
+        # Lock files can be created by a read or baseline replacement. They
+        # are operational metadata, not a saved source or allocation decision.
         kinds = sorted(part.name for part in folder.iterdir()
-                       if part.is_dir() and any(part.iterdir()))
+                       if part.is_dir() and any(not item.name.startswith(".")
+                                                for item in part.iterdir()))
         if not kinds:
             continue
         label = folder.name.replace("-", " ")

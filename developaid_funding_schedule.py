@@ -212,6 +212,10 @@ def read_schedule(data: bytes | Path) -> dict[str, Any]:
                                 "depth": code.count(".") + 1, "work": work,
                                 "status": str(cell(cells, "status") or "").strip(),
                                 "plan": {}, "notes": []}
+        from openpyxl.utils import get_column_letter
+        item["source"] = {"sheet": SHEET, "row": number,
+                          "plan_cells": {month: f"{get_column_letter(col)}{number}"
+                                         for col, month in months.items()}}
         for key in ("contract", "paid", "remain"):
             amount, text = _number(cell(cells, key), scale)
             item[key] = amount

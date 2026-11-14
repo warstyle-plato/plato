@@ -259,7 +259,8 @@ def _bounded_row(row, budget: dict) -> list[Any]:
     return list(row)
 
 
-def _read_workbook(filename: str, data: bytes, budget: dict | None = None) -> list[tuple[str, list[list[Any]]]]:
+def _read_workbook(filename: str, data: bytes, budget: dict | None = None, *,
+                   sheet_names: set[str] | None = None) -> list[tuple[str, list[list[Any]]]]:
     budget = budget if budget is not None else {'text_bytes': 0}
     suffix = PurePosixPath(filename).suffix.lower()
     if suffix == '.xls':
@@ -272,6 +273,8 @@ def _read_workbook(filename: str, data: bytes, budget: dict | None = None) -> li
                 out = []
                 cells = 0
                 for index in range(wb.nsheets):
+                    if sheet_names is not None and wb.sheet_names()[index].strip().casefold() not in sheet_names:
+                        continue
                     sheet = wb.sheet_by_index(index)
                     if sheet.nrows > MAX_ROWS or sheet.ncols > MAX_COLUMNS:
                         raise LedgerProblem('В книге слишком большая таблица для загрузки накопительных.')
@@ -302,6 +305,8 @@ def _read_workbook(filename: str, data: bytes, budget: dict | None = None) -> li
             formula_wb = load_workbook(io.BytesIO(data), read_only=True, data_only=False, keep_links=False)
             out = []
             for sheet, formula_sheet in zip(wb.worksheets, formula_wb.worksheets):
+                if sheet_names is not None and sheet.title.strip().casefold() not in sheet_names:
+                    continue
                 bounds = {'max_row': min(sheet.max_row or bound, bound),
                           'max_col': min(sheet.max_column or MAX_COLUMNS, MAX_COLUMNS)}
                 rows = _SheetRows(header_merges=header_merges.get(sheet._worksheet_path.lstrip('/'), ()))

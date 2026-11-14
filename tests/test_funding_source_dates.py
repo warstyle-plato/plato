@@ -79,10 +79,11 @@ def test_distinct_source_dates_reach_all_views_and_visible_cards(tmp_path, monke
         assert line in html and line in text
         assert line in limit["limit_reconciliation_lines"]
     tiles = {item["label"]: item for item in report.tiles(built)}
+    tile_notes = dashboard.funding_source_tile_notes(limit)
     for title, key in (("Утверждённый бюджет", "budget"), ("Лимит банка", "limit"),
                        ("Оплачено с начала проекта", "paid"), ("Выбрано у банка", "paid"),
-                       ("Остаток лимита банка", "left"), ("Нужно своих денег сверх сметы банка", "need")):
-        assert expected[key] in tiles[title]["note"]  # printed, not only in a hidden tooltip
+                       ("Доступный остаток лимита банка", "left"), ("Расчётная дополнительная потребность", "need")):
+        assert tile_notes[key] in tiles[title]["note"]  # compact qualifier is printed, not hidden
     assert "14.10.2026–20.10.2026" in tiles["Выбрано у банка"]["note"]
     assert "с начала месяца (01.10.2026–20.10.2026)" in tiles["Выбрано у банка"]["note"]
     bridge = dashboard.own_budget_reconciliation_lines(limit["own_money"], report._rub)
@@ -101,7 +102,7 @@ def test_missing_data_dates_are_not_replaced_by_upload_or_selection_day(tmp_path
     assert "23.09.2026" not in notes["schedule"]  # selected version is not a known data date
     assert "График финансирования от 23.09.2026" not in report.render_text(built)
     assert "графика от 23.09.2026" not in report._schedule_html(built["funding_schedule"])
-    assert "по графику финансирования (дата данных не указана)" in " ".join(report._own_money_lines(limit))
+    assert notes['schedule'] in " ".join(report._own_money_lines(limit))
     assert notes["budget"] in report.render_html(built) and notes["budget"] in report.render_text(built)
 
 
@@ -152,10 +153,10 @@ def test_report_preserves_known_rss_date_when_monitor_funding_fails(tmp_path, mo
     assert "20.10.2026" in tiles["Выбрано у банка"]["note"]
 
 
-def test_later_budget_version_is_explicit_without_rewriting_money(tmp_path, monkeypatch):
+def test_later_budget_version_is_retained_without_claiming_historical_money(tmp_path, monkeypatch):
     built, view = source_case(tmp_path, monkeypatch)
     limit = view["dashboard"]["funding"]
-    before = {k: limit["own_money"][k] for k in ("budget", "paid", "left", "need")}
+    before = dashboard._finance_baseline(PROJECT)
     meta_path = monitor._project_dir(PROJECT) / "baseline" / monitor.FINANCE_META
     meta = json.loads(meta_path.read_text())
     meta["taken_at"] = "2026-10-25"
@@ -167,4 +168,5 @@ def test_later_budget_version_is_explicit_without_rewriting_money(tmp_path, monk
     note = dashboard.funding_source_notes(updated)["budget"]
     assert "версия от 25.10.2026" in note and "позже даты расчётного среза" in note
     assert note in report.render_html(built)
-    assert before == {k: updated["own_money"][k] for k in before}
+    assert not updated["known"] and "позже выбранной даты" in updated["reason"]
+    assert dashboard._finance_baseline(PROJECT) == before  # Stored amounts are unchanged.

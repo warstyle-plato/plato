@@ -50,6 +50,7 @@ def _finmodel(crosswalk: bool = True, credit: bool = True) -> bytes:
     ws = book.active
     ws.title = "ОТЧЕТ"
     cf = book.create_sheet("cf_1_new")
+    cf["B2"] = "Все суммы в тыс. руб."
     cf.cell(6, 9, "ИТОГО"), cf.cell(6, 10, "ФАКТ"), cf.cell(6, 11, "ПЛАН")
     # факт закрыт сентябрём, план — с октября
     cf.cell(5, 13, "факт"), cf.cell(6, 13, datetime.datetime(2026, 9, 1))
@@ -123,11 +124,12 @@ def test_the_chapters_come_from_the_crosswalk(tmp_path):
     assert "2.4.9" in got["chapters_reason"] and "не найдены" in got["chapters_reason"]
 
 
-def test_a_mixed_article_without_a_decision_goes_by_majority_and_says_so(tmp_path, monkeypatch):
+def test_a_mixed_article_without_a_monetary_decision_remains_unallocated(tmp_path, monkeypatch):
     monkeypatch.setattr(dashboard, "_FM_CHAPTER_DECIDED", {})
     got = _read(tmp_path, _finmodel())
-    # 2.3.4: две строки карты в главу 3, одна в главу 2 — глава большинства, и это сказано.
-    assert got["articles"]["2.3.4"]["chapter"] == "3"
+    # Counting map rows cannot assign the money of a mixed article.
+    assert got["articles"]["2.3.4"]["chapter"] == ""
+    assert got['chapter_flow']['']['sections']['2.3'] > 0
     assert "2.3.4" in got["chapters_reason"] and "разные главы" in got["chapters_reason"]
 
 
@@ -183,7 +185,7 @@ def _finmodel_funding(monkeypatch, sections: dict | None, estimate: dict, paid: 
     })
     monkeypatch.setattr(dashboard.actuals, "read_estimate", lambda _: {"rows": [], "by_code": estimate})
     monkeypatch.setattr(dashboard, "_paid_in_chapters",
-                        lambda rss, est, chapters=("2", "3"): {
+                        lambda rss, est, chapters=("2", "3"), **_: {
                             "total": sum(paid[c][0] for c in chapters),
                             "borrowed": sum(paid[c][1] for c in chapters)})
     # Оплаты РСС по кодам в статьи финмодели не кладутся вовсе.

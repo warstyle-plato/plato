@@ -234,7 +234,7 @@ def test_monitor_gpr_shows_statement_observation_not_manual_gpr_percentage(width
     view = {'cut':'2026-11-06', 'schedule':{'management':[
         {'level':'task','key':'task:1','id':'1','wbs':'1','name':'Монтаж', 'object':'Корпус 1',
          'plan_start':'2026-09-01','plan_finish':'2026-12-01',
-         'actual_progress':.4,'pace_progress':.4,'gpr_progress':.8,
+         'actual_progress':.4,'pace_progress':.4,'gpr_progress':.8,'gpr_progress_date':'2026-11-04',
          'progress_kind':'cumulative_statement','pace_forecast_method':'cumulative_statement',
          'pace_forecast_known':False,'forecast_finish':None,
          'progress_source':{'label':'Накопительная ведомость','date':'2026-11-06','date_basis':'snapshot'}}]}}
@@ -243,6 +243,15 @@ def test_monitor_gpr_shows_statement_observation_not_manual_gpr_percentage(width
         expand_gantt(page)
         gantt = page.locator('#gantt')
         expect(gantt).to_contain_text('По ведомости: 40% от 06.11.2026')
-        assert '80%' not in gantt.inner_text()
+        work = gantt.locator('.lvl-task')
+        assert '80%' not in work.inner_text()
+        work.locator('.work-evidence summary').click()
+        assert '80%' not in work.inner_text()
+        expect(work.locator('.work-progress')).to_contain_text('Накопительная ведомость')
+        expect(work.locator('.factbar')).to_have_attribute('title','По ведомости: 40%')
+        plan, fact = work.locator('.planbar').bounding_box(), work.locator('.factbar').bounding_box()
+        assert fact['width']/plan['width'] == pytest.approx(.4, abs=.01)
+        assert work.locator('.forecastmark,.latebar,.aheadbar').count() == 0
+        expect(work).to_contain_text('Оценка неизвестна')
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         assert not errors

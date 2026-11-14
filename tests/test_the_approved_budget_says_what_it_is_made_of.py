@@ -50,10 +50,11 @@ CROSSWALK = [("2.1.1.1", "Участок", "1.1"), ("2.2.1.1", "Вырубка",
              ("2.4.5.1.1", "Имущество", "2.6"), ("2.4.5.2.1", "Земля", "1.2")]
 
 
-def _finmodel(rows: dict = ROWS) -> bytes:
+def _finmodel(rows: dict = ROWS, *, unit: str | None = "тыс. руб.") -> bytes:
     book = openpyxl.Workbook()
     book.active.title = "ОТЧЕТ"
     cf = book.create_sheet("cf_1_new")
+    cf["B2"] = "Все суммы в " + unit if unit else None
     cf.cell(6, 9, "ИТОГО"), cf.cell(6, 10, "ФАКТ"), cf.cell(6, 11, "ПЛАН")
     cf.cell(5, 14, "план"), cf.cell(6, 14, datetime.datetime(2026, 11, 1))
     for r, (code, (name, total, fact, plan)) in enumerate(rows.items(), 7):
@@ -89,7 +90,7 @@ def test_the_budget_leaves_the_taxes_and_the_interest_aside(tmp_path):
     assert comp["interest_outside"] == [{"code": "3.1.4", "name": "Выплаты %% по кредитам и займам",
                                          "total": pytest.approx(90 * K)}]
     # Налоги не попадают ни в главы, ни в оплаченное, ни в остаток.
-    assert sum(got["approved_by_chapter"].values()) == pytest.approx(K_BUDGET)
+    assert sum(got["approved_by_chapter"].values()) + got["chapter_flow"][""]["total"] == pytest.approx(K_BUDGET)
     assert got["paid_at_baseline"] == pytest.approx(750 * K)
     assert got["completion_need_at_baseline"] == pytest.approx(690 * K)
     assert comp["fact"] + comp["plan"] == pytest.approx(got["approved"])
@@ -169,32 +170,27 @@ def test_limit_is_paid_plus_left_and_budget_is_limit_plus_own_money(tmp_path):
     assert own["limit"] == pytest.approx(own["paid"] + own["left"])
     assert own["left_by_chapter"] == {"1": pytest.approx(-30 * K), "2": pytest.approx(490 * K),
                                       "3": pytest.approx(50 * K)}
-    # Каждая глава одинаково: оплачено + осталось оплатить − лимит главы.
-    # 180 = глава 1: 280 + 0 − 250 + глава 2: 410 + 620 − 900 + глава 3: 30 + 70 − 80
+    # Диагностика глав хранит АХР без денежной главы отдельно. Общий gap
+    # ниже считается независимо по полному B, оплатам и доступному лимиту.
     rows = {row["chapter"]: row["amount"] for row in own["rows"]}
-    assert rows == {"1": pytest.approx(30 * K), "2": pytest.approx(130 * K),
-                    "3": pytest.approx(20 * K)}
-    assert own["need"] == pytest.approx(180 * K) == pytest.approx(sum(rows.values()))
-    # Карта «статьи_БДДС» кладёт административные расходы (2.4.1 → 2.6) в главу 2.
+    assert rows == {"1": pytest.approx(30 * K), "2": pytest.approx(110 * K),
+                    "3": pytest.approx(20 * K), "": pytest.approx(40 * K)}
+    assert own["need"] == pytest.approx(200 * K) == pytest.approx(sum(rows.values()))
+    # Единственная глава справочника не доказывает денежное отнесение АХР.
     assert own["rows"][1]["sections"] == {"2.2": pytest.approx(1_000 * K),
-                                          "2.4": pytest.approx(40 * K)}
-    # Бюджет − лимит (210) отличается от суммы глав на расхождение учёта прошлых
-    # оплат: финмодель записала оплаченным на 30 больше, чем реестр.
-    assert own["accounting"] == pytest.approx(30 * K)
+                                          "2.4": pytest.approx(0.)}
+    # Несверенная диагностика глав не подставляется в общий gap.
+    assert own["accounting"] == pytest.approx(10 * K)
     assert own["budget"] - own["limit"] - own["accounting"] == pytest.approx(own["need"])
     # Первый месяц — водопад глав: главе 2 не хватает в ноябре.
     assert own["from"] == "2026-11-01"
 
     lines = dashboard.own_money_lines(own, report._rub)
-    assert lines[0].startswith("Нужно своих денег сверх сметы банка 180 000 ₽, первый месяц "
-                               "нехватки — ноябрь 2026: по каждой главе — оплачено по реестру "
-                               "плюс то, что осталось оплатить, минус лимит главы.")
-    assert ("глава 2 (стройка) — 130 000 ₽: оплачено 410 000 ₽ плюс осталось оплатить по "
-            "финмодели 620 000 ₽ минус лимит главы 900 000 ₽") in lines[1]
-    assert lines[2] == ("Справочно, как это связано с утверждённым бюджетом: бюджет без "
-                        "налогов 1,4 млн ₽ минус лимит банка 1,2 млн ₽ — 210 000 ₽; минус "
-                        "30 000 ₽ — на столько по прошлым оплатам финмодель записала больше, "
-                        "чем реестр РСС; итого 180 000 ₽.")
+    assert lines[0] == ("Бюджет 1,4 млн ₽: оплачено на дату 720 000 ₽, доступный остаток лимита "
+                        "540 000 ₽, расчётная дополнительная потребность 180 000 ₽.")
+    assert "Факт финансовой базы и оплаты на дату различаются; в сверке использованы оплаты на дату: 10 000 ₽." in lines
+    assert own['reconciliation']['budget'] == pytest.approx(own['reconciliation']['rhs'])
+    assert own['reconciliation']['primary_source_gate'] == 'BLOCKED'
 
 
 def test_a_forged_section_breaks_the_identity(tmp_path):
@@ -233,28 +229,28 @@ def test_the_tiles_add_up_on_the_page(tmp_path, monkeypatch):
     assert tiles["Лимит банка"]["note"].startswith("смета банка: в неё засчитываются все оплаты")
     assert tiles["Оплачено с начала проекта"]["value"] == report._rub(own["paid"])
     assert tiles["Оплачено с начала проекта"]["note"] == (
-        "из них кредитом 420 000 ₽, своими деньгами 300 000 ₽. " + source_notes["paid"])
-    assert tiles["Остаток лимита банка"]["value"] == report._rub(own["left"])
-    assert tiles["Остаток лимита банка"]["note"] == (
-        "лимит минус всё оплаченное; по главе 1 −30 000 ₽, по главе 2 490 000 ₽, "
-        "по главе 3 50 000 ₽. " + source_notes["left"])
-    need = tiles["Нужно своих денег сверх сметы банка"]
-    assert need["value"] == report._rub(own["need"])
-    assert need["note"] == (
-        "Глава 1 (участок) — 30 000 ₽; Глава 2 (стройка) — 130 000 ₽; "
-        "Глава 3 (коммерция) — 20 000 ₽; первая нехватка — ноябрь 2026. "
-        + source_notes["need"])
+        "На 2026-10-20. " + source_notes["paid"])
+    assert tiles["Доступный остаток лимита банка"]["value"] == report._rub(own["reconciliation"]["available_bank_limit"])
+    assert tiles["Доступный остаток лимита банка"]["note"] == (
+        "Положительные остатки лимитов на ту же дату. " + source_notes["left"])
+    need = tiles["Расчётная дополнительная потребность"]
+    assert need["value"] == report._rub(own["reconciliation"]["calculated_additional"])
+    assert "Утверждённый бюджет минус оплаты" in need["note"]
+    assert source_notes['need'] in need['note']
+    for row in own['reconciliation']['display_rows']:
+        assert tiles[row['label']]['value'] == report._rub(row['value'])
+    assert tiles['Несверенные оплаты']['value'] == report._rub(10 * K)
     for gone in ("Потребность в допфинансировании банка", "Осталось по смете после всех оплат",
                  "Можно ещё выбрать у банка"):
         assert gone not in tiles
     found = {item["topic"]: item["text"] for item in built["findings"]}["Финансирование"]
-    assert found.startswith("Нужно своих денег сверх сметы банка 180 000 ₽, первый месяц "
-                            "нехватки — ноябрь 2026")
+    assert found.startswith("Бюджет 1,4 млн ₽: оплачено на дату 720 000 ₽")
+    assert 'Финансовая сверка первичных источников не завершена' in found
     page = report.render_html(built)
     assert ("<div class='k'>Утверждённый бюджет <span class='i' tabindex='0' role='note' "
             "title='Утверждённый бюджет — сумма") in page
-    assert "Нужно своих денег сверх сметы банка</b>" in report._funding_html(built)
-    assert "глава 2 (стройка) — 130 000 ₽: оплачено 410 000 ₽ плюс осталось оплатить" in report.render_text(built)
+    assert "Сверка бюджета и финансирования" in report._funding_html(built)
+    assert "Факт финансовой базы и оплаты на дату различаются; в сверке использованы оплаты на дату: 10 000 ₽" in report.render_text(built)
 
 
 # --- Нехватка не прыгает при смене месяца сводки.
@@ -288,7 +284,7 @@ def test_the_monitor_gap_is_the_same_in_october_and_in_november(monkeypatch):
     monkeypatch.setattr(dashboard, "_finance_baseline",
                         lambda project: {**reader(project), "plan_from": BOOK})
     # По реестру после даты книги оплачено 40 по каждой главе.
-    monkeypatch.setattr(dashboard, "_paid_since", lambda rss, est, ch, since: 40.0)
+    monkeypatch.setattr(dashboard, "_paid_since", lambda rss, est, ch, since, cut=None: 40.0)
     view = {"schedule": {"approved_end": "2027-09-30", "forecast_end": None}}
     got = {cut.month: dashboard._funding_risk("demo", Path("rss.xlsx"), cut, view)
            for cut in (datetime.date(2026, 10, 27), datetime.date(2026, 11, 2))}
@@ -339,7 +335,7 @@ def test_the_bank_commission_is_in_the_budget_and_out_of_the_interest(tmp_path):
     assert [item["code"] for item in comp["sections"]][-1] == "3.1.4.1.3"
     assert got["chapter_flow"]["3"]["total"] == pytest.approx(100 * K + 8 * K)
     # Строка комиссии после «2.…» не делает чужую статью «родителем»: 2.4.1 на месте.
-    assert got["chapter_flow"]["2"]["sections"]["2.4"] == pytest.approx(40 * K)
+    assert got["chapter_flow"][""]["sections"]["2.4"] == pytest.approx(40 * K)
     assert comp["interest_outside"][0]["total"] == pytest.approx((90 - 8) * K)
     text = " ".join(dashboard.budget_hint_lines({"budget_composition": comp}, report._rub))
     assert "без налогов плюс комиссия банка" in text
@@ -358,7 +354,7 @@ def test_chapter_two_by_the_funding_schedule(tmp_path, monkeypatch):
     monkeypatch.setattr(funding_schedule, "sources", lambda project, upto="": {
         "versions": {"2026-09-23": {"path": path, "file": path.name}}, "looked": []})
     # По реестру с 01.09 по главе 2 оплачено 100 млн.
-    monkeypatch.setattr(dashboard, "_paid_since", lambda rss, est, ch, since: 100 * gf.M)
+    monkeypatch.setattr(dashboard, "_paid_since", lambda rss, est, ch, since, cut=None: 100 * gf.M)
     sch = dashboard._schedule_need("demo", Path("rss.xlsx"), {}, datetime.date(2026, 11, 3))
     planned = sum((row[6] or 0) + (row[7] or 0) for row in gf.ROWS) * gf.M
     assert sch["day"] == "2026-09-23" and sch["plan_from"] == "2026-09-01"
@@ -374,15 +370,35 @@ def test_chapter_two_by_the_funding_schedule(tmp_path, monkeypatch):
     two = own["rows"][1]
     # Глава 2: оплачено по реестру 410 + по графику осталось 500 − лимит 900 = 10.
     assert two["amount"] == pytest.approx(10 * K)
-    assert two["model_budget"] == pytest.approx(1_040 * K)
-    # Финмодель по главе 2 закладывает больше графика на 1 040 − 910 = 130 — и это названо.
-    assert own["model_over_schedule"] == pytest.approx(130 * K)
+    assert two["model_budget"] == pytest.approx(1_000 * K)
+    # По подтверждённому составу главы 2: 1 000 − 910 = 90; АХР остаются отдельно.
+    assert own["model_over_schedule"] == pytest.approx(90 * K)
     assert own["matches"]
     assert own["need"] == pytest.approx(sum(row["amount"] for row in own["rows"]))
-    assert own["need"] == pytest.approx(own["budget"] - own["limit"] - 130 * K
+    assert own["need"] == pytest.approx(own["budget"] - own["limit"] - 90 * K
                                         - own["accounting"])
     text = " ".join(dashboard.own_money_lines(own, report._rub))
-    assert ("минус 130 000 ₽ — на столько финмодель по главе из графика финансирования "
-            "закладывает больше графика") in text
-    assert ("глава 2 (стройка) — 10 000 ₽: оплачено 410 000 ₽ плюс осталось оплатить по "
-            "графику финансирования от 23.09.2026 500 000 ₽ минус лимит главы 900 000 ₽") in text
+    assert 'Различие бюджета модели и программы графика; общий бюджет не уменьшает: 90 000 ₽' in text
+    assert own['reconciliation']['admin_schedule']['state'] == 'incomplete'
+    assert own['reconciliation']['confirmed_additional'] is None
+
+
+def test_admin_expenses_are_named_apart_and_not_assumed_covered(tmp_path):
+    """A budget-map chapter is not proof of bank coverage or current payments."""
+    _, own = _own(tmp_path)
+    admin = own["admin"]
+    assert admin["total"] == pytest.approx(40 * K)
+    assert admin["chapters"] == {}
+    assert admin["unallocated"]["total"] == pytest.approx(40 * K)
+    assert admin["bank_coverage"] is None
+    assert admin["included_in_deficit"] is None
+    assert admin["paid_at_cut"] is None
+    assert admin["added_to_deficit"] == 0
+    assert own["need"] == pytest.approx(sum(row["amount"] for row in own["rows"]))
+    text = " ".join(dashboard.own_money_lines(own, report._rub))
+    assert "Административные расходы без налогов — 40 000 ₽" in text
+    assert "ФАКТ финмодели 20 000 ₽, ПЛАН 20 000 ₽" in text
+    assert "не распределено — 40 000 ₽" in text
+    assert "Постатейное покрытие АХР и состав календарной программы не подтверждены" in text
+    assert "уже входят" not in text
+    assert "лимита не хватит" not in text

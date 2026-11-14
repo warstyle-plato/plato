@@ -380,6 +380,38 @@ def test_a_late_admission_cannot_replace_a_changed_report_or_login(report_ui, mo
             expect(page.locator("#privateArea")).to_be_hidden()
 
 
+@pytest.mark.parametrize("change", ["project", "date", "period"])
+def test_old_financial_tiles_disappear_while_a_changed_report_is_pending(report_ui, monkeypatch, change):
+    from playwright.sync_api import expect
+    page, base = report_ui
+    monkeypatch.setattr(core, "_monitor_report_body", lambda *a, **k: {
+        **RESULT, "html": "<h1>Предыдущий бюджет и дефицит</h1>"})
+    page.goto(base + "/report")
+    expect(page.locator("#reportBox h1")).to_have_text("Предыдущий бюджет и дефицит", timeout=5_000)
+    release = threading.Event()
+
+    def changed(req, **policy):
+        release.wait(10)
+        return {**RESULT, "html": "<h1>Новый бюджет и дефицит</h1>"}
+
+    monkeypatch.setattr(core, "_monitor_report_body", changed)
+    try:
+        with page.expect_response("**/monitor/report/build") as response:
+            if change == "project":
+                page.locator("#project").select_option("Fixture B")
+            elif change == "date":
+                page.locator("#cut").fill("2026-11-07")
+                page.locator("#cut").dispatch_event("change")
+            else:
+                page.locator("#reportKind").select_option("month")
+        assert response.value.status == 202
+        expect(page.locator("#reportBox h1")).to_have_count(0, timeout=2_000)
+        expect(page.locator("#reportMsg")).to_have_class("msg warn")
+    finally:
+        release.set()
+    expect(page.locator("#reportBox h1")).to_have_text("Новый бюджет и дефицит", timeout=5_000)
+
+
 def test_latest_selection_waits_for_real_capacity_without_extra_workers(report_ui, monkeypatch):
     """Intermediate selections fill both slots; the final selection must recover."""
     from playwright.sync_api import expect
