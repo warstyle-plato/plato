@@ -82,8 +82,8 @@ def _funding_source_dates(project: str, rss: Path, cut: datetime.date,
     dates["observation_scope"] = "raw_saved_sources"
     dates["payments_complete_through_cut"] = None
     dates["source_scope_short_note"] = (
-        "Сохранённые данные; " + ("дата ФМ неизвестна; " if not budget_day else "")
-        + "полнота оплат на выбранную дату не подтверждена.")
+        "Сохранённые суммы; " + ("дата ФМ неизвестна; " if not budget_day else "")
+        + "полнота оплат не подтверждена.")
     dates["source_scope_note"] = (
         "Расчёт по сохранённым источникам. "
         + ("Дата версии финансовой модели не указана. " if not budget_day else
@@ -147,11 +147,15 @@ def funding_source_tile_notes(funding: dict[str, Any]) -> dict[str, str]:
     def date_of(key):
         value = monitor._day((dates.get(key) or {}).get("data_date"))
         return value.strftime("%d.%m.%Y") if value else "дата не указана"
-    return {"budget": "Версия ФМ: " + date_of("budget") + ". " + short,
-            "limit": "Смета РСС: " + date_of("rss") + ". " + short,
-            "paid": "Учтённые оплаты РСС: " + date_of("rss") + ". " + short,
-            "left": "РСС: " + date_of("rss") + "; остаток по учтённым оплатам. " + short,
-            "need": "Расчёт по сохранённым суммам. " + short}
+    # The four AHR cash cards share the report cover with these captions.
+    # Name each source/date/coverage boundary once per caption; the complete
+    # canonical warning remains visible in the Funding block.
+    budget_day = monitor._day((dates.get("budget") or {}).get("data_date"))
+    return {"budget": ("ФМ: " + date_of("budget") + ". " if budget_day else "") + short,
+            "limit": "РСС: " + date_of("rss") + ". " + short,
+            "paid": "РСС: " + date_of("rss") + ". " + short,
+            "left": "По учтённым оплатам. РСС: " + date_of("rss") + ". " + short,
+            "need": short}
 
 
 def funding_reconciliation_lines(funding: dict[str, Any], money: Any) -> list[str]:
@@ -2874,9 +2878,12 @@ def _build(
         raise RuntimeError("dashboard layer is not installed")
     view = _ORIGINAL_BUILD(project, cut, programme=programme, upto=upto)
     view = schedule_graph.apply(project, view)
-    import developaid_admin_expenses as admin_expenses
-    view["admin_expenses"] = admin_expenses.for_project(project, monitor._iso(cut))
-    view["admin_expenses_html"] = admin_expenses.render(view["admin_expenses"])
+    if not monitor._HISTORICAL_TREND_READ.get():
+        import developaid_admin_expenses as admin_expenses
+        import developaid_admin_expenses_cash as admin_cash
+        view["admin_expenses"] = admin_expenses.for_project(project, monitor._iso(cut))
+        view["admin_expenses_cash"] = admin_cash.for_project(project, monitor._iso(cut))
+        view["admin_expenses_html"] = admin_cash.render(view["admin_expenses_cash"], admin_expenses.render(view["admin_expenses"]))
     rss = monitor._latest(project, "estimate", ".xlsx", upto or monitor._iso(cut))
     cut_date = monitor._day(cut)
     if rss is not None and cut_date is not None:

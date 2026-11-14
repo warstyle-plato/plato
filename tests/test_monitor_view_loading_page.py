@@ -4,7 +4,7 @@ import pytest
 import developaid_gpr_corpus as corpus
 from test_gpr_corpus_preview import book
 from browser import expand_gantt
-from test_monitor_cumulative_controls import browser_page
+from test_monitor_cumulative_controls import browser_page, KEY
 from test_monitor_gpr_sections import monitor_view
 
 
@@ -32,6 +32,13 @@ def test_pending_job_polls_then_renders_full_view_instead_of_one_source_package(
     with browser_page() as (page, responses, errors):
         held = []
         starts = []
+        # A successful view loads this authenticated GET. The general fixture
+        # checks POST body keys only, so give this endpoint its real admission.
+        def daily_summary(route):
+            assert route.request.method == 'GET'
+            assert route.request.headers.get('x-developaid-admin-key') == KEY
+            route.fulfill(json={'rows': []})
+        page.route('**/monitor/daily/summary*', daily_summary)
         def admission(route):
             starts.append(route.request.post_data_json)
             route.fulfill(status=202, json={'pending': True, 'ticket': 'a'*32})
@@ -44,6 +51,8 @@ def test_pending_job_polls_then_renders_full_view_instead_of_one_source_package(
         assert starts[0]['background'] is True
         for route in held:
             route.fulfill(json={'pending': False, 'snapshot': monitor_view()})
+        expect(page.locator('#gprFactMatrix [data-work-id]')).to_have_count(3)
+        page.locator('#gprCalendar > summary').click()
         expect(page.locator('#gantt .lvl-corpus').first).to_be_visible()
         expect(page.locator('#refresh')).to_be_enabled()
         expand_gantt(page)

@@ -240,7 +240,7 @@ def monitor_routes() -> dict[str, bool]:
 
 # Чтение монитора и сводки — названо явно. Новый маршрут попадает в запись,
 # пока его не перенесли сюда; лишнее «чтение» в коде роняет эту проверку.
-MONITOR_READS = {"/monitor/snapshots", "/monitor/view", "/monitor/view/result",
+MONITOR_READS = {"/monitor/snapshots", "/monitor/view", "/monitor/view/result", "/monitor/gpr-view",
                  "/monitor/rewritten", "/monitor/ask",
                  "/monitor/doubts", "/monitor/crew", "/monitor/daily/summary",
                  "/monitor/photo", "/monitor/report/projects", "/monitor/report",

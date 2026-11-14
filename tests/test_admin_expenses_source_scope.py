@@ -91,8 +91,8 @@ def test_source_pair_replacement_during_projection_never_returns_old_amounts(tmp
     original = workbook('тыс. руб.')
     monitor.replace_finance_baseline('Synthetic', original, '2026-11-01', 'synthetic.xlsx')
     real = proof._cells
-    def changed(data):
-        result = real(data)
+    def changed(data, **kwargs):
+        result = real(data, **kwargs)
         replacement = workbook('руб.')
         monitor.replace_finance_baseline('Synthetic', replacement, '2026-11-02', 'replacement.xlsx')
         return result

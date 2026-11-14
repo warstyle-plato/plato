@@ -7,6 +7,7 @@ import openpyxl
 import pytest
 
 import developaid_admin_expenses as admin
+import developaid_admin_expenses_cash as cash
 import developaid_management_report as report
 import developaid_monitor as monitor
 import developaid_monitor_dashboard as dashboard
@@ -32,15 +33,17 @@ def composed(tmp_path, monkeypatch, *, unknown_payment=False):
     rss = monitor._latest(PROJECT, 'estimate', '.xlsx', cut.isoformat())
     funding = dashboard._funding_risk(PROJECT, rss, cut, {})
     model = admin.for_project(PROJECT, cut.isoformat())
+    cash_model = cash.for_project(PROJECT, cut.isoformat())
     view['dashboard']['funding'] = funding
     view['dashboard']['construction']['approved'] = funding.get('approved')
-    view.update(admin_expenses=model, admin_expenses_html=admin.render(model))
+    view.update(admin_expenses=model, admin_expenses_cash=cash_model,
+                admin_expenses_html=cash.render(cash_model, admin.render(model)))
     monkeypatch.setattr(report, '_monitor_view', lambda *_: view)
     return report.build(PROJECT, 'week', cut.isoformat()), view, rss
 
 
 @pytest.mark.parametrize('unknown_payment', [False, True])
-def test_one_source_has_one_budget_and_three_ahr_tiles_without_a_second_expense(tmp_path, monkeypatch, unknown_payment):
+def test_one_source_has_one_budget_and_four_cash_tiles_without_a_second_expense(tmp_path, monkeypatch, unknown_payment):
     built, view, rss = composed(tmp_path, monkeypatch, unknown_payment=unknown_payment)
     funding = view['dashboard']['funding']
     reconciliation = funding['reconciliation']
@@ -54,9 +57,12 @@ def test_one_source_has_one_budget_and_three_ahr_tiles_without_a_second_expense(
     assert reconciliation['amounts_at_selected_cut'] is None
     assert not model['financial_acceptance'] and not reconciliation['financial_acceptance_performed']
     assert all(value is None for value in model['amounts_at_cut'].values())
-    tiles = [item for item in report.tiles(built) if item.get('group') == 'admin_expenses']
-    assert [item['label'] for item in tiles] == [label for _, label in admin.FIELDS]
-    assert [item['value'] for item in tiles] == ['40 000 ₽', '20 000 ₽', '20 000 ₽']
+    # FM FACT/PLAN remain the three source values above, not actual AHR paid.
+    # This fixture has no usable contract register to classify actual AHR cash.
+    tiles = [item for item in report.tiles(built) if item.get('group') == 'admin_expenses_cash']
+    assert [item['label'] for item in tiles] == [label for _, label in cash.FIELDS]
+    assert [item['value'] for item in tiles] == ['40 000,00 ₽', 'нет данных', 'нет данных', 'нет данных']
+    assert not any(item.get('group') == 'admin_expenses' for item in report.tiles(built))
     assert 'повторно к расходам или дефициту не прибавляются' in report.render_html(built)
     if unknown_payment:
         assert reconciliation['paid_at_cut'] is None
@@ -81,8 +87,9 @@ def test_real_monitor_keeps_ahr_before_canonical_financial_return_and_clears_the
         page.evaluate("view=>{currentView=view;renderDash(view);selectMonitorTab('money')}", view)
         card = page.locator('#adminExpensesCard')
         expect(card).to_be_visible()
-        assert card.locator('.admin-expenses > div > div').count() == 3
-        assert card.locator('details .admin-expenses > div > div').count() == 0
+        assert card.locator('.admin-expenses-cash > div > div').count() == 4
+        assert card.locator('details.admin-fm-source .admin-expenses > div > div').count() == 3
+        assert card.locator('details.admin-fm-source').evaluate('e=>!e.open')
         for _, label in admin.FIELDS:
             assert page.get_by_text(label, exact=True).count() == 1
         block = page.locator('.funding-reconciliation')
@@ -93,7 +100,7 @@ def test_real_monitor_keeps_ahr_before_canonical_financial_return_and_clears_the
         page.locator('#project').fill('Another synthetic project')
         expect(card).to_be_hidden()
         assert card.inner_text() == ''
-        assert page.evaluate('!currentView || (!currentView.admin_expenses && !currentView.admin_expenses_html)')
+        assert page.evaluate('!currentView || (!currentView.admin_expenses && !currentView.admin_expenses_cash && !currentView.admin_expenses_html)')
         assert not errors
 
 

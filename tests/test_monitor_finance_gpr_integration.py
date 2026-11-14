@@ -1,16 +1,20 @@
 """One Monitor view retains the active GPR and canonical AHR finance together."""
 import datetime as dt
+import copy
 import json
 
 import pytest
 
 import developaid_finance_management as management
+import developaid_admin_expenses as admin
+import developaid_admin_expenses_cash as cash
 import developaid_monitor as monitor
 import developaid_monitor_dashboard as dashboard
 from test_finance_money_bridge import source
 from test_finance_owner_allocations import canonical
 from test_monitor_active_plan_note import approve
 from test_monitor_cumulative_controls import browser_page
+from test_admin_expenses_cash import calc, doc, payment
 from test_schedule_completed_facts import site, book, PROJECT  # noqa: F401
 
 DAY = '2026-11-10'
@@ -85,4 +89,41 @@ def test_a_late_combined_view_cannot_restore_another_project_or_date(combined_vi
         expect(page.locator('#activePlan')).to_be_hidden()
         expect(page.locator('#financeCard')).to_be_hidden()
         assert page.evaluate('currentView===null')
+        assert not errors
+
+
+@pytest.mark.parametrize('width', [390, 1440])
+@pytest.mark.parametrize('invalidate', ['project', 'auth'])
+def test_cash_cards_and_model_detail_do_not_add_ahr_twice_or_survive_context_loss(combined_view, width, invalidate):
+    """Observed cash is separate from FM FACT and from the full B/P/L bridge."""
+    from playwright.sync_api import expect
+    view = copy.deepcopy(combined_view)
+    reconciliation = copy.deepcopy(view['dashboard']['funding']['reconciliation'])
+    model = calc([payment(25), payment(-5, '2026-11-03', row=2)],
+                 bdds={'2026-10-01': doc(30)}, cut=DAY,
+                 budget=reconciliation['budget'])
+    assert model['paid_observed_net'] == 50
+    assert model['balance_after_observed_payments'] == reconciliation['budget'] - 50
+    assert model['remaining_need'] is None and model['financial_acceptance'] is False
+    view['admin_expenses_cash'] = model
+    view['admin_expenses_html'] = cash.render(model, admin.render(view['admin_expenses']))
+    with browser_page(width) as (page, responses, errors):
+        page.evaluate('v=>{currentView=v;renderDash(v);renderGantt(v);selectMonitorTab("money")}', view)
+        card = page.locator('#adminExpensesCard')
+        expect(card).to_be_visible()
+        assert card.locator('.admin-expenses-cash > div > div').count() == 4
+        assert card.locator('details.admin-fm-source .admin-expenses > div > div').count() == 3
+        assert card.locator('details.admin-fm-source').evaluate('e=>!e.open')
+        assert page.locator('#kpis .kpi .l').all_text_contents().count('Утверждённый бюджет') == 1
+        assert page.evaluate('currentView.dashboard.funding.reconciliation') == reconciliation
+        assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+        if invalidate == 'project':
+            page.evaluate("()=>{const e=document.getElementById('project');e.value='Other synthetic';e.dispatchEvent(new Event('input',{bubbles:true}))}")
+        else:
+            responses.reject_key = True
+            page.evaluate("async()=>{try{await post('/monitor/cumulative/list',{project:'Synthetic'})}catch(e){}}")
+            expect(page.locator('#privateArea')).to_be_hidden()
+        expect(card).to_be_hidden()
+        expect(page.locator('#adminExpensesBody')).to_be_empty()
+        assert page.evaluate('!currentView || (!currentView.admin_expenses_cash && !currentView.admin_expenses && !currentView.admin_expenses_html)')
         assert not errors

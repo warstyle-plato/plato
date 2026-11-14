@@ -10,6 +10,7 @@ import developaid_monitor as monitor
 from test_gpr_corpus_preview import book
 from test_monitor_cumulative_controls import browser_page
 from test_monitor_gpr_sections import monitor_view
+from browser import expand_gantt
 
 
 @pytest.mark.parametrize('width', [390, 1440])
@@ -25,6 +26,9 @@ def test_initial_work_rows_show_known_zero_partial_unknown_and_bad_dates_before_
     with browser_page(width) as (page, responses, errors):
         page.evaluate('(v)=>{currentView=v;renderDash(v);renderGantt(v)}',view)
         assert page.locator('#gprMatrix,.gpr-matrix').count() == 0
+        assert page.locator('#gprFactMatrix [data-work-id]').count() == 4
+        assert page.locator('#gantt .lvl-task:visible').count() == 0
+        expand_gantt(page)
         assert page.locator('#gantt .lvl-task:visible').count() == 4
         for name, pct in [('Известный ноль','0%'),('Известное выполнение','90%'),('Ошибочная дата','90%')]:
             row = page.locator('#gantt .lvl-task',has_text=name)
@@ -63,8 +67,10 @@ def test_new_all_undated_source_replaces_previous_calendar_without_inventing_pla
             'reason':'Обе даты отсутствуют, источник ГПР'}]}}
     with browser_page(width) as (page,responses,errors):
         page.evaluate('(v)=>{currentView=v;renderGantt(v)}',first)
+        expand_gantt(page)
         assert page.locator('#gantt .planbar').count()>0
         page.evaluate('(v)=>{currentView=v;renderGantt(v)}',second)
+        expand_gantt(page)
         expect(page.locator('#gantt .lvl-task')).to_be_visible()
         expect(page.locator('#gantt .lvl-task')).to_contain_text('90%')
         expect(page.locator('#gantt')).not_to_contain_text('Монтаж фасада')

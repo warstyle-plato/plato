@@ -253,7 +253,7 @@ def _unit_evidence(rows, column_count):
     return collector.result()
 
 
-def _cells(data):
+def _cells(data, *, observe_units=False):
     from openpyxl import load_workbook
     from openpyxl.utils import get_column_letter
 
@@ -267,7 +267,7 @@ def _cells(data):
         sheet = book["cf_1_new"]
         if sheet.max_row > MAX_ROWS or sheet.max_column > MAX_COLUMNS:
             raise SourceProblem("worksheet_size_limit")
-        header, columns = None, None
+        header, columns, header_cells = None, None, None
         evidence = _HeaderEvidence(sheet.max_column)
         for index, cells in enumerate(sheet.iter_rows(max_row=min(sheet.max_row, MAX_HEADER_ROWS)), 1):
             evidence.add(index, cells)  # Bound strings before normalising header labels.
@@ -276,12 +276,13 @@ def _cells(data):
                 if any(labels.count(name) != 1 for _, name in FIELDS):
                     raise SourceProblem("columns_ambiguous")
                 header = index
+                header_cells = cells
                 columns = {key: labels.index(label) for key, label in FIELDS}
                 break
         if columns is None:
             raise SourceProblem("columns_missing")
         units = evidence.result()
-        items, all_codes = [], []
+        items, all_codes, observed_cells = [], [], {}
         for row, cells in enumerate(sheet.iter_rows(min_row=header+1, max_col=max(2, *columns.values())+1),
                                     header+1):
             code = str(cells[2].value or "").strip().rstrip(".")
@@ -295,6 +296,8 @@ def _cells(data):
             items.append({"code": code, "row": row, "raw_code": _raw(cells[2]),
                 "cells": {key: {"cell": f"{get_column_letter(column+1)}{row}", **_raw(cells[column])}
                           for key, column in columns.items()}})
+            if observe_units and columns == {'total': 8, 'fact': 9, 'plan': 10}:
+                observed_cells[row] = cells
         if len({item["code"] for item in items}) != len(items):
             raise SourceProblem("codes_ambiguous")
         leaves = [item for item in items if not any(code.startswith(item["code"]+".") for code in all_codes)]
@@ -302,6 +305,9 @@ def _cells(data):
             raise SourceProblem("projection_size_limit")
         if not leaves:
             raise SourceProblem("rows_missing")
+        if observe_units:
+            from developaid_admin_expenses_unit_observability import observe
+            units['_observability'] = observe(leaves, observed_cells, header_cells, columns, _UNIT)
     # A cached None stays distinguishable from an uncalculated formula; the
     # formula's text, references and external links are never returned.
     by_row = {item["row"]: item for item in leaves}
@@ -312,6 +318,10 @@ def _cells(data):
             if row in by_row:
                 for key, column in columns.items():
                     by_row[row]["cells"][key]["formula"] = cells[column].data_type == "f"
+                for sample in units.get('_observability', {}).get('row_unit_samples', []):
+                    if sample['row'] == row:
+                        column = ord(sample['cell'][0]) - ord('A')
+                        sample['formula'] = cells[column].data_type == 'f'
     return leaves, {key: f"{get_column_letter(column+1)}{header}" for key, column in columns.items()}, units
 
 
@@ -376,11 +386,12 @@ def capture_saved_snapshot(project, *, runtime):
     source.update(sheet='cf_1_new', version_date=version.isoformat() if version else None,
         selection_basis='current_stored_bytes_not_a_historical_cut')
     try:
-        rows, headers, units = _cells(data)
+        rows, headers, units = _cells(data, observe_units=True)
     except SourceProblem:
         raise
     except Exception:
         raise SourceProblem('workbook_unreadable') from None
+    observation = units.pop('_observability', None)
     result = {'schema': 1, 'purpose': SAVED_PURPOSE, 'scope': 'raw_saved_snapshot',
         'state': 'raw_saved_snapshot_read', 'captured_at': dt.datetime.now(dt.timezone.utc).isoformat(),
         'runtime': {key: str(runtime.get(key) or '')[:64] for key in ('version', 'commit')},
@@ -395,4 +406,19 @@ def capture_saved_snapshot(project, *, runtime):
         raise SourceProblem('source_changed')
     if len(json.dumps(result, ensure_ascii=False, allow_nan=False).encode()) > MAX_OUTPUT:
         raise SourceProblem('projection_size_limit')
+    if observation is not None:
+        from developaid_admin_expenses_unit_observability import MAX_DIAGNOSTIC_BYTES
+        observation.update(source_sha256=source['sha256'], metadata_sha256=source['metadata_sha256'])
+        candidate = {**result, 'unit_observability': observation}
+        if (len(json.dumps(observation, ensure_ascii=False, allow_nan=False).encode()) <= MAX_DIAGNOSTIC_BYTES
+                and len(json.dumps(candidate, ensure_ascii=False, allow_nan=False).encode()) <= MAX_OUTPUT):
+            return candidate
+        # Diagnostics must never make an otherwise valid raw projection fail.
+        minimal = {'state': 'bounded_incomplete', 'raw_unit_state': 'unknown',
+                   'raw_storage_unit': None, 'money_factor': None,
+                   'gaps': ['unit_observability_output_omitted']}
+        candidate = {**result, 'unit_observability': minimal}
+        if (len(json.dumps(minimal, ensure_ascii=False, allow_nan=False).encode()) <= MAX_DIAGNOSTIC_BYTES
+                and len(json.dumps(candidate, ensure_ascii=False, allow_nan=False).encode()) <= MAX_OUTPUT):
+            return candidate
     return result

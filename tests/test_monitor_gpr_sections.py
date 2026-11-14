@@ -234,12 +234,16 @@ def test_explicitly_confirmed_completion_is_a_dated_fact_without_a_forecast_tail
 
 @pytest.mark.parametrize('width', [390, 1440])
 def test_gantt_opens_works_and_retains_corpus_and_stage_collapse_controls(width):
-    """Current brief: visible work progress on first render, with collapse controls."""
+    """The matrix shows work progress first; the calendar keeps native controls."""
     from playwright.sync_api import expect
     with browser_page(width) as (page, responses, errors):
         page.evaluate("(v)=>{currentView=v;msg('viewMsg','');renderDash(v);renderGantt(v)}", monitor_view())
+        expect(page.locator('#gprFactMatrix [data-work-id]')).to_have_count(3)
+        assert page.locator('#gantt .g-row.lvl-task:visible').count() == 0
+        page.locator('#gprCalendar>summary').click()
         corpora = page.locator('#gantt .g-row.lvl-corpus')
         expect(corpora.first).to_be_visible()
+        page.locator('#ganttExpand').click()
         assert page.locator('#gantt .g-row.lvl-task:visible').count() == 3
         page.locator('#ganttCollapse').click()
         assert page.locator('#gantt .g-row.lvl-task').count() == 0
@@ -253,8 +257,8 @@ def test_gantt_opens_works_and_retains_corpus_and_stage_collapse_controls(width)
 
 
 @pytest.mark.parametrize('width', [390, 1440])
-def test_work_plan_replaces_matrix_and_all_corpora_expand_without_losing_completion(width):
-    """The current GPR is the main surface; source evidence follows the chart."""
+def test_work_matrix_and_all_corpora_expand_without_losing_completion(width):
+    """The source matrix remains useful before the unweighted calendar opens."""
     from playwright.sync_api import expect
     view = monitor_view('partial')
     control = view['schedule']['management'][0]
@@ -269,6 +273,9 @@ def test_work_plan_replaces_matrix_and_all_corpora_expand_without_losing_complet
     with browser_page(width) as (page, responses, errors):
         page.evaluate("(v)=>{currentView=v;msg('viewMsg','');renderDash(v);renderGantt(v)}", view)
         assert page.locator('#gprMatrix, .gpr-matrix').count() == 0
+        expect(page.locator('#gprFactMatrix [data-work-id]')).to_have_count(7)
+        assert page.locator('#gantt .g-row.lvl-task:visible').count() == 0
+        expand_gantt(page)
         assert page.locator('#gantt .g-row.lvl-task:visible').count() == 7
         done = page.locator('#gantt .g-row.lvl-corpus', has_text='Корпус 3')
         expect(done).to_contain_text('Все работы завершены')

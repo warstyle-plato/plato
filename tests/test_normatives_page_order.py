@@ -154,3 +154,37 @@ def test_the_tiles_and_filters_follow_the_sections(monkeypatch) -> None:
             assert tab.eval_on_selector("details.history", "x => x.open") is True
         finally:
             browser.close()
+
+
+def test_expanded_mo_sources_fit_mobile_and_desktop(monkeypatch) -> None:
+    """Длинные SHA и пути источников остаются читаемыми внутри карточек."""
+    from browser import chromium_or_skip
+    from playwright.sync_api import sync_playwright
+
+    rows = [dict(row, check={}) for row in _rows()]
+    monkeypatch.setattr(registry, "_merged_registry", lambda: rows)
+    core = SimpleNamespace(_is_admin_request=_checker(answer=False))
+    html = registry._page(_request(), core)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(executable_path=str(chromium_or_skip()))
+        try:
+            for width in (390, 1440):
+                page = browser.new_page(viewport={"width": width, "height": 950})
+                page.set_content(html)
+                page.click('.filters button[data-filter="mo"]')
+                page.locator('.nsection[data-section="mo"] .ncard').evaluate_all(
+                    'cards => cards.forEach(card => { card.open = true; })')
+                layout = page.evaluate("""() => ({
+                    viewport: innerWidth,
+                    document: document.documentElement.scrollWidth,
+                    sourceNotes: [...document.querySelectorAll('.nsection[data-section="mo"] .notes')]
+                        .map(node => ({text: node.textContent, width: node.clientWidth,
+                                       content: node.scrollWidth}))
+                })""")
+                assert layout["sourceNotes"], layout
+                assert any(len(note["text"]) > 200 for note in layout["sourceNotes"])
+                assert layout["document"] <= layout["viewport"], layout
+                assert all(note["content"] <= note["width"] for note in layout["sourceNotes"]), layout
+                page.close()
+        finally:
+            browser.close()

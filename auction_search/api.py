@@ -1517,10 +1517,11 @@ def install(app: FastAPI) -> None:
 
     async def _auctions_view_gate(request: Request, call_next):
         path = request.url.path.rstrip("/") or "/"
-        # These two private POSTs apply their own owner admission before any
+        # These private POSTs apply their own owner admission before any
         # source I/O. Market/demo/scoped-cookie admission is not their realm.
         if request.method == "POST" and path in {
-            "/auctions/krt/audit/cached", "/monitor/audit/sources"
+            "/auctions/krt/audit/cached", "/monitor/audit/sources",
+            "/auctions/krt/audit/origin-catalogue",
         }:
             return await call_next(request)
         # Личный ключ «auctions» ограничивает ВЕСЬ сайт, а не только /auctions:
@@ -4644,6 +4645,54 @@ def install(app: FastAPI) -> None:
             "rings_merc": rings,
             "centre_merc": centre,
         }
+
+    @app.post("/auctions/krt/audit/origin-catalogue", include_in_schema=False)
+    async def auction_krt_origin_catalogue_audit(request: Request) -> Response:
+        """One bounded owner-only origin observation; no application refresh."""
+        private = {"Cache-Control": "private, no-store"}
+        try:
+            raw = bytearray()
+            too_large = False
+            async for chunk in request.stream():
+                if len(raw) + len(chunk) > 16384:
+                    raw = bytearray()
+                    too_large = True
+                    break
+                raw.extend(chunk)
+            try:
+                initial = json.loads(raw)
+            except (ValueError, UnicodeError, RecursionError):
+                initial = {}
+            initial = initial if isinstance(initial, dict) else {}
+            key, session = initial.get("key", ""), initial.get("session", "")
+            key = key if isinstance(key, str) and len(key) <= 4096 else ""
+            session = session if isinstance(session, str) and len(session) <= 4096 else ""
+            if not key:
+                key = str(request.headers.get("X-Developaid-Admin-Key") or "")[:4096]
+            owner_gate = getattr(core, "_require_admin", None) if core is not None else None
+            knows_owner = core is not None and (
+                bool(getattr(core, "usage_admin_ids", lambda: [])()) or
+                bool((getattr(core, "_env_str", lambda *a: "")("DEVELOPAID_ADMIN_KEY", "") or "").strip()))
+            if not callable(owner_gate) or not knows_owner:
+                raise HTTPException(403, "Закрытая проверка источника КРТ доступна только владельцу сервиса.")
+            owner_gate(session, key, "Закрытая проверка официального каталога КРТ")
+            if too_large:
+                return JSONResponse({"code": "invalid_request"}, status_code=413, headers=private)
+            import developaid_krt_origin_audit as origin_audit
+            try:
+                if request.query_params:
+                    raise origin_audit.InputError("invalid_request")
+                origin_audit.validate_request(bytes(raw))
+                result = await origin_audit.capture(runtime={
+                    "commit": getattr(core, "COMMIT", ""), "version": getattr(core, "VERSION", "")})
+                return JSONResponse(result, headers=private)
+            except origin_audit.InputError as exc:
+                return JSONResponse({"code": str(exc)}, status_code=400, headers=private)
+        except HTTPException as exc:
+            exc.headers = {**(exc.headers or {}), **private}
+            raise
+        except Exception:
+            return JSONResponse({"code": "origin_observation_unavailable"}, status_code=503, headers=private)
 
     @app.post("/auctions/krt/audit/cached", include_in_schema=False)
     async def auction_krt_cached_audit(request: Request) -> Response:
