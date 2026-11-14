@@ -1,6 +1,7 @@
 """A slow HTTP200 body cannot become a successful empty Monitor snapshot."""
 import pytest
 from playwright.sync_api import expect
+from browser import expand_gantt
 
 from test_monitor_cumulative_controls import browser_page
 from test_monitor_gpr_sections import monitor_view
@@ -35,6 +36,8 @@ def test_gpr_renders_while_full_financial_view_is_still_pending(width):
         with page.expect_request('**/monitor/view/result'):
             page.locator('#refresh').click()
         expect(page.locator('#ganttCard')).to_be_visible()
+        expect(page.locator('#gprFactMatrix [data-work-id]')).to_have_count(3)
+        expand_gantt(page)
         expect(page.locator('#gantt .lvl-task')).to_have_count(3)
         expect(page.locator('#gantt')).to_contain_text('40%')
         assert page.evaluate('currentView.schedule.management.length')>0
@@ -68,6 +71,8 @@ def test_large_result_body_has_its_own_read_timeout_and_renders_the_full_snapsho
         }""")
         page.locator('#refresh').click()
         expect(page.locator('#refresh')).to_be_enabled()
+        expect(page.locator('#gprFactMatrix [data-work-id]')).to_have_count(3)
+        expand_gantt(page)
         expect(page.locator('#gantt .lvl-task')).to_have_count(3)
         assert page.evaluate('Boolean(currentView?.schedule)')
         assert not errors
@@ -80,6 +85,8 @@ def test_late_fast_view_does_not_overwrite_an_already_rendered_full_view():
         page.route('**/monitor/view',lambda route:route.fulfill(json={'snapshot':monitor_view()}))
         with page.expect_request('**/monitor/gpr-view'):
             page.locator('#refresh').click()
+        expect(page.locator('#gprFactMatrix [data-work-id]')).to_have_count(3)
+        expand_gantt(page)
         expect(page.locator('#gantt .lvl-task')).to_have_count(3)
         expect(page.locator('#refresh')).to_be_enabled()
         stale=monitor_view();stale['schedule']['management'][0]['name']='LATE LIGHT RESPONSE'

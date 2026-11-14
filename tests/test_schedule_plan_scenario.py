@@ -3,6 +3,7 @@ import copy
 
 import pytest
 from playwright.sync_api import expect
+from browser import expand_gantt
 
 import developaid_schedule_plan_scenario as scenario
 from test_monitor_cumulative_controls import browser_page
@@ -73,6 +74,10 @@ def test_actual_page_displays_a_scenario_label_beside_unknown_pace(width):
         page.evaluate('(v)=>{currentView=v;renderDash(v);renderGantt(v)}',view)
         expect(page.locator('.plan-scenario-summary')).to_be_visible()
         expect(page.locator('.plan-scenario-summary')).to_contain_text('условная оценка')
+        cell=page.locator('#gprFactMatrix [data-work-id="2"]')
+        expect(cell.locator('.gpr-cell-forecast')).to_have_text('Нет прогноза')
+        expect(cell.locator('.gpr-cell-scenario')).to_have_text('При плановом темпе: 08.01.2027')
+        expand_gantt(page)
         line=page.locator('.g-row.lvl-task').filter(has_text='Внутренние работы')
         expect(line.locator('.plan-scenario>summary')).to_contain_text('При плановом темпе: 08.01.2027')
         expect(line).not_to_contain_text('2031')

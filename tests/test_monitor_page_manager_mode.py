@@ -15,10 +15,13 @@ def test_gpr_tasks_show_plan_fact_and_forecast_shift():
     """Measure actual PAGE bars and dated facts, rather than a JS literal."""
     import pytest
     from playwright.sync_api import expect
+    from browser import expand_gantt
     from test_monitor_cumulative_controls import browser_page
     from test_monitor_gpr_sections import monitor_view
     with browser_page(390) as (page, responses, errors):
         page.evaluate('(v)=>renderGantt(v)', monitor_view())
+        expect(page.locator('#gprFactMatrix [data-work-id]')).to_have_count(3)
+        expand_gantt(page)
         work = page.locator('#gantt .lvl-task', has_text='Монтаж фасада')
         expect(work).to_contain_text('Выполнено по ГПР: 40% от 06.11.2026')
         expect(work).to_contain_text('План до 01.12.2026')

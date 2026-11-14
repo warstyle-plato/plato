@@ -1,6 +1,8 @@
 """A current GPR estimate must not open an unrelated historical work list."""
 import pytest
+import io
 from playwright.sync_api import expect
+from pypdf import PdfReader
 from urllib.parse import urlsplit
 
 import developaid_monitor as monitor
@@ -51,6 +53,44 @@ def test_saved_current_estimate_renders_values_but_never_certifies_full_readines
     assert ready.editor(PROJECT)['configuration']['scope_kind'] == ready.CURRENT_ESTIMATE
     import developaid_management_report as report
     assert report.gantt(view,view['dashboard'])['readiness'] == state
+
+
+def test_reading_current_editor_and_fast_view_never_activates_an_estimate(site):
+    import developaid_monitor_pace as pace
+    assert ready._events(PROJECT) == []
+    editor = ready.editor(PROJECT)
+    assert editor['configuration']['scope_kind'] == ready.CURRENT_ESTIMATE
+    view = pace.schedule_view(PROJECT, DAY)
+    state = view['schedule']['readiness']
+    assert state['project']['progress'] is None
+    assert state['project']['known_weights'] == 0
+    assert not state['estimated'] and not state['full_scope_confirmed']
+    assert ready._events(PROJECT) == []
+
+
+@pytest.mark.parametrize('width', [390, 1440])
+def test_compact_current_estimate_keeps_partial_coverage_and_reason_in_pdf(site, width):
+    cfg, opts = current_profile()
+    activate((cfg, opts))
+    view = monitor.build(PROJECT, DAY)
+    with browser_page(width) as (page, _, errors):
+        page.locator('#cut').fill(DAY)
+        page.evaluate('(v)=>{currentView=v;renderGantt(v)}', view)
+        expect(page.locator('.readiness-summary')).to_contain_text('Оценочная готовность по текущему ГПР')
+        row = page.locator('.readiness-corpus-table tr[data-corpus-facts-object="Корпус 1"]')
+        expect(row).to_contain_text('50,0% · частично · покрытие веса 100,0%')
+        expect(row).to_contain_text('показания от')
+        expect(page.locator('.readiness-summary')).to_contain_text(ready.CURRENT_ESTIMATE_NOTE)
+        page.locator('.readiness-estimate-reference > summary').click()
+        expect(page.locator('.readiness-estimate-reference')).not_to_contain_text('Карта пока не применена')
+        pdf = PdfReader(io.BytesIO(page.pdf(prefer_css_page_size=True)))
+        text = ' '.join(p.extract_text() or '' for p in pdf.pages)
+        assert ready.CURRENT_ESTIMATE_NOTE in ' '.join(text.split())
+        assert 'покрытие веса 100,0%' in text
+        assert '50,0%' in text and 'частично' in text
+        assert not view['schedule']['readiness']['full_scope_confirmed']
+        assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+        assert not errors
 
 
 @pytest.mark.parametrize('mutation', [

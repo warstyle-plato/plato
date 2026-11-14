@@ -248,18 +248,12 @@ def test_multi_building_matrix_is_readable_and_known_unweighted_facts_are_not_mi
         page.evaluate('(v)=>{currentView=v;renderGantt(v)}',view)
         expect(page.locator('#readinessSummary')).to_contain_text('Пригодные показания: 4 из 4')
         expect(page.locator('#readinessSummary')).to_contain_text('включено во взвешенный расчёт: 0')
-        cells=page.locator('#gprMatrix .readiness-stage-row td[data-object]')
-        expect(cells).to_have_count(4)
-        expect(page.locator('#gprMatrix thead')).to_be_visible()
-        expect(page.locator('#gprMatrix .readiness-total th')).to_have_text('Итого по корпусу')
-        boxes=[]
+        expect(page.locator('#readinessSummary #gprMatrix')).to_have_count(0)
+        rows=page.locator('.readiness-corpus-table tbody tr')
+        expect(rows).to_have_count(4)
         for i in range(4):
-            box=cells.nth(i).bounding_box()
-            assert box['width'] >= 45
-            boxes.append(box)
-            assert cells.nth(i).get_attribute('data-object')=='Корпус '+str(i+1)
-        assert max(b['y'] for b in boxes)-min(b['y'] for b in boxes)<1
-        assert boxes[1]['x']>boxes[0]['x']  # Real columns on a phone, not stacked text cards.
+            expect(rows.nth(i)).to_contain_text('Корпус '+str(i+1))
+            expect(rows.nth(i).locator('td').first).to_have_text('1')
         assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
         assert not errors
 
@@ -286,6 +280,14 @@ def test_matrix_total_is_the_weighted_corpus_value_and_mobile_numbers_are_compac
         expect(total.locator('td strong')).to_have_text(['41,7%','91,7%','35,0%'])
         expect(total.locator('.readiness-meter')).to_have_count(3)
         expect(page.locator('#gprMatrix .readiness-stage-row')).to_have_count(2)
+        expect(page.locator('#gprMatrix thead')).to_be_visible()
+        expect(total.locator('th')).to_have_text('Итого по корпусу')
+        cells=page.locator('#gprMatrix .readiness-stage-row').first.locator('td[data-object]')
+        expect(cells).to_have_count(3)
+        boxes=[cell.bounding_box() for cell in cells.all()]
+        assert all(box['width']>=45 for box in boxes)
+        assert max(box['y'] for box in boxes)-min(box['y'] for box in boxes)<1
+        assert boxes[0]['x']<boxes[1]['x']<boxes[2]['x']
         bounds=page.locator('#gprMatrix table').bounding_box()
         assert bounds['height']<240  # The whole comparison fits without a long text list.
         cards=page.locator('.readiness-item')
@@ -298,4 +300,26 @@ def test_matrix_total_is_the_weighted_corpus_value_and_mobile_numbers_are_compac
         details.locator('summary').click()
         expect(details).to_contain_text('Самое старое учтённое показание')
         assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+        assert not errors
+
+
+def test_compact_weighted_matrix_distinguishes_known_zero_from_unknown():
+    rows=[reading('zero',0,obj='Корпус 1'),reading('unknown',None,obj='Корпус 2')]
+    config=dict(id=elements.PROFILE_ID,overrides={},
+        objects={'Корпус 1':'residential','Корпус 2':'residential'},
+        assignments={row['id']:dict(element_id='frame',share=100) for row in rows})
+    state=ready.model({'works':{r['id']:r for r in rows}},cut=DAY,baseline_scope='remaining_work',source_sha256='a'*64)
+    state.update(elements.projection(rows,config,cut=DAY,confirmed=True))
+    assert state['project']['progress'] is None  # No comparable corpus scales.
+    with browser_page(390) as (page,_,errors):
+        from test_monitor_gpr_sections import monitor_view
+        view=monitor_view();view['schedule']['readiness_html']=ready.render(state)
+        page.evaluate('(v)=>{currentView=v;renderGantt(v)}',view)
+        total=page.locator('#gprMatrix .readiness-total')
+        expect(total.locator('td[data-object="Корпус 1"] strong')).to_have_text('0,0%')
+        expect(total.locator('td[data-object="Корпус 1"] .readiness-meter')).to_have_count(1)
+        expect(total.locator('td[data-object="Корпус 2"] strong')).to_have_text('—')
+        expect(total.locator('td[data-object="Корпус 2"] .readiness-meter')).to_have_count(0)
+        expect(total.locator('td[data-object="Корпус 2"]')).to_have_attribute('aria-label','Корпус 2: пока не определено')
+        expect(page.locator('.readiness-project-value')).to_have_count(0)
         assert not errors
