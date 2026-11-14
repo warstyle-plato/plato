@@ -25,6 +25,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -369,7 +370,10 @@ def _mini_app_by_parcel(monkeypatch, numbers: list[str], region: str, port: int,
         page.on("request", lambda r: calcs.append(json.loads(r.post_data or "{}"))
                 if r.method == "POST" and r.url.endswith("/calculate") else None)
         for pattern, handler in routes:
-            page.route(pattern, handler)
+            # Native screening is GET with a cadastral query; matching only
+            # the URL suffix lets that background request escape this mock.
+            matcher = (lambda url: urlsplit(url).path == "/land/screening") if pattern == "**/land/screening" else pattern
+            page.route(matcher, handler)
         with stand.serve(wrapper.app, port) as root:
             page.goto(f"{root}/?telegram=1#{url.split('#', 1)[1]}", wait_until="domcontentloaded")
             page.wait_for_function(
@@ -385,7 +389,7 @@ def _mini_app_by_parcel(monkeypatch, numbers: list[str], region: str, port: int,
                 "+(document.getElementById('telegramDoneBanner')?.innerText||'')")
             state = page.evaluate("() => ({region: inputs.vri_region, area: Number(inputs.site_area_ha),"
                                   " fee: Number(inputs.land_rights_cost_mln||0)})")
-        chromium.close()
+            chromium.close()
     assert not errors, errors
     assert "не посчитан" not in seen, seen[:500]
     sent = calcs[-1]
