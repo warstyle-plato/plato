@@ -408,8 +408,12 @@ async def _monitor_budget_funding_source_job(request: Request, *, start: bool) -
                     return {"ok": True, "source_projection": source.capture(project.strip(), cut,
                         runtime={"version": VERSION, "commit": COMMIT})}
                 except source.SourceProblem as exc:
-                    return {"ok": False, "code": exc.code,
-                            "detail": "Ограниченная проверка источников бюджета и оплат не сформирована."}
+                    failed = {"ok": False, "code": exc.code,
+                              "detail": "Ограниченная проверка источников бюджета и оплат не сформирована."}
+                    diagnostic = source.failure_diagnostic(exc)
+                    if diagnostic is not None:
+                        failed['diagnostic'] = diagnostic
+                    return failed
             result = store.start(owner, profile, {"project": project.strip(), "cut": cut,
                 "purpose": profile, "click": ticket or _secrets.token_hex(16)}, collect, ticket)
         else:

@@ -292,6 +292,8 @@ def test_matrix_total_is_the_weighted_corpus_value_and_mobile_numbers_are_compac
         assert bounds['height']<240  # The whole comparison fits without a long text list.
         cards=page.locator('.readiness-item')
         assert cards.nth(0).bounding_box()['y']<page.locator('.readiness-method').bounding_box()['y']
+        expect(page.locator('.readiness-corpus-table')).to_be_hidden()
+        assert page.locator('.readiness-weighted-evidence').get_attribute('open') is None
         if width==390:
             assert abs(cards.nth(0).bounding_box()['y']-cards.nth(2).bounding_box()['y'])<1
             assert page.locator('.readiness-grid').bounding_box()['height']<140

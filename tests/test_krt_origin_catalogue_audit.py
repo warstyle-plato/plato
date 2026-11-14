@@ -205,6 +205,147 @@ def test_total_deadline_covers_later_connection_and_keeps_prior_page(mock_origin
     assert result["elapsed_ms"] < 1000 and len(result["roster"]) == 1
 
 
+@pytest.mark.parametrize("event,phase", [
+    ("connection.connect_tcp", "dns_or_tcp_connect"),
+    ("connection.start_tls", "tls_handshake"),
+    ("http11.receive_response_headers", "receive_response_headers"),
+    ("http11.receive_response_body", "receive_response_body"),
+])
+def test_outer_deadline_preserves_observed_phase_without_extending_budget(mock_origin, monkeypatch, event, phase):
+    monkeypatch.setattr(audit, "MAX_SECONDS", 0.03)
+    async def respond(request):
+        await request.extensions["trace"](event + ".started", {"headers": KEY})
+        try:
+            await asyncio.sleep(5)
+        finally:
+            await request.extensions["trace"](event + ".failed", {"exception": KEY})
+    calls, settings = mock_origin(respond)
+    result = capture()
+    assert len(calls) == 1 and result["elapsed_ms"] < 1000
+    assert result["gaps"] == ["total_time_limit"] and not result["complete"]
+    assert result["transport_failure"] == {"kind": "outer_deadline", "page_index": 0,
+        "last_phase": phase, "last_outcome": "failed"}
+    assert settings[0]["timeout"] == httpx2.Timeout(0.03)
+    assert result["pages"][0]["status"] is None and result["bytes"] == 0
+    assert result["source_updated_at"] is None and not result["production_acceptance"]
+    assert KEY not in json.dumps(result)
+
+
+def test_no_trace_does_not_invent_a_connection_phase(mock_origin, monkeypatch):
+    monkeypatch.setattr(audit, "MAX_SECONDS", 0.03)
+    async def respond(request):
+        await asyncio.sleep(5)
+    mock_origin(respond)
+    result = capture()
+    assert result["transport_failure"] == {"kind": "outer_deadline", "page_index": 0,
+        "last_phase": "not_observed", "last_outcome": "not_observed"}
+    assert result["transport"]["events"] == []
+
+
+@pytest.mark.parametrize("exception,kind,gap", [
+    (httpx2.ConnectTimeout, "connect_timeout", "transport_timeout"),
+    (httpx2.ReadTimeout, "read_timeout", "transport_timeout"),
+    (httpx2.WriteTimeout, "write_timeout", "transport_timeout"),
+    (httpx2.PoolTimeout, "pool_timeout", "transport_timeout"),
+    (httpx2.ConnectError, "connect_error", "transport_error"),
+    (httpx2.ReadError, "read_error", "transport_error"),
+    (httpx2.WriteError, "write_error", "transport_error"),
+    (httpx2.ProxyError, "proxy_error", "transport_error"),
+    (httpx2.RemoteProtocolError, "remote_protocol_error", "transport_error"),
+])
+def test_transport_exception_enum_preserves_existing_gaps_and_unknown_phase(mock_origin, exception, kind, gap):
+    def fail(request):
+        raise exception(KEY, request=request)
+    calls, _ = mock_origin(fail)
+    result = capture()
+    assert len(calls) == 1 and result["gaps"] == [gap]
+    assert result["transport_failure"]["kind"] == kind
+    assert result["transport_failure"]["last_phase"] == "not_observed"
+    assert KEY not in json.dumps(result)
+
+
+def test_trace_ignores_malicious_info_and_oversized_events_and_stays_under_one_kib(mock_origin):
+    class Poison:
+        def __getattribute__(self, key):
+            pytest.fail("trace inspected info: " + key)
+        def __str__(self):
+            pytest.fail("trace stringified info")
+    async def respond(request):
+        trace = request.extensions["trace"]
+        trace.started -= 1e10  # Also exercise the bounded elapsed integer.
+        await trace(KEY * 10000, Poison())
+        await trace("unknown." + KEY, Poison())
+        await trace("http11.receive_response_headers." + KEY, Poison())
+        for _ in range(400):
+            await trace("http11.receive_response_headers.complete", Poison())
+        await trace("http11.receive_response_headers.failed", Poison())
+        raise httpx2.ReadTimeout(KEY, request=request)
+    calls, _ = mock_origin(respond)
+    result = capture()
+    diagnostic = {key: result[key] for key in ("transport", "transport_failure", "transport_observation")}
+    assert len(calls) == 1 and len(json.dumps(diagnostic).encode()) <= 1024
+    assert len(result["transport"]["events"]) == 6 and result["transport"]["events_truncated"]
+    assert result["transport_failure"]["last_phase"] == "receive_response_headers"
+    times = [event["elapsed_ms"] for event in result["transport"]["events"]]
+    assert times == [2**31 - 1] * 6
+    assert KEY not in json.dumps(result)
+
+
+@pytest.mark.parametrize("failure,phase,kind", [
+    (None, None, None),
+    ("connect", "dns_or_tcp_connect", "connect_timeout"),
+    ("tls", "tls_handshake", "connect_timeout"),
+    ("headers", "receive_response_headers", "read_timeout"),
+    ("body", "receive_response_body", "read_timeout"),
+])
+def test_real_httpcore_trace_plumbing_with_memory_only_network(monkeypatch, failure, phase, kind):
+    # Exercise the actual installed httpx2/httpcore2 phase producer and exception
+    # mapping. A memory backend replaces DNS/TCP/TLS; no origin is contacted.
+    import httpcore2
+    actual_pool = httpcore2.AsyncConnectionPool
+    body = page()
+    headers = (f"HTTP/1.1 200 OK\r\nContent-Length: {len(body)}\r\n"
+               "Connection: close\r\n\r\n").encode()
+    connections, writes, closed = [], [], []
+    class MemoryStream(httpcore2.AsyncNetworkStream):
+        reads = 0
+        async def read(self, max_bytes, timeout=None):
+            self.reads += 1
+            if failure == "headers" or failure == "body" and self.reads > 1:
+                raise httpcore2.ReadTimeout(KEY)
+            return headers + (b"" if failure == "body" else body) if self.reads == 1 else b""
+        async def write(self, buffer, timeout=None):
+            writes.append(buffer)
+        async def aclose(self):
+            closed.append(True)
+        async def start_tls(self, ssl_context, server_hostname=None, timeout=None):
+            assert ssl_context.verify_mode.name == "CERT_REQUIRED" and ssl_context.check_hostname
+            assert server_hostname == "api.krt.mos.ru" and timeout == 45.0
+            if failure == "tls":
+                raise httpcore2.ConnectTimeout(KEY)
+            return self
+    class MemoryBackend(httpcore2.AsyncNetworkBackend):
+        async def connect_tcp(self, host, port, timeout=None, **kwargs):
+            connections.append((host, port, timeout))
+            if failure == "connect":
+                raise httpcore2.ConnectTimeout(KEY)
+            return MemoryStream()
+    monkeypatch.setattr(httpcore2, "AsyncConnectionPool",
+        lambda *args, **kwargs: actual_pool(*args, **kwargs, network_backend=MemoryBackend()))
+    result = capture()
+    assert connections == [("api.krt.mos.ru", 443, 45.0)]
+    if failure is None:
+        assert result["complete"] and result["transport_failure"] is None
+        assert result["transport"]["last_phase"] == "receive_response_body"
+        assert result["transport"]["last_outcome"] == "complete" and closed
+        assert b"GET /projects/ HTTP/1.1" in b"".join(writes)
+    else:
+        assert not result["complete"] and result["gaps"] == ["transport_timeout"]
+        assert result["transport_failure"] == {"kind": kind, "page_index": 0,
+            "last_phase": phase, "last_outcome": "failed"}
+    assert KEY not in json.dumps(result) and KEY.encode() not in b"".join(writes)
+
+
 def test_duplicate_slug_is_observed_but_not_accepted_and_ambiguous_pagination_stops(mock_origin):
     calls, _ = mock_origin(lambda request: httpx2.Response(200, content=page(next_url="/projects/?PAGEN_1=2")
         if not request.url.query else page(status="Планируемый")))

@@ -525,7 +525,7 @@ def render(state):
 .readiness-meter{display:block;height:5px;border-radius:4px;background:#e6edf5;overflow:hidden;margin-top:7px}.readiness-meter i{display:block;height:100%;background:#34567a;border-radius:4px}
 .readiness-matrix table{min-width:calc(90px + var(--readiness-columns)*70px)}.readiness-matrix th:first-child{width:30%}.readiness-matrix td{text-align:center;vertical-align:middle}.readiness-matrix td strong{white-space:nowrap;font-size:14px}.readiness-matrix .readiness-total{background:#eaf1fa}.readiness-total strong{font-size:17px!important}.readiness-matrix-evidence{margin-top:10px}.readiness-matrix-evidence article{border-bottom:1px solid #dce3ed;padding:6px 0}.readiness-matrix-evidence h4{font-size:12px;margin:4px 0}.readiness-method{margin:8px 0}.readiness-grid{margin:8px 0 10px}
 @media(max-width:640px){.readiness-summary{padding:10px}.readiness-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}.readiness-item{padding:8px 6px}.readiness-item h4{font-size:11px}.readiness-item strong{font-size:21px}.readiness-item:has(details[open]){grid-column:1/-1}.readiness-matrix th,.readiness-matrix td{padding:7px 4px}.readiness-matrix th{font-size:11px}.readiness-matrix th:first-child{width:30%}.readiness-matrix td strong{font-size:13px}.readiness-total strong{font-size:14px!important}}
-@media print{.readiness-summary details::details-content{content-visibility:visible!important;display:block!important}}
+@media print{.readiness-summary details::details-content{content-visibility:visible!important;display:block!important}body.gpr-print-mode .readiness-summary .readiness-weighted-evidence{display:block!important}}
 </style>''')
     if known:
         if any(row.get('partial') for row in state['corpora']):
@@ -539,6 +539,8 @@ def render(state):
         out.append('<details class="readiness-project-gap readiness-gap"><summary>Общий показатель проекта пока не определён</summary><p>'+esc(state['reason'])+'</p><p>'+esc(facts(project))+'</p><p>'+esc(evidence(project))+'</p></details>')
     else:
         out.append('<p class="readiness-gap">Общая готовность пока не определена. '+esc(state.get('reason'))+'</p>')
+    if known:
+        out.append('<details class="readiness-corpus-counts readiness-weighted-evidence"><summary>Состав и показания по корпусам</summary>')
     eligible = project.get('eligible_readings', project['known_readings'])
     dates = ', '.join(date_text(day) for day in project['source_dates']) or 'дата не указана'
     out.append('<p class="readiness-work-coverage"><b>Пригодные показания: '+str(eligible)+' из '+str(project['total'])+'</b> · '+esc(dates)+'. Процент каждой работы доступен в графике ниже.</p>')
@@ -555,7 +557,9 @@ def render(state):
                 value += ' · показания от '+date_text(row['oldest_date'])
         out.append('<tr data-corpus-facts-object="'+esc(row['name'])+'"><th scope="row">'+esc(row['name'])+'</th><td>'+str(row['total'])+'</td>'+''.join('<td>'+str(counts[k])+'</td>' for k in ('completed','in_progress','not_started'))+('<td>'+str(counts['unknown'])+'</td>' if unknown else '')+('<td>'+esc(value)+'</td>' if weighted else '')+'</tr>')
     out.append('</tbody></table>')
-    out.append('<details class="readiness-corpus-counts"><summary>Основание общей готовности и источники</summary><p>'+esc(state.get('reason'))+'</p><p>'+esc(evidence(project))+'</p><p>'+esc(facts(project))+'</p></details>')
+    if not known:
+        out.append('<details class="readiness-corpus-counts"><summary>Основание общей готовности и источники</summary>')
+    out.append('<p>'+esc(state.get('reason'))+'</p><p>'+esc(evidence(project))+'</p><p>'+esc(facts(project))+'</p></details>')
     out.append('<details class="readiness-method"><summary>Как рассчитана готовность</summary>')
     if state.get('estimated'):
         out.append('<p>Оценка по удельным весам видов работ'+(' с ручными долями' if state.get('manual') else '')+', не по объёмам этого проекта.</p>')
