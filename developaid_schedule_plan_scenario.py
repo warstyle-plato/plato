@@ -90,7 +90,63 @@ def group(rows):
 
 
 def decorate_readiness(state, rows):
-    by_id = {str(row['id']): row for row in rows}
+    from collections import Counter, defaultdict
+    by_id = defaultdict(list)
+    for row in rows:
+        if row.get('id') is not None:
+            by_id[str(row['id'])].append(row)
+    identity = state.get('forecast_identity') or {}
+    mapping = identity.get('remaining_ids') or {}
+    translations = Counter(str(value) for value in mapping.values() if value is not None)
+    valid_identity = (identity.get('id_scope') in {'current_source', 'full_source'}
+                      and identity.get('source_sha256') == state.get('source_sha256')
+                      and (identity.get('id_scope') != 'full_source'
+                           or bool(identity.get('full_source_sha256'))))
+    scope = state.get('forecast_scope') or {}
     groups = [state['project'], *state['corpora'], *(cell for stage in state.get('matrix', []) for cell in stage['cells'])]
     for item in groups:
-        item['forecast'] = group([by_id[key] for key in item.get('work_ids', []) if key in by_id])
+        ids = [str(key) for key in item.get('work_ids', [])]
+        counts = Counter(ids)
+        members, gaps, excluded = [], [], []
+
+        def gap(key, reason, remaining_id=None):
+            gaps.append(dict(work_id=key, remaining_id=remaining_id, kind=reason))
+            members.append({})  # Retain every unresolved expected member.
+
+        for key in ids:
+            qualification = scope.get(key) or {}
+            if qualification.get('status') == 'excluded':
+                excluded.append(dict(work_id=key, kind=qualification['reason']))
+            elif qualification.get('status') == 'gap':
+                gap(key, qualification['reason'])
+            elif counts[key] != 1:
+                gap(key, 'ambiguous_reference_identity')
+            elif not valid_identity or key not in mapping:
+                gap(key, 'missing_identity_translation')
+            elif mapping[key] is None:
+                gap(key, 'outside_current_source')
+            elif translations[str(mapping[key])] != 1:
+                gap(key, 'ambiguous_identity_translation', str(mapping[key]))
+            else:
+                current = str(mapping[key])
+                candidates = by_id.get(current, [])
+                if not candidates:
+                    gap(key, 'missing_current_work', current)
+                elif len(candidates) != 1:
+                    gap(key, 'ambiguous_current_identity', current)
+                else:
+                    members.append(candidates[0])
+                    if not group(candidates)['covered']:
+                        gaps.append(dict(work_id=key, remaining_id=current,
+                                         kind='unknown_time'))
+        # Older/incomplete projections cannot turn omitted membership into0/0.
+        for _ in range(max(0, item.get('total', 0)-len(ids))):
+            gap(None, 'missing_reference_membership')
+        forecast = group(members)
+        forecast.update(gaps=gaps, excluded=excluded,
+                        reference_total=item.get('total', len(ids)),
+                        reference_scope=state.get('scope_label'),
+                        id_scope=identity.get('id_scope'),
+                        source_sha256=state.get('source_sha256'),
+                        full_source_sha256=identity.get('full_source_sha256'))
+        item['forecast'] = forecast

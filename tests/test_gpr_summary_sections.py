@@ -105,8 +105,13 @@ def test_native_page_groups_pir_and_displays_totals_and_dates_with_closed_work_l
         total=page.locator('#gprMatrix .readiness-total')
         expect(total.locator('td strong')).to_have_text(['20,0%','80,0%'])
         expect(total.locator('.readiness-cell-forecast')).to_have_text(['03.02.2027']*2)
+        expect(total.locator('.readiness-forecast-label')).to_have_text(['При плановом темпе']*2)
+        for label in total.locator('.readiness-forecast-label').all():
+            expect(label).to_be_visible()
         expect(page.locator('.readiness-project-total')).to_contain_text('68,0%')
         expect(page.locator('.readiness-project-total .readiness-cell-forecast')).to_be_visible()
+        expect(page.locator('.readiness-project-total .readiness-forecast-label')).to_have_text('При плановом темпе')
+        expect(page.locator('.readiness-project-total .readiness-forecast-label')).to_be_visible()
         expect(page.locator('.readiness-corpus-assumption')).to_contain_text('ПИР и паркинг в неё не включены')
         expect(page.locator('.readiness-project-coverage')).to_be_visible()
         expect(page.locator('.readiness-project-coverage')).to_contain_text('25,0%')

@@ -346,7 +346,8 @@ def model(work_fact, *, cut, baseline_scope, source_sha256, profile=None, full_r
             group_reason = 'Есть незавершённая работа с нулевым весом;100%веса не подтверждают завершение всех работ.'
         return {'name': name, 'progress': value, 'counts': counts, 'total': len(rows), 'known_readings': eligible_count,
                 'numeric_readings': numeric, 'known_weights': len(own_weights), 'requires_reconciliation': reconcile,
-                'source_dates': sorted(dates), 'sources': sorted(sources), 'reason': group_reason}
+                'source_dates': sorted(dates), 'sources': sorted(sources), 'reason': group_reason,
+                'work_ids': [row['id'] for row in rows]}
     corpora = {}
     for row in entries:
         corpora.setdefault(row.get('object') or 'Общие работы', []).append(row)
@@ -374,6 +375,15 @@ def model(work_fact, *, cut, baseline_scope, source_sha256, profile=None, full_r
             group['partial'] = True
             group['reason'] = ' '.join(filter(None, (CURRENT_ESTIMATE_NOTE, group['reason'])))
         result['reason'] = result['project']['reason']
+    # Projection groups use full-source IDs for an active profile. Display
+    # rows retain current-source IDs, even when the same strings mean other
+    # works. Only the validated crosswalk may bridge those namespaces.
+    result['forecast_identity'] = dict(
+        id_scope='full_source' if active else 'current_source',
+        source_sha256=source_sha256,
+        full_source_sha256=profile.get('full_source_sha256') if active else None,
+        remaining_ids={str(row['id']): reverse.get(row['id']) if active else row['id']
+                       for row in entries})
     return result
 
 
@@ -543,7 +553,7 @@ def render(state):
         if forecast.get('finish'):
             out.append('<p class="readiness-project-forecast"><b>При плановом темпе: '+esc(date_text(forecast['finish']))+'</b> · сроки известны для '+str(forecast['covered'])+' из '+str(forecast['total'])+' работ. Это не прогноз РНВ.</p>')
         if project.get('partial'):
-            out.append('<p>Оценка по известной части состава.</p>')
+            out.append('<p>Оценка по известной части состава. '+esc(project['reason'])+'</p>')
     elif known:
         out.append('<details class="readiness-project-gap readiness-gap"><summary>Общий показатель проекта пока не определён</summary><p>'+esc(state['reason'])+'</p><p>'+esc(facts(project))+'</p><p>'+esc(evidence(project))+'</p></details>')
     else:

@@ -106,6 +106,7 @@ def weights(config, rows):
 
 
 def projection(entries, config, *, cut, confirmed):
+    declared_scope = config is not None
     config = config or dict(id=PROFILE_ID, overrides={}, assignments={}, objects={})
     rows = {row['id']: row for row in entries}
     weight_map, weight_reasons = weights(config, rows)
@@ -222,8 +223,22 @@ def projection(entries, config, *, cut, confirmed):
     # A malformed source must not turn a bounded work list into millions of cells.
     shown_objects, shown_stages = objects[:32], stages[:100]
     matrix = [dict(stage=stage, cells=[group(obj, indexed.get((obj, stage), [])) for obj in shown_objects]) for stage in shown_stages]
+    # Calendar membership follows explicit scope, not the availability of a
+    # numerical weight. Unknown classification is a gap, never an inferred
+    # residential construction work or a silently omitted denominator.
+    forecast_scope = {}
+    for row in entries:
+        obj = row.get('object') or 'Общие работы'
+        assigned = row['id'] in config['assignments']
+        if config['objects'].get(obj) == 'separate':
+            forecast_scope[str(row['id'])] = dict(status='excluded', reason='separate_scope')
+        elif declared_scope and row.get('construction_work') is False and not assigned:
+            forecast_scope[str(row['id'])] = dict(status='excluded', reason='nonconstruction_scope')
+        elif declared_scope and not assigned and row.get('construction_work') is not True:
+            forecast_scope[str(row['id'])] = dict(status='gap', reason='unclassified_scope')
     return dict(project=group('Проект', entries, True, project=True), corpora=[group(obj, by_object[obj], True) for obj in objects],
                 matrix=matrix, matrix_objects=shown_objects, matrix_truncated=len(objects)>32 or len(stages)>100,
+                forecast_scope=forecast_scope,
                 share_total=nominal, manual=bool(config['overrides']),
                 project_weight_basis=corpus_basis,
                 project_weight_estimated=bool(manual_corpora),
@@ -239,7 +254,7 @@ def render_matrix(state):
         from developaid_schedule_visual import date_text
         text = 'Выполнено' if value.get('all_complete') else date_text(value['finish']) if value.get('finish') else 'Нет срока'
         title = value.get('note', '')+' Учтено '+str(value['covered'])+' из '+str(value['total'])+' работ.'
-        return '<span class="readiness-cell-forecast" title="'+esc(title)+'">'+esc(text)+'</span><small class="readiness-forecast-coverage">'+str(value['covered'])+'/'+str(value['total'])+' работ</small>'
+        return '<small class="readiness-forecast-label">'+esc(value.get('label') or 'При плановом темпе')+'</small><span class="readiness-cell-forecast" title="'+esc(title)+'">'+esc(text)+'</span><small class="readiness-forecast-coverage">'+str(value['covered'])+'/'+str(value['total'])+' работ</small>'
     def cell(row):
         if not row['total']:
             return '<td class="readiness-cell-empty">—</td>'
