@@ -152,13 +152,16 @@ def _apply_gpr(project: str, view: dict[str, Any], cut: datetime.date) -> dict[s
     """PM is off (owner): forecasts from the GPR and cumulative KS, never money."""
     schedule = view.setdefault("schedule", {})
     rows = schedule.get("rows") or []
+    # Calendar omissions remain works with dated factual evidence. They do not
+    # enter the calendar/RNV calculation, whose missing-calendar guard remains.
+    display_rows = rows + (schedule.get("undated_works") or [])
     physical = gpr_physical.build(project, cut.isoformat())
     ks = {task["task_id"]: task for task in physical.get("tasks") or []
           if (task.get("scope_confirmed") and task.get("mode") in {"quantities", "completed"})
           or (task.get("source_conflict") or {}).get("scope") == "source_cohort"}
-    works = gpr_forecast.forecasts(project, cut, rows, ks)
+    works = gpr_forecast.forecasts(project, cut, display_rows, ks)
     stalled = []
-    for row in rows:
+    for row in display_rows:
         tid = str(row.get("id") or row.get("wbs") or "").strip()
         item = works.get(tid) or {}
         # Работа только с планом (темпа нет) прогноза не имеет: срок плана не
@@ -215,6 +218,7 @@ def _apply_gpr(project: str, view: dict[str, Any], cut: datetime.date) -> dict[s
         if origin not in {"cumulative_quantities", "cumulative_statement", "confirmed_completion"}:
             row.update(gpr_progress=item.get("progress"), gpr_progress_origin=origin,
                        gpr_progress_date=item.get("progress_date"))
+        row['display_progress'] = schedule_work_fact.primary_fact(row)
         row.pop("dependencies", None)
         row.pop("delay_reason", None)
         if item.get("method") == "stalled":
@@ -235,7 +239,7 @@ def _apply_gpr(project: str, view: dict[str, Any], cut: datetime.date) -> dict[s
                     "progress_source", "progress_reason", "gpr_progress", "gpr_progress_origin", "gpr_progress_date",
                     "progress_date_basis", "progress_basis", "observation_history",
                     "requires_reconciliation", "observed_complete_by", "work_done", "finished_late_days",
-                    "forecast_finish", "forecast_known", "forecast_source", "forecast_reason", "delta_days", "status"):
+                    "forecast_finish", "forecast_known", "forecast_source", "forecast_reason", "delta_days", "status", "display_progress"):
             node[key] = src.get(key)
         node["source_conflict"] = src.get("source_conflict")
         node.pop("dependencies", None)
@@ -257,7 +261,17 @@ def _apply_gpr(project: str, view: dict[str, Any], cut: datetime.date) -> dict[s
                                        "confirmation": {}, "basis": "gpr", "physical": physical}
     schedule["physical_progress"] = physical
     schedule["completed_facts"] = physical.get("completed_facts")
-    schedule["work_fact"] = schedule_work_fact.model(rows, physical)
+    schedule["work_fact"] = schedule_work_fact.model(display_rows, physical)
+    import developaid_schedule_readiness as readiness
+    schedule['readiness'] = readiness.build(project, cut.isoformat(), schedule)
+    schedule['readiness_html'] = readiness.render(schedule['readiness'])
+    if schedule.get('completed_facts') is not None:
+        summary = schedule['readiness']['project']
+        # This legacy field means the whole scope. A known weighted fraction
+        # stays in readiness with its coverage, never masquerades as the whole.
+        schedule['completed_facts']['overall_progress'] = None if summary.get('partial') else summary['progress']
+        schedule['completed_facts']['overall_progress_basis'] = schedule['readiness']['scope_label']
+        schedule['completed_facts']['overall_progress_reason'] = summary.get('reason') or ''
     schedule["gpr_forecasts"] = works
     schedule.update(basis="gpr", forecast_state=qualified["state"],
                     forecast_end=qualified.get("forecast"), pace_forecast_end=qualified.get("forecast"),

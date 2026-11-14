@@ -233,14 +233,16 @@ def test_explicitly_confirmed_completion_is_a_dated_fact_without_a_forecast_tail
 
 
 @pytest.mark.parametrize('width', [390, 1440])
-def test_gantt_opens_collapsed_to_corpora_and_expands_on_click(width):
-    """Владелец: по умолчанию всё свёрнуто; корпус и этап раскрываются нажатием."""
+def test_gantt_opens_works_and_retains_corpus_and_stage_collapse_controls(width):
+    """Current brief: visible work progress on first render, with collapse controls."""
     from playwright.sync_api import expect
     with browser_page(width) as (page, responses, errors):
         page.evaluate("(v)=>{currentView=v;msg('viewMsg','');renderDash(v);renderGantt(v)}", monitor_view())
         corpora = page.locator('#gantt .g-row.lvl-corpus')
         expect(corpora.first).to_be_visible()
-        assert page.locator('#gantt .g-row.lvl-stage, #gantt .g-row.lvl-task').count() == 0
+        assert page.locator('#gantt .g-row.lvl-task:visible').count() == 3
+        page.locator('#ganttCollapse').click()
+        assert page.locator('#gantt .g-row.lvl-task').count() == 0
         expect(corpora.first.locator('.chev')).to_have_text('▸')
         corpora.first.click()
         expect(page.locator('#gantt .g-row.lvl-stage').first).to_be_visible()
@@ -251,8 +253,8 @@ def test_gantt_opens_collapsed_to_corpora_and_expands_on_click(width):
 
 
 @pytest.mark.parametrize('width', [390, 1440])
-def test_stage_by_corpus_summary_sits_above_the_gantt_and_opens_the_tapped_stage(width):
-    """Владелец: над графиком — сводка «этап × корпус»; клетка открывает этап."""
+def test_work_plan_replaces_matrix_and_all_corpora_expand_without_losing_completion(width):
+    """The current GPR is the main surface; source evidence follows the chart."""
     from playwright.sync_api import expect
     view = monitor_view('partial')
     control = view['schedule']['management'][0]
@@ -266,29 +268,16 @@ def test_stage_by_corpus_summary_sits_above_the_gantt_and_opens_the_tapped_stage
             dict(base, id='9', wbs='0.1', object='Корпус 1', name='Рабочая документация', pace_forecast_method='plan', pace_forecast_known=False, forecast_known=False, forecast_finish=None, delta_days=None)]}]})
     with browser_page(width) as (page, responses, errors):
         page.evaluate("(v)=>{currentView=v;msg('viewMsg','');renderDash(v);renderGantt(v)}", view)
-        matrix = page.locator('#gprMatrix table')
-        expect(matrix).to_be_visible()
-        assert matrix.bounding_box()['y'] < page.locator('#gantt').bounding_box()['y']
-        heads = matrix.locator('thead th')
-        assert heads.all_inner_texts() == ['Этап', 'Корпус 1', 'Корпус 2', 'Корпус 3']
-        rows = matrix.locator('tbody tr')
-        assert [r.locator('th').inner_text() for r in rows.all()] == ['Весь корпус', 'Проектирование', 'Строительные работы']
-        cells = lambda i: [c.inner_text().replace('\n', ' ') for c in rows.nth(i).locator('td').all()]
-        # Без прогноза: стоящая, старый денежный темп, только план (Корпус 1), устаревший ГПР (Корпус 2).
-        assert cells(0) == ['+19 дн. у 3 работ нет прогноза, 1 стоит', '+12 дн. у 1 работы нет прогноза', 'Готово']
-        assert cells(1) == ['Срок пока не оценить у 1 работы нет данных о темпе', '—', '—']
-        assert cells(2) == ['+19 дн. у 2 работ нет прогноза, 1 стоит', '+12 дн. у 1 работы нет прогноза', 'Готово']
-        assert page.locator('#gantt .g-row.lvl-task').count() == 0  # the Gantt itself stays collapsed
-        page.locator('#gprMatrix').screenshot(path=f'/tmp/plato-gpr-matrix-top-{width}.png')
+        assert page.locator('#gprMatrix, .gpr-matrix').count() == 0
+        assert page.locator('#gantt .g-row.lvl-task:visible').count() == 7
         done = page.locator('#gantt .g-row.lvl-corpus', has_text='Корпус 3')
-        expect(done).to_contain_text('Все работы завершены')  # the row agrees with the «Готово» cell
+        expect(done).to_contain_text('Все работы завершены')
         expect(done).not_to_contain_text('Оценка')
-        rows.nth(2).locator('td').nth(1).locator('button').click()
+        page.locator('#ganttCollapse').click()
+        assert page.locator('#gantt .g-row.lvl-task').count() == 0
+        page.locator('#ganttExpand').click()
         expect(page.locator('#gantt .g-row.lvl-task', has_text='Кровля')).to_be_visible()
-        assert page.locator('#gantt .g-row.lvl-task').count() == 2  # only Корпус 2 · Строительные работы
-        expect(page.locator('#gantt .g-row.selected')).to_contain_text('Строительные работы')
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
-        page.screenshot(path=f'/tmp/plato-gpr-matrix-{width}.png', full_page=False)
         assert not errors
 
 
@@ -308,11 +297,6 @@ def test_cell_and_corpus_row_agree_on_finished_late_no_forecast_and_current_dela
         dict(done, id='4', object='Корпус 3', name='Сваи', actual_finish='2026-12-31', forecast_finish='2026-12-31', delta_days=30, finished_late_days=30)]
     with browser_page(1440) as (page, responses, errors):
         page.evaluate("(v)=>{currentView=v;msg('viewMsg','');renderDash(v);renderGantt(v)}", view)
-        rows = page.locator('#gprMatrix tbody tr')
-        assert [c.inner_text().replace('\n', ' ') for c in rows.nth(0).locator('td').all()] == [
-            'Срок пока не оценить у 1 работы нет прогноза',
-            'По сроку Среди законченных работ: закончено на 50 дн. позже плана',
-            'Готово Среди законченных работ: закончено на 30 дн. позже плана']
         corpus = lambda name: page.locator('#gantt .g-row.lvl-corpus', has_text=name)
         expect(corpus('Корпус 2')).to_contain_text('По сроку')
         # У корпуса — «среди законченных работ», чтобы не читалось как окончание всего корпуса.
@@ -347,8 +331,7 @@ def test_the_page_takes_done_from_the_server_and_keeps_a_100_percent_reading_out
         # Дата показания 100% (07.10) отлична от плановых дат образца и не
         # появляется нигде в строке корпуса, включая подписи дат телефона.
         expect(first).not_to_contain_text('07.10.2026')
-        cells = [c.inner_text().replace('\n', ' ') for c in page.locator('#gprMatrix tbody tr').nth(0).locator('td').all()]
-        assert cells == ['По сроку', '+19 дн.']
+        assert page.locator('#gprMatrix').count() == 0
         assert not errors
 
 
@@ -398,8 +381,7 @@ def test_a_work_with_only_a_plan_and_no_pace_is_not_on_time(tmp_path, monkeypatc
     with browser_page(1440) as (page, responses, errors):
         page.evaluate("(v)=>{currentView=v;msg('viewMsg','');renderGantt(v)}",
                       {'cut': cut.isoformat(), 'schedule': {'management': view['schedule']['management']}})
-        cells = [c.inner_text().replace('\n', ' ') for c in page.locator('#gprMatrix tbody tr').nth(0).locator('td').all()]
-        assert cells == ['Срок пока не оценить у 1 работы нет данных о темпе']
+        assert page.locator('#gprMatrix').count() == 0
         corpus = page.locator('#gantt .g-row.lvl-corpus')
         expect(corpus).to_contain_text('пока не оценить: у 1 работы нет данных о темпе.')
         expect(corpus).to_contain_text('Без данных о темпе: Каркас.')
@@ -425,7 +407,7 @@ def test_works_left_out_for_unreadable_dates_are_named_above_the_gantt(width):
         render(page, view)
         notice = page.locator('#gprUndated')
         expect(notice).to_be_visible()
-        expect(notice).to_contain_text('2 работы не попали в график: в утверждённом ГПР у них нет понятных дат.')
+        expect(notice).to_contain_text('У 2 работ нужно проверить плановые даты.')
         expect(notice).to_contain_text('КОРПУС 1 · Фасады · Каркас / Утеплитель: '
                                        'окончание «31.06.2027» не распознано (лист «ГПР», ячейка G45).')
         expect(notice).to_contain_text('лист «ГПР», ячейка J45')
@@ -445,14 +427,14 @@ def test_one_undated_work_reads_in_the_singular_and_an_empty_plan_has_one_reason
         view['schedule']['undated_works'] = undated
         render(page, view)
         notice = page.locator('#gprUndated')
-        expect(notice).to_contain_text('1 работа не попала в график: в утверждённом ГПР у неё нет понятной даты.')
-        expect(notice).to_contain_text('Пока дата не исправлена, у этой работы нет ни полосы на графике, ни прогноза.')
+        expect(notice).to_contain_text('У 1 работы нужно проверить плановые даты.')
+        expect(notice).to_contain_text('Работы и известное выполнение показаны ниже.')
         expect(notice).not_to_contain_text('ни у одной работы')
         empty = {'cut': '2026-11-08', 'schedule': {'management': [], 'rows': [], 'undated_works': undated,
-                 'reason': 'График загружен, но ни у одной работы нет понятных дат, поэтому график пуст.'}}
+                 'reason': 'В ГПР нет полных корректных дат. Работы и известные проценты доступны; плановые полосы пока построить нельзя.'}}
         render(page, empty)
         expect(notice).to_be_visible()
-        expect(notice).to_contain_text('График загружен, но ни у одной работы нет понятных дат, поэтому график пуст.')
+        expect(page.locator('#gantt .lvl-task')).to_contain_text('Монтаж НВФ')
         expect(page.locator('#gprEmpty')).to_be_hidden()
         assert 'нет работ утверждённого ГПР' not in page.locator('#monitorPanel').inner_text()
         assert not errors
@@ -473,8 +455,7 @@ def test_corpus_names_why_each_work_has_no_forecast_with_the_work_row_words():
         dict(base, id='4', name='Кровля', delta_days=0, forecast_finish='2026-12-01')]
     with browser_page(1440) as (page, responses, errors):
         page.evaluate("(v)=>{currentView=v;msg('viewMsg','');renderDash(v);renderGantt(v)}", view)
-        cell = page.locator('#gprMatrix tbody tr').nth(0).locator('td').first
-        assert cell.inner_text().replace('\n', ' ') == 'Срок пока не оценить у 3 работ нет прогноза, 1 стоит'
+        assert page.locator('#gprMatrix').count() == 0
         corpus = page.locator('#gantt .g-row.lvl-corpus')
         expect(corpus).to_contain_text('Срок корпуса пока не оценить: у 3 работ нет прогноза срока.')
         expect(corpus).to_contain_text(
@@ -493,8 +474,7 @@ def test_corpus_names_why_each_work_has_no_forecast_with_the_work_row_words():
         dict(none, id='2', name='Окна', pace_forecast_method='stalled')]
     with browser_page(1440) as (page, responses, errors):
         page.evaluate("(v)=>{currentView=v;msg('viewMsg','');renderDash(v);renderGantt(v)}", view)
-        cell = page.locator('#gprMatrix tbody tr').nth(0).locator('td').first
-        assert cell.inner_text().replace('\n', ' ') == 'Срок пока не оценить у 2 работ нет прогноза, 1 стоит'
+        assert page.locator('#gprMatrix').count() == 0
         corpus = page.locator('#gantt .g-row.lvl-corpus')
         expect(corpus).to_contain_text('Без прогноза: Фасад — нет данных о темпе; Окна — работа стоит.')
         assert not errors

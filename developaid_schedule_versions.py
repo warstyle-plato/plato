@@ -154,7 +154,7 @@ def _atomic(path: Path, data: bytes):
 def approve(folder: Path, legacy: Path | None, data: bytes, *, expected_previous_sha256: str,
             expected_source_sha256: str, effective_from: str, author: str = '',
             owner_rnv_date=None, owner_rnv_note=None, expected_owner_rnv_revision=None,
-            baseline_scope=None):
+            baseline_scope=None, expected_revision=None):
     source_sha = digest(data)
     if not _SHA.fullmatch(expected_previous_sha256 or '') or not _SHA.fullmatch(expected_source_sha256 or ''):
         raise ValueError('Сначала проверьте выбранную версию ГПР перед утверждением.')
@@ -178,6 +178,9 @@ def approve(folder: Path, legacy: Path | None, data: bytes, *, expected_previous
         if day < now.date():
             raise ValueError('Новая версия или решение владельца не могут менять прошлые срезы.')
         current = state(folder, legacy)
+        if expected_revision is not None and (type(expected_revision) is not int
+                or len(current['versions']) != expected_revision):
+            raise ScheduleVersionConflict('Ревизия утверждённого плана изменилась. Проверьте источник заново.')
         if not current['source_sha256']:
             raise ValueError('Сначала загрузите первый утверждённый план проекта.')
         if current['latest_source_sha256'] != expected_previous_sha256:

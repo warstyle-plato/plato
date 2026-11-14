@@ -92,6 +92,14 @@ def call(method: str, path: str, session: str = "", key: str = "",
                  "snapshot_id": "2026-10-22-" + "a" * 64,
                  "calendar_basis": "unconfirmed"}
     out.update(_ENDPOINT_PAYLOADS.get((method, path), {}))
+    if path in {'/monitor/schedule/saved-source-preview', '/monitor/schedule/saved-source-approve'}:
+        out = {'project': 'проверка', 'session': session, 'key': key, 'source_sha256': 'a'*64,
+               'expected_active_sha256': 'b'*64, 'expected_revision': 0, 'effective_from': '2026-11-12'}
+    elif path == '/monitor/readiness/editor':
+        out = {'project': 'проверка', 'session': session, 'key': key}
+    elif path in {'/monitor/readiness/profile-preview', '/monitor/readiness/profile-save'}:
+        out = {'project': 'проверка', 'session': session, 'key': key, 'configuration': {},
+               'expected_source_sha256': 'a'*64, 'expected_source_revision': 0, 'expected_revision': 0}
     route = _route(method, path)
     dependant = getattr(route, "dependant", None)
     if method == "GET":

@@ -12,10 +12,26 @@ def test_manager_gantt_is_default_and_sources_are_explicit():
 
 
 def test_gpr_tasks_show_plan_fact_and_forecast_shift():
-    assert "Выполнено по ГПР" in MONITOR_PAGE
-    assert "К дате по длительности ${pct(planRatio)}. ${progress.label}: ${pct(ratio)}" in MONITOR_PAGE
-    assert "План до ${dt(n.plan_finish)}" in MONITOR_PAGE
-    assert "Оценка неизвестна" in MONITOR_PAGE
+    """Measure actual PAGE bars and dated facts, rather than a JS literal."""
+    import pytest
+    from playwright.sync_api import expect
+    from test_monitor_cumulative_controls import browser_page
+    from test_monitor_gpr_sections import monitor_view
+    with browser_page(390) as (page, responses, errors):
+        page.evaluate('(v)=>renderGantt(v)', monitor_view())
+        work = page.locator('#gantt .lvl-task', has_text='Монтаж фасада')
+        expect(work).to_contain_text('Выполнено по ГПР: 40% от 06.11.2026')
+        expect(work).to_contain_text('План до 01.12.2026')
+        expect(work).to_contain_text('Оценка 20.12.2026')
+        plan, fact = work.locator('.planbar').bounding_box(), work.locator('.factbar').bounding_box()
+        assert fact['width']/plan['width'] == pytest.approx(.4, abs=.01)
+        assert work.locator('.forecastmark,.latebar').count() == 2
+        zero = page.locator('#gantt .lvl-task', has_text='Внутренние работы')
+        expect(zero).to_contain_text('Выполнено по ГПР: 0%')
+        expect(zero).to_contain_text('Оценка неизвестна')
+        assert zero.locator('.forecastmark,.latebar,.aheadbar').count() == 0
+        expect(zero).not_to_contain_text('2031')
+        assert not errors
 
 
 def test_platon_forecast_leads_with_drivers_and_model_confidence():

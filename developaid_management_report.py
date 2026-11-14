@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any
 
 import developaid_actuals as actuals
+import developaid_admin_expenses as admin_expenses
 import developaid_credit_repayment as credit_repayment
 import developaid_monitor as monitor
 import developaid_funding_schedule as funding_schedule
@@ -1148,6 +1149,7 @@ def gantt(view: dict[str, Any], dashboard: dict[str, Any]) -> dict[str, Any]:
     result["dependency_timeline"] = schedule_view.get("dependency_timeline")
     result["corpus_gpr"] = schedule_view.get("corpus_gpr")
     result["work_fact"] = schedule_view.get("work_fact")
+    result["readiness"] = schedule_view.get("readiness")
     result["version_comparison"] = {"state": "not_calculated"}
     result["source"] = {"basis": schedule_view.get("basis"),
                         "fact": schedule_view.get("fact_source"),
@@ -1800,6 +1802,8 @@ def build(project: str, kind: str, end: Any, sales_project: str | None = None,
         view = {}
         dashboard = {"error": f"{type(exc).__name__}: {exc}"}
     for name, collect in (
+            ("admin_expenses", lambda: view.get("admin_expenses") or
+                admin_expenses.for_project(project, bounds["end"].isoformat())),
             ("physical", lambda: physical(project, kind, bounds["end"])),
             ("crew", lambda: crew(project, kind, bounds["end"])),
             ("schedule", lambda: schedule(dashboard)),
@@ -3468,6 +3472,12 @@ def render_text(report: dict[str, Any]) -> str:
         lines.append(esc(block.get("reason") or "Данных нет."))
 
     lines += ["", "<b>Финансирование</b>"]
+    admin = report.get("admin_expenses") or admin_expenses.unavailable("Расшифровка АХР не получена.")
+    lines.append("<b>Административные расходы · статья 2.6</b>")
+    lines.extend(f"{esc(item['label'])}: {esc(item['value'])}. {esc(item['note'])}"
+                 for item in admin_expenses.tiles(admin))
+    lines.append(esc(admin_expenses.NOTE))
+    lines.append(esc(admin_expenses.BANK_NOTE))
     lines += [esc(line) for line in _funding_text(report)]
     lines.append(esc("Погашение кредитов: " + credit_main(report.get("credit_due") or {})))
 
@@ -4186,7 +4196,7 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
          if sections else
          (_by_chapter_words(limit.get("approved_by_chapter")) or "по финмодели")) if need
         else ("; ".join((limit.get("reconciliation") or {}).get("reasons") or [])
-              or limit.get("reason") or "финансовая книга не загружена"),
+              or limit.get("reason") or admin_expenses.availability_note(report.get("admin_expenses") or {})),
         hint=" ".join(_budget_hint(limit)) if limit.get("known") else "")
     draws = block.get("draws") if block.get("state") == "ok" else None
     # Плашки складываются (владелец, 02.11.2026): «лимит банка» — смета, в неё
@@ -4291,6 +4301,8 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
             "bad" if need["deficit"] > 0 else "good")
     else:
         add("Дефицит на достройку", None, limit.get("reason") or "утверждённый бюджет не загружен")
+    out.extend(admin_expenses.tiles(report.get("admin_expenses") or
+        admin_expenses.unavailable("Расшифровка АХР не получена.")))
     if limit.get("known") or limit.get("source_dates"):
         import developaid_monitor_dashboard as dashboard
 
@@ -4365,10 +4377,14 @@ def _executive_schedule(report: dict[str, Any]) -> dict[str, Any]:
 
 def _gantt_html(report: dict[str, Any]) -> str:
     block = report.get("gantt") or {}
-    out = ["<h3>Сроки работ по корпусам</h3>"]
+    import developaid_schedule_readiness as readiness
+    out = [readiness.render(block.get("readiness")), "<h3>Сроки работ по корпусам</h3>"]
     import developaid_gpr_corpus as corpus_gpr
+    completed_history = ''
     if block.get("dependency_timeline"):
-        executive = _executive_schedule(report)
+        executive = dict(_executive_schedule(report))
+        completed_history = executive.get('completed_facts_html') or ''
+        executive['completed_facts_html'] = ''
         out.append(report_schedule.render(executive))
         out.append('<details class="report-source-screen"><summary>Источники и ограничения оценки</summary>'
                    + _schedule_source_details(report) + '</details>')
@@ -4379,13 +4395,16 @@ def _gantt_html(report: dict[str, Any]) -> str:
                    corpus_gpr.render(block["corpus_gpr"])+"</details>")
     if block.get("state") != "ok":
         out.append(f"<p class='note'>{html.escape(block.get('reason') or 'Графика работ нет.')}</p>")
+        out.append(completed_history)
         return "".join(out)
     out.append(report_gantt.render(block, report.get("end"), explanations=False))
+    out.append(completed_history)
     return "".join(out)
 
 
 def _schedule_source_details(report: dict[str, Any]) -> str:
-    content = report_schedule.details(_executive_schedule(report))
+    content = report_schedule.details(_executive_schedule(report),
+        include_completed=not bool((report.get('gantt') or {}).get('dependency_timeline')))
     block = report.get("schedule") or {}
     content += ''.join("<p class='note'>" + html.escape(line) + "</p>"
                        for line in report_gantt.notes(report.get("gantt") or {}, block))
@@ -4930,6 +4949,8 @@ def render_html(report: dict[str, Any]) -> str:
         out.append(_sales_depth_html(report["sales"], report["kind"]))
 
     out.append(_block_heading("funding"))
+    out.append(admin_expenses.render(report.get("admin_expenses") or
+        admin_expenses.unavailable("Расшифровка АХР не получена."), show_tiles=False))
     out.append(_funding_html(report))
     out.append(_funding_chart(report))
     out.append(_funding_depth_html(report))

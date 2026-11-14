@@ -39,8 +39,18 @@ def _serve(page, listing, calls):
 
 
 def _open(page):
+    if page.locator('#contractDialog').evaluate('d=>d.open'):
+        page.locator('#contractDialogClose').click()
     page.locator("#contractsTab").click()
     page.locator(f'tr[data-contract-id="{CONTRACT}"] .contract-open').click()
+    page.locator('#contractComparison[aria-busy="false"]').wait_for(state='attached')
+    # Source-specific reader tests deliberately expand the new closed source
+    # hierarchy; the modal tests separately assert its default closed state.
+    page.locator('#contractDocumentList > summary').click()
+    for document in page.locator('#contractDocuments .contract-document').all():
+        document.locator(':scope > summary').click()
+        for section in document.locator(':scope > .contract-document-level').all():
+            section.locator(':scope > summary').click()
 
 
 @pytest.mark.parametrize("width", [390, 1440])

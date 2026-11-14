@@ -242,11 +242,16 @@ def test_corpus_view_keeps_one_selected_plan_across_another_workers_approval(api
     monkeypatch.setattr(monitor, '_working_baseline_file', select_then_approve)
     first = post(client, 'gpr-corpus/view', project=PROJECT, cut=TODAY)
     assert first.status_code == 200
-    assert first.json() == {'source': None, 'html': ''}
+    assert first.json()['source'] is None
+    first_plan = first.json()['source_state']['selected_plan']
+    assert first_plan['revision'] == 0
+    assert first_plan['source_sha256'] == hashlib.sha256(monitor._legacy_baseline_file(PROJECT).read_bytes()).hexdigest()
     assert first.headers['cache-control'] == 'private, no-store'
     next_read = post(client, 'gpr-corpus/view', project=PROJECT, cut=TODAY)
     assert next_read.status_code == 200
     assert next_read.json()['source']['sha256'] == hashlib.sha256(new).hexdigest()
+    assert next_read.json()['source_state']['selected_plan']['source_sha256'] == hashlib.sha256(new).hexdigest()
+    assert next_read.json()['source_state']['selected_plan']['revision'] == 1
     assert next_read.json()['source']['baseline_approved']
     assert next_read.json()['source']['working_source_state'] == 'approved'
 
