@@ -265,6 +265,8 @@ def expand_gantt(page) -> None:
     открывает и карточку подробностей; если она открылась, помощник закрывает
     её кнопкой «✕», как сделал бы человек, чтобы вернуться к графику.
     Видимость строк проверяют сами тесты; помощник только раскрывает."""
+    if page.locator('#gprCalendar').count():
+        page.locator('#gprCalendar').evaluate('(box)=>box.open=true')
     collapsed = page.locator('#gantt .g-row:is(.lvl-corpus,.lvl-stage)',
                              has=page.locator('.chev', has_text='▸'))
     clicked = False

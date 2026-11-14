@@ -71,6 +71,10 @@ def test_the_corpus_rule_is_the_monitor_one():
     assert gantt.corpus_of({"object": "корп. 2", "name": "Фасад"}) == "Корпус 2"
     assert gantt.corpus_of({"object": "Наружные сети"}) == "Наружные сети"
     assert gantt.corpus_of({"name": "Охрана"}) == "Общие работы"
+    # A work may mention a neighboring building; the explicit source object
+    # still owns the reading, in both the report and the browser matrix.
+    assert gantt.corpus_of({"object": "ПАРКИНГ", "name": "Примыкание к корпусу 1"}) == "ПАРКИНГ"
+    assert gantt.corpus_of({"object": "Корпус 2", "name": "Сеть корпуса 1"}) == "Корпус 2"
 
 
 def test_articles_by_corpus_with_plan_and_pace_forecast():
