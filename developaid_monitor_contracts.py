@@ -717,23 +717,9 @@ def _cumulative_money(physical: list[dict], warnings: list[str],
     return sum(value[0] for value in periods.values()), next(iter(bases)) if bases else "unspecified"
 
 
-def build(project: str, cut: str = "", *, include_history: bool = True) -> dict:
-    """The universe is the contracts explicitly present in uploaded documents."""
-    cut = _cut(cut)
-    if not str(project or "").strip():
-        raise ContractProblem("Выберите проект.")
-    snapshot = _archive(project, cut)
+def qualified_sources(snapshot: dict | None, cut: str) -> tuple[list, list, list]:
+    """The same source qualification serves the register and identity inventory."""
     archive_day = (snapshot or {}).get("taken_at")
-    warnings = []
-    if snapshot and (not _date(archive_day) or _date(archive_day) > cut):
-        warnings.append("Дата накопительного архива не подтверждена или позже среза; архив не включён в этот срез.")
-        snapshot, archive_day = None, None
-    if snapshot:
-        import developaid_monitor_ledgers as ledgers
-        try:
-            snapshot = ledgers.effective_snapshot(project, cut, snapshot=snapshot)
-        except ledgers.LedgerProblem as exc:
-            raise ContractProblem(str(exc)) from None
     primary, unresolved = [], []
     for original in (snapshot or {}).get("ledgers") or []:
         ledger = dict(original, kind="ledger", source_date=archive_day)
@@ -785,6 +771,27 @@ def build(project: str, cut: str = "", *, include_history: bool = True) -> dict:
                 'source_kind': 'closing_summary', 'included_in_register': True,
                 'reason': 'В сводной не подтверждена дата договора; денежный источник сохранён отдельно.'})
         primary.append(summary)
+    return primary, summary_sources, unresolved
+
+
+def build(project: str, cut: str = "", *, include_history: bool = True) -> dict:
+    """The universe is the contracts explicitly present in uploaded documents."""
+    cut = _cut(cut)
+    if not str(project or "").strip():
+        raise ContractProblem("Выберите проект.")
+    snapshot = _archive(project, cut)
+    archive_day = (snapshot or {}).get("taken_at")
+    warnings = []
+    if snapshot and (not _date(archive_day) or _date(archive_day) > cut):
+        warnings.append("Дата накопительного архива не подтверждена или позже среза; архив не включён в этот срез.")
+        snapshot, archive_day = None, None
+    if snapshot:
+        import developaid_monitor_ledgers as ledgers
+        try:
+            snapshot = ledgers.effective_snapshot(project, cut, snapshot=snapshot)
+        except ledgers.LedgerProblem as exc:
+            raise ContractProblem(str(exc)) from None
+    primary, summary_sources, unresolved = qualified_sources(snapshot, cut)
     rss, rss_day = [], None
     if primary:
         rss, rss_day, rss_warnings = _read_rss(project, cut)
