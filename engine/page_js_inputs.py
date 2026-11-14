@@ -25,6 +25,7 @@ PAGE += r"""const TERRITORY_MARKERS=['_glavapu_import','_other_region','_field_o
 const TERRITORY_CLEARED_LABELS={
  purchase_price_mln:'цена входа', land_rights_cost_mln:'плата за смену ВРИ',
  social_compensation_mln:'социальная компенсация', site_area_ha:'площадь участка',
+ mo_vri_compensation_mln:'компенсация по соглашению о плате за смену ВРИ',
  site_density_sqm_per_ha:'плотность', kindergarten_places:'места в ДОО',
  school_places:'места в школе', clinic_capacity:'мощность поликлиники',
  social_dou_gba_sqm:'площадь ДОО', social_school_gba_sqm:'площадь школы',
@@ -69,6 +70,7 @@ function resetTerritoryData(options){
   // району → 1,0): пустое поле — не ноль, и сброс ставит пустоту.
   inputs[key]=SITE_ONLY_INPUTS.includes(key)?'':0;
  });
+ syncMoCompensation();
  TERRITORY_MARKERS.forEach(key=>{delete inputs[key]});
  if(keepLeaseTerms)Object.assign(fieldOrigins(),leaseOrigins);
  STANDALONE_OBJECTS.forEach(o=>{inputs[o.prefix+'_enabled']=false});
@@ -725,6 +727,11 @@ function classFieldUnitText(id,unit){
   head=String(head||'').replace(/[\s.;·]+$/,'');
   return head?head+'. '+sentence:sentence;
  };
+ // Зачёт площадей вычитается вместе с компенсацией по соглашению о Ксу*;
+ // оба ли вписаны, решает движок (`offset_with_compensation`), поле
+ // предупреждает о двойном счёте одних и тех же метров.
+ if(id==='vri_transfer_offset_mln'&&(((lastResult||{}).vri||{}).totals||{}).offset_with_compensation)
+  return unitSentence(unit,'Вычитается вместе с компенсацией по соглашению с областью (Ксу*). Если эти метры входят в соглашение о Ксу*, их стоимость не должна стоять ещё и в сумме компенсации.');
  // Площадь сноса и выкуп, найденные по контуру КРТ, подписаны своим
  // происхождением, пока число в поле то же, что положил контур; исправленное —
  // уже ручное. Проверка внутри, а не своей функцией: стенды страницы собирают
