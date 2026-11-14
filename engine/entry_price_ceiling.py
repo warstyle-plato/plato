@@ -177,18 +177,31 @@ def _entry_price_weakest(bundle: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def entry_price_verdict(bundle: dict[str, Any]) -> dict[str, str]:
+    """Сумма аренды уже в модели — показываем результат с явной оговоркой.
+
+    Неизвестную аренду нельзя принять за нулевые затраты. Известное начисление
+    тоже не означает, что договор, НДС и сроки оплаты уже подтверждены.
+    """
+    result = bundle.get("consolidated") or {}
+    summary = result.get("summary") or {}
+    preliminary = bool(summary.get("preliminary"))
+    # Keep the canonical sum-state shared by the result row and all verdicts.
+    # A construction subtotal alone does not resolve post-RVE or VRI costs.
+    if preliminary and not (summary.get("land_rent_sum") or {}).get("known"):
+        return {"title": "Предварительная экономика: уточните аренду земли", "tone": "edge"}
+    verdict = _entry_price_metric_verdict(bundle)
+    if preliminary:
+        verdict["title"] = "Предварительно: " + verdict["title"][0].lower() + verdict["title"][1:]
+        if verdict["tone"] == "pass":
+            verdict["tone"] = "edge"
+    return verdict
+
+
+def _entry_price_metric_verdict(bundle: dict[str, Any]) -> dict[str, str]:
     """Заголовок карточки решения: проходит / на границе / не проходит —
     по показателю долга и его порогам из движка; без показателя — по прибыли."""
     result = bundle.get("consolidated") or {}
     summary = result.get("summary") or {}
-    # «Уточните аренду земли» уместно, только когда сумма аренды ещё не
-    # определена. Решает движок аренды (`summary.land_rent_sum`, тот же ответ
-    # читает строка «Аренда земли участка» на странице). Если предварительны
-    # лишь график оплаты или НДС, карточка говорит об экономике по факту,
-    # а оговорку несёт подпись под плитками (`preliminary_reason`).
-    # Нет ответа движка — сумма не считается определённой.
-    if summary.get("preliminary") and not (summary.get("land_rent_sum") or {}).get("known"):
-        return {"title": "Предварительная экономика: уточните аренду земли", "tone": "edge"}
     metric = goal_seek_debt_metric(bundle)
     if not metric.get("key"):
         ok = float(summary.get("net_profit") or 0) > 0

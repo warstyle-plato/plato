@@ -58,6 +58,11 @@ class MonitorContractDocuments(MonitorContractsBuild):
     contract_id: str = _CumulativeField(pattern=r"^[0-9a-f]{64}$")
 
 
+class MonitorContractSourceReview(MonitorContractDocuments):
+    # This operation never accepts a filename, worksheet, range, path or URL.
+    model_config = {"extra": "forbid"}
+
+
 class MonitorContractDocumentUpload(MonitorContractDocuments):
     filename: str = _CumulativeField(default="", max_length=240)
     content_base64: str = _CumulativeField(max_length=28 * 1024 * 1024)
@@ -136,6 +141,7 @@ _CUMULATIVE_PATHS = frozenset({
     "/monitor/cumulative/upload", "/monitor/cumulative/result",
     "/monitor/cumulative/list", "/monitor/contracts/build",
     "/monitor/contracts/result", "/monitor/contracts/term", "/monitor/contracts/link", "/monitor/contracts/header-date",
+    "/monitor/contracts/source-review",
     "/monitor/contracts/documents", "/monitor/contracts/document-upload",
     "/monitor/contracts/document-links", "/monitor/contracts/document-remove",
     "/monitor/contracts/document-confirm",
@@ -293,6 +299,10 @@ def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = 
                 payload["project"], payload["contract_id"], payload["deadline"], payload["note"])}
         elif operation == "header-date":
             result = {"header_date": contracts.confirm_header_date(**payload)}
+        elif operation == "source-review":
+            import developaid_contract_source_review as source_review
+            result = {"source_review": source_review.review(**payload),
+                      "runtime": {"version": VERSION, "commit": COMMIT}}
         elif operation == "link":
             result = {"link": links.set_link(
                 payload["project"], payload["contract_id"], payload["evidence_id"],
@@ -398,6 +408,8 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
                     payload.update(snapshot_id=req.snapshot_id, filename=req.filename,
                                    file_sha256=req.file_sha256, sheet=req.sheet, cell=req.cell,
                                    raw=req.raw, contract_date=req.contract_date, note=req.note)
+                elif operation == "source-review":
+                    payload.update(contract_id=req.contract_id)
                 elif operation == "link":
                     payload.update(contract_id=req.contract_id, evidence_id=req.evidence_id,
                                    confirmed=req.confirmed)
@@ -481,6 +493,11 @@ def monitor_contracts_header_date(req: MonitorContractsHeaderDate) -> Response:
 @app.post("/monitor/contracts/documents", include_in_schema=False)
 def monitor_contracts_documents(req: MonitorContractDocuments) -> Response:
     return _monitor_cumulative_job(req, family="contracts", operation="documents")
+
+
+@app.post("/monitor/contracts/source-review", include_in_schema=False)
+def monitor_contract_source_review(req: MonitorContractSourceReview) -> Response:
+    return _monitor_cumulative_job(req, family="contracts", operation="source-review")
 
 
 @app.post("/monitor/contracts/document-upload", include_in_schema=False)

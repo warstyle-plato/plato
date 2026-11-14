@@ -20,6 +20,7 @@ from __future__ import annotations
 import base64
 import json
 import sys
+from html.parser import HTMLParser
 from pathlib import Path
 
 import pytest
@@ -172,6 +173,135 @@ def test_the_dialogue_survives_the_other_worker(bot):
     engine._TELEGRAM_DIALOGS.pop(CHAT, None)
     engine._telegram_handle_dialog_text(CHAT, "1")
     assert "Вопрос 2 из 3" in bot[-1]["text"]
+
+
+class TelegramHTML(HTMLParser):
+    """Reject the incomplete markup that Telegram rejected in the incident."""
+
+    def __init__(self, text, *, bounded=True):
+        super().__init__(convert_charrefs=True)
+        self.stack, self.plain = [], []
+        self.feed(text)
+        self.close()
+        assert not self.stack, f"Telegram cannot find end tag: {self.stack}"
+        if bounded:
+            assert len(''.join(self.plain).encode('utf-16-le')) // 2 <= 4096
+
+    def handle_starttag(self, tag, attrs):
+        self.stack.append(tag)
+
+    def handle_endtag(self, tag):
+        assert self.stack and self.stack.pop() == tag
+
+    def handle_data(self, data):
+        self.plain.append(data)
+
+
+def test_long_final_card_after_elite_answer_is_complete_and_keeps_the_calculate_button(bot, monkeypatch):
+    engine._telegram_handle_intake_document(CHAT, b"%PDF", "synthetic.pdf")
+    _press("intake_questions")
+    _press(_buttons(bot[-1])[0]["callback_data"])
+    _press(_buttons(bot[-1])[0]["callback_data"])
+    dialog = engine._telegram_dialog_get(CHAT)
+    queue = engine._intake_queue_load(dialog['intake']['id'], request=engine._telegram_agent_request(CHAT))
+    queue['notes'] = [('Синтетическое пояснение ' + str(i) + ': ' + 'проверить & сверить <значение> 😀 ' * 12)
+                      for i in range(24)]
+    engine._intake_queue_save(queue)
+    original_send = engine._telegram_send_message
+
+    def validate_send(chat_id, text, **kwargs):
+        TelegramHTML(text)
+        return original_send(chat_id, text, **kwargs)
+
+    monkeypatch.setattr(engine, '_telegram_send_message', validate_send)
+    before = len(bot)
+    _press(_buttons(bot[-1])[2]["callback_data"])  # Элитный, последний вопрос.
+    parts = bot[before + 1:]  # The first message acknowledges the saved answer.
+    assert len(parts) > 1
+    assert 'Итог разбора перед расчётом' in parts[0]['text']
+    assert all(not _buttons(message) for message in parts[:-1])
+    assert [b['text'] for b in _buttons(parts[-1])] == ['Всё верно, считать']
+    session = _session(_buttons(parts[-1])[0]['web_app']['url'])
+    assert session['calc_overrides']['project_class'] == 'elite'
+    updated = engine._intake_queue_load(dialog['intake']['id'], request=engine._telegram_agent_request(CHAT))
+    card = engine.teaser_card_view(updated, dict(engine.DEFAULT_INPUTS),
+                                  {k: dict(v) for k, v in engine.TEP_DEFAULT.items()},
+                                  by_parcel=True, parcel_region=dialog['intake']['region'])
+    expected = engine._telegram_intake_card_text(card, first=False)
+    rendered = ''.join(''.join(TelegramHTML(p['text']).plain) for p in parts)
+    assert rendered.startswith(''.join(TelegramHTML(expected, bounded=False).plain))
+    assert 'Синтетическое пояснение 23' in rendered
+    assert len(updated['answers']) == 3 and updated['index'] == 3
+    assert not bot.parcels
+
+
+def test_calc_menu_can_return_to_the_saved_intake_without_reloading_the_document(bot):
+    engine._telegram_handle_intake_document(CHAT, b"%PDF", "synthetic.pdf")
+    _press('intake_questions')
+    engine._telegram_handle_dialog_text(CHAT, 'стоп')
+    saved = engine._telegram_dialog_get(CHAT)['intake']['id']
+    engine._TELEGRAM_DIALOGS.pop(CHAT, None)
+    engine._telegram_calc_menu(CHAT)
+    assert any(b.get('callback_data') == 'intake_questions' for b in _buttons(bot[-1]))
+    _press('intake_questions')
+    assert 'Итог разбора перед расчётом' in bot[-1]['text']
+    assert _buttons(bot[-1])[0]['text'] == 'Всё верно, считать'
+    assert engine._telegram_dialog_get(CHAT)['intake']['id'] == saved
+
+
+@pytest.mark.parametrize('text', [
+    '<b>Заголовок</b>\n<i>' + 'Сверить &amp; проверить &lt;число&gt; 😀 ' * 700 + '</i>',
+    '<b><i>' + '😀' * 5000 + '</i></b>',
+    '<b>Начало\n' + 'А' * 12000 + '\nконец</b>',
+])
+def test_intake_parts_preserve_all_text_and_never_split_entities_unicode_or_emphasis(text):
+    from telegram_intake_text import split_intake_html
+    parts = split_intake_html(text)
+    assert len(parts) > 1
+    assert all(len(part.encode('utf-16-le')) // 2 <= 3900 for part in parts)
+    actual = ''.join(''.join(TelegramHTML(part).plain) for part in parts)
+    # No Telegram limit is applied to the original, unfragmented test source.
+    parser = HTMLParser(convert_charrefs=True)
+    original = []
+    parser.handle_data = original.append
+    parser.feed(text)
+    parser.close()
+    assert actual == ''.join(original)
+
+
+def test_long_first_card_keeps_its_complete_text_before_the_questions_button(bot, monkeypatch):
+    extraction = json.loads(json.dumps(EXTRACTION))
+    extraction['notes'] = ['Первое чтение ' + str(i) + ': ' + 'проверить ' * 35 for i in range(24)]
+    monkeypatch.setattr(engine, 'plato_answer', lambda *_a: {'answer': json.dumps(extraction, ensure_ascii=False)})
+    original_send = engine._telegram_send_message
+    def validate_send(chat_id, text, **kwargs):
+        TelegramHTML(text)
+        return original_send(chat_id, text, **kwargs)
+    monkeypatch.setattr(engine, '_telegram_send_message', validate_send)
+    engine._telegram_handle_intake_document(CHAT, b'%PDF', 'synthetic.pdf')
+    parts = bot[1:]
+    assert len(parts) > 1
+    assert 'Что я прочитал в тизере' in parts[0]['text']
+    assert 'Первое чтение 23' in ''.join(p['text'] for p in parts)
+    assert all(not _buttons(p) for p in parts[:-1])
+    assert _buttons(parts[-1])[0]['callback_data'] == 'intake_questions'
+    assert not bot.parcels
+
+
+@pytest.mark.parametrize('chat_id,error,notified', [
+    (CHAT, 'Synthetic callback failure', True),
+    (-CHAT, 'Synthetic callback failure', False),
+    (CHAT, '429 Too Many Requests', False),
+])
+def test_callback_failure_is_visible_in_private_chat_but_not_in_groups_or_rate_limits(bot, monkeypatch, chat_id, error, notified):
+    def fail(_update):
+        raise RuntimeError(error)
+    monkeypatch.setattr(engine, '_telegram_handle_update', fail)
+    engine._telegram_process_update({'callback_query': {'from': {'id': CHAT},
+        'message': {'chat': {'id': chat_id, 'type': 'private' if chat_id > 0 else 'group'}}}})
+    assert bool(bot) is notified
+    if notified:
+        assert 'Не удалось завершить запрос' in bot[-1]['text']
 
 
 OTHER = "66:41:0000000:1"
