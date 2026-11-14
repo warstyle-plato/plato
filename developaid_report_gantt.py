@@ -33,6 +33,12 @@ _CORPUS = re.compile(CORPUS_PATTERN, re.IGNORECASE)
 
 
 def corpus_of(task: dict[str, Any]) -> str:
+    obj = str(task.get("object") or "").strip()
+    if obj and re.search(r"паркинг|parking", obj, re.I):
+        return obj
+    own = _CORPUS.search(obj)
+    if own:
+        return f"Корпус {own.group(1)}"
     parts = " ".join(str(task.get(key) or "") for key in ("object", "section", "name")
                      if task.get(key))
     found = _CORPUS.search(parts)

@@ -203,7 +203,11 @@ def test_real_monitor_rejects_pm_dates_and_keeps_current_gpr_dates_and_works(gpr
         expect(page.locator('#forecastCard')).to_contain_text('Недостаточно данных')
         expect(page.locator('#monitorPanel')).not_to_contain_text('16.02.2027')
         expect(page.locator('#monitorPanel')).to_contain_text('Пакет работ 24')
-        assert page.get_by_text('Пакет работ 24', exact=True).count() == 4
+        assert page.locator('#gantt .g-label .title').filter(has_text=re.compile(r'^Пакет работ 24$')).count() == 4
+        page.locator('#gprFactMatrix .gpr-matrix-more').click()
+        matrix_row = page.locator('#gprFactMatrix tr').filter(has=page.get_by_role('rowheader', name='Пакет работ 24', exact=True))
+        expect(matrix_row).to_have_count(1)
+        expect(matrix_row.locator('[data-work-id]')).to_have_count(4)
         # Positive control: a real saved GPR and confirmed natural mapping
         # reaches the same production script with its own qualified dates.
         current = gpr_sources(view=True)
