@@ -23,6 +23,7 @@ MAX_PAGES = 100
 MAX_ROWS = 4000
 MAX_OUTPUT_BYTES = 2 * 1024 * 1024
 MAX_STATUS_OBSERVATIONS = 8
+MAX_TRANSPORT_EVENTS = 6
 HEADERS = {
     "User-Agent": "DevelopAid-Market-Discovery/0.2 (+https://developaid.ru)",
     "Accept-Language": "ru-RU,ru;q=0.9",
@@ -80,6 +81,59 @@ def _new_client():
         timeout=httpx2.Timeout(MAX_SECONDS), headers=HEADERS,
         limits=httpx2.Limits(max_connections=1, max_keepalive_connections=1),
     )
+
+
+class _TransportTrace:
+    """Phase names only: httpcore's info contains headers, streams and errors."""
+    _PHASES = {
+        "connection.connect_tcp": "dns_or_tcp_connect",
+        "connection.start_tls": "tls_handshake",
+        **{f"{protocol}.{event}": phase for protocol in ("http11", "http2")
+           for event, phase in (
+               ("send_request_headers", "send_request_headers"),
+               ("send_request_body", "send_request_body"),
+               ("receive_response_headers", "receive_response_headers"),
+               ("receive_response_body", "receive_response_body"))},
+    }
+
+    def __init__(self, started, page_index):
+        self.started = started
+        self.value = {"page_index": page_index, "last_phase": "not_observed",
+                      "last_outcome": "not_observed", "events": [], "events_truncated": False}
+
+    async def __call__(self, event, _info):
+        # Never inspect, stringify or export the info payload, even on failure.
+        if not isinstance(event, str) or len(event) > 80:
+            return
+        name, _, outcome = event.rpartition(".")
+        phase = self._PHASES.get(name)
+        if phase is None or outcome not in ("started", "complete", "failed"):
+            return
+        self.value["last_phase"] = phase
+        self.value["last_outcome"] = outcome
+        self.value["events"].append({"phase": phase, "outcome": outcome,
+            "elapsed_ms": min(2**31 - 1, max(0, round((time.monotonic() - self.started) * 1000)))})
+        if len(self.value["events"]) > MAX_TRANSPORT_EVENTS:
+            self.value["events"].pop(0)
+            self.value["events_truncated"] = True
+
+
+def _failure_kind(exc):
+    # Fixed enums, never exception text. Connect includes DNS/TCP/TLS errors;
+    # only an observed trace phase can narrow that down.
+    for kind, exception in (
+            ("connect_timeout", httpx2.ConnectTimeout), ("read_timeout", httpx2.ReadTimeout),
+            ("write_timeout", httpx2.WriteTimeout), ("pool_timeout", httpx2.PoolTimeout),
+            ("transport_timeout", httpx2.TimeoutException),
+            ("proxy_error", httpx2.ProxyError), ("connect_error", httpx2.ConnectError),
+            ("read_error", httpx2.ReadError), ("write_error", httpx2.WriteError),
+            ("remote_protocol_error", httpx2.RemoteProtocolError),
+            ("transport_error", httpx2.HTTPError), ("stream_error", httpx2.StreamError),
+            ("outer_deadline", TimeoutError), ("os_error", OSError),
+            ("local_value_error", ValueError)):
+        if isinstance(exc, exception):
+            return kind
+    return "not_classified"
 
 
 class _SourceMarkers(HTMLParser):
@@ -234,6 +288,9 @@ async def capture(*, runtime: dict) -> dict:
         "origin_cache_revalidation": "requested_not_attested",
         "historical_period_proven": False, "production_acceptance": False,
         "source_files_written": False,
+        "transport": None,
+        "transport_failure": None,
+        "transport_observation": "httpcore_phase_names_only_v1",
     }
 
     def gap(code):
@@ -248,6 +305,16 @@ async def capture(*, runtime: dict) -> dict:
     seen_urls, seen_bodies = set(), set()
     statuses_by_slug = {}
     url = ORIGIN
+    trace = None
+
+    def transport_failure(exc):
+        result["transport_failure"] = {
+            "kind": _failure_kind(exc),
+            "page_index": len(result["pages"]) - 1 if result["pages"] else None,
+            "last_phase": trace.value["last_phase"] if trace else "not_observed",
+            "last_outcome": trace.value["last_outcome"] if trace else "not_observed",
+        }
+
     try:
         async with asyncio.timeout(MAX_SECONDS):
             async with _new_client() as client:
@@ -258,11 +325,15 @@ async def capture(*, runtime: dict) -> dict:
                     seen_urls.add(url)
                     page = {"url": url, "status": None, "bytes": 0,
                             "sha256": None, "body_complete": False, "cache_headers": {}}
+                    # Only the last page's phase receipt is retained, bounded
+                    # with the failure enums to under 1 KiB for the whole walk.
+                    trace = _TransportTrace(started, index)
+                    result["transport"] = trace.value
                     result["pages"].append(page)
                     # A Set-Cookie on one public page must not become a credential
                     # on the next; this is an observation, not a browsing session.
                     client.cookies.clear()
-                    async with client.stream("GET", url) as response:
+                    async with client.stream("GET", url, extensions={"trace": trace}) as response:
                         page["status"] = response.status_code
                         page["cache_headers"] = {
                             key: response.headers[key][:256]
@@ -339,13 +410,17 @@ async def capture(*, runtime: dict) -> dict:
                     url = next_url
                 else:
                     gap("page_limit")
-    except TimeoutError:
+    except TimeoutError as exc:
+        transport_failure(exc)
         gap("total_time_limit")
-    except httpx2.TimeoutException:
+    except httpx2.TimeoutException as exc:
+        transport_failure(exc)
         gap("transport_timeout")
-    except (httpx2.HTTPError, httpx2.StreamError):
+    except (httpx2.HTTPError, httpx2.StreamError) as exc:
+        transport_failure(exc)
         gap("transport_error")
-    except (OSError, ValueError):
+    except (OSError, ValueError) as exc:
+        transport_failure(exc)
         gap("transport_unavailable")
     if any(code not in result["quality_gaps"] for code in result["gaps"]):
         result["walk_complete"] = False
