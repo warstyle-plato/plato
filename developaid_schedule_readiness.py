@@ -16,6 +16,8 @@ import developaid_schedule_elements as elements
 
 MAX_MEMBERS = 3000
 BASIS = {'smr_cost': 'Полная стоимость СМР', 'estimated_elements': 'Оценочные доли строительных элементов'}
+CURRENT_ESTIMATE = 'construction_estimate'
+CURRENT_ESTIMATE_NOTE = 'Оценка по известным работам действующего ГПР. Полный состав строительства не подтверждён.'
 CONFIG_FIELDS = {'label', 'scope_kind', 'scope_note', 'basis', 'source_reference', 'building_type',
                  'full_source_sha256', 'effective_from', 'full_scope_confirmed', 'included_ids', 'excluded_ids',
                  'crosswalk', 'outside_completed_ids', 'owner_note', 'weights', 'element_profile'}
@@ -104,9 +106,9 @@ def preview(project, configuration, *, expected_source_sha256, expected_source_r
     for name in ('label', 'scope_note', 'source_reference'):
         if not isinstance(cfg.get(name), str) or not cfg[name].strip() or len(cfg[name]) > 1000:
             raise ValueError('Укажите название, границы состава и источник весов.')
-    if not isinstance(cfg.get('basis'), str) or not isinstance(cfg.get('scope_kind'), str) or cfg['basis'] not in BASIS or cfg['scope_kind'] not in {'construction', 'gpr_all'}:
+    if not isinstance(cfg.get('basis'), str) or not isinstance(cfg.get('scope_kind'), str) or cfg['basis'] not in BASIS or cfg['scope_kind'] not in {'construction', 'gpr_all', CURRENT_ESTIMATE}:
         raise ValueError('Выберите сметные веса или оценочные доли и явно назовите состав.')
-    if cfg['basis'] == 'estimated_elements' and (cfg['scope_kind'] != 'construction' or not isinstance(cfg.get('building_type'), str) or not cfg['building_type'].strip()):
+    if cfg['basis'] == 'estimated_elements' and (cfg['scope_kind'] not in {'construction', CURRENT_ESTIMATE} or not isinstance(cfg.get('building_type'), str) or not cfg['building_type'].strip()):
         raise ValueError('Для оценочных долей нужны тип здания и отдельный строительный состав.')
     day = versions._day(cfg.get('effective_from'))
     if day < versions._now().date():
@@ -117,7 +119,11 @@ def preview(project, configuration, *, expected_source_sha256, expected_source_r
         raise versions.ScheduleVersionConflict('Источник или профиль готовности изменён. Перечитайте состояние.')
     if not isinstance(cfg.get('full_source_sha256'), str) or not versions._SHA.fullmatch(cfg['full_source_sha256']):
         raise ValueError('Укажите отпечаток одного полного ГПР.')
-    full = _catalog(project, cfg['full_source_sha256'], full=True, effective_from=cfg['effective_from'])
+    current_estimate = cfg['scope_kind'] == CURRENT_ESTIMATE
+    if current_estimate and (cfg['basis'] != 'estimated_elements' or cfg.get('element_profile') is None
+                             or cfg['full_source_sha256'] != current['source_sha256'] or cfg.get('full_scope_confirmed') is not False):
+        raise ValueError('Оценка по текущему ГПР использует его собственный источник и не подтверждает полный состав строительства.')
+    full = _catalog(project, cfg['full_source_sha256'], full=not current_estimate, effective_from=cfg['effective_from'])
     remaining = _catalog(project, current['source_sha256'])
     element_profile = cfg.get('element_profile')
     if element_profile is not None:
@@ -259,7 +265,10 @@ def model(work_fact, *, cut, baseline_scope, source_sha256, profile=None, full_r
     works = work_fact.get('works') or {}
     entries = [dict(value, id=key, primary=value.get('primary') or {}) for key, value in works.items()]
     reason = 'Нет подтверждённого полного состава и весов. Показан текущий остаточный перечень.' if baseline_scope == 'remaining_work' else 'Нет подтверждённого профиля полного состава и весов.'
-    active = bool(profile and profile.get('full_scope_confirmed') is True and profile.get('remaining_source_sha256') == source_sha256
+    current_estimate = bool(profile and profile.get('scope_kind') == CURRENT_ESTIMATE)
+    active = bool(profile and (profile.get('full_scope_confirmed') is True or current_estimate)
+                  and (not current_estimate or profile.get('full_source_sha256') == source_sha256)
+                  and profile.get('remaining_source_sha256') == source_sha256
                   and profile['effective_from'] <= cut and full_rows)
     if active:
         links = profile['crosswalk']
@@ -268,6 +277,7 @@ def model(work_fact, *, cut, baseline_scope, source_sha256, profile=None, full_r
         if (len(matched) != len(links) or {link['remaining_id'] for link in links} != set(works)
                 or len({link['remaining_id'] for link in links}) != len(links)
                 or matched-set(full_rows) or set(profile['outside_completed_ids']) != outside
+                or (current_estimate and outside)
                 or set(profile['included_ids']) & set(profile['excluded_ids'])
                 or set(profile['included_ids']) | set(profile['excluded_ids']) != set(full_rows)):
             active = False
@@ -342,7 +352,8 @@ def model(work_fact, *, cut, baseline_scope, source_sha256, profile=None, full_r
         corpora.setdefault(row.get('object') or 'Общие работы', []).append(row)
     project = group('Проект', entries, project_group=True)
     result = {'project': project, 'corpora': [group(name, rows) for name, rows in sorted(corpora.items())],
-            'full_scope_confirmed': active, 'scope_label': ('Строительная готовность СМР' if profile['scope_kind'] == 'construction' else 'Готовность работ по ГПР') if active else 'Текущий остаточный перечень' if baseline_scope == 'remaining_work' else 'Текущий ГПР',
+            'full_scope_confirmed': active and not current_estimate,
+            'scope_label': ('Оценочная готовность по текущему ГПР' if current_estimate else 'Строительная готовность СМР' if profile['scope_kind'] == 'construction' else 'Готовность работ по ГПР') if active else 'Текущий остаточный перечень' if baseline_scope == 'remaining_work' else 'Текущий ГПР',
             'basis_label': BASIS[profile['basis']] if active else None, 'estimated': active and profile['basis'] == 'estimated_elements',
             'profile_label': profile.get('label') if active else None, 'source_reference': profile.get('source_reference') if active else None,
             'excluded_works': len(profile['excluded_ids']) if active else 0,
@@ -356,6 +367,13 @@ def model(work_fact, *, cut, baseline_scope, source_sha256, profile=None, full_r
         result.update(project=projection['project'], corpora=projection['corpora'], reason=projection['project']['reason'],
                       source_reference=elements.SOURCE, estimated=True, profile_label=elements.TITLE,
                       basis_label=BASIS['estimated_elements'])
+    if active and current_estimate:
+        groups = [result['project'], *result['corpora'],
+                  *(cell for row in result['matrix'] for cell in row['cells'])]
+        for group in groups:
+            group['partial'] = True
+            group['reason'] = ' '.join(filter(None, (CURRENT_ESTIMATE_NOTE, group['reason'])))
+        result['reason'] = result['project']['reason']
     return result
 
 
@@ -370,7 +388,7 @@ def build(project, cut, schedule):
     error = None
     if profile:
         try:
-            full = _catalog(project, profile['full_source_sha256'], full=True, effective_from=profile['effective_from'])
+            full = _catalog(project, profile['full_source_sha256'], full=profile.get('scope_kind') != CURRENT_ESTIMATE, effective_from=profile['effective_from'])
             if _fingerprint(full) != profile['full_fingerprint']:
                 raise ValueError('Полный состав изменился после подтверждения.')
         except (OSError, ValueError) as exc:
@@ -405,13 +423,21 @@ def editor(project, *, full_source_sha256=''):
     for event in base['versions']:
         if event.get('baseline_scope', 'full_schedule') == 'full_schedule' and event['effective_from'] <= today and event['source_sha256'] not in {c['sha256'] for c in choices}:
             choices.append({'sha256': event['source_sha256'], 'label': 'Полный ГПР от '+event['effective_from']})
+    if current.get('baseline_scope') == 'remaining_work' and current.get('source_sha256'):
+        choices.append({'sha256': current['source_sha256'], 'label': 'Действующий ГПР — оценка по известным работам',
+                        'scope_kind': CURRENT_ESTIMATE})
     latest = events[-1] if events else None
-    sha = full_source_sha256 or ((latest or {}).get('profile') or {}).get('full_source_sha256') or (choices[-1]['sha256'] if choices else '')
+    previous_sha = ((latest or {}).get('profile') or {}).get('full_source_sha256')
+    if previous_sha not in {choice['sha256'] for choice in choices}:
+        previous_sha = None
+    sha = full_source_sha256 or previous_sha or (current.get('source_sha256') if choices else '')
     if not sha:
         return {'available': False, 'reason': 'Среди сохранённых источников нет подтверждённого полного ГПР. Остаточный перечень не заменяет полный состав.'}
     if not isinstance(sha, str) or not versions._SHA.fullmatch(sha):
         raise ValueError('Выберите отпечаток сохранённого полного ГПР.')
-    full = _catalog(project, sha, full=True, effective_from=today)
+    selected_choice = next((choice for choice in reversed(choices) if choice['sha256'] == sha), {})
+    scope_kind = selected_choice.get('scope_kind', 'construction')
+    full = _catalog(project, sha, full=scope_kind != CURRENT_ESTIMATE, effective_from=today)
     remaining = _catalog(project, current['source_sha256'])
     previous = next((e for e in reversed(events) if e['profile']['full_source_sha256'] == sha and e['profile'].get('element_profile')), None)
     if previous:
@@ -420,7 +446,8 @@ def editor(project, *, full_source_sha256=''):
         if previous['profile']['remaining_source_sha256'] != current['source_sha256']:
             cfg.update(full_scope_confirmed=False, outside_completed_ids=[], owner_note='', crosswalk=[])
     else:
-        cfg = dict(label=elements.TITLE, scope_kind='construction', scope_note='Явно подтверждённый строительный состав жилых корпусов; паркинг отдельно.',
+        cfg = dict(label=elements.TITLE, scope_kind=scope_kind,
+                   scope_note=CURRENT_ESTIMATE_NOTE if scope_kind == CURRENT_ESTIMATE else 'Явно подтверждённый строительный состав жилых корпусов; паркинг отдельно.',
                    basis='estimated_elements', source_reference=elements.SOURCE, building_type=elements.TITLE,
                    full_source_sha256=sha, full_scope_confirmed=False, included_ids=list(full), excluded_ids=[],
                    outside_completed_ids=[], owner_note='', crosswalk=[], weights=[],
@@ -478,11 +505,14 @@ def render(state):
     def evidence(row):
         eligible = row.get('eligible_readings', row['known_readings'])
         weighted = ' · включено во взвешенный расчёт: '+str(row['known_readings']) if 'eligible_readings' in row else ''
-        return 'Пригодные показания: '+str(eligible)+' из '+str(row['total'])+weighted+' · веса полного состава: '+str(row['known_weights'])+' из '+str(row['total'])+'. Даты учтённых источников: '+(', '.join(date_text(day) for day in row['source_dates']) or 'нет учтённых показаний')+'. '+', '.join(row['sources'])
+        weight_label = 'веса полного состава' if state['full_scope_confirmed'] else 'работы с заданным весом'
+        return 'Пригодные показания: '+str(eligible)+' из '+str(row['total'])+weighted+' · '+weight_label+': '+str(row['known_weights'])+' из '+str(row['total'])+'. Даты учтённых источников: '+(', '.join(date_text(day) for day in row['source_dates']) or 'нет учтённых показаний')+'. '+', '.join(row['sources'])
     def card(row):
         value = 'Не определена' if row['progress'] is None else f"{row['progress']*100:.1f}%".replace('.', ',')
         partial = '<p>По известным данным; состав учтён не полностью.</p>' if row.get('partial') and row['progress'] is not None else ''
-        return '<article class="readiness-item"><h4>'+esc(row['name'])+'</h4><strong>'+esc(value)+'</strong>'+partial+'<details><summary>Состав и данные</summary><p>'+esc(facts(row))+'</p><p>'+esc(evidence(row))+'</p><p>'+esc(row['reason'])+'</p></details></article>'
+        coverage = ('<p>Покрытие веса: '+esc(f"{row['coverage']:.1f}%".replace('.', ','))+
+                    (' · показания от '+esc(date_text(row['oldest_date'])) if row.get('oldest_date') else '')+'</p>') if row.get('coverage') is not None else ''
+        return '<article class="readiness-item"><h4>'+esc(row['name'])+'</h4><strong>'+esc(value)+'</strong>'+partial+coverage+'<details><summary>Состав и данные</summary><p>'+esc(facts(row))+'</p><p>'+esc(evidence(row))+'</p><p>'+esc(row['reason'])+'</p></details></article>'
     project = state['project']
     known = project['progress'] is not None or any(row['progress'] is not None for row in state['corpora'])
     heading = state['scope_label']+(' · оценочный профиль' if state['estimated'] else '')
@@ -492,9 +522,12 @@ def render(state):
         out.append('<strong class="readiness-project-value">'+esc(f"{project['progress']*100:.1f}%".replace('.', ','))+'</strong>')
         if project.get('partial'):
             out.append('<p>По известным данным; это не готовность всего состава. '+esc(project['reason'])+'</p>')
+    elif known:
+        out.append('<details class="readiness-project-gap"><summary>Общий показатель проекта пока не определён</summary><p>'+esc(state['reason'])+'</p><p>'+esc(facts(project))+'</p><p>'+esc(evidence(project))+'</p></details>')
     else:
         out.append('<p class="readiness-gap">Общая готовность пока не определена. '+esc(state['reason'])+'</p>')
-    out.append('<p>'+esc(facts(project))+'</p><p>'+esc(evidence(project))+'</p>')
+    if project['progress'] is not None or not known:
+        out.append('<p>'+esc(facts(project))+'</p><p>'+esc(evidence(project))+'</p>')
     if state.get('estimated'):
         out.append('<p>Оценка по удельным весам видов работ'+(' с ручными долями' if state.get('manual') else '')+', не по объёмам этого проекта.</p>')
     if state.get('internal_weight_methods'):
