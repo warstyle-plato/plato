@@ -174,9 +174,10 @@ def test_document_queue_failure_does_not_expose_server_details(server, monkeypat
     def fail(_queue):
         raise OSError(sentinel)
     monkeypatch.setattr(core, "_intake_queue_save", fail)
-    card = core._intake_queue_start("teaser.pdf", {"fields": []}, {"text": ""}, {}, {})
-    assert card.get("error")
-    assert sentinel not in json.dumps(card)
+    with pytest.raises(core.HTTPException) as failed:
+        core._intake_queue_start("teaser.pdf", {"fields": []}, {"text": ""}, {}, {})
+    assert failed.value.status_code == 503
+    assert sentinel not in str(failed.value.detail)
 
 
 @pytest.mark.parametrize("gns", [31000, 100.25, 100.26])
@@ -204,7 +205,8 @@ def test_document_extraction_has_no_calculation_or_agent_tools(server, monkeypat
     monkeypatch.setattr(core, "_agent_rate_limit", lambda *_a: None)
     monkeypatch.setattr(core, "_run_authoritative_model", lambda *_a: pytest.fail("extraction calculated project economics"))
     payloads = []
-    def model(payload):
+    def model(payload, *, budget_seconds=None):
+        assert 0 < budget_seconds <= 240
         payloads.append(payload)
         return {"status": "completed", "output": [{"type": "message", "content": [
             {"type": "output_text", "text": '{"fields":[],"questions":[],"notes":[]}'}]}]}

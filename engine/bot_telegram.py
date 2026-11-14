@@ -125,7 +125,44 @@ def _telegram_webhook_enabled() -> bool:
     }
 
 
-def _telegram_api(method: str, payload: dict[str, Any] | None = None) -> Any:
+def _telegram_document_read_response(response, deadline: float, max_bytes: int) -> bytes:
+    """One read per remaining socket deadline; no accumulated/trickle read()."""
+    import document_processing
+    length = response.headers.get('Content-Length') if getattr(response,'headers',None) is not None else None
+    if length is not None:
+        try:declared=int(length)
+        except (ValueError,TypeError):raise ValueError('Telegram передал некорректный размер ответа.') from None
+        if not 0 <= declared <= max_bytes:
+            raise ValueError('Ответ Telegram превышает допустимый размер.')
+    read = getattr(response,'read1',None)
+    if read is None:
+        raise RuntimeError('Ограниченное потоковое чтение ответа Telegram недоступно.')
+    chunks,size=[],0
+    while True:
+        document_processing.check()
+        left = deadline-time.monotonic()
+        if left <= 0:raise TimeoutError('Telegram response deadline')
+        stream=response
+        for _ in range(3):
+            sock=getattr(getattr(stream,'raw',None),'_sock',None)
+            if sock is not None:
+                sock.settimeout(left)
+                break
+            stream=getattr(stream,'fp',None)
+            if stream is None:break
+        chunk=read(min(64*1024,max_bytes+1-size))
+        document_processing.check()
+        if time.monotonic() >= deadline:raise TimeoutError('Telegram response deadline')
+        if not chunk:break
+        size += len(chunk)
+        if size > max_bytes:raise ValueError('Ответ Telegram превышает допустимый размер.')
+        chunks.append(chunk)
+    if length is not None and size != declared:
+        raise ValueError('Ответ Telegram пришёл не полностью. Источник не принят.')
+    return b''.join(chunks)
+
+
+def _telegram_api(method: str, payload: dict[str, Any] | None = None, *, timeout: float = 15) -> Any:
     token = _telegram_token()
     if not token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN не задан")
@@ -135,12 +172,25 @@ def _telegram_api(method: str, payload: dict[str, Any] | None = None) -> Any:
         headers={"Content-Type": "application/json"},
         method="POST",
     )
+    import document_processing
+    document_deadline = document_processing.deadline()
+    until = time.monotonic()+timeout
+    if document_deadline is not None:
+        until = min(until,document_deadline)
+    timeout = until-time.monotonic()
+    if timeout <= 0:
+        raise document_processing.Expired()
     try:
-        with urllib.request.urlopen(request, timeout=15) as response:
-            body = json.loads(response.read().decode("utf-8"))
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = _telegram_document_read_response(response,until,1024*1024)
+            body = json.loads(raw.decode('utf-8'))
     except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")[:500]
+        with exc:
+            raw = _telegram_document_read_response(exc,until,1024*1024)
+        detail = raw.decode('utf-8',errors='replace')[:500]
         raise RuntimeError(f"Telegram API: HTTP {exc.code}: {detail}") from exc
+    except (document_processing.Cancelled,document_processing.Expired):
+        raise
     except Exception as exc:
         raise RuntimeError(f"Telegram API недоступен: {exc}") from exc
     if not body.get("ok"):
@@ -619,41 +669,63 @@ _TELEGRAM_DOCUMENT_EXTENSIONS = (".xlsx", ".pdf", ".png", ".jpg", ".jpeg")
 _TELEGRAM_DOCUMENT_MAX_BYTES = 20 * 1024 * 1024
 
 
-def _telegram_download_document(
-    document: dict[str, Any],
-    *,
-    extensions: tuple[str, ...] = _TELEGRAM_DOCUMENT_EXTENSIONS,
-    max_bytes: int = _TELEGRAM_DOCUMENT_MAX_BYTES,
-) -> tuple[bytes, str]:
-    filename = str(document.get("file_name") or "ТЭП.xlsx").strip()[:180]
+def _telegram_download_document(document: dict[str, Any], *,
+    extensions: tuple[str,...] = _TELEGRAM_DOCUMENT_EXTENSIONS,
+    max_bytes: int = _TELEGRAM_DOCUMENT_MAX_BYTES) -> tuple[bytes,str]:
+    mime_extensions = {'application/pdf':'.pdf','image/png':'.png','image/jpeg':'.jpg',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':'.xlsx'}
+    filename = str(document.get('file_name') or '').strip()[:180]
+    if not filename:
+        extension = mime_extensions.get(str(document.get('mime_type') or '').lower())
+        if extension is None:
+            raise ValueError('Telegram не передал имя или поддерживаемый тип файла. Пришлите PDF, XLSX, JPEG или PNG.')
+        filename = 'Документ'+extension
     if not filename.lower().endswith(tuple(extensions)):
-        raise ValueError("Бот принимает " + " и ".join(extensions)
-                         + ": шаблон ТЭП, выгрузку ГлавАПУ или документ по участку")
-    limit_mb = max_bytes // (1024 * 1024)
-    declared_size = int(document.get("file_size") or 0)
+        raise ValueError('Бот принимает '+' и '.join(extensions)+': шаблон ТЭП, выгрузку ГлавАПУ или документ по участку')
+    try:
+        declared_size = int(document.get('file_size') or 0)
+    except (ValueError,TypeError):
+        raise ValueError('Telegram передал некорректный размер файла.') from None
+    if declared_size < 0:
+        raise ValueError('Telegram передал некорректный размер файла.')
     if declared_size > max_bytes:
-        raise ValueError(f"Файл слишком большой. Лимит — {limit_mb} МБ")
-    file_id = str(document.get("file_id") or "")
+        raise ValueError(f'Файл слишком большой. Лимит — {max_bytes//(1024*1024)} МБ')
+    file_id = str(document.get('file_id') or '')
     if not file_id:
-        raise ValueError("Telegram не передал идентификатор файла")
-    return _telegram_file_bytes(file_id, max_bytes), filename
+        raise ValueError('Telegram не передал идентификатор файла')
+    return _telegram_file_bytes(file_id,max_bytes),filename
 
 
 def _telegram_file_bytes(file_id: str, max_bytes: int) -> bytes:
-    """Скачать файл Telegram по ``file_id``: одна дорога для документов и фото."""
-    limit_mb = max(1, max_bytes // (1024 * 1024))
-    info = _telegram_api("getFile", {"file_id": file_id}) or {}
-    file_path = str(info.get("file_path") or "")
+    """One native getFile/download, capped bytes and remaining wall-clock IO."""
+    import document_processing
+    if type(max_bytes) is not int or not 0 < max_bytes <= 20*1024*1024:
+        raise ValueError('Недопустимый предел размера файла Telegram.')
+    document_processing.check()
+    info = _telegram_api('getFile',{'file_id':file_id},timeout=document_processing.remaining(15)) or {}
+    document_processing.check()
+    if not isinstance(info,dict):
+        raise ValueError('Telegram не подготовил сведения о файле.')
+    file_path = str(info.get('file_path') or '')
     if not file_path:
-        raise ValueError("Telegram не подготовил файл к загрузке")
-    url = f"https://api.telegram.org/file/bot{_telegram_token()}/{urllib.parse.quote(file_path, safe='/')}"
+        raise ValueError('Telegram не подготовил файл к загрузке')
+    until = time.monotonic()+document_processing.remaining(20)
+    url = f"https://api.telegram.org/file/bot{_telegram_token()}/{urllib.parse.quote(file_path,safe='/')}"
+    def remaining():
+        document_processing.check()
+        left = until-time.monotonic()
+        if left <= 0:
+            raise TimeoutError('Telegram download deadline')
+        return left
     try:
-        with urllib.request.urlopen(url, timeout=20) as response:
-            data = response.read(max_bytes + 1)
+        with urllib.request.urlopen(url,timeout=remaining()) as response:
+            data = _telegram_document_read_response(response,until,max_bytes)
+            if not data:
+                raise ValueError('Telegram вернул пустой файл. Пришлите документ заново.')
+    except (document_processing.Cancelled,document_processing.Expired,ValueError):
+        raise
     except Exception as exc:
-        raise RuntimeError(f"Не удалось скачать файл из Telegram: {exc}") from exc
-    if len(data) > max_bytes:
-        raise ValueError(f"Файл слишком большой. Лимит — {limit_mb} МБ")
+        raise RuntimeError('Файл из Telegram не скачан ('+type(exc).__name__+'). Повторите загрузку.') from None
     return data
 
 
@@ -1222,7 +1294,150 @@ def _telegram_start_message(chat_id: int, user_id: int, source: str = "") -> Non
     )
 
 
-def _telegram_handle_glavapu_document(chat_id: int, data: bytes, filename: str) -> bool:
+def _telegram_document_begin(chat_id: int, filename: str) -> dict:
+    import document_processing
+    deadline = time.monotonic()+240
+    request = _telegram_agent_request(chat_id)
+    nonce = _telegram_intake_begin(chat_id,filename)
+    persisted = (_telegram_dialog_get(chat_id) or {}).get('document_read') or {}
+    if persisted.get('id') != nonce:
+        raise document_processing.Cancelled()
+    deadline = min(deadline,time.monotonic()+max(0,float(persisted['deadline_at'])-time.time()))
+    return {'chat_id':chat_id,'nonce':nonce,'root':Path(_PLATO_STAGE_DIR).absolute(),
+            'request':request,'actor':request.scope['plato_actor'],'deadline':deadline}
+
+
+def _telegram_document_current(operation: dict, *, allow_failed: bool = False) -> bool:
+    return (Path(_PLATO_STAGE_DIR).absolute() == operation['root'] and
+            _telegram_intake_current(operation['chat_id'],operation['nonce'],allow_failed=allow_failed))
+
+
+def _telegram_document_reply(operation: dict, text: str, *, reply_markup=None, allow_failed=False) -> bool:
+    import document_processing
+    from telegram_intake_text import split_intake_html
+    if not _telegram_document_current(operation,allow_failed=allow_failed):
+        return False
+    parts = split_intake_html(text)
+    try:
+        # Failed processing is already closed in state. Its best-effort error
+        # notification still has the native15s send budget, never a new read.
+        with document_processing.operation(current=lambda:_telegram_document_current(operation,allow_failed=allow_failed),seconds=15):
+            for index,part in enumerate(parts):
+                if not _telegram_document_current(operation,allow_failed=allow_failed):
+                    return False
+                _telegram_send_intake_text(operation['chat_id'],part,
+                    reply_markup=reply_markup if index==len(parts)-1 else None)
+    except document_processing.Cancelled:
+        return False
+    return True
+
+
+def _telegram_document_interrupted(operation) -> None:
+    if operation is None or not _telegram_document_current(operation,allow_failed=True):
+        return
+    state = (_telegram_dialog_get(operation['chat_id']) or {}).get('document_read') or {}
+    if state.get('status') == 'interrupted':
+        _telegram_document_reply(operation,'<b>Ожидание чтения документа завершено.</b>\n'
+            'Процесс был прерван или превысил время ожидания. Результат этого чтения неизвестен и не принят в расчёт. '
+            'Пришлите документ снова или явно вернитесь к предыдущей карточке.',allow_failed=True)
+
+
+def _telegram_document_publish(operation: dict, filename: str, *, queue=None, context=None):
+    """Only bounded local publication holds the native chat lock."""
+    import document_processing
+    document_processing.check()
+    def commit(dialog):
+        if not _telegram_document_current(operation):
+            raise document_processing.Cancelled()
+        fresh = _telegram_agent_request(operation['chat_id']).scope['plato_actor']
+        if fresh.metadata() != operation['actor'].metadata():
+            raise document_processing.Cancelled()
+        if queue is not None:
+            _intake_queue_publish(queue,operation['actor'],short=True)
+            dialog['intake'] = {'id':queue['id'],'filename':filename,
+                                'region':operation.get('region','')}
+            dialog['step'] = 'intake_card'
+        else:
+            dialog.pop('intake',None)
+            dialog['step'] = 'manual_ready'
+        dialog['document_read'].update(status='ready',filename=filename,
+            source_sha256=operation.get('source_sha256'))
+        _telegram_dialog_save(operation['chat_id'],dialog)
+        # Native memory persistence is local JSON; no provider/send is called.
+        return (_telegram_platon_remember_document(operation['chat_id'],context)
+                if context is not None else '')
+    accepted,result = _telegram_intake_commit(operation['chat_id'],operation['nonce'],commit)
+    if not accepted:
+        raise document_processing.Cancelled()
+    return result
+
+
+def _telegram_document_fail(operation, reason: str, heading: str = 'Разбор не завершён.', *, error=None) -> None:
+    if operation is None:
+        return
+    def commit(dialog):
+        dialog['step'] = 'intake_document_failed'
+        dialog['document_read'].update(status='failed')
+        _telegram_dialog_save(operation['chat_id'],dialog)
+    accepted,_ = _telegram_intake_commit(operation['chat_id'],operation['nonce'],commit)
+    if not accepted:
+        if error is not None and _telegram_document_current(operation,allow_failed=True):
+            state = _telegram_dialog_get(operation['chat_id']) or {}
+            if (state.get('document_read') or {}).get('status') == 'ready':
+                raise error  # Saved card: preserve native send-error/429 handling above.
+        _telegram_document_interrupted(operation)
+        return
+    _telegram_document_reply(operation,'<b>'+html.escape(heading)+'</b>\n'+html.escape(reason)
+        +'\n\nДанные этого чтения в расчёт не приняты. Повторите загрузку или введите данные вручную.',allow_failed=True)
+
+
+def _telegram_document_error(exc, stage: str) -> str:
+    import document_processing
+    if isinstance(exc,document_processing.Expired):
+        return document_processing.Expired.public_message
+    if isinstance(exc,ValueError):
+        return str(exc)
+    if isinstance(exc,HTTPException):
+        if exc.status_code == 503:
+            return 'Разбор не удалось сохранить на сервере. Продолжение и расчёт не начаты.'
+        if exc.status_code in (401,403):
+            return 'Доступ к разбору изменился. Откройте документ из своего чата заново.'
+        if exc.status_code == 504:
+            return 'Истекло время ожидания разбора. Модель не завершила чтение документа.'
+    return 'Не завершён этап «'+stage+'» ('+type(exc).__name__+'). Источник не подтверждён.'
+
+
+def _telegram_handle_intake_url(chat_id: int, url: str) -> None:
+    import document_source
+    import document_processing
+    operation = None
+    try:
+        operation = _telegram_document_begin(chat_id,'Документ по ссылке')
+        with document_processing.operation(current=lambda:_telegram_document_current(operation),deadline=operation['deadline']):
+            _telegram_document_reply(operation,'<b>Ссылка принята. Загружаю документ…</b>')
+            _intake_queue_cleanup()
+            loaded = document_source.read_url(url,timeout=document_processing.remaining(20))
+            document_processing.check()
+            operation['source_sha256'] = hashlib.sha256(
+                loaded.get('data') or str(loaded.get('text') or '').encode('utf-8')).hexdigest()
+            document = ({'text':loaded['text'],'pages':1,'pages_read':1,
+                         'filename':loaded['filename'],'recognized':False,'reason':''}
+                        if 'text' in loaded else document_intake.extract_text(loaded['data'],loaded['filename']))
+            document['source'] = loaded['source']
+            _telegram_handle_intake_document(chat_id,loaded.get('data') or b'',loaded['filename'],
+                                            document_override=document,_operation=operation)
+    except document_processing.Cancelled:
+        _telegram_document_interrupted(operation)
+        return
+    except Exception as exc:
+        reason = str(exc) if isinstance(exc,document_source.DocumentSourceError) else _telegram_document_error(exc,'загрузка ссылки')
+        if operation is None:
+            _telegram_send_intake_text(chat_id,'<b>Не удалось начать чтение ссылки.</b>\n'+html.escape(reason))
+        else:
+            _telegram_document_fail(operation,reason,'Не удалось прочитать ссылку.',error=exc)
+
+
+def _telegram_handle_glavapu_document(chat_id: int, data: bytes, filename: str, *, _operation=None) -> bool:
     """Файл формата калькулятора ГлавАПУ, присланный прямо в чат.
 
     Подпись к выгрузке кнопки «Посчитать ВРИ и ТЭП» обещает, что файл
@@ -1264,7 +1479,11 @@ def _telegram_handle_glavapu_document(chat_id: int, data: bytes, filename: str) 
         "text": "Открыть ТЭП в DevelopAid",
         "web_app": {"url": _telegram_web_app_url(chat_id, [], session)},
     }]]}
-    _telegram_send_message(
+    if _operation is not None:
+        _telegram_document_publish(_operation,filename)
+    sender = (_telegram_send_message if _operation is None else
+              lambda chat,text,**kwargs:_telegram_document_reply(_operation,text,**kwargs))
+    sender(
         chat_id,
         "<b>Файл калькулятора ГлавАПУ распознан</b>\n"
         f"Территория: <b>{_telegram_number(normalized.get('site_area_ha'), 4)} га</b>\n"
@@ -1300,78 +1519,81 @@ def _telegram_platon_remember_document(chat_id: int, context: dict[str, Any]) ->
     return "разговор с Платоном в этом процессе не ведётся"
 
 
-def _telegram_handle_intake_document(chat_id: int, data: bytes, filename: str, document_override: dict[str, Any] | None = None) -> None:
-    """Разбор присланного в чат тизера — тремя шагами, как на сайте.
-
-    Первый шаг — карточка: что найдено (со страницей), что уйдёт в расчёт и
-    чего не хватает. Вопросов в нём нет. Вопросы — потом, кнопкой, по одному и
-    только о недостающем. Расчёт — кнопкой «Всё верно, считать», и мини-
-    приложение получает ровно строки карточки (`teaser_card.calc_overrides`).
-    Карточку собирает тот же сборщик, что и для сайта (`teaser_card_view`).
-    """
-    document = document_override if document_override is not None else document_intake.extract_text(data, filename)
-    if not document.get("source") and data:
-        document["source"] = {"kind": "upload", "sha256": hashlib.sha256(data).hexdigest()}
-    if not document.get("text"):
-        # Скан — не пустой документ. Сказать «ничего не нашли» значит соврать
-        # про источник: там всё есть, просто картинкой. Признак скана гейтом
-        # быть перестал: распознанный скан — это скан С текстом.
-        _telegram_send_message(
-            chat_id,
-            "<b>Документ принят, но прочитать нечего.</b>\n"
-            + html.escape(str(document.get("reason") or "в документе нет текста"))
-            + "\n\nПришлите страницы картинками или введите числа вручную.")
-        return
-    _telegram_send_message(
-        chat_id, f"<b>Читаю «{html.escape(filename)}»…</b>\n"
-                 f"Страниц: {document.get('pages')}. Сначала покажу, что нашёл и что "
-                 "уйдёт в расчёт; вопросы — потом.")
+def _telegram_handle_intake_document(chat_id: int, data: bytes, filename: str,
+        document_override: dict[str,Any] | None = None, *, _operation=None) -> None:
+    """Prepare outside locks; only current native operation can publish a card."""
+    import document_processing
+    operation = _operation
+    stage = 'начало чтения'
     try:
-        request = _telegram_agent_request(chat_id)
-        got = document_intake_read(document, request)
-    except Exception as exc:  # noqa: BLE001
-        _telegram_send_message(
-            chat_id, "<b>Разбор не удался.</b>\n" + html.escape(str(exc)))
+        if operation is None:
+            operation = _telegram_document_begin(chat_id,filename)
+        with document_processing.operation(current=lambda:_telegram_document_current(operation),
+                                           deadline=operation['deadline']):
+            _telegram_document_reply(operation,'<b>Документ принят. Читаю страницы…</b>')
+            _intake_queue_cleanup()
+            stage = 'чтение PDF и распознавание'
+            document = (copy.deepcopy(document_override) if document_override is not None
+                        else document_intake.extract_text(data,filename))
+            document_processing.check()
+            if not document.get('source') and data:
+                document['source'] = {'kind':'upload','sha256':hashlib.sha256(data).hexdigest()}
+            if data:
+                actual = hashlib.sha256(data).hexdigest()
+                if (document.get('source') or {}).get('sha256') not in (None,actual):
+                    raise ValueError('Отпечаток документа не совпал с прочитанными байтами. Источник не принят.')
+                operation['source_sha256'] = actual
+            else:
+                operation['source_sha256'] = hashlib.sha256(json.dumps(
+                    {'text':document.get('text'),'source':document.get('source')},
+                    sort_keys=True,ensure_ascii=False).encode('utf-8')).hexdigest()
+            if not document.get('text'):
+                _telegram_document_fail(operation,str(document.get("reason") or 'В документе нет читаемого текста.'),
+                                        'Документ принят, но прочитать его не удалось.')
+                return
+            _telegram_document_reply(operation,'<b>Читаю «'+html.escape(filename)+'»…</b>\n'
+                +'Страниц: '+str(document.get('pages'))+'. Сначала покажу, что нашёл и что уйдёт в расчёт; вопросы — потом.')
+            stage = 'разбор текста моделью'
+            got = document_intake_read(document,operation['request'])
+            document_processing.check()
+            if got.get('reason'):
+                _telegram_document_fail(operation,str(got['reason']),'Разбор не удался.')
+                return
+            stage = 'проверка участка'
+            region = _telegram_intake_region(_intake_cadastral_numbers(got))
+            document_processing.check()
+            operation['region'] = region
+            stage = 'подготовка карточки'
+            queue,card = _intake_queue_prepare(filename,got,document,dict(DEFAULT_INPUTS),
+                {key:dict(value)for key,value in TEP_DEFAULT.items()},by_parcel=True,
+                parcel_region=region,actor=operation['actor'])
+            context = document_intake.chat_context(document,got)
+            document_processing.check()
+            text = _telegram_intake_card_text(card,first=True,recognized=bool(document.get('recognized')))
+            if card.get('ready'):
+                markup = None
+            else:
+                left = int(card['questions']['total'])-int(card['questions']['index'])
+                text += ('\n\nМодель пока не менялась. Дальше — '+str(left)+' '
+                    +_telegram_plural(left,'вопрос','вопроса','вопросов')+' о том, чего в тизере нет, по одному.')
+                markup = {'inline_keyboard':[[{'text':'Перейти к вопросам',
+                    'callback_data':_telegram_intake_callback_data(card['id'],'questions')}]]}
+            stage = 'сохранение карточки'
+            remembered = _telegram_document_publish(operation,filename,queue=queue,context=context)
+            if card.get('ready'):
+                markup = _telegram_intake_calc_markup(chat_id,card,region)
+            text += ('\n\n<i>Документ в разговоре: спрашивайте по нему — Платон ответит по тексту. Новый документ заменит этот.</i>'
+                if not remembered else '\n\n<i>Документ в разговор не попал; карточка сохранена отдельно. Следующий вопрос Платон увидит без него.</i>')
+            _telegram_document_reply(operation,text,reply_markup=markup)
+    except document_processing.Cancelled:
+        _telegram_document_interrupted(operation)
         return
-    # Документ остаётся в разговоре: следующий вопрос («а какая там IRR?»)
-    # Платон отвечает по нему. Не легло — причина называется, а не теряется.
-    remembered = _telegram_platon_remember_document(
-        chat_id, document_intake.chat_context(document, got))
-    in_dialog = ("<i>Документ в разговоре: спрашивайте по нему — Платон ответит "
-                 "по тексту. Новый документ заменит этот.</i>" if not remembered else
-                 "<i>Документ в разговор не попал (" + html.escape(remembered[:200])
-                 + "): следующий вопрос Платон увидит без него.</i>")
-    if got.get("reason"):
-        _telegram_send_message(
-            chat_id, "<b>Разбор не удался.</b>\n" + html.escape(str(got["reason"]))
-            + "\n\n" + in_dialog)
-        return
-    region = _telegram_intake_region(_intake_cadastral_numbers(got))
-    card = _intake_queue_start(filename, got, document, dict(DEFAULT_INPUTS),
-                               {key: dict(value) for key, value in TEP_DEFAULT.items()},
-                               by_parcel=True, parcel_region=region,
-                               actor=request.scope["plato_actor"])
-    dialog = _telegram_dialog_get(chat_id) or {}
-    dialog["step"] = "intake_card"
-    # Регион участка решается один раз, при разборе: определить его — запрос
-    # территории, и повторять его на каждом вопросе незачем.
-    dialog["intake"] = {"id": card["id"], "filename": filename, "region": region}
-    _telegram_dialog_save(chat_id, dialog)
-    text = _telegram_intake_card_text(card, first=True,
-                                      recognized=bool(document.get("recognized")))
-    if card.get("error"):
-        text += "\n\n" + html.escape(card["error"])
-    text += "\n\n" + in_dialog
-    if card.get("ready"):
-        _telegram_send_intake_text(chat_id, text,
-                               reply_markup=_telegram_intake_calc_markup(chat_id, card, region))
-        return
-    left = int(card["questions"]["total"]) - int(card["questions"]["index"])
-    text += (f"\n\nМодель пока не менялась. Дальше — {left} "
-             + _telegram_plural(left, "вопрос", "вопроса", "вопросов")
-             + " о том, чего в тизере нет, по одному.")
-    _telegram_send_intake_text(chat_id, text, reply_markup={"inline_keyboard": [[
-        {"text": "Перейти к вопросам", "callback_data": "intake_questions"}]]})
+    except Exception as exc:
+        reason = _telegram_document_error(exc,stage)
+        if operation is None:
+            _telegram_send_intake_text(chat_id,'<b>Не удалось начать чтение документа.</b>\n'+html.escape(reason))
+        else:
+            _telegram_document_fail(operation,reason,'Разбор не удался.',error=exc)
 
 
 def _telegram_send_intake_text(chat_id: int, text: str, *, reply_markup=None) -> None:
@@ -1662,34 +1884,48 @@ def _telegram_intake_callback(chat_id: int, data: str) -> None:
         _telegram_intake_answer(chat_id, dialog, index=index, action="answer", choice=choice)
 
 
-def _telegram_handle_manual_document(chat_id: int, document: dict[str, Any]) -> None:
+def _telegram_handle_manual_document(chat_id: int, document: dict[str,Any]) -> None:
+    import document_processing
+    operation = None
+    stage = 'загрузка файла'
     try:
-        data, filename = _telegram_download_document(document)
-    except (ValueError, RuntimeError) as exc:
-        _telegram_send_message(
-            chat_id,
-            "<b>Не удалось принять файл.</b>\n" + html.escape(str(exc)),
-        )
+        operation = _telegram_document_begin(chat_id,str(document.get('file_name') or 'Документ'))
+        with document_processing.operation(current=lambda:_telegram_document_current(operation),
+                                           deadline=operation['deadline']):
+            _telegram_document_reply(operation,'<b>Файл принят. Загружаю его из Telegram…</b>')
+            _intake_queue_cleanup()
+            data,filename = _telegram_download_document(document)
+            operation['source_sha256'] = hashlib.sha256(data).hexdigest()
+            document_processing.check()
+            if filename.lower().endswith(('.pdf','.png','.jpg','.jpeg')):
+                _telegram_handle_intake_document(chat_id,data,filename,_operation=operation)
+                return
+            stage = 'чтение таблицы XLSX'
+            _telegram_document_reply(operation,'<b>Файл загружен. Читаю таблицу ТЭП…</b>')
+            try:
+                parsed = parse_manual_tep_xlsx(data,filename)
+            except (ValueError,RuntimeError):
+                document_processing.check()
+                if _telegram_handle_glavapu_document(chat_id,data,filename,_operation=operation):
+                    return
+                raise
+            document_processing.check()
+            text,markup = _telegram_manual_document_reply(chat_id,parsed)
+            _telegram_document_publish(operation,filename)
+            _telegram_document_reply(operation,text,reply_markup=markup)
+    except document_processing.Cancelled:
+        _telegram_document_interrupted(operation)
         return
-    # PDF шаблоном ТЭП не бывает: это тизер, справка или решение ГЗК.
-    if filename.lower().endswith((".pdf", ".png", ".jpg", ".jpeg")):
-        _telegram_handle_intake_document(chat_id, data, filename)
-        return
-    try:
-        parsed = parse_manual_tep_xlsx(data, filename)
-    except (ValueError, RuntimeError) as exc:
-        # В чат приходят два наших же формата: шаблон DevelopAid и файл
-        # калькулятора ГлавАПУ (в т.ч. выгрузка кнопки «Посчитать ВРИ и ТЭП»).
-        if _telegram_handle_glavapu_document(chat_id, data, filename):
-            return
-        _telegram_send_message(
-            chat_id,
-            "<b>Не удалось принять ручной ТЭП.</b>\n" + html.escape(str(exc)) +
-            "\n\nСкачайте актуальный шаблон командой /template и не меняйте его структуру. "
-            "Бот принимает в чате два формата: шаблон DevelopAid и файл калькулятора ГлавАПУ.",
-        )
-        return
+    except Exception as exc:
+        reason = _telegram_document_error(exc,stage)
+        heading = 'Не удалось принять файл.' if stage=='загрузка файла' else 'Не удалось принять ручной ТЭП.'
+        if operation is None:
+            _telegram_send_intake_text(chat_id,'<b>'+heading+'</b>\n'+html.escape(reason))
+        else:
+            _telegram_document_fail(operation,reason,heading,error=exc)
 
+
+def _telegram_manual_document_reply(chat_id: int, parsed: dict) -> tuple[str,dict]:
     summary = parsed.get("summary") or {}
     project_name = str(parsed.get("project_name") or "Без названия")
     region = str(parsed.get("region") or "").strip()
@@ -1708,8 +1944,7 @@ def _telegram_handle_manual_document(chat_id: int, document: dict[str, Any]) -> 
             "web_app": {"url": _telegram_web_app_url(chat_id, [], manual_session)},
         }]]
     }
-    _telegram_send_message(
-        chat_id,
+    return (
         "<b>Ручной ТЭП распознан</b>\n"
         f"Проект: <b>{html.escape(project_name)}</b>\n"
         f"{region_line}"
@@ -1721,7 +1956,7 @@ def _telegram_handle_manual_document(chat_id: int, document: dict[str, Any]) -> 
         f"Смена ВРИ: <b>{_telegram_money_mln(summary.get('land_rights_cost_mln'))}</b>\n"
         f"Социальная компенсация: <b>{_telegram_money_mln(summary.get('social_compensation_mln'))}</b>\n\n"
         "Проверьте сводку и откройте модель. Финансовые параметры можно настроить уже в DevelopAid.",
-        reply_markup=button,
+        button,
     )
 
 

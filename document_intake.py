@@ -34,6 +34,7 @@ from datetime import date
 from typing import Any
 
 import pdf_ocr
+import document_processing
 
 
 # Сколько страниц вообще читаем. Тизер — три страницы, справка — две, решение
@@ -109,15 +110,24 @@ def extract_text(data: bytes, filename: str = "",
         return {"text": "", "pages": 0, "scanned": False, "recognized": False,
                 "reason": f"не удалось открыть PDF ({type(exc).__name__}) — "
                           "файл повреждён или это не PDF"}
-    pages = len(reader.pages)
+    try:
+        pages = len(reader.pages)
+    except Exception as exc:
+        logging.warning('document_intake: PDF pages unavailable (%s)',type(exc).__name__)
+        return {'filename':name,'text':'','pages':0,'scanned':False,'recognized':False,
+                'reason':('PDF защищён паролем: пришлите незашифрованный файл.'
+                          if getattr(reader,'is_encrypted',False) else
+                          'Страницы PDF не прочитаны: файл повреждён или недоступен.')}
     coverage: list[dict[str, Any]] = []
     reasons = []
     ocr_count = 0
     for index, page in enumerate(reader.pages[:MAX_PAGES], start=1):
+        document_processing.check()
         try:
             layer = page.extract_text() or ""
         except Exception:  # noqa: BLE001
             layer = ""
+        document_processing.check()
         sparse = len(re.sub(r"\s", "", layer)) < MIN_CHARS_PER_PAGE
         item = {"page": index, "status": "text", "text": layer,
                 "needs_recognition": sparse}
@@ -128,12 +138,15 @@ def extract_text(data: bytes, filename: str = "",
                 ocr_count += 1
                 try:
                     recognized = pdf_ocr.text(data, page_indices=[index - 1])
+                    document_processing.check()
                     recognized = re.sub(r"^\[стр\. \d+\]\s*", "", recognized).strip()
                     if recognized:
                         item.update(status="ocr", text=recognized)
                         why = ""
                     else:
                         why = "распознавание не нашло букв"
+                except (document_processing.Cancelled,document_processing.Expired):
+                    raise
                 except pdf_ocr.Unavailable as exc:
                     why = getattr(exc, "public_message", "") or _SCAN_REFUSAL
                 except Exception as exc:  # noqa: BLE001
@@ -173,6 +186,32 @@ def extract_text(data: bytes, filename: str = "",
             "recognized": recognized, "reason": "; ".join(reasons),
             "page_coverage": [{k: v for k, v in item.items() if k != "text"}
                               for item in coverage]}
+
+
+DOCUMENT_MODEL_ERRORS = {
+    'refusal':'Модель отказалась разбирать документ. Данные не приняты в расчёт.',
+    'incomplete':'Ответ разбора документа оборвался. Данные не приняты в расчёт.',
+    'failed':'Модель вернула ошибку разбора документа. Данные не приняты в расчёт.',
+}
+
+
+def model_error(response: dict[str,Any]) -> str | None:
+    """Keep typed provider outcomes distinct; never publish free error text."""
+    if not isinstance(response,dict):
+        return 'failed'
+    if response.get('status') == 'incomplete':
+        return 'incomplete'
+    if response.get('status') in {'failed','cancelled','expired'} or response.get('error'):
+        return 'failed'
+    for item in response.get('output') or []:
+        if not isinstance(item,dict):
+            continue
+        if item.get('type') == 'refusal':
+            return 'refusal'
+        for content in item.get('content') or []:
+            if isinstance(content,dict) and content.get('type') == 'refusal':
+                return 'refusal'
+    return None
 
 
 # Отказ прежний и остаётся: распознавания в образе может не быть (бот живёт на

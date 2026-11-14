@@ -402,6 +402,12 @@ def _plato_chat_launch(
     def _work() -> dict[str, Any]:
         _agent_actor_current(req)
         if str(req.scenario or "") == "document_intake":
+            import document_processing
+            document_deadline = getattr(req,'_document_deadline',None)
+            budget = (document_deadline-time.monotonic() if document_deadline is not None
+                      else document_processing.DEFAULT_SECONDS)
+            if budget <= 0:
+                raise HTTPException(504,document_processing.Expired.public_message)
             # Extraction has no project economics and no calculation tools.
             response = _openai_responses_request({
                 "model": _plato_openai_agent_model(),
@@ -413,9 +419,11 @@ def _plato_chat_launch(
                 "text": {"format": {"type": "json_schema", "name": "plato_document_intake",
                                     "strict": True, "schema": document_intake.extraction_schema()}},
                 "max_output_tokens": 7000, "store": False,
-            })
-            if response.get("status") == "incomplete":
-                raise HTTPException(502, "Ответ разбора документа оборвался. Повторите разбор.")
+            }, budget_seconds=budget)
+            document_error = document_intake.model_error(response)
+            if document_error:
+                return {'answer':'','document_error':document_error,'tools_used':[],
+                        'proposals':[],'source':'document_extraction'}
             return {"answer": _extract_openai_text(response), "tools_used": [], "proposals": [],
                     "model": _plato_openai_agent_model(), "source": "document_extraction"}
         _plato_trace_write(trace_id, "model", "Пересчитываю модель DevelopAid")
@@ -638,10 +646,14 @@ def plato_answer(req: AgentChatRequest, request: Request) -> dict[str, Any]:
     в телеграме получил бы вместо ответа пустоту.
     """
     trace_id, done, outcome = _plato_chat_launch(req, request)
-    if not done.wait(_PLATO_AGENT_WAIT_SECONDS):
+    wait = _PLATO_AGENT_WAIT_SECONDS
+    document_deadline = getattr(req,'_document_deadline',None)
+    if str(req.scenario or '') == 'document_intake' and document_deadline is not None:
+        wait = min(wait,max(0,document_deadline-time.monotonic()))
+    if not done.wait(wait):
         raise HTTPException(
             status_code=504,
-            detail=(f"Платон Сергеевич не ответил за {int(_PLATO_AGENT_WAIT_SECONDS)} с. "
+            detail=(f"Платон Сергеевич не ответил за {int(wait)} с. "
                     "Повторите вопрос."))
     _agent_actor_current(req)
     return _plato_chat_result(trace_id, outcome)
@@ -744,7 +756,15 @@ def document_intake_read(document: dict[str, Any], request: Any) -> dict[str, An
     actor = request.scope.get("plato_actor")
     if isinstance(actor, _agent_access.Actor):
         object.__setattr__(payload, "_agent_actor", actor)
+    import document_processing
+    document_processing.check()
+    object.__setattr__(payload,'_document_deadline',document_processing.deadline()
+                       or time.monotonic()+document_processing.DEFAULT_SECONDS)
     answer = plato_answer(payload, request)
+    document_processing.check()
+    if (answer or {}).get('document_error') in document_intake.DOCUMENT_MODEL_ERRORS:
+        return {'fields':[],'questions':[],'not_asked':[],'notes':[],
+                'reason':document_intake.DOCUMENT_MODEL_ERRORS[answer['document_error']]}
     import intake_evidence
     return intake_evidence.validate(document_intake.parse_intake(
         str((answer or {}).get("answer") or "")), document)
@@ -767,8 +787,17 @@ def _intake_queue_save(queue: dict[str, Any]) -> None:
     _PLATO_STAGE_DIR.mkdir(parents=True, exist_ok=True)
     # Complete atomic records, with the same private permissions as run state.
     _agent_access.write_json(path, queue)
+    import document_processing
+    if not document_processing.short_publication():
+        _intake_queue_cleanup()
+
+
+def _intake_queue_cleanup() -> None:
+    """The existing TTL sweep, bounded and outside a chat publication lock."""
     cutoff = time.time() - _INTAKE_QUEUE_TTL
-    for stale in _PLATO_STAGE_DIR.glob("intake_*.json"):
+    for index,stale in enumerate(_PLATO_STAGE_DIR.glob("intake_*.json")):
+        if index >= 128:
+            break
         try:
             if stale.stat().st_mtime < cutoff:
                 stale.unlink()
@@ -837,26 +866,41 @@ def teaser_card_view(queue: dict[str, Any], inputs: dict[str, Any],
     return card
 
 
-def _intake_queue_start(filename: str, extraction: dict[str, Any], document: dict[str, Any],
+def _intake_queue_prepare(filename: str, extraction: dict[str, Any], document: dict[str, Any],
                         inputs: dict[str, Any], tep: dict[str, dict[str, Any]],
                         *, by_parcel: bool = False, parcel_region: str = "moscow",
-                        class_profile: dict[str, Any] | None = None, actor=None) -> dict[str, Any]:
-    """Завести состояние разбора и отдать карточку первого шага."""
-    queue = {"id": os.urandom(16).hex(),
+                        class_profile: dict[str, Any] | None = None, actor=None) -> tuple[dict,dict]:
+    """Prepare the existing queue/card without publishing any file or pointer."""
+    queue = {"id": os.urandom(16).hex(), 'callback_schema':2,
              **teaser_card.start(extraction, document, filename,
                                  presets=PROJECT_CLASS_PRESETS,
                                  current_class=str(inputs.get("project_class") or ""))}
-    if isinstance(actor, _agent_access.Actor):
-        _agent_access.claim(_PLATO_STAGE_DIR / "intake_access", queue["id"], actor)
     card = teaser_card_view(queue, inputs, tep, by_parcel=by_parcel, parcel_region=parcel_region,
                             class_profile=class_profile)
+    return queue,card
+
+
+def _intake_queue_publish(queue,actor=None,*,short: bool = False) -> None:
+    """Publish the existing queue only after a caller's current-source check."""
     try:
-        _intake_queue_save(queue)
+        if isinstance(actor, _agent_access.Actor):
+            _agent_access.claim(_PLATO_STAGE_DIR / "intake_access", queue["id"], actor)
+        import document_processing
+        with document_processing.publication(short=short):
+            _intake_queue_save(queue)
     except OSError as exc:
-        # Без диска карточку показать можно, а принять ответ в другом воркере —
-        # нет. Говорим об этом прямо, а не теряем ответ на втором вопросе.
+        # Without durable state no continue/calculation action can be offered.
         _PLATON_LOG.warning("document queue could not be saved (%s)", type(exc).__name__)
-        card["error"] = "Разбор не удалось сохранить на сервере. Повторите загрузку документа."
+        raise HTTPException(503,'Разбор не удалось сохранить на сервере. Продолжение и расчёт не начаты; повторите загрузку.') from None
+
+
+def _intake_queue_start(filename: str, extraction: dict[str, Any], document: dict[str, Any],
+                        inputs: dict[str, Any], tep: dict[str, dict[str, Any]],
+                        *, by_parcel: bool = False, parcel_region: str = 'moscow',
+                        class_profile: dict[str, Any] | None = None, actor=None) -> dict[str, Any]:
+    queue,card = _intake_queue_prepare(filename,extraction,document,inputs,tep,
+        by_parcel=by_parcel,parcel_region=parcel_region,class_profile=class_profile,actor=actor)
+    _intake_queue_publish(queue,actor)
     return card
 
 
