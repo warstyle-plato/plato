@@ -15,15 +15,15 @@ from test_budget_funding_source_proof import (source, capture, fm_bytes, rss_byt
 
 def failing_book(source, stage):
     if stage == 'fm_cf':
-        raw = fm_bytes(lambda sheet: setattr(sheet.cell(20001, 1), 'number_format', '0'))
+        raw = fm_bytes(lambda sheet: setattr(sheet.cell(20001, 1), 'value', 1))
         monitor.replace_finance_baseline(PROJECT, raw, '2026-11-01', 'PRIVATE-FM-PATH-CANARY')
         return raw, 'cf_1_new', {'rows': True, 'columns': False, 'rectangle_cells': False}
     if stage == 'rss_estimate':
-        raw = rss_bytes(lambda estimate, payments: setattr(estimate.cell(1, 1001), 'number_format', '0'))
+        raw = rss_bytes(lambda estimate, payments: setattr(estimate.cell(1, 1001), 'value', 1))
         flags = {'rows': False, 'columns': True, 'rectangle_cells': False}
         name = proof.ESTIMATE
     else:
-        raw = rss_bytes(lambda estimate, payments: setattr(payments.cell(2001, 1000), 'number_format', '0'))
+        raw = rss_bytes(lambda estimate, payments: setattr(payments.cell(2001, 1000), 'value', 1))
         flags = {'rows': False, 'columns': False, 'rectangle_cells': True}
         name = proof.PAYMENTS
     replace_rss(source, raw)
