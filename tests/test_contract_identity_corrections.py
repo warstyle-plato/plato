@@ -388,3 +388,9 @@ def test_native_alias_merge_lock_cannot_retarget_namespace_during_a_decision(ret
             assert started.wait(1) and not acquired.wait(.1)
         pending.result(timeout=2)
     assert acquired.is_set()
+
+
+@pytest.mark.parametrize('value', ['1e999', '-1e999', 'NaN', 'Infinity', '-Infinity'])
+def test_strict_json_rejects_nonfinite_overflow_in_legacy_metadata(value):
+    with pytest.raises(identity.IdentityProblem):
+        journal.strict_json(('{"value":'+value+'}').encode())

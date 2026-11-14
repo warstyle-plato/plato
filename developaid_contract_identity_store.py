@@ -8,6 +8,7 @@ import fcntl
 import functools
 import hashlib
 import json
+import math
 import os
 import re
 import stat
@@ -56,8 +57,13 @@ def strict_json(raw):
         return out
     def nonfinite(_):
         raise ValueError('nonfinite number')
+    def finite(value):
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError('nonfinite number')
+        return number
     try:
-        return json.loads(raw, object_pairs_hook=pairs, parse_constant=nonfinite)
+        return json.loads(raw, object_pairs_hook=pairs, parse_constant=nonfinite, parse_float=finite)
     except (UnicodeError, ValueError, RecursionError):
         raise IdentityProblem('Сохранённые уточнения реквизитов не прочитаны. Проверьте журнал решений.', 503) from None
 
