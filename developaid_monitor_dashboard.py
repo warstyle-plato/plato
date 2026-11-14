@@ -2408,6 +2408,12 @@ def _build(
         raise RuntimeError("dashboard layer is not installed")
     view = _ORIGINAL_BUILD(project, cut, programme=programme, upto=upto)
     view = schedule_graph.apply(project, view)
+    if not monitor._HISTORICAL_TREND_READ.get():
+        import developaid_admin_expenses as admin_expenses
+        import developaid_admin_expenses_cash as admin_cash
+        view["admin_expenses"] = admin_expenses.for_project(project, monitor._iso(cut))
+        view["admin_expenses_cash"] = admin_cash.for_project(project, monitor._iso(cut))
+        view["admin_expenses_html"] = admin_cash.render(view["admin_expenses_cash"], admin_expenses.render(view["admin_expenses"]))
     rss = monitor._latest(project, "estimate", ".xlsx", upto or monitor._iso(cut))
     cut_date = monitor._day(cut)
     if rss is not None and cut_date is not None:

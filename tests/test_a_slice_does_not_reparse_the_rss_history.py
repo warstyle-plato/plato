@@ -43,10 +43,10 @@ def _count_parses(monkeypatch):
     parsed: list[str] = []
     real = actuals._sheet
 
-    def counting(path, name):
+    def counting(path, name, **kwargs):
         if "ГПР" not in name:  # ГПР приходит байтами и читается быстро
             parsed.append(name)
-        return real(path, name)
+        return real(path, name, **kwargs)
 
     monkeypatch.setattr(actuals, "_sheet", counting)
     return parsed
@@ -92,3 +92,57 @@ def test_files_outside_snapshots_are_not_cached_on_disk(tmp_path):
     outside.write_bytes(_rss_book(payments=[("2026-07-03", 1e6)]))
     actuals.read_payments(outside)
     assert not (tmp_path / ".parsed").exists()
+
+
+def test_trend_skips_unused_ahr_and_the_next_normal_view_keeps_it(project, monkeypatch):
+    import developaid_admin_expenses_cash as cash
+    calls = []
+    model = {'budget': 100, 'paid_observed_net': None}
+    def collect(project, cut):
+        calls.append((project, cut))
+        return model
+    monkeypatch.setattr(cash, 'for_project', collect)
+    points = monitor.trend('Тест', cut=WEEKS[-1])
+    assert len(points) == len(WEEKS)
+    assert calls == []
+    view = monitor.build('Тест', cut=WEEKS[-1])
+    assert calls == [('Тест', WEEKS[-1])]
+    assert view['admin_expenses_cash'] is model
+
+
+def test_failed_trend_does_not_disable_the_next_normal_view_ahr(project, monkeypatch):
+    import developaid_admin_expenses_cash as cash
+    original = monitor.build
+    calls = []
+    def fail(*args, **kwargs):
+        raise ValueError('synthetic trend point failure')
+    monkeypatch.setattr(monitor, 'build', fail)
+    assert monitor.trend('Тест', cut=WEEKS[-1]) == []
+    monkeypatch.setattr(monitor, 'build', original)
+    monkeypatch.setattr(cash, 'for_project', lambda *args: calls.append(args) or {'budget': 100})
+    view = monitor.build('Тест', cut=WEEKS[-1])
+    assert calls == [('Тест', WEEKS[-1])] and view['admin_expenses_cash']['budget'] == 100
+
+
+def test_historical_trend_context_does_not_disable_another_thread_view(project, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    import developaid_admin_expenses_cash as cash
+    original = monitor.build
+    entered = threading.Event(); release = threading.Event(); calls = []
+    def point(project, cut, **kwargs):
+        entered.set()
+        assert release.wait(10)
+        return original(project, cut, **kwargs)
+    monkeypatch.setattr(monitor, 'build', point)
+    monkeypatch.setattr(cash, 'for_project', lambda *args: calls.append(args) or {'budget': 100})
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        running = pool.submit(monitor.trend, 'Тест', WEEKS[-1])
+        try:
+            assert entered.wait(10)
+            view = original('Тест', WEEKS[-1])
+            assert view['admin_expenses_cash']['budget'] == 100
+        finally:
+            release.set()
+        assert len(running.result(timeout=20)) == len(WEEKS)
+    assert calls == [('Тест', WEEKS[-1])]
