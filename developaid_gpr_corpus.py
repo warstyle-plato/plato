@@ -68,7 +68,7 @@ def read(data: bytes) -> dict | None:
 
 def _read_uncached(data: bytes) -> dict | None:
     """Recognize only the selected ГПР sheet and bounded two-row corpus schema."""
-    sheets = ledgers._read_workbook('gpr.xlsx', data)
+    sheets = ledgers._read_workbook('gpr.xlsx', data, sheet_names={'гпр'})
     rows = next((rows for name, rows in sheets if name.strip().casefold() == 'гпр'), None)
     if rows is None:
         return None
@@ -249,8 +249,7 @@ def for_view(project: str, cut: str = '', *, baseline_sha256: str = '') -> dict 
                     return dict(parsed, taken_at=taken_at)
         return None
     # An archived source upload must not displace the explicitly selected plan.
-    source = (approved_source() if selected.get('baseline_scope') == 'remaining_work'
-              or baseline_sha256 and selected['source_sha256'] == baseline_sha256 else None)
+    source = approved_source() if selected.get('path') is not None else None
     if selected.get('baseline_scope') == 'remaining_work':
         # Operational history shows today's plan and historical facts, never
         # an alternative archived plan when that plan is not a corpus file.

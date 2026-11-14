@@ -1118,6 +1118,7 @@ def gantt(view: dict[str, Any], dashboard: dict[str, Any]) -> dict[str, Any]:
     result["dependency_timeline"] = schedule_view.get("dependency_timeline")
     result["corpus_gpr"] = schedule_view.get("corpus_gpr")
     result["work_fact"] = schedule_view.get("work_fact")
+    result["readiness"] = schedule_view.get("readiness")
     result["version_comparison"] = {"state": "not_calculated"}
     result["source"] = {"basis": schedule_view.get("basis"),
                         "fact": schedule_view.get("fact_source"),
@@ -4256,10 +4257,14 @@ def _executive_schedule(report: dict[str, Any]) -> dict[str, Any]:
 
 def _gantt_html(report: dict[str, Any]) -> str:
     block = report.get("gantt") or {}
-    out = ["<h3>Сроки работ по корпусам</h3>"]
+    import developaid_schedule_readiness as readiness
+    out = [readiness.render(block.get("readiness")), "<h3>Сроки работ по корпусам</h3>"]
     import developaid_gpr_corpus as corpus_gpr
+    completed_history = ''
     if block.get("dependency_timeline"):
-        executive = _executive_schedule(report)
+        executive = dict(_executive_schedule(report))
+        completed_history = executive.get('completed_facts_html') or ''
+        executive['completed_facts_html'] = ''
         out.append(report_schedule.render(executive))
         out.append('<details class="report-source-screen"><summary>Источники и ограничения оценки</summary>'
                    + _schedule_source_details(report) + '</details>')
@@ -4270,13 +4275,16 @@ def _gantt_html(report: dict[str, Any]) -> str:
                    corpus_gpr.render(block["corpus_gpr"])+"</details>")
     if block.get("state") != "ok":
         out.append(f"<p class='note'>{html.escape(block.get('reason') or 'Графика работ нет.')}</p>")
+        out.append(completed_history)
         return "".join(out)
     out.append(report_gantt.render(block, report.get("end"), explanations=False))
+    out.append(completed_history)
     return "".join(out)
 
 
 def _schedule_source_details(report: dict[str, Any]) -> str:
-    content = report_schedule.details(_executive_schedule(report))
+    content = report_schedule.details(_executive_schedule(report),
+        include_completed=not bool((report.get('gantt') or {}).get('dependency_timeline')))
     block = report.get("schedule") or {}
     content += ''.join("<p class='note'>" + html.escape(line) + "</p>"
                        for line in report_gantt.notes(report.get("gantt") or {}, block))
