@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -63,6 +64,14 @@ _ENDPOINT_PAYLOADS = {
     ("POST", "/monitor/contracts/document-remove"): {"contract_id": "a" * 64, "sha256": "b" * 64},
     ("POST", "/monitor/contracts/document-confirm"): {
         "contract_id": "a" * 64, "sha256": "b" * 64, "kind": "act", "values": {}},
+    ("POST", "/monitor/contracts/identity/inventory"): {"raw_ids": ["a" * 64, "b" * 64]},
+    ("POST", "/monitor/contracts/identity/confirm"): {
+        "raw_ids": ["a" * 64, "b" * 64], "expected_revision": 0,
+        "inventory_sha256": "c" * 64, "source_tokens": ["d" * 64, "e" * 64],
+        "anchor_id": "a" * 64, "canonical_number": "SYNTHETIC-C-01", "note": "Synthetic owner review."},
+    ("POST", "/monitor/contracts/identity/revoke"): {
+        "decision_id": "f" * 64, "expected_revision": 1, "note": "Synthetic owner revocation."},
+    ("POST", "/monitor/contracts/identity/resolve"): {"contract_id": "a" * 64},
     ("POST", "/monitor/schedule/version-preview"): {
         "effective_from": "2026-10-22", "gpr_base64": "eA=="},
     ("POST", "/monitor/schedule/version-approve"): {
@@ -190,13 +199,35 @@ def test_without_the_admin_key_setting_it_is_closed_for_everyone(method, path, m
 
 
 @pytest.mark.parametrize("method,path", ROUTES)
-def test_the_admin_key_passes(method, path):
+def test_the_admin_key_passes(method, path, monkeypatch):
+    identity_operation = path.startswith("/monitor/contracts/identity/") and not path.endswith("/result")
+    if identity_operation:
+        import developaid_management_report_jobs as jobs
+        start = jobs.Store.start
+        def authorized_job(store, owner, profile, params, builder, ticket=""):
+            # Admission, strict models and the native job store stay real.
+            # This auth smoke does not confirm/revoke any source identity.
+            if profile == "monitor-cumulative-v1:contract-identity":
+                builder = lambda: {"ok": True}
+            return start(store, owner, profile, params, builder, ticket)
+        monkeypatch.setattr(jobs.Store, "start", authorized_job)
     # Заголовком ключ едет на GET-маршрутах (страница так не кладёт его в адрес).
     answers = [call(method, path, key=KEY)]
     if method == "GET":
         answers.append(call(method, path, headers={"X-Developaid-Admin-Key": KEY}))
     for answer in answers:
         assert answer.status_code not in (401, 403), f"{method} {path}: {answer.text[:200]}"
+        if identity_operation:
+            assert answer.status_code in (200, 202)
+            assert answer.headers["cache-control"] == "private, no-store"
+            deadline = time.monotonic() + 5
+            while answer.status_code == 202 and time.monotonic() < deadline:
+                answer = client.post("/monitor/contracts/identity/result", json={
+                    "key": KEY, "session": "", "ticket": answer.json()["ticket"]})
+                assert answer.headers["cache-control"] == "private, no-store"
+                if answer.status_code == 202:
+                    time.sleep(.005)
+            assert answer.status_code == 200, "synthetic identity worker did not finish before fixture teardown"
 
 
 def test_health_names_the_closed_gate(monkeypatch):
