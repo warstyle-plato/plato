@@ -346,7 +346,8 @@ def model(work_fact, *, cut, baseline_scope, source_sha256, profile=None, full_r
             group_reason = 'Есть незавершённая работа с нулевым весом;100%веса не подтверждают завершение всех работ.'
         return {'name': name, 'progress': value, 'counts': counts, 'total': len(rows), 'known_readings': eligible_count,
                 'numeric_readings': numeric, 'known_weights': len(own_weights), 'requires_reconciliation': reconcile,
-                'source_dates': sorted(dates), 'sources': sorted(sources), 'reason': group_reason}
+                'source_dates': sorted(dates), 'sources': sorted(sources), 'reason': group_reason,
+                'work_ids': [row['id'] for row in rows]}
     corpora = {}
     for row in entries:
         corpora.setdefault(row.get('object') or 'Общие работы', []).append(row)
@@ -374,6 +375,17 @@ def model(work_fact, *, cut, baseline_scope, source_sha256, profile=None, full_r
             group['partial'] = True
             group['reason'] = ' '.join(filter(None, (CURRENT_ESTIMATE_NOTE, group['reason'])))
         result['reason'] = result['project']['reason']
+    if not active:
+        result['forecast_scope'] = {}  # An old profile cannot scope current rows.
+    # Projection groups use full-source IDs for an active profile. Display
+    # rows retain current-source IDs, even when the same strings mean other
+    # works. Only the validated crosswalk may bridge those namespaces.
+    result['forecast_identity'] = dict(
+        id_scope='full_source' if active else 'current_source',
+        source_sha256=source_sha256,
+        full_source_sha256=profile.get('full_source_sha256') if active else None,
+        remaining_ids={str(row['id']): reverse.get(row['id']) if active else row['id']
+                       for row in entries})
     return result
 
 
@@ -489,6 +501,7 @@ def editor(project, *, full_source_sha256=''):
                 unmatched=[dict(id=key, name=row.get('name') or key, object=row.get('object') or 'Общие работы') for key, row in remaining.items() if key not in automatic],
                 outside=[dict(id=key, name=full[key].get('name') or key, object=full[key].get('object') or 'Общие работы') for key in sorted(outside)],
                 history=[dict(revision=e['revision'], recorded_at=e['recorded_at'], author=e['author'],
+                              corpus_shares=(e['profile'].get('element_profile') or {}).get('corpus_shares', {}),
                               internal_methods=elements.internal.methods((e['profile'].get('element_profile') or {}).get('assignments', {})),
                               overrides=(e['profile'].get('element_profile') or {}).get('overrides', {})) for e in events if e['profile']['full_source_sha256'] == sha])
 
@@ -523,6 +536,7 @@ def render(state):
     out.append('''<style>
 .readiness-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(250px,100%),1fr));gap:10px}.readiness-item{border:1px solid #dce3ed;border-radius:7px;padding:10px}.readiness-item h4{margin:0 0 7px}.readiness-item strong{font-size:20px}.readiness-item details{margin-top:7px}
 .readiness-meter{display:block;height:5px;border-radius:4px;background:#e6edf5;overflow:hidden;margin-top:7px}.readiness-meter i{display:block;height:100%;background:#34567a;border-radius:4px}
+.readiness-forecast-label{display:block;font-size:9px;line-height:1.1;margin-top:4px}.readiness-cell-forecast{display:block;font-size:10px;line-height:1.15;white-space:nowrap;margin-top:2px;color:#465d72}.readiness-forecast-coverage{display:block;font-size:9px;line-height:1.1;margin-top:2px;color:#607084}
 .readiness-matrix table{min-width:calc(90px + var(--readiness-columns)*70px)}.readiness-matrix th:first-child{width:30%}.readiness-matrix td{text-align:center;vertical-align:middle}.readiness-matrix td strong{white-space:nowrap;font-size:14px}.readiness-matrix .readiness-total{background:#eaf1fa}.readiness-total strong{font-size:17px!important}.readiness-matrix-evidence{margin-top:10px}.readiness-matrix-evidence article{border-bottom:1px solid #dce3ed;padding:6px 0}.readiness-matrix-evidence h4{font-size:12px;margin:4px 0}.readiness-method{margin:8px 0}.readiness-grid{margin:8px 0 10px}
 @media(max-width:640px){.readiness-summary{padding:10px}.readiness-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}.readiness-item{padding:8px 6px}.readiness-item h4{font-size:11px}.readiness-item strong{font-size:21px}.readiness-item:has(details[open]){grid-column:1/-1}.readiness-matrix th,.readiness-matrix td{padding:7px 4px}.readiness-matrix th{font-size:11px}.readiness-matrix th:first-child{width:30%}.readiness-matrix td strong{font-size:13px}.readiness-total strong{font-size:14px!important}}
 @media print{.readiness-summary details::details-content{content-visibility:visible!important;display:block!important}body.gpr-print-mode .readiness-summary .readiness-weighted-evidence{display:block!important}}
@@ -532,9 +546,17 @@ def render(state):
             out.append('<p>По известным данным · состав учтён не полностью.</p>')
         out.append('<div class="readiness-grid">'+''.join(card(row) for row in state['corpora'])+'</div>')
     if project['progress'] is not None:
+        out.append('<h4>Всего по жилым корпусам</h4>' if state.get('estimated') else '<h4>Общая готовность</h4>')
         out.append('<strong class="readiness-project-value">'+esc(f"{project['progress']*100:.1f}%".replace('.', ','))+'</strong>')
+        if project.get('coverage') is not None:
+            out.append('<p class="readiness-project-coverage">Расчёт охватывает '+esc(f"{project['coverage']:.1f}%".replace('.', ','))+' оценочного веса разделов.</p>')
+        if state.get('project_weight_estimated'):
+            out.append('<p class="readiness-corpus-assumption">'+esc(state['project_weight_basis'])+'. Допущение для общей оценки СМР; ПИР и паркинг в неё не включены.</p>')
+        forecast = project.get('forecast') or {}
+        if forecast.get('finish'):
+            out.append('<p class="readiness-project-forecast"><b>При плановом темпе: '+esc(date_text(forecast['finish']))+'</b> · сроки известны для '+str(forecast['covered'])+' из '+str(forecast['total'])+' работ. Это не прогноз РНВ.</p>')
         if project.get('partial'):
-            out.append('<p>По известным данным; это не готовность всего состава. '+esc(project['reason'])+'</p>')
+            out.append('<p>Оценка по известной части состава.</p><details class="readiness-project-reasons"><summary>Что не учтено в оценке</summary><p>'+esc(project['reason'])+'</p></details>')
     elif known:
         out.append('<details class="readiness-project-gap readiness-gap"><summary>Общий показатель проекта пока не определён</summary><p>'+esc(state['reason'])+'</p><p>'+esc(facts(project))+'</p><p>'+esc(evidence(project))+'</p></details>')
     else:
@@ -566,7 +588,7 @@ def render(state):
     if state.get('internal_weight_methods'):
         out.append('<p>Внутри разделов: '+esc('; '.join(state['internal_weight_methods']))+'. Число задач вес не определяет.</p>')
     if state.get('project_weight_basis'):
-        out.append('<p>Доли корпусов в общей готовности определены по полному сопоставимому плану: '+esc(state['project_weight_basis'])+'. Оценочные доли разделов внутри корпуса сохранены.</p>')
+        out.append('<p>'+('Заданы экспертные доли корпусов: ' if state.get('project_weight_estimated') else 'Доли корпусов в общей готовности определены по полному сопоставимому плану: ')+esc(state['project_weight_basis'])+'. Оценочные доли разделов внутри корпуса сохранены.</p>')
     if state.get('profile_label') or state.get('basis_label'):
         out.append('<p>'+esc(state.get('profile_label'))+' · '+esc(state.get('basis_label'))+'</p>')
     out.append('</details>')
