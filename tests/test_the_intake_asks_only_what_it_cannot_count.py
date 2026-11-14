@@ -173,7 +173,7 @@ def test_twenty_pdf_parcels_reach_one_territory() -> None:
     assert core._intake_cadastral_numbers(got) == numbers
 
 
-def test_the_bot_hands_the_parcel_to_the_calculator(monkeypatch) -> None:
+def test_the_bot_hands_the_parcel_to_the_calculator(monkeypatch, tmp_path) -> None:
     """Номер участка из документа уходит в расчёт кнопкой «Всё верно, считать»:
     мини-приложение получает его вместе со строками карточки."""
     import base64
@@ -182,8 +182,20 @@ def test_the_bot_hands_the_parcel_to_the_calculator(monkeypatch) -> None:
 
     assert core._intake_cadastral_numbers(parsed()) == ["77:09:0003021:158"]
     monkeypatch.setattr(core, "_telegram_token", lambda: "123:test")
-    card = {"cadastral_numbers": ["77:09:0003021:158"], "to_engine": [
-        {"path": "inputs.offices_gba_sqm", "value": 26300.0, "origin": "тизер, стр. 2"}]}
+    monkeypatch.setattr(core, "_PLATO_STAGE_DIR", tmp_path)
+    request = core._telegram_agent_request(1)
+    quote = "КН 77:09:0003021:158; офисы 26300 м²"
+    initial = core._intake_queue_start("synthetic.pdf", {"fields": [
+        {"key":"cadastral_numbers","value":["77:09:0003021:158"],"unit":"список","quote":quote},
+        {"key":"offices_gba_sqm","value":26300,"unit":"м²","quote":quote}],
+        "questions":[],"notes":[]}, {"text":quote,"pages":1}, dict(core.DEFAULT_INPUTS),
+        {key:dict(value) for key,value in core.TEP_DEFAULT.items()}, actor=request.scope["plato_actor"])
+    queue = core._intake_queue_load(initial["id"],request=request)
+    core.teaser_card.answer(queue,dict(core.DEFAULT_INPUTS),{},index=0,action="stop",
+        spp_split=core.MKD_SPP_SPLIT,presets=core.PROJECT_CLASS_PRESETS)
+    core._intake_queue_save(queue)
+    card = core.teaser_card_view(queue,dict(core.DEFAULT_INPUTS),
+        {key:dict(value) for key,value in core.TEP_DEFAULT.items()},by_parcel=True,parcel_region="")
     button = core._telegram_intake_calc_markup(1, card)["inline_keyboard"][0][0]
     assert button["text"] == "Всё верно, считать"
     token = parse_qs(button["web_app"]["url"].split("#", 1)[1])["telegram_session"][0]

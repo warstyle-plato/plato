@@ -113,12 +113,16 @@ def test_an_answer_lands_in_the_card_and_the_next_question_follows(monkeypatch) 
         "«не требуется — 0» не легло нулём"
 
     # Обязательство: вариант называет поле, но не сумму — не применено, и
-    # причина названа; ответ всё равно записан.
+    # причина названа; вопрос ждёт денежную оценку или явный пропуск.
     kbo = _answer(card, 2, choice=1)
     assert not kbo["applied"]
     assert "нет числа" in kbo["refused"][0]["reason"]
-    assert kbo["card"]["questions"]["card"]["kind"] == "class"
-    answers = kbo["card"]["questions"]["answers"]
+    assert kbo["card"]["questions"]["index"] == 2
+    skipped = _answer(card, 2, choice=1, action="skip")
+    assert not skipped["applied"]
+    assert skipped["card"]["questions"]["card"]["kind"] == "class"
+    assert "inputs.social_compensation_mln" not in _engine(skipped["card"])
+    answers = skipped["card"]["questions"]["answers"]
     assert answers[0]["answer"] == "Снос всего здания — 2863,7 м²"
 
 

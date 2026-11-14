@@ -14,7 +14,21 @@ engine/page_build.py. Стенды на node берут куски скрипт�
 """
 # ruff: noqa
 
-PAGE += r"""async function loadTelegramSessionData(){
+PAGE += r"""function telegramOverridesReviewNotice(){
+ const id='telegramOverridesReview';
+ let note=document.getElementById(id);
+ if(!note){
+  note=document.createElement('div');note.id=id;note.className='note';
+  note.style.cssText='padding:16px;margin:12px 0;border:2px solid #b36b00';
+  const panel=document.getElementById('inputs');
+  if(panel)panel.insertBefore(note,panel.firstChild);
+ }
+ note.textContent='Параметры этой ссылки нужно подтвердить заново. Вход сохранён. Вернитесь в чат бота, откройте «Расчёт» и проверьте текущую карточку. До подтверждения параметры не применяются и расчёт не запускается.';
+ openTab('inputs');telegramProgress('');
+ return false;
+}
+
+async function loadTelegramSessionData(){
  if(!telegramSession)return {};
  const response=await fetch('/telegram/session-data',{
   method:'POST',
@@ -23,7 +37,8 @@ PAGE += r"""async function loadTelegramSessionData(){
  });
  const payload=await response.json();
  if(!response.ok)throw new Error(serverDetail(payload)||'Telegram-сессия недействительна');
- return payload||{};
+ if(!payload||typeof payload!=='object'||Array.isArray(payload))throw new Error('Параметры ссылки не проверены. Вернитесь к карточке в чате.');
+ return payload;
 }
 
 // Тот ли это проект, что в открытой карточке. Сверяем площадь квартир и
@@ -193,7 +208,13 @@ async function runTelegramLaunch(){
  if(telegramSession){
   try{
    sessionData=await loadTelegramSessionData();
-   telegramCalcOverrides=sessionData.calc_overrides||{};
+   const suppliedOverrides=sessionData.calc_overrides;
+   const overrideRecord=suppliedOverrides!==null&&typeof suppliedOverrides==='object'&&!Array.isArray(suppliedOverrides);
+   const legacyEmpty=suppliedOverrides==null||(overrideRecord&&Object.keys(suppliedOverrides).length===0);
+   telegramOverridesReviewRequired=!(sessionData.overrides_review_required===false&&overrideRecord)
+    &&!(sessionData.overrides_review_required===undefined&&legacyEmpty);
+   telegramCalcOverrides=telegramOverridesReviewRequired?{}:(sessionData.calc_overrides||{});
+   if(telegramOverridesReviewRequired){telegramOverridesReviewNotice();return}
   }catch(e){
    const status=document.getElementById('glavapuStatus');
    if(status)status.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>';
@@ -326,7 +347,7 @@ async function initializeApp(){
  generateRateCurve();
  renderRates();
  await refreshCurrentKeyRate(false);
- await calculate();
+ if(!telegramSession)await calculate();
  await refreshAgentStatus();
  await loadMoReference();
  await initializeTelegramLaunch();

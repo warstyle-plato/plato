@@ -162,7 +162,8 @@ def test_a_skip_and_a_stop_are_answers_and_say_so(bot):
     assert any("Пропущено" in m["text"] for m in bot[-2:])
     engine._telegram_handle_dialog_text(CHAT, "стоп")
     assert "Итог разбора перед расчётом" in bot[-1]["text"]
-    assert _buttons(bot[-1])[0]["text"] == "Всё верно, считать"
+    assert "Предварительный расчёт" in bot[-1]["text"]
+    assert _buttons(bot[-1])[0]["text"] == "Считать без неуточнённых обязательств"
 
 
 def test_the_dialogue_survives_the_other_worker(bot):
@@ -242,10 +243,12 @@ def test_calc_menu_can_return_to_the_saved_intake_without_reloading_the_document
     saved = engine._telegram_dialog_get(CHAT)['intake']['id']
     engine._TELEGRAM_DIALOGS.pop(CHAT, None)
     engine._telegram_calc_menu(CHAT)
-    assert any(b.get('callback_data') == 'intake_questions' for b in _buttons(bot[-1]))
-    _press('intake_questions')
+    resume = next(b for b in _buttons(bot[-1]) if b.get('callback_data', '').startswith('intake2_questions:'))
+    assert resume['callback_data'] == engine._telegram_intake_callback_data(saved, 'questions')
+    _press(resume['callback_data'])
     assert 'Итог разбора перед расчётом' in bot[-1]['text']
-    assert _buttons(bot[-1])[0]['text'] == 'Всё верно, считать'
+    assert 'Предварительный расчёт' in bot[-1]['text']
+    assert _buttons(bot[-1])[0]['text'] == 'Считать без неуточнённых обязательств'
     assert engine._telegram_dialog_get(CHAT)['intake']['id'] == saved
 
 
@@ -329,7 +332,7 @@ def test_another_region_is_counted_with_our_defaults_and_the_card(bot, monkeypat
     _press("intake_questions")
     engine._telegram_handle_dialog_text(CHAT, "стоп")
     button = _buttons(bot[-1])[0]
-    assert button["text"] == "Всё верно, считать"
+    assert button["text"] == "Считать без неуточнённых обязательств"
     url = button["web_app"]["url"]
     assert "mode=intake" in url
     session = _session(url)
@@ -387,8 +390,9 @@ def test_a_50_number_without_glavapu_is_not_guessed(bot, monkeypatch):
     _press("intake_questions")
     engine._telegram_handle_dialog_text(CHAT, "стоп")
     button = _buttons(bot[-1])[0]
-    assert button.get("callback_data") == "intake_region" and "web_app" not in button
-    _press("intake_region")
+    assert button.get("callback_data") == engine._telegram_intake_callback_data(
+        engine._telegram_dialog_get(CHAT)['intake']['id'], 'region') and "web_app" not in button
+    _press(button["callback_data"])
     url = _buttons(bot[-1])[0]["web_app"]["url"]
     assert "mode=intake" not in url and _session(url)["cad"] == [number]
 
@@ -457,6 +461,10 @@ def test_foreign_chat_web_identity_and_forged_bot_claim_cannot_read_or_answer_in
     assert denied.value.status_code == 403
     # A different Telegram chat cannot answer even after obtaining an intake ID.
     foreign_dialog = copy.deepcopy(dialog)
+    # This fixture deliberately creates a fresh foreign-chat pointer; copying
+    # a loaded dialogue's CAS metadata would be refused before the ACL probe.
+    foreign_dialog.pop('_revision', None)
+    foreign_dialog.pop('_source_sha256', None)
     engine._telegram_dialog_save(CHAT + 1, foreign_dialog)
     engine._telegram_handle_update({"callback_query": {
         "id": "", "data": "intake_opt:0:0", "from": {"id": CHAT + 1},

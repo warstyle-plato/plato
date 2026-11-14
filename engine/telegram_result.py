@@ -305,6 +305,7 @@ def telegram_result(req: TelegramResultRequest,
                 session.get("manual_tep"),
                 session.get("calc_overrides"),
                 mode="edit",
+                application_proof=_telegram_carry_application_proof(session),
             )},
         }]]
     }

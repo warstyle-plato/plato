@@ -911,6 +911,7 @@ function isTelegramWebApp(){
  try{return !!(window.Telegram&&window.Telegram.WebApp&&String(window.Telegram.WebApp.initData||'').length)}catch(e){return false}
 }
 let telegramCalcOverrides={};
+let telegramOverridesReviewRequired=!!telegramSession;
 // Вход на сайт через бота: подписанная сессия входа живёт в браузере и несёт
 // ту же личность (chat_id), что сессия мини-приложения. Она подставляется
 // всюду, где нужен владелец: проекты, Платон, PDF. Телеграм-сессия из хеша

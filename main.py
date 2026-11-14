@@ -1225,6 +1225,7 @@ def _apply_proposal(chat_id: int) -> dict[str, Any]:
                 manual_tep=session_data.get("manual_tep"),
                 calc_overrides=overrides,
                 mode="edit",
+                application_proof=core._telegram_confirmed_patch_proof(session_data, overrides, real_patch),
             )
         except Exception as exc:
             core._TELEGRAM_RUNTIME["last_error"] = "Платон/применение: " + str(exc)
@@ -2831,6 +2832,17 @@ def _handle_message(message: dict[str, Any]) -> None:
         return
     if command in {"/vritep", "/vri", "/ври"}:
         _start_vritep(chat_id)
+        return
+    if command == "/cancel":
+        if _dialog_active(chat_id):
+            _dialog_stop(chat_id)
+        _ORIGINAL_HANDLE_MESSAGE(message)
+        return
+    # A saved document question owns its answer before older Platon/model
+    # conversations. In particular a numeric valuation must not call the LLM.
+    if text and (core._telegram_dialog_get(chat_id) or {}).get("step") in {
+            "await_intake_answer", "intake_document_reading", "intake_document_failed"}:
+        _ORIGINAL_HANDLE_MESSAGE(message)
         return
     # Ответ на анкету идёт раньше разбора адресов и вопросов: «дорого и
     # непонятно» — это комментарий, а не кадастровый номер.

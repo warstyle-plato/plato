@@ -1773,6 +1773,7 @@ async function fillClassesFromStats(){
 
 
 function applyTelegramCalcOverrides(){
+ if(typeof telegramOverridesReviewRequired!=='undefined'&&telegramOverridesReviewRequired){telegramOverridesReviewNotice();return false}
  const o=telegramCalcOverrides||{};
  if(!Object.keys(o).length)return;
  if(o.project_class)inputs.project_class=String(o.project_class);
