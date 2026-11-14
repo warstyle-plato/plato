@@ -37,6 +37,7 @@ _SNAPSHOT_DIR = Path(
     or (_ROOT / "data" / "monitor")
 )
 _APPROVED_SCHEDULE_READ = contextvars.ContextVar('approved_schedule_read', default=None)
+_HISTORICAL_TREND_READ = contextvars.ContextVar('historical_trend_read', default=False)
 
 
 class ApprovedScheduleMissing(FileNotFoundError):
@@ -1295,10 +1296,14 @@ def trend(project: str, cut: Any, programme: dict[str, Any] | None = None) -> li
     for day in snapshots(project)["estimate"]:
         if cutoff is not None and (_day(day) is None or _day(day) > cutoff):
             continue
+        # Trend returns only money/schedule points, never the AHR card.
+        token = _HISTORICAL_TREND_READ.set(True)
         try:
             point = build(project, cut=day, upto=day)
         except Exception:
             continue
+        finally:
+            _HISTORICAL_TREND_READ.reset(token)
         points.append({
             "snapshot": day,
             "paid": point["money"]["paid"],

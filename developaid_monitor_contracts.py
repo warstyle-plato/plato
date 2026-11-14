@@ -817,6 +817,17 @@ def _qualify(snapshot: dict, cut: str) -> tuple[list[dict], list[dict], list[dic
     return primary, summary_sources, unresolved, owners
 
 
+def qualified_sources(snapshot: dict | None, cut: str) -> tuple[list, list, list]:
+    """Read-only compatibility for the accepted source-bound identity seam.
+
+    Archive composition still owns qualification, notes and raw source tags.
+    The identity seam consumes the same three source collections without
+    changing the register's raw carry/grouping or any source/binding bytes.
+    """
+    primary, summaries, unresolved, _ = _qualify(snapshot or {}, cut)
+    return primary, summaries, unresolved
+
+
 def _carry(item: dict, newer: dict[tuple, set]) -> str:
     """Whether a contract of an earlier archive is absent from every newer one.
 
