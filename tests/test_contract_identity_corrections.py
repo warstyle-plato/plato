@@ -94,8 +94,13 @@ def test_confirm_is_append_only_current_time_and_two_raw_addresses_resolve(retai
         assert found['canonical_number'] == 'C-NEW' and found['decision_recorded_at'] == saved['recorded_at']
         assert found['financial_acceptance'] is False and found['legal_signature_status'] == 'unknown'
         assert found['binding_resolution'] == 'not_combined'
-    # Stage one exposes a resolver seam; legacy raw register amounts/IDs stay exact.
-    assert contracts.build(PROJECT, CUT, include_history=False) == original_rows
+    # Ownership does not choose between financial editions or change either raw card.
+    logical = contracts.build(PROJECT, CUT, include_history=False)
+    assert contracts.raw_rows(logical) == original_rows['rows']
+    assert len(logical['rows']) == 1
+    assert logical['rows'][0]['id'] == old
+    assert logical['rows'][0]['raw_member_ids'] == sorted([old, new])
+    assert logical['rows'][0]['amount'] is None and logical['rows'][0]['completed'] is None
     assert {key: value for key, value in pins(root).items() if key != journal.LOG} == before
     historic = identity.resolve(PROJECT, old, '2026-11-06')
     assert historic['status'] == 'confirmed' and '2026-11-14' in historic['annotation']

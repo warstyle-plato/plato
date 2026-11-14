@@ -4951,7 +4951,8 @@ _CONTRACT_PERFORMANCE_FIELDS = (
     'completed', 'completed_basis',
     'completion_ratio', 'monetary_comparable', 'completed_works', 'completed_materials', 'works_materials_split',
     'works_materials_note', 'progress', 'statement_progress', 'summary_progress', 'reported_performance_sources',
-    'observation_forecast', 'risk', 'advance', 'warnings', 'performance_basis', 'date_evidence', 'rss_match')
+    'observation_forecast', 'risk', 'advance', 'warnings', 'performance_basis', 'date_evidence', 'rss_match',
+    'logical_ownership', 'raw_observations', 'raw_member_ids', 'logical_id', 'source_snapshot_id')
 
 
 def contract_risks(project: str, end: Any) -> dict[str, Any]:
@@ -5111,6 +5112,15 @@ def _contract_performance_details(row: dict[str, Any]) -> str:
                 body += '<div>'+esc(point['reason'])+'</div>'
             body += '</td></tr>'
         body += '</tbody></table>'
+    if row.get('logical_ownership'):
+        body += '<p>Исходные карточки сохранены отдельно. Финансовый источник, срок и общий прогноз между ними не выбраны.</p>'
+        for source_row in row.get('raw_observations') or []:
+            heading = ' · '.join(str(value) for value in
+                (source_row.get('contract'), _day(source_row.get('contract_date')),
+                 'данные на '+_day(source_row.get('source_date'))) if value)
+            body += "<section class='contract-raw-observation' data-raw-contract='"+esc(str(source_row.get('id') or ''), quote=True)+"'><b>Исходная карточка: "+esc(heading)+'</b>'
+            body += '<p>'+esc(_work_contract_progress(source_row))+'</p>'
+            body += _contract_performance_details(source_row)+'</section>'
     return ("<details class='contract-performance-details'><summary>Источники и замечания</summary>"
             + body + '</details>') if body else ''
 
@@ -5137,7 +5147,18 @@ def _contract_performance_html(block: dict[str, Any]) -> str:
         name = '<b>'+esc(row.get('contractor') or 'Подрядчик не указан')+'</b><div>'+esc(row.get('contract') or 'Номер не указан')
         if row.get('contract_date'):
             name += ' от '+_day(row['contract_date'])
-        name += '</div><div class="contract-caption">'+('КС-2 по сводной' if _work_closing_summary(row) else 'Накопительные КС-6а')+'</div>'
+        ownership = row.get('logical_ownership') or {}
+        caption = ('Единый договор: исходные карточки отдельно' if ownership.get('resolution_status') == 'confirmed' else
+                   'Принадлежность исходных карточек не подтверждена' if ownership else
+                   'КС-2 по сводной' if _work_closing_summary(row) else 'Накопительные КС-6а')
+        name += '</div><div class="contract-caption">'+caption+'</div>'
+        if row.get('logical_ownership'):
+            name += '<div class="contract-ownership-summary"><p>Финансовый источник, срок и общий прогноз между карточками не выбраны.</p>'
+            for raw in row.get('raw_observations') or []:
+                source = 'Исходная карточка '+str(raw.get('contract') or 'без номера')
+                source += ' от '+_day(raw.get('contract_date'))+' · данные на '+_day(raw.get('source_date'))
+                name += '<div class="contract-ownership-observation"><b>'+esc(source)+'</b><div>'+esc(_work_contract_progress(raw, include_change=False))+'</div></div>'
+            name += '</div>'
         name += _contract_performance_details(row)
         metric = esc(_work_contract_progress(row, include_change=False, include_reason=False)).replace('; ', '<br>')
         if _work_contract_metric(row).get('ratio') is None:

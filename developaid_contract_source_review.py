@@ -172,18 +172,18 @@ def _record(record, snapshot_id, kind, headers):
             'header_cells': headers['cells'], 'headers_truncated': headers['truncated']}
 
 
-def review(project, contract_id, cut):
+def _review_raw(project, contract_id, cut):
     """Read original KS evidence for one existing card; never calculate a fact."""
     cut = contracts._cut(cut)
     register = contracts.build(project, cut, include_history=False)
-    row = next((r for r in register.get('rows') or [] if r.get('id') == contract_id), None)
+    row = contracts.find_raw_row(register, contract_id)
     if row is None:
         raise SourceReviewProblem('Договор не найден в данных выбранного проекта на эту дату.')
     identity = contracts._identity(row)
     if identity is None:
         raise SourceReviewProblem('Реквизиты карточки не подтверждены; исходники не выбраны по совпадению названия.')
     if any(r.get('id') != contract_id and contracts._identity(r) == identity
-           for r in register.get('rows') or []):
+           for r in contracts.raw_rows(register)):
         raise SourceReviewProblem('Реквизиты подходят нескольким карточкам; исходник не выбран автоматически.')
     snapshots = [s for s in ledgers.list_snapshots(project) if s.get('taken_at', '') <= cut]
     if len(snapshots) > MAX_ARCHIVES:
@@ -260,3 +260,12 @@ def review(project, contract_id, cut):
     if len(json.dumps(output, ensure_ascii=False, default=str).encode()) > MAX_RESULT_BYTES:
         raise SourceReviewProblem('Результат проверки превышает предел; исходные строки не возвращены частично.')
     return output
+
+
+def review(project, contract_id, cut):
+    import developaid_contract_ownership as ownership
+    try:
+        with ownership.read_scope(project, contracts._cut(cut)):
+            return _review_raw(project, contract_id, cut)
+    except ownership.OwnershipProblem as exc:
+        raise SourceReviewProblem(str(exc)) from None

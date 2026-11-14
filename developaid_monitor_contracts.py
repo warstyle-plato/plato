@@ -932,8 +932,8 @@ def _ru_date(value: Any) -> str:
     return ".".join(reversed(day.split("-"))) if day else "неизвестной даты"
 
 
-def build(project: str, cut: str = "", *, include_history: bool = True,
-          _archive_cache: dict | None = None) -> dict:
+def _build_raw(project: str, cut: str = "", *, include_history: bool = True,
+               _archive_cache: dict | None = None) -> dict:
     """The universe is the contracts explicitly present in uploaded documents."""
     cut = _cut(cut)
     if not str(project or "").strip():
@@ -941,6 +941,8 @@ def build(project: str, cut: str = "", *, include_history: bool = True,
     if include_history and _archive_cache is None:
         _archive_cache = {}
     composition = _composition(project, cut, _archive_cache)
+    import developaid_contract_ownership as ownership
+    ownership.capture(composition)
     snapshot, archive_day = composition["snapshot"], composition["source_date"]
     by_snapshot = composition["by_snapshot"]
     warnings = list(composition["warnings"])
@@ -1274,10 +1276,42 @@ def build(project: str, cut: str = "", *, include_history: bool = True,
         result['source_coverage']['closing_summary_sections'] = len(summary_sources)
     if include_history:
         import developaid_monitor_contract_history as progress_history
-        return progress_history.enrich(project, cut, result,
-            build_register=lambda previous_cut: build(project, previous_cut, include_history=False,
-                                                      _archive_cache=_archive_cache))
+        with ownership.raw_history():
+            return progress_history.enrich(project, cut, result,
+                build_register=lambda previous_cut: build(project, previous_cut, include_history=False,
+                                                          _archive_cache=_archive_cache))
     return result
+
+
+def raw_rows(register: dict) -> list[dict]:
+    """All original source cards, never a canonical number/key rewrite."""
+    import developaid_contract_ownership as ownership
+    return ownership.raw_rows(register)
+
+
+def raw_view(register: dict) -> dict:
+    import developaid_contract_ownership as ownership
+    return ownership.raw_view(register)
+
+
+def find_raw_row(register: dict, contract_id: str) -> dict | None:
+    import developaid_contract_ownership as ownership
+    return ownership.find_raw_row(register, contract_id)
+
+
+def build(project: str, cut: str = "", *, include_history: bool = True,
+          _archive_cache: dict | None = None) -> dict:
+    """Raw archive observations first; only confirmed ownership can fold them."""
+    import developaid_contract_ownership as ownership
+    day = _cut(cut)
+    if not str(project or '').strip():
+        raise ContractProblem('Выберите проект.')
+    try:
+        with ownership.read_scope(project, day) as context:
+            result = _build_raw(project, day, include_history=include_history, _archive_cache=_archive_cache)
+            return result if ownership.is_raw_history() else ownership.apply(result, context)
+    except ownership.OwnershipProblem as exc:
+        raise ContractProblem(str(exc)) from None
 
 
 def archive_summary(project: str, cut: str) -> dict:
@@ -1346,7 +1380,7 @@ def set_term(project: str, contract_id: str, deadline: str, note: str = "") -> d
         raise ContractProblem("Срок договора нужен в виде ГГГГ-ММ-ДД.")
     if not isinstance(note, str) or len(note) > 500:
         raise ContractProblem("Пояснение к сроку должно быть не длиннее 500 символов.")
-    if contract_id not in {r["id"] for r in build(project)["rows"]}:
+    if find_raw_row(build(project), contract_id) is None:
         raise ContractProblem("Договор не найден в текущих данных выбранного проекта.")
     path = _terms_path(project)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
