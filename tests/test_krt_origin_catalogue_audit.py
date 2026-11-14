@@ -64,7 +64,7 @@ def test_complete_native_walk_binds_each_body_and_exports_only_slug_status(mock_
         headers={"Date": "Fri, 13 Nov 2026 20:00:00 GMT", "Age": "600",
                  "ETag": "opaque-tag", "Set-Cookie": "MARKER-COOKIE=secret; Path=/"}))
     result = capture()
-    assert result["complete"] and result["gaps"] == []
+    assert result["complete"] and result["walk_complete"] and result["gaps"] == []
     assert [str(call.url) for call in calls] == [audit.ORIGIN, audit.ORIGIN + "?PAGEN_1=2"]
     assert result["roster"] == [{"slug": "site-one", "status": "В реализации"},
                                 {"slug": "site-two", "status": "Планируемый"}]
@@ -205,11 +205,15 @@ def test_total_deadline_covers_later_connection_and_keeps_prior_page(mock_origin
     assert result["elapsed_ms"] < 1000 and len(result["roster"]) == 1
 
 
-def test_duplicate_slug_and_ambiguous_pagination_are_incomplete(mock_origin):
+def test_duplicate_slug_is_observed_but_not_accepted_and_ambiguous_pagination_stops(mock_origin):
     calls, _ = mock_origin(lambda request: httpx2.Response(200, content=page(next_url="/projects/?PAGEN_1=2")
         if not request.url.query else page(status="Планируемый")))
     result = capture()
-    assert len(calls) == 2 and result["gaps"] == ["duplicate_slug"] and not result["complete"]
+    assert len(calls) == 2 and result["gaps"] == ["duplicate_slug", "conflicting_status"]
+    assert result["walk_complete"] and not result["complete"]
+    assert result["observed_occurrence_count"] == 2 and result["observed_unique_slug_count"] == 1
+    assert len(result["roster"]) == 2 and result["observed_duplicate_occurrence_count"] == 1
+    assert result["conflicting_status_observations"] == [{"slug": "site-one", "statuses": ["В реализации", "Планируемый"]}]
     mock_origin(lambda request: httpx2.Response(200, content=page(next_url="/projects/?PAGEN_1=2") +
         b'<button class="show_more" data-url="/projects/?PAGEN_1=3">More</button>'))
     assert capture()["gaps"] == ["invalid_next_link"]
@@ -234,6 +238,173 @@ def test_roster_output_and_metadata_are_bounded(mock_origin, monkeypatch):
     result = capture()
     assert result["gaps"] == ["output_limit"] and not result["complete"]
     assert result["roster"] == [] and result["roster_sha256"] is None
+    assert not result["walk_complete"] and result["output_truncated"]
+
+
+def duplicate_shape(next_url=None):
+    """Anonymized retained282/280 duplicate/status shape; this HTML is synthetic."""
+    return (page('exact-repeat', 'Планируемый') + page('exact-repeat', 'Планируемый') +
+            page('status-conflict', 'Планируемый') +
+            page('status-conflict', 'В реализации', next_url=next_url))
+
+
+def test_adjacent_observed_duplicate_shape_preserves_both_rows_and_following_pages(mock_origin):
+    bodies = [duplicate_shape('/projects/?PAGEN_1=2'),
+              page('after-duplicate', next_url='/projects/?PAGEN_1=3'), page('last-site')]
+    calls, _ = mock_origin(lambda request: httpx2.Response(200,
+        content=bodies[0 if not request.url.query else int(request.url.params['PAGEN_1']) - 1]))
+    result = capture()
+    assert len(calls) == 3 and result['walk_complete'] and not result['complete']
+    assert result['gaps'] == result['quality_gaps'] == ['duplicate_slug', 'conflicting_status']
+    assert result['observed_occurrence_count'] == 6 and result['observed_unique_slug_count'] == 4
+    assert result['observed_duplicate_occurrence_count'] == 2 and result['occurrence_identity_ambiguous']
+    assert result['roster'] == [
+        {'slug': 'exact-repeat', 'status': 'Планируемый'},
+        {'slug': 'exact-repeat', 'status': 'Планируемый'},
+        {'slug': 'status-conflict', 'status': 'Планируемый'},
+        {'slug': 'status-conflict', 'status': 'В реализации'},
+        {'slug': 'after-duplicate', 'status': 'В реализации'},
+        {'slug': 'last-site', 'status': 'В реализации'},
+    ]
+    assert result['conflicting_status_observations'] == [
+        {'slug': 'status-conflict', 'statuses': ['В реализации', 'Планируемый']}]
+    assert [item['observed_occurrence_count'] for item in result['pages']] == [4, 1, 1]
+    assert not result['production_acceptance'] and not result['historical_period_proven']
+    assert result['source_updated_at'] is None
+
+
+def test_image_name_and_more_links_are_one_native_occurrence(mock_origin):
+    body = (b'<a href="/projects/site-one"><img src="picture"></a>' + page() +
+            '<a href="/projects/site-one">Подробнее</a>'.encode())
+    mock_origin(lambda request: httpx2.Response(200, content=body))
+    result = capture()
+    assert result['complete'] and result['walk_complete'] and result['quality_gaps'] == []
+    assert result['observed_occurrence_count'] == result['observed_unique_slug_count'] == 1 and len(result['roster']) == 1
+
+
+def test_nested_named_anchors_preserve_adjacent_status_observations(mock_origin):
+    body = ('<div><a href="/projects/same-site"><span><strong>First name</strong></span>'
+            '<span>Подробнее</span></a><p>Статус: Планируемый</p></div>\n'
+            '<div><a href="/projects/same-site"><span><strong>Second name</strong></span>'
+            '<span>Подробнее</span></a><p>Статус: В реализации</p></div>').encode()
+    mock_origin(lambda request: httpx2.Response(200, content=body))
+    result = capture()
+    assert result['walk_complete'] and not result['complete']
+    assert result['observed_occurrence_count'] == 2 and result['observed_unique_slug_count'] == 1
+    assert [row['status'] for row in result['roster']] == ['Планируемый', 'В реализации']
+    assert result['quality_gaps'] == ['duplicate_slug', 'conflicting_status']
+
+
+def test_conflicting_status_labels_within_one_occurrence_are_observed_not_silently_overwritten(mock_origin):
+    first = page('same-site', 'Планируемый', next_url='/projects/?PAGEN_1=2')
+    first += '<p>Статус: В реализации</p>'.encode()
+    calls, _ = mock_origin(lambda request: httpx2.Response(200,
+        content=first if not request.url.query else page('following-site')))
+    result = capture()
+    assert len(calls) == 2 and result['walk_complete'] and not result['complete']
+    assert result['observed_occurrence_count'] == 2 and result['observed_unique_slug_count'] == 2
+    assert result['observed_duplicate_occurrence_count'] == 0
+    assert result['roster'][0] == {'slug': 'same-site', 'status': 'В реализации',
+        'status_observations': ['Планируемый', 'В реализации']}
+    assert result['quality_gaps'] == ['ambiguous_status_within_occurrence', 'conflicting_status']
+    assert result['conflicting_status_observations'] == [
+        {'slug': 'same-site', 'statuses': ['В реализации', 'Планируемый']}]
+
+
+def test_status_evidence_limit_is_an_explicit_incomplete_observation(mock_origin):
+    body = page() + ''.join(f'<p>Статус: observed-{i}</p>' for i in range(9)).encode()
+    mock_origin(lambda request: httpx2.Response(200, content=body))
+    result = capture()
+    assert not result['walk_complete'] and not result['complete']
+    assert result['gaps'] == ['status_observation_limit'] and result['roster'] == []
+
+
+def test_retained_282_280_shape_wrapper_keeps_both_duplicates_and_a_following_page(mock_origin):
+    # Derived from the already inspected saved metadata shape only:282entries,
+    #280exactslugs; adjacent duplicates136/137 and156/157. IDs/names/HTML here
+    #are synthetic, not the primary origin HTML or a new freshness observation.
+    observations = [{'slug': f'shape-site-{i:03d}', 'status': 'Планируемый'} for i in range(282)]
+    observations[137] = dict(observations[136])
+    observations[157] = dict(observations[156], status='В реализации')
+    first = b'\n'.join(page(row['slug'], row['status']) for row in observations)
+    first += b'<button class="show_more" data-url="/projects/?PAGEN_1=2">More</button>'
+    following = {'slug': 'following-wrapper-sentinel', 'status': 'В реализации'}
+    calls, _ = mock_origin(lambda request: httpx2.Response(200, content=first if not request.url.query
+        else page(following['slug'], following['status'])))
+    result = capture()
+    assert len(calls) == 2 and result['walk_complete'] and not result['complete']
+    assert result['roster'] == observations + [following]
+    assert result['observed_occurrence_count'] == 283 and result['observed_unique_slug_count'] == 281
+    assert result['observed_duplicate_occurrence_count'] == 2
+    assert result['quality_gaps'] == ['duplicate_slug', 'conflicting_status']
+    assert result['conflicting_status_observations'] == [
+        {'slug': observations[156]['slug'], 'statuses': ['В реализации', 'Планируемый']}]
+    assert [p['observed_occurrence_count'] for p in result['pages']] == [282, 1]
+
+
+def test_later_timeout_after_quality_gap_still_fails_walk_closed(mock_origin, monkeypatch):
+    monkeypatch.setattr(audit, 'MAX_SECONDS', 0.03)
+    async def respond(request):
+        if request.url.query:
+            await asyncio.sleep(5)
+        return httpx2.Response(200, content=duplicate_shape('/projects/?PAGEN_1=2'))
+    calls, _ = mock_origin(respond)
+    result = capture()
+    assert len(calls) == 2 and not result['walk_complete'] and not result['complete']
+    assert result['gaps'] == ['duplicate_slug', 'conflicting_status', 'total_time_limit']
+    assert result['observed_occurrence_count'] == 4 and result['elapsed_ms'] < 1000
+
+
+def test_quality_gap_does_not_mask_a_later_transport_failure(mock_origin):
+    calls, _ = mock_origin(lambda request: httpx2.Response(200,
+        content=duplicate_shape('/projects/?PAGEN_1=2')) if not request.url.query
+        else httpx2.Response(503))
+    result = capture()
+    assert len(calls) == 2 and not result['walk_complete'] and not result['complete']
+    assert result['gaps'] == ['duplicate_slug', 'conflicting_status', 'http_status']
+    assert result['observed_occurrence_count'] == 4 and result['observed_unique_slug_count'] == 2
+
+
+@pytest.mark.parametrize('failure,code', [('skip', 'nonsequential_next_link'),
+    ('empty', 'unrecognized_catalogue'), ('redirect', 'redirect_refused'),
+    ('repeated', 'repeated_page'), ('nameless', 'project_identity_coverage_incomplete')])
+def test_quality_gap_never_turns_a_failed_walk_into_complete(mock_origin, failure, code):
+    first = duplicate_shape('/projects/?PAGEN_1=2')
+    second = {'skip': page('later-site', next_url='/projects/?PAGEN_1=7'), 'empty': b'',
+              'repeated': first,
+              'nameless': page('later-site') + b'<a href="/projects/missing-name"></a>'}
+    def respond(request):
+        if not request.url.query:
+            return httpx2.Response(200, content=first)
+        if failure == 'redirect':
+            return httpx2.Response(302, headers={'Location': 'https://evil.example/'})
+        return httpx2.Response(200, content=second[failure])
+    calls, _ = mock_origin(respond)
+    result = capture()
+    assert len(calls) == 2 and not result['walk_complete'] and not result['complete']
+    assert code in result['gaps']
+    assert result['quality_gaps'] == ['duplicate_slug', 'conflicting_status']
+
+
+@pytest.mark.parametrize('limit,code', [('pages', 'page_limit'), ('rows', 'roster_limit'),
+    ('bytes', 'body_limit'), ('output', 'output_limit')])
+def test_quality_observation_retains_all_existing_budgets(mock_origin, monkeypatch, limit, code):
+    first = duplicate_shape('/projects/?PAGEN_1=2')
+    if limit == 'pages':
+        monkeypatch.setattr(audit, 'MAX_PAGES', 1)
+    elif limit == 'rows':
+        monkeypatch.setattr(audit, 'MAX_ROWS', 4)
+    elif limit == 'bytes':
+        monkeypatch.setattr(audit, 'MAX_BYTES', len(first) + 5)
+    else:
+        monkeypatch.setattr(audit, 'MAX_OUTPUT_BYTES', 1)
+    mock_origin(lambda request: httpx2.Response(200, content=first if not request.url.query else page('later-site')))
+    result = capture()
+    assert not result['complete'] and not result['walk_complete'] and code in result['gaps']
+    if limit == 'output':
+        assert result['output_truncated'] and result['conflicting_status_observations'] == []
+    else:
+        assert result['observed_occurrence_count'] == 4 and result['observed_unique_slug_count'] == 2
 
 
 @pytest.fixture
