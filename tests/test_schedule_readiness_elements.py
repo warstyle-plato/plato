@@ -248,11 +248,54 @@ def test_multi_building_matrix_is_readable_and_known_unweighted_facts_are_not_mi
         page.evaluate('(v)=>{currentView=v;renderGantt(v)}',view)
         expect(page.locator('#readinessSummary')).to_contain_text('Пригодные показания: 4 из 4')
         expect(page.locator('#readinessSummary')).to_contain_text('включено во взвешенный расчёт: 0')
-        cells=page.locator('#gprMatrix tbody td[data-object]')
+        cells=page.locator('#gprMatrix .readiness-stage-row td[data-object]')
         expect(cells).to_have_count(4)
+        expect(page.locator('#gprMatrix thead')).to_be_visible()
+        expect(page.locator('#gprMatrix .readiness-total th')).to_have_text('Итого по корпусу')
+        boxes=[]
         for i in range(4):
             box=cells.nth(i).bounding_box()
-            assert box['width'] >= (width-90 if width==390 else 150)
+            assert box['width'] >= 45
+            boxes.append(box)
             assert cells.nth(i).get_attribute('data-object')=='Корпус '+str(i+1)
+        assert max(b['y'] for b in boxes)-min(b['y'] for b in boxes)<1
+        assert boxes[1]['x']>boxes[0]['x']  # Real columns on a phone, not stacked text cards.
+        assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+        assert not errors
+
+
+@pytest.mark.parametrize('width',[390,1440])
+def test_matrix_total_is_the_weighted_corpus_value_and_mobile_numbers_are_compact(width):
+    rows=[];assignments={}
+    for obj,values in [('Корпус 1',(.5,0)),('Корпус 2',(.9,1)),('Корпус 3',(.3,.6))]:
+        for element,stage,value in [('frame','Конструктив',values[0]),('masonry','Кладка',values[1])]:
+            key=obj+element
+            rows.append(dict(reading(key,value,obj=obj),section=stage))
+            assignments[key]=dict(element_id=element,share=100)
+    config=dict(id=elements.PROFILE_ID,overrides={},assignments=assignments,
+                objects={obj:'residential' for obj in ('Корпус 1','Корпус 2','Корпус 3')})
+    state=ready.model({'works':{r['id']:r for r in rows}},cut=DAY,baseline_scope='remaining_work',source_sha256='a'*64)
+    state.update(elements.projection(rows,config,cut=DAY,confirmed=True))
+    # Frame carries25 and masonry5: corpus1 is41.7%, not the25% mean of its stages.
+    assert state['corpora'][0]['progress']==pytest.approx((25*.5+5*0)/30)
+    with browser_page(width) as (page,_,errors):
+        from test_monitor_gpr_sections import monitor_view
+        view=monitor_view();view['schedule']['readiness_html']=ready.render(state)
+        page.evaluate('(v)=>{currentView=v;renderGantt(v)}',view)
+        total=page.locator('#gprMatrix .readiness-total')
+        expect(total.locator('td strong')).to_have_text(['41,7%','91,7%','35,0%'])
+        expect(total.locator('.readiness-meter')).to_have_count(3)
+        expect(page.locator('#gprMatrix .readiness-stage-row')).to_have_count(2)
+        bounds=page.locator('#gprMatrix table').bounding_box()
+        assert bounds['height']<240  # The whole comparison fits without a long text list.
+        cards=page.locator('.readiness-item')
+        assert cards.nth(0).bounding_box()['y']<page.locator('.readiness-method').bounding_box()['y']
+        if width==390:
+            assert abs(cards.nth(0).bounding_box()['y']-cards.nth(2).bounding_box()['y'])<1
+            assert page.locator('.readiness-grid').bounding_box()['height']<140
+        details=page.locator('.readiness-matrix-evidence')
+        assert details.get_attribute('open') is None
+        details.locator('summary').click()
+        expect(details).to_contain_text('Самое старое учтённое показание')
         assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
         assert not errors

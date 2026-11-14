@@ -220,9 +220,19 @@ def render_matrix(state):
     def cell(row):
         if not row['total']:
             return '<td class="readiness-cell-empty">—</td>'
-        pct = 'Пока не определено' if row['progress'] is None else f"{row['progress']*100:.1f}%".replace('.', ',')+(' · по известным данным' if row['partial'] else '')
+        pct = '—' if row['progress'] is None else f"{row['progress']*100:.1f}%".replace('.', ',')
+        label = row['name']+': '+('пока не определено' if row['progress'] is None else pct+(' · по известным данным' if row.get('partial') else ''))
+        bar = '' if row['progress'] is None else '<span class="readiness-meter" aria-hidden="true"><i style="width:'+str(max(0,min(100,row['progress']*100)))+'%"></i></span>'
+        return '<td data-object="'+esc(row['name'])+'" aria-label="'+esc(label)+'"><strong>'+esc(pct)+'</strong>'+bar+'</td>'
+    def evidence(stage, row):
+        if not row['total']:
+            return ''
         coverage = 'неизвестно' if row['coverage'] is None else f"{row['coverage']:.1f}%".replace('.', ',')
         date = row['oldest_date'] or 'не указана'
-        return '<td data-object="'+esc(row['name'])+'"><strong>'+esc(pct)+'</strong><div>Учтено '+str(row['known_readings'])+' из '+str(row['total'])+' работ; покрытие веса: '+esc(coverage)+'.</div><div>Самое старое учтённое показание: '+esc(date)+'.</div>'+('<details><summary>Что не учтено</summary>'+esc(row['reason'])+'</details>' if row['reason'] else '')+'</td>'
+        return '<article><h4>'+esc(stage)+' · '+esc(row['name'])+'</h4><p>Учтено '+str(row['known_readings'])+' из '+str(row['total'])+' работ; покрытие веса: '+esc(coverage)+'. Самое старое учтённое показание: '+esc(date)+'.</p>'+('<p>'+esc(row['reason'])+'</p>' if row['reason'] else '')+'</article>'
     limit = '<p>Матрица показывает первые 100 этапов и 32 корпуса из-за размера источника. Полный список работ остаётся в Ганте; общая готовность учитывает весь подтверждённый состав.</p>' if state.get('matrix_truncated') else ''
-    return '<section id="gprMatrix"><h3>Готовность по этапам и корпусам</h3><p>Оценка по удельным весам видов работ'+(' с ручными долями' if state.get('manual') else '')+', не по объёмам этого проекта.</p>'+limit+'<div class="readiness-matrix"><table><thead><tr><th>Этап</th>'+''.join('<th>'+esc(obj)+'</th>' for obj in state['matrix_objects'])+'</tr></thead><tbody>'+''.join('<tr><th>'+esc(row['stage'])+'</th>'+''.join(cell(c) for c in row['cells'])+'</tr>' for row in state['matrix'])+'</tbody></table></div></section>'
+    corpora = {row['name']:row for row in state['corpora']}
+    totals = '<tr class="readiness-total"><th scope="row">Итого по корпусу</th>'+''.join(cell(corpora[obj]) for obj in state['matrix_objects'])+'</tr>'
+    rows = ''.join('<tr class="readiness-stage-row"><th scope="row">'+esc(row['stage'])+'</th>'+''.join(cell(c) for c in row['cells'])+'</tr>' for row in state['matrix'])
+    details = ''.join(evidence(row['stage'], c) for row in state['matrix'] for c in row['cells'])
+    return '<section id="gprMatrix"><h3>Готовность по этапам и корпусам</h3><p>По известным данным; оценочные доли'+(' с ручными изменениями' if state.get('manual') else '')+'. Итог корпуса учитывает веса разделов.</p>'+limit+'<div class="readiness-matrix" style="--readiness-columns:'+str(len(state['matrix_objects']))+'"><table><thead><tr><th scope="col">Этап</th>'+''.join('<th scope="col">'+esc(obj)+'</th>' for obj in state['matrix_objects'])+'</tr></thead><tbody>'+totals+rows+'</tbody></table></div><details class="readiness-matrix-evidence"><summary>Состав, даты и ограничения расчёта</summary>'+details+'</details></section>'
