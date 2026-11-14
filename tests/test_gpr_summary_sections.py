@@ -84,15 +84,21 @@ def test_native_page_groups_pir_and_displays_totals_and_dates_with_closed_work_l
     view['schedule']['display_groups'] = groups.metadata(tasks)
     rows, config = weighted_rows()
     config['corpus_shares']={'Корпус 1':20,'Корпус 2':80}
-    for row in rows:
+    for i,row in enumerate(rows):
+        row.update(plan_start='2026-11-01',plan_finish=['2027-01-12','2027-01-20'][i])
         row['plan_pace_scenario']=dict(finish='2027-02-03',source_date='2026-11-06')
     state = ready.model({'works':{r['id']:r for r in rows}},cut=DAY,baseline_scope='remaining_work',source_sha256='a'*64)
     state.update(elements.projection(rows,config,cut=DAY,confirmed=True))
-    scenario.decorate_readiness(state, rows)
+    scenario.decorate_readiness(state, rows, dict(plan_date='2027-09-30',plan_label='План РНВ владельца'))
     view['schedule']['readiness_html']=ready.render(state)
     serve_view(monkeypatch,view)
     with browser_page(width) as (page,_,errors):
         settled(page,view)
+        expect(page.locator('.readiness-milestone-plan')).to_be_visible()
+        expect(page.locator('.readiness-milestone-plan')).to_have_text('План РНВ владельца: 30.09.2027')
+        expect(page.locator('.readiness-project-plan')).to_be_visible()
+        expect(page.locator('.readiness-project-plan')).to_contain_text('20.01.2027')
+        expect(page.locator('.readiness-project-forecast')).to_contain_text('Оценка окончания: 03.02.2027')
         stages=page.locator('#gprFactMatrix .gpr-matrix-stage')
         expect(stages).to_have_count(3)
         assert stages.evaluate_all('(xs)=>xs.map(x=>x.dataset.stage)')==['ПИР','Конструктив','Благоустройство']
@@ -105,12 +111,15 @@ def test_native_page_groups_pir_and_displays_totals_and_dates_with_closed_work_l
         total=page.locator('#gprMatrix .readiness-total')
         expect(total.locator('td strong')).to_have_text(['20,0%','80,0%'])
         expect(total.locator('.readiness-cell-forecast')).to_have_text(['03.02.2027']*2)
-        expect(total.locator('.readiness-forecast-label')).to_have_text(['При плановом темпе']*2)
+        expect(total.locator('.readiness-cell-plan')).to_have_text(['План: 12.01.2027','План: 20.01.2027'])
+        expect(total.locator('.readiness-forecast-label')).to_have_text(['Оценка']*2)
+        expect(total.locator('.readiness-forecast-basis')).to_have_text(['Плановый темп']*2)
         for label in total.locator('.readiness-forecast-label').all():
             expect(label).to_be_visible()
         expect(page.locator('.readiness-project-total')).to_contain_text('68,0%')
         expect(page.locator('.readiness-project-total .readiness-cell-forecast')).to_be_visible()
-        expect(page.locator('.readiness-project-total .readiness-forecast-label')).to_have_text('При плановом темпе')
+        expect(page.locator('.readiness-project-total .readiness-cell-plan')).to_have_text('План: 20.01.2027')
+        expect(page.locator('.readiness-project-total .readiness-forecast-label')).to_have_text('Оценка')
         expect(page.locator('.readiness-project-total .readiness-forecast-label')).to_be_visible()
         expect(page.locator('.readiness-corpus-assumption')).to_contain_text('ПИР и паркинг в неё не включены')
         expect(page.locator('.readiness-project-coverage')).to_be_visible()
@@ -118,6 +127,6 @@ def test_native_page_groups_pir_and_displays_totals_and_dates_with_closed_work_l
         reasons=page.locator('.readiness-project-reasons')
         expect(reasons.locator('summary')).to_be_visible()
         expect(reasons.locator('p')).to_be_hidden()
-        assert page.locator('#gprMatrix table').bounding_box()['height']<360
+        assert page.locator('#gprMatrix table').bounding_box()['height']<500
         assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
         assert not errors

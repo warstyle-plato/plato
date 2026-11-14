@@ -71,8 +71,10 @@ def summary(rows):
 
 def group(rows):
     """Latest known finish is bounded by coverage; it never certifies an RNV."""
-    ends, covered, completed, sources = [], 0, 0, []
+    ends, covered, completed, sources, plans = [], 0, 0, [], []
     for row in rows:
+        if _day(row.get('plan_finish')):
+            plans.append(row['plan_finish'])
         scenario = row.get('plan_pace_scenario') or {}
         measured = row.get('forecast_finish') if row.get('forecast_known') and not row.get('observed_complete_by') else None
         done = bool(scenario.get('complete') or row.get('work_done'))
@@ -84,13 +86,17 @@ def group(rows):
         if (done or finish) and _day(scenario.get('source_date')):
             sources.append(scenario['source_date'])
     return dict(finish=max(ends, default=None), covered=covered, total=len(rows),
+                plan_finish=max(plans, default=None), plan_covered=len(plans),
                 all_complete=bool(rows) and completed == len(rows), partial=True,
                 oldest_source_date=min(sources, default=None), label=LABEL,
                 note='Условная оценка по известным работам; не подтверждённый прогноз РНВ.')
 
 
-def decorate_readiness(state, rows):
+def decorate_readiness(state, rows, milestone_plan=None):
     from collections import Counter, defaultdict
+    plan = milestone_plan or {}
+    state['milestone_plan'] = (dict(date=plan['plan_date'], label=plan.get('plan_label') or 'План окончания работ')
+                               if _day(plan.get('plan_date')) else None)
     by_id = defaultdict(list)
     for row in rows:
         if row.get('id') is not None:

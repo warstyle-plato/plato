@@ -97,16 +97,23 @@ def selected_months(parsed_files):
 
 def calculate(budget, payments, register, crosswalk, bdds, cut):
     cut=dt.date.fromisoformat(cut);events=[];future=0;eligible=[];fingerprints={};duplicate_rows=set();duplicate_months=set()
+    try:
+        from developaid_admin_expenses_classification_audit import AuditEvents
+        audit = AuditEvents(number, scalar);events = audit
+    except Exception:audit = None
     for item in payments.get('rows',[]):
         day=item.get('date')
         if day is not None and day>cut:future+=1;continue
         eligible.append(item)
         if day is not None:
             key=(day,item.get('amount'),item.get('estimate_code'),item.get('contractor'),item.get('contract'),item.get('source'))
+            if audit is not None:
+                try:audit.fingerprint(item, key)
+                except Exception:audit.record_failure()
             if key in fingerprints:duplicate_rows.update((item.get('source_row'),fingerprints[key]))
             fingerprints[key]=item.get('source_row')
     actuals.payments_by_article({'rows':eligible,'total':None},register,crosswalk=crosswalk,
-                               classification_observer=events.append)
+                               classification_observer=events if audit is not None else events.append)
     rss_months={};uncertain={};unknown_date=0
     for event in events:
         possible=event['scope_unknown'] or ARTICLE in event['possible_articles']
@@ -156,7 +163,7 @@ def calculate(budget, payments, register, crosswalk, bdds, cut):
     known=sum(paid,Decimal(0)) if paid else None;B=number(budget.get('budget'))
     balance=B-known if B is not None and known is not None else None
     complete=not missing and not unknown_date
-    return {'state':'ok' if complete else 'partial','scope':'current_saved_budget_minus_observed_paid_at_cut',
+    result = {'state':'ok' if complete else 'partial','scope':'current_saved_budget_minus_observed_paid_at_cut',
         'cut':cut.isoformat(),'budget':scalar(B),'paid_observed_net':scalar(known),'paid_known_part':scalar(known),
         'balance_after_observed_payments':scalar(balance),'observed_overspend':scalar(max(Decimal(0),-balance)) if balance is not None else None,
         'remaining_need':None,  # No source attests complete paid history since project start.
@@ -172,6 +179,11 @@ def calculate(budget, payments, register, crosswalk, bdds, cut):
         'source_preference':'closed-month BDDS admin FACT replaces RSS month; otherwise dated RSS known part; never add both',
         'warning':'Расчёт предварительный: часть периодов или платежей ещё не сверена. Подробности — в составе оплат.' if not complete else
                   'Расчёт по загруженным данным; полнота с начала проекта отдельно не подтверждена.'}
+
+    try:
+        result['classification_audit'] = audit.build(chosen) if audit is not None else {'state':'diagnostic_unavailable','financial_acceptance':False}
+    except Exception:result['classification_audit'] = {'state':'diagnostic_unavailable','financial_acceptance':False}
+    return result
 
 
 def _read_file(path,limit=source.MAX_SOURCE):
@@ -336,6 +348,10 @@ def for_project(project,cut):
             result['warning']='Часть сохранённых источников не прочитана. Известные бюджет и оплаты сохранены. '+result['warning']
         result['sources']={'fm':{**identity,'version_date':meta.get('taken_at')},'rss':rss_id,
             'budget_files':[_budget_provenance(item) for item in origins],'registry_available':registry_known,'crosswalk_available':crosswalk_known}
+        try:
+            from developaid_admin_expenses_classification_audit import bind_sources
+            result['classification_audit'] = bind_sources(result.get('classification_audit') or {}, result['sources'], errors)
+        except Exception:result['classification_audit'] = {'state':'diagnostic_unavailable','financial_acceptance':False}
         return result
     except Exception:
         return {'state':'missing','budget':None,'paid_observed_net':None,'balance_after_observed_payments':None,
