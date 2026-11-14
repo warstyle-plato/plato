@@ -210,6 +210,7 @@ def test_long_final_card_after_elite_answer_is_complete_and_keeps_the_calculate_
     queue['notes'] = [('Синтетическое пояснение ' + str(i) + ': ' + 'проверить & сверить <значение> 😀 ' * 12)
                       for i in range(24)]
     engine._intake_queue_save(queue)
+    engine._telegram_intake_ask_next(CHAT, engine._telegram_dialog_get(CHAT))
     original_send = engine._telegram_send_message
 
     def validate_send(chat_id, text, **kwargs):
