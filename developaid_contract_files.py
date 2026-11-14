@@ -32,6 +32,8 @@ import developaid_contract_link_choices as choices
 import developaid_contract_plan as plan
 import developaid_contract_scan as scan
 import developaid_contract_schedule_links as links
+import developaid_contract_terms as terms
+import developaid_contract_price as price
 import developaid_monitor as monitor
 
 MAX_BYTES = 20 * 1024 * 1024
@@ -303,6 +305,18 @@ def _choices(folder: Path) -> dict:
     return stored.get("choices") or {}
 
 
+def document_terms(project: str, contract_id: str, cut: str) -> dict:
+    """Source-bound conditions, read from the same saved PDFs as the card."""
+    folder = _directory(project, contract_id)
+    return terms.resolve(_records(folder) if folder.is_dir() else [], cut)
+
+
+def document_prices(project: str, contract_id: str, cut: str) -> dict:
+    """Explicit full price from saved clauses; never an estimate's maximum total."""
+    folder = _directory(project, contract_id)
+    return price.resolve(_records(folder) if folder.is_dir() else [], cut)
+
+
 def listing(project: str, contract_id: str, cut: str = "", acts: dict | None = None) -> dict:
     """Every document in the card with its links, the accumulated plan and fact on `cut` and the removed files.
 
@@ -448,9 +462,44 @@ def _fact(editions, in_force, acts, cut, performed):
 
 def _with_control(listed, acts, cut):
     """The deviation, lag and forecast of the listed plan and fact (step 7)."""
-    listed["control"] = control.build(listed["plan"], listed["fact"], (acts or {}).get("deadline"),
-                                      (acts or {}).get("deadline_label") or "", cut)
+    conditions = terms.resolve(listed.get('documents') or [], cut)
+    price_condition = price.resolve(listed.get('documents') or [], cut)
+    if price_condition['history']:
+        listed['price'] = price_condition
+    deadline, label = (acts or {}).get('deadline'), (acts or {}).get('deadline_label') or ''
+    if conditions['history']:
+        listed['terms'] = conditions
+        manual = (acts or {}).get('deadline_manual')
+        if not manual:
+            deadline = conditions['deadline']
+            label = (conditions['source'] or {}).get('label') or ''
+    listed["control"] = control.build(listed["plan"], listed["fact"], deadline, label, cut)
+    # Known source dates are useful even before money/fact can be matched.
+    # They are a source-plan interval, never a legal deadline or a forecast.
+    if listed["control"].get("total") is None:
+        source = _schedule_source(listed.get("documents") or [], cut)
+        if source:
+            listed["control"]["schedule_source"] = source
     return listed
+
+
+def _schedule_source(records, cut):
+    eligible = [r for r in records if not r.get('removed_at') and not r.get('act')
+                and not (r.get('scan') and not r['scan'].get('confirmed_at'))
+                and (r.get('schedule') or {}).get('lines') and _date(r) and _date(r) <= cut]
+    if not eligible:
+        return None
+    record = max(eligible, key=_edition)
+    if sum(_edition(r) == _edition(record) for r in eligible) > 1:
+        return None  # Conflicting documents of one edition need an explicit choice.
+    lines = record['schedule']['lines']
+    dated = [r for r in lines if r.get('start') and r.get('finish') and r['start'] <= r['finish']]
+    if not dated:
+        return None
+    return {'start': min(r['start'] for r in dated), 'finish': max(r['finish'] for r in dated),
+            'title': record.get('title') or _title(record), 'date': _date(record),
+            'sha256': record['sha256'], 'dated': len(dated), 'undated': len(lines)-len(dated),
+            'assumption': record['schedule'].get('assumption') or '', 'basis': 'source_gpr'}
 
 
 def register_control(project: str, register: dict, cut: str) -> dict:
@@ -482,6 +531,8 @@ def register_control(project: str, register: dict, cut: str) -> dict:
             "left_out": found["left_out"],
             **{k: forecast.get(k) for k in ("finish", "deadline", "from_register", "done", "threat", "days_over",
                                             "days_early", "passed")}}
+        if found.get('schedule_source'):
+            row['schedule_control']['schedule_source'] = found['schedule_source']
     return register
 
 

@@ -305,7 +305,7 @@ def store_schedule(project: str, gpr: bytes, pm: bytes | None,
             raise FileExistsError("baseline проекта уже загружен; новую версию нужно проверить и явно утвердить")
         versions._atomic(path, gpr)
         if pm:
-            versions._atomic(folder / "finance.xlsx", pm)
+            _write_finance_pair(folder, pm, day, "")
         versions._atomic(folder / "meta.json", json.dumps({
             "taken_at": day,
             "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -717,14 +717,27 @@ def replace_finance_baseline(project: str, data: bytes,
     finally:
         wb.close()
     folder = _project_dir(project) / "baseline"
-    folder.mkdir(parents=True, exist_ok=True)
-    path = folder / "finance.xlsx"
-    if path.exists():
-        history = _project_dir(project) / "finance_history"
-        history.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d%H%M%S")
-        (history / f"replaced-{stamp}.xlsx").write_bytes(path.read_bytes())
-    path.write_bytes(data)
+    import developaid_schedule_versions as versions
+    with versions.lock(folder):
+        path = folder / "finance.xlsx"
+        if path.exists():
+            history = _project_dir(project) / "finance_history"
+            history.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d%H%M%S")
+            versions._atomic(history / f"replaced-{stamp}.xlsx", path.read_bytes())
+        meta = _write_finance_pair(folder, data, day, file_name)
+    return {"taken_at": day, "replaced": True, "file_name": meta["file_name"]}
+
+
+def _write_finance_pair(folder: Path, data: bytes, day: str, file_name: str) -> dict:
+    """Publish a source-bound pair while the caller holds the baseline file lock.
+
+    Metadata goes first and carries the new source hash. If a writer stops
+    before replacing the book, a reader rejects the mismatched pair instead
+    of presenting a new book under the previous source's date and filename.
+    """
+    import hashlib
+    import developaid_schedule_versions as versions
     # Книга хранится под общим именем, поэтому исходное имя файла и время
     # загрузки записываются рядом: подсказка плитки «Утверждённый бюджет»
     # называет источник (владелец, 02.11.2026). Пустое имя — так и пишется:
@@ -732,9 +745,10 @@ def replace_finance_baseline(project: str, data: bytes,
     # Браузер на Windows может прислать путь с «\», имя — последняя часть.
     meta = {"file_name": re.split(r"[\\/]", str(file_name or "").strip())[-1],
             "uploaded_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            "taken_at": day}
-    (folder / FINANCE_META).write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
-    return {"taken_at": day, "replaced": True, "file_name": meta["file_name"]}
+            "taken_at": day, "source_sha256": hashlib.sha256(data).hexdigest()}
+    versions._atomic(folder / FINANCE_META, json.dumps(meta, ensure_ascii=False).encode("utf-8"))
+    versions._atomic(folder / "finance.xlsx", data)
+    return meta
 
 
 # Имя исходного файла финансовой базы и время её загрузки.

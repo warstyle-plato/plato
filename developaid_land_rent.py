@@ -9,7 +9,7 @@ import calendar
 import math
 import re
 from collections import defaultdict
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 from urllib.parse import urlparse
 
@@ -573,7 +573,18 @@ def build(inputs: dict[str, Any], project_start: date, rve: date,
         out["notes"].append("Московская область: аренда — 6% кадастровой стоимости в год, с 1 января года после заключения договора сумма индексируется."
                             + (" После смены ВРИ ставка считается от новой кадастровой стоимости." if switch else ""))
         origins = _mapping(x.get("land_rent_indices_origin"))
+        index_end = min(rve, termination) if termination else rve
+        default_years = [y for y, value in sorted(indices.items()) if value is not None and
+                         contract_date.year < y <= (index_end - timedelta(days=1)).year and
+                         _mapping(origins.get(str(y)) or origins.get(y)).get("source") == "default_estimate"]
+        if default_years:
+            text = ("Простая оценка: будущая индексация МО на " + ", ".join(map(str, default_years))
+                    + " гг. не учтена (0%). Это допущение в текущих ценах; уточните индексы для расчёта по договору.")
+            out["financial_missing"].append(text)
+            out["financial_missing_codes"].append("indices_estimate")
+            out["assumptions"].append(text)
         assumed = [y for y, value in sorted(indices.items()) if value is not None and
+                   _mapping(origins.get(str(y)) or origins.get(y)).get("source") != "default_estimate" and
                    (y > date.today().year or _mapping(origins.get(str(y)) or origins.get(y)).get("source") == "forecast")]
         if assumed:
             text = "Индексы на " + ", ".join(map(str, assumed)) + " гг. — ваш прогноз для сценария, а не утверждённый размер аренды."
@@ -731,7 +742,8 @@ def sum_state(result: dict[str, Any]) -> dict[str, Any]:
     reasons = [*(result.get("missing") or []), *(result.get("financial_missing") or [])]
     if not reasons and result.get("post_rve_unknown"):
         reasons = ["Аренда после ввода требует отдельного расчёта."]
-    return {"known": False, "reason": str(reasons[0]) if reasons else "Сумма аренды не определена."}
+    return {"known": False,
+            "reason": str(reasons[0]) if reasons else "Расчёт не назвал, каких данных для неё не хватает."}
 
 
 def disclosure(result: dict[str, Any]) -> str:
