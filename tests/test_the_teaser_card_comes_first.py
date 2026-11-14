@@ -20,11 +20,13 @@
 from __future__ import annotations
 
 import base64
+import copy
 import json
 import sys
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -293,6 +295,27 @@ def test_on_the_page_card_then_questions_then_the_button(monkeypatch) -> None:
     assert cad == NUMBER
 
 
+def _ready_owned_bot_card(monkeypatch, numbers, region):
+    """The launch fixture now uses a persisted, owned, confirmed native card."""
+    _stub(monkeypatch)
+    extraction=copy.deepcopy(EXTRACTION)
+    text=TEXT.replace(NUMBER, ", ".join(numbers))
+    if numbers:
+        extraction["fields"][0].update(value=numbers, quote="КН " + ", ".join(numbers))
+    else:
+        extraction["fields"]=[f for f in extraction["fields"] if f["key"]!="cadastral_numbers"]
+    request=core._telegram_agent_request(1)
+    first=core._intake_queue_start("synthetic.pdf",extraction,{"text":text,"pages":4},
+        dict(core.DEFAULT_INPUTS),copy.deepcopy(core.TEP_DEFAULT),by_parcel=True,
+        parcel_region=region,actor=request.scope["plato_actor"])
+    queue=core._intake_queue_load(first["id"],request=request)
+    teaser_card.answer(queue,dict(core.DEFAULT_INPUTS),copy.deepcopy(core.TEP_DEFAULT),
+        index=0,action="stop",spp_split=core.MKD_SPP_SPLIT,presets=core.PROJECT_CLASS_PRESETS)
+    core._intake_queue_save(queue)
+    return core.teaser_card_view(queue,dict(core.DEFAULT_INPUTS),copy.deepcopy(core.TEP_DEFAULT),
+                                by_parcel=True,parcel_region=region)
+
+
 def test_the_mini_app_counts_exactly_the_bot_card(monkeypatch) -> None:
     """Кнопка бота «Всё верно, считать» без участка: мини-приложение считает
     с умолчаний движка и строк карточки — ни больше, ни меньше."""
@@ -300,12 +323,9 @@ def test_the_mini_app_counts_exactly_the_bot_card(monkeypatch) -> None:
     from playwright.sync_api import sync_playwright
     import browser as stand
 
-    card = _parse(monkeypatch)["card"]
-    card = {**card, "to_engine": [row for row in card["to_engine"]
-                                  if not row["path"].startswith("land.")]}
+    card = _ready_owned_bot_card(monkeypatch, [], "")
     monkeypatch.setattr(core, "_telegram_token", lambda: "123:test")
-    url = core._telegram_intake_calc_markup(1, {**card, "cadastral_numbers": []}
-                                            )["inline_keyboard"][0][0]["web_app"]["url"]
+    url = core._telegram_intake_calc_markup(1, card)["inline_keyboard"][0][0]["web_app"]["url"]
     fragment = url.split("#", 1)[1]
     calcs: list[dict] = []
     with sync_playwright() as pw:
@@ -327,7 +347,7 @@ def test_the_mini_app_counts_exactly_the_bot_card(monkeypatch) -> None:
     assert not errors, errors
     sent = calcs[-1]
     for row in card["to_engine"]:
-        if row["derived"]:
+        if row["derived"] or row["path"].startswith("land."):
             continue
         parts = row["path"].split(".")
         got = sent["inputs"][parts[1]] if parts[0] == "inputs" else sent["tep"][parts[1]][parts[2]]
@@ -355,9 +375,7 @@ def _mini_app_by_parcel(monkeypatch, numbers: list[str], region: str, port: int,
     from playwright.sync_api import sync_playwright
     import browser as stand
 
-    card = _parse(monkeypatch)["card"]
-    card = {**card, "cadastral_numbers": numbers,
-            "to_engine": [row for row in card["to_engine"] if not row["path"].startswith("land.")]}
+    card = _ready_owned_bot_card(monkeypatch, numbers, region)
     monkeypatch.setattr(core, "_telegram_token", lambda: "123:test")
     url = core._telegram_intake_calc_markup(1, card, region)["inline_keyboard"][0][0]["web_app"]["url"]
     calcs: list[dict] = []
@@ -369,7 +387,9 @@ def _mini_app_by_parcel(monkeypatch, numbers: list[str], region: str, port: int,
         page.on("request", lambda r: calcs.append(json.loads(r.post_data or "{}"))
                 if r.method == "POST" and r.url.endswith("/calculate") else None)
         for pattern, handler in routes:
-            page.route(pattern, handler)
+            # Keep the accepted query-aware native screening fixture.
+            matcher = (lambda url: urlsplit(url).path == "/land/screening") if pattern == "**/land/screening" else pattern
+            page.route(matcher, handler)
         with stand.serve(wrapper.app, port) as root:
             page.goto(f"{root}/?telegram=1#{url.split('#', 1)[1]}", wait_until="domcontentloaded")
             page.wait_for_function(
@@ -385,12 +405,12 @@ def _mini_app_by_parcel(monkeypatch, numbers: list[str], region: str, port: int,
                 "+(document.getElementById('telegramDoneBanner')?.innerText||'')")
             state = page.evaluate("() => ({region: inputs.vri_region, area: Number(inputs.site_area_ha),"
                                   " fee: Number(inputs.land_rights_cost_mln||0)})")
-        chromium.close()
+            chromium.close()
     assert not errors, errors
     assert "не посчитан" not in seen, seen[:500]
     sent = calcs[-1]
     for row in card["to_engine"]:
-        if row["derived"]:
+        if row["derived"] or row["path"].startswith("land."):
             continue
         parts = row["path"].split(".")
         got = sent["inputs"][parts[1]] if parts[0] == "inputs" else sent["tep"][parts[1]][parts[2]]

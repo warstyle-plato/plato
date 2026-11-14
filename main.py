@@ -1192,6 +1192,7 @@ def _apply_proposal(chat_id: int) -> dict[str, Any]:
                 manual_tep=session_data.get("manual_tep"),
                 calc_overrides=overrides,
                 mode="edit",
+                application_proof=core._telegram_confirmed_patch_proof(session_data, overrides, real_patch),
             )
         except Exception as exc:
             core._TELEGRAM_RUNTIME["last_error"] = "Платон/применение: " + str(exc)

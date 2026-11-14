@@ -311,12 +311,71 @@ def _telegram_user_allowed(user_id: int) -> bool:
     return not allowed or int(user_id) in allowed
 
 
+def _telegram_overrides_digest(overrides: dict[str, Any]) -> str:
+    raw = json.dumps(overrides, ensure_ascii=False, sort_keys=True,
+                     separators=(",", ":"), allow_nan=False).encode("utf-8")
+    if len(raw) > 24_000:
+        raise ValueError("Параметры требуют повторной проверки карточки")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _telegram_application_proof(overrides: dict[str, Any], proof: Any) -> dict[str, Any] | None:
+    # This checks a signed server attestation; the generic session issuer does
+    # not manufacture one. Only canonical card/CAD confirmation paths issue it.
+    if not isinstance(proof, dict) or set(proof) != {"schema", "scope", "binding", "sha256"}:
+        return None
+    if (type(proof.get("schema")) is not int or proof["schema"] != 1
+            or proof.get("scope") not in {"confirmed_card", "confirmed_cad", "confirmed_patch"}
+            or not re.fullmatch(r"[0-9a-f]{64}", str(proof.get("binding") or ""))):
+        return None
+    try:
+        if not hmac.compare_digest(str(proof.get("sha256") or ""), _telegram_overrides_digest(overrides)):
+            return None
+    except (ValueError, TypeError, OverflowError):
+        return None
+    return dict(proof)
+
+
+def _telegram_carry_application_proof(session: dict[str, Any]) -> dict[str, Any] | None:
+    return _telegram_application_proof(session.get("calc_overrides") or {},
+                                       session.get("overrides_application"))
+
+
+def _telegram_confirmed_patch_proof(session: dict[str, Any], overrides: dict[str, Any],
+                                     changes: dict[str, Any]) -> dict[str, Any] | None:
+    # A confirmed change may extend a validated base, never promote an old
+    # unvalidated saved dictionary. Every changed value has native field type.
+    base = session.get("calc_overrides") or {}
+    prior = _telegram_carry_application_proof(session)
+    if (base and prior is None) or not changes:
+        return None
+    expected = dict(base)
+    for key, value in changes.items():
+        if key not in DEFAULT_INPUTS:
+            return None
+        default = DEFAULT_INPUTS[key]
+        if isinstance(default, bool):
+            if not isinstance(value, bool):return None
+        elif isinstance(default, (int, float)):
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not teaser_card._finite_value(value):return None
+        elif not isinstance(value, str):
+            return None
+        expected[key] = value
+    if expected != overrides:
+        return None
+    digest = _telegram_overrides_digest(overrides)
+    binding = hashlib.sha256(json.dumps({"base": prior, "changes": changes},
+        sort_keys=True, ensure_ascii=False, allow_nan=False).encode("utf-8")).hexdigest()
+    return {"schema": 1, "scope": "confirmed_patch", "binding": binding, "sha256": digest}
+
+
 def _telegram_session(
     chat_id: int,
     cadastral_numbers: list[str],
     lifetime_seconds: int = 86400,
     manual_tep: dict[str, Any] | None = None,
     calc_overrides: dict[str, Any] | None = None,
+    application_proof: dict[str, Any] | None = None,
 ) -> str:
     token = _telegram_token()
     if not token:
@@ -330,6 +389,9 @@ def _telegram_session(
         payload["manual_tep"] = manual_tep
     if calc_overrides:
         payload["calc_overrides"] = calc_overrides
+        proof = _telegram_application_proof(calc_overrides, application_proof)
+        if proof is not None:
+            payload["overrides_application"] = proof
     raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
     if len(raw) > 24_000:
         raise RuntimeError("Ручной ТЭП слишком велик для Telegram-сессии")
@@ -388,6 +450,7 @@ def _telegram_web_app_url(
     manual_tep: dict[str, Any] | None = None,
     calc_overrides: dict[str, Any] | None = None,
     mode: str | None = None,
+    application_proof: dict[str, Any] | None = None,
 ) -> str:
     fragment: dict[str, str] = {
         "telegram_session": _telegram_session(
@@ -395,6 +458,7 @@ def _telegram_web_app_url(
             cadastral_numbers,
             manual_tep=manual_tep,
             calc_overrides=calc_overrides,
+            application_proof=application_proof,
         ),
     }
     if cadastral_numbers:
@@ -1669,7 +1733,21 @@ def _telegram_intake_calc_markup(chat_id: int, card: dict[str, Any],
     overrides = teaser_card.calc_overrides(card)
     mode = "intake" if not numbers or region in ("mo", "other") else None
     try:
-        url = _telegram_web_app_url(chat_id, numbers, calc_overrides=overrides, mode=mode)
+        # Read the current owned queue and rebuild with the current validators.
+        # A previously saved output dictionary alone cannot attest its units.
+        queue = _intake_queue_load(str(card.get("id") or ""),
+                                  request=_telegram_agent_request(chat_id))
+        current = teaser_card_view(queue, dict(DEFAULT_INPUTS),
+            {key: dict(value) for key, value in TEP_DEFAULT.items()},
+            by_parcel=True, parcel_region=region)
+        if (not current.get("ready") or teaser_card.calc_overrides(current) != overrides
+                or list(current.get("cadastral_numbers") or []) != numbers):
+            return None
+        digest = _telegram_overrides_digest(overrides)
+        proof = {"schema": 1, "scope": "confirmed_card", "sha256": digest,
+                 "binding": hashlib.sha256((queue["id"] + current["card_key"]).encode("ascii")).hexdigest()}
+        url = _telegram_web_app_url(chat_id, numbers, calc_overrides=overrides, mode=mode,
+                                    application_proof=proof)
     except Exception:  # noqa: BLE001
         return None
     label = "Считать без неуточнённых обязательств" if card.get("conditional") else "Всё верно, считать"
@@ -2217,11 +2295,16 @@ def _telegram_send_cad_calculate_button(chat_id: int, dialog: dict[str, Any]) ->
         overrides["apartment_price_th"], overrides["commercial_price_th"],
         overrides["parking_price_th"], overrides["smr_th_per_sqm"],
     ]
-    if overrides["project_class"] not in PROJECT_CLASS_PRESETS or min(values) <= 0:
+    if (overrides["project_class"] not in PROJECT_CLASS_PRESETS
+            or not all(math.isfinite(value) and value > 0 for value in values)):
         raise ValueError("Не заполнены параметры выбранного класса")
     class_label = PROJECT_CLASS_PRESETS.get(overrides["project_class"], {}).get("label") or "—"
     prices_note = " · цены изменены вручную" if bool(data.get("prices_custom")) else ""
-    url = _telegram_web_app_url(chat_id, numbers, calc_overrides=overrides)
+    digest = _telegram_overrides_digest(overrides)
+    proof = {"schema": 1, "scope": "confirmed_cad", "sha256": digest,
+             "binding": hashlib.sha256(json.dumps({"cad": numbers, "overrides": overrides},
+                 sort_keys=True, allow_nan=False).encode("utf-8")).hexdigest()}
+    url = _telegram_web_app_url(chat_id, numbers, calc_overrides=overrides, application_proof=proof)
     dialog["step"] = "ready_cad_calculation"
     dialog["calc_overrides"] = overrides
     _telegram_dialog_save(chat_id, dialog)
@@ -3457,8 +3540,11 @@ def telegram_session_data(req: TelegramSessionRequest) -> dict[str, Any]:
     chat_id = int(session["chat_id"])
     if not _telegram_user_allowed(chat_id):
         raise HTTPException(status_code=403, detail="Доступ к боту закрыт")
+    overrides = session.get("calc_overrides") or {}
+    review = bool(overrides) and _telegram_carry_application_proof(session) is None
     return {
         "cadastral_numbers": session.get("cad") or [],
         "manual_tep": session.get("manual_tep"),
-        "calc_overrides": session.get("calc_overrides") or {},
+        "calc_overrides": {} if review else overrides,
+        "overrides_review_required": review,
     }
