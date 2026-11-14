@@ -8,6 +8,7 @@ from __future__ import annotations
 import html
 import math
 import developaid_schedule_internal_weights as internal
+import developaid_schedule_groups as display_groups
 
 PROFILE_ID = 'residential-monolith-unfinished-v1'
 TITLE = 'Монолитный жилой корпус без отделки квартир'
@@ -35,7 +36,8 @@ def catalog(overrides=None):
 
 
 def validate(config, full):
-    if not isinstance(config, dict) or set(config) != {'id', 'overrides', 'assignments', 'objects'} or config['id'] != PROFILE_ID:
+    if (not isinstance(config, dict) or not {'id', 'overrides', 'assignments', 'objects'} <= set(config)
+            or set(config)-{'id', 'overrides', 'assignments', 'objects', 'corpus_shares'} or config['id'] != PROFILE_ID):
         raise ValueError('Выберите поддерживаемый оценочный профиль.')
     overrides, assignments, objects = (config[k] for k in ('overrides', 'assignments', 'objects'))
     ids = {key for key, _, _ in ELEMENTS}
@@ -48,6 +50,12 @@ def validate(config, full):
         raise ValueError('Явно укажите тип каждого корпуса; паркингу нужен отдельный профиль.')
     if not isinstance(assignments, dict) or set(assignments)-set(full):
         raise ValueError('Сопоставление относится к неизвестной работе полного ГПР.')
+    shares = config.get('corpus_shares', {})
+    residential = {obj for obj, kind in objects.items() if kind == 'residential'}
+    if (not isinstance(shares, dict) or shares and (set(shares) != residential
+            or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 0 for v in shares.values())
+            or not math.isclose(math.fsum(shares.values()), 100, abs_tol=1e-6))):
+        raise ValueError('Экспертные доли должны охватывать все жилые корпуса и давать 100%; пустые доли не означают равные.')
     for value in assignments.values():
         if (not isinstance(value, dict) or not {'element_id', 'share'} <= set(value)
                 or set(value)-{'element_id', 'share', 'weight'} or not isinstance(value['element_id'], str) or value['element_id'] not in ids):
@@ -104,11 +112,16 @@ def projection(entries, config, *, cut, confirmed):
     shares = catalog(config['overrides'])
     nominal = math.fsum(row['value'] for row in shares)
     objects = sorted({row.get('object') or 'Общие работы' for row in entries})
-    stages = sorted({row.get('section') or 'Без этапа' for row in entries})
+    stage_of = lambda row: display_groups.section(row, config['assignments'].get(row['id']))
+    stages = sorted({stage_of(row) for row in entries}, key=display_groups.order)
     included = [row for row in entries if config['objects'].get(row.get('object') or 'Общие работы') != 'separate']
     included_objects = {row.get('object') or 'Общие работы' for row in included}
     corpus_shares, corpus_reason, corpus_basis = {}, '', ''
-    if len(included_objects) > 1:
+    manual_corpora = config.get('corpus_shares') or {}
+    if manual_corpora and set(manual_corpora) == included_objects:
+        corpus_shares = {obj: value/100 for obj, value in manual_corpora.items()}
+        corpus_basis = 'Экспертные доли корпусов: '+', '.join(obj+' — '+f'{value:g}%' for obj,value in manual_corpora.items())
+    elif len(included_objects) > 1:
         # Nominal element percentages describe one building, not its size in
         # the project. Retain the full comparable plan before normalizing the
         # element shares; counting buildings would silently assign equal size.
@@ -198,11 +211,12 @@ def projection(entries, config, *, cut, confirmed):
                     numeric_readings=numeric, eligible_readings=eligible_readings, known_weights=mapped, requires_reconciliation=sum(bool((row.get('primary') or {}).get('requires_reconciliation')) for row in members),
                     source_dates=sorted(dates), sources=sorted(sources), reason=' '.join(dict.fromkeys(problems)),
                     coverage=100*known_weight/denominator if denominator > 0 and (whole or not unknown_weight) and not (project_scaled and corpus_reason) else None,
-                    known_weight=known_weight, partial=bool(problems), oldest_date=min(dates) if dates else None)
+                    known_weight=known_weight, partial=bool(problems) or bool(project and manual_corpora), oldest_date=min(dates) if dates else None,
+                    work_ids=[row['id'] for row in members])
     indexed = {}
     by_object = {}
     for row in entries:
-        obj, stage = row.get('object') or 'Общие работы', row.get('section') or 'Без этапа'
+        obj, stage = row.get('object') or 'Общие работы', stage_of(row)
         indexed.setdefault((obj, stage), []).append(row)
         by_object.setdefault(obj, []).append(row)
     # A malformed source must not turn a bounded work list into millions of cells.
@@ -212,18 +226,27 @@ def projection(entries, config, *, cut, confirmed):
                 matrix=matrix, matrix_objects=shown_objects, matrix_truncated=len(objects)>32 or len(stages)>100,
                 share_total=nominal, manual=bool(config['overrides']),
                 project_weight_basis=corpus_basis,
+                project_weight_estimated=bool(manual_corpora),
                 internal_weight_methods=internal.methods(config['assignments']))
 
 
 def render_matrix(state):
     esc = lambda value: html.escape(str(value), quote=True)
+    def forecast(row):
+        value = row.get('forecast') or {}
+        if not value.get('total'):
+            return ''
+        from developaid_schedule_visual import date_text
+        text = 'Выполнено' if value.get('all_complete') else date_text(value['finish']) if value.get('finish') else 'Нет срока'
+        title = value.get('note', '')+' Учтено '+str(value['covered'])+' из '+str(value['total'])+' работ.'
+        return '<span class="readiness-cell-forecast" title="'+esc(title)+'">'+esc(text)+'</span><small class="readiness-forecast-coverage">'+str(value['covered'])+'/'+str(value['total'])+' работ</small>'
     def cell(row):
         if not row['total']:
             return '<td class="readiness-cell-empty">—</td>'
         pct = '—' if row['progress'] is None else f"{row['progress']*100:.1f}%".replace('.', ',')
         label = row['name']+': '+('пока не определено' if row['progress'] is None else pct+(' · по известным данным' if row.get('partial') else ''))
         bar = '' if row['progress'] is None else '<span class="readiness-meter" aria-hidden="true"><i style="width:'+str(max(0,min(100,row['progress']*100)))+'%"></i></span>'
-        return '<td data-object="'+esc(row['name'])+'" aria-label="'+esc(label)+'"><strong>'+esc(pct)+'</strong>'+bar+'</td>'
+        return '<td data-object="'+esc(row['name'])+'" aria-label="'+esc(label)+'"><strong>'+esc(pct)+'</strong>'+bar+forecast(row)+'</td>'
     def evidence(stage, row):
         if not row['total']:
             return ''
@@ -233,6 +256,9 @@ def render_matrix(state):
     limit = '<p>Матрица показывает первые 100 этапов и 32 корпуса из-за размера источника. Полный список работ остаётся в Ганте; общая готовность учитывает весь подтверждённый состав.</p>' if state.get('matrix_truncated') else ''
     corpora = {row['name']:row for row in state['corpora']}
     totals = '<tr class="readiness-total"><th scope="row">Итого по корпусу</th>'+''.join(cell(corpora[obj]) for obj in state['matrix_objects'])+'</tr>'
+    project = state['project']
+    if project.get('progress') is not None:
+        totals = '<tr class="readiness-project-total"><th scope="row">Всего по жилым корпусам</th><td colspan="'+str(len(state['matrix_objects']))+'"><strong>'+esc(f"{project['progress']*100:.1f}%".replace('.', ','))+'</strong>'+forecast(project)+'</td></tr>'+totals
     rows = ''.join('<tr class="readiness-stage-row"><th scope="row">'+esc(row['stage'])+'</th>'+''.join(cell(c) for c in row['cells'])+'</tr>' for row in state['matrix'])
     details = ''.join(evidence(row['stage'], c) for row in state['matrix'] for c in row['cells'])
-    return '<section id="gprMatrix"><h3>Готовность по этапам и корпусам</h3><p>По известным данным; оценочные доли'+(' с ручными изменениями' if state.get('manual') else '')+'. Итог корпуса учитывает веса разделов.</p>'+limit+'<div class="readiness-matrix" style="--readiness-columns:'+str(len(state['matrix_objects']))+'"><table><thead><tr><th scope="col">Этап</th>'+''.join('<th scope="col">'+esc(obj)+'</th>' for obj in state['matrix_objects'])+'</tr></thead><tbody>'+totals+rows+'</tbody></table></div><details class="readiness-matrix-evidence"><summary>Состав, даты и ограничения расчёта</summary>'+details+'</details></section>'
+    return '<section id="gprMatrix"><h3>Готовность и сроки по корпусам</h3><p>Процент — по оценочным весам разделов; дата под ним — условное окончание при плановом темпе. Учтён известный состав, это не прогноз РНВ.</p>'+limit+'<div class="readiness-matrix" style="--readiness-columns:'+str(len(state['matrix_objects']))+'"><table><thead><tr><th scope="col">Этап</th>'+''.join('<th scope="col">'+esc(obj)+'</th>' for obj in state['matrix_objects'])+'</tr></thead><tbody>'+totals+rows+'</tbody></table></div><details class="readiness-matrix-evidence"><summary>Состав, даты и ограничения расчёта</summary>'+details+'</details></section>'

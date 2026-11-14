@@ -132,7 +132,7 @@ def test_matrix_forecast_uses_native_qualification_and_shows_actual_forecast_dat
         expect(done.locator('.gpr-cell-forecast')).to_have_text('Готово')
         assert 'Закончено на 8 дн. позже плана' in done.get_attribute('title')
         expect(done.locator('.gpr-cell-forecast')).not_to_contain_text('06.11.2026')
-        expect(page.locator('[data-work-id="ПАРКИНГ-0"] .gpr-cell-forecast')).to_have_text('Нет прогноза')
+        expect(page.locator('[data-work-id="ПАРКИНГ-0"] .gpr-cell-forecast')).to_have_text('Срок не определён')
         expect(page.locator('#gprFactMatrix')).not_to_contain_text('2035')
         assert not errors
 

@@ -489,6 +489,7 @@ def editor(project, *, full_source_sha256=''):
                 unmatched=[dict(id=key, name=row.get('name') or key, object=row.get('object') or 'Общие работы') for key, row in remaining.items() if key not in automatic],
                 outside=[dict(id=key, name=full[key].get('name') or key, object=full[key].get('object') or 'Общие работы') for key in sorted(outside)],
                 history=[dict(revision=e['revision'], recorded_at=e['recorded_at'], author=e['author'],
+                              corpus_shares=(e['profile'].get('element_profile') or {}).get('corpus_shares', {}),
                               internal_methods=elements.internal.methods((e['profile'].get('element_profile') or {}).get('assignments', {})),
                               overrides=(e['profile'].get('element_profile') or {}).get('overrides', {})) for e in events if e['profile']['full_source_sha256'] == sha])
 
@@ -532,9 +533,17 @@ def render(state):
             out.append('<p>По известным данным · состав учтён не полностью.</p>')
         out.append('<div class="readiness-grid">'+''.join(card(row) for row in state['corpora'])+'</div>')
     if project['progress'] is not None:
+        out.append('<h4>Всего по жилым корпусам</h4>' if state.get('estimated') else '<h4>Общая готовность</h4>')
         out.append('<strong class="readiness-project-value">'+esc(f"{project['progress']*100:.1f}%".replace('.', ','))+'</strong>')
+        if project.get('coverage') is not None:
+            out.append('<p class="readiness-project-coverage">Расчёт охватывает '+esc(f"{project['coverage']:.1f}%".replace('.', ','))+' оценочного веса разделов.</p>')
+        if state.get('project_weight_estimated'):
+            out.append('<p class="readiness-corpus-assumption">'+esc(state['project_weight_basis'])+'. Допущение для общей оценки СМР; ПИР и паркинг в неё не включены.</p>')
+        forecast = project.get('forecast') or {}
+        if forecast.get('finish'):
+            out.append('<p class="readiness-project-forecast"><b>При плановом темпе: '+esc(date_text(forecast['finish']))+'</b> · сроки известны для '+str(forecast['covered'])+' из '+str(forecast['total'])+' работ. Это не прогноз РНВ.</p>')
         if project.get('partial'):
-            out.append('<p>По известным данным; это не готовность всего состава. '+esc(project['reason'])+'</p>')
+            out.append('<p>Оценка по известной части состава.</p>')
     elif known:
         out.append('<details class="readiness-project-gap readiness-gap"><summary>Общий показатель проекта пока не определён</summary><p>'+esc(state['reason'])+'</p><p>'+esc(facts(project))+'</p><p>'+esc(evidence(project))+'</p></details>')
     else:
@@ -566,7 +575,7 @@ def render(state):
     if state.get('internal_weight_methods'):
         out.append('<p>Внутри разделов: '+esc('; '.join(state['internal_weight_methods']))+'. Число задач вес не определяет.</p>')
     if state.get('project_weight_basis'):
-        out.append('<p>Доли корпусов в общей готовности определены по полному сопоставимому плану: '+esc(state['project_weight_basis'])+'. Оценочные доли разделов внутри корпуса сохранены.</p>')
+        out.append('<p>'+('Заданы экспертные доли корпусов: ' if state.get('project_weight_estimated') else 'Доли корпусов в общей готовности определены по полному сопоставимому плану: ')+esc(state['project_weight_basis'])+'. Оценочные доли разделов внутри корпуса сохранены.</p>')
     if state.get('profile_label') or state.get('basis_label'):
         out.append('<p>'+esc(state.get('profile_label'))+' · '+esc(state.get('basis_label'))+'</p>')
     out.append('</details>')
