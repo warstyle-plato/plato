@@ -4,6 +4,7 @@ import builtins
 import hashlib
 import inspect
 import json
+import os
 from types import SimpleNamespace
 
 import httpx2
@@ -16,6 +17,13 @@ import developaid_krt_origin_audit as audit
 RUNTIME = {"commit": "a" * 40, "version": "0.29.26"}
 PATH = "/auctions/krt/audit/origin-catalogue"
 KEY = "OWNER-MARKER-NOT-AN-ORIGIN-CREDENTIAL"
+
+
+@pytest.fixture(autouse=True)
+def isolated_proxy_environment(monkeypatch):
+    for name in list(os.environ):
+        if name.lower().endswith("_proxy"):
+            monkeypatch.delenv(name)
 
 
 def page(slug="site-one", status="В реализации", next_url=None, name="NAME-MUST-NOT-LEAVE"):
