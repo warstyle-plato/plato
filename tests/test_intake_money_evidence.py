@@ -62,7 +62,7 @@ def test_area_rate_and_foreign_currency_are_not_total_ruble_amounts(text):
 
 
 @pytest.mark.parametrize('typed,expected', [
-    ('2400000 руб.', 2.4), ('2 400 000 ₽', 2.4), ('2400 тыс руб.', 2.4),
+    ('2400000 руб.', 2.4), ('2 400 000 ₽', 2.4), ('2\u202f400\u202f000 ₽', 2.4), ('2400 тыс руб.', 2.4),
     ('2400 тыс', 2.4), ('2,4 млн ₽', 2.4), ('0,004 млрд руб.', 4),
     ('2,4', 2.4), ('0', 0),
 ])
@@ -85,4 +85,21 @@ def test_manual_source_validation_cannot_restore_discarded_quote_numbers():
     card = di.question_card({'key': '', 'question': 'Укажите сумму и решение',
                              'quote': 'Передача 73 м² оценена в 11 млн руб.',
                              'requires_manual': True, 'options': ROUTES})
+    assert all(o['value'] is None for o in card['options'])
+
+
+@pytest.mark.parametrize('question', ['Благоустройство $9 млн — куда отнести?',
+                                   'Платёж USD 9 млн — куда отнести?',
+                                   'Платёж 2 млн USD и 7 млн руб. — куда отнести?'])
+def test_foreign_or_mixed_obligation_is_not_an_automatic_partial_ruble_total(question):
+    card = di.question_card({'key': '', 'question': question, 'options': ROUTES})
+    assert all(o['value'] is None for o in card['options'])
+    assert card['requires_manual']
+    manual = di.answer_card(card, {}, {}, choice=1, typed='4 млн ₽', ledger={})
+    assert manual['inputs']['social_compensation_mln'] == 4
+
+
+def test_model_ruble_choice_cannot_relabel_foreign_source_amount():
+    card = di.question_card({'key': '', 'question': 'Платёж USD 9 млн — куда отнести?',
+        'choices': [{'label': label, 'value': 9, 'unit': 'млн ₽'} for label in ROUTES]})
     assert all(o['value'] is None for o in card['options'])
