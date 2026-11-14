@@ -185,17 +185,17 @@ def test_symlink_budget_is_not_read_and_does_not_hide_fm(saved,tmp_path,monkeypa
     assert result['coverage']['source_errors']['budget_files']=='unavailable'
 
 
-def test_ui_cash_is_primary_source_pills_collapsed_and_unknown_never_zero():
+def test_ahr_details_have_no_separate_tiles_and_unknown_never_zero():
     model=calc(bdds={'2026-10-01':doc(3)},budget=2_000_000)
     html=cash.render(model,'<div class="source-three">three source pills</div>')
-    assert html.index('Бюджет АХР по сохранённой ФМ')<html.index('<details class="admin-fm-source">')
-    assert '2,00 млн ₽' in html and '1 999 997,00 ₽' in html
+    assert '<details class="admin-fm-source">' in html
+    assert 'font-size:20px' not in html and '1 999 997,00 ₽' in html
     assert cash.tiles({})[0]['value']=='нет данных'
     assert 'font-size:20px' not in cash.render(model,show_tiles=False)
 
 
 @pytest.mark.parametrize('width',[390,1440])
-def test_real_monitor_page_shows_cash_four_before_source_context_and_clears_it(width,tmp_path):
+def test_real_monitor_page_shows_one_funding_tile_and_clears_it(width,tmp_path):
     from playwright.sync_api import expect
     from test_monitor_cumulative_controls import browser_page
     import developaid_admin_expenses as admin
@@ -203,13 +203,17 @@ def test_real_monitor_page_shows_cash_four_before_source_context_and_clears_it(w
     source=admin.read(workbook(None),cut='2026-11-14')
     model=calc(bdds={'2026-10-01':doc(3_000_000)},budget=300_000_000)
     view={'admin_expenses_cash':model,'admin_expenses':source,
-          'admin_expenses_html':cash.render(model,admin.render(source)),'dashboard':{}}
+          'admin_expenses_html':cash.render_funding(
+              cash.funding_summary(1_800_000_000,model,lambda value: cash.money(value,compact=True)),
+              cash.render(model,admin.render(source))),'dashboard':{}}
     with browser_page(width) as (page,responses,errors):
         page.evaluate("v=>{currentView=v;renderDash(v);selectMonitorTab('money')}",view)
         card=page.locator('#adminExpensesCard');expect(card).to_be_visible()
-        assert card.locator('.admin-expenses-cash > div > div').count()==4
+        assert card.locator('.admin-expenses-cash > div > div').count()==0
+        assert card.locator('.additional-funding').count()==1
+        assert card.locator('details').first.evaluate('(e)=>!e.open')
         assert card.locator('details.admin-fm-source').evaluate('(e)=>!e.open')
-        expect(card).to_contain_text('300,00 млн ₽')
+        expect(card).to_contain_text('2,10 млрд ₽')
         expect(card).to_contain_text('297,00 млн ₽')
         assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
         for element in card.locator('.admin-expenses-cash > div > div').all():
@@ -221,7 +225,7 @@ def test_real_monitor_page_shows_cash_four_before_source_context_and_clears_it(w
         assert not errors
 
 
-def test_pdf_cash_four_on_cover_and_legacy_source_context_is_separate(tmp_path,monkeypatch):
+def test_pdf_one_funding_tile_on_cover_and_ahr_is_in_details(tmp_path,monkeypatch):
     import pymupdf
     import developaid_management_report as report
     import developaid_admin_expenses as admin
@@ -245,8 +249,9 @@ def test_pdf_cash_four_on_cover_and_legacy_source_context_is_separate(tmp_path,m
     (tmp_path/'cash-report.pdf').write_bytes(raw)
     pdf=pymupdf.open(stream=raw,filetype='pdf')
     cover=' '.join(pdf[0].get_text().split())
-    for _,label in cash.FIELDS:assert label.casefold() in cover.casefold()
-    assert '300,00 млн ₽' in cover and '297,00 млн ₽' in cover
+    for _,label in cash.FIELDS:assert label.casefold() not in cover.casefold()
+    assert 'Ещё' in cover and 'на АХР' in cover
+    assert '297,0 млн ₽' in cover
     assert any(hit.y0<120 for hit in pdf[1].search_for('Стройка'))
 
 
