@@ -742,8 +742,19 @@ def sum_state(result: dict[str, Any]) -> dict[str, Any]:
     reasons = [*(result.get("missing") or []), *(result.get("financial_missing") or [])]
     if not reasons and result.get("post_rve_unknown"):
         reasons = ["Аренда после ввода требует отдельного расчёта."]
-    return {"known": False,
-            "reason": str(reasons[0]) if reasons else "Расчёт не назвал, каких данных для неё не хватает."}
+    state = {"known": False,
+             "reason": str(reasons[0]) if reasons else "Расчёт не назвал, каких данных для неё не хватает."}
+    # A calculated amount can still depend only on an assumed start date.
+    # Name that narrow uncertainty without treating the sum as confirmed.
+    codes = set(result.get("financial_missing_codes") or [])
+    if (result.get("complete") and _number(result.get("total")) is not None
+            and not result.get("missing") and not result.get("post_rve_unknown")
+            and result.get("regime_start_assumed") is True
+            and _date(result.get("regime_start")) is not None
+            and len(result.get("financial_missing") or []) == 1
+            and "regime_start" in codes and codes <= {"regime_start", "payments", "vat"}):
+        state["reason_code"] = "regime_start"
+    return state
 
 
 def disclosure(result: dict[str, Any]) -> str:
