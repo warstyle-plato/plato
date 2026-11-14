@@ -115,5 +115,9 @@ def test_native_page_groups_pir_and_displays_totals_and_dates_with_closed_work_l
         expect(page.locator('.readiness-corpus-assumption')).to_contain_text('ПИР и паркинг в неё не включены')
         expect(page.locator('.readiness-project-coverage')).to_be_visible()
         expect(page.locator('.readiness-project-coverage')).to_contain_text('25,0%')
+        reasons=page.locator('.readiness-project-reasons')
+        expect(reasons.locator('summary')).to_be_visible()
+        expect(reasons.locator('p')).to_be_hidden()
+        assert page.locator('#gprMatrix table').bounding_box()['height']<360
         assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
         assert not errors

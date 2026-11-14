@@ -536,6 +536,7 @@ def render(state):
     out.append('''<style>
 .readiness-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(250px,100%),1fr));gap:10px}.readiness-item{border:1px solid #dce3ed;border-radius:7px;padding:10px}.readiness-item h4{margin:0 0 7px}.readiness-item strong{font-size:20px}.readiness-item details{margin-top:7px}
 .readiness-meter{display:block;height:5px;border-radius:4px;background:#e6edf5;overflow:hidden;margin-top:7px}.readiness-meter i{display:block;height:100%;background:#34567a;border-radius:4px}
+.readiness-forecast-label{display:block;font-size:9px;line-height:1.1;margin-top:4px}.readiness-cell-forecast{display:block;font-size:10px;line-height:1.15;white-space:nowrap;margin-top:2px;color:#465d72}.readiness-forecast-coverage{display:block;font-size:9px;line-height:1.1;margin-top:2px;color:#607084}
 .readiness-matrix table{min-width:calc(90px + var(--readiness-columns)*70px)}.readiness-matrix th:first-child{width:30%}.readiness-matrix td{text-align:center;vertical-align:middle}.readiness-matrix td strong{white-space:nowrap;font-size:14px}.readiness-matrix .readiness-total{background:#eaf1fa}.readiness-total strong{font-size:17px!important}.readiness-matrix-evidence{margin-top:10px}.readiness-matrix-evidence article{border-bottom:1px solid #dce3ed;padding:6px 0}.readiness-matrix-evidence h4{font-size:12px;margin:4px 0}.readiness-method{margin:8px 0}.readiness-grid{margin:8px 0 10px}
 @media(max-width:640px){.readiness-summary{padding:10px}.readiness-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}.readiness-item{padding:8px 6px}.readiness-item h4{font-size:11px}.readiness-item strong{font-size:21px}.readiness-item:has(details[open]){grid-column:1/-1}.readiness-matrix th,.readiness-matrix td{padding:7px 4px}.readiness-matrix th{font-size:11px}.readiness-matrix th:first-child{width:30%}.readiness-matrix td strong{font-size:13px}.readiness-total strong{font-size:14px!important}}
 @media print{.readiness-summary details::details-content{content-visibility:visible!important;display:block!important}body.gpr-print-mode .readiness-summary .readiness-weighted-evidence{display:block!important}}
@@ -555,7 +556,7 @@ def render(state):
         if forecast.get('finish'):
             out.append('<p class="readiness-project-forecast"><b>При плановом темпе: '+esc(date_text(forecast['finish']))+'</b> · сроки известны для '+str(forecast['covered'])+' из '+str(forecast['total'])+' работ. Это не прогноз РНВ.</p>')
         if project.get('partial'):
-            out.append('<p>Оценка по известной части состава. '+esc(project['reason'])+'</p>')
+            out.append('<p>Оценка по известной части состава.</p><details class="readiness-project-reasons"><summary>Что не учтено в оценке</summary><p>'+esc(project['reason'])+'</p></details>')
     elif known:
         out.append('<details class="readiness-project-gap readiness-gap"><summary>Общий показатель проекта пока не определён</summary><p>'+esc(state['reason'])+'</p><p>'+esc(facts(project))+'</p><p>'+esc(evidence(project))+'</p></details>')
     else:
