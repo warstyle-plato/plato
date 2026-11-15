@@ -4314,7 +4314,10 @@ def _executive_schedule(report: dict[str, Any]) -> dict[str, Any]:
 def _gantt_html(report: dict[str, Any]) -> str:
     block = report.get("gantt") or {}
     import developaid_schedule_readiness as readiness
-    out = [readiness.render(block.get("readiness")), "<h3>Сроки работ по корпусам</h3>"]
+    from developaid_gpr_summary import render_analysis
+    summary = gpr_summary(block.get('readiness'), report.get('end'))
+    out = [render_analysis(summary.get('display')) if summary else '',
+           readiness.render(block.get("readiness")), "<h3>Сроки работ по корпусам</h3>"]
     import developaid_gpr_corpus as corpus_gpr
     completed_history = ''
     if block.get("dependency_timeline"):
