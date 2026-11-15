@@ -36,6 +36,17 @@ def _text(value, limit):
     return text
 
 
+def _display_excerpt(value, limit):
+    """Bound disclosure text; full native queue/card hashes retain identity."""
+    text = ' '.join(str(value or '').split())
+    if not text or any(ord(ch)<32 for ch in text):
+        raise QualificationError('Описание обязательства требует повторной проверки карточки.')
+    if len(text) <= limit:
+        return text
+    suffix = '… [сокращено; полный текст — в карточке документа]'
+    return text[:limit-len(suffix)].rstrip()+suffix
+
+
 def obligations(queue):
     """Durable unresolved valuations, including later unpriced cards after stop."""
     answers = {a.get('index'):a for a in queue.get('answers') or [] if type(a.get('index')) is int}
@@ -50,8 +61,9 @@ def obligations(queue):
         choice = (answer or {}).get('choice')
         option = options[choice] if type(choice) is int and 0 <= choice < len(options) else None
         route = _text(option.get('label'), 200) if option else ''
-        out.append({'index':index, 'question':_text(card.get('question') or 'Обязательство из документа', 500),
-            'quote':_text(card.get('quote') or card.get('question') or 'Обязательство из документа', 500),
+        question = _display_excerpt(card.get('question') or 'Обязательство из документа', 500)
+        out.append({'index':index, 'question':question,
+            'quote':_text(card['quote'],500) if card.get('quote') else question,
             'route':route, 'status':'valuation_missing' if route else 'route_unconfirmed'})
     if len(out) > MAX_ITEMS:
         raise QualificationError('Слишком много неуточнённых обязательств. Уточните их в карточке.')

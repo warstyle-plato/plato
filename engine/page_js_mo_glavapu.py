@@ -596,6 +596,17 @@ function telegramParkingByKind(result){
 }
 
 async function sendTelegramResult(){
+ function telegramResultErrorNotice(message){
+ let notice=document.getElementById('telegramResultError');
+ if(!message){if(notice&&typeof notice.remove==='function')notice.remove();return}
+ if(!notice){
+  notice=document.createElement('div');notice.id='telegramResultError';notice.setAttribute('role','alert');
+  notice.style.cssText='position:fixed;left:0;right:0;top:0;z-index:99998;padding:12px 16px;'
+   +'background:#fff2d9;color:#6c3d00;font-weight:700;font-size:14px;overflow-wrap:anywhere;max-height:40vh;overflow:auto';
+  document.body.appendChild(notice);
+ }
+ notice.textContent=message;
+ }
  const glavapuMeta=inputs._glavapu_import||null;
  const manualMeta=inputs._manual_tep_import||null;
  const documentMeta=inputs._intake_qualification||null;
@@ -673,6 +684,7 @@ async function sendTelegramResult(){
  try{
    sendTelegramResult.pending=true;
    sendTelegramResult.failure='';
+   telegramResultErrorNotice('');
    telegramProgress('Готов. Отправляю в чат…');
    // Если ответ задерживается, надпись не должна выглядеть зависшей: в чате
    // к этому моменту уже может быть всё, и человек ждёт впустую.
@@ -693,7 +705,7 @@ async function sendTelegramResult(){
        ...(controller?{signal:controller.signal}:{})
      });
      const result=await response.json();
-     if(!response.ok){const e=new Error(serverDetail(result)||'Telegram не принял результат');e.deliveryUnknown=![401,403,422].includes(response.status);throw e}
+     if(!response.ok){const e=new Error(serverDetail(result)||'Telegram не принял результат');e.deliveryUnknown=![401,403,409,422].includes(response.status);throw e}
      if(!result||result.ok!==true)throw new Error('Сервер не подтвердил доставку. Проверьте чат перед повторной отправкой.');
      return result;
    })();
@@ -715,6 +727,7 @@ async function sendTelegramResult(){
    telegramProgress('');
    sendTelegramResult.uncertain=previousUnknown||(requestStarted&&e.deliveryUnknown!==false);
    sendTelegramResult.failure=String(e.message||e)+(sendTelegramResult.uncertain?' Доставка неизвестна. Проверьте чат перед повторной отправкой.':'');
+   telegramResultErrorNotice('Не удалось отправить итог в Telegram: '+sendTelegramResult.failure);
    const status=document.getElementById('glavapuStatus');
    if(status)status.innerHTML+=' <span class="import-error">Не удалось отправить итог в Telegram: '+escapeHtml(sendTelegramResult.failure)+'</span>';
  }finally{

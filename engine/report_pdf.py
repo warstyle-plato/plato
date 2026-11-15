@@ -1662,7 +1662,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         if document_qualification['reason'] not in preliminary_reason:
             preliminary_reason = ' '.join(x for x in [preliminary_reason, document_qualification['reason']] if x)
     if preliminary_reason:
-        story.append(P(html.escape(preliminary_reason), small))
+        story.append(P(preliminary_reason, small))
     # Прибыль при непогашенном долге — бумажная: для инвестора проект
     # дефолтный, а не прибыльный (решение владельца, 27.08.2026), и строка
     # прибыли обязана говорить это сама, а не полагаться на вывод ниже.

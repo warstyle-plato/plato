@@ -306,6 +306,7 @@ def test_on_the_page_card_then_questions_then_the_button(monkeypatch) -> None:
 def _ready_owned_bot_card(monkeypatch, numbers, region):
     """The launch fixture now uses a persisted, owned, confirmed native card."""
     _stub(monkeypatch)
+    monkeypatch.setattr(core, "_telegram_token", lambda: "123:test")
     extraction=copy.deepcopy(EXTRACTION)
     text=TEXT.replace(NUMBER, ", ".join(numbers))
     if numbers:

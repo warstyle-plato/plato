@@ -815,6 +815,8 @@ function renderOpenedProjectButton(){
 }
 
 function forgetTerritoryState(){
+ const resultError=document.getElementById('telegramResultError');
+ if(resultError&&typeof resultError.remove==='function')resultError.remove();
  cadastralAnalysis=null;landLookup=null;otherRegionPending=null;landScreeningLast=null;LAND_MAP=null;
  calcWentWithoutContour=false;
  glavapuImport=null;moResult=null;
