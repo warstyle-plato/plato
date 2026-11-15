@@ -8,6 +8,9 @@
 """
 # ruff: noqa
 import document_intake_protocol as document_protocol
+import document_core_admission
+
+_DOCUMENT_CORE_ADMISSION_ROOT = document_core_admission.data_root(os.environ)
 
 _TELEGRAM_PUBLIC_BASE_URL = (
     (_telegram_public_base_selected := os.environ.get("TELEGRAM_PUBLIC_BASE_URL"))
@@ -566,7 +569,8 @@ def _telegram_document_origin_metadata() -> dict[str, Any]:
 
 
 def _telegram_document_target() -> str:
-    origin = document_protocol.admitted_origin(os.environ.get(document_protocol.ADMISSION_ENV, ''),
+    origin = document_protocol.admitted_origin(document_core_admission.admission_raw(
+        os.environ, _DOCUMENT_CORE_ADMISSION_ROOT, _TELEGRAM_WEB_APP_BASE_URL),
                                                _TELEGRAM_WEB_APP_BASE_URL)
     url = origin + document_protocol.CAPABILITY_PATH
     started = time.monotonic()

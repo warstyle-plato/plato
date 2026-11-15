@@ -1346,6 +1346,23 @@ def agent_document_protocol() -> dict[str, Any]:
 async def _document_protocol_metadata(request: Request, call_next):
     # The existing owner middleware initializes browser state for ordinary
     # requests. This public, static capability is intentionally outside it.
+    if request.method == 'POST' and request.url.path == document_core_admission.PATH:
+        from fastapi.responses import JSONResponse
+        try:
+            prepared = document_core_admission.preflight(request.scope['headers'],
+                require_admin=lambda key: _require_admin_key(key, 'Настройка подтверждения ядра'),
+                environ=os.environ, scheme=request.scope.get('scheme'), query=request.url.query,
+                local_mode=globals().get('_MO_CALC_API_URL'), local_commit=COMMIT, local_version=VERSION)
+            raw = await document_core_admission.request_bytes(request, prepared)
+            result = document_core_admission.store(prepared, raw, root=_DOCUMENT_CORE_ADMISSION_ROOT,
+                target=_TELEGRAM_WEB_APP_BASE_URL, environ=os.environ)
+        except HTTPException as exc:
+            return JSONResponse({'detail': exc.detail}, status_code=exc.status_code,
+                headers={'Cache-Control': 'private, no-store', **(exc.headers or {})})
+        except document_core_admission.ConfigHold as exc:
+            return JSONResponse({'detail': {'code': exc.code, 'message': str(exc)}},
+                status_code=exc.status, headers={'Cache-Control': 'private, no-store'})
+        return JSONResponse(result, headers={'Cache-Control': 'private, no-store'})
     if (request.method == 'GET' and request.url.path == '/telegram/status'
             and request.url.query == 'document_origin_only=1'):
         from fastapi.responses import JSONResponse
