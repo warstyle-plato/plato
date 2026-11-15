@@ -2933,6 +2933,7 @@ def _own_money_lines(limit: dict[str, Any], cash_model=None) -> list[str]:
     lines = dashboard.own_money_lines(limit.get("own_money"), _rub, with_reconciliation=False)
     if lines and admin_cash.funding_summary(None, cash_model or {}, _rub).get("scope") == "unconfirmed_total":
         lines[0] = lines[0].replace("Нужно своих денег сверх сметы банка", "По главам сметы до уточнения АХР", 1)
+        lines.append(dashboard.funding_source_notes(limit)["need"])
     return lines
 
 
