@@ -132,6 +132,13 @@ def _source(value: Any, label: str = "") -> dict:
     return source
 
 
+def _observed_source(item: dict, label: str = '') -> dict:
+    source = _source(item.get('source'), label)
+    source.update(snapshot_id=item.get('archive_snapshot_id'), file_sha256=item.get('file_sha256'),
+                  source_date=item.get('source_date'))
+    return source
+
+
 def _warnings(values) -> list[str]:
     out = []
     for value in values or []:
@@ -533,12 +540,21 @@ def _physical(item: dict, ledger: dict, cut: str, *, _duplicates=None) -> dict:
         _duplicates = ledgers.verified_duplicate_sources(ledger.get('items') or []) if item.get('is_duplicate') else {}
     result['is_duplicate'] = ledgers._duplicate_key(dict(item, period_year=ledger.get('period_year'))) in _duplicates
     result["source"] = _source(item.get("source") or ledger.get("source"), "Накопительная ведомость работ")
+    result["source"].update(snapshot_id=ledger.get("archive_snapshot_id"),
+                            file_sha256=ledger.get("file_sha256"), source_date=ledger.get("source_date"))
+    for field in ("object_scope", "system_scope", "site_scope"):
+        result["ledger_"+field] = ledger.get(field) or ""
     result["period_year"] = ledger.get("period_year")
     result["warnings"] = _warnings(item.get("warnings"))
     result["snapshot_date"] = _date(ledger.get("source_date"))
     periods = list(item.get("periods") or [])
     period_year = ledger.get("period_year")
     future_year = type(period_year) is int and period_year > int(cut[:4])
+    year_conflict = type(period_year) is int and any(
+        _date(period.get('date_start')) and _date(period.get('date_end'))
+        and not int(period['date_start'][:4]) <= period_year <= int(period['date_end'][:4])
+        and any((_number(period.get(field)) or 0) != 0 for field in ('quantity', 'material_quantity', 'amount'))
+        for period in periods)
     included = [p for p in periods if not future_year and _date(p.get("date_end"))
                 and _date(p["date_end"]) <= cut
                 and (not _date(p.get("date_start"))
@@ -555,6 +571,8 @@ def _physical(item: dict, ledger: dict, cut: str, *, _duplicates=None) -> dict:
                             for p in periods)
 
     def asof(field: str, annual_field: str) -> tuple[float | None, str]:
+        if year_conflict:
+            return None, 'Даты выполнения не относятся к указанному году ведомости; требуется сверка исходника.'
         if future_year:
             return None, "Год ведомости позже выбранного среза; итог не использован как текущее выполнение."
         annual = _number(item.get(annual_field))
@@ -687,7 +705,9 @@ def _reference_differences(identity: tuple, entry: dict) -> list[str]:
 
 
 def _physical_key(item: dict) -> tuple:
-    return tuple(_norm(item.get(key)) for key in ("position", "name", "scope", "unit"))
+    from developaid_contract_detail_history import normalize_unit, work_identity
+    base = tuple(_norm(item.get(field)) for field in ('position', 'name', 'scope')) + (normalize_unit(item.get('unit')),)
+    return (*base, work_identity(item))
 
 
 def _cumulative_money(physical: list[dict], warnings: list[str],
@@ -706,6 +726,8 @@ def _cumulative_money(physical: list[dict], warnings: list[str],
     uncertain = False
     import developaid_monitor_ledgers as ledgers
     for item in ledgers.aggregation_members(physical):
+        if item.get('detail_history_state') == 'unknown':
+            uncertain = True
         work = _physical_key(item)
         if item.get("completed_amount") is None:
             uncertain = True
@@ -846,10 +868,11 @@ def _carry(item: dict, newer: dict[tuple, set]) -> str:
 
 
 def _composition(project: str, cut: str, cache: dict | None = None) -> dict:
-    """The one register source: the newest archive plus contracts only earlier archives hold.
+    """Keep detailed KS history and choose closing-summary editions separately.
 
-    Every reader of the contracts register receives this composition through
-    ``build``; each contract keeps the date and snapshot of its own archive.
+    Missing books/periods in an incremental upload are not cancellations.
+    Detailed observations retain their archive; the period projector resolves
+    duplicates and revisions before any monetary aggregation.
     """
     warnings, archives = [], []
     for candidate in _archives(project, cut, cache):
@@ -862,29 +885,22 @@ def _composition(project: str, cut: str, cache: dict | None = None) -> dict:
         except ledgers.LedgerProblem as exc:
             raise ContractProblem(str(exc)) from None
     primary, summaries, unresolved, carried = [], [], [], []
-    newer: dict[tuple, set] = {}
-    newer_sources: set[tuple] = set()
-    selected_sheets, reduced_sheets = {}, {}
+    newest_ids = set()
+    newer_summaries: dict[tuple, set] = {}
+    newer_details: dict[tuple, set] = {}
     for position, archive in enumerate(archives):
         items, sources, notes, owners = _qualify(archive, cut)
-        archive_sheets = {}
-        for item in items:
-            identity = _identity(item)
-            if identity:
-                sheets = archive_sheets.setdefault(identity, set())
-                if item.get("kind") == "ledger":
-                    filename, sheet = _source_place(item.get("source"))
-                    sheets.add((item.get("file_sha256") or filename, sheet))
-        for identity, sheets in archive_sheets.items():
-            if identity in selected_sheets and identity not in reduced_sheets:
-                day, selected = selected_sheets[identity]
-                if len(sheets) > len(selected):
-                    reduced_sheets[identity] = (
-                        f"В архиве от {_ru_date(day)} листов ведомостей этого договора меньше: "
-                        f"{len(selected)} вместо {len(sheets)} в архиве от {_ru_date(archive.get('taken_at'))}. "
-                        "Использованы только данные выбранного архива; прежние листы не добавлены.")
+        if not position:
+            newest_ids = {identifier for identifier, _ in _groups(items, project)}
         if position:
-            decisions = {id(item): _carry(item, newer) for item in [*items, *sources]}
+            decisions = {}
+            for item in [*items, *sources]:
+                decision = _carry(item, newer_details if item.get('kind') == 'ledger' else newer_summaries)
+                # A dated detailed revision supplements the same contract's
+                # history. An unconfirmed contract identity does not authorize
+                # merging two sets of money or creating another legal contract.
+                decisions[id(item)] = ('carry' if item.get('kind') == 'ledger' and decision == 'superseded'
+                                       else decision)
             day = _date(archive.get("taken_at"))
             for item in items:
                 if decisions[id(item)] == "unmatched":
@@ -892,34 +908,42 @@ def _composition(project: str, cut: str, cache: dict | None = None) -> dict:
                         "contractor": item.get("contractor") or "", "contract": item.get("contract") or "",
                         "contract_date": _date(item.get("contract_date")),
                         "snapshot_id": archive.get("snapshot_id"), "source_date": day,
+                        'file_sha256': item.get('file_sha256'),
+                        'date_evidence': _date_evidence(archive, item),
+                        'identity_warnings': item.get('identity_warnings') or [],
+                        'party_evidence': item.get('party_evidence') or {},
                         "reason": f"Договор из архива от {_ru_date(day)} не перенесён в реестр: в более новом архиве "
                                   "есть договор того же подрядчика с тем же номером, но дата договора не подтверждена "
                                   "в одной из шапок. Чтобы договор не задвоился, показаны данные нового архива."})
             items = [item for item in items if decisions[id(item)] == "carry"]
             sources = [item for item in sources if decisions[id(item)] == "carry"]
-            kept = {id(item) for item in items}
-            # A header note follows its contract; a note without a register row
-            # stays until a newer archive holds the same file and sheet.
+            kept = {id(item) for item in [*items, *sources]}
+            # Header problems remain attached to their own retained source.
+            # A similarly named file in another archive is not its identity.
             notes = [note for note in notes if (id(note) in owners and id(owners[id(note)]) in kept)
-                     or (id(note) not in owners and _source_place(note.get("source")) not in newer_sources)]
+                     or id(note) not in owners]
             if items:
                 carried.append({"snapshot_id": archive.get("snapshot_id"), "taken_at": day,
                                 "warnings": _warnings(archive.get("warnings"))})
         primary.extend(items)
         summaries.extend(sources)
         unresolved.extend(notes)
+        for item in sources:
+            newer_summaries.setdefault(_base_key(item), set()).add(_date(item.get("contract_date")))
         for item in items:
-            newer.setdefault(_base_key(item), set()).add(_date(item.get("contract_date")))
-            identity = _identity(item)
-            if identity and identity not in selected_sheets:
-                selected_sheets[identity] = (archive.get("taken_at"), archive_sheets[identity])
-        newer_sources.update(_source_place(record.get("source"))
-                             for record in [*(archive.get("ledgers") or []), *(archive.get("summary_contracts") or [])])
+            if item.get('kind') == 'ledger':
+                newer_details.setdefault(_base_key(item), set()).add(_date(item.get('contract_date')))
+    # A fresh summary enriches the existing detailed card. It never claims
+    # that an older detailed ledger disappeared or becomes a second card.
+    detailed = [item for item in primary if item.get("kind") == "ledger"]
+    detailed_identities = {_identity(item) for item in detailed} - {None}
+    primary = detailed + [item for item in primary if item.get("kind") != "ledger"
+                          and (_identity(item) is None or _identity(item) not in detailed_identities)]
     snapshot = archives[0] if archives else None
     return {"snapshot": snapshot, "source_date": (snapshot or {}).get("taken_at"),
             "by_snapshot": {archive.get("snapshot_id"): archive for archive in archives},
             "primary": primary, "summaries": summaries, "unresolved": unresolved,
-            "carried": carried, "warnings": warnings, "reduced_sheets": reduced_sheets}
+            "carried": carried, "warnings": warnings, "reduced_sheets": {}, 'newest_ids': newest_ids}
 
 
 def _source_place(source: Any) -> tuple[str, str]:
@@ -976,7 +1000,8 @@ def _build_raw(project: str, cut: str = "", *, include_history: bool = True,
                         "по подрядчику, номеру и дате; они не присоединены ни к одному.")
     for identifier, ledger_items in groups:
         first = ledger_items[0]
-        # Groups never mix archives: a newer archive owns its contracts whole.
+        # Identity follows the newest detailed header. Each observation below
+        # retains its own archive; a summary never replaces detailed KS.
         row_snapshot = by_snapshot.get(first.get("archive_snapshot_id")) or snapshot or {}
         identity = _identity(first)
         matched = [entry for entry in extras if entry not in ledger_items and identity and not _reference_differences(identity, entry)
@@ -1025,6 +1050,12 @@ def _build_raw(project: str, cut: str = "", *, include_history: bool = True,
             physical_sources.append((ledger, [_physical(item, ledger, cut, _duplicates=duplicates)
                                               for item in ledger.get('items') or []]))
         physical = [item for _, views in physical_sources for item in views]
+        detail_history = None
+        if len({ledger.get('archive_snapshot_id') for ledger, _ in physical_sources}) > 1:
+            from developaid_contract_detail_history import compose
+            detail_history = compose(physical_sources, cut)
+            physical = detail_history['items']
+            row_warnings.extend(detail_history['warnings'])
         money_parts: dict = {}
         dated_money: list = []
         completed, completed_basis = _cumulative_money(physical, row_warnings, money_parts, dated_money)
@@ -1095,6 +1126,7 @@ def _build_raw(project: str, cut: str = "", *, include_history: bool = True,
                          for summary in summary_items for act in summary.get("acts") or []]})
         references = []
         for ledger, views in physical_sources:
+            ledger_snapshot = by_snapshot.get(ledger.get('archive_snapshot_id')) or row_snapshot
             source_items = ledgers.aggregation_members(ledger.get('items') or [])
             values = [_number(item.get("completed_amount")) for item in source_items]
             planned_values = [_number(item.get("planned_amount")) for item in source_items]
@@ -1106,7 +1138,7 @@ def _build_raw(project: str, cut: str = "", *, include_history: bool = True,
             planned_bases = {item.get("planned_amount_basis") for item in source_items} - {None, "", "unspecified"}
             completed_bases = ({item.get("completed_amount_basis") for item in source_items}
                                | {p.get("amount_basis") for item in source_items for p in item.get("periods") or []}) - {None, "", "unspecified"}
-            statement_comparable = (_basis_metadata_current(row_snapshot)
+            statement_comparable = (_basis_metadata_current(ledger_snapshot)
                                     and "conflicting" not in planned_bases | completed_bases
                                     and len(planned_bases) <= 1 and len(completed_bases) <= 1
                                     and not (planned_bases and completed_bases and planned_bases != completed_bases))
@@ -1132,12 +1164,15 @@ def _build_raw(project: str, cut: str = "", *, include_history: bool = True,
             completed_materials = (sum(_number(item.get('completed_material_amount')) for item in source_items)
                                    if source_split and reported_completed is not None else None)
             part_bases = {item.get('planned_work_amount_basis') for item in source_items} - {None, '', 'unspecified'}
-            parts_comparable = (planned_split and source_split and financial_complete and _basis_metadata_current(row_snapshot)
+            parts_comparable = (planned_split and source_split and financial_complete and _basis_metadata_current(ledger_snapshot)
                 and 'conflicting' not in part_bases | completed_bases and len(part_bases) <= 1
                 and len(completed_bases) <= 1 and not (part_bases and completed_bases and part_bases != completed_bases)
                 and all(_number(item.get(field)) >= 0 for item in source_items
                         for field in ('planned_work_amount', 'planned_material_amount')))
-            references.append({"source": _source(ledger.get("source"), "Накопительная ведомость"),
+            reference_source = _source(ledger.get("source"), "Накопительная ведомость")
+            reference_source.update(snapshot_id=ledger.get('archive_snapshot_id'),
+                                    file_sha256=ledger.get('file_sha256'), source_date=ledger.get('source_date'))
+            references.append({"source": reference_source,
                 "period_year": ledger.get("period_year"), "source_date": ledger.get("source_date"),
                 "completed": reported_completed,
                 "planned": reported_planned,
@@ -1202,19 +1237,40 @@ def _build_raw(project: str, cut: str = "", *, include_history: bool = True,
                "source_date": first.get("source_date"), "source_snapshot_id": row_snapshot.get("snapshot_id"),
                "warnings": _warnings(row_warnings),
                "requires_reconciliation": bool(row_warnings), "physical_items": physical,
-               "sources": [_source(x.get("source")) for x in ledger_items],
+               "sources": [_observed_source(x) for x in ledger_items],
                "financial_sources": financial,
                "rss_match": _rss_match(identity, rss_items, rss_candidates, rss_day),
                "scope": sorted({str(item.get("scope") or "") for item in physical if item.get("scope")}),
                "performance_basis": ('Денежное закрытие по КС-2 из сводной; не физическая готовность и не объёмы КС-6а'
                    if summary_only else "Денежное выполнение только по загруженным накопительным и завершённым датированным периодам; не оплата и не физическая готовность"),
                "performance_source_count": len(physical_sources), "reported_performance_sources": references}
+        if summary_items:
+            latest_summary = max(summary_items, key=lambda item: str(item.get('source_date') or ''))
+            row['summary_source_date'] = latest_summary.get('source_date')
+            row['summary_source_snapshot_id'] = latest_summary.get('archive_snapshot_id')
+            # A percentage using the current summary's price is an observation
+            # of both inputs, not a retroactive change to the older KS date.
+            if (ratio is not None and summary_amount is not None and amount == summary_amount
+                    and not (amount_documents and amount_documents['history'])):
+                observation = max([first, *summary_items], key=lambda item: str(item.get('source_date') or ''))
+                row['financial_observation_date'] = observation.get('source_date')
+                row['financial_observation_snapshot_id'] = observation.get('archive_snapshot_id')
+        if detail_history is not None:
+            row['detail_history'] = {
+                'source_count': len(physical_sources),
+                'state': 'unknown' if any(item.get('detail_history_state') == 'unknown' for item in physical) else 'known',
+                'source_dates': sorted({item.get('source_date') for item, _ in physical_sources if item.get('source_date')}),
+                'note': 'Сохранённые КС объединены по работам и периодам. Отсутствие ведомости в новой загрузке не отменяет прежние данные.',
+            }
         if snapshot and row_snapshot.get("snapshot_id") != snapshot.get("snapshot_id"):
             # Not a source warning: the figures are complete for their own date.
             row["carried_from_archive"] = {"snapshot_id": row_snapshot.get("snapshot_id"),
                 "taken_at": row_snapshot.get("taken_at"), "newest_taken_at": archive_day,
-                "text": f"Данные на {_ru_date(row_snapshot.get('taken_at'))}: в архиве от "
-                        f"{_ru_date(archive_day)} этого договора нет."}
+                "text": (f"Подробные КС на {_ru_date(row_snapshot.get('taken_at'))}. "
+                         f"Сводная обновлена на {_ru_date(row.get('summary_source_date'))}; прежние ведомости сохранены."
+                         if row.get('summary_source_date') and row['summary_source_date'] > str(row_snapshot.get('taken_at') or '')
+                         else f"Данные на {_ru_date(row_snapshot.get('taken_at'))}: в архиве от "
+                              f"{_ru_date(archive_day)} этого договора нет.")}
         if deadline_documents and deadline_documents['history']:
             row['deadline_documents'] = deadline_documents
         if amount_documents and amount_documents['history']:
@@ -1227,7 +1283,18 @@ def _build_raw(project: str, cut: str = "", *, include_history: bool = True,
                 row['summary_progress'] = rebase_summary(row['summary_progress'], amount_documents)
         else:
             from developaid_monitor_statement_union import statement_union
-            row["statement_progress"] = statement_union(row)
+            if detail_history is not None and row['detail_history']['state'] == 'unknown':
+                row['statement_progress'] = {'state': 'unknown', 'ratio': None,
+                    'why': 'В истории КС есть неполные или противоречивые наблюдения. Общий процент не выбран автоматически.'}
+            elif detail_history is not None:
+                # Raw references stay visible. The numeric union qualifies
+                # only the base sources of the projected work-year rows.
+                from developaid_monitor_statement_union import _source as source_key
+                active = {source_key(item.get('source')) for item in physical}
+                row['statement_progress'] = statement_union(dict(row,
+                    reported_performance_sources=[ref for ref in references if source_key(ref.get('source')) in active]))
+            else:
+                row["statement_progress"] = statement_union(row)
         row["risk"] = contract_risk.forecast(
             amount=amount, completed=completed, comparable=comparable, periods=dated_money,
             cut=dt.date.fromisoformat(cut), deadline=dt.date.fromisoformat(deadline) if deadline else None,
@@ -1257,7 +1324,7 @@ def _build_raw(project: str, cut: str = "", *, include_history: bool = True,
                                        for ledger in used_ledgers)},
             "unresolved_sources": unresolved,
             "counts": {"contracts_from_cumulative": sum(row.get('source_kind') == 'cumulative' for row in rows), "cumulative_sheets": len(used_ledgers),
-                       "contracts_from_newest_archive": sum(row["source_snapshot_id"] == newest_id for row in rows),
+                       "contracts_from_newest_archive": sum(row['id'] in composition['newest_ids'] for row in rows),
                        "contracts_carried": sum(row["source_snapshot_id"] != newest_id for row in rows),
                        "unresolved_headers": len(unresolved)},
             "scope_note": note, "empty_reason": ("Загрузите архив накопительных: без него списка договоров нет." if not snapshot else
@@ -1319,9 +1386,10 @@ def archive_summary(project: str, cut: str) -> dict:
     composition = _composition(project, _cut(cut))
     newest = (composition["snapshot"] or {}).get("snapshot_id")
     groups = _groups(composition["primary"], project)
-    own = sum(items[0].get("archive_snapshot_id") == newest for _, items in groups)
+    own = sum(identifier in composition['newest_ids'] for identifier, _ in groups)
+    carried = sum(items[0].get('archive_snapshot_id') != newest for _, items in groups)
     return {"cut": _cut(cut), "snapshot_id": newest, "contracts_in_archive": own,
-            "contracts_carried": len(groups) - own}
+            "contracts_carried": carried}
 
 
 def _date_evidence(snapshot: dict, ledger: dict) -> list[dict]:

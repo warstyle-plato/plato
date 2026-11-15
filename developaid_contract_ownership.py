@@ -131,7 +131,13 @@ class ReadContext:
                 continue
             snapshots = {item.get('archive_snapshot_id') for item in items}
             if len(snapshots) != 1:
-                raise OwnershipProblem('Исходная карточка содержит неоднозначные версии архива; уточнение не применено.')
+                # Incremental KS history may legitimately use several source
+                # archives. A former one-snapshot identity decision does not
+                # authorize this new composition: retain the raw cards and
+                # expose a source conflict, rather than hiding the register.
+                self.members[identifier] = {'raw_id': identifier,
+                    'history_snapshots': sorted(str(sid or '') for sid in snapshots)}
+                continue
             sid = next(iter(snapshots))
             archive = composition['by_snapshot'].get(sid) or {}
             files = {}
@@ -156,6 +162,12 @@ class ReadContext:
                     if identifier in self.members and self.pairs.get(identifier) == pair]
         if not observed:
             return None
+        if any(self.members[identifier].get('history_snapshots') for identifier in observed):
+            resolved = {'status': 'source_conflict', 'logical_id': None,
+                'member_ids': list(pair),
+                'reason': 'История КС содержит несколько исходных архивов. Прежнее уточнение реквизитов не подтверждает новый состав; исходные карточки сохранены отдельно.'}
+            self.cache[pair] = resolved
+            return resolved
         try:
             resolved = identity.resolve(self.project, observed[0], self.cut)
         except identity.IdentityProblem:

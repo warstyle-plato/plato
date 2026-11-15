@@ -66,7 +66,8 @@ def check_union(view, first, second):
     assert view['snapshots']['carried'] == [{'snapshot_id': first, 'taken_at': FIRST, 'contracts': 2}]
     assert view['counts']['contracts_from_newest_archive'] == 1
     assert view['counts']['contracts_carried'] == 2
-    assert view['counts']['cumulative_sheets'] == 3
+    # Both editions of A remain source evidence; their execution is counted once.
+    assert view['counts']['cumulative_sheets'] == 4
 
 
 def test_new_archive_keeps_contracts_it_does_not_contain(stored):
@@ -115,9 +116,10 @@ def test_undated_contract_in_a_changed_file_is_not_doubled(context):  # noqa: F8
     view = contracts.build(PROJECT, SECOND)
     row, = view['rows']
     assert row['source_date'] == SECOND and 'carried_from_archive' not in row
+    assert row['contract_date'] is None
+    assert len(row['sources']) == 1
     withheld = [x for x in view['unresolved_sources'] if 'не перенесён' in x['reason']]
     assert len(withheld) == 1 and withheld[0]['source_date'] == FIRST
-    assert f'из архива от {ru(FIRST)}' in withheld[0]['reason'].lower()
 
 
 def test_same_number_with_another_confirmed_date_is_another_contract(context):  # noqa: F811
@@ -172,7 +174,7 @@ def test_page_names_each_archive_and_the_missing_contract(stored, width):
         responses.data = view
         page.locator('#contractsTab').click()
         expect(page.locator('#contractsMsg')).to_contain_text(
-            f'Из архива от {ru(SECOND)}: 1, из прежних архивов: 2 — в новом архиве этих договоров нет.', timeout=10000)
+            f'В архиве от {ru(SECOND)} представлены договоры: 1. Подробные КС из прежних архивов сохранены для договоров: 2.', timeout=10000)
         line = contract_row(page, carried['id']).locator('.contract-carried')
         expect(line).to_have_text(note)
         assert line.is_visible()
@@ -211,8 +213,8 @@ def test_upload_message_names_contracts_kept_from_earlier_archives(width, monkey
         page.locator('#cumulativeFile').set_input_files({'name': 'Новый.zip', 'mimeType': 'application/zip', 'buffer': b'synthetic'})
         page.locator('#cumulativeUpload').click()
         message = page.locator('#cumulativeMsg')
-        expect(message).to_contain_text('Договоров в этом архиве: 1.', timeout=10000)
-        expect(message).to_contain_text('Ещё договоров из прежних архивов остаются в реестре: 2 — в этом архиве их нет')
+        expect(message).to_contain_text('В новом архиве представлены договоры: 1.', timeout=10000)
+        expect(message).to_contain_text('Прежние подробные КС сохранены для договоров: 2.')
         assert message.is_visible() and not errors
 
 
@@ -244,27 +246,27 @@ def test_an_unchanged_amount_in_a_new_own_archive_is_still_a_real_observation(co
     assert row['observation_forecast']['state'] == 'no_recent_growth'
 
 
-def test_fewer_new_sheets_are_named_without_adding_the_previous_month(context):  # noqa: F811
+def test_partial_upload_retains_the_missing_previous_month(context):  # noqa: F811
     context.setattr(contracts, '_archive', ARCHIVE_READER)
     ledgers.store_archive(PROJECT, archive([
         ('A-January.xlsx', ks(period='jan')), ('A-February.xlsx', ks(period='feb'))]), FIRST)
     latest = ledgers.store_archive(PROJECT, archive([('A-January.xlsx', ks(period='jan'))]), SECOND)
     row = by_number(contracts.build(PROJECT, SECOND, include_history=False))['A-12']
-    assert row['completed'] == 200 and len(row['sources']) == 1
+    assert row['completed'] == 400 and len(row['sources']) == 3
     assert row['source_snapshot_id'] == latest['snapshot_id'] and row['source_date'] == SECOND
-    assert any(f'1 вместо 2 в архиве от {ru(FIRST)}' in reason and 'прежние листы не добавлены' in reason
-               for reason in row['warnings'])
+    assert row['detail_history']['source_dates'] == [FIRST, SECOND]
+    assert not any('прежние листы не добавлены' in reason for reason in row['warnings'])
 
 
-def test_another_partial_archive_does_not_silently_confirm_the_reduced_sheet_set(context):  # noqa: F811
+def test_repeated_partial_upload_does_not_erase_or_duplicate_old_periods(context):  # noqa: F811
     context.setattr(contracts, '_archive', ARCHIVE_READER)
     ledgers.store_archive(PROJECT, archive([
         ('A-January.xlsx', ks(period='jan')), ('A-February.xlsx', ks(period='feb'))]), FIRST)
     ledgers.store_archive(PROJECT, archive([('A-January.xlsx', ks(period='jan'))]), MIDDLE)
     ledgers.store_archive(PROJECT, archive([('A-January.xlsx', ks(period='jan'))]), SECOND)
     row = by_number(contracts.build(PROJECT, SECOND, include_history=False))['A-12']
-    assert row['completed'] == 200 and len(row['sources']) == 1
-    assert any(f'1 вместо 2 в архиве от {ru(FIRST)}' in reason for reason in row['warnings'])
+    assert row['completed'] == 400 and len(row['sources']) == 4
+    assert row['detail_history']['source_dates'] == [FIRST, MIDDLE, SECOND]
 
 
 def test_identical_workbook_copies_are_not_a_false_sheet_loss(context):  # noqa: F811
@@ -277,7 +279,7 @@ def test_identical_workbook_copies_are_not_a_false_sheet_loss(context):  # noqa:
 
 
 @pytest.mark.parametrize('width', [390, 1440])
-def test_reduced_sheet_warning_is_visible_in_the_existing_card_sources(context, width):  # noqa: F811
+def test_retained_history_is_visible_in_the_existing_card(context, width):  # noqa: F811
     from playwright.sync_api import expect
     from test_monitor_cumulative_controls import browser_page
     from tests.contract_rows import row as contract_row
@@ -291,10 +293,7 @@ def test_reduced_sheet_warning_is_visible_in_the_existing_card_sources(context, 
         responses.data = view
         page.locator('#contractsTab').click()
         line = contract_row(page, current['id'])
-        expect(line.locator('.contract-attention')).to_contain_text('Есть замечания')
         line.locator('.contract-open').click()
-        page.locator('#contractRecordSources > summary').click()
-        page.locator('#contractRecordSources > .contract-sources > summary').click()
-        warning = page.locator('#contractRecordSources .contract-warning')
-        expect(warning).to_contain_text(f'1 вместо 2 в архиве от {ru(FIRST)}')
-        assert warning.is_visible() and not errors
+        note = page.locator('#contractsDetails .contract-detail-history')
+        expect(note).to_contain_text('Отсутствие ведомости в новой загрузке не отменяет прежние данные')
+        assert note.is_visible() and not errors

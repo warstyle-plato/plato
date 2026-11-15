@@ -38,6 +38,12 @@ def _norm(value):
     return ' '.join(str(value or '').casefold().replace('ё', 'е').split())
 
 
+def normalize_unit(value):
+    text = _norm(value).replace('²', '2').replace('³', '3')
+    return {'м^2': 'м2', 'м^3': 'м3', 'м.кв.': 'м2', 'кв.м': 'м2',
+            'м.куб.': 'м3', 'куб.м': 'м3', 'пог.м': 'м', 'п.м': 'м'}.get(text, text)
+
+
 def _number(value):
     if value is None or isinstance(value, bool):
         return None
@@ -110,19 +116,37 @@ def _identity(ledger, view):
         valid = False
     if view.get('period_year') not in (None, year):
         valid = False
-    position, name, unit = (_norm(view.get(field)) for field in ('position', 'name', 'unit'))
+    position, name = (_norm(view.get(field)) for field in ('position', 'name'))
+    unit = normalize_unit(view.get('unit'))
     if not position or not name or not unit:
         valid = False
     section, section_valid = _headings(view.get('section_path'))
     context, context_valid = _headings(view.get('context_headings'))
+    # Earlier free-text captions may describe other operations. Retain the
+    # active caption plus every explicitly identified physical location.
+    locations = {}
+    for node in context:
+        role = re.match(r'^(корпус|секция|этаж|помещение|комната|паркинг|автостоянка)(?=\s|№|\d|$)', node[1])
+        if role:
+            locations[role[1]] = node
+    active = tuple(locations[key] for key in sorted(locations))
+    if context and context[-1] not in active:
+        active += (context[-1],)
     valid = valid and section_valid and context_valid
     return (tuple(scopes), position, name, unit, year, _norm(view.get('scope')),
-            section, context, view.get('is_group') is True), valid
+            section, active, view.get('is_group') is True), valid
 
 
 def _place(view):
     source = view.get('source') or {}
     return tuple(source.get(field) for field in ('filename', 'sheet', 'row'))
+
+
+def work_identity(view):
+    """The same semantic identity for projected and single-archive views."""
+    ledger = {field: view.get('ledger_'+field) or '' for field in _SCOPES}
+    ledger['period_year'] = view.get('period_year')
+    return _identity(ledger, view)[0]
 
 
 def _provenance(ledger, view):

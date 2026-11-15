@@ -55,7 +55,10 @@ def contract_identity(row):
 
 
 def _source_key(source):
-    return tuple(str((source or {}).get(field) or '') for field in ('filename', 'sheet'))
+    fields = ('filename', 'sheet')
+    if (source or {}).get('snapshot_id') or (source or {}).get('file_sha256'):
+        fields += ('snapshot_id', 'file_sha256')
+    return tuple(str((source or {}).get(field) or '') for field in fields)
 
 
 def _scope(row, reference=None):
@@ -74,12 +77,13 @@ def _scope(row, reference=None):
         return None
     positions = {}
     for item in items:
-        key = tuple(_norm(item.get(field)) for field in ('position', 'name', 'scope', 'unit'))
+        from developaid_monitor_contracts import _physical_key
+        key = _physical_key(item)
         plan = _number(item.get('plan_quantity'))
         year = item.get('period_year')
         if not key[1] or not key[3] or plan is None or not isinstance(year, int) or isinstance(year, bool):
             return None
-        identity = (*key, year)
+        identity = json.dumps([key, year], ensure_ascii=False, sort_keys=True, separators=(',', ':'))
         definition = (plan, _number(item.get('planned_amount')))
         if identity in positions and positions[identity] != definition:
             return None
@@ -89,12 +93,12 @@ def _scope(row, reference=None):
 
 def _observation(row, register):
     # A contract carried from an earlier archive is observed on that archive's date.
-    day = _day(row.get('source_date') or register.get('source_date')
+    day = _day(row.get('financial_observation_date') or row.get('source_date') or register.get('source_date')
                or (register.get('snapshots') or {}).get('cumulative'))
     result = {'ratio': None, 'basis': None, 'basis_label': '', 'origin': None,
               'observation_date': day.isoformat() if day else None,
               'date_basis': 'snapshot',
-              'snapshot_id': row.get('source_snapshot_id') or (register.get('snapshots') or {}).get('cumulative_id'),
+              'snapshot_id': row.get('financial_observation_snapshot_id') or row.get('source_snapshot_id') or (register.get('snapshots') or {}).get('cumulative_id'),
               'scope_fingerprint': None, 'basis_fingerprint': None,
               'state': 'unknown', 'reason': 'Общий процент по ведомости не рассчитан.'}
     if row.get('source_kind') == 'closing_summary':
