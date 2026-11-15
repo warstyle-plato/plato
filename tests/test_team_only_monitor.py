@@ -104,6 +104,14 @@ def call(method: str, path: str, session: str = "", key: str = "",
     if path in {'/monitor/schedule/saved-source-preview', '/monitor/schedule/saved-source-approve'}:
         out = {'project': 'проверка', 'session': session, 'key': key, 'source_sha256': 'a'*64,
                'expected_active_sha256': 'b'*64, 'expected_revision': 0, 'effective_from': '2026-11-12'}
+    elif path in {'/monitor/audit/budget-funding/layout', '/monitor/audit/budget-funding/layout/result'}:
+        out = {'key': key, 'session': session, 'purpose': 'budget_funding_layout_proof_v1', 'ticket': '1'*32}
+        if path.endswith('/layout'):
+            out.update(project='Synthetic', cut='2026-11-13', scope='rss_estimate_only', expected={
+                'runtime_commit': 'a'*40, 'producer_sha256': {name: 'b'*64 for name in (
+                    'budget_source', 'layout_proof', 'monitor_routes', 'cached_source_reader', 'admin_source_reader')},
+                'finance_sha256': 'c'*64, 'rss_sha256': 'd'*64,
+                'namespace_sha256': 'e'*64, 'aliases_sha256': None})
     elif path == '/monitor/readiness/editor':
         out = {'project': 'проверка', 'session': session, 'key': key}
     elif path in {'/monitor/readiness/profile-preview', '/monitor/readiness/profile-save'}:

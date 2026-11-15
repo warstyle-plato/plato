@@ -488,10 +488,14 @@ def _formatting_formula_checks(stack, element, data_seen, active_row, active_cel
     return states
 
 
-def _formatting_formula(stack, element, data_seen, active_row, active_cell):
+def _formatting_formula(stack, element, data_seen, active_row, active_cell, *, _observation=None):
     """Only the existing standard Excel2010 data-bar threshold exception."""
-    return all(state == 'match' for state in _formatting_formula_checks(
-        stack, element, data_seen, active_row, active_cell))
+    states = _formatting_formula_checks(stack, element, data_seen, active_row, active_cell)
+    if _observation is not None:
+        _observation['counts']['cf_predicate_evaluations'] += 1
+        for name, state in zip(_FORMATTING_FORMULA_CHECKS, states):
+            _observation['cf11'][name][state] += 1
+    return all(state == 'match' for state in states)
 
 
 def _data_validation_metadata(stack, element, data_seen, active_row, active_cell, root_element, *, end=False):
@@ -585,12 +589,21 @@ def _namespace_structure(stack, element, data_seen, active_row, active_cell):
                             if 'no_match' in states else 'none'), 'checks': states}
 
 
-def _verified_payload_extent(sheet, *, _failure=None):
+def _verified_payload_extent(sheet, *, _failure=None, _observation=None):
     """A failed/ambiguous proof returns None, never an empty successful sheet.
 
     Values/formula text are not inspected or retained. All payload coordinates,
     including uncached/shared formulas, are checked before a bounded view exists.
     """
+    if _observation is not None:
+        _observation.clear()
+        _observation.update(scan='not_observed', cf_rejected=False, dv_rejected=False,
+            counts=dict.fromkeys(('foreign_formula_starts', 'cf_predicate_evaluations',
+                'cf_path_candidates', 'cf_start_predicate_matches', 'dv_containers_seen',
+                'dv_rules_seen', 'dv_formula1_starts', 'dv_formula2_starts',
+                'dv_sqref_starts', 'dv_formula_start_matches', 'rejected_foreign_formula_starts'), 0),
+            cf11={name: dict.fromkeys(('match', 'no_match', 'not_evaluated'), 0)
+                  for name in _FORMATTING_FORMULA_CHECKS})
     max_row = max_column = nodes = cells = 0
     data_seen = False
     context = 'unknown'
@@ -627,6 +640,8 @@ def _verified_payload_extent(sheet, *, _failure=None):
 
         with sheet._get_source() as raw:
             stream = _ExtentStream(raw)
+            if _observation is not None:
+                _observation['scan'] = 'observed_prefix'
             parsed = etree.iterparse(stream, events=('start', 'end'), resolve_entities=False,
                 load_dtd=False, no_network=True, recover=False, huge_tree=False)
             for event, element in parsed:
@@ -643,15 +658,36 @@ def _verified_payload_extent(sheet, *, _failure=None):
                     if len(stack) > 64 or nodes > MAX_CELLS * 8:
                         raise _ExtentProofProblem('xml_resource_limit')
                     if formatting_formula is not None:
+                        if _observation is not None:
+                            _observation['cf_rejected'] = True
                         raise _ExtentProofProblem('metadata_formula_structure')
                     if formatting_threshold is not None:
+                        if _observation is not None:
+                            _observation['cf_rejected'] = True
                         raise _ExtentProofProblem('metadata_formula_structure')
                     if data_validation_leaf is not None:
+                        if _observation is not None:
+                            _observation['dv_rejected'] = True
                         raise _ExtentProofProblem('metadata_formula_structure')
                     if len(stack) == 1:
                         if tag != worksheet or element.getroottree().docinfo.doctype:
                             raise _ExtentProofProblem('worksheet_namespace_or_doctype')
                         root_element = element
+                    if _observation is not None:
+                        counts = _observation['counts']
+                        path = tuple(stack)
+                        if local == 'f' and tag != namespace+'f':
+                            counts['foreign_formula_starts'] += 1
+                        if path == _FORMATTING_FORMULA_PATH:
+                            counts['cf_path_candidates'] += 1
+                        if path == _DATA_VALIDATION_PATH:
+                            counts['dv_containers_seen'] += 1
+                        if path == _DATA_VALIDATION_RECORD_PATH:
+                            counts['dv_rules_seen'] += 1
+                        if path in _DATA_VALIDATION_FORMULA_PATHS:
+                            counts['dv_'+('formula1' if path[-2] == _X14_QNAME+'formula1' else 'formula2')+'_starts'] += 1
+                        if path == _DATA_VALIDATION_SQREF_PATH:
+                            counts['dv_sqref_starts'] += 1
                     data_validation = False
                     starts_data_validation = (
                         tuple(stack) == _DATA_VALIDATION_EXTENSION_PATH
@@ -660,6 +696,8 @@ def _verified_payload_extent(sheet, *, _failure=None):
                     if data_validation_extension is not None or starts_data_validation:
                         if not _data_validation_metadata(
                                 stack, element, data_seen, active_row, active_cell, root_element):
+                            if _observation is not None:
+                                _observation['dv_rejected'] = True
                             raise _ExtentProofProblem('metadata_formula_structure')
                         data_validation = True
                         if data_validation_extension is None:
@@ -669,14 +707,27 @@ def _verified_payload_extent(sheet, *, _failure=None):
                             data_validation_count += 1
                         if tag in (_XM_QNAME+'f', _XM_QNAME+'sqref'):
                             data_validation_leaf = element
-                    is_formatting_formula = (local == 'f' and tag != namespace+'f'
-                        and _formatting_formula(stack, element, data_seen, active_row, active_cell))
+                    if _observation is None:
+                        is_formatting_formula = (local == 'f' and tag != namespace+'f'
+                            and _formatting_formula(stack, element, data_seen, active_row, active_cell))
+                    else:
+                        is_formatting_formula = (local == 'f' and tag != namespace+'f'
+                            and _formatting_formula(stack, element, data_seen, active_row, active_cell,
+                                                    _observation=_observation))
+                        if is_formatting_formula:
+                            _observation['counts']['cf_start_predicate_matches'] += 1
                     if is_formatting_formula:
                         formatting_formula = element
                         formatting_threshold = element.getparent()
                     is_data_validation_formula = data_validation and tag == _XM_QNAME+'f'
+                    if _observation is not None and is_data_validation_formula:
+                        _observation['counts']['dv_formula_start_matches'] += 1
                     if (local in ('sheetData', 'row', 'c', 'v', 'f', 'is') and tag != namespace + local
                             and not is_formatting_formula and not is_data_validation_formula):
+                        if _observation is not None and local == 'f':
+                            _observation['counts']['rejected_foreign_formula_starts'] += 1
+                            if tuple(stack) == _FORMATTING_FORMULA_PATH:
+                                _observation['cf_rejected'] = True
                         namespace_rejection = _namespace_rejection(tag)
                         namespace_structure = _namespace_structure(stack, element, data_seen, active_row, active_cell)
                         namespace_path_fingerprint = _namespace_path_fingerprint(stack)
@@ -727,9 +778,13 @@ def _verified_payload_extent(sheet, *, _failure=None):
                 else:
                     if (data_validation_extension is not None and not _data_validation_metadata(
                             stack, element, data_seen, active_row, active_cell, root_element, end=True)):
+                        if _observation is not None:
+                            _observation['dv_rejected'] = True
                         raise _ExtentProofProblem('metadata_formula_structure')
                     if (data_validation_extension is not None and tuple(stack) == _DATA_VALIDATION_PATH
                             and element.get('count') is not None and int(element.get('count')) != data_validation_count):
+                        if _observation is not None:
+                            _observation['dv_rejected'] = True
                         raise _ExtentProofProblem('metadata_formula_structure')
                     if not stack or stack.pop() != tag:
                         raise _ExtentProofProblem('xml_structure_unknown')
@@ -760,6 +815,8 @@ def _verified_payload_extent(sheet, *, _failure=None):
             # Complete parse and read through ZIP EOF/CRC, not an XML prefix.
             if stream.read(1) or stack or not data_seen or not max_row or not max_column:
                 raise _ExtentProofProblem('extent_not_proven')
+        if _observation is not None:
+            _observation['scan'] = 'complete'
         return max_row, max_column
     except _ExtentProofProblem as exc:
         reason = exc.reason

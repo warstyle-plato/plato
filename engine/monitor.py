@@ -441,6 +441,73 @@ async def monitor_budget_funding_source_result(request: Request) -> Response:
     return await _monitor_budget_funding_source_job(request, start=False)
 
 
+async def _monitor_budget_funding_layout_job(request: Request, *, start: bool) -> Response:
+    """Fixed metadata-only layout proof; never call the financial source capture."""
+    import developaid_management_report_jobs as jobs
+    private = {"Cache-Control": "private, no-store"}
+    try:
+        raw = bytearray()
+        async for chunk in request.stream():
+            if len(raw) + len(chunk) > 12288:
+                raise HTTPException(413, "Запрос проверки структуры слишком большой.")
+            raw.extend(chunk)
+        try:
+            initial = json.loads(raw)
+        except (ValueError, UnicodeError, RecursionError):
+            initial = {}
+        initial = initial if isinstance(initial, dict) else {}
+        key, session = initial.get("key", ""), initial.get("session", "")
+        key = key if isinstance(key, str) and len(key) <= 4096 else ""
+        session = session if isinstance(session, str) and len(session) <= 4096 else ""
+        _require_admin_key(key, "Проверка структуры сохранённого листа", session)
+        # Producer hashing, source reads and job storage follow the key gate.
+        import developaid_budget_funding_layout_proof as layout
+        try:
+            params = layout.parse_request(bytes(raw), start=start)
+            if start:
+                layout.validate_bindings(params["expected"], {"version": VERSION, "commit": COMMIT})
+        except layout.LayoutProblem as exc:
+            raise HTTPException(400 if exc.code == "request_invalid" else 409,
+                                "Проверьте параметры и версию проверки структуры.") from None
+        profile = layout.PURPOSE
+        owner = jobs.owner_binding(_env_str("DEVELOPAID_ADMIN_KEY", "").strip(), session, profile)
+        store = jobs.Store(developaid_monitor._SNAPSHOT_DIR / ".admin_budget_funding_layout_proof_jobs")
+        if start:
+            def collect():
+                return {"layout_proof": layout.capture_layout_proof(
+                    params["project"].strip(), params["cut"], params["expected"],
+                    runtime={"version": VERSION, "commit": COMMIT})}
+            # Credential-free request fingerprint; separate profile and supplied ticket.
+            selection = {name: params[name] for name in ("project", "cut", "purpose", "scope", "expected")}
+            selection["click"] = params["ticket"]
+            result = store.start(owner, profile, selection, collect, params["ticket"])
+        else:
+            result = store.poll(params["ticket"], owner, profile)
+        if result["pending"]:
+            result["detail"] = "Проверка структуры сохранённого листа выполняется."
+        if len(json.dumps(result, ensure_ascii=False, allow_nan=False).encode()) > layout.MAX_WIRE:
+            raise HTTPException(503, "Проверка структуры временно недоступна.")
+        return JSONResponse(result, status_code=202 if result["pending"] else 200, headers=private)
+    except HTTPException as exc:
+        exc.headers = {**(exc.headers or {}), **private}
+        raise
+    except jobs.JobProblem as exc:
+        raise HTTPException(exc.status, "Проверка структуры не найдена или временно недоступна.",
+                            headers=private) from None
+    except (OSError, ValueError):
+        raise HTTPException(503, "Проверка структуры временно недоступна.", headers=private) from None
+
+
+@app.post("/monitor/audit/budget-funding/layout", include_in_schema=False)
+async def monitor_budget_funding_layout(request: Request) -> Response:
+    return await _monitor_budget_funding_layout_job(request, start=True)
+
+
+@app.post("/monitor/audit/budget-funding/layout/result", include_in_schema=False)
+async def monitor_budget_funding_layout_result(request: Request) -> Response:
+    return await _monitor_budget_funding_layout_job(request, start=False)
+
+
 @app.post("/monitor/audit/admin-expenses/saved-snapshot", include_in_schema=False)
 async def monitor_admin_expenses_saved_snapshot(request: Request) -> Response:
     return await _monitor_admin_expenses_source_job(request, start=True, saved_snapshot=True)
