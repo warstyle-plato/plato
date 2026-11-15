@@ -4061,6 +4061,8 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
             readiness['scope_text']+' '+readiness['as_of_text'], hint=readiness['reason'])
         add('Оценка окончания учтённых работ', _day(readiness['finish']) if readiness['finish'] else None,
             readiness['forecast_text']+' '+readiness['scope_text']+' '+readiness['as_of_text'])
+        for tile in out[-2:]:
+            tile['group'] = 'gpr_readiness'
     elif block.get("state") == "ok":
         lag = block.get("lag")
         add("Выполнение по ГПР", _pct(block["fact"]),
@@ -4358,8 +4360,13 @@ def tiles_footnote(report: dict[str, Any]) -> str:
 
 def _tiles_html(items: list[dict[str, str]], footnote: str = "") -> str:
     esc = html.escape
-    return ("<div class='tiles'>" + "".join(
-        f"<div class='tile {esc(item['tone'])}'><div class='k'>{esc(item['label'])}"
+    # Keep source/cut and forecast limits readable without adding a cover row.
+    # Embed the print rule here so REPORT_PAGE's scoped screen style stays intact.
+    return ("<style>@media print{.tile[data-group='gpr_readiness']{grid-column:span 2}}</style>"
+        "<div class='tiles'>" + "".join(
+        f"<div class='tile {esc(item['tone'])}'"
+        + (f" data-group='{esc(item['group'], quote=True)}'" if item.get('group') else "")
+        + f"><div class='k'>{esc(item['label'])}"
         + (f" <span class='i' tabindex='0' role='note' title='{esc(item['hint'], quote=True)}' "
            f"aria-label='{esc(item['hint'], quote=True)}'>i</span>" if item.get("hint") else "")
         + "</div>"
