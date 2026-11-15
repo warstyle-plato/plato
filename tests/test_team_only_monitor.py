@@ -58,6 +58,8 @@ _ENDPOINT_PAYLOADS = {
     ("POST", "/monitor/contracts/source-review"): {"contract_id": "a" * 64},
     ("POST", "/monitor/contracts/source-audit-page"): {
         "book_sha256": ["a" * 64], "corpus_token": "b" * 64},
+    ("POST", "/monitor/contracts/source-duplicate-proof"): {
+        "book_sha256": ["a" * 64], "corpus_token": "b" * 64},
     ("POST", "/monitor/schedule-gpr-physical/save"): {"source_kind": "gpr"},
     ("POST", "/monitor/contracts/documents"): {"contract_id": "a" * 64},
     ("POST", "/monitor/contracts/document-upload"): {"contract_id": "a" * 64},

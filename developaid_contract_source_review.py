@@ -810,7 +810,7 @@ def _project_audit_page(project, cut, selected, expected_token, directory_fd, gu
     return output
 
 
-def project_audit_page(project, cut, book_sha256, corpus_token):
+def _selected_source_read(project, cut, book_sha256, corpus_token, projection):
     """A bounded selection from the corpus already evidenced by a v1 audit."""
     import developaid_contract_identity_store as identity_store
     if (not isinstance(book_sha256, list) or not 1 <= len(book_sha256) <= PAGE_MAX_BOOKS
@@ -845,10 +845,22 @@ def project_audit_page(project, cut, book_sha256, corpus_token):
                         ledgers._iso(snapshot['taken_at'])
                     guard()
                     return sorted(values, key=lambda s: (s['taken_at'], s['snapshot_id']))
-                return _project_audit_page(project, cut, set(book_sha256), corpus_token, descriptor, guard, inventory)
+                return projection(project, cut, set(book_sha256), corpus_token, descriptor, guard, inventory)
             finally:
                 if descriptor is not None:
                     os.close(descriptor)
     except (identity_store.IdentityProblem, OSError, ledgers.LedgerProblem) as exc:
         raise SourceReviewProblem(str(exc) if not isinstance(exc, OSError)
             else 'Оригинал архива недоступен; корпус страницы не подтверждён.') from None
+
+
+def project_audit_page(project, cut, book_sha256, corpus_token):
+    return _selected_source_read(project, cut, book_sha256, corpus_token, _project_audit_page)
+
+
+def project_duplicate_proof(project, cut, book_sha256, corpus_token):
+    """Raw native duplicate normalization only; no binding or financial choice."""
+    if not isinstance(book_sha256, list) or len(book_sha256) != 1:
+        raise SourceReviewProblem('Выберите ровно один SHA книги для проверки копий.')
+    from developaid_contract_duplicate_proof import project_proof
+    return _selected_source_read(project, cut, book_sha256, corpus_token, project_proof)
