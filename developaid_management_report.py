@@ -2116,8 +2116,14 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
             source = "по финмодели" if _model_basis(limit) else "по РСС"
             parts = _chapter_gap_words(limit)
             own = limit.get("own_money")
-            if own:
-                # То же число, что на плашке (владелец, 02.11.2026).
+            model = report.get("admin_expenses_cash") or {}
+            summary = admin_cash.funding_summary(admin_cash.funding_base_for_limit(limit, model), model, _rub)
+            if summary.get("scope") == "unconfirmed_total":
+                extra = summary["amount"]
+                if extra is not None:
+                    pieces.append(f"потребность в допфинансировании {_rub(extra)}")
+                pieces.append(summary["note"].rstrip("."))
+            elif own:
                 extra = float(own["need"])
                 pieces.append(f"нужно своих денег сверх сметы банка {_rub(extra)}"
                               + (f", первый месяц нехватки — {_month_word(own['from'])}"
@@ -2149,13 +2155,18 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
         own = limit.get("own_money") if limit.get("known") else None
         short = (float(own["need"]) if own
                  else float(limit.get("additional_financing") or 0) if limit.get("known") else 0.0)
+        model = report.get("admin_expenses_cash") or {}
+        summary = admin_cash.funding_summary(admin_cash.funding_base_for_limit(limit, model), model, _rub)
+        if summary.get("scope") == "unconfirmed_total":
+            short = summary["amount"]
         # Фраза «участок и проценты не входят» — про потребность банка по главам
         # 2–3; у «своих денег сверх сметы» участок входит, и её там нет.
-        if not own and short > 0 and _gap_note(limit):
+        if (not own and short is not None and short > 0 and _gap_note(limit)
+                and (report.get("admin_expenses_cash") or {}).get("balance_after_observed_payments") is None):
             text += " " + _gap_note(limit)
         add("Финансирование", text,
             f"РСС от {_day(block['rss'])}, расчёт Монитора, план финмодели",
-            "bad" if short > 0 else "")
+            "bad" if short is not None and short > 0 else "missing" if short is None else "")
     else:
         add("Финансирование", block.get("reason") or "Данных нет.", "", "missing")
 
@@ -2915,11 +2926,15 @@ def _reconciliation_lines(limit: dict[str, Any]) -> list[str]:
     return dashboard.funding_reconciliation_lines(limit, _rub)
 
 
-def _own_money_lines(limit: dict[str, Any]) -> list[str]:
+def _own_money_lines(limit: dict[str, Any], cash_model=None) -> list[str]:
     """«Нужно своих денег сверх сметы банка» — фразы Монитора, деньги сводки."""
     import developaid_monitor_dashboard as dashboard
 
-    return dashboard.own_money_lines(limit.get("own_money"), _rub, with_reconciliation=False)
+    lines = dashboard.own_money_lines(limit.get("own_money"), _rub, with_reconciliation=False)
+    if lines and admin_cash.funding_summary(None, cash_model or {}, _rub).get("scope") == "unconfirmed_total":
+        lines[0] = lines[0].replace("Нужно своих денег сверх сметы банка", "По главам сметы до уточнения АХР", 1)
+        lines.append(dashboard.funding_source_notes(limit)["need"])
+    return lines
 
 
 def _month_word(key: str | None) -> str:
@@ -2978,6 +2993,9 @@ def _funding_text(report: dict[str, Any]) -> list[str]:
     if block.get("state") != "ok":
         return [block.get("reason") or "Данных нет."]
     lines = []
+    for item in tiles(report):
+        if item.get("group") == "additional_funding":
+            lines.append(f"{item['label']}: {item['value']}. {item['note']}")
     limit = block.get("limit") or {}
     if limit.get("known"):
         lines.append(f"Лимит банка: {_rub(limit.get('bank_limit'))}; "
@@ -3024,9 +3042,9 @@ def _funding_text(report: dict[str, Any]) -> list[str]:
             lines.append("По финмодели остатка лимита глав 2–3 хватает до конца стройки.")
         else:
             lines.append("По РСС лимитов и резерва хватает до ввода по прогнозу Монитора.")
-        own_text = _own_money_lines(limit)
+        own_text = _own_money_lines(limit, report.get("admin_expenses_cash"))
         if own_text:
-            lines.append("Нужно своих денег сверх сметы банка.")
+            lines.append("Расчёт по главам сметы.")
             lines.extend(own_text)
         recon = _reconciliation_lines(limit)
         if recon:
@@ -3244,6 +3262,9 @@ def _funding_html(report: dict[str, Any]) -> str:
     if block.get("state") != "ok":
         return f"<p class='missing'>{esc(block.get('reason') or 'Данных нет.')}</p>"
     out = []
+    for item in tiles(report):
+        if item.get("group") == "additional_funding":
+            out.append(f"<p class='note'><b>{esc(item['label'])}: {esc(item['value'])}.</b> {esc(item['note'])}</p>")
     limit = block.get("limit") or {}
     if limit.get("known"):
         extra = float(limit.get("additional_financing") or 0.0)
@@ -3270,9 +3291,9 @@ def _funding_html(report: dict[str, Any]) -> str:
                 for row in _gap_chapters(limit)])))
         if extra > 0 and _gap_note(limit):
             out.append(f"<p class='note'>{esc(_gap_note(limit))}</p>")
-        own_text = _own_money_lines(limit)
+        own_text = _own_money_lines(limit, report.get("admin_expenses_cash"))
         if own_text:
-            out.append("<p class='note'><b>Нужно своих денег сверх сметы банка</b></p>"
+            out.append("<p class='note'><b>Расчёт по главам сметы</b></p>"
                        + "".join(f"<p class='note'>{esc(line)}</p>" for line in own_text))
         recon = _reconciliation_lines(limit)
         if recon:
@@ -4072,6 +4093,22 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
         if hint:
             out[-1]["hint"] = hint
 
+    def add_need(label, note):
+        model = report.get("admin_expenses_cash") or {}
+        base = admin_cash.funding_base_for_limit((report.get("funding") or {}).get("limit") or {}, model)
+        summary = admin_cash.funding_summary(base, model, _rub)
+        amount = summary["amount"]
+        if summary.get("scope") == "unconfirmed_total":
+            label = "Потребность в допфинансировании"
+        # A partial cash balance is an observation; the combined need is unknown.
+        if summary.get("scope") == "unconfirmed_total":
+            note = (f"Без АХР — {_rub(max(0.0, base))}. " if base is not None else "") + summary["note"]
+        else:
+            note = note.rstrip(" .;") + ". " + summary["note"]
+        add(label, _rub(amount) if amount is not None and amount > 0 else "нет" if amount is not None else None,
+            note, "bad" if amount is not None and amount > 0 else "good" if amount is not None else "missing")
+        out[-1]["group"] = "additional_funding"
+
     block = report.get("physical") or {}
     readiness = gpr_summary((report.get('gantt') or {}).get('readiness'), report.get('end'))
     if readiness is not None:
@@ -4192,10 +4229,9 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
             if row.get("label"):
                 name += f" ({row['label']})"
             chapter_amounts.append(f"{name} — {_rub(row.get('amount'))}")
-        add("Нужно своих денег сверх сметы банка", _rub(own["need"]) if own["need"] > 0 else "нет",
+        add_need("Нужно своих денег сверх сметы банка",
             ("; ".join(chapter_amounts) or "Разбивка по главам не получена")
-            + (f"; первая нехватка — {_month_word(own['from'])}" if own.get("from") else ""),
-            "bad" if own["need"] > 0 else "good")
+            + (f"; первая нехватка — {_month_word(own['from'])}" if own.get("from") else ""))
     elif limit.get("known"):
         extra = float(limit.get("additional_financing") or 0.0)
         # Число и одна строка (владелец на проде, 27.10.2026: подписи плиток —
@@ -4229,20 +4265,16 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
     if own:
         pass
     elif need and need["deficit"] is not None and _model_basis(limit):
-        add("Потребность в допфинансировании банка",
-            _rub(need["deficit"]) if need["deficit"] > 0 else "нет",
+        add_need("Потребность в допфинансировании банка",
             (f"{_since(limit.get('additional_financing_from'))}; участок и проценты по "
              "кредиту сюда не входят, разбивка по главам — в разделе «Финансирование»"
-             if need["deficit"] > 0 else "лимита хватает до ввода"),
-            "bad" if need["deficit"] > 0 else "good")
+             if need["deficit"] > 0 else "лимита хватает до ввода"))
     elif need and need["deficit"] is not None:
-        add("Дефицит на достройку", _rub(need["deficit"]) if need["deficit"] > 0 else "нет",
+        add_need("Дефицит на достройку",
             f"утверждённый бюджет минус оплаченное ({_rub(need['remaining'])}) против "
-            f"остатка лимитов и резерва ({_rub(need['fuel'])})",
-            "bad" if need["deficit"] > 0 else "good")
+            f"остатка лимитов и резерва ({_rub(need['fuel'])})")
     else:
-        add("Дефицит на достройку", None, "утверждённый бюджет не загружен")
-    out.extend(admin_cash.tiles(report.get("admin_expenses_cash") or {}))
+        add_need("Дефицит на достройку", "утверждённый бюджет не загружен")
     if limit.get("known") or limit.get("source_dates"):
         import developaid_monitor_dashboard as dashboard
 
@@ -4252,7 +4284,8 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
                       "Остаток лимита банка": "left",
                       "Осталось по смете после всех оплат": "left",
                       "Нужно своих денег сверх сметы банка": "need",
-                      "Потребность в допфинансировании банка": "need", "Дефицит на достройку": "need"}
+                      "Потребность в допфинансировании банка": "need",
+                      "Потребность в допфинансировании": "need", "Дефицит на достройку": "need"}
         for item in out:
             key = source_for.get(item["label"])
             if key and item["tone"] != "missing":

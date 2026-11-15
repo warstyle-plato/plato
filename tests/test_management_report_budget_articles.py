@@ -207,7 +207,7 @@ def test_the_tiles_lead_the_first_page():
     built = _setup()
     items = report.tiles(built)
     # Canonical readiness and its scoped end estimate are separate tiles.
-    assert len(items) == 17
+    assert len(items) == 13
     from developaid_gpr_summary import gpr_summary
     summary = gpr_summary(built['gantt']['readiness'], built['end'])
     assert len(summary['source_sha256']) == 64
@@ -224,7 +224,9 @@ def test_the_tiles_lead_the_first_page():
     assert items[1]['value'] == 'нет данных' and items[1]['tone'] == 'missing'
     assert summary['forecast_text'] in items[1]['note']
     assert [item for item in items if item.get('group') == 'gpr_readiness'] == items[:2]
-    assert len([item for item in items if item.get('group') == 'admin_expenses_cash']) == 4
+    # AHR observations remain in funding details, not four cover tiles.
+    assert not any(item.get('group') == 'admin_expenses_cash' for item in items)
+    assert len([item for item in items if item.get('group') == 'additional_funding']) == 1
     by_label = {item["label"]: item for item in items}
     build = by_label["Бюджет стройки за месяц"]
     assert build["value"] == "33,6%"

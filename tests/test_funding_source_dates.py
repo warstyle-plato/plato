@@ -81,8 +81,15 @@ def test_distinct_source_dates_reach_all_views_and_visible_cards(tmp_path, monke
     tiles = {item["label"]: item for item in report.tiles(built)}
     for title, key in (("Утверждённый бюджет", "budget"), ("Лимит банка", "limit"),
                        ("Оплачено с начала проекта", "paid"), ("Выбрано у банка", "paid"),
-                       ("Остаток лимита банка", "left"), ("Нужно своих денег сверх сметы банка", "need")):
+                       ("Остаток лимита банка", "left")):
         assert expected[key] in tiles[title]["note"]  # printed, not only in a hidden tooltip
+    combined, = [item for item in tiles.values() if item.get('group') == 'additional_funding']
+    assert combined['value'] == 'нет данных' and combined['tone'] == 'missing'
+    assert built['admin_expenses_cash']['remaining_need'] is None
+    assert 'общая потребность пока не определена' in combined['note']
+    # The known bank component keeps its own source dates in the detailed
+    # funding section; they do not attest the combined AHR funding scope.
+    assert expected['need'] in html and expected['need'] in text
     assert "14.10.2026–20.10.2026" in tiles["Выбрано у банка"]["note"]
     assert "с начала месяца (01.10.2026–20.10.2026)" in tiles["Выбрано у банка"]["note"]
     bridge = dashboard.own_budget_reconciliation_lines(limit["own_money"], report._rub)
