@@ -282,11 +282,15 @@ def _project(records, cut, identity, identity_valid):
         result.pop(field, None)
 
     plans = {tuple(record['view'].get(field) for field in _PLAN) for record in records}
-    if (len(plans) != 1 or any(_number(record['view'].get('plan_quantity')) is None
+    plan_unknown = (len(plans) != 1 or any(_number(record['view'].get('plan_quantity')) is None
                               or _number(record['view'].get('plan_quantity')) <= 0
                               or _number(record['view'].get('planned_amount')) is None
-                              or _number(record['view'].get('planned_amount')) < 0 for record in records)):
+                              or _number(record['view'].get('planned_amount')) < 0 for record in records))
+    if plan_unknown:
         problem('plan')
+    if plan_unknown or 'scope' in problems:
+        # An ambiguous location does not attest another full work plan either.
+        # The original plans remain untouched inside history_sources.
         for field in ('plan_quantity', 'planned_amount', 'planned_work_amount', 'planned_material_amount'):
             result[field] = None
         result['planned_cost_split'] = False
@@ -392,6 +396,22 @@ def _project(records, cut, identity, identity_valid):
     return result, messages
 
 
+def _compatible_scope(left, right):
+    """Only missing scalar context, exact section prefixes and retained nodes.
+
+    Context nodes must remain in their canonical order. No names, locations
+    or captions are inferred, reordered or matched approximately here.
+    """
+    if not all(not a or not b or a == b for a, b in zip(left[:4], right[:4])):
+        return False
+    first, second = left[4], right[4]
+    if not (first == second[:len(first)] or second == first[:len(second)]):
+        return False
+    short, long = (left[5], right[5]) if len(left[5]) <= len(right[5]) else (right[5], left[5])
+    remaining = iter(long)
+    return all(any(node == candidate for candidate in remaining) for node in short)
+
+
 def compose(sources, cut):
     """Compose one contract's detail history without mutating any input.
 
@@ -415,7 +435,7 @@ def compose(sources, cut):
             key = identity if valid else ('unresolved', ordinal)
             ordinal += 1
             buckets.setdefault(key, (identity, valid, []))[2].append(record)
-    # Filling an absent header field does not prove an independent work.
+    # Filling absent header or row location fields does not prove independent work.
     # Keep both original observations, but do not add their plans or facts.
     # Two explicitly different non-empty scopes remain distinct. Checking
     # disjoint periods as well prevents duplicating the full work plan.
@@ -424,11 +444,15 @@ def compose(sources, cut):
         if valid:
             # A work's full plan also spans years; a year boundary does not
             # prove independence after a missing scope becomes populated.
-            scope_candidates.setdefault(identity[1:4] + identity[5:], []).append((identity[0], records))
+            # Location stays in the bucket identity. Compare only potential
+            # counterparts here, then retain both buckets as unknown if any
+            # compatible location component was absent in one observation.
+            scope = identity[0] + identity[5:8]
+            scope_candidates.setdefault(identity[1:4] + identity[8:], []).append((scope, records))
     for candidates in scope_candidates.values():
         for index, (left, left_records) in enumerate(candidates):
             for right, right_records in candidates[index+1:]:
-                if left != right and all(not a or not b or a == b for a, b in zip(left, right)):
+                if left != right and _compatible_scope(left, right):
                     for record in [*left_records, *right_records]:
                         if 'scope' not in record['problems']:
                             record['problems'].append('scope')
