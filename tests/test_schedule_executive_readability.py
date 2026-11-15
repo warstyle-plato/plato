@@ -212,7 +212,7 @@ def test_real_monitor_rejects_pm_dates_and_keeps_current_gpr_dates_and_works(gpr
         # reaches the same production script with its own qualified dates.
         current = gpr_sources(view=True)
         page.evaluate('(v)=>renderGantt(v)', current)
-        cards = page.locator('#dependencyTimelineBody .schedule-rnv-cards')
+        cards = page.locator('#readinessSummary .gpr-legacy-fallback .schedule-rnv-cards')
         expect(cards).to_contain_text('31.10.2026')
         expect(cards).to_contain_text('06.01.2027')
         expect(cards).to_contain_text('Оценка по ГПР')

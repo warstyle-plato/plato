@@ -78,8 +78,13 @@ def test_new_path_is_causal_against_the_original_blanket_foreign_formula_refusal
     assert proof._bank(raw,proof._day(CUT))
     monkeypatch.setattr(proof,'_formatting_formula',lambda *args:False)
     with pytest.raises(proof.SourceProblem,match='worksheet_size_limit') as caught:proof._bank(raw,proof._day(CUT))
-    assert caught.value.extent_failure['reason']=='payload_namespace_unknown'
-    assert caught.value.extent_failure['context']=='worksheet_metadata'
+    # The forced Boolean refusal contradicts the real predicate's all-match
+    # observation. Keep the typed refusal, without exporting an impossible proof.
+    assert caught.value.extent_failure=={}
+    caught.value.captured_source={'sha256':'a'*64,'bytes':len(raw)}
+    diagnostic=proof.failure_diagnostic(caught.value)
+    assert 'extent_proof' not in diagnostic
+    assert not diagnostic['complete_projection'] and not diagnostic['financial_acceptance']
 
 
 @pytest.mark.parametrize('mutate',[

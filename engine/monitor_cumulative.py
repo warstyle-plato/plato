@@ -63,8 +63,19 @@ class MonitorContractSourceReview(MonitorContractDocuments):
     model_config = {"extra": "forbid"}
 
 
+class MonitorProjectSourceAudit(MonitorContractsBuild):
+    # The server alone enumerates retained archives and workbook sources.
+    model_config = {"extra": "forbid", "strict": True}
+    cut: str = _CumulativeField(default="", max_length=10)
+
+
 from typing import Annotated as _IdentityAnnotated
 _IdentityHash = _IdentityAnnotated[str, _CumulativeField(pattern=r"^[0-9a-f]{64}$", strict=True)]
+
+
+class MonitorProjectSourceAuditPage(MonitorProjectSourceAudit):
+    book_sha256: list[_IdentityHash] = _CumulativeField(min_length=1, max_length=8)
+    corpus_token: _IdentityHash
 
 
 class MonitorContractIdentityInventory(MonitorContractsBuild):
@@ -178,6 +189,8 @@ _CUMULATIVE_PATHS = _IDENTITY_PATHS | frozenset({
     "/monitor/cumulative/list", "/monitor/contracts/build",
     "/monitor/contracts/result", "/monitor/contracts/term", "/monitor/contracts/link", "/monitor/contracts/header-date",
     "/monitor/contracts/source-review",
+    "/monitor/contracts/source-audit",
+    "/monitor/contracts/source-audit-page",
     "/monitor/contracts/documents", "/monitor/contracts/document-upload",
     "/monitor/contracts/document-links", "/monitor/contracts/document-remove",
     "/monitor/contracts/document-confirm",
@@ -384,6 +397,14 @@ def _monitor_cumulative_execute_raw(operation: str, payload: dict, archive: byte
             import developaid_contract_source_review as source_review
             result = {"source_review": source_review.review(**payload),
                       "runtime": {"version": VERSION, "commit": COMMIT}}
+        elif operation == "source-audit":
+            import developaid_contract_source_review as source_review
+            result = {"source_audit": source_review.project_audit(**payload),
+                      "runtime": {"version": VERSION, "commit": COMMIT}}
+        elif operation == "source-audit-page":
+            import developaid_contract_source_review as source_review
+            result = {"source_audit_page": source_review.project_audit_page(**payload),
+                      "runtime": {"version": VERSION, "commit": COMMIT}}
         elif operation == "link":
             result = {"link": links.set_link(
                 payload["project"], payload["contract_id"], payload["evidence_id"],
@@ -513,6 +534,8 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
                                    raw=req.raw, contract_date=req.contract_date, note=req.note)
                 elif operation == "source-review":
                     payload.update(contract_id=req.contract_id)
+                elif operation == "source-audit-page":
+                    payload.update(book_sha256=sorted(set(req.book_sha256)), corpus_token=req.corpus_token)
                 elif operation == "link":
                     payload.update(contract_id=req.contract_id, evidence_id=req.evidence_id,
                                    confirmed=req.confirmed)
@@ -626,6 +649,16 @@ def monitor_contracts_documents(req: MonitorContractDocuments) -> Response:
 @app.post("/monitor/contracts/source-review", include_in_schema=False)
 def monitor_contract_source_review(req: MonitorContractSourceReview) -> Response:
     return _monitor_cumulative_job(req, family="contracts", operation="source-review")
+
+
+@app.post("/monitor/contracts/source-audit", include_in_schema=False)
+def monitor_project_source_audit(req: MonitorProjectSourceAudit) -> Response:
+    return _monitor_cumulative_job(req, family="contracts", operation="source-audit")
+
+
+@app.post("/monitor/contracts/source-audit-page", include_in_schema=False)
+def monitor_project_source_audit_page(req: MonitorProjectSourceAuditPage) -> Response:
+    return _monitor_cumulative_job(req, family="contracts", operation="source-audit-page")
 
 
 @app.post("/monitor/contracts/document-upload", include_in_schema=False)
