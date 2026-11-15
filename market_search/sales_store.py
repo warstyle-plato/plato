@@ -149,6 +149,9 @@ def projects(data_dir: Path) -> list[dict[str, Any]]:
             got = json.loads(place.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001
             continue
+        # В этом же каталоге лежат журналы вопросов. Они не являются проектами.
+        if not isinstance(got, dict) or not isinstance(got.get("sources"), dict):
+            continue
         sources = got.get("sources") or {}
         out.append({
             "project": got.get("project") or place.stem,

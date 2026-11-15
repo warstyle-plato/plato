@@ -79,6 +79,8 @@ _NAMESPACE_PATH_TOKENS = {
     _X14_QNAME+'conditionalFormatting': 'x14:cf', _X14_QNAME+'cfRule': 'x14:rule',
     _X14_QNAME+'dataBar': 'x14:bar', _X14_QNAME+'cfvo': 'x14:cfvo', _XM_QNAME+'f': 'xm:f'}
 _NAMESPACE_PATH_LIMIT = 12
+_QNAME_PATH_FINGERPRINT_SCHEMA = 'expanded-qname-path-v1'
+_QNAME_PATH_FINGERPRINT_MAX_BYTES = 64 * 1024
 
 
 class _ExtentProofProblem(ValueError):
@@ -144,6 +146,31 @@ def _checked_namespace_structure(value):
     return states == ['match'] * first + ['no_match'] + ['not_evaluated'] * (len(states) - first - 1)
 
 
+def _namespace_path_fingerprint(stack):
+    """Hash a complete bounded QName stack; never return a partial digest."""
+    if (type(stack) not in (list, tuple) or not 1 <= len(stack) <= 64
+            or any(type(tag) is not str or not tag for tag in stack)
+            or sum(len(tag) for tag in stack) > _QNAME_PATH_FINGERPRINT_MAX_BYTES):
+        return None
+    try:
+        # The character precheck bounds even worst-case JSON escaping before
+        # encoding; the byte check is on the full canonical representation.
+        content = json.dumps({'schema': _QNAME_PATH_FINGERPRINT_SCHEMA, 'path': list(stack)},
+            ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False).encode('utf-8')
+    except (TypeError, ValueError, UnicodeError, OverflowError):
+        return None
+    if len(content) > _QNAME_PATH_FINGERPRINT_MAX_BYTES:
+        return None
+    return {'schema': _QNAME_PATH_FINGERPRINT_SCHEMA, 'sha256': hashlib.sha256(content).hexdigest()}
+
+
+def _checked_namespace_path_fingerprint(value):
+    return (type(value) is dict and set(value) == {'schema', 'sha256'}
+            and type(value['schema']) is str and value['schema'] == _QNAME_PATH_FINGERPRINT_SCHEMA
+            and type(value['sha256']) is str and len(value['sha256']) == 64
+            and re.fullmatch('[0-9a-f]{64}', value['sha256']) is not None)
+
+
 def _checked_extent_failure(value):
     """Metadata only. Unknown exception text/objects never cross this boundary."""
     fields = {'schema', 'outcome', 'basis', 'complete_proof', 'reason', 'context',
@@ -151,7 +178,8 @@ def _checked_extent_failure(value):
               'candidate_payload_rectangle', 'cell_elements_seen', 'xml_nodes_seen',
               'xml_bytes_observed', 'sheet_data_seen'}
     if type(value) is not dict or set(value) not in (
-            fields, fields | {'namespace_rejection'}, fields | {'namespace_rejection', 'namespace_structure'}):
+            fields, fields | {'namespace_rejection'}, fields | {'namespace_rejection', 'namespace_structure'},
+            fields | {'namespace_rejection', 'namespace_structure', 'namespace_path_fingerprint'}):
         return None
     if (type(value['schema']) is not int or value['schema'] != 1
             or value['outcome'] != 'rejected' or value['basis'] != 'partial_XML_scan_not_an_accepted_extent'
@@ -192,6 +220,9 @@ def _checked_extent_failure(value):
         if ((token == 'other' and not structure['other'])
                 or not structure['truncated'] and structure['path'][-1] != token):
             return None
+    if ('namespace_path_fingerprint' in value
+            and not _checked_namespace_path_fingerprint(value['namespace_path_fingerprint'])):
+        return None
     limits = {'candidate_payload_max_row': 1048576, 'candidate_payload_max_column': 16384,
               'candidate_payload_rectangle': 1048576 * 16384, 'cell_elements_seen': MAX_CELLS + 1,
               'xml_nodes_seen': MAX_CELLS * 8 + 1, 'xml_bytes_observed': ahr.MAX_EXPANDED + 65536}
@@ -255,6 +286,10 @@ def failure_diagnostic(exc):
             enriched = {**result, 'extent_proof': extent}
             if len(json.dumps(enriched, ensure_ascii=False, allow_nan=False).encode()) <= MAX_FAILURE_DIAGNOSTIC:
                 return enriched
+            if 'namespace_path_fingerprint' in extent:
+                enriched['extent_proof'] = {k: v for k, v in extent.items() if k != 'namespace_path_fingerprint'}
+                if len(json.dumps(enriched, ensure_ascii=False, allow_nan=False).encode()) <= MAX_FAILURE_DIAGNOSTIC:
+                    return enriched
         if len(json.dumps(result, ensure_ascii=False, allow_nan=False).encode()) <= MAX_FAILURE_DIAGNOSTIC:
             return result
     except (AttributeError, TypeError, ValueError, OverflowError):
@@ -464,9 +499,11 @@ def _verified_payload_extent(sheet, *, _failure=None):
     context = 'unknown'
     namespace_rejection = None
     namespace_structure = None
+    namespace_path_fingerprint = None
     if type(_failure) is dict:
         _failure.pop('namespace_rejection', None)
         _failure.pop('namespace_structure', None)
+        _failure.pop('namespace_path_fingerprint', None)
     stream = None
     xml_error = ()
     try:
@@ -521,6 +558,7 @@ def _verified_payload_extent(sheet, *, _failure=None):
                     if local in ('sheetData', 'row', 'c', 'v', 'f', 'is') and tag != namespace + local and not is_formatting_formula:
                         namespace_rejection = _namespace_rejection(tag)
                         namespace_structure = _namespace_structure(stack, element, data_seen, active_row, active_cell)
+                        namespace_path_fingerprint = _namespace_path_fingerprint(stack)
                         raise _ExtentProofProblem('payload_namespace_unknown')
                     if tag == data:
                         if (tuple(stack) != (worksheet, data) or element.getparent() is not root_element or data_seen):
@@ -616,7 +654,9 @@ def _verified_payload_extent(sheet, *, _failure=None):
             'xml_bytes_observed': stream.bytes if stream is not None else None,
             'sheet_data_seen': data_seen,
             **({'namespace_rejection': namespace_rejection, 'namespace_structure': namespace_structure}
-               if namespace_rejection is not None else {})})
+               if namespace_rejection is not None else {}),
+            **({'namespace_path_fingerprint': namespace_path_fingerprint}
+               if namespace_rejection is not None and namespace_path_fingerprint is not None else {})})
         if record is not None:
             _failure.update(record)
     return None
