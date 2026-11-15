@@ -330,3 +330,47 @@ def test_unsaved_memory_queue_cannot_issue_a_qualification_bound_to_other_durabl
         core.teaser_card_view(queue,dict(core.DEFAULT_INPUTS),copy.deepcopy(item['tep']))
     assert conflict.value.status_code==409
     assert core._intake_queue_path(queue['id']).read_bytes()==before
+
+
+@pytest.mark.parametrize('path',['inputs.land_rent_cadastral_mln','inputs.land_rent_cadastral_target_mln'])
+def test_native_EGRN_cadastral_origin_is_not_a_teaser_obligation(path):
+    inputs={'_field_origin':{path:{'source':'document','kind':'land_rent_egrn','text':'Synthetic cadastral source'}}}
+    assert qual.state(inputs,lambda scope:pytest.fail('ordinary cadastral provenance must not request a signing key'))is None
+
+
+@pytest.mark.parametrize('case',['unknown_kind','malformed_kind','missing_kind','wrong_path','mixed_document',
+    'teaser_packet','unknown_packet','null_packet','unsigned_record','malformed_record'])
+def test_native_cadastral_origin_cannot_mask_document_or_unknown_qualification(case):
+    path='inputs.land_rent_cadastral_mln'
+    origin={'source':'document','kind':'land_rent_egrn'}
+    inputs={'_field_origin':{path:origin}}
+    if case=='unknown_kind':origin['kind']='unrecognized'
+    elif case=='malformed_kind':origin['kind']=[]
+    elif case=='missing_kind':origin.pop('kind')
+    elif case=='wrong_path':inputs['_field_origin']={'inputs.purchase_price_mln':origin}
+    elif case=='mixed_document':inputs['_field_origin']['inputs.purchase_price_mln']={'source':'document'}
+    elif case=='teaser_packet':inputs[qual.PACKET]={'kind':'teaser_card'}
+    elif case=='unknown_packet':inputs[qual.PACKET]={'kind':'unrecognized'}
+    elif case=='null_packet':inputs[qual.PACKET]=None
+    elif case=='unsigned_record':inputs[qual.KEY]=None
+    elif case=='malformed_record':inputs[qual.KEY]={'key_scope':'telegram'}
+    state=qual.state(inputs,lambda scope:b'synthetic-signing-key')
+    assert state['status']=='review_required'and state['verified']is False and state['reason']
+
+
+@pytest.mark.parametrize('priced',[False,True])
+def test_native_cadastral_origin_preserves_the_existing_signed_document_state(document,priced):
+    item=document(priced);inputs=copy.deepcopy(item['inputs'])
+    before=core._intake_qualification_state(inputs)
+    inputs.setdefault('_field_origin',{})['inputs.land_rent_cadastral_mln']={'source':'document','kind':'land_rent_egrn'}
+    assert core._intake_qualification_state(inputs)==before
+    assert before['status']==('verified_empty'if priced else'conditional')and before['verified']is True
+
+
+@pytest.mark.parametrize('priced',[False,True])
+def test_native_cadastral_origin_does_not_validate_a_tampered_signed_record(document,priced):
+    item=document(priced);inputs=copy.deepcopy(item['inputs']);inputs.pop(qual.PACKET)
+    inputs['_field_origin']={'inputs.land_rent_cadastral_mln':{'source':'document','kind':'land_rent_egrn'}}
+    inputs[qual.KEY]['signature']='0'*64
+    state=core._intake_qualification_state(inputs)
+    assert state['status']=='review_required'and state['verified']is False and state['reason']

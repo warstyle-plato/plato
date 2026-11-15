@@ -69,6 +69,8 @@ def bot(monkeypatch, tmp_path):
     monkeypatch.setattr(engine, "_PLATO_STAGE_DIR", tmp_path)
     monkeypatch.setattr(engine, "_telegram_token", lambda: "123:test")
     monkeypatch.setattr(engine, "_telegram_allowed_user_ids", lambda: set())
+    from document_protocol_stub import compatible_document_core
+    compatible_document_core(monkeypatch, engine)
     monkeypatch.setattr(document_intake, "extract_text",
                         lambda _data, name: {"text": TEXT, "pages": 4, "filename": name})
     monkeypatch.setattr(engine, "plato_answer",
@@ -155,6 +157,23 @@ def test_the_button_carries_exactly_the_card(bot):
     # Чего нет в карточке «уйдёт в расчёт», того нет и в расчёте.
     assert "social_compensation_mln" not in overrides
     assert not bot.parcels, "расчёт начался до кнопки"
+
+
+def test_an_unadmitted_core_keeps_the_ready_card_without_signing_or_starting_calculation(bot, monkeypatch):
+    import document_intake_protocol as protocol
+    monkeypatch.delenv(protocol.ADMISSION_ENV)
+    monkeypatch.setattr(engine, '_telegram_session', lambda *a, **k: pytest.fail('held handoff must not sign a session'))
+    engine._telegram_handle_intake_document(CHAT, b"%PDF", "synthetic.pdf")
+    _press("intake_questions")
+    _press(_buttons(bot[-1])[0]["callback_data"])
+    _press(_buttons(bot[-1])[0]["callback_data"])
+    _press(_buttons(bot[-1])[1]["callback_data"])
+    assert "Итог разбора перед расчётом" in bot[-1]["text"]
+    assert protocol.UNAVAILABLE_MESSAGE in bot[-1]["text"]
+    assert not _buttons(bot[-1]) and not bot.parcels
+    dialog = engine._telegram_dialog_get(CHAT)
+    queue = engine._intake_queue_load(dialog['intake']['id'], request=engine._telegram_agent_request(CHAT))
+    assert queue['index'] == len(queue['cards']) and len(queue['answers']) == 3
 
 
 def test_a_skip_and_a_stop_are_answers_and_say_so(bot):

@@ -125,7 +125,11 @@ def document_context(inputs):
     packet=inputs.get(PACKET) or {}
     if isinstance(packet,dict) and packet.get('kind')=='teaser_card':return True
     origins=inputs.get('_field_origin') or {}
-    return isinstance(origins,dict) and any(isinstance(o,dict) and o.get('source')=='document'for o in origins.values())
+    # Native cadastral sums use this existing typed origin, not a teaser card.
+    # Any packet or other document origin keeps the conservative legacy review.
+    return isinstance(origins,dict) and any(isinstance(o,dict) and o.get('source')=='document'
+        and not (PACKET not in inputs and path in {'inputs.land_rent_cadastral_mln','inputs.land_rent_cadastral_target_mln'}
+                 and o.get('kind')=='land_rent_egrn')for path,o in origins.items())
 
 
 def state(inputs, key_for):
