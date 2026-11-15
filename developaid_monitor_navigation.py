@@ -76,7 +76,7 @@ window.createMonitorNavigation=function(config){
  for(const id of fields){const e=byId(id);if(e&&!['reportSales','physicalTask','physicalItems'].includes(id))defaults[id]=getValue(e);}
  function write(){try{const raw=JSON.stringify(state);if(raw.length<=32768)sessionStorage.setItem(STORE,raw);}catch(e){}}
  function scope(c,create=false){let item=state.scopes.find(x=>same(x,c));if(!item&&create&&c.project&&c.cut){item={...c,view:'monitor',monitor:{},report:{}};state.scopes.push(item);if(state.scopes.length>8)state.scopes.shift();}return item;}
- function capture(c=active){if(!c||!c.project||!c.cut||restoring)return;const item=scope(c,true),values={};for(const id of fields){const e=byId(id);if(e)values[id]=pending[id]!==undefined?pending[id]:getValue(e);}item[config.page]=cleanFields(values);if(config.page==='monitor')item.view=config.view();write();}
+ function capture(c=active){if(!c||!c.project||!c.cut||restoring)return;const item=scope(c,true),values=cleanFields(item[config.page]);for(const id of fields){const e=byId(id);if(e&&(!config.fieldReady||config.fieldReady(id)))values[id]=pending[id]!==undefined?pending[id]:getValue(e);}item[config.page]=cleanFields(values);if(config.page==='monitor')item.view=config.view();write();}
  function restoreFields(){const c=context();if(!same(c,active))return;restoring=true;let changed=false;
   for(const id of fields){const e=byId(id);if(!e||config.fieldReady&&!config.fieldReady(id))continue;const value=pending[id];if(value===undefined)continue;
    if(e.tagName==='SELECT'){const wanted=Array.isArray(value)?value:[value],available=Array.from(e.options).filter(x=>!x.disabled).map(x=>x.value);if(!wanted.every(x=>available.includes(x)))continue;if(e.multiple){const before=JSON.stringify(getValue(e));for(const o of e.options)o.selected=!o.disabled&&wanted.includes(o.value);changed=changed||before!==JSON.stringify(getValue(e));}else if(e.value!==value){e.value=value;changed=true;}}
@@ -91,7 +91,11 @@ window.createMonitorNavigation=function(config){
  function restoreView(){if(config.page!=='monitor')return;const h=hash();if(h.deep){if(!same(active,context()))useContext();return;}const wanted=h.view||scope(context())?.view||'monitor';if(config.view()!==wanted)config.select(wanted);changed(wanted);}
  function forget(){state={version:1,current:null,scopes:[]};pending={};active=null;try{sessionStorage.removeItem(STORE);}catch(e){}}
  function connect(){if(connected)return;connected=true;active=context();
-  const nav=document.querySelector('.monitor-navigation');nav.addEventListener('click',e=>{const a=e.target.closest('a,button');if(!a)return;capture();const tab=a.dataset.monitorView;if(config.page==='monitor'&&tab){e.preventDefault();const next='#tab='+tab;if(location.hash!==next)history.pushState(null,'',next);changed(tab);}});
+  const nav=document.querySelector('.monitor-navigation');
+  // Native tab handlers can clear physical controls. Keep the available UI
+  // first; later captures retain its hint while those controls are unavailable.
+  nav.addEventListener('click',()=>capture(),true);
+  nav.addEventListener('click',e=>{const a=e.target.closest('a,button');if(!a)return;capture();const tab=a.dataset.monitorView;if(config.page==='monitor'&&tab){e.preventDefault();const next='#tab='+tab;if(location.hash!==next)history.pushState(null,'',next);changed(tab);}});
   for(const id of ['project','cut'])for(const event of ['input','change'])byId(id).addEventListener(event,()=>{const next=context();if(same(next,active))return;capture(active);active=next;
    // The report's existing onchange starts its request synchronously. Its new
    // scope's period must be in place before that native handler reads it.
