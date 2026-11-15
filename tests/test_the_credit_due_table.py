@@ -186,13 +186,50 @@ def test_each_date_in_the_owner_words_and_the_same_lines_everywhere(monkeypatch)
     tile = tiles["Эскроу на платежи по НКЛ"]
     first = due["rows"][0]
     assert tile["value"] == f"не хватает {report._rub(first['own']['pace'])}"
-    assert tile["note"].startswith(
+    assert tile["note"].startswith("По действующим НКЛ, без увеличения лимита. ")
+    assert due["extra_reason"] in tile["note"]
+    assert (
         f"30.09.2027 по графикам НКЛ платёж {report._rub(first['total']['pace'])} (долг "
         f"{report._rub(first['principal'])} и проценты {report._rub(first['interest']['pace'])}), "
-        f"на эскроу к этой дате {report._rub(first['escrow']['pace'])} по нашему прогнозу.")
+        f"на эскроу к этой дате {report._rub(first['escrow']['pace'])} по нашему прогнозу.") \
+        in tile["note"]
     assert report._rub(due["own_total"]["pace"]) not in tile["note"]
     # Сумма за весь срок — под таблицей, с подписью, из чего она сложена.
     assert "Это не нехватка к вводу" in page
+
+
+def test_the_tile_names_the_increase_and_compares_the_same_first_date(monkeypatch):
+    built = _built(monkeypatch)
+    due = _with_the_increase(built)
+    built["credit_due"] = due
+    first = due["rows"][0]
+    tile = next(item for item in report.tiles(built)
+                if item["label"] == "Эскроу на платежи по НКЛ")
+    assert tile["value"] == f"не хватает {report._rub(first['own']['pace'])}"
+    assert tile["note"].startswith(
+        f"С учётом расчётного увеличения лимита банка на {report._rub(due['extra'])}. ")
+    assert f"Условия увеличения приняты как у {due['first_short']}" in tile["note"]
+    assert "это допущение расчёта" in tile["note"]
+    assert ("Без увеличения лимита к этой же дате по нашему прогнозу не хватает "
+            f"{report._rub(first['own']['pace_base'])}.") in tile["note"]
+    assert report._rub(due["own_total"]["pace_base"]) not in tile["note"]
+    assert tile["note"] in report.render_html(built)
+
+
+@pytest.mark.parametrize("base,interest,expected", [
+    (0.0, 18.0, "эскроу хватает."),
+    (None, 18.0, "результат не посчитан."),
+    (32.0, None, "не хватает 32 ₽ (без процентов: они не посчитаны)."),
+])
+def test_the_tile_preserves_zero_missing_and_unknown_interest(base, interest, expected):
+    block = {"extra": 240.0, "first_short": "Тестовая НКЛ", "rows": [{
+        "date": "2033-06-30", "principal": 360.0,
+        "interest": {"pace": 48.0}, "interest_base": {"pace": interest},
+        "total": {"pace": 408.0}, "escrow": {"pace": 200.0},
+        "own": {"pace": 208.0, "pace_base": base, "fm": None},
+    }]}
+    note = report._first_due_words(block)
+    assert note.endswith("Без увеличения лимита к этой же дате по нашему прогнозу " + expected)
 
 
 def test_a_project_without_credit_terms_says_why(monkeypatch):
