@@ -195,7 +195,7 @@ def test_every_before_after_state_and_code_drift_holds(cache, monkeypatch, fault
         elif fault=='added':(root/('2036-08-02-'+'c'*64+'.json')).write_bytes(b'{}')
         elif fault=='removed':path.unlink()
         elif fault=='header':(root.parent/'cumulative_header_dates.json').write_bytes(b'{}')
-        elif fault=='alias':monkeypatch.setattr(monitor,'_resolved_slug',lambda *a:'foreign')
+        elif fault=='alias':monkeypatch.setattr(monitor,'_slug',lambda *a:'foreign')
         elif fault=='root':root.rename(root.with_name('moved'));root.mkdir()
         elif fault=='producer':monkeypatch.setattr(proof,'_producer',lambda:{'changed':True})
         return result
@@ -226,3 +226,118 @@ def test_native_file_namespace_and_missing_cache_guards(cache, fault):
     elif fault=='orphan_zip':(root/('2036-06-01-'+'c'*64+'.zip')).write_bytes(b'never read')
     elif fault=='header_present':(root.parent/'cumulative_header_dates.json').write_bytes(b'{}')
     with pytest.raises(proof.PreparedIndexProblem):proof.project_index(**args)
+
+
+def deny_legacy_alias_io(monkeypatch):
+    def forbidden(*a,**k):
+        pytest.fail('proof called an unsealed legacy alias/path reader')
+    for name in ('_aliases','_resolved_slug','_project_dir'):
+        monkeypatch.setattr(monitor,name,forbidden)
+
+
+@pytest.mark.parametrize('body',[
+    b'{', b'{"aliases":{},"aliases":{}}', b'{"aliases":{"a":"b","a":"b"}}',
+    b'{"aliases":{},"unexpected":NaN}', b'null', b'[]', b'{"unexpected":{}}',
+    b'{"aliases":null}', b'{"aliases":[]}', b'{"aliases":{"a":false}}',
+    b'{"aliases":{"a":42}}', b'{"aliases":{"a":{}}}', b'{"aliases":{"a":"../b"}}',
+    b'{"aliases":{"a":""}}', b'{"aliases":{"":"a"}}', b'{"aliases":{"a":"\\ud800"}}',
+])
+def test_namespace_strict_held_alias_bytes_reject_before_project_cache(cache,monkeypatch,body):
+    root,_,args=cache
+    (root.parent.parent/monitor._ALIASES_FILE).write_bytes(body)
+    monkeypatch.setattr(monitor,'_ALIAS_CACHE',dict(key=None,map={}))
+    deny_legacy_alias_io(monkeypatch)
+    monkeypatch.setattr(proof,'_project',lambda *a,**k:pytest.fail('invalid aliases reached project data'))
+    with pytest.raises(proof.PreparedIndexProblem):proof.project_index(**args)
+
+
+@pytest.mark.parametrize('state',['cold','different_key','warm_matching','missing_warm'])
+def test_namespace_resolution_uses_exact_FD_map_and_only_observes_native_cache(cache,monkeypatch,state):
+    root,_,args=cache;args=copy.deepcopy(args);base=root.parent.parent
+    slug=monitor._slug(PROJECT);alias=base/monitor._ALIASES_FILE
+    if state=='missing_warm':
+        cache_state=dict(key=(str(alias),1,123),map={slug:'old-target'})
+        expected_branch='missing_alias_file_empty_map'
+    else:
+        target='Synthetic-target'
+        root.parent.rename(base/target)
+        alias_map={slug:target,target:'not-recursively-selected'}
+        alias.write_bytes(proof.canonical(dict(aliases=alias_map)))
+        info=alias.stat();key=(str(alias),info.st_mtime_ns,info.st_size)
+        cache_state=(dict(key=key,map=alias_map)if state=='warm_matching'else
+                     dict(key=None,map={})if state=='cold'else
+                     dict(key=(str(alias),0,0),map={slug:'old-target'}))
+        args['expected_project_scope']=proof.digest(dict(namespace=target))
+        expected_branch='warm_key_matching_fd'if state=='warm_matching'else'would_reload'
+    monkeypatch.setattr(monitor,'_ALIAS_CACHE',copy.deepcopy(cache_state));cache_object=monitor._ALIAS_CACHE
+    deny_legacy_alias_io(monkeypatch)
+    result=proof.project_index(**args);observed=result['namespace_resolution']
+    assert result['complete']is True and observed['branch']==expected_branch
+    assert observed['legacy_resolver_invoked']is observed['current_native_consumer_invoked']is False
+    assert observed['native_cache_key_matches_fd']is(state=='warm_matching')
+    assert observed['native_cache_before_sha256']==observed['native_cache_after_sha256']==proof.digest(cache_state)
+    assert monitor._ALIAS_CACHE is cache_object and monitor._ALIAS_CACHE==cache_state
+    assert result['future_consumer_invoked']is False and result['namespace_preimage_observed']is False
+
+
+def test_namespace_same_key_sealed_bravo_vs_warm_alpha_is_HOLD_not_silent_reload(cache,monkeypatch):
+    root,_,args=cache;args=copy.deepcopy(args);base=root.parent.parent
+    slug=monitor._slug(PROJECT);alias=base/monitor._ALIASES_FILE
+    old=proof.canonical(dict(aliases={slug:'alpha'}));new=proof.canonical(dict(aliases={slug:'bravo'}))
+    assert len(old)==len(new)
+    alias.write_bytes(old);info=alias.stat()
+    cache_state=dict(key=(str(alias),info.st_mtime_ns,info.st_size),map={slug:'alpha'})
+    monkeypatch.setattr(monitor,'_ALIAS_CACHE',copy.deepcopy(cache_state))
+    alias.write_bytes(new);os.utime(alias,ns=(info.st_atime_ns,info.st_mtime_ns))
+    args['expected_project_scope']=proof.digest(dict(namespace='bravo'))
+    deny_legacy_alias_io(monkeypatch)
+    with pytest.raises(proof.PreparedIndexProblem,match='при том же ключе'):proof.project_index(**args)
+    assert monitor._ALIAS_CACHE==cache_state
+
+
+@pytest.mark.parametrize('mutation',['map','key','object','pure_slug'])
+def test_namespace_observed_native_cache_and_pure_slug_prepost_drift_HOLD(cache,monkeypatch,mutation):
+    _,_,args=cache;state=dict(key=None,map={});monkeypatch.setattr(monitor,'_ALIAS_CACHE',state)
+    deny_legacy_alias_io(monkeypatch);ordinary=proof._project
+    def changed(*a,**k):
+        value=ordinary(*a,**k)
+        if mutation=='map':state['map']['changed']='different'
+        elif mutation=='key':state['key']=('/synthetic/old',0,0)
+        elif mutation=='object':monkeypatch.setattr(monitor,'_ALIAS_CACHE',copy.deepcopy(state))
+        elif mutation=='pure_slug':monkeypatch.setattr(monitor,'_slug',lambda *a:'different')
+        return value
+    monkeypatch.setattr(proof,'_project',changed)
+    with pytest.raises(proof.PreparedIndexProblem):proof.project_index(**args)
+
+
+@pytest.mark.parametrize('state',[None,[],{},dict(key=None,map=None),dict(key=False,map={}),
+    dict(key=('bad',True,0),map={}),dict(key=None,map={'a':False})])
+def test_namespace_unknown_native_cache_fact_containers_HOLD(cache,monkeypatch,state):
+    _,_,args=cache;monkeypatch.setattr(monitor,'_ALIAS_CACHE',state);deny_legacy_alias_io(monkeypatch)
+    with pytest.raises(proof.PreparedIndexProblem):proof.project_index(**args)
+
+
+@pytest.mark.parametrize('cap',['MAX_ALIAS_ENTRIES','MAX_ALIASES_BYTES'])
+def test_namespace_alias_caps_hold_without_fallback_or_cache_repair(cache,monkeypatch,cap):
+    root,_,args=cache;(root.parent.parent/monitor._ALIASES_FILE).write_bytes(b'{"aliases":{"a":"b"}}')
+    state=dict(key=None,map={});monkeypatch.setattr(monitor,'_ALIAS_CACHE',state)
+    monkeypatch.setattr(proof,cap,0);deny_legacy_alias_io(monkeypatch)
+    with pytest.raises(proof.PreparedIndexProblem):proof.project_index(**args)
+    assert monitor._ALIAS_CACHE==state
+
+
+@pytest.mark.parametrize('change_cwd',[False,True])
+def test_namespace_relative_native_stat_key_is_exact_and_cwd_drift_holds(cache,monkeypatch,change_cwd):
+    root,_,args=cache;base=root.parent.parent;alias=base/monitor._ALIASES_FILE
+    slug=monitor._slug(PROJECT);alias_map={slug:slug};alias.write_bytes(proof.canonical(dict(aliases=alias_map)))
+    monkeypatch.chdir(base.parent);configured=Path(base.name);monkeypatch.setattr(monitor,'_SNAPSHOT_DIR',configured)
+    info=alias.stat();state=dict(key=(str(configured/monitor._ALIASES_FILE),info.st_mtime_ns,info.st_size),map=alias_map)
+    monkeypatch.setattr(monitor,'_ALIAS_CACHE',copy.deepcopy(state));deny_legacy_alias_io(monkeypatch)
+    if change_cwd:
+        ordinary=proof._project
+        def changed(*a,**k):
+            value=ordinary(*a,**k);monkeypatch.chdir(base);return value
+        monkeypatch.setattr(proof,'_project',changed)
+        with pytest.raises(proof.PreparedIndexProblem):proof.project_index(**args)
+    else:assert proof.project_index(**args)['namespace_resolution']['branch']=='warm_key_matching_fd'
+    assert monitor._ALIAS_CACHE==state

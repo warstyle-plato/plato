@@ -20,6 +20,23 @@ schema/basis state, incomplete identity-input shape, an effective-header file,
 ambiguous coordinates, changed seals or exceeded bounds cause a whole-result
 hold. A hold never authorizes reparse or automatic paging.
 
+Namespace resolution uses only a bounded held-FD decode of the closed
+`{"aliases": {string: string}}` file and the native pure `_slug` function with
+one exact map lookup. Duplicate/nonfinite/unknown containers and invalid
+directory components cause a hold. `_aliases`, `_resolved_slug` and
+`_project_dir` are not invoked or reread through an unsealed path.
+
+The process `_ALIAS_CACHE` is copied and observed before/after without writes
+or clearing. If its exact native `(str(path),mtime_ns,size)` key matches the
+held FD key, the cached map must equal the strict FD map. A mismatch holds.
+A cold/different key records only the `would_reload` condition and resolves
+from the strict held FD map;
+it does not claim the legacy helper was run. A missing file has the native
+empty-map branch while preserving any old process cache. `namespace_resolution`
+states these facts and `legacy_resolver_invoked=false`; consumers remain
+uninvoked. Alias bytes/file identity, configured path/cwd, native cache facts
+and the pure slug function are checked for drift.
+
 The native current-cache path uses the existing `basis_metadata_current` and
 pure `_restore_period_dates` functions. Observed parser/identity stamps remain
 distinct from the code's current constants; a missing stamp is not filled.

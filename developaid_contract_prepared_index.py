@@ -33,6 +33,8 @@ MAX_TOTAL_BYTES = 64 * 1024 * 1024
 MAX_RESULT_BYTES = 262144
 MAX_NODES = 1_000_000
 MAX_DEPTH = 32
+MAX_ALIASES_BYTES = 65536
+MAX_ALIAS_ENTRIES = 1024
 HASH = re.compile(r'[0-9a-f]{64}\Z')
 SID = re.compile(r'\d{4}-\d{2}-\d{2}-[0-9a-f]{64}\Z')
 
@@ -57,6 +59,49 @@ def digest(value):
 
 def text_sha256(value):
     return hashlib.sha256(value.encode('utf-8')).hexdigest()
+
+
+def _alias_component(value):
+    if (type(value) is not str or not 0 < len(value) <= 255 or value in {'.', '..'}
+            or any(c in value for c in '/\\\0') or any(ord(c) < 32 for c in value)):
+        return False
+    try:
+        return len(value.encode('utf-8')) <= 255
+    except UnicodeError:
+        return False
+
+
+def _strict_alias_map(held):
+    if held is None:
+        return {}
+    value = _decode(held[0])
+    _need(type(value) is dict and set(value) == {'aliases'} and type(value['aliases']) is dict
+          and len(value['aliases']) <= MAX_ALIAS_ENTRIES,
+          'Структура файла псевдонимов не подтверждена.')
+    _need(all(_alias_component(k) and _alias_component(v) for k, v in value['aliases'].items()),
+          'Каталог в файле псевдонимов не подтверждён.')
+    return value['aliases']
+
+
+def _native_alias_cache_snapshot(state):
+    """Observe only; never warm, clear or repair the legacy process cache."""
+    _need(type(state) is dict and set(state) == {'key', 'map'} and type(state['map']) is dict
+          and len(state['map']) <= MAX_ALIAS_ENTRIES, 'Состояние native alias cache не подтверждено.')
+    key = state['key']
+    _need(key is None or type(key) is tuple and len(key) == 3
+          and type(key[0]) is str and 0 < len(key[0]) <= 4096
+          and type(key[1]) is int and -(2**63) <= key[1] < 2**63
+          and type(key[2]) is int and 0 <= key[2] < 2**63,
+          'Ключ native alias cache не подтверждён.')
+    size = 0
+    for name, target in state['map'].items():
+        _need(type(name) is str and type(target) is str and len(name) <= 4096 and len(target) <= 4096,
+              'Типы native alias cache не подтверждены.')
+        size += len(canonical(name)) + len(canonical(target))
+        _need(size <= MAX_ALIASES_BYTES, 'Объём native alias cache превышает предел.')
+    snapshot = copy.deepcopy(state)
+    _need(snapshot == state, 'Native alias cache изменился во время наблюдения.')
+    return snapshot
 
 
 def _shape(value):
@@ -367,11 +412,29 @@ def project_index(project, cut, snapshot_ids, expected_project_scope,
     producer = _producer()
     opened = []
     try:
-        base = Path(monitor._SNAPSHOT_DIR).absolute()
+        configured_base = monitor._SNAPSHOT_DIR
+        _need(isinstance(configured_base, Path), 'Каталог native cache не подтверждён.')
+        base = configured_base.absolute()
+        alias_name = monitor._ALIASES_FILE
+        _need(_alias_component(alias_name), 'Имя файла псевдонимов не подтверждено.')
         base_dir = _Directory(base); opened.append(base_dir)
-        aliases = base_dir.read(monitor._ALIASES_FILE, 65536, optional=True, with_pin=True)
-        slug = monitor._resolved_slug(project.strip())
-        _need(type(slug) is str and slug not in {'', '.', '..'} and not any(c in slug for c in '/\\\0'),
+        aliases = base_dir.read(alias_name, MAX_ALIASES_BYTES, optional=True, with_pin=True)
+        alias_map = _strict_alias_map(aliases)
+        cache_object = monitor._ALIAS_CACHE
+        native_cache = _native_alias_cache_snapshot(cache_object)
+        fd_key = (str(configured_base / alias_name), aliases[1][3], aliases[1][2]) if aliases is not None else None
+        cache_key_matches = aliases is not None and native_cache['key'] == fd_key
+        _need(not cache_key_matches or native_cache['map'] == alias_map,
+              'Native alias cache не совпал с точным файлом при том же ключе.')
+        branch = ('missing_alias_file_empty_map' if aliases is None else
+                  'warm_key_matching_fd' if cache_key_matches else 'would_reload')
+        native_slug_function = monitor._slug
+        input_slug = native_slug_function(project.strip())
+        _need(_alias_component(input_slug), 'Исходный каталог проекта не подтверждён.')
+        slug = alias_map.get(input_slug, input_slug)
+        location = os.path.normpath(os.path.join(str(base), slug))
+        _need(_alias_component(slug) and os.path.dirname(location) == str(base)
+              and location.startswith(str(base) + os.sep),
               'Пространство cache не подтверждено.')
         scope = digest(dict(namespace=slug))
         _need(scope == expected_project_scope, 'Пространство cache не совпало с наблюдаемым scope.')
@@ -380,9 +443,12 @@ def project_index(project, cut, snapshot_ids, expected_project_scope,
         def guard():
             for directory in opened:
                 directory.verify()
-            _need(Path(monitor._SNAPSHOT_DIR).absolute() == base and
-                  monitor._resolved_slug(project.strip()) == slug and
-                  base_dir.read(monitor._ALIASES_FILE, 65536, optional=True, with_pin=True) == aliases,
+            _need(monitor._SNAPSHOT_DIR == configured_base and configured_base.absolute() == base
+                  and monitor._ALIASES_FILE == alias_name
+                  and monitor._slug is native_slug_function and native_slug_function(project.strip()) == input_slug
+                  and base_dir.read(alias_name, MAX_ALIASES_BYTES, optional=True, with_pin=True) == aliases
+                  and monitor._ALIAS_CACHE is cache_object
+                  and _native_alias_cache_snapshot(cache_object) == native_cache,
                   'Пространство cache изменилось.')
             _need(project_dir.absent('cumulative_header_dates.json'),
                   'Наблюдается файл уточнений шапок; необходим отдельный профиль.')
@@ -428,7 +494,14 @@ def project_index(project, cut, snapshot_ids, expected_project_scope,
             producer=producer, manifest_set_before_sha256=manifest_seal,
             manifest_set_after_sha256=manifest_seal,
             namespace_seal_sha256=digest(dict(scope=scope, alias_file_pin=
-                [hashlib.sha256(aliases[0]).hexdigest(), list(aliases[1])] if aliases is not None else None)),
+                [hashlib.sha256(aliases[0]).hexdigest(), list(aliases[1])] if aliases is not None else None,
+                strict_alias_map_sha256=digest(alias_map), native_cache_sha256=digest(native_cache), branch=branch)),
+            namespace_resolution=dict(basis='held_fd_alias_inputs_and_observed_cache_not_legacy_execution',
+                resolution_source='strict_held_fd_map',
+                branch=branch, alias_file_present=aliases is not None,
+                strict_alias_map_sha256=digest(alias_map), native_cache_key_matches_fd=cache_key_matches,
+                native_cache_before_sha256=digest(native_cache), native_cache_after_sha256=digest(native_cache),
+                legacy_resolver_invoked=False, current_native_consumer_invoked=False),
             header_file=dict(present=False, bytes=None, sha256=None),
             manifests=[dict(snapshot_id=sid, bytes=len(data), sha256=hashlib.sha256(data).hexdigest(),
                             file_identity_sha256=digest(list(pin)))
@@ -453,7 +526,7 @@ def project_index(project, cut, snapshot_ids, expected_project_scope,
         return result
     except PreparedIndexProblem:
         raise
-    except (OSError, ValueError, TypeError, KeyError, AttributeError, RecursionError):
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, RecursionError, RuntimeError):
         raise PreparedIndexProblem('Наблюдаемый cache не подтверждён; чтение остановлено.') from None
     finally:
         for directory in reversed(opened):
