@@ -206,3 +206,5 @@ def decorate_readiness(state, rows, milestone_plan=None):
         item['forecast'] = forecast
         if item is state['project']:
             forecast['explanation'] = _explanation(state, forecast, members, references)
+            from developaid_gpr_summary import display_forecast
+            forecast['display'] = display_forecast(state, forecast, members, references)
