@@ -249,14 +249,15 @@ def test_document_jobs_are_bounded_and_release_capacity(server, monkeypatch):
     core._DOCUMENT_JOBS.release()
 
 
-def test_shared_document_poll_transmits_the_same_identity_headers():
-    from pathlib import Path
+def test_shared_document_poll_transmits_the_same_identity_headers(server):
     import subprocess
-    root = Path(__file__).resolve().parents[1]
-    source = (root / "document_client.js").read_text()
+    core, _ = server
+    source = core.document_client_script().body.decode()
     script = """const window={};const calls=[];
 const setTimeout=fn=>fn();let step=0;
-const fetch=async(url,init)=>{calls.push({url,init});const values=[{trace_id:'abc'},
+const fetch=async(url,init)=>{calls.push({url,init});
+if(url===window.PlatoDocumentProtocol.capabilityPath)return{ok:true,json:async()=>({schema:1,protocol:window.PlatoDocumentProtocol.protocol})};
+const values=[{trace_id:'abc'},
 {pending:true},{pending:false,card:{id:'intake'}}];return{ok:true,json:async()=>values[step++]}};
 """ + source + """
 window.PlatoDocumentClient.read({session:'synthetic-session',access_key:'synthetic-key'}).then(result=>{
@@ -264,10 +265,35 @@ window.PlatoDocumentClient.read({session:'synthetic-session',access_key:'synthet
 });"""
     got = json.loads(subprocess.check_output(["node", "-e", script], text=True))
     assert got["result"]["card"]["id"] == "intake"
-    assert len(got["calls"]) == 3
-    for call in got["calls"][1:]:
+    assert len(got["calls"]) == 4
+    assert got["calls"][0] == {"url": core.document_protocol.CAPABILITY_PATH, "init": {"cache": "no-store"}}
+    started = got["calls"][1]
+    assert started["url"] == "/agent/document/start" and started["init"]["method"] == "POST"
+    assert json.loads(started["init"]["body"]) == {"session": "synthetic-session", "access_key": "synthetic-key"}
+    for call in got["calls"][2:]:
         assert call["init"]["headers"] == {"x-plato-session": "synthetic-session", "x-developaid-admin-key": "synthetic-key"}
-        assert "synthetic-key" not in call["url"]
+        assert call["url"] == "/agent/result/abc" and call["init"]["cache"] == "no-store"
+    assert all("synthetic-key" not in call["url"] and "synthetic-session" not in call["url"] for call in got["calls"])
+
+
+def test_shared_document_poll_keeps_its_deadline_after_protocol_preflight(server):
+    import subprocess
+    core, _ = server
+    source = core.document_client_script().body.decode()
+    script = """const window={};const calls=[];const ticks=[0,1,600000];
+const Date={now:()=>ticks.shift()};const setTimeout=fn=>fn();
+const fetch=async(url,init)=>{calls.push({url,init});
+if(url===window.PlatoDocumentProtocol.capabilityPath)return{ok:true,json:async()=>({schema:1,protocol:window.PlatoDocumentProtocol.protocol})};
+return{ok:true,json:async()=>url==='/agent/document/start'?{trace_id:'deadline'}:{pending:true}}};
+""" + source + """
+window.PlatoDocumentClient.read({session:'synthetic-session',access_key:'synthetic-key'}).then(()=>{throw new Error('deadline did not hold')},error=>{
+ console.log(JSON.stringify({error:error.message,calls}));
+});"""
+    got = json.loads(subprocess.check_output(["node", "-e", script], text=True))
+    assert got["error"] == "Разбор не завершился за отведённое время. Пришлите нужные страницы отдельно."
+    assert [call["url"] for call in got["calls"]] == [core.document_protocol.CAPABILITY_PATH, "/agent/document/start", "/agent/result/deadline"]
+    assert got["calls"][2]["init"]["headers"] == {"x-plato-session": "synthetic-session", "x-developaid-admin-key": "synthetic-key"}
+    assert all("synthetic-key" not in call["url"] for call in got["calls"])
 
 
 @pytest.mark.parametrize("public", [True, False])

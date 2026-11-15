@@ -1354,13 +1354,9 @@ async def _document_protocol_metadata(request: Request, call_next):
         # or any canonical document operation can read its queue.
         from fastapi.responses import JSONResponse
         try:
-            body = await request.json()
-        except (ValueError, UnicodeError):
-            body = {}
-        body = body if isinstance(body, dict) else {}
-        session = body.get('session', '')
-        key = body.get('access_key', '')
-        try:
+            body = await json_object(request)
+            session = body.get('session', '')
+            key = body.get('access_key', '')
             _require_web_access(session if isinstance(session, str) else '',
                                 key if isinstance(key, str) else '', 'Разбор документа')
         except HTTPException as exc:

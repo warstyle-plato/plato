@@ -129,6 +129,30 @@ def test_capability_fastpath_does_not_initialize_or_read_browser_owner_state(mon
 
 
 @pytest.mark.parametrize('path',['/agent/document/answer','/agent/document/apply'])
+@pytest.mark.parametrize('body,reason',[(b'','пуст'),(b'not-json','не разобрано'),
+    (b'{"session":','не разобрано'),(b'[1,2]','объект JSON'),
+    (b'"BODY_SECRET_SENTINEL"','объект JSON'),(b'\xff','не разобрано')])
+def test_legacy_malformed_body_uses_named_refusal_before_owner_or_queue_IO(path,body,reason,monkeypatch,tmp_path):
+    import main
+    core=main.core
+    monkeypatch.setattr(core,'_PLATO_STAGE_DIR',tmp_path/'must-stay-absent')
+    auth_calls=[];native_auth=core._require_web_access
+    def auth(*a,**k):auth_calls.append(1);return native_auth(*a,**k)
+    def forbidden(*a,**k):pytest.fail('a malformed legacy request must not enter owner/queue operations')
+    monkeypatch.setattr(core,'_require_web_access',auth)
+    monkeypatch.setattr(core._agent_access,'browser_owner',forbidden)
+    monkeypatch.setattr(core,'_intake_queue_load',forbidden)
+    monkeypatch.setattr(core,'_intake_queue_save',forbidden)
+    client=TestClient(core.app)
+    try:response=client.post(path,content=body)
+    finally:client.close()
+    assert response.status_code==422 and reason in response.json()['detail']
+    assert response.headers['Cache-Control']=='no-store'and 'set-cookie'not in response.headers
+    assert 'BODY_SECRET_SENTINEL'not in response.text and not core._PLATO_STAGE_DIR.exists()
+    assert auth_calls==[]
+
+
+@pytest.mark.parametrize('path',['/agent/document/answer','/agent/document/apply'])
 def test_legacy_HTTP_authenticates_then_refuses_without_owner_queue_or_source_IO(path,monkeypatch,tmp_path):
     import main
     core=main.core;key='synthetic-refresh-admin'
