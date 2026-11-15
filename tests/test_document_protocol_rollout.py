@@ -265,3 +265,119 @@ def test_qualified_entry_refuses_old_target_before_overrides_or_calculation(docu
         assert page.evaluate('() => lastResult')is None
         assert page.evaluate('() => inputs._intake_qualification||null')is None
         browser.close()
+
+
+def _origin_projection(base,source='TELEGRAM_WEBAPP_URL'):
+    import ast
+    text=(Path(__file__).resolve().parents[1]/'engine/bot_telegram.py').read_text()
+    function=next(n for n in ast.parse(text).body if isinstance(n,ast.FunctionDef)
+                  and n.name=='_telegram_document_origin_metadata')
+    namespace=dict(document_protocol=protocol,Any=object,
+                   _TELEGRAM_WEB_APP_BASE_URL=base,_TELEGRAM_WEB_APP_BASE_SOURCE=source)
+    exec(compile(ast.Module(body=[function],type_ignores=[]),'<native public-origin projection>','exec'),namespace)
+    return namespace['_telegram_document_origin_metadata']()
+
+
+@pytest.mark.parametrize('settings,base,source,reads',[
+    ({},'https://plato-development-investment-model.onrender.com','default_public',
+     ['TELEGRAM_PUBLIC_BASE_URL','RENDER_EXTERNAL_URL','TELEGRAM_WEBAPP_URL','TELEGRAM_WEB_APP_BASE_URL']),
+    ({'TELEGRAM_PUBLIC_BASE_URL':'https://developaid.ru///'},'https://developaid.ru','TELEGRAM_PUBLIC_BASE_URL',
+     ['TELEGRAM_PUBLIC_BASE_URL','TELEGRAM_WEBAPP_URL','TELEGRAM_WEB_APP_BASE_URL']),
+    ({'RENDER_EXTERNAL_URL':'https://plato-development-investment-model.onrender.com/'},
+     'https://plato-development-investment-model.onrender.com','RENDER_EXTERNAL_URL',
+     ['TELEGRAM_PUBLIC_BASE_URL','RENDER_EXTERNAL_URL','TELEGRAM_WEBAPP_URL','TELEGRAM_WEB_APP_BASE_URL']),
+    ({'TELEGRAM_WEB_APP_BASE_URL':'https://developaid.ru/legacy/'},'https://developaid.ru/legacy','TELEGRAM_WEB_APP_BASE_URL',
+     ['TELEGRAM_PUBLIC_BASE_URL','RENDER_EXTERNAL_URL','TELEGRAM_WEBAPP_URL','TELEGRAM_WEB_APP_BASE_URL']),
+    ({'TELEGRAM_PUBLIC_BASE_URL':'https://developaid.ru/public','RENDER_EXTERNAL_URL':'https://ignored.invalid',
+      'TELEGRAM_WEBAPP_URL':'https://developaid.ru/primary///','TELEGRAM_WEB_APP_BASE_URL':'https://ignored.invalid'},
+     'https://developaid.ru/primary','TELEGRAM_WEBAPP_URL',['TELEGRAM_PUBLIC_BASE_URL','TELEGRAM_WEBAPP_URL']),
+    ({'TELEGRAM_WEBAPP_URL':' ','TELEGRAM_WEB_APP_BASE_URL':'https://developaid.ru'},' ','TELEGRAM_WEBAPP_URL',
+     ['TELEGRAM_PUBLIC_BASE_URL','RENDER_EXTERNAL_URL','TELEGRAM_WEBAPP_URL']),
+])
+def test_origin_source_capture_preserves_import_time_reads_and_base_exactly(settings,base,source,reads):
+    import ast
+    import types
+    names={'_TELEGRAM_PUBLIC_BASE_URL','_TELEGRAM_PUBLIC_BASE_SOURCE',
+           '_TELEGRAM_WEB_APP_BASE_URL','_TELEGRAM_WEB_APP_BASE_SOURCE'}
+    text=(Path(__file__).resolve().parents[1]/'engine/bot_telegram.py').read_text()
+    statements=[n for n in ast.parse(text).body if isinstance(n,ast.Assign)
+                and any(isinstance(t,ast.Name)and t.id in names for t in n.targets)]
+    called=[]
+    class Settings:
+        def get(self,key):called.append(key);return settings.get(key)
+    namespace=dict(os=types.SimpleNamespace(environ=Settings()))
+    exec(compile(ast.Module(body=statements,type_ignores=[]),'<native URL import-time assignments>','exec'),namespace)
+    assert namespace['_TELEGRAM_WEB_APP_BASE_URL']==base
+    assert namespace['_TELEGRAM_WEB_APP_BASE_SOURCE']==source and called==reads
+
+
+@pytest.mark.parametrize('base,origin',[
+    ('https://developaid.ru','https://developaid.ru'),
+    ('https://DEVELOPAID.RU:443/private/path','https://developaid.ru'),
+    ('https://plato-development-investment-model.onrender.com/path',
+     'https://plato-development-investment-model.onrender.com'),
+    ('http://developaid.ru',None),('https://developaid.ru:8443',None),
+    ('https://user:SECRET@developaid.ru',None),('https://developaid.ru/?SECRET=1',None),
+    ('https://developaid.ru/#SECRET',None),('https://unknown.example.org',None),
+    ('https://127.0.0.1',None),('https://8.8.8.8',None),('https://[::1]',None),
+    ('https://service.internal',None),('https://developaid.ru.attacker.example',None),
+    ('https://developaid.ru.',None),
+    ('https://developaid.ru/SECRET path',None),(None,None),([],None),
+])
+def test_origin_metadata_discloses_only_exact_known_public_origins(base,origin,monkeypatch):
+    import socket
+    monkeypatch.setattr(socket,'getaddrinfo',lambda *a,**k:pytest.fail('origin disclosure must not resolve DNS'))
+    result=_origin_projection(base)
+    assert result=={'origin':origin,'source':'TELEGRAM_WEBAPP_URL'}
+    assert 'SECRET'not in json.dumps(result)and set(result)=={'origin','source'}
+
+
+@pytest.mark.parametrize('source',[None,[],{},'unrecognized'])
+def test_origin_metadata_source_is_a_closed_token(source):
+    assert _origin_projection('https://developaid.ru',source)=={'origin':None,'source':'unavailable'}
+
+
+def test_exact_origin_metadata_GET_is_private_bounded_and_has_no_owner_or_callback_IO(monkeypatch,tmp_path):
+    import main
+    core=main.core
+    monkeypatch.setattr(core,'_TELEGRAM_WEB_APP_BASE_URL','https://developaid.ru/private/path')
+    monkeypatch.setattr(core,'_TELEGRAM_WEB_APP_BASE_SOURCE','TELEGRAM_WEBAPP_URL')
+    monkeypatch.setattr(core,'_PLATO_STAGE_DIR',tmp_path/'must-remain-absent')
+    def forbidden(*a,**k):pytest.fail('metadata must not enter owner/auth/queue/Telegram/provider callbacks')
+    monkeypatch.setattr(core._agent_access,'browser_owner',forbidden)
+    for name in ['_require_web_access','_intake_queue_load','_intake_queue_save','_telegram_token',
+                 '_telegram_allowed_user_ids','_telegram_document_target','_telegram_session',
+                 '_telegram_api','_openai_responses_request']:
+        monkeypatch.setattr(core,name,forbidden)
+    client=TestClient(core.app)
+    try:response=client.get('/telegram/status?document_origin_only=1')
+    finally:client.close()
+    assert response.status_code==200 and response.json()=={'origin':'https://developaid.ru','source':'TELEGRAM_WEBAPP_URL'}
+    assert response.headers['X-DevelopAid-Metadata']=='document-origin-v1'
+    assert response.headers['Cache-Control']=='private, no-store'and 'set-cookie'not in response.headers
+    assert len(response.content)<=512 and not core._PLATO_STAGE_DIR.exists()
+
+
+@pytest.mark.parametrize('method,path,query',[
+    ('GET','/telegram/status',''),('GET','/telegram/status','document_origin_only=0'),
+    ('GET','/telegram/status','document_origin_only=%31'),
+    ('GET','/telegram/status','document_origin_only=1&extra=1'),
+    ('GET','/telegram/status','document_origin_only=1&document_origin_only=1'),
+    ('POST','/telegram/status','document_origin_only=1'),
+    ('HEAD','/telegram/status','document_origin_only=1'),
+    ('GET','/telegram/status/','document_origin_only=1'),
+])
+def test_origin_metadata_fastpath_does_not_change_other_requests(method,path,query):
+    import ast
+    import asyncio
+    import types
+    text=(Path(__file__).resolve().parents[1]/'engine/agent_routes.py').read_text()
+    function=next(n for n in ast.parse(text).body if isinstance(n,ast.AsyncFunctionDef)
+                  and n.name=='_document_protocol_metadata')
+    function.decorator_list=[]
+    namespace=dict(Request=object,document_protocol=protocol,
+        _telegram_document_origin_metadata=lambda:pytest.fail('other requests must retain their original path'))
+    exec(compile(ast.Module(body=[function],type_ignores=[]),'<native exact metadata routing>','exec'),namespace)
+    request=types.SimpleNamespace(method=method,url=types.SimpleNamespace(path=path,query=query));calls=[]
+    async def next_(value):calls.append(value);return 'unchanged'
+    assert asyncio.run(namespace['_document_protocol_metadata'](request,next_))=='unchanged'and calls==[request]

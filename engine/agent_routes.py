@@ -1346,6 +1346,12 @@ def agent_document_protocol() -> dict[str, Any]:
 async def _document_protocol_metadata(request: Request, call_next):
     # The existing owner middleware initializes browser state for ordinary
     # requests. This public, static capability is intentionally outside it.
+    if (request.method == 'GET' and request.url.path == '/telegram/status'
+            and request.url.query == 'document_origin_only=1'):
+        from fastapi.responses import JSONResponse
+        return JSONResponse(_telegram_document_origin_metadata(), headers={
+            'Cache-Control': 'private, no-store',
+            'X-DevelopAid-Metadata': 'document-origin-v1'})
     if request.method == 'GET' and request.url.path == document_protocol.CAPABILITY_PATH:
         from fastapi.responses import JSONResponse
         return JSONResponse(document_protocol.capability(), headers={'Cache-Control': 'no-store'})

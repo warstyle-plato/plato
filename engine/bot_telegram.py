@@ -10,20 +10,24 @@
 import document_intake_protocol as document_protocol
 
 _TELEGRAM_PUBLIC_BASE_URL = (
-    os.environ.get("TELEGRAM_PUBLIC_BASE_URL")
-    or os.environ.get("RENDER_EXTERNAL_URL")
+    (_telegram_public_base_selected := os.environ.get("TELEGRAM_PUBLIC_BASE_URL"))
+    or (_telegram_render_public_selected := os.environ.get("RENDER_EXTERNAL_URL"))
     or "https://plato-development-investment-model.onrender.com"
 ).rstrip("/")
+_TELEGRAM_PUBLIC_BASE_SOURCE = ("TELEGRAM_PUBLIC_BASE_URL" if _telegram_public_base_selected
+    else "RENDER_EXTERNAL_URL" if _telegram_render_public_selected else "default_public")
 
 # Вебхук и мини-приложение живут по разным адресам, когда бот на Render, а
 # модель — там, где доступен НСПД: адрес вебхука должен остаться на Render,
 # иначе Telegram перестанет доставлять обновления, а кнопка «Открыть модель»
 # должна вести на ядро, иначе в модели не заработают ни адреса, ни область.
 _TELEGRAM_WEB_APP_BASE_URL = (
-    os.environ.get("TELEGRAM_WEBAPP_URL")
-    or os.environ.get("TELEGRAM_WEB_APP_BASE_URL")
+    (_telegram_webapp_selected := os.environ.get("TELEGRAM_WEBAPP_URL"))
+    or (_telegram_webapp_legacy_selected := os.environ.get("TELEGRAM_WEB_APP_BASE_URL"))
     or _TELEGRAM_PUBLIC_BASE_URL
 ).rstrip("/")
+_TELEGRAM_WEB_APP_BASE_SOURCE = ("TELEGRAM_WEBAPP_URL" if _telegram_webapp_selected
+    else "TELEGRAM_WEB_APP_BASE_URL" if _telegram_webapp_legacy_selected else _TELEGRAM_PUBLIC_BASE_SOURCE)
 _TELEGRAM_RUNTIME: dict[str, Any] = {
     "configured": False,
     "username": "",
@@ -542,6 +546,23 @@ def _telegram_verify_session(value: str) -> dict[str, Any]:
 class _DocumentProtocolNoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *args, **kwargs):
         return None
+
+
+def _telegram_document_origin_metadata() -> dict[str, Any]:
+    """Disclose only known public origins and the selected setting's closed name."""
+    source = _TELEGRAM_WEB_APP_BASE_SOURCE
+    if type(source) is not str or source not in (
+            'TELEGRAM_WEBAPP_URL', 'TELEGRAM_WEB_APP_BASE_URL',
+            'TELEGRAM_PUBLIC_BASE_URL', 'RENDER_EXTERNAL_URL', 'default_public'):
+        return {'origin': None, 'source': 'unavailable'}
+    try:
+        origin = document_protocol.target_origin(_TELEGRAM_WEB_APP_BASE_URL)
+    except document_protocol.ProtocolHold:
+        origin = None
+    if origin not in {'https://developaid.ru',
+                      'https://plato-development-investment-model.onrender.com'}:
+        origin = None
+    return {'origin': origin, 'source': source}
 
 
 def _telegram_document_target() -> str:
