@@ -367,7 +367,7 @@ def money(value,compact=False):
 
 
 def _has_cash_observation(model):
-    return model.get('state') == 'partial' or any(number(model.get(key)) is not None for key, _ in FIELDS)
+    return any(number(model.get(key)) is not None for key, _ in FIELDS)
 
 
 def funding_base(own, model):

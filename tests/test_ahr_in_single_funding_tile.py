@@ -86,6 +86,19 @@ def test_report_has_one_unknown_combined_tile_with_the_same_scope_in_text(tmp_pa
     assert finding['tone'] == 'missing' and 'нужно на АХР' not in finding['text']
 
 
+def test_no_observed_cash_keeps_only_the_separately_named_bank_component():
+    model = {key: None for key, _ in cash.FIELDS}
+    model.update(state='partial', remaining_need=None)
+    base = _partial_cash()['budget']
+    result = cash.funding_summary(base, model, cash.money)
+    assert result['scope'] == 'bank_only' and result['amount'] == base
+    html = cash.render_funding(result, cash.render(model))
+    assert 'Потребность по смете банка' in html
+    assert 'Потребность в допфинансировании</small>' not in html
+    assert model['remaining_need'] is None
+    assert 'Сумма без уточнения АХР' in result['note']
+
+
 def test_old_own_money_without_ahr_split_does_not_claim_a_combined_total():
     model = _partial_cash()
     base = cash.funding_base({'need': model['budget']}, model)
