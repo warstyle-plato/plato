@@ -422,7 +422,9 @@ def compose(sources, cut):
     scope_candidates = {}
     for identity, valid, records in buckets.values():
         if valid:
-            scope_candidates.setdefault(identity[1:], []).append((identity[0], records))
+            # A work's full plan also spans years; a year boundary does not
+            # prove independence after a missing scope becomes populated.
+            scope_candidates.setdefault(identity[1:4] + identity[5:], []).append((identity[0], records))
     for candidates in scope_candidates.values():
         for index, (left, left_records) in enumerate(candidates):
             for right, right_records in candidates[index+1:]:

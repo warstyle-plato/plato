@@ -115,8 +115,10 @@ def test_same_file_sheet_row_and_work_in_different_header_scopes_stay_distinct(c
      {'object_scope': '', 'system_scope': 'Система А'}),
 ])
 @pytest.mark.parametrize('new_month', [1, 2])
-def test_compatible_incomplete_header_scopes_do_not_prove_independent_work(old_scopes, new_scopes, new_month):
-    old = source('2026-04-01', view(period(1)), **old_scopes)
+@pytest.mark.parametrize('old_year', [2025, 2026])
+def test_compatible_incomplete_header_scopes_do_not_prove_independent_work(old_scopes, new_scopes, new_month, old_year):
+    old = source('2026-04-01', view(period(1, year=old_year), period_year=old_year),
+                 period_year=old_year, **old_scopes)
     new = source('2026-05-01', view(period(new_month)), sha='b', **new_scopes)
     result = compose([old, new], CUT)
     assert len(result['items']) == 2

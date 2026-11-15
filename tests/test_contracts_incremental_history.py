@@ -213,3 +213,26 @@ def test_filling_or_removing_a_header_scope_does_not_prove_an_extra_plan_or_exec
     assert all(item['detail_history_state'] == 'unknown' for item in row['physical_items']
                if not item.get('is_group'))
     assert any('Область работ' in note for note in row['warnings'])
+
+
+def test_a_year_boundary_does_not_prove_another_full_plan_when_scope_was_missing(context):
+    context.setattr(contracts, '_archive', ARCHIVE_READER)
+    files = []
+    for year in [2025, 2026]:
+        wb = openpyxl.load_workbook(io.BytesIO(ks(date=dt.date(2025, 1, 1))))
+        ws = wb.active
+        if year == 2025:
+            for cell in ['H7', 'K7', 'N7']:
+                ws[cell] = str(ws[cell].value).replace('2026', '2025')
+        else:
+            ws['A5'], ws['B5'] = 'Объект', 'Корпус 1'
+        out = io.BytesIO()
+        wb.save(out)
+        files.append(out.getvalue())
+    save(FIRST, ('Old.xlsx', files[0]))
+    save(SECOND, ('New.xlsx', files[1]))
+    row, = contracts.build(PROJECT, SECOND, include_history=False)['rows']
+    assert row['completed'] is None and row['completion_ratio'] is None
+    assert row['statement_progress']['state'] == 'unknown'
+    assert all(item['detail_history_state'] == 'unknown' for item in row['physical_items']
+               if not item.get('is_group'))
