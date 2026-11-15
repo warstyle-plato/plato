@@ -484,18 +484,50 @@ def calendar(schedule: dict[str, Any], cut: Any) -> dict[str, Any]:
     references = [str(key) for key in project.get('work_ids') or []]
     counts = Counter(references)
     translations = Counter(str(value) for value in mapping.values() if value is not None)
+    # Only an explicit exclusion attested by the same native projection can
+    # reduce its denominator. A missing translation remains a selected gap.
+    exclusions = forecast.get('excluded')
+    attested_exclusions = {}
+    if not isinstance(exclusions, list):
+        issues.append('Исключения из календарного состава не подтверждены. Общая дата требует сверки.')
+    else:
+        for exclusion in exclusions:
+            if (not isinstance(exclusion, dict) or not isinstance(exclusion.get('work_id'), str)
+                    or exclusion['work_id'] not in counts or exclusion['work_id'] in attested_exclusions
+                    or not isinstance(exclusion.get('kind'), str)
+                    or exclusion['kind'] not in {'separate_scope','nonconstruction_scope'}):
+                issues.append('Не подтверждено исключение работы из календарного состава. План и показания сохранены.')
+                continue
+            attested_exclusions[exclusion['work_id']] = exclusion['kind']
+    if (type(project.get('total')) is not int or project['total'] != len(references)
+            or display['reference_total'] != len(references)
+            or display['total'] != len(references)-len(attested_exclusions)):
+        issues.append('Число исходных работ не совпадает с подтверждённым календарным составом. Общая дата скрыта; план и показания сохранены.')
     expected = {}
     for reference in references:
         qualification = (state.get('forecast_scope') or {}).get(reference) or {}
+        if counts[reference] != 1:
+            issues.append('Идентификатор выбранной работы повторяется. Общая дата требует сверки состава; исходные строки сохранены.')
+            continue
         if not isinstance(qualification, dict):
             issues.append('Не подтверждён формат связи работы с выбранным составом. План и показания сохранены.')
             continue
         if qualification.get('status') is not None and not isinstance(qualification['status'], str):
             issues.append('Не подтверждён статус связи работы с выбранным составом. План и показания сохранены.')
             continue
-        current = mapping.get(reference)
-        if qualification.get('status') in {'gap','excluded'} or current is None:
+        status = qualification.get('status')
+        if status == 'excluded':
+            if (not isinstance(qualification.get('reason'), str)
+                    or qualification['reason'] not in {'separate_scope','nonconstruction_scope'}
+                    or attested_exclusions.get(reference) != qualification['reason']):
+                issues.append('Исключение выбранной работы не подтверждено исходной проекцией. Общая дата требует сверки состава.')
             continue
+        if reference in attested_exclusions or status not in {None,'gap'}:
+            issues.append('Статус выбранной работы противоречит исходной календарной проекции. План и показания сохранены.')
+        if status == 'gap' or reference not in mapping or mapping[reference] is None:
+            issues.append('Для выбранной работы не подтверждена точная связь с текущим ГПР. Общая дата скрыта; план и показания сохранены.')
+            continue
+        current = mapping[reference]
         if isinstance(current, bool) or not isinstance(current, (str,int)) or not str(current) or len(str(current)) > 512:
             issues.append('Нет точного идентификатора работы в текущем источнике. План и показания сохранены.')
             continue
