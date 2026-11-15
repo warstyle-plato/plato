@@ -69,13 +69,40 @@ class _ExtentProofProblem(ValueError):
         super().__init__(self.reason)
 
 
+def _namespace_rejection(tag):
+    """Private failure metadata only; never a namespace acceptance rule."""
+    if type(tag) is not str:
+        return None
+    local = tag.rsplit('}', 1)[-1]
+    if local not in ('sheetData', 'row', 'c', 'v', 'f', 'is'):
+        return None
+    if tag.startswith('{'):
+        end = len(tag) - len(local) - 1
+        if end < 1 or tag[end] != '}':
+            return None
+        # Do not encode/copy an unbounded URI merely to truncate it.
+        if end - 1 > 256:
+            return {'local_name': local, 'namespace_uri': None, 'truncated': True}
+        uri = tag[1:end]
+    elif tag == local:
+        uri = ''
+    else:
+        return None
+    try:
+        truncated = len(uri.encode('utf-8')) > 256
+    except UnicodeError:
+        return None
+    return {'local_name': local, 'namespace_uri': None if truncated else uri,
+            'truncated': truncated}
+
+
 def _checked_extent_failure(value):
     """Metadata only. Unknown exception text/objects never cross this boundary."""
     fields = {'schema', 'outcome', 'basis', 'complete_proof', 'reason', 'context',
               'candidate_payload_max_row', 'candidate_payload_max_column',
               'candidate_payload_rectangle', 'cell_elements_seen', 'xml_nodes_seen',
               'xml_bytes_observed', 'sheet_data_seen'}
-    if type(value) is not dict or set(value) != fields:
+    if type(value) is not dict or set(value) not in (fields, fields | {'namespace_rejection'}):
         return None
     if (type(value['schema']) is not int or value['schema'] != 1
             or value['outcome'] != 'rejected' or value['basis'] != 'partial_XML_scan_not_an_accepted_extent'
@@ -84,6 +111,26 @@ def _checked_extent_failure(value):
             or not isinstance(value['context'], str) or value['context'] not in _EXTENT_CONTEXTS
             or type(value['sheet_data_seen']) is not bool):
         return None
+    if 'namespace_rejection' in value:
+        metadata = value['namespace_rejection']
+        if (value['reason'] != 'payload_namespace_unknown' or type(metadata) is not dict
+                or set(metadata) != {'local_name', 'namespace_uri', 'truncated'}
+                or type(metadata['local_name']) is not str
+                or metadata['local_name'] not in ('sheetData', 'row', 'c', 'v', 'f', 'is')
+                or type(metadata['truncated']) is not bool):
+            return None
+        uri = metadata['namespace_uri']
+        if metadata['truncated']:
+            if uri is not None:
+                return None
+        else:
+            if type(uri) is not str or len(uri) > 256:
+                return None
+            try:
+                if len(uri.encode('utf-8')) > 256:
+                    return None
+            except UnicodeError:
+                return None
     limits = {'candidate_payload_max_row': 1048576, 'candidate_payload_max_column': 16384,
               'candidate_payload_rectangle': 1048576 * 16384, 'cell_elements_seen': MAX_CELLS + 1,
               'xml_nodes_seen': MAX_CELLS * 8 + 1, 'xml_bytes_observed': ahr.MAX_EXPANDED + 65536}
@@ -329,6 +376,9 @@ def _verified_payload_extent(sheet, *, _failure=None):
     max_row = max_column = nodes = cells = 0
     data_seen = False
     context = 'unknown'
+    namespace_rejection = None
+    if type(_failure) is dict:
+        _failure.pop('namespace_rejection', None)
     stream = None
     xml_error = ()
     try:
@@ -380,6 +430,7 @@ def _verified_payload_extent(sheet, *, _failure=None):
                         formatting_formula = element
                         formatting_threshold = element.getparent()
                     if local in ('sheetData', 'row', 'c', 'v', 'f', 'is') and tag != namespace + local and not is_formatting_formula:
+                        namespace_rejection = _namespace_rejection(tag)
                         raise _ExtentProofProblem('payload_namespace_unknown')
                     if tag == data:
                         if parent != worksheet or data_seen:
@@ -468,7 +519,8 @@ def _verified_payload_extent(sheet, *, _failure=None):
             'candidate_payload_rectangle': max_row * max_column if observed_rows is not None else None,
             'cell_elements_seen': cells, 'xml_nodes_seen': nodes,
             'xml_bytes_observed': stream.bytes if stream is not None else None,
-            'sheet_data_seen': data_seen})
+            'sheet_data_seen': data_seen,
+            **({'namespace_rejection': namespace_rejection} if namespace_rejection is not None else {})})
         if record is not None:
             _failure.update(record)
     return None
