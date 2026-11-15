@@ -4275,6 +4275,7 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
                 "bad" if put > 0.5 else "good")
     else:
         add("Эскроу на платежи по НКЛ", None, due.get("reason") or "не посчитано")
+    out[-1]['group'] = 'credit_due'
 
     block = report.get("budget") or {}
     table = block.get("by_budget_article") or {}
@@ -4293,6 +4294,7 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
                 "bad" if hit or line["share"] > elapsed + 0.1 else "")
         else:
             add(f"{label} за месяц", None, "плана месяца нет")
+        out[-1]['group'] = 'monthly_budget'
     return out
 
 
@@ -4378,9 +4380,20 @@ def tiles_footnote(report: dict[str, Any]) -> str:
 
 def _tiles_html(items: list[dict[str, str]], footnote: str = "") -> str:
     esc = html.escape
-    # Keep source/cut and forecast limits readable without adding a cover row.
-    # Embed the print rule here so REPORT_PAGE's scoped screen style stays intact.
-    return ("<style>@media print{.tile[data-group='gpr_readiness']{grid-column:span 2}}</style>"
+    # Keep full source/forecast notes at their normal font size on the cover.
+    # Inline print rules leave REPORT_PAGE's scoped screen styles intact.
+    return ("""<style>@media print{
+ol.toc{columns:4;column-gap:12px;margin-bottom:6px}
+.tiles{gap:4px;margin-top:6px}.tile{padding:3px 5px}
+.tile .v{margin:0;line-height:1.1}.tile .n{line-height:1.2}
+.tile .k{line-height:1.2;text-transform:none;letter-spacing:0}
+.tile[data-group='gpr_readiness']{grid-column:span 2}
+.tile[data-group='credit_due']:not(.missing){grid-column:span 3}
+.tiles:has(.tile[data-group='credit_due']:not(.missing)) .tile[data-group='monthly_budget']{grid-column:span 2}
+#block-main{margin-top:10px}ul.findings{line-height:1.25}ul.findings li{margin:2px 0}
+table.readiness-corpus-table,table.credit-due,.report-sales>table{table-layout:fixed;width:100%;max-width:100%}
+table.readiness-corpus-table :is(th,td),table.credit-due :is(th,td),.report-sales>table :is(th,td){white-space:normal;overflow-wrap:anywhere;min-width:0}
+}</style>"""
         "<div class='tiles'>" + "".join(
         f"<div class='tile {esc(item['tone'])}'"
         + (f" data-group='{esc(item['group'], quote=True)}'" if item.get('group') else "")
@@ -4845,7 +4858,7 @@ def render_html(report: dict[str, Any]) -> str:
 
     out.append(_photos_html(report.get("photos") or {}, report["kind"]))
 
-    out.append(_block_heading("sales"))
+    out.append("<div class='report-sales'>" + _block_heading("sales"))
     block = report.get("sales") or {}
     if block.get("state") == "ok":
         def fact_cells(fact: dict[str, Any]) -> list[str]:
@@ -4894,7 +4907,7 @@ def render_html(report: dict[str, Any]) -> str:
     if (report.get("sales") or {}).get("state") == "ok":
         out.append(_sales_depth_html(report["sales"], report["kind"]))
 
-    out.append(_block_heading("funding"))
+    out.append("</div>" + _block_heading("funding"))
     out.append(admin_cash.render(report.get("admin_expenses_cash") or {},
         admin_expenses.render(report.get("admin_expenses") or
         admin_expenses.unavailable("Расшифровка АХР не получена.")), show_tiles=False))
