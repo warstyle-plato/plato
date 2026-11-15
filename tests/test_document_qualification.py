@@ -20,6 +20,8 @@ TEXT='Цена покупки 73,5 млн руб. Передача 275 м² го
 
 @pytest.fixture
 def document(monkeypatch,tmp_path):
+    from document_protocol_stub import compatible_document_core
+    compatible_document_core(monkeypatch,core)
     monkeypatch.setattr(core,'_PLATO_STAGE_DIR',tmp_path/'stage')
     monkeypatch.setattr(core,'_TELEGRAM_DIALOGS',{})
     monkeypatch.setattr(core,'_telegram_token',lambda:'123:synthetic-qualification')

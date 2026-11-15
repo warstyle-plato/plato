@@ -15,6 +15,11 @@ engine/page_build.py. Стенды на node берут куски скрипт�
 # ruff: noqa
 
 PAGE += r"""let aiHistory=[],aiBusy=false,aiProposals=[];
+function qualifiedDocumentClient(method){
+ const client=window.PlatoDocumentClient;
+ if(!client||typeof client[method]!=='function')throw new Error('Модель обновляется. Ответ и расчёт не применены.');
+ return client;
+}
 function escapeHtml(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
 function toggleAgent(open){aiDrawer.classList.toggle('open',!!open);aiOverlay.classList.toggle('open',!!open);if(open)setTimeout(()=>aiInput.focus(),80)}
 // Модель отвечает Markdown-ом, а сообщение выводилось как есть, и человек
@@ -229,10 +234,9 @@ function renderAiCard(card,opts){
 }
 async function reviewAiObligation(card,index){
  try{
-  const response=await fetch('/agent/document/answer',{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({intake_id:card.id,index,action:'review',queue_revision:card.queue_revision,
-    question_token:card.question_token,inputs,tep,class_profile:aiClassProfile(),session:activeSession(),access_key:projectsAdminKey||''})});
-  const data=await response.json();
+  const {response,data}=await qualifiedDocumentClient('answer').answer(card,
+   {intake_id:card.id,index,action:'review',queue_revision:card.queue_revision,
+    question_token:card.question_token,inputs,tep,class_profile:aiClassProfile(),session:activeSession(),access_key:projectsAdminKey||''});
   if(!response.ok){appendAiMessage('system','Уточнение не начато: '+(serverDetail(data)||'проверьте текущую карточку.'));return}
   renderAiQuestion(data.card);
  }catch(e){appendAiMessage('system','Уточнение не начато: '+String(e.message||e))}
@@ -324,11 +328,10 @@ async function answerAiQuestion(choice,action,mode,shown){
  if(box)box.querySelectorAll('button,input,a').forEach(el=>{el.disabled=true;el.style.pointerEvents='none'});
  try{
   await syncInputsForAgent();
-  const r=await fetch('/agent/document/answer',{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({intake_id:queue.id,index:queue.index,queue_revision:queue.queue_revision,question_token:queue.question_token,
+  const {response:r,data}=await qualifiedDocumentClient('answer').answer(queue,
+   {intake_id:queue.id,index:queue.index,queue_revision:queue.queue_revision,question_token:queue.question_token,
     action:action||'answer',choice,value:typed,
-    mode:mode||'',inputs,tep,class_profile:aiClassProfile(),session:activeSession(),access_key:projectsAdminKey||''})});
-  const data=await r.json().catch(()=>({}));
+    mode:mode||'',inputs,tep,class_profile:aiClassProfile(),session:activeSession(),access_key:projectsAdminKey||''});
   if(r.status===409&&data.detail&&data.detail.code==='intake_queue_changed'){
    queue.unapplied_answer={index:queue.index,choice,action:action||'answer',value:typed,mode:mode||''};
    const kept=document.createElement('div');kept.className='ai-msg system ai-unapplied-answer';
@@ -426,9 +429,8 @@ async function confirmAiCard(shown,box){
  box.appendChild(status);status.textContent='Сверяю карточку с вводными…';
  try{
   await syncInputsForAgent();
-  const r=await fetch('/agent/document/apply',{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({intake_id:shown.id,card_key:shown.card_key,inputs,tep,class_profile:aiClassProfile(),session:activeSession(),access_key:projectsAdminKey||''})});
-  const result=await r.json().catch(()=>({}));
+  const {response:r,data:result}=await qualifiedDocumentClient('apply').apply(shown,
+   {intake_id:shown.id,card_key:shown.card_key,inputs,tep,class_profile:aiClassProfile(),session:activeSession(),access_key:projectsAdminKey||''});
   if(!r.ok){status.textContent='Расчёт не запущен: '+(serverDetail(result)||('HTTP '+r.status));return}
   const card=result.card;
   if(result.stale){

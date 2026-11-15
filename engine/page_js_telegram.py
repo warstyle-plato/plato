@@ -31,12 +31,19 @@ function telegramOverridesReviewNotice(){
 
 async function loadTelegramSessionData(){
  if(!telegramSession)return {};
- const response=await fetch('/telegram/session-data',{
-  method:'POST',
-  headers:{'Content-Type':'application/json'},
-  body:JSON.stringify({session:telegramSession})
- });
- const payload=await response.json();
+ let response,payload;
+ if(window.PlatoQualifiedDocumentEntry===true){
+  const client=window.PlatoDocumentClient;
+  if(!client||typeof client.sessionData!=='function')throw new Error('Модель обновляется. Ответ и расчёт не применены.');
+  ({response,data:payload}=await client.sessionData({session:telegramSession}));
+ }else{
+  response=await fetch('/telegram/session-data',{
+   method:'POST',
+   headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({session:telegramSession})
+  });
+  payload=await response.json();
+ }
  if(!response.ok)throw new Error(serverDetail(payload)||'Telegram-сессия недействительна');
  if(!payload||typeof payload!=='object'||Array.isArray(payload))throw new Error('Параметры ссылки не проверены. Вернитесь к карточке в чате.');
  return payload;

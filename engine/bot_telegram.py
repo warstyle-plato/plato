@@ -7,6 +7,7 @@
 Отдельно не импортировать: второй импорт поднял бы вторую копию движка.
 """
 # ruff: noqa
+import document_intake_protocol as document_protocol
 
 _TELEGRAM_PUBLIC_BASE_URL = (
     os.environ.get("TELEGRAM_PUBLIC_BASE_URL")
@@ -538,6 +539,37 @@ def _telegram_verify_session(value: str) -> dict[str, Any]:
         raise HTTPException(status_code=403, detail="Telegram-сессия недействительна или истекла") from exc
 
 
+class _DocumentProtocolNoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+def _telegram_document_target() -> str:
+    origin = document_protocol.admitted_origin(os.environ.get(document_protocol.ADMISSION_ENV, ''),
+                                               _TELEGRAM_WEB_APP_BASE_URL)
+    url = origin + document_protocol.CAPABILITY_PATH
+    started = time.monotonic()
+    try:
+        opener = urllib.request.build_opener(_DocumentProtocolNoRedirect())
+        try:
+            req = urllib.request.Request(url, headers={'Accept': 'application/json',
+                'Accept-Encoding': 'identity', 'Cache-Control': 'no-store'})
+            with opener.open(req, timeout=5) as response:
+                if (response.status != 200 or response.geturl() != url
+                        or response.headers.get_content_type() != 'application/json'
+                        or response.headers.get('Content-Encoding', 'identity').lower() != 'identity'
+                        or response.headers.get('Content-Range')):
+                    raise document_protocol.ProtocolHold('core_protocol')
+                document_protocol.parse_capability(response.read(4097))
+                if time.monotonic() - started > 5:
+                    raise document_protocol.ProtocolHold('core_unavailable')
+        finally:
+            opener.close()
+    except Exception:
+        raise document_protocol.ProtocolHold('core_unavailable') from None
+    return origin
+
+
 def _telegram_web_app_url(
     chat_id: int,
     cadastral_numbers: list[str],
@@ -547,6 +579,10 @@ def _telegram_web_app_url(
     application_proof: dict[str, Any] | None = None,
     calculation_qualification: dict[str, Any] | None = None,
 ) -> str:
+    qualified = (isinstance(calc_overrides, dict) and intake_qualification.KEY in calc_overrides
+                 or calculation_qualification is not None)
+    entry = (_telegram_document_target() + document_protocol.ENTRY_PATH if qualified
+             else _TELEGRAM_WEB_APP_BASE_URL + '/')
     fragment: dict[str, str] = {
         "telegram_session": _telegram_session(
             chat_id,
@@ -563,7 +599,7 @@ def _telegram_web_app_url(
         fragment["mode"] = str(mode)
     # v=VERSION ломает кэш Telegram WebView: без него после выкатки открывалась
     # старая сборка страницы, и починки «не доезжали» до мини-приложения.
-    return (_TELEGRAM_WEB_APP_BASE_URL + "/?telegram=1&v="
+    return (entry + "?telegram=1&v="
             + urllib.parse.quote(VERSION) + "#" + urllib.parse.urlencode(fragment))
 
 
@@ -2054,6 +2090,9 @@ def _telegram_intake_calc_markup(chat_id: int, card: dict[str, Any],
                  "binding": _telegram_qualified_application_binding(overrides, 'confirmed_card')}
         url = _telegram_web_app_url(chat_id, numbers, calc_overrides=overrides, mode=mode,
                                     application_proof=proof)
+    except document_protocol.ProtocolHold:
+        card['calculation_error'] = document_protocol.UNAVAILABLE_MESSAGE
+        return None
     except Exception:  # noqa: BLE001
         card['calculation_error'] = ('Кнопка расчёта не выдана: не удалось подтвердить текущие условия документа. '
             'Уточните оценки в карточке или пришлите нужную часть документа отдельно.')
@@ -3990,3 +4029,8 @@ def telegram_session_data(req: TelegramSessionRequest) -> dict[str, Any]:
     if session.get('qualification_review_required') is True:
         result['qualification_review_required'] = True
     return result
+
+
+@app.post(document_protocol.SESSION_PATH)
+def telegram_session_data_qualified(req: TelegramSessionRequest) -> dict[str, Any]:
+    return {**telegram_session_data(req), 'document_protocol': document_protocol.capability()}

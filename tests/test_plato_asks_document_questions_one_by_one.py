@@ -82,7 +82,7 @@ def _parse(monkeypatch) -> dict:
 def _answer(card: dict, index: int, **kw) -> dict:
     shown = client.post("/agent/document/card", json={"intake_id": card["id"],
         "inputs": {"demolition_area_sqm": 0}, "tep": {}}).json()
-    return client.post("/agent/document/answer", json=core.AgentDocumentAnswerRequest(
+    return client.post("/agent/document/qualified-v1/answer", json=core.AgentDocumentAnswerRequest(
         intake_id=card["id"], index=index, queue_revision=shown["queue_revision"],
         question_token=shown["question_token"], inputs={"demolition_area_sqm": 0}, tep={}, **kw).model_dump()).json()
 

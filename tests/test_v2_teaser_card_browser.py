@@ -1,5 +1,6 @@
 """Exercise the actual /v2 upload, questions, stale-card gate and calculation."""
 import json
+import document_intake_protocol as protocol
 
 import pytest
 
@@ -46,7 +47,7 @@ def test_v2_applies_only_the_ready_current_server_card(monkeypatch, tmp_path, wi
                     if req.method == "POST" and req.url.endswith("/api/v2/calculate") else None)
             page.on("response", lambda response: answered.append({"request": response.request.post_data_json,
                     "status": response.status, "data": response.json()})
-                    if response.url.endswith("/agent/document/answer") else None)
+                    if response.url.endswith(protocol.ANSWER_PATH) else None)
             page.goto(base + "/v2", wait_until="networkidle")
             page.set_input_files("#v2TeaserUpload", {"name": "test.pdf", "mimeType": "application/pdf", "buffer": b"%PDF-test"})
             page.get_by_role("button", name="Перейти к вопросам (2)").wait_for(timeout=15000)
@@ -61,7 +62,7 @@ def test_v2_applies_only_the_ready_current_server_card(monkeypatch, tmp_path, wi
             assert len(first["request"]["question_token"]) == 64
             # A duplicate delivery of the first click cannot answer the next
             # question or change its version/token.
-            duplicate = page.request.post(base + "/agent/document/answer", data=first["request"])
+            duplicate = page.request.post(base + protocol.ANSWER_PATH, data=first["request"])
             assert duplicate.status == 409
             current = duplicate.json()["detail"]["card"]
             assert current["questions"]["index"] == 1
@@ -117,7 +118,7 @@ def test_v2_stale_answer_shows_current_question_and_keeps_the_unapplied_proposal
                 result = response.json()
                 if result.get("card"):
                     cards.append(result["card"])
-            if response.url.endswith("/agent/document/answer"):
+            if response.url.endswith(protocol.ANSWER_PATH):
                 answered.append({"status": response.status, "request": response.request.post_data_json,
                                  "data": response.json()})
         page.on("response", response_received)
@@ -129,7 +130,7 @@ def test_v2_stale_answer_shows_current_question_and_keeps_the_unapplied_proposal
         other_tab_answer = {"intake_id": shown["id"], "index": shown["questions"]["index"],
             "queue_revision": shown["queue_revision"], "question_token": shown["question_token"],
             "action": "answer", "choice": 0, "inputs": read[0]["inputs"], "tep": read[0]["tep"]}
-        changed = page.request.post(base + "/agent/document/answer", data=other_tab_answer)
+        changed = page.request.post(base + protocol.ANSWER_PATH, data=other_tab_answer)
         assert changed.status == 200
         current = changed.json()["card"]
         assert current["questions"]["index"] == 1
@@ -144,7 +145,7 @@ def test_v2_stale_answer_shows_current_question_and_keeps_the_unapplied_proposal
         assert answered[-1]["request"]["queue_revision"] == shown["queue_revision"]
         assert page.locator("#v2TeaserApply").count() == 0
         assert not calculated
-        with page.expect_response(lambda response: response.url.endswith("/agent/document/answer")) as accepted_response:
+        with page.expect_response(lambda response: response.url.endswith(protocol.ANSWER_PATH)) as accepted_response:
             page.locator("#v2TeaserQuestion").get_by_role("button", name="Бизнес", exact=True).click()
         expect(page.locator("#v2TeaserApply")).to_be_visible()
         accepted = accepted_response.value
@@ -154,4 +155,40 @@ def test_v2_stale_answer_shows_current_question_and_keeps_the_unapplied_proposal
         assert accepted.json()["card"]["inputs"]["vri_relief_mln"] == current["inputs"]["vri_relief_mln"] == 0
         assert accepted.json()["card"]["tep"]["apartments"]["gns"] == 100.25
         assert not calculated and not errors
+        browser.close()
+
+
+@pytest.mark.parametrize('width',[390,1440])
+def test_v2_new_card_then_legacy_worker_HOLD_is_in_viewport_without_retry(monkeypatch,tmp_path,width):
+    from playwright.sync_api import sync_playwright,expect
+    import main
+    app=prepare_teaser(monkeypatch,tmp_path,100.25);cards=[];posts=[];errors=[]
+    with serve(app,18471+(width==390))as base,sync_playwright()as pw:
+        browser=pw.chromium.launch(executable_path=str(chromium_or_skip()))
+        page=browser.new_page(viewport={'width':width,'height':900})
+        page.on('pageerror',lambda error:errors.append(str(error)))
+        def result(response):
+            if '/agent/result/'in response.url:
+                value=response.json()
+                if value.get('card'):cards.append(value['card'])
+        page.on('response',result)
+        page.on('request',lambda req:posts.append(req.url)if req.method=='POST'else None)
+        page.goto(base+'/v2',wait_until='networkidle')
+        page.set_input_files('#v2TeaserUpload',{'name':'synthetic.pdf','mimeType':'application/pdf','buffer':b'%PDF-test'})
+        page.get_by_role('button',name='Перейти к вопросам (2)').click()
+        assert cards
+        path=main.core._intake_queue_path(cards[-1]['id']);before=path.read_bytes()
+        # Exact native56/57/58 lack this new route. Simulate the POST landing
+        # there after the preceding capability/card came from the new worker.
+        page.route('**'+protocol.ANSWER_PATH,lambda route:route.fulfill(status=404,
+            content_type='application/json',body='{"detail":"Not Found"}'))
+        with page.expect_response(lambda response:response.url.endswith(protocol.ANSWER_PATH)):
+            page.locator('#v2TeaserQuestion [data-teaser-choice="1"]').click()
+        note=page.locator('#v2ImportStatus')
+        expect(note).to_contain_text('Модель обновляется')
+        expect(note).to_be_in_viewport()
+        page.evaluate('() => new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))')
+        assert sum(url.endswith(protocol.ANSWER_PATH)for url in posts)==1
+        assert not any(url.endswith(('/agent/document/answer','/agent/document/apply','/api/v2/calculate'))for url in posts)
+        assert path.read_bytes()==before and not errors,errors
         browser.close()

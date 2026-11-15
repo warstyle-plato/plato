@@ -11,6 +11,7 @@ _plato_chat_launch, /agent/selftest, /agent/chat, /agent/document,
 Отдельно не импортировать: второй импорт поднял бы вторую копию движка.
 """
 # ruff: noqa
+import document_intake_protocol as document_protocol
 
 # --- локальные сценарии кнопок ---------------------------------------------
 
@@ -1268,7 +1269,6 @@ def _intake_queue_answer_conflict(req, request: Request) -> None:
     raise HTTPException(409, detail)
 
 
-@app.post("/agent/document/answer")
 def agent_document_answer(req: AgentDocumentAnswerRequest, request: Request) -> dict[str, Any]:
     """Apply one explicitly shown question, then publish with snapshot CAS."""
     _require_web_access(req.session, req.access_key, "Разбор документа")
@@ -1302,7 +1302,6 @@ def agent_document_answer(req: AgentDocumentAnswerRequest, request: Request) -> 
             "applied": record.get("applied") or [], "refused": record.get("refused") or []}
 
 
-@app.post("/agent/document/apply")
 def agent_document_apply(req: AgentDocumentApplyRequest, request: Request) -> dict[str, Any]:
     """Read the owned server queue, never client-supplied extracted facts."""
     _require_web_access(req.session, req.access_key, "Разбор документа")
@@ -1337,6 +1336,65 @@ def agent_document_apply(req: AgentDocumentApplyRequest, request: Request) -> di
 _DOCUMENT_JOBS = threading.BoundedSemaphore(2)
 
 
+@app.get(document_protocol.CAPABILITY_PATH)
+def agent_document_protocol() -> dict[str, Any]:
+    """Static code capability only: no identity, queue, model or storage probe."""
+    return document_protocol.capability()
+
+
+@app.middleware('http')
+async def _document_protocol_metadata(request: Request, call_next):
+    # The existing owner middleware initializes browser state for ordinary
+    # requests. This public, static capability is intentionally outside it.
+    if request.method == 'GET' and request.url.path == document_protocol.CAPABILITY_PATH:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(document_protocol.capability(), headers={'Cache-Control': 'no-store'})
+    if request.method == 'POST' and request.url.path in {'/agent/document/answer', '/agent/document/apply'}:
+        # Authenticate before the old owner middleware can initialize a salt
+        # or any canonical document operation can read its queue.
+        from fastapi.responses import JSONResponse
+        try:
+            body = await request.json()
+        except (ValueError, UnicodeError):
+            body = {}
+        body = body if isinstance(body, dict) else {}
+        session = body.get('session', '')
+        key = body.get('access_key', '')
+        try:
+            _require_web_access(session if isinstance(session, str) else '',
+                                key if isinstance(key, str) else '', 'Разбор документа')
+        except HTTPException as exc:
+            return JSONResponse({'detail': exc.detail}, status_code=exc.status_code,
+                                headers={'Cache-Control': 'no-store', **(exc.headers or {})})
+        return JSONResponse({'detail': document_protocol.REFRESH_MESSAGE}, status_code=409,
+                            headers={'Cache-Control': 'no-store'})
+    return await call_next(request)
+
+
+@app.post('/agent/document/answer')
+@app.post('/agent/document/apply')
+def agent_document_legacy_update(req: AgentDocumentCardRequest) -> dict[str, Any]:
+    _require_web_access(req.session, req.access_key, 'Разбор документа')
+    raise HTTPException(409, document_protocol.REFRESH_MESSAGE)
+
+
+@app.post(document_protocol.ANSWER_PATH)
+def agent_document_answer_qualified(req: AgentDocumentAnswerRequest, request: Request) -> dict[str, Any]:
+    try:
+        result = agent_document_answer(req, request)
+    except HTTPException as exc:
+        if exc.status_code == 409 and isinstance(exc.detail, dict) and exc.detail.get('code') == 'intake_queue_changed':
+            raise HTTPException(409, {**exc.detail, 'document_protocol': document_protocol.capability()},
+                                headers=exc.headers) from None
+        raise
+    return {**result, 'document_protocol': document_protocol.capability()}
+
+
+@app.post(document_protocol.APPLY_PATH)
+def agent_document_apply_qualified(req: AgentDocumentApplyRequest, request: Request) -> dict[str, Any]:
+    return {**agent_document_apply(req, request), 'document_protocol': document_protocol.capability()}
+
+
 @app.post("/agent/document/start")
 def agent_document_start(req: AgentDocumentRequest, request: Request) -> dict[str, Any]:
     """OCR and extraction survive the lifetime of the browser connection."""
@@ -1369,8 +1427,10 @@ def agent_document_start(req: AgentDocumentRequest, request: Request) -> dict[st
 
 @app.get("/agent/document-client.js", include_in_schema=False)
 def document_client_script():
-    return FileResponse(Path(__file__).resolve().parent / "document_client.js",
-                        media_type="application/javascript", headers={"Cache-Control": "no-cache"})
+    from fastapi.responses import Response
+    script = (Path(__file__).resolve().parent / "document_client.js").read_text(encoding="utf-8")
+    configuration = 'window.PlatoDocumentProtocol=Object.freeze(' + json.dumps(document_protocol.client_contract(), ensure_ascii=False) + ');\n'
+    return Response(configuration + script, media_type="application/javascript", headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/agent/result/{trace_id}")

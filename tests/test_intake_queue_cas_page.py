@@ -37,7 +37,7 @@ def test_page_keeps_unapplied_value_and_refreshes_without_auto_answer(monkeypatc
             errors, answers = [], []
             page.on('pageerror', lambda error: errors.append(str(error)))
             page.on('request', lambda req: answers.append(json.loads(req.post_data))
-                if req.method == 'POST' and req.url.endswith('/agent/document/answer') else None)
+                if req.method == 'POST' and req.url.endswith('/agent/document/qualified-v1/answer') else None)
             base = f'http://127.0.0.1:{port}'
             page.goto(base+'/', wait_until='networkidle'); wait_for_result(page)
             page.evaluate('() => toggleAgent(true)')
@@ -47,7 +47,7 @@ def test_page_keeps_unapplied_value_and_refreshes_without_auto_answer(monkeypatc
             page.locator('.ai-card').last.get_by_role('button', name='Перейти к вопросам').click()
             page.locator('.ai-question-value').last.fill('2,5 млн')
             # A second tab's native request wins while this page still shows Q0.
-            winner = page.request.post(base+'/agent/document/answer', data={
+            winner = page.request.post(base+'/agent/document/qualified-v1/answer', data={
                 'intake_id': shown['id'], 'index': 0, 'action': 'skip',
                 'queue_revision': shown['queue_revision'], 'question_token': shown['question_token'],
                 'inputs': shown['inputs'], 'tep': shown['tep']})

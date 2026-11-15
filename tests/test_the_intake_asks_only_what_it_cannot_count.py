@@ -178,6 +178,8 @@ def test_the_bot_hands_the_parcel_to_the_calculator(monkeypatch, tmp_path) -> No
     мини-приложение получает его вместе со строками карточки."""
     import base64
     import main_legacy as core
+    from document_protocol_stub import compatible_document_core
+    compatible_document_core(monkeypatch,core)
     from urllib.parse import parse_qs
 
     assert core._intake_cadastral_numbers(parsed()) == ["77:09:0003021:158"]

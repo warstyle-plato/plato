@@ -13,6 +13,8 @@ from page_blocks import function
 
 @pytest.fixture
 def native(monkeypatch, tmp_path):
+    from document_protocol_stub import compatible_document_core
+    compatible_document_core(monkeypatch,core)
     monkeypatch.setattr(core, '_telegram_token', lambda: 'synthetic-test-signing-key')
     monkeypatch.setattr(core, '_telegram_allowed_user_ids', lambda: set())
     monkeypatch.setattr(core, '_PLATO_STAGE_DIR', tmp_path)

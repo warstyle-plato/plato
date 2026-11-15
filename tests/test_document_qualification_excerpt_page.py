@@ -26,7 +26,7 @@ def test_primary_page_native_document_refusal_is_visible_without_delivery(docume
         page=browser.new_page(viewport={'width':width,'height':900});errors=[]
         page.on('pageerror',lambda error:errors.append(str(error)))
         launch=original['markup']['inline_keyboard'][0][0]['web_app']['url']
-        page.goto(base+'/#'+urlsplit(launch).fragment,wait_until='networkidle');wait_for_result(page)
+        page.goto(base+urlsplit(launch).path+'#'+urlsplit(launch).fragment,wait_until='networkidle');wait_for_result(page)
         assert page.locator('.ia-nav').is_visible()
         payload={'inputs':copy.deepcopy(other['inputs']),'tep':copy.deepcopy(other['tep']),'phasing':{},'scenario':'base'}
         page.evaluate('payload=>{applyProjectSnapshot(payload);return calculate()}',payload);wait_for_result(page)

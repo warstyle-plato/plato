@@ -41,7 +41,7 @@ def test_actual_page_keeps_qualification_through_calculation_save_reload_and_edi
             page=context.new_page();errors=[];page.on('pageerror',lambda error:errors.append(str(error)))
             base=f'http://127.0.0.1:{port}'
             initial_url=item['markup']['inline_keyboard'][0][0]['web_app']['url']
-            page.goto(base+'/#'+urlsplit(initial_url).fragment,wait_until='networkidle')
+            page.goto(base+urlsplit(initial_url).path+'#'+urlsplit(initial_url).fragment,wait_until='networkidle')
             page.wait_for_function("() => lastResult?.summary?.intake_qualification?.status==='conditional'",timeout=30000)
             wait_for_result(page)
             record=page.evaluate('() => inputs._intake_qualification')
@@ -87,7 +87,7 @@ def test_actual_page_keeps_qualification_through_calculation_save_reload_and_edi
             messages=[value for method,value in sent if method=='sendMessage']
             assert any('275 м²'in value['text']and'не включена'in value['text']for value in messages)
             edit_url=next(value['reply_markup']['inline_keyboard'][0][0]['web_app']['url']for value in reversed(messages)if value.get('reply_markup'))
-            page.goto(base+'/#'+urlsplit(edit_url).fragment,wait_until='networkidle')
+            page.goto(base+urlsplit(edit_url).path+'#'+urlsplit(edit_url).fragment,wait_until='networkidle')
             page.reload(wait_until='networkidle')
             wait_for_result(page)
             assert page.evaluate('() => inputs._intake_qualification')==record
@@ -102,7 +102,7 @@ def test_actual_page_keeps_qualification_through_calculation_save_reload_and_edi
             priced=core._telegram_verify_session(other['token'])
             old_url=core._telegram_web_app_url(CHAT,[],calc_overrides=priced['calc_overrides'],
                 application_proof=priced['overrides_application'],mode='edit')
-            page.goto(base+'/#'+urlsplit(old_url).fragment,wait_until='networkidle')
+            page.goto(base+urlsplit(old_url).path+'#'+urlsplit(old_url).fragment,wait_until='networkidle')
             page.reload(wait_until='networkidle')
             page.wait_for_selector('#telegramOverridesReview')
             assert page.locator('#telegramOverridesReview').is_visible()

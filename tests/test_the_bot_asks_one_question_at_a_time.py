@@ -488,7 +488,7 @@ def test_foreign_chat_web_identity_and_forged_bot_claim_cannot_read_or_answer_in
         response = client.post("/agent/document/card", json=body)
         assert response.status_code == 403
         assert "own.pdf" not in response.text
-        response = client.post("/agent/document/answer", json={**body,
+        response = client.post("/agent/document/qualified-v1/answer", json={**body,
             "index": 0, "action": "answer", "choice": 0})
         assert response.status_code == 403
     assert engine._intake_queue_path(intake_id).read_bytes() == before
