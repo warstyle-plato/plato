@@ -285,8 +285,9 @@ def test_the_report_names_the_bank_need_by_chapter_for_the_model(monkeypatch):
     assert tile["value"] == "нет данных" and tile["tone"] == "missing"
     assert built['admin_expenses_cash']['remaining_need'] is None
     assert 'общая потребность пока не определена' in tile['note']
-    assert 'Дата расчётного среза не указана' in tile['note']
-    assert 'финмодель: дата данных не указана; РСС: дата данных не указана' in tile['note']
+    assert 'Дата расчётного среза не указана' in tiles['Лимит банка']['note']
+    assert 'финмодель: дата данных не указана' in tiles['Утверждённый бюджет']['note'].casefold()
+    assert 'рсс: дата данных не указана' in tiles['Лимит банка']['note'].casefold()
     text = report.render_text(built)
     assert ("на стройку и коммерцию по финмодели нужно 3,67 млрд ₽ при остатке лимита глав 2–3 "
             "1,28 млрд ₽ — потребность в допфинансировании банка 2,39 млрд ₽: на стройку") in text
