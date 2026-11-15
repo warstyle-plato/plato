@@ -44,7 +44,10 @@ def decorated(raw, *, edit=None, member='xl/worksheets/sheet1.xml', far=False):
 def reason(sheet):
     value={};assert proof._verified_payload_extent(sheet,_failure=value) is None
     checked=proof._checked_extent_failure(value)
-    assert checked==value and len(json.dumps(value).encode())<1024
+    assert checked==value
+    exc=proof._WorksheetSizeProblem(proof.ESTIMATE,900000,200,value)
+    exc.captured_source={'sha256':'a'*64,'bytes':1234}
+    assert len(json.dumps(proof.failure_diagnostic(exc),ensure_ascii=False).encode())<=proof.MAX_FAILURE_DIAGNOSTIC==2048
     assert PRIVATE not in json.dumps(value) and value['complete_proof'] is False
     return value
 
@@ -78,8 +81,13 @@ def test_new_path_is_causal_against_the_original_blanket_foreign_formula_refusal
     assert proof._bank(raw,proof._day(CUT))
     monkeypatch.setattr(proof,'_formatting_formula',lambda *args:False)
     with pytest.raises(proof.SourceProblem,match='worksheet_size_limit') as caught:proof._bank(raw,proof._day(CUT))
-    assert caught.value.extent_failure['reason']=='payload_namespace_unknown'
-    assert caught.value.extent_failure['context']=='worksheet_metadata'
+    # The forced Boolean refusal contradicts the real predicate's all-match
+    # observation. Keep the typed refusal, without exporting an impossible proof.
+    assert caught.value.extent_failure=={}
+    caught.value.captured_source={'sha256':'a'*64,'bytes':len(raw)}
+    diagnostic=proof.failure_diagnostic(caught.value)
+    assert 'extent_proof' not in diagnostic
+    assert not diagnostic['complete_projection'] and not diagnostic['financial_acceptance']
 
 
 @pytest.mark.parametrize('mutate',[

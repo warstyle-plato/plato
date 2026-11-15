@@ -15,3 +15,10 @@ id = "generic-api-key"
 [[rules.allowlists]]
 description = "Выдуманные ключи стенда в тестах и ключи объектов в справочниках"
 paths = ['''^tests/''', '''^reference_data/''']
+
+[[rules.allowlists]]
+description = "Публичный идентификатор схемы сохранённого корпуса КС"
+condition = "AND"
+paths = ['''^developaid_contract_source_review\.py$''']
+regexTarget = "secret"
+regexes = ['''^ks6-retained-corpus-v1$''']

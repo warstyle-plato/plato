@@ -412,6 +412,8 @@ def build(project, cut, schedule):
     if error or history_error:
         result['reason'] = error or history_error
     result['profile_revision'] = (event or {}).get('revision', 0)
+    result['profile_sha256'] = (event or {}).get('profile_sha256', '')
+    result['profile_effective_from'] = ((event or {}).get('profile') or {}).get('effective_from', '')
     latest = events[-1] if events else {}
     result.update(latest_profile_revision=latest.get('revision', 0),
                   latest_profile_sha256=latest.get('profile_sha256', ''),
@@ -512,6 +514,8 @@ def render(state):
         return ''
     esc = lambda value: html.escape(str(value if value is not None else ''), quote=True)
     from developaid_schedule_visual import date_text
+    from developaid_gpr_summary import gpr_summary
+    summary = gpr_summary(state, state.get('cut'))
     project = state['project']
     def facts(row):
         c = row['counts']
@@ -550,16 +554,16 @@ def render(state):
         out.append('<div class="readiness-grid">'+''.join(card(row) for row in state['corpora'])+'</div>')
     if project['progress'] is not None:
         out.append('<h4>Всего по жилым корпусам</h4>' if state.get('estimated') else '<h4>Общая готовность</h4>')
-        out.append('<strong class="readiness-project-value">'+esc(f"{project['progress']*100:.1f}%".replace('.', ','))+'</strong>')
+        out.append('<strong class="readiness-project-value">'+esc(summary['value'])+'</strong>')
         if project.get('coverage') is not None:
             out.append('<p class="readiness-project-coverage">Расчёт охватывает '+esc(f"{project['coverage']:.1f}%".replace('.', ','))+' оценочного веса разделов.</p>')
         if state.get('project_weight_estimated'):
             out.append('<p class="readiness-corpus-assumption">'+esc(state['project_weight_basis'])+'. Допущение для общей оценки СМР; ПИР и паркинг в неё не включены.</p>')
-        forecast = project.get('forecast') or {}
-        if forecast.get('plan_finish'):
-            out.append('<p class="readiness-project-plan"><b>План окончания учтённых работ: '+esc(date_text(forecast['plan_finish']))+'</b> · даты известны для '+str(forecast['plan_covered'])+' из '+str(forecast['total'])+' работ.</p>')
-        if forecast.get('finish'):
-            out.append('<p class="readiness-project-forecast"><b>Оценка окончания: '+esc(date_text(forecast['finish']))+'</b> · при плановом темпе; сроки известны для '+str(forecast['covered'])+' из '+str(forecast['total'])+' работ. Это не прогноз РНВ.</p>')
+        if summary['plan_text']:
+            out.append('<p class="readiness-project-plan"><b>'+esc(summary['plan_text'])+'</b></p>')
+        if summary['finish']:
+            out.append('<p class="readiness-project-forecast"><b>'+esc(summary['forecast_text'])+'</b></p>')
+        out.append('<p class="readiness-project-asof">'+esc(summary['as_of_text'])+'</p>')
         if project.get('partial'):
             out.append('<p>Оценка по известной части состава.</p><details class="readiness-project-reasons"><summary>Что не учтено в оценке</summary><p>'+esc(project['reason'])+'</p></details>')
     elif known:
