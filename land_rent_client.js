@@ -285,6 +285,11 @@ function landRentOpenConditions(link){
  const advanced=root?.querySelector('[data-land-rent-advanced]');if(advanced)advanced.open=true;
  const conditions=root?.querySelector('[data-land-rent-detail=conditions]');if(conditions)conditions.open=true;
 }
+function landRentFocusStartDate(){
+ const root=document.getElementById('landRentEditor'),field=document.getElementById('f_land_rent_regime_start');
+ if(!root||!field)return;
+ root.open=true;field.focus({preventScroll:true});field.scrollIntoView({block:'center'});
+}
 function landRentSummaryHtml(){
  const r=landRentShownResult(),mode=inputs.land_rent_mode||'unspecified',preset=LAND_RENT_SPEC.presets[mode];
  const total=r?.construction_total;
@@ -460,7 +465,9 @@ function renderLandRentEditor(){
   if(preset){
    note(conditions,preset.source+'. '+preset.condition);
    if(/^https:\/\//.test(preset.url||'')){const link=document.createElement('a');link.href=preset.url;link.target='_blank';link.rel='noopener noreferrer';link.textContent='Открыть текст акта: '+preset.url_label;conditions.appendChild(link)}
-   landRentField(contract,'land_rent_preset_confirmed','Ставки сверены с договором: в нём те же условия','checkbox');
+   landRentField(contract,'land_rent_preset_confirmed','Подтверждены ставки аренды по договору','checkbox');
+   const dateHint=note(contract,'Отметка подтверждает только ставки. Начало аренды указывается отдельно. ');
+   const goDate=document.createElement('button');goDate.type='button';goDate.className='lr-link';goDate.textContent='Проверить дату начала аренды';goDate.onclick=landRentFocusStartDate;dateHint.appendChild(goDate);
    note(conditions,preset.rates.map((rate,index)=>(index+1)+'-й год: '+landRentPercent(rate)).join(' · '));
    note(conditions,mode==='mo_housing_new_2026'?'Базовая ставка '+landRentPercent(preset.rates[0])+'; сумма зависит от календарных индексов.':'После таблицы до ввода: '+landRentPercent(preset.tail_rate_pct)+' в пределах выбранного режима.');
   }else{
