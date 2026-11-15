@@ -29,7 +29,7 @@ def _cover_model(tmp_path, monkeypatch, variant, credit):
     state = copy.deepcopy(monitor.build(PROJECT, CUT)['schedule']['readiness'])
     monkeypatch.setattr(monitor, '_SNAPSHOT_DIR', tmp_path / 'other-monitor')
     monkeypatch.setenv('DATA_DIR', str(tmp_path / 'other-data'))
-    if variant == 'budget17':
+    if variant == 'budget':
         from test_management_report_budget_articles import _setup
         built = _setup()
     else:
@@ -46,13 +46,16 @@ def _cover_model(tmp_path, monkeypatch, variant, credit):
     return built
 
 
-@pytest.mark.parametrize('variant', ['budget17', 'full18'])
+@pytest.mark.parametrize('variant', ['budget', 'full'])
 @pytest.mark.parametrize('credit', ['missing', 'base', 'extra'])
 def test_full_cover_notes_and_page2_keep_their_normal_font(saved, tmp_path, monkeypatch, variant, credit):
     built = _cover_model(tmp_path, monkeypatch, variant, credit)
     before = copy.deepcopy(built)
     items = report.tiles(built)
-    assert len(items) == (17 if variant == 'budget17' else 18)
+    assert len(items) == (13 if variant == 'budget' else 14)
+    assert len([item for item in items if item.get('group') == 'gpr_readiness']) == 2
+    assert len([item for item in items if item.get('group') == 'additional_funding']) == 1
+    assert not any(item.get('group') == 'admin_expenses_cash' for item in items)
     body = report.render_html(built)
     heading = "<h2 class='block' id='block-build'>"
     # Print the genuine cover at normal A4 width independently of later
