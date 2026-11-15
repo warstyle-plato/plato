@@ -30,6 +30,8 @@ def test_existing_ahr_contribution_is_identified_without_attesting_remaining_cas
         flows['2'][key] += admin[key]
     for month, value in admin['monthly'].items():
         flows['2']['monthly'][month] = flows['2']['monthly'].get(month, 0) + value
+    for flow in flows.values():
+        flow['admin_expenses'] = {'total': 0, 'fact': 0, 'plan': 0, 'monthly': {}}
     flows['2']['sections']['2.4'] = admin['total']
     flows['2']['admin_expenses'] = admin
     if unmapped:

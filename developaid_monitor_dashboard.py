@@ -694,15 +694,7 @@ def _read_finance_model(wb: Any, path: Path, *, bank_assignments: dict | None = 
         # смете в главе 2 (владелец, 02.11.2026: «Административные расходы
         # сидят скорее всего в главе 2-3 тоже, 2.6 статья например»).
         flow = chapter_flow.setdefault(chapter, {"total": 0.0, "fact": 0.0, "plan": 0.0,
-                                                 "monthly": {}, "sections": {},
-                                                 "admin_expenses": {"total": 0.0, "fact": 0.0, "plan": 0.0, "monthly": {}}})
-        if code == "2.4" or code.startswith("2.4."):
-            admin = flow["admin_expenses"]
-            for key, value in (("total", total), ("fact", paid), ("plan", need)):
-                admin[key] += value
-            for c, month in month_columns:
-                key = month.isoformat()
-                admin["monthly"][key] = admin["monthly"].get(key, 0.0) + max(0.0, money(r, c))
+                                                 "monthly": {}, "sections": {}})
         flow["total"] += total
         flow["fact"] += paid
         flow["plan"] += need
