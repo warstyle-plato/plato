@@ -258,6 +258,23 @@ function landRentReleaseEdit(index,value){
  if(typeof calculate==='function')calculate();
 }
 const LAND_RENT_MANUAL_DATE_HINT='Дата указана вручную. Очистите поле, чтобы вернуть значение по умолчанию.';
+function landRentDateHint(key,caption){
+ const raw=inputs[key];
+ if(raw!=null&&raw!=='')return LAND_RENT_MANUAL_DATE_HINT;
+ if(key!=='land_rent_regime_start')return caption;
+ const shown=landRentDate(inputs.project_start);
+ return shown==='Не задана'?'По договору дата начала аренды ещё не подтверждена. Укажите дату из договора.':
+  'Для расчёта взята дата проекта '+shown+'; по договору дата ещё не подтверждена.';
+}
+function landRentCanConfirmStartDate(field){
+ const raw=inputs.land_rent_regime_start,value=field?.value||'';
+ return (raw==null||raw==='')&&!!value&&field.checkValidity()&&value>='1900-01-01'&&value<='2200-12-31';
+}
+function landRentConfirmStartDate(button){
+ const field=button.closest('.field')?.querySelector('#f_land_rent_regime_start');
+ if(!landRentCanConfirmStartDate(field))return;
+ landRentSet('land_rent_regime_start',field.value);button.hidden=true;
+}
 function landRentDateField(box,key,label,auto,caption){
  // Значение по умолчанию видно в поле, но во вводные не пишется: пока поле
  // не изменено вручную, оно следует за экономикой; очистка возвращает его.
@@ -268,8 +285,14 @@ function landRentDateField(box,key,label,auto,caption){
   landRentSet(key,el.value);
  };
  const hint=document.createElement('p');hint.className='lr-note lr-date-hint';hint.dataset.landRentHint=key;
- hint.dataset.caption=caption;hint.textContent=inputs[key]?LAND_RENT_MANUAL_DATE_HINT:caption;
- el.closest('.field').appendChild(hint);return el;
+ hint.dataset.caption=caption;hint.textContent=landRentDateHint(key,caption);
+ el.closest('.field').appendChild(hint);
+ if(key==='land_rent_regime_start'){
+  const confirm=document.createElement('button');confirm.type='button';confirm.className='btn';
+  confirm.dataset.landRentConfirmStart='';confirm.textContent='Подтвердить эту дату по договору';
+  confirm.hidden=!landRentCanConfirmStartDate(el);confirm.onclick=()=>landRentConfirmStartDate(confirm);el.closest('.field').appendChild(confirm);
+ }
+ return el;
 }
 function landRentDateDefaults(r){
  return {land_rent_regime_start:inputs.project_start||'',land_rent_manual_cutoff:r?.derived_rve||''};
@@ -352,7 +375,8 @@ function landRentRefreshDetails(root){
  if(phases&&!phases.contains(document.activeElement))phases.innerHTML=landRentPhaseHtml(r);
  const defaults=landRentDateDefaults(r);
  root.querySelectorAll('[data-land-rent-auto]').forEach(el=>{const key=el.dataset.landRentAuto;if(!inputs[key]&&document.activeElement!==el)el.value=defaults[key]||''});
- root.querySelectorAll('[data-land-rent-hint]').forEach(el=>{const key=el.dataset.landRentHint;if(!el.dataset.caption)el.dataset.caption=el.textContent;el.textContent=inputs[key]?LAND_RENT_MANUAL_DATE_HINT:el.dataset.caption});
+ root.querySelectorAll('[data-land-rent-hint]').forEach(el=>{const key=el.dataset.landRentHint;if(!el.dataset.caption)el.dataset.caption=el.textContent;el.textContent=landRentDateHint(key,el.dataset.caption)});
+ root.querySelectorAll('[data-land-rent-confirm-start]').forEach(button=>{button.hidden=!landRentCanConfirmStartDate(button.closest('.field')?.querySelector('#f_land_rent_regime_start'))});
  const premium=root.querySelector('.lr-premium');
  if(premium)premium.textContent=r?.premium?.derived?r.premium.source:(r?.premium?.misfit||'');
  const cash=root.querySelector('.lr-cash-result');
