@@ -31,11 +31,13 @@ _MESSAGES = {
     'overlap': 'Сохранённые периоды пересекаются или имеют разные подписи при одинаковых датах; их суммы не сложены.',
     'duplicate': 'Повтор исходной строки не подтверждён присутствующей канонической строкой.',
     'basis': 'Основания сумм выбранных периодов различаются или противоречивы; суммы не сложены.',
+    'scope': 'Область работ в одной версии не указана, а в другой заполнена; независимость работ не подтверждена, суммы не сложены.',
 }
 
 
 def _norm(value):
-    return ' '.join(str(value or '').casefold().replace('ё', 'е').split())
+    text = str(value or '').casefold().replace('ё', 'е')
+    return ' '.join(re.sub(r'[«»“”"]', '', text).split())
 
 
 def normalize_unit(value):
@@ -413,6 +415,21 @@ def compose(sources, cut):
             key = identity if valid else ('unresolved', ordinal)
             ordinal += 1
             buckets.setdefault(key, (identity, valid, []))[2].append(record)
+    # Filling an absent header field does not prove an independent work.
+    # Keep both original observations, but do not add their plans or facts.
+    # Two explicitly different non-empty scopes remain distinct. Checking
+    # disjoint periods as well prevents duplicating the full work plan.
+    scope_candidates = {}
+    for identity, valid, records in buckets.values():
+        if valid:
+            scope_candidates.setdefault(identity[1:], []).append((identity[0], records))
+    for candidates in scope_candidates.values():
+        for index, (left, left_records) in enumerate(candidates):
+            for right, right_records in candidates[index+1:]:
+                if left != right and all(not a or not b or a == b for a, b in zip(left, right)):
+                    for record in [*left_records, *right_records]:
+                        if 'scope' not in record['problems']:
+                            record['problems'].append('scope')
     items = []
     for identity, valid, records in buckets.values():
         item, messages = _project(records, day, identity, valid)

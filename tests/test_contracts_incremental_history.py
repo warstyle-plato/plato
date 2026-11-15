@@ -160,3 +160,56 @@ def test_summary_presence_is_counted_without_hiding_old_detail(context):
     assert view['counts']['contracts_carried'] == 1
     assert contracts.archive_summary(PROJECT, SECOND)['contracts_in_archive'] == 1
     assert contracts.archive_summary(PROJECT, SECOND)['contracts_carried'] == 1
+
+
+def test_summary_presence_uses_equivalent_legal_form_without_rekeying_the_detailed_card(context):
+    context.setattr(contracts, '_archive', ARCHIVE_READER)
+    wb = openpyxl.load_workbook(io.BytesIO(ks()))
+    wb.active['C2'] = 'Общество с ограниченной ответственностью «Подрядчик», ИНН 1234567890'
+    out = io.BytesIO()
+    wb.save(out)
+    save(FIRST, ('Detail.xlsx', out.getvalue()))
+    old, = contracts.build(PROJECT, FIRST, include_history=False)['rows']
+    save(SECOND, ('Summary.xlsx', summary('A-12')))
+    view = contracts.build(PROJECT, SECOND, include_history=False)
+    row, = view['rows']
+    assert row['id'] == old['id'] and row['amount'] == 1500
+    assert row['summary_source_date'] == SECOND
+    assert view['counts']['contracts_from_newest_archive'] == 1
+    assert contracts.archive_summary(PROJECT, SECOND)['contracts_in_archive'] == 1
+
+
+def test_quotes_in_a_work_name_do_not_create_another_execution(context):
+    context.setattr(contracts, '_archive', ARCHIVE_READER)
+    save(FIRST, ('Old.xlsx', ks()))
+    wb = openpyxl.load_workbook(io.BytesIO(ks()))
+    wb.active['C9'] = '«Устройство стены»'
+    out = io.BytesIO()
+    wb.save(out)
+    save(SECOND, ('New.xlsx', out.getvalue()), ('Summary.xlsx', summary('A-12')))
+    row, = contracts.build(PROJECT, SECOND, include_history=False)['rows']
+    assert row['completed'] == 400
+    assert row['completion_ratio'] == pytest.approx(400/1500)
+
+
+@pytest.mark.parametrize('reverse', [False, True])
+@pytest.mark.parametrize('disjoint', [False, True])
+def test_filling_or_removing_a_header_scope_does_not_prove_an_extra_plan_or_execution(context, reverse, disjoint):
+    context.setattr(contracts, '_archive', ARCHIVE_READER)
+    files = []
+    for index in range(2):
+        wb = openpyxl.load_workbook(io.BytesIO(ks(period=('jan' if index == 0 else 'feb'))
+                                             if disjoint else ks()))
+        if bool(index) != reverse:
+            wb.active['A5'], wb.active['B5'] = 'Объект', 'Корпус 1'
+        out = io.BytesIO()
+        wb.save(out)
+        files.append(out.getvalue())
+    save(FIRST, ('Old.xlsx', files[0]))
+    save(SECOND, ('New.xlsx', files[1]))
+    row, = contracts.build(PROJECT, SECOND, include_history=False)['rows']
+    assert row['completed'] is None
+    assert row['completion_ratio'] is None
+    assert all(item['detail_history_state'] == 'unknown' for item in row['physical_items']
+               if not item.get('is_group'))
+    assert any('Область работ' in note for note in row['warnings'])

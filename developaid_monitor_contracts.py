@@ -886,12 +886,14 @@ def _composition(project: str, cut: str, cache: dict | None = None) -> dict:
             raise ContractProblem(str(exc)) from None
     primary, summaries, unresolved, carried = [], [], [], []
     newest_ids = set()
+    newest_identities = set()
     newer_summaries: dict[tuple, set] = {}
     newer_details: dict[tuple, set] = {}
     for position, archive in enumerate(archives):
         items, sources, notes, owners = _qualify(archive, cut)
         if not position:
             newest_ids = {identifier for identifier, _ in _groups(items, project)}
+            newest_identities = {_identity(item) for item in [*items, *sources]} - {None}
         if position:
             decisions = {}
             for item in [*items, *sources]:
@@ -939,6 +941,17 @@ def _composition(project: str, cut: str, cache: dict | None = None) -> dict:
     detailed_identities = {_identity(item) for item in detailed} - {None}
     primary = detailed + [item for item in primary if item.get("kind") != "ledger"
                           and (_identity(item) is None or _identity(item) not in detailed_identities)]
+    # A summary may use a supported full/short legal-form equivalent while
+    # the detailed card retains its original persisted id. Count its presence
+    # only when the canonical identity points to exactly one retained card.
+    canonical_ids = {}
+    for identifier, items in _groups(primary, project):
+        for item in items:
+            canonical_ids.setdefault(_identity(item), set()).add(identifier)
+    for identity in newest_identities:
+        matches = canonical_ids.get(identity, set())
+        if len(matches) == 1:
+            newest_ids.update(matches)
     snapshot = archives[0] if archives else None
     return {"snapshot": snapshot, "source_date": (snapshot or {}).get("taken_at"),
             "by_snapshot": {archive.get("snapshot_id"): archive for archive in archives},

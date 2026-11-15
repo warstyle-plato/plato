@@ -107,6 +107,34 @@ def test_same_file_sheet_row_and_work_in_different_header_scopes_stay_distinct(c
         assert any(item['ledger_'+field] == value for item in result['items'])
 
 
+@pytest.mark.parametrize('old_scopes,new_scopes', [
+    ({'object_scope': ''}, {'object_scope': 'Корпус 1'}),
+    ({'system_scope': 'Система А'}, {'system_scope': ''}),
+    ({'site_scope': ''}, {'site_scope': 'Площадка'}),
+    ({'object_scope': 'Корпус 1', 'system_scope': ''},
+     {'object_scope': '', 'system_scope': 'Система А'}),
+])
+@pytest.mark.parametrize('new_month', [1, 2])
+def test_compatible_incomplete_header_scopes_do_not_prove_independent_work(old_scopes, new_scopes, new_month):
+    old = source('2026-04-01', view(period(1)), **old_scopes)
+    new = source('2026-05-01', view(period(new_month)), sha='b', **new_scopes)
+    result = compose([old, new], CUT)
+    assert len(result['items']) == 2
+    assert all(item['detail_history_state'] == 'unknown' for item in result['items'])
+    assert all(item['completed_amount'] is None for item in result['items'])
+    assert all(item['history_sources'] and item['periods'] for item in result['items'])
+    assert any('Область работ' in note for note in result['warnings'])
+
+
+def test_a_known_different_scope_proves_separate_work_even_with_other_missing_fields():
+    result = compose([
+        source('2026-04-01', view(period(1)), object_scope='Корпус 1', system_scope=''),
+        source('2026-05-01', view(period(1)), sha='b', object_scope='Корпус 2')], CUT)
+    assert len(result['items']) == 2
+    assert all(item['detail_history_state'] == 'known' for item in result['items'])
+    assert sum(item['completed_amount'] for item in result['items']) == 200
+
+
 @pytest.mark.parametrize('changes', [
     {'unit': 'м3'}, {'scope': 'Этаж 3'}, {'section_path': [{'position': '1', 'name': 'Корпус 2'}]},
     {'context_headings': ['Система Б']},
