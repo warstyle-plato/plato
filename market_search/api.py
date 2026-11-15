@@ -1121,6 +1121,7 @@ def install(app: FastAPI) -> MarketDiscoveryService:
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
         got = _sales_view(kept, project)
+        got["known"] = await run_in_threadpool(sales_store.projects, _cabinet_dir())
         for line in notes:
             got.setdefault("read_notes", []).append(line)
         return got
