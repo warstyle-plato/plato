@@ -324,10 +324,31 @@ def _audit_raw_cells(item, rows):
     return out
 
 
-def _audit_record(record, rows, siblings, sha, cut):
+def _page_headers(record, rows, siblings):
+    """The native first-work boundary, across the sheet's actually used columns."""
+    if record.get('document_form') == 'closing_summary':
+        return _headers(record, rows, siblings)
+    points = [item.get('source', {}).get('row') for item in record.get('items') or []
+              if type(item.get('source', {}).get('row')) is int]
+    first = min(points, default=1)
+    columns = min(ledgers.MAX_COLUMNS, max((column for row in rows
+        for column, value in enumerate(row, 1)
+        if value is not None and (not isinstance(value, str) or value.strip())), default=0))
+    cells = []
+    for row_number in range(1, min(first, 61)):
+        if row_number <= len(rows):
+            for column, value in enumerate(rows[row_number-1][:columns], 1):
+                if value is not None and (not isinstance(value, str) or value.strip()):
+                    cells.append({'cell': ledgers._cell(column, row_number), **_value(value)})
+    beyond_columns = any(value is not None and (not isinstance(value, str) or value.strip())
+        for row in rows[:min(first-1, 60)] for value in row[ledgers.MAX_COLUMNS:])
+    return {'cells': cells, 'truncated': first > 61 or beyond_columns}
+
+
+def _audit_record(record, rows, siblings, sha, cut, *, page_headers=False):
     # Unlike effective_snapshot, these records have no confirmations/aliases or
     # date-based fact filtering applied. Known dates only qualify raw periods.
-    headers = _headers(record, rows, siblings)
+    headers = (_page_headers if page_headers else _headers)(record, rows, siblings)
     value = _audit_relative(record, sha)
     value['file_sha256'] = sha
     value['source_coordinates_scope'] = 'relative_to_this_file_sha256'
@@ -352,7 +373,7 @@ def _audit_record(record, rows, siblings, sha, cut):
     return value
 
 
-def _audit_book(name, payload, sha, budget, used, cut):
+def _audit_book(name, payload, sha, budget, used, cut, *, page_headers=False):
     """One native decode per exact byte hash; no financial/source decisions."""
     book = {'file_sha256': sha, 'size_bytes': len(payload), 'state': 'read', 'sheets': [],
             'sheet_count': None, 'omitted_sheets': 0, 'omitted_records': 0}
@@ -414,7 +435,7 @@ def _audit_book(name, payload, sha, budget, used, cut):
         used['items'] += count
         used['periods'] += periods
         for record in records:
-            projected = _audit_record(record, rows, summaries or [], sha, cut)
+            projected = _audit_record(record, rows, summaries or [], sha, cut, page_headers=page_headers)
             cells = len(projected['header_cells'])
             if used['headers'] + cells > PROJECT_MAX_HEADER_CELLS:
                 sheet.update(state='not_read_budget', reason='Общий предел исходных ячеек заголовков.')
@@ -641,3 +662,193 @@ def project_audit(project, cut):
                 if descriptor is not None:os.close(descriptor)
     except identity_store.IdentityProblem as exc:
         raise SourceReviewProblem(str(exc)) from None
+
+
+PAGE_MAX_BOOKS = 8
+CORPUS_TOKEN_SCHEMA = 'ks6-retained-corpus-v1'
+
+
+def corpus_token(project, cut, archives):
+    """Reproducible from an existing v1 audit; no parse-dependent fields."""
+    projected = []
+    for archive in sorted(archives, key=lambda a: (a['taken_at'], a['snapshot_id'])):
+        projected.append({**{key: archive[key] for key in ('snapshot_id', 'taken_at',
+            'archive_sha256', 'manifest_present', 'size_bytes')},
+            'files': [{key: item[key] for key in ('filename', 'file_sha256', 'size_bytes')
+                       if key in item} for item in archive['files']]})
+    value = dict(schema=CORPUS_TOKEN_SCHEMA, project=project, cut=cut, archives=projected)
+    return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
+        separators=(',', ':'), allow_nan=False).encode('utf-8')).hexdigest()
+
+
+def _page_inventory(project, snapshots, directory_fd, guard, selected):
+    """Verify every original before decoding; retain bytes only for selected SHA."""
+    if len(snapshots) > MAX_ARCHIVES:
+        raise SourceReviewProblem('Состав архивов превышает предел страницы; корпус не подтверждён.')
+    archives, payloads, sizes = [], {}, {}
+    total = 0
+    for snapshot in snapshots:
+        sid = snapshot['snapshot_id']
+        guard()
+        info = os.stat(sid+'.zip', dir_fd=directory_fd, follow_symlinks=False)
+        if not stat.S_ISREG(info.st_mode):
+            raise SourceReviewProblem('Исходный архив не является обычным файлом; чтение остановлено.')
+        if total + info.st_size > MAX_TOTAL_ARCHIVE_BYTES:
+            raise SourceReviewProblem('Достигнут общий предел байтов исходных архивов.')
+        raw = _original(project, sid, directory_fd=directory_fd)
+        total += len(raw)
+        if total > MAX_TOTAL_ARCHIVE_BYTES:
+            raise SourceReviewProblem('Объём источника изменился и превысил общий предел байтов.')
+        entry = dict(snapshot_id=sid, taken_at=snapshot['taken_at'], archive_sha256=sid[11:],
+            manifest_present=snapshot.get('manifest_present', True), size_bytes=len(raw),
+            archive_date_basis='native_snapshot_manifest' if snapshot.get('manifest_present', True)
+                else 'snapshot_id_only_manifest_missing', state='verified',
+            original_sha_verified=True, source_stable_verified=False, files_inventory_complete=True, files=[])
+        archives.append(entry)
+        for name, payload in ledgers._zip_members(raw, skip_unsupported=True):
+            item = dict(filename=name, file_sha256=None, status='unsupported')
+            entry['files'].append(item)
+            if payload is None:
+                item['reason'] = 'Служебный или неподдерживаемый файл. Содержимое не открывалось.'
+                continue
+            sha = hashlib.sha256(payload).hexdigest()
+            item.update(file_sha256=sha, size_bytes=len(payload),
+                        status='selected' if sha in selected else 'not_selected')
+            if sha in sizes:
+                if sizes[sha] != len(payload):
+                    raise SourceReviewProblem('Неоднозначный отпечаток исходной книги; чтение остановлено.')
+                item.update(status='reused_same_hash', duplicate_proof='same_sha256_and_size')
+            else:
+                sizes[sha] = len(payload)
+                if len(sizes) > PROJECT_MAX_BOOKS:
+                    raise SourceReviewProblem('Состав книг превышает общий предел; корпус не подтверждён.')
+                if sha in selected:
+                    payloads[sha] = (name, payload)
+        guard()
+        if _original(project, sid, directory_fd=directory_fd) != raw:
+            raise SourceReviewProblem('Исходный архив изменился во время проверки описи страницы.')
+        entry['source_stable_verified'] = True
+    return archives, payloads, sizes
+
+
+def _project_audit_page(project, cut, selected, expected_token, directory_fd, guard, inventory):
+    snapshots = inventory()
+    eligible = [s for s in snapshots if s['taken_at'] <= cut]
+    archives, payloads, sizes = _page_inventory(project, eligible, directory_fd, guard, selected)
+    token = corpus_token(project, cut, archives)
+    if token != expected_token:
+        raise SourceReviewProblem('Корпус исходников изменился или не совпал с доказательством предыдущего чтения.')
+    if not selected <= sizes.keys() or selected != payloads.keys():
+        raise SourceReviewProblem('Выбранный SHA книги отсутствует в подтверждённом корпусе проекта на эту дату.')
+    if [s for s in inventory() if s['taken_at'] <= cut] != eligible:
+        raise SourceReviewProblem('Состав сохранённых архивов изменился до чтения страницы.')
+    detail_limit = max(0, min(PROJECT_MAX_DETAIL_BYTES, PROJECT_MAX_RESULT_BYTES-
+        (64*1024+len(eligible)*ledgers.MAX_FILES*2048)))
+    budget = dict(text_bytes=0, materialized_cells=0, max_materialized_cells=PROJECT_MAX_CELLS)
+    used = dict(sheets=0, items=0, periods=0, headers=0)
+    books, detail_bytes = [], 0
+    for sha in sorted(selected):
+        name, payload = payloads.pop(sha)
+        book = _audit_book(name, payload, sha, budget, used, cut, page_headers=True)
+        encoded = json.dumps(book, ensure_ascii=False, allow_nan=False).encode()
+        if detail_bytes + len(encoded) > detail_limit:
+            omitted = sum(len(s['records'])+s.get('omitted_records', 0) for s in book['sheets'])
+            book = dict(file_sha256=sha, size_bytes=len(payload), sheet_count=book['sheet_count'],
+                state='not_read_budget', reason='Общий предел подробностей результата.', sheets=[],
+                omitted_sheets=book['sheet_count'] or 0, omitted_records=omitted)
+            used['stop'] = book['reason']
+            encoded = json.dumps(book, ensure_ascii=False).encode()
+        detail_bytes += len(encoded)
+        books.append(book)
+    # Verify all originals again, including books not selected/decoded here.
+    after = inventory()
+    if [s for s in after if s['taken_at'] <= cut] != eligible:
+        raise SourceReviewProblem('Состав сохранённых архивов изменился во время чтения страницы.')
+    verified, _, verified_sizes = _page_inventory(project, eligible, directory_fd, guard, set())
+    if corpus_token(project, cut, verified) != token or verified_sizes != sizes:
+        raise SourceReviewProblem('Исходники изменились во время чтения страницы; результат не принят.')
+    if [s for s in inventory() if s['taken_at'] <= cut] != eligible:
+        raise SourceReviewProblem('Состав сохранённых архивов изменился после проверки страницы.')
+    for entry in archives:
+        entry['source_stable_verified'] = True
+    selected_archives = [{**a, 'files': [f for f in a['files'] if f.get('file_sha256') in selected]}
+                         for a in archives]
+    counts = _audit_counts(selected_archives, books)
+    counts['selected_unique_books'] = len(selected)
+    counts['materialized_cell_reads'] = budget['materialized_cells']
+    complete = all(b['state'] == 'read' for b in books)
+    future = [s for s in after if s['taken_at'] > cut]
+    output = dict(schema=1, kind='selected_ks6_source_page', project=project, cut=cut,
+        source_family='retained_cumulative_archives', source_reader_schema=ledgers.PARSER_SCHEMA,
+        corpus_token_schema=CORPUS_TOKEN_SCHEMA, corpus_token=token,
+        selected_book_sha256=sorted(selected), selected_read_complete=complete,
+        selected_recognition_complete=complete and not counts['unresolved_source_headers']
+            and not counts['unrecognized_sheets'], corpus_read_complete=None,
+        financial_complete=None, binding_verified=None,
+        state='read_selected' if complete else 'partial_selected', counts=counts,
+        counts_complete=complete, counts_scope='retained_selected_books_only_not_the_whole_corpus',
+        inventory_counts=dict(eligible_archives=len(archives), unique_book_fingerprints=len(sizes),
+            file_observations=sum(len(a['files']) for a in archives),
+            verified_original_bytes=sum(a['size_bytes'] for a in archives),
+            missing_archive_manifests=sum(not a['manifest_present'] for a in archives)),
+        archives=archives, books=books,
+        continuation=dict(not_selected_book_sha256=sorted(sizes.keys()-selected),
+            incomplete_selected_book_sha256=[b['file_sha256'] for b in books if b['state'] != 'read'],
+            max_selected_books=PAGE_MAX_BOOKS),
+        future_archives=[dict(snapshot_id=s['snapshot_id'], taken_at=s['taken_at'],
+            state='not_read_after_cut') for s in future[:MAX_ARCHIVES]],
+        omitted_future_archives=max(0, len(future)-MAX_ARCHIVES),
+        limits=dict(archives=MAX_ARCHIVES, original_bytes=MAX_TOTAL_ARCHIVE_BYTES,
+            unique_books=PROJECT_MAX_BOOKS, selected_books=PAGE_MAX_BOOKS, sheets=PROJECT_MAX_SHEETS,
+            materialized_cells=PROJECT_MAX_CELLS, positions=PROJECT_MAX_ITEMS,
+            period_values=PROJECT_MAX_PERIODS, header_cells=PROJECT_MAX_HEADER_CELLS,
+            detail_bytes=detail_limit, result_bytes=PROJECT_MAX_RESULT_BYTES),
+        note='Страница содержит только выбранные книги. Полнота страницы не подтверждает чтение всего корпуса. '
+             'Периоды и количества исходные; это не подтверждённый факт, финансовая приёмка или привязка договора.')
+    if len(json.dumps(output, ensure_ascii=False, allow_nan=False).encode()) > PROJECT_MAX_RESULT_BYTES:
+        raise SourceReviewProblem('Предел размера страницы не вмещает опись и выбранные книги; результат не принят.')
+    return output
+
+
+def project_audit_page(project, cut, book_sha256, corpus_token):
+    """A bounded selection from the corpus already evidenced by a v1 audit."""
+    import developaid_contract_identity_store as identity_store
+    if (not isinstance(book_sha256, list) or not 1 <= len(book_sha256) <= PAGE_MAX_BOOKS
+            or any(not isinstance(sha, str) or not re.fullmatch(r'[0-9a-f]{64}', sha) for sha in book_sha256)
+            or not isinstance(corpus_token, str) or not re.fullmatch(r'[0-9a-f]{64}', corpus_token)):
+        raise SourceReviewProblem('Неверный ограниченный выбор SHA книг или доказательство корпуса.')
+    cut = contracts._cut(cut)
+    try:
+        with identity_store.namespace(project):
+            root = _audit_root(project)
+            descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW) if root.exists() else None
+            try:
+                location = (os.fstat(descriptor).st_dev, os.fstat(descriptor).st_ino) if descriptor is not None else None
+                def guard():
+                    identity_store.assert_namespace(project)
+                    current = _audit_root(project)
+                    actual = current.stat() if current.exists() else None
+                    if current != root or ((actual.st_dev, actual.st_ino) if actual else None) != location:
+                        raise SourceReviewProblem('Каталог исходников изменился во время чтения.')
+                def inventory():
+                    guard()
+                    values = ledgers.list_snapshots(project) if root.exists() else []
+                    known = {s.get('snapshot_id') for s in values}
+                    for path in root.glob('*.zip') if root.exists() else []:
+                        if re.fullmatch(r'\d{4}-\d{2}-\d{2}-[0-9a-f]{64}', path.stem) and path.stem not in known:
+                            values.append(dict(snapshot_id=path.stem, taken_at=path.stem[:10], manifest_present=False))
+                    for snapshot in values:
+                        sid = snapshot.get('snapshot_id', '')
+                        if (not isinstance(sid, str) or not re.fullmatch(r'\d{4}-\d{2}-\d{2}-[0-9a-f]{64}', sid)
+                                or snapshot.get('taken_at') != sid[:10]):
+                            raise SourceReviewProblem('Описание версии не совпало с датой и отпечатком архива.')
+                        ledgers._iso(snapshot['taken_at'])
+                    guard()
+                    return sorted(values, key=lambda s: (s['taken_at'], s['snapshot_id']))
+                return _project_audit_page(project, cut, set(book_sha256), corpus_token, descriptor, guard, inventory)
+            finally:
+                if descriptor is not None:
+                    os.close(descriptor)
+    except (identity_store.IdentityProblem, OSError, ledgers.LedgerProblem) as exc:
+        raise SourceReviewProblem(str(exc) if not isinstance(exc, OSError)
+            else 'Оригинал архива недоступен; корпус страницы не подтверждён.') from None
