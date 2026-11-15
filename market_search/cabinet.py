@@ -573,6 +573,9 @@ __DEVELOPAID_CONTOUR__
     <div class="blockhead"><h2 style="margin:0" id="overviewTitle">Кабинет</h2>
       <label class="upload" title="Что в файле нашлось, то и прочитано: выгрузка ЦФ несёт контрактацию, проводки 1С и оба плана, книга финмодели — квартирографию, план продаж и отчёт правлению. Источники ложатся на склад ядра и переживают закрытие вкладки: файлы грузятся по одному и в любом порядке. Форматы .xlsx, .xlsm, .xlsb">Загрузить файл проекта<input type="file" id="cf" accept=".xlsx,.xlsm,.xlsb"></label>
     </div>
+    <label class="f noprint" id="salesProjectLabel" style="display:none;margin-bottom:10px">Проект отчёта
+      <select id="salesProject" aria-label="Проект отчёта" style="max-width:100%"></select>
+    </label>
     <label class="muted">Дата шахматки (при её загрузке) <input type="date" id="chessboardDate"></label>
     <div id="overviewBody" class="muted" style="font-size:13px;margin-top:6px">Смотрю, что уже загружено…</div>
     <div id="cfstate" class="muted" style="font-size:12.5px;margin-top:6px"></div>
@@ -2644,8 +2647,37 @@ function boardCard(data){
 // и обе строки выглядели бы верными. Ровно то правило, по которому разбивка
 // очередей берётся из `report.products`.
 let salesData=null;
+let salesLoadSequence=0, salesKnown=[];
+
+function salesBusy(busy){
+  $('#cf').disabled=busy;
+  $('#salesProject').disabled=busy;
+}
+
+function salesProjectContext(d){
+  if(Array.isArray(d.known)) salesKnown=d.known;
+  const names=salesKnown.map(p=>p.project).filter(Boolean);
+  if(d.project&&!names.includes(d.project)) names.push(d.project);
+  const select=$('#salesProject');
+  select.replaceChildren();
+  names.forEach(name=>{
+    const option=document.createElement('option');
+    option.value=name; option.textContent=name;
+    select.appendChild(option);
+  });
+  select.value=d.project||'';
+  $('#salesProjectLabel').style.display=names.length?'':'none';
+  // Адрес сохраняет выбранный проект после обновления и при открытии ссылки.
+  if(location.protocol==='http:'||location.protocol==='https:'){
+    const url=new URL(location.href);
+    if(d.project) url.searchParams.set('project',d.project);
+    else url.searchParams.delete('project');
+    history.replaceState(history.state,'',url);
+  }
+}
 
 async function loadContracting(file){
+  salesBusy(true);
   $('#cfstate').textContent='Читаю файл проекта…';
   try{
     // Имя файла едет заголовком: в свод оно попадает подписью источника, а
@@ -2666,20 +2698,39 @@ async function loadContracting(file){
     if(!r.ok){ $('#cfstate').textContent=d.detail||'Файл не разобран'; return }
     showSales(d);
   }catch(e){ $('#cfstate').textContent=String(e.message||e) }
+  finally{ salesBusy(false); $('#cf').value='' }
 }
 
 // Источники лежат на ядре и переживают закрытие вкладки: файл грузится один
 // раз, а не при каждом открытии кабинета (владелец, 26.08.2026). Пустой склад
 // — это «ещё не грузили», а не «продаж нет», и так и написано.
-async function loadStoredSales(){
+async function loadStoredSales(project){
   // «Не спросили» и «не загружено» — разные ответы, и молчание выдаёт первое за
   // второе: страница оставалась со строкой «Смотрю, что уже загружено…»
   // навсегда, и отличить закрытый ключом кабинет от пустого склада было нечем.
   const box=$('#overviewBody');
-  const failed=why=>{ if(box)box.innerHTML='<b>Склад не ответил.</b> '+esc(why)
-    +' Это не значит, что источников нет: их не удалось спросить.'; };
+  const sequence=++salesLoadSequence;
+  if(project===undefined) project=new URL(location.href).searchParams.get('project')||'';
+  salesBusy(true);
+  salesData=null;
+  planData=null;
+  $('#planstate').textContent='';
+  salesTalk.reset();
+  $('#sales').innerHTML='';
+  $('#overviewTitle').textContent='Кабинет';
+  $('#cfstate').textContent='Открываю сохранённый проект…';
+  if(box)box.textContent='Читаю сохранённые источники проекта…';
+  let loaded=false;
+  const failed=why=>{
+    if(box)box.innerHTML='<b>Склад не ответил.</b> '+esc(why)
+      +' Это не значит, что источников нет: их не удалось спросить.';
+    $('#cfstate').textContent='Не удалось открыть проект. Загрузка файлов временно недоступна.';
+  };
   try{
-    const r=await fetch('/cabinet/sales/summary');
+    const params=new URLSearchParams();
+    if(project)params.set('project',project);
+    const r=await fetch('/cabinet/sales/summary'+(params.size?'?'+params.toString():''));
+    if(sequence!==salesLoadSequence)return;
     if(!r.ok){
       failed(r.status===401||r.status===403
         ?'Кабинет закрыт ключом — войдите и обновите страницу.'
@@ -2687,9 +2738,17 @@ async function loadStoredSales(){
       return;
     }
     const d=await r.json();
-    if(d&&!d.empty) showSales(d);
-    else renderOverview(null);
-  }catch(e){ failed(String(e&&e.message||e)+'.') }
+    if(sequence!==salesLoadSequence)return;
+    if(d&&(d.project||(d.sources||[]).length)) showSales(d);
+    else{salesProjectContext(d||{});renderOverview(null);$('#cfstate').textContent=''}
+    loaded=true;
+  }catch(e){ if(sequence===salesLoadSequence)failed(String(e&&e.message||e)+'.') }
+  finally{
+    if(sequence===salesLoadSequence){
+      $('#salesProject').disabled=false;
+      $('#cf').disabled=!loaded;
+    }
+  }
 }
 
 let salesSourcesSeen='';
@@ -2699,9 +2758,10 @@ function showSales(d){
   // Платон помнил бы то, чего в своде уже нет. Сравнивается состав и даты
   // источников, а не сам факт перерисовки: экран рисуется заново и при
   // открытии вкладки, а разговор при этом тот же.
-  const seen=(d&&d.sources||[]).map(s=>`${s.name}@${String(s.at||'').slice(0,10)}`).join(';');
+  const seen=(d.project||'')+';'+(d&&d.sources||[]).map(s=>`${s.name}@${String(s.at||'').slice(0,10)}`).join(';');
   if(seen!==salesSourcesSeen){ salesTalk.reset(); salesSourcesSeen=seen }
   salesData=d;
+  salesProjectContext(d);
   renderOverview(d);
   takePlan(d);
   const t=d.total||{};
@@ -3873,7 +3933,7 @@ function outOf(sold, pool){
 function renderOverview(d){
  const box=$('#overviewBody'), head=$('#overviewTitle');
  if(!box)return;
- if(!d||d.empty){
+ if(!d||!(d.sources||[]).length){
   if(head)head.textContent='Кабинет';
   box.innerHTML='<b>Файлы проекта ещё не загружены.</b> '
    +'Выгрузка ЦФ несёт контрактацию и проводки, книга финмодели — квартирографию '
@@ -3888,7 +3948,7 @@ function renderOverview(d){
  // плиток не было. Два одинаковых числа подряд читаются как два разных.
  const n=(d.sources||[]).length, notes=(d.missing||[]).length;
  box.innerHTML=`Прочитано ${num(n)} ${plural(n,'источник','источника','источников')}`
-   +' — числа ниже, в отчёте.'
+   +(d.empty?'. Контрактация ещё не загружена. Доступные сведения показаны ниже.':' — числа ниже, в отчёте.')
    +(notes?` Не прочитано: ${notes} `
      +`${plural(notes,'источник','источника','источников')} — подробности в отчёте.`:'');
  // Кнопок «открыть отчёт» тут больше нет: отчёты — это страницы, и вход в них
@@ -3934,6 +3994,7 @@ function renderSales(d){
 
   // Плашки с долей от проекта: «продано 3 594 м²» без второй половины —
   // не показатель, а число. Доли считает сервер (`pool`).
+  if(!d.empty){
   const flats=byProduct['Квартира']||{}, cars=byProduct['Машиноместо']||{};
   html+='<div class="kv">'
     +tile('Договоров', num(t.contracts))
@@ -4007,8 +4068,10 @@ function renderSales(d){
       `<button type="button" data-basis="${b.key}" data-for="planschart"`
       +` class="${b.key===plansBasis?'on':''}">${esc(b.name)}</button>`).join('')+'</div></div>');
 
+  }
   if(d.chessboard_html)html+=salesSection('sb-chess','Шахматка и остаток продаж',d.chessboard_html);
 
+  if(!d.empty){
   html+=salesSection('sb-esc','Эскроу против погашения ПФ',
     salesEscrowBlock(d), salesNote(d,'escrow'));
 
@@ -4029,6 +4092,7 @@ function renderSales(d){
       salesTable(['Договор','Объект','Дата','Возвращено с эскроу, млн ₽'],
         d.terminated.map(x=>[esc(x.contract||'—'), esc(x.object||'—'), esc(x.on||'—'),
           x.escrow_returned===null||x.escrow_returned===undefined?'—':num(x.escrow_returned/1e6,2)])));
+  }
   }
 
   // Что загружено и когда: два файла разных дат, показанные как один проект, —
@@ -4212,8 +4276,9 @@ function salesDigest(d, limit){
   // вопрос перевалил четыре тысячи знаков ещё до первого раздела — Платон
   // отвечал «вопрос слишком длинный» на полностью загруженном проекте.
   const head=[`ПРОЕКТ: ${d.project||'—'}.`,
-    `Всего: ${num(t.contracts)} договоров, ${num(t.area)} м², ${num(t.amount/1e6,1)} млн ₽, `
-     +`средняя ${num(t.price_per_sqm)} ₽/м²; на эскроу ${num(t.escrow/1e6,1)} млн (${num(t.escrow_share*100,1)}%).`];
+    d.empty?'Контрактация не загружена. Продажи, выручка и наполнение эскроу неизвестны.':
+      `Всего: ${num(t.contracts)} договоров, ${num(t.area)} м², ${num(t.amount/1e6,1)} млн ₽, `
+       +`средняя ${num(t.price_per_sqm)} ₽/м²; на эскроу ${num(t.escrow/1e6,1)} млн (${num(t.escrow_share*100,1)}%).`];
   // Длинный ряд обрезается по хвосту, а не выбрасывается целиком: свежие
   // месяцы отвечают на вопрос, а прошлогодние — подробность. Сколько показано
   // из скольких, стоит в самой строке: молчаливая обрезка читается как весь ряд.
@@ -4976,6 +5041,7 @@ on('#reset','click',function(){
   $('#q').focus();
 });
 on('#cf','change',e=>{if(e.target.files[0])loadContracting(e.target.files[0])});
+on('#salesProject','change',e=>loadStoredSales(e.target.value));
 if($('#sales'))loadStoredSales();
 
 // Ориентир цены — то же число, что кнопка «Рекомендация DevelopAid» у поля
