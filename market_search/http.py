@@ -6,11 +6,14 @@ import os
 import socket
 import tempfile
 import time
+import hashlib
+import stat
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
+from . import krt_catalogue_observation as _krt_observation
 
 # Наши добавочные корни. Объявлены один раз (`trusted_roots`) и общие с
 # адаптером ГИС Торгов: без них прямое чтение krt.mos.ru падает на проверке
@@ -53,6 +56,13 @@ def request_bytes(
     retries: int = 2,
     headers: dict[str, str] | None = None,
 ) -> bytes:
+    try:
+        observer = _krt_observation.current_fetch()
+    except Exception:
+        observer = None
+    if observer is not None:
+        return _request_bytes_observed(observer, url, params=params, data=data, method=method,
+            timeout=timeout, retries=retries, headers=headers)
     if params:
         query = urlencode({k: v for k, v in params.items() if v is not None})
         url = f"{url}{'&' if '?' in url else '?'}{query}"
@@ -78,6 +88,47 @@ def request_bytes(
             last_error = exc
             if attempt < retries:
                 time.sleep(min(2.0 ** attempt, 4.0))
+    raise RemoteServiceError(f"Не удалось получить ответ от {url}: {last_error}") from last_error
+
+
+def _request_bytes_observed(observer, url, *, params, data, method, timeout, retries, headers):
+    """The same urllib calls/policy, with best-effort passive metadata only."""
+    if params:
+        query = urlencode({k: v for k, v in params.items() if v is not None})
+        url = f"{url}{'&' if '?' in url else '?'}{query}"
+    url = _ascii_url(url)
+    request_headers = {
+        "User-Agent": _USER_AGENT,
+        "Accept-Language": "ru-RU,ru;q=0.9",
+    }
+    if headers:
+        request_headers.update(headers)
+    _krt_observation.note(observer, 'context_start')
+    try:
+        context = _trust_context() if _trust_context is not None else None
+    except Exception as exc:
+        _krt_observation.note(observer, 'failure', exc, 'tls_context_setup')
+        raise
+    last_error: Exception | None = None
+    for attempt in range(retries + 1):
+        boundary = 'open_response'
+        _krt_observation.note(observer, 'attempt_start', attempt + 1)
+        try:
+            req = Request(url, data=data, headers=request_headers, method=method)
+            with urlopen(req, timeout=timeout, context=context) as response:
+                _krt_observation.note(observer, 'response', response)
+                boundary = 'body'
+                body = response.read()
+                _krt_observation.note(observer, 'body', body)
+                return body
+        except (HTTPError, URLError, TimeoutError, socket.timeout) as exc:
+            _krt_observation.note(observer, 'failure', exc, boundary)
+            last_error = exc
+            if attempt < retries:
+                time.sleep(min(2.0 ** attempt, 4.0))
+        except Exception as exc:
+            _krt_observation.note(observer, 'failure', exc, boundary)
+            raise
     raise RemoteServiceError(f"Не удалось получить ответ от {url}: {last_error}") from last_error
 
 
@@ -110,7 +161,9 @@ def load_json(path: Path) -> Any | None:
         return None
 
 
-def save_json(path: Path, payload: Any) -> None:
+def save_json(path: Path, payload: Any, *, _saved_receipt: dict | None = None) -> None:
+    if type(_saved_receipt) is dict:
+        return _save_json_observed(path, payload, _saved_receipt)
     path.parent.mkdir(parents=True, exist_ok=True)
     # Два воркера могут одновременно обновлять один каталог. Общий .tmp
     # позволял одному переименовать файл, в который другой ещё пишет.
@@ -123,6 +176,65 @@ def save_json(path: Path, payload: Any) -> None:
             tmp = Path(fh.name)
             json.dump(payload, fh, ensure_ascii=False, separators=(",", ":"))
         tmp.replace(path)
+    finally:
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)
+
+
+class _HashingJSONWriter:
+    def __init__(self, stream):
+        self.stream = stream
+        self.digest = hashlib.sha256()
+        self.count = 0
+        self.valid = True
+
+    def write(self, text):
+        result = self.stream.write(text)
+        try:
+            if type(result) is not int or result != len(text):
+                self.valid = False
+            raw = text.encode('utf-8')
+            self.digest.update(raw)
+            self.count += len(raw)
+        except Exception:
+            self.valid = False
+        return result
+
+
+def _save_json_observed(path, payload, receipt):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp: Path | None = None
+    writer = initial = saved = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent,
+            prefix=f".{path.name}.", suffix=".tmp", delete=False,
+        ) as fh:
+            tmp = Path(fh.name)
+            try: initial = os.fstat(fh.fileno())
+            except Exception: pass
+            try: writer = _HashingJSONWriter(fh)
+            except Exception: pass
+            json.dump(payload, writer if writer is not None else fh, ensure_ascii=False, separators=(",", ":"))
+        try:
+            saved = tmp.stat(follow_symlinks=False)
+        except Exception:
+            pass
+        tmp.replace(path)
+        try: receipt['_replaced'] = True
+        except Exception: pass
+        try:
+            final = path.stat(follow_symlinks=False)
+            if (writer is not None and writer.valid and initial is not None and saved is not None
+                    and stat.S_ISREG(saved.st_mode) and saved.st_nlink == 1
+                    and (initial.st_dev, initial.st_ino) == (saved.st_dev, saved.st_ino)
+                    and (saved.st_dev, saved.st_ino, saved.st_size, saved.st_mtime_ns)
+                    == (final.st_dev, final.st_ino, final.st_size, final.st_mtime_ns)
+                    and saved.st_size == writer.count):
+                receipt.update(written_payload_sha256=writer.digest.hexdigest(), written_bytes=writer.count,
+                    inode=saved.st_ino, mtime_ns=saved.st_mtime_ns)
+        except Exception:
+            pass
     finally:
         if tmp is not None:
             tmp.unlink(missing_ok=True)
