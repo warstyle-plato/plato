@@ -350,9 +350,13 @@ def money(value,compact=False):
     return f'{value:,.2f}'.replace(',',' ').replace('.',',')+' ₽'
 
 
+def _has_cash_observation(model):
+    return model.get('state') == 'partial' or any(number(model.get(key)) is not None for key, _ in FIELDS)
+
+
 def funding_base(own, model):
     """Cash replaces the old AHR contribution only when that contribution is known."""
-    if model.get('balance_after_observed_payments') is None:
+    if not _has_cash_observation(model):
         return own.get('need')
     return own.get('need_without_admin_expenses')
 
@@ -364,6 +368,9 @@ def funding_base_for_limit(funding, model):
     own = funding.get('own_money')
     if own:
         return funding_base(own, model)
+    if _has_cash_observation(model):
+        # The legacy deficit does not attest which AHR contribution it includes.
+        return None
     approved = number(funding.get('approved'))
     if approved is not None and approved > 0:
         return (funding.get('deficit_ladder') or {}).get('total')
@@ -371,29 +378,33 @@ def funding_base_for_limit(funding, model):
 
 
 def funding_summary(base, model, money):
-    """One funding need: existing non-AHR deficit plus unpaid AHR, never its full budget."""
+    """Observed cash is context, never an attestation of remaining funding need.
+
+    The native cash producer does not attest payment coverage since project
+    start. Even a complete observed period cannot turn its balance into need.
+    Without cash data, keep the existing, separately named bank calculation.
+    """
     base = number(base)
     balance = number(model.get('balance_after_observed_payments'))
-    if balance is None:
+    if not _has_cash_observation(model):
         return {'amount': scalar(max(Decimal(0), base)) if base is not None else None,
+                'scope': 'bank_only',
                 'note': 'Сумма без уточнения АХР: остаток АХР пока не рассчитан.'}
-    admin = max(Decimal(0), balance)
-    amount = max(Decimal(0), base) + admin if base is not None else None
-    note = (f'В том числе ещё {money(scalar(admin))} нужно на АХР. '
-            if amount is not None else f'Ещё {money(scalar(admin))} нужно на АХР; потребность без АХР пока не рассчитана. ')
-    if model.get('remaining_need') is None:
-        note += 'Предварительно: полнота учтённых оплат АХР не подтверждена.'
-    return {'amount': scalar(amount), 'note': note.strip()}
+    note = (f'АХР: остаток после учтённых оплат — {money(scalar(balance))}. '
+            if balance is not None else 'Остаток АХР после учтённых оплат пока не рассчитан. ')
+    note += 'Полнота оплат с начала проекта не подтверждена; общая потребность пока не определена.'
+    return {'amount': None, 'scope': 'unconfirmed_total', 'note': note}
 
 
 def render_funding(summary, details_html):
     amount = summary['amount']
     esc = lambda v: html.escape(str(v))
     value = money(amount, compact=True) if amount is not None else 'нет данных'
-    return ('<div class="additional-funding"><small>Потребность в допфинансировании</small>'
+    label = 'Потребность по смете банка' if summary.get('scope') == 'bank_only' else 'Потребность в допфинансировании'
+    return (f'<div class="additional-funding"><small>{esc(label)}</small>'
             f'<div style="font-size:20px;font-weight:700">{esc(value)}</div>'
             f'<p>{esc(summary["note"])}</p></div>'
-            '<details><summary>Расчёт АХР</summary>' + details_html + '</details>')
+            '<details class="admin-expenses-details"><summary>Расчёт АХР</summary>' + details_html + '</details>')
 
 
 def tiles(model):
@@ -406,7 +417,10 @@ def tiles(model):
 
 
 def render(model,source_html='',*,show_tiles=False):
-    esc=lambda v:html.escape(str(v));out=['<section class="admin-expenses-cash"><h3>Административные расходы</h3>',
+    esc=lambda v:html.escape(str(v));out=['<section class="admin-expenses-cash">'
+        '<style>@media print{.admin-expenses-details::details-content,.admin-expenses-cash details::details-content{content-visibility:visible}'
+        '.admin-expenses-details>:not(summary),.admin-expenses-cash details>:not(summary){display:block!important}}</style>'
+        '<h3>Административные расходы</h3>',
         '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px">']
     for tile in tiles(model) if show_tiles else []:out.append(f'<div><small>{esc(tile["label"])}</small><div style="font-size:20px;font-weight:700">{esc(tile["value"])}</div></div>')
     out+=['</div>',f'<p>{esc(model.get("warning")or "")}</p>',

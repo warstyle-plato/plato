@@ -213,8 +213,9 @@ def test_real_monitor_page_shows_one_funding_tile_and_clears_it(width,tmp_path):
         assert card.locator('.additional-funding').count()==1
         assert card.locator('details').first.evaluate('(e)=>!e.open')
         assert card.locator('details.admin-fm-source').evaluate('(e)=>!e.open')
-        expect(card).to_contain_text('2,10 млрд ₽')
-        expect(card).to_contain_text('297,00 млн ₽')
+        expect(card.locator('.additional-funding')).to_contain_text('нет данных')
+        expect(card).to_contain_text(cash.money(model['balance_after_observed_payments'], compact=True))
+        expect(card).to_contain_text('общая потребность пока не определена')
         assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
         for element in card.locator('.admin-expenses-cash > div > div').all():
             assert element.evaluate('(e)=>e.scrollWidth<=e.clientWidth')
@@ -250,8 +251,12 @@ def test_pdf_one_funding_tile_on_cover_and_ahr_is_in_details(tmp_path,monkeypatc
     pdf=pymupdf.open(stream=raw,filetype='pdf')
     cover=' '.join(pdf[0].get_text().split())
     for _,label in cash.FIELDS:assert label.casefold() not in cover.casefold()
-    assert 'Ещё' in cover and 'на АХР' in cover
-    assert '297,0 млн ₽' in cover
+    assert 'общая потребность пока не определена' in cover
+    assert 'нужно на АХР' not in cover
+    all_text=' '.join(''.join(page.get_text() for page in pdf).split())
+    for key,label in cash.FIELDS:
+        assert label in all_text and cash.money(model[key]) in all_text
+    assert 'Дата версии текущей сохранённой финмодели не указана' in all_text
     assert any(hit.y0<120 for hit in pdf[1].search_for('Стройка'))
 
 

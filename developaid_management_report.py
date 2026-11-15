@@ -2086,8 +2086,8 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
             parts = _chapter_gap_words(limit)
             own = limit.get("own_money")
             model = report.get("admin_expenses_cash") or {}
-            if model.get("balance_after_observed_payments") is not None:
-                summary = admin_cash.funding_summary(admin_cash.funding_base_for_limit(limit, model), model, _rub)
+            summary = admin_cash.funding_summary(admin_cash.funding_base_for_limit(limit, model), model, _rub)
+            if summary.get("scope") == "unconfirmed_total":
                 extra = summary["amount"]
                 if extra is not None:
                     pieces.append(f"потребность в допфинансировании {_rub(extra)}")
@@ -2124,9 +2124,10 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
         own = limit.get("own_money") if limit.get("known") else None
         short = (float(own["need"]) if own
                  else float(limit.get("additional_financing") or 0) if limit.get("known") else 0.0)
-        if (report.get("admin_expenses_cash") or {}).get("balance_after_observed_payments") is not None:
-            short = admin_cash.funding_summary(admin_cash.funding_base_for_limit(
-                limit, report["admin_expenses_cash"]), report["admin_expenses_cash"], _rub)["amount"]
+        model = report.get("admin_expenses_cash") or {}
+        summary = admin_cash.funding_summary(admin_cash.funding_base_for_limit(limit, model), model, _rub)
+        if summary.get("scope") == "unconfirmed_total":
+            short = summary["amount"]
         # Фраза «участок и проценты не входят» — про потребность банка по главам
         # 2–3; у «своих денег сверх сметы» участок входит, и её там нет.
         if (not own and short is not None and short > 0 and _gap_note(limit)
@@ -2899,7 +2900,7 @@ def _own_money_lines(limit: dict[str, Any], cash_model=None) -> list[str]:
     import developaid_monitor_dashboard as dashboard
 
     lines = dashboard.own_money_lines(limit.get("own_money"), _rub, with_reconciliation=False)
-    if lines and (cash_model or {}).get("balance_after_observed_payments") is not None:
+    if lines and admin_cash.funding_summary(None, cash_model or {}, _rub).get("scope") == "unconfirmed_total":
         lines[0] = lines[0].replace("Нужно своих денег сверх сметы банка", "По главам сметы до уточнения АХР", 1)
     return lines
 
@@ -4064,11 +4065,10 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
         base = admin_cash.funding_base_for_limit((report.get("funding") or {}).get("limit") or {}, model)
         summary = admin_cash.funding_summary(base, model, _rub)
         amount = summary["amount"]
-        if label == "Потребность в допфинансировании банка" and model.get("balance_after_observed_payments") is not None:
+        if summary.get("scope") == "unconfirmed_total":
             label = "Потребность в допфинансировании"
-        # When cash is available, the visible total and explanation describe the
-        # same two components. Chapter detail remains in the financing section.
-        if (report.get("admin_expenses_cash") or {}).get("balance_after_observed_payments") is not None:
+        # A partial cash balance is an observation; the combined need is unknown.
+        if summary.get("scope") == "unconfirmed_total":
             note = (f"Без АХР — {_rub(max(0.0, base))}. " if base is not None else "") + summary["note"]
         else:
             note = note.rstrip(" .;") + ". " + summary["note"]
