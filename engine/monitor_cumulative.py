@@ -63,6 +63,12 @@ class MonitorContractSourceReview(MonitorContractDocuments):
     model_config = {"extra": "forbid"}
 
 
+class MonitorProjectSourceAudit(MonitorContractsBuild):
+    # The server alone enumerates retained archives and workbook sources.
+    model_config = {"extra": "forbid", "strict": True}
+    cut: str = _CumulativeField(default="", max_length=10)
+
+
 from typing import Annotated as _IdentityAnnotated
 _IdentityHash = _IdentityAnnotated[str, _CumulativeField(pattern=r"^[0-9a-f]{64}$", strict=True)]
 
@@ -178,6 +184,7 @@ _CUMULATIVE_PATHS = _IDENTITY_PATHS | frozenset({
     "/monitor/cumulative/list", "/monitor/contracts/build",
     "/monitor/contracts/result", "/monitor/contracts/term", "/monitor/contracts/link", "/monitor/contracts/header-date",
     "/monitor/contracts/source-review",
+    "/monitor/contracts/source-audit",
     "/monitor/contracts/documents", "/monitor/contracts/document-upload",
     "/monitor/contracts/document-links", "/monitor/contracts/document-remove",
     "/monitor/contracts/document-confirm",
@@ -378,6 +385,10 @@ def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = 
         elif operation == "source-review":
             import developaid_contract_source_review as source_review
             result = {"source_review": source_review.review(**payload),
+                      "runtime": {"version": VERSION, "commit": COMMIT}}
+        elif operation == "source-audit":
+            import developaid_contract_source_review as source_review
+            result = {"source_audit": source_review.project_audit(**payload),
                       "runtime": {"version": VERSION, "commit": COMMIT}}
         elif operation == "link":
             result = {"link": links.set_link(
@@ -605,6 +616,11 @@ def monitor_contracts_documents(req: MonitorContractDocuments) -> Response:
 @app.post("/monitor/contracts/source-review", include_in_schema=False)
 def monitor_contract_source_review(req: MonitorContractSourceReview) -> Response:
     return _monitor_cumulative_job(req, family="contracts", operation="source-review")
+
+
+@app.post("/monitor/contracts/source-audit", include_in_schema=False)
+def monitor_project_source_audit(req: MonitorProjectSourceAudit) -> Response:
+    return _monitor_cumulative_job(req, family="contracts", operation="source-audit")
 
 
 @app.post("/monitor/contracts/document-upload", include_in_schema=False)
