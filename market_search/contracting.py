@@ -597,11 +597,14 @@ def payment_variant(text: str) -> str:
     return value
 
 
-_SIZE_BANDS = (("студия", 0.0, 28.0), ("1к", 28.0, 45.0), ("2к", 45.0, 70.0),
-               ("3к", 70.0, 100.0), ("4к+", 100.0, float("inf")))
+_SIZE_BANDS = (("до 28 м²", 0.0, 28.0), ("28–45 м²", 28.0, 45.0),
+               ("45–70 м²", 45.0, 70.0), ("70–100 м²", 70.0, 100.0),
+               ("от 100 м²", 100.0, float("inf")))
 
 
 def size_band(area: float) -> str:
+    if area <= 0:
+        return "Площадь не указана"
     for name, low, high in _SIZE_BANDS:
         if low <= area < high:
             return name
