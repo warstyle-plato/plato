@@ -398,6 +398,17 @@ def workbook_caption(meta: dict[str, Any]) -> str:
             "из текущих вводных" + queues)
 
 
+def _intake_qualified_workbook(built, inputs):
+    """Add a first disclosure sheet; existing formulas and cash cells stay intact."""
+    qualification = _intake_qualification_state(inputs)
+    if not qualification or not qualification.get('reason'):
+        return built
+    content, filename, meta = built
+    return intake_qualification.qualified_workbook(content, qualification), filename, {
+        **meta, 'preliminary':True, 'preliminary_reason':qualification['reason'],
+        'intake_qualification':qualification}
+
+
 def build_project_workbook(
     inputs: dict[str, Any],
     tep: dict[str, dict[str, Any]],
@@ -419,8 +430,8 @@ def build_project_workbook(
     # формулами, годовой USALI, итоги и сверка с движком. Книга v4 построена
     # на ДДУ, эскроу и ПФ, которых у гостиницы нет.
     if is_hotel(merged):
-        return _hotel_project_workbook(inputs, tep, rates, phasing,
-                                       str(kwargs.get("project_name") or ""))
+        return _intake_qualified_workbook(_hotel_project_workbook(inputs, tep, rates, phasing,
+                                       str(kwargs.get("project_name") or "")), inputs)
     # Нежилой проект получает свою книгу (`office_workbook`): книга v4 построена
     # на ДДУ, эскроу и ПФ жилья (владелец, 04.10.2026: отчёт, тизер и книга
     # нежилого проекта — самостоятельные).
@@ -428,7 +439,7 @@ def build_project_workbook(
         nonres_book = _nonres_project_workbook(inputs, tep, rates, phasing,
                                                str(kwargs.get("project_name") or ""))
         if nonres_book is not None:
-            return nonres_book
+            return _intake_qualified_workbook(nonres_book, inputs)
     # Экземпляр вне состава проекта в книгу не пишется, даже включённый.
     merged = object_instances_applied(merged, {})[0]
     token = _V4_BOOK_OBJECTS.set(_v4_book_objects(merged))
@@ -441,7 +452,7 @@ def build_project_workbook(
         if partial_tep.active(inputs) and built[2].get("missing"):
             raise HTTPException(422, "Excel пока не воспроизводит все исходные поля этого ТЭП. "
                                 "Файл не выдан: требуется сверка соответствия полей книги.")
-        return built
+        return _intake_qualified_workbook(built, inputs)
     finally:
         _V4_BOOK_OBJECTS.reset(token)
 

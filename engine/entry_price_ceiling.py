@@ -187,6 +187,11 @@ def entry_price_verdict(bundle: dict[str, Any]) -> dict[str, str]:
     preliminary = bool(summary.get("preliminary"))
     # Keep the canonical sum-state shared by the result row and all verdicts.
     # A construction subtotal alone does not resolve post-RVE or VRI costs.
+    document_qualification = summary.get('intake_qualification') or {}
+    if document_qualification.get('reason'):
+        return {'title': ('Предварительная экономика: есть неоценённые обязательства'
+                          if document_qualification.get('status') == 'conditional'
+                          else 'Предварительная экономика: перепроверьте условия документа'), 'tone':'edge'}
     rent_sum = summary.get("land_rent_sum") or {}
     if preliminary and not rent_sum.get("known"):
         title = ("Предварительная экономика: подтвердите дату начала аренды"

@@ -1039,11 +1039,108 @@ def _intake_queue_load(intake_id: str, req=None, request: Request | None = None)
                 queue._intake_snapshot = {"id": intake_id, "root": os.path.abspath(_PLATO_STAGE_DIR),
                     "sha256": hashlib.sha256(raw).hexdigest(), "revision": revision,
                     "directory_identity": (os.fstat(directory).st_dev, os.fstat(directory).st_ino),
-                    "owner_sha256": hashlib.sha256(owner_raw).hexdigest(), "actor": actor}
+                    "owner_sha256": hashlib.sha256(owner_raw).hexdigest(), "actor": actor,
+                    "qualification_recipient": _intake_qualification_request_recipient(request, req)}
                 return queue
     except (OSError, ValueError):
         raise HTTPException(404, "Разбор этого документа не найден на сервере: прошло больше трёх дней "
                             "или сервер перезапущен с чистого диска. Приложите документ заново.") from None
+
+
+def _intake_qualification_recipient(chat_id: int) -> str:
+    return hmac.new(_intake_qualification_key('telegram'),
+        b'plato/document-qualification/recipient/v1\0'+str(int(chat_id)).encode('ascii'), hashlib.sha256).hexdigest()
+
+
+def _intake_qualification_request_recipient(request, req=None):
+    if not _telegram_token():
+        return None
+    bound = request.scope.get('plato_bot_actor')
+    if isinstance(bound, tuple) and len(bound) == 2 and bound[0] is _agent_access.BOT_CAPABILITY:
+        return _intake_qualification_recipient(bound[1])
+    session = str(getattr(req, 'session', '') or '')
+    if session:
+        chat_id = _web_identity_chat_id(session)
+        if chat_id:
+            return _intake_qualification_recipient(chat_id)
+    return None
+
+
+def _intake_qualification_key(scope: str) -> bytes:
+    if scope == 'telegram':
+        token = _telegram_token()
+        if not token:
+            raise ValueError('Подпись условий документа пока нельзя проверить. Вернитесь к карточке.')
+        return token.encode('utf-8')
+    if scope == 'stage':
+        return _agent_access.secret(_PLATO_STAGE_DIR)
+    raise ValueError('Неизвестная подпись условий документа.')
+
+
+def _intake_qualification_state(inputs: dict[str, Any]):
+    return intake_qualification.state(inputs or {}, _intake_qualification_key)
+
+
+def _intake_qualification_apply(inputs: dict[str, Any], result):
+    return intake_qualification.apply(inputs or {}, result, _intake_qualification_key)
+
+
+def _intake_qualification_current(record, chat_id, session):
+    """A disclosure may change lineage state only against its current owned queue."""
+    if not _intake_qualification_state({intake_qualification.KEY:record}).get('verified'):
+        return False
+    try:
+        queue = _intake_queue_load(record['intake_id'], request=_telegram_agent_request(chat_id))
+    except HTTPException:
+        # Browser and bot actors deliberately remain distinct. A current
+        # signed web identity can read its own public queue through the
+        # ordinary web ACL, never through a fabricated bot/admin capability.
+        try:
+            queue = _intake_queue_load(record['intake_id'], TelegramSessionRequest(session=session),
+                Request({'type':'http','headers':[]}))
+        except HTTPException:
+            return False
+    snapshot = queue._intake_snapshot
+    return (record['recipient'] == _intake_qualification_recipient(chat_id)
+        and record['owner'] == snapshot['actor'].owner
+        and record['revision'] == queue.get('revision')
+        and record['queue_sha256'] == snapshot['sha256']
+        and record['obligations'] == intake_qualification.obligations(queue))
+
+
+def _intake_qualification_issue(queue, card, overrides):
+    """Only a current owned durable queue can issue a qualification record."""
+    snapshot = getattr(queue, '_intake_snapshot', None)
+    if not snapshot or snapshot.get('sha256') is None or not card.get('ready'):
+        raise _intake_queue_conflict()
+    actor = snapshot['actor']
+    with _intake_queue_directory() as directory, _intake_queue_lock(directory, queue['id']):
+        metadata, owner_raw = _intake_queue_metadata(directory, queue['id'])
+        raw = _intake_queue_read_file(directory, _intake_queue_path(queue['id']).name)
+        info = os.fstat(directory)
+        if (metadata != actor.metadata() or hashlib.sha256(owner_raw).hexdigest() != snapshot['owner_sha256']
+                or hashlib.sha256(raw).hexdigest() != snapshot['sha256']
+                or (info.st_dev, info.st_ino) != snapshot['directory_identity']):
+            raise _intake_queue_conflict()
+        if actor.private and not _agent_key_valid(actor.key):
+            raise HTTPException(403, 'Нужен действующий ключ администратора.')
+        canonical = json.loads(raw)
+        teaser_card.review_saved_state(canonical)
+        if canonical != queue:
+            raise _intake_queue_conflict()
+    scope = 'telegram' if _telegram_token() else 'stage'
+    file_digest = (canonical.get('source') or {}).get('sha256')
+    source = ({'kind':'file', 'sha256':file_digest} if re.fullmatch(r'[0-9a-f]{64}', str(file_digest or ''))
+              else {'kind':'queue','sha256':snapshot['sha256']})
+    binding = hashlib.sha256((queue['id']+card['card_key']).encode('ascii')).hexdigest()
+    try:
+        facts_digest = _telegram_overrides_digest(overrides)
+    except (ValueError, TypeError, OverflowError):
+        raise intake_qualification.QualificationError(
+            'Параметры документа слишком велики или требуют повторной проверки карточки.') from None
+    return intake_qualification.issue(canonical, owner=actor.owner, recipient=snapshot.get('qualification_recipient'),
+        queue_sha256=snapshot['sha256'], source=source, binding=binding, overrides_sha256=facts_digest,
+        key_scope=scope, key=_intake_qualification_key(scope))
 
 
 def teaser_card_view(queue: dict[str, Any], inputs: dict[str, Any],
@@ -1051,10 +1148,13 @@ def teaser_card_view(queue: dict[str, Any], inputs: dict[str, Any],
                      parcel_region: str = "moscow",
                      class_profile: dict[str, Any] | None = None) -> dict[str, Any]:
     """Карточка разбора по текущим вводным — один сборщик для сайта и бота."""
-    card = teaser_card.build(queue, inputs, tep, spp_split=MKD_SPP_SPLIT,
-                             presets=teaser_card.class_presets(PROJECT_CLASS_PRESETS, class_profile),
-                             defaults=DEFAULT_INPUTS, by_parcel=by_parcel,
-                             parcel_region=parcel_region)
+    try:
+        card = teaser_card.build(queue, inputs, tep, spp_split=MKD_SPP_SPLIT,
+                                 presets=teaser_card.class_presets(PROJECT_CLASS_PRESETS, class_profile),
+                                 defaults=DEFAULT_INPUTS, by_parcel=by_parcel,
+                                 parcel_region=parcel_region)
+    except intake_qualification.QualificationError as exc:
+        raise HTTPException(413, str(exc)) from None
     # Complete dependent TEP cells with the existing engine-backed editor.
     # A new GNS must not remain next to saleable area from the previous project.
     from developaid_v2_account_projects import _sync_tep, TepSyncRequest
@@ -1091,6 +1191,13 @@ def teaser_card_view(queue: dict[str, Any], inputs: dict[str, Any],
     card["card_key"] = hashlib.sha256(json.dumps(
         {"card": card, "inputs": inputs, "tep": tep, "class_profile": class_profile or {}},
         ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+    snapshot = getattr(queue, '_intake_snapshot', None)
+    if card.get('ready') and snapshot and snapshot.get('sha256') is not None:
+        try:
+            card['calculation_qualification_record'] = _intake_qualification_issue(
+                queue, card, teaser_card.calc_overrides(card))
+        except intake_qualification.QualificationError as exc:
+            raise HTTPException(413, str(exc)) from None
     return card
 
 
@@ -1205,15 +1312,26 @@ def agent_document_apply(req: AgentDocumentApplyRequest, request: Request) -> di
         raise HTTPException(409, "Сначала ответьте на вопросы карточки.")
     if not secrets.compare_digest(card["card_key"], req.card_key):
         return {"stale": True, "card": card}
+    # Only this explicit current-card confirmation can issue a replacement
+    # application proof for a Telegram model. It never signs client summaries.
+    calculation_session = ''
+    chat_id = _web_identity_chat_id(req.session) if req.session else None
+    if chat_id and _telegram_token():
+        overrides = teaser_card.calc_overrides(card)
+        proof = {'schema':1, 'scope':'confirmed_card', 'sha256':_telegram_overrides_digest(overrides),
+            'binding':_telegram_qualified_application_binding(overrides, 'confirmed_card')}
+        calculation_session = _telegram_session(chat_id, card['cadastral_numbers'],
+            calc_overrides=overrides, application_proof=proof)
     origins = copy.deepcopy((card["inputs"].get("_field_origin") or {}))
     for row in card["to_engine"]:
         if row["path"].startswith(("inputs.", "tep.")):
             origins[row["path"]] = {"source": row.get("source") or "document", "text": row["origin"]}
     card["inputs"]["_field_origin"] = origins
     card["inputs"]["_tep_source_packet"] = {"version": 1, "kind": "teaser_card", "intake_id": queue["id"]}
+    card["inputs"][intake_qualification.KEY] = copy.deepcopy(card['calculation_qualification_record'])
     usage_track("document_apply", surface="site", text=str(queue.get("filename") or ""))
     return {"card": card, "inputs": card["inputs"], "tep": card["tep"],
-            "cadastral_numbers": card["cadastral_numbers"]}
+            "cadastral_numbers": card["cadastral_numbers"], "calculation_session":calculation_session}
 
 
 _DOCUMENT_JOBS = threading.BoundedSemaphore(2)

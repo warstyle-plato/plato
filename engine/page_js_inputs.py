@@ -1810,6 +1810,9 @@ function applyTelegramCalcOverrides(){
    const v=Number(tepRows[row][field]);if(Number.isFinite(v))tep[row][field]=v;
   });
  });
+ // The server-authenticated qualification is model metadata, never a cash input.
+ if(o._intake_qualification)inputs._intake_qualification=cloneValue(o._intake_qualification);
+ if(o._tep_source_packet)inputs._tep_source_packet=cloneValue(o._tep_source_packet);
  const origins=o._field_origin&&typeof o._field_origin==='object'?o._field_origin:{};
  Object.keys(origins).forEach(path=>{fieldOrigins()[path]=origins[path]});
  if(Object.keys(tepRows).length||'offices_enabled' in o||'retail_enabled' in o)syncTep(false);

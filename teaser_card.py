@@ -29,6 +29,7 @@ import math
 import re
 from typing import Any
 
+import intake_qualification
 import document_intake as di
 import intake_evidence
 
@@ -583,6 +584,15 @@ def answer(state: dict[str, Any], inputs: dict[str, Any], tep: dict[str, dict[st
     review_saved_state(state)
     cards = state.get("cards") or []
     current = int(state.get("index") or 0)
+    if action == 'review':
+        # Only an explicit current-card action reopens an unresolved item.
+        # Other answers and their native numeric provenance remain intact.
+        if type(index) is not int or index not in {item['index'] for item in intake_qualification.obligations(state)}:
+            return {'stale': True}
+        state['answers'] = [item for item in state.get('answers') or [] if item.get('index') != index]
+        state['review_indices'] = sorted(set(state.get('review_indices') or []) | {index})
+        state['index'] = index
+        return {'answer': {'answer':'Обязательство открыто для уточнения.', 'applied':[], 'refused':[]}}
     if index != current or current >= len(cards):
         return {"stale": True}
     card = cards[current]
@@ -819,9 +829,8 @@ def build(state: dict[str, Any], inputs: dict[str, Any], tep: dict[str, dict[str
                                    "answer": a.get("answer") or "",
                                    "action": a.get("action")}
                                   for a in state.get("answers") or []]},
-        "calculation_caveats": [r["reason"] for a in state.get("answers") or []
-            if a.get("deferred") or a.get("pending_proposal") for r in a.get("refused") or []],
-        "conditional": any(a.get("deferred") or a.get("pending_proposal") for a in state.get("answers") or []),
+        "calculation_caveats": [intake_qualification.item_reason(item) for item in intake_qualification.obligations(state)],
+        "conditional": bool(intake_qualification.obligations(state)),
         "ready": question is None,
         "inputs": pending_inputs,
         "tep": pending_tep,
@@ -863,4 +872,10 @@ def calc_overrides(card: dict[str, Any]) -> dict[str, Any]:
         out["_tep"] = tep
     if origin:
         out["_field_origin"] = origin
+    # Only the native owned-card reader supplies this signed attestation.
+    # Generic dictionaries cannot turn absence into verified-empty metadata.
+    record = card.get('calculation_qualification_record')
+    if isinstance(record, dict):
+        out[intake_qualification.KEY] = copy.deepcopy(record)
+        out[intake_qualification.PACKET] = {'version':1,'kind':'teaser_card','intake_id':card['id']}
     return out

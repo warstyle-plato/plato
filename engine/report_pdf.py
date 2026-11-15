@@ -1656,8 +1656,13 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             story.append(P(verdict.get("disclaimer", ""), small))
         story.append(Spacer(1, 4*mm))
     story.append(_PdfSection("summary"));story.append(P("Ключевая экономика",h2))
-    if summary.get("preliminary_reason"):
-        story.append(P(html.escape(str(summary["preliminary_reason"])), small))
+    document_qualification = _intake_qualification_state(inputs)
+    preliminary_reason = str(summary.get('preliminary_reason') or '')
+    if document_qualification and document_qualification.get('reason'):
+        if document_qualification['reason'] not in preliminary_reason:
+            preliminary_reason = ' '.join(x for x in [preliminary_reason, document_qualification['reason']] if x)
+    if preliminary_reason:
+        story.append(P(html.escape(preliminary_reason), small))
     # Прибыль при непогашенном долге — бумажная: для инвестора проект
     # дефолтный, а не прибыльный (решение владельца, 27.08.2026), и строка
     # прибыли обязана говорить это сама, а не полагаться на вывод ниже.

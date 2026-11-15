@@ -118,7 +118,7 @@ def _telegram_intake_commit(chat_id: int, nonce: str, commit):
 
 def _telegram_intake_callback_data(intake_id: str, action: str, *parts) -> str:
     if (not re.fullmatch(r"[0-9a-f]{32}", str(intake_id or ""))
-            or action not in {"questions", "region", "opt", "defer", "rechoose", "mode"}):
+            or action not in {"questions", "region", "opt", "defer", "rechoose", "mode", "review"}):
         raise ValueError("Кнопка не связана с текущим разбором.")
     data = ":".join(["intake2_"+action, intake_id, *(str(part) for part in parts)])
     if len(data.encode("utf-8")) > 64:
@@ -371,16 +371,39 @@ def _telegram_overrides_digest(overrides: dict[str, Any]) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def _telegram_qualified_application_binding(overrides: dict[str, Any], scope: str) -> str:
+    # Disclosure signatures grant no authority over arbitrary cash. The
+    # application binding separately attests these exact confirmed overrides.
+    record = overrides[intake_qualification.KEY]
+    body = {'scope':scope, 'sha256':_telegram_overrides_digest(overrides),
+        'source_binding':record['binding'], 'owner':record['owner'], 'recipient':record['recipient']}
+    raw = json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
+    return hmac.new(_intake_qualification_key('telegram'),
+        b'plato/document-qualification/application/v1\0'+raw, hashlib.sha256).hexdigest()
+
+
 def _telegram_application_proof(overrides: dict[str, Any], proof: Any) -> dict[str, Any] | None:
     # This checks a signed server attestation; the generic session issuer does
     # not manufacture one. Only canonical card/CAD confirmation paths issue it.
     if not isinstance(proof, dict) or set(proof) != {"schema", "scope", "binding", "sha256"}:
         return None
     if (type(proof.get("schema")) is not int or proof["schema"] != 1
-            or proof.get("scope") not in {"confirmed_card", "confirmed_cad", "confirmed_patch"}
+            or not isinstance(proof.get('scope'), str)
+            or proof['scope'] not in {"confirmed_card", "confirmed_cad", "confirmed_patch"}
             or not re.fullmatch(r"[0-9a-f]{64}", str(proof.get("binding") or ""))):
         return None
     try:
+        qualification = _intake_qualification_state(overrides)
+        if (qualification is not None and not qualification.get('verified')) or (
+                proof['scope'] == 'confirmed_card' and qualification is None):
+            return None
+        if qualification is not None:
+            if not hmac.compare_digest(proof['binding'], _telegram_qualified_application_binding(overrides, proof['scope'])):
+                return None
+            if proof['scope'] == 'confirmed_card':
+                facts = {k:v for k,v in overrides.items() if k not in {intake_qualification.KEY, intake_qualification.PACKET}}
+                if not hmac.compare_digest(overrides[intake_qualification.KEY]['overrides_sha256'], _telegram_overrides_digest(facts)):
+                    return None
         if not hmac.compare_digest(str(proof.get("sha256") or ""), _telegram_overrides_digest(overrides)):
             return None
     except (ValueError, TypeError, OverflowError):
@@ -389,8 +412,13 @@ def _telegram_application_proof(overrides: dict[str, Any], proof: Any) -> dict[s
 
 
 def _telegram_carry_application_proof(session: dict[str, Any]) -> dict[str, Any] | None:
-    return _telegram_application_proof(session.get("calc_overrides") or {},
-                                       session.get("overrides_application"))
+    overrides = session.get('calc_overrides') or {}
+    proof = _telegram_application_proof(overrides, session.get('overrides_application'))
+    record = overrides.get(intake_qualification.KEY)
+    if record is not None and (not isinstance(record, dict) or not session.get('chat_id')
+            or record.get('recipient') != _intake_qualification_recipient(session['chat_id'])):
+        return None
+    return proof
 
 
 def _telegram_confirmed_patch_proof(session: dict[str, Any], overrides: dict[str, Any],
@@ -416,8 +444,9 @@ def _telegram_confirmed_patch_proof(session: dict[str, Any], overrides: dict[str
     if expected != overrides:
         return None
     digest = _telegram_overrides_digest(overrides)
-    binding = hashlib.sha256(json.dumps({"base": prior, "changes": changes},
-        sort_keys=True, ensure_ascii=False, allow_nan=False).encode("utf-8")).hexdigest()
+    binding = (_telegram_qualified_application_binding(overrides, 'confirmed_patch')
+        if intake_qualification.KEY in overrides else hashlib.sha256(json.dumps({"base": prior, "changes": changes},
+        sort_keys=True, ensure_ascii=False, allow_nan=False).encode("utf-8")).hexdigest())
     return {"schema": 1, "scope": "confirmed_patch", "binding": binding, "sha256": digest}
 
 
@@ -428,6 +457,7 @@ def _telegram_session(
     manual_tep: dict[str, Any] | None = None,
     calc_overrides: dict[str, Any] | None = None,
     application_proof: dict[str, Any] | None = None,
+    calculation_qualification: dict[str, Any] | None = None,
 ) -> str:
     token = _telegram_token()
     if not token:
@@ -442,8 +472,20 @@ def _telegram_session(
     if calc_overrides:
         payload["calc_overrides"] = calc_overrides
         proof = _telegram_application_proof(calc_overrides, application_proof)
+        qualification = calc_overrides.get(intake_qualification.KEY)
+        if qualification is not None and (
+                not isinstance(qualification, dict)
+                or qualification.get('recipient') != _intake_qualification_recipient(chat_id)):
+            proof = None
         if proof is not None:
             payload["overrides_application"] = proof
+    if calculation_qualification is not None and not (calc_overrides or {}).get(intake_qualification.KEY):
+        state = _intake_qualification_state({intake_qualification.KEY:calculation_qualification})
+        recipient = calculation_qualification.get('recipient') if isinstance(calculation_qualification, dict) else None
+        if state and state.get('verified') and recipient in (None, _intake_qualification_recipient(chat_id)):
+            payload['calculation_qualification'] = calculation_qualification
+        else:
+            payload['qualification_review_required'] = True
     raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
     if len(raw) > 24_000:
         raise RuntimeError("Ручной ТЭП слишком велик для Telegram-сессии")
@@ -503,6 +545,7 @@ def _telegram_web_app_url(
     calc_overrides: dict[str, Any] | None = None,
     mode: str | None = None,
     application_proof: dict[str, Any] | None = None,
+    calculation_qualification: dict[str, Any] | None = None,
 ) -> str:
     fragment: dict[str, str] = {
         "telegram_session": _telegram_session(
@@ -511,6 +554,7 @@ def _telegram_web_app_url(
             manual_tep=manual_tep,
             calc_overrides=calc_overrides,
             application_proof=application_proof,
+            calculation_qualification=calculation_qualification,
         ),
     }
     if cadastral_numbers:
@@ -1807,6 +1851,20 @@ def _telegram_platon_remember_document(chat_id: int, context: dict[str, Any]) ->
     return "разговор с Платоном в этом процессе не ведётся"
 
 
+def _telegram_document_memory_reason(outcome: Any) -> str:
+    """Closed public causes; persistence diagnostics never leave the server."""
+    text = str(outcome or "").casefold()
+    if "read-only" in text or "read only" in text or "только для чтения" in text:
+        return "диск доступен только для чтения"
+    if "permission" in text or "access denied" in text or "недостаточно прав" in text:
+        return "недостаточно прав для записи разговора"
+    if "no space" in text or "disk full" in text or "нет места" in text:
+        return "на диске недостаточно свободного места"
+    if "разговор с платоном в этом процессе не ведётся" in text:
+        return "хранилище разговора в этом процессе не подключено"
+    return "хранилище разговора сейчас недоступно"
+
+
 def _telegram_handle_intake_document(chat_id: int, data: bytes, filename: str,
         document_override: dict[str,Any] | None = None, *, _operation=None) -> None:
     """Prepare outside locks; only current native operation can publish a card."""
@@ -1871,7 +1929,9 @@ def _telegram_handle_intake_document(chat_id: int, data: bytes, filename: str,
             if card.get('ready'):
                 markup = _telegram_intake_calc_markup(chat_id,card,region)
             text += ('\n\n<i>Документ в разговоре: спрашивайте по нему — Платон ответит по тексту. Новый документ заменит этот.</i>'
-                if not remembered else '\n\n<i>Документ в разговор не попал; карточка сохранена отдельно. Следующий вопрос Платон увидит без него.</i>')
+                if not remembered else '\n\n<i>Документ в разговор не попал: '
+                + _telegram_document_memory_reason(remembered)
+                + '. Карточка сохранена отдельно. Следующий вопрос Платон увидит без него.</i>')
             _telegram_document_reply(operation,text,reply_markup=markup)
     except document_processing.Cancelled:
         _telegram_document_interrupted(operation)
@@ -1991,13 +2051,20 @@ def _telegram_intake_calc_markup(chat_id: int, card: dict[str, Any],
             return None
         digest = _telegram_overrides_digest(overrides)
         proof = {"schema": 1, "scope": "confirmed_card", "sha256": digest,
-                 "binding": hashlib.sha256((queue["id"] + current["card_key"]).encode("ascii")).hexdigest()}
+                 "binding": _telegram_qualified_application_binding(overrides, 'confirmed_card')}
         url = _telegram_web_app_url(chat_id, numbers, calc_overrides=overrides, mode=mode,
                                     application_proof=proof)
     except Exception:  # noqa: BLE001
+        card['calculation_error'] = ('Кнопка расчёта не выдана: не удалось подтвердить текущие условия документа. '
+            'Уточните оценки в карточке или пришлите нужную часть документа отдельно.')
         return None
-    label = "Считать без неуточнённых обязательств" if card.get("conditional") else "Всё верно, считать"
-    return {"inline_keyboard": [[{"text": label, "web_app": {"url": url}}]]}
+    label = "Считать без неуточнённых обязательств" if current.get("conditional") else "Всё верно, считать"
+    keyboard = [[{"text": label, "web_app": {"url": url}}]]
+    for item in current['calculation_qualification_record']['obligations']:
+        keyboard.append([{'text':'Уточнить обязательство '+str(item['index']+1),
+            'callback_data':_telegram_intake_callback_data(queue['id'], 'review', item['index'],
+                _intake_question_token(queue)[:8])}])
+    return {"inline_keyboard": keyboard}
 
 
 def _intake_cadastral_numbers(extraction: dict[str, Any]) -> list[str]:
@@ -2189,9 +2256,16 @@ def _telegram_intake_ask_next(chat_id: int, dialog: dict[str, Any]) -> None:
             _telegram_intake_amount_prompt(chat_id, cards[index], index, choice, queue["id"], _intake_question_token(queue))
             return
     region = str((dialog.get("intake") or {}).get("region") or "")
-    card = teaser_card_view(queue, dict(DEFAULT_INPUTS),
-                            {key: dict(value) for key, value in TEP_DEFAULT.items()},
-                            by_parcel=True, parcel_region=region)
+    try:
+        card = teaser_card_view(queue, dict(DEFAULT_INPUTS),
+                                {key: dict(value) for key, value in TEP_DEFAULT.items()},
+                                by_parcel=True, parcel_region=region)
+    except HTTPException as exc:
+        if exc.status_code != 413:
+            raise
+        _telegram_send_message(chat_id, 'Кнопка расчёта не выдана: '+html.escape(str(exc.detail))
+            +' Карточка и ваши ответы сохранены; при необходимости пришлите нужную часть документа отдельно.')
+        return
     ask = card["questions"]["card"]
     if ask is None:
         dialog["step"] = "intake_ready"
@@ -2202,8 +2276,10 @@ def _telegram_intake_ask_next(chat_id: int, dialog: dict[str, Any]) -> None:
         if card.get("conditional"):
             text += ("\n\n<b>Предварительный расчёт:</b> неуточнённые обязательства "
                      "в денежный расчёт не включены. Кнопка подтверждает только показанные вводные.")
-        _telegram_send_intake_text(chat_id, text,
-                               reply_markup=_telegram_intake_calc_markup(chat_id, card, region))
+        markup = _telegram_intake_calc_markup(chat_id, card, region)
+        if card.get('calculation_error'):
+            text += '\n\n<b>'+html.escape(card['calculation_error'])+'</b>'
+        _telegram_send_intake_text(chat_id, text, reply_markup=markup)
         return
     dialog["step"] = "await_intake_answer"
     _telegram_dialog_save(chat_id, dialog)
@@ -2314,7 +2390,7 @@ def _telegram_intake_callback(chat_id: int, data: str) -> None:
         _telegram_intake_ask_next(chat_id, dialog)
         return
     action = parts[0].removeprefix("intake2_")
-    if action in {"opt","defer","rechoose","mode"}:
+    if action in {"opt","defer","rechoose","mode","review"}:
         intake = dialog.get("intake") or {}
         pending = intake.get("pending") or {} if action == "mode" else None
         expected_token = str((pending or {}).get("question_token") if action == "mode"
@@ -2331,6 +2407,11 @@ def _telegram_intake_callback(chat_id: int, data: str) -> None:
             return
         if action != "mode":parts=parts[:-1]
     data = ":".join([parts[0].replace("intake2_", "intake_", 1), *parts[2:]])
+    if data.startswith('intake_review:'):
+        value = data.removeprefix('intake_review:')
+        if value.isascii() and value.isdigit():
+            _telegram_intake_answer(chat_id, dialog, index=int(value), action='review')
+        return
     if data == "intake_questions":
         _telegram_intake_ask_next(chat_id, dialog)
         return
@@ -3887,9 +3968,25 @@ def telegram_session_data(req: TelegramSessionRequest) -> dict[str, Any]:
         raise HTTPException(status_code=403, detail="Доступ к боту закрыт")
     overrides = session.get("calc_overrides") or {}
     review = bool(overrides) and _telegram_carry_application_proof(session) is None
-    return {
+    qualification = overrides.get(intake_qualification.KEY)
+    if qualification is not None and (
+            not isinstance(qualification, dict)
+            or qualification.get('recipient') != _intake_qualification_recipient(chat_id)):
+        review = True
+    result = {
         "cadastral_numbers": session.get("cad") or [],
         "manual_tep": session.get("manual_tep"),
         "calc_overrides": {} if review else overrides,
         "overrides_review_required": review,
     }
+    carried = session.get('calculation_qualification')
+    if carried is not None:
+        state = _intake_qualification_state({intake_qualification.KEY:carried})
+        recipient = carried.get('recipient') if isinstance(carried, dict) else None
+        if state and state.get('verified') and recipient in (None, _intake_qualification_recipient(chat_id)):
+            result['calculation_qualification'] = carried
+        else:
+            result['qualification_review_required'] = True
+    if session.get('qualification_review_required') is True:
+        result['qualification_review_required'] = True
+    return result

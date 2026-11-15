@@ -3013,6 +3013,7 @@ class CadastralTepRequest(BaseModel):
 class TelegramResultRequest(BaseModel):
     session: str
     summary: dict[str, Any]
+    qualification_session: str = ""
 
 
 class TelegramSessionRequest(BaseModel):

@@ -209,7 +209,12 @@ function renderAiCard(card,opts){
  (card.dropped||[]).forEach(line=>{html+='<div style="margin-top:4px;color:#8a4b08;font-size:12px">Не взято: '+aiEsc(line)+'</div>'});
  const left=Math.max(0,Number(q.total||0)-Number(q.index||0));
  html+='<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:10px">';
- if(card.ready)html+='<button class="btn dark" data-act="calc">Всё верно, считать</button>';
+ if(card.ready){
+  html+='<button class="btn dark" data-act="calc">Всё верно, считать</button>';
+  (card.calculation_qualification_record?.obligations||[]).forEach(item=>{
+   html+='<button class="btn" data-act="review" data-index="'+item.index+'">Уточнить обязательство '+(item.index+1)+'</button>';
+  });
+ }
  else html+='<div style="width:100%">Модель пока не менялась. Дальше — '+aiEsc(left)+' '+(left===1?'вопрос':left<5?'вопроса':'вопросов')+' о том, чего в тизере нет, по одному.</div>'
   +'<button class="btn dark" data-act="questions">Перейти к вопросам</button>';
  html+='</div>';
@@ -217,9 +222,20 @@ function renderAiCard(card,opts){
  box.querySelectorAll('button[data-act]').forEach(b=>b.onclick=()=>{
   box.querySelectorAll('button[data-act]').forEach(x=>x.disabled=true);
   if(b.dataset.act==='questions')renderAiQuestion(card);
+  else if(b.dataset.act==='review')reviewAiObligation(card,Number(b.dataset.index));
   else confirmAiCard(card,box);
  });
  return box;
+}
+async function reviewAiObligation(card,index){
+ try{
+  const response=await fetch('/agent/document/answer',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({intake_id:card.id,index,action:'review',queue_revision:card.queue_revision,
+    question_token:card.question_token,inputs,tep,class_profile:aiClassProfile(),session:activeSession(),access_key:projectsAdminKey||''})});
+  const data=await response.json();
+  if(!response.ok){appendAiMessage('system','Уточнение не начато: '+(serverDetail(data)||'проверьте текущую карточку.'));return}
+  renderAiQuestion(data.card);
+ }catch(e){appendAiMessage('system','Уточнение не начато: '+String(e.message||e))}
 }
 // Происхождение подставленного из документа: значение нормы или импорта после
 // сохранения не должно выглядеть ручным, а документ — источник, а не человек.
@@ -422,6 +438,7 @@ async function confirmAiCard(shown,box){
   aiDocBaseline=aiSnapshot();
   const rows=card.to_engine||[];
   Object.assign(inputs,result.inputs);
+  telegramQualificationSession=result.calculation_session||'';
   Object.keys(tep).forEach(k=>delete tep[k]);Object.assign(tep,result.tep);
   rows.forEach(row=>{if(row.path==='land.cadastral_numbers')applyAiCadastral({label:row.label,value:row.value},card.filename)});
   syncTep(false);renderInputs();renderTep();syncProjectClassSelector();

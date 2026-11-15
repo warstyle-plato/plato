@@ -598,7 +598,8 @@ function telegramParkingByKind(result){
 async function sendTelegramResult(){
  const glavapuMeta=inputs._glavapu_import||null;
  const manualMeta=inputs._manual_tep_import||null;
- if(!telegramSession||telegramResultSent||!lastResult||(!glavapuMeta&&!manualMeta))return;
+ const documentMeta=inputs._intake_qualification||null;
+ if(!telegramSession||telegramResultSent||!lastResult||(!glavapuMeta&&!manualMeta&&!documentMeta))return;
  if(sendTelegramResult.pending)return;
  // A timed-out request may already have delivered its message. Only the
  // explicit user recalculation/edit action may try again after that outcome.
@@ -682,7 +683,8 @@ async function sendTelegramResult(){
      if(controller)controller.abort();
    },20000)});
    const request=(async()=>{
-     const body=JSON.stringify({session:telegramSession,summary:payload});
+     const body=JSON.stringify({session:telegramSession,summary:payload,
+      qualification_session:typeof telegramQualificationSession==='string'?telegramQualificationSession:''});
      requestStarted=true;
      const response=await fetch('/telegram/result',{
        method:'POST',
