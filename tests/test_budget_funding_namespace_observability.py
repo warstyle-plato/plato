@@ -112,6 +112,7 @@ def test_namespace_metadata_cannot_be_attached_to_an_unrelated_refusal():
 def test_omitted_QName_or_truncated_URI_does_not_imply_namespace_identified():
     legacy = rejection(rejected_xml())
     legacy.pop('namespace_rejection')
+    legacy.pop('namespace_structure')
     assert proof._checked_extent_failure(legacy) == legacy
     assert outer(legacy)['extent_proof'] == legacy
     truncated = rejection(rejected_xml('urn:synthetic:' + 'x' * 300))
@@ -168,6 +169,8 @@ def test_native_admin_job_retains_private_QName_with_exact_source_and_no_money_p
     assert diag['stage'] == 'rss_estimate'
     assert diag['source_identity'] == {'kind': 'rss', 'sha256': hashlib.sha256(raw).hexdigest(), 'bytes': len(raw)}
     assert diag['extent_proof']['namespace_rejection'] == {'namespace_uri': URI, 'local_name': 'f', 'truncated': False}
+    assert diag['extent_proof']['namespace_structure']['path'] == ['worksheet', 'extLst', 'ext', 'other']
+    assert diag['extent_proof']['namespace_structure']['checks'] == ['no_match'] + ['not_evaluated'] * 10
     assert not diag['complete_projection'] and not diag['financial_acceptance']
     assert CANARY not in response.text and CANARY not in caplog.text and URI not in caplog.text
     assert KEY not in response.text and len(json.dumps(diag).encode()) <= 2048
@@ -175,6 +178,7 @@ def test_native_admin_job_retains_private_QName_with_exact_source_and_no_money_p
     for path in ('/health', '/monitor', '/openapi.json'):
         public = client.get(path)
         assert URI not in public.text and CANARY not in public.text
+        assert 'namespace_structure' not in public.text
     assert '/monitor/audit/budget-funding' not in client.get('/openapi.json').json()['paths']
 
 
