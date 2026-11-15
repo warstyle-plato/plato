@@ -111,7 +111,11 @@ def test_cash_cards_and_model_detail_do_not_add_ahr_twice_or_survive_context_los
         page.evaluate('v=>{currentView=v;renderDash(v);renderGantt(v);selectMonitorTab("money")}', view)
         card = page.locator('#adminExpensesCard')
         expect(card).to_be_visible()
-        assert card.locator('.admin-expenses-cash > div > div').count() == 4
+        assert card.locator('.admin-expenses-cash > div > div').count() == 0
+        cash_details = card.locator('.admin-expenses-cash > details:not(.admin-fm-source) > p')
+        assert cash_details.count() == 4
+        assert cash_details.all_text_contents() == [f'{label}: {cash.money(model.get(key))}'
+                                                   for key, label in cash.FIELDS]
         assert card.locator('details.admin-fm-source .admin-expenses > div > div').count() == 3
         assert card.locator('details.admin-fm-source').evaluate('e=>!e.open')
         assert page.locator('#kpis .kpi .l').all_text_contents().count('Утверждённый бюджет') == 1

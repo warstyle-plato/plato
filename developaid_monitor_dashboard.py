@@ -93,6 +93,27 @@ def _funding_source_dates(project: str, rss: Path, cut: datetime.date,
     return dates
 
 
+def funding_cash_summary(funding: dict[str, Any], model: dict[str, Any], money: Any) -> dict[str, Any]:
+    """Keep the whole-project diagnostic gap out of the bank-only headline.
+
+    The canonical approved budget already includes AHR. Its current producer
+    does not attest a confirmed additional need; cash observations cannot
+    supply that missing attestation or make AHR an extra expense again.
+    """
+    import developaid_admin_expenses_cash as admin_cash
+
+    reconciliation = ((funding.get("own_money") or {}).get("reconciliation")
+                      or funding.get("reconciliation"))
+    if reconciliation:
+        summary = admin_cash.funding_summary(None, model, money)
+        cash_note = summary["note"] + " " if summary["scope"] == "unconfirmed_total" else ""
+        return {"amount": None, "scope": "unconfirmed_total",
+                "note": cash_note + "Финансовая сверка первичных источников не завершена; "
+                "общая потребность пока не определена. Расчётная дополнительная потребность "
+                "приведена в разделе «Финансирование»."}
+    return admin_cash.funding_summary(admin_cash.funding_base_for_limit(funding, model), model, money)
+
+
 def funding_source_notes(funding: dict[str, Any]) -> dict[str, str]:
     """Единые видимые даты карточек, Монитора, текста и печатной сводки."""
     dates = funding.get("source_dates") or {}
@@ -673,7 +694,15 @@ def _read_finance_model(wb: Any, path: Path, *, bank_assignments: dict | None = 
         # смете в главе 2 (владелец, 02.11.2026: «Административные расходы
         # сидят скорее всего в главе 2-3 тоже, 2.6 статья например»).
         flow = chapter_flow.setdefault(chapter, {"total": 0.0, "fact": 0.0, "plan": 0.0,
-                                                 "monthly": {}, "sections": {}})
+                                                 "monthly": {}, "sections": {},
+                                                 "admin_expenses": {"total": 0.0, "fact": 0.0, "plan": 0.0, "monthly": {}}})
+        if code == "2.4" or code.startswith("2.4."):
+            admin = flow["admin_expenses"]
+            for key, value in (("total", total), ("fact", paid), ("plan", need)):
+                admin[key] += value
+            for c, month in month_columns:
+                key = month.isoformat()
+                admin["monthly"][key] = admin["monthly"].get(key, 0.0) + max(0.0, money(r, c))
         flow["total"] += total
         flow["fact"] += paid
         flow["plan"] += need
@@ -1511,6 +1540,8 @@ def _own_money(comp: dict[str, Any] | None, smeta: dict[str, float],
     left = {ch: float(smeta.get(ch) or 0.0) - paid[ch] for ch in chapters}
     rows: list[dict[str, Any]] = []
     dates = book = 0.0
+    admin_included = 0.0
+    admin_split_known = all("admin_expenses" in flow for flow in chapter_flow.values())
     articles: dict[str, dict[str, Any]] = {}
     policy = {"state": "not_replaced", "items": [], "monthly_additions": {},
               "added_to_need": 0.0}
@@ -1532,6 +1563,12 @@ def _own_money(comp: dict[str, Any] | None, smeta: dict[str, float],
             for month, amount in policy["monthly_additions"].items():
                 monthly[month] = monthly.get(month, 0.0) + amount
         owed = sum(monthly.values())
+        if admin_split_known and not by_schedule:
+            admin_monthly = (flow.get("admin_expenses") or {}).get("monthly", {})
+            without_admin = {month: max(0.0, value - admin_monthly.get(month, 0.0))
+                             for month, value in flow["monthly"].items()}
+            admin_included += owed - sum(_plan_still_owed(
+                without_admin, plan_from, (paid_since or {}).get(chapter, 0.0), cut).values())
         cost = paid[chapter] + owed
         rows.append({"chapter": chapter, "label": _CHAPTER_WORDS.get(chapter, ("", ""))[0],
                      "sections": dict(sorted(flow["sections"].items())),
@@ -1553,6 +1590,8 @@ def _own_money(comp: dict[str, Any] | None, smeta: dict[str, float],
                      "budget": flow["total"], "limit": 0.0,
                      "to_pay": flow["plan"], "left": 0.0, "paid": flow["fact"],
                      "amount": flow["total"]})
+        if admin_split_known:
+            admin_included += flow["admin_expenses"]["total"]
         book += flow["total"] - flow["fact"] - flow["plan"]
         articles[f"вне глав {chapter}"] = {
             "code": f"вне глав {chapter}", "chapter": "", "rss_limit": 0.0,
@@ -1586,6 +1625,8 @@ def _own_money(comp: dict[str, Any] | None, smeta: dict[str, float],
         "left": sum(left.values()), "left_by_chapter": left,
         "need": need, "model_over_schedule": over, "accounting": accounting,
         "admin": _admin_expenses(comp, chapter_flow, schedule),
+        **({"need_without_admin_expenses": need - admin_included,
+            "admin_expenses_included": admin_included} if admin_split_known else {}),
         "rows": rows, "dates": dates, "book": book,
         "from": waterfall["additional_financing_from"],
         "book_fact": float(comp.get("fact") or 0.0),
@@ -2901,6 +2942,10 @@ def _build(
         dashboard = _dashboard(project, rss, cut_date, view)
         view["dashboard"] = dashboard
         view["financing"] = dashboard["funding"]
+        if not monitor._HISTORICAL_TREND_READ.get():
+            funding = dashboard["funding"]
+            summary = funding_cash_summary(funding, view["admin_expenses_cash"], _fmt_money)
+            view["admin_expenses_html"] = admin_cash.render_funding(summary, view["admin_expenses_html"])
     return view
 
 

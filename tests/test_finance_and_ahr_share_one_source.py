@@ -43,7 +43,7 @@ def composed(tmp_path, monkeypatch, *, unknown_payment=False):
 
 
 @pytest.mark.parametrize('unknown_payment', [False, True])
-def test_one_source_has_one_budget_and_four_cash_tiles_without_a_second_expense(tmp_path, monkeypatch, unknown_payment):
+def test_one_source_has_one_budget_and_four_cash_details_without_a_second_expense(tmp_path, monkeypatch, unknown_payment):
     built, view, rss = composed(tmp_path, monkeypatch, unknown_payment=unknown_payment)
     funding = view['dashboard']['funding']
     reconciliation = funding['reconciliation']
@@ -60,8 +60,14 @@ def test_one_source_has_one_budget_and_four_cash_tiles_without_a_second_expense(
     # FM FACT/PLAN remain the three source values above, not actual AHR paid.
     # This fixture has no usable contract register to classify actual AHR cash.
     tiles = [item for item in report.tiles(built) if item.get('group') == 'admin_expenses_cash']
-    assert [item['label'] for item in tiles] == [label for _, label in cash.FIELDS]
-    assert [item['value'] for item in tiles] == ['40 000,00 ₽', 'нет данных', 'нет данных', 'нет данных']
+    assert tiles == []  # The shipped single funding headline replaces four cover cards.
+    cash_values = cash.tiles(view['admin_expenses_cash'])
+    assert [item['label'] for item in cash_values] == [label for _, label in cash.FIELDS]
+    assert [item['value'] for item in cash_values] == ['40 000,00 ₽', 'нет данных', 'нет данных', 'нет данных']
+    for key, label in cash.FIELDS:
+        assert f'<p>{label}: {cash.money(view["admin_expenses_cash"].get(key))}</p>' in report.render_html(built)
+    headline, = [item for item in report.tiles(built) if item.get('group') == 'additional_funding']
+    assert headline['value'] == 'нет данных' and headline['tone'] == 'missing'
     assert not any(item.get('group') == 'admin_expenses' for item in report.tiles(built))
     assert 'повторно к расходам или дефициту не прибавляются' in report.render_html(built)
     if unknown_payment:
@@ -87,7 +93,11 @@ def test_real_monitor_keeps_ahr_before_canonical_financial_return_and_clears_the
         page.evaluate("view=>{currentView=view;renderDash(view);selectMonitorTab('money')}", view)
         card = page.locator('#adminExpensesCard')
         expect(card).to_be_visible()
-        assert card.locator('.admin-expenses-cash > div > div').count() == 4
+        assert card.locator('.admin-expenses-cash > div > div').count() == 0
+        cash_details = card.locator('.admin-expenses-cash > details:not(.admin-fm-source) > p')
+        assert cash_details.count() == 4
+        assert cash_details.all_text_contents() == [
+            f'{label}: {cash.money(view["admin_expenses_cash"].get(key))}' for key, label in cash.FIELDS]
         assert card.locator('details.admin-fm-source .admin-expenses > div > div').count() == 3
         assert card.locator('details.admin-fm-source').evaluate('e=>!e.open')
         for _, label in admin.FIELDS:

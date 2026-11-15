@@ -233,15 +233,16 @@ def test_the_tiles_add_up_on_the_page(tmp_path, monkeypatch):
     assert tiles["Доступный остаток лимита банка"]["value"] == report._rub(own["reconciliation"]["available_bank_limit"])
     assert tiles["Доступный остаток лимита банка"]["note"] == (
         "Положительные остатки лимитов на ту же дату. " + source_notes["left"])
-    need = tiles["Расчётная дополнительная потребность"]
-    assert need["value"] == report._rub(own["reconciliation"]["calculated_additional"])
-    assert "Утверждённый бюджет минус оплаты" in need["note"]
+    need = tiles["Потребность в допфинансировании"]
+    assert need["value"] == "нет данных" and need["tone"] == "missing"
+    assert "сверка первичных источников не завершена" in need["note"]
+    assert "без АХР" not in need["note"]
     assert source_notes['need'] in need['note']
     funding_html = report._funding_html(built)
-    core = {'budget', 'bank_limit_total', 'paid_at_cut', 'available_bank_limit', 'calculated_additional'}
+    core = {'budget', 'bank_limit_total', 'paid_at_cut', 'available_bank_limit'}
     for row in own['reconciliation']['display_rows']:
-        # Cover uses the five principal canonical readings; every diagnostic
-        # label/value stays in the canonical table, without another cover tile.
+        # Unaccepted calculated need stays in the canonical table; its cover
+        # headline remains unknown. Every diagnostic label/value is retained.
         assert f"<td>{row['label']}</td><td>{report._rub(row['value'])}</td>" in funding_html
         if row['key'] in core:
             assert tiles[row['label']]['value'] == report._rub(row['value'])
@@ -252,7 +253,7 @@ def test_the_tiles_add_up_on_the_page(tmp_path, monkeypatch):
                  "Можно ещё выбрать у банка"):
         assert gone not in tiles
     found = {item["topic"]: item["text"] for item in built["findings"]}["Финансирование"]
-    assert found.startswith('Расчётная дополнительная потребность ' + report._rub(own['reconciliation']['calculated_additional']))
+    assert 'общая потребность пока не определена' in found
     assert 'финансовая сверка источников не завершена' in found
     assert 'Финансовая сверка первичных источников не завершена' in funding_html
     page = report.render_html(built)

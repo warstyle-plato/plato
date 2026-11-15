@@ -92,6 +92,53 @@ def group(rows):
                 note='Условная оценка по известным работам; не подтверждённый прогноз РНВ.')
 
 
+def _explanation(state, forecast, members, references):
+    """Bounded display evidence from the exact members used by this summary."""
+    candidates = []
+    unlinked = 0
+    counts = dict(measured=0, conditional=0, complete=0, observation_only=0, unknown=0)
+    for row in members:
+        single = group([row])
+        if single['all_complete']:
+            counts['complete'] += 1
+            counts['observation_only'] += bool(row.get('observed_complete_by'))
+            continue
+        if not single['finish']:
+            counts['unknown'] += 1
+            continue
+        basis = ('measured' if row.get('forecast_known') and not row.get('observed_complete_by')
+                 else 'conditional')
+        counts[basis] += 1
+        key = str(row.get('id') or '')
+        reference = references.get(key)
+        if not key or len(key) > 512 or not isinstance(reference, str) or not reference or len(reference) > 512:
+            unlinked += 1
+            continue
+        plan = _day(single['plan_finish'])
+        finish = _day(single['finish'])
+        candidates.append(dict(work_id=key, reference_work_id=reference,
+                               finish=single['finish'], plan_finish=single['plan_finish'],
+                               basis=basis, delta_days=(finish-plan).days if plan and finish else None,
+                               latest=single['finish'] == forecast['finish']))
+    latest = sorted((row for row in candidates if row['latest']), key=lambda row: row['work_id'])
+    shifted = sorted((row for row in candidates if row['delta_days'] is not None and row['delta_days'] > 0),
+                     key=lambda row: (-row['delta_days'], row['work_id']))
+    selected = list(latest[:3])
+    for row in shifted:
+        if len(selected) == 5:
+            break
+        if row not in selected:
+            selected.append(row)
+    return dict(schema=1, basis='readiness_project_forecast', source_sha256=forecast['source_sha256'],
+                full_source_sha256=forecast['full_source_sha256'], id_scope=forecast['id_scope'],
+                cut=state.get('cut'), finish=forecast['finish'], total=forecast['total'],
+                covered=forecast['covered'], reference_total=forecast['reference_total'],
+                gap_count=len(forecast['gaps']), excluded_count=len(forecast['excluded']),
+                counts=counts, latest_count=len(latest), shifted_count=len(shifted),
+                unlinked_count=unlinked, conditional_note=NOTE if counts['conditional'] else None,
+                limit=5, rows=selected)
+
+
 def decorate_readiness(state, rows, milestone_plan=None):
     from collections import Counter, defaultdict
     plan = milestone_plan or {}
@@ -113,7 +160,7 @@ def decorate_readiness(state, rows, milestone_plan=None):
     for item in groups:
         ids = [str(key) for key in item.get('work_ids', [])]
         counts = Counter(ids)
-        members, gaps, excluded = [], [], []
+        members, gaps, excluded, references = [], [], [], {}
 
         def gap(key, reason, remaining_id=None):
             gaps.append(dict(work_id=key, remaining_id=remaining_id, kind=reason))
@@ -142,6 +189,7 @@ def decorate_readiness(state, rows, milestone_plan=None):
                     gap(key, 'ambiguous_current_identity', current)
                 else:
                     members.append(candidates[0])
+                    references[current] = key
                     if not group(candidates)['covered']:
                         gaps.append(dict(work_id=key, remaining_id=current,
                                          kind='unknown_time'))
@@ -156,3 +204,7 @@ def decorate_readiness(state, rows, milestone_plan=None):
                         source_sha256=state.get('source_sha256'),
                         full_source_sha256=identity.get('full_source_sha256'))
         item['forecast'] = forecast
+        if item is state['project']:
+            forecast['explanation'] = _explanation(state, forecast, members, references)
+            from developaid_gpr_summary import display_forecast
+            forecast['display'] = display_forecast(state, forecast, members, references)

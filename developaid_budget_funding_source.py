@@ -61,6 +61,26 @@ _EXTENT_REASONS = frozenset({
     'parser_unavailable', 'xml_parse_failure', 'zip_integrity_failure',
     'source_stream_failure', 'internal_proof_failure'})
 _EXTENT_CONTEXTS = frozenset({'root', 'sheet_data', 'row', 'cell', 'worksheet_metadata', 'unknown'})
+_MAIN_QNAME = '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}'
+_X14_QNAME = '{http://schemas.microsoft.com/office/spreadsheetml/2009/9/main}'
+_XM_QNAME = '{http://schemas.microsoft.com/office/excel/2006/main}'
+_FORMATTING_FORMULA_PATH = (
+    _MAIN_QNAME+'worksheet', _MAIN_QNAME+'extLst', _MAIN_QNAME+'ext',
+    _X14_QNAME+'conditionalFormattings', _X14_QNAME+'conditionalFormatting',
+    _X14_QNAME+'cfRule', _X14_QNAME+'dataBar', _X14_QNAME+'cfvo', _XM_QNAME+'f')
+_FORMATTING_FORMULA_CHECKS = ('path', 'data_seen', 'row_inactive', 'cell_inactive',
+    'attributes_empty', 'first_child', 'cfvo_formula', 'rule_data_bar', 'rule_guid',
+    'extension_attributes', 'extension_uri')
+_NAMESPACE_PATH_TOKENS = {
+    _MAIN_QNAME+'worksheet': 'worksheet', _MAIN_QNAME+'sheetData': 'sheetData',
+    _MAIN_QNAME+'row': 'row', _MAIN_QNAME+'c': 'c', _MAIN_QNAME+'v': 'v',
+    _MAIN_QNAME+'f': 'f', _MAIN_QNAME+'is': 'is', _MAIN_QNAME+'extLst': 'extLst',
+    _MAIN_QNAME+'ext': 'ext', _X14_QNAME+'conditionalFormattings': 'x14:cfs',
+    _X14_QNAME+'conditionalFormatting': 'x14:cf', _X14_QNAME+'cfRule': 'x14:rule',
+    _X14_QNAME+'dataBar': 'x14:bar', _X14_QNAME+'cfvo': 'x14:cfvo', _XM_QNAME+'f': 'xm:f'}
+_NAMESPACE_PATH_LIMIT = 12
+_QNAME_PATH_FINGERPRINT_SCHEMA = 'expanded-qname-path-v1'
+_QNAME_PATH_FINGERPRINT_MAX_BYTES = 64 * 1024
 
 
 class _ExtentProofProblem(ValueError):
@@ -69,13 +89,97 @@ class _ExtentProofProblem(ValueError):
         super().__init__(self.reason)
 
 
+def _namespace_rejection(tag):
+    """Private failure metadata only; never a namespace acceptance rule."""
+    if type(tag) is not str:
+        return None
+    local = tag.rsplit('}', 1)[-1]
+    if local not in ('sheetData', 'row', 'c', 'v', 'f', 'is'):
+        return None
+    if tag.startswith('{'):
+        end = len(tag) - len(local) - 1
+        if end < 1 or tag[end] != '}':
+            return None
+        # Do not encode/copy an unbounded URI merely to truncate it.
+        if end - 1 > 256:
+            return {'local_name': local, 'namespace_uri': None, 'truncated': True}
+        uri = tag[1:end]
+    elif tag == local:
+        uri = ''
+    else:
+        return None
+    try:
+        truncated = len(uri.encode('utf-8')) > 256
+    except UnicodeError:
+        return None
+    return {'local_name': local, 'namespace_uri': None if truncated else uri,
+            'truncated': truncated}
+
+
+def _checked_namespace_structure(value):
+    """Only fixed tokens/states; an incomplete path never attests compatibility."""
+    if (type(value) is not dict or set(value) != {'path', 'depth', 'truncated', 'other', 'first_unmet', 'checks'}
+            or type(value['path']) is not list or type(value['depth']) is not int
+            or not 1 <= value['depth'] <= 64 or type(value['truncated']) is not bool
+            or type(value['other']) is not bool or type(value['first_unmet']) is not str
+            or type(value['checks']) is not list):
+        return False
+    tokens = frozenset(_NAMESPACE_PATH_TOKENS.values()) | {'other'}
+    if (len(value['path']) != min(value['depth'], _NAMESPACE_PATH_LIMIT)
+            or any(type(token) is not str or token not in tokens for token in value['path'])
+            or value['truncated'] != (value['depth'] > _NAMESPACE_PATH_LIMIT)
+            or 'other' in value['path'] and not value['other']
+            or not value['truncated'] and value['other'] != ('other' in value['path'])):
+        return False
+    states = value['checks']
+    if (len(states) != len(_FORMATTING_FORMULA_CHECKS)
+            or any(type(state) is not str or state not in {'match', 'no_match', 'not_evaluated'} for state in states)):
+        return False
+    expected_path = [_NAMESPACE_PATH_TOKENS[tag] for tag in _FORMATTING_FORMULA_PATH]
+    if (states[0] == 'match') != (not value['truncated'] and value['path'] == expected_path):
+        return False
+    if value['first_unmet'] == 'none':
+        return all(type(state) is str and state == 'match' for state in states)
+    if value['first_unmet'] not in _FORMATTING_FORMULA_CHECKS:
+        return False
+    first = _FORMATTING_FORMULA_CHECKS.index(value['first_unmet'])
+    return states == ['match'] * first + ['no_match'] + ['not_evaluated'] * (len(states) - first - 1)
+
+
+def _namespace_path_fingerprint(stack):
+    """Hash a complete bounded QName stack; never return a partial digest."""
+    if (type(stack) not in (list, tuple) or not 1 <= len(stack) <= 64
+            or any(type(tag) is not str or not tag for tag in stack)
+            or sum(len(tag) for tag in stack) > _QNAME_PATH_FINGERPRINT_MAX_BYTES):
+        return None
+    try:
+        # The character precheck bounds even worst-case JSON escaping before
+        # encoding; the byte check is on the full canonical representation.
+        content = json.dumps({'schema': _QNAME_PATH_FINGERPRINT_SCHEMA, 'path': list(stack)},
+            ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False).encode('utf-8')
+    except (TypeError, ValueError, UnicodeError, OverflowError):
+        return None
+    if len(content) > _QNAME_PATH_FINGERPRINT_MAX_BYTES:
+        return None
+    return {'schema': _QNAME_PATH_FINGERPRINT_SCHEMA, 'sha256': hashlib.sha256(content).hexdigest()}
+
+
+def _checked_namespace_path_fingerprint(value):
+    return (type(value) is dict and set(value) == {'schema', 'sha256'}
+            and type(value['schema']) is str and value['schema'] == _QNAME_PATH_FINGERPRINT_SCHEMA
+            and type(value['sha256']) is str and len(value['sha256']) == 64
+            and re.fullmatch('[0-9a-f]{64}', value['sha256']) is not None)
+
+
 def _checked_extent_failure(value):
     """Metadata only. Unknown exception text/objects never cross this boundary."""
     fields = {'schema', 'outcome', 'basis', 'complete_proof', 'reason', 'context',
               'candidate_payload_max_row', 'candidate_payload_max_column',
               'candidate_payload_rectangle', 'cell_elements_seen', 'xml_nodes_seen',
               'xml_bytes_observed', 'sheet_data_seen'}
-    if type(value) is not dict or set(value) != fields:
+    if type(value) is not dict or set(value) not in (
+            fields, fields | {'namespace_rejection'}, fields | {'namespace_rejection', 'namespace_structure'},
+            fields | {'namespace_rejection', 'namespace_structure', 'namespace_path_fingerprint'}):
         return None
     if (type(value['schema']) is not int or value['schema'] != 1
             or value['outcome'] != 'rejected' or value['basis'] != 'partial_XML_scan_not_an_accepted_extent'
@@ -83,6 +187,41 @@ def _checked_extent_failure(value):
             or not isinstance(value['reason'], str) or value['reason'] not in _EXTENT_REASONS
             or not isinstance(value['context'], str) or value['context'] not in _EXTENT_CONTEXTS
             or type(value['sheet_data_seen']) is not bool):
+        return None
+    if 'namespace_rejection' in value:
+        metadata = value['namespace_rejection']
+        if (value['reason'] != 'payload_namespace_unknown' or type(metadata) is not dict
+                or set(metadata) != {'local_name', 'namespace_uri', 'truncated'}
+                or type(metadata['local_name']) is not str
+                or metadata['local_name'] not in ('sheetData', 'row', 'c', 'v', 'f', 'is')
+                or type(metadata['truncated']) is not bool):
+            return None
+        uri = metadata['namespace_uri']
+        if metadata['truncated']:
+            if uri is not None:
+                return None
+        else:
+            if type(uri) is not str or len(uri) > 256:
+                return None
+            try:
+                if len(uri.encode('utf-8')) > 256:
+                    return None
+            except UnicodeError:
+                return None
+    if 'namespace_structure' in value:
+        if (not _checked_namespace_structure(value['namespace_structure'])
+                or value['namespace_structure']['first_unmet'] == 'none'):
+            return None
+    if 'namespace_structure' in value:
+        metadata, structure = value['namespace_rejection'], value['namespace_structure']
+        qname = ('{' + metadata['namespace_uri'] + '}' + metadata['local_name']
+                 if metadata['namespace_uri'] else metadata['local_name'])
+        token = _NAMESPACE_PATH_TOKENS.get(qname, 'other')
+        if ((token == 'other' and not structure['other'])
+                or not structure['truncated'] and structure['path'][-1] != token):
+            return None
+    if ('namespace_path_fingerprint' in value
+            and not _checked_namespace_path_fingerprint(value['namespace_path_fingerprint'])):
         return None
     limits = {'candidate_payload_max_row': 1048576, 'candidate_payload_max_column': 16384,
               'candidate_payload_rectangle': 1048576 * 16384, 'cell_elements_seen': MAX_CELLS + 1,
@@ -147,6 +286,10 @@ def failure_diagnostic(exc):
             enriched = {**result, 'extent_proof': extent}
             if len(json.dumps(enriched, ensure_ascii=False, allow_nan=False).encode()) <= MAX_FAILURE_DIAGNOSTIC:
                 return enriched
+            if 'namespace_path_fingerprint' in extent:
+                enriched['extent_proof'] = {k: v for k, v in extent.items() if k != 'namespace_path_fingerprint'}
+                if len(json.dumps(enriched, ensure_ascii=False, allow_nan=False).encode()) <= MAX_FAILURE_DIAGNOSTIC:
+                    return enriched
         if len(json.dumps(result, ensure_ascii=False, allow_nan=False).encode()) <= MAX_FAILURE_DIAGNOSTIC:
             return result
     except (AttributeError, TypeError, ValueError, OverflowError):
@@ -301,23 +444,48 @@ def _extent_coordinate(value):
     return row, column
 
 
+def _formatting_formula_checks(stack, element, data_seen, active_row, active_cell):
+    """The original exception predicates, in their original short-circuit order."""
+    parents = None
+    def ancestor(index):
+        nonlocal parents
+        if parents is None:
+            parents = list(element.iterancestors())
+        return parents[index]
+    checks = (
+        lambda: tuple(stack) == _FORMATTING_FORMULA_PATH,
+        lambda: bool(data_seen),
+        lambda: active_row is None,
+        lambda: active_cell is None,
+        lambda: not element.attrib,
+        lambda: element.getprevious() is None,
+        lambda: dict(ancestor(0).attrib) == {'type': 'formula'},
+        lambda: ancestor(2).get('type') == 'dataBar',
+        lambda: re.fullmatch(r'\{[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\}',
+                            ancestor(2).get('id', '')) is not None,
+        lambda: set(ancestor(5).attrib) == {'uri'},
+        lambda: ancestor(5).get('uri', '').upper() == '{78C0D931-6437-407D-A8EE-F0AAD7539E65}')
+    states = ['not_evaluated'] * len(checks)
+    for index, check in enumerate(checks):
+        states[index] = 'match' if check() else 'no_match'
+        if states[index] == 'no_match':
+            break
+    return states
+
+
 def _formatting_formula(stack, element, data_seen, active_row, active_cell):
-    """Only the standard Excel2010 data-bar threshold, outside all cells."""
-    main = '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}'
-    x14 = '{http://schemas.microsoft.com/office/spreadsheetml/2009/9/main}'
-    xm = '{http://schemas.microsoft.com/office/excel/2006/main}'
-    path = (main+'worksheet', main+'extLst', main+'ext', x14+'conditionalFormattings',
-            x14+'conditionalFormatting', x14+'cfRule', x14+'dataBar', x14+'cfvo', xm+'f')
-    if (tuple(stack) != path or not data_seen or active_row is not None or active_cell is not None
-            or element.attrib or element.getprevious() is not None):
-        return False
-    parents = list(element.iterancestors())
-    threshold, rule, extension = parents[0], parents[2], parents[5]
-    return (dict(threshold.attrib) == {'type': 'formula'}
-            and rule.get('type') == 'dataBar'
-            and re.fullmatch(r'\{[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\}', rule.get('id', '')) is not None
-            and set(extension.attrib) == {'uri'}
-            and extension.get('uri', '').upper() == '{78C0D931-6437-407D-A8EE-F0AAD7539E65}')
+    """Only the existing standard Excel2010 data-bar threshold exception."""
+    return all(state == 'match' for state in _formatting_formula_checks(
+        stack, element, data_seen, active_row, active_cell))
+
+
+def _namespace_structure(stack, element, data_seen, active_row, active_cell):
+    tokens = [_NAMESPACE_PATH_TOKENS.get(tag, 'other') for tag in stack]
+    states = _formatting_formula_checks(stack, element, data_seen, active_row, active_cell)
+    return {'path': tokens[:_NAMESPACE_PATH_LIMIT], 'depth': len(stack),
+            'truncated': len(stack) > _NAMESPACE_PATH_LIMIT, 'other': 'other' in tokens,
+            'first_unmet': (_FORMATTING_FORMULA_CHECKS[states.index('no_match')]
+                            if 'no_match' in states else 'none'), 'checks': states}
 
 
 def _verified_payload_extent(sheet, *, _failure=None):
@@ -329,6 +497,13 @@ def _verified_payload_extent(sheet, *, _failure=None):
     max_row = max_column = nodes = cells = 0
     data_seen = False
     context = 'unknown'
+    namespace_rejection = None
+    namespace_structure = None
+    namespace_path_fingerprint = None
+    if type(_failure) is dict:
+        _failure.pop('namespace_rejection', None)
+        _failure.pop('namespace_structure', None)
+        _failure.pop('namespace_path_fingerprint', None)
     stream = None
     xml_error = ()
     try:
@@ -337,6 +512,7 @@ def _verified_payload_extent(sheet, *, _failure=None):
         namespace = '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}'
         worksheet, data, row_tag, cell_tag = (namespace + name for name in ('worksheet', 'sheetData', 'row', 'c'))
         stack = []
+        root_element = data_element = row_element = None
         active_row = None
         previous_row = previous_column = 0
         active_cell = None
@@ -359,7 +535,6 @@ def _verified_payload_extent(sheet, *, _failure=None):
                     raise _ExtentProofProblem('entity_or_unknown_node')
                 local = tag.rsplit('}', 1)[-1]
                 if event == 'start':
-                    parent = stack[-1] if stack else None
                     stack.append(tag)
                     context = ('cell' if active_cell is not None or local == 'c' and data in stack else
                                'row' if active_row is not None else 'sheet_data' if data in stack else
@@ -374,27 +549,35 @@ def _verified_payload_extent(sheet, *, _failure=None):
                     if len(stack) == 1:
                         if tag != worksheet or element.getroottree().docinfo.doctype:
                             raise _ExtentProofProblem('worksheet_namespace_or_doctype')
+                        root_element = element
                     is_formatting_formula = (local == 'f' and tag != namespace+'f'
                         and _formatting_formula(stack, element, data_seen, active_row, active_cell))
                     if is_formatting_formula:
                         formatting_formula = element
                         formatting_threshold = element.getparent()
                     if local in ('sheetData', 'row', 'c', 'v', 'f', 'is') and tag != namespace + local and not is_formatting_formula:
+                        namespace_rejection = _namespace_rejection(tag)
+                        namespace_structure = _namespace_structure(stack, element, data_seen, active_row, active_cell)
+                        namespace_path_fingerprint = _namespace_path_fingerprint(stack)
                         raise _ExtentProofProblem('payload_namespace_unknown')
                     if tag == data:
-                        if parent != worksheet or data_seen:
+                        if (tuple(stack) != (worksheet, data) or element.getparent() is not root_element or data_seen):
                             raise _ExtentProofProblem('sheet_data_ambiguous')
                         data_seen = True
+                        data_element = element
                     elif tag == row_tag:
                         reference = element.get('r', '')
-                        if parent != data or not re.fullmatch(r'[1-9][0-9]{0,6}', reference):
+                        if (tuple(stack) != (worksheet, data, row_tag) or element.getparent() is not data_element
+                                or not re.fullmatch(r'[1-9][0-9]{0,6}', reference)):
                             raise _ExtentProofProblem('row_reference_unknown')
                         active_row = int(reference)
+                        row_element = element
                         if not previous_row < active_row <= 1048576:
                             raise _ExtentProofProblem('row_reference_order')
                         previous_row, previous_column = active_row, 0
                     elif tag == cell_tag:
-                        if parent != row_tag or active_row is None or active_cell is not None:
+                        if (tuple(stack) != (worksheet, data, row_tag, cell_tag) or element.getparent() is not row_element
+                                or active_row is None or active_cell is not None):
                             raise _ExtentProofProblem('cell_structure_unknown')
                         row, column = _extent_coordinate(element.get('r'))
                         if row != active_row or column <= previous_column:
@@ -433,6 +616,7 @@ def _verified_payload_extent(sheet, *, _failure=None):
                         active_cell = None
                     elif tag == row_tag:
                         active_row = None
+                        row_element = None
                     if element is formatting_formula:
                         formatting_formula = None
                     if element is formatting_threshold:
@@ -468,7 +652,11 @@ def _verified_payload_extent(sheet, *, _failure=None):
             'candidate_payload_rectangle': max_row * max_column if observed_rows is not None else None,
             'cell_elements_seen': cells, 'xml_nodes_seen': nodes,
             'xml_bytes_observed': stream.bytes if stream is not None else None,
-            'sheet_data_seen': data_seen})
+            'sheet_data_seen': data_seen,
+            **({'namespace_rejection': namespace_rejection, 'namespace_structure': namespace_structure}
+               if namespace_rejection is not None else {}),
+            **({'namespace_path_fingerprint': namespace_path_fingerprint}
+               if namespace_rejection is not None and namespace_path_fingerprint is not None else {})})
         if record is not None:
             _failure.update(record)
     return None

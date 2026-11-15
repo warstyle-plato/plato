@@ -58,6 +58,14 @@ _ENDPOINT_PAYLOADS = {
     ("POST", "/monitor/finance-allocation/apply"): {"assignments": [{"row_id": "a" * 64, "bank_code": "2.6"}]},
     ("POST", "/monitor/finance-management/apply"): {"item_ids": ["a" * 64], "management_article": "2.6"},
     ("POST", "/monitor/contracts/source-review"): {"contract_id": "a" * 64},
+    ("POST", "/monitor/contracts/source-audit-page"): {
+        "book_sha256": ["a" * 64], "corpus_token": "b" * 64},
+    ("POST", "/monitor/contracts/source-duplicate-proof"): {
+        "book_sha256": ["a" * 64], "corpus_token": "b" * 64},
+    ("POST", "/monitor/contracts/source-prepared-index"): {
+        "cut": "2036-08-19", "snapshot_ids": ["2036-07-01-" + "a" * 64],
+        "expected_project_scope": "b" * 64, "expected_cached_source_roster_sha256": "c" * 64,
+        "expected_source_content_sha256": "d" * 64, "caller_reference_corpus_token": "e" * 64},
     ("POST", "/monitor/schedule-gpr-physical/save"): {"source_kind": "gpr"},
     ("POST", "/monitor/contracts/documents"): {"contract_id": "a" * 64},
     ("POST", "/monitor/contracts/document-upload"): {"contract_id": "a" * 64},

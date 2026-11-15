@@ -119,13 +119,14 @@ def test_report_shows_the_same_ahr_when_financial_and_schedule_blocks_are_missin
     assert got['admin_expenses'] is model
     assert got['admin_expenses_cash'] is cash_model
     actual = [t for t in report.tiles(got) if t.get('group') == 'admin_expenses_cash']
-    assert len(actual) == 4 and actual == cash.tiles(cash_model)
+    assert actual == []
+    assert len([t for t in report.tiles(got) if t.get("group") == "additional_funding"]) == 1
     assert cash_model['budget'] == model['total'] == 40000
     assert cash_model['paid_observed_net'] is None  # FM FACT is not paid cash.
     assert cash_model['balance_after_observed_payments'] is None
     assert cash_model['remaining_need'] is None
     output = report.render_html(got)
-    assert '<details class="admin-fm-source" open><summary>Данные ФМ</summary>' in output
+    assert '<details class="admin-fm-source"><summary>Данные ФМ</summary>' in output
     assert admin.render(model) in output  # All three truthful FM columns remain context.
     assert '40 000 ₽' in output and 'Повторно' not in output
     text = report.render_text(got)
