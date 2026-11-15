@@ -106,6 +106,12 @@ def test_project_choice_survives_reload_and_corpora_uploads(client, width, stock
             if stock_only:
                 expect(page.locator(".chessboard-overlay")).to_be_visible()
                 expect(page.locator("#overviewBody")).to_contain_text("Контрактация ещё не загружена")
+                assert page.locator("#salesreport .kv").count() == 0
+                assert "Контрактация не загружена" in page.evaluate("salesDigest(salesData, 20000)")
+                assert "Всего:" not in page.evaluate("salesDigest(salesData, 20000)")
+                printed = page.evaluate("salesPrintHtml()")
+                assert "Остаток по шахматке" in printed
+                assert 'class="kv"' not in printed
             for corpus in [2, 3, 3]:
                 page.reload()
                 expect(page.locator("#salesProject")).to_have_value("Бета")
@@ -149,9 +155,15 @@ def test_failed_project_switch_prevents_upload_to_the_previous_project(client):
             expect(page.locator("#salesProject")).to_have_value("Альфа")
             pending = []
             page.route("**/cabinet/sales/summary?*", lambda route: pending.append(route))
+            page.evaluate("""() => {
+                planData={months:[]};
+                document.querySelector('#planstate').textContent='План предыдущего проекта';
+            }""")
             page.select_option("#salesProject", "Бета")
             expect(page.locator("#cf")).to_be_disabled()
             assert page.evaluate("salesData") is None
+            assert page.evaluate("planData") is None
+            expect(page.locator("#planstate")).to_be_empty()
             assert page.locator("#salesreport").count() == 0
             assert len(pending) == 1
             pending[0].fulfill(status=503, body='{"detail":"temporary outage"}',

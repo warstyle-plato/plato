@@ -2693,6 +2693,9 @@ async function loadStoredSales(project){
   if(project===undefined) project=new URL(location.href).searchParams.get('project')||'';
   salesBusy(true);
   salesData=null;
+  planData=null;
+  $('#planstate').textContent='';
+  salesTalk.reset();
   $('#sales').innerHTML='';
   $('#overviewTitle').textContent='Кабинет';
   $('#cfstate').textContent='Открываю сохранённый проект…';
@@ -3967,6 +3970,7 @@ function renderSales(d){
 
   // Плашки с долей от проекта: «продано 3 594 м²» без второй половины —
   // не показатель, а число. Доли считает сервер (`pool`).
+  if(!d.empty){
   const flats=byProduct['Квартира']||{}, cars=byProduct['Машиноместо']||{};
   html+='<div class="kv">'
     +tile('Договоров', num(t.contracts))
@@ -4040,8 +4044,10 @@ function renderSales(d){
       `<button type="button" data-basis="${b.key}" data-for="planschart"`
       +` class="${b.key===plansBasis?'on':''}">${esc(b.name)}</button>`).join('')+'</div></div>');
 
+  }
   if(d.chessboard_html)html+=salesSection('sb-chess','Шахматка и остаток продаж',d.chessboard_html);
 
+  if(!d.empty){
   html+=salesSection('sb-esc','Эскроу против погашения ПФ',
     salesEscrowBlock(d), salesNote(d,'escrow'));
 
@@ -4062,6 +4068,7 @@ function renderSales(d){
       salesTable(['Договор','Объект','Дата','Возвращено с эскроу, млн ₽'],
         d.terminated.map(x=>[esc(x.contract||'—'), esc(x.object||'—'), esc(x.on||'—'),
           x.escrow_returned===null||x.escrow_returned===undefined?'—':num(x.escrow_returned/1e6,2)])));
+  }
   }
 
   // Что загружено и когда: два файла разных дат, показанные как один проект, —
@@ -4245,8 +4252,9 @@ function salesDigest(d, limit){
   // вопрос перевалил четыре тысячи знаков ещё до первого раздела — Платон
   // отвечал «вопрос слишком длинный» на полностью загруженном проекте.
   const head=[`ПРОЕКТ: ${d.project||'—'}.`,
-    `Всего: ${num(t.contracts)} договоров, ${num(t.area)} м², ${num(t.amount/1e6,1)} млн ₽, `
-     +`средняя ${num(t.price_per_sqm)} ₽/м²; на эскроу ${num(t.escrow/1e6,1)} млн (${num(t.escrow_share*100,1)}%).`];
+    d.empty?'Контрактация не загружена. Продажи, выручка и наполнение эскроу неизвестны.':
+      `Всего: ${num(t.contracts)} договоров, ${num(t.area)} м², ${num(t.amount/1e6,1)} млн ₽, `
+       +`средняя ${num(t.price_per_sqm)} ₽/м²; на эскроу ${num(t.escrow/1e6,1)} млн (${num(t.escrow_share*100,1)}%).`];
   // Длинный ряд обрезается по хвосту, а не выбрасывается целиком: свежие
   // месяцы отвечают на вопрос, а прошлогодние — подробность. Сколько показано
   // из скольких, стоит в самой строке: молчаливая обрезка читается как весь ряд.
