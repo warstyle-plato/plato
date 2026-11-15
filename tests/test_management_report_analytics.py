@@ -69,12 +69,14 @@ def test_findings_carry_numbers_and_sources():
                            "Бюджет месяца", "Продажи", "Финансирование", "Споры",
                            "Открытые вопросы"]
     assert "ГПР" == found["Срок"]["source"]
-    assert "Оценка окончания работ" in found["Срок"]["text"]
-    assert "не подтверждает дату получения разрешения на ввод" in found["Срок"]["text"]
+    from developaid_gpr_summary import gpr_summary
+    canonical = gpr_summary(built['gantt']['readiness'], built['end'])
+    assert canonical['forecast_text'] in found['Срок']['text']
+    assert "Это не прогноз РНВ" in found["Срок"]["text"]
     assert "PM" not in found["Срок"]["text"]
-    lag = built["physical"]["lag"]
-    assert f"отставание {report._pp(-lag)[1:]}" in found["Стройка"]["text"]
-    assert "ГПР-факт от 16.10.2026" == found["Стройка"]["source"]
+    assert found['Стройка']['text'] == canonical['readiness_text']
+    assert "ГПР" == found["Стройка"]["source"]
+    assert "16.10.2026" in found['Стройка']['text']
     # Оплата 19.10 уже в реестре, но после конца недели — в сводку не входит.
     assert "оплачено 150,0 млн ₽ из 400,0 млн ₽ (37,5%)" in found["Бюджет месяца"]["text"]
     assert "Выборка кредита за неделю — 48,0 млн ₽ (за предыдущий такой же период — " \

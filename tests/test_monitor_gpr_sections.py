@@ -85,7 +85,7 @@ def test_qualified_dates_keep_their_meaning_and_method_is_disclosed(state):
     from playwright.sync_api import expect
     with browser_page() as (page, responses, errors):
         render(page, monitor_view(state))
-        summary = page.locator('#dependencyTimelineBody')
+        summary = page.locator('#readinessSummary .gpr-legacy-fallback')
         expect(summary).to_contain_text('Оценка по ГПР')
         if state == 'estimate':
             expect(summary.locator('.schedule-rnv-cards>div:nth-child(2)>strong')).to_have_text('20.12.2026')
