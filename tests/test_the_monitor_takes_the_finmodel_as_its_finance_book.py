@@ -279,13 +279,14 @@ def test_the_report_names_the_bank_need_by_chapter_for_the_model(monkeypatch):
         "Смета и оплаты для остатка лимита — РСС: дата данных не указана. "
         "Дата расчётного среза не указана.")
     assert "Дефицит на достройку" not in tiles
-    tile = tiles["Потребность в допфинансировании банка"]
-    assert tile["value"] == "2,39 млрд ₽"
-    assert tile["note"] == ("с ноября 2026; участок и проценты по кредиту сюда не входят, "
-                            "разбивка по главам — в разделе «Финансирование». "
-                            "Сумма без уточнения АХР: остаток АХР пока не рассчитан. "
-                            "Дата расчётного среза не указана. Источники расчёта: "
-                            "финмодель: дата данных не указана; РСС: дата данных не указана.")
+    # The bank deficit is known below, but cash coverage does not attest a
+    # combined total. A missing paid-AHR history must stay visible as unknown.
+    tile = tiles["Потребность в допфинансировании"]
+    assert tile["value"] == "нет данных" and tile["tone"] == "missing"
+    assert built['admin_expenses_cash']['remaining_need'] is None
+    assert 'общая потребность пока не определена' in tile['note']
+    assert 'Дата расчётного среза не указана' in tile['note']
+    assert 'финмодель: дата данных не указана; РСС: дата данных не указана' in tile['note']
     text = report.render_text(built)
     assert ("на стройку и коммерцию по финмодели нужно 3,67 млрд ₽ при остатке лимита глав 2–3 "
             "1,28 млрд ₽ — потребность в допфинансировании банка 2,39 млрд ₽: на стройку") in text

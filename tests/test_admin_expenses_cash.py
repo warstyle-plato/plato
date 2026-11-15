@@ -250,7 +250,10 @@ def test_pdf_one_funding_tile_on_cover_and_ahr_is_in_details(tmp_path,monkeypatc
     (tmp_path/'cash-report.pdf').write_bytes(raw)
     pdf=pymupdf.open(stream=raw,filetype='pdf')
     cover=' '.join(pdf[0].get_text().split())
-    for _,label in cash.FIELDS:assert label.casefold() not in cover.casefold()
+    for key,label in cash.FIELDS:
+        if key != 'balance_after_observed_payments':
+            assert label.casefold() not in cover.casefold()
+    assert not any(item.get('group')=='admin_expenses_cash' for item in report.tiles(data))
     assert 'общая потребность пока не определена' in cover
     assert 'нужно на АХР' not in cover
     all_text=' '.join(''.join(page.get_text() for page in pdf).split())
