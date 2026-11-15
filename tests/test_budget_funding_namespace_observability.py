@@ -113,6 +113,7 @@ def test_omitted_QName_or_truncated_URI_does_not_imply_namespace_identified():
     legacy = rejection(rejected_xml())
     legacy.pop('namespace_rejection')
     legacy.pop('namespace_structure')
+    legacy.pop('namespace_path_fingerprint', None)
     assert proof._checked_extent_failure(legacy) == legacy
     assert outer(legacy)['extent_proof'] == legacy
     truncated = rejection(rejected_xml('urn:synthetic:' + 'x' * 300))
@@ -179,6 +180,7 @@ def test_native_admin_job_retains_private_QName_with_exact_source_and_no_money_p
         public = client.get(path)
         assert URI not in public.text and CANARY not in public.text
         assert 'namespace_structure' not in public.text
+        assert 'namespace_path_fingerprint' not in public.text
     assert '/monitor/audit/budget-funding' not in client.get('/openapi.json').json()['paths']
 
 
