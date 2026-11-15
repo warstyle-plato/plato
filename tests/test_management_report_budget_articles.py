@@ -206,7 +206,24 @@ def test_months_without_data_are_not_zero():
 def test_the_tiles_lead_the_first_page():
     built = _setup()
     items = report.tiles(built)
-    assert len(items) == 16
+    # Canonical readiness and its scoped end estimate are separate tiles.
+    assert len(items) == 17
+    from developaid_gpr_summary import gpr_summary
+    summary = gpr_summary(built['gantt']['readiness'], built['end'])
+    assert len(summary['source_sha256']) == 64
+    assert summary['source_sha256'] == built['gantt']['readiness']['source_sha256']
+    assert summary['cut'] == built['end']
+    assert summary['progress'] is None
+    assert items[0]['label'] == summary['label'] == 'Готовность по ГПР'
+    assert items[0]['value'] == 'нет данных' and items[0]['tone'] == 'missing'
+    assert items[0]['hint'] == summary['reason']
+    assert summary['scope_text'] in items[0]['note']
+    assert summary['as_of_text'] in items[0]['note']
+    assert items[1]['label'] == 'Оценка окончания учтённых работ'
+    assert summary['finish'] is None
+    assert items[1]['value'] == 'нет данных' and items[1]['tone'] == 'missing'
+    assert summary['forecast_text'] in items[1]['note']
+    assert [item for item in items if item.get('group') == 'gpr_readiness'] == items[:2]
     assert len([item for item in items if item.get('group') == 'admin_expenses_cash']) == 4
     by_label = {item["label"]: item for item in items}
     build = by_label["Бюджет стройки за месяц"]

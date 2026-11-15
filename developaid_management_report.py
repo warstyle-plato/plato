@@ -36,6 +36,7 @@ import developaid_admin_expenses as admin_expenses
 import developaid_admin_expenses_cash as admin_cash
 import developaid_credit_repayment as credit_repayment
 import developaid_monitor as monitor
+from developaid_gpr_summary import gpr_summary
 import developaid_funding_schedule as funding_schedule
 import developaid_monitor_manager as manager
 import developaid_monthly_budget as monthly_budget
@@ -1907,7 +1908,11 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
         out.append({"topic": topic, "text": text, "source": source, "tone": tone})
 
     block = report.get("physical") or {}
-    if block.get("state") == "ok":
+    readiness = gpr_summary((report.get('gantt') or {}).get('readiness'), report.get('end'))
+    if readiness is not None:
+        add('Стройка', readiness['readiness_text'], 'ГПР',
+            'missing' if readiness['progress'] is None else '')
+    elif block.get("state") == "ok":
         lag = block["lag"]
         text = _sentence(f"По ГПР выполнено {_pct(block['fact'])} при плане "
                          f"{_pct(block['plan'])} — " + (f"отставание {_pp(-lag)[1:]}" if lag < 0
@@ -1967,18 +1972,26 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
 
     block = report.get("schedule") or {}
     executive = _executive_schedule(report)
-    if block.get("qualification") or (report.get("gantt") or {}).get("dependency_timeline"):
+    if readiness is not None:
+        text = readiness['forecast_text']+' '+readiness['scope_text']+' '+readiness['as_of_text']
+        if executive.get('stalled_text'):
+            text += ' Данные о темпе по всему текущему ГПР. '+executive['stalled_text']
+            if executive.get('driver'):
+                text += ' Работа с известной оценкой: '+executive['driver']+'. '+str(executive.get('driver_reason') or '')
+        add('Срок', text,
+            'ГПР', 'missing' if not readiness['finish'] else '')
+    elif block.get("qualification") or (report.get("gantt") or {}).get("dependency_timeline"):
         text = report_schedule.conclusion(executive)
         if executive.get("action"):
             text += " " + executive["action"]
         delay = executive.get("delay_days")
         add("Срок", text, executive["source_label"],
             "bad" if isinstance(delay, (int, float)) and delay > 0 else "missing" if not executive.get("forecast") else "")
-        if executive.get("facts"):
-            add("Натуральный факт", " ".join(report_schedule.fact_text(f) for f in executive["facts"][:3]),
-                "подтверждённые накопительные")
     elif block.get("reason"):
         add("Срок", block["reason"], "", "missing")
+    if executive.get("facts"):
+        add("Натуральный факт", " ".join(report_schedule.fact_text(f) for f in executive["facts"][:3]),
+            "подтверждённые накопительные")
     late = [corpus for corpus in (report.get("gantt") or {}).get("corpora") or []
             if (corpus.get("delta_days") or 0) > 0]
     if late:
@@ -3515,6 +3528,7 @@ table.articles tr.over td{background:#fdecea}table.articles tr.left td{backgroun
 .tile .n{font-size:10px;color:#475569}
 .tile .k .i{display:inline-block;width:12px;height:12px;line-height:12px;border-radius:50%;border:1px solid #5b6b7d;text-align:center;font-size:9px;font-style:italic;text-transform:none;cursor:help}
 @media print{.tile .k .i{display:none}}
+.gpr-broader-physical>summary{cursor:pointer;font-size:12px;color:#526277;margin:10px 0}
 .dependency-timeline,.corpus-gpr-source{max-width:100%;overflow-wrap:anywhere}
 @media print{.dependency-timeline svg{min-width:0!important}.corpus-gpr-source table{min-width:0!important;table-layout:fixed;break-inside:auto;page-break-inside:auto}.corpus-gpr-source td,.corpus-gpr-source th{white-space:normal;overflow-wrap:anywhere;min-width:0}}
 ul.findings{margin:6px 0;padding-left:18px}ul.findings li{margin:5px 0;padding-left:2px}
@@ -4059,7 +4073,15 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
             out[-1]["hint"] = hint
 
     block = report.get("physical") or {}
-    if block.get("state") == "ok":
+    readiness = gpr_summary((report.get('gantt') or {}).get('readiness'), report.get('end'))
+    if readiness is not None:
+        add(readiness['label'], readiness['value'] if readiness['progress'] is not None else None,
+            readiness['scope_text']+' '+readiness['as_of_text'], hint=readiness['reason'])
+        add('Оценка окончания учтённых работ', _day(readiness['finish']) if readiness['finish'] else None,
+            readiness['forecast_text']+' '+readiness['scope_text']+' '+readiness['as_of_text'])
+        for tile in out[-2:]:
+            tile['group'] = 'gpr_readiness'
+    elif block.get("state") == "ok":
         lag = block.get("lag")
         add("Выполнение по ГПР", _pct(block["fact"]),
             f"план {_pct(block.get('plan'))}"
@@ -4253,6 +4275,7 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
                 "bad" if put > 0.5 else "good")
     else:
         add("Эскроу на платежи по НКЛ", None, due.get("reason") or "не посчитано")
+    out[-1]['group'] = 'credit_due'
 
     block = report.get("budget") or {}
     table = block.get("by_budget_article") or {}
@@ -4271,6 +4294,7 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
                 "bad" if hit or line["share"] > elapsed + 0.1 else "")
         else:
             add(f"{label} за месяц", None, "плана месяца нет")
+        out[-1]['group'] = 'monthly_budget'
     return out
 
 
@@ -4297,7 +4321,13 @@ def _gantt_html(report: dict[str, Any]) -> str:
         executive = dict(_executive_schedule(report))
         completed_history = executive.get('completed_facts_html') or ''
         executive['completed_facts_html'] = ''
-        out.append(report_schedule.render(executive))
+        if gpr_summary(block.get('readiness'), report.get('end')) is not None:
+            out.append('<section class="gpr-broader-schedule"><h4>Сроки по строительным работам текущего ГПР</h4>'
+                       '<p class="note">Отдельная оценка строительных работ. Состав и основание могут отличаться '
+                       'от выбранной оценки готовности. Срез '+html.escape(_day(report.get('end')))+'. Статус и ограничения этой оценки приведены ниже.</p>'
+                       +report_schedule.render(executive)+'</section>')
+        else:
+            out.append(report_schedule.render(executive))
         out.append('<details class="report-source-screen"><summary>Источники и ограничения оценки</summary>'
                    + _schedule_source_details(report) + '</details>')
     if block.get("corpus_gpr") and block.get("state") != "ok":
@@ -4350,8 +4380,24 @@ def tiles_footnote(report: dict[str, Any]) -> str:
 
 def _tiles_html(items: list[dict[str, str]], footnote: str = "") -> str:
     esc = html.escape
-    return ("<div class='tiles'>" + "".join(
-        f"<div class='tile {esc(item['tone'])}'><div class='k'>{esc(item['label'])}"
+    # Keep full source/forecast notes at their normal font size on the cover.
+    # Inline print rules leave REPORT_PAGE's scoped screen styles intact.
+    return ("""<style>@media print{
+ol.toc{columns:4;column-gap:12px;margin-bottom:6px}
+.tiles{gap:4px;margin-top:6px}.tile{padding:3px 5px}
+.tile .v{margin:0;line-height:1.1}.tile .n{line-height:1.2}
+.tile .k{line-height:1.2;text-transform:none;letter-spacing:0}
+.tile[data-group='gpr_readiness']{grid-column:span 2}
+.tile[data-group='credit_due']:not(.missing){grid-column:span 3}
+.tiles:has(.tile[data-group='credit_due']:not(.missing)) .tile[data-group='monthly_budget']{grid-column:span 2}
+#block-main{margin-top:10px}ul.findings{line-height:1.25}ul.findings li{margin:2px 0}
+table.readiness-corpus-table,table.credit-due,.report-sales>table{table-layout:fixed;width:100%;max-width:100%}
+table.readiness-corpus-table :is(th,td),table.credit-due :is(th,td),.report-sales>table :is(th,td){white-space:normal;overflow-wrap:anywhere;min-width:0}
+}</style>"""
+        "<div class='tiles'>" + "".join(
+        f"<div class='tile {esc(item['tone'])}'"
+        + (f" data-group='{esc(item['group'], quote=True)}'" if item.get('group') else "")
+        + f"><div class='k'>{esc(item['label'])}"
         + (f" <span class='i' tabindex='0' role='note' title='{esc(item['hint'], quote=True)}' "
            f"aria-label='{esc(item['hint'], quote=True)}'>i</span>" if item.get("hint") else "")
         + "</div>"
@@ -4759,6 +4805,17 @@ def render_html(report: dict[str, Any]) -> str:
 
     out.append(_block_heading("build"))
     block = report.get("physical") or {}
+    readiness = gpr_summary((report.get('gantt') or {}).get('readiness'), report.get('end'))
+    if readiness is not None:
+        out[-1] = '<div class="keep">'+out[-1]+'<p class="gpr-build-summary">'+esc(readiness['readiness_text'])+'</p></div>'
+    physical_start = len(out)
+    if readiness is not None and block.get('state') == 'ok':
+        out.append('<style>@media print{.gpr-broader-physical::details-content{content-visibility:visible!important;display:block!important}}</style>'
+                   '<details class="gpr-broader-physical"><summary>Выполнение по всему перечню ГПР, с весом по длительности</summary>'
+                   '<p class="note">Здесь работы с известным показанием взвешены по плановой длительности. '
+                   'Этот процент сам по себе не подтверждает готовность всего строительства. '
+                   'Работ с показаниями: '+str(block.get('works'))+'. Неизвестных показаний: '
+                   +str(block.get('works_unknown'))+'. Срез '+esc(_day(report.get('end')))+'.</p>')
     if block.get("state") == "ok":
         out.append(_table(["", "План к дате", "Выполнено", "Отставание"], [[
             "По процентам ГПР", _pct(block["plan"]), _pct(block["fact"]),
@@ -4785,6 +4842,9 @@ def render_html(report: dict[str, Any]) -> str:
         out.append(_breakdown_html(block.get("breakdown") or {}, report["kind"], shown))
     else:
         out.append(missing(block))
+    if readiness is not None and block.get('state') == 'ok':
+        out.append('</details>')
+        out[physical_start:] = [''.join(out[physical_start:])]
     out.append("<h3>Люди на площадке</h3>")
     out.append(_crew_html(report.get("crew") or {}, report["kind"]))
     out.append(_works_html(report.get("crew") or {}, report["kind"]))
@@ -4798,7 +4858,7 @@ def render_html(report: dict[str, Any]) -> str:
 
     out.append(_photos_html(report.get("photos") or {}, report["kind"]))
 
-    out.append(_block_heading("sales"))
+    out.append("<div class='report-sales'>" + _block_heading("sales"))
     block = report.get("sales") or {}
     if block.get("state") == "ok":
         def fact_cells(fact: dict[str, Any]) -> list[str]:
@@ -4847,7 +4907,7 @@ def render_html(report: dict[str, Any]) -> str:
     if (report.get("sales") or {}).get("state") == "ok":
         out.append(_sales_depth_html(report["sales"], report["kind"]))
 
-    out.append(_block_heading("funding"))
+    out.append("</div>" + _block_heading("funding"))
     out.append(admin_cash.render(report.get("admin_expenses_cash") or {},
         admin_expenses.render(report.get("admin_expenses") or
         admin_expenses.unavailable("Расшифровка АХР не получена.")), show_tiles=False))
