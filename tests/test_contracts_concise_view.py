@@ -92,24 +92,31 @@ def test_forecast_short_reason_distinguishes_missing_price_from_zero_pace(amount
 
 
 @pytest.mark.parametrize('width', [390, 1440])
-def test_contract_tab_hides_unrelated_navigation_and_monitor_restores_it(width):
+def test_contract_tab_keeps_one_shared_navigation_and_active_monitor_view(width):
+    import copy
+
     with browser_page(width) as (page, responses, errors):
-        navigation = page.locator('nav.contour')
-        navigation_menu = page.locator('.monitor-app-nav')
-        expect(navigation_menu).to_be_visible()
-        expect(navigation).to_be_hidden()
-        navigation_menu.locator('summary').click()
+        original_sources = copy.deepcopy(responses.data)
+        navigation = page.get_by_role('navigation', name='Разделы DevelopAid', exact=True)
+        expect(page.get_by_role('navigation')).to_have_count(1)
         expect(navigation).to_be_visible()
+        expect(navigation.get_by_role('link')).to_have_count(7)
+        expect(navigation.get_by_role('tab')).to_have_count(4)
+        assert page.locator('.monitor-tabs,.monitor-app-nav,nav.contour').count() == 0
         page.locator('#contractsTab').click()
         expect(page.locator('tr[data-contract-id]')).to_have_count(2)
-        expect(navigation_menu).to_be_hidden()
-        expect(navigation).to_be_hidden()
-        assert 'Коммерции' not in page.locator('body').inner_text()
-        page.screenshot(path=f'/tmp/contracts-focused-{width}.png', full_page=True)
-        page.locator('#monitorTab').click()
-        expect(navigation_menu).to_be_visible()
         expect(navigation).to_be_visible()
+        expect(navigation.locator('#contractsTab')).to_have_attribute('aria-selected', 'true')
+        for link in navigation.get_by_role('link').all():
+            expect(link).to_be_visible()
         expect(navigation).to_contain_text('Коммерции')
-        navigation_menu.locator('summary').click()
-        expect(navigation).to_be_hidden()
+        page.screenshot(path=f'/tmp/contracts-focused-{width}.png', full_page=True)
+        page.locator('#moneyTab').click()
+        expect(page.locator('#moneyPanel')).to_be_visible()
+        expect(navigation.locator('#moneyTab')).to_have_attribute('aria-selected', 'true')
+        page.locator('#monitorTab').click()
+        expect(navigation).to_be_visible()
+        expect(navigation.locator('#monitorTab')).to_have_attribute('aria-selected', 'true')
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+        assert responses.data == original_sources
         assert not errors
