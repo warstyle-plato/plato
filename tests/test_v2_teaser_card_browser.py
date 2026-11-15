@@ -6,12 +6,10 @@ import pytest
 from browser import chromium_or_skip, serve
 
 
-@pytest.mark.parametrize("width,gns", [(390, 31000), (1440, 31000), (390, 100.25)])
-def test_v2_applies_only_the_ready_current_server_card(monkeypatch, tmp_path, width, gns):
+def prepare_teaser(monkeypatch, tmp_path, gns):
     import main_registry
     import main as wrapper
     import document_intake
-    from playwright.sync_api import sync_playwright
 
     core = wrapper.core
     monkeypatch.setattr(core, "_PLATO_STAGE_DIR", tmp_path)
@@ -28,8 +26,17 @@ def test_v2_applies_only_the_ready_current_server_card(monkeypatch, tmp_path, wi
     ]
     monkeypatch.setattr(core, "plato_answer", lambda *_a:
                         {"answer": json.dumps({"fields": fields, "questions": [], "notes": []})})
+    return main_registry.app
+
+
+@pytest.mark.parametrize("width,gns", [(390, 31000), (1440, 31000), (390, 100.25)])
+def test_v2_applies_only_the_ready_current_server_card(monkeypatch, tmp_path, width, gns):
+    from playwright.sync_api import sync_playwright
+
+    app = prepare_teaser(monkeypatch, tmp_path, gns)
     calculated = []
-    with serve(main_registry.app, 18371 + (width == 390)) as base:
+    answered = []
+    with serve(app, 18371 + (width == 390)) as base:
         with sync_playwright() as pw:
             browser = pw.chromium.launch(executable_path=str(chromium_or_skip()))
             page = browser.new_page(viewport={"width": width, "height": 900})
@@ -37,6 +44,9 @@ def test_v2_applies_only_the_ready_current_server_card(monkeypatch, tmp_path, wi
             page.on("pageerror", lambda exc: errors.append(str(exc)))
             page.on("request", lambda req: calculated.append(req.post_data_json)
                     if req.method == "POST" and req.url.endswith("/api/v2/calculate") else None)
+            page.on("response", lambda response: answered.append({"request": response.request.post_data_json,
+                    "status": response.status, "data": response.json()})
+                    if response.url.endswith("/agent/document/answer") else None)
             page.goto(base + "/v2", wait_until="networkidle")
             page.set_input_files("#v2TeaserUpload", {"name": "test.pdf", "mimeType": "application/pdf", "buffer": b"%PDF-test"})
             page.get_by_role("button", name="Перейти к вопросам (2)").wait_for(timeout=15000)
@@ -44,8 +54,26 @@ def test_v2_applies_only_the_ready_current_server_card(monkeypatch, tmp_path, wi
             assert not calculated
             page.get_by_role("button", name="Перейти к вопросам (2)").click()
             page.locator('#v2TeaserQuestion [data-teaser-choice="1"]').click()  # explicitly take relief
+            page.locator("#v2TeaserQuestion").get_by_role("button", name="Бизнес", exact=True).wait_for()
+            first = answered[0]
+            assert first["status"] == 200
+            assert first["request"]["queue_revision"] == 0
+            assert len(first["request"]["question_token"]) == 64
+            # A duplicate delivery of the first click cannot answer the next
+            # question or change its version/token.
+            duplicate = page.request.post(base + "/agent/document/answer", data=first["request"])
+            assert duplicate.status == 409
+            current = duplicate.json()["detail"]["card"]
+            assert current["questions"]["index"] == 1
+            assert current["queue_revision"] == first["data"]["card"]["queue_revision"] == 1
+            assert current["question_token"] == first["data"]["card"]["question_token"]
+            assert not calculated
             page.locator("#v2TeaserQuestion").get_by_role("button", name="Бизнес", exact=True).click()
             page.locator("#v2TeaserApply").wait_for()
+            assert answered[-1]["status"] == 200
+            assert answered[-1]["request"]["queue_revision"] == 1
+            assert answered[-1]["request"]["question_token"] == current["question_token"]
+            assert current["question_token"] != first["request"]["question_token"]
             assert not calculated
             page.evaluate("() => { form.draft.inputs.purchase_price_mln = 999; }")
             page.locator("#v2TeaserApply").click()
@@ -64,3 +92,66 @@ def test_v2_applies_only_the_ready_current_server_card(monkeypatch, tmp_path, wi
             assert sent["inputs"]["_field_origin"]["inputs.purchase_price_mln"]["source"] == "document"
             assert not errors, errors
             browser.close()
+
+
+@pytest.mark.parametrize("width", [390, 1440])
+def test_v2_stale_answer_shows_current_question_and_keeps_the_unapplied_proposal(monkeypatch, tmp_path, width):
+    from playwright.sync_api import sync_playwright, expect
+
+    app = prepare_teaser(monkeypatch, tmp_path, 100.25)
+    read = []
+    cards = []
+    calculated = []
+    answered = []
+    with serve(app, 18373 + (width == 390)) as base, sync_playwright() as pw:
+        browser = pw.chromium.launch(executable_path=str(chromium_or_skip()))
+        page = browser.new_page(viewport={"width": width, "height": 900})
+        errors = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        page.on("request", lambda req: read.append(req.post_data_json)
+                if req.url.endswith("/agent/document/start") else None)
+        page.on("request", lambda req: calculated.append(req.post_data_json)
+                if req.url.endswith("/api/v2/calculate") else None)
+        def response_received(response):
+            if "/agent/result/" in response.url:
+                result = response.json()
+                if result.get("card"):
+                    cards.append(result["card"])
+            if response.url.endswith("/agent/document/answer"):
+                answered.append({"status": response.status, "request": response.request.post_data_json,
+                                 "data": response.json()})
+        page.on("response", response_received)
+        page.goto(base + "/v2", wait_until="networkidle")
+        page.set_input_files("#v2TeaserUpload", {"name": "test.pdf", "mimeType": "application/pdf", "buffer": b"%PDF-test"})
+        page.get_by_role("button", name="Перейти к вопросам (2)").click(timeout=15000)
+        shown = cards[-1]
+        proposal = shown["questions"]["card"]["options"][1]["label"]
+        other_tab_answer = {"intake_id": shown["id"], "index": shown["questions"]["index"],
+            "queue_revision": shown["queue_revision"], "question_token": shown["question_token"],
+            "action": "answer", "choice": 0, "inputs": read[0]["inputs"], "tep": read[0]["tep"]}
+        changed = page.request.post(base + "/agent/document/answer", data=other_tab_answer)
+        assert changed.status == 200
+        current = changed.json()["card"]
+        assert current["questions"]["index"] == 1
+        page.locator('#v2TeaserQuestion [data-teaser-choice="1"]').click()
+        expect(page.locator("#v2ImportStatus")).to_contain_text("Ответ не применён")
+        expect(page.locator("#v2ImportStatus")).to_contain_text(proposal)
+        expect(page.locator("#v2ImportStatus")).to_be_visible()
+        expect(page.locator("#v2ImportStatus")).to_be_in_viewport()
+        expect(page.locator("#v2TeaserQuestion").get_by_role("button", name="Бизнес", exact=True)).to_be_visible()
+        assert answered[-1]["status"] == 409
+        assert answered[-1]["data"]["detail"]["card"]["id"] == shown["id"]
+        assert answered[-1]["request"]["queue_revision"] == shown["queue_revision"]
+        assert page.locator("#v2TeaserApply").count() == 0
+        assert not calculated
+        with page.expect_response(lambda response: response.url.endswith("/agent/document/answer")) as accepted_response:
+            page.locator("#v2TeaserQuestion").get_by_role("button", name="Бизнес", exact=True).click()
+        expect(page.locator("#v2TeaserApply")).to_be_visible()
+        accepted = accepted_response.value
+        assert accepted.status == 200
+        assert accepted.request.post_data_json["queue_revision"] == current["queue_revision"]
+        assert accepted.request.post_data_json["question_token"] == current["question_token"]
+        assert accepted.json()["card"]["inputs"]["vri_relief_mln"] == current["inputs"]["vri_relief_mln"] == 0
+        assert accepted.json()["card"]["tep"]["apartments"]["gns"] == 100.25
+        assert not calculated and not errors
+        browser.close()

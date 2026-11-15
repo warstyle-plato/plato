@@ -304,9 +304,25 @@
       const response = await fetch('/agent/document/answer', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({intake_id: card.id, index: card.questions.index, action, choice, value, mode,
+          queue_revision: card.queue_revision, question_token: card.question_token,
           inputs: draft.inputs, tep: draft.tep, session: webSession()}),
       });
       const data = await response.json();
+      if (response.status === 409 && data.detail && data.detail.code === 'intake_queue_changed') {
+        const current = data.detail.card;
+        if (!current || current.id !== card.id) throw new Error('Не удалось сверить текущую карточку. Повторите загрузку документа.');
+        const option = ((card.questions.card || {}).options || [])[choice];
+        const proposed = [option && option.label, value, action === 'skip' ? 'пропустить' : ''].filter(Boolean).join(' — ');
+        renderTeaserReview({...teaserExtraction, card: current});
+        if (!current.ready) {
+          document.getElementById('v2TeaserQuestions').hidden = true;
+          renderTeaserQuestion(current);
+        }
+        status('Карточка уже изменилась. Ответ не применён. Ваш ответ сохранён как предложение: '
+          + proposed + '. Проверьте текущую карточку и подтвердите ответ заново.', 'error');
+        document.getElementById('v2ImportStatus').scrollIntoView({block: 'center'});
+        return;
+      }
       if (!response.ok) throw new Error(data.detail || 'Ответ не сохранился.');
       if (data.confirm) {
         const host = document.getElementById('v2TeaserQuestion');

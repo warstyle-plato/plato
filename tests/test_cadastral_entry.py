@@ -271,19 +271,48 @@ def test_telegram_resend_button_is_not_limited_to_edit_mode():
     assert "showTelegramResendButton();" in page[sent:sent + 600]
 
 
-def test_edit_mode_opens_the_project_from_the_card():
+@pytest.mark.parametrize('signed,matches,manual_count', [(False, False, 1), (False, True, 0), (True, False, 0)])
+def test_edit_mode_opens_the_project_from_the_card(signed, matches, manual_count):
     """«Изменить» должно открывать тот расчёт, по которому нажали кнопку.
 
     Расчёт по Подмосковью и по адресу делает бот на сервере — браузер его
     никогда не видел. Режим правки брал только сохранённое локально состояние
     и показывал чужой прошлый проект вместо посчитанных участков.
     """
-    page = main.PAGE
-    assert "function telegramStateMatches(manual)" in page
-    assert "if(sessionData.manual_tep&&!telegramStateMatches(sessionData.manual_tep))" in page
-    # Загрузка ТЭП из сессии не должна сама отправлять карточку в чат.
-    assert "applyTelegramManualTep(sessionData.manual_tep,{silent:true})" in page
-    assert "if(!silent)await sendTelegramResult();" in page
+    import json
+    from page_blocks import run
+
+    # Execute the actual launch branch: ordinary links restore the card's
+    # project, while a matching signed document keeps the user's current edits.
+    prelude = """
+const assert=require('assert');const window={};
+let telegramSession='synthetic',telegramMode='edit',telegramCalcOverrides={};
+let telegramOverridesReviewRequired=true,manuals=[],overlays=0,calcs=0;
+const signed=SIGNED,matches=MATCHES;
+const record={signature:'same-signed-document',intake_id:'same-intake'};
+const inputs={purchase_price_mln:19,...(signed?{_intake_qualification:record}:{})};
+const loadTelegramSessionData=async()=>({overrides_review_required:false,
+ calc_overrides:signed?{_intake_qualification:record,purchase_price_mln:7}:{},manual_tep:{project:'server-card'}});
+const telegramOverridesReviewNotice=()=>{throw Error('current project unexpectedly refused')};
+const telegramStateMatches=()=>matches;
+const applyTelegramManualTep=async(manual,options)=>{manuals.push({manual,options})};
+const applyTelegramCalcOverrides=()=>{overlays++};
+const renderInputs=()=>{},renderTep=()=>{},renderPhasing=()=>{};
+const syncProjectClassSelector=()=>{},syncProjectKindSelector=()=>{},openTab=()=>{};
+const telegramProgress=()=>{},calculate=async()=>{calcs++},setupTelegramEditSubmit=()=>{};
+""".replace('SIGNED', json.dumps(signed)).replace('MATCHES', json.dumps(matches))
+    tail = """
+(async()=>{await runTelegramLaunch();
+assert.equal(manuals.length,MANUAL_COUNT);
+if(manuals.length)assert.deepEqual(manuals[0],{manual:{project:'server-card'},options:{silent:true}});
+assert.equal(overlays,signed?0:1);assert.equal(calcs,1);
+assert.equal(inputs.purchase_price_mln,19);
+if(signed)assert.strictEqual(inputs._intake_qualification,record);
+assert.equal(telegramOverridesReviewRequired,false);
+})().catch(e=>{console.error(e);process.exit(1)});
+""".replace('MANUAL_COUNT', str(manual_count))
+    run(prelude, tail, page=main.PAGE)
+    assert "if(!silent)await sendTelegramResult();" in main.PAGE
 
 
 def test_incoming_project_clears_the_previous_territory():

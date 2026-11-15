@@ -50,6 +50,7 @@ function renderCalculationQualification(result){
 
 function renderResult(){
  if(!lastResult)return;const r=lastResult,f=r.finance;
+ hideCalcLocked();
  renderCalculationQualification(r);
  renderObjectParkingNote();
  // Подпись под ставкой благоустройства зовётся и формой, и результатом:
@@ -58,7 +59,6 @@ function renderResult(){
  // имеет, а чужая связь ломает стенды, перечисляющие куски руками.
  renderLandscapingRateNote();
  renderLandRentSummary();
- hideCalcLocked();
  if(typeof feedbackCalcs!=='undefined'){feedbackCalcs+=1;feedbackMaybeAsk()}
 
  // Числа берутся из результата, а не из формы: форма не знает ни о льготе по
