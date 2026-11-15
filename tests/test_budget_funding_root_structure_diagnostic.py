@@ -221,6 +221,22 @@ def test_token_path_and_observed_namespace_cannot_disagree():
     assert proof._checked_extent_failure(failure) is None
 
 
+def test_all_matching_exception_is_a_valid_helper_result_but_never_a_rejection_envelope():
+    from lxml import etree
+    root, formula, stack = formatting_case()
+    all_match = proof._namespace_structure(stack, formula, True, None, None)
+    assert all_match['first_unmet'] == 'none' and all_match['checks'] == ['match'] * 11
+    assert proof._checked_namespace_structure(all_match) is True
+    assert proof._formatting_formula(stack, formula, True, None, None) is True
+    formula.getparent().set('type', 'num')
+    failure = rejected(etree.tostring(root))
+    failure['namespace_structure'] = all_match
+    assert proof._checked_extent_failure(failure) is None
+    diagnostic = outer(failure)
+    assert 'extent_proof' not in diagnostic
+    assert diagnostic['complete_projection'] is False and diagnostic['financial_acceptance'] is False
+
+
 def test_whole_diagnostic_keeps_the_2048_byte_bound_with_largest_URI_and_all_counter_widths():
     raw = xml(PAYLOAD).replace(b'</worksheet>', (
         '<extLst><ext><other:f xmlns:other="' + 'x' * 256 + '"/></ext></extLst></worksheet>').encode())

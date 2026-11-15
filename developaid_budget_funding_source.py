@@ -180,8 +180,10 @@ def _checked_extent_failure(value):
                     return None
             except UnicodeError:
                 return None
-    if 'namespace_structure' in value and not _checked_namespace_structure(value['namespace_structure']):
-        return None
+    if 'namespace_structure' in value:
+        if (not _checked_namespace_structure(value['namespace_structure'])
+                or value['namespace_structure']['first_unmet'] == 'none'):
+            return None
     if 'namespace_structure' in value:
         metadata, structure = value['namespace_rejection'], value['namespace_structure']
         qname = ('{' + metadata['namespace_uri'] + '}' + metadata['local_name']
