@@ -26,7 +26,8 @@ def calc(rows=(),bdds=None,cut='2026-11-14',budget=100):
 def doc(fact):return {'fact':fact,'source':{'sha256':'a'*64}}
 
 def test_budget_is_non_tax_leaves_and_parent_is_only_composition_diagnostic():
-    result=cash.fm_budget(_finmodel())
+    # This legacy contract deliberately has no explicit unit declaration.
+    result=cash.fm_budget(_finmodel(unit=None))
     assert result['budget']==40000
     assert result['fm_columns_context_only']['fact']==20000  # never paid cash
     assert result['taxes_separate']['total']==120000

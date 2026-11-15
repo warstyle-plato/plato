@@ -380,6 +380,105 @@ def test_a_late_admission_cannot_replace_a_changed_report_or_login(report_ui, mo
             expect(page.locator("#privateArea")).to_be_hidden()
 
 
+@pytest.mark.parametrize("change", ["project", "date", "period"])
+def test_old_financial_tiles_disappear_while_a_changed_report_is_pending(report_ui, monkeypatch, change):
+    from playwright.sync_api import expect
+    page, base = report_ui
+    monkeypatch.setattr(core, "_monitor_report_body", lambda *a, **k: {
+        **RESULT, "html": "<h1>Предыдущий бюджет и дефицит</h1>"})
+    page.goto(base + "/report")
+    expect(page.locator("#reportBox h1")).to_have_text("Предыдущий бюджет и дефицит", timeout=5_000)
+    release = threading.Event()
+
+    def changed(req, **policy):
+        release.wait(10)
+        return {**RESULT, "html": "<h1>Новый бюджет и дефицит</h1>"}
+
+    monkeypatch.setattr(core, "_monitor_report_body", changed)
+    try:
+        with page.expect_response("**/monitor/report/build") as response:
+            if change == "project":
+                page.locator("#project").select_option("Fixture B")
+            elif change == "date":
+                page.locator("#cut").fill("2026-11-07")
+                page.locator("#cut").dispatch_event("change")
+            else:
+                page.locator("#reportKind").select_option("month")
+        assert response.value.status == 202
+        expect(page.locator("#reportBox h1")).to_have_count(0, timeout=2_000)
+        expect(page.locator("#reportMsg")).to_have_class("msg warn")
+    finally:
+        release.set()
+    expect(page.locator("#reportBox h1")).to_have_text("Новый бюджет и дефицит", timeout=5_000)
+
+
+@pytest.mark.parametrize('width', [390, 1440])
+@pytest.mark.parametrize('change', ['project', 'date', 'period', 'stored-key'])
+@pytest.mark.parametrize('late_status', [200, 500])
+def test_pending_native_report_hides_old_money_and_late_A_cannot_replace_or_clear_B(
+        report_ui, monkeypatch, width, change, late_status):
+    from playwright.sync_api import expect
+    page, base = report_ui
+    page.set_viewport_size({'width': width, 'height': 844})
+    monkeypatch.setattr(core, '_monitor_report_body', lambda *a, **k: {
+        **RESULT, 'html': '<h1>Previous financial context</h1>'})
+    page.goto(base + '/report')
+    expect(page.locator('#reportBox h1')).to_have_text('Previous financial context')
+    held = []
+
+    def admission(route):
+        if not held:
+            held.append(route)
+        else:
+            route.fulfill(status=200, content_type='application/json', body=json.dumps({
+                'pending': False, 'html': '<h1>Latest financial context B</h1>'}))
+
+    page.route('**/monitor/report/build', admission)
+    page.locator('#reportBtn').click()
+    expect(page.locator('#reportBox')).to_have_text('Собираю сводку для выбранного проекта и даты…')
+    assert len(held) == 1
+    if change == 'project':
+        page.locator('#project').select_option('Fixture B')
+    elif change == 'date':
+        page.locator('#cut').fill('2026-11-07')
+        page.locator('#cut').dispatch_event('change')
+    elif change == 'period':
+        page.locator('#reportKind').select_option('month')
+    else:
+        page.evaluate("window.dispatchEvent(new StorageEvent('storage',{key:'plato_projects_key'}))")
+    if change == 'stored-key':
+        expect(page.locator('#privateArea')).to_be_hidden()
+        expect(page.locator('#reportBox h1')).to_have_count(0)
+    else:
+        expect(page.locator('#reportBox h1')).to_have_text('Latest financial context B')
+    body = ({'pending': False, 'html': '<h1>Stale financial context A</h1>'} if late_status == 200
+            else {'detail': 'Stale admission failure A'})
+    with page.expect_response('**/monitor/report/build'):
+        held[0].fulfill(status=late_status, content_type='application/json', body=json.dumps(body))
+    page.evaluate('async()=>{await new Promise(requestAnimationFrame)}')
+    if change == 'stored-key':
+        expect(page.locator('#privateArea')).to_be_hidden()
+        expect(page.locator('#reportBox h1')).to_have_count(0)
+    else:
+        expect(page.locator('#reportBox h1')).to_have_text('Latest financial context B')
+        expect(page.locator('#reportMsg')).to_be_empty()
+
+
+@pytest.mark.parametrize('width', [390, 1440])
+def test_current_native_report_failure_clears_loading_and_previous_money(report_ui, monkeypatch, width):
+    from playwright.sync_api import expect
+    page, base = report_ui
+    page.set_viewport_size({'width': width, 'height': 844})
+    monkeypatch.setattr(core, '_monitor_report_body', lambda *a, **k: RESULT)
+    page.goto(base + '/report')
+    expect(page.locator('#reportBox h1')).to_have_text('Fixture report')
+    page.route('**/monitor/report/build', lambda route: route.fulfill(
+        status=500, content_type='application/json', body='{"detail":"Current build failed"}'))
+    page.locator('#reportBtn').click()
+    expect(page.locator('#reportMsg')).to_have_text('Current build failed')
+    expect(page.locator('#reportBox')).to_be_empty()
+
+
 def test_latest_selection_waits_for_real_capacity_without_extra_workers(report_ui, monkeypatch):
     """Intermediate selections fill both slots; the final selection must recover."""
     from playwright.sync_api import expect
