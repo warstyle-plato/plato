@@ -60,6 +60,15 @@ def test_summary_is_partial_and_preserves_a_measured_forecast():
     assert 'rnv_forecast' not in result
 
 
+def test_group_keeps_known_plan_dates_and_missing_members_separate_from_estimate():
+    a=row();a['plan_pace_scenario']=scenario.work(a,'2026-01-06')
+    b=row();b.update(plan_finish='2026-01-20',forecast_known=True,forecast_finish='2026-02-02')
+    result=scenario.group([a,b,{}])
+    assert result['plan_finish']=='2026-01-20' and result['plan_covered']==2
+    assert result['finish']=='2026-02-02' and result['covered']==2 and result['total']==3
+    assert scenario.group([{}])['plan_finish'] is None
+
+
 @pytest.mark.parametrize('width',[390,1440])
 def test_actual_page_displays_a_scenario_label_beside_unknown_pace(width):
     view=copy.deepcopy(monitor_view())

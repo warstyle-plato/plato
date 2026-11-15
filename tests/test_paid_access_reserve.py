@@ -56,6 +56,7 @@ def shop(monkeypatch, tmp_path):
     monkeypatch.setenv("DEVELOPAID_ADMIN_KEY", "kluch")
     monkeypatch.setenv("DEVELOPAID_PAYWALL", "1")
     monkeypatch.setattr(core, "_MO_CALC_API_URL", "")
+    monkeypatch.setattr(core, "_telegram_api", lambda *_args, **_kwargs: {"ok": True, "result": {}})
     core._ACCESS_REMOTE_CACHE.clear()
     legal = tmp_path / "legal"
     legal.mkdir()
@@ -283,16 +284,27 @@ def test_a_test_payment_puts_the_reserve_only_to_the_demo_user(shop):
     assert core.access_status(demo)["reserve"] == 3
 
 
-def test_render_signs_the_reserve_and_the_core_rejects_a_forged_count(shop, monkeypatch):
+@pytest.mark.parametrize("notice_poll_first", [False, True])
+def test_render_signs_the_reserve_and_the_core_rejects_a_forged_count(shop, monkeypatch, notice_poll_first):
     sent: list[dict] = []
+    ignored: list[str] = []
 
     def core_post(url, payload, timeout):
+        # Background polls use this same transport; only grants belong here.
+        if url != core._projects_remote_url("/internal/access/grant"):
+            ignored.append(url)
+            return {}
         sent.append(payload)
         return TestClient(core.app).post("/internal/access/grant", json=payload).json()
 
     monkeypatch.setattr(core, "_MO_CALC_API_URL", "https://core.example/mo/calculate")
     monkeypatch.setattr(core, "_core_post", core_post)
+    if notice_poll_first:
+        monkeypatch.setenv("TELEGRAM_WEBHOOK_ENABLED", "1")
+        _wrapper._deliver_access_notices()  # One native tick, no background loop.
+        assert core._projects_remote_url("/internal/access/notices") in ignored
     buy_package(shop, 3, [A1])
+    assert len(sent) == 1
     assert sent and sent[0]["reserve"] == 2 and sent[0]["payment_id"] == PAY_ID
     status = core.access_status(CHAT)
     assert status["reserve"] == 2 and len(status["plots"]) == 1

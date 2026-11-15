@@ -148,25 +148,26 @@ def store(project: str, row: dict, filename: str, content: bytes) -> dict:
         raise ContractFilesProblem("Файл не открылся как PDF. Сохраните документ в PDF заново, например выгрузкой из системы электронного документооборота, и загрузите ещё раз.")
     sha = hashlib.sha256(content).hexdigest()
     folder.mkdir(parents=True, exist_ok=True, mode=0o700)
-    existing = folder / f"{sha}.json"
-    if existing.exists() and (folder / f"{sha}.pdf").exists():
-        with _locked(folder):
+    # Identity inventory/CAS shares this native lock, including first upload.
+    with _locked(folder):
+        existing = folder / f"{sha}.json"
+        if existing.exists() and (folder / f"{sha}.pdf").exists():
             record = _current(folder, sha)
             restored = bool(record.pop("removed_at", None))
             if restored:
                 _json(existing, record)
-        return {**_summary(record), "already": True, "restored": restored}
-    record = _record(sha, Path(str(filename or "")).name[:240] or "документ.pdf", content, _now())
-    if record.get("scan"):
-        # A misread number does not refuse a scan: the contract is checked again when it is confirmed.
-        record["scan"]["card_number_found"] = _named_in_scan(record, row)
-    else:
-        reason = _same_contract(record.get("contract"), row)
-        if reason:
-            raise ContractFilesProblem(reason)
-    _write(folder / f"{sha}.pdf", content)
-    _json(existing, record)
-    return {**_summary(record), "already": False, "restored": False}
+            return {**_summary(record), "already": True, "restored": restored}
+        record = _record(sha, Path(str(filename or "")).name[:240] or "документ.pdf", content, _now())
+        if record.get("scan"):
+            # A misread number does not refuse a scan: the contract is checked again when it is confirmed.
+            record["scan"]["card_number_found"] = _named_in_scan(record, row)
+        else:
+            reason = _same_contract(record.get("contract"), row)
+            if reason:
+                raise ContractFilesProblem(reason)
+        _write(folder / f"{sha}.pdf", content)
+        _json(existing, record)
+        return {**_summary(record), "already": False, "restored": False}
 
 
 def _stored(path: Path) -> dict:

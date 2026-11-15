@@ -188,7 +188,7 @@ def test_the_rooms_section_is_drawn_by_the_report_itself() -> None:
                 tab.on("pageerror", lambda exc: errors.append(str(exc)))
                 tab.route("**/*", lambda route: route.abort()
                           if route.request.url.startswith("http") else route.continue_())
-                tab.goto(file.as_uri())
+                tab.set_content(file.read_text(encoding="utf-8"))
                 drawn = tab.evaluate(
                     """d => { let box=document.querySelector('#sales');
                               if(!box){ box=document.createElement('div'); box.id='sales';

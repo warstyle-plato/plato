@@ -1530,10 +1530,14 @@ def payments_by_article(
         bdds = str(item["bdds_code"] or "").strip()
         if not bdds:
             continue
-        pair = _party_key(item["counterparty"], item.get("contract"))
-        by_pair.setdefault((pair, item["estimate_code"]), set()).add(bdds)
-        by_pair_any.setdefault(pair, set()).add(bdds)
-        by_party.setdefault(_party_key(item["counterparty"]), set()).add(bdds)
+        party = _party_key(item["counterparty"])
+        contract = _party_key(item.get("contract"))
+        if party and contract:
+            pair = _party_key(item["counterparty"], item.get("contract"))
+            by_pair.setdefault((pair, item["estimate_code"]), set()).add(bdds)
+            by_pair_any.setdefault(pair, set()).add(bdds)
+        if party:
+            by_party.setdefault(party, set()).add(bdds)
     # Соответствие «код РСС → статья» берётся с листа «статьи_БДДС», а из
     # реестра выводится только если листа не дали: в реестре «Код банк» местами
     # расходится с листом, и сборный по ошибке код уносит деньги в
@@ -1558,20 +1562,72 @@ def payments_by_article(
     current_code = {"value": ""}
     current_item = {}
 
+    known_articles = {article for _, article in _BDDS_TO_ARTICLE}
+
+    def code_articles(codes):
+        return {article for code in codes for article in
+                (_gns_split_for(code) or (article_for(code)[0],))}
+
+    def admissible_candidates(item, pair, party):
+        contract = _party_key(item.get('contract'))
+        qualified = bool(party and contract)
+        exact = by_pair.get((pair, item.get('estimate_code')), set()) if qualified else set()
+        whole = by_pair_any.get(pair, set()) if qualified else set()
+        weak = by_party.get(party, set()) if party else set()
+        official = ssr_articles.get(item.get('estimate_code'), set())
+        # A missing contract cannot promote a counterparty guess over a
+        # different, explicit, unambiguous article from the official crosswalk.
+        # Fully qualified contracts retain their existing priority.
+        if (not contract and crosswalk and len(official) == 1 and official <= known_articles
+                and weak and code_articles(weak) != official):
+            weak = set()
+        return exact, whole, weak, official, contract
+
     def observe(article, amount, basis, reason=""):
         if classification_observer is None:
             return
         item = current_item.get('value') or {}
-        pair = _party_key(item.get('contractor'), item.get('contract'))
-        exact = by_pair.get((pair,item.get('estimate_code')),set()) or by_pair_any.get(pair,set())
+        pair = current_item.get('pair')
+        if pair is None:
+            pair = _party_key(item.get('contractor'), item.get('contract'))
+            current_item['pair'] = pair
+        party = current_item.get('party')
+        if party is None:
+            party = _party_key(item.get('contractor'))
+            current_item['party'] = party
+        choices = current_item.get('candidates')
+        if choices is None:
+            choices = admissible_candidates(item, pair, party)
+            current_item['candidates'] = choices
+        exact_codes, contract_codes, party_codes, official, contract = choices
+        exact = exact_codes or contract_codes
         candidates = {article_for(code)[0] for code in exact} if exact else set()
-        official = ssr_articles.get(item.get('estimate_code'),set())
         if not exact:
             candidates = set(official) if official else {None}
-        classification_observer({'source_row':item.get('source_row'), 'date':item.get('date'),
+            if not contract and party_codes:
+                # Keep weak, admissible AHR possibilities visible, including
+                # undated/incomplete rows. Never resurrect rejected pair keys.
+                candidates |= code_articles(party_codes)
+        event = {'source_row':item.get('source_row'), 'date':item.get('date'),
             'amount':amount,'article':article,'basis':basis,'reason':reason,
             'possible_articles':sorted(a for a in candidates if a), 'scope_unknown':None in candidates,
-            'estimate_code':item.get('estimate_code')})
+            'estimate_code':item.get('estimate_code')}
+        record = getattr(classification_observer, 'record_candidates', None)
+        if callable(record):
+            try:
+                record(event, exact_codes=exact_codes, contract_codes=contract_codes,
+                    party_codes=party_codes if basis == 'по контрагенту' else None,
+                    official_articles=official if crosswalk else None,
+                    normalized_pair=pair,
+                    normalized_contract=pair.partition('|')[2] if '|' in pair else None,
+                    flags={'party_present': bool(str(item.get('contractor') or '').strip()),
+                        'contract_present': bool(str(item.get('contract') or '').strip()),
+                        'party_normalized_empty': not party, 'contract_normalized_empty': not contract,
+                        'pair_normalized_empty': not party and not contract})
+            except Exception:
+                failed = getattr(classification_observer, 'record_failure', None)
+                if callable(failed):failed()
+        classification_observer(event)
 
     def put(article: str, month: datetime.date, amount: float, how: str) -> None:
         target = other if article in _NON_CAPEX_ARTICLES else capex
@@ -1600,7 +1656,7 @@ def payments_by_article(
         return True
 
     for item in payments["rows"]:
-        current_item['value'] = item
+        current_item.update(value=item, pair=None, party=None, candidates=None)
         amount, month = item["amount"], item["date"]
         if amount is None:
             observe(None, None, 'unresolved', 'платёж без суммы')
@@ -1613,10 +1669,14 @@ def payments_by_article(
         current_code["value"] = item["estimate_code"]
 
         pair = _party_key(item["contractor"], item["contract"])
+        party = _party_key(item["contractor"])
+        choices = admissible_candidates(item, pair, party)
+        current_item.update(pair=pair, party=party, candidates=choices)
+        exact_codes, contract_codes, party_codes, _, _ = choices
         attempts = (
-            ("по договору и коду РСС", by_pair.get((pair, item["estimate_code"]), set())),
-            ("по договору", by_pair_any.get(pair, set())),
-            ("по контрагенту", by_party.get(_party_key(item["contractor"]), set())),
+            ("по договору и коду РСС", exact_codes),
+            ("по договору", contract_codes),
+            ("по контрагенту", party_codes),
         )
         placed = False
         for how, codes in attempts:

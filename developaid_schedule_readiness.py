@@ -412,6 +412,8 @@ def build(project, cut, schedule):
     if error or history_error:
         result['reason'] = error or history_error
     result['profile_revision'] = (event or {}).get('revision', 0)
+    result['profile_sha256'] = (event or {}).get('profile_sha256', '')
+    result['profile_effective_from'] = ((event or {}).get('profile') or {}).get('effective_from', '')
     latest = events[-1] if events else {}
     result.update(latest_profile_revision=latest.get('revision', 0),
                   latest_profile_sha256=latest.get('profile_sha256', ''),
@@ -512,6 +514,8 @@ def render(state):
         return ''
     esc = lambda value: html.escape(str(value if value is not None else ''), quote=True)
     from developaid_schedule_visual import date_text
+    from developaid_gpr_summary import gpr_summary
+    summary = gpr_summary(state, state.get('cut'))
     project = state['project']
     def facts(row):
         c = row['counts']
@@ -536,25 +540,30 @@ def render(state):
     out.append('''<style>
 .readiness-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(250px,100%),1fr));gap:10px}.readiness-item{border:1px solid #dce3ed;border-radius:7px;padding:10px}.readiness-item h4{margin:0 0 7px}.readiness-item strong{font-size:20px}.readiness-item details{margin-top:7px}
 .readiness-meter{display:block;height:5px;border-radius:4px;background:#e6edf5;overflow:hidden;margin-top:7px}.readiness-meter i{display:block;height:100%;background:#34567a;border-radius:4px}
-.readiness-forecast-label{display:block;font-size:9px;line-height:1.1;margin-top:4px}.readiness-cell-forecast{display:block;font-size:10px;line-height:1.15;white-space:nowrap;margin-top:2px;color:#465d72}.readiness-forecast-coverage{display:block;font-size:9px;line-height:1.1;margin-top:2px;color:#607084}
+.readiness-cell-plan{display:block;font-size:9px;line-height:1.15;margin-top:4px;color:#465d72}.readiness-cell-plan time{white-space:nowrap}.readiness-forecast-label{display:block;font-size:9px;line-height:1.1;margin-top:4px}.readiness-cell-forecast{display:block;font-size:10px;line-height:1.15;white-space:nowrap;margin-top:2px;color:#465d72}.readiness-forecast-basis,.readiness-forecast-coverage{display:block;font-size:9px;line-height:1.1;margin-top:2px;color:#607084}
 .readiness-matrix table{min-width:calc(90px + var(--readiness-columns)*70px)}.readiness-matrix th:first-child{width:30%}.readiness-matrix td{text-align:center;vertical-align:middle}.readiness-matrix td strong{white-space:nowrap;font-size:14px}.readiness-matrix .readiness-total{background:#eaf1fa}.readiness-total strong{font-size:17px!important}.readiness-matrix-evidence{margin-top:10px}.readiness-matrix-evidence article{border-bottom:1px solid #dce3ed;padding:6px 0}.readiness-matrix-evidence h4{font-size:12px;margin:4px 0}.readiness-method{margin:8px 0}.readiness-grid{margin:8px 0 10px}
 @media(max-width:640px){.readiness-summary{padding:10px}.readiness-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}.readiness-item{padding:8px 6px}.readiness-item h4{font-size:11px}.readiness-item strong{font-size:21px}.readiness-item:has(details[open]){grid-column:1/-1}.readiness-matrix th,.readiness-matrix td{padding:7px 4px}.readiness-matrix th{font-size:11px}.readiness-matrix th:first-child{width:30%}.readiness-matrix td strong{font-size:13px}.readiness-total strong{font-size:14px!important}}
 @media print{.readiness-summary details::details-content{content-visibility:visible!important;display:block!important}body.gpr-print-mode .readiness-summary .readiness-weighted-evidence{display:block!important}}
 </style>''')
+    milestone = state.get('milestone_plan') or {}
+    if milestone.get('date'):
+        out.append('<p class="readiness-milestone-plan"><b>'+esc(milestone['label'])+': '+esc(date_text(milestone['date']))+'</b></p>')
     if known:
         if any(row.get('partial') for row in state['corpora']):
             out.append('<p>По известным данным · состав учтён не полностью.</p>')
         out.append('<div class="readiness-grid">'+''.join(card(row) for row in state['corpora'])+'</div>')
     if project['progress'] is not None:
         out.append('<h4>Всего по жилым корпусам</h4>' if state.get('estimated') else '<h4>Общая готовность</h4>')
-        out.append('<strong class="readiness-project-value">'+esc(f"{project['progress']*100:.1f}%".replace('.', ','))+'</strong>')
+        out.append('<strong class="readiness-project-value">'+esc(summary['value'])+'</strong>')
         if project.get('coverage') is not None:
             out.append('<p class="readiness-project-coverage">Расчёт охватывает '+esc(f"{project['coverage']:.1f}%".replace('.', ','))+' оценочного веса разделов.</p>')
         if state.get('project_weight_estimated'):
             out.append('<p class="readiness-corpus-assumption">'+esc(state['project_weight_basis'])+'. Допущение для общей оценки СМР; ПИР и паркинг в неё не включены.</p>')
-        forecast = project.get('forecast') or {}
-        if forecast.get('finish'):
-            out.append('<p class="readiness-project-forecast"><b>При плановом темпе: '+esc(date_text(forecast['finish']))+'</b> · сроки известны для '+str(forecast['covered'])+' из '+str(forecast['total'])+' работ. Это не прогноз РНВ.</p>')
+        if summary['plan_text']:
+            out.append('<p class="readiness-project-plan"><b>'+esc(summary['plan_text'])+'</b></p>')
+        if summary['finish']:
+            out.append('<p class="readiness-project-forecast"><b>'+esc(summary['forecast_text'])+'</b></p>')
+        out.append('<p class="readiness-project-asof">'+esc(summary['as_of_text'])+'</p>')
         if project.get('partial'):
             out.append('<p>Оценка по известной части состава.</p><details class="readiness-project-reasons"><summary>Что не учтено в оценке</summary><p>'+esc(project['reason'])+'</p></details>')
     elif known:

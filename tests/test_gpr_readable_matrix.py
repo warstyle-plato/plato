@@ -4,6 +4,9 @@ Only synthetic observations are kept in git. The owner-source replay remains
 private, and does not turn the unweighted project into a confirmed percentage.
 """
 import copy
+import re
+from collections import Counter
+from datetime import date
 
 import pytest
 from playwright.sync_api import expect
@@ -155,6 +158,67 @@ def test_late_afterprint_cannot_restore_another_context(monkeypatch, context_cha
         assert not errors
 
 
+def capture_next_print_observations(page):
+    # beforeprint runs before Chromium switches media itself. Read the effective
+    # print layout, including CSS-unhidden tails, rather than screen visibility.
+    page.emulate_media(media='print')
+    page.evaluate("""()=>window.addEventListener('beforeprint',()=>{
+        const visible=e=>!!e.getClientRects().length&&getComputedStyle(e).display!=='none'&&getComputedStyle(e).visibility!=='hidden';
+        window.gprPrintedObservations={
+            matrix:[...document.querySelectorAll('#gprFactMatrix .gpr-fact-cell[data-work-id]')].map(e=>({
+                id:e.dataset.workId,object:e.dataset.object,column:e.closest('[data-matrix-object]').dataset.matrixObject,
+                name:e.closest('tr').querySelector('th[scope=row]').textContent,fact:e.querySelector('b').textContent,
+                visible:visible(e),dates:[...e.querySelectorAll('.gpr-cell-date')].filter(visible).map(x=>x.textContent)})),
+            gantt:[...document.querySelectorAll('#gantt .lvl-task[data-work-id]')].map(e=>({
+                id:e.dataset.workId,name:e.querySelector('.title').textContent,
+                reference:e.querySelector('.gpr-print-reference').textContent,visible:visible(e),
+                readings:[...e.querySelectorAll('.work-progress,.gpr-compact-print-metrics>div:first-child')].filter(visible).map(x=>x.textContent)}))};
+    },{once:true})""")
+
+
+def assert_printed_observations(view, coverage, pdf_text):
+    rows = [*view['schedule']['management'][0]['children'][0]['children'][0]['children'],
+            *view['schedule'].get('undated_works', [])]
+    expected = {row['id']: row for row in rows}
+    assert len(expected) == len(rows), 'source work identities must be unique'
+    for scope in ['matrix', 'gantt']:
+        actual = coverage[scope]
+        assert Counter(row['id'] for row in actual) == Counter(expected.keys()), scope+' identity mismatch'
+        for row in actual:
+            source = expected[row['id']]
+            observation = date.fromisoformat(source['progress_source']['date']).strftime('%d.%m.%Y')
+            fact = f"{source['actual_progress']:.0%}"
+            assert row['visible'], scope+' hidden work: '+row['id']
+            assert row['name'] == source['name'], scope+' name mismatch: '+row['id']
+            if scope == 'matrix':
+                assert row['object'] == row['column'] == source['object']
+                assert row['fact'] == fact
+                assert row['dates'] == [observation], 'matrix observation mismatch: '+row['id']
+            else:
+                assert row['reference'] == 'Работа '+source['wbs']
+                assert len(row['readings']) == 1, 'gantt observation mismatch: '+row['id']
+                reading = row['readings'][0]
+                assert reading.count(observation) == 1
+                assert re.findall(r'(?<![\d.,])\d+(?:[.,]\d+)?%', reading) == [fact]
+    # The full, unmodified PDF retains both surfaces. The visible native axis
+    # heading separates their actual text; no diagnostic style hides either.
+    compact = lambda value: ''.join(value.split())
+    axis = 'Корпус, этап и работа'
+    assert pdf_text.count(axis) == 1
+    matrix_pdf, gantt_pdf = pdf_text.split(axis)
+    assert 'Матрицапланаивыполнения' in compact(matrix_pdf)
+    observations = Counter(date.fromisoformat(row['progress_source']['date']).strftime('%d.%m.%Y') for row in rows)
+    for observation, count in observations.items():
+        assert compact(matrix_pdf).count(observation) == count
+        assert compact(gantt_pdf).count(observation) == count
+        assert compact(pdf_text).count(observation) == count+count
+    # Human WBS references bind the printed Gantt to each work, including the
+    # undated clone whose real reference intentionally repeats the first WBS.
+    expected_refs = Counter(compact('Работа '+row['wbs']) for row in rows)
+    printed_lines = Counter(compact(line) for line in gantt_pdf.splitlines())
+    assert {ref: printed_lines[ref] for ref in expected_refs} == dict(expected_refs)
+
+
 def test_a4_pdf_includes_closed_stages_hidden_tail_and_undated_work(monkeypatch, tmp_path):
     view = matrix_view(22)
     source = copy.deepcopy(view)
@@ -167,16 +231,18 @@ def test_a4_pdf_includes_closed_stages_hidden_tail_and_undated_work(monkeypatch,
         before = page.locator('.gpr-matrix-stage[open]').evaluate_all('(xs)=>xs.map(x=>x.dataset.stage)')
         assert page.locator('.gpr-matrix-tail[hidden]').count() > 0
         pdf = tmp_path/'matrix.pdf'
+        capture_next_print_observations(page)
         page.pdf(path=str(pdf), prefer_css_page_size=True, print_background=False)
         reader = PdfReader(pdf)
         assert 1 < len(reader.pages) < 15
         assert all(float(p.mediabox.width)>800 and float(p.mediabox.height)<650 for p in reader.pages)
-        text = ''.join(''.join(p.extract_text().split()) for p in reader.pages)
+        pdf_text = '\n'.join(p.extract_text() for p in reader.pages)
+        text = ''.join(pdf_text.split())
         assert 'Последняяработабезплановыхдат' in text
-        # Each task prints its own observation once, including identical names
-        # across objects and the row with no plan dates. Name membership alone
-        # would pass if a whole object's cells silently disappeared.
-        assert text.count('06.11.2026') == 89
+        # Every work prints once in each surface, including identical names
+        # across objects and the undated row. A global count cannot bind cells.
+        assert_printed_observations(view, page.evaluate('gprPrintedObservations'), pdf_text)
+        page.emulate_media(media='screen')
         for row in source['schedule']['management'][0]['children'][0]['children'][0]['children']:
             assert ''.join(row['name'].split()) in text
         for obj in ['Корпус1', 'Корпус2', 'Корпус3', 'ПАРКИНГ']:
@@ -184,4 +250,35 @@ def test_a4_pdf_includes_closed_stages_hidden_tail_and_undated_work(monkeypatch,
         assert '08.11.2026' in text
         assert page.locator('.gpr-matrix-stage[open]').evaluate_all('(xs)=>xs.map(x=>x.dataset.stage)') == before
         assert page.locator('#gantt .lvl-task').count() == 0
+        assert not errors
+
+
+@pytest.mark.parametrize('mutation', ['hide-object', 'duplicate-cell'])
+def test_pdf_observation_oracle_rejects_missing_object_and_replaced_duplicate(monkeypatch, tmp_path, mutation):
+    view = matrix_view(22)
+    task = view['schedule']['management'][0]['children'][0]['children'][0]['children'][0]
+    view['schedule']['undated_works'] = [dict(task, id='undated', name='Последняя работа без плановых дат',
+        section='Последний этап', plan_start=None, plan_finish=None, reason='Нет даты в источнике')]
+    serve_view(monkeypatch, view)
+    with browser_page(390) as (page, _, errors):
+        settled(page, view)
+        page.evaluate("""mutation=>window.addEventListener('beforeprint',()=>{
+            if(mutation==='hide-object'){
+                for(const cell of document.querySelectorAll('#gprFactMatrix [data-matrix-object="Корпус 2"]'))cell.style.display='none';
+            }else{
+                const cell=document.querySelector('#gprFactMatrix [data-work-id="Корпус 1-6"]');
+                cell.parentNode.appendChild(cell.cloneNode(true));
+                // Compensate the global date count: membership must still fail.
+                document.querySelector('#gprFactMatrix [data-work-id="Корпус 2-6"]').style.display='none';
+            }
+        },{once:true})""", mutation)
+        capture_next_print_observations(page)
+        pdf = tmp_path/(mutation+'.pdf')
+        page.pdf(path=str(pdf), prefer_css_page_size=True, print_background=False)
+        pdf_text = '\n'.join(p.extract_text() for p in PdfReader(pdf).pages)
+        if mutation == 'duplicate-cell':
+            # An aggregate date count alone accepts this missing/replaced cell.
+            assert ''.join(pdf_text.split()).count('06.11.2026') == 2*89
+        with pytest.raises(AssertionError, match='matrix'):
+            assert_printed_observations(view, page.evaluate('gprPrintedObservations'), pdf_text)
         assert not errors
