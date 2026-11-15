@@ -1557,18 +1557,36 @@ def _credit_due_html(block: dict[str, Any]) -> str:
 _GROUPS = (("pace", "Наш прогноз (нынешний темп продаж)"), ("fm", "План финмодели"))
 
 
-def _first_due_words(row: dict[str, Any]) -> str:
-    """Подпись плитки: первый платёж по графикам НКЛ и эскроу к его дате — фразой."""
+def _first_due_words(block: dict[str, Any]) -> str:
+    """Первый платёж с явным сценарием лимита и сравнением без его увеличения."""
+    row = block["rows"][0]
+    extra = block.get("extra")
+    if extra:
+        scope = (f"С учётом расчётного увеличения лимита банка на {_rub(extra)}. "
+                 f"Условия увеличения приняты как у {block['first_short']}; "
+                 "это допущение расчёта. ")
+    else:
+        scope = "По действующим НКЛ, без увеличения лимита. "
+        if block.get("extra_reason"):
+            scope += f"Допфинансирование не включено: {block['extra_reason']}. "
     interest = row["interest"]["pace"]
     owed = (f"платёж {_rub(row['total']['pace'])} (долг {_rub(row['principal'])} и проценты "
             f"{_rub(interest)})" if interest is not None else
             f"основной долг {_rub(row['principal'])}, проценты не посчитаны")
-    text = (f"{_day(row['date'])} по графикам НКЛ {owed}, на эскроу к этой дате "
+    text = (scope + f"{_day(row['date'])} по графикам НКЛ {owed}, на эскроу к этой дате "
             f"{_rub(row['escrow']['pace'])} по нашему прогнозу.")
     fm = row["own"].get("fm")
     if fm is not None:
         text += (" По плану финмодели хватает." if fm <= 0.5 else
                  f" По плану финмодели не хватает {_rub(fm)}.")
+    if extra:
+        base = row["own"].get("pace_base")
+        text += " Без увеличения лимита к этой же дате по нашему прогнозу "
+        text += ("результат не посчитан" if base is None else
+                 "эскроу хватает" if base <= 0.5 else f"не хватает {_rub(base)}")
+        if base is not None and row["interest_base"].get("pace") is None:
+            text += " (без процентов: они не посчитаны)"
+        text += "."
     return text
 
 
@@ -4231,7 +4249,7 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
             add("Эскроу на платежи по НКЛ", None, credit_verdict(due))
         else:
             add("Эскроу на платежи по НКЛ",
-                f"не хватает {_rub(put)}" if put > 0.5 else "хватает", _first_due_words(row),
+                f"не хватает {_rub(put)}" if put > 0.5 else "хватает", _first_due_words(due),
                 "bad" if put > 0.5 else "good")
     else:
         add("Эскроу на платежи по НКЛ", None, due.get("reason") or "не посчитано")
