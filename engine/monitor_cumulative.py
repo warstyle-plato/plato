@@ -78,6 +78,10 @@ class MonitorProjectSourceAuditPage(MonitorProjectSourceAudit):
     corpus_token: _IdentityHash
 
 
+class MonitorProjectDuplicateProof(MonitorProjectSourceAuditPage):
+    book_sha256: list[_IdentityHash] = _CumulativeField(min_length=1, max_length=1)
+
+
 class MonitorContractIdentityInventory(MonitorContractsBuild):
     model_config = {"extra": "forbid", "strict": True}
     raw_ids: list[_IdentityHash] = _CumulativeField(min_length=2, max_length=2)
@@ -191,6 +195,7 @@ _CUMULATIVE_PATHS = _IDENTITY_PATHS | frozenset({
     "/monitor/contracts/source-review",
     "/monitor/contracts/source-audit",
     "/monitor/contracts/source-audit-page",
+    "/monitor/contracts/source-duplicate-proof",
     "/monitor/contracts/documents", "/monitor/contracts/document-upload",
     "/monitor/contracts/document-links", "/monitor/contracts/document-remove",
     "/monitor/contracts/document-confirm",
@@ -400,6 +405,10 @@ def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = 
             import developaid_contract_source_review as source_review
             result = {"source_audit_page": source_review.project_audit_page(**payload),
                       "runtime": {"version": VERSION, "commit": COMMIT}}
+        elif operation == "source-duplicate-proof":
+            import developaid_contract_source_review as source_review
+            result = {"source_duplicate_proof": source_review.project_duplicate_proof(**payload),
+                      "runtime": {"version": VERSION, "commit": COMMIT}}
         elif operation == "link":
             result = {"link": links.set_link(
                 payload["project"], payload["contract_id"], payload["evidence_id"],
@@ -513,7 +522,7 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
                                    raw=req.raw, contract_date=req.contract_date, note=req.note)
                 elif operation == "source-review":
                     payload.update(contract_id=req.contract_id)
-                elif operation == "source-audit-page":
+                elif operation in {"source-audit-page", "source-duplicate-proof"}:
                     payload.update(book_sha256=sorted(set(req.book_sha256)), corpus_token=req.corpus_token)
                 elif operation == "link":
                     payload.update(contract_id=req.contract_id, evidence_id=req.evidence_id,
@@ -658,3 +667,8 @@ def monitor_contracts_document_remove(req: MonitorContractDocumentRemove) -> Res
 @app.post("/monitor/contracts/document-confirm", include_in_schema=False)
 def monitor_contracts_document_confirm(req: MonitorContractDocumentConfirm) -> Response:
     return _monitor_cumulative_job(req, family="contracts", operation="document-confirm")
+
+
+@app.post("/monitor/contracts/source-duplicate-proof", include_in_schema=False)
+def monitor_project_duplicate_proof(req: MonitorProjectDuplicateProof) -> Response:
+    return _monitor_cumulative_job(req, family="contracts", operation="source-duplicate-proof")
