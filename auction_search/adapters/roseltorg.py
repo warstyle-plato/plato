@@ -443,7 +443,25 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
                                        "«Развитие территории» по Москве и городская "
                                        "приватизация: доли обществ, земля и здания "
                                        "Московской области")}
-        candidate_urls: list[str] = []
+        # Уже известные действующие КРТ проверяем раньше общего каталога.
+        # Их отсутствие в поиске не доказывает завершение торгов.
+        known = getattr(self, "known_krt_lots", [])
+        known = [row for row in known if re.fullmatch(
+            r"https://www\.roseltorg\.ru/procedure/\d+/\d+/?", str(row.get("url") or ""))][:100]
+        read: dict[str, AuctionLot] = {}
+        attempts: dict[str, dict[str, Any]] = {}
+        if known:
+            with ThreadPoolExecutor(max_workers=6) as pool:
+                jobs = {pool.submit(self.fetch_lot, row["url"], deadline=deadline): row["url"]
+                        for row in known}
+                for job in as_completed(jobs):
+                    url = jobs[job]
+                    try:
+                        read[url] = job.result()
+                    except Exception as exc:
+                        attempts[url] = {"state": "unread", "reason": str(exc)[:300]}
+        candidate_urls: list[str] = list(dict.fromkeys(row["url"] for row in known))
+        # Память не считается уже просмотренной страницей поиска.
         seen_urls: set[str] = set()
         # Подпись ссылки из раздела: по ней КРТ видно до открытия карточки.
         titles: dict[str, str] = {}
@@ -500,7 +518,11 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
                         f"остановлено по времени на странице {page}")
                     break
                 search_url = self._discovery_url(tag, page)
-                html = self._read(search_url, clock.timeout(deadline, 25))
+                try:
+                    html = self._read(search_url, clock.timeout(deadline, 25))
+                except Exception as exc:  # noqa: BLE001 — прочитанные карточки не теряем
+                    self.last_report["reason"] = f"Поиск по тегу «{tag}», страница {page}: {exc}"
+                    break
                 parser = _RoseltorgHTML()
                 parser.feed(html)
                 page_urls = self._procedure_urls(search_url, parser.links)
@@ -522,7 +544,7 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
         candidate_urls.extend(privatization_urls)
         # Читаем в порядке «сначала то, за чем пришли»: срок кончается раньше,
         # чем список карточек.
-        candidate_urls = self._ordered_candidates(candidate_urls, titles)
+        candidate_urls = self._ordered_candidates(list(dict.fromkeys(candidate_urls)), titles)
         lots: list[AuctionLot] = []
         seen_lots: set[str] = set()
         self.last_report["cards"] = len(candidate_urls)
@@ -536,16 +558,16 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
         #
         # Шесть потоков — не «побыстрее», а ровно столько, чтобы уложиться:
         # больше значит стучаться в чужую площадку без нужды.
-        read: dict[str, AuctionLot] = {}
-        unread = 0
+        unread = len(attempts)
         if candidate_urls and not clock.expired(deadline):
             with ThreadPoolExecutor(max_workers=6) as pool:
                 jobs = {pool.submit(self.fetch_lot, url, deadline=deadline): url
-                        for url in candidate_urls}
+                        for url in candidate_urls if url not in read and url not in attempts}
                 for job in as_completed(jobs):
                     try:
                         read[jobs[job]] = job.result()
-                    except Exception:
+                    except Exception as exc:
+                        attempts[jobs[job]] = {"state": "unread", "reason": str(exc)[:300]}
                         # Одна битая или недоступная процедура не роняет выдачу.
                         unread += 1
         # Отсев называет причину. «Одна карточка КРТ» неотличима от «остальные
@@ -557,6 +579,7 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
         tally = privatization.Tally()
 
         def drop(reason: str, is_krt: bool) -> None:
+            attempts[lot_url] = {"state": "excluded", "reason": reason}
             dropped[reason] = dropped.get(reason, 0) + 1
             if is_krt:
                 krt_dropped[reason] = krt_dropped.get(reason, 0) + 1
@@ -576,6 +599,7 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
                 # 0,5 га, здание от 1 000 м², доли — по правилу для долей.
                 # Вид «доля» и «Продажа доли» прежние шаги отсекали молча.
                 if not tally.keep(lot):
+                    attempts[lot_url] = {"state": "excluded", "reason": privatization.verdict(lot)}
                     continue
                 if lot.canonical_key in seen_lots:
                     drop("дубль", is_krt)
@@ -583,6 +607,7 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
                 seen_lots.add(lot.canonical_key)
                 lot.raw["discovered_via"] = "Roseltorg: раздел приватизации (178-ФЗ)"
                 lots.append(lot)
+                attempts[lot_url] = {"state": "collected", "reason": "Карточка прочитана"}
                 continue
             if lot.lot_kind not in self.RELEVANT_KINDS:
                 drop("вид лота не девелоперский", is_krt)
@@ -605,6 +630,10 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
             seen_lots.add(lot.canonical_key)
             lot.raw["discovered_via"] = "Roseltorg public tags[] search"
             lots.append(lot)
+            attempts[lot_url] = {"state": "collected", "reason": "Карточка прочитана"}
+        for url in candidate_urls:
+            attempts.setdefault(url, {"state": "unread", "reason": "Карточка не прочитана до окончания срока сбора"})
+        self.last_report["lot_checks"] = attempts
         if dropped:
             self.last_report["dropped"] = dict(
                 sorted(dropped.items(), key=lambda pair: -pair[1]))
