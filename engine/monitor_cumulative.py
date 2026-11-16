@@ -58,6 +58,23 @@ class MonitorContractDocuments(MonitorContractsBuild):
     contract_id: str = _CumulativeField(pattern=r"^[0-9a-f]{64}$")
 
 
+class MonitorContractComparisonExport(MonitorContractDocuments):
+    model_config = {"extra": "forbid", "strict": True}
+    cut: str = _CumulativeField(min_length=10, max_length=10)
+    ticket: str = _CumulativeField(pattern=r"^[0-9a-f]{32}$")
+    revision: str = _CumulativeField(pattern=r"^[0-9a-f]{64}$")
+    selected_tokens: list[str] = _CumulativeField(max_length=10_000)
+    query: str = _CumulativeField(default="", max_length=200)
+    filter: str = _CumulativeField(default="all", pattern=r"^(all|behind|ahead|overdue|done|unknown)$")
+
+    @_CumulativeValidator("selected_tokens")
+    @classmethod
+    def export_tokens(cls, value):
+        if len(set(value)) != len(value) or any(not re.fullmatch(r"[0-9a-f]{64}", token) for token in value):
+            raise ValueError("Нужны уникальные номера строк этой версии таблицы.")
+        return value
+
+
 class MonitorContractSourceReview(MonitorContractDocuments):
     # This operation never accepts a filename, worksheet, range, path or URL.
     model_config = {"extra": "forbid"}
@@ -244,6 +261,7 @@ _CUMULATIVE_PATHS = _IDENTITY_PATHS | frozenset({
     "/monitor/contracts/source-duplicate-proof",
     "/monitor/contracts/source-prepared-index",
     "/monitor/contracts/documents", "/monitor/contracts/document-upload",
+    "/monitor/contracts/comparison.xlsx",
     "/monitor/contracts/document-links", "/monitor/contracts/document-remove",
     "/monitor/contracts/document-confirm",
     "/monitor/view", "/monitor/gpr-view", "/monitor/gantt", "/monitor/schedule-fact", "/monitor/gpr-corpus/view",
@@ -260,17 +278,18 @@ _CUMULATIVE_PATHS = _IDENTITY_PATHS | frozenset({
 
 @app.middleware("http")
 async def monitor_cumulative_private_headers(request: Request, call_next):
-    if request.url.path in _IDENTITY_PATHS and request.method == 'POST':
+    if (request.url.path in _IDENTITY_PATHS or request.url.path == "/monitor/contracts/comparison.xlsx") and request.method == 'POST':
         private = {"Cache-Control": "private, no-store"}
+        cap = 1024*1024 if request.url.path == "/monitor/contracts/comparison.xlsx" else 64*1024
         # Bound the stream before FastAPI parses JSON, including chunked input.
         try:
             declared = request.headers.get('content-length')
-            if declared is not None and (not declared.isdecimal() or int(declared) > 64*1024):
+            if declared is not None and (not declared.isdecimal() or int(declared) > cap):
                 return JSONResponse(status_code=413, content={"detail": "Запрос уточнения слишком большой."}, headers=private)
             raw = bytearray()
             async for chunk in request.stream():
                 raw.extend(chunk)
-                if len(raw) > 64*1024:
+                if len(raw) > cap:
                     return JSONResponse(status_code=413, content={"detail": "Запрос уточнения слишком большой."}, headers=private)
             import developaid_contract_identity_store as identity_store
             value = identity_store.strict_json(bytes(raw))
@@ -528,7 +547,13 @@ def _monitor_cumulative_execute_raw(operation: str, payload: dict, archive: byte
                 raise RuntimeError("unknown monitor operation")
         else:
             raise RuntimeError("unknown monitor operation")
-        return {"ok": True, **jsonable_encoder(result)}
+        encoded = jsonable_encoder(result)
+        if operation.startswith("document") and "comparison" in encoded:
+            import developaid_contract_comparison_export as comparison_export
+            encoded["comparison_export"] = comparison_export.bind_snapshot(
+                payload["project"], payload["cut"], payload["contract_id"], encoded,
+                {key: (row or {}).get(key) or "" for key in ("contract", "contractor", "contract_date")})
+        return {"ok": True, **encoded}
     except ledgers.LedgerProblem as exc:
         return {"ok": False, "detail": str(exc), "files": exc.files}
     except (contracts.ContractProblem, links.LinkProblem, contract_files.ContractFilesProblem,
@@ -770,6 +795,36 @@ def monitor_finance_management_result(req: MonitorCumulativeResult) -> Response:
 @app.post("/monitor/contracts/documents", include_in_schema=False)
 def monitor_contracts_documents(req: MonitorContractDocuments) -> Response:
     return _monitor_cumulative_job(req, family="contracts", operation="documents")
+
+
+@app.post("/monitor/contracts/comparison.xlsx", include_in_schema=False)
+def monitor_contract_comparison_xlsx(req: MonitorContractComparisonExport) -> Response:
+    private = {"Cache-Control": "private, no-store"}
+    _require_admin_key(req.key, "Монитор проекта", req.session)
+    import developaid_management_report_jobs as jobs
+    import developaid_contract_comparison_export as comparison_export
+    project, cut = req.project.strip(), _monitor_cumulative_day(req.cut)
+    try:
+        profile = "monitor-cumulative-v1:contracts"
+        owner = jobs.owner_binding(_env_str("DEVELOPAID_ADMIN_KEY", "").strip(), req.session, profile)
+        store = jobs.Store(developaid_monitor._SNAPSHOT_DIR / ".cumulative_jobs")
+        cached = store.poll(req.ticket, owner, profile)
+        meta, comparison, rows = comparison_export.select_snapshot(
+            cached, project, cut, req.contract_id, req.revision, req.selected_tokens)
+        raw = comparison_export.workbook(meta, comparison, rows, query=req.query, filter=req.filter)
+        return Response(raw, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        headers={**private, "Content-Disposition":
+                                 f'attachment; filename="contract-plan-fact-{cut}.xlsx"'})
+    except comparison_export.ExportProblem as exc:
+        raise HTTPException(exc.status, str(exc), headers=private) from None
+    except jobs.JobProblem as exc:
+        status = 409 if exc.status in (400, 404) else 503
+        raise HTTPException(status, "Сохранённая карточка недоступна. Откройте её заново перед выгрузкой.",
+                            headers=private) from None
+    except Exception as exc:
+        logging.getLogger("developaid.monitor").error("Contract comparison export unavailable (%s)", type(exc).__name__)
+        raise HTTPException(503, "Не удалось подготовить Excel. Повторите выгрузку из открытой карточки.",
+                            headers=private) from None
 
 
 @app.post("/monitor/contracts/source-review", include_in_schema=False)
