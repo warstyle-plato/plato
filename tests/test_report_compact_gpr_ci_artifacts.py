@@ -34,7 +34,7 @@ def synthetic_report(project_finish=FINISH):
             members.append(reference)
             mapping[reference] = current
             task = dict(id=current, object=name, name='Вымышленный пакет '+stage,
-                        plan_start='2031-01-10', plan_finish='2031-09-30',
+                        plan_start='2028-01-10', plan_finish='2031-09-30',
                         plan_pace_scenario=dict(finish=finish, source_date=CUT))
             rows.append(dict(task=task))
             points[current] = dict(work_id=current, reference_work_id=reference,
@@ -144,6 +144,39 @@ def test_public_synthetic_native_page_and_print_layout(width):
             expect(host.locator('.rg-plan')).to_have_count(3)
             expect(host.locator('.rg-forecast')).to_have_count(3)
             assert host.locator('details,.cg-work,.cg-stage').count() == 0
+            # Document overflow can stay bounded while an ancestor clips the
+            # table. Every column AND its actual text must fit without scrolling.
+            matrix = host.locator('.rg-matrix')
+            expect(matrix.locator('thead th')).to_have_count(4)
+            assert matrix.locator('thead th').all_text_contents() == ['Этап', 'Учебный корпус 1', 'Учебный корпус 2', 'Учебный корпус 3']
+            matrix_geometry = matrix.evaluate('''table=>{
+                const box=table.getBoundingClientRect(),cells=[...table.querySelectorAll('th,td')];
+                const viewport={left:Math.max(0,box.left),right:Math.min(innerWidth,box.right)};
+                for(let node=table.parentElement;node;node=node.parentElement){
+                    if(!/^(auto|scroll|hidden|clip)$/.test(getComputedStyle(node).overflowX))continue;
+                    const clip=node.getBoundingClientRect(),left=clip.left+node.clientLeft;
+                    viewport.left=Math.max(viewport.left,left);
+                    viewport.right=Math.min(viewport.right,left+node.clientWidth);
+                }
+                const inspect=cell=>{
+                    const r=cell.getBoundingClientRect(),range=document.createRange();
+                    range.selectNodeContents(cell);
+                    return {text:cell.textContent, left:r.left,right:r.right,width:r.width,height:r.height,
+                        font:parseFloat(getComputedStyle(cell).fontSize),
+                        textRects:[...range.getClientRects()].map(x=>({left:x.left,right:x.right}))};
+                };
+                return {viewport,display:getComputedStyle(table).display,
+                    clientWidth:table.clientWidth,scrollWidth:table.scrollWidth,cells:cells.map(inspect)};
+            }''')
+            assert matrix_geometry['display'] == 'table'
+            assert matrix_geometry['scrollWidth'] <= matrix_geometry['clientWidth']+1
+            for cell in matrix_geometry['cells']:
+                assert cell['width'] > 0 and cell['height'] > 0 and cell['font'] >= 11
+                assert cell['left'] >= matrix_geometry['viewport']['left']-1
+                assert cell['right'] <= matrix_geometry['viewport']['right']+1
+                assert all(max(cell['left'],matrix_geometry['viewport']['left'])-1 <= text['left']
+                           <= text['right'] <= min(cell['right'],matrix_geometry['viewport']['right'])+1
+                           for text in cell['textRects'])
             expect(host.locator('.rg-corpus').last).to_contain_text('Вне выбранного состава проекта')
             expect(host.locator('.rg-corpus').last).to_contain_text('нет даты')
             assert host.locator('.rg-corpus').last.locator('.rg-plan,.rg-forecast').count() == 0
@@ -154,7 +187,7 @@ def test_public_synthetic_native_page_and_print_layout(width):
             years = host.locator('.rg-years [data-year]').evaluate_all('''es=>es.map(e=>{
                 const r=e.getBoundingClientRect();return {year:e.textContent,left:r.left,right:r.right,
                     font:parseFloat(getComputedStyle(e).fontSize)};})''')
-            assert [row['year'] for row in years] == ['2031', '2032']
+            assert [row['year'] for row in years] == ['2028', '2029', '2030', '2031', '2032']
             assert all(row['font'] >= 12 and 0 <= row['left'] < row['right'] <= width for row in years)
             assert all(a['right'] <= b['left'] for a, b in zip(years, years[1:]))
             assert page.evaluate('document.documentElement.scrollWidth<=innerWidth+1')
@@ -167,7 +200,8 @@ def test_public_synthetic_native_page_and_print_layout(width):
             assert calls == ['public_projects', 'public_report']
             (out/f'public-synthetic-geometry-{width}.json').write_text(json.dumps(
                 dict(fixture='PUBLIC_SYNTHETIC_ONLY', width=width, project_forecast=FINISH,
-                     blocks=3, corpus_rows=4, selected_bars=3, axis=years, print_rows_visible=4),
+                     blocks=3, corpus_rows=4, selected_bars=3, axis=years,
+                     matrix=matrix_geometry, print_rows_visible=4),
                 ensure_ascii=False, indent=2), encoding='utf-8')
         finally:
             browser.close()
@@ -204,12 +238,13 @@ def test_public_synthetic_native_pdf_has_compact_layout_and_canonical_date():
             for block in page.get_text('dict')['blocks']:
                 for line in block.get('lines', []):
                     for span in line['spans']:
-                        if span['text'].strip() in {'2031', '2032'}:
+                        if span['text'].strip() in {'2028', '2029', '2030', '2031', '2032'}:
                             assert span['size'] >= 9
                             year_spans.append(dict(page=index+1, year=span['text'].strip(), bbox=list(span['bbox'])))
-        assert {span['year'] for span in year_spans} == {'2031', '2032'}
+        assert {span['year'] for span in year_spans} == {'2028', '2029', '2030', '2031', '2032'}
         for page_index in {span['page'] for span in year_spans}:
             axis = sorted((s for s in year_spans if s['page'] == page_index), key=lambda s:s['bbox'][0])
+            assert [span['year'] for span in axis] == ['2028', '2029', '2030', '2031', '2032']
             assert all(a['bbox'][2] <= b['bbox'][0] for a, b in zip(axis, axis[1:]))
         for label, index in [('title', 0), ('gpr-first', min(gpr_pages)), ('gpr-last', max(gpr_pages))]:
             (out/f'public-synthetic-pdf-{label}.png').write_bytes(pdf[index].get_pixmap(matrix=fitz.Matrix(1.2, 1.2)).tobytes('png'))
