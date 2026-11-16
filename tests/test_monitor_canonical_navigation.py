@@ -1,7 +1,7 @@
 """Canonical Cabinet navigation on actual Monitor/Report PAGE, including host CSS."""
 import ast
 from pathlib import Path
-import re
+from html.parser import HTMLParser
 
 import pytest
 
@@ -15,12 +15,63 @@ PAGES={'/monitor':MONITOR_PAGE.replace(plato_question.PLACEHOLDER,plato_question
 PAGES={path:html.replace('__VERSION__','0.29.71')for path,html in PAGES.items()}
 
 
+class _ScriptRanges(HTMLParser):
+    """Parse HTML tags case-insensitively and retain all non-script bytes."""
+    def __init__(self, html):
+        super().__init__(convert_charrefs=False)
+        self.html, self.spans, self.opened = html, [], None
+        self.lines = [0] + [i + 1 for i, char in enumerate(html) if char == '\n']
+
+    def source_offset(self):
+        line, column = self.getpos()
+        return self.lines[line - 1] + column
+
+    def handle_starttag(self, tag, attrs):
+        if tag == 'script':
+            self.opened = self.source_offset()
+
+    def handle_startendtag(self, tag, attrs):
+        if tag == 'script':
+            start = self.source_offset()
+            self.spans.append((start, start + len(self.get_starttag_text())))
+
+    def handle_endtag(self, tag):
+        if tag == 'script' and self.opened is not None:
+            self.spans.append((self.opened, self.html.index('>', self.source_offset()) + 1))
+            self.opened = None
+
+
+def without_scripts(html):
+    parser = _ScriptRanges(html)
+    parser.feed(html)
+    parser.close()
+    if parser.opened is not None:
+        parser.spans.append((parser.opened, len(html)))
+    parts, position = [], 0
+    for start, end in parser.spans:
+        parts.append(html[position:start])
+        position = end
+    parts.append(html[position:])
+    return ''.join(parts)
+
+
+@pytest.mark.parametrize(('html', 'expected'), [
+    ('<nav>Keep</nav><script>run()</script>', '<nav>Keep</nav>'),
+    ('<SCRIPT SRC="native.js"></SCRIPT><nav>Keep</nav>', '<nav>Keep</nav>'),
+    ('<!-- <SCRIPT>comment</SCRIPT> --><ScRiPt data-x=">">\nrun()\n</sCrIpT><scripture>Keep</scripture>',
+     '<!-- <SCRIPT>comment</SCRIPT> --><scripture>Keep</scripture>'),
+    ('<nav>Keep</nav><SCRIPT>unfinished', '<nav>Keep</nav>'),
+])
+def test_reference_removes_all_html_script_tags_without_changing_other_markup(html, expected):
+    assert without_scripts(html) == expected
+
+
 def cabinet_reference():
     # This is the real native Cabinet template; no business renderer/provider.
     tree=ast.parse((ROOT/'market_search/cabinet.py').read_bytes())
     template=next(ast.literal_eval(n.value)for n in tree.body if isinstance(n,ast.Assign)and any(isinstance(t,ast.Name)and t.id=='CABINET_PAGE'for t in n.targets))
     template=template.replace('__DEVELOPAID_CONTOUR_STYLE__',contour.STYLE).replace(contour.PLACEHOLDER,contour.markup('/cabinet/market'))
-    return re.sub(r'<script\b[^>]*>.*?</script>','',template,flags=re.S)
+    return without_scripts(template)
 
 
 @pytest.mark.parametrize('width',[390,1440])
