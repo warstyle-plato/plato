@@ -152,12 +152,16 @@ def test_browser_refresh_after_exhausted_retries_reuses_job_and_context_change_c
     with browser_page() as (page, responses, errors):
         failed = True
         tickets = []
+        offsets = []
+        responses.data['warnings'] = ['Сохранённая часть реестра ' * 30000]
         def intercept(route):
             body = route.request.post_data_json
             if route.request.url.endswith('/build'):
                 tickets.append(body['ticket'])
-            elif failed:
-                return route.abort('connectionfailed')
+            else:
+                offsets.append(body['offset'])
+                if failed and body['offset'] > 0:
+                    return route.abort('connectionfailed')
             return responses(route)
         page.route('**/monitor/contracts/build', intercept)
         page.route('**/monitor/contracts/result-part', intercept)
@@ -167,6 +171,8 @@ def test_browser_refresh_after_exhausted_retries_reuses_job_and_context_change_c
         page.locator('#contractsRefresh').click()
         expect(page.locator(f'tr[data-contract-id="{CONTRACT}"]')).to_be_visible(timeout=10000)
         assert tickets[0] == tickets[1]
+        assert offsets.count(0) == 1  # Already received bytes survive the red error.
+        assert page.evaluate('contractRegister.warnings[0]') == responses.data['warnings'][0]
         page.locator('#project').fill('Другой проект')
         expect(page.locator('#contractsSource')).to_contain_text('Срез:', timeout=10000)
         assert tickets[-1] != tickets[0]
