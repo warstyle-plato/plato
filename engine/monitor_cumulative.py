@@ -378,7 +378,7 @@ def monitor_schedule_gpr_physical_save(req: MonitorGprPhysicalSave) -> Response:
     return _monitor_schedule_gpr_physical(req, save=True)
 
 
-def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = b"") -> dict:
+def _monitor_cumulative_execute_raw(operation: str, payload: dict, archive: bytes = b"") -> dict:
     """Only validated calculation inputs enter the background worker."""
     from fastapi.encoders import jsonable_encoder
     import developaid_monitor_ledgers as ledgers
@@ -404,6 +404,11 @@ def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = 
         elif operation == "upload":
             result = {"snapshot": ledgers.store_archive(
                 payload["project"], archive, payload["taken_at"], payload["filename"])}
+            # A new archive supplements the register; say which contracts stay from earlier ones.
+            try:
+                result["contracts"] = contracts.archive_summary(payload["project"], payload["taken_at"])
+            except (contracts.ContractProblem, ledgers.LedgerProblem) as exc:
+                result["contracts"] = {"error": str(exc)}
         elif operation == "view":
             register = contracts.build(payload["project"], payload["cut"])
             register = links.enrich(payload["project"], register, payload["cut"])
@@ -444,14 +449,19 @@ def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = 
             import developaid_contract_fact as contract_fact
             problem = ""
             try:
-                rows = contracts.build(payload["project"], payload["cut"], include_history=False)["rows"]
+                register = contracts.build(payload["project"], payload["cut"], include_history=False)
+                rows = contracts.raw_rows(register)
             except contracts.ContractProblem as exc:
                 if operation == "document-upload":
                     raise
-                rows, problem = [], str(exc)
+                register, rows, problem = {}, [], str(exc)
             row = next((r for r in rows if r["id"] == payload["contract_id"]), None)
             acts = contract_fact.unavailable(problem) if problem else contract_fact.acts(row)
             if operation == "documents":
+                ownership_state = register.get('logical_ownership',{}).get('states') or {}
+                related = {member for state in ownership_state.values() for member in state.get('member_ids') or []}
+                if row is None and payload['contract_id'] in related:
+                    raise contracts.ContractProblem('Исходная карточка не представлена на выбранную дату.')
                 result = contract_files.listing(payload["project"], payload["contract_id"], payload["cut"], acts)
             elif operation == "document-upload":
                 if row is None:
@@ -481,6 +491,17 @@ def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = 
             contract_identity.IdentityProblem) as exc:
         # These exception classes contain deliberate user-facing diagnostics.
         return {"ok": False, "detail": str(exc)}
+
+
+def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = b"") -> dict:
+    if operation not in {'view', 'documents', 'source-review'}:
+        return _monitor_cumulative_execute_raw(operation, payload, archive)
+    import developaid_contract_ownership as ownership
+    try:
+        with ownership.read_scope(payload['project'], payload['cut']):
+            return _monitor_cumulative_execute_raw(operation, payload, archive)
+    except ownership.OwnershipProblem as exc:
+        return {'ok': False, 'detail': str(exc)}
 
 
 def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Response:
