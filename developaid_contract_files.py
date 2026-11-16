@@ -520,7 +520,7 @@ def _schedule_source(records, cut):
             'assumption': record['schedule'].get('assumption') or '', 'basis': 'source_gpr'}
 
 
-def register_control(project: str, register: dict, cut: str) -> dict:
+def _register_control_raw(project: str, register: dict, cut: str) -> dict:
     """Put the card's deviation, lag and forecast on every row of the register as `schedule_control`.
 
     The numbers are the card's own (`listing`), not a second calculation; a card that fails keeps
@@ -552,6 +552,16 @@ def register_control(project: str, register: dict, cut: str) -> dict:
         if found.get('schedule_source'):
             row['schedule_control']['schedule_source'] = found['schedule_source']
     return register
+
+
+def register_control(project: str, register: dict, cut: str) -> dict:
+    import developaid_contract_ownership as ownership
+    with ownership.read_scope(project, cut) as context:
+        context.require_current(register)
+        if 'raw_rows' not in register:
+            return _register_control_raw(project, register, cut)
+        enriched = _register_control_raw(project, ownership.raw_view(register), cut)
+        return ownership.refresh(register, enriched)
 
 
 def save_links(project: str, contract_id: str, sha256: str, estimate: int, picked: list[dict],
