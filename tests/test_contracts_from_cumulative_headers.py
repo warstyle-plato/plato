@@ -330,12 +330,18 @@ def test_real_monitor_shows_cumulative_count_sources_quarantine_and_printed_valu
         expect(page.locator('#contractsRows')).to_contain_text('B-24')
         expect(page.locator('#contractsRows')).to_contain_text('C-1')
         expect(page.locator('#contractsRows')).to_contain_text('дата не подтверждена')
-        expect(page.locator('#contractsRows')).to_contain_text('Дата из шапки')
-        expect(page.locator('#contractsRows')).to_contain_text('B4')
         expect(page.locator('#contractsRows')).to_contain_text('400 ₽')
         expect(page.locator('#contractsSource')).to_contain_text('06.11.2026')
         assert 'Общий реестр РСС' not in page.locator('#contractsPanel').inner_text()
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+        # Header evidence lives in the new closed source section of this card.
+        from tests.contract_rows import opened
+        more = opened(page, next(row['id'] for row in view['rows'] if row['contract'] == 'A-12'))
+        more.locator('#contractRecordSources > summary').click()
+        more.locator('#contractRecordSources > .contract-sources > summary').click()
+        expect(more.locator('#contractRecordSources')).to_contain_text('Дата из шапки')
+        expect(more.locator('#contractRecordSources')).to_contain_text('B4')
+        page.locator('#contractDialogClose').click()
         if width == 1440:
             text = ' '.join(' '.join((x.extract_text() or '').split())
                             for x in PdfReader(io.BytesIO(page.pdf())).pages)
@@ -537,8 +543,12 @@ def test_real_page_is_a_table_and_shows_why_rss_did_not_complete(context, width)
         # A table on a wide screen, a card per row on a phone.
         assert table.evaluate('(t)=>getComputedStyle(t).display') == ('block' if width <= 640 else 'table')
         assert table.evaluate('(t)=>getComputedStyle(t.querySelector("thead")).display') == ('none' if width <= 640 else 'table-header-group')
-        expect(page.locator('#contractsRows .contract-rss-why')).to_contain_text('не совпало')
-        expect(page.locator('#contractsRows .contract-rss-why')).to_contain_text('дата договора')
+        from tests.contract_rows import opened
+        more = opened(page, view['rows'][0]['id'])
+        more.locator('#contractFinancialSources').get_by_text('Сверка РСС', exact=True).click()
+        expect(more.locator('.contract-rss-why')).to_be_visible()
+        expect(more.locator('.contract-rss-why')).to_contain_text('не совпало')
+        expect(more.locator('.contract-rss-why')).to_contain_text('дата договора')
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         page.screenshot(path=f'/tmp/contracts-table-{width}.png', full_page=True)
         assert not errors

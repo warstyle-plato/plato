@@ -257,8 +257,8 @@ def test_the_card_does_not_offer_a_line_without_a_term_and_says_why(monkeypatch,
     calls = []
     with browser_page(1440) as (page, _, errors):
         card._serve(page, calls)
-        page.locator("#contractsTab").click()
-        page.locator(f'tr[data-contract-id="{card.CONTRACT}"] .contract-open').click()
+        from tests.test_contract_card_shows_its_documents import _open as open_document_sources
+        open_document_sources(page)
         box = page.locator("#contractDocuments .contract-links")
         box.get_by_text("На проверку (3)").click()
         box.locator(".contract-links-review tr", has_text="Устройство лестниц").get_by_role(

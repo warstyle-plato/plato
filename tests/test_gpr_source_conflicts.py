@@ -134,7 +134,9 @@ def test_real_conflict_reason_quantities_and_action_are_visible_in_monitor_repor
     view, built = monitor.build(PROJECT, CUT), report.build(PROJECT, 'week', CUT)
     with browser_page(width) as (page, responses, errors):
         page.evaluate('(view)=>renderGantt(view)', view)
-        body = page.locator('#dependencyTimelineBody .schedule-physical-summary')
+        # Physical sources remain above the matrix; the bottom block now
+        # explains the selected readiness forecast without a duplicate timeline.
+        body = page.locator('#readinessSummary .schedule-physical-summary')
         expect(body).to_be_visible()
         visible = body.inner_text()
         assert '50 / 100 м²' in visible and '31.10.2026' in visible and '30.10.2026' in visible

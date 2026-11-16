@@ -30,6 +30,11 @@ def test_current_graph_and_pdf_keep_source_qualified_completion_markers(site,wid
         open_ks_calculation(page)
         marker=page.locator('#ksSharedGroups .completed-work-marker')
         expect(marker).to_have_count(1)
+        history = page.locator('#ksSharedGroups .completed-work-facts > details')
+        assert history.get_attribute('open') is None
+        expect(marker).to_be_hidden()
+        history.locator(':scope > summary').click()
+        expect(marker).to_be_visible()
         expect(marker).to_contain_text('Завершённый фасад')
         expect(marker).to_contain_text('Завершено 2026-11-05' if explicit else '100% на дату '+OLD_DAY)
         assert marker.locator('.completed-actual-point').get_attribute('data-date-basis')==(
@@ -42,6 +47,8 @@ def test_current_graph_and_pdf_keep_source_qualified_completion_markers(site,wid
         # No-calendar views still keep known facts visible.
         page.evaluate('(v)=>{v.schedule.management=[];renderGantt(v)}',view)
         expect(page.locator('#ganttCard')).to_be_visible()
+        assert history.get_attribute('open') is None
+        history.locator(':scope > summary').click()
         expect(marker).to_be_visible()
         assert page.locator('#gantt .g-row').count()==0
         block=report.gantt(view,view['dashboard'])

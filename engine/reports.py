@@ -1370,6 +1370,10 @@ def _finalize_result(result: dict[str, Any] | None) -> dict[str, Any] | None:
         return result
     _apply_equity_irr_to_participation(result)
     report = result.get("report")
+    if isinstance(report, dict):
+        # До подбора цены и без кредита страница читает тот же вердикт,
+        # что затем получат подбор, тизер и PDF. Пересчёта модели здесь нет.
+        report["entry_price_verdict"] = entry_price_verdict({"consolidated": result})
     if not isinstance(report, dict) or "object_report" in report:
         return result
     built = object_report(result)

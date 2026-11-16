@@ -16,6 +16,7 @@ percent or a date; a missing value carries its reason.
 from __future__ import annotations
 
 from typing import Any
+import math
 
 DIVERGENCE_PP = 0.10
 
@@ -24,6 +25,28 @@ GPR_ORIGINS = {
     "weekly_gpr": "еженедельный файл ГПР",
     "manual": "решение в Мониторе",
 }
+
+
+def primary_fact(row: dict) -> dict:
+    """The dated fact used by the work bar, readiness and reports; never money."""
+    kind = row.get('progress_kind')
+    value = row.get('actual_progress')
+    source = row.get('progress_source') or {}
+    if kind not in {'gpr_percent', 'cumulative_quantities', 'cumulative_statement', 'confirmed_completion'}:
+        value = None
+    if value is None and row.get('gpr_progress') is not None:
+        value, kind = row['gpr_progress'], 'gpr_percent'
+        source = {'label': 'ГПР', 'date': row.get('gpr_progress_date')}
+    if kind not in {'gpr_percent', 'cumulative_quantities', 'cumulative_statement', 'confirmed_completion'}:
+        value = None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        value = None
+    return {'value': value, 'basis': kind,
+            'label': {'cumulative_statement': 'По ведомости', 'cumulative_quantities': 'Объём по накопительной',
+                      'confirmed_completion': 'Выполнение подтверждено'}.get(kind, 'Выполнено по ГПР'),
+            'source': source.get('label') or '', 'date': source.get('date'),
+            'reason': row.get('progress_reason') or '',
+            'requires_reconciliation': row.get('requires_reconciliation') is True or bool(row.get('source_conflict'))}
 
 
 def _ks(task: dict | None) -> dict[str, Any]:
@@ -92,6 +115,9 @@ def model(rows: list[dict], physical: dict | None) -> dict[str, Any]:
         bound += ks["origin"] is not None
         divergent += flag
         works[tid] = {"gpr": gpr, "ks": ks, "gap": gap, "divergent": flag,
+                      "primary": primary_fact(row),
+                      "name": row.get('name') or tid, "object": row.get('object') or '',
+                      "section": row.get('section') or '', "wbs": row.get('wbs') or '',
                       "source_conflict": (tasks.get(tid) or {}).get("source_conflict")}
     return {"works": works, "divergence_pp": DIVERGENCE_PP,
             "completed_facts": (physical or {}).get("completed_facts"),

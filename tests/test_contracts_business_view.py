@@ -47,8 +47,7 @@ def test_real_business_register_keeps_core_facts_visible_and_sources_closed(widt
         expect(first).to_contain_text('01.11.2026')
         expect(first.locator('.contract-attention .contract-risk')).to_have_text(
             ['Сумма превышена', 'Срок прошёл', 'Есть замечания'])
-        more = page.locator(f'tr[data-contract-detail="{CONTRACT}"]')
-        expect(more).to_be_hidden()
+        expect(page.get_by_role("dialog")).to_be_hidden()
         # A phone card stacks six signed cells; a table row stays short.
         assert first.evaluate('(r)=>r.getBoundingClientRect().height') <= (420 if width <= 640 else 110 if width < 900 else 80)
         more = opened(page, CONTRACT)
@@ -59,10 +58,11 @@ def test_real_business_register_keeps_core_facts_visible_and_sources_closed(widt
         for shown in (first, more):
             expect(shown).not_to_contain_text('Договор исполнен')
         # Source evidence remains accessible, with no technical filename on the default surface.
-        sources = more.locator('.contract-sources')
+        sources = more.locator('#contractRecordSources')
         assert not sources.evaluate('(el)=>el.open')
         expect(sources.locator('.contract-source').filter(has_text='private-source-marker')).to_be_hidden()
-        sources.locator('summary').click()
+        sources.locator(':scope > summary').click()
+        sources.locator(':scope > .contract-sources > summary').click()
         expect(sources.locator('.contract-source').filter(has_text='private-source-marker')).to_be_visible()
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         # A table on a wide screen; on a phone every row is a signed card without
@@ -73,9 +73,9 @@ def test_real_business_register_keeps_core_facts_visible_and_sources_closed(widt
         assert page.locator('#contractsRows table.contract-register').evaluate(
             '(t)=>getComputedStyle(t).display') == ('block' if width <= 640 else 'table')
         if width <= 640:
-            part = more.locator('.contract-more-part').first.bounding_box()
+            part = more.locator('.contract-card-pill').first.bounding_box()
             assert part is not None and part['x'] >= 0 and part['x'] + part['width'] <= width
-        sources.locator('summary').click()
+        page.locator('#contractDialogClose').click()
         second = page.locator(f'tr[data-contract-id="{OTHER}"]')
         assert second.locator('.contract-main-money').all_text_contents() == ['—']
         expect(second).to_contain_text('полная сумма не подтверждена')
@@ -106,9 +106,11 @@ def test_actual_print_is_a4_landscape_paginated_with_business_fields_only():
         expect(page.locator('tr[data-contract-id]')).to_have_count(30)
         # Even opened source evidence, term editor and unmatched details are excluded from print.
         more = opened(page)
-        more.locator('.contract-sources summary').click()
+        more.locator('#contractRecordSources > summary').click()
         more.locator('.contract-term').click()
         expect(page.locator('#contractsUnmatched')).to_be_empty()
+        # Closing the card selects the complete register print, preserving all contracts.
+        page.locator('#contractDialogClose').click()
         pdf = PdfReader(io.BytesIO(page.pdf(prefer_css_page_size=True, print_background=True)))
         assert len(pdf.pages) >= 3
         texts = []
@@ -154,6 +156,7 @@ def test_daily_candidates_do_not_inherit_confirmation_for_another_contract():
         more = opened(page, CONTRACT)
         expect(more).not_to_contain_text('Связь со стройкой')
         expect(more).not_to_contain_text('Связей с договором:')
+        page.locator('#contractDialogClose').click()
         first.locator('.contract-open').click()
         expect(page.locator('#contractsDetails')).to_contain_text('Сообщение связано с другим договором')
         assert page.locator('#contractsDetails .evidence-remove').count() == 0
@@ -161,6 +164,7 @@ def test_daily_candidates_do_not_inherit_confirmation_for_another_contract():
         assert page.locator('#contractsDetails .evidence-choice').count() == 1
         assert responses.links == []
         evidence[1].update(contract_id=CONTRACT)
+        page.locator('#contractDialogClose').click()
         page.locator('#contractsRefresh').click()
         first.locator('.contract-open').click()
         expect(page.locator('#contractsDetails')).to_contain_text('Договор определён по номеру в сообщении')
@@ -186,6 +190,7 @@ def test_chat_messages_do_not_create_mandatory_contract_tasks_or_a_global_queue(
         more = opened(page, CONTRACT)
         expect(more).not_to_contain_text('Связь со стройкой')
         expect(more.locator('.contract-next')).to_have_text('Данные заполнены')
+        page.locator('#contractDialogClose').click()
         page.locator('#contractsFilter').select_option('warnings')
         expect(page.locator('tr[data-contract-id]')).to_have_count(0)
         page.locator('#contractsFilter').select_option('all')
@@ -198,6 +203,8 @@ def test_chat_messages_do_not_create_mandatory_contract_tasks_or_a_global_queue(
         expect(chat.locator('.evidence-choice')).to_be_visible()
         assert responses.links == []
         # Refresh reads saved inputs. Neither linking nor an AI request is automatic.
+        if page.locator('#contractDialog').evaluate('d=>d.open'):
+            page.locator('#contractDialogClose').click()
         page.locator('#contractsRefresh').click()
         expect(page.locator('#contractsSummary b').nth(1)).to_have_text('0')
         expect(page.locator('#contractsUnmatched')).to_be_empty()
@@ -232,6 +239,7 @@ def test_passed_contract_deadline_stays_in_attention_count_filter_and_next_step(
         for shown in (passed, more):
             expect(shown).not_to_contain_text('Договор не исполнен')
             expect(shown).not_to_contain_text('Нарушение договора')
+        page.locator('#contractDialogClose').click()
         page.locator('#contractsFilter').select_option('warnings')
         expect(page.locator('tr[data-contract-id]')).to_have_count(1)
         expect(passed).to_be_visible()
@@ -239,6 +247,8 @@ def test_passed_contract_deadline_stays_in_attention_count_filter_and_next_step(
         page.locator('#contractsFilter').select_option('no-term')
         expect(page.locator('tr[data-contract-id]')).to_have_count(0)
         row.update(deadline='2026-12-01', deadline_passed=False)
+        if page.locator('#contractDialog').evaluate('d=>d.open'):
+            page.locator('#contractDialogClose').click()
         page.locator('#contractsRefresh').click()
         expect(page.locator('#contractsSummary b').nth(1)).to_have_text('0')
         page.locator('#contractsFilter').select_option('warnings')

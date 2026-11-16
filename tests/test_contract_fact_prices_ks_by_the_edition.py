@@ -206,62 +206,54 @@ def test_the_card_route_takes_the_fact_from_the_register_of_the_same_cut(card, m
 @pytest.mark.parametrize("width", [390, 1440])
 def test_the_card_shows_the_fact_beside_the_plan_with_what_stayed_outside(card, width):
     from playwright.sync_api import expect
-
     from test_monitor_cumulative_controls import browser_page
     from tests.test_contract_card_confirms_and_chooses_links import _serve
-    with browser_page(width) as (page, _, errors):
-        _serve(page, [], cut="2026-02-04", acts=fact.acts(REGISTER_ROW))
-        page.locator("#contractsTab").click()
+    with browser_page(width) as (page,_,errors):
+        _serve(page,[],cut='2026-02-04',acts=fact.acts(REGISTER_ROW))
+        page.locator('#contractsTab').click()
         page.locator(f'tr[data-contract-id="{CONTRACT}"] .contract-open').click()
-        plan, shown = (page.locator("#contractDocuments " + c) for c in (".contract-plan", ".contract-fact"))
-        expect(shown.locator(".contract-plan-total")).to_have_text("Факт к 04.02.2026: 5 500 ₽")
-        expect(shown).to_contain_text("Работы, принятые до соглашения от 01.02.2026, в этот факт не входят, "
-                                      "как и в план: периодов КС — 1. Для 1 из них в карточке нет расчёта")
-        expect(shown).to_contain_text("связь с графиком на проверке — периодов КС: 1 на сумму 1 000 ₽")
-        warnings = shown.locator("p.contract-plan-overdue")
-        expect(warnings).to_have_count(2)
-        expect(warnings.nth(1)).to_contain_text("В периодах КС (1) сумма в акте отличается")
-        color = "e => getComputedStyle(e).color"
-        assert warnings.nth(0).evaluate(color) != shown.evaluate(color), "предупреждение выделено цветом"
-        expect(shown).to_contain_text(fact.ASSUMPTION)
-
-        plan.get_by_text("Строки плана (3)").click()
-        expect(plan.locator(".contract-plan-lines thead")).to_contain_text("План к 04.02.2026Факт к 04.02.2026")
-        expect(plan.locator(".contract-plan-lines tbody tr").nth(1)).to_have_text(
-            "1.2Возведение стен 2-го этажа01.02.2026 — 05.02.20265 000 ₽4 000 ₽2 500 ₽")
-        plan.get_by_text("План и факт нарастающим итогом по месяцам (1)").click()
-        expect(plan.locator(".contract-plan-months tbody tr")).to_have_text(["февраль 2026 г.11 000 ₽5 500 ₽"])
-
-        shown.get_by_text("Позиции факта (3)").click()
-        rows = shown.locator(".contract-fact-positions tbody tr")
-        expect(rows.nth(0)).to_contain_text("1.1 Устройство стен")
-        expect(rows.nth(0).locator(".contract-fact-both")).to_have_text("по расчёту 4 000 ₽ · по КС 4 100 ₽")
-        expect(rows.nth(0)).to_contain_text("Сумма по КС больше расчётной: возможно, в акт вошли работы или материалы "
-                                            "сверх расчёта. В факт вошла сумма по расчёту.")
-        expect(rows.filter(has_text="сложено из более мелких строк КС")).to_contain_text("в факт по строкам графика")
-        expect(rows.filter(has_text="2.1")).to_contain_text("не вошло: связь с графиком на проверке")
-        shown.get_by_text("Не сопоставлено с расчётом (2)").click()
-        expect(shown.locator(".contract-fact-review tbody tr").nth(1)).to_contain_text(
-            "В расчёте нет позиции с этим номером или с таким же названием и единицей (№ 9.9).")
-        shown.get_by_text("Работы КС-6а без выполнения по датам (1)").click()
-        expect(shown.locator(".contract-fact-unread")).to_contain_text("Есть выполнение без даты периода")
-        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
-        assert errors == []
+        compare=page.locator('#contractComparison')
+        expect(compare.locator('tr[data-comparison-code="1.2"] [data-label="Факт"]')).to_contain_text('0,313 м3')
+        expect(compare.locator('tr[data-comparison-code="2.1"] [data-label="Факт"]')).to_contain_text('Неизвестно')
+        compare.locator('.contract-methodology > summary').click()
+        audit=compare.locator('.contract-fact-audit')
+        expect(compare.locator('.contract-comparison-money')).to_contain_text('факт 5 500 ₽')
+        expect(audit).to_contain_text('До текущего соглашения принято периодов КС: 1')
+        expect(audit).to_contain_text('Для 1 из них нет расчёта, действовавшего в тот момент')
+        expect(audit).to_contain_text('Сумма КС отличается от расчёта в периодах: 1')
+        expect(audit).to_contain_text(fact.ASSUMPTION)
+        audit.get_by_text('Позиции факта (3)',exact=True).click()
+        positions=audit.locator('.contract-fact-source-positions li')
+        expect(positions).to_have_count(3)
+        expect(positions.nth(0)).to_contain_text('1.1 Устройство стен')
+        expect(positions.nth(0).locator('.contract-fact-both')).to_have_text('по расчёту 4 000 ₽ · по КС 4 100 ₽')
+        expect(positions.nth(0)).to_contain_text('Сумма по КС больше расчётной')
+        expect(positions.filter(has_text='суммированы детальные позиции КС')).to_contain_text('в факт по строкам графика')
+        expect(positions.filter(has_text='2.1')).to_contain_text('не вошло: связь с графиком на проверке')
+        audit.get_by_text('Не вошло в сопоставление (3)',exact=True).click()
+        expect(audit).to_contain_text('В расчёте нет позиции с этим номером или с таким же названием и единицей (№ 9.9)')
+        expect(audit).to_contain_text('Есть выполнение без даты периода')
+        assert page.evaluate('document.documentElement.scrollWidth<=innerWidth') and not errors
 
 
 def test_a_month_before_the_first_fact_shows_zero_and_the_plan_stays_reached(card):
     from playwright.sync_api import expect
-
     from test_monitor_cumulative_controls import browser_page
     from tests.test_contract_card_confirms_and_chooses_links import _serve
-    row = {**ROW, "physical_items": [_item("1.1", "Устройство стен", (0.25, 2000, "2026-03-01", "2026-03-02"))]}
-    with browser_page(1440) as (page, _, errors):
-        _serve(page, [], cut="2026-03-02", acts=fact.acts(row))
-        page.locator("#contractsTab").click()
-        page.locator(f'tr[data-contract-id="{CONTRACT}"] .contract-open').click()
-        plan = page.locator("#contractDocuments .contract-plan")
-        plan.get_by_text("План и факт нарастающим итогом по месяцам (2)").click()
-        # Сроки графика кончились в феврале: в марте план тот же, а факта в феврале не было — ноль, а не прочерк.
-        expect(plan.locator(".contract-plan-months tbody tr")).to_have_text(
-            ["февраль 2026 г.11 000 ₽0 ₽", "март 2026 г.11 000 ₽2 000 ₽"])
-        assert errors == []
+    row={**ROW,'physical_items':[_item('1.1','Устройство стен',(0.25,2000,'2026-03-01','2026-03-02'))]}
+    with browser_page(1440) as (page,_,errors):
+        _serve(page,[],acts=fact.acts(row))
+        for cut,actual,money in [('2026-02-28','0 м3','0 ₽'),('2026-03-02','0,094 м3','2 000 ₽')]:
+            if page.locator('#contractDialog').evaluate('d=>d.open'):
+                page.locator('#contractDialogClose').click()
+            page.locator('#cut').fill(cut)
+            page.locator('#contractsTab').click()
+            page.locator(f'tr[data-contract-id="{CONTRACT}"] .contract-open').click()
+            first=page.locator('#contractComparisonRows tr[data-comparison-code="1.1"]')
+            expect(first.locator('[data-label="Факт"]')).to_contain_text(actual)
+            expect(first.locator('[data-label="План на дату"]')).to_have_text('0,375 м3')
+            # Scalar monetary plan remains the reached 11000, while the native
+            # fact for the earlier cut is an explicit zero, not an unknown.
+            page.locator('.contract-methodology > summary').click()
+            expect(page.locator('.contract-comparison-money')).to_contain_text('план 11 000 ₽, факт '+money)
+        assert not errors

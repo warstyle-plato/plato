@@ -171,7 +171,7 @@ def test_parameters_trigger_a_recalculation():
     assert "function recalcMo()" in page
     assert "function bindMoParams()" in page
     # Все параметры блока подписаны на пересчёт.
-    assert "['moDensity','moArea','moFlat','moPrice','moKd'].forEach" in page
+    assert "['moDensity','moArea','moFlat','moPrice','moKd','moCompensation'].forEach" in page
     # Смена округа тоже.
     assert "select.onchange=()=>{syncMoPrice();syncMoKd();recalcMo()};" in page
 

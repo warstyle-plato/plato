@@ -41,14 +41,19 @@ def test_each_register_row_is_a_signed_card_on_a_phone():
         assert name.evaluate('(b) => b.scrollWidth <= b.clientWidth + 1 && getComputedStyle(b).textOverflow !== "ellipsis"')
         hint = page.locator('#contractsRows .contract-scroll-hint')
         expect(hint).to_have_text('Нажмите на договор, чтобы увидеть подробности.', use_inner_text=True)
-        # The detail still opens inside the card and fits the screen.
+        # The same dialog opens from the row and fits the screen.
         more = detail(page, row)
         row.locator('td.contract-attention').click()
         expect(more).to_be_visible()
-        part = more.locator('.contract-more-part').first.bounding_box()
+        # Loading the documents replaces the summary; measure its settled DOM.
+        expect(page.locator('#contractDocumentUpload')).to_be_enabled()
+        pill = more.locator('.contract-card-pill').first
+        expect(pill).to_be_visible()
+        part = pill.bounding_box()
+        assert part is not None
         assert part['x'] >= 0 and part['x'] + part['width'] <= 390
         assert wrap.evaluate('(w) => w.scrollWidth <= w.clientWidth')
-        row.locator('.contract-more-toggle').click()
+        page.locator('#contractDialogClose').click()
         expect(more).to_be_hidden()
         assert not errors
 

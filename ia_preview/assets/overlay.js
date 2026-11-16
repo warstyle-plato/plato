@@ -1227,7 +1227,11 @@
        проект. */
     var title = document.getElementById('iaVerdictTitle');
     card.classList.remove('pass', 'edge', 'fail');
-    if (!metric.key) {
+    var verdict = (result.report || {}).entry_price_verdict;
+    if (verdict && verdict.title) {
+      title.textContent = verdict.title;
+      if (verdict.tone) card.classList.add(verdict.tone);
+    } else if (!metric.key) {
       title.textContent = Number(result.summary.net_profit || 0) > 0
         ? 'Экономика проходит по прибыли' : 'Экономика не проходит';
       card.classList.add(Number(result.summary.net_profit || 0) > 0 ? 'edge' : 'fail');

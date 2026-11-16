@@ -816,6 +816,7 @@ def _gantt(project: str, cut: Any, upto: str = "") -> dict[str, Any]:
         "indicative_forecast_end": schedule.get("indicative_forecast_end"),
         "by_code": schedule.get("rows", []),
         "work_fact": schedule.get("work_fact"),
+        "readiness": schedule.get("readiness"),
         "gpr_forecasts": schedule.get("gpr_forecasts"),
         "corpus_gpr": schedule.get("corpus_gpr"),
         "dependency_timeline": schedule.get("dependency_timeline"),

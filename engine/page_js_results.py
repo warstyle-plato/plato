@@ -22,11 +22,13 @@ function landRentResultRow(r){
  const rent=(r&&r.land_rent)||{},sum=((r&&r.summary)||{}).land_rent_sum||{};
  if(!rent.status||rent.status==='not_applicable')return '';
  const amount=Number(((r.capex)||{}).land_rent||0),note=t=>' <span style="color:#777;font-weight:400">'+escapeHtml(t)+'</span>';
- if(sum.known)return row('Аренда земли участка',money(amount));
+ // Keep small known amounts visible instead of rounding them to zero billions.
+ const shown=Math.abs(amount)>=1e9?money(amount):escapeHtml(landRentMoney(amount));
+ if(sum.known)return row('Аренда земли участка',shown);
  const reason=String(sum.reason||'Расчёт не назвал, каких данных для неё не хватает.');
  // Ноль при неопределённой сумме — не «аренда бесплатна», а отсутствие данных.
  return row('Аренда земли участка',amount>0
-  ?money(amount)+note('Это известная часть суммы, она ещё уточнится. '+reason)
+  ?shown+note('Это известная часть суммы, она ещё уточнится. '+reason)
   :'Не определена.'+note(reason));
 }
 

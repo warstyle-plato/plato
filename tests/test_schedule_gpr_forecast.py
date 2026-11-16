@@ -186,7 +186,7 @@ def test_gpr_rnv_driver_is_shown_once_without_restoring_pm_drawing(width):
                         'dependency_timeline_html': timeline.render(block)}}
     with browser_page(width) as (page, responses, errors):
         page.evaluate('(view)=>renderGantt(view)', view)
-        body = page.locator('#dependencyTimelineBody')
+        body = page.locator('#readinessSummary .gpr-legacy-fallback')
         expect(body).to_be_visible()
         estimate = body.locator('.schedule-rnv-cards>div').nth(1)
         expect(estimate.locator('span')).to_have_text('Оценка по ГПР')
@@ -203,6 +203,8 @@ def test_gpr_rnv_driver_is_shown_once_without_restoring_pm_drawing(width):
         expect(driver).to_contain_text('Оценка по измеренному росту процента ГПР.')
         assert body.locator('.schedule-lane,.schedule-technical,svg,img').count() == 0
         assert page.evaluate('window.forecastXSS') is None
+        assert page.locator('#dependencyTimelineBody .schedule-rnv-cards').count() == 0
+        expect(page.locator('#dependencyTimelineBody')).to_contain_text('Что влияет на срок')
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         if width == 1440:
             data = {'project': 'Учебный', 'kind': 'week', 'start': '2026-11-01',

@@ -27,6 +27,7 @@ import developaid_contract_act_dates as act_dates
 import developaid_contract_acts as acts_in_card
 import developaid_contract_documents as documents
 import developaid_contract_control as control
+import developaid_contract_comparison as comparison
 import developaid_contract_fact as fact
 import developaid_contract_link_choices as choices
 import developaid_contract_plan as plan
@@ -147,25 +148,26 @@ def store(project: str, row: dict, filename: str, content: bytes) -> dict:
         raise ContractFilesProblem("Файл не открылся как PDF. Сохраните документ в PDF заново, например выгрузкой из системы электронного документооборота, и загрузите ещё раз.")
     sha = hashlib.sha256(content).hexdigest()
     folder.mkdir(parents=True, exist_ok=True, mode=0o700)
-    existing = folder / f"{sha}.json"
-    if existing.exists() and (folder / f"{sha}.pdf").exists():
-        with _locked(folder):
+    # Identity inventory/CAS shares this native lock, including first upload.
+    with _locked(folder):
+        existing = folder / f"{sha}.json"
+        if existing.exists() and (folder / f"{sha}.pdf").exists():
             record = _current(folder, sha)
             restored = bool(record.pop("removed_at", None))
             if restored:
                 _json(existing, record)
-        return {**_summary(record), "already": True, "restored": restored}
-    record = _record(sha, Path(str(filename or "")).name[:240] or "документ.pdf", content, _now())
-    if record.get("scan"):
-        # A misread number does not refuse a scan: the contract is checked again when it is confirmed.
-        record["scan"]["card_number_found"] = _named_in_scan(record, row)
-    else:
-        reason = _same_contract(record.get("contract"), row)
-        if reason:
-            raise ContractFilesProblem(reason)
-    _write(folder / f"{sha}.pdf", content)
-    _json(existing, record)
-    return {**_summary(record), "already": False, "restored": False}
+            return {**_summary(record), "already": True, "restored": restored}
+        record = _record(sha, Path(str(filename or "")).name[:240] or "документ.pdf", content, _now())
+        if record.get("scan"):
+            # A misread number does not refuse a scan: the contract is checked again when it is confirmed.
+            record["scan"]["card_number_found"] = _named_in_scan(record, row)
+        else:
+            reason = _same_contract(record.get("contract"), row)
+            if reason:
+                raise ContractFilesProblem(reason)
+        _write(folder / f"{sha}.pdf", content)
+        _json(existing, record)
+        return {**_summary(record), "already": False, "restored": False}
 
 
 def _stored(path: Path) -> dict:
@@ -290,6 +292,7 @@ def _editions(records: list[dict], chosen: dict) -> list[dict]:
         editions.append({"sha256": record["sha256"], "title": record["title"], "date": _date(record),
                          "estimates": estimates, "estimate_title": source["title"],
                          "schedule": schedule and schedule["schedule"],
+                         "schedule_sha256": schedule["sha256"] if schedule else "",
                          "schedule_title": schedule["title"] if schedule else "",
                          "start": _date(source) if remaining else None})
     return editions
@@ -480,10 +483,18 @@ def _with_control(listed, acts, cut):
         source = _schedule_source(listed.get("documents") or [], cut)
         if source:
             listed["control"]["schedule_source"] = source
+    identity = _schedule_identity(listed.get('documents') or [],cut)
+    # The new undated, source-only fallback needs an explicit contract binding.
+    # Keep the existing dated-interval/control policy unchanged.
+    binding = (identity or {}).get('contract') or {}
+    if not binding.get('number') or not binding.get('date'):
+        identity = None
+    listed['comparison'] = comparison.build(listed,cut,identity['sha256'] if identity else None)
     return listed
 
 
-def _schedule_source(records, cut):
+def _schedule_identity(records, cut):
+    """Unique eligible source document; unread dates do not erase its identity."""
     eligible = [r for r in records if not r.get('removed_at') and not r.get('act')
                 and not (r.get('scan') and not r['scan'].get('confirmed_at'))
                 and (r.get('schedule') or {}).get('lines') and _date(r) and _date(r) <= cut]
@@ -492,6 +503,13 @@ def _schedule_source(records, cut):
     record = max(eligible, key=_edition)
     if sum(_edition(r) == _edition(record) for r in eligible) > 1:
         return None  # Conflicting documents of one edition need an explicit choice.
+    return record
+
+
+def _schedule_source(records, cut):
+    record = _schedule_identity(records,cut)
+    if record is None:
+        return None
     lines = record['schedule']['lines']
     dated = [r for r in lines if r.get('start') and r.get('finish') and r['start'] <= r['finish']]
     if not dated:

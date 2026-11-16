@@ -73,6 +73,13 @@ def test_the_report_card_and_its_pdf(tmp_path, monkeypatch):
             tab.wait_for_function(
                 "document.getElementById('reportBox').textContent.includes('за октябрь 2026')")
             month = tab.inner_text("#reportBox")
+            budget_tile = tab.locator("#reportBox .tile[data-group='monthly_budget']").filter(
+                has_text="Бюджет стройки за месяц")
+            assert budget_tile.count() == 1
+            tile_value = budget_tile.locator(".v").inner_text()
+            tile_note = budget_tile.locator(".n").inner_text()
+            assert tile_value == "37,5%"
+            assert "оплачено 150,0 млн ₽ из 400,0 млн ₽" in " ".join(tile_note.split())
             with tab.expect_download(timeout=90_000) as download:
                 tab.click("#reportPdfBtn")
             path = download.value.path()
@@ -102,8 +109,17 @@ def test_the_report_card_and_its_pdf(tmp_path, monkeypatch):
     assert "Главное за период" in first
     # Плитки с главными числами — на первой странице, над «Главным».
     first = " ".join(first.split())
-    # Содержание в начале тоже называет «Главное»; ищется сам заголовок — после плиток.
-    assert first.index("БЮДЖЕТ СТРОЙКИ ЗА МЕСЯЦ") < first.rindex("Главное за период")
+    # Регистр задаёт печатный CSS, а положение и числа должны совпадать со
+    # страницей. Содержание тоже называет «Главное»: нужен последний заголовок.
+    cover = first.casefold()
+    tile_start = cover.index("Бюджет стройки за месяц".casefold())
+    main_start = cover.rindex("Главное за период".casefold())
+    assert tile_start < main_start
+    tile_text = cover[tile_start:main_start]
+    assert tile_value.casefold() in tile_text
+    # PDF-экстрактор вставляет пробел и перед пунктуацией; ни один значимый
+    # символ или знак полного пояснения при этом потеряться не должен.
+    assert "".join(tile_note.split()).casefold() in "".join(tile_text.split())
     # Бюджет по статьям напечатан с итогом стройки и коммерции.
     assert "Итого стройка и коммерческие расходы" in text
     # Подпись и столбцы графика бюджета напечатаны текстом SVG: те же 400,0 и

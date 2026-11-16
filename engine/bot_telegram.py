@@ -1057,16 +1057,20 @@ def _telegram_calc_menu(chat_id: int) -> None:
     один и тот же — разное только то, откуда берутся исходные данные, и здесь
     это видно.
     """
+    rows = [
+        [{"text": "Свои вводные, без кадастра", "callback_data": "flow_cad_no"}],
+        [{"text": "По адресу участка", "callback_data": "flow_address"}],
+        [{"text": "По кадастровому номеру", "callback_data": "flow_cad_yes"}],
+        [{"text": "Скачать Excel-шаблон ТЭП", "callback_data": "tep_template"}],
+    ]
+    if ((_telegram_dialog_get(chat_id) or {}).get("intake") or {}).get("id"):
+        rows.insert(0, [{"text": "Продолжить разбор сохранённого тизера",
+                          "callback_data": "intake_questions"}])
     _telegram_send_message(
         chat_id,
         "<b>Расчёт модели</b>\n"
         "Откуда взять ТЭП проекта?",
-        reply_markup={"inline_keyboard": [
-            [{"text": "Свои вводные, без кадастра", "callback_data": "flow_cad_no"}],
-            [{"text": "По адресу участка", "callback_data": "flow_address"}],
-            [{"text": "По кадастровому номеру", "callback_data": "flow_cad_yes"}],
-            [{"text": "Скачать Excel-шаблон ТЭП", "callback_data": "tep_template"}],
-        ]},
+        reply_markup={"inline_keyboard": rows},
     )
 
 
@@ -1359,15 +1363,24 @@ def _telegram_handle_intake_document(chat_id: int, data: bytes, filename: str, d
         text += "\n\n" + html.escape(card["error"])
     text += "\n\n" + in_dialog
     if card.get("ready"):
-        _telegram_send_message(chat_id, text[:4000],
+        _telegram_send_intake_text(chat_id, text,
                                reply_markup=_telegram_intake_calc_markup(chat_id, card, region))
         return
     left = int(card["questions"]["total"]) - int(card["questions"]["index"])
     text += (f"\n\nМодель пока не менялась. Дальше — {left} "
              + _telegram_plural(left, "вопрос", "вопроса", "вопросов")
              + " о том, чего в тизере нет, по одному.")
-    _telegram_send_message(chat_id, text[:4000], reply_markup={"inline_keyboard": [[
+    _telegram_send_intake_text(chat_id, text, reply_markup={"inline_keyboard": [[
         {"text": "Перейти к вопросам", "callback_data": "intake_questions"}]]})
+
+
+def _telegram_send_intake_text(chat_id: int, text: str, *, reply_markup=None) -> None:
+    """Deliver the whole saved card; attach its action to the final part only."""
+    from telegram_intake_text import split_intake_html
+    parts = split_intake_html(text)
+    for index, part in enumerate(parts):
+        _telegram_send_message(chat_id, part,
+                               reply_markup=reply_markup if index == len(parts) - 1 else None)
 
 
 def _telegram_intake_card_text(card: dict[str, Any], *, first: bool, recognized: bool = False) -> str:
@@ -1533,7 +1546,7 @@ def _telegram_intake_ask_next(chat_id: int, dialog: dict[str, Any]) -> None:
         text = _telegram_intake_card_text(card, first=False)
         text += ("\n\nРасчёт начнётся только кнопкой ниже и возьмёт ровно то, что в разделе "
                  "«Что уйдёт в расчёт»; остальное — как в разделе 3.")
-        _telegram_send_message(chat_id, text[:4000],
+        _telegram_send_intake_text(chat_id, text,
                                reply_markup=_telegram_intake_calc_markup(chat_id, card, region))
         return
     dialog["step"] = "await_intake_answer"
@@ -1547,7 +1560,7 @@ def _telegram_intake_ask_next(chat_id: int, dialog: dict[str, Any]) -> None:
     if not ask.get("kind") and ask.get("key"):
         hint += f" или впишите число сообщением ({html.escape(str(ask.get('unit') or ''))})"
     text += f"\n\n<i>{hint}. «-» — пропустить вопрос, «стоп» — закончить вопросы.</i>"
-    _telegram_send_message(chat_id, text[:3900],
+    _telegram_send_intake_text(chat_id, text,
                            reply_markup={"inline_keyboard": buttons} if buttons else None)
 
 
@@ -1590,7 +1603,7 @@ def _telegram_intake_answer(chat_id: int, dialog: dict[str, Any], *, index: int,
     for row in record.get("refused") or []:
         lines.append("в расчёт не пойдёт: " + html.escape(str(row.get("label") or row.get("key")))
                      + " — " + html.escape(str(row.get("reason") or "")))
-    _telegram_send_message(chat_id, "\n".join(lines)[:3900])
+    _telegram_send_intake_text(chat_id, "\n".join(lines))
     _telegram_intake_ask_next(chat_id, dialog)
 
 
@@ -3050,6 +3063,9 @@ def _telegram_process_update(update: dict[str, Any]) -> None:
         where = _error_location(exc)
         _TELEGRAM_RUNTIME["last_error"] = where
         message = update.get("message") if isinstance(update, dict) else None
+        if not isinstance(message, dict) and isinstance(update, dict):
+            query = update.get("callback_query")
+            message = query.get("message") if isinstance(query, dict) else None
         chat = (message or {}).get("chat") if isinstance(message, dict) else None
         chat_id = (chat or {}).get("id") if isinstance(chat, dict) else None
         if _telegram_is_group(chat):

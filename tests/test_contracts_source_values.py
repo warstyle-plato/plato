@@ -146,13 +146,13 @@ def test_source_known_money_is_shown_in_the_row_detail_without_creating_ratio(wi
         expect(cell).not_to_contain_text('355\u00a0003')
         assert cell.locator('.contract-progress').count() == 0
         assert '50%' not in cell.text_content()
-        expect(more.locator('[data-label="Сумма договора"]')).to_contain_text('Не подтверждена')
+        expect(more.locator('#contractCardSummary [data-label="Сумма договора"]')).to_contain_text('Не подтверждена')
         remaining = more.locator('[data-label="Остаток и оплата"]')
         expect(remaining.locator('.contract-main-money')).to_have_text('—')
         expect(remaining).to_contain_text('Оплачено: — · итог не подтверждён')
         expect(remaining).not_to_contain_text('50\u00a0000 ₽')
         expect(remaining).not_to_contain_text('0 ₽')
-        assert more.locator('.contract-sources').get_attribute('open') is None
+        assert more.locator('#contractRecordSources').get_attribute('open') is None
         assert 'private-ledger' not in cell.text_content()
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         assert not errors
@@ -235,7 +235,9 @@ def test_reference_source_year_and_metadata_do_not_expose_a_known_future_total()
         expect(cell).to_contain_text('230\u00a0002')
         expect(cell).to_contain_text('Ведомость 2')
         row['reported_performance_sources'][1]['future_periods_excluded'] = True
+        page.locator('#contractDialogClose').click()
         page.locator('#contractsRefresh').click()
+        cell=opened(page).locator('[data-label="Выполнено по накопительным"]')
         expect(cell).to_contain_text('Периоды позже среза исключены')
         expect(cell).not_to_contain_text('230\u00a0002')
         assert not errors
@@ -278,7 +280,8 @@ def test_long_realistic_work_titles_and_scopes_have_bounded_previews_and_full_de
         expect(work).to_contain_text('Ещё участков: 7')
         assert len(work.text_content()) < 500
         assert full not in work.text_content()
-        page.locator('tr[data-contract-id] .contract-open').click()
+        page.locator('#contractRecordSources > summary').click()
+        page.locator('#contractRecordSources > .contract-sources > summary').click()
         expect(page.locator('#contractsDetails')).to_contain_text(full)
         expect(page.locator('#contractsDetails')).to_contain_text('Исходная работа 11')
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')

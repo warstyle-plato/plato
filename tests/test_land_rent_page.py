@@ -47,6 +47,7 @@ def test_rental_editor_uses_real_page_retains_rates_and_recalculates(width, surf
             assert page.locator("#landRentEditor").is_visible()
             assert page.locator("#f_land_rent_cadastral_mln").input_value() == "100"
             assert page.evaluate("lastResult.land_rent.construction_total") == pytest.approx(4.5e6)
+            page.locator('#landRentEditor [data-land-rent-advanced] > summary').click()
             page.locator('#landRentEditor details[data-land-rent-detail="conditions"] > summary').click()
             page.locator("#f_land_rent_mode").select_option("msk_mkd_3_2")
             browser.wait_for_result(page)

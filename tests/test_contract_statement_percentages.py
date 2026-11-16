@@ -124,7 +124,7 @@ def test_primary_register_and_physical_rows_show_statement_percentages(context, 
         expect(row.locator('.contract-money')).to_contain_text('сумма по ведомости')
         expect(row.locator('.contract-money')).to_contain_text('68,6%')
         more = opened(page)
-        amount, done = more.locator('[data-label="Сумма договора"]'), more.locator('[data-label="Выполнено по накопительным"]')
+        amount, done = more.locator('[data-label="Основание суммы"]'), more.locator('[data-label="Выполнено по накопительным"]')
         expect(amount).to_contain_text('В ведомости')
         expect(amount).to_contain_text('1\u00a0000 ₽')
         expect(done).to_contain_text('68,6%')
@@ -134,9 +134,9 @@ def test_primary_register_and_physical_rows_show_statement_percentages(context, 
         assert 'Нет полной суммы' not in row.inner_text()
         # This is an observation of the covered statements, so the forecast
         # needs comparable snapshots rather than a whole-contract price/date.
-        expect(more.locator('.contract-more-term')).to_contain_text('Для прогноза нужны два свежих наблюдения')
-        assert 'нужна полная сумма договора' not in more.locator('.contract-more-term').inner_text()
-        row.locator('.contract-open').click()
+        expect(more.locator('.contract-money-forecast')).to_contain_text('Для прогноза нужны два свежих наблюдения')
+        assert 'нужна полная сумма договора' not in more.locator('.contract-money-forecast').inner_text()
+        page.locator('#contractPhysicalSources > summary').click()
         work = page.locator('.physical-main').first
         expect(work.locator('td').nth(2)).to_contain_text('4 м2')
         expect(work.locator('td').nth(3)).to_contain_text('8 м2')
@@ -145,6 +145,7 @@ def test_primary_register_and_physical_rows_show_statement_percentages(context, 
         assert '80%' not in work.locator('td').nth(4).inner_text()
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         if width == 1440:
+            page.locator('#contractDialogClose').click()
             pdf = PdfReader(io.BytesIO(page.pdf(prefer_css_page_size=True)))
             content = ' '.join(' '.join(sheet.extract_text() or '' for sheet in pdf.pages).split())
             assert '68,6%' in content and 'стоимости работ по ведомостям' in content

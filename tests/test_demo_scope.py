@@ -92,6 +92,14 @@ def body(session: str, path: str = "") -> dict:
     после разбора тела, а не спрятаться за 422. Поля — по самой модели."""
     out: dict = {"session": session, "project": "проверка", "message": "что со сроками?",
                  "text": "запись", "topic": "тема"}
+    if path in {'/monitor/schedule/saved-source-preview', '/monitor/schedule/saved-source-approve'}:
+        return {'project': 'проверка', 'session': session, 'source_sha256': 'a'*64,
+                'expected_active_sha256': 'b'*64, 'expected_revision': 0, 'effective_from': '2026-11-12'}
+    if path == '/monitor/readiness/editor':
+        return {'project': 'проверка', 'session': session}
+    if path in {'/monitor/readiness/profile-preview', '/monitor/readiness/profile-save'}:
+        return {'project': 'проверка', 'session': session, 'configuration': {},
+                'expected_source_sha256': 'a'*64, 'expected_source_revision': 0, 'expected_revision': 0}
     route = next((r for r in core.app.routes
                   if getattr(r, "path", "") == path and "POST" in getattr(r, "methods", ())), None)
     for param in getattr(getattr(route, "dependant", None), "body_params", []) or []:
@@ -232,7 +240,7 @@ def monitor_routes() -> dict[str, bool]:
 
 # Чтение монитора и сводки — названо явно. Новый маршрут попадает в запись,
 # пока его не перенесли сюда; лишнее «чтение» в коде роняет эту проверку.
-MONITOR_READS = {"/monitor/snapshots", "/monitor/view", "/monitor/view/result",
+MONITOR_READS = {"/monitor/snapshots", "/monitor/view", "/monitor/view/result", "/monitor/gpr-view",
                  "/monitor/rewritten", "/monitor/ask",
                  "/monitor/doubts", "/monitor/crew", "/monitor/daily/summary",
                  "/monitor/photo", "/monitor/report/projects", "/monitor/report",

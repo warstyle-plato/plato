@@ -80,6 +80,8 @@ jobs:
           cache-dependency-path: requirements-dev.txt
       - name: Зависимости
         run: python -m pip install -r requirements-dev.txt
+      - name: Браузер для проверки страницы и PDF
+        run: python -m playwright install --with-deps chromium
       - name: Есть ли в ветке модуль рынка
         id: present
         run: |
@@ -92,6 +94,8 @@ jobs:
       - name: Синтаксис и unit-тесты
         if: steps.present.outputs.value == 'yes'
         shell: bash
+        env:
+          REQUIRE_BROWSER: "1"
         run: |
           set -euo pipefail
           compile_files=(market_search/*.py market_search/providers/*.py main_registry.py market-preview-acceptance.py)

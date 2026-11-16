@@ -237,7 +237,7 @@ def render(block):
     return ''.join(out)
 
 
-def details(block):
+def details(block, *, include_completed=True):
     esc = html.escape
     out = ['<div class="executive-source-content"><h3>Основания оценки сроков</h3>']
     owner = block.get('owner_rnv')
@@ -245,7 +245,7 @@ def details(block):
         out.append('<p>План РНВ владельца: '+esc(date_text(owner['date']))+'. '+
                    esc(owner.get('note') or '')+'</p>')
     inventory = block.get('completed_facts') or {}
-    if len(inventory.get('qualified_task_completions') or []) > 3:
+    if include_completed and len(inventory.get('qualified_task_completions') or []) > 3:
         from developaid_schedule_completed_facts import render as completed_render
         out.append(completed_render(inventory, expanded=True))
     if block.get("driver_reason"):

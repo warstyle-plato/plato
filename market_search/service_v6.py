@@ -25,6 +25,7 @@ from .geo_resolution import RESOLVED, ProjectGeoResolver, address_signature
 from .geocoder import GeoPoint
 from .http import RemoteServiceError
 from .dynamics import DealsSummary, SalesDynamics
+from .report_pace import align_report_pace
 from .market_reference import MarketAtlas, MoscowMarket
 from .region_market import RegionMarketCollector, configured_regions, russia_connected, site_region
 from .metrics import build_blocks
@@ -1095,6 +1096,8 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         # медиана класса по всей Москве отвечает не на тот вопрос: решают
         # соседи в трёх километрах, а город только шумит рядом с ними.
         reference = market if (city_scope["covered"] and city_reference) else MoscowMarket({})
+        subject_metrics, peers = align_report_pace(
+            subject_metrics, peers, subject_sales, self.dynamics.last_month, self.dynamics.source)
         blocks = build_blocks(subject_metrics, peers, reference, codes)
         notes = build_notes(blocks, subject_series)
         notes["premium_series"] = premium_series(subject_series, peers)

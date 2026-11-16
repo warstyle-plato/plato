@@ -39,6 +39,9 @@ def row(page, name):
 def test_phone_rows_have_full_width_bar_with_signed_dates_under_a_date_axis():
     with browser_page(390) as (page, responses, errors):
         render(page)
+        expect(page.locator('#gprFactMatrix [data-work-id]')).to_have_count(4)
+        assert page.locator('#gprCalendar').get_attribute('open') is None
+        page.locator('#gprCalendar > summary').click()
         rows = page.locator('#gantt .g-row')
         expect(rows.first).to_be_visible()
         axis = page.locator('#gantt .g-axis .axis')
@@ -173,6 +176,7 @@ def test_a_browser_without_container_units_keeps_the_cut_label_centred_on_the_ma
         view = two_corpus_view()
         view['cut'] = '2026-11-08'
         page.evaluate("(v)=>{currentView=v;renderGantt(v)}", view)
+        page.locator('#gprCalendar > summary').click()
         removed = page.evaluate("""()=>{let n=0;for(const sheet of document.styleSheets){const rules=[...sheet.cssRules];
           for(let i=rules.length-1;i>=0;i--){const r=rules[i];
             if(r instanceof CSSSupportsRule&&/cqw/.test(r.conditionText)&&/al-today/.test(r.cssText)){sheet.deleteRule(i);n++}}}

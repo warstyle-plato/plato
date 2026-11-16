@@ -25,6 +25,7 @@ PAGE += r"""const TERRITORY_MARKERS=['_glavapu_import','_other_region','_field_o
 const TERRITORY_CLEARED_LABELS={
  purchase_price_mln:'цена входа', land_rights_cost_mln:'плата за смену ВРИ',
  social_compensation_mln:'социальная компенсация', site_area_ha:'площадь участка',
+ mo_vri_compensation_mln:'компенсация по соглашению о плате за смену ВРИ',
  site_density_sqm_per_ha:'плотность', kindergarten_places:'места в ДОО',
  school_places:'места в школе', clinic_capacity:'мощность поликлиники',
  social_dou_gba_sqm:'площадь ДОО', social_school_gba_sqm:'площадь школы',
@@ -69,6 +70,7 @@ function resetTerritoryData(options){
   // району → 1,0): пустое поле — не ноль, и сброс ставит пустоту.
   inputs[key]=SITE_ONLY_INPUTS.includes(key)?'':0;
  });
+ syncMoCompensation();
  TERRITORY_MARKERS.forEach(key=>{delete inputs[key]});
  if(keepLeaseTerms)Object.assign(fieldOrigins(),leaseOrigins);
  STANDALONE_OBJECTS.forEach(o=>{inputs[o.prefix+'_enabled']=false});
@@ -725,6 +727,11 @@ function classFieldUnitText(id,unit){
   head=String(head||'').replace(/[\s.;·]+$/,'');
   return head?head+'. '+sentence:sentence;
  };
+ // Зачёт площадей вычитается вместе с компенсацией по соглашению о Ксу*;
+ // оба ли вписаны, решает движок (`offset_with_compensation`), поле
+ // предупреждает о двойном счёте одних и тех же метров.
+ if(id==='vri_transfer_offset_mln'&&(((lastResult||{}).vri||{}).totals||{}).offset_with_compensation)
+  return unitSentence(unit,'Вычитается вместе с компенсацией по соглашению с областью (Ксу*). Если эти метры входят в соглашение о Ксу*, их стоимость не должна стоять ещё и в сумме компенсации.');
  // Площадь сноса и выкуп, найденные по контуру КРТ, подписаны своим
  // происхождением, пока число в поле то же, что положил контур; исправленное —
  // уже ручное. Проверка внутри, а не своей функцией: стенды страницы собирают
@@ -2064,7 +2071,9 @@ function renderInputs(){
       el.disabled=true;
       el.title='Москва: платежи ежеквартально — установлено нормативно';
      }
-     el.onchange=()=>{if(partialTepEditInput(id,el,type))return;if(id==='vri_required')return vriRequiredToggled(el);if(OFFICE_CLASS_FIELDS[id])return setOfficeClass(OFFICE_CLASS_FIELDS[id],el.value);const classRegionBefore=classRegion();const valueBefore=inputs[id];inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);markFieldManual('inputs.'+id);if(id==='land_rights_cost_mln'){vriFeeClearedMln=0;syncVriRequiredBox()}if(id==='demolition_area_sqm'||id==='land_buyout_mln')refreshClassFieldUnit(id);if(id==='social_mode')inputs._social_mode_user_set=true;if(id==='social_population_method')socialPopulationSwitched(valueBefore);{const parkOwner=OBJECT_PARKING_PREFIXES.find(p=>id===p+'_parking_under_spaces'||id===p+'_parking_over_spaces');if(parkOwner){if(String(el.value).trim()==='')restoreParkingNorm(parkOwner);else parkingFieldByHand(parkOwner,id);}}if(id==='underground_manual_spaces'||id==='underground_manual_gns_sqm'){if(Number(el.value)>0)markParkingByHand(PROJECT_PARKING_KEY);else markParkingByNorm(PROJECT_PARKING_KEY);}if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){followClassRegion(classRegionBefore);syncTep(false);renderInputs();return calculate()}if(id==='vri_relief_mode'||id==='vri_financing_mode'){renderInputs();return calculate()}if(VRI_SHARE_FIELDS.includes(id))refreshVriSharesNote();if(STRATEGY_FIELD_READERS_SWITCHES.includes(id)){renderInputs();return calculate()}if(markClassManual(id)){syncProjectClassSelector();refreshClassFieldUnit(id)}if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(id==='storage_area_per_unit_sqm'){syncStoragePair('units');renderTep()}if(TEP_DERIVED_INPUTS.includes(id)){const modeSwitched=id==='social_area_source';const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(modeSwitched||filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
+     // При смене права сначала обновляем аренду и её базу из ЕГРН: форма
+     // собственности не содержит этих полей, а запрос должен уже читать их.
+     el.onchange=()=>{if(partialTepEditInput(id,el,type))return;if(id==='vri_required')return vriRequiredToggled(el);if(OFFICE_CLASS_FIELDS[id])return setOfficeClass(OFFICE_CLASS_FIELDS[id],el.value);const classRegionBefore=classRegion();const valueBefore=inputs[id];inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);markFieldManual('inputs.'+id);if(id==='land_rights_cost_mln'){vriFeeClearedMln=0;syncVriRequiredBox()}if(id==='demolition_area_sqm'||id==='land_buyout_mln')refreshClassFieldUnit(id);if(id==='social_mode')inputs._social_mode_user_set=true;if(id==='social_population_method')socialPopulationSwitched(valueBefore);{const parkOwner=OBJECT_PARKING_PREFIXES.find(p=>id===p+'_parking_under_spaces'||id===p+'_parking_over_spaces');if(parkOwner){if(String(el.value).trim()==='')restoreParkingNorm(parkOwner);else parkingFieldByHand(parkOwner,id);}}if(id==='underground_manual_spaces'||id==='underground_manual_gns_sqm'){if(Number(el.value)>0)markParkingByHand(PROJECT_PARKING_KEY);else markParkingByNorm(PROJECT_PARKING_KEY);}if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){followClassRegion(classRegionBefore);syncTep(false);renderInputs();return calculate()}if(id==='land_right'){renderLandRentEditor();refreshGroupPeeks();return calculate()}if(id==='vri_relief_mode'||id==='vri_financing_mode'){renderInputs();return calculate()}if(VRI_SHARE_FIELDS.includes(id))refreshVriSharesNote();if(STRATEGY_FIELD_READERS_SWITCHES.includes(id)){renderInputs();return calculate()}if(markClassManual(id)){syncProjectClassSelector();refreshClassFieldUnit(id)}if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(id==='storage_area_per_unit_sqm'){syncStoragePair('units');renderTep()}if(TEP_DERIVED_INPUTS.includes(id)){const modeSwitched=id==='social_area_source';const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(modeSwitched||filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
      wrap.appendChild(el);
      // Кнопка «Подобрать» у срока кредита объекта с доходным методом.
      if(typeof loanTermPickField==='function'&&loanTermPickField(id))wrap.appendChild(loanTermPickNode(id));

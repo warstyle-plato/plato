@@ -238,98 +238,66 @@ def test_a_finished_line_ends_on_its_latest_ks_day_and_waits_for_every_linked_po
 @pytest.mark.parametrize("width", [390, 1440])
 def test_the_card_reports_the_lag_and_the_threat_in_plain_words(card, width):  # noqa: F811
     from playwright.sync_api import expect
-
     from test_monitor_cumulative_controls import browser_page
     from tests.test_contract_card_confirms_and_chooses_links import _serve
     with browser_page(width) as (page, _, errors):
         _serve(page, [], cut="2026-02-04", acts=fact.acts(REGISTER_ROW))
         page.locator("#contractsTab").click()
         page.locator(f'tr[data-contract-id="{CONTRACT}"] .contract-open').click()
-        report = page.locator("#contractDocuments .contract-control")
-        expect(report.locator(".contract-plan-total")).to_have_text(
-            "На 04.02.2026: готовность договора 50 %, выполнение плана 55 %")
-        expect(report.locator(".contract-control-money")).to_have_text(
-            "По плану к этой дате — 90,9 % работ договора. План 10 000 ₽, факт 5 500 ₽, отклонение −4 500 ₽ (−45 %).")
-        expect(report.locator(".contract-control-left-out")).to_have_text(
-            "2 периода КС не вошли в факт: В расчёте позиция № 1.2 измеряется в «м3», а в КС — в «т»: объём не "
-            "пересчитать в деньги. В расчёте нет позиции с этим номером или с таким же названием и единицей (№ 9.9). "
-            "Поэтому отставание и отклонение неполные: выполнение этих периодов в них не учтено.")
-        state = report.locator(".contract-control-state")
-        expect(state).to_have_text("Договор отстаёт от плана на 2 дня: столько дней назад план нарастающим итогом "
-                                   "был равен сегодняшней готовности. Не выполнено по плану на дату среза: 4 500 ₽.")
-        # Просрочка — от срока самой работы, отдельно от отставания от плана.
-        expect(report.locator(".contract-control-overdue")).to_have_text(
-            "Срок по графику прошёл, а работа не закончена: 1.1 Возведение стен 1-го этажа — просрочка 3 дня; "
-            "1.3 Устройство плит перекрытия — просрочка 1 день. Просрочка считается от срока работы и не совпадает "
-            "с отставанием от плана.")
-        expect(report).to_contain_text("Срок договора в реестре не указан, поэтому прогноз сравнивается с окончанием "
-                                       "расчётного плана по действующему ГПР — 05.02.2026.")
-        threat = report.locator(".contract-control-forecast")
-        expect(threat).to_have_text("Есть угроза сроку: если отставание сохранится, работы закончатся 06.02.2026 — "
-                                    "на 1 день позже срока. Позже срока заканчиваются: "
-                                    "1.2 Возведение стен 2-го этажа — 06.02.2026.")
-        color = "e => getComputedStyle(e).color"
-        assert threat.evaluate(color) == state.evaluate(color) != report.evaluate(color), "угроза выделена красным"
-        expect(report).to_contain_text("Позиции расчёта, связь которых с графиком не определена (2), в план и прогноз")
-        expect(report).to_contain_text("Готовность каждой работы посчитана по объёму в её единицах.")
-        expect(report).to_contain_text("не меняет прогноз срока ввода проекта")
-        report.get_by_text("Работы договора (3)").click()
-        works = report.locator(".contract-control-works")
-        names = [" ".join(x.split()) for x in works.locator("thead th").evaluate_all("hs => hs.map(h => h.textContent)")]
-        assert names == ["Работа", "Ед.", "Объём", "План на дату среза", "Факт", "Выполнение плана", "Готовность",
-                         "Отклонение", "Отставание", "Просрочка", "Прогноз окончания"]
-        rows = works.locator("tbody tr")
-        expect(rows.nth(0)).to_contain_text("1.1 Возведение стен 1-го этажа")
-        cells = rows.nth(0).locator("td")
-        expect(cells.nth(8)).to_have_text("3 дня")
-        expect(cells.nth(9)).to_have_text("3 дня")
-        # На телефоне таблица становится карточками: у каждого числа видна его подпись.
-        assert cells.nth(8).get_attribute("data-label") == "Отставание"
-        assert cells.nth(9).get_attribute("data-label") == "Просрочка"
-        # Стены 2-го этажа: объём в натуре первым, деньги — под ним; три процента работы.
-        slabs = rows.nth(2).locator("td")
-        expect(slabs.nth(1)).to_have_text("м3")
-        expect(slabs.nth(3)).to_have_text("0,5 м34 000 ₽")
-        expect(slabs.nth(4)).to_have_text("0,313 м32 500 ₽")
-        expect(slabs.nth(5)).to_have_text("62,5 %")
-        expect(slabs.nth(6)).to_have_text("50 %")
-        expect(slabs.nth(7)).to_have_text("−37,5 %−0,188 м3")
-        expect(slabs.nth(9)).to_have_text("—")
-        expect(slabs.nth(10)).to_have_text("06.02.2026")
-        assert "risktext" in slabs.nth(5).get_attribute("class")
-        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
-        assert errors == []
+        report=page.locator('#contractComparison')
+        expect(report.locator('thead th')).to_have_text([
+            'Работа / единица','План на дату','Факт','Отклонение','Срок работы','Прогноз окончания'])
+        expect(page.locator('#contractCardSummary')).to_contain_text('55 %')
+        expect(page.locator('#contractCardSummary')).to_contain_text('Готовность сопоставленных работ: 50 %')
+        expect(report.locator('#contractComparisonInfo')).to_contain_text('Сравнено 3 из 4')
+        expect(report.locator('#contractComparisonInfo')).to_contain_text('Не учтено периодов КС: 2')
+        forecast=page.locator('#contractCardSummary [data-label="Прогноз окончания"]')
+        expect(forecast).to_contain_text('06.02.2026')
+        expect(forecast).to_contain_text('позже срока на 1 день')
+        assert 'risktext' in forecast.locator('.contract-card-pill-value').get_attribute('class')
+        first=report.locator('tr[data-comparison-code="1.1"]')
+        expect(first.locator('[data-label="Отклонение"]')).to_contain_text('Отставание: 3 дня')
+        expect(first.locator('[data-label="Срок работы"]')).to_contain_text('Просрочка: 3 дня')
+        second=report.locator('tr[data-comparison-code="1.2"]')
+        expect(second.locator('[data-label="План на дату"]')).to_have_text('0,5 м3')
+        expect(second.locator('[data-label="Факт"]')).to_contain_text('0,313 м3')
+        expect(second.locator('[data-label="Факт"]')).to_contain_text('62,5 %')
+        expect(second.locator('[data-label="Работа / единица"]')).to_contain_text('Доля полного объёма: 50 %')
+        expect(second.locator('[data-label="Отклонение"]')).to_contain_text('-0,188 м3')
+        expect(second.locator('[data-label="Отклонение"]')).to_contain_text('−37,5 %')
+        expect(second.locator('[data-label="Прогноз окончания"]')).to_have_text('06.02.2026')
+        unknown=report.locator('tr[data-comparison-code="2.1"]')
+        expect(unknown.locator('[data-label="Факт"]')).to_contain_text('Неизвестно')
+        report.locator('.contract-methodology > summary').click()
+        expect(report.locator('.contract-comparison-money')).to_have_text(
+            'По сопоставленным работам: план 10 000 ₽, факт 5 500 ₽, отклонение −4 500 ₽.')
+        expect(report.locator('.contract-fact-audit')).to_contain_text('В расчёте нет позиции')
+        expect(report.locator('.contract-methodology')).to_contain_text('не меняет срок ввода проекта')
+        assert page.evaluate('document.documentElement.scrollWidth<=innerWidth') and not errors
 
 
 @pytest.mark.parametrize("width", [390, 1440])
 def test_a_finished_contract_says_when_its_work_ended_against_the_deadline(card, width):  # noqa: F811
     from playwright.sync_api import expect
-
     from test_monitor_cumulative_controls import browser_page
     from tests.test_contract_card_confirms_and_chooses_links import _serve
-    row = {**FINISHED_ROW, "deadline": "2026-02-02", "deadline_source": {"label": "Указан вручную"},
-           "physical_items": FINISHED_ROW["physical_items"][:2]}
-    with browser_page(width) as (page, _, errors):
-        _serve(page, [], cut="2026-02-04", acts=fact.acts(row))
-        page.locator("#contractsTab").click()
+    row={**FINISHED_ROW,'deadline':'2026-02-02','deadline_source':{'label':'Указан вручную'},
+         'physical_items':FINISHED_ROW['physical_items'][:2]}
+    with browser_page(width) as (page,_,errors):
+        _serve(page,[],cut='2026-02-04',acts=fact.acts(row))
+        page.locator('#contractsTab').click()
         page.locator(f'tr[data-contract-id="{CONTRACT}"] .contract-open').click()
-        report = page.locator("#contractDocuments .contract-control")
-        expect(report.locator(".contract-control-overdue")).to_have_count(0)
-        expect(report.locator(".contract-control-state")).to_have_text(
-            "Все работы плана закончены. Стоимость выполненного по КС меньше расчёта на 5 500 ₽.")
-        ended = report.locator(".contract-control-forecast")
-        expect(ended).to_have_text("Работы закончены 03.02.2026 — на 1 день позже срока. Позже срока закончены: "
-                                   "1.1 Возведение стен 1-го этажа — 03.02.2026; "
-                                   "1.2 Возведение стен 2-го этажа — 03.02.2026.")
-        assert "risktext" in ended.get_attribute("class")
-        expect(report).not_to_contain_text("а работы не закончены")
-        report.get_by_text("Закончены (3)").click()
-        rows = report.locator(".contract-control-done tbody tr")
-        expect(rows.nth(0)).to_contain_text("1.1 Возведение стен 1-го этажа")
-        expect(rows.nth(0).locator("td").nth(3)).to_have_text("на 2 дня позже")
-        assert "risktext" in rows.nth(0).locator("td").nth(3).get_attribute("class")
-        assert rows.nth(0).locator("td").nth(2).get_attribute("data-label") == "Окончание по КС"
-        expect(rows.nth(0)).to_contain_text("меньше расчёта на 1 500 ₽")
-        expect(rows.nth(2).locator("td").nth(3)).to_have_text("на 2 дня раньше")
-        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
-        assert errors == []
+        forecast=page.locator('#contractCardSummary [data-label="Прогноз окончания"]')
+        expect(forecast).to_contain_text('03.02.2026')
+        expect(forecast).to_contain_text('позже срока на 1 день')
+        expect(forecast).to_contain_text('По сопоставленным работам')
+        assert 'risktext' in forecast.locator('.contract-card-pill-value').get_attribute('class')
+        page.locator('#contractComparisonFilter').select_option('done')
+        rows=page.locator('#contractComparisonRows tr[data-comparison-state="done"]')
+        expect(rows).to_have_count(3)
+        assert all('Просрочка' not in text for text in rows.locator('[data-label="Срок работы"]').all_text_contents())
+        ended=page.locator('#contractComparisonRows tr[data-comparison-code="1.1"] [data-label="Прогноз окончания"]')
+        expect(ended).to_contain_text('03.02.2026')
+        expect(ended).to_contain_text('позже срока на 2 дня')
+        expect(page.locator('#contractComparisonCount')).to_contain_text('Показано 3 из 4')
+        assert not errors

@@ -573,6 +573,9 @@ __DEVELOPAID_CONTOUR__
     <div class="blockhead"><h2 style="margin:0" id="overviewTitle">Кабинет</h2>
       <label class="upload" title="Что в файле нашлось, то и прочитано: выгрузка ЦФ несёт контрактацию, проводки 1С и оба плана, книга финмодели — квартирографию, план продаж и отчёт правлению. Источники ложатся на склад ядра и переживают закрытие вкладки: файлы грузятся по одному и в любом порядке. Форматы .xlsx, .xlsm, .xlsb">Загрузить файл проекта<input type="file" id="cf" accept=".xlsx,.xlsm,.xlsb"></label>
     </div>
+    <label class="f noprint" id="salesProjectLabel" style="display:none;margin-bottom:10px">Проект отчёта
+      <select id="salesProject" aria-label="Проект отчёта" style="max-width:100%"></select>
+    </label>
     <label class="muted">Дата шахматки (при её загрузке) <input type="date" id="chessboardDate"></label>
     <div id="overviewBody" class="muted" style="font-size:13px;margin-top:6px">Смотрю, что уже загружено…</div>
     <div id="cfstate" class="muted" style="font-size:12.5px;margin-top:6px"></div>
@@ -860,7 +863,7 @@ function trendChart(series){
 // единица — параметрами, потому что вопросов три и все они помесячные:
 // сколько ДДУ, сколько метров и каким лотом. Прежде график был только у
 // первого, а числа для остальных лежали в том же отчёте и не рисовались.
-function salesChart(rows, key, unit, digits, note){
+function salesChart(rows, key, unit, digits, note, windowMonths){
   key=key||'sold'; unit=unit||'ДДУ'; digits=digits||0;
   const own=rows.find(r=>r.own);
   // Причина пустоты приходит снаружи: у «Пульса» это «проекта нет в отчёте по
@@ -869,7 +872,7 @@ function salesChart(rows, key, unit, digits, note){
   if(!own||!own.points.length) return '<div class="muted">'
     +esc(note||'Истории продаж по этому проекту в отчёте нет — он покрывает «Москву старую».')+'</div>';
   const months=[...new Set(rows.flatMap(r=>r.points.map(p=>p.month)))].sort();
-  const at=(r,m,k)=>{const p=r.points.find(p=>p.month===m);return p?p[k]:null};
+  const at=(r,m,k)=>{const p=r.points.find(p=>p.month===m);return p?(p[k]??null):null};
   const med=months.map(m=>{
     const v=rows.filter(r=>!r.own).map(r=>at(r,m,key)).filter(x=>x!==null).sort((a,b)=>a-b);
     return v.length?(v.length%2?v[(v.length-1)/2]:(v[v.length/2-1]+v[v.length/2])/2):null;
@@ -880,7 +883,7 @@ function salesChart(rows, key, unit, digits, note){
     .concat(med.filter(v=>v!==null))
     .concat(rows.filter(r=>!r.own&&r.shown).flatMap(r=>months.map(m=>at(r,m,key)).filter(v=>v!==null)));
   const hi=Math.max(...vals,1)*1.15;
-  const W=620,H=210,L=44,R=110,T=12,B=28;
+  const W=620,H=210,L=44,R=190,T=12,B=28;
   // Отмеченные соседи — такими же столбиками рядом, а не линиями поверх.
   // Линия поверх столбиков читалась как другая величина: одинаковые числа
   // надо показывать одинаковой формой.
@@ -905,11 +908,16 @@ function salesChart(rows, key, unit, digits, note){
         +` height="${Math.max(1,H-B-y(v)).toFixed(1)}" rx="2" fill="${one.colour}"`
         +` data-tip="${esc(one.row.name)} · ${m} · ${num(v,digits)} ${unit}"></rect>`;
     });
-    if(i%Math.ceil(months.length/6)===0)
+    if(i%Math.ceil(months.length/6)===0||i===months.length-1)
       svg+=`<text x="${x(i)}" y="${H-9}" text-anchor="middle" font-size="10" fill="#8798a8">${m.slice(2)}</text>`;
   });
-  const mp=months.map((m,i)=>med[i]===null?null:`${i?'L':'M'}${x(i).toFixed(1)} ${y(med[i]).toFixed(1)}`).filter(Boolean).join(' ');
-  if(mp) svg+=`<path d="${mp}" fill="none" stroke="#16202b" stroke-width="1.3" stroke-dasharray="5 4"/>`;
+  let mp='', drawing=false;
+  med.forEach((value,i)=>{
+    if(value===null){drawing=false;return;}
+    mp+=`${drawing?'L':'M'}${x(i).toFixed(1)} ${y(value).toFixed(1)} `;
+    drawing=true;
+  });
+  if(mp) svg+=`<path class="sales-median" d="${mp}" fill="none" stroke="#16202b" stroke-width="1.3" stroke-dasharray="5 4"/>`;
   const lastOwn=[...months].reverse().find(m=>at(own,m,key)!==null);
   if(lastOwn===undefined) return '<div class="muted">Помесячных чисел по этому проекту в отчёте нет.</div>';
   // Подпись — имя и значение через разделитель. Было слово «проект» и число
@@ -919,15 +927,16 @@ function salesChart(rows, key, unit, digits, note){
   // Подписи справа расталкиваются, а не ставятся каждая на своей высоте:
   // «Кутузов Сити · 48,4» и «медиана · 79,5» ложились друг на друга, стоило
   // числам сойтись. Тот же двухпроходный расклад, что на графике цены.
-  const tags=[{y:y(at(own,lastOwn,key)),
+  const tags=[];
+  if(!windowMonths||lastOwn===months[months.length-1]) tags.push({y:y(at(own,lastOwn,key)),
                text:`${ownName} · ${num(at(own,lastOwn,key),digits)} ${unit}`,
-               colour:'#C4581B', bold:true}];
-  const lastMed=rows.length<2?null:[...med].reverse().find(v=>v!==null);
+               colour:'#C4581B', bold:true});
+  const lastMed=rows.length<2?null:windowMonths?med[med.length-1]:[...med].reverse().find(v=>v!==null);
   if(lastMed!==undefined&&lastMed!==null)
     tags.push({y:y(lastMed),text:`медиана · ${num(lastMed,digits||1)} ${unit}`,colour:'#16202b'});
   picked.forEach(r=>{
     const m=[...months].reverse().find(mm=>at(r,mm,key)!==null);
-    if(m===undefined)return;
+    if(m===undefined||(windowMonths&&m!==months[months.length-1]))return;
     const v=at(r,m,key);
     tags.push({y:y(v),colour:pickedColour(picked,r),
                text:`${esc(r.name.length>16?r.name.slice(0,15)+'…':r.name)} · ${num(v,digits)} ${unit}`});
@@ -955,7 +964,14 @@ function salesChart(rows, key, unit, digits, note){
       +` height="${(H-B-T).toFixed(1)}" fill="transparent"`
       +` data-tip="${esc(lines.join('\n'))}"></rect>`;
   });
-  return '<div class="wrap">'+svg+'</svg></div>';
+  const lastMonth=windowMonths?months[months.length-1]:[...months].reverse().find((m)=>med[months.indexOf(m)]!==null);
+  const count=lastMonth?rows.filter(r=>!r.own&&at(r,lastMonth,key)!==null).length:0;
+  const caption=lastMonth?`<div class="muted" style="font-size:12px">`
+    +(windowMonths?'Каждая точка — средний месячный темп за три календарных месяца, заканчивающихся в указанном месяце. Пунктир — медиана этих средних. '
+      :'Пунктир — медиана продаж за каждый месяц. ')
+    +`На ${esc(lastMonth)} известны данные ${count}`
+    +` из ${rows.filter(r=>!r.own).length} соседей. Пропуски не считаются нулями.</div>`:'';
+  return '<div class="wrap">'+svg+'</svg></div>'+caption;
 }
 
 // Остаток: линия одного проекта. Медиану соседей здесь не рисуем — остаток
@@ -1976,10 +1992,10 @@ function blockCard(b,ctx){
       +(c.median?cell(num(c.median)+' ₽/м²','медиана класса в Москве'):'')
       +(c.band?cell({above_p75:'выше верхнего квартиля',interquartile:'внутри квартилей',below_p25:'ниже нижнего квартиля'}[c.band]||c.band,'место в городе'):'');
   } else if(b.code==='pace'){
-    kv=cell(num(s.units_per_month,1),'ДДУ в месяц')
+    kv=cell(num(s.units_per_month,1),pacePeriodLabel(s))
       +cell(num(p.median,1),'медиана соседей')
-      +cell(s.units_per_month&&p.peer_median_over_subject?p.peer_median_over_subject+'×':'—','соседи быстрее во столько раз')
-      +(s.sales_end_forecast?cell(s.sales_end_forecast,'прогноз окончания продаж'):'');
+      +cell(s.units_per_month&&p.peer_median_over_subject?num(p.peer_median_over_subject,1)+'×':'—','соседи быстрее во столько раз')
+      +(s.sales_end_forecast?cell(s.sales_end_forecast,'прогноз источника об окончании продаж'):'');
   } else if(b.code==='stock'){
     kv=cell(num(s.remaining_units),'остаток, лотов')
       +cell(num(s.exposure_lots),'в экспозиции')
@@ -2041,19 +2057,22 @@ function blockCard(b,ctx){
   const say=(ctx.analysis&&ctx.analysis.blocks&&ctx.analysis.blocks[b.code])||null;
   const verdict=say&&say.text?`<div class="say ${say.tone}"><b>${TONE[say.tone]||'•'} Разбор</b> ${esc(say.text)}</div>`:'';
   const chart=b.code==='price'?trendChart(ctx.series)
-    :b.code==='pace'?salesChart(ctx.sales,'sold','ДДУ',0,ctx.salesNote)
+    :b.code==='pace'?salesChart(ctx.paceSales||ctx.sales,'sold',ctx.paceSales?'ДДУ/мес':'ДДУ',
+      ctx.paceSales?1:0,ctx.salesNote,ctx.paceSales?3:0)
     :b.code==='lot_size'?lotChart(ctx.sales,ctx.salesNote)
     :b.code==='absorption'?salesChart(ctx.sales,'area','м²',0,ctx.salesNote)
     :b.code==='stock'?remainChart(ctx.sales):'';
-  const chartTitle={price:'Динамика цены, ₽/м²',pace:'Продажи по месяцам, ДДУ',
+  const chartTitle={price:'Динамика цены, ₽/м²',pace:ctx.paceSales?'Средний темп за три месяца, ДДУ/мес':'Продажи по месяцам, ДДУ',
     lot_size:'Средний проданный лот по месяцам, м²',
     absorption:'Продажи по месяцам, м²',
     stock:'Остаток по месяцам, лотов'}[b.code]||'Динамика';
   const table=sectionTable(b.code,ctx);
   const extra=b.code==='rooms'?roomsTable(b)+bandsTable(b)
     :b.code==='payment'?banksTable(b):'';
+  const monthly=b.code==='pace'&&ctx.paceSales?'<details><summary>Фактические продажи за отдельные месяцы</summary>'
+    +salesChart(ctx.sales,'sold','ДДУ',0,ctx.salesNote)+'</details>':'';
   return `<div class="card"><h2>${esc(b.title)}</h2>${empty}<div class="kv">${kv}</div>`
-    +verdict+notes+extra+(chart?`<h3>${chartTitle}</h3>${chart}`:'')+(table?`<h3>Сравнение</h3>${table}`:'')+`</div>`;
+    +verdict+notes+extra+(chart?`<h3>${chartTitle}</h3>${chart}`:'')+monthly+(table?`<h3>Сравнение</h3>${table}`:'')+`</div>`;
 }
 
 // Таблица под каждым разделом — та же выборка, но показанная колонками этого
@@ -2076,16 +2095,20 @@ function sectionTable(code,ctx){
     price:[...base,{t:'₽/м²',num:1,f:r=>num(r.price_per_sqm)},
            {t:'мин',num:1,f:r=>num(r.price_per_sqm_min)},{t:'макс',num:1,f:r=>num(r.price_per_sqm_max)},
            {t:'Прайс от',f:r=>esc(r.observed_at||'—')}],
-    pace:[...base,{t:'ДДУ/мес',num:1,f:r=>num(r.units_per_month,1)},
-          {t:'за 3 мес',num:1,f:r=>num(r.units_per_month_3m,1)},
-          {t:'Конец продаж',f:r=>esc(r.sales_end_forecast||'—')}],
+    pace:[...base,{t:pacePeriodLabel(ctx.subjectMetrics||{}),num:1,f:r=>num(r.units_per_month,1)},
+          {t:(ctx.subjectMetrics||{}).pace_reference?.basis==='calendar_average'
+            ?'ДДУ за '+ctx.subjectMetrics.pace_reference.month_label:'За 3 мес, источник',num:1,
+            f:r=>num(r.pace_basis==='calendar_average'?r.units_in_last_month:r.units_per_month_3m,1)},
+          ...((ctx.subjectMetrics||{}).provider_pace?
+            [{t:'Средний темп источника',num:1,f:r=>num((r.provider_pace||r).units_per_month,1)}]:[]),
+          {t:'Прогноз источника',f:r=>esc(r.sales_end_forecast||'—')}],
     stock:[...base,{t:'Лотов в продаже',num:1,f:r=>num(r.lot_count)},
            {t:'Остаток',num:1,f:r=>num(r.remaining_units)},
            {t:'Всего',num:1,f:r=>num(r.living_units)}],
     lot_size:[...base,{t:'Продано, м²',num:1,f:r=>num(r.sold_lot_avg,1)},
               {t:'Средний в проекте',num:1,f:r=>num(r.lot_area_avg,1)}],
     absorption:[...base,{t:'м²/мес',num:1,f:r=>num(r.area_per_month)},
-                {t:'ДДУ/мес',num:1,f:r=>num(r.units_per_month,1)}],
+                {t:'ДДУ/мес, средний темп источника',num:1,f:r=>num((r.provider_pace||r).units_per_month,1)}],
     payment:[...base,{t:'Ипотека, %',num:1,f:r=>num(r.mortgage,1)},
              {t:'Скидка к прайсу, %',num:1,f:r=>num(r.disc,1)},
              {t:'Месяц',f:r=>esc(r.mortgage_at||'—')}],
@@ -2311,7 +2334,7 @@ function projectCard(p){
       ${row('прайс, ₽/м²', num(p.price_per_sqm))}
       ${row('диапазон', p.price_per_sqm_min?num(p.price_per_sqm_min)+'–'+num(p.price_per_sqm_max):'')}
       ${row('за год', change===null?'':pct(change))}
-      ${row('ДДУ в месяц', num(p.units_per_month,1))}
+      ${row(pacePeriodLabel(p), num(p.units_per_month,1))}
       ${row('за 3 месяца', num(p.units_per_month_3m,1))}
       ${row('м² в месяц', num(p.area_per_month))}
       ${row('лотов в продаже', num(p.lot_count))}
@@ -2624,8 +2647,37 @@ function boardCard(data){
 // и обе строки выглядели бы верными. Ровно то правило, по которому разбивка
 // очередей берётся из `report.products`.
 let salesData=null;
+let salesLoadSequence=0, salesKnown=[];
+
+function salesBusy(busy){
+  $('#cf').disabled=busy;
+  $('#salesProject').disabled=busy;
+}
+
+function salesProjectContext(d){
+  if(Array.isArray(d.known)) salesKnown=d.known;
+  const names=salesKnown.map(p=>p.project).filter(Boolean);
+  if(d.project&&!names.includes(d.project)) names.push(d.project);
+  const select=$('#salesProject');
+  select.replaceChildren();
+  names.forEach(name=>{
+    const option=document.createElement('option');
+    option.value=name; option.textContent=name;
+    select.appendChild(option);
+  });
+  select.value=d.project||'';
+  $('#salesProjectLabel').style.display=names.length?'':'none';
+  // Адрес сохраняет выбранный проект после обновления и при открытии ссылки.
+  if(location.protocol==='http:'||location.protocol==='https:'){
+    const url=new URL(location.href);
+    if(d.project) url.searchParams.set('project',d.project);
+    else url.searchParams.delete('project');
+    history.replaceState(history.state,'',url);
+  }
+}
 
 async function loadContracting(file){
+  salesBusy(true);
   $('#cfstate').textContent='Читаю файл проекта…';
   try{
     // Имя файла едет заголовком: в свод оно попадает подписью источника, а
@@ -2646,20 +2698,39 @@ async function loadContracting(file){
     if(!r.ok){ $('#cfstate').textContent=d.detail||'Файл не разобран'; return }
     showSales(d);
   }catch(e){ $('#cfstate').textContent=String(e.message||e) }
+  finally{ salesBusy(false); $('#cf').value='' }
 }
 
 // Источники лежат на ядре и переживают закрытие вкладки: файл грузится один
 // раз, а не при каждом открытии кабинета (владелец, 26.08.2026). Пустой склад
 // — это «ещё не грузили», а не «продаж нет», и так и написано.
-async function loadStoredSales(){
+async function loadStoredSales(project){
   // «Не спросили» и «не загружено» — разные ответы, и молчание выдаёт первое за
   // второе: страница оставалась со строкой «Смотрю, что уже загружено…»
   // навсегда, и отличить закрытый ключом кабинет от пустого склада было нечем.
   const box=$('#overviewBody');
-  const failed=why=>{ if(box)box.innerHTML='<b>Склад не ответил.</b> '+esc(why)
-    +' Это не значит, что источников нет: их не удалось спросить.'; };
+  const sequence=++salesLoadSequence;
+  if(project===undefined) project=new URL(location.href).searchParams.get('project')||'';
+  salesBusy(true);
+  salesData=null;
+  planData=null;
+  $('#planstate').textContent='';
+  salesTalk.reset();
+  $('#sales').innerHTML='';
+  $('#overviewTitle').textContent='Кабинет';
+  $('#cfstate').textContent='Открываю сохранённый проект…';
+  if(box)box.textContent='Читаю сохранённые источники проекта…';
+  let loaded=false;
+  const failed=why=>{
+    if(box)box.innerHTML='<b>Склад не ответил.</b> '+esc(why)
+      +' Это не значит, что источников нет: их не удалось спросить.';
+    $('#cfstate').textContent='Не удалось открыть проект. Загрузка файлов временно недоступна.';
+  };
   try{
-    const r=await fetch('/cabinet/sales/summary');
+    const params=new URLSearchParams();
+    if(project)params.set('project',project);
+    const r=await fetch('/cabinet/sales/summary'+(params.size?'?'+params.toString():''));
+    if(sequence!==salesLoadSequence)return;
     if(!r.ok){
       failed(r.status===401||r.status===403
         ?'Кабинет закрыт ключом — войдите и обновите страницу.'
@@ -2667,9 +2738,17 @@ async function loadStoredSales(){
       return;
     }
     const d=await r.json();
-    if(d&&!d.empty) showSales(d);
-    else renderOverview(null);
-  }catch(e){ failed(String(e&&e.message||e)+'.') }
+    if(sequence!==salesLoadSequence)return;
+    if(d&&(d.project||(d.sources||[]).length)) showSales(d);
+    else{salesProjectContext(d||{});renderOverview(null);$('#cfstate').textContent=''}
+    loaded=true;
+  }catch(e){ if(sequence===salesLoadSequence)failed(String(e&&e.message||e)+'.') }
+  finally{
+    if(sequence===salesLoadSequence){
+      $('#salesProject').disabled=false;
+      $('#cf').disabled=!loaded;
+    }
+  }
 }
 
 let salesSourcesSeen='';
@@ -2679,9 +2758,10 @@ function showSales(d){
   // Платон помнил бы то, чего в своде уже нет. Сравнивается состав и даты
   // источников, а не сам факт перерисовки: экран рисуется заново и при
   // открытии вкладки, а разговор при этом тот же.
-  const seen=(d&&d.sources||[]).map(s=>`${s.name}@${String(s.at||'').slice(0,10)}`).join(';');
+  const seen=(d.project||'')+';'+(d&&d.sources||[]).map(s=>`${s.name}@${String(s.at||'').slice(0,10)}`).join(';');
   if(seen!==salesSourcesSeen){ salesTalk.reset(); salesSourcesSeen=seen }
   salesData=d;
+  salesProjectContext(d);
   renderOverview(d);
   takePlan(d);
   const t=d.total||{};
@@ -3041,7 +3121,7 @@ function salesChartBlock(d){
 // Три полосы одной ширины — доли внутри каждой считает сервер (`pool.bands`).
 function salesMixBlock(d){
   const bands=((d.pool||{}).bands)||[];
-  // Без квартирографии книги пул неизвестен, но размерность проданного
+  // Без квартирографии книги пул неизвестен, но площадь проданного
   // известна всегда: показываем её нашими полосами и говорим, чего нет.
   // Пустой блок и отсутствующий выглядят одинаково, а значат разное.
   if(!bands.length) return salesSizesOnly(d);
@@ -3078,13 +3158,16 @@ function salesSizesOnly(d){
   if(!(d.by_size||[]).length) return '';
   return salesShareBar(d.by_size, x=>x.band)
     +'<details style="margin-top:8px"><summary>Полосы числами</summary>'
-    +salesTable(['Размер','Лотов','м²','млн ₽','₽/м²'],
+    +salesTable(['Площадь квартиры','Лотов','м²','млн ₽','₽/м²'],
       d.by_size.map(x=>[esc(x.band), num(x.contracts), num(x.area),
         num(x.amount/1e6,1), x.area?num(x.price_per_sqm):'—']))
     +'</details>'
     +'<div class="muted" style="font-size:12.5px;margin-top:6px">'
-    +'Полосы наши, а не проектные: квартирография книги не загружена, '
-    +'поэтому пул и остаток витрины показать не из чего.</div>';
+    +'Квартиры сгруппированы по площади, а не по числу комнат. '
+    +'Квартира ровно на границе относится к следующему диапазону. '
+    +'Это общие диапазоны площади, а не состав квартир проекта. '
+    +'Квартирография проекта не загружена, поэтому общее число квартир '
+    +'и остаток по диапазонам неизвестны.</div>';
 }
 
 // Комнатность проданного. Соседний блок режет метражными полосами книги, и в
@@ -3539,7 +3622,8 @@ function salesShareBar(items, label){
   const rows=(items||[]).filter(x=>x.amount>0);
   if(!rows.length) return '';
   const total=rows.reduce((sum,x)=>sum+x.amount,0);
-  let bar='<div style="display:flex;height:18px;border-radius:4px;overflow:hidden;margin:8px 0 6px">';
+  let bar='<div class="muted" style="font-size:12px">Доли по выручке</div>'
+    +'<div style="display:flex;height:18px;border-radius:4px;overflow:hidden;margin:8px 0 6px">';
   rows.forEach((x,i)=>{
     const w=(x.amount/total*100).toFixed(2);
     bar+=`<div style="width:${w}%;background:${SALES_COLORS[i%SALES_COLORS.length]}"`
@@ -3849,7 +3933,7 @@ function outOf(sold, pool){
 function renderOverview(d){
  const box=$('#overviewBody'), head=$('#overviewTitle');
  if(!box)return;
- if(!d||d.empty){
+ if(!d||!(d.sources||[]).length){
   if(head)head.textContent='Кабинет';
   box.innerHTML='<b>Файлы проекта ещё не загружены.</b> '
    +'Выгрузка ЦФ несёт контрактацию и проводки, книга финмодели — квартирографию '
@@ -3864,7 +3948,7 @@ function renderOverview(d){
  // плиток не было. Два одинаковых числа подряд читаются как два разных.
  const n=(d.sources||[]).length, notes=(d.missing||[]).length;
  box.innerHTML=`Прочитано ${num(n)} ${plural(n,'источник','источника','источников')}`
-   +' — числа ниже, в отчёте.'
+   +(d.empty?'. Контрактация ещё не загружена. Доступные сведения показаны ниже.':' — числа ниже, в отчёте.')
    +(notes?` Не прочитано: ${notes} `
      +`${plural(notes,'источник','источника','источников')} — подробности в отчёте.`:'');
  // Кнопок «открыть отчёт» тут больше нет: отчёты — это страницы, и вход в них
@@ -3910,6 +3994,7 @@ function renderSales(d){
 
   // Плашки с долей от проекта: «продано 3 594 м²» без второй половины —
   // не показатель, а число. Доли считает сервер (`pool`).
+  if(!d.empty){
   const flats=byProduct['Квартира']||{}, cars=byProduct['Машиноместо']||{};
   html+='<div class="kv">'
     +tile('Договоров', num(t.contracts))
@@ -3930,7 +4015,7 @@ function renderSales(d){
     salesMetricButtons('saleschart', salesMetric, SALES_METRICS));
 
   html+=salesSection('sb-mix',
-    (pool.bands||[]).length?'Квартирография: пул, продажи, остаток':'Размерность проданного',
+    (pool.bands||[]).length?'Квартирография: пул, продажи, остаток':'Продажи по площади квартир',
     salesMixBlock(d), salesNote(d,'bands'));
 
   if((d.by_rooms||[]).length){
@@ -3983,8 +4068,10 @@ function renderSales(d){
       `<button type="button" data-basis="${b.key}" data-for="planschart"`
       +` class="${b.key===plansBasis?'on':''}">${esc(b.name)}</button>`).join('')+'</div></div>');
 
+  }
   if(d.chessboard_html)html+=salesSection('sb-chess','Шахматка и остаток продаж',d.chessboard_html);
 
+  if(!d.empty){
   html+=salesSection('sb-esc','Эскроу против погашения ПФ',
     salesEscrowBlock(d), salesNote(d,'escrow'));
 
@@ -4005,6 +4092,7 @@ function renderSales(d){
       salesTable(['Договор','Объект','Дата','Возвращено с эскроу, млн ₽'],
         d.terminated.map(x=>[esc(x.contract||'—'), esc(x.object||'—'), esc(x.on||'—'),
           x.escrow_returned===null||x.escrow_returned===undefined?'—':num(x.escrow_returned/1e6,2)])));
+  }
   }
 
   // Что загружено и когда: два файла разных дат, показанные как один проект, —
@@ -4188,8 +4276,9 @@ function salesDigest(d, limit){
   // вопрос перевалил четыре тысячи знаков ещё до первого раздела — Платон
   // отвечал «вопрос слишком длинный» на полностью загруженном проекте.
   const head=[`ПРОЕКТ: ${d.project||'—'}.`,
-    `Всего: ${num(t.contracts)} договоров, ${num(t.area)} м², ${num(t.amount/1e6,1)} млн ₽, `
-     +`средняя ${num(t.price_per_sqm)} ₽/м²; на эскроу ${num(t.escrow/1e6,1)} млн (${num(t.escrow_share*100,1)}%).`];
+    d.empty?'Контрактация не загружена. Продажи, выручка и наполнение эскроу неизвестны.':
+      `Всего: ${num(t.contracts)} договоров, ${num(t.area)} м², ${num(t.amount/1e6,1)} млн ₽, `
+       +`средняя ${num(t.price_per_sqm)} ₽/м²; на эскроу ${num(t.escrow/1e6,1)} млн (${num(t.escrow_share*100,1)}%).`];
   // Длинный ряд обрезается по хвосту, а не выбрасывается целиком: свежие
   // месяцы отвечают на вопрос, а прошлогодние — подробность. Сколько показано
   // из скольких, стоит в самой строке: молчаливая обрезка читается как весь ряд.
@@ -4299,7 +4388,7 @@ function salesDigest(d, limit){
       add('план банка', lines, 6);
     }
   }
-  add('размерность', (d.by_size||[]).map(x=>`РАЗМЕР ${x.band}: ${num(x.contracts)} шт, ${num(x.area)} м², ${num(x.amount/1e6,1)} млн ₽`));
+  add('площадь квартир', (d.by_size||[]).map(x=>`ПЛОЩАДЬ КВАРТИРЫ ${x.band}: ${num(x.contracts)} шт, ${num(x.area)} м², ${num(x.amount/1e6,1)} млн ₽`));
   // Комнатность — своя строка, а не пересказ размерности: полоса 28,3-40 м²
   // держит и студию, и однокомнатную. Границу говорим в самой сводке — иначе
   // Платон сравнит наши доли с чьим-нибудь пулом, которого у нас нет.
@@ -4413,7 +4502,7 @@ function salesDigest(d, limit){
   // же «почему не покупают», только числами витрины, и вытеснять их новой
   // темой значит менять один ответ на другой, а не добавлять.
   const ORDER=['выводы','не прочитано','чат: воронка от встреч','оплата','каналы',
-    'пул и вымывание','условия рынка','чат: о чём говорят','размерность','комнатность','продукты',
+    'пул и вымывание','условия рынка','чат: о чём говорят','площадь квартир','комнатность','продукты',
     'воронка обращений','план ФМ','план банка','расторжения','динамика'];
   const rank=name=>(ORDER.indexOf(name)+1)||99;
   groups.sort((a,b)=>rank(a.name)-rank(b.name));
@@ -4619,6 +4708,10 @@ function longDate(iso){
   if(parts.length!==3) return String(iso||'');
   return `${Number(parts[2])} ${MONTHS_OF[Number(parts[1])-1]||''} ${parts[0]}`;
 }
+function pacePeriodLabel(row){
+  const ref=row.pace_reference||{basis:row.pace_basis,label:row.pace_label};
+  return ref.basis==='calendar_average'?'ДДУ/мес за '+ref.label:'ДДУ/мес, средний темп источника';
+}
 function printHead(d){
   const s=d.subject||{}, c=d.comparison||{}, m=s.metrics||{};
   const name=s.project_name||s.address||s.query||'объект';
@@ -4635,12 +4728,12 @@ function printHead(d){
     tile(gap==null?null:(gap>0?'+':'')+num(gap,1)+' %',
          `к медиане класса «${esc(s.segment||'—')}»`,
          own.median?`медиана ${num(own.count)} соседей — ${num(own.median)} ₽/м²`:''),
-    tile(m.units_per_month==null?null:num(m.units_per_month,1),'квартир в месяц',
+    tile(m.units_per_month==null?null:num(m.units_per_month,1),pacePeriodLabel(m),
          (paceBlock.peers||{}).median?`у соседей медиана ${num(paceBlock.peers.median,1)}`:''),
     tile(m.lot_count==null?null:num(m.lot_count),'лотов в экспозиции',
          m.living_units?`из ${num(m.living_units)} квартир проекта`:''),
-    tile(m.sales_end_forecast?esc(monthYear(m.sales_end_forecast)):null,'прогноз конца продаж',
-         'при нынешнем темпе'),
+    tile(m.sales_end_forecast?esc(monthYear(m.sales_end_forecast)):null,'прогноз источника об окончании продаж',
+         'по методике источника'),
   ].join('');
   const where=[s.address, s.segment?'класс '+s.segment:''].filter(Boolean).join(' · ');
   return `<div class="printhead">`
@@ -4775,6 +4868,9 @@ function render(d){
   const ctx={
     analysis:d.analysis, peers:peers, subjectMetrics:m,
     subjectName:s.project_name||s.address||s.query, subjectSegment:s.segment,
+    paceSales:m.pace_series?[{name:s.project_name||'объект',own:true,points:m.pace_series}]
+      .concat(peers.map(p=>({name:p.name,own:false,points:p.pace_series||[],
+                             shown:onChart.has(String(p.complex_id))}))):null,
     series:[{name:s.project_name||'объект',own:true,points:d.price_series||[]}]
       .concat(peers.map(p=>({name:p.name,own:false,points:p.price_series||[],
                              shown:onChart.has(String(p.complex_id))}))),
@@ -4855,6 +4951,21 @@ window.addEventListener('scroll',hideTip,{passive:true});
 // печатают разное содержимое, но одним путём. Две копии разошлись бы на том,
 // что чинят по одной, — на сроке, на откате к печати браузера и на тексте
 // отказа; так уже расходились фразы про закрытый кабинет.
+function marketPrintHtml(){
+  const out=$('#out');
+  if(!out) return '';
+  const copy=out.cloneNode(true);
+  copy.querySelectorAll('details').forEach(n=>n.setAttribute('open',''));
+  return copy.innerHTML;
+}
+let marketPrintDetails=[];
+window.addEventListener('beforeprint',()=>{
+  marketPrintDetails=[...document.querySelectorAll('#out details:not([open])')];
+  marketPrintDetails.forEach(n=>n.open=true);
+});
+window.addEventListener('afterprint',()=>{
+  marketPrintDetails.forEach(n=>n.open=false); marketPrintDetails=[];
+});
 async function printPdf({html, title, footer, file, button, state}){
   if(!html||!html.trim()){window.print();return}
   const was=button?button.textContent:'';
@@ -4902,11 +5013,10 @@ on('#go','click',build);
 // нечего. Не получилось — остаётся диалог печати: отчёт на бумаге важнее
 // номеров на нём.
 on('#pdf','click',()=>{
-  const out=$('#out');
   const s=(lastReport||{}).subject||{};
   const name=s.project_name||s.address||s.query||'Отчёт о рынке';
   const day=String((lastReport||{}).retrieved_at||'').slice(0,10);
-  return printPdf({html:out?out.innerHTML:'',
+  return printPdf({html:marketPrintHtml(),
     title:name+' — рынок '+day,
     footer:name+' · конкурентное окружение · срез '+day+' · источник: Пульс Продаж Новостроек',
     file:name+' — рынок '+day+'.pdf',
@@ -4931,6 +5041,7 @@ on('#reset','click',function(){
   $('#q').focus();
 });
 on('#cf','change',e=>{if(e.target.files[0])loadContracting(e.target.files[0])});
+on('#salesProject','change',e=>loadStoredSales(e.target.value));
 if($('#sales'))loadStoredSales();
 
 // Ориентир цены — то же число, что кнопка «Рекомендация DevelopAid» у поля

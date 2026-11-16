@@ -398,13 +398,19 @@ class LotNotes:
         points = self.points()
         point_failures = [point for point in points.values() if not point.get("map_url")]
         runs = self.runs()
+        # Старые записи хранят техническую причину. Наружу отдаётся тот же
+        # понятный отказ, что в таблице и XLSX; сами записи не переписываются.
+        public_runs = {step: dict(run) for step, run in runs.items()}
+        note_run = public_runs.get("notes") or {}
+        if str(note_run.get("result") or "").lower().startswith("разбор не удался"):
+            note_run["result"] = "Разбор не удался: " + failure_reason(note_run.get("result"))
         last = max((run.get("at") or 0 for run in runs.values()), default=0)
         return {
             "lots": len(lots),
             "commented": done,
             "failed": len(failed),
             "queue": len(self.queue(moment)),
-            "last_failure": (notes.get(failed[0]) or {}).get("reason", "") if failed else "",
+            "last_failure": failure_reason((notes.get(failed[0]) or {}).get("reason")) if failed else "",
             "nspd_points": {
                 "found": len(points) - len(point_failures),
                 "failed": len(point_failures),
@@ -413,7 +419,7 @@ class LotNotes:
             },
             # Жив ли фон: без отметки прогона «queue 20» не отличить от стоящего цикла.
             "last_run_ago_seconds": int(moment - last) if last else None,
-            "runs": runs,
+            "runs": public_runs,
         }
 
 
@@ -540,6 +546,30 @@ def prompt(lot: dict[str, Any], docs: list[dict[str, Any]], search_problem: str 
     return head + "Найдено в открытых источниках:\n" + "\n".join(lines) + tail
 
 
+def failure_reason(reason: Any) -> str:
+    """Публичное объяснение отказа; подходит и для старого кэша исключений.
+
+    Не возвращает текст провайдера, URL или внутреннее исключение. Отказ
+    остаётся отказом: это не комментарий о рисках лота и не новый запрос AI.
+    """
+    text = " ".join(str(reason or "").lower().split())
+    if (any(value in text for value in ("no credits", "insufficient_quota", "insufficient credits",
+                                        "insufficient balance", "payment required"))
+            or ("лимит" in text and any(value in text for value in ("исчерпан", "законч")))):
+        return "При попытке разбора был исчерпан лимит сервиса AI. Комментарий пока не получен."
+    if any(value in text for value in ("rate limit", "too many requests", "status code 429", "status_code=429")):
+        return "Сервис AI временно ограничил число запросов. Разбор можно повторить позже."
+    if any(value in text for value in ("timeout", "timed out", "не ответил вовремя")):
+        return "Сервис разбора не ответил вовремя. Разбор можно повторить позже."
+    if any(value in text for value in ("вопрос слишком длинный", "context_length_exceeded")):
+        return "Объём данных превышает допустимый размер для разбора. Комментарий пока не получен."
+    if "пустой ответ" in text:
+        return "Сервис разбора вернул пустой ответ. Комментарий пока не получен."
+    if any(value in text for value in ("unauthorized", "invalid api key", "authenticationerror")):
+        return "Доступ к сервису AI не подтверждён. Комментарий пока не получен."
+    return "Комментарий пока не получен из-за ошибки сервиса разбора. Повторить разбор можно позже."
+
+
 def comment_for_book(note: dict[str, Any] | None, *, place: int | None = None,
                      interval_seconds: float = 180.0,
                      again: str = "выгрузите таблицу ещё раз") -> str:
@@ -555,7 +585,7 @@ def comment_for_book(note: dict[str, Any] | None, *, place: int | None = None,
         return (f"Ещё не разобран: в очереди {place}-й, комментарий появится "
                 f"примерно через {minutes} мин — {again}")
     if note.get("failed"):
-        return f"Разбор не удался: {note.get('reason') or 'причина не названа'}"
+        return "Разбор не удался: " + failure_reason(note.get("reason"))
     text = str(note.get("text") or "").strip()
     sources = [item for item in (note.get("sources") or [])
                if isinstance(item, dict) and item.get("url")]

@@ -85,6 +85,8 @@ def test_the_table_shows_lag_deviation_and_forecast_in_plain_words(card, width):
             {"id": OTHER, "physical_items": []}]}, CUT)["rows"]
         for row in responses.data["rows"]:
             row["schedule_control"] = next(x["schedule_control"] for x in shown if x["id"] == row["id"])
+        listed=files.listing(PROJECT,CONTRACT,CUT,fact.acts(REGISTER_ROW))
+        page.route("**/monitor/contracts/documents",lambda route:route.fulfill(json={"pending":False,"ok":True,**(listed if route.request.post_data_json["contract_id"]==CONTRACT else files.listing(PROJECT,OTHER,CUT))}))
         page.locator("#contractsTab").click()
         row = page.locator(f'tr[data-contract-id="{CONTRACT}"]')
         # The short row: one chip with the lag, the deviation and the forecast in a few words.
@@ -100,29 +102,27 @@ def test_the_table_shows_lag_deviation_and_forecast_in_plain_words(card, width):
         red = brief.locator(".contract-risk").evaluate(color)
         assert brief.locator(".contract-sub").nth(1).evaluate(color) == brief.locator(".contract-sub").first.evaluate(
             color) != row.evaluate(color)
-        # The detail keeps the full answer of the card.
+        # The same native result is presented once, in the modal work table.
         more = opened(page, CONTRACT)
-        lag = more.locator(".contract-schedule-lag")
-        expect(lag).to_have_text("Отставание по ГПР договора2 дняотставание от планаПросрочено работ: 2."
-                                 "Отставание неполное. 2 периода КС "
-                                 "не вошли в факт: В расчёте позиция № 1.2 измеряется в «м3», а в КС — в «т»: объём "
-                                 "не пересчитать в деньги. В расчёте нет позиции с этим номером или с таким же "
-                                 "названием и единицей (№ 9.9).")
-        assert lag.get_attribute("data-label") == "Отставание по ГПР договора"
-        expect(more.locator(".contract-schedule-deviation")).to_have_text(
-            "Готовность и выполнение плана50 %готовность договоравыполнение плана на дату среза — 55 %"
-            "отклонение −45 % · −4 500 ₽план 10 000 ₽ · факт 5 500 ₽")
-        forecast = more.locator(".contract-schedule-forecast")
-        expect(forecast).to_have_text("Прогноз окончания по ГПР06.02.2026на 1 день позже срокаОкончание плана по ГПР: 05.02.2026")
-        assert forecast.locator(".contract-main-money").evaluate(color) == lag.locator(".contract-main-money").evaluate(
-            color) != row.evaluate(color)
-        assert red != row.evaluate(color)
+        expect(more.locator('#contractCardSummary')).to_contain_text('55 %')
+        expect(more.locator('#contractCardSummary')).to_contain_text('Готовность сопоставленных работ: 50 %')
+        expect(more.locator('#contractCardSummary [data-label="Прогноз окончания"]')).to_contain_text('06.02.2026')
+        expect(more.locator('#contractCardSummary [data-label="Прогноз окончания"]')).to_contain_text('позже срока на 1 день')
+        expect(more.locator('#contractComparisonInfo')).to_contain_text('Не учтено периодов КС: 2')
+        first=more.locator('[data-comparison-code="1.1"]')
+        expect(first).to_contain_text('Отставание: 3 дня')
+        more.locator('#contractComparisonMethodology > details > summary').click()
+        expect(more.locator('.contract-comparison-money')).to_have_text(
+            'По сопоставленным работам: план 10 000 ₽, факт 5 500 ₽, отклонение −4 500 ₽.')
+        assert more.locator('#contractCardSummary [data-label="Прогноз окончания"] .risktext').evaluate(color)==first.locator('.contract-compare-status.risktext').evaluate(color)
+        assert more.locator('#contractCardSummary [data-label="Прогноз окончания"] .risktext').evaluate(color)!=row.evaluate(color)
+        assert red!=row.evaluate(color)
+        page.locator('#contractDialogClose').click()
         other = page.locator(f'tr[data-contract-id="{OTHER}"]')
         expect(other.locator(".contract-schedule")).to_have_text("ГПР не загружен")
         assert other.locator(".contract-schedule .contract-risk").get_attribute("title") == (
             "ГПР и расчёт договора в карточку не загружены.")
         more = opened(page, OTHER)
-        expect(more.locator(".contract-schedule-lag")).to_have_text(
-            "Отставание по ГПР договора—ГПР и расчёт договора в карточку не загружены.")
-        expect(more.locator(".contract-schedule-forecast")).to_have_text("Прогноз окончания по ГПР—")
+        expect(more.locator('#contractComparisonInfo')).to_contain_text(files.listing(PROJECT,OTHER,CUT)['comparison']['reason'])
+        expect(more.locator('#contractCardSummary [data-label="Прогноз окончания"]')).to_contain_text('Не рассчитан')
         assert errors == []

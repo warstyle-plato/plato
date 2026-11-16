@@ -114,6 +114,7 @@ def pace_comparison(subject: dict[str, Any], peers: list[dict[str, Any]]) -> dic
     median = stats.get("median")
     return {
         **stats,
+        "period_label": (subject.get("pace_reference") or {}).get("label"),
         "peer_median_over_subject": round(median / pace, 1) if pace and median else None,
     }
 
@@ -296,6 +297,24 @@ def price_block(subject: dict[str, Any], peers: list[dict[str, Any]], city: Mosc
 def pace_block(subject: dict[str, Any], peers: list[dict[str, Any]], city: MoscowMarket) -> MetricBlock:
     block = MetricBlock(BLOCK_PACE, BLOCK_TITLES[BLOCK_PACE])
     pace = subject.get("units_per_month")
+    reference = subject.get("pace_reference") or {}
+    if reference.get("basis") == "calendar_average":
+        block.notes.append(
+            f"Сравнение за {reference['label']}: известны продажи "
+            f"{reference['peer_count']} из {reference['peer_total']} соседей. "
+            "Темп каждого проекта — сумма ДДУ за три полных календарных месяца / 3. "
+            "Сосед входит в медиану только при данных за все три месяца. "
+            "Пропуски не считаются нулевыми продажами.")
+        original = subject.get("provider_pace") or {}
+        source_stats = _peer_stats([p.get("provider_pace") or {} for p in peers], "units_per_month")
+        if original.get("units_per_month") is not None and source_stats.get("count"):
+            block.notes.append(
+                f"Справочно, средние темпы источника: у проекта {str(original['units_per_month']).replace('.', ',')}, "
+                f"медиана {str(source_stats['median']).replace('.', ',')} по {source_stats['count']} соседям. "
+                "Эти показатели не входят в сравнение за три месяца.")
+    elif reference:
+        block.notes.append("Помесячного ряда проекта нет. Сравниваются средние темпы источника; "
+                           "общий трёхмесячный период не подтверждён.")
     if pace is None:
         block.notes.append("Темп продаж по проекту неизвестен")
         return block
@@ -304,12 +323,13 @@ def pace_block(subject: dict[str, Any], peers: list[dict[str, Any]], city: Mosco
         "units_per_month_3m": subject.get("units_per_month_3m"),
         "sales_end_forecast": subject.get("sales_end_forecast"),
         "known_sales_for": subject.get("known_sales_for"),
+        "pace_reference": reference,
     }
     stats = pace_comparison(subject, peers)
     if stats["count"]:
         block.peers = {**stats, "vs_median_pct": _ratio(pace, stats["median"])}
     snapshot = city.snapshot(subject.get("segment"))
-    if snapshot and snapshot.sold_median is not None:
+    if snapshot and snapshot.sold_median is not None and reference.get("basis") != "calendar_average":
         block.city = {
             "segment": snapshot.segment,
             "sold_median": snapshot.sold_median,

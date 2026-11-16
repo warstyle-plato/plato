@@ -55,6 +55,9 @@ def rental_page(request,monkeypatch):
 
 
 def open_detail(page,name):
+    advanced=page.locator('#landRentEditor [data-land-rent-advanced]')
+    if not advanced.evaluate('(e)=>e.open'):
+        advanced.locator('summary').first.click()
     target=page.locator(f'#landRentEditor details[data-land-rent-detail="{name}"]')
     if not target.evaluate('(e)=>e.open'):
         target.locator('summary').first.click()
@@ -443,7 +446,11 @@ def test_default_dates_follow_the_economics_until_typed_and_queues_add_up(rental
     browser.open_vri(page)
     # Начало аренды видно в поле, но во вводные не пишется и следует за стартом проекта.
     assert page.locator('#f_land_rent_regime_start').input_value()=='2027-01-01'
-    assert 'По умолчанию — дата начала проекта' in page.locator('#landRentEditor').inner_text()
+    assert page.locator('[data-land-rent-hint="land_rent_regime_start"]').inner_text()==(
+        'Для расчёта взята дата проекта 01.01.2027; по договору дата ещё не подтверждена.')
+    assert page.evaluate("()=>inputs.land_rent_regime_start")is None
+    assert page.evaluate("()=>landRentResult().regime_start_assumed")is True
+    assert page.get_by_role('button',name='Подтвердить эту дату по договору',exact=True).is_visible()
     page.evaluate("""async()=>{inputs.project_start='2027-03-01';renderInputs();await settledCalculate()}""")
     browser.open_vri(page)
     assert page.locator('#f_land_rent_regime_start').input_value()=='2027-03-01'

@@ -320,8 +320,10 @@ def test_the_mini_app_counts_exactly_the_bot_card(monkeypatch) -> None:
             page.wait_for_function(
                 "() => /по карточке тизера готов/.test("
                 "document.getElementById('telegramIntakeNote')?.innerText||'')", timeout=60_000)
+            wait_for_result(page)
             origin = page.evaluate("() => (inputs._field_origin||{})['tep.apartments.gns']")
-        chromium.close()
+            # Keep the server alive until the page has stopped its background requests.
+            chromium.close()
     assert not errors, errors
     sent = calcs[-1]
     for row in card["to_engine"]:

@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -54,6 +55,15 @@ def _gated_routes() -> list[tuple[str, str]]:
 ROUTES = _gated_routes()
 _FILL = {str: "проверка", int: 1, float: 1.0, bool: False, list: [], dict: {}}
 _ENDPOINT_PAYLOADS = {
+    ("POST", "/monitor/contracts/source-review"): {"contract_id": "a" * 64},
+    ("POST", "/monitor/contracts/source-audit-page"): {
+        "book_sha256": ["a" * 64], "corpus_token": "b" * 64},
+    ("POST", "/monitor/contracts/source-duplicate-proof"): {
+        "book_sha256": ["a" * 64], "corpus_token": "b" * 64},
+    ("POST", "/monitor/contracts/source-prepared-index"): {
+        "cut": "2036-08-19", "snapshot_ids": ["2036-07-01-" + "a" * 64],
+        "expected_project_scope": "b" * 64, "expected_cached_source_roster_sha256": "c" * 64,
+        "expected_source_content_sha256": "d" * 64, "caller_reference_corpus_token": "e" * 64},
     ("POST", "/monitor/schedule-gpr-physical/save"): {"source_kind": "gpr"},
     ("POST", "/monitor/contracts/documents"): {"contract_id": "a" * 64},
     ("POST", "/monitor/contracts/document-upload"): {"contract_id": "a" * 64},
@@ -62,6 +72,14 @@ _ENDPOINT_PAYLOADS = {
     ("POST", "/monitor/contracts/document-remove"): {"contract_id": "a" * 64, "sha256": "b" * 64},
     ("POST", "/monitor/contracts/document-confirm"): {
         "contract_id": "a" * 64, "sha256": "b" * 64, "kind": "act", "values": {}},
+    ("POST", "/monitor/contracts/identity/inventory"): {"raw_ids": ["a" * 64, "b" * 64]},
+    ("POST", "/monitor/contracts/identity/confirm"): {
+        "raw_ids": ["a" * 64, "b" * 64], "expected_revision": 0,
+        "inventory_sha256": "c" * 64, "source_tokens": ["d" * 64, "e" * 64],
+        "anchor_id": "a" * 64, "canonical_number": "SYNTHETIC-C-01", "note": "Synthetic owner review."},
+    ("POST", "/monitor/contracts/identity/revoke"): {
+        "decision_id": "f" * 64, "expected_revision": 1, "note": "Synthetic owner revocation."},
+    ("POST", "/monitor/contracts/identity/resolve"): {"contract_id": "a" * 64},
     ("POST", "/monitor/schedule/version-preview"): {
         "effective_from": "2026-10-22", "gpr_base64": "eA=="},
     ("POST", "/monitor/schedule/version-approve"): {
@@ -87,6 +105,22 @@ def call(method: str, path: str, session: str = "", key: str = "",
                  "snapshot_id": "2026-10-22-" + "a" * 64,
                  "calendar_basis": "unconfirmed"}
     out.update(_ENDPOINT_PAYLOADS.get((method, path), {}))
+    if path in {'/monitor/schedule/saved-source-preview', '/monitor/schedule/saved-source-approve'}:
+        out = {'project': 'проверка', 'session': session, 'key': key, 'source_sha256': 'a'*64,
+               'expected_active_sha256': 'b'*64, 'expected_revision': 0, 'effective_from': '2026-11-12'}
+    elif path in {'/monitor/audit/budget-funding/layout', '/monitor/audit/budget-funding/layout/result'}:
+        out = {'key': key, 'session': session, 'purpose': 'budget_funding_layout_proof_v1', 'ticket': '1'*32}
+        if path.endswith('/layout'):
+            out.update(project='Synthetic', cut='2026-11-13', scope='rss_estimate_only', expected={
+                'runtime_commit': 'a'*40, 'producer_sha256': {name: 'b'*64 for name in (
+                    'budget_source', 'layout_proof', 'monitor_routes', 'cached_source_reader', 'admin_source_reader')},
+                'finance_sha256': 'c'*64, 'rss_sha256': 'd'*64,
+                'namespace_sha256': 'e'*64, 'aliases_sha256': None})
+    elif path == '/monitor/readiness/editor':
+        out = {'project': 'проверка', 'session': session, 'key': key}
+    elif path in {'/monitor/readiness/profile-preview', '/monitor/readiness/profile-save'}:
+        out = {'project': 'проверка', 'session': session, 'key': key, 'configuration': {},
+               'expected_source_sha256': 'a'*64, 'expected_source_revision': 0, 'expected_revision': 0}
     route = _route(method, path)
     dependant = getattr(route, "dependant", None)
     if method == "GET":
@@ -106,6 +140,8 @@ def call(method: str, path: str, session: str = "", key: str = "",
                 kind = getattr(field.annotation, "__origin__", None) or field.annotation
                 out[name] = _FILL.get(kind, "проверка")
         if getattr(model, "model_fields", None):
+            if model.model_config.get('extra') == 'forbid':
+                out = {k: v for k, v in out.items() if k in model.model_fields}
             # Невалидная заготовка не проверяет доступ: FastAPI вернёт 422
             # ещё до вызова маршрута. Отличаем поломку стенда от отказа ключа.
             model.model_validate(out)
@@ -179,13 +215,35 @@ def test_without_the_admin_key_setting_it_is_closed_for_everyone(method, path, m
 
 
 @pytest.mark.parametrize("method,path", ROUTES)
-def test_the_admin_key_passes(method, path):
+def test_the_admin_key_passes(method, path, monkeypatch):
+    identity_operation = path.startswith("/monitor/contracts/identity/") and not path.endswith("/result")
+    if identity_operation:
+        import developaid_management_report_jobs as jobs
+        start = jobs.Store.start
+        def authorized_job(store, owner, profile, params, builder, ticket=""):
+            # Admission, strict models and the native job store stay real.
+            # This auth smoke does not confirm/revoke any source identity.
+            if profile == "monitor-cumulative-v1:contract-identity":
+                builder = lambda: {"ok": True}
+            return start(store, owner, profile, params, builder, ticket)
+        monkeypatch.setattr(jobs.Store, "start", authorized_job)
     # Заголовком ключ едет на GET-маршрутах (страница так не кладёт его в адрес).
     answers = [call(method, path, key=KEY)]
     if method == "GET":
         answers.append(call(method, path, headers={"X-Developaid-Admin-Key": KEY}))
     for answer in answers:
         assert answer.status_code not in (401, 403), f"{method} {path}: {answer.text[:200]}"
+        if identity_operation:
+            assert answer.status_code in (200, 202)
+            assert answer.headers["cache-control"] == "private, no-store"
+            deadline = time.monotonic() + 5
+            while answer.status_code == 202 and time.monotonic() < deadline:
+                answer = client.post("/monitor/contracts/identity/result", json={
+                    "key": KEY, "session": "", "ticket": answer.json()["ticket"]})
+                assert answer.headers["cache-control"] == "private, no-store"
+                if answer.status_code == 202:
+                    time.sleep(.005)
+            assert answer.status_code == 200, "synthetic identity worker did not finish before fixture teardown"
 
 
 def test_health_names_the_closed_gate(monkeypatch):

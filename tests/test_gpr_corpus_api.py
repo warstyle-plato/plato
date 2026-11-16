@@ -29,7 +29,8 @@ def test_source_preview_survives_reload_without_rss_or_baseline(api):
     assert result.json()['source']['sha256'] == uploaded.json()['corpus_gpr']['sha256']
     assert '31.06.2027' in result.json()['html']
     earlier = post(client, 'gpr-corpus/view', project='Учебный проект', cut='2026-11-05')
-    assert earlier.json() == {'source': None, 'html': ''}
+    assert earlier.json()['source'] is None
+    assert earlier.json()['source_state']['selected_plan']['source_sha256'] == ''
 
 
 def test_invalid_cut_is_rejected_instead_of_choosing_latest(api):

@@ -76,8 +76,8 @@ def _serve(page, calls, cut="", acts=None):
 
 def _open(page):
     from playwright.sync_api import expect
-    page.locator("#contractsTab").click()
-    page.locator(f'tr[data-contract-id="{CONTRACT}"] .contract-open').click()
+    from tests.test_contract_card_shows_its_documents import _open as open_sources
+    open_sources(page)
     links = page.locator("#contractDocuments .contract-links")
     expect(links).to_contain_text("предложено: 2 · на проверку: 2")
     return links
@@ -196,7 +196,7 @@ def test_a_wrong_file_is_removed_after_the_question_and_comes_back(card):
         removed = documents.locator("details.contract-removed")
         expect(removed.locator("summary")).to_have_text("Убранные документы (1)")
         removed.locator("summary").click()
-        expect(removed).to_contain_text("Эти файлы сохранены, но в расчёт не входят.")
+        expect(removed).to_contain_text("Файлы сохранены, но в расчёт не входят.")
         removed.get_by_role("button", name="Вернуть").click()
         expect(page.locator("#contractDocumentsMsg")).to_have_text("Документ возвращён в карточку.")
         expect(documents.locator("details.contract-document")).to_have_count(2)
@@ -226,30 +226,27 @@ def test_the_plan_of_the_edition_in_force_follows_a_confirmation(card, width):
     with browser_page(width) as (page, _, errors):
         _serve(page, [], cut="2026-02-02")
         links = _open(page)
-        plan = page.locator("#contractDocuments .contract-plan")
-        expect(plan).to_contain_text("Дополнительное соглашение № 4 от 01.02.2026 · график: Документ без номера")
-        # Однозначные предложенные связи входят в план сразу; подтверждение снимает только подпись.
-        total = "По плану к 02.02.2026: 7 000 ₽ из 11 000 ₽ (63,6 %)"
-        expect(plan.locator(".contract-plan-total")).to_have_text(total)
-        expect(plan).to_contain_text("Позиций со связью, принятой автоматически, потому что она однозначна: 2.")
-        links.get_by_text("Предложенные связи (2)").click()
-        links.get_by_role("button", name="Подтвердить все предложенные в разделе (2)").click()
-        expect(plan).not_to_contain_text("принятой автоматически")
-        expect(plan.locator(".contract-plan-total")).to_have_text(total)
-        expect(plan).to_contain_text("составлен на завершение работ, поэтому план считается с 01.02.2026")
-        overdue = plan.locator("p.contract-plan-overdue")
-        expect(overdue).to_contain_text("Строк графика, срок которых по графику закончился до соглашения: 1.")
-        color = "e => getComputedStyle(e).color"
-        assert overdue.evaluate(color) != plan.evaluate(color), "предупреждение выделено цветом"
-        expect(plan).to_contain_text("на проверке — позиций: 2 на сумму 3 000 ₽")
-        expect(plan).not_to_contain_text("предложены, но не подтверждены")
-        plan.get_by_text("Строки плана (3)").click()
-        rows = plan.locator(".contract-plan-lines tbody tr")
-        expect(rows.nth(0)).to_contain_text("срок закончился до соглашения")
-        expect(rows.nth(1)).to_have_text("1.2Возведение стен 2-го этажа01.02.2026 — 05.02.20265 000 ₽2 000 ₽")
-        plan.get_by_text("План нарастающим итогом по месяцам (1)").click()
-        expect(plan.locator(".contract-plan-months tbody tr")).to_have_text(["февраль 2026 г.11 000 ₽"])
-        plan.get_by_text("Редакции плана (1)").click()
-        expect(plan.locator(".contract-plan-editions")).to_contain_text("с 01.02.2026 · действует на дату среза")
+        page.locator('#contractComparisonMethodology > details > summary').click()
+        plan=page.locator('.contract-comparison-plan-source')
+        expect(page.locator('#contractComparisonMethodology')).to_contain_text('Дополнительное соглашение № 4 от 01.02.2026')
+        expect(plan).to_contain_text('План в действующей редакции: 7 000 ₽ из 11 000 ₽.')
+        expect(plan).to_contain_text('принятой автоматически, потому что она однозначна: 2.')
+        links.get_by_text('Предложенные связи (2)').click()
+        links.get_by_role('button',name='Подтвердить все предложенные в разделе (2)').click()
+        page.locator('#contractComparisonMethodology > details > summary').click()
+        expect(plan).not_to_contain_text('принятой автоматически')
+        expect(plan).to_contain_text('План в действующей редакции: 7 000 ₽ из 11 000 ₽.')
+        expect(plan).to_contain_text('составлен на завершение работ, поэтому план считается с 01.02.2026')
+        overdue=plan.locator('.contract-plan-overdue')
+        expect(overdue).to_contain_text('Строк графика, срок которых по графику закончился до соглашения: 1.')
+        color='e=>getComputedStyle(e).color'
+        assert overdue.evaluate(color)!=plan.evaluate(color)
+        expect(plan).to_contain_text('на проверке — позиций: 2 на сумму 3 000 ₽')
+        rows=page.locator('#contractComparisonRows tr[data-comparison-code]')
+        expect(rows).to_have_count(4)
+        expect(rows.locator('[data-label="Факт"]').first).to_contain_text('Неизвестно')
+        expect(rows.locator('[data-label="План на дату"]').nth(1)).to_contain_text('0,25 м3')
+        plan.get_by_text('Редакции плана (1)').click()
+        expect(plan).to_contain_text('с 01.02.2026 · действует на дату среза')
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
         assert errors == []

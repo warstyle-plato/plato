@@ -151,7 +151,8 @@ def _safe_name(name: str) -> str:
     return name
 
 
-def _zip_members(data: bytes, *, workbook: bool = False) -> list[tuple[str, bytes]]:
+def _zip_members(data: bytes, *, workbook: bool = False,
+                 skip_unsupported: bool = False) -> list[tuple[str, bytes | None]]:
     if not data or len(data) > (MAX_FILE_BYTES if workbook else MAX_ARCHIVE_BYTES):
         raise LedgerProblem('Архив или книга превышает допустимый размер 20 МБ.')
     try:
@@ -177,6 +178,11 @@ def _zip_members(data: bytes, *, workbook: bool = False) -> list[tuple[str, byte
                 if (info.file_size > MAX_FILE_BYTES or total > MAX_UNPACKED_BYTES
                         or info.file_size > max(1, info.compress_size) * MAX_RATIO):
                     raise LedgerProblem('Распакованный архив превышает безопасный предел размера.')
+                if skip_unsupported and not workbook and (PurePosixPath(name).suffix.lower() not in SUPPORTED
+                        or name.startswith('__MACOSX/') or PurePosixPath(name).name == '.DS_Store'):
+                    # Inventory other members without opening their payloads.
+                    out.append((name, None))
+                    continue
                 # Reading is bounded by the verified member size; no member is extracted.
                 with z.open(info) as handle:
                     payload = handle.read(MAX_FILE_BYTES+1)
@@ -249,6 +255,12 @@ def _bounded_row(row, budget: dict) -> list[Any]:
     # Shared-string references can expand a tiny ZIP into enormous repeated
     # business strings. Check materialized values before retaining/normalizing
     # rows; the same budget is shared by every workbook in the archive.
+    if 'max_materialized_cells' in budget:
+        cells = budget.get('materialized_cells', 0) + len(row)
+        if cells > budget['max_materialized_cells']:
+            budget['cell_limit_reached'] = True
+            raise LedgerProblem('Достигнут общий предел ячеек чтения исходников; оставшиеся книги не прочитаны.')
+        budget['materialized_cells'] = cells
     for value in row:
         if isinstance(value, str):
             if len(value) > MAX_TEXT_CELL_CHARS:
@@ -259,7 +271,8 @@ def _bounded_row(row, budget: dict) -> list[Any]:
     return list(row)
 
 
-def _read_workbook(filename: str, data: bytes, budget: dict | None = None) -> list[tuple[str, list[list[Any]]]]:
+def _read_workbook(filename: str, data: bytes, budget: dict | None = None, *,
+                   sheet_names: set[str] | None = None) -> list[tuple[str, list[list[Any]]]]:
     budget = budget if budget is not None else {'text_bytes': 0}
     suffix = PurePosixPath(filename).suffix.lower()
     if suffix == '.xls':
@@ -272,6 +285,8 @@ def _read_workbook(filename: str, data: bytes, budget: dict | None = None) -> li
                 out = []
                 cells = 0
                 for index in range(wb.nsheets):
+                    if sheet_names is not None and wb.sheet_names()[index].strip().casefold() not in sheet_names:
+                        continue
                     sheet = wb.sheet_by_index(index)
                     if sheet.nrows > MAX_ROWS or sheet.ncols > MAX_COLUMNS:
                         raise LedgerProblem('В книге слишком большая таблица для загрузки накопительных.')
@@ -302,6 +317,8 @@ def _read_workbook(filename: str, data: bytes, budget: dict | None = None) -> li
             formula_wb = load_workbook(io.BytesIO(data), read_only=True, data_only=False, keep_links=False)
             out = []
             for sheet, formula_sheet in zip(wb.worksheets, formula_wb.worksheets):
+                if sheet_names is not None and sheet.title.strip().casefold() not in sheet_names:
+                    continue
                 bounds = {'max_row': min(sheet.max_row or bound, bound),
                           'max_col': min(sheet.max_column or MAX_COLUMNS, MAX_COLUMNS)}
                 rows = _SheetRows(header_merges=header_merges.get(sheet._worksheet_path.lstrip('/'), ()))

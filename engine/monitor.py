@@ -260,7 +260,8 @@ def monitor_view(req: MonitorViewRequest) -> dict[str, Any]:
         raise HTTPException(404, str(exc))
 
 
-async def _monitor_admin_expenses_source_job(request: Request, *, start: bool) -> Response:
+async def _monitor_admin_expenses_source_job(request: Request, *, start: bool,
+                                           saved_snapshot: bool = False) -> Response:
     """Explicit admin-only source proof, independent of the financial widget."""
     import secrets as _secrets
     import datetime as _dt
@@ -288,7 +289,8 @@ async def _monitor_admin_expenses_source_job(request: Request, *, start: bool) -
         import developaid_admin_expenses_source as source
         try:
             params = audit._json(bytes(raw))
-            allowed = {"key", "session", "ticket"} | ({"project", "cut"} if start else set())
+            fields = {"project"} if saved_snapshot else {"project", "cut"}
+            allowed = {"key", "session", "ticket"} | (fields if start else set())
             if not isinstance(params, dict) or set(params)-allowed:
                 raise ValueError()
             if not isinstance(params.get("session", ""), str) or len(params.get("session", "")) > 4096:
@@ -300,29 +302,35 @@ async def _monitor_admin_expenses_source_job(request: Request, *, start: bool) -
                 project, cut = params.get("project"), params.get("cut")
                 if not isinstance(project, str) or not project.strip() or len(project) > 200:
                     raise ValueError()
-                if not isinstance(cut, str) or _dt.date.fromisoformat(cut).isoformat() != cut:
+                if not saved_snapshot and (not isinstance(cut, str) or _dt.date.fromisoformat(cut).isoformat() != cut):
                     raise ValueError()
             elif not ticket:
                 raise ValueError()
         except (ValueError, TypeError, audit.AuditError):
             raise HTTPException(400, "Проверьте проект, дату и номер проверки источника.") from None
-        profile = source.PURPOSE
+        profile = source.SAVED_PURPOSE if saved_snapshot else source.PURPOSE
         owner = jobs.owner_binding(_env_str("DEVELOPAID_ADMIN_KEY", "").strip(), session, profile)
         store = jobs.Store(developaid_monitor._SNAPSHOT_DIR / ".admin_ahr_source_jobs")
         if start:
             def collect():
                 try:
-                    return {"ok": True, "source_projection": source.capture(project.strip(), cut,
-                        runtime={"version": VERSION, "commit": COMMIT})}
+                    if saved_snapshot:
+                        projection = source.capture_saved_snapshot(project.strip(), runtime={"version": VERSION, "commit": COMMIT})
+                    else:
+                        projection = source.capture(project.strip(), cut, runtime={"version": VERSION, "commit": COMMIT})
+                    return {"ok": True, "source_projection": projection}
                 except source.SourceProblem as exc:
                     return {"ok": False, "code": exc.code,
                             "detail": "Ограниченная проверка источника АХР не сформирована."}
-            result = store.start(owner, profile, {"project": project.strip(), "cut": cut,
-                "purpose": profile, "click": ticket or _secrets.token_hex(16)}, collect, ticket)
+            context = {"project": project.strip(), "purpose": profile, "click": ticket or _secrets.token_hex(16)}
+            if not saved_snapshot:
+                context['cut'] = cut
+            result = store.start(owner, profile, context, collect, ticket)
         else:
             result = store.poll(ticket, owner, profile)
         if result["pending"]:
-            result["detail"] = "Читаю исходные ячейки АХР. Финансовый расчёт не запускается."
+            result["detail"] = ("Читаю сохранённые ячейки АХР без утверждения их даты и исторической применимости."
+                if saved_snapshot else "Читаю исходные ячейки АХР. Финансовый расчёт не запускается.")
         return JSONResponse(result, status_code=202 if result["pending"] else 200, headers=private)
     except HTTPException as exc:
         exc.headers = {**(exc.headers or {}), **private}
@@ -342,6 +350,182 @@ async def monitor_admin_expenses_source(request: Request) -> Response:
 @app.post("/monitor/audit/admin-expenses/result", include_in_schema=False)
 async def monitor_admin_expenses_source_result(request: Request) -> Response:
     return await _monitor_admin_expenses_source_job(request, start=False)
+
+async def _monitor_budget_funding_source_job(request: Request, *, start: bool) -> Response:
+    """Fixed admin-only cached B/P/L observations; no export or financial acceptance."""
+    import secrets as _secrets
+    import datetime as _dt
+    import developaid_management_report_jobs as jobs
+
+    private = {"Cache-Control": "private, no-store"}
+    try:
+        raw = bytearray()
+        async for chunk in request.stream():
+            if len(raw)+len(chunk) > 12288:
+                raise HTTPException(413, "Запрос проверки источника слишком большой.")
+            raw.extend(chunk)
+        try:
+            initial = json.loads(raw)
+        except (ValueError, UnicodeError, RecursionError):
+            initial = {}
+        initial = initial if isinstance(initial, dict) else {}
+        key, session = initial.get("key", ""), initial.get("session", "")
+        key = key if isinstance(key, str) and len(key) <= 4096 else ""
+        session = session if isinstance(session, str) and len(session) <= 4096 else ""
+        _require_admin_key(key, "Проверка источников бюджета и оплат", session)
+        # Source readers and job storage are entered only after the strict key
+        # gate. Extra fields cannot turn this into a file/range export API.
+        import developaid_cached_source_audit as audit
+        import developaid_budget_funding_source as source
+        try:
+            params = audit._json(bytes(raw))
+            allowed = {"key", "session", "ticket"} | ({"project", "cut"} if start else set())
+            if not isinstance(params, dict) or set(params)-allowed:
+                raise ValueError()
+            if not isinstance(params.get("session", ""), str) or len(params.get("session", "")) > 4096:
+                raise ValueError()
+            ticket = params.get("ticket", "")
+            if not isinstance(ticket, str) or ticket and not jobs.TICKET.fullmatch(ticket):
+                raise ValueError()
+            if start:
+                project, cut = params.get("project"), params.get("cut")
+                if not isinstance(project, str) or not project.strip() or len(project) > 200 \
+                        or any(c in project for c in ("/", "\\", "\0")):
+                    raise ValueError()
+                if not isinstance(cut, str) or _dt.date.fromisoformat(cut).isoformat() != cut \
+                        or _dt.date.fromisoformat(cut) > _dt.date.today():
+                    raise ValueError()
+            elif not ticket:
+                raise ValueError()
+        except (ValueError, TypeError, audit.AuditError):
+            raise HTTPException(400, "Проверьте проект, дату и номер проверки источника.") from None
+        profile = source.PURPOSE
+        owner = jobs.owner_binding(_env_str("DEVELOPAID_ADMIN_KEY", "").strip(), session, profile)
+        store = jobs.Store(developaid_monitor._SNAPSHOT_DIR / ".admin_budget_funding_source_jobs")
+        if start:
+            def collect():
+                try:
+                    return {"ok": True, "source_projection": source.capture(project.strip(), cut,
+                        runtime={"version": VERSION, "commit": COMMIT})}
+                except source.SourceProblem as exc:
+                    failed = {"ok": False, "code": exc.code,
+                              "detail": "Ограниченная проверка источников бюджета и оплат не сформирована."}
+                    diagnostic = source.failure_diagnostic(exc)
+                    if diagnostic is not None:
+                        failed['diagnostic'] = diagnostic
+                    return failed
+            result = store.start(owner, profile, {"project": project.strip(), "cut": cut,
+                "purpose": profile, "click": ticket or _secrets.token_hex(16)}, collect, ticket)
+        else:
+            result = store.poll(ticket, owner, profile)
+        if result["pending"]:
+            result["detail"] = "Читаю ограниченные сохранённые ячейки бюджета и оплат. Финансовая приёмка не выполняется."
+        return JSONResponse(result, status_code=202 if result["pending"] else 200, headers=private)
+    except HTTPException as exc:
+        exc.headers = {**(exc.headers or {}), **private}
+        raise
+    except jobs.JobProblem as exc:
+        raise HTTPException(exc.status, "Проверка источника не найдена или временно недоступна.",
+                            headers=private) from None
+    except (OSError, ValueError):
+        raise HTTPException(503, "Проверка источника временно недоступна.", headers=private) from None
+
+
+@app.post("/monitor/audit/budget-funding", include_in_schema=False)
+async def monitor_budget_funding_source(request: Request) -> Response:
+    return await _monitor_budget_funding_source_job(request, start=True)
+
+
+@app.post("/monitor/audit/budget-funding/result", include_in_schema=False)
+async def monitor_budget_funding_source_result(request: Request) -> Response:
+    return await _monitor_budget_funding_source_job(request, start=False)
+
+
+async def _monitor_budget_funding_layout_job(request: Request, *, start: bool) -> Response:
+    """Fixed metadata-only layout proof; never call the financial source capture."""
+    import developaid_management_report_jobs as jobs
+    private = {"Cache-Control": "private, no-store"}
+    try:
+        raw = bytearray()
+        async for chunk in request.stream():
+            if len(raw) + len(chunk) > 12288:
+                raise HTTPException(413, "Запрос проверки структуры слишком большой.")
+            raw.extend(chunk)
+        try:
+            initial = json.loads(raw)
+        except (ValueError, UnicodeError, RecursionError):
+            initial = {}
+        initial = initial if isinstance(initial, dict) else {}
+        key, session = initial.get("key", ""), initial.get("session", "")
+        key = key if isinstance(key, str) and len(key) <= 4096 else ""
+        session = session if isinstance(session, str) and len(session) <= 4096 else ""
+        _require_admin_key(key, "Проверка структуры сохранённого листа", session)
+        # Producer hashing, source reads and job storage follow the key gate.
+        import developaid_budget_funding_layout_proof as layout
+        try:
+            params = layout.parse_request(bytes(raw), start=start)
+            if start:
+                layout.validate_bindings(params["expected"], {"version": VERSION, "commit": COMMIT})
+        except layout.LayoutProblem as exc:
+            raise HTTPException(400 if exc.code == "request_invalid" else 409,
+                                "Проверьте параметры и версию проверки структуры.") from None
+        profile = layout.PURPOSE
+        owner = jobs.owner_binding(_env_str("DEVELOPAID_ADMIN_KEY", "").strip(), session, profile)
+        store = jobs.Store(developaid_monitor._SNAPSHOT_DIR / ".admin_budget_funding_layout_proof_jobs")
+        if start:
+            def collect():
+                return {"layout_proof": layout.capture_layout_proof(
+                    params["project"].strip(), params["cut"], params["expected"],
+                    runtime={"version": VERSION, "commit": COMMIT})}
+            # Credential-free request fingerprint; separate profile and supplied ticket.
+            selection = {name: params[name] for name in ("project", "cut", "purpose", "scope", "expected")}
+            selection["click"] = params["ticket"]
+            result = store.start(owner, profile, selection, collect, params["ticket"])
+        else:
+            result = store.poll(params["ticket"], owner, profile)
+        if result["pending"]:
+            result["detail"] = "Проверка структуры сохранённого листа выполняется."
+        if len(json.dumps(result, ensure_ascii=False, allow_nan=False).encode()) > layout.MAX_WIRE:
+            raise HTTPException(503, "Проверка структуры временно недоступна.")
+        return JSONResponse(result, status_code=202 if result["pending"] else 200, headers=private)
+    except HTTPException as exc:
+        exc.headers = {**(exc.headers or {}), **private}
+        raise
+    except jobs.JobProblem as exc:
+        raise HTTPException(exc.status, "Проверка структуры не найдена или временно недоступна.",
+                            headers=private) from None
+    except (OSError, ValueError):
+        raise HTTPException(503, "Проверка структуры временно недоступна.", headers=private) from None
+
+
+@app.post("/monitor/audit/budget-funding/layout", include_in_schema=False)
+async def monitor_budget_funding_layout(request: Request) -> Response:
+    return await _monitor_budget_funding_layout_job(request, start=True)
+
+
+@app.post("/monitor/audit/budget-funding/layout/result", include_in_schema=False)
+async def monitor_budget_funding_layout_result(request: Request) -> Response:
+    return await _monitor_budget_funding_layout_job(request, start=False)
+
+
+@app.post("/monitor/audit/admin-expenses/saved-snapshot", include_in_schema=False)
+async def monitor_admin_expenses_saved_snapshot(request: Request) -> Response:
+    return await _monitor_admin_expenses_source_job(request, start=True, saved_snapshot=True)
+
+
+@app.post("/monitor/audit/admin-expenses/saved-snapshot/result", include_in_schema=False)
+async def monitor_admin_expenses_saved_snapshot_result(request: Request) -> Response:
+    return await _monitor_admin_expenses_source_job(request, start=False, saved_snapshot=True)
+
+
+@app.post("/monitor/audit/admin-expenses/saved-snapshot", include_in_schema=False)
+async def monitor_admin_expenses_saved_snapshot(request: Request) -> Response:
+    return await _monitor_admin_expenses_source_job(request, start=True, saved_snapshot=True)
+
+
+@app.post("/monitor/audit/admin-expenses/saved-snapshot/result", include_in_schema=False)
+async def monitor_admin_expenses_saved_snapshot_result(request: Request) -> Response:
+    return await _monitor_admin_expenses_source_job(request, start=False, saved_snapshot=True)
 
 
 class MonitorViewResultRequest(BaseModel):
@@ -471,6 +655,150 @@ def monitor_schedule_version_preview(req: MonitorScheduleVersionPreviewRequest) 
 @app.post('/monitor/schedule/version-approve', include_in_schema=False)
 def monitor_schedule_version_approve(req: MonitorScheduleVersionApproveRequest) -> Response:
     return _monitor_schedule_version(req, approve=True)
+
+
+class MonitorGprDateCorrection(BaseModel):
+    model_config = {'extra': 'forbid'}
+    cell: str
+    expected_raw: str | None
+    value: str
+    note: str
+
+
+class MonitorSavedGprSourceRequest(BaseModel):
+    model_config = {'extra': 'forbid'}
+    project: str
+    source_sha256: str
+    expected_active_sha256: str
+    expected_revision: int
+    effective_from: str
+    corrections: list[MonitorGprDateCorrection] = []
+    expected_prepared_sha256: str = ''
+    session: str = ''
+    key: str = ''
+
+
+@developaid_monitor.approved_schedule_read
+def _monitor_saved_gpr_source(req, *, approve=False):
+    """Server-known source identity only; no workbook/path crosses the wire."""
+    private = {'Cache-Control': 'private, no-store'}
+    import developaid_schedule_versions as versions
+    try:
+        _require_team_access(req.session, req.key, 'Монитор проекта', write=approve)
+        if not req.project.strip() or len(req.project) > 200 or len(req.corrections) > 100:
+            raise ValueError('Выберите проект и не более 100 явных исправлений дат.')
+        import developaid_gpr_source_prepare as prepare
+        result = prepare.prepare(req.project.strip(), req.source_sha256,
+            expected_active_sha256=req.expected_active_sha256, expected_revision=req.expected_revision,
+            corrections=[c.model_dump() for c in req.corrections])
+        preview = developaid_monitor.schedule_version_preview(req.project.strip(), result['data'], req.effective_from)
+        if approve:
+            saved = developaid_monitor.approve_schedule_version(req.project.strip(), result['data'], req.effective_from,
+                expected_previous_sha256=req.expected_active_sha256,
+                expected_source_sha256=req.expected_prepared_sha256,
+                expected_revision=req.expected_revision, author=_monitor_note_author(req.session, req.key))
+            return JSONResponse(content={'saved': saved, 'review': result['manifest'], 'applied': True}, headers=private)
+        return JSONResponse(content={'preview': preview, 'review': result['manifest'], 'applied': False}, headers=private)
+    except HTTPException as exc:
+        exc.headers = {**(exc.headers or {}), **private}
+        raise
+    except versions.ScheduleVersionConflict as exc:
+        raise HTTPException(409, str(exc), headers=private) from None
+    except ValueError as exc:
+        raise HTTPException(400, str(exc), headers=private) from None
+    except OSError:
+        raise HTTPException(503, 'Сохранённые источники сейчас недоступны.', headers=private) from None
+
+
+@app.post('/monitor/schedule/saved-source-preview', include_in_schema=False)
+def monitor_saved_gpr_source_preview(req: MonitorSavedGprSourceRequest) -> Response:
+    return _monitor_saved_gpr_source(req)
+
+
+@app.post('/monitor/schedule/saved-source-approve', include_in_schema=False)
+def monitor_saved_gpr_source_approve(req: MonitorSavedGprSourceRequest) -> Response:
+    return _monitor_saved_gpr_source(req, approve=True)
+
+
+from pydantic import Field as _ReadinessField
+
+
+class MonitorReadinessProfileRequest(BaseModel):
+    model_config = {'extra': 'forbid'}
+    project: str
+    configuration: dict
+    expected_source_sha256: str
+    expected_source_revision: int = _ReadinessField(strict=True, ge=0)
+    expected_revision: int = _ReadinessField(strict=True, ge=0)
+    expected_profile_sha256: str = ''
+    key: str = ''
+    session: str = ''
+
+
+@developaid_monitor.approved_schedule_read
+def _monitor_readiness_profile(req, *, save=False):
+    private = {'Cache-Control': 'private, no-store'}
+    import developaid_schedule_readiness as readiness
+    import developaid_schedule_versions as versions
+    try:
+        _require_team_access(req.session, req.key, 'Монитор проекта', write=save)
+        if not req.project.strip() or len(req.project) > 200 or len(json.dumps(req.configuration)) > 2*1024*1024:
+            raise ValueError('Укажите проект и ограниченный профиль состава и весов.')
+        options = dict(expected_source_sha256=req.expected_source_sha256,
+                       expected_source_revision=req.expected_source_revision, expected_revision=req.expected_revision)
+        if save:
+            result = readiness.save(req.project.strip(), req.configuration, **options,
+                expected_profile_sha256=req.expected_profile_sha256, author=_monitor_note_author(req.session, req.key))
+        else:
+            prepared = readiness.preview(req.project.strip(), req.configuration, **options)
+            result = {key: value for key, value in prepared.items() if key != 'profile'}
+        return JSONResponse(content=result, headers=private)
+    except HTTPException as exc:
+        exc.headers = {**(exc.headers or {}), **private}
+        raise
+    except versions.ScheduleVersionConflict as exc:
+        raise HTTPException(409, str(exc), headers=private) from None
+    except ValueError as exc:
+        raise HTTPException(400, str(exc), headers=private) from None
+    except OSError:
+        raise HTTPException(503, 'Профиль готовности сейчас недоступен.', headers=private) from None
+
+
+@app.post('/monitor/readiness/profile-preview', include_in_schema=False)
+def monitor_readiness_profile_preview(req: MonitorReadinessProfileRequest) -> Response:
+    return _monitor_readiness_profile(req)
+
+
+@app.post('/monitor/readiness/profile-save', include_in_schema=False)
+def monitor_readiness_profile_save(req: MonitorReadinessProfileRequest) -> Response:
+    return _monitor_readiness_profile(req, save=True)
+
+
+class MonitorReadinessEditorRequest(BaseModel):
+    model_config = {'extra': 'forbid'}
+    project: str
+    full_source_sha256: str = ''
+    key: str = ''
+    session: str = ''
+
+
+@app.post('/monitor/readiness/editor', include_in_schema=False)
+@developaid_monitor.approved_schedule_read
+def monitor_readiness_editor(req: MonitorReadinessEditorRequest) -> Response:
+    private = {'Cache-Control': 'private, no-store'}
+    try:
+        _require_team_access(req.session, req.key, 'Монитор проекта')
+        if not req.project.strip() or len(req.project) > 200:
+            raise ValueError('Выберите проект.')
+        import developaid_schedule_readiness as readiness
+        return JSONResponse(content=readiness.editor(req.project.strip(), full_source_sha256=req.full_source_sha256), headers=private)
+    except HTTPException as exc:
+        exc.headers = {**(exc.headers or {}), **private}
+        raise
+    except ValueError as exc:
+        raise HTTPException(400, str(exc), headers=private) from None
+    except OSError:
+        raise HTTPException(503, 'Сохранённый полный ГПР или профиль пока недоступен.', headers=private) from None
 
 
 class MonitorNotesRequest(BaseModel):
@@ -1616,6 +1944,19 @@ def internal_report_sent(req: ReportMailingInternalRequest) -> dict[str, Any]:
     except KeyError as exc:
         raise HTTPException(404, str(exc.args[0]))
     return {"ok": True}
+
+
+@app.post("/monitor/gpr-view", include_in_schema=False)
+def monitor_gpr_view(req: MonitorGanttRequest) -> Response:
+    """Read the canonical schedule while the larger financial view is pending."""
+    _require_team_access(req.session, req.key, "Монитор проекта", write=False)
+    from fastapi.encoders import jsonable_encoder
+    import developaid_monitor_pace as pace
+    try:
+        view = pace.schedule_view(req.project, req.cut)
+        return JSONResponse(content=jsonable_encoder(view), headers={"Cache-Control":"private, no-store"})
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(400, str(exc), headers={"Cache-Control":"private, no-store"}) from None
 
 
 @app.post("/monitor/gantt", include_in_schema=False)

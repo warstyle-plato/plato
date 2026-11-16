@@ -297,6 +297,8 @@ function renderVri(vri){
  if(sitePositionWanted(vri&&vri.benefits,reliefBasis))resolveSitePosition();
  renderVriBenefits(vri&&vri.benefits,reliefBasis);
  fillVriReliefOffer();
+ // Подпись поля зачёта площадей читает итог расчёта: вписан ли рядом Ксу*.
+ if(typeof refreshClassFieldUnit==='function'&&typeof document.querySelector==='function')refreshClassFieldUnit('vri_transfer_offset_mln');
  renderKrtVriFooter();
  syncVriRequiredBox();
  if(typeof window.mptOverrideChanged==='function')window.mptOverrideChanged();
@@ -2279,6 +2281,7 @@ async function applyNormativeTep(densityOverride,keepRows){
    district:district,
    market_price_rub_per_sqm:0,
    vri_kd:0,
+   vri_compensation_rub:Math.max(0,Number(inputs.mo_vri_compensation_mln||0))*1e6,
    average_flat_sqm:Number((document.getElementById('moFlat')||{}).value||0)||AVERAGE_FLAT.mo.sqm
   };
   const response=await fetch('/mo/calculate',{method:'POST',headers:{'Content-Type':'application/json'},

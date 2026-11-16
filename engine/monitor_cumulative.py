@@ -6,7 +6,7 @@ closures never retain the request's authentication credentials.
 """
 # ruff: noqa
 
-from pydantic import Field as _CumulativeField
+from pydantic import Field as _CumulativeField, field_validator as _CumulativeValidator
 
 
 class MonitorCumulativeAuth(BaseModel):
@@ -56,6 +56,80 @@ class MonitorContractsHeaderDate(MonitorContractsBuild):
 
 class MonitorContractDocuments(MonitorContractsBuild):
     contract_id: str = _CumulativeField(pattern=r"^[0-9a-f]{64}$")
+
+
+class MonitorContractSourceReview(MonitorContractDocuments):
+    # This operation never accepts a filename, worksheet, range, path or URL.
+    model_config = {"extra": "forbid"}
+
+
+class MonitorProjectSourceAudit(MonitorContractsBuild):
+    # The server alone enumerates retained archives and workbook sources.
+    model_config = {"extra": "forbid", "strict": True}
+    cut: str = _CumulativeField(default="", max_length=10)
+
+
+from typing import Annotated as _IdentityAnnotated
+_IdentityHash = _IdentityAnnotated[str, _CumulativeField(pattern=r"^[0-9a-f]{64}$", strict=True)]
+
+
+class MonitorProjectSourceAuditPage(MonitorProjectSourceAudit):
+    book_sha256: list[_IdentityHash] = _CumulativeField(min_length=1, max_length=8)
+    corpus_token: _IdentityHash
+
+
+class MonitorProjectDuplicateProof(MonitorProjectSourceAuditPage):
+    book_sha256: list[_IdentityHash] = _CumulativeField(min_length=1, max_length=1)
+
+
+_PreparedSnapshotID = _IdentityAnnotated[str, _CumulativeField(
+    pattern=r"^\d{4}-\d{2}-\d{2}-[0-9a-f]{64}$", strict=True)]
+
+
+class MonitorProjectPreparedIndex(MonitorProjectSourceAudit):
+    cut: str = _CumulativeField(min_length=10, max_length=10)
+    snapshot_ids: list[_PreparedSnapshotID] = _CumulativeField(min_length=1, max_length=32)
+    expected_project_scope: _IdentityHash
+    expected_cached_source_roster_sha256: _IdentityHash
+    expected_source_content_sha256: _IdentityHash
+    caller_reference_corpus_token: _IdentityHash
+
+    @_CumulativeValidator('snapshot_ids')
+    @classmethod
+    def unique_snapshot_ids(cls, value):
+        if len(value) != len(set(value)):
+            raise ValueError('Состав cache не должен содержать повторённые snapshot IDs.')
+        return value
+
+
+class MonitorContractIdentityInventory(MonitorContractsBuild):
+    model_config = {"extra": "forbid", "strict": True}
+    raw_ids: list[_IdentityHash] = _CumulativeField(min_length=2, max_length=2)
+
+
+class MonitorContractIdentityConfirm(MonitorContractIdentityInventory):
+    expected_revision: int = _CumulativeField(ge=0, strict=True)
+    inventory_sha256: _IdentityHash
+    source_tokens: list[_IdentityHash] = _CumulativeField(min_length=2, max_length=64)
+    anchor_id: _IdentityHash
+    canonical_number: str = _CumulativeField(min_length=1, max_length=80)
+    note: str = _CumulativeField(min_length=1, max_length=500)
+
+
+class MonitorContractIdentityRevoke(MonitorContractsBuild):
+    model_config = {"extra": "forbid", "strict": True}
+    expected_revision: int = _CumulativeField(ge=0, strict=True)
+    decision_id: _IdentityHash
+    note: str = _CumulativeField(min_length=1, max_length=500)
+
+
+class MonitorContractIdentityResolve(MonitorContractDocuments):
+    model_config = {"extra": "forbid", "strict": True}
+
+
+class MonitorContractIdentityResult(MonitorCumulativeAuth):
+    model_config = {"extra": "forbid", "strict": True}
+    ticket: str = _CumulativeField(min_length=1, max_length=128)
 
 
 class MonitorContractDocumentUpload(MonitorContractDocuments):
@@ -131,15 +205,25 @@ class MonitorGprPhysicalSave(MonitorCumulativeProject):
     configuration: dict[str, Any]
 
 
-_CUMULATIVE_PATHS = frozenset({
+_IDENTITY_PATHS = frozenset('/monitor/contracts/identity/'+name for name in
+                            ('inventory', 'confirm', 'revoke', 'resolve', 'result'))
+_CUMULATIVE_PATHS = _IDENTITY_PATHS | frozenset({
     '/monitor/schedule/version-preview', '/monitor/schedule/version-approve',
     "/monitor/cumulative/upload", "/monitor/cumulative/result",
     "/monitor/cumulative/list", "/monitor/contracts/build",
     "/monitor/contracts/result", "/monitor/contracts/term", "/monitor/contracts/link", "/monitor/contracts/header-date",
+    "/monitor/contracts/source-review",
+    "/monitor/contracts/source-audit",
+    "/monitor/contracts/source-audit-page",
+    "/monitor/contracts/source-duplicate-proof",
+    "/monitor/contracts/source-prepared-index",
     "/monitor/contracts/documents", "/monitor/contracts/document-upload",
     "/monitor/contracts/document-links", "/monitor/contracts/document-remove",
     "/monitor/contracts/document-confirm",
-    "/monitor/view", "/monitor/gantt", "/monitor/schedule-fact", "/monitor/gpr-corpus/view",
+    "/monitor/view", "/monitor/gpr-view", "/monitor/gantt", "/monitor/schedule-fact", "/monitor/gpr-corpus/view",
+    "/monitor/schedule/saved-source-preview", "/monitor/schedule/saved-source-approve",
+    "/monitor/readiness/profile-preview", "/monitor/readiness/profile-save",
+    "/monitor/readiness/editor",
     "/monitor/schedule-confirmation/view", "/monitor/schedule-confirmation/save",
     "/monitor/schedule-physical/view", "/monitor/schedule-physical/save",
     "/monitor/schedule-gpr-physical/view", "/monitor/schedule-gpr-physical/save",
@@ -148,6 +232,25 @@ _CUMULATIVE_PATHS = frozenset({
 
 @app.middleware("http")
 async def monitor_cumulative_private_headers(request: Request, call_next):
+    if request.url.path in _IDENTITY_PATHS and request.method == 'POST':
+        private = {"Cache-Control": "private, no-store"}
+        # Bound the stream before FastAPI parses JSON, including chunked input.
+        try:
+            declared = request.headers.get('content-length')
+            if declared is not None and (not declared.isdecimal() or int(declared) > 64*1024):
+                return JSONResponse(status_code=413, content={"detail": "Запрос уточнения слишком большой."}, headers=private)
+            raw = bytearray()
+            async for chunk in request.stream():
+                raw.extend(chunk)
+                if len(raw) > 64*1024:
+                    return JSONResponse(status_code=413, content={"detail": "Запрос уточнения слишком большой."}, headers=private)
+            import developaid_contract_identity_store as identity_store
+            value = identity_store.strict_json(bytes(raw))
+            if not isinstance(value, dict):
+                raise ValueError('object required')
+            request._body = bytes(raw)
+        except (ValueError, UnicodeError):
+            return JSONResponse(status_code=422, content={"detail": "Нужен однозначный JSON-запрос уточнения."}, headers=private)
     response = await call_next(request)
     if request.url.path in _CUMULATIVE_PATHS:
         response.headers["Cache-Control"] = "private, no-store"
@@ -171,7 +274,10 @@ def monitor_corpus_gpr_view(req: MonitorContractsBuild) -> Response:
         baseline = _corpus_monitor._working_baseline_file(req.project.strip(), cut)
         sha = _corpus_hashlib.sha256(baseline.read_bytes()).hexdigest() if baseline is not None else ""
         source = corpus_gpr.for_view(req.project.strip(), cut, baseline_sha256=sha)
-        return JSONResponse(content={"source": source, "html": corpus_gpr.render_overview(source, cut)}, headers=private)
+        import developaid_gpr_source_state as source_state
+        state = source_state.inspect(req.project.strip(), cut)
+        return JSONResponse(content={"source": source, "source_state": state,
+            "html": corpus_gpr.render_overview(source, cut)+source_state.render(state)}, headers=private)
 
     return read()
 
@@ -279,8 +385,23 @@ def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = 
     import developaid_monitor_contracts as contracts
     import developaid_monitor_contract_links as links
     import developaid_contract_files as contract_files
+    import developaid_contract_identity as contract_identity
     try:
-        if operation == "upload":
+        if operation.startswith('identity-'):
+            values = dict(payload)
+            if operation == 'identity-inventory':
+                result = {'identity_inventory': contract_identity.inventory(**values)}
+            elif operation == 'identity-confirm':
+                result = {'identity_decision': contract_identity.confirm(**values)}
+            elif operation == 'identity-revoke':
+                values.pop('cut')
+                result = {'identity_decision': contract_identity.revoke(**values)}
+            elif operation == 'identity-resolve':
+                values['raw_id'] = values.pop('contract_id')
+                result = {'identity_resolution': contract_identity.resolve(**values)}
+            else:
+                raise RuntimeError('unknown identity operation')
+        elif operation == "upload":
             result = {"snapshot": ledgers.store_archive(
                 payload["project"], archive, payload["taken_at"], payload["filename"])}
         elif operation == "view":
@@ -293,6 +414,26 @@ def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = 
                 payload["project"], payload["contract_id"], payload["deadline"], payload["note"])}
         elif operation == "header-date":
             result = {"header_date": contracts.confirm_header_date(**payload)}
+        elif operation == "source-review":
+            import developaid_contract_source_review as source_review
+            result = {"source_review": source_review.review(**payload),
+                      "runtime": {"version": VERSION, "commit": COMMIT}}
+        elif operation == "source-audit":
+            import developaid_contract_source_review as source_review
+            result = {"source_audit": source_review.project_audit(**payload),
+                      "runtime": {"version": VERSION, "commit": COMMIT}}
+        elif operation == "source-audit-page":
+            import developaid_contract_source_review as source_review
+            result = {"source_audit_page": source_review.project_audit_page(**payload),
+                      "runtime": {"version": VERSION, "commit": COMMIT}}
+        elif operation == "source-duplicate-proof":
+            import developaid_contract_source_review as source_review
+            result = {"source_duplicate_proof": source_review.project_duplicate_proof(**payload),
+                      "runtime": {"version": VERSION, "commit": COMMIT}}
+        elif operation == "source-prepared-index":
+            import developaid_contract_prepared_index as prepared_index
+            result = {"source_prepared_index": prepared_index.project_index(**payload),
+                      "runtime": {"version": VERSION, "commit": COMMIT}}
         elif operation == "link":
             result = {"link": links.set_link(
                 payload["project"], payload["contract_id"], payload["evidence_id"],
@@ -336,7 +477,8 @@ def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = 
         return {"ok": True, **jsonable_encoder(result)}
     except ledgers.LedgerProblem as exc:
         return {"ok": False, "detail": str(exc), "files": exc.files}
-    except (contracts.ContractProblem, links.LinkProblem, contract_files.ContractFilesProblem) as exc:
+    except (contracts.ContractProblem, links.LinkProblem, contract_files.ContractFilesProblem,
+            contract_identity.IdentityProblem) as exc:
         # These exception classes contain deliberate user-facing diagnostics.
         return {"ok": False, "detail": str(exc)}
 
@@ -378,7 +520,12 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
                     raise HTTPException(413, "Выберите непустой PDF размером не больше 20 МБ.")
             else:
                 payload["cut"] = _monitor_cumulative_day(req.cut)
-                if operation == "documents":
+                if operation.startswith('identity-'):
+                    fields = req.model_dump(exclude={'key', 'session', 'ticket', 'project', 'cut'})
+                    payload.update(fields)
+                    if operation in {'identity-confirm', 'identity-revoke'}:
+                        payload['actor'] = owner
+                elif operation == "documents":
                     payload["contract_id"] = req.contract_id
                 elif operation == "document-links":
                     payload.update(contract_id=req.contract_id, sha256=req.sha256, estimate=req.estimate,
@@ -398,6 +545,12 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
                     payload.update(snapshot_id=req.snapshot_id, filename=req.filename,
                                    file_sha256=req.file_sha256, sheet=req.sheet, cell=req.cell,
                                    raw=req.raw, contract_date=req.contract_date, note=req.note)
+                elif operation == "source-review":
+                    payload.update(contract_id=req.contract_id)
+                elif operation in {"source-audit-page", "source-duplicate-proof"}:
+                    payload.update(book_sha256=sorted(set(req.book_sha256)), corpus_token=req.corpus_token)
+                elif operation == "source-prepared-index":
+                    payload.update(req.model_dump(exclude={'key', 'session', 'ticket', 'project', 'cut'}))
                 elif operation == "link":
                     payload.update(contract_id=req.contract_id, evidence_id=req.evidence_id,
                                    confirmed=req.confirmed)
@@ -458,6 +611,31 @@ def monitor_contracts_build(req: MonitorContractsBuild) -> Response:
     return _monitor_cumulative_job(req, family="contracts", operation="view")
 
 
+@app.post('/monitor/contracts/identity/inventory', include_in_schema=False)
+def monitor_contract_identity_inventory(req: MonitorContractIdentityInventory) -> Response:
+    return _monitor_cumulative_job(req, family='contract-identity', operation='identity-inventory')
+
+
+@app.post('/monitor/contracts/identity/confirm', include_in_schema=False)
+def monitor_contract_identity_confirm(req: MonitorContractIdentityConfirm) -> Response:
+    return _monitor_cumulative_job(req, family='contract-identity', operation='identity-confirm')
+
+
+@app.post('/monitor/contracts/identity/revoke', include_in_schema=False)
+def monitor_contract_identity_revoke(req: MonitorContractIdentityRevoke) -> Response:
+    return _monitor_cumulative_job(req, family='contract-identity', operation='identity-revoke')
+
+
+@app.post('/monitor/contracts/identity/resolve', include_in_schema=False)
+def monitor_contract_identity_resolve(req: MonitorContractIdentityResolve) -> Response:
+    return _monitor_cumulative_job(req, family='contract-identity', operation='identity-resolve')
+
+
+@app.post('/monitor/contracts/identity/result', include_in_schema=False)
+def monitor_contract_identity_result(req: MonitorContractIdentityResult) -> Response:
+    return _monitor_cumulative_job(req, family='contract-identity')
+
+
 @app.post("/monitor/contracts/result", include_in_schema=False)
 def monitor_contracts_result(req: MonitorCumulativeResult) -> Response:
     return _monitor_cumulative_job(req, family="contracts")
@@ -483,6 +661,21 @@ def monitor_contracts_documents(req: MonitorContractDocuments) -> Response:
     return _monitor_cumulative_job(req, family="contracts", operation="documents")
 
 
+@app.post("/monitor/contracts/source-review", include_in_schema=False)
+def monitor_contract_source_review(req: MonitorContractSourceReview) -> Response:
+    return _monitor_cumulative_job(req, family="contracts", operation="source-review")
+
+
+@app.post("/monitor/contracts/source-audit", include_in_schema=False)
+def monitor_project_source_audit(req: MonitorProjectSourceAudit) -> Response:
+    return _monitor_cumulative_job(req, family="contracts", operation="source-audit")
+
+
+@app.post("/monitor/contracts/source-audit-page", include_in_schema=False)
+def monitor_project_source_audit_page(req: MonitorProjectSourceAuditPage) -> Response:
+    return _monitor_cumulative_job(req, family="contracts", operation="source-audit-page")
+
+
 @app.post("/monitor/contracts/document-upload", include_in_schema=False)
 def monitor_contracts_document_upload(req: MonitorContractDocumentUpload) -> Response:
     return _monitor_cumulative_job(req, family="contracts", operation="document-upload")
@@ -501,3 +694,13 @@ def monitor_contracts_document_remove(req: MonitorContractDocumentRemove) -> Res
 @app.post("/monitor/contracts/document-confirm", include_in_schema=False)
 def monitor_contracts_document_confirm(req: MonitorContractDocumentConfirm) -> Response:
     return _monitor_cumulative_job(req, family="contracts", operation="document-confirm")
+
+
+@app.post("/monitor/contracts/source-duplicate-proof", include_in_schema=False)
+def monitor_project_duplicate_proof(req: MonitorProjectDuplicateProof) -> Response:
+    return _monitor_cumulative_job(req, family="contracts", operation="source-duplicate-proof")
+
+
+@app.post("/monitor/contracts/source-prepared-index", include_in_schema=False)
+def monitor_project_prepared_index(req: MonitorProjectPreparedIndex) -> Response:
+    return _monitor_cumulative_job(req, family="contracts", operation="source-prepared-index")

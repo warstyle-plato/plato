@@ -240,6 +240,8 @@ def build(project, cut, snapshot, *, physical):
             unresolved += 1
     leaves = [row for row in positions.values() if row]
     return {'qualified_task_completions': sorted(works, key=lambda f: (f['observed_complete_by'], f['fact_id'])),
+            'completion_blockers': [{'definition': list(work(key)), 'observations': readings}
+                                    for key, readings in blockers.items()],
             'completed_ks_positions': leaves,
             'counts': {'confirmed_works': len(works), 'ks_positions': len(leaves), 'unresolved_sources': unresolved},
             'overall_progress': None,
@@ -263,16 +265,16 @@ def render(inventory, *, expanded=False):
                 '<span class="completed-actual-point" data-date="'+esc(date)+'" '
                 'data-date-basis="'+('actual_finish' if actual else 'observed_complete_by')+'">● '+esc(label)+'</span></li>')
     out = ['<style>.completed-work-marker{margin:8px 0;overflow-wrap:anywhere}'
-           '.completed-actual-point{display:block;color:#17623b;font-weight:600}</style>',
+           '.completed-actual-point{display:block;color:#17623b;font-weight:600}'
+           '@media print{.completed-work-history::details-content{content-visibility:visible!important;display:block!important}}</style>',
            '<section class="completed-work-facts"><h3>Подтверждённое выполнение</h3>']
     if works:
         out.append('<p>Завершённых работ с подтверждённым составом: '+str(len(works))+'.</p>')
-        out.append('<ul>'+''.join(marker(fact) for fact in (works if expanded else works[:3]))+'</ul>')
-        if len(works) > 3 and not expanded:
-            out.append('<details><summary>Ещё завершённых работ: '+str(len(works)-3)+'</summary><ul>'+
-                       ''.join(marker(fact) for fact in works[3:])+'</ul></details>')
+        markers = '<ul>'+''.join(marker(fact) for fact in works)+'</ul>'
+        out.append(markers if expanded else '<details class="completed-work-history"><summary>История завершённых работ ('+
+                   str(len(works))+')</summary>'+markers+'</details>')
     if counts.get('ks_positions'):
         out.append('<p>Позиций КС с выполненным объёмом: '+str(counts['ks_positions'])+
                    '. Это позиции ведомостей, а не число завершённых работ ГПР. Подробности — в договорах.</p>')
-    out.append('<p class="schedule-note">Готовность всего проекта: нет полной сопоставимой базы.</p></section>')
+    out.append('<p class="schedule-note">История завершений не задаёт общий процент. Состав и основание общей готовности показаны в сводке.</p></section>')
     return ''.join(out)

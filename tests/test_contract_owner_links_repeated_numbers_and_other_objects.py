@@ -106,8 +106,8 @@ def test_the_card_takes_the_object_of_the_schedule_and_the_line_the_owner_picked
     calls = []
     with browser_page(1440) as (page, _, errors):
         _serve(page, calls, cut="2026-02-04")
-        page.locator("#contractsTab").click()
-        page.locator(f'tr[data-contract-id="{CONTRACT}"] .contract-open').click()
+        from tests.test_contract_card_shows_its_documents import _open as open_document_sources
+        open_document_sources(page)
         host = page.locator("#contractDocuments")
         expect(host.locator(".contract-request")).to_have_value(REQUEST)
         box = host.locator(".contract-links")
