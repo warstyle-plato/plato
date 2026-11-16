@@ -658,7 +658,11 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
                 fingerprint["archive_sha256"] = _hashlib.sha256(archive).hexdigest()
             def build():
                 return _monitor_cumulative_execute(operation, payload, archive)
-            result = store.start(owner, profile, fingerprint, build, req.ticket)
+            # Only the ordinary register transports its complete history/rows.
+            # Source review/audit/index operations retain the default budget.
+            result_policy = ({"result_limit_bytes": jobs.MAX_EXTENDED_RESULT_BYTES}
+                             if operation == "view" else {})
+            result = store.start(owner, profile, fingerprint, build, req.ticket, **result_policy)
         if result["pending"]:
             result["detail"] = ("Проверяю управленческую статью АХР." if family == "finance-management" else
                                 "Проверяю банковское отнесение АХР." if family == "finance-allocation" else
@@ -676,6 +680,8 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
             409: "Этот номер операции относится к другим параметрам.",
             429: "Сервер обрабатывает другие запросы. Повторите чуть позже.",
         }
+        if exc.code:
+            private["X-Monitor-Job-Error"] = exc.code
         raise HTTPException(exc.status, messages.get(exc.status, "Не удалось завершить операцию. Повторите запрос."),
                             headers=private) from None
     except Exception as exc:

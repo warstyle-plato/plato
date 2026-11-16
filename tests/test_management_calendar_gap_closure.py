@@ -40,7 +40,8 @@ def _assert_boundary(view,valid):
     body=report._gantt_html(dict(gantt=block,end=view['cut']))
     assert not block['calendar']['qualified'] and block['calendar']['issues']
     assert block['calendar']['points'] and len(block['calendar']['rows'])==len(view['schedule']['rows'])
-    assert body.count('<article class="cg-work"')==len(view['schedule']['rows'])
+    assert body.count('<article class="cg-work"')==0
+    assert body.count('data-gpr-block=')==3
     assert 'gpr-scoped-finish"'not in body and 'gpr-analysis-paragraph'not in body
     if valid:assert block['readiness']==view['schedule']['readiness']
     else:assert block['readiness']['project']['forecast']=={}

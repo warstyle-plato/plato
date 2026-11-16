@@ -63,6 +63,9 @@ REPORT_PAGE = """<!doctype html>
    шесть колонок эскроу обрезались справа, а первая сжималась до буквы в строку. */
 @media (max-width:900px){#reportBox table{display:block;max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
 #reportBox td,#reportBox th{overflow-wrap:normal;word-break:normal}
+/* The compact three-corpus matrix fits its viewport, unlike wide finance tables. */
+#reportBox table.rg-matrix{display:table;width:100%;min-width:0;table-layout:fixed;overflow:visible}
+#reportBox table.rg-matrix :is(th,td){min-width:0;white-space:normal;overflow-wrap:anywhere}
 #reportBox svg,#reportBox img{max-width:100%;height:auto}}
 #reportBox{overflow-wrap:anywhere;min-width:0}
 .files .field{min-width:0;max-width:100%}.files select,.files input{max-width:100%}

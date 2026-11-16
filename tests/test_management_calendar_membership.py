@@ -22,11 +22,11 @@ def _closed(view):
     model=block['calendar']
     assert model['qualified'] is False and model['issues']
     assert len(model['rows'])==len(view['schedule']['rows'])+len(view['schedule']['undated_works'])
-    assert body.count('<article class="cg-work"')==len(model['rows'])
+    assert body.count('<article class="cg-work"')==0
+    assert body.count('data-gpr-block=')==3
     assert 'gpr-scoped-finish"'not in body and 'gpr-analysis-paragraph'not in body
     assert 'class="readiness-project-forecast"'not in body and block['readiness']['project']['forecast']=={}
-    for row in view['schedule']['rows']+view['schedule']['undated_works']:
-        assert html.escape(row['name'])in body
+    assert 'Подробные работы и источники — в Мониторе' in body
     assert view==before
     return model,body
 
@@ -44,12 +44,10 @@ def test_selected_membership_gaps_never_turn_into_outside_work(mutation):
     else:state['forecast_identity']['remaining_ids'][second['reference_work_id']]=first['work_id']
     model,body=_closed(view)
     assert third['work_id']in model['points']
-    row=next(part for part in re.findall(r'<article class="cg-work"(.*?)</article>',body,re.S)if 'data-work-id="'+third['work_id']+'"'in part)
-    assert 'gpr-forecast-end'in row
+    assert 'class="rg-forecast"' not in body
     if mutation in {'missing_translation_and_point','null_translation_and_point'}:
         assert len(model['points'])==2 and first['reference_work_id']in state['project']['work_ids']
-        lost=next(part for part in re.findall(r'<article class="cg-work"(.*?)</article>',body,re.S)if 'data-work-id="'+first['work_id']+'"'in part)
-        assert 'Точка прогноза не подтверждена'in lost and 'Вне выбранного состава'not in lost
+
 
 
 def _native_scoped_view(classification=False, separate=False):
@@ -79,9 +77,9 @@ def test_native_source_attested_exclusion_keeps_the_valid_selected_projection(se
     block,body=_render(view);model=block['calendar']
     assert model['qualified'] is True and not model['issues']
     assert set(model['points'])=={'build'}and len(model['rows'])==2
-    assert 'class="gpr-scoped-finish"'in body and body.count('class="gpr-analysis-paragraph"')==2
-    assert 'data-work-id="other" data-forecast-scope="outside"'in body
-    assert '2038' in body and view==before
+    assert 'class="rg-project-line"'in body and body.count('data-gpr-block=')==3
+    assert 'Вне выбранного состава'in body or 'вне выбранного состава'in body
+    assert '2038'not in body and view==before
 
 
 def test_native_unclassified_scope_remains_a_named_unresolved_reference():
