@@ -109,6 +109,8 @@ window.createMonitorNavigation=function(config){
    queueMicrotask(()=>{if(same(next,context()))useContext();});},true);
   for(const id of fields){const e=byId(id);if(e)for(const event of ['input','change'])e.addEventListener(event,()=>{delete pending[id];capture();});}
   window.addEventListener('pagehide',()=>capture());window.addEventListener('beforeunload',()=>capture());
+  // History and legacy hash listeners can clear the native controls too.
+  for(const event of ['popstate','hashchange'])window.addEventListener(event,()=>capture(),true);
   window.addEventListener('popstate',restoreView);window.addEventListener('hashchange',restoreView);
   window.addEventListener('storage',e=>{if(e.key===null||['developaid_web_session','plato_projects_key','session','developaid_session','key','developaid_key'].includes(e.key))forget();});
   for(const id of ['keyBtn','loginBtn','logoutBtn'])byId(id)?.addEventListener('click',forget,true);
