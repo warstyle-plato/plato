@@ -48,10 +48,10 @@ def test_report_has_three_blocks_visible_corpus_bars_and_readable_full_years():
     assert 'Подробные работы и источники — в Мониторе'in body and value==before
 
 
-@pytest.mark.parametrize('fault',['missing','crosscut','crosssource','crossscope','duplicate_id','missing_reference','foreign_point','duplicate_corpus_membership'])
+@pytest.mark.parametrize('fault',['missing_canonical_forecast','crosscut','crosssource','crossscope','duplicate_id','missing_reference','foreign_point','duplicate_corpus_membership'])
 def test_missing_or_foreign_canonical_projection_never_becomes_a_plan_forecast(fault):
     value=block();calendar=value['calendar'];state=value['readiness']
-    if fault=='missing':value.pop('calendar')
+    if fault=='missing_canonical_forecast':state['project']['forecast']={}
     elif fault=='crosscut':calendar['cut']='2026-11-16'
     elif fault=='crosssource':calendar['display']['source_sha256']='f'*64
     elif fault=='crossscope':state['forecast_identity']['id_scope']='current_source'
@@ -179,3 +179,32 @@ def test_compact_uses_the_native_calendar_guard_for_scope_and_point_dates(fault)
     before=copy.deepcopy(value);model=gantt.compact_model(value,CUT)
     assert not model['qualified']and model['finish']is None and value==before
     assert all(group['finish']is None for group in model['groups'])
+
+
+@pytest.mark.parametrize('missing',['attested_gap','calendar','display'])
+def test_independent_partial_assessment_and_matrix_survive_unavailable_corpus_calendar(missing):
+    from test_management_calendar_membership import _native_scoped_view
+    from developaid_gpr_summary import gpr_summary
+    view=_native_scoped_view(classification=None)
+    value=report.gantt(view,{})
+    expected=gpr_summary(value['readiness'],view['cut'])
+    assert value['calendar']['readiness_forecast_invalid']is False
+    assert expected['finish'] and expected['progress']is not None
+    if missing=='calendar':value.pop('calendar')
+    elif missing=='display':
+        value['readiness']['project']['forecast'].pop('display')
+        tasks=[dict(row['task'],level='task')for row in value['calendar']['rows']]
+        value['calendar']=gantt.calendar(dict(rows=tasks,management=tasks,readiness=value['readiness']),view['cut'])
+    before=copy.deepcopy(value);model=gantt.compact_model(value,view['cut'])
+    assert not model['qualified']and model['assessment_qualified']and model['readiness_qualified']
+    assert model['finish']==expected['finish']
+    assert all(group['finish']is None and group['plan_finish']is None for group in model['groups'])
+    assert any(value is not None for row in model['matrix']for value in row['values'])
+    body=gantt.render_compact(model)
+    assert body.count('data-project-forecast="'+expected['finish']+'"')==3
+    assert 'Календарные даты корпусов пока не подтверждены'in body
+    assert 'class="rg-forecast"'not in body and 'class="rg-plan"'not in body
+    assert 'None'not in body and '0 из'not in body
+    summary=report._report_gpr_summary(dict(gantt=value,end=view['cut']))
+    assert summary['finish']==expected['finish']and summary['forecast_text']==expected['forecast_text']
+    assert summary['progress']==expected['progress']and value==before

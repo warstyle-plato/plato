@@ -4494,9 +4494,10 @@ def _report_gpr_summary(report: dict[str, Any]) -> dict[str, Any] | None:
     summary = model.get('summary')
     if summary is None:
         return None
-    summary = dict(summary, finish=model['finish'])
-    summary['forecast_text'] = ('Оценка окончания учтённых работ: '+_day(model['finish'])+'. При плановом темпе; не прогноз РНВ.'
-                                if model['finish'] else 'Оценка окончания учтённых работ пока не определена.')
+    summary = dict(summary)
+    if summary['finish'] != model['finish']:
+        summary['forecast_text'] = 'Оценка окончания учтённых работ пока не определена.'
+    summary['finish'] = model['finish']
     return summary
 
 

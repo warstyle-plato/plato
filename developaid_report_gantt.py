@@ -753,16 +753,24 @@ def compact_model(block: dict[str, Any], cut: Any) -> dict[str, Any]:
     tasks = [dict(task, level='task') for task in by_id.values()]
     checked = calendar(dict(rows=tasks, undated_works=[], management=tasks,
                             readiness=state), cut)
-    valid = bool(summary and projection.get('qualified') is True
-                 and projection.get('schema') == checked['schema']
-                 and projection.get('cut') == str(cut) and checked['qualified']
-                 and len(by_id) == len(rows) and projection.get('issues') == checked['issues']
-                 and display == checked['display'] and points == checked['points']
-                 and display.get('finish') == summary['finish'])
+    projection_matches = (not projection or
+                          (projection.get('schema') == checked['schema']
+                           and projection.get('cut') == str(cut)
+                           and len(by_id) == len(rows) and projection.get('issues') == checked['issues']
+                           and projection.get('display') == checked['display'] and points == checked['points']))
     # Corpus membership is another explicit ID join, not inferred from labels.
     references = project.get('work_ids') or []
     memberships = [key for group in corpora for key in group.get('work_ids') or []]
-    valid = valid and len(memberships) == len(set(memberships)) and set(memberships) == set(references)
+    membership_matches = len(memberships) == len(set(memberships)) and set(memberships) == set(references)
+    readiness_bound = bool(summary and membership_matches
+                           and re.fullmatch('[a-f0-9]{64}', str(summary['source_sha256'] or '')))
+    assessment_bound = bool(readiness_bound and projection_matches
+                            and checked['readiness_forecast_invalid'] is False
+                            and summary['id_scope'] in {'current_source', 'full_source'}
+                            and (summary['id_scope'] != 'full_source' or
+                                 re.fullmatch('[a-f0-9]{64}', str(summary['full_source_sha256'] or ''))))
+    valid = bool(readiness_bound and projection_matches and projection.get('qualified') is True
+                 and checked['qualified'] and display.get('finish') == summary['finish'])
     excluded = {item['work_id'] for item in forecast.get('excluded') or []} if checked['qualified'] else set()
     def aggregate(keys):
         selected = [points[mapping[key]] for key in keys if mapping.get(key) in points]
@@ -808,12 +816,14 @@ def compact_model(block: dict[str, Any], cut: Any) -> dict[str, Any]:
             found = [cell for cell in stage.get('cells') or [] if cell.get('name') == group.get('name')]
             cell = found[0] if len(found) == 1 else {}
             keys = cell.get('work_ids') or []
-            cells.append(cell.get('progress') if valid and set(keys) <= set(group.get('work_ids') or []) else None)
+            cells.append(cell.get('progress') if readiness_bound and set(keys) <= set(group.get('work_ids') or []) else None)
         matrix.append(dict(stage=stage.get('stage') or 'Этап не указан', values=cells))
     owner = projection.get('owner_rnv') or {}
     owner_date = owner.get('date') if owner.get('source') == 'owner_decision' and valid_day(owner.get('date')) else None
-    return dict(qualified=bool(valid), finish=display.get('finish') if valid else None,
-                covered=display.get('covered') if valid else None, total=display.get('total') if valid else None,
+    return dict(qualified=bool(valid), assessment_qualified=assessment_bound,
+                readiness_qualified=readiness_bound, finish=summary['finish'] if assessment_bound else None,
+                covered=forecast.get('covered') if assessment_bound else None,
+                total=forecast.get('total') if assessment_bound else None,
                 summary=summary, groups=groups, matrix=matrix, matrix_columns=len(corpora),
                 owner_plan=owner_date, cut=str(cut))
 
@@ -830,7 +840,10 @@ def render_compact(model: dict[str, Any]) -> str:
     summary = model.get('summary') or {}
     out = [_COMPACT_STYLE, '<div class="report-gpr-compact">', '<section data-gpr-block="forecast"'+project_attr+'><h3>Прогноз учтённых работ</h3><strong class="rg-project-date">'+esc(finish_text)+'</strong>']
     if finish:
-        out.append('<p>Условная оценка при плановом темпе. Сроки учтены для '+str(model['covered'])+' из '+str(model['total'])+' работ. Это не прогноз разрешения на ввод.</p>')
+        count_text = lambda value: str(value) if type(value) is int and value >= 0 else 'неизвестно'
+        out.append('<p>Условная оценка при плановом темпе. Сроки учтены для '+count_text(model['covered'])+' из '+count_text(model['total'])+' работ. Это не прогноз разрешения на ввод.</p>')
+        if not model['qualified']:
+            out.append('<p>Общая оценка сохранена. Календарные даты корпусов пока не подтверждены.</p>')
     else:
         out.append('<p>Для этого среза нет подтверждённой общей календарной оценки. Плановая дата её не заменяет.</p>')
     if summary:
@@ -846,7 +859,7 @@ def render_compact(model: dict[str, Any]) -> str:
         out.append('<table class="rg-matrix"><thead><tr><th scope="col">Этап</th>'+''.join('<th scope="col">'+esc(g['name'])+'</th>' for g in selected_groups)+'</tr></thead><tbody>')
         for stage in model['matrix']:
             out.append('<tr><th scope="row">'+esc(stage['stage'])+'</th>'+''.join('<td>'+esc(pct(v))+'</td>' for v in stage['values'])+'</tr>')
-        out.append('<tr class="rg-total"><th scope="row">По корпусу</th>'+''.join('<td>'+esc(pct(g['progress']) if model['qualified'] else 'Нет данных')+(' · частично' if g['partial_progress'] else '')+'</td>' for g in selected_groups)+'</tr>')
+        out.append('<tr class="rg-total"><th scope="row">По корпусу</th>'+''.join('<td>'+esc(pct(g['progress']) if model['readiness_qualified'] else 'Нет данных')+(' · частично' if g['partial_progress'] else '')+'</td>' for g in selected_groups)+'</tr>')
         out.append('<tr class="rg-project-total"><th scope="row">Прогноз проекта</th><td colspan="'+str(cols)+'">'+esc(finish_text)+'</td></tr></tbody></table>')
     else:
         out.append('<p>Матрица выбранного состава для этого среза отсутствует.</p>')
