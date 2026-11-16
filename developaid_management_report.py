@@ -843,6 +843,12 @@ def funding(project: str, kind: str, end: Any, sales_project: str = "",
 
         limit = {**limit, "source_dates": funding_dashboard._funding_source_dates(
             project, rss, bounds["end"])}
+    if not limit.get('known') and not limit.get('bank_observations'):
+        import developaid_monitor_dashboard as funding_dashboard
+        try:
+            limit = {**limit, 'bank_observations': funding_dashboard._rss_bank_observations(rss, bounds['end'])}
+        except Exception as exc:
+            limit = {**limit, 'bank_observations': {'reason': type(exc).__name__+': '+str(exc)}}
     # Выборка — по тем же главам РСС, что лимит Монитора (владелец,
     # 22.10.2026: «лимит 4,64, выбрано 4,80, остаток 1,00 — так не
     # сходится»). Лимит не посчитан — все главы, как раньше.
@@ -3085,6 +3091,16 @@ def _approved_need(limit: dict[str, Any]) -> dict[str, float] | None:
             "deficit": float(total) if total is not None else None}
 
 
+def _bank_observation_rows(limit):
+    bank = limit.get('bank_observations') or {}
+    if bank.get('scope') != 'rss_chapters_1_2_3':
+        return []
+    return [('Лимит банка по РСС', bank.get('bank_limit')),
+            ('Учтено оплат по РСС', bank.get('paid_actual')),
+            ('Из них заёмными средствами', bank.get('paid_borrowed')),
+            ('Доступный остаток лимита по РСС', bank.get('available_bank_limit'))]
+
+
 def _funding_text(report: dict[str, Any]) -> list[str]:
     """Строки блока «Финансирование» — одни и те же для сообщения и PDF."""
     block = report.get("funding") or {}
@@ -3095,6 +3111,9 @@ def _funding_text(report: dict[str, Any]) -> list[str]:
         if item.get("group") == "additional_funding":
             lines.append(f"{item['label']}: {item['value']}. {item['note']}")
     limit = block.get("limit") or {}
+    if _bank_observation_rows(limit):
+        lines.extend(label+': '+_rub(value)+'.' for label, value in _bank_observation_rows(limit))
+        lines.append(limit['bank_observations']['note'])
     reconciliation = limit.get("reconciliation") or (limit.get("own_money") or {}).get("reconciliation")
     if reconciliation:
         lines.extend(_own_money_lines(limit))
@@ -3374,6 +3393,10 @@ def _funding_html(report: dict[str, Any]) -> str:
         if item.get("group") == "additional_funding":
             out.append(f"<p class='note'><b>{esc(item['label'])}: {esc(item['value'])}.</b> {esc(item['note'])}</p>")
     limit = block.get("limit") or {}
+    if _bank_observation_rows(limit):
+        out.append(_table(['Банковские данные РСС', 'Сумма'],
+                          [[label, _rub(value)] for label, value in _bank_observation_rows(limit)]))
+        out.append('<p class="note">'+esc(limit['bank_observations']['note'])+'</p>')
     reconciliation = limit.get("reconciliation") or (limit.get("own_money") or {}).get("reconciliation")
     if reconciliation:
         rows = [[row["label"], _rub(row["value"])] for row in reconciliation["display_rows"]]
@@ -4359,7 +4382,9 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
                 _by_chapter_words(limit.get("limit_by_chapter")) or "по смете РСС",
                 _reserve_words(limit)])))
     else:
-        add("Лимит банка", None, limit.get("reason") or "лимит не посчитан")
+        bank = limit.get('bank_observations') or {}
+        add("Лимит банка", _rub(bank['bank_limit']) if bank.get('bank_limit') is not None else None,
+            bank.get('note') or limit.get('reason') or 'лимит не посчитан')
     if draws:
         bounds = period_bounds(report["kind"], report["end"])
         span = f"{bounds['start']:%d.%m.%Y}–{bounds['end']:%d.%m.%Y}"
@@ -4373,7 +4398,10 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
         if limit.get("known") and over is not None and over > 0:
             note += f"; больше лимита на {_rub(over)}"
         note = " ".join(part for part in (note, _payment_observation_note(draws)) if part)
-        add("Выбрано у банка", _rub(draws["total"]) if total_drawn is not None else None, note,
+        known_part = (draws.get('known_part') or {}).get('total')
+        value = (_rub(total_drawn) if total_drawn is not None else
+                 'учтено '+_rub(known_part) if known_part is not None else None)
+        add("Выбрано у банка", value, note,
             "bad" if limit.get("known") and over is not None and over > 0 else "")
     else:
         add("Выбрано у банка", None, "отчёт РСС не загружен")
@@ -4434,7 +4462,10 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
                if extra > 0 else "хватает до ввода"),
             "bad" if extra > 0 else "good")
     else:
-        add("Осталось по смете после всех оплат", None, "лимит не посчитан")
+        bank = limit.get('bank_observations') or {}
+        value = bank.get('available_bank_limit')
+        add("Осталось по смете после всех оплат", _rub(value) if value is not None else None,
+            bank.get('note') or 'лимит не посчитан')
     if own:
         pass
     elif need and need["deficit"] is not None and _model_basis(limit):
@@ -4545,6 +4576,8 @@ def _gantt_html(report: dict[str, Any]) -> str:
             out.append(report_schedule.render(executive))
         elif completed_history:
             out.append('<style>@media print{.report-completed-history::details-content{display:block!important;content-visibility:visible!important}}</style><details class="report-completed-history"><summary>Подтверждённое завершение работ</summary>'+completed_history+'</details>')
+        if summary and (executive.get('source_status') or {}).get('state') == 'source_conflict':
+            out.append('<p class="executive-source-conflict">'+html.escape(executive['source_status'].get('reason') or '')+' '+html.escape(executive.get('action') or '')+'</p>')
         if summary and executive.get('stalled_text'):
             out.append('<p class="executive-stalled">'+html.escape(executive['stalled_text'])+'</p>')
         out.append('<details class="report-source-screen"><summary>Источники и ограничения оценки</summary>'

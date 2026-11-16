@@ -892,6 +892,25 @@ def monitor_replace_finance(req: MonitorFinanceBaselineRequest) -> dict[str, Any
         raise HTTPException(400, str(exc))
 
 
+class MonitorFinanceUnitRequest(BaseModel):
+    project: str
+    unit: str = ''
+    expected_source_sha256: str = ''
+    session: str = ''
+    key: str = ''
+
+
+@app.post('/monitor/finance-unit', include_in_schema=False)
+def monitor_finance_unit(req: MonitorFinanceUnitRequest) -> dict[str, Any]:
+    _require_team_access(req.session, req.key, 'Монитор проекта')
+    import developaid_finance_units as finance_units
+    try:
+        return finance_units.configure(req.project, req.unit,
+            expected_source_sha256=req.expected_source_sha256)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
 class MonitorDoubtsRequest(BaseModel):
     project: str
     cut: str

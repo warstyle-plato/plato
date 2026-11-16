@@ -256,7 +256,7 @@ def details(block, *, include_completed=True, include_all_facts=False):
         out.append('<p class="note">Основание оценки работы «'+esc(str(block.get("driver") or ""))+
                    '»: '+esc(str(block["driver_reason"]))+'</p>')
     if include_all_facts and block.get("facts") or len(block.get("facts") or []) > 5:
-        out.append('<h4>Все подтверждённые показания</h4><ul>')
+        out.append('<h4>Все подтверждённые показания</h4><ul class="executive-facts">')
         out.extend('<li>'+esc(fact_text(f))+'</li>' for f in block["facts"])
         out.append('</ul>')
     if include_all_facts:
