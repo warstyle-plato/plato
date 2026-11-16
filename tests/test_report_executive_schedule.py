@@ -139,11 +139,11 @@ def test_stalled_gpr_risk_is_visible_before_details_in_html_and_pdf(monkeypatch)
             tab.select_option("#project", PROJECT)
             tab.fill("#cut", CUT)
             tab.click("#reportBtn")
-            summary = tab.locator("#reportBox .executive-schedule")
+            summary = tab.locator("#reportBox .readiness-summary")
             summary.wait_for(state="visible")
             for width in (390, 1440):
                 tab.set_viewport_size({"width": width, "height": 1000})
-                risk = summary.locator(".executive-stalled")
+                risk = tab.locator("#reportBox .executive-stalled")
                 assert risk.is_visible()
                 text = risk.inner_text()
                 assert "Демонтаж башенных кранов К-1,2" in text and "процент в ГПР" in text
@@ -204,30 +204,18 @@ def test_actual_page_and_pdf(scenario, tmp_path, monkeypatch):
             tab.select_option("#project", PROJECT)
             tab.fill("#cut", cut)
             tab.click("#reportBtn")
-            summary = tab.locator("#reportBox .executive-schedule")
+            summary = tab.locator("#reportBox .readiness-summary")
             summary.wait_for(state="visible")
             for width in (390, 1440):
                 tab.set_viewport_size({"width": width, "height": 1000})
                 summary.scroll_into_view_if_needed()
                 visible = summary.inner_text()
-                assert "План ввода" in visible
+                assert "Оценка окончания учтённых работ" in visible
+                assert "План окончания учтённых работ" in visible
                 assert "не предоставлены" not in visible
-                assert "PM" not in visible and "цепочк" not in visible
-                assert "разными единицами" not in visible and "Сравнение версий" not in visible
-                assert "Команде:" in visible
-                if scenario in {"unknownpace", "partialRNV", "versionspresent"}:
-                    assert "4 из 10 м³" in visible and "28.02.2026" in visible
-                    assert "текущего темпа" in visible
-                if scenario == "unmapped":
-                    assert "ещё не сопоставлены" in visible
-                if scenario == "historical":
-                    assert "после даты сводки" in visible
-                if scenario == "partialRNV":
-                    assert "Оценка по части работ" in visible and "31.12.2026" in visible
-                    assert "не подтверждает дату" in visible
+                assert "Сравнение версий" not in visible
+                assert tab.locator('#reportBox .gpr-broader-schedule').count() == 0
                 assert summary.evaluate("e=>{const r=e.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth+1}")
-                for node in summary.locator(".schedule-rnv-cards>div,.executive-action").all():
-                    assert node.evaluate("e=>e.scrollWidth<=e.clientWidth+1"), node.inner_text()
                 tab.screenshot(path=f"/tmp/plato1043-{scenario}-{width}.png", full_page=False)
             detail = tab.locator("#reportBox details.report-source-screen").filter(has_text="Источники и ограничения оценки")
             assert not detail.get_attribute("open")
@@ -235,6 +223,16 @@ def test_actual_page_and_pdf(scenario, tmp_path, monkeypatch):
             assert "PM" not in tab.locator("#reportBox").inner_text()
             detail.locator("summary").click()
             assert "Сравнение версий ГПР пока не рассчитано." in detail.inner_text()
+            source_text = detail.inner_text()
+            assert "Команде:" in source_text
+            if scenario in {"unknownpace", "partialRNV", "versionspresent"}:
+                assert "4 из 10 м³" in source_text and "28.02.2026" in source_text
+                assert "текущего темпа" in source_text
+            if scenario == "unmapped":
+                assert "ещё не сопоставлены" in source_text
+            if scenario == "historical":
+                assert "после даты сводки" in source_text
+
             with tab.expect_download(timeout=90_000) as download:
                 tab.click("#reportPdfBtn")
             raw = Path(download.value.path()).read_bytes()
@@ -242,16 +240,16 @@ def test_actual_page_and_pdf(scenario, tmp_path, monkeypatch):
             pages = PdfReader(io.BytesIO(raw)).pages
             texts = [" ".join((p.extract_text() or "").split()) for p in pages]
             text = " ".join(texts)
-            assert "Сроки и выполнение работ" in text
+            assert "Оценка окончания учтённых работ" in text
             assert "Приложение. Источники и ограничения оценки" in text
             assert "Сравнение версий ГПР пока не рассчитано." in text
             assert "не предоставлены" not in text
             assert "PM" not in text
-            assert text.index("Сроки и выполнение работ") < text.index("Приложение. Источники")
+            assert text.index("Оценка окончания учтённых работ") < text.index("Приложение. Источники")
             if scenario in {"unknownpace", "partialRNV", "versionspresent"}:
                 assert "4 из 10 м³" in text
             if scenario == "partialRNV":
-                assert "Оценка по части работ" in text and "31.12.2026" in text
+                assert "План: 01.09.2026 — 31.12.2026" in text
                 # The current report prints the canonical full-work calendar.
                 chart_page = next(page for page in texts if "Корпус, этап и работа" in page)
                 chart_start = text.split("Корпус, этап и работа", 1)[1]

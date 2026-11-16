@@ -1285,9 +1285,22 @@ def credit_due(credit_block: dict[str, Any], funding_block: dict[str, Any],
     loans = preset["loans"]
     funding_ok = (funding_block or {}).get("state") == "ok"
     limit = ((funding_block or {}).get("limit") or {}) if funding_ok else {}
-    need = _approved_need(limit) if limit else None
-    extra = (need["deficit"] if need and _model_basis(limit) and need["deficit"]
-             and need["deficit"] > 0.5 else 0.0)
+    reconciliation = limit.get('reconciliation')
+    if reconciliation is None:
+        reconciliation = (limit.get('own_money') or {}).get('reconciliation')
+    has_reconciliation = reconciliation is not None
+    reconciliation = reconciliation if isinstance(reconciliation, dict) else {}
+    need = _approved_need(limit) if limit and not has_reconciliation else None
+    from developaid_funding_reconciliation import number
+    # The funding bridge owns the current additional need. An absent amount
+    # cannot silently become the no-increase scenario or revive an old ladder.
+    amount = (number(reconciliation.get('calculated_additional')) if has_reconciliation else
+              number(need.get('deficit')) if need and _model_basis(limit) else None)
+    extra_known = amount is not None and amount >= 0
+    extra = amount if extra_known and amount > 0.5 else 0.0
+    extra_note = ('Расчётная дополнительная потребность по финансовой сверке; '
+                  'её привлечение в банке на условиях первой НКЛ — допущение, не одобренный кредит. '
+                  + str(reconciliation.get('source_scope_short_note') or '') if has_reconciliation else '')
     due: dict[str, dict[str, float]] = {}
     for loan in loans:
         for item in credit_repayment._schedule(loan, loan["limit"]):
@@ -1351,9 +1364,10 @@ def credit_due(credit_block: dict[str, Any], funding_block: dict[str, Any],
             "loans": [{"id": loan["id"], "short": loan["short"], "limit": loan["limit"]}
                       for loan in loans],
             "first_short": loans[0]["short"], "extra": extra,
+            "extra_known": extra_known, "extra_note": extra_note,
             "extra_reason": ("" if extra else
-                             "потребность в допфинансировании банка не посчитана по модели"
-                             if not need or not _model_basis(limit) else
+                             "расчётная дополнительная потребность не определена"
+                             if not extra_known else
                              "лимита банка хватает — увеличения нет"),
             "principal_total": sum(row["principal"] for row in rows),
             "principal_base_total": sum(row["principal_base"] for row in rows),
@@ -1579,11 +1593,22 @@ def _credit_due_html(block: dict[str, Any]) -> str:
     esc = html.escape
     if block.get("state") != "ok":
         return f"<p class='missing'>{esc(block.get('reason') or 'Данных нет.')}</p>"
-    short = any((row["own"].get("pace") or 0.0) > 0.5 for row in block["rows"])
-    out = [f"<p class='note'><b>{esc(credit_interest_line(block))}</b></p>",
-           f"<p class='{'note warn' if short else 'note'}'><b>{esc(credit_verdict(block))}</b></p>"]
-
-    out += _credit_due_table(block)
+    out = []
+    for with_extra, title in [(False, 'Без допфинансирования'), (True, 'С допфинансированием')]:
+        out.append('<section class="credit-financing-scenario" data-financing="'+('extra' if with_extra else 'base')+'"><h3>'+title+'</h3>')
+        if with_extra and block.get('extra_known', bool(block.get('extra'))) is False:
+            out.append('<p class="missing">Не рассчитано: '+esc(block.get('extra_reason') or 'сумма допфинансирования неизвестна')+'.</p></section>')
+            continue
+        variant = _credit_financing_variant(block, with_extra=with_extra)
+        if with_extra:
+            out.append('<p class="note">Допфинансирование: '+esc(_rub(block['extra']))+
+                       '. Погашение и проценты — на условиях '+esc(block['first_short'])+'. '
+                       +esc(block.get('extra_note') or 'Увеличение лимита — допущение расчёта.')+'</p>')
+        out.append('<p class="note"><b>'+esc(credit_interest_line(variant))+'</b></p>')
+        out.append('<p class="note"><b>'+esc(credit_verdict(variant))+'</b></p>')
+        out += _credit_due_table(variant, include_base_total=False)
+        out.append('</section>')
+    out.append('<h4>Платежи словами — '+('с допфинансированием' if block.get('extra') else 'без допфинансирования')+'</h4>')
     out.append("<ul class='credit-dates'>" + "".join(
         f"<li>{esc(line)}</li>" for line in credit_lines(block)) + "</ul>")
     out.append(f"<p class='note'>{esc(_credit_assumptions(block))}</p>")
@@ -1591,6 +1616,19 @@ def _credit_due_html(block: dict[str, Any]) -> str:
         if reason:
             out.append(f"<p class='missing'>{esc(reason)}</p>")
     return "\n".join(out)
+
+
+def _credit_financing_variant(block: dict[str, Any], *, with_extra: bool) -> dict[str, Any]:
+    """Select already computed values; do not calculate a second money model."""
+    if with_extra:
+        return block
+    variant = dict(block, extra=0.0, principal_total=block['principal_base_total'],
+                   interest_total=block['interest_base_total'])
+    variant['rows'] = [dict(row, principal=row['principal_base'], interest=row['interest_base'],
+        **{field: {key: row[field].get(key+'_base') for key in _SCENARIOS}
+           for field in ['own','left','total']}) for row in block['rows']]
+    variant['own_total'] = {key: block['own_total'].get(key+'_base') for key in _SCENARIOS}
+    return variant
 
 
 _GROUPS = (("pace", "Наш прогноз (нынешний темп продаж)"), ("fm", "План финмодели"))
@@ -1664,7 +1702,7 @@ def _nb(value: float | None) -> str:
     return _bn(value).replace(" ", "\u00a0")
 
 
-def _credit_due_table(block: dict[str, Any]) -> list[str]:
+def _credit_due_table(block: dict[str, Any], *, include_base_total=True) -> list[str]:
     """Таблица погашения: две группы — наш прогноз и план финмодели, в каждой
     проценты, сколько не хватает к дате и нарастающим итогом (владелец,
     28.10.2026: «Нагляднее… сколько не хватает по ФМ и сколько по нашему
@@ -1717,11 +1755,11 @@ def _credit_due_table(block: dict[str, Any]) -> list[str]:
 
     body.append(total_row("Итого", block["principal_total"], block["interest_total"],
                           {"pace": own["pace"], "fm": own["fm"]}))
-    if block["extra"]:
+    if block["extra"] and include_base_total:
         body.append(total_row("Без увеличения лимита", block["principal_base_total"],
                               block["interest_base_total"],
                               {"pace": own["pace_base"], "fm": own["fm_base"]}))
-    out.append("<table class='credit-due'>" + "".join(head) + "".join(body) + "</table>")
+    out.append("<div class='credit-table-scroll'><table class='credit-due'>" + "".join(head) + "".join(body) + "</table></div>")
     out.append(f"<p class='note'>{esc(_totals_words(block))}</p>")
     return out
 
@@ -1742,7 +1780,7 @@ def _credit_assumptions(block: dict[str, Any]) -> str:
     extra = (f" и ожидаемое увеличение лимита на {_rub(block['extra'])} по графику "
              f"{block['first_short']} (условия приняты как у {block['first_short']}; проценты "
              "на него — с даты РСС, оценка сверху)"
-             if block["extra"] else f"; увеличения лимита нет: {block['extra_reason']}")
+             if block["extra"] else f"; допфинансирование не включено: {block['extra_reason']}")
     drawn = (f" Выбрано по РСС {_rub(block['drawn'])}." if block.get("drawn") is not None
              else "")
     return (f"Долг — по графикам договоров от полного лимита ({limits}){extra}.{drawn} "
@@ -3603,6 +3641,9 @@ def render_text(report: dict[str, Any]) -> str:
 # --------------------------------------------------------------------------
 
 REPORT_STYLE = """
+.credit-financing-scenario{max-width:100%;overflow-wrap:anywhere}.credit-table-scroll{max-width:100%;overflow-x:auto}table.credit-due{min-width:820px}
+@media print{.credit-table-scroll{overflow:visible}table.credit-due{min-width:0;table-layout:fixed;width:100%;font-size:8px;break-inside:auto}table.credit-due :is(th,td){white-space:normal;overflow-wrap:anywhere;min-width:0;padding:4px 2px}table.credit-due td:first-child,table.credit-due th:first-child{position:static}}
+
 .report-source-screen{margin:10px 0;color:#5b6b7d}
 .report-source-screen>summary{cursor:pointer;font-size:11px}
 .executive-action{padding:9px 12px;background:#fff6e6;border-left:3px solid #d59c38;font-size:12px;line-height:1.5}
@@ -4491,21 +4532,21 @@ def _gantt_html(report: dict[str, Any]) -> str:
     calendar = block.get('calendar')
     display = ((calendar.get('display') if calendar.get('qualified') and calendar.get('cut') == str(report.get('end')) else None)
                if calendar is not None else summary.get('display') if summary else None)
-    out = [render_analysis(display),
-           readiness.render(block.get("readiness")), "<h3>Сроки работ по корпусам</h3>"]
+    out = [report_schedule.source_styles(),
+           readiness.render(block.get("readiness"), executive=True, analysis=render_analysis(display)),
+           "<h3>Гант по корпусам</h3>"]
     import developaid_gpr_corpus as corpus_gpr
     completed_history = ''
     if block.get("dependency_timeline"):
         executive = dict(_executive_schedule(report))
         completed_history = executive.get('completed_facts_html') or ''
         executive['completed_facts_html'] = ''
-        if gpr_summary(block.get('readiness'), report.get('end')) is not None:
-            out.append('<section class="gpr-broader-schedule"><h4>Сроки по строительным работам текущего ГПР</h4>'
-                       '<p class="note">Отдельная оценка строительных работ. Состав и основание могут отличаться '
-                       'от выбранной оценки готовности. Срез '+html.escape(_day(report.get('end')))+'. Статус и ограничения этой оценки приведены ниже.</p>'
-                       +report_schedule.render(executive)+'</section>')
-        else:
+        if summary is None:
             out.append(report_schedule.render(executive))
+        elif completed_history:
+            out.append('<style>@media print{.report-completed-history::details-content{display:block!important;content-visibility:visible!important}}</style><details class="report-completed-history"><summary>Подтверждённое завершение работ</summary>'+completed_history+'</details>')
+        if summary and executive.get('stalled_text'):
+            out.append('<p class="executive-stalled">'+html.escape(executive['stalled_text'])+'</p>')
         out.append('<details class="report-source-screen"><summary>Источники и ограничения оценки</summary>'
                    + _schedule_source_details(report) + '</details>')
     if block.get("corpus_gpr") and block.get("state") != "ok" and not (calendar or {}).get('rows'):
@@ -4515,27 +4556,32 @@ def _gantt_html(report: dict[str, Any]) -> str:
                    corpus_gpr.render(block["corpus_gpr"])+"</details>")
     if calendar is not None and calendar.get('rows'):
         out.append(report_gantt.render_calendar(calendar, report.get('end')))
-        out.append(completed_history)
+        if not summary:
+            out.append(completed_history)
         return ''.join(out)
     if block.get("state") != "ok":
         out.append(f"<p class='note'>{html.escape(block.get('reason') or 'Графика работ нет.')}</p>")
-        out.append(completed_history)
+        if not summary:
+            out.append(completed_history)
         return "".join(out)
     if 'calendar' not in block:
         out.append('<p class="note"><b>Архивная сводка по корпусам.</b> Это сохранённые укрупнённые данные. '
                    'Для полного календаря всех работ соберите новый срез отчёта.</p>')
         out.append(report_gantt.render(block, report.get('end')))
-        out.append(completed_history)
+        if not summary:
+            out.append(completed_history)
         return ''.join(out)
     out.append('<p class="note">В сохранённой сводке нет полного перечня работ для нового календаря. '
                'Соберите сводку по текущему срезу; даты по укрупнённым статьям его не заменяют.</p>')
-    out.append(completed_history)
+    if not summary:
+        out.append(completed_history)
     return "".join(out)
 
 
 def _schedule_source_details(report: dict[str, Any]) -> str:
     content = report_schedule.details(_executive_schedule(report),
-        include_completed=not bool((report.get('gantt') or {}).get('dependency_timeline')))
+        include_completed=not bool((report.get('gantt') or {}).get('dependency_timeline')),
+        include_all_facts=gpr_summary((report.get('gantt') or {}).get('readiness'), report.get('end')) is not None)
     block = report.get("schedule") or {}
     content += ''.join("<p class='note'>" + html.escape(line) + "</p>"
                        for line in report_gantt.notes(report.get("gantt") or {}, block))

@@ -508,7 +508,7 @@ def editor(project, *, full_source_sha256=''):
                               overrides=(e['profile'].get('element_profile') or {}).get('overrides', {})) for e in events if e['profile']['full_source_sha256'] == sha])
 
 
-def render(state):
+def render(state, *, executive=False, analysis=""):
     """One compact state and substantive corpus facts before the work chart."""
     if not state:
         return ''
@@ -535,7 +535,7 @@ def render(state):
     known = project['progress'] is not None or any(row['progress'] is not None for row in state['corpora'])
     heading = state['scope_label']+(' · оценочный профиль' if state['estimated'] and not state['scope_label'].startswith('Оценочная') else '')
     out = ['<style>.readiness-summary{padding:12px 16px;border-bottom:1px solid #dce3ed;overflow-wrap:anywhere}.readiness-summary h3{font-size:15px;margin:0 0 7px}.readiness-summary p{font-size:12px;line-height:1.45;margin:5px 0}.readiness-summary summary{cursor:pointer;font-size:12px}.readiness-project-value{display:block;font-size:24px;margin:5px 0}.readiness-corpus-table,.readiness-estimate-table{width:100%;border-collapse:collapse;font-size:12px;margin:9px 0}.readiness-corpus-table th,.readiness-corpus-table td,.readiness-estimate-table th,.readiness-estimate-table td{padding:7px 4px;border-bottom:1px solid #dce3ed;text-align:right;vertical-align:top}.readiness-corpus-table th:first-child,.readiness-estimate-table th{text-align:left;overflow-wrap:anywhere}.readiness-corpus-table thead th{font-weight:600;font-size:11px}.readiness-corpus-table tbody th{max-width:120px}.readiness-estimate-reference{margin-top:9px}.readiness-estimate-reference p{max-width:850px}.readiness-matrix{max-width:100%;overflow-x:auto}.readiness-matrix table{width:100%;table-layout:fixed;border-collapse:collapse;font-size:12px}.readiness-matrix th,.readiness-matrix td{padding:7px;border:1px solid #dce3ed;overflow-wrap:anywhere;vertical-align:top}@media(max-width:640px){.readiness-summary{padding:10px 12px}.readiness-corpus-table{font-size:11px}.readiness-corpus-table th,.readiness-corpus-table td{padding:6px 3px}.readiness-corpus-table thead th{font-size:10px}}</style>',
-           '<section class="readiness-summary"><h3>'+esc(heading)+'</h3>']
+           '<section class="readiness-summary"><h3>'+esc('ГПР — сроки и готовность' if executive else heading)+'</h3>']
     out.append('<style>@media print{.readiness-project-gap::details-content{content-visibility:visible!important;display:block!important}}</style>')
     out.append('''<style>
 .readiness-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(250px,100%),1fr));gap:10px}.readiness-item{border:1px solid #dce3ed;border-radius:7px;padding:10px}.readiness-item h4{margin:0 0 7px}.readiness-item strong{font-size:20px}.readiness-item details{margin-top:7px}
@@ -545,6 +545,36 @@ def render(state):
 @media(max-width:640px){.readiness-summary{padding:10px}.readiness-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}.readiness-item{padding:8px 6px}.readiness-item h4{font-size:11px}.readiness-item strong{font-size:21px}.readiness-item:has(details[open]){grid-column:1/-1}.readiness-matrix th,.readiness-matrix td{padding:7px 4px}.readiness-matrix th{font-size:11px}.readiness-matrix th:first-child{width:30%}.readiness-matrix td strong{font-size:13px}.readiness-total strong{font-size:14px!important}}
 @media print{.readiness-summary details::details-content{content-visibility:visible!important;display:block!important}body.gpr-print-mode .readiness-summary .readiness-weighted-evidence{display:block!important}}
 </style>''')
+    if executive:
+        out.append('<style>.gpr-forecast-card{padding:16px 20px;background:#eef4fb;border:1px solid #cad9ea;border-left:4px solid #34567a;border-radius:8px;margin:4px 0 16px}.gpr-forecast-card>span{font-size:13px;color:#465d72}.gpr-forecast-card>strong{display:block;font-size:28px;margin:6px 0}.gpr-forecast-card .readiness-project-value{display:inline;font-size:inherit}.gpr-automatic-analysis small{display:none}</style>')
+        # The executive view reads the same supplied dates and matrix as Monitor.
+        # Source inventories remain available without duplicating the overview.
+        forecast = project.get('forecast') or {}
+        forecast_class = 'readiness-project-forecast' if summary['finish'] else 'readiness-gap'
+        out.append('<div class="gpr-forecast-card"><span>Оценка окончания учтённых работ</span>'
+                   '<strong class="'+forecast_class+'">'+esc(date_text(summary['finish']) if summary['finish'] else 'Выполнено' if forecast.get('all_complete') else 'Не определена')+'</strong>'
+                   '<p>План окончания учтённых работ: '+esc(date_text(summary['plan_finish']))+'</p>'
+                   '<p>Готовность: <b class="readiness-project-value">'+esc(summary['value'])+'</b></p>'
+                   '<p>'+esc(summary['scope_text'])+'</p><p>'+esc(summary['as_of_text'])+'</p>'
+                   '<p>'+esc('Учтённые работы завершены по источникам; фактическая дата окончания и РНВ этим не подтверждаются.' if forecast.get('all_complete') else summary['forecast_text'])+'</p></div>')
+        milestone = state.get('milestone_plan') or {}
+        if milestone.get('date'):
+            out.append('<p class="readiness-milestone-plan">'+esc(milestone['label'])+': '+esc(date_text(milestone['date']))+'</p>')
+        out.append(analysis)
+        if state.get('project_weight_estimated'):
+            out.append('<p class="readiness-corpus-assumption">'+esc(state['project_weight_basis'])+
+                       '. Допущение для общей оценки СМР; ПИР и паркинг в неё не включены.</p>')
+        out.append('<details class="readiness-method"><summary>Основания и ограничения оценки</summary>')
+        for row in [project, *state['corpora']]:
+            out.append('<p><b>'+esc(row.get('name') or 'Проект')+'</b>: '+esc(facts(row))+'. '+esc(evidence(row))+'</p>')
+            if row.get('reason'):
+                out.append('<p>'+esc(row['reason'])+'</p>')
+        if state.get('internal_weight_methods'):
+            out.append('<p>'+esc('; '.join(state['internal_weight_methods']))+'</p>')
+        out.append('<p>'+esc(state.get('profile_label'))+' · '+esc(state.get('basis_label'))+'</p></details>')
+        if state.get('matrix'):
+            out.append(elements.render_matrix(state))
+        return ''.join(out)+'</section>'
     milestone = state.get('milestone_plan') or {}
     if milestone.get('date'):
         out.append('<p class="readiness-milestone-plan"><b>'+esc(milestone['label'])+': '+esc(date_text(milestone['date']))+'</b></p>')

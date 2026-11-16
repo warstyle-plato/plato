@@ -157,7 +157,8 @@ def test_real_report_page_tiles_and_downloaded_pdf_use_readiness(saved, monkeypa
                 assert broader.bounding_box()['height'] > closed_height + 100
                 broader.locator('summary').first.click()
                 expect(broader).to_have_js_property('open', False)
-                expect(page.locator('.gpr-broader-schedule')).to_contain_text('Отдельная оценка строительных работ')
+                expect(page.locator('.gpr-broader-schedule')).to_have_count(0)
+                expect(page.locator('.gpr-forecast-card')).to_contain_text(report._day(summary['finish']))
                 assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
                 page.screenshot(path=f'/tmp/gpr-executive-readiness-{width}.png', full_page=True)
             with page.expect_download(timeout=90000) as download:
@@ -172,7 +173,7 @@ def test_real_report_page_tiles_and_downloaded_pdf_use_readiness(saved, monkeypa
             assert 'плановом темпе' in first and 'не прогноз РНВ' in first
             all_text = ' '.join(' '.join((p.extract_text() or '').split()) for p in reader.pages)
             assert '78,7%' in all_text and 'по плановой длительности' in all_text
-            assert 'Сроки по строительным работам текущего ГПР' in all_text
+            assert 'Сроки по строительным работам текущего ГПР' not in all_text
             assert all_text.index(summary['value']) < all_text.index('78,7%')
             assert not errors
         finally:

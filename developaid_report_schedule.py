@@ -199,15 +199,19 @@ def conclusion(block):
     return " ".join(parts)
 
 
+def source_styles():
+    """Source appendix visibility is shared by both executive presentations."""
+    return ('<style>.report-source-appendix{display:none}'
+                   '@media print{.report-source-screen{display:none!important}'
+                   '.report-source-appendix{display:block;break-before:page;page-break-before:always}}</style>')
+
+
 def render(block):
     esc = lambda v: html.escape(str(v if v is not None else ""), quote=True)
     forecast = date_text(block.get("forecast")) if block.get("forecast") else "Не определена"
     delta = block.get("delay_days")
     delay = (f"{delta:+g} дн." if _number(delta) and block.get("forecast") else "Не определено")
-    print_style = ('<style>.report-source-appendix{display:none}'
-                   '@media print{.report-source-screen{display:none!important}'
-                   '.report-source-appendix{display:block;break-before:page;page-break-before:always}}</style>')
-    out = [styles(), print_style, '<section class="dependency-timeline schedule-overview executive-schedule">',
+    out = [styles(), source_styles(), '<section class="dependency-timeline schedule-overview executive-schedule">',
            '<h3>Сроки и выполнение работ</h3><div class="schedule-rnv-cards">',
            '<div><span>'+esc(block.get("plan_label") or "План ввода")+'</span><strong>'+esc(date_text(block.get("plan_date") or block.get("approved")))+'</strong></div>',
            '<div class="schedule-warning"><span>'+esc(block["forecast_label"])+
@@ -237,7 +241,7 @@ def render(block):
     return ''.join(out)
 
 
-def details(block, *, include_completed=True):
+def details(block, *, include_completed=True, include_all_facts=False):
     esc = html.escape
     out = ['<div class="executive-source-content"><h3>Основания оценки сроков</h3>']
     owner = block.get('owner_rnv')
@@ -251,10 +255,16 @@ def details(block, *, include_completed=True):
     if block.get("driver_reason"):
         out.append('<p class="note">Основание оценки работы «'+esc(str(block.get("driver") or ""))+
                    '»: '+esc(str(block["driver_reason"]))+'</p>')
-    if len(block.get("facts") or []) > 5:
+    if include_all_facts and block.get("facts") or len(block.get("facts") or []) > 5:
         out.append('<h4>Все подтверждённые показания</h4><ul>')
         out.extend('<li>'+esc(fact_text(f))+'</li>' for f in block["facts"])
         out.append('</ul>')
+    if include_all_facts:
+        status = block.get('source_status') or {}
+        if status.get('reason'):
+            out.append('<p class="executive-source-state">'+esc(status['reason'])+'</p>')
+        if block.get('action'):
+            out.append('<p class="executive-action">'+esc(block['action'])+'</p>')
     out.extend('<p class="note">'+esc(str(reason))+'</p>' for reason in block.get("reasons") or [])
     out.append('<p class="note">Общий процент разных видов работ показан только при известных полных весах стоимости СМР. '
                'Объём общей группы не распределяется между отдельными работами.</p>')
