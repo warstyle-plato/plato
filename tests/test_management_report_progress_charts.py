@@ -1,12 +1,8 @@
-"""Графики выполнения ГПР в сводке появляются только со второго замера.
+"""The compact executive report does not expand full-GPR progress charts.
 
-Владелец (02.11.2026) о разделе «Стройка»: при одном ГПР-факте график
-«план и факт на дату каждого ГПР-факта» — одна точка, а не динамика. Графики
-(кривая и «Разделы графика») скрыты, пока дат ГПР-факта меньше двух; таблицы
-«План к дате / Выполнено / Отставание» остаются. Проверяется отрисованная
-страница (тот же ``render_html`` уходит в PDF). Данные — синтетика.
-
-Запуск: python3 -m pytest tests/test_management_report_progress_charts.py -q
+The source predicate and two-date history remain available to Monitor/model
+consumers. Owner's 16.11.2026 report composition is forecast, matrix and corpus
+Gantt only; a second reading cannot reintroduce the full duration-weighted block.
 """
 from __future__ import annotations
 
@@ -63,17 +59,6 @@ def _rendered(page_html: str, *, open_physical: bool = False) -> dict:
         try:
             page = browser.new_page()
             page.set_content(page_html)
-            if open_physical:
-                from playwright.sync_api import expect
-                # The duration-weighted reading is secondary to canonical
-                # readiness. Open its real disclosure before reading tables.
-                details = page.locator('.gpr-broader-physical')
-                assert not details.get_attribute('open')
-                toggle = details.locator(':scope > summary')
-                expect(toggle).to_be_visible()
-                expect(details.locator('table').first).not_to_be_visible()
-                toggle.click()
-                expect(details.locator('table').first).to_be_visible()
             return page.evaluate("""() => ({
                 captions: [...document.querySelectorAll('figure')]
                     .filter(f => f.getBoundingClientRect().height > 0)
@@ -87,33 +72,23 @@ def _rendered(page_html: str, *, open_physical: bool = False) -> dict:
             browser.close()
 
 
-def test_one_measurement_shows_tables_without_charts():
+def test_one_measurement_does_not_expand_full_gpr_in_summary():
     built = _built(["2026-10-16"])
     assert not report.progress_charts_shown(built["physical"])
     seen = _rendered(report.render_html(built), open_physical=True)
     assert CURVE not in seen["captions"] and SECTIONS not in seen["captions"]
-    # Таблицы остаются, вместо графика — одна понятная фраза.
-    assert "План к дате" in seen["text"] and "По разделам графика работ" in seen["text"]
-    assert NOTE in seen["text"]
-    physical = built['physical']
-    assert seen['physicalTables'][0] == [
-        ['', 'План к дате', 'Выполнено', 'Отставание'],
-        ['По процентам ГПР', report._pct(physical['plan']), report._pct(physical['fact']),
-         report._pp(physical['fact'] - physical['plan'])],
-        *[[row['object'], report._pct(row['plan']), report._pct(row['fact']),
-           report._pp(row['fact'] - row['plan'])] for row in physical['objects']]]
-    assert seen['physicalTables'][1] == [
-        ['Раздел', 'План к дате', 'Выполнено', 'Отставание', 'Прирост за неделю'],
-        *[[row['section'], report._pct(row['plan']), report._pct(row['fact']),
-           report._pp(row['lag']), report._pp(row['delta']) if row['delta'] is not None else '—']
-          for row in physical['breakdown']['sections']]]
+    assert 'Прогноз учтённых работ'in seen['text']and 'Матрица готовности'in seen['text']
+    assert 'По разделам графика работ'not in seen['text']and NOTE not in seen['text']
+    assert seen['physicalTables']==[]
 
 
-def test_two_measurements_bring_both_charts_back():
+def test_two_measurements_do_not_expand_full_gpr_in_summary():
     built = _built(["2026-10-09", "2026-10-16"])
     assert report.progress_charts_shown(built["physical"])
     seen = _rendered(report.render_html(built))
-    assert CURVE in seen["captions"] and SECTIONS in seen["captions"]
+    assert CURVE not in seen["captions"] and SECTIONS not in seen["captions"]
+    assert 'Гант по корпусам'in seen["text"]
+    assert seen["physicalTables"]==[]
     assert NOTE not in seen["text"]
 
 

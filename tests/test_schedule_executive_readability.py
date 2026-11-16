@@ -46,8 +46,9 @@ def dense_schedule():
 
 
 def executive_html(block, grouped):
-    return report._gantt_html({'gantt': grouped, 'end': '2026-11-06',
-                              'schedule': {**block['rnv'], 'state': 'ok'}})
+    # Exercise the retained detailed components directly, not the compact report.
+    import developaid_report_schedule as executive
+    return executive.render(report._executive_schedule({'gantt':grouped}))+gantt.render(grouped,'2026-11-06')
 
 
 def test_dense_network_is_calculated_fully_but_history_cannot_crowd_out_delay_origin():
@@ -124,7 +125,7 @@ def test_source_only_corpus_fallback_displays_raw_progress_without_approving_it(
     source = corpus.read(book(name='Учебный фасад'))
     before = copy.deepcopy(source)
     block = {'state': 'missing', 'reason': 'Нет утверждённой привязки.', 'corpus_gpr': source}
-    html = report._gantt_html({'gantt': block, 'end': '2026-11-06'})
+    html = corpus.render_overview(block['corpus_gpr'], '2026-11-06')
     assert 'Исходные показания ГПР по корпусам' in html
     assert 'Показание исходного ГПР: 50.0%' in html
     assert '01.02.2027' in html and 'Все пакеты исходного файла (2)' in html

@@ -1,4 +1,4 @@
-"""The native summary calendar keeps the full source and the selected forecast."""
+"""Full-calendar component is retained; the executive PAGE/PDF use a compact overview."""
 import copy
 import html
 import io
@@ -10,12 +10,14 @@ import pytest
 from pypdf import PdfReader
 
 import developaid_management_report as report
+import developaid_report_gantt as gantt
 import developaid_schedule_plan_scenario as scenario
 from test_gpr_why_page import why_view
 
 
 def _body(view):
-    return report._gantt_html({'gantt':report.gantt(view,{}),'end':view['cut']})
+    # Retained full-calendar component; the executive report now uses an overview.
+    return gantt.render_calendar(report.gantt(view,{})['calendar'],view['cut'])
 
 
 def _rows(body):
@@ -34,7 +36,7 @@ def _tasks(view):
     return [*walk(view['schedule']['management']),*view['schedule']['undated_works']]
 
 
-def test_summary_replaces_the_legacy_rollups_with_every_native_work_and_exact_selected_finish():
+def test_full_calendar_component_retains_every_native_work_and_exact_selected_finish():
     view=why_view();before=copy.deepcopy(view);body=_body(view)
     rows=view['schedule']['rows']+view['schedule']['undated_works']
     display=view['schedule']['readiness']['project']['forecast']['display']
@@ -42,8 +44,8 @@ def test_summary_replaces_the_legacy_rollups_with_every_native_work_and_exact_se
     for row in rows:
         assert html.escape(row['name'])in _row(body,row['id'])
         assert html.escape(row['object'])in _row(body,row['id'])
-    assert body.count('class="gpr-analysis-paragraph"')==2
-    assert body.index('gpr-automatic-analysis')<body.index('readiness-summary')<body.index('data-calendar-version="canonical"')
+    assert 'gpr-analysis-paragraph'not in body
+    assert 'data-calendar-version="canonical"'in body
     assert 'class="schedule-article-details'not in body
     assert 'class="gpr-scoped-finish" data-date="'+display['finish']+'"'in body
     for point in display['rows']:
@@ -185,7 +187,7 @@ def native_summary(tmp_path,monkeypatch):
 
 
 @pytest.mark.parametrize('width',[390,1440])
-def test_actual_summary_page_keeps_the_new_axis_every_source_work_and_native_pdf(native_summary,tmp_path,width):
+def test_actual_summary_page_keeps_compact_corpus_axis_and_native_pdf(native_summary,tmp_path,width):
     from playwright.sync_api import sync_playwright, expect
     from browser import chromium_or_skip, serve
     from developaid_schedule_visual import date_text
@@ -203,39 +205,30 @@ def test_actual_summary_page_keeps_the_new_axis_every_source_work_and_native_pdf
         page.goto(base+'/report',wait_until='domcontentloaded')
         page.wait_for_selector('#project option[value="'+project+'"]',state='attached')
         page.select_option('#project',project);page.fill('#cut',view['cut']);page.click('#reportBtn')
-        host=page.locator('#reportBox .report-gpr-calendar[data-cut="'+view['cut']+'"]')
+        host=page.locator('#reportBox .report-gpr-compact')
         expect(host).to_be_visible(timeout=30000)
-        expect(host.locator('.cg-work')).to_have_count(len(tasks))
-        paragraphs=page.locator('#reportBox .gpr-analysis-paragraph')
-        assert paragraphs.all_text_contents()==display['paragraphs']
-        assert paragraphs.first.evaluate('(el)=>el.compareDocumentPosition(document.querySelector("#reportBox .readiness-summary"))&Node.DOCUMENT_POSITION_FOLLOWING')
-        for stage in host.locator('.cg-stage > summary').all():stage.click()
-        marker=host.locator('.cg-axis .gpr-scoped-finish')
-        expect(marker).to_have_attribute('data-date',display['finish'])
-        row=host.locator('.cg-work[data-work-id="why-0"]')
-        expect(row.locator('.gpr-forecast-end')).to_have_attribute('data-finish',display['finish'])
-        error=page.evaluate('''()=>{const a=document.querySelector('.report-gpr-calendar .cg-axis .gpr-scoped-finish').getBoundingClientRect(),b=document.querySelector('.cg-work[data-work-id="why-0"] .gpr-forecast-end').getBoundingClientRect();return Math.abs(a.left-b.left)}''')
-        assert error<1
-        expect(host.locator('[data-work-id="why-3"]')).to_contain_text('Вне выбранного состава')
-        assert host.locator('[data-work-id="why-3"] .gpr-forecast-end').count()==0
+        expect(host.locator('[data-gpr-block]')).to_have_count(3)
+        assert host.locator('[data-gpr-block]').evaluate_all('es=>es.map(e=>e.dataset.projectForecast)')==[display['finish']]*3
+        assert host.locator('.cg-work,.cg-stage,.readiness-summary,details').count()==0
+        assert host.locator('.rg-corpus').count()>0
+        for row in host.locator('.rg-corpus').all():expect(row).to_be_visible()
+        expect(host.locator('a[href="/monitor#tab=monitor"]')).to_be_visible()
         assert page.locator('#reportBox .schedule-article-tree').count()==0
         assert page.locator('#reportBox img').count()==0 and page.evaluate('window.whyInjected')is None
         assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
         host.screenshot(path=str(tmp_path/f'canonical-report-{width}.png'))
         page.emulate_media(media='print')
-        for details in host.locator('.cg-stage').all():details.evaluate('(el)=>el.open=false')
-        assert host.locator('.cg-work:visible').count()==len(tasks)
+        for row in host.locator('.rg-corpus').all():expect(row).to_be_visible()
         page.emulate_media(media='screen')
         with page.expect_download(timeout=90000)as download:page.click('#reportPdfBtn')
         raw=Path(download.value.path()).read_bytes()
         (tmp_path/f'canonical-report-{width}.pdf').write_bytes(raw)
         pdf=PdfReader(io.BytesIO(raw));text='\n'.join(item.extract_text()or''for item in pdf.pages)
-        tight=lambda value:''.join(value.split())
-        assert date_text(display['finish'])in text and 'Условное окончание'in text
-        assert 'Вне выбранного состава'in text and 'Учебная работа без начала'in text
-        for task in tasks:
-            assert tight(task['name'])in tight(text)
-            for cell in task['source_cells'].values():assert cell in text
+        assert date_text(display['finish'])in text and 'Прогноз учтённых работ'in text
+        assert 'Матрица готовности'in text and 'Гант по корпусам'in text
+        assert 'Подробные работы и источники'in text
+        assert 'Учебная работа без начала'not in text
+        assert 'Платон: пояснение расчётного среза'not in text
         geometry=pymupdf.open(stream=raw,filetype='pdf')
         for sheet in geometry:
             assert sheet.rect.width==pytest.approx(595,abs=2)

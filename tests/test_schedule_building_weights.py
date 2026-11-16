@@ -160,15 +160,15 @@ def test_actual_report_html_and_pdf_preserve_project_scale_and_unknown_reason(wi
     actual=lambda s:report._gantt_html({'gantt':{'readiness':s,'state':'error','reason':'Synthetic empty timeline'},'end':DAY})
     with browser_page(width) as (page,_,errors):
         page.set_content(actual(state))
-        expect(page.locator('.readiness-project-value')).to_have_text('99,0%')
-        expect(page.locator('.readiness-summary')).to_contain_text('Доли корпусов в общей готовности определены')
+        expect(page.locator('[data-gpr-block=forecast]')).to_contain_text('99,0%')
+        expect(page.locator('[data-gpr-block]')).to_have_count(3)
         assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
         text=''.join(p.extract_text() for p in PdfReader(io.BytesIO(page.pdf())).pages)
-        assert '99,0%' in text and 'Полная плановая стоимость СМР' in text
+        assert '99,0%' in text and 'Матрица готовности' in text
         config['assignments']['Small:frame']['weight']['value']=None
         missing=model(rows,config);page.set_content(actual(missing))
         expect(page.locator('.readiness-project-value')).to_have_count(0)
-        expect(page.locator('.readiness-gap')).to_contain_text('Не определён общий вес корпусов')
+        expect(page.locator('.rg-gap')).to_contain_text('Не определён общий вес корпусов')
         text=''.join(p.extract_text() for p in PdfReader(io.BytesIO(page.pdf())).pages)
         assert 'Не определён общий вес корпусов' in text
         assert '99,0%' not in text

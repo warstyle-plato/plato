@@ -171,7 +171,8 @@ def test_legacy_confirmation_provenance_and_executive_forecast_are_escaped(sourc
     markup = timeline.render(block, context='report')
     assert '&lt;img' in markup and '<img' not in markup
     assert 'Архивная проверка календаря' not in markup
-    assert markup in report._gantt_html(payload)
+    assert markup not in report._gantt_html(payload)
+    assert report._gantt_html(payload).count('data-gpr-block=')==3
     assert block == original
 
 

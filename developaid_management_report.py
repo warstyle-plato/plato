@@ -4223,7 +4223,7 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
         out[-1]["group"] = "additional_funding"
 
     block = report.get("physical") or {}
-    readiness = gpr_summary((report.get('gantt') or {}).get('readiness'), report.get('end'))
+    readiness = _report_gpr_summary(report)
     if readiness is not None:
         add(readiness['label'], readiness['value'] if readiness['progress'] is not None else None,
             readiness['scope_text']+' '+readiness['as_of_text'], hint=readiness['reason'])
@@ -4484,53 +4484,20 @@ def _executive_schedule(report: dict[str, Any]) -> dict[str, Any]:
 
 
 def _gantt_html(report: dict[str, Any]) -> str:
-    block = report.get("gantt") or {}
-    import developaid_schedule_readiness as readiness
-    from developaid_gpr_summary import render_analysis
-    summary = gpr_summary(block.get('readiness'), report.get('end'))
-    calendar = block.get('calendar')
-    display = ((calendar.get('display') if calendar.get('qualified') and calendar.get('cut') == str(report.get('end')) else None)
-               if calendar is not None else summary.get('display') if summary else None)
-    out = [render_analysis(display),
-           readiness.render(block.get("readiness")), "<h3>Сроки работ по корпусам</h3>"]
-    import developaid_gpr_corpus as corpus_gpr
-    completed_history = ''
-    if block.get("dependency_timeline"):
-        executive = dict(_executive_schedule(report))
-        completed_history = executive.get('completed_facts_html') or ''
-        executive['completed_facts_html'] = ''
-        if gpr_summary(block.get('readiness'), report.get('end')) is not None:
-            out.append('<section class="gpr-broader-schedule"><h4>Сроки по строительным работам текущего ГПР</h4>'
-                       '<p class="note">Отдельная оценка строительных работ. Состав и основание могут отличаться '
-                       'от выбранной оценки готовности. Срез '+html.escape(_day(report.get('end')))+'. Статус и ограничения этой оценки приведены ниже.</p>'
-                       +report_schedule.render(executive)+'</section>')
-        else:
-            out.append(report_schedule.render(executive))
-        out.append('<details class="report-source-screen"><summary>Источники и ограничения оценки</summary>'
-                   + _schedule_source_details(report) + '</details>')
-    if block.get("corpus_gpr") and block.get("state") != "ok" and not (calendar or {}).get('rows'):
-        out.append(corpus_gpr.render_overview(block["corpus_gpr"], str(report.get("end") or "")))
-    elif block.get("corpus_gpr"):
-        out.append('<details class="schedule-provenance"><summary>Исходные показания ГПР по корпусам</summary>'+
-                   corpus_gpr.render(block["corpus_gpr"])+"</details>")
-    if calendar is not None and calendar.get('rows'):
-        out.append(report_gantt.render_calendar(calendar, report.get('end')))
-        out.append(completed_history)
-        return ''.join(out)
-    if block.get("state") != "ok":
-        out.append(f"<p class='note'>{html.escape(block.get('reason') or 'Графика работ нет.')}</p>")
-        out.append(completed_history)
-        return "".join(out)
-    if 'calendar' not in block:
-        out.append('<p class="note"><b>Архивная сводка по корпусам.</b> Это сохранённые укрупнённые данные. '
-                   'Для полного календаря всех работ соберите новый срез отчёта.</p>')
-        out.append(report_gantt.render(block, report.get('end')))
-        out.append(completed_history)
-        return ''.join(out)
-    out.append('<p class="note">В сохранённой сводке нет полного перечня работ для нового календаря. '
-               'Соберите сводку по текущему срезу; даты по укрупнённым статьям его не заменяют.</p>')
-    out.append(completed_history)
-    return "".join(out)
+    return report_gantt.render_compact(report_gantt.compact_model(
+        report.get('gantt') or {}, report.get('end')))
+
+
+def _report_gpr_summary(report: dict[str, Any]) -> dict[str, Any] | None:
+    """The report cover shares the same bound date as its compact matrix/Gantt."""
+    model = report_gantt.compact_model(report.get('gantt') or {}, report.get('end'))
+    summary = model.get('summary')
+    if summary is None:
+        return None
+    summary = dict(summary, finish=model['finish'])
+    summary['forecast_text'] = ('Оценка окончания учтённых работ: '+_day(model['finish'])+'. При плановом темпе; не прогноз РНВ.'
+                                if model['finish'] else 'Оценка окончания учтённых работ пока не определена.')
+    return summary
 
 
 def _schedule_source_details(report: dict[str, Any]) -> str:
@@ -4996,9 +4963,19 @@ def render_html(report: dict[str, Any]) -> str:
     def missing(block: dict[str, Any]) -> str:
         return f"<p class='missing'>{esc(block.get('reason') or 'Данных нет.')}</p>"
 
-    out.append(_tiles_html(tiles(report), tiles_footnote(report)))
+    cover = [item for item in tiles(report)
+             if (item.get('group') != 'gpr_readiness' and item['label'] != 'Выполнение по ГПР')
+             or item['label'] == 'Оценка окончания учтённых работ']
+    if not any(item['label'] == 'Оценка окончания учтённых работ' for item in cover):
+        cover.append(dict(label='Оценка окончания учтённых работ', value='нет данных',
+                          note='Каноническая оценка для этого среза отсутствует; плановая дата её не заменяет.',
+                          tone='missing', group='gpr_readiness'))
+    out.append(_tiles_html(cover, tiles_footnote(report)))
     out.append(_block_heading("main") + "<ul class='findings'>")
     for item in report.get("findings") or []:
+        # Detailed GPR/source and alternate scope conclusions belong in Monitor.
+        if item.get('topic') in {'Стройка', 'Срок', 'Корпуса', 'Натуральный факт', 'Отстающие работы'}:
+            continue
         tone = f" {item['tone']}" if item.get("tone") else ""
         source = (f" <span class='source'>Источник: {esc(item['source'])}.</span>"
                   if item.get("source") else "")
@@ -5007,57 +4984,10 @@ def render_html(report: dict[str, Any]) -> str:
     out.append("</ul>")
 
     out.append(_block_heading("build"))
-    block = report.get("physical") or {}
-    readiness = gpr_summary((report.get('gantt') or {}).get('readiness'), report.get('end'))
-    if readiness is not None:
-        out[-1] = '<div class="keep">'+out[-1]+'<p class="gpr-build-summary">'+esc(readiness['readiness_text'])+'</p></div>'
-    physical_start = len(out)
-    if readiness is not None and block.get('state') == 'ok':
-        out.append('<style>@media print{.gpr-broader-physical::details-content{content-visibility:visible!important;display:block!important}}</style>'
-                   '<details class="gpr-broader-physical"><summary>Выполнение по всему перечню ГПР, с весом по длительности</summary>'
-                   '<p class="note">Здесь работы с известным показанием взвешены по плановой длительности. '
-                   'Этот процент сам по себе не подтверждает готовность всего строительства. '
-                   'Работ с показаниями: '+str(block.get('works'))+'. Неизвестных показаний: '
-                   +str(block.get('works_unknown'))+'. Срез '+esc(_day(report.get('end')))+'.</p>')
-    if block.get("state") == "ok":
-        out.append(_table(["", "План к дате", "Выполнено", "Отставание"], [[
-            "По процентам ГПР", _pct(block["plan"]), _pct(block["fact"]),
-            _pp(block["fact"] - block["plan"]) if block.get("plan") is not None else "—"]]
-            + [[esc(item["object"]), _pct(item["plan"]), _pct(item["fact"]),
-                _pp(item["fact"] - item["plan"]) if item.get("plan") is not None else "—"]
-               for item in block.get("objects") or []]))
-        if block.get("delta") is not None:
-            out.append(f"<p class='note'>За {PERIODS[report['kind']]} выполнение "
-                       f"{'выросло' if block['delta'] >= 0 else 'снизилось'} на "
-                       f"{_pp(abs(block['delta']))[1:]}</p>")
-        else:
-            out.append("<p class='note'>Прирост за период посчитать не из чего: на начало "
-                       "периода не было графика с процентами выполнения.</p>")
-        notes = _physical_notes(block)
-        out.append('<details class="report-source-screen"><summary>Источники выполнения по ГПР</summary>'
-                   + ''.join("<p class='note'>" + esc(line) + "</p>" for line in notes) + '</details>')
-        shown = progress_charts_shown(block)
-        if shown:
-            out.append(_physical_chart(block))
-        else:
-            out.append("<p class='note'>График выполнения появится, когда будет второй "
-                       "замер выполнения по графику работ.</p>")
-        out.append(_breakdown_html(block.get("breakdown") or {}, report["kind"], shown))
-    else:
-        out.append(missing(block))
-    if readiness is not None and block.get('state') == 'ok':
-        out.append('</details>')
-        out[physical_start:] = [''.join(out[physical_start:])]
+    out.append(_gantt_html(report))
     out.append("<h3>Люди на площадке</h3>")
     out.append(_crew_html(report.get("crew") or {}, report["kind"]))
     out.append(_works_html(report.get("crew") or {}, report["kind"]))
-    out.append(_gantt_html(report))
-    # The qualified executive block above is the sole date conclusion.
-    # Known stalled risks stay visible as work names, with causes in details.
-    stalled = (report.get("schedule") or {}).get("stalled") or []
-    if stalled:
-        names = ", ".join(str(item.get("name") or "") for item in stalled[:3])
-        out.append("<p class='note warn'>Требуют проверки темпа: " + esc(names) + ".</p>")
 
     out.append(_photos_html(report.get("photos") or {}, report["kind"]))
 
@@ -5172,12 +5102,6 @@ def render_html(report: dict[str, Any]) -> str:
             out.append(f"<div class='item'><b>{esc(note['topic'])}</b> — вопрос закрыт: "
                        f"{esc(note['text'])} <span class='note'>— {_day(note['at'])}, "
                        f"{esc(note['author'])}</span></div>")
-    if (report.get("gantt") or {}).get("dependency_timeline"):
-        out.append('<section class="report-source-appendix"><h2>Приложение. Источники и ограничения оценки</h2>'
-                   + _schedule_source_details(report)
-                   + (''.join("<p class='note'>" + esc(line) + "</p>"
-                              for line in _physical_notes(report["physical"]))
-                      if (report.get("physical") or {}).get("state") == "ok" else "") + '</section>')
     if _built_words(report):
         out.append(f"<p class='note built'>{esc(_built_words(report))}</p>")
     return "\n".join(_keep_headings([part for part in out if part]))

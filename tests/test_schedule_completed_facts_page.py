@@ -57,13 +57,14 @@ def test_current_graph_and_pdf_keep_source_qualified_completion_markers(site,wid
         page=page.context.browser.new_page(viewport=page.viewport_size)
         page.on('pageerror',lambda error:errors.append(str(error)))
         page.set_content('<html><head><meta charset="utf-8"></head><body>'+markup+'</body></html>')
-        expect(page.locator('.completed-work-marker')).to_have_count(1)
+        expect(page.locator('.completed-work-marker')).to_have_count(0)
+        expect(page.locator('[data-gpr-block]')).to_have_count(3)
         if width==1440:
             path=Path(f'/tmp/completed-work-{explicit}.pdf')
             page.pdf(path=str(path),format='A4',print_background=True)
             text=' '.join(p.extract_text() or '' for p in PdfReader(str(path)).pages)
-            assert 'Завершённый фасад' in text and '2028' not in text
-            assert ('2026-11-05' if explicit else OLD_DAY) in text
+            assert 'Завершённый фасад' not in text and '2028' not in text
+            assert 'Гант по корпусам'in text
         assert not errors
 
 
@@ -103,7 +104,7 @@ def test_owner_plan_date_is_shared_by_current_past_fact_view_and_pdf(site,width)
         page.on('pageerror',lambda error:errors.append(str(error)))
         page.set_content('<html><head><meta charset="utf-8"></head><body>'+
             report._gantt_html({'gantt':block,'end':OLD_DAY})+'</body></html>')
-        expect(page.locator('.schedule-rnv-cards')).to_contain_text('30.09.2027')
+        expect(page.locator('.rg-owner-plan')).to_contain_text('План РНВ владельца: 30.09.2027')
         expect(page.locator('body')).not_to_contain_text('2028')
         if width==1440:
             path=Path('/tmp/completed-owner-rnv.pdf');page.pdf(path=str(path),format='A4',print_background=True)

@@ -148,7 +148,7 @@ def test_actual_monitor_and_report_share_readiness_without_an_empty_matrix(site,
         block=report.gantt(view,view['dashboard'])
         markup=report._gantt_html({'gantt':block,'end':DAY})
         page.set_content(markup)
-        expect(page.locator('.readiness-project-value')).to_have_text('70,0%')
+        expect(page.locator('[data-gpr-block=forecast]')).to_contain_text('70,0%')
 
 
 def test_later_reopening_of_an_owned_outside_work_invalidates_readiness(site):
