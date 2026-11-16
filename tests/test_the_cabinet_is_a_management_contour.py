@@ -104,50 +104,38 @@ def test_every_internal_surface_carries_the_contour() -> None:
             class Navigation(HTMLParser):
                 def __init__(self):
                     super().__init__()
-                    self.navs, self.entries, self.views, self.current, self.labels = 0, [], [], [], []
-                    self.inside = False
-                    self.label = None
+                    self.global_navs = self.local_navs = 0
+                    self.views, self.nested_views = [], []
+                    self.inside_global = False
 
                 def handle_starttag(self, tag, attrs):
                     attrs = dict(attrs)
-                    if tag == "nav" and attrs.get("class") == "monitor-navigation":
-                        self.navs += 1
-                        self.inside = True
-                        assert attrs.get("aria-label") == "Разделы DevelopAid"
-                    if not self.inside:
-                        return
+                    if tag == "nav" and attrs.get("class") == "contour":
+                        self.global_navs += 1
+                        self.inside_global = True
+                    if tag == "nav" and attrs.get("class") == "monitor-tabs":
+                        self.local_navs += 1
                     if "data-monitor-view" in attrs:
                         self.views.append(attrs["data-monitor-view"])
-                    elif tag == "a":
-                        self.entries.append(attrs.get("href"))
-                        self.label = []
-                        if attrs.get("aria-current") == "page":
-                            self.current.append(attrs["href"])
-
-                def handle_data(self, data):
-                    if self.label is not None:
-                        self.label.append(data)
+                        if self.inside_global:
+                            self.nested_views.append(attrs["data-monitor-view"])
 
                 def handle_endtag(self, tag):
-                    if tag == "a" and self.label is not None:
-                        self.labels.append("".join(self.label).strip())
-                        self.label = None
                     if tag == "nav":
-                        self.inside = False
+                        self.inside_global = False
 
             navigation = Navigation()
             navigation.feed(answer.text)
-            assert navigation.navs == 1
-            assert navigation.entries == [str(link["href"]) for role in contour.ROLES for link in role["links"]]
-            assert navigation.labels == [str(link["name"]) for role in contour.ROLES for link in role["links"]]
-            assert len(navigation.entries) == 7
+            assert contour.markup(path) in answer.text
+            assert contour.STYLE in answer.text
+            assert navigation.global_navs == navigation.local_navs == 1
             assert navigation.views == ["monitor", "money", "contracts", "data"]
-            assert navigation.current == [path]
-            assert "/* shared-monitor-navigation */" in answer.text
-            assert ".monitor-navigation{" in answer.text
-            assert 'class="contour"' not in answer.text
+            assert navigation.nested_views == []
+            assert 'class="monitor-page-header"' in answer.text
+            assert 'src="/guide/assets/logo.webp"' in answer.text
+            assert 'class="monitor-navigation"' not in answer.text
+            assert "Разделы DevelopAid" not in answer.text
             assert '<details class="monitor-app-nav"' not in answer.text
-            assert '<div class="monitor-tabs"' not in answer.text
         else:
             assert "Управленческий контур" in answer.text, f"{path} без входа в контур"
             assert ".contour{" in answer.text, f"{path} без стиля контура"

@@ -97,26 +97,37 @@ def test_contract_tab_keeps_one_shared_navigation_and_active_monitor_view(width)
 
     with browser_page(width) as (page, responses, errors):
         original_sources = copy.deepcopy(responses.data)
-        navigation = page.get_by_role('navigation', name='Разделы DevelopAid', exact=True)
+        navigation = page.get_by_role('navigation', name='Управленческий контур', exact=True)
+        tabs = page.get_by_role('tablist', name='Виды Монитора', exact=True)
         expect(page.get_by_role('navigation')).to_have_count(1)
         expect(navigation).to_be_visible()
-        expect(navigation.get_by_role('link')).to_have_count(7)
-        expect(navigation.get_by_role('tab')).to_have_count(4)
-        assert page.locator('.monitor-tabs,.monitor-app-nav,nav.contour').count() == 0
+        expect(navigation.locator('a')).to_have_count(7)
+        expect(navigation.get_by_role('link')).to_have_count(6)
+        assert set(navigation.get_by_role('link').evaluate_all('(links)=>links.map(a=>a.getAttribute("href"))')) == {
+            '/report', '/cabinet/sales', '/cabinet/market', '/auctions', '/', '/statistics'}
+        current = navigation.locator('[aria-current="page"]')
+        expect(current).to_have_count(1)
+        expect(current).to_contain_text('Монитор проекта')
+        assert current.get_attribute('href') is None
+        expect(navigation.get_by_role('tab')).to_have_count(0)
+        expect(tabs).to_be_visible()
+        expect(tabs.get_by_role('tab')).to_have_count(4)
+        assert page.locator('.monitor-app-nav').count() == 0
+        assert page.locator('nav.contour,.monitor-tabs').count() == 2
         page.locator('#contractsTab').click()
         expect(page.locator('tr[data-contract-id]')).to_have_count(2)
         expect(navigation).to_be_visible()
-        expect(navigation.locator('#contractsTab')).to_have_attribute('aria-selected', 'true')
+        expect(tabs.locator('#contractsTab')).to_have_attribute('aria-selected', 'true')
         for link in navigation.get_by_role('link').all():
             expect(link).to_be_visible()
         expect(navigation).to_contain_text('Коммерции')
         page.screenshot(path=f'/tmp/contracts-focused-{width}.png', full_page=True)
         page.locator('#moneyTab').click()
         expect(page.locator('#moneyPanel')).to_be_visible()
-        expect(navigation.locator('#moneyTab')).to_have_attribute('aria-selected', 'true')
+        expect(tabs.locator('#moneyTab')).to_have_attribute('aria-selected', 'true')
         page.locator('#monitorTab').click()
         expect(navigation).to_be_visible()
-        expect(navigation.locator('#monitorTab')).to_have_attribute('aria-selected', 'true')
+        expect(tabs.locator('#monitorTab')).to_have_attribute('aria-selected', 'true')
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         assert responses.data == original_sources
         assert not errors
