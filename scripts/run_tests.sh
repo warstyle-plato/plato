@@ -34,6 +34,16 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
+# A bounded public-only review runs beside the full suite in CI. This fixed
+# argument selects one literal module; the normal no-argument shard path stays.
+if [ "${1:-}" = "--public-gpr-synthetic-review" ]; then
+  if [ "$#" -ne 1 ]; then
+    echo "public GPR review accepts no additional arguments" >&2
+    exit 2
+  fi
+  exec python3 -m pytest tests/test_report_compact_gpr_ci_artifacts.py -q -rsfE --timeout=180
+fi
+
 shards="${TEST_SHARDS:-1}"
 shard="${TEST_SHARD:-1}"
 

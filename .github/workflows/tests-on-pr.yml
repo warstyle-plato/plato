@@ -142,7 +142,7 @@ jobs:
       - name: Те же три публичные проверки PAGE и PDF
         env:
           REQUIRE_BROWSER: "1"
-        run: python -m pytest tests/test_report_compact_gpr_ci_artifacts.py -q -rsfE --timeout=180
+        run: bash scripts/run_tests.sh --public-gpr-synthetic-review
       - name: Публичные учебные снимки
         if: always()
         uses: actions/upload-artifact@v7
