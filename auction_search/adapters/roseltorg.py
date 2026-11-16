@@ -544,7 +544,8 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
         candidate_urls.extend(privatization_urls)
         # Читаем в порядке «сначала то, за чем пришли»: срок кончается раньше,
         # чем список карточек.
-        candidate_urls = self._ordered_candidates(list(dict.fromkeys(candidate_urls)), titles)
+        candidate_urls = list(dict.fromkeys(candidate_urls))
+        candidate_urls = self._ordered_candidates(candidate_urls, titles)
         lots: list[AuctionLot] = []
         seen_lots: set[str] = set()
         self.last_report["cards"] = len(candidate_urls)
