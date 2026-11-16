@@ -8,55 +8,54 @@ from __future__ import annotations
 from html import escape
 import json
 
-from management_contour import PLACEHOLDER, ROLES
+import management_contour
 
 VIEWS = (('monitor', 'ГПР: план и факт'), ('money', 'Деньги'),
          ('contracts', 'Договоры'), ('data', 'Данные и настройки'))
 
 STYLE = """
 /* shared-monitor-navigation */
-.monitor-navigation{margin:0 0 18px;padding:14px;background:#fff;border:1px solid #d9e2ec;border-radius:10px}
-.monitor-navigation-title{font-size:12px;font-weight:700;color:#526579;margin-bottom:10px}
-.monitor-navigation-groups{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
-.monitor-navigation-group{min-width:0;border-left:3px solid #1f4e8c;padding-left:12px}
-.monitor-navigation-group>b{display:block;color:#24374b;font-size:13px;margin-bottom:6px}
-.monitor-navigation a,.monitor-navigation button{box-sizing:border-box;display:block;max-width:100%;font:inherit;font-size:13px;line-height:1.4;text-align:left;text-decoration:none;color:#1f4e8c;background:none;border:0;border-radius:5px;padding:5px 7px;margin:2px 0;white-space:normal;overflow-wrap:anywhere;cursor:pointer}
-.monitor-navigation a:hover,.monitor-navigation button:hover{background:#f0f4f9}
-.monitor-navigation [aria-current="page"],.monitor-navigation [aria-selected="true"]{background:#eaf1fa;color:#163d70;font-weight:700}
-.monitor-navigation a:focus-visible,.monitor-navigation button:focus-visible{outline:2px solid #1f4e8c;outline-offset:2px}
-.monitor-navigation-views{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:3px;margin:7px 0 0;padding-top:7px;border-top:1px solid #e1e7ee}
-.monitor-navigation-views a,.monitor-navigation-views button{font-size:12px;margin:0;width:100%;min-height:36px}
-@media(max-width:640px){.monitor-navigation{padding:12px}.monitor-navigation-groups{grid-template-columns:minmax(0,1fr);gap:10px}.monitor-navigation-group{padding-left:9px}.monitor-navigation-group>b{margin-bottom:2px}.monitor-navigation-views{grid-template-columns:repeat(2,minmax(0,1fr))}.monitor-navigation a,.monitor-navigation button{padding:6px 7px}}
-@media print{.monitor-navigation{display:none!important}}
+.monitor-page-header{background:#fff;border-bottom:1px solid #dde5ed;padding:14px 22px;color:#16202b;font:15px/1.55 -apple-system,Segoe UI,Roboto,sans-serif}
+.monitor-page-header .brand{display:block;margin-bottom:10px;line-height:0}
+.monitor-page-header .brand img{height:26px;width:auto;display:block;mix-blend-mode:multiply}
+.monitor-page-header h1{font-size:17px;margin:0}
+.monitor-page-header .sub{color:#5b6b7d;font-size:13px;margin-top:2px}
+.monitor-global-shell{box-sizing:border-box;display:flow-root;max-width:1080px;margin:0 auto;padding:22px 22px 0;color:#16202b;font:15px/1.55 -apple-system,Segoe UI,Roboto,sans-serif}
+.monitor-host>.wrap{padding-top:0}
+.monitor-tabs a{text-decoration:none;display:inline-flex;align-items:center}
+@media print{.monitor-page-header,.monitor-global-shell,.monitor-tabs{display:none!important}}
 """
 
 
 def markup(current: str) -> str:
-    """Same seven destinations and four Monitor views, with host-only semantics."""
-    groups = []
-    for role in ROLES:
-        links = []
-        for link in role['links']:
-            href = str(link['href'])
-            here = ' aria-current="page"' if href == current else ''
-            links.append(f'<a href="{escape(href, quote=True)}"{here}>{escape(str(link["name"]))}</a>')
-            if href == '/monitor':
-                views = []
-                for key, name in VIEWS:
-                    if current == '/monitor':
-                        views.append(f'<button type="button" id="{key}Tab" role="tab" '
-                                     f'aria-selected="{str(key == "monitor").lower()}" '
-                                     f'aria-controls="{key}Panel" tabindex="{0 if key == "monitor" else -1}" '
-                                     f'data-monitor-view="{key}">{escape(name)}</button>')
-                    else:
-                        views.append(f'<a href="/monitor#tab={key}" data-monitor-view="{key}">{escape(name)}</a>')
-                semantics = ' role="tablist" aria-label="Разделы проекта"' if current == '/monitor' else ''
-                links.append('<div class="monitor-navigation-views"' + semantics + '>' + ''.join(views) + '</div>')
-        groups.append('<div class="monitor-navigation-group"><b>' + escape(str(role['role']))
-                      + '</b>' + ''.join(links) + '</div>')
-    return ('<nav class="monitor-navigation" aria-label="Разделы DevelopAid">'
-            '<div class="monitor-navigation-title">Разделы DevelopAid</div>'
-            '<div class="monitor-navigation-groups">' + ''.join(groups) + '</div></nav>')
+    """Use the cabinet's actual global component, including every note."""
+    return management_contour.markup(current)
+
+
+def header_markup(current: str) -> str:
+    """One host header for both pages, using the existing cabinet brand asset."""
+    title, note = {
+        '/monitor': ('Монитор проекта', 'Работы по ГПР, сроки и деньги проекта.'),
+        '/report': ('Сводка руководству', 'Стройка, продажи, финансирование и бюджет за неделю или за месяц — для решений и рассылки'),
+    }[current]
+    return ('<header class="monitor-page-header">'
+            '<a class="brand" href="/" title="DevelopAid"><img src="/guide/assets/logo.webp" alt="ПЛАТО" height="26"></a>'
+            f'<h1>{escape(title)}</h1><div class="sub">{escape(note)} · версия __VERSION__</div></header>')
+
+
+def view_markup(current: str) -> str:
+    """Local project views belong below its context, outside the global menu."""
+    views = []
+    for key, name in VIEWS:
+        if current == '/monitor':
+            views.append(f'<button class="btn alt" type="button" id="{key}Tab" role="tab" '
+                         f'aria-selected="{str(key == "monitor").lower()}" '
+                         f'aria-controls="{key}Panel" tabindex="{0 if key == "monitor" else -1}" '
+                         f'data-monitor-view="{key}">{escape(name)}</button>')
+        else:
+            views.append(f'<a class="btn alt" href="/monitor#tab={key}" data-monitor-view="{key}">{escape(name)}</a>')
+    semantics = ' role="tablist"' if current == '/monitor' else ''
+    return ('<nav class="monitor-tabs" aria-label="Виды Монитора"' + semantics + '>' + ''.join(views) + '</nav>')
 
 
 SCRIPT = r"""
@@ -97,11 +96,13 @@ window.createMonitorNavigation=function(config){
  function restoreView(){if(config.page!=='monitor')return;const h=hash();if(h.deep){if(!same(active,context()))useContext();return;}const wanted=h.view||scope(context())?.view||'monitor';if(config.view()!==wanted)config.select(wanted);changed(wanted);}
  function forget(){state={version:1,current:null,scopes:[]};pending={};pendingSource=null;active=null;try{sessionStorage.removeItem(STORE);}catch(e){}}
  function connect(){if(connected)return;connected=true;active=context();
-  const nav=document.querySelector('.monitor-navigation');
+  const navs=document.querySelectorAll('.contour,.monitor-tabs');
+  for(const nav of navs){
   // Native tab handlers can clear physical controls. Keep the available UI
   // first; later captures retain its hint while those controls are unavailable.
   nav.addEventListener('click',()=>capture(),true);
   nav.addEventListener('click',e=>{const a=e.target.closest('a,button');if(!a)return;capture();const tab=a.dataset.monitorView;if(config.page==='monitor'&&tab){e.preventDefault();const next='#tab='+tab;if(location.hash!==next)history.pushState(null,'',next);changed(tab);}});
+  }
   for(const id of ['project','cut'])for(const event of ['input','change'])byId(id).addEventListener(event,()=>{const next=context();if(same(next,active))return;const previous=active;capture(active);active=next;
    // The report's existing onchange starts its request synchronously. Its new
    // scope's period must be in place before that native handler reads it.
@@ -125,4 +126,8 @@ def apply(page: str, current: str) -> str:
     """Only these hosts opt in; existing cabinet/global contour calls stay exact."""
     if '/* shared-monitor-navigation */' not in page:
         page = page.replace('</style>', STYLE + '\n</style>', 1)
-    return page.replace(PLACEHOLDER, markup(current)).replace('__MONITOR_NAVIGATION_SCRIPT__', SCRIPT)
+    return (page.replace('__DEVELOPAID_CONTOUR_STYLE__', management_contour.STYLE)
+            .replace(management_contour.PLACEHOLDER, markup(current))
+            .replace('__MONITOR_PAGE_HEADER__', header_markup(current))
+            .replace('__MONITOR_VIEW_TABS__', view_markup(current))
+            .replace('__MONITOR_NAVIGATION_SCRIPT__', SCRIPT))
