@@ -886,8 +886,8 @@ async function cumulativeJob(buildPath,resultPath,payload,current,onWaiting,opti
   }
   return null;
  }
- let d,attempt=0;
- while(current()){
+ let d=options.chunked&&options.transfer?.ticket===ticket&&options.transfer?.offset>0?{pending:false,ticket,result_ready:true}:null,attempt=0;
+ while(!d&&current()){
   try{d=await request(buildPath,{...payload,ticket},15000);break}catch(e){
    if(!current())return null;
    if(e.status!==429||attempt++>=60)throw e;

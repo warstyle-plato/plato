@@ -170,7 +170,7 @@ def test_browser_refresh_after_exhausted_retries_reuses_job_and_context_change_c
         failed = False
         page.locator('#contractsRefresh').click()
         expect(page.locator(f'tr[data-contract-id="{CONTRACT}"]')).to_be_visible(timeout=10000)
-        assert tickets[0] == tickets[1]
+        assert len(tickets) == 1  # Resume polls the old job without admission.
         assert offsets.count(0) == 1  # Already received bytes survive the red error.
         assert page.evaluate('contractRegister.warnings[0]') == responses.data['warnings'][0]
         page.locator('#project').fill('Другой проект')
@@ -199,4 +199,42 @@ def test_permanent_job_failure_allows_a_fresh_build(status):
         page.locator('#contractsRefresh').click()
         expect(page.locator(f'tr[data-contract-id="{CONTRACT}"]')).to_be_visible(timeout=10000)
         assert tickets[0]!=tickets[1]
+        assert not errors
+
+
+
+def test_expired_partial_result_is_not_rebuilt_under_its_old_ticket_or_mixed_with_new_bytes():
+    with browser_page() as (page,responses,errors):
+        state='broken'
+        tickets=[]
+        responses.data['warnings']=['СТАРЫЙ реестр '+('А'*800000)]
+        def intercept(route):
+            body=route.request.post_data_json
+            if route.request.url.endswith('/build'):
+                tickets.append(body['ticket'])
+            elif state=='broken' and body['offset']>0:
+                return route.abort('connectionfailed')
+            elif state=='expired':
+                return route.fulfill(status=404,json={'detail':'Сборка уже удалена.'})
+            return responses(route)
+        page.route('**/monitor/contracts/build',intercept)
+        page.route('**/monitor/contracts/result-part',intercept)
+        page.locator('#contractsTab').click()
+        expect(page.locator('#contractsMsg')).to_have_class('msg bad',timeout=15000)
+        assert page.evaluate('contractPendingJob.offset')>0
+        old_ticket=tickets[0]
+        # Expiration/sweep removed this job. A new builder could return different
+        # source bytes of the same size: admitting the old ticket would mix them.
+        responses.jobs.clear()
+        responses.data['warnings']=['НОВЫЙ  реестр '+('Б'*800000)]
+        state='expired'
+        page.locator('#contractsRefresh').click()
+        expect(page.locator('#contractsMsg')).to_contain_text('Сборка уже удалена.',timeout=10000)
+        assert tickets==[old_ticket]
+        assert page.evaluate('contractPendingJob') is None
+        state='fresh'
+        page.locator('#contractsRefresh').click()
+        expect(page.locator(f'tr[data-contract-id="{CONTRACT}"]')).to_be_visible(timeout=10000)
+        assert len(tickets)==2 and tickets[1]!=old_ticket
+        assert page.evaluate('contractRegister.warnings[0]')==responses.data['warnings'][0]
         assert not errors
