@@ -378,13 +378,50 @@ def test_native_closed_realm_runtime_and_request_preconditions_hold_before_IO(na
     assert reply.status_code == status and not list(root.iterdir())
 
 
-def test_native_http_scheme_proxy_claim_and_query_do_not_supply_authority(native):
+def test_native_http_transport_retains_explicit_owner_authority_and_query_HOLD(native):
     _, client, root = native
     reply = client.post("http://developaid.ru" + config.PATH,
-        headers=http_headers(**{"x-forwarded-proto": "https"}), content=raw_config())
-    assert reply.status_code == 409 and not list(root.iterdir())
+        headers=http_headers(**{"x-forwarded-proto": "https", "x-forwarded-for": "203.0.113.7:1234"}),
+        content=raw_config(False))
+    assert reply.status_code == 200 and reply.json()["stored"] is True
+    before = (root / config.FILENAME).read_bytes()
+    assert json.loads(before)["completed_rollout"] is False
     reply = client.post(config.PATH + "?path=elsewhere", headers=http_headers(), content=raw_config())
-    assert reply.status_code == 409 and not list(root.iterdir())
+    assert reply.status_code == 409 and (root / config.FILENAME).read_bytes() == before
+
+
+@pytest.mark.parametrize("scheme", [None, "", "ftp", "ws", "wss", "HTTPS", 1, True, [], {}])
+def test_malformed_or_other_backend_transport_remains_HOLD(scheme):
+    with pytest.raises(config.ConfigHold) as error:
+        prepare(scheme=scheme)
+    assert error.value.code == "core_realm"
+
+
+@pytest.mark.parametrize("change", ["missing", "wrong", "unconfigured"])
+def test_native_http_and_forwarded_claims_never_replace_owner_key(native, monkeypatch, change):
+    _, client, root = native
+    values = http_headers(**{"x-forwarded-proto": "https", "x-forwarded-for": "127.0.0.1:1234"})
+    if change == "missing":
+        del values["x-developaid-admin-key"]
+    elif change == "wrong":
+        values["x-developaid-admin-key"] = "wrong"
+    else:
+        monkeypatch.delenv("DEVELOPAID_ADMIN_KEY")
+    reply = client.post("http://developaid.ru" + config.PATH, headers=values, content=raw_config())
+    assert reply.status_code == 403 and not list(root.iterdir())
+
+
+@pytest.mark.parametrize("changes,status", [
+    ({"host": "other.invalid", "x-forwarded-host": "developaid.ru"}, 409),
+    ({"origin": "https://other.invalid"}, 403), ({"sec-fetch-site": "cross-site"}, 403),
+    ({"x-developaid-expected-commit": "d" * 40}, 409),
+    ({"x-developaid-expected-version": "other"}, 409),
+    ({"content-type": "text/plain"}, 415), ({"if-match": '"' + "0" * 64 + '"'}, 428)])
+def test_native_http_keeps_target_CSRF_runtime_body_and_CAS_preconditions(native, changes, status):
+    _, client, root = native
+    reply = client.post("http://developaid.ru" + config.PATH,
+                        headers=http_headers(**changes), content=raw_config())
+    assert reply.status_code == status and not list(root.iterdir())
 
 
 @pytest.mark.parametrize("mode,commit", [(None, COMMIT), ("https://core.invalid/mo/calculate", COMMIT), ("", "")])

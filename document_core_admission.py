@@ -177,8 +177,9 @@ def preflight(raw_headers, *, require_admin, environ, scheme, query,
               local_mode, local_commit, local_version):
     """Only fixed server code supplies the native admin-check callable.
 
-    Raw singleton Host and native ASGI https are required. Forwarded headers
-    never supply authority; actual proxy/TLS admission is an operator fact.
+    Raw singleton Host is required; http/https are ordinary backend transport.
+    The explicit owner key grants authority, never scheme, peer or forwarded
+    claims. The operator uses verified public HTTPS and refuses redirects.
     """
     headers = {}
     for name, value in raw_headers:
@@ -200,7 +201,8 @@ def preflight(raw_headers, *, require_admin, environ, scheme, query,
         raise ConfigHold("owner_key_required", 403)
     if protocol.ADMISSION_ENV in environ:
         raise ConfigHold("environment_has_priority")
-    if (scheme != "https" or query != "" or headers.get("host") not in {"developaid.ru", "developaid.ru:443"}
+    if (type(scheme) is not str or scheme not in {"http", "https"}
+            or query != "" or headers.get("host") not in {"developaid.ru", "developaid.ru:443"}
             or type(local_mode) is not str or local_mode != ""):
         raise ConfigHold("core_realm")
     if (type(local_commit) is not str or not re.fullmatch(r"[0-9a-f]{40}", local_commit)
