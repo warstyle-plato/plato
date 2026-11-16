@@ -99,6 +99,36 @@ console.log(JSON.stringify({tickets:calls,oldHasBinding:!!old.comparison_export,
     assert result == {"tickets": ["1" * 32, "2" * 32], "oldHasBinding": False, "freshHasBinding": True}
 
 
+@pytest.mark.parametrize("status", [307, 308])
+def test_node_export_refuses_redirect_before_replaying_credentials(status):
+    prelude = "const redirectStatus=" + str(status) + ";\n" + r"""
+let authEpoch=1,calls=[],forwarded=[],downloads=[];
+const contractComparisonState={lines:[]};
+const contractComparisonExport={available:true,ticket:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',id:'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',revision:'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',cut:'2026-03-05',row_tokens:[]};
+const widgets={contractComparisonExport:{isConnected:true,disabled:false},contractComparisonFilter:{value:'all'},contractComparisonSearch:{value:''}};
+function $(id){return widgets[id]}function hasAuth(){return true}function requireLogin(){throw Error('Unexpected login')}
+function cumulativeContext(){return{project:'Synthetic',cut:'2026-03-05',key:'synthetic-redirect-admin',session:'synthetic-redirect-owner'}};
+function sameCumulativeContext(){return true}function msg(){}function checkAuthResponse(){};
+const URL={createObjectURL(){downloads.push('blob');return'blob:local'},revokeObjectURL(){}};
+const document={body:{appendChild(){}},createElement(){return{click(){downloads.push('download')},remove(){}}}};
+// Model Fetch's 307/308 default-follow body replay; no actual transport.
+globalThis.fetch=async(path,options)=>{
+ calls.push({path,redirect:options.redirect||'follow',status:redirectStatus});
+ if(options.redirect==='error')throw new TypeError('Synthetic redirect refused');
+ forwarded.push({origin:'https://foreign.invalid',body:JSON.parse(options.body)});
+ return{ok:true,status:200,headers:{get(){return'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}},blob:async()=>({size:20})};
+};
+const deny=()=>{throw Error('Actual transport forbidden')};
+require('http').request=deny;require('https').request=deny;require('net').connect=deny;require('dns').lookup=deny;
+"""
+    tail = r"""
+(async()=>{await exportContractComparison();console.log(JSON.stringify({calls,forwarded,downloads,disabled:widgets.contractComparisonExport.disabled}));})().catch(e=>{console.error(e);process.exit(1)});
+"""
+    result = page_blocks.run_json(prelude, tail, page=MONITOR_PAGE)
+    assert result["calls"] == [{"path": "/monitor/contracts/comparison.xlsx", "redirect": "error", "status": status}]
+    assert result["forwarded"] == [] and result["downloads"] == [] and result["disabled"] is False
+
+
 def test_browser_download_contains_only_the_current_shown_plan_fact_rows(tmp_path):
     from playwright.sync_api import expect
     from tests.test_monitor_cumulative_controls import browser_page, CONTRACT, KEY
