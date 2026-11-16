@@ -1,5 +1,6 @@
 """Synthetic owner configuration, without sources, providers or rollout claims."""
 import email.message
+import errno
 import fcntl
 import hashlib
 import json
@@ -233,6 +234,62 @@ def test_after_publication_sync_failure_is_unknown_without_rollback_or_retry(roo
     assert json.loads((root / config.FILENAME).read_bytes())["completed_rollout"] is False
     with pytest.raises(protocol.ProtocolHold):
         protocol.admitted_origin(config.admission_raw({}, root, TARGET), TARGET)
+
+
+@pytest.mark.parametrize("initial", [True, False])
+@pytest.mark.parametrize("committed", [True, False])
+def test_namespace_error_is_unknown_without_retry_or_cleanup(root, monkeypatch, initial, committed):
+    receipt = None if initial else store(root, False)
+    before = None if initial else (root / config.FILENAME).read_bytes()
+    operation = config.os.link if initial else config.os.replace
+    attempts, cleanup = [], []
+    unlink = config.os.unlink
+    def ambiguous(*args, **kwargs):
+        attempts.append("one namespace attempt")
+        if committed:
+            operation(*args, **kwargs)
+        raise OSError(errno.EIO, "synthetic ambiguous namespace error")
+    def watched_unlink(*args, **kwargs):
+        cleanup.append("unlink")
+        return unlink(*args, **kwargs)
+    monkeypatch.setattr(config.os, "link" if initial else "replace", ambiguous)
+    monkeypatch.setattr(config.os, "unlink", watched_unlink)
+    with pytest.raises(config.ConfigHold) as error:
+        store(root, True, None if initial else receipt["sha256"])
+    assert error.value.code == "publication_unknown"
+    assert "Не повторяйте запись" in str(error.value)
+    assert "не применена" not in str(error.value)
+    assert attempts == ["one namespace attempt"] and cleanup == []
+    if committed:
+        assert json.loads((root / config.FILENAME).read_bytes())["completed_rollout"] is True
+    elif before is None:
+        assert not (root / config.FILENAME).exists()
+    else:
+        assert (root / config.FILENAME).read_bytes() == before
+    if initial or not committed:
+        assert len(list(root.glob(".document_core_admission.*.tmp"))) == 1
+
+
+@pytest.mark.parametrize("initial", [True, False])
+def test_known_file_sync_failure_is_prepublication_and_preserves_config(root, monkeypatch, initial):
+    receipt = None if initial else store(root, False)
+    before = None if initial else (root / config.FILENAME).read_bytes()
+    def no_namespace(*args, **kwargs):
+        pytest.fail("known file-sync failure must precede namespace publication")
+    def fail_file_sync(fd):
+        assert stat.S_ISREG(os.fstat(fd).st_mode)
+        raise OSError(errno.EIO, "synthetic file-sync failure")
+    monkeypatch.setattr(config.os, "fsync", fail_file_sync)
+    monkeypatch.setattr(config.os, "link", no_namespace)
+    monkeypatch.setattr(config.os, "replace", no_namespace)
+    with pytest.raises(config.ConfigHold) as error:
+        store(root, True, None if initial else receipt["sha256"])
+    assert error.value.code == "configuration_hold" and "не применена" in str(error.value)
+    assert not list(root.glob(".document_core_admission.*.tmp"))
+    if before is None:
+        assert not (root / config.FILENAME).exists()
+    else:
+        assert (root / config.FILENAME).read_bytes() == before
 
 
 def test_direct_store_without_native_preflight_has_no_IO(root, monkeypatch):

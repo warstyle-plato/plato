@@ -32,7 +32,10 @@ _SECURITY_HEADERS = frozenset({"host", "x-developaid-admin-key", "origin", "sec-
 class ConfigHold(ValueError):
     def __init__(self, code: str, status: int = 409):
         self.code, self.status = code, status
-        super().__init__("Настройка подтверждения ядра не применена. Требуется проверка владельца.")
+        message = ("Не удалось подтвердить результат сохранения настройки. "
+                   "Не повторяйте запись до проверки владельцем." if code == "publication_unknown" else
+                   "Настройка подтверждения ядра не применена. Требуется проверка владельца.")
+        super().__init__(message)
 
 
 def data_root(environ) -> Path:
@@ -273,7 +276,7 @@ def store(prepared, raw: bytes, *, root: Path, target: str, environ) -> dict:
     value = validate(raw, target)
     canonical = json.dumps(value, ensure_ascii=False, allow_nan=False, sort_keys=True,
                            separators=(",", ":")).encode("utf-8")
-    directory, temporary, temporary_inode, published = -1, None, None, False
+    directory, temporary, temporary_inode, publication_attempted = -1, None, None, False
     try:
         directory = _open_root(root)
         with _writer_lock(directory) as lock:
@@ -306,13 +309,14 @@ def store(prepared, raw: bytes, *, root: Path, target: str, environ) -> dict:
                 raise ConfigHold("configuration_changed")
             if _identity(os.stat(temporary, dir_fd=directory, follow_symlinks=False)) != _identity(complete):
                 raise ConfigHold("configuration_changed")
+            # A namespace syscall can publish yet report an I/O error. From
+            # this boundary onward, neither failure nor cleanup proves absence.
+            publication_attempted = True
             if previous is None:
                 os.link(temporary, FILENAME, src_dir_fd=directory, dst_dir_fd=directory, follow_symlinks=False)
-                published = True
                 os.unlink(temporary, dir_fd=directory)
             else:
                 os.replace(temporary, FILENAME, src_dir_fd=directory, dst_dir_fd=directory)
-                published = True
             temporary = None
             os.fsync(directory)
             if _current(directory, target) != canonical:
@@ -321,14 +325,14 @@ def store(prepared, raw: bytes, *, root: Path, target: str, environ) -> dict:
             _lock_current(directory, lock)
             return {"schema": 1, "stored": True, "sha256": hashlib.sha256(canonical).hexdigest()}
     except ConfigHold:
-        if published:
+        if publication_attempted:
             raise ConfigHold("publication_unknown") from None
         raise
     except OSError:
-        raise ConfigHold("publication_unknown" if published else "configuration_hold") from None
+        raise ConfigHold("publication_unknown" if publication_attempted else "configuration_hold") from None
     finally:
         if directory >= 0:
-            if temporary is not None and temporary_inode is not None and not published:
+            if temporary is not None and temporary_inode is not None and not publication_attempted:
                 try:
                     info = os.stat(temporary, dir_fd=directory, follow_symlinks=False)
                     if (info.st_dev, info.st_ino) == temporary_inode:
