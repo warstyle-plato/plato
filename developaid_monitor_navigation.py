@@ -102,10 +102,10 @@ window.createMonitorNavigation=function(config){
   // first; later captures retain its hint while those controls are unavailable.
   nav.addEventListener('click',()=>capture(),true);
   nav.addEventListener('click',e=>{const a=e.target.closest('a,button');if(!a)return;capture();const tab=a.dataset.monitorView;if(config.page==='monitor'&&tab){e.preventDefault();const next='#tab='+tab;if(location.hash!==next)history.pushState(null,'',next);changed(tab);}});
-  for(const id of ['project','cut'])for(const event of ['input','change'])byId(id).addEventListener(event,()=>{const next=context();if(same(next,active))return;capture(active);active=next;
+  for(const id of ['project','cut'])for(const event of ['input','change'])byId(id).addEventListener(event,()=>{const next=context();if(same(next,active))return;const previous=active;capture(active);active=next;
    // The report's existing onchange starts its request synchronously. Its new
    // scope's period must be in place before that native handler reads it.
-   if(config.page==='report'){const kind=cleanFields(scope(next)?.report).reportKind??defaults.reportKind;if(Array.from(byId('reportKind').options).some(o=>o.value===kind))byId('reportKind').value=kind;}
+   if(config.page==='report'){const kind=cleanFields(scope(next)?.report).reportKind??(previous?.project===next.project?byId('reportKind').value:defaults.reportKind);if(Array.from(byId('reportKind').options).some(o=>o.value===kind)){byId('reportKind').value=kind;const item=scope(next,true);if(item)item.report.reportKind=kind;}}
    queueMicrotask(()=>{if(same(next,context()))useContext();});},true);
   for(const id of fields){const e=byId(id);if(e)for(const event of ['input','change'])e.addEventListener(event,()=>{delete pending[id];capture();});}
   window.addEventListener('pagehide',()=>capture());window.addEventListener('beforeunload',()=>capture());
