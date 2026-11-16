@@ -101,7 +101,7 @@ function bindMoParams(){
   const note=document.getElementById('moFlatBasis');
   if(note)note.textContent=AVERAGE_FLAT.mo.basis;
  }
- ['moDensity','moArea','moFlat','moPrice','moKd','moCompensation'].forEach(id=>{
+ ['moDensity','moArea','moFlat','moPrice','moKd'].forEach(id=>{
   const el=document.getElementById(id);
   if(el&&!el._moBound){el._moBound=true;el.addEventListener('change',recalcMo)}
  });
@@ -134,6 +134,166 @@ function syncMoKd(){
   field.value='';
   if(unit)unit.textContent='доля. Определится по округу участка';
  }
+}
+
+const MO_VRI_COMPENSATION_SOURCE=__DEVELOPAID_MO_VRI_COMPENSATION_SOURCE__;
+let moVriReliefOwner=null;
+let moVriReliefModelKey='';
+let moVriReliefPreview=null;
+let moVriReliefRun=0;
+let moVriReliefBaseSource=null;
+function moVriNode(id){return document.getElementById(id)}
+function moVriNumber(value){
+ if(value===null||value===undefined||String(value).trim()==='')return null;
+ const result=Number(value);return Number.isFinite(result)?result:null;
+}
+function moVriMoney(rubles){
+ return rubles==null?'не указана':Number(rubles).toLocaleString('ru-RU',{maximumFractionDigits:2})+' ₽';
+}
+function moVriSavedBasis(){
+ const own=inputs._mo_vri_relief;
+ const calc=inputs._mo_calc;
+ if(own!=null&&(!own||typeof own!=='object'||own.schema!==1))return null;
+ const vri=own&&own.schema===1?own.vri:(calc&&calc.vri);
+ if(!vri||typeof vri!=='object')return null;
+ const gross=moVriNumber(vri.payment_before_compensation_rub);
+ const used=moVriNumber(vri.payment_used_mln),current=moVriNumber(inputs.land_rights_cost_mln);
+ if(gross===null||gross<0||used===null||current===null||Math.abs(used-current)>=1e-6)return null;
+ const entered=moVriNumber(inputs.mo_vri_compensation_mln)||0;
+ const saved=moVriNumber(vri.compensation_rub)||0;
+ if(Math.abs(entered*1e6-saved)>=0.005)return null;
+ return {gross,kind:own&&own.schema===1?(own.source||{}).kind||'manual':'mo_calculation',
+  label:own&&own.schema===1?(own.source||{}).label||'Плата до уменьшения введена вручную':'Плата до уменьшения из сохранённого расчёта по Московской области',vri};
+}
+function moVriModelKey(){
+ const basis=moVriSavedBasis();
+ return JSON.stringify([classRegion(),inputs._project_uid||'',inputs.land_rights_cost_mln,
+  inputs.mo_vri_compensation_mln,basis&&basis.gross,basis&&basis.kind,
+  inputs.vri_transfer_offset_mln,inputs.vri_relief_mode,inputs.vri_relief_pct,inputs.vri_relief_mln,tep,
+  typeof partialTepMode==='function'&&partialTepMode()]);
+}
+function moVriReliefBinding(){
+ return JSON.stringify([moVriModelKey(),(moVriNode('moVriGross')||{}).value,
+  (moVriNode('moCompensation')||{}).value,moVriReliefBaseSource]);
+}
+function moVriReliefStatus(text){const node=moVriNode('moVriReliefStatus');if(node)node.textContent=text}
+function invalidateMoVriRelief(){
+ ++moVriReliefRun;moVriReliefPreview=null;
+ const apply=moVriNode('moVriApplyButton');if(apply)apply.disabled=true;
+ const preview=moVriNode('moVriPreviewButton');if(preview)preview.disabled=false;
+ const result=moVriNode('moVriReliefResult');if(result)result.style.display='none';
+}
+function moVriReliefEdited(baseChanged){
+ invalidateMoVriRelief();
+ if(baseChanged)moVriReliefBaseSource={kind:'manual',label:'Плата до уменьшения введена вручную'};
+ const origin=moVriNode('moVriGrossSource');
+ if(origin&&moVriReliefBaseSource)origin.textContent=moVriReliefBaseSource.label;
+ moVriReliefStatus('Проверьте предварительный расчёт. До применения плата проекта остаётся прежней.');
+}
+function renderMoVriReliefResult(vri,withFinal){
+ const rows=[['Плата до уменьшения',moVriMoney(vri.payment_before_compensation_rub)],
+  ['Компенсация по соглашению',moVriMoney(vri.compensation_rub)],
+  ['Фактически вычтено',vri.compensation_applied_rub==null?'уменьшение не применено':moVriMoney(vri.compensation_applied_rub)],
+  ['Плата после уменьшения',moVriMoney(vri.payment_used_rub)]];
+ if(withFinal){
+  rows.push(['Отдельный зачёт переданных площадей',moVriMoney(vri.transfer_offset_requested_rub)],
+   ['Из него учтено в плате',moVriMoney(vri.transfer_offset_applied_rub)]);
+  if(Number(vri.other_relief_rub)>0)rows.push(['Другие уменьшения, заданные во ВРИ',moVriMoney(vri.other_relief_rub)]);
+  rows.push(['Итого основная плата, без процентов рассрочки',moVriMoney(vri.payment_after_reliefs_rub)]);
+ }
+ const totals=moVriNode('moVriReliefTotals');
+ if(totals)totals.innerHTML=rows.map(([label,value])=>'<tr><td>'+escapeHtml(label)+'</td><td><b>'+escapeHtml(value)+'</b></td></tr>').join('');
+ const result=moVriNode('moVriReliefResult');if(result)result.style.display='';
+}
+function renderMoVriRelief(){
+ const panel=moVriNode('moVriReliefPanel');if(!panel)return;
+ const region=classRegion();panel.style.display=region==='mo'?'':'none';
+ const mpt=moVriNode('mpt-benefit-panel');if(mpt){mpt.hidden=region!=='msk';mpt.style.display=region==='msk'?'':'none'}
+ if(region!=='mo'){invalidateMoVriRelief();moVriReliefOwner=null;return}
+ const source=moVriNode('moVriReliefSource');if(source&&MO_VRI_COMPENSATION_SOURCE.url)source.href=MO_VRI_COMPENSATION_SOURCE.url;
+ const modelKey=moVriModelKey();
+ if(moVriReliefOwner!==inputs||moVriReliefModelKey!==modelKey){
+  invalidateMoVriRelief();moVriReliefOwner=inputs;moVriReliefModelKey=modelKey;
+  const basis=moVriSavedBasis();
+  moVriReliefBaseSource=basis?{kind:basis.kind,label:basis.label}:null;
+  const gross=moVriNode('moVriGross');if(gross)gross.value=basis?String(basis.gross/1e6):'';
+  syncMoCompensation();
+  const origin=moVriNode('moVriGrossSource');if(origin)origin.textContent=basis?basis.label:'Исходная плата до уменьшения в проекте не подтверждена. Впишите известную сумму; текущая плата показана отдельно.';
+  if(basis){renderMoVriReliefResult(basis.vri);moVriReliefStatus('Показано уменьшение, уже учтённое в текущей плате проекта. Изменения нужно сначала рассчитать и затем применить.')}
+  else moVriReliefStatus('Укажите плату до уменьшения. Предварительный расчёт не меняет проект.');
+ }
+ const current=moVriNode('moVriCurrentFee');if(current)current.textContent='Плата в настройках проекта: '+moVriMoney(moVriNumber(inputs.land_rights_cost_mln)===null?null:Number(inputs.land_rights_cost_mln)*1e6)+'. Отдельный зачёт площадей и другие льготы применяются к ней при построении графика ВРИ.';
+ const transfer=moVriNode('moVriTransferNote');if(transfer){
+  const metres=moVriNumber((tep.apartments||{}).transfer),offset=moVriNumber(inputs.vri_transfer_offset_mln);
+  transfer.textContent='В модели передаётся квартир: '+(metres===null?'не указано':metres.toLocaleString('ru-RU')+' м²')+
+   '. Отдельный денежный зачёт: '+moVriMoney(offset===null?null:offset*1e6)+'.';
+ }
+ if(typeof partialTepMode==='function'&&partialTepMode()){
+  invalidateMoVriRelief();moVriReliefStatus('Сначала дополните исходные данные ТЭП. Применение платы к неполному проекту недоступно.');
+  const preview=moVriNode('moVriPreviewButton');if(preview)preview.disabled=true;
+ }
+}
+function openMoVriRelief(){
+ openTab('vri');renderMoVriRelief();const panel=moVriNode('moVriReliefPanel');
+ if(panel&&classRegion()==='mo'){panel.open=true;panel.scrollIntoView({block:'start',behavior:'smooth'})}
+}
+function openMoVriTransferOffset(){
+ openTab('vri');const field=moVriNode('f_vri_transfer_offset_mln');if(!field)return;
+ let parent=field.parentElement;while(parent){if(parent.tagName==='DETAILS')parent.open=true;parent=parent.parentElement}
+ field.scrollIntoView({block:'center',behavior:'smooth'});field.focus();
+}
+async function previewMoVriRelief(){
+ renderMoVriRelief();
+ if(classRegion()!=='mo')return;
+ if(typeof partialTepMode==='function'&&partialTepMode())return;
+ const gross=moVriNumber((moVriNode('moVriGross')||{}).value),compensation=moVriNumber((moVriNode('moCompensation')||{}).value);
+ invalidateMoVriRelief();
+ const compensationField=moVriNode('moCompensation');
+ if(compensationField&&compensationField.validity&&compensationField.validity.badInput){moVriReliefStatus('Закончите ввод суммы компенсации или очистите поле.');return}
+ if(gross===null||gross<0){moVriReliefStatus('Укажите известную плату до уменьшения: сумму не меньше нуля.');return}
+ if(compensation!==null&&compensation<0){moVriReliefStatus('Сумма компенсации должна быть не меньше нуля.');return}
+ const owner=inputs,binding=moVriReliefBinding(),run=moVriReliefRun;
+ const origin=moVriReliefBaseSource||{kind:'manual',label:'Плата до уменьшения введена вручную'};
+ const button=moVriNode('moVriPreviewButton');if(button)button.disabled=true;
+ moVriReliefStatus('Считаю уменьшение платы…');
+ try{
+  const response=await fetch('/mo/vri-compensation',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({payment_before_compensation_rub:gross*1e6,compensation_rub:compensation===null?null:compensation*1e6,
+    inputs,tep,session:activeSession(),access_key:projectsAdminKey||''})});
+  const data=await serverJson(response);
+  if(run!==moVriReliefRun||owner!==inputs||binding!==moVriReliefBinding())return;
+  if(!response.ok)throw new Error(serverDetail(data)||'Не удалось рассчитать уменьшение платы');
+  const vri=data&&data.vri;
+  if(!vri||moVriNumber(vri.payment_before_compensation_rub)===null||moVriNumber(vri.payment_used_rub)===null
+   ||moVriNumber(vri.payment_used_mln)===null||moVriNumber(vri.payment_after_reliefs_rub)===null||Number(vri.payment_used_rub)<0
+   ||Math.abs(Number(vri.payment_before_compensation_rub)-gross*1e6)>0.011
+   ||Math.abs((moVriNumber(vri.compensation_rub)||0)-(compensation||0)*1e6)>0.011
+   ||Math.abs(Number(vri.payment_used_mln)*1e6-Number(vri.payment_used_rub))>0.011)
+   throw new Error('Сервер не вернул полный расчёт платы. Проект не изменён.');
+  moVriReliefPreview={owner,binding,vri,source:origin};renderMoVriReliefResult(vri,true);
+  moVriNode('moVriApplyButton').disabled=false;
+  moVriReliefStatus('Предварительный расчёт. Для переноса платы нажмите «Применить плату к проекту». '+(vri.warnings||[]).join(' '));
+ }catch(error){
+  if(run===moVriReliefRun&&owner===inputs&&binding===moVriReliefBinding())moVriReliefStatus(String(error.message||error));
+ }finally{if(button&&run===moVriReliefRun)button.disabled=false}
+}
+async function applyMoVriRelief(){
+ const preview=moVriReliefPreview;
+ if(!preview||preview.owner!==inputs||classRegion()!=='mo'||preview.binding!==moVriReliefBinding()
+  ||(typeof partialTepMode==='function'&&partialTepMode())){
+  invalidateMoVriRelief();moVriReliefStatus('Исходные данные изменились. Рассчитайте уменьшение ещё раз.');return;
+ }
+ invalidateMoVriRelief();
+ inputs.land_rights_cost_mln=preview.vri.payment_used_mln;
+ inputs.mo_vri_compensation_mln=preview.vri.compensation_rub==null?0:preview.vri.compensation_rub/1e6;
+ inputs._mo_vri_relief={schema:1,vri:cloneValue(preview.vri),source:cloneValue(preview.source)};
+ fieldOrigins()['inputs.land_rights_cost_mln']={source:'mo_vri_compensation',text:'Плата по Московской области после уменьшения по соглашению. '+preview.source.label+'.'};
+ markFieldManual('inputs.mo_vri_compensation_mln');
+ moVriReliefOwner=null;renderInputs();
+ renderMoVriReliefResult(preview.vri,true);
+ let kept=true;try{persistLocalSilently()}catch(error){kept=false}
+ moVriReliefStatus('Плата применена к проекту. ТЭП, очередность и отдельный денежный зачёт сохранены.'+(kept?'':' Локальную копию сохранить не удалось: сохраните проект в кабинете или скачайте настройки.'));
+ await calculate();
 }
 
 // Сумма компенсации по соглашению о Ксу* — вводная проекта

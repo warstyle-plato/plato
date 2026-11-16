@@ -303,6 +303,20 @@ def test_the_book_names_the_deduction_only_when_there_is_one():
                                    _mo_calc={"vri": dict(calc["vri"], payment_used_mln=40.0)})
 
 
+def test_the_book_names_an_applied_fee_only_calculation_without_a_tep_import():
+    import copy
+    named = "Плата уменьшена на сумму компенсации по соглашению с областью (1310-ПП, Ксу*)"
+    vri = core.mo_vri_compensation(110_000_000, 10_000_000)
+    record = {"schema": 1, "vri": vri, "source": {"kind": "manual", "label": "Плата до уменьшения введена вручную"}}
+    text = _book_text(mo_vri_compensation_mln=10, _mo_vri_relief=record)
+    assert named in text and "вычтено 10,0 млн ₽" in text
+    # Изменили сумму независимо от применённого расчёта — источником он не служит.
+    assert named not in _book_text(mo_vri_compensation_mln=20, _mo_vri_relief=record)
+    stale = copy.deepcopy(record)
+    stale["vri"]["payment_used_mln"] = 40
+    assert named not in _book_text(mo_vri_compensation_mln=10, _mo_vri_relief=stale)
+
+
 # Решение владельца 13.11.2026 («А»): в Московской области компенсация по
 # соглашению о Ксу* и зачёт переданных муниципалитету площадей вычитаются оба.
 # Ксу* уже срезан в плате из расчёта по области (не ниже 1 ₽), зачёт метров

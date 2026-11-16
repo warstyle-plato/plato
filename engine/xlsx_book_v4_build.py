@@ -1182,8 +1182,7 @@ def _build_project_workbook(
         # в проекте — та, что этот расчёт дал: вписанная поверх сумма — уже
         # не плата за вычетом, а введённая сумма вычетом не была. Служебные
         # ключи с «_» в `x` не попадают, поэтому расчёт МО читается из `inputs`.
-        _mo_calc = (inputs or {}).get("_mo_calc")
-        _mo_vri = (_mo_calc.get("vri") or {}) if isinstance(_mo_calc, dict) else {}
+        _mo_vri = mo_vri_applied_details(inputs or {})
         _applied_rub = _mo_vri.get("compensation_applied_rub")
         _used_mln = _mo_vri.get("payment_used_mln")
         _compensation_mln = (
