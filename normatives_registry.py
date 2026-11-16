@@ -1764,6 +1764,27 @@ def _verification_html(entry: dict[str, Any], admin: bool = False) -> str:
     return "".join(parts)
 
 
+def _latest_amendment_links(entry: dict[str, Any]) -> str:
+    """Публикация названной поправки — у её упоминания, из той же карточки акта."""
+    references = entry.get("latest_amendment_ids") or []
+    if not isinstance(references, list) or not references:
+        return ""
+    by_id = {row.get("id"): row for row in _load_registry()}
+    links = []
+    for identity in references:
+        amendment = by_id.get(identity) if isinstance(identity, str) else None
+        if not amendment:
+            continue
+        source = str(amendment.get("source_url") or "").strip()
+        if not source.startswith("https://"):
+            continue
+        label = ("Официальный текст поправки: "
+                 + str(amendment.get("short_name") or amendment.get("title") or identity))
+        links.append(f'<a href="{html.escape(source, quote=True)}" '
+                     f'target="_blank" rel="noopener">{html.escape(label)} ↗</a>')
+    return ('<div class="amendment-sources">' + "<br>".join(links) + "</div>") if links else ""
+
+
 def _card(entry: dict[str, Any], admin: bool = False) -> str:
     check = entry.get("check") if isinstance(entry.get("check"), dict) else {}
     check_result = str(check.get("result") or "")
@@ -1977,7 +1998,8 @@ def _card(entry: dict[str, Any], admin: bool = False) -> str:
     <div><b>Реестр актуален на</b><span>{_fmt_date(entry.get('current_as_of'))}</span></div>
   </div>
   <div class="amend"><b>Текущая учтённая редакция</b>
-    <span>{html.escape(str(entry.get('latest_amendment') or '—'))}</span></div>
+    <span>{html.escape(str(entry.get('latest_amendment') or '—'))}</span>
+    {_latest_amendment_links(entry)}</div>
   {news_html}
   {verification_html}
   {history_html}
