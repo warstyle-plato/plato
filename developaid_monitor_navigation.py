@@ -63,7 +63,7 @@ SCRIPT = r"""
 // UI state only. Credentials, fetched results and source/edit drafts never enter this store.
 window.createMonitorNavigation=function(config){
  const STORE='developaid_monitor_navigation_v1',views=__MONITOR_NAVIGATION_VIEWS__;
- const fieldSets={monitor:['contractsSearch','contractsFilter','physicalReviewView','physicalReviewSearch','physicalReviewFilter','physicalSearch','physicalTask','physicalItems'],report:['reportKind','reportSales']},fields=fieldSets[config.page];
+ const fieldSets={monitor:['contractsSearch','contractsFilter','physicalReviewView','physicalReviewSearch','physicalReviewFilter','physicalSearch','physicalTask','physicalItems'],report:['reportKind']},fields=fieldSets[config.page];
  const byId=id=>document.getElementById(id),plain=x=>x&&typeof x==='object'&&!Array.isArray(x);
  const text=(v,n)=>typeof v==='string'&&v.length<=n&&!/[\u0000-\u001f]/.test(v)?v:'';
  const day=v=>/^\d{4}-\d{2}-\d{2}$/.test(v||'')?v:'';
