@@ -86,7 +86,12 @@ def test_actual_report_keeps_quantities_visible_without_approving_unknown_scope(
         assert section.locator('details,.executive-facts').count()==0
         assert section.evaluate('(e)=>e.getBoundingClientRect().width<=innerWidth')
         assert '50 из 100 м²'not in section.inner_text()
-        assert summary['facts']==[] if scenario=='unconfirmed' else summary['facts'][0]['done']==50
+        if scenario=='unconfirmed':
+            assert summary['source_status']['state']=='unconfirmed'
+            assert summary['facts']==[]
+        else:
+            assert summary['facts'][0]['done']==50 and summary['facts'][0]['plan']==100
+        if scenario=='confirmed':assert summary['state']=='estimate'
         assert data['gantt']['dependency_timeline']['physical']['tasks'][0]['progress']==(None if scenario=='unconfirmed'else .5)
         if scenario!='confirmed':assert summary['forecast']is None
         engine.close()

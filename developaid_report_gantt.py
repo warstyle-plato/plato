@@ -734,48 +734,36 @@ def compact_model(block: dict[str, Any], cut: Any) -> dict[str, Any]:
     """Report-only overview. Join explicit reference IDs; never calculate a forecast."""
     from developaid_gpr_summary import gpr_summary
     state = block.get('readiness') or {}
-    calendar = block.get('calendar') or {}
+    projection = block.get('calendar') or {}
     summary = gpr_summary(state, cut)
     project = state.get('project') or {}
     forecast = project.get('forecast') or {}
-    display = calendar.get('display') or {}
+    display = projection.get('display') or {}
     identity = state.get('forecast_identity') or {}
     mapping = identity.get('remaining_ids') or {}
-    rows = calendar.get('rows') or []
-    points = calendar.get('points') or {}
+    rows = projection.get('rows') or []
+    points = projection.get('points') or {}
     corpora = state.get('corpora') or []
     valid_day = lambda value: isinstance(value, str) and _date(value) is not None and _date(value).isoformat() == value
     by_id = {str(item['task']['id']): item['task'] for item in rows
              if isinstance(item, dict) and isinstance(item.get('task'), dict) and item['task'].get('id') is not None}
-    valid = bool(summary and re.fullmatch('[a-f0-9]{64}', str(state.get('source_sha256') or ''))
-                 and calendar.get('qualified') is True and calendar.get('cut') == str(cut)
-                 and len(by_id) == len(rows) and display == forecast.get('display')
-                 and display.get('finish') == summary['finish']
-                 and all(display.get(key) == forecast.get(key) == identity.get(key)
-                         for key in ('source_sha256', 'full_source_sha256', 'id_scope'))
-                 and display.get('cut') == str(cut) and display.get('truncated') is False)
-    display_points = {p.get('work_id'): p for p in display.get('rows') or [] if isinstance(p, dict)}
-    valid = valid and len(display_points) == len(display.get('rows') or []) and display_points == points
+    # Requalify only the compiled DTO already supplied to this renderer. The
+    # native validator owns source/scope/exclusion/point-date rules; there is
+    # no second, weaker interpretation of its qualified flag here.
+    tasks = [dict(task, level='task') for task in by_id.values()]
+    checked = calendar(dict(rows=tasks, undated_works=[], management=tasks,
+                            readiness=state), cut)
+    valid = bool(summary and projection.get('qualified') is True
+                 and projection.get('schema') == checked['schema']
+                 and projection.get('cut') == str(cut) and checked['qualified']
+                 and len(by_id) == len(rows) and projection.get('issues') == checked['issues']
+                 and display == checked['display'] and points == checked['points']
+                 and display.get('finish') == summary['finish'])
+    # Corpus membership is another explicit ID join, not inferred from labels.
     references = project.get('work_ids') or []
     memberships = [key for group in corpora for key in group.get('work_ids') or []]
-    valid = valid and project.get('total') == display.get('reference_total') == len(references)
-    valid = valid and len(references) == len(set(references)) and len(memberships) == len(set(memberships)) and set(memberships) == set(references)
-    selected_refs = {point.get('reference_work_id') for point in points.values()}
-    exclusions = forecast.get('excluded') or []
-    excluded = {item.get('work_id') for item in exclusions if isinstance(item, dict)
-                and item.get('kind') in {'separate_scope', 'nonconstruction_scope'}}
-    valid = valid and len(selected_refs) == len(points) and not selected_refs & excluded and selected_refs | excluded == set(references)
-    valid = valid and display.get('total') == len(points) and display.get('covered') == sum(bool(p.get('complete') or valid_day(p.get('finish'))) for p in points.values())
-    for key, point in points.items():
-        task = by_id.get(key) or {}
-        scenario = task.get('plan_pace_scenario') or {}
-        complete = bool(scenario.get('complete') or task.get('work_done'))
-        measured = bool(task.get('forecast_known') and not task.get('observed_complete_by'))
-        finish = None if complete else (task.get('forecast_finish') if measured else None) or scenario.get('finish') or None
-        valid = valid and mapping.get(point.get('reference_work_id')) == key and point.get('plan_finish') == (task.get('plan_finish') or None)
-        valid = valid and point.get('finish') == finish and point.get('complete') is complete
-    finishes = [p['finish'] for p in points.values() if valid_day(p.get('finish'))]
-    valid = valid and display.get('finish') == max(finishes, default=None)
+    valid = valid and len(memberships) == len(set(memberships)) and set(memberships) == set(references)
+    excluded = {item['work_id'] for item in forecast.get('excluded') or []} if checked['qualified'] else set()
     def aggregate(keys):
         selected = [points[mapping[key]] for key in keys if mapping.get(key) in points]
         tasks = [by_id[p['work_id']] for p in selected if p.get('work_id') in by_id]
@@ -822,7 +810,7 @@ def compact_model(block: dict[str, Any], cut: Any) -> dict[str, Any]:
             keys = cell.get('work_ids') or []
             cells.append(cell.get('progress') if valid and set(keys) <= set(group.get('work_ids') or []) else None)
         matrix.append(dict(stage=stage.get('stage') or 'Этап не указан', values=cells))
-    owner = calendar.get('owner_rnv') or {}
+    owner = projection.get('owner_rnv') or {}
     owner_date = owner.get('date') if owner.get('source') == 'owner_decision' and valid_day(owner.get('date')) else None
     return dict(qualified=bool(valid), finish=display.get('finish') if valid else None,
                 covered=display.get('covered') if valid else None, total=display.get('total') if valid else None,

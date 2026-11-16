@@ -73,7 +73,8 @@ def test_missing_or_foreign_canonical_projection_never_becomes_a_plan_forecast(f
 def test_unknown_point_is_not_zero_or_plan_fallback_and_keeps_qualified_partial_project_date():
     value=block();key='source-3'
     value['calendar']['rows'][2]['task']['plan_pace_scenario']['finish']=None
-    for point in [value['calendar']['points'][key],value['calendar']['display']['rows'][2],value['readiness']['project']['forecast']['display']['rows'][2]]:point['finish']=None
+    for point in [value['calendar']['points'][key],value['calendar']['display']['rows'][2],value['readiness']['project']['forecast']['display']['rows'][2]]:
+        point['finish']=None;point['basis']='unknown'
     for display in [value['calendar']['display'],value['readiness']['project']['forecast']['display'],value['readiness']['project']['forecast']]:display['covered']=2
     model=gantt.compact_model(value,CUT);assert model['qualified']and model['finish']=='2028-05-31'
     assert model['covered']==2 and model['groups'][2]['finish']is None and model['groups'][2]['unknown']
@@ -157,3 +158,24 @@ def test_compact_presentation_never_calls_a_forecast_calculator(monkeypatch):
     monkeypatch.setattr(scenario,'work',forbidden);monkeypatch.setattr(scenario,'group',forbidden)
     body=report._gantt_html(dict(gantt=value,end=CUT))
     assert '31.05.2028'in body and value==before
+
+
+@pytest.mark.parametrize('fault',['unattested_exclusion','future_source_date'])
+def test_compact_uses_the_native_calendar_guard_for_scope_and_point_dates(fault):
+    value=block();projection=value['calendar'];state=value['readiness'];forecast=state['project']['forecast']
+    if fault=='unattested_exclusion':
+        key='source-3';projection['points'].pop(key);state['forecast_identity']['remaining_ids'].pop(key)
+        forecast['excluded']=[dict(work_id=key,kind='separate_scope')]
+        for display in [projection['display'],forecast['display']]:
+            display['rows']=[p for p in display['rows']if p['work_id']!=key]
+            display['total']=display['covered']=2
+        forecast['total']=forecast['covered']=2
+    else:
+        for point in [projection['points']['source-1'],projection['display']['rows'][0],forecast['display']['rows'][0]]:
+            point['source_date']='2099-01-01'
+    tasks=[dict(row['task'],level='task')for row in projection['rows']]
+    checked=gantt.calendar(dict(rows=tasks,management=tasks,readiness=state),CUT)
+    assert not checked['qualified']and checked['issues']
+    before=copy.deepcopy(value);model=gantt.compact_model(value,CUT)
+    assert not model['qualified']and model['finish']is None and value==before
+    assert all(group['finish']is None for group in model['groups'])
