@@ -407,7 +407,7 @@ def text_lines(gantt: dict[str, Any]) -> list[str]:
     return out
 
 
-def _attested_partial_calendar_gap(reference, references, scope, mapping, gaps):
+def _attested_partial_calendar_gap(reference, references, scope, mapping, gaps, id_scope):
     """Read native declared uncertainty; never repair or infer missing members."""
     if type(gaps) is not list or len(gaps) > 2000:
         return False
@@ -415,7 +415,7 @@ def _attested_partial_calendar_gap(reference, references, scope, mapping, gaps):
     for gap in gaps:
         if (type(gap) is not dict or set(gap) != {'work_id','remaining_id','kind'}
                 or type(gap['work_id']) is not str or gap['work_id'] not in references
-                or gap['work_id'] in indexed or type(gap['kind']) is not str):
+                or gap['work_id'] in indexed or gap['work_id'] not in mapping or type(gap['kind']) is not str):
             return False
         key, kind, remaining = gap['work_id'], gap['kind'], gap['remaining_id']
         qualification = scope.get(key) or {}
@@ -424,7 +424,7 @@ def _attested_partial_calendar_gap(reference, references, scope, mapping, gaps):
         if kind == 'unclassified_scope':
             valid = qualification == {'status':'gap','reason':kind} and remaining is None
         elif kind == 'outside_current_source':
-            valid = not qualification and key in mapping and mapping[key] is None and remaining is None
+            valid = id_scope == 'full_source' and not qualification and mapping[key] is None and remaining is None
         elif kind == 'unknown_time':
             current = mapping.get(key)
             valid = (not qualification and type(current) in {str,int}
@@ -563,7 +563,7 @@ def calendar(schedule: dict[str, Any], cut: Any) -> dict[str, Any]:
             problem('Статус выбранной работы противоречит исходной календарной проекции. План и показания сохранены.')
         if status == 'gap' or reference not in mapping or mapping[reference] is None:
             attested = _attested_partial_calendar_gap(reference, references,
-                state.get('forecast_scope') or {}, mapping, forecast.get('gaps'))
+                state.get('forecast_scope') or {}, mapping, forecast.get('gaps'), forecast.get('id_scope'))
             if attested:
                 declared_gaps.add(reference)
             problem('Для выбранной работы не подтверждена точная связь с текущим ГПР. Общая дата скрыта; план и показания сохранены.', invalid=not attested)
