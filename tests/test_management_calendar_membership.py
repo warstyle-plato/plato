@@ -88,8 +88,11 @@ def test_native_unclassified_scope_remains_a_named_unresolved_reference():
     view=_native_scoped_view(classification=None);state=view['schedule']['readiness']
     assert state['forecast_scope']['other']==dict(status='gap',reason='unclassified_scope')
     assert state['project']['forecast']['gaps']==[dict(work_id='other',remaining_id=None,kind='unclassified_scope')]
-    model,_=_closed(view)
+    before=copy.deepcopy(view);block,body=_render(view);model=block['calendar']
+    assert not model['qualified'] and model['issues'] and len(model['rows'])==2
     assert set(model['points'])=={'build'}
+    assert 'gpr-scoped-finish"'not in body and 'gpr-analysis-paragraph'not in body
+    assert block['readiness']==state and view==before
 
 
 @pytest.mark.parametrize('mutation',['missing_attestation','contradicting_scope','duplicate_exclusion','malformed_kind','malformed_reason'])

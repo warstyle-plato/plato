@@ -407,6 +407,36 @@ def text_lines(gantt: dict[str, Any]) -> list[str]:
     return out
 
 
+def _attested_partial_calendar_gap(reference, references, scope, mapping, gaps):
+    """Read native declared uncertainty; never repair or infer missing members."""
+    if type(gaps) is not list or len(gaps) > 2000:
+        return False
+    indexed = {}
+    for gap in gaps:
+        if (type(gap) is not dict or set(gap) != {'work_id','remaining_id','kind'}
+                or type(gap['work_id']) is not str or gap['work_id'] not in references
+                or gap['work_id'] in indexed or type(gap['kind']) is not str):
+            return False
+        key, kind, remaining = gap['work_id'], gap['kind'], gap['remaining_id']
+        qualification = scope.get(key) or {}
+        if type(qualification) is not dict:
+            return False
+        if kind == 'unclassified_scope':
+            valid = qualification == {'status':'gap','reason':kind} and remaining is None
+        elif kind == 'outside_current_source':
+            valid = not qualification and key in mapping and mapping[key] is None and remaining is None
+        elif kind == 'unknown_time':
+            current = mapping.get(key)
+            valid = (not qualification and type(current) in {str,int}
+                     and type(remaining) is str and remaining == str(current))
+        else:
+            return False
+        if not valid:
+            return False
+        indexed[key] = kind
+    return indexed.get(reference) in {'unclassified_scope','outside_current_source'}
+
+
 def calendar(schedule: dict[str, Any], cut: Any) -> dict[str, Any]:
     """Copy the compiled source roster and qualify its canonical display points.
 
@@ -429,7 +459,11 @@ def calendar(schedule: dict[str, Any], cut: Any) -> dict[str, Any]:
     owner = schedule.get('owner_rnv') or {}
     owner = owner if isinstance(owner, dict) else {}
     result = dict(schema=1, cut=str(cut), rows=roster, display=None, qualified=False, points={}, issues=[],
-                  owner_rnv=copy.deepcopy(owner) if owner.get('source') == 'owner_decision' and _date(owner.get('date')) else None)
+                  readiness_forecast_invalid=False, owner_rnv=copy.deepcopy(owner) if owner.get('source') == 'owner_decision' and _date(owner.get('date')) else None)
+    def problem(reason, *, invalid=True):
+        result['issues'].append(reason)
+        if invalid:
+            result['readiness_forecast_invalid'] = True
     source = [*(schedule.get('rows') or []), *(schedule.get('undated_works') or [])]
     source = source or [item['task'] for item in roster]
     present = {str(item['task']['id']) for item in roster if item['task'].get('id') is not None}
@@ -438,7 +472,7 @@ def calendar(schedule: dict[str, Any], cut: Any) -> dict[str, Any]:
         roster.append(dict(task=copy.deepcopy(row),control='Иерархию работы нужно проверить',
                            detail=str(row.get('section') or 'Работы вне исходной иерархии'),rss=''))
     if missing:
-        result['issues'].append('В исходном перечне есть работы без строки в иерархии ГПР. Они сохранены отдельно; общая календарная дата требует сверки состава.')
+        problem('В исходном перечне есть работы без строки в иерархии ГПР. Они сохранены отдельно; общая календарная дата требует сверки состава.')
     by_id = defaultdict(list)
     for row in source:
         if row.get('id') is not None:
@@ -451,11 +485,13 @@ def calendar(schedule: dict[str, Any], cut: Any) -> dict[str, Any]:
     identity = state.get('forecast_identity') or {} if isinstance(state, dict) else None
     mapping = identity.get('remaining_ids') or {} if isinstance(identity, dict) else None
     issues = result['issues']
-    def unavailable(reason):
-        issues.append(reason)
+    def unavailable(reason, *, invalid=True):
+        problem(reason, invalid=invalid)
         return result
     if not display:
-        return unavailable('Для этого среза нет подтверждённой календарной проекции. План и исходные показания сохранены.')
+        return unavailable('Для этого среза нет подтверждённой календарной проекции. План и исходные показания сохранены.', invalid=False)
+    if not roster:
+        return unavailable('Для календаря нет полного исходного перечня работ. Независимая оценка готовности сохранена.', invalid=False)
     if (not all(isinstance(value, dict) for value in [state,project,forecast,display,identity,mapping])
             or not isinstance(project.get('work_ids'), list)
             or not isinstance(state.get('forecast_scope') or {}, dict)):
@@ -489,51 +525,56 @@ def calendar(schedule: dict[str, Any], cut: Any) -> dict[str, Any]:
     exclusions = forecast.get('excluded')
     attested_exclusions = {}
     if not isinstance(exclusions, list):
-        issues.append('Исключения из календарного состава не подтверждены. Общая дата требует сверки.')
+        problem('Исключения из календарного состава не подтверждены. Общая дата требует сверки.')
     else:
         for exclusion in exclusions:
             if (not isinstance(exclusion, dict) or not isinstance(exclusion.get('work_id'), str)
                     or exclusion['work_id'] not in counts or exclusion['work_id'] in attested_exclusions
                     or not isinstance(exclusion.get('kind'), str)
                     or exclusion['kind'] not in {'separate_scope','nonconstruction_scope'}):
-                issues.append('Не подтверждено исключение работы из календарного состава. План и показания сохранены.')
+                problem('Не подтверждено исключение работы из календарного состава. План и показания сохранены.')
                 continue
             attested_exclusions[exclusion['work_id']] = exclusion['kind']
     if (type(project.get('total')) is not int or project['total'] != len(references)
             or display['reference_total'] != len(references)
             or display['total'] != len(references)-len(attested_exclusions)):
-        issues.append('Число исходных работ не совпадает с подтверждённым календарным составом. Общая дата скрыта; план и показания сохранены.')
+        problem('Число исходных работ не совпадает с подтверждённым календарным составом. Общая дата скрыта; план и показания сохранены.')
     expected = {}
+    declared_gaps = set()
     for reference in references:
         qualification = (state.get('forecast_scope') or {}).get(reference) or {}
         if counts[reference] != 1:
-            issues.append('Идентификатор выбранной работы повторяется. Общая дата требует сверки состава; исходные строки сохранены.')
+            problem('Идентификатор выбранной работы повторяется. Общая дата требует сверки состава; исходные строки сохранены.')
             continue
         if not isinstance(qualification, dict):
-            issues.append('Не подтверждён формат связи работы с выбранным составом. План и показания сохранены.')
+            problem('Не подтверждён формат связи работы с выбранным составом. План и показания сохранены.')
             continue
         if qualification.get('status') is not None and not isinstance(qualification['status'], str):
-            issues.append('Не подтверждён статус связи работы с выбранным составом. План и показания сохранены.')
+            problem('Не подтверждён статус связи работы с выбранным составом. План и показания сохранены.')
             continue
         status = qualification.get('status')
         if status == 'excluded':
             if (not isinstance(qualification.get('reason'), str)
                     or qualification['reason'] not in {'separate_scope','nonconstruction_scope'}
                     or attested_exclusions.get(reference) != qualification['reason']):
-                issues.append('Исключение выбранной работы не подтверждено исходной проекцией. Общая дата требует сверки состава.')
+                problem('Исключение выбранной работы не подтверждено исходной проекцией. Общая дата требует сверки состава.')
             continue
         if reference in attested_exclusions or status not in {None,'gap'}:
-            issues.append('Статус выбранной работы противоречит исходной календарной проекции. План и показания сохранены.')
+            problem('Статус выбранной работы противоречит исходной календарной проекции. План и показания сохранены.')
         if status == 'gap' or reference not in mapping or mapping[reference] is None:
-            issues.append('Для выбранной работы не подтверждена точная связь с текущим ГПР. Общая дата скрыта; план и показания сохранены.')
+            attested = _attested_partial_calendar_gap(reference, references,
+                state.get('forecast_scope') or {}, mapping, forecast.get('gaps'))
+            if attested:
+                declared_gaps.add(reference)
+            problem('Для выбранной работы не подтверждена точная связь с текущим ГПР. Общая дата скрыта; план и показания сохранены.', invalid=not attested)
             continue
         current = mapping[reference]
         if isinstance(current, bool) or not isinstance(current, (str,int)) or not str(current) or len(str(current)) > 512:
-            issues.append('Нет точного идентификатора работы в текущем источнике. План и показания сохранены.')
+            problem('Нет точного идентификатора работы в текущем источнике. План и показания сохранены.')
             continue
         current = str(current)
         if counts[reference] != 1 or translations[current] != 1 or len(by_id[current]) != 1 or tree_ids[current] != 1:
-            issues.append('Неоднозначная связь работы с выбранным составом. Эта точка не показана; исходные строки сохранены.')
+            problem('Неоднозначная связь работы с выбранным составом. Эта точка не показана; исходные строки сохранены.')
             continue
         expected[current] = reference
     point_counts = Counter(p.get('work_id') for p in display['rows'] if isinstance(p, dict) and isinstance(p.get('work_id'), str))
@@ -552,11 +593,14 @@ def calendar(schedule: dict[str, Any], cut: Any) -> dict[str, Any]:
                 or not valid_date(point.get('source_date')) or point.get('source_date') and point['source_date'] > str(cut)
                 or point.get('source_date') != (scenario.get('source_date') or None)):
             label = str((row or {}).get('name') or 'Работа без однозначной связи с источником')
-            issues.append('Не подтверждена календарная точка: '+label+'. Её прогноз не показан; план и показание сохранены.')
+            problem('Не подтверждена календарная точка: '+label+'. Её прогноз не показан; план и показание сохранены.')
             continue
         result['points'][key] = copy.deepcopy(point)
     if set(result['points']) != set(expected):
-        issues.append('Не для каждой работы выбранного состава подтверждена календарная точка. Общая дата скрыта; пригодные индивидуальные даты сохранены.')
+        problem('Не для каждой работы выбранного состава подтверждена календарная точка. Общая дата скрыта; пригодные индивидуальные даты сохранены.')
+    if declared_gaps and (display['total'] != len(result['points']) + len(declared_gaps)
+            or display['covered'] != sum(bool(point['complete'] or point['finish']) for point in result['points'].values())):
+        problem('Покрытие частичной оценки не совпало с исходными точками и заявленными пробелами. Общая дата требует сверки.')
     result['qualified'] = not issues
     return result
 

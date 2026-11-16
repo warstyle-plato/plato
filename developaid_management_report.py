@@ -1123,7 +1123,7 @@ def gantt(view: dict[str, Any], dashboard: dict[str, Any]) -> dict[str, Any]:
     result["corpus_gpr"] = schedule_view.get("corpus_gpr")
     result["work_fact"] = schedule_view.get("work_fact")
     result["readiness"] = schedule_view.get("readiness")
-    if (isinstance(result['readiness'], dict) and not result['calendar']['qualified']
+    if (isinstance(result['readiness'], dict) and result['calendar'].get('readiness_forecast_invalid')
             and isinstance(result['readiness'].get('project'), dict)):
         # A broken display membership must not leave its global calendar date
         # qualified in the cover/readiness. Physical facts and weights remain.
@@ -4389,6 +4389,12 @@ def _gantt_html(report: dict[str, Any]) -> str:
         out.append(f"<p class='note'>{html.escape(block.get('reason') or 'Графика работ нет.')}</p>")
         out.append(completed_history)
         return "".join(out)
+    if 'calendar' not in block:
+        out.append('<p class="note"><b>Архивная сводка по корпусам.</b> Это сохранённые укрупнённые данные. '
+                   'Для полного календаря всех работ соберите новый срез отчёта.</p>')
+        out.append(report_gantt.render(block, report.get('end')))
+        out.append(completed_history)
+        return ''.join(out)
     out.append('<p class="note">В сохранённой сводке нет полного перечня работ для нового календаря. '
                'Соберите сводку по текущему срезу; даты по укрупнённым статьям его не заменяют.</p>')
     out.append(completed_history)
