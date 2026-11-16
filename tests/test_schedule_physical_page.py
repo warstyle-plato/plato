@@ -151,6 +151,7 @@ def test_compact_report_pdf_and_full_monitor_retain_the_same_physical_dto(tmp_pa
     expected_finish=None if scenario=='stale'else'2027-01-06'
     expected_text='Пока не определён'if scenario=='stale'else'06.01.2027'
     assert compact['finish']==expected_finish
+    assert compact['owner_plan'] is None  # This fixture stores no owner decision.
     assert markup.count('data-project-forecast="'+(expected_finish or'')+'"')==3
     path=tmp_path/'physical.pdf'
     with sync_playwright() as pw:
@@ -164,8 +165,10 @@ def test_compact_report_pdf_and_full_monitor_retain_the_same_physical_dto(tmp_pa
     assert '06.11.2026' in text and 'Подробные работы и источники' in text
     assert 'Сроки и выполнение работ' not in text and 'Приложение. Источники и ограничения оценки' not in text
     forecast_text=text.split('Прогноз учтённых работ',1)[1].split('Матрица готовности',1)[0]
+    # The primary forecast precedes the separately labelled evidence date.
     assert forecast_text.lstrip().startswith(expected_text+' ')
-    assert '31.10.2026'not in forecast_text and '13.02.2027'not in forecast_text
+    assert 'План РНВ владельца:'not in forecast_text
+    assert '13.02.2027'not in forecast_text
     assert '50 из 100 м² на '+actual_date not in forecast_text
     assert '13.02.2027' not in text and 'Все работы исходной сети' not in text
     if scenario=='stale':
