@@ -44,7 +44,10 @@ def decorated(raw, *, edit=None, member='xl/worksheets/sheet1.xml', far=False):
 def reason(sheet):
     value={};assert proof._verified_payload_extent(sheet,_failure=value) is None
     checked=proof._checked_extent_failure(value)
-    assert checked==value and len(json.dumps(value).encode())<1024
+    assert checked==value
+    exc=proof._WorksheetSizeProblem(proof.ESTIMATE,900000,200,value)
+    exc.captured_source={'sha256':'a'*64,'bytes':1234}
+    assert len(json.dumps(proof.failure_diagnostic(exc),ensure_ascii=False).encode())<=proof.MAX_FAILURE_DIAGNOSTIC==2048
     assert PRIVATE not in json.dumps(value) and value['complete_proof'] is False
     return value
 

@@ -205,6 +205,7 @@ def test_structure_requires_the_legacy_namespace_rejection_and_its_existing_reas
     failure = rejected(etree.tostring(root))
     legacy = copy.deepcopy(failure)
     legacy.pop('namespace_structure')
+    legacy.pop('namespace_path_fingerprint', None)
     assert proof._checked_extent_failure(legacy) == legacy
     failure.pop('namespace_rejection')
     assert proof._checked_extent_failure(failure) is None
@@ -246,7 +247,7 @@ def test_whole_diagnostic_keeps_the_2048_byte_bound_with_largest_URI_and_all_cou
                    xml_nodes_seen=proof.MAX_CELLS * 8 + 1, xml_bytes_observed=proof.ahr.MAX_EXPANDED + 65536)
     failure['namespace_structure'].update(path=['worksheet'] * 12, depth=64, truncated=True, other=True)
     result = outer(failure)
-    assert result['extent_proof'] == failure
+    assert result['extent_proof'] == {k: v for k, v in failure.items() if k != 'namespace_path_fingerprint'}
     assert len(json.dumps(result, ensure_ascii=False, allow_nan=False).encode()) <= proof.MAX_FAILURE_DIAGNOSTIC == 2048
 
 

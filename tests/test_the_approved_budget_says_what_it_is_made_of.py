@@ -243,7 +243,7 @@ def test_the_tiles_add_up_on_the_page(tmp_path, monkeypatch):
     assert need["note"] == (
         "Глава 1 (участок) — 30 000 ₽; Глава 2 (стройка) — 130 000 ₽; "
         "Глава 3 (коммерция) — 20 000 ₽; первая нехватка — ноябрь 2026. "
-        + source_notes["need"])
+        "Сумма без уточнения АХР: остаток АХР пока не рассчитан. " + source_notes["need"])
     for gone in ("Потребность в допфинансировании банка", "Осталось по смете после всех оплат",
                  "Можно ещё выбрать у банка"):
         assert gone not in tiles
@@ -253,7 +253,7 @@ def test_the_tiles_add_up_on_the_page(tmp_path, monkeypatch):
     page = report.render_html(built)
     assert ("<div class='k'>Утверждённый бюджет <span class='i' tabindex='0' role='note' "
             "title='Утверждённый бюджет — сумма") in page
-    assert "Нужно своих денег сверх сметы банка</b>" in report._funding_html(built)
+    assert "Нужно своих денег сверх сметы банка: 180 000 ₽.</b>" in report._funding_html(built)
     assert "глава 2 (стройка) — 130 000 ₽: оплачено 410 000 ₽ плюс осталось оплатить" in report.render_text(built)
 
 
