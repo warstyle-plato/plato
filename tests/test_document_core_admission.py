@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import stat
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -171,6 +172,132 @@ def test_unsafe_root_symlink_or_shared_mode_stays_HOLD_without_repair(root):
     with pytest.raises(config.ConfigHold):
         store(link)
     assert not list(root.iterdir())
+
+
+def _stat_with_owner(info, uid):
+    fields = ("st_dev", "st_ino", "st_mode", "st_uid", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns")
+    values = {key: getattr(info, key) for key in fields}
+    values["st_uid"] = uid
+    return SimpleNamespace(**values)
+
+
+def _synthetic_host_owner(monkeypatch, path):
+    """Model bind-mount UID metadata without chown or real deployment facts."""
+    actual = path.stat()
+    original = config.os.fstat
+    def observe(fd):
+        info = original(fd)
+        if (info.st_dev, info.st_ino) == (actual.st_dev, actual.st_ino):
+            return _stat_with_owner(info, os.geteuid() + 12345)
+        return info
+    monkeypatch.setattr(config.os, "fstat", observe)
+
+
+def test_trusted_host_owner_and_group_write_do_not_grant_HTTP_authority(native, monkeypatch):
+    _, client, root = native
+    root.chmod(0o770)
+    _synthetic_host_owner(monkeypatch, root)
+    values = http_headers(**{"x-developaid-admin-key": "wrong"})
+    denied = client.post("http://developaid.ru" + config.PATH, headers=values, content=raw_config())
+    assert denied.status_code == 403 and not list(root.iterdir())
+    accepted = client.post("http://developaid.ru" + config.PATH,
+                           headers=http_headers(), content=raw_config(False))
+    assert accepted.status_code == 200 and accepted.json()["stored"] is True
+    assert json.loads((root / config.FILENAME).read_bytes())["completed_rollout"] is False
+    for name in (config.FILENAME, config.LOCKNAME):
+        info = (root / name).stat()
+        assert info.st_uid == os.geteuid() and stat.S_IMODE(info.st_mode) == 0o600 and info.st_nlink == 1
+    assert stat.S_IMODE(root.stat().st_mode) == 0o770  # no owner/mode repair
+    with pytest.raises(protocol.ProtocolHold):
+        protocol.admitted_origin(config.admission_raw({}, root, TARGET), TARGET)
+
+
+@pytest.mark.parametrize("kind", ["host_owner", "group_write"])
+def test_trusted_configured_root_accepts_host_owner_or_group_write(root, monkeypatch, kind):
+    if kind == "host_owner":
+        _synthetic_host_owner(monkeypatch, root)
+    else:
+        root.chmod(0o770)
+    assert store(root, False)["stored"] is True
+    assert json.loads((root / config.FILENAME).read_bytes())["completed_rollout"] is False
+
+
+@pytest.mark.parametrize("mode", [0o777, 0o1777])
+def test_final_trusted_root_world_write_is_HOLD_even_if_sticky(root, monkeypatch, mode):
+    root.chmod(mode)
+    if mode == 0o1777:
+        original, identity, system_uid = config.os.fstat, root.stat(), Path("/").stat().st_uid
+        def observe(fd):
+            info = original(fd)
+            if (info.st_dev, info.st_ino) == (identity.st_dev, identity.st_ino):
+                return _stat_with_owner(info, system_uid)
+            return info
+        monkeypatch.setattr(config.os, "fstat", observe)
+    with pytest.raises(config.ConfigHold):
+        store(root)
+    assert stat.S_IMODE(root.stat().st_mode) == mode and not list(root.iterdir())
+
+
+@pytest.mark.parametrize("system_owned,accepted", [(True, True), (False, False)])
+def test_only_system_owned_sticky_ancestor_exception(root, monkeypatch, system_owned, accepted):
+    parent = root.parent
+    parent.chmod(0o1777)
+    original = config.os.fstat
+    identity = parent.stat()
+    system_uid = Path("/").stat().st_uid
+    def observe(fd):
+        info = original(fd)
+        if (info.st_dev, info.st_ino) == (identity.st_dev, identity.st_ino):
+            return _stat_with_owner(info, system_uid if system_owned else system_uid + 12345)
+        return info
+    monkeypatch.setattr(config.os, "fstat", observe)
+    try:
+        if accepted:
+            assert store(root, False)["stored"] is True
+        else:
+            with pytest.raises(config.ConfigHold):
+                store(root, False)
+            assert not list(root.iterdir())
+    finally:
+        parent.chmod(0o700)
+
+
+@pytest.mark.parametrize("kind", ["config_mode", "config_uid", "config_link", "config_symlink",
+                                  "config_fifo", "lock_mode", "temporary_uid"])
+def test_trusted_group_root_never_adopts_unsafe_private_files(root, monkeypatch, kind):
+    root.chmod(0o770)
+    path = root / (config.LOCKNAME if kind == "lock_mode" else config.FILENAME)
+    if kind == "config_fifo":
+        os.mkfifo(path, 0o600)
+    elif kind == "config_symlink":
+        target = root / "synthetic-other"
+        target.write_bytes(raw_config(False)); target.chmod(0o600)
+        path.symlink_to(target)
+    elif kind != "temporary_uid":
+        path.write_bytes(b"" if kind == "lock_mode" else raw_config(False))
+        path.chmod(0o640 if kind.endswith("mode") else 0o600)
+        if kind == "config_link":
+            os.link(path, root / "synthetic-link")
+        elif kind == "config_uid":
+            _synthetic_host_owner(monkeypatch, path)
+    else:
+        original = config.os.fstat
+        def foreign_temporary(fd):
+            info = original(fd)
+            if stat.S_ISREG(info.st_mode) and info.st_size == 0:
+                name = Path(os.readlink("/proc/self/fd/" + str(fd))).name
+                if name.startswith(".document_core_admission.") and name.endswith(".tmp"):
+                    return _stat_with_owner(info, os.geteuid() + 12345)
+            return info
+        monkeypatch.setattr(config.os, "fstat", foreign_temporary)
+    before = None if kind == "temporary_uid" else path.lstat()
+    with pytest.raises(config.ConfigHold):
+        store(root, True)
+    if before is not None:
+        after = path.lstat()
+        assert (after.st_ino, after.st_mode, after.st_nlink) == (before.st_ino, before.st_mode, before.st_nlink)
+    else:
+        assert not (root / config.FILENAME).exists()
 
 
 def test_changed_named_file_during_read_is_HOLD(root, monkeypatch):

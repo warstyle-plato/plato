@@ -81,11 +81,12 @@ def _private_file(info):
 
 
 def _open_root(root: Path) -> int:
-    """No-follow ancestors; only owned, non-shared existing data roots.
+    """Open the existing operator-configured shared data root without aliases.
 
-    Ancestors must belong to this uid or the filesystem root's uid, without
-    group/other write except system-owned sticky directories (e.g. /tmp).
-    The final data root must belong to this uid and cannot be shared-writable.
+    Host ownership and trusted deployment-group write are legitimate across a
+    container bind mount. Directory UID is not HTTP authority. World-write is
+    refused except for system-owned sticky ancestors (e.g. /tmp), never the
+    final root. Config, lock and temporary files retain private app ownership.
     """
     if (not root.is_absolute() or ".." in root.parts or len(str(root)) > 4096
             or any(ord(c) < 32 for c in str(root))):
@@ -98,12 +99,11 @@ def _open_root(root: Path) -> int:
             os.close(fd)
             fd = child
             info = os.fstat(fd)
-            if (info.st_uid not in {os.geteuid(), system_uid}
-                    or (info.st_mode & 0o022 and not
-                        (info.st_uid == system_uid and info.st_mode & stat.S_ISVTX))):
+            if (info.st_mode & 0o002 and not
+                    (info.st_uid == system_uid and info.st_mode & stat.S_ISVTX)):
                 raise ConfigHold("configuration_unsafe")
         info = os.fstat(fd)
-        if info.st_uid != os.geteuid() or info.st_mode & 0o022:
+        if info.st_mode & 0o002:
             raise ConfigHold("configuration_unsafe")
         result, fd = fd, -1
         return result
