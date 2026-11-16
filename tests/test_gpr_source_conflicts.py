@@ -142,15 +142,15 @@ def test_real_conflict_reason_quantities_and_action_are_visible_in_monitor_repor
         assert '50 / 100 м²' in visible and '31.10.2026' in visible and '30.10.2026' in visible
         assert 'Сверьте' in visible and '06.01.2027' not in visible
         page.set_content(report.render_html(built))
-        main = page.locator('.executive-schedule')
-        visible = main.inner_text()
-        assert '50 из 100 м²' in visible and '31.10.2026' in visible and '30.10.2026' in visible
-        assert 'Сверьте' in visible and 'Не определена' in visible
+        main=page.locator('.report-gpr-compact')
+        expect(main.locator('[data-gpr-block]')).to_have_count(3)
+        assert '50 из 100 м²'not in main.inner_text()
+        assert page.locator('.executive-schedule,.report-source-appendix').count()==0
+        expect(main.locator('a[href="/monitor#tab=monitor"]')).to_be_visible()
         assert main.evaluate('(e)=>e.scrollWidth<=e.clientWidth+1')
-        text = ' '.join(' '.join(p.extract_text() or '' for p in
-                                PdfReader(io.BytesIO(page.pdf(format='A4'))).pages).split())
-        assert '50 из 100 м² на 31.10.2026' in text
-        assert '30.10.2026' in text and 'Сверьте' in text and '06.01.2027' not in text
+        text=' '.join(' '.join(p.extract_text()or''for p in PdfReader(io.BytesIO(page.pdf(format='A4'))).pages).split())
+        assert 'Прогноз учтённых работ'in text and 'Матрица готовности'in text
+        assert '50 из 100 м²'not in text and 'Приложение. Источники'not in text
         assert not errors
 
 
@@ -176,13 +176,9 @@ def test_real_driver_reason_is_printed_once_in_the_source_appendix(gpr_sources):
     assert reason == driver['reason'] and reason
     with browser_page(1440) as (page, responses, errors):
         page.set_content(report.render_html(built))
-        assert reason not in page.locator('.executive-schedule').inner_text()
-        detail = page.locator('details.report-source-screen').filter(has_text='Источники и ограничения оценки')
-        assert not detail.get_attribute('open')
-        detail.locator('summary').click()
-        expect(detail).to_contain_text(reason)
-        text = ' '.join(' '.join(p.extract_text() or '' for p in
-                                PdfReader(io.BytesIO(page.pdf(format='A4'))).pages).split())
-        assert text.count(reason) == 1
-        assert text.index(reason) > text.index('Приложение. Источники и ограничения оценки')
+        assert reason not in page.locator('.report-gpr-compact').inner_text()
+        assert page.locator('details.report-source-screen,.report-source-appendix').count()==0
+        expect(page.locator('.report-gpr-compact a[href="/monitor#tab=monitor"]')).to_be_visible()
+        text=' '.join(' '.join(p.extract_text()or''for p in PdfReader(io.BytesIO(page.pdf(format='A4'))).pages).split())
+        assert reason not in text and 'Приложение. Источники'not in text
         assert not errors

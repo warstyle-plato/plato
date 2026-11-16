@@ -31,8 +31,10 @@ def test_display_points_are_the_exact_canonical_members_not_the_broader_roster()
     assert 'Платон' in text and 'без обращения к языковой модели' in text
     assert 'Работа вне выбранного состава' not in text
     native_report = report._gantt_html({'gantt': {'readiness': state}, 'end': view['cut']})
-    assert native_report.index(text) < native_report.index('readiness-summary')
-    assert 'Монтаж &lt;img' in native_report
+    assert text not in native_report and 'readiness-summary'not in native_report
+    assert native_report.count('data-gpr-block=')==3
+    assert 'Монтаж &lt;img'not in native_report
+    assert 'Подробные работы и источники — в Мониторе'in native_report
 
 
 def test_unknown_reading_counts_are_labelled_without_python_none():

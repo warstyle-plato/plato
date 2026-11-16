@@ -6126,8 +6126,22 @@ def install(app: FastAPI) -> None:
         This endpoint does not download/parse every attachment. Full KRT document
         extraction happens only through `/auctions/ingest` for a selected lot.
         """
+        from . import krt_reconciliation
+
+        known_reader = getattr(krt_registry, "tender_lots_known", None)
+        reconciliation_error = ""
+        try:
+            expected = krt_reconciliation.expected_lots(
+                await run_in_threadpool(known_reader) if callable(known_reader) else {})
+        except Exception:  # noqa: BLE001 — общий каталог доступен без памяти КРТ
+            logger.exception("КРТ: сохранённые лоты не прочитаны для сверки")
+            expected = []
+            reconciliation_error = "Сохранённый список лотов КРТ не удалось прочитать; сверка не выполнена"
         try:
             adapters = _discovery_adapters(source)
+            for adapter in adapters:
+                if isinstance(adapter, RoseltorgAdapter):
+                    adapter.known_krt_lots = expected
             service = AuctionSearchService(adapters)
             lots = await run_in_threadpool(
                 lambda: service.discover_moscow(
@@ -6163,13 +6177,20 @@ def install(app: FastAPI) -> None:
         except Exception:  # noqa: BLE001 — каталог не роняем чтением точек
             logger.exception("Торги: точки НСПД не прочитаны")
             nspd_points = {}
+        public_rows = [_discover_row(lot, nspd_points) for lot in lots]
+        checks = {}
+        for adapter in adapters:
+            checks.update((getattr(adapter, "last_report", {}) or {}).get("lot_checks") or {})
+        checks.update(service.last_selection_checks)
         return {
+            "krt_reconciliation": {**krt_reconciliation.reconcile(
+                expected, public_rows, checks, source=source), "error": reconciliation_error},
             "source_policy": "official_etp_only",
             "source": source,
             "count": len(lots),
             "quality": service.last_quality_report,
             "coverage": [_coverage_row(adapter) for adapter in adapters],
-            "lots": [_discover_row(lot, nspd_points) for lot in lots],
+            "lots": public_rows,
         }
 
     # История завершённых торгов. Тяжёлая выборка — до сорока страниц ГИС

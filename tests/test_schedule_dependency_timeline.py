@@ -131,7 +131,8 @@ def test_monitor_report_html_pdf_share_model_and_escape_data():
     assert 'Зависимости и сдвиги работ' not in html and 'от этапов' not in html
     assert 'Прогноз РНВ' in html and block['rows'] and block['edges']
     wrapped = report._gantt_html({'gantt': {'state': 'missing', 'dependency_timeline': block}})
-    assert timeline.render(block, context='report') in wrapped
+    assert timeline.render(block, context='report') not in wrapped
+    assert wrapped.count('data-gpr-block=')==3 and 'Пока не определён'in wrapped
     assert '<table class="schedule-all-tasks">' not in wrapped
 
 

@@ -25,14 +25,18 @@ TTL_SECONDS = 3600
 MAX_ACTIVE = 2
 MAX_RETAINED = 64
 MAX_RESULT_BYTES = 16 * 1024 * 1024
+MAX_EXTENDED_RESULT_BYTES = 64 * 1024 * 1024
+FAILURE_CODES = frozenset({"builder_failed", "serialization_failed", "result_too_large",
+                           "storage_failed", "interrupted"})
 FAILED = "Не удалось собрать сводку. Повторите запрос."
 MISSING = "Сборка сводки не найдена или срок её хранения истёк. Запросите сводку снова."
 
 
 class JobProblem(Exception):
-    def __init__(self, status: int, detail: str):
+    def __init__(self, status: int, detail: str, *, code: str = ""):
         super().__init__(detail)
         self.status, self.detail = status, detail
+        self.code = code if code in FAILURE_CODES else ""
 
 
 def _claim(handle, *, wait: bool = True):
@@ -145,13 +149,20 @@ class Store:
 
     def _state(self, meta: dict) -> dict:
         ticket = meta["ticket"]
+        extended = meta.get("result_limit_bytes", MAX_RESULT_BYTES) > MAX_RESULT_BYTES
         if time.time() - meta["created"] > TTL_SECONDS:
             raise JobProblem(404, MISSING)
         if meta["state"] == "done":
-            result = json.loads(self._path(ticket, "result").read_text())
+            try:
+                result = json.loads(self._path(ticket, "result").read_text())
+            except (OSError, ValueError):
+                if extended:
+                    raise JobProblem(500, FAILED, code="storage_failed") from None
+                raise
             return {"pending": False, "ticket": ticket, **result}
         if meta["state"] == "error" or not self._busy(ticket):
-            raise JobProblem(500, FAILED)
+            code = meta.get("failure_code", "interrupted") if extended else ""
+            raise JobProblem(500, FAILED, code=code)
         return {"pending": True, "ticket": ticket,
                 "detail": "Собираю сводку. Можно оставить страницу открытой."}
 
@@ -163,7 +174,12 @@ class Store:
             return self._state(meta)
 
     def start(self, owner: str, profile: str, params: dict,
-              builder: Callable[[], dict], ticket: str = "") -> dict:
+              builder: Callable[[], dict], ticket: str = "", *,
+              result_limit_bytes: int = MAX_RESULT_BYTES) -> dict:
+        # Server policy only: request payloads never select this budget. An
+        # existing ticket retains its admitted metadata, including legacy 16 MiB.
+        if type(result_limit_bytes) is not int or not 1 <= result_limit_bytes <= MAX_EXTENDED_RESULT_BYTES:
+            raise ValueError("invalid job result limit")
         if ticket and not TICKET.fullmatch(ticket):
             raise JobProblem(400, "Неверный номер сборки сводки.")
         fingerprint = hashlib.sha256(json.dumps(params, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
@@ -190,33 +206,55 @@ class Store:
             _claim(run_lock, wait=False)
             meta = {"ticket": ticket, "owner": owner, "profile": profile,
                     "request": fingerprint, "created": now, "state": "pending"}
+            if result_limit_bytes != MAX_RESULT_BYTES:
+                meta["result_limit_bytes"] = result_limit_bytes
+            failure_code = "storage_failed"
             try:
                 self._save(meta)
+                failure_code = "interrupted"
                 threading.Thread(target=self._build, args=(meta, builder, run_lock),
                                  name="management-report", daemon=True).start()
             except Exception:
                 run_lock.close()
                 meta["state"] = "error"
-                self._save(meta)
-                raise JobProblem(503, FAILED) from None
+                code = failure_code if result_limit_bytes > MAX_RESULT_BYTES else ""
+                if code:
+                    meta["failure_code"] = code
+                try:
+                    self._save(meta)
+                except Exception:
+                    if not code:
+                        raise
+                    logging.getLogger(__name__).error("Cannot persist management report job failure")
+                raise JobProblem(503, FAILED, code=code) from None
             return {"pending": True, "ticket": ticket,
                     "detail": "Собираю сводку. Можно оставить страницу открытой."}
 
     def _build(self, meta: dict, builder: Callable[[], dict], run_lock):
+        limit = meta.get("result_limit_bytes", MAX_RESULT_BYTES)
+        extended = limit > MAX_RESULT_BYTES
+        failure_code = "builder_failed"
         try:
-            data = json.dumps(builder(), ensure_ascii=False, allow_nan=False).encode()
-            if len(data) > MAX_RESULT_BYTES:
+            result = builder()
+            failure_code = "serialization_failed"
+            data = json.dumps(result, ensure_ascii=False, allow_nan=False).encode()
+            failure_code = "result_too_large"
+            if len(data) > limit:
                 raise ValueError("report result too large")
+            failure_code = "storage_failed"
             with self._locked():
                 self._write(self._path(meta["ticket"], "result"), data)
                 meta["state"] = "done"
                 self._save(meta)
         except Exception as exc:
             # Exceptions can contain source paths, client names or financial data.
-            logging.getLogger(__name__).error("Management report job failed (%s)", type(exc).__name__)
+            logging.getLogger(__name__).error("Management report job failed (%s)",
+                                             failure_code if extended else type(exc).__name__)
             try:
                 with self._locked():
                     meta["state"] = "error"
+                    if extended:
+                        meta["failure_code"] = failure_code
                     self._save(meta)
             except Exception:
                 # Even a failed disk must not cause threading's traceback hook

@@ -146,6 +146,7 @@ __DEVELOPAID_CONTOUR__
     <div id="krtSnapshot" class="source" style="margin:6px 2px"></div>
     <div id="krtRankStatus" class="notice" style="display:none"></div>
     <div id="krtDecisions" class="notice" style="display:none"></div>
+    <div id="krtTenderNote" class="source" style="display:none;margin-top:8px"></div>
     <div class="layout"><div class="tablecol"><div class="scrolltop" id="krtScrollTop"><div></div></div><div class="tablewrap" id="krtTableWrap"><table class="wide"><thead><tr>
 <th data-sort="name">Проект КРТ</th>
 <th data-sort="decided" title="Дата раннего сигнала либо публикации проекта решения о КРТ.">Сигнал / решение</th>
@@ -194,6 +195,7 @@ __DEVELOPAID_CONTOUR__
     <div class="stat"><b id="sDeadline">—</b><span>ближайший дедлайн</span></div>
   </div>
   <div id="coverage" class="notice coverage"></div>
+  <div id="krtReconciliation" class="notice" style="display:none"></div>
   <div id="foldNote" class="notice" style="display:none"></div>
   <div class="viewswitch" id="auctionViewSwitch" role="tablist"><button type="button" id="viewSheet" class="active" role="tab">Таблица как в Excel</button><button type="button" id="viewPick" role="tab">Подборка: балл и карточка лота</button></div>
   <div class="sheetview" id="auctionSheet">
@@ -1329,7 +1331,7 @@ async function askJson(url, init){
  }
  return d;
 }
-async function discover(){if(state.finished.on)loadFinished();const btn=$('refresh');btn.disabled=true;btn.innerHTML='<span class="spinner"></span>Читаю ЭТП';$('tableEmpty').style.display='grid';$('tableEmpty').textContent='Получаю публичный каталог официальной площадки…';try{const qs=new URLSearchParams({source:$('source').value,include_noise:$('noise').value==='1'?'true':'false'});const d=await askJson('/auctions/discover?'+qs);state.lots=d.lots||[];state.coverage=d.coverage||[];state.quality=d.quality||{};renderCoverage();filter();if(!state.lots.length){$('tableEmpty').textContent='Подтверждённых текущих лотов не найдено. Воронка источников показана выше.'}}catch(e){state.lots=[];state.coverage=[];state.quality={};renderCoverage();filter();$('tableEmpty').style.display='grid';$('tableEmpty').textContent=String(e.message||e)}finally{btn.disabled=false;btn.textContent='Обновить'}}
+async function discover(){if(state.finished.on)loadFinished();const btn=$('refresh');btn.disabled=true;btn.innerHTML='<span class="spinner"></span>Читаю ЭТП';$('tableEmpty').style.display='grid';$('tableEmpty').textContent='Получаю публичный каталог официальной площадки…';try{const qs=new URLSearchParams({source:$('source').value,include_noise:$('noise').value==='1'?'true':'false'});const d=await askJson('/auctions/discover?'+qs);state.lots=d.lots||[];state.coverage=d.coverage||[];state.quality=d.quality||{};state.krtReconciliation=d.krt_reconciliation||null;renderKrtReconciliation();renderCoverage();filter();if(!state.lots.length){$('tableEmpty').textContent='Подтверждённых текущих лотов не найдено. Воронка источников показана выше.'}}catch(e){state.lots=[];state.coverage=[];state.quality={};state.krtReconciliation={error:'Сбор не выполнен: '+String(e.message||e)};renderKrtReconciliation();renderCoverage();filter();$('tableEmpty').style.display='grid';$('tableEmpty').textContent=String(e.message||e)}finally{btn.disabled=false;btn.textContent='Обновить'}}
 async function ingest(){const l=state.selected;if(!l)return;const b=$('ingestBtn'),status=$('detailStatus');b.disabled=true;b.innerHTML='<span class="spinner"></span>Разбираю';status.textContent=l.lot_kind==='krt'?'Читаю карточку и официальные документы КРТ…':'Повторно сверяю официальную карточку…';try{const d=await askJson('/auctions/ingest',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:l.source.lot_url,enrich_krt_documents:true,include_raw:false})});
  // Перед handoff в ГлавАПУ оставляем только земельные КН. КН здания —
  // отдельный объект ЕГРН, его площадь никогда не является площадью участка.
@@ -2438,6 +2440,7 @@ function filterKrt(){
  state.krtHidden={small,unknown,priceBelow,priceUnknown};
  markKrtSort();
  renderKrtFilterCounts();
+ if(state.krtTenderSummary)renderKrtTenderNote(state.krtTenderSummary);
  renderKrt();
 }
 // Какая колонка сортирует и в какую сторону — видно на самой колонке. Пока
@@ -3979,14 +3982,27 @@ async function loadKrtTenders(){
   filterKrt();
  }catch(e){ /* торги не спрошены — список площадок от этого не ломается */ }
 }
+function renderKrtReconciliation(){
+ const box=$('krtReconciliation'), d=state.krtReconciliation;
+ if(!box)return;
+ if(d&&d.error){box.textContent=d.error;box.style.display='';return}
+ if(!d||!d.expected){box.innerHTML='';box.style.display='none';return}
+ box.style.display='';
+ box.innerHTML=`<b>Сверка сохранённых лотов КРТ с последним сбором.</b> В основной подборке ${d.included} из ${d.expected} ранее известных лотов с непросроченным сроком заявок.`
+  +'<div>Сохранённый срок не подтверждает, что торги продолжаются. Ниже — результат проверки каждой карточки.</div>'
+  +'<div class="table-wrap"><table><thead><tr><th>Площадка</th><th>Сохранённый срок заявок</th><th>Результат проверки</th></tr></thead><tbody>'
+  +(d.rows||[]).map(r=>`<tr><td><a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.name)}</a></td><td>${esc(r.saved_deadline||'—')}</td><td>${esc(r.reason)}</td></tr>`).join('')
+  +'</tbody></table></div>';
+}
 function renderKrtTenderNote(d){
- const box=$('krtDecisions');
+ state.krtTenderSummary=d;
+ const box=$('krtTenderNote');
  if(!box)return;
  const sites=Object.keys(state.krtTenders).length, orphans=(d.unmatched||[]).length;
  const orders=(d.orders||[]).length;
  // Связки в счёт молчания входят тоже: помним одиннадцать, собрали ноль — и
  // подпись молчала бы ровно там, где расхождение и надо назвать.
- if(!sites&&!orphans&&!orders&&!(d.known_links||0))return;
+ if(!sites&&!orphans&&!orders&&!(d.known_links||0)){box.innerHTML='';box.style.display='none';return;}
  const last=(d.orders||[])[0];
  box.style.display='';
  // У числа обязано быть окно и предмет. «Город объявил 55» без них читается
@@ -4004,8 +4020,10 @@ function renderKrtTenderNote(d){
  const live=(state.krt||[]).filter(x=>krtLiveLot(x)).length;
  const announced=(state.krt||[]).filter(x=>krtTenderAnnounced(x)).length;
  const cancelled=(d.orders||[]).filter(o=>o&&o.action==='cancel').length;
- box.innerHTML+=`<div class="source" style="margin-top:8px"><b>Торги по КРТ.</b> `
-  +`Идёт аукцион у ${live} площадок`
+ const axis=KRT_FILTERS.find(a=>a.options.some(o=>o.value==='tender'));
+ const inSelection=axis?krtFilterCount(axis,axis.options.find(o=>o.value==='tender')):live;
+ box.innerHTML=`<b>Торги по КРТ.</b> `
+  +`По сохранённым срокам заявок: ${live} площадок во всём каталоге; ${inSelection} с учётом остальных условий отбора. Текущая проверка лотов — в таблице сверки на вкладке «Торги»`
   +(announced?`, торги объявлялись когда-то — ещё у ${announced}`:'')
   +`. Распоряжений города об аукционе — ${orders} за всё время`
   +(Number.isFinite(recent)?`, из них за последние 12 месяцев ${recent}`:'')
@@ -4021,7 +4039,7 @@ function renderKrtTenderNote(d){
         ? ` — больше, чем собрано сейчас: раздел читается не целиком, и это наш `
           +`сбор, а не рынок (непрочитанное названо в строке охвата)`
         : '')
-    :'')+'.</div>';
+    :'')+'.';
 }
 // Распоряжение о торгах на карточке площадки. Ставится РУКАМИ: адреса в
 // распоряжении нет ни в заголовке, ни в карточке документа, а PDF — скан
