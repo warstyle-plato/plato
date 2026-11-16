@@ -9,6 +9,7 @@ import developaid_monitor_pace as _pace
 _pace.install()
 import developaid_monitor_physical_review as _physical_review
 import developaid_monitor_readiness_editor as _readiness_editor
+import developaid_monitor_navigation as _navigation
 
 MONITOR_PAGE = r"""<!doctype html>
 <html lang="ru">
@@ -109,11 +110,10 @@ __DEVELOPAID_CONTOUR_STYLE__
 </style>
 </head>
 <body><div class="wrap">
-<details class="monitor-app-nav"><summary>Разделы DevelopAid</summary>__DEVELOPAID_CONTOUR__</details>
+__DEVELOPAID_CONTOUR__
 <div class="top"><div><h1>Монитор проекта</h1><div class="muted">Работы по ГПР, сроки и деньги проекта.</div></div><div class="controls"><div class="field"><label>Проект</label><input id="project" placeholder="Название проекта"></div><div class="field"><label>Срез</label><input id="cut" type="date"></div><button class="btn" id="refresh">Обновить</button></div></div>
 <div class="card auth-card" id="loginBox"><div class="body"><div class="auth-title">Доступ к Монитору</div><div class="muted" id="loginHelp">Раздел доступен только по ключу администратора. Нажмите «Ключ администратора» и введите его.</div><div class="auth-actions" style="margin-top:10px"><button class="btn hidden" id="loginBtn">Войти через Telegram</button><button class="btn" id="keyBtn">Ключ администратора</button><button class="btn ghost hidden" id="logoutBtn">Выйти</button><span id="loginState" role="status"></span></div><div class="msg" id="loginMsg" role="alert"></div></div></div>
 <div id="privateArea" class="hidden">
-<div class="monitor-tabs" role="tablist" aria-label="Разделы проекта"><button class="btn ghost" id="monitorTab" role="tab" aria-selected="true" aria-controls="monitorPanel">ГПР: план и факт</button><button class="btn ghost" id="moneyTab" role="tab" aria-selected="false" aria-controls="moneyPanel">Деньги</button><button class="btn ghost" id="contractsTab" role="tab" aria-selected="false" aria-controls="contractsPanel">Договоры</button><button class="btn ghost" id="dataTab" role="tab" aria-selected="false" aria-controls="dataPanel">Данные и настройки</button></div>
 <div class="card hidden" id="activePlanCard"><div class="body"><div class="sub" id="activePlan"></div></div></div>
 <div id="monitorPanel" role="tabpanel" aria-labelledby="monitorTab">
 <div class="monitor-intro" id="gprIntro"><h2>План и факт работ по ГПР</h2><p>Сравните утверждённые сроки с выполнением на выбранную дату. Прогноз показан отдельно от плана.</p></div>
@@ -896,6 +896,7 @@ function selectMonitorTab(tab){
  for(const name of Object.keys(names)){$(name+'Panel').classList.toggle('hidden',name!==tab);$(name+'Tab').setAttribute('aria-selected',String(name===tab));$(name+'Tab').tabIndex=name===tab?0:-1;}
  msg('viewMsg','');if(contracts)loadContractRegister();else if(previous==='contracts')refresh();
  if(tab==='data'){$('setupCard').classList.add('open');$('setupChev').textContent='▾';loadCumulativeHistory();}
+ monitorNavigation.changed(tab);
 }
 $('monitorTab').onclick=()=>selectMonitorTab('monitor');$('moneyTab').onclick=()=>selectMonitorTab('money');$('dataTab').onclick=()=>selectMonitorTab('data');$('contractsTab').onclick=()=>selectMonitorTab('contracts');$('contractsUploadLink').onclick=()=>{selectMonitorTab('data');$('setupCard').classList.add('open');$('setupChev').textContent='▾';$('cumulativeBox').scrollIntoView({behavior:'smooth',block:'start'})};
 async function loadContractRegister(){if(!hasAuth())return requireLogin();closeContractDialog(false);const c=cumulativeContext(),n=++contractRequest;if(!c.project)return msg('contractsMsg','Укажите проект вверху страницы.','bad');$('contractsRefresh').disabled=true;contractRegister=null;$('contractsRows').replaceChildren();$('contractsDetails').replaceChildren();$('contractsSource').replaceChildren();$('contractsWarnings').replaceChildren();$('contractsUnmatched').replaceChildren();$('contractsSummary').replaceChildren();$('contractsRisk').replaceChildren();$('contractsPrintHeading').replaceChildren();$('contractsTerm').classList.add('hidden');const current=()=>sameCumulativeContext(c)&&n===contractRequest&&monitorActiveTab==='contracts';msg('contractsMsg','Собираю договоры на выбранную дату…','warn');try{const d=await cumulativeJob('/monitor/contracts/build','/monitor/contracts/result',{project:c.project,cut:c.cut},current,t=>msg('contractsMsg',t,'warn'));if(!d||!current())return;contractRegister=d.register||{rows:[]};headerDateTargets=[];$('contractsSource').textContent=`Срез: ${dt(contractRegister.cut||c.cut)}${contractRegister.source_date?' · дата источника: '+dt(contractRegister.source_date):''}`;$('contractsWarnings').innerHTML=(contractRegister.warnings||[]).length?'<details class="contract-detail"><summary>Замечания к источникам ('+(contractRegister.warnings||[]).length+')</summary><ul>'+warningsHtml(contractRegister.warnings)+'</ul></details>':'';$('contractsPrintHeading').textContent=c.project+' · срез '+dt(contractRegister.cut||c.cut);renderContractSummary();renderContractUnresolved();renderContractRisk();renderContractRegister();renderUnmatchedWorks();const missingLink=!!pendingContractId&&!contractById(pendingContractId);if(pendingContractId&&contractById(pendingContractId))openContractDetails(pendingContractId);pendingContractId='';const counts=contractRegister.counts||{};msg('contractsMsg',`${contractUniverseLabel()}: ${(contractRegister.rows||[]).length}. `+contractArchivesText(contractRegister)+`Листов накопительных: ${counts.cumulative_sheets??'—'}. Шапок с замечаниями: ${(contractRegister.unresolved_sources||[]).length}.`+(missingLink?' Договор по старой ссылке не найден в выбранном архиве накопительных.':''),missingLink?'warn':'good')}catch(e){if(current())msg('contractsMsg',cumulativeError(e),'bad')}finally{if(current())$('contractsRefresh').disabled=false}}
@@ -1325,7 +1326,10 @@ $('siteAuthorizeBtn').onclick=()=>changeSiteAccess('authorize');$('siteRevokeBtn
 $('siteAccessRefresh').onclick=async()=>{if(!hasAuth()||keyRejected)return requireLogin();const c=siteAccessContext();try{msg('siteAccessMsg','Загружаю привязки…','warn');await loadSiteAccess(c);if(sameSiteAccess(c))msg('siteAccessMsg','');}catch(error){if(sameSiteAccess(c))msg('siteAccessMsg',error.message,'bad');}};
 $('project').addEventListener('change',clearSiteAccess);
 __READINESS_EDITOR_SCRIPT__
-initMonitorSections();syncAuthUi();if(applyContractHash()){}else if(hasAuth())refresh();else msg('viewMsg','Введите ключ администратора, чтобы открыть данные проекта.','bad');
+__MONITOR_NAVIGATION_SCRIPT__
+const monitorNavigation=createMonitorNavigation({page:'monitor',view:()=>monitorActiveTab,select:selectMonitorTab,sourceToken:()=>physicalState?[physicalState.source_kind,physicalState.source_sha256,physicalState.snapshot_id]:null,fieldReady:id=>!id.startsWith('physical')||!!physicalState&&(!['physicalTask','physicalItems'].includes(id)||physicalState.can_edit===true),filtersRestored:()=>{renderContractRegister();if(physicalState){physicalSelection=new Set(Array.from($('physicalItems').selectedOptions,x=>x.value));physicalTaskFields();renderPhysicalReview();}}});
+monitorNavigation.restoreContext();initMonitorSections();syncAuthUi();monitorNavigation.connect();if(applyContractHash()){}else{monitorNavigation.restoreView();if(hasAuth()&&monitorActiveTab!=='contracts')refresh();else if(!hasAuth())msg('viewMsg','Введите ключ администратора, чтобы открыть данные проекта.','bad');}
 </script>
 </body></html>
 """.replace('__PHYSICAL_REVIEW_SCRIPT__', _physical_review.SCRIPT).replace('__READINESS_EDITOR_SCRIPT__', _readiness_editor.SCRIPT)
+MONITOR_PAGE = _navigation.apply(MONITOR_PAGE, '/monitor')

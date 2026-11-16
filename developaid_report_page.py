@@ -20,6 +20,7 @@ import re
 
 from developaid_management_report import REPORT_STYLE
 from developaid_monitor_page import MONITOR_PAGE as _MONITOR
+import developaid_monitor_navigation as _navigation
 
 _STYLE = _MONITOR[_MONITOR.index("<style>") + len("<style>"):_MONITOR.index("</style>")]
 
@@ -132,7 +133,7 @@ function drawMerge(){$('mergeCard').classList.toggle('hidden',projectList.length
 function mergeWords(r){const c=r.counts||{},n=k=>c[k]||0;let t=`<div>Из «${esc(r.source)}» в «${esc(r.target)}»: перенесётся файлов — ${n('move')}; уже есть такие же — ${n('same')}; журналы, которые дополнятся записями, — ${n('append')}; дни ручных отметок по работам, которые сольются, — ${n('combine')}.</div>`;if(n('conflict'))t+=`<div class="msg warn">Разные файлы с одним именем — ${n('conflict')}: главный проект их не потеряет, а файлы из «${esc(r.source)}» лягут рядом для проверки: ${(r.conflicts||[]).map(esc).join(', ')}.</div>`;return t}
 async function mergeRun(apply){const source=$('mergeSource').value,target=$('mergeTarget').value;if(source===target)return msg('mergeMsg','Выберите два разных проекта.','bad');if(apply&&!confirm(`Объединить «${source}» с «${target}»? Главным останется «${target}».`))return;try{msg('mergeMsg',apply?'Объединяю…':'Проверяю…','warn');const r=await post('/monitor/merge',{source,target,apply});$('mergePlan').innerHTML=mergeWords(r);if(apply){drawProjects(await post('/monitor/report/projects',{}),target);msg('mergeMsg',`Готово: «${source}» теперь ведёт в «${target}».`+(r.subscribers_moved?` Получателей рассылки перешло: ${r.subscribers_moved}.`:''),'good');renderReport()}else{$('mergeApplyBtn').disabled=false;msg('mergeMsg','','')}}catch(e){msg('mergeMsg',e.message,'bad')}}
 $('mergeCheckBtn').onclick=()=>mergeRun(false);$('mergeApplyBtn').onclick=()=>mergeRun(true);$('mergeSource').onchange=$('mergeTarget').onchange=()=>{$('mergeApplyBtn').disabled=true;$('mergePlan').innerHTML=''};
-async function loadProjects(){try{drawProjects(await post('/monitor/report/projects',{}));if(!projectList.length)msg('reportMsg','В Мониторе пока нет проектов. Загрузите РСС или график работ на странице Монитора — проект появится в списке.','warn');return projectList.length>0}catch(e){msg('reportMsg',e.message,'bad');return false}}
+async function loadProjects(){try{drawProjects(await post('/monitor/report/projects',{}),reportNavigation.project());if(!projectList.length)msg('reportMsg','В Мониторе пока нет проектов. Загрузите РСС или график работ на странице Монитора — проект появится в списке.','warn');return projectList.length>0}catch(e){msg('reportMsg',e.message,'bad');return false}}
 function reportPayload(){remember('mgmt_report_project',$('project').value);return {project:$('project').value,kind:$('reportKind').value,end:$('cut').value||''}}
 function newReportTicket(){if(!globalThis.crypto||!crypto.getRandomValues)return '';const bytes=new Uint8Array(16);crypto.getRandomValues(bytes);return Array.from(bytes,x=>x.toString(16).padStart(2,'0')).join('')}
 // Переключатель мер темпа продаж — орудие страницы: в документе кнопок нет и
@@ -233,8 +234,12 @@ $('loginBtn').onclick=async()=>{msg('loginMsg','Открываю Telegram…','g
 $('keyBtn').onclick=()=>{const k=prompt('Ключ администратора');if(!k)return;invalidateReport();remember(ADMIN_KEY,k.trim());if(syncAuthUi())start()};
 window.addEventListener('storage',e=>{if(e.key===null||[WEB_SESSION_KEY,ADMIN_KEY,'session','developaid_session','key','developaid_key'].includes(e.key))requireLogin()});
 $('cut').value=new Date().toISOString().slice(0,10);
-async function start(){if(await loadProjects())renderReport()}
+__MONITOR_NAVIGATION_SCRIPT__
+const reportNavigation=createMonitorNavigation({page:'report',resolved:project=>projectList.some(x=>x.project===project)});
+reportNavigation.connect();
+async function start(){if(await loadProjects()){reportNavigation.ready();renderReport()}}
 if(syncAuthUi())start();else msg('loginMsg','Введите ключ администратора, чтобы открыть сводку.','bad');
 </script>
 </body></html>
 """
+REPORT_PAGE = _navigation.apply(REPORT_PAGE, '/report')
