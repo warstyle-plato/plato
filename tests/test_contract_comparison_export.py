@@ -1,5 +1,6 @@
 """A derived card export uses its saved DTO, never source books or client amounts."""
 import ast
+import asyncio
 import copy
 import datetime as dt
 import io
@@ -9,6 +10,7 @@ from pathlib import Path
 import re
 from types import SimpleNamespace
 import time
+import threading
 import zipfile
 
 from fastapi import HTTPException
@@ -190,6 +192,21 @@ def test_row_and_output_caps_fail_with_a_status_instead_of_an_empty_file(monkeyp
         xlsx(native_card())
 
 
+def test_writer_does_not_rescan_the_entire_sheet_for_each_work(monkeypatch):
+    from openpyxl.worksheet.worksheet import Worksheet
+    cached = native_card()
+    cached["comparison"]["lines"] *= 100
+    cached["comparison_export"] = export.bind_snapshot(PROJECT, CUT, CONTRACT, cached, {})
+    original = Worksheet.max_row.fget
+    scans = []
+    def count_scans(sheet):
+        scans.append(1)
+        return original(sheet)
+    monkeypatch.setattr(Worksheet, "max_row", property(count_scans))
+    assert xlsx(cached).startswith(b"PK")
+    assert len(scans) < 20, "whole-sheet scans per work make large exports quadratic"
+
+
 @pytest.fixture
 def route(tmp_path, monkeypatch):
     source = ast.parse((ROOT / "engine/monitor_cumulative.py").read_bytes())
@@ -269,3 +286,91 @@ def test_request_rejects_client_financial_rows_and_duplicate_or_invalid_tokens(r
                   {"selected_tokens": values["selected_tokens"] * 2}, {"selected_tokens": [0]}]:
         with pytest.raises(ValidationError):
             scope["MonitorContractComparisonExport"](**{**values, **extra})
+
+
+def test_legacy_ticket_refuses_export_and_normal_new_admission_builds_new_snapshot(tmp_path, monkeypatch):
+    cached = native_card()
+    legacy = copy.deepcopy(cached)
+    legacy.pop("comparison_export")
+    old, new = "1" * 32, "2" * 32
+    root = tmp_path / "jobs"
+    root.mkdir()
+    store = jobs.Store(root)
+    profile = "monitor-cumulative-v1:contracts"
+    owner = jobs.owner_binding(KEY, SESSION, profile)
+    old_params = dict(operation="documents", click=old, project=PROJECT, cut=CUT, contract_id=CONTRACT)
+    fingerprint = jobs.hashlib.sha256(json.dumps(old_params, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    (root / (old + ".json")).write_text(json.dumps(dict(ticket=old, owner=owner, profile=profile,
+        request=fingerprint, created=time.time(), state="done")))
+    (root / (old + ".result")).write_text(json.dumps(legacy))
+    same = store.start(owner, profile, old_params, lambda: pytest.fail("old completed job rebuilt"), old)
+    with pytest.raises(export.ExportProblem) as unbound:
+        export.select_snapshot(same, PROJECT, CUT, CONTRACT, "0" * 64, [])
+    assert unbound.value.status == 409
+    workers = []
+    class HeldThread:
+        def __init__(self, *, target, args, **kwargs):
+            workers.append((target, args))
+        def start(self):
+            pass
+    monkeypatch.setattr(jobs.threading, "Thread", HeldThread)
+    pending = store.start(owner, profile, {**old_params, "click": new}, lambda: cached, new)
+    assert pending["pending"] and pending["ticket"] == new and len(workers) == 1
+    target, args = workers[0]
+    target(*args)  # Exercise the exact worker after releasing the admission lock.
+    ready = store.poll(new, owner, profile)
+    meta, _, rows = export.select_snapshot(ready, PROJECT, CUT, CONTRACT,
+        ready["comparison_export"]["revision"], ready["comparison_export"]["row_tokens"])
+    assert meta["available"] and len(rows) == 2
+
+
+def test_sync_export_writer_is_offloaded_and_does_not_block_the_event_loop(route, monkeypatch):
+    from fastapi import FastAPI
+    scope, _, _, _, values = route
+    app = FastAPI()
+    app.post("/comparison.xlsx")(scope["monitor_contract_comparison_xlsx"])
+    @app.get("/ping")
+    async def ping():
+        return {"ok": True}
+    started, release = threading.Event(), threading.Event()
+    native = export.workbook
+    worker_ids = []
+    def held_writer(*args, **kwargs):
+        worker_ids.append(threading.get_ident())
+        started.set()
+        assert release.wait(2), "event loop could not release the writer"
+        return native(*args, **kwargs)
+    monkeypatch.setattr(export, "workbook", held_writer)
+    async def request(path, body=None):
+        messages, sent = [], False
+        async def receive():
+            nonlocal sent
+            if not sent:
+                sent = True
+                return {"type": "http.request", "body": json.dumps(body).encode() if body else b"", "more_body": False}
+            return {"type": "http.disconnect"}
+        async def send(message):
+            messages.append(message)
+        await app({"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
+                   "method": "POST" if body else "GET", "scheme": "http", "path": path,
+                   "raw_path": path.encode(), "query_string": b"", "root_path": "",
+                   "headers": [(b"content-type", b"application/json")],
+                   "server": ("synthetic.local", 80), "client": ("synthetic", 1)}, receive, send)
+        status = next(m["status"] for m in messages if m["type"] == "http.response.start")
+        return status, b"".join(m.get("body", b"") for m in messages if m["type"] == "http.response.body")
+    async def exercise():
+        loop_thread = threading.get_ident()
+        running = asyncio.create_task(request("/comparison.xlsx", values))
+        try:
+            deadline = time.monotonic() + 1
+            while not started.is_set() and time.monotonic() < deadline:
+                await asyncio.sleep(.005)
+            assert started.is_set() and worker_ids != [loop_thread]
+            status, body = await request("/ping")
+            assert status == 200 and json.loads(body) == {"ok": True}
+            assert not release.is_set()
+        finally:
+            release.set()
+        status, body = await running
+        assert status == 200 and body.startswith(b"PK")
+    asyncio.run(exercise())

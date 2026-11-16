@@ -115,21 +115,26 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
     sheet = book.active
     sheet.title = "Накопленный план-факт"
     book.properties.creator = "DevelopAid"
+    row_number = 0
 
     def append(values):
+        nonlocal row_number
         values = [_text(value) if isinstance(value, str) else value for value in values]
         sheet.append(values)
-        for cell in sheet[sheet.max_row]:
+        row_number += 1
+        cells = [sheet.cell(row_number, column) for column in range(1, 7)]
+        for cell in cells:
             if isinstance(cell.value, str):
                 cell.value = _text(cell.value)
                 cell.data_type = "s"  # Source strings, including = + - @, are never formulas.
             cell.alignment = Alignment(vertical="top", wrap_text=True)
             if isinstance(cell.value, dt.date):
                 cell.number_format = "dd.mm.yyyy"
+        return cells
 
     def note(text):
         append([_text(text)])
-        sheet.merge_cells(start_row=sheet.max_row, start_column=1, end_row=sheet.max_row, end_column=6)
+        sheet.merge_cells(start_row=row_number, start_column=1, end_row=row_number, end_column=6)
 
     label = meta.get("label") or {}
     note("Накопленные план и факт по работам договора")
@@ -164,7 +169,7 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
          "Прогноз относится к сопоставленным работам и не меняет срок ввода проекта.")
     note("Версия таблицы: " + meta["revision"])
     append(["Работа / единица", "План на дату", "Факт", "Отклонение", "Срок работы", "Прогноз окончания"])
-    header = sheet.max_row
+    header = row_number
     for cell in sheet[header]:
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="1F4E78")
@@ -174,9 +179,9 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
     for row in rows:
         name = "\n".join(_text(v) for v in [row.get("name"), row.get("context"),
                          " · ".join(_text(v) for v in [row.get("code"), row.get("unit")] if v)] if v)
-        append([name, _number(row.get("planned")), _number(row.get("fact")), _number(row.get("deviation")),
-                _date(row.get("due")), _date(row.get("finished") or row.get("forecast_finish"))])
-        for cell in sheet[sheet.max_row][1:4]:
+        cells = append([name, _number(row.get("planned")), _number(row.get("fact")), _number(row.get("deviation")),
+                        _date(row.get("due")), _date(row.get("finished") or row.get("forecast_finish"))])
+        for cell in cells[1:4]:
             cell.number_format = '#,##0.00" ₽"' if row.get("basis") == "money" else "#,##0.###"
         movement = (f"Отставание: {row['lag_days']} дн." if row.get("lag_days", 0) else
                     f"Опережение: {row['ahead_days']} дн." if row.get("ahead_days", 0) else
@@ -194,8 +199,7 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
                     (f" Позже срока на {row['late_days']} дн." if (row.get("late_days") or 0) > 0 else ""))
                    if row.get("finished") else "" if row.get("forecast_finish") else "Прогноз не рассчитан."]
         if any(remarks):
-            append(remarks)
-            for cell in sheet[sheet.max_row]:
+            for cell in append(remarks):
                 cell.font = Font(size=10, color="526579")
     for column, width in zip("ABCDEF", [48, 22, 24, 26, 23, 30]):
         sheet.column_dimensions[column].width = width

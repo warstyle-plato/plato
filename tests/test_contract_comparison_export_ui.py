@@ -79,6 +79,26 @@ def _browser_export(page, cached, contract_id, key, calls):
     page.locator("#contractComparisonExport").wait_for(state="visible")
 
 
+def test_node_normal_reopen_uses_a_fresh_ticket_after_a_legacy_completed_result():
+    prelude = r"""
+let calls=[],counter=0;function cumulativeNonce(){return String(++counter).repeat(32)};
+async function post(path,body){calls.push(body.ticket);return{pending:false,ok:true,ticket:body.ticket,...(calls.length===2?{comparison_export:{available:true}}:{})}};
+async function cumulativePause(){throw Error('unexpected poll')};
+"""
+    # The shared extractor stops at the default options={} argument. Supply
+    # this exact one-line native declaration, not a rewritten implementation.
+    declarations = [line for line in MONITOR_PAGE.splitlines() if line.startswith("async function cumulativeJob(")]
+    assert len(declarations) == 1
+    prelude += declarations[0] + "\n"
+    tail = r"""
+(async()=>{const old=await cumulativeJob('/documents','/result',{project:'Synthetic'},()=>true);
+const fresh=await cumulativeJob('/documents','/result',{project:'Synthetic'},()=>true);
+console.log(JSON.stringify({tickets:calls,oldHasBinding:!!old.comparison_export,freshHasBinding:!!fresh.comparison_export}));})();
+"""
+    result = page_blocks.run_json(prelude, tail, page=MONITOR_PAGE)
+    assert result == {"tickets": ["1" * 32, "2" * 32], "oldHasBinding": False, "freshHasBinding": True}
+
+
 def test_browser_download_contains_only_the_current_shown_plan_fact_rows(tmp_path):
     from playwright.sync_api import expect
     from tests.test_monitor_cumulative_controls import browser_page, CONTRACT, KEY
