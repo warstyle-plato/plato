@@ -252,9 +252,10 @@ def test_actual_page_and_pdf(scenario, tmp_path, monkeypatch):
                 assert "4 из 10 м³" in text
             if scenario == "partialRNV":
                 assert "Оценка по части работ" in text and "31.12.2026" in text
-                chart_page = next(page for page in texts if "План и прогноз по корпусам" in page)
-                chart_start = chart_page.split("План и прогноз по корпусам", 1)[1]
-                assert "Работа / объект" in chart_start and "Корпус 1" in chart_start
+                # The current report prints the canonical full-work calendar.
+                chart_page = next(page for page in texts if "Корпус, этап и работа" in page)
+                chart_start = text.split("Корпус, этап и работа", 1)[1]
+                assert "Устройство стены" in chart_start and "Корпус 1" in chart_start
             assert not errors, errors
         finally:
             browser.close()

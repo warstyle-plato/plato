@@ -1118,10 +1118,17 @@ def gantt(view: dict[str, Any], dashboard: dict[str, Any]) -> dict[str, Any]:
         return _missing(f"Монитор не собрал срез: {dashboard['error']}")
     schedule_view = view.get("schedule") or {}
     result = report_gantt.model(schedule_view.get("management") or [])
+    result['calendar'] = report_gantt.calendar(schedule_view, view.get('cut'))
     result["dependency_timeline"] = schedule_view.get("dependency_timeline")
     result["corpus_gpr"] = schedule_view.get("corpus_gpr")
     result["work_fact"] = schedule_view.get("work_fact")
     result["readiness"] = schedule_view.get("readiness")
+    if (isinstance(result['readiness'], dict) and result['calendar'].get('readiness_forecast_invalid')
+            and isinstance(result['readiness'].get('project'), dict)):
+        # A broken display membership must not leave its global calendar date
+        # qualified in the cover/readiness. Physical facts and weights remain.
+        result['readiness'] = copy.deepcopy(result['readiness'])
+        result['readiness']['project']['forecast'] = {}
     result["version_comparison"] = {"state": "not_calculated"}
     result["source"] = {"basis": schedule_view.get("basis"),
                         "fact": schedule_view.get("fact_source"),
@@ -4349,7 +4356,10 @@ def _gantt_html(report: dict[str, Any]) -> str:
     import developaid_schedule_readiness as readiness
     from developaid_gpr_summary import render_analysis
     summary = gpr_summary(block.get('readiness'), report.get('end'))
-    out = [render_analysis(summary.get('display')) if summary else '',
+    calendar = block.get('calendar')
+    display = ((calendar.get('display') if calendar.get('qualified') and calendar.get('cut') == str(report.get('end')) else None)
+               if calendar is not None else summary.get('display') if summary else None)
+    out = [render_analysis(display),
            readiness.render(block.get("readiness")), "<h3>Сроки работ по корпусам</h3>"]
     import developaid_gpr_corpus as corpus_gpr
     completed_history = ''
@@ -4366,16 +4376,27 @@ def _gantt_html(report: dict[str, Any]) -> str:
             out.append(report_schedule.render(executive))
         out.append('<details class="report-source-screen"><summary>Источники и ограничения оценки</summary>'
                    + _schedule_source_details(report) + '</details>')
-    if block.get("corpus_gpr") and block.get("state") != "ok":
+    if block.get("corpus_gpr") and block.get("state") != "ok" and not (calendar or {}).get('rows'):
         out.append(corpus_gpr.render_overview(block["corpus_gpr"], str(report.get("end") or "")))
     elif block.get("corpus_gpr"):
         out.append('<details class="schedule-provenance"><summary>Исходные показания ГПР по корпусам</summary>'+
                    corpus_gpr.render(block["corpus_gpr"])+"</details>")
+    if calendar is not None and calendar.get('rows'):
+        out.append(report_gantt.render_calendar(calendar, report.get('end')))
+        out.append(completed_history)
+        return ''.join(out)
     if block.get("state") != "ok":
         out.append(f"<p class='note'>{html.escape(block.get('reason') or 'Графика работ нет.')}</p>")
         out.append(completed_history)
         return "".join(out)
-    out.append(report_gantt.render(block, report.get("end"), explanations=False))
+    if 'calendar' not in block:
+        out.append('<p class="note"><b>Архивная сводка по корпусам.</b> Это сохранённые укрупнённые данные. '
+                   'Для полного календаря всех работ соберите новый срез отчёта.</p>')
+        out.append(report_gantt.render(block, report.get('end')))
+        out.append(completed_history)
+        return ''.join(out)
+    out.append('<p class="note">В сохранённой сводке нет полного перечня работ для нового календаря. '
+               'Соберите сводку по текущему срезу; даты по укрупнённым статьям его не заменяют.</p>')
     out.append(completed_history)
     return "".join(out)
 
