@@ -112,20 +112,44 @@ def test_real_report_pdf_uses_gpr_provenance_without_legacy_pm_confirmation(tmp_
     payload['gantt']['dependency_timeline']['confirmation'] = state(
         calendar_basis='calendar_days', rnv_chain_complete=True,
         recorded_at='2026-11-06T12:00:00+00:00', note='Synthetic calendar evidence 2026')
+    import copy
+    from developaid_schedule_timeline import render as monitor_timeline
+    from developaid_report_schedule import fact_text
+    block = payload['gantt']['dependency_timeline']
+    summary = payload['construction_summary']
+    before = copy.deepcopy(payload)
+    # Detailed source quantities and the legacy opt-in calendar check remain
+    # in the full Monitor/DTO; they must not repopulate the compact report.
+    monitor_html = monitor_timeline(block, context='monitor')
+    assert '50 / 100 м²' in monitor_html and '28.02.2026' in monitor_html
+    assert '<strong>31.10.2026</strong>' in monitor_html
+    assert 'Synthetic calendar evidence 2026' in monitor_html
+    assert 'Проверка исходного графика' in monitor_html
+    assert summary['facts'][0]['done'] == 50 and summary['facts'][0]['plan'] == 100
+    assert '50 из 100 м² на 28.02.2026' in fact_text(summary['facts'][0])
+    assert summary['source_status'] == block['physical']['evidence_status']
+    assert summary['source_status']['reason']
+    assert (summary.get('plan_date') or summary.get('approved')) == '2026-10-31'
+    assert summary['forecast'] is None and 'ГПР' in summary['source_label']
+    markup = report.render_html(payload)
+    assert markup.count('data-gpr-block=') == 3
+    assert '<article class="cg-work"' not in markup and 'executive-schedule' not in markup
     path = tmp_path / 'synthetic-confirmation-report.pdf'
     with sync_playwright() as pw:
         browser = pw.chromium.launch(executable_path=str(chromium_or_skip()), headless=True, args=['--no-sandbox'])
         page = browser.new_page()
         page.route('**/*', lambda route: route.abort())
-        page.set_content(report.render_html(payload), wait_until='load')
+        page.set_content(markup, wait_until='load')
         page.pdf(path=str(path), format='A4', print_background=True)
         browser.close()
     with fitz.open(path) as pdf:
         text = ' '.join(page.get_text() for page in pdf)
     text = ' '.join(text.split())
-    assert 'Сроки и выполнение работ' in text and '06.11.2026' in text
-    assert '50 из 100 м² на 28.02.2026' in text and 'План ввода 31.10.2026' in text
-    assert 'Основания оценки сроков' in text and 'ГПР' in text
-    assert 'Не определена' in text and payload['construction_summary']['forecast'] is None
+    assert all(title in text for title in ['Прогноз учтённых работ', 'Матрица готовности', 'Гант по корпусам'])
+    assert '06.11.2026' in text and 'Подробные работы и источники' in text
+    assert 'Сроки и выполнение работ' not in text and 'Основания оценки сроков' not in text
+    assert '50 из 100 м² на 28.02.2026' not in text
+    assert payload['construction_summary']['forecast'] is None
     assert 'Synthetic calendar evidence 2026' not in text
     assert 'Проверка исходного графика' not in text
+    assert payload == before
