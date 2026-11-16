@@ -47,6 +47,15 @@ def test_logical_row_chooses_second_raw_card_and_closes_by_escape_and_button():
         expect(dialog).to_be_visible()
         expect(dialog.get_by_role("heading", name="Выберите исходную карточку договора")).to_be_visible()
         expect(dialog.locator("[data-raw-contract]")).to_have_count(2)
+        assert dialog.locator("[data-raw-contract]").evaluate_all("""buttons => {
+            const viewport=document.getElementById('contractDialogScroll').getBoundingClientRect();
+            return buttons.every(button => {
+                const box=button.getBoundingClientRect();
+                return box.width>0 && box.height>0
+                    && box.left>=Math.max(0,viewport.left)-1 && box.right<=Math.min(innerWidth,viewport.right)+1
+                    && box.top>=Math.max(0,viewport.top)-1 && box.bottom<=Math.min(innerHeight,viewport.bottom)+1;
+            });
+        }""")
         expect(dialog.locator("[data-raw-contract][aria-current]")).to_have_count(0)
         expect(dialog).to_contain_text("Финансовый источник, срок и общий прогноз между ними не выбраны")
         expect(dialog).not_to_contain_text("₽")
