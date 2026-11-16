@@ -110,6 +110,15 @@ jobs:
           TEST_SHARD: ${{ matrix.shard }}
           REQUIRE_BROWSER: "1"
         run: bash scripts/run_tests.sh
+      - name: Публичные учебные снимки компактного ГПР
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: gpr-synthetic-shard-${{ matrix.shard }}
+          path: .ci-ui-review/gpr-synthetic/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 3
 
   # Долей шесть, и «N passed» стало шестью строками. Не запустившаяся доля
   # снаружи неотличима от зелёной, поэтому вердикт один и он здесь: красный,
