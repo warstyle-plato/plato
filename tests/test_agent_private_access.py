@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from starlette.requests import Request
 
 import agent_access
+import document_intake_protocol as document_protocol
 import main as wrapper
 import project_knowledge as knowledge
 
@@ -210,7 +211,8 @@ def test_ownerless_run_and_intake_are_never_served(monkeypatch):
     client = TestClient(core.app)
     assert client.get("/agent/result/" + trace).status_code == 404
     assert client.get("/agent/trace/" + trace).status_code == 404
-    core._intake_queue_save({"id": trace, "filename": PRIVATE})
+    # A raw legacy ownerless file may exist, but cannot be served or saved.
+    core._intake_queue_path(trace).write_text(json.dumps({"id": trace, "filename": PRIVATE}))
     response = client.post("/agent/document/card", json={"intake_id": trace, "session": session()})
     assert response.status_code == 404
     assert PRIVATE not in response.text
@@ -228,10 +230,23 @@ def test_own_uploaded_document_works_other_paid_user_cannot_read_or_answer(monke
     trace = response.json()["card"]["id"]
     own = a.post("/agent/document/card", json={"session": sa, "intake_id": trace})
     assert own.status_code == 200 and PRIVATE in own.text
-    for route in ("card", "answer"):
-        denied = b.post("/agent/document/" + route, json={"session": sb, "intake_id": trace, "index": 0})
+    card = own.json()
+    before = core._intake_queue_path(trace).read_bytes()
+    foreign = {"session": sb, "intake_id": trace, "index": 0,
+               "queue_revision": card["queue_revision"], "question_token": card["question_token"],
+               "card_key": card["card_key"]}
+    for route in ("/agent/document/card", document_protocol.ANSWER_PATH, document_protocol.APPLY_PATH):
+        denied = b.post(route, json=foreign)
         assert denied.status_code == 403
         assert PRIVATE not in denied.text
+        assert core._intake_queue_path(trace).read_bytes() == before
+    # Cached clients stop before any owner/queue operation, even with valid auth.
+    for route in ("/agent/document/answer", "/agent/document/apply"):
+        refresh = b.post(route, json=foreign)
+        assert refresh.status_code == 409
+        assert refresh.json() == {"detail": document_protocol.REFRESH_MESSAGE}
+        assert PRIVATE not in refresh.text
+        assert core._intake_queue_path(trace).read_bytes() == before
 
 
 def test_private_key_rotation_during_run_prevents_result_release(monkeypatch):
@@ -248,7 +263,8 @@ def test_private_key_rotation_during_run_prevents_result_release(monkeypatch):
 
 def test_real_document_reader_inherits_actor_and_does_not_send_credentials(monkeypatch):
     captures = fake_search(monkeypatch)
-    def extraction_reply(payload):
+    def extraction_reply(payload, *, budget_seconds):
+        assert 0 < budget_seconds <= 240
         captures.append(payload)
         return {"output": [{"type": "message", "content": [{"type": "output_text",
             "text": '{"fields":[],"questions":[],"notes":[]}'}]}]}

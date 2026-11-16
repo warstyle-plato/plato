@@ -815,6 +815,8 @@ function renderOpenedProjectButton(){
 }
 
 function forgetTerritoryState(){
+ const resultError=document.getElementById('telegramResultError');
+ if(resultError&&typeof resultError.remove==='function')resultError.remove();
  cadastralAnalysis=null;landLookup=null;otherRegionPending=null;landScreeningLast=null;LAND_MAP=null;
  calcWentWithoutContour=false;
  glavapuImport=null;moResult=null;
@@ -1076,7 +1078,7 @@ const NON_PROJECT_STATE=['feedbackShown','feedbackCalcs','feedbackReportSeconds'
  'profileState','profileAskedOnResult','calcRequiresLogin','accessUseFree','calcRun','calcSettled','webLoginBusy',
  'projectsAdminKey','projectsStorageReady','projectsAcceptsKey','projectsAcceptsLogin',
  'projectsCards','projectsSortRestored',
- 'telegramResultSent','telegramCalcOverrides','telegramEditSubmitting','telegramFinishing',
+ 'telegramResultSent','telegramCalcOverrides','telegramOverridesReviewRequired','telegramEditSubmitting','telegramFinishing','telegramQualificationSession',
  'aiBusy','moAutoBusy','moRecalcTimer','sensitivityBusy','moDistrictPrices','moKdDocument',
  'landScreeningRun','tepRunSequence','krtSiteRun','krtSiteBusy','glavapuScenarioRun','strategyCompareRound','landContourPending',
  'CLASS_OVERRIDES','CLASS_OVERRIDES_NOTE','CLASS_OVERRIDES_FROM_SERVER',

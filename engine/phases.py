@@ -3269,9 +3269,9 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
     if isinstance(bundle, dict) and migrations:
         bundle["input_migrations"] = migrations
     if isinstance(bundle, dict):
-        _finalize_result(bundle.get("consolidated"))
+        _finalize_result(_intake_qualification_apply(req.inputs, bundle.get("consolidated")))
         for item in bundle.get("phases") or []:
-            _finalize_result((item or {}).get("result"))
+            _finalize_result(_intake_qualification_apply(req.inputs, (item or {}).get("result")))
     return bundle
 
 

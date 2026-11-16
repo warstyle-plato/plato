@@ -29,11 +29,13 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 from datetime import date
 from typing import Any
 
 import pdf_ocr
+import document_processing
 
 
 # Сколько страниц вообще читаем. Тизер — три страницы, справка — две, решение
@@ -109,15 +111,24 @@ def extract_text(data: bytes, filename: str = "",
         return {"text": "", "pages": 0, "scanned": False, "recognized": False,
                 "reason": f"не удалось открыть PDF ({type(exc).__name__}) — "
                           "файл повреждён или это не PDF"}
-    pages = len(reader.pages)
+    try:
+        pages = len(reader.pages)
+    except Exception as exc:
+        logging.warning('document_intake: PDF pages unavailable (%s)',type(exc).__name__)
+        return {'filename':name,'text':'','pages':0,'scanned':False,'recognized':False,
+                'reason':('PDF защищён паролем: пришлите незашифрованный файл.'
+                          if getattr(reader,'is_encrypted',False) else
+                          'Страницы PDF не прочитаны: файл повреждён или недоступен.')}
     coverage: list[dict[str, Any]] = []
     reasons = []
     ocr_count = 0
     for index, page in enumerate(reader.pages[:MAX_PAGES], start=1):
+        document_processing.check()
         try:
             layer = page.extract_text() or ""
         except Exception:  # noqa: BLE001
             layer = ""
+        document_processing.check()
         sparse = len(re.sub(r"\s", "", layer)) < MIN_CHARS_PER_PAGE
         item = {"page": index, "status": "text", "text": layer,
                 "needs_recognition": sparse}
@@ -128,12 +139,15 @@ def extract_text(data: bytes, filename: str = "",
                 ocr_count += 1
                 try:
                     recognized = pdf_ocr.text(data, page_indices=[index - 1])
+                    document_processing.check()
                     recognized = re.sub(r"^\[стр\. \d+\]\s*", "", recognized).strip()
                     if recognized:
                         item.update(status="ocr", text=recognized)
                         why = ""
                     else:
                         why = "распознавание не нашло букв"
+                except (document_processing.Cancelled,document_processing.Expired):
+                    raise
                 except pdf_ocr.Unavailable as exc:
                     why = getattr(exc, "public_message", "") or _SCAN_REFUSAL
                 except Exception as exc:  # noqa: BLE001
@@ -173,6 +187,32 @@ def extract_text(data: bytes, filename: str = "",
             "recognized": recognized, "reason": "; ".join(reasons),
             "page_coverage": [{k: v for k, v in item.items() if k != "text"}
                               for item in coverage]}
+
+
+DOCUMENT_MODEL_ERRORS = {
+    'refusal':'Модель отказалась разбирать документ. Данные не приняты в расчёт.',
+    'incomplete':'Ответ разбора документа оборвался. Данные не приняты в расчёт.',
+    'failed':'Модель вернула ошибку разбора документа. Данные не приняты в расчёт.',
+}
+
+
+def model_error(response: dict[str,Any]) -> str | None:
+    """Keep typed provider outcomes distinct; never publish free error text."""
+    if not isinstance(response,dict):
+        return 'failed'
+    if response.get('status') == 'incomplete':
+        return 'incomplete'
+    if response.get('status') in {'failed','cancelled','expired'} or response.get('error'):
+        return 'failed'
+    for item in response.get('output') or []:
+        if not isinstance(item,dict):
+            continue
+        if item.get('type') == 'refusal':
+            return 'refusal'
+        for content in item.get('content') or []:
+            if isinstance(content,dict) and content.get('type') == 'refusal':
+                return 'refusal'
+    return None
 
 
 # Отказ прежний и остаётся: распознавания в образе может не быть (бот живёт на
@@ -507,6 +547,57 @@ def parse_intake(answer: str) -> dict[str, Any]:
     if not isinstance(data, dict):
         return {"fields": [], "questions": [], "not_asked": [], "notes": [],
                 "reason": "ответ модели не объект"}
+    def shape_error(path: str) -> dict[str, Any]:
+        label = {"fields": "найденных полей", "questions": "вопросов", "notes": "примечаний"}[path.split("[", 1)[0]]
+        reason = "Основной разбор вернул неверный формат " + label + ". Значения не перенесены."
+        return {"fields": [], "questions": [], "not_asked": [], "notes": [],
+                "reason": reason,
+                "parse_error": {"code": "invalid_extraction_shape", "path": path},
+                "unverified": [{"reason": reason}]}
+
+    def finite_numeric(value: Any) -> bool:
+        try:
+            return math.isfinite(value)
+        except OverflowError:
+            return False
+
+    for name in ("fields", "questions", "notes"):
+        if name in data and not isinstance(data[name], list):
+            return shape_error(name)
+    for row in data.get("fields", []):
+        if not isinstance(row, dict):
+            return shape_error("fields[]")
+        if any(key in row and not isinstance(row[key], str) for key in ("key", "quote", "unit")):
+            return shape_error("fields[]")
+        value = row.get("value")
+        if isinstance(value, list):
+            if row.get("key") != "cadastral_numbers" or any(not isinstance(v, str) for v in value):
+                return shape_error("fields[].value")
+        elif value is not None and (isinstance(value, bool) or not isinstance(value, (str, int, float))):
+            return shape_error("fields[].value")
+        elif isinstance(value, (int, float)) and not finite_numeric(value):
+            return shape_error("fields[].value")
+    for row in data.get("questions", []):
+        if not isinstance(row, dict):
+            return shape_error("questions[]")
+        if any(key in row and not isinstance(row[key], str) for key in ("key", "question", "quote")):
+            return shape_error("questions[]")
+        if "options" in row and not isinstance(row["options"], list):
+            return shape_error("questions[].options")
+        for option in row.get("options", []):
+            if isinstance(option, str):
+                continue
+            if not isinstance(option, dict):
+                return shape_error("questions[].options[]")
+            if any(key in option and not isinstance(option[key], str) for key in ("label", "unit")):
+                return shape_error("questions[].options[]")
+            value = option.get("value")
+            if value is not None and (isinstance(value, bool) or not isinstance(value, (str, int, float))):
+                return shape_error("questions[].options[].value")
+            if isinstance(value, (int, float)) and not finite_numeric(value):
+                return shape_error("questions[].options[].value")
+    if any(not isinstance(note, str) for note in data.get("notes", [])):
+        return shape_error("notes[]")
     fields, dropped = [], []
     for item in data.get("fields") or []:
         if not isinstance(item, dict):
@@ -607,7 +698,10 @@ _NUMBER_RE = re.compile(r"-?\d[\d\s ]*(?:[.,]\d+)?")
 def to_number(value: Any) -> float | None:
     """Число из того, как его пишет документ: «11 385,6», «400 млн. руб.»."""
     if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return float(value)
+        try:
+            return float(value)
+        except OverflowError:
+            return None
     match = _NUMBER_RE.search(str(value or ""))
     if not match:
         return None
@@ -845,7 +939,10 @@ def _option_number(target: str, value: Any, unit: str) -> tuple[float | None, st
         # Ноль — ноль в любой единице; отказывать ему за неназванную единицу
         # значило бы не принять «расселение не требуется».
         return 0.0, ""
-    return to_field_number(target, value, unit)
+    number, why = to_field_number(target, value, unit)
+    if number is not None and (not math.isfinite(number) or number < 0):
+        return None, "нужно конечное неотрицательное число"
+    return number, why
 
 
 # Сумма, названная в самом вопросе: «Платёж 2,55 млрд руб. за SPV…». Вариант
@@ -858,17 +955,66 @@ _AMOUNT_RE = re.compile(
     r"(?<![\d.,])(\d[\d\s\u00a0]*(?:[.,]\d+)?)\s*"
     r"(млрд|миллиард\w*|млн|миллион\w*|тыс\.?|тысяч\w*)\s*(?:руб\w*\.?|₽)?",
     re.I)
+_FOREIGN_CURRENCY_RE = re.compile(
+    r"[$€£¥₺₸]|(?<![a-z])(?:USD|EUR|CNY|RMB|GBP|JPY|KZT|AED|BYN|CHF|TRY)(?![a-z])|"
+    r"доллар\w*|евро\b|юан\w*|тенге|фунт\w*", re.I)
 
 
 def question_amounts(text: str) -> list[dict[str, Any]]:
     """Денежные суммы вопроса в миллионах рублей, с тем, как они написаны."""
     out = []
-    for match in _AMOUNT_RE.finditer(str(text or "")):
+    text = str(text or "")
+    if _FOREIGN_CURRENCY_RE.search(text):
+        return []  # Do not turn a mixed-currency obligation into a partial RUB total.
+    for match in _AMOUNT_RE.finditer(text):
+        tail = text[match.end():]
+        if re.match(r"\s*(?:м\s*[²23]|кв\.?\s*м|га\b|гект|мест|шт\b|человек|жител|"
+                    r"USD\b|EUR\b|CNY\b|GBP\b|доллар|евро|юан|[$€£¥])", tail, re.I):
+            continue
+        if re.match(r"\s*(?:/|(?:за|на|в)\s+(?:(?:1|один|одну)\s+)?"
+                    r"(?:м\s*[²2]|кв\.?\s*м|га\b|гектар|мест|год|месяц|сутк|час))", tail, re.I):
+            continue
         written = match.group(0).strip()
         number, _why = to_field_number("purchase_price_mln", match.group(1), match.group(2))
-        if number is not None:
+        if number is not None and math.isfinite(number):
             out.append({"mln": number, "number": to_number(match.group(1)),
                         "written": written})
+    return out
+
+
+def area_transfer(card: dict[str, Any]) -> bool:
+    """A transfer of area needs its own monetary valuation, not nearby cash."""
+    text = " ".join(str(card.get(key) or "") for key in ("question", "source_quote", "quote"))
+    return bool(re.search(r"переда(?:ч|ть|но|в\w*|ётся|ется)|бартер", text, re.I)
+                and re.search(r"\d\s*(?:(?:млн\.?|тыс\.?)\s*)?(?:м\s*[²2]|кв\.?\s*м|га\b|гект)", text, re.I))
+
+
+def _question_has_foreign_currency(card: dict[str, Any]) -> bool:
+    parts = [str(card.get(key) or "") for key in ("question", "source_quote", "quote")]
+    for option in card.get("choices") or card.get("options") or []:
+        parts.append(" ".join(str(option.get(k) or "") for k in ("label", "value", "unit"))
+                     if isinstance(option, dict) else str(option))
+    return bool(_FOREIGN_CURRENCY_RE.search(" ".join(parts)))
+
+
+def _related_question_amounts(card: dict[str, Any]) -> list[dict[str, Any]]:
+    if card.get("requires_manual") or _question_has_foreign_currency(card):
+        return []
+    if not area_transfer(card):
+        return question_amounts(str(card.get("source_quote") or card.get("question") or ""))
+    # Only an explicit valuation of the transferred area can supply money.
+    # A purchase price/payment in the same question is a different obligation.
+    proof = str(card.get("source_quote") or card.get("quote") or "")
+    out = []
+    for clause in re.split(r"[;\n]|(?<=[.!?])\s+", proof):
+        if re.search(r"\b(?:покупк|сделк|участк|земл)\w*", clause, re.I):
+            continue
+        related = re.search(
+            r"(?:оцен\w*|стоимост\w*|денежн\w*\s+эквивалент\w*)\s+(?:передач\w*|передаваем\w*)|"
+            r"(?:переда\w*|передач\w*).*(?:оценен\w*|оценива\w*|денежн\w*\s+эквивалент\w*)",
+            clause, re.I)
+        if related:
+            out.extend(question_amounts(clause))
     return out
 
 
@@ -937,7 +1083,9 @@ def question_card(item: dict[str, Any]) -> dict[str, Any]:
     """
     key = str(item.get("key") or "").strip()
     field = key if key in ASKABLE_KEYS and key != "cadastral_numbers" else ""
-    amounts = question_amounts(str(item.get("source_quote") or item.get("question") or ""))
+    amounts = _related_question_amounts(item)
+    transfer = area_transfer(item)
+    foreign = _question_has_foreign_currency(item)
     options = []
     for raw in item.get("choices") or item.get("options") or []:
         if isinstance(raw, dict) and "value" in raw:
@@ -952,6 +1100,11 @@ def question_card(item: dict[str, Any]) -> dict[str, Any]:
         target = field or obligation_target(label)
         number, why = (_option_number(target, value, unit) if target
                        else (None, "у ответа нет поля в модели — записан в разговор"))
+        if target in _MONEY_FIELDS and (foreign or item.get("requires_manual")):
+            number, why = None, "Укажите подтверждённую денежную сумму в рублях. Другую валюту автоматически не переводим."
+        if transfer and target in _MONEY_FIELDS and number is not None:
+            if not any(math.isclose(number, a["mln"], rel_tol=1e-10, abs_tol=1e-8) for a in amounts):
+                number, why = None, "Денежная оценка передаваемой площади не названа. Укажите её отдельно в рублях."
         from_question = ""
         if not field and target and number is None and len(amounts) == 1:
             # Обязательство без своего числа — сумма вопроса, в единицах поля.
@@ -960,7 +1113,7 @@ def question_card(item: dict[str, Any]) -> dict[str, Any]:
                         "unit": INTAKE_UNITS.get(target, ""), "why": why,
                         **({"from_question": from_question} if from_question else {})})
     return {"question": str(item.get("question") or ""), "key": field,
-            "requires_manual": bool(item.get("requires_manual")),
+            "requires_manual": bool(item.get("requires_manual") or foreign or (transfer and not amounts)),
             "source_quote": str(item.get("source_quote") or ""),
             "label": INTAKE_LABELS.get(field, ""), "unit": INTAKE_UNITS.get(field, ""),
             # Обязательство складывается с тем, что уже стоит в поле: три
@@ -977,15 +1130,28 @@ def _typed_number(card: dict[str, Any], target: str, said: str) -> tuple[float |
     вопросом «Платёж 2,55 млрд руб.» — это 2,55 млрд, а не 2,55 млн.
     """
     unit = INTAKE_UNITS.get(target, "")
+    if target in _MONEY_FIELDS:
+        written = str(said).strip().replace("\u00a0", " ").replace("\u202f", " ")
+        match = re.fullmatch(r"\+?(?:\d{1,3}(?: \d{3})+|\d+)(?:[.,]\d+)?\s*([^\d]*)", written)
+        suffix = match[1].strip().lower() if match else None
+        money_unit = (r"(?:(?:млрд\.?|миллиард(?:а|ов)?|млн\.?|миллион(?:а|ов)?|тыс\.?|тысяч(?:а|и)?)"
+                      r"(?:\s*(?:руб(?:ль|ля|лей)?\.?|₽|rub))?|руб(?:ль|ля|лей)?\.?|₽|rub)")
+        if suffix is None or (suffix and not re.fullmatch(money_unit, suffix)):
+            return None, "Нужна одна неотрицательная денежная сумма в рублях, без площади, другой валюты или ставки. Например: 2,5 млн ₽.", ""
+        said = written  # Convert exactly the normalized numeric literal we validated.
+        if suffix:
+            unit = ""  # Explicit typed units take precedence over the field hint.
     bare = not re.search(r"[a-zа-яё₽]", said.lower())
     if bare and target in _MONEY_FIELDS:
         typed = to_number(said)
-        for amount in question_amounts(str(card.get("question") or "")):
+        for amount in _related_question_amounts(card):
             if typed is not None and amount["number"] == typed and amount["mln"] != typed:
                 return (amount["mln"], "",
                         f"вписано «{said}» — в вопросе «{amount['written']}», "
                         f"значит {_fmt_mln(amount['mln'])} {unit}")
     number, why = to_field_number(target, said, unit)
+    if target in _MONEY_FIELDS and (number is None or not math.isfinite(number) or number < 0):
+        return None, "Нужна конечная неотрицательная денежная сумма в рублях.", ""
     return number, why, ""
 
 

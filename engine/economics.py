@@ -137,7 +137,7 @@ def calculate(req: CalcRequest) -> dict:
     original = (copy.deepcopy((req.inputs, req.tep, req.rates))
                 if any(strategy_path_prefixes(req.inputs, product) for product, _ in STRATEGY_PATH_PRODUCTS)
                 else None)
-    result = _finalize_result(_calculate_economics(req))
+    result = _finalize_result(_intake_qualification_apply(req.inputs, _calculate_economics(req)))
     if migrations and isinstance(result, dict):
         result["input_migrations"] = migrations
     if isinstance(result, dict):

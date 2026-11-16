@@ -786,6 +786,10 @@ def _page_one(model: dict[str, Any], map_png: bytes | None, width: float, st: _S
         f"{model.get('project_name') or 'Проект'} · расчёт {origin.get('calculation_id') or '—'} · "
         f"движок DevelopAid {origin.get('engine_version') or '—'} · {origin.get('generated_at') or ''}", st.sub))
     story.append(Spacer(1, 2 * mm))
+    qualification = model.get('calculation_qualification') or {}
+    if qualification.get('reason'):
+        story.append(Paragraph(_esc(qualification['reason']), st.note))
+        story.append(Spacer(1, 2 * mm))
     story += decision_tiles_block(model.get("decision_tiles"), width, st)
     story += strategy_line_block(model.get("strategy_line"), st)
     story += office_class_line_block(model.get("office_class_line"), st)

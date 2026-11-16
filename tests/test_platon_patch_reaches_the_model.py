@@ -49,7 +49,7 @@ def applied(monkeypatch, tmp_path):
     }}})
     captured: dict = {}
 
-    def fake_url(chat_id, cads, manual_tep=None, calc_overrides=None, mode=None):
+    def fake_url(chat_id, cads, manual_tep=None, calc_overrides=None, mode=None, application_proof=None):
         captured["overrides"] = calc_overrides or {}
         return "https://example.org/#telegram_session=s-new&mode=edit"
 

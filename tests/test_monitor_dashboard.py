@@ -142,7 +142,7 @@ def test_funding_risk_uses_article_waterfall(monkeypatch):
         "rows": [], "by_code": {"2": {"estimate": 700.0}, "3": {"estimate": 100.0}}
     })
     monkeypatch.setattr(dashboard, "_paid_in_chapters",
-                        lambda *_: {"total": 200.0, "borrowed": 150.0})
+                        lambda *_, **__: {"total": 200.0, "borrowed": 150.0})
     monkeypatch.setattr(dashboard, "_payment_by_code", lambda _: {})
     view = {"schedule": {"approved_end": "2027-09-30", "forecast_end": None}}
 
@@ -446,7 +446,7 @@ def test_the_funding_card_explains_the_remaining_limit(monkeypatch):
         "rows": [], "by_code": {"1": {"estimate": 100.0}, "2": {"estimate": 500.0},
                                 "3": {"estimate": 50.0}}})
     monkeypatch.setattr(dashboard, "_paid_in_chapters",
-                        lambda *_: {"total": 350.0, "borrowed": 300.0})
+                        lambda *_, **__: {"total": 350.0, "borrowed": 300.0})
     monkeypatch.setattr(dashboard, "_payment_by_code", lambda _: {"1.1": 150.0, "2.2": 200.0})
     view = {"schedule": {"approved_end": "2027-09-30", "forecast_end": None}}
     got = dashboard._funding_risk("demo", Path("rss.xlsx"), datetime.date(2026, 8, 20), view)
@@ -477,7 +477,7 @@ def test_chapter_one_comes_from_the_rss_when_the_book_lacks_it(monkeypatch):
         "rows": [], "by_code": {"1": {"estimate": 200.0}, "2": {"estimate": 500.0},
                                 "3": {"estimate": 50.0}}})
 
-    def paid(_rss, _estimate, chapters=("2", "3")):
+    def paid(_rss, _estimate, chapters=("2", "3"), **_):
         return ({"total": 150.0, "borrowed": 100.0} if tuple(chapters) == ("1",)
                 else {"total": 200.0, "borrowed": 180.0})
     monkeypatch.setattr(dashboard, "_paid_in_chapters", paid)

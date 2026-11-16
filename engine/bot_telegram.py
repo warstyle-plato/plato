@@ -7,22 +7,30 @@
 Отдельно не импортировать: второй импорт поднял бы вторую копию движка.
 """
 # ruff: noqa
+import document_intake_protocol as document_protocol
+import document_core_admission
+
+_DOCUMENT_CORE_ADMISSION_ROOT = document_core_admission.data_root(os.environ)
 
 _TELEGRAM_PUBLIC_BASE_URL = (
-    os.environ.get("TELEGRAM_PUBLIC_BASE_URL")
-    or os.environ.get("RENDER_EXTERNAL_URL")
+    (_telegram_public_base_selected := os.environ.get("TELEGRAM_PUBLIC_BASE_URL"))
+    or (_telegram_render_public_selected := os.environ.get("RENDER_EXTERNAL_URL"))
     or "https://plato-development-investment-model.onrender.com"
 ).rstrip("/")
+_TELEGRAM_PUBLIC_BASE_SOURCE = ("TELEGRAM_PUBLIC_BASE_URL" if _telegram_public_base_selected
+    else "RENDER_EXTERNAL_URL" if _telegram_render_public_selected else "default_public")
 
 # Вебхук и мини-приложение живут по разным адресам, когда бот на Render, а
 # модель — там, где доступен НСПД: адрес вебхука должен остаться на Render,
 # иначе Telegram перестанет доставлять обновления, а кнопка «Открыть модель»
 # должна вести на ядро, иначе в модели не заработают ни адреса, ни область.
 _TELEGRAM_WEB_APP_BASE_URL = (
-    os.environ.get("TELEGRAM_WEBAPP_URL")
-    or os.environ.get("TELEGRAM_WEB_APP_BASE_URL")
+    (_telegram_webapp_selected := os.environ.get("TELEGRAM_WEBAPP_URL"))
+    or (_telegram_webapp_legacy_selected := os.environ.get("TELEGRAM_WEB_APP_BASE_URL"))
     or _TELEGRAM_PUBLIC_BASE_URL
 ).rstrip("/")
+_TELEGRAM_WEB_APP_BASE_SOURCE = ("TELEGRAM_WEBAPP_URL" if _telegram_webapp_selected
+    else "TELEGRAM_WEB_APP_BASE_URL" if _telegram_webapp_legacy_selected else _TELEGRAM_PUBLIC_BASE_SOURCE)
 _TELEGRAM_RUNTIME: dict[str, Any] = {
     "configured": False,
     "username": "",
@@ -32,57 +40,206 @@ _TELEGRAM_RUNTIME: dict[str, Any] = {
 _TELEGRAM_DIALOGS: dict[int, dict[str, Any]] = {}
 _TELEGRAM_DIALOG_LOCK = threading.Lock()
 _TELEGRAM_DIALOG_TTL_SECONDS = 6 * 60 * 60
+_TELEGRAM_INTAKE_READ_SECONDS = 240
+import contextvars as _telegram_contextvars
+_TELEGRAM_INTAKE_LOCKED = _telegram_contextvars.ContextVar("telegram_intake_locked", default=None)
+_TELEGRAM_INTAKE_AFTER_LOCK = _telegram_contextvars.ContextVar("telegram_intake_after_lock", default=None)
+
+
+def _telegram_intake_serialized(function):
+    """Serialize one chat's intake read/modify/write across native workers."""
+    import functools
+    @functools.wraps(function)
+    def locked(chat_id, *args, **kwargs):
+        import fcntl
+        import stat
+        chat_id = int(chat_id)
+        if _TELEGRAM_INTAKE_LOCKED.get() == chat_id:
+            return function(chat_id, *args, **kwargs)
+        if function.__name__ == "_telegram_handle_dialog_text":
+            state = _telegram_dialog_get(chat_id) or {}
+            if state.get("step") not in {"await_intake_answer", "intake_document_reading", "intake_document_failed"}:
+                return function(chat_id, *args, **kwargs)
+        _PLATO_STAGE_DIR.mkdir(parents=True, exist_ok=True)
+        fd = os.open(_PLATO_STAGE_DIR / f"intake_dialog_{chat_id}.lock",
+                     os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise RuntimeError("Блокировка шага разбора недоступна.")
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            token = _TELEGRAM_INTAKE_LOCKED.set(chat_id)
+            deferred = []
+            delivery = _TELEGRAM_INTAKE_AFTER_LOCK.set(deferred)
+            try:
+                result = function(chat_id, *args, **kwargs)
+            finally:
+                _TELEGRAM_INTAKE_AFTER_LOCK.reset(delivery)
+                _TELEGRAM_INTAKE_LOCKED.reset(token)
+        finally:
+            os.close(fd)
+        for operation, positional, named in deferred:
+            operation(*positional, **named)
+        return result
+    return locked
+
+
+def _telegram_intake_after_lock(operation, *args, **kwargs):
+    deferred = _TELEGRAM_INTAKE_AFTER_LOCK.get()
+    if deferred is None:
+        return operation(*args, **kwargs)
+    deferred.append((operation, args, kwargs))
+    return None
+
+
+@_telegram_intake_serialized
+def _telegram_intake_begin(chat_id: int, filename: str) -> str:
+    """Claim a document operation before IO; no lock is held during reading."""
+    nonce = os.urandom(16).hex()
+    started = time.time()
+    dialog = _telegram_dialog_get(chat_id) or {}
+    previous_step = str((dialog.get("document_read") or {}).get("previous_step") or dialog.get("step") or "")
+    dialog["document_read"] = {"id": nonce, "filename": str(filename or "")[:240],
+                               "status": "loading", "previous_step": previous_step,
+                               "started_at":started,"deadline_at":started+_TELEGRAM_INTAKE_READ_SECONDS}
+    dialog["step"] = "intake_document_reading"
+    _telegram_dialog_save(chat_id, dialog)
+    return nonce
+
+
+def _telegram_intake_current(chat_id: int, nonce: str, *, allow_failed: bool = False) -> bool:
+    dialog = _telegram_dialog_get(chat_id) or {}
+    active = dialog.get("document_read") or {}
+    return bool(nonce and active.get("id") == nonce
+                and (active.get("status") in {"loading","ready"} or allow_failed))
+
+
+@_telegram_intake_serialized
+def _telegram_intake_commit(chat_id: int, nonce: str, commit):
+    """Run only short local publication after a fresh operation comparison."""
+    dialog = _telegram_dialog_get(chat_id) or {}
+    active = dialog.get("document_read") or {}
+    if not nonce or active.get("id") != nonce or active.get("status") != "loading":
+        return False, None
+    return True, commit(dialog)
+
+
+def _telegram_intake_callback_data(intake_id: str, action: str, *parts) -> str:
+    if (not re.fullmatch(r"[0-9a-f]{32}", str(intake_id or ""))
+            or action not in {"questions", "region", "opt", "defer", "rechoose", "mode", "review"}):
+        raise ValueError("Кнопка не связана с текущим разбором.")
+    data = ":".join(["intake2_"+action, intake_id, *(str(part) for part in parts)])
+    if len(data.encode("utf-8")) > 64:
+        raise ValueError("Кнопка разбора превышает допустимый размер.")
+    return data
 
 
 def _telegram_dialog_path(chat_id: int) -> Path:
     return _PLATO_STAGE_DIR / f"dialog_{int(chat_id)}.json"
 
 
+def _telegram_intake_expired(active: dict) -> bool:
+    import math
+    deadline = active.get("deadline_at")
+    return active.get("status") == "loading" and (type(deadline) not in (int,float)
+        or not math.isfinite(deadline) or time.time() >= deadline)
+
+
+@_telegram_intake_serialized
+def _telegram_intake_expire(chat_id: int, expected_source: str):
+    try:
+        raw = _telegram_dialog_path(chat_id).read_bytes()
+    except FileNotFoundError:
+        return None
+    if hashlib.sha256(raw).hexdigest() != expected_source:
+        return _telegram_dialog_get(chat_id)
+    current = json.loads(raw)
+    current["_source_sha256"] = expected_source
+    active = current.get("document_read") or {}
+    if _telegram_intake_expired(active):
+        current["document_read"] = {**active,"status":"interrupted","failure":"document_read_interrupted"}
+        current["step"] = "intake_document_failed"
+        _telegram_dialog_save(chat_id,current)
+    return current
+
+
 def _telegram_dialog_get(chat_id: int) -> dict[str, Any] | None:
     now = int(time.time())
     with _TELEGRAM_DIALOG_LOCK:
         current = _TELEGRAM_DIALOGS.get(int(chat_id))
-    if not current:
-        # Воркеров два, и память у них раздельная: следующее сообщение того же
-        # человека попадает в другой процесс, где разговора не было. Пока шаг
-        # был один, это выглядело как случайная забывчивость; на очереди из
-        # десяти вопросов оно ломает разговор посередине.
-        try:
-            current = json.loads(_telegram_dialog_path(chat_id).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return None
-        if not isinstance(current, dict):
-            return None
-    if now - int(current.get("updated_at") or 0) > _TELEGRAM_DIALOG_TTL_SECONDS:
-        _telegram_dialog_clear(chat_id)
+    # Disk is authoritative across workers, including an updated choice or
+    # cancellation made while this worker still has an older cached step.
+    try:
+        raw = _telegram_dialog_path(chat_id).read_bytes()
+        current = json.loads(raw)
+        if isinstance(current, dict):
+            current["_source_sha256"] = hashlib.sha256(raw).hexdigest()
+    except FileNotFoundError:
+        with _TELEGRAM_DIALOG_LOCK:
+            _TELEGRAM_DIALOGS.pop(int(chat_id), None)
         return None
+    except (OSError, ValueError):
+        raise RuntimeError("Сохранённый шаг не прочитан; ответ ещё не принят.") from None
+    if not isinstance(current, dict):
+        raise RuntimeError("Формат сохранённого шага не прочитан; ответ ещё не принят.")
+    if _telegram_intake_expired(current.get("document_read") or {}):
+        return _telegram_intake_expire(chat_id,current["_source_sha256"])
+    if now - int(current.get("updated_at") or 0) > _TELEGRAM_DIALOG_TTL_SECONDS:
+        cleared = _telegram_dialog_clear(chat_id, expected_source=current.get("_source_sha256"))
+        return _telegram_dialog_get(chat_id) if cleared is False else None
     with _TELEGRAM_DIALOG_LOCK:
         _TELEGRAM_DIALOGS[int(chat_id)] = copy.deepcopy(current)
     return copy.deepcopy(current)
 
 
+@_telegram_intake_serialized
 def _telegram_dialog_save(chat_id: int, dialog: dict[str, Any]) -> None:
     saved = copy.deepcopy(dialog)
+    expected_source = saved.pop("_source_sha256", None)
     saved["updated_at"] = int(time.time())
+    try:
+        import agent_access
+        try:
+            before_raw = _telegram_dialog_path(chat_id).read_bytes()
+            before = json.loads(before_raw)
+        except FileNotFoundError:
+            before_raw = None
+            before = {}
+        if not isinstance(before, dict):
+            raise RuntimeError("Формат сохранённого шага не прочитан; продолжение пока не подтверждено.")
+        expected = dialog.get("_revision", 0)
+        actual = before.get("_revision", 0)
+        if (type(expected) is not int or type(actual) is not int or expected < 0 or actual < 0
+                or ("_revision" in dialog and expected != actual)
+                or (expected_source is not None and expected_source != (
+                    hashlib.sha256(before_raw).hexdigest() if before_raw is not None else None))):
+            raise RuntimeError("Шаг уже изменился. Продолжите с текущего вопроса.")
+        saved["_revision"] = actual + 1
+        agent_access.write_json(_telegram_dialog_path(chat_id), saved)
+    except (OSError, TypeError, ValueError):
+        raise RuntimeError("Шаг не удалось сохранить; продолжение пока не подтверждено.") from None
     with _TELEGRAM_DIALOG_LOCK:
         _TELEGRAM_DIALOGS[int(chat_id)] = saved
-    try:
-        _PLATO_STAGE_DIR.mkdir(parents=True, exist_ok=True)
-        _telegram_dialog_path(chat_id).write_text(
-            json.dumps(saved, ensure_ascii=False), encoding="utf-8")
-    except (OSError, TypeError, ValueError):
-        # Диск — подстраховка от второго воркера, а не условие разговора:
-        # ронять ответ человеку из-за неё нельзя.
-        pass
+    dialog["_revision"] = saved["_revision"]
+    dialog["_source_sha256"] = hashlib.sha256(json.dumps(saved, ensure_ascii=False).encode()).hexdigest()
 
 
-def _telegram_dialog_clear(chat_id: int) -> None:
+@_telegram_intake_serialized
+def _telegram_dialog_clear(chat_id: int, *, expected_source: str | None = None) -> bool:
+    if expected_source is not None:
+        try:
+            raw = _telegram_dialog_path(chat_id).read_bytes()
+        except FileNotFoundError:
+            raw = None
+        if raw is not None and hashlib.sha256(raw).hexdigest() != expected_source:
+            return False  # A newer worker refreshed the dialogue while TTL was checked.
     with _TELEGRAM_DIALOG_LOCK:
         _TELEGRAM_DIALOGS.pop(int(chat_id), None)
     try:
         _telegram_dialog_path(chat_id).unlink(missing_ok=True)
     except OSError:
-        pass
+        raise RuntimeError("Сохранённый шаг не удалось отменить; отмена пока не подтверждена.") from None
+    return True
 
 
 def _telegram_dialog_number(text: str, *, site_area: bool = False) -> float:
@@ -125,7 +282,44 @@ def _telegram_webhook_enabled() -> bool:
     }
 
 
-def _telegram_api(method: str, payload: dict[str, Any] | None = None) -> Any:
+def _telegram_document_read_response(response, deadline: float, max_bytes: int) -> bytes:
+    """One read per remaining socket deadline; no accumulated/trickle read()."""
+    import document_processing
+    length = response.headers.get('Content-Length') if getattr(response,'headers',None) is not None else None
+    if length is not None:
+        try:declared=int(length)
+        except (ValueError,TypeError):raise ValueError('Telegram передал некорректный размер ответа.') from None
+        if not 0 <= declared <= max_bytes:
+            raise ValueError('Ответ Telegram превышает допустимый размер.')
+    read = getattr(response,'read1',None)
+    if read is None:
+        raise RuntimeError('Ограниченное потоковое чтение ответа Telegram недоступно.')
+    chunks,size=[],0
+    while True:
+        document_processing.delivery_check()
+        left = deadline-time.monotonic()
+        if left <= 0:raise TimeoutError('Telegram response deadline')
+        stream=response
+        for _ in range(3):
+            sock=getattr(getattr(stream,'raw',None),'_sock',None)
+            if sock is not None:
+                sock.settimeout(left)
+                break
+            stream=getattr(stream,'fp',None)
+            if stream is None:break
+        chunk=read(min(64*1024,max_bytes+1-size))
+        document_processing.delivery_check()
+        if time.monotonic() >= deadline:raise TimeoutError('Telegram response deadline')
+        if not chunk:break
+        size += len(chunk)
+        if size > max_bytes:raise ValueError('Ответ Telegram превышает допустимый размер.')
+        chunks.append(chunk)
+    if length is not None and size != declared:
+        raise ValueError('Ответ Telegram пришёл не полностью. Источник не принят.')
+    return b''.join(chunks)
+
+
+def _telegram_api(method: str, payload: dict[str, Any] | None = None, *, timeout: float = 15) -> Any:
     token = _telegram_token()
     if not token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN не задан")
@@ -135,12 +329,27 @@ def _telegram_api(method: str, payload: dict[str, Any] | None = None) -> Any:
         headers={"Content-Type": "application/json"},
         method="POST",
     )
+    import document_processing
+    if document_processing.notification_active() and method != 'sendMessage':
+        raise document_processing.Cancelled('A failure notice cannot download or read a source')
+    document_deadline = document_processing.delivery_deadline()
+    until = time.monotonic()+timeout
+    if document_deadline is not None:
+        until = min(until,document_deadline)
+    timeout = until-time.monotonic()
+    if timeout <= 0:
+        raise document_processing.Expired()
     try:
-        with urllib.request.urlopen(request, timeout=15) as response:
-            body = json.loads(response.read().decode("utf-8"))
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = _telegram_document_read_response(response,until,1024*1024)
+            body = json.loads(raw.decode('utf-8'))
     except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")[:500]
+        with exc:
+            raw = _telegram_document_read_response(exc,until,1024*1024)
+        detail = raw.decode('utf-8',errors='replace')[:500]
         raise RuntimeError(f"Telegram API: HTTP {exc.code}: {detail}") from exc
+    except (document_processing.Cancelled,document_processing.Expired):
+        raise
     except Exception as exc:
         raise RuntimeError(f"Telegram API недоступен: {exc}") from exc
     if not body.get("ok"):
@@ -162,12 +371,101 @@ def _telegram_user_allowed(user_id: int) -> bool:
     return not allowed or int(user_id) in allowed
 
 
+def _telegram_overrides_digest(overrides: dict[str, Any]) -> str:
+    raw = json.dumps(overrides, ensure_ascii=False, sort_keys=True,
+                     separators=(",", ":"), allow_nan=False).encode("utf-8")
+    if len(raw) > 24_000:
+        raise ValueError("Параметры требуют повторной проверки карточки")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _telegram_qualified_application_binding(overrides: dict[str, Any], scope: str) -> str:
+    # Disclosure signatures grant no authority over arbitrary cash. The
+    # application binding separately attests these exact confirmed overrides.
+    record = overrides[intake_qualification.KEY]
+    body = {'scope':scope, 'sha256':_telegram_overrides_digest(overrides),
+        'source_binding':record['binding'], 'owner':record['owner'], 'recipient':record['recipient']}
+    raw = json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
+    return hmac.new(_intake_qualification_key('telegram'),
+        b'plato/document-qualification/application/v1\0'+raw, hashlib.sha256).hexdigest()
+
+
+def _telegram_application_proof(overrides: dict[str, Any], proof: Any) -> dict[str, Any] | None:
+    # This checks a signed server attestation; the generic session issuer does
+    # not manufacture one. Only canonical card/CAD confirmation paths issue it.
+    if not isinstance(proof, dict) or set(proof) != {"schema", "scope", "binding", "sha256"}:
+        return None
+    if (type(proof.get("schema")) is not int or proof["schema"] != 1
+            or not isinstance(proof.get('scope'), str)
+            or proof['scope'] not in {"confirmed_card", "confirmed_cad", "confirmed_patch"}
+            or not re.fullmatch(r"[0-9a-f]{64}", str(proof.get("binding") or ""))):
+        return None
+    try:
+        qualification = _intake_qualification_state(overrides)
+        if (qualification is not None and not qualification.get('verified')) or (
+                proof['scope'] == 'confirmed_card' and qualification is None):
+            return None
+        if qualification is not None:
+            if not hmac.compare_digest(proof['binding'], _telegram_qualified_application_binding(overrides, proof['scope'])):
+                return None
+            if proof['scope'] == 'confirmed_card':
+                facts = {k:v for k,v in overrides.items() if k not in {intake_qualification.KEY, intake_qualification.PACKET}}
+                if not hmac.compare_digest(overrides[intake_qualification.KEY]['overrides_sha256'], _telegram_overrides_digest(facts)):
+                    return None
+        if not hmac.compare_digest(str(proof.get("sha256") or ""), _telegram_overrides_digest(overrides)):
+            return None
+    except (ValueError, TypeError, OverflowError):
+        return None
+    return dict(proof)
+
+
+def _telegram_carry_application_proof(session: dict[str, Any]) -> dict[str, Any] | None:
+    overrides = session.get('calc_overrides') or {}
+    proof = _telegram_application_proof(overrides, session.get('overrides_application'))
+    record = overrides.get(intake_qualification.KEY)
+    if record is not None and (not isinstance(record, dict) or not session.get('chat_id')
+            or record.get('recipient') != _intake_qualification_recipient(session['chat_id'])):
+        return None
+    return proof
+
+
+def _telegram_confirmed_patch_proof(session: dict[str, Any], overrides: dict[str, Any],
+                                     changes: dict[str, Any]) -> dict[str, Any] | None:
+    # A confirmed change may extend a validated base, never promote an old
+    # unvalidated saved dictionary. Every changed value has native field type.
+    base = session.get("calc_overrides") or {}
+    prior = _telegram_carry_application_proof(session)
+    if (base and prior is None) or not changes:
+        return None
+    expected = dict(base)
+    for key, value in changes.items():
+        if key not in DEFAULT_INPUTS:
+            return None
+        default = DEFAULT_INPUTS[key]
+        if isinstance(default, bool):
+            if not isinstance(value, bool):return None
+        elif isinstance(default, (int, float)):
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not teaser_card._finite_value(value):return None
+        elif not isinstance(value, str):
+            return None
+        expected[key] = value
+    if expected != overrides:
+        return None
+    digest = _telegram_overrides_digest(overrides)
+    binding = (_telegram_qualified_application_binding(overrides, 'confirmed_patch')
+        if intake_qualification.KEY in overrides else hashlib.sha256(json.dumps({"base": prior, "changes": changes},
+        sort_keys=True, ensure_ascii=False, allow_nan=False).encode("utf-8")).hexdigest())
+    return {"schema": 1, "scope": "confirmed_patch", "binding": binding, "sha256": digest}
+
+
 def _telegram_session(
     chat_id: int,
     cadastral_numbers: list[str],
     lifetime_seconds: int = 86400,
     manual_tep: dict[str, Any] | None = None,
     calc_overrides: dict[str, Any] | None = None,
+    application_proof: dict[str, Any] | None = None,
+    calculation_qualification: dict[str, Any] | None = None,
 ) -> str:
     token = _telegram_token()
     if not token:
@@ -181,6 +479,21 @@ def _telegram_session(
         payload["manual_tep"] = manual_tep
     if calc_overrides:
         payload["calc_overrides"] = calc_overrides
+        proof = _telegram_application_proof(calc_overrides, application_proof)
+        qualification = calc_overrides.get(intake_qualification.KEY)
+        if qualification is not None and (
+                not isinstance(qualification, dict)
+                or qualification.get('recipient') != _intake_qualification_recipient(chat_id)):
+            proof = None
+        if proof is not None:
+            payload["overrides_application"] = proof
+    if calculation_qualification is not None and not (calc_overrides or {}).get(intake_qualification.KEY):
+        state = _intake_qualification_state({intake_qualification.KEY:calculation_qualification})
+        recipient = calculation_qualification.get('recipient') if isinstance(calculation_qualification, dict) else None
+        if state and state.get('verified') and recipient in (None, _intake_qualification_recipient(chat_id)):
+            payload['calculation_qualification'] = calculation_qualification
+        else:
+            payload['qualification_review_required'] = True
     raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
     if len(raw) > 24_000:
         raise RuntimeError("Ручной ТЭП слишком велик для Telegram-сессии")
@@ -233,19 +546,76 @@ def _telegram_verify_session(value: str) -> dict[str, Any]:
         raise HTTPException(status_code=403, detail="Telegram-сессия недействительна или истекла") from exc
 
 
+class _DocumentProtocolNoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+def _telegram_document_origin_metadata() -> dict[str, Any]:
+    """Disclose only known public origins and the selected setting's closed name."""
+    source = _TELEGRAM_WEB_APP_BASE_SOURCE
+    if type(source) is not str or source not in (
+            'TELEGRAM_WEBAPP_URL', 'TELEGRAM_WEB_APP_BASE_URL',
+            'TELEGRAM_PUBLIC_BASE_URL', 'RENDER_EXTERNAL_URL', 'default_public'):
+        return {'origin': None, 'source': 'unavailable'}
+    try:
+        origin = document_protocol.target_origin(_TELEGRAM_WEB_APP_BASE_URL)
+    except document_protocol.ProtocolHold:
+        origin = None
+    if origin not in {'https://developaid.ru',
+                      'https://plato-development-investment-model.onrender.com'}:
+        origin = None
+    return {'origin': origin, 'source': source}
+
+
+def _telegram_document_target() -> str:
+    origin = document_protocol.admitted_origin(document_core_admission.admission_raw(
+        os.environ, _DOCUMENT_CORE_ADMISSION_ROOT, _TELEGRAM_WEB_APP_BASE_URL),
+                                               _TELEGRAM_WEB_APP_BASE_URL)
+    url = origin + document_protocol.CAPABILITY_PATH
+    started = time.monotonic()
+    try:
+        opener = urllib.request.build_opener(_DocumentProtocolNoRedirect())
+        try:
+            req = urllib.request.Request(url, headers={'Accept': 'application/json',
+                'Accept-Encoding': 'identity', 'Cache-Control': 'no-store'})
+            with opener.open(req, timeout=5) as response:
+                if (response.status != 200 or response.geturl() != url
+                        or response.headers.get_content_type() != 'application/json'
+                        or response.headers.get('Content-Encoding', 'identity').lower() != 'identity'
+                        or response.headers.get('Content-Range')):
+                    raise document_protocol.ProtocolHold('core_protocol')
+                document_protocol.parse_capability(response.read(4097))
+                if time.monotonic() - started > 5:
+                    raise document_protocol.ProtocolHold('core_unavailable')
+        finally:
+            opener.close()
+    except Exception:
+        raise document_protocol.ProtocolHold('core_unavailable') from None
+    return origin
+
+
 def _telegram_web_app_url(
     chat_id: int,
     cadastral_numbers: list[str],
     manual_tep: dict[str, Any] | None = None,
     calc_overrides: dict[str, Any] | None = None,
     mode: str | None = None,
+    application_proof: dict[str, Any] | None = None,
+    calculation_qualification: dict[str, Any] | None = None,
 ) -> str:
+    qualified = (isinstance(calc_overrides, dict) and intake_qualification.KEY in calc_overrides
+                 or calculation_qualification is not None)
+    entry = (_telegram_document_target() + document_protocol.ENTRY_PATH if qualified
+             else _TELEGRAM_WEB_APP_BASE_URL + '/')
     fragment: dict[str, str] = {
         "telegram_session": _telegram_session(
             chat_id,
             cadastral_numbers,
             manual_tep=manual_tep,
             calc_overrides=calc_overrides,
+            application_proof=application_proof,
+            calculation_qualification=calculation_qualification,
         ),
     }
     if cadastral_numbers:
@@ -254,7 +624,7 @@ def _telegram_web_app_url(
         fragment["mode"] = str(mode)
     # v=VERSION ломает кэш Telegram WebView: без него после выкатки открывалась
     # старая сборка страницы, и починки «не доезжали» до мини-приложения.
-    return (_TELEGRAM_WEB_APP_BASE_URL + "/?telegram=1&v="
+    return (entry + "?telegram=1&v="
             + urllib.parse.quote(VERSION) + "#" + urllib.parse.urlencode(fragment))
 
 
@@ -272,7 +642,7 @@ def _telegram_send_message(
     }
     if reply_markup:
         payload["reply_markup"] = reply_markup
-    return _telegram_api("sendMessage", payload)
+    return _telegram_intake_after_lock(_telegram_api, "sendMessage", payload)
 
 
 def _telegram_send_document_bytes(
@@ -619,41 +989,63 @@ _TELEGRAM_DOCUMENT_EXTENSIONS = (".xlsx", ".pdf", ".png", ".jpg", ".jpeg")
 _TELEGRAM_DOCUMENT_MAX_BYTES = 20 * 1024 * 1024
 
 
-def _telegram_download_document(
-    document: dict[str, Any],
-    *,
-    extensions: tuple[str, ...] = _TELEGRAM_DOCUMENT_EXTENSIONS,
-    max_bytes: int = _TELEGRAM_DOCUMENT_MAX_BYTES,
-) -> tuple[bytes, str]:
-    filename = str(document.get("file_name") or "ТЭП.xlsx").strip()[:180]
+def _telegram_download_document(document: dict[str, Any], *,
+    extensions: tuple[str,...] = _TELEGRAM_DOCUMENT_EXTENSIONS,
+    max_bytes: int = _TELEGRAM_DOCUMENT_MAX_BYTES) -> tuple[bytes,str]:
+    mime_extensions = {'application/pdf':'.pdf','image/png':'.png','image/jpeg':'.jpg',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':'.xlsx'}
+    filename = str(document.get('file_name') or '').strip()[:180]
+    if not filename:
+        extension = mime_extensions.get(str(document.get('mime_type') or '').lower())
+        if extension is None:
+            raise ValueError('Telegram не передал имя или поддерживаемый тип файла. Пришлите PDF, XLSX, JPEG или PNG.')
+        filename = 'Документ'+extension
     if not filename.lower().endswith(tuple(extensions)):
-        raise ValueError("Бот принимает " + " и ".join(extensions)
-                         + ": шаблон ТЭП, выгрузку ГлавАПУ или документ по участку")
-    limit_mb = max_bytes // (1024 * 1024)
-    declared_size = int(document.get("file_size") or 0)
+        raise ValueError('Бот принимает '+' и '.join(extensions)+': шаблон ТЭП, выгрузку ГлавАПУ или документ по участку')
+    try:
+        declared_size = int(document.get('file_size') or 0)
+    except (ValueError,TypeError):
+        raise ValueError('Telegram передал некорректный размер файла.') from None
+    if declared_size < 0:
+        raise ValueError('Telegram передал некорректный размер файла.')
     if declared_size > max_bytes:
-        raise ValueError(f"Файл слишком большой. Лимит — {limit_mb} МБ")
-    file_id = str(document.get("file_id") or "")
+        raise ValueError(f'Файл слишком большой. Лимит — {max_bytes//(1024*1024)} МБ')
+    file_id = str(document.get('file_id') or '')
     if not file_id:
-        raise ValueError("Telegram не передал идентификатор файла")
-    return _telegram_file_bytes(file_id, max_bytes), filename
+        raise ValueError('Telegram не передал идентификатор файла')
+    return _telegram_file_bytes(file_id,max_bytes),filename
 
 
 def _telegram_file_bytes(file_id: str, max_bytes: int) -> bytes:
-    """Скачать файл Telegram по ``file_id``: одна дорога для документов и фото."""
-    limit_mb = max(1, max_bytes // (1024 * 1024))
-    info = _telegram_api("getFile", {"file_id": file_id}) or {}
-    file_path = str(info.get("file_path") or "")
+    """One native getFile/download, capped bytes and remaining wall-clock IO."""
+    import document_processing
+    if type(max_bytes) is not int or not 0 < max_bytes <= 20*1024*1024:
+        raise ValueError('Недопустимый предел размера файла Telegram.')
+    document_processing.check()
+    info = _telegram_api('getFile',{'file_id':file_id},timeout=document_processing.remaining(15)) or {}
+    document_processing.check()
+    if not isinstance(info,dict):
+        raise ValueError('Telegram не подготовил сведения о файле.')
+    file_path = str(info.get('file_path') or '')
     if not file_path:
-        raise ValueError("Telegram не подготовил файл к загрузке")
-    url = f"https://api.telegram.org/file/bot{_telegram_token()}/{urllib.parse.quote(file_path, safe='/')}"
+        raise ValueError('Telegram не подготовил файл к загрузке')
+    until = time.monotonic()+document_processing.remaining(20)
+    url = f"https://api.telegram.org/file/bot{_telegram_token()}/{urllib.parse.quote(file_path,safe='/')}"
+    def remaining():
+        document_processing.check()
+        left = until-time.monotonic()
+        if left <= 0:
+            raise TimeoutError('Telegram download deadline')
+        return left
     try:
-        with urllib.request.urlopen(url, timeout=20) as response:
-            data = response.read(max_bytes + 1)
+        with urllib.request.urlopen(url,timeout=remaining()) as response:
+            data = _telegram_document_read_response(response,until,max_bytes)
+            if not data:
+                raise ValueError('Telegram вернул пустой файл. Пришлите документ заново.')
+    except (document_processing.Cancelled,document_processing.Expired,ValueError):
+        raise
     except Exception as exc:
-        raise RuntimeError(f"Не удалось скачать файл из Telegram: {exc}") from exc
-    if len(data) > max_bytes:
-        raise ValueError(f"Файл слишком большой. Лимит — {limit_mb} МБ")
+        raise RuntimeError('Файл из Telegram не скачан ('+type(exc).__name__+'). Повторите загрузку.') from None
     return data
 
 
@@ -930,13 +1322,36 @@ def _telegram_dialog_callback(chat_id: int, user_id: int, action: str) -> None:
         return
 
 
+@_telegram_intake_serialized
 def _telegram_handle_dialog_text(chat_id: int, text: str) -> bool:
     dialog = _telegram_dialog_get(chat_id)
     if not dialog:
         return False
     step = str(dialog.get("step") or "")
+    if (step in {"await_intake_answer", "intake_document_reading", "intake_document_failed"}
+            and _TELEGRAM_INTAKE_LOCKED.get() != int(chat_id)):
+        return _telegram_handle_dialog_text(chat_id, text)
     data = dialog.setdefault("data", {})
     try:
+        if step in {"intake_document_reading", "intake_document_failed"}:
+            if str(text).strip().lower() in {"стоп", "/стоп", "/stop", "отмена"}:
+                previous = (dialog.pop("document_read", None) or {}).get("previous_step")
+                if (dialog.get("intake") or {}).get("id"):
+                    dialog["step"] = previous or "intake_card"
+                    _telegram_dialog_save(chat_id, dialog)
+                    _telegram_send_message(chat_id, "Чтение отменено. Возвращаю сохранённый разбор.")
+                    _telegram_intake_ask_next(chat_id, dialog)
+                else:
+                    _telegram_dialog_clear(chat_id)
+                    _telegram_send_message(chat_id, "Чтение документа отменено.")
+                return True
+            _telegram_send_message(chat_id,
+                "Разбор ещё не завершён; ответ на предыдущую карточку пока не принят. "
+                "Команда /cancel отменит чтение."
+                if (dialog.get("document_read") or {}).get("status") == "loading" else
+                "Разбор документа не завершён. Предыдущие ответы сохранены; "
+                "вернуться к ним можно через /calc.")
+            return True
         if step == "await_address":
             _telegram_dialog_clear(chat_id)
             _telegram_handle_address(chat_id, text)
@@ -983,22 +1398,56 @@ def _telegram_handle_dialog_text(chat_id: int, text: str) -> bool:
                 return True
             index = int(queue.get("index") or 0)
             said = str(text or "").strip()
-            if said.lower() in {"стоп", "хватит", "отмена", "/cancel"}:
+            try:
+                _telegram_intake_expect_shown(queue, intake)
+            except HTTPException as exc:
+                if exc.status_code != 409:raise
+                _telegram_intake_queue_conflict(chat_id, dialog, {"index":index,"action":"answer","value":said})
+                return True
+            pending = intake.get("pending_choice") or {}
+            choice = int(pending.get("choice", -1)) if int(pending.get("index", -1)) == index else -1
+            legacy = choice >= 0 and pending.get("intake_id") != queue.get("id")
+            if said.lower() in {"стоп", "/стоп", "/stop", "хватит", "отмена", "/cancel"}:
                 # Прекратить разговор — законный ответ, а не сбой. Отвеченное
                 # до этого не выбрасывается: человек уже потратил на него время.
-                _telegram_intake_answer(chat_id, dialog, index=index, action="stop")
+                _telegram_intake_answer(chat_id, dialog, index=index, action="stop",
+                    choice=-1 if legacy else choice, proposal=pending if legacy else None)
                 return True
             if said in {"-", "—", "?"} or said.lower() in {"пропустить", "не знаю"}:
-                _telegram_intake_answer(chat_id, dialog, index=index, action="skip")
+                _telegram_intake_answer(chat_id, dialog, index=index, action="skip",
+                    choice=-1 if legacy else choice, proposal=pending if legacy else None)
                 return True
-            pending = intake.pop("pending_choice", None) or {}
-            dialog["intake"] = intake
-            choice = int(pending.get("choice", -1)) if int(pending.get("index", -1)) == index else -1
+            if legacy:
+                _telegram_send_message(chat_id,
+                    "Предыдущий выбор сохранён как предложение. Сначала подтвердите способ учёта "
+                    "для текущего документа кнопкой; денежная сумма пока не принята.")
+                _telegram_intake_ask_next(chat_id, dialog)
+                return True
             cards = queue.get("cards") or []
+            if not 0 <= index < len(cards):
+                _telegram_intake_ask_next(chat_id, dialog)
+                return True
             options = (cards[index].get("options") or []) if index < len(cards) else []
             if choice < 0 and said.isdigit() and 1 <= int(said) <= len(options):
                 # «2» — номер варианта, если вариантов столько есть.
                 choice, said = int(said) - 1, ""
+            if choice < 0:
+                matching = [n for n, option in enumerate(options)
+                            if str(option.get("label") or "").strip().lower() == said.lower()]
+                if len(matching) == 1:
+                    choice, said = matching[0], ""
+            if choice < 0 and cards[index].get("adds") and any(option.get("target") for option in options):
+                _telegram_send_message(chat_id, "Сначала выберите вариант учёта кнопкой или его номером.")
+                _telegram_intake_ask_next(chat_id, dialog)
+                return True
+            if (not said and 0 <= choice < len(options) and options[choice].get("target")
+                    and options[choice].get("value") is None):
+                intake["pending_choice"] = {"index": index, "choice": choice, "intake_id": queue["id"],
+                    **_telegram_intake_queue_binding(queue)}
+                dialog["intake"] = intake
+                _telegram_dialog_save(chat_id, dialog)
+                _telegram_intake_amount_prompt(chat_id, cards[index], index, choice, queue["id"], _intake_question_token(queue))
+                return True
             _telegram_intake_answer(chat_id, dialog, index=index, action="answer",
                                     choice=choice, value=said)
             return True
@@ -1063,9 +1512,10 @@ def _telegram_calc_menu(chat_id: int) -> None:
         [{"text": "По кадастровому номеру", "callback_data": "flow_cad_yes"}],
         [{"text": "Скачать Excel-шаблон ТЭП", "callback_data": "tep_template"}],
     ]
-    if ((_telegram_dialog_get(chat_id) or {}).get("intake") or {}).get("id"):
+    if ((dialog := _telegram_dialog_get(chat_id) or {}).get("intake") or {}).get("id"):
         rows.insert(0, [{"text": "Продолжить разбор сохранённого тизера",
-                          "callback_data": "intake_questions"}])
+                          "callback_data": _telegram_intake_callback_data(
+                              dialog["intake"]["id"], "questions")}])
     _telegram_send_message(
         chat_id,
         "<b>Расчёт модели</b>\n"
@@ -1222,7 +1672,165 @@ def _telegram_start_message(chat_id: int, user_id: int, source: str = "") -> Non
     )
 
 
-def _telegram_handle_glavapu_document(chat_id: int, data: bytes, filename: str) -> bool:
+def _telegram_document_begin(chat_id: int, filename: str) -> dict:
+    import document_processing
+    deadline = time.monotonic()+240
+    request = _telegram_agent_request(chat_id)
+    nonce = _telegram_intake_begin(chat_id,filename)
+    persisted = (_telegram_dialog_get(chat_id) or {}).get('document_read') or {}
+    if persisted.get('id') != nonce:
+        raise document_processing.Cancelled()
+    deadline = min(deadline,time.monotonic()+max(0,float(persisted['deadline_at'])-time.time()))
+    return {'chat_id':chat_id,'nonce':nonce,'root':Path(_PLATO_STAGE_DIR).absolute(),
+            'request':request,'actor':request.scope['plato_actor'],'deadline':deadline}
+
+
+def _telegram_document_current(operation: dict, *, allow_failed: bool = False) -> bool:
+    return (Path(_PLATO_STAGE_DIR).absolute() == operation['root'] and
+            _telegram_intake_current(operation['chat_id'],operation['nonce'],allow_failed=allow_failed))
+
+
+def _telegram_document_closed(operation: dict) -> bool:
+    if not _telegram_document_current(operation,allow_failed=True):
+        return False
+    read = (_telegram_dialog_get(operation['chat_id']) or {}).get('document_read') or {}
+    return read.get('id') == operation['nonce'] and read.get('status') in {'failed','interrupted'}
+
+
+def _telegram_document_reply(operation: dict, text: str, *, reply_markup=None, allow_failed=False) -> bool:
+    import document_processing
+    from telegram_intake_text import split_intake_html
+    current = (lambda:_telegram_document_closed(operation)) if allow_failed else (
+        lambda:_telegram_document_current(operation))
+    if not current():
+        return False
+    parts = split_intake_html(text)
+    try:
+        # Failed processing is already closed in state. Its best-effort error
+        # notification still has the native15s send budget, never a new read.
+        scope = (document_processing.notification(current=current) if allow_failed else
+                 document_processing.operation(current=current,seconds=15))
+        with scope:
+            for index,part in enumerate(parts):
+                if not current():
+                    return False
+                _telegram_send_intake_text(operation['chat_id'],part,
+                    reply_markup=reply_markup if index==len(parts)-1 else None)
+    except document_processing.Cancelled:
+        return False
+    return True
+
+
+def _telegram_document_interrupted(operation) -> None:
+    if operation is None or not _telegram_document_current(operation,allow_failed=True):
+        return
+    state = (_telegram_dialog_get(operation['chat_id']) or {}).get('document_read') or {}
+    if state.get('status') == 'interrupted':
+        _telegram_document_reply(operation,'<b>Ожидание чтения документа завершено.</b>\n'
+            'Процесс был прерван или превысил время ожидания. Результат этого чтения неизвестен и не принят в расчёт. '
+            'Пришлите документ снова или явно вернитесь к предыдущей карточке.',allow_failed=True)
+
+
+def _telegram_document_publish(operation: dict, filename: str, *, queue=None, context=None):
+    """Only bounded local publication holds the native chat lock."""
+    import document_processing
+    document_processing.check()
+    def commit(dialog):
+        if not _telegram_document_current(operation):
+            raise document_processing.Cancelled()
+        fresh = _telegram_agent_request(operation['chat_id']).scope['plato_actor']
+        if fresh.metadata() != operation['actor'].metadata():
+            raise document_processing.Cancelled()
+        if queue is not None:
+            _intake_queue_publish(queue,operation['actor'],short=True)
+            dialog['intake'] = {'id':queue['id'],'filename':filename,
+                                'region':operation.get('region','')}
+            dialog['step'] = 'intake_card'
+        else:
+            dialog.pop('intake',None)
+            dialog['step'] = 'manual_ready'
+        dialog['document_read'].update(status='ready',filename=filename,
+            source_sha256=operation.get('source_sha256'))
+        _telegram_dialog_save(operation['chat_id'],dialog)
+        # Native memory persistence is local JSON; no provider/send is called.
+        return (_telegram_platon_remember_document(operation['chat_id'],context)
+                if context is not None else '')
+    accepted,result = _telegram_intake_commit(operation['chat_id'],operation['nonce'],commit)
+    if not accepted:
+        raise document_processing.Cancelled()
+    return result
+
+
+def _telegram_document_fail(operation, reason: str, heading: str = 'Разбор не завершён.', *, error=None) -> None:
+    if operation is None:
+        return
+    def commit(dialog):
+        dialog['step'] = 'intake_document_failed'
+        dialog['document_read'].update(status='failed')
+        _telegram_dialog_save(operation['chat_id'],dialog)
+    accepted,_ = _telegram_intake_commit(operation['chat_id'],operation['nonce'],commit)
+    if not accepted:
+        if error is not None and _telegram_document_current(operation,allow_failed=True):
+            state = _telegram_dialog_get(operation['chat_id']) or {}
+            if (state.get('document_read') or {}).get('status') == 'ready':
+                raise error  # Saved card: preserve native send-error/429 handling above.
+        _telegram_document_interrupted(operation)
+        return
+    if error is not None:
+        where = _error_location(error)
+        if '429' in where or 'Too Many Requests' in where:
+            raise error  # Native top-level rate-limit handling must not send again.
+    _telegram_document_reply(operation,'<b>'+html.escape(heading)+'</b>\n'+html.escape(reason)
+        +'\n\nДанные этого чтения в расчёт не приняты. Повторите загрузку или введите данные вручную.',allow_failed=True)
+
+
+def _telegram_document_error(exc, stage: str) -> str:
+    import document_processing
+    if isinstance(exc,document_processing.Expired):
+        return document_processing.Expired.public_message
+    if isinstance(exc,ValueError):
+        return str(exc)
+    if isinstance(exc,HTTPException):
+        if exc.status_code == 503:
+            return 'Разбор не удалось сохранить на сервере. Продолжение и расчёт не начаты.'
+        if exc.status_code in (401,403):
+            return 'Доступ к разбору изменился. Откройте документ из своего чата заново.'
+        if exc.status_code == 504:
+            return 'Истекло время ожидания разбора. Модель не завершила чтение документа.'
+    return 'Не завершён этап «'+stage+'» ('+type(exc).__name__+'). Источник не подтверждён.'
+
+
+def _telegram_handle_intake_url(chat_id: int, url: str) -> None:
+    import document_source
+    import document_processing
+    operation = None
+    try:
+        operation = _telegram_document_begin(chat_id,'Документ по ссылке')
+        with document_processing.operation(current=lambda:_telegram_document_current(operation),deadline=operation['deadline']):
+            _telegram_document_reply(operation,'<b>Ссылка принята. Загружаю документ…</b>')
+            _intake_queue_cleanup()
+            loaded = document_source.read_url(url,timeout=document_processing.remaining(20))
+            document_processing.check()
+            operation['source_sha256'] = hashlib.sha256(
+                loaded.get('data') or str(loaded.get('text') or '').encode('utf-8')).hexdigest()
+            document = ({'text':loaded['text'],'pages':1,'pages_read':1,
+                         'filename':loaded['filename'],'recognized':False,'reason':''}
+                        if 'text' in loaded else document_intake.extract_text(loaded['data'],loaded['filename']))
+            document['source'] = loaded['source']
+            _telegram_handle_intake_document(chat_id,loaded.get('data') or b'',loaded['filename'],
+                                            document_override=document,_operation=operation)
+    except document_processing.Cancelled:
+        _telegram_document_interrupted(operation)
+        return
+    except Exception as exc:
+        reason = str(exc) if isinstance(exc,document_source.DocumentSourceError) else _telegram_document_error(exc,'загрузка ссылки')
+        if operation is None:
+            _telegram_send_intake_text(chat_id,'<b>Не удалось начать чтение ссылки.</b>\n'+html.escape(reason))
+        else:
+            _telegram_document_fail(operation,reason,'Не удалось прочитать ссылку.',error=exc)
+
+
+def _telegram_handle_glavapu_document(chat_id: int, data: bytes, filename: str, *, _operation=None) -> bool:
     """Файл формата калькулятора ГлавАПУ, присланный прямо в чат.
 
     Подпись к выгрузке кнопки «Посчитать ВРИ и ТЭП» обещает, что файл
@@ -1264,7 +1872,11 @@ def _telegram_handle_glavapu_document(chat_id: int, data: bytes, filename: str) 
         "text": "Открыть ТЭП в DevelopAid",
         "web_app": {"url": _telegram_web_app_url(chat_id, [], session)},
     }]]}
-    _telegram_send_message(
+    if _operation is not None:
+        _telegram_document_publish(_operation,filename)
+    sender = (_telegram_send_message if _operation is None else
+              lambda chat,text,**kwargs:_telegram_document_reply(_operation,text,**kwargs))
+    sender(
         chat_id,
         "<b>Файл калькулятора ГлавАПУ распознан</b>\n"
         f"Территория: <b>{_telegram_number(normalized.get('site_area_ha'), 4)} га</b>\n"
@@ -1300,78 +1912,97 @@ def _telegram_platon_remember_document(chat_id: int, context: dict[str, Any]) ->
     return "разговор с Платоном в этом процессе не ведётся"
 
 
-def _telegram_handle_intake_document(chat_id: int, data: bytes, filename: str, document_override: dict[str, Any] | None = None) -> None:
-    """Разбор присланного в чат тизера — тремя шагами, как на сайте.
+def _telegram_document_memory_reason(outcome: Any) -> str:
+    """Closed public causes; persistence diagnostics never leave the server."""
+    text = str(outcome or "").casefold()
+    if "read-only" in text or "read only" in text or "только для чтения" in text:
+        return "диск доступен только для чтения"
+    if "permission" in text or "access denied" in text or "недостаточно прав" in text:
+        return "недостаточно прав для записи разговора"
+    if "no space" in text or "disk full" in text or "нет места" in text:
+        return "на диске недостаточно свободного места"
+    if "разговор с платоном в этом процессе не ведётся" in text:
+        return "хранилище разговора в этом процессе не подключено"
+    return "хранилище разговора сейчас недоступно"
 
-    Первый шаг — карточка: что найдено (со страницей), что уйдёт в расчёт и
-    чего не хватает. Вопросов в нём нет. Вопросы — потом, кнопкой, по одному и
-    только о недостающем. Расчёт — кнопкой «Всё верно, считать», и мини-
-    приложение получает ровно строки карточки (`teaser_card.calc_overrides`).
-    Карточку собирает тот же сборщик, что и для сайта (`teaser_card_view`).
-    """
-    document = document_override if document_override is not None else document_intake.extract_text(data, filename)
-    if not document.get("source") and data:
-        document["source"] = {"kind": "upload", "sha256": hashlib.sha256(data).hexdigest()}
-    if not document.get("text"):
-        # Скан — не пустой документ. Сказать «ничего не нашли» значит соврать
-        # про источник: там всё есть, просто картинкой. Признак скана гейтом
-        # быть перестал: распознанный скан — это скан С текстом.
-        _telegram_send_message(
-            chat_id,
-            "<b>Документ принят, но прочитать нечего.</b>\n"
-            + html.escape(str(document.get("reason") or "в документе нет текста"))
-            + "\n\nПришлите страницы картинками или введите числа вручную.")
-        return
-    _telegram_send_message(
-        chat_id, f"<b>Читаю «{html.escape(filename)}»…</b>\n"
-                 f"Страниц: {document.get('pages')}. Сначала покажу, что нашёл и что "
-                 "уйдёт в расчёт; вопросы — потом.")
+
+def _telegram_handle_intake_document(chat_id: int, data: bytes, filename: str,
+        document_override: dict[str,Any] | None = None, *, _operation=None) -> None:
+    """Prepare outside locks; only current native operation can publish a card."""
+    import document_processing
+    operation = _operation
+    stage = 'начало чтения'
     try:
-        request = _telegram_agent_request(chat_id)
-        got = document_intake_read(document, request)
-    except Exception as exc:  # noqa: BLE001
-        _telegram_send_message(
-            chat_id, "<b>Разбор не удался.</b>\n" + html.escape(str(exc)))
+        if operation is None:
+            operation = _telegram_document_begin(chat_id,filename)
+        with document_processing.operation(current=lambda:_telegram_document_current(operation),
+                                           deadline=operation['deadline']):
+            _telegram_document_reply(operation,'<b>Документ принят. Читаю страницы…</b>')
+            _intake_queue_cleanup()
+            stage = 'чтение PDF и распознавание'
+            document = (copy.deepcopy(document_override) if document_override is not None
+                        else document_intake.extract_text(data,filename))
+            document_processing.check()
+            if not document.get('source') and data:
+                document['source'] = {'kind':'upload','sha256':hashlib.sha256(data).hexdigest()}
+            if data:
+                actual = hashlib.sha256(data).hexdigest()
+                if (document.get('source') or {}).get('sha256') not in (None,actual):
+                    raise ValueError('Отпечаток документа не совпал с прочитанными байтами. Источник не принят.')
+                operation['source_sha256'] = actual
+            else:
+                operation['source_sha256'] = hashlib.sha256(json.dumps(
+                    {'text':document.get('text'),'source':document.get('source')},
+                    sort_keys=True,ensure_ascii=False).encode('utf-8')).hexdigest()
+            if not document.get('text'):
+                _telegram_document_fail(operation,str(document.get("reason") or 'В документе нет читаемого текста.'),
+                                        'Документ принят, но прочитать его не удалось.')
+                return
+            _telegram_document_reply(operation,'<b>Читаю «'+html.escape(filename)+'»…</b>\n'
+                +'Страниц: '+str(document.get('pages'))+'. Сначала покажу, что нашёл и что уйдёт в расчёт; вопросы — потом.')
+            stage = 'разбор текста моделью'
+            got = document_intake_read(document,operation['request'])
+            document_processing.check()
+            if got.get('reason'):
+                _telegram_document_fail(operation,str(got['reason']),'Разбор не удался.')
+                return
+            stage = 'проверка участка'
+            region = _telegram_intake_region(_intake_cadastral_numbers(got))
+            document_processing.check()
+            operation['region'] = region
+            stage = 'подготовка карточки'
+            queue,card = _intake_queue_prepare(filename,got,document,dict(DEFAULT_INPUTS),
+                {key:dict(value)for key,value in TEP_DEFAULT.items()},by_parcel=True,
+                parcel_region=region,actor=operation['actor'])
+            context = document_intake.chat_context(document,got)
+            document_processing.check()
+            text = _telegram_intake_card_text(card,first=True,recognized=bool(document.get('recognized')))
+            if card.get('ready'):
+                markup = None
+            else:
+                left = int(card['questions']['total'])-int(card['questions']['index'])
+                text += ('\n\nМодель пока не менялась. Дальше — '+str(left)+' '
+                    +_telegram_plural(left,'вопрос','вопроса','вопросов')+' о том, чего в тизере нет, по одному.')
+                markup = {'inline_keyboard':[[{'text':'Перейти к вопросам',
+                    'callback_data':_telegram_intake_callback_data(card['id'],'questions')}]]}
+            stage = 'сохранение карточки'
+            remembered = _telegram_document_publish(operation,filename,queue=queue,context=context)
+            if card.get('ready'):
+                markup = _telegram_intake_calc_markup(chat_id,card,region)
+            text += ('\n\n<i>Документ в разговоре: спрашивайте по нему — Платон ответит по тексту. Новый документ заменит этот.</i>'
+                if not remembered else '\n\n<i>Документ в разговор не попал: '
+                + _telegram_document_memory_reason(remembered)
+                + '. Карточка сохранена отдельно. Следующий вопрос Платон увидит без него.</i>')
+            _telegram_document_reply(operation,text,reply_markup=markup)
+    except document_processing.Cancelled:
+        _telegram_document_interrupted(operation)
         return
-    # Документ остаётся в разговоре: следующий вопрос («а какая там IRR?»)
-    # Платон отвечает по нему. Не легло — причина называется, а не теряется.
-    remembered = _telegram_platon_remember_document(
-        chat_id, document_intake.chat_context(document, got))
-    in_dialog = ("<i>Документ в разговоре: спрашивайте по нему — Платон ответит "
-                 "по тексту. Новый документ заменит этот.</i>" if not remembered else
-                 "<i>Документ в разговор не попал (" + html.escape(remembered[:200])
-                 + "): следующий вопрос Платон увидит без него.</i>")
-    if got.get("reason"):
-        _telegram_send_message(
-            chat_id, "<b>Разбор не удался.</b>\n" + html.escape(str(got["reason"]))
-            + "\n\n" + in_dialog)
-        return
-    region = _telegram_intake_region(_intake_cadastral_numbers(got))
-    card = _intake_queue_start(filename, got, document, dict(DEFAULT_INPUTS),
-                               {key: dict(value) for key, value in TEP_DEFAULT.items()},
-                               by_parcel=True, parcel_region=region,
-                               actor=request.scope["plato_actor"])
-    dialog = _telegram_dialog_get(chat_id) or {}
-    dialog["step"] = "intake_card"
-    # Регион участка решается один раз, при разборе: определить его — запрос
-    # территории, и повторять его на каждом вопросе незачем.
-    dialog["intake"] = {"id": card["id"], "filename": filename, "region": region}
-    _telegram_dialog_save(chat_id, dialog)
-    text = _telegram_intake_card_text(card, first=True,
-                                      recognized=bool(document.get("recognized")))
-    if card.get("error"):
-        text += "\n\n" + html.escape(card["error"])
-    text += "\n\n" + in_dialog
-    if card.get("ready"):
-        _telegram_send_intake_text(chat_id, text,
-                               reply_markup=_telegram_intake_calc_markup(chat_id, card, region))
-        return
-    left = int(card["questions"]["total"]) - int(card["questions"]["index"])
-    text += (f"\n\nМодель пока не менялась. Дальше — {left} "
-             + _telegram_plural(left, "вопрос", "вопроса", "вопросов")
-             + " о том, чего в тизере нет, по одному.")
-    _telegram_send_intake_text(chat_id, text, reply_markup={"inline_keyboard": [[
-        {"text": "Перейти к вопросам", "callback_data": "intake_questions"}]]})
+    except Exception as exc:
+        reason = _telegram_document_error(exc,stage)
+        if operation is None:
+            _telegram_send_intake_text(chat_id,'<b>Не удалось начать чтение документа.</b>\n'+html.escape(reason))
+        else:
+            _telegram_document_fail(operation,reason,'Разбор не удался.',error=exc)
 
 
 def _telegram_send_intake_text(chat_id: int, text: str, *, reply_markup=None) -> None:
@@ -1465,14 +2096,39 @@ def _telegram_intake_calc_markup(chat_id: int, card: dict[str, Any],
         return None
     if numbers and region == "unknown":
         return {"inline_keyboard": [[{"text": "Проверить участок ещё раз",
-                                      "callback_data": "intake_region"}]]}
+                                      "callback_data": _telegram_intake_callback_data(card["id"], "region")}]]}
     overrides = teaser_card.calc_overrides(card)
     mode = "intake" if not numbers or region in ("mo", "other") else None
     try:
-        url = _telegram_web_app_url(chat_id, numbers, calc_overrides=overrides, mode=mode)
-    except Exception:  # noqa: BLE001
+        # Read the current owned queue and rebuild with the current validators.
+        # A previously saved output dictionary alone cannot attest its units.
+        queue = _intake_queue_load(str(card.get("id") or ""),
+                                  request=_telegram_agent_request(chat_id))
+        current = teaser_card_view(queue, dict(DEFAULT_INPUTS),
+            {key: dict(value) for key, value in TEP_DEFAULT.items()},
+            by_parcel=True, parcel_region=region)
+        if (not current.get("ready") or teaser_card.calc_overrides(current) != overrides
+                or list(current.get("cadastral_numbers") or []) != numbers):
+            return None
+        digest = _telegram_overrides_digest(overrides)
+        proof = {"schema": 1, "scope": "confirmed_card", "sha256": digest,
+                 "binding": _telegram_qualified_application_binding(overrides, 'confirmed_card')}
+        url = _telegram_web_app_url(chat_id, numbers, calc_overrides=overrides, mode=mode,
+                                    application_proof=proof)
+    except document_protocol.ProtocolHold:
+        card['calculation_error'] = document_protocol.UNAVAILABLE_MESSAGE
         return None
-    return {"inline_keyboard": [[{"text": "Всё верно, считать", "web_app": {"url": url}}]]}
+    except Exception:  # noqa: BLE001
+        card['calculation_error'] = ('Кнопка расчёта не выдана: не удалось подтвердить текущие условия документа. '
+            'Уточните оценки в карточке или пришлите нужную часть документа отдельно.')
+        return None
+    label = "Считать без неуточнённых обязательств" if current.get("conditional") else "Всё верно, считать"
+    keyboard = [[{"text": label, "web_app": {"url": url}}]]
+    for item in current['calculation_qualification_record']['obligations']:
+        keyboard.append([{'text':'Уточнить обязательство '+str(item['index']+1),
+            'callback_data':_telegram_intake_callback_data(queue['id'], 'review', item['index'],
+                _intake_question_token(queue)[:8])}])
+    return {"inline_keyboard": keyboard}
 
 
 def _intake_cadastral_numbers(extraction: dict[str, Any]) -> list[str]:
@@ -1521,6 +2177,7 @@ def _telegram_intake_card(chat_id: int, dialog: dict[str, Any]) -> dict[str, Any
     try:
         queue = _intake_queue_load(str(intake.get("id") or ""),
                                    request=_telegram_agent_request(chat_id))
+        teaser_card.review_saved_state(queue)
     except HTTPException as exc:
         dialog.pop("intake", None)
         dialog.pop("step", None)
@@ -1530,15 +2187,149 @@ def _telegram_intake_card(chat_id: int, dialog: dict[str, Any]) -> dict[str, Any
     return queue
 
 
+def _telegram_intake_queue_binding(queue: dict[str, Any]) -> dict[str, Any]:
+    return {"queue_revision": queue.get("revision", 0),
+            "question_token": _intake_question_token(queue)}
+
+
+def _telegram_intake_expect_shown(queue: dict[str, Any], intake: dict[str, Any],
+                                  pending: dict[str, Any] | None = None) -> None:
+    binding = pending if pending is not None else {
+        "queue_revision": intake.get("shown_queue_revision"),
+        "question_token": intake.get("shown_question_token")}
+    _intake_queue_expect(queue, binding.get("queue_revision"), binding.get("question_token"))
+
+
+@_telegram_intake_serialized
+def _telegram_intake_queue_conflict(chat_id: int, dialog: dict[str, Any], proposal: dict[str, Any]) -> None:
+    # Preserve only a bounded unapplied proposal in the existing dialog. It is
+    # never replayed into the queue or automatically retried after a conflict.
+    current = _telegram_dialog_get(chat_id) or {}
+    if (current.get("intake") or {}).get("id") != (dialog.get("intake") or {}).get("id"):
+        _telegram_send_message(chat_id, "Текущий документ уже изменился. Предыдущий ответ не применён; откройте его карточку через /calc.")
+        return
+    intake = current.get("intake") or {}
+    kept = {key: proposal.get(key) for key in ("index", "choice", "action", "mode") if key in proposal}
+    kept["value"] = str(proposal.get("value") or "")[:512]
+    kept["status"] = "not_applied_queue_changed"
+    if intake.get("pending_choice"):
+        kept["route_proposal"] = copy.deepcopy(intake["pending_choice"])
+    intake["unapplied_answer"] = kept
+    for key in ("pending_choice", "pending", "shown_queue_revision", "shown_question_token"):
+        intake.pop(key, None)
+    current["intake"] = intake
+    _telegram_dialog_save(chat_id, current)
+    _telegram_send_message(chat_id, "Карточка уже изменилась. Этот ответ сохранён только как предложение и не применён. Подтвердите текущий вопрос заново.")
+    _telegram_intake_ask_next(chat_id, current)
+
+
+def _telegram_intake_amount_prompt(chat_id: int, ask: dict, index: int, choice: int, intake_id: str, question_token: str) -> None:
+    option = (ask.get("options") or [])[choice]
+    text = (html.escape(str(ask.get("question") or "")) + "\n\nВыбрано: <b>"
+        + html.escape(str(option.get("label") or "")) + "</b>.\n\n"
+        "Денежная оценка этого обязательства пока не указана. Нужна его стоимость в млн ₽. "
+        "Площадь и денежные платежи за покупку не подставляются вместо этой оценки.\n"
+        "Введите сумму сообщением, например <code>2,5 млн ₽</code>, или отложите оценку кнопкой ниже. "
+        "Выбранный способ учёта сохранится; обязательство пока не добавится в денежный расчёт.\n\n"
+        "«Не знаю» или «-» — отложить оценку; «стоп» — закончить остальные вопросы.")
+    _telegram_send_intake_text(chat_id, text, reply_markup={"inline_keyboard": [
+        [{"text": "Уточнить стоимость позже", "callback_data": _telegram_intake_callback_data(intake_id, "defer", index, choice, question_token[:8])}],
+        [{"text": "Вернуться к вариантам", "callback_data": _telegram_intake_callback_data(intake_id, "rechoose", index, question_token[:8])}]]})
+
+
+def _telegram_intake_confirmation_prompt(chat_id: int, pending: dict, intake_id: str) -> None:
+    c = pending["confirm"]
+    _telegram_send_message(chat_id,
+        f"В поле «{html.escape(c['label'])}» уже стоит {_telegram_number(c['current'], 2)} "
+        f"{html.escape(c['unit'])}. Ответ добавляет {_telegram_number(c['adding'], 2)} "
+        f"{html.escape(c['unit'])}. Как поступить?",
+        reply_markup={"inline_keyboard": [
+            [{"text": "Прибавить", "callback_data": _telegram_intake_callback_data(intake_id, "mode", pending["nonce"], "add")}],
+            [{"text": "Заменить", "callback_data": _telegram_intake_callback_data(intake_id, "mode", pending["nonce"], "replace")}]]})
+
+
+@_telegram_intake_serialized
+def _telegram_intake_region_commit(chat_id: int, intake_id: str, region: str) -> None:
+    dialog = _telegram_dialog_get(chat_id) or {}
+    if ((dialog.get("intake") or {}).get("id") != intake_id
+            or (dialog.get("document_read") or {}).get("status") == "loading"):
+        return
+    dialog["intake"]["region"] = region
+    _telegram_dialog_save(chat_id, dialog)
+    _telegram_intake_ask_next(chat_id, dialog)
+
+
+def _telegram_intake_region_refresh(chat_id: int, intake_id: str, numbers: list[str]) -> None:
+    # Territory IO happens only after the callback's chat lock has been released.
+    region = _telegram_intake_region(numbers)
+    _telegram_intake_region_commit(chat_id, intake_id, region)
+
+
+@_telegram_intake_serialized
 def _telegram_intake_ask_next(chat_id: int, dialog: dict[str, Any]) -> None:
     """Следующий вопрос о недостающем — или итоговая карточка с кнопкой расчёта."""
     queue = _telegram_intake_card(chat_id, dialog)
     if queue is None:
         return
+    binding = _telegram_intake_queue_binding(queue)
+    intake = dialog.setdefault("intake", {})
+    intake["shown_queue_revision"] = binding["queue_revision"]
+    intake["shown_question_token"] = binding["question_token"]
+    for key in ("pending_choice", "pending"):
+        saved = intake.get(key) or {}
+        if saved and (saved.get("queue_revision") != binding["queue_revision"]
+                      or saved.get("question_token") != binding["question_token"]):
+            intake["unapplied_answer"] = {"status":"not_applied_queue_changed",
+                "route_proposal":copy.deepcopy(saved),"value":str(saved.get("value") or "")[:512]}
+            intake.pop(key,None)
+    _telegram_dialog_save(chat_id, dialog)
+    pending = intake.get("pending_choice") or {}
+    index = int(queue.get("index") or 0)
+    cards = queue.get("cards") or []
+    confirm = (dialog.get("intake") or {}).get("pending") or {}
+    if (confirm.get("index") == index and confirm.get("nonce") and confirm.get("confirm")
+            and confirm.get("intake_id") == queue["id"]):
+        probe = teaser_card.answer(copy.deepcopy(queue), dict(DEFAULT_INPUTS),
+            {key:dict(value)for key,value in TEP_DEFAULT.items()}, index=index, action="answer",
+            choice=int(confirm.get("choice",-1)), value=str(confirm.get("value") or ""),
+            spp_split=MKD_SPP_SPLIT, presets=PROJECT_CLASS_PRESETS)
+        if probe.get("confirm"):
+            if probe["confirm"] != confirm["confirm"]:
+                confirm = {**confirm,"confirm":probe["confirm"],"nonce":os.urandom(4).hex()}
+                dialog["intake"]["pending"] = confirm
+                _telegram_dialog_save(chat_id,dialog)
+            _telegram_intake_confirmation_prompt(chat_id,confirm,queue["id"])
+            return
+        dialog["intake"]["pending_proposal"] = dialog["intake"].pop("pending")
+        _telegram_dialog_save(chat_id,dialog)
+        _telegram_send_message(chat_id,"Сохранённая оценка требует проверки. Подтвердите текущий вариант и введите сумму заново.")
+    if pending.get("index") == index and index < len(cards):
+        choice = pending.get("choice")
+        options = cards[index].get("options") or []
+        if type(choice) is int and 0 <= choice < len(options) and options[choice].get("value") is None:
+            if pending.get("intake_id") != queue["id"]:
+                _telegram_send_intake_text(chat_id,
+                    "<b>Подтвердите текущий документ: " + html.escape(str(queue.get("filename") or ""))
+                    + "</b>\n" + html.escape(str(cards[index].get("question") or ""))
+                    + "\n\nРанее выбранный способ учёта сохранён как предложение. "
+                      "Для этого документа он ещё не подтверждён; деньги не добавлены. Выберите вариант заново.",
+                    reply_markup={"inline_keyboard": [[{"text":str(o.get("label") or "")[:60],
+                        "callback_data":_telegram_intake_callback_data(queue["id"],"opt",index,n,binding["question_token"][:8])}]
+                        for n,o in enumerate(options)]})
+                return
+            _telegram_intake_amount_prompt(chat_id, cards[index], index, choice, queue["id"], _intake_question_token(queue))
+            return
     region = str((dialog.get("intake") or {}).get("region") or "")
-    card = teaser_card_view(queue, dict(DEFAULT_INPUTS),
-                            {key: dict(value) for key, value in TEP_DEFAULT.items()},
-                            by_parcel=True, parcel_region=region)
+    try:
+        card = teaser_card_view(queue, dict(DEFAULT_INPUTS),
+                                {key: dict(value) for key, value in TEP_DEFAULT.items()},
+                                by_parcel=True, parcel_region=region)
+    except HTTPException as exc:
+        if exc.status_code != 413:
+            raise
+        _telegram_send_message(chat_id, 'Кнопка расчёта не выдана: '+html.escape(str(exc.detail))
+            +' Карточка и ваши ответы сохранены; при необходимости пришлите нужную часть документа отдельно.')
+        return
     ask = card["questions"]["card"]
     if ask is None:
         dialog["step"] = "intake_ready"
@@ -1546,15 +2337,20 @@ def _telegram_intake_ask_next(chat_id: int, dialog: dict[str, Any]) -> None:
         text = _telegram_intake_card_text(card, first=False)
         text += ("\n\nРасчёт начнётся только кнопкой ниже и возьмёт ровно то, что в разделе "
                  "«Что уйдёт в расчёт»; остальное — как в разделе 3.")
-        _telegram_send_intake_text(chat_id, text,
-                               reply_markup=_telegram_intake_calc_markup(chat_id, card, region))
+        if card.get("conditional"):
+            text += ("\n\n<b>Предварительный расчёт:</b> неуточнённые обязательства "
+                     "в денежный расчёт не включены. Кнопка подтверждает только показанные вводные.")
+        markup = _telegram_intake_calc_markup(chat_id, card, region)
+        if card.get('calculation_error'):
+            text += '\n\n<b>'+html.escape(card['calculation_error'])+'</b>'
+        _telegram_send_intake_text(chat_id, text, reply_markup=markup)
         return
     dialog["step"] = "await_intake_answer"
     _telegram_dialog_save(chat_id, dialog)
     index, total = card["questions"]["index"], card["questions"]["total"]
     text = f"<b>Вопрос {index + 1} из {total}</b>\n" + html.escape(str(ask.get("question")))
     buttons = [[{"text": str(option.get("label"))[:60],
-                 "callback_data": f"intake_opt:{index}:{number}"}]
+                 "callback_data": _telegram_intake_callback_data(queue["id"], "opt", index, number, binding["question_token"][:8])}]
                for number, option in enumerate(ask.get("options") or [])]
     hint = "Выберите вариант кнопкой"
     if not ask.get("kind") and ask.get("key"):
@@ -1564,11 +2360,19 @@ def _telegram_intake_ask_next(chat_id: int, dialog: dict[str, Any]) -> None:
                            reply_markup={"inline_keyboard": buttons} if buttons else None)
 
 
+@_telegram_intake_serialized
 def _telegram_intake_answer(chat_id: int, dialog: dict[str, Any], *, index: int, action: str,
-                            choice: int = -1, value: str = "", mode: str = "") -> None:
+                            choice: int = -1, value: str = "", mode: str = "", proposal=None) -> None:
     """Ответ на вопрос по тизеру — в разбор на диске, не в модель."""
     queue = _telegram_intake_card(chat_id, dialog)
     if queue is None:
+        return
+    unapplied = {"index":index,"choice":choice,"action":action,"value":value,"mode":mode}
+    try:
+        _telegram_intake_expect_shown(queue, dialog.get("intake") or {})
+    except HTTPException as exc:
+        if exc.status_code != 409:raise
+        _telegram_intake_queue_conflict(chat_id, dialog, unapplied)
         return
     inputs = dict(DEFAULT_INPUTS)
     tep = {key: dict(item) for key, item in TEP_DEFAULT.items()}
@@ -1582,21 +2386,43 @@ def _telegram_intake_answer(chat_id: int, dialog: dict[str, Any], *, index: int,
     if got.get("confirm"):
         c = got["confirm"]
         dialog["intake"] = {**(dialog.get("intake") or {}),
-                            "pending": {"index": index, "choice": choice, "value": value}}
+                            "pending": {"index": index, "choice": choice, "value": value,
+                                        "nonce": os.urandom(4).hex(), "confirm": c,"intake_id":queue["id"],
+                                        **_telegram_intake_queue_binding(queue)}}
         _telegram_dialog_save(chat_id, dialog)
-        _telegram_send_message(
-            chat_id,
-            f"В поле «{html.escape(c['label'])}» уже стоит {_telegram_number(c['current'], 2)} "
-            f"{html.escape(c['unit'])}. Ответ добавляет {_telegram_number(c['adding'], 2)} "
-            f"{html.escape(c['unit'])}. Как поступить?",
-            reply_markup={"inline_keyboard": [
-                [{"text": "Прибавить", "callback_data": "intake_mode:add"}],
-                [{"text": "Заменить", "callback_data": "intake_mode:replace"}]]})
+        _telegram_intake_confirmation_prompt(chat_id, dialog["intake"]["pending"], queue["id"])
         return
-    _intake_queue_save(queue)
+    if got.get("invalid"):
+        record = got.get("answer") or {}
+        for refused in record.get("refused") or []:
+            _telegram_send_message(chat_id, html.escape(str(refused.get("reason") or "Ответ не принят.")))
+        _telegram_intake_ask_next(chat_id, dialog)
+        return
+    if proposal is not None:
+        record = got["answer"]
+        record["pending_proposal"] = copy.deepcopy(proposal)
+        record["refused"] = [{"key":"", "label":"Предыдущий способ учёта", "value":"",
+            "reason":"Предыдущий выбор сохранён как неподтверждённое предложение; "
+                     "денежная оценка не принята и в расчёт не включена."}]
+    try:
+        _intake_queue_save(queue)
+    except HTTPException as exc:
+        if exc.status_code != 409:raise
+        _telegram_intake_queue_conflict(chat_id, dialog, unapplied)
+        return
+    (dialog.get("intake") or {}).pop("pending_choice", None)
+    (dialog.get("intake") or {}).pop("pending", None)
+    _telegram_dialog_save(chat_id, dialog)
     record = got["answer"]
-    lines = [("Пропущено." if action == "skip" else "Вопросы закончены." if action == "stop"
-              else "Ответ: " + html.escape(str(record.get("answer") or value)))]
+    if action == "stop":
+        acknowledgement = "Вопросы закончены."
+    elif action == "skip":
+        acknowledgement = "Пропущено."
+    else:
+        acknowledgement = "Ответ: " + html.escape(str(record.get("answer") or value))
+    lines = [acknowledgement]
+    if record.get("deferred"):
+        lines.append("Сохранено: " + html.escape(str(record.get("answer") or "")))
     for row in record.get("applied") or []:
         lines.append("в карточку: " + html.escape(str(row.get("label") or row.get("key")))
                      + " — " + html.escape(str(row.get("shown") or _telegram_number(row.get("now"), 2))))
@@ -1607,11 +2433,48 @@ def _telegram_intake_answer(chat_id: int, dialog: dict[str, Any], *, index: int,
     _telegram_intake_ask_next(chat_id, dialog)
 
 
+@_telegram_intake_serialized
 def _telegram_intake_callback(chat_id: int, data: str) -> None:
     """Кнопки разбора тизера: к вопросам, вариант ответа, прибавить/заменить."""
     dialog = _telegram_dialog_get(chat_id) or {}
+    if (dialog.get("document_read") or {}).get("status") == "loading":
+        _telegram_send_message(chat_id, "Результат разбора ещё не получен. Кнопка предыдущей карточки не применена; /cancel отменит ожидание.")
+        return
     if not (dialog.get("intake") or {}).get("id"):
         _telegram_send_message(chat_id, "Разбор этого тизера не найден. Пришлите документ заново.")
+        return
+    queue = _telegram_intake_card(chat_id, dialog)
+    if queue is None:
+        return
+    parts = str(data).split(":")
+    supplied = parts[1] if len(parts)>1 and re.fullmatch(r"[0-9a-f]{32}", parts[1]) else None
+    if not data.startswith("intake2_") or supplied != queue.get("id"):
+        _telegram_send_message(chat_id,
+            "Эта старая кнопка не подтверждает текущий документ. Показываю его вопрос заново; ответы сохранены.")
+        _telegram_intake_ask_next(chat_id, dialog)
+        return
+    action = parts[0].removeprefix("intake2_")
+    if action in {"opt","defer","rechoose","mode","review"}:
+        intake = dialog.get("intake") or {}
+        pending = intake.get("pending") or {} if action == "mode" else None
+        expected_token = str((pending or {}).get("question_token") if action == "mode"
+                             else intake.get("shown_question_token") or "")
+        supplied_token = parts[-1] if action != "mode" and len(parts) >= 4 else None
+        try:
+            if action != "mode" and (not re.fullmatch(r"[0-9a-f]{8}", str(supplied_token or ""))
+                                       or supplied_token != expected_token[:8]):
+                raise HTTPException(409, "Вопрос уже изменился")
+            _telegram_intake_expect_shown(queue, intake, pending)
+        except HTTPException as exc:
+            if exc.status_code != 409:raise
+            _telegram_intake_queue_conflict(chat_id, dialog, {"action":action,"value":""})
+            return
+        if action != "mode":parts=parts[:-1]
+    data = ":".join([parts[0].replace("intake2_", "intake_", 1), *parts[2:]])
+    if data.startswith('intake_review:'):
+        value = data.removeprefix('intake_review:')
+        if value.isascii() and value.isdigit():
+            _telegram_intake_answer(chat_id, dialog, index=int(value), action='review')
         return
     if data == "intake_questions":
         _telegram_intake_ask_next(chat_id, dialog)
@@ -1622,21 +2485,36 @@ def _telegram_intake_callback(chat_id: int, data: str) -> None:
             return
         numbers = [str(n) for n in teaser_card_view(
             queue, dict(DEFAULT_INPUTS), dict(TEP_DEFAULT)).get("cadastral_numbers") or []]
-        dialog["intake"] = {**dialog["intake"], "region": _telegram_intake_region(numbers)}
-        _telegram_dialog_save(chat_id, dialog)
-        _telegram_intake_ask_next(chat_id, dialog)
+        _telegram_intake_after_lock(_telegram_intake_region_refresh, chat_id, queue["id"], numbers)
         return
     if data.startswith("intake_mode:"):
         pending = (dialog.get("intake") or {}).get("pending") or {}
         if not pending:
             _telegram_intake_ask_next(chat_id, dialog)
             return
+        values = data.removeprefix("intake_mode:").split(":")
+        if (len(values) != 2 or values[0] != pending.get("nonce")
+                or values[1] not in {"add", "replace"}
+                or pending.get("intake_id") != queue["id"]
+                or pending.get("index") != int(queue.get("index") or 0)):
+            _telegram_intake_ask_next(chat_id, dialog)
+            return
         dialog["intake"].pop("pending", None)
         _telegram_intake_answer(chat_id, dialog, index=int(pending["index"]), action="answer",
                                 choice=int(pending["choice"]), value=str(pending["value"]),
-                                mode=data.removeprefix("intake_mode:"))
+                                mode=values[1])
         return
-    if data.startswith("intake_opt:"):
+    if data.startswith("intake_rechoose:"):
+        queue = _telegram_intake_card(chat_id, dialog)
+        if queue is None:
+            return
+        if data == f"intake_rechoose:{int(queue.get('index') or 0)}":
+            dialog["intake"].pop("pending_choice", None)
+            dialog["intake"].pop("pending", None)
+            _telegram_dialog_save(chat_id, dialog)
+        _telegram_intake_ask_next(chat_id, dialog)
+        return
+    if data.startswith(("intake_opt:", "intake_defer:")):
         try:
             _, index_text, choice_text = data.split(":")
             index, choice = int(index_text), int(choice_text)
@@ -1645,51 +2523,88 @@ def _telegram_intake_callback(chat_id: int, data: str) -> None:
         queue = _telegram_intake_card(chat_id, dialog)
         if queue is None:
             return
+        try:
+            _telegram_intake_expect_shown(queue, dialog.get("intake") or {})
+        except HTTPException as exc:
+            if exc.status_code != 409:raise
+            _telegram_intake_queue_conflict(chat_id, dialog, {"index":index,"choice":choice,"action":"answer","value":""})
+            return
         cards = queue.get("cards") or []
+        if index != int(queue.get("index") or 0) or not 0 <= index < len(cards):
+            _telegram_send_message(chat_id, "Этот вопрос уже изменился. Продолжаю с текущего.")
+            _telegram_intake_ask_next(chat_id, dialog)
+            return
         ask = cards[index] if 0 <= index < len(cards) else {}
         options = ask.get("options") or []
+        if not 0 <= choice < len(options):
+            _telegram_intake_ask_next(chat_id, dialog)
+            return
         option = options[choice] if 0 <= choice < len(options) else {}
+        if data.startswith("intake_defer:"):
+            pending = dialog["intake"].get("pending_choice") or {}
+            if (any(pending.get(k) != v for k,v in {"index":index,"choice":choice,"intake_id":queue["id"],
+                    **_telegram_intake_queue_binding(queue)}.items()) or ask.get("kind")
+                    or not ask.get("adds") or not option.get("target") or option.get("value") is not None):
+                _telegram_intake_ask_next(chat_id, dialog)
+                return
+            _telegram_intake_answer(chat_id, dialog, index=index, action="skip", choice=choice)
+            return
         if (not ask.get("kind") and option.get("target")
                 and option.get("value") is None):
             # У варианта нет числа: его впишет человек следующим сообщением.
-            dialog["intake"] = {**dialog["intake"], "pending_choice": {"index": index, "choice": choice}}
+            dialog["intake"] = {**dialog["intake"], "pending_choice": {
+                "index": index, "choice": choice, "intake_id": queue["id"],
+                **_telegram_intake_queue_binding(queue)}}
+            dialog["intake"].pop("pending", None)
             dialog["step"] = "await_intake_answer"
             _telegram_dialog_save(chat_id, dialog)
-            _telegram_send_message(
-                chat_id, f"«{html.escape(str(option.get('label')))}» — впишите сумму сообщением "
-                         f"({html.escape(str(option.get('unit') or ''))}).")
+            _telegram_intake_amount_prompt(chat_id, ask, index, choice, queue["id"], _intake_question_token(queue))
             return
         _telegram_intake_answer(chat_id, dialog, index=index, action="answer", choice=choice)
 
 
-def _telegram_handle_manual_document(chat_id: int, document: dict[str, Any]) -> None:
+def _telegram_handle_manual_document(chat_id: int, document: dict[str,Any]) -> None:
+    import document_processing
+    operation = None
+    stage = 'загрузка файла'
     try:
-        data, filename = _telegram_download_document(document)
-    except (ValueError, RuntimeError) as exc:
-        _telegram_send_message(
-            chat_id,
-            "<b>Не удалось принять файл.</b>\n" + html.escape(str(exc)),
-        )
+        operation = _telegram_document_begin(chat_id,str(document.get('file_name') or 'Документ'))
+        with document_processing.operation(current=lambda:_telegram_document_current(operation),
+                                           deadline=operation['deadline']):
+            _telegram_document_reply(operation,'<b>Файл принят. Загружаю его из Telegram…</b>')
+            _intake_queue_cleanup()
+            data,filename = _telegram_download_document(document)
+            operation['source_sha256'] = hashlib.sha256(data).hexdigest()
+            document_processing.check()
+            if filename.lower().endswith(('.pdf','.png','.jpg','.jpeg')):
+                _telegram_handle_intake_document(chat_id,data,filename,_operation=operation)
+                return
+            stage = 'чтение таблицы XLSX'
+            _telegram_document_reply(operation,'<b>Файл загружен. Читаю таблицу ТЭП…</b>')
+            try:
+                parsed = parse_manual_tep_xlsx(data,filename)
+            except (ValueError,RuntimeError):
+                document_processing.check()
+                if _telegram_handle_glavapu_document(chat_id,data,filename,_operation=operation):
+                    return
+                raise
+            document_processing.check()
+            text,markup = _telegram_manual_document_reply(chat_id,parsed)
+            _telegram_document_publish(operation,filename)
+            _telegram_document_reply(operation,text,reply_markup=markup)
+    except document_processing.Cancelled:
+        _telegram_document_interrupted(operation)
         return
-    # PDF шаблоном ТЭП не бывает: это тизер, справка или решение ГЗК.
-    if filename.lower().endswith((".pdf", ".png", ".jpg", ".jpeg")):
-        _telegram_handle_intake_document(chat_id, data, filename)
-        return
-    try:
-        parsed = parse_manual_tep_xlsx(data, filename)
-    except (ValueError, RuntimeError) as exc:
-        # В чат приходят два наших же формата: шаблон DevelopAid и файл
-        # калькулятора ГлавАПУ (в т.ч. выгрузка кнопки «Посчитать ВРИ и ТЭП»).
-        if _telegram_handle_glavapu_document(chat_id, data, filename):
-            return
-        _telegram_send_message(
-            chat_id,
-            "<b>Не удалось принять ручной ТЭП.</b>\n" + html.escape(str(exc)) +
-            "\n\nСкачайте актуальный шаблон командой /template и не меняйте его структуру. "
-            "Бот принимает в чате два формата: шаблон DevelopAid и файл калькулятора ГлавАПУ.",
-        )
-        return
+    except Exception as exc:
+        reason = _telegram_document_error(exc,stage)
+        heading = 'Не удалось принять файл.' if stage=='загрузка файла' else 'Не удалось принять ручной ТЭП.'
+        if operation is None:
+            _telegram_send_intake_text(chat_id,'<b>'+heading+'</b>\n'+html.escape(reason))
+        else:
+            _telegram_document_fail(operation,reason,heading,error=exc)
 
+
+def _telegram_manual_document_reply(chat_id: int, parsed: dict) -> tuple[str,dict]:
     summary = parsed.get("summary") or {}
     project_name = str(parsed.get("project_name") or "Без названия")
     region = str(parsed.get("region") or "").strip()
@@ -1708,8 +2623,7 @@ def _telegram_handle_manual_document(chat_id: int, document: dict[str, Any]) -> 
             "web_app": {"url": _telegram_web_app_url(chat_id, [], manual_session)},
         }]]
     }
-    _telegram_send_message(
-        chat_id,
+    return (
         "<b>Ручной ТЭП распознан</b>\n"
         f"Проект: <b>{html.escape(project_name)}</b>\n"
         f"{region_line}"
@@ -1721,7 +2635,7 @@ def _telegram_handle_manual_document(chat_id: int, document: dict[str, Any]) -> 
         f"Смена ВРИ: <b>{_telegram_money_mln(summary.get('land_rights_cost_mln'))}</b>\n"
         f"Социальная компенсация: <b>{_telegram_money_mln(summary.get('social_compensation_mln'))}</b>\n\n"
         "Проверьте сводку и откройте модель. Финансовые параметры можно настроить уже в DevelopAid.",
-        reply_markup=button,
+        button,
     )
 
 
@@ -1871,11 +2785,16 @@ def _telegram_send_cad_calculate_button(chat_id: int, dialog: dict[str, Any]) ->
         overrides["apartment_price_th"], overrides["commercial_price_th"],
         overrides["parking_price_th"], overrides["smr_th_per_sqm"],
     ]
-    if overrides["project_class"] not in PROJECT_CLASS_PRESETS or min(values) <= 0:
+    if (overrides["project_class"] not in PROJECT_CLASS_PRESETS
+            or not all(math.isfinite(value) and value > 0 for value in values)):
         raise ValueError("Не заполнены параметры выбранного класса")
     class_label = PROJECT_CLASS_PRESETS.get(overrides["project_class"], {}).get("label") or "—"
     prices_note = " · цены изменены вручную" if bool(data.get("prices_custom")) else ""
-    url = _telegram_web_app_url(chat_id, numbers, calc_overrides=overrides)
+    digest = _telegram_overrides_digest(overrides)
+    proof = {"schema": 1, "scope": "confirmed_cad", "sha256": digest,
+             "binding": hashlib.sha256(json.dumps({"cad": numbers, "overrides": overrides},
+                 sort_keys=True, allow_nan=False).encode("utf-8")).hexdigest()}
+    url = _telegram_web_app_url(chat_id, numbers, calc_overrides=overrides, application_proof=proof)
     dialog["step"] = "ready_cad_calculation"
     dialog["calc_overrides"] = overrides
     _telegram_dialog_save(chat_id, dialog)
@@ -2954,7 +3873,7 @@ def _telegram_handle_update(update: dict[str, Any]) -> None:
                 }]]},
             )
             return
-        if data.startswith("intake_"):
+        if data.startswith(("intake_", "intake2_")):
             _telegram_intake_callback(chat_id, data)
             return
         if data.startswith("flow_"):
@@ -3111,8 +4030,32 @@ def telegram_session_data(req: TelegramSessionRequest) -> dict[str, Any]:
     chat_id = int(session["chat_id"])
     if not _telegram_user_allowed(chat_id):
         raise HTTPException(status_code=403, detail="Доступ к боту закрыт")
-    return {
+    overrides = session.get("calc_overrides") or {}
+    review = bool(overrides) and _telegram_carry_application_proof(session) is None
+    qualification = overrides.get(intake_qualification.KEY)
+    if qualification is not None and (
+            not isinstance(qualification, dict)
+            or qualification.get('recipient') != _intake_qualification_recipient(chat_id)):
+        review = True
+    result = {
         "cadastral_numbers": session.get("cad") or [],
         "manual_tep": session.get("manual_tep"),
-        "calc_overrides": session.get("calc_overrides") or {},
+        "calc_overrides": {} if review else overrides,
+        "overrides_review_required": review,
     }
+    carried = session.get('calculation_qualification')
+    if carried is not None:
+        state = _intake_qualification_state({intake_qualification.KEY:carried})
+        recipient = carried.get('recipient') if isinstance(carried, dict) else None
+        if state and state.get('verified') and recipient in (None, _intake_qualification_recipient(chat_id)):
+            result['calculation_qualification'] = carried
+        else:
+            result['qualification_review_required'] = True
+    if session.get('qualification_review_required') is True:
+        result['qualification_review_required'] = True
+    return result
+
+
+@app.post(document_protocol.SESSION_PATH)
+def telegram_session_data_qualified(req: TelegramSessionRequest) -> dict[str, Any]:
+    return {**telegram_session_data(req), 'document_protocol': document_protocol.capability()}

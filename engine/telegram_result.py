@@ -116,7 +116,50 @@ def telegram_result(req: TelegramResultRequest,
     chat_id = int(session["chat_id"])
     if not _telegram_user_allowed(chat_id):
         raise HTTPException(status_code=403, detail="Доступ к боту закрыт")
-    summary = req.summary or {}
+    summary = dict(req.summary or {})
+    session_overrides = session.get('calc_overrides') or {}
+    document_handoff = (intake_qualification.document_context(session_overrides)
+        or (session.get('overrides_application') or {}).get('scope') == 'confirmed_card')
+    if (document_handoff and _telegram_carry_application_proof(session) is None
+            or session.get('qualification_review_required') is True):
+        raise HTTPException(409, 'Условия документа не подтверждены. Вернитесь к его текущей карточке.')
+    payload = dict(summary.get('report_payload') or {})
+    source_inputs = dict(payload.get('inputs') or {})
+    # Carry the existing signed source qualification through ordinary edits;
+    # a client summary or an omitted metadata field cannot clear its meaning.
+    carried_qualification = session_overrides.get(intake_qualification.KEY) or session.get('calculation_qualification')
+    candidate = source_inputs.get(intake_qualification.KEY)
+    replacement = False
+    packet = source_inputs.get(intake_qualification.PACKET)
+    if (carried_qualification is not None and isinstance(packet, dict)
+            and packet.get('kind') == 'teaser_card' and packet.get('intake_id') != carried_qualification.get('intake_id')):
+        raise HTTPException(409, 'Документ изменился. Откройте текущую карточку и подтвердите условия заново.')
+    if (carried_qualification is not None and intake_qualification.KEY in source_inputs
+            and candidate != carried_qualification):
+        fresh = _telegram_verify_session(req.qualification_session) if req.qualification_session else {}
+        fresh_overrides = fresh.get('calc_overrides') or {}
+        fresh_proof = _telegram_carry_application_proof(fresh) if fresh else None
+        same_lineage = (isinstance(candidate, dict) and isinstance(carried_qualification, dict)
+            and all(candidate.get(key) == carried_qualification.get(key)
+                for key in ['owner','recipient','intake_id','source'])
+            and type(candidate.get('revision')) is int
+            and candidate['revision'] > carried_qualification['revision'])
+        if (not same_lineage or fresh.get('chat_id') != chat_id
+                or not fresh_proof or fresh_proof['scope'] != 'confirmed_card'
+                or fresh_overrides.get(intake_qualification.KEY) != candidate
+                or not _intake_qualification_current(candidate, chat_id, req.qualification_session)):
+            raise HTTPException(409, 'Документ или его ответы изменились. Откройте текущую карточку и подтвердите условия заново.')
+        carried_qualification = candidate
+        replacement = True
+    if carried_qualification is not None:
+        source_inputs[intake_qualification.KEY] = copy.deepcopy(carried_qualification)
+        source_inputs[intake_qualification.PACKET] = {'version':1, 'kind':'teaser_card',
+            'intake_id':carried_qualification.get('intake_id') if isinstance(carried_qualification, dict) else ''}
+        if payload:
+            payload['inputs'] = source_inputs
+            summary['report_payload'] = payload
+    document_qualification = _intake_qualification_state(source_inputs)
+
     session_numbers = session.get("cad") or []
     raw_result_numbers = summary.get("cadastral_numbers") or []
     result_numbers = _parse_cadastral_numbers(raw_result_numbers) if raw_result_numbers else []
@@ -292,8 +335,18 @@ def telegram_result(req: TelegramResultRequest,
     )
     report_result = (summary.get("report_payload") or {}).get("result") or {}
     report_result = report_result.get("consolidated") or report_result
-    rent_qualification = str(summary.get("preliminary_reason") or
-        (report_result.get("summary") or {}).get("preliminary_reason") or "").strip()
+    computed_summary = report_result.get('summary')
+    rent_qualification = str((computed_summary if isinstance(computed_summary, dict) else summary)
+        .get('preliminary_reason') or '').strip()
+    if replacement:
+        old_state = _intake_qualification_state({intake_qualification.KEY:
+            session_overrides.get(intake_qualification.KEY) or session.get('calculation_qualification')})
+        if old_state and old_state.get('reason'):
+            rent_qualification = rent_qualification.replace(old_state['reason'], '').strip()
+    if document_qualification and document_qualification.get('reason'):
+        reason = document_qualification['reason']
+        if reason not in rent_qualification:
+            rent_qualification = ' '.join(x for x in [rent_qualification, reason] if x)
     if rent_qualification:
         text = "<b>" + html.escape(rent_qualification) + "</b>\n\n" + text
     button = {
@@ -303,12 +356,15 @@ def telegram_result(req: TelegramResultRequest,
                 chat_id,
                 numbers,
                 session.get("manual_tep"),
-                session.get("calc_overrides"),
+                None if replacement else session.get("calc_overrides"),
                 mode="edit",
+                application_proof=None if replacement else _telegram_carry_application_proof(session),
+                calculation_qualification=(source_inputs.get(intake_qualification.KEY)
+                    if document_qualification and document_qualification.get('verified') else None),
             )},
         }]]
     }
-    _telegram_send_message(chat_id, text, reply_markup=button)
+    _telegram_send_intake_text(chat_id, text, reply_markup=button)
     report_payload=summary.get("report_payload")
     if isinstance(report_payload,dict) and isinstance(report_payload.get("result"),dict):
         # PDF и Excel-модель собираются десятки секунд, и пока они собирались,

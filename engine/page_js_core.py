@@ -911,6 +911,7 @@ function isTelegramWebApp(){
  try{return !!(window.Telegram&&window.Telegram.WebApp&&String(window.Telegram.WebApp.initData||'').length)}catch(e){return false}
 }
 let telegramCalcOverrides={};
+let telegramOverridesReviewRequired=!!telegramSession;
 // Вход на сайт через бота: подписанная сессия входа живёт в браузере и несёт
 // ту же личность (chat_id), что сессия мини-приложения. Она подставляется
 // всюду, где нужен владелец: проекты, Платон, PDF. Телеграм-сессия из хеша
@@ -1215,7 +1216,7 @@ async function telegramRecalculateAndFinish(tab){
   telegramProgress('Готов. Отправляю в чат…');
   telegramResultSent=false;
   await sendTelegramResult();
-  if(!telegramResultSent)throw new Error('Не удалось отправить расчёт в Telegram');
+  if(!telegramResultSent)throw new Error(sendTelegramResult.failure||'Не удалось отправить расчёт в Telegram');
   finishTelegramSession('Результат отправлен в чат.');
  }catch(e){
   telegramProgress('');
