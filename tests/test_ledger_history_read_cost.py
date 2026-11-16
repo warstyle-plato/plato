@@ -3,6 +3,7 @@ import copy
 import gzip
 import json
 import random
+import zlib
 
 import pytest
 
@@ -78,11 +79,19 @@ def test_incompressible_or_oversized_result_is_returned_intact_but_not_retained(
     assert not ledgers._PARSE_CACHE
 
 
-def test_damaged_disposable_cache_reparses_the_original(monkeypatch):
+@pytest.mark.parametrize('damage',['header','deflate'])
+def test_damaged_disposable_cache_reparses_the_original(monkeypatch,damage):
     calls=[]
     def parse(*a):calls.append(1);return {'data':['preserved',None,0]}
     monkeypatch.setattr(ledgers,'parse_archive',parse)
     first=ledgers._current_archive(b'raw','a'*64,'source.zip')
-    ledgers._PARSE_CACHE[(ledgers.PARSER_SCHEMA,'a'*64,'source.zip')]=b'damaged'
+    key=(ledgers.PARSER_SCHEMA,'a'*64,'source.zip')
+    broken=b'damaged'
+    if damage=='deflate':
+        packed=bytearray(ledgers._PARSE_CACHE[key])
+        packed[10]=(packed[10]&~6)|6  # Reserved DEFLATE block type.
+        broken=bytes(packed)
+        with pytest.raises(zlib.error):gzip.decompress(broken)
+    ledgers._PARSE_CACHE[key]=broken
     assert ledgers._current_archive(b'raw','a'*64,'source.zip')==first
     assert len(calls)==2

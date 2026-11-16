@@ -21,6 +21,7 @@ import stat
 import tempfile
 import threading
 import gzip
+import zlib
 import unicodedata
 import zipfile
 import xml.etree.ElementTree as ET
@@ -1746,7 +1747,7 @@ def _current_archive(data: bytes, digest: str, filename: str) -> dict:
             if len(decoded) > MAX_PARSED_BYTES:
                 raise ValueError('parsed cache size limit')
             return json.loads(decoded)
-        except (OSError, EOFError, ValueError, UnicodeError):
+        except (OSError, EOFError, ValueError, UnicodeError, zlib.error):
             # A disposable cache never makes the verified original unusable.
             with _PARSE_CACHE_LOCK:
                 if _PARSE_CACHE.get(key) is cached:
