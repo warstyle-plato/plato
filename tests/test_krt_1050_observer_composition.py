@@ -3,10 +3,10 @@ import copy
 import hashlib
 import importlib.util
 from pathlib import Path
-import subprocess
 import sys
 
 import pytest
+from krt_baseline_sources import source_bytes
 from market_search import krt_registry as source
 from market_search import krt_catalogue_observation as obs
 from auction_search.krt_status import model_exclusion
@@ -17,7 +17,7 @@ ROOT=Path(__file__).resolve().parents[1]
 
 def native1050():
     name='market_search._native1050_policy';module=importlib.util.module_from_spec(importlib.util.spec_from_loader(name,loader=None));sys.modules[name]=module
-    raw=subprocess.check_output(['git','show',OLD+':market_search/krt_registry.py'],cwd=ROOT)
+    raw=source_bytes(OLD,'krt_registry')
     exec(compile(raw,'exact8139nativepolicy','exec'),module.__dict__)
     return module
 
