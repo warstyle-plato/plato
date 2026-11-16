@@ -1276,7 +1276,7 @@ $('siteAccessRefresh').onclick=async()=>{if(!hasAuth()||keyRejected)return requi
 $('project').addEventListener('change',clearSiteAccess);
 __READINESS_EDITOR_SCRIPT__
 __MONITOR_NAVIGATION_SCRIPT__
-const monitorNavigation=createMonitorNavigation({page:'monitor',view:()=>monitorActiveTab,select:selectMonitorTab,fieldReady:id=>!id.startsWith('physical')||!!physicalState&&(!['physicalTask','physicalItems'].includes(id)||physicalState.can_edit===true),filtersRestored:()=>{renderContractRegister();if(physicalState){physicalSelection=new Set(Array.from($('physicalItems').selectedOptions,x=>x.value));physicalTaskFields();renderPhysicalReview();}}});
+const monitorNavigation=createMonitorNavigation({page:'monitor',view:()=>monitorActiveTab,select:selectMonitorTab,sourceToken:()=>physicalState?[physicalState.source_kind,physicalState.source_sha256,physicalState.snapshot_id]:null,fieldReady:id=>!id.startsWith('physical')||!!physicalState&&(!['physicalTask','physicalItems'].includes(id)||physicalState.can_edit===true),filtersRestored:()=>{renderContractRegister();if(physicalState){physicalSelection=new Set(Array.from($('physicalItems').selectedOptions,x=>x.value));physicalTaskFields();renderPhysicalReview();}}});
 monitorNavigation.restoreContext();initMonitorSections();syncAuthUi();monitorNavigation.connect();if(applyContractHash()){}else{monitorNavigation.restoreView();if(hasAuth()&&monitorActiveTab!=='contracts')refresh();else if(!hasAuth())msg('viewMsg','Введите ключ администратора, чтобы открыть данные проекта.','bad');}
 </script>
 </body></html>
