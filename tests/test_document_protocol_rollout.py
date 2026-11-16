@@ -371,11 +371,13 @@ def test_origin_metadata_fastpath_does_not_change_other_requests(method,path,que
     import ast
     import asyncio
     import types
+    import document_core_admission
     text=(Path(__file__).resolve().parents[1]/'engine/agent_routes.py').read_text()
     function=next(n for n in ast.parse(text).body if isinstance(n,ast.AsyncFunctionDef)
                   and n.name=='_document_protocol_metadata')
     function.decorator_list=[]
     namespace=dict(Request=object,document_protocol=protocol,
+        document_core_admission=document_core_admission,
         _telegram_document_origin_metadata=lambda:pytest.fail('other requests must retain their original path'))
     exec(compile(ast.Module(body=[function],type_ignores=[]),'<native exact metadata routing>','exec'),namespace)
     request=types.SimpleNamespace(method=method,url=types.SimpleNamespace(path=path,query=query));calls=[]
