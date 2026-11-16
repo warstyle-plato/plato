@@ -912,7 +912,9 @@ async function cumulativeJob(buildPath,resultPath,payload,current,onWaiting,opti
  }
  if(!current()||!d)return null;
  let offset=options.transfer?.offset||0,bytes=options.transfer?.bytes||null,encoding=options.transfer?.encoding||null,jsonBytes=options.transfer?.jsonBytes||null;
- while(current()){
+ const completed=async()=>{try{const decoded=await cumulativeDecodedBytes(bytes,encoding,jsonBytes,current);if(!decoded||!current())return null;return{...JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(decoded)),pending:false,ticket}}catch(e){throw Error('Реестр получен не полностью. Обновите договоры.')}};
+ if(bytes&&offset===bytes.length)d=await completed();
+ else while(current()){
   if(d.pending){
    checkDeadline();
    if(onWaiting)onWaiting('Обрабатываю данные в фоне. Можно оставить страницу открытой.');
@@ -929,7 +931,7 @@ async function cumulativeJob(buildPath,resultPath,payload,current,onWaiting,opti
    for(let i=0;i<raw.length;i++)bytes[offset+i]=raw.charCodeAt(i);
    offset+=raw.length;
    if(options.transfer){Object.assign(options.transfer,{offset,bytes,encoding,jsonBytes})}
-   if(offset===bytes.length){try{const decoded=await cumulativeDecodedBytes(bytes,encoding,jsonBytes,current);if(!decoded||!current())return null;d={...JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(decoded)),pending:false,ticket}}catch(e){throw Error('Реестр получен не полностью. Обновите договоры.')}break}
+   if(offset===bytes.length){d=await completed();break}
    if(onWaiting)onWaiting('Получаю договоры: '+Math.floor(100*offset/bytes.length)+'%');
   }else if(!d.result_ready)break;
   if(!current())return null;

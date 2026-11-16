@@ -121,3 +121,41 @@ def test_browser_rejects_decompressed_bytes_beyond_the_declared_bound():
         }''',compressed)
         assert 'превышает' in result
         assert not errors
+
+
+def test_completed_buffer_is_decoded_locally_after_cancellation_during_decompression():
+    with browser_page() as (page,responses,errors):
+        raw=json.dumps({'ok':True,'register':responses.data},ensure_ascii=False).encode()
+        packed=gzip.compress(raw,mtime=0)
+        counts={'build':0,'part':0}
+        def synthetic(route):
+            body=route.request.post_data_json
+            if route.request.url.endswith('/build'):
+                counts['build']+=1
+                return route.fulfill(status=202,json={'pending':True,'ticket':body['ticket']})
+            counts['part']+=1
+            offset=body['offset']
+            if offset>=len(packed):
+                return route.fulfill(status=400,json={'detail':'Invalid final offset'})
+            return route.fulfill(json={'pending':False,'ticket':body['ticket'],'result_part':{
+                'offset':offset,'total_bytes':len(packed),'json_bytes':len(raw),'encoding':'gzip',
+                'content_base64':base64.b64encode(packed[offset:offset+jobs.RESULT_PART_BYTES]).decode()}})
+        page.route('**/synthetic/**',synthetic)
+        result=page.evaluate('''async()=>{
+          let live=true,interrupted=false;
+          const transfer={ticket:'f'.repeat(32)},original=cumulativeDecodedBytes;
+          cumulativeDecodedBytes=async(...args)=>{
+            if(!interrupted){interrupted=true;live=false;return null}
+            return original(...args);
+          };
+          const options={ticket:transfer.ticket,transfer,chunked:true,acceptGzip:true};
+          const first=await cumulativeJob('/synthetic/build','/synthetic/part',{},()=>live,null,options);
+          const complete=transfer.offset===transfer.bytes.length;
+          live=true;
+          const second=await cumulativeJob('/synthetic/build','/synthetic/part',{},()=>live,null,options);
+          cumulativeDecodedBytes=original;
+          return {cancelled:first===null,complete,rows:second.register.rows.length};
+        }''')
+        assert result=={'cancelled':True,'complete':True,'rows':len(responses.data['rows'])}
+        assert counts=={'build':1,'part':1}
+        assert not errors
