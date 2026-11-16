@@ -438,8 +438,9 @@ def attribute_work_items(parsed: dict, parties: list[str]) -> list[dict]:
 
 def _evidence(project: str, register: dict, cut: str, start: str = "", *,
               reports: list[dict] | None = None, parties: list[str] | None = None) -> list[dict]:
+    import developaid_contract_ownership as ownership
     names = list(daily.known_parties(project, cut) if parties is None else parties)
-    names.extend(str(row.get("contractor") or "") for row in register.get("rows") or [])
+    names.extend(str(row.get("contractor") or "") for row in ownership.raw_rows(register))
     names = list(dict.fromkeys(names))
     out: dict[str, dict] = {}
     for report in sorted(daily._load_reports(project) if reports is None else reports,
@@ -551,7 +552,7 @@ def _write(project: str, data: dict) -> None:
         Path(temporary).unlink(missing_ok=True)
 
 
-def enrich(project: str, register: dict, cut: str, start: str = "", *,
+def _enrich_raw(project: str, register: dict, cut: str, start: str = "", *,
            _reports: list[dict] | None = None, _parties: list[str] | None = None) -> dict:
     """Return a copy of a register with traceable, non-financial daily evidence."""
     cut, start = _day(cut), _day(start, optional=True)
@@ -680,13 +681,26 @@ def enrich(project: str, register: dict, cut: str, start: str = "", *,
     return result
 
 
+def enrich(project: str, register: dict, cut: str, start: str = "", *,
+           _reports: list[dict] | None = None, _parties: list[str] | None = None) -> dict:
+    import developaid_contract_ownership as ownership
+    with ownership.read_scope(project, _day(cut)) as context:
+        context.require_current(register)
+        if 'raw_rows' not in register:
+            return _enrich_raw(project, register, cut, start, _reports=_reports, _parties=_parties)
+        enriched = _enrich_raw(project, ownership.raw_view(register), cut, start,
+                               _reports=_reports, _parties=_parties)
+        return ownership.refresh(register, enriched)
+
+
 def set_link(project: str, contract_id: str, evidence_id: str, cut: str,
              confirmed: bool = True) -> dict:
     """Confirm/remove an exact-source work link; never accepts client work text."""
     if not isinstance(confirmed, bool) or not _ID.fullmatch(str(evidence_id)):
         raise LinkProblem("Неверное подтверждение или номер строки ежедневного отчёта.")
     import developaid_monitor_contracts as contracts
-    register = contracts.build(project, _day(cut))
+    import developaid_contract_ownership as ownership
+    register = ownership.raw_view(contracts.build(project, _day(cut)))
     rows = [row for row in register.get("rows") or [] if str(row.get("id")) == str(contract_id)]
     if len(rows) != 1 or not contract_id:
         raise LinkProblem("Договор не найден в выбранном проекте или его номер неоднозначен.")
@@ -716,7 +730,7 @@ def set_link(project: str, contract_id: str, evidence_id: str, cut: str,
     return {"contract_id": str(contract_id), "evidence_id": evidence_id, "confirmed": confirmed}
 
 
-def prepare_report_context(project: str, reports: list[dict] | None, start: Any, end: Any,
+def _prepare_report_context_raw(project: str, reports: list[dict] | None, start: Any, end: Any,
                            parties: list[str] | None = None) -> dict | None:
     """Freeze one registry and one attribution context for a report period."""
     import developaid_monitor_ledgers as ledgers
@@ -724,15 +738,23 @@ def prepare_report_context(project: str, reports: list[dict] | None, start: Any,
         return None
     import developaid_monitor_contracts as contracts
     register = contracts.build(project, _day(end))
+    import developaid_contract_ownership as ownership
     names = list(daily.known_parties(project, _day(end)) if parties is None else parties)
-    names.extend(str(row.get("contractor") or "") for row in register.get("rows") or [])
+    names.extend(str(row.get("contractor") or "") for row in ownership.raw_rows(register))
     names = list(dict.fromkeys(names))
     return {"parties": names,
             "register": enrich(project, register, _day(end), _day(start),
                                _reports=reports, _parties=names)}
 
 
-def enrich_report_works(project: str, groups: list[dict], start: Any, end: Any, *,
+def prepare_report_context(project: str, reports: list[dict] | None, start: Any, end: Any,
+                           parties: list[str] | None = None) -> dict | None:
+    import developaid_contract_ownership as ownership
+    with ownership.read_scope(project, _day(end)):
+        return _prepare_report_context_raw(project, reports, start, end, parties)
+
+
+def _enrich_report_works_raw(project: str, groups: list[dict], start: Any, end: Any, *,
                         context: dict | None = None) -> list[dict]:
     """Link report lines using the same registry/resolver, without money totals.
 
@@ -742,7 +764,8 @@ def enrich_report_works(project: str, groups: list[dict], start: Any, end: Any, 
     context = context if context is not None else prepare_report_context(project, None, start, end)
     if context is None:
         return groups
-    register = context["register"]
+    import developaid_contract_ownership as ownership
+    register = ownership.raw_view(context["register"])
     by_id = {str(row.get("id")): row for row in register.get("rows") or []}
     evidences: dict[str, dict] = {}
     for row in register.get("rows") or []:
@@ -825,3 +848,12 @@ def enrich_report_works(project: str, groups: list[dict], start: Any, end: Any, 
                                           for identifier in item.get("selectable_contract_ids") or []
                                           if identifier in by_id})]
     return out
+
+
+def enrich_report_works(project: str, groups: list[dict], start: Any, end: Any, *,
+                        context: dict | None = None) -> list[dict]:
+    import developaid_contract_ownership as ownership
+    with ownership.read_scope(project, _day(end)) as reading:
+        if context is not None:
+            reading.require_current(context['register'])
+        return _enrich_report_works_raw(project, groups, start, end, context=context)

@@ -1149,10 +1149,17 @@ def gantt(view: dict[str, Any], dashboard: dict[str, Any]) -> dict[str, Any]:
         return _missing(f"Монитор не собрал срез: {dashboard['error']}")
     schedule_view = view.get("schedule") or {}
     result = report_gantt.model(schedule_view.get("management") or [])
+    result['calendar'] = report_gantt.calendar(schedule_view, view.get('cut'))
     result["dependency_timeline"] = schedule_view.get("dependency_timeline")
     result["corpus_gpr"] = schedule_view.get("corpus_gpr")
     result["work_fact"] = schedule_view.get("work_fact")
     result["readiness"] = schedule_view.get("readiness")
+    if (isinstance(result['readiness'], dict) and result['calendar'].get('readiness_forecast_invalid')
+            and isinstance(result['readiness'].get('project'), dict)):
+        # A broken display membership must not leave its global calendar date
+        # qualified in the cover/readiness. Physical facts and weights remain.
+        result['readiness'] = copy.deepcopy(result['readiness'])
+        result['readiness']['project']['forecast'] = {}
     result["version_comparison"] = {"state": "not_calculated"}
     result["source"] = {"basis": schedule_view.get("basis"),
                         "fact": schedule_view.get("fact_source"),
@@ -4481,7 +4488,10 @@ def _gantt_html(report: dict[str, Any]) -> str:
     import developaid_schedule_readiness as readiness
     from developaid_gpr_summary import render_analysis
     summary = gpr_summary(block.get('readiness'), report.get('end'))
-    out = [render_analysis(summary.get('display')) if summary else '',
+    calendar = block.get('calendar')
+    display = ((calendar.get('display') if calendar.get('qualified') and calendar.get('cut') == str(report.get('end')) else None)
+               if calendar is not None else summary.get('display') if summary else None)
+    out = [render_analysis(display),
            readiness.render(block.get("readiness")), "<h3>Сроки работ по корпусам</h3>"]
     import developaid_gpr_corpus as corpus_gpr
     completed_history = ''
@@ -4498,16 +4508,27 @@ def _gantt_html(report: dict[str, Any]) -> str:
             out.append(report_schedule.render(executive))
         out.append('<details class="report-source-screen"><summary>Источники и ограничения оценки</summary>'
                    + _schedule_source_details(report) + '</details>')
-    if block.get("corpus_gpr") and block.get("state") != "ok":
+    if block.get("corpus_gpr") and block.get("state") != "ok" and not (calendar or {}).get('rows'):
         out.append(corpus_gpr.render_overview(block["corpus_gpr"], str(report.get("end") or "")))
     elif block.get("corpus_gpr"):
         out.append('<details class="schedule-provenance"><summary>Исходные показания ГПР по корпусам</summary>'+
                    corpus_gpr.render(block["corpus_gpr"])+"</details>")
+    if calendar is not None and calendar.get('rows'):
+        out.append(report_gantt.render_calendar(calendar, report.get('end')))
+        out.append(completed_history)
+        return ''.join(out)
     if block.get("state") != "ok":
         out.append(f"<p class='note'>{html.escape(block.get('reason') or 'Графика работ нет.')}</p>")
         out.append(completed_history)
         return "".join(out)
-    out.append(report_gantt.render(block, report.get("end"), explanations=False))
+    if 'calendar' not in block:
+        out.append('<p class="note"><b>Архивная сводка по корпусам.</b> Это сохранённые укрупнённые данные. '
+                   'Для полного календаря всех работ соберите новый срез отчёта.</p>')
+        out.append(report_gantt.render(block, report.get('end')))
+        out.append(completed_history)
+        return ''.join(out)
+    out.append('<p class="note">В сохранённой сводке нет полного перечня работ для нового календаря. '
+               'Соберите сводку по текущему срезу; даты по укрупнённым статьям его не заменяют.</p>')
     out.append(completed_history)
     return "".join(out)
 
@@ -5211,7 +5232,8 @@ _CONTRACT_PERFORMANCE_FIELDS = (
     'completed', 'completed_basis',
     'completion_ratio', 'monetary_comparable', 'completed_works', 'completed_materials', 'works_materials_split',
     'works_materials_note', 'progress', 'statement_progress', 'summary_progress', 'reported_performance_sources',
-    'observation_forecast', 'risk', 'advance', 'warnings', 'performance_basis', 'date_evidence', 'rss_match')
+    'observation_forecast', 'risk', 'advance', 'warnings', 'performance_basis', 'date_evidence', 'rss_match',
+    'logical_ownership', 'raw_observations', 'raw_member_ids', 'logical_id', 'source_snapshot_id')
 
 
 def contract_risks(project: str, end: Any) -> dict[str, Any]:
@@ -5371,6 +5393,15 @@ def _contract_performance_details(row: dict[str, Any]) -> str:
                 body += '<div>'+esc(point['reason'])+'</div>'
             body += '</td></tr>'
         body += '</tbody></table>'
+    if row.get('logical_ownership'):
+        body += '<p>Исходные карточки сохранены отдельно. Финансовый источник, срок и общий прогноз между ними не выбраны.</p>'
+        for source_row in row.get('raw_observations') or []:
+            heading = ' · '.join(str(value) for value in
+                (source_row.get('contract'), _day(source_row.get('contract_date')),
+                 'данные на '+_day(source_row.get('source_date'))) if value)
+            body += "<section class='contract-raw-observation' data-raw-contract='"+esc(str(source_row.get('id') or ''), quote=True)+"'><b>Исходная карточка: "+esc(heading)+'</b>'
+            body += '<p>'+esc(_work_contract_progress(source_row))+'</p>'
+            body += _contract_performance_details(source_row)+'</section>'
     return ("<details class='contract-performance-details'><summary>Источники и замечания</summary>"
             + body + '</details>') if body else ''
 
@@ -5397,7 +5428,18 @@ def _contract_performance_html(block: dict[str, Any]) -> str:
         name = '<b>'+esc(row.get('contractor') or 'Подрядчик не указан')+'</b><div>'+esc(row.get('contract') or 'Номер не указан')
         if row.get('contract_date'):
             name += ' от '+_day(row['contract_date'])
-        name += '</div><div class="contract-caption">'+('КС-2 по сводной' if _work_closing_summary(row) else 'Накопительные КС-6а')+'</div>'
+        ownership = row.get('logical_ownership') or {}
+        caption = ('Единый договор: исходные карточки отдельно' if ownership.get('resolution_status') == 'confirmed' else
+                   'Принадлежность исходных карточек не подтверждена' if ownership else
+                   'КС-2 по сводной' if _work_closing_summary(row) else 'Накопительные КС-6а')
+        name += '</div><div class="contract-caption">'+caption+'</div>'
+        if row.get('logical_ownership'):
+            name += '<div class="contract-ownership-summary"><p>Финансовый источник, срок и общий прогноз между карточками не выбраны.</p>'
+            for raw in row.get('raw_observations') or []:
+                source = 'Исходная карточка '+str(raw.get('contract') or 'без номера')
+                source += ' от '+_day(raw.get('contract_date'))+' · данные на '+_day(raw.get('source_date'))
+                name += '<div class="contract-ownership-observation"><b>'+esc(source)+'</b><div>'+esc(_work_contract_progress(raw, include_change=False))+'</div></div>'
+            name += '</div>'
         name += _contract_performance_details(row)
         metric = esc(_work_contract_progress(row, include_change=False, include_reason=False)).replace('; ', '<br>')
         if _work_contract_metric(row).get('ratio') is None:
