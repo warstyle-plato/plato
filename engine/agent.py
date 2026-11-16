@@ -3951,6 +3951,168 @@ _PLATO_PROXY_JOBS: dict[str, threading.Event] = {}
 _PLATO_PROXY_JOBS_LOCK = threading.Lock()
 
 
+def _plato_proxy_lock(path: Path, *, wait: bool = True) -> int:
+    """Native per-ticket claim; never unlink a live lock inode."""
+    import fcntl
+    import stat
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    except OSError:
+        raise HTTPException(503, "Состояние задания модели недоступно.") from None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_mode & 0o077 or info.st_size > 4096:
+            raise HTTPException(503, "Состояние задания модели недоступно.")
+        fcntl.flock(fd, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
+        return fd
+    except BlockingIOError:
+        os.close(fd)
+        raise
+    except OSError:
+        os.close(fd)
+        raise HTTPException(503, "Состояние задания модели недоступно.") from None
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _plato_proxy_record(path: Path) -> dict[str, Any] | None:
+    import stat
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        raise HTTPException(503, "Состояние задания модели недоступно.") from None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_mode & 0o077 or info.st_size > 4096:
+            raise HTTPException(503, "Состояние задания модели недоступно.")
+        raw = os.read(fd, 4097)
+    finally:
+        os.close(fd)
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw)
+        if (not isinstance(value, dict) or set(value) != {"at", "owner", "request"}
+                or not (type(value["at"]) in (int, float) and 0 <= value["at"] <= 253402300799
+                        and math.isfinite(value["at"]))
+                or not all(isinstance(value[k], str) and re.fullmatch(r"[0-9a-f]{64}", value[k]) for k in ("owner", "request"))):
+            raise ValueError()
+    except (ValueError, TypeError):
+        raise HTTPException(503, "Состояние задания модели повреждено; повтор автоматически не запускается.") from None
+    return value
+
+
+def _plato_proxy_owner() -> str:
+    secret = _env_str("PLATO_AI_PROXY_SECRET", "").strip()
+    if not secret:
+        raise HTTPException(503, "Служебный доступ к модели не настроен.")
+    return hmac.new(secret.encode(), b"plato-proxy-owner-v1", hashlib.sha256).hexdigest()
+
+
+def _plato_proxy_claim(ticket: str, payload: dict[str, Any]) -> tuple[int | None, dict[str, Any] | None]:
+    """Claim once across processes; a stranded claim is an error, never a replay."""
+    if not _TRACE_ID_RE.fullmatch(ticket):
+        raise HTTPException(400, "Неверный билет.")
+    _PLATO_STAGE_DIR.mkdir(parents=True, exist_ok=True)
+    admission = _plato_proxy_lock(_safe_child(_PLATO_STAGE_DIR, ".proxy-admission.lock"))
+    claim = None
+    try:
+        path = _safe_child(_PLATO_STAGE_DIR, "proxy_claim_" + ticket + ".lock")
+        try:
+            claim = _plato_proxy_lock(path, wait=False)
+        except BlockingIOError:
+            pass
+        record = _plato_proxy_record(path)
+        owner = _plato_proxy_owner()
+        fingerprint = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        if record is not None:
+            if not hmac.compare_digest(record["owner"], owner):
+                raise HTTPException(403, "Билет модели относится к другому служебному доступу.")
+            if record["request"] != fingerprint:
+                raise HTTPException(409, "Билет модели уже относится к другому запросу.")
+            if time.time() - record["at"] >= _PLATO_TRACE_TTL:
+                raise HTTPException(410, "Срок задания модели истёк. Создайте новый запрос.")
+        stored = _plato_answer_get("proxy" + ticket)
+        if stored is not None:
+            return None, stored
+        if claim is None:
+            return None, None
+        if record is not None:
+            raise HTTPException(502, "Предыдущая обработка не оставила сохранённого ответа; автоматически повторять её не буду.")
+        raw = json.dumps({"at": time.time(), "owner": owner, "request": fingerprint}).encode()
+        os.lseek(claim, 0, os.SEEK_SET)
+        if os.write(claim, raw) != len(raw):
+            raise OSError("proxy claim write incomplete")
+        os.ftruncate(claim, len(raw))
+        os.fsync(claim)
+        owned, claim = claim, None
+        return owned, None
+    finally:
+        if claim is not None:
+            os.close(claim)
+        os.close(admission)
+
+
+def _plato_proxy_result(ticket: str) -> dict[str, Any] | None:
+    """Distinguish a live claim from interrupted work with no cached answer."""
+    path = _safe_child(_PLATO_STAGE_DIR, "proxy_claim_" + ticket + ".lock")
+    if not os.path.lexists(path):
+        return _plato_answer_get("proxy" + ticket)  # A pre-claim-version result.
+    _PLATO_STAGE_DIR.mkdir(parents=True, exist_ok=True)
+    admission = _plato_proxy_lock(_safe_child(_PLATO_STAGE_DIR, ".proxy-admission.lock"))
+    fd = None
+    try:
+        if not os.path.lexists(path):
+            return _plato_answer_get("proxy" + ticket)
+        record = _plato_proxy_record(path)
+        if record is not None and not hmac.compare_digest(record["owner"], _plato_proxy_owner()):
+            raise HTTPException(403, "Билет модели относится к другому служебному доступу.")
+        if record is not None and time.time() - record["at"] >= _PLATO_TRACE_TTL:
+            raise HTTPException(410, "Срок задания модели истёк.")
+        stored = _plato_answer_get("proxy" + ticket)
+        if stored is not None:
+            return stored
+        try:
+            fd = _plato_proxy_lock(path, wait=False)
+        except BlockingIOError:
+            return None
+        return {"error": "Предыдущая обработка уже не выполняется, а сохранённого ответа нет; автоматически повторять её не буду.", "status": 502}
+    finally:
+        if fd is not None:
+            os.close(fd)
+        os.close(admission)
+
+
+def _plato_proxy_cleanup() -> None:
+    if not _PLATO_STAGE_DIR.exists():
+        return
+    admission = _plato_proxy_lock(_safe_child(_PLATO_STAGE_DIR, ".proxy-admission.lock"))
+    try:
+        cutoff = time.time() - _PLATO_TRACE_TTL
+        for path in _PLATO_STAGE_DIR.glob("proxy_claim_*.lock"):
+            fd = None
+            try:
+                if path.stat().st_mtime >= cutoff:
+                    continue
+                ticket = path.name[len("proxy_claim_"):-len(".lock")]
+                if not _TRACE_ID_RE.fullmatch(ticket):
+                    continue
+                fd = _plato_proxy_lock(path, wait=False)
+                os.close(fd); fd = None
+                # Owner binding must not disappear while its protected answer
+                # remains readable as a legacy result after key rotation.
+                _plato_stage_path("answer", "proxy" + ticket).unlink(missing_ok=True)
+                path.unlink(missing_ok=True)
+            except (OSError, HTTPException):
+                pass
+            finally:
+                if fd is not None:
+                    os.close(fd)
+    finally:
+        os.close(admission)
+
+
 def _plato_proxy_stored(stored: dict[str, Any]) -> dict[str, Any]:
     if stored.get("error"):
         raise HTTPException(status_code=int(stored.get("status") or 502),
@@ -3969,15 +4131,19 @@ def _plato_proxy_job(ticket: str, payload: dict[str, Any]) -> dict[str, Any]:
     стороне работа доходила до конца, а клиент получал разорванный запрос и
     начинал всё заново — и так по кругу, пока человек не переставал ждать.
     """
-    stored = _plato_answer_get("proxy" + ticket)
+    claim, stored = _plato_proxy_claim(ticket, payload)
     if stored is not None:
         return _plato_proxy_stored(stored)
+    if claim is None:
+        return {"pending": True, "ticket": ticket}
 
     with _PLATO_PROXY_JOBS_LOCK:
         done = _PLATO_PROXY_JOBS.get(ticket)
         fresh = done is None
         if fresh:
             done = _PLATO_PROXY_JOBS[ticket] = threading.Event()
+    if not fresh:
+        os.close(claim)  # A legacy local worker already owns the computation.
 
     if fresh:
         def worker() -> None:
@@ -3996,11 +4162,18 @@ def _plato_proxy_job(ticket: str, payload: dict[str, Any]) -> dict[str, Any]:
                 done.set()
                 with _PLATO_PROXY_JOBS_LOCK:
                     _PLATO_PROXY_JOBS.pop(ticket, None)
+                os.close(claim)
 
-        threading.Thread(target=worker, name="plato-proxy-" + ticket, daemon=True).start()
+        try:
+            threading.Thread(target=worker, name="plato-proxy-" + ticket, daemon=True).start()
+        except BaseException:
+            with _PLATO_PROXY_JOBS_LOCK:
+                _PLATO_PROXY_JOBS.pop(ticket, None)
+            os.close(claim)
+            raise
 
     if done.wait(_PLATO_PROXY_HANDOFF_SECONDS):
-        stored = _plato_answer_get("proxy" + ticket)
+        stored = _plato_proxy_result(ticket)
         if stored is not None:
             return _plato_proxy_stored(stored)
     return {"pending": True, "ticket": ticket}
@@ -4012,7 +4185,7 @@ def internal_plato_result(ticket: str, request: Request) -> dict[str, Any]:
     _plato_internal_guard(request)
     if not _TRACE_ID_RE.fullmatch(str(ticket or "").strip().lower()):
         raise HTTPException(status_code=400, detail="Неверный билет.")
-    stored = _plato_answer_get("proxy" + str(ticket).strip().lower())
+    stored = _plato_proxy_result(str(ticket).strip().lower())
     if stored is None:
         return {"pending": True}
     return {"pending": False, **stored}
@@ -4150,9 +4323,7 @@ def _openai_pull_request(payload: dict[str, Any],
     deadline = time.monotonic() + float(budget_seconds or _PLATO_AI_TIMEOUT_SECONDS)
     try:
         _PLATO_STAGE_DIR.mkdir(parents=True, exist_ok=True)
-        _plato_job_path(job_id).write_text(
-            json.dumps({"at": time.time(), "payload": payload}, ensure_ascii=False),
-            encoding="utf-8")
+        _agent_access.write_json(_plato_job_path(job_id), {"at": time.time(), "payload": payload})
     except OSError as exc:
         raise HTTPException(
             status_code=500,
@@ -4774,10 +4945,26 @@ def _plato_stage_cleanup() -> None:
             for path in _PLATO_STAGE_DIR.glob(pattern):
                 if path.name.startswith("intake_"):
                     continue  # document queues have their own three-day retention
-                if path.stat().st_mtime < cutoff:
-                    path.unlink(missing_ok=True)
+                if path.name.startswith("dialog_"):
+                    owner = globals().get("_telegram_dialog_get")
+                    chat = re.fullmatch(r"dialog_(-?[0-9]+)\.json", path.name)
+                    if callable(owner) and chat:
+                        try:
+                            owner(int(chat[1]))  # The bot owns its TTL and conditional clear.
+                        except Exception:
+                            _PLATON_LOG.warning("Telegram dialog expiry check failed")
+                    continue
+                try:
+                    if path.stat().st_mtime < cutoff:
+                        path.unlink(missing_ok=True)
+                except OSError:
+                    continue
     except OSError:
         pass
+    try:
+        _plato_proxy_cleanup()
+    except (OSError, HTTPException):
+        _PLATON_LOG.warning("Proxy claim cleanup failed")
 
 
 @app.get("/agent/trace/{trace_id}")
