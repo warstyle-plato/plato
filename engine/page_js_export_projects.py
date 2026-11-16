@@ -862,6 +862,7 @@ function applyProjectSnapshot(data){
  // чужие числа в тот проект, из которого их уже не достать — истории версий у
  // хранилища нет. Кто открыл проект по-настоящему, скажет об этом следом.
  openedProject=null;
+ renderCalculationQualification(null);
  forgetTerritoryState();
  inputs=Object.assign(cloneValue(INPUT_DEFAULT),data.inputs||{});
  if(inputs._partial_tep)partialTepInvalidateResult();

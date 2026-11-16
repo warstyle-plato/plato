@@ -293,6 +293,7 @@ function renderAccessLine(access){
 
 function renderCalcLocked(reason,status){
  lastResult=null;phaseBundle=null;
+ renderCalculationQualification(null);
  const box=document.getElementById('calcLocked');
  if(!box)return;
  box.style.display='';
