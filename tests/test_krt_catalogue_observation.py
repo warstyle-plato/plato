@@ -12,12 +12,13 @@ import json
 from pathlib import Path
 import socket
 import ssl
-import subprocess
 from types import SimpleNamespace
 from urllib.error import HTTPError, URLError
 from urllib.response import addinfourl
 
 import pytest
+
+from krt_baseline_sources import source_bytes
 
 from market_search import http
 from market_search import krt_registry as registry
@@ -44,7 +45,7 @@ def markdown(slug='one'):
 
 
 def baseline(name):
-    source = subprocess.check_output(['git', 'show', BASE+':market_search/'+name+'.py'], cwd=ROOT)
+    source = source_bytes(BASE, name)
     module_name = 'market_search._observation_baseline_'+name
     spec = importlib.util.spec_from_loader(module_name, loader=None)
     module = importlib.util.module_from_spec(spec)
