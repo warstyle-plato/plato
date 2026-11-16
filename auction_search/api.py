@@ -1526,10 +1526,10 @@ def install(app: FastAPI) -> None:
         path = request.url.path.rstrip("/") or "/"
         # These private POSTs apply their own owner admission before any
         # source I/O. Market/demo/scoped-cookie admission is not their realm.
-        if request.method == "POST" and path in {
+        if request.method == "POST" and (path in {
             "/auctions/krt/audit/cached", "/monitor/audit/sources",
             "/auctions/krt/audit/origin-catalogue",
-        }:
+        } or request.url.path == "/auctions/krt/audit/catalogue-observation"):
             return await call_next(request)
         # Личный ключ «auctions» ограничивает ВЕСЬ сайт, а не только /auctions:
         # с ним открыт раздел торгов и нужные ему запросы карты, остальное —
@@ -4687,6 +4687,61 @@ def install(app: FastAPI) -> None:
             "rings_merc": rings,
             "centre_merc": centre,
         }
+
+    @app.post("/auctions/krt/audit/catalogue-observation", include_in_schema=False)
+    async def auction_krt_catalogue_observation(request: Request) -> Response:
+        """Owner-only fixed sidecar read; never starts or refreshes a collector."""
+        private = {"Cache-Control": "private, no-store"}
+        try:
+            raw = bytearray()
+            too_large = False
+            async for chunk in request.stream():
+                if len(raw) + len(chunk) > 16384:
+                    raw = bytearray()
+                    too_large = True
+                    break
+                raw.extend(chunk)
+            try:
+                initial = json.loads(raw)
+            except (ValueError, UnicodeError, RecursionError):
+                initial = {}
+            initial = initial if isinstance(initial, dict) else {}
+            key, session = initial.get("key", ""), initial.get("session", "")
+            key = key if isinstance(key, str) and len(key) <= 4096 else ""
+            session = session if isinstance(session, str) and len(session) <= 4096 else ""
+            if not key:
+                key = str(request.headers.get("X-Developaid-Admin-Key") or "")[:4096]
+            owner_gate = getattr(core, "_require_admin", None) if core is not None else None
+            knows_owner = core is not None and (
+                bool(getattr(core, "usage_admin_ids", lambda: [])()) or
+                bool((getattr(core, "_env_str", lambda *a: "")("DEVELOPAID_ADMIN_KEY", "") or "").strip()))
+            if not callable(owner_gate) or not knows_owner:
+                raise HTTPException(403, "Сведения о чтении каталога КРТ доступны только владельцу сервиса.")
+            owner_gate(session, key, "Сведения о сохранённом чтении каталога КРТ")
+            if too_large:
+                return JSONResponse({"code": "invalid_request"}, status_code=413, headers=private)
+            from market_search import krt_catalogue_observation as observation
+            try:
+                selected = json.loads(raw, object_pairs_hook=observation._pairs,
+                    parse_constant=lambda value: (_ for _ in ()).throw(ValueError()))
+                if (request.query_params or type(selected) is not dict or set(selected) != {"key", "session"}
+                        or any(type(selected[name]) is not str or len(selected[name]) > 4096 for name in selected)):
+                    raise ValueError()
+            except (ValueError, UnicodeError, RecursionError, TypeError):
+                return JSONResponse({"code": "invalid_request"}, status_code=400, headers=private)
+            # This existing store's configured path only. No Registry method,
+            # catalogue body, source audit, remote core or refresh is invoked.
+            root = Path(krt_ranking.path).parent.absolute()
+            result = await run_in_threadpool(observation.read_view, root,
+                {"commit": getattr(core, "COMMIT", None), "version": getattr(core, "VERSION", None)})
+            if len(observation.canonical(result)) > observation.VIEW_LIMIT:
+                return JSONResponse({"code": "diagnostic_unavailable"}, status_code=503, headers=private)
+            return JSONResponse(result, headers=private)
+        except HTTPException as exc:
+            exc.headers = {**(exc.headers or {}), **private}
+            raise
+        except Exception:
+            return JSONResponse({"code": "diagnostic_unavailable"}, status_code=503, headers=private)
 
     @app.post("/auctions/krt/audit/origin-catalogue", include_in_schema=False)
     async def auction_krt_origin_catalogue_audit(request: Request) -> Response:
