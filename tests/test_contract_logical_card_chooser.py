@@ -100,6 +100,24 @@ if(scenario==='chooser'){
  assert.deepEqual(calls,[['summary',B],['financial',B],['documents',B]],'explicit second-card choice uses the existing raw path');
  assert.ok(nodes.get('contractsDetails').innerHTML.includes('aria-current="true"'));
  assert.equal(nodes.get('contractDialogDocuments').disabled,false);
+}else if(scenario==='hostile-labels'){
+ const hostileContractor='<img src=x onerror=evil()>',hostileContract='<script>evil</script> & "quoted"',hostileId='"><img src=x onerror=evil()>';
+ first.contractor=hostileContractor;first.contract=hostileContract;second.id=hostileId;state.member_ids=[A,hostileId];
+ openContractDetails(L);
+ const host=nodes.get('contractsDetails'),html=host.innerHTML;
+ assert.ok(!html.includes('<img')&&!html.includes('<script>'));
+ assert.ok(html.includes('&lt;script&gt;evil&lt;/script&gt; &amp; &quot;quoted&quot;'));
+ assert.ok(html.includes('data-raw-contract="&quot;&gt;&lt;img'));
+ assert.deepEqual(calls,[]);
+ host.onclick({target:{closest:selector=>selector==='[data-raw-contract]'?{dataset:{rawContract:A}}:null}});
+ assert.equal(nodes.get('contractDialogTitle').textContent,hostileContractor+' · '+hostileContract);
+ assert.ok(!nodes.get('contractsDetails').innerHTML.includes('<img'));
+ assert.deepEqual(calls,[['summary',A],['financial',A],['documents',A]]);
+}else if(scenario==='empty-members'){
+ state.member_ids=[];openContractDetails(L);
+ assert.deepEqual(calls,[]);
+ assert.ok(!nodes.get('contractsDetails').innerHTML.includes('RAW_CARD_'));
+ assert.equal((nodes.get('contractsDetails').innerHTML.match(/data-raw-contract=/g)||[]).length,0);
 }else if(scenario==='raw'||scenario==='unknown-ownership'){
  if(scenario==='raw')contractRegister={rows:[first]};
  else{state.status='source_conflict';logical.id=A;logical.logical_ownership.resolution_status='source_conflict';}
@@ -111,6 +129,8 @@ if(scenario==='chooser'){
  if(scenario==='unconfirmed-logical'){
   logical.logical_ownership.resolution_status='source_conflict';state.status='source_conflict';
  }
+ if(scenario==='missing-state')contractRegister.logical_ownership.states={};
+ if(scenario==='wrong-logical-state')state.logical_id='d'.repeat(64);
  openContractDetails(scenario==='unknown-id'?'d'.repeat(64):L);
  assert.equal(nodes.get('contractDialog').open,false);
  assert.deepEqual(calls,[]);
@@ -136,6 +156,7 @@ def run_native(scenario, page=None):
     assert output.strip() == "ok"
 
 
-@pytest.mark.parametrize("scenario", ["chooser", "raw", "unknown-ownership", "unknown-id", "unconfirmed-logical"])
+@pytest.mark.parametrize("scenario", ["chooser", "raw", "unknown-ownership", "unknown-id", "unconfirmed-logical",
+                                     "hostile-labels", "empty-members", "missing-state", "wrong-logical-state"])
 def test_native_page_logical_chooser_and_existing_raw_dispatch(scenario):
     run_native(scenario)
