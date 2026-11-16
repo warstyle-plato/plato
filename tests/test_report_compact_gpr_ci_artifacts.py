@@ -53,7 +53,7 @@ def synthetic_report(project_finish=FINISH):
                                              'finish', 'total', 'covered', 'reference_total']}
     forecast.update(display=copy.deepcopy(display), excluded=[])
     state = dict(cut=CUT, source_sha256='d'*64,
-                 project=dict(progress=.375, known_readings=4, total=6, source_dates=[CUT],
+                 project=dict(progress=.375, coverage=88, partial=True, known_readings=4, total=6, source_dates=[CUT],
                               work_ids=list(mapping), forecast=forecast),
                  corpora=corpora,
                  forecast_identity=dict(source_sha256='d'*64, full_source_sha256='d'*64,
@@ -140,6 +140,11 @@ def test_public_synthetic_native_page_and_print_layout(width):
             host.screenshot(path=str(out/f'public-synthetic-page-{width}.png'))
             expect(host.locator('[data-gpr-block]')).to_have_count(3)
             assert host.locator('[data-gpr-block]').evaluate_all('es=>es.map(e=>e.dataset.projectForecast)') == [FINISH]*3
+            qualifier = host.locator('[data-gpr-block=forecast] p').filter(has_text='Покрытие веса: 88,0%.')
+            expect(qualifier).to_have_count(1)
+            expect(qualifier).to_be_visible()
+            expect(qualifier).to_contain_text('Пригодные показания: 4 из 6 работ.')
+            expect(qualifier).to_contain_text('Оценка по известной части состава.')
             expect(host.locator('.rg-corpus:visible')).to_have_count(4)
             expect(host.locator('.rg-plan')).to_have_count(3)
             expect(host.locator('.rg-forecast')).to_have_count(3)
@@ -224,6 +229,10 @@ def test_public_synthetic_native_pdf_has_compact_layout_and_canonical_date():
         assert all(label in text for label in ['Прогноз учтённых работ', 'Матрица готовности',
                                                'Гант по корпусам', 'Вне выбранного состава проекта'])
         assert text.count('20.08.2032') >= 3
+        qualification = text.split('Прогноз учтённых работ', 1)[1].split('Матрица готовности', 1)[0]
+        assert 'Пригодные показания: 4 из 6 работ.' in qualification
+        assert 'Покрытие веса: 88,0%.' in qualification
+        assert 'Оценка по известной части состава.' in qualification
         assert 'План РНВ владельца: 30.09.2031' in text
         assert '2038' not in text and 'Вымышленный пакет' not in text
         assert 'Приложение. Источники и ограничения оценки' not in text

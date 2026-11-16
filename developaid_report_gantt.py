@@ -847,7 +847,7 @@ def render_compact(model: dict[str, Any]) -> str:
     else:
         out.append('<p>Для этого среза нет подтверждённой общей календарной оценки. Плановая дата её не заменяет.</p>')
     if summary:
-        out.append('<p>'+esc(summary['label'])+': '+esc(summary['value'])+'. '+esc(summary['as_of_text'])+'</p>')
+        out.append('<p>'+esc(summary['readiness_text'])+'</p>')
     if summary.get('progress') is None and summary.get('reason'):
         out.append('<p class="rg-gap">'+esc(str(summary['reason'])[:240])+'</p>')
     if model['owner_plan']:
