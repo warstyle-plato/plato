@@ -572,7 +572,7 @@ class KrtRegistry:
         # The renderer preserves the official page text and links. Pagination
         # has no reliable final-page marker, so a repeated page is the stop.
         try:
-            previous: list[str] | None = None
+            previous: list[tuple[str, str]] | None = None
             for page_number in range(1, max_pages + 1):
                 suffix = "" if page_number == 1 else f"?PAGEN_1={page_number}"
                 with _catalogue_observation.fetch_scope(observation, 'renderer', page_number) as observed:
@@ -583,13 +583,13 @@ class KrtRegistry:
                     _catalogue_observation.note(observed, 'stage', 'parse')
                     page = parse_catalogue_markdown(document)
                     _catalogue_observation.note(observed, 'parsed', len(page))
-                    slugs = [row.slug for row in page]
+                    page_keys: list[tuple[str, str]] = [(row.slug, str(row.status or "")) for row in page]
                     # Конец — повтор предыдущей страницы, а не «нет новых
                     # площадок». Прямой путь мог оборваться на середине, и тогда
                     # первая же страница запасного состоит из уже прочитанных:
                     # обход останавливался на ней и объявлял усечённый список
                     # полным. Пустая первая страница — отказ рендерера, а не конец.
-                    if slugs and previous is not None and slugs == previous:
+                    if page_keys and previous is not None and page_keys == previous:
                         _catalogue_observation.note(observed, 'contributed', 0)
                         persist(complete=True)
                         _catalogue_observation.note(observation, 'returned', len(rows), 'existing_renderer_repeated_page')
@@ -600,7 +600,7 @@ class KrtRegistry:
                         persist(complete=True)
                         _catalogue_observation.note(observation, 'returned', len(rows), 'existing_renderer_empty_page')
                         return rows
-                    previous = slugs
+                    previous = page_keys
                     new_rows = unseen(page)
                     rows.extend(new_rows)
                     _catalogue_observation.note(observed, 'contributed', len(new_rows))
