@@ -137,7 +137,8 @@ def test_apply_uses_the_owned_ready_card_and_rechecks_all_inputs(server):
     with pytest.raises(core.HTTPException, match="") as exc:
         core.agent_document_apply(core.AgentDocumentApplyRequest(intake_id=card["id"], card_key=card["card_key"], inputs=inputs, tep=tep), request)
     assert exc.value.status_code == 409
-    core.agent_document_answer(core.AgentDocumentAnswerRequest(intake_id=card["id"], index=0, choice=0, inputs=inputs, tep=tep), request)
+    core.agent_document_answer(core.AgentDocumentAnswerRequest(intake_id=card["id"], index=0, choice=0, inputs=inputs, tep=tep,
+        queue_revision=card["queue_revision"], question_token=card["question_token"]), request)
     card = core.agent_document_card(core.AgentDocumentCardRequest(intake_id=card["id"], inputs=inputs, tep=tep), request)
     req = core.AgentDocumentApplyRequest(intake_id=card["id"], card_key=card["card_key"], inputs=inputs, tep=tep)
     applied = core.agent_document_apply(req, request)
@@ -174,9 +175,10 @@ def test_document_queue_failure_does_not_expose_server_details(server, monkeypat
     def fail(_queue):
         raise OSError(sentinel)
     monkeypatch.setattr(core, "_intake_queue_save", fail)
-    card = core._intake_queue_start("teaser.pdf", {"fields": []}, {"text": ""}, {}, {})
-    assert card.get("error")
-    assert sentinel not in json.dumps(card)
+    with pytest.raises(core.HTTPException) as failed:
+        core._intake_queue_start("teaser.pdf", {"fields": []}, {"text": ""}, {}, {})
+    assert failed.value.status_code == 503
+    assert sentinel not in str(failed.value.detail)
 
 
 @pytest.mark.parametrize("gns", [31000, 100.25, 100.26])
@@ -188,7 +190,8 @@ def test_gns_import_updates_stale_dependants_in_the_actual_engine(server, gns):
     quote = f"Квартиры {gns} м²"
     card = core._intake_queue_start("teaser.pdf", {"fields": [field(gns, quote, "apartments_gns_sqm", "м²")]},
         {"text": "[стр. 1]\n" + quote}, inputs, tep, actor=actor)
-    core.agent_document_answer(core.AgentDocumentAnswerRequest(intake_id=card["id"], index=0, choice=0, inputs=inputs, tep=tep), request)
+    core.agent_document_answer(core.AgentDocumentAnswerRequest(intake_id=card["id"], index=0, choice=0, inputs=inputs, tep=tep,
+        queue_revision=card["queue_revision"], question_token=card["question_token"]), request)
     card = core.agent_document_card(core.AgentDocumentCardRequest(intake_id=card["id"], inputs=inputs, tep=tep), request)
     applied = core.agent_document_apply(core.AgentDocumentApplyRequest(intake_id=card["id"], card_key=card["card_key"], inputs=inputs, tep=tep), request)
     assert applied["tep"]["apartments"]["gns"] == gns
@@ -204,7 +207,8 @@ def test_document_extraction_has_no_calculation_or_agent_tools(server, monkeypat
     monkeypatch.setattr(core, "_agent_rate_limit", lambda *_a: None)
     monkeypatch.setattr(core, "_run_authoritative_model", lambda *_a: pytest.fail("extraction calculated project economics"))
     payloads = []
-    def model(payload):
+    def model(payload, *, budget_seconds=None):
+        assert 0 < budget_seconds <= 240
         payloads.append(payload)
         return {"status": "completed", "output": [{"type": "message", "content": [
             {"type": "output_text", "text": '{"fields":[],"questions":[],"notes":[]}'}]}]}
@@ -245,14 +249,15 @@ def test_document_jobs_are_bounded_and_release_capacity(server, monkeypatch):
     core._DOCUMENT_JOBS.release()
 
 
-def test_shared_document_poll_transmits_the_same_identity_headers():
-    from pathlib import Path
+def test_shared_document_poll_transmits_the_same_identity_headers(server):
     import subprocess
-    root = Path(__file__).resolve().parents[1]
-    source = (root / "document_client.js").read_text()
+    core, _ = server
+    source = core.document_client_script().body.decode()
     script = """const window={};const calls=[];
 const setTimeout=fn=>fn();let step=0;
-const fetch=async(url,init)=>{calls.push({url,init});const values=[{trace_id:'abc'},
+const fetch=async(url,init)=>{calls.push({url,init});
+if(url===window.PlatoDocumentProtocol.capabilityPath)return{ok:true,json:async()=>({schema:1,protocol:window.PlatoDocumentProtocol.protocol})};
+const values=[{trace_id:'abc'},
 {pending:true},{pending:false,card:{id:'intake'}}];return{ok:true,json:async()=>values[step++]}};
 """ + source + """
 window.PlatoDocumentClient.read({session:'synthetic-session',access_key:'synthetic-key'}).then(result=>{
@@ -260,10 +265,35 @@ window.PlatoDocumentClient.read({session:'synthetic-session',access_key:'synthet
 });"""
     got = json.loads(subprocess.check_output(["node", "-e", script], text=True))
     assert got["result"]["card"]["id"] == "intake"
-    assert len(got["calls"]) == 3
-    for call in got["calls"][1:]:
+    assert len(got["calls"]) == 4
+    assert got["calls"][0] == {"url": core.document_protocol.CAPABILITY_PATH, "init": {"cache": "no-store"}}
+    started = got["calls"][1]
+    assert started["url"] == "/agent/document/start" and started["init"]["method"] == "POST"
+    assert json.loads(started["init"]["body"]) == {"session": "synthetic-session", "access_key": "synthetic-key"}
+    for call in got["calls"][2:]:
         assert call["init"]["headers"] == {"x-plato-session": "synthetic-session", "x-developaid-admin-key": "synthetic-key"}
-        assert "synthetic-key" not in call["url"]
+        assert call["url"] == "/agent/result/abc" and call["init"]["cache"] == "no-store"
+    assert all("synthetic-key" not in call["url"] and "synthetic-session" not in call["url"] for call in got["calls"])
+
+
+def test_shared_document_poll_keeps_its_deadline_after_protocol_preflight(server):
+    import subprocess
+    core, _ = server
+    source = core.document_client_script().body.decode()
+    script = """const window={};const calls=[];const ticks=[0,1,600000];
+const Date={now:()=>ticks.shift()};const setTimeout=fn=>fn();
+const fetch=async(url,init)=>{calls.push({url,init});
+if(url===window.PlatoDocumentProtocol.capabilityPath)return{ok:true,json:async()=>({schema:1,protocol:window.PlatoDocumentProtocol.protocol})};
+return{ok:true,json:async()=>url==='/agent/document/start'?{trace_id:'deadline'}:{pending:true}}};
+""" + source + """
+window.PlatoDocumentClient.read({session:'synthetic-session',access_key:'synthetic-key'}).then(()=>{throw new Error('deadline did not hold')},error=>{
+ console.log(JSON.stringify({error:error.message,calls}));
+});"""
+    got = json.loads(subprocess.check_output(["node", "-e", script], text=True))
+    assert got["error"] == "Разбор не завершился за отведённое время. Пришлите нужные страницы отдельно."
+    assert [call["url"] for call in got["calls"]] == [core.document_protocol.CAPABILITY_PATH, "/agent/document/start", "/agent/result/deadline"]
+    assert got["calls"][2]["init"]["headers"] == {"x-plato-session": "synthetic-session", "x-developaid-admin-key": "synthetic-key"}
+    assert all("synthetic-key" not in call["url"] for call in got["calls"])
 
 
 @pytest.mark.parametrize("public", [True, False])

@@ -80,8 +80,11 @@ def _parse(monkeypatch) -> dict:
 
 
 def _answer(card: dict, index: int, **kw) -> dict:
-    return client.post("/agent/document/answer", json=core.AgentDocumentAnswerRequest(
-        intake_id=card["id"], index=index, inputs={"demolition_area_sqm": 0}, tep={}, **kw).model_dump()).json()
+    shown = client.post("/agent/document/card", json={"intake_id": card["id"],
+        "inputs": {"demolition_area_sqm": 0}, "tep": {}}).json()
+    return client.post("/agent/document/qualified-v1/answer", json=core.AgentDocumentAnswerRequest(
+        intake_id=card["id"], index=index, queue_revision=shown["queue_revision"],
+        question_token=shown["question_token"], inputs={"demolition_area_sqm": 0}, tep={}, **kw).model_dump()).json()
 
 
 def _engine(card: dict) -> dict:
@@ -113,12 +116,16 @@ def test_an_answer_lands_in_the_card_and_the_next_question_follows(monkeypatch) 
         "«не требуется — 0» не легло нулём"
 
     # Обязательство: вариант называет поле, но не сумму — не применено, и
-    # причина названа; ответ всё равно записан.
+    # причина названа; вопрос ждёт денежную оценку или явный пропуск.
     kbo = _answer(card, 2, choice=1)
     assert not kbo["applied"]
     assert "нет числа" in kbo["refused"][0]["reason"]
-    assert kbo["card"]["questions"]["card"]["kind"] == "class"
-    answers = kbo["card"]["questions"]["answers"]
+    assert kbo["card"]["questions"]["index"] == 2
+    skipped = _answer(card, 2, choice=1, action="skip")
+    assert not skipped["applied"]
+    assert skipped["card"]["questions"]["card"]["kind"] == "class"
+    assert "inputs.social_compensation_mln" not in _engine(skipped["card"])
+    answers = skipped["card"]["questions"]["answers"]
     assert answers[0]["answer"] == "Снос всего здания — 2863,7 м²"
 
 
@@ -135,8 +142,9 @@ def test_a_repeated_click_does_not_answer_the_next_question(monkeypatch) -> None
     card = _parse(monkeypatch)["card"]
     _answer(card, 0, choice=0)
     again = _answer(card, 0, choice=0)
-    assert again["stale"] is True and again["card"]["questions"]["index"] == 1
-    assert not again["applied"]
+    assert again["detail"]["code"] == "intake_queue_changed"
+    assert again["detail"]["card"]["questions"]["index"] == 1
+    assert not again["detail"]["applied"]
 
 
 def test_the_cadastral_number_is_applied_to_the_site_not_just_noted() -> None:

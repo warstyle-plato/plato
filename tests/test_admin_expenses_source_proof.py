@@ -34,7 +34,8 @@ def source(tmp_path, monkeypatch):
     monkeypatch.setattr(monitor, "_SNAPSHOT_DIR", tmp_path / "monitor")
     monkeypatch.setenv("DEVELOPAID_ADMIN_KEY", KEY)
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "")
-    raw = _finmodel()
+    # Missing-unit evidence is the starting case; unit tests edit B2 explicitly.
+    raw = _finmodel(unit=None)
     monitor.replace_finance_baseline(PROJECT, raw, "2026-11-01", "private-source.xlsx")
     folder = monitor._project_dir(PROJECT) / "baseline"
     meta_path = folder / monitor.FINANCE_META

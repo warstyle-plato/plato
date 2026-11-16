@@ -331,6 +331,7 @@ let calcRun=0,calcSettled=0;
 // раньше ответа, а `lastResult` после загрузки проекта ещё меняется.
 function calcIdle(){return calcSettled===calcRun}
 async function calculate(){
+ if(typeof telegramOverridesReviewRequired!=='undefined'&&telegramOverridesReviewRequired){lastResult=null;phaseBundle=null;blankResultSurfaces();telegramOverridesReviewNotice();return null}
  if(partialTepMode()&&partialTepMissing().length){lastResult=null;phaseBundle=null;blankResultSurfaces();partialTepNotice();return null}
  // Форма забирается целиком, КРОМЕ полей, где стоит счётный показатель, а не
  // набранное число: у таких вводная равна нулю, и ноль здесь значит «считает

@@ -32,8 +32,10 @@ def test_v2_teaser_upload_keeps_the_existing_confirm_before_apply_flow():
 
     assert "content_b64" in source
     assert "PlatoDocumentClient.read" in source
-    assert "'/agent/document/apply'" in source
-    assert "'/agent/document/answer'" in source
+    assert "PlatoDocumentClient.apply(card" in source
+    assert "fetch('/agent/document/apply'" not in source
+    assert "PlatoDocumentClient.answer(card" in source
+    assert "fetch('/agent/document/answer'" not in source
     assert "card_key: card.card_key" in source
     assert "extraction: teaserExtraction" not in source
     assert '@app.post("/agent/document")' in core

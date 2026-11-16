@@ -94,6 +94,7 @@ from developaid_report_page import REPORT_PAGE as _REPORT_PAGE_RAW
 # документах, движок — об экономике, и смешивать их незачем.
 import document_intake
 import teaser_card
+import intake_qualification
 from request_body import json_object
 import v4_book_polish
 import v4_dashboard

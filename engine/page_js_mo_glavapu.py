@@ -596,9 +596,25 @@ function telegramParkingByKind(result){
 }
 
 async function sendTelegramResult(){
+ function telegramResultErrorNotice(message){
+ let notice=document.getElementById('telegramResultError');
+ if(!message){if(notice&&typeof notice.remove==='function')notice.remove();return}
+ if(!notice){
+  notice=document.createElement('div');notice.id='telegramResultError';notice.setAttribute('role','alert');
+  notice.style.cssText='position:fixed;left:0;right:0;top:0;z-index:99998;padding:12px 16px;'
+   +'background:#fff2d9;color:#6c3d00;font-weight:700;font-size:14px;overflow-wrap:anywhere;max-height:40vh;overflow:auto';
+  document.body.appendChild(notice);
+ }
+ notice.textContent=message;
+ }
  const glavapuMeta=inputs._glavapu_import||null;
  const manualMeta=inputs._manual_tep_import||null;
- if(!telegramSession||telegramResultSent||!lastResult||(!glavapuMeta&&!manualMeta))return;
+ const documentMeta=inputs._intake_qualification||null;
+ if(!telegramSession||telegramResultSent||!lastResult||(!glavapuMeta&&!manualMeta&&!documentMeta))return;
+ if(sendTelegramResult.pending)return;
+ // A timed-out request may already have delivered its message. Only the
+ // explicit user recalculation/edit action may try again after that outcome.
+ if(sendTelegramResult.uncertain&&(typeof telegramEditSubmitting==='undefined'||!telegramEditSubmitting))return;
  const n=(glavapuMeta&&glavapuMeta.normalized)||{};
  const s=lastResult.summary||{};
  const f=(lastResult.report&&lastResult.report.financing)||{};
@@ -663,21 +679,41 @@ async function sendTelegramResult(){
    queue_count:(phaseBundle&&phaseBundle.mode==='phased'&&(phaseBundle.comparison||[]).length)||1,
     report_payload:currentPdfReportPayload(cads)
  };
+ let requestStarted=false;
+ const previousUnknown=!!sendTelegramResult.uncertain;
  try{
+   sendTelegramResult.pending=true;
+   sendTelegramResult.failure='';
+   telegramResultErrorNotice('');
    telegramProgress('Готов. Отправляю в чат…');
    // Если ответ задерживается, надпись не должна выглядеть зависшей: в чате
    // к этому моменту уже может быть всё, и человек ждёт впустую.
-   const slow=setTimeout(()=>telegramProgress('Ответ сервера задерживается — проверьте чат.'),20000);
-   const response=await fetch('/telegram/result',{
-     method:'POST',
-     headers:{'Content-Type':'application/json'},
-     body:JSON.stringify({session:telegramSession,summary:payload})
-   }).finally(()=>clearTimeout(slow));
-   const result=await response.json();
-   if(!response.ok)throw new Error(serverDetail(result)||'Telegram не принял результат');
+   const controller=typeof AbortController==='function'?new AbortController():null;
+   let slow;
+   const deadline=new Promise((_,reject)=>{slow=setTimeout(()=>{
+     reject(new Error('Время ожидания истекло. Доставка неизвестна: проверьте чат перед повторной отправкой.'));
+     if(controller)controller.abort();
+   },20000)});
+   const request=(async()=>{
+     const body=JSON.stringify({session:telegramSession,summary:payload,
+      qualification_session:typeof telegramQualificationSession==='string'?telegramQualificationSession:''});
+     requestStarted=true;
+     const response=await fetch('/telegram/result',{
+       method:'POST',
+       headers:{'Content-Type':'application/json'},
+       body,
+       ...(controller?{signal:controller.signal}:{})
+     });
+     const result=await response.json();
+     if(!response.ok){const e=new Error(serverDetail(result)||'Telegram не принял результат');e.deliveryUnknown=![401,403,409,422].includes(response.status);throw e}
+     if(!result||result.ok!==true)throw new Error('Сервер не подтвердил доставку. Проверьте чат перед повторной отправкой.');
+     return result;
+   })();
+   await Promise.race([request,deadline]).finally(()=>clearTimeout(slow));
    telegramResultSent=true;
+   sendTelegramResult.uncertain=false;
    const status=document.getElementById('glavapuStatus');
-   if(status)status.innerHTML+=' <b>Итоговая карточка и PDF-отчёт отправлены в Telegram.</b>'
+   if(status)status.innerHTML+=' <b>Итоговая карточка отправлена в Telegram. PDF-отчёт и Excel-модель придут следом.</b>'
      +' Изменили вводные — нажмите «Обновить расчёт в Telegram» внизу.';
    if(window.Telegram&&window.Telegram.WebApp)window.Telegram.WebApp.ready();
    if(telegramMode==='edit'){
@@ -689,8 +725,13 @@ async function sendTelegramResult(){
    }
  }catch(e){
    telegramProgress('');
+   sendTelegramResult.uncertain=previousUnknown||(requestStarted&&e.deliveryUnknown!==false);
+   sendTelegramResult.failure=String(e.message||e)+(sendTelegramResult.uncertain?' Доставка неизвестна. Проверьте чат перед повторной отправкой.':'');
+   telegramResultErrorNotice('Не удалось отправить итог в Telegram: '+sendTelegramResult.failure);
    const status=document.getElementById('glavapuStatus');
-   if(status)status.innerHTML+=' <span class="import-error">Не удалось отправить итог в Telegram: '+escapeHtml(String(e.message||e))+'</span>';
+   if(status)status.innerHTML+=' <span class="import-error">Не удалось отправить итог в Telegram: '+escapeHtml(sendTelegramResult.failure)+'</span>';
+ }finally{
+   sendTelegramResult.pending=false;
  }
 }
 

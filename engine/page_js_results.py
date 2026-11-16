@@ -32,8 +32,26 @@ function landRentResultRow(r){
   :'Не определена.'+note(reason));
 }
 
+function renderCalculationQualification(result){
+ const state=result?.summary?.intake_qualification;
+ let box=document.getElementById('documentQualificationNotice');
+ if(!state?.reason){if(box)box.remove();return}
+ if(!box){
+  box=document.createElement('section');box.id='documentQualificationNotice';box.className='card';
+  box.setAttribute('role','status');box.style.cssText='padding:14px;border-left:4px solid #b87511;overflow-wrap:anywhere';
+  const anchor=document.querySelector('.tabs')||document.getElementById('inputs');
+  if(!anchor)return;
+  anchor.parentNode.insertBefore(box,anchor);
+ }
+ const title=document.createElement('b');title.textContent='Предварительный расчёт по известным затратам';
+ const text=document.createElement('p');text.textContent=state.reason;
+ box.replaceChildren(title,text);
+}
+
 function renderResult(){
  if(!lastResult)return;const r=lastResult,f=r.finance;
+ hideCalcLocked();
+ renderCalculationQualification(r);
  renderObjectParkingNote();
  // Подпись под ставкой благоустройства зовётся и формой, и результатом:
  // написанная объяснять молчание, она молчала бы ровно до первого расчёта.
@@ -41,7 +59,6 @@ function renderResult(){
  // имеет, а чужая связь ломает стенды, перечисляющие куски руками.
  renderLandscapingRateNote();
  renderLandRentSummary();
- hideCalcLocked();
  if(typeof feedbackCalcs!=='undefined'){feedbackCalcs+=1;feedbackMaybeAsk()}
 
  // Числа берутся из результата, а не из формы: форма не знает ни о льготе по
@@ -67,7 +84,8 @@ function renderResult(){
    +`${modelDefault.name?' на '+escapeHtml(modelDefault.name):''}`
    +`${modelDefault.when?' в '+modelDefault.when:''}`)
   :'');
- const conditionalShort=rentQualifier?note('предварительно: уточняется аренда земли'):modelDefault?note('при том же допущении'):'';
+ const documentQualifier=(r.summary||{}).intake_qualification||{};
+ const conditionalShort=rentQualifier?note(documentQualifier.reason?'предварительно: есть неуточнённые условия документа':'предварительно: уточняется аренда земли'):modelDefault?note('при том же допущении'):'';
 
  // Какой поток стоит за NPV, решает движок (`report.layout.npv_basis`).
  const npvHint=reportLayout(r).npv_basis==='hotel'?'npv_hotel':'npv';

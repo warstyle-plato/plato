@@ -109,6 +109,7 @@
     if (!node) return;
     node.className = `v2-import-status${tone ? ` is-${tone}` : ''}`;
     node.textContent = text || '';
+    if (tone === 'error') node.scrollIntoView({block: 'center'});
   }
 
   function mergeTep(defaults, stored) {
@@ -301,12 +302,28 @@
     try {
       const draft = currentDraft(await defaults());
       const value = (document.getElementById('v2TeaserAnswer') || {}).value || '';
-      const response = await fetch('/agent/document/answer', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({intake_id: card.id, index: card.questions.index, action, choice, value, mode,
-          inputs: draft.inputs, tep: draft.tep, session: webSession()}),
-      });
-      const data = await response.json();
+      if (!window.PlatoDocumentClient || typeof window.PlatoDocumentClient.answer !== 'function') {
+        throw new Error('Модель обновляется. Ответ и расчёт не применены.');
+      }
+      const {response, data} = await window.PlatoDocumentClient.answer(card,
+        {intake_id: card.id, index: card.questions.index, action, choice, value, mode,
+          queue_revision: card.queue_revision, question_token: card.question_token,
+          inputs: draft.inputs, tep: draft.tep, session: webSession()});
+      if (response.status === 409 && data.detail && data.detail.code === 'intake_queue_changed') {
+        const current = data.detail.card;
+        if (!current || current.id !== card.id) throw new Error('Не удалось сверить текущую карточку. Повторите загрузку документа.');
+        const option = ((card.questions.card || {}).options || [])[choice];
+        const proposed = [option && option.label, value, action === 'skip' ? 'пропустить' : ''].filter(Boolean).join(' — ');
+        renderTeaserReview({...teaserExtraction, card: current});
+        if (!current.ready) {
+          document.getElementById('v2TeaserQuestions').hidden = true;
+          renderTeaserQuestion(current);
+        }
+        status('Карточка уже изменилась. Ответ не применён. Ваш ответ сохранён как предложение: '
+          + proposed + '. Проверьте текущую карточку и подтвердите ответ заново.', 'error');
+        document.getElementById('v2ImportStatus').scrollIntoView({block: 'center'});
+        return;
+      }
       if (!response.ok) throw new Error(data.detail || 'Ответ не сохранился.');
       if (data.confirm) {
         const host = document.getElementById('v2TeaserQuestion');
@@ -363,12 +380,12 @@
     try {
       const before = currentDraft(await defaults());
       const card = teaserExtraction.card;
-      const response = await fetch('/agent/document/apply', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({intake_id: card.id, card_key: card.card_key,
-          inputs: before.inputs, tep: before.tep, session: webSession()}),
-      });
-      const applied = await response.json();
+      if (!window.PlatoDocumentClient || typeof window.PlatoDocumentClient.apply !== 'function') {
+        throw new Error('Модель обновляется. Ответ и расчёт не применены.');
+      }
+      const {response, data: applied} = await window.PlatoDocumentClient.apply(card,
+        {intake_id: card.id, card_key: card.card_key,
+          inputs: before.inputs, tep: before.tep, session: webSession()});
       if (!response.ok) throw new Error(applied.detail || 'Карточка не применена.');
       if (applied.stale) {
         renderTeaserReview({...teaserExtraction, card: applied.card});

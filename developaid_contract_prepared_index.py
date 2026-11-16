@@ -333,14 +333,39 @@ def _cache_view(snapshot, remaining_positions, remaining_records):
     return restored
 
 
+def _native_ignored_file(record):
+    """Recognize only exact metadata records emitted by the native parser."""
+    if (type(record) is not dict or set(record) != {'filename', 'status', 'warnings'}
+            or record['status'] != 'ignored' or type(record['filename']) is not str
+            or record['warnings'] != ['Служебный файл архива.']):
+        return False
+    name = record['filename']
+    try:
+        name.encode('utf-8')
+        return (ledgers._safe_name(name) == name and not name.endswith('/')
+                and (name.startswith('__MACOSX/') or name.rsplit('/', 1)[-1] == '.DS_Store'))
+    except (ledgers.LedgerProblem, UnicodeError):
+        return False
+
+
 def _project(snapshots, cut):
     file_rows, sheet_rows, record_rows, index_rows, states, read_snapshots = [], [], [], [], [], []
+    manifest_files = 0
     for ai, snapshot in enumerate(snapshots):
         _need(type(snapshot.get('files')) is list, 'Опись файлов cache отсутствует.')
-        file_map = {}
+        file_map, seen_names = {}, set()
         for f in snapshot['files']:
-            _need(type(f) is dict and type(f.get('filename')) is str and 0 < len(f['filename']) <= 240
-                  and f.get('status') == 'parsed' and _hash(f.get('sha256')),
+            manifest_files += 1
+            _need(manifest_files <= MAX_FILES, 'Предел файлов cache превышен.')
+            _need(type(f) is dict and type(f.get('filename')) is str and 0 < len(f['filename']) <= 240,
+                  'Опись cache неполна или содержит неподдерживаемый файл.')
+            name_key = f['filename'].casefold().rstrip('/')
+            _need(name_key not in seen_names, 'В cache повторено имя файла.')
+            seen_names.add(name_key)
+            if f.get('status') == 'ignored':
+                _need(_native_ignored_file(f), 'Опись cache неполна или содержит неподдерживаемый файл.')
+                continue
+            _need(f.get('status') == 'parsed' and _hash(f.get('sha256')),
                   'Опись cache неполна или содержит неподдерживаемый файл.')
             _need(f['filename'] not in file_map, 'В cache повторено имя файла.')
             file_map[f['filename']] = len(file_rows)
@@ -477,8 +502,9 @@ def project_index(project, cut, snapshot_ids, expected_project_scope,
             snapshots.append(snapshot)
         projected, read_views = _project(snapshots, cut)
         archives = [dict(snapshot_id=s['snapshot_id'], taken_at=s['taken_at'],
-            files=[dict(filename_sha256=text_sha256(f['filename']), file_sha256=f['sha256']) for f in s['files']])
-            for s in snapshots]
+            files=[dict(filename_sha256=f[2], file_sha256=f[1])
+                   for f in projected['files'] if f[0] == ai])
+            for ai, s in enumerate(snapshots)]
         roster = source_roster_digest(cut, archives)
         _need(roster == expected_cached_source_roster_sha256, 'Наблюдаемая опись cache не совпала с ожидаемой.')
         content = source_content_digest(read_views)

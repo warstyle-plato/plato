@@ -14,16 +14,39 @@ engine/page_build.py. Стенды на node берут куски скрипт�
 """
 # ruff: noqa
 
-PAGE += r"""async function loadTelegramSessionData(){
+PAGE += r"""let telegramQualificationSession='';
+function telegramOverridesReviewNotice(){
+ const id='telegramOverridesReview';
+ let note=document.getElementById(id);
+ if(!note){
+  note=document.createElement('div');note.id=id;note.className='note';
+  note.style.cssText='padding:16px;margin:12px 0;border:2px solid #b36b00';
+  const panel=document.getElementById('inputs');
+  if(panel)panel.insertBefore(note,panel.firstChild);
+ }
+ note.textContent='Параметры этой ссылки нужно подтвердить заново. Вход сохранён. Вернитесь в чат бота, откройте «Расчёт» и проверьте текущую карточку. До подтверждения параметры не применяются и расчёт не запускается.';
+ openTab('inputs');telegramProgress('');
+ return false;
+}
+
+async function loadTelegramSessionData(){
  if(!telegramSession)return {};
- const response=await fetch('/telegram/session-data',{
-  method:'POST',
-  headers:{'Content-Type':'application/json'},
-  body:JSON.stringify({session:telegramSession})
- });
- const payload=await response.json();
+ let response,payload;
+ if(window.PlatoQualifiedDocumentEntry===true){
+  const client=window.PlatoDocumentClient;
+  if(!client||typeof client.sessionData!=='function')throw new Error('Модель обновляется. Ответ и расчёт не применены.');
+  ({response,data:payload}=await client.sessionData({session:telegramSession}));
+ }else{
+  response=await fetch('/telegram/session-data',{
+   method:'POST',
+   headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({session:telegramSession})
+  });
+  payload=await response.json();
+ }
  if(!response.ok)throw new Error(serverDetail(payload)||'Telegram-сессия недействительна');
- return payload||{};
+ if(!payload||typeof payload!=='object'||Array.isArray(payload))throw new Error('Параметры ссылки не проверены. Вернитесь к карточке в чате.');
+ return payload;
 }
 
 // Тот ли это проект, что в открытой карточке. Сверяем площадь квартир и
@@ -98,7 +121,7 @@ async function submitTelegramEditedResult(){
   persistLocalSilently();
   telegramResultSent=false;
   await sendTelegramResult();
-  if(!telegramResultSent)throw new Error('Не удалось отправить обновлённый расчёт в Telegram');
+  if(!telegramResultSent)throw new Error(sendTelegramResult.failure||'Не удалось отправить обновлённый расчёт в Telegram');
   finishTelegramSession('Обновлённый расчёт отправлен в чат.');
  }catch(e){
   const status=document.getElementById('glavapuStatus');
@@ -193,7 +216,21 @@ async function runTelegramLaunch(){
  if(telegramSession){
   try{
    sessionData=await loadTelegramSessionData();
-   telegramCalcOverrides=sessionData.calc_overrides||{};
+   const suppliedOverrides=sessionData.calc_overrides;
+   const overrideRecord=suppliedOverrides!==null&&typeof suppliedOverrides==='object'&&!Array.isArray(suppliedOverrides);
+   const legacyEmpty=suppliedOverrides==null||(overrideRecord&&Object.keys(suppliedOverrides).length===0);
+   telegramOverridesReviewRequired=!(sessionData.overrides_review_required===false&&overrideRecord)
+    &&!(sessionData.overrides_review_required===undefined&&legacyEmpty);
+   telegramOverridesReviewRequired=telegramOverridesReviewRequired||sessionData.qualification_review_required===true;
+   telegramCalcOverrides=telegramOverridesReviewRequired?{}:(sessionData.calc_overrides||{});
+   if(telegramOverridesReviewRequired){telegramOverridesReviewNotice();return}
+   // A validated disclosure may accompany an auth-only edit link. It grants
+   // no financial override and survives the ordinary launch/reset adapters.
+   if(sessionData.calculation_qualification){
+    telegramCalcOverrides={...telegramCalcOverrides,
+     _intake_qualification:sessionData.calculation_qualification,
+     _tep_source_packet:{version:1,kind:'teaser_card',intake_id:sessionData.calculation_qualification.intake_id}};
+   }
   }catch(e){
    const status=document.getElementById('glavapuStatus');
    if(status)status.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>';
@@ -201,15 +238,28 @@ async function runTelegramLaunch(){
   }
  }
  if(telegramMode==='edit'){
+  // An old link cannot replace the document already open in this browser.
+  // A disclosure-only link also cannot reconstruct a financial model.
+  const supplied=telegramCalcOverrides._intake_qualification;
+  const current=inputs._intake_qualification;
+  if((supplied&&current&&(supplied.signature!==current.signature||supplied.intake_id!==current.intake_id))
+    ||(sessionData.calculation_qualification&&!current)
+    ||(!supplied&&current)){
+   telegramOverridesReviewRequired=true;
+   telegramCalcOverrides={};
+   telegramOverridesReviewNotice();return;
+  }
   // Открываем проект из той карточки, по которой нажали «изменить». Раньше
   // бралось только сохранённое в браузере состояние, и если расчёт делал бот
   // на сервере — по Подмосковью или по адресу, — браузер его никогда не видел
   // и показывал чужой прошлый проект. Тяжёлый расчёт при этом не перезапускаем:
   // ТЭП приходит в самой сессии готовым.
-  if(sessionData.manual_tep&&!telegramStateMatches(sessionData.manual_tep)){
+  if(sessionData.manual_tep&&!(supplied&&current)&&!telegramStateMatches(sessionData.manual_tep)){
    await applyTelegramManualTep(sessionData.manual_tep,{silent:true});
   }
-  applyTelegramCalcOverrides();
+  // Keep ordinary edits of this exact signed document. Its old numeric
+  // confirmation remains a proof of the source snapshot, not these edits.
+  if(!supplied||!current)applyTelegramCalcOverrides();
   renderInputs();
   renderTep();
   renderPhasing();
@@ -326,7 +376,7 @@ async function initializeApp(){
  generateRateCurve();
  renderRates();
  await refreshCurrentKeyRate(false);
- await calculate();
+ if(!telegramSession)await calculate();
  await refreshAgentStatus();
  await loadMoReference();
  await initializeTelegramLaunch();

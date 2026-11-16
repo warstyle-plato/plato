@@ -55,7 +55,10 @@ def contract_identity(row):
 
 
 def _source_key(source):
-    return tuple(str((source or {}).get(field) or '') for field in ('filename', 'sheet'))
+    fields = ('filename', 'sheet')
+    if (source or {}).get('snapshot_id') or (source or {}).get('file_sha256'):
+        fields += ('snapshot_id', 'file_sha256')
+    return tuple(str((source or {}).get(field) or '') for field in fields)
 
 
 def _scope(row, reference=None):
@@ -74,12 +77,13 @@ def _scope(row, reference=None):
         return None
     positions = {}
     for item in items:
-        key = tuple(_norm(item.get(field)) for field in ('position', 'name', 'scope', 'unit'))
+        from developaid_monitor_contracts import _physical_key
+        key = _physical_key(item)
         plan = _number(item.get('plan_quantity'))
         year = item.get('period_year')
         if not key[1] or not key[3] or plan is None or not isinstance(year, int) or isinstance(year, bool):
             return None
-        identity = (*key, year)
+        identity = json.dumps([key, year], ensure_ascii=False, sort_keys=True, separators=(',', ':'))
         definition = (plan, _number(item.get('planned_amount')))
         if identity in positions and positions[identity] != definition:
             return None
@@ -88,11 +92,13 @@ def _scope(row, reference=None):
 
 
 def _observation(row, register):
-    day = _day(register.get('source_date') or (register.get('snapshots') or {}).get('cumulative'))
+    # A contract carried from an earlier archive is observed on that archive's date.
+    day = _day(row.get('financial_observation_date') or row.get('source_date') or register.get('source_date')
+               or (register.get('snapshots') or {}).get('cumulative'))
     result = {'ratio': None, 'basis': None, 'basis_label': '', 'origin': None,
               'observation_date': day.isoformat() if day else None,
               'date_basis': 'snapshot',
-              'snapshot_id': (register.get('snapshots') or {}).get('cumulative_id'),
+              'snapshot_id': row.get('financial_observation_snapshot_id') or row.get('source_snapshot_id') or (register.get('snapshots') or {}).get('cumulative_id'),
               'scope_fingerprint': None, 'basis_fingerprint': None,
               'state': 'unknown', 'reason': 'Общий процент по ведомости не рассчитан.'}
     if row.get('source_kind') == 'closing_summary':
@@ -457,6 +463,7 @@ def enrich(project: str, cut: str, register: dict, *, build_register: Callable[[
         if current_day and cutoff and current_day > cutoff:
             row['progress'].update(ratio=None, state='future_source', reason=
                                    'Дата источника позже выбранного среза; процент не использован.')
+    seen_observations = {id(row): set() for row in rows}
     errors, truncated = 0, False
     try:
         selected, truncated = (_selected_snapshots(project, current_day)
@@ -484,6 +491,9 @@ def enrich(project: str, cut: str, register: dict, *, build_register: Callable[[
                 failure = ('history_unavailable', 'Предыдущий снимок не прочитан; текущий процент остаётся доступен.')
         errors += int(failure is not None)
         for row in rows:
+            own_day = _day(row['progress']['observation_date'])
+            if own_day and day >= own_day:
+                continue  # The earlier archive is this row's own observation, not a previous one.
             identity = contract_identity(row)
             candidates = by_identity.get(identity, []) if identity else []
             if failure:
@@ -493,7 +503,17 @@ def enrich(project: str, cut: str, register: dict, *, build_register: Callable[[
             elif not candidates:
                 state, reason = 'previous_contract_missing', 'В предыдущем снимке этот договор не представлен; отсутствие не считается нулём.'
             else:
-                row['progress']['series'].append(_point(_observation(candidates[0], previous)))
+                candidate = candidates[0]
+                point = _point(_observation(candidate, previous))
+                if point.get('snapshot_id') and _day(point.get('observation_date')):
+                    # A union register on another archive date can carry this
+                    # exact own-source observation again. It is not new progress.
+                    sources = sorted(_source_key(source) for source in candidate.get('sources') or [])
+                    observation_key = _digest([identity, sources, point])
+                    if observation_key in seen_observations[id(row)]:
+                        continue
+                    seen_observations[id(row)].add(observation_key)
+                row['progress']['series'].append(point)
                 continue
             row['progress']['series'].append({'ratio': None, 'observation_date': date,
                 'snapshot_id': identifiers[0] if len(identifiers) == 1 else None,

@@ -98,8 +98,59 @@ def test_every_internal_surface_carries_the_contour() -> None:
             skipped.append(f"{path} → {answer.status_code}")
             continue
         seen.append(path)
-        assert "Управленческий контур" in answer.text, f"{path} без входа в контур"
-        assert ".contour{" in answer.text, f"{path} без стиля контура"
+        if path in {"/monitor", "/report"}:
+            from html.parser import HTMLParser
+
+            class Navigation(HTMLParser):
+                def __init__(self):
+                    super().__init__()
+                    self.navs, self.entries, self.views, self.current, self.labels = 0, [], [], [], []
+                    self.inside = False
+                    self.label = None
+
+                def handle_starttag(self, tag, attrs):
+                    attrs = dict(attrs)
+                    if tag == "nav" and attrs.get("class") == "monitor-navigation":
+                        self.navs += 1
+                        self.inside = True
+                        assert attrs.get("aria-label") == "Разделы DevelopAid"
+                    if not self.inside:
+                        return
+                    if "data-monitor-view" in attrs:
+                        self.views.append(attrs["data-monitor-view"])
+                    elif tag == "a":
+                        self.entries.append(attrs.get("href"))
+                        self.label = []
+                        if attrs.get("aria-current") == "page":
+                            self.current.append(attrs["href"])
+
+                def handle_data(self, data):
+                    if self.label is not None:
+                        self.label.append(data)
+
+                def handle_endtag(self, tag):
+                    if tag == "a" and self.label is not None:
+                        self.labels.append("".join(self.label).strip())
+                        self.label = None
+                    if tag == "nav":
+                        self.inside = False
+
+            navigation = Navigation()
+            navigation.feed(answer.text)
+            assert navigation.navs == 1
+            assert navigation.entries == [str(link["href"]) for role in contour.ROLES for link in role["links"]]
+            assert navigation.labels == [str(link["name"]) for role in contour.ROLES for link in role["links"]]
+            assert len(navigation.entries) == 7
+            assert navigation.views == ["monitor", "money", "contracts", "data"]
+            assert navigation.current == [path]
+            assert "/* shared-monitor-navigation */" in answer.text
+            assert ".monitor-navigation{" in answer.text
+            assert 'class="contour"' not in answer.text
+            assert '<details class="monitor-app-nav"' not in answer.text
+            assert '<div class="monitor-tabs"' not in answer.text
+        else:
+            assert "Управленческий контур" in answer.text, f"{path} без входа в контур"
+            assert ".contour{" in answer.text, f"{path} без стиля контура"
         assert "__DEVELOPAID_CONTOUR" not in answer.text, f"{path}: плейсхолдер на экране"
     assert seen, f"ни одна поверхность не проверена: {skipped}"
     assert skipped == [] or all("/cabinet" in item for item in skipped), skipped

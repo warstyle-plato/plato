@@ -426,6 +426,7 @@ def build_teaser_pdf(bundle: dict[str, Any], inputs: dict[str, Any],
     документа не выполнялся. Сам подбор здесь не идёт: это вёрстка."""
     presentation = project_presentation(bundle, inputs, tep, phasing, site=site)
     presentation["decision_tiles"] = entry_price or entry_price_block(bundle, inputs, None)
+    presentation['calculation_qualification'] = _intake_qualification_state(inputs)
     # «Сравнение стратегий» — одна строка тизера из блока расчёта.
     presentation["strategy_line"] = (((bundle or {}).get("consolidated") or {})
                                      .get("strategy_compare") or {}).get("teaser") or ""

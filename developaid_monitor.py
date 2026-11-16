@@ -280,6 +280,14 @@ def _has_sheet(data: bytes | Path, name: str) -> bool:
 
 def store_schedule(project: str, gpr: bytes, pm: bytes | None,
                    taken_at: Any) -> dict[str, Any]:
+    """Store the first GPR and compatible payment baseline under the source lock."""
+    import developaid_finance_allocations as allocations
+    with allocations.source_lock(project):
+        return _store_schedule_locked(project, gpr, pm, taken_at)
+
+
+def _store_schedule_locked(project: str, gpr: bytes, pm: bytes | None,
+                           taken_at: Any) -> dict[str, Any]:
     """Create the fixed project baseline once.
 
     ``gpr`` may be either the prepared cleaned GPR (sheet ``ГПР``) or our
@@ -318,6 +326,7 @@ def store_schedule(project: str, gpr: bytes, pm: bytes | None,
         "works": len(_read_baseline_gpr(project)["works"]),
         "payment_plan": bool(plan["known"]),
     }
+
 
 
 def _read_baseline_gpr_bytes(data: bytes) -> dict[str, Any]:
@@ -698,6 +707,13 @@ def _schedule_packages(project: str, data: bytes, cut: str = '') -> dict[str, An
 
 def replace_finance_baseline(project: str, data: bytes,
                              taken_at: Any, file_name: str = "") -> dict[str, Any]:
+    import developaid_finance_allocations as allocations
+    with allocations.source_lock(project):
+        return _replace_finance_baseline_locked(project, data, taken_at, file_name)
+
+
+def _replace_finance_baseline_locked(project: str, data: bytes,
+                                     taken_at: Any, file_name: str = "") -> dict[str, Any]:
     """Заменить финансовый baseline утверждённым пересчётом.
 
     Финкнигу пересчитывают решением — например, когда потребность фасадов
@@ -730,6 +746,7 @@ def replace_finance_baseline(project: str, data: bytes,
             versions._atomic(history / f"replaced-{stamp}.xlsx", path.read_bytes())
         meta = _write_finance_pair(folder, data, day, file_name)
     return {"taken_at": day, "replaced": True, "file_name": meta["file_name"]}
+
 
 
 def _write_finance_pair(folder: Path, data: bytes, day: str, file_name: str) -> dict:
@@ -1279,8 +1296,11 @@ def projects() -> list[dict[str, Any]]:
     for folder in sorted(_SNAPSHOT_DIR.iterdir(), key=lambda item: item.name.lower()):
         if not folder.is_dir() or folder.name.startswith("."):
             continue
+        # Lock files can be created by a read or baseline replacement. They
+        # are operational metadata, not a saved source or allocation decision.
         kinds = sorted(part.name for part in folder.iterdir()
-                       if part.is_dir() and any(part.iterdir()))
+                       if part.is_dir() and any(not item.name.startswith(".")
+                                                for item in part.iterdir()))
         if not kinds:
             continue
         label = folder.name.replace("-", " ")

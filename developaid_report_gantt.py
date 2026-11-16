@@ -1,5 +1,9 @@
 """График сводки по корпусам: укрупнённые статьи, план, прогноз и РНВ.
 
+calendar/render_calendar показывают полный канонический календарь нового
+Монитора; прежние model/render и скалярные статьи сохранены для совместимости
+текстовых выводов. Новая разметка не пересчитывает сроки и веса.
+
 «График как в мониторе, но с укрупнёнными статьями по корпусам с планом и
 прогнозом окончания работ и РНВ» (владелец, 20.10.2026).
 
@@ -20,8 +24,11 @@
 from __future__ import annotations
 
 import datetime
+import copy
 import html
+import math
 import re
+from collections import Counter, defaultdict
 from typing import Any
 
 import developaid_schedule_done as done_rule
@@ -398,3 +405,324 @@ def text_lines(gantt: dict[str, Any]) -> list[str]:
             line += "; среди законченных работ: " + late[0].lower() + late[1:]
         out.append(line + ".")
     return out
+
+
+def _attested_partial_calendar_gap(reference, references, scope, mapping, gaps, id_scope):
+    """Read native declared uncertainty; never repair or infer missing members."""
+    if type(gaps) is not list or len(gaps) > 2000:
+        return False
+    indexed = {}
+    for gap in gaps:
+        if (type(gap) is not dict or set(gap) != {'work_id','remaining_id','kind'}
+                or type(gap['work_id']) is not str or gap['work_id'] not in references
+                or gap['work_id'] in indexed or gap['work_id'] not in mapping or type(gap['kind']) is not str):
+            return False
+        key, kind, remaining = gap['work_id'], gap['kind'], gap['remaining_id']
+        qualification = scope.get(key) or {}
+        if type(qualification) is not dict:
+            return False
+        if kind == 'unclassified_scope':
+            valid = qualification == {'status':'gap','reason':kind} and remaining is None
+        elif kind == 'outside_current_source':
+            valid = id_scope == 'full_source' and not qualification and mapping[key] is None and remaining is None
+        elif kind == 'unknown_time':
+            current = mapping.get(key)
+            valid = (not qualification and type(current) in {str,int}
+                     and type(remaining) is str and remaining == str(current))
+        else:
+            return False
+        if not valid:
+            return False
+        indexed[key] = kind
+    return indexed.get(reference) in {'unclassified_scope','outside_current_source'}
+
+
+def calendar(schedule: dict[str, Any], cut: Any) -> dict[str, Any]:
+    """Copy the compiled source roster and qualify its canonical display points.
+
+    No forecast or group progress is calculated here. A bad point remains a
+    named gap; other source rows and individually qualified points survive.
+    """
+    roster = []
+    def collect(nodes, control='', detail='', rss=''):
+        for node in nodes or []:
+            level = node.get('level')
+            here = (str(node.get('name') or '') if level == 'control' else control,
+                    str(node.get('name') or '') if level == 'detail' else detail,
+                    str(node.get('name') or node.get('code') or '') if level == 'rss' else rss)
+            if level == 'task':
+                roster.append(dict(task=copy.deepcopy(node), control=here[0], detail=here[1], rss=here[2]))
+            collect(node.get('children'), *here)
+    collect(schedule.get('management'))
+    for task in schedule.get('undated_works') or []:
+        roster.append(dict(task=copy.deepcopy(task), control='', detail=str(task.get('section') or 'Работы с неполными датами'), rss=''))
+    owner = schedule.get('owner_rnv') or {}
+    owner = owner if isinstance(owner, dict) else {}
+    result = dict(schema=1, cut=str(cut), rows=roster, display=None, qualified=False, points={}, issues=[],
+                  readiness_forecast_invalid=False, owner_rnv=copy.deepcopy(owner) if owner.get('source') == 'owner_decision' and _date(owner.get('date')) else None)
+    def problem(reason, *, invalid=True):
+        result['issues'].append(reason)
+        if invalid:
+            result['readiness_forecast_invalid'] = True
+    source = [*(schedule.get('rows') or []), *(schedule.get('undated_works') or [])]
+    source = source or [item['task'] for item in roster]
+    present = {str(item['task']['id']) for item in roster if item['task'].get('id') is not None}
+    missing = [row for row in schedule.get('rows') or [] if row.get('id') is not None and str(row['id']) not in present]
+    for row in missing:
+        roster.append(dict(task=copy.deepcopy(row),control='Иерархию работы нужно проверить',
+                           detail=str(row.get('section') or 'Работы вне исходной иерархии'),rss=''))
+    if missing:
+        problem('В исходном перечне есть работы без строки в иерархии ГПР. Они сохранены отдельно; общая календарная дата требует сверки состава.')
+    by_id = defaultdict(list)
+    for row in source:
+        if row.get('id') is not None:
+            by_id[str(row['id'])].append(row)
+    tree_ids = Counter(str(item['task']['id']) for item in roster if item['task'].get('id') is not None)
+    state = schedule.get('readiness') or {}
+    project = state.get('project') or {} if isinstance(state, dict) else None
+    forecast = project.get('forecast') or {} if isinstance(project, dict) else None
+    display = forecast.get('display') or {} if isinstance(forecast, dict) else None
+    identity = state.get('forecast_identity') or {} if isinstance(state, dict) else None
+    mapping = identity.get('remaining_ids') or {} if isinstance(identity, dict) else None
+    issues = result['issues']
+    def unavailable(reason, *, invalid=True):
+        problem(reason, invalid=invalid)
+        return result
+    if not display:
+        return unavailable('Для этого среза нет подтверждённой календарной проекции. План и исходные показания сохранены.', invalid=False)
+    if not roster:
+        return unavailable('Для календаря нет полного исходного перечня работ. Независимая оценка готовности сохранена.', invalid=False)
+    if (not all(isinstance(value, dict) for value in [state,project,forecast,display,identity,mapping])
+            or not isinstance(project.get('work_ids'), list)
+            or not isinstance(state.get('forecast_scope') or {}, dict)):
+        return unavailable('Структура календарной проекции не подтверждена. План и исходные показания сохранены.')
+    valid_date = lambda value: value is None or isinstance(value, str) and _date(value) is not None and _date(value).isoformat() == value
+    if (type(display.get('schema')) is not int or display.get('schema') != 1
+            or display.get('basis') != 'readiness_project_forecast' or display.get('truncated') is not False
+            or not isinstance(display.get('rows'), list) or len(display['rows']) > 2000
+            or not isinstance(display.get('paragraphs'), list) or len(display['paragraphs']) != 2
+            or not all(isinstance(p, str) and 0 < len(p) <= 4000 for p in display['paragraphs'])):
+        return unavailable('Календарная проекция неполна или имеет неподтверждённый формат. План и показания сохранены.')
+    if (state.get('cut') != str(cut) or display.get('cut') != str(cut)
+            or not re.fullmatch(r'[a-f0-9]{64}', str(state.get('source_sha256') or ''))
+            or forecast.get('source_sha256') != state.get('source_sha256')
+            or identity.get('source_sha256') != state.get('source_sha256')
+            or not isinstance(forecast.get('id_scope'), str) or forecast['id_scope'] not in {'current_source', 'full_source'}
+            or any(display.get(key) != forecast.get(key) for key in
+                   ['source_sha256','full_source_sha256','id_scope','finish','total','covered','reference_total'])
+            or any(identity.get(key) != forecast.get(key) for key in ['source_sha256','full_source_sha256','id_scope'])
+            or forecast.get('id_scope') == 'full_source' and not re.fullmatch(r'[a-f0-9]{64}', str(forecast.get('full_source_sha256') or ''))
+            or not valid_date(display.get('finish'))
+            or any(type(display.get(key)) is not int or display[key] < 0 for key in ['total','covered','reference_total'])
+            or display['covered'] > display['total']):
+        return unavailable('Источник, дата среза или состав календарной проекции не совпадают с текущим ГПР. Общая дата не показана; план и показания сохранены.')
+    result['display'] = copy.deepcopy(display)
+    references = [str(key) for key in project.get('work_ids') or []]
+    counts = Counter(references)
+    translations = Counter(str(value) for value in mapping.values() if value is not None)
+    # Only an explicit exclusion attested by the same native projection can
+    # reduce its denominator. A missing translation remains a selected gap.
+    exclusions = forecast.get('excluded')
+    attested_exclusions = {}
+    if not isinstance(exclusions, list):
+        problem('Исключения из календарного состава не подтверждены. Общая дата требует сверки.')
+    else:
+        for exclusion in exclusions:
+            if (not isinstance(exclusion, dict) or not isinstance(exclusion.get('work_id'), str)
+                    or exclusion['work_id'] not in counts or exclusion['work_id'] in attested_exclusions
+                    or not isinstance(exclusion.get('kind'), str)
+                    or exclusion['kind'] not in {'separate_scope','nonconstruction_scope'}):
+                problem('Не подтверждено исключение работы из календарного состава. План и показания сохранены.')
+                continue
+            attested_exclusions[exclusion['work_id']] = exclusion['kind']
+    if (type(project.get('total')) is not int or project['total'] != len(references)
+            or display['reference_total'] != len(references)
+            or display['total'] != len(references)-len(attested_exclusions)):
+        problem('Число исходных работ не совпадает с подтверждённым календарным составом. Общая дата скрыта; план и показания сохранены.')
+    expected = {}
+    declared_gaps = set()
+    for reference in references:
+        qualification = (state.get('forecast_scope') or {}).get(reference) or {}
+        if counts[reference] != 1:
+            problem('Идентификатор выбранной работы повторяется. Общая дата требует сверки состава; исходные строки сохранены.')
+            continue
+        if not isinstance(qualification, dict):
+            problem('Не подтверждён формат связи работы с выбранным составом. План и показания сохранены.')
+            continue
+        if qualification.get('status') is not None and not isinstance(qualification['status'], str):
+            problem('Не подтверждён статус связи работы с выбранным составом. План и показания сохранены.')
+            continue
+        status = qualification.get('status')
+        if status == 'excluded':
+            if (not isinstance(qualification.get('reason'), str)
+                    or qualification['reason'] not in {'separate_scope','nonconstruction_scope'}
+                    or attested_exclusions.get(reference) != qualification['reason']):
+                problem('Исключение выбранной работы не подтверждено исходной проекцией. Общая дата требует сверки состава.')
+            continue
+        if reference in attested_exclusions or status not in {None,'gap'}:
+            problem('Статус выбранной работы противоречит исходной календарной проекции. План и показания сохранены.')
+        if status == 'gap' or reference not in mapping or mapping[reference] is None:
+            attested = _attested_partial_calendar_gap(reference, references,
+                state.get('forecast_scope') or {}, mapping, forecast.get('gaps'), forecast.get('id_scope'))
+            if attested:
+                declared_gaps.add(reference)
+            problem('Для выбранной работы не подтверждена точная связь с текущим ГПР. Общая дата скрыта; план и показания сохранены.', invalid=not attested)
+            continue
+        current = mapping[reference]
+        if isinstance(current, bool) or not isinstance(current, (str,int)) or not str(current) or len(str(current)) > 512:
+            problem('Нет точного идентификатора работы в текущем источнике. План и показания сохранены.')
+            continue
+        current = str(current)
+        if counts[reference] != 1 or translations[current] != 1 or len(by_id[current]) != 1 or tree_ids[current] != 1:
+            problem('Неоднозначная связь работы с выбранным составом. Эта точка не показана; исходные строки сохранены.')
+            continue
+        expected[current] = reference
+    point_counts = Counter(p.get('work_id') for p in display['rows'] if isinstance(p, dict) and isinstance(p.get('work_id'), str))
+    for point in display['rows']:
+        key = point.get('work_id') if isinstance(point, dict) else None
+        row = by_id[key][0] if isinstance(key, str) and len(by_id[key]) == 1 else None
+        scenario = (row or {}).get('plan_pace_scenario') or {}
+        complete = bool(scenario.get('complete') or (row or {}).get('work_done'))
+        measured = bool((row or {}).get('forecast_known') and not (row or {}).get('observed_complete_by'))
+        finish = None if complete else ((row or {}).get('forecast_finish') if measured else None) or scenario.get('finish') or None
+        basis = 'complete' if complete else ('measured' if measured else 'conditional') if finish else 'unknown'
+        if (not row or point_counts[key] != 1 or expected.get(key) != point.get('reference_work_id')
+                or not key or len(key) > 512 or not valid_date(point.get('finish')) or not valid_date(point.get('plan_finish'))
+                or point.get('finish') != finish or point.get('plan_finish') != (row.get('plan_finish') or None)
+                or point.get('complete') is not complete or point.get('basis') != basis
+                or not valid_date(point.get('source_date')) or point.get('source_date') and point['source_date'] > str(cut)
+                or point.get('source_date') != (scenario.get('source_date') or None)):
+            label = str((row or {}).get('name') or 'Работа без однозначной связи с источником')
+            problem('Не подтверждена календарная точка: '+label+'. Её прогноз не показан; план и показание сохранены.')
+            continue
+        result['points'][key] = copy.deepcopy(point)
+    if set(result['points']) != set(expected):
+        problem('Не для каждой работы выбранного состава подтверждена календарная точка. Общая дата скрыта; пригодные индивидуальные даты сохранены.')
+    if declared_gaps and (display['total'] != len(result['points']) + len(declared_gaps)
+            or display['covered'] != sum(bool(point['complete'] or point['finish']) for point in result['points'].values())):
+        problem('Покрытие частичной оценки не совпало с исходными точками и заявленными пробелами. Общая дата требует сверки.')
+    result['qualified'] = not issues
+    return result
+
+
+def _calendar_progress(task):
+    """Read a supplied physical/GPR observation; monetary acceptance is separate."""
+    physical = ('gpr_percent','cumulative_quantities','cumulative_statement','confirmed_completion')
+    fact = task.get('display_progress')
+    if isinstance(fact, dict) and (task.get('progress_kind') != 'accepted_cost_ratio'
+            or fact.get('source') in physical or fact.get('basis') in physical):
+        result = dict(fact)
+    elif task.get('gpr_progress') is not None:
+        result = dict(value=task['gpr_progress'], date=task.get('gpr_progress_date'), label='Выполнено по ГПР', source='ГПР')
+    elif task.get('progress_kind') in physical:
+        origin = task.get('progress_source') or {}
+        result = dict(value=task.get('actual_progress', task.get('pace_progress')), date=origin.get('date'),
+                      label='По ведомости' if task.get('progress_kind') == 'cumulative_statement' else 'Выполнено по ГПР', source=origin.get('label'))
+    else:
+        result = dict(value=None)
+    value = result.get('value')
+    if isinstance(value, bool) or not isinstance(value, (int,float)) or not math.isfinite(value) or not 0 <= value <= 1:
+        result['value'] = None
+    return result
+
+
+def render_calendar(model: dict[str, Any], cut: Any = None) -> str:
+    """One responsive full-work calendar for the summary and native A4 print."""
+    from developaid_schedule_visual import date_text
+    esc = lambda value: html.escape(str(value if value is not None else ''), quote=True)
+    rows = model.get('rows') or []
+    if not rows:
+        return '<p class="note">В этом срезе нет исходных работ для календаря.</p>'
+    same_cut = model.get('cut') == str(cut)
+    display = model.get('display') or {}
+    qualified = bool(model.get('qualified') and same_cut)
+    points = (model.get('points') or {}) if same_cut else {}
+    finish = display.get('finish') if qualified else None
+    owner = model.get('owner_rnv') or {}
+    days = [date for item in rows for date in (_date(item['task'].get('plan_start')), _date(item['task'].get('plan_finish')), _date(item['task'].get('actual_finish'))) if date]
+    days += [date for date in (_date(p.get('finish')) for p in points.values()) if date]
+    days += [date for date in [_date(finish), _date(owner.get('date')), _date(cut)] if date]
+    first, last = (min(days), max(days)) if days else (None,None)
+    if days:
+        first = first-datetime.timedelta(days=min(15,(first-datetime.date.min).days))
+        last = last+datetime.timedelta(days=min(15,(datetime.date.max-last).days))
+    span = max(1,(last-first).days) if days else 1
+    def pos(value):
+        date = _date(value)
+        return max(0,min(100,(date-first).days/span*100)) if date and days else None
+    def marker(value, name, title):
+        x = pos(value)
+        return (f'<i class="{name}" data-date="{esc(value)}" style="left:{x:.5f}%" title="{esc(title)}"></i>') if x is not None else ''
+    def marks():
+        return marker(cut,'cg-cut','Дата среза '+date_text(cut))+marker(finish,'gpr-scoped-finish','Оценка выбранного состава; не РНВ')+marker(owner.get('date'),'cg-owner-rnv','Отдельный план РНВ владельца')
+    out = [_CALENDAR_STYLE, '<div class="chart gantt"><section class="report-gpr-calendar" data-calendar-version="canonical" data-cut="'+esc(cut)+'">']
+    if qualified:
+        out.append('<p class="cg-scope"><b>Гант учтённого состава: '+esc(date_text(finish) if finish else 'окончание неизвестно')+'</b><br>Даты учтены для '+str(display['covered'])+' из '+str(display['total'])+' работ. Это оценка выбранного состава, не прогноз РНВ. Остальные работы сохранены с планом и исходными показаниями.</p>')
+    else:
+        out.append('<p class="cg-gap"><b>Общая календарная оценка не подтверждена.</b> План и исходные показания всех работ сохранены.</p>')
+    for issue in model.get('issues') or []:
+        out.append('<p class="cg-gap">'+esc(issue)+'</p>')
+    if not same_cut:
+        out.append('<p class="cg-gap">Дата этой проекции не совпадает со срезом отчёта. Прогнозные точки скрыты.</p>')
+    if owner:
+        out.append('<p class="note">Отдельный план РНВ владельца: '+esc(date_text(owner['date']))+'.</p>')
+    out.append('<div class="cg-legend"><span>▱ План</span><span>━ Показание выполнения</span><span>┊ Оценка выбранного состава</span><span>▨ Условный срок, при плановом темпе</span><span>┃ Измеренный срок</span></div>')
+    out.append('<div class="cg-axis"><b>Корпус, этап и работа</b><div class="cg-track" data-domain-start="'+esc(first.isoformat() if days else '')+'" data-domain-end="'+esc(last.isoformat() if days else '')+'">')
+    if days:
+        for index in range(7):
+            tick = first+datetime.timedelta(days=round(span*index/6))
+            out.append('<span class="cg-tick" style="left:'+str(index/6*100)+'%">'+esc(tick.strftime('%m.%y'))+'</span>')
+    out.append(marks()+'</div><b>План, выполнение и основание срока</b></div>')
+    corpora = {}
+    for item in rows:
+        corpora.setdefault(corpus_of(item['task']), {}).setdefault(item['detail'] or item['control'] or str(item['task'].get('section') or 'Работы'), []).append(item)
+    for corpus, stages in sorted(corpora.items(), key=lambda item:_natural(item[0])):
+        out.append('<details class="cg-corpus" open><summary>'+esc(corpus)+'</summary>')
+        for stage, items in stages.items():
+            out.append('<details class="cg-stage"><summary>'+esc(stage)+' · '+str(len(items))+' работ</summary>')
+            for item in items:
+                task = item['task'];key = '' if task.get('id') is None else str(task['id']);point = points.get(key)
+                scope = 'selected' if point else 'unconfirmed' if not qualified else 'outside'
+                fact = _calendar_progress(task);value = fact.get('value')
+                progress = ('Выполнение неизвестно' if value is None else str(fact.get('label') or 'По источнику')+': '+f'{value*100:g}%'+(' от '+date_text(fact['date']) if fact.get('date') else ''))
+                if _date(task.get('actual_finish')):
+                    end = 'Фактическое окончание: '+date_text(task['actual_finish'])
+                elif point and point['complete']:
+                    end = 'Завершено по источнику; фактическая дата не подтверждена'
+                elif point and point['finish']:
+                    end = ('Условное окончание: ' if point['basis']=='conditional' else 'Измеренное окончание: ')+date_text(point['finish'])
+                elif point:
+                    end = 'Окончание неизвестно'
+                else:
+                    end = 'Вне выбранного состава' if qualified else 'Точка прогноза не подтверждена'
+                out.append('<article class="cg-work" data-work-id="'+esc(key)+'" data-forecast-scope="'+scope+'"><div class="cg-label"><b>'+esc(task.get('name') or 'Работа без названия')+'</b>')
+                path = ' → '.join(str(x) for x in [task.get('object') or corpus,item['control'],item['detail'],item['rss']] if x)
+                if path:out.append('<small>'+esc(path)+'</small>')
+                cells = task.get('source_cells') or {}
+                refs = ', '.join(str(cells[k]) for k in ['progress','start','finish'] if cells.get(k))
+                if refs:out.append('<small>Ячейки исходного ГПР: '+esc(refs)+'</small>')
+                elif task.get('wbs'):out.append('<small>Работа '+esc(task['wbs'])+'</small>')
+                out.append('</div><div><div class="cg-track">'+marks())
+                start, stop = pos(task.get('plan_start')), pos(task.get('plan_finish'))
+                if start is not None and stop is not None and stop >= start:
+                    out.append(f'<span class="cg-plan" style="left:{start:.5f}%;width:{max(.2,stop-start):.5f}%"></span>')
+                    if value is not None:out.append(f'<span class="cg-fact" style="left:{start:.5f}%;width:{(stop-start)*value:.5f}%"></span>')
+                if point and point['finish']:
+                    x = pos(point['finish']);left = min(stop,x) if stop is not None else x
+                    out.append(f'<span class="cg-forecast {point["basis"]}" style="left:{left:.5f}%;width:{abs(x-(stop if stop is not None else x)):.5f}%"></span><i class="gpr-forecast-end {point["basis"]}" data-finish="{esc(point["finish"])}" style="left:{x:.5f}%"></i>')
+                out.append(marker(task.get('actual_finish'),'cg-actual','Фактическое окончание по источнику')+'</div></div><div class="cg-metrics"><div>'+esc(progress)+'</div><div>План: '+esc(date_text(task.get('plan_start')))+' — '+esc(date_text(task.get('plan_finish')))+'</div><b>'+esc(end)+'</b>')
+                if point and point['basis']=='conditional':out.append('<div>Основание: плановый темп, а не измеренная скорость.</div>')
+                if point and point['basis']=='measured':out.append('<div>Основание: датированный темп выполнения.</div>')
+                if not point:out.append('<div>План и показание этой работы сохранены отдельно от общей оценки.</div>')
+                out.append('</div></article>')
+            out.append('</details>')
+        out.append('</details>')
+    out.append('</section></div>')
+    return ''.join(out)
+
+
+_CALENDAR_STYLE = '''<style>
+.report-gpr-calendar{max-width:100%;overflow-wrap:anywhere}.report-gpr-calendar *{box-sizing:border-box}.cg-scope,.cg-gap{font-size:12px;line-height:1.5}.cg-gap{color:#825314}.cg-legend{display:flex;flex-wrap:wrap;gap:8px 16px;font-size:10px;color:#475569;margin:12px 0}.cg-axis,.cg-work{display:grid;grid-template-columns:minmax(0,1.05fr) minmax(0,1.25fr) minmax(0,1.2fr);gap:12px;align-items:start}.cg-axis{font-size:10px;padding:10px 0}.cg-axis .cg-track{height:28px}.cg-track{position:relative;height:38px;min-width:0;background:repeating-linear-gradient(to right,#f3f5f8,#f3f5f8 calc(16.666% - 1px),#dce3eb calc(16.666% - 1px),#dce3eb 16.666%)}.cg-tick{position:absolute;top:0;font-size:9px;transform:translateX(-50%);white-space:nowrap}.cg-tick:first-child{transform:none}.cg-tick:nth-child(7){transform:translateX(-100%)}.cg-track i{position:absolute;top:0;bottom:0;pointer-events:none}.cg-cut{border-left:1px solid #666}.gpr-scoped-finish{border-left:2px dashed #245b93}.cg-owner-rnv{border-left:1px dashed #7b5396}.cg-actual{border-left:3px solid #207448}.cg-plan,.cg-fact,.cg-forecast{position:absolute;height:8px;top:9px;min-width:0}.cg-plan{border:1px dashed #586575}.cg-fact{top:12px;height:4px;background:#267a58}.cg-forecast{top:25px;height:5px;background:#245b93}.cg-forecast.conditional{background:repeating-linear-gradient(120deg,#8c5eaa,#8c5eaa 3px,#e4d8ed 3px,#e4d8ed 6px)}.gpr-forecast-end{top:21px!important;height:13px;border-left:3px solid #245b93}.gpr-forecast-end.conditional{border-color:#8c5eaa}.cg-corpus>summary{font-weight:700;font-size:14px;background:#eef3f8;padding:9px;cursor:pointer}.cg-stage>summary{font-size:12px;font-weight:600;padding:9px;cursor:pointer}.cg-work{padding:10px 0;border-bottom:1px solid #e4e9ef;break-inside:avoid;page-break-inside:avoid}.cg-label b{font-size:11px}.cg-label small{display:block;color:#667085;font-size:9px;margin-top:4px}.cg-metrics{font-size:10px;line-height:1.5}.cg-metrics b{display:block}.cg-stage,.cg-corpus{margin:8px 0;break-inside:auto;page-break-inside:auto}
+@media(max-width:600px){.cg-axis{grid-template-columns:1fr}.cg-axis>b{display:none}.cg-axis .cg-track{height:25px}.cg-work{grid-template-columns:1fr;gap:7px}.cg-label b{font-size:13px}.cg-metrics{font-size:12px}.cg-scope,.cg-gap{font-size:13px}}
+@media print{.cg-corpus::details-content,.cg-stage::details-content{display:block!important;content-visibility:visible!important}.cg-corpus,.cg-stage{display:block!important;break-inside:auto!important;page-break-inside:auto!important}.cg-corpus>summary,.cg-stage>summary{break-after:avoid;page-break-after:avoid;list-style:none}.cg-work{grid-template-columns:minmax(0,1.05fr) minmax(0,1.25fr) minmax(0,1.2fr);gap:9px}.cg-label b{font-size:9pt}.cg-label small{font-size:7pt}.cg-metrics{font-size:8pt}.cg-axis{grid-template-columns:minmax(0,1.05fr) minmax(0,1.25fr) minmax(0,1.2fr)}.cg-axis>b{display:block}.cg-track{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+</style>'''

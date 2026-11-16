@@ -56,6 +56,22 @@ def _rss_with_sources() -> bytes:
         (datetime.date(2026, 10, 19), 50 * M),
     ])
     book = load_workbook(io.BytesIO(data))
+    estimate = book["Расчет стоимости строительства"]
+    # These payment codes are explicit members of the selected synthetic RSS,
+    # including the chapter1 payment added by the scope-comparison test. A
+    # prefix alone is not evidence that an absent source code belongs here.
+    estimate.delete_rows(10, 3)
+    for row, (code, label, amount) in enumerate([
+        ("1", "Земельный участок", 900 * M), ("1.1", "Земельный участок", 900 * M),
+        ("2", "Строительство", 1000 * M), ("2.2", "Строительство", 1000 * M),
+        ("2.2.1", "Монолит", 1000 * M), ("2.2.1.4", "Монолит", 1000 * M),
+        ("3", "Прочие затраты", 18 * M), ("3.1", "Реклама", 0),
+        ("3.5", "Услуги банка", 18 * M), ("3.5.1", "Услуги банка", 2 * M),
+    ], 10):
+        for column, value in ((1, code), (4, label), (5, amount)):
+            estimate.cell(row, column, value)
+    estimate.cell(22, 4, "Всего инвестиционные расходы")
+    estimate.cell(22, 5, 1918 * M)
     paid = book["Реестр платежей"]
     for r in range(10, paid.max_row + 1):
         if paid.cell(row=r, column=10).value is not None:

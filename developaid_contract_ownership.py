@@ -1,0 +1,391 @@
+"""Read-only logical ownership after the unchanged raw archive register.
+
+Identity confirmation never chooses a financial edition or a raw binding.
+Absent overlay returns the former register; every original raw card survives.
+"""
+from __future__ import annotations
+
+import contextlib
+import contextvars
+import datetime as dt
+import hashlib
+import stat
+from pathlib import Path
+
+MAX_RELEVANT_PAIRS = 4
+MAX_ARCHIVES = 32
+MAX_VERIFIED_READ_BYTES = 128 * 1024 * 1024
+_CONTEXT = contextvars.ContextVar('contract_ownership_read', default=None)
+_RAW_HISTORY = contextvars.ContextVar('contract_ownership_raw_history', default=False)
+GAP = 'financial_source_choice_required'
+WHY = ('Владелец подтвердил принадлежность исходных карточек одному договору. '
+       'Финансовый источник, срок и расчёт риска для единого договора не выбраны; '
+       'данные каждой исходной карточки сохранены отдельно.')
+
+
+class OwnershipProblem(ValueError):
+    pass
+
+
+def raw_rows(register):
+    return register.get('raw_rows', register.get('rows') or [])
+
+
+def raw_view(register):
+    result = dict(register, rows=raw_rows(register))
+    result.pop('raw_rows', None)
+    result.pop('logical_ownership', None)
+    return result
+
+
+def find_raw_row(register, identifier):
+    selected = [row for row in raw_rows(register) if row.get('id') == identifier]
+    return selected[0] if len(selected) == 1 else None
+
+
+@contextlib.contextmanager
+def raw_history():
+    token = _RAW_HISTORY.set(True)
+    try:
+        yield
+    finally:
+        _RAW_HISTORY.reset(token)
+
+
+def is_raw_history():
+    return _RAW_HISTORY.get()
+
+
+class ReadContext:
+    def __init__(self, project, cut):
+        import developaid_contract_identity_store as store
+        self.project, self.cut = project.strip(), cut
+        self.root = store.project_root(self.project)
+        self.state = store.load(self.project)
+        self.head = self.state['head']
+        self.present = bool(self.state['events'])
+        self.cache, self.members, self.roster, self.binding_pins = {}, {}, None, {}
+        self.header = None
+        self.header_digest = None
+        self.paths = {}
+        self.pairs = {}
+        for event in self.state['events']:
+            if event['action'] == 'confirm':
+                pair = tuple(sorted({member['raw_id'] for member in event['payload']['members']}))
+                for identifier in pair:
+                    self.pairs[identifier] = pair
+        self.active = {tuple(sorted({member['raw_id'] for member in event['payload']['members']}))
+                       for event in self.state['active']}
+
+    def _roster(self):
+        import developaid_monitor_ledgers as ledgers
+        import developaid_monitor_contracts as contracts
+        roster = []
+        for item in ledgers.list_snapshots(self.project):
+            day = contracts._date(item.get('taken_at'))
+            if not day or item['taken_at'] > self.cut:
+                continue
+            sid = item.get('snapshot_id')
+            if not isinstance(sid,str) or sid[:10] != item['taken_at']:
+                raise OwnershipProblem('Дата сохранённого архива не совпала с его идентичностью.')
+            roster.append(sid)
+        return sorted(roster)
+
+    def capture(self, composition):
+        if not self.present or is_raw_history():
+            return
+        import developaid_monitor_contracts as contracts
+        import developaid_contract_identity_store as store
+        identifiers = {identifier for identifier, _ in contracts._groups(composition['primary'], self.project)}
+        relevant = {self.pairs[identifier] for identifier in identifiers if identifier in self.pairs}
+        if len(relevant) > MAX_RELEVANT_PAIRS:
+            raise OwnershipProblem('Слишком много уточнений реквизитов для одной ограниченной сборки. Реестр не собран частично.')
+        active_passes = len(relevant & self.active)
+        if relevant:
+            import developaid_contract_identity as identity
+            self.binding_pins = {pair:store.digest(identity.metadata_inventory(self.project,list(pair)))
+                                 for pair in relevant}
+        if active_passes:
+            self.roster = self._roster()
+            if len(self.roster) > MAX_ARCHIVES or len(set(self.roster)) != len(self.roster):
+                raise OwnershipProblem('Состав архивов превышает предел проверки уточнений. Частичное объединение не выполнено.')
+            total = 0
+            for sid in self.roster:
+                if not isinstance(sid, str) or len(sid) != 75 or store.day(sid[:10]) != sid[:10] or not store.HASH.fullmatch(sid[11:]):
+                    raise OwnershipProblem('Идентичность сохранённого архива не подтверждена.')
+                path = self.root/'cumulative'/(sid+'.zip')
+                try:
+                    info = path.lstat()
+                except OSError:
+                    raise OwnershipProblem('Сохранённый архив недоступен для проверки уточнения.') from None
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > 20*1024*1024:
+                    raise OwnershipProblem('Исходный архив не подходит для ограниченной проверки уточнения.')
+                total += info.st_size
+                self.paths[sid] = path
+            if (2*active_passes+1)*total > MAX_VERIFIED_READ_BYTES:
+                raise OwnershipProblem('Объём повторной проверки источников превышает предел одной сборки. Частичное объединение не выполнено.')
+            self.header = store.read_bytes(self.root/'cumulative_header_dates.json', 4*1024*1024)
+            self.header_digest = store.digest(self.header.hex() if self.header is not None else None)
+        for identifier, items in contracts._groups(composition['primary'], self.project):
+            if identifier not in self.pairs or self.pairs[identifier] not in relevant:
+                continue
+            snapshots = {item.get('archive_snapshot_id') for item in items}
+            if len(snapshots) != 1:
+                # Incremental KS history may legitimately use several source
+                # archives. A former one-snapshot identity decision does not
+                # authorize this new composition: retain the raw cards and
+                # expose a source conflict, rather than hiding the register.
+                self.members[identifier] = {'raw_id': identifier,
+                    'history_snapshots': sorted(str(sid or '') for sid in snapshots)}
+                continue
+            sid = next(iter(snapshots))
+            archive = composition['by_snapshot'].get(sid) or {}
+            files = {}
+            for file in archive.get('files') or []:
+                files.setdefault(file.get('filename'), []).append(file.get('sha256'))
+            refs = []
+            for item in items:
+                source = item.get('source') or {}
+                candidates = files.get(source.get('filename'), [])
+                file_sha = item.get('file_sha256') or (candidates[0] if len(candidates) == 1 else None)
+                refs.append({'file_sha256':file_sha, 'source_locator_sha256':store.digest(source), 'kind':item.get('kind')})
+            self.members[identifier] = {'raw_id':identifier, 'snapshot_id':sid,
+                'identity':{key:items[0].get(key) for key in ('customer','contractor','contract','contract_date')},
+                'sources':sorted(refs,key=store.digest)}
+
+    def resolve(self, pair):
+        if pair in self.cache:
+            return self.cache[pair]
+        import developaid_contract_identity as identity
+        import developaid_contract_identity_store as store
+        observed = [identifier for identifier in pair
+                    if identifier in self.members and self.pairs.get(identifier) == pair]
+        if not observed:
+            return None
+        if any(self.members[identifier].get('history_snapshots') for identifier in observed):
+            resolved = {'status': 'source_conflict', 'logical_id': None,
+                'member_ids': list(pair),
+                'reason': 'История КС содержит несколько исходных архивов. Прежнее уточнение реквизитов не подтверждает новый состав; исходные карточки сохранены отдельно.'}
+            self.cache[pair] = resolved
+            return resolved
+        try:
+            resolved = identity.resolve(self.project, observed[0], self.cut)
+        except identity.IdentityProblem:
+            resolved = {'status':'source_conflict', 'logical_id':None,
+                        'member_ids':list(pair), 'reason':'Сохранённые версии уточнения не подтверждены.'}
+        if sorted(resolved.get('member_ids') or []) != list(pair):
+            resolved = {'status':'source_conflict', 'logical_id':None,
+                        'member_ids':list(pair), 'reason':'Состав уточнения не совпал с исходными карточками.'}
+        if resolved.get('status') == 'confirmed':
+            versions = resolved.get('source_versions') or []
+            for identifier in observed:
+                expected = self.members[identifier]
+                matched = [member for member in versions if member['raw_id'] == identifier
+                           and member['snapshot_id'] == expected['snapshot_id']
+                           and member['identity'] == expected['identity'] and member['sources'] == expected['sources']]
+                if len(matched) != 1:
+                    resolved = dict(resolved,status='source_conflict',logical_id=None,
+                                    reason='Используемая исходная версия не совпала с подтверждённым уточнением.')
+                    break
+            if self.binding_pins[pair] != store.digest(identity.metadata_inventory(self.project,list(pair))):
+                raise OwnershipProblem('Исходные привязки изменились во время сборки. Обновите реестр.')
+        self.cache[pair] = resolved
+        return resolved
+
+    def pin(self):
+        import developaid_contract_identity_store as store
+        return {'cut':self.cut, 'journal_head':self.head,
+                'namespace_sha256':store.digest(str(self.root)),
+                'archives':self.roster, 'header_sha256':self.header_digest,
+                'bindings':[{'member_ids':list(pair),'sha256':digest}
+                            for pair,digest in sorted(self.binding_pins.items())]}
+
+    def adopt(self, register):
+        """A later raw enrichment must still belong to the original read."""
+        import developaid_contract_identity_store as store
+        pin = register['logical_ownership']['read_guard']
+        if any(pin.get(key) != self.pin().get(key)
+               for key in ('cut','journal_head','namespace_sha256')):
+            raise OwnershipProblem('Состав проекта или уточнения изменились после сборки. Обновите реестр.')
+        if self.roster is None and pin.get('archives') is not None:
+            roster = pin['archives']
+            if not isinstance(roster,list) or len(roster) > MAX_ARCHIVES or len(set(roster)) != len(roster):
+                raise OwnershipProblem('Состав проверенных источников неоднозначен. Обновите реестр.')
+            self.roster, self.header_digest = roster, pin.get('header_sha256')
+            total = 0
+            for sid in roster:
+                if not isinstance(sid,str) or len(sid) != 75 or store.day(sid[:10]) != sid[:10] or not store.HASH.fullmatch(sid[11:]):
+                    raise OwnershipProblem('Идентичность проверенного архива не подтверждена.')
+                path = self.root/'cumulative'/(sid+'.zip')
+                try:
+                    info = path.lstat()
+                except OSError:
+                    raise OwnershipProblem('Сохранённый архив недоступен для проверки уточнения.') from None
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > 20*1024*1024:
+                    raise OwnershipProblem('Исходный архив не подходит для ограниченной проверки уточнения.')
+                total += info.st_size
+                self.paths[sid] = path
+            if total > MAX_VERIFIED_READ_BYTES:
+                raise OwnershipProblem('Объём повторной проверки источников превышает предел одной сборки.')
+        elif self.roster != pin.get('archives') or self.header_digest != pin.get('header_sha256'):
+            raise OwnershipProblem('Источники изменились после сборки. Обновите реестр.')
+        for item in pin.get('bindings') or []:
+            pair = tuple(item['member_ids'])
+            if pair in self.binding_pins and self.binding_pins[pair] != item['sha256']:
+                raise OwnershipProblem('Исходные привязки изменились после сборки. Обновите реестр.')
+            self.binding_pins[pair] = item['sha256']
+
+    def require_current(self, register):
+        if 'raw_rows' in register:
+            self.adopt(register)
+        elif any(row.get('id') in self.pairs for row in raw_rows(register)):
+            raise OwnershipProblem('Уточнения появились после сборки исходных карточек. Обновите реестр.')
+
+    def check(self):
+        import developaid_contract_identity_store as store
+        if store.project_root(self.project) != self.root or store.load(self.project)['head'] != self.head:
+            raise OwnershipProblem('Уточнения реквизитов изменились во время чтения. Обновите реестр.')
+        store.assert_namespace(self.project)
+        if self.roster is not None:
+            header = store.read_bytes(self.root/'cumulative_header_dates.json',4*1024*1024)
+            if self._roster() != self.roster or store.digest(header.hex() if header is not None else None) != self.header_digest:
+                raise OwnershipProblem('Источники или подтверждения шапок изменились во время чтения. Обновите реестр.')
+            for sid, path in self.paths.items():
+                raw = store.read_bytes(path,20*1024*1024)
+                if raw is None or hashlib.sha256(raw).hexdigest() != sid[11:]:
+                    raise OwnershipProblem('Исходная версия изменилась во время чтения; логическое объединение не подтверждено.')
+        if self.binding_pins:
+            import developaid_contract_identity as identity
+            if any(store.digest(identity.metadata_inventory(self.project,list(pair))) != digest
+                   for pair,digest in self.binding_pins.items()):
+                raise OwnershipProblem('Исходные привязки изменились во время чтения. Обновите реестр.')
+
+
+@contextlib.contextmanager
+def read_scope(project, cut):
+    current = _CONTEXT.get()
+    if current is not None:
+        if project.strip() != current.project:
+            raise OwnershipProblem('Сборка уточнения относится к другому проекту.')
+        if cut != current.cut and not is_raw_history():
+            raise OwnershipProblem('Сборка уточнения относится к другому срезу.')
+        yield current
+        return
+    import developaid_monitor as monitor
+    import developaid_contract_identity_store as store
+    namespace = store.namespace(project) if Path(monitor._SNAPSHOT_DIR).is_dir() else contextlib.nullcontext()
+    try:
+        with namespace:
+            context = ReadContext(project,cut)
+            token = _CONTEXT.set(context)
+            try:
+                yield context
+                context.check()
+            finally:
+                _CONTEXT.reset(token)
+    except (store.IdentityProblem, OSError):
+        raise OwnershipProblem('Состояние уточнений или источников не подтверждено. Обновите реестр.') from None
+
+
+def capture(composition):
+    context = _CONTEXT.get()
+    if context is not None:
+        context.capture(composition)
+
+
+def unknown_row(raw, identifier, *, resolution, members, cut):
+    import developaid_monitor_contract_risk as risk
+    from developaid_monitor_contracts import _reference_key
+    reason = WHY if resolution.get('status') == 'confirmed' else 'Принадлежность исходных карточек одному договору сейчас не подтверждена. Данные источников показаны отдельно; финансовый итог не выбран.'
+    anchor = next((row for row in raw if row['id'] == identifier),raw[0])
+    row = {key:anchor.get(key) for key in ('contractor','customer','contract_date')}
+    row['subject'] = None
+    row.update(id=identifier,contract=resolution.get('canonical_number') if resolution.get('status') == 'confirmed' else anchor.get('contract'),
+        source_kind='logical_ownership',contract_identity_kind='owner_confirmed_logical' if resolution.get('status') == 'confirmed' else 'ownership_unknown',
+        logical_id=resolution.get('logical_id'),raw_observations=raw,raw_member_ids=members,
+        logical_ownership=dict(resolution_status=resolution.get('status'),decision_id=resolution.get('decision_id'),
+            decision_recorded_at=resolution.get('decision_recorded_at'),binding_resolution=resolution.get('binding_resolution'),
+            binding_conflicts=resolution.get('binding_conflicts') or [],financial_acceptance=False,gap=GAP),
+        amount=None,completed=None,remaining=None,completion_ratio=None,completed_works=None,completed_materials=None,
+        amount_basis='unspecified',completed_basis='unspecified',monetary_comparable=False,works_materials_split=False,
+        amount_source_label=reason,works_materials_note=reason,deadline=None,deadline_source=None,manual_deadline_reference=None,
+        deadline_passed=False,source={'label':'Исходные карточки показаны отдельно.'},source_date=None,source_snapshot_id=None,
+        sources=[],financial_sources=[],reported_performance_sources=[],physical_items=[],scope=[],
+        date_evidence=[],date_confirmations=[],identity_source={},requires_reconciliation=True,warnings=[reason],
+        performance_basis=reason,performance_source_count=0,rss_match={'status':'not_combined','text':reason,'candidates':[]},
+        progress={'state':'unknown','ratio':None,'reason':reason,'series':[]},
+        observation_forecast={'state':'unknown','eligible':False,'forecast_finish':None,'reason':reason},
+        schedule_control={'state':'unknown','documents':None,'finish':None,'deadline':None,'note':reason})
+    row['risk'] = risk.forecast(amount=None,completed=None,comparable=False,periods=[],cut=dt.date.fromisoformat(cut),deadline=None)
+    row['risk']['reason'] = reason
+    row['advance'] = risk.advance(row,None,reference_key=_reference_key,completed_basis='unspecified')
+    row['advance']['reason'] = reason
+    return row
+
+
+def fold(register, states):
+    import developaid_monitor_contract_risk as risk
+    originals = raw_rows(register)
+    result = dict(register,raw_rows=originals)
+    done, rows = set(), []
+    unresolved = 0
+    for row in originals:
+        identifier = row['id']
+        resolved = states.get(identifier)
+        if resolved is None:
+            rows.append(row)
+            continue
+        pair = tuple(resolved['member_ids'])
+        if resolved.get('status') == 'confirmed':
+            if pair in done:
+                continue
+            done.add(pair)
+            observed = [item for item in originals if item['id'] in pair]
+            # A future raw card is never manufactured at an earlier cut.
+            if len(observed) == 1:
+                rows.append(row)
+            else:
+                rows.append(unknown_row(observed,resolved['logical_id'],resolution=resolved,members=list(pair),cut=register['cut']))
+        else:
+            unresolved += 1
+            rows.append(unknown_row([row],identifier,resolution=resolved,members=list(pair),cut=register['cut']))
+    result['rows'] = rows
+    result['logical_ownership'] = {'states':states,'financial_acceptance':False,
+        'unresolved_source_cards':unresolved,'raw_source_cards':len(originals),
+        'logical_contracts':None if unresolved else len(rows)}
+    if register.get('logical_ownership',{}).get('read_guard'):
+        result['logical_ownership']['read_guard'] = register['logical_ownership']['read_guard']
+    result['risk_summary'] = risk.summary(rows)
+    result['counts'] = dict(register.get('counts') or {},raw_source_cards=len(originals),
+                            logical_contracts=None if unresolved else len(rows))
+    return result
+
+
+def apply(register, context):
+    if not context.present or not context.members:
+        return register
+    states = {}
+    for pair in sorted({context.pairs[identifier] for identifier in context.members}):
+        resolved = context.resolve(pair)
+        if resolved:
+            for identifier in pair:
+                if identifier in context.members and context.pairs.get(identifier) == pair:
+                    states[identifier] = resolved
+    if not states:
+        return register
+    result = fold(register,states)
+    result['logical_ownership']['read_guard'] = context.pin()
+    return result
+
+
+def refresh(register, enriched_raw):
+    if 'raw_rows' not in register:
+        return enriched_raw
+    context = _CONTEXT.get()
+    if context is None:
+        raise OwnershipProblem('Обогащение исходных карточек требует единого проверенного чтения.')
+    context.adopt(register)
+    result = dict(register)
+    result.update({key:value for key,value in enriched_raw.items() if key != 'rows'})
+    result['raw_rows'] = enriched_raw.get('rows') or []
+    return fold(result,register['logical_ownership']['states'])
