@@ -21,6 +21,19 @@ def test_existing_ahr_contribution_is_identified_without_attesting_remaining_cas
         tmp_path, schedule, unmapped, paid_since, expected):
     model = _read(tmp_path, _finmodel())
     flows = copy.deepcopy(model['chapter_flow'])
+    # This positive split control supplies an explicit monetary allocation.
+    # The article map alone leaves these AHR amounts outside the bank chapters.
+    unallocated = flows.pop('')
+    assert unallocated['sections'] == {'2.4': 40_000}
+    admin = {key: copy.deepcopy(unallocated[key]) for key in ('total', 'fact', 'plan', 'monthly')}
+    for key in ('total', 'fact', 'plan'):
+        flows['2'][key] += admin[key]
+    for month, value in admin['monthly'].items():
+        flows['2']['monthly'][month] = flows['2']['monthly'].get(month, 0) + value
+    for flow in flows.values():
+        flow['admin_expenses'] = {'total': 0, 'fact': 0, 'plan': 0, 'monthly': {}}
+    flows['2']['sections']['2.4'] = admin['total']
+    flows['2']['admin_expenses'] = admin
     if unmapped:
         admin = flows['2']['admin_expenses']
         flows[''] = {**admin, 'sections': {'2.4': admin['total']}, 'admin_expenses': admin}
@@ -40,6 +53,21 @@ def test_existing_ahr_contribution_is_identified_without_attesting_remaining_cas
     assert result['amount'] is None  # A known chapter split does not attest all paid AHR.
     assert 'общая потребность пока не определена' in result['note']
     assert own['matches']
+
+
+def test_unqualified_article_map_does_not_supply_a_known_ahr_split(tmp_path):
+    model = _read(tmp_path, _finmodel())
+    flows = model['chapter_flow']
+    assert flows['']['sections'] == {'2.4': 40_000}
+    assert 'admin_expenses' not in flows['']
+    own = dashboard._own_money(
+        model['budget_composition'], SMETA, PAID, ['1', '2', '3'], dt.date(2026, 10, 20),
+        paid_since={'2': 0}, chapter_flow=flows)
+    assert 'admin_expenses_included' not in own
+    assert 'need_without_admin_expenses' not in own
+    assert own['admin']['bank_coverage'] is None
+    assert own['reconciliation']['confirmed_additional'] is None
+    assert cash.funding_base(own, _partial_cash()) is None
 
 
 def _partial_cash():

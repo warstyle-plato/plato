@@ -55,6 +55,8 @@ def _gated_routes() -> list[tuple[str, str]]:
 ROUTES = _gated_routes()
 _FILL = {str: "проверка", int: 1, float: 1.0, bool: False, list: [], dict: {}}
 _ENDPOINT_PAYLOADS = {
+    ("POST", "/monitor/finance-allocation/apply"): {"assignments": [{"row_id": "a" * 64, "bank_code": "2.6"}]},
+    ("POST", "/monitor/finance-management/apply"): {"item_ids": ["a" * 64], "management_article": "2.6"},
     ("POST", "/monitor/contracts/source-review"): {"contract_id": "a" * 64},
     ("POST", "/monitor/contracts/source-audit-page"): {
         "book_sha256": ["a" * 64], "corpus_token": "b" * 64},
