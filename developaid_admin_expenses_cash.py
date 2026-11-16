@@ -361,8 +361,66 @@ def for_project(project,cut):
 
 def money(value,compact=False):
     if value is None:return 'нет данных'
+    if compact and abs(value)>=1000000000:return f'{value/1000000000:,.2f}'.replace(',',' ').replace('.',',')+' млрд ₽'
     if compact and abs(value)>=1000000:return f'{value/1000000:,.2f}'.replace(',',' ').replace('.',',')+' млн ₽'
     return f'{value:,.2f}'.replace(',',' ').replace('.',',')+' ₽'
+
+
+def _has_cash_observation(model):
+    return any(number(model.get(key)) is not None for key, _ in FIELDS)
+
+
+def funding_base(own, model):
+    """Cash replaces the old AHR contribution only when that contribution is known."""
+    if not _has_cash_observation(model):
+        return own.get('need')
+    return own.get('need_without_admin_expenses')
+
+
+def funding_base_for_limit(funding, model):
+    """The same existing funding contour for report and Monitor, including legacy books."""
+    if not funding.get('known'):
+        return None
+    own = funding.get('own_money')
+    if own:
+        return funding_base(own, model)
+    if _has_cash_observation(model):
+        # The legacy deficit does not attest which AHR contribution it includes.
+        return None
+    approved = number(funding.get('approved'))
+    if approved is not None and approved > 0:
+        return (funding.get('deficit_ladder') or {}).get('total')
+    return None
+
+
+def funding_summary(base, model, money):
+    """Observed cash is context, never an attestation of remaining funding need.
+
+    The native cash producer does not attest payment coverage since project
+    start. Even a complete observed period cannot turn its balance into need.
+    Without cash data, keep the existing, separately named bank calculation.
+    """
+    base = number(base)
+    balance = number(model.get('balance_after_observed_payments'))
+    if not _has_cash_observation(model):
+        return {'amount': scalar(max(Decimal(0), base)) if base is not None else None,
+                'scope': 'bank_only',
+                'note': 'Сумма без уточнения АХР: остаток АХР пока не рассчитан.'}
+    note = (f'АХР: остаток после учтённых оплат — {money(scalar(balance))}. '
+            if balance is not None else 'Остаток АХР после учтённых оплат пока не рассчитан. ')
+    note += 'Полнота оплат с начала проекта не подтверждена; общая потребность пока не определена.'
+    return {'amount': None, 'scope': 'unconfirmed_total', 'note': note}
+
+
+def render_funding(summary, details_html):
+    amount = summary['amount']
+    esc = lambda v: html.escape(str(v))
+    value = money(amount, compact=True) if amount is not None else 'нет данных'
+    label = 'Потребность по смете банка' if summary.get('scope') == 'bank_only' else 'Потребность в допфинансировании'
+    return (f'<div class="additional-funding"><small>{esc(label)}</small>'
+            f'<div style="font-size:20px;font-weight:700">{esc(value)}</div>'
+            f'<p>{esc(summary["note"])}</p></div>'
+            '<details class="admin-expenses-details"><summary>Расчёт АХР</summary>' + details_html + '</details>')
 
 
 def tiles(model):
@@ -374,15 +432,18 @@ def tiles(model):
              'group':'admin_expenses_cash','tone':'missing' if model.get(key)is None else ''}for key,label in FIELDS]
 
 
-def render(model,source_html='',*,show_tiles=True):
-    esc=lambda v:html.escape(str(v));out=['<section class="admin-expenses-cash"><h3>Административные расходы</h3>',
+def render(model,source_html='',*,show_tiles=False):
+    esc=lambda v:html.escape(str(v));out=['<section class="admin-expenses-cash">'
+        '<style>@media print{.admin-expenses-details::details-content,.admin-expenses-cash details::details-content{content-visibility:visible}'
+        '.admin-expenses-details>:not(summary),.admin-expenses-cash details>:not(summary){display:block!important}}</style>'
+        '<h3>Административные расходы</h3>',
         '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px">']
     for tile in tiles(model) if show_tiles else []:out.append(f'<div><small>{esc(tile["label"])}</small><div style="font-size:20px;font-weight:700">{esc(tile["value"])}</div></div>')
     out+=['</div>',f'<p>{esc(model.get("warning")or "")}</p>',
            '<p>Оплаты из месячного бюджета и РСС за один месяц не складываются. Эти расходы уже входят в бюджет проекта.</p>']
     if source_html:
         unit_note='Бюджет рассчитан по принятому формату сохранённой ФМ. Единица хранения в шапке отдельно не подтверждена.' if (model.get('fm',{}).get('raw_unit_evidence') or {}).get('state')!='observed' else 'Бюджет рассчитан по принятому формату сохранённой ФМ.'
-        out.append('<details class="admin-fm-source"'+(' open' if not show_tiles else '')+'><summary>Данные ФМ</summary><p>'+esc(unit_note)+'</p>'+source_html+'</details>')
+        out.append('<details class="admin-fm-source"><summary>Данные ФМ</summary><p>'+esc(unit_note)+'</p>'+source_html+'</details>')
     out.append('<details><summary>Состав и охват оплат</summary>'+''.join(f'<p>{esc(label)}: {esc(money(model.get(key)))}</p>' for key,label in FIELDS)+'<table><tr><th>Месяц</th><th>Учтено</th><th>Источник</th></tr>')
     for row in model.get('months',[]):out.append(f'<tr><td>{esc(row["month"][:7])}</td><td>{esc(money(row["paid"]))}</td><td>{esc({"budget_month_fact":"Факт месячного бюджета","rss_observed":"Оплаты РСС","unknown":"Нет полного факта"}[row["source"]])}</td></tr>')
     out.append('</table></details></section>');return ''.join(out)

@@ -262,7 +262,7 @@ def test_each_view_of_the_cabinet_opens_without_a_script_error(tmp_path) -> None
                 tab.route("**/*", lambda route: route.abort()
                           if route.request.url.startswith("http")
                           else route.continue_())
-                tab.goto(file.as_uri())
+                tab.set_content(file.read_text(encoding="utf-8"))
                 # Доработал ли скрипт до конца, отвечает ПОСЛЕДНЕЕ, что он
                 # делает. Объявление функции для этого не годится вовсе: оно
                 # поднимается наверх при разборе и остаётся на месте даже у
