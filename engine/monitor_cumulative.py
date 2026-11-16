@@ -6,7 +6,7 @@ closures never retain the request's authentication credentials.
 """
 # ruff: noqa
 
-from pydantic import Field as _CumulativeField
+from pydantic import Field as _CumulativeField, field_validator as _CumulativeValidator
 
 
 class MonitorCumulativeAuth(BaseModel):
@@ -80,6 +80,26 @@ class MonitorProjectSourceAuditPage(MonitorProjectSourceAudit):
 
 class MonitorProjectDuplicateProof(MonitorProjectSourceAuditPage):
     book_sha256: list[_IdentityHash] = _CumulativeField(min_length=1, max_length=1)
+
+
+_PreparedSnapshotID = _IdentityAnnotated[str, _CumulativeField(
+    pattern=r"^\d{4}-\d{2}-\d{2}-[0-9a-f]{64}$", strict=True)]
+
+
+class MonitorProjectPreparedIndex(MonitorProjectSourceAudit):
+    cut: str = _CumulativeField(min_length=10, max_length=10)
+    snapshot_ids: list[_PreparedSnapshotID] = _CumulativeField(min_length=1, max_length=32)
+    expected_project_scope: _IdentityHash
+    expected_cached_source_roster_sha256: _IdentityHash
+    expected_source_content_sha256: _IdentityHash
+    caller_reference_corpus_token: _IdentityHash
+
+    @_CumulativeValidator('snapshot_ids')
+    @classmethod
+    def unique_snapshot_ids(cls, value):
+        if len(value) != len(set(value)):
+            raise ValueError('Состав cache не должен содержать повторённые snapshot IDs.')
+        return value
 
 
 class MonitorContractIdentityInventory(MonitorContractsBuild):
@@ -165,6 +185,32 @@ class MonitorScheduleConfirmation(MonitorCumulativeProject):
     note: str = _CumulativeField(min_length=1, max_length=1000)
 
 
+class MonitorFinanceAllocationRow(BaseModel):
+    model_config = {"extra": "forbid"}
+    row_id: str = _CumulativeField(pattern=r"^[0-9a-f]{64}$")
+    bank_code: str = _CumulativeField(pattern=r"^(?:[123](?:\.[0-9]+)+)?$")
+
+
+
+class MonitorFinanceAllocationApply(MonitorContractsBuild):
+    model_config = {"extra": "forbid"}
+    source_sha256: str = _CumulativeField(pattern=r"^[0-9a-f]{64}$")
+    revision: int = _CumulativeField(ge=0, strict=True)
+    assignments: list[MonitorFinanceAllocationRow] = _CumulativeField(min_length=1, max_length=1000)
+    note: str = _CumulativeField(min_length=1, max_length=1000)
+
+
+
+class MonitorFinanceManagementApply(MonitorContractsBuild):
+    model_config = {"extra": "forbid"}
+    source_sha256: str = _CumulativeField(pattern=r"^[0-9a-f]{64}$")
+    revision: int = _CumulativeField(ge=0, strict=True)
+    item_ids: list[str] = _CumulativeField(min_length=1, max_length=1000)
+    management_article: str = _CumulativeField(pattern=r"^(?:2\.6)?$")
+    note: str = _CumulativeField(min_length=1, max_length=1000)
+
+
+
 class MonitorPhysicalView(MonitorContractsBuild):
     query: str = _CumulativeField(default="", max_length=200)
     offset: int = _CumulativeField(default=0, ge=0, le=100000, strict=True)
@@ -196,6 +242,7 @@ _CUMULATIVE_PATHS = _IDENTITY_PATHS | frozenset({
     "/monitor/contracts/source-audit",
     "/monitor/contracts/source-audit-page",
     "/monitor/contracts/source-duplicate-proof",
+    "/monitor/contracts/source-prepared-index",
     "/monitor/contracts/documents", "/monitor/contracts/document-upload",
     "/monitor/contracts/document-links", "/monitor/contracts/document-remove",
     "/monitor/contracts/document-confirm",
@@ -206,6 +253,8 @@ _CUMULATIVE_PATHS = _IDENTITY_PATHS | frozenset({
     "/monitor/schedule-confirmation/view", "/monitor/schedule-confirmation/save",
     "/monitor/schedule-physical/view", "/monitor/schedule-physical/save",
     "/monitor/schedule-gpr-physical/view", "/monitor/schedule-gpr-physical/save",
+    "/monitor/finance-allocation/view", "/monitor/finance-allocation/apply", "/monitor/finance-allocation/result",
+    "/monitor/finance-management/view", "/monitor/finance-management/apply", "/monitor/finance-management/result",
 })
 
 
@@ -357,9 +406,25 @@ def monitor_schedule_gpr_physical_save(req: MonitorGprPhysicalSave) -> Response:
     return _monitor_schedule_gpr_physical(req, save=True)
 
 
-def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = b"") -> dict:
+def _monitor_cumulative_execute_raw(operation: str, payload: dict, archive: bytes = b"") -> dict:
     """Only validated calculation inputs enter the background worker."""
     from fastapi.encoders import jsonable_encoder
+    if operation in {"finance-management-view", "finance-management-apply"}:
+        import developaid_finance_management as management
+        try:
+            result = (management.view(payload["project"], payload["cut"])
+                      if operation == "finance-management-view" else management.apply(**payload))
+            return {"ok": True, "management": jsonable_encoder(result)}
+        except management.AllocationProblem as exc:
+            return {"ok": False, "status": exc.status, "detail": str(exc)}
+    if operation in {"finance-allocation-view", "finance-allocation-apply"}:
+        import developaid_finance_allocations as allocations
+        try:
+            result = (allocations.view(payload["project"], payload["cut"])
+                      if operation == "finance-allocation-view" else allocations.apply(**payload))
+            return {"ok": True, "allocation": jsonable_encoder(result)}
+        except allocations.AllocationProblem as exc:
+            return {"ok": False, "status": exc.status, "detail": str(exc)}
     import developaid_monitor_ledgers as ledgers
     import developaid_monitor_contracts as contracts
     import developaid_monitor_contract_links as links
@@ -383,6 +448,11 @@ def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = 
         elif operation == "upload":
             result = {"snapshot": ledgers.store_archive(
                 payload["project"], archive, payload["taken_at"], payload["filename"])}
+            # A new archive supplements the register; say which contracts stay from earlier ones.
+            try:
+                result["contracts"] = contracts.archive_summary(payload["project"], payload["taken_at"])
+            except (contracts.ContractProblem, ledgers.LedgerProblem) as exc:
+                result["contracts"] = {"error": str(exc)}
         elif operation == "view":
             register = contracts.build(payload["project"], payload["cut"])
             register = links.enrich(payload["project"], register, payload["cut"])
@@ -409,6 +479,10 @@ def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = 
             import developaid_contract_source_review as source_review
             result = {"source_duplicate_proof": source_review.project_duplicate_proof(**payload),
                       "runtime": {"version": VERSION, "commit": COMMIT}}
+        elif operation == "source-prepared-index":
+            import developaid_contract_prepared_index as prepared_index
+            result = {"source_prepared_index": prepared_index.project_index(**payload),
+                      "runtime": {"version": VERSION, "commit": COMMIT}}
         elif operation == "link":
             result = {"link": links.set_link(
                 payload["project"], payload["contract_id"], payload["evidence_id"],
@@ -419,14 +493,19 @@ def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = 
             import developaid_contract_fact as contract_fact
             problem = ""
             try:
-                rows = contracts.build(payload["project"], payload["cut"], include_history=False)["rows"]
+                register = contracts.build(payload["project"], payload["cut"], include_history=False)
+                rows = contracts.raw_rows(register)
             except contracts.ContractProblem as exc:
                 if operation == "document-upload":
                     raise
-                rows, problem = [], str(exc)
+                register, rows, problem = {}, [], str(exc)
             row = next((r for r in rows if r["id"] == payload["contract_id"]), None)
             acts = contract_fact.unavailable(problem) if problem else contract_fact.acts(row)
             if operation == "documents":
+                ownership_state = register.get('logical_ownership',{}).get('states') or {}
+                related = {member for state in ownership_state.values() for member in state.get('member_ids') or []}
+                if row is None and payload['contract_id'] in related:
+                    raise contracts.ContractProblem('Исходная карточка не представлена на выбранную дату.')
                 result = contract_files.listing(payload["project"], payload["contract_id"], payload["cut"], acts)
             elif operation == "document-upload":
                 if row is None:
@@ -456,6 +535,17 @@ def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = 
             contract_identity.IdentityProblem) as exc:
         # These exception classes contain deliberate user-facing diagnostics.
         return {"ok": False, "detail": str(exc)}
+
+
+def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = b"") -> dict:
+    if operation not in {'view', 'documents', 'source-review'}:
+        return _monitor_cumulative_execute_raw(operation, payload, archive)
+    import developaid_contract_ownership as ownership
+    try:
+        with ownership.read_scope(payload['project'], payload['cut']):
+            return _monitor_cumulative_execute_raw(operation, payload, archive)
+    except ownership.OwnershipProblem as exc:
+        return {'ok': False, 'detail': str(exc)}
 
 
 def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Response:
@@ -524,9 +614,17 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
                     payload.update(contract_id=req.contract_id)
                 elif operation in {"source-audit-page", "source-duplicate-proof"}:
                     payload.update(book_sha256=sorted(set(req.book_sha256)), corpus_token=req.corpus_token)
+                elif operation == "source-prepared-index":
+                    payload.update(req.model_dump(exclude={'key', 'session', 'ticket', 'project', 'cut'}))
                 elif operation == "link":
                     payload.update(contract_id=req.contract_id, evidence_id=req.evidence_id,
                                    confirmed=req.confirmed)
+                elif operation == "finance-allocation-apply":
+                    payload.update(source_sha256=req.source_sha256, revision=req.revision,
+                                   assignments=[item.model_dump() for item in req.assignments], note=req.note)
+                elif operation == "finance-management-apply":
+                    payload.update(source_sha256=req.source_sha256, revision=req.revision,
+                                   item_ids=list(req.item_ids), management_article=req.management_article, note=req.note)
             # The store persists only the fingerprint, not these private inputs.
             # A fresh click must not reuse another running view of older data.
             # Retrying the same admission keeps its exact ticket and fingerprint.
@@ -537,7 +635,9 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
                 return _monitor_cumulative_execute(operation, payload, archive)
             result = store.start(owner, profile, fingerprint, build, req.ticket)
         if result["pending"]:
-            result["detail"] = ("Обрабатываю накопительные." if family == "upload" else
+            result["detail"] = ("Проверяю управленческую статью АХР." if family == "finance-management" else
+                                "Проверяю банковское отнесение АХР." if family == "finance-allocation" else
+                                "Обрабатываю накопительные." if family == "upload" else
                                 "Читаю документы договора." if operation.startswith("document") else
                                 "Готовлю договорную сверку.")
         return JSONResponse(status_code=202 if result["pending"] else 200, content=result, headers=private)
@@ -555,7 +655,9 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
                             headers=private) from None
     except Exception as exc:
         logging.getLogger("developaid.monitor").error("Cumulative operation unavailable (%s)", type(exc).__name__)
-        raise HTTPException(503, "Договорная сверка сейчас недоступна. Повторите запрос.", headers=private) from None
+        message = ("Банковское отнесение АХР сейчас недоступно. Повторите запрос."
+                   if family == "finance-allocation" else "Договорная сверка сейчас недоступна. Повторите запрос.")
+        raise HTTPException(503, message, headers=private) from None
 
 
 @app.post("/monitor/cumulative/upload", include_in_schema=False)
@@ -629,6 +731,42 @@ def monitor_contracts_header_date(req: MonitorContractsHeaderDate) -> Response:
     return _monitor_cumulative_job(req, family="contracts", operation="header-date")
 
 
+@app.post("/monitor/finance-allocation/view", include_in_schema=False)
+def monitor_finance_allocation_view(req: MonitorContractsBuild) -> Response:
+    return _monitor_cumulative_job(req, family="finance-allocation", operation="finance-allocation-view")
+
+
+
+@app.post("/monitor/finance-allocation/apply", include_in_schema=False)
+def monitor_finance_allocation_apply(req: MonitorFinanceAllocationApply) -> Response:
+    return _monitor_cumulative_job(req, family="finance-allocation", operation="finance-allocation-apply")
+
+
+
+@app.post("/monitor/finance-allocation/result", include_in_schema=False)
+def monitor_finance_allocation_result(req: MonitorCumulativeResult) -> Response:
+    return _monitor_cumulative_job(req, family="finance-allocation")
+
+
+
+@app.post("/monitor/finance-management/view", include_in_schema=False)
+def monitor_finance_management_view(req: MonitorContractsBuild) -> Response:
+    return _monitor_cumulative_job(req, family="finance-management", operation="finance-management-view")
+
+
+
+@app.post("/monitor/finance-management/apply", include_in_schema=False)
+def monitor_finance_management_apply(req: MonitorFinanceManagementApply) -> Response:
+    return _monitor_cumulative_job(req, family="finance-management", operation="finance-management-apply")
+
+
+
+@app.post("/monitor/finance-management/result", include_in_schema=False)
+def monitor_finance_management_result(req: MonitorCumulativeResult) -> Response:
+    return _monitor_cumulative_job(req, family="finance-management")
+
+
+
 @app.post("/monitor/contracts/documents", include_in_schema=False)
 def monitor_contracts_documents(req: MonitorContractDocuments) -> Response:
     return _monitor_cumulative_job(req, family="contracts", operation="documents")
@@ -672,3 +810,8 @@ def monitor_contracts_document_confirm(req: MonitorContractDocumentConfirm) -> R
 @app.post("/monitor/contracts/source-duplicate-proof", include_in_schema=False)
 def monitor_project_duplicate_proof(req: MonitorProjectDuplicateProof) -> Response:
     return _monitor_cumulative_job(req, family="contracts", operation="source-duplicate-proof")
+
+
+@app.post("/monitor/contracts/source-prepared-index", include_in_schema=False)
+def monitor_project_prepared_index(req: MonitorProjectPreparedIndex) -> Response:
+    return _monitor_cumulative_job(req, family="contracts", operation="source-prepared-index")

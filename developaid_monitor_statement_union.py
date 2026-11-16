@@ -38,43 +38,23 @@ def _digest(value):
 
 
 def _source(source):
-    return tuple(str((source or {}).get(field) or '') for field in ('filename', 'sheet'))
+    fields = ('filename', 'sheet')
+    if (source or {}).get('snapshot_id') or (source or {}).get('file_sha256'):
+        fields += ('snapshot_id', 'file_sha256')
+    return tuple(str((source or {}).get(field) or '') for field in fields)
 
 
 def _unit(value):
-    from developaid_monitor_contracts import _norm
-    text = _norm(value).replace('²', '2').replace('³', '3')
-    return {'м^2': 'м2', 'м^3': 'м3', 'м.кв.': 'м2', 'кв.м': 'м2',
-            'м.куб.': 'м3', 'куб.м': 'м3', 'пог.м': 'м', 'п.м': 'м'}.get(text, text)
+    from developaid_contract_detail_history import normalize_unit
+    return normalize_unit(value)
 
 
 def _work(item):
-    from developaid_monitor_contracts import _norm
-
-    def headings(value):
-        if isinstance(value, str):
-            value = [value]
-        # Row/cell coordinates are provenance, not physical work identity.
-        return tuple((_norm(node.get('position')), _norm(node.get('name')))
-                     if isinstance(node, dict) else ('', _norm(node))
-                     for node in value or [])
-
-    context = headings(item.get('context_headings'))
-    # The reader retains recent captions as source evidence. Earlier operations
-    # do not identify the current work; retain the active caption and explicit
-    # physical locations (a room remains relevant below a system caption).
-    locations = {}
-    for node in context:
-        role = re.match(r'^(корпус|секция|этаж|помещение|комната|паркинг|автостоянка)(?=\s|№|\d|$)', node[1])
-        if role:
-            locations[role[1]] = node
-    active_context = tuple(locations[key] for key in sorted(locations))
-    if context and context[-1] not in active_context:
-        active_context += (context[-1],)
-
-    return (tuple(_norm(item.get(field)) for field in ('position', 'name', 'scope'))
-            + (_unit(item.get('unit')), headings(item.get('section_path')),
-               active_context))
+    from developaid_contract_detail_history import work_identity
+    scopes, position, name, unit, _, scope, section, context, _ = work_identity(item)
+    headers = tuple((label, value) for label, value in zip(
+        ('object_scope', 'system_scope', 'site_scope'), scopes) if value)
+    return position, name, scope, _unit(unit), headers+section, context
 
 
 def _annual(item, reference, observation_year):

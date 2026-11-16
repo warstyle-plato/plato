@@ -60,6 +60,9 @@ def test_monitor_projects_are_what_lies_on_disk():
     assert monitor.projects() == []
     monitor.store_schedule("Кутузов Сити", _gpr_book({}), None, "2026-07-01")
     monitor.snapshots("Пустой")  # чтение создаёт каталог — это ещё не проект
+    import developaid_finance_allocations as allocations
+    with allocations.source_lock("Только блокировка"):
+        pass  # штатная блокировка создаёт .lock, но решения ещё нет
     got = monitor.projects()
     assert got == [{"project": "Кутузов Сити", "data": ["baseline"]}]
     # Имя из списка ведёт в тот же каталог, что и имя, под которым грузили.
