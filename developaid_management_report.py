@@ -3580,7 +3580,6 @@ def render_text(report: dict[str, Any]) -> str:
         lines.append(esc(block.get("reason") or "Данных нет."))
 
     lines += ["", "<b>Общая информация</b>"]
-    lines.extend(_contract_risk_lines(report.get("contract_risks") or {}))
     lines.extend(_legal_lines(report.get("legal") or {}))
     block = report.get("notes") or {}
     if block.get("state") != "ok":
@@ -5086,7 +5085,6 @@ def render_html(report: dict[str, Any]) -> str:
         out.append(_budget_depth_html(report["budget"], _date(report["end"])))
 
     out.append(_block_heading("legal"))
-    out.append(_contract_risks_html(report.get("contract_risks") or {}))
     out.append(_legal_html(report.get("legal") or {}))
     out.append(_block_heading("info"))
     block = report.get("notes") or {}
