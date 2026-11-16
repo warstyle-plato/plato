@@ -71,6 +71,21 @@ _FORMATTING_FORMULA_PATH = (
 _FORMATTING_FORMULA_CHECKS = ('path', 'data_seen', 'row_inactive', 'cell_inactive',
     'attributes_empty', 'first_child', 'cfvo_formula', 'rule_data_bar', 'rule_guid',
     'extension_attributes', 'extension_uri')
+_DATA_VALIDATION_EXTENSION_PATH = (_MAIN_QNAME+'worksheet', _MAIN_QNAME+'extLst', _MAIN_QNAME+'ext')
+_DATA_VALIDATION_PATH = _DATA_VALIDATION_EXTENSION_PATH + (_X14_QNAME+'dataValidations',)
+_DATA_VALIDATION_RECORD_PATH = _DATA_VALIDATION_PATH + (_X14_QNAME+'dataValidation',)
+_DATA_VALIDATION_FORMULA_PATHS = frozenset(
+    _DATA_VALIDATION_RECORD_PATH + (_X14_QNAME+name, _XM_QNAME+'f')
+    for name in ('formula1', 'formula2'))
+_DATA_VALIDATION_SQREF_PATH = _DATA_VALIDATION_RECORD_PATH + (_XM_QNAME+'sqref',)
+_DATA_VALIDATION_EXTENSION_URI = '{CCE6A557-97BC-4B89-ADB6-D9C93CAAB3DF}'
+_DATA_VALIDATION_ENUMS = {
+    'type': frozenset(('none', 'whole', 'decimal', 'list', 'date', 'time', 'textLength', 'custom')),
+    'errorStyle': frozenset(('stop', 'warning', 'information')),
+    'operator': frozenset(('between', 'notBetween', 'equal', 'notEqual', 'lessThan',
+                          'lessThanOrEqual', 'greaterThan', 'greaterThanOrEqual')),
+    'imeMode': frozenset(('noControl', 'off', 'on', 'disabled', 'hiragana', 'fullKatakana',
+                         'halfKatakana', 'fullAlpha', 'halfAlpha', 'fullHangul', 'halfHangul'))}
 _NAMESPACE_PATH_TOKENS = {
     _MAIN_QNAME+'worksheet': 'worksheet', _MAIN_QNAME+'sheetData': 'sheetData',
     _MAIN_QNAME+'row': 'row', _MAIN_QNAME+'c': 'c', _MAIN_QNAME+'v': 'v',
@@ -473,10 +488,96 @@ def _formatting_formula_checks(stack, element, data_seen, active_row, active_cel
     return states
 
 
-def _formatting_formula(stack, element, data_seen, active_row, active_cell):
+def _formatting_formula(stack, element, data_seen, active_row, active_cell, *, _observation=None):
     """Only the existing standard Excel2010 data-bar threshold exception."""
-    return all(state == 'match' for state in _formatting_formula_checks(
-        stack, element, data_seen, active_row, active_cell))
+    states = _formatting_formula_checks(stack, element, data_seen, active_row, active_cell)
+    if _observation is not None:
+        _observation['counts']['cf_predicate_evaluations'] += 1
+        for name, state in zip(_FORMATTING_FORMULA_CHECKS, states):
+            _observation['cf11'][name][state] += 1
+    return all(state == 'match' for state in states)
+
+
+def _data_validation_metadata(stack, element, data_seen, active_row, active_cell, root_element, *, end=False):
+    """Only the closed standard Excel2010 data-validation metadata subtree.
+
+    Formula and reference text stay opaque. Exact ownership, grammar and public
+    attribute types are separate from the unchanged data-bar exception.
+    """
+    path = tuple(stack)
+    formula_wrappers = {p[:-1] for p in _DATA_VALIDATION_FORMULA_PATHS}
+    paths = {_DATA_VALIDATION_EXTENSION_PATH, _DATA_VALIDATION_PATH,
+             _DATA_VALIDATION_RECORD_PATH, _DATA_VALIDATION_SQREF_PATH,
+             *formula_wrappers, *_DATA_VALIDATION_FORMULA_PATHS}
+    if (path not in paths or not data_seen or active_row is not None or active_cell is not None):
+        return False
+    chain = [*reversed(list(element.iterancestors())), element]
+    if (len(chain) != len(path) or chain[0] is not root_element
+            or tuple(node.tag for node in chain) != path):
+        return False
+    extension = chain[2]
+    if (set(extension.attrib) != {'uri'}
+            or extension.get('uri', '').upper() != _DATA_VALIDATION_EXTENSION_URI
+            or chain[1].attrib):
+        return False
+
+    def attributes(node, *, container=False):
+        booleans = {'disablePrompts'} if container else {
+            'allowBlank', 'showDropDown', 'showInputMessage', 'showErrorMessage'}
+        integers = {'xWindow', 'yWindow', 'count'} if container else set()
+        strings = set() if container else {'errorTitle', 'error', 'promptTitle', 'prompt'}
+        enums = {} if container else _DATA_VALIDATION_ENUMS
+        for name, value in node.attrib.items():
+            if name in booleans:
+                if value not in {'0', '1', 'false', 'true'}:
+                    return False
+            elif name in integers:
+                if re.fullmatch(r'[0-9]{1,10}', value) is None or int(value) > 2**32 - 1:
+                    return False
+            elif name in enums:
+                if value not in enums[name]:
+                    return False
+            elif name not in strings:
+                return False
+        return True
+
+    if len(chain) >= 4 and not attributes(chain[3], container=True):
+        return False
+    if len(chain) >= 5 and not attributes(chain[4]):
+        return False
+    if len(chain) >= 6 and chain[5].attrib:
+        return False
+    if len(chain) >= 7 and chain[6].attrib:
+        return False
+    previous = element.getprevious()
+    previous_tag = previous.tag if previous is not None else None
+    if path == _DATA_VALIDATION_PATH and previous is not None:
+        return False
+    if path == _DATA_VALIDATION_RECORD_PATH and previous_tag not in (None, _X14_QNAME+'dataValidation'):
+        return False
+    if path in formula_wrappers:
+        allowed_previous = (None,) if path[-1] == _X14_QNAME+'formula1' else (None, _X14_QNAME+'formula1')
+        if previous_tag not in allowed_previous:
+            return False
+    if path in _DATA_VALIDATION_FORMULA_PATHS and previous is not None:
+        return False
+    if path == _DATA_VALIDATION_SQREF_PATH and previous_tag not in (
+            None, _X14_QNAME+'formula1', _X14_QNAME+'formula2'):
+        return False
+    leaf = path in _DATA_VALIDATION_FORMULA_PATHS or path == _DATA_VALIDATION_SQREF_PATH
+    if not leaf and element.text and element.text.strip():
+        return False
+    if end:
+        # Streaming cleanup retains only the final already-validated child.
+        expected = (_X14_QNAME+'dataValidations' if path == _DATA_VALIDATION_EXTENSION_PATH else
+                    _X14_QNAME+'dataValidation' if path == _DATA_VALIDATION_PATH else
+                    _XM_QNAME+'sqref' if path == _DATA_VALIDATION_RECORD_PATH else
+                    _XM_QNAME+'f' if path in formula_wrappers else None)
+        if leaf:
+            return len(element) == 0
+        if len(element) != 1 or element[0].tag != expected:
+            return False
+    return True
 
 
 def _namespace_structure(stack, element, data_seen, active_row, active_cell):
@@ -488,12 +589,21 @@ def _namespace_structure(stack, element, data_seen, active_row, active_cell):
                             if 'no_match' in states else 'none'), 'checks': states}
 
 
-def _verified_payload_extent(sheet, *, _failure=None):
+def _verified_payload_extent(sheet, *, _failure=None, _observation=None):
     """A failed/ambiguous proof returns None, never an empty successful sheet.
 
     Values/formula text are not inspected or retained. All payload coordinates,
     including uncached/shared formulas, are checked before a bounded view exists.
     """
+    if _observation is not None:
+        _observation.clear()
+        _observation.update(scan='not_observed', cf_rejected=False, dv_rejected=False,
+            counts=dict.fromkeys(('foreign_formula_starts', 'cf_predicate_evaluations',
+                'cf_path_candidates', 'cf_start_predicate_matches', 'dv_containers_seen',
+                'dv_rules_seen', 'dv_formula1_starts', 'dv_formula2_starts',
+                'dv_sqref_starts', 'dv_formula_start_matches', 'rejected_foreign_formula_starts'), 0),
+            cf11={name: dict.fromkeys(('match', 'no_match', 'not_evaluated'), 0)
+                  for name in _FORMATTING_FORMULA_CHECKS})
     max_row = max_column = nodes = cells = 0
     data_seen = False
     context = 'unknown'
@@ -518,6 +628,9 @@ def _verified_payload_extent(sheet, *, _failure=None):
         active_cell = None
         formatting_formula = None
         formatting_threshold = None
+        data_validation_extension = None
+        data_validation_leaf = None
+        data_validation_count = 0
 
         def include(row, column):
             nonlocal max_row, max_column
@@ -527,6 +640,8 @@ def _verified_payload_extent(sheet, *, _failure=None):
 
         with sheet._get_source() as raw:
             stream = _ExtentStream(raw)
+            if _observation is not None:
+                _observation['scan'] = 'observed_prefix'
             parsed = etree.iterparse(stream, events=('start', 'end'), resolve_entities=False,
                 load_dtd=False, no_network=True, recover=False, huge_tree=False)
             for event, element in parsed:
@@ -543,19 +658,76 @@ def _verified_payload_extent(sheet, *, _failure=None):
                     if len(stack) > 64 or nodes > MAX_CELLS * 8:
                         raise _ExtentProofProblem('xml_resource_limit')
                     if formatting_formula is not None:
+                        if _observation is not None:
+                            _observation['cf_rejected'] = True
                         raise _ExtentProofProblem('metadata_formula_structure')
                     if formatting_threshold is not None:
+                        if _observation is not None:
+                            _observation['cf_rejected'] = True
+                        raise _ExtentProofProblem('metadata_formula_structure')
+                    if data_validation_leaf is not None:
+                        if _observation is not None:
+                            _observation['dv_rejected'] = True
                         raise _ExtentProofProblem('metadata_formula_structure')
                     if len(stack) == 1:
                         if tag != worksheet or element.getroottree().docinfo.doctype:
                             raise _ExtentProofProblem('worksheet_namespace_or_doctype')
                         root_element = element
-                    is_formatting_formula = (local == 'f' and tag != namespace+'f'
-                        and _formatting_formula(stack, element, data_seen, active_row, active_cell))
+                    if _observation is not None:
+                        counts = _observation['counts']
+                        path = tuple(stack)
+                        if local == 'f' and tag != namespace+'f':
+                            counts['foreign_formula_starts'] += 1
+                        if path == _FORMATTING_FORMULA_PATH:
+                            counts['cf_path_candidates'] += 1
+                        if path == _DATA_VALIDATION_PATH:
+                            counts['dv_containers_seen'] += 1
+                        if path == _DATA_VALIDATION_RECORD_PATH:
+                            counts['dv_rules_seen'] += 1
+                        if path in _DATA_VALIDATION_FORMULA_PATHS:
+                            counts['dv_'+('formula1' if path[-2] == _X14_QNAME+'formula1' else 'formula2')+'_starts'] += 1
+                        if path == _DATA_VALIDATION_SQREF_PATH:
+                            counts['dv_sqref_starts'] += 1
+                    data_validation = False
+                    starts_data_validation = (
+                        tuple(stack) == _DATA_VALIDATION_EXTENSION_PATH
+                        and element.get('uri', '').upper() == _DATA_VALIDATION_EXTENSION_URI
+                        or tuple(stack) == _DATA_VALIDATION_PATH)
+                    if data_validation_extension is not None or starts_data_validation:
+                        if not _data_validation_metadata(
+                                stack, element, data_seen, active_row, active_cell, root_element):
+                            if _observation is not None:
+                                _observation['dv_rejected'] = True
+                            raise _ExtentProofProblem('metadata_formula_structure')
+                        data_validation = True
+                        if data_validation_extension is None:
+                            data_validation_extension = element if len(stack) == 3 else element.getparent()
+                            data_validation_count = 0
+                        if tuple(stack) == _DATA_VALIDATION_RECORD_PATH:
+                            data_validation_count += 1
+                        if tag in (_XM_QNAME+'f', _XM_QNAME+'sqref'):
+                            data_validation_leaf = element
+                    if _observation is None:
+                        is_formatting_formula = (local == 'f' and tag != namespace+'f'
+                            and _formatting_formula(stack, element, data_seen, active_row, active_cell))
+                    else:
+                        is_formatting_formula = (local == 'f' and tag != namespace+'f'
+                            and _formatting_formula(stack, element, data_seen, active_row, active_cell,
+                                                    _observation=_observation))
+                        if is_formatting_formula:
+                            _observation['counts']['cf_start_predicate_matches'] += 1
                     if is_formatting_formula:
                         formatting_formula = element
                         formatting_threshold = element.getparent()
-                    if local in ('sheetData', 'row', 'c', 'v', 'f', 'is') and tag != namespace + local and not is_formatting_formula:
+                    is_data_validation_formula = data_validation and tag == _XM_QNAME+'f'
+                    if _observation is not None and is_data_validation_formula:
+                        _observation['counts']['dv_formula_start_matches'] += 1
+                    if (local in ('sheetData', 'row', 'c', 'v', 'f', 'is') and tag != namespace + local
+                            and not is_formatting_formula and not is_data_validation_formula):
+                        if _observation is not None and local == 'f':
+                            _observation['counts']['rejected_foreign_formula_starts'] += 1
+                            if tuple(stack) == _FORMATTING_FORMULA_PATH:
+                                _observation['cf_rejected'] = True
                         namespace_rejection = _namespace_rejection(tag)
                         namespace_structure = _namespace_structure(stack, element, data_seen, active_row, active_cell)
                         namespace_path_fingerprint = _namespace_path_fingerprint(stack)
@@ -601,9 +773,19 @@ def _verified_payload_extent(sheet, *, _failure=None):
                             if first[0] > last[0] or first[1] > last[1]:
                                 raise _ExtentProofProblem('formula_area_order')
                             include(*last)
-                    elif local in ('v', 'f', 'is') and not is_formatting_formula:
+                    elif local in ('v', 'f', 'is') and not is_formatting_formula and not is_data_validation_formula:
                         raise _ExtentProofProblem('payload_outside_cell')
                 else:
+                    if (data_validation_extension is not None and not _data_validation_metadata(
+                            stack, element, data_seen, active_row, active_cell, root_element, end=True)):
+                        if _observation is not None:
+                            _observation['dv_rejected'] = True
+                        raise _ExtentProofProblem('metadata_formula_structure')
+                    if (data_validation_extension is not None and tuple(stack) == _DATA_VALIDATION_PATH
+                            and element.get('count') is not None and int(element.get('count')) != data_validation_count):
+                        if _observation is not None:
+                            _observation['dv_rejected'] = True
+                        raise _ExtentProofProblem('metadata_formula_structure')
                     if not stack or stack.pop() != tag:
                         raise _ExtentProofProblem('xml_structure_unknown')
                     if element.tail and element.tail.strip():
@@ -621,6 +803,10 @@ def _verified_payload_extent(sheet, *, _failure=None):
                         formatting_formula = None
                     if element is formatting_threshold:
                         formatting_threshold = None
+                    if element is data_validation_leaf:
+                        data_validation_leaf = None
+                    if element is data_validation_extension:
+                        data_validation_extension = None
                     element.clear()
                     while element.getprevious() is not None:
                         del element.getparent()[0]
@@ -629,6 +815,8 @@ def _verified_payload_extent(sheet, *, _failure=None):
             # Complete parse and read through ZIP EOF/CRC, not an XML prefix.
             if stream.read(1) or stack or not data_seen or not max_row or not max_column:
                 raise _ExtentProofProblem('extent_not_proven')
+        if _observation is not None:
+            _observation['scan'] = 'complete'
         return max_row, max_column
     except _ExtentProofProblem as exc:
         reason = exc.reason
