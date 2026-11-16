@@ -115,6 +115,7 @@ def test_real_report_pdf_uses_gpr_provenance_without_legacy_pm_confirmation(tmp_
     import copy
     from developaid_schedule_timeline import render as monitor_timeline
     from developaid_report_schedule import fact_text
+    import developaid_report_gantt as gantt
     block = payload['gantt']['dependency_timeline']
     summary = payload['construction_summary']
     before = copy.deepcopy(payload)
@@ -134,12 +135,18 @@ def test_real_report_pdf_uses_gpr_provenance_without_legacy_pm_confirmation(tmp_
     markup = report.render_html(payload)
     assert markup.count('data-gpr-block=') == 3
     assert '<article class="cg-work"' not in markup and 'executive-schedule' not in markup
+    # This fixture has no readiness profile/owner-calendar override. Its sole
+    # 28 February reading is 251 days old at the cut, beyond the native 45-day
+    # window; the injected legacy confirmation cannot supply a project date.
+    assert gantt.compact_model(payload['gantt'], payload['end'])['finish'] is None
+    assert markup.count('data-project-forecast=""') == 3
     path = tmp_path / 'synthetic-confirmation-report.pdf'
     with sync_playwright() as pw:
         browser = pw.chromium.launch(executable_path=str(chromium_or_skip()), headless=True, args=['--no-sandbox'])
         page = browser.new_page()
         page.route('**/*', lambda route: route.abort())
         page.set_content(markup, wait_until='load')
+        assert page.locator('[data-gpr-block=forecast]>.rg-project-date').inner_text() == 'Пока не определён'
         page.pdf(path=str(path), format='A4', print_background=True)
         browser.close()
     with fitz.open(path) as pdf:
@@ -149,6 +156,9 @@ def test_real_report_pdf_uses_gpr_provenance_without_legacy_pm_confirmation(tmp_
     assert '06.11.2026' in text and 'Подробные работы и источники' in text
     assert 'Сроки и выполнение работ' not in text and 'Основания оценки сроков' not in text
     assert '50 из 100 м² на 28.02.2026' not in text
+    forecast_text = text.split('Прогноз учтённых работ', 1)[1].split('Матрица готовности', 1)[0]
+    assert forecast_text.lstrip().startswith('Пока не определён ')
+    assert '31.10.2026' not in forecast_text and '13.02.2027' not in forecast_text
     assert payload['construction_summary']['forecast'] is None
     assert 'Synthetic calendar evidence 2026' not in text
     assert 'Проверка исходного графика' not in text

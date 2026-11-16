@@ -4485,7 +4485,8 @@ def _executive_schedule(report: dict[str, Any]) -> dict[str, Any]:
 
 def _gantt_html(report: dict[str, Any]) -> str:
     return report_gantt.render_compact(report_gantt.compact_model(
-        report.get('gantt') or {}, report.get('end')))
+        report.get('gantt') or {}, report.get('end')),
+        stalled_risk=_stalled_words(report.get('schedule') or {}))
 
 
 def _report_gpr_summary(report: dict[str, Any]) -> dict[str, Any] | None:

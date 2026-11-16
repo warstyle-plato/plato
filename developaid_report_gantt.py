@@ -828,7 +828,7 @@ def compact_model(block: dict[str, Any], cut: Any) -> dict[str, Any]:
                 owner_plan=owner_date, cut=str(cut))
 
 
-def render_compact(model: dict[str, Any]) -> str:
+def render_compact(model: dict[str, Any], *, stalled_risk: str = '') -> str:
     """Three report blocks share the same bound project date, on screen and paper."""
     from developaid_schedule_visual import date_text
     esc = lambda value: html.escape(str(value if value is not None else ''), quote=True)
@@ -850,6 +850,8 @@ def render_compact(model: dict[str, Any]) -> str:
         out.append('<p>'+esc(summary['readiness_text'])+'</p>')
     if summary.get('progress') is None and summary.get('reason'):
         out.append('<p class="rg-gap">'+esc(str(summary['reason'])[:240])+'</p>')
+    if stalled_risk:
+        out.append('<p class="rg-stalled">По всему текущему ГПР: '+esc(stalled_risk)+'</p>')
     if model['owner_plan']:
         out.append('<p class="rg-owner-plan">План РНВ владельца: '+esc(date_text(model['owner_plan']))+'.</p>')
     out.append('<p><a href="/monitor#tab=monitor">Подробные работы и источники — в Мониторе</a>.</p></section>')

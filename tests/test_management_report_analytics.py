@@ -107,7 +107,6 @@ def test_the_document_opens_with_findings_and_has_charts():
     assert page.index("Главное за период") < page.index(">Стройка</h2>")
     titles = re.findall(r"<figcaption>([^<]+)</figcaption>", page)
     assert titles == [
-        "Выполнение по графику работ: план и факт на дату каждого ГПР-факта",
         "Продажи нарастающим итогом по кварталам, сумма договоров",
         "Темп продаж по месяцам: м² договоров и цена квартир",
         "Темп продаж по месяцам: лотов всех типов (квартиры, помещения, машиноместа, кладовые) "
@@ -119,6 +118,10 @@ def test_the_document_opens_with_findings_and_has_charts():
         "Стройка и проектирование: план и оплачено по месяцам",
         "Коммерческие расходы: план и оплачено по месяцам",
     ]
+    # GPR is now the compact forecast/matrix/corpus overview; the nine
+    # independent sales/financial charts above retain their order and values.
+    assert page.count('data-gpr-block=') == 3
+    assert 'Выполнение по графику работ: план и факт на дату каждого ГПР-факта' not in page
     # Числа графика — те же, что в таблице блока: столбец «Оплачено» стройки.
     budget = page[page.index("Бюджет на октябрь 2026"):]
     assert ">150,0<" in budget and ">400,0<" in budget

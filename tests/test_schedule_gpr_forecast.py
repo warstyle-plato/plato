@@ -209,20 +209,28 @@ def test_gpr_rnv_driver_is_shown_once_without_restoring_pm_drawing(width):
         if width == 1440:
             data = {'project': 'Учебный', 'kind': 'week', 'start': '2026-11-01',
                     'end': '2026-11-06', 'gantt': {'dependency_timeline': block}}
-            page.set_content(report.render_html(data))
             basis = 'Оценка по измеренному росту процента ГПР.'
-            expect(page.locator('.executive-schedule')).not_to_contain_text(basis)
-            source_details = page.locator('details.report-source-screen')
-            assert not source_details.get_attribute('open')
-            source_details.locator('summary').click()
-            expect(source_details.get_by_text(basis, exact=False)).to_be_visible()
+            # The detailed renderer/source explanation is unchanged. A work's
+            # physical estimate must not become a project date without the
+            # selected canonical projection in the compact document.
+            import developaid_report_schedule as executive
+            summary = report._executive_schedule(data)
+            detail = executive.render(summary)+executive.details(summary)
+            assert '10.05.2027' in detail and 'Оценка окончания работ' in detail
+            assert 'Оценка работ не подтверждает дату получения разрешения на ввод' in detail
+            assert detail.count('На срок влияет') == 1 and detail.count(basis) == 1
+            assert qualified['forecast'] == '2027-05-10'
+            page.set_content(report.render_html(data))
+            compact = page.locator('.report-gpr-compact')
+            expect(compact.locator('[data-gpr-block]')).to_have_count(3)
+            expect(compact.locator('[data-gpr-block=forecast]')).to_contain_text('Пока не определён')
+            assert compact.locator('.executive-schedule,details.report-source-screen').count() == 0
+            expect(compact).not_to_contain_text(basis)
             text = ' '.join(' '.join(p.extract_text() or '' for p in
                                     PdfReader(io.BytesIO(page.pdf(format='A4'))).pages).split())
-            assert '10.05.2027' in text and 'Оценка окончания работ' in text
-            assert 'Оценка работ не подтверждает дату получения разрешения на ввод' in text
-            assert text.count('На срок влияет') == 1
-            assert 'Оценка по измеренному росту процента ГПР.' in text
-            assert text.count(basis) == 1  # one printed appendix, no duplicate main-method explanation
+            assert all(title in text for title in ['Прогноз учтённых работ', 'Матрица готовности', 'Гант по корпусам'])
+            assert 'Пока не определён' in text and '10.05.2027' not in text
+            assert basis not in text
             assert 'Устаревшая техническая работа' not in text
             assert 'Техническая сеть работ' not in text
         assert not errors

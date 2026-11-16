@@ -64,3 +64,7 @@ def test_report_keeps_stalled_work_risk_when_final_rnv_is_not_known(state):
     text = report.render_html(payload)
     assert 'почти стоят' in text and '&lt;b&gt;Synthetic risk&lt;/b&gt;' in text
     assert '<b>Synthetic risk</b>' not in text and 'модель ждёт' not in text
+    forecast = text.split('data-gpr-block="forecast"', 1)[1].split('data-gpr-block="matrix"', 1)[0]
+    assert 'По всему текущему ГПР' in forecast and 'почти стоят' in forecast
+    assert text.count('class="rg-stalled"') == 1 and text.count('data-gpr-block=') == 3
+    assert text.count('data-project-forecast=""') == 3

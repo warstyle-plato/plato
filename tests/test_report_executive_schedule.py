@@ -145,7 +145,13 @@ def test_stalled_gpr_risk_is_visible_before_details_in_html_and_pdf(monkeypatch)
                 tab.set_viewport_size(dict(width=width,height=1000))
                 assert summary.locator('[data-gpr-block]').count()==3
                 assert summary.locator('details,.executive-stalled').count()==0
-                assert 'Демонтаж башенных кранов К-1,2'not in summary.inner_text()
+                risk = summary.locator('[data-gpr-block=forecast] .rg-stalled')
+                assert risk.count() == 1 and risk.is_visible()
+                text = risk.inner_text()
+                assert 'По всему текущему ГПР' in text
+                assert 'Демонтаж башенных кранов К-1,2' in text and 'процент в ГПР' in text
+                assert 'актов' not in text
+                assert risk.evaluate('e=>e.scrollWidth<=e.clientWidth+1')
                 assert summary.evaluate('e=>e.scrollWidth<=e.clientWidth+1')
             with tab.expect_download(timeout=90_000) as download:
                 tab.click("#reportPdfBtn")
@@ -154,7 +160,9 @@ def test_stalled_gpr_risk_is_visible_before_details_in_html_and_pdf(monkeypatch)
                             for page in PdfReader(io.BytesIO(raw)).pages)
             assert 'Приложение. Источники и ограничения оценки'not in text
             assert 'Прогноз учтённых работ'in text and 'Гант по корпусам'in text
-            assert 'Демонтаж башенных кранов К-1,2'not in text and '2044'not in text
+            assert 'По всему текущему ГПР' in text
+            assert text.count('Демонтаж башенных кранов К-1,2') == 1 and 'процент в ГПР' in text
+            assert '2044'not in text
             assert not errors,errors
 
         finally:
@@ -263,7 +271,15 @@ def test_confirmed_zero_is_known_natural_fact_even_without_pace():
     assert executive["facts"][0]["done"] == 0
     assert executive["source_status"]["state"] == "pace_unknown"
     assert executive["forecast"] is None
-    assert "0 из 10 м³" in report.render_html(built)
+    # Confirmed zero is still a measured fact in the complete native consumer;
+    # the compact document links to those details rather than printing them.
+    from developaid_report_schedule import fact_text
+    from developaid_schedule_timeline import render as monitor_timeline
+    assert "0 из 10 м³" in fact_text(executive["facts"][0])
+    assert "0 / 10 м³" in monitor_timeline(built['gantt']['dependency_timeline'])
+    markup = report.render_html(built)
+    assert markup.count('data-gpr-block=') == 3
+    assert "0 из 10 м³" not in markup and 'Подробные работы и источники — в Мониторе' in markup
 
 
 @pytest.mark.parametrize("revoked", [False, True])

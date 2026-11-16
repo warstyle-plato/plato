@@ -145,19 +145,27 @@ def test_compact_report_pdf_and_full_monitor_retain_the_same_physical_dto(tmp_pa
     assert markup.count('data-gpr-block=')==3
     assert '<article class="cg-work"'not in markup and 'executive-schedule'not in markup
     compact=gantt.compact_model(payload['gantt'],CUT)
-    assert markup.count('data-project-forecast="'+(compact['finish']or'')+'"')==3
+    # Native canonical fixture expectations, independently of the renderer:
+    # stale February reading has no date; fresh confirmed October reading
+    # keeps the measured 6 January estimate, including the partial policy.
+    expected_finish=None if scenario=='stale'else'2027-01-06'
+    expected_text='Пока не определён'if scenario=='stale'else'06.01.2027'
+    assert compact['finish']==expected_finish
+    assert markup.count('data-project-forecast="'+(expected_finish or'')+'"')==3
     path=tmp_path/'physical.pdf'
     with sync_playwright() as pw:
         browser=pw.chromium.launch(executable_path=str(chromium_or_skip()),args=['--no-sandbox'])
         page=browser.new_page();page.route('**/*',lambda route:route.abort())
         page.set_content(markup,wait_until='load')
+        assert page.locator('[data-gpr-block=forecast]>.rg-project-date').inner_text()==expected_text
         page.pdf(path=str(path),format='A4');browser.close()
     with fitz.open(path) as pdf:text=' '.join(' '.join(page.get_text() for page in pdf).split())
     assert all(title in text for title in ['Прогноз учтённых работ', 'Матрица готовности', 'Гант по корпусам'])
     assert '06.11.2026' in text and 'Подробные работы и источники' in text
     assert 'Сроки и выполнение работ' not in text and 'Приложение. Источники и ограничения оценки' not in text
     forecast_text=text.split('Прогноз учтённых работ',1)[1].split('Матрица готовности',1)[0]
-    assert (report._day(compact['finish'])if compact['finish']else'Пока не определён')in forecast_text
+    assert forecast_text.lstrip().startswith(expected_text+' ')
+    assert '31.10.2026'not in forecast_text and '13.02.2027'not in forecast_text
     assert '50 из 100 м² на '+actual_date not in forecast_text
     assert '13.02.2027' not in text and 'Все работы исходной сети' not in text
     if scenario=='stale':

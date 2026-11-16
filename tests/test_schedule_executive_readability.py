@@ -47,8 +47,12 @@ def dense_schedule():
 
 def executive_html(block, grouped):
     # Exercise the retained detailed components directly, not the compact report.
+    import html
     import developaid_report_schedule as executive
-    return executive.render(report._executive_schedule({'gantt':grouped}))+gantt.render(grouped,'2026-11-06')
+    summary = report._executive_schedule({'gantt':grouped})
+    corpus = (gantt.render(grouped, '2026-11-06') if grouped.get('state') == 'ok'
+              else '<p>'+html.escape(grouped.get('reason') or 'Графика работ нет.')+'</p>')
+    return executive.render(summary)+executive.details(summary)+corpus
 
 
 def test_dense_network_is_calculated_fully_but_history_cannot_crowd_out_delay_origin():
