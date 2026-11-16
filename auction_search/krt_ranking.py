@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from market_search.http import load_json, save_json
+from auction_search.krt_status import model_cohort, model_exclusion, project_kind, with_last_known_status
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,7 @@ CACHE_SCHEMA_VERSION = 1
 # — маркетинг, модель, рекомендация Платона, — а строка рейтинга живёт своей
 # жизнью. Чужая версия читается как «нет отчёта», а не как отчёт с дырами.
 REPORT_SCHEMA_VERSION = 1
+MARKET_REPORT_SCHEMA_VERSION = 1
 # Что каталог видел раньше. Нужно ровно для одного: отличить площадку, которая
 # появилась на этой неделе, от той, что лежит там полгода. Без этого «новое»
 # пришлось бы определять глазами по списку из ста двадцати строк.
@@ -178,7 +180,8 @@ def _number(value: Any) -> float:
 
 # Паспорт площадки приходит из каталога krt.mos.ru и к нашему счёту отношения
 # не имеет: он обновляется даже тогда, когда посчитать не удалось.
-_CATALOGUE_FIELDS = ("name", "okrug", "district", "status", "area_ha", "housing_gfa_sqm",
+_CATALOGUE_FIELDS = ("name", "okrug", "district", "status", "status_kind", "last_known_status_kind",
+                     "area_ha", "housing_gfa_sqm",
                      # Съезд разбора — свойство карточки, а не счёта: карточка
                      # исправилась — метка обязана уйти вместе с ней, поэтому
                      # поле обновляется и пустым.
@@ -411,13 +414,20 @@ def score_row(project: dict[str, Any], screening: dict[str, Any]) -> dict[str, A
     млн ₽ в рубли, рубли на метр продаваемой. Всё остальное приходит готовым из
     `build_krt_model_screening`, второй экономики тут нет.
     """
+    project = with_last_known_status(project)
     slug = str(project.get("slug") or "")
+    excluded = model_exclusion(project)
+    if excluded is not None:
+        return {"slug": slug, **{key: project[key] for key in _CATALOGUE_FIELDS if key in project},
+                **excluded, "computed_at": 0}
     row: dict[str, Any] = {
         "slug": slug,
         "name": str(project.get("name") or slug),
         "okrug": project.get("okrug"),
         "district": project.get("district"),
         "status": project.get("status"),
+        "status_kind": project_kind(project),
+        "last_known_status_kind": project.get("last_known_status_kind") or "",
         "area_ha": project.get("area_ha"),
         "housing_gfa_sqm": project.get("housing_gfa_sqm"),
         # Съезд разбора едет вместе со строкой. Экран прячет числа съехавшей
@@ -729,7 +739,45 @@ class KrtRanking:
         except OSError:
             logger.exception("KRT schedule state write failed")
 
-    def _schedule_begin(self, projects: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _weekly_trace(self, operation: str, *args):
+        """Prospective metadata only; audit failure never changes model work."""
+        import sys
+        trace = None
+        try:
+            import developaid_krt_weekly_trace as trace
+            root = self.path.parent.absolute()
+            period = getattr(self, '_weekly_trace_period', self.last_scheduled_moment())
+            if operation == 'sources':
+                return trace.source_revision(root)
+            if operation == 'begin':
+                self._weekly_trace_period = period
+                previous = {r.get('slug'): r for r in self.rows()}
+                projects = [with_last_known_status(p, previous.get(p.get('slug'))) for p in args[0]]
+                core = sys.modules.get('developaid_core') or sys.modules.get('main_legacy')
+                return trace.begin(root, period, projects,
+                    {'commit': getattr(core, 'COMMIT', None), 'version': getattr(core, 'VERSION', None)},
+                    raw_projects=args[1] if len(args) > 1 else None,
+                    source_before=args[2] if len(args) > 2 else None)
+            if operation == 'observe':
+                # These are the exact nonfinancial fields the existing excluded
+                # market-only path is allowed to refresh; all other row values
+                # are bound by a hash, without exporting their contents.
+                mutable = _CATALOGUE_FIELDS + (
+                    'model_excluded', 'model_exclusion_reason', 'market_computed_at',
+                    'market_failed_at', 'market_failure_reason',
+                    'surrounding_price_rub_sqm', 'surrounding_sales_units_per_month')
+                return trace.observe(root, args[0], mutable)
+            if operation == 'visit':
+                return trace.visit(root, period, *args)
+            if operation == 'end':
+                return trace.end(root, period, *args)
+        except Exception as exc:  # Audit is a separate, explicitly incomplete result.
+            code = getattr(exc, 'code', 'trace_unavailable')
+            code = code if code in getattr(trace, 'GAPS', ()) else 'trace_unavailable'
+            logger.warning('KRT weekly metadata trace incomplete: %s', code)
+        return {'state': 'unavailable'} if operation == 'observe' else None
+
+    def _schedule_begin(self, projects: list[dict[str, Any]], *, raw_projects=None, trace_sources_before=None) -> list[dict[str, Any]]:
         """Начать или продолжить плановый прогон этого срока.
 
         Посчитанные в этот срок площадки второй раз не считаются: прогон,
@@ -753,6 +801,8 @@ class KrtRanking:
             "finished_at": None,
             "stop_reason": "",
         })
+        self._weekly_trace_period = period
+        self._weekly_trace('begin', projects, raw_projects, trace_sources_before)
         return remaining
 
     def _schedule_mark(self, slug: str, failed: bool) -> None:
@@ -1215,11 +1265,90 @@ class KrtRanking:
             cached = load_json(self.report_path(slug))
         except ValueError:
             return None
-        if not isinstance(cached, dict):
-            return None
-        if cached.get("schema_version") != REPORT_SCHEMA_VERSION:
-            return None
+        if not isinstance(cached, dict) or cached.get("schema_version") != REPORT_SCHEMA_VERSION:
+            cached = None
+        market_only = load_json(self._market_report_path(slug)) or {}
+        if (not isinstance(market_only, dict)
+                or market_only.get("schema_version") != MARKET_REPORT_SCHEMA_VERSION
+                or market_only.get("slug") != slug):
+            market_only = {}
+        if (_number(market_only.get("market_computed_at")) >
+                _number((cached or {}).get("computed_at"))):
+            # Observations have a separate cache and clock. Never overwrite or
+            # restamp the old financial report merely by refreshing its market.
+            cached = dict(cached or {
+                "schema_version": REPORT_SCHEMA_VERSION, "slug": slug,
+                "computed_at": 0, "screening": market_only.get("exclusion") or {},
+            })
+            cached.update({key: market_only[key] for key in
+                           ("project", "market", "market_computed_at", "exclusion")
+                           if key in market_only})
         return cached
+
+    def _market_report_path(self, slug: str) -> Path:
+        # Reuse the model report's validated slug, never a second path policy.
+        return self.path.parent / "market-reports" / self.report_path(slug).name
+
+    def model_project(self, project: dict[str, Any]) -> dict[str, Any]:
+        """Read source history first, falling back to a legacy stored row."""
+        return with_last_known_status(project, self.stored_row(str(project.get("slug") or "")))
+
+    def save_market_only(
+        self, project: dict[str, Any], screening: dict[str, Any], market: dict[str, Any],
+    ) -> None:
+        """Persist observations without changing a model, score, or model date."""
+        excluded = model_exclusion(project)
+        if excluded is None:
+            raise ValueError("Отдельное обновление рынка требует исключённой из расчёта площадки")
+        slug = str(project.get("slug") or "").strip()
+        if not slug:
+            return
+        from auction_search.krt_screening import market_only_screening
+
+        verified = market_only_screening(project, market) or {}
+        problem = ("Результат проверки наблюдений рынка имеет неподдерживаемую структуру"
+                   if not isinstance(screening, dict) else
+                   str(screening.get("market_problem") or verified.get("market_problem") or ""))
+        if problem:
+            self.note_market_failure(project, problem)
+            raise ValueError(problem)
+        now = int(time.time())
+        save_json(self._market_report_path(slug), {
+            "schema_version": MARKET_REPORT_SCHEMA_VERSION, "slug": slug,
+            "project": project, "market": market,
+            "market_computed_at": now, "exclusion": excluded,
+        })
+        observed = verified.get("market") or {}
+        absorption = verified.get("absorption") or {}
+        price = _number(observed.get("market_price_rub_sqm"))
+        self.remember(slug, {
+            **{key: project[key] for key in _CATALOGUE_FIELDS if key in project},
+            **{key: screening[key] for key in ("card_facts", "press_facts")
+               if screening.get(key)},
+            "market_computed_at": now,
+            "model_excluded": True,
+            "model_exclusion_reason": excluded["reason"],
+            "status_kind": excluded["status_kind"],
+            "last_known_status_kind": excluded["last_known_status_kind"],
+            "market_failed_at": None, "market_failure_reason": "",
+            "surrounding_price_rub_sqm": round(price) if price > 0 else None,
+            "surrounding_sales_units_per_month": (
+                absorption.get("market_units_per_month") if absorption.get("available") else None),
+        })
+
+    def note_market_failure(self, project: dict[str, Any], reason: str) -> None:
+        """Record a failed attempt without erasing the last good observations."""
+        excluded = model_exclusion(project)
+        if excluded is None:
+            raise ValueError("Отдельное обновление рынка требует исключённой из расчёта площадки")
+        self.remember(str(project.get("slug") or ""), {
+            **{key: project[key] for key in _CATALOGUE_FIELDS if key in project},
+            "model_excluded": True, "model_exclusion_reason": excluded["reason"],
+            "status_kind": excluded["status_kind"],
+            "last_known_status_kind": excluded["last_known_status_kind"],
+            "market_failed_at": int(time.time()),
+            "market_failure_reason": str(reason or "Рынок не обновлён"),
+        })
 
     def save_report(
         self, slug: str, payload: dict[str, Any], *, computed_at: int | None = None
@@ -1340,6 +1469,7 @@ class KrtRanking:
         *,
         scheduled: bool = False,
         claimed: bool = False,
+        trace_sources_before=None,
     ) -> bool:
         """Запустить прогон. Повторный вызов на ходу ничего не запускает.
 
@@ -1360,12 +1490,15 @@ class KrtRanking:
                 if not claimed:
                     self.release()
                 return False
+            raw_projects = projects
+            projects = model_cohort(projects, unique=True)
             if scheduled:
-                projects = self._schedule_begin(projects)
+                projects = self._schedule_begin(projects, raw_projects=raw_projects,
+                                                trace_sources_before=trace_sources_before)
             self._progress = {
                 "running": True, "done": 0, "total": len(projects), "current": "",
                 "started_at": time.time(), "finished_at": None, "failed": 0,
-                "stop_reason": "", "scheduled": bool(scheduled),
+                "stop_reason": "", "scheduled": bool(scheduled), "model_skipped": 0,
             }
         thread = threading.Thread(
             target=self._run, args=(projects, screen),
@@ -1393,6 +1526,9 @@ class KrtRanking:
         stop_reason = ""
         try:
             for index, project in enumerate(projects, start=1):
+                project = self.model_project(project)
+                trace_before = (self._weekly_trace('observe', str(project.get('slug') or ''))
+                                if catalogue_run and model_exclusion(project) is not None else None)
                 name = str(project.get("name") or project.get("slug") or "")
                 site_failed = False
                 with self._lock:
@@ -1407,8 +1543,33 @@ class KrtRanking:
                     site_failed = True
                     with self._lock:
                         self._progress["failed"] += 1
-                row = score_row(project, screening)
-                if row["slug"]:
+                excluded = model_exclusion(project)
+                if excluded is not None:
+                    slug = str(project.get("slug") or "")
+                    market = screening.pop("market_report", None)
+                    if market:
+                        try:
+                            self.save_market_only(project, screening, market)
+                        except ValueError:
+                            if not site_failed:
+                                site_failed = True
+                                with self._lock:
+                                    self._progress["failed"] += 1
+                    else:
+                        self.note_market_failure(project,
+                            screening.get("market_problem")
+                            or (screening.get("reason") if not screening.get("model_excluded") else None)
+                            or "Источник рынка не вернул отчёт для обновления наблюдений")
+                        if not site_failed:
+                            site_failed = True
+                            with self._lock:
+                                self._progress["failed"] += 1
+                    with self._lock:
+                        self._progress["model_skipped"] += 1
+                    row = {"slug": slug}
+                else:
+                    row = score_row(project, screening)
+                if row["slug"] and excluded is None:
                     # Отчёт кладётся целиком, даже когда посчитать не вышло:
                     # «не посчитали и вот почему» — тоже ответ, и карточка
                     # должна показывать его, а не пустоту с кнопкой. Но если
@@ -1421,6 +1582,9 @@ class KrtRanking:
                     })
                     self._persist({row["slug"]: row})
                 if catalogue_run and row["slug"]:
+                    if excluded is not None:
+                        trace_after = self._weekly_trace('observe', row['slug'])
+                        self._weekly_trace('visit', project, trace_before, trace_after)
                     self._schedule_mark(row["slug"], site_failed)
                 with self._lock:
                     self._progress["done"] = index
@@ -1446,6 +1610,7 @@ class KrtRanking:
                 stamp = False
                 stop_reason = stop_reason or "Не удалось записать итог прогона на диск"
             if catalogue_run:
+                self._weekly_trace('end', stamp)
                 self._schedule_end(completed=stamp, reason=stop_reason)
             # Замок отпускается ровно здесь: держать его до протухания значило
             # бы, что после первого же прогона неделя превращается в шесть часов

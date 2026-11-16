@@ -313,11 +313,24 @@ def capture_krt(root:Path,*,runtime:dict[str,Any],now:dt.datetime|None=None,proc
             if projected_bytes>MAX_CAPTURE_BYTES:
                 raise AuditError('source_size_limit')
             files.append(record)
+        # A fixed internal period record adds prospective evidence only. It
+        # never fabricates the missing historical Sunday inputs/before-after.
+        import developaid_krt_weekly_trace as weekly_trace
+        period=(decoded.get('schedule.json') or {}).get('period')
+        def trace_view():
+            if period is None:
+                return None
+            try:
+                return weekly_trace.read(root,period)
+            except weekly_trace.TraceProblem:
+                return {'state':'unavailable'}
+        prospective_trace=trace_view()
         if reader.paths()!=paths:raise AuditError('file_set_changed')
         for relative in paths:
             second=reader.read(relative)
             if first[relative]!=(None if second is None else second[1]):
                 raise AuditError('snapshot_changed')
+        if prospective_trace!=trace_view():raise AuditError('snapshot_changed')
         reader.check_identity()
         missing=[path for path in FIXED_FILES if first[path] is None]
         catalogue=decoded.get('catalogue.json');schedule=decoded.get('schedule.json')
@@ -328,6 +341,10 @@ def capture_krt(root:Path,*,runtime:dict[str,Any],now:dt.datetime|None=None,proc
               'weekly_stdout_logs_not_persisted_by_this_collector',
               'early_projects_require_exact_runtime_source',
               'other_worker_refresh_state_not_observed']
+        if prospective_trace is None or prospective_trace.get('state')=='unavailable':
+            gaps.append('prospective_trace_missing_or_unavailable')
+        elif prospective_trace.get('completed') is not True or prospective_trace.get('gaps'):
+            gaps.append('prospective_trace_incomplete')
         refresh_flags=[process_observation[key] for key in ('catalogue_refreshing','decisions_refreshing')]
         if any(flag is None for flag in refresh_flags):gaps.append('runtime_refresh_flags_not_captured')
         if any(flag is True for flag in refresh_flags):gaps.append('observed_worker_refreshing')
@@ -353,6 +370,7 @@ def capture_krt(root:Path,*,runtime:dict[str,Any],now:dt.datetime|None=None,proc
             'coherent':True,'files':files,'missing_files':missing,
             'missing_required_files':missing_required,'missing_optional_files':missing_optional,'gaps':gaps,
             'replay_projection_complete':replay_complete,
+            'prospective_weekly_trace':prospective_trace,
             'evidence_complete':False,'production_acceptance':False,
             'reads_only':True,'models_or_scores_computed':False,'source_files_written':False}
         encoded=json.dumps(output,ensure_ascii=False,allow_nan=False).encode()

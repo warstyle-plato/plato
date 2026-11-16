@@ -25,6 +25,7 @@
 
 from __future__ import annotations
 
+import copy
 import sys
 import time
 from pathlib import Path
@@ -153,14 +154,87 @@ def test_a_decision_without_an_address_is_not_paid_for(monkeypatch) -> None:
         "заплатили за поиск по заголовку документа"
 
 
-def test_the_weekly_run_carries_the_decisions() -> None:
-    """Недельный прогон берёт обе половины списка и один диспетчер."""
-    start = API.index("    def _weekly_ranking(")
-    body = API[start:API.index("\n    # main.py loads the canonical legacy core", start)]
-    assert "_decision_rows_for_run()" in body, \
-        "недельный прогон до площадок-решений не доходит"
-    assert "_screen_for" in body and "_screen_one" not in body, \
-        "прогон зовёт скрининг мимо общего выбора «чем считать эту строку»"
+@pytest.mark.parametrize('case', ['running', 'conflict-planned-first', 'conflict-running-first',
+                                 'unknown-after-running'])
+def test_the_weekly_run_carries_the_decisions(tmp_path, monkeypatch, case) -> None:
+    """The actual weekly loop carries absent-from-catalogue decisions safely.
+
+    Source-call spelling cannot establish this: the complete UI cohort also
+    owns early projects, status conflicts and the completeness gate.
+    """
+    from test_running_krt_models_are_excluded import (
+        RUNNING, PLANNED, _app as model_app, _closure, _keep_old_model,
+        _one_pass, _synchronous_worker,
+    )
+
+    running = dict(RUNNING)
+    if case == 'unknown-after-running':
+        running.update(status='Новое нераспознанное состояние', last_known_status_kind='running')
+    catalogue = [running, dict(PLANNED)]
+    if case.startswith('conflict-'):
+        conflict = [{'slug': 'conflicting', 'name': 'Synthetic conflict', 'status': status}
+                    for status in ['Планируемый', 'В реализации']]
+        catalogue.extend(conflict if case == 'conflict-planned-first' else reversed(conflict))
+    decisions = {**copy.deepcopy(DECISIONS), 'complete': True}
+    decision_rows = auction_api.krt_decision_rows(decisions)
+    # The requirements stub may serve these decisions, but the catalogue must
+    # not contain them: otherwise a broken decision path would still pass.
+    app, ranking, loops, model_calls, _, requirements = model_app(
+        tmp_path, monkeypatch, [*catalogue, *decision_rows])
+    registry = app.state.market_discovery_service.krt
+    registry.catalogue = lambda **_: copy.deepcopy(catalogue)
+    registry.projects = lambda **_: copy.deepcopy(catalogue)
+    source_calls = []
+
+    def read_decisions(**kwargs):
+        source_calls.append(copy.deepcopy(kwargs.get('catalogue')))
+        return copy.deepcopy(decisions)
+
+    registry.decisions = read_decisions
+    document_reads = []
+
+    def decision_requirements(document_id):
+        document_reads.append(document_id)
+        return {}
+
+    registry.decision_requirements = decision_requirements
+    old_model = _keep_old_model(ranking)
+    monkeypatch.setattr(ranking, 'due', lambda *args: True)
+    _synchronous_worker(monkeypatch, ranking)
+    weekly = loops['krt-weekly']
+    dispatch = _closure(weekly)['_screen_for_background']
+    cell = dict(zip(dispatch.__code__.co_freevars, dispatch.__closure__))['_screen_for']
+    original = cell.cell_contents
+    dispatched = []
+
+    def recorded_dispatch(project, **kwargs):
+        dispatched.append(project['slug'])
+        return original(project, **kwargs)
+
+    cell.cell_contents = recorded_dispatch
+    try:
+        _one_pass(monkeypatch, weekly)
+    finally:
+        cell.cell_contents = original
+
+    assert source_calls and source_calls[0] == catalogue
+    assert set(model_calls) == {'planned', 'decision:347614220'}
+    assert len(model_calls) == 2, 'one source key must never launch two models'
+    # Decision requirements come from their own document path, not a missing
+    # catalogue card. The catalogue requirements reader sees only the allowed card.
+    assert requirements == ['planned']
+    assert document_reads == ['347614220']
+    assert set(dispatched) == {project['slug'] for project in catalogue+decision_rows}
+    assert ranking.report('decision:347614220')['screening']['available']
+    refusal = ranking.stored_row('decision:336775220')
+    assert 'адрес' in (refusal.get('press_facts') or {}).get('reason', '').lower()
+    assert ranking.report_path('running').read_bytes() == old_model
+    assert ranking.stored_row('running')['computed_at'] == 100
+    if case.startswith('conflict-'):
+        assert not ranking.report_path('conflicting').exists()
+        assert ranking.stored_row('conflicting')['model_excluded']
+    assert ranking.progress()['model_skipped'] == (2 if case.startswith('conflict-') else 1)
+    assert ranking.progress()['done'] == len({project['slug'] for project in catalogue+decision_rows})
     # Выбор «чем считать строку» объявлен один раз: разойдись кнопка с
     # прогоном, одна площадка считалась бы двумя способами.
     assert API.count("    def _screen_for(") == 1
