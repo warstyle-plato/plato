@@ -870,6 +870,21 @@ function sameCumulativeContext(c){return c.epoch===cumulativeEpoch&&c.project===
 function cumulativeNonce(){const a=new Uint8Array(16);crypto.getRandomValues(a);return Array.from(a,x=>x.toString(16).padStart(2,'0')).join('')}
 const cumulativePause=ms=>new Promise(ok=>setTimeout(ok,ms));
 function cumulativeError(e,upload=false){if(e.name==='AbortError'||e instanceof TypeError)return upload?'Связь прервалась. Архив мог быть сохранён: проверьте список снимков перед повторной загрузкой.':'Связь прервалась. Обновите договоры, чтобы получить состояние обработки.';return e.message}
+async function cumulativeDecodedBytes(bytes,encoding,jsonBytes,current){
+ if(encoding==='identity')return bytes;
+ const reader=new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip')).getReader(),decoded=new Uint8Array(jsonBytes);
+ let offset=0;
+ try{
+  while(true){
+   if(!current()){await reader.cancel();return null}
+   const part=await reader.read();if(part.done)break;
+   if(offset+part.value.length>decoded.length){await reader.cancel();throw Error('Реестр превышает заявленный размер.')}
+   decoded.set(part.value,offset);offset+=part.value.length;
+  }
+ }finally{reader.releaseLock()}
+ if(offset!==decoded.length)throw Error('Реестр получен не полностью.');
+ return decoded;
+}
 async function cumulativeJob(buildPath,resultPath,payload,current,onWaiting,options={}){
  const ticket=options.ticket||cumulativeNonce(),deadline=Date.now()+(options.deadlineMs||360000);
  const checkDeadline=()=>{if(Date.now()>deadline){const e=new Error(options.timeoutMessage||'Ожидание закончилось. Проверьте список снимков перед повторной загрузкой.');e.pendingJobTimedOut=true;throw e}};
@@ -896,26 +911,29 @@ async function cumulativeJob(buildPath,resultPath,payload,current,onWaiting,opti
   }
  }
  if(!current()||!d)return null;
- let offset=options.transfer?.offset||0,bytes=options.transfer?.bytes||null;
+ let offset=options.transfer?.offset||0,bytes=options.transfer?.bytes||null,encoding=options.transfer?.encoding||null,jsonBytes=options.transfer?.jsonBytes||null;
  while(current()){
   if(d.pending){
    checkDeadline();
    if(onWaiting)onWaiting('Обрабатываю данные в фоне. Можно оставить страницу открытой.');
    await cumulativePause(1000);
   }else if(d.result_part){
-   const part=d.result_part;
+   const part=d.result_part,partEncoding=part.encoding||'identity',partJsonBytes=part.json_bytes??part.total_bytes;
+   if(!['identity','gzip'].includes(partEncoding)||!Number.isInteger(partJsonBytes)||partJsonBytes<=0||partJsonBytes>64*1024*1024||partEncoding==='gzip'&&!options.acceptGzip||partEncoding==='identity'&&partJsonBytes!==part.total_bytes)throw Error('Получена неверная версия реестра.');
+   if(encoding!==null&&(encoding!==partEncoding||jsonBytes!==partJsonBytes))throw Error('Части относятся к разным версиям реестра.');
+   encoding=partEncoding;jsonBytes=partJsonBytes;
    if(!Number.isInteger(part.total_bytes)||part.total_bytes<=0||part.total_bytes>64*1024*1024||part.offset!==offset||typeof part.content_base64!=='string'||part.content_base64.length>349528)throw Error('Получена неверная часть реестра. Обновите договоры.');
    if(!bytes)bytes=new Uint8Array(part.total_bytes);
    const raw=atob(part.content_base64);
    if(bytes.length!==part.total_bytes||!raw.length||raw.length!==Math.min(256*1024,bytes.length-offset))throw Error('Реестр получен не полностью. Обновите договоры.');
    for(let i=0;i<raw.length;i++)bytes[offset+i]=raw.charCodeAt(i);
    offset+=raw.length;
-   if(options.transfer){options.transfer.offset=offset;options.transfer.bytes=bytes;}
-   if(offset===bytes.length){try{d={...JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes)),pending:false,ticket}}catch(e){throw Error('Реестр получен не полностью. Обновите договоры.')}break}
+   if(options.transfer){Object.assign(options.transfer,{offset,bytes,encoding,jsonBytes})}
+   if(offset===bytes.length){try{const decoded=await cumulativeDecodedBytes(bytes,encoding,jsonBytes,current);if(!decoded||!current())return null;d={...JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(decoded)),pending:false,ticket}}catch(e){throw Error('Реестр получен не полностью. Обновите договоры.')}break}
    if(onWaiting)onWaiting('Получаю договоры: '+Math.floor(100*offset/bytes.length)+'%');
   }else if(!d.result_ready)break;
   if(!current())return null;
-  d=await request(resultPath,{ticket:d.ticket||ticket,...(options.chunked?{offset}:{})},options.resultTimeout||15000);
+  d=await request(resultPath,{ticket:d.ticket||ticket,...(options.chunked?{offset,accept_gzip:encoding==='gzip'||encoding===null&&!!options.acceptGzip}:{})},options.resultTimeout||15000);
   if(!current()||!d)return null;
   if(options.chunked&&d.ticket!==ticket)throw Error('Ответ относится к другой сборке договоров.');
  }
@@ -958,7 +976,7 @@ function selectMonitorTab(tab){
  monitorNavigation.changed(tab);
 }
 $('monitorTab').onclick=()=>selectMonitorTab('monitor');$('moneyTab').onclick=()=>selectMonitorTab('money');$('dataTab').onclick=()=>selectMonitorTab('data');$('contractsTab').onclick=()=>selectMonitorTab('contracts');$('contractsUploadLink').onclick=()=>{selectMonitorTab('data');$('setupCard').classList.add('open');$('setupChev').textContent='▾';$('cumulativeBox').scrollIntoView({behavior:'smooth',block:'start'})};
-async function loadContractRegister(){if(!hasAuth())return requireLogin();closeContractDialog(false);const c=cumulativeContext(),n=++contractRequest;if(!c.project)return msg('contractsMsg','Укажите проект вверху страницы.','bad');$('contractsRefresh').disabled=true;contractRegister=null;$('contractsRows').replaceChildren();$('contractsDetails').replaceChildren();$('contractsSource').replaceChildren();$('contractsWarnings').replaceChildren();$('contractsUnmatched').replaceChildren();$('contractsSummary').replaceChildren();$('contractsRisk').replaceChildren();$('contractsPrintHeading').replaceChildren();$('contractsTerm').classList.add('hidden');const current=()=>sameCumulativeContext(c)&&n===contractRequest&&monitorActiveTab==='contracts';msg('contractsMsg','Собираю договоры на выбранную дату…','warn');try{if(!contractPendingJob||!sameCumulativeContext(contractPendingJob.context))contractPendingJob={context:c,ticket:cumulativeNonce()};const d=await cumulativeJob('/monitor/contracts/build','/monitor/contracts/result-part',{project:c.project,cut:c.cut,chunked:true},current,t=>msg('contractsMsg',t,'warn'),{ticket:contractPendingJob.ticket,transfer:contractPendingJob,chunked:true,retryNetwork:true,resultTimeout:30000,timeoutMessage:'Получение договоров заняло больше обычного. Нажмите «Обновить договоры», чтобы продолжить.'});if(!d||!current())return;contractPendingJob=null;contractRegister=d.register||{rows:[]};headerDateTargets=[];$('contractsSource').textContent=`Срез: ${dt(contractRegister.cut||c.cut)}${contractRegister.source_date?' · дата источника: '+dt(contractRegister.source_date):''}`;$('contractsWarnings').innerHTML=(contractRegister.warnings||[]).length?'<details class="contract-detail"><summary>Замечания к источникам ('+(contractRegister.warnings||[]).length+')</summary><ul>'+warningsHtml(contractRegister.warnings)+'</ul></details>':'';$('contractsPrintHeading').textContent=c.project+' · срез '+dt(contractRegister.cut||c.cut);renderContractSummary();renderContractUnresolved();renderContractRisk();renderContractRegister();renderUnmatchedWorks();const missingLink=!!pendingContractId&&!contractById(pendingContractId);if(pendingContractId&&contractById(pendingContractId))openContractDetails(pendingContractId);pendingContractId='';const counts=contractRegister.counts||{};msg('contractsMsg',`${contractUniverseLabel()}: ${(contractRegister.rows||[]).length}. `+contractArchivesText(contractRegister)+`Листов накопительных: ${counts.cumulative_sheets??'—'}. Шапок с замечаниями: ${(contractRegister.unresolved_sources||[]).length}.`+(missingLink?' Договор по старой ссылке не найден в выбранном архиве накопительных.':''),missingLink?'warn':'good')}catch(e){if(current()){if(!(e.name==='AbortError'||e instanceof TypeError||e.transport||e.pendingJobTimedOut||[502,503,504].includes(e.status)))contractPendingJob=null;msg('contractsMsg',cumulativeError(e),'bad')}}finally{if(current())$('contractsRefresh').disabled=false}}
+async function loadContractRegister(){if(!hasAuth())return requireLogin();closeContractDialog(false);const c=cumulativeContext(),n=++contractRequest;if(!c.project)return msg('contractsMsg','Укажите проект вверху страницы.','bad');$('contractsRefresh').disabled=true;contractRegister=null;$('contractsRows').replaceChildren();$('contractsDetails').replaceChildren();$('contractsSource').replaceChildren();$('contractsWarnings').replaceChildren();$('contractsUnmatched').replaceChildren();$('contractsSummary').replaceChildren();$('contractsRisk').replaceChildren();$('contractsPrintHeading').replaceChildren();$('contractsTerm').classList.add('hidden');const current=()=>sameCumulativeContext(c)&&n===contractRequest&&monitorActiveTab==='contracts';msg('contractsMsg','Собираю договоры на выбранную дату…','warn');try{if(!contractPendingJob||!sameCumulativeContext(contractPendingJob.context))contractPendingJob={context:c,ticket:cumulativeNonce()};const d=await cumulativeJob('/monitor/contracts/build','/monitor/contracts/result-part',{project:c.project,cut:c.cut,chunked:true},current,t=>msg('contractsMsg',t,'warn'),{ticket:contractPendingJob.ticket,transfer:contractPendingJob,chunked:true,acceptGzip:typeof DecompressionStream==='function',retryNetwork:true,resultTimeout:30000,timeoutMessage:'Получение договоров заняло больше обычного. Нажмите «Обновить договоры», чтобы продолжить.'});if(!d||!current())return;contractPendingJob=null;contractRegister=d.register||{rows:[]};headerDateTargets=[];$('contractsSource').textContent=`Срез: ${dt(contractRegister.cut||c.cut)}${contractRegister.source_date?' · дата источника: '+dt(contractRegister.source_date):''}`;$('contractsWarnings').innerHTML=(contractRegister.warnings||[]).length?'<details class="contract-detail"><summary>Замечания к источникам ('+(contractRegister.warnings||[]).length+')</summary><ul>'+warningsHtml(contractRegister.warnings)+'</ul></details>':'';$('contractsPrintHeading').textContent=c.project+' · срез '+dt(contractRegister.cut||c.cut);renderContractSummary();renderContractUnresolved();renderContractRisk();renderContractRegister();renderUnmatchedWorks();const missingLink=!!pendingContractId&&!contractById(pendingContractId);if(pendingContractId&&contractById(pendingContractId))openContractDetails(pendingContractId);pendingContractId='';const counts=contractRegister.counts||{};msg('contractsMsg',`${contractUniverseLabel()}: ${(contractRegister.rows||[]).length}. `+contractArchivesText(contractRegister)+`Листов накопительных: ${counts.cumulative_sheets??'—'}. Шапок с замечаниями: ${(contractRegister.unresolved_sources||[]).length}.`+(missingLink?' Договор по старой ссылке не найден в выбранном архиве накопительных.':''),missingLink?'warn':'good')}catch(e){if(current()){if(!(e.name==='AbortError'||e instanceof TypeError||e.transport||e.pendingJobTimedOut||[502,503,504].includes(e.status)))contractPendingJob=null;msg('contractsMsg',cumulativeError(e),'bad')}}finally{if(current())$('contractsRefresh').disabled=false}}
 function contractIdentityHtml(row){const refs=row.identity_source||{};return['contract','contract_date'].filter(k=>refs[k]).map(k=>'<div class="contract-source">'+(k==='contract'?'Номер из шапки: ':'Дата из шапки: ')+esc(sourceLabel(refs[k]))+'</div>').join('')+(row.date_confirmations||[]).map(headerDateConfirmationHtml).join('')+headerDateButtons(row.date_evidence,row.date_confirmations||[],row.contractor,row.contract)}
 let headerDateTargets=[],editingHeaderDate=null;
 function sameHeaderBinding(a,b){return!!a&&!!b&&['snapshot_id','file_sha256','filename','sheet','cell','raw'].every(k=>a[k]===b[k])}

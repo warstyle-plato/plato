@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import base64
+import gzip
 import hashlib
 import hmac
 import json
@@ -119,7 +120,7 @@ class Store:
         return entries
 
     def _delete(self, meta: dict):
-        for suffix in ("json", "result", "run"):
+        for suffix in ("json", "result", "gzip", "run"):
             self._path(meta["ticket"], suffix).unlink(missing_ok=True)
 
     def _sweep(self, now: float) -> list[dict]:
@@ -130,7 +131,7 @@ class Store:
                 continue
             if path.name.startswith(".write-"):
                 path.unlink(missing_ok=True)
-            elif (path.suffix in (".run", ".result") and TICKET.fullmatch(path.stem)
+            elif (path.suffix in (".run", ".result", ".gzip") and TICKET.fullmatch(path.stem)
                   and self._meta(path.stem) is None and not self._busy(path.stem)):
                 path.unlink(missing_ok=True)
         kept = []
@@ -177,7 +178,8 @@ class Store:
                 raise JobProblem(404, MISSING)
             return self._state(meta)
 
-    def poll_part(self, ticket: str, owner: str, profile: str, offset: int = 0) -> dict:
+    def poll_part(self, ticket: str, owner: str, profile: str, offset: int = 0, *,
+                  accept_gzip: bool = False) -> dict:
         """Read an immutable result in bounded pieces, authenticating each read.
 
         No JSON decoding or full-file read is needed while holding the shared
@@ -192,8 +194,9 @@ class Store:
             state = self._state(meta, include_result=False)
             if state["pending"]:
                 return state
+            compressed = accept_gzip and meta.get("gzip_result") is True
             try:
-                with self._path(ticket, "result").open("rb") as handle:
+                with self._path(ticket, "gzip" if compressed else "result").open("rb") as handle:
                     size = os.fstat(handle.fileno()).st_size
                     if not 0 < size <= meta.get("result_limit_bytes", MAX_RESULT_BYTES):
                         raise OSError("invalid result size")
@@ -205,18 +208,24 @@ class Store:
                         raise OSError("incomplete result")
             except OSError:
                 raise JobProblem(500, FAILED, code="storage_failed") from None
+            json_bytes = meta.get("result_bytes") if compressed else size
+            if type(json_bytes) is not int or not 0 < json_bytes <= meta.get("result_limit_bytes", MAX_RESULT_BYTES):
+                raise JobProblem(500, FAILED, code="storage_failed")
             return {"pending": False, "ticket": ticket, "result_part": {
                 "offset": offset, "total_bytes": size,
+                "encoding": "gzip" if compressed else "identity", "json_bytes": json_bytes,
                 "content_base64": base64.b64encode(data).decode("ascii")}}
 
     def start(self, owner: str, profile: str, params: dict,
               builder: Callable[[], dict], ticket: str = "", *,
               result_limit_bytes: int = MAX_RESULT_BYTES,
-              include_result: bool = True) -> dict:
+              include_result: bool = True, compress_result: bool = False) -> dict:
         # Server policy only: request payloads never select this budget. An
         # existing ticket retains its admitted metadata, including legacy 16 MiB.
         if type(result_limit_bytes) is not int or not 1 <= result_limit_bytes <= MAX_EXTENDED_RESULT_BYTES:
             raise ValueError("invalid job result limit")
+        if type(compress_result) is not bool:
+            raise ValueError("invalid result compression policy")
         if ticket and not TICKET.fullmatch(ticket):
             raise JobProblem(400, "Неверный номер сборки сводки.")
         fingerprint = hashlib.sha256(json.dumps(params, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
@@ -245,6 +254,8 @@ class Store:
                     "request": fingerprint, "created": now, "state": "pending"}
             if result_limit_bytes != MAX_RESULT_BYTES:
                 meta["result_limit_bytes"] = result_limit_bytes
+            if compress_result:
+                meta["compress_result"] = True
             failure_code = "storage_failed"
             try:
                 self._save(meta)
@@ -278,9 +289,16 @@ class Store:
             failure_code = "result_too_large"
             if len(data) > limit:
                 raise ValueError("report result too large")
+            failure_code = "serialization_failed"
+            compressed = gzip.compress(data, compresslevel=5, mtime=0) if meta.get("compress_result") else None
+            if compressed is not None and len(compressed) >= len(data):
+                compressed = None
             failure_code = "storage_failed"
             with self._locked():
                 self._write(self._path(meta["ticket"], "result"), data)
+                if compressed is not None:
+                    self._write(self._path(meta["ticket"], "gzip"), compressed)
+                    meta.update(gzip_result=True, result_bytes=len(data))
                 meta["state"] = "done"
                 self._save(meta)
         except Exception as exc:

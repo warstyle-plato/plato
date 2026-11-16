@@ -200,6 +200,7 @@ class MonitorCumulativeResult(MonitorCumulativeAuth):
 
 class MonitorContractResultPart(MonitorCumulativeResult):
     offset: int = _CumulativeField(default=0, ge=0, le=64 * 1024 * 1024, strict=True)
+    accept_gzip: bool = _CumulativeField(default=False, strict=True)
 
 
 class MonitorScheduleConfirmation(MonitorCumulativeProject):
@@ -594,7 +595,7 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
         store = jobs.Store(developaid_monitor._SNAPSHOT_DIR / ".cumulative_jobs")
         if not operation:
             if family == "contracts" and getattr(req, "offset", None) is not None:
-                result = store.poll_part(req.ticket, owner, profile, req.offset)
+                result = store.poll_part(req.ticket, owner, profile, req.offset, accept_gzip=req.accept_gzip)
             else:
                 result = store.poll(req.ticket, owner, profile)
         else:
@@ -675,6 +676,7 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
                              if operation == "view" else {})
             if operation == "view" and getattr(req, "chunked", False):
                 result_policy["include_result"] = False
+                result_policy["compress_result"] = True
             result = store.start(owner, profile, fingerprint, build, req.ticket, **result_policy)
         if result["pending"]:
             result["detail"] = ("Проверяю управленческую статью АХР." if family == "finance-management" else
