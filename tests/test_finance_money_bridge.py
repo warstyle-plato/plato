@@ -240,7 +240,7 @@ def test_verified_admin_money_remains_visible_in_the_real_monitor_and_report(wid
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         assert not errors
     funding = {'own_money': own, 'reconciliation': r}
-    block = {'kind': 'week', 'funding': {'state': 'ok', 'limit': funding, 'rss': None,
+    block = {'kind': 'week', 'end': r['cut'], 'funding': {'state': 'ok', 'limit': funding, 'rss': None,
         'draws': dict.fromkeys(('period', 'month', 'total')),
         'interest': dict.fromkeys(('period', 'month', 'total'))}}
     html = report._funding_html(block)

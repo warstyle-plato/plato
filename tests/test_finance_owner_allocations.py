@@ -212,7 +212,7 @@ def test_owner_provenance_and_unchanged_total_reach_monitor_html_and_pdf(stored,
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         assert not errors
     limit = {'own_money':own,'reconciliation':r}
-    html = report._funding_html({'kind':'week','funding':{'state':'ok','limit':limit,'rss':None,
+    html = report._funding_html({'kind':'week','end':r['cut'],'funding':{'state':'ok','limit':limit,'rss':None,
         'draws':dict.fromkeys(('period','month','total')),'interest':dict.fromkeys(('period','month','total'))}})
     assert note in html and '282 500 ₽' in html and '77 500 ₽' in html
     assert note in report._own_money_lines(limit)

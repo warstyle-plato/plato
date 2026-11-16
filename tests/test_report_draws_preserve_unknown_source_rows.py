@@ -115,15 +115,26 @@ def test_native_report_downloads_canonical_pdf_and_preserves_a_gap_in_loan_chart
     tiles = report.tiles(built)
     labels = page.locator('#reportBox .tile .k').all_text_contents()
     for _, label in cash.FIELDS:
-        assert labels.count(label) == 1
+        assert labels.count(label) == 0  # Main63 keeps cash values in printable details.
+    cash_details = page.locator('#reportBox .admin-expenses-cash > details:not(.admin-fm-source) > p')
+    assert cash_details.count() == 4
+    assert cash_details.all_text_contents() == [
+        f'{label}: {cash.money(built["admin_expenses_cash"].get(key))}' for key, label in cash.FIELDS]
+    headline = page.locator('#reportBox .tile').filter(has=page.locator('.k', has_text='Потребность в допфинансировании'))
+    expect(headline).to_have_count(1)
+    expect(headline.locator('.v')).to_have_text('нет данных')
     for row in canonical['display_rows']:
         expect(page.locator('#reportBox')).to_contain_text(row['label'])
-        if row['key'] in {'budget', 'bank_limit_total', 'paid_at_cut', 'available_bank_limit', 'calculated_additional'}:
+        if row['key'] in {'budget', 'bank_limit_total', 'paid_at_cut', 'available_bank_limit'}:
             expected = next(item for item in tiles if item['label'] == row['label'])
             tile = page.locator('#reportBox .tile').filter(has=page.locator('.k', has_text=row['label']))
             expect(tile.locator('.v')).to_have_text(expected['value'])
         else:
             assert row['label'] not in labels  # Diagnostics are retained in the canonical detail table.
+        if row['key'] == 'calculated_additional':
+            cell = page.locator('#reportBox').get_by_role('cell', name=row['label'], exact=True)
+            expect(cell).to_have_count(1)
+            expect(cell.locator('xpath=..').locator('td').nth(1)).to_have_text(report._rub(row['value']))
     figure = page.locator('#reportBox figure').filter(has=page.locator(
         'figcaption', has_text='Выборка кредита и эскроу нарастающим итогом по месяцам'))
     paths = figure.locator('svg path[stroke-width="2"]')
@@ -141,8 +152,10 @@ def test_native_report_downloads_canonical_pdf_and_preserves_a_gap_in_loan_chart
     pdf = pymupdf.open(path)
     text = ' '.join(' '.join(sheet.get_text().split()) for sheet in pdf)
     cover = ' '.join(pdf[0].get_text().split())
-    for _, label in cash.FIELDS:
-        assert label.casefold() in cover.casefold()
+    for key, label in cash.FIELDS:
+        assert label in text and cash.money(built['admin_expenses_cash'].get(key)) in text
+        if key != 'balance_after_observed_payments':
+            assert label.casefold() not in cover.casefold()
     # Exact native main50 bfe439f9, with this same no-credit source DTO,
     # starts the construction block on page 3 (y=55.8). Its missing-credit
     # and other native findings already extend the cover to two pages.
@@ -156,6 +169,8 @@ def test_native_report_downloads_canonical_pdf_and_preserves_a_gap_in_loan_chart
     assert headings[0][0] <= 3 and headings[0][1] < 120
     for row in canonical['display_rows']:
         assert row['label'] in text
+        if row['key'] == 'calculated_additional':
+            assert report._rub(row['value']) in text
     assert 'Финансовая сверка первичных источников не завершена' in text
     assert ' '.join(built['credit_due']['reason'].split()) in text
     if unknown:

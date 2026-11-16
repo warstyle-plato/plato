@@ -200,7 +200,7 @@ def test_one_management_article_is_visible_without_relabeling_bank_rows(stored, 
         assert not errors
         out=Path('/tmp/plato-ahr-completion/management-surfaces');out.mkdir(parents=True,exist_ok=True)
         detail.screenshot(path=str(out/f'management-{width}.png'))
-    html = report._funding_html({'kind':'week','funding':{'state':'ok','limit':data,'rss':None,
+    html = report._funding_html({'kind':'week','end':own['reconciliation']['cut'],'funding':{'state':'ok','limit':data,'rss':None,
         'draws':dict.fromkeys(('period','month','total')),'interest':dict.fromkeys(('period','month','total'))}})
     assert 'управленческая статья 2.6' in html
     assert 'Статьи главы 3' in html and 'Банковская статья не уточнена' in html

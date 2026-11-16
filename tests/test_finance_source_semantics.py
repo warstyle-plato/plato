@@ -149,8 +149,13 @@ def test_undated_raw_source_scope_is_visible_in_canonical_rows_and_every_funding
         assert short in rows[key]['note']
     tiles = {row['label']: row for row in report.tiles(built)}
     for label in ('Утверждённый бюджет', 'Лимит банка', 'Оплачено с начала проекта',
-                  'Доступный остаток лимита банка', 'Расчётная дополнительная потребность'):
+                  'Доступный остаток лимита банка', 'Потребность в допфинансировании'):
         assert tiles[label]['note'].count(short) == 1
+    assert tiles['Потребность в допфинансировании']['value'] == 'нет данных'
+    assert tiles['Потребность в допфинансировании']['tone'] == 'missing'
+    calculated = rows['calculated_additional']
+    assert calculated['label'] not in tiles
+    assert f"<td>{calculated['label']}</td><td>{report._rub(calculated['value'])}</td>" in report._funding_html(built)
     assert 'дата ФМ неизвестна' in short and 'полнота оплат' in short
     assert note in report.render_text(built) and note in report.render_html(built)
 
