@@ -30,6 +30,10 @@ class MonitorContractsBuild(MonitorCumulativeProject):
     ticket: str = ""
 
 
+class MonitorContractRegisterBuild(MonitorContractsBuild):
+    chunked: bool = _CumulativeField(default=False, strict=True)
+
+
 class MonitorContractsTerm(MonitorContractsBuild):
     contract_id: str = _CumulativeField(min_length=1, max_length=128)
     deadline: str = _CumulativeField(default="", max_length=10)
@@ -194,6 +198,10 @@ class MonitorCumulativeResult(MonitorCumulativeAuth):
     ticket: str = _CumulativeField(min_length=1, max_length=128)
 
 
+class MonitorContractResultPart(MonitorCumulativeResult):
+    offset: int = _CumulativeField(default=0, ge=0, le=64 * 1024 * 1024, strict=True)
+
+
 class MonitorScheduleConfirmation(MonitorCumulativeProject):
     source_sha256: str = _CumulativeField(pattern=r"^[0-9a-f]{64}$")
     revision: int = _CumulativeField(ge=0, strict=True)
@@ -254,7 +262,7 @@ _CUMULATIVE_PATHS = _IDENTITY_PATHS | frozenset({
     '/monitor/schedule/version-preview', '/monitor/schedule/version-approve',
     "/monitor/cumulative/upload", "/monitor/cumulative/result",
     "/monitor/cumulative/list", "/monitor/contracts/build",
-    "/monitor/contracts/result", "/monitor/contracts/term", "/monitor/contracts/link", "/monitor/contracts/header-date",
+    "/monitor/contracts/result", "/monitor/contracts/result-part", "/monitor/contracts/term", "/monitor/contracts/link", "/monitor/contracts/header-date",
     "/monitor/contracts/source-review",
     "/monitor/contracts/source-audit",
     "/monitor/contracts/source-audit-page",
@@ -585,7 +593,10 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
         owner = jobs.owner_binding(_env_str("DEVELOPAID_ADMIN_KEY", "").strip(), req.session, profile)
         store = jobs.Store(developaid_monitor._SNAPSHOT_DIR / ".cumulative_jobs")
         if not operation:
-            result = store.poll(req.ticket, owner, profile)
+            if family == "contracts" and getattr(req, "offset", None) is not None:
+                result = store.poll_part(req.ticket, owner, profile, req.offset)
+            else:
+                result = store.poll(req.ticket, owner, profile)
         else:
             payload = {"project": req.project.strip()}
             if not payload["project"]:
@@ -662,6 +673,8 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
             # Source review/audit/index operations retain the default budget.
             result_policy = ({"result_limit_bytes": jobs.MAX_EXTENDED_RESULT_BYTES}
                              if operation == "view" else {})
+            if operation == "view" and getattr(req, "chunked", False):
+                result_policy["include_result"] = False
             result = store.start(owner, profile, fingerprint, build, req.ticket, **result_policy)
         if result["pending"]:
             result["detail"] = ("Проверяю управленческую статью АХР." if family == "finance-management" else
@@ -713,7 +726,7 @@ def monitor_cumulative_list(req: MonitorCumulativeProject) -> Response:
 
 
 @app.post("/monitor/contracts/build", include_in_schema=False)
-def monitor_contracts_build(req: MonitorContractsBuild) -> Response:
+def monitor_contracts_build(req: MonitorContractRegisterBuild) -> Response:
     return _monitor_cumulative_job(req, family="contracts", operation="view")
 
 
@@ -744,6 +757,11 @@ def monitor_contract_identity_result(req: MonitorContractIdentityResult) -> Resp
 
 @app.post("/monitor/contracts/result", include_in_schema=False)
 def monitor_contracts_result(req: MonitorCumulativeResult) -> Response:
+    return _monitor_cumulative_job(req, family="contracts")
+
+
+@app.post("/monitor/contracts/result-part", include_in_schema=False)
+def monitor_contracts_result_part(req: MonitorContractResultPart) -> Response:
     return _monitor_cumulative_job(req, family="contracts")
 
 

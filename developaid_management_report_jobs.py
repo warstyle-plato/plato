@@ -7,6 +7,7 @@ session, project name or exception detail is persisted in job metadata.
 from __future__ import annotations
 
 import contextlib
+import base64
 import hashlib
 import hmac
 import json
@@ -26,6 +27,7 @@ MAX_ACTIVE = 2
 MAX_RETAINED = 64
 MAX_RESULT_BYTES = 16 * 1024 * 1024
 MAX_EXTENDED_RESULT_BYTES = 64 * 1024 * 1024
+RESULT_PART_BYTES = 256 * 1024
 FAILURE_CODES = frozenset({"builder_failed", "serialization_failed", "result_too_large",
                            "storage_failed", "interrupted"})
 FAILED = "Не удалось собрать сводку. Повторите запрос."
@@ -147,12 +149,14 @@ class Store:
                 kept.remove(meta)
         return kept
 
-    def _state(self, meta: dict) -> dict:
+    def _state(self, meta: dict, *, include_result: bool = True) -> dict:
         ticket = meta["ticket"]
         extended = meta.get("result_limit_bytes", MAX_RESULT_BYTES) > MAX_RESULT_BYTES
         if time.time() - meta["created"] > TTL_SECONDS:
             raise JobProblem(404, MISSING)
         if meta["state"] == "done":
+            if not include_result:
+                return {"pending": False, "ticket": ticket, "result_ready": True}
             try:
                 result = json.loads(self._path(ticket, "result").read_text())
             except (OSError, ValueError):
@@ -173,9 +177,42 @@ class Store:
                 raise JobProblem(404, MISSING)
             return self._state(meta)
 
+    def poll_part(self, ticket: str, owner: str, profile: str, offset: int = 0) -> dict:
+        """Read an immutable result in bounded pieces, authenticating each read.
+
+        No JSON decoding or full-file read is needed while holding the shared
+        job lock. Retrying the same offset never runs the builder again.
+        """
+        if type(offset) is not int or not 0 <= offset <= MAX_EXTENDED_RESULT_BYTES:
+            raise JobProblem(400, "Неверная часть результата.")
+        with self._locked():
+            meta = self._meta(ticket)
+            if meta is None or not hmac.compare_digest(meta["owner"], owner) or meta["profile"] != profile:
+                raise JobProblem(404, MISSING)
+            state = self._state(meta, include_result=False)
+            if state["pending"]:
+                return state
+            try:
+                with self._path(ticket, "result").open("rb") as handle:
+                    size = os.fstat(handle.fileno()).st_size
+                    if not 0 < size <= meta.get("result_limit_bytes", MAX_RESULT_BYTES):
+                        raise OSError("invalid result size")
+                    if offset >= size:
+                        raise JobProblem(400, "Неверная часть результата.")
+                    handle.seek(offset)
+                    data = handle.read(RESULT_PART_BYTES)
+                    if len(data) != min(RESULT_PART_BYTES, size - offset):
+                        raise OSError("incomplete result")
+            except OSError:
+                raise JobProblem(500, FAILED, code="storage_failed") from None
+            return {"pending": False, "ticket": ticket, "result_part": {
+                "offset": offset, "total_bytes": size,
+                "content_base64": base64.b64encode(data).decode("ascii")}}
+
     def start(self, owner: str, profile: str, params: dict,
               builder: Callable[[], dict], ticket: str = "", *,
-              result_limit_bytes: int = MAX_RESULT_BYTES) -> dict:
+              result_limit_bytes: int = MAX_RESULT_BYTES,
+              include_result: bool = True) -> dict:
         # Server policy only: request payloads never select this budget. An
         # existing ticket retains its admitted metadata, including legacy 16 MiB.
         if type(result_limit_bytes) is not int or not 1 <= result_limit_bytes <= MAX_EXTENDED_RESULT_BYTES:
@@ -191,14 +228,14 @@ class Store:
                         raise JobProblem(404, MISSING)
                     if meta["request"] != fingerprint:
                         raise JobProblem(409, "Эта сборка относится к другому запросу сводки.")
-                    return self._state(meta)
+                    return self._state(meta, include_result=include_result)
             now = time.time()
             entries = self._sweep(now)
             active = [meta for meta in entries if self._busy(meta["ticket"])]
             for meta in active:
                 if (meta["state"] == "pending" and meta["owner"] == owner and meta["profile"] == profile
                         and meta["request"] == fingerprint and now - meta["created"] <= TTL_SECONDS):
-                    return self._state(meta)
+                    return self._state(meta, include_result=include_result)
             if len(active) >= MAX_ACTIVE or len(entries) >= MAX_RETAINED:
                 raise JobProblem(429, "Сервер уже собирает сводки. Повторите запрос чуть позже.")
             ticket = ticket or secrets.token_hex(16)
