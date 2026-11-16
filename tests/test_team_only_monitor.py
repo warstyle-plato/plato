@@ -68,6 +68,9 @@ _ENDPOINT_PAYLOADS = {
         "expected_source_content_sha256": "d" * 64, "caller_reference_corpus_token": "e" * 64},
     ("POST", "/monitor/schedule-gpr-physical/save"): {"source_kind": "gpr"},
     ("POST", "/monitor/contracts/documents"): {"contract_id": "a" * 64},
+    ("POST", "/monitor/contracts/comparison.xlsx"): {
+        "cut": "2036-08-19", "ticket": "1" * 32, "contract_id": "a" * 64,
+        "revision": "b" * 64, "selected_tokens": []},
     ("POST", "/monitor/contracts/document-upload"): {"contract_id": "a" * 64},
     ("POST", "/monitor/contracts/document-links"): {
         "contract_id": "a" * 64, "sha256": "b" * 64, "estimate": 0, "choices": [{"index": 0}]},

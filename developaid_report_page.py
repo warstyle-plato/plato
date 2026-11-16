@@ -63,6 +63,9 @@ REPORT_PAGE = """<!doctype html>
    шесть колонок эскроу обрезались справа, а первая сжималась до буквы в строку. */
 @media (max-width:900px){#reportBox table{display:block;max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
 #reportBox td,#reportBox th{overflow-wrap:normal;word-break:normal}
+/* The compact three-corpus matrix fits its viewport, unlike wide finance tables. */
+#reportBox table.rg-matrix{display:table;width:100%;min-width:0;table-layout:fixed;overflow:visible}
+#reportBox table.rg-matrix :is(th,td){min-width:0;white-space:normal;overflow-wrap:anywhere}
 #reportBox svg,#reportBox img{max-width:100%;height:auto}}
 #reportBox{overflow-wrap:anywhere;min-width:0}
 .files .field{min-width:0;max-width:100%}.files select,.files input{max-width:100%}
@@ -82,11 +85,13 @@ REPORT_PAGE = """<!doctype html>
 #legalForm input.wide{width:320px}#legalForm .claimRow input,#legalForm .eventRow input{font-size:12px}
 </style>
 </head>
-<body>
+<body class="monitor-host">
+__MONITOR_PAGE_HEADER__
+<div class="monitor-global-shell">__DEVELOPAID_CONTOUR__</div>
 <div class="wrap">
-__DEVELOPAID_CONTOUR__
-<div class="top"><div><h1 style="margin:0">Сводка руководству</h1><div class="muted">Стройка, продажи, финансирование и бюджет за неделю или за месяц — для решений и рассылки</div></div>
+<div class="top">
 <div class="files"><div class="field"><label>Проект</label><select id="project"><option value="">Загружаю список проектов…</option></select></div><div class="field"><label>Дата сводки</label><input id="cut" type="date"></div><div class="field"><label>Период</label><select id="reportKind"><option value="week">За неделю</option><option value="month">За месяц</option></select></div><div class="field" id="salesField"><label>Проект в отчёте о продажах</label><div id="salesLinked" class="hidden" style="padding-top:6px"><span id="salesName"></span> <button class="btn ghost" id="salesChange" type="button" title="Выбрать другой проект из отчёта о продажах">Сменить</button></div><select id="reportSales" class="hidden" title="Выбор запоминается на сервере для всех, кто открывает сводку этого проекта."></select></div><button class="btn" id="reportBtn">Показать</button><button class="btn alt" id="reportPdfBtn">Скачать PDF</button></div></div>
+__MONITOR_VIEW_TABS__
 <div class="card auth-card" id="loginBox"><div class="body" style="padding:12px 14px"><b>Вход</b><div class="muted">Раздел доступен только по ключу администратора. Нажмите «Ключ администратора» и введите его.</div><div class="files" style="margin-top:10px"><button class="btn hidden" id="loginBtn">Войти через Telegram</button><button class="btn" id="keyBtn">Ключ администратора</button></div><div class="msg" id="loginMsg"></div></div></div>
 <div id="privateArea" class="hidden">
 <div class="msg" id="reportMsg"></div>

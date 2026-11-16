@@ -156,3 +156,30 @@ def test_form_sends_the_unit_only_for_the_file_shown_before_confirmation():
         assert len(calls)==2 and calls[1]['expected_source_sha256']=='a'*64
         assert calls[1]['unit']=='тыс. руб.'
         assert not errors
+
+
+@pytest.mark.parametrize(('unit','factor'), [('руб.',1),('тыс. руб.',1000),('млн руб.',1000000)])
+def test_admin_cash_uses_the_same_explicit_unit_as_the_financial_budget(stored,unit,factor):
+    import developaid_admin_expenses_cash as cash
+    raw,_=stored
+    digest=hashlib.sha256(raw).hexdigest()
+    units.configure(PROJECT,unit,expected_source_sha256=digest)
+    result=cash.fm_budget(raw,monitor.finance_baseline_meta(PROJECT))
+    assert result['factor_to_rubles']==factor
+    assert result['unit_basis']=='owner_declaration'
+    assert result['budget']==40*factor
+    assert result['parent_2_4']['total']==160*factor
+    assert result['taxes_separate']['total']==120*factor
+    assert result['parent_minus_all_children']['total']==0
+    assert dashboard._finance_baseline(PROJECT)['budget_composition']['unit_scale']==factor
+
+
+def test_admin_cash_rejects_a_source_bound_declaration_conflicting_with_header():
+    import developaid_admin_expenses_cash as cash
+    import developaid_admin_expenses_source as source
+    raw=_finmodel(unit='руб.')
+    meta={'money_unit':{'basis':'owner_declaration','source_sha256':hashlib.sha256(raw).hexdigest(),'unit':'тыс. руб.'}}
+    with pytest.raises(source.SourceProblem,match='unit_ambiguous'):
+        cash.fm_budget(raw,meta)
+    meta['money_unit']['source_sha256']='f'*64
+    assert cash.fm_budget(raw,meta)['unit_basis']=='existing_native_finmodel_contract'

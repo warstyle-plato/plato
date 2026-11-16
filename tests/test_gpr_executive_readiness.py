@@ -141,24 +141,17 @@ def test_real_report_page_tiles_and_downloaded_pdf_use_readiness(saved, monkeypa
             page.select_option('#project', PROJECT)
             page.fill('#cut', CUT)
             page.click('#reportBtn')
-            expect(page.locator('#reportBox .readiness-project-value')).to_have_text(summary['value'], timeout=90000)
+            expect(page.locator('#reportBox .report-gpr-compact')).to_be_visible(timeout=90000)
             for width in (390, 1440):
                 page.set_viewport_size(dict(width=width, height=1000))
-                tiles = page.locator('#reportBox .tile')
-                expect(tiles.nth(0)).to_contain_text(summary['value'])
-                expect(tiles.nth(1)).to_contain_text(report._day(summary['finish']))
-                expect(tiles.nth(0)).to_contain_text('11.04.2034')
-                broader = page.locator('#reportBox .gpr-broader-physical')
-                expect(broader).to_have_js_property('open', False)
-                closed_height = broader.bounding_box()['height']
-                broader.locator('summary').first.click()
-                expect(broader).to_contain_text('по плановой длительности')
-                expect(broader).to_contain_text('78,7%')
-                assert broader.bounding_box()['height'] > closed_height + 100
-                broader.locator('summary').first.click()
-                expect(broader).to_have_js_property('open', False)
-                expect(page.locator('.gpr-broader-schedule')).to_have_count(0)
-                expect(page.locator('.gpr-forecast-card')).to_contain_text(report._day(summary['finish']))
+                host=page.locator('#reportBox .report-gpr-compact')
+                expect(host.locator('[data-gpr-block]')).to_have_count(3)
+                expect(host.locator('[data-gpr-block=forecast]')).to_contain_text(summary['value'])
+                expect(host.locator('[data-gpr-block=forecast]')).to_contain_text('11.04.2034')
+                dates=host.locator('[data-gpr-block]').evaluate_all('es=>es.map(e=>e.dataset.projectForecast)')
+                assert dates==[dates[0]]*3
+                assert host.locator('details,.readiness-summary,.executive-schedule').count()==0
+                assert page.locator('#reportBox .gpr-broader-physical').count()==0
                 assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
                 page.screenshot(path=f'/tmp/gpr-executive-readiness-{width}.png', full_page=True)
             with page.expect_download(timeout=90000) as download:
@@ -166,15 +159,11 @@ def test_real_report_page_tiles_and_downloaded_pdf_use_readiness(saved, monkeypa
             raw = Path(download.value.path()).read_bytes()
             Path('/tmp/gpr-executive-readiness.pdf').write_bytes(raw)
             reader = PdfReader(io.BytesIO(raw))
-            first = ' '.join((reader.pages[0].extract_text() or '').split())
-            assert summary['value'] in first and report._day(summary['finish']) in first
-            assert '11.04.2034' in first and '16.04.2034' in first
-            assert '2 из 3 работ' in first and '37,0%' in first
-            assert 'плановом темпе' in first and 'не прогноз РНВ' in first
             all_text = ' '.join(' '.join((p.extract_text() or '').split()) for p in reader.pages)
-            assert '78,7%' in all_text and 'по плановой длительности' in all_text
-            assert 'Сроки по строительным работам текущего ГПР' not in all_text
-            assert all_text.index(summary['value']) < all_text.index('78,7%')
+            assert summary['value'] in all_text and '11.04.2034' in all_text
+            assert 'Прогноз учтённых работ'in all_text and 'Матрица готовности'in all_text and 'Гант по корпусам'in all_text
+            assert '78,7%'not in all_text and 'по плановой длительности'not in all_text
+            assert 'Сроки по строительным работам текущего ГПР'not in all_text
             assert not errors
         finally:
             browser.close()

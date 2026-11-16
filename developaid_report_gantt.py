@@ -1,8 +1,10 @@
 """График сводки по корпусам: укрупнённые статьи, план, прогноз и РНВ.
 
-calendar/render_calendar показывают полный канонический календарь нового
+calendar/render_calendar сохраняют полный канонический календарь нового
 Монитора; прежние model/render и скалярные статьи сохранены для совместимости
-текстовых выводов. Новая разметка не пересчитывает сроки и веса.
+текстовых выводов. Компактная сводка читает выбранную проекцию через
+compact_model/render_compact и соединяет корпуса по явным referenceID.
+Разметка не пересчитывает сроки и веса.
 
 «График как в мониторе, но с укрупнёнными статьями по корпусам с планом и
 прогнозом окончания работ и РНВ» (владелец, 20.10.2026).
@@ -602,39 +604,6 @@ def calendar(schedule: dict[str, Any], cut: Any) -> dict[str, Any]:
             or display['covered'] != sum(bool(point['complete'] or point['finish']) for point in result['points'].values())):
         problem('Покрытие частичной оценки не совпало с исходными точками и заявленными пробелами. Общая дата требует сверки.')
     result['qualified'] = not issues
-    result['corpus_summaries'] = {}
-    if result['qualified']:
-        from developaid_gpr_summary import gpr_summary
-        # Group dates/progress are supplied by the canonical readiness model,
-        # never an average or a fresh forecast made by this renderer.
-        for group in state.get('corpora') or []:
-            ids = group.get('work_ids') or []
-            current = [str(mapping[key]) for key in ids if key in mapping and mapping[key] is not None]
-            names = {corpus_of(by_id[key][0]) for key in current if len(by_id[key]) == 1}
-            if len(names) != 1 or len(current) != len(ids):
-                continue
-            name = next(iter(names))
-            corpus_refs = {p['reference_work_id'] for key, p in result['points'].items()
-                           if corpus_of(by_id[key][0]) == name}
-            if not corpus_refs or not corpus_refs.issubset(set(ids)):
-                continue
-            selected = [p for p in result['points'].values() if p['reference_work_id'] in ids]
-            group_forecast = group.get('forecast') or {}
-            expected_fields = dict(
-                finish=max((p['finish'] for p in selected if p['finish']), default=None),
-                plan_finish=max((p['plan_finish'] for p in selected if p['plan_finish']), default=None),
-                total=len(selected), covered=sum(bool(p['complete'] or p['finish']) for p in selected),
-                all_complete=bool(selected) and all(p['complete'] for p in selected))
-            # Verify the supplied aggregate against its already qualified points.
-            # This is a consistency check, not a new forecast or weight formula.
-            if (set(ids) - set(references) or any(group_forecast.get(k) != v for k, v in expected_fields.items())
-                    or any(group_forecast.get(k) != forecast.get(k) for k in ['source_sha256','full_source_sha256','id_scope'])):
-                result['issues'].append('Сводная календарная строка «'+name+'» не совпала с подтверждёнными работами; оценка корпуса скрыта.')
-                continue
-            summary = gpr_summary(dict(state, project=group), cut)
-            if summary:
-                summary['all_complete'] = group_forecast['all_complete']
-                result['corpus_summaries'][name] = copy.deepcopy(summary)
     return result
 
 
@@ -683,18 +652,11 @@ def render_calendar(model: dict[str, Any], cut: Any = None) -> str:
     def pos(value):
         date = _date(value)
         return max(0,min(100,(date-first).days/span*100)) if date and days else None
-    tick_days = []
-    if days:
-        months = (last.year-first.year)*12+last.month-first.month
-        step = 1 if months <= 6 else 3 if months <= 18 else 6 if months <= 36 else 12 if months <= 72 else 12*math.ceil(months/60)
-        tick_days = [date for date in _months(first,last)
-                     if date >= first and (date.year*12+date.month-1) % step == 0] or [first]
     def marker(value, name, title):
         x = pos(value)
         return (f'<i class="{name}" data-date="{esc(value)}" style="left:{x:.5f}%" title="{esc(title)}"></i>') if x is not None else ''
     def marks():
-        grid = ''.join(f'<span class="cg-gridline" style="left:{pos(tick.isoformat()):.5f}%"></span>' for tick in tick_days)
-        return grid+marker(cut,'cg-cut','Дата среза '+date_text(cut))+marker(finish,'gpr-scoped-finish','Оценка выбранного состава; не РНВ')+marker(owner.get('date'),'cg-owner-rnv','Отдельный план РНВ владельца')
+        return marker(cut,'cg-cut','Дата среза '+date_text(cut))+marker(finish,'gpr-scoped-finish','Оценка выбранного состава; не РНВ')+marker(owner.get('date'),'cg-owner-rnv','Отдельный план РНВ владельца')
     out = [_CALENDAR_STYLE, '<div class="chart gantt"><section class="report-gpr-calendar" data-calendar-version="canonical" data-cut="'+esc(cut)+'">']
     if qualified:
         out.append('<p class="cg-scope"><b>Гант учтённого состава: '+esc(date_text(finish) if finish else 'окончание неизвестно')+'</b><br>Даты учтены для '+str(display['covered'])+' из '+str(display['total'])+' работ. Это оценка выбранного состава, не прогноз РНВ. Остальные работы сохранены с планом и исходными показаниями.</p>')
@@ -707,37 +669,17 @@ def render_calendar(model: dict[str, Any], cut: Any = None) -> str:
     if owner:
         out.append('<p class="note">Отдельный план РНВ владельца: '+esc(date_text(owner['date']))+'.</p>')
     out.append('<div class="cg-legend"><span>▱ План</span><span>━ Показание выполнения</span><span>┊ Оценка выбранного состава</span><span>▨ Условный срок, при плановом темпе</span><span>┃ Измеренный срок</span></div>')
-    def axis():
-        parts = ['<div class="cg-axis"><b>Корпус, этап и работа</b><div class="cg-track" data-domain-start="'+esc(first.isoformat() if days else '')+'" data-domain-end="'+esc(last.isoformat() if days else '')+'">']
-        for tick in tick_days:
-            parts.append('<span class="cg-tick" style="left:'+str(pos(tick.isoformat()))+'%">'+esc(_MONTHS[tick.month-1]+' '+str(tick.year))+'</span>')
-        parts.append(marks()+'</div><b>План и оценка окончания</b></div>')
-        return ''.join(parts)
-    out.append('<div class="cg-scroll" tabindex="0" role="region" aria-label="Гант по корпусам; горизонтальная прокрутка"><div class="cg-grid">')
+    out.append('<div class="cg-axis"><b>Корпус, этап и работа</b><div class="cg-track" data-domain-start="'+esc(first.isoformat() if days else '')+'" data-domain-end="'+esc(last.isoformat() if days else '')+'">')
+    if days:
+        for index in range(7):
+            tick = first+datetime.timedelta(days=round(span*index/6))
+            out.append('<span class="cg-tick" style="left:'+str(index/6*100)+'%">'+esc(tick.strftime('%m.%y'))+'</span>')
+    out.append(marks()+'</div><b>План, выполнение и основание срока</b></div>')
     corpora = {}
     for item in rows:
         corpora.setdefault(corpus_of(item['task']), {}).setdefault(item['detail'] or item['control'] or str(item['task'].get('section') or 'Работы'), []).append(item)
     for corpus, stages in sorted(corpora.items(), key=lambda item:_natural(item[0])):
-        out.append(axis())
-        all_items = [item for items in stages.values() for item in items]
-        starts = [d for item in all_items if (d := _date(item['task'].get('plan_start')))]
-        ends = [d for item in all_items if (d := _date(item['task'].get('plan_finish')))]
-        summary = (model.get('corpus_summaries') or {}).get(corpus) if qualified else None
-        estimate = summary.get('finish') if summary else None
-        out.append('<details class="cg-corpus" open><summary><div class="cg-corpus-summary"><b>'+esc(corpus)+'</b><span class="cg-track">'+marks())
-        if starts and ends:
-            start, stop = pos(min(starts).isoformat()), pos(max(ends).isoformat())
-            if stop >= start:
-                out.append(f'<span class="cg-plan" style="left:{start:.5f}%;width:{max(.2,stop-start):.5f}%"></span>')
-        if estimate and starts:
-            start, stop = pos(min(starts).isoformat()), pos(estimate)
-            if stop >= start:
-                out.append(f'<span class="cg-corpus-forecast" data-finish="{esc(estimate)}" style="left:{start:.5f}%;width:{max(.2,stop-start):.5f}%"></span>')
-        out.append('</span><span class="cg-metrics">План всего перечня: '+esc(date_text(max(ends).isoformat()) if ends else 'нет даты')+
-                   '<b>Оценка учтённого состава: '+esc(date_text(estimate) if estimate else 'выполнено' if summary and summary.get('all_complete') else 'не определена')+'</b>')
-        if summary:
-            out.append('<span>Готовность: '+esc(summary['value'])+'</span>')
-        out.append('</span></div></summary>')
+        out.append('<details class="cg-corpus" open><summary>'+esc(corpus)+'</summary>')
         for stage, items in stages.items():
             out.append('<details class="cg-stage"><summary>'+esc(stage)+' · '+str(len(items))+' работ</summary>')
             for item in items:
@@ -777,7 +719,7 @@ def render_calendar(model: dict[str, Any], cut: Any = None) -> str:
                 out.append('</div></article>')
             out.append('</details>')
         out.append('</details>')
-    out.append('</div></div></section></div>')
+    out.append('</section></div>')
     return ''.join(out)
 
 
@@ -785,8 +727,181 @@ _CALENDAR_STYLE = '''<style>
 .report-gpr-calendar{max-width:100%;overflow-wrap:anywhere}.report-gpr-calendar *{box-sizing:border-box}.cg-scope,.cg-gap{font-size:12px;line-height:1.5}.cg-gap{color:#825314}.cg-legend{display:flex;flex-wrap:wrap;gap:8px 16px;font-size:10px;color:#475569;margin:12px 0}.cg-axis,.cg-work{display:grid;grid-template-columns:minmax(0,1.05fr) minmax(0,1.25fr) minmax(0,1.2fr);gap:12px;align-items:start}.cg-axis{font-size:10px;padding:10px 0}.cg-axis .cg-track{height:28px}.cg-track{position:relative;height:38px;min-width:0;background:repeating-linear-gradient(to right,#f3f5f8,#f3f5f8 calc(16.666% - 1px),#dce3eb calc(16.666% - 1px),#dce3eb 16.666%)}.cg-tick{position:absolute;top:0;font-size:9px;transform:translateX(-50%);white-space:nowrap}.cg-tick:first-child{transform:none}.cg-tick:nth-child(7){transform:translateX(-100%)}.cg-track i{position:absolute;top:0;bottom:0;pointer-events:none}.cg-cut{border-left:1px solid #666}.gpr-scoped-finish{border-left:2px dashed #245b93}.cg-owner-rnv{border-left:1px dashed #7b5396}.cg-actual{border-left:3px solid #207448}.cg-plan,.cg-fact,.cg-forecast{position:absolute;height:8px;top:9px;min-width:0}.cg-plan{border:1px dashed #586575}.cg-fact{top:12px;height:4px;background:#267a58}.cg-forecast{top:25px;height:5px;background:#245b93}.cg-forecast.conditional{background:repeating-linear-gradient(120deg,#8c5eaa,#8c5eaa 3px,#e4d8ed 3px,#e4d8ed 6px)}.gpr-forecast-end{top:21px!important;height:13px;border-left:3px solid #245b93}.gpr-forecast-end.conditional{border-color:#8c5eaa}.cg-corpus>summary{font-weight:700;font-size:14px;background:#eef3f8;padding:9px;cursor:pointer}.cg-stage>summary{font-size:12px;font-weight:600;padding:9px;cursor:pointer}.cg-work{padding:10px 0;border-bottom:1px solid #e4e9ef;break-inside:avoid;page-break-inside:avoid}.cg-label b{font-size:11px}.cg-label small{display:block;color:#667085;font-size:9px;margin-top:4px}.cg-metrics{font-size:10px;line-height:1.5}.cg-metrics b{display:block}.cg-stage,.cg-corpus{margin:8px 0;break-inside:auto;page-break-inside:auto}
 @media(max-width:600px){.cg-axis{grid-template-columns:1fr}.cg-axis>b{display:none}.cg-axis .cg-track{height:25px}.cg-work{grid-template-columns:1fr;gap:7px}.cg-label b{font-size:13px}.cg-metrics{font-size:12px}.cg-scope,.cg-gap{font-size:13px}}
 @media print{.cg-corpus::details-content,.cg-stage::details-content{display:block!important;content-visibility:visible!important}.cg-corpus,.cg-stage{display:block!important;break-inside:auto!important;page-break-inside:auto!important}.cg-corpus>summary,.cg-stage>summary{break-after:avoid;page-break-after:avoid;list-style:none}.cg-work{grid-template-columns:minmax(0,1.05fr) minmax(0,1.25fr) minmax(0,1.2fr);gap:9px}.cg-label b{font-size:9pt}.cg-label small{font-size:7pt}.cg-metrics{font-size:8pt}.cg-axis{grid-template-columns:minmax(0,1.05fr) minmax(0,1.25fr) minmax(0,1.2fr)}.cg-axis>b{display:block}.cg-track{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
-.cg-track{background:#f8fafc}.cg-gridline{position:absolute;top:0;bottom:0;border-left:1px solid #dce3eb;pointer-events:none}.cg-scroll{max-width:100%;overflow-x:auto}.cg-grid{min-width:960px}.cg-axis,.cg-work,.cg-corpus-summary{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,2fr) minmax(0,1.1fr);gap:16px;align-items:start}.cg-axis{font-size:12px;margin-top:12px}.cg-axis .cg-track{height:32px;background:none}.cg-tick{font-size:12px;top:3px;transform:translateX(-50%);color:#334155}.cg-tick:first-child,.cg-tick:nth-child(7){transform:translateX(-50%)}.cg-tick:last-of-type{transform:translateX(-100%)}.cg-corpus>summary{padding:12px 0;list-style:none}.cg-corpus-summary>b{padding-left:10px}.cg-corpus-summary>b:before{content:'▾ ';color:#526277}.cg-corpus:not([open]) .cg-corpus-summary>b:before{content:'▸ '}.cg-corpus-forecast{position:absolute;top:24px;height:8px;background:repeating-linear-gradient(120deg,#8c5eaa,#8c5eaa 3px,#e4d8ed 3px,#e4d8ed 6px);border-right:2px solid #6f448f}.cg-label b{font-size:13px}.cg-label small{font-size:11px}.cg-metrics{font-size:12px;font-weight:400}.cg-legend{font-size:12px}.cg-stage>summary{font-size:13px}
-@media(max-width:600px){.cg-axis>b{display:block}.cg-label b{font-size:13px}}
-@media print{.cg-scroll{overflow:visible}.cg-grid{min-width:0}.cg-axis,.cg-work,.cg-corpus-summary{grid-template-columns:minmax(0,1fr) minmax(0,1.5fr) minmax(0,1.1fr);gap:8px}.cg-tick{font-size:8pt}.cg-label b{font-size:9pt}.cg-label small{font-size:7pt}.cg-metrics{font-size:8pt}}
+</style>'''
 
+
+def compact_model(block: dict[str, Any], cut: Any) -> dict[str, Any]:
+    """Report-only overview. Join explicit reference IDs; never calculate a forecast."""
+    from developaid_gpr_summary import gpr_summary
+    state = block.get('readiness') or {}
+    projection = block.get('calendar') or {}
+    summary = gpr_summary(state, cut)
+    project = state.get('project') or {}
+    forecast = project.get('forecast') or {}
+    display = projection.get('display') or {}
+    identity = state.get('forecast_identity') or {}
+    mapping = identity.get('remaining_ids') or {}
+    rows = projection.get('rows') or []
+    points = projection.get('points') or {}
+    corpora = state.get('corpora') or []
+    valid_day = lambda value: isinstance(value, str) and _date(value) is not None and _date(value).isoformat() == value
+    by_id = {str(item['task']['id']): item['task'] for item in rows
+             if isinstance(item, dict) and isinstance(item.get('task'), dict) and item['task'].get('id') is not None}
+    # Requalify only the compiled DTO already supplied to this renderer. The
+    # native validator owns source/scope/exclusion/point-date rules; there is
+    # no second, weaker interpretation of its qualified flag here.
+    tasks = [dict(task, level='task') for task in by_id.values()]
+    checked = calendar(dict(rows=tasks, undated_works=[], management=tasks,
+                            readiness=state), cut)
+    projection_matches = (not projection or
+                          (projection.get('schema') == checked['schema']
+                           and projection.get('cut') == str(cut)
+                           and len(by_id) == len(rows) and projection.get('issues') == checked['issues']
+                           and projection.get('display') == checked['display'] and points == checked['points']))
+    # Corpus membership is another explicit ID join, not inferred from labels.
+    references = project.get('work_ids') or []
+    memberships = [key for group in corpora for key in group.get('work_ids') or []]
+    membership_matches = len(memberships) == len(set(memberships)) and set(memberships) == set(references)
+    readiness_bound = bool(summary and membership_matches
+                           and re.fullmatch('[a-f0-9]{64}', str(summary['source_sha256'] or '')))
+    assessment_bound = bool(readiness_bound and projection_matches
+                            and checked['readiness_forecast_invalid'] is False
+                            and summary['id_scope'] in {'current_source', 'full_source'}
+                            and (summary['id_scope'] != 'full_source' or
+                                 re.fullmatch('[a-f0-9]{64}', str(summary['full_source_sha256'] or ''))))
+    valid = bool(readiness_bound and projection_matches and projection.get('qualified') is True
+                 and checked['qualified'] and display.get('finish') == summary['finish'])
+    excluded = {item['work_id'] for item in forecast.get('excluded') or []} if checked['qualified'] else set()
+    def aggregate(keys):
+        selected = [points[mapping[key]] for key in keys if mapping.get(key) in points]
+        tasks = [by_id[p['work_id']] for p in selected if p.get('work_id') in by_id]
+        starts = [t.get('plan_start') for t in tasks]
+        plans = [p.get('plan_finish') for p in selected]
+        unknown = len(selected) != len(keys) or any(not p.get('complete') and not valid_day(p.get('finish')) for p in selected)
+        dated = [p['finish'] for p in selected if valid_day(p.get('finish'))]
+        return dict(selected=len(selected) if valid else None, total=len(keys),
+                    plan_start=min(starts) if valid and starts and all(map(valid_day, starts)) else None,
+                    plan_finish=max(plans) if valid and plans and all(map(valid_day, plans)) else None,
+                    finish=max(dated, default=None) if valid and not unknown else None,
+                    complete=bool(valid and selected and not unknown and all(p.get('complete') for p in selected)),
+                    partial=bool(unknown), unknown=not valid or unknown)
+    groups = []
+    for group in corpora:
+        keys = [key for key in group.get('work_ids') or [] if key not in excluded]
+        joined = [by_id[mapping[key]] for key in keys if mapping.get(key) in by_id]
+        # The membership is an ID join. Source object labels only name an
+        # explicitly joined group; a work mentioning another corpus cannot move it.
+        objects = {t.get('object') for t in joined if t.get('object')}
+        groups.append(dict(name=group.get('name') or 'Объект не указан', progress=group.get('progress'),
+                           partial_progress=bool(group.get('partial')), objects=objects,
+                           **aggregate(keys)))
+    outside_groups = {}
+    for task in by_id.values():
+        if str(task['id']) in points:
+            continue
+        obj = task.get('object') or 'Объект не указан'
+        matches = [g for g in groups if g['total'] and obj in g['objects']]
+        existing = matches[0] if len(matches) == 1 else outside_groups.get(obj)
+        if existing is None:
+            existing = dict(name=obj, progress=None, partial_progress=False, objects={obj},
+                            selected=0, total=0, plan_start=None, plan_finish=None, finish=None,
+                            complete=False, partial=False, unknown=True)
+            groups.append(existing)
+            outside_groups[obj] = existing
+        existing['outside'] = existing.get('outside', 0) + 1
+    matrix = []
+    for stage in state.get('matrix') or []:
+        cells = []
+        for group in corpora:
+            found = [cell for cell in stage.get('cells') or [] if cell.get('name') == group.get('name')]
+            cell = found[0] if len(found) == 1 else {}
+            keys = cell.get('work_ids') or []
+            cells.append(cell.get('progress') if readiness_bound and set(keys) <= set(group.get('work_ids') or []) else None)
+        matrix.append(dict(stage=stage.get('stage') or 'Этап не указан', values=cells))
+    owner = projection.get('owner_rnv') or {}
+    owner_date = owner.get('date') if owner.get('source') == 'owner_decision' and valid_day(owner.get('date')) else None
+    return dict(qualified=bool(valid), assessment_qualified=assessment_bound,
+                readiness_qualified=readiness_bound, finish=summary['finish'] if assessment_bound else None,
+                covered=forecast.get('covered') if assessment_bound else None,
+                total=forecast.get('total') if assessment_bound else None,
+                summary=summary, groups=groups, matrix=matrix, matrix_columns=len(corpora),
+                owner_plan=owner_date, cut=str(cut))
+
+
+def render_compact(model: dict[str, Any], *, stalled_risk: str = '') -> str:
+    """Three report blocks share the same bound project date, on screen and paper."""
+    from developaid_schedule_visual import date_text
+    esc = lambda value: html.escape(str(value if value is not None else ''), quote=True)
+    def pct(value):
+        return f'{value*100:.1f}%'.replace('.', ',') if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and 0 <= value <= 1 else 'Нет данных'
+    finish = model['finish']
+    finish_text = date_text(finish) if finish else 'Пока не определён'
+    project_attr = ' data-project-forecast="'+esc(finish)+'"'
+    summary = model.get('summary') or {}
+    out = [_COMPACT_STYLE, '<div class="report-gpr-compact">', '<section data-gpr-block="forecast"'+project_attr+'><h3>Прогноз учтённых работ</h3><strong class="rg-project-date">'+esc(finish_text)+'</strong>']
+    if finish:
+        count_text = lambda value: str(value) if type(value) is int and value >= 0 else 'неизвестно'
+        out.append('<p>Условная оценка при плановом темпе. Сроки учтены для '+count_text(model['covered'])+' из '+count_text(model['total'])+' работ. Это не прогноз разрешения на ввод.</p>')
+        if not model['qualified']:
+            out.append('<p>Общая оценка сохранена. Календарные даты корпусов пока не подтверждены.</p>')
+    else:
+        out.append('<p>Для этого среза нет подтверждённой общей календарной оценки. Плановая дата её не заменяет.</p>')
+    if summary:
+        out.append('<p>'+esc(summary['readiness_text'])+'</p>')
+    if summary.get('progress') is None and summary.get('reason'):
+        out.append('<p class="rg-gap">'+esc(str(summary['reason'])[:240])+'</p>')
+    if stalled_risk:
+        out.append('<p class="rg-stalled">По всему текущему ГПР: '+esc(stalled_risk)+'</p>')
+    if model['owner_plan']:
+        out.append('<p class="rg-owner-plan">План РНВ владельца: '+esc(date_text(model['owner_plan']))+'.</p>')
+    out.append('<p><a href="/monitor#tab=monitor">Подробные работы и источники — в Мониторе</a>.</p></section>')
+    out.append('<section data-gpr-block="matrix"'+project_attr+'><h3>Матрица готовности</h3>')
+    cols = model['matrix_columns'];selected_groups = model['groups'][:cols]
+    if cols:
+        out.append('<table class="rg-matrix"><thead><tr><th scope="col">Этап</th>'+''.join('<th scope="col">'+esc(g['name'])+'</th>' for g in selected_groups)+'</tr></thead><tbody>')
+        for stage in model['matrix']:
+            out.append('<tr><th scope="row">'+esc(stage['stage'])+'</th>'+''.join('<td>'+esc(pct(v))+'</td>' for v in stage['values'])+'</tr>')
+        out.append('<tr class="rg-total"><th scope="row">По корпусу</th>'+''.join('<td>'+esc(pct(g['progress']) if model['readiness_qualified'] else 'Нет данных')+(' · частично' if g['partial_progress'] else '')+'</td>' for g in selected_groups)+'</tr>')
+        out.append('<tr class="rg-project-total"><th scope="row">Прогноз проекта</th><td colspan="'+str(cols)+'">'+esc(finish_text)+'</td></tr></tbody></table>')
+    else:
+        out.append('<p>Матрица выбранного состава для этого среза отсутствует.</p>')
+    out.append('</section><section data-gpr-block="gantt"'+project_attr+'><h3>Гант по корпусам</h3><p>Пунктир — план учтённых работ, цветная полоса — их оценка окончания. Вертикальная линия — прогноз проекта: '+esc(finish_text)+'.</p>')
+    dates = [value for g in model['groups'] for value in (g['plan_start'], g['plan_finish'], g['finish']) if _date(value)]
+    dates += [v for v in (finish, model['cut']) if _date(v)]
+    first = datetime.date(min(_date(v).year for v in dates), 1, 1) if dates else None
+    last_year = max(_date(v).year for v in dates) if dates else None
+    last = datetime.date(last_year + 1, 1, 1) if dates and last_year < 9999 else _date(max(dates)) if dates else None
+    span = max(1, (last-first).days) if dates else 1
+    pos = lambda value: (_date(value)-first).days/span*100 if first and _date(value) else None
+    if first:
+        years = list(range(first.year, last_year+1));stride = max(1, math.ceil(len(years)/6))
+        out.append('<div class="rg-axis"><span>Корпус / состав</span><div class="rg-years">')
+        for year in years[::stride]:
+            out.append('<span data-year="'+str(year)+'" style="left:'+str(pos(str(year)+'-01-01'))+'%">'+str(year)+'</span>')
+        out.append('</div></div>')
+    for group in model['groups']:
+        outside = not group['total']
+        status = 'Вне выбранного состава проекта' if outside else 'Завершено по источнику' if group['complete'] else date_text(group['finish']) if group['finish'] else 'Окончание неизвестно'
+        note = ('Состав этой оценки не подтверждён' if group['selected'] is None
+                else str(group['selected'])+' из '+str(group['total'])+' выбранных работ') if not outside else str(group.get('outside', 0))+' исходных работ; не включены в общий прогноз'
+        if not outside and group.get('outside'):
+            note += '; ещё '+str(group['outside'])+' вне выбранного состава'
+        out.append('<article class="rg-corpus" data-corpus="'+esc(group['name'])+'" data-selected="'+esc(group['selected'])+'" data-plan-finish="'+esc(group['plan_finish'])+'" data-corpus-forecast="'+esc(group['finish'])+'"><div><b>'+esc(group['name'])+'</b><small>'+esc(note)+'</small></div><div><div class="rg-track">')
+        start, plan, end = pos(group['plan_start']), pos(group['plan_finish']), pos(group['finish'])
+        if start is not None and plan is not None and plan >= start:
+            out.append('<span class="rg-plan" style="left:'+str(start)+'%;width:'+str(plan-start)+'%"></span>')
+        if start is not None and end is not None and end >= start:
+            out.append('<span class="rg-forecast" style="left:'+str(start)+'%;width:'+str(end-start)+'%"></span>')
+        if finish:
+            out.append('<i class="rg-project-line" data-date="'+esc(finish)+'" style="left:'+str(pos(finish))+'%"></i>')
+        out.append('</div><div class="rg-dates">План: '+esc(date_text(group['plan_finish']) if group['plan_finish'] else 'нет даты')+' · Оценка: <b>'+esc(status)+'</b></div></div></article>')
+    if not model['groups']:
+        out.append('<p>Канонический состав работ для сводного Ганта отсутствует.</p>')
+    return ''.join(out)+'</section></div>'
+
+
+_COMPACT_STYLE = '''<style>
+.report-gpr-compact{max-width:100%;overflow-wrap:anywhere}.report-gpr-compact section{margin:16px 0}.report-gpr-compact p{font-size:12px;line-height:1.5;margin:7px 0}.rg-project-date{font-size:23px;color:#245b93}.rg-matrix{width:100%;table-layout:fixed;border-collapse:collapse;font-size:12px}.rg-matrix th,.rg-matrix td{border:1px solid #dce3eb;padding:8px 6px;overflow-wrap:anywhere;text-align:center}.rg-matrix th:first-child{text-align:left;width:34%}.rg-total,.rg-project-total{background:#eef3f8}.rg-axis,.rg-corpus{display:grid;grid-template-columns:minmax(110px,.7fr) minmax(0,2fr);gap:14px}.rg-axis{margin:18px 0 8px;font-size:12px;font-weight:700;break-after:avoid}.rg-years{position:relative;height:25px;min-width:0}.rg-years span{position:absolute;top:0;white-space:nowrap;font-size:12px}.rg-corpus{padding:12px 0;border-bottom:1px solid #dce3eb;break-inside:avoid;page-break-inside:avoid}.rg-corpus b{font-size:13px}.rg-corpus small{display:block;font-size:11px;line-height:1.5;margin-top:4px;color:#526277}.rg-track{position:relative;min-width:0;height:34px;background:#f1f4f8;border:1px solid #dce3eb}.rg-plan,.rg-forecast{position:absolute;height:9px;top:5px}.rg-plan{border:1px dashed #586575}.rg-forecast{top:21px;height:7px;background:#5275a5}.rg-project-line{position:absolute;top:0;bottom:0;border-left:2px dashed #245b93}.rg-dates{font-size:11px;line-height:1.5;margin-top:5px}.rg-dates b{font-size:11px}
+@media(max-width:600px){.rg-axis,.rg-corpus{grid-template-columns:minmax(0,1fr);gap:6px}.rg-axis>span{display:none}.rg-matrix{font-size:11px}.rg-matrix th,.rg-matrix td{padding:7px 4px}.rg-matrix th:first-child{width:31%}.rg-years span{font-size:13px}.rg-corpus small,.rg-dates{font-size:12px}.report-gpr-compact p{font-size:13px}}
+@media print{.rg-axis,.rg-corpus{grid-template-columns:minmax(100px,.7fr) minmax(0,2fr)}.rg-axis>span{display:block}.rg-years span{font-size:10pt}.rg-matrix{font-size:9pt}.rg-track{-webkit-print-color-adjust:exact;print-color-adjust:exact}.report-gpr-compact section>h3{break-after:avoid}.rg-corpus{break-inside:avoid}}
 </style>'''

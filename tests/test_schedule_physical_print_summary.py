@@ -80,33 +80,20 @@ def test_actual_report_keeps_quantities_visible_without_approving_unknown_scope(
         page = engine.new_page(viewport={'width': width, 'height': 1000})
         page.route('**/*', lambda route: route.abort())
         page.set_content(markup)
-        section = page.locator('details.report-source-screen').filter(has_text='Источники и ограничения оценки')
-        expect(page.locator('.gpr-forecast-card')).to_be_visible()
-        section.locator('summary').click()
+        section=page.locator('.report-gpr-compact')
         expect(section).to_be_visible()
-        if summary['source_status']['state'] != 'confirmed':
-            expect(section).to_contain_text(summary['source_status']['reason'])
-        assert page.locator('.gpr-broader-schedule').count() == 0
-        assert section.evaluate('(e)=>e.getBoundingClientRect().width <= innerWidth')
-        assert page.locator('.schedule-confirmation-summary').count() == 0
-        if scenario == 'unconfirmed':
-            assert summary['source_status']['state'] == 'unconfirmed'
-            assert summary['facts'] == []
-            assert section.locator('.executive-facts').count() == 0
-            assert data['gantt']['dependency_timeline']['physical']['tasks'][0]['progress'] is None
+        expect(section.locator('[data-gpr-block]')).to_have_count(3)
+        assert section.locator('details,.executive-facts').count()==0
+        assert section.evaluate('(e)=>e.getBoundingClientRect().width<=innerWidth')
+        assert '50 из 100 м²'not in section.inner_text()
+        if scenario=='unconfirmed':
+            assert summary['source_status']['state']=='unconfirmed'
+            assert summary['facts']==[]
         else:
-            fact = section.locator('.executive-facts')
-            expect(fact).to_be_visible()
-            expect(fact).to_contain_text('50 из 100 м²')
-            expect(fact).to_contain_text('28.02.2026' if scenario == 'stale' else '31.10.2026')
-            assert fact.locator('li').count() == 1
-            assert fact.evaluate('(e)=>parseFloat(getComputedStyle(e).fontSize)') >= 12
-            assert summary['facts'][0]['done'] == 50 and summary['facts'][0]['plan'] == 100
-            assert data['gantt']['dependency_timeline']['physical']['tasks'][0]['progress'] == .5
-        forecast = report.gpr_summary(data['gantt']['readiness'], data['end'])
-        card = page.locator('.gpr-forecast-card')
-        expect(card).to_contain_text('Оценка окончания учтённых работ')
-        expect(card).to_contain_text(report._day(forecast['finish']) if forecast['finish'] else 'Не определена')
+            assert summary['facts'][0]['done']==50 and summary['facts'][0]['plan']==100
+        if scenario=='confirmed':assert summary['state']=='estimate'
+        assert data['gantt']['dependency_timeline']['physical']['tasks'][0]['progress']==(None if scenario=='unconfirmed'else .5)
+        if scenario!='confirmed':assert summary['forecast']is None
         engine.close()
 
 
@@ -125,18 +112,10 @@ def test_quantities_and_source_dates_remain_in_real_pdf_without_raw_network(scen
         engine.close()
     with fitz.open(stream=content, filetype='pdf') as pdf:
         text = ' '.join(' '.join(page.get_text() for page in pdf).split())
-    assert 'Оценка окончания учтённых работ' in text and '06.11.2026' in text
-    assert '31.10.2026' in text  # the approved GPR date survives qualification
-    main = text.split('Приложение. Источники и ограничения оценки', 1)[0]
-    if scenario == 'unconfirmed':
-        assert '50 из 100 м²' not in main
-        assert data['construction_summary']['source_status']['reason'] in text
-    else:
-        assert '50 из 100 м²' in text
-        assert ('28.02.2026' if scenario == 'stale' else '31.10.2026') in text
-    if scenario != 'confirmed':
-        assert data['construction_summary']['forecast'] is None
-    assert 'Все работы исходной сети' not in text
+    assert 'Прогноз учтённых работ'in text and 'Матрица готовности'in text and 'Гант по корпусам'in text
+    assert '50 из 100 м²'not in text and 'Приложение. Источники'not in text
+    if scenario!='confirmed':assert data['construction_summary']['forecast']is None
+    assert 'Все работы исходной сети'not in text
 
 
 def test_legacy_confirmation_note_is_escaped_without_promoting_a_revocation(gpr_sources):

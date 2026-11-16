@@ -38,13 +38,13 @@ def test_absent_display_does_not_erase_an_independently_source_bound_forecast():
 @pytest.mark.parametrize('present',[{},None])
 def test_only_absent_calendar_key_can_use_archival_corpus_compatibility(present):
     timeline,_,legacy=dense_schedule()
-    old=executive_html(timeline,legacy)
-    assert 'Архивная сводка по корпусам'in old and 'Корпус 4'in old
-    assert 'class="schedule-lane"'in old
+    old=report._gantt_html({'gantt':legacy,'end':'2026-11-06'})
+    assert 'Архивная сводка по корпусам'not in old and 'class="schedule-lane"'not in old
+    assert old.count('data-gpr-block=')==3 and 'Пока не определён'in old
     modern=copy.deepcopy(legacy);modern['calendar']=present
-    body=executive_html(timeline,modern)
+    body=report._gantt_html({'gantt':modern,'end':'2026-11-06'})
     assert 'Архивная сводка по корпусам'not in body and 'class="schedule-lane"'not in body
-    assert 'нет полного перечня работ'in body and '16.02.2027'in body
+    assert body.count('data-gpr-block=')==3 and 'Пока не определён'in body
 
 
 def test_unavailable_full_roster_does_not_erase_independently_source_bound_readiness():
