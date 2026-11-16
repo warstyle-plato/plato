@@ -116,8 +116,8 @@ def test_revision_race_and_source_race_preserve_the_first_valid_event(stored, mo
     assert sorted(results) == [1, 409]
     current = allocations.view(PROJECT, DAY)
     read = allocations._read_model
-    def replace_during_validation(data, assignments=None):
-        value = read(data, assignments)
+    def replace_during_validation(data, assignments=None, **kwargs):
+        value = read(data, assignments, **kwargs)
         path.write_bytes(raw + b' newer')
         return value
     monkeypatch.setattr(allocations, '_read_model', replace_during_validation)

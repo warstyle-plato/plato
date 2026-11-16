@@ -47,6 +47,8 @@ def test_thousands_restore_budget_and_admin_from_the_same_declared_source(stored
     assert evidence['basis'] == 'owner_declaration'
     assert evidence['header_evidence']['state'] == 'missing'
     assert admin.for_project(PROJECT, '2026-10-31')['source']['unit_factor_to_rubles'] == 1000
+    markup = admin.render(admin.for_project(PROJECT, '2026-10-31'))
+    assert 'Единицы подтверждены владельцем' in markup and 'Единицы в шапке' not in markup
     captured = proof._finance(raw, monitor.finance_baseline_meta(PROJECT))
     assert captured['observations']['total']['rubles'] == result['approved']
     assert path.read_bytes() == raw
@@ -183,3 +185,37 @@ def test_admin_cash_rejects_a_source_bound_declaration_conflicting_with_header()
         cash.fm_budget(raw,meta)
     meta['money_unit']['source_sha256']='f'*64
     assert cash.fm_budget(raw,meta)['unit_basis']=='existing_native_finmodel_contract'
+
+
+def test_declared_units_survive_bank_and_management_reads_and_qualified_cache(tmp_path,monkeypatch):
+    import developaid_finance_allocations as allocations
+    import developaid_finance_management as management
+    from test_finance_money_bridge import source
+    monkeypatch.setattr(monitor,'_SNAPSHOT_DIR',tmp_path/'monitor')
+    now=dt.datetime(2026,11,9,12,tzinfo=dt.timezone.utc)
+    monkeypatch.setattr(allocations,'_now',lambda:now)
+    monkeypatch.setattr(management,'_now',lambda:now)
+    project='Declared units with owner classifications'
+    raw=source(unit='')
+    monitor.replace_finance_baseline(project,raw,'2026-11-09')
+    digest=hashlib.sha256(raw).hexdigest()
+    units.configure(project,'тыс. руб.',expected_source_sha256=digest)
+    state=allocations.view(project,'2026-11-09')
+    assert len(state['rows'])==1
+    allocations.apply(project,digest,state['revision'],
+        [{'row_id':state['rows'][0]['row_id'],'bank_code':'2.6'}],
+        'Synthetic owner classification','2026-11-09')
+    allocations._QUALIFIED_CACHE.clear()
+    first=dashboard._finance_for_cut(project,'2026-11-09')
+    assert first['known'] and first['approved']==360000
+    assert first['budget_composition']['unit_scale']==1000
+    policy=management.view(project,'2026-11-09')
+    assert policy['rows']
+    management.apply(project,digest,policy['revision'],[r['item_id'] for r in policy['rows']],
+        management.ARTICLE,'Synthetic management instruction','2026-11-09')
+    assert dashboard._finance_for_cut(project,'2026-11-09')['known']
+    units.configure(project,'руб.',expected_source_sha256=digest)
+    changed=dashboard._finance_for_cut(project,'2026-11-09')
+    assert changed['approved']==360
+    assert changed['budget_composition']['unit_scale']==1
+    assert (monitor._project_dir(project)/'baseline'/'finance.xlsx').read_bytes()==raw

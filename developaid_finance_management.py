@@ -108,7 +108,7 @@ def view(project, cut=''):
     source_sha256 = hashlib.sha256(raw).hexdigest()
     try:
         state = active(project, source_sha256, cut)
-        rows = candidates(bank_allocations._read_model(raw))
+        rows = candidates(bank_allocations._read_model(raw, project=project))
     except (ValueError, KeyError, TypeError) as exc:
         raise AllocationProblem('История управленческого отнесения или строки АХР не подтверждены.', 503) from exc
     return {**state, 'rows': rows, 'can_edit': state['cut'] == _now().date().isoformat(),
@@ -130,7 +130,7 @@ def apply(project, source_sha256, revision, item_ids, management_article, note, 
         source_sha = hashlib.sha256(raw).hexdigest()
         try:
             state = active(project, source_sha)
-            eligible = {row['item_id'] for row in candidates(bank_allocations._read_model(raw))}
+            eligible = {row['item_id'] for row in candidates(bank_allocations._read_model(raw, project=project))}
         except (ValueError, KeyError, TypeError) as exc:
             raise AllocationProblem('Источник или история управленческого отнесения не подтверждены.', 503) from exc
         if source_sha256 != source_sha or revision != state['revision']:

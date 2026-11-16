@@ -398,7 +398,8 @@ def finance_sheets_reason() -> str:
             "ни листа «cf_1_new» (финмодель)")
 
 
-def _read_finance_baseline(path: Path, *, bank_assignments: dict | None = None) -> dict[str, Any]:
+def _read_finance_baseline(path: Path, *, bank_assignments: dict | None = None,
+                           unit_metadata: dict | None = None) -> dict[str, Any]:
     from openpyxl import load_workbook
 
     # Parse and hash the same bytes, including the article map. A concurrent
@@ -413,7 +414,8 @@ def _read_finance_baseline(path: Path, *, bank_assignments: dict | None = None) 
         if FINANCE_MODEL_SHEET in wb.sheetnames:
             import developaid_finance_units as finance_units
             result = _read_finance_model(wb, source, bank_assignments=bank_assignments,
-                unit_metadata=finance_units.metadata(path), source_sha256=hashlib.sha256(raw).hexdigest())
+                unit_metadata=finance_units.metadata(path) if unit_metadata is None else unit_metadata,
+                source_sha256=hashlib.sha256(raw).hexdigest())
             if result.get("budget_composition") is not None:
                 result["budget_composition"]["source_sha256"] = hashlib.sha256(raw).hexdigest()
             return result

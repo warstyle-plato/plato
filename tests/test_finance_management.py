@@ -158,8 +158,8 @@ def test_only_one_writer_consumes_source_revision_and_source_race_is_fenced(stor
 def test_external_source_change_during_parse_is_refused_before_commit(stored, monkeypatch):
     path, raw, state = stored
     read = bank._read_model
-    def replace_after_parse(data):
-        model = read(data)
+    def replace_after_parse(data, **kwargs):
+        model = read(data, **kwargs)
         path.write_bytes(raw + b' changed')
         return model
     monkeypatch.setattr(bank, '_read_model', replace_after_parse)
