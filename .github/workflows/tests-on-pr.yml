@@ -114,7 +114,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: gpr-synthetic-shard-${{ matrix.shard }}
+          name: gpr-synthetic-shard-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
           path: .ci-ui-review/gpr-synthetic/
           include-hidden-files: true
           if-no-files-found: ignore
@@ -147,7 +147,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: gpr-synthetic-fast
+          name: gpr-synthetic-fast-attempt-${{ github.run_attempt }}
           path: .ci-ui-review/gpr-synthetic/
           include-hidden-files: true
           if-no-files-found: ignore
