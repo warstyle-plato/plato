@@ -279,6 +279,10 @@ def _office_path_metrics(result: dict[str, Any], prefixes: tuple[str, ...],
 
     return {
         "comparison_missing": missing,
+        # Lease policy depends on this variant's sale/retention horizon.
+        # The native workbook must not reuse the selected variant's rental
+        # calendar for every comparison column.
+        "land_rent": copy.deepcopy(result.get("land_rent") or {}),
         "revenue": float(summary.get("revenue") or 0.0),
         "capex": float(summary.get("capex") or 0.0),
         "selling_cost": total("selling_cost"),

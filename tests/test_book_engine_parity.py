@@ -43,7 +43,7 @@ def test_the_reference_set_covers_every_kind_of_project() -> None:
     titles = " | ".join(title for _, title, _ in bep.PROJECTS.values())
     for word in ("Жильё", "Офис по ДДУ", "Офис без ДДУ", "ТЦ", "ФОК", "паркинг", "Смешанный"):
         assert word in titles, word
-    assert {kind for kind, _, _ in bep.PROJECTS.values()} == {"v4", "office"}
+    assert {kind for kind, _, _ in bep.PROJECTS.values()} == {"v4", "office", "hotel"}
 
 
 def test_the_housing_book_agrees_and_its_known_gaps_are_real() -> None:
