@@ -102,15 +102,27 @@ def business_files(bot):
 def test_empty_background_delivery_tick_preserves_every_recorded_byte(bot, monkeypatch):
     # Exercise the real local outbox path used by the delivery daemon, without
     # contacting Telegram or replacing the closed-source authorization gates.
+    import developaid_report_mailing as mailing
+
     monkeypatch.setattr(bot.core, "_projects_remote_url", lambda path: "")
+    monkeypatch.setattr(bot.core, "_telegram_webhook_enabled", lambda: True)
     before = business_files(bot)
     assert before["monitor/.mailing/lock"] == b""
     results = []
     worker = threading.Thread(target=lambda: results.append(bot._deliver_management_reports()),
                               name="management-report-controlled")
+    original_take = mailing.take
+    controlled_calls = []
+    def take(*args, **kwargs):
+        result = original_take(*args, **kwargs)
+        if threading.current_thread() is worker:
+            controlled_calls.append(threading.current_thread())
+        return result
+    monkeypatch.setattr(mailing, "take", take)
     worker.start()
     worker.join(timeout=5)
     assert not worker.is_alive() and results == [[]]
+    assert len(controlled_calls) == 1 and controlled_calls[0] is worker
     assert business_files(bot) == before
     assert bot.fixture["sent"] == bot.fixture["model"] == []
 
