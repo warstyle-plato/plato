@@ -39,6 +39,8 @@ def _row(line, volume, *, unknown=False, reason=''):
     money_fact = line.get('work_fact') if split else line.get('fact')
     money_deviation = money_fact-money_plan if money_plan is not None and money_fact is not None else None
     return {'code': line['code'], 'name': line['name'], 'basis': 'volume' if natural else 'money',
+            **{key: line[key] for key in ('display_code', 'parent_code', 'position_key', 'source') if key in line},
+            **({'physical_scope': line['operations']['group']} if line.get('operations') else {}),
             'unit': volume['unit'] if natural else '₽',
             'planned': volume['planned'] if natural else money_plan,
             'fact': None if unknown else volume['fact'] if natural else money_fact,
@@ -78,7 +80,14 @@ def build(listed: dict, cut: str, source_sha256: str | None = None) -> dict:
                           'source_rows': len(source_lines), 'source_known': bool(schedule),
                           'schedule_title': document and document.get('title'), 'schedule_sha256': source_sha}
     if canonical.get('lines'):
-        result['lines'] = [_row(r, r.get('volume')) for r in canonical['lines']]
+        for native in canonical['lines']:
+            row = _row(native, native.get('volume'))
+            if native.get('operations'):
+                row['money_fallback'] = ('Общая готовность операций — по стоимости работ без материалов. '
+                                         'Объёмы отдельных операций показаны ниже и не складываются в площадь конструкции.')
+            result['lines'].append(row)
+            result['lines'].extend(_row(part, part.get('volume'))
+                                   for part in (native.get('operations') or {}).get('lines') or [])
     elif current and current.get('lines'):
         start = dt.date.fromisoformat(current['start']) if current.get('start') else None
         day = dt.date.fromisoformat(cut)
@@ -99,7 +108,7 @@ def build(listed: dict, cut: str, source_sha256: str | None = None) -> dict:
                 'lag_days':None,'ahead_days':None,'overdue_days':None,'forecast_finish':None,'finished':None,
                 'due':row.get('finish'),'state':'unknown','reason':unfit.get(row['code']) or
                 'Работа есть в ГПР, но объём из расчёта и выполнение КС с ней не сопоставлены.', 'money_fallback':''})
-    result['coverage']['unknown'] = sum(r['state'] == 'unknown' for r in result['lines'])
+    result['coverage']['unknown'] = sum(r['state'] == 'unknown' for r in result['lines'] if not r.get('parent_code'))
     result['coverage']['partial'] = bool(result['coverage']['unknown'] or (canonical.get('left_out') or {}).get('count') or result['data_gaps'])
     # A current estimate can describe only the remaining scope of an agreement.
     # Keep its calendar projection, but never promote it to the whole contract
@@ -120,7 +129,7 @@ def build(listed: dict, cut: str, source_sha256: str | None = None) -> dict:
         by_code.setdefault(source_row['code'],[]).append(source_row)
     for row in result['lines']:
         contexts,seen = [],set()
-        own = by_code.get(row['code']) or []
+        own = by_code.get(row.get('parent_code') or row['code']) or []
         section = (own[0].get('section') or '').strip() if len(own) == 1 else ''
         unambiguous = len(own) == 1
         parent = own[0].get('parent') if len(own) == 1 else None
@@ -146,7 +155,7 @@ def build(listed: dict, cut: str, source_sha256: str | None = None) -> dict:
         order = {row['code']: index for index, row in enumerate(source_lines)
                  if len(by_code[row['code']]) == 1}
         groups = {}
-        for row in sorted(result['lines'], key=lambda row: order.get(row['code'], len(source_lines))):
+        for row in sorted(result['lines'], key=lambda row: order.get(row.get('parent_code') or row['code'], len(source_lines))):
             groups.setdefault(row['section'], []).append(row)
         result['lines'] = [row for rows in groups.values() for row in rows]
     return result

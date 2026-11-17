@@ -64,18 +64,41 @@ def _volume(parts):
     return {"unit": parts[0][0], "quantity": sum(q * share for _, q, share in parts)}
 
 
+def _operations(parts, schedule_line):
+    """Explicit indexed children of one printed parent, never equal-volume deduplication."""
+    if len(parts) < 2:
+        return None
+    printed = links.printed(schedule_line)
+    groups = [(part.get('group') or {}) for part in parts]
+    if any(not group.get('number') or group['number'] != printed for group in groups):
+        return None
+    if any(not str(part.get('number') or '').startswith(printed + '.') for part in parts):
+        return None
+    identities = {(group['number'], group.get('name'), part.get('section'))
+                  for part, group in zip(parts, groups)}
+    if len(identities) != 1 or len({part['key'] for part in parts}) != len(parts):
+        return None
+    group = dict(groups[0], section=parts[0].get('section') or '')
+    declarations = {(item.get('unit'), item.get('quantity')) for item in groups}
+    if len(declarations) != 1:
+        group.pop('unit', None)
+        group.pop('quantity', None)
+    return {'group': group, 'parts': parts}
+
+
 def edition(estimates: list[dict], schedule: dict | None, start: dt.date | None) -> dict:
     """Plan lines of linked `estimates` over `schedule`; `start` is the date of an estimate «на завершение»."""
     dated = {line["code"]: line for line in links.leaves(schedule)}
     money, outside, without = {}, {status: {"count": 0, "amount": 0.0} for status in _OUTSIDE}, 0
     volumes, auto, auto_positions = {}, {}, 0
-    components, material_volumes = {}, {}
+    components, material_volumes, source_operations = {}, {}, {}
     accepted, accepted_without = None, 0
     for estimate in estimates:
         positions = (estimate.get("links") or {}).get("positions") or []
-        source_parts = {}
+        source_parts, raw_parts = {}, {}
         for raw in estimate.get('positions') or []:
             source_parts.setdefault(links.position_key(raw), []).append(raw.get('amount') or {})
+            raw_parts.setdefault(links.position_key(raw), []).append(raw)
         if estimate.get("scope") == "accepted":
             # A position without a sum is named, not counted as zero: the sum is then of the others only.
             known = [p["amount"] for p in positions if p["amount"] is not None]
@@ -97,6 +120,15 @@ def edition(estimates: list[dict], schedule: dict | None, start: dt.date | None)
                 # A position split over several lines is one automatic link, not one per line.
                 auto_positions += position["status"] == "proposed"
                 for line in position["lines"]:
+                    raw = raw_parts.get(position.get('key')) or []
+                    if len(raw) == 1:
+                        source_operations.setdefault(line['code'], []).append({
+                            'key': position['key'], 'number': raw[0].get('number'),
+                            'name': raw[0].get('name'), 'group': raw[0].get('group'),
+                            'section': raw[0].get('section'), 'unit': raw[0].get('unit'),
+                            'quantity': raw[0].get('quantity'), 'share': line['share'],
+                            'work_amount': work, 'material_amount': material,
+                            'source': {'annex': estimate.get('annex'), 'page': raw[0].get('page')}})
                     money[line["code"]] = money.get(line["code"], 0.0) + position["amount"] * line["share"]
                     auto[line["code"]] = auto.get(line["code"], 0) + (position["status"] == "proposed")
                     parts = components.setdefault(line['code'], {'work': [], 'material': []})
@@ -119,6 +151,11 @@ def edition(estimates: list[dict], schedule: dict | None, start: dt.date | None)
               "auto": auto.get(code, 0),
               "overdue": bool(start and _day(dated[code]["finish"]) < start)}
              for code, amount in sorted(money.items(), key=lambda kv: list(dated).index(kv[0]))]
+    for line in lines:
+        operations = _operations(source_operations.get(line['code']) or [], dated[line['code']])
+        if operations:
+            line['operations'] = operations
+            line['volume'] = None
     return {"lines": lines, "total": sum(line["amount"] for line in lines), "outside": outside,
             "auto": auto_positions,
             "without_amount": without, "accepted": accepted, "accepted_without_amount": accepted_without}
@@ -154,6 +191,14 @@ def build(editions: list[dict], cut: str) -> dict:
         # The plan on the cut belongs to the edition in force: an older one would answer with a superseded plan.
         for line in entry["lines"]:
             line["planned"] = line["amount"] * done(line, day, start) if entry["in_force"] else None
+            if line.get('operations'):
+                line['operations']['group']['source'] = {
+                    'source_kind': 'contract_estimate', 'title': item.get('estimate_title') or item['title'],
+                    'sha256': item.get('estimate_sha256'), 'edition_date': item.get('date'),
+                    'page': line['operations']['group'].get('page')}
+                for part in line['operations']['parts']:
+                    part['source'].update(title=item.get('estimate_title') or item['title'],
+                                          sha256=item.get('estimate_sha256'), edition_date=item.get('date'))
         entry["planned"] = sum(line["planned"] for line in entry["lines"]) if entry["in_force"] else None
         entry["overdue"] = sum(1 for line in entry["lines"] if line["overdue"])
         if entry["lines"]:
