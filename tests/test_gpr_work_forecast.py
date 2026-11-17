@@ -256,3 +256,43 @@ def test_legacy_wbs_keeps_the_existing_plan_pace_policy(source_format):
 def test_corpus_unknown_type_never_uses_calendar_duration(construction):
     row = task('corpus', construction_work=construction)
     assert row['plan_pace_scenario']['finish'] is None
+
+
+@pytest.mark.parametrize('invalid_source', [False, True])
+def test_dashboard_compiles_missing_owner_or_reports_unknown_without_legacy_date(invalid_source):
+    from developaid_monitor_dashboard import refresh_schedule_summary
+    schedule = profiled()
+    expected = work_dates.for_schedule(schedule, schedule['cut'])['summary']['finish']
+    value = dict(cut=schedule['cut'], schedule=schedule, dashboard=dict(
+        schedule=dict(qualified_rnv=dict(state='estimate', basis='gpr', approved='2048-01-01',
+                                         forecast='2049-01-01', reasons=[])),
+        summary=['Срок. Прежняя дата.', 'Бюджет: текст сохранён.']))
+    if invalid_source:
+        schedule['approved_plan']['source_sha256'] = 'e'*64
+    before = copy.deepcopy(value)
+    refresh_schedule_summary(value)
+    sentence = value['dashboard']['summary'][0]
+    assert '2049' not in sentence and '2048' not in sentence
+    if invalid_source:
+        assert 'не определена' in sentence
+    else:
+        assert '.'.join(reversed(expected.split('-'))) in sentence
+    assert value['dashboard']['summary'][1:] == before['dashboard']['summary'][1:]
+    assert schedule == before['schedule']
+
+
+def test_weighted_matrix_reads_owner_dates_and_comparison_instead_of_old_aliases():
+    from developaid_schedule_readiness import render
+    source = profiled()
+    value = work_dates.build(source, source['cut'])
+    expected = value['summary']['finish']
+    groups = [value['project'], *value['corpora'],
+              *(cell for stage in value['matrix'] for cell in stage['cells'])]
+    for group in groups:
+        group['forecast'].update(plan_finish='2099-01-01', all_complete=True)
+    before = copy.deepcopy(value)
+    body = render(value, show_forecast=False)
+    assert '2099' not in body
+    assert '.'.join(reversed(expected.split('-'))) in body
+    assert 'class="readiness-cell-forecast"' in body
+    assert value == before

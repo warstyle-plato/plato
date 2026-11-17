@@ -2779,7 +2779,8 @@ def _schedule_summary(schedule: dict[str, Any], assessment=None, *, readiness_pr
 def _work_schedule_summary(view: dict[str, Any]) -> str | None:
     """Read the same source-bound work date as the Monitor and report cards."""
     schedule = view.get('schedule') or {}
-    if 'work_forecast' not in schedule:
+    if 'work_forecast' not in schedule and not any(
+            key in schedule for key in ('readiness', 'rows', 'approved_plan')):
         return None
     from developaid_gpr_work_forecast import for_schedule, describe
     value = for_schedule(schedule, view.get('cut'))

@@ -274,7 +274,15 @@ def _apply_gpr(project: str, view: dict[str, Any], cut: datetime.date) -> dict[s
     schedule.setdefault('cut', view.get('cut'))
     from developaid_gpr_work_forecast import build as work_forecast
     schedule['work_forecast'] = work_forecast(schedule, cut.isoformat())
-    schedule['readiness_html'] = readiness.render(schedule['readiness'], show_forecast=False)
+    display_readiness = schedule['work_forecast']
+    if display_readiness.get('scope_kind') != 'readiness_profile':
+        # Keep source facts/counts available without restoring a second date.
+        from copy import deepcopy
+        display_readiness = deepcopy(schedule['readiness'])
+        for group in [display_readiness.get('project') or {}, *display_readiness.get('corpora', []),
+                      *(cell for stage in display_readiness.get('matrix', []) for cell in stage.get('cells', []))]:
+            group.pop('forecast', None)
+    schedule['readiness_html'] = readiness.render(display_readiness, show_forecast=False)
     if schedule.get('completed_facts') is not None:
         summary = schedule['readiness']['project']
         # This legacy field means the whole scope. A known weighted fraction

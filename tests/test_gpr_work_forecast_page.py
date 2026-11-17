@@ -19,7 +19,8 @@ def view(kind):
     schedule = profiled() if kind == 'profile' else fallback()
     result.update(cut=schedule['cut'], schedule=schedule)
     schedule['work_forecast'] = work_dates.build(schedule, schedule['cut'])
-    schedule['readiness_html'] = readiness.render(schedule['readiness'], show_forecast=False)
+    display = schedule['work_forecast'] if schedule['work_forecast']['scope_kind'] == 'readiness_profile' else schedule['readiness']
+    schedule['readiness_html'] = readiness.render(display, show_forecast=False)
     return result
 
 

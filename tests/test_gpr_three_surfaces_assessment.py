@@ -269,3 +269,25 @@ def test_an_invalid_explicit_new_assessment_does_not_use_the_old_ticket_fallback
         expect(page.locator('#gprProjectAssessment .n')).to_have_text('Не определена')
         expect(page.locator('#gprProjectAssessment')).to_contain_text('требуют обновления')
         assert not errors
+
+
+def test_native_weighted_matrix_uses_the_compiled_owner_not_raw_forecast_aliases(gpr_sources, monkeypatch):
+    import developaid_monitor as monitor
+    import developaid_schedule_plan_scenario as scenario
+    from test_schedule_physical_print_summary import PROJECT, CUT as cut
+    original = scenario.decorate_readiness
+    def add_legacy_shadow(state, rows, *args, **kwargs):
+        result = original(state, rows, *args, **kwargs)
+        for group in [*state.get('corpora', []),
+                      *(cell for stage in state.get('matrix', []) for cell in stage.get('cells', []))]:
+            group['forecast'].update(finish='2099-01-01', plan_finish='2099-01-01')
+        return result
+    monkeypatch.setattr(scenario, 'decorate_readiness', add_legacy_shadow)
+    gpr_sources('confirmed')
+    value = monitor.build(PROJECT, cut)
+    schedule = value['schedule']
+    owner = work_dates.for_schedule(schedule, cut)
+    assert owner['state'] != 'unavailable'
+    assert any(group['forecast']['finish'] == '2099-01-01' for group in schedule['readiness']['corpora'])
+    assert '2099' not in schedule['readiness_html']
+    assert '.'.join(reversed(owner['summary']['finish'].split('-'))) in schedule['readiness_html']
