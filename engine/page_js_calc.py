@@ -401,6 +401,13 @@ async function calculate(){
  // страница только принимает его ответ: иначе поле показывало бы одно
  // число, а расчёт шёл по другому. Происхождение подписано у поля.
  applyInputMigrations((phaseBundle||lastResult||{}).input_migrations);
+ const moUpdate=(phaseBundle||lastResult||{}).mo_vri_benefits_update;
+ if(moUpdate&&moUpdate.inputs&&startedAtReset===resetRun){
+  Object.assign(inputs,moUpdate.inputs);
+  const feeField=document.getElementById('f_land_rights_cost_mln');
+  if(feeField)feeField.value=inputs.land_rights_cost_mln;
+  if(typeof renderMoVriRelief==='function')renderMoVriRelief();
+ }
  if(startedAtReset!==resetRun){
   // Между стартом расчёта и его ответом человек нажал «Сбросить».
   lastResult=null;phaseBundle=null;blankResultSurfaces();return null;

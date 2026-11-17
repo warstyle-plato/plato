@@ -506,6 +506,7 @@ def _build_project_workbook(
     # общий vri_relief вычел бы исходный зачёт метров ещё раз при записи B82.
     if (inputs or {}).get("_vri_relief_applied_at_project") is True:
         x["_vri_relief_applied_at_project"] = True
+    _mo_benefits_update = apply_mo_vri_benefits(x, tep)
     # География МПТ берётся из того же разбора/импорта, что у движка. Общий
     # фильтр служебных полей не должен превращать известный район/ТТК в
     # отсутствие данных: переносим только факты канонического site_position.
@@ -1191,7 +1192,7 @@ def _build_project_workbook(
         # в проекте — та, что этот расчёт дал: вписанная поверх сумма — уже
         # не плата за вычетом, а введённая сумма вычетом не была. Служебные
         # ключи с «_» в `x` не попадают, поэтому расчёт МО читается из `inputs`.
-        _mo_vri = mo_vri_applied_details(inputs or {})
+        _mo_vri = (_mo_benefits_update.get("vri") or mo_vri_applied_details(inputs or {}))
         _applied_rub = _mo_vri.get("compensation_applied_rub")
         _used_mln = _mo_vri.get("payment_used_mln")
         _compensation_mln = (
@@ -1208,6 +1209,13 @@ def _build_project_workbook(
                     f"(1310-ПП, Ксу*), вписанную пользователем: вычтено "
                     f"{_compensation_text} млн ₽, плата не ниже 1 ₽"
                     if _compensation_mln > 0 else ""))
+        if _mo_vri.get("benefits"):
+            _benefit_rows = _mo_vri["benefits"].get("rows", [])
+            sources_xml, _ = _v4_set_cell(sources_xml, "I7", text=(
+                "Предварительная оценка уменьшения ВРИ по 1310-ПП; право требует соглашения. "
+                + "; ".join(f"{r['label']}: {r['formula']} = {r['amount_rub']:,.2f} ₽. "
+                            + str(r.get("valuation_basis", "")) + ". " + " ".join(r.get("notes", []))
+                            for r in _benefit_rows)))
     calculation_id = _calculation_fingerprint(inputs, calculation_source_tep, phasing)
     sources_xml, _ = _v4_set_cell(
         sources_xml, "C16", text=f"Сборка DevelopAid {VERSION}")

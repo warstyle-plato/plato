@@ -70,6 +70,7 @@ SETUP = """()=>{
  savedPhasing.products.apartments=[60,40];
  applyProjectSnapshot(stored({inputs:model,tep:savedTep,phasing:savedPhasing,scenario:'base'}));
  projectsAdminKey='fictional-full-page-mo-key';openTab('vri');
+ document.getElementById('moVriBenefitMode').value='manual';moVriBenefitModeChanged();
 }"""
 
 READ = """()=>({

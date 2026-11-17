@@ -136,6 +136,83 @@ function syncMoKd(){
  }
 }
 
+const MO_BENEFITS_CATALOG=__DEVELOPAID_MO_BENEFITS_CATALOG__;
+let moVriBenefitsDraft=null;
+function moVriBenefitMode(){
+ const node=moVriNode('moVriBenefitMode');return node&&node.value==='calculated'?'calculated':'manual';
+}
+function moVriBenefitModeChanged(){
+ moVriReliefEdited(false);renderMoVriBenefitEditor();
+}
+function moVriBenefitConfig(){return {schema:1,rows:JSON.parse(JSON.stringify(moVriBenefitsDraft||[])),separate_transfer_offset:!!moVriNode('moVriDistinctOffset')?.checked}}
+function loadMoVriBenefitDraft(){
+ const saved=inputs.mo_vri_benefits;
+ moVriBenefitsDraft=saved&&saved.schema===1?JSON.parse(JSON.stringify(saved.rows||[])):[];
+ const distinct=moVriNode('moVriDistinctOffset');if(distinct)distinct.checked=saved?.separate_transfer_offset===true;
+ const mode=moVriNode('moVriBenefitMode');
+ if(mode)mode.value=saved&&saved.schema===1?'calculated':Number(inputs.mo_vri_compensation_mln||0)>0?'manual':'calculated';
+ renderMoVriBenefitEditor();
+}
+function addMoVriBenefitRow(){
+ const kind=(moVriNode('moVriBenefitKind')||{}).value||'investment';
+ if(!moVriBenefitsDraft)moVriBenefitsDraft=[];
+ if(moVriBenefitsDraft.length>=100){moVriReliefStatus('Допускается не больше 100 обязательств.');return}
+ moVriBenefitsDraft.push({id:'obligation-'+Date.now()+'-'+Math.random().toString(36).slice(2),kind,
+  ...(kind==='investment'?{object_type:'hotel_3',index_mode:'base',municipality_uplift:false}:{}),
+  ...(kind==='resettlement'?{district:inputs._mo_calc?.territory?.district||''}:{})});
+ moVriReliefEdited(false);renderMoVriBenefitEditor();
+}
+function removeMoVriBenefitRow(index){
+ moVriBenefitsDraft.splice(index,1);moVriReliefEdited(false);renderMoVriBenefitEditor();
+}
+function setMoVriBenefitField(index,key,value){
+ const row=(moVriBenefitsDraft||[])[index];if(!row)return;
+ if(key==='amount_mln'){row.amount_rub=value===''?null:Number(value)*1e6}
+ else if(key==='municipality_uplift')row[key]=value===true;
+ else row[key]=value===''?null:value;
+ moVriReliefEdited(false);
+ if(['object_type','index_mode','municipality_uplift'].includes(key))renderMoVriBenefitEditor();
+}
+function renderMoVriBenefitEditor(){
+ const host=moVriNode('moVriBenefitRows');if(!host)return;
+ const calculated=moVriBenefitMode()==='calculated';
+ const editor=moVriNode('moVriBenefitsEditor');if(editor)editor.style.display=calculated?'':'none';
+ const manual=moVriNode('moCompensation');if(manual){const field=manual.closest?manual.closest('.field'):null;if(field)field.style.display=calculated?'none':''}
+ const esc=value=>escapeHtml(String(value??''));
+ host.innerHTML=(moVriBenefitsDraft||[]).map((row,i)=>{
+  const number=(key,label,placeholder='из проекта')=>'<div class="field"><label>'+esc(label)+'</label><input type="number" min="0" step="any" aria-label="'+esc(label)+'" value="'+esc(row[key])+'" placeholder="'+esc(placeholder)+'" oninput="setMoVriBenefitField('+i+',\''+key+'\',this.value)"></div>';
+  const text=(key,label,placeholder='')=>'<div class="field"><label>'+esc(label)+'</label><input type="text" aria-label="'+esc(label)+'" value="'+esc(row[key])+'" placeholder="'+esc(placeholder)+'" oninput="setMoVriBenefitField('+i+',\''+key+'\',this.value)"></div>';
+  let fields='',note='';
+  if(['kindergarten','school'].includes(row.kind)){
+   fields=number('required_places','Нормативная потребность, мест','автоматически по РНГП')+number('planned_places','Проектная мощность, мест')+number('rub_per_place','Стоимость засчитываемого места, ₽')+number('eligible_places','Засчитываемые места по соглашению','профицит после проверки >10%')+text('valuation_basis','Источник стоимости места','при ручной ставке — акт или соглашение');
+   note='Проверяется строгое превышение потребности более чем на 10%. Предварительно оценивается разница проектной и нормативной мощности. Ставка из бюджета проекта — оценка; согласованную зачётную мощность можно указать отдельно.';
+  }else if(row.kind==='resettlement'){
+   fields=number('area_sqm','Расселяемая аварийная площадь, м²','укажите площадь')+text('district','Муниципалитет переселения','например, Мытищи')+number('rub_per_sqm','Стоимость метра, ₽/м²','КЦТ по муниципалитету')+text('valuation_basis','Источник ручной стоимости');
+   note='Укажите аварийную площадь по обязательствам переселения. Цена КЦТ берётся по муниципалитету переселения. Со = Об × Цм — предварительная оценка по положению КРТ; стоимость для Ксу* подтверждается ДоКРТ.';
+  }else if(row.kind==='victims'){
+   const value=row.amount_rub==null?'':row.amount_rub/1e6;
+   fields='<div class="field"><label>Сумма возмещения, млн ₽</label><input aria-label="Сумма возмещения, млн ₽" type="number" min="0" step="any" value="'+esc(value)+'" oninput="setMoVriBenefitField('+i+',\'amount_mln\',this.value)"></div>';
+   note='Возмещение специальной категории пострадавших граждан по п. 5.1(1) 1310-ПП, предусмотренное ДоКРТ и соглашениями с муниципалитетом.';
+  }else{
+   const types=MO_BENEFITS_CATALOG.investment_types,rate=types.find(t=>t.key===row.object_type);
+   fields='<div class="field"><label>Инвестиционный объект</label><select aria-label="Инвестиционный объект" onchange="setMoVriBenefitField('+i+',\'object_type\',this.value)">'+types.map(t=>'<option value="'+esc(t.key)+'"'+(row.object_type===t.key?' selected':'')+'>'+esc(t.label)+'</option>').join('')+'</select></div>';
+   fields+=number('area_sqm','Общая площадь инвестиционного объекта, м²','укажите площадь');
+   fields+='<div class="field"><label>Норматив 933-ПП, ₽/м² без НДС</label><output>'+esc(rate?rate.rub_per_sqm.toLocaleString('ru-RU'):'выберите объект')+'</output></div>';
+   fields+='<div class="field"><label>Уровень цен</label><select aria-label="Уровень цен" onchange="setMoVriBenefitField('+i+',\'index_mode\',this.value)"><option value="base"'+(row.index_mode!=='indexed'?' selected':'')+'>На 07.08.2026 — без индексации</option><option value="indexed"'+(row.index_mode==='indexed'?' selected':'')+'>С накопленным индексом Ки</option></select></div>';
+   if(row.index_mode==='indexed')fields+=number('price_index','Накопленный индекс Ки, коэффициент','например, 1.025')+text('index_basis','Период и источник индексов Росстата','с сентября 2026 до месяца перед заявлением');
+   fields+='<div class="field"><label><input type="checkbox" '+(row.municipality_uplift?'checked':'')+' onchange="setMoVriBenefitField('+i+',\'municipality_uplift\',this.checked)"> Коэффициент муниципалитета 1,2 по 151/2004-ОЗ</label></div>';
+   if(row.municipality_uplift)fields+=text('uplift_basis','Основание коэффициента 1,2','муниципалитет и пункт перечня');
+   note='Стоимость = площадь × норматив × Ки × коэффициент муниципалитета. Ки — произведение месячных индексов Росстата, каждый процентный индекс делится на 100. Стоимость этих обязательств уменьшает ВРИ либо отдельный платёж КРТ; повторный зачёт недопустим.';
+  }
+  return '<div class="note" style="margin:12px 0"><div class="toolbar"><b>'+esc(MO_BENEFITS_CATALOG.grounds[row.kind]||row.kind)+'</b><button type="button" class="btn" onclick="removeMoVriBenefitRow('+i+')" aria-label="Удалить обязательство '+(i+1)+'">Удалить</button></div><div class="fields" style="grid-template-columns:repeat(auto-fit,minmax(210px,1fr))">'+fields+'</div><p class="hint">'+esc(note)+'</p></div>';
+ }).join('');
+}
+function renderMoVriBenefitBreakdown(benefits){
+ const host=moVriNode('moVriBenefitBreakdown');if(!host)return;
+ if(!benefits){host.innerHTML='';return}
+ host.innerHTML='<table class="metric-table"><thead><tr><th>Основание</th><th>Расчёт и источник</th><th>Оценка уменьшения</th></tr></thead><tbody>'+(benefits.rows||[]).map(r=>'<tr><td>'+escapeHtml(r.label)+'</td><td>'+(r.required_places!=null?escapeHtml('Потребность: '+r.required_places+' мест; проект: '+r.planned_places+'; профицит: '+r.surplus_places+'; зачёт: '+r.eligible_places+'; превышение: '+(r.required_places>0?((r.planned_places/r.required_places-1)*100).toFixed(2)+'%':'при нулевой потребности'))+'<br>':'')+escapeHtml(r.formula||r.error||'Недостаточно данных')+(r.unit_rate_rub!=null?'<br>Ставка: '+escapeHtml(moVriMoney(r.unit_rate_rub)):'')+'<br>'+escapeHtml(r.valuation_basis||r.source||'')+'<br><small>'+escapeHtml((r.notes||[]).join(' '))+'</small></td><td>'+escapeHtml(r.amount_rub==null?'нужны данные':moVriMoney(r.amount_rub))+'</td></tr>').join('')+'</tbody><tfoot><tr><th>Итого потенциальная льгота</th><td>'+(benefits.complete?'Предварительная оценка':'Расчёт не завершён; известная часть '+escapeHtml(moVriMoney(benefits.known_subtotal_rub)))+'</td><td><b>'+escapeHtml(benefits.total_rub==null?'не определена':moVriMoney(benefits.total_rub))+'</b></td></tr></tfoot></table>';
+}
+
 const MO_VRI_COMPENSATION_SOURCE=__DEVELOPAID_MO_VRI_COMPENSATION_SOURCE__;
 let moVriReliefOwner=null;
 let moVriReliefProjectKey='';
@@ -175,13 +252,14 @@ function moVriSavedBasis(){
 function moVriModelKey(){
  const basis=moVriSavedBasis();
  return JSON.stringify([classRegion(),inputs._project_uid||'',inputs.land_rights_cost_mln,
-  inputs.mo_vri_compensation_mln,basis&&basis.gross,basis&&basis.kind,
+  inputs.mo_vri_compensation_mln,inputs.mo_vri_benefits,inputs.school_places,inputs.kindergarten_places,
+  inputs.school_cost_mln_per_place,inputs.kindergarten_cost_mln_per_place,basis&&basis.gross,basis&&basis.kind,
   inputs.vri_transfer_offset_mln,inputs.vri_relief_mode,inputs.vri_relief_pct,inputs.vri_relief_mln,tep,
   typeof partialTepMode==='function'&&partialTepMode()]);
 }
 function moVriReliefBinding(){
  return JSON.stringify([moVriModelKey(),(moVriNode('moVriGross')||{}).value,
-  (moVriNode('moCompensation')||{}).value,moVriReliefBaseSource]);
+  (moVriNode('moCompensation')||{}).value,moVriReliefBaseSource,moVriBenefitMode(),moVriBenefitsDraft]);
 }
 function moVriReliefStatus(text){const node=moVriNode('moVriReliefStatus');if(node)node.textContent=text}
 function invalidateMoVriRelief(){
@@ -197,12 +275,13 @@ function resetMoVriRelief(){
  moVriReliefOwner=null;moVriReliefProjectKey='';moVriReliefModelKey='';
  moVriReliefPreview=null;moVriReliefBaseSource=null;
  moVriReliefGrossEdited=false;moVriReliefCompEdited=false;
+ moVriBenefitsDraft=null;renderMoVriBenefitBreakdown(null);
  ['moVriGross','moCompensation'].forEach(id=>{const field=moVriNode(id);if(field)field.value=''});
  ['moVriGrossSource','moVriReliefStatus'].forEach(id=>{const node=moVriNode(id);if(node)node.textContent=''});
  const totals=moVriNode('moVriReliefTotals');if(totals)totals.innerHTML='';
 }
 function moVriReliefEdited(baseChanged){
- invalidateMoVriRelief();
+ invalidateMoVriRelief();renderMoVriBenefitBreakdown(null);
  if(baseChanged){moVriReliefGrossEdited=true;moVriReliefBaseSource={kind:'manual',label:'Плата до уменьшения введена вручную'}}
  else moVriReliefCompEdited=true;
  const origin=moVriNode('moVriGrossSource');
@@ -210,10 +289,12 @@ function moVriReliefEdited(baseChanged){
  moVriReliefStatus('Проверьте предварительный расчёт. До применения плата проекта остаётся прежней.');
 }
 function renderMoVriReliefResult(vri,withFinal){
+ renderMoVriBenefitBreakdown(vri.benefits||null);
  const rows=[['Плата до уменьшения',moVriMoney(vri.payment_before_compensation_rub)],
-  ['Компенсация по соглашению',moVriMoney(vri.compensation_rub)],
+  [vri.benefits?'Расчётная потенциальная льгота':'Компенсация по соглашению',moVriMoney(vri.compensation_rub)],
   ['Фактически вычтено',vri.compensation_applied_rub==null?'уменьшение не применено':moVriMoney(vri.compensation_applied_rub)],
   ['Плата после уменьшения',moVriMoney(vri.payment_used_rub)]];
+ if(vri.benefits)rows.push(['Оценка сверх доступного уменьшения этой платы',moVriMoney(Math.max(0,Number(vri.compensation_rub||0)-Number(vri.compensation_applied_rub||0)))]);
  if(withFinal){
   rows.push(['Отдельный зачёт переданных площадей',moVriMoney(vri.transfer_offset_requested_rub)],
    ['Из него учтено в плате',moVriMoney(vri.transfer_offset_applied_rub)]);
@@ -237,7 +318,7 @@ function renderMoVriRelief(){
   // прежний результат: renderTep дополняет производные поля после renderInputs.
   // Новый ручной ввод при таком изменении остаётся черновиком до Preview/Apply.
   invalidateMoVriRelief();moVriReliefOwner=inputs;moVriReliefProjectKey=projectKey;moVriReliefModelKey=modelKey;
-  if(ownerChanged){moVriReliefGrossEdited=false;moVriReliefCompEdited=false}
+  if(ownerChanged){moVriReliefGrossEdited=false;moVriReliefCompEdited=false;loadMoVriBenefitDraft()}
   const basis=moVriSavedBasis();
   if(!moVriReliefGrossEdited){
    moVriReliefBaseSource=basis?{kind:basis.kind,label:basis.label}:null;
@@ -273,31 +354,35 @@ async function previewMoVriRelief(){
  renderMoVriRelief();
  if(classRegion()!=='mo')return;
  if(typeof partialTepMode==='function'&&partialTepMode())return;
+ const calculated=moVriBenefitMode()==='calculated';
  const gross=moVriNumber((moVriNode('moVriGross')||{}).value),compensation=moVriNumber((moVriNode('moCompensation')||{}).value);
  invalidateMoVriRelief();
  const compensationField=moVriNode('moCompensation');
- if(compensationField&&compensationField.validity&&compensationField.validity.badInput){moVriReliefStatus('Закончите ввод суммы компенсации или очистите поле.');return}
- if(gross===null||gross<0){moVriReliefStatus('Укажите известную плату до уменьшения: сумму не меньше нуля.');return}
- if(compensation!==null&&compensation<0){moVriReliefStatus('Сумма компенсации должна быть не меньше нуля.');return}
+ if(!calculated&&compensationField&&compensationField.validity&&compensationField.validity.badInput){moVriReliefStatus('Закончите ввод суммы компенсации или очистите поле.');return}
+ if((gross===null&&!calculated)||(gross!==null&&gross<0)){moVriReliefStatus('Укажите известную плату до уменьшения: сумму не меньше нуля.');return}
+ if(!calculated&&compensation!==null&&compensation<0){moVriReliefStatus('Сумма компенсации должна быть не меньше нуля.');return}
  const owner=inputs,binding=moVriReliefBinding(),run=moVriReliefRun;
  const origin=moVriReliefBaseSource||{kind:'manual',label:'Плата до уменьшения введена вручную'};
  const button=moVriNode('moVriPreviewButton');if(button)button.disabled=true;
  moVriReliefStatus('Считаю уменьшение платы…');
  try{
   const response=await fetch('/mo/vri-compensation',{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({payment_before_compensation_rub:gross*1e6,compensation_rub:compensation===null?null:compensation*1e6,
+   body:JSON.stringify({payment_before_compensation_rub:gross===null?null:gross*1e6,compensation_rub:calculated?null:compensation===null?null:compensation*1e6,
+    benefits:calculated?moVriBenefitConfig():null,
     inputs,tep,session:activeSession(),access_key:projectsAdminKey||''})});
   const data=await serverJson(response);
   if(run!==moVriReliefRun||owner!==inputs||binding!==moVriReliefBinding())return;
   if(!response.ok)throw new Error(serverDetail(data)||'Не удалось рассчитать уменьшение платы');
   const vri=data&&data.vri;
+  renderMoVriBenefitBreakdown(data.benefits||null);
+  if(data.benefits&&!vri){moVriReliefStatus(data.benefits.complete?'Потенциальная льгота рассчитана. Укажите исходную плату за ВРИ для расчёта остатка и применения.':'Заполните недостающие данные обязательств. Проект не изменён.');return}
   if(!vri||moVriNumber(vri.payment_before_compensation_rub)===null||moVriNumber(vri.payment_used_rub)===null
    ||moVriNumber(vri.payment_used_mln)===null||moVriNumber(vri.payment_after_reliefs_rub)===null||Number(vri.payment_used_rub)<0
    ||Math.abs(Number(vri.payment_before_compensation_rub)-gross*1e6)>0.011
-   ||Math.abs((moVriNumber(vri.compensation_rub)||0)-(compensation||0)*1e6)>0.011
+   ||(!calculated&&Math.abs((moVriNumber(vri.compensation_rub)||0)-(compensation||0)*1e6)>0.011)
    ||Math.abs(Number(vri.payment_used_mln)*1e6-Number(vri.payment_used_rub))>0.011)
    throw new Error('Сервер не вернул полный расчёт платы. Проект не изменён.');
-  moVriReliefPreview={owner,binding,vri,source:origin};renderMoVriReliefResult(vri,true);
+  moVriReliefPreview={owner,binding,vri,source:origin,benefits:calculated?moVriBenefitConfig():null};renderMoVriReliefResult(vri,true);
   moVriNode('moVriApplyButton').disabled=false;
   moVriReliefStatus('Предварительный расчёт. Для переноса платы нажмите «Применить плату к проекту». '+(vri.warnings||[]).join(' '));
  }catch(error){
@@ -313,9 +398,14 @@ async function applyMoVriRelief(){
  invalidateMoVriRelief();
  inputs.land_rights_cost_mln=preview.vri.payment_used_mln;
  inputs.mo_vri_compensation_mln=preview.vri.compensation_rub==null?0:preview.vri.compensation_rub/1e6;
+ if(preview.benefits){
+  inputs.mo_vri_benefits={...cloneValue(preview.benefits),result:cloneValue(preview.vri.benefits),
+   applied:{gross_rub:preview.vri.payment_before_compensation_rub,net_mln:preview.vri.payment_used_mln}};
+ }else delete inputs.mo_vri_benefits;
  inputs._mo_vri_relief={schema:1,vri:cloneValue(preview.vri),source:cloneValue(preview.source)};
  fieldOrigins()['inputs.land_rights_cost_mln']={source:'mo_vri_compensation',text:'Плата по Московской области после уменьшения по соглашению. '+preview.source.label+'.'};
- markFieldManual('inputs.mo_vri_compensation_mln');
+ if(preview.benefits)fieldOrigins()['inputs.mo_vri_compensation_mln']={source:'mo_vri_compensation',text:'Предварительная оценка по обязательствам 1310-ПП; пересчитывается при изменении входов.'};
+ else markFieldManual('inputs.mo_vri_compensation_mln');
  moVriReliefOwner=null;renderInputs();
  renderMoVriReliefResult(preview.vri,true);
  let kept=true;try{persistLocalSilently()}catch(error){kept=false}
@@ -559,11 +649,16 @@ async function applyMo(options){
  const status=document.getElementById('moStatus');
  if(!moResult){if(!silent)status.innerHTML='<span class="import-error">Сначала выполните расчёт.</span>';return}
  const incoming=moResult;
+ const keepBenefits=silent&&inputs.mo_vri_benefits?cloneValue(inputs.mo_vri_benefits):null;
  const leaseTerritoryBefore=landRentMoTerritoryKey(inputs._mo_calc);
  const keepLeaseTerms=silent&&!!leaseTerritoryBefore&&leaseTerritoryBefore===landRentMoTerritoryKey(incoming);
  resetTerritoryData({keepPhasing:silent,keepLeaseTerms});
  moResult=incoming;
  Object.assign(inputs,moResult.inputs||{});
+ if(keepBenefits&&keepBenefits.applied&&moResult.vri?.payment_before_compensation_rub!=null){
+  keepBenefits.applied={gross_rub:moResult.vri.payment_before_compensation_rub,net_mln:moResult.vri.payment_used_mln};
+  inputs.mo_vri_benefits=keepBenefits;
+ }
  syncMoCompensation();
  // Площадь участка приходит в территории расчёта, а не во вводных.
  {

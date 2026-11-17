@@ -2300,6 +2300,9 @@ async function applyNormativeTep(densityOverride,keepRows){
   const keepRegion=inputs.vri_region;
   Object.assign(inputs,data.inputs||{});
   delete inputs._mo_vri_relief;
+  if(inputs.mo_vri_benefits?.applied&&data.vri?.payment_before_compensation_rub!=null){
+   inputs.mo_vri_benefits.applied={gross_rub:data.vri.payment_before_compensation_rub,net_mln:data.vri.payment_used_mln};
+  }
   const parcels=((data.vri||{}).parcels||[]).length;
   // Плата за ВРИ считается от УПКС конкретных участков; без кадастра расчёта
   // нет, и введённая руками сумма не затирается нулём. Регион ВРИ без
