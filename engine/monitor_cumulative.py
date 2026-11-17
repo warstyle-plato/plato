@@ -34,6 +34,7 @@ class MonitorContractRegisterBuild(MonitorContractsBuild):
     chunked: bool = _CumulativeField(default=False, strict=True)
     profile_stages: bool = _CumulativeField(default=False, strict=True)
     profile_matching_cache_off: bool = _CumulativeField(default=False, strict=True)
+    profile_matching_verify: bool = _CumulativeField(default=False, strict=True)
 
 
 class MonitorContractsTerm(MonitorContractsBuild):
@@ -594,6 +595,9 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
     try:
         _require_admin_key(req.key, "Монитор проекта", req.session)
         matching_cache_off = operation == 'view' and getattr(req, 'profile_matching_cache_off', False)
+        matching_verify = operation == 'view' and getattr(req, 'profile_matching_verify', False)
+        if matching_verify and (matching_cache_off or not getattr(req, 'profile_stages', False)):
+            raise HTTPException(400, 'Проверка сопоставления требует диагностики этапов и включённого кэша.')
         if matching_cache_off and not getattr(req, 'profile_stages', False):
             raise HTTPException(400, 'Режим сравнения требует включённой диагностики этапов.')
         profile = "monitor-cumulative-v1:" + family
@@ -681,9 +685,21 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
             if matching_cache_off:
                 import developaid_contract_match_cache as matching_cache
                 fingerprint['matching_cache'] = matching_cache.DISABLED_PURPOSE
+            if matching_verify:
+                import developaid_contract_match_verify as matching_verification
+                fingerprint['matching_cache'] = matching_verification.PURPOSE
             def build():
                 if profile_stages:
                     import developaid_contract_stage_profile as stage_profile
+                    if matching_verify:
+                        import developaid_contract_match_verify as matching_verification
+                        with matching_verification.collect() as verified, stage_profile.collect() as diagnostics:
+                            result = stage_profile.call('execute_total', _monitor_cumulative_execute,
+                                                        operation, payload, archive)
+                            proof = verified.proof()  # Sticky failures survive broad business fallbacks.
+                            measured = diagnostics.export()
+                            measured['matching_cache_verification'] = proof
+                        return {**result, 'diagnostics': measured}
                     if matching_cache_off:
                         import developaid_contract_match_cache as matching_cache
                         with matching_cache.disabled_scope() as disabled, stage_profile.collect() as diagnostics:
