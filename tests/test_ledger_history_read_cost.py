@@ -35,7 +35,7 @@ def test_five_large_recent_archives_parse_once_each_and_keep_identical_independe
             result['ledgers'][0]['items'][0]['name']='Caller mutation'
     assert len(calls)==5 and len(ledgers._PARSE_CACHE)==5
     assert sum(len(x) for x in ledgers._PARSE_CACHE.values())<=ledgers._PARSE_CACHE_TOTAL_BYTES
-    for packed in ledgers._PARSE_CACHE.values():assert json.loads(gzip.decompress(packed))==payload
+    for key, packed in ledgers._PARSE_CACHE.items():assert ledgers._decode_archive(packed,key)==payload
 
 
 def test_filename_source_digest_and_parser_revision_remain_separate_cache_identities(monkeypatch):
@@ -56,7 +56,8 @@ def test_lru_retains_recent_entries_without_exceeding_the_total_compressed_byte_
     rng=random.Random(741)
     text=''.join(rng.choices('abcdefghijklmnopqrstuvwxyz0123456789',k=6000))
     payload={'text':text}
-    length=len(gzip.compress(json.dumps(payload,ensure_ascii=False).encode(),compresslevel=3,mtime=0))
+    envelope={'identity':ledgers._archive_cache_key('0'*64,'source.zip'),'parsed':payload}
+    length=len(gzip.compress(json.dumps(envelope,ensure_ascii=False).encode(),compresslevel=3,mtime=0))
     monkeypatch.setattr(ledgers,'_PARSE_CACHE_BYTES',length+100)
     monkeypatch.setattr(ledgers,'_PARSE_CACHE_TOTAL_BYTES',2*length+1)
     monkeypatch.setattr(ledgers,'parse_archive',lambda *a:dict(payload))
@@ -85,7 +86,7 @@ def test_damaged_disposable_cache_reparses_the_original(monkeypatch,damage):
     def parse(*a):calls.append(1);return {'data':['preserved',None,0]}
     monkeypatch.setattr(ledgers,'parse_archive',parse)
     first=ledgers._current_archive(b'raw','a'*64,'source.zip')
-    key=(ledgers.PARSER_SCHEMA,'a'*64,'source.zip')
+    key=ledgers._archive_cache_key('a'*64,'source.zip')
     broken=b'damaged'
     if damage=='deflate':
         packed=bytearray(ledgers._PARSE_CACHE[key])
