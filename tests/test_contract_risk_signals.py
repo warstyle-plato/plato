@@ -276,7 +276,7 @@ def test_real_page_shows_signal_strip_risk_filter_and_unworked_advance(project, 
         assert not errors
 
 
-def test_management_summary_reads_the_same_register_signals(project):
+def test_management_summary_keeps_only_the_register_risk_summary(project):
     import developaid_management_report as report
     base = {"contractor": "Builder A", "contract_date": dt.datetime(2026, 1, 1), "source": "Собственные средства"}
     book(project, [contract("LATE", deadline=dt.datetime(2026, 11, 30)),
@@ -294,10 +294,12 @@ def test_management_summary_reads_the_same_register_signals(project):
     payload["findings"] = report.findings(payload)
     main, = [f for f in payload["findings"] if f.get("topic") == "Договоры"]
     assert "не успевают к сроку: 1" in main["text"] and "200" in main["text"]
-    html = report.render_html(payload)
-    assert "Договоры под угрозой срыва срока" in html and "24.02.2027" in html and "Задержка 86 дн." in html
-    text = report.render_text(payload)
-    assert "LATE" in text and "прогноз 24.02.2027" in text
+    # Contract details stay in Monitor; the executive summary keeps only the
+    # aggregate warning in «Главное» (owner, 16.11.2026).
+    for rendered in (report.render_html(payload), report.render_text(payload)):
+        assert main["text"] in rendered
+        for detail in ("LATE", "24.02.2027", "Задержка 86 дн.", "contract-performance"):
+            assert detail not in rendered
 
 
 def test_management_summary_names_a_missing_archive(project):
