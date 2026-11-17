@@ -160,3 +160,18 @@ def test_missing_cap_for_hold_is_unknown_valuation_and_visible_warning():
     sec=next(s for s in r['report']['object_report']['sections'] if s['key']=='income')
     rows=[row for block in sec['blocks'] for row in block.get('rows') or []]
     assert any('Нет данных' in str(row.get('value')) and 'капитализации' in str(row.get('value')) for row in rows)
+
+
+def test_ddu_object_and_unit_cost_use_the_sold_area_after_floor_parking():
+    _,_,r,d=run('ddu')
+    product=next(p for p in d['products'] if p['key']=='offices')
+    raw=next(p for p in r['tep']['rows'] if p['key']=='offices')['saleable']
+    assert product['quantity'] < raw
+    sections={s['key']:s for s in r['report']['object_report']['sections']}
+    obj=next(b for b in sections['object']['blocks'] if b.get('title')=='Офисы')
+    rows={row['label']:row['value'] for row in obj['rows']}
+    assert rows['Продаваемая площадь']==pytest.approx(product['quantity'])
+    cost=next(b for b in sections['costs']['blocks'] if b.get('title')=='Смета объекта — Офисы')
+    rows={row['label']:row['value'] for row in cost['rows']}
+    assert rows['на м² арендопригодной / продаваемой']==pytest.approx(
+        rows['Итого смета объекта']/product['quantity']/1000)

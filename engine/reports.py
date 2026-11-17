@@ -844,6 +844,7 @@ def _ddu_objects(result: dict[str, Any], objects: list[dict[str, Any]]) -> list[
     выручка объекта в расчёте; площадь и смета — те же поля движка."""
     revenue = result.get("revenue") or {}
     tep = {str(row.get("key")): row for row in (result.get("tep") or {}).get("rows") or []}
+    products = {str(p.get("key")): p for p in (result.get("report") or {}).get("products") or []}
     own = {str(o.get("key")) for o in objects}
     out = []
     for obj in STANDALONE_OBJECTS:
@@ -851,8 +852,13 @@ def _ddu_objects(result: dict[str, Any], objects: list[dict[str, Any]]) -> list[
         if obj.key in own or value <= 0.5:
             continue
         row = tep.get(obj.key) or {}
+        # TEP retains building area before first-floor parking is allocated.
+        # Product saleable is the canonical base used by revenue and prices;
+        # object cards and unit costs must use that same sold metre.
+        product = products.get(obj.key) or {}
+        area = product.get("saleable")
         out.append({"key": obj.key, "title": str(row.get("label") or obj.label),
-                    "revenue": value, "area": float(row.get("saleable") or 0.0)})
+                    "revenue": value, "area": float(area) if area is not None else 0.0})
     return out
 
 
