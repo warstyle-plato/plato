@@ -57,7 +57,7 @@ def test_slow_view_admission_is_short_retry_is_single_and_history_is_not_built(a
         release.set()
     result = poll(client, body['ticket'], session='fixture-session')
     assert result.status_code == 200 and result.json()['snapshot']['schedule']['approved_plan']['revision'] == 4
-    assert seen == [('Fixture', {'cut': '2026-11-10'})]
+    assert seen == [('Fixture', {'cut': '2026-11-10', 'upto': '2026-11-10'})]
     private = b''.join(f.read_bytes() for f in (root/'monitor'/'.view_jobs').iterdir() if f.is_file())
     assert KEY.encode() not in private and b'fixture-session' not in private
 
