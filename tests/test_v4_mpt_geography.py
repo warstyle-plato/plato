@@ -113,17 +113,22 @@ def test_manual_inside_ttk_still_blocks_mpt_in_actual_v4():
         native["capex"]["land_rights"], abs=0.51, rel=0)
 
 
-def test_actual_phased_v4_geography_agrees_with_native_without_the_separate_offset_bug():
-    # The independent once-offset repair is deliberately not part of this
-    # branch. Zero offset isolates cadastral MPT geography on current main.
-    x, t = fictional(offset=0)
+@pytest.mark.parametrize("offset", [0, 37])
+def test_actual_phased_v4_preserves_geography_and_applies_the_project_offset_once(offset):
+    # Both provenance readers survive integration: cadastral MPT is used by
+    # the master book, and its net fee is not reduced again inside a phase.
+    x, t = fictional(offset=offset)
     weights = [23, 35, 42]
     p = {"enabled": True, "phase_count": 3,
          "phases": [{"name": f"Fictional {index + 1}", "start_offset_months": index * 9,
                      "construction_months": 24} for index in range(3)],
          "shared_cash": {"land_rights": weights}, "cost_inflation_pct": 0, "sales_price_inflation_pct": 0}
     native = core.calculate_phased(core.PhasedCalcRequest(inputs=x, tep=t, rates=[], phasing=p))
+    master = core.calculate(core.CalcRequest(inputs=x, tep=t, rates=[]))
     assert native["vri"]["benefits"]["mpt_mln"] > 0
+    phase_principals = [item["result"]["vri"]["totals"]["principal"] for item in native["phases"]]
+    assert sum(phase_principals) == pytest.approx(master["vri"]["totals"]["principal"], abs=0.01, rel=0)
+    assert native["vri"]["totals"]["principal"] == pytest.approx(sum(phase_principals), abs=0.01, rel=0)
     content, _, meta = core.build_project_workbook(x, t, [], p, project_name="Fictional phased MPT")
     assert not meta["missing"], meta["missing"]
     wb = openpyxl.load_workbook(io.BytesIO(content))
@@ -134,3 +139,5 @@ def test_actual_phased_v4_geography_agrees_with_native_without_the_separate_offs
         assert wb["ВРИ"][coordinate].data_type == "f"
         assert float(ev.cell("ВРИ", coordinate)) * 1e6 == pytest.approx(
             item["result"]["capex"]["land_rights"], abs=0.51, rel=0)
+        assert float(ev.cell("ВРИ", coordinate)) * 1e6 == pytest.approx(
+            phase_principals[index], abs=0.51, rel=0)

@@ -1081,7 +1081,7 @@ const NON_PROJECT_STATE=['feedbackShown','feedbackCalcs','feedbackReportSeconds'
  'projectsCards','projectsSortRestored',
  'telegramResultSent','telegramCalcOverrides','telegramOverridesReviewRequired','telegramEditSubmitting','telegramFinishing','telegramQualificationSession',
  'aiBusy','moAutoBusy','moRecalcTimer','sensitivityBusy','moDistrictPrices','moKdDocument',
- 'landScreeningRun','tepRunSequence','krtSiteRun','krtSiteBusy','glavapuScenarioRun','strategyCompareRound','landContourPending',
+ 'landScreeningRun','tepRunSequence','krtSiteRun','krtSiteBusy','glavapuScenarioRun','moVriReliefRun','strategyCompareRound','landContourPending',
  'CLASS_OVERRIDES','CLASS_OVERRIDES_NOTE','CLASS_OVERRIDES_FROM_SERVER',
  'CLASS_STATS_BY','CLASS_STATS_KEY','CLASS_STATS_ERROR','CLASS_DETAIL_OPEN',
  'PROJECT_KIND_WHERE','LAND_MAP_VIEWS','demoBlockNames','landRentRedrawQueued','landRentNeedsRedraw'];
@@ -1252,6 +1252,7 @@ function resetAll(){
  // участка.
  forgetTerritoryState();
  rates=[];
+ resetMoVriRelief();
  scenarioSelect.value='base';
  renderInputs();renderTep();renderStoredGlavapu();renderScenarioNote();syncProjectClassSelector();syncProjectKindSelector();
  resetTepControls();
