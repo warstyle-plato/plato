@@ -49,9 +49,17 @@ def test_the_report_card_and_its_pdf(tmp_path, monkeypatch):
     from playwright.sync_api import sync_playwright
 
     import main_legacy as core
+    import developaid_legal_cases as legal
+    import developaid_monitor_contracts as contracts
+    from test_legal_cases import CARD
+    from test_contract_performance_report import record, registry
 
     _project()
     monthly_budget.store_budget(PROJECT, budget_book(), "2026-10-02")
+    legal.save(PROJECT, CARD, [], "Иванова", at="2026-10-01T09:00:00+00:00")
+    row = record(contractor="Подрядчик без юридического спора", contract="КС-999",
+                 risk={"status": "overdue", "label": "Срок договора прошёл"})
+    monkeypatch.setattr(contracts, "build", lambda *_a, **_kw: registry([row]))
     monkeypatch.setattr(core, "_require_web_access", lambda *_a, **_k: None)
     with serve(core.app, PORT) as base, sync_playwright() as pw:
         browser = pw.chromium.launch(executable_path=str(chrome))
@@ -73,6 +81,10 @@ def test_the_report_card_and_its_pdf(tmp_path, monkeypatch):
             tab.wait_for_function(
                 "document.getElementById('reportBox').textContent.includes('за октябрь 2026')")
             month = tab.inner_text("#reportBox")
+            assert CARD["counterparty"] in month and CARD["subject"] in month
+            assert tab.locator("#reportBox .contract-performance").count() == 0
+            assert "Договоры: выполнение и сроки" not in month
+            assert row["contractor"] not in month and row["contract"] not in month
             budget_tile = tab.locator("#reportBox .tile[data-group='monthly_budget']").filter(
                 has_text="Бюджет стройки за месяц")
             assert budget_tile.count() == 1
@@ -95,6 +107,12 @@ def test_the_report_card_and_its_pdf(tmp_path, monkeypatch):
     assert name.endswith(".pdf")
     assert pdf.startswith(b"%PDF"), pdf[:20]
     assert done == "PDF скачан."
+    import pymupdf
+    with pymupdf.open(stream=pdf, filetype="pdf") as document:
+        pdf_text = " ".join(" ".join(page.get_text() for page in document).split())
+    assert CARD["counterparty"] in pdf_text and CARD["subject"] in pdf_text
+    assert "Договоры: выполнение и сроки" not in pdf_text
+    assert row["contractor"] not in pdf_text and row["contract"] not in pdf_text
     try:
         from pypdf import PdfReader
     except ImportError:

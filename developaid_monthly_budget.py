@@ -175,18 +175,21 @@ def read_budget(data: bytes) -> dict[str, Any]:
 
     book = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
     try:
-        sheets = [(sheet.title, [list(row) for row in sheet.iter_rows(values_only=True)])
-                  for sheet in book.worksheets]
+        # Select the native plan/fact sheet before reading its cells. Registry
+        # and reference sheets may contain far more rows than the budget.
+        named = [sheet for sheet in book.worksheets
+                 if _norm(sheet.title).replace(" ", "") in _PF_SHEETS]
+        chosen = None
+        for sheet in named[:1] or book.worksheets:
+            rows = [list(row) for row in sheet.iter_rows(values_only=True)]
+            if named or _month_header(rows)[0] is not None:
+                chosen = (sheet.title, rows)
+                break
+        if chosen is None:
+            raise ValueError("в файле не нашлось шапки с месяцами («Сентябрь 2026»)")
+        sheet_name, rows = chosen
     finally:
         book.close()
-    # Лист план-факта — по имени «П-Ф», а не первый по порядку: в книге бывает
-    # свод или прежняя версия впереди, и её план читался бы молча. Листа с
-    # таким именем нет — первый лист, где есть шапка с месяцами.
-    named = [item for item in sheets if _norm(item[0]).replace(" ", "") in _PF_SHEETS]
-    candidates = named or [item for item in sheets if _month_header(item[1])[0] is not None]
-    if not candidates:
-        raise ValueError("в файле не нашлось шапки с месяцами («Сентябрь 2026»)")
-    sheet_name, rows = candidates[0]
     title = next((str(cell) for row in rows[:4] for cell in row if cell), "")
     header, months = _month_header(rows)
     if header is None or header + 1 >= len(rows):
