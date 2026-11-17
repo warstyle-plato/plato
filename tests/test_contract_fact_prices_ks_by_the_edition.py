@@ -96,13 +96,17 @@ def test_the_fact_of_the_card_is_priced_by_the_estimate_and_laid_on_confirmed_li
     got = files.listing("Учебный", CONTRACT, "2026-02-04", fact.acts(REGISTER_ROW))["fact"]
     assert got["note"] == "" and got["assumption"] == fact.ASSUMPTION
     # Стены: 0,5 × 8 000 по долям 3/8 и 5/8; армирование плит — более мелкая строка позиции 1.2.
-    assert got["lines"] == [
+    assert [{k: v for k, v in line.items() if k != 'position_facts'} for line in got["lines"]] == [
         {"code": "1.1", "fact": 1500.0, "volumes": [{"unit": "м3", "quantity": 0.1875}], "last": "2026-02-03",
          "complete": False, "work_fact": 1500.0, "material_fact": 0.0, "material_volumes": []},
         {"code": "1.2", "fact": 2500.0, "volumes": [{"unit": "м3", "quantity": 0.3125}], "last": "2026-02-03",
          "complete": False, "work_fact": 2500.0, "material_fact": 0.0, "material_volumes": []},
         {"code": "1.3", "fact": 1500.0, "volumes": [{"unit": "м3", "quantity": 0.5}], "last": "2026-02-02",
          "complete": False, "work_fact": 1500.0, "material_fact": 0.0, "material_volumes": []}]
+    positions = [line['position_facts'] for line in got['lines']]
+    assert [sum(p['quantity'] for p in group) for group in positions] == [0.1875, 0.3125, 0.5]
+    assert [group[0]['last'] for group in positions] == ['2026-02-03', '2026-02-03', '2026-02-02']
+    assert all(p['key'] and p['sources'] for group in positions for p in group)
     assert got["total"] == 5500.0
     assert got["before"] == {"start": "2026-02-01", "count": 1, "amount": None,
                              "known_amount": 0.0, "unpriced": 1}
