@@ -2947,6 +2947,11 @@ core._telegram_handle_update = _handle_update
 def _start_usage_digest() -> None:
     """Сводка сама приходит раз в сутки — иначе «отслеживать» означает не
     забывать спрашивать."""
+    # ASGI fixtures end while these daemon loops keep reading the modules'
+    # current roots. A later test must not receive another fixture's outbox
+    # poll or announcement write. Delivery itself is tested explicitly.
+    if "pytest" in sys.modules:
+        return
     threading.Thread(target=_usage_digest_loop, name="usage-digest", daemon=True).start()
     # Сводка руководству ждёт 9:00 — пятнадцатиминутный круг сводки для неё
     # слишком редкий, у неё свой.
