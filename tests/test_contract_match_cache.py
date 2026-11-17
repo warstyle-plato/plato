@@ -83,11 +83,11 @@ def test_non_string_inputs_and_mutable_values_are_never_retained():
 
 def test_all_projection_kinds_share_the_real_budget_and_entry_limit(monkeypatch):
     assert cache.MAX_BYTES == 2*1024*1024 and cache.MAX_ENTRIES == 4096
-    kinds = ('party','reference','scope')
+    kinds = ('party','reference','scope','party_parts','work_words')
     with cache.scope() as state:
         for i in range(600):
             value = str(i)+'x'*5000
-            assert cache.remember(kinds[i%3],(str(i),),lambda:value) == value
+            assert cache.remember(kinds[i%len(kinds)],(str(i),),lambda:value) == value
         assert {kind for kind,key in state.entries} == set(kinds)
         assert 0 < state.bytes <= cache.MAX_BYTES
         assert len(state.entries) < 600
@@ -100,7 +100,7 @@ def test_all_projection_kinds_share_the_real_budget_and_entry_limit(monkeypatch)
     monkeypatch.setattr(cache,'MAX_BYTES',32*1024*1024)
     with cache.scope() as state:
         for i in range(cache.MAX_ENTRIES+3):
-            assert cache.remember(kinds[i%3],(str(i),),lambda:'value') == 'value'
+            assert cache.remember(kinds[i%len(kinds)],(str(i),),lambda:'value') == 'value'
         assert len(state.entries) == cache.MAX_ENTRIES
 
 
