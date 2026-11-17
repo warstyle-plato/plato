@@ -151,6 +151,11 @@ def test_audited_date_carry_matches_native_owner_event_and_independent_fact_line
         assert value['scope_kind'] == 'readiness_profile' and value['state'] != 'unavailable'
         assert value['reference_source_sha256'] == state['profile_reference_source_sha256'] == site['parent']['source_sha256']
         assert value['project']['work_ids'] == state['project']['work_ids']
+        block = dict(calendar=gantt.calendar(schedule, cut), readiness=state,
+                     approved_plan=schedule['approved_plan'], work_forecast=value,
+                     work_forecast_groups=schedule['display_groups'])
+        report = gantt.compact_model(block, cut)
+        assert report['qualified'] and report['finish'] == value['summary']['finish']
         for branch, key, changed in [
             ('profile_source_carry', 'from_source_sha256', 'f'*64),
             ('profile_source_carry', 'source_revision', 99),

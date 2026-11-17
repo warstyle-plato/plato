@@ -618,7 +618,8 @@ def calendar(schedule: dict[str, Any], cut: Any) -> dict[str, Any]:
     for item in result['rows']:
         if str(item['task'].get('id')) in source_rows:
             item['task'].update(copy.deepcopy(source_rows[str(item['task']['id'])]))
-    result.update(work_forecast=value, source_order=[r.get('id') for r in
+    result.update(work_forecast=value, fact_source_carry=copy.deepcopy(schedule.get('fact_source_carry')),
+                  source_order=[r.get('id') for r in
                   [*(schedule.get('rows') or []), *(schedule.get('undated_works') or [])]])
     if value['state'] == 'unavailable':
         result.update(display=None, points={}, qualified=False, readiness_forecast_invalid=True,

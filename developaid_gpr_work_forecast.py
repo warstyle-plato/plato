@@ -343,6 +343,7 @@ def report_model(block, cut):
     order = projection.get('source_order') or []
     schedule = dict(cut=str(cut), approved_plan=block.get('approved_plan'),
                     readiness=block.get('readiness'),
+                    fact_source_carry=projection.get('fact_source_carry'),
                     rows=[by_id[key] for key in order if key in by_id], undated_works=[],
                     management=[dict(task, level='task') for task in by_id.values()],
                     display_groups=block.get('work_forecast_groups') or {},
