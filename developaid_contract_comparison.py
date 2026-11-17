@@ -122,17 +122,19 @@ def build(listed: dict, cut: str, source_sha256: str | None = None) -> dict:
         contexts,seen = [],set()
         own = by_code.get(row['code']) or []
         section = (own[0].get('section') or '').strip() if len(own) == 1 else ''
+        unambiguous = len(own) == 1
         parent = own[0].get('parent') if len(own) == 1 else None
         while parent and parent not in seen:
-            seen.add(parent)
             candidates = by_code.get(parent) or []
             if len(candidates) != 1:
+                unambiguous = unambiguous and not candidates
                 break
+            seen.add(parent)
             contexts.insert(0,candidates[0]['name'])
             if not section:
                 section = (candidates[0].get('section') or '').strip()
             parent = candidates[0].get('parent')
-        if not section and not parent:
+        if not section and unambiguous and parent not in seen:
             section = _building_section(contexts)
         row['section'] = section
         if section and section not in contexts:

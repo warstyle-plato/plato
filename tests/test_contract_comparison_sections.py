@@ -105,6 +105,16 @@ def test_broken_or_conflicting_parent_chains_do_not_choose_a_building(problem):
     assert row['section'] == ''
 
 
+def test_an_explicit_building_parent_does_not_require_an_absent_broader_heading():
+    _, listed = section_card()
+    source = listed['documents'][0]['schedule']['lines']
+    for row in source:
+        row.pop('section', None)
+    source[0].update(name='Монолитные работы К2', parent='absent-broad-heading')
+    row = next(r for r in comparison.build(listed, CUT, 'source')['lines'] if r['code'] == '3.1')
+    assert row['section'] == 'Корпус 2'
+
+
 def test_unambiguous_printed_sections_and_unknown_works_reach_excel():
     cached = projected()
     rows = cached['comparison']['lines']
