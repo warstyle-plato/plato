@@ -1867,6 +1867,8 @@ def _consolidate_phase_results(
                 cf_months, equity_cf, finance, discount_rate=discount_rate, irr=irr_equity),
             "layout": report_layout(master_inputs, finance, equity_cf),
             "products": list(product_map.values()),
+            "office_results": __import__("office_results").combine(results, total_revenue)
+                if without_housing(master_inputs) and report_kind(master_inputs) != REPORT_KIND_HOTEL else {},
             "phase_products": phase_sales,
             "unit_economics": unit_economics,
             "construction_costs": construction_costs,

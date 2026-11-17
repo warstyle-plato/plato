@@ -2062,8 +2062,11 @@ def _office_totals(rows: _Rows, path: dict[str, str], offices: list[_Block], ddu
     cap_formula = (f'IF(AND({",".join(f"{cap}={caps[0]}" for cap in caps)}),{caps[0]},"")'
                    if caps else '""')
     param("o_cap", "Ставка капитализации (если едина у объектов)", "=" + cap_formula, "", PCT)
-    param("o_exit_value", "Стоимость здания", "=" + (_sum([b.r("exit_value") for b in rent_blocks])
-                                                     if rent_blocks else '""'), "млн ₽")
+    # Nullable presentation KPI matches engine sum(...) or None. Cash,
+    # valuation and NPV series keep their existing financial formulas.
+    exit_total = _sum([b.r("exit_value") for b in rent_blocks])
+    param("o_exit_value", "Стоимость здания", f'=IF(({exit_total})>0,{exit_total},"")'
+          if rent_blocks else '=""', "млн ₽")
     o_dscr = [b.r("dscr_min") for b in rent_blocks]
     param("o_dscr", "DSCR кредита объекта — минимум",
           f'=IF(COUNT({",".join(o_dscr)})>0,MIN({",".join(o_dscr)}),"")' if o_dscr else '=""', "×", RATIO)
@@ -2349,7 +2352,7 @@ def _better_formula(paths=PATHS) -> str:
     for j in range(len(paths) - 2, -1, -1):
         rest = ",".join(npv[j + 1:])
         formula = f'IF({npv[j]}>=MAX({rest}),{_path_label(paths[j])},{formula})'
-    return formula
+    return f'IF(COUNT({",".join(npv)})<{len(paths)},"нет данных — сравнение неполно",{formula})'
 
 
 # --- «Дашборд», «ИНСТРУКЦИЯ», «Источники» --------------------------------------
@@ -2364,8 +2367,377 @@ CHART_AXIS_FORMAT = "#,##0;-#,##0;0"
 VERDICT_CHARS_PER_LINE = 110
 
 
+DISCLOSURE_SHEET = "Раскрытие результатов"
+DISCLOSURE_PLAN_SHEET = "План реализации"
+
+
+def _disclosure_sheet(book: _Book, current: str | None, path_blocks: dict, path_ddu: dict) -> None:
+    """Live product disclosure of the selected path, referencing model formulas.
+
+    It creates no financial model and never writes calculated snapshots. Typed
+    parking prices/quantities use the exact bases of the existing weighted rate.
+    A separate monthly sheet keeps the overview printable at a readable size.
+    """
+    ws = book.sheet(DISCLOSURE_SHEET, "ПРОДУКТЫ, ЦЕНЫ И ВЫРУЧКА · ВЫБРАННЫЙ ПУТЬ", width=12, tab=HEAD)
+    ws.merge_cells("A1:L1")
+    ws.merge_cells("A2:L2")
+    ws["A2"] = "Все производные — формулы книги. Цены в ₽ за единицу, с НДС; м² — продаваемая площадь. Темп — расчётный план, не факт."
+    ws["A2"].alignment = Alignment(wrap_text=True, vertical="top")
+    ws.row_dimensions[2].height = 32
+    headers = ("Продукт / поток", "Объём", "Ед.", "Дата исходной цены", "Исходная цена, ₽/ед.",
+               "Первый период", "Первая цена, ₽/ед.", "Последний период", "Последняя цена, ₽/ед.",
+               "Средняя цена, ₽/ед.", "Выручка, млн ₽", "Доля денег")
+    widths = (42, 14, 12, 16, 19, 16, 19, 16, 19, 19, 21, 14)
+    for column, (label, width) in enumerate(zip(headers, widths), start=1):
+        ws.column_dimensions[L(column)].width = width
+        cell = ws.cell(4, column, label)
+        cell.fill, cell.font = _fill(HEAD), _fnt(b=True, color="FFFFFF")
+        cell.alignment = Alignment(wrap_text=True, vertical="center")
+    ws.row_dimensions[4].height = 45
+    if current is None:
+        ws["A6"] = "Нет данных: точная исходная комбинация разных способов объектов книгой не построена. Альтернативная стратегия не подставлена."
+        ws.merge_cells("A6:L7")
+        ws["A6"].alignment = Alignment(wrap_text=True)
+        return
+    blocks = path_blocks[current] + path_ddu[current]
+    plan = book.sheet(DISCLOSURE_PLAN_SHEET, "ПЛАН РЕАЛИЗАЦИИ · ВЫБРАННЫЙ ПУТЬ",
+                      "Расчётный план, не факт. Гостевые места не продаются.",
+                      monthly=True, tab=SALE_TAB)
+    # Twelve months fit A3 at 78% while Cyrillic status words and 7-digit
+    # prices retain enough width; existing model sheets keep their layout.
+    for column in range(FIRST_COL, FIRST_COL + book.n):
+        plan.column_dimensions[L(column)].width = 13
+    rows = _Rows(book, plan, 5)
+    r, money_refs, value_refs, source_notes = 5, [], [], []
+    live_num = "#,##0.0;[Red](#,##0.0);0"
+
+    def put(row: int, column: int, formula: str, fmt: str = live_num) -> None:
+        cell = ws.cell(row, column)
+        book.pending.append((cell, formula, None, ws.title))
+        cell.number_format = fmt
+        cell.font = _fnt()
+        cell.alignment = Alignment(wrap_text=True, vertical="center")
+
+    def product(block: _Block, key: str, title: str, unit: str, quantity: str,
+                base: str, money: str, *, rental: bool = False, valuation: bool = False) -> None:
+        nonlocal r
+        b = block.r
+        exit_flow = key in ("exit", "valuation")
+        valid = f"AND({b('cap')}>0,{b('fwd_noi')}>0)" if exit_flow else "1"
+        invalid = f"OR({b('cap')}<=0,{b('fwd_noi')}<=0)" if exit_flow else "0"
+        unavailable = (f'IF({b("cap")}<=0,"нет данных — ставка капитализации не задана",'
+                       '"нет данных — нет положительного NOI для оценки")') if exit_flow else '"не применяется"'
+        fallback = f'IF(AND({quantity}>0,{invalid}),{unavailable},"не применяется")' if exit_flow else '"не применяется"'
+        pre = f"disc.{block.pre}.{key}"
+        p = lambda name, mod="": ref(f"{pre}.{name}", mod)
+        rows.section(title)
+        if rental:
+            rows.month(f"{pre}.qty", "Арендуемый объём с учётом заполнения", f"{quantity}*{b('occ')}*{b('hold_on')}", unit=unit, fmt=live_num, total=False)
+            rows.month(f"{pre}.occupancy", "Заполнение", f"{b('occ')}*{b('hold_on')}", unit="доля", fmt=PCT, total=False)
+        elif not valuation and key != "exit":
+            rows.month(f"{pre}.qty", "Продано за месяц", f"{quantity}*{b('weight')}", unit=unit, fmt=live_num)
+            rows.month(f"{pre}.cum", "Продано накопленно", f"SUM({p('qty', ':k')})", unit=unit, fmt=live_num, total=False)
+            rows.month(f"{pre}.remaining", "Остаток", f"MAX(0,{quantity}-{p('cum')})", unit=unit, fmt=live_num, total=False)
+        else:
+            rows.month(f"{pre}.qty", "Оценка без сделки" if valuation else "Сделка выхода, объект", f"IF(AND({ref('k')}={b('horizon')},{valid},{b('exit_mode')}=\"{EXIT[ns.EXIT_HOLD] if valuation else EXIT[ns.EXIT_SALE]}\"),1,0)", unit="объект", fmt=live_num)
+        rows.month(f"{pre}.revenue", "Оценка удержания — не деньги" if valuation else "Выручка", money, unit="млн ₽", fmt=live_num)
+        rows.month(f"{pre}.price", "Цена периода, с НДС", f'IF({p("qty")}>0,{p("revenue")}*1000000/{p("qty")},{fallback})', unit=f"₽/{unit}" + ("/мес." if rental else ""), fmt="#,##0;[Red](#,##0);0", total=False)
+        price_row = rows.r - 1
+        plan.row_dimensions[price_row].height = 90 if exit_flow else 48
+        for cell in plan[price_row][FIRST_COL-1:]:
+            cell.alignment = Alignment(horizontal="right", vertical="top", wrap_text=True)
+        # Real non-zero physical periods, including sales at a zero price.
+        rows.month(f"{pre}.first", "Служебная: первый физический период", f"IF({p('qty')}>0,{ref('k')},{book.n})", unit="№", fmt=INT, total=False)
+        rows.month(f"{pre}.last", "Служебная: последний физический период", f"IF({p('qty')}>0,{ref('k')},-1)", unit="№", fmt=INT, total=False)
+        plan.row_dimensions[rows.r-2].hidden = True
+        plan.row_dimensions[rows.r-1].hidden = True
+        first, last = f"MIN({p('first', ':')})", f"MAX({p('last', ':')})"
+        active = f"MAX({p('qty', ':')})>0"
+        ws.cell(r, 1, title).font = _fnt(b=True)
+        ws.cell(r, 3, unit).font = _fnt()
+        put(r, 2, f'IF(AND({quantity}>0,{invalid}),{unavailable},{quantity})' if exit_flow else quantity)
+        put(r, 4, f"EDATE({ref('in.start')},{b('rent_from') if rental else b('price_start')})" if key not in ("exit", "valuation") else '"не применяется"', MONTH)
+        put(r, 5, f'IF(AND({quantity}>0,{valid}),{base},{fallback})')
+        put(r, 6, f'IF({active},EDATE({ref("in.start")},{first}),{fallback})', MONTH)
+        put(r, 7, f'IF({active},INDEX({p("price", ":")},1,{first}+1),{fallback})')
+        put(r, 8, f'IF({active},EDATE({ref("in.start")},{last}),{fallback})', MONTH)
+        put(r, 9, f'IF({active},INDEX({p("price", ":")},1,{last}+1),{fallback})')
+        put(r, 10, f'IF(SUM({p("qty", ":")})>0,SUM({p("revenue", ":")})*1000000/SUM({p("qty", ":")}),{fallback})')
+        put(r, 11, f"SUM({p('revenue', ':')})")
+        if valuation:
+            ws.cell(r, 12, "не деньги")
+            value_refs.append(f"K{r}")
+        else:
+            money_refs.append(f"K{r}")
+            put(r, 12, f'IF({ref("disc.cash")}<>0,K{r}/{ref("disc.cash")},"не применяется")', PCT)
+        ws.cell(r, 1).hyperlink = f"#'{plan.title}'!A{rows.r - 8}"
+        ws.row_dimensions[r].height = 80 if exit_flow else 34
+        for cell in ws[r][:12]:
+            cell.border = Border(bottom=_thin)
+        r += 1
+
+    for block in blocks:
+        b, item, o = block.r, block.item, block.code
+        i = lambda key: ref(f"in.{o}.{key}")
+        types = [("area", item["title"], "шт." if item["measure"] == "spaces" else "м²", b('area'),
+                  f"{b('price')}*1000000" if item["measure"] == "spaces" else f"{b('price')}*1000")]
+        if item.get("parking_sellable"):
+            total = f"(MAX(0,{i('parking_under_units')})+MAX(0,{i('over_units')}))"
+            for kind, source, label in [("under", "parking_under_units", "подземные места"),
+                                         ("over", "over_units", "места на первых этажах")]:
+                # Both real schema types remain reactive if an Excel edit enables
+                # a previously empty type; its zero row has no invented price.
+                q = f"IF({total}>0,{b('spaces')}*MAX(0,{i(source)})/{total},0)"
+                price = f"IF({i('parking_'+kind+'_mln')}>0,{i('parking_'+kind+'_mln')}*1000000,{ref('in.parking_price_th')}*1000)"
+                types.append((kind, item['title']+' — '+label, 'шт.', q, price))
+        rental = block.strategy == ns.STRATEGY_INCOME
+        field = "rent" if rental else "price"
+        origin = (f'IF({i(field)}="","ступень класса "&{i("class")},"вводная книги (история ручного происхождения не подтверждается)")'
+                  if item.get("office") else '"вводная книги"')
+        source_notes.append((item["title"] + " — источник ставки", origin))
+        if rental:
+            source_notes.append((item["title"] + " — индексация аренды", f'ROUND({b("rent_index")}*100,4)&"% в год; вводная книги"'))
+        else:
+            source_notes.append((item["title"] + " — динамика цены", f'"до ввода "&ROUND({b("growth_pre")}*100,4)&"%/мес.; после ввода "&ROUND({b("growth_post")}*100,4)&"%/мес. Действующий профиль/лестница — на листе стратегии; происхождение ручного роста не подтверждено."'))
+        for key, title, unit, quantity, base in types:
+            if rental:
+                rate = f"{b('rent_rate')}*1000" if key == 'area' else f"{b('parking_rent')}*1000"
+                money = f"{quantity}*({rate})*0.000001*{b('growth')}*{b('occ')}*{b('rev_mult')}*{b('hold_on')}"
+                product(block,key,title+' — аренда ('+f'₽/{unit}/мес.'+')',unit,quantity,rate,money,rental=True)
+            else:
+                money = f"{quantity}*({base})*0.000001*{b('factor')}*{b('weight')}*{b('rev_mult')}"
+                product(block,key,title,unit,quantity,base,money)
+        if rental:
+            product(block,'exit',item['title']+' — продажа при выходе','объект',
+                    f'IF({b("exit_mode")} = "{EXIT[ns.EXIT_SALE]}",1,0)','"по капитализации NOI"',b('exit'))
+            product(block,'valuation',item['title']+' — удержание, без сделки','объект',
+                    f'IF({b("exit_mode")} = "{EXIT[ns.EXIT_HOLD]}",1,0)','"оценка, не цена сделки"',b('residual'),valuation=True)
+    r += 1
+    ws.cell(r, 1, "Денежная выручка — продажи, аренда и выход").font = _fnt(b=True)
+    put(r, 11, _sum(money_refs))
+    book.register('disc.cash', ws.title, r, 'K')
+    r += 1
+    ws.cell(r, 1, "Оценка удержания — без сделки").font = _fnt(b=True)
+    put(r, 11, _sum(value_refs))
+    r += 1
+    ws.cell(r, 1, "Сверка с выручкой модели (деньги + оценка)").font = _fnt(b=True)
+    put(r, 11, f"{ref(f'{current}.t_revenue')}-{ref('disc.cash')}-K{r-1}")
+    r += 2
+    for title, formula in source_notes:
+        ws.merge_cells(start_row=r,start_column=1,end_row=r,end_column=3)
+        ws.cell(r,1,title).font=_fnt(b=True)
+        ws.cell(r,1).alignment=Alignment(wrap_text=True)
+        ws.merge_cells(start_row=r,start_column=4,end_row=r,end_column=12)
+        put(r,4,formula,"@")
+        ws.row_dimensions[r].height=40
+        r += 1
+    for note in (
+            "Цена последнего физического периода отличается от цены на конец расчёта: за пределами продаж её не продлеваем. Средняя цена взвешена физическими объёмами.",
+            "Аренда: объём в своде — доступная площадь/места; месячные занятые объёмы — на листе плана. Арендные цены — ₽ за м²/место в месяц; средняя взвешена занятыми объёмами по месяцам. Продажа при выходе и оценка удержания — отдельно.",
+            "Подземные/первые этажи — типы действующей схемы модели. Нулевая строка означает: этот тип не используется; цены и периоды без объёма не применяются. Гостевые исключены пропорционально; дробные места — расчётное распределение. При нулевой/пустой цене типа используется общая цена проекта, как в модели.",
+            "Динамика цены и темпа — формульные ряды выбранного пути на листах стратегии. Изменение Вводных обновляет раскрытие. Заданные на странице нестандартные профиль/лестница ДДУ сохраняют существующие ограничения книги: их месячные веса импортированы."):
+        ws.merge_cells(start_row=r,start_column=1,end_row=r+1,end_column=12)
+        ws.cell(r,1,note).alignment=Alignment(wrap_text=True,vertical='top')
+        ws.row_dimensions[r].height=24
+        ws.row_dimensions[r+1].height=18
+        r += 2
+    ws.freeze_panes='D5'
+    ws.print_title_rows='1:4'
+    ws.print_title_cols='A:C'
+    ws.print_area=f'A1:L{r}'
+    ws.page_setup.paperSize=ws.PAPERSIZE_A3
+    ws.page_setup.fitToWidth=1
+    ws.page_setup.fitToHeight=0
+    plan.print_area=f'A1:{book.last}{rows.r}'
+    plan.page_setup.paperSize = plan.PAPERSIZE_A3
+    plan.page_setup.scale = 78
+
+
+def _dashboard_matrix_sheet(book: _Book, report: dict[str, Any], sheet_name: str) -> None:
+    """Metrics stay in rows, model strategies keep the same column throughout.
+
+    Only presentation references change. Calculation sheets, registry addresses,
+    named ranges and all model formulas remain in their original locations.
+    """
+    paths = report["paths"]
+    matrix_num = "#,##0.0;[Red](#,##0.0);0"
+    matrix_pct = "0.0%;[Red]-0.0%;0.0%"
+    end = 1 + len(paths)
+    last_col = L(end)
+    ws = book.sheet(sheet_name, "DEVELOPAID · ОФИСЫ · СРАВНЕНИЕ СТРАТЕГИЙ", width=end, tab=DARK)
+    ws.column_dimensions["A"].width = 52
+    for column in range(2, end + 1):
+        ws.column_dimensions[L(column)].width = 28
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=end)
+    ws.row_dimensions[1].height = 30
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=end)
+    book.pending.append((ws["A2"], f'{ref("in.name")}&" · меняется стратегия: {report["title"]}; остальные объекты — как в проекте"', None, sheet_name))
+    ws["A2"].alignment = Alignment(wrap_text=True, vertical="top")
+    ws.row_dimensions[2].height = 30
+    ws.cell(4, 1, "Показатель / единица")
+    for column, path in enumerate(paths, start=2):
+        cell = ws.cell(4, column)
+        book.pending.append((cell, _path_label(path), None, sheet_name))
+        cell.fill = _fill(path["tab"])
+    for cell in ws[4][:end]:
+        cell.font = _fnt(b=True, color="FFFFFF")
+        if cell.column == 1:
+            cell.fill = _fill(HEAD)
+        cell.alignment = Alignment(wrap_text=True, vertical="center")
+    # Exact product labels can be long; a merged card grid cannot preserve
+    # their column identity. Each label gets the same generous header height.
+    ws.row_dimensions[4].height = LINE_HEIGHT * max(4, max(-(-len(p["label"]) // 22) for p in paths))
+    r = 5
+
+    def section(title: str) -> None:
+        nonlocal r
+        ws.cell(r, 1, title)
+        for cell in ws[r][:end]:
+            cell.fill, cell.font = _fill(LIGHT), _fnt(b=True, color=DARK)
+            cell.border = Border(top=_thin, bottom=_thin)
+        ws.row_dimensions[r].height = 25
+        r += 1
+
+    def line(label: str, key: str, fmt: str = matrix_num, applicable=None) -> None:
+        nonlocal r
+        ws.cell(r, 1, label).font = _fnt()
+        for column, path in enumerate(paths, start=2):
+            cell = ws.cell(r, column)
+            if applicable is not None and not applicable(path):
+                cell.value = "не применяется"
+            else:
+                formula = ref(f"{path['code']}.{key}")
+                # Preserve model explanations, zero and missing as distinct states.
+                missing = '"не применяется — IRR потока не определяется"' if key in ("irr", "irr_eq") else '"нет данных"'
+                if key in ("dscr_min", "llcr"):
+                    debt = ref(f"{path['code']}." + ("loan_peak" if key == "dscr_min" else "pf_peak"))
+                    missing = f'IF({debt}=0,"не применяется — нет кредита","нет данных")'
+                book.pending.append((cell, f'IF({formula}="",{missing},{formula})', None, sheet_name))
+            cell.number_format = fmt
+            cell.font = _fnt(b=key in ("npv", "irr", "t_net", "peak"), color=DARK)
+            cell.alignment = Alignment(horizontal="right", vertical="center", wrap_text=True)
+            cell.border = Border(bottom=_thin)
+        ws.cell(r, 1).alignment = Alignment(wrap_text=True, vertical="center")
+        ws.row_dimensions[r].height = 32
+        r += 1
+
+    def link(title: str, target_sheet: str, target_row: int, text: str) -> None:
+        nonlocal r
+        ws.cell(r, 1, title).font = _fnt(b=True)
+        ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=end)
+        cell = ws.cell(r, 2, text)
+        cell.hyperlink = f"#'{target_sheet}'!A{target_row}"
+        cell.font = _fnt(color="0563C1", underline="single")
+        cell.alignment = Alignment(wrap_text=True, vertical="center")
+        ws.cell(r, 1).alignment = Alignment(wrap_text=True, vertical="center")
+        ws.row_dimensions[r].height = 32
+        r += 1
+
+    section("Показатели проекта")
+    line("NPV проекта, млн ₽", "npv")
+    line("IRR проекта до кредита, % годовых", "irr", matrix_pct)
+    line("Чистая прибыль проекта, млн ₽", "t_net")
+    section("Собственные деньги — после финансирования")
+    line("Пик собственных денег, млн ₽", "peak")
+    line("NPV собственника, млн ₽", "npv_eq")
+    line("IRR собственника, % годовых", "irr_eq", matrix_pct)
+    section("Деньги и оценка")
+    line("Денежные поступления, млн ₽", "t_cash_received")
+    line("Оценка удержанных зданий — не деньги, млн ₽", "t_residual")
+    line("Итог модели с оценкой удержания, млн ₽", "t_revenue")
+
+    section("Рекомендация по стратегии")
+    ws.merge_cells(start_row=r, start_column=1, end_row=r + 2, end_column=end)
+    npv = [ref(f"{p['code']}.npv") for p in paths]
+    complete = report.get("comparison_complete", "1")
+    text = (f'"Критерий: NPV проекта. "&IF(OR(COUNT({",".join(npv)})<{len(paths)},{complete}=0),'
+            f'"Сравнение неполно: нет данных NPV или оценки выхода (капитализация / положительный NOI); победитель не назван.",'
+            f'"Наибольший NPV: "&{report["better_ref"]}&". "&'
+            f'IF(MAX({",".join(npv)})<0,"NPV всех стратегий отрицателен. ",""))&'
+            f'"Сравнивается весь проект при неизменных стратегиях соседних объектов. При удержании NPV включает оценку здания, а не только деньги."')
+    cell = ws.cell(r, 1)
+    book.pending.append((cell, text, None, sheet_name))
+    cell.font = _fnt(b=True, color=DARK)
+    cell.alignment = Alignment(wrap_text=True, vertical="top")
+    for row in range(r, r + 3):
+        ws.row_dimensions[row].height = 25
+    r += 4
+    section("Продукты и выручка")
+    rent = lambda p: p["strategy"] == ns.STRATEGY_INCOME
+    line("Продажи продукта и мест, млн ₽", "o_sale", applicable=lambda p: not rent(p))
+    line("Арендная выручка, млн ₽", "o_rent", applicable=rent)
+    line("Продажа здания при выходе, млн ₽", "o_exit",
+         applicable=lambda p: rent(p) and p.get("exit_override") != ns.EXIT_HOLD)
+    link("Состав и объёмы продуктов", TEP_SHEET, 1, "ТЭП: площади объектов и машино-места →")
+    if "Раскрытие результатов" in book.wb.sheetnames:
+        link("Продукты и выручка — формулы", "Раскрытие результатов", 1, "Формульное раскрытие: продукты, цены, продажи и допущения →")
+    section("Начальные и конечные цены")
+    link("Цены продуктов", INPUTS_SHEET, 1, "Исходные ставки, динамика и источник цены — лист «Вводные» →")
+    for path in paths:
+        link(path["label"], path["flows"], 1, "Цены периодов и выручка — расчётные ряды стратегии →")
+    section("Темпы продаж — расчётный план")
+    for path in paths:
+        link(path["label"], path["flows"], 1, "Объёмы по периодам, заполнение и аренда →")
+    section("Структура затрат")
+    line("CAPEX с участком, млн ₽", "t_capex")
+    line("Продажи и эксплуатация, млн ₽", "t_costs")
+    line("Проценты и комиссии, млн ₽", "t_financing")
+    line("Налог на прибыль, млн ₽", "t_tax")
+    line("НДС, млн ₽", "t_vat")
+    line("Расходы всего, млн ₽", "t_expenses")
+    link("Статьи затрат", CAPEX_SHEET, 1, "Смета и помесячное финансирование статей →")
+    section("Денежный поток и финансирование")
+    line("Кредит объектов — пик, млн ₽", "loan_peak")
+    line("Проектное финансирование — пик, млн ₽", "pf_peak")
+    line("Эскроу — пик, млн ₽", "escrow_peak")
+    line("DSCR кредитов объектов проекта — минимум, ×", "dscr_min", RATIO)
+    line("LLCR проектного финансирования проекта, ×", "llcr", RATIO)
+    rep = book.wb[report["sheet"]]
+    head, first, last = report["owner_years"]
+    link("Поток по годам", report["sheet"], head, "Сравнение собственных денег по годам →")
+    section("Допущения и проверка")
+    link("Основания расчёта", GUIDE_SHEET, 1, "Инструкция: ставки, деньги и оценка, границы сравнения →")
+    link("Все проверки книги", CHECK_SHEET, 1, "Проверки пересчитанных формул против движка →")
+    ws.cell(r, 1, "Проверки книги").font = _fnt(b=True)
+    book.pending.append((ws.cell(r, 2), ref("chk.verdict"), None, sheet_name))
+    r += 2
+    if last >= first:
+        chart = BarChart()
+        chart.title = "Поток собственника по годам, млн ₽"
+        chart.add_data(Reference(rep, min_col=2, max_col=end, min_row=head, max_row=last), titles_from_data=True)
+        chart.set_categories(Reference(rep, min_col=1, min_row=first, max_row=last))
+        for series, path in zip(chart.series, paths):
+            series.graphicalProperties.solidFill = path["tab"]
+        chart.x_axis.tickLblPos = "low"
+        chart.x_axis.delete = chart.y_axis.delete = False
+        chart.legend.position, chart.legend.overlay = "b", False
+        chart.y_axis.numFmt = NumFmt(formatCode=CHART_AXIS_FORMAT, sourceLinked=False)
+        chart.y_axis.majorGridlines = ChartLines()
+        chart.y_axis.title = "млн ₽"
+        anchor = TwoCellAnchor()
+        anchor._from, anchor.to = AnchorMarker(col=0, row=r - 1), AnchorMarker(col=end, row=r - 1 + CHART_ROWS)
+        chart.anchor = anchor
+        ws.add_chart(chart)
+        r += CHART_ROWS
+    ws.freeze_panes = "B5"
+    ws.print_title_rows = "1:4"
+    ws.print_title_cols = "A:A"
+    ws.print_area = f"A1:{last_col}{r}"
+    ws.page_setup.paperSize = ws.PAPERSIZE_A3
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
+    # Page height remains unlimited: a multi-section report is never shrunk
+    # to a single unreadable page. The top matrix stays together on page 1.
+    ws.row_breaks.append(Break(id=21))
+
+
 def _dashboard_sheet(book: _Book, report: dict[str, Any], with_pf: bool = False,
                      sheet_name: str = DASH_SHEET) -> None:
+    if not book.project_only and report.get("title") == "Офисы":
+        _dashboard_matrix_sheet(book, report, sheet_name)
+        return
     DASH_SHEET = sheet_name  # noqa: N806
     PATHS = report["paths"]  # noqa: N806 — способы этой группы
     if book.project_only:
@@ -3099,10 +3471,19 @@ def build(result: dict[str, Any], spec: dict[str, Any], office_keys: set[str]) -
 
     years = sorted({(start.year * 12 + start.month - 1 + k) // 12 for k in range(book.n)})
     reports, dashboards, current_code = {}, [], None
+    selected = next((p["code"] for g in book.groups for p in g["paths"] if p["key"] == g["current"]),
+                    PROJECT_PATH["code"] if book.project_only else None)
+    _disclosure_sheet(book, selected, path_blocks, path_ddu)
     if book.groups:
         for group in book.groups:
             report = _report_sheet(book, spec, capex, group["current"], years, paths=group["paths"],
                                    sheet_name=group["report"], product_title=group["title"])
+            report["comparison_complete"] = "AND(" + ",".join(
+                f"AND({block.r('cap')}>0,{block.r('fwd_noi')}>0)"
+                for p in group["paths"] for block in path_blocks[p["code"]]
+                if block.strategy == ns.STRATEGY_INCOME) + ")"
+            if report["comparison_complete"] == "AND()":
+                report["comparison_complete"] = "1"
             reports[group["report"]] = report
             _dashboard_sheet(book, report, sheet_name=group["dashboard"])
             dashboards.append(group["dashboard"])
@@ -3142,7 +3523,7 @@ def build(result: dict[str, Any], spec: dict[str, Any], office_keys: set[str]) -
         for name in [*dashboards, *reports]:
             land_rent_book.qualify(book.wb[name])
     book.resolve()
-    order = [*dashboards, *reports, INPUTS_SHEET, *([land_rent_book.SHEET] if rent_ref else []), GUIDE_SHEET, TEP_SHEET, TIME_SHEET, CAPEX_SHEET, RATE_SHEET,
+    order = [*dashboards, *reports, DISCLOSURE_SHEET, *([DISCLOSURE_PLAN_SHEET] if DISCLOSURE_PLAN_SHEET in book.wb.sheetnames else []), INPUTS_SHEET, *([land_rent_book.SHEET] if rent_ref else []), GUIDE_SHEET, TEP_SHEET, TIME_SHEET, CAPEX_SHEET, RATE_SHEET,
              *comparison_sheets, *other_sheets, *pf_sheets,
              *(path["cf"] for path in book.paths), TAX_SHEET, CHECK_SHEET, *([SOURCES_SHEET] if offices else [])]
     book.wb._sheets = [book.wb[name] for name in order]
