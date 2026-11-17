@@ -264,7 +264,21 @@ def _office_path_metrics(result: dict[str, Any], prefixes: tuple[str, ...],
         ddu_sales = sum(float(revenue.get(k) or 0.0) + float(revenue.get(object_parking_product_key(k)) or 0.0)
                         for k in office_keys)
     with_pf = float(finance.get("pf_draw_total") or 0.0) > 0
+    # Presentation completeness is separate from the numerical NPV ranking.
+    # A zero output caused by missing capitalization cannot prove that a
+    # rental strategy loses; do not change the financial model's numbers.
+    missing = []
+    for obj in ((finance.get("nonres") or {}).get("objects") or []):
+        if obj.get("strategy") != nonres_strategy.STRATEGY_INCOME:
+            continue
+        params = (obj.get("book") or {}).get("params") or {}
+        reason = ("не задана ставка капитализации" if float(params.get("exit_cap_pct") or 0) <= 0 else
+                  "нет положительного NOI для оценки" if float((obj.get("kpi") or {}).get("forward_noi") or 0) <= 0 else "")
+        if reason:
+            missing.append(str(obj.get("title") or obj.get("key")) + ": " + reason)
+
     return {
+        "comparison_missing": missing,
         "revenue": float(summary.get("revenue") or 0.0),
         "capex": float(summary.get("capex") or 0.0),
         "selling_cost": total("selling_cost"),
@@ -1357,6 +1371,8 @@ def _calculate_economics(req: CalcRequest) -> dict:
                 cash_timeline, equity_cf, fin, discount_rate=discount_rate, irr=irr_equity),
             "layout": report_layout(x, fin, equity_cf),
             "products": products_report,
+            "office_results": (__import__("office_results").build(x, t, op, fin, products_report, STANDALONE_OBJECTS)
+                               if without_housing(x) and report_kind(x) != REPORT_KIND_HOTEL else {}),
             # Как себестоимость дома разложена по продуктам — одной фразой
             # для экрана и PDF (`cost_pool_product_costs`).
             "product_cost_basis": PRODUCT_COST_BASIS,

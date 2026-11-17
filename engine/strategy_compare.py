@@ -129,8 +129,11 @@ def strategy_path_sets(result: dict[str, Any] | None) -> list[dict[str, Any]]:
 
 
 def _scored(paths: list[dict[str, Any]], keys: tuple[str, ...] | None = None) -> list[dict[str, Any]]:
-    return [p for p in paths if isinstance(p.get("npv"), (int, float)) and not p.get("error")
-            and (keys is None or p.get("key") in keys)]
+    selected = [p for p in paths if keys is None or p.get("key") in keys]
+    if any(p.get("comparison_missing") or p.get("error") or not isinstance(p.get("npv"), (int, float))
+           for p in selected):
+        return []
+    return selected
 
 
 def _strategy_lead(data: dict[str, Any]) -> str:
@@ -138,7 +141,9 @@ def _strategy_lead(data: dict[str, Any]) -> str:
     paths = data.get("paths") or []
     scored = sorted(_scored(paths), key=lambda p: -float(p["npv"]))
     if not scored:
-        return "Ни одна стратегия не посчиталась — причины названы в таблице."
+        reasons = list(dict.fromkeys(reason for p in paths for reason in p.get("comparison_missing") or []))
+        return "Сравнение неполно; победитель не назван. " + ("; ".join(reasons) if reasons else
+               "Не все стратегии имеют рассчитанный NPV; причины названы в таблице.")
     best = scored[0]
     current = next((p for p in scored if p.get("key") == data.get("current")), None)
     best_word = _lead_word(best)
@@ -174,7 +179,7 @@ def strategy_teaser_line(data: dict[str, Any]) -> str:
     """Одна строка тизера: лучшая стратегия и разница с выбранной."""
     scored = sorted(_scored(data.get("paths") or []), key=lambda p: -float(p["npv"]))
     if not scored:
-        return ""
+        return _strategy_lead(data)
     best = scored[0]
     labels = {p.get("key"): p.get("label") for p in data.get("paths") or []}
     current = next((p for p in scored if p.get("key") == data.get("current")), None)
@@ -352,9 +357,10 @@ def strategy_compare_block(result: dict[str, Any] | None,
         for data in sets]
     teaser = " ".join((f"{item['caption']}: " if item["caption"] else "") + item["teaser"]
                       for item in items if item["teaser"])
+    complete = all(item.get("best") is not None for item in items)
     return {"title": STRATEGY_COMPARE_TITLE, "items": items, "teaser": teaser,
-            "stamp": _strategy_stamp(indifference),
-            "page_stamp": _strategy_page_stamp(indifference),
+            "stamp": _strategy_stamp(indifference) if complete else "Сравнение неполно: рекомендация по NPV не сформирована.",
+            "page_stamp": _strategy_page_stamp(indifference) if complete else "Сравнение неполно: отсутствующие данные не считаются проигрышем стратегии.",
             "stamp_hint": strategy_hint_key("method"),
             "points_ready": isinstance(indifference, dict) and not indifference.get("error"),
             "fingerprint": (indifference or {}).get("fingerprint")}
@@ -368,7 +374,8 @@ def attach_strategy_compare(result: dict[str, Any]) -> None:
         return
     result["strategy_compare"] = block
     for section in (((result.get("report") or {}).get("object_report") or {}).get("sections") or []):
-        if section.get("key") != "decision":
+        target = "comparison" if (result.get("report") or {}).get("layout", {}).get("kind") == REPORT_KIND_OBJECT else "decision"
+        if section.get("key") != target:
             continue
         blocks = section.setdefault("blocks", [])
         if not any(b.get("ref") == "strategy_compare" for b in blocks):

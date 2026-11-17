@@ -184,7 +184,8 @@ def test_the_retail_book_compares_all_five_ways_on_the_v4_frame() -> None:
     book = openpyxl.load_workbook(io.BytesIO(content))
     group = meta["comparisons"][0]
     assert group["product"] == "standalone_retail" and len(group["paths"]) == 5
-    assert book.sheetnames == [ow.DASH_SHEET, ow.REPORT_SHEET, ow.INPUTS_SHEET, ow.GUIDE_SHEET, ow.TEP_SHEET,
+    assert book.sheetnames == [ow.DASH_SHEET, ow.REPORT_SHEET, ow.DISCLOSURE_SHEET,
+                               ow.DISCLOSURE_PLAN_SHEET, ow.INPUTS_SHEET, ow.GUIDE_SHEET, ow.TEP_SHEET,
                               ow.TIME_SHEET, ow.CAPEX_SHEET, ow.RATE_SHEET,
                               ow.DDU_SHEET, ow.PRESALE_SHEET, ow.SALE_SHEET, "Удержание", ow.RENT_SHEET,
                               ow.EXIT_SHEET, "Наземный паркинг", ow.PF_SHEET,

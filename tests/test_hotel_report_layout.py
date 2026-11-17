@@ -43,7 +43,7 @@ import hotel_presets  # noqa: E402
 import main as wrapper  # noqa: E402
 from test_hotel_strategy import plan, run  # noqa: E402
 from test_nonres_report_layout import (  # noqa: E402
-    KEYS, TITLES, _drawn_mismatches, _in_order, _render_blocks)
+    HOTEL_KEYS as KEYS, HOTEL_TITLES as TITLES, _drawn_mismatches, _in_order, _render_blocks)
 
 core = wrapper.core
 
