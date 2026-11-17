@@ -42,7 +42,7 @@ def test_dashboard_distinguishes_cash_valuation_and_applicability(example):
             ws.cell(_row(ws,'Денежные поступления, млн ₽'),column).value
             + ws.cell(_row(ws,'Оценка удержанных зданий — не деньги, млн ₽'),column).value,abs=1e-6)
         residual_cell=ws.cell(_row(ws,"Оценка удержанных зданий — не деньги, млн ₽"),column)
-        if path.get("exit_mode") != "hold":
+        if path["strategy"] != "income" or path.get("exit_mode") == "sale":
             assert residual_cell.value == 0
             assert residual_cell.number_format.split(";")[2] == "0"
         if path['strategy']!='income':
