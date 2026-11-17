@@ -54,8 +54,10 @@ def test_the_register_and_card_share_the_same_source_interval(source_card):
 @pytest.mark.parametrize('width',[390,1440])
 def test_real_page_shows_known_plan_dates_when_forecast_is_unavailable(source_card,width):
     from playwright.sync_api import expect
+    from developaid_contract_documents import CHART_DATES_ASSUMPTION
     row={'id':CONTRACT,'physical_items':[]}
     control=files.register_control(PROJECT,{'rows':[row]},CUT)['rows'][0]['schedule_control']
+    control['schedule_source']['assumption']=CHART_DATES_ASSUMPTION
     with browser_page(width) as (page,responses,errors):
         responses.data['rows'][0]['schedule_control']=control
         page.route('**/monitor/contracts/document*',lambda route:route.fulfill(json={
@@ -64,6 +66,11 @@ def test_real_page_shows_known_plan_dates_when_forecast_is_unavailable(source_ca
         line=page.locator(f'tr[data-contract-id="{CONTRACT}"]')
         expect(line).to_contain_text('Прогноз не рассчитан')
         expect(line).to_contain_text('План по ГПР: 29.01.2026 — 05.02.2026')
+        schedule=line.locator('.contract-schedule')
+        expect(schedule).to_contain_text(control['note'])
+        expect(schedule).not_to_contain_text(CHART_DATES_ASSUMPTION)
+        expect(schedule).not_to_contain_text('Это сроки исходного графика')
+        expect(schedule.locator('.contract-source-plan .warn')).to_have_count(0)
         expect(line.locator('.term')).to_contain_text('Окончание исходного ГПР: 05.02.2026')
         expect(line.locator('.term')).to_contain_text('Прогноз по ГПР не рассчитан')
         expect(line.locator('.term')).not_to_contain_text('Прогноз неизвестен')
