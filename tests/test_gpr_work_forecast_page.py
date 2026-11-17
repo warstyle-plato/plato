@@ -8,7 +8,7 @@ from playwright.sync_api import expect
 import developaid_gpr_work_forecast as work_dates
 import developaid_schedule_plan_scenario as scenario
 import developaid_schedule_readiness as readiness
-from test_gpr_work_forecast import fallback, profiled
+from test_gpr_work_forecast import fallback, profiled, task
 from test_gpr_why_page import serve, why_view
 from test_management_calendar_membership import _native_scoped_view
 from test_monitor_cumulative_controls import browser_page
@@ -119,4 +119,37 @@ def test_native_group_keeps_an_attested_member_without_a_calendar_point(monkeypa
           gprCalendarProjection(currentView))''')
         assert group['total'] == 2 and group['covered'] == 1 and group['missing'] == 1
         assert group['work_ids'] == ['build', 'other']
+        assert not errors
+
+
+@pytest.mark.parametrize('width', [390, 1440])
+def test_native_summary_renders_missing_work_markup_and_financial_ampersand_as_text(monkeypatch, width):
+    from developaid_monitor_dashboard import refresh_schedule_summary
+    imported = '<img src=x onerror="window.gprSummaryUnsafe=true">'
+    value = why_view()
+    schedule = fallback([task('missing', name=imported,
+                              display_progress=dict(value=None, date='2035-04-09'))])
+    schedule['work_forecast'] = work_dates.build(schedule, schedule['cut'])
+    schedule['readiness_html'] = readiness.render(schedule['readiness'], show_forecast=False)
+    value.update(cut=schedule['cut'], schedule=schedule)
+    money = 'Бюджет. A&B — учтено 12 млн ₽.'
+    imported_head = '<img src=x onerror="window.gprSummaryHeadUnsafe=true">'
+    value['dashboard']['summary'] = ['Срок. Прежняя оценка.', money, imported_head+'. Обычный текст.']
+    refresh_schedule_summary(value)
+    assert imported in value['dashboard']['summary'][0]
+    assert value['dashboard']['summary'][1] == money
+    serve(monkeypatch, value)
+    with browser_page(width) as (page, _, errors):
+        show(page, value)
+        page.locator('#moneyTab').click()
+        summary = page.locator('#summaryBody')
+        expect(summary).to_contain_text(imported)
+        expect(summary).to_contain_text(imported_head)
+        expect(summary).to_contain_text(money)
+        assert summary.locator('img').count() == 0
+        assert page.evaluate('window.gprSummaryUnsafe===true') is False
+        assert page.evaluate('window.gprSummaryHeadUnsafe===true') is False
+        assert summary.inner_text().count('A&B') == 1
+        assert 'A&amp;amp;B' not in summary.inner_html()
+        assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
         assert not errors
