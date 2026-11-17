@@ -138,11 +138,18 @@ function syncMoKd(){
 
 const MO_VRI_COMPENSATION_SOURCE=__DEVELOPAID_MO_VRI_COMPENSATION_SOURCE__;
 let moVriReliefOwner=null;
+let moVriReliefProjectKey='';
 let moVriReliefModelKey='';
 let moVriReliefPreview=null;
 let moVriReliefRun=0;
 let moVriReliefBaseSource=null;
+let moVriReliefGrossEdited=false;
+let moVriReliefCompEdited=false;
 function moVriNode(id){return document.getElementById(id)}
+function moVriDraftProjectKey(){return JSON.stringify([classRegion(),inputs._project_uid||''])}
+function moVriHasCompensationDraft(){
+ return moVriReliefCompEdited&&moVriReliefOwner===inputs&&moVriReliefProjectKey===moVriDraftProjectKey();
+}
 function moVriNumber(value){
  if(value===null||value===undefined||String(value).trim()==='')return null;
  const result=Number(value);return Number.isFinite(result)?result:null;
@@ -185,7 +192,8 @@ function invalidateMoVriRelief(){
 }
 function moVriReliefEdited(baseChanged){
  invalidateMoVriRelief();
- if(baseChanged)moVriReliefBaseSource={kind:'manual',label:'Плата до уменьшения введена вручную'};
+ if(baseChanged){moVriReliefGrossEdited=true;moVriReliefBaseSource={kind:'manual',label:'Плата до уменьшения введена вручную'}}
+ else moVriReliefCompEdited=true;
  const origin=moVriNode('moVriGrossSource');
  if(origin&&moVriReliefBaseSource)origin.textContent=moVriReliefBaseSource.label;
  moVriReliefStatus('Проверьте предварительный расчёт. До применения плата проекта остаётся прежней.');
@@ -211,15 +219,23 @@ function renderMoVriRelief(){
  const mpt=moVriNode('mpt-benefit-panel');if(mpt){mpt.hidden=region!=='msk';mpt.style.display=region==='msk'?'':'none'}
  if(region!=='mo'){invalidateMoVriRelief();moVriReliefOwner=null;return}
  const source=moVriNode('moVriReliefSource');if(source&&MO_VRI_COMPENSATION_SOURCE.url)source.href=MO_VRI_COMPENSATION_SOURCE.url;
- const modelKey=moVriModelKey();
- if(moVriReliefOwner!==inputs||moVriReliefModelKey!==modelKey){
-  invalidateMoVriRelief();moVriReliefOwner=inputs;moVriReliefModelKey=modelKey;
+ const projectKey=moVriDraftProjectKey(),modelKey=moVriModelKey();
+ const ownerChanged=moVriReliefOwner!==inputs||moVriReliefProjectKey!==projectKey;
+ if(ownerChanged||moVriReliefModelKey!==modelKey){
+  // Другой проект получает свои поля. Обычный пересчёт ТЭП снимает только
+  // прежний результат: renderTep дополняет производные поля после renderInputs.
+  // Новый ручной ввод при таком изменении остаётся черновиком до Preview/Apply.
+  invalidateMoVriRelief();moVriReliefOwner=inputs;moVriReliefProjectKey=projectKey;moVriReliefModelKey=modelKey;
+  if(ownerChanged){moVriReliefGrossEdited=false;moVriReliefCompEdited=false}
   const basis=moVriSavedBasis();
-  moVriReliefBaseSource=basis?{kind:basis.kind,label:basis.label}:null;
-  const gross=moVriNode('moVriGross');if(gross)gross.value=basis?String(basis.gross/1e6):'';
+  if(!moVriReliefGrossEdited){
+   moVriReliefBaseSource=basis?{kind:basis.kind,label:basis.label}:null;
+   const gross=moVriNode('moVriGross');if(gross)gross.value=basis?String(basis.gross/1e6):'';
+  }
   syncMoCompensation();
-  const origin=moVriNode('moVriGrossSource');if(origin)origin.textContent=basis?basis.label:'Исходная плата до уменьшения в проекте не подтверждена. Впишите известную сумму; текущая плата показана отдельно.';
-  if(basis){renderMoVriReliefResult(basis.vri);moVriReliefStatus('Показано уменьшение, уже учтённое в текущей плате проекта. Изменения нужно сначала рассчитать и затем применить.')}
+  const origin=moVriNode('moVriGrossSource');if(origin)origin.textContent=moVriReliefBaseSource?moVriReliefBaseSource.label:'Исходная плата до уменьшения в проекте не подтверждена. Впишите известную сумму; текущая плата показана отдельно.';
+  if(moVriReliefGrossEdited||moVriReliefCompEdited)moVriReliefStatus('Параметры проекта изменились. Введённые суммы сохранены; рассчитайте уменьшение ещё раз.');
+  else if(basis){renderMoVriReliefResult(basis.vri);moVriReliefStatus('Показано уменьшение, уже учтённое в текущей плате проекта. Изменения нужно сначала рассчитать и затем применить.')}
   else moVriReliefStatus('Укажите плату до уменьшения. Предварительный расчёт не меняет проект.');
  }
  const current=moVriNode('moVriCurrentFee');if(current)current.textContent='Плата в настройках проекта: '+moVriMoney(moVriNumber(inputs.land_rights_cost_mln)===null?null:Number(inputs.land_rights_cost_mln)*1e6)+'. Отдельный зачёт площадей и другие льготы применяются к ней при построении графика ВРИ.';
@@ -314,7 +330,7 @@ function moFeeText(v){
 
 function syncMoCompensation(){
  const field=document.getElementById('moCompensation');
- if(!field)return;
+ if(!field||moVriHasCompensationDraft())return;
  const mln=Number(inputs.mo_vri_compensation_mln||0);
  field.value=mln>0?String(mln):'';
 }
@@ -436,7 +452,7 @@ function syncMoParams(data){
  const area=document.getElementById('moArea');
  if(area&&t.site_area_ha)area.placeholder=landNum(t.site_area_ha,4)+' га из ЕГРН';
  const compensation=document.getElementById('moCompensation');
- if(compensation)compensation.value=v.compensation_rub!=null?String(v.compensation_rub/1e6):'';
+ if(compensation&&!moVriHasCompensationDraft())compensation.value=v.compensation_rub!=null?String(v.compensation_rub/1e6):'';
 }
 
 // Дефицит рабочих мест — это будущий объект, а не строка справки. РНГП МО
