@@ -107,6 +107,7 @@ def build(listed: dict, cut: str, source_sha256: str | None = None) -> dict:
     for row in result['lines']:
         contexts,seen = [],set()
         own = by_code.get(row['code']) or []
+        section = (own[0].get('section') or '').strip() if len(own) == 1 else ''
         parent = own[0].get('parent') if len(own) == 1 else None
         while parent and parent not in seen:
             seen.add(parent)
@@ -114,6 +115,20 @@ def build(listed: dict, cut: str, source_sha256: str | None = None) -> dict:
             if len(candidates) != 1:
                 break
             contexts.insert(0,candidates[0]['name'])
+            if not section:
+                section = (candidates[0].get('section') or '').strip()
             parent = candidates[0].get('parent')
+        row['section'] = section
+        if section and section not in contexts:
+            contexts.insert(0, section)
         row['context'] = ' · '.join(contexts)
+    # Keep every work separate, including identical names in different buildings.
+    # The same ordered projection supplies the card, search and XLSX export.
+    if any(row['section'] for row in result['lines']):
+        order = {row['code']: index for index, row in enumerate(source_lines)
+                 if len(by_code[row['code']]) == 1}
+        groups = {}
+        for row in sorted(result['lines'], key=lambda row: order.get(row['code'], len(source_lines))):
+            groups.setdefault(row['section'], []).append(row)
+        result['lines'] = [row for rows in groups.values() for row in rows]
     return result
