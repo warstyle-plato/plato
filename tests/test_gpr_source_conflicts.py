@@ -141,6 +141,10 @@ def test_real_conflict_reason_quantities_and_action_are_visible_in_monitor_repor
         visible = body.inner_text()
         assert '50 / 100 м²' in visible and '31.10.2026' in visible and '30.10.2026' in visible
         assert 'Сверьте' in visible and '06.01.2027' not in visible
+        task = view['schedule']['physical_progress']['tasks'][0]
+        assert task['reason'] == task['components'][0]['reason']
+        card = body.locator('.schedule-physical-item').first
+        expect(card.get_by_text(task['reason'], exact=True)).to_have_count(1)
         page.set_content(report.render_html(built))
         main=page.locator('.report-gpr-compact')
         expect(main.locator('[data-gpr-block]')).to_have_count(3)
@@ -169,11 +173,13 @@ def test_real_driver_reason_is_printed_once_in_the_source_appendix(gpr_sources):
     from pypdf import PdfReader
     from test_monitor_cumulative_controls import browser_page
     built = gpr_sources('confirmed')
-    summary = built['construction_summary']
+    summary = report._executive_schedule(built)
     driver = built['schedule']['qualification']['driving_chain'][0]
-    assert summary['driver_method'] == driver['method'] == 'cumulative_quantities'
-    reason = summary['driver_reason']
+    assert summary['driver_method'] is summary['driver_reason'] is None
+    assert summary['rnv_driver_method'] == driver['method'] == 'cumulative_quantities'
+    reason = summary['rnv_driver_reason']
     assert reason == driver['reason'] and reason
+    assert report._executive_schedule(built)['rnv_driver_reason'] == reason
     with browser_page(1440) as (page, responses, errors):
         page.set_content(report.render_html(built))
         assert reason not in page.locator('.report-gpr-compact').inner_text()

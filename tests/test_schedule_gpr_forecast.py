@@ -102,6 +102,9 @@ def test_monitor_layer_uses_stored_gpr_files_and_never_money_pace(tmp_path, monk
             dict(row("2", finish="2030-01-01", code="", name="Продажи"))]
     view = {"cut": CUT.isoformat(), "schedule": {"rows": rows, "management": []},
             "dashboard": {"schedule": {"approved_finish": "2026-12-31"}, "summary": []}}
+    # The normal Monitor builder supplies this source binding before the pace
+    # overlay. Its selected-project assessment must not borrow another scope.
+    view['schedule']['approved_plan'] = monitor._working_baseline_state('Учебный', CUT)
     pace._apply_pace("Учебный", view, CUT)
     first = view["schedule"]["rows"][0]
     # The approved GPR of 01.09 (0%) is inside the 90-day window: 40% per 50 days,
@@ -112,7 +115,11 @@ def test_monitor_layer_uses_stored_gpr_files_and_never_money_pace(tmp_path, monk
     assert qualified["basis"] == "gpr" and qualified["delay_days"] == 4
     assert qualified["driving_chain"][0]["name"] == "Каркас"  # «Продажи» has no article
     assert "оценка по ГПР" in view["schedule"]["dependency_timeline_html"]
-    assert view["dashboard"]["summary"][0].startswith("Срок.") and "Без цепочки" in view["dashboard"]["summary"][0]
+    sentence = view['dashboard']['summary'][0]
+    # This legacy WBS has no explicit project roster or active readiness profile.
+    # Its per-work measured date remains valid, without becoming a project date.
+    assert sentence.startswith('Срок.') and 'нет явно определённого строительного состава' in sentence
+    assert '04.01.2027' not in sentence
 
 
 def test_summary_shows_the_estimate_but_does_not_shift_loans():
@@ -133,7 +140,7 @@ def test_summary_shows_the_estimate_but_does_not_shift_loans():
     assert dashboard['schedule']['qualified_rnv'] == expected_qualification
 
 
-def test_monitor_card_shows_the_estimate_date_with_its_caveat():
+def test_legacy_work_estimate_is_not_presented_as_rnv_without_bound_assessment():
     from playwright.sync_api import expect
     from test_monitor_cumulative_controls import browser_page
     qualified = {"state": "estimate", "approved": "2027-04-30", "forecast": "2027-05-10",
@@ -141,8 +148,11 @@ def test_monitor_card_shows_the_estimate_date_with_its_caveat():
     with browser_page(390) as (page, responses, errors):
         page.evaluate("(q)=>renderDash({dashboard:{schedule:{qualified_rnv:q}},schedule:{}})", qualified)
         kpis = page.locator('#kpis')
-        expect(kpis).to_contain_text('10.05.2027')
-        expect(kpis).to_contain_text('оценка по ГПР')
+        # A legacy work-only estimate is not a confirmed RNV and does not carry
+        # the new source-bound selected-project assessment.
+        expect(kpis).not_to_contain_text('10.05.2027')
+        expect(kpis).to_contain_text('Прогноз РНВ')
+        expect(kpis).to_contain_text('недостаточно факта для прогноза')
         assert not errors
 
 
@@ -186,22 +196,11 @@ def test_gpr_rnv_driver_is_shown_once_without_restoring_pm_drawing(width):
                         'dependency_timeline_html': timeline.render(block)}}
     with browser_page(width) as (page, responses, errors):
         page.evaluate('(view)=>renderGantt(view)', view)
-        body = page.locator('#readinessSummary .gpr-legacy-fallback')
-        expect(body).to_be_visible()
-        estimate = body.locator('.schedule-rnv-cards>div').nth(1)
-        expect(estimate.locator('span')).to_have_text('Оценка по ГПР')
-        expect(estimate.locator('strong')).to_have_text('10.05.2027')
-        expect(body.get_by_text(
-            'Окончание строительных работ оценено по ГПР. Дата разрешения на ввод этим не подтверждается.',
-            exact=True)).to_be_visible()
-        driver = body.locator('p.schedule-note').filter(has_text='Срок тянет')
-        assert driver.count() == 1
-        expect(driver).to_be_hidden()
-        body.get_by_text('Основание и ограничения', exact=True).click()
-        expect(driver).to_be_visible()
-        expect(driver).to_contain_text(name)
-        expect(driver).to_contain_text('Оценка по измеренному росту процента ГПР.')
-        assert body.locator('.schedule-lane,.schedule-technical,svg,img').count() == 0
+        # A legacy RNV estimate from a different scope is not a second project
+        # forecast when the canonical work-date DTO/roster is absent.
+        assert page.locator('#readinessSummary .gpr-legacy-fallback').count() == 0
+        assert page.locator('#readinessSummary .schedule-rnv-cards').count() == 0
+        assert page.locator('#readinessSummary .schedule-lane,#readinessSummary .schedule-technical,#readinessSummary svg,#readinessSummary img').count() == 0
         assert page.evaluate('window.forecastXSS') is None
         assert page.locator('#dependencyTimelineBody .schedule-rnv-cards').count() == 0
         expect(page.locator('#dependencyTimelineBody')).to_contain_text('Что влияет на срок')

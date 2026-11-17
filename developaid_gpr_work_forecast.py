@@ -233,7 +233,9 @@ def build(schedule, cut):
     if not _carry_consistent(schedule, state, carry):
         return unavailable(schedule, cut, 'Связь профиля с исправленной версией ГПР требует проверки.', 'profile_carry_binding')
     value.update(schema=SCHEMA, basis=BASIS, scope_kind=scope_kind, profile_state=profile_state,
-                 state='complete' if stats['complete'] else 'unavailable' if not stats['covered'] else 'partial' if missing or scope_kind == 'construction_partial' else 'known',
+                 profile_revision=state.get('profile_revision', 0), profile_sha256=state.get('profile_sha256', ''),
+                 profile_effective_from=state.get('profile_effective_from', ''),
+                 state='complete' if stats['complete'] else 'partial' if missing or not stats['covered'] or scope_kind == 'construction_partial' else 'known',
                  source_order=ids, reference_source_sha256=carry.get('from_source_sha256') or value['forecast_identity'].get('full_source_sha256') or source,
                  ordered_members=ordered, covered_members=stats['comparison_members'], missing_members=missing,
                  outside_members=[dict(work_id=r['id'], reason=excluded_current.get(r['id']) or 'outside_assessment_scope')
@@ -277,24 +279,26 @@ def build(schedule, cut):
     for row in rows:
         presentation[(row.get('object'), by_group.get(row['id']) or row.get('section'))].append(row)
         presentation[(row.get('object'), row.get('section'))].append(row)
+        presentation[(None, by_group.get(row['id']) or row.get('section'))].append(row)
     for members in presentation.values():
         cache_rows(list({r['id']:r for r in members}.values()))
     value['aggregates'] = aggregates
-    from developaid_schedule_plan_scenario import group as date_group
     outside_points = {}
     for row in rows:
         if row['id'] in intended_current:
             continue
         measured = row.get('forecast_known') and not row.get('observed_complete_by')
-        single = date_group([row])
-        if not single['all_complete'] and not measured and not linear_eligible(row):
+        scenario = row.get('plan_pace_scenario') or {}
+        complete = bool(scenario.get('complete') or row.get('work_done'))
+        finish = None if complete else (row.get('forecast_finish') if measured else scenario.get('finish'))
+        if not complete and not measured and not linear_eligible(row):
             continue
-        if not single['finish'] and not single['all_complete']:
+        if not finish and not complete:
             continue
-        finish, plan = single['finish'], row.get('plan_finish')
+        plan = row.get('plan_finish')
         outside_points[row['id']] = dict(work_id=row['id'], reference_work_id=None, outside=True,
-            finish=finish, plan_finish=plan, complete=single['all_complete'],
-            basis='complete' if single['all_complete'] else 'measured' if measured else 'conditional',
+            finish=finish, plan_finish=plan, complete=complete,
+            basis='complete' if complete else 'measured' if measured else 'conditional',
             source_date=(row.get('plan_pace_scenario') or {}).get('source_date'),
             delta_days=(_day(finish)-_day(plan)).days if _day(finish) and _day(plan) else None)
     value['outside_points'] = outside_points
@@ -337,7 +341,7 @@ def describe(value, cut):
     text = label+': '+date_text(finish)+'.' if finish else ('Работы отмечены выполненными; дата их окончания не подтверждена.' if f.get('complete') else 'Расчётная дата окончания работ не определена.')
     if f.get('conditional'):
         text += ' Условный сценарий при плановом темпе, а не измеренная скорость.'
-    if value.get('state') == 'unavailable':
+    if value.get('state') == 'unavailable' or value.get('reason_code') == 'no_usable_work_dates':
         text += ' '+str(value.get('reason') or '')
     result.update(finish=finish, plan_finish=plan, delta_days=delta,
                   forecast_label=label, forecast_text=text, scope_text=scope,
@@ -354,14 +358,17 @@ def report_model(block, cut):
     roster = projection.get('rows') or []
     by_id = {str(item['task']['id']):item['task'] for item in roster
              if isinstance(item, dict) and isinstance(item.get('task'), dict) and item['task'].get('id') is not None}
-    order = projection.get('source_order') or []
+    order = (projection.get('source_order') or [] if 'work_forecast' in block else
+             [str(item['task']['id']) for item in roster if isinstance(item, dict)
+              and isinstance(item.get('task'), dict) and item['task'].get('id') is not None])
     schedule = dict(cut=str(cut), approved_plan=block.get('approved_plan'),
                     readiness=block.get('readiness'),
                     fact_source_carry=projection.get('fact_source_carry'),
                     rows=[by_id[key] for key in order if key in by_id], undated_works=[],
                     management=[dict(task, level='task') for task in by_id.values()],
-                    display_groups=block.get('work_forecast_groups') or {},
-                    work_forecast=block.get('work_forecast'))
+                    display_groups=block.get('work_forecast_groups') or {})
+    if 'work_forecast' in block:
+        schedule['work_forecast'] = block['work_forecast']
     if len(order) != len(set(order)) or set(order) != set(by_id) or len(by_id) != len(roster):
         value = unavailable(schedule, cut, 'Исходный перечень календаря не подтверждён.', 'report_roster')
     else:

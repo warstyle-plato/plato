@@ -271,6 +271,7 @@ def _apply_gpr(project: str, view: dict[str, Any], cut: datetime.date) -> dict[s
     from developaid_schedule_groups import metadata as group_metadata
     schedule['display_groups'] = group_metadata(display_rows)
     decorate_readiness(schedule['readiness'], display_rows, qualified)
+    schedule.setdefault('cut', view.get('cut'))
     from developaid_gpr_work_forecast import build as work_forecast
     schedule['work_forecast'] = work_forecast(schedule, cut.isoformat())
     schedule['readiness_html'] = readiness.render(schedule['readiness'], show_forecast=False)

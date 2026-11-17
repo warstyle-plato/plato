@@ -377,7 +377,10 @@ def test_message_carries_all_three_blocks():
     assert "за октябрь 2026" in text
     assert "Стройка и проектирование за октябрь 2026: оплачено 150,0 млн ₽." in text
     assert "План банка на квартал — 280,0 млн ₽" in text
-    assert "Выполнено по графику работ" in text
+    # The primary project readiness uses explicit composition/weights, not the
+    # old duration-weighted aggregate that the physical source DTO retains.
+    assert "Оценка учтённых работ не подтверждена" in text
+    assert "Выполнено по графику работ" not in text
 
 
 def test_period_bounds():

@@ -229,7 +229,7 @@ def test_dashboard_schedule_sentence_shares_the_dto_and_preserves_money_and_rnv(
 def test_no_usable_readings_names_the_missing_evidence_instead_of_missing_weights():
     schedule = fallback([task('unread', display_progress=dict(value=None, date='2035-04-09'))])
     value = work_dates.build(schedule, CUT)
-    assert value['state'] == 'unavailable' and value['reason_code'] == 'no_usable_work_dates'
+    assert value['state'] == 'partial' and value['reason_code'] == 'no_usable_work_dates'
     assert value['project']['forecast']['total'] == 1 and value['project']['forecast']['missing'] == 1
     assert 'Учебная работа unread' in value['reason'] and 'профил' not in value['reason']
 

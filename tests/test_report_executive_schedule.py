@@ -66,7 +66,7 @@ def storage(tmp_path, monkeypatch):
 def test_real_source_states_and_values(scenario):
     cut = sources(scenario)
     built = report.build(PROJECT, "week", cut)
-    executive = built["construction_summary"]
+    executive = report._executive_schedule(built)
     expected = {"noarchive": "no_archive", "unmapped": "unmapped", "unknownpace": "pace_unknown",
                 "historical": "historical", "partialRNV": "pace_unknown", "versionspresent": "pace_unknown"}[scenario]
     assert executive["source_status"]["state"] == expected
@@ -80,9 +80,12 @@ def test_real_source_states_and_values(scenario):
     else:
         assert not executive["facts"]
     if scenario == "partialRNV":
-        assert executive["state"] == "partial" and executive["forecast"] == "2026-12-31"
+        # This legacy WBS has no declared project membership/weights.
+        # Its valid natural observations do not invent an overall project date.
+        assert executive["state"] == "unknown" and executive["forecast"] is None
+        assert executive["rnv_state"] == "partial" and executive["rnv_forecast"] is None
         assert built["schedule"]["qualification"]["forecast"] is None
-        assert executive["forecast_label"] == "Оценка по части работ"
+        assert executive["forecast_label"] == "Оценка окончания учтённых работ"
     elif scenario in {"unknownpace", "versionspresent"}:
         assert executive["forecast"] is None
     if scenario == "versionspresent":
@@ -105,17 +108,26 @@ def stalled_sources(partial):
 def test_stalled_gpr_work_and_its_cause_remain_in_the_executive_conclusion(partial):
     stalled_sources(partial)
     built = report.build(PROJECT, "week", CUT)
-    assert built["construction_summary"]["state"] == ("partial" if partial else "unknown")
-    risk = built["construction_summary"]["stalled_text"]
+    executive = report._executive_schedule(built)
+    # The separate source DTO keeps its partial known date; it is not the
+    # selected-project date shown in the main assessment.
+    assert built["construction_summary"]["forecast"] == ("2026-12-31" if partial else None)
+    assert executive["state"] == "unknown" and executive["forecast"] is None
+    # Original per-work dates and stalled risks remain below; absent project
+    # membership does not turn their other population into the main forecast.
+    assert executive["rnv_state"] == ("partial" if partial else "unknown")
+    assert executive["rnv_forecast"] is None
+    risk = executive["stalled_text"]
     assert "Демонтаж башенных кранов К-1,2" in risk
     assert built["schedule"]["stalled"][0]["reason"] in risk
     assert "процент в ГПР" in risk and "актов" not in risk
     conclusion = next(item["text"] for item in built["findings"] if item["topic"] == "Срок")
     assert risk in conclusion
     if partial:
-        assert "Фасад" in conclusion  # the known driver does not erase the other risk
+        # The broader RNV source is retained apart from the selected assessment.
+        assert "Фасад" in executive["rnv_driver"]
     from developaid_report_schedule import render
-    assert risk in render(built["construction_summary"])
+    assert risk in render(executive)
     assert built["schedule"]["qualification"]["forecast"] is None
 
 
@@ -267,7 +279,7 @@ def test_confirmed_zero_is_known_natural_fact_even_without_pace():
                                  "components": [{"component_id": "Стены", "task_id": "1", "item_ids": ["0:0"]}],
                                  "note": "Подтверждён учебный нулевой объём за закрытые периоды."})
     built = report.build(PROJECT, "week", CUT)
-    executive = built["construction_summary"]
+    executive = report._executive_schedule(built)
     assert executive["facts"][0]["done"] == 0
     assert executive["source_status"]["state"] == "pace_unknown"
     assert executive["forecast"] is None

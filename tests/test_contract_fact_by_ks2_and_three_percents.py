@@ -155,6 +155,6 @@ def test_the_card_shows_the_ks2_fact_and_the_reconciliation_in_plain_words(card,
         expect(first.nth(4)).to_have_text("объём разный")
         assert first.nth(3).get_attribute("data-label") == "По КС-6а"
         expect(page.locator("#contractCardSummary")).to_contain_text("40 %")
-        expect(page.locator("#contractCardSummary")).to_contain_text("Готовность сопоставленных работ: 36,4 %")
+        expect(page.locator("#contractCardSummary")).to_contain_text("Готовность по КС сопоставленных работ: 36,4 %")
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
         assert errors == []
