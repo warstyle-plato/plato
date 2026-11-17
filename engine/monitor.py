@@ -53,6 +53,9 @@ class MonitorSalesRequest(BaseModel):
     key: str = ""
 
 
+from pydantic import Field as _MonitorProfileField
+
+
 class MonitorViewRequest(BaseModel):
     project: str
     cut: str
@@ -61,6 +64,7 @@ class MonitorViewRequest(BaseModel):
     session: str = ""
     key: str = ""
     background: bool = False
+    profile_python: bool = _MonitorProfileField(default=False, strict=True)
     ticket: str = ""
 
 
@@ -245,6 +249,10 @@ async def monitor_audit_sources(request: Request) -> Response:
 @app.post("/monitor/view", include_in_schema=False)
 def monitor_view(req: MonitorViewRequest) -> dict[str, Any]:
     """Срез и тренд по нему. Считает сервер, страница только рисует."""
+    if req.profile_python and not req.background:
+        _require_admin_key(req.key, 'Диагностика Монитора', req.session)
+        raise HTTPException(400, 'Диагностика Python доступна только для фоновой сборки.',
+                            headers={'Cache-Control': 'private, no-store'})
     if req.background:
         return _monitor_view_job(req, start=True)
     _require_team_access(req.session, req.key, "Монитор проекта", write=False)
@@ -545,6 +553,9 @@ def _monitor_view_job(req, *, start: bool) -> Response:
 
     private = {"Cache-Control": "private, no-store"}
     try:
+        profile_python = start and getattr(req, 'profile_python', False)
+        if profile_python:
+            _require_admin_key(req.key, 'Диагностика Монитора', req.session)
         _require_team_access(req.session, req.key, "Монитор проекта", write=False)
         profile = "demo" if demo_session_chat(req.session) else "admin"
         owner = jobs.owner_binding(_env_str("DEVELOPAID_ADMIN_KEY", "").strip(), req.session, profile)
@@ -561,8 +572,17 @@ def _monitor_view_job(req, *, start: bool) -> Response:
             # calculation is running. Only retries of this ticket reuse it.
             payload = {"project": project, "cut": cut,
                        "click": req.ticket or _secrets.token_hex(16)}
+            if profile_python:
+                import developaid_monitor_python_profile as python_profile
+                payload['diagnostics'] = python_profile.PURPOSE
             def build():
-                return {"snapshot": jsonable_encoder(developaid_monitor.build(project, cut=cut, upto=cut))}
+                def snapshot():
+                    return {"snapshot": jsonable_encoder(developaid_monitor.build(project, cut=cut, upto=cut))}
+                if profile_python:
+                    import developaid_monitor_python_profile as python_profile
+                    result, diagnostics = python_profile.run(snapshot)
+                    return {**result, 'diagnostics': diagnostics}
+                return snapshot()
             # Full snapshots can contain several complete financial and GPR
             # projections. Keep every field within a bounded, server-owned
             # budget; other job families retain their existing limits.

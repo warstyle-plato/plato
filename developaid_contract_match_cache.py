@@ -12,20 +12,26 @@ import functools
 import sys
 import threading
 
+import developaid_contract_match_verify as verification
+
 MAX_BYTES = 2 * 1024 * 1024
 MAX_ENTRIES = 4096
+DISABLED_PURPOSE = 'contract-pure-matching-cache-off-v1'
+MAX_BYPASSES = 2**53 - 1
 _KINDS = frozenset({'party', 'reference', 'scope'})
 _MISSING = object()
 _ACTIVE = contextvars.ContextVar('contract_pure_match_cache', default=None)
 
 
 class _Cache:
-    __slots__ = ('owner', 'entries', 'bytes')
+    __slots__ = ('owner', 'entries', 'bytes', 'disabled', 'bypasses')
 
-    def __init__(self):
+    def __init__(self, *, disabled=False):
         self.owner = threading.current_thread()
         self.entries = {}
         self.bytes = 0
+        self.disabled = disabled
+        self.bypasses = 0
 
 
 def _current():
@@ -35,6 +41,16 @@ def _current():
 
 @contextlib.contextmanager
 def scope():
+    observation = verification.enter_scope()
+    try:
+        with _scope() as current:
+            yield current
+    finally:
+        verification.exit_scope(observation)
+
+
+@contextlib.contextmanager
+def _scope():
     current = _current()
     if current is not None:
         yield current
@@ -45,6 +61,28 @@ def scope():
         yield cache
     finally:
         _ACTIVE.reset(token)
+
+
+@contextlib.contextmanager
+def disabled_scope():
+    """Worker-local diagnostic control; nested build scopes stay disabled."""
+    current = _current()
+    if current is not None and current.disabled:
+        yield current
+        return
+    disabled = _Cache(disabled=True)
+    token = _ACTIVE.set(disabled)
+    try:
+        yield disabled
+    finally:
+        _ACTIVE.reset(token)
+
+
+def disabled_proof(state):
+    """Only fixed codes and a bounded aggregate; never keys or pure values."""
+    if state is not _current() or not state.disabled:
+        raise ValueError('inactive matching counterfactual')
+    return {'purpose': DISABLED_PURPOSE, 'mode': 'off', 'bypass_calls': state.bypasses}
 
 
 def scoped(function):
@@ -79,12 +117,17 @@ def remember(kind, key, compute):
     """Memoize only explicitly admitted pure inputs; a full cache falls back."""
     if kind not in _KINDS:
         raise ValueError('unknown pure contract projection')
+    verification.observe_call()
     cache = _current()
+    if cache is not None and cache.disabled:
+        cache.bypasses = min(MAX_BYPASSES, cache.bypasses+1)
+        return compute()
     if cache is None or type(key) is not tuple or not strings(key):
         return compute()
     identity = kind, key
     found = cache.entries.get(identity, _MISSING)
     if found is not _MISSING:
+        verification.hit(kind, found, compute)
         return found
     result = compute()
     if len(cache.entries) < MAX_ENTRIES:
