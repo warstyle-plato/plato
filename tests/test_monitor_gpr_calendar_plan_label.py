@@ -1,4 +1,4 @@
-"""Calendar plan wording uses the typed corpus source, not a work's name."""
+"""Calendar duration is not a planned physical completion percentage."""
 import ast
 import json
 from html import unescape
@@ -53,25 +53,27 @@ console.log(JSON.stringify({html:host.innerHTML,unchanged:before===JSON.stringif
     return run_json(prelude, tail, page=page or _page())
 
 
-def test_corpus_calendar_plan_discloses_actual_dates_and_preserves_values():
+def test_matrix_shows_source_plan_dates_without_inventing_physical_plan_percent():
     result = _render([_task()])
     html = unescape(result['html'])
     assert result['unchanged']
-    assert 'class="gpr-cell-plan">План по срокам 37,5% · Δ -37,5 п.п.' in html
-    assert 'План по срокам: 12.03.2031 — 09.10.2032; линейная оценка при равномерном темпе' in html
-    assert 'data-fact="0" data-plan="0.375"' in html
+    assert 'class="gpr-cell-plan">План: 12.03.2031 — 09.10.2032' in html
+    assert 'Плановые даты: 12.03.2031 — 09.10.2032' in html
+    assert 'не определяет плановую готовность по объёму работ' in html
+    assert '37,5%' not in html and 'Δ' not in html and 'п.п.' not in html
+    assert 'data-fact="0" data-calendar-fraction="0.375"' in html
     assert 'data-scenario-finish="2033-02-17"' in html
     assert 'При плановом темпе: 17.02.2033' in html
 
 
-def test_other_source_formats_keep_their_plan_label_even_with_a_corpus_name():
+def test_calendar_duration_does_not_become_physical_readiness_for_other_formats():
     for source_format in ('legacy-gpr', None, {'format': 'corpus-gpr-v1'}):
         result = _render([_task(source_format=source_format)])
         html = unescape(result['html'])
         assert result['unchanged']
-        assert 'class="gpr-cell-plan">План 37,5%' in html
-        assert 'План по срокам' not in html
-        assert 'линейная оценка' not in html
+        assert 'class="gpr-cell-plan">План: 12.03.2031 — 09.10.2032' in html
+        assert '37,5%' not in html and 'Δ' not in html
+        assert 'data-calendar-fraction="0.375"' in html
 
 
 def test_unknown_values_dates_and_escaped_source_text_stay_safe():
@@ -82,9 +84,9 @@ def test_unknown_values_dates_and_escaped_source_text_stay_safe():
                                              'date': None})])
     html = result['html']
     assert result['unchanged']
-    assert 'class="gpr-cell-plan">План по срокам —</span>' in html
-    assert 'План по срокам: начало неизвестно — окончание неизвестно; линейная оценка при равномерном темпе' in html
+    assert 'class="gpr-cell-plan">План: начало неизвестно — окончание неизвестно</span>' in html
+    assert 'Плановые даты: начало неизвестно — окончание неизвестно' in html
     assert 'Нет показания' in html
-    assert 'data-fact="" data-plan=""' in html
+    assert 'data-fact="" data-calendar-fraction=""' in html
     assert '&lt;неизвестно&gt; &quot;источник&quot;' in html
     assert 'NaN' not in html and 'undefined' not in html

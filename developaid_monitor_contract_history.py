@@ -13,6 +13,7 @@ from collections import defaultdict
 from typing import Callable
 
 import developaid_monitor_ledgers as ledgers
+import developaid_contract_stage_profile as stage_profile
 
 MAX_RECENT_SNAPSHOTS = 12
 WINDOW_DAYS = 90
@@ -445,6 +446,7 @@ def observation_forecast(row: dict, cut: str) -> dict:
     return result
 
 
+@stage_profile.stage('history_enrich')
 def enrich(project: str, cut: str, register: dict, *, build_register: Callable[[str], dict]) -> dict:
     """Attach canonical observations and deltas without mutating source registers.
 

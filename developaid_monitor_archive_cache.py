@@ -18,6 +18,8 @@ import time
 import uuid
 import zlib
 
+import developaid_contract_stage_profile as stage_profile
+
 DIRECTORY = '.parsed-evidence'
 _ENTRY = re.compile(r'[0-9a-f]{64}\.json\.gz')
 _TEMP = re.compile(r'\.write-[0-9a-f]{32}')
@@ -26,7 +28,7 @@ _TEMP = re.compile(r'\.write-[0-9a-f]{32}')
 def fingerprint(reader: Path) -> str:
     """Invalidate on parser/storage code, Python or workbook dependency changes."""
     digest = hashlib.sha256()
-    for path in (reader, Path(__file__)):
+    for path in (reader, Path(__file__), Path(stage_profile.__file__)):
         digest.update(path.read_bytes())
     digest.update((sys.version + zlib.ZLIB_RUNTIME_VERSION).encode())
     for package in ('openpyxl', 'xlrd', 'lxml', 'defusedxml', 'et-xmlfile'):
@@ -76,6 +78,7 @@ class Store:
             self.remove(name)
             count -= 1
             retained -= size
+            stage_profile.count('disk_eviction')
 
     def remove(self, name: str):
         os.unlink(name, dir_fd=self.directory)
@@ -87,6 +90,7 @@ class Store:
         stamp = max(time.time_ns(), newest + 1)
         os.utime(name, ns=(stamp, stamp), dir_fd=self.directory, follow_symlinks=False)
 
+    @stage_profile.stage('disk_read')
     def load(self, name: str) -> bytes | None:
         try:
             fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
@@ -103,6 +107,7 @@ class Store:
         except OSError:
             return None
 
+    @stage_profile.stage('disk_write')
     def save(self, name: str, blob: bytes):
         if len(blob) > min(self.entry_bytes, self.total_bytes):
             return
@@ -157,7 +162,7 @@ def locked(root: Path | None, *, entries: int, entry_bytes: int, total_bytes: in
             descriptors.append(lock)
             if not _private_file(os.fstat(lock)):
                 raise OSError('cache lock is not a private regular file')
-            fcntl.flock(lock, fcntl.LOCK_EX)
+            stage_profile.call('cache_lock_wait', fcntl.flock, lock, fcntl.LOCK_EX)
             store = Store(directory, entries, entry_bytes, total_bytes)
             store.prune()
     except (OSError, ImportError):

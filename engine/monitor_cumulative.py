@@ -32,6 +32,7 @@ class MonitorContractsBuild(MonitorCumulativeProject):
 
 class MonitorContractRegisterBuild(MonitorContractsBuild):
     chunked: bool = _CumulativeField(default=False, strict=True)
+    profile_stages: bool = _CumulativeField(default=False, strict=True)
 
 
 class MonitorContractsTerm(MonitorContractsBuild):
@@ -556,7 +557,8 @@ def _monitor_cumulative_execute_raw(operation: str, payload: dict, archive: byte
                 raise RuntimeError("unknown monitor operation")
         else:
             raise RuntimeError("unknown monitor operation")
-        encoded = jsonable_encoder(result)
+        import developaid_contract_stage_profile as stage_profile
+        encoded = stage_profile.call('jsonable_encoder', jsonable_encoder, result)
         if operation.startswith("document") and "comparison" in encoded:
             import developaid_contract_comparison_export as comparison_export
             encoded["comparison_export"] = comparison_export.bind_snapshot(
@@ -668,7 +670,17 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
             fingerprint = {"operation": operation, "click": req.ticket or _secrets.token_hex(16), **payload}
             if archive:
                 fingerprint["archive_sha256"] = _hashlib.sha256(archive).hexdigest()
+            profile_stages = operation == "view" and getattr(req, "profile_stages", False)
+            if profile_stages:
+                import developaid_contract_stage_profile as stage_profile
+                fingerprint['diagnostics'] = stage_profile.PURPOSE
             def build():
+                if profile_stages:
+                    import developaid_contract_stage_profile as stage_profile
+                    with stage_profile.collect() as diagnostics:
+                        result = stage_profile.call('execute_total', _monitor_cumulative_execute,
+                                                    operation, payload, archive)
+                    return {**result, 'diagnostics': diagnostics.export()}
                 return _monitor_cumulative_execute(operation, payload, archive)
             # Only the ordinary register transports its complete history/rows.
             # Source review/audit/index operations retain the default budget.

@@ -249,10 +249,12 @@ def monitor_view(req: MonitorViewRequest) -> dict[str, Any]:
         return _monitor_view_job(req, start=True)
     _require_team_access(req.session, req.key, "Монитор проекта", write=False)
     programme = _monitor_programme(req)
+    selection_day = developaid_monitor._day(req.cut)
     try:
         return {
             "snapshot": developaid_monitor.build(
-                req.project, cut=req.cut, programme=programme),
+                req.project, cut=req.cut, programme=programme,
+                upto=selection_day.isoformat() if selection_day else ""),
             "trend": developaid_monitor.trend(
                 req.project, cut=req.cut, programme=programme),
         }
@@ -560,7 +562,7 @@ def _monitor_view_job(req, *, start: bool) -> Response:
             payload = {"project": project, "cut": cut,
                        "click": req.ticket or _secrets.token_hex(16)}
             def build():
-                return {"snapshot": jsonable_encoder(developaid_monitor.build(project, cut=cut))}
+                return {"snapshot": jsonable_encoder(developaid_monitor.build(project, cut=cut, upto=cut))}
             # Full snapshots can contain several complete financial and GPR
             # projections. Keep every field within a bounded, server-owned
             # budget; other job families retain their existing limits.

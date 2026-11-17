@@ -15,6 +15,8 @@ import json
 import math
 import re
 
+import developaid_contract_stage_profile as stage_profile
+
 _SCOPES = ('object_scope', 'system_scope', 'site_scope')
 _PLAN = ('plan_quantity', 'planned_amount', 'planned_work_amount',
          'planned_material_amount', 'planned_cost_split', 'planned_work_amount_basis',
@@ -524,6 +526,7 @@ def _compatible_scope(left, right):
     return all(any(node == candidate for candidate in remaining) for node in short)
 
 
+@stage_profile.stage('detail_history')
 def compose(sources, cut):
     """Compose one contract's detail history without mutating any input.
 

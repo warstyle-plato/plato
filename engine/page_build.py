@@ -12,10 +12,13 @@ MONITOR_PAGE_HTML, помощник _js_keys и маршрут GET /.
 """
 # ruff: noqa
 import document_intake_protocol as document_protocol
+import normatives_registry as _page_normatives_registry
 
 # Подстановка разовая, на импорте: страница отдаётся на каждый запрос, а версия
 # за время работы процесса не меняется.
 PAGE = PAGE.replace(VERSION_PLACEHOLDER, VERSION)
+PAGE = PAGE.replace("__DEVELOPAID_MO_VRI_COMPENSATION_SOURCE__", json.dumps(
+    _page_normatives_registry.official_link("mo-1310-vri-ksu"), ensure_ascii=False))
 PAGE = PAGE.replace('</head>', '<script>window.PlatoDocumentProtocol=Object.freeze('
     + json.dumps(document_protocol.client_contract(), ensure_ascii=False) + ');</script></head>', 1)
 # Ссылка на панораму Яндекса — один шаблон сервера на страницу и бота.
