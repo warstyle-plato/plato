@@ -91,7 +91,7 @@ def test_legacy_ownership_switch_rebuilds_before_recalc_and_keeps_confirmation(w
             page.locator('#f_land_rent_termination_date').dispatch_event('change')
             browser.wait_for_result(page)
             assert page.evaluate('lastResult.summary.land_rent_sum.reason_code') == 'regime_start'
-            title = 'Предварительная экономика: подтвердите дату начала аренды'
+            title = 'Предварительный расчёт'
             assert page.evaluate('lastResult.report.entry_price_verdict.title') == title
             assert 'договор с ними ещё не сверен' not in page.locator('#landRentSummary').inner_text()
             if surface == '/':
