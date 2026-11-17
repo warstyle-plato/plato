@@ -202,9 +202,13 @@ _COLUMN_LIST: tuple[tuple[str, str], ...] = (
     ("land_rent_operating_cash", "Аренда ЗУ: оплачено за эксплуатационный период, ₽"),
     ("land_rent_valuation", "Аренда ЗУ будущего покупателя: только для оценки, ₽"),
     ("operating_cash_before_tax", "Деньги эксплуатации до налога, ₽"),
-    ("land_rent_construction", "Аренда ЗУ: начислено в стоимость разработки, ₽"),
+    ("land_rent_construction_incurred", "Аренда ЗУ: начислено в стоимость разработки, ₽"),
     ("land_rent_construction_cash", "Аренда ЗУ: оплачено за период разработки, ₽"),
     ("cash_capex", "Оплачено CAPEX, включая поздние обязательства по аренде ЗУ, ₽"),
+    ("land_rent_construction_taxable_cash", "Оплата аренды разработки с облагаемым НДС, ₽"),
+    ("land_rent_construction_input_vat", "НДС начисленной аренды разработки, ₽"),
+    ("land_rent_construction_vat_refund", "Возмещение НДС аренды разработки, ₽"),
+    ("capex_input_vat", "Входящий НДС прочих затрат разработки, ₽"),
 )
 COLUMNS: dict[str, tuple[str, str]] = {
     key: (get_column_letter(i), label) for i, (key, label) in enumerate(_COLUMN_LIST, start=1)}
@@ -235,6 +239,22 @@ def _num(params: dict[str, Any], key: str) -> float:
         return 0.0
 
 
+def evaluate(book: Workbook) -> Evaluator:
+    """Evaluate the live monthly model in its dependency order."""
+    evaluator = Evaluator(book)
+    calc = book[CALC_SHEET]
+    limit = sys.getrecursionlimit()
+    sys.setrecursionlimit(max(limit, 20000))
+    try:
+        for row in range(FIRST_ROW, calc.max_row + 1):
+            for key, (letter, _) in COLUMNS.items():
+                if key not in ("irr_p", "irr_e"):
+                    evaluator.cell(CALC_SHEET, f"{letter}{row}")
+    finally:
+        sys.setrecursionlimit(limit)
+    return evaluator
+
+
 def _row_formulas(r: int) -> dict[str, str]:
     """Формулы строки r — построчный пересказ `hotel_flows` языком Excel."""
     first = FIRST_ROW
@@ -250,8 +270,9 @@ def _row_formulas(r: int) -> dict[str, str]:
     open_ = v["open"]
     r12 = f"{v['rate']}/12"
     left = f"({i('maturity')}-{A})"
-    refund_window = f"{_c('vatin')}{max(first, r - 3)}:{_c('vatin')}{r}"
-    refund_lag = f"{_c('vatin')}{r - 3}" if r - 3 >= first else "0"
+    refund_window = f"{_c('capex_input_vat')}{max(first, r - 3)}:{_c('capex_input_vat')}{r}"
+    refund_lag = f"{_c('capex_input_vat')}{r - 3}" if r - 3 >= first else "0"
+    rent_refund_lag = f"{_c('land_rent_construction_input_vat')}{r - 3}" if r - 3 >= first else "0"
     irr_p = f'IF(\'{TOTALS_SHEET}\'!$B$5="",0,(1+\'{TOTALS_SHEET}\'!$B$5)^(1/12)-1)'
     irr_e = f'IF(\'{TOTALS_SHEET}\'!$B$7="",0,(1+\'{TOTALS_SHEET}\'!$B$7)^(1/12)-1)'
     return {
@@ -302,14 +323,19 @@ def _row_formulas(r: int) -> dict[str, str]:
         "cum_capex": f"={prev('cum_capex')}+IF({A}<={i('comm')},{v['capex']},0)",
         "shield": (f"=IF(AND({v['margin']}-{v['fin_ded']}>0,{v['tax']}>0),{v['int_paid']}"
                    f"*MIN({i('tax_rate')},{v['tax']}/({v['margin']}-{v['fin_ded']})),0)"),
-        "fcf_pre": (f"=IF({v['in_h']}<>1,-{v['land_rent_operating_cash']}-{v['land_rent_construction_cash']},"
+        "fcf_pre": (f"=IF({v['in_h']}<>1,-{v['land_rent_operating_cash']}-{v['land_rent_construction_cash']}"
+                    f"+{v['land_rent_construction_vat_refund']},"
                     f"{v['operating_cash_before_tax']}-{v['vat_paid']}-{v['capex']}"
                     f"-{v['tax']}-{v['shield']})"),
         "gordon_base": (f"=IF(AND({A}>{i('horizon')}-12,{A}<={i('horizon')}),"
-                        f"{v['ebitda']}-{v['vat_paid']}-{v['capex']}-{v['tax']}-{v['shield']},0)"),
-        "vatin": f"=IF({v['in_h']}=1,MAX(0,{v['capex']}-{v['capex_land']}-{v['capex_vat_exempt']})*{i('vs')},0)",
+                        f"{v['ebitda']}-{v['vat_paid']}-{v['land_rent_construction_vat_refund']}"
+                        f"-{v['capex']}+{v['land_rent_construction_cash']}-{v['tax']}-{v['shield']},0)"),
+        "capex_input_vat": (f"=IF({v['in_h']}=1,MAX(0,{v['capex']}-{v['capex_land']}"
+                            f"-{v['capex_vat_exempt']}-{v['land_rent_construction_taxable_cash']})*{i('vs')},0)"),
+        "vatin": f"={v['capex_input_vat']}+{v['land_rent_construction_input_vat']}",
+        "land_rent_construction_vat_refund": f"={rent_refund_lag}",
         "refund": (f"=IF({A}>{i('horizon')},0,IF({A}={i('horizon')},SUM({refund_window}),"
-                   f"{refund_lag}))"),
+                   f"{refund_lag}))+{v['land_rent_construction_vat_refund']}"),
         "rate": (f'=IF({i("financing")}="none",0,IF({i("financing")}="preferential",'
                  f"{i('pref_share')}*{v['key_rate']}+{i('pref_margin')},"
                  f"{v['key_rate']}+{i('spread')}))"),
@@ -375,15 +401,16 @@ def _row_formulas(r: int) -> dict[str, str]:
                 f"MAX({v['base']}*{i('tax_rate')}-{v['ypaid_prev']},0))"),
         "ypaid": f"={v['ypaid_prev']}+{v['tax']}",
         "vat_paid": f"=-{v['refund']}",
-        "operating": (f"=IF({v['in_h']}<>1,-{v['land_rent_operating_cash']},{v['operating_cash_before_tax']}+{v['exit']}+{v['residual']}"
+        "operating": (f"=IF({v['in_h']}<>1,-{v['land_rent_operating_cash']}+{v['land_rent_construction_vat_refund']},"
+                      f"{v['operating_cash_before_tax']}+{v['exit']}+{v['residual']}"
                       f"-{v['exit_cost']}-{v['vat_paid']})"),
         "to_equity": (f"={v['operating']}-{v['int_paid']}-{v['fee']}+{v['draw']}"
                       f"-{v['repay_total']}-{v['retained']}"),
         # Поток проекта — FCFF без процентов и их налогового щита (Расчеты!1637:1640).
         "project_cf": f"={v['fcff']}",
-        "equity_cf": (f"=IF({v['in_h']}<>1,-{v['land_rent_operating_cash']}-{v['land_rent_construction_cash']},"
+        "equity_cf": (f"=IF({v['in_h']}<>1,{v['to_equity']}-{v['land_rent_construction_cash']},"
                       f"{v['to_equity']}-{v['capex']}-{v['tax']})"),
-        "fcff": (f"=IF({v['in_h']}<>1,-{v['land_rent_operating_cash']}-{v['land_rent_construction_cash']},"
+        "fcff": (f"=IF({v['in_h']}<>1,{v['operating']}-{v['land_rent_construction_cash']},"
                  f"{v['operating']}-{v['capex']}-{v['tax']}-{v['shield']})"),
         "cash_capex": f"=IF({v['in_h']}=1,{v['capex']},{v['land_rent_construction_cash']})",
         "disc_p": f"={v['project_cf']}/(1+{i('rate_m')})^{A}",
@@ -528,7 +555,7 @@ def _inputs_sheet(book: Workbook, data: dict[str, Any], values: dict[str, Any],
         "vs": f"={i('vat')}/(1+{i('vat')})",
         "capex_total": (f"=SUMIF({col('in_h')},1,{col('capex')})"
                         f"-SUMIF({col('in_h')},1,{col('land_rent_construction_cash')})"
-                        f"+SUM({col('land_rent_construction')})"),
+                        f"+SUM({col('land_rent_construction_incurred')})"),
         "land_total": f"=SUMIF({col('in_h')},1,{col('capex_land')})",
         "ffe_total": f"=SUMIF({col('in_h')},1,{col('capex_ffe')})",
         "capex_vat": f"=MAX(0,{i('capex_total')}-{i('land_total')}-{i('rent_vat_exempt_total')})*{i('vs')}",
@@ -623,10 +650,16 @@ def _calc_sheet(book: Workbook, data: dict[str, Any], start: date, values: dict[
         for name, kind in (("land_rent_operating", "operating_accrual"),
                            ("land_rent_operating_cash", "operating"),
                            ("land_rent_valuation", "operating_accrual"),
-                           ("land_rent_construction", "construction_accrual"),
+                           ("land_rent_construction_incurred", "construction_accrual"),
                            ("land_rent_construction_cash", "construction")):
             calendar = valuation_ref if name == "land_rent_valuation" else rent_ref
             ws[f"{_c(name)}{r}"] = "=" + (f"SUM({calendar.month(idx, kind)})*1000000" if calendar else "0")
+        cash = f"{_c('land_rent_construction_cash')}{r}"
+        accrued = f"{_c('land_rent_construction_incurred')}{r}"
+        ws[f"{_c('land_rent_construction_taxable_cash')}{r}"] = (
+            f"={cash}-({rent_ref.vat_exempt(cash)})" if rent_ref else "=0")
+        ws[f"{_c('land_rent_construction_input_vat')}{r}"] = (
+            f"=({accrued}-({rent_ref.vat_exempt(accrued)}))*{_in('vs')}" if rent_ref else "=0")
         for name, key in (("capex", "capex"), ("capex_ffe", "capex_ffe"),
                           ("capex_land", "capex_land"), ("key_rate", "key_rate"),
                           ("capex_vat_exempt", "capex_vat_exempt")):
@@ -695,6 +728,10 @@ USALI_LINES: tuple[tuple[str, str, str], ...] = (
     ("ins", "Страхование", "sum"),
     ("land_rent_operating", "Аренда ЗУ: начислено в расходы", "sum"),
     ("land_rent_operating_cash", "Аренда ЗУ: оплачено за эксплуатационный период", "sum"),
+    ("land_rent_construction_incurred", "Аренда ЗУ: начислено в разработку", "sum"),
+    ("land_rent_construction_cash", "Аренда ЗУ: оплачено за период разработки", "sum"),
+    ("land_rent_construction_input_vat", "Входящий НДС аренды разработки", "sum"),
+    ("land_rent_construction_vat_refund", "Возмещение НДС аренды разработки", "sum"),
     ("ebitda", "EBITDA", "sum"),
     ("dep", "Амортизация", "sum"),
     ("interest", "Проценты по кредиту", "sum:int_cap+int_paid"),
@@ -726,7 +763,8 @@ def _usali_sheet(book: Workbook, years: list[int], rows: int) -> dict[tuple[str,
             r = line_row[key]
             ws[f"A{r}"] = label
             if how == "sum":
-                year_column = "year" if key in ("fcff", "equity_cf", "land_rent_operating_cash", "capex") else "year_h"
+                year_column = "year" if key in ("fcff", "equity_cf", "land_rent_operating_cash", "capex",
+                    "land_rent_construction_cash", "land_rent_construction_vat_refund") else "year_h"
                 source = "cash_capex" if key == "capex" else key
                 formula = f"=SUMIF({col(year_column)},{letter}$3,{col(source)})"
             elif how.startswith("sum:"):
@@ -773,6 +811,10 @@ def _totals(rows: int) -> dict[str, str]:
         "cash_to_equity": f"=SUM({col('to_equity')})",
         "land_rent_operating": in_h("land_rent_operating"),
         "land_rent_operating_cash": f"=SUM({col('land_rent_operating_cash')})",
+        "land_rent_construction_incurred": f"=SUM({col('land_rent_construction_incurred')})",
+        "land_rent_construction_cash": f"=SUM({col('land_rent_construction_cash')})",
+        "land_rent_construction_input_vat": f"=SUM({col('land_rent_construction_input_vat')})",
+        "land_rent_construction_vat_refund": f"=SUM({col('land_rent_construction_vat_refund')})",
         "forward_ebitda": f"={_in('forward_ebitda')}", "exit_value": f"={_in('exit_value')}",
         "loan_peak": f"={_in('peak')}",
         "capex_total": f"={_in('capex_total')}",
@@ -797,6 +839,10 @@ CHECKS: tuple[tuple[str, str, str], ...] = (
     ("opex", "Расходы USALI", "totals"),
     ("land_rent_operating", "Аренда ЗУ: начислено в расходы", "totals"),
     ("land_rent_operating_cash", "Аренда ЗУ: оплачено за эксплуатационный период", "totals"),
+    ("land_rent_construction_incurred", "Аренда ЗУ: начислено в разработку", "totals"),
+    ("land_rent_construction_cash", "Аренда ЗУ: оплачено за период разработки", "totals"),
+    ("land_rent_construction_input_vat", "Входящий НДС аренды разработки", "totals"),
+    ("land_rent_construction_vat_refund", "Возмещение НДС аренды разработки", "totals"),
     ("property_tax", "Налог на имущество", "totals"),
     ("insurance", "Страхование", "totals"),
     ("ebitda", "EBITDA", "totals"),
@@ -887,12 +933,12 @@ def build(result: dict[str, Any], project_name: str = "") -> bytes:
                                f"${_c(key)}${FIRST_ROW + rows - 1}")
         # Basis follows incurred construction rent; an advance or delayed
         # payment changes cash timing without changing the building value.
-        adjustment = (f"SUM({columns('land_rent_construction')})"
+        adjustment = (f"SUM({columns('land_rent_construction_incurred')})"
                       f"-SUMIF({columns('in_h')},1,{columns('land_rent_construction_cash')})")
         book[INPUTS_SHEET][f"C{_ROWS['rent_vat_exempt_total']}"] = (
             f"=SUMIF({columns('in_h')},1,{columns('capex_vat_exempt')})+"
             + rent_ref.vat_exempt(adjustment))
-    years = list(range(start.year, hs.add_months(start, max(rows - 13, len(data.get("months") or []) - 1)).year + 1))
+    years = list(range(start.year, hs.add_months(start, rows - 1).year + 1))
     refs = _usali_sheet(book, years, rows)
     totals = _totals(rows)
 
@@ -1006,11 +1052,7 @@ def build(result: dict[str, Any], project_name: str = "") -> bytes:
     book.save(stream)
     # Долг и налог читают предыдущий месяц: предварительный расчёт сверху
     # вниз избегает глубокой рекурсии при сохранении значений для телефона.
-    evaluator = Evaluator(book)
-    for row in range(FIRST_ROW, FIRST_ROW + rows):
-        for key, (letter, _) in COLUMNS.items():
-            if key not in ("irr_p", "irr_e"):
-                evaluator.cell(CALC_SHEET, f"{letter}{row}")
+    evaluator = evaluate(book)
     # Варианты чувствительности считает Excel при открытии (`excel_only`).
     content, report = with_cached_values(stream.getvalue(), evaluator=evaluator,
                                          left_to_excel=sensitivity_book.excel_only(clones))

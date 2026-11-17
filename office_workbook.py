@@ -1049,6 +1049,15 @@ def _path_cx(book: _Book, key: str, code: str | None) -> str:
     return ref(f"cx.{code}.{key}" if code in book.rent_calendars else f"cx.{key}")
 
 
+_RENT_SERIES_LABELS = {
+    "construction": "оплачено за период разработки",
+    "construction_accrual": "начислено в стоимость разработки",
+    "operating": "оплачено за эксплуатационный период",
+    "operating_accrual": "начислено в расходы эксплуатации",
+    "valuation": "расходы покупателя для оценки стоимости",
+}
+
+
 def _rent_calendars(book: _Book, result: dict[str, Any], spec: dict[str, Any],
                     objects: list[dict[str, Any]]) -> None:
     """Each canonical variant owns its parcel calendar; all share contract inputs."""
@@ -1315,17 +1324,32 @@ def _capex_sheet(book: _Book, spec: dict[str, Any], objects: list[dict[str, Any]
         rows.section(f"Аренда ЗУ · {path['label']}: собственный календарь")
         rows.month(f"cx.{c}.land_rent", "Оплата аренды в стоимости разработки",
                    paid.series(book.n, k, "construction"), amount=paid.total(book.n, "construction"))
+        rows.month(f"cx.{c}.land_rent_incurred", "Начисленная аренда в стоимости разработки",
+                   paid.series(book.n, k, "construction_accrual"),
+                   amount=paid.total(book.n, "construction_accrual"))
         rows.month(f"cx.{c}.total", "Все затраты на создание этого варианта",
                    f"{ref('cx.total')}-{ref('cx.land_rent')}+{ref(f'cx.{c}.land_rent')}")
+        rows.month(f"cx.{c}.incurred", "Стоимость создания с начисленной арендой",
+                   f"{ref(f'cx.{c}.total')}-{ref(f'cx.{c}.land_rent')}"
+                   f"+{ref(f'cx.{c}.land_rent_incurred')}")
         rows.param(f"cx.{c}.capex_total", "Все затраты на создание, итого",
-                   f"=SUM({ref(f'cx.{c}.total', ':')})", "млн ₽")
+                   f"=SUM({ref(f'cx.{c}.incurred', ':')})", "млн ₽")
+        own_rent = []
+        for item in objects:
+            if not item.get("nonres"):
+                continue
+            strategy = path["strategy"] if item["key"] in path.get("object_keys", set()) else item["strategy"]
+            if strategy != ns.STRATEGY_DDU:
+                own_rent.append(ref(f"lr.{c}.{item['code']}.construction"))
         rows.month(f"cx.{c}.common", "Общие затраты проекта на кредит объектов",
-                   f"MAX(0,MAX(0,{ref(f'cx.{c}.total')}-{ref('cx.vri_equity')}-{ref('cx.flow_obj')})"
+                   f"MAX(0,MAX(0,{ref(f'cx.{c}.total')}-{ref('cx.vri_equity')}"
+                   f"-({_sum(own_rent)})-{ref('cx.flow_obj')})"
                    f"-{ref('cx.other_obj')})")
         for item in objects:
             ids = [data["id"] for data in book.rent_exposures[c] if data.get("object_key") == item["key"]]
-            for kind in ("operating", "operating_accrual"):
-                rows.month(f"lr.{c}.{item['code']}.{kind}", f"{item['title']}: аренда ЗУ ({kind})",
+            for kind in ("construction", "construction_accrual", "operating", "operating_accrual"):
+                rows.month(f"lr.{c}.{item['code']}.{kind}",
+                    f"{item['title']}: аренда ЗУ — {_RENT_SERIES_LABELS[kind]}",
                     _sum([paid.series(book.n, k, kind, key) for key in ids]))
             valued_ids = [key for key in ids if valuation and key in valuation.layout.get("exposure_rows", {})]
             rows.month(f"lr.{c}.{item['code']}.valuation", f"{item['title']}: аренда ЗУ только для оценки",
@@ -1462,9 +1486,16 @@ def _flows(book: _Book, rows: _Rows, exit_rows: _Rows | None, block: _Block, inf
         param("dep_years", "Срок амортизации для налога", f"=MAX(1,INT({i('dep_years')}))", "лет", INT)
     rows.section(f"{item['title']} · затраты объекта")
     month("capex", "Затраты стройки объекта", ref(f"cx.{o}"))
-    month("common", "Доля общих затрат проекта", f"{_path_cx(book, 'common', block.path_code)}*{ref(f'cx.share.{o}')}")
+    own_rent_cash = "0"
+    if block.path_code in book.rent_calendars:
+        own_rent_cash = ref(f"lr.{block.path_code}.{o}.construction")
+    month("common", "Доля общих затрат проекта",
+          f"{_path_cx(book, 'common', block.path_code)}*{ref(f'cx.share.{o}')}+{own_rent_cash}")
     param("capex_total", "Затраты стройки объекта, итого", f"=SUM({b('capex', ':')})", "млн ₽")
-    param("common_total", "Общие затраты проекта на объекте", f"=SUM({b('common', ':')})", "млн ₽")
+    own_cash_total = ref(f"lr.{block.path_code}.{o}.construction", ":") if block.path_code in book.rent_calendars else "0"
+    own_incurred_total = ref(f"lr.{block.path_code}.{o}.construction_accrual", ":") if block.path_code in book.rent_calendars else "0"
+    param("common_total", "Общие затраты проекта на объекте",
+          f"=SUM({b('common', ':')})-SUM({own_cash_total})+SUM({own_incurred_total})", "млн ₽")
     param("basis", "Стоимость объекта без НДС (база налога на имущество и амортизации)",
           f"={b('capex_total')}*(1-{b('vat')}/(1+{b('vat')}))", "млн ₽")
     if block.direct:
@@ -1516,7 +1547,7 @@ def _flows(book: _Book, rows: _Rows, exit_rows: _Rows | None, block: _Block, inf
     month("rent", "Доход аренды", f"{b('op_rev')}*{b('hold_on')}", bold=True)
     for key, source in (("land_rent_operating", "operating_accrual"),
                         ("land_rent_cash", "operating"), ("land_rent_valuation", "valuation")):
-        month(key, "Аренда ЗУ · " + source,
+        month(key, "Аренда ЗУ: " + _RENT_SERIES_LABELS[source],
               ref(f"lr.{block.path_code}.{o}.{source}") if block.path_code in book.rent_calendars else "0")
     month("opex", "Расходы эксплуатации", f"{b('rent')}*{b('opex_share')}+{b('land_rent_operating')}")
     month("ptax", "Налог на имущество", f"{b('basis')}*{b('ptax_rate')}/12*{b('hold_on')}")
@@ -1683,9 +1714,11 @@ def _pf(book: _Book, rows: _Rows, path: dict[str, str], ddu: list[_Block], credi
     month("operating", "Маркетинг и брокеры продаж по ДДУ", _sum([b.r("operating") for b in ddu]))
     # Долговые затраты — `debt_capex` движка: CAPEX без платы за ВРИ за счёт
     # собственных денег, без объектов вне ДДУ и без их доли общих затрат.
+    own_lease = _sum([ref(f"lr.{c}.{b.code}.construction") for b in credit]) if c in book.rent_calendars else "0"
     month("capex", "Затраты на ПФ: CAPEX без объектов вне ДДУ и их доли общих затрат",
           f"MAX(0,MAX(0,{_path_cx(book, 'total', c)}-{ref('cx.vri_equity')})"
-          f"-({_sum([ref(f'cx.{b.code}') for b in credit])}))-{_path_cx(book, 'common', c)}*({shares})")
+          f"-({_sum([ref(f'cx.{b.code}') for b in credit])})-({own_lease}))"
+          f"-{_path_cx(book, 'common', c)}*({shares})")
     month("costs", "Потребность месяца",
           f"{P('capex')}+{P('operating')}+IF(AND({k}={permit},{pay_mode}),{P('transfer')},0)")
     month("esc", "Эскроу на конец месяца (до раскрытия)",
@@ -1786,7 +1819,7 @@ def _pf(book: _Book, rows: _Rows, path: dict[str, str], ddu: list[_Block], credi
     bearing = (f"{_path_cx(book, 'capex_total', c)}+SUM({P('operating', ':')})-{ref('in.purchase_price')}"
                f"-{ref('in.land_buyout')}{vri}-({credit_capex})")
     if "cx.land_rent.amt" in book.reg:
-        bearing += "-" + (book.rent_calendars[c][0].vat_exempt(ref(f"cx.{c}.land_rent.amt"))
+        bearing += "-" + (book.rent_calendars[c][0].vat_exempt(ref(f"cx.{c}.land_rent_incurred.amt"))
                        if c in book.rent_calendars else land_rent_book.vat_exempt(ref("cx.land_rent.amt")))
     param("vat_due", "НДС продаж по ДДУ к уплате в РВЭ",
           f"=IF({ref('in.vat')}>0,MAX({revenue}*{gross}-({bearing})*{gross}*IF({revenue}>0,1,0),0),0)", "млн ₽")

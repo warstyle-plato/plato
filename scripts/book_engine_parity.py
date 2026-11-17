@@ -387,16 +387,9 @@ def _hotel_lines(book: Any) -> list[Line]:
 
 def _hotel_lines_at_depth(book: Any) -> list[Line]:
     import hotel_workbook as hw
-    from xlsx_eval import Evaluator
-
-    ev = Evaluator(book)
-    # Debt and tax read their preceding month. Evaluate the genuine monthly
-    # model in order instead of relying on a frozen Excel cache.
-    monthly = book[hw.CALC_SHEET]
-    for row in range(hw.FIRST_ROW, monthly.max_row + 1):
-        for key, (letter, _label) in hw.COLUMNS.items():
-            if key not in ("irr_p", "irr_e") and monthly[f"{letter}{row}"].data_type == "f":
-                ev.cell(hw.CALC_SHEET, f"{letter}{row}")
+    # Export and the independent checker use the same dependency ordering;
+    # the checker still recalculates the genuine formulas, not cached values.
+    ev = hw.evaluate(book)
     dimensions = {label for key, label, _where in hw.CHECKS
                   if key.startswith("irr_") or key in ("pbp_years", "dpbp_years", "dscr_min")}
     sheet = book[hw.CHECK_SHEET]
