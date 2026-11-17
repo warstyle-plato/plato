@@ -23,12 +23,19 @@ import developaid_monitor as monitor
 import developaid_monitor_contract_risk as contract_risk
 import developaid_contract_stage_profile as stage_profile
 import developaid_contract_match_cache as match_cache
+from developaid_contract_comparison import _building_section
 from developaid_monitor_ledgers import amount_basis as _amount_basis
 from developaid_monitor_ledgers import basis_metadata_current as _basis_metadata_current
 
 
 class ContractProblem(ValueError):
     """A controlled, safe message that may be returned to an authenticated user."""
+
+
+def physical_sections(items: list[dict]) -> list[dict]:
+    """Use the plan/fact object reader; an ambiguous scope never inherits its neighbour."""
+    return [{**item, 'physical_section': _building_section([str(item.get('scope') or '')])}
+            for item in items]
 
 
 def _date(value: Any) -> str | None:
@@ -1228,6 +1235,7 @@ def _build_raw(project: str, cut: str = "", *, include_history: bool = True,
                 "period_dates_known": bool(ledger.get("period_dates_known")),
                 "future_periods_excluded": future_excluded,
                 "label": "Сумма сохранённых итогов позиций этой ведомости; справочно, период закрытия не установлен"})
+        physical = physical_sections(physical)
         summary_only = not any(ledger.get('kind') == 'ledger' for ledger in ledger_items)
         row = {"id": identifier, "contractor": str(first.get("contractor") or ""),
                'source_kind': 'closing_summary' if summary_only else 'cumulative',

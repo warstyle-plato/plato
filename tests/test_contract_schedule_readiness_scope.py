@@ -19,13 +19,14 @@ def rendered(control, source=None):
         'const row=' + json.dumps(row) + ';const before=JSON.stringify(row);',
         'console.log(JSON.stringify({brief:contractScheduleBrief(row),parts:contractScheduleParts(row),'
         'unchanged:before===JSON.stringify(row)}))', page=source or page.MONITOR_PAGE)
-    assert 'contractReadiness' in taken
+    assert 'contractScheduleBrief' in taken
     return json.loads(out)
 
 
 def assert_matched_scope(result):
-    assert 'готовность по КС сопоставленных работ 0,1 %' in result['brief']
-    assert 'готовность по КС сопоставленных работ' in result['parts']
+    assert 'Сверить с КС-6а' in result['brief']
+    assert '0,1 %' not in result['brief']
+    assert 'готовность сопоставленных работ' in result['parts']
     assert 'готовность договора' not in result['parts']
     assert result['unchanged']
 
@@ -35,9 +36,9 @@ def test_low_schedule_readiness_is_named_as_matched_scope_without_changing_finan
 
 
 def test_scope_assertion_rejects_the_previous_whole_contract_wording():
-    old = page.MONITOR_PAGE.replace('готовность по КС сопоставленных работ ${contractShare(s.readiness)}',
+    old = page.MONITOR_PAGE.replace('готовность сопоставленных работ ${contractShare(s.readiness)}',
                                     'готовность ${contractShare(s.readiness)}').replace(
-        '<div class="contract-sub">готовность по КС сопоставленных работ</div>',
+        '<div class="contract-sub">готовность сопоставленных работ</div>',
         '<div class="contract-sub">готовность договора</div>')
     with pytest.raises(AssertionError):
         assert_matched_scope(rendered(CONTROL, old))
@@ -46,7 +47,7 @@ def test_scope_assertion_rejects_the_previous_whole_contract_wording():
 def test_unknown_schedule_readiness_is_not_rendered_as_zero():
     result = rendered(dict(CONTROL, readiness=None, plan_done=None))
     assert 'готовность' not in result['brief']
-    assert 'готовность по КС сопоставленных работ' not in result['parts']
+    assert 'готовность сопоставленных работ' not in result['parts']
     assert '0 %' not in result['parts']
     assert result['unchanged']
 
@@ -56,7 +57,8 @@ def test_partial_coverage_and_remaining_start_are_visible_next_to_the_measured_r
              coverage={'source_known': True, 'calculated': 2, 'source_works': 5, 'unknown': 3,
                        'partial': True, 'calculation_start': '2026-02-01', 'prior_periods': 7})
     result = rendered(c)
-    for html in (result['brief'], result['parts']):
+    assert 'Сверить с КС-6а' in result['brief']
+    for html in (result['parts'],):
         assert 'Сопоставлено работ по ГПР: 2 из 5.' in html
         assert 'Выполнение остальных работ не определено.' in html
         assert 'Расчёт с 01.02.2026.' in html
@@ -71,7 +73,8 @@ def test_complete_known_scope_keeps_its_finish_visible():
              coverage={'source_known': True, 'calculated': 2, 'source_works': 2,
                        'unknown': 0, 'partial': False})
     result = rendered(c)
-    for html in (result['brief'], result['parts']):
+    assert 'Есть отставание' in result['brief']
+    for html in (result['parts'],):
         assert '04.03.2026' in html
         assert 'Прогноз всего договора не определён' not in html
         assert 'Сопоставлено работ по ГПР: 2 из 2.' in html

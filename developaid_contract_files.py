@@ -328,6 +328,7 @@ def _editions(records: list[dict], chosen: dict) -> list[dict]:
         remaining = any(e.get("scope") == "remaining" for e in source["estimates"])
         editions.append({"sha256": record["sha256"], "title": record["title"], "date": _date(record),
                          "estimates": estimates, "estimate_title": source["title"],
+                         "estimate_sha256": source['sha256'],
                          "schedule": schedule and schedule["schedule"],
                          "schedule_sha256": schedule["sha256"] if schedule else "",
                          "schedule_title": schedule["title"] if schedule else "",
