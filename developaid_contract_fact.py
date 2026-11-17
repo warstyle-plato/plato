@@ -68,10 +68,11 @@ def acts(row: dict | None) -> dict | None:
         if item.get("is_group") or item.get("is_duplicate"):
             continue  # A group sums its works; a verified duplicate repeats one.
         periods = list(item.get("periods") or []) + list(item.get("undated_periods") or [])
+        item_basis = item.get('quantity_basis') if item.get('quantity_basis') in ('work', 'material') else 'work'
         for period in periods:
             if period.get("amount") is not None:
                 sums[period.get("label") or ""] = sums.get(period.get("label") or "", 0.0) + period["amount"]
-        if item.get("completed_quantity") is None:
+        if item.get("completed_quantity") is None and item_basis != 'material':
             # Periods named by an act only may still be dated by the act (developaid_contract_act_dates).
             unread.append({"number": item.get("position") or "", "name": item.get("name") or "",
                            "unit": item.get("unit") or "", "reason": item.get("quantity_basis") or "",
@@ -79,17 +80,28 @@ def acts(row: dict | None) -> dict | None:
                            "plan_quantity": item.get("plan_quantity"),
                            "reported_quantity": item.get("reported_completed_quantity"),
                            "periods": [{"label": p.get("label") or "", "quantity": p.get("quantity"),
+                                        "material_quantity": p.get('material_quantity'),
+                                        "work_amount": p.get('work_amount'), "material_amount": p.get('material_amount'),
                                         "amount": p.get("amount"), "start": p.get("date_start"),
                                         "end": p.get("date_end"), "source": p.get("source") or {}}
                                        for p in periods]})
             continue
         works.append({"item": index, "number": item.get("position") or "", "name": item.get("name") or "",
-                      "unit": item.get("unit") or "", "plan_quantity": item.get("plan_quantity")})
+                      "unit": item.get("unit") or "", "plan_quantity": item.get("plan_quantity"),
+                      "basis": item_basis})
         for period in item.get("periods") or []:
-            if not period.get("quantity") and not period.get("amount"):
+            if not period.get("quantity") and not period.get("material_quantity") and not period.get("amount"):
                 continue  # Nothing done in this period; a sum without a volume goes to review in `build`.
+            period_basis = period.get('quantity_basis') if period.get('quantity_basis') in ('work', 'material') else item_basis
+            quantity = period.get('quantity')
+            if period_basis == 'material' and quantity is None:
+                quantity = period.get('material_quantity')
             found.append({"number": item.get("position") or "", "name": item.get("name") or "",
-                          "unit": item.get("unit") or "", "quantity": period.get("quantity") or None,
+                          "unit": item.get("unit") or "", "quantity": quantity,
+                          "basis": period_basis,
+                          "quantity_material": period.get('material_quantity'),
+                          "amount_components": {'work': period.get('work_amount'),
+                                                'material': period.get('material_amount'), 'total': period.get('amount')},
                           "act_amount": period.get("amount"), "start": period.get("date_start"),
                           "end": period["date_end"], "label": period.get("label") or "",
                           "item": index,
@@ -104,6 +116,29 @@ def acts(row: dict | None) -> dict | None:
 def unavailable(reason: str) -> dict:
     """No fact, because the register of the cut could not be built: `reason` says why."""
     return {"acts": [], "unread": [], "works": 0, "items": [], "problem": reason}
+
+
+def statement_materials(found: dict | None, cut: str) -> dict:
+    """A separate observation from the statement's labelled material columns.
+
+    This projection is never added to the work fact or the uploaded acts.
+    The closing summary supplies no quantity, price, or material amount.
+    """
+    result = {'source': 'ks6a', 'rows': [], 'unknown_count': len((found or {}).get('unread') or [])}
+    if found is None or found.get('problem'):
+        result['note'] = (found or {}).get('problem') or 'КС-6а к договору не привязана.'
+        return result
+    for period in found.get('acts') or []:
+        if not period.get('end') or period['end'] > cut:
+            continue
+        quantity = period.get('quantity_material')
+        amount = (period.get('amount_components') or {}).get('material')
+        if not quantity and not amount:
+            continue
+        result['rows'].append({'number': period['number'], 'name': period['name'], 'unit': period['unit'],
+            'quantity': quantity, 'amount': amount, 'label': period.get('label') or '',
+            'basis': 'Отдельные графы материалов КС-6а.', 'source': period.get('source') or {}})
+    return result
 
 
 def match(act: dict, estimates: list[dict]):
@@ -142,14 +177,99 @@ def match(act: dict, estimates: list[dict]):
             + (f" (№ {act['number']})" if number else "") + ".")
 
 
-def _price(position):
-    price = (position.get("unit_price") or {}).get("total")
-    if price is None and position.get("quantity") and (position.get("amount") or {}).get("total") is not None:
-        price = position["amount"]["total"] / position["quantity"]
+def _price(position, component="total"):
+    price = (position.get("unit_price") or {}).get(component)
+    if price is None and position.get("quantity") and (position.get("amount") or {}).get(component) is not None:
+        price = position["amount"][component] / position["quantity"]
     return price
 
 
+def _components(act, position):
+    """Price work and supplied material by their own quantities, without inventing a missing quantity.
+
+    Older saved reads do not identify whether the act had one or two quantity
+    columns. A shared quantity is therefore accepted only when the act's own
+    printed component prices and total prove it within a ruble of rounding.
+    """
+    basis = act.get('basis') or 'work'
+    work_quantity = act['quantity'] if basis != 'material' else 0.0
+    material_quantity = act['quantity'] if basis == 'material' else act.get('quantity_material')
+    material_basis = 'Количество материала из акта.' if material_quantity is not None else ''
+    printed = act.get('unit_price') or {}
+    amounts = act.get('amount_components') or {}
+    mp, wp, total = printed.get('material'), printed.get('work'), act.get('act_amount')
+    if basis != 'material' and material_quantity is None:
+        if amounts.get('material') is not None and mp:
+            material_quantity = amounts['material'] / mp
+            material_basis = 'Количество материала из его напечатанной суммы и цены акта.'
+        elif mp is not None and wp is not None and total is not None:
+            if abs(work_quantity * (mp + wp) - total) <= 1.0 and mp:
+                material_quantity = work_quantity
+                material_basis = 'Общий объём подтверждён напечатанными ценами и итогом акта.'
+            elif abs(work_quantity * wp - total) <= 1.0:
+                material_quantity = 0.0
+                material_basis = 'Итог акта подтверждает только выполненную работу.'
+        elif printed.get('material') is None and wp is not None and total is not None \
+                and abs(work_quantity * wp - total) <= 1.0:
+            material_quantity = 0.0
+            material_basis = 'Итог акта подтверждает только выполненную работу.'
+    work_price, material_price = _price(position, 'work'), _price(position, 'material')
+    printed_total = printed.get('total')
+    if basis != 'material' and material_quantity is None and mp is None and wp is None \
+            and work_price is not None and material_price not in (None, 0) and printed_total is not None \
+            and total is not None and abs(printed_total-work_price-material_price) <= 1e-6 \
+            and abs(work_quantity*printed_total-total) <= 1.0:
+        material_quantity = work_quantity
+        material_basis = 'Общий объём подтверждён полной ценой акта и разбивкой цены РДС.'
+    work_money = 0.0 if basis == 'material' or work_quantity == 0 else (
+        work_quantity * work_price if work_price is not None else None)
+    material_money = (0.0 if material_quantity == 0 else
+                      material_quantity * material_price if material_quantity is not None and material_price is not None
+                      else 0.0 if material_price == 0 else None)
+    known = work_money is not None and material_money is not None
+    fallback = _price(position)
+    split_evidence = any(v is not None for v in (
+        work_price, material_price, mp, wp, amounts.get('work'), amounts.get('material'),
+        act.get('quantity_material'))) or basis == 'material'
+    combined_only = not known and not split_evidence and fallback is not None
+    money = work_money + material_money if known else act['quantity'] * fallback if combined_only else None
+    reason = '' if known else 'Работы и материалы не разделены полностью: неизвестны количество или цена компонента.'
+    return {'work_quantity': work_quantity, 'material_quantity': material_quantity,
+            'work_amount': work_money, 'material_amount': material_money, 'total': money,
+            'known_total': money if money is not None else sum(v for v in (work_money, material_money) if v is not None),
+            'material_basis': material_basis, 'reason': reason, 'combined_only': combined_only,
+            'act_amount': act.get('act_amount')}
+
+
+def _add_money(one, other):
+    return None if one is None or other is None else one + other
+
+
+def _accumulate_money(record, value, key='amount', known_key='known_amount', known_value=None):
+    """An unknown component makes the full amount unknown; a known subtotal stays explicit."""
+    previous = record[key]
+    if previous is None or value is None:
+        if known_key not in record:
+            record[known_key] = previous if previous is not None else 0.0
+        if value is not None:
+            record[known_key] += value
+        elif known_value is not None:
+            record[known_key] += known_value
+        record[key] = None
+    else:
+        record[key] += value
+
+
+def _sum_money(values):
+    result = 0.0
+    for value in values:
+        result = _add_money(result, value)
+    return result
+
+
 def _money(value):
+    if value is None:
+        return 'сумма не определена'
     return f"{value:,.2f}".replace(",", " ").replace(".", ",") + " ₽"
 
 
@@ -165,12 +285,16 @@ def from_acts(performed: dict | None) -> list[dict]:
     rows = []
     for position in (performed or {}).get("positions") or []:
         for part in position["parts"]:
-            if not part["quantity"]:
+            if not part["quantity"] and not part.get('quantity_material'):
                 continue
             rows.append({"number": position["number"], "name": part["name"] or position["name"],
                          "unit": position["unit"], "quantity": part["quantity"], "act_amount": part["amount"],
+                         "basis": part.get('basis') or position.get('basis') or 'work',
+                         "quantity_material": part.get('quantity_material'),
+                         "unit_price": part.get('unit_price') or {},
+                         "amount_components": part.get('amount_components') or {},
                          "start": None, "end": part["day"], "label": f"акт КС-2 № {part['act'] or 'без номера'}",
-                         "item": None, "preliminary": part["preliminary"], "source": {}})
+                         "item": None, "preliminary": part["preliminary"], "source": part.get('source') or {}})
     return rows
 
 
@@ -198,6 +322,8 @@ def reconcile(performed: dict | None, found: dict | None, cut: str) -> dict | No
     sums = {}
     for side, rows in (("ks2", from_acts(performed)), ("ks6a", ks6a)):
         for row in rows:
+            if row.get('basis') == 'material':
+                continue
             key = (_code(row["number"]), _unit(row["unit"]))
             if not key[0]:
                 continue  # A work without its number in the estimate is not the same work by its name alone.
@@ -225,7 +351,8 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
     result = {"cut": cut, "assumption": ASSUMPTION, "total": 0.0, "lines": [], "months": [], "positions": [],
               "outside": {status: {"count": 0, "amount": 0.0} for status in _STATUSES},
               "before": None, "review": [], "unread": [], "price_differs": 0, "after_cut": 0, "note": "",
-              "source": None, "source_note": "", "preliminary": False, "reconciliation": None}
+              "source": None, "source_note": "", "preliminary": False, "reconciliation": None,
+              "materials": [], "component_gaps": [], 'material_statement': statement_materials(found, cut)}
     rows = from_acts(performed)
     if rows:
         result["source"] = "ks2"
@@ -262,6 +389,10 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
     links_now = {p["key"]: p for e in current["estimates"] if e.get("scope") != "accepted"
                  for p in (e.get("links") or {}).get("positions") or []}
     lines, volumes, positions, dated_money = {}, {}, {}, []
+    dated_known_money = []
+    known_lines = {}
+    work_money, material_money, material_volumes = {}, {}, {}
+    unknown_work, unknown_material = set(), set()
     last, done_quantity = {}, {}
     for act in rows:
         end = _day(act["end"])
@@ -277,9 +408,11 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
         edition = next((e for e in reversed(dated) if _day(e["date"]) <= end), None)
         if start and end < start and edition is None:
             # Accepted before the agreement, in a period whose Расчёт is not in the card.
-            done_quantity[act["item"]] = done_quantity.get(act["item"], 0.0) + act["quantity"]
+            if act.get('basis') != 'material':
+                done_quantity[act["item"]] = done_quantity.get(act["item"], 0.0) + act["quantity"]
             result["before"]["count"] += 1
             result["before"]["unpriced"] += 1
+            _accumulate_money(result['before'], None)
             continue
         if edition is None:
             result["review"].append({**act, "reason": "Период КС закончился раньше даты первой редакции расчёта, "
@@ -292,41 +425,65 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
         e, i, how = found_at
         position = edition["estimates"][e]["positions"][i]
         price = _price(position)
-        if price is None:
-            result["review"].append({**act, "edition": edition["title"],
-                                     "reason": f"У позиции № {position['number']} в расчёте не прочитана цена за единицу."})
-            continue
+        components = _components(act, position)
+        money = components['total']
         # Only the volume that entered the fact counts toward a complete line: review volume is not known done.
-        done_quantity[act["item"]] = done_quantity.get(act["item"], 0.0) + act["quantity"]
-        money = act["quantity"] * price
-        if act["act_amount"] is not None and abs(act["act_amount"] - money) > max(1.0, abs(money) * 0.005):
+        if act.get('basis') != 'material':
+            done_quantity[act["item"]] = done_quantity.get(act["item"], 0.0) + components['work_quantity']
+        if components['reason']:
+            result['component_gaps'].append(f"Позиция № {position['number']}, {act.get('label') or 'период КС'}: " + components['reason'])
+        if money is not None and act["act_amount"] is not None and abs(act["act_amount"] - money) > max(1.0, abs(money) * 0.005):
             result["price_differs"] += 1
         if start and end < start:
             place = "before"
             result["before"]["count"] += 1
-            result["before"]["amount"] += money
+            _accumulate_money(result['before'], money, known_value=components['known_total'])
         else:
             link = links_now.get(links.position_key(position))
             place = link["status"] if link else "missing"
             if place in _LINKED:
                 for line in link["lines"]:
-                    lines[line["code"]] = lines.get(line["code"], 0.0) + money * line["share"]
-                    unit = volumes.setdefault(line["code"], {}).setdefault(
-                        _unit(position["unit"]), {"unit": position["unit"], "quantity": 0.0})
-                    unit["quantity"] += act["quantity"] * line["share"]
-                    last[line["code"]] = max(last.get(line["code"], act["end"]), act["end"])
+                    code, share = line['code'], line['share']
+                    part_money = money * share if money is not None else None
+                    lines[code] = _add_money(lines.get(code, 0.0), part_money)
+                    known_lines[code] = known_lines.get(code, 0.0) + components['known_total'] * share
+                    for key, target, unknown in [('work_amount', work_money, unknown_work),
+                                                 ('material_amount', material_money, unknown_material)]:
+                        value = components[key]
+                        if value is None:
+                            unknown.add(code)
+                        else:
+                            target[code] = target.get(code, 0.0) + value * share
+                    if components['work_quantity']:
+                        unit = volumes.setdefault(code, {}).setdefault(
+                            _unit(position["unit"]), {"unit": position["unit"], "quantity": 0.0})
+                        unit["quantity"] += components['work_quantity'] * share
+                        last[code] = max(last.get(code, act["end"]), act["end"])
+                    if components['material_quantity'] is not None:
+                        unit = material_volumes.setdefault(code, {}).setdefault(
+                            _unit(position["unit"]), {"unit": position["unit"], "quantity": 0.0})
+                        unit['quantity'] += components['material_quantity'] * share
                 dated_money.append((end, money))
-                result["total"] += money
+                dated_known_money.append((end, components['known_total']))
+                _accumulate_money(result, money, 'total', 'known_total', components['known_total'])
             else:
                 result["outside"][place]["count"] += 1
-                result["outside"][place]["amount"] += money
-        key = (edition["sha256"], e, i, place)
+                _accumulate_money(result['outside'][place], money, known_value=components['known_total'])
+        if components['material_quantity'] or components['material_amount'] or (
+                components['reason'] and (_price(position, 'material') or act.get('basis') == 'material')):
+            result['materials'].append({'number': position['number'], 'name': position['name'],
+                'unit': position['unit'], 'quantity': components['material_quantity'],
+                'amount': components['material_amount'], 'basis': components['material_basis'],
+                'reason': components['reason'], 'place': place, 'label': act.get('label') or '', 'end': act['end'],
+                'source': act.get('source') or {}, 'edition': edition['title']})
+        key = (edition["sha256"], e, i, place, act.get('basis') or 'work')
         row = positions.setdefault(key, {
             "number": position["number"], "name": position["name"], "unit": position["unit"], "price": price,
             "edition": edition["title"], "how": how, "place": place, "quantity": 0.0, "amount": 0.0,
             "act_amount": 0.0, "periods": 0, "last": act["end"]})
+        row['basis'] = act.get('basis') or 'work'
         row["quantity"] += act["quantity"]
-        row["amount"] += money
+        _accumulate_money(row, money, known_value=components['known_total'])
         row["act_amount"] = None if act["act_amount"] is None or row["act_amount"] is None \
             else row["act_amount"] + act["act_amount"]
         row["periods"] += 1
@@ -335,6 +492,8 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
     # Every work of the statement, done or not yet, belongs to its position of the edition in force.
     items_of = {}
     for work in (found or {}).get("items") or [] if result["source"] == "ks6a" else []:
+        if work.get('basis') == 'material':
+            continue
         found_at = match(work, current["estimates"])
         if not isinstance(found_at, str):
             e, i, _ = found_at
@@ -351,13 +510,26 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
         keys = keys_of.get(code) or []
         return bool(keys) and all(items_of.get(key) and all(full(work) for work in items_of[key]) for key in keys)
 
-    result["lines"] = [{"code": code, "fact": lines[code], "volumes": list(volumes[code].values()),
-                        "last": last[code], "complete": complete(code)}
+    result["lines"] = [{"code": code, "fact": lines[code], "volumes": list(volumes.get(code, {}).values()),
+                        **({'known_fact': known_lines.get(code, 0.0)} if lines[code] is None else {}),
+                        'work_fact': None if code in unknown_work else work_money.get(code, 0.0),
+                        'material_fact': None if code in unknown_material else material_money.get(code, 0.0),
+                        'material_volumes': list(material_volumes.get(code, {}).values()),
+                        "last": last.get(code), "complete": complete(code)}
                        for code in order if code in lines]
+    result['component_gaps'] = list(dict.fromkeys(result['component_gaps']))
     result["positions"] = list(positions.values())
+    if result['total'] is None or any(p['amount'] is None for p in result['positions']) or \
+            any(v['amount'] is None for v in result['outside'].values()) or \
+            (result.get('before') and result['before']['amount'] is None):
+        result['money_incomplete'] = True
     if dated_money:
         day = _day(cut)
         first = min(end for end, _ in dated_money)
-        result["months"] = [{"month": end.isoformat()[:7], "fact": sum(m for d, m in dated_money if d <= end)}
-                            for end in _month_ends(first, day)]
+        result["months"] = []
+        for end in _month_ends(first, day):
+            relevant = [m for d, m in dated_money if d <= end]
+            total = _sum_money(relevant)
+            result['months'].append({'month': end.isoformat()[:7], 'fact': total,
+                **({'known_fact': sum(m for d, m in dated_known_money if d <= end)} if total is None else {})})
     return result

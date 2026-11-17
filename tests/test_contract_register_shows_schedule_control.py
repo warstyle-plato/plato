@@ -130,7 +130,7 @@ def test_the_table_shows_lag_deviation_and_forecast_in_plain_words(card, width):
         expect(first).to_contain_text('Отставание: 3 дня')
         more.locator('#contractComparisonMethodology > details > summary').click()
         expect(more.locator('.contract-comparison-money')).to_have_text(
-            'По сопоставленным работам: план 10 000 ₽, факт 5 500 ₽, отклонение −4 500 ₽.')
+            'Денежный план и факт, включая материалы: план 10 000 ₽, факт 5 500 ₽, отклонение −4 500 ₽.')
         assert more.locator('#contractCardSummary [data-label="Прогноз окончания"] .risktext').count()==0
         assert first.locator('.contract-compare-status.risktext').evaluate(color)!=row.evaluate(color)
         assert red!=row.evaluate(color)

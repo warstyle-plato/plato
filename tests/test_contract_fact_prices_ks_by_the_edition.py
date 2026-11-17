@@ -98,13 +98,14 @@ def test_the_fact_of_the_card_is_priced_by_the_estimate_and_laid_on_confirmed_li
     # Стены: 0,5 × 8 000 по долям 3/8 и 5/8; армирование плит — более мелкая строка позиции 1.2.
     assert got["lines"] == [
         {"code": "1.1", "fact": 1500.0, "volumes": [{"unit": "м3", "quantity": 0.1875}], "last": "2026-02-03",
-         "complete": False},
+         "complete": False, "work_fact": 1500.0, "material_fact": 0.0, "material_volumes": []},
         {"code": "1.2", "fact": 2500.0, "volumes": [{"unit": "м3", "quantity": 0.3125}], "last": "2026-02-03",
-         "complete": False},
+         "complete": False, "work_fact": 2500.0, "material_fact": 0.0, "material_volumes": []},
         {"code": "1.3", "fact": 1500.0, "volumes": [{"unit": "м3", "quantity": 0.5}], "last": "2026-02-02",
-         "complete": False}]
+         "complete": False, "work_fact": 1500.0, "material_fact": 0.0, "material_volumes": []}]
     assert got["total"] == 5500.0
-    assert got["before"] == {"start": "2026-02-01", "count": 1, "amount": 0.0, "unpriced": 1}
+    assert got["before"] == {"start": "2026-02-01", "count": 1, "amount": None,
+                             "known_amount": 0.0, "unpriced": 1}
     assert got["outside"]["review"] == {"count": 1, "amount": 1000.0}
     assert [(r["number"], r["reason"]) for r in got["review"]] == [
         ("1.2", "В расчёте позиция № 1.2 измеряется в «м3», а в КС — в «т»: объём не пересчитать в деньги."),
@@ -218,7 +219,7 @@ def test_the_card_shows_the_fact_beside_the_plan_with_what_stayed_outside(card, 
         compare.locator('.contract-methodology > summary').click()
         audit=compare.locator('.contract-fact-audit')
         expect(compare.locator('.contract-comparison-money')).to_contain_text('факт 5 500 ₽')
-        expect(audit).to_contain_text('До текущего соглашения принято периодов КС: 1')
+        expect(audit).to_contain_text('До начала учёта оставшихся работ принято периодов КС: 1')
         expect(audit).to_contain_text('Для 1 из них нет расчёта, действовавшего в тот момент')
         expect(audit).to_contain_text('Сумма КС отличается от расчёта в периодах: 1')
         expect(audit).to_contain_text(fact.ASSUMPTION)

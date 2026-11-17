@@ -88,6 +88,19 @@ def test_native_known_values_zero_units_and_dates_survive_roundtrip():
     assert cached == before
 
 
+def test_remaining_start_source_and_missing_data_remain_inspectable_in_excel():
+    cached = native_card()
+    cached['comparison']['edition'].update(start='2026-02-01', start_source={'title': 'Учебное ДС № 1'})
+    cached['comparison']['data_gaps'] = ['В карточке нет акта КС-2 № 7.']
+    cached['comparison_export'] = export.bind_snapshot(PROJECT, CUT, CONTRACT, cached, {'contract': 'Т-1'})
+    sheet, _ = table(xlsx(cached))
+    values = list(sheet.values)
+    start = next(row for row in values if row[0] == 'Начало учёта оставшихся работ')
+    assert start[1].date() == dt.date(2026, 2, 1)
+    assert any(row[0] == 'Источник начала учёта: Учебное ДС № 1' for row in values)
+    assert any(row[0] == 'В карточке нет акта КС-2 № 7.' for row in values)
+
+
 def test_unknown_and_empty_native_comparisons_are_qualified_not_zero():
     cached = native_card(unknown=True)
     sheet, header = table(xlsx(cached))
