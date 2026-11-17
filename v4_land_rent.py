@@ -341,7 +341,7 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
     # or the excluded first year may change within it.
     phase_segment_first = phase_month_first + 5 * phase_count + 3
     cutoff = 'IF(COUNT($F$10)=1,MIN($F$10,$B$15),$B$15)'
-    cadastral_gate = (f'OR(COUNT($B${switch_row})=0,$B${switch_row}>={cutoff},'
+    cadastral_gate = (f'OR($F$13<>"Кадастровая стоимость",COUNT($B${switch_row})=0,$B${switch_row}>={cutoff},'
                       f'AND(COUNT($B${target_row})=1,$B${target_row}>0))')
 
     def g_phase(t: str, r: int) -> str:

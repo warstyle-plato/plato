@@ -189,3 +189,25 @@ def test_export_keeps_methodology_date_and_the_parcels_target_use():
     first = layout["cadastral_parameter_rows"][0]
     assert wb[book.SHEET][f"G{first}"].value == "2.6: многоэтажная жилая застройка"
     assert wb[book.SHEET][f"H{first}"].value == "Синтетическая территория оценки"
+
+
+def test_annual_contract_amount_does_not_require_a_future_cadastral_value():
+    inputs = dict(land_right="lease", vri_region="msk", land_rent_mode="manual",
+        land_rent_base_kind="annual_amount", land_rent_annual_base_mln=10,
+        land_rent_regime_start=START.isoformat(), land_rent_rates=[{"year": 1, "rate_pct": 100}],
+        land_rent_tail_rule="repeat_last", land_rent_vat_treatment="public_exempt",
+        land_rent_payment_mode="manual", land_rent_payment_schedule="100%@0")
+    result = calculated(inputs)
+    assert result["financial_complete"], result["financial_missing"]
+    assert result["cadastral_change"]["date"] == CHANGE.isoformat()
+    assert result["cadastral_switch"] is None
+    wb, _ = workbook(inputs, result)
+    ev = Evaluator(wb)
+    assert ev.cell(book.SHEET, "L18") == 1
+    assert ev.cell(book.SHEET, "B19") * 1e6 == pytest.approx(result["cash_total"], abs=.01)
+    assert ev.cell(book.SHEET, "B18") * 1e6 == pytest.approx(result["total"], abs=.01)
+    for month in range(1, 7):
+        key = date(2028, month, 1).isoformat()
+        col = openpyxl.utils.get_column_letter(3 + month)
+        assert ev.cell(book.SHEET, f"{col}4") * 1e6 == pytest.approx(result["accrual_monthly"].get(key, 0), abs=.01)
+        assert ev.cell(book.SHEET, f"{col}6") * 1e6 == pytest.approx(result["monthly"].get(key, 0), abs=.01)
