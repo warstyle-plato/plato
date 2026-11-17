@@ -7,10 +7,24 @@ values through the same plan/volume helpers, while actuals remain unknown.
 from __future__ import annotations
 
 import datetime as dt
+import re
 
 import developaid_contract_control as control
 import developaid_contract_plan as plan
 import developaid_contract_schedule_links as links
+
+
+def _building_section(headings):
+    """Only a single explicit building from the unique ancestor chain.
+
+    Use the same object reader as schedule matching. Mark ranges as plural
+    too: the endpoints suffice to reject a multi-building heading.
+    """
+    places = set()
+    for heading in headings:
+        expanded = re.sub(r'(?<=\d)\s*[-–—/]\s*(?=\d)', ' и ', heading)
+        places.update(links.buildings(expanded))
+    return next(iter(places)).capitalize() if len(places) == 1 else ''
 
 
 def _row(line, volume, *, unknown=False, reason=''):
@@ -118,6 +132,8 @@ def build(listed: dict, cut: str, source_sha256: str | None = None) -> dict:
             if not section:
                 section = (candidates[0].get('section') or '').strip()
             parent = candidates[0].get('parent')
+        if not section and not parent:
+            section = _building_section(contexts)
         row['section'] = section
         if section and section not in contexts:
             contexts.insert(0, section)

@@ -71,6 +71,40 @@ def test_a_missing_or_ambiguous_source_section_is_not_guessed(missing):
     assert next(r for r in rows if r['code'] == '3.1')['section'] == ''
 
 
+@pytest.mark.parametrize('heading,expected', [
+    ('Корпус 1', 'Корпус 1'), ('Монолитные работы К2', 'Корпус 2'),
+    ('Автостоянка', 'Автостоянка'), ('Паркинг', 'Автостоянка'),
+    ('Корпуса 1 и 2', ''), ('Корпуса 1-3', ''), ('Корпуса 1/2', ''),
+    ('Работы на площадке', ''),
+])
+def test_buildings_printed_as_parent_names_are_preserved_without_a_section_field(heading, expected):
+    _, listed = section_card()
+    source = listed['documents'][0]['schedule']['lines']
+    for row in source:
+        row.pop('section', None)
+    source[0]['name'] = heading
+    row = next(r for r in comparison.build(listed, CUT, 'source')['lines'] if r['code'] == '3.1')
+    assert row['section'] == expected
+
+
+@pytest.mark.parametrize('problem', ['duplicate', 'cycle', 'conflicting_building'])
+def test_broken_or_conflicting_parent_chains_do_not_choose_a_building(problem):
+    _, listed = section_card()
+    source = listed['documents'][0]['schedule']['lines']
+    for row in source:
+        row.pop('section', None)
+    source[0]['name'] = 'Корпус 1'
+    if problem == 'duplicate':
+        source.append({**source[0], 'name': 'Корпус 2'})
+    elif problem == 'cycle':
+        source[0]['parent'] = source[0]['code']
+    else:
+        source[0]['parent'] = 'outer'
+        source.append({**source[0], 'code': 'outer', 'parent': None, 'name': 'Корпус 2'})
+    row = next(r for r in comparison.build(listed, CUT, 'source')['lines'] if r['code'] == '3.1')
+    assert row['section'] == ''
+
+
 def test_unambiguous_printed_sections_and_unknown_works_reach_excel():
     cached = projected()
     rows = cached['comparison']['lines']
