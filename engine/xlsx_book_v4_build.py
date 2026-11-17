@@ -2543,6 +2543,9 @@ def _build_project_workbook(
         _rent_end = _v4_excel_serial(_rent.get("project_end")) or 0
         _rent_meta = copy.deepcopy(_rent)
         _rent_meta["workbook_supported"] = False
+        _rent_exposures = _rent.get("land_exposures") or []
+        if any(item.get("retained") for item in _rent_exposures):
+            raise ValueError("Аренда ЗУ: общий шаблон v4 пока не связывает операционную аренду удерживаемых объектов с их доходным расчётом. Нужна нативная книга офиса или гостиницы; смешанный проект с такой арендой пока не выгружается.")
         _rent_calendars = [{} for _ in (_rent.get("phase_land") or [])]
         # The fifth source queue has no CF sheet in v4. Its editable lease
         # calendar must reproduce the engine's actual commissioning date,
@@ -2562,6 +2565,26 @@ def _build_project_workbook(
                 cfg["start_offset_months"]), cfg["ird_months"]), cfg["construction_months"])
             if commissioning.isoformat() != _rent["phase_land"][i].get("commissioning"):
                 raise ValueError("Аренда ЗУ: календарь очереди не совпадает с датой ввода движка")
+        _rent_exposure_formulas = {}
+        _rent_seen_objects = set()
+        for item in _rent_exposures:
+            phase = int(item.get("phase_index",0))
+            if item.get("object_key") == "housing":
+                own = {"share":"auto","commissioning":_rent_rve_refs[phase] if phase < count else "",
+                       "lease_exit":"EDATE({commissioning},$N$15)"}
+                if phase >= count:
+                    own["calendar"] = _rent_calendars[phase]
+            else:
+                key = item.get("object_key")
+                layout = next((lay for lay in _v4_layouts() if lay.obj.key==key),None)
+                if layout is None or key in _rent_seen_objects or item.get("sale_exit_basis") != "last_delivery":
+                    raise ValueError("Аренда ЗУ: календарь передачи отдельно стоящего объекта в общем шаблоне пока не связан с арендой. Нужна нативная книга нежилого проекта.")
+                _rent_seen_objects.add(key)
+                quantity_row = _V4_OBJECT_ROWS[layout.obj.prefix][0]
+                own = {"share":"auto","commissioning":f"'ОБЪЕКТЫ'!$B${layout.object_head+4}",
+                    "lease_exit":"EDATE(MAX({commissioning},{last_delivery}),$N$15)",
+                    "last_delivery":[f"'ОБЪЕКТЫ'!{_v4_column_letter(4+i)}{quantity_row}" for i in range(v4_land_rent.MONTHS)]}
+            _rent_exposure_formulas[item["id"]] = own
         content = v4_land_rent.apply(
             content, x, _rent, project_start_formula=_rent_start_formula,
             rve_formula=_rent_rve_formula,
@@ -2569,6 +2592,7 @@ def _build_project_workbook(
             phase_shares=_rent_shares, hostvri_amount_formula="'Параметры модели'!$B$16",
             phase_rve_formulas=_rent_rve_refs if len(_rent.get("phase_land") or []) > 1 else None,
             phase_calendars=_rent_calendars,
+            exposure_formulas=_rent_exposure_formulas if _rent_exposures else None,
             phase_capex_groups=([[i] for i in range(count-1)] + [list(range(count-1, len(_rent_shares)))])
                 if len(_rent_shares) > count else None)
         _rent_meta["workbook_supported"] = True

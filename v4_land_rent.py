@@ -140,7 +140,7 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
                 hostvri_amount_formula: str | None = None,
                 phase_rve_formulas: list[str] | None = None,
                 phase_calendars: list[dict[str, Any]] | None = None,
-                exposure_formulas: dict[str, dict[str, str]] | None = None,
+                exposure_formulas: dict[str, dict[str, Any]] | None = None,
                 master_terms_sheet: str | None = None,
                 layout: dict[str, Any] | None = None) -> bytes:
     """Editable Actual/Actual accrual and separately reconciled payment dates.
@@ -160,6 +160,13 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
         raise ValueError("Аренда ЗУ: число месяцев должно быть от 1 до 600")
     if month_formulas is not None and len(month_formulas) != months:
         raise ValueError("Аренда ЗУ: календарь не соответствует числу месяцев")
+    if result.get("project_start"):
+        cash_start = dt.date.fromisoformat(str(result["project_start"])).replace(day=1)
+        month_index = cash_start.year*12+cash_start.month-1+months
+        cash_end = dt.date(month_index//12,month_index%12+1,1)
+        for key,value in (result.get("monthly") or {}).items():
+            if value and not cash_start <= dt.date.fromisoformat(str(key)) < cash_end:
+                raise ValueError("Аренда ЗУ: известные платежи выходят за календарь книги; нужен более длинный денежный горизонт")
     last_col, last_matrix_col = _col(3+months), _col(9+months)
     history = result.get("historical") or {}
     history_mode = history.get("mode") if isinstance(history, dict) else None
@@ -347,7 +354,7 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
     phase_end = phase_first + phase_count - 1
     g_month_row = phase_end + 2
     phase_month_first = g_month_row + 2
-    phase_stride = 9 if exposure_mode else 5
+    phase_stride = 10 if exposure_mode else 5
     cash_summary_first = phase_month_first + phase_stride * phase_count + 1
     # Each phase allocates the existing monetary year/month cells on their
     # exact intervals. Never redistribute an already aggregated month: rates
@@ -498,6 +505,8 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
              'OR($B$12="Первый год отдельно от ВРИ",AND($B$12="Первый год полностью включён в ВРИ",$F$12="Да")),'
              f'COUNT($B${phase_first}:$B${phase_end})={phase_count},COUNTIF($B${phase_first}:$B${phase_end},"<0")=0,'
              f'ABS(SUM($B${phase_first}:$B${phase_end})-1)<0.000000001)')
+    if exposure_mode and any(not item.get("retained") for item in land_exposures):
+        valid = f'AND({valid},COUNT($N$15)=1,$N$15>=0,$N$15<=120,$N$15=ROUND($N$15,0))'
     put(20, "H20", "Условия расчёта")
     put(20, "I20", formula=(f'IF(OR($B$8="Не применяется",$I$14="Собственность"),"Не требуются",'
         f'IF(IFERROR({valid},0),"Заданы","Не полны"))'))
@@ -638,7 +647,7 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
         # быть и раньше общей даты. D ссылается на rve_formula, не на B15.
         next(c for c in rows[15] if c.get("r") == "B15").find(_tag("f")).text = (
             f"MAX($D${phase_first}:$D${phase_end})")
-    metres = [phase_land[p].get("site_area_ha" if basis == "area" else "total_area") if phased else None
+    metres = [phase_land[p].get("total_area" if exposure_mode else "site_area_ha" if basis == "area" else "total_area") if phased else None
               for p in range(phase_count)]
     phase_cash_rows = []
     for p in range(phase_count):
@@ -646,7 +655,20 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
         put(r, f"A{r}", str(phase_land[p].get("name") or phase_land[p].get("id")) if exposure_mode else f"Очередь {p+1}" if phased else "Весь участок")
         if exposure_mode:
             own_formulas = exposure_formulas[phase_land[p]["id"]]
-            put(r, f"B{r}", formula=own_formulas["share"], style=styles["amount"])
+            share_formula = own_formulas["share"]
+            if share_formula == "auto":
+                phase_id = int(phase_land[p].get("phase_index",0))
+                own_rows = [phase_first+i for i,item in enumerate(phase_land) if int(item.get("phase_index",0))==phase_id]
+                phase_rows_by_id = {int(item.get("phase_index",0)):phase_first+i for i,item in reversed(list(enumerate(phase_land)))}
+                area_sum = "SUM("+",".join(f"$H${row}" for row in own_rows)+")"
+                if basis == "area":
+                    first = phase_rows_by_id[phase_id]
+                    total = "SUM("+",".join(f"$P${row}" for row in phase_rows_by_id.values())+")"
+                    estimate = f"IFERROR($P${first}/{total}*$H${r}/{area_sum},{float(phase_land[p]['share'])!r})"
+                else:
+                    estimate = f"IFERROR($H${r}/SUM($H${phase_first}:$H${phase_end}),{float(phase_land[p]['share'])!r})"
+                share_formula = estimate
+            put(r, f"B{r}", formula=share_formula, style=styles["amount"])
         elif phased:
             # Доля — формула метров колонки H; пока метры известны не у всех
             # очередей, стоит предварительная доля расчёта (основание — в J).
@@ -656,7 +678,15 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
         else:
             put(r, f"B{r}", formula="1", style=styles["amount"])  # весь участок — одна доля, не ввод
         if exposure_mode:
-            commissioning = own_formulas["commissioning"]
+            calendar = own_formulas.get("calendar")
+            if calendar:
+                put(r,f"K{r}",calendar["start_offset_months"],style=styles["input"])
+                put(r,f"L{r}",formula=calendar.get("ird_formula"),
+                    value=None if calendar.get("ird_formula") else calendar["ird_months"],style=styles["input"])
+                put(r,f"M{r}",calendar["construction_months"],style=styles["input"])
+                commissioning=f'EDATE(EDATE(EDATE({project_start_formula},K{r}),L{r}),M{r})'
+            else:
+                commissioning = own_formulas["commissioning"]
         elif phased and p >= len(phase_refs):
             calendar = phase_calendars[p]
             put(r, f"K{r}", int(calendar["start_offset_months"]), style=styles["input"])
@@ -673,8 +703,10 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
         common_rve = (f'MAX({rve_formula},$C${phase_first}:$C${phase_end})'
                       if phased and len(phase_refs) < phase_count and result.get("housing_applicable", True)
                       else rve_formula)
-        exposure_exit = (f'IF(COUNT($F$10)=1,MIN($F$10,IF(COUNT(I{r})=1,I{r},IF(COUNT($L$15)=1,$L$15,{own_formulas["lease_exit"]}))),'
-                         f'IF(COUNT(I{r})=1,I{r},IF(COUNT($L$15)=1,$L$15,{own_formulas["lease_exit"]})))') if exposure_mode else None
+        exit_formula = (str(own_formulas["lease_exit"]).replace("{commissioning}",f"$C${r}")
+            .replace("{last_delivery}",f'$B${phase_month_first+phase_stride*p+9}')) if exposure_mode else None
+        exposure_exit = (f'IF(COUNT($F$10)=1,MIN($F$10,IF(COUNT(I{r})=1,I{r},IF(COUNT($L$15)=1,$L$15,{exit_formula}))),'
+                         f'IF(COUNT(I{r})=1,I{r},IF(COUNT($L$15)=1,$L$15,{exit_formula})))') if exposure_mode else None
         put(r, f"D{r}", formula=(exposure_exit if exposure_mode else f'IF(COUNT(I{r})=1,I{r},IF(C{r}=MAX($C${phase_first}:$C${phase_end}),{common_rve},MIN(C{r},{common_rve})))'
                                  if phased else "$B$15"), style=styles["date"])
         put(r, f"G{r}", formula="IFERROR(" + g_phase(cutoff, r) + ",0)", style=styles["amount"])
@@ -683,6 +715,8 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
             put(r, f"H{r}", float(metres[p]) if metres[p] is not None else None, style=styles["input"])
             put(r, f"I{r}", _serial(typed) if typed else None, style=styles["input_date"])
             put(r, f"J{r}", str(result.get("phase_share_basis_text") or ""))
+            if exposure_mode:
+                put(r,f"P{r}",phase_land[p].get("phase_site_area_ha"),style=styles["input"])
         if phased:
             base = phase_month_first + phase_stride * p
             put(r, f"E{r}", formula=f"SUM(D{base+3}:{last_col}{base+3})", style=styles["amount"])
@@ -694,6 +728,9 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
                 for offset,label in ((5,"начислено в стоимость разработки"),(6,"оплачено в стоимость разработки"),
                                      (7,"операционная аренда: оплачено"),(8,"операционная аренда: начислено")):
                     put(base+offset,f"A{base+offset}",f'{phase_land[p].get("name") or phase_land[p]["id"]}: {label}')
+                if own_formulas.get("last_delivery"):
+                    put(base+9,f"A{base+9}","Дата последней передачи по графику продаж")
+                    put(base+9,f"B{base+9}",formula=f'MAX(D{base+9}:{last_col}{base+9})',style=styles["date"])
             phase_cash_rows.append(base + 4)
         else:
             put(r, f"E{r}", formula="$L$17", style=styles["amount"])
@@ -724,6 +761,9 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
                     f'IF({col}{base+3}>0,{col}{base+4}*{col}{base+5}/{col}{base+3},{col}{base+4}))'),style=styles["amount"])
                 put(base+7,f"{col}{base+7}",formula=f'{col}{base+4}-{col}{base+6}',style=styles["amount"])
                 put(base+8,f"{col}{base+8}",formula=f'{col}{base+3}-{col}{base+5}',style=styles["amount"])
+                delivery_formulas = exposure_formulas[phase_land[p]["id"]].get("last_delivery")
+                if delivery_formulas:
+                    put(base+9,f"{col}{base+9}",formula=f'IF({delivery_formulas[index]}>0,{col}$3,0)',style=styles["date"])
             matrix = _col(10 + index)
             for year in range(YEARS):
                 n, dest = pre_first + year, first + year
@@ -791,6 +831,12 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
         put(n, f"E{n}", formula=f'IF(COUNT(C{n})=0,0,IF(D{n}="%",SUM($D$4:${last_col}$4)*C{n}/100,C{n}))', style=styles["amount"])
         put(n, f"F{n}", formula=f'IF(COUNT(A{n})=1,B{n}-DAY(B{n})+1,0)', style=styles["date"])
         put(n, f"G{n}", formula=f'IF(AND(COUNT(A{n})=0,COUNT(C{n})=0),0,IF(AND(COUNT(A{n})=1,A{n}>=0,A{n}<=1200,A{n}=ROUND(A{n},0),COUNT(C{n})=1,C{n}>=0,B{n}>=$B$14,B{n}<$F$11,OR(D{n}="%",D{n}="млн ₽")),0,1))')
+        put(n,f"H{n}",formula=f'IF(AND(COUNT(A{n})=1,A{n}>=0,A{n}<=1200,A{n}=ROUND(A{n},0),COUNT(C{n})=1,C{n}>0,OR(D{n}="%",D{n}="млн ₽")),EDATE(B{n}-DAY(B{n})+1,1),0)',style=styles["date"])
+    horizon_cell = next(c for c in rows[11] if c.get("r")=="F11")
+    horizon_cell.find(_tag("f")).text=f'MAX({project_end_formula or rve_formula},IF($F$16="Ручной график",MAX(H{pay_first}:H{pay_end}),0))'
+    if layout is not None:
+        layout["cash_horizon_cell"] = "F11"
+        layout["payment_horizon_range"] = f"H{pay_first}:H{pay_end}"
     put(17, "F17", formula=(f'IF(AND({raw_complete},$F$20="Да",COUNT(C{pay_first}:C{pay_end})>0,SUM(G{pay_first}:G{pay_end})=0,OR(COUNTIF(D{pay_first}:D{pay_end},"%")=0,AND(COUNTIF(D{pay_first}:D{pay_end},"%")=COUNT(C{pay_first}:C{pay_end}),ABS(SUMIF(D{pay_first}:D{pay_end},"%",C{pay_first}:C{pay_end})-100)<=0.0000001)),ABS(SUM(E{pay_first}:E{pay_end})-SUM($D$4:${last_col}$4))<=0.0000005),1,0)'))
     for index in range(months):
         col, matrix = _col(4 + index), _col(10 + index)

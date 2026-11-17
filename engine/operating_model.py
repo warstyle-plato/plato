@@ -898,26 +898,69 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     # Relief changes the money payable, not the VRI-change event. A fully
     # waived gross obligation still needs the post-change cadastral base.
     rent_switch = vri_obligation_date(x, permit)[0] if vri_payment_active(x) else None
+    rent_objects = []
+    lag = developaid_land_rent.registration_months(x)
+    for obj in standalone_objects():
+        if obj.key not in object_commissioning:
+            continue
+        comm = object_commissioning[obj.key]
+        plan = nonres_plans.get(obj.key)
+        retained = bool(plan and plan["strategy"] == nonres_strategy.STRATEGY_INCOME)
+        if plan:
+            exit_date = add_months(nonres_strategy.plan_horizon_end(plan), 1)
+            if retained:
+                exit_date = exit_date.replace(day=1)
+            if not retained:
+                exit_date = add_months(max(comm, exit_date), lag)
+        else:
+            deliveries = [month for month,value in quantity_product_schedules.get(obj.key, {}).items() if value > 0]
+            exit_date = add_months(max([comm, *deliveries]), lag)
+        rent_objects.append({"id": obj.key, "object_key": obj.key, "name": obj.tep_label or obj.label,
+            "total_area": (t.get(obj.key) or {}).get("total_area"), "commissioning": comm.isoformat(),
+            "lease_exit": exit_date.isoformat(), "retained": retained,
+            "sale_exit": (add_months(nonres_strategy.plan_horizon_end(plan),1).isoformat() if plan and not retained
+                          else max([comm,*[m for m,v in quantity_product_schedules.get(obj.key,{}).items() if v>0]]).isoformat()),
+            "sale_exit_basis": "exclusive_direct_end" if plan and not retained else "last_delivery",
+            "policy": "income_horizon" if retained else "sale_registration", "registration_months": 0 if retained else lag,
+            "source": "Операционный срок объекта" if retained else "Сценарный срок передачи объекта и регистрации"})
+    if is_hotel(x):
+        rent_objects = [{"id":"hotel", "object_key":"hotel", "name":"Гостиница",
+            "total_area": (t.get(HOTEL_TEP_KEY) or {}).get("total_area"), "commissioning":rve.isoformat(),
+            "lease_exit":add_months(hotel_strategy.plan_horizon_end({"commissioning":rve,
+                "params":hotel_strategy.params_from_inputs(x)}),1).replace(day=1).isoformat(),
+            "policy":"income_horizon", "retained":True, "source":"Операционный горизонт гостиницы"}]
+    nonres_keys = {obj.key for obj in standalone_objects()}
+    housing_rows = {key:row for key,row in t.items() if key not in nonres_keys}
+    housing_area, _ = developaid_land_rent.queue_total_area(housing_rows,
+        skip=("kindergarten","school","clinic") if str(x.get("social_mode")) == "Денежная компенсация" else ())
+    local_policy_inputs = {**x, "land_rent_manual_cutoff":None,"land_rent_exposure_exit_dates":{}} if x.get("_land_rent_phase_model") else x
+    local_exposures, exposure_missing = developaid_land_rent.planning_exposures(local_policy_inputs, rve,
+        housing_area=housing_area, objects=rent_objects, housing=not is_nonresidential(x) and not is_hotel(x))
     land_rent = copy.deepcopy(x.get("_land_rent_phase_model")) if x.get("_land_rent_phase_model") else developaid_land_rent.build(
-        x, project_start, rent_rve, add_months(max(rent_end, rent_rve), 1), cadastral_switch=rent_switch)
+        x, project_start, rent_rve, add_months(max(rent_end, rent_rve), 1), cadastral_switch=rent_switch, exposures=local_exposures)
+    if not x.get("_land_rent_phase_model"):
+        developaid_land_rent.qualify_exposures(land_rent, exposure_missing)
+        developaid_land_rent.attach_valuation(x, land_rent, project_start, rent_rve,
+            add_months(max(rent_end, rent_rve),1), cadastral_switch=rent_switch)
+    land_rent["local_land_exposures"] = local_exposures
+    land_rent["local_exposure_missing"] = exposure_missing
     land_rent["local_object_commissioning"] = {key: value.isoformat() for key, value in object_commissioning.items()}
     land_rent["housing_rve"] = rve.isoformat()
     land_rent["cutoff_includes_housing"] = not is_nonresidential(x)
-    if land_rent.get("cutoff_origin") not in ("manual", "phases"):
+    if land_rent.get("cutoff_origin") not in ("manual", "phases", "exposures"):
         land_rent["cutoff_basis"] = "Аренда считается до ввода последнего основного здания на участке. Социальные объекты, связь которых с этой землёй не подтверждена, не учитываются. Дата ввода жилья и условия проектного финансирования от этого не меняются."
     unlinked_social_dates = {key: add_months(d(x[f"{key}_start"]), int(n(x, f"{key}_months", 24)))
         for key, value in social_construction_breakdown.items()
         if value > 0 and social_mode in ("Строительство", SOCIAL_MODE_BOTH)}
     developaid_land_rent.qualify_scope(land_rent, unlinked_social_dates)
     rent_schedule = {d(month): float(value)
-                     for month, value in land_rent["monthly"].items()}
+                     for month, value in land_rent.get("construction_monthly",land_rent["monthly"]).items()}
     for month, value in rent_schedule.items():
         add_capex("land_rent", month, value)
     amounts["land_rent"] = sum(rent_schedule.values())
     cash_start = min([project_start, *rent_schedule])
     end = max([end, *rent_schedule])
-    land_rent["applied_total"] = amounts["land_rent"]
-    land_rent["cash_total"] = amounts["land_rent"]
+    land_rent["applied_total"] = amounts["land_rent"] + float(land_rent.get("operating_cash_total") or 0.0)
     land_rent["scenario_cost_multiplier"] = 1.0
 
     # Долговое финансирование видит все расходы проекта, кроме той части платы
@@ -931,6 +974,11 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     # Затраты остаются в CAPEX проекта — прибыль и налог их видят.
     for key, plan in nonres_plans.items():
         plan["capex"] = dict(capex_by_article.get(key) or {})
+        plan["land_rent_operating"] = {d(m):v for m,v in (land_rent.get("operating_accrual_monthly_by_object",{}).get(key) or {}).items()}
+        plan["land_rent_operating_cash"] = {d(m):v for m,v in (land_rent.get("operating_monthly_by_object",{}).get(key) or {}).items()}
+        plan["land_rent_valuation"] = {d(m):v for m,v in ((land_rent.get("valuation") or {}).get("operating_accrual_monthly_by_object",{}).get(key) or {}).items()}
+        plan["land_rent_valuation_complete"] = land_rent.get("valuation_complete",True)
+        plan["land_rent_valuation_missing"] = land_rent.get("valuation_missing",[])
         plan["revenue_multiplier"] = revenue_multiplier
         plan["cost_multiplier"] = cost_multiplier
         for month, value in plan["capex"].items():
@@ -979,6 +1027,11 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
             "land_articles": list(HOTEL_LAND_ARTICLES),
             "vat_exempt_articles": list(developaid_land_rent.excluded_input_vat_articles(land_rent)),
             "params": hotel_params,
+            "land_rent_operating": {d(m):v for m,v in (land_rent.get("operating_accrual_monthly_by_object",{}).get("hotel") or {}).items()},
+            "land_rent_operating_cash": {d(m):v for m,v in (land_rent.get("operating_monthly_by_object",{}).get("hotel") or {}).items()},
+            "land_rent_valuation": {d(m):v for m,v in ((land_rent.get("valuation") or {}).get("operating_accrual_monthly_by_object",{}).get("hotel") or {}).items()},
+            "land_rent_valuation_complete": land_rent.get("valuation_complete",True),
+            "land_rent_valuation_missing": land_rent.get("valuation_missing",[]),
             "revenue_multiplier": revenue_multiplier,
             "missing": [f.label for f in hotel_strategy.missing_fields(
                 hotel_params, with_capex=True)],

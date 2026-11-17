@@ -6,6 +6,7 @@ statutory payment calendar. No missing input is converted to a zero rate.
 from __future__ import annotations
 
 import calendar
+import copy
 import math
 import re
 from collections import defaultdict
@@ -130,6 +131,25 @@ def registration_months(inputs: dict[str, Any]) -> int:
     return int(value) if value is not None and 0 <= value <= 120 and value == int(value) else 3
 
 
+def payment_horizon(inputs: dict[str, Any], project_start: date, minimum_end: date) -> date:
+    """Seller payment calendar can outlive the asset; it does not move RVE."""
+    if inputs.get("land_rent_payment_mode") != "manual":
+        return minimum_end
+    end = minimum_end
+    for raw in str(inputs.get("land_rent_payment_schedule") or "").split(";"):
+        if not raw.strip():
+            continue
+        match = re.fullmatch(r'\s*([0-9]+(?:[.,][0-9]+)?)\s*(%)?\s*@\s*([0-9]+)\s*',raw)
+        if not match:
+            return minimum_end
+        amount, _, offset = match.groups()
+        if int(offset) > 1200:
+            return minimum_end
+        if float(amount.replace(",",".")) > 0:
+            end = max(end,_next_month(_add_months(project_start,int(offset))))
+    return end
+
+
 def planning_exposures(inputs: dict[str, Any], commissioning: date, *,
                        housing_area: float | None, objects: list[dict[str, Any]],
                        housing: bool = True) -> tuple[list[dict[str, Any]], list[str]]:
@@ -173,7 +193,14 @@ def planning_exposures(inputs: dict[str, Any], commissioning: date, *,
         item.setdefault("retained", item.get("policy") == "income_horizon")
         item.setdefault("name", str(item.get("object_key") or item["id"]))
         end = _date(item.get("lease_exit"))
-        if manual is not None:
+        object_raw = _mapping(inputs.get("land_rent_exposure_exit_dates")).get(item["id"])
+        object_manual = _date(object_raw)
+        if object_raw and object_manual is None:
+            missing.append("Не распознана дата выхода из аренды объекта «" + item["name"] + "»; взят сценарный срок.")
+        if object_manual is not None:
+            end = object_manual
+            item.update(manual_exit=object_manual.isoformat(),policy="manual",source="Дата выхода объекта из аренды введена пользователем")
+        elif manual is not None:
             end = manual
             item.update(policy="manual", source="Дата выхода из арендного расчёта введена пользователем")
         if end is None:
@@ -189,6 +216,27 @@ def qualify_exposures(result: dict[str, Any], reasons: list[str]) -> dict[str, A
         result["financial_missing_codes"] = list(dict.fromkeys([*result.get("financial_missing_codes", []), "land_exposures"]))
         result["financial_complete"] = False
         result["status"] = "preliminary" if result.get("complete") else "incomplete"
+    return result
+
+
+def attach_valuation(inputs: dict[str, Any], result: dict[str, Any], project_start: date,
+                     commissioning: date, project_end: date, *, cadastral_switch: date | None = None) -> dict[str, Any]:
+    """Contractual forward-year accrual for the buyer, never seller cash."""
+    items = copy.deepcopy(result.get("land_exposures") or [])
+    if not any(item.get("retained") for item in items):
+        return result
+    for item in items:
+        if item.get("retained"):
+            item["lease_exit"] = _add_months(_date(item["lease_exit"]), 12).isoformat()
+    horizon = max([project_end, *[_date(item["lease_exit"]) for item in items]])
+    valuation = build(inputs, project_start, commissioning, horizon, cadastral_switch=cadastral_switch, exposures=items)
+    result["valuation"] = valuation
+    result["valuation_complete"] = bool(valuation.get("complete") and not valuation.get("financial_missing") and
+                                        not valuation.get("missing") and valuation.get("scope_complete", True))
+    result["valuation_missing"] = list(dict.fromkeys([*valuation.get("missing", []), *valuation.get("financial_missing", [])]))
+    if not result["valuation_complete"]:
+        qualify_exposures(result,["Для оценки удерживаемого объекта не полностью определена аренда следующего года: "+
+            " ".join(result["valuation_missing"])])
     return result
 
 
@@ -432,7 +480,7 @@ def build(inputs: dict[str, Any], project_start: date, rve: date,
     parcel with the dates their land leaves the lease (``phase_release``).
     """
     x = inputs or {}
-    end = project_end or rve
+    end = payment_horizon(x,project_start,project_end or rve)
     derived_rve = rve
     geometry = exposures if exposures is not None else phase_land
     release = [(_number(p.get("share")), _date(p.get("lease_exit" if exposures is not None else "rve")))

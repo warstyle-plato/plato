@@ -2228,6 +2228,8 @@ _DEFAULT_INPUTS_LITERAL = {'project_class': 'comfort', 'project_kind': 'mixed', 
 # литералом, новый объект означал ещё двадцать строк здесь — то есть список,
 # расходящийся с реестром молча.
 DEFAULT_INPUTS: dict[str, Any] = dict(_DEFAULT_INPUTS_LITERAL)
+DEFAULT_INPUTS.setdefault("land_rent_registration_months", 3)
+DEFAULT_INPUTS.setdefault("land_rent_exposure_exit_dates", {})
 
 # --- Рост цены после РВЭ: одна вводная ----------------------------------------
 # Решение владельца (15.10.2026): видимая «Инфляция после РВЭ, % год» —
