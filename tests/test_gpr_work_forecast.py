@@ -10,6 +10,7 @@ import developaid_schedule_readiness as readiness
 from test_gpr_why_page import why_view
 from test_management_calendar_membership import _native_scoped_view
 from test_readiness_date_only_projection import site
+from test_schedule_physical_print_summary import gpr_sources
 
 CUT = '2035-04-10'
 SOURCE = 'd'*64
@@ -54,6 +55,136 @@ def test_no_profile_dates_do_not_invent_weights_or_expand_to_untyped_rows():
     assert [m['work_id'] for m in value['ordered_members']] == ['building']
     assert value['outside_members'] == [dict(work_id='admin', reason='outside_assessment_scope')]
     assert schedule == before
+
+
+@pytest.mark.parametrize('source_format', [None, '', 'legacy-gpr'])
+def test_legacy_catalog_does_not_opt_into_the_corpus_work_date_producer(source_format):
+    schedule = fallback([task('legacy', source_format=source_format,
+                              construction_work=True, forecast_known=True, forecast_finish='2035-07-01')])
+    assert work_dates.applies_to(schedule) is False
+
+
+@pytest.mark.parametrize('construction', [True, False, None])
+def test_corpus_opt_in_is_explicit_even_without_approval_or_construction_scope(construction):
+    schedule = fallback([task('corpus', construction_work=construction)])
+    schedule.pop('approved_plan')
+    assert work_dates.applies_to(schedule) is True
+    value = work_dates.build(schedule, CUT)
+    assert value['state'] == 'unavailable' and value['reason_code'] == 'source_or_cut'
+
+
+def test_configured_legacy_profile_is_a_work_contract_without_changing_its_format():
+    schedule = profiled()
+    for row in schedule['rows'] + schedule['undated_works']:
+        row['source_format'] = 'legacy-gpr'
+    assert work_dates.applies_to(schedule) is True
+    value = work_dates.build(schedule, schedule['cut'])
+    assert value['scope_kind'] == 'readiness_profile'
+    assert value['project']['forecast']['finish'] == schedule['readiness']['project']['forecast']['finish']
+    schedule['readiness']['profile_state'] = 'invalid'
+    assert work_dates.applies_to(schedule) is True
+    assert work_dates.build(schedule, schedule['cut'])['reason_code'] == 'invalid_profile'
+
+
+def test_empty_owned_corpus_or_configured_catalog_never_switches_to_legacy():
+    for schedule in [fallback(), profiled()]:
+        before = copy.deepcopy(schedule['readiness'])
+        schedule.update(source_format='corpus-gpr-v1', rows=[], undated_works=[])
+        assert work_dates.applies_to(schedule) is True
+        value = work_dates.build(schedule, schedule['cut'])
+        assert value['state'] == 'unavailable' and value['reason_code'] == 'roster'
+        assert schedule['readiness'] == before
+
+
+@pytest.mark.parametrize('status', ['absent', 'future'])
+def test_configured_profile_cannot_claim_no_profile_to_expand_its_scope(status):
+    schedule = fallback([task('legacy', source_format='legacy-gpr')])
+    schedule['readiness'].update(profile_state=status, profile_revision=1)
+    assert work_dates.applies_to(schedule) is True
+    assert work_dates.build(schedule, CUT)['reason_code'] == 'profile_state_identity'
+
+
+def test_all_undated_corpus_keeps_same_catalog_format_in_both_producer_paths(tmp_path, monkeypatch):
+    import datetime as dt
+    import io
+    from openpyxl import load_workbook
+    import developaid_gpr_corpus as corpus
+    import developaid_monitor as monitor
+    import developaid_monitor_manager as manager
+    from test_gpr_corpus_preview import book
+    from test_management_report_model import _rss_book
+    monkeypatch.setattr(monitor, '_SNAPSHOT_DIR', tmp_path/'monitor')
+    monkeypatch.setenv('DATA_DIR', str(tmp_path/'data'))
+    data = book(name='Synthetic undated catalog')
+    source = corpus.read(data)
+    workbook = load_workbook(io.BytesIO(data))
+    for package in source['packages']:
+        for scope in package['scopes']:
+            for field in ['start', 'finish']:
+                workbook[source['sheet']][scope['source_cells'][field]] = None
+    blob = io.BytesIO(); workbook.save(blob); data = blob.getvalue()
+    parsed = monitor._read_baseline_gpr_bytes(data)
+    assert parsed['source_format'] == 'corpus-gpr-v1' and parsed['works']
+    project = 'Synthetic undated catalog'
+    monitor.store_schedule(project, data, None, CUT)
+    plan = manager._schedule_only(project, CUT)['schedule']
+    assert plan['approved_plan']['source_sha256'] == parsed['source_sha256']
+    monitor.store_estimate(project, _rss_book([]), CUT)
+    rss = monitor._latest(project, 'estimate', '.xlsx')
+    funded = monitor._schedule_plan_fact(project, rss, dt.date.fromisoformat(CUT))
+    for schedule in [plan, funded]:
+        assert schedule['source_format'] == parsed['source_format']
+        assert schedule['rows'] == [] and len(schedule['undated_works']) == len(parsed['works'])
+        assert all(row['source_format'] == parsed['source_format'] for row in schedule['undated_works'])
+        assert work_dates.applies_to(schedule) is True
+        # Even total presentation loss cannot erase the owned catalog type.
+        empty = dict(schedule, undated_works=[])
+        assert work_dates.applies_to(empty) is True
+
+
+def test_legacy_confirmed_physical_date_keeps_its_existing_report_reader(gpr_sources):
+    payload = gpr_sources('confirmed', with_readiness_profile=False)
+    block = payload['gantt']
+    assert 'work_forecast' not in block
+    expected = payload['construction_summary']['forecast']
+    assert expected is not None
+    assert gantt.compact_model(block, payload['end'])['finish'] == expected
+
+
+@pytest.mark.parametrize('kind', ['confirmed', 'stale', 'unconfirmed'])
+def test_legacy_actual_report_and_dashboard_keep_the_same_validated_source_reader(gpr_sources, kind):
+    import developaid_management_report as report
+    import developaid_monitor_dashboard as dashboard
+    value = gpr_sources(kind, view=True, with_readiness_profile=False)
+    schedule = value['schedule']
+    assert schedule['work_forecast_applicable'] is False
+    assert not work_dates.owns_response(schedule)
+    model = work_dates.legacy_model(schedule, value['cut'])
+    block = report.gantt(value, {})
+    payload = dict(gantt=block, end=value['cut'], schedule={},
+                   construction_summary=report.report_schedule.model(schedule['dependency_timeline']))
+    current = report._report_gpr_compact(payload)
+    assert block['work_forecast_applicable'] is False
+    assert current['finish'] == model['finish'] == payload['construction_summary']['forecast']
+    assert report._executive_schedule(payload)['forecast'] == model['finish']
+    sentence = dashboard._work_schedule_summary(value)
+    if kind == 'confirmed':
+        assert model['finish'] is not None
+        assert schedule['legacy_work_forecast']['finish'] == model['finish']
+        assert '.'.join(reversed(model['finish'].split('-'))) in sentence
+    else:
+        assert model['finish'] is None
+
+
+@pytest.mark.parametrize('kind', ['profile', 'corpus', 'old_response'])
+def test_false_legacy_marker_cannot_disable_owned_or_old_typed_response(kind):
+    schedule = profiled() if kind == 'profile' else fallback()
+    schedule['work_forecast_applicable'] = False
+    if kind == 'old_response':
+        for row in schedule['rows'] + schedule['undated_works']:
+            row['source_format'] = 'legacy-gpr'
+        schedule.pop('work_forecast_applicable')
+    assert work_dates.owns_response(schedule)
 
 
 def test_comparable_plan_uses_exactly_the_covered_members_and_names_missing_work():

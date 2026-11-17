@@ -29,6 +29,73 @@ def _key(ids):
     return json.dumps(sorted(ids, key=lambda s: s.encode('utf-16-be')), ensure_ascii=False, separators=(',', ':'))
 
 
+def _configured_profile(state):
+    revision = state.get('profile_revision')
+    return (state.get('profile_state') in {'active', 'invalid'}
+            or type(revision) is int and revision > 0
+            or (state.get('forecast_identity') or {}).get('id_scope') == 'full_source')
+
+
+def applies_to(schedule):
+    """Explicit corpus provenance or a configured profile owns this producer.
+
+    A profile is an independent WORK contract, never evidence of a corpus
+    format. Other legacy WBS retains its source-qualified date readers. Missing
+    evidence in an opted-in catalog/profile must not select a legacy fallback.
+    """
+    state = schedule.get('readiness') or {}
+    if not isinstance(state, dict):
+        return True
+    return (_configured_profile(state) or schedule.get('source_format') == 'corpus-gpr-v1'
+            or any(row.get('source_format') == 'corpus-gpr-v1' for row in
+                   [*(schedule.get('rows') or []), *(schedule.get('undated_works') or [])]))
+
+
+def owns_response(schedule):
+    """Only an explicit unowned producer response permits the legacy reader."""
+    return ('work_forecast' in schedule or applies_to(schedule)
+            or schedule.get('work_forecast_applicable') is not False
+            and isinstance(schedule.get('readiness'), dict))
+
+
+def legacy_model(schedule, cut):
+    """Reuse the existing source/point validator, never an RNV fallback date."""
+    from developaid_report_gantt import calendar, compact_model
+    model = compact_model(dict(readiness=schedule.get('readiness'),
+                               calendar=calendar(schedule, cut)), cut)
+    return _legacy_qualification(model, schedule.get('dependency_timeline'), cut)
+
+
+def legacy_report_model(block, cut):
+    from developaid_report_gantt import compact_model
+    model = compact_model(block, cut)
+    return (_legacy_qualification(model, block.get('dependency_timeline'), cut)
+            if block.get('work_forecast_applicable') is False else model)
+
+
+def _legacy_qualification(model, timeline, cut):
+    """A calendar-only conditional date cannot override source qualification."""
+    timeline = timeline or {}
+    if (timeline.get('rnv') or {}).get('basis') != 'gpr':
+        return model
+    from developaid_report_schedule import model as source_model
+    from developaid_schedule_visual import date_text
+    qualified = source_model(timeline)
+    result = copy.deepcopy(model)
+    finish = qualified.get('forecast') if model.get('assessment_qualified') else None
+    result['finish'] = finish
+    summary = result.get('summary')
+    if summary:
+        text = ((qualified['forecast_label']+': '+date_text(finish)+'. ')
+                if finish else 'Оценка окончания работ не подтверждена. ')+qualified['caveat']
+        summary.update(finish=finish, forecast_label=qualified['forecast_label'], forecast_text=text)
+    if not finish:
+        result['qualified'] = False
+        for group in result.get('groups') or []:
+            group.update(finish=None, complete=False, unknown=True)
+    return result
+
+
 def unavailable(schedule, cut, reason, code='unavailable'):
     source = (schedule.get('approved_plan') or {}).get('source_sha256')
     return dict(schema=SCHEMA, basis=BASIS, cut=str(cut), source_sha256=source,
@@ -152,8 +219,7 @@ def build(schedule, cut):
     profile_state = _profile_state(state)
     if profile_state == 'invalid':
         return unavailable(schedule, cut, state.get('reason') or 'Состав профиля не подтверждён для текущего источника.', 'invalid_profile')
-    if (profile_state in {'absent', 'future'} and
-            (state.get('forecast_identity') or {}).get('id_scope') == 'full_source'):
+    if profile_state in {'absent', 'future'} and _configured_profile(state):
         return unavailable(schedule, cut, 'Состояние профиля противоречит подтверждённому составу работ.', 'profile_state_identity')
     from developaid_report_gantt import _readiness_calendar
     from developaid_schedule_plan_scenario import decorate_readiness

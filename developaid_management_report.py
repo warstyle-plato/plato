@@ -1190,6 +1190,9 @@ def gantt(view: dict[str, Any], dashboard: dict[str, Any]) -> dict[str, Any]:
     result["corpus_gpr"] = schedule_view.get("corpus_gpr")
     result["work_fact"] = schedule_view.get("work_fact")
     result["readiness"] = schedule_view.get("readiness")
+    result['source_format'] = schedule_view.get('source_format') or ''
+    if 'work_forecast_applicable' in schedule_view:
+        result['work_forecast_applicable'] = schedule_view['work_forecast_applicable']
     result['approved_plan'] = schedule_view.get('approved_plan')
     if (isinstance(result['readiness'], dict) and result['calendar'].get('readiness_forecast_invalid')
             and isinstance(result['readiness'].get('project'), dict)):
@@ -2027,7 +2030,7 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
     if readiness is not None:
         add('Стройка', readiness['readiness_text'], 'ГПР',
             'missing' if readiness['progress'] is None else '')
-    elif (isinstance((report.get('gantt') or {}).get('readiness'), dict) or 'work_forecast' in (report.get('gantt') or {})):
+    elif _report_uses_owner(report):
         add('Стройка', _GPR_UNCONFIRMED, 'ГПР', 'missing')
     elif block.get("state") == "ok":
         lag = block["lag"]
@@ -3570,7 +3573,7 @@ def render_text(report: dict[str, Any]) -> str:
     lines += ["", "<b>Стройка</b>"]
     block = report.get("physical") or {}
     assessment = _report_gpr_summary(report)
-    if (isinstance((report.get('gantt') or {}).get('readiness'), dict) or 'work_forecast' in (report.get('gantt') or {})):
+    if _report_uses_owner(report):
         lines.append(esc(assessment['readiness_text']) if assessment else
                      _GPR_UNCONFIRMED)
         if block.get('state') == 'ok':
@@ -4340,7 +4343,7 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
         for role, tile in zip(('readiness', 'forecast'), out[-2:]):
             tile['group'] = 'gpr_readiness'
             tile['gpr_role'] = role
-    elif (isinstance((report.get('gantt') or {}).get('readiness'), dict) or 'work_forecast' in (report.get('gantt') or {})):
+    elif _report_uses_owner(report):
         add('Готовность по ГПР', None, _GPR_UNCONFIRMED)
         add('Оценка окончания учтённых работ', None, _GPR_UNCONFIRMED)
         for role, tile in zip(('readiness', 'forecast'), out[-2:]):
@@ -4624,7 +4627,9 @@ def _executive_schedule(report: dict[str, Any]) -> dict[str, Any]:
     timeline = (report.get('gantt') or {}).get('dependency_timeline') or {}
     schedule_block = report.get('schedule') or {}
     readiness = (report.get('gantt') or {}).get('readiness')
-    if not isinstance(readiness, dict) and 'work_forecast' not in (report.get('gantt') or {}):
+    if not _report_uses_owner(report):
+        if (report.get('gantt') or {}).get('work_forecast_applicable') is False:
+            legacy = dict(legacy, forecast=_report_gpr_compact(report)['finish'])
         return legacy
     # This is the presentation summary, built after credit/funding. Keep the
     # independent RNV qualification intact and never send this conditional
@@ -4650,13 +4655,19 @@ def _gantt_html(report: dict[str, Any]) -> str:
         stalled_risk=_stalled_words(report.get('schedule') or {}))
 
 
+def _report_uses_owner(report: dict[str, Any]) -> bool:
+    from developaid_gpr_work_forecast import owns_response
+    return owns_response(report.get('gantt') or {})
+
+
 def _report_gpr_compact(report: dict[str, Any]) -> dict[str, Any]:
     """All current and retained typed report rosters use the same owner."""
     block = report.get('gantt') or {}
-    if 'work_forecast' in block or isinstance(block.get('readiness'), dict):
+    if _report_uses_owner(report):
         from developaid_gpr_work_forecast import report_model
         return report_model(block, report.get('end'))
-    return report_gantt.compact_model(block, report.get('end'))
+    from developaid_gpr_work_forecast import legacy_report_model
+    return legacy_report_model(block, report.get('end'))
 
 
 def _report_gpr_summary(report: dict[str, Any]) -> dict[str, Any] | None:

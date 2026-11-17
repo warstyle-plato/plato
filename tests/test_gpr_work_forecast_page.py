@@ -12,6 +12,33 @@ from test_gpr_work_forecast import fallback, profiled, task
 from test_gpr_why_page import serve, why_view
 from test_management_calendar_membership import _native_scoped_view
 from test_monitor_cumulative_controls import browser_page
+from test_schedule_physical_print_summary import gpr_sources
+
+
+@pytest.mark.parametrize('width', [390, 1440])
+@pytest.mark.parametrize('kind', ['confirmed', 'unconfirmed'])
+def test_actual_legacy_producer_keeps_source_date_and_per_work_facts(monkeypatch, gpr_sources, width, kind):
+    value = gpr_sources(kind, view=True, with_readiness_profile=False)
+    schedule = value['schedule']
+    expected = work_dates.legacy_model(schedule, value['cut'])['finish']
+    assert schedule['work_forecast_applicable'] is False and 'work_forecast' not in schedule
+    serve(monkeypatch, value)
+    with browser_page(width) as (page, _, errors):
+        show(page, value)
+        box = page.locator('#readinessSummary .legacy-work-forecast')
+        expect(box).to_be_visible()
+        expect(box.locator('strong')).to_have_text('.'.join(reversed(expected.split('-'))) if expected else 'Дата не определена')
+        assert page.locator('#readinessSummary .canonical-work-forecast').count() == 0
+        assert page.locator('[data-work-forecast-kpi]').count() == 0
+        page.locator('#gprMatrixExpand').click()
+        cell = page.locator('#gprFactMatrix [data-work-id="1"]')
+        expect(cell.locator('b')).to_have_text('50%' if kind == 'confirmed' else '80%')
+        if expected:
+            expect(cell.locator('.gpr-cell-forecast')).to_contain_text('.'.join(reversed(expected.split('-'))))
+        else:
+            expect(cell.locator('.gpr-cell-forecast')).not_to_contain_text('2099')
+        assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+        assert not errors
 
 
 def view(kind):

@@ -171,7 +171,9 @@ def project_assessment(schedule, cut):
     """Read the one canonical work-date DTO; never derive a second scope/date."""
     if not isinstance(schedule, dict):
         return None
-    from developaid_gpr_work_forecast import for_schedule, describe
+    from developaid_gpr_work_forecast import for_schedule, describe, owns_response
+    if not owns_response(schedule):
+        return None
     try:
         value = for_schedule(schedule, cut)
         if not value.get('project'):
