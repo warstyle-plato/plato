@@ -132,6 +132,12 @@ function renderResult(){
  const layout=reportLayout(r);
  if(!layout.project_finance)reportKpis.splice(-3,3);
  (layout.nonres_tiles||[]).forEach(t=>reportKpis.push([t.label,nonresCell(t),t.hint]));
+ const disclosure=r.report.office_results||{};
+ if(disclosure.valuation){
+  reportKpis[0]=['Денежная выручка — без оценки',money(disclosure.cash_revenue)];
+  reportKpis.splice(1,0,['Оценка удержания — без сделки',money(disclosure.valuation)]);
+  reportKpis.forEach(k=>{if(['EBITDA','Чистая прибыль','Маржинальность'].includes(k[0]))k[0]+=' (с оценкой удержания)'});
+ }
  // Значок «i» стоит у самого числа, до оговорки под ним: подсказка — о
  // том, как число посчитано (`report_kpi_hints`), оговорка — о допущении.
  reportKpi.innerHTML=reportKpis.map(x=>

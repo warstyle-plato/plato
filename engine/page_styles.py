@@ -537,5 +537,5 @@ PAGE += r"""<style>
 .object-bar-row{display:grid;grid-template-columns:minmax(90px,1fr) minmax(40px,1fr) 65px;gap:8px;align-items:center;font-size:11px;margin:9px 0}
 .object-bar-track{background:#f2f3f4}.object-bar-row b{text-align:right}.object-note{font-size:12px;color:#555;line-height:1.5}
 .object-report details summary{cursor:pointer;font-size:12px;padding:12px 0;font-weight:600}
-@media(max-width:760px){.object-plan-charts{grid-template-columns:minmax(0,1fr)}.object-chart-table{grid-template-columns:minmax(0,1fr)}.object-chart svg{min-height:180px}.object-report .card{min-width:0}.object-bar-row{grid-template-columns:minmax(95px,1fr) minmax(40px,1fr) 65px}}
+@media(max-width:760px){.object-chart svg text{font-size:18px}.object-plan-charts{grid-template-columns:minmax(0,1fr)}.object-chart-table{grid-template-columns:minmax(0,1fr)}.object-chart svg{min-height:180px}.object-report .card{min-width:0}.object-bar-row{grid-template-columns:minmax(95px,1fr) minmax(40px,1fr) 65px}}
 </style>"""

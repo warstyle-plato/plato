@@ -105,3 +105,28 @@ def test_pdf_exports_long_monthly_plans_with_labels():
     text='\n'.join(p.extract_text() for p in PdfReader(io.BytesIO(pdf)).pages)
     for phrase in ['Состав денежной выручки','Последняя продажа','Остаток','Подземные места','Места на первых этажах','расчётный план продаж']:
         assert phrase.lower() in text.lower()
+
+
+def test_rental_exit_has_a_date_price_and_cash_period():
+    _, _, _, d = run('income')
+    p = next(p for p in d['products'] if p['strategy']=='Выход')
+    assert len(p['rows']) == 1 and p['quantity']==1
+    assert p['first_date']==p['last_date']
+    assert p['first_price']==p['last_price']==p['average_price']==p['revenue']
+    assert p['rows'][0]['revenue']==p['revenue']
+
+
+def test_ddu_rejected_profile_is_not_claimed_as_applied():
+    _,_,_,d = run('ddu',offices_sales_profile='невалидный профиль',
+        _field_origin={'inputs.offices_growth_pre_pct': {'source':'manual','text':'Гипотеза владельца'}})
+    p=d['products'][0]
+    assert 'не распознан' in p['note'] and 'не применён' in p['note']
+    assert 'Гипотеза владельца' in p['note']
+
+
+def test_missing_exit_cap_is_not_a_free_sale_of_one_building():
+    _,_,_,d = run('income',offices_exit_cap_pct=0)
+    p=next(p for p in d['products'] if p['strategy']=='Выход')
+    assert p['quantity'] is None and p.get('first_price') is None
+    assert 'капитализации' in p['missing_reason']
+    assert d['reconciliation_gap']==pytest.approx(0,abs=.01)

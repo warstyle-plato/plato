@@ -428,7 +428,7 @@ function objectChartsHtml(block){
     return `<div class="object-bar-row"><span>${escapeHtml(r.label)}</span><span class="object-bar-track"><span style="display:block;width:${p}%;height:14px;background:${v<0?colors[1]:colors[0]}"></span></span><b>${escapeHtml(fmt(v))}</b></div>`;
    }).join('')}</figure>`;
   }
-  const W=560,H=210,L=62,T=15,R=15,B=42,x=i=>L+(W-L-R)*(rows.length>1?i/(rows.length-1):0.5),y=v=>T+(max-v)/span*(H-T-B);
+  const W=560,H=210,L=90,T=15,R=25,B=42,x=i=>L+(W-L-R)*(rows.length>1?i/(rows.length-1):0.5),y=v=>T+(max-v)/span*(H-T-B);
   let svg=`<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${title}"><title>${title}</title>`;
   [min,(max+min)/2,max].forEach(v=>{svg+=`<line x1="${L}" x2="${W-R}" y1="${y(v)}" y2="${y(v)}" stroke="#ddd"/><text x="${L-5}" y="${y(v)+4}" text-anchor="end" font-size="11">${escapeHtml(fmt(v))}</text>`});
   fields.forEach((f,k)=>{
@@ -438,7 +438,7 @@ function objectChartsHtml(block){
    points.forEach(p=>{if(p)segment.push(p.join(','));else flush()});flush();
    rows.forEach((r,i)=>{if(r[f[0]]!=null)svg+=`<circle cx="${x(i)}" cy="${y(Number(r[f[0]])*mult)}" r="2.5" fill="${colors[k%colors.length]}"><title>${escapeHtml(r.month||'')}: ${escapeHtml(f[1])} ${escapeHtml(fmt(Number(r[f[0]])*mult))} ${escapeHtml(chart.unit||'')}</title></circle>`});
   });
-  [...new Set([0,Math.floor((rows.length-1)/2),rows.length-1])].filter(i=>i>=0).forEach(i=>{svg+=`<text x="${x(i)}" y="${H-15}" text-anchor="middle" font-size="11">${escapeHtml(rows[i].month||'')}</text>`});
+  [...new Set([0,Math.floor((rows.length-1)/2),rows.length-1])].filter(i=>i>=0).forEach(i=>{svg+=`<text x="${x(i)}" y="${H-15}" text-anchor="${i===0?'start':i===rows.length-1?'end':'middle'}" font-size="11">${escapeHtml(rows[i].month||'')}</text>`});
   svg+='</svg>';
   return `<figure class="object-chart"><figcaption>${title}</figcaption>${svg}<div>${fields.map((f,k)=>`<span style="color:${colors[k%colors.length]};margin-right:15px">● ${escapeHtml(f[1])}</span>`).join('')}</div></figure>`;
  }).join('');

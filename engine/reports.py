@@ -490,6 +490,11 @@ def object_report(result: dict[str, Any]) -> dict[str, Any]:
         _row("Пик собственных средств", equity.get("peak") if equity else _equity_need(result), "rub"),
         _row("Цена входа (участок, сделка)", deal_rub, "rub"),
     ]
+    disclosure = report.get("office_results") or {}
+    if disclosure.get("valuation"):
+        decision[0]["label"] += " (с оценкой удержания)"
+        decision += [_row("Денежная выручка — без оценки", disclosure.get("cash_revenue"), "rub"),
+                     _row("Оценка удержания — без сделки", disclosure["valuation"], "rub")]
     sections["decision"] = {
         "brief": [_row("Вывод", verdict["title"], "text"),
                   _row("Основание", verdict["text"], "text"), *decision[:4]],
@@ -623,7 +628,9 @@ def object_report(result: dict[str, Any]) -> dict[str, Any]:
     exit_value = sum(float((o.get("kpi") or {}).get("exit_value") or 0.0) for o in objects
                      if o.get("strategy") == nonres_strategy.STRATEGY_INCOME)
     if exit_value:
-        income_brief.append(_row("Стоимость выхода", exit_value, "rub"))
+        income_brief.append(_row("Продажа объектов при выходе — денежная выручка", totals["exit_revenue"], "rub"))
+        if disclosure.get("valuation"):
+            income_brief.append(_row("Оценка удержания — без сделки", disclosure["valuation"], "rub"))
     sections["income"] = {"brief": income_brief, "blocks": income_blocks}
 
     # 5. Затраты -----------------------------------------------------------
@@ -735,7 +742,7 @@ def object_report(result: dict[str, Any]) -> dict[str, Any]:
     nonres_costs = next((float(e.get("value") or 0.0) for e in report.get("expense_structure") or []
                          if e.get("label") == (report.get("nonres_costs_label")
                                                or NONRES_COSTS_LABEL)), 0.0)
-    pnl = [_row("Выручка", summary.get("revenue"), "rub")]
+    pnl = [_row("Доходы модели — деньги + оценка удержания" if (report.get("office_results") or {}).get("valuation") else "Выручка", summary.get("revenue"), "rub")]
     if income_any:
         pnl.append(_row("NOI объектов за горизонт", totals["noi"], "rub"))
     pnl += [_row("Затраты стройки (смета объектов и общие)", summary.get("capex"), "rub"),

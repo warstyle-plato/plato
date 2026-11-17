@@ -1108,6 +1108,7 @@ def _object_pdf_charts(block: dict[str, Any], width: float, P: Any, small: Any) 
     """Chart values are the exact same rows/fields as the report table."""
     from reportlab.graphics.shapes import Circle, Drawing, Line, PolyLine, Rect, String
     from reportlab.lib import colors
+    from reportlab.platypus import KeepTogether
     regular, _ = _pdf_font_names()
     out = []
     palette = [colors.HexColor("#2b6475"), colors.HexColor("#a76828")]
@@ -1115,7 +1116,7 @@ def _object_pdf_charts(block: dict[str, Any], width: float, P: Any, small: Any) 
         rows = chart.get("rows", block.get("years") or [])
         fields = chart.get("fields") or []
         multiplier = chart.get("multiplier", 1)
-        out.append(P(str(chart.get("title") or ""), small))
+        heading = P(str(chart.get("title") or ""), small)
         if chart.get("horizontal"):
             height = 20 * len(rows) + 8
             drawing = Drawing(width, height)
@@ -1129,7 +1130,7 @@ def _object_pdf_charts(block: dict[str, Any], width: float, P: Any, small: Any) 
                                  fillColor=palette[value < 0], strokeColor=None))
                 drawing.add(String(width, yy, _pdf_num(value, 1), fontName=regular,
                                    fontSize=7, textAnchor="end"))
-            out.append(drawing)
+            out.extend([heading, drawing])
             continue
         height, left, bottom = 135, 45, 27
         drawing = Drawing(width, height)
@@ -1161,8 +1162,8 @@ def _object_pdf_charts(block: dict[str, Any], width: float, P: Any, small: Any) 
         for i in sorted({0, (len(rows) - 1) // 2, len(rows) - 1}):
             if i >= 0:
                 drawing.add(String(xx(i), 10, str(rows[i].get("month") or ""), fontName=regular,
-                                   fontSize=7, textAnchor="middle"))
-        out.extend([drawing, P(" · ".join(str(f[1]) for f in fields), small)])
+                                   fontSize=7, textAnchor="start" if i == 0 else "end" if i == len(rows)-1 else "middle"))
+        out.append(KeepTogether([heading, drawing, P(" · ".join(str(f[1]) for f in fields), small)]))
     return out
 
 
@@ -1758,6 +1759,13 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         *_pdf_entry_cost_rows(result, expense_structure),
         ["Выручка",_pdf_money(summary.get('revenue'))],["Расходы всего",_pdf_money(summary.get('total_expenses'))],["EBITDA",_pdf_money(summary.get('ebitda'))],["Чистая прибыль",_pdf_money(summary.get('net_profit'))+_default_note],["Маржинальность",_pdf_pct(summary.get('margin'))],["LLCR",_pdf_num(summary.get('llcr'),2)+"x"],["Расчётный БРИДЖ",_pdf_money(financing.get('calculated_bridge'))],["Фактический пик БРИДЖ",_pdf_money(financing.get('actual_bridge'))],["Пиковая (непокрытая эскроу) задолженность ПФ",_pdf_money(financing.get('pf_uncovered_peak'))],["Проценты и комиссии",_pdf_money(financing.get('interest_and_fees'))],
     ]
+    disclosure = report.get("office_results") or {}
+    if disclosure.get("valuation"):
+        kpis = [(["Денежная выручка — без оценки", _pdf_money(disclosure.get("cash_revenue"))]
+                 if row[0] == "Выручка" else
+                 [row[0] + " (с оценкой удержания)", row[1]]
+                 if row[0] in ("EBITDA", "Чистая прибыль", "Маржинальность") else row) for row in kpis]
+        kpis.insert(1, ["Оценка удержания — без сделки", _pdf_money(disclosure["valuation"])])
     # Остаток ПФ на конец проекта — это несостоявшееся погашение, а не деталь
     # финансирования: без него отчёт выглядел безупречно при непогашенном долге.
     _ending_pf=float(financing.get('ending_pf') or 0)

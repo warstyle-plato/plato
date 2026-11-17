@@ -105,11 +105,21 @@ def build(x: dict, t: dict, op: dict, fin: dict, products: list[dict], objects: 
         parking_obj = registry.get(parent) if parent else None
         obj = obj or parking_obj
         prefix = obj.prefix if obj else ''
-        note = ('Расчётный план, не фактические продажи. ' +
-                (p.get('price_ladder') or f"Рост цены до ввода: {x.get(prefix + '_growth_pre_pct', 'не задан')}%/мес.; "
+        schedule_note = (op.get('object_schedule_notes') or {}).get(prefix or 'core') or {}
+        profile = ('Применён заданный профиль: ' + str(p.get('sales_profile'))
+                   if schedule_note.get('profile_applied') else
+                   'Темп — стандартное распределение действующей модели; пользовательский профиль не применён.')
+        growth_fields = ([prefix + f'_growth_stage{k}_pct' for k in (1, 2, 3, 4)]
+                         if schedule_note.get('steps_applied') else
+                         [prefix + '_growth_pre_pct', prefix + '_growth_post_pct'])
+        note = ('Расчётный план, не фактические продажи. ДДУ: деньги покупателей на эскроу, '
+                'раскрытие и поступление проекту — в денежном потоке финансирования. ' +
+                (p.get('price_ladder') if schedule_note.get('steps_applied') else
+                 f"Рост цены до ввода: {x.get(prefix + '_growth_pre_pct', 'не задан')}%/мес.; "
                  f"после ввода: {x.get(prefix + '_growth_post_pct', 'не задан')}%/мес.") +
-                ' Основание динамики — вводные расчёта; при отсутствии происхождения ручной ввод не подтверждён. ' +
-                str(p.get('sales_profile') or 'Темп — распределение продаж действующей модели.'))
+                ' Источник динамики: ' + '; '.join(f"{('ступень ' + str(i+1)) if schedule_note.get('steps_applied') else ('рост до ввода' if i==0 else 'рост после ввода')}: {_origin(x, f)}" for i,f in enumerate(growth_fields)) +
+                '. ' + profile + ' ' + '; '.join(p.get('schedule_warnings') or []))
+
         context = dict(strategy='ДДУ', reference=str(x.get(prefix + '_sales_start') or '')[:7], note=note)
         if parking_obj and parking_obj.garage_sellable:
             split(_parking(x, t, parking_obj), quantity_series, revenue_series)
@@ -143,7 +153,8 @@ def build(x: dict, t: dict, op: dict, fin: dict, products: list[dict], objects: 
                     note=f"Расчётный план, не факт. Рост до ввода {book.get('growth_pre', 0)*100:g}%/мес., "
                          f"после {book.get('growth_post', 0)*100:g}%/мес.; основание — вводные модели. "
                          f"Профиль: {params.get('direct_sale_curve', 'flat')}. Происхождение роста: "
-                         + _origin(x, obj.prefix + '_growth_pre_pct'))
+                         + _origin(x, obj.prefix + '_growth_pre_pct') + '; после ввода: '
+                         + _origin(x, obj.prefix + '_growth_post_pct'))
         else:
             # Cash rent and transaction exit are separate from residual valuation.
             rent_rows = [dict(month=r['month'][:7], revenue=r.get('rent_revenue', 0.0),
@@ -155,7 +166,7 @@ def build(x: dict, t: dict, op: dict, fin: dict, products: list[dict], objects: 
             if item.get('exit_mode') != 'hold':
                 exit_date = (item.get('kpi') or {}).get('exit_month')
                 value = item['totals'].get('exit_revenue')
-                if exit_date is not None:
+                if exit_date is not None and value is not None and value > 0:
                     add(dict(key=key+':exit', label=item['title']+' — продажа объекта при выходе',
                              quantity=1.0, unit='объект', base_price=value,
                              origin='Допущение модели: капитализация NOI следующих 12 месяцев; ставка капитализации — вводные объекта.'),
@@ -163,7 +174,13 @@ def build(x: dict, t: dict, op: dict, fin: dict, products: list[dict], objects: 
                         note='Расчётная продажа целого объекта по капитализации NOI, не цена продажи м². '
                              'Цена определяется на дату выхода, отдельная исходная цена продажи не задаётся.')
                 else:
-                    warnings.append(item['title']+' — нет даты выхода; продажа объекта не раскрыта по месяцам.')
+                    reason = ('ставка капитализации не задана' if not params.get('exit_cap_pct') else
+                              'дата выхода не задана' if exit_date is None else
+                              'положительная стоимость выхода не определена из NOI')
+                    warnings.append(item['title']+' — продажа объекта: нет данных; '+reason+'.')
+                    result.append(dict(key=key+':exit',label=item['title']+' — продажа объекта при выходе',
+                                       quantity=None,unit='объект',revenue=value,strategy='Выход',rows=[],
+                                       planned_date=exit_date,missing_reason=reason))
     cash = sum(p['revenue'] for p in result if p.get('revenue') is not None)
     valuation = sum((o.get('totals') or {}).get('residual_value', 0.0) for o in nonres.values())
     expected = fin.get('total_revenue')
@@ -188,7 +205,7 @@ def combine(results: list[dict], expected: float) -> dict:
                              'label': f"Очередь {index} — {p['label']}"})
     cash = sum(p['revenue'] for p in products)
     for p in products:
-        p['share'] = p['revenue'] / cash if cash else None
+        p['share'] = p['revenue'] / cash if cash and p.get('revenue') is not None else None
     gap = expected - cash - valuation
     if abs(gap) > 1:
         warnings.append(f'Раскрытие очередей не сходится с итогом: {gap:,.2f} ₽.')
@@ -221,7 +238,20 @@ def blocks(data: dict) -> tuple[list[dict], list[dict], list[dict]]:
     income.append(dict(title='Сверка выручки', rows=rows))
     for p in products:
         periods = p.get('rows') or []
+        if p.get('missing_reason'):
+            sales.append(dict(title=p['label'],rows=[
+                dict(label='Планируемая дата выхода',value=p.get('planned_date'),unit='date'),
+                dict(label='Цена и объём продажи',value='Нет данных — '+p['missing_reason'],unit='text')]))
+            continue
         if not periods:
+            continue
+        if p['strategy'] == 'Выход':
+            sales.append(dict(title=p['label']+' — цена и расчётный план',
+                              note=p['note']+' '+p['origin'], kind='single_sale_plan',
+                              years=periods, columns=[['month','Дата сделки','text'],
+                                  ['quantity','Объектов','num'],['price','Цена сделки, ₽/объект, с НДС','num'],
+                                  ['revenue','Выручка','rub']],
+                              widths=[25,25,65,55]))
             continue
         if p['strategy'] == 'Аренда':
             sales.append(dict(title=p['label']+' — заполнение и аренда', kind='monthly_plan',
@@ -261,92 +291,3 @@ def blocks(data: dict) -> tuple[list[dict], list[dict], list[dict]]:
 
 
 WORKBOOK_DISCLOSURE_SHEET = 'Раскрытие результатов'
-
-
-def add_workbook_sheet(wb: Any, result: dict) -> None:
-    """Supplemental export snapshot. Never overwrites formula model sheets.
-
-    This sheet describes the exported run, so its limitation is printed at
-    the top and repeated in the footer. Editable calculations remain on the
-    original model sheets; no existing formula or defined name is relocated.
-    """
-    from openpyxl.chart import BarChart, LineChart, Reference
-    from openpyxl.styles import Alignment, Font, PatternFill
-    from openpyxl.worksheet.pagebreak import Break
-    data = (result.get('report') or {}).get('office_results')
-    if not data:
-        return
-    ws = wb.create_sheet(WORKBOOK_DISCLOSURE_SHEET)
-    ws.append(['Раскрытие результатов — снимок экспортированного расчёта'])
-    ws.merge_cells('A1:H1')
-    ws.append(['С НДС. При изменении вводных в Excel этот справочный лист не обновляется. '
-               'Пересчитываемая модель — на расчётных листах книги; для нового раскрытия повторите экспорт.'])
-    ws.merge_cells('A2:H2')
-    ws.row_dimensions[2].height = 42
-    ws.append(['Прочерк — показатель отсутствует/неприменим к потоку; действительный ноль сохранён числом.'])
-    ws.merge_cells('A3:H3')
-    income, sales, assumptions = blocks(data)
-    sections = [('Продукты и выручка', income), ('Цены и темпы продаж', sales)]
-    costs = next((s for s in ((result.get('report') or {}).get('object_report') or {}).get('sections') or []
-                  if s['key'] == 'costs'), {})
-    sections += [('Структура затрат', [b for b in costs.get('blocks') or [] if b.get('kind') == 'expense_structure']),
-                 ('Допущения и ограничения', assumptions)]
-    for title, group in sections:
-        ws.append([title]); row = ws.max_row
-        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=8)
-        ws.cell(row, 1).font = Font(name='Calibri', size=13, bold=True, color='FFFFFF')
-        ws.cell(row, 1).fill = PatternFill('solid', fgColor='2B6475')
-        for block in group:
-            if block.get('kind') == 'monthly_plan' and ws.max_row > 12:
-                ws.row_breaks.append(Break(id=ws.max_row))
-            ws.append([block['title']]); ws.cell(ws.max_row, 1).font = Font(bold=True, size=12)
-            if block.get('note'):
-                ws.append([block['note']]); note_row = ws.max_row
-                ws.merge_cells(start_row=note_row,start_column=1,end_row=note_row,end_column=8)
-                ws.row_dimensions[note_row].height=42
-            columns = block.get('columns') or [['label','Показатель','text'],['value','Значение','text']]
-            ws.append([c[1] for c in columns]); head = ws.max_row
-            for cell in ws[head]:
-                cell.font=Font(bold=True)
-                cell.fill=PatternFill('solid',fgColor='E8EFF1')
-            records = block.get('years') if 'years' in block else block.get('rows') or []
-            for record in records:
-                if 'years' in block:
-                    ws.append([record.get(c[0]) if record.get(c[0]) is not None else '—' for c in columns])
-                    for i,c in enumerate(columns,1):
-                        ws.cell(ws.max_row,i).number_format = '0.0%' if c[2]=='pct' else '#,##0.00' if c[2]!='text' else 'General'
-                else:
-                    ws.append([record.get('label'), record.get('value') if record.get('value') is not None else '—'])
-                    ws.cell(ws.max_row,2).number_format='0.0%' if record.get('unit')=='pct' else '#,##0.00' if record.get('unit') in ('rub','num','count','sqm') else 'General'
-            end = ws.max_row
-            if block.get('kind') in ('expense_structure','monthly_plan') and end>head:
-                plot=BarChart() if block['kind']=='expense_structure' else LineChart()
-                plot.title=block['title']; plot.y_axis.title='₽' if block['kind']=='expense_structure' else 'Объём; единица в заголовках'
-                plot.height=7; plot.width=20
-                # Expense total is not a second cost category. Monthly plot
-                # deliberately excludes price and money from volume units.
-                last=end-1 if block['kind']=='expense_structure' else end
-                indices=[2] if block['kind']=='expense_structure' else ([2,3,4] if len(columns)==6 else [])
-                for i in indices:
-                    plot.add_data(Reference(ws,min_col=i,max_col=i,min_row=head,max_row=last),titles_from_data=True)
-                if indices:
-                    plot.set_categories(Reference(ws,min_col=1,min_row=head+1,max_row=last))
-                    ws.add_chart(plot,f'A{end+2}')
-                    for _ in range(16): ws.append([''])
-            ws.append([''])
-    for row in ws:
-        for cell in row:
-            cell.alignment=Alignment(vertical='top',wrap_text=True)
-            if not cell.font.name:
-                cell.font=Font(name='Calibri',size=10)
-    for col,width in zip('ABCDEFGH',[43,23,14,22,22,22,24,16]):
-        ws.column_dimensions[col].width=width
-    ws.freeze_panes='B5'
-    ws.sheet_view.showGridLines=False
-    ws.sheet_properties.pageSetUpPr.fitToPage=True
-    ws.page_setup.orientation='landscape'
-    ws.page_setup.paperSize=ws.PAPERSIZE_A3
-    ws.page_setup.fitToWidth=1; ws.page_setup.fitToHeight=0
-    ws.print_title_rows='1:3'
-    ws.print_area=f'A1:H{ws.max_row}'
-    ws.oddFooter.center.text='Снимок расчёта при экспорте; повторный расчёт — на листах модели'
