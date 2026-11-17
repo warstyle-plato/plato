@@ -36,6 +36,7 @@ import datetime as dt
 import re
 
 import developaid_contract_schedule_links as links
+import developaid_contract_acts as contract_acts
 from developaid_monitor_contracts import _norm
 from developaid_monitor_statement_union import _unit
 
@@ -173,6 +174,19 @@ def from_acts(performed: dict | None) -> list[dict]:
     return rows
 
 
+def _missing_acts(performed: dict | None, found: dict | None, cut: str) -> list[str]:
+    """Only acts explicitly observed by this contract's dated summary can be missing.
+
+    Do not infer gaps from consecutive numbering or combine their volumes with
+    uploaded acts. Full normalized numbers keep different years distinct.
+    """
+    present = {contract_acts.edition(a) for a in (performed or {}).get('acts') or []}
+    expected = {contract_acts.edition(a) for a in (found or {}).get('summary_acts') or []
+                if a.get('date') and a['date'] <= cut}
+    return sorted((n for n in expected-present if n is not None),
+                  key=lambda n: (tuple(map(int, re.findall(r'\d+', n))), n))
+
+
 def reconcile(performed: dict | None, found: dict | None, cut: str) -> dict | None:
     """The accumulated volumes of the acts КС-2 against the KS-6a periods up to `cut`, by number and unit.
 
@@ -220,6 +234,7 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
         result["reconciliation"] = reconcile(performed, None if (found or {}).get("problem") else found, cut)
         # The KS-6a works without a dated period are not reconciled: they are named, not dropped.
         result["unread"] = [] if (found or {}).get("problem") else (found or {}).get("unread") or []
+        result['missing_acts'] = _missing_acts(performed, found, cut)
     elif found is None:
         result["note"] = ("Актов КС-2 в карточке нет, а накопительная КС-6а этого договора на дату среза "
                           "не найдена: факт не рассчитан.")

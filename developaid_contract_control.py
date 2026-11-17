@@ -113,7 +113,7 @@ def build(planned: dict, fact: dict, deadline: str | None, deadline_label: str, 
     result = {"cut": cut, "assumption": ASSUMPTION, "weights": WEIGHTS, "note": "", "total": None, "lines": [],
               "behind": [], "ahead": [], "done": [], "overdue": [], "forecast": None, "left_out": _left_out(fact),
               "source": fact.get("source"), "source_note": fact.get("source_note") or "",
-              "preliminary": bool(fact.get("preliminary"))}
+              "preliminary": bool(fact.get("preliminary")), "data_gaps": _data_gaps(fact)}
     current = next((e for e in planned.get("editions") or [] if e.get("in_force")), None)
     if current is None:
         result["note"] = "Отклонение не рассчитано: на дату среза нет действующей редакции плана."
@@ -197,7 +197,7 @@ def build(planned: dict, fact: dict, deadline: str | None, deadline_label: str, 
                        "overdue_works": len(result["overdue"]),
                        "preliminary": result["preliminary"],
                        # KS periods left out of the fact: the lag and the deviation are counted without them.
-                       "incomplete": bool(result["left_out"]["count"])}
+                       "incomplete": bool(result["left_out"]["count"] or result['data_gaps'])}
     result["forecast"] = _forecast(finishes, deadline, deadline_label, last, current, day)
     forecast = result["forecast"]
     result["total"]["overdue_days"] = (day - _day(forecast["deadline"])).days \
@@ -209,6 +209,19 @@ def _left_out(fact):
     """KS periods the fact could not take (`review`): their count and every reason once, in order."""
     review = fact.get("review") or []
     return {"count": len(review), "reasons": list(dict.fromkeys(r["reason"] for r in review))}
+
+
+def _data_gaps(fact):
+    gaps = []
+    if fact.get('missing_acts'):
+        gaps.append('В карточке нет актов КС-2 № ' + ', '.join(fact['missing_acts']) +
+                    ', которые указаны в сводной. Их выполнение в расчёт не вошло.')
+    if fact.get('unread'):
+        gaps.append(f'Работ КС-6а без подтверждённой истории выполнения: {len(fact["unread"])}.')
+    outside = sum(v.get('count', 0) for v in (fact.get('outside') or {}).values())
+    if outside:
+        gaps.append(f'Выполнение по {outside} позициям не сопоставлено с действующим планом.')
+    return gaps
 
 
 def _forecast(finishes, deadline, deadline_label, last, current, day):

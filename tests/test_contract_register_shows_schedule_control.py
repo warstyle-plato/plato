@@ -34,11 +34,12 @@ def _register():
 
 def assert_behind_with_scope(observed):
     assert {key: observed[key] for key in BEHIND} == BEHIND
-    assert set(observed) == set(BEHIND) | {'coverage', 'forecast_scope', 'whole_contract_finish'}
+    assert set(observed) == set(BEHIND) | {'coverage', 'forecast_scope', 'whole_contract_finish', 'data_gaps'}
     coverage = observed['coverage']
     assert (coverage['calculated'], coverage['source_works'], coverage['source_rows'], coverage['unknown']) == (3, 4, 6, 1)
     assert coverage['source_known'] and coverage['partial']
     assert coverage['calculation_start'] == '2026-02-01' and coverage['prior_periods'] == 1
+    assert observed['data_gaps']
     assert observed['forecast_scope'] == 'matched_works' and observed['whole_contract_finish'] is None
 
 

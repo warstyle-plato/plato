@@ -33,10 +33,11 @@ def build(listed: dict, cut: str, source_sha256: str | None = None) -> dict:
     reason = (current or {}).get('note') or canonical.get('note') or listed['fact'].get('note') or ''
     result = {'cut': cut, 'lines': [], 'total': canonical.get('total'), 'forecast': canonical.get('forecast'),
               'reason': reason, 'source': canonical.get('source'), 'source_note': canonical.get('source_note') or '',
-              'edition': current and {key: current.get(key) for key in ('title','date','estimate','schedule','start')},
+              'edition': current and {key: current.get(key) for key in ('title','date','estimate','schedule','start','start_source')},
               'plan_summary': current and {key: current.get(key) for key in ('planned','total','auto','overdue','outside','start','accepted','accepted_without_amount','without_amount')},
               'plan_assumption': listed['plan'].get('assumption') or '',
               'plan_editions': [{key:e.get(key) for key in ('title','date','until','in_force','total','note')} for e in listed['plan'].get('editions') or []],
+              'data_gaps': canonical.get('data_gaps') or [],
               'left_out': canonical.get('left_out'), 'preliminary': canonical.get('preliminary',False),
               'schedule_source': canonical.get('schedule_source'),
               'assumption': canonical.get('assumption') or '', 'weights': canonical.get('weights') or ''}
@@ -72,7 +73,7 @@ def build(listed: dict, cut: str, source_sha256: str | None = None) -> dict:
                 'due':row.get('finish'),'state':'unknown','reason':unfit.get(row['code']) or
                 'Работа есть в ГПР, но объём из расчёта и выполнение КС с ней не сопоставлены.', 'money_fallback':''})
     result['coverage']['unknown'] = sum(r['state'] == 'unknown' for r in result['lines'])
-    result['coverage']['partial'] = bool(result['coverage']['unknown'] or (canonical.get('left_out') or {}).get('count'))
+    result['coverage']['partial'] = bool(result['coverage']['unknown'] or (canonical.get('left_out') or {}).get('count') or result['data_gaps'])
     # A current estimate can describe only the remaining scope of an agreement.
     # Keep its calendar projection, but never promote it to the whole contract
     # while source works are unknown or absent from the comparison.
