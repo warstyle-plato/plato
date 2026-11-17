@@ -18,8 +18,8 @@ def inputs(**kw):
             "land_rent_tail_rule": "repeat_last", "land_rent_vat_treatment": "public_exempt", **kw}
 
 
-def op(x):
-    p = core.prepared_calculation(x, copy.deepcopy(core.TEP_DEFAULT), [])
+def op(x, tep=None):
+    p = core.prepared_calculation(x, copy.deepcopy(core.TEP_DEFAULT if tep is None else tep), [])
     return core.build_operating_model(p["x"], p["t"], p["rates"])
 
 
@@ -136,17 +136,19 @@ def test_monthly_detail_keeps_common_rent_before_the_earliest_queue_start():
 @pytest.mark.parametrize("kind", ["mixed", "nonresidential"])
 def test_only_active_object_commissioning_extends_rental_cutoff_without_changing_housing_rve(kind):
     x = inputs(project_kind=kind, offices_enabled=True, offices_strategy="income",
-        offices_gns_sqm=10000, offices_saleable_sqm=8000,
+        offices_gba_sqm=10000, offices_saleable_sqm=8000,
         offices_start="2028-01-01", offices_months=12)
-    early = op(x)
+    t = copy.deepcopy(core.TEP_DEFAULT)
+    t['offices']['total_area'] = 10000
+    early = op(x,t)
     x["offices_months"] = 36
-    late = op(x)
+    late = op(x,t)
     assert late["rve"] == early["rve"]
     assert late["land_rent"]["commissioning"] == "2031-01-01"
     assert late["land_rent"]["rve"] > "2031-01-01"  # retained office horizon
     assert late["capex_amounts"]["land_rent"] > early["capex_amounts"]["land_rent"]
     x["offices_enabled"] = False
-    disabled = op(x)
+    disabled = op(x,t)
     assert disabled["land_rent"]["commissioning"] == disabled["rve"].isoformat()
 
 
