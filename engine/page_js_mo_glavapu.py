@@ -262,7 +262,11 @@ function normalizeMoVriRegion(){
  }
  if(config&&typeof config==='object'){delete config.applied;delete config.result}
  delete inputs._mo_vri_relief;
- if(stored&&typeof stored==='object')delete stored.vri;
+ if(stored?.vri&&typeof stored.vri==='object'){
+  // Accepted parcels retain their cadastral rent bases; only the fee is detached.
+  if(Object.prototype.hasOwnProperty.call(stored.vri,'parcels'))stored.vri={parcels:cloneValue(stored.vri.parcels)};
+  else delete stored.vri;
+ }
 }
 function moVriSavedBasis(){
  const own=inputs._mo_vri_relief;

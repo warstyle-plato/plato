@@ -1328,8 +1328,12 @@ def normalize_mo_vri_region(inputs: dict) -> dict:
         config.pop("result", None)
         inputs["mo_vri_benefits"] = config
     inputs.pop("_mo_vri_relief", None)
-    if isinstance(stored, dict) and "vri" in stored:
+    if isinstance(stored, dict) and isinstance(stored.get("vri"), dict):
+        # The accepted parcels also own current/future cadastral rent bases.
+        # Detach the applied fee, keeping that source for a return to MO.
         inputs["_mo_calc"] = {k: copy.deepcopy(v) for k, v in stored.items() if k != "vri"}
+        if "parcels" in stored["vri"]:
+            inputs["_mo_calc"]["vri"] = {"parcels": copy.deepcopy(stored["vri"]["parcels"])}
     if origins != (inputs.get("_field_origin") or {}):
         inputs["_field_origin"] = origins
     changed = {k: copy.deepcopy(v) for k, v in inputs.items() if k not in before or v != before[k]}
