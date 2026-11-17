@@ -122,7 +122,8 @@ def funding_cash_summary(funding: dict[str, Any], model: dict[str, Any], money: 
         return {"amount": None, "scope": "calculated_total",
                 "label": "Расчётная потребность в допфинансировании",
                 "note": "Для расчёта " + "; ".join(missing) + "."}
-    if not admin_cash._has_cash_observation(model):
+    if (not admin_cash._has_cash_observation(model)
+            and (funding.get("funding_scope") or {}).get("basis") != "bank_chapters"):
         # Older reports may already carry a complete funding result without
         # a separate AHR cash observation. Preserve that result and its scope,
         # chapter breakdown and first shortage month; don't relabel a full
