@@ -399,10 +399,13 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
         if end > _day(cut):
             result["after_cut"] += 1
             continue
-        if act["quantity"] is None:
+        zero_without_material = (act['quantity'] == 0 and not act.get('quantity_material')
+                                 and act.get('act_amount') not in (None, 0))
+        if act["quantity"] is None or zero_without_material:
+            absent = ('объём работ равен нулю и количество материала не записано' if zero_without_material
+                      else 'объём не записан (например, оплачена только поставка материалов)')
             result["review"].append({**act, "reason": f"В периоде КС записана сумма {_money(act['act_amount'])}, "
-                                                      "а объём не записан (например, оплачена только поставка "
-                                                      "материалов): без объёма выполнение не пересчитать по цене "
+                                                      f"а {absent}: без объёма выполнение не пересчитать по цене "
                                                       "расчёта."})
             continue
         edition = next((e for e in reversed(dated) if _day(e["date"]) <= end), None)
@@ -427,6 +430,9 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
         price = _price(position)
         components = _components(act, position)
         money = components['total']
+        if price is None and all(_price(position, part) is None for part in ('work', 'material')):
+            result['review'].append({**act, 'edition': edition['title'],
+                'reason': f"У позиции № {position['number']} в расчёте не прочитана цена за единицу."})
         # Only the volume that entered the fact counts toward a complete line: review volume is not known done.
         if act.get('basis') != 'material':
             done_quantity[act["item"]] = done_quantity.get(act["item"], 0.0) + components['work_quantity']
