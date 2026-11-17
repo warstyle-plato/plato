@@ -121,6 +121,9 @@ def model(rows: list[dict], physical: dict | None) -> dict[str, Any]:
                       "primary": primary_fact(row),
                       "name": row.get('name') or tid, "object": row.get('object') or '',
                       "section": row.get('section') or '', "wbs": row.get('wbs') or '',
+                      # Section and calendar scope read this flag; an absent
+                      # flag stays absent instead of becoming «not construction».
+                      "construction_work": row.get('construction_work'),
                       "source_conflict": (tasks.get(tid) or {}).get("source_conflict")}
     return {"works": works, "divergence_pp": DIVERGENCE_PP,
             "completed_facts": (physical or {}).get("completed_facts"),
