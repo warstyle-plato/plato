@@ -140,3 +140,23 @@ def test_saved_numeric_strings_do_not_break_the_report():
     got=r['report']['office_results']
     assert got['cash_revenue']==pytest.approx(d['cash_revenue'])
     assert got['products'][1]['base_price']==3e6
+
+
+def test_missing_cap_does_not_turn_a_rental_strategy_into_a_loser():
+    _,_,r,_=run('income',offices_exit_cap_pct=0)
+    # Numerical ranking is retained for model parity, but the recommendation
+    # cannot treat an uncalculated exit as a losing rental strategy.
+    assert r['office_paths']['better'] is not None
+    block=r['strategy_compare']
+    assert block['items'][0]['best'] is None
+    assert 'победитель не назван' in block['items'][0]['lead']
+    assert 'неполно' in block['page_stamp']
+
+
+def test_missing_cap_for_hold_is_unknown_valuation_and_visible_warning():
+    _,_,r,d=run('income',offices_exit_cap_pct=0,offices_exit_mode='hold')
+    assert d['valuation_missing'][0]['reason']=='ставка капитализации не задана'
+    assert any('капитализации' in warning for warning in d['warnings'])
+    sec=next(s for s in r['report']['object_report']['sections'] if s['key']=='income')
+    rows=[row for block in sec['blocks'] for row in block.get('rows') or []]
+    assert any('Нет данных' in str(row.get('value')) and 'капитализации' in str(row.get('value')) for row in rows)

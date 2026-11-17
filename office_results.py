@@ -57,6 +57,7 @@ def build(x: dict, t: dict, op: dict, fin: dict, products: list[dict], objects: 
     """
     result: list[dict] = []
     warnings: list[str] = []
+    valuation_missing: list[dict] = []
     nonres = {o['key']: o for o in (fin.get('nonres') or {}).get('objects') or []}
     registry = {o.key: o for o in objects}
 
@@ -148,6 +149,7 @@ def build(x: dict, t: dict, op: dict, fin: dict, products: list[dict], objects: 
         book = item.get('book') or {}
         params = book.get('params') or {}
         rows = item.get('rows') or []
+        warnings.extend(item['title'] + ': ' + str(w) for w in item.get('warnings') or [])
         if item['strategy'] == 'direct':
             components = [dict(key=key, label=item['title'], quantity=book.get('area_sqm'),
                                unit='шт.' if obj.measure == 'spaces' else 'м²', base_price=book.get('price_rub_sqm') if _number(x.get(obj.rate_price)) is not None else None, origin=_origin(x, obj.rate_price))]
@@ -174,6 +176,11 @@ def build(x: dict, t: dict, op: dict, fin: dict, products: list[dict], objects: 
             result.append(dict(key=key+':rent', label=item['title']+' — аренда (включая сдаваемые места)',
                                unit='м² и машино-места', quantity=None, revenue=rent, strategy='Аренда',
                                rows=rent_rows, note='Расчётное заполнение и аренда; ставки и индексация — в стратегии объекта.'))
+            value_reason = ('ставка капитализации не задана' if (_number(params.get('exit_cap_pct')) or 0) <= 0 else
+                            'нет положительного NOI для оценки' if float((item.get('kpi') or {}).get('forward_noi') or 0) <= 0 else '')
+            if item.get('exit_mode') == 'hold' and value_reason:
+                valuation_missing.append(dict(key=key,label=item['title'],reason=value_reason))
+                warnings.append(item['title']+': оценка удержания — нет данных; '+value_reason)
             if item.get('exit_mode') != 'hold':
                 exit_date = (item.get('kpi') or {}).get('exit_month')
                 value = item['totals'].get('exit_revenue')
@@ -185,7 +192,7 @@ def build(x: dict, t: dict, op: dict, fin: dict, products: list[dict], objects: 
                         note='Расчётная продажа целого объекта по капитализации NOI, не цена продажи м². '
                              'Цена определяется на дату выхода, отдельная исходная цена продажи не задаётся.')
                 else:
-                    reason = ('ставка капитализации не задана' if not params.get('exit_cap_pct') else
+                    reason = ('ставка капитализации не задана' if (_number(params.get('exit_cap_pct')) or 0) <= 0 else
                               'дата выхода не задана' if exit_date is None else
                               'положительная стоимость выхода не определена из NOI')
                     warnings.append(item['title']+' — продажа объекта: нет данных; '+reason+'.')
@@ -201,16 +208,17 @@ def build(x: dict, t: dict, op: dict, fin: dict, products: list[dict], objects: 
     if gap is not None and abs(gap) > 1.0:
         warnings.append(f'Раскрытие продуктов не сходится с итогом модели: разница {gap:,.2f} ₽.')
     return dict(products=result, cash_revenue=cash, valuation=valuation, model_revenue=expected,
-                reconciliation_gap=gap, warnings=warnings)
+                reconciliation_gap=gap, warnings=warnings, valuation_missing=valuation_missing)
 
 
 def combine(results: list[dict], expected: float) -> dict:
-    products, warnings = [], []
+    products, warnings, valuation_missing = [], [], []
     valuation = 0.0
     for index, r in enumerate(results, 1):
         data = (r.get('report') or {}).get('office_results') or {}
         valuation += data.get('valuation', 0.0)
         warnings.extend(data.get('warnings') or [])
+        valuation_missing.extend(data.get('valuation_missing') or [])
         for p in data.get('products') or []:
             products.append({**p, 'key': f"phase{index}:{p['key']}",
                              'label': f"Очередь {index} — {p['label']}"})
@@ -221,7 +229,7 @@ def combine(results: list[dict], expected: float) -> dict:
     if abs(gap) > 1:
         warnings.append(f'Раскрытие очередей не сходится с итогом: {gap:,.2f} ₽.')
     return dict(products=products, cash_revenue=cash, valuation=valuation, model_revenue=expected,
-                reconciliation_gap=gap, warnings=warnings)
+                reconciliation_gap=gap, warnings=warnings, valuation_missing=valuation_missing)
 
 
 def blocks(data: dict) -> tuple[list[dict], list[dict], list[dict]]:
@@ -245,6 +253,7 @@ def blocks(data: dict) -> tuple[list[dict], list[dict], list[dict]]:
     if data.get('valuation'):
         rows += [dict(label='Оценка удерживаемых объектов — без сделки, не денежная выручка', value=data['valuation'], unit='rub'),
                  dict(label='Итог модели, включая оценку', value=data.get('model_revenue'), unit='rub')]
+    rows.extend(dict(label=p['label']+' — оценка удержания', value='Нет данных — '+p['reason'], unit='text') for p in data.get('valuation_missing') or [])
     rows.append(dict(label='Расхождение с итогом модели (деньги + оценка), ₽',value=(0.0 if data.get('reconciliation_gap') is not None and abs(data['reconciliation_gap'])<.01 else data.get('reconciliation_gap')),unit='num'))
     income.append(dict(title='Сверка выручки', rows=rows))
     for p in products:

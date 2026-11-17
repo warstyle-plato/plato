@@ -138,6 +138,11 @@ function renderResult(){
   reportKpis.splice(1,0,['Оценка удержания — без сделки',money(disclosure.valuation)]);
   reportKpis.forEach(k=>{if(['EBITDA','Чистая прибыль','Маржинальность'].includes(k[0]))k[0]+=' (с оценкой удержания)'});
  }
+ if((disclosure.valuation_missing||[]).length){
+  reportKpis[0]=['Денежная выручка — без оценки',money(disclosure.cash_revenue)];
+  reportKpis.splice(1,0,['Оценка удержания','Нет данных — '+disclosure.valuation_missing.map(p=>p.reason).join('; ')]);
+  reportKpis.forEach(k=>{if(['EBITDA','Чистая прибыль','Маржинальность'].includes(k[0]))k[0]+=' (без нерассчитанной оценки)'});
+ }
  // Значок «i» стоит у самого числа, до оговорки под ним: подсказка — о
  // том, как число посчитано (`report_kpi_hints`), оговорка — о допущении.
  reportKpi.innerHTML=reportKpis.map(x=>

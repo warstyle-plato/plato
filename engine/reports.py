@@ -495,6 +495,10 @@ def object_report(result: dict[str, Any]) -> dict[str, Any]:
         decision[0]["label"] += " (с оценкой удержания)"
         decision += [_row("Денежная выручка — без оценки", disclosure.get("cash_revenue"), "rub"),
                      _row("Оценка удержания — без сделки", disclosure["valuation"], "rub")]
+    if disclosure.get("valuation_missing"):
+        decision[0]["label"] += " (без нерассчитанной оценки удержания)"
+        decision += [_row(p["label"] + " — оценка удержания", "Нет данных — " + p["reason"], "text")
+                     for p in disclosure["valuation_missing"]]
     sections["decision"] = {
         "brief": [_row("Вывод", verdict["title"], "text"),
                   _row("Основание", verdict["text"], "text"), *decision[:4]],
@@ -599,6 +603,8 @@ def object_report(result: dict[str, Any]) -> dict[str, Any]:
                     _row("Стоимость объекта — оценка удержания, без сделки" if hold
                          else "Выход: продажа по ставке капитализации",
                          kpi.get("exit_value"), "rub")]
+            if hold and any(p["key"] == item.get("key") for p in disclosure.get("valuation_missing") or []):
+                rows[-1] = _row("Стоимость объекта — оценка удержания, без сделки", "Нет данных — " + next(p["reason"] for p in disclosure["valuation_missing"] if p["key"] == item.get("key")), "text")
             columns = [["year", "Год", "text"], ["rent_revenue", "Аренда", "mln"],
                        ["opex", "Эксплуатация", "mln"], ["property_tax", "Налог на имущество", "mln"],
                        ["noi", "NOI", "mln"], ["exit_revenue", "Выход", "mln"]]
