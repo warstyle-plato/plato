@@ -45,10 +45,19 @@ def total(values):
     return sum(known,Decimal(0)) if known and len(known)==len(values) else None
 
 
-def fm_budget(data):
+def fm_budget(data, meta=None):
     from openpyxl import load_workbook
     from openpyxl.utils.cell import coordinate_from_string,column_index_from_string
     leaves,headers,units=source._cells(data)
+    import developaid_finance_units as finance_units
+    resolved=finance_units.resolve(units,meta,hashlib.sha256(data).hexdigest())
+    declaration=(meta if isinstance(meta,dict) else {}).get('money_unit')
+    declared=(isinstance(declaration,dict) and declaration.get('basis')=='owner_declaration'
+              and declaration.get('source_sha256')==hashlib.sha256(data).hexdigest()
+              and isinstance(declaration.get('unit'),str) and declaration['unit'] in finance_units.UNITS)
+    if declared and resolved.get('state')!='observed':raise source.SourceProblem('unit_ambiguous')
+    factor=int(finance_units.UNITS[resolved['recognized_unit']]) if declared else FACTOR
+    basis='owner_declaration' if declared else 'existing_native_finmodel_contract'
     sums={k:total(number(r['cells'][k]['cached_value']) for r in leaves) for k in ('total','fact','plan')}
     columns={k:column_index_from_string(coordinate_from_string(ref)[0])-1 for k,ref in headers.items()}
     parent=None;tax=[];all_tax_codes=[]
@@ -58,7 +67,7 @@ def fm_budget(data):
             code=str(cells[2].value or '').strip().rstrip('.')
             if code!='2.4' and not(code=='2.4.5' or code.startswith('2.4.5.')):continue
             row={'code':code,'row':index,'cells':{k:f'{coordinate_from_string(headers[k])[0]}{index}' for k in columns},
-                 **{k:scalar(number(source._raw(cells[c])['cached_value'])*FACTOR) if number(source._raw(cells[c])['cached_value']) is not None else None for k,c in columns.items()}}
+                 **{k:scalar(number(source._raw(cells[c])['cached_value'])*factor) if number(source._raw(cells[c])['cached_value']) is not None else None for k,c in columns.items()}}
             if code=='2.4':
                 if parent is not None:raise source.SourceProblem('codes_ambiguous')
                 parent=row
@@ -66,14 +75,14 @@ def fm_budget(data):
     tax_leaves=[r for r in tax if not any(c.startswith(r['code']+'.') for c in all_tax_codes)]
     tax_known=len(set(all_tax_codes))==len(all_tax_codes)
     taxes={k:(scalar(total(number(r[k]) for r in tax_leaves)) if tax_leaves else 0.0) if tax_known else None for k in sums}
-    normalized={k:scalar(v*FACTOR) if v is not None else None for k,v in sums.items()}
+    normalized={k:scalar(v*factor) if v is not None else None for k,v in sums.items()}
     all_children={k:scalar(number(normalized[k])+number(taxes[k])) if normalized[k] is not None and taxes[k] is not None else None for k in sums}
     differences={k:scalar(number(parent[k])-number(all_children[k])) if parent and parent[k] is not None and all_children[k] is not None else None for k in sums}
     return {'budget':normalized['total'],'fm_columns_context_only':normalized,'taxes_separate':taxes,
         'parent_2_4':parent,'all_child_leaf_sum_including_tax':all_children,'parent_minus_all_children':differences,
         'parent_minus_non_tax_leaves':{k:scalar(number(parent[k])-number(normalized[k])) if parent and parent[k] is not None and normalized[k] is not None else None for k in sums},
         'leaf_count':len(leaves),'cells':{k:[r['cells'][k]['cell'] for r in leaves] for k in sums},
-        'factor_to_rubles':FACTOR,'unit_basis':'existing_native_finmodel_contract','raw_unit_evidence':units,
+        'factor_to_rubles':factor,'unit_basis':basis,'raw_unit_evidence':units,'unit_evidence':resolved,
         'budget_definition':'non-tax leaf2.4; parent is diagnostic only; financing excluded'}
 
 
@@ -301,7 +310,7 @@ def for_project(project,cut):
             if any(identity.get(k)!=v for k,v in namespace.items()):raise ValueError('finance_namespace_changed')
         except Exception:fm=None;errors['fm']='unavailable'
         if fm is not None:
-            try:budget=fm_budget(fm)
+            try:budget=fm_budget(fm,meta)
             except Exception:errors['fm_budget']='unavailable'
         try:
             rss,_,rss_id=rss_source._rss_copy(project,day.isoformat())

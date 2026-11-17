@@ -72,7 +72,7 @@ def test_actual_rss_report_and_tile_keep_unknown_draws_and_known_parts(tmp_path,
     assert draws['known_part']['total'] == 418000000
     assert built['funding']['draws_monthly']['2026-10'] is None
     tile = next(item for item in report.tiles(built) if item['label'] == 'Выбрано у банка')
-    assert tile['value'] == 'нет данных'
+    assert tile['value'] == 'учтено 418,0 млн ₽'
     assert 'Известная часть' in tile['note'] and 'не полный итог' in tile['note']
     assert 'Известная часть' in report.render_html(built) and 'Известная часть' in report.render_text(built)
 

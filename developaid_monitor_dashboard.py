@@ -255,7 +255,8 @@ def _finance_baseline(project: str) -> dict[str, Any]:
     if not path.exists():
         return {"known": False, "reason": "не загружен финансовый baseline"}
     stat = _os.stat(path)
-    key = (str(path), stat.st_mtime_ns, stat.st_size)
+    import developaid_finance_units as finance_units
+    key = (str(path), stat.st_mtime_ns, stat.st_size, json.dumps(finance_units.metadata(path).get('money_unit'), sort_keys=True))
     if key in _FINANCE_CACHE:
         return _copy.deepcopy(_FINANCE_CACHE[key])
     result = _read_finance_baseline(path)
@@ -397,7 +398,8 @@ def finance_sheets_reason() -> str:
             "ни листа «cf_1_new» (финмодель)")
 
 
-def _read_finance_baseline(path: Path, *, bank_assignments: dict | None = None) -> dict[str, Any]:
+def _read_finance_baseline(path: Path, *, bank_assignments: dict | None = None,
+                           unit_metadata: dict | None = None) -> dict[str, Any]:
     from openpyxl import load_workbook
 
     # Parse and hash the same bytes, including the article map. A concurrent
@@ -410,7 +412,10 @@ def _read_finance_baseline(path: Path, *, bank_assignments: dict | None = None) 
         if FINANCE_BOOK_SHEET in wb.sheetnames:
             return _read_finance_book(wb, source)
         if FINANCE_MODEL_SHEET in wb.sheetnames:
-            result = _read_finance_model(wb, source, bank_assignments=bank_assignments)
+            import developaid_finance_units as finance_units
+            result = _read_finance_model(wb, source, bank_assignments=bank_assignments,
+                unit_metadata=finance_units.metadata(path) if unit_metadata is None else unit_metadata,
+                source_sha256=hashlib.sha256(raw).hexdigest())
             if result.get("budget_composition") is not None:
                 result["budget_composition"]["source_sha256"] = hashlib.sha256(raw).hexdigest()
             return result
@@ -525,7 +530,7 @@ def budget_hint_lines(funding: dict[str, Any], money: Any) -> list[str]:
     return out
 
 
-def _read_finance_model(wb: Any, path: Path, *, bank_assignments: dict | None = None) -> dict[str, Any]:
+def _read_finance_model(wb: Any, path: Path, *, bank_assignments: dict | None = None, unit_metadata=None, source_sha256=None) -> dict[str, Any]:
     """Финмодель как финансовый baseline: лист «cf_1_new» + карта «статьи_БДДС».
 
     Утверждённый бюджет — «ИТОГО», оплачено — «ФАКТ», средства на завершение —
@@ -560,7 +565,8 @@ def _read_finance_model(wb: Any, path: Path, *, bank_assignments: dict | None = 
             evidence.add(index, cells)
     except source_proof.SourceProblem:
         return {"known": False, "reason": "Не удалось проверить ограниченную шапку денежных единиц финмодели."}
-    units = evidence.result()
+    import developaid_finance_units as finance_units
+    units = finance_units.resolve(evidence.result(), unit_metadata, source_sha256)
     units["context"]["sheet"] = FINANCE_MODEL_SHEET
     unit_scale = {"руб.": 1.0, "тыс. руб.": 1000.0, "млн руб.": 1000000.0}.get(
         units.get("recognized_unit")) if units["state"] == "observed" else None
@@ -2101,10 +2107,37 @@ def _payment_total_ch23(rss: Path, estimate: dict[str, Any],
     return _paid_in_chapters(rss, estimate, chapters)["total"]
 
 
+def _rss_bank_observations(rss: Path, cut: datetime.date) -> dict[str, Any]:
+    """Independent source facts, without a budget or monthly-need inference."""
+    estimate = actuals.read_estimate(rss)
+    limits = _rss_ch23(estimate, CHAPTERS)
+    paid = _paid_in_chapters(rss, estimate, CHAPTERS, cut=cut)
+    rows = []
+    for chapter in CHAPTERS:
+        amount = limits['by_chapter'][chapter]
+        payment = _paid_in_chapters(rss, estimate, (chapter,), cut=cut)['total']
+        rows.append(dict(chapter=chapter, limit=amount, paid=payment,
+                         available=max(0., amount-payment) if amount is not None and payment is not None else None))
+    available = [row['available'] for row in rows]
+    return dict(scope='rss_chapters_1_2_3', scope_label='Главы 1–3 РСС', chapters=list(CHAPTERS),
+                bank_limit=limits['limit'], paid_actual=paid['total'], paid_borrowed=paid['borrowed'],
+                available_bank_limit=sum(available) if all(v is not None for v in available) else None,
+                by_chapter=rows, incomplete_rows=paid['incomplete_rows'],
+                payments_complete_through_cut=None,
+                note='По сохранённому РСС, главы 1–3. Бюджет ФМ и потребность в допфинансировании этими суммами не определяются.')
+
+
 def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, Any]) -> dict[str, Any]:
     def unavailable(reason: str, **extra: Any) -> dict[str, Any]:
         result = {"known": False, "reason": reason, **extra,
                   "source_dates": _funding_source_dates(project, rss, cut)}
+        # Historical trend points return money/schedule, not these source
+        # observations. Keep ordinary views and reports fully populated.
+        if not monitor._HISTORICAL_TREND_READ.get():
+            try:
+                result['bank_observations'] = _rss_bank_observations(rss, cut)
+            except Exception as exc:
+                result['bank_observations'] = {'reason': type(exc).__name__+': '+str(exc)}
         notes = funding_source_notes(result)
         result["limit_reconciliation_lines"] = [notes["paid"], notes["limit"],
             result["source_dates"]["source_scope_note"]]

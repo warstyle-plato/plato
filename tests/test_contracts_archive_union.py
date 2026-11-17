@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import datetime as dt
 import io
+from types import SimpleNamespace
 
 import openpyxl
 import pytest
@@ -137,6 +138,18 @@ def test_a_carried_header_date_is_clarified_in_its_own_archive(context):  # noqa
     row = by_number(contracts.build(PROJECT, SECOND))['E-60']
     binding, = [e['binding'] for e in row['date_evidence']]
     assert binding['snapshot_id'] == first['snapshot_id']
+    import developaid_monitor_header_confirmations as confirmations
+    fixed = dt.datetime.fromisoformat(SECOND + 'T12:00:00+00:00')
+
+    class Clock(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed.astimezone(tz) if tz is not None else fixed.replace(tzinfo=None)
+
+    # Collection and execution may straddle UTC midnight. This test verifies
+    # an archive binding, so keep the decision on its selected cut date.
+    context.setattr(confirmations, 'dt', SimpleNamespace(
+        date=dt.date, datetime=Clock, timezone=dt.timezone))
     contracts.confirm_header_date(PROJECT, SECOND, contract_date='2024-07-03', **binding)
     row = by_number(contracts.build(PROJECT, SECOND))['E-60']
     assert row['contract_date'] == '2024-07-03' and row['source_date'] == FIRST
