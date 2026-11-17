@@ -118,6 +118,17 @@ def test_fingerprint_tracks_reader_code_and_installed_dependency_versions(tmp_pa
     assert disk.fingerprint(reader) != second
 
 
+def test_fingerprint_tracks_the_stage_decorator_code_dependency(tmp_path, monkeypatch):
+    reader = tmp_path / 'reader.py'
+    reader.write_text('synthetic reader')
+    dependency = tmp_path / 'stage_profile.py'
+    dependency.write_text('synthetic decorator version one')
+    monkeypatch.setattr(disk.stage_profile, '__file__', str(dependency))
+    first = disk.fingerprint(reader)
+    dependency.write_text('synthetic decorator version two')
+    assert disk.fingerprint(reader) != first
+
+
 @pytest.mark.parametrize('damage', ['header', 'deflate', 'identity', 'decoded_size', 'compressed_size'])
 def test_corrupt_or_oversized_cache_reparses_verified_original(source, monkeypatch, damage):
     root, saved = source
