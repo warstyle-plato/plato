@@ -224,6 +224,9 @@ def test_real_page_names_proportional_exit_and_does_not_request_an_absent_separa
             assert state["verdict"]["title"] != "Предварительная экономика: уточните аренду земли"
             browser.open_vri(page)
             root = page.locator("#landRentEditor")
+            expect(root).to_contain_text("Итого по сроку аренды")
+            expect(root).not_to_contain_text("Итого до ввода")
+            expect(root).not_to_contain_text("до ввода зданий и очередей")
             advanced = root.locator("[data-land-rent-advanced]")
             advanced.locator("summary").first.click()
             scope = root.locator('[data-land-rent-detail="scope"]')

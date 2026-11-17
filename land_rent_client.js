@@ -350,7 +350,7 @@ function landRentSummaryHtml(){
    const amount=a.included_in_vri?'Включён в ВРИ':a.amount===undefined&&total!=null?'Вне периода':landRentMoney(a.amount);
    return '<tr><td title="'+escapeHtml(period)+'"><b>'+escapeHtml(String(a.year))+'-й</b>'+(a.overlap_start?'<small>'+escapeHtml(String(a.overlap_start).slice(0,4))+'</small>':'')+'</td><td class="lr-rate">'+rate+'</td><td title="'+escapeHtml(a.amount==null?period:new Intl.NumberFormat('ru-RU',{maximumFractionDigits:2}).format(a.amount)+' ₽ · '+period)+'">'+escapeHtml(amount)+'</td></tr>';
   }).join(''):'<tr><td colspan="3" class="lr-empty">Подтвердите условия договора, чтобы увидеть начисления по годам.</td></tr>';
-  html+='</tbody><tfoot><tr><th colspan="2">Итого до ввода</th><th>'+escapeHtml(landRentMoney(total))+'</th></tr></tfoot></table></div><div class="lr-tools"><button type="button" class="btn" onclick="'+(preset?'landRentCopyPreset()':'landRentAddYear()')+'">'+(preset?'Изменить ставки вручную':'+ Год аренды')+'</button><span class="hint">'+escapeHtml(landRentSourceLabel(preset))+'</span></div>';
+  html+='</tbody><tfoot><tr><th colspan="2">Итого по сроку аренды</th><th>'+escapeHtml(landRentMoney(total))+'</th></tr></tfoot></table></div><div class="lr-tools"><button type="button" class="btn" onclick="'+(preset?'landRentCopyPreset()':'landRentAddYear()')+'">'+(preset?'Изменить ставки вручную':'+ Год аренды')+'</button><span class="hint">'+escapeHtml(landRentSourceLabel(preset))+'</span></div>';
  }
  return html;
 }
@@ -464,7 +464,7 @@ function renderLandRentEditor(){
  if(preset){
   const guide=document.createElement('div');guide.className='lr-defaults';
   const heading=document.createElement('b');heading.textContent=preset.region!==territory.region?'Сохранённые условия: проверьте регион':territory.region==='msk'?'Москва: расчёт по ставкам региона':'Подмосковье: расчёт по ставке региона';guide.appendChild(heading);
-  note(guide,'Кадастр — из ЕГРН; ставки — '+preset.short_source+'. По умолчанию: от начала проекта до ввода зданий и очередей, начисление помесячно. Ваши изменения сохраняются.');
+  note(guide,'Кадастр — из ЕГРН; ставки — '+preset.short_source+'. Аренда начисляется помесячно до регистрации жилья или выхода из владения объектом. Срок можно изменить в «Уточнить расчёт». Ваши изменения сохраняются.');
   if(inputs.land_rent_simple_estimate===true&&mode==='mo_housing_new_2026')note(guide,'Для пустых будущих лет принята индексация 0%: это оценка в текущих ценах, а не утверждённая аренда. Сохранённые индексы не меняются.');
   if(preset.region===territory.region&&mode==='mo_housing_new_2026'&&inputs.land_rent_simple_estimate!==true){
    const simple=document.createElement('button');simple.type='button';simple.className='tep-refill';simple.textContent='Оценить без будущей индексации';simple.onclick=landRentEnableSimpleEstimate;guide.appendChild(simple);
