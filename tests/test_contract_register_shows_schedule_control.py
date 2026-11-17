@@ -103,7 +103,7 @@ def test_the_table_shows_lag_deviation_and_forecast_in_plain_words(card, width):
         row = page.locator(f'tr[data-contract-id="{CONTRACT}"]')
         # The short row: one chip with the lag, the deviation and the forecast in a few words.
         brief = row.locator(".contract-schedule")
-        for text in ['отстаёт на 2 дня', 'готовность сопоставленных работ 50 %, выполнение плана 55 %',
+        for text in ['отстаёт на 2 дня', 'готовность по КС сопоставленных работ 50 %, выполнение плана 55 %',
                      'Сопоставлено работ по ГПР: 3 из 4.', 'Выполнение остальных работ не определено.',
                      'Расчёт с 01.02.2026.', 'Периоды КС до этой даты учтены отдельно: 1.',
                      'просрочено работ: 2', 'отставание неполное: 2 периода КС не вошли в факт',
@@ -121,7 +121,7 @@ def test_the_table_shows_lag_deviation_and_forecast_in_plain_words(card, width):
         # The same native result is presented once, in the modal work table.
         more = opened(page, CONTRACT)
         expect(more.locator('#contractCardSummary')).to_contain_text('55 %')
-        expect(more.locator('#contractCardSummary')).to_contain_text('Готовность сопоставленных работ: 50 %')
+        expect(more.locator('#contractCardSummary')).to_contain_text('Готовность по КС сопоставленных работ: 50 %')
         expect(more.locator('#contractCardSummary [data-label="Прогноз окончания"]')).to_contain_text('06.02.2026')
         expect(more.locator('#contractCardSummary [data-label="Прогноз окончания"]')).to_contain_text('Не определён')
         expect(more.locator('#contractCardSummary [data-label="Прогноз окончания"]')).to_contain_text('Оценка сопоставленных работ')

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 import html
+import re
 
 from developaid_schedule_visual import date_text, day
 
@@ -98,6 +99,20 @@ def render_analysis(display):
                      for text in display['paragraphs'])+'</section>')
 
 
+def _forecast_method(forecast):
+    explanation = forecast.get('explanation')
+    counts = explanation.get('counts') if isinstance(explanation, dict) else None
+    counts = counts if isinstance(counts, dict) else {}
+    count = lambda key: counts[key] if type(counts.get(key)) is int and counts[key] > 0 else 0
+    conditional, measured = count('conditional'), count('measured')
+    method = ('mixed' if conditional and measured else 'conditional' if conditional
+              else 'measured' if measured else 'complete' if count('complete') and not count('unknown') else 'unknown')
+    label = {'mixed': 'Измеренный и плановый темп', 'conditional': 'При плановом темпе',
+             'measured': 'По измеренному темпу', 'complete': 'Завершено по источникам',
+             'unknown': 'Основание срока не определено'}[method]
+    return method, label
+
+
 def gpr_summary(state, cut):
     """Read supplied project scalars only; never infer weights, dates or scope."""
     if not isinstance(state, dict) or state.get('cut') != str(cut) or not isinstance(state.get('project'), dict):
@@ -133,7 +148,8 @@ def gpr_summary(state, cut):
     as_of_text += ' Срез '+date_text(cut)+'.'
     plan_text = ('План окончания учтённых работ: '+date_text(plan)+'. Даты известны для '
                  +str(forecast.get('plan_covered'))+' из '+str(forecast.get('total'))+' работ.') if plan else ''
-    forecast_text = ('Оценка окончания: '+date_text(finish)+'. При плановом темпе. Сроки известны для '
+    method, method_label = _forecast_method(forecast)
+    forecast_text = ('Оценка окончания: '+date_text(finish)+'. '+method_label+'. Сроки известны для '
                      +str(forecast.get('covered'))+' из '+str(forecast.get('total'))+' работ. Это не прогноз РНВ.') if finish else 'Оценка окончания учтённых работ пока не определена.'
     return dict(schema=1, source_sha256=state.get('source_sha256'), cut=str(cut),
                 full_source_sha256=forecast.get('full_source_sha256'), id_scope=forecast.get('id_scope'),
@@ -141,8 +157,44 @@ def gpr_summary(state, cut):
                 profile_effective_from=state.get('profile_effective_from'),
                 progress=progress, coverage=coverage, total=total, known_readings=known,
                 estimated=estimated, partial=partial, fact_as_of=fact_as_of,
+                method=method, method_label=method_label,
                 label=label, value=value, scope_text=scope_text, as_of_text=as_of_text,
                 finish=finish, plan_finish=plan, forecast_text=forecast_text, plan_text=plan_text,
                 display=forecast.get('display'),
                 reason=project.get('reason') or state.get('reason') or '',
                 readiness_text=label+': '+value+'. '+scope_text+' '+as_of_text)
+
+
+def project_assessment(schedule, cut):
+    """One display DTO for the selected GPR population, never a project RNV.
+
+    The source/profile/readings and dates are supplied by the existing readiness
+    calculation. This adapter neither changes its population nor extrapolates.
+    """
+    state = schedule.get('readiness') if isinstance(schedule, dict) else None
+    if not isinstance(state, dict):
+        return None
+    project = state.get('project')
+    if not isinstance(project, dict):
+        return None
+    forecast = project.get('forecast') or {}
+    approved = schedule.get('approved_plan') or {}
+    if (not isinstance(forecast, dict) or not isinstance(approved, dict)
+            or not isinstance(project.get('source_dates', []), (list, tuple))
+            or forecast.get('id_scope') is not None and not isinstance(forecast['id_scope'], str)
+            or forecast.get('id_scope') == 'full_source' and not re.fullmatch(
+                '[a-f0-9]{64}', str(forecast.get('full_source_sha256') or ''))):
+        return None
+    source = state.get('source_sha256')
+    expected = approved.get('source_sha256')
+    if (not isinstance(source, str) or not re.fullmatch('[a-f0-9]{64}', source)
+            or expected and expected != source):
+        return None
+    effective = state.get('profile_effective_from')
+    if effective and (not isinstance(effective, str) or not day(effective) or effective > str(cut)):
+        return None
+    value = gpr_summary(state, cut)
+    if value is None:
+        return None
+    return dict(value, basis='selected_project_gpr', finish_label='Оценка окончания учтённых работ',
+                work_ids=list((state.get('project') or {}).get('work_ids') or []))

@@ -1160,6 +1160,7 @@ def gantt(view: dict[str, Any], dashboard: dict[str, Any]) -> dict[str, Any]:
     result["corpus_gpr"] = schedule_view.get("corpus_gpr")
     result["work_fact"] = schedule_view.get("work_fact")
     result["readiness"] = schedule_view.get("readiness")
+    result['approved_plan'] = schedule_view.get('approved_plan')
     if (isinstance(result['readiness'], dict) and result['calendar'].get('readiness_forecast_invalid')
             and isinstance(result['readiness'].get('project'), dict)):
         # A broken display membership must not leave its global calendar date
@@ -1914,7 +1915,7 @@ def build(project: str, kind: str, end: Any, sales_project: str | None = None,
     if declined:
         blocks["sales"] = _missing("Продажи в сводку не входят: так выбрано на "
                                    "странице «Сводка руководству».")
-    blocks["construction_summary"] = _executive_schedule(blocks)
+    blocks["construction_summary"] = _executive_schedule(dict(blocks, end=bounds['end'].isoformat()))
     blocks["findings"] = findings({"kind": kind, "end": bounds["end"].isoformat(), **blocks})
     return {"project": project, "kind": kind,
             "start": bounds["start"].isoformat(),
@@ -3532,7 +3533,11 @@ def render_text(report: dict[str, Any]) -> str:
 
     lines += ["", "<b>Стройка</b>"]
     block = report.get("physical") or {}
-    if block.get("state") == "ok":
+    assessment = _report_gpr_summary(report)
+    if isinstance((report.get('gantt') or {}).get('readiness'), dict):
+        lines.append(esc(assessment['readiness_text']) if assessment else
+                     'Оценка учтённых работ не подтверждена для этого источника и даты среза.')
+    elif block.get("state") == "ok":
         lines.append(f"Выполнено по графику работ {_pct(block['fact'])}, "
                      f"по плану к этой дате должно быть {_pct(block['plan'])}.")
         if block.get("delta") is not None:
@@ -4542,8 +4547,6 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
 
 
 def _executive_schedule(report: dict[str, Any]) -> dict[str, Any]:
-    if report.get("construction_summary") is not None:
-        return report["construction_summary"]
     timeline = (report.get("gantt") or {}).get("dependency_timeline") or {}
     schedule_block = report.get("schedule") or {}
     if not timeline:
@@ -4551,7 +4554,28 @@ def _executive_schedule(report: dict[str, Any]) -> dict[str, Any]:
             "state": "complete" if schedule_block.get("known") else "unknown",
             "approved": schedule_block.get("approved"), "forecast": schedule_block.get("forecast"),
             "delay_days": schedule_block.get("delay_days")}}
-    return report_schedule.model(timeline, stalled=schedule_block.get("stalled"))
+    legacy = (report.get('construction_summary') if report.get('construction_summary') is not None
+              else report_schedule.model(timeline, stalled=schedule_block.get('stalled')))
+    readiness = (report.get('gantt') or {}).get('readiness')
+    if not isinstance(readiness, dict):
+        return legacy
+    # This is the presentation summary, built after credit/funding. Keep the
+    # independent RNV qualification intact and never send this conditional
+    # selected-work date back into financial inputs or the official milestone.
+    assessment = _report_gpr_summary(report)
+    rnv = timeline.get('rnv') or schedule_block.get('qualification') or {}
+    return dict(legacy, forecast=(assessment or {}).get('finish'),
+                forecast_label='Оценка окончания учтённых работ', assessment_basis='selected_project_gpr',
+                state='selected_gpr' if (assessment or {}).get('finish') else 'unknown',
+                rnv_state=rnv.get('state', 'unknown'),
+                delay_days=None, driver=None, driver_reason=None, driver_method=None,
+                rnv_driver=legacy.get('rnv_driver') or legacy.get('driver'),
+                rnv_driver_reason=legacy.get('rnv_driver_reason') or legacy.get('driver_reason'),
+                rnv_driver_method=legacy.get('rnv_driver_method') or legacy.get('driver_method'),
+                caveat=((assessment['forecast_text']+' '+assessment['scope_text']+' '+assessment['as_of_text'])
+                        if assessment else 'Оценка учтённых работ не подтверждена для этого источника и даты среза.'),
+                gpr_assessment=assessment, rnv_context=copy.deepcopy(rnv),
+                rnv_forecast=rnv.get('forecast') if rnv.get('state') == 'complete' else None)
 
 
 def _gantt_html(report: dict[str, Any]) -> str:
@@ -4562,9 +4586,15 @@ def _gantt_html(report: dict[str, Any]) -> str:
 
 def _report_gpr_summary(report: dict[str, Any]) -> dict[str, Any] | None:
     """The report cover shares the same bound date as its compact matrix/Gantt."""
-    model = report_gantt.compact_model(report.get('gantt') or {}, report.get('end'))
-    summary = model.get('summary')
+    from developaid_gpr_summary import project_assessment
+    summary = project_assessment(report.get('gantt') or {}, report.get('end'))
     if summary is None:
+        return None
+    try:
+        model = report_gantt.compact_model(report.get('gantt') or {}, report.get('end'))
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return None
+    if model.get('summary') is None:
         return None
     summary = dict(summary)
     if summary['finish'] != model['finish']:
@@ -4575,8 +4605,14 @@ def _report_gpr_summary(report: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _schedule_source_details(report: dict[str, Any]) -> str:
-    content = report_schedule.details(_executive_schedule(report),
+    executive = _executive_schedule(report)
+    content = report_schedule.details(executive,
         include_completed=not bool((report.get('gantt') or {}).get('dependency_timeline')))
+    if executive.get('rnv_driver_reason'):
+        content += ('<p class="note">Отдельный состав проверки РНВ: «'
+                    +html.escape(str(executive.get('rnv_driver') or 'Работа'))+'». '
+                    +html.escape(str(executive['rnv_driver_reason']))
+                    +' Это не основание общей оценки учтённых работ.</p>')
     block = report.get("schedule") or {}
     content += ''.join("<p class='note'>" + html.escape(line) + "</p>"
                        for line in report_gantt.notes(report.get("gantt") or {}, block))

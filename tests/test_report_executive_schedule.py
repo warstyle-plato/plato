@@ -80,9 +80,11 @@ def test_real_source_states_and_values(scenario):
     else:
         assert not executive["facts"]
     if scenario == "partialRNV":
-        assert executive["state"] == "partial" and executive["forecast"] == "2026-12-31"
+        # The source plan ending in December is not the selected-work assessment.
+        assert executive["state"] == "selected_gpr" and executive["forecast"] == "2027-02-11"
+        assert executive["rnv_state"] == "partial" and executive["rnv_forecast"] is None
         assert built["schedule"]["qualification"]["forecast"] is None
-        assert executive["forecast_label"] == "Оценка по части работ"
+        assert executive["forecast_label"] == "Оценка окончания учтённых работ"
     elif scenario in {"unknownpace", "versionspresent"}:
         assert executive["forecast"] is None
     if scenario == "versionspresent":
@@ -105,7 +107,10 @@ def stalled_sources(partial):
 def test_stalled_gpr_work_and_its_cause_remain_in_the_executive_conclusion(partial):
     stalled_sources(partial)
     built = report.build(PROJECT, "week", CUT)
-    assert built["construction_summary"]["state"] == ("partial" if partial else "unknown")
+    assert built["construction_summary"]["state"] == "selected_gpr"
+    assert built["construction_summary"]["forecast"] == ("2027-01-30" if partial else "2026-12-24")
+    assert built["construction_summary"]["rnv_state"] == ("partial" if partial else "unknown")
+    assert built["construction_summary"]["rnv_forecast"] is None
     risk = built["construction_summary"]["stalled_text"]
     assert "Демонтаж башенных кранов К-1,2" in risk
     assert built["schedule"]["stalled"][0]["reason"] in risk
@@ -113,7 +118,8 @@ def test_stalled_gpr_work_and_its_cause_remain_in_the_executive_conclusion(parti
     conclusion = next(item["text"] for item in built["findings"] if item["topic"] == "Срок")
     assert risk in conclusion
     if partial:
-        assert "Фасад" in conclusion  # the known driver does not erase the other risk
+        # The broader RNV source is retained apart from the selected assessment.
+        assert "Фасад" in built["construction_summary"]["rnv_driver"]
     from developaid_report_schedule import render
     assert risk in render(built["construction_summary"])
     assert built["schedule"]["qualification"]["forecast"] is None

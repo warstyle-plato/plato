@@ -2688,9 +2688,16 @@ def _gap_by_chapter_sentence(funding: dict[str, Any]) -> str:
     return text + (f" {note}" if note else "")
 
 
-def _schedule_summary(schedule: dict[str, Any]) -> str | None:
+def _schedule_summary(schedule: dict[str, Any], assessment=None, *, readiness_present=False) -> str | None:
     """Use the same qualified RNV as the cards, including partial/unknown."""
     qualified = schedule.get("qualified_rnv")
+    if readiness_present:
+        text = ((assessment['forecast_text']+' '+assessment['scope_text']+' '+assessment['as_of_text'])
+                if assessment else 'Оценка учтённых работ не подтверждена для этого источника и даты среза.')
+        rnv_state = qualified if isinstance(qualified, dict) else {}
+        rnv = rnv_state.get('forecast') if rnv_state.get('state') == 'complete' else None
+        return 'Срок. '+text+(' Прогноз РНВ: '+monitor._day(rnv).strftime('%d.%m.%Y')+'.'
+                                 if monitor._day(rnv) else ' Прогноз РНВ не определён.')
     if isinstance(qualified, dict):
         if qualified.get("state") == "estimate":
             approved = monitor._day(qualified.get("approved"))
@@ -2746,7 +2753,10 @@ def refresh_schedule_summary(view: dict[str, Any]) -> None:
     if not isinstance(current, list):
         return
     schedule = dashboard.get("schedule") or view.get("schedule") or {}
-    sentence = _schedule_summary(schedule)
+    from developaid_gpr_summary import project_assessment
+    source = view.get('schedule') or {}
+    sentence = _schedule_summary(schedule, project_assessment(source, view.get('cut')),
+                                 readiness_present=isinstance(source.get('readiness'), dict))
     rest = [line for line in current if not isinstance(line, str) or not line.startswith("Срок.")]
     dashboard["summary"] = ([sentence] if sentence else []) + rest
 
@@ -2760,7 +2770,10 @@ def _summary(view: dict[str, Any], funding: dict[str, Any],
     """
     out: list[str] = []
     schedule = (view.get("dashboard") or {}).get("schedule") or view.get("schedule") or {}
-    sentence = _schedule_summary(schedule)
+    from developaid_gpr_summary import project_assessment
+    source = view.get('schedule') or {}
+    sentence = _schedule_summary(schedule, project_assessment(source, view.get('cut')),
+                                 readiness_present=isinstance(source.get('readiness'), dict))
     if sentence:
         out.append(sentence)
 

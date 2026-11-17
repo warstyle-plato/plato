@@ -272,6 +272,8 @@ def _apply_gpr(project: str, view: dict[str, Any], cut: datetime.date) -> dict[s
     schedule['display_groups'] = group_metadata(display_rows)
     decorate_readiness(schedule['readiness'], display_rows, qualified)
     schedule['readiness_html'] = readiness.render(schedule['readiness'])
+    from developaid_gpr_summary import project_assessment
+    schedule['gpr_assessment'] = project_assessment(schedule, cut.isoformat())
     if schedule.get('completed_facts') is not None:
         summary = schedule['readiness']['project']
         # This legacy field means the whole scope. A known weighted fraction
@@ -295,7 +297,7 @@ def _apply_gpr(project: str, view: dict[str, Any], cut: datetime.date) -> dict[s
     schedule["corpus_gpr_html"] = corpus_gpr.render_overview(schedule["corpus_gpr"], cut.isoformat())
     if isinstance(dash, dict):
         driver = (qualified.get("driving_chain") or [None])[0]
-        dash.update(qualified_rnv=qualified, stalled=stalled,
+        dash.update(qualified_rnv=qualified, gpr_assessment=schedule['gpr_assessment'], stalled=stalled,
                     forecast_known=qualified["state"] == "estimate",
                     forecast_finish=qualified.get("forecast"),
                     forecast_source="ГПР, без цепочки до разрешения",

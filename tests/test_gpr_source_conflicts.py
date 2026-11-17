@@ -171,9 +171,11 @@ def test_real_driver_reason_is_printed_once_in_the_source_appendix(gpr_sources):
     built = gpr_sources('confirmed')
     summary = built['construction_summary']
     driver = built['schedule']['qualification']['driving_chain'][0]
-    assert summary['driver_method'] == driver['method'] == 'cumulative_quantities'
-    reason = summary['driver_reason']
+    assert summary['driver_method'] is summary['driver_reason'] is None
+    assert summary['rnv_driver_method'] == driver['method'] == 'cumulative_quantities'
+    reason = summary['rnv_driver_reason']
     assert reason == driver['reason'] and reason
+    assert report._executive_schedule(built)['rnv_driver_reason'] == reason
     with browser_page(1440) as (page, responses, errors):
         page.set_content(report.render_html(built))
         assert reason not in page.locator('.report-gpr-compact').inner_text()
