@@ -57,7 +57,8 @@ def test_invalid_payment_amount_survives_xlsx_as_unknown(tmp_path, monkeypatch, 
     assert not r['matches']
     assert funding['own_money']['source_completeness']['payments']['2'] == [
         {'source_row': 10, 'fields': ['amount']}]
-    assert r['primary_source_gate'] == 'BLOCKED'
+    assert r['primary_source_gate'] == 'NOT_REQUIRED_FOR_CALCULATION'
+    assert r['calculation']['paid_at_cut'] is None  # No readable row is not a known zero.
 
 
 @pytest.mark.parametrize('value', [None, 'неизвестно', True, 'NaN', '-inf'])

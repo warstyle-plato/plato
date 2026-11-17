@@ -403,22 +403,16 @@ def funding_base_for_limit(funding, model):
 
 
 def funding_summary(base, model, money):
-    """Observed cash is context, never an attestation of remaining funding need.
-
-    The native cash producer does not attest payment coverage since project
-    start. Even a complete observed period cannot turn its balance into need.
-    Without cash data, keep the existing, separately named bank calculation.
-    """
+    """Show an available bank calculation; keep AHR cash context separate."""
     base = number(base)
     balance = number(model.get('balance_after_observed_payments'))
-    if not _has_cash_observation(model):
-        return {'amount': scalar(max(Decimal(0), base)) if base is not None else None,
-                'scope': 'bank_only',
-                'note': 'Сумма без уточнения АХР: остаток АХР пока не рассчитан.'}
     note = (f'АХР: остаток после учтённых оплат — {money(scalar(balance))}. '
-            if balance is not None else 'Остаток АХР после учтённых оплат пока не рассчитан. ')
-    note += 'Полнота оплат с начала проекта не подтверждена; общая потребность пока не определена.'
-    return {'amount': None, 'scope': 'unconfirmed_total', 'note': note}
+            if balance is not None else 'Остаток АХР после учтённых оплат не рассчитан. ')
+    if base is not None:
+        return {'amount': scalar(max(Decimal(0), base)), 'scope': 'bank_only',
+                'note': note + 'Потребность по смете банка показана отдельно от остатка АХР.'}
+    return {'amount': None, 'scope': 'unconfirmed_total',
+            'note': note + 'Не определена базовая потребность без уже включённых в неё АХР.'}
 
 
 def render_funding(summary, details_html):
@@ -435,7 +429,7 @@ def render_funding(summary, details_html):
 def tiles(model):
     notes={'budget':'По сохранённой ФМ; налоги отдельно.',
            'paid_observed_net':'Известная часть оплат по загруженным источникам.',
-           'balance_after_observed_payments':'Промежуточный остаток; полнота оплат не подтверждена.',
+           'balance_after_observed_payments':'Остаток после оплат, учтённых за выбранный период.',
            'observed_overspend':'По учтённым оплатам; без добавления в бюджет.'}
     return [{'label':label,'value':money(model.get(key),compact=True),'note':notes[key],
              'group':'admin_expenses_cash','tone':'missing' if model.get(key)is None else ''}for key,label in FIELDS]

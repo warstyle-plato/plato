@@ -1,4 +1,4 @@
-"""A whole-project diagnostic gap cannot become a bank-only or accepted total."""
+"""Computed need is visible without an audit gate; AHR stays in the budget once."""
 import copy
 import datetime as dt
 
@@ -12,7 +12,7 @@ from test_the_approved_budget_says_what_it_is_made_of import _read, _finmodel, S
 
 
 @pytest.mark.parametrize("cash_model", [{}, {"remaining_need": None, "coverage": {"known_count": 0}}])
-def test_whole_budget_with_ahr_and_no_observations_has_no_known_headline(tmp_path, monkeypatch, cash_model):
+def test_whole_budget_with_ahr_has_a_calculated_headline_without_cash_observations(tmp_path, monkeypatch, cash_model):
     built, _ = source_case(tmp_path, monkeypatch)
     limit = built["funding"]["limit"]
     canonical = limit["own_money"]["reconciliation"]
@@ -20,31 +20,37 @@ def test_whole_budget_with_ahr_and_no_observations_has_no_known_headline(tmp_pat
     assert canonical["budget"] == 1_440_000  # Includes the same 40,000 AHR; never add it twice.
     assert limit["own_money"]["admin"]["total"] == 40_000
     assert canonical["calculated_additional"] is not None
-    assert canonical["confirmed_additional"] is None and canonical["primary_source_gate"] == "BLOCKED"
+    assert canonical["confirmed_additional"] is None
+    assert canonical["primary_source_gate"] == "NOT_REQUIRED_FOR_CALCULATION"
     before = copy.deepcopy(limit)
     built["admin_expenses_cash"] = copy.deepcopy(cash_model)
     tile, = [tile for tile in report.tiles(built) if tile.get("group") == "additional_funding"]
-    assert tile["label"] == "Потребность в допфинансировании"
-    assert tile["value"] == "нет данных" and tile["tone"] == "missing"
+    assert tile["label"] == "Расчётная потребность в допфинансировании"
+    assert tile["value"] == report._rub(canonical["calculated_additional"])
+    assert tile["tone"] == ("bad" if canonical["calculated_additional"] > 0 else "good")
     assert "без АХР" not in tile["note"].lower()
     assert "по смете банка" not in tile["note"].lower()
-    assert "сверка первичных источников не завершена" in tile["note"]
+    assert "Утверждённый бюджет уже включает АХР" in tile["note"]
+    assert "сверка" not in tile["note"].lower()
     summary = dashboard.funding_cash_summary(limit, cash_model, report._rub)
-    assert summary["amount"] is None and summary["scope"] == "unconfirmed_total"
+    assert summary["amount"] == canonical["calculated_additional"]
+    assert summary["scope"] == "calculated_total"
     finding, = [f for f in report.findings(built) if f["topic"] == "Финансирование"]
-    assert finding["tone"] == "missing" and "общая потребность пока не определена" in finding["text"]
+    assert finding["tone"] == ("bad" if summary["amount"] > 0 else "")
+    assert report._rub(summary["amount"]) in finding["text"]
+    assert "сверка источников не завершена" not in finding["text"]
     html = report._funding_html(built)
     row = next(row for row in canonical["display_rows"] if row["key"] == "calculated_additional")
     assert f"<td>{row['label']}</td><td>{report._rub(row['value'])}</td>" in html
     assert limit == before
 
 
-def test_unaccepted_confirmed_field_does_not_bypass_the_source_gate():
+def test_legacy_acceptance_metadata_cannot_hide_an_existing_calculation():
     funding = {"known": True, "own_money": {"need": 250, "reconciliation": {
         "basis": "approved_budget", "calculated_additional": 250,
-        "confirmed_additional": 250, "primary_source_gate": "BLOCKED",
+        "confirmed_additional": 777, "primary_source_gate": "BLOCKED",
         "financial_acceptance_performed": False}}}
-    assert dashboard.funding_cash_summary(funding, {}, cash.money)["amount"] is None
+    assert dashboard.funding_cash_summary(funding, {}, cash.money)["amount"] == 250
 
 
 def test_explicit_bank_chapter_basis_keeps_its_separate_native_component():

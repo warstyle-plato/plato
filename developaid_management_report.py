@@ -1320,14 +1320,14 @@ def credit_due(credit_block: dict[str, Any], funding_block: dict[str, Any],
     has_reconciliation = reconciliation is not None
     reconciliation = reconciliation if isinstance(reconciliation, dict) else {}
     need = _approved_need(limit) if limit and not has_reconciliation else None
-    from developaid_funding_reconciliation import number
+    from developaid_funding_reconciliation import number, calculation_values
     # The funding bridge owns the current additional need. An absent amount
     # cannot silently become the no-increase scenario or revive an old ladder.
-    amount = (number(reconciliation.get('calculated_additional')) if has_reconciliation else
+    amount = (number(calculation_values(reconciliation).get('calculated_additional')) if has_reconciliation else
               number(need.get('deficit')) if need and _model_basis(limit) else None)
     extra_known = amount is not None and amount >= 0
     extra = amount if extra_known and amount > 0.5 else 0.0
-    extra_note = ('Расчётная дополнительная потребность по финансовой сверке; '
+    extra_note = ('Расчётная дополнительная потребность по учтённым оплатам; '
                   'её привлечение в банке на условиях первой НКЛ — допущение, не одобренный кредит. '
                   + str(reconciliation.get('source_scope_short_note') or '') if has_reconciliation else '')
     due: dict[str, dict[str, float]] = {}
@@ -2224,19 +2224,13 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
             reconciliation = (own or {}).get("reconciliation")
             model = report.get("admin_expenses_cash") or {}
             summary = _funding_cash_summary(limit, model)
-            if summary.get("scope") == "unconfirmed_total":
+            if reconciliation or summary.get("scope") in {"unconfirmed_total", "bank_only"}:
                 extra = summary["amount"]
                 if extra is not None:
-                    pieces.append(f"потребность в допфинансировании {_rub(extra)}")
+                    label = ("потребность по банковской смете" if summary.get("scope") == "bank_only"
+                             else "расчётная потребность в допфинансировании")
+                    pieces.append(f"{label} {_rub(extra)}")
                 pieces.append(summary["note"].rstrip("."))
-                if reconciliation:
-                    pieces.append('финансовая сверка источников не завершена '
-                                  '(подробности — в разделе «Финансирование»)')
-            elif reconciliation:
-                pieces.append('расчётная дополнительная потребность ' +
-                              _rub(reconciliation.get('calculated_additional')) +
-                              '; финансовая сверка источников не завершена '
-                              '(подробности — в разделе «Финансирование»)')
             elif own:
                 extra = float(own["need"])
                 pieces.append(f"нужно своих денег сверх сметы банка {_rub(extra)}"
@@ -2273,7 +2267,7 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
                  else float(limit.get("additional_financing") or 0) if limit.get("known") else 0.0)
         model = report.get("admin_expenses_cash") or {}
         summary = _funding_cash_summary(limit, model)
-        if summary.get("scope") == "unconfirmed_total":
+        if reconciliation or summary.get("scope") in {"unconfirmed_total", "bank_only"}:
             short = summary["amount"]
         # Фраза «участок и проценты не входят» — про потребность банка по главам
         # 2–3; у «своих денег сверх сметы» участок входит, и её там нет.
@@ -3118,10 +3112,11 @@ def _bank_observation_rows(limit):
     bank = limit.get('bank_observations') or {}
     if bank.get('scope') != 'rss_chapters_1_2_3':
         return []
+    calculation = bank.get('calculation') or {}
     return [('Лимит банка по РСС', bank.get('bank_limit')),
-            ('Учтено оплат по РСС', bank.get('paid_actual')),
+            ('Учтено оплат по РСС', calculation.get('paid_at_cut', bank.get('paid_actual'))),
             ('Из них заёмными средствами', bank.get('paid_borrowed')),
-            ('Доступный остаток лимита по РСС', bank.get('available_bank_limit'))]
+            ('Доступный остаток лимита по РСС', calculation.get('available_bank_limit', bank.get('available_bank_limit')))]
 
 
 def _funding_text(report: dict[str, Any]) -> list[str]:
@@ -3420,9 +3415,13 @@ def _funding_html(report: dict[str, Any]) -> str:
         out.append(_table(['Банковские данные РСС', 'Сумма'],
                           [[label, _rub(value)] for label, value in _bank_observation_rows(limit)]))
         out.append('<p class="note">'+esc(limit['bank_observations']['note'])+'</p>')
+        if limit['bank_observations'].get('calculation'):
+            from developaid_funding_reconciliation import calculation_note
+            out.append('<p class="note">'+esc(calculation_note(limit['bank_observations']))+'</p>')
     reconciliation = limit.get("reconciliation") or (limit.get("own_money") or {}).get("reconciliation")
     if reconciliation:
-        rows = [[row["label"], _rub(row["value"])] for row in reconciliation["display_rows"]]
+        rows = [[row["label"], (row.get("prefix", "") if row["value"] is not None else "") + _rub(row["value"])]
+                for row in reconciliation["display_rows"]]
         out.append(_table(["Сверка бюджета и финансирования", "Сумма"], rows))
         admin = reconciliation.get("admin_expenses") or {}
         if admin.get("rows"):
@@ -4296,6 +4295,8 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
         base = admin_cash.funding_base_for_limit(limit, model)
         summary = _funding_cash_summary(limit, model)
         amount = summary["amount"]
+        label = summary.get("label") or ("Потребность по банковской смете"
+                 if summary.get("scope") == "bank_only" else label)
         if summary.get("scope") == "unconfirmed_total":
             label = "Потребность в допфинансировании"
         # A partial cash balance is an observation; the combined need is unknown.
@@ -4307,7 +4308,7 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
                                           base_note, summary["note"])))
         else:
             note = note.rstrip(" .;") + ". " + summary["note"]
-        add(label, _rub(amount) if amount is not None and amount > 0 else "нет" if amount is not None else None,
+        add(label, _rub(amount) if amount is not None else None,
             note, "bad" if amount is not None and amount > 0 else "good" if amount is not None else "missing")
         out[-1]["group"] = "additional_funding"
 
@@ -4437,10 +4438,10 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
                 # The cover keeps the five principal money readings. Every
                 # diagnostic canonical row remains in the Funding block below.
                 if row["key"] in {"paid_at_cut", "available_bank_limit"}:
-                    note = '' if raw_reconciliation else row["note"]
-                    if row["value"] is None:
+                    note = row["note"]
+                    if row["value"] is None and not reconciliation.get("calculation"):
                         note = " ".join(filter(None, (note, _payment_total_gap_note(reconciliation))))
-                    add(row["label"], _rub(row["value"]) if row["value"] is not None else None, note)
+                    add(row["label"], row.get("prefix", "") + _rub(row["value"]) if row["value"] is not None else None, note)
                 elif row["key"] == "calculated_additional":
                     add_need(row["label"], row["note"], reconciliation=reconciliation)
         else:
@@ -4490,13 +4491,16 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
             "bad" if extra > 0 else "good")
     else:
         bank = limit.get('bank_observations') or {}
+        calculation = bank.get('calculation') or {}
         payment_note = _payment_total_gap_note(bank)
         note = " ".join(filter(None, (bank.get('note') or limit.get('reason'), payment_note)))
-        paid = bank.get('paid_actual')
-        add("Оплачено с начала проекта", _rub(paid) if paid is not None else None,
+        paid = calculation.get('paid_at_cut', bank.get('paid_actual'))
+        prefix = 'учтено ' if calculation.get('partial') else ''
+        add("Оплачено с начала проекта", prefix + _rub(paid) if paid is not None else None,
             note or 'оплаты не прочитаны')
-        value = bank.get('available_bank_limit')
-        add("Осталось по смете после всех оплат", _rub(value) if value is not None else None,
+        value = calculation.get('available_bank_limit', bank.get('available_bank_limit'))
+        prefix = 'расчётно ' if calculation.get('partial') else ''
+        add("Осталось по смете после всех оплат", prefix + _rub(value) if value is not None else None,
             note or 'лимит не посчитан')
     if own:
         pass
@@ -4524,6 +4528,8 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
                       "Расчётная дополнительная потребность": "need",
                       "Потребность в допфинансировании банка": "need",
                       "Потребность в допфинансировании": "need", "Дефицит на достройку": "need"}
+        source_for["Расчётная потребность в допфинансировании"] = "need"
+        source_for["Потребность по банковской смете"] = "need"
         for item in out:
             key = source_for.get(item["label"])
             if key:

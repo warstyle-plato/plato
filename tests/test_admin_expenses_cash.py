@@ -214,9 +214,10 @@ def test_real_monitor_page_shows_one_funding_tile_and_clears_it(width,tmp_path):
         assert card.locator('.additional-funding').count()==1
         assert card.locator('details').first.evaluate('(e)=>!e.open')
         assert card.locator('details.admin-fm-source').evaluate('(e)=>!e.open')
-        expect(card.locator('.additional-funding')).to_contain_text('нет данных')
+        expect(card.locator('.additional-funding')).to_contain_text(cash.money(1_800_000_000, compact=True))
+        expect(card.locator('.additional-funding')).to_contain_text('Потребность по смете банка')
         expect(card).to_contain_text(cash.money(model['balance_after_observed_payments'], compact=True))
-        expect(card).to_contain_text('общая потребность пока не определена')
+        expect(card).to_contain_text('Потребность по смете банка показана отдельно от остатка АХР')
         assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
         for element in card.locator('.admin-expenses-cash > div > div').all():
             assert element.evaluate('(e)=>e.scrollWidth<=e.clientWidth')
@@ -255,7 +256,10 @@ def test_pdf_one_funding_tile_on_cover_and_ahr_is_in_details(tmp_path,monkeypatc
         if key != 'balance_after_observed_payments':
             assert label.casefold() not in cover.casefold()
     assert not any(item.get('group')=='admin_expenses_cash' for item in report.tiles(data))
-    assert 'общая потребность пока не определена' in cover
+    tile = next(item for item in report.tiles(data) if item.get('group') == 'additional_funding')
+    assert tile['label'] in cover and tile['value'] in cover
+    assert ''.join(tile['note'].split()) in ''.join(cover.split())
+    assert 'общая потребность пока не определена' not in cover
     assert 'нужно на АХР' not in cover
     all_text=' '.join(''.join(page.get_text() for page in pdf).split())
     for key,label in cash.FIELDS:
