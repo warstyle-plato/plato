@@ -12,6 +12,7 @@
 Отдельно не импортировать: второй импорт поднял бы вторую копию движка.
 """
 # ruff: noqa
+import mo_vri_benefits
 
 # ---------------------------------------------------------------------------
 # Калькулятор Подмосковья: ТЭП, социальная нагрузка по РНГП МО и плата за ВРИ
@@ -1248,10 +1249,76 @@ class MoCalculateRequest(BaseModel):
     limit: int = 30
 
 
+def mo_vri_benefit_estimate(config: dict, inputs: dict, tep: dict) -> dict:
+    """Контекст РНГП и цен МО добавляется один раз перед общим расчётом."""
+    if (not isinstance(config, dict) or config.get("schema") != 1
+            or not isinstance(config.get("rows", []), list)
+            or any(not isinstance(row, dict) for row in config.get("rows", []))):
+        raise ValueError("Некорректный состав обязательств 1310-ПП.")
+    apartments = tep.get("apartments") or {}
+    saleable, transfer = (_land_float(apartments.get(k)) for k in ("saleable", "transfer"))
+    area = saleable + transfer if saleable is not None and transfer is not None else _land_float(apartments.get("useful"))
+    needs = {}
+    if area is not None and math.isfinite(area) and area >= 0:
+        social = mo_social_program(area, norms=MO_NORMS_DEFAULT)
+        needs = {k: social[k]["required_places"] for k in ("school", "kindergarten")}
+    prices = {}
+    for row in config.get("rows", []):
+        district = str(row.get("district") or "")
+        if district and district not in prices:
+            price, period, document, basis = _mo_market_price_for(district)
+            prices[district] = {"price": price, "basis": basis, "document": document + " · " + period}
+    return mo_vri_benefits.estimate(config, inputs=inputs, tep=tep, social_needs=needs, market_prices=prices)
+
+
+def apply_mo_vri_benefits(inputs: dict, tep: dict) -> dict:
+    """Пересчитать принятую оценку после изменения её входов, без повторного вычета."""
+    config = inputs.get("mo_vri_benefits")
+    if (project_region(inputs) != "mo" or not isinstance(config, dict)
+            or inputs.get("_vri_relief_applied_at_project") is True or not config.get("applied")):
+        return {}
+    applied = config["applied"]
+    try:
+        if not isinstance(applied, dict):
+            raise ValueError("Нет исходной платы принятого расчёта льгот.")
+        gross = float(mo_vri_benefits.number(applied.get("gross_rub"), "исходную плату"))
+        saved_net = float(mo_vri_benefits.number(applied.get("net_mln"), "прежнюю плату после уменьшения"))
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    current = _land_float(inputs.get("land_rights_cost_mln"))
+    if current is None or abs(current - saved_net) >= 1e-6:
+        return {}  # пользователь заменил плату вручную
+    try:
+        estimate = mo_vri_benefit_estimate(config, inputs, tep)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    if not estimate["complete"]:
+        missing = "; ".join(r.get("error", "") for r in estimate["rows"] if not r["complete"])
+        raise HTTPException(status_code=422, detail="Льготы 1310-ПП требуют уточнения: " + missing)
+    if (estimate["has_resettlement"] and n(inputs, "vri_transfer_offset_mln") > 0
+            and config.get("separate_transfer_offset") is not True):
+        raise HTTPException(status_code=422, detail="Подтвердите, что отдельный зачёт переданных площадей не входит в оценку переселения, или уберите повторный зачёт.")
+    vri = mo_vri_compensation(gross, estimate["total_rub"])
+    vri["payment_used_mln"] = vri["payment_used_rub"] / 1e6
+    vri["benefits"] = estimate
+    vri["compensation_basis"] = estimate["basis"]
+    vri["warnings"] = [mo_vri_benefits.ESTIMATE_NOTE]
+    config = copy.deepcopy(config)
+    config["applied"] = {"gross_rub": applied["gross_rub"], "net_mln": vri["payment_used_mln"]}
+    config["result"] = estimate
+    inputs.update(mo_vri_benefits=config, land_rights_cost_mln=vri["payment_used_mln"],
+                  mo_vri_compensation_mln=(vri["compensation_rub"] or 0) / 1e6,
+                  _mo_vri_relief={"schema": 1, "vri": vri,
+                                  "source": {"kind": "calculated_benefits", "label": estimate["basis"]}})
+    return {"vri": vri, "inputs": {k: copy.deepcopy(inputs[k]) for k in
+            ("mo_vri_benefits", "land_rights_cost_mln", "mo_vri_compensation_mln", "_mo_vri_relief")}}
+
+
 class MoVriCompensationRequest(BaseModel):
     model_config = {"strict": True}
     payment_before_compensation_rub: float | None = None
     compensation_rub: float | None = None
+    benefits: dict[str, Any] | None = None
     inputs: dict[str, Any] = {}
     tep: dict[str, Any] = {}
     session: str = ""
@@ -1268,11 +1335,29 @@ def mo_vri_compensation_preview(req: MoVriCompensationRequest) -> dict[str, Any]
         raise HTTPException(status_code=400, detail="Этот расчёт применяется к проекту Московской области.")
     gross = req.payment_before_compensation_rub
     compensation = req.compensation_rub
-    if gross is None or not math.isfinite(gross) or gross < 0:
+    if (gross is None and req.benefits is None) or (gross is not None and (not math.isfinite(gross) or gross < 0)):
         raise HTTPException(status_code=422, detail="Укажите плату до уменьшения: известную сумму не меньше нуля.")
     if compensation is not None and (not math.isfinite(compensation) or compensation < 0):
         raise HTTPException(status_code=422, detail="Сумма компенсации должна быть не меньше нуля.")
+    estimate = None
+    if req.benefits is not None:
+        try:
+            estimate = mo_vri_benefit_estimate(req.benefits, req.inputs, req.tep)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        if not estimate["complete"]:
+            return {"vri": None, "benefits": estimate}
+        compensation = estimate["total_rub"]
+        if gross is None:
+            return {"vri": None, "benefits": estimate}
     vri = mo_vri_compensation(gross, compensation)
+    if estimate is not None:
+        vri["benefits"] = estimate
+        vri["compensation_basis"] = estimate["basis"]
+        vri["warnings"] = [mo_vri_benefits.ESTIMATE_NOTE]
+        if (estimate["has_resettlement"] and n(req.inputs, "vri_transfer_offset_mln") > 0
+                and req.benefits.get("separate_transfer_offset") is not True):
+            raise HTTPException(status_code=422, detail="Есть расчёт переселения и отдельный зачёт переданных площадей. Уберите пересекающийся зачёт или подтвердите отдельное основание.")
     # В узком денежном расчёте переносим точную сумму в миллионы, не округляя
     # вручную заданную исходную плату до тысяч рублей, как в старом превью ТЭП.
     vri["payment_used_mln"] = vri["payment_used_rub"] / 1_000_000.0
@@ -1287,7 +1372,7 @@ def mo_vri_compensation_preview(req: MoVriCompensationRequest) -> dict[str, Any]
     vri["transfer_offset_applied_rub"] = before_offset - payable
     vri["other_relief_rub"] = other_relief
     vri["payment_after_reliefs_rub"] = payable
-    return {"vri": vri}
+    return {"vri": vri, "benefits": estimate}
 
 
 @app.get("/mo/reference")
