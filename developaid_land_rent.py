@@ -89,8 +89,54 @@ def construction_plan(result: dict[str, Any], object_key: str) -> dict[str, Any]
         "land_rent_construction_vat_exempt": result.get("vat_treatment") != "taxable",
         "land_rent_construction_input_vat_base": dict(accrued) if result.get("vat_treatment") == "taxable" else {},
         "land_rent_construction_complete": complete,
-        "land_rent_construction_cash_complete": complete,
+        "land_rent_construction_cash_complete": complete and result.get("construction_cash_complete", True) is True,
     }
+
+
+def sync_construction_cash(result: dict[str, Any], cash: dict[str, float]) -> None:
+    """Refresh an overlaid article without treating payments as service dates.
+
+    Existing explicit exposure shares may allocate cash for the forecast.
+    That model allocation is disclosed and does not become a primary fact.
+    Accruals and the separately modelled operating cash remain unchanged.
+    """
+    previous = result.get("construction_monthly") or {}
+    changed = cash != previous
+    if changed:
+        by_object = result.get("construction_monthly_by_object") or {}
+        weights: dict[str, float] = defaultdict(float)
+        for item in result.get("land_exposures") or []:
+            share = _number(item.get("share"))
+            if share is not None and share >= 0 and item.get("object_key"):
+                weights[item["object_key"]] += share
+        allocated = {key:{} for key in weights}
+        unallocated = {}
+        for month, value in cash.items():
+            old_total = sum(own.get(month,0.0) for own in by_object.values())
+            own_weights = ({key:own.get(month,0.0)/old_total for key,own in by_object.items()}
+                           if old_total else weights)
+            if not own_weights or not math.isclose(sum(own_weights.values()),1.0,abs_tol=1e-9):
+                unallocated[month] = value
+                continue
+            for key, weight in own_weights.items():
+                allocated.setdefault(key,{})[month] = value*weight
+        result["construction_monthly_by_object"] = allocated
+        result["unallocated_construction_cash"] = unallocated
+        result["construction_cash_complete"] = False
+        result["construction_cash_allocation"] = {
+            "kind":"model", "primary_fact":False,
+            "source":"Существующие явные доли объектов; месяцы с прежним графиком сохраняют его распределение",
+            "reason":"Факт оплаты аренды не подтверждает объект и период начисления; распределение по объектам остаётся модельной оценкой.",
+        }
+        result["notes"] = list(dict.fromkeys([*result.get("notes",[]),result["construction_cash_allocation"]["reason"]]))
+    result["construction_monthly"] = dict(cash)
+    result["development_cash_total"] = sum(cash.values())
+    combined = defaultdict(float,cash)
+    for own in (result.get("operating_monthly_by_object") or {}).values():
+        for month,value in own.items():
+            combined[month] += value
+    result["monthly"] = dict(sorted(combined.items()))
+    result["cash_total"] = result["applied_total"] = sum(combined.values())
 
 
 def construction_cutoff(housing_rve: date, object_dates: dict[str, date], *, pure_nonres: bool = False) -> date:

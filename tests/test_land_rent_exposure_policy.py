@@ -8,6 +8,7 @@ import openpyxl
 import pytest
 
 import developaid_land_rent as rent
+import developaid_actuals as actuals
 import hotel_presets
 import main_legacy as core
 import v4_land_rent as sheet
@@ -141,6 +142,89 @@ def test_hotel_caller_excludes_separate_construction_liability_from_other_capex(
     for month,value in cash.items():
         assert op['capex'][month]-plan['capex'].get(month,0)==pytest.approx(value)
         assert plan['capex_vat_exempt'].get(month,0)==0
+
+
+@pytest.mark.parametrize('phased,expected',[(False,3_369_863.013699),(True,4_344_863.013699)])
+def test_housing_app_uses_registration_tail_without_moving_commissioning(phased,expected):
+    p={'enabled':True,'phase_count':2,'phases':[
+        {'name':'A','site_area_ha':35,'start_offset_months':0,'construction_months':12},
+        {'name':'B','site_area_ha':65,'start_offset_months':12,'construction_months':12}]} if phased else {}
+    before=core._run_authoritative_model(inputs(land_rent_registration_months=0),
+        copy.deepcopy(core.TEP_DEFAULT),[],copy.deepcopy(p))
+    after=core._run_authoritative_model(inputs(),copy.deepcopy(core.TEP_DEFAULT),[],copy.deepcopy(p))
+    result=after['consolidated']
+    assert result['land_rent']['known_total']==pytest.approx(expected,abs=.01)
+    assert result['land_rent']['known_total']==pytest.approx(daily(result['land_rent']['land_exposures']),abs=.01)
+    assert result['dates']==before['consolidated']['dates']
+    assert result['summary']['land_rent_sum']['known']
+    if phased:
+        assert [row['result']['dates'] for row in after['phases']]==[
+            row['result']['dates'] for row in before['phases']]
+
+
+@pytest.fixture(params=['office','hotel'])
+def retained_operating_model(request):
+    x=inputs()
+    for obj in core.STANDALONE_OBJECTS:
+        x[obj.enabled_key]=False
+    if request.param=='hotel':
+        x=hotel_presets.apply_preset(x,'hotel1')
+        x.update(project_kind='hotel',hotel_hold_years=2)
+    else:
+        x.update(project_kind='nonresidential',offices_enabled=True,
+            offices_gba_sqm=5000,offices_saleable_sqm=3500,offices_strategy='income',
+            offices_rent_th_per_sqm_month=5,offices_occupancy_stable_pct=95,
+            offices_leaseup_months=12,offices_opex_pct=18,offices_exit_cap_pct=10,
+            offices_hold_years=2,offices_start='2028-01-01',offices_months=12)
+    prepared=core.prepared_calculation(x,copy.deepcopy(core.TEP_DEFAULT),[])
+    return request.param,core.build_operating_model(prepared['x'],prepared['t'],prepared['rates'])
+
+
+@pytest.mark.parametrize('replace_rent',[False,True])
+def test_overlay_carries_construction_once_and_preserves_service_basis(retained_operating_model,replace_rent):
+    kind,op=retained_operating_model
+    before=copy.deepcopy(op)
+    facts={'land_rent':{'2027-01-01':200_000}} if replace_rent else {'utilities':{'2027-01-01':50_000}}
+    changed=actuals.overlay(op,{'cut':'2027-04-01','land_rent_mapping_version':1,
+                              'capex_by_article':facts})['op']
+    assert op==before
+    key='hotel' if kind=='hotel' else 'offices'
+    plan=changed['hotel_plan'] if kind=='hotel' else changed['nonres_plans']['offices']
+    old_plan=op['hotel_plan'] if kind=='hotel' else op['nonres_plans']['offices']
+    assert plan['land_rent_construction_incurred']==old_plan['land_rent_construction_incurred']
+    assert plan['land_rent_operating']==old_plan['land_rent_operating']
+    assert plan['land_rent_operating_cash']==old_plan['land_rent_operating_cash']
+    cash=plan['land_rent_construction_cash']
+    assert sum(cash.values())==pytest.approx(sum(changed['capex_by_article']['land_rent'].values()))
+    if kind=='hotel':
+        for month,value in changed['capex'].items():
+            assert plan['capex'].get(month,0)+cash.get(month,0)==pytest.approx(value)
+    else:
+        for month,value in changed['capex'].items():
+            assert (plan['capex'].get(month,0)+plan['common_capex'].get(month,0)+cash.get(month,0)
+                    +changed['debt_capex'].get(month,0))==pytest.approx(value)
+    rent_result=changed['land_rent']
+    assert rent_result['cash_total']==pytest.approx(
+        sum(changed['capex_by_article']['land_rent'].values())+op['land_rent']['operating_cash_total'])
+    if replace_rent:
+        assert cash[date(2027,1,1)]==200_000
+        assert not plan['land_rent_construction_cash_complete']
+        assert rent_result['construction_cash_allocation']['primary_fact'] is False
+        assert rent_result['construction_cash_allocation']['kind']=='model'
+    else:
+        assert cash==old_plan['land_rent_construction_cash']
+        assert 'construction_cash_allocation' not in rent_result
+
+
+def test_unknown_exposure_shares_keep_actual_cash_unallocated_without_normalization():
+    result={'construction_monthly':{},'construction_monthly_by_object':{},
+        'land_exposures':[{'object_key':'office','share':.2}],
+        'operating_monthly_by_object':{'office':{'2030-01-01':300}}}
+    rent.sync_construction_cash(result,{'2027-01-01':900})
+    assert result['unallocated_construction_cash']=={'2027-01-01':900}
+    assert result['construction_monthly_by_object']=={'office':{}}
+    assert result['cash_total']==1200
+    assert result['construction_cash_allocation']['primary_fact'] is False
 
 
 @pytest.mark.parametrize('region',['msk','mo'])

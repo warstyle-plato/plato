@@ -218,7 +218,7 @@ def test_real_page_names_proportional_exit_and_does_not_request_an_absent_separa
               renderInputs();await settledCalculate();
             }""", inputs())
             browser.wait_for_result(page)
-            state = page.evaluate("({rent:lastResult.land_rent, sum:lastResult.summary.land_rent_sum, verdict:lastResult.report.entry_price_verdict})")
+            state = page.evaluate("({rent:lastResult.land_rent, dates:lastResult.dates, sum:lastResult.summary.land_rent_sum, verdict:lastResult.report.entry_price_verdict})")
             assert not state["rent"]["post_rve_unknown"]
             assert state["sum"] == {"known":True,"reason":""}
             assert state["verdict"]["title"] != "Предварительная экономика: уточните аренду земли"
@@ -231,6 +231,18 @@ def test_real_page_names_proportional_exit_and_does_not_request_an_absent_separa
             expect(scope).to_contain_text("аренда уменьшается по долям введённых очередей")
             expect(scope).not_to_contain_text("После ввода нужен отдельный расчёт аренды")
             assert scope.locator(".lr-phase-table tbody tr").count() == 5
+            assert root.locator('.lr-exposure-table tbody tr').count() == 5
+            registration = root.locator('#f_land_rent_registration_months')
+            expect(registration).to_have_value('3')
+            registration.fill('6')
+            registration.dispatch_event('change')
+            page.wait_for_function('lastResult.land_rent.registration_months===6')
+            browser.wait_for_result(page)
+            changed=page.evaluate('({rent:lastResult.land_rent,dates:lastResult.dates})')
+            assert changed['dates']==state['dates']
+            assert changed['rent']['known_total']>state['rent']['known_total']
+            assert all(p['lease_exit']>old['lease_exit'] for p,old in zip(
+                changed['rent']['land_exposures'],state['rent']['land_exposures']))
             assert page.evaluate("document.documentElement.scrollWidth<=innerWidth+2")
             output = Path("/tmp/plato-rent-five-queue-proof")
             output.mkdir(mode=0o700, exist_ok=True)
