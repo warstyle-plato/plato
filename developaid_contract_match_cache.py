@@ -18,7 +18,7 @@ MAX_BYTES = 2 * 1024 * 1024
 MAX_ENTRIES = 4096
 DISABLED_PURPOSE = 'contract-pure-matching-cache-off-v1'
 MAX_BYPASSES = 2**53 - 1
-_KINDS = frozenset({'party', 'reference', 'scope'})
+_KINDS = frozenset(verification.KINDS)
 _MISSING = object()
 _ACTIVE = contextvars.ContextVar('contract_pure_match_cache', default=None)
 
@@ -147,5 +147,16 @@ def scalar(kind):
         @functools.wraps(function)
         def run(value):
             return remember(kind, (value,), lambda: function(value))
+        return run
+    return decorate
+
+
+def mutable(kind, *, freeze, fresh):
+    """Retain only the immutable projection; every caller owns a fresh result."""
+    def decorate(function):
+        @functools.wraps(function)
+        def run(value):
+            result = remember(kind, (value,), lambda: freeze(function(value)))
+            return fresh(result)
         return run
     return decorate

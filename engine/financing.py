@@ -271,6 +271,9 @@ def nonres_overlay(x: dict, rates: list[dict[str, Any]], op: dict) -> dict[str, 
             # налог объекта и поток его капитала (`object_result`).
             object_rows.append({
                 "month": month.isoformat(), **row,
+                **{name: get(name, month) for name in
+                   ("sale_weight", "sale_price_factor", "sale_revenue", "rent_revenue", "exit_revenue")},
+                "occupancy": (series.get("occupancy") or {}).get(month),
                 **{name: float((result_series.get(name) or {}).get(month, 0.0) or 0.0)
                    for name in OBJECT_RESULT_SERIES}})
         flows["rows"] = object_rows

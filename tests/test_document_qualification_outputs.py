@@ -175,3 +175,37 @@ def test_telegram_composes_live_rent_and_document_reasons_without_reviving_a_cli
         'report_payload':{'inputs':inputs,'tep':item['tep'],'result':result}}))
     assert 'аренд'in sent[0].casefold()and'275 м²'in sent[0]
     assert '01.11'not in sent[0]
+
+
+def test_long_workbook_qualification_fits_a4_without_rewriting_the_model():
+    """Disclosure print layout keeps full long obligations and original caches."""
+    import textwrap
+    from openpyxl import Workbook
+    book=Workbook();book.active.title='Модель';book.active['A1']='=1+2'
+    source=io.BytesIO();book.save(source)
+    obligation={'question':'Обязательство по исходному документу',
+                'quote':('Подробное описание исходных данных и неоценённого обязательства. '*7).strip(),
+                'route':'Подтвердить стоимость после получения сметы','status':'valuation_missing'}
+    state={'reason':'Предварительный расчёт','obligations':[obligation]}
+    content=qual.qualified_workbook(source.getvalue(),state)
+    result=load_workbook(io.BytesIO(content))
+    sheet=result.worksheets[0]
+    assert sheet.column_dimensions['A'].width==85
+    assert sheet.print_area=="'Условия расчёта'!$A$1:$A$3"
+    assert str(sheet.page_setup.paperSize)==str(sheet.PAPERSIZE_A4)
+    assert sheet.page_setup.orientation=='portrait'
+    assert sheet.page_setup.fitToWidth==1 and sheet.page_setup.fitToHeight==0
+    text=qual.item_reason(obligation)
+    assert sheet['A3'].value==text and sheet['A3'].alignment.wrap_text
+    assert sheet['A3'].alignment.vertical=='top'
+    assert sheet.row_dimensions[3].height >= len(textwrap.wrap(text,width=74))*16
+    # Adding/formatting the disclosure must not rewrite formulas or cached data.
+    with zipfile.ZipFile(io.BytesIO(source.getvalue()))as old,zipfile.ZipFile(io.BytesIO(content))as new:
+        assert new.read('xl/worksheets/sheet1.xml')==old.read('xl/worksheets/sheet1.xml')
+    again=qual.qualified_workbook(content,state)
+    from xml.etree import ElementTree as ET
+    with zipfile.ZipFile(io.BytesIO(again))as archive:
+        tree=ET.fromstring(archive.read('xl/workbook.xml'))
+        areas=[n for n in tree.iter('{http://schemas.openxmlformats.org/spreadsheetml/2006/main}definedName')
+               if n.get('name')=='_xlnm.Print_Area'and n.get('localSheetId')=='0']
+        assert len(areas)==1

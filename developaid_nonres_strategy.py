@@ -603,6 +603,9 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
             m["sale_revenue"][month] += base * revenue_multiplier
             m["selling_cost"][month] += base * float(plan.get("selling_share", 0.0) or 0.0) * cost_multiplier
             sold_share[month] = sold_share.get(month, 0.0) + weight
+            # Physical plan and applied factor for all report consumers.
+            m["sale_weight"][month] = weight
+            m["sale_price_factor"][month] = factor * revenue_multiplier
         horizon_end = month_key(plan_horizon_end(plan))
         # Налог на имущество — с непроданной доли готового здания; проданное
         # авансом до ввода в неё уже не входит.
@@ -858,7 +861,7 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
         "commissioning": plan["commissioning"],
         "horizon_end": plan_horizon_end(plan),
         # Нули не несём: ряд — это месяцы, в которых что-то было.
-        "monthly": {name: {month: value for month, value in series.items() if value}
+        "monthly": {name: {month: value for month, value in series.items() if value or name == "occupancy"}
                     for name, series in m.items()},
         # Затраты объекта по месяцам: своя стройка и доля общих затрат проекта,
         # которую кредитует его кредит. Платит их проект, но итог объекта
