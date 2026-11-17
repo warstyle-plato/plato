@@ -85,9 +85,9 @@ def server():
     from fastapi.testclient import TestClient
     import main_registry
 
-    def ask(compensation_rub):
+    def ask(compensation_rub, density=30000):
         answer = TestClient(main_registry.app).post("/mo/calculate", json={
-            "query": "", "limit": 30, "site_area_ha": 6.6667, "density_sqm_per_ha": 30000,
+            "query": "", "limit": 30, "site_area_ha": 6.6667, "density_sqm_per_ha": density,
             "district": "Мытищи", "market_price_rub_per_sqm": 0, "vri_kd": 0,
             "vri_compensation_rub": compensation_rub, "average_flat_sqm": 58.8,
         })
@@ -145,19 +145,57 @@ def test_the_tep_recalc_sends_the_sum_again_and_keeps_it(server):
     assert shown["sum"] == pytest.approx(50.0)
 
 
-def test_the_calculation_sends_the_typed_sum(server):
+def test_the_calculation_sends_the_applied_sum_even_when_the_draft_differs(server):
     # Ошибку внутри своего try расчёт пишет в статус, а не бросает — стенд
     # такое имя сам не доберёт, поэтому константа берётся со страницы явно.
     shown, taken = _stand(server(50_000_000), "\n".join([
         page_blocks.page_const("AVERAGE_FLAT"),
-        "notes.moArea={value:'6.6667'};notes.moCompensation={value:'50'};",
+        "notes.moArea={value:'6.6667'};notes.moCompensation={value:'7'};",
         "(async()=>{",
         " await calculateMo('');",
         " console.log(JSON.stringify({sent:bodies.map(b=>b.vri_compensation_rub),status:notes.cadastralStatus.innerHTML}));",
         "})().catch(e=>{console.error(e);process.exit(1)});",
     ]))
     assert "calculateMo" in taken
-    assert shown["sent"] == [50_000_000], f"расчёт МО не отправил вписанную сумму: {shown}"
+    assert shown["sent"] == [50_000_000], f"пересчёт МО должен брать применённые 50, а не черновые 7 млн ₽: {shown}"
+
+
+def test_density_recalculation_cannot_apply_the_unconfirmed_vri_panel_draft(server):
+    initial = server(0)
+    after_applied = server(0, density=31000)
+    after_draft = server(10_000_000, density=31000)
+    shown, taken = _stand(after_applied, "\n".join([
+        page_blocks.page_const("AVERAGE_FLAT"),
+        page_blocks.constant("moDistrictPrices"),
+        "const INITIAL=" + json.dumps(initial, ensure_ascii=False) + ";",
+        "const AFTER_APPLIED=" + json.dumps(after_applied, ensure_ascii=False) + ";",
+        "const AFTER_DRAFT=" + json.dumps(after_draft, ensure_ascii=False) + ";",
+        "let phasing={enabled:false,phases:[]},pendingRecalc=null,moLastQuery='';",
+        "function setTimeout(fn){pendingRecalc=fn;return 1} function clearTimeout(){}",
+        "function previewMoVriRelief(){throw new Error('preview не запрашивали')} function applyMoVriRelief(){throw new Error('применение не запрашивали')}",
+        "inputs=Object.assign({},INITIAL.inputs,{site_area_ha:INITIAL.territory.site_area_ha,",
+        " _mo_calc:{query:'',territory:INITIAL.territory,density_sqm_per_ha:INITIAL.density_sqm_per_ha,",
+        " vri:INITIAL.vri,social:INITIAL.social,balance:INITIAL.balance}});",
+        "tep=JSON.parse(JSON.stringify(INITIAL.tep));moResult=INITIAL;",
+        "notes.moArea={value:'6.6667'};notes.moDensity={value:'31000'};notes.moFlat={value:'58.8'};",
+        "notes.moDistrict={value:'Мытищи'};notes.moCompensation={value:'10'};",
+        "fetch=async(url,options)=>{const body=JSON.parse(options.body);bodies.push(body);",
+        " return {ok:true,json:async()=>body.vri_compensation_rub?AFTER_DRAFT:AFTER_APPLIED}};",
+        "(async()=>{const appliedBefore=inputs.mo_vri_compensation_mln;recalcMo();",
+        " if(!pendingRecalc)throw new Error('пересчёт плотности не запущен');await pendingRecalc();",
+        # calculateMo сообщает об ошибке через DOM. Вернуть её разрешителю
+        # PAGE необходимо, иначе стенд не доберёт настоящую зависимость.
+        " const caught=notes.cadastralStatus.innerHTML.match(/class=\"import-error\">([^<]+)/);",
+        " if(caught)throw new ReferenceError(caught[1]);",
+        " console.log(JSON.stringify({appliedBefore,sent:bodies.map(b=>b.vri_compensation_rub),",
+        " appliedAfter:inputs.mo_vri_compensation_mln,fee:inputs.land_rights_cost_mln,status:notes.cadastralStatus.innerHTML}));",
+        "})().catch(e=>{console.error(e);process.exit(1)});",
+    ]))
+    assert {"recalcMo", "calculateMo", "moCompensationRub", "applyMo"}.issubset(taken)
+    assert shown["appliedBefore"] == shown["appliedAfter"] == 0
+    assert shown["sent"] == [0]
+    assert shown["fee"] == pytest.approx(after_applied["inputs"]["land_rights_cost_mln"])
+    assert "import-error" not in shown["status"], shown
 
 
 def test_a_zero_fee_does_not_become_one_ruble():
@@ -245,7 +283,7 @@ def test_a_same_parcel_recalculation_keeps_the_incoming_compensation():
     assert shown["next"] == 1_234_567
 
 
-def test_the_page_field_reads_and_writes_the_project_value():
+def test_the_draft_field_does_not_change_the_applied_project_value():
     shown, _ = page_blocks.run("\n".join([
         "let inputs={mo_vri_compensation_mln:12.5};",
         "const notes={moCompensation:{value:''}};",
@@ -256,21 +294,24 @@ def test_the_page_field_reads_and_writes_the_project_value():
         "notes.moCompensation.value='';",
         "const empty=moCompensationRub();",
         "notes.moCompensation.value='7';",
-        "console.log(JSON.stringify({shownValue,empty,typed:moCompensationRub()}));",
+        "const typed=moCompensationRub();inputs.mo_vri_compensation_mln=3.5;",
+        "console.log(JSON.stringify({shownValue,empty,typed,applied:moCompensationRub()}));",
     ]))
     result = json.loads(shown)
-    assert result == {"shownValue": "12.5", "empty": 0, "typed": 7_000_000}
+    assert result == {"shownValue": "12.5", "empty": 12_500_000, "typed": 12_500_000, "applied": 3_500_000}
 
 
 @pytest.mark.parametrize("rubles", [1_234_567, 50_000_001, 1])
-def test_a_server_result_keeps_the_exact_compensation_for_the_next_request(rubles):
+def test_a_server_preview_does_not_replace_applied_compensation(rubles):
     shown, taken = page_blocks.run(
-        "let inputs={}; const fields={}; const document={getElementById(id){"
+        "let inputs={mo_vri_compensation_mln:0}; const fields={}; const document={getElementById(id){"
         "return fields[id]||(fields[id]={value:'',checked:false})}};",
         f"syncMoParams({{vri:{{compensation_rub:{rubles}}}}});"
-        "console.log(JSON.stringify({next:moCompensationRub()}));")
+        "console.log(JSON.stringify({next:moCompensationRub(),draft:fields.moCompensation.value}));")
     assert "syncMoParams" in taken and "moCompensationRub" in taken
-    assert json.loads(shown)["next"] == pytest.approx(rubles, rel=0, abs=0.000001)
+    result = json.loads(shown)
+    assert result["next"] == 0
+    assert float(result["draft"]) * 1e6 == pytest.approx(rubles, rel=0, abs=0.000001)
 
 
 def _book_text(**over) -> str:

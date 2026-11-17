@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import re
 
@@ -137,6 +138,7 @@ def test_server_refusal_preserves_the_project_and_cannot_enable_apply(money):
 
 @pytest.mark.parametrize("width", [390, 1440])
 def test_real_browser_component_has_a_visible_source_and_working_preview_apply(money, width):
+    import browser_launch
     from browser import chromium_or_skip
     from playwright.sync_api import sync_playwright, expect
 
@@ -153,8 +155,10 @@ def test_real_browser_component_has_a_visible_source_and_working_preview_apply(m
     html = inject_mpt_panel('<!doctype html><html><head><base href="https://fixture.invalid/">' + style
                             + '</head><body><div id="vri" class="panel active">' + core.PAGE[start:end]
                             + '</div><script>' + script + '\nrenderMoVriRelief();</script></body></html>')
+    if not os.environ.get("CHROMIUM_EXECUTABLE_PATH"):
+        chromium_or_skip()
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(executable_path=str(chromium_or_skip()))
+        browser = browser_launch.launch(pw)
         try:
             page = browser.new_page(viewport={"width": width, "height": 1100})
             def serve(route):

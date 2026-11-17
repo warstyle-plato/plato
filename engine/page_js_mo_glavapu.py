@@ -296,12 +296,11 @@ async function applyMoVriRelief(){
  await calculate();
 }
 
-// Сумма компенсации по соглашению о Ксу* — вводная проекта
-// (`inputs.mo_vri_compensation_mln`): поле показывает её, расчёт шлёт её.
-// Пустое поле — соглашения нет, а не «ноль по соглашению».
+// Полный пересчёт МО читает только уже применённую сумму проекта. Поле в
+// панели ВРИ — черновик до отдельного «Применить»: его читает только
+// previewMoVriRelief, иначе правка плотности молча применила бы этот черновик.
 function moCompensationRub(){
- const field=document.getElementById('moCompensation');
- const mln=field?Number(field.value||0):Number(inputs.mo_vri_compensation_mln||0);
+ const mln=Number(inputs.mo_vri_compensation_mln||0);
  return mln>0?mln*1e6:0;
 }
 
