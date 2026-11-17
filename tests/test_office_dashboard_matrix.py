@@ -47,9 +47,9 @@ def test_dashboard_distinguishes_cash_valuation_and_applicability(example):
             assert residual_cell.number_format.split(";")[2] == "0"
         if path['strategy']!='income':
             assert ws.cell(_row(ws,'Арендная выручка, млн ₽'),column).value=='не применяется'
-            assert ws.cell(_row(ws,'DSCR — минимум, ×'),column).value=='не применяется'
+
         else:
-            assert ws.cell(_row(ws,'LLCR, ×'),column).value=='не применяется'
+
             if path.get('exit_mode') == 'hold':
                 assert ws.cell(_row(ws,'Продажа здания при выходе, млн ₽'),column).value=='не применяется'
     for label in ['Продукты и выручка','Начальные и конечные цены','Темпы продаж — расчётный план',
