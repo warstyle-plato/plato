@@ -561,7 +561,11 @@ def _monitor_view_job(req, *, start: bool) -> Response:
                        "click": req.ticket or _secrets.token_hex(16)}
             def build():
                 return {"snapshot": jsonable_encoder(developaid_monitor.build(project, cut=cut))}
-            result = store.start(owner, profile, payload, build, req.ticket)
+            # Full snapshots can contain several complete financial and GPR
+            # projections. Keep every field within a bounded, server-owned
+            # budget; other job families retain their existing limits.
+            result = store.start(owner, profile, payload, build, req.ticket,
+                                 result_limit_bytes=jobs.MAX_EXTENDED_RESULT_BYTES)
         else:
             result = store.poll(req.ticket, owner, profile)
         if result["pending"]:
@@ -576,8 +580,12 @@ def _monitor_view_job(req, *, start: bool) -> Response:
                     404: "Расчёт не найден или срок хранения истёк. Обновите срез.",
                     409: "Этот расчёт относится к другому проекту или дате. Обновите срез.",
                     429: "Сервер занят другими расчётами. Повторите чуть позже."}
-        raise HTTPException(exc.status, messages.get(exc.status,
-            "Не удалось рассчитать план и факт проекта. Обновите срез."), headers=private) from None
+        if exc.code:
+            private["X-Monitor-Job-Error"] = exc.code
+        detail = ("Полный расчёт не удалось передать: результат превышает допустимый размер. "
+                  "Обратитесь к администратору." if exc.code == "result_too_large" else
+                  messages.get(exc.status, "Не удалось рассчитать план и факт проекта. Обновите срез."))
+        raise HTTPException(exc.status, detail, headers=private) from None
     except (OSError, ValueError):
         raise HTTPException(503, "Расчёт Монитора сейчас недоступен. Повторите чуть позже.",
                             headers=private) from None
@@ -888,6 +896,25 @@ def monitor_replace_finance(req: MonitorFinanceBaselineRequest) -> dict[str, Any
     try:
         return developaid_monitor.replace_finance_baseline(
             req.project, base64.b64decode(req.content_base64), req.taken_at, req.file_name)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+class MonitorFinanceUnitRequest(BaseModel):
+    project: str
+    unit: str = ''
+    expected_source_sha256: str = ''
+    session: str = ''
+    key: str = ''
+
+
+@app.post('/monitor/finance-unit', include_in_schema=False)
+def monitor_finance_unit(req: MonitorFinanceUnitRequest) -> dict[str, Any]:
+    _require_team_access(req.session, req.key, 'Монитор проекта')
+    import developaid_finance_units as finance_units
+    try:
+        return finance_units.configure(req.project, req.unit,
+            expected_source_sha256=req.expected_source_sha256)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
 

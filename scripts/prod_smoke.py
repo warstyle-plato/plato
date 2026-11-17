@@ -13,10 +13,11 @@
 кнопки человеком; очередь повторно известный лот не ставит.
 
 Запуск:  python3 scripts/prod_smoke.py --base https://developaid.ru
-Ключ владельца (тизер и экономика «Итога» — за входом): PROD_SMOKE_ADMIN_KEY.
+Ключ владельца (тизер, книга v4 и экономика «Итога» — за входом): PROD_SMOKE_ADMIN_KEY.
 Ключ раздела «Торги» (закрыт, пока есть действующие личные ключи):
 PROD_SMOKE_AUCTIONS_KEY — ключ кабинета рынка или общий AUCTIONS_VIEW_KEY.
-Нет ключа — проверка ПРОПУЩЕНА с причиной, а не зелёная.
+Нет ключа — закрытые тизер, «Итог» и торги ПРОПУЩЕНЫ с причиной, а не зелёные.
+Книга v4 обязательна: отказ в доступе или отсутствие проекта — провал проверки.
 """
 
 from __future__ import annotations
@@ -777,17 +778,19 @@ def run(base: str, ref: dict[str, Any], admin_key: str, out: Path,
         checks.append(Check("3. Excel-выгрузка торгов", FAIL, "выборка и xlsx",
                             f"ошибка: {str(exc).splitlines()[0][:300]}"))
 
-    # 4. Книга v4 — маршрут открыт без ключа.
+    # 4. Книга v4 пересчитывает модель и требует тот же ключ, что и страница.
     if not payload:
-        checks.append(Check("4. Книга Excel v4", FAIL if browser_error.startswith("страница") else SKIP,
-                            "xlsx", "—", browser_error))
+        checks.append(Check("4. Книга Excel v4", FAIL, "xlsx", "—",
+                            browser_error or "страница не вернула данные проекта для книги"))
     else:
         def workbook() -> Check:
             status, ctype, body, note = fetch("POST", base + "/report/workbook", {
                 key: payload.get(key) for key in ("inputs", "tep", "rates", "phasing", "scenario")
-            } | {"project_name": ref["project"]}, timeout=600, log=log)
+            } | {"project_name": ref["project"], "session": "", "access_key": admin_key},
+                timeout=600, log=log)
             if status == 401:
-                return with_note(Check("4. Книга Excel v4", SKIP, "xlsx", "HTTP 401", no_key), note)
+                return with_note(Check("4. Книга Excel v4", FAIL, "xlsx", "HTTP 401",
+                                       no_key if not admin_key else "ключ не принят прод-сервером"), note)
             if status != 200 or not body.startswith(b"PK"):
                 return with_note(Check("4. Книга Excel v4", FAIL, "HTTP 200, xlsx",
                                        f"HTTP {status} {ctype}: {body[:300]!r}"), note)

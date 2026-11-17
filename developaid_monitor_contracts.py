@@ -211,18 +211,11 @@ def _prepared(ledgers, project: str, snapshot: dict) -> dict:
     # header parser; do not rewrite snapshots, dates, financial data or GPR.
     identifier = str(snapshot.get("snapshot_id") or "")
     if re.fullmatch(r"\d{4}-\d{2}-\d{2}-[0-9a-f]{64}", identifier):
-        raw = ledgers._root(project) / (identifier + ".zip")
-        if raw.is_file():
-            with raw.open("rb") as handle:
-                data = handle.read(ledgers.MAX_ARCHIVE_BYTES+1)
-            if len(data) > ledgers.MAX_ARCHIVE_BYTES:
-                raise ContractProblem("Сохранённый архив накопительных превышает допустимый размер.")
-            if hashlib.sha256(data).hexdigest() != identifier[11:]:
-                raise ContractProblem("Исходный архив накопительных не совпадает с сохранённым отпечатком.")
-            try:
-                parsed = ledgers.parse_archive(data, snapshot.get("filename") or "")
-            except ledgers.LedgerProblem:
-                raise ContractProblem("Сохранённый архив накопительных не прочитан; проверьте исходный файл.") from None
+        try:
+            parsed = ledgers.verified_archive(project, identifier, snapshot.get("filename") or "")
+        except ledgers.LedgerProblem as exc:
+            raise ContractProblem(str(exc)) from None
+        if parsed is not None:
             return {**snapshot, **parsed, "identity_schema": 4}
     safe_ledgers = []
     for item in snapshot.get("ledgers") or []:

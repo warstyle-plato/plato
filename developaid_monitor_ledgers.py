@@ -20,12 +20,15 @@ import re
 import stat
 import tempfile
 import threading
+import gzip
+import zlib
 import unicodedata
 import zipfile
 import xml.etree.ElementTree as ET
 from typing import Any
 
 import developaid_monitor as monitor
+import developaid_monitor_archive_cache as archive_cache
 
 MAX_ARCHIVE_BYTES = 20 * 1024 * 1024
 PARSER_SCHEMA = 5
@@ -48,8 +51,10 @@ SUPPORTED = {'.xlsx', '.xlsm', '.xls'}
 _UNCACHED_FORMULA = '=__uncached_formula__'
 _PARSE_CACHE = OrderedDict()
 _PARSE_CACHE_LOCK = threading.Lock()
-_PARSE_CACHE_ENTRIES = 2
+_PARSE_CACHE_ENTRIES = 16
 _PARSE_CACHE_BYTES = 4 * 1024 * 1024
+_PARSE_CACHE_TOTAL_BYTES = 8 * 1024 * 1024
+_PARSER_FINGERPRINT = archive_cache.fingerprint(Path(__file__))
 
 
 class _SheetRows(list):
@@ -1725,28 +1730,115 @@ def basis_metadata_current(snapshot: dict) -> bool:
         for field in ('planned_amount_basis', 'completed_amount_basis'))
 
 
-def _current_archive(data: bytes, digest: str, filename: str) -> dict:
-    """Bounded process cache of parsed evidence, never original bytes or state.
+def _archive_cache_key(digest: str, filename: str) -> tuple:
+    return (PARSER_SCHEMA, digest, filename, _PARSER_FINGERPRINT)
 
-    The caller verifies the ZIP hash on every read, including cache hits. JSON
-    gives each consumer its own copy and bounds retained private data to 8 MiB.
-    """
-    key = (PARSER_SCHEMA, digest, filename)
+
+def _decode_archive(blob: bytes, key: tuple) -> dict:
+    if len(blob) > _PARSE_CACHE_BYTES:
+        raise ValueError('parsed cache size limit')
+    # Limit inflation while reading, not after allocating an unbounded result.
+    with gzip.GzipFile(fileobj=io.BytesIO(blob)) as handle:
+        decoded = handle.read(MAX_PARSED_BYTES + 1)
+    if len(decoded) > MAX_PARSED_BYTES:
+        raise ValueError('parsed cache size limit')
+    def invalid_constant(value):
+        raise ValueError('non-finite parsed cache value')
+    envelope = json.loads(decoded, parse_constant=invalid_constant)
+    if (not isinstance(envelope, dict) or envelope.get('identity') != list(key)
+            or not isinstance(envelope.get('parsed'), dict)):
+        raise ValueError('parsed cache identity mismatch')
+    return envelope['parsed']
+
+
+_CACHE_ERRORS = (OSError, EOFError, ValueError, UnicodeError, zlib.error, RecursionError)
+
+
+def _remember_archive(key: tuple, packed: bytes):
+    with _PARSE_CACHE_LOCK:
+        _PARSE_CACHE[key] = packed
+        _PARSE_CACHE.move_to_end(key)
+        retained = sum(len(value) for value in _PARSE_CACHE.values())
+        while len(_PARSE_CACHE) > _PARSE_CACHE_ENTRIES or retained > _PARSE_CACHE_TOTAL_BYTES:
+            _, removed = _PARSE_CACHE.popitem(last=False)
+            retained -= len(removed)
+
+
+def _memory_archive(key: tuple) -> dict | None:
     with _PARSE_CACHE_LOCK:
         cached = _PARSE_CACHE.get(key)
         if cached is not None:
             _PARSE_CACHE.move_to_end(key)
     if cached is not None:
-        return json.loads(cached)
-    parsed = parse_archive(data, filename)
-    encoded = json.dumps(parsed, ensure_ascii=False, allow_nan=False).encode('utf-8')
-    if len(encoded) <= _PARSE_CACHE_BYTES:
-        with _PARSE_CACHE_LOCK:
-            _PARSE_CACHE[key] = encoded
-            _PARSE_CACHE.move_to_end(key)
-            while len(_PARSE_CACHE) > _PARSE_CACHE_ENTRIES:
-                _PARSE_CACHE.popitem(last=False)
-    return parsed
+        try:
+            return _decode_archive(cached, key)
+        except _CACHE_ERRORS:
+            with _PARSE_CACHE_LOCK:
+                if _PARSE_CACHE.get(key) is cached:
+                    _PARSE_CACHE.pop(key)
+    return None
+
+
+def _current_archive(data: bytes, digest: str, filename: str, *, cache_root: Path | None = None) -> dict:
+    """Only pure source evidence is cached; the caller first verifies ZIP bytes.
+
+    Each hit is independently decoded. The private disk layer is shared across
+    workers/restarts and cold reads are serialized per project. Neither layer
+    contains persisted index realignments, header decisions or a cut projection.
+    """
+    key = _archive_cache_key(digest, filename)
+    cached = _memory_archive(key)
+    if cached is not None:
+        return cached
+    with archive_cache.locked(cache_root, entries=_PARSE_CACHE_ENTRIES,
+            entry_bytes=_PARSE_CACHE_BYTES, total_bytes=_PARSE_CACHE_TOTAL_BYTES) as store:
+        # Another thread may have finished while this one waited for the flock.
+        cached = _memory_archive(key)
+        if cached is not None:
+            return cached
+        name = hashlib.sha256(json.dumps(key, ensure_ascii=False).encode()).hexdigest() + '.json.gz'
+        packed = store.load(name) if store is not None else None
+        if packed is not None:
+            try:
+                cached = _decode_archive(packed, key)
+            except _CACHE_ERRORS:
+                try:
+                    store.remove(name)
+                except OSError:
+                    pass
+            else:
+                _remember_archive(key, packed)
+                return cached
+        parsed = parse_archive(data, filename)
+        encoded = json.dumps({'identity': key, 'parsed': parsed},
+                             ensure_ascii=False, allow_nan=False).encode('utf-8')
+        packed = gzip.compress(encoded, compresslevel=3, mtime=0) if len(encoded) <= MAX_PARSED_BYTES else b''
+        if packed and len(packed) <= _PARSE_CACHE_BYTES:
+            _remember_archive(key, packed)
+            if store is not None:
+                store.save(name, packed)
+        return parsed
+
+
+def verified_archive(project: str, snapshot_id: str, filename: str = '') -> dict | None:
+    """One hash-checked source entry point, including every memory/disk hit."""
+    root = _root(project)
+    _snapshot_path(root, snapshot_id)  # Validate the identifier before any I/O.
+    raw = root / (snapshot_id + '.zip')
+    try:
+        fd = os.open(raw, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, 'rb') as handle:
+            info = os.fstat(handle.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_ARCHIVE_BYTES:
+                raise LedgerProblem('Сохранённый исходный архив превышает допустимый размер или не является файлом.')
+            data = handle.read(MAX_ARCHIVE_BYTES + 1)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        raise LedgerProblem('Сохранённый исходный архив не читается.') from None
+    if len(data) > MAX_ARCHIVE_BYTES or hashlib.sha256(data).hexdigest() != snapshot_id[11:]:
+        raise LedgerProblem('Исходный архив не совпадает с сохранённым отпечатком.')
+    return _current_archive(data, snapshot_id[11:], filename or 'Накопительные.zip', cache_root=root)
 
 
 def _preserve_source_indices(previous: dict, parsed: dict) -> dict:
@@ -1797,18 +1889,8 @@ def read_snapshot(project: str, snapshot_id: str) -> dict:
     except (OSError, ValueError):
         raise LedgerProblem('Сохранённый архив не читается. Обратитесь к администратору.') from None
     if not basis_metadata_current(snapshot):
-        raw = root / (snapshot_id + '.zip')
-        if raw.resolve().parent != root.resolve():
-            raise LedgerProblem('Неверное расположение исходного архива.')
-        if raw.is_file():
-            try:
-                with raw.open('rb') as handle:
-                    data = handle.read(MAX_ARCHIVE_BYTES + 1)
-            except OSError:
-                raise LedgerProblem('Сохранённый исходный архив не читается.') from None
-            if len(data) > MAX_ARCHIVE_BYTES or hashlib.sha256(data).hexdigest() != snapshot_id[11:]:
-                raise LedgerProblem('Исходный архив не совпадает с сохранённым отпечатком.')
-            parsed = _current_archive(data, snapshot_id[11:], snapshot.get('filename') or 'Накопительные.zip')
+        parsed = verified_archive(project, snapshot_id, snapshot.get('filename') or '')
+        if parsed is not None:
             parsed = _preserve_source_indices(snapshot, parsed)
             return {**snapshot, **parsed, 'source_parse_state': 'refreshed'}
         return {**_restore_period_dates(snapshot), 'source_parse_state': 'original_unavailable'}

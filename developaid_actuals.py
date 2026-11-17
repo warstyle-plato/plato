@@ -308,8 +308,9 @@ def _remember(key: tuple, blob: bytes) -> None:
         total -= len(dropped)
 
 
-def _cached_read(fn):
+def _cached_read(fn, *, cache_name: str | None = None):
     import functools
+    name = cache_name or fn.__name__
 
     @functools.wraps(fn)
     def wrapper(path, *args, **kwargs):
@@ -317,13 +318,13 @@ def _cached_read(fn):
             stat = os.stat(path)
         except (TypeError, OSError):
             return fn(path, *args, **kwargs)
-        key = (fn.__name__, str(path), stat.st_mtime_ns, stat.st_size,
+        key = (name, str(path), stat.st_mtime_ns, stat.st_size,
                args, tuple(sorted(kwargs.items())))
         blob = _READ_CACHE.get(key)
         if blob is not None:
             _READ_CACHE.move_to_end(key)
             return pickle.loads(blob)
-        place = (_disk_cache_path(fn.__name__, Path(path), stat, args, kwargs)
+        place = (_disk_cache_path(name, Path(path), stat, args, kwargs)
                  if _disk_allowed(Path(path)) else None)
         blob = _disk_load(place) if place is not None else None
         if blob is not None:
@@ -1465,12 +1466,12 @@ def borrowed(source: Any) -> bool:
     return "заем" in str(source or "").lower().replace("ё", "е")
 
 
-def read_payments(path: str | Path, *, include_incomplete: bool = False) -> dict[str, Any]:
-    """Реестр платежей РСС: дата, сумма, код ССР, договор и источник средств.
+def _read_payment_rows(path: str | Path) -> list[dict[str, Any]]:
+    """One cached source reading for both public payment projections.
 
-    The contract-risk reader retains incomplete rows to report unknown totals;
-    Legacy readers keep nonzero-payment behaviour; date/scope financial
-    reconciliation explicitly uses include_incomplete=True.
+    Keep the amount cell unchanged: the legacy and strict readers interpret
+    missing or invalid monetary values differently. No payment is discarded
+    before the caller chooses its projection.
     """
     rows: list[dict[str, Any]] = []
     for index, row in enumerate(_sheet(path, _PAYMENTS_SHEET, max_col=max(_PAYMENTS_COLUMNS.values()) + 1), 1):
@@ -1481,12 +1482,7 @@ def read_payments(path: str | Path, *, include_incomplete: bool = False) -> dict
             position = _PAYMENTS_COLUMNS[field]
             return row[position] if position < len(row) else None
 
-        amount = _money(cell("amount"))
-        if include_incomplete:
-            if not any(cell(field) not in (None, "") for field in _PAYMENTS_COLUMNS):
-                continue
-            amount = money_value(cell("amount"))
-        elif not amount:
+        if not any(cell(field) not in (None, "") for field in _PAYMENTS_COLUMNS):
             continue
         source = str(cell("source") or "").strip()
         item = {
@@ -1498,12 +1494,30 @@ def read_payments(path: str | Path, *, include_incomplete: bool = False) -> dict
             "estimate_code": _code(cell("estimate_code")),
             "article_name": str(cell("article_name") or "").strip(),
             "date": _date(cell("date")),
-            "amount": amount,
+            "amount": cell("amount"),
             "source": source,
             "own_funds": _OWN_FUNDS_MARKER in _normalized(source),
+            "source_row": index,
         }
-        if include_incomplete:
-            item["source_row"] = index
+        rows.append(item)
+    return rows
+
+
+def read_payments(path: str | Path, *, include_incomplete: bool = False) -> dict[str, Any]:
+    """Реестр платежей РСС: дата, сумма, код ССР, договор и источник средств.
+
+    Both projections read the same cached source rows. Strict financial
+    readers retain incomplete rows; legacy readers keep nonzero payments.
+    The cache returns independent copies, so projection never changes it.
+    """
+    rows: list[dict[str, Any]] = []
+    for item in _read_payment_rows(path):
+        amount = money_value(item["amount"]) if include_incomplete else _money(item["amount"])
+        if not include_incomplete:
+            if not amount:
+                continue
+            item.pop("source_row")
+        item["amount"] = amount
         rows.append(item)
     dated = [item for item in rows if item["date"]]
     def total(items):
@@ -2724,7 +2738,10 @@ def apply_proposals(programme: dict[str, Any] | None,
 # Кэш навешивается после объявлений: читатели зовут друг друга по имени
 # модуля, поэтому обёртка одного не ломает других.
 for _name in ("read_estimate", "read_register", "read_completed_works",
-              "read_article_crosswalk", "read_payments", "read_contracts",
+              "read_article_crosswalk", "_read_payment_rows", "read_contracts",
               "read_sales", "read_programme", "read_credits", "read_schedule"):
-    globals()[_name] = _cached_read(globals()[_name])
+    # Keep the payment cache's existing identity so a new parser replaces its
+    # previous stored projections instead of leaving them beside the source.
+    globals()[_name] = _cached_read(globals()[_name],
+        cache_name="read_payments" if _name == "_read_payment_rows" else None)
 del _name

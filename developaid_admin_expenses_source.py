@@ -358,6 +358,8 @@ def capture(project, cut, *, runtime):
             raise
         except Exception:
             raise SourceProblem("workbook_unreadable") from None
+        import developaid_finance_units as finance_units
+        result['unit_evidence'] = finance_units.resolve(result['unit_evidence'], meta, source['sha256'])
         result["state"] = "ok"
     _, again_meta, again_source = _copy(project)
     if any(source[key] != again_source[key] for key in ("sha256", "namespace_sha256", "aliases_sha256")) \
@@ -392,6 +394,8 @@ def capture_saved_snapshot(project, *, runtime):
     except Exception:
         raise SourceProblem('workbook_unreadable') from None
     observation = units.pop('_observability', None)
+    import developaid_finance_units as finance_units
+    units = finance_units.resolve(units, meta, source['sha256'])
     result = {'schema': 1, 'purpose': SAVED_PURPOSE, 'scope': 'raw_saved_snapshot',
         'state': 'raw_saved_snapshot_read', 'captured_at': dt.datetime.now(dt.timezone.utc).isoformat(),
         'runtime': {key: str(runtime.get(key) or '')[:64] for key in ('version', 'commit')},

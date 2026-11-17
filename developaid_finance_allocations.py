@@ -140,18 +140,19 @@ def candidates(model):
     return list(rows.values())
 
 
-def _read_model(raw, assignments=None):
+def _read_model(raw, assignments=None, *, project=''):
     import developaid_monitor_dashboard as dashboard
     stream = io.BytesIO(raw)
     stream.name = 'source.xlsx'
-    return dashboard._read_finance_baseline(stream, bank_assignments=assignments)
+    return dashboard._read_finance_baseline(stream, bank_assignments=assignments,
+        unit_metadata=monitor.finance_baseline_meta(project) if project else None)
 
 
 def view(project, cut=''):
     raw = _source(project)
     sha = hashlib.sha256(raw).hexdigest()
     state = active(project, sha, cut)
-    model = _read_model(raw)
+    model = _read_model(raw, project=project)
     rows = candidates(model)
     for row in rows:
         row['decision'] = state['assignments'].get(row['row_id'])
@@ -183,7 +184,7 @@ def apply(project, source_sha256, revision, assignments, note, cut=''):
         state = active(project, sha)
         if source_sha256 != sha or revision != state['revision']:
             raise AllocationProblem('Финансовая модель или решение изменились. Перечитайте строки.', 409)
-        eligible = {row['row_id'] for row in candidates(_read_model(raw))}
+        eligible = {row['row_id'] for row in candidates(_read_model(raw, project=project))}
         if not seen <= eligible:
             raise AllocationProblem('Выбранные строки не являются подтверждёнными АХР с пустым кодом банка.', 409)
         if hashlib.sha256(_source(project)).hexdigest() != sha:
@@ -220,11 +221,12 @@ def qualify(project, model, cut=''):
         if hashlib.sha256(raw).hexdigest() != sha:
             return dict(model, allocation_problem='Версия ФМ изменилась; решение владельца не применено.')
         fingerprint = hashlib.sha256(json.dumps(state['assignments'], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
-        key = (project, sha, fingerprint)
+        unit = json.dumps(monitor.finance_baseline_meta(project).get('money_unit'), sort_keys=True)
+        key = (project, sha, fingerprint, unit)
         if key not in _QUALIFIED_CACHE:
             if len(_QUALIFIED_CACHE) >= 8:
                 _QUALIFIED_CACHE.clear()
-            _QUALIFIED_CACHE[key] = _read_model(raw, state['assignments'])
+            _QUALIFIED_CACHE[key] = _read_model(raw, state['assignments'], project=project)
         result = copy.deepcopy(_QUALIFIED_CACHE[key])
         result['source'] = model.get('source', result.get('source'))
         result['owner_allocation_revision'] = state['revision']

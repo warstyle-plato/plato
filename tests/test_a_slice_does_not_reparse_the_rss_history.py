@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import io
 import sys
 from pathlib import Path
 
@@ -87,6 +88,33 @@ def test_a_result_change_does_not_spoil_the_cache(project):
     assert actuals.read_payments(path)["rows"], "правка результата испортила кэш"
 
 
+def test_payment_modes_share_saved_rows_and_preserve_unknowns_and_refunds(tmp_path, monkeypatch):
+    import openpyxl
+    monkeypatch.setattr(monitor, "_SNAPSHOT_DIR", tmp_path / "monitor")
+    monkeypatch.setattr(actuals, "_READ_CACHE", type(actuals._READ_CACHE)())
+    raw = _rss_book(payments=[(WEEKS[-1], 1_000_000), (WEEKS[-1], 0),
+                              (WEEKS[-1], -250_000)])
+    book = openpyxl.load_workbook(io.BytesIO(raw))
+    book["Реестр платежей"]["J11"] = None
+    output = io.BytesIO(); book.save(output); book.close()
+    monitor.store_estimate("Тест", output.getvalue(), WEEKS[-1])
+    path = monitor._project_dir("Тест") / "estimate" / f"{WEEKS[-1]}.xlsx"
+    parsed = _count_parses(monkeypatch)
+    monkeypatch.setattr(actuals, "_READ_CACHE", type(actuals._READ_CACHE)())
+    strict = actuals.read_payments(path, include_incomplete=True)
+    assert [row["amount"] for row in strict["rows"]] == [1_000_000, None, -250_000]
+    assert [row["source_row"] for row in strict["rows"]] == [10, 11, 12]
+    assert strict["total"] is None
+    monkeypatch.setattr(actuals, "_READ_CACHE", type(actuals._READ_CACHE)())
+    legacy = actuals.read_payments(path)
+    assert [row["amount"] for row in legacy["rows"]] == [1_000_000, -250_000]
+    assert legacy["total"] == 750_000
+    assert all("source_row" not in row for row in legacy["rows"])
+    strict["rows"][0]["amount"] = 17
+    assert actuals.read_payments(path, include_incomplete=True)["rows"][0]["amount"] == 1_000_000
+    assert parsed == []
+
+
 def test_files_outside_snapshots_are_not_cached_on_disk(tmp_path):
     outside = tmp_path / "рядом.xlsx"
     outside.write_bytes(_rss_book(payments=[("2026-07-03", 1e6)]))
@@ -108,6 +136,7 @@ def test_trend_skips_unused_ahr_and_the_next_normal_view_keeps_it(project, monke
     view = monitor.build('Тест', cut=WEEKS[-1])
     assert calls == [('Тест', WEEKS[-1])]
     assert view['admin_expenses_cash'] is model
+    assert view['dashboard']['funding']['bank_observations']['scope'] == 'rss_chapters_1_2_3'
 
 
 def test_failed_trend_does_not_disable_the_next_normal_view_ahr(project, monkeypatch):
@@ -142,6 +171,7 @@ def test_historical_trend_context_does_not_disable_another_thread_view(project, 
             assert entered.wait(10)
             view = original('Тест', WEEKS[-1])
             assert view['admin_expenses_cash']['budget'] == 100
+            assert view['dashboard']['funding']['bank_observations']['scope'] == 'rss_chapters_1_2_3'
         finally:
             release.set()
         assert len(running.result(timeout=20)) == len(WEEKS)
