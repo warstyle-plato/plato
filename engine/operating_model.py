@@ -959,7 +959,7 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         add_capex("land_rent", month, value)
     amounts["land_rent"] = sum(rent_schedule.values())
     cash_start = min([project_start, *rent_schedule])
-    end = max([end, *rent_schedule])
+    end = max([end, *[d(month) for month,value in land_rent["monthly"].items() if value]])
     land_rent["applied_total"] = amounts["land_rent"] + float(land_rent.get("operating_cash_total") or 0.0)
     land_rent["scenario_cost_multiplier"] = 1.0
 
@@ -979,6 +979,8 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         plan["land_rent_valuation"] = {d(m):v for m,v in ((land_rent.get("valuation") or {}).get("operating_accrual_monthly_by_object",{}).get(key) or {}).items()}
         plan["land_rent_valuation_complete"] = land_rent.get("valuation_complete",True)
         plan["land_rent_valuation_missing"] = land_rent.get("valuation_missing",[])
+        plan["land_rent_operating_complete"] = bool(land_rent.get("complete") and not land_rent.get("financial_missing"))
+        plan["land_rent_operating_cash_complete"] = plan["land_rent_operating_complete"]
         plan["revenue_multiplier"] = revenue_multiplier
         plan["cost_multiplier"] = cost_multiplier
         for month, value in plan["capex"].items():
@@ -1032,6 +1034,8 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
             "land_rent_valuation": {d(m):v for m,v in ((land_rent.get("valuation") or {}).get("operating_accrual_monthly_by_object",{}).get("hotel") or {}).items()},
             "land_rent_valuation_complete": land_rent.get("valuation_complete",True),
             "land_rent_valuation_missing": land_rent.get("valuation_missing",[]),
+            "land_rent_operating_complete": bool(land_rent.get("complete") and not land_rent.get("financial_missing")),
+            "land_rent_operating_cash_complete": bool(land_rent.get("complete") and not land_rent.get("financial_missing")),
             "revenue_multiplier": revenue_multiplier,
             "missing": [f.label for f in hotel_strategy.missing_fields(
                 hotel_params, with_capex=True)],
