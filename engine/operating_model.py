@@ -974,6 +974,8 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     # Затраты остаются в CAPEX проекта — прибыль и налог их видят.
     for key, plan in nonres_plans.items():
         plan["capex"] = dict(capex_by_article.get(key) or {})
+        for name, value in developaid_land_rent.construction_plan(land_rent, key).items():
+            plan[name] = {d(m):v for m,v in value.items()} if isinstance(value, dict) else value
         plan["land_rent_operating"] = {d(m):v for m,v in (land_rent.get("operating_accrual_monthly_by_object",{}).get(key) or {}).items()}
         plan["land_rent_operating_cash"] = {d(m):v for m,v in (land_rent.get("operating_monthly_by_object",{}).get(key) or {}).items()}
         plan["land_rent_valuation"] = {d(m):v for m,v in ((land_rent.get("valuation") or {}).get("operating_accrual_monthly_by_object",{}).get(key) or {}).items()}
@@ -984,6 +986,11 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         plan["revenue_multiplier"] = revenue_multiplier
         plan["cost_multiplier"] = cost_multiplier
         for month, value in plan["capex"].items():
+            debt_capex[month] = max(0.0, debt_capex.get(month, 0.0) - value)
+        # Its exact parcel share belongs to this object's liability. Remove
+        # it before allocating other common costs, so construction-cost
+        # weights cannot redistribute the area-based lease exposure.
+        for month, value in plan["land_rent_construction_cash"].items():
             debt_capex[month] = max(0.0, debt_capex.get(month, 0.0) - value)
         end = max(end, nonres_strategy.plan_horizon_end(plan))
     # Нежилой проект: банк кредитует долю ВСЕЙ стоимости — участка, проекта,
@@ -1019,13 +1026,15 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         hotel_params = hotel_strategy.params_from_inputs(x)
         hotel_plan = {
             "commissioning": rve, "start": project_start,
-            "capex": {month: value for month, value in capex.items() if value},
+            "capex": {month: value-rent_schedule.get(month, 0.0)
+                      for month, value in capex.items() if value-rent_schedule.get(month, 0.0)},
             "capex_ffe": dict(capex_by_article.get("hotel_ffe") or {}),
             "capex_land": dict(land),
             # Construction rent forms building investment cost; its public
             # budget VAT exemption does not turn it into a land asset.
             "capex_vat_exempt": {month: sum((capex_by_article.get(key) or {}).get(month, 0.0)
-                for key in developaid_land_rent.excluded_input_vat_articles(land_rent)) for month in capex},
+                for key in developaid_land_rent.excluded_input_vat_articles(land_rent)
+                if key != "land_rent") for month in capex},
             "land_articles": list(HOTEL_LAND_ARTICLES),
             "vat_exempt_articles": list(developaid_land_rent.excluded_input_vat_articles(land_rent)),
             "params": hotel_params,
@@ -1040,6 +1049,8 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
             "missing": [f.label for f in hotel_strategy.missing_fields(
                 hotel_params, with_capex=True)],
         }
+        for name, value in developaid_land_rent.construction_plan(land_rent, "hotel").items():
+            hotel_plan[name] = {d(m):v for m,v in value.items()} if isinstance(value, dict) else value
         debt_capex = {month: 0.0 for month in debt_capex}
         end = max(end, hotel_strategy.plan_horizon_end(hotel_plan))
 

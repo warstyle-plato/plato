@@ -70,6 +70,29 @@ def excluded_input_vat_articles(result: dict[str, Any]) -> tuple[str, ...]:
     return ("land_tax", "land_use_other") + (() if result.get("vat_treatment") == "taxable" else ("land_rent",))
 
 
+def construction_plan(result: dict[str, Any], object_key: str) -> dict[str, Any]:
+    """Accrued development cost and its seller liability are separate clocks.
+
+    Gross eligible VAT base is an accrual input, not a new deduction right.
+    The hotel consumer applies its existing eligible input-VAT treatment;
+    office common costs retain their existing non-deductible classification.
+    Calendar keys remain ISO dates until the application caller converts them.
+    """
+    accrued = {month:value for month,value in
+               ((result.get("construction_accrual_monthly_by_object") or {}).get(object_key) or {}).items() if value}
+    cash = {month:value for month,value in
+            ((result.get("construction_monthly_by_object") or {}).get(object_key) or {}).items() if value}
+    complete = bool(result.get("complete") and not result.get("financial_missing"))
+    return {
+        "land_rent_construction_incurred": accrued,
+        "land_rent_construction_cash": cash,
+        "land_rent_construction_vat_exempt": result.get("vat_treatment") != "taxable",
+        "land_rent_construction_input_vat_base": dict(accrued) if result.get("vat_treatment") == "taxable" else {},
+        "land_rent_construction_complete": complete,
+        "land_rent_construction_cash_complete": complete,
+    }
+
+
 def construction_cutoff(housing_rve: date, object_dates: dict[str, date], *, pure_nonres: bool = False) -> date:
     """Common-parcel assumption, not a change of the housing PF/RVE date."""
     dates = list(object_dates.values())
@@ -903,11 +926,20 @@ def build(inputs: dict[str, Any], project_start: date, rve: date,
                 item["construction_accrual_monthly"] = {month.isoformat():value for month,value in development_accrual[i].items()}
                 item["operating_accrual_monthly"] = {month:value-item["construction_accrual_monthly"].get(month,0.0) for month,value in item["accrual_monthly"].items()}
             construction_cash = defaultdict(float)
+            construction_accrual = defaultdict(float)
+            construction_cash_by_object: dict[str, Any] = {}
+            construction_accrual_by_object: dict[str, Any] = {}
             operating_cash: dict[str, Any] = {}
             operating_accrual: dict[str, Any] = {}
             for item in out["land_exposures"]:
+                own_construction_cash = construction_cash_by_object.setdefault(item["object_key"], defaultdict(float))
                 for month,value in item["construction_monthly"].items():
                     construction_cash[month] += value
+                    own_construction_cash[month] += value
+                own_construction_accrual = construction_accrual_by_object.setdefault(item["object_key"], defaultdict(float))
+                for month,value in item["construction_accrual_monthly"].items():
+                    construction_accrual[month] += value
+                    own_construction_accrual[month] += value
                 own = operating_cash.setdefault(item["object_key"], defaultdict(float))
                 for month,value in item["operating_monthly"].items():
                     own[month] += value
@@ -915,6 +947,9 @@ def build(inputs: dict[str, Any], project_start: date, rve: date,
                 for month,value in item["operating_accrual_monthly"].items():
                     own_accrual[month] += value
             out["construction_monthly"] = dict(construction_cash)
+            out["construction_accrual_monthly"] = dict(construction_accrual)
+            out["construction_monthly_by_object"] = {key:dict(value) for key,value in construction_cash_by_object.items()}
+            out["construction_accrual_monthly_by_object"] = {key:dict(value) for key,value in construction_accrual_by_object.items()}
             out["operating_monthly_by_object"] = {key:dict(value) for key,value in operating_cash.items()}
             out["operating_accrual_monthly_by_object"] = {key:dict(value) for key,value in operating_accrual.items()}
             out["development_cash_total"] = sum(construction_cash.values())

@@ -2353,6 +2353,9 @@ def _calculate_phased_once(req: PhasedCalcRequest, *, _land_rent_cutoff: date | 
             return {key:dict(value) for key,value in output.items()}
         if phase_rent.get("land_exposures"):
             phase_rent["construction_monthly"] = own_rent_stream("construction_monthly")
+            phase_rent["construction_accrual_monthly"] = own_rent_stream("construction_accrual_monthly")
+            phase_rent["construction_monthly_by_object"] = own_rent_by_object("construction_monthly",own_exposures)
+            phase_rent["construction_accrual_monthly_by_object"] = own_rent_by_object("construction_accrual_monthly",own_exposures)
             phase_rent["operating_monthly_by_object"] = own_rent_by_object("operating_monthly",own_exposures)
             phase_rent["operating_accrual_monthly_by_object"] = own_rent_by_object("operating_accrual_monthly",own_exposures)
             phase_rent["operating_cash_total"] = sum(sum(value.values()) for value in phase_rent["operating_monthly_by_object"].values())

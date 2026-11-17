@@ -105,6 +105,44 @@ def test_prepayment_does_not_capitalize_future_retained_rent_or_expense_it_all_a
     assert sum(own['operating_accrual_monthly'].values())==pytest.approx(7_500_000)
 
 
+@pytest.mark.parametrize('vat',['taxable','public_exempt','unknown'])
+def test_construction_plan_separates_incurred_basis_from_late_seller_cash(vat):
+    x=inputs(land_rent_payment_mode='manual',land_rent_payment_schedule='100%@90',
+             land_rent_vat_treatment=vat)
+    exposed,_=rent.planning_exposures(x,OPEN,housing_area=0,housing=False,objects=[{
+        'id':'hotel','object_key':'hotel','total_area':1000,'commissioning':OPEN.isoformat(),
+        'lease_exit':'2034-01-01','policy':'income_horizon','retained':True}])
+    result=rent.build(x,START,OPEN,date(2034,1,1),exposures=exposed)
+    before=copy.deepcopy(result)
+    plan=rent.construction_plan(result,'hotel')
+    assert result==before
+    assert sum(plan['land_rent_construction_incurred'].values())==pytest.approx(3_000_000)
+    assert max(plan['land_rent_construction_incurred'])<'2029-01-01'
+    assert plan['land_rent_construction_cash']==pytest.approx({'2034-07-01':3_000_000})
+    assert plan['land_rent_construction_vat_exempt'] is (vat!='taxable')
+    assert plan['land_rent_construction_input_vat_base']==(
+        plan['land_rent_construction_incurred'] if vat=='taxable' else {})
+    assert sum(result['construction_accrual_monthly'].values())==pytest.approx(3_000_000)
+    assert sum(result['construction_monthly_by_object']['hotel'].values())==pytest.approx(3_000_000)
+
+
+def test_hotel_caller_excludes_separate_construction_liability_from_other_capex():
+    x=hotel_presets.apply_preset(inputs(),'hotel1')
+    x.update({key:value for key,value in inputs().items() if not key.startswith('hotel_')})
+    x.update(project_kind='hotel',hotel_hold_years=2,land_rent_payment_mode='manual',
+             land_rent_payment_schedule='100%@90')
+    prepared=core.prepared_calculation(x,copy.deepcopy(core.TEP_DEFAULT),[])
+    op=core.build_operating_model(prepared['x'],prepared['t'],prepared['rates'])
+    plan=op['hotel_plan']
+    cash=plan['land_rent_construction_cash']
+    assert sum(cash.values())==pytest.approx(3_000_000)
+    assert sum(plan['land_rent_construction_incurred'].values())==pytest.approx(3_000_000)
+    assert max(cash)>core.hotel_strategy.plan_horizon_end(plan)
+    for month,value in cash.items():
+        assert op['capex'][month]-plan['capex'].get(month,0)==pytest.approx(value)
+        assert plan['capex_vat_exempt'].get(month,0)==0
+
+
 @pytest.mark.parametrize('region',['msk','mo'])
 @pytest.mark.parametrize('phased',[False,True])
 @pytest.mark.parametrize('target',[None,200])
