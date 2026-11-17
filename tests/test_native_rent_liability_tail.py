@@ -1,6 +1,7 @@
 """Deferred lease payments keep their own cash date in editable native books."""
 import copy
 import io
+import json
 from datetime import date
 
 import openpyxl
@@ -77,7 +78,7 @@ def test_hotel_payment_edit_changes_cash_but_not_building_or_gordon_value(deferr
     assert after.cell(hw.CALC_SHEET, f"{hw._c('land_rent_construction_cash')}{hw.FIRST_ROW + 30}") == pytest.approx(old_cash)
 
 
-def test_office_and_retail_keep_area_based_liabilities_out_of_common_cost_weights():
+def test_office_and_retail_keep_area_based_liabilities_out_of_common_cost_weights(tmp_path):
     inputs = copy.deepcopy(core.DEFAULT_INPUTS)
     for obj in core.STANDALONE_OBJECTS:
         inputs[obj.enabled_key] = False
@@ -103,6 +104,15 @@ def test_office_and_retail_keep_area_based_liabilities_out_of_common_cost_weight
     prepared = core.prepared_calculation(copy.deepcopy(inputs), copy.deepcopy(tep), [])
     spec = core.nonres_book_spec(prepared, result, "Synthetic separate parcel liabilities")
     office_keys = {o.key for o in core.STANDALONE_OBJECTS if o.product == "offices"}
-    _, report = ow.build(result, spec, office_keys)
+    content, report = ow.build(result, spec, office_keys)
     assert report["unresolved"] == 0, report["unresolved_examples"]
-    assert report["verdict"] == ow.PASSED, report["mismatches"]
+    if report["verdict"] != ow.PASSED:
+        artifact = tmp_path / 'synthetic-mixed-office-retail.xlsx'
+        artifact.write_bytes(content)
+        cached = openpyxl.load_workbook(io.BytesIO(content), data_only=True, read_only=True)
+        differences = [dict(zip(('section','metric','book','engine','difference','tolerance','verdict'),row[:7]))
+            for row in cached[ow.CHECK_SHEET].iter_rows(min_row=5,values_only=True)
+            if len(row) >= 7 and row[6] not in (None,ow.AGREE,'—')]
+        artifact.with_suffix('.json').write_text(json.dumps(differences,ensure_ascii=False,indent=2))
+        cached.close()
+        pytest.fail(f'{report["mismatches"]}; численные расхождения: {artifact.with_suffix(".json")}')

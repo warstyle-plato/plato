@@ -2082,7 +2082,7 @@ def _cash_path(book: _Book, rows: _Rows, path: dict[str, str], blocks: list[_Blo
                      for b in blocks] + pf("cash")))
     rows.month(f"{c}.project", "Поток проекта до кредита, с оценкой удержания",
                f"{p('cash_in')}+{over('residual')}-{p('costs')}"
-               f"+{over('land_rent_operating')}-{over('land_rent_cash')}"
+               f"+({over('land_rent_operating')})-({over('land_rent_cash')})"
                f"-{p('vat')}-{p('capex')}-{p('tax')}", bold=True)
     rows.section("Собственник: деньги по месяцам", path["tab"])
     rows.month(f"{c}.to_equity", "Деньги объектов, ДДУ и ПФ собственнику (без затрат стройки)",
