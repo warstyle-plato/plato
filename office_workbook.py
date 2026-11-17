@@ -2403,7 +2403,7 @@ def _disclosure_sheet(book: _Book, current: str | None, path_blocks: dict, path_
     plan = book.sheet(DISCLOSURE_PLAN_SHEET, "ПЛАН РЕАЛИЗАЦИИ · ВЫБРАННЫЙ ПУТЬ",
                       "Расчётный план, не факт. Гостевые места не продаются.",
                       monthly=True, tab=SALE_TAB)
-    # Twelve months fit A3 at 85% while Cyrillic status words and 7-digit
+    # Twelve months fit A3 at 78% while Cyrillic status words and 7-digit
     # prices retain enough width; existing model sheets keep their layout.
     for column in range(FIRST_COL, FIRST_COL + book.n):
         plan.column_dimensions[L(column)].width = 13
@@ -2550,7 +2550,7 @@ def _disclosure_sheet(book: _Book, current: str | None, path_blocks: dict, path_
     ws.page_setup.fitToHeight=0
     plan.print_area=f'A1:{book.last}{rows.r}'
     plan.page_setup.paperSize = plan.PAPERSIZE_A3
-    plan.page_setup.scale = 85
+    plan.page_setup.scale = 78
 
 
 def _dashboard_matrix_sheet(book: _Book, report: dict[str, Any], sheet_name: str) -> None:
