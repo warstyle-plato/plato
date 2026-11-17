@@ -29,6 +29,7 @@ from typing import Any
 
 import developaid_monitor as monitor
 import developaid_monitor_archive_cache as archive_cache
+import developaid_contract_stage_profile as stage_profile
 
 MAX_ARCHIVE_BYTES = 20 * 1024 * 1024
 PARSER_SCHEMA = 5
@@ -276,6 +277,7 @@ def _bounded_row(row, budget: dict) -> list[Any]:
     return list(row)
 
 
+@stage_profile.stage('workbook_parse')
 def _read_workbook(filename: str, data: bytes, budget: dict | None = None, *,
                    sheet_names: set[str] | None = None) -> list[tuple[str, list[list[Any]]]]:
     budget = budget if budget is not None else {'text_bytes': 0}
@@ -1499,6 +1501,7 @@ def _summary(filename: str, sheet: str, rows: list[list[Any]]) -> list[dict] | N
     return contracts
 
 
+@stage_profile.stage('archive_parse')
 def parse_archive(data: bytes, filename: str = '') -> dict:
     if filename and PurePosixPath(filename).suffix.lower() != '.zip':
         raise LedgerProblem('Выберите ZIP-архив с накопительными книгами Excel.')
@@ -1706,6 +1709,13 @@ def store_archive(project: str, data: bytes, taken_at: Any, filename: str = '') 
         return _import_result(stored, duplicate=False)
 
 
+def _read_manifest(path: Path) -> dict:
+    text = stage_profile.call('manifest_read', path.read_text, encoding='utf-8')
+    stage_profile.byte_count('manifest_bytes', text)
+    return stage_profile.call('manifest_decode', json.loads, text)
+
+
+@stage_profile.stage('manifest_list')
 def list_snapshots(project: str) -> list[dict]:
     root = _root(project)
     if not root.exists():
@@ -1716,7 +1726,7 @@ def list_snapshots(project: str) -> list[dict]:
             continue
         checked = _snapshot_path(root, path.stem)
         try:
-            snapshot = json.loads(checked.read_text(encoding='utf-8'))
+            snapshot = _read_manifest(checked)
         except (OSError, ValueError):
             raise LedgerProblem('Сохранённый архив не читается. Обратитесь к администратору.') from None
         out.append(_brief(snapshot))
@@ -1734,6 +1744,7 @@ def _archive_cache_key(digest: str, filename: str) -> tuple:
     return (PARSER_SCHEMA, digest, filename, _PARSER_FINGERPRINT)
 
 
+@stage_profile.stage('cache_decode')
 def _decode_archive(blob: bytes, key: tuple) -> dict:
     if len(blob) > _PARSE_CACHE_BYTES:
         raise ValueError('parsed cache size limit')
@@ -1742,6 +1753,8 @@ def _decode_archive(blob: bytes, key: tuple) -> dict:
         decoded = handle.read(MAX_PARSED_BYTES + 1)
     if len(decoded) > MAX_PARSED_BYTES:
         raise ValueError('parsed cache size limit')
+    stage_profile.byte_count('cache_packed_bytes', blob)
+    stage_profile.byte_count('cache_decoded_bytes', decoded)
     def invalid_constant(value):
         raise ValueError('non-finite parsed cache value')
     envelope = json.loads(decoded, parse_constant=invalid_constant)
@@ -1762,6 +1775,7 @@ def _remember_archive(key: tuple, packed: bytes):
         while len(_PARSE_CACHE) > _PARSE_CACHE_ENTRIES or retained > _PARSE_CACHE_TOTAL_BYTES:
             _, removed = _PARSE_CACHE.popitem(last=False)
             retained -= len(removed)
+            stage_profile.count('ram_eviction')
 
 
 def _memory_archive(key: tuple) -> dict | None:
@@ -1773,12 +1787,14 @@ def _memory_archive(key: tuple) -> dict | None:
         try:
             return _decode_archive(cached, key)
         except _CACHE_ERRORS:
+            stage_profile.count('ram_corrupt')
             with _PARSE_CACHE_LOCK:
                 if _PARSE_CACHE.get(key) is cached:
                     _PARSE_CACHE.pop(key)
     return None
 
 
+@stage_profile.stage('source_cache')
 def _current_archive(data: bytes, digest: str, filename: str, *, cache_root: Path | None = None) -> dict:
     """Only pure source evidence is cached; the caller first verifies ZIP bytes.
 
@@ -1789,34 +1805,49 @@ def _current_archive(data: bytes, digest: str, filename: str, *, cache_root: Pat
     key = _archive_cache_key(digest, filename)
     cached = _memory_archive(key)
     if cached is not None:
+        stage_profile.count('ram_hit')
         return cached
+    stage_profile.count('ram_miss')
     with archive_cache.locked(cache_root, entries=_PARSE_CACHE_ENTRIES,
             entry_bytes=_PARSE_CACHE_BYTES, total_bytes=_PARSE_CACHE_TOTAL_BYTES) as store:
         # Another thread may have finished while this one waited for the flock.
         cached = _memory_archive(key)
         if cached is not None:
+            stage_profile.count('ram_hit_after_wait')
             return cached
+        if store is None:
+            stage_profile.count('disk_unavailable')
         name = hashlib.sha256(json.dumps(key, ensure_ascii=False).encode()).hexdigest() + '.json.gz'
         packed = store.load(name) if store is not None else None
         if packed is not None:
             try:
                 cached = _decode_archive(packed, key)
             except _CACHE_ERRORS:
+                stage_profile.count('disk_corrupt')
                 try:
                     store.remove(name)
                 except OSError:
                     pass
             else:
+                stage_profile.count('disk_hit')
                 _remember_archive(key, packed)
                 return cached
+        else:
+            if store is not None:
+                stage_profile.count('disk_miss')
         parsed = parse_archive(data, filename)
-        encoded = json.dumps({'identity': key, 'parsed': parsed},
-                             ensure_ascii=False, allow_nan=False).encode('utf-8')
-        packed = gzip.compress(encoded, compresslevel=3, mtime=0) if len(encoded) <= MAX_PARSED_BYTES else b''
+        with stage_profile.measure('cache_encode'):
+            encoded = json.dumps({'identity': key, 'parsed': parsed},
+                                 ensure_ascii=False, allow_nan=False).encode('utf-8')
+            packed = gzip.compress(encoded, compresslevel=3, mtime=0) if len(encoded) <= MAX_PARSED_BYTES else b''
         if packed and len(packed) <= _PARSE_CACHE_BYTES:
             _remember_archive(key, packed)
             if store is not None:
                 store.save(name, packed)
+        elif not packed:
+            stage_profile.count('not_cached_decoded_limit')
+        else:
+            stage_profile.count('not_cached_compressed_limit')
         return parsed
 
 
@@ -1826,18 +1857,21 @@ def verified_archive(project: str, snapshot_id: str, filename: str = '') -> dict
     _snapshot_path(root, snapshot_id)  # Validate the identifier before any I/O.
     raw = root / (snapshot_id + '.zip')
     try:
-        fd = os.open(raw, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-        with os.fdopen(fd, 'rb') as handle:
-            info = os.fstat(handle.fileno())
-            if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_ARCHIVE_BYTES:
-                raise LedgerProblem('Сохранённый исходный архив превышает допустимый размер или не является файлом.')
-            data = handle.read(MAX_ARCHIVE_BYTES + 1)
+        with stage_profile.measure('zip_read'):
+            fd = os.open(raw, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd, 'rb') as handle:
+                info = os.fstat(handle.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_ARCHIVE_BYTES:
+                    raise LedgerProblem('Сохранённый исходный архив превышает допустимый размер или не является файлом.')
+                data = handle.read(MAX_ARCHIVE_BYTES + 1)
     except FileNotFoundError:
         return None
     except OSError:
         raise LedgerProblem('Сохранённый исходный архив не читается.') from None
-    if len(data) > MAX_ARCHIVE_BYTES or hashlib.sha256(data).hexdigest() != snapshot_id[11:]:
-        raise LedgerProblem('Исходный архив не совпадает с сохранённым отпечатком.')
+    stage_profile.byte_count('zip_bytes', data)
+    with stage_profile.measure('zip_verify'):
+        if len(data) > MAX_ARCHIVE_BYTES or hashlib.sha256(data).hexdigest() != snapshot_id[11:]:
+            raise LedgerProblem('Исходный архив не совпадает с сохранённым отпечатком.')
     return _current_archive(data, snapshot_id[11:], filename or 'Накопительные.zip', cache_root=root)
 
 
@@ -1876,6 +1910,7 @@ def _preserve_source_indices(previous: dict, parsed: dict) -> dict:
     return dict(parsed, ledgers=ordered(previous.get('ledgers') or [], parsed.get('ledgers') or [], ledger=True))
 
 
+@stage_profile.stage('snapshot_read')
 def read_snapshot(project: str, snapshot_id: str) -> dict:
     """Read one immutable import through the current source parser.
 
@@ -1885,7 +1920,7 @@ def read_snapshot(project: str, snapshot_id: str) -> dict:
     root = _root(project)
     path = _snapshot_path(root, snapshot_id)
     try:
-        snapshot = json.loads(path.read_text(encoding='utf-8'))
+        snapshot = _read_manifest(path)
     except (OSError, ValueError):
         raise LedgerProblem('Сохранённый архив не читается. Обратитесь к администратору.') from None
     if not basis_metadata_current(snapshot):
