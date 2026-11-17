@@ -76,6 +76,20 @@ def _carry_consistent(schedule, state, carry):
     if not isinstance(carry, dict):
         return False
     if not carry:
+        if _profile_state(state) == 'active':
+            reference = state.get('profile_reference_source_sha256')
+            # A normal full/remaining crosswalk may have two source hashes.
+            # Date-only projection rewrites the compiled full-source hash;
+            # only that difference from the owner event requires a carry.
+            compiled_reference = (state.get('forecast_identity') or {}).get('full_source_sha256')
+            if reference is not None and reference != compiled_reference:
+                return False
+            parent_facts = (state.get('fact_source_carry') is not None
+                            or schedule.get('fact_source_carry') is not None
+                            or any(row.get('gpr_fact_source_carry') is not None for row in
+                                   [*(schedule.get('rows') or []), *(schedule.get('undated_works') or [])]))
+            if reference is None and parent_facts:
+                return False
         return True
     source = schedule['approved_plan']
     if (carry.get('kind') != 'approved_date_only_projection'
@@ -215,7 +229,7 @@ def build(schedule, cut):
     stats = _stats(list(points.values()), len(intended), len(missing))
     if forecast.get('finish') != stats['finish'] or forecast.get('covered') != stats['covered']:
         return unavailable(schedule, cut, 'Общая дата или покрытие не совпали с точками того же состава.', 'summary_mismatch')
-    carry = state.get('profile_source_carry') or {}
+    carry = state.get('profile_source_carry', {})
     if not _carry_consistent(schedule, state, carry):
         return unavailable(schedule, cut, 'Связь профиля с исправленной версией ГПР требует проверки.', 'profile_carry_binding')
     value.update(schema=SCHEMA, basis=BASIS, scope_kind=scope_kind, profile_state=profile_state,

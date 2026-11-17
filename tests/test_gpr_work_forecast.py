@@ -151,6 +151,13 @@ def test_audited_date_carry_matches_native_owner_event_and_independent_fact_line
         assert value['scope_kind'] == 'readiness_profile' and value['state'] != 'unavailable'
         assert value['reference_source_sha256'] == state['profile_reference_source_sha256'] == site['parent']['source_sha256']
         assert value['project']['work_ids'] == state['project']['work_ids']
+        for empty in [{}, False, None, []]:
+            bad = copy.deepcopy(schedule)
+            bad['readiness']['profile_source_carry'] = empty
+            assert work_dates.build(bad, cut)['reason_code'] == 'profile_carry_binding'
+        missing_carry = copy.deepcopy(schedule)
+        missing_carry['readiness'].pop('profile_source_carry')
+        assert work_dates.build(missing_carry, cut)['reason_code'] == 'profile_carry_binding'
         block = dict(calendar=gantt.calendar(schedule, cut), readiness=state,
                      approved_plan=schedule['approved_plan'], work_forecast=value,
                      work_forecast_groups=schedule['display_groups'])
