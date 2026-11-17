@@ -9,6 +9,8 @@ import copy
 import math
 import re
 
+import project_regions
+
 
 def positive(value):
     if value is None or value == "" or isinstance(value, bool):
@@ -33,26 +35,55 @@ def mapping(value):
     return value if isinstance(value, dict) else {}
 
 
+def accepted_territory(x):
+    """Mirror the page's one applied-source and project-region gate.
+
+    An empty mappings object is present in valid saved ГлавАПУ records and
+    is truthy in JavaScript. Test its type/presence, not Python's bool({}).
+    Parcel values alone never establish that a territory was applied.
+    """
+    accepted = []
+    gl = mapping(x.get("_glavapu_import"))
+    normalized = gl.get("normalized")
+    recognized = gl.get("recognized") if isinstance(gl.get("recognized"), list) else []
+    if (isinstance(gl.get("mappings"), dict) and isinstance(normalized, dict)
+            and (normalized.get("cadastral_quarter") or recognized)):
+        accepted.append({"region": "msk", "numbers": [n for n in recognized
+            if isinstance(n, str) and re.fullmatch(r"\d{2}:\d{2}:\d{6,8}:\d+", n)]})
+    mo = mapping(mapping(x.get("_mo_calc")).get("vri")).get("parcels")
+    mo = mo if isinstance(mo, list) else []
+    mo_numbers = [str(p.get("cadastral_number") or "") for p in mo if isinstance(p, dict)
+        and re.fullmatch(r"\d{2}:\d{2}:\d{6,8}:\d+", str(p.get("cadastral_number") or ""))]
+    if mo_numbers:
+        accepted.append({"region": "mo", "numbers": mo_numbers, "parcels": mo})
+    other = mapping(x.get("_other_region"))
+    if isinstance(other.get("numbers"), list) and other["numbers"] and other.get("region"):
+        accepted.append({"region": "other", "numbers": other["numbers"]})
+    if len(accepted) != 1 or accepted[0]["region"] != project_regions.region_of(x):
+        return None
+    return accepted[0]
+
+
 def parcels(x):
     """Only parcels of the accepted territory, using the same IDs as the UI."""
-    region = x.get("vri_region")
-    mo = mapping(mapping(x.get("_mo_calc")).get("vri")).get("parcels") or []
-    gl = mapping(x.get("_glavapu_import"))
+    territory = accepted_territory(x)
+    if territory is None:
+        return []
+    region = territory["region"]
     # ГлавАПУ stores recognized table cells here, not just parcel numbers.
     # Match the browser's explicit cadastral-number filter; never treat a
     # recognized metric dict as the identity of a parcel.
-    numbers = [n for n in gl.get("recognized", []) or []
-               if isinstance(n, str) and re.fullmatch(r"\d{2}:\d{2}:\d{6,8}:\d+", n)]
+    numbers = territory["numbers"]
     lookup = mapping(x.get("_land_lookup")).get("results") or []
-    raw = mo if region == "mo" and mo else [p for p in lookup if isinstance(p, dict)
+    raw = territory["parcels"] if region == "mo" else [p for p in lookup if isinstance(p, dict)
         and p.get("found") and p.get("kind") == "land"
-        and (not numbers or p.get("cadastral_number") in numbers)] if region == "msk" and gl else []
+        and (not numbers or p.get("cadastral_number") in numbers)] if region == "msk" else []
     rows, seen = [], set()
     for p in raw:
         if not isinstance(p, dict):
             continue
         number = str(p.get("cadastral_number") or "")
-        if not number or number in seen:
+        if not re.fullmatch(r"\d{2}:\d{2}:\d{6,8}:\d+", number) or number in seen:
             continue
         seen.add(number)
         current = positive(p.get("cadastral_value_rub")) if region == "mo" else None
@@ -83,7 +114,10 @@ def prepare(inputs):
     x = copy.deepcopy(inputs or {})
     if x.get("land_right") != "lease" or x.get("land_rent_base_kind", "cadastral_percent") != "cadastral_percent":
         return x
-    if x.get("vri_region") not in ("msk", "mo"):
+    region = project_regions.region_of(x)
+    # Other-region calculations stay outside this estimator. An invalid
+    # source/region gate still has to detach any previous automatic bases.
+    if region not in ("msk", "mo") and accepted_territory(x) is not None:
         return x
     all_rows = parcels(x)
     excluded = set(x.get("land_rent_parcels_excluded") or [])
@@ -100,7 +134,7 @@ def prepare(inputs):
     params = {str(p.get("number")): p for p in x.get("land_rent_cadastral_parameters", []) if isinstance(p, dict)}
     for row in rows:
         p = params.get(row["number"], {})
-        if x.get("vri_region") == "msk":
+        if region == "msk":
             area = positive(p.get("area_sqm")) if "area_sqm" in p else row["area_sqm"]
             upks = positive(p.get("upks_rub_sqm"))
             row.update(area_sqm=area, upks_rub_sqm=upks,
@@ -111,8 +145,8 @@ def prepare(inputs):
             row["source"] = "Расчёт МО: целевой земельный УПКС из применённого расчёта ВРИ"
             # The ЕГРН date belongs to the current base, not to this estimate.
             row["source_date"] = ""
-    x["_land_rent_cadastral_estimate"] = dict(formula=FORMULA, region=x.get("vri_region"), parcels=rows,
-        methodology=METHODOLOGY if x.get("vri_region") == "msk" else None,
+    x["_land_rent_cadastral_estimate"] = dict(formula=FORMULA, region=region, parcels=rows,
+        methodology=METHODOLOGY if region == "msk" else None,
         total_mln=sum(r["target_mln"] for r in rows) if rows and all(r["target_mln"] is not None for r in rows) else None)
     fill("land_rent_cadastral_target_mln", "target_mln", "land_rent_estimate", "Расчётная будущая КС (не ЕГРН), площадь × целевой земельный УПКС")
     x["_land_rent_cadastral_estimate"]["applied"] = (automatic(x, "land_rent_cadastral_target_mln") and

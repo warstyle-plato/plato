@@ -200,3 +200,63 @@ def test_parcel_sources_future_estimate_manual_override_and_reload(region, width
                 assert official["cadastral_switch"]["date"] == "2027-02-12"
                 expect(page.locator(".lr-cadastral-result")).to_contain_text("Официальная новая КС из ЕГРН")
             assert not errors, errors
+
+
+@pytest.mark.parametrize('width,surface', [(390,'/'),(1440,'/classic')])
+def test_rejected_territory_cannot_be_refilled_by_the_server_but_keeps_manual_bases(width,surface,monkeypatch):
+    from playwright.sync_api import expect, sync_playwright
+    from main_registry import app as registry_app
+    from tests.test_rent_cadastral_bases import settings
+
+    monkeypatch.setattr(core,'_telegram_token',lambda:'')
+    monkeypatch.setattr(core,'require_calc_access',lambda *a,**k:{'allowed':True})
+    with browser.serve(registry_app,18916) as base, sync_playwright() as pw:
+        with pw.chromium.launch(executable_path=str(browser.chromium_or_skip())) as chromium:
+            page=chromium.new_page(viewport={'width':width,'height':1000},locale='ru-RU')
+            errors=[]
+            page.on('pageerror',lambda exc:errors.append(str(exc)))
+            page.route('**/*',lambda route:route.continue_()
+                if route.request.url.startswith(base.rstrip('/')+'/') else route.abort())
+            page.route('**/ia/goal-seek',lambda route:route.fulfill(status=503,json={'reason':'Synthetic cadastral gate'}))
+            page.goto(base.rstrip('/')+surface,wait_until='domcontentloaded')
+            browser.wait_for_result(page)
+            for case,region in [('ambiguous','mo'),('unapplied','msk')]:
+                values=settings(region)
+                values['_glavapu_import']=(settings()['_glavapu_import'] if case=='ambiguous'
+                    else {'unrelated_note':'not an applied territory'})
+                values.update(land_rent_cadastral_mln=111,land_rent_cadastral_target_mln=777,
+                    land_rent_vri_change=False,project_start='2027-01-01',
+                    land_rent_cadastral_parameters=settings()['land_rent_cadastral_parameters'],
+                    _field_origin={'inputs.land_rent_cadastral_mln':{'source':'document','kind':'land_rent_egrn'},
+                        'inputs.land_rent_cadastral_target_mln':{'source':'calculated','kind':'land_rent_estimate'}})
+                page.evaluate('''async values=>{
+                    delete inputs._mo_calc;delete inputs._glavapu_import;delete inputs._other_region;
+                    delete inputs._land_lookup;delete inputs._land_rent_cadastral_estimate;
+                    Object.assign(inputs,values);phasing.enabled=false;
+                    renderInputs();await settledCalculate();
+                }''',values)
+                rejected=page.evaluate('''()=>({current:inputs.land_rent_cadastral_mln,
+                    target:inputs.land_rent_cadastral_target_mln,region:inputs.vri_region,
+                    territory:landRentTerritory(),rent:lastResult.land_rent,
+                    sum:lastResult.summary.land_rent_sum})''')
+                assert rejected['territory']['key'] is None
+                assert rejected['current'] is None and rejected['target'] is None
+                assert rejected['rent']['base_value_mln'] is None
+                assert rejected['rent']['cadastral_estimate']['parcels']==[]
+                assert not rejected['sum']['known']
+                assert rejected['region']==region
+                browser.open_vri(page)
+                expect(page.locator('#f_land_rent_cadastral_mln')).to_have_value('')
+                for provenance in ['manual','unlabelled']:
+                    page.evaluate('''async provenance=>{
+                        inputs.land_rent_cadastral_mln=111;inputs.land_rent_cadastral_target_mln=777;
+                        inputs._field_origin=provenance==='manual'?{
+                            'inputs.land_rent_cadastral_mln':{source:'manual',kind:'manual',text:'Synthetic confirmation'},
+                            'inputs.land_rent_cadastral_target_mln':{source:'manual',kind:'manual',text:'Synthetic confirmation'}}:{};
+                        renderInputs();await settledCalculate();
+                    }''',provenance)
+                    confirmed=state(page)
+                    assert confirmed['current']==111 and confirmed['target']==777
+                    assert confirmed['rent']['base_value_mln']==111
+                    assert page.evaluate('inputs.vri_region')==region
+            assert not errors,errors

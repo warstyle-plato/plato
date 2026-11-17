@@ -126,6 +126,60 @@ def test_recognized_glavapu_metrics_are_not_parcel_ids():
     assert result['land_rent_cadastral_target_mln']==600
 
 
+@pytest.mark.parametrize('case', ['ambiguous', 'unapplied', 'region_mismatch', 'empty_acceptance', 'other_source'])
+def test_server_does_not_autofill_a_territory_rejected_by_the_page(case):
+    x=settings('mo' if case=='ambiguous' else 'msk')
+    if case=='ambiguous':
+        x['_glavapu_import']=settings()['_glavapu_import']
+    elif case=='unapplied':
+        x['_glavapu_import']={'unrelated_note':'not an applied territory'}
+    elif case=='region_mismatch':
+        x['vri_region']='mo'
+    elif case=='empty_acceptance':
+        x['_glavapu_import']={'mappings':{},'normalized':{},'recognized':[]}
+    else:
+        x['_other_region']={'numbers':['66:01:0000001:11'],'region':'Синтетический другой регион'}
+    result=cadastral.prepare(x)
+    assert result['vri_region']==x['vri_region']
+    assert result.get('land_rent_cadastral_mln') is None
+    assert result.get('land_rent_cadastral_target_mln') is None
+    assert cadastral.parcels(x)==[]
+
+
+@pytest.mark.parametrize('manual', [False, True, 'unlabelled'])
+@pytest.mark.parametrize('region', ['msk','mo','other'])
+def test_invalidated_acceptance_clears_only_automatic_bases(manual,region):
+    x=cadastral.prepare(settings())
+    before=copy.deepcopy(x['_field_origin'])
+    if manual:
+        x.update(land_rent_cadastral_mln=111,land_rent_cadastral_target_mln=777)
+        if manual=='unlabelled':
+            x.pop('_field_origin')
+        else:
+            x['_field_origin']={key:{'source':'manual','kind':'manual','text':'Сохранённое подтверждение'}
+                                for key in before}
+            before=copy.deepcopy(x['_field_origin'])
+    x['_glavapu_import']={'unrelated_note':'not an applied territory'}
+    x['vri_region']=region
+    result=cadastral.prepare(x)
+    assert result['vri_region']==region
+    assert result['land_rent_cadastral_mln']==(111 if manual else None)
+    assert result['land_rent_cadastral_target_mln']==(777 if manual else None)
+    assert result['_land_rent_cadastral_estimate']['parcels']==[]
+    if manual is True:
+        assert result['_field_origin']==before
+
+
+@pytest.mark.parametrize('region,alias', [('msk','Москва'),('mo','Московская область')])
+def test_accepted_empty_mapping_and_region_alias_follow_the_page_without_mutating_region(region,alias):
+    x=settings(region)
+    x['vri_region']=alias
+    result=cadastral.prepare(x)
+    assert result['vri_region']==alias
+    assert result['land_rent_cadastral_mln']==300
+    assert result['land_rent_cadastral_target_mln']==600
+
+
 @pytest.mark.parametrize('region',['msk','mo'])
 def test_removing_the_normalized_territory_invalidates_only_automatic_bases(region):
     x=cadastral.prepare(settings(region))
