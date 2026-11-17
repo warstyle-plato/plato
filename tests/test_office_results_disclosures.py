@@ -78,7 +78,7 @@ def test_zero_and_missing_are_distinct_and_no_parking_is_not_invented():
     d=office_results.build(x,t,op,fin,[],core.STANDALONE_OBJECTS)
     p=d['products'][0]
     assert p['base_price'] is None and p['first_price'] is None and p['average_price'] is None
-    assert 'не различены' in p['origin']
+    assert 'во вводных отсутствует' in p['origin']
 
 
 def test_zero_type_price_uses_disclosed_existing_model_fallback():

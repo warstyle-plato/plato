@@ -6,6 +6,8 @@ from typing import Any
 
 
 def _origin(x: dict, field: str) -> str:
+    if field and x.get(field) is None:
+        return 'Нет данных — значение во вводных отсутствует.'
     origin = (x.get('_field_origin') or {}).get('inputs.' + field) or {}
     origin = origin if isinstance(origin, dict) else {}
     return str(origin.get('text') or origin.get('source') or

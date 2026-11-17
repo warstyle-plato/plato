@@ -420,7 +420,7 @@ def _object_sensitivity(objects: list[dict[str, Any]], deal_rub: float,
 
 
 def object_report(result: dict[str, Any]) -> dict[str, Any]:
-    """Отчёт проекта без жилья — девять разделов (`REPORT_SECTIONS`) из уже
+    """Отчёт проекта без жилья — разделы (`REPORT_SECTIONS`) из уже
     посчитанного: `finance.nonres`, смета объектов (`object_costs`),
     `report.nonres_financing`, `report.equity_participation`, сводка и
     `report.layout.debt_metric`. Второго расчёта нет — только раскладка.
