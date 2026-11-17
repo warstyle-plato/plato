@@ -540,6 +540,29 @@ def _payment_observation_note(observation: dict[str, Any]) -> str:
 
 
 
+def _payment_total_gap_note(observation: dict[str, Any]) -> str:
+    """Explain an unknown saved payment total without replacing it with draws."""
+    rows = observation.get("incomplete_rows") or []
+    if not rows:
+        payments = (observation.get("source_completeness") or {}).get("payments") or {}
+        # An unclassified payment is retained under every possibly selected
+        # chapter. It is one source row, not several independent omissions.
+        unique = {}
+        for chapter_rows in payments.values():
+            for row in chapter_rows:
+                key = (row.get("source_row"), tuple(sorted(row.get("fields") or [])))
+                unique[key] = row
+        rows = list(unique.values())
+    if not rows:
+        return ""
+    fields = {field for row in rows for field in row.get("fields") or []}
+    names = [label for field, label in (("date", "дата"), ("amount", "сумма"),
+                                       ("estimate_code", "привязка к главе РСС"))
+             if field in fields]
+    return (f"Итог оплат не определён: строк с непрочитанными реквизитами — {len(rows)}"
+            + (" (" + ", ".join(names) + ")" if names else "") + ".")
+
+
 def _monitor_view(project: str, end: datetime.date) -> dict[str, Any]:
     """Срез Монитора на конец периода — со всеми слоями, как на его странице."""
     import developaid_monitor_page  # noqa: F401 — ставит слои среза, как на странице
@@ -4277,8 +4300,11 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
             label = "Потребность в допфинансировании"
         # A partial cash balance is an observation; the combined need is unknown.
         if summary.get("scope") == "unconfirmed_total":
-            note = ((f"Без АХР — {_rub(max(0.0, base))}. " if base is not None else "")
-                    if reconciliation is None else "") + summary["note"]
+            reason = limit.get("reason") if not limit.get("known") else ""
+            base_note = (f"Без АХР — {_rub(max(0.0, base))}."
+                         if base is not None and reconciliation is None else "")
+            note = " ".join(filter(None, (reason.rstrip(" .;") + "." if reason else "",
+                                          base_note, summary["note"])))
         else:
             note = note.rstrip(" .;") + ". " + summary["note"]
         add(label, _rub(amount) if amount is not None and amount > 0 else "нет" if amount is not None else None,
@@ -4411,8 +4437,10 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
                 # The cover keeps the five principal money readings. Every
                 # diagnostic canonical row remains in the Funding block below.
                 if row["key"] in {"paid_at_cut", "available_bank_limit"}:
-                    add(row["label"], _rub(row["value"]), '' if raw_reconciliation else row["note"],
-                        "missing" if row["key"] not in {"paid_at_cut", "remaining_bank_limit", "available_bank_limit"} else "")
+                    note = '' if raw_reconciliation else row["note"]
+                    if row["value"] is None:
+                        note = " ".join(filter(None, (note, _payment_total_gap_note(reconciliation))))
+                    add(row["label"], _rub(row["value"]) if row["value"] is not None else None, note)
                 elif row["key"] == "calculated_additional":
                     add_need(row["label"], row["note"], reconciliation=reconciliation)
         else:
@@ -4462,9 +4490,14 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
             "bad" if extra > 0 else "good")
     else:
         bank = limit.get('bank_observations') or {}
+        payment_note = _payment_total_gap_note(bank)
+        note = " ".join(filter(None, (bank.get('note') or limit.get('reason'), payment_note)))
+        paid = bank.get('paid_actual')
+        add("Оплачено с начала проекта", _rub(paid) if paid is not None else None,
+            note or 'оплаты не прочитаны')
         value = bank.get('available_bank_limit')
         add("Осталось по смете после всех оплат", _rub(value) if value is not None else None,
-            bank.get('note') or 'лимит не посчитан')
+            note or 'лимит не посчитан')
     if own:
         pass
     elif need and need["deficit"] is not None and _model_basis(limit):
