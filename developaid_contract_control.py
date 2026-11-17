@@ -157,7 +157,8 @@ def _operation_rows(line, got, day, start, physical_groups):
             'readiness': ready, 'plan_done': ready / due if ready is not None and due > _SHARE else None,
             'percent': ready / due - 1 if ready is not None and due > _SHARE else None,
             'state': state, 'lag_days': lag, 'ahead_days': ahead,
-            'overdue_days': (day-finish).days if state != 'done' and day > finish else 0,
+            'overdue_days': (None if state == 'unknown' else
+                             (day-finish).days if state != 'done' and day > finish else 0),
             'forecast_finish': forecast.isoformat() if forecast else None,
             'finished': finished, 'late_days': (_day(finished)-finish).days if finished else None})
     return {'group': group, 'lines': result}

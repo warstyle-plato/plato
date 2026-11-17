@@ -148,6 +148,20 @@ def test_nested_printed_operation_indices_never_promote_subgroup_area_to_the_who
         p['number'] for p in estimate['positions']]
 
 
+def test_an_operation_with_unknown_total_quantity_has_no_claimed_live_overdue_days():
+    edition, found = source_case()
+    edition['estimates'][0]['positions'][0]['quantity'] = None
+    edition['estimates'][0]['links']['positions'][0]['quantity'] = None
+    cut = '2026-03-30'
+    planned = plan.build([edition], cut)
+    performed = fact.build([edition], planned['in_force'], found, cut)
+    measured = control.build(planned, performed, None, '', cut)
+    first, second = measured['lines'][0]['operations']['lines'][:2]
+    assert first['state'] == 'unknown' and first['overdue_days'] is None
+    assert first['forecast_finish'] is None
+    assert second['state'] == 'behind' and second['overdue_days'] == 20
+
+
 @pytest.mark.parametrize('width', [390, 1440])
 def test_native_card_and_excel_keep_the_original_stage_indices(width, tmp_path):
     from playwright.sync_api import expect
