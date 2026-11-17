@@ -26,9 +26,10 @@ def test_contract_answers_are_visible_and_calculation_details_are_optional(width
         row['reconciliation']['issues'] = ['Проверочное замечание к исходному сообщению.']
         page.locator('#contractsTab').click()
         first = page.locator(f'tr[data-contract-id="{CONTRACT}"]')
-        expect(first.locator('.term')).to_contain_text('15.12.2026')
+        expect(first.locator('.term')).to_have_text('30.11.2026')
+        expect(first.locator('.contract-schedule')).to_have_text('Проверить документы')
         visible = first.inner_text()
-        assert '25%' in visible and 'задержка 15 дн.' in visible
+        assert '25%' in visible and 'задержка 15 дн.' not in visible
         for private in ('technical-source.xlsx', 'Темп работ', 'Проверочное основание', '01.09.2026'):
             assert private not in visible
         assert 'Что входит в реестр' not in page.locator('#contractsPanel').inner_text()
@@ -65,7 +66,8 @@ def test_missing_forecast_inputs_have_short_specific_explanations():
                        'reason': 'Длинное техническое пояснение. ' * 20}
         page.locator('#contractsTab').click()
         first = page.locator(f'tr[data-contract-id="{CONTRACT}"]')
-        assert first.locator('.term .contract-risk').get_attribute('title') == 'Для прогноза нужна полная сумма договора.'
+        expect(first.locator('.term')).to_have_text('Указать срок договора')
+        expect(first.locator('.contract-attention')).to_contain_text('Уточнить сумму')
         more = opened(page, CONTRACT)
         expect(more.locator('.contract-money-forecast')).to_contain_text('Для прогноза нужна полная сумма договора.')
         for shown in (first, more):
