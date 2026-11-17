@@ -501,6 +501,11 @@ def _build_project_workbook(
     applied_parking = apply_object_parking(inputs, tep)
 
     x = {**DEFAULT_INPUTS, **{k: v for k, v in (inputs or {}).items() if not str(k).startswith("_")}}
+    # У книги отдельной очереди плата уже net, как у её атомарного расчёта.
+    # Сохраняем только этот внутренний признак происхождения базы: иначе
+    # общий vri_relief вычел бы исходный зачёт метров ещё раз при записи B82.
+    if (inputs or {}).get("_vri_relief_applied_at_project") is True:
+        x["_vri_relief_applied_at_project"] = True
     # Книга считает то же, что движок, и по типу проекта тоже: плата за ВРИ,
     # соцкомпенсация и места соцобъектов нежилого проекта в ячейки не идут —
     # тот же предикат, что у движка, а не своя проверка. Движок ниже получает
