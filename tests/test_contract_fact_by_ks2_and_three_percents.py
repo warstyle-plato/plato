@@ -45,8 +45,15 @@ def test_the_fact_is_the_acts_ks2_and_the_ks6a_only_reconciles_them(card):  # no
     assert reconciliation["rows"][0] == {"number": "1.1", "name": "Устройство стен", "unit": "м3", "ks2": 0.5,
                                          "ks6a": 0.75, "same": False}
     total = got["control"]["total"]
-    assert (total["fact"], total["readiness"], total["plan_done"], total["incomplete"]) == pytest.approx(
-        (4000.0, 4 / 11, 0.4, False))
+    assert (total["fact"], total["readiness"], total["plan_done"]) == pytest.approx(
+        (4000.0, 4 / 11, 0.4))
+    # Факт двух сопоставленных работ известен. Остальные работы исходного
+    # ГПР остаются вне расчёта: это не готовность всего договора.
+    coverage = got["comparison"]["coverage"]
+    assert coverage["partial"] is True and coverage["unknown"] > 0
+    assert coverage["calculated"] < coverage["source_works"]
+    assert total["incomplete"] is True
+    assert got["control"]["forecast"]["whole_contract_finish"] is None
     assert got["control"]["source"] == "ks2"
 
 
