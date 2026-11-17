@@ -155,7 +155,7 @@ def for_project(project, cut=""):
 
 def availability_note(model):
     if (model.get('source') or {}).get('sha256'):
-        return 'Финмодель сохранена; общая финансовая сверка не завершена.'
+        return model.get('reason') or 'Финмодель сохранена.'
     return model.get('reason') or 'Финансовая книга не загружена.'
 
 

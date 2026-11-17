@@ -67,7 +67,14 @@ def test_one_source_has_one_budget_and_four_cash_details_without_a_second_expens
     for key, label in cash.FIELDS:
         assert f'<p>{label}: {cash.money(view["admin_expenses_cash"].get(key))}</p>' in report.render_html(built)
     headline, = [item for item in report.tiles(built) if item.get('group') == 'additional_funding']
-    assert headline['value'] == 'нет данных' and headline['tone'] == 'missing'
+    calculation = reconciliation['calculation']
+    assert calculation['paid_at_cut'] == 505_000_000
+    assert calculation['available_bank_limit'] == 1_420_000_000
+    assert calculation['calculated_additional'] == 0
+    assert calculation['partial'] is unknown_payment
+    assert headline['value'] == '0 ₽' and headline['tone'] == 'good'
+    assert 'Утверждённый бюджет уже включает АХР' in headline['note']
+    assert 'финансовая сверка' not in headline['note'].lower()
     assert not any(item.get('group') == 'admin_expenses' for item in report.tiles(built))
     assert 'повторно к расходам или дефициту не прибавляются' in report.render_html(built)
     if unknown_payment:

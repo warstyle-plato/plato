@@ -406,12 +406,12 @@ function limitReconciliation(f){
 function fundingReconciliationBlock(f){
  const r=f.reconciliation;if(!r)return '';
  const value=v=>typeof v==='number'&&Number.isFinite(v)?money(v):'—';
- const row=(name,v)=>`<div class="funding-row"><span>${esc(name)}</span><b>${value(v)}</b></div>`;
+ const row=(name,v,prefix='')=>`<div class="funding-row"><span>${esc(name)}</span><b>${typeof v==='number'&&Number.isFinite(v)?esc(prefix):''}${value(v)}</b></div>`;
  let html='<div class="fundblock funding-reconciliation"><b>Сверка бюджета и финансирования</b>';
- for(const item of r.display_rows||[])html+=row(item.label,item.value);
+ for(const item of r.display_rows||[])html+=row(item.label,item.value,item.prefix||'');
  html+='<p class="muted">'+(r.observation_scope==='raw_saved_sources'?'Выбранная дата: ':'Расчёт на ')+esc(dt(r.cut))+'. Финансовая база: '+esc(dt(r.source_dates?.budget?.data_date))+'. РСС: '+esc(dt(r.source_dates?.rss?.data_date))+'.</p>';
  if(r.source_scope_note)html+='<p class="notice funding-source-scope">'+esc(r.source_scope_note)+'</p>';
- html+='<p class="notice">Финансовая сверка первичных источников не завершена.</p>';
+ if(r.calculation_note)html+='<p class="notice funding-calculation-scope">'+esc(r.calculation_note)+'</p>';
  for(const reason of r.reasons||[])html+='<p class="muted">'+esc(reason)+'</p>';
  const admin=r.admin_expenses;
  if(admin?.rows?.length){
@@ -438,7 +438,7 @@ function renderFundingReconciliationKpis(f){
  const r=f.reconciliation;if(!r)return;
  const replaced=new Set(['Остаток потребности по утверждённому бюджету','Резерв · РСС','Дефицит · РСС']);
  const retained=[...$('kpis').children].filter(item=>!replaced.has(item.querySelector('.l')?.textContent));
- $('kpis').innerHTML=(r.display_rows||[]).map(item=>kpi(esc(item.label),typeof item.value==='number'&&Number.isFinite(item.value)?money(item.value):'—',esc(item.note||''),'')).join('');
+ $('kpis').innerHTML=(r.display_rows||[]).map(item=>kpi(esc(item.label),typeof item.value==='number'&&Number.isFinite(item.value)?esc(item.prefix||'')+money(item.value):'—',esc(item.note||''),'')).join('');
  for(const item of retained)$('kpis').append(item);
 }
 

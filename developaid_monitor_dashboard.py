@@ -81,36 +81,60 @@ def _funding_source_dates(project: str, rss: Path, cut: datetime.date,
     budget_day = dates["budget"].get("data_date")
     dates["observation_scope"] = "raw_saved_sources"
     dates["payments_complete_through_cut"] = None
-    dates["source_scope_short_note"] = (
-        ("дата ФМ неизвестна; " if not budget_day else "")
-        + "полнота оплат не подтверждена.")
+    dates["source_scope_short_note"] = "дата ФМ не указана." if not budget_day else ""
     dates["source_scope_note"] = (
         "Расчёт по сохранённым источникам. "
         + ("Дата версии финансовой модели не указана. " if not budget_day else
            "Версия финансовой модели: " + budget_day + ". ")
-        + "Полнота оплат на выбранную дату не подтверждена; суммы и расчётная потребность "
-          "не являются подтверждённым финансовым состоянием на эту дату.")
+        + "Оплаты отобраны до выбранной даты расчёта. Пропуски исходных данных показаны отдельно.")
     return dates
 
 
 def funding_cash_summary(funding: dict[str, Any], model: dict[str, Any], money: Any) -> dict[str, Any]:
-    """Keep the whole-project diagnostic gap out of the bank-only headline.
+    """Show the common calculation; a separate audit is not its prerequisite.
 
-    The canonical approved budget already includes AHR. Its current producer
-    does not attest a confirmed additional need; cash observations cannot
-    supply that missing attestation or make AHR an extra expense again.
+    The approved budget already includes AHR. Cash observations remain context
+    and cannot be added to that same budget a second time.
     """
     import developaid_admin_expenses_cash as admin_cash
 
     reconciliation = ((funding.get("own_money") or {}).get("reconciliation")
                       or funding.get("reconciliation"))
     if reconciliation:
-        summary = admin_cash.funding_summary(None, model, money)
-        cash_note = summary["note"] + " " if summary["scope"] == "unconfirmed_total" else ""
-        return {"amount": None, "scope": "unconfirmed_total",
-                "note": cash_note + "Финансовая сверка первичных источников не завершена; "
-                "общая потребность пока не определена. Расчётная дополнительная потребность "
-                "приведена в разделе «Финансирование»."}
+        calculation = funding_reconciliation.calculation_values(reconciliation)
+        return {"amount": calculation.get("calculated_additional"), "scope": "calculated_total",
+                "label": "Расчётная потребность в допфинансировании",
+                "partial": bool(calculation.get("partial")),
+                "note": funding_reconciliation.calculation_note(reconciliation)
+                        + " Утверждённый бюджет уже включает АХР."}
+    if not funding.get("known"):
+        return {"amount": None, "scope": "calculated_total",
+                "label": "Расчётная потребность в допфинансировании",
+                "note": funding.get("reason") or "Не прочитан утверждённый бюджет."}
+    own = funding.get("own_money") or {}
+    missing = [description for flag, description in (
+        ("payments_known", "не прочитан полный состав оплат"),
+        ("limits_known", "не прочитан полный состав лимитов банка"))
+        if own.get(flag) is False or funding.get(flag) is False]
+    if missing:
+        # Old producers used float(total or 0). An explicit unknown flag
+        # forbids accepting that legacy zero, even through the AHR fallback.
+        return {"amount": None, "scope": "calculated_total",
+                "label": "Расчётная потребность в допфинансировании",
+                "note": "Для расчёта " + "; ".join(missing) + "."}
+    if (not admin_cash._has_cash_observation(model)
+            and (funding.get("funding_scope") or {}).get("basis") != "bank_chapters"):
+        # Older reports may already carry a complete funding result without
+        # a separate AHR cash observation. Preserve that result and its scope,
+        # chapter breakdown and first shortage month; don't relabel a full
+        # approved-budget need as an AHR-dependent bank component.
+        amount = funding_reconciliation.number(own.get("need"))
+        if not own:
+            amount = funding_reconciliation.number((funding.get("deficit_ladder") or {}).get("total"))
+            if amount is None:
+                amount = funding_reconciliation.number(funding.get("additional_financing"))
+        if amount is not None:
+            return {"amount": max(0.0, amount), "scope": "existing_total", "note": ""}
     return admin_cash.funding_summary(admin_cash.funding_base_for_limit(funding, model), model, money)
 
 
@@ -162,21 +186,19 @@ def funding_source_notes(funding: dict[str, Any]) -> dict[str, str]:
 def funding_source_tile_notes(funding: dict[str, Any]) -> dict[str, str]:
     """Compact visible tile captions; full source limits remain in Funding."""
     dates = funding.get("source_dates") or {}
-    short = dates.get("source_scope_short_note")
-    if not short:
-        return funding_source_notes(funding)
+    meta = funding.get("baseline_file") or {}
     def date_of(key):
-        value = monitor._day((dates.get(key) or {}).get("data_date"))
+        source = dates.get(key) or ({"data_date": _source_day(meta.get("taken_at"))}
+                                   if key == "budget" else {})
+        value = monitor._day(source.get("data_date"))
         return value.strftime("%d.%m.%Y") if value else "дата не указана"
     # The four AHR cash cards share the report cover with these captions.
-    # Name each source/date/coverage boundary once per caption; the complete
-    # canonical warning remains visible in the Funding block.
-    budget_day = monitor._day((dates.get("budget") or {}).get("data_date"))
-    return {"budget": ("ФМ: " + date_of("budget") + ". " if budget_day else "") + short,
-            "limit": "РСС: " + date_of("rss") + ". " + short,
-            "paid": "РСС: " + date_of("rss") + ". " + short,
-            "left": "По учтённым оплатам. РСС: " + date_of("rss") + ". " + short,
-            "need": short}
+    # Full source dates remain visible in the Funding block.
+    return {"budget": "ФМ: " + date_of("budget") + ".",
+            "limit": "РСС: " + date_of("rss") + ".",
+            "paid": "РСС: " + date_of("rss") + ".",
+            "left": "По учтённым оплатам. РСС: " + date_of("rss") + ".",
+            "need": "ФМ: " + date_of("budget") + ". РСС: " + date_of("rss") + "."}
 
 
 
@@ -1153,7 +1175,11 @@ def _paid_in_chapters(rss: Path, estimate: dict[str, Any],
     borrowed_rows = [row for row in selected if actuals.borrowed(row.get("source"))]
     borrowed = (sum(row["amount"] for row in borrowed_rows)
                 if all(row["complete"] for row in borrowed_rows) else None)
+    observed = [row for row in selected if row["complete"]]
+    observed_total = (sum(row["amount"] for row in observed)
+                      if observed or total is not None else None)
     return {"total": total, "borrowed": borrowed, "incomplete_rows": incomplete,
+            "observed_total": observed_total, "observed_count": len(observed),
             "cut": cut.isoformat() if cut else None,
             "since": since.isoformat() if since else None}
 
@@ -1509,7 +1535,7 @@ def _chapter_title(row: dict[str, Any]) -> str:
 
 
 def _own_money(comp: dict[str, Any] | None, smeta: dict[str, float],
-               paid_by_chapter: dict[str, dict[str, float]], bank_chapters: Any,
+               paid_by_chapter: dict[str, dict[str, Any]], bank_chapters: Any,
                cut: datetime.date, plan_from: datetime.date | None = None,
                paid_since: dict[str, float] | None = None,
                chapter_flow: dict[str, dict[str, Any]] | None = None,
@@ -1619,6 +1645,7 @@ def _own_money(comp: dict[str, Any] | None, smeta: dict[str, float],
             "payments": {ch: list((paid_by_chapter.get(ch) or {}).get("incomplete_rows") or [])
                          for ch in chapters},
             "limits": [ch for ch in chapters if funding_reconciliation.number(smeta.get(ch)) is None]},
+        "payment_observation": funding_reconciliation.payment_observation(paid_by_chapter, chapters),
         "own_paid": sum(paid.values()) - borrowed,
         "left": sum(left.values()), "left_by_chapter": left,
         "need": need, "model_over_schedule": over, "accounting": accounting,
@@ -1774,7 +1801,8 @@ def own_money_lines(own: dict[str, Any] | None, money: Any,
                 + (admin_expense_lines(own.get("admin"), money) if with_admin else [])
                 + (list(funding_source_notes({"source_dates": r["source_dates"],
                                              "need_basis": "model"}).values())
-                   if r.get("source_dates") else []))
+                   if r.get("source_dates") else [])
+                + ([r["source_scope_note"]] if r.get("source_scope_note") else []))
     out = [f"Нужно своих денег сверх сметы банка {money(own['need'])}"
            + (f", первый месяц нехватки — {_month_name(own['from'])}" if own.get("from") else "")
            + ": по каждой главе — оплачено по реестру плюс то, что осталось оплатить, минус "
@@ -2112,10 +2140,11 @@ def _rss_bank_observations(rss: Path, cut: datetime.date) -> dict[str, Any]:
     estimate = actuals.read_estimate(rss)
     limits = _rss_ch23(estimate, CHAPTERS)
     paid = _paid_in_chapters(rss, estimate, CHAPTERS, cut=cut)
-    rows = []
+    rows, paid_by_chapter = [], {}
     for chapter in CHAPTERS:
         amount = limits['by_chapter'][chapter]
-        payment = _paid_in_chapters(rss, estimate, (chapter,), cut=cut)['total']
+        paid_by_chapter[chapter] = _paid_in_chapters(rss, estimate, (chapter,), cut=cut)
+        payment = paid_by_chapter[chapter]['total']
         rows.append(dict(chapter=chapter, limit=amount, paid=payment,
                          available=max(0., amount-payment) if amount is not None and payment is not None else None))
     available = [row['available'] for row in rows]
@@ -2123,6 +2152,7 @@ def _rss_bank_observations(rss: Path, cut: datetime.date) -> dict[str, Any]:
                 bank_limit=limits['limit'], paid_actual=paid['total'], paid_borrowed=paid['borrowed'],
                 available_bank_limit=sum(available) if all(v is not None for v in available) else None,
                 by_chapter=rows, incomplete_rows=paid['incomplete_rows'],
+                calculation=funding_reconciliation.bank_calculation(paid_by_chapter, limits['by_chapter']),
                 payments_complete_through_cut=None,
                 note='По сохранённому РСС, главы 1–3. Бюджет ФМ и потребность в допфинансировании этими суммами не определяются.')
 

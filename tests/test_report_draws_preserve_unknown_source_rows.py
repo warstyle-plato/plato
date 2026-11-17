@@ -122,7 +122,10 @@ def test_native_report_downloads_canonical_pdf_and_preserves_a_gap_in_loan_chart
         f'{label}: {cash.money(built["admin_expenses_cash"].get(key))}' for key, label in cash.FIELDS]
     headline = page.locator('#reportBox .tile').filter(has=page.locator('.k', has_text='Потребность в допфинансировании'))
     expect(headline).to_have_count(1)
-    expect(headline.locator('.v')).to_have_text('нет данных')
+    expected_need = canonical['calculation']['calculated_additional']
+    assert expected_need is not None  # Readable payments support the operational calculation.
+    expect(headline.locator('.v')).to_have_text(report._rub(expected_need))
+    expect(headline).to_contain_text('Утверждённый бюджет уже включает АХР')
     for row in canonical['display_rows']:
         expect(page.locator('#reportBox')).to_contain_text(row['label'])
         if row['key'] in {'budget', 'bank_limit_total', 'paid_at_cut', 'available_bank_limit'}:
@@ -134,7 +137,8 @@ def test_native_report_downloads_canonical_pdf_and_preserves_a_gap_in_loan_chart
         if row['key'] == 'calculated_additional':
             cell = page.locator('#reportBox').get_by_role('cell', name=row['label'], exact=True)
             expect(cell).to_have_count(1)
-            expect(cell.locator('xpath=..').locator('td').nth(1)).to_have_text(report._rub(row['value']))
+            expect(cell.locator('xpath=..').locator('td').nth(1)).to_have_text(
+                row.get('prefix', '') + report._rub(row['value']))
     figure = page.locator('#reportBox figure').filter(has=page.locator(
         'figcaption', has_text='Выборка кредита и эскроу нарастающим итогом по месяцам'))
     paths = figure.locator('svg path[stroke-width="2"]')
@@ -171,7 +175,9 @@ def test_native_report_downloads_canonical_pdf_and_preserves_a_gap_in_loan_chart
         assert row['label'] in text
         if row['key'] == 'calculated_additional':
             assert report._rub(row['value']) in text
-    assert 'Финансовая сверка первичных источников не завершена' in text
+    assert 'Финансовая сверка первичных источников не завершена' not in text
+    assert 'Расчётная потребность в допфинансировании' in text
+    assert report._rub(expected_need) in cover
     assert ' '.join(built['credit_due']['reason'].split()) in text
     if unknown:
         assert 'Выборка кредита не определена полностью' in text
