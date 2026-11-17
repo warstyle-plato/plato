@@ -1179,6 +1179,10 @@ def gantt(view: dict[str, Any], dashboard: dict[str, Any]) -> dict[str, Any]:
     schedule_view = view.get("schedule") or {}
     result = report_gantt.model(schedule_view.get("management") or [])
     result['calendar'] = report_gantt.calendar(schedule_view, view.get('cut'))
+    if 'work_forecast' in schedule_view:
+        result['work_forecast'] = result['calendar']['work_forecast']
+        result['approved_plan'] = copy.deepcopy(schedule_view.get('approved_plan'))
+        result['work_forecast_groups'] = copy.deepcopy(schedule_view.get('display_groups'))
     result["dependency_timeline"] = schedule_view.get("dependency_timeline")
     result["corpus_gpr"] = schedule_view.get("corpus_gpr")
     result["work_fact"] = schedule_view.get("work_fact")
@@ -2013,7 +2017,8 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
         out.append({"topic": topic, "text": text, "source": source, "tone": tone})
 
     block = report.get("physical") or {}
-    readiness = gpr_summary((report.get('gantt') or {}).get('readiness'), report.get('end'))
+    readiness = (_report_gpr_summary(report) if 'work_forecast' in (report.get('gantt') or {})
+                 else gpr_summary((report.get('gantt') or {}).get('readiness'), report.get('end')))
     if readiness is not None:
         add('Стройка', readiness['readiness_text'], 'ГПР',
             'missing' if readiness['progress'] is None else '')

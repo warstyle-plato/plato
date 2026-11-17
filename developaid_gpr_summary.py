@@ -102,6 +102,8 @@ def gpr_summary(state, cut):
     """Read supplied project scalars only; never infer weights, dates or scope."""
     if not isinstance(state, dict) or state.get('cut') != str(cut) or not isinstance(state.get('project'), dict):
         return None
+    if state.get('basis') == 'gpr_work_forecast' and isinstance(state.get('summary'), dict):
+        return dict(state['summary'])
     project = state['project']
     number = lambda value: isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
     progress = project.get('progress')
