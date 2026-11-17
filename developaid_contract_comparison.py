@@ -73,6 +73,20 @@ def build(listed: dict, cut: str, source_sha256: str | None = None) -> dict:
                 'Работа есть в ГПР, но объём из расчёта и выполнение КС с ней не сопоставлены.', 'money_fallback':''})
     result['coverage']['unknown'] = sum(r['state'] == 'unknown' for r in result['lines'])
     result['coverage']['partial'] = bool(result['coverage']['unknown'] or (canonical.get('left_out') or {}).get('count'))
+    # A current estimate can describe only the remaining scope of an agreement.
+    # Keep its calendar projection, but never promote it to the whole contract
+    # while source works are unknown or absent from the comparison.
+    result['coverage']['calculation_start'] = (current or {}).get('start')
+    result['coverage']['prior_periods'] = ((listed.get('fact') or {}).get('before') or {}).get('count', 0)
+    if result['forecast'] is not None:
+        complete = (result['coverage']['source_known'] and not result['coverage']['partial']
+                    and result['coverage']['calculated'] > 0
+                    and result['coverage']['calculated'] == result['coverage']['source_works']
+                    and not any(item.get('count') for item in ((current or {}).get('outside') or {}).values())
+                    and not (current or {}).get('without_amount')
+                    and not (current or {}).get('accepted_without_amount'))
+        result['forecast'] = dict(result['forecast'], scope='matched_works',
+                                  whole_contract_finish=result['forecast'].get('finish') if complete else None)
     by_code = {}
     for source_row in source_lines:
         by_code.setdefault(source_row['code'],[]).append(source_row)
