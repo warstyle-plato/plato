@@ -229,6 +229,7 @@ def planning_exposures(inputs: dict[str, Any], commissioning: date, *,
     """
     lag = registration_months(inputs)
     items = [dict(item) for item in objects]
+    missing = []
     if housing:
         items.insert(0, {"id": "housing", "object_key": "housing", "name": "Жильё и встроенные помещения",
             "total_area": housing_area, "commissioning": commissioning.isoformat(),
@@ -236,10 +237,10 @@ def planning_exposures(inputs: dict[str, Any], commissioning: date, *,
             "registration_months": lag,
             "source": "Сценарное допущение: до регистрации первых квартир после ввода"})
     if not items:
+        missing.append("Не определены объекты арендуемого участка и срок владения: добавьте объект проекта.")
         items = [{"id": "unallocated", "object_key": "unallocated", "total_area": None,
             "commissioning": commissioning.isoformat(), "lease_exit": _add_months(commissioning, lag).isoformat(),
             "policy": "unallocated", "source": "Не определены объекты арендуемого участка"}]
-    missing = []
     raw_lag = inputs.get("land_rent_registration_months")
     lag_value = _number(raw_lag) if raw_lag not in (None, "") else 3
     if housing and (lag_value is None or lag_value < 0 or lag_value > 120 or lag_value != int(lag_value)):
@@ -601,6 +602,7 @@ def build(inputs: dict[str, Any], project_start: date, rve: date,
     }
     if exposures is not None:
         out["land_exposures"] = [dict(item) for item in exposures]
+        out["scope"] = "По долям земли до сценарных дат регистрации жилья или выхода из владения нежилыми объектами"
         out["commissioning"] = derived_rve.isoformat()
         out["cutoff_origin"] = "exposures"
         out["cutoff_basis"] = "Аренда учитывается по долям земли до выхода каждого объекта; ввод и условия ПФ от этой даты не меняются"

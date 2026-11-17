@@ -92,6 +92,14 @@ def test_unknown_mixed_allocation_is_named_instead_of_a_false_zero_tail():
     assert not rent.sum_state(result)['known'] and not result['financial_complete']
 
 
+def test_a_nonresidential_project_without_active_objects_has_unknown_rental_scope():
+    x=inputs(project_kind='nonresidential')
+    exposed,reasons=rent.planning_exposures(x,OPEN,housing_area=0,housing=False,objects=[])
+    result=rent.qualify_exposures(rent.build(x,START,OPEN,date(2030,1,1),exposures=exposed),reasons)
+    assert reasons and 'land_exposures' in result['financial_missing_codes']
+    assert not rent.sum_state(result)['known']
+
+
 def test_prepayment_does_not_capitalize_future_retained_rent_or_expense_it_all_at_start():
     x=inputs(land_rent_payment_mode='manual',land_rent_payment_schedule='100%@0')
     exposed,_=rent.planning_exposures(x,OPEN,housing_area=0,housing=False,objects=[{

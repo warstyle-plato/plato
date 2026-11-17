@@ -26,10 +26,11 @@ def op(x):
 def test_land_rent_reaches_capex_months_and_cashflow_as_a_separate_cost():
     x = inputs()
     result = core.calculate(core.CalcRequest(inputs=x, tep=copy.deepcopy(core.TEP_DEFAULT), rates=[]))
-    assert result["capex"]["land_rent"] == pytest.approx(3e6)
+    expected = 3e6 + 1.5e6 * 90/365  # Jan–Mar after the 01.01.2029 RVE.
+    assert result["capex"]["land_rent"] == pytest.approx(expected)
     line = next(r for r in result["monthly"]["costs"] if r["key"] == "land_rent")
-    assert line["total"] == pytest.approx(3e6)
-    assert result["land_rent"]["applied_total"] == pytest.approx(3e6)
+    assert line["total"] == pytest.approx(expected)
+    assert result["land_rent"]["applied_total"] == pytest.approx(expected)
     assert result["summary"]["preliminary"]
     assert "аренд" in result["summary"]["preliminary_reason"].lower()
 
@@ -50,16 +51,21 @@ def test_common_parcel_rent_decreases_as_queues_are_commissioned(count):
         phasing={"enabled": True, "mode": "phased", "phase_count": count, "user_enabled": True, "phases": phases}))
     rent = result["consolidated"]["land_rent"]
     shares = [(i+1) / sum(range(1, count+1)) for i in range(count)]
-    # Queue i keeps its land on lease from 2027 to its own RVE (2 + 2i years).
-    own = [1.5e6 * share * (2 + 2*i) for i, share in enumerate(shares)]
+    # Each queue keeps its parcel share until the signed three-month
+    # registration assumption after its own RVE (2 + 2i contractual years).
+    own = [1.5e6 * share * (2 + 2*i +
+        (date(2029+2*i,4,1)-date(2029+2*i,1,1)).days /
+        (date(2030+2*i,1,1)-date(2029+2*i,1,1)).days) for i, share in enumerate(shares)]
     total = result["consolidated"]["capex"]["land_rent"]
     assert total == pytest.approx(sum(own)) and total < (2 + 2*(count-1))*1.5e6
     assert [p["result"]["capex"]["land_rent"] for p in result["phases"]] == pytest.approx(own)
     assert rent["applied_total"] == pytest.approx(total)
-    assert rent["phase_share_basis"] == "area" and rent["cutoff_origin"] == "phases"
-    assert [p["rve"] for p in rent["phase_land"]] == [f"{2029 + 2*i}-01-01" for i in range(count)]
+    assert rent["phase_share_basis"] == "area" and rent["cutoff_origin"] == "exposures"
+    assert [p["commissioning"] for p in rent["phase_land"]] == [f"{2029 + 2*i}-01-01" for i in range(count)]
+    assert [p["rve"] for p in rent["phase_land"]] == [f"{2029 + 2*i}-04-01" for i in range(count)]
     first = result["phases"][0]["result"]
-    assert not [m for m, v in first["land_rent"]["monthly"].items() if v and m >= first["dates"]["rve"]]
+    assert not [m for m, v in first["land_rent"]["monthly"].items() if v and m >= "2029-04-01"]
+    assert sum(v for m,v in first["land_rent"]["monthly"].items() if "2029-01-01" <= m < "2029-04-01") > 0
     last = result["phases"][-1]["result"]
     assert last["land_rent"]["monthly"]["2027-01-01"] > 0  # a not-yet-started queue's land is leased too
     # The first queue's repaid credit must not be fictitiously reopened.
@@ -136,11 +142,12 @@ def test_only_active_object_commissioning_extends_rental_cutoff_without_changing
     x["offices_months"] = 36
     late = op(x)
     assert late["rve"] == early["rve"]
-    assert late["land_rent"]["rve"] == "2031-01-01"
+    assert late["land_rent"]["commissioning"] == "2031-01-01"
+    assert late["land_rent"]["rve"] > "2031-01-01"  # retained office horizon
     assert late["capex_amounts"]["land_rent"] > early["capex_amounts"]["land_rent"]
     x["offices_enabled"] = False
     disabled = op(x)
-    assert disabled["land_rent"]["rve"] == disabled["rve"].isoformat()
+    assert disabled["land_rent"]["commissioning"] == disabled["rve"].isoformat()
 
 
 def test_actual_cash_is_canonical_without_rewriting_accruals_for_other_payment_periods():

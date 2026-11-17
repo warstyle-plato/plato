@@ -228,7 +228,7 @@ def test_real_page_names_proportional_exit_and_does_not_request_an_absent_separa
             advanced.locator("summary").first.click()
             scope = root.locator('[data-land-rent-detail="scope"]')
             scope.locator("summary").first.click()
-            expect(scope).to_contain_text("аренда уменьшается по долям введённых очередей")
+            expect(scope).to_contain_text("Каждая доля земли учитывается до её собственного сценарного выхода")
             expect(scope).not_to_contain_text("После ввода нужен отдельный расчёт аренды")
             assert scope.locator(".lr-phase-table tbody tr").count() == 5
             assert root.locator('.lr-exposure-table tbody tr').count() == 5
