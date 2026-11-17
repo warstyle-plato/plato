@@ -19,7 +19,7 @@ def _page():
 def _task(**changes):
     return dict({'id': 'work-1', 'level': 'task', 'object': 'Корпус А',
                  'section': 'Фасады', 'name': 'Учебная работа',
-                 'source_format': 'corpus-gpr-v1',
+                 'source_format': 'corpus-gpr-v1', 'construction_work': True,
                  'plan_start': '2031-03-12', 'plan_finish': '2032-10-09',
                  'plan_progress': .375,
                  'display_progress': {'value': 0, 'label': 'Выполнено по ГПР',

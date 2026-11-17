@@ -17,6 +17,15 @@ def _day(value):
         return None
 
 
+def linear_eligible(row):
+    """Corpus imports explicitly classify construction. Keep legacy WBS policy.
+
+    This is a conservative method boundary, never a milestone classifier.
+    Names, percentages and source-cell positions do not select the policy.
+    """
+    return row.get('source_format') != 'corpus-gpr-v1' or row.get('construction_work') is True
+
+
 def work(row, cut):
     fact = row.get('display_progress') or {}
     progress = fact.get('value')
@@ -28,6 +37,10 @@ def work(row, cut):
         return dict(result, reason='Нет пригодного датированного процента для сценария.')
     if progress >= 1:
         return dict(result, complete=True, reason='100% по источнику не задают фактическую дату окончания.')
+    if not linear_eligible(row):
+        return dict(result, reason=('Процент из ГПР не позволяет рассчитать новую дату этой работы. '
+                                    'План и датированное выполнение сохранены; расчётная дата не определена.'),
+                    eligibility='unconfirmed_work_type')
     from developaid_schedule_gpr_forecast import STALE_DAYS
     if (day-observed).days > STALE_DAYS:
         return dict(result, reason='Последнее показание устарело; сценарий не рассчитан.')

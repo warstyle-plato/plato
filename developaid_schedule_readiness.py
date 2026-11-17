@@ -386,6 +386,9 @@ def model(work_fact, *, cut, baseline_scope, source_sha256, profile=None, full_r
         full_source_sha256=profile.get('full_source_sha256') if active else None,
         remaining_ids={str(row['id']): reverse.get(row['id']) if active else row['id']
                        for row in entries})
+    result['profile_state'] = 'active' if active else 'invalid' if profile else 'absent'
+    result['profile_state_reason'] = ('bound_profile' if active else
+                                    'profile_identity_or_membership' if profile else 'no_profile')
     return result
 
 
@@ -437,6 +440,10 @@ def build(project, cut, schedule):
                   pending_profile='future' if latest and latest['profile']['effective_from'] > cut else None)
     if latest and not event:
         result['reason'] = 'Сохранённый профиль ещё не действует на выбранную дату. Текущие показания показаны отдельно.'
+        result.update(profile_state='future', profile_state_reason='profile_not_yet_effective')
+    if error or history_error:
+        result.update(profile_state='invalid', profile_state_reason=(
+            'profile_history_unreadable' if history_error else 'profile_source_unconfirmed'))
     return result
 
 
@@ -550,7 +557,7 @@ def editor(project, *, full_source_sha256=''):
                               overrides=(e['profile'].get('element_profile') or {}).get('overrides', {})) for e in history_events if e['profile']['full_source_sha256'] == history_sha])
 
 
-def render(state):
+def render(state, *, show_forecast=True):
     """One compact state and substantive corpus facts before the work chart."""
     if not state:
         return ''
@@ -601,9 +608,9 @@ def render(state):
             out.append('<p class="readiness-project-coverage">Расчёт охватывает '+esc(f"{project['coverage']:.1f}%".replace('.', ','))+' оценочного веса разделов.</p>')
         if state.get('project_weight_estimated'):
             out.append('<p class="readiness-corpus-assumption">'+esc(state['project_weight_basis'])+'. Допущение для общей оценки СМР; ПИР и паркинг в неё не включены.</p>')
-        if summary['plan_text']:
+        if show_forecast and summary['plan_text']:
             out.append('<p class="readiness-project-plan"><b>'+esc(summary['plan_text'])+'</b></p>')
-        if summary['finish']:
+        if show_forecast and summary['finish']:
             out.append('<p class="readiness-project-forecast"><b>'+esc(summary['forecast_text'])+'</b></p>')
         out.append('<p class="readiness-project-asof">'+esc(summary['as_of_text'])+'</p>')
         if project.get('partial'):
