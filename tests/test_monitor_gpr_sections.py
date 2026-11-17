@@ -4,6 +4,7 @@ import pytest
 import developaid_schedule_timeline as timeline
 from browser import expand_gantt
 from test_monitor_cumulative_controls import browser_page
+from gpr_view_fixtures import legacy_response
 
 
 def monitor_view(state='estimate'):
@@ -24,17 +25,18 @@ def monitor_view(state='estimate'):
          'delay_days': 19 if state != 'unknown' else None, 'driving_chain': [],
          'reasons': ['Техническая подробность источника.']}
     block = {'rnv': q, 'rows': [], 'edges': []}
-    return {'cut': '2026-11-08', 'schedule': {'management': [
+    return legacy_response({'cut': '2026-11-08', 'schedule': {'management': [
         {'level': 'control', 'name': 'Стройка', 'children': [
             {'level': 'detail', 'name': 'Строительные работы', 'children': [
                 {'level': 'rss', 'name': 'Фасады', 'code': '2.2', 'eac': 100, 'accepted': 99,
                  'actual_progress': .99, 'children': [task, unknown, legacy]}]}]}],
         'dependency_timeline': block, 'dependency_timeline_html': timeline.render(block)},
-        'dashboard': {'schedule': {'qualified_rnv': q}}}
+        'dashboard': {'schedule': {'qualified_rnv': q}}})
 
 
 def render(page, view):
-    page.evaluate("(v)=>{currentView=v;msg('viewMsg','');renderDash(v);renderGantt(v)}", view)
+    view = legacy_response(view)
+    page.evaluate("(v)=>{document.activeElement?.blur();$('cut').value=v.cut;currentView=v;msg('viewMsg','');renderDash(v);renderGantt(v)}", view)
     expand_gantt(page)
 
 
@@ -85,19 +87,20 @@ def test_qualified_dates_keep_their_meaning_and_method_is_disclosed(state):
     from playwright.sync_api import expect
     with browser_page() as (page, responses, errors):
         render(page, monitor_view(state))
-        summary = page.locator('#readinessSummary .gpr-legacy-fallback')
-        expect(summary).to_contain_text('Оценка по ГПР')
+        summary = page.locator('#readinessSummary .legacy-work-forecast')
+        expect(summary).to_contain_text('Оценка окончания работ по источнику')
         if state == 'estimate':
-            expect(summary.locator('.schedule-rnv-cards>div:nth-child(2)>strong')).to_have_text('20.12.2026')
-            expect(summary.locator('.schedule-rnv-cards>div:nth-child(2)>span')).to_have_text('Оценка по ГПР')
+            expect(summary.locator('strong')).to_have_text('20.12.2026')
+            expect(summary.locator('p')).to_contain_text('Оценка окончания работ: 20.12.2026')
         elif state == 'partial':
-            expect(summary.locator('.schedule-rnv-cards')).to_contain_text('неполный')
-            expect(summary.locator('.schedule-note').last).to_contain_text('Для части работ нет прогноза')
+            expect(summary.locator('strong')).to_have_text('20.12.2026')
+            expect(summary.locator('p')).to_contain_text('Оценка по части работ')
         else:
-            expect(summary.locator('.schedule-rnv-cards')).to_contain_text('недостаточно данных')
-        expect(summary.get_by_text('Техническая подробность источника.', exact=True)).to_be_hidden()
-        summary.locator('details>summary').last.click()
-        expect(summary.get_by_text('Техническая подробность источника.', exact=True)).to_be_visible()
+            expect(summary.locator('strong')).to_have_text('Дата не определена')
+        details = page.locator('#gprWhy .gpr-why-limits')
+        expect(details.get_by_text('Техническая подробность источника.', exact=True)).to_be_hidden()
+        details.locator('summary').click()
+        expect(details.get_by_text('Техническая подробность источника.', exact=True)).to_be_visible()
         assert not errors
 
 
@@ -237,7 +240,7 @@ def test_gantt_opens_works_and_retains_corpus_and_stage_collapse_controls(width)
     """The matrix shows work progress first; the calendar keeps native controls."""
     from playwright.sync_api import expect
     with browser_page(width) as (page, responses, errors):
-        page.evaluate("(v)=>{currentView=v;msg('viewMsg','');renderDash(v);renderGantt(v)}", monitor_view())
+        page.evaluate("(v)=>{document.activeElement?.blur();document.getElementById(`cut`).value=v.cut;currentView=v;msg('viewMsg','');renderDash(v);renderGantt(v)}", monitor_view())
         expect(page.locator('#gprFactMatrix [data-work-id]')).to_have_count(3)
         assert page.locator('#gantt .g-row.lvl-task:visible').count() == 0
         page.locator('#gprCalendar>summary').click()
@@ -271,7 +274,7 @@ def test_work_matrix_and_all_corpora_expand_without_losing_completion(width):
         {'level': 'rss', 'name': 'Проект', 'code': '1.1', 'children': [
             dict(base, id='9', wbs='0.1', object='Корпус 1', name='Рабочая документация', pace_forecast_method='plan', pace_forecast_known=False, forecast_known=False, forecast_finish=None, delta_days=None)]}]})
     with browser_page(width) as (page, responses, errors):
-        page.evaluate("(v)=>{currentView=v;msg('viewMsg','');renderDash(v);renderGantt(v)}", view)
+        page.evaluate("(v)=>{document.activeElement?.blur();document.getElementById(`cut`).value=v.cut;currentView=v;msg('viewMsg','');renderDash(v);renderGantt(v)}", legacy_response(view))
         assert page.locator('#gprMatrix, .gpr-matrix').count() == 0
         expect(page.locator('#gprFactMatrix [data-work-id]')).to_have_count(7)
         assert page.locator('#gantt .g-row.lvl-task:visible').count() == 0
@@ -303,7 +306,7 @@ def test_cell_and_corpus_row_agree_on_finished_late_no_forecast_and_current_dela
         dict(base, id='3', object='Корпус 2', name='Монолит', delta_days=0, forecast_finish='2026-12-01'),
         dict(done, id='4', object='Корпус 3', name='Сваи', actual_finish='2026-12-31', forecast_finish='2026-12-31', delta_days=30, finished_late_days=30)]
     with browser_page(1440) as (page, responses, errors):
-        page.evaluate("(v)=>{currentView=v;msg('viewMsg','');renderDash(v);renderGantt(v)}", view)
+        page.evaluate("(v)=>{document.activeElement?.blur();document.getElementById(`cut`).value=v.cut;currentView=v;msg('viewMsg','');renderDash(v);renderGantt(v)}", legacy_response(view))
         corpus = lambda name: page.locator('#gantt .g-row.lvl-corpus', has_text=name)
         expect(corpus('Корпус 2')).to_contain_text('По сроку')
         # У корпуса — «среди законченных работ», чтобы не читалось как окончание всего корпуса.
@@ -331,7 +334,7 @@ def test_the_page_takes_done_from_the_server_and_keeps_a_100_percent_reading_out
         dict(base, id='3', object='Корпус 2', name='Кровля', actual_progress=1, pace_progress=1, pace_forecast_method='done',
              work_done=False, forecast_finish='2026-12-20', delta_days=19)]
     with browser_page(1440) as (page, responses, errors):
-        page.evaluate("(v)=>{currentView=v;msg('viewMsg','');renderDash(v);renderGantt(v)}", view)
+        page.evaluate("(v)=>{document.activeElement?.blur();document.getElementById(`cut`).value=v.cut;currentView=v;msg('viewMsg','');renderDash(v);renderGantt(v)}", legacy_response(view))
         first = page.locator('#gantt .g-row.lvl-corpus', has_text='Корпус 1')
         expect(first).to_contain_text('Оценка 15.09.2026')
         expect(first.locator('.g-metrics')).to_contain_text('Оценка 15.09.2026')
@@ -386,8 +389,8 @@ def test_a_work_with_only_a_plan_and_no_pace_is_not_on_time(tmp_path, monkeypatc
     text = report.render_text(report.build(project, 'week', cut.isoformat()))
     assert 'срок пока не оценить: у 1 работы нет данных о темпе (остальные идут по сроку).' in text
     with browser_page(1440) as (page, responses, errors):
-        page.evaluate("(v)=>{currentView=v;msg('viewMsg','');renderGantt(v)}",
-                      {'cut': cut.isoformat(), 'schedule': {'management': view['schedule']['management']}})
+        page.evaluate("(v)=>{document.activeElement?.blur();document.getElementById(`cut`).value=v.cut;currentView=v;msg('viewMsg','');renderGantt(v)}",
+                      view)
         assert page.locator('#gprMatrix').count() == 0
         corpus = page.locator('#gantt .g-row.lvl-corpus')
         expect(corpus).to_contain_text('пока не оценить: у 1 работы нет данных о темпе.')
@@ -461,7 +464,7 @@ def test_corpus_names_why_each_work_has_no_forecast_with_the_work_row_words():
         dict(none, id='3', name='Лифты', pace_forecast_method='stale'),
         dict(base, id='4', name='Кровля', delta_days=0, forecast_finish='2026-12-01')]
     with browser_page(1440) as (page, responses, errors):
-        page.evaluate("(v)=>{currentView=v;msg('viewMsg','');renderDash(v);renderGantt(v)}", view)
+        page.evaluate("(v)=>{document.activeElement?.blur();document.getElementById(`cut`).value=v.cut;currentView=v;msg('viewMsg','');renderDash(v);renderGantt(v)}", legacy_response(view))
         assert page.locator('#gprMatrix').count() == 0
         corpus = page.locator('#gantt .g-row.lvl-corpus')
         expect(corpus).to_contain_text('Срок корпуса пока не оценить: у 3 работ нет прогноза срока.')
@@ -480,7 +483,7 @@ def test_corpus_names_why_each_work_has_no_forecast_with_the_work_row_words():
         dict(none, id='1', name='Фасад', pace_forecast_method='plan'),
         dict(none, id='2', name='Окна', pace_forecast_method='stalled')]
     with browser_page(1440) as (page, responses, errors):
-        page.evaluate("(v)=>{currentView=v;msg('viewMsg','');renderDash(v);renderGantt(v)}", view)
+        page.evaluate("(v)=>{document.activeElement?.blur();document.getElementById(`cut`).value=v.cut;currentView=v;msg('viewMsg','');renderDash(v);renderGantt(v)}", legacy_response(view))
         assert page.locator('#gprMatrix').count() == 0
         corpus = page.locator('#gantt .g-row.lvl-corpus')
         expect(corpus).to_contain_text('Без прогноза: Фасад — нет данных о темпе; Окна — работа стоит.')

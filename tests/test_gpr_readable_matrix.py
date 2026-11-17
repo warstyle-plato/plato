@@ -14,6 +14,7 @@ from pypdf import PdfReader
 
 from test_monitor_cumulative_controls import Responses, browser_page
 from test_monitor_gpr_sections import monitor_view
+from gpr_view_fixtures import legacy_response
 
 
 def matrix_view(count=4):
@@ -38,7 +39,7 @@ def serve_view(monkeypatch, view):
     def response(self, route):
         path = route.request.url.split('?')[0]
         if path.endswith('/monitor/view'):
-            return route.fulfill(json=view)
+            return route.fulfill(json=legacy_response(view))
         # The successful view also loads this GET. The general contracts
         # fixture admits POST body keys only; it cannot represent that GET.
         if path.endswith('/monitor/daily/summary'):
@@ -51,7 +52,7 @@ def serve_view(monkeypatch, view):
 def settled(page, view):
     page.wait_for_function('currentView!==null&&!$("refresh").disabled')
     page.locator('#cut').fill(view['cut'])
-    page.evaluate('(v)=>{currentView=v;renderGantt(v)}', view)
+    page.evaluate('(v)=>{currentView=v;renderGantt(v)}', legacy_response(view))
 
 
 @pytest.mark.parametrize('stage_count', [1, 2])

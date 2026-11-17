@@ -249,7 +249,7 @@ def test_the_card_reports_the_lag_and_the_threat_in_plain_words(card, width):  #
         expect(report.locator('thead th')).to_have_text([
             'Работа / единица','План на дату','Факт','Отклонение','Срок работы','Прогноз окончания'])
         expect(page.locator('#contractCardSummary')).to_contain_text('55 %')
-        expect(page.locator('#contractCardSummary')).to_contain_text('Готовность по КС сопоставленных работ: 50 %')
+        expect(page.locator('#contractCardSummary')).to_contain_text('Готовность сопоставленных работ: 50 %')
         expect(report.locator('#contractComparisonInfo')).to_contain_text('Сравнено 3 из 4')
         expect(report.locator('#contractComparisonInfo')).to_contain_text('Не учтено периодов КС: 2')
         forecast=page.locator('#contractCardSummary [data-label="Прогноз окончания"]')

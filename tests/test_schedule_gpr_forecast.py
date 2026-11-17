@@ -118,7 +118,7 @@ def test_monitor_layer_uses_stored_gpr_files_and_never_money_pace(tmp_path, monk
     sentence = view['dashboard']['summary'][0]
     # This legacy WBS has no explicit project roster or active readiness profile.
     # Its per-work measured date remains valid, without becoming a project date.
-    assert sentence.startswith('Срок.') and 'нет явно определённого строительного состава' in sentence
+    assert sentence.startswith('Срок.') and 'Оценка окончания работ не подтверждена' in sentence
     assert '04.01.2027' not in sentence
 
 

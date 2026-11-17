@@ -9,6 +9,7 @@ from pypdf import PdfReader
 import developaid_schedule_elements as elements
 import developaid_schedule_readiness as ready
 from test_monitor_cumulative_controls import browser_page
+from gpr_view_fixtures import readiness_view
 
 DAY = '2026-11-13'
 
@@ -30,14 +31,16 @@ def buildings():
 
 def model(rows, config):
     full = {row['id']:{key:value for key,value in row.items() if key!='primary'} for row in rows}
-    profile = dict(full_scope_confirmed=True, remaining_source_sha256='a'*64,
+    profile = dict(full_scope_confirmed=True, full_source_sha256='a'*64, remaining_source_sha256='a'*64,
                    effective_from=DAY, crosswalk=[dict(remaining_id=key,full_id=key) for key in full],
                    outside_completed_ids=[], included_ids=list(full), excluded_ids=[], weights=[],
                    basis='estimated_elements', scope_kind='construction', label='Synthetic profile',
                    source_reference='Synthetic source', element_profile=config)
-    return ready.model({'works':{row['id']:{key:value for key,value in row.items() if key!='id'} for row in rows}},
-                       cut=DAY, baseline_scope='full_schedule', source_sha256='a'*64,
-                       profile=profile, full_rows=full)
+    state=ready.model({'works':{row['id']:{key:value for key,value in row.items() if key!='id'} for row in rows}},
+                     cut=DAY, baseline_scope='full_schedule', source_sha256='a'*64,
+                     profile=profile, full_rows=full)
+    state.update(profile_revision=1,profile_sha256=ready._digest(profile),profile_effective_from=DAY)
+    return state
 
 
 def test_project_uses_comparable_full_plan_and_keeps_each_buildings_owner_shares():
@@ -157,7 +160,9 @@ def test_missing_reading_retains_correct_cost_coverage_without_reweighting_a_bui
 def test_actual_report_html_and_pdf_preserve_project_scale_and_unknown_reason(width):
     import developaid_management_report as report
     rows,config=buildings();state=model(rows,config)
-    actual=lambda s:report._gantt_html({'gantt':{'readiness':s,'state':'error','reason':'Synthetic empty timeline'},'end':DAY})
+    def actual(state):
+        view=readiness_view(rows,state)
+        return report._gantt_html(dict(gantt=report.gantt(view,{}),end=DAY))
     with browser_page(width) as (page,_,errors):
         page.set_content(actual(state))
         expect(page.locator('[data-gpr-block=forecast]')).to_contain_text('99,0%')
@@ -173,3 +178,29 @@ def test_actual_report_html_and_pdf_preserve_project_scale_and_unknown_reason(wi
         assert 'Не определён общий вес корпусов' in text
         assert '99,0%' not in text
         assert not errors
+
+
+@pytest.mark.parametrize('mutation',['source','cut','profile_revision','future_profile'])
+def test_unknown_readiness_cause_never_crosses_a_rejected_owner_context(mutation):
+    import developaid_management_report as report
+    import developaid_gpr_work_forecast as work_dates
+    rows,config=buildings()
+    config['assignments']['Small:frame']['weight']['value']=None
+    state=model(rows,config)
+    reason=state['project']['reason']
+    assert 'Не определён общий вес корпусов' in reason
+    view=readiness_view(rows,state)
+    block=report.gantt(view,{})
+    valid=work_dates.report_model(block,DAY)
+    assert valid['readiness_reason']==reason and valid['finish']
+    cut=DAY
+    if mutation=='source':block['approved_plan']['source_sha256']='b'*64
+    elif mutation=='cut':cut='2026-11-14'
+    elif mutation=='profile_revision':block['readiness']['profile_revision']=2
+    else:block['readiness']['profile_effective_from']='2026-11-14'
+    rejected=work_dates.report_model(block,cut)
+    assert not rejected['assessment_qualified'] and rejected['finish'] is None
+    assert rejected['readiness_reason'] is None
+    markup=report._gantt_html(dict(gantt=block,end=cut))
+    assert reason not in markup and 'class="rg-gap"' not in markup
+    assert 'data-project-forecast="'+valid['finish']+'"' not in markup

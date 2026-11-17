@@ -43,10 +43,12 @@ def test_selected_membership_gaps_never_turn_into_outside_work(mutation):
     elif mutation=='duplicate_reference':state['project']['work_ids'].append(first['reference_work_id'])
     else:state['forecast_identity']['remaining_ids'][second['reference_work_id']]=first['work_id']
     model,body=_closed(view)
-    assert third['work_id']in model['points']
+    # An invalid owned DTO cannot retain points from the earlier population.
+    assert model['points']=={}
+    assert third['work_id'] in {row['task']['id'] for row in model['rows']}
     assert 'class="rg-forecast"' not in body
     if mutation in {'missing_translation_and_point','null_translation_and_point'}:
-        assert len(model['points'])==2 and first['reference_work_id']in state['project']['work_ids']
+        assert first['reference_work_id']in state['project']['work_ids']
 
 
 
@@ -60,7 +62,13 @@ def _native_scoped_view(classification=False, separate=False):
         gpr_progress=.5,gpr_progress_date='2026-11-06')for key,row in full.items()]
     scenario.decorate_readiness(state,rows)
     tree=[dict(level='control',name='Исходный раздел',children=[dict(level='detail',name='Исходный этап',children=copy.deepcopy(rows))])]
-    return dict(cut=DAY,schedule=dict(rows=rows,undated_works=[],management=tree,readiness=state))
+    view=dict(cut=DAY,schedule=dict(cut=DAY,
+        approved_plan=dict(source_sha256=state['source_sha256']),
+        rows=rows,undated_works=[],management=tree,readiness=state))
+    from developaid_gpr_work_forecast import for_schedule
+    view['schedule']['work_forecast_applicable']=True
+    view['schedule']['work_forecast']=for_schedule(view['schedule'],DAY)
+    return view
 
 
 @pytest.mark.parametrize('separate',[False,True])
@@ -87,8 +95,16 @@ def test_native_unclassified_scope_remains_a_named_unresolved_reference():
     assert state['forecast_scope']['other']==dict(status='gap',reason='unclassified_scope')
     assert state['project']['forecast']['gaps']==[dict(work_id='other',remaining_id=None,kind='unclassified_scope')]
     before=copy.deepcopy(view);block,body=_render(view);model=block['calendar']
-    assert not model['qualified'] and model['issues'] and len(model['rows'])==2
+    assert model['qualified'] and not model['issues'] and len(model['rows'])==2
     assert set(model['points'])=={'build'}
+    assert {row['task']['id'] for row in model['rows']}=={'build','other'}
+    owner=view['schedule']['work_forecast']
+    assert owner['state']=='partial'
+    assert owner['missing_members']==[dict(reference_work_id='other',work_id='other',reason='unclassified_scope')]
+    assert owner['outside_members']==[]
+    compact=report._report_gpr_compact(dict(gantt=block,end=DAY))
+    assert compact['total']==2 and compact['covered']==1
+    assert sum(group.get('outside',0) for group in compact['groups'])==0
     assert 'gpr-scoped-finish"'not in body and 'gpr-analysis-paragraph'not in body
     assert block['readiness']==state and view==before
 
@@ -102,4 +118,5 @@ def test_an_unattested_or_contradictory_exclusion_cannot_shrink_the_selected_den
     elif mutation=='malformed_kind':forecast['excluded'][0]['kind']=[]
     else:state['forecast_scope']['other']['reason']=[]
     model,_=_closed(view)
-    assert 'build'in model['points']
+    assert model['points']=={}
+    assert 'build' in {row['task']['id'] for row in model['rows']}

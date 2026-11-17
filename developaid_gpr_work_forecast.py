@@ -476,6 +476,7 @@ def report_model(block, cut):
             for c in value.get('corpora') or []]))
     owner = projection.get('owner_rnv') or {}
     return dict(qualified=valid, assessment_qualified=valid, readiness_qualified=valid, work_forecast=True,
+                readiness_reason=(value.get('project') or {}).get('reason') if valid else None,
                 finish=summary.get('finish') if valid else None,
                 covered=(value.get('project') or {}).get('forecast', {}).get('covered') if valid else None,
                 total=(value.get('project') or {}).get('forecast', {}).get('total') if valid else None,
