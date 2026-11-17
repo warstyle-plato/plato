@@ -2403,6 +2403,10 @@ def _disclosure_sheet(book: _Book, current: str | None, path_blocks: dict, path_
     plan = book.sheet(DISCLOSURE_PLAN_SHEET, "ПЛАН РЕАЛИЗАЦИИ · ВЫБРАННЫЙ ПУТЬ",
                       "Расчётный план, не факт. Гостевые места не продаются.",
                       monthly=True, tab=SALE_TAB)
+    # Twelve months fit A3 at 85% while Cyrillic status words and 7-digit
+    # prices retain enough width; existing model sheets keep their layout.
+    for column in range(FIRST_COL, FIRST_COL + book.n):
+        plan.column_dimensions[L(column)].width = 13
     rows = _Rows(book, plan, 5)
     r, money_refs, value_refs, source_notes = 5, [], [], []
     live_num = "#,##0.0;[Red](#,##0.0);0"
