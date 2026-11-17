@@ -2175,6 +2175,15 @@ def _cash_path(book: _Book, rows: _Rows, path: dict[str, str], blocks: list[_Blo
     param("pf_peak", "Пик долга проектного финансирования", "=" + pf_param("peak_pf"), "млн ₽")
     param("escrow_peak", "Пик денег на эскроу", "=" + pf_param("peak_escrow"), "млн ₽")
     horizons = "".join(f",{b.r('horizon')}" for b in blocks + ddu)
+    # A paid lease liability can outlive the asset. Keep its cash month in
+    # the project horizon without moving object exits or loan maturities.
+    # PF that remains unpaid still accrues interest through the project rows,
+    # as in the engine; the existing settled-PF condition prevents reopening.
+    rental = getattr(book, "rent_calendars", {}).get(c)
+    if rental:
+        rows.month(f"{c}.rent_last_k", "Месяц с оплатой аренды ЗУ",
+                   f"IF(ABS({rental[0].series(book.n, k)})>0,{k},-1)", unit="№", fmt=INT, total=False)
+        horizons += f",MAX({p('rent_last_k', ':')})"
     param("horizon", f"Горизонт варианта, мес. (месяцев в таблицах: {book.n})",
           f"=MAX({ref('t.rve')}+MAX(INT({ref('in.residual_months')})+3,12){horizons},{ref('cx.plan_last')})+1",
           "мес.", INT)
