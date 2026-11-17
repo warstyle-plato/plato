@@ -540,6 +540,9 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
     ``land_rent_operating`` — начисленный расход, ``land_rent_operating_cash``
     — его оплата, ``land_rent_valuation`` — начисление для оценки, включая
     следующие 12 месяцев. Последний ряд не является оплатой продавца.
+    Строительная аренда передаётся отдельно в
+    ``land_rent_construction_incurred`` и ``land_rent_construction_cash``;
+    передающий расчёт исключает её из ``common_capex``.
 
     Возвращает помесячные ряды (ключ — первое число месяца) и итоги. Всё, что
     уходит в общий расчёт, лежит в ``monthly``; движок складывает эти ряды со
@@ -562,6 +565,22 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
                                  (plan.get("land_rent_operating_cash") or {}).items() if value})
     land_rent_valuation = monthly_sum({mm: float(value) for mm, value in
                                       (plan.get("land_rent_valuation") or {}).items() if value})
+    construction_rent = monthly_sum({mm: float(value) for mm, value in
+                                     (plan.get("land_rent_construction_incurred") or {}).items() if value})
+    construction_rent_cash = monthly_sum({mm: float(value) for mm, value in
+                                          (plan.get("land_rent_construction_cash") or {}).items() if value})
+    construction_supplied = any(name in plan for name in (
+        "land_rent_construction_incurred", "land_rent_construction_cash"))
+    construction_complete = (not construction_supplied or
+                              (isinstance(plan.get("land_rent_construction_incurred"), dict) and
+                               plan.get("land_rent_construction_complete", True) is True))
+    construction_cash_complete = (not construction_supplied or
+                                   (isinstance(plan.get("land_rent_construction_cash"), dict) and
+                                    plan.get("land_rent_construction_cash_complete", True) is True))
+    if not construction_complete:
+        warnings.append("Строительная аренда земли рассчитана не полностью.")
+    if not construction_cash_complete:
+        warnings.append("Денежный график строительной аренды земли рассчитан не полностью.")
     rent_supplied = any(name in plan for name in (
         "land_rent_operating", "land_rent_operating_cash", "land_rent_valuation"))
     rent_accrual_complete = (not rent_supplied or
@@ -600,9 +619,15 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
     # финансируются кредитом, но не входят ни в НДС, ни в себестоимость
     # объекта — их учитывает проект.
     common = monthly_sum({mm: float(v) for mm, v in (plan.get("common_capex") or {}).items() if v})
-    common_total = sum(common.values())
+    # The caller removes construction rent from common CAPEX. Its incurred
+    # amount belongs to development cost; its payment may be after asset exit.
+    # Keep the office's existing common-cost VAT/depreciation classification.
+    common_total = sum(common.values()) + sum(construction_rent.values())
+    for month, value in construction_rent_cash.items():
+        common[month] = common.get(month, 0.0) + value
 
-    first = month_key(min([commissioning, *capex, *common, *land_rent_cash]))
+    first = month_key(min([commissioning, *capex, *common, *land_rent_cash,
+                           *construction_rent]))
     m = defaultdict(lambda: defaultdict(float))  # ряд → месяц → значение
     sold_share: dict[date, float] = {}
     horizon_end = commissioning
@@ -709,11 +734,13 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
     vat_credit = 0.0
     months: list[date] = []
     month = min(first, commissioning)
-    cash_horizon_end = max([horizon_end, *land_rent_cash])
+    cash_horizon_end = max([horizon_end, *land_rent_cash, *construction_rent_cash])
     while month <= cash_horizon_end:
         months.append(month)
         month = _add_months(month, 1)
     for month in months:
+        m["land_rent_construction_incurred"][month] = construction_rent.get(month, 0.0)
+        m["land_rent_construction_cash"][month] = construction_rent_cash.get(month, 0.0)
         m["land_rent_operating_cash"][month] = land_rent_cash.get(month, 0.0)
         # NOI and tax use the service period. Cash uses the payment date:
         # a prepayment is neither an asset cost nor all the first month's OPEX.
@@ -916,6 +943,8 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
         "capex_by_month": dict(capex),
         "common_by_month": dict(common),
         "cost_basis": cost_basis,
+        "land_rent_construction_complete": construction_complete,
+        "land_rent_construction_cash_complete": construction_cash_complete,
         "land_rent_operating_complete": rent_accrual_complete,
         "land_rent_operating_cash_complete": rent_cash_complete,
         "land_rent_valuation_complete": rent_valuation_complete,
@@ -931,6 +960,8 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
             "opex_cash": total("opex_cash"),
             "land_rent_operating": total("land_rent_operating"),
             "land_rent_operating_cash": total("land_rent_operating_cash"),
+            "land_rent_construction_incurred": sum(construction_rent.values()),
+            "land_rent_construction_cash": sum(construction_rent_cash.values()),
             "property_tax": total("property_tax"),
             "selling_cost": total("selling_cost"),
             "exit_cost": total("exit_cost"),

@@ -295,3 +295,159 @@ def test_advance_sale_first_bucket_does_not_drop_midmonth_source_money():
     assert result['months'][0] == date(2029, 10, 1)
     assert result['totals']['sale_revenue'] == 100_000_000
     assert result['monthly']['cash_to_equity'][date(2029, 10, 1)] > 0
+
+
+def construction_fixture(kind, cash):
+    plan = fixture(kind)
+    plan.update(land_rent_construction_incurred=series(date(2029, 1, 1), 12, 100_000),
+                land_rent_construction_cash=cash,
+                land_rent_construction_vat_exempt=True,
+                land_rent_construction_input_vat_base={})
+    return plan
+
+
+@pytest.mark.parametrize('kind', ['office', 'hotel'])
+def test_incurred_construction_rent_preserves_existing_asset_classification(kind):
+    base = run(kind, fixture(kind))
+    paid = {date(2033, 1, 1): 1_200_000}
+    after = run(kind, construction_fixture(kind, paid))
+    if kind == 'office':
+        assert after['cost_basis'] == base['cost_basis']
+        assert after['monthly']['cost_recognized'] == base['monthly']['cost_recognized']
+        assert after['monthly']['property_tax'] == base['monthly']['property_tax']
+        assert after['kpi']['cost_total'] - base['kpi']['cost_total'] == 1_200_000
+        assert after['common_by_month'] == paid
+    else:
+        assert after['kpi']['building_net'] - base['kpi']['building_net'] == pytest.approx(1_200_000)
+        assert after['kpi']['capex_net'] - base['kpi']['capex_net'] == pytest.approx(1_200_000)
+        assert after['kpi']['capex_vat'] == base['kpi']['capex_vat']
+        assert after['totals']['capex'] - base['totals']['capex'] == 1_200_000
+        assert after['monthly']['capex'][date(2033, 1, 1)] == 1_200_000
+    assert after['horizon_end'] == base['horizon_end']
+    assert after['kpi']['exit_month'] == base['kpi']['exit_month']
+    assert after['cash_horizon_end'] == date(2033, 1, 1)
+
+
+@pytest.mark.parametrize('kind', ['office', 'hotel'])
+def test_payment_date_of_construction_liability_does_not_change_development_basis(kind):
+    monthly = run(kind, construction_fixture(kind, series(date(2029, 1, 1), 12, 100_000)))
+    early = run(kind, construction_fixture(kind, {PREPAY: 1_200_000}))
+    late = run(kind, construction_fixture(kind, {date(2033, 1, 1): 1_200_000}))
+    for result in (early, late):
+        assert result['kpi']['exit_value'] == monthly['kpi']['exit_value']
+        assert result['monthly']['property_tax'] == monthly['monthly']['property_tax']
+        assert result['monthly']['tax_margin'] == monthly['monthly']['tax_margin']
+        assert result['monthly']['opex'] == monthly['monthly']['opex']
+        if kind == 'hotel':
+            for field in ('building_net', 'capex_net', 'capex_vat'):
+                assert result['kpi'][field] == monthly['kpi'][field]
+            for field in ('depreciation', 'insurance'):
+                assert result['monthly'][field] == monthly['monthly'][field]
+        else:
+            assert result['cost_basis'] == monthly['cost_basis']
+            assert result['kpi']['cost_total'] == monthly['kpi']['cost_total']
+
+
+@pytest.mark.parametrize('kind', ['office', 'hotel'])
+def test_late_construction_and_operating_cash_are_paid_once_without_new_draws(kind):
+    import main_legacy as core
+    late = date(2033, 1, 1)
+    plan = construction_fixture(kind, {late: 1_200_000})
+    plan['land_rent_operating_cash'] = {late: 2_400_000}
+    if kind == 'office':
+        plan['params'].update(loan_share_pct=60, debt_repayment='bullet')
+    else:
+        plan['params'].update(financing='commercial', loan_share_pct=60,
+                              loan_term_years=10)
+    result = run(kind, plan)
+    assert result['monthly']['cash_to_equity'][late] == -2_400_000
+    assert not any(month > OPEN for month in result['monthly']['loan_draw'])
+    assert not result['monthly']['loan_balance'].get(late, 0)
+    assert max(result['monthly']['loan_repayment']) <= date(2031, 12, 1)
+    assert result['monthly']['land_rent_operating_cash'][late] == 2_400_000
+    if kind == 'office':
+        standalone = core.object_result(result, start=PREPAY, discount_rate=.15, tax_rate=.25)
+        assert standalone['monthly']['object_equity_flow'][late] == -3_600_000
+    else:
+        assert result['monthly']['fcff'][late] == -3_600_000
+        assert result['monthly']['equity_cf'][late] == -3_600_000
+
+
+def test_taxable_hotel_construction_rent_uses_accrual_for_basis_and_input_vat():
+    base = run('hotel', fixture('hotel'))
+    incurred = series(date(2029, 1, 1), 12, 100_000)
+    plan = construction_fixture('hotel', {date(2033, 1, 1): 1_200_000})
+    plan.update(land_rent_construction_vat_exempt=False,
+                land_rent_construction_input_vat_base=incurred)
+    result = run('hotel', plan)
+    vat = 1_200_000 * .22 / 1.22
+    assert result['kpi']['building_net'] - base['kpi']['building_net'] == pytest.approx(1_200_000 - vat)
+    assert result['kpi']['capex_vat'] - base['kpi']['capex_vat'] == pytest.approx(vat)
+    refunds = {hotel.add_months(month, 3): amount * .22 / 1.22
+               for month, amount in incurred.items()}
+    assert result['monthly']['land_rent_construction_vat_refund'] == pytest.approx(refunds)
+    assert result['totals']['land_rent_construction_vat_refund'] == pytest.approx(vat)
+    assert result['monthly']['capex'][date(2033, 1, 1)] == 1_200_000
+    assert result['horizon_end'] == base['horizon_end']
+
+
+def test_office_construction_rent_preserves_common_cost_vat_treatment():
+    plan = construction_fixture('office', {date(2033, 1, 1): 1_200_000})
+    public = run('office', plan)
+    plan.update(land_rent_construction_vat_exempt=False,
+                land_rent_construction_input_vat_base=plan['land_rent_construction_incurred'])
+    private = run('office', plan)
+    assert private['monthly']['vat_paid'] == public['monthly']['vat_paid']
+    assert private['cost_basis'] == public['cost_basis']
+    assert private['kpi']['cost_total'] == public['kpi']['cost_total']
+
+
+@pytest.mark.parametrize('kind', ['office', 'hotel'])
+@pytest.mark.parametrize('field', ['land_rent_construction_complete',
+                                  'land_rent_construction_cash_complete'])
+def test_partial_construction_rent_remains_explicit(kind, field):
+    plan = construction_fixture(kind, {date(2029, 1, 1): 100_000})
+    plan[field] = False
+    result = run(kind, plan)
+    assert result[field] is False
+    assert result['warnings']
+    assert result['totals']['land_rent_construction_incurred'] == 1_200_000
+    assert result['totals']['land_rent_construction_cash'] == 100_000
+
+
+def test_hotel_vat_receivable_tail_does_not_advance_or_extend_asset(monkeypatch):
+    # A short operating horizon isolates the refund date from asset exit.
+    # The normal hotel policy holds at least a year; the consumer must still
+    # retain a canonical receivable if the horizon policy is shortened.
+    monkeypatch.setattr(hotel, 'plan_horizon_end', lambda plan: date(2030, 1, 1))
+    plan = construction_fixture('hotel', {date(2033, 1, 1): 1_200_000})
+    plan.update(land_rent_construction_incurred={date(2029, 12, 1): 1_200_000},
+                land_rent_construction_vat_exempt=False,
+                land_rent_construction_input_vat_base={date(2029, 12, 1): 1_200_000})
+    result = run('hotel', plan)
+    assert result['monthly']['land_rent_construction_vat_refund'] == {
+        date(2030, 3, 1): pytest.approx(1_200_000 * .22 / 1.22)}
+    assert not result['monthly']['vat_refund'].get(date(2030, 1, 1), 0)
+    assert result['horizon_end'] == date(2030, 1, 1)
+    assert result['kpi']['exit_month'] == date(2030, 1, 1)
+    assert not any(month > date(2030, 1, 1) for month in result['monthly']['depreciation'])
+
+
+@pytest.mark.parametrize('taxable', [False, True])
+def test_gordon_value_does_not_depend_on_payment_of_preopening_land_obligation(taxable):
+    results = []
+    for payment_month in (PREPAY, date(2031, 7, 1), date(2033, 1, 1)):
+        plan = construction_fixture('hotel', {payment_month: 1_200_000})
+        plan['params'].update(valuation='gordon', exit_mode='hold',
+                              gordon_rate_pct=15, gordon_growth_pct=2)
+        if taxable:
+            plan.update(land_rent_construction_vat_exempt=False,
+                        land_rent_construction_input_vat_base=plan['land_rent_construction_incurred'])
+        results.append(run('hotel', plan))
+    first = results[0]
+    for result in results[1:]:
+        assert result['kpi']['exit_value'] == pytest.approx(first['kpi']['exit_value'])
+        assert result['monthly']['depreciation'] == first['monthly']['depreciation']
+        assert result['monthly']['tax_margin'] == first['monthly']['tax_margin']
+        assert result['kpi']['exit_month'] == first['kpi']['exit_month']
+    assert len({round(result['kpi']['npv_project']) for result in results}) == 3
