@@ -93,6 +93,27 @@ def construction_plan(result: dict[str, Any], object_key: str) -> dict[str, Any]
     }
 
 
+def stream_totals(result: dict[str, Any]) -> dict[str, Any]:
+    """Scalar metadata for exactly the supplied lease streams.
+
+    ``construction_total`` retains its legacy meaning: all accrued rent for
+    the covered lease period. The two explicit accrual totals distinguish
+    development from operation without changing that existing alias.
+    """
+    known = result.get("construction_total") is not None
+    development_cash = result.get("construction_monthly", result.get("monthly")) or {}
+    development_accrual = result.get("construction_accrual_monthly", result.get("accrual_monthly")) or {}
+    operating_cash = result.get("operating_monthly_by_object") or {}
+    operating_accrual = result.get("operating_accrual_monthly_by_object") or {}
+    return {
+        "cash_total":sum((result.get("monthly") or {}).values()),
+        "development_cash_total":sum(development_cash.values()),
+        "operating_cash_total":sum(sum(own.values()) for own in operating_cash.values()),
+        "development_accrual_total":sum(development_accrual.values()) if known else None,
+        "operating_accrual_total":sum(sum(own.values()) for own in operating_accrual.values()) if known else None,
+    }
+
+
 def sync_construction_cash(result: dict[str, Any], cash: dict[str, float]) -> None:
     """Refresh an overlaid article without treating payments as service dates.
 
@@ -581,6 +602,7 @@ def build(inputs: dict[str, Any], project_start: date, rve: date,
         "schema_version": 1, "status": "incomplete", "complete": False,
         "financial_complete": False, "total": None, "known_total": 0.0,
         "construction_total": None, "cash_total": 0.0, "monthly": {}, "accrual_monthly": {},
+        "development_accrual_total": None, "operating_accrual_total": None,
         "annual_rows": [], "missing": [], "notes": [], "financial_missing": [], "financial_missing_codes": ["inputs"], "source": "",
         "convention": CONVENTION, "cash_schedule_estimated": True,
         "scope": "До сценарного ввода; после ввода — отдельный режим",
@@ -616,6 +638,7 @@ def build(inputs: dict[str, Any], project_start: date, rve: date,
     if mode == "not_applicable" or x.get("land_right", "ownership") == "ownership":
         out.update(status="not_applicable", complete=True, financial_complete=True,
                    total=0.0, construction_total=0.0, cash_schedule_estimated=False,
+                   development_accrual_total=0.0, operating_accrual_total=0.0,
                    source="Аренда не применяется: выбранное право собственности" if mode == "unspecified" else "По выбранному пользователем режиму аренда не применяется", financial_missing_codes=[])
         return out
     if phased and not valid_release:
@@ -1023,6 +1046,7 @@ def build(inputs: dict[str, Any], project_start: date, rve: date,
     out["status"] = "complete" if out["financial_complete"] else "preliminary" if out["complete"] else "incomplete"
     if out["cash_schedule_estimated"]:
         out["notes"].append("Плановое начисление; сроки оплаты уточняются по договору. Для Москвы первый год может оплачиваться единовременно по п. 3.2.2.")
+    out.update(stream_totals(out))
     return out
 
 

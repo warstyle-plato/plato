@@ -2358,9 +2358,10 @@ def _calculate_phased_once(req: PhasedCalcRequest, *, _land_rent_cutoff: date | 
             phase_rent["construction_accrual_monthly_by_object"] = own_rent_by_object("construction_accrual_monthly",own_exposures)
             phase_rent["operating_monthly_by_object"] = own_rent_by_object("operating_monthly",own_exposures)
             phase_rent["operating_accrual_monthly_by_object"] = own_rent_by_object("operating_accrual_monthly",own_exposures)
-            phase_rent["operating_cash_total"] = sum(sum(value.values()) for value in phase_rent["operating_monthly_by_object"].values())
             if phase_rent.get("valuation"):
                 phase_rent["valuation"]["operating_accrual_monthly_by_object"] = own_rent_by_object("operating_accrual_monthly",phase_rent["valuation"].get("land_exposures",[]))
+        phase_rent.update(developaid_land_rent.stream_totals(phase_rent))
+        phase_rent["applied_total"] = phase_rent["cash_total"]
         p_inputs["_land_rent_phase_model"] = phase_rent
         p_inputs.pop("_glavapu_import", None)
         # Заданная руками ПЛОЩАДЬ двора — величина проекта: оставленная
@@ -2953,7 +2954,8 @@ def _calculate_phased_once(req: PhasedCalcRequest, *, _land_rent_cutoff: date | 
         vri_summary["warnings"].append(VRI_OFFSET_WITH_COMPENSATION)
     vri_summary["benefits"] = vri_benefits_for(x_master, t_master)
     consolidated["vri"] = vri_summary
-    common_land_rent["applied_total"] = sum(float(item["result"]["capex"].get("land_rent") or 0.0) for item in phase_items)
+    common_land_rent["applied_total"] = sum(
+        sum(item["result"]["land_rent"]["monthly"].values()) for item in phase_items)
     common_land_rent["cash_total"] = common_land_rent["applied_total"]
     consolidated["land_rent"] = common_land_rent
     consolidated["summary"]["preliminary"] = not common_land_rent["financial_complete"]
