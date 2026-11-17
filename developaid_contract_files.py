@@ -490,6 +490,14 @@ def _with_control(listed, acts, cut):
     if not binding.get('number') or not binding.get('date'):
         identity = None
     listed['comparison'] = comparison.build(listed,cut,identity['sha256'] if identity else None)
+    # Comparison owns coverage of the full source GPR. Its partial state must
+    # reach the register too: no rejected KS period does not mean all works
+    # of the contract were matched to the estimate and its current scope.
+    listed['control']['coverage'] = dict(listed['comparison']['coverage'])
+    if listed['control'].get('total') is not None:
+        listed['control']['total']['incomplete'] = bool(
+            listed['control']['total'].get('incomplete') or listed['comparison']['coverage']['partial'])
+    listed['control']['forecast'] = listed['comparison']['forecast']
     return listed
 
 
@@ -547,6 +555,9 @@ def _register_control_raw(project: str, register: dict, cut: str) -> dict:
                                          "auto", "incomplete")},
             "source": found.get("source"), "preliminary": bool(found.get("preliminary")),
             "left_out": found["left_out"],
+            "coverage": found.get("coverage"),
+            "forecast_scope": forecast.get("scope"),
+            "whole_contract_finish": forecast.get("whole_contract_finish"),
             **{k: forecast.get(k) for k in ("finish", "deadline", "from_register", "done", "threat", "days_over",
                                             "days_early", "passed")}}
         if found.get('schedule_source'):
