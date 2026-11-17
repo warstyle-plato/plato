@@ -85,11 +85,11 @@ let calls=[],counter=0;function cumulativeNonce(){return String(++counter).repea
 async function post(path,body){calls.push(body.ticket);return{pending:false,ok:true,ticket:body.ticket,...(calls.length===2?{comparison_export:{available:true}}:{})}};
 async function cumulativePause(){throw Error('unexpected poll')};
 """
-    # The shared extractor stops at the default options={} argument. Supply
-    # this exact one-line native declaration, not a rewritten implementation.
-    declarations = [line for line in MONITOR_PAGE.splitlines() if line.startswith("async function cumulativeJob(")]
-    assert len(declarations) == 1
-    prelude += declarations[0] + "\n"
+    # The generic extractor stops at the default options={} argument. Take
+    # the complete native declaration, including its multi-line body.
+    start = MONITOR_PAGE.index("async function cumulativeJob(")
+    end = MONITOR_PAGE.index("\nfunction sourceLabel(", start)
+    prelude += MONITOR_PAGE[start:end] + "\n"
     tail = r"""
 (async()=>{const old=await cumulativeJob('/documents','/result',{project:'Synthetic'},()=>true);
 const fresh=await cumulativeJob('/documents','/result',{project:'Synthetic'},()=>true);
