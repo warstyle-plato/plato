@@ -1058,13 +1058,31 @@ _RENT_SERIES_LABELS = {
 }
 
 
+def _rent_object_bindings(exposures: list[dict[str, Any]],
+                          objects: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Only the canonical object binding identifies the lease's owner."""
+    by_key = {item["key"]: item for item in objects}
+    missing = [item for item in exposures if item.get("object_key") not in by_key]
+    if missing:
+        names = [str(item["name"]) for item in missing if item.get("name")
+                 and item["name"] not in (item.get("id"), item.get("object_key"))]
+        if not names:
+            names = [str(item["title"]) for item in objects if item.get("title")
+                     and item["title"] != item.get("key")]
+        names = list(dict.fromkeys(names))
+        text = "Невозможно распределить аренду между объектами: укажите площади и состав объектов в ТЭП."
+        if names:
+            text += " Объекты: " + ", ".join(names) + "."
+        raise ValueError(text)
+    return by_key
+
+
 def _rent_calendars(book: _Book, result: dict[str, Any], spec: dict[str, Any],
                     objects: list[dict[str, Any]]) -> None:
     """Each canonical variant owns its parcel calendar; all share contract inputs."""
     if not land_rent_book.requested(spec) or not (spec.get("land_rent") or {}).get("land_exposures"):
         return
     start = book.cell_ref("in.start")
-    by_key = {item["key"]: item for item in objects}
     master = None
     selected = next((p["code"] for g in book.groups for p in g["paths"] if p["key"] == g["current"]),
                     PROJECT_PATH["code"] if book.project_only else None)
@@ -1076,21 +1094,18 @@ def _rent_calendars(book: _Book, result: dict[str, Any], spec: dict[str, Any],
         if not isinstance(model, dict) or not model.get("land_exposures"):
             raise ValueError(f"Аренда ЗУ: для варианта {path['label']} нет канонического календаря")
         exposures = model["land_exposures"]
+        by_key = _rent_object_bindings(exposures, objects)
         mapped = [e for e in exposures if e.get("object_key") in by_key]
         # Preserve the absolute share of the mapped group. A missing or
         # separately modelled parcel is never silently normalized away.
         area_refs = [ref(f"in.{by_key[e['object_key']]['code']}.total_area") for e in mapped]
         mapped_share = sum(float(e["share"]) for e in mapped)
-        live_areas = bool(mapped) and all(e.get("total_area") not in (None, "") for e in mapped)
+        live_areas = len(mapped) > 1 and all(e.get("total_area") not in (None, "") for e in mapped)
         formulas = {}
         for exposure in exposures:
             key = exposure.get("object_key")
-            item = by_key.get(key)
-            if item is None:
-                comm = f"EDATE({start},{ref('t.rve')})"
-                exit_ = f"EDATE({comm},'{master or land_rent_book.SHEET}'!$N$15)"
-                share = str(exposure["share"])
-            elif not (item.get("nonres") or item.get("ddu")):
+            item = by_key[key]
+            if not (item.get("nonres") or item.get("ddu")):
                 comm = (f"EDATE({ref('in.' + item['code'] + '.start')},"
                         f"INT({ref('in.' + item['code'] + '.months')}))")
                 exit_ = f"EDATE({comm},'{master or land_rent_book.SHEET}'!$N$15)"
@@ -1113,7 +1128,7 @@ def _rent_calendars(book: _Book, result: dict[str, Any], spec: dict[str, Any],
                              f"+'{master or land_rent_book.SHEET}'!$N$15)")
                 share = (f'IF(AND(COUNT({",".join(area_refs)})={len(mapped)},SUM({",".join(area_refs)})>0),'
                          f'{mapped_share!r}*{ref("in." + item["code"] + ".total_area")}/SUM({",".join(area_refs)}),'
-                         f'{float(exposure["share"])!r})' if live_areas else str(exposure["share"]))
+                         f'"")' if live_areas else str(exposure["share"]))
             formulas[exposure["id"]] = {"share": share, "commissioning": comm, "lease_exit": exit_}
         end = "MAX(" + ",".join(f["lease_exit"] for f in formulas.values()) + ")"
         name = land_rent_book.SHEET if master is None else f"Аренда ЗУ · {c}"
