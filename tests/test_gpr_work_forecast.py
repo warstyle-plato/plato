@@ -187,6 +187,30 @@ def test_false_legacy_marker_cannot_disable_owned_or_old_typed_response(kind):
     assert work_dates.owns_response(schedule)
 
 
+@pytest.mark.parametrize('qualification', [None, dict(basis='rss', state='estimate', forecast='2099-01-01')])
+def test_missing_or_foreign_legacy_qualification_cannot_restore_a_calendar_only_date(gpr_sources, qualification):
+    import developaid_management_report as report
+    import developaid_monitor_dashboard as dashboard
+    value = gpr_sources('confirmed', view=True, with_readiness_profile=False)
+    schedule = value['schedule']
+    assert work_dates.legacy_model(schedule, value['cut'])['finish'] is not None
+    if qualification is None:
+        schedule['dependency_timeline'].pop('rnv')
+    else:
+        schedule['dependency_timeline']['rnv'] = qualification
+    before = copy.deepcopy(value)
+    model = work_dates.legacy_model(schedule, value['cut'])
+    assert model['finish'] is None and model['summary']['finish'] is None
+    assert '2099' not in model['summary']['forecast_text']
+    assert all(group['finish'] is None for group in model['groups'])
+    payload = dict(end=value['cut'], gantt=report.gantt(value, {}), schedule={})
+    compact = report._report_gpr_compact(payload)
+    assert compact['finish'] is None and compact['summary']['finish'] is None
+    assert '2099' not in compact['summary']['forecast_text']
+    assert '2099' not in dashboard._work_schedule_summary(value)
+    assert value == before
+
+
 def test_comparable_plan_uses_exactly_the_covered_members_and_names_missing_work():
     missing = task('missing', plan_finish='2041-12-31', display_progress=dict(value=None, date='2035-04-09'))
     schedule = fallback([task('known'), task('complete', display_progress=dict(value=1, date='2035-04-09')),

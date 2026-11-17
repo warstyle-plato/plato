@@ -77,7 +77,7 @@ def _legacy_qualification(model, timeline, cut):
     """A calendar-only conditional date cannot override source qualification."""
     timeline = timeline or {}
     if (timeline.get('rnv') or {}).get('basis') != 'gpr':
-        return model
+        timeline = {}
     from developaid_report_schedule import model as source_model
     from developaid_schedule_visual import date_text
     qualified = source_model(timeline)
