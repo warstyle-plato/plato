@@ -368,7 +368,8 @@ def attach_strategy_compare(result: dict[str, Any]) -> None:
         return
     result["strategy_compare"] = block
     for section in (((result.get("report") or {}).get("object_report") or {}).get("sections") or []):
-        if section.get("key") != "decision":
+        target = "comparison" if (result.get("report") or {}).get("layout", {}).get("kind") == REPORT_KIND_OBJECT else "decision"
+        if section.get("key") != target:
             continue
         blocks = section.setdefault("blocks", [])
         if not any(b.get("ref") == "strategy_compare" for b in blocks):

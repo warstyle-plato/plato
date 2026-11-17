@@ -1104,6 +1104,68 @@ def _site_massing_scheme_pdf(scheme: dict[str, Any] | None, P: Any, small: Any,
     return out
 
 
+def _object_pdf_charts(block: dict[str, Any], width: float, P: Any, small: Any) -> list[Any]:
+    """Chart values are the exact same rows/fields as the report table."""
+    from reportlab.graphics.shapes import Circle, Drawing, Line, PolyLine, Rect, String
+    from reportlab.lib import colors
+    regular, _ = _pdf_font_names()
+    out = []
+    palette = [colors.HexColor("#2b6475"), colors.HexColor("#a76828")]
+    for chart in block.get("charts") or []:
+        rows = chart.get("rows", block.get("years") or [])
+        fields = chart.get("fields") or []
+        multiplier = chart.get("multiplier", 1)
+        out.append(P(str(chart.get("title") or ""), small))
+        if chart.get("horizontal"):
+            height = 20 * len(rows) + 8
+            drawing = Drawing(width, height)
+            maximum = max((abs(r["value"] * multiplier) for r in rows), default=1) or 1
+            for index, row in enumerate(rows):
+                yy = height - (index + 1) * 20
+                value = row["value"] * multiplier
+                # Numeric labels identify categories in the adjacent table.
+                drawing.add(String(0, yy, str(index + 1), fontName=regular, fontSize=7))
+                drawing.add(Rect(15, yy - 2, (width - 65) * abs(value) / maximum, 10,
+                                 fillColor=palette[value < 0], strokeColor=None))
+                drawing.add(String(width, yy, _pdf_num(value, 1), fontName=regular,
+                                   fontSize=7, textAnchor="end"))
+            out.append(drawing)
+            continue
+        height, left, bottom = 135, 45, 27
+        drawing = Drawing(width, height)
+        values = [r[f[0]] * multiplier for r in rows for f in fields if r.get(f[0]) is not None]
+        lo, hi = min([0, *values]), max([0, *values])
+        span = hi - lo or 1
+        def xx(i):
+            return left + (width - left - 12) * (i / (len(rows) - 1) if len(rows) > 1 else .5)
+        def yy(v):
+            return bottom + (height - bottom - 12) * (v - lo) / span
+        for value in (lo, (hi + lo) / 2, hi):
+            drawing.add(Line(left, yy(value), width - 12, yy(value), strokeColor=colors.lightgrey))
+            drawing.add(String(left - 4, yy(value) - 2, _pdf_num(value, 1), fontName=regular,
+                               fontSize=7, textAnchor="end"))
+        for k, field in enumerate(fields):
+            segment = []
+            def flush():
+                if len(segment) >= 4:
+                    drawing.add(PolyLine(list(segment), strokeColor=palette[k % 2], strokeWidth=1.3))
+                segment.clear()
+            for i, row in enumerate(rows):
+                if row.get(field[0]) is None:
+                    flush()
+                else:
+                    segment.extend([xx(i), yy(row[field[0]] * multiplier)])
+                    drawing.add(Circle(xx(i), yy(row[field[0]] * multiplier), 1.5,
+                                       fillColor=palette[k % 2], strokeColor=None))
+            flush()
+        for i in sorted({0, (len(rows) - 1) // 2, len(rows) - 1}):
+            if i >= 0:
+                drawing.add(String(xx(i), 10, str(rows[i].get("month") or ""), fontName=regular,
+                                   fontSize=7, textAnchor="middle"))
+        out.extend([drawing, P(" · ".join(str(f[1]) for f in fields), small)])
+    return out
+
+
 def _object_pdf_blocks(story: list[Any], section: dict[str, Any], inputs: dict[str, Any],
                        P: Any, table: Any, small: Any, KeepTogether: Any, Spacer: Any,
                        mm: float, entry_price: dict[str, Any] | None = None,
@@ -1160,6 +1222,8 @@ def _object_pdf_blocks(story: list[Any], section: dict[str, Any], inputs: dict[s
             story.append(P("Чувствительность не рассчитана на вкладке — факторы объекта: "
                            + (brief or "—") + ".", small))
             continue
+        if block.get("note"):
+            story.append(P(str(block["note"]), small))
         if block.get("years"):
             columns = block.get("columns") or []
             rows = [[str(c[1]) for c in columns]]
@@ -1172,8 +1236,22 @@ def _object_pdf_blocks(story: list[Any], section: dict[str, Any], inputs: dict[s
             widths = [float(w) for w in block.get("widths") or []]
             if len(widths) != len(columns):
                 widths = [170 / max(1, len(columns))] * len(columns)
-            story.append(KeepTogether([P(title, small),
-                                       table(rows, [w*mm for w in widths], font_size=6.8)]))
+            charts = _object_pdf_charts(block, 170*mm, P, small)
+            heading = P(title, small)
+            data_table = table(rows, [w*mm for w in widths], font_size=6.8)
+            if block.get("kind") == "expense_structure" and charts:
+                # Chart and table use one set of categories; numbers are keys
+                # to the table, allowing long category labels to stay legible.
+                for index, row in enumerate(rows[1:-1], 1):
+                    row[0] = f"{index}. {row[0]}"
+                from reportlab.platypus import Table
+                compact = table(rows, [w*mm*.65 for w in widths], font_size=6.8)
+                chart_col = _object_pdf_charts(block, 54*mm, P, small)
+                story.extend([heading, Table([[chart_col, compact]], colWidths=[57*mm,113*mm])])
+            else:
+                # Monthly tables may span several pages; KeepTogether would
+                # prevent a long office sales horizon from being exported.
+                story.extend([heading, *charts, data_table])
             continue
         rows = [[title or " ", " "]]
         for row in block.get("rows") or []:

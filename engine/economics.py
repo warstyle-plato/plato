@@ -1357,6 +1357,8 @@ def _calculate_economics(req: CalcRequest) -> dict:
                 cash_timeline, equity_cf, fin, discount_rate=discount_rate, irr=irr_equity),
             "layout": report_layout(x, fin, equity_cf),
             "products": products_report,
+            "office_results": (__import__("office_results").build(x, t, op, fin, products_report, STANDALONE_OBJECTS)
+                               if without_housing(x) and report_kind(x) != REPORT_KIND_HOTEL else {}),
             # Как себестоимость дома разложена по продуктам — одной фразой
             # для экрана и PDF (`cost_pool_product_costs`).
             "product_cost_basis": PRODUCT_COST_BASIS,

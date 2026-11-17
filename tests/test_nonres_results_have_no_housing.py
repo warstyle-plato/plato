@@ -133,7 +133,7 @@ def walk() -> dict:
 def test_a_nonresidential_project_with_ddu_reads_as_an_object(walk) -> None:
     state = walk["office_ddu"]
     assert state["kind"] == "object"
-    assert state["sections"][:3] == ["Решение", "Объект и участок", "Стратегия реализации"]
+    assert state["sections"][:3] == ["Решение", "Объект и участок", "Доходы"]
     assert "Удельная экономика" not in state["sections"]
 
 

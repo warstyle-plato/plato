@@ -171,7 +171,12 @@ REPORT_SECTIONS: dict[str, tuple[tuple[str, str], ...]] = {
         ("expenses", "Расходы"), ("income", "Доходы"), ("finance", "Финансирование"),
         ("sensitivity", "Чувствительность"), ("calendar", "Календарный план"),
     ),
-    REPORT_KIND_OBJECT: _OBJECT_FRAME_SECTIONS,
+    REPORT_KIND_OBJECT: (
+        ("decision", "Решение"), ("object", "Объект и участок"), ("income", "Доходы"),
+        ("strategy", "Цены и продажи во времени"), ("costs", "Затраты"),
+        ("finance", "Финансирование"), ("owner", "Экономика собственника"),
+        ("comparison", "Сравнение стратегий"), ("sensitivity", "Чувствительность"),
+        ("calendar", "Календарь"), ("assumptions", "Допущения и ограничения")),
     REPORT_KIND_HOTEL: _OBJECT_FRAME_SECTIONS,
 }
 
@@ -320,7 +325,12 @@ def _expense_structure_block(report: dict[str, Any], summary: dict[str, Any]) ->
                  "share": 1.0 if float(total or 0.0) else None})
     return [{"title": "Структура расходов", "kind": "expense_structure",
              "columns": [list(c) for c in EXPENSE_STRUCTURE_COLUMNS], "years": rows,
-             "widths": list(EXPENSE_STRUCTURE_PDF_WIDTHS)}]
+             "widths": list(EXPENSE_STRUCTURE_PDF_WIDTHS),
+             "note": "Итог включает CAPEX, коммерческие расходы, эксплуатацию, финансирование и налоги. "
+                     "Таблицы ниже — расшифровка этих статей, повторно в итог не добавляются.",
+             "charts": [{"title": "Структура расходов, млн ₽", "unit": "млн ₽",
+                         "fields": [["value", "Сумма"]], "multiplier": 1e-6,
+                         "horizontal": True, "rows": rows[:-1]}]}]
 
 
 def _object_unit_block(report: dict[str, Any]) -> list[dict[str, Any]]:
@@ -781,6 +791,15 @@ def object_report(result: dict[str, Any]) -> dict[str, Any]:
     sections["calendar"] = {"brief": brief, "calendar": calendar,
                             "blocks": [{"ref": "calendar", "title": "Календарный план объекта"}]}
 
+    # Disclosures are prepared once alongside the authoritative calculation.
+    from office_results import blocks as office_disclosure_blocks
+    disclosure_income, disclosure_sales, disclosure_assumptions = office_disclosure_blocks(
+        report.get("office_results") or {})
+    sections["income"]["blocks"] = disclosure_income + sections["income"]["blocks"]
+    sections["strategy"]["blocks"] = disclosure_sales + sections["strategy"]["blocks"]
+    sections["comparison"] = {"brief": [_row("Критерий", "NPV проекта при сопоставимых условиях; см. сравнение стратегий", "text")], "blocks": []}
+    # strategy_compare attaches its ref later using the section key.
+    sections["assumptions"] = {"brief": [_row("Статус", "Расчётный план; исходные цены и динамика раскрыты по продуктам", "text")], "blocks": disclosure_assumptions}
     return {"kind": REPORT_KIND_OBJECT,
             "sections": [{"key": key, "title": title, **sections[key]}
                          for key, title in REPORT_SECTIONS[REPORT_KIND_OBJECT]]}

@@ -414,6 +414,35 @@ function objectRefHtml(block,section){
  }
  return '';
 }
+// Charts consume the same block rows as the adjacent table and PDF.
+function objectChartsHtml(block){
+ const colors=['#2b6475','#a76828'];
+ return (block.charts||[]).map(chart=>{
+  const rows=chart.rows||block.years||[],fields=chart.fields||[],mult=chart.multiplier??1;
+  const vals=rows.flatMap(r=>fields.map(f=>r[f[0]]==null?0:Number(r[f[0]])*mult));
+  const max=Math.max(0,...vals),min=Math.min(0,...vals),span=max-min||1;
+  const title=escapeHtml(chart.title||''),fmt=v=>Number(Math.abs(v)<1e-8?0:v).toLocaleString('ru-RU',{maximumFractionDigits:2});
+  if(chart.horizontal){
+   return `<figure class="object-chart"><figcaption>${title}</figcaption>${rows.map(r=>{
+    const v=Number(r.value)*mult,p=Math.abs(v)/Math.max(Math.abs(min),Math.abs(max),1)*100;
+    return `<div class="object-bar-row"><span>${escapeHtml(r.label)}</span><span class="object-bar-track"><span style="display:block;width:${p}%;height:14px;background:${v<0?colors[1]:colors[0]}"></span></span><b>${escapeHtml(fmt(v))}</b></div>`;
+   }).join('')}</figure>`;
+  }
+  const W=560,H=210,L=62,T=15,R=15,B=42,x=i=>L+(W-L-R)*(rows.length>1?i/(rows.length-1):0.5),y=v=>T+(max-v)/span*(H-T-B);
+  let svg=`<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${title}"><title>${title}</title>`;
+  [min,(max+min)/2,max].forEach(v=>{svg+=`<line x1="${L}" x2="${W-R}" y1="${y(v)}" y2="${y(v)}" stroke="#ddd"/><text x="${L-5}" y="${y(v)+4}" text-anchor="end" font-size="11">${escapeHtml(fmt(v))}</text>`});
+  fields.forEach((f,k)=>{
+   const points=rows.map((r,i)=>r[f[0]]==null?null:[x(i),y(Number(r[f[0]])*mult)]);
+   // Null values break a line; they are not zero occupancy or zero price.
+   let segment=[];const flush=()=>{if(segment.length)svg+=`<polyline points="${segment.join(' ')}" fill="none" stroke="${colors[k%colors.length]}" stroke-width="2"/>`;segment=[]};
+   points.forEach(p=>{if(p)segment.push(p.join(','));else flush()});flush();
+   rows.forEach((r,i)=>{if(r[f[0]]!=null)svg+=`<circle cx="${x(i)}" cy="${y(Number(r[f[0]])*mult)}" r="2.5" fill="${colors[k%colors.length]}"><title>${escapeHtml(r.month||'')}: ${escapeHtml(f[1])} ${escapeHtml(fmt(Number(r[f[0]])*mult))} ${escapeHtml(chart.unit||'')}</title></circle>`});
+  });
+  [...new Set([0,Math.floor((rows.length-1)/2),rows.length-1])].filter(i=>i>=0).forEach(i=>{svg+=`<text x="${x(i)}" y="${H-15}" text-anchor="middle" font-size="11">${escapeHtml(rows[i].month||'')}</text>`});
+  svg+='</svg>';
+  return `<figure class="object-chart"><figcaption>${title}</figcaption>${svg}<div>${fields.map((f,k)=>`<span style="color:${colors[k%colors.length]};margin-right:15px">● ${escapeHtml(f[1])}</span>`).join('')}</div></figure>`;
+ }).join('');
+}
 function objectBlockHtml(block,section){
  if(block.ref)return objectRefHtml(block,section);
  if(block.kind==='verdict'&&section.verdict){
@@ -421,7 +450,11 @@ function objectBlockHtml(block,section){
   return `<div class="card object-verdict" data-status="${escapeHtml(v.status||'')}"><b>${escapeHtml(v.title||'')}</b>${escapeHtml(v.text||'')}</div>`;
  }
  const t=block.title?`<div class="section-title">${escapeHtml(block.title)}</div>`:'';
- return `<div class="card">${t}${block.years?objectYearsHtml(block):objectRowsHtml(block.rows)}</div>`;
+ const note=block.note?`<p class="object-note">${escapeHtml(block.note)}</p>`:'';
+ const table=block.years?objectYearsHtml(block):objectRowsHtml(block.rows);
+ const charts=objectChartsHtml(block);
+ const body=block.kind==='monthly_plan'?`<div class="object-plan-charts">${charts}</div><details><summary>Помесячные значения и изменения цены</summary>${table}</details>`:charts?`<div class="object-chart-table"><div>${charts}</div>${table}</div>`:table;
+ return `<div class="card" data-kind="${escapeHtml(block.kind||'rows')}">${t}${note}${body}</div>`;
 }
 function renderObjectReport(r){
  const box=document.getElementById('objectReport');
@@ -435,9 +468,12 @@ function renderObjectReport(r){
   const s=rep&&rep.sections.find(x=>x.key===key);
   title.textContent=s?s.title:title.dataset.housingTitle;
  });
+ document.getElementById('rsObj-assumptions')?.remove();
  box.innerHTML=rep?rep.sections.filter(s=>!OBJECT_SHARED_SECTIONS[s.key]).map(s=>
   `<div class="report-section object-report" id="rsObj-${escapeHtml(s.key)}" data-section="${escapeHtml(s.key)}"><div class="report-section-title">${escapeHtml(s.title)}</div>${
    (s.blocks||[]).map(b=>objectBlockHtml(b,s)).join('')}</div>`).join(''):'';
+ const assumptions=document.getElementById('rsObj-assumptions'),calendar=document.getElementById('rsCalendar');
+ if(assumptions&&calendar){calendar.after(assumptions);assumptions.dataset.layout='object'}
  // Таблицы кредита и собственного участия рисуют свои функции во все свои
  // ящики — и в ящики раздела «Финансирование» этой вёрстки.
  renderNonresFinancing(r);
