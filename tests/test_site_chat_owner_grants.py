@@ -4,6 +4,7 @@ import copy
 import datetime
 import io
 import json
+import threading
 import time
 from pathlib import Path
 
@@ -28,6 +29,7 @@ def bot(monkeypatch, tmp_path):
     import main as wrapper
     import developaid_monitor as monitor
     import developaid_management_report as management
+    import developaid_report_mailing as mailing
 
     core = wrapper.core
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
@@ -58,6 +60,11 @@ def bot(monkeypatch, tmp_path):
     sales_store.save(sales_store.default_dir(), SALES, {"contracting": {"rows": [row]}}, "synthetic.xlsx")
     monitor._project_dir(PROJECT)
     management.link_sales(PROJECT, SALES, "synthetic test")
+    # A delivery daemon from an earlier TestClient startup can take an empty
+    # outbox between this test's snapshots. Initialize only its coordination
+    # inode first; business_files still records the lock bytes and all sources.
+    with mailing._locked():
+        pass
     core.app.state.telegram_group_seen = {}
     wrapper.fixture = dict(sent=sent, model=model, jpeg=data.getvalue(), root=tmp_path)
     return wrapper
@@ -90,6 +97,42 @@ def business_files(bot):
     root = bot.fixture["root"]
     return {str(p.relative_to(root)): p.read_bytes() for top in (root / "data", root / "monitor")
             for p in top.rglob("*") if p.is_file() and p.suffix != ".lock"}
+
+
+def test_empty_background_delivery_tick_preserves_every_recorded_byte(bot, monkeypatch):
+    # Exercise the real local outbox path used by the delivery daemon, without
+    # contacting Telegram or replacing the closed-source authorization gates.
+    monkeypatch.setattr(bot.core, "_projects_remote_url", lambda path: "")
+    before = business_files(bot)
+    assert before["monitor/.mailing/lock"] == b""
+    results = []
+    worker = threading.Thread(target=lambda: results.append(bot._deliver_management_reports()),
+                              name="management-report-controlled")
+    worker.start()
+    worker.join(timeout=5)
+    assert not worker.is_alive() and results == [[]]
+    assert business_files(bot) == before
+    assert bot.fixture["sent"] == bot.fixture["model"] == []
+
+
+@pytest.mark.parametrize("mutation", ["lock-content", "business-change", "business-create", "business-delete"])
+def test_byte_guard_still_detects_lock_content_and_business_writes(bot, mutation):
+    root = bot.fixture["root"]
+    before = business_files(bot)
+    assert before["monitor/.mailing/lock"] == b""
+    if mutation == "lock-content":
+        (root / "monitor" / ".mailing" / "lock").write_bytes(b"unexpected coordination content")
+    elif mutation == "business-create":
+        (root / "monitor" / "unexpected-business.json").write_bytes(b'{"unexpected":true}')
+    else:
+        source = next(p for p in (root / "data").rglob("*.json") if MARKER.encode() in p.read_bytes())
+        if mutation == "business-delete":
+            source.unlink()
+        else:
+            source.write_bytes(source.read_bytes() + b"\n")
+    # The same byte equality used by the access tests must reject each mutation.
+    with pytest.raises(AssertionError):
+        assert business_files(bot) == before
 
 
 def test_outsider_site_known_project_cannot_read_or_write_any_closed_source(bot):
