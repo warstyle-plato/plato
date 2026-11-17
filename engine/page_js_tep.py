@@ -2240,6 +2240,7 @@ async function applyMoscowNormativeTep(area,density,keepRows){
   warnings:(data.warnings||[]).concat(skipped?[skipped]:[])});
 }
 async function applyNormativeTep(densityOverride,keepRows){
+ const moOwner=inputs,moEpoch=moTerritoryEpoch,moRun=moCalculateRun;
  // Нормативный пересчёт ручного и кадастрового ТЭП: квартиры = площадь ×
  // плотность, остальное — от населения нормативами региона. Чьи нормативы,
  // решает `classRegion()`: Москва — свои (`applyMoscowNormativeTep`), область
@@ -2287,6 +2288,7 @@ async function applyNormativeTep(densityOverride,keepRows){
   const response=await fetch('/mo/calculate',{method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify(body)});
   data=await response.json();
+  if(moOwner!==inputs||moEpoch!==moTerritoryEpoch||moRun!==moCalculateRun||classRegion()!=='mo')return null;
   if(!response.ok)throw new Error(serverDetail(data)||'Не удалось рассчитать нормативный ТЭП');
   Object.entries(data.tep||{}).forEach(([key,values])=>{if(tep[key])Object.assign(tep[key],values)});
   // Обратный счёт от вписанных метров: строка, которую человек вписал, остаётся

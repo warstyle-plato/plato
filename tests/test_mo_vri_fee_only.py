@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import ast
+import copy
 from copy import deepcopy
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 from pathlib import Path
 import re
 import time
@@ -42,12 +44,13 @@ def put(namespace, path, names):
 
 def money_namespace():
     ns = {"__name__": __name__, "Any": Any, "re": re, "BaseModel": BaseModel,
-          "HTTPException": HTTPException, "project_regions": project_regions, "app": Routes()}
+          "HTTPException": HTTPException, "project_regions": project_regions, "app": Routes(),
+          "copy": copy, "math": math}
     put(ns, "engine/nspd.py", ["_land_float"])
     put(ns, "engine/inputs.py", ["project_region"])
     put(ns, "engine/norms.py", ["n"])
     put(ns, "engine/vri_payment.py", ["vri_relief_basis", "vri_relief"])
-    put(ns, "engine/mo_calc.py", ["mo_vri_compensation", "mo_vri_applied_details", "mo_vri_payment",
+    put(ns, "engine/mo_calc.py", ["mo_vri_compensation", "mo_vri_applied_details", "mo_vri_payment", "normalize_mo_vri_region",
                                  "MoVriCompensationRequest", "mo_vri_compensation_preview"])
     ns["require_calc_access"] = lambda *args, **kwargs: None
     return ns

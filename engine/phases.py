@@ -3334,7 +3334,7 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
     Очереди решены своим `calculate`.
     """
     _partial_tep_preflight(req.inputs, req.tep)
-    mo_benefits_update = apply_mo_vri_benefits(req.inputs, req.tep) if req.inputs.get("mo_vri_benefits") else {}
+    mo_benefits_update = apply_mo_vri_benefits(req.inputs, req.tep)
     migrations = migrate_growth_post(req.inputs)
     apply_office_classes(req.inputs)
     bundle = _calculate_phased_with_table(req)

@@ -1271,8 +1271,77 @@ def mo_vri_benefit_estimate(config: dict, inputs: dict, tep: dict) -> dict:
     return mo_vri_benefits.estimate(config, inputs=inputs, tep=tep, social_needs=needs, market_prices=prices)
 
 
+def normalize_mo_vri_region(inputs: dict) -> dict:
+    """Снять применение МО при смене региона, сохранив самостоятельный ручной ввод.
+
+    applied/proof — свидетельство вычета, а не новая плата другого региона.
+    Совпадения числа без такого свидетельства для восстановления gross мало.
+    """
+    if project_region(inputs) == "mo" or inputs.get("_vri_relief_applied_at_project") is True:
+        return {}
+    before = copy.deepcopy(inputs)
+    config = inputs.get("mo_vri_benefits")
+    applied = config.get("applied") if isinstance(config, dict) and config.get("schema") == 1 else None
+    record = inputs.get("_mo_vri_relief")
+    stored = inputs.get("_mo_calc")
+    if record is not None:
+        vri = record.get("vri") if isinstance(record, dict) and record.get("schema") == 1 else None
+    else:
+        vri = stored.get("vri") if isinstance(stored, dict) else None
+    vri = vri if isinstance(vri, dict) else {}
+
+    def amount(value):
+        number = _land_float(value)
+        return number if not isinstance(value, bool) and number is not None and math.isfinite(number) and number >= 0 else None
+
+    gross, net = amount(vri.get("payment_before_compensation_rub")), amount(vri.get("payment_used_mln"))
+    if (gross is None or net is None) and isinstance(applied, dict):
+        gross, net = amount(applied.get("gross_rub")), amount(applied.get("net_mln"))
+    origins = inputs.get("_field_origin")
+    origins = copy.deepcopy(origins) if isinstance(origins, dict) else {}
+    fee_origin = origins.get("inputs.land_rights_cost_mln") or {}
+    fee_origin = fee_origin if isinstance(fee_origin, dict) else {}
+    current = amount(inputs.get("land_rights_cost_mln"))
+    if (gross is not None and net is not None and gross + .011 >= net * 1e6
+            and current is not None and abs(current - net) < 1e-6
+            and fee_origin.get("source") != "manual"):
+        inputs["land_rights_cost_mln"] = gross / 1e6
+        origins["inputs.land_rights_cost_mln"] = {
+            "source": "migrated",
+            "text": "Восстановлена исходная плата до уменьшения МО. Расчёт платы для текущего региона не выполнен."}
+    elif fee_origin.get("source") == "mo_vri_compensation":
+        origins.pop("inputs.land_rights_cost_mln", None)
+    compensation_origin = origins.get("inputs.mo_vri_compensation_mln") or {}
+    compensation_origin = compensation_origin if isinstance(compensation_origin, dict) else {}
+    compensation = amount(inputs.get("mo_vri_compensation_mln"))
+    recorded_compensation = amount(vri.get("compensation_rub"))
+    derived_compensation = (compensation_origin.get("source") == "mo_vri_compensation"
+        or (isinstance(applied, dict) and compensation_origin.get("source") != "manual"
+            and compensation is not None and recorded_compensation is not None
+            and abs(compensation * 1e6 - recorded_compensation) < .005))
+    if derived_compensation:
+        inputs.pop("mo_vri_compensation_mln", None)
+        origins.pop("inputs.mo_vri_compensation_mln", None)
+    if isinstance(config, dict) and ("applied" in config or "result" in config):
+        config = copy.deepcopy(config)
+        config.pop("applied", None)
+        config.pop("result", None)
+        inputs["mo_vri_benefits"] = config
+    inputs.pop("_mo_vri_relief", None)
+    if isinstance(stored, dict) and "vri" in stored:
+        inputs["_mo_calc"] = {k: copy.deepcopy(v) for k, v in stored.items() if k != "vri"}
+    if origins != (inputs.get("_field_origin") or {}):
+        inputs["_field_origin"] = origins
+    changed = {k: copy.deepcopy(v) for k, v in inputs.items() if k not in before or v != before[k]}
+    removed = [k for k in before if k not in inputs]
+    return {"inputs": changed, "removed_inputs": removed} if changed or removed else {}
+
+
 def apply_mo_vri_benefits(inputs: dict, tep: dict) -> dict:
     """Пересчитать принятую оценку после изменения её входов, без повторного вычета."""
+    normalized = normalize_mo_vri_region(inputs)
+    if normalized:
+        return normalized
     config = inputs.get("mo_vri_benefits")
     if (project_region(inputs) != "mo" or not isinstance(config, dict)
             or inputs.get("_vri_relief_applied_at_project") is True or not config.get("applied")):
@@ -1286,7 +1355,8 @@ def apply_mo_vri_benefits(inputs: dict, tep: dict) -> dict:
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     current = _land_float(inputs.get("land_rights_cost_mln"))
-    if current is None or abs(current - saved_net) >= 1e-6:
+    if (current is None or abs(current - saved_net) >= 1e-6
+            or ((inputs.get("_field_origin") or {}).get("inputs.land_rights_cost_mln") or {}).get("source") == "manual"):
         return {}  # пользователь заменил плату вручную
     try:
         estimate = mo_vri_benefit_estimate(config, inputs, tep)
@@ -1306,10 +1376,14 @@ def apply_mo_vri_benefits(inputs: dict, tep: dict) -> dict:
     config = copy.deepcopy(config)
     config["applied"] = {"gross_rub": applied["gross_rub"], "net_mln": vri["payment_used_mln"]}
     config["result"] = estimate
+    proof = inputs.get("_mo_vri_relief")
+    source = (proof.get("source") if isinstance(proof, dict) and proof.get("schema") == 1 else None)
+    if not isinstance(source, dict):
+        source = {"kind": "calculated_benefits", "label": estimate["basis"]}
     inputs.update(mo_vri_benefits=config, land_rights_cost_mln=vri["payment_used_mln"],
                   mo_vri_compensation_mln=(vri["compensation_rub"] or 0) / 1e6,
                   _mo_vri_relief={"schema": 1, "vri": vri,
-                                  "source": {"kind": "calculated_benefits", "label": estimate["basis"]}})
+                                  "source": copy.deepcopy(source)})
     return {"vri": vri, "inputs": {k: copy.deepcopy(inputs[k]) for k in
             ("mo_vri_benefits", "land_rights_cost_mln", "mo_vri_compensation_mln", "_mo_vri_relief")}}
 

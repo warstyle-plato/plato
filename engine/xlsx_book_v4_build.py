@@ -496,17 +496,19 @@ def _build_project_workbook(
     # Отпечаток расчёта снимается с ПРИСЛАННЫХ вводных, а не с производных от
     # них: он отвечает на «по чему это посчитано», и книга с PDF обязаны нести
     # один и тот же. Правка ТЭП до отпечатка подписала бы книгу другим расчётом.
+    calculation_source_inputs = inputs
+    inputs = copy.deepcopy(inputs or {})
     calculation_source_tep = tep
     tep = copy.deepcopy(tep or {})
     applied_parking = apply_object_parking(inputs, tep)
 
+    _mo_benefits_update = apply_mo_vri_benefits(inputs, tep)
     x = {**DEFAULT_INPUTS, **{k: v for k, v in (inputs or {}).items() if not str(k).startswith("_")}}
     # У книги отдельной очереди плата уже net, как у её атомарного расчёта.
     # Сохраняем только этот внутренний признак происхождения базы: иначе
     # общий vri_relief вычел бы исходный зачёт метров ещё раз при записи B82.
     if (inputs or {}).get("_vri_relief_applied_at_project") is True:
         x["_vri_relief_applied_at_project"] = True
-    _mo_benefits_update = apply_mo_vri_benefits(x, tep)
     # География МПТ берётся из того же разбора/импорта, что у движка. Общий
     # фильтр служебных полей не должен превращать известный район/ТТК в
     # отсутствие данных: переносим только факты канонического site_position.
@@ -1216,7 +1218,7 @@ def _build_project_workbook(
                 + "; ".join(f"{r['label']}: {r['formula']} = {r['amount_rub']:,.2f} ₽. "
                             + str(r.get("valuation_basis", "")) + ". " + " ".join(r.get("notes", []))
                             for r in _benefit_rows)))
-    calculation_id = _calculation_fingerprint(inputs, calculation_source_tep, phasing)
+    calculation_id = _calculation_fingerprint(calculation_source_inputs, calculation_source_tep, phasing)
     sources_xml, _ = _v4_set_cell(
         sources_xml, "C16", text=f"Сборка DevelopAid {VERSION}")
     sources_xml, _ = _v4_set_cell(

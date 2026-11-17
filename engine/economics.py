@@ -125,7 +125,7 @@ def capex_unit_rows(capex: dict[str, float], bases: dict[str, float]) -> dict[st
 
 def calculate(req: CalcRequest) -> dict:
     _partial_tep_preflight(req.inputs, req.tep)
-    mo_benefits_update = apply_mo_vri_benefits(req.inputs, req.tep) if req.inputs.get("mo_vri_benefits") else {}
+    mo_benefits_update = apply_mo_vri_benefits(req.inputs, req.tep)
     # Решение о доходности капитала принимается один раз, на выходе расчёта:
     # у раннего выхода (наложение фактов) и у основного пути одно правило.
     # Проект, сохранённый до «одной вводной роста после РВЭ», переносится

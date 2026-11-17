@@ -15,6 +15,8 @@ engine/page_build.py. Стенды на node берут куски скрипт�
 # ruff: noqa
 
 PAGE += r"""let moResult=null,moLastQuery='';
+let moTerritoryEpoch=0;
+let moCalculateRun=0;
 
 // Подпись-приглашение из разметки: к ней возвращается строка ГлавАПУ, когда
 // карточка снимается с экрана (расчёт МО, сброс проекта).
@@ -223,7 +225,7 @@ let moVriReliefBaseSource=null;
 let moVriReliefGrossEdited=false;
 let moVriReliefCompEdited=false;
 function moVriNode(id){return document.getElementById(id)}
-function moVriDraftProjectKey(){return JSON.stringify([classRegion(),inputs._project_uid||''])}
+function moVriDraftProjectKey(){return JSON.stringify([inputs._project_uid||'',moTerritoryEpoch])}
 function moVriHasCompensationDraft(){
  return moVriReliefCompEdited&&moVriReliefOwner===inputs&&moVriReliefProjectKey===moVriDraftProjectKey();
 }
@@ -233,6 +235,34 @@ function moVriNumber(value){
 }
 function moVriMoney(rubles){
  return rubles==null?'не указана':Number(rubles).toLocaleString('ru-RU',{maximumFractionDigits:2})+' ₽';
+}
+function normalizeMoVriRegion(){
+ // Mirror normalize_mo_vri_region: applied/proof proves a deduction; a number alone does not.
+ if(classRegion()==='mo'||inputs._vri_relief_applied_at_project===true)return;
+ const config=inputs.mo_vri_benefits,applied=config?.schema===1?config.applied:null;
+ const record=inputs._mo_vri_relief,stored=inputs._mo_calc;
+ const vri=(record!=null?(record?.schema===1?record.vri:null):stored?.vri)||{};
+ const amount=value=>{const n=moVriNumber(value);return typeof value!=='boolean'&&n!==null&&n>=0?n:null};
+ let gross=amount(vri.payment_before_compensation_rub),net=amount(vri.payment_used_mln);
+ if((gross===null||net===null)&&applied){gross=amount(applied.gross_rub);net=amount(applied.net_mln)}
+ const origins=inputs._field_origin||{},feeOrigin=origins['inputs.land_rights_cost_mln']||{};
+ const current=amount(inputs.land_rights_cost_mln);
+ if(gross!==null&&net!==null&&gross+.011>=net*1e6&&current!==null&&Math.abs(current-net)<1e-6&&feeOrigin.source!=='manual'){
+  inputs.land_rights_cost_mln=gross/1e6;
+  fieldOrigins()['inputs.land_rights_cost_mln']={source:'migrated',text:'Восстановлена исходная плата до уменьшения МО. Расчёт платы для текущего региона не выполнен.'};
+  if(record?.source?.kind==='manual'){
+   const field=moVriNode('moVriGross');if(field)field.value=String(gross/1e6);
+   moVriReliefGrossEdited=true;moVriReliefBaseSource={kind:'manual',label:'Плата до уменьшения введена вручную'};
+  }
+ }else if(feeOrigin.source==='mo_vri_compensation')delete origins['inputs.land_rights_cost_mln'];
+ const compOrigin=origins['inputs.mo_vri_compensation_mln']||{};
+ const compensation=amount(inputs.mo_vri_compensation_mln),recorded=amount(vri.compensation_rub);
+ if(compOrigin.source==='mo_vri_compensation'||(applied&&compOrigin.source!=='manual'&&compensation!==null&&recorded!==null&&Math.abs(compensation*1e6-recorded)<.005)){
+  delete inputs.mo_vri_compensation_mln;delete origins['inputs.mo_vri_compensation_mln'];
+ }
+ if(config&&typeof config==='object'){delete config.applied;delete config.result}
+ delete inputs._mo_vri_relief;
+ if(stored&&typeof stored==='object')delete stored.vri;
 }
 function moVriSavedBasis(){
  const own=inputs._mo_vri_relief;
@@ -280,6 +310,14 @@ function resetMoVriRelief(){
  ['moVriGrossSource','moVriReliefStatus'].forEach(id=>{const node=moVriNode(id);if(node)node.textContent=''});
  const totals=moVriNode('moVriReliefTotals');if(totals)totals.innerHTML='';
 }
+function invalidateMoCalculation(){
+ ++moCalculateRun;
+ const button=moVriNode('cadastralAnalyzeButton');if(button){button.disabled=false;button.textContent='Получить ТЭП'}
+}
+function resetMoTerritoryDraft(){
+ ++moTerritoryEpoch;invalidateMoCalculation();
+ resetMoVriRelief();
+}
 function moVriReliefEdited(baseChanged){
  invalidateMoVriRelief();renderMoVriBenefitBreakdown(null);
  if(baseChanged){moVriReliefGrossEdited=true;moVriReliefBaseSource={kind:'manual',label:'Плата до уменьшения введена вручную'}}
@@ -307,9 +345,10 @@ function renderMoVriReliefResult(vri,withFinal){
 }
 function renderMoVriRelief(){
  const panel=moVriNode('moVriReliefPanel');if(!panel)return;
+ normalizeMoVriRegion();
  const region=classRegion();panel.style.display=region==='mo'?'':'none';
  const mpt=moVriNode('mpt-benefit-panel');if(mpt){mpt.hidden=region!=='msk';mpt.style.display=region==='msk'?'':'none'}
- if(region!=='mo'){invalidateMoVriRelief();moVriReliefOwner=null;return}
+ if(region!=='mo'){invalidateMoVriRelief();return}
  const source=moVriNode('moVriReliefSource');if(source&&MO_VRI_COMPENSATION_SOURCE.url)source.href=MO_VRI_COMPENSATION_SOURCE.url;
  const projectKey=moVriDraftProjectKey(),modelKey=moVriModelKey();
  const ownerChanged=moVriReliefOwner!==inputs||moVriReliefProjectKey!==projectKey;
@@ -485,6 +524,8 @@ function renderMoPriceState(state,kdState){
 }
 
 async function calculateMo(queryText){
+ const owner=inputs,epoch=moTerritoryEpoch,run=++moCalculateRun,region=classRegion();
+ const current=()=>owner===inputs&&epoch===moTerritoryEpoch&&run===moCalculateRun&&region===classRegion();
  const button=document.getElementById('cadastralAnalyzeButton');
  const status=document.getElementById('cadastralStatus');
  const moStatus=document.getElementById('moStatus');
@@ -514,6 +555,7 @@ async function calculateMo(queryText){
    })
   });
   const data=await response.json();
+  if(!current())return;
   if(!response.ok)throw new Error(serverDetail(data)||'Не удалось рассчитать проект');
   moResult=data;
   moLastQuery=query;
@@ -531,9 +573,10 @@ async function calculateMo(queryText){
   // по старым, и в Telegram уходит расчёт, которого пользователь не видел.
   if(inputs._mo_calc)await applyMo({silent:true});
  }catch(e){
+  if(!current())return;
   status.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>';
  }finally{
-  button.disabled=false;button.textContent='Получить ТЭП';
+  if(run===moCalculateRun){button.disabled=false;button.textContent='Получить ТЭП'}
  }
 }
 
@@ -649,10 +692,11 @@ async function applyMo(options){
  const status=document.getElementById('moStatus');
  if(!moResult){if(!silent)status.innerHTML='<span class="import-error">Сначала выполните расчёт.</span>';return}
  const incoming=moResult;
- const keepBenefits=silent&&inputs.mo_vri_benefits?cloneValue(inputs.mo_vri_benefits):null;
+ const sameTerritory=silent&&inputs._mo_calc&&JSON.stringify([inputs._mo_calc.query,inputs._mo_calc.territory])===JSON.stringify([incoming.query,incoming.territory]);
+ const keepBenefits=sameTerritory&&inputs.mo_vri_benefits?cloneValue(inputs.mo_vri_benefits):null;
  const leaseTerritoryBefore=landRentMoTerritoryKey(inputs._mo_calc);
  const keepLeaseTerms=silent&&!!leaseTerritoryBefore&&leaseTerritoryBefore===landRentMoTerritoryKey(incoming);
- resetTerritoryData({keepPhasing:silent,keepLeaseTerms});
+ resetTerritoryData({keepPhasing:silent,keepLeaseTerms,keepMoVriDraft:sameTerritory});
  moResult=incoming;
  Object.assign(inputs,moResult.inputs||{});
  if(keepBenefits&&keepBenefits.applied&&moResult.vri?.payment_before_compensation_rub!=null){

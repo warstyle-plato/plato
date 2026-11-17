@@ -404,6 +404,7 @@ async function calculate(){
  const moUpdate=(phaseBundle||lastResult||{}).mo_vri_benefits_update;
  if(moUpdate&&moUpdate.inputs&&startedAtReset===resetRun){
   Object.assign(inputs,moUpdate.inputs);
+  (moUpdate.removed_inputs||[]).forEach(key=>{delete inputs[key]});
   const feeField=document.getElementById('f_land_rights_cost_mln');
   if(feeField)feeField.value=inputs.land_rights_cost_mln;
   if(typeof renderMoVriRelief==='function')renderMoVriRelief();
