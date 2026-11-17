@@ -103,7 +103,9 @@ def _weekly(project: str, path: Path, cut: str = '') -> dict[str, tuple[float | 
 @monitor.approved_schedule_read
 def history(project: str, cut: dt.date) -> dict[str, list[tuple[dt.date, float, str]]]:
     """Dated GPR percents per work up to the cut: (date, progress, origin)."""
-    out: dict[str, list[tuple[dt.date, float, str]]] = {}
+    class Readings(dict):
+        source_carry = None
+    out: dict[str, list[tuple[dt.date, float, str]]] = Readings()
 
     def add(tid: str, day: dt.date | None, progress: float | None, origin: str) -> None:
         if day and progress is not None and day <= cut:
@@ -112,9 +114,19 @@ def history(project: str, cut: dt.date) -> dict[str, list[tuple[dt.date, float, 
     folder = monitor._project_dir(project)
     try:
         baseline = monitor._read_working_baseline_gpr(project, cut)
-        base_day = _day(monitor._working_baseline_state(project, cut)['taken_at'])
+        selected = monitor._working_baseline_state(project, cut)
+        base_day = _day(selected['taken_at'])
     except (OSError, ValueError, FileNotFoundError):
         baseline, base_day = {"works": []}, None
+    source_carry = None
+    if base_day and base_day > cut and selected.get('baseline_scope') == 'remaining_work':
+        from developaid_readiness_date_carry import DateCarryProblem, parent_facts
+        try:
+            parent, source_carry = parent_facts(project, selected['source_sha256'], cut.isoformat())
+            baseline = {'works':list(parent.values()), 'source_format':'corpus-gpr-v1'}
+            base_day = _day(source_carry['parent_effective_from'])
+        except DateCarryProblem:
+            pass  # The original future-source fact gate remains closed.
     baseline_dates = {str(work.get('id') or work.get('wbs') or '').strip():
                       _day(work.get('progress_date')) for work in baseline.get('works') or []}
     for tid, (progress, _status) in _works(baseline).items():
@@ -122,6 +134,8 @@ def history(project: str, cut: dt.date) -> dict[str, list[tuple[dt.date, float, 
         # An unavailable/future baseline date still cannot authorize past facts.
         fact_day = baseline_dates.get(tid) if baseline.get('source_format') == 'corpus-gpr-v1' else base_day
         add(tid, fact_day if base_day and base_day <= cut else None, progress, "approved_gpr")
+    if source_carry and out:
+        out.source_carry = source_carry
     earliest = cut - dt.timedelta(days=WINDOW_DAYS + STALE_DAYS)
     weekly = folder / "schedule_fact"
     if weekly.exists():
