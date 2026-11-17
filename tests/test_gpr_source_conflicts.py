@@ -141,6 +141,10 @@ def test_real_conflict_reason_quantities_and_action_are_visible_in_monitor_repor
         visible = body.inner_text()
         assert '50 / 100 м²' in visible and '31.10.2026' in visible and '30.10.2026' in visible
         assert 'Сверьте' in visible and '06.01.2027' not in visible
+        task = view['schedule']['physical_progress']['tasks'][0]
+        assert task['reason'] == task['components'][0]['reason']
+        card = body.locator('.schedule-physical-item').first
+        expect(card.get_by_text(task['reason'], exact=True)).to_have_count(1)
         page.set_content(report.render_html(built))
         main=page.locator('.report-gpr-compact')
         expect(main.locator('[data-gpr-block]')).to_have_count(3)
