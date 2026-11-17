@@ -251,6 +251,8 @@ def _baseline_status(project: str, upto: str = "") -> dict[str, dict[str, Any]]:
             "progress_reason": ("Идентификатор работы повторяется в ГПР." if counts[tid] != 1 else
                                 "Нет датированного процента ГПР на выбранную дату." if last is None else ""),
         }
+        if last and last[2] == 'approved_gpr' and getattr(points, 'source_carry', None):
+            out[tid]['fact_source_carry'] = dict(points.source_carry, fact_date=last[0].isoformat())
     return out
 
 
@@ -276,6 +278,10 @@ def _sanitize_base_schedule(project: str, schedule: dict[str, Any], upto: str = 
         schedule['approved_plan']['latest_pending'] = (
             'future' if latest.get('effective_from', '') > today else 'earlier_cut')
     statuses = _baseline_status(project, upto)
+    carried = [meta['fact_source_carry'] for meta in statuses.values() if meta.get('fact_source_carry')]
+    if carried:
+        schedule['fact_source_carry'] = {k:v for k,v in carried[0].items() if k != 'fact_date'}
+        schedule['fact_source_carry']['fact_dates'] = sorted({entry['fact_date'] for entry in carried})
     for row in schedule.get("rows") or []:
         tid = str(row.get("id") or row.get("wbs") or "").strip()
         meta = statuses.get(tid, {})
@@ -301,6 +307,8 @@ def _sanitize_base_schedule(project: str, schedule: dict[str, Any], upto: str = 
         row["gpr_progress_origin"] = meta.get("progress_origin")
         row["gpr_progress_date"] = meta.get("progress_date")
         row["gpr_progress_reason"] = meta.get("progress_reason")
+        if meta.get('fact_source_carry'):
+            row['gpr_fact_source_carry'] = meta['fact_source_carry']
         row["baseline_closed"] = bool(meta.get("closed"))
         row["baseline_status"] = meta.get("status", "")
         row["actual_progress"] = None
