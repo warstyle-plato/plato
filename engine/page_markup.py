@@ -320,7 +320,7 @@ PAGE += r"""</head>
             <div class="field"><label>Городской округ <span class="unit">по нему берутся цена метра жилья и кадастровая стоимость</span></label><select id="moDistrict"><option value="">определить по участку</option></select></div>
             <div class="field"><label>Средняя цена м², Кср <span class="unit" id="moPriceUnit">₽/м². Берётся из справочника</span></label><input type="number" id="moPrice" value="" step="1000" readonly><label class="mo-manual"><input type="checkbox" id="moPriceManual" onchange="toggleMoPrice()"> задать вручную</label></div>
             <div class="field"><label>Коэффициент доходности Кд <span class="unit" id="moKdUnit">доля. Берётся из справочника</span></label><input type="number" id="moKd" value="" step="0.01" readonly><label class="mo-manual"><input type="checkbox" id="moKdManual" onchange="toggleMoKd()"> задать вручную</label></div>
-            <div class="field"><label>Сумма компенсации по соглашению с областью <span class="unit">млн ₽. Заполните, только если с областью заключено соглашение об уменьшении платы за смену ВРИ (Ксу*): плата уменьшится на эту сумму, но не ниже 1 ₽</span></label><input type="number" id="moCompensation" value="" step="0.1" min="0" placeholder="соглашения нет"></div>
+            <p class="hint">Уменьшение платы по соглашению с областью настраивается в блоке «Уменьшение платы за ВРИ — Московская область» на вкладке «ВРИ». <button type="button" class="btn" onclick="openMoVriRelief()">Открыть уменьшение платы</button></p>
             <div class="field"><label>Средняя площадь квартиры <span class="unit">м²</span></label><input type="number" id="moFlat" value="" step="0.25"><span class="hint" id="moFlatBasis"></span></div>
           </div>
           <div class="mo-price-line"><span id="moPriceState">Справочники загружаются…</span></div>
@@ -382,6 +382,20 @@ PAGE += r"""</head>
       <div class="card" id="vriTabEmpty">
         <div class="note" id="vriTabEmptyNote">Изменение ВРИ не требуется или сумма обязательства равна нулю — график не строится.</div>
       </div>
+      <details class="card" id="moVriReliefPanel" style="display:none" open>
+        <summary class="section-title">Уменьшение платы за ВРИ — Московская область</summary>
+        <p>Сумма компенсации берётся из соглашения с областью. Расчёт вычитает её из платы до уменьшения. Если исходная плата больше 1 ₽, после уменьшения остаётся не меньше 1 ₽. Право на уменьшение и стоимость обязательств он не определяет. <a id="moVriReliefSource" href="/normatives" target="_blank" rel="noopener">1310-ПП — официальный текст</a>.</p>
+        <p id="moVriCurrentFee" class="note"></p>
+        <div class="fields" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr))">
+          <div class="field"><label for="moVriGross">Плата до уменьшения <span class="unit">млн ₽. Это исходная плата, а не текущая сумма после льгот.</span></label><input type="number" id="moVriGross" min="0" step="any" value="" placeholder="укажите известную исходную плату" oninput="moVriReliefEdited(true)"><span id="moVriGrossSource" class="hint"></span></div>
+          <div class="field"><label for="moCompensation">Сумма компенсации по соглашению с областью <span class="unit">млн ₽. Пустое поле — сумма не указана, уменьшение не применяется.</span></label><input type="number" id="moCompensation" min="0" step="any" value="" placeholder="соглашения нет" oninput="moVriReliefEdited(false)"></div>
+        </div>
+        <div class="toolbar"><button type="button" class="btn" id="moVriPreviewButton" onclick="previewMoVriRelief()">Рассчитать уменьшение</button><button type="button" class="btn dark" id="moVriApplyButton" onclick="applyMoVriRelief()" disabled>Применить плату к проекту</button></div>
+        <div id="moVriReliefStatus" class="note" role="status"></div>
+        <div id="moVriReliefResult" class="scroll" style="display:none"><table class="metric-table"><tbody id="moVriReliefTotals"></tbody></table></div>
+        <p class="hint">Применение изменяет только плату за ВРИ и основание её уменьшения. Площади ТЭП, очередность, передаваемые метры и их денежный зачёт сохраняются.</p>
+        <div class="note"><b>Передаваемые площади и отдельный денежный зачёт</b><p id="moVriTransferNote"></p><p>Передаваемые помещения задаются в колонке «Передаваемая площадь, м²» таблицы ТЭП и исключаются из продаж. Их денежный зачёт задаётся отдельно в поле «Зачёт переданных муниципалитету площадей». Стоимость метров не добавляется к компенсации автоматически. Если оба уменьшения относятся к одним обязательствам, проверьте двойной зачёт.</p><button type="button" class="btn" onclick="openTab('tep')">Открыть передаваемые площади в ТЭП</button> <button type="button" class="btn" onclick="openMoVriTransferOffset()">Открыть денежный зачёт</button></div>
+      </details>
     </div>
 
     <div id="phasing" class="panel">

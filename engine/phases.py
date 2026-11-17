@@ -2391,6 +2391,10 @@ def _calculate_phased_once(req: PhasedCalcRequest, *, _land_rent_cutoff: date | 
         # применять её повторно к доле нельзя. Не «none»: в КРТ «none» значит
         # «льготы проекта по расчёту», и очередь получила бы её второй раз.
         p_inputs["vri_relief_mode"] = "master"
+        # В базе уже учтён и отдельный зачёт переданных метров. Саму вводную
+        # сохраняем: внутреннее происхождение net-доли обозначается отдельно
+        # от режима, который пользователь мог прислать и одиночному расчёту.
+        p_inputs["_vri_relief_applied_at_project"] = True
 
         if str(x_master.get("social_mode")) == "Денежная компенсация":
             p_inputs["social_mode"] = "Денежная компенсация"

@@ -167,6 +167,12 @@ def vri_relief(x: dict[str, Any], gross: float,
     """
     gross = max(0.0, float(gross or 0.0))
     basis = vri_relief_basis(x)
+    # Очередь получила долю уже очищенной платы проекта, включая зачёт
+    # переданных метров. Исходный зачёт хранится в её вводных для раскрытия,
+    # но повторно эту долю не уменьшает. Один пользовательский режим master
+    # такого происхождения не доказывает: нужен маркер обёртки очередей.
+    if basis == "master" and x.get("_vri_relief_applied_at_project") is True:
+        return 0.0, gross
     if basis == "percent":
         relief = gross * max(0.0, min(100.0, n(x, "vri_relief_pct", 0.0))) / 100.0
     elif basis == "amount":
