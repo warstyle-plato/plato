@@ -130,3 +130,13 @@ def test_missing_exit_cap_is_not_a_free_sale_of_one_building():
     assert p['quantity'] is None and p.get('first_price') is None
     assert 'капитализации' in p['missing_reason']
     assert d['reconciliation_gap']==pytest.approx(0,abs=.01)
+
+
+def test_saved_numeric_strings_do_not_break_the_report():
+    x,t,_,d=run()
+    x['offices_parking_under_price_mln_per_space']='3'
+    x['offices_parking_over_price_mln_per_space']='2'
+    r=core.calculate(core.CalcRequest(inputs=x,tep=t,rates=[]))
+    got=r['report']['office_results']
+    assert got['cash_revenue']==pytest.approx(d['cash_revenue'])
+    assert got['products'][1]['base_price']==3e6

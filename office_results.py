@@ -5,8 +5,17 @@ from datetime import date
 from typing import Any
 
 
+def _number(value: Any) -> float | None:
+    if value is None or value == '':
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _origin(x: dict, field: str) -> str:
-    if field and x.get(field) is None:
+    if field and x.get(field) in (None, ''):
         return 'Нет данных — значение во вводных отсутствует.'
     origin = (x.get('_field_origin') or {}).get('inputs.' + field) or {}
     origin = origin if isinstance(origin, dict) else {}
@@ -28,9 +37,9 @@ def _parking(x: dict, t: dict, obj: Any) -> list[dict]:
         if count <= 0 or total <= 0 or saleable <= 0:
             continue
         field = f'{obj.prefix}_parking_{kind}_price_mln_per_space'
-        raw = x.get(field)
+        raw = _number(x.get(field))
         fallback = raw is None or raw <= 0
-        price = x.get('parking_price_th') if fallback else raw
+        price = _number(x.get('parking_price_th')) if fallback else raw
         price = None if price is None else price * (1000 if fallback else 1e6)
         out.append(dict(key=f'{obj.key}:parking:{kind}', label=f'{obj.tep_label or obj.label} — {label}',
                         quantity=saleable * count / total, unit='шт.', base_price=price,
@@ -128,7 +137,7 @@ def build(x: dict, t: dict, op: dict, fin: dict, products: list[dict], objects: 
         else:
             field = obj.rate_price if obj else ''
             add(dict(key=key, label=p['label'], quantity=p.get('quantity'), unit=p['unit'],
-                     base_price=(p.get('start_price_th', 0.0) * 1000 if not obj or x.get(field) is not None else None),
+                     base_price=(p.get('start_price_th', 0.0) * 1000 if not obj or _number(x.get(field)) is not None else None),
                      origin=_origin(x, field)), quantity_series, revenue_series,
                 strategy=context['strategy'], reference=context['reference'], note=note)
     for key, item in nonres.items():
@@ -141,7 +150,7 @@ def build(x: dict, t: dict, op: dict, fin: dict, products: list[dict], objects: 
         rows = item.get('rows') or []
         if item['strategy'] == 'direct':
             components = [dict(key=key, label=item['title'], quantity=book.get('area_sqm'),
-                               unit='шт.' if obj.measure == 'spaces' else 'м²', base_price=book.get('price_rub_sqm') if x.get(obj.rate_price) is not None else None, origin=_origin(x, obj.rate_price))]
+                               unit='шт.' if obj.measure == 'spaces' else 'м²', base_price=book.get('price_rub_sqm') if _number(x.get(obj.rate_price)) is not None else None, origin=_origin(x, obj.rate_price))]
             components += _parking(x, t, obj) if obj.garage_sellable else []
             for c in components:
                 quantities = {r['month']: r.get('sale_weight', 0.0) * c['quantity'] for r in rows}
@@ -290,6 +299,3 @@ def blocks(data: dict) -> tuple[list[dict], list[dict], list[dict]]:
         dict(label='Отсутствующие значения',value='Прочерк означает: показатель не задан либо неприменим к этому потоку. У аренды нет цены продажи м², у выхода цена определяется NOI. Нулевая цена типа парковки по правилу текущей модели наследует общую цену; это подписано у продукта.',unit='text'),
         *[dict(label='Сверка',value=w,unit='text') for w in data.get('warnings') or []]]))
     return income, sales, assumptions
-
-
-WORKBOOK_DISCLOSURE_SHEET = 'Раскрытие результатов'
