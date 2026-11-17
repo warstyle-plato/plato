@@ -1296,10 +1296,17 @@
         title.textContent = server.verdict.title;
       }
     }
-    document.getElementById('iaVerdictGrid').innerHTML = cells.map(function (cell) {
-      return '<div class="ia-verdict-cell' + (cell.wait ? ' wait' : '') + '"><span>' + cell.label + '</span><b>'
-        + cell.value + '</b><small>' + cell.note + '</small></div>';
-    }).join('');
+    document.getElementById('iaVerdictGrid').replaceChildren.apply(
+      document.getElementById('iaVerdictGrid'), cells.map(function (cell) {
+        var node = document.createElement('div');
+        node.className = 'ia-verdict-cell' + (cell.wait ? ' wait' : '');
+        [['span', cell.label], ['b', cell.value], ['small', cell.note]].forEach(function (item) {
+          var text = document.createElement(item[0]);
+          text.textContent = item[1] == null ? '' : String(item[1]);
+          node.appendChild(text);
+        });
+        return node;
+      }));
 
     var stamp = document.getElementById('iaVerdictStamp');
     if (server) {
