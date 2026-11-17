@@ -159,7 +159,8 @@ def test_all_four_ways_agree_with_the_engine(name) -> None:
 def test_the_book_has_the_sample_composition_and_the_v4_look() -> None:
     content, _ = _book("аренда и продажа здания, аннуитет")
     book = openpyxl.load_workbook(io.BytesIO(content))
-    assert book.sheetnames == [ow.DASH_SHEET, ow.REPORT_SHEET, ow.INPUTS_SHEET, ow.GUIDE_SHEET, ow.TEP_SHEET,
+    assert book.sheetnames == [ow.DASH_SHEET, ow.REPORT_SHEET, ow.DISCLOSURE_SHEET,
+                               ow.DISCLOSURE_PLAN_SHEET, ow.INPUTS_SHEET, ow.GUIDE_SHEET, ow.TEP_SHEET,
                                ow.TIME_SHEET, ow.CAPEX_SHEET, ow.RATE_SHEET, ow.DDU_SHEET, ow.PRESALE_SHEET,
                                ow.SALE_SHEET, "Удержание", ow.RENT_SHEET, ow.EXIT_SHEET, ow.PF_SHEET, "CF_ДДУ", "CF_ПДКП",
                                "CF_Продажа", "CF_Удержание", "CF_Аренда",

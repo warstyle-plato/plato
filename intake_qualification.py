@@ -240,19 +240,37 @@ def qualified_workbook(content, qualification):
         views=ET.SubElement(sheet,tag('sheetViews'));view=ET.SubElement(views,tag('sheetView'),{'workbookViewId':'0'})
         ET.SubElement(view,tag('pane'),{'ySplit':'2','topLeftCell':'A3','activePane':'bottomLeft','state':'frozen'})
         ET.SubElement(sheet,tag('sheetFormatPr'),{'defaultRowHeight':'15'})
-        cols=ET.SubElement(sheet,tag('cols'));ET.SubElement(cols,tag('col'),{'min':'1','max':'1','width':'112','customWidth':'1'})
+        # A4 portrait at native font size: keep the text column within margins.
+        # Print-area binding is explicit, so renderers do not crop a wide column.
+        cols=ET.SubElement(sheet,tag('cols'));ET.SubElement(cols,tag('col'),{'min':'1','max':'1','width':'85','customWidth':'1'})
         data=ET.SubElement(sheet,tag('sheetData'))
         lines=['Предварительный расчёт по известным затратам']
         if qualification['obligations']:
             lines+=['Оценки перечисленных обязательств не подтверждены. Эти расходы не добавлены в денежный расчёт.']
             lines += [item_reason(item)for item in qualification['obligations']]
         else:lines += [qualification['reason']]
+        import textwrap
         for number,text in enumerate(lines,1):
-            row=ET.SubElement(data,tag('row'),{'r':str(number),'ht':str(36 if number==1 else max(45,min(400,(len(text)//90+1)*16))),'customHeight':'1'})
+            # Merged/wrapped Excel rows do not grow themselves during printing.
+            # Reserve space for Cyrillic and word wrapping at the narrower width.
+            wrapped=sum(max(1,len(textwrap.wrap(part,width=74,break_long_words=True)))
+                        for part in str(text).splitlines())
+            height=40 if number==1 else max(48,min(400,wrapped*16+12))
+            row=ET.SubElement(data,tag('row'),{'r':str(number),'ht':str(height),'customHeight':'1'})
             cell=ET.SubElement(row,tag('c'),{'r':'A'+str(number),'s':str(body_style+(1 if number==1 else 0)),'t':'inlineStr'})
             ET.SubElement(ET.SubElement(cell,tag('is')),tag('t')).text=text
         ET.SubElement(sheet,tag('pageMargins'),{'left':'0.4','right':'0.4','top':'0.5','bottom':'0.5','header':'0.2','footer':'0.2'})
         ET.SubElement(sheet,tag('pageSetup'),{'paperSize':'9','orientation':'portrait','fitToWidth':'1','fitToHeight':'0'})
+        defined=workbook.find(tag('definedNames'))
+        if defined is None:
+            defined=ET.Element(tag('definedNames'))
+            before=next((i for i,node in enumerate(workbook)if node.tag==tag('calcPr')),len(workbook))
+            workbook.insert(before,defined)
+        # Requalification updates this local print area rather than duplicating it.
+        for node in list(defined):
+            if node.get('name')=='_xlnm.Print_Area'and node.get('localSheetId')=='0':defined.remove(node)
+        area=ET.SubElement(defined,tag('definedName'),{'name':'_xlnm.Print_Area','localSheetId':'0'})
+        area.text="'"+existing.get('name').replace("'","''")+"'!$A$1:$A$"+str(len(lines))
         replacements={'xl/workbook.xml':workbook,'xl/_rels/workbook.xml.rels':relationships,'[Content_Types].xml':types,'xl/styles.xml':styles,target:sheet}
         encoded={name:ET.tostring(node,encoding='utf-8',xml_declaration=True)for name,node in replacements.items()}
         output=io.BytesIO()
