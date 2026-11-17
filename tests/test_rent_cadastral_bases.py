@@ -88,3 +88,17 @@ def test_one_missing_record_is_not_a_partial_sum_for_the_accepted_territory():
     assert prepared['land_rent_cadastral_mln'] is None
     assert prepared['land_rent_cadastral_target_mln'] is None
     assert len(cadastral.parcels(x))==2
+
+
+@pytest.mark.parametrize('region',['msk','mo'])
+def test_removing_the_normalized_territory_invalidates_only_automatic_bases(region):
+    x=cadastral.prepare(settings(region))
+    x.pop('_mo_calc' if region=='mo' else '_glavapu_import')
+    x.pop('_land_lookup',None)
+    result=cadastral.prepare(x)
+    assert result['land_rent_cadastral_mln'] is None
+    assert result['land_rent_cadastral_target_mln'] is None
+    assert not result['_land_rent_cadastral_estimate']['parcels']
+    x['land_rent_cadastral_mln']=500
+    x['_field_origin']['inputs.land_rent_cadastral_mln']={'source':'manual'}
+    assert cadastral.prepare(x)['land_rent_cadastral_mln']==500

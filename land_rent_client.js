@@ -28,7 +28,7 @@ function landRentSyncTerritory(){
  if(withoutHousing()&&LAND_RENT_SPEC.presets[inputs.land_rent_mode]){
   inputs.land_rent_mode='manual';inputs.land_rent_preset_confirmed=false;
  }
- if(!territory.key)return territory;
+ if(!territory.key){landRentFillCadastral(territory);return territory}
  if(landRentAppliedTerritoryKey&&landRentAppliedTerritoryKey!==territory.key){
   inputs.land_rent_preset_confirmed=false;
   if(LAND_RENT_SPEC.presets[inputs.land_rent_mode]?.region!==territory.region&&LAND_RENT_SPEC.presets[inputs.land_rent_mode])inputs.land_rent_mode='unspecified';
@@ -135,7 +135,7 @@ function renderLandRentCadastralParameters(parent,territory){
   [['area_sqm','Площадь участка, м²','number'],['upks_rub_sqm','Целевой земельный УПКС, ₽/м²','number'],['target_use','Целевой ВРИ и группа оценки','text'],['valuation_territory','Территория оценки земельного показателя','text'],['source','Источник земельного УПКС','text'],['source_date','Дата оценки земельного показателя','date']].forEach(([key,label,type])=>{
    const wrap=document.createElement('label');wrap.className='field';wrap.textContent=label;
    const el=document.createElement('input');el.type=type;el.step='any';el.dataset.cadastralParcel=p.number;el.dataset.cadastralParameter=key;
-   el.setAttribute('aria-label',label+' — '+p.number);el.value=row[key]??(key==='area_sqm'?p.area_sqm??'':'');
+   el.setAttribute('aria-label',label+' — '+p.number);el.value=Object.hasOwn(row,key)?row[key]??'':(key==='area_sqm'?p.area_sqm??'':'');
    el.onchange=()=>landRentCadastralParameter(p.number,key,el.value);wrap.appendChild(el);grid.appendChild(wrap);
   });
  });
@@ -505,7 +505,7 @@ function renderLandRentEditor(){
   landRentDateField(basis,'land_rent_regime_start','Начало аренды',landRentDateDefaults(landRentResult()).land_rent_regime_start,'По умолчанию — дата начала проекта. Можно изменить, если аренда началась в другой день.');
   if(inputs.land_rent_base_kind!=='annual_amount'){
    const parcels=landRentParcels(territory),excluded=new Set(inputs.land_rent_parcels_excluded||[]);
-   if(parcels.length){
+   if(parcels.length&&!(parcels.length===1&&parcels[0].current_mln==null&&Number(inputs.land_rent_cadastral_mln)>0)){
     const list=document.createElement('div');list.className='lr-parcels';
     list.innerHTML='<p class="lr-note">Участки из ЕГРН. Снимите отметку с участка, который не берётся в аренду: его стоимость не войдёт в сумму.'+
      (isFieldManual('inputs.land_rent_cadastral_mln')?' Сейчас стоимость вписана вручную, поэтому отметки её не меняют. Очистите поле, чтобы вернуть сумму из ЕГРН.':'')+'</p>'+

@@ -76,6 +76,8 @@ def prepare(inputs):
     x = copy.deepcopy(inputs or {})
     if x.get("land_right") != "lease" or x.get("land_rent_base_kind", "cadastral_percent") != "cadastral_percent":
         return x
+    if x.get("vri_region") not in ("msk", "mo"):
+        return x
     all_rows = parcels(x)
     excluded = set(x.get("land_rent_parcels_excluded") or [])
     rows = [r for r in all_rows if r["number"] not in excluded]
@@ -87,8 +89,7 @@ def prepare(inputs):
         x[key] = round(sum(r[field] for r in rows), 6) if rows and all(r[field] is not None for r in rows) else None
         origins["inputs." + key] = dict(source="document" if kind == "land_rent_egrn" else "calculated",
             kind=kind, text=text + ": " + ", ".join(r["number"] for r in rows))
-    if all_rows:
-        fill("land_rent_cadastral_mln", "current_mln", "land_rent_egrn", "Из ЕГРН: сумма кадастровой стоимости арендуемых участков")
+    fill("land_rent_cadastral_mln", "current_mln", "land_rent_egrn", "Из ЕГРН: сумма кадастровой стоимости арендуемых участков")
     params = {str(p.get("number")): p for p in x.get("land_rent_cadastral_parameters", []) if isinstance(p, dict)}
     for row in rows:
         p = params.get(row["number"], {})
@@ -106,8 +107,7 @@ def prepare(inputs):
     x["_land_rent_cadastral_estimate"] = dict(formula=FORMULA, region=x.get("vri_region"), parcels=rows,
         methodology=METHODOLOGY if x.get("vri_region") == "msk" else None,
         total_mln=sum(r["target_mln"] for r in rows) if rows and all(r["target_mln"] is not None for r in rows) else None)
-    if all_rows:
-        fill("land_rent_cadastral_target_mln", "target_mln", "land_rent_estimate", "Расчётная будущая КС (не ЕГРН), площадь × целевой земельный УПКС")
+    fill("land_rent_cadastral_target_mln", "target_mln", "land_rent_estimate", "Расчётная будущая КС (не ЕГРН), площадь × целевой земельный УПКС")
     x["_land_rent_cadastral_estimate"]["applied"] = mapping(origins.get("inputs.land_rent_cadastral_target_mln")).get("kind") == "land_rent_estimate"
     target_key = "inputs.land_rent_cadastral_target_mln"
     if not automatic(x, "land_rent_cadastral_target_mln"):

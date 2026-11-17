@@ -131,6 +131,21 @@ def test_parcel_sources_future_estimate_manual_override_and_reload(region, width
                 assert "cadastral_change" in state(page)["rent"]["financial_missing_codes"]
                 open_payment(page)
                 blur_edit(page, f'[data-cadastral-parcel="{numbers[1]}"][data-cadastral-parameter="upks_rub_sqm"]', "200000")
+                # An explicitly cleared area remains empty after the editor
+                # redraws. It must not fall back to the imported parcel area
+                # or turn the missing future value into a zero.
+                area_selector = f'[data-cadastral-parcel="{numbers[0]}"][data-cadastral-parameter="area_sqm"]'
+                open_payment(page)
+                blur_edit(page, area_selector, "")
+                open_payment(page)
+                expect(page.locator(area_selector)).to_have_value("")
+                empty_area = state(page)
+                assert empty_area["target"] is None
+                assert empty_area["current"] == 300
+                assert empty_area["origins"]["inputs.land_rent_cadastral_target_mln"]["kind"] == "land_rent_estimate"
+                assert "cadastral_change" in empty_area["rent"]["financial_missing_codes"]
+                blur_edit(page, area_selector, "1000")
+                assert state(page)["target"] == 700
             else:
                 page.evaluate("async()=>{inputs._mo_calc.vri.parcels[0].cadastral_value_new_rub=300e6;renderInputs();await settledCalculate()}")
                 assert state(page)["target"] == 700
