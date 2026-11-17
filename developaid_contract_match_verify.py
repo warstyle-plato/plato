@@ -9,8 +9,8 @@ import contextlib
 import contextvars
 import threading
 
-PURPOSE = 'contract-pure-matching-hit-verify-v1'
-KINDS = ('party', 'reference', 'scope')
+PURPOSE = 'contract-pure-matching-hit-verify-v2'
+KINDS = ('party', 'reference', 'scope', 'party_parts', 'work_words')
 MAX_COUNT = 2**53 - 1
 _VERIFY = contextvars.ContextVar('contract_pure_match_verification', default=None)
 
@@ -139,7 +139,11 @@ def _strict_equal(first, second):
     if kind is tuple:
         return len(first) == len(second) and all(_strict_equal(a, b) for a, b in zip(first, second))
     if kind is frozenset:
-        return len(first) == len(second) and all(any(_strict_equal(a, b) for b in second) for a in first)
+        if len(first) != len(second):
+            return False
+        if all(type(value) is str for value in first) and all(type(value) is str for value in second):
+            return first == second
+        return all(any(_strict_equal(a, b) for b in second) for a in first)
     return False
 
 
