@@ -2458,7 +2458,7 @@ def _disclosure_sheet(book: _Book, current: str | None, path_blocks: dict, path_
             money_refs.append(f"K{r}")
             put(r, 12, f'IF({ref("disc.cash")}<>0,K{r}/{ref("disc.cash")},"не применяется")', PCT)
         ws.cell(r, 1).hyperlink = f"#'{plan.title}'!A{rows.r - 8}"
-        ws.row_dimensions[r].height = 34
+        ws.row_dimensions[r].height = 80 if exit_flow else 34
         for cell in ws[r][:12]:
             cell.border = Border(bottom=_thin)
         r += 1
