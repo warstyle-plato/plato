@@ -143,20 +143,23 @@ def test_undated_raw_source_scope_is_visible_in_canonical_rows_and_every_funding
     assert result['amounts_at_selected_cut'] is None
     note = result['source_scope_note']
     short = result['source_scope_short_note']
-    assert 'Дата версии' in note and 'не указана' in note and 'Полнота оплат' in note
+    assert 'Дата версии' in note and 'не указана' in note
+    assert 'Оплаты отобраны до выбранной даты расчёта' in note
+    assert 'Пропуски исходных данных показаны отдельно' in note
+    assert short == 'дата ФМ не указана.'
     rows = {row['key']: row for row in result['display_rows']}
-    for key in ('budget', 'paid_at_cut', 'available_bank_limit', 'calculated_additional'):
-        assert short in rows[key]['note']
     tiles = {row['label']: row for row in report.tiles(built)}
-    for label in ('Утверждённый бюджет', 'Лимит банка', 'Оплачено с начала проекта',
-                  'Доступный остаток лимита банка', 'Потребность в допфинансировании'):
-        assert tiles[label]['note'].count(short) == 1
-    assert tiles['Потребность в допфинансировании']['value'] == 'нет данных'
-    assert tiles['Потребность в допфинансировании']['tone'] == 'missing'
+    for label in ('Утверждённый бюджет', 'Оплачено с начала проекта',
+                  'Доступный остаток лимита банка', 'Расчётная потребность в допфинансировании'):
+        assert tiles[label]['note'].count('ФМ: дата не указана.') == (1 if label in {
+            'Утверждённый бюджет', 'Расчётная потребность в допфинансировании'} else 0)
+        assert 'финансовая сверка' not in tiles[label]['note'].lower()
+    assert tiles['Расчётная потребность в допфинансировании']['value'] == '0 ₽'
+    assert tiles['Расчётная потребность в допфинансировании']['tone'] == 'good'
+    assert result['calculation']['paid_at_cut'] == 505000000
+    assert result['calculation']['available_bank_limit'] == 1420000000
     calculated = rows['calculated_additional']
-    assert calculated['label'] not in tiles
     assert f"<td>{calculated['label']}</td><td>{report._rub(calculated['value'])}</td>" in report._funding_html(built)
-    assert 'дата ФМ неизвестна' in short and 'полнота оплат' in short
     assert note in report.render_text(built) and note in report.render_html(built)
 
 

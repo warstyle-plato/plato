@@ -2224,12 +2224,15 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
             reconciliation = (own or {}).get("reconciliation")
             model = report.get("admin_expenses_cash") or {}
             summary = _funding_cash_summary(limit, model)
-            if reconciliation or summary.get("scope") in {"unconfirmed_total", "bank_only"}:
+            if reconciliation or summary.get("scope") in {"calculated_total", "unconfirmed_total", "bank_only"}:
                 extra = summary["amount"]
                 if extra is not None:
                     label = ("потребность по банковской смете" if summary.get("scope") == "bank_only"
                              else "расчётная потребность в допфинансировании")
-                    pieces.append(f"{label} {_rub(extra)}")
+                    detail = ((f" {_since(limit.get('additional_financing_from'))}"
+                               + (f" ({parts})" if parts else ""))
+                              if summary.get("scope") == "bank_only" and extra > 0 else "")
+                    pieces.append(f"{label} {_rub(extra)}" + detail)
                 pieces.append(summary["note"].rstrip("."))
             elif own:
                 extra = float(own["need"])
@@ -2267,7 +2270,7 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
                  else float(limit.get("additional_financing") or 0) if limit.get("known") else 0.0)
         model = report.get("admin_expenses_cash") or {}
         summary = _funding_cash_summary(limit, model)
-        if reconciliation or summary.get("scope") in {"unconfirmed_total", "bank_only"}:
+        if reconciliation or summary.get("scope") in {"calculated_total", "unconfirmed_total", "bank_only"}:
             short = summary["amount"]
         # Фраза «участок и проценты не входят» — про потребность банка по главам
         # 2–3; у «своих денег сверх сметы» участок входит, и её там нет.
@@ -4307,7 +4310,7 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
             note = " ".join(filter(None, (reason.rstrip(" .;") + "." if reason else "",
                                           base_note, summary["note"])))
         else:
-            note = note.rstrip(" .;") + ". " + summary["note"]
+            note = ". ".join(part for part in (note.rstrip(" .;"), summary["note"]) if part)
         add(label, _rub(amount) if amount is not None else None,
             note, "bad" if amount is not None and amount > 0 else "good" if amount is not None else "missing")
         out[-1]["group"] = "additional_funding"

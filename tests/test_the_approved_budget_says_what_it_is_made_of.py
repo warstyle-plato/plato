@@ -186,11 +186,12 @@ def test_limit_is_paid_plus_left_and_budget_is_limit_plus_own_money(tmp_path):
     assert own["from"] == "2026-11-01"
 
     lines = dashboard.own_money_lines(own, report._rub)
-    assert lines[0] == ("Бюджет 1,4 млн ₽: оплачено на дату 720 000 ₽, доступный остаток лимита "
+    assert lines[0] == ("Бюджет 1,4 млн ₽: учтённые оплаты 720 000 ₽, доступный остаток лимита "
                         "540 000 ₽, расчётная дополнительная потребность 180 000 ₽.")
     assert "Факт финансовой базы и оплаты на дату различаются; в сверке использованы оплаты на дату: 10 000 ₽." in lines
     assert own['reconciliation']['budget'] == pytest.approx(own['reconciliation']['rhs'])
-    assert own['reconciliation']['primary_source_gate'] == 'BLOCKED'
+    assert own['reconciliation']['primary_source_gate'] == 'NOT_REQUIRED_FOR_CALCULATION'
+    assert own['reconciliation']['confirmed_additional'] is None
 
 
 def test_a_forged_section_breaks_the_identity(tmp_path):
@@ -219,7 +220,7 @@ def test_the_tiles_add_up_on_the_page(tmp_path, monkeypatch):
                         lambda project, end: {"dashboard": {"funding": funding}})
     built = report.build(PROJECT, "week", "2026-10-18")
     tiles = {item["label"]: item for item in report.tiles(built)}
-    source_notes = dashboard.funding_source_notes(funding)
+    source_notes = dashboard.funding_source_tile_notes(funding)
     assert tiles["Утверждённый бюджет"]["value"] == report._rub(comp["total"])
     assert tiles["Утверждённый бюджет"]["note"] == (
         "по разделам финмодели 2.1, 2.2, 2.3, 2.4; без процентов по кредиту. " + source_notes["budget"])
@@ -229,20 +230,21 @@ def test_the_tiles_add_up_on_the_page(tmp_path, monkeypatch):
     assert tiles["Лимит банка"]["note"].startswith("смета банка: в неё засчитываются все оплаты")
     assert tiles["Оплачено с начала проекта"]["value"] == report._rub(own["paid"])
     assert tiles["Оплачено с начала проекта"]["note"] == (
-        "На 2026-10-20. " + source_notes["paid"])
+        "На 2026-10-20 Расчёт по сохранённым данным. " + source_notes["paid"])
     assert tiles["Доступный остаток лимита банка"]["value"] == report._rub(own["reconciliation"]["available_bank_limit"])
     assert tiles["Доступный остаток лимита банка"]["note"] == (
-        "Положительные остатки лимитов на ту же дату. " + source_notes["left"])
-    need = tiles["Потребность в допфинансировании"]
-    assert need["value"] == "нет данных" and need["tone"] == "missing"
-    assert "сверка первичных источников не завершена" in need["note"]
+        "Положительные остатки лимитов на ту же дату Расчёт по сохранённым данным. " + source_notes["left"])
+    need = tiles["Расчётная потребность в допфинансировании"]
+    assert need["value"] == "180 000 ₽" and need["tone"] == "bad"
+    assert "Утверждённый бюджет уже включает АХР" in need["note"]
+    assert "финансовая сверка" not in need["note"].lower()
     assert "без АХР" not in need["note"]
     assert source_notes['need'] in need['note']
     funding_html = report._funding_html(built)
     core = {'budget', 'bank_limit_total', 'paid_at_cut', 'available_bank_limit'}
     for row in own['reconciliation']['display_rows']:
-        # Unaccepted calculated need stays in the canonical table; its cover
-        # headline remains unknown. Every diagnostic label/value is retained.
+        # The same calculated need appears on the cover under its public
+        # label; diagnostics stay in the detailed table, not a duplicate tile.
         assert f"<td>{row['label']}</td><td>{report._rub(row['value'])}</td>" in funding_html
         if row['key'] in core:
             assert tiles[row['label']]['value'] == report._rub(row['value'])
@@ -253,9 +255,9 @@ def test_the_tiles_add_up_on_the_page(tmp_path, monkeypatch):
                  "Можно ещё выбрать у банка"):
         assert gone not in tiles
     found = {item["topic"]: item["text"] for item in built["findings"]}["Финансирование"]
-    assert 'общая потребность пока не определена' in found
-    assert 'финансовая сверка источников не завершена' in found
-    assert 'Финансовая сверка первичных источников не завершена' in funding_html
+    assert 'расчётная потребность в допфинансировании 180 000 ₽' in found.lower()
+    assert 'финансовая сверка' not in found.lower()
+    assert 'Финансовая сверка первичных источников не завершена' not in funding_html
     page = report.render_html(built)
     assert ("<div class='k'>Утверждённый бюджет <span class='i' tabindex='0' role='note' "
             "title='Утверждённый бюджет — сумма") in page

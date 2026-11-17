@@ -419,7 +419,7 @@ def render_funding(summary, details_html):
     amount = summary['amount']
     esc = lambda v: html.escape(str(v))
     value = money(amount, compact=True) if amount is not None else 'нет данных'
-    label = 'Потребность по смете банка' if summary.get('scope') == 'bank_only' else 'Потребность в допфинансировании'
+    label = summary.get('label') or ('Потребность по смете банка' if summary.get('scope') == 'bank_only' else 'Потребность в допфинансировании')
     return (f'<div class="additional-funding"><small>{esc(label)}</small>'
             f'<div style="font-size:20px;font-weight:700">{esc(value)}</div>'
             f'<p>{esc(summary["note"])}</p></div>'

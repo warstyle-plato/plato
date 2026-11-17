@@ -111,6 +111,29 @@ def funding_cash_summary(funding: dict[str, Any], model: dict[str, Any], money: 
         return {"amount": None, "scope": "calculated_total",
                 "label": "Расчётная потребность в допфинансировании",
                 "note": funding.get("reason") or "Не прочитан утверждённый бюджет."}
+    own = funding.get("own_money") or {}
+    missing = [description for flag, description in (
+        ("payments_known", "не прочитан полный состав оплат"),
+        ("limits_known", "не прочитан полный состав лимитов банка"))
+        if own.get(flag) is False or funding.get(flag) is False]
+    if missing:
+        # Old producers used float(total or 0). An explicit unknown flag
+        # forbids accepting that legacy zero, even through the AHR fallback.
+        return {"amount": None, "scope": "calculated_total",
+                "label": "Расчётная потребность в допфинансировании",
+                "note": "Для расчёта " + "; ".join(missing) + "."}
+    if not admin_cash._has_cash_observation(model):
+        # Older reports may already carry a complete funding result without
+        # a separate AHR cash observation. Preserve that result and its scope,
+        # chapter breakdown and first shortage month; don't relabel a full
+        # approved-budget need as an AHR-dependent bank component.
+        amount = funding_reconciliation.number(own.get("need"))
+        if not own:
+            amount = funding_reconciliation.number((funding.get("deficit_ladder") or {}).get("total"))
+            if amount is None:
+                amount = funding_reconciliation.number(funding.get("additional_financing"))
+        if amount is not None:
+            return {"amount": max(0.0, amount), "scope": "existing_total", "note": ""}
     return admin_cash.funding_summary(admin_cash.funding_base_for_limit(funding, model), model, money)
 
 
@@ -162,8 +185,11 @@ def funding_source_notes(funding: dict[str, Any]) -> dict[str, str]:
 def funding_source_tile_notes(funding: dict[str, Any]) -> dict[str, str]:
     """Compact visible tile captions; full source limits remain in Funding."""
     dates = funding.get("source_dates") or {}
+    meta = funding.get("baseline_file") or {}
     def date_of(key):
-        value = monitor._day((dates.get(key) or {}).get("data_date"))
+        source = dates.get(key) or ({"data_date": _source_day(meta.get("taken_at"))}
+                                   if key == "budget" else {})
+        value = monitor._day(source.get("data_date"))
         return value.strftime("%d.%m.%Y") if value else "дата не указана"
     # The four AHR cash cards share the report cover with these captions.
     # Full source dates remain visible in the Funding block.
@@ -1774,7 +1800,8 @@ def own_money_lines(own: dict[str, Any] | None, money: Any,
                 + (admin_expense_lines(own.get("admin"), money) if with_admin else [])
                 + (list(funding_source_notes({"source_dates": r["source_dates"],
                                              "need_basis": "model"}).values())
-                   if r.get("source_dates") else []))
+                   if r.get("source_dates") else [])
+                + ([r["source_scope_note"]] if r.get("source_scope_note") else []))
     out = [f"Нужно своих денег сверх сметы банка {money(own['need'])}"
            + (f", первый месяц нехватки — {_month_name(own['from'])}" if own.get("from") else "")
            + ": по каждой главе — оплачено по реестру плюс то, что осталось оплатить, минус "
