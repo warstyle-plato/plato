@@ -66,6 +66,8 @@ def _volume(parts):
 
 def _operations(parts, schedule_line):
     """Explicit indexed children of one printed parent, never equal-volume deduplication."""
+    supplies = [part for part in parts if part.get('work_amount') == 0 and part.get('material_amount')]
+    parts = [part for part in parts if not (part.get('work_amount') == 0 and part.get('material_amount'))]
     if len(parts) < 2:
         return None
     printed = links.printed(schedule_line)
@@ -88,7 +90,7 @@ def _operations(parts, schedule_line):
     if len(declarations) != 1 or len({item.get('name') for item in groups}) != 1:
         group.pop('unit', None)
         group.pop('quantity', None)
-    return {'group': group, 'parts': parts}
+    return {'group': group, 'parts': parts, 'supplies': supplies}
 
 
 def edition(estimates: list[dict], schedule: dict | None, start: dt.date | None) -> dict:
@@ -201,7 +203,7 @@ def build(editions: list[dict], cut: str) -> dict:
                     'source_kind': 'contract_estimate', 'title': item.get('estimate_title') or item['title'],
                     'sha256': item.get('estimate_sha256'), 'edition_date': item.get('date'),
                     'page': line['operations']['group'].get('page')}
-                for part in line['operations']['parts']:
+                for part in line['operations']['parts'] + line['operations'].get('supplies', []):
                     part['source'].update(title=item.get('estimate_title') or item['title'],
                                           sha256=item.get('estimate_sha256'), edition_date=item.get('date'))
         entry["planned"] = sum(line["planned"] for line in entry["lines"]) if entry["in_force"] else None

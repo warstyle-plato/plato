@@ -162,6 +162,31 @@ def test_an_operation_with_unknown_total_quantity_has_no_claimed_live_overdue_da
     assert second['state'] == 'behind' and second['overdue_days'] == 20
 
 
+def test_pure_material_supply_does_not_become_an_unfinished_installation_operation():
+    edition, found = source_case()
+    estimate = edition['estimates'][0]
+    supply = copy.deepcopy(estimate['positions'][0])
+    supply.update(number='4.1.5', name='Поставка материала',
+                  unit_price={'work':0.0,'material':10.0,'total':10.0},
+                  amount={'work':0.0,'material':1000.0,'total':1000.0})
+    estimate['positions'].append(supply)
+    estimate['links']['positions'].append({'key':links.position_key(supply),'status':'confirmed',
+        'amount':1000.0,'work_amount':0.0,'material_amount':1000.0,'unit':'м2','quantity':100.0,
+        'lines':[{'code':'4.1','share':1.0}]})
+    for act, position in zip(found['acts'], estimate['positions']):
+        act.update(quantity=100.0,act_amount=position['amount']['work'])
+    planned = plan.build([edition], CUT)
+    performed = fact.build([edition], planned['in_force'], found, CUT)
+    measured = control.build(planned, performed, None, '', CUT)
+    row = measured['lines'][0]
+    assert row['state'] == 'done'
+    assert len(row['operations']['lines']) == 4
+    assert all(part['state']=='done' for part in row['operations']['lines'])
+    assert row['material_amount'] == 1000.0
+    assert len(planned['editions'][0]['lines'][0]['operations']['supplies']) == 1
+    assert planned['editions'][0]['total'] == 11000.0
+
+
 @pytest.mark.parametrize('width', [390, 1440])
 def test_native_card_and_excel_keep_the_original_stage_indices(width, tmp_path):
     from playwright.sync_api import expect
