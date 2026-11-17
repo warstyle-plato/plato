@@ -894,10 +894,8 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         rent_end = max(rent_end, hotel_strategy.plan_horizon_end({
             "commissioning": rve, "params": hotel_strategy.params_from_inputs(x)}))
     rent_rve = developaid_land_rent.construction_cutoff(rve, object_commissioning, pure_nonres=is_nonresidential(x))
-    # The cadastral value after the VRI change applies from the VRI date.
-    # Relief changes the money payable, not the VRI-change event. A fully
-    # waived gross obligation still needs the post-change cadastral base.
-    rent_switch = vri_obligation_date(x, permit)[0] if vri_payment_active(x) else None
+    # A zero payment after relief does not cancel the VRI change or its date.
+    rent_switch = vri_cadastral_change_date(x, permit)
     rent_objects = []
     lag = developaid_land_rent.registration_months(x)
     for obj in standalone_objects():

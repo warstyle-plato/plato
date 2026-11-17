@@ -56,7 +56,8 @@ CONVENTION = "Плановое начисление по фактическим 
 
 
 def page_spec() -> dict[str, Any]:
-    return {"presets": PRESETS, "convention": CONVENTION}
+    import developaid_land_cadastral
+    return {"presets": PRESETS, "convention": CONVENTION, "cadastral_methodology": developaid_land_cadastral.METHODOLOGY}
 
 
 def _mapping(value: Any) -> dict:
@@ -570,7 +571,8 @@ def build(inputs: dict[str, Any], project_start: date, rve: date,
     cadastral value after the change. ``phase_land`` — queues' shares of the
     parcel with the dates their land leaves the lease (``phase_release``).
     """
-    x = inputs or {}
+    import developaid_land_cadastral
+    x = developaid_land_cadastral.prepare(inputs)
     end = payment_horizon(x,project_start,project_end or rve)
     derived_rve = rve
     geometry = exposures if exposures is not None else phase_land
@@ -706,6 +708,12 @@ def build(inputs: dict[str, Any], project_start: date, rve: date,
     out["base_kind"] = base_kind
     out["base_origin"] = _mapping(x.get("_field_origin")).get("inputs.land_rent_cadastral_mln" if base_kind == "cadastral_percent" else "inputs.land_rent_annual_base_mln")
     base = _number(x.get("land_rent_cadastral_mln" if base_kind == "cadastral_percent" else "land_rent_annual_base_mln"))
+    out["base_value_mln"] = base
+    out["cadastral_estimate"] = x.get("_land_rent_cadastral_estimate")
+    out["target_cadastral_origin"] = _mapping(x.get("_field_origin")).get("inputs.land_rent_cadastral_target_mln")
+    target_origin = _mapping(out["target_cadastral_origin"])
+    out["target_cadastral_kind"] = target_origin.get("value_type") or (
+        "estimate" if target_origin.get("kind") == "land_rent_estimate" and target_origin.get("source") != "manual" else "manual_confirmed")
     if base_kind not in ("cadastral_percent", "annual_amount") or (preset and base_kind != "cadastral_percent"):
         missing.append("Для выбранного режима не подтверждена база аренды.")
     if base is None or base <= 0:
@@ -742,12 +750,31 @@ def build(inputs: dict[str, Any], project_start: date, rve: date,
     # VRI change: before the change date the base is the current cadastral
     # value, from it — the value after the change (owner's decision).
     target = _number(x.get("land_rent_cadastral_target_mln")) if base_kind == "cadastral_percent" else None
-    switch = cadastral_switch if target and base and target > 0 and abs(target - base) > 1e-9 else None
+    raw_change_date = x.get("land_rent_cadastral_change_date")
+    if raw_change_date and _date(raw_change_date) is None and x.get("land_rent_vri_change") is not False:
+        missing.append("Не распознана дата применения новой кадастровой стоимости. Укажите дату из ЕГРН или оставьте поле пустым для сценарной даты.")
+    out["cadastral_change"] = ({"date": cadastral_switch.isoformat(),
+        "estimated": not bool(raw_change_date),
+        "basis": "Указанная дата применения новой КС" if raw_change_date else "Сценарная дата смены ВРИ; уточните дату применения новой КС по ЕГРН"}
+        if cadastral_switch else None)
+    switch = cadastral_switch if target and base and target > 0 else None
     out["cadastral_switch"] = ({"date": switch.isoformat(), "current_mln": base, "target_mln": target,
                                 "origin": _mapping(x.get("_field_origin")).get("inputs.land_rent_cadastral_target_mln")}
                                if switch else None)
     if target and target > 0 and base and abs(target - base) > 1e-9 and switch is None:
-        out["notes"].append("Кадастровая стоимость после смены ВРИ не применена: в проекте нет платы за смену ВРИ, поэтому нет и даты смены.")
+        out["notes"].append("Кадастровая стоимость после смены ВРИ не применена: событие смены ВРИ не задано или отключено.")
+    if switch and out["target_cadastral_kind"] == "estimate":
+        preliminary.append(("cadastral_estimate", "После смены ВРИ применяется расчётная оценка будущей КС, а не официальная новая стоимость из ЕГРН."))
+        estimate = out.get("cadastral_estimate") or {}
+        if estimate.get("region") == "msk" and estimate.get("applied") and any(
+                not p.get("source") or not p.get("source_date") or not p.get("target_use") or not p.get("valuation_territory") for p in estimate.get("parcels", [])):
+            preliminary.append(("cadastral_parameters", "Для оценки КС Москвы укажите целевой ВРИ, группу и территорию оценки, источник и дату земельного УПКС каждого арендуемого участка."))
+    if cadastral_switch and not raw_change_date:
+        text = "Для аренды дата применения новой КС пока сценарная: принята дата смены ВРИ. Уточните её по ЕГРН."
+        if switch and abs(target - base) > 1e-9:
+            preliminary.append(("cadastral_date", text))
+        else:
+            out["notes"].append(text)
     if cadastral_switch and base_kind == "cadastral_percent" and not (target and target > 0):
         preliminary.append(("cadastral_change", "Кадастровая стоимость участка после смены ВРИ не указана, поэтому аренда и после смены ВРИ считается от нынешней стоимости. Впишите новую стоимость, когда она станет известна."))
     if switch and mode == "mo_housing_new_2026":

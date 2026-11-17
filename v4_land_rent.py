@@ -245,7 +245,7 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
     base_kind = str(inputs.get("land_rent_base_kind") or "cadastral_percent")
     base_key = "land_rent_cadastral_mln" if base_kind == "cadastral_percent" else "land_rent_annual_base_mln"
     settings = ((8, "Режим расчёта", displayed_mode, "input_text"),
-                (9, "База начисления, млн ₽", _numeric(inputs.get(base_key)), "input"),
+                (9, "База начисления, млн ₽", _numeric(result.get("base_value_mln", inputs.get(base_key))), "input"),
                 (10, "Начало аренды по договору", _serial(result.get("regime_start") or inputs.get("land_rent_regime_start")), "input_date"),
                 (11, "После последнего заданного года", "Повтор последней ставки" if preset else TAILS.get(str(inputs.get("land_rent_tail_rule") or "unknown"), "Не задана"), "input_text"),
                 (12, "Первый год и ВРИ", RELATIONS.get(str(inputs.get("land_rent_first_year_relation") or "regular_only"), "Не задано"), "input_text"))
@@ -332,7 +332,7 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
     origin_label = str(origin or "Источник базы не указан")
     if base_kind == "annual_amount":
         origin_label = "Годовая сумма по договору"
-    seeded_base = _numeric(inputs.get(base_key))
+    seeded_base = _numeric(result.get("base_value_mln", inputs.get(base_key)))
     put(19, "H19", "Источник базы начисления")
     if seeded_base is None:
         put(19, "I19", origin_label)
@@ -366,6 +366,8 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
     phase_segment_first = cash_summary_first + 6
     development_segment_first = phase_segment_first + phase_count * (YEARS + 2)
     cutoff = 'IF(COUNT($F$10)=1,MIN($F$10,$B$15),$B$15)'
+    cadastral_gate = (f'OR($F$13<>"Кадастровая стоимость",COUNT($B${switch_row})=0,$B${switch_row}>={cutoff},'
+                      f'AND(COUNT($B${target_row})=1,$B${target_row}>0))')
 
     def g_phase(t: str, r: int) -> str:
         """Cumulative base × days of one queue from the project start to t."""
@@ -539,7 +541,7 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
     put(17, "K17", "Начислено по ставкам: известная часть, млн ₽")
     put(17, "L17", formula=f"SUM(D4:{last_col}4)", style=styles["amount"])
     put(18, "K18", "Денежный поток определён полностью")
-    put(18, "L18", formula=f'IF(OR($L$8="Старый импорт: аренда и ВРИ не разделены",SUM(D5:{last_col}5)>0,{premium_gate}=0,{conditions_gate}=0,{regime_gate}=0),0,1)')
+    put(18, "L18", formula=f'IF(OR($L$8="Старый импорт: аренда и ВРИ не разделены",SUM(D5:{last_col}5)>0,{premium_gate}=0,{conditions_gate}=0,{regime_gate}=0,{cadastral_gate}=0),0,1)')
 
     for c, label in enumerate(("Год режима", "Начало года", "Конец года", "Ставка, %", "Применённая ставка, %", "Дни периода", "Дни года", "Известная сумма, млн ₽", "Заданный год"), 1):
         put(21, f"{_col(c)}21", label)
@@ -610,18 +612,52 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
             put(row, f"B{row}", amount/1e6, style=styles["amount"])
             put(row, f"C{row}", "Факт из классифицированного импорта")
     switch = result.get("cadastral_switch") if isinstance(result.get("cadastral_switch"), dict) else None
+    change = result.get("cadastral_change") if isinstance(result.get("cadastral_change"), dict) else switch
+    cadastral_estimate = result.get("cadastral_estimate") if isinstance(result.get("cadastral_estimate"), dict) else {}
+    estimate_parcels = [p for p in cadastral_estimate.get("parcels", []) if isinstance(p, dict)]
+    use_estimate = cadastral_estimate.get("applied") is True and bool(estimate_parcels)
+    saved_mo_estimate = (cadastral_estimate.get("region") or inputs.get("vri_region")) == "mo"
+    target_origin = result.get("target_cadastral_origin") or (switch or {}).get("origin") or {}
+    target_kind = result.get("target_cadastral_kind") or (target_origin.get("value_type") if isinstance(target_origin, dict) else None)
     target_seed = switch["target_mln"] if switch else _numeric(inputs.get("land_rent_cadastral_target_mln"))
     put(block-2, f"A{block-2}",
         "ОБЪЕКТЫ, ОЧЕРЕДИ И СМЕНА ВРИ — доля аренды учитывается до регистрации жилья или выхода из владения; дата ввода показана отдельно" if exposure_mode else
         "ОЧЕРЕДИ И СМЕНА ВРИ — земля очереди выходит из аренды при её вводе; со дня смены ВРИ аренда считается от новой кадастровой стоимости")
-    put(target_row, f"A{target_row}", "Кадастровая стоимость после смены ВРИ, млн ₽")
-    put(target_row, f"B{target_row}", target_seed, style=styles["input"])
-    put(switch_row, f"A{switch_row}", "Дата смены ВРИ (дата платы за смену ВРИ)")
-    put(switch_row, f"B{switch_row}", _serial(switch["date"]) if switch else None, style=styles["input_date"])
+    target_label = ("Официальная новая КС из ЕГРН, млн ₽" if target_kind == "official_egrn" else
+                    "Расчётная будущая КС, млн ₽" if use_estimate or target_kind == "estimate" else
+                    "КС после смены ВРИ, введённая пользователем, млн ₽")
+    if not use_estimate:
+        if target_kind == "official_egrn" and target_seed is not None:
+            put(target_row, f"A{target_row}", formula=(f'IF(AND(COUNT(B{target_row})=1,'
+                f'ABS(B{target_row}-{target_seed})<0.000000001),"{target_label}",'
+                '"КС после смены ВРИ, изменённая вручную, млн ₽")'))
+        else:
+            put(target_row, f"A{target_row}", target_label)
+    # The formula is attached below after the parcel-table coordinates are
+    # known. A confirmed manual / official total never becomes this formula.
+    if not use_estimate:
+        put(target_row, f"B{target_row}", target_seed, style=styles["input"])
+    origin_text = target_origin.get("text") if isinstance(target_origin, dict) else str(target_origin)
+    origin_label = str(origin_text or "Источник новой КС не указан")
+    if target_seed is not None and not use_estimate:
+        escaped_origin = origin_label.replace('"', '""')
+        put(target_row, f"C{target_row}", formula=(f'IF(AND(COUNT(B{target_row})=1,'
+            f'ABS(B{target_row}-{target_seed})<0.000000001),"{escaped_origin}","Изменено вручную в этой книге")'))
+    elif not use_estimate:
+        put(target_row, f"C{target_row}", origin_label)
+    put(target_row, f"D{target_row}", str(target_origin.get("source_date") or "Дата источника не указана")
+        if isinstance(target_origin, dict) else "Дата источника не указана")
+    put(switch_row, f"A{switch_row}", "Дата применения новой кадастровой базы")
+    put(switch_row, f"B{switch_row}", _serial(change.get("date")) if change else None, style=styles["input_date"])
+    put(switch_row, f"C{switch_row}", (change or {}).get("basis") or
+        ("Сценарная дата; подтвердите дату применения новой КС" if (change or {}).get("estimated") else
+         "Дата применения новой КС; размер платы и льгота её не отменяют"))
     put(switch_eff, f"A{switch_eff}", "Новая кадастровая стоимость применяется с")
     put(switch_eff, f"B{switch_eff}", formula=(f'IF(AND(COUNT($B${target_row})=1,$B${target_row}>0,COUNT($B${switch_row})=1,'
         f'$F$13="Кадастровая стоимость"),$B${switch_row},2958465)'), style=styles["date"])
-    put(switch_eff, f"C{switch_eff}", "31.12.9999 — смены ВРИ в расчёте нет")
+    put(switch_eff, f"C{switch_eff}", formula=(f'IF(AND(COUNT(B{switch_row})=1,'
+        f'OR(COUNT(B{target_row})=0,B{target_row}<=0)),"Будущая КС неизвестна: старая база сохранена только для предварительной оценки",'
+        '"31.12.9999 означает отсутствие применённого перехода на новую базу")'))
     put(target_eff, f"A{target_eff}", "База после смены ВРИ в расчёте, млн ₽")
     put(target_eff, f"B{target_eff}", formula=f'IF(COUNT($B${target_row})=1,$B${target_row},$B$9)', style=styles["amount"])
     put(regime_row, f"A{regime_row}", "Дата начала аренды взята из договора")
@@ -870,6 +906,57 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
         put(21, f"{matrix}21", formula=f'{col}3', style=styles["date"])
     put(7, "A7", "Неопределённые интервалы аренды" if exposure_mode else "Неопределённые интервалы до ввода")
     put(6, "B6", formula='IF(OR($B$8="Не применяется",$I$14="Собственность"),"Не применяется",IF(AND(F16="Ручной график",F17=1),"По заданному графику","Плановое начисление; сроки оплаты — по договору"))')
+    # Keep the estimate's inspectable parameters below the existing calendars.
+    # It is a scenario of the land value, independent of the VRI fee. Empty
+    # parameters produce an empty result rather than a zero-valued parcel.
+    if estimate_parcels:
+        estimate_title = max(rows) + 3
+        estimate_first = estimate_title + 6
+        estimate_last = estimate_first + len(estimate_parcels) - 1
+        put(estimate_title, f"A{estimate_title}", "РАСЧЁТНАЯ БУДУЩАЯ КС — оценка, не новая запись ЕГРН")
+        put(estimate_title + 1, f"A{estimate_title+1}", (
+            "МО: сохранённая расчётная КС каждого участка из применённого расчёта ВРИ; площадь и УПКС показаны справочно, их округление не меняет сохранённую сумму. Для изменения оценки правьте колонку D."
+            if saved_mo_estimate else str(cadastral_estimate.get("formula") or
+                "КСрасч = Σ (площадь участка, м² × целевой земельный УПКС, ₽/м²)")))
+        methodology = cadastral_estimate.get("methodology") if isinstance(cadastral_estimate.get("methodology"), dict) else {}
+        put(estimate_title + 2, f"A{estimate_title+2}", str(methodology.get("text") or
+            "Сценарная оценка; официальный результат определяет уполномоченное бюджетное учреждение и вносится в ЕГРН."))
+        put(estimate_title + 3, f"A{estimate_title+3}", "Официальный источник методики")
+        put(estimate_title + 3, f"B{estimate_title+3}", str(methodology.get("url") or "Источник методики не указан"))
+        put(estimate_title + 4, f"A{estimate_title+4}", "Методика проверена на дату")
+        put(estimate_title + 4, f"B{estimate_title+4}", str(methodology.get("as_of") or "Дата проверки методики не указана"))
+        for col, label in enumerate(("Арендуемый участок", "Площадь участка, м²", "Земельный УПКС, ₽/м²",
+                                    "Расчётная КС, млн ₽", "Источник земельного УПКС", "Дата источника",
+                                    "Целевой ВРИ / группа оценки", "Территория показателя / модель оценки"), 1):
+            put(estimate_first-1, f"{_col(col)}{estimate_first-1}", label)
+        for row, parcel in enumerate(estimate_parcels, estimate_first):
+            put(row, f"A{row}", str(parcel.get("number") or "Участок не указан"))
+            put(row, f"B{row}", _numeric(parcel.get("area_sqm")), style=styles["amount" if saved_mo_estimate else "input"])
+            put(row, f"C{row}", _numeric(parcel.get("upks_rub_sqm")), style=styles["amount" if saved_mo_estimate else "input"])
+            if saved_mo_estimate:
+                put(row, f"D{row}", _numeric(parcel.get("target_mln")), style=styles["input"])
+            else:
+                put(row, f"D{row}", formula=(f'IF(AND(COUNT(B{row}:C{row})=2,B{row}>0,C{row}>0),'
+                    f'B{row}*C{row}/1000000,"")'), style=styles["amount"])
+            put(row, f"E{row}", str(parcel.get("source") or "Источник показателя не указан"))
+            put(row, f"F{row}", str(parcel.get("source_date") or "Дата источника не указана"))
+            put(row, f"G{row}", str(parcel.get("target_use") or "Целевой ВРИ / группа не указаны"))
+            put(row, f"H{row}", str(parcel.get("valuation_territory") or "Территория показателя не указана"))
+        if use_estimate:
+            put(target_row, f"B{target_row}", formula=(f'IF(COUNTIF(D{estimate_first}:D{estimate_last},">0")='
+                f'{len(estimate_parcels)},ROUND(SUM(D{estimate_first}:D{estimate_last}),6),"")'), style=styles["amount"])
+            matches_estimate = (f'AND(COUNT(B{target_row})=1,COUNTIF(D{estimate_first}:D{estimate_last},">0")='
+                f'{len(estimate_parcels)},ABS(B{target_row}-ROUND(SUM(D{estimate_first}:D{estimate_last}),6))<0.000000001)')
+            put(target_row, f"A{target_row}", formula=(f'IF(OR(B{target_row}="",{matches_estimate}),'
+                '"Расчётная будущая КС, млн ₽","КС после смены ВРИ, изменённая вручную, млн ₽")'))
+            escaped_origin = origin_label.replace('"', '""')
+            put(target_row, f"C{target_row}", formula=(f'IF(OR(B{target_row}="",{matches_estimate}),'
+                f'"{escaped_origin}","Изменено вручную в этой книге")'))
+        if layout is not None:
+            layout["cadastral_parameter_rows"] = list(range(estimate_first, estimate_last+1))
+    if layout is not None:
+        layout["cadastral_target_row"] = target_row
+        layout["cadastral_change_row"] = switch_row
     # Explicit semantic input map: secondary strategy sheets share contract
     # terms, but never another strategy's shares, commissioning or exit dates.
     input_cells = {coord:kind for kind,coords in {
@@ -882,6 +969,14 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
                  *[f"D{n}" for n in range(pay_first,pay_end+1)]]}.items() for coord in coords}
     if is_mo:
         input_cells.update({f"{column}{n}":"number" for column in ("A","B") for n in range(index_first,index_end+1)})
+    if estimate_parcels:
+        # Every strategy reads the same parcel inputs. Its commissioning,
+        # lease exit and forward-valuation horizon remain its own calendar.
+        input_cells.update({f"{column}{n}": "number"
+            for column in (("D",) if saved_mo_estimate else ("B", "C"))
+            for n in range(estimate_first, estimate_last + 1)})
+        input_cells.update({f"{column}{n}": "text" for column in ("E", "F", "G", "H")
+            for n in range(estimate_first, estimate_last + 1)})
     if layout is not None:
         layout["input_cells"] = input_cells
     if master_terms_sheet:

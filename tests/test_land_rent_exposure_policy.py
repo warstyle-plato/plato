@@ -21,7 +21,7 @@ OPEN=date(2029,1,1)
 
 def inputs(**changes):
     return {**copy.deepcopy(core.DEFAULT_INPUTS),"project_start":"2027-01-01","ird_months":12,
-        "construction_months":12,"land_right":"lease","land_rights_cost_mln":0,
+        "construction_months":12,"land_right":"lease","land_rights_cost_mln":0,"vri_required":False,
         "land_rent_mode":"manual","land_rent_cadastral_mln":100,
         "land_rent_regime_start":"2027-01-01","land_rent_rates":[{"year":1,"rate_pct":1.5}],
         "land_rent_tail_rule":"repeat_last","land_rent_vat_treatment":"public_exempt",
@@ -245,7 +245,8 @@ def test_full_vri_relief_does_not_erase_the_cadastral_event(region,phased,target
     results=[]
     for relief in (0,100):
         x=inputs(vri_region=region,land_rights_cost_mln=50,vri_relief_mode='percent',vri_relief_pct=relief,
-            vri_obligation_date='2027-07-01',land_rent_cadastral_target_mln=target)
+            vri_obligation_date='2027-07-01',land_rent_cadastral_change_date='2027-07-01',
+            land_rent_cadastral_target_mln=target)
         results.append(core._run_authoritative_model(x,copy.deepcopy(core.TEP_DEFAULT),[],copy.deepcopy(p))['consolidated'])
     before,after=results
     assert before['land_rent']['accrual_monthly']==after['land_rent']['accrual_monthly']
@@ -340,8 +341,7 @@ def test_shared_strategy_terms_preserve_blank_vs_explicit_zero():
         header=layout['exposure_rows']['housing']['metadata']-1
         assert ws[f'C{header}'].value=='Ввод объекта'
         assert ws[f'D{header}'].value=='Аренда доли до'
-    target=next(cell.coordinate for row in book['Terms'] for cell in row if cell.value=='Кадастровая стоимость после смены ВРИ, млн ₽')
-    target='B'+''.join(c for c in target if c.isdigit())
+    target=f"B{layouts[0]['cadastral_target_row']}"
     ev=Evaluator(book)
     assert ev.cell('Alternative',target)==''
     book['Terms'][target]=0

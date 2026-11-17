@@ -2232,8 +2232,7 @@ def _calculate_phased_once(req: PhasedCalcRequest, *, _land_rent_cutoff: date | 
         result.setdefault("phase_shares", list(shares))
         return result
 
-    # The parcel's VRI event survives 100% relief; only its cash charge is zero.
-    rent_switch = master_vri_obligation if vri_payment_active(x_master) else None
+    rent_switch = vri_cadastral_change_date(x_master, base_op["permit"])
     common_land_rent = _common_land_rent(rent_rve, rent_end, _land_rent_areas, _land_rent_exposures)
     shared_base_mln = {
         "purchase": n(x_master, "purchase_price_mln"),

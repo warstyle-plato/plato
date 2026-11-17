@@ -17,7 +17,7 @@ from xlsx_eval import Evaluator
 def inputs(**changes):
     return {**copy.deepcopy(core.DEFAULT_INPUTS), "project_start": "2027-01-01",
         "ird_months": 12, "construction_months": 24,
-        "land_right": "lease", "land_rights_cost_mln": 0,
+        "land_right": "lease", "land_rights_cost_mln": 0, "vri_required": False,
         "land_rent_mode": "manual", "land_rent_cadastral_mln": 100,
         "land_rent_regime_start": "2027-01-01",
         "land_rent_rates": [{"year": 1, "rate_pct": 1.5}],

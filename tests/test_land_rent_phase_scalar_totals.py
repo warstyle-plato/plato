@@ -10,7 +10,7 @@ import main_legacy as core
 
 def inputs(**changes):
     return {**deepcopy(core.DEFAULT_INPUTS),'project_start':'2027-01-01','ird_months':12,
-        'construction_months':12,'land_right':'lease','land_rights_cost_mln':0,
+        'construction_months':12,'land_right':'lease','land_rights_cost_mln':0,'vri_required':False,
         'land_rent_mode':'manual','land_rent_cadastral_mln':100,
         'land_rent_regime_start':'2027-01-01','land_rent_rates':[{'year':1,'rate_pct':1.5}],
         'land_rent_tail_rule':'repeat_last','land_rent_vat_treatment':'public_exempt',

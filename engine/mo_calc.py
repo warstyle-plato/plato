@@ -689,7 +689,11 @@ def mo_vri_payment(
             "cadastral_value_date": str(parcel.get("cadastral_value_date") or ""),
             "upks_current": round(kc1 / area, 2) if area else None,
             "upks_target": round(target, 2) if target else None,
-            "cadastral_value_new_rub": round(kc2, 2),
+            "cadastral_value_new_rub": round(kc2, 2) if area > 0 and target and target > 0 else None,
+            "cadastral_value_new_origin": {
+                "kind": "calculated_estimate", "formula": "area_sqm * upks_target",
+                "text": "Расчётная будущая КС: площадь × целевой земельный УПКС; не новая запись ЕГРН",
+            },
             "delta_rub": round(kc2 - kc1, 2),
         })
     delta = total_kc2 - total_kc1

@@ -2519,8 +2519,14 @@ def _build_project_workbook(
         if not _rent:
             if count > 1 and x.get("land_right", "ownership") != "ownership":
                 raise ValueError("движок не передал единый график аренды всех очередей")
-            _rent = developaid_land_rent.build(
-                x, _engine_op["project_start"], _engine_op["rve"], _engine_op["end"])
+            # The ordinary single-project route already has the authoritative
+            # exposure calendar, cadastral event and sourced bases. Rebuilding
+            # from dates alone would lose the registration/retention policy.
+            _rent = copy.deepcopy(_engine_op.get("land_rent") or {})
+            if not _rent:
+                _rent = developaid_land_rent.build(
+                    x, _engine_op["project_start"], _engine_op["rve"], _engine_op["end"],
+                    cadastral_switch=vri_cadastral_change_date(x, _engine_op["permit"]))
         _rent_shares = list((finance_hints or {}).get("land_rent_phase_shares") or
                             ([1.0] + [0.0] * (count - 1)))
         _rent_rve_refs = [f'IF(\'Параметры модели\'!$B${88+k}="Да",\'CF_{k+1}\'!$B$8,0)'

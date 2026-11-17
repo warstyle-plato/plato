@@ -401,6 +401,8 @@ def prepared_calculation(x: dict, t: dict, rates: list[dict[str, Any]] | None) -
     как правил расчёт до выноса.
     """
     _partial_tep_preflight(x, t)
+    import developaid_land_cadastral
+    x.update(developaid_land_cadastral.prepare(x))
     if not rates:
         rates = generate_rate_curve(
             d(x.get("rate_start_date", date.today().isoformat())),
