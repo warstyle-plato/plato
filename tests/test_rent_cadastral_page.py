@@ -260,3 +260,75 @@ def test_rejected_territory_cannot_be_refilled_by_the_server_but_keeps_manual_ba
                     assert confirmed['rent']['base_value_mln']==111
                     assert page.evaluate('inputs.vri_region')==region
             assert not errors,errors
+
+
+@pytest.mark.parametrize('width,surface',[(390,'/'),(1440,'/classic')])
+def test_other_region_current_base_matches_backend_and_returns_to_mo_without_losing_manual_654(width,surface,monkeypatch):
+    from playwright.sync_api import expect, sync_playwright
+    from main_registry import app as registry_app
+    from tests.test_rent_cadastral_bases import other_settings, settings
+
+    monkeypatch.setattr(core,'_telegram_token',lambda:'')
+    monkeypatch.setattr(core,'require_calc_access',lambda *a,**k:{'allowed':True})
+    with browser.serve(registry_app,18918) as base, sync_playwright() as pw:
+        with pw.chromium.launch(executable_path=str(browser.chromium_or_skip())) as chromium:
+            page=chromium.new_page(viewport={'width':width,'height':1000},locale='ru-RU')
+            errors=[]
+            page.on('pageerror',lambda exc:errors.append(str(exc)))
+            page.route('**/*',lambda route:route.continue_()
+                if route.request.url.startswith(base.rstrip('/')+'/') else route.abort())
+            page.route('**/ia/goal-seek',lambda route:route.fulfill(status=503,json={'reason':'Synthetic other-region transition'}))
+            page.goto(base.rstrip('/')+surface,wait_until='domcontentloaded')
+            browser.wait_for_result(page)
+            for shape,current in [('unknown',None),('aggregate',45.5),('parcels',100),
+                                  ('lookup',123),('missing_record',None)]:
+                values=other_settings(shape)
+                values.update(land_rent_vri_change=False,project_start='2027-01-01')
+                # Send the stale saved automatic300/600 through the actual
+                # HTTP calculation route, before the editor can clear them.
+                raw=page.evaluate('''async values=>{
+                    const rawInputs={...inputs,...values};
+                    for(const key of ['_mo_calc','_glavapu_import','_other_region','_land_lookup'])
+                        if(!(key in values))delete rawInputs[key];
+                    const response=await fetch('/calculate',{method:'POST',headers:{'Content-Type':'application/json'},
+                        body:JSON.stringify({inputs:rawInputs,tep,rates:[]})});
+                    if(!response.ok)throw new Error('Synthetic calculate HTTP '+response.status);
+                    const result=await response.json();return result.land_rent;
+                }''',values)
+                assert raw['base_value_mln']==current
+                assert raw['cadastral_estimate']['total_mln'] is None
+                assert raw['cadastral_estimate']['parcels']==[]
+                page.evaluate('''async values=>{
+                    delete inputs._mo_calc;delete inputs._glavapu_import;delete inputs._other_region;
+                    delete inputs._land_lookup;delete inputs._land_rent_cadastral_estimate;
+                    Object.assign(inputs,values);phasing.enabled=false;
+                    renderInputs();await settledCalculate();
+                }''',values)
+                actual=state(page)
+                assert actual['current']==actual['rent']['base_value_mln']==current
+                assert actual['target'] is None
+                assert page.evaluate('inputs.vri_region')=='other'
+                browser.open_vri(page)
+                expect(page.locator('#f_land_rent_cadastral_mln')).to_have_value('' if current is None else str(current))
+            blur_edit(page,'#f_land_rent_cadastral_mln','654')
+            page.evaluate('''async()=>{
+                inputs._other_region={numbers:['66:01:0000001:13'],region:'Synthetic other region',cadastral_value_mln:88};
+                renderInputs();await settledCalculate();
+            }''')
+            assert state(page)['current']==state(page)['rent']['base_value_mln']==654
+            page.evaluate('''async record=>{
+                delete inputs._other_region;inputs.vri_region='mo';inputs._mo_calc=record;
+                renderInputs();await settledCalculate();
+            }''',settings('mo')['_mo_calc'])
+            returned=state(page)
+            assert returned['current']==returned['rent']['base_value_mln']==654
+            assert returned['target']==600
+            assert page.evaluate('inputs.vri_region')=='mo'
+            browser.open_vri(page)
+            blur_edit(page,'#f_land_rent_cadastral_mln','')
+            assert state(page)['current']==300
+            page.reload(wait_until='domcontentloaded')
+            browser.wait_for_result(page)
+            assert state(page)['current']==300 and state(page)['target']==600
+            assert page.evaluate('inputs.vri_region')=='mo'
+            assert not errors,errors

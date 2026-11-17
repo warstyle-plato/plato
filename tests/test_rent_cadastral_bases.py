@@ -180,6 +180,73 @@ def test_accepted_empty_mapping_and_region_alias_follow_the_page_without_mutatin
     assert result['land_rent_cadastral_target_mln']==600
 
 
+def other_settings(shape='unknown'):
+    x=cadastral.prepare(settings())
+    x.pop('_glavapu_import')
+    x['vri_region']='other'
+    numbers=['66:01:0000001:11','66:01:0000001:12']
+    x['_other_region']={'numbers':numbers[:1],'region':'Синтетический другой регион'}
+    if shape=='aggregate':
+        x['_other_region']['cadastral_value_mln']=45.5
+    elif shape in ('parcels','missing_parcel','missing_record'):
+        x['_other_region'].update(numbers=numbers,parcels=[
+            {'cadastral_number':numbers[0],'cadastral_value_mln':40,'cadastral_value_new_rub':999e6},
+            {'cadastral_number':numbers[1],'cadastral_value_mln':60 if shape!='missing_parcel' else None}])
+        if shape=='missing_record':
+            x['_other_region']['parcels'].pop()
+    elif shape=='lookup':
+        x['_land_lookup']['results'].append({'cadastral_number':numbers[0],
+            'found':True,'kind':'land','cadastral_value_mln':123})
+    elif shape=='multiple_aggregate':
+        x['_other_region'].update(numbers=numbers,cadastral_value_mln=999)
+    return x
+
+
+@pytest.mark.parametrize('shape,expected', [('unknown',None),('aggregate',45.5),('parcels',100),
+    ('lookup',123),('missing_parcel',None),('missing_record',None),('multiple_aggregate',None)])
+def test_other_region_uses_its_own_current_source_and_never_keeps_a_previous_future_estimate(shape,expected):
+    result=cadastral.prepare(other_settings(shape))
+    assert result['vri_region']=='other'
+    assert result['land_rent_cadastral_mln']==expected
+    assert result['land_rent_cadastral_target_mln'] is None
+    assert result['_land_rent_cadastral_estimate']['parcels']==[]
+    assert result['_land_rent_cadastral_estimate']['total_mln'] is None
+    assert not result['_land_rent_cadastral_estimate']['applied']
+    assert all(p['number'].startswith('66:') for p in cadastral.parcels(result))
+
+
+def test_other_parcel_selection_and_return_to_mo_recompute_only_automatic_bases():
+    x=other_settings('parcels')
+    x['land_rent_parcels_excluded']=['66:01:0000001:12']
+    result=cadastral.prepare(x)
+    assert result['land_rent_cadastral_mln']==40
+    assert result['land_rent_cadastral_target_mln'] is None
+    result.pop('_other_region')
+    result['vri_region']='mo'
+    result['_mo_calc']=settings('mo')['_mo_calc']
+    result=cadastral.prepare(result)
+    assert result['land_rent_cadastral_mln']==300
+    assert result['land_rent_cadastral_target_mln']==600
+
+
+@pytest.mark.parametrize('labelled',[True,False])
+def test_other_region_preserves_manual_or_unlabelled_654_when_switching_sources(labelled):
+    x=other_settings('aggregate')
+    x.update(land_rent_cadastral_mln=654,land_rent_cadastral_target_mln=987)
+    x['_field_origin']=({key:{'source':'manual','kind':'manual','text':'Synthetic confirmation',
+        'source_date':'2026-11-17'} for key in x['_field_origin']} if labelled else {})
+    origins=copy.deepcopy(x['_field_origin'])
+    for region in ['other','mo']:
+        if region=='mo':
+            x.pop('_other_region')
+            x['vri_region']='mo'
+            x['_mo_calc']=settings('mo')['_mo_calc']
+        x=cadastral.prepare(x)
+        assert x['land_rent_cadastral_mln']==654 and x['land_rent_cadastral_target_mln']==987
+        if labelled:
+            assert x['_field_origin']==origins
+
+
 @pytest.mark.parametrize('region',['msk','mo'])
 def test_removing_the_normalized_territory_invalidates_only_automatic_bases(region):
     x=cadastral.prepare(settings(region))

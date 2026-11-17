@@ -58,7 +58,7 @@ def accepted_territory(x):
         accepted.append({"region": "mo", "numbers": mo_numbers, "parcels": mo})
     other = mapping(x.get("_other_region"))
     if isinstance(other.get("numbers"), list) and other["numbers"] and other.get("region"):
-        accepted.append({"region": "other", "numbers": other["numbers"]})
+        accepted.append({"region": "other", "numbers": other["numbers"], "record": other})
     if len(accepted) != 1 or accepted[0]["region"] != project_regions.region_of(x):
         return None
     return accepted[0]
@@ -75,9 +75,19 @@ def parcels(x):
     # recognized metric dict as the identity of a parcel.
     numbers = territory["numbers"]
     lookup = mapping(x.get("_land_lookup")).get("results") or []
-    raw = territory["parcels"] if region == "mo" else [p for p in lookup if isinstance(p, dict)
-        and p.get("found") and p.get("kind") == "land"
-        and (not numbers or p.get("cadastral_number") in numbers)] if region == "msk" else []
+    other = territory.get("record") or {}
+    if region == "mo":
+        raw = territory["parcels"]
+    elif region == "other" and isinstance(other.get("parcels"), list) and other["parcels"]:
+        raw = [p for p in other["parcels"] if isinstance(p, dict)
+            and p.get("cadastral_number") in numbers]
+    elif region == "other" and len(numbers) == 1 and positive(other.get("cadastral_value_mln")) is not None:
+        # A saved aggregate is attributable only when it names one parcel,
+        # exactly as in landRentParcels. Never apportion it across a list.
+        raw = [{"cadastral_number": numbers[0], "cadastral_value_mln": other["cadastral_value_mln"]}]
+    else:
+        raw = [p for p in lookup if isinstance(p, dict) and p.get("found") and p.get("kind") == "land"
+            and (not numbers or p.get("cadastral_number") in numbers)]
     rows, seen = [], set()
     for p in raw:
         if not isinstance(p, dict):
@@ -92,7 +102,7 @@ def parcels(x):
         rows.append(dict(number=number, current_mln=current,
             area_sqm=positive(p.get("area_sqm")), target_mln=target / 1e6 if target else None,
             upks_rub_sqm=positive(p.get("upks_target")), source_date=p.get("cadastral_value_date") or ""))
-    if region == "msk":
+    if region in ("msk", "other"):
         for number in numbers:
             if number not in seen:
                 rows.append(dict(number=number, current_mln=None, area_sqm=None,
@@ -115,10 +125,6 @@ def prepare(inputs):
     if x.get("land_right") != "lease" or x.get("land_rent_base_kind", "cadastral_percent") != "cadastral_percent":
         return x
     region = project_regions.region_of(x)
-    # Other-region calculations stay outside this estimator. An invalid
-    # source/region gate still has to detach any previous automatic bases.
-    if region not in ("msk", "mo") and accepted_territory(x) is not None:
-        return x
     all_rows = parcels(x)
     excluded = set(x.get("land_rent_parcels_excluded") or [])
     rows = [r for r in all_rows if r["number"] not in excluded]
@@ -141,15 +147,20 @@ def prepare(inputs):
                 target_mln=area * upks / 1e6 if area and upks else None,
                 source=str(p.get("source") or ""), source_date=str(p.get("source_date") or ""),
                 target_use=str(p.get("target_use") or ""), valuation_territory=str(p.get("valuation_territory") or ""))
-        else:
+        elif region == "mo":
             row["source"] = "Расчёт МО: целевой земельный УПКС из применённого расчёта ВРИ"
             # The ЕГРН date belongs to the current base, not to this estimate.
             row["source_date"] = ""
-    x["_land_rent_cadastral_estimate"] = dict(formula=FORMULA, region=region, parcels=rows,
+    # Other regions provide their own current EGRN values only. There is no
+    # future-value algorithm or UPKS transfer from the previous territory.
+    estimate_rows = rows if region in ("msk", "mo") else []
+    x["_land_rent_cadastral_estimate"] = dict(formula=FORMULA, region=region, parcels=estimate_rows,
         methodology=METHODOLOGY if region == "msk" else None,
-        total_mln=sum(r["target_mln"] for r in rows) if rows and all(r["target_mln"] is not None for r in rows) else None)
-    fill("land_rent_cadastral_target_mln", "target_mln", "land_rent_estimate", "Расчётная будущая КС (не ЕГРН), площадь × целевой земельный УПКС")
-    x["_land_rent_cadastral_estimate"]["applied"] = (automatic(x, "land_rent_cadastral_target_mln") and
+        total_mln=sum(r["target_mln"] for r in estimate_rows) if estimate_rows and all(r["target_mln"] is not None for r in estimate_rows) else None)
+    fill("land_rent_cadastral_target_mln", "target_mln", "land_rent_estimate",
+        "Расчётная будущая КС (не ЕГРН), площадь × целевой земельный УПКС" if region in ("msk", "mo")
+        else "Будущая КС другого региона не определена")
+    x["_land_rent_cadastral_estimate"]["applied"] = (region in ("msk", "mo") and automatic(x, "land_rent_cadastral_target_mln") and
         mapping(origins.get("inputs.land_rent_cadastral_target_mln")).get("kind") == "land_rent_estimate")
     target_key = "inputs.land_rent_cadastral_target_mln"
     if not automatic(x, "land_rent_cadastral_target_mln"):

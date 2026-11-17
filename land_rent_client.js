@@ -70,10 +70,14 @@ function landRentParcels(territory){
   area_sqm:value(p.area_sqm),upks_rub_sqm:value(p.upks_target),current_mln:value(p.cadastral_value_rub)==null?null:Number(p.cadastral_value_rub)/1e6,
   target_mln:value(p.cadastral_value_new_rub)==null?null:Number(p.cadastral_value_new_rub)/1e6}));
  const other=territory.region==='other'?territory.record:null;
- if(other?.parcels?.length)return other.parcels.filter(p=>valid(String(p.cadastral_number||''))).map(p=>({number:String(p.cadastral_number),current_mln:value(p.cadastral_value_mln),target_mln:null}));
+ const wanted=new Set(territory.numbers||[]);
+ if(other?.parcels?.length){
+  const found=other.parcels.filter(p=>wanted.has(String(p.cadastral_number||''))&&valid(String(p.cadastral_number||''))).map(p=>({number:String(p.cadastral_number),current_mln:value(p.cadastral_value_mln),target_mln:null}));
+  for(const number of wanted)if(!seen.has(number))found.push({number,area_sqm:null,current_mln:null,target_mln:null});
+  return found;
+ }
  // An older saved territory keeps only the total: one value for all its parcels.
  if(other&&(territory.numbers||[]).length===1&&value(other.cadastral_value_mln)!=null)return [{number:String(territory.numbers[0]),current_mln:value(other.cadastral_value_mln),target_mln:null}];
- const wanted=new Set(territory.numbers||[]);
  const found=((inputs._land_lookup||{}).results||[]).filter(x=>x&&x.found&&x.kind==='land'&&(!wanted.size||wanted.has(String(x.cadastral_number)))&&valid(String(x.cadastral_number||'')))
   .map(x=>({number:String(x.cadastral_number),area_sqm:value(x.area_sqm),current_mln:value(x.cadastral_value_mln),target_mln:null}));
  for(const number of wanted)if(!seen.has(number))found.push({number,area_sqm:null,current_mln:null,target_mln:null});
