@@ -10,8 +10,8 @@ from tests import browser
 from tests.test_land_rent_result_clarity import rental_inputs
 
 core = main.core
-ASK_DATE = 'Предварительная экономика: подтвердите дату начала аренды'
-ASK_RENT = 'Предварительная экономика: уточните аренду земли'
+ASK_DATE = 'Предварительный расчёт'
+ASK_RENT = 'Предварительный расчёт'
 
 
 def calculated(**changes):
@@ -72,7 +72,7 @@ def test_an_assumed_start_flag_without_a_valid_accepted_date_keeps_the_generic_w
 
 
 @pytest.mark.parametrize('width', [390, 1440])
-def test_native_page_names_assumed_date_but_missing_rate_keeps_the_rent_warning(width, monkeypatch):
+def test_native_page_keeps_assumptions_in_state_and_uses_a_compact_rent_notice(width, monkeypatch):
     from playwright.sync_api import expect, sync_playwright
     from main_registry import app
     monkeypatch.setattr(core, '_telegram_token', lambda: '')
@@ -95,7 +95,8 @@ def test_native_page_names_assumed_date_but_missing_rate_keeps_the_rent_warning(
             assert not page.locator('#iaVerdict').evaluate("e=>e.classList.contains('pass')")
             row = page.locator('#projectParamsTable tr').filter(has=page.get_by_text('Аренда земли участка', exact=True))
             expect(row).to_contain_text('3 млн')
-            expect(row).to_contain_text('Дата начала аренды по договору не указана')
+            expect(row).not_to_contain_text('Дата начала аренды по договору не указана')
+            expect(page.locator('#landRentResultNotice')).to_have_count(1)
             state = page.evaluate('({start:inputs.land_rent_regime_start,assumed:lastResult.land_rent.regime_start,known:lastResult.summary.land_rent_sum.known})')
             assert state == {'start': None, 'assumed': '2027-01-01', 'known': False}
             shots = Path('/tmp/plato-rent-assumed-date-20261114')

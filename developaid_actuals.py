@@ -61,6 +61,7 @@ import collections
 import copy
 import datetime
 import hashlib
+import math
 import os
 import pickle
 import re
@@ -1483,6 +1484,54 @@ def borrowed(source: Any) -> bool:
     return "заем" in str(source or "").lower().replace("ё", "е")
 
 
+def _payment_amount_cell(value: Any, source_row: int) -> dict[str, Any]:
+    """Describe only the saved value already read with data_only=True."""
+    state, raw, truncated = "saved_value", value, False
+    if value is None:
+        state = "missing_saved_value"
+    elif isinstance(value, str):
+        state = "empty_saved_string" if value == "" else state
+        raw, truncated = value[:256], len(value) > 256
+    elif isinstance(value, (datetime.datetime, datetime.date)):
+        raw = value.isoformat()
+    elif type(value) is float and not math.isfinite(value):
+        state = "non_finite_saved_value"
+        raw = "NaN" if math.isnan(value) else "Infinity" if value > 0 else "-Infinity"
+    elif type(value) is int and value.bit_length() > 840:
+        raw, truncated = "[integer representation omitted]", True
+    elif type(value) not in {bool, int, float}:
+        state, raw = "unsupported_saved_type", None
+    return {"coordinate": "J"+str(source_row), "raw_type": type(value).__name__,
+            "state": state, "raw_value": raw, "truncated": truncated}
+
+
+def payment_issue_context(row: dict[str, Any]) -> dict[str, Any]:
+    """Bounded provenance for one incomplete payment, without another read."""
+    context, truncated = {}, []
+    for field in ("contractor", "contract", "contract_date", "object", "purpose",
+                  "estimate_code", "date", "source"):
+        value = row.get(field)
+        if isinstance(value, (datetime.datetime, datetime.date)):
+            value = value.isoformat()
+        if isinstance(value, str):
+            if len(value) > 512:
+                truncated.append(field)
+            value = value[:512]
+        elif value is not None and type(value) not in {bool, int, float}:
+            value = None
+        elif type(value) is float and not math.isfinite(value):
+            value = None
+        context[field] = value
+    context["truncated_fields"] = truncated
+    observed = row.get("amount_cell")
+    if not isinstance(observed, dict):
+        source_row = row.get("source_row")
+        observed = {"coordinate": "J"+str(source_row) if type(source_row) is int else None,
+                    "raw_type": None, "state": "not_captured", "raw_value": None, "truncated": False}
+    return {"sheet": _PAYMENTS_SHEET, "payment_context": context,
+            "amount_cell": copy.deepcopy(observed)}
+
+
 def _read_payment_rows(path: str | Path) -> list[dict[str, Any]]:
     """One cached source reading for both public payment projections.
 
@@ -1520,6 +1569,7 @@ def _read_payment_rows(path: str | Path) -> list[dict[str, Any]]:
             "article_name": str(cell("article_name") or "").strip(),
             "date": _date(cell("date")),
             "amount": cell("amount"),
+            "_amount_cell": _payment_amount_cell(cell("amount"), index),
             "source": source,
             "own_funds": _OWN_FUNDS_MARKER in _normalized(source),
             "source_row": index,
@@ -1528,15 +1578,21 @@ def _read_payment_rows(path: str | Path) -> list[dict[str, Any]]:
     return rows
 
 
-def read_payments(path: str | Path, *, include_incomplete: bool = False) -> dict[str, Any]:
+def read_payments(path: str | Path, *, include_incomplete: bool = False,
+                  include_cell_metadata: bool = False) -> dict[str, Any]:
     """Реестр платежей РСС: дата, сумма, код ССР, договор и источник средств.
 
     Both projections read the same cached source rows. Strict financial
     readers retain incomplete rows; legacy readers keep nonzero payments.
     The cache returns independent copies, so projection never changes it.
+    Cell provenance is opt-in for internal financial issue records; default
+    legacy and strict row shapes are unchanged.
     """
     rows: list[dict[str, Any]] = []
     for item in _read_payment_rows(path):
+        observed = item.pop("_amount_cell", None)
+        if include_cell_metadata and observed is not None:
+            item["amount_cell"] = observed
         amount = money_value(item["amount"]) if include_incomplete else _money(item["amount"])
         if not include_incomplete:
             if not amount:
