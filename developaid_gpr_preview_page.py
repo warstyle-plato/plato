@@ -97,7 +97,7 @@ function corpora(b){
   +b.corpora.map(c=>'<tr><td>'+esc(c.name)+'</td><td data-label="Готовность">'+(pct(c.progress)||'—')+'</td><td data-label="Выполнено работ">'+c.done+' из '+c.total+'</td><td data-label="Отстают" class="'+(c.behind?'behind':'')+'">'+c.behind+'</td><td data-label="Без показания">'+c.no_reading+'</td><td data-label="План окончания">'+(dt(c.plan_finish)||'—')+'</td></tr>').join('')
   +'</tbody></table></div></section>';
 }
-function workChip(w){return '<span class="chip '+esc(w.state)+'">'+esc(w.object)+': '+(w.fact==null?'нет показания':'выполнено '+pct(w.fact))+(w.plan==null?'':', по плану '+pct(w.plan))+'</span>'}
+function workChip(w){return '<span class="chip '+esc(w.state)+'">'+esc(w.object)+': '+(w.reason?esc(w.reason):w.fact==null?(w.state==='done'?'завершено по источнику':'нет показания'):'выполнено '+pct(w.fact))+(w.plan==null?'':', по плану '+pct(w.plan))+'</span>'}
 function attention(b){
  const a=b.attention;
  if(!a.total)return '<section class="card" id="attention"><h2>Требует внимания</h2><p class="muted">На дату среза нет работ, которые отстают от плана.</p></section>';
@@ -111,17 +111,18 @@ function cellText(c){
 }
 function matrix(b){
  const m=b.matrix,objects=phone()&&m.objects.length>1?[shownObject||m.objects[0]]:m.objects;
- const stages=m.stages.filter(s=>!onlyBehind||s.behind);
+ const selectedWorks=l=>objects.flatMap(o=>l.by_object[o]||[]).filter(w=>!onlyBehind||w.state==='behind');
+ const stages=m.stages.filter(s=>!onlyBehind||s.cells.some(c=>objects.includes(c.object)&&c.behind));
  let html='<section class="card" id="matrix"><h2>Матрица по разделам</h2><p class="muted">Нажмите на раздел, чтобы увидеть его работы. Одинаковые работы разных корпусов показаны одной строкой.</p>'
   +'<label><input type="checkbox" id="onlyBehind"'+(onlyBehind?' checked':'')+'> Только отстающие</label>';
  if(phone()&&m.objects.length>1)html+='<div class="switch" id="objectSwitch">'+m.objects.map(o=>'<button type="button" class="btn alt'+(o===objects[0]?' on':'')+'" data-object="'+esc(o)+'">'+esc(o)+'</button>').join('')+'</div>';
  html+='<div class="scroll"><table class="matrix"><thead><tr><th>Раздел</th>'+objects.map(o=>'<th>'+esc(o)+'</th>').join('')+'</tr></thead><tbody>';
  for(const s of stages){
   const cells=s.cells.filter(c=>objects.includes(c.object));
-  const lines=s.lines.filter(l=>(!onlyBehind||l.behind)&&objects.some(o=>l.by_object[o]));
+  const lines=s.lines.map(l=>({...l,shown:selectedWorks(l)})).filter(l=>l.shown.length);
   const open=openStages.has(s.stage);
   html+='<tr class="stage-row'+(open?' open':'')+'" data-stage="'+esc(s.stage)+'"><td class="stage">'+esc(s.stage)+'</td>'+cells.map(c=>'<td>'+cellText(c)+'</td>').join('')+'</tr>'
-   +'<tr class="lines'+(open?'':' hidden')+'"><td colspan="'+(objects.length+1)+'"><ul>'+lines.map(l=>'<li class="'+(l.behind?'behind':'')+'">'+esc(l.name)+'<br>'+objects.flatMap(o=>l.by_object[o]||[]).map(workChip).join('')+'</li>').join('')+'</ul>'+(lines.length?'':'<span class="muted">Нет работ для показа.</span>')+'</td></tr>';
+   +'<tr class="lines'+(open?'':' hidden')+'"><td colspan="'+(objects.length+1)+'"><ul>'+lines.map(l=>'<li class="'+(l.shown.some(w=>w.state==='behind')?'behind':'')+'">'+esc(l.name)+'<br>'+l.shown.map(workChip).join('')+'</li>').join('')+'</ul>'+(lines.length?'':'<span class="muted">Нет работ для показа.</span>')+'</td></tr>';
  }
  html+='</tbody></table></div>'+(stages.length?'':'<p class="muted">Отстающих разделов нет.</p>')+(m.truncated?'<p class="muted">Показаны не все корпуса и разделы: их слишком много для одной таблицы.</p>':'')+'</section>';
  return html;

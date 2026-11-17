@@ -28,13 +28,18 @@ def view():
             row('5', 'Озеленение', 'Корпус 1', .9, .1)]
     cell = lambda ids: {'work_ids': ids, 'progress': None}
     return {'cut': DAY, 'schedule': {'rows': rows, 'readiness': {
+        'cut': DAY, 'source_sha256': 'a' * 64,
+        'forecast_identity': {'id_scope': 'current_source', 'source_sha256': 'a' * 64,
+                              'full_source_sha256': None,
+                              'remaining_ids': {r['id']: r['id'] for r in rows}},
         'matrix_objects': ['Корпус 1', 'Корпус 2'],
         # Work 5 sits in no cell: it is outside the matrix, whatever its name says.
         'matrix': [{'stage': 'Каркас', 'cells': [cell(['1']), cell(['2'])]},
                    {'stage': 'Отделка', 'cells': [cell(['3']), cell(['4'])]}],
         'corpora': [{'name': 'Корпус 1', 'progress': .4, 'forecast': {'plan_finish': '2026-12-01'}},
                     {'name': 'Корпус 2', 'progress': .9, 'forecast': {'plan_finish': '2026-11-30'}}],
-        'project': {'progress': None, 'reason': 'Нет подтверждённого полного состава и весов.'},
+        'project': {'progress': None, 'work_ids': ['1', '2', '3', '4'], 'total': 4,
+                    'reason': 'Нет подтверждённого полного состава и весов.'},
         'reason': 'Нет подтверждённого полного состава и весов.'}},
         'dashboard': {'schedule': {'qualified_rnv': {'plan_date': '2026-12-01', 'plan_label': 'План ввода',
                                                      'reasons': ['Нет подтверждённого полного состава и весов.']}}}}
@@ -68,6 +73,96 @@ def test_brief_moves_a_work_when_the_matrix_moves_it():
     assert [(s['behind'], s['no_reading'], s['done']) for s in b['matrix']['stages']] == [(0, 1, 0), (1, 0, 1)]
 
 
+def brief_works(result):
+    return [work for stage in result['matrix']['stages'] for line in stage['lines']
+            for values in line['by_object'].values() for work in values]
+
+
+def translated_view(ids=('f1', 'f2', 'r1', 'r2')):
+    from test_schedule_summary_identity import record, full_state
+    f1, f2, r1, r2 = ids
+    state = full_state({key: record(key) for key in (f1, f2)},
+                       {key: record(key) for key in (r1, r2)}, {f1: r1, f2: r2})
+    return {'cut': DAY, 'schedule': {'readiness': state,
+        'rows': [row(r1, 'Первая работа', 'Корпус 1', .8, .2),
+                 row(r2, 'Вторая работа', 'Корпус 1', .8, .7)]}}
+
+
+@pytest.mark.parametrize('ids', [('f1', 'f2', 'r1', 'r2'), ('1', '2', '2', '3')])
+def test_full_source_matrix_follows_canonical_translation_even_when_namespaces_overlap(ids):
+    source = translated_view(ids)
+    before = copy.deepcopy(source)
+    result = brief.build(source)
+    assert [(item['reference_work_id'], item['id'], item['fact']) for item in brief_works(result)] == [
+        (ids[0], ids[2], .2), (ids[1], ids[3], .7)]
+    assert result['counts']['total'] == 2
+    assert result['expected_finish']['state'] == 'pending'
+    assert source == before
+
+
+@pytest.mark.parametrize('problem', ['missing_translation', 'duplicate_translation', 'missing_row',
+                                   'duplicate_row', 'duplicate_reference', 'outside_current', 'source_mismatch'])
+def test_unresolved_canonical_members_remain_unknown_in_the_matrix_denominator(problem):
+    source = translated_view()
+    state, rows = source['schedule']['readiness'], source['schedule']['rows']
+    mapping = state['forecast_identity']['remaining_ids']
+    if problem == 'missing_translation':
+        mapping.pop('f2')
+    elif problem == 'duplicate_translation':
+        mapping['f2'] = 'r1'
+    elif problem == 'missing_row':
+        rows.pop()
+    elif problem == 'duplicate_row':
+        rows.append(copy.deepcopy(rows[-1]))
+    elif problem == 'duplicate_reference':
+        state['matrix'][0]['cells'][0]['work_ids'] = ['f1', 'f1']
+    elif problem == 'outside_current':
+        mapping['f2'] = None
+    else:
+        state['forecast_identity']['source_sha256'] = 'c' * 64
+    before = copy.deepcopy(source)
+    result = brief.build(source)
+    unresolved = [item for item in brief_works(result) if item['id'] is None]
+    assert result['counts']['total'] == 2
+    assert unresolved and all(item['state'] == 'no_reading' and item['fact'] is None for item in unresolved)
+    assert all(item['reason_code'] != 'unknown_time' for item in unresolved)
+    assert result['outside_matrix'] is None
+    assert any('Проверьте привязки' in note for note in result['notes'])
+    assert source == before
+
+
+@pytest.mark.parametrize('gap, state', [(9.950738916, 'on_plan'), (9.99, 'on_plan'),
+                                     (10.0, 'behind'), (10.04, 'behind')])
+def test_lag_threshold_uses_raw_points_before_display_rounding(gap, state):
+    item = brief.work(row('1', 'Работа', 'Корпус 1', .5 + gap / 100, .5))
+    assert item['state'] == state
+    if state == 'behind':
+        assert item['gap_pp'] == 10.0
+
+
+@pytest.mark.parametrize('value', [float('nan'), float('inf'), True, -.1])
+def test_invalid_direct_observations_are_not_a_zero_or_behind(value):
+    item = brief.work(row('1', 'Работа', 'Корпус 1', .8, value))
+    assert item['fact'] is None and item['state'] == 'no_reading'
+
+
+@pytest.mark.parametrize('date', [None, 'не дата', '2099-01-01'])
+def test_a_missing_invalid_or_future_date_cannot_supply_a_dated_fact(date):
+    source = row('1', 'Работа', 'Корпус 1', .8, .2)
+    source['display_progress']['date'] = date
+    item = brief.work(source, DAY)
+    assert item['fact'] is None and item['fact_date'] is None and item['state'] == 'no_reading'
+
+
+@pytest.mark.parametrize('key, session', [('', ''), ('wrong', ''), ('', 'claimed-demo'), ('market-key', '')])
+def test_denied_preview_responses_are_nostore_before_touching_any_schedule(api, monkeypatch, key, session):
+    client, _ = api
+    monkeypatch.setattr(pace, 'schedule_view', lambda *_: pytest.fail('auth must precede source reads'))
+    denied = post(client, 'gpr-brief', key=key, session=session, project=PROJECT, cut=DAY)
+    assert denied.status_code == 403 and denied.headers['cache-control'] == 'private, no-store'
+    assert 'counts' not in denied.text
+
+
 def test_brief_and_page_routes_keep_monitor_access(api, site):
     client, _ = api
     good = post(client, 'gpr-brief', project=PROJECT, cut=DAY)
@@ -75,6 +170,7 @@ def test_brief_and_page_routes_keep_monitor_access(api, site):
     assert good.json() == json.loads(json.dumps(brief.build(pace.schedule_view(PROJECT, DAY)), default=str))
     denied = post(client, 'gpr-brief', key='wrong-key', project=PROJECT, cut=DAY)
     assert denied.status_code == 403 and 'counts' not in denied.text
+    assert denied.headers['cache-control'] == 'private, no-store'
     missing = post(client, 'gpr-brief', project='Нет такого', cut=DAY).json()
     assert missing['empty'] and missing['empty_reason'] == 'Утверждённый график работ не загружен.'
     assert missing['notes'][0] == missing['empty_reason'] and missing['counts']['total'] == 0
@@ -163,7 +259,13 @@ def test_rendered_preview_shows_deadlines_attention_and_an_opening_matrix(site, 
         else:
             expect(page.locator('#matrix thead th')).to_have_count(3)
         page.locator('#onlyBehind').check()
+        if width <= 700:
+            # Filtering concerns the selected corpus, which has no lagging work.
+            expect(page.locator('#matrix .stage-row')).to_have_count(0)
+            expect(page.locator('#matrix')).to_contain_text('Отстающих разделов нет.')
+            page.locator('#objectSwitch [data-object="Корпус 1"]').click()
         expect(page.locator('#matrix .stage-row')).to_have_count(1)
+        expect(page.locator('#matrix .chip.on_plan')).to_have_count(0)
         # The opened stage stays open through the filter and the corpus switch.
         expect(page.locator('#matrix tr.lines').first).to_be_visible()
         page.locator('#matrix td.stage', has_text='Каркас').click()

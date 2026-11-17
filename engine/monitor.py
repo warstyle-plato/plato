@@ -2011,7 +2011,11 @@ def monitor_gpr_view(req: MonitorGanttRequest) -> Response:
 @app.post("/monitor/gpr-brief", include_in_schema=False)
 def monitor_gpr_brief(req: MonitorGanttRequest) -> Response:
     """Короткий вид блока ГПР для тестовой страницы: тот же расчёт, что /monitor/gpr-view."""
-    _require_team_access(req.session, req.key, "Монитор проекта", write=False)
+    try:
+        _require_team_access(req.session, req.key, "Монитор проекта", write=False)
+    except HTTPException as exc:
+        raise HTTPException(exc.status_code, exc.detail,
+                            headers={**(exc.headers or {}), "Cache-Control": "private, no-store"}) from None
     from fastapi.encoders import jsonable_encoder
     import developaid_gpr_brief as gpr_brief
     import developaid_monitor_pace as pace
