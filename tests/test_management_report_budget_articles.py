@@ -207,7 +207,7 @@ def test_the_tiles_lead_the_first_page():
     built = _setup()
     items = report.tiles(built)
     # Canonical readiness and its scoped end estimate are separate tiles.
-    assert len(items) == 13
+    assert len(items) == 14  # The paid-source card remains visible without a usable FM.
     from developaid_gpr_summary import gpr_summary
     summary = gpr_summary(built['gantt']['readiness'], built['end'])
     assert len(summary['source_sha256']) == 64

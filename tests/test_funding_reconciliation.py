@@ -56,7 +56,7 @@ def test_unknown_schedule_coverage_preserves_the_exact_admin_gap(tmp_path):
     assert r['admin_schedule']['items'][0]['state'] == 'unknown'
     assert r['admin_schedule']['items'][0]['model_remaining'] == 20_000
     assert r['confirmed_additional'] is None
-    assert r['primary_source_gate'] == 'BLOCKED'
+    assert r['primary_source_gate'] == 'NOT_REQUIRED_FOR_CALCULATION'
     assert r['calculated_additional'] == original['reconciliation']['calculated_additional']
     assert r['calculated_additional'] is not None
     assert not r['financial_acceptance_performed']

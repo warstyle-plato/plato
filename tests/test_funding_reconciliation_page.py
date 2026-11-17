@@ -18,6 +18,8 @@ def test_real_page_uses_exact_canonical_rows_and_keeps_unknown_separate(width):
     module, r = reconciliation()
     r['calculated_additional'] = None
     r['paid_at_cut'] = 0.0
+    r.pop('calculation')  # A legacy cached DTO has no observed-subset calculation.
+    r.pop('calculation_note')
     r['reasons'] = ['АХР <img src=x onerror="window.unsafeFinancial=true"> требуют сверки']
     r['display_rows'] = module.display_rows(r)
     with browser_page(width) as (page, responses, errors):
@@ -37,7 +39,7 @@ def test_real_page_uses_exact_canonical_rows_and_keeps_unknown_separate(width):
         assert 'Утверждённый РНВ' in values and 'Прогноз РНВ' in values
         assert 'Продажи' in values
         assert 'Дефицит · РСС' not in values
-        expect(page.locator('.funding-reconciliation')).to_contain_text(
+        expect(page.locator('.funding-reconciliation')).not_to_contain_text(
             'Финансовая сверка первичных источников не завершена')
         assert page.locator('#fundingCompare .batt').count() == 0
         assert page.locator('#financeBars').text_content() == ''

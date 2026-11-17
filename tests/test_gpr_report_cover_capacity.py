@@ -52,7 +52,8 @@ def test_full_cover_notes_and_page2_keep_their_normal_font(saved, tmp_path, monk
     built = _cover_model(tmp_path, monkeypatch, variant, credit)
     before = copy.deepcopy(built)
     items = report.tiles(built)
-    assert len(items) == (13 if variant == 'budget' else 14)
+    # The independent paid card remains visible when the FM is unavailable.
+    assert len(items) == (14 if variant == 'budget' else 15)
     assert len([item for item in items if item.get('group') == 'gpr_readiness']) == 2
     assert len([item for item in items if item.get('group') == 'additional_funding']) == 1
     assert not any(item.get('group') == 'admin_expenses_cash' for item in items)
