@@ -262,8 +262,10 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
          "После ввода аренда не считается прекращённой."))
     for n, label in ((3, "Месяц"), (4, "Исходное начисление, млн ₽"),
                      (5, "Неполные интервалы"), (6, "Денежный поток с фактом, млн ₽" if history_mode else "Плановый платёж, млн ₽"),
-                     (13, "Основание ставок"), (14, "Начало расчёта"), (15, "Ввод; граница исключается"),
-                     (16, "Последний заданный год"), (17, "Расчёт до ввода полный"),
+                     (13, "Основание ставок"), (14, "Начало расчёта"),
+                     (15, "Аренда долей до; граница исключается" if exposure_mode else "Ввод; граница исключается"),
+                     (16, "Последний заданный год"),
+                     (17, "Начисление по сроку аренды полное" if exposure_mode else "Расчёт до ввода полный"),
                      (18, "Начислено по ставкам: полный итог, млн ₽"), (19, "Денежный поток: известная часть, млн ₽"), (20, "Конвенция")):
         put(n, f"A{n}", label)
     put(13, "B13", str(source), style=styles["input_text"])
@@ -274,7 +276,8 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
         # The formula is completed below, once the queue rows are known: a
         # queue's rent-only exit date may end the calculation later or earlier.
         put(15, "B15", formula=rve_formula, style=styles["date"])
-        put(15, "K15", "Ввод очередей — в таблице очередей ниже; одна общая дата не задаётся")
+        put(15, "K15", "Ввод и дата выхода из аренды указаны отдельно в таблице ниже" if exposure_mode else
+            "Ввод очередей — в таблице очередей ниже; одна общая дата не задаётся")
         put(15, "L15", None)
     else:
         put(15, "B15", formula=f'IF(COUNT($L$15)=1,$L$15,{rve_formula})', style=styles["date"])
@@ -291,7 +294,8 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
     vat = result.get("vat_treatment") or inputs.get("land_rent_vat_treatment")
     put(18, "I18", {"taxable": "Облагается НДС", "public_exempt": "Без НДС: публичный собственник"}.get(vat, "Не уточнён"), style=styles["input_text"])
     is_mo = mode == "mo_housing_new_2026"
-    extra = ((8, "После ввода", "Выход долей по датам очередей" if phased else "Отдельный режим; здесь не рассчитан", "amount"),
+    extra = ((8, "После ввода", "Регистрация жилья или выход из владения объектом" if exposure_mode else
+              "Выход долей по датам очередей" if phased else "Отдельный режим; здесь не рассчитан", "amount"),
              (9, "Основание границы расчёта" if phased else "Полнота после ввода", "Допущение инвестиционного расчёта" if phased else "Обязательство не считается прекращённым", "amount"),
              (10, "Подтверждённое прекращение", _serial(inputs.get("land_rent_termination_date")) if _serial(inputs.get("land_rent_termination_date")) is not None else inputs.get("land_rent_termination_date"), "input_date"),
              (12, "Первый год целиком в ВРИ подтверждён", "Да" if inputs.get("land_rent_first_year_confirmed") is True else "Нет", "input_text"),
@@ -607,7 +611,9 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
             put(row, f"C{row}", "Факт из классифицированного импорта")
     switch = result.get("cadastral_switch") if isinstance(result.get("cadastral_switch"), dict) else None
     target_seed = switch["target_mln"] if switch else _numeric(inputs.get("land_rent_cadastral_target_mln"))
-    put(block-2, f"A{block-2}", "ОЧЕРЕДИ И СМЕНА ВРИ — земля очереди выходит из аренды при её вводе; со дня смены ВРИ аренда считается от новой кадастровой стоимости")
+    put(block-2, f"A{block-2}",
+        "ОБЪЕКТЫ, ОЧЕРЕДИ И СМЕНА ВРИ — доля аренды учитывается до регистрации жилья или выхода из владения; дата ввода показана отдельно" if exposure_mode else
+        "ОЧЕРЕДИ И СМЕНА ВРИ — земля очереди выходит из аренды при её вводе; со дня смены ВРИ аренда считается от новой кадастровой стоимости")
     put(target_row, f"A{target_row}", "Кадастровая стоимость после смены ВРИ, млн ₽")
     put(target_row, f"B{target_row}", target_seed, style=styles["input"])
     put(switch_row, f"A{switch_row}", "Дата смены ВРИ (дата платы за смену ВРИ)")
@@ -627,7 +633,8 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
     put(g_hi_row, f"A{g_hi_row}", "База × дни аренды к концу расчёта")
     put(g_hi_row, f"B{g_hi_row}", formula=g(cutoff), style=styles["amount"])
     basis = str(result.get("phase_share_basis") or "")
-    headers = ["Очередь", "Доля участка", "Ввод очереди", "Земля выходит из аренды",
+    headers = ["Объект / очередь" if exposure_mode else "Очередь", "Доля участка",
+               "Ввод объекта" if exposure_mode else "Ввод очереди", "Аренда доли до" if exposure_mode else "Земля выходит из аренды",
                "Начислено, млн ₽", "Оплачено, млн ₽", "База × дни к концу расчёта"]
     if phased:
         headers += [{"area": "Площадь участка очереди, га"}.get(basis, "Общая площадь объектов очереди, м²"),
@@ -723,7 +730,8 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
             put(r, f"F{r}", formula=f"SUM(D{base+4}:{last_col}{base+4})", style=styles["amount"])
             for k, label in enumerate(("база × дни к началу месяца", "база × дни к концу месяца",
                                        "доля начисления месяца", "начисление, млн ₽", "платёж, млн ₽")):
-                put(base+k, f"A{base+k}", f"Очередь {p+1}: {label}")
+                who = (phase_land[p].get("name") or phase_land[p]["id"]) if exposure_mode else f"Очередь {p+1}"
+                put(base+k, f"A{base+k}", f"{who}: {label}")
             if exposure_mode:
                 for offset,label in ((5,"начислено в стоимость разработки"),(6,"оплачено в стоимость разработки"),
                                      (7,"операционная аренда: оплачено"),(8,"операционная аренда: начислено")):
@@ -860,7 +868,7 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
             cash = f'IF(AND({col}3>=$L$10,{col}3<=$L$11),SUMIF($A${actual_first}:$A${actual_end},{col}3,$B${actual_first}:$B${actual_end}),{cash})'
         put(6, f"{col}6", formula=cash, style=styles["amount"])
         put(21, f"{matrix}21", formula=f'{col}3', style=styles["date"])
-    put(7, "A7", "Неопределённые интервалы до ввода")
+    put(7, "A7", "Неопределённые интервалы аренды" if exposure_mode else "Неопределённые интервалы до ввода")
     put(6, "B6", formula='IF(OR($B$8="Не применяется",$I$14="Собственность"),"Не применяется",IF(AND(F16="Ручной график",F17=1),"По заданному графику","Плановое начисление; сроки оплаты — по договору"))')
     # Explicit semantic input map: secondary strategy sheets share contract
     # terms, but never another strategy's shares, commissioning or exit dates.

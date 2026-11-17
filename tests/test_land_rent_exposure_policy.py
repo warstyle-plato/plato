@@ -335,6 +335,11 @@ def test_shared_strategy_terms_preserve_blank_vs_explicit_zero():
             exposure_formulas={'housing':{'share':'1','commissioning':'DATE(2027,2,1)',
                 'lease_exit':'EDATE({commissioning},$N$15)'}},master_terms_sheet=master,layout=layout)
         WorksheetReader(ws,io.BytesIO(xml),[],False,False).bind_all();layouts.append(layout)
+        assert ws['A15'].value=='Аренда долей до; граница исключается'
+        assert ws['A17'].value=='Начисление по сроку аренды полное'
+        header=layout['exposure_rows']['housing']['metadata']-1
+        assert ws[f'C{header}'].value=='Ввод объекта'
+        assert ws[f'D{header}'].value=='Аренда доли до'
     target=next(cell.coordinate for row in book['Terms'] for cell in row if cell.value=='Кадастровая стоимость после смены ВРИ, млн ₽')
     target='B'+''.join(c for c in target if c.isdigit())
     ev=Evaluator(book)
