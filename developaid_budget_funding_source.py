@@ -902,7 +902,7 @@ def _cell(cell, coordinate):
     return {'cell': coordinate, **ahr._raw(cell)}
 
 
-def _finance(raw):
+def _finance(raw, meta=None):
     from openpyxl.utils import get_column_letter
     with _book(raw) as book:
         sheet = _sheet(book, 'cf_1_new')
@@ -917,7 +917,8 @@ def _finance(raw):
                 break
         if columns is None:
             raise SourceProblem('finance_columns_missing')
-        units = _header(sheet, header)
+        import developaid_finance_units as finance_units
+        units = finance_units.resolve(_header(sheet, header), meta, hashlib.sha256(raw).hexdigest())
         items, codes = [], set()
         for index, cells in enumerate(sheet.iter_rows(min_row=header+1,
                 max_col=max(2, *columns.values())+1), header+1):
@@ -1138,7 +1139,7 @@ def capture(project, cut, *, runtime):
     eligibility = ('source_date_unknown' if version is None else
                    'source_after_cut' if version > day else 'eligible_version')
     try:
-        result['finance'] = {**_finance(fm), 'source_temporal_state': eligibility,
+        result['finance'] = {**_finance(fm, meta), 'source_temporal_state': eligibility,
             'amounts_at_cut': None, 'historical_financial_acceptance': False}
         result['bank'] = _bank(rss, day) if rss is not None else {'state': 'source_missing_at_cut'}
     except _WorksheetSizeProblem as exc:

@@ -197,7 +197,10 @@ def render(model, *, show_tiles=True):
     out.append(f'<p>Источник: {esc(source.get("filename") or "сохранённая финмодель")}, '
                f'{esc(source.get("sheet") or "cf_1_new")}; {esc(when)}. Факт относится к этой версии книги.</p>')
     if source.get('unit'):
-        out.append(f'<p>Единицы в шапке: {esc(source["unit"])}; плашки приведены к рублям.</p>')
+        label = ('Единицы подтверждены владельцем' if
+                 (source.get('unit_evidence') or {}).get('basis') == 'owner_declaration'
+                 else 'Единицы в шапке')
+        out.append(f'<p>{label}: {esc(source["unit"])}; плашки приведены к рублям.</p>')
     if source.get('sha256'):
         out.append(f'<details><summary>Отпечаток источника</summary><p style="overflow-wrap:anywhere">{esc(source["sha256"])}</p></details>')
     out.append(f'<p>{esc(model.get("bank_note") or BANK_NOTE)}</p>')

@@ -291,8 +291,8 @@ def test_source_files_are_not_written_and_only_fixed_reader_paths_are_opened(sou
 
 def test_changed_source_is_rejected_across_the_complete_capture(source, monkeypatch):
     original = proof._finance
-    def change(raw):
-        result = original(raw)
+    def change(raw, meta=None):
+        result = original(raw, meta)
         monitor.replace_finance_baseline(PROJECT, fm_bytes(lambda sheet: setattr(sheet["I11"], "value", 1)), "2026-11-01")
         return result
     monkeypatch.setattr(proof, "_finance", change)
