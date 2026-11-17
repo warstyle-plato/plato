@@ -139,6 +139,7 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
                 month_formulas: list[str] | None = None,
                 hostvri_amount_formula: str | None = None,
                 phase_rve_formulas: list[str] | None = None,
+                phase_calendars: list[dict[str, Any]] | None = None,
                 layout: dict[str, Any] | None = None) -> bytes:
     """Editable Actual/Actual accrual and separately reconciled payment dates.
 
@@ -188,8 +189,16 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
                 raise ValueError("Аренда ЗУ: диапазон покрытия факта не совпадает с исходными месяцами")
     phase_land = result.get("phase_land") or []
     phased = len(phase_land) > 1
-    if phased and (phase_rve_formulas is None or len(phase_rve_formulas) != len(phase_land)):
-        raise ValueError("Аренда ЗУ: в книгу не переданы даты ввода всех очередей")
+    phase_refs = list(phase_rve_formulas or [])
+    if phased:
+        for p in range(len(phase_refs), len(phase_land)):
+            calendar = (phase_calendars or [])[p] if p < len(phase_calendars or []) else {}
+            numbers = [_numeric(calendar.get(key)) for key in
+                       ("start_offset_months", "ird_months", "construction_months")]
+            if any(value is None or value < 0 or value != int(value) for value in numbers):
+                raise ValueError("Аренда ЗУ: в книгу не переданы даты ввода всех очередей")
+        if len(phase_refs) > len(phase_land):
+            raise ValueError("Аренда ЗУ: даты ввода не соответствуют очередям")
     root = ET.Element(_tag("worksheet"))
     views = ET.SubElement(root, _tag("sheetViews"))
     view = ET.SubElement(views, _tag("sheetView"), {"workbookViewId": "0"})
@@ -233,7 +242,9 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
     if isinstance(source, dict):
         source = source.get("label") or source.get("text") or str(source)
     put(1, "A1", BLOCK_TITLE)
-    put(2, "A2", "Аренда земли: годовой расчёт и план оплаты — отдельно от платы за ВРИ. Жёлтые ячейки редактируются. Начисление — расчётная конвенция; сроки оплаты — по договору. После ввода аренда не считается прекращённой.")
+    put(2, "A2", "Аренда земли: годовой расчёт и план оплаты — отдельно от платы за ВРИ. Жёлтые ячейки редактируются. Начисление — расчётная конвенция; сроки оплаты — по договору. " +
+        ("Земля выходит из инвестиционного расчёта пропорционально вводу очередей; это не подтверждение прекращения договора." if phased else
+         "После ввода аренда не считается прекращённой."))
     for n, label in ((3, "Месяц"), (4, "Исходное начисление, млн ₽"),
                      (5, "Неполные интервалы"), (6, "Денежный поток с фактом, млн ₽" if history_mode else "Плановый платёж, млн ₽"),
                      (13, "Основание ставок"), (14, "Начало расчёта"), (15, "Ввод; граница исключается"),
@@ -265,8 +276,8 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
     vat = result.get("vat_treatment") or inputs.get("land_rent_vat_treatment")
     put(18, "I18", {"taxable": "Облагается НДС", "public_exempt": "Без НДС: публичный собственник"}.get(vat, "Не уточнён"), style=styles["input_text"])
     is_mo = mode == "mo_housing_new_2026"
-    extra = ((8, "После ввода", "Отдельный режим; здесь не рассчитан", "amount"),
-             (9, "Полнота после ввода", "Обязательство не считается прекращённым", "amount"),
+    extra = ((8, "После ввода", "Выход долей по датам очередей" if phased else "Отдельный режим; здесь не рассчитан", "amount"),
+             (9, "Основание границы расчёта" if phased else "Полнота после ввода", "Допущение инвестиционного расчёта" if phased else "Обязательство не считается прекращённым", "amount"),
              (10, "Подтверждённое прекращение", _serial(inputs.get("land_rent_termination_date")) if _serial(inputs.get("land_rent_termination_date")) is not None else inputs.get("land_rent_termination_date"), "input_date"),
              (12, "Первый год целиком в ВРИ подтверждён", "Да" if inputs.get("land_rent_first_year_confirmed") is True else "Нет", "input_text"),
              (13, "База", {"annual_amount":"Годовая сумма договора", "cadastral_percent":"Кадастровая стоимость"}.get(base_kind,"Не распознана"), "input_text"),
@@ -309,7 +320,7 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
     put(11, "E11", "Горизонт расчёта")
     put(11, "F11", formula=project_end_formula or rve_formula, style=styles["date"])
     put(17, "E17", "Ручной график сходится")
-    put(18, "E18", "Расчёт после ввода полный")
+    put(18, "E18", "Выход всех долей учтён" if phased else "Расчёт после ввода полный")
     put(19, "E19", "Исходная таблица без ошибок")
     pre_first, pre_end = FIRST_YEAR_ROW, FIRST_YEAR_ROW + YEARS - 1
     pay_first, pay_end = pre_end + 4, pre_end + 503
@@ -493,7 +504,9 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
     put(12, "N12", formula=live_years)
     raw_complete = f'AND({valid},{coverage},$F$19="Да",$N$12=1,SUM(D7:{last_col}7)=0)'
     put(17, "B17", formula=f'IF(OR($B$8="Не применяется",$I$14="Собственность"),1,IF({raw_complete},1,0))')
-    put(18, "F18", formula=f'IF(OR(OR($B$8="Не применяется",$I$14="Собственность"),{final}<=MAX($B$15,$B$10)),1,0)')
+    after_coverage = (f'COUNT($D${phase_first}:$D${phase_end})={phase_count}' if phased else
+                      f'{final}<=MAX($B$15,$B$10)')
+    put(18, "F18", formula=f'IF(OR(OR($B$8="Не применяется",$I$14="Собственность"),{after_coverage}),1,0)')
     put(18, "B18", formula=f'IF(AND(B17=1,F18=1),SUM(D4:{last_col}4),"Не рассчитано полностью")', style=styles["amount"])
     put(19, "B19", formula=f"SUM(D6:{last_col}6)", style=styles["amount"])
     put(17, "K17", "Начислено по ставкам: известная часть, млн ₽")
@@ -598,6 +611,13 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
                     "Аренда доли до — вручную", "Основание доли"]
     for c, label in enumerate(headers, 1):
         put(phase_first-1, f"{_col(c)}{phase_first-1}", label)
+    if phased and len(phase_refs) < phase_count:
+        # v4 has four financing blocks, but the common-parcel rent keeps all
+        # five source queues and their independent editable dates. Only cash
+        # attribution is folded into the fourth CAPEX/CF, never the dates.
+        for col, label in (("K", "Сдвиг старта очереди, мес."),
+                           ("L", "До разрешения, мес."), ("M", "Строительство, мес.")):
+            put(phase_first-1, f"{col}{phase_first-1}", label)
     if phased:
         # Граница всего расчёта — последняя фактическая дата выхода доли
         # (колонка D, как rve движка): ручная дата последней очереди может
@@ -618,10 +638,23 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
                                      f'{float(phase_land[p]["share"])!r})'), style=styles["amount"])
         else:
             put(r, f"B{r}", formula="1", style=styles["amount"])  # весь участок — одна доля, не ввод
-        put(r, f"C{r}", formula=phase_rve_formulas[p] if phased else "$B$15", style=styles["date"])
+        if phased and p >= len(phase_refs):
+            calendar = phase_calendars[p]
+            put(r, f"K{r}", int(calendar["start_offset_months"]), style=styles["input"])
+            put(r, f"L{r}", formula=calendar.get("ird_formula"),
+                value=None if calendar.get("ird_formula") else int(calendar["ird_months"]),
+                style=styles["input"])
+            put(r, f"M{r}", int(calendar["construction_months"]), style=styles["input"])
+            commissioning = f'EDATE(EDATE(EDATE({project_start_formula},K{r}),L{r}),M{r})'
+        else:
+            commissioning = phase_refs[p] if phased else "$B$15"
+        put(r, f"C{r}", formula=commissioning, style=styles["date"])
         # The queue commissioned last holds its land up to the common cutoff
         # (developaid_land_rent.phase_release); a rent-only date in I wins.
-        put(r, f"D{r}", formula=(f'IF(COUNT(I{r})=1,I{r},IF(C{r}=MAX($C${phase_first}:$C${phase_end}),{rve_formula},MIN(C{r},{rve_formula})))'
+        common_rve = (f'MAX({rve_formula},$C${phase_first}:$C${phase_end})'
+                      if phased and len(phase_refs) < phase_count and result.get("housing_applicable", True)
+                      else rve_formula)
+        put(r, f"D{r}", formula=(f'IF(COUNT(I{r})=1,I{r},IF(C{r}=MAX($C${phase_first}:$C${phase_end}),{common_rve},MIN(C{r},{common_rve})))'
                                  if phased else "$B$15"), style=styles["date"])
         put(r, f"G{r}", formula="IFERROR(" + g_phase(cutoff, r) + ",0)", style=styles["amount"])
         if phased:
@@ -712,7 +745,8 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
         put(4, f"{col}4", formula=f'SUM({matrix}{pre_first}:{matrix}{pre_end})', style=styles["amount"])
         active = f'AND({col}3<$B$15,EDATE({col}3,1)>$B$14)'
         put(7, f"{col}7", formula=f'IF(OR($B$8="Не применяется",$I$14="Собственность"),0,IF(AND({active},OR({valid}=0,$N$12=0)),1,COUNTIF({matrix}{pre_first}:{matrix}{pre_end},"Не рассчитано")))')
-        unknown = f'{col}7+IF(AND(AND($B$8<>"Не применяется",$I$14<>"Собственность"),MAX(0,MIN(EDATE({col}3,1),{final})-MAX({col}3,$B$15,$B$10))>0),1,0)'
+        unknown = (f'{col}7' if phased else
+                   f'{col}7+IF(AND(AND($B$8<>"Не применяется",$I$14<>"Собственность"),MAX(0,MIN(EDATE({col}3,1),{final})-MAX({col}3,$B$15,$B$10))>0),1,0)')
         if history_mode == "legacy_combined":
             unknown = f'IF(AND({col}3<$L$9,EDATE({col}3,1)>$B$14),1,{unknown})'
         put(5, f"{col}5", formula=unknown)
@@ -745,7 +779,9 @@ def apply(content: bytes, inputs: dict[str, Any], result: dict[str, Any], *,
           project_start_formula: str, rve_formula: str,
           phase_shares: list[float], project_end_formula: str | None = None,
           hostvri_amount_formula: str | None = None,
-          phase_rve_formulas: list[str] | None = None) -> bytes:
+          phase_rve_formulas: list[str] | None = None,
+          phase_calendars: list[dict[str, Any]] | None = None,
+          phase_capex_groups: list[list[int]] | None = None) -> bytes:
     """Add one project schedule and distribute it once across active phases.
 
     With several queues on the parcel each CAPEX row takes its queue's own
@@ -755,8 +791,15 @@ def apply(content: bytes, inputs: dict[str, Any], result: dict[str, Any], *,
     text in the rent row; known partial slices still enter the existing
     numeric CAPEX/CF totals.
     """
-    if len(phase_shares) > 4 or any(not math.isfinite(v) or v < 0 for v in phase_shares) or not math.isclose(sum(phase_shares), 1.0, abs_tol=1e-9):
+    if (any(isinstance(v, bool) or not isinstance(v, (int,float)) or not math.isfinite(v) or v < 0 for v in phase_shares)
+            or not math.isclose(sum(phase_shares), 1.0, abs_tol=1e-9)):
         raise ValueError("Аренда ЗУ: доли очередей не образуют единый проектный поток")
+    groups = phase_capex_groups if phase_capex_groups is not None else [[p] for p in range(len(phase_shares))]
+    flat = [p for group in groups for p in group]
+    if (len(groups) > len(CAPEX_ROWS) or any(not group for group in groups)
+            or any(type(p) is not int for p in flat)
+            or sorted(flat) != list(range(len(phase_shares)))):
+        raise ValueError("Аренда ЗУ: очереди должны попасть в CAPEX ровно один раз")
     with zipfile.ZipFile(io.BytesIO(content)) as original:
         parts = {name: original.read(name) for name in original.namelist()}
     if SHEET_PATH in parts:
@@ -766,10 +809,11 @@ def apply(content: bytes, inputs: dict[str, Any], result: dict[str, Any], *,
     layout: dict[str, Any] = {}
     parts[SHEET_PATH] = build_sheet(inputs, result, styles,
         project_start_formula=project_start_formula, rve_formula=rve_formula, project_end_formula=project_end_formula,
-        hostvri_amount_formula=hostvri_amount_formula, phase_rve_formulas=phase_rve_formulas, layout=layout)
+        hostvri_amount_formula=hostvri_amount_formula, phase_rve_formulas=phase_rve_formulas,
+        phase_calendars=phase_calendars, layout=layout)
     phase_rows = layout.get("phase_cash_rows") or []
-    if phase_rows and len(phase_rows) > len(CAPEX_ROWS):
-        raise ValueError("Аренда ЗУ: очередей больше, чем строк CAPEX")
+    if phase_rows and len(phase_rows) != len(phase_shares):
+        raise ValueError("Аренда ЗУ: строки оплаты не соответствуют долям очередей")
     rels = ET.fromstring(parts["xl/_rels/workbook.xml.rels"])
     rid_to_path = {r.get("Id"): r.get("Target", "").lstrip("/") for r in rels}
     wb = ET.fromstring(parts["xl/workbook.xml"])
@@ -788,16 +832,19 @@ def apply(content: bytes, inputs: dict[str, Any], result: dict[str, Any], *,
     capex = ET.fromstring(parts[paths["CAPEX"]])
     data = capex.find(_tag("sheetData"))
     for phase, row_number in enumerate(CAPEX_ROWS):
-        share = phase_shares[phase] if phase < len(phase_shares) else 0.0
+        group = groups[phase] if phase < len(groups) else []
+        share = sum(phase_shares[p] for p in group)
         if phase_rows:
-            share = 1 if phase < len(phase_rows) else 0
-        own = f"'{SHEET}'!{{col}}{phase_rows[phase]}" if phase < len(phase_rows) else f"'{SHEET}'!{{col}}6*{share}"
+            share = 1 if group else 0
+        own = ("SUM(" + ",".join(f"'{SHEET}'!{{col}}{phase_rows[p]}" for p in group) + ")"
+               if phase_rows and group else f"'{SHEET}'!{{col}}6*{share}")
         row = data.find(f"{_tag('row')}[@r='{row_number}']")
         if row is not None and len(row):
             raise ValueError(f"Аренда ЗУ: строка CAPEX {row_number} уже занята")
         if row is None:
             row = ET.SubElement(data, _tag("row"), {"r": str(row_number)})
-        _cell(row, f"A{row_number}", f"Аренда ЗУ · очередь {phase+1}: план оплаты; неизвестная часть отдельно")
+        label = ", ".join(str(p+1) for p in group) if group else str(phase+1)
+        _cell(row, f"A{row_number}", f"Аренда ЗУ · {'очереди' if len(group)>1 else 'очередь'} {label}: план оплаты; неизвестная часть отдельно")
         _cell(row, f"B{row_number}", formula=(f'IF({share}=0,0,IF(\'{SHEET}\'!$B$17=1,SUM(D{row_number}:GA{row_number}),'
             f'IF(SUM(D{row_number}:GA{row_number})<>0,SUM(D{row_number}:GA{row_number}),"Не рассчитано")))'), style=styles["amount"])
         _cell(row, f"C{row_number}", "млн ₽")

@@ -364,9 +364,14 @@ def build(inputs: dict[str, Any], project_start: date, rve: date,
     x = inputs or {}
     end = project_end or rve
     derived_rve = rve
-    release = [(float(p["share"]), _date(p["rve"])) for p in (phase_land or [])]
-    phased = len(release) > 1
-    if phased:
+    release = [(_number(p.get("share")), _date(p.get("rve")))
+               for p in (phase_land or []) if isinstance(p, dict)]
+    phased = len(phase_land or []) > 1
+    valid_release = (len(release) == len(phase_land or [])
+        and all(share is not None and share >= 0 and day is not None and 1900 <= day.year <= 2200
+                for share, day in release)
+        and math.isclose(sum(share for share, _ in release if share is not None), 1.0, abs_tol=1e-9))
+    if phased and valid_release:
         rve = max(r for _, r in release)
         end = max(end, rve)
     raw_manual_cutoff = None if phased else x.get("land_rent_manual_cutoff")
@@ -408,6 +413,19 @@ def build(inputs: dict[str, Any], project_start: date, rve: date,
                    total=0.0, construction_total=0.0, cash_schedule_estimated=False,
                    source="Аренда не применяется: выбранное право собственности" if mode == "unspecified" else "По выбранному пользователем режиму аренда не применяется", financial_missing_codes=[])
         return out
+    if phased and not valid_release:
+        missing.append("Для аренды нужны даты выхода всех очередей и неотрицательные доли участка в сумме 100%.")
+        out["post_rve_unknown"] = end > max(rve, project_start)
+        out["post_rve_policy"] = "unmodelled"
+        return out
+    if phased:
+        # Missing contract/base/rate inputs do not erase the parcel geometry.
+        # The editable book still needs every exit date when the owner fills
+        # those inputs later; an empty known amount is not a missing queue.
+        out["phase_land"] = [{"share": share, "rve": day.isoformat(),
+                              "accrual_total": 0.0, "cash_total": 0.0}
+                             for share, day in release]
+        out["phase_shares"] = [share for share, _ in release]
     if mode == "unspecified":
         missing.append("Для арендуемой земли не заданы кадастровая база, дата и годовые ставки аренды.")
         return out
@@ -676,7 +694,18 @@ def build(inputs: dict[str, Any], project_start: date, rve: date,
     after_unknown = False
     after_start = max(rve, project_start, anchor)
     after_end = min(end, termination) if termination else end
-    if after_start < after_end:
+    # The owner's phased investment scenario already releases every part of
+    # the parcel on its own exit date. Residual sales after the last release
+    # do not create another, unmodelled parcel. This is a modelling boundary,
+    # not evidence that the lease contract legally ends on commissioning.
+    phased_release_complete = phased and valid_release
+    out["post_rve_policy"] = "proportional_phase_release" if phased_release_complete else "unmodelled"
+    if phased_release_complete:
+        out["scope"] = "До выхода каждой доли участка из инвестиционного расчёта по датам очередей"
+        out["assumptions"].append(
+            "Аренда уменьшается пропорционально долям очередей по мере их ввода; после выхода последней доли "
+            "аренда в инвестиционном расчёте равна нулю. Это допущение расчёта, а не подтверждение прекращения договора.")
+    if after_start < after_end and not phased_release_complete:
         after_unknown = True
         out["notes"].append("Аренда после ввода требует отдельного расчёта и не считается прекращённой по одной дате ввода.")
     out["post_rve_unknown"] = after_unknown

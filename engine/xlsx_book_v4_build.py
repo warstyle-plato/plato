@@ -2523,11 +2523,11 @@ def _build_project_workbook(
                 x, _engine_op["project_start"], _engine_op["rve"], _engine_op["end"])
         _rent_shares = list((finance_hints or {}).get("land_rent_phase_shares") or
                             ([1.0] + [0.0] * (count - 1)))
-        _rent_start_refs = [f'IF(\'Параметры модели\'!$B${88+k}="Да",\'CF_{k+1}\'!$B$6,1000000)'
-                            for k in range(count)]
         _rent_rve_refs = [f'IF(\'Параметры модели\'!$B${88+k}="Да",\'CF_{k+1}\'!$B$8,0)'
                           for k in range(count)]
-        _rent_start_formula = "MIN(" + ",".join(_rent_start_refs) + ")"
+        # The common parcel is leased from the master's project start, even
+        # if none of the queues has started yet (engine/phases.py).
+        _rent_start_formula = "'Параметры модели'!$B$8"
         _rent_housing_rve = "MAX(" + ",".join(_rent_rve_refs) + ")"
         _rent_object_refs = []
         for _rent_layout in _v4_layouts():
@@ -2543,12 +2543,34 @@ def _build_project_workbook(
         _rent_end = _v4_excel_serial(_rent.get("project_end")) or 0
         _rent_meta = copy.deepcopy(_rent)
         _rent_meta["workbook_supported"] = False
+        _rent_calendars = [{} for _ in (_rent.get("phase_land") or [])]
+        # The fifth source queue has no CF sheet in v4. Its editable lease
+        # calendar must reproduce the engine's actual commissioning date,
+        # not silently reconstruct a different or missing one.
+        for i in range(count, len(_rent.get("phase_land") or [])):
+            if i >= len(phases):
+                raise ValueError("Аренда ЗУ: не передан календарь всех очередей")
+            raw = phases[i] or {}
+            offset, duration = raw.get("start_offset_months"), raw.get("construction_months")
+            cfg = _rent_calendars[i] = {
+                "start_offset_months": int(i * int(p.get("phase_gap_months", 12)) if offset in (None, "") else offset),
+                "ird_months": max(IRD_MONTHS_MIN, int(n(x, "ird_months", 18))),
+                "ird_formula": "'Параметры модели'!$E$88",
+                "construction_months": int(n(x, "construction_months", 24) if duration in (None, "") else duration),
+            }
+            commissioning = add_months(add_months(add_months(d(x["project_start"]),
+                cfg["start_offset_months"]), cfg["ird_months"]), cfg["construction_months"])
+            if commissioning.isoformat() != _rent["phase_land"][i].get("commissioning"):
+                raise ValueError("Аренда ЗУ: календарь очереди не совпадает с датой ввода движка")
         content = v4_land_rent.apply(
             content, x, _rent, project_start_formula=_rent_start_formula,
             rve_formula=_rent_rve_formula,
             project_end_formula=f"MAX({_rent_end},EDATE('Аренда ЗУ'!$B$15,1))",
             phase_shares=_rent_shares, hostvri_amount_formula="'Параметры модели'!$B$16",
-            phase_rve_formulas=_rent_rve_refs if len(_rent.get("phase_land") or []) > 1 else None)
+            phase_rve_formulas=_rent_rve_refs if len(_rent.get("phase_land") or []) > 1 else None,
+            phase_calendars=_rent_calendars,
+            phase_capex_groups=([[i] for i in range(count-1)] + [list(range(count-1, len(_rent_shares)))])
+                if len(_rent_shares) > count else None)
         _rent_meta["workbook_supported"] = True
     except Exception as exc:
         _rent_meta["workbook_supported"] = False

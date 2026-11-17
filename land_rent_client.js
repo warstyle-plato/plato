@@ -554,7 +554,7 @@ function renderLandRentEditor(){
    phases.addEventListener('focusout',()=>setTimeout(()=>{if(!phases.contains(document.activeElement))phases.innerHTML=landRentPhaseHtml(landRentShownResult())},0));
   }else landRentDateField(dates,'land_rent_manual_cutoff','Учитывать аренду до',landRentDateDefaults(landRentResult()).land_rent_manual_cutoff,'По умолчанию — дата ввода из экономики; можно изменить. Это граница расчёта, а не прекращение договора.');
   landRentField(dates,'land_rent_termination_date','Подтверждённая дата прекращения аренды (если есть)','date');
-  note(scope,'После ввода нужен отдельный расчёт аренды. Дата ввода сама по себе не прекращает обязательство.');
+  note(scope,landRentPhased()?'В инвестиционном расчёте аренда уменьшается по долям введённых очередей и заканчивается с выходом последней доли. Это допущение расчёта, а не подтверждение прекращения договора.':'После ввода нужен отдельный расчёт аренды. Дата ввода сама по себе не прекращает обязательство.');
   note(scope,LAND_RENT_SPEC.convention);
   const periods=document.createElement('ul');periods.className='lr-periods';scope.appendChild(periods);
  }
