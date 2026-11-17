@@ -6,6 +6,7 @@ general cross-source mapping: all work semantics and explicit weights survive.
 from __future__ import annotations
 
 import copy
+import datetime as dt
 import io
 import math
 import re
@@ -152,9 +153,38 @@ def _date_cells(source):
 def verified_transition(project, target_sha, *, expected_parent_sha=None):
     """Shared source-only proof; no readiness weights or fact admission here."""
     current = _source_call(monitor._working_baseline_state, project)
+    if (not isinstance(current, dict) or not isinstance(current.get('versions'), list)
+            or len(current['versions']) > versions.MAX_VERSIONS
+            or type(current.get('revision')) is not int or current['revision'] < 2
+            or current.get('baseline_scope') != 'remaining_work'
+            or not isinstance(current.get('source_sha256'), str)
+            or not versions._SHA.fullmatch(current['source_sha256'])):
+        raise DateCarryProblem('lineage')
     events = current['versions']
+    revisions = []
+    for event in events:
+        if (not isinstance(event, dict) or type(event.get('revision')) is not int
+                or event['revision'] < 1):
+            raise DateCarryProblem('lineage')
+        revisions.append(event['revision'])
+    if revisions != list(range(1, len(events)+1)):
+        raise DateCarryProblem('lineage')
     child = next((e for e in events if e['revision'] == current['revision']), None)
     parent = next((e for e in events if child and e['revision'] == child['revision']-1), None)
+    for event in (parent, child):
+        if (event is None or event.get('baseline_scope') != 'remaining_work'
+                or any(not isinstance(event.get(field), str) or not versions._SHA.fullmatch(event[field])
+                       for field in ('source_sha256', 'previous_source_sha256'))
+                or any(not isinstance(event.get(field), str)
+                       for field in ('effective_from', 'approved_at'))):
+            raise DateCarryProblem('lineage')
+        try:
+            versions._day(event['effective_from'])
+            approved = dt.datetime.fromisoformat(event['approved_at'])
+        except ValueError:
+            raise DateCarryProblem('lineage') from None
+        if approved.utcoffset() != dt.timedelta(0):
+            raise DateCarryProblem('lineage')
     parent_sha = parent['source_sha256'] if parent else ''
     if (not child or not parent or target_sha != current['source_sha256']
             or child['source_sha256'] != target_sha or child['previous_source_sha256'] != parent_sha
@@ -224,7 +254,6 @@ def verified_transition(project, target_sha, *, expected_parent_sha=None):
 
 def parent_facts(project, target_sha, cut):
     """Authorize only the immediate parent's already available dated facts."""
-    import datetime as dt
     parent, child, provenance = verified_transition(project, target_sha)
     day = versions._day(cut)
     if (versions._day(provenance['parent_effective_from']) > day
