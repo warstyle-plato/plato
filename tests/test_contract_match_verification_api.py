@@ -52,6 +52,12 @@ def test_full_native_register_and_key_order_are_equal_and_original_cache_scopes_
                                             ('A-12',None,0),('B-24',dt.date(2026,1,1),0)),10):
         for col,value in ((2,'Подрядчик ООО'),(3,number),(4,day),(6,'Аванс'),(9,dt.date(2026,10,5)),(10,amount)):payments.cell(row,col,value)
     workbook.save(folder/'2026-11-01.xlsx');workbook.close()
+    reports=monitor._project_dir(PROJECT)/'daily';reports.mkdir()
+    report={'date':CUT,'parsed':{'contractors':[],'works':[
+        {'contractor':'Подрядчик ООО (бетонирование)',
+         'line':f'Корпус 1 по договору № A-12 бетонирование участок {index}'}
+        for index in range(3)]}}
+    (reports/(CUT+'.json')).write_text(json.dumps(report,ensure_ascii=False))
     expected=core._monitor_cumulative_execute('view',{'project':PROJECT,'cut':CUT})
     execute=core._monitor_cumulative_execute
     def observed(*args):
@@ -77,6 +83,8 @@ def test_full_native_register_and_key_order_are_equal_and_original_cache_scopes_
     assert sum(item['verified'] for item in proof['hits'].values())>0
     assert proof['entered_scopes']==proof['exited_scopes']>0
     assert all(item['attempted']==item['verified'] for item in proof['hits'].values())
+    assert set(proof['hits'])==set(verify.KINDS)
+    assert all(item['verified']>0 for item in proof['hits'].values())
     meta=jobs.Store(root/'monitor'/'.cumulative_jobs')._meta('a'*32)
     assert meta['compress_result'] is True and meta['result_limit_bytes']==jobs.MAX_EXTENDED_RESULT_BYTES
 
@@ -146,6 +154,27 @@ def test_no_hits_is_not_a_successful_verification_proof(api,monkeypatch):
     response=poll(client,'a'*32)
     assert response.status_code==500 and 'diagnostics' not in response.json()
     assert not jobs.Store(root/'monitor'/'.cumulative_jobs')._path('a'*32,'result').exists()
+
+
+@pytest.mark.parametrize('failed',[False,True])
+def test_v1_verify_ticket_is_immutable_and_cannot_be_readmitted_as_v2(api,monkeypatch,failed):
+    client,root=api;store=jobs.Store(root/'monitor'/'.cumulative_jobs')
+    family='monitor-cumulative-v1:contracts';owner=jobs.owner_binding(KEY,'',family)
+    payload={'operation':'view','click':'a'*32,'project':PROJECT,'cut':CUT,
+             'diagnostics':stages.PURPOSE,'matching_cache':'contract-pure-matching-hit-verify-v1'}
+    def legacy():
+        if failed:raise ValueError('synthetic legacy failure')
+        return {'ok':True,'register':{'rows':[]},'diagnostics':{
+            'matching_cache_verification':{'purpose':'contract-pure-matching-hit-verify-v1'}}}
+    store.start(owner,family,payload,legacy,'a'*32,result_limit_bytes=jobs.MAX_EXTENDED_RESULT_BYTES)
+    expected=poll(client,'a'*32);assert expected.status_code==(500 if failed else 200)
+    before=store._meta('a'*32)
+    monkeypatch.setattr(core,'_monitor_cumulative_execute',lambda *a:pytest.fail('Legacy VERIFY rebuilt'))
+    for flags in ({},{'profile_stages':True},{'profile_stages':True,'profile_matching_cache_off':True},
+                  {'profile_stages':True,'profile_matching_verify':True}):
+        assert admit(client,'a'*32,**flags).status_code==409
+    assert poll(client,'a'*32).json()==expected.json()
+    assert store._meta('a'*32)==before
 
 
 def test_normal_and_verify_parallel_workers_keep_cache_scopes_and_counts_isolated(api,monkeypatch):

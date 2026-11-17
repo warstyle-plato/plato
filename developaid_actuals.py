@@ -1501,6 +1501,14 @@ def _read_payment_rows(path: str | Path) -> list[dict[str, Any]]:
 
         if not any(cell(field) not in (None, "") for field in _PAYMENTS_COLUMNS):
             continue
+        # The work-name lookup is prefilled below the payment list. Its
+        # numeric zero, with every payment field empty, is an unused template
+        # row. A zero in the amount column is still a payment observation.
+        article = cell("article_name")
+        if (type(article) in (int, float) and article == 0
+                and all(cell(field) in (None, "") for field in _PAYMENTS_COLUMNS
+                        if field != "article_name")):
+            continue
         source = str(cell("source") or "").strip()
         item = {
             "contractor": str(cell("contractor") or "").strip(),

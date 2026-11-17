@@ -77,6 +77,8 @@ def _party_identity(value: Any) -> str:
     return " ".join(re.findall(r"[0-9a-zа-я]+", _text(value)))
 
 
+@match_cache.mutable('party_parts', freeze=lambda pair: (tuple(pair[0]), pair[1]),
+                     fresh=lambda pair: (list(pair[0]), pair[1]))
 def _party_parts(value: Any) -> tuple[list[str], str]:
     """Comparison only: persisted source identities keep their original text."""
     words = _party_identity(_party_norm(value)).split()
@@ -94,6 +96,7 @@ def _same_party_exact(left: Any, right: Any) -> bool:
             and (not first_form or not second_form or first_form == second_form))
 
 
+@match_cache.mutable('work_words', freeze=frozenset, fresh=set)
 def _work_words(value: Any) -> set[str]:
     """Small inflection normalization for a source's work annotation."""
     result = set()
