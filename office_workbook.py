@@ -2401,7 +2401,7 @@ def _disclosure_sheet(book: _Book, current: str | None, path_blocks: dict, path_
         return
     blocks = path_blocks[current] + path_ddu[current]
     plan = book.sheet(DISCLOSURE_PLAN_SHEET, "ПЛАН РЕАЛИЗАЦИИ · ВЫБРАННЫЙ ПУТЬ",
-                      "Объёмы, цены и деньги читают формулы выбранной стратегии. Паузы — нулевые продажи; гостевые места не продаются.",
+                      "Расчётный план, не факт. Гостевые места не продаются.",
                       monthly=True, tab=SALE_TAB)
     rows = _Rows(book, plan, 5)
     r, money_refs, value_refs, source_notes = 5, [], [], []
@@ -2439,7 +2439,7 @@ def _disclosure_sheet(book: _Book, current: str | None, path_blocks: dict, path_
         rows.month(f"{pre}.revenue", "Оценка удержания — не деньги" if valuation else "Выручка", money, unit="млн ₽", fmt=live_num)
         rows.month(f"{pre}.price", "Цена периода, с НДС", f'IF({p("qty")}>0,{p("revenue")}*1000000/{p("qty")},{fallback})', unit=f"₽/{unit}" + ("/мес." if rental else ""), fmt="#,##0;[Red](#,##0);0", total=False)
         price_row = rows.r - 1
-        plan.row_dimensions[price_row].height = 90 if exit_flow else 32
+        plan.row_dimensions[price_row].height = 90 if exit_flow else 48
         for cell in plan[price_row][FIRST_COL-1:]:
             cell.alignment = Alignment(horizontal="right", vertical="top", wrap_text=True)
         # Real non-zero physical periods, including sales at a zero price.
