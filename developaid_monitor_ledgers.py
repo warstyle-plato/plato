@@ -20,6 +20,8 @@ import re
 import stat
 import tempfile
 import threading
+import gzip
+import zlib
 import unicodedata
 import zipfile
 import xml.etree.ElementTree as ET
@@ -48,8 +50,9 @@ SUPPORTED = {'.xlsx', '.xlsm', '.xls'}
 _UNCACHED_FORMULA = '=__uncached_formula__'
 _PARSE_CACHE = OrderedDict()
 _PARSE_CACHE_LOCK = threading.Lock()
-_PARSE_CACHE_ENTRIES = 2
+_PARSE_CACHE_ENTRIES = 16
 _PARSE_CACHE_BYTES = 4 * 1024 * 1024
+_PARSE_CACHE_TOTAL_BYTES = 8 * 1024 * 1024
 
 
 class _SheetRows(list):
@@ -1728,8 +1731,10 @@ def basis_metadata_current(snapshot: dict) -> bool:
 def _current_archive(data: bytes, digest: str, filename: str) -> dict:
     """Bounded process cache of parsed evidence, never original bytes or state.
 
-    The caller verifies the ZIP hash on every read, including cache hits. JSON
-    gives each consumer its own copy and bounds retained private data to 8 MiB.
+    The caller verifies the ZIP hash on every read, including cache hits.
+    Lossless compressed JSON keeps large/recent archive histories reusable;
+    decoded evidence remains within the parser's existing size limit, every
+    reader gets its own copy, and retained private bytes still total <=8 MiB.
     """
     key = (PARSER_SCHEMA, digest, filename)
     with _PARSE_CACHE_LOCK:
@@ -1737,15 +1742,27 @@ def _current_archive(data: bytes, digest: str, filename: str) -> dict:
         if cached is not None:
             _PARSE_CACHE.move_to_end(key)
     if cached is not None:
-        return json.loads(cached)
+        try:
+            decoded = gzip.decompress(cached)
+            if len(decoded) > MAX_PARSED_BYTES:
+                raise ValueError('parsed cache size limit')
+            return json.loads(decoded)
+        except (OSError, EOFError, ValueError, UnicodeError, zlib.error):
+            # A disposable cache never makes the verified original unusable.
+            with _PARSE_CACHE_LOCK:
+                if _PARSE_CACHE.get(key) is cached:
+                    _PARSE_CACHE.pop(key)
     parsed = parse_archive(data, filename)
     encoded = json.dumps(parsed, ensure_ascii=False, allow_nan=False).encode('utf-8')
-    if len(encoded) <= _PARSE_CACHE_BYTES:
+    packed = gzip.compress(encoded, compresslevel=3, mtime=0) if len(encoded) <= MAX_PARSED_BYTES else b''
+    if packed and len(packed) <= _PARSE_CACHE_BYTES:
         with _PARSE_CACHE_LOCK:
-            _PARSE_CACHE[key] = encoded
+            _PARSE_CACHE[key] = packed
             _PARSE_CACHE.move_to_end(key)
-            while len(_PARSE_CACHE) > _PARSE_CACHE_ENTRIES:
-                _PARSE_CACHE.popitem(last=False)
+            retained = sum(len(value) for value in _PARSE_CACHE.values())
+            while len(_PARSE_CACHE) > _PARSE_CACHE_ENTRIES or retained > _PARSE_CACHE_TOTAL_BYTES:
+                _, removed = _PARSE_CACHE.popitem(last=False)
+                retained -= len(removed)
     return parsed
 
 
