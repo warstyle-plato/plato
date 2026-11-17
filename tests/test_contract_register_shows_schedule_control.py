@@ -32,9 +32,20 @@ def _register():
     return {"rows": [dict(REGISTER_ROW), {"id": EMPTY, "contract": "Д-02", "physical_items": []}]}
 
 
+def assert_behind_with_scope(observed):
+    assert {key: observed[key] for key in BEHIND} == BEHIND
+    assert set(observed) == set(BEHIND) | {'coverage', 'forecast_scope', 'whole_contract_finish', 'data_gaps'}
+    coverage = observed['coverage']
+    assert (coverage['calculated'], coverage['source_works'], coverage['source_rows'], coverage['unknown']) == (3, 4, 6, 1)
+    assert coverage['source_known'] and coverage['partial']
+    assert coverage['calculation_start'] == '2026-02-01' and coverage['prior_periods'] == 1
+    assert observed['data_gaps']
+    assert observed['forecast_scope'] == 'matched_works' and observed['whole_contract_finish'] is None
+
+
 def test_the_row_carries_the_card_numbers_and_says_why_they_are_missing(card):  # noqa: F811
     rows = files.register_control(PROJECT, _register(), CUT)["rows"]
-    assert rows[0]["schedule_control"] == BEHIND
+    assert_behind_with_scope(rows[0]["schedule_control"])
     # Тот же итог, что в карточке договора: строка таблицы читает карточку.
     own = files.listing(PROJECT, CONTRACT, CUT, fact.acts(REGISTER_ROW))["control"]
     assert (own["total"]["lag_days"], own["total"]["percent"], own["forecast"]["finish"]) == (2, pytest.approx(-0.45), "2026-02-06")
@@ -57,7 +68,7 @@ def test_a_card_that_fails_keeps_the_register_and_names_the_failure(card, monkey
         return real(project, contract_id, *args)
     monkeypatch.setattr(files, "listing", listing)
     rows = files.register_control(PROJECT, _register(), CUT)["rows"]
-    assert rows[0]["schedule_control"] == BEHIND
+    assert_behind_with_scope(rows[0]["schedule_control"])
     assert rows[1]["schedule_control"] == {"documents": None, "note": (
         "Отчёт по графику договора не построен: документы карточки не прочитаны. Откройте карточку договора "
         "и обновите её.")}
@@ -70,7 +81,8 @@ def test_the_register_view_of_the_monitor_brings_the_schedule_control(card, monk
     monkeypatch.setattr(contracts, "build", lambda project, cut: _register())
     monkeypatch.setattr(links, "enrich", lambda project, register, cut: register)
     got = wrapper.core._monitor_cumulative_execute("view", {"project": PROJECT, "cut": CUT})
-    assert got["ok"] is True and got["register"]["rows"][0]["schedule_control"] == BEHIND
+    assert got["ok"] is True
+    assert_behind_with_scope(got["register"]["rows"][0]["schedule_control"])
 
 
 @pytest.mark.parametrize("width", [390, 1440])
@@ -91,8 +103,12 @@ def test_the_table_shows_lag_deviation_and_forecast_in_plain_words(card, width):
         row = page.locator(f'tr[data-contract-id="{CONTRACT}"]')
         # The short row: one chip with the lag, the deviation and the forecast in a few words.
         brief = row.locator(".contract-schedule")
-        expect(brief).to_have_text("отстаёт на 2 дняготовность 50 %, выполнение плана 55 %просрочено работ: 2"
-                                   "отставание неполное: 2 периода КС не вошли в фактпрогноз 06.02.2026, позже на 1 день")
+        for text in ['отстаёт на 2 дня', 'готовность сопоставленных работ 50 %, выполнение плана 55 %',
+                     'Сопоставлено работ по ГПР: 3 из 4.', 'Выполнение остальных работ не определено.',
+                     'Расчёт с 01.02.2026.', 'Периоды КС до этой даты учтены отдельно: 1.',
+                     'просрочено работ: 2', 'отставание неполное: 2 периода КС не вошли в факт',
+                     'Прогноз всего договора не определён.', 'Оценка сопоставленных работ: 06.02.2026.']:
+            expect(brief).to_contain_text(text)
         assert brief.get_attribute("data-label") == "График договора"
         head = page.locator(".contract-register thead th")
         expect(head).to_have_count(6)
@@ -107,15 +123,16 @@ def test_the_table_shows_lag_deviation_and_forecast_in_plain_words(card, width):
         expect(more.locator('#contractCardSummary')).to_contain_text('55 %')
         expect(more.locator('#contractCardSummary')).to_contain_text('Готовность сопоставленных работ: 50 %')
         expect(more.locator('#contractCardSummary [data-label="Прогноз окончания"]')).to_contain_text('06.02.2026')
-        expect(more.locator('#contractCardSummary [data-label="Прогноз окончания"]')).to_contain_text('позже срока на 1 день')
+        expect(more.locator('#contractCardSummary [data-label="Прогноз окончания"]')).to_contain_text('Не определён')
+        expect(more.locator('#contractCardSummary [data-label="Прогноз окончания"]')).to_contain_text('Оценка сопоставленных работ')
         expect(more.locator('#contractComparisonInfo')).to_contain_text('Не учтено периодов КС: 2')
         first=more.locator('[data-comparison-code="1.1"]')
         expect(first).to_contain_text('Отставание: 3 дня')
         more.locator('#contractComparisonMethodology > details > summary').click()
         expect(more.locator('.contract-comparison-money')).to_have_text(
-            'По сопоставленным работам: план 10 000 ₽, факт 5 500 ₽, отклонение −4 500 ₽.')
-        assert more.locator('#contractCardSummary [data-label="Прогноз окончания"] .risktext').evaluate(color)==first.locator('.contract-compare-status.risktext').evaluate(color)
-        assert more.locator('#contractCardSummary [data-label="Прогноз окончания"] .risktext').evaluate(color)!=row.evaluate(color)
+            'Денежный план и факт, включая материалы: план 10 000 ₽, факт 5 500 ₽, отклонение −4 500 ₽.')
+        assert more.locator('#contractCardSummary [data-label="Прогноз окончания"] .risktext').count()==0
+        assert first.locator('.contract-compare-status.risktext').evaluate(color)!=row.evaluate(color)
         assert red!=row.evaluate(color)
         page.locator('#contractDialogClose').click()
         other = page.locator(f'tr[data-contract-id="{OTHER}"]')

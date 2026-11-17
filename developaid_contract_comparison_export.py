@@ -150,6 +150,10 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
     note("Источник факта: " + source + (". Редакция: " + edition["title"] if edition.get("title") else ""))
     if edition.get("date"):
         append(["Дата редакции", _date(edition["date"])])
+    if edition.get('start'):
+        append(['Начало учёта оставшихся работ', _date(edition['start'])])
+        if (edition.get('start_source') or {}).get('title'):
+            note('Источник начала учёта: ' + _text(edition['start_source']['title']))
     for key, caption in [("estimate", "Расчёт договорной стоимости"), ("schedule", "ГПР")]:
         if edition.get(key):
             note(caption + ": " + _text(edition[key]))
@@ -160,6 +164,8 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
         note("Сопоставление не охватывает весь договор.")
     if comparison.get("preliminary"):
         note("Предварительно: у части актов использована дата составления.")
+    for gap in comparison.get('data_gaps') or []:
+        note(gap)
     for value in [comparison.get("reason"), comparison.get("source_note"), comparison.get("plan_assumption"),
                   (comparison.get("schedule_source") or {}).get("assumption"), comparison.get("assumption"),
                   comparison.get("weights")]:
@@ -176,7 +182,15 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
     if not rows:
         note("По выбранному фильтру работ нет." if comparison["lines"] else
              comparison.get("reason") or "Работы для сравнения не определены. Выполнение неизвестно.")
+    sections = any(row.get('section') for row in rows)
+    previous_section = None
     for row in rows:
+        section = row.get('section') or ''
+        if sections and section != previous_section:
+            note(section or 'Раздел в ГПР не указан')
+            sheet.cell(row_number, 1).font = Font(bold=True, color='1F4E78')
+            sheet.cell(row_number, 1).fill = PatternFill('solid', fgColor='E8EFF7')
+        previous_section = section
         name = "\n".join(_text(v) for v in [row.get("name"), row.get("context"),
                          " · ".join(_text(v) for v in [row.get("code"), row.get("unit")] if v)] if v)
         cells = append([name, _number(row.get("planned")), _number(row.get("fact")), _number(row.get("deviation")),

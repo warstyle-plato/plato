@@ -22,6 +22,7 @@ import developaid_actuals as actuals
 import developaid_monitor as monitor
 import developaid_monitor_contract_risk as contract_risk
 import developaid_contract_stage_profile as stage_profile
+import developaid_contract_match_cache as match_cache
 from developaid_monitor_ledgers import amount_basis as _amount_basis
 from developaid_monitor_ledgers import basis_metadata_current as _basis_metadata_current
 
@@ -97,6 +98,7 @@ _LEGAL_FORMS = (
 )
 
 
+@match_cache.scalar('party')
 def _party_norm(value: Any) -> str:
     text = _norm(value)
     for full, short in _LEGAL_FORMS:
@@ -122,8 +124,17 @@ def _base_key(item: dict) -> tuple[str, str, str]:
 
 def _reference_key(item: dict) -> tuple[str, str, str]:
     """Compare external references without changing cumulative identity."""
-    return (_party_norm(item.get("customer")), _party_norm(item.get("contractor")),
-            _contract_number(item.get("contract"), reference=True))
+    def original():
+        return (_party_norm(item.get("customer")), _party_norm(item.get("contractor")),
+                _contract_number(item.get("contract"), reference=True))
+    if type(item) is not dict:
+        return original()
+    values = tuple(item.get(field) for field in ('customer', 'contractor', 'contract'))
+    if not match_cache.strings(values):
+        return original()
+    return match_cache.remember('reference', values, lambda: (
+        _party_norm(values[0]), _party_norm(values[1]),
+        _contract_number(values[2], reference=True)))
 
 
 def _source(value: Any, label: str = "") -> dict:
@@ -1379,6 +1390,7 @@ def find_raw_row(register: dict, contract_id: str) -> dict | None:
 
 
 @stage_profile.stage('contracts_build')
+@match_cache.scoped
 def build(project: str, cut: str = "", *, include_history: bool = True,
           _archive_cache: dict | None = None) -> dict:
     """Raw archive observations first; only confirmed ownership can fold them."""

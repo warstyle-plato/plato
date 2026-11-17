@@ -272,9 +272,45 @@ def _date(record: dict) -> str | None:
     return ((record.get("agreement") or record.get("contract")) or {}).get("date")
 
 
+def _remaining_starts(records: list[dict]) -> dict:
+    """Replacing the same remaining annex does not accept all work done since its first edition.
+
+    Carry its start only within an explicitly dated annex series following the
+    same accepted-work snapshot. A new accepted snapshot (including a separate
+    PDF of the same agreement), another annex, or a full estimate starts a new
+    series. Incomplete identifiers never establish continuity.
+    """
+    accepted = [r for r in records if _date(r) and
+                any(e.get('scope') == 'accepted' for e in r.get('estimates') or [])]
+    starts, previous = {}, None
+    for record in records:
+        estimates = [e for e in record.get('estimates') or [] if e.get('scope') != 'accepted']
+        if not estimates:
+            continue
+        if any(e.get('scope') != 'remaining' for e in estimates):
+            previous = None
+            if any(e.get('scope') == 'remaining' for e in estimates):
+                starts[record['sha256']] = {'date': _date(record), 'sha256': record['sha256'],
+                                            'title': record['title']}
+            continue
+        agreement = record.get('agreement') or {}
+        explicit = bool(agreement.get('number') and agreement.get('date')) and all(
+            e.get('annex') and e.get('edition') == agreement for e in estimates)
+        annexes = tuple(sorted(e.get('annex') or '' for e in estimates))
+        epoch = max((_edition(r) for r in accepted if _edition(r) <= _edition(record)), default=None)
+        key = (annexes, epoch) if explicit and epoch is not None else None
+        basis = (previous[1] if key is not None and previous and previous[0] == key else
+                 {'date': _date(record), 'sha256': record['sha256'], 'title': record['title']})
+        starts[record['sha256']] = basis
+        previous = (key, basis)
+    return starts
+
+
+
 def _editions(records: list[dict], chosen: dict) -> list[dict]:
     """Documents that bring an estimate or a schedule, each with the latest of both at or before it."""
     editions, schedule, source = [], None, None
+    remaining_starts = _remaining_starts(records)
     for record in records:
         brings_schedule = bool((record.get("schedule") or {}).get("lines"))
         brings_estimate = any(e.get("scope") != "accepted" for e in record.get("estimates") or [])
@@ -295,7 +331,8 @@ def _editions(records: list[dict], chosen: dict) -> list[dict]:
                          "schedule": schedule and schedule["schedule"],
                          "schedule_sha256": schedule["sha256"] if schedule else "",
                          "schedule_title": schedule["title"] if schedule else "",
-                         "start": _date(source) if remaining else None})
+                         "start": remaining_starts[source['sha256']]['date'] if remaining else None,
+                         "start_source": remaining_starts.get(source['sha256']) if remaining else None})
     return editions
 
 
@@ -492,6 +529,14 @@ def _with_control(listed, acts, cut):
     if not binding.get('number') or not binding.get('date'):
         identity = None
     listed['comparison'] = comparison.build(listed,cut,identity['sha256'] if identity else None)
+    # Comparison owns coverage of the full source GPR. Its partial state must
+    # reach the register too: no rejected KS period does not mean all works
+    # of the contract were matched to the estimate and its current scope.
+    listed['control']['coverage'] = dict(listed['comparison']['coverage'])
+    if listed['control'].get('total') is not None:
+        listed['control']['total']['incomplete'] = bool(
+            listed['control']['total'].get('incomplete') or listed['comparison']['coverage']['partial'])
+    listed['control']['forecast'] = listed['comparison']['forecast']
     return listed
 
 
@@ -550,6 +595,10 @@ def _register_control_raw(project: str, register: dict, cut: str) -> dict:
                                          "auto", "incomplete")},
             "source": found.get("source"), "preliminary": bool(found.get("preliminary")),
             "left_out": found["left_out"],
+            "coverage": found.get("coverage"),
+            "data_gaps": found["data_gaps"],
+            "forecast_scope": forecast.get("scope"),
+            "whole_contract_finish": forecast.get("whole_contract_finish"),
             **{k: forecast.get(k) for k in ("finish", "deadline", "from_register", "done", "threat", "days_over",
                                             "days_early", "passed")}}
         if found.get('schedule_source'):

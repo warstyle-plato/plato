@@ -166,12 +166,27 @@ def test_kd_field_is_read_only_with_an_explicit_override():
 
 def test_parameters_trigger_a_recalculation():
     """Правка плотности или коэффициента должна пересчитывать готовый расчёт,
-    а не ждать повторного нажатия «Получить ТЭП»."""
+    а компенсация в панели ВРИ остаётся черновиком до «Применить»."""
+    import json
+    from tests import page_blocks
+
     page = main.PAGE
-    assert "function recalcMo()" in page
-    assert "function bindMoParams()" in page
-    # Все параметры блока подписаны на пересчёт.
-    assert "['moDensity','moArea','moFlat','moPrice','moKd','moCompensation'].forEach" in page
+    shown, taken = page_blocks.run("""
+const ids=['moDensity','moArea','moFlat','moPrice','moKd','moCompensation'];
+const nodes=Object.fromEntries(ids.map(id=>[id,{value:'1',listeners:{},
+ addEventListener(type,fn){(this.listeners[type]??=[]).push(fn)}}]));
+const document={getElementById(id){return nodes[id]||null}};
+let recalculated=0;
+function recalcMo(){recalculated++}
+function setSiteDensity(){} function setSiteArea(){}
+""", """
+bindMoParams();bindMoParams();
+for(const node of Object.values(nodes))for(const fn of node.listeners.change||[])fn();
+console.log(JSON.stringify({recalculated,compensationListeners:nodes.moCompensation.listeners}));
+""")
+    result = json.loads(shown)
+    assert "bindMoParams" in taken
+    assert result == {"recalculated": 5, "compensationListeners": {}}
     # Смена округа тоже.
     assert "select.onchange=()=>{syncMoPrice();syncMoKd();recalcMo()};" in page
 

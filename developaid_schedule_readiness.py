@@ -406,6 +406,18 @@ def build(project, cut, schedule):
         except (OSError, ValueError) as exc:
             error, profile = str(exc), None
     selected = schedule.get('approved_plan') or {}
+    carry = None
+    if (profile and profile.get('scope_kind') == CURRENT_ESTIMATE
+            and profile['remaining_source_sha256'] != selected.get('source_sha256')):
+        from developaid_readiness_date_carry import DateCarryProblem, project as date_projection
+        try:
+            profile, full, carry = date_projection(project, profile, selected.get('source_sha256'))
+            carry.update(profile_revision=event['revision'], profile_sha256=event['profile_sha256'],
+                         profile_effective_from=event['profile']['effective_from'], recorded_at=event['recorded_at'])
+        except DateCarryProblem as exc:
+            # A failed proof never revives an old profile or substitutes weights.
+            profile, full = None, None
+            error = 'Перенос долей на новый источник не подтверждён. '+str(exc)+' Текущие показания сохранены.'
     result = model(schedule.get('work_fact') or {}, cut=cut, baseline_scope=schedule.get('baseline_scope', 'full_schedule'),
                    source_sha256=selected.get('source_sha256'), profile=profile, full_rows=full,
                    blockers=(schedule.get('completed_facts') or {}).get('completion_blockers') or [])
@@ -414,6 +426,10 @@ def build(project, cut, schedule):
     result['profile_revision'] = (event or {}).get('revision', 0)
     result['profile_sha256'] = (event or {}).get('profile_sha256', '')
     result['profile_effective_from'] = ((event or {}).get('profile') or {}).get('effective_from', '')
+    if carry:
+        result['profile_source_carry'] = carry
+    if schedule.get('fact_source_carry'):
+        result['fact_source_carry'] = schedule['fact_source_carry']
     latest = events[-1] if events else {}
     result.update(latest_profile_revision=latest.get('revision', 0),
                   latest_profile_sha256=latest.get('profile_sha256', ''),
@@ -454,6 +470,22 @@ def editor(project, *, full_source_sha256=''):
     full = _catalog(project, sha, full=scope_kind != CURRENT_ESTIMATE, effective_from=today)
     remaining = _catalog(project, current['source_sha256'])
     previous = next((e for e in reversed(events) if e['profile']['full_source_sha256'] == sha and e['profile'].get('element_profile')), None)
+    carry = None
+    history_sha = sha
+    history_events = events
+    if previous is None and scope_kind == CURRENT_ESTIMATE and sha == current['source_sha256']:
+        candidate = next((e for e in reversed(events) if e['profile']['effective_from'] <= today), None)
+        if candidate:
+            from developaid_readiness_date_carry import DateCarryProblem, project as date_projection
+            try:
+                projected, full, carry = date_projection(project, candidate['profile'], sha)
+                previous = dict(candidate, profile=projected)
+                history_sha = candidate['profile']['full_source_sha256']
+                history_events = [e for e in events if e['revision'] <= candidate['revision']]
+                carry.update(profile_revision=candidate['revision'], profile_sha256=candidate['profile_sha256'],
+                             profile_effective_from=candidate['profile']['effective_from'], recorded_at=candidate['recorded_at'])
+            except DateCarryProblem:
+                pass  # The existing unsaved blank editor remains available.
     if previous:
         cfg = copy.deepcopy({k: v for k, v in previous['profile'].items() if k in CONFIG_FIELDS})
         cfg['crosswalk'] = [{k: link[k] for k in ('remaining_id', 'full_id')} for link in cfg['crosswalk'] if link.get('basis') == 'explicit_override']
@@ -486,8 +518,8 @@ def editor(project, *, full_source_sha256=''):
                     weight_reason=weight_reasons.get(key, ''))
     for share in shares:
         changes, previous_override = [], None
-        for e in events:
-            if e['profile']['full_source_sha256'] != sha:
+        for e in history_events:
+            if e['profile']['full_source_sha256'] != history_sha:
                 continue
             overrides = (e['profile'].get('element_profile') or {}).get('overrides', {})
             override = overrides.get(share['id'])
@@ -497,15 +529,25 @@ def editor(project, *, full_source_sha256=''):
         if share['origin'] == 'manual' and changes:
             change = changes[-1]
             share.update(author=change['author'], recorded_at=change['recorded_at'])
+    def history_methods(event):
+        assignments = (event['profile'].get('element_profile') or {}).get('assignments', {})
+        try:
+            return elements.internal.methods(assignments)
+        except KeyError:
+            # History is evidence, not an active weight or a guessed method.
+            return ['Неизвестное основание внутренних долей']
     return dict(available=True, configuration=cfg, options=dict(expected_source_sha256=current['source_sha256'], expected_source_revision=current['revision'], expected_revision=len(events)),
+                source_carry=carry,
                 sources=choices, elements=shares, profile_id=elements.PROFILE_ID, title=elements.TITLE, source=elements.SOURCE, source_url=elements.SOURCE_URL, accepted_on=elements.ACCEPTED_ON,
                 works=[work_editor(key, row) for key, row in full.items()],
                 unmatched=[dict(id=key, name=row.get('name') or key, object=row.get('object') or 'Общие работы') for key, row in remaining.items() if key not in automatic],
                 outside=[dict(id=key, name=full[key].get('name') or key, object=full[key].get('object') or 'Общие работы') for key in sorted(outside)],
                 history=[dict(revision=e['revision'], recorded_at=e['recorded_at'], author=e['author'],
+                              source_sha256=e['profile']['full_source_sha256'], profile_sha256=e['profile_sha256'],
+                              effective_from=e['profile']['effective_from'],
                               corpus_shares=(e['profile'].get('element_profile') or {}).get('corpus_shares', {}),
-                              internal_methods=elements.internal.methods((e['profile'].get('element_profile') or {}).get('assignments', {})),
-                              overrides=(e['profile'].get('element_profile') or {}).get('overrides', {})) for e in events if e['profile']['full_source_sha256'] == sha])
+                              internal_methods=history_methods(e),
+                              overrides=(e['profile'].get('element_profile') or {}).get('overrides', {})) for e in history_events if e['profile']['full_source_sha256'] == history_sha])
 
 
 def render(state):

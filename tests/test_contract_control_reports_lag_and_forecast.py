@@ -52,7 +52,7 @@ def test_a_line_lags_by_the_days_back_to_when_the_plan_equalled_its_fact(cut, mo
         state, lag, ahead, forecast)
     assert line["deviation"] == money - line["planned"]
     assert got["ahead"] == (["3.1"] if state == "ahead" else []) and got["done"] == (["3.1"] if state == "done" else [])
-    assert line["behind_amount"] == max(line["planned"] - money, 0.0)
+    assert line["behind_amount"] == pytest.approx(max(line["planned"] - money, 0.0))
 
 
 def test_the_behind_volume_is_shown_in_its_unit_only_when_the_line_has_one():
@@ -158,6 +158,7 @@ def test_the_card_reports_lag_volume_and_the_threat_to_the_schedule_end(card):  
     # Готовность договора — 5 500 из 11 000 по стоимости работ, по плану к срезу — 10 000 из 11 000.
     assert got["total"] == pytest.approx({
         "amount": 11000.0, "planned": 10000.0, "fact": 5500.0, "deviation": -4500.0,
+        "work_amount": 11000.0, "work_planned": 10000.0,
         "readiness": 0.5, "plan_share": 10 / 11, "plan_done": 0.55, "percent": -0.45, "state": "behind",
         "lag_days": 2, "ahead_days": 0, "behind_amount": 4500.0, "shortfall": 0.0, "by_volume": 3, "by_money": 0,
         "auto": 0, "overdue_works": 2, "preliminary": False, "incomplete": True, "overdue_days": 0})
@@ -253,8 +254,9 @@ def test_the_card_reports_the_lag_and_the_threat_in_plain_words(card, width):  #
         expect(report.locator('#contractComparisonInfo')).to_contain_text('Не учтено периодов КС: 2')
         forecast=page.locator('#contractCardSummary [data-label="Прогноз окончания"]')
         expect(forecast).to_contain_text('06.02.2026')
-        expect(forecast).to_contain_text('позже срока на 1 день')
-        assert 'risktext' in forecast.locator('.contract-card-pill-value').get_attribute('class')
+        expect(forecast).to_contain_text('Не определён')
+        expect(forecast).to_contain_text('Оценка сопоставленных работ')
+        assert 'risktext' not in forecast.locator('.contract-card-pill-value').get_attribute('class')
         first=report.locator('tr[data-comparison-code="1.1"]')
         expect(first.locator('[data-label="Отклонение"]')).to_contain_text('Отставание: 3 дня')
         expect(first.locator('[data-label="Срок работы"]')).to_contain_text('Просрочка: 3 дня')
@@ -270,14 +272,14 @@ def test_the_card_reports_the_lag_and_the_threat_in_plain_words(card, width):  #
         expect(unknown.locator('[data-label="Факт"]')).to_contain_text('Неизвестно')
         report.locator('.contract-methodology > summary').click()
         expect(report.locator('.contract-comparison-money')).to_have_text(
-            'По сопоставленным работам: план 10 000 ₽, факт 5 500 ₽, отклонение −4 500 ₽.')
+            'Денежный план и факт, включая материалы: план 10 000 ₽, факт 5 500 ₽, отклонение −4 500 ₽.')
         expect(report.locator('.contract-fact-audit')).to_contain_text('В расчёте нет позиции')
         expect(report.locator('.contract-methodology')).to_contain_text('не меняет срок ввода проекта')
         assert page.evaluate('document.documentElement.scrollWidth<=innerWidth') and not errors
 
 
 @pytest.mark.parametrize("width", [390, 1440])
-def test_a_finished_contract_says_when_its_work_ended_against_the_deadline(card, width):  # noqa: F811
+def test_finished_matched_works_keep_their_date_without_claiming_full_contract_completion(card, width):  # noqa: F811
     from playwright.sync_api import expect
     from test_monitor_cumulative_controls import browser_page
     from tests.test_contract_card_confirms_and_chooses_links import _serve
@@ -289,9 +291,9 @@ def test_a_finished_contract_says_when_its_work_ended_against_the_deadline(card,
         page.locator(f'tr[data-contract-id="{CONTRACT}"] .contract-open').click()
         forecast=page.locator('#contractCardSummary [data-label="Прогноз окончания"]')
         expect(forecast).to_contain_text('03.02.2026')
-        expect(forecast).to_contain_text('позже срока на 1 день')
-        expect(forecast).to_contain_text('По сопоставленным работам')
-        assert 'risktext' in forecast.locator('.contract-card-pill-value').get_attribute('class')
+        expect(forecast).to_contain_text('Не определён')
+        expect(forecast).to_contain_text('Оценка сопоставленных работ')
+        assert 'risktext' not in forecast.locator('.contract-card-pill-value').get_attribute('class')
         page.locator('#contractComparisonFilter').select_option('done')
         rows=page.locator('#contractComparisonRows tr[data-comparison-state="done"]')
         expect(rows).to_have_count(3)
