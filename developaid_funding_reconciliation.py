@@ -22,6 +22,129 @@ def number(value: Any) -> float | None:
     return result if math.isfinite(result) else None
 
 
+def payment_observation(paid_by_chapter: dict, chapters: list[str]) -> dict:
+    """Keep the readable payment subset separate from an unknown full total."""
+    selected = {}
+    for chapter in chapters:
+        source = paid_by_chapter.get(chapter) or {}
+        full = number(source.get("total"))
+        count = source.get("observed_count")
+        count_known = isinstance(count, int) and not isinstance(count, bool) and count >= 0
+        count = count if count_known else 0
+        # A new reader can explicitly report an empty observed subset. It
+        # does not assert that the unknown full chapter total is zero. Old
+        # DTOs without a row count cannot supply this observation.
+        observed = (0.0 if count == 0 else number(source.get("observed_total"))) if count_known else None
+        selected[chapter] = {"total": full if full is not None else observed,
+                             "count": count, "count_known": count_known, "complete": full is not None}
+    count = sum(row["count"] for row in selected.values())
+    complete = all(row["complete"] for row in selected.values())
+    readable = all(row["total"] is not None for row in selected.values() if row["count"])
+    total = (sum(row["total"] for row in selected.values() if row["total"] is not None)
+             if complete or (count and readable) else None)
+    return {"total": number(total), "count": count, "complete": complete, "by_chapter": selected}
+
+
+def _payment_gaps(source_completeness: dict) -> list[dict]:
+    # Unknown chapter rows occur under every potentially selected chapter.
+    # This deduplicates diagnostics, never monetary payment identities.
+    unique = {}
+    for rows in (source_completeness.get("payments") or {}).values():
+        for row in rows:
+            key = (row.get("source_row"), tuple(sorted(row.get("fields") or [])))
+            unique[key] = {"source_row": row.get("source_row"), "fields": list(row.get("fields") or [])}
+    return list(unique.values())
+
+
+def _calculation(own: dict, budget: float | None, limit: float | None,
+                 paid: float | None, available: float | None) -> dict:
+    observation = own.get("payment_observation") or {}
+    count = observation.get("count", 0)
+    observed = number(observation.get("total")) if count else None
+    calc_paid = paid if paid is not None else observed
+    partial = paid is None
+    calc_available = available
+    missing = []
+    if calc_paid is None:
+        missing.append("payments")
+    if limit is None:
+        missing.append("bank_limit")
+    if calc_available is None and limit is not None and calc_paid is not None:
+        rows = [row for row in own.get("rows") or [] if row.get("chapter")]
+        balances = []
+        for row in rows:
+            chapter = row["chapter"]
+            amount = (number((observation.get("by_chapter", {}).get(chapter) or {}).get("total"))
+                      if partial else number(row.get("paid")))
+            chapter_limit = number(row.get("limit"))
+            if partial:
+                balances.append(max(0.0, chapter_limit - amount)
+                                if chapter_limit is not None and amount is not None else None)
+            else:
+                balances.append(number(row.get("left")))
+        calc_available = (sum(max(0.0, value) for value in balances)
+                          if rows and all(value is not None for value in balances) else
+                          max(0.0, limit - calc_paid) if not rows else None)
+        if calc_available is None:
+            missing.append("chapter_payments")
+    if budget is None:
+        missing.append("budget")
+    additional = (max(0.0, budget - calc_paid - calc_available)
+                  if budget is not None and calc_paid is not None and calc_available is not None else None)
+    return {"budget": budget, "bank_limit_total": limit, "paid_at_cut": calc_paid,
+            "available_bank_limit": calc_available, "calculated_additional": additional,
+            "basis": ("observed_payments" if calc_paid is not None else "unavailable_payments")
+                     if partial else "complete_payments",
+            "partial": partial, "observed_count": count,
+            "missing_payment_rows": _payment_gaps(own.get("source_completeness") or {}),
+            "missing_fields": missing}
+
+
+def bank_calculation(paid_by_chapter: dict, limits_by_chapter: dict) -> dict:
+    """The same bank arithmetic remains available without a financial model."""
+    chapters = list(limits_by_chapter)
+    observation = payment_observation(paid_by_chapter, chapters)
+    payments_known = observation["complete"]
+    limits = [number(limits_by_chapter[chapter]) for chapter in chapters]
+    limit = sum(limits) if all(value is not None for value in limits) else None
+    rows = []
+    for chapter, chapter_limit in zip(chapters, limits):
+        paid = number((paid_by_chapter.get(chapter) or {}).get("total"))
+        rows.append({"chapter": chapter, "limit": chapter_limit, "paid": paid,
+                     "left": chapter_limit - paid if chapter_limit is not None and paid is not None else None})
+    own = {"payment_observation": observation, "rows": rows,
+           "source_completeness": {"payments": {
+               chapter: (paid_by_chapter.get(chapter) or {}).get("incomplete_rows") or []
+               for chapter in chapters}}}
+    return _calculation(own, None, limit, observation["total"] if payments_known else None, None)
+
+
+def calculation_values(reconciliation: dict) -> dict:
+    """One presentation source, including old cached calculations with no gate."""
+    values = {key: reconciliation.get(key) for key in (
+        "budget", "paid_at_cut", "bank_limit_total", "available_bank_limit", "calculated_additional")}
+    if isinstance(reconciliation.get("calculation"), dict):
+        values.update(reconciliation["calculation"])
+    return values
+
+
+def calculation_note(reconciliation: dict) -> str:
+    calculation = calculation_values(reconciliation)
+    notes = ["Расчёт по учтённым оплатам." if calculation.get("partial")
+             else "Расчёт по сохранённым данным."]
+    gaps = (calculation.get("missing_payment_rows")
+            or _payment_gaps(reconciliation.get("source_completeness") or {}))
+    if gaps:
+        notes.append(f"Строк с непрочитанными реквизитами: {len(gaps)}.")
+    missing = calculation.get("missing_fields") or []
+    names = {"payments": "не прочитано ни одной оплаты выбранного состава",
+             "bank_limit": "не прочитан лимит банка", "chapter_payments": "не прочитаны оплаты части глав",
+             "budget": "не прочитан утверждённый бюджет"}
+    if missing:
+        notes.append("Для полного расчёта " + "; ".join(names[key] for key in missing) + ".")
+    return " ".join(notes)
+
+
 def admin_schedule_policy(comp: dict, schedule: dict | None, chapter: str,
                           cut: str) -> dict:
     """Return only proven unpaid additions; never infer inclusion from an RSS code."""
@@ -237,7 +360,7 @@ def build(own: dict, comp: dict, chapter_flow: dict, cut: str,
             "composition_matches": composition_matches,
             "state": "arithmetically_reconciled" if matches else "needs_reconciliation",
             "reasons": reasons, "admin_schedule": policy,
-            "primary_source_gate": "BLOCKED", "financial_acceptance_performed": False,
+            "primary_source_gate": "NOT_REQUIRED_FOR_CALCULATION", "financial_acceptance_performed": False,
             "payment_identity_verified": None, "source_dates": {},
             "source_completeness": source_completeness,
             "admin_expenses": admin_expense_breakdown(own.get("admin")),
@@ -246,6 +369,8 @@ def build(own: dict, comp: dict, chapter_flow: dict, cut: str,
                 "model_plan": number(unallocated.get("plan", 0.0)),
                 "monthly": dict(unallocated.get("monthly") or {}),
                 "paid_at_cut": None, "funding_coverage": None}}
+    result["calculation"] = _calculation(own, budget, limit, paid, available)
+    result["calculation_note"] = calculation_note(result)
     result["display_rows"] = display_rows(result)
     result["need_breakdown"] = need_breakdown(own, comp, cut, schedule_known, schedule)
     detail = result["need_breakdown"]
@@ -321,10 +446,14 @@ def need_breakdown(own: dict, comp: dict, cut: str, known: bool,
 
 def display_rows(r: dict) -> list[dict]:
     """Shared labels and values; the browser never reconstructs the equation."""
+    calculation = calculation_values(r)
     def row(key: str, label: str, note: str = "") -> dict:
-        warning = r.get("source_scope_short_note") or r.get("source_scope_note", "")
-        return {"key": key, "label": label, "value": r[key],
-                "note": " ".join(part for part in (note, warning) if part)}
+        value = calculation.get(key, r.get(key))
+        derived = key in {"paid_at_cut", "available_bank_limit", "calculated_additional"}
+        prefix = ("учтено " if key == "paid_at_cut" else "расчётно ") if derived and calculation.get("partial") else ""
+        detail = calculation_note(r) if derived else ""
+        return {"key": key, "label": label, "value": value, "prefix": prefix,
+                "note": " ".join(part for part in (note, detail) if part)}
     raw_saved = r.get("observation_scope") == "raw_saved_sources"
     rows = [row("budget", "Утверждённый бюджет"),
             row("bank_limit_total", "Лимит банка", "Полный лимит уже включает оплаченное"),
@@ -434,12 +563,10 @@ def lines(reconciliation: dict | None, money: Any) -> list[str]:
     if not reconciliation:
         return []
     r = reconciliation
-    out = [f"Бюджет {money(r['budget'])}: оплачено на дату {money(r['paid_at_cut'])}, "
-           f"доступный остаток лимита {money(r['available_bank_limit'])}, расчётная дополнительная "
-           f"потребность {money(r['calculated_additional'])}."]
-    if r.get("observation_scope") == "raw_saved_sources":
-        out[0] = out[0].replace("оплачено на дату", "учтённые оплаты источника")
-        out.append(r["source_scope_note"])
+    calculation = calculation_values(r)
+    out = [f"Бюджет {money(calculation.get('budget'))}: учтённые оплаты {money(calculation.get('paid_at_cut'))}, "
+           f"доступный остаток лимита {money(calculation.get('available_bank_limit'))}, расчётная дополнительная "
+           f"потребность {money(calculation.get('calculated_additional'))}.", calculation_note(r)]
     for item in r["components"]:
         if item["amount"] is None or abs(item["amount"]) > 0.5:
             out.append(item["reason"] + ": " + money(item["amount"]) + ".")
@@ -449,5 +576,4 @@ def lines(reconciliation: dict | None, money: Any) -> list[str]:
         out.append("Неиспользуемая часть лимита: " + money(r["unused_capacity"]) + ".")
     if r["reasons"]:
         out.append("Финансирование требует уточнения: " + "; ".join(r["reasons"]) + ".")
-    out.append("Финансовая сверка первичных источников не завершена.")
     return out
