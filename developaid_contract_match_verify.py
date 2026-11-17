@@ -139,7 +139,11 @@ def _strict_equal(first, second):
     if kind is tuple:
         return len(first) == len(second) and all(_strict_equal(a, b) for a, b in zip(first, second))
     if kind is frozenset:
-        return len(first) == len(second) and all(any(_strict_equal(a, b) for b in second) for a in first)
+        if len(first) != len(second):
+            return False
+        if all(type(value) is str for value in first) and all(type(value) is str for value in second):
+            return first == second
+        return all(any(_strict_equal(a, b) for b in second) for a in first)
     return False
 
 

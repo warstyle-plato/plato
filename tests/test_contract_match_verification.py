@@ -35,6 +35,43 @@ def test_strict_recursive_types_cannot_pass_loose_python_equality(cached,recompu
         with pytest.raises(verify.VerificationProblem):state.proof()
 
 
+@pytest.mark.parametrize('cached,recomputed',[
+    (frozenset({True}),frozenset({1})),
+    (frozenset({'same',False}),frozenset({'same',0})),
+    (frozenset({(True,)}),frozenset({(1,)})),
+    (frozenset({'same'}),frozenset({type('Other',(str,),{})('same')})),
+    (frozenset({frozenset({'same'})}),frozenset({frozenset({type('Other',(str,),{})('same')})})),
+])
+def test_string_set_fast_path_cannot_admit_equal_but_differently_typed_members(cached,recomputed):
+    assert cached==recomputed  # Native equality alone would certify the wrong types.
+    with verify.collect()as observer:
+        with cache.scope()as ordinary:
+            ordinary.entries[('work_words',('synthetic',))]=cached
+            with pytest.raises(verify.VerificationProblem):
+                cache.remember('work_words',('synthetic',),lambda:recomputed)
+        with pytest.raises(verify.VerificationProblem):observer.proof()
+
+
+def test_native_large_word_hit_avoids_pairwise_string_comparison(monkeypatch):
+    text=' '.join('works'+chr(97+i//676)+chr(97+i//26%26)+chr(97+i%26)for i in range(1500))
+    expected=links._work_words(text);assert len(expected)==1500
+    original=verify._strict_equal;calls=[]
+    def counted(first,second):calls.append(1);return original(first,second)
+    monkeypatch.setattr(verify,'_strict_equal',counted)
+    with verify.collect()as observer:
+        with cache.scope()as ordinary:
+            assert links._work_words(text)==links._work_words(text)==expected
+            assert ordinary.bytes<=cache.MAX_BYTES
+        assert observer.proof()['hits']['work_words']=={'attempted':1,'verified':1}
+    assert calls==[1]
+
+
+def test_strict_nested_and_mixed_native_values_keep_the_recursive_path():
+    assert verify._strict_equal(frozenset({'same',True,None}),frozenset({None,True,'same'}))
+    assert verify._strict_equal((frozenset({'same'}),False),(frozenset({'same'}),False))
+    assert not verify._strict_equal(frozenset({'same'}),frozenset({'same','extra'}))
+
+
 def test_prepopulated_cache_is_not_extended_and_nested_pure_compute_is_uncached():
     calls=[]
     def party():calls.append(1);return 'owner'
