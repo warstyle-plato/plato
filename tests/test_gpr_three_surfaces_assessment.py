@@ -128,8 +128,9 @@ def test_legacy_only_summary_still_has_its_original_qualified_scope():
 
 def test_an_untyped_legacy_schedule_without_a_profile_does_not_invent_project_membership(gpr_sources):
     view = gpr_sources(view=True, with_readiness_profile=False)
-    owner = view['schedule']['work_forecast']
-    assert owner['state'] == 'unavailable' and owner['reason_code'] == 'no_construction_scope'
+    assert 'work_forecast' not in view['schedule']
+    assert view['schedule']['work_forecast_applicable'] is False
+    assert summary.project_assessment(view['schedule'], view['cut']) is None
     assert view['schedule']['readiness']['profile_state'] == 'absent'
     # The physical work estimate remains its own evidence; it does not supply
     # an undeclared project roster or readiness weights.
