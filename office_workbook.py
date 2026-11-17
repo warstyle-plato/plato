@@ -2062,8 +2062,11 @@ def _office_totals(rows: _Rows, path: dict[str, str], offices: list[_Block], ddu
     cap_formula = (f'IF(AND({",".join(f"{cap}={caps[0]}" for cap in caps)}),{caps[0]},"")'
                    if caps else '""')
     param("o_cap", "Ставка капитализации (если едина у объектов)", "=" + cap_formula, "", PCT)
-    param("o_exit_value", "Стоимость здания", "=" + (_sum([b.r("exit_value") for b in rent_blocks])
-                                                     if rent_blocks else '""'), "млн ₽")
+    # Nullable presentation KPI matches engine sum(...) or None. Cash,
+    # valuation and NPV series keep their existing financial formulas.
+    exit_total = _sum([b.r("exit_value") for b in rent_blocks])
+    param("o_exit_value", "Стоимость здания", f'=IF(({exit_total})>0,{exit_total},"")'
+          if rent_blocks else '=""', "млн ₽")
     o_dscr = [b.r("dscr_min") for b in rent_blocks]
     param("o_dscr", "DSCR кредита объекта — минимум",
           f'=IF(COUNT({",".join(o_dscr)})>0,MIN({",".join(o_dscr)}),"")' if o_dscr else '=""', "×", RATIO)
