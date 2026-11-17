@@ -266,6 +266,8 @@ def propose(estimate, schedule, *, agreement=False):
         item = {"index": index, "key": position_key(position), "number": position.get("number"),
                 "name": position.get("name"), "unit": position.get("unit"), "section": position.get("section"),
                 "amount": (position.get("amount") or {}).get("total"), "quantity": position.get("quantity"),
+                "work_amount": (position.get("amount") or {}).get("work"),
+                "material_amount": (position.get("amount") or {}).get("material"),
                 "kind": label, "buildings": sorted(where), "part": side, "lines": [], "status": "review",
                 "reason": "", "assumption": "", "suggested": [], "fix": None}
         positions.append(item)

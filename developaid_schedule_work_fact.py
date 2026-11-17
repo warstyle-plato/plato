@@ -41,12 +41,15 @@ def primary_fact(row: dict) -> dict:
         value = None
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
         value = None
-    return {'value': value, 'basis': kind,
+    result = {'value': value, 'basis': kind,
             'label': {'cumulative_statement': 'По ведомости', 'cumulative_quantities': 'Объём по накопительной',
                       'confirmed_completion': 'Выполнение подтверждено'}.get(kind, 'Выполнено по ГПР'),
             'source': source.get('label') or '', 'date': source.get('date'),
             'reason': row.get('progress_reason') or '',
             'requires_reconciliation': row.get('requires_reconciliation') is True or bool(row.get('source_conflict'))}
+    if kind == 'gpr_percent' and row.get('gpr_fact_source_carry'):
+        result['source_carry'] = row['gpr_fact_source_carry']
+    return result
 
 
 def _ks(task: dict | None) -> dict[str, Any]:

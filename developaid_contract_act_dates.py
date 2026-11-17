@@ -115,7 +115,7 @@ def resolve(found: dict | None, records: list[dict]) -> dict | None:
     for work in found.get("unread") or []:
         for period in work.get("periods") or []:
             n = number(period["label"]) if not period.get("end") else None
-            if n and (period.get("quantity") or period.get("amount")):
+            if n and (period.get("quantity") or period.get('material_quantity') or period.get("amount")):
                 labels.setdefault(n, period["label"])
     chosen = acts_in_card.in_force(records)
     dates = {n: _dates(n, chosen["acts"], found.get("summary_acts") or [], chosen["notes"]) for n in labels}
@@ -136,7 +136,12 @@ def resolve(found: dict | None, records: list[dict]) -> dict | None:
         result["items"].append({"item": work["item"], "number": work["number"], "name": work["name"],
                                 "unit": work["unit"], "plan_quantity": work.get("plan_quantity")})
         result["acts"].extend({"number": work["number"], "name": work["name"], "unit": work["unit"],
-                               "quantity": period.get("quantity") or None, "act_amount": period.get("amount"),
+                               "quantity": period.get("quantity"), "act_amount": period.get("amount"),
+                               "quantity_material": period.get('material_quantity'),
+                               "basis": period.get('basis') or work.get('basis') or 'work',
+                               "amount_components": {'work': period.get('work_amount'),
+                                                     'material': period.get('material_amount'),
+                                                     'total': period.get('amount')},
                                "start": period["start"], "end": period["end"], "label": period["label"],
                                "item": work["item"], "dated_by": period.get("dated_by") or "",
                                "source": period.get("source") or work.get("source") or {}} for period in dated)
@@ -152,7 +157,7 @@ def _dated(work: dict, dates: dict):
         return work.get("reason") or "", None
     out = []
     for period in periods:
-        if not period.get("quantity") and not period.get("amount"):
+        if not period.get("quantity") and not period.get('material_quantity') and not period.get("amount"):
             continue  # A sum without a volume is dated too and goes to review in the fact.
         if period.get("end"):
             out.append(period)
