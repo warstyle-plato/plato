@@ -140,6 +140,8 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
                 hostvri_amount_formula: str | None = None,
                 phase_rve_formulas: list[str] | None = None,
                 phase_calendars: list[dict[str, Any]] | None = None,
+                exposure_formulas: dict[str, dict[str, str]] | None = None,
+                master_terms_sheet: str | None = None,
                 layout: dict[str, Any] | None = None) -> bytes:
     """Editable Actual/Actual accrual and separately reconciled payment dates.
 
@@ -187,10 +189,15 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
                 raise ValueError("Аренда ЗУ: факт выходит за конец календаря книги; нужна более длинная сетка")
             if str(history.get("covered_from")) != min(observed) or str(history.get("covered_to")) != max(observed):
                 raise ValueError("Аренда ЗУ: диапазон покрытия факта не совпадает с исходными месяцами")
-    phase_land = result.get("phase_land") or []
-    phased = len(phase_land) > 1
+    land_exposures = result.get("land_exposures") or []
+    phase_land = land_exposures or result.get("phase_land") or []
+    exposure_mode = bool(land_exposures)
+    phased = exposure_mode or len(phase_land) > 1
     phase_refs = list(phase_rve_formulas or [])
-    if phased:
+    if exposure_mode:
+        if exposure_formulas is None or any(item.get("id") not in exposure_formulas for item in land_exposures):
+            raise ValueError("Аренда ЗУ: в книгу не переданы живые доли и даты всех объектов")
+    elif phased:
         for p in range(len(phase_refs), len(phase_land)):
             calendar = (phase_calendars or [])[p] if p < len(phase_calendars or []) else {}
             numbers = [_numeric(calendar.get(key)) for key in
@@ -243,7 +250,8 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
         source = source.get("label") or source.get("text") or str(source)
     put(1, "A1", BLOCK_TITLE)
     put(2, "A2", "Аренда земли: годовой расчёт и план оплаты — отдельно от платы за ВРИ. Жёлтые ячейки редактируются. Начисление — расчётная конвенция; сроки оплаты — по договору. " +
-        ("Земля выходит из инвестиционного расчёта пропорционально вводу очередей; это не подтверждение прекращения договора." if phased else
+        ("Жильё: аренда после ввода до регистрации по редактируемому сценарию; удерживаемые нежилые объекты — весь операционный срок. Это не подтверждение прекращения договора." if exposure_mode else
+         "Земля выходит из инвестиционного расчёта по датам очередей; это не подтверждение прекращения договора." if phased else
          "После ввода аренда не считается прекращённой."))
     for n, label in ((3, "Месяц"), (4, "Исходное начисление, млн ₽"),
                      (5, "Неполные интервалы"), (6, "Денежный поток с фактом, млн ₽" if history_mode else "Плановый платёж, млн ₽"),
@@ -303,6 +311,9 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
     put(14, "I14", "Собственность" if inputs.get("land_right", "ownership") == "ownership" else "Аренда")
     put(15, "H15", "Публикация источника")
     put(15, "I15", str(result.get("source_url") or "По документам проекта"))
+    put(15, "M15", "После ввода до регистрации, мес. · сценарное допущение")
+    from developaid_land_rent import registration_months
+    put(15, "N15", registration_months(inputs) if inputs.get("land_rent_registration_months") in (None, "") else inputs["land_rent_registration_months"], style=styles["input"])
     origins = inputs.get("_field_origin") if isinstance(inputs.get("_field_origin"), dict) else {}
     origin = result.get("base_origin") or origins.get("inputs.land_rent_cadastral_mln")
     if isinstance(origin, dict):
@@ -336,10 +347,13 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
     phase_end = phase_first + phase_count - 1
     g_month_row = phase_end + 2
     phase_month_first = g_month_row + 2
+    phase_stride = 9 if exposure_mode else 5
+    cash_summary_first = phase_month_first + phase_stride * phase_count + 1
     # Each phase allocates the existing monetary year/month cells on their
     # exact intervals. Never redistribute an already aggregated month: rates
     # or the excluded first year may change within it.
-    phase_segment_first = phase_month_first + 5 * phase_count + 3
+    phase_segment_first = cash_summary_first + 6
+    development_segment_first = phase_segment_first + phase_count * (YEARS + 2)
     cutoff = 'IF(COUNT($F$10)=1,MIN($F$10,$B$15),$B$15)'
 
     def g_phase(t: str, r: int) -> str:
@@ -629,8 +643,11 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
     phase_cash_rows = []
     for p in range(phase_count):
         r = phase_first + p
-        put(r, f"A{r}", f"Очередь {p+1}" if phased else "Весь участок")
-        if phased:
+        put(r, f"A{r}", str(phase_land[p].get("name") or phase_land[p].get("id")) if exposure_mode else f"Очередь {p+1}" if phased else "Весь участок")
+        if exposure_mode:
+            own_formulas = exposure_formulas[phase_land[p]["id"]]
+            put(r, f"B{r}", formula=own_formulas["share"], style=styles["amount"])
+        elif phased:
             # Доля — формула метров колонки H; пока метры известны не у всех
             # очередей, стоит предварительная доля расчёта (основание — в J).
             put(r, f"B{r}", formula=(f'IF(AND(COUNT($H${phase_first}:$H${phase_end})={phase_count},'
@@ -638,7 +655,9 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
                                      f'{float(phase_land[p]["share"])!r})'), style=styles["amount"])
         else:
             put(r, f"B{r}", formula="1", style=styles["amount"])  # весь участок — одна доля, не ввод
-        if phased and p >= len(phase_refs):
+        if exposure_mode:
+            commissioning = own_formulas["commissioning"]
+        elif phased and p >= len(phase_refs):
             calendar = phase_calendars[p]
             put(r, f"K{r}", int(calendar["start_offset_months"]), style=styles["input"])
             put(r, f"L{r}", formula=calendar.get("ird_formula"),
@@ -654,21 +673,27 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
         common_rve = (f'MAX({rve_formula},$C${phase_first}:$C${phase_end})'
                       if phased and len(phase_refs) < phase_count and result.get("housing_applicable", True)
                       else rve_formula)
-        put(r, f"D{r}", formula=(f'IF(COUNT(I{r})=1,I{r},IF(C{r}=MAX($C${phase_first}:$C${phase_end}),{common_rve},MIN(C{r},{common_rve})))'
+        exposure_exit = (f'IF(COUNT($F$10)=1,MIN($F$10,IF(COUNT(I{r})=1,I{r},IF(COUNT($L$15)=1,$L$15,{own_formulas["lease_exit"]}))),'
+                         f'IF(COUNT(I{r})=1,I{r},IF(COUNT($L$15)=1,$L$15,{own_formulas["lease_exit"]})))') if exposure_mode else None
+        put(r, f"D{r}", formula=(exposure_exit if exposure_mode else f'IF(COUNT(I{r})=1,I{r},IF(C{r}=MAX($C${phase_first}:$C${phase_end}),{common_rve},MIN(C{r},{common_rve})))'
                                  if phased else "$B$15"), style=styles["date"])
         put(r, f"G{r}", formula="IFERROR(" + g_phase(cutoff, r) + ",0)", style=styles["amount"])
         if phased:
-            typed = phase_land[p].get("rve") if phase_land[p].get("release_origin") == "manual" else None
+            typed = phase_land[p].get("manual_exit") if exposure_mode else phase_land[p].get("rve") if phase_land[p].get("release_origin") == "manual" else None
             put(r, f"H{r}", float(metres[p]) if metres[p] is not None else None, style=styles["input"])
             put(r, f"I{r}", _serial(typed) if typed else None, style=styles["input_date"])
             put(r, f"J{r}", str(result.get("phase_share_basis_text") or ""))
         if phased:
-            base = phase_month_first + 5 * p
+            base = phase_month_first + phase_stride * p
             put(r, f"E{r}", formula=f"SUM(D{base+3}:{last_col}{base+3})", style=styles["amount"])
             put(r, f"F{r}", formula=f"SUM(D{base+4}:{last_col}{base+4})", style=styles["amount"])
             for k, label in enumerate(("база × дни к началу месяца", "база × дни к концу месяца",
                                        "доля начисления месяца", "начисление, млн ₽", "платёж, млн ₽")):
                 put(base+k, f"A{base+k}", f"Очередь {p+1}: {label}")
+            if exposure_mode:
+                for offset,label in ((5,"начислено в стоимость разработки"),(6,"оплачено в стоимость разработки"),
+                                     (7,"операционная аренда: оплачено"),(8,"операционная аренда: начислено")):
+                    put(base+offset,f"A{base+offset}",f'{phase_land[p].get("name") or phase_land[p]["id"]}: {label}')
             phase_cash_rows.append(base + 4)
         else:
             put(r, f"E{r}", formula="$L$17", style=styles["amount"])
@@ -682,7 +707,7 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
         if not phased:
             continue
         for p in range(phase_count):
-            r, base = phase_first + p, phase_month_first + 5 * p
+            r, base = phase_first + p, phase_month_first + phase_stride * p
             put(base, f"{col}{base}", formula="IFERROR(" + g_phase(f"{col}$3", r) + ",0)", style=styles["amount"])
             put(base+1, f"{col}{base+1}", formula="IFERROR(" + g_phase(f"MIN(EDATE({col}$3,1),{cutoff})", r) + ",0)", style=styles["amount"])
             first = phase_segment_first + p * (YEARS + 2)
@@ -691,6 +716,14 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
             put(base+2, f"{col}{base+2}", formula=f'IF({col}$4>0,{col}{base+3}/{col}$4,$B${r})')
             put(base+4, f"{col}{base+4}", formula=(f'IF(AND($F$16="Ручной график",$F$17=1),'
                 f'{col}$6*IF($L$17>0,$E${r}/$L$17,$B${r}),{col}$6*{col}{base+2})'), style=styles["amount"])
+            if exposure_mode:
+                dev_first = development_segment_first + p * (YEARS + 2)
+                put(base+5,f"{col}{base+5}",formula=f'SUM({col}{dev_first}:{col}{dev_first+YEARS-1})',style=styles["amount"])
+                put(base+6,f"{col}{base+6}",formula=(f'IF(AND($F$16="Ручной график",$F$17=1),'
+                    f'{col}{base+4}*IF($E${r}>0,SUM($D${base+5}:${last_col}${base+5})/$E${r},1),'
+                    f'IF({col}{base+3}>0,{col}{base+4}*{col}{base+5}/{col}{base+3},{col}{base+4}))'),style=styles["amount"])
+                put(base+7,f"{col}{base+7}",formula=f'{col}{base+4}-{col}{base+6}',style=styles["amount"])
+                put(base+8,f"{col}{base+8}",formula=f'{col}{base+3}-{col}{base+5}',style=styles["amount"])
             matrix = _col(10 + index)
             for year in range(YEARS):
                 n, dest = pre_first + year, first + year
@@ -705,10 +738,34 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
                 amount = f'{matrix}{n}'
                 put(dest, f'{col}{dest}', formula=(f'IF(AND(COUNT({amount})=1,{total}>0),'
                     f'{amount}*{own}/{total},0)'), style=styles["amount"])
+                if exposure_mode:
+                    dev_dest = development_segment_first + p*(YEARS+2) + year
+                    own_pre = f'MAX(0,({g_phase(f"MIN({hi},$C${r})",r)})-({g_phase(f"MIN({lo},$C${r})",r)}))'
+                    development = (f'IF({own}>0,{col}{dest}*{own_pre}/{own},0)'
+                                   if phase_land[p].get("retained") or phase_land[p].get("policy") == "income_horizon" else f'{col}{dest}')
+                    put(dev_dest,f'{col}{dev_dest}',formula=development,style=styles["amount"])
                 if index == 0:
                     put(dest, f'A{dest}', f'Очередь {p+1}, год {year+1}: начисление по общему расчёту')
     if layout is not None:
         layout["phase_cash_rows"] = phase_cash_rows
+        layout["phase_cash_phase_indices"] = [int(item.get("phase_index", 0)) for item in land_exposures] if exposure_mode else list(range(phase_count))
+        layout["exposure_rows"] = {item["id"]: {"cash":phase_month_first+phase_stride*i+4,
+            "construction":phase_month_first+phase_stride*i+6,"operating":phase_month_first+phase_stride*i+7,
+            "construction_accrual":phase_month_first+phase_stride*i+5,"operating_accrual":phase_month_first+phase_stride*i+8,
+            "metadata":phase_first+i} for i,item in enumerate(land_exposures)}
+        layout["phase_construction_rows"] = [phase_month_first+phase_stride*i+6 for i in range(phase_count)] if exposure_mode else phase_cash_rows
+    if exposure_mode:
+        fields = {"construction":6,"operating":7,"construction_accrual":5,"operating_accrual":8}
+        for offset,(key,delta) in enumerate(fields.items()):
+            row = cash_summary_first + offset
+            put(row,f"A{row}",{"construction":"Аренда в разработке: платежи","operating":"Операционная аренда: платежи",
+                "construction_accrual":"Аренда в разработке: начислено","operating_accrual":"Операционная аренда: начислено"}[key])
+            put(row,f"B{row}",formula=f'SUM(D{row}:{last_col}{row})',style=styles["amount"])
+            for index in range(months):
+                col=_col(4+index)
+                put(row,f"{col}{row}",formula="SUM("+",".join(f"{col}{phase_month_first+phase_stride*i+delta}" for i in range(phase_count))+")",style=styles["amount"])
+        if layout is not None:
+            layout["cash_rows"] = {"total":6,**{key:cash_summary_first+offset for offset,key in enumerate(fields)}}
     put(pay_first-2, f"A{pay_first-2}", "РУЧНОЙ ГРАФИК ОПЛАТЫ — сумма должна совпасть с известной полной потребностью")
     for c, label in enumerate(("Месяц от старта", "Дата платежа", "Сумма / доля", "Единица: млн ₽ или %", "Сумма, млн ₽", "Месяц платежа", "Ошибка строки"), 1):
         put(pay_first-1, f"{_col(c)}{pay_first-1}", label)
@@ -759,6 +816,31 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
         put(21, f"{matrix}21", formula=f'{col}3', style=styles["date"])
     put(7, "A7", "Неопределённые интервалы до ввода")
     put(6, "B6", formula='IF(OR($B$8="Не применяется",$I$14="Собственность"),"Не применяется",IF(AND(F16="Ручной график",F17=1),"По заданному графику","Плановое начисление; сроки оплаты — по договору"))')
+    # Explicit semantic input map: secondary strategy sheets share contract
+    # terms, but never another strategy's shares, commissioning or exit dates.
+    input_cells = {coord:kind for kind,coords in {
+        "number": ["B9","L20","N15",f"B{target_row}",*[f"A{n}" for n in range(pre_first,pre_end+1)],
+                   *[f"D{n}" for n in range(pre_first,pre_end+1)],
+                   *[f"A{n}" for n in range(pay_first,pay_end+1)], *[f"C{n}" for n in range(pay_first,pay_end+1)]],
+        "date": ["B10","F10","I8","L15",f"B{switch_row}"],
+        "text": ["B8","B11","B12","B13","F12","F13","F14","F16","F19","F20",
+                 "I9","I10","I11","I12","I18","L16","L19",f"B{regime_row}",
+                 *[f"D{n}" for n in range(pay_first,pay_end+1)]]}.items() for coord in coords}
+    if is_mo:
+        input_cells.update({f"{column}{n}":"number" for column in ("A","B") for n in range(index_first,index_end+1)})
+    if layout is not None:
+        layout["input_cells"] = input_cells
+    if master_terms_sheet:
+        quoted = master_terms_sheet.replace("'", "''")
+        for row in rows.values():
+            for cell in row:
+                coord=cell.get("r")
+                if coord not in input_cells:
+                    continue
+                ref=f"'{quoted}'!{coord}"
+                cell.attrib.pop("t",None)
+                cell[:] = []
+                ET.SubElement(cell,_tag("f")).text=(f'IF(COUNT({ref})=1,{ref},"")' if input_cells[coord] in ("number","date") else f'IF({ref}="","",{ref})')
     data[:] = sorted(data, key=lambda r: int(r.get("r", "0")))
     for row in data:
         row[:] = sorted(row, key=lambda c: (len(re.match(r"[A-Z]+", c.get("r")).group()), re.match(r"[A-Z]+", c.get("r")).group()))
@@ -781,7 +863,8 @@ def apply(content: bytes, inputs: dict[str, Any], result: dict[str, Any], *,
           hostvri_amount_formula: str | None = None,
           phase_rve_formulas: list[str] | None = None,
           phase_calendars: list[dict[str, Any]] | None = None,
-          phase_capex_groups: list[list[int]] | None = None) -> bytes:
+          phase_capex_groups: list[list[int]] | None = None,
+          exposure_formulas: dict[str, dict[str, str]] | None = None) -> bytes:
     """Add one project schedule and distribute it once across active phases.
 
     With several queues on the parcel each CAPEX row takes its queue's own
@@ -810,9 +893,10 @@ def apply(content: bytes, inputs: dict[str, Any], result: dict[str, Any], *,
     parts[SHEET_PATH] = build_sheet(inputs, result, styles,
         project_start_formula=project_start_formula, rve_formula=rve_formula, project_end_formula=project_end_formula,
         hostvri_amount_formula=hostvri_amount_formula, phase_rve_formulas=phase_rve_formulas,
-        phase_calendars=phase_calendars, layout=layout)
-    phase_rows = layout.get("phase_cash_rows") or []
-    if phase_rows and len(phase_rows) != len(phase_shares):
+        phase_calendars=phase_calendars, exposure_formulas=exposure_formulas, layout=layout)
+    phase_rows = layout.get("phase_construction_rows") or layout.get("phase_cash_rows") or []
+    cash_phase_indices = layout.get("phase_cash_phase_indices") or list(range(len(phase_rows)))
+    if phase_rows and (len(cash_phase_indices) != len(phase_rows) or set(cash_phase_indices) != set(range(len(phase_shares)))):
         raise ValueError("Аренда ЗУ: строки оплаты не соответствуют долям очередей")
     rels = ET.fromstring(parts["xl/_rels/workbook.xml.rels"])
     rid_to_path = {r.get("Id"): r.get("Target", "").lstrip("/") for r in rels}
@@ -836,7 +920,7 @@ def apply(content: bytes, inputs: dict[str, Any], result: dict[str, Any], *,
         share = sum(phase_shares[p] for p in group)
         if phase_rows:
             share = 1 if group else 0
-        own = ("SUM(" + ",".join(f"'{SHEET}'!{{col}}{phase_rows[p]}" for p in group) + ")"
+        own = ("SUM(" + ",".join(f"'{SHEET}'!{{col}}{row}" for row,index in zip(phase_rows,cash_phase_indices) if index in group) + ")"
                if phase_rows and group else f"'{SHEET}'!{{col}}6*{share}")
         row = data.find(f"{_tag('row')}[@r='{row_number}']")
         if row is not None and len(row):
