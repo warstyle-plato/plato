@@ -757,6 +757,7 @@ def _schedule_only(project: str, cut: Any, upto: str = "") -> dict[str, Any]:
                      "actual_progress": None, "forecast_finish": None, "delta_days": None,
                      "status": "", "accepted": None, "eac": None})
     schedule = {"cut": day.isoformat(), "rows": rows, "risks": 0, "forecast_end": None,
+                "source_format": baseline.get("source_format") or "",
                 "baseline_end": max((r["plan_finish"] for r in rows), default=None),
                 "reason": monitor._schedule_reason(baseline, rows),
                 "undated_works": monitor._undated_works(baseline)}
