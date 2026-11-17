@@ -2922,9 +2922,9 @@ def _dashboard(project: str, rss: Path, cut: datetime.date, view: dict[str, Any]
             "forecast_source": graph.get("forecast_source", ""),
             "rnv_delay_days": graph.get("rnv_delay_days"),
         },
-        "sales": _sales_snapshot(project, cut),
+        "sales": (sales := _sales_snapshot(project, cut)),
         "funding": funding,
-        "summary": _summary(view, funding, _sales_snapshot(project, cut)),
+        "summary": _summary(view, funding, sales),
         "sources": {
             "rss": rss.name,
             "physical_fact": "Реестр выполненных работ",
