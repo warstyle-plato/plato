@@ -70,17 +70,22 @@ def _operations(parts, schedule_line):
         return None
     printed = links.printed(schedule_line)
     groups = [(part.get('group') or {}) for part in parts]
-    if any(not group.get('number') or group['number'] != printed for group in groups):
+    if any(not group.get('number') or not (group['number'] == printed or
+           group['number'].startswith(printed + '.')) for group in groups):
         return None
-    if any(not str(part.get('number') or '').startswith(printed + '.') for part in parts):
+    if any(not str(part.get('number') or '').startswith(group['number'] + '.')
+           for part, group in zip(parts, groups)):
         return None
-    identities = {(group['number'], group.get('name'), part.get('section'))
-                  for part, group in zip(parts, groups)}
-    if len(identities) != 1 or len({part['key'] for part in parts}) != len(parts):
+    if len({part.get('section') for part in parts}) != 1 or len({part['key'] for part in parts}) != len(parts):
         return None
-    group = dict(groups[0], section=parts[0].get('section') or '')
+    direct = all(item['number'] == printed for item in groups)
+    group = (dict(groups[0]) if direct else
+             {'number': printed, 'name': schedule_line['name'],
+              'nested_groups': list({(item['number'], item.get('name')): dict(item)
+                                     for item in groups}.values())})
+    group['section'] = parts[0].get('section') or ''
     declarations = {(item.get('unit'), item.get('quantity')) for item in groups}
-    if len(declarations) != 1:
+    if len(declarations) != 1 or len({item.get('name') for item in groups}) != 1:
         group.pop('unit', None)
         group.pop('quantity', None)
     return {'group': group, 'parts': parts}

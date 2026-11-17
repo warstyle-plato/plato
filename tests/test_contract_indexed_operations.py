@@ -125,6 +125,29 @@ def test_new_estimate_read_keeps_the_printed_parent_quantity():
     assert positions[0]['group']['unit'] == 'м2'
 
 
+@pytest.mark.parametrize('mixed_groups', [False, True])
+def test_nested_printed_operation_indices_never_promote_subgroup_area_to_the_whole(mixed_groups):
+    edition, _ = source_case()
+    estimate = edition['estimates'][0]
+    estimate['positions'] = estimate['positions'][:2]
+    for i, position in enumerate(estimate['positions'], 1):
+        group = '4.1.' + str(i if mixed_groups else 1)
+        position['group'].update(number=group, name='Подраздел ' + group)
+        position['number'] = group + '.' + str(i)
+    estimate['links']['positions'] = [
+        {'key': links.position_key(p), 'status': 'confirmed', 'amount': p['amount']['total'],
+         'unit': p['unit'], 'quantity': p['quantity'], 'work_amount': p['amount']['work'],
+         'material_amount': 0.0, 'lines': [{'code': '4.1', 'share': 1.0}]}
+        for p in estimate['positions']]
+    row = plan.build([edition], CUT)['editions'][0]['lines'][0]
+    assert row['volume'] is None
+    assert row['operations']['group']['number'] == '4.1'
+    assert row['operations']['group'].get('quantity') is None
+    assert len(row['operations']['group']['nested_groups']) == (2 if mixed_groups else 1)
+    assert [p['number'] for p in row['operations']['parts']] == [
+        p['number'] for p in estimate['positions']]
+
+
 @pytest.mark.parametrize('width', [390, 1440])
 def test_native_card_and_excel_keep_the_original_stage_indices(width, tmp_path):
     from playwright.sync_api import expect
