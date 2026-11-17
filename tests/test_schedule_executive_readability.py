@@ -194,13 +194,14 @@ def test_actual_executive_renderer_keeps_fonts_bars_and_height_at_realistic_dens
         engine.close()
 
 
-def test_real_monitor_rejects_pm_dates_and_keeps_current_gpr_dates_and_works(gpr_sources):
+@pytest.mark.parametrize('width', [390, 1440])
+def test_real_monitor_rejects_pm_dates_and_keeps_current_gpr_dates_and_works(gpr_sources, width):
     from playwright.sync_api import expect
     from test_monitor_cumulative_controls import browser_page
     block, roots, _ = dense_schedule()
     view = {'cut': '2026-11-06', 'schedule': {'management': roots,
              'dependency_timeline': block, 'dependency_timeline_html': timeline.render(block)}}
-    with browser_page(390) as (page, responses, errors):
+    with browser_page(width) as (page, responses, errors):
         page.evaluate('(v)=>renderGantt(v)', view)
         expand_gantt(page)
         # A supplied PM response cannot become the default GPR forecast.
@@ -216,11 +217,18 @@ def test_real_monitor_rejects_pm_dates_and_keeps_current_gpr_dates_and_works(gpr
         # Positive control: a real saved GPR and confirmed natural mapping
         # reaches the same production script with its own qualified dates.
         current = gpr_sources(view=True)
-        page.evaluate('(v)=>renderGantt(v)', current)
-        cards = page.locator('#readinessSummary .gpr-legacy-fallback .schedule-rnv-cards')
-        expect(cards).to_contain_text('31.10.2026')
-        expect(cards).to_contain_text('06.01.2027')
-        expect(cards).to_contain_text('Оценка по ГПР')
+        # The bound primary assessment requires the date/context of the
+        # response, exactly as the normal refresh flow supplies them.
+        page.evaluate('(v)=>{document.activeElement?.blur();$("cut").value=v.cut;currentView=v;renderGantt(v)}', current)
+        expect(page.locator('#readinessSummary .gpr-legacy-fallback')).to_have_count(0)
+        expect(page.locator('#readinessSummary .gpr-plan-fallback')).to_contain_text('31.10.2026')
+        primary = page.locator('#gprCalendarOverview')
+        expect(primary).to_contain_text('06.01.2027')
+        expect(primary).to_contain_text('1 из 1 работ')
+        expect(page.locator('#gprAutomaticAnalysis')).to_contain_text('06.01.2027')
+        physical = page.locator('#readinessSummary .schedule-physical-summary')
+        expect(physical).to_contain_text('50 / 100 м²')
+        expect(physical).to_contain_text('Объём по 31.10.2026')
         assert current['schedule']['dependency_timeline']['rnv']['state'] == 'estimate'
         # Owner's decision: no dependency lanes and no technical network view.
         assert page.locator('#dependencyTimelineBody .schedule-lane').count() == 0
