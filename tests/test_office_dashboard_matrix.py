@@ -41,6 +41,14 @@ def test_dashboard_distinguishes_cash_valuation_and_applicability(example):
         assert ws.cell(_row(ws,'Итог модели с оценкой удержания, млн ₽'),column).value == pytest.approx(
             ws.cell(_row(ws,'Денежные поступления, млн ₽'),column).value
             + ws.cell(_row(ws,'Оценка удержанных зданий — не деньги, млн ₽'),column).value,abs=1e-6)
+        # Project coverage includes fixed neighboring objects of another type.
+        cf=book[group['paths'][column-2]['cf']]
+        for source_label, dashboard_label in [
+            ('DSCR кредита — минимум по годам и объектам','DSCR кредитов объектов проекта — минимум, ×'),
+            ('LLCR проектного финансирования','LLCR проектного финансирования проекта, ×')]:
+            value=cf.cell(_row(cf,source_label),2).value
+            if isinstance(value,(int,float)):
+                assert ws.cell(_row(ws,dashboard_label),column).value==pytest.approx(value)
         residual_cell=ws.cell(_row(ws,"Оценка удержанных зданий — не деньги, млн ₽"),column)
         if path["strategy"] != "income" or path.get("exit_mode") == "sale":
             assert residual_cell.value == 0

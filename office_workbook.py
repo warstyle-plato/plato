@@ -2437,10 +2437,16 @@ def _disclosure_sheet(book: _Book, current: str | None, path_blocks: dict, path_
         else:
             rows.month(f"{pre}.qty", "Оценка без сделки" if valuation else "Сделка выхода, объект", f"IF(AND({ref('k')}={b('horizon')},{valid},{b('exit_mode')}=\"{EXIT[ns.EXIT_HOLD] if valuation else EXIT[ns.EXIT_SALE]}\"),1,0)", unit="объект", fmt=live_num)
         rows.month(f"{pre}.revenue", "Оценка удержания — не деньги" if valuation else "Выручка", money, unit="млн ₽", fmt=live_num)
-        rows.month(f"{pre}.price", "Цена периода, с НДС", f'IF({p("qty")}>0,{p("revenue")}*1000000/{p("qty")},{fallback})', unit=f"₽/{unit}" + ("/мес." if rental else ""), fmt=live_num, total=False)
+        rows.month(f"{pre}.price", "Цена периода, с НДС", f'IF({p("qty")}>0,{p("revenue")}*1000000/{p("qty")},{fallback})', unit=f"₽/{unit}" + ("/мес." if rental else ""), fmt="#,##0;[Red](#,##0);0", total=False)
+        price_row = rows.r - 1
+        plan.row_dimensions[price_row].height = 90 if exit_flow else 32
+        for cell in plan[price_row][FIRST_COL-1:]:
+            cell.alignment = Alignment(horizontal="right", vertical="top", wrap_text=True)
         # Real non-zero physical periods, including sales at a zero price.
         rows.month(f"{pre}.first", "Служебная: первый физический период", f"IF({p('qty')}>0,{ref('k')},{book.n})", unit="№", fmt=INT, total=False)
         rows.month(f"{pre}.last", "Служебная: последний физический период", f"IF({p('qty')}>0,{ref('k')},-1)", unit="№", fmt=INT, total=False)
+        plan.row_dimensions[rows.r-2].hidden = True
+        plan.row_dimensions[rows.r-1].hidden = True
         first, last = f"MIN({p('first', ':')})", f"MAX({p('last', ':')})"
         active = f"MAX({p('qty', ':')})>0"
         ws.cell(r, 1, title).font = _fnt(b=True)
@@ -2539,6 +2545,8 @@ def _disclosure_sheet(book: _Book, current: str | None, path_blocks: dict, path_
     ws.page_setup.fitToWidth=1
     ws.page_setup.fitToHeight=0
     plan.print_area=f'A1:{book.last}{rows.r}'
+    plan.page_setup.paperSize = plan.PAPERSIZE_A3
+    plan.page_setup.scale = 85
 
 
 def _dashboard_matrix_sheet(book: _Book, report: dict[str, Any], sheet_name: str) -> None:
@@ -2637,8 +2645,9 @@ def _dashboard_matrix_sheet(book: _Book, report: dict[str, Any], sheet_name: str
     section("Рекомендация по стратегии")
     ws.merge_cells(start_row=r, start_column=1, end_row=r + 2, end_column=end)
     npv = [ref(f"{p['code']}.npv") for p in paths]
-    text = (f'"Критерий: NPV проекта. "&IF(COUNT({",".join(npv)})<{len(paths)},'
-            f'"Сравнение неполно: отсутствуют данные по одной или нескольким стратегиям; победитель не назван.",'
+    complete = report.get("comparison_complete", "1")
+    text = (f'"Критерий: NPV проекта. "&IF(OR(COUNT({",".join(npv)})<{len(paths)},{complete}=0),'
+            f'"Сравнение неполно: нет данных NPV или оценки выхода (капитализация / положительный NOI); победитель не назван.",'
             f'"Наибольший NPV: "&{report["better_ref"]}&". "&'
             f'IF(MAX({",".join(npv)})<0,"NPV всех стратегий отрицателен. ",""))&'
             f'"Сравнивается весь проект при неизменных стратегиях соседних объектов. При удержании NPV включает оценку здания, а не только деньги."')
@@ -2657,7 +2666,7 @@ def _dashboard_matrix_sheet(book: _Book, report: dict[str, Any], sheet_name: str
          applicable=lambda p: rent(p) and p.get("exit_override") != ns.EXIT_HOLD)
     link("Состав и объёмы продуктов", TEP_SHEET, 1, "ТЭП: площади объектов и машино-места →")
     if "Раскрытие результатов" in book.wb.sheetnames:
-        link("Продукты и выручка — снимок", "Раскрытие результатов", 1, "Подробное раскрытие текущего расчёта: продукты, цены, продажи и допущения →")
+        link("Продукты и выручка — формулы", "Раскрытие результатов", 1, "Формульное раскрытие: продукты, цены, продажи и допущения →")
     section("Начальные и конечные цены")
     link("Цены продуктов", INPUTS_SHEET, 1, "Исходные ставки, динамика и источник цены — лист «Вводные» →")
     for path in paths:
@@ -3465,6 +3474,12 @@ def build(result: dict[str, Any], spec: dict[str, Any], office_keys: set[str]) -
         for group in book.groups:
             report = _report_sheet(book, spec, capex, group["current"], years, paths=group["paths"],
                                    sheet_name=group["report"], product_title=group["title"])
+            report["comparison_complete"] = "AND(" + ",".join(
+                f"AND({block.r('cap')}>0,{block.r('fwd_noi')}>0)"
+                for p in group["paths"] for block in path_blocks[p["code"]]
+                if block.strategy == ns.STRATEGY_INCOME) + ")"
+            if report["comparison_complete"] == "AND()":
+                report["comparison_complete"] = "1"
             reports[group["report"]] = report
             _dashboard_sheet(book, report, sheet_name=group["dashboard"])
             dashboards.append(group["dashboard"])

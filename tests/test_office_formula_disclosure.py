@@ -92,6 +92,10 @@ def test_exit_with_missing_capitalization_never_sells_one_object_at_zero():
     for col in [2,5,6,7,8,9,10]:
         assert ws.cell(row,col).value=='нет данных — ставка капитализации не задана'
     assert ws.cell(row,11).value==0
+    dashboard=w[ow.DASH_SHEET]
+    recommendation=next(str(c.value) for cells in dashboard for c in cells
+                        if str(c.value or '').startswith('Критерий: NPV проекта.'))
+    assert 'Сравнение неполно' in recommendation and 'победитель не назван' in recommendation
     plan=w[ow.DISCLOSURE_PLAN_SHEET]
     qty=_row(plan,'Сделка выхода, объект')
     assert all((plan.cell(qty,col).value or 0)==0 for col in range(ow.FIRST_COL,plan.max_column+1))
