@@ -20,6 +20,8 @@ from urllib.parse import urlencode
 
 import developaid_monitor as monitor
 import developaid_monitor_daily as daily
+import developaid_contract_stage_profile as stage_profile
+import developaid_contract_match_cache as match_cache
 from developaid_monitor_contracts import _party_norm, _contract_number
 
 _MAX_TEXT = 20000
@@ -244,17 +246,21 @@ def _scope(value: Any) -> set[str]:
     return _scope_info(value)[0]
 
 
+@stage_profile.stage('daily_scope')
 def _contract_scope_info(row: dict) -> tuple[set[str], bool]:
     texts = [row.get("subject"), *(row.get("scope") or [])]
     for item in row.get("physical_items") or []:
         texts.extend([item.get("scope"), item.get("name")])
-    scopes: set[str] = set()
-    ambiguous = False
-    for text in texts:
-        parts, unclear = _scope_info(text)
-        scopes.update(parts)
-        ambiguous = ambiguous or unclear
-    return scopes, ambiguous
+    def parse():
+        scopes: set[str] = set()
+        ambiguous = False
+        for text in texts:
+            parts, unclear = _scope_info(text)
+            scopes.update(parts)
+            ambiguous = ambiguous or unclear
+        return frozenset(scopes), ambiguous
+    scopes, ambiguous = match_cache.remember('scope', tuple(texts), parse)
+    return set(scopes), ambiguous
 
 
 def _contract_scopes(row: dict) -> set[str]:
@@ -681,6 +687,8 @@ def _enrich_raw(project: str, register: dict, cut: str, start: str = "", *,
     return result
 
 
+@stage_profile.stage('daily_enrich')
+@match_cache.scoped
 def enrich(project: str, register: dict, cut: str, start: str = "", *,
            _reports: list[dict] | None = None, _parties: list[str] | None = None) -> dict:
     import developaid_contract_ownership as ownership

@@ -21,6 +21,8 @@ from typing import Any
 import developaid_actuals as actuals
 import developaid_monitor as monitor
 import developaid_monitor_contract_risk as contract_risk
+import developaid_contract_stage_profile as stage_profile
+import developaid_contract_match_cache as match_cache
 from developaid_monitor_ledgers import amount_basis as _amount_basis
 from developaid_monitor_ledgers import basis_metadata_current as _basis_metadata_current
 
@@ -96,6 +98,7 @@ _LEGAL_FORMS = (
 )
 
 
+@match_cache.scalar('party')
 def _party_norm(value: Any) -> str:
     text = _norm(value)
     for full, short in _LEGAL_FORMS:
@@ -121,8 +124,17 @@ def _base_key(item: dict) -> tuple[str, str, str]:
 
 def _reference_key(item: dict) -> tuple[str, str, str]:
     """Compare external references without changing cumulative identity."""
-    return (_party_norm(item.get("customer")), _party_norm(item.get("contractor")),
-            _contract_number(item.get("contract"), reference=True))
+    def original():
+        return (_party_norm(item.get("customer")), _party_norm(item.get("contractor")),
+                _contract_number(item.get("contract"), reference=True))
+    if type(item) is not dict:
+        return original()
+    values = tuple(item.get(field) for field in ('customer', 'contractor', 'contract'))
+    if not match_cache.strings(values):
+        return original()
+    return match_cache.remember('reference', values, lambda: (
+        _party_norm(values[0]), _party_norm(values[1]),
+        _contract_number(values[2], reference=True)))
 
 
 def _source(value: Any, label: str = "") -> dict:
@@ -172,6 +184,7 @@ def _archive(project: str, cut: str) -> dict | None:
     return _prepared(ledgers, project, snapshot)
 
 
+@stage_profile.stage('archive_select')
 def _archives(project: str, cut: str, cache: dict | None = None) -> list[dict]:
     """The newest archive up to the cut, then every earlier one, read like ``_archive``.
 
@@ -236,6 +249,7 @@ def _prepared(ledgers, project: str, snapshot: dict) -> dict:
         "Сохранённый исходный ZIP недоступен: точная привязка уточнения шапки к файлу не подтверждена; отпечаток не выдуман."]}
 
 
+@stage_profile.stage('rss_projection')
 def _read_rss(project: str, cut: str) -> tuple[list[dict], str | None, list[str]]:
     path = monitor._latest(project, "estimate", ".xlsx", cut)
     if path is None:
@@ -860,6 +874,7 @@ def _carry(item: dict, newer: dict[tuple, set]) -> str:
     return "carry" if date and None not in dates else "unmatched"
 
 
+@stage_profile.stage('archive_composition')
 def _composition(project: str, cut: str, cache: dict | None = None) -> dict:
     """Keep detailed KS history and choose closing-summary editions separately.
 
@@ -962,6 +977,7 @@ def _ru_date(value: Any) -> str:
     return ".".join(reversed(day.split("-"))) if day else "неизвестной даты"
 
 
+@stage_profile.stage('register_build')
 def _build_raw(project: str, cut: str = "", *, include_history: bool = True,
                _archive_cache: dict | None = None) -> dict:
     """The universe is the contracts explicitly present in uploaded documents."""
@@ -1053,8 +1069,9 @@ def _build_raw(project: str, cut: str = "", *, include_history: bool = True,
                 continue
             import developaid_monitor_ledgers as ledgers
             duplicates = ledgers.verified_duplicate_sources(ledger.get('items') or [])
-            physical_sources.append((ledger, [_physical(item, ledger, cut, _duplicates=duplicates)
-                                              for item in ledger.get('items') or []]))
+            with stage_profile.measure('physical_projection'):
+                physical_sources.append((ledger, [_physical(item, ledger, cut, _duplicates=duplicates)
+                                                  for item in ledger.get('items') or []]))
         physical = [item for _, views in physical_sources for item in views]
         detail_history = None
         if len({ledger.get('archive_snapshot_id') for ledger, _ in physical_sources}) > 1:
@@ -1372,6 +1389,8 @@ def find_raw_row(register: dict, contract_id: str) -> dict | None:
     return ownership.find_raw_row(register, contract_id)
 
 
+@stage_profile.stage('contracts_build')
+@match_cache.scoped
 def build(project: str, cut: str = "", *, include_history: bool = True,
           _archive_cache: dict | None = None) -> dict:
     """Raw archive observations first; only confirmed ownership can fold them."""

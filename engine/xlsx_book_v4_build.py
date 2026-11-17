@@ -501,6 +501,15 @@ def _build_project_workbook(
     applied_parking = apply_object_parking(inputs, tep)
 
     x = {**DEFAULT_INPUTS, **{k: v for k, v in (inputs or {}).items() if not str(k).startswith("_")}}
+    # У книги отдельной очереди плата уже net, как у её атомарного расчёта.
+    # Сохраняем только этот внутренний признак происхождения базы: иначе
+    # общий vri_relief вычел бы исходный зачёт метров ещё раз при записи B82.
+    if (inputs or {}).get("_vri_relief_applied_at_project") is True:
+        x["_vri_relief_applied_at_project"] = True
+    # География МПТ берётся из того же разбора/импорта, что у движка. Общий
+    # фильтр служебных полей не должен превращать известный район/ТТК в
+    # отсутствие данных: переносим только факты канонического site_position.
+    x.update(site_position.source_inputs(inputs))
     # Книга считает то же, что движок, и по типу проекта тоже: плата за ВРИ,
     # соцкомпенсация и места соцобъектов нежилого проекта в ячейки не идут —
     # тот же предикат, что у движка, а не своя проверка. Движок ниже получает
@@ -1182,8 +1191,7 @@ def _build_project_workbook(
         # в проекте — та, что этот расчёт дал: вписанная поверх сумма — уже
         # не плата за вычетом, а введённая сумма вычетом не была. Служебные
         # ключи с «_» в `x` не попадают, поэтому расчёт МО читается из `inputs`.
-        _mo_calc = (inputs or {}).get("_mo_calc")
-        _mo_vri = (_mo_calc.get("vri") or {}) if isinstance(_mo_calc, dict) else {}
+        _mo_vri = mo_vri_applied_details(inputs or {})
         _applied_rub = _mo_vri.get("compensation_applied_rub")
         _used_mln = _mo_vri.get("payment_used_mln")
         _compensation_mln = (

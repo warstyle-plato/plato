@@ -36,6 +36,7 @@ import developaid_contract_schedule_links as links
 import developaid_contract_terms as terms
 import developaid_contract_price as price
 import developaid_monitor as monitor
+import developaid_contract_stage_profile as stage_profile
 
 MAX_BYTES = 20 * 1024 * 1024
 CHOICES = "links.json"
@@ -320,6 +321,7 @@ def document_prices(project: str, contract_id: str, cut: str) -> dict:
     return price.resolve(_records(folder) if folder.is_dir() else [], cut)
 
 
+@stage_profile.stage('card_listing')
 def listing(project: str, contract_id: str, cut: str = "", acts: dict | None = None) -> dict:
     """Every document in the card with its links, the accumulated plan and fact on `cut` and the removed files.
 
@@ -536,7 +538,8 @@ def _register_control_raw(project: str, register: dict, cut: str) -> dict:
     """
     for row in register.get("rows") or []:
         try:
-            listed = listing(project, row["id"], cut, fact.acts(row))
+            acts = stage_profile.call('card_acts', fact.acts, row)
+            listed = listing(project, row["id"], cut, acts)
         except ContractFilesProblem as exc:
             row["schedule_control"] = {"documents": None, "note": str(exc)}
             continue
@@ -565,6 +568,7 @@ def _register_control_raw(project: str, register: dict, cut: str) -> dict:
     return register
 
 
+@stage_profile.stage('card_controls')
 def register_control(project: str, register: dict, cut: str) -> dict:
     import developaid_contract_ownership as ownership
     with ownership.read_scope(project, cut) as context:

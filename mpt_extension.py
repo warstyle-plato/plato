@@ -415,6 +415,7 @@ _MPT_FRAGMENT = r'''
     host=findVriHost();
     host.appendChild(tpl.content.cloneNode(true));
     wire();
+    if(typeof renderMoVriRelief==='function')renderMoVriRelief();
   }
   function sync(){
     if(!meta) return;
