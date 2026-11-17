@@ -536,6 +536,11 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
     ``parking_price_rub``, ``selling_share`` (маркетинг + продажи), множители
     сценария и ``params`` — вводные стратегии без приставки объекта.
 
+    Аренда земли приходит из общего расчёта договора тремя рядами:
+    ``land_rent_operating`` — начисленный расход, ``land_rent_operating_cash``
+    — его оплата, ``land_rent_valuation`` — начисление для оценки, включая
+    следующие 12 месяцев. Последний ряд не является оплатой продавца.
+
     Возвращает помесячные ряды (ключ — первое число месяца) и итоги. Всё, что
     уходит в общий расчёт, лежит в ``monthly``; движок складывает эти ряды со
     своими и больше ничего не пересчитывает.
@@ -551,6 +556,30 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
     capex_total = sum(capex.values())
     cost_basis = capex_total * (1.0 - vat_share)  # входящий НДС объекта — к вычету
     warnings: list[str] = []
+    land_rent = monthly_sum({mm: float(value) for mm, value in
+                            (plan.get("land_rent_operating") or {}).items() if value})
+    land_rent_cash = monthly_sum({mm: float(value) for mm, value in
+                                 (plan.get("land_rent_operating_cash") or {}).items() if value})
+    land_rent_valuation = monthly_sum({mm: float(value) for mm, value in
+                                      (plan.get("land_rent_valuation") or {}).items() if value})
+    rent_supplied = any(name in plan for name in (
+        "land_rent_operating", "land_rent_operating_cash", "land_rent_valuation"))
+    rent_accrual_complete = (not rent_supplied or
+                             (isinstance(plan.get("land_rent_operating"), dict) and
+                              plan.get("land_rent_operating_complete", True) is True))
+    rent_cash_complete = (not rent_supplied or
+                          (isinstance(plan.get("land_rent_operating_cash"), dict) and
+                           plan.get("land_rent_operating_cash_complete", True) is True))
+    rent_valuation_complete = (strategy != STRATEGY_INCOME or not rent_supplied or
+                               (isinstance(plan.get("land_rent_valuation"), dict) and
+                                plan.get("land_rent_valuation_complete", True) is True))
+    if not rent_accrual_complete:
+        warnings.append("Начисленный расход по операционной аренде земли рассчитан не полностью.")
+    if not rent_cash_complete:
+        warnings.append("Денежный график операционной аренды земли рассчитан не полностью.")
+    if not rent_valuation_complete:
+        warnings.append("Аренда земли для оценки стоимости выхода рассчитана не полностью.")
+        warnings.extend(str(reason) for reason in plan.get("land_rent_valuation_missing") or [])
 
     loan_share = _clamp(_num(params, "loan_share_pct", 60.0) / 100.0, 0.0, 0.95)
     spread = _num(params, "loan_spread_pp", 4.0) / 100.0
@@ -573,7 +602,7 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
     common = monthly_sum({mm: float(v) for mm, v in (plan.get("common_capex") or {}).items() if v})
     common_total = sum(common.values())
 
-    first = min([commissioning, *capex, *common])
+    first = month_key(min([commissioning, *capex, *common, *land_rent_cash]))
     m = defaultdict(lambda: defaultdict(float))  # ряд → месяц → значение
     sold_share: dict[date, float] = {}
     horizon_end = commissioning
@@ -583,14 +612,14 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
     if strategy == STRATEGY_DIRECT:
         start, period = direct_sale_window(plan)
         curve = _choice(params, "direct_sale_curve", SALE_CURVES, "flat")
-        first = min(first, start)
+        first = min(first, month_key(start))
         price_start: date = plan.get("price_start") or commissioning
         growth_pre = float(plan.get("growth_pre", 0.0) or 0.0)
         growth_post = float(plan.get("growth_post", 0.0) or 0.0)
         area = float(plan.get("area_sqm", 0.0) or 0.0)
         spaces = float(plan.get("parking_spaces", 0.0) or 0.0)
         for index, weight in enumerate(sales_weights(period, curve)):
-            month = _add_months(start, index)
+            month = month_key(_add_months(start, index))
             # Цена идёт той же траекторией, что у ДДУ: рост «до ввода» до
             # месяца ввода и «после» — дальше. Один метр в одну дату стоит
             # одинаково при любой стратегии; разницу задаёт сама цена.
@@ -615,6 +644,8 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
         while month <= horizon_end:
             # Налог на имущество — с непроданной доли готового здания.
             m["property_tax"][month] += cost_basis * property_tax / 12.0 * unsold
+            m["land_rent_operating"][month] = land_rent.get(month, 0.0)
+            m["opex"][month] += land_rent.get(month, 0.0)
             unsold = max(0.0, unsold - sold_share.get(month, 0.0))
             month = _add_months(month, 1)
     elif strategy == STRATEGY_INCOME:
@@ -636,22 +667,27 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
             "rent_pre": rent_months_before(params, commissioning),
         }
         hold_months = hold_years * 12
-        horizon_end = plan_horizon_end(plan)
+        horizon_end = month_key(plan_horizon_end(plan))
         for index in range(hold_months):
             month = _add_months(commissioning, index)
             row = operating_month(p, index + 1)
             m["rent_revenue"][month] += row["revenue"]
-            m["opex"][month] += row["opex"]
+            m["land_rent_operating"][month] = land_rent.get(month, 0.0)
+            m["opex"][month] += row["opex"] + land_rent.get(month, 0.0)
             m["occupancy"][month] = row["occupancy"]
             m["property_tax"][month] += cost_basis * property_tax / 12.0
         # Стоимость выхода — от NOI СЛЕДУЮЩИХ двенадцати месяцев: покупатель
         # платит за доход, который получит сам. PR #531 брал последний месяц ×12
         # — это доход продавца, на год индексации меньше.
         forward_noi = sum(
-            operating_month(p, hold_months + k)["noi"] for k in range(1, 13)
+            operating_month(p, hold_months + k)["noi"]
+            - land_rent_valuation.get(_add_months(commissioning, hold_months + k - 1), 0.0)
+            for k in range(1, 13)
         ) - cost_basis * property_tax
         stabilized_noi = sum(
-            operating_month(p, max(p["leaseup"], 1) + k)["noi"] for k in range(12)
+            operating_month(p, max(p["leaseup"], 1) + k)["noi"]
+            - land_rent_valuation.get(_add_months(commissioning, max(p["leaseup"], 1) + k - 1), 0.0)
+            for k in range(12)
         ) - cost_basis * property_tax
         if cap <= 0:
             warnings.append("Ставка капитализации не задана — стоимость выхода не считается.")
@@ -673,9 +709,19 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
     vat_credit = 0.0
     months: list[date] = []
     month = min(first, commissioning)
-    while month <= horizon_end:
+    cash_horizon_end = max([horizon_end, *land_rent_cash])
+    while month <= cash_horizon_end:
         months.append(month)
         month = _add_months(month, 1)
+    for month in months:
+        m["land_rent_operating_cash"][month] = land_rent_cash.get(month, 0.0)
+        # NOI and tax use the service period. Cash uses the payment date:
+        # a prepayment is neither an asset cost nor all the first month's OPEX.
+        m["opex_cash"][month] = (m["opex"][month] - m["land_rent_operating"][month]
+                                  + m["land_rent_operating_cash"][month])
+        m["operating_cash_before_tax"][month] = (
+            m["sale_revenue"][month] + m["rent_revenue"][month]
+            - m["selling_cost"][month] - m["opex_cash"][month] - m["property_tax"][month])
     for month in months:
         charged = (m["sale_revenue"][month] + m["rent_revenue"][month]
                    + m["exit_revenue"][month]) * vat_share
@@ -718,7 +764,7 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
         if balance > 0 and (month >= commissioning or strategy == STRATEGY_DIRECT):
             cash = (m["sale_revenue"][month] + m["rent_revenue"][month]
                     + m["exit_revenue"][month] - m["selling_cost"][month]
-                    - m["opex"][month] - m["property_tax"][month]
+                    - m["opex_cash"][month] - m["property_tax"][month]
                     - m["exit_cost"][month] - m["vat_paid"][month]
                     - m["loan_interest_paid"][month])
             last = month == horizon_end
@@ -805,9 +851,9 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
             m["cost_recognized"][month] = recognized
             m["tax_margin"][month] = (
                 realized_sale.get(month, 0.0) - recognized - m["selling_cost"][month]
-                - m["property_tax"][month])
+                - m["opex"][month] - m["property_tax"][month])
             continue
-        if month >= commissioning:
+        if commissioning <= month <= horizon_end:
             recognized = min(book, monthly_dep)
             if exit_month == month and m["exit_revenue"][month]:
                 recognized = book  # при продаже списывается остаток стоимости
@@ -825,7 +871,7 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
         m["cash_to_equity"][month] = (
             m["sale_revenue"][month] + m["rent_revenue"][month] + m["exit_revenue"][month]
             + m["residual_value"][month]
-            - m["selling_cost"][month] - m["opex"][month] - m["property_tax"][month]
+            - m["selling_cost"][month] - m["opex_cash"][month] - m["property_tax"][month]
             - m["exit_cost"][month] - m["vat_paid"][month]
             - m["loan_interest_paid"][month] - m["loan_fee"][month]
             + m["loan_draw"][month] - m["loan_repayment"][month])
@@ -860,6 +906,7 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
         "months": months,
         "commissioning": plan["commissioning"],
         "horizon_end": plan_horizon_end(plan),
+        "cash_horizon_end": cash_horizon_end,
         # Нули не несём: ряд — это месяцы, в которых что-то было.
         "monthly": {name: {month: value for month, value in series.items() if value or name == "occupancy"}
                     for name, series in m.items()},
@@ -869,6 +916,10 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
         "capex_by_month": dict(capex),
         "common_by_month": dict(common),
         "cost_basis": cost_basis,
+        "land_rent_operating_complete": rent_accrual_complete,
+        "land_rent_operating_cash_complete": rent_cash_complete,
+        "land_rent_valuation_complete": rent_valuation_complete,
+        "land_rent_valuation": dict(land_rent_valuation),
         "totals": {
             "capex": capex_total,
             "revenue": revenue_total,
@@ -877,6 +928,9 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
             "exit_revenue": total("exit_revenue"),
             "residual_value": total("residual_value"),
             "opex": total("opex"),
+            "opex_cash": total("opex_cash"),
+            "land_rent_operating": total("land_rent_operating"),
+            "land_rent_operating_cash": total("land_rent_operating_cash"),
             "property_tax": total("property_tax"),
             "selling_cost": total("selling_cost"),
             "exit_cost": total("exit_cost"),
@@ -893,12 +947,16 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
             "loan_repayment": total("loan_repayment"),
             "loan_peak": peak,
             "noi": noi_total,
+            "noi_complete": rent_accrual_complete,
             "tax_margin": total("tax_margin"),
         },
         "kpi": {
             "stabilized_noi": stabilized_noi,
+            "stabilized_noi_complete": rent_valuation_complete,
             "forward_noi": forward_noi,
+            "forward_noi_complete": rent_valuation_complete,
             "exit_value": exit_value,
+            "exit_value_complete": rent_valuation_complete,
             # Доходность на затраты — NOI года после заполнения на ВСЕ затраты
             # создания: стройку здания и его долю общих затрат с участком.
             # Делитель «только стройка» давал 12,1% вместо 6,6% (Пролетарский
@@ -906,7 +964,7 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
             "cost_total": capex_total + common_total,
             "yield_on_cost": (stabilized_noi / (capex_total + common_total)
                               if capex_total + common_total else 0.0),
-            "exit_month": exit_month,
+            "exit_month": plan_horizon_end(plan) if exit_month is not None else None,
             "equity_cash_flow_sum": sum(equity_cf),
             "icr_min": min(icr_by_year) if icr_by_year else None,
             "icr_by_year": icr_by_year,
