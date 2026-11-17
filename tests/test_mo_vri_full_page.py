@@ -235,3 +235,43 @@ def test_full_page_rejects_old_preview_and_isolates_a_replaced_project(served, c
             assert after_response[key] == before_response[key], key
         assert after_response["fee"] == (444 if change == "project" else 1000)
         assert requests.count("/mo/vri-compensation") == 1
+
+
+def test_full_page_reset_clears_mo_draft_and_rejects_its_late_response(served):
+    from playwright.sync_api import expect
+
+    with full_page(served, 390) as (page, requests, _):
+        page.locator("#moVriGross").fill("100")
+        page.locator("#moCompensation").fill("10")
+        page.evaluate("""()=>{
+          window.moResetFetch=window.fetch.bind(window);
+          window.fetch=async(...args)=>{
+            const response=await window.moResetFetch(...args);
+            if(args[0]==='/mo/vri-compensation')
+              await new Promise(resolve=>{window.moResetRelease=resolve});
+            return response;
+          };
+          window.moResetPending=previewMoVriRelief();return true;
+        }""")
+        page.wait_for_function("()=>typeof window.moResetRelease==='function'")
+        old_run = page.evaluate("moVriReliefRun")
+        page.evaluate("()=>resetAll()")
+        cleared = page.evaluate("""()=>({
+          owner:moVriReliefOwner,project:moVriReliefProjectKey,model:moVriReliefModelKey,
+          preview:moVriReliefPreview,source:moVriReliefBaseSource,
+          grossEdited:moVriReliefGrossEdited,compEdited:moVriReliefCompEdited,
+          run:moVriReliefRun,proof:inputs._mo_vri_relief||null,
+          gross:document.getElementById('moVriGross').value,
+          compensation:document.getElementById('moCompensation').value})""")
+        assert cleared == {"owner": None, "project": "", "model": "", "preview": None,
+                           "source": None, "grossEdited": False, "compEdited": False,
+                           "run": cleared["run"], "proof": None, "gross": "", "compensation": ""}
+        assert cleared["run"] > old_run
+        page.evaluate("()=>window.moResetRelease()")
+        page.evaluate("async()=>await window.moResetPending")
+        page.evaluate("()=>{inputs.vri_region='mo';renderInputs();openTab('vri')}")
+        expect(page.locator("#moVriGross")).to_have_value("")
+        expect(page.locator("#moCompensation")).to_have_value("")
+        expect(page.locator("#moVriApplyButton")).to_be_disabled()
+        assert page.evaluate("inputs._mo_vri_relief||null") is None
+        assert requests.count("/mo/vri-compensation") == 1

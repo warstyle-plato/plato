@@ -190,6 +190,17 @@ function invalidateMoVriRelief(){
  const preview=moVriNode('moVriPreviewButton');if(preview)preview.disabled=false;
  const result=moVriNode('moVriReliefResult');if(result)result.style.display='none';
 }
+function resetMoVriRelief(){
+ // Номер запроса только растёт: поздний ответ старого проекта не становится
+ // допустимым после сброса. Сам черновик и его происхождение принадлежат проекту.
+ invalidateMoVriRelief();
+ moVriReliefOwner=null;moVriReliefProjectKey='';moVriReliefModelKey='';
+ moVriReliefPreview=null;moVriReliefBaseSource=null;
+ moVriReliefGrossEdited=false;moVriReliefCompEdited=false;
+ ['moVriGross','moCompensation'].forEach(id=>{const field=moVriNode(id);if(field)field.value=''});
+ ['moVriGrossSource','moVriReliefStatus'].forEach(id=>{const node=moVriNode(id);if(node)node.textContent=''});
+ const totals=moVriNode('moVriReliefTotals');if(totals)totals.innerHTML='';
+}
 function moVriReliefEdited(baseChanged){
  invalidateMoVriRelief();
  if(baseChanged){moVriReliefGrossEdited=true;moVriReliefBaseSource={kind:'manual',label:'Плата до уменьшения введена вручную'}}
