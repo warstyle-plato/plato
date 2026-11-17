@@ -2131,10 +2131,13 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
     def unavailable(reason: str, **extra: Any) -> dict[str, Any]:
         result = {"known": False, "reason": reason, **extra,
                   "source_dates": _funding_source_dates(project, rss, cut)}
-        try:
-            result['bank_observations'] = _rss_bank_observations(rss, cut)
-        except Exception as exc:
-            result['bank_observations'] = {'reason': type(exc).__name__+': '+str(exc)}
+        # Historical trend points return money/schedule, not these source
+        # observations. Keep ordinary views and reports fully populated.
+        if not monitor._HISTORICAL_TREND_READ.get():
+            try:
+                result['bank_observations'] = _rss_bank_observations(rss, cut)
+            except Exception as exc:
+                result['bank_observations'] = {'reason': type(exc).__name__+': '+str(exc)}
         notes = funding_source_notes(result)
         result["limit_reconciliation_lines"] = [notes["paid"], notes["limit"],
             result["source_dates"]["source_scope_note"]]
