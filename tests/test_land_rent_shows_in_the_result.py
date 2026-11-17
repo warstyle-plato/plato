@@ -37,6 +37,7 @@ ASK = "Предварительная экономика: уточните ар�
 LEASE = {"land_right": "lease", "vri_region": "msk", "land_rent_mode": "manual",
          "land_rent_cadastral_mln": 100, "land_rent_regime_start": "2027-01-01",
          "project_start": "2027-01-01", "land_rent_rates": [{"year": 1, "rate_pct": 1.5}],
+         "land_rent_cadastral_change_date": "2027-12-01",
          "land_rent_tail_rule": "repeat_last", "land_rent_vat_treatment": "public_exempt"}
 
 
@@ -54,6 +55,16 @@ def test_a_known_rent_sum_does_not_ask_to_clarify_the_rent():
     assert summary["preliminary"] and summary["preliminary_reason"]
     assert summary["land_rent_sum"] == {"known": True, "reason": ""}
     assert core.entry_price_verdict(bundle)["title"] != ASK
+
+
+def test_a_future_value_without_its_confirmed_date_keeps_the_rent_unknown():
+    bundle = _run(land_rent_termination_date="2028-01-01",
+                  land_rent_cadastral_target_mln=120,
+                  land_rent_cadastral_change_date=None)
+    result = bundle["consolidated"]
+    assert "cadastral_date" in result["land_rent"]["financial_missing_codes"]
+    assert result["summary"]["land_rent_sum"]["known"] is False
+    assert core.entry_price_verdict(bundle)["title"] == ASK
 
 
 @pytest.mark.parametrize("case, kw, reason", [
