@@ -9,6 +9,7 @@ import developaid_schedule_plan_scenario as scenario
 import developaid_schedule_readiness as readiness
 from test_gpr_why_page import why_view
 from test_management_calendar_membership import _native_scoped_view
+from test_readiness_date_only_projection import site
 
 CUT = '2035-04-10'
 SOURCE = 'd'*64
@@ -138,15 +139,34 @@ def test_future_profile_uses_work_dates_without_applying_future_weights():
     assert value['project']['forecast']['finish']
 
 
-def test_audited_date_carry_keeps_profile_members_and_reference_provenance():
-    schedule = profiled()
-    state = schedule['readiness']
-    state['profile_source_carry'] = dict(kind='approved_date_only_projection',
-                                       from_source_sha256='f'*64, to_source_sha256=state['source_sha256'])
-    value = work_dates.build(schedule, schedule['cut'])
-    assert value['scope_kind'] == 'readiness_profile'
-    assert value['reference_source_sha256'] == 'f'*64
-    assert value['project']['work_ids'] == state['project']['work_ids']
+def test_audited_date_carry_matches_native_owner_event_and_independent_fact_lineage(site):
+    import developaid_monitor as monitor
+    from test_readiness_date_only_projection import PROJECT, NOW, save_profile, prepared, approve
+    save_profile(site)
+    approve(prepared(site))
+    for cut in ['2026-11-16', NOW]:
+        schedule = monitor.build(PROJECT, cut)['schedule']
+        state = schedule['readiness']
+        value = work_dates.build(schedule, cut)
+        assert value['scope_kind'] == 'readiness_profile' and value['state'] != 'unavailable'
+        assert value['reference_source_sha256'] == state['profile_reference_source_sha256'] == site['parent']['source_sha256']
+        assert value['project']['work_ids'] == state['project']['work_ids']
+        for branch, key, changed in [
+            ('profile_source_carry', 'from_source_sha256', 'f'*64),
+            ('profile_source_carry', 'source_revision', 99),
+            ('profile_source_carry', 'profile_sha256', 'f'*64),
+            ('profile_source_carry', 'profile_effective_from', '2026-11-15'),
+        ]:
+            bad = copy.deepcopy(schedule)
+            bad['readiness'][branch][key] = changed
+            assert work_dates.build(bad, cut)['reason_code'] == 'profile_carry_binding'
+        legacy = copy.deepcopy(schedule)
+        legacy['readiness'].pop('profile_reference_source_sha256')
+        result = work_dates.build(legacy, cut)
+        assert (result['state'] != 'unavailable') == bool(state.get('fact_source_carry'))
+        if state.get('fact_source_carry'):
+            legacy['readiness']['fact_source_carry']['from_source_sha256'] = 'f'*64
+            assert work_dates.build(legacy, cut)['reason_code'] == 'profile_carry_binding'
 
 
 @pytest.mark.parametrize('mutate', [
@@ -174,6 +194,24 @@ def test_report_reads_the_same_known_partial_date_and_comparison():
     assert result['summary']['plan_finish'] == forecast['comparison_plan_finish']
     assert result['summary']['delta_days'] == forecast['delta_days']
     assert result['covered'] == 1 and result['total'] == 2
+
+
+def test_dashboard_schedule_sentence_shares_the_dto_and_preserves_money_and_rnv():
+    from developaid_monitor_dashboard import refresh_schedule_summary
+    schedule = profiled()
+    schedule['work_forecast'] = work_dates.build(schedule, schedule['cut'])
+    value = dict(cut=schedule['cut'], schedule=schedule, dashboard=dict(
+        schedule=dict(qualified_rnv=dict(state='partial', indicative_forecast='2048-01-01')),
+        summary=['Срок. Прежняя другая оценка.', 'Бюджет: прежний текст.', 'Продажи: прежний текст.']))
+    before = copy.deepcopy(value)
+    refresh_schedule_summary(value)
+    text = value['dashboard']['summary'][0]
+    assert schedule['work_forecast']['summary']['forecast_text'] in text
+    assert schedule['work_forecast']['summary']['scope_text'] in text
+    assert '2048' not in text
+    assert value['dashboard']['summary'][1:] == before['dashboard']['summary'][1:]
+    assert value['dashboard']['schedule'] == before['dashboard']['schedule']
+    assert schedule == before['schedule']
 
 
 def test_no_usable_readings_names_the_missing_evidence_instead_of_missing_weights():

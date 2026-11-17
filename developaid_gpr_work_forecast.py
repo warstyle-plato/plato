@@ -71,6 +71,56 @@ def _profile_state(state):
     return 'invalid'
 
 
+def _carry_consistent(schedule, state, carry):
+    """Cross-check already-owned lineage evidence without opening a source."""
+    if not isinstance(carry, dict):
+        return False
+    if not carry:
+        return True
+    source = schedule['approved_plan']
+    if (carry.get('kind') != 'approved_date_only_projection'
+            or carry.get('to_source_sha256') != source.get('source_sha256')
+            or not isinstance(carry.get('from_source_sha256'), str) or not _SHA.fullmatch(carry['from_source_sha256'])
+            or carry['from_source_sha256'] == carry['to_source_sha256']
+            or carry.get('profile_decisions_unchanged') is not True or carry.get('persisted') is not False):
+        return False
+    if (type(state.get('profile_revision')) is not int or state['profile_revision'] <= 0
+            or not isinstance(state.get('profile_sha256'), str) or not _SHA.fullmatch(state['profile_sha256'])
+            or not _day(state.get('profile_effective_from')) or state['profile_effective_from'] > state['cut']
+            or any(carry.get(key) != state.get(key) for key in
+                   ['profile_revision', 'profile_sha256', 'profile_effective_from'])
+            or type(source.get('revision')) is not int or source['revision'] <= 0
+            or type(carry.get('source_revision')) is not int or carry['source_revision'] != source['revision']
+            or type(carry.get('profile_revision')) is not int
+            or carry.get('source_effective_from') != source.get('effective_from')
+            or carry.get('source_approved_at') != source.get('approved_at')):
+        return False
+    common = ['from_source_sha256', 'to_source_sha256', 'source_revision', 'source_effective_from',
+              'source_approved_at', 'parent_effective_from', 'parent_approved_at', 'changed_date_cells', 'persisted']
+    fact = state.get('fact_source_carry')
+    source_fact = schedule.get('fact_source_carry')
+    if fact is not None or source_fact is not None:
+        if (not isinstance(fact, dict) or not isinstance(source_fact, dict)
+                or fact.get('kind') != 'unchanged_parent_gpr_facts' or fact != source_fact
+                or any(fact.get(key) != carry.get(key) for key in common)):
+            return False
+    reference = state.get('profile_reference_source_sha256')
+    if reference is None:
+        # A retained old-producer snapshot needs independent fact lineage.
+        # In its absence an update is required; another cut is never consulted.
+        if not fact:
+            return False
+    elif reference != carry['from_source_sha256']:
+        return False
+    for row in [*(schedule.get('rows') or []), *(schedule.get('undated_works') or [])]:
+        row_carry = row.get('gpr_fact_source_carry')
+        if row_carry is not None and (not fact or not isinstance(row_carry, dict)
+                or row_carry.get('kind') != fact['kind']
+                or any(row_carry.get(key) != carry.get(key) for key in common)):
+            return False
+    return True
+
+
 def build(schedule, cut):
     """Compile dates from the same current roster and existing native points."""
     cut = str(cut)
@@ -166,9 +216,7 @@ def build(schedule, cut):
     if forecast.get('finish') != stats['finish'] or forecast.get('covered') != stats['covered']:
         return unavailable(schedule, cut, 'Общая дата или покрытие не совпали с точками того же состава.', 'summary_mismatch')
     carry = state.get('profile_source_carry') or {}
-    if (not isinstance(carry, dict) or carry and (carry.get('kind') != 'approved_date_only_projection'
-            or carry.get('to_source_sha256') != source
-            or not isinstance(carry.get('from_source_sha256'), str) or not _SHA.fullmatch(carry['from_source_sha256']))):
+    if not _carry_consistent(schedule, state, carry):
         return unavailable(schedule, cut, 'Связь профиля с исправленной версией ГПР требует проверки.', 'profile_carry_binding')
     value.update(schema=SCHEMA, basis=BASIS, scope_kind=scope_kind, profile_state=profile_state,
                  state='complete' if stats['complete'] else 'unavailable' if not stats['covered'] else 'partial' if missing or scope_kind == 'construction_partial' else 'known',

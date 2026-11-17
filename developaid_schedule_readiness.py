@@ -389,6 +389,7 @@ def model(work_fact, *, cut, baseline_scope, source_sha256, profile=None, full_r
     result['profile_state'] = 'active' if active else 'invalid' if profile else 'absent'
     result['profile_state_reason'] = ('bound_profile' if active else
                                     'profile_identity_or_membership' if profile else 'no_profile')
+    result['profile_reference_source_sha256'] = profile.get('full_source_sha256') if active else None
     return result
 
 
@@ -429,6 +430,8 @@ def build(project, cut, schedule):
     result['profile_revision'] = (event or {}).get('revision', 0)
     result['profile_sha256'] = (event or {}).get('profile_sha256', '')
     result['profile_effective_from'] = ((event or {}).get('profile') or {}).get('effective_from', '')
+    # Keep the owner event's source before the audited date-only projection.
+    result['profile_reference_source_sha256'] = ((event or {}).get('profile') or {}).get('full_source_sha256')
     if carry:
         result['profile_source_carry'] = carry
     if schedule.get('fact_source_carry'):
