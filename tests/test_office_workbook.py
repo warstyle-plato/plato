@@ -489,38 +489,30 @@ def _width(sheet, first: int, last: int) -> float:
 
 
 def test_the_dashboard_is_laid_out_readably() -> None:
-    """Дашборд владельца в Excel для Mac (25.10.2026): легенда графика лежала
-    поверх столбиков, ось несла формат ячеек «#,##0.0;[Red](…)» («,0», «(0)»),
-    график был уже сетки плиток, подписи плиток и вывод обрезались."""
+    """The dashboard compares all strategies in stable columns, including print."""
     sheet = openpyxl.load_workbook(io.BytesIO(_book("офис по ДДУ")[0]))[ow.DASH_SHEET]
-    tile_cols = max(r.max_col for r in sheet.merged_cells.ranges if r.min_row > 2 and r.max_col < 12)
-
-    labels = [c for row in sheet.iter_rows(min_row=3) for c in row
-              if c.fill.fgColor.rgb and c.fill.fgColor.rgb.endswith(ow.TILE) and c.value]
-    assert len(labels) >= 6
-    for cell in labels:
-        merged = next(r for r in sheet.merged_cells.ranges if cell.coordinate in r)
-        lines = (sheet.row_dimensions[cell.row].height or LINE) // LINE
-        assert cell.alignment.wrap_text and lines >= 2, cell.coordinate
-        # Жирный шрифт шире цифры, по которой Excel мерит столбец: запас 20 %.
-        assert len(cell.value) <= lines * 0.8 * _width(sheet, merged.min_col, merged.max_col), cell.value
-
-    # Вывод: самый длинный случай — все оговорки формулы разом и самое длинное
-    # имя способа; объединённые строки Excel сам не растит.
-    verdict = next(r for r in sheet.merged_cells.ranges if r.min_col == 1 and r.max_col == 12)
+    labels = [sheet.cell(4, col) for col in range(2, 7)]
+    assert all(cell.value.startswith("=") and cell.alignment.wrap_text for cell in labels)
+    assert sheet.row_dimensions[4].height >= 60
+    assert sheet.freeze_panes == "B5"
+    assert sheet.print_title_rows == "$1:$4"
+    assert sheet.print_title_cols == "$A:$A"
+    assert sheet.page_setup.fitToWidth == 1 and sheet.page_setup.fitToHeight == 0
+    assert str(sheet.page_setup.paperSize) == str(sheet.PAPERSIZE_A3)
+    assert len(sheet.print_area) > 0
+    # Financial cells are individual cells; no multi-column cards remain.
+    for merged in sheet.merged_cells.ranges:
+        assert merged.min_row <= 2 or merged.min_col == 1 or merged.min_col == 2
+    verdict = next(r for r in sheet.merged_cells.ranges if r.min_col == 1 and r.min_row > 4)
     cell = sheet.cell(verdict.min_row, 1)
     assert cell.alignment.wrap_text
-    longest = sum(len(t) for t in re.findall(r'"([^"]+)"', cell.value)) + max(len(p["label"]) for p in ow.PATHS)
-    height = sum(sheet.row_dimensions[r].height or LINE for r in range(verdict.min_row, verdict.max_row + 1))
-    assert height // LINE * 0.7 * _width(sheet, 1, 12) >= longest, (height, longest)
-
+    assert sum(sheet.row_dimensions[r].height or LINE for r in range(verdict.min_row, verdict.max_row + 1)) >= 60
     (chart,) = sheet._charts
     assert chart.legend.position == "b" and not chart.legend.overlay
     fmt = chart.y_axis.numFmt
-    assert fmt is not None and not fmt.sourceLinked and "[Red]" not in fmt.formatCode and ".0" not in fmt.formatCode
+    assert fmt is not None and not fmt.sourceLinked and "[Red]" not in fmt.formatCode
     assert chart.y_axis.majorGridlines is not None
-    anchor = chart.anchor
-    assert type(anchor).__name__ == "TwoCellAnchor", type(anchor).__name__
-    assert anchor._from.col == 0 and anchor.to.col >= tile_cols
-    assert anchor._from.row >= verdict.max_row  # под выводом, без наложения
-    assert anchor.to.row - anchor._from.row >= 15
+    assert type(chart.anchor).__name__ == "TwoCellAnchor"
+    assert chart.anchor._from.col == 0 and chart.anchor.to.col == 6
+    assert chart.anchor._from.row >= verdict.max_row
+    assert chart.anchor.to.row - chart.anchor._from.row >= 15

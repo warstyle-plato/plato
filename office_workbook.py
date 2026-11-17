@@ -2349,7 +2349,7 @@ def _better_formula(paths=PATHS) -> str:
     for j in range(len(paths) - 2, -1, -1):
         rest = ",".join(npv[j + 1:])
         formula = f'IF({npv[j]}>=MAX({rest}),{_path_label(paths[j])},{formula})'
-    return formula
+    return f'IF(COUNT({",".join(npv)})<{len(paths)},"нет данных — сравнение неполно",{formula})'
 
 
 # --- «Дашборд», «ИНСТРУКЦИЯ», «Источники» --------------------------------------
@@ -2364,8 +2364,190 @@ CHART_AXIS_FORMAT = "#,##0;-#,##0;0"
 VERDICT_CHARS_PER_LINE = 110
 
 
+def _dashboard_matrix_sheet(book: _Book, report: dict[str, Any], sheet_name: str) -> None:
+    """Metrics stay in rows, model strategies keep the same column throughout.
+
+    Only presentation references change. Calculation sheets, registry addresses,
+    named ranges and all model formulas remain in their original locations.
+    """
+    paths = report["paths"]
+    matrix_num = "#,##0.0;[Red](#,##0.0);0"
+    matrix_pct = "0.0%;[Red]-0.0%;0.0%"
+    end = 1 + len(paths)
+    last_col = L(end)
+    ws = book.sheet(sheet_name, "DEVELOPAID · ОФИСЫ · СРАВНЕНИЕ СТРАТЕГИЙ", width=end, tab=DARK)
+    ws.column_dimensions["A"].width = 52
+    for column in range(2, end + 1):
+        ws.column_dimensions[L(column)].width = 28
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=end)
+    ws.row_dimensions[1].height = 30
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=end)
+    book.pending.append((ws["A2"], f'{ref("in.name")}&" · меняется стратегия: {report["title"]}; остальные объекты — как в проекте"', None, sheet_name))
+    ws["A2"].alignment = Alignment(wrap_text=True, vertical="top")
+    ws.row_dimensions[2].height = 30
+    ws.cell(4, 1, "Показатель / единица")
+    for column, path in enumerate(paths, start=2):
+        cell = ws.cell(4, column)
+        book.pending.append((cell, _path_label(path), None, sheet_name))
+        cell.fill = _fill(path["tab"])
+    for cell in ws[4][:end]:
+        cell.font = _fnt(b=True, color="FFFFFF")
+        if cell.column == 1:
+            cell.fill = _fill(HEAD)
+        cell.alignment = Alignment(wrap_text=True, vertical="center")
+    # Exact product labels can be long; a merged card grid cannot preserve
+    # their column identity. Each label gets the same generous header height.
+    ws.row_dimensions[4].height = LINE_HEIGHT * max(4, max(-(-len(p["label"]) // 22) for p in paths))
+    r = 5
+
+    def section(title: str) -> None:
+        nonlocal r
+        ws.cell(r, 1, title)
+        for cell in ws[r][:end]:
+            cell.fill, cell.font = _fill(LIGHT), _fnt(b=True, color=DARK)
+            cell.border = Border(top=_thin, bottom=_thin)
+        ws.row_dimensions[r].height = 25
+        r += 1
+
+    def line(label: str, key: str, fmt: str = matrix_num, applicable=None) -> None:
+        nonlocal r
+        ws.cell(r, 1, label).font = _fnt()
+        for column, path in enumerate(paths, start=2):
+            cell = ws.cell(r, column)
+            if applicable is not None and not applicable(path):
+                cell.value = "не применяется"
+            else:
+                formula = ref(f"{path['code']}.{key}")
+                # Preserve model explanations, zero and missing as distinct states.
+                missing = '"не применяется — IRR потока не определяется"' if key in ("irr", "irr_eq") else '"нет данных"'
+                if key in ("dscr_min", "llcr"):
+                    debt = ref(f"{path['code']}." + ("loan_peak" if key == "dscr_min" else "pf_peak"))
+                    missing = f'IF({debt}=0,"не применяется — нет кредита","нет данных")'
+                book.pending.append((cell, f'IF({formula}="",{missing},{formula})', None, sheet_name))
+            cell.number_format = fmt
+            cell.font = _fnt(b=key in ("npv", "irr", "t_net", "peak"), color=DARK)
+            cell.alignment = Alignment(horizontal="right", vertical="center", wrap_text=True)
+            cell.border = Border(bottom=_thin)
+        ws.cell(r, 1).alignment = Alignment(wrap_text=True, vertical="center")
+        ws.row_dimensions[r].height = 32
+        r += 1
+
+    def link(title: str, target_sheet: str, target_row: int, text: str) -> None:
+        nonlocal r
+        ws.cell(r, 1, title).font = _fnt(b=True)
+        ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=end)
+        cell = ws.cell(r, 2, text)
+        cell.hyperlink = f"#'{target_sheet}'!A{target_row}"
+        cell.font = _fnt(color="0563C1", underline="single")
+        cell.alignment = Alignment(wrap_text=True, vertical="center")
+        ws.cell(r, 1).alignment = Alignment(wrap_text=True, vertical="center")
+        ws.row_dimensions[r].height = 32
+        r += 1
+
+    section("Показатели проекта")
+    line("NPV проекта, млн ₽", "npv")
+    line("IRR проекта до кредита, % годовых", "irr", matrix_pct)
+    line("Чистая прибыль проекта, млн ₽", "t_net")
+    section("Собственные деньги — после финансирования")
+    line("Пик собственных денег, млн ₽", "peak")
+    line("NPV собственника, млн ₽", "npv_eq")
+    line("IRR собственника, % годовых", "irr_eq", matrix_pct)
+    section("Деньги и оценка")
+    line("Денежные поступления, млн ₽", "t_cash_received")
+    line("Оценка удержанных зданий — не деньги, млн ₽", "t_residual")
+    line("Итог модели с оценкой удержания, млн ₽", "t_revenue")
+
+    section("Рекомендация по стратегии")
+    ws.merge_cells(start_row=r, start_column=1, end_row=r + 2, end_column=end)
+    npv = [ref(f"{p['code']}.npv") for p in paths]
+    text = (f'"Критерий: NPV проекта. "&IF(COUNT({",".join(npv)})<{len(paths)},'
+            f'"Сравнение неполно: отсутствуют данные по одной или нескольким стратегиям; победитель не назван.",'
+            f'"Наибольший NPV: "&{report["better_ref"]}&". "&'
+            f'IF(MAX({",".join(npv)})<0,"NPV всех стратегий отрицателен. ",""))&'
+            f'"Сравнивается весь проект при неизменных стратегиях соседних объектов. При удержании NPV включает оценку здания, а не только деньги."')
+    cell = ws.cell(r, 1)
+    book.pending.append((cell, text, None, sheet_name))
+    cell.font = _fnt(b=True, color=DARK)
+    cell.alignment = Alignment(wrap_text=True, vertical="top")
+    for row in range(r, r + 3):
+        ws.row_dimensions[row].height = 25
+    r += 4
+    section("Продукты и выручка")
+    rent = lambda p: p["strategy"] == ns.STRATEGY_INCOME
+    line("Продажи продукта и мест, млн ₽", "o_sale", applicable=lambda p: not rent(p))
+    line("Арендная выручка, млн ₽", "o_rent", applicable=rent)
+    line("Продажа здания при выходе, млн ₽", "o_exit",
+         applicable=lambda p: rent(p) and p.get("exit_override") != ns.EXIT_HOLD)
+    link("Состав и объёмы продуктов", TEP_SHEET, 1, "ТЭП: площади объектов и машино-места →")
+    if "Раскрытие результатов" in book.wb.sheetnames:
+        link("Продукты и выручка — снимок", "Раскрытие результатов", 1, "Подробное раскрытие текущего расчёта: продукты, цены, продажи и допущения →")
+    section("Начальные и конечные цены")
+    link("Цены продуктов", INPUTS_SHEET, 1, "Исходные ставки, динамика и источник цены — лист «Вводные» →")
+    for path in paths:
+        link(path["label"], path["flows"], 1, "Цены периодов и выручка — расчётные ряды стратегии →")
+    section("Темпы продаж — расчётный план")
+    for path in paths:
+        link(path["label"], path["flows"], 1, "Объёмы по периодам, заполнение и аренда →")
+    section("Структура затрат")
+    line("CAPEX с участком, млн ₽", "t_capex")
+    line("Продажи и эксплуатация, млн ₽", "t_costs")
+    line("Проценты и комиссии, млн ₽", "t_financing")
+    line("Налог на прибыль, млн ₽", "t_tax")
+    line("НДС, млн ₽", "t_vat")
+    line("Расходы всего, млн ₽", "t_expenses")
+    link("Статьи затрат", CAPEX_SHEET, 1, "Смета и помесячное финансирование статей →")
+    section("Денежный поток и финансирование")
+    line("Кредит объектов — пик, млн ₽", "loan_peak")
+    line("Проектное финансирование — пик, млн ₽", "pf_peak")
+    line("Эскроу — пик, млн ₽", "escrow_peak")
+    line("DSCR — минимум, ×", "dscr_min", RATIO, applicable=rent)
+    line("LLCR, ×", "llcr", RATIO, applicable=lambda p: p["strategy"] == ns.STRATEGY_DDU)
+    rep = book.wb[report["sheet"]]
+    head, first, last = report["owner_years"]
+    link("Поток по годам", report["sheet"], head, "Сравнение собственных денег по годам →")
+    section("Допущения и проверка")
+    link("Основания расчёта", GUIDE_SHEET, 1, "Инструкция: ставки, деньги и оценка, границы сравнения →")
+    link("Все проверки книги", CHECK_SHEET, 1, "Проверки пересчитанных формул против движка →")
+    ws.cell(r, 1, "Проверки книги").font = _fnt(b=True)
+    book.pending.append((ws.cell(r, 2), ref("chk.verdict"), None, sheet_name))
+    r += 2
+    if last >= first:
+        chart = BarChart()
+        chart.title = "Поток собственника по годам, млн ₽"
+        chart.add_data(Reference(rep, min_col=2, max_col=end, min_row=head, max_row=last), titles_from_data=True)
+        chart.set_categories(Reference(rep, min_col=1, min_row=first, max_row=last))
+        for series, path in zip(chart.series, paths):
+            series.graphicalProperties.solidFill = path["tab"]
+        chart.x_axis.tickLblPos = "low"
+        chart.x_axis.delete = chart.y_axis.delete = False
+        chart.legend.position, chart.legend.overlay = "b", False
+        chart.y_axis.numFmt = NumFmt(formatCode=CHART_AXIS_FORMAT, sourceLinked=False)
+        chart.y_axis.majorGridlines = ChartLines()
+        chart.y_axis.title = "млн ₽"
+        anchor = TwoCellAnchor()
+        anchor._from, anchor.to = AnchorMarker(col=0, row=r - 1), AnchorMarker(col=end, row=r - 1 + CHART_ROWS)
+        chart.anchor = anchor
+        ws.add_chart(chart)
+        r += CHART_ROWS
+    ws.freeze_panes = "B5"
+    ws.print_title_rows = "1:4"
+    ws.print_title_cols = "A:A"
+    ws.print_area = f"A1:{last_col}{r}"
+    ws.page_setup.paperSize = ws.PAPERSIZE_A3
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
+    # Page height remains unlimited: a multi-section report is never shrunk
+    # to a single unreadable page. The top matrix stays together on page 1.
+    ws.row_breaks.append(Break(id=21))
+
+
 def _dashboard_sheet(book: _Book, report: dict[str, Any], with_pf: bool = False,
                      sheet_name: str = DASH_SHEET) -> None:
+    if not book.project_only and report.get("title") == "Офисы":
+        _dashboard_matrix_sheet(book, report, sheet_name)
+        return
     DASH_SHEET = sheet_name  # noqa: N806
     PATHS = report["paths"]  # noqa: N806 — способы этой группы
     if book.project_only:
