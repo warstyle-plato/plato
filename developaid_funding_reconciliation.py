@@ -7,6 +7,7 @@ were reviewed. Unproved coverage stays explicit rather than becoming zero.
 from __future__ import annotations
 
 import math
+import copy
 import re
 import datetime
 from typing import Any
@@ -52,7 +53,12 @@ def _payment_gaps(source_completeness: dict) -> list[dict]:
     for rows in (source_completeness.get("payments") or {}).values():
         for row in rows:
             key = (row.get("source_row"), tuple(sorted(row.get("fields") or [])))
-            unique[key] = {"source_row": row.get("source_row"), "fields": list(row.get("fields") or [])}
+            previous = unique.get(key) or {}
+            context = {name: copy.deepcopy(row[name] if name in row else previous[name])
+                       for name in ("sheet", "payment_context", "amount_cell")
+                       if name in row or name in previous}
+            unique[key] = {"source_row": row.get("source_row"), "fields": list(row.get("fields") or []),
+                           **context}
     return list(unique.values())
 
 
