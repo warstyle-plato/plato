@@ -66,7 +66,7 @@ def storage(tmp_path, monkeypatch):
 def test_real_source_states_and_values(scenario):
     cut = sources(scenario)
     built = report.build(PROJECT, "week", cut)
-    executive = built["construction_summary"]
+    executive = report._executive_schedule(built)
     expected = {"noarchive": "no_archive", "unmapped": "unmapped", "unknownpace": "pace_unknown",
                 "historical": "historical", "partialRNV": "pace_unknown", "versionspresent": "pace_unknown"}[scenario]
     assert executive["source_status"]["state"] == expected
@@ -107,11 +107,15 @@ def stalled_sources(partial):
 def test_stalled_gpr_work_and_its_cause_remain_in_the_executive_conclusion(partial):
     stalled_sources(partial)
     built = report.build(PROJECT, "week", CUT)
-    assert built["construction_summary"]["state"] == "selected_gpr"
-    assert built["construction_summary"]["forecast"] == ("2027-01-30" if partial else "2026-12-24")
-    assert built["construction_summary"]["rnv_state"] == ("partial" if partial else "unknown")
-    assert built["construction_summary"]["rnv_forecast"] is None
-    risk = built["construction_summary"]["stalled_text"]
+    executive = report._executive_schedule(built)
+    # The separate source DTO keeps its partial known date; it is not the
+    # selected-project date shown in the main assessment.
+    assert built["construction_summary"]["forecast"] == ("2026-12-31" if partial else None)
+    assert executive["state"] == "selected_gpr"
+    assert executive["forecast"] == ("2027-01-30" if partial else "2026-12-24")
+    assert executive["rnv_state"] == ("partial" if partial else "unknown")
+    assert executive["rnv_forecast"] is None
+    risk = executive["stalled_text"]
     assert "Демонтаж башенных кранов К-1,2" in risk
     assert built["schedule"]["stalled"][0]["reason"] in risk
     assert "процент в ГПР" in risk and "актов" not in risk
@@ -119,9 +123,9 @@ def test_stalled_gpr_work_and_its_cause_remain_in_the_executive_conclusion(parti
     assert risk in conclusion
     if partial:
         # The broader RNV source is retained apart from the selected assessment.
-        assert "Фасад" in built["construction_summary"]["rnv_driver"]
+        assert "Фасад" in executive["rnv_driver"]
     from developaid_report_schedule import render
-    assert risk in render(built["construction_summary"])
+    assert risk in render(executive)
     assert built["schedule"]["qualification"]["forecast"] is None
 
 
@@ -273,7 +277,7 @@ def test_confirmed_zero_is_known_natural_fact_even_without_pace():
                                  "components": [{"component_id": "Стены", "task_id": "1", "item_ids": ["0:0"]}],
                                  "note": "Подтверждён учебный нулевой объём за закрытые периоды."})
     built = report.build(PROJECT, "week", CUT)
-    executive = built["construction_summary"]
+    executive = report._executive_schedule(built)
     assert executive["facts"][0]["done"] == 0
     assert executive["source_status"]["state"] == "pace_unknown"
     assert executive["forecast"] is None

@@ -36,7 +36,6 @@ import developaid_admin_expenses as admin_expenses
 import developaid_admin_expenses_cash as admin_cash
 import developaid_credit_repayment as credit_repayment
 import developaid_monitor as monitor
-from developaid_gpr_summary import gpr_summary
 import developaid_funding_schedule as funding_schedule
 import developaid_monitor_manager as manager
 import developaid_monthly_budget as monthly_budget
@@ -50,6 +49,7 @@ from market_search import contracting, salesroom, sales_store, chessboard
 
 PERIODS = {"week": "неделю", "month": "месяц"}
 _PREVIOUS = {"week": "прошлую неделю", "month": "прошлый месяц"}
+_GPR_UNCONFIRMED = 'Оценка учтённых работ не подтверждена для этого источника и даты среза.'
 
 
 def _sold(amount: float | None) -> str:
@@ -2019,10 +2019,12 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
         out.append({"topic": topic, "text": text, "source": source, "tone": tone})
 
     block = report.get("physical") or {}
-    readiness = gpr_summary((report.get('gantt') or {}).get('readiness'), report.get('end'))
+    readiness = _report_gpr_summary(report)
     if readiness is not None:
         add('Стройка', readiness['readiness_text'], 'ГПР',
             'missing' if readiness['progress'] is None else '')
+    elif isinstance((report.get('gantt') or {}).get('readiness'), dict):
+        add('Стройка', _GPR_UNCONFIRMED, 'ГПР', 'missing')
     elif block.get("state") == "ok":
         lag = block["lag"]
         text = _sentence(f"По ГПР выполнено {_pct(block['fact'])} при плане "
@@ -3566,7 +3568,7 @@ def render_text(report: dict[str, Any]) -> str:
     assessment = _report_gpr_summary(report)
     if isinstance((report.get('gantt') or {}).get('readiness'), dict):
         lines.append(esc(assessment['readiness_text']) if assessment else
-                     'Оценка учтённых работ не подтверждена для этого источника и даты среза.')
+                     _GPR_UNCONFIRMED)
         if block.get('state') == 'ok':
             lines.extend(esc(line) for line in _physical_notes(block))
     elif block.get("state") == "ok":
@@ -4333,6 +4335,11 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
             readiness['forecast_text']+' '+readiness['scope_text']+' '+readiness['as_of_text'])
         for tile in out[-2:]:
             tile['group'] = 'gpr_readiness'
+    elif isinstance((report.get('gantt') or {}).get('readiness'), dict):
+        add('Готовность по ГПР', None, _GPR_UNCONFIRMED)
+        add('Оценка окончания учтённых работ', None, _GPR_UNCONFIRMED)
+        for tile in out[-2:]:
+            tile['group'] = 'gpr_readiness'
     elif block.get("state") == "ok":
         lag = block.get("lag")
         add("Выполнение по ГПР", _pct(block["fact"]),
@@ -4627,15 +4634,24 @@ def _executive_schedule(report: dict[str, Any]) -> dict[str, Any]:
                 rnv_driver_reason=legacy.get('rnv_driver_reason') or legacy.get('driver_reason'),
                 rnv_driver_method=legacy.get('rnv_driver_method') or legacy.get('driver_method'),
                 caveat=((assessment['forecast_text']+' '+assessment['scope_text']+' '+assessment['as_of_text'])
-                        if assessment else 'Оценка учтённых работ не подтверждена для этого источника и даты среза.'),
+                        if assessment else _GPR_UNCONFIRMED),
                 gpr_assessment=assessment, rnv_context=copy.deepcopy(rnv),
                 rnv_forecast=rnv.get('forecast') if rnv.get('state') == 'complete' else None)
 
 
 def _gantt_html(report: dict[str, Any]) -> str:
-    return report_gantt.render_compact(report_gantt.compact_model(
-        report.get('gantt') or {}, report.get('end')),
+    return report_gantt.render_compact(_report_gpr_compact(report),
         stalled_risk=_stalled_words(report.get('schedule') or {}))
+
+
+def _report_gpr_compact(report: dict[str, Any]) -> dict[str, Any]:
+    """A foreign/rejected readiness cannot revive figures in compact HTML/PDF."""
+    from developaid_gpr_summary import project_assessment
+    block = report.get('gantt') or {}
+    if (isinstance(block.get('readiness'), dict)
+            and project_assessment(block, report.get('end')) is None):
+        block = dict(block, readiness={})
+    return report_gantt.compact_model(block, report.get('end'))
 
 
 def _report_gpr_summary(report: dict[str, Any]) -> dict[str, Any] | None:
@@ -4645,7 +4661,7 @@ def _report_gpr_summary(report: dict[str, Any]) -> dict[str, Any] | None:
     if summary is None:
         return None
     try:
-        model = report_gantt.compact_model(report.get('gantt') or {}, report.get('end'))
+        model = _report_gpr_compact(report)
     except (KeyError, TypeError, ValueError, AttributeError):
         return None
     if model.get('summary') is None:

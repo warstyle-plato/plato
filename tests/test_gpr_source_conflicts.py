@@ -169,7 +169,7 @@ def test_real_driver_reason_is_printed_once_in_the_source_appendix(gpr_sources):
     from pypdf import PdfReader
     from test_monitor_cumulative_controls import browser_page
     built = gpr_sources('confirmed')
-    summary = built['construction_summary']
+    summary = report._executive_schedule(built)
     driver = built['schedule']['qualification']['driving_chain'][0]
     assert summary['driver_method'] is summary['driver_reason'] is None
     assert summary['rnv_driver_method'] == driver['method'] == 'cumulative_quantities'

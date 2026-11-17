@@ -81,6 +81,43 @@ def test_missing_or_foreign_assessment_never_falls_back_to_the_legacy_plan(fault
     assert '30.09.2027' not in sentence
 
 
+@pytest.mark.parametrize('fault', ['source', 'cut', 'future_profile'])
+def test_rejected_readiness_never_revives_old_cover_percent_or_compact_date(fault):
+    import fitz
+    value = report_value()
+    value.update(project='Учебная проверка источника', kind='week', start='2026-11-09',
+                 physical=dict(state='ok', fact=.9, plan=.8, lag=.1,
+                               source=dict(label='Старый отдельный состав')))
+    if fault == 'source':
+        value['gantt']['approved_plan'] = dict(source_sha256='b'*64)
+    elif fault == 'cut':
+        value['end'] = '2026-11-16'
+    else:
+        value['gantt']['readiness']['profile_effective_from'] = '2026-11-16'
+    assert report._report_gpr_summary(value) is None
+    tiles = [item for item in report.tiles(value) if item.get('group') == 'gpr_readiness']
+    assert len(tiles) == 2 and all(t['value'] == 'нет данных' for t in tiles)
+    assert all(t['tone'] == 'missing' and 'не подтверждена' in t['note'] for t in tiles)
+    value['findings'] = report.findings(value)
+    construction = next(item for item in value['findings'] if item['topic'] == 'Стройка')
+    assert construction['tone'] == 'missing' and 'не подтверждена' in construction['text']
+    text = report.render_text(value)
+    assert '90,0%' not in text and '31.05.2028' not in text
+    frozen = copy.deepcopy(value)
+    with browser_page(390) as (page, _, errors):
+        page.set_content(report.render_html(value))
+        compact = page.locator('.report-gpr-compact')
+        expect(compact.locator('.rg-project-date')).to_have_text('Пока не определён')
+        expect(compact).not_to_contain_text('40,0%')
+        assert '90,0%' not in page.locator('body').inner_text()
+        with fitz.open(stream=page.pdf(format='A4'), filetype='pdf') as pdf:
+            visible = ' '.join(' '.join(p.get_text() for p in pdf).split())
+        assert 'Пока не определён' in visible
+        assert '90,0%' not in visible and '31.05.2028' not in visible
+        assert not errors
+    assert value == frozen
+
+
 def test_legacy_only_summary_still_has_its_original_qualified_scope():
     value = report_value()
     del value['gantt']['readiness']
