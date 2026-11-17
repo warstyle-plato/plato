@@ -377,6 +377,15 @@ def _office_lines(book: Any) -> list[Line]:
 
 
 def _hotel_lines(book: Any) -> list[Line]:
+    limit = sys.getrecursionlimit()
+    sys.setrecursionlimit(max(limit, 20000))
+    try:
+        return _hotel_lines_at_depth(book)
+    finally:
+        sys.setrecursionlimit(limit)
+
+
+def _hotel_lines_at_depth(book: Any) -> list[Line]:
     import hotel_workbook as hw
     from xlsx_eval import Evaluator
 
@@ -385,8 +394,8 @@ def _hotel_lines(book: Any) -> list[Line]:
     # model in order instead of relying on a frozen Excel cache.
     monthly = book[hw.CALC_SHEET]
     for row in range(hw.FIRST_ROW, monthly.max_row + 1):
-        for letter, _label in hw.COLUMNS.values():
-            if monthly[f"{letter}{row}"].data_type == "f":
+        for key, (letter, _label) in hw.COLUMNS.items():
+            if key not in ("irr_p", "irr_e") and monthly[f"{letter}{row}"].data_type == "f":
                 ev.cell(hw.CALC_SHEET, f"{letter}{row}")
     dimensions = {label for key, label, _where in hw.CHECKS
                   if key.startswith("irr_") or key in ("pbp_years", "dpbp_years", "dscr_min")}

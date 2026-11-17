@@ -77,3 +77,46 @@ def test_a_word_against_a_number_is_a_mismatch() -> None:
     assert not bep.Line("Выручка", None, 5.0).agrees()
     assert bep.Line("Выручка", 1000.0005, 1000.0).agrees()
     assert not bep.Line("Выручка", 1000.2, 1000.0).agrees()
+
+
+@pytest.mark.parametrize("name", ["office_lease_retained", "hotel_lease_retained"])
+def test_retained_lease_books_agree_and_a_changed_lease_base_is_caught(name) -> None:
+    built = _built(name)
+    canonical = built[2]["land_rent"]
+    assert canonical["development_cash_total"] > 0
+    assert canonical["operating_cash_total"] > 0
+    assert canonical["valuation"]["land_exposures"]
+    clean = bep.check(core, name, built=built)
+    assert clean.mismatches == [], [line.text(name) for line in clean.mismatches]
+
+    def tamper(book):
+        book["Аренда ЗУ"]["B9"] = 200
+
+    changed = bep.check(core, name, tamper, built=built)
+    assert any("аренд" in line.row.lower() for line in changed.mismatches), changed.mismatches
+
+
+def test_hotel_hold_edit_keeps_operating_rent_live_beyond_month_180():
+    import copy
+    import io
+
+    import hotel_workbook as hw
+    import openpyxl
+    from xlsx_eval import Evaluator
+
+    name = "hotel_lease_retained"
+    content, _, original = _built(name)
+    book = openpyxl.load_workbook(io.BytesIO(content))
+    book[hw.INPUTS_SHEET][f"C{hw._ROWS['hold']}"] = 18
+    spec = bep.PROJECTS[name][2](core)
+    spec["inputs"]["hotel_hold_years"] = 18
+    expected = core._run_authoritative_model(copy.deepcopy(spec["inputs"]),
+        copy.deepcopy(spec["tep"]), [], copy.deepcopy(spec["phasing"]))["consolidated"]
+    evaluator = Evaluator(book)
+    assert evaluator.cell("Аренда ЗУ", "B19") * 1e6 == pytest.approx(expected["land_rent"]["cash_total"])
+    # More operating years must not increase the building/depreciation basis.
+    assert evaluator.cell(hw.INPUTS_SHEET, f"C{hw._ROWS['capex_total']}") == pytest.approx(original["capex"]["total"])
+    assert evaluator.cell(hw.INPUTS_SHEET, f"C{hw._ROWS['building_net']}") == pytest.approx(
+        expected["finance"]["hotel"]["kpi"]["building_net"])
+    row = hw.FIRST_ROW + 200
+    assert evaluator.cell(hw.CALC_SHEET, f"{hw._c('land_rent_operating')}{row}") > 0

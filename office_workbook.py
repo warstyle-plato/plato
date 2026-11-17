@@ -205,6 +205,8 @@ class _Book:
         # Сравнения из авторитетного расчёта; без них — исходная стратегия проекта.
         self.paths: tuple[dict[str, Any], ...] = PATHS
         self.groups: list[dict[str, Any]] = []
+        self.rent_calendars: dict[str, tuple[Any, Any]] = {}
+        self.rent_exposures: dict[str, list[dict[str, Any]]] = {}
 
     @property
     def project_only(self) -> bool:
@@ -1043,6 +1045,101 @@ ENGINE_LABELS = {"landscaping": "Благоустройство", "social": "С�
                  "land_rights": "Плата за смену ВРИ (рассрочка)"}
 
 
+def _path_cx(book: _Book, key: str, code: str | None) -> str:
+    return ref(f"cx.{code}.{key}" if code in book.rent_calendars else f"cx.{key}")
+
+
+def _rent_calendars(book: _Book, result: dict[str, Any], spec: dict[str, Any],
+                    objects: list[dict[str, Any]]) -> None:
+    """Each canonical variant owns its parcel calendar; all share contract inputs."""
+    if not land_rent_book.requested(spec) or not (spec.get("land_rent") or {}).get("land_exposures"):
+        return
+    start = book.cell_ref("in.start")
+    by_key = {item["key"]: item for item in objects}
+    master = None
+    selected = next((p["code"] for g in book.groups for p in g["paths"] if p["key"] == g["current"]),
+                    PROJECT_PATH["code"] if book.project_only else None)
+    for path in sorted(book.paths, key=lambda p: p["code"] != selected):
+        c = path["code"]
+        model = spec["land_rent"] if book.project_only else next(
+            (p.get("land_rent") for p in (result.get(path["result_key"]) or {}).get("paths") or []
+             if p.get("key") == path["key"]), None)
+        if not isinstance(model, dict) or not model.get("land_exposures"):
+            raise ValueError(f"Аренда ЗУ: для варианта {path['label']} нет канонического календаря")
+        exposures = model["land_exposures"]
+        mapped = [e for e in exposures if e.get("object_key") in by_key]
+        # Preserve the absolute share of the mapped group. A missing or
+        # separately modelled parcel is never silently normalized away.
+        area_refs = [ref(f"in.{by_key[e['object_key']]['code']}.total_area") for e in mapped]
+        mapped_share = sum(float(e["share"]) for e in mapped)
+        live_areas = bool(mapped) and all(e.get("total_area") not in (None, "") for e in mapped)
+        formulas = {}
+        for exposure in exposures:
+            key = exposure.get("object_key")
+            item = by_key.get(key)
+            if item is None:
+                comm = f"EDATE({start},{ref('t.rve')})"
+                exit_ = f"EDATE({comm},'{master or land_rent_book.SHEET}'!$N$15)"
+                share = str(exposure["share"])
+            elif not (item.get("nonres") or item.get("ddu")):
+                comm = (f"EDATE({ref('in.' + item['code'] + '.start')},"
+                        f"INT({ref('in.' + item['code'] + '.months')}))")
+                exit_ = f"EDATE({comm},'{master or land_rent_book.SHEET}'!$N$15)"
+                share = str(exposure["share"])
+            else:
+                focus = key in path.get("object_keys", set())
+                prefix = item["code"] + c + ("" if focus else "f")
+                strategy = path["strategy"] if focus else item["strategy"]
+                comm = (f"EDATE({ref('in.' + item['code'] + '.start')},"
+                        f"INT({ref('in.' + item['code'] + '.months')}))")
+                horizon = ref(prefix + ".horizon")
+                if strategy == ns.STRATEGY_INCOME:
+                    exit_ = f"EDATE({start},{horizon}+1)"
+                    exit_ = f"({exit_})-DAY({exit_})+1"
+                elif strategy == ns.STRATEGY_DDU:
+                    last_delivery = f"EDATE(({start})-DAY({start})+1,{horizon})"
+                    exit_ = f"EDATE(MAX({comm},{last_delivery}),'{master or land_rent_book.SHEET}'!$N$15)"
+                else:
+                    exit_ = (f"EDATE({comm},{horizon}+1-{ref(prefix + '.comm')}"
+                             f"+'{master or land_rent_book.SHEET}'!$N$15)")
+                share = (f'IF(AND(COUNT({",".join(area_refs)})={len(mapped)},SUM({",".join(area_refs)})>0),'
+                         f'{mapped_share!r}*{ref("in." + item["code"] + ".total_area")}/SUM({",".join(area_refs)}),'
+                         f'{float(exposure["share"])!r})' if live_areas else str(exposure["share"]))
+            formulas[exposure["id"]] = {"share": share, "commissioning": comm, "lease_exit": exit_}
+        end = "MAX(" + ",".join(f["lease_exit"] for f in formulas.values()) + ")"
+        name = land_rent_book.SHEET if master is None else f"Аренда ЗУ · {c}"
+        options = dict(start=start, rve=end, end=end,
+            month_formulas=[f"'{TIME_SHEET}'!{L(FIRST_COL + k)}{DATE_ROW}" for k in range(book.n)])
+        paid = land_rent_book.add(book.wb, {**spec, "land_rent": model}, **options,
+            sheet_name=name, exposure_formulas=formulas, master_terms_sheet=master)
+        master = master or name
+        valuation = model.get("valuation")
+        valued = None
+        if valuation:
+            valuation_formulas = {e["id"]: {**formulas[e["id"]],
+                "lease_exit": (f"EDATE({formulas[e['id']]['lease_exit']},12)"
+                               if e.get("retained") else formulas[e["id"]]["lease_exit"])}
+                for e in valuation.get("land_exposures") or []}
+            valuation_end = "MAX(" + ",".join(f["lease_exit"] for f in valuation_formulas.values()) + ")"
+            valued = land_rent_book.add(book.wb, {**spec, "land_rent": valuation},
+                **{**options, "rve": valuation_end, "end": valuation_end},
+                sheet_name=f"Аренда оценка · {c}", exposure_formulas=valuation_formulas,
+                master_terms_sheet=master)
+        book.rent_calendars[c] = paid, valued
+        book.rent_exposures[c] = exposures
+        # Resolve the workbook's own forward row references after the flow
+        # rows have been registered. Shared writer owns all rent formulas.
+        for calendar in (paid, valued):
+            if calendar:
+                coordinates = {"B14", "B15", "F11"}
+                coordinates.update(f"{column}{data['metadata']}"
+                    for data in calendar.layout["exposure_rows"].values() for column in "BCD")
+                for coordinate in coordinates:
+                    cell = book.wb[calendar.sheet_name][coordinate]
+                    if cell.data_type == "f" and _TOKEN.search(cell.value):
+                        book.pending.append((cell, cell.value[1:], None, calendar.sheet_name))
+
+
 def _capex_sheet(book: _Book, spec: dict[str, Any], objects: list[dict[str, Any]], info: _Inputs,
                  months: int, land_rent_ref=None) -> dict[str, Any]:
     """Смета «ставка × база» и её график по месяцам (`build_operating_model`).
@@ -1172,9 +1269,9 @@ def _capex_sheet(book: _Book, spec: dict[str, Any], objects: list[dict[str, Any]
     if land_rent_ref:
         # Ground rent is not inflated by the construction cost scenario and
         # is added after the construction reserve, as in the engine.
+        kind = "construction" if book.rent_calendars else "total"
         article("land_rent", "Аренда земельного участка",
-                f"SUM('{land_rent_book.SHEET}'!$D$6:${book.last}$6)",
-                f"SUM(INDEX('{land_rent_book.SHEET}'!$D$6:${book.last}$6,1,{k}+1))")
+                land_rent_ref.total(book.n, kind), land_rent_ref.series(book.n, k, kind))
 
     rows.section("Итоги по месяцам")
     for item in objects:
@@ -1210,6 +1307,29 @@ def _capex_sheet(book: _Book, spec: dict[str, Any], objects: list[dict[str, Any]
     # Горизонт: месяцев в таблицах столько, сколько нужно самому длинному
     # способа продажи; расчёт, уводящий проект дальше, краснит «ПРОВЕРКИ», а не обрезает поток.
     rows.param("cx.plan_last", "Последний платёж за участок, № месяца", f"=MAX({info.plan[0]})", "№", INT)
+    for path in book.paths:
+        c = path["code"]
+        if c not in book.rent_calendars:
+            continue
+        paid, valuation = book.rent_calendars[c]
+        rows.section(f"Аренда ЗУ · {path['label']}: собственный календарь")
+        rows.month(f"cx.{c}.land_rent", "Оплата аренды в стоимости разработки",
+                   paid.series(book.n, k, "construction"), amount=paid.total(book.n, "construction"))
+        rows.month(f"cx.{c}.total", "Все затраты на создание этого варианта",
+                   f"{ref('cx.total')}-{ref('cx.land_rent')}+{ref(f'cx.{c}.land_rent')}")
+        rows.param(f"cx.{c}.capex_total", "Все затраты на создание, итого",
+                   f"=SUM({ref(f'cx.{c}.total', ':')})", "млн ₽")
+        rows.month(f"cx.{c}.common", "Общие затраты проекта на кредит объектов",
+                   f"MAX(0,MAX(0,{ref(f'cx.{c}.total')}-{ref('cx.vri_equity')}-{ref('cx.flow_obj')})"
+                   f"-{ref('cx.other_obj')})")
+        for item in objects:
+            ids = [data["id"] for data in book.rent_exposures[c] if data.get("object_key") == item["key"]]
+            for kind in ("operating", "operating_accrual"):
+                rows.month(f"lr.{c}.{item['code']}.{kind}", f"{item['title']}: аренда ЗУ ({kind})",
+                    _sum([paid.series(book.n, k, kind, key) for key in ids]))
+            valued_ids = [key for key in ids if valuation and key in valuation.layout.get("exposure_rows", {})]
+            rows.month(f"lr.{c}.{item['code']}.valuation", f"{item['title']}: аренда ЗУ только для оценки",
+                _sum([valuation.series(book.n, k, "operating_accrual", key) for key in valued_ids]))
     return {"labels": labels, "order": order}
 
 
@@ -1225,6 +1345,7 @@ class _Block:
         self.exit_override: str | None = None
         self.code = item["code"]
         self.names: set[str] = set()
+        self.path_code: str | None = None
 
     @property
     def direct(self) -> bool:
@@ -1341,7 +1462,7 @@ def _flows(book: _Book, rows: _Rows, exit_rows: _Rows | None, block: _Block, inf
         param("dep_years", "Срок амортизации для налога", f"=MAX(1,INT({i('dep_years')}))", "лет", INT)
     rows.section(f"{item['title']} · затраты объекта")
     month("capex", "Затраты стройки объекта", ref(f"cx.{o}"))
-    month("common", "Доля общих затрат проекта", f"{ref('cx.common')}*{ref(f'cx.share.{o}')}")
+    month("common", "Доля общих затрат проекта", f"{_path_cx(book, 'common', block.path_code)}*{ref(f'cx.share.{o}')}")
     param("capex_total", "Затраты стройки объекта, итого", f"=SUM({b('capex', ':')})", "млн ₽")
     param("common_total", "Общие затраты проекта на объекте", f"=SUM({b('common', ':')})", "млн ₽")
     param("basis", "Стоимость объекта без НДС (база налога на имущество и амортизации)",
@@ -1393,14 +1514,19 @@ def _flows(book: _Book, rows: _Rows, exit_rows: _Rows | None, block: _Block, inf
     month("hold_on", "Удержание", f"IF(AND({b('open')}>=1,{b('open')}<={hold}),1,0)",
           unit="0/1", fmt=FLAG, total=False)
     month("rent", "Доход аренды", f"{b('op_rev')}*{b('hold_on')}", bold=True)
-    month("opex", "Расходы эксплуатации", f"{b('rent')}*{b('opex_share')}")
+    for key, source in (("land_rent_operating", "operating_accrual"),
+                        ("land_rent_cash", "operating"), ("land_rent_valuation", "valuation")):
+        month(key, "Аренда ЗУ · " + source,
+              ref(f"lr.{block.path_code}.{o}.{source}") if block.path_code in book.rent_calendars else "0")
+    month("opex", "Расходы эксплуатации", f"{b('rent')}*{b('opex_share')}+{b('land_rent_operating')}")
     month("ptax", "Налог на имущество", f"{b('basis')}*{b('ptax_rate')}/12*{b('hold_on')}")
     month("noi", "NOI", f"{b('rent')}-{b('opex')}-{b('ptax')}", bold=True)
     month("fwd", "NOI покупателя: год после срока удержания (до налога на имущество)",
-          f"IF(AND({b('open')}>={hold}+1,{b('open')}<={hold}+12),{b('op_rev')}*(1-{b('opex_share')}),0)")
+          f"IF(AND({b('open')}>={hold}+1,{b('open')}<={hold}+12),"
+          f"{b('op_rev')}*(1-{b('opex_share')})-{b('land_rent_valuation')},0)")
     month("stab", "NOI года после заполнения (до налога на имущество)",
           f"IF(AND({b('open')}>={b('leaseup')},{b('open')}<={b('leaseup')}+11),"
-          f"{b('op_rev')}*(1-{b('opex_share')}),0)")
+          f"{b('op_rev')}*(1-{b('opex_share')})-{b('land_rent_valuation')},0)")
     month("year", "Год эксплуатации",
           f"IF({b('hold_on')}=1,INT(({b('open')}-1)/12)+1,0)", unit="№", fmt=INT, total=False)
 
@@ -1558,8 +1684,8 @@ def _pf(book: _Book, rows: _Rows, path: dict[str, str], ddu: list[_Block], credi
     # Долговые затраты — `debt_capex` движка: CAPEX без платы за ВРИ за счёт
     # собственных денег, без объектов вне ДДУ и без их доли общих затрат.
     month("capex", "Затраты на ПФ: CAPEX без объектов вне ДДУ и их доли общих затрат",
-          f"MAX(0,MAX(0,{ref('cx.total')}-{ref('cx.vri_equity')})"
-          f"-({_sum([ref(f'cx.{b.code}') for b in credit])}))-{ref('cx.common')}*({shares})")
+          f"MAX(0,MAX(0,{_path_cx(book, 'total', c)}-{ref('cx.vri_equity')})"
+          f"-({_sum([ref(f'cx.{b.code}') for b in credit])}))-{_path_cx(book, 'common', c)}*({shares})")
     month("costs", "Потребность месяца",
           f"{P('capex')}+{P('operating')}+IF(AND({k}={permit},{pay_mode}),{P('transfer')},0)")
     month("esc", "Эскроу на конец месяца (до раскрытия)",
@@ -1657,10 +1783,11 @@ def _pf(book: _Book, rows: _Rows, path: dict[str, str], ddu: list[_Block], credi
     revenue = f"SUM({P('sales', ':')})"
     vri = "".join(f"-{ref(f'cx.{key}.amt')}" for key in ("land_rights", "vri_interest", "vri_security")
                   if f"cx.{key}.amt" in book.reg)
-    bearing = (f"{ref('cx.capex_total')}+SUM({P('operating', ':')})-{ref('in.purchase_price')}"
+    bearing = (f"{_path_cx(book, 'capex_total', c)}+SUM({P('operating', ':')})-{ref('in.purchase_price')}"
                f"-{ref('in.land_buyout')}{vri}-({credit_capex})")
     if "cx.land_rent.amt" in book.reg:
-        bearing += "-" + land_rent_book.vat_exempt(ref("cx.land_rent.amt"))
+        bearing += "-" + (book.rent_calendars[c][0].vat_exempt(ref(f"cx.{c}.land_rent.amt"))
+                       if c in book.rent_calendars else land_rent_book.vat_exempt(ref("cx.land_rent.amt")))
     param("vat_due", "НДС продаж по ДДУ к уплате в РВЭ",
           f"=IF({ref('in.vat')}>0,MAX({revenue}*{gross}-({bearing})*{gross}*IF({revenue}>0,1,0),0),0)", "млн ₽")
     # LLCR — покрытие ПФ: выручка по ДДУ, расходы на продажу, налог на прибыль,
@@ -1669,7 +1796,7 @@ def _pf(book: _Book, rows: _Rows, path: dict[str, str], ddu: list[_Block], credi
     credit_cost = _sum([f"SUM({b.r('interest', ':')})+SUM({b.r('fees', ':')})" for b in credit])
     param("llcr_num", "LLCR: числитель",
           f"={revenue}-SUM({P('operating', ':')})-SUM({ref(f'tx.{c}.tax', ':')})-{P('vat_due')}"
-          f"-({ref('cx.capex_total')}-({credit_capex}))+{P('pf_draw_total')}", "млн ₽")
+          f"-({_path_cx(book, 'capex_total', c)}-({credit_capex}))+{P('pf_draw_total')}", "млн ₽")
     param("llcr_den", "LLCR: знаменатель", f"={P('pf_draw_total')}+{P('financing_cost')}+{credit_cost}", "млн ₽")
     param("llcr", "LLCR проектного финансирования",
           f"=IF({P('llcr_den')}<>0,{P('llcr_num')}/{P('llcr_den')},0)", "×", RATIO, bold=True)
@@ -1745,7 +1872,7 @@ def _finance(book: _Book, rows: _Rows, block: _Block) -> None:
           f"+{b('draw')},{b('bal_build', '@p')})", total=False)
     month("cash", "Деньги объекта до погашения",
           f"{z('sale')}+{z('rent')}+{z('exit')}-{z('selling')}-{z('opex')}-{z('ptax')}-{z('exit_cost')}"
-          f"-{b('vat_paid')}-{b('int_paid')}")
+          f"+{z('land_rent_operating')}-{z('land_rent_cash')}-{b('vat_paid')}-{b('int_paid')}")
     if block.direct:
         month("repay", "Погашение из выручки",
               f"IF({b('bal_after')}<=0,0,IF({k}={horizon},{b('bal_after')},MIN({b('bal_after')},MAX(0,{b('cash')}))))")
@@ -1777,6 +1904,7 @@ def _finance(book: _Book, rows: _Rows, block: _Block) -> None:
     param("peak", "Пик долга", f"=MAX({b('bal_close', ':')})", "млн ₽", bold=True)
     month("to_equity", "Деньги объекта собственнику (без затрат стройки)",
           f"{z('sale')}+{z('rent')}+{z('exit')}+{z('residual')}-{z('selling')}-{z('opex')}-{z('ptax')}"
+          f"+{z('land_rent_operating')}-{z('land_rent_cash')}"
           f"-{z('exit_cost')}-{b('vat_paid')}-{b('int_paid')}-{b('fees')}+{b('draw')}-{b('repay')}")
     if block.direct:
         return
@@ -1821,7 +1949,7 @@ def _tax_path(book: _Book, rows: _Rows, path: dict[str, str], blocks: list[_Bloc
     # Маркетинг и брокеры продаж по ДДУ — в общем пуле (`commercial_costs`).
     operating = "".join(f"+SUM({ref(name + '.operating', ':')})" for name in pf)
     rows.param(f"{c}.pool", "Общие затраты проекта — признаются в месяц ввода проекта",
-               f"=MAX(0,{ref('cx.capex_total')}{operating}-{ref('cx.tax_pool')})", "млн ₽")
+               f"=MAX(0,{_path_cx(book, 'capex_total', path['code'])}{operating}-{ref('cx.tax_pool')})", "млн ₽")
     rows.month(f"{c}.vat_charged", "НДС начислен", _sum([b.r("vat_charged") for b in blocks]))
     rows.month(f"{c}.vat_paid", "НДС к уплате (минус — возмещение)",
                _sum([b.r("vat_paid") for b in blocks] + [ref(name + ".vat") for name in pf]))
@@ -1892,7 +2020,7 @@ def _cash_path(book: _Book, rows: _Rows, path: dict[str, str], blocks: list[_Blo
     rows.section("Проект: деньги по месяцам", path["tab"])
     rows.month(f"{c}.revenue", "Выручка", _sum([f"{b.z('sale')}+{b.z('rent')}+{b.z('exit')}+{b.z('residual')}"
                                               for b in blocks] + pf("sales")), bold=True)
-    rows.month(f"{c}.capex", "Затраты на создание", ref("cx.total"))
+    rows.month(f"{c}.capex", "Затраты на создание", _path_cx(book, "total", c))
     rows.month(f"{c}.costs", "Расходы продаж и эксплуатации, налог на имущество, сделка",
                _sum([f"{b.z('selling')}+{b.z('opex')}+{b.z('ptax')}+{b.z('exit_cost')}" for b in blocks]
                     + pf("operating")))
@@ -1905,7 +2033,9 @@ def _cash_path(book: _Book, rows: _Rows, path: dict[str, str], blocks: list[_Blo
                _sum([f"{b.z('sale')}+{b.z('rent')}+{b.z('exit')}"
                      for b in blocks] + pf("cash")))
     rows.month(f"{c}.project", "Поток проекта до кредита, с оценкой удержания",
-               f"{p('cash_in')}+{over('residual')}-{p('costs')}-{p('vat')}-{p('capex')}-{p('tax')}", bold=True)
+               f"{p('cash_in')}+{over('residual')}-{p('costs')}"
+               f"+{over('land_rent_operating')}-{over('land_rent_cash')}"
+               f"-{p('vat')}-{p('capex')}-{p('tax')}", bold=True)
     rows.section("Собственник: деньги по месяцам", path["tab"])
     rows.month(f"{c}.to_equity", "Деньги объектов, ДДУ и ПФ собственнику (без затрат стройки)",
                _sum([over("to_equity")] + pf("equity")))
@@ -1936,7 +2066,8 @@ def _cash_path(book: _Book, rows: _Rows, path: dict[str, str], blocks: list[_Blo
     rows.section("Итоги варианта", path["tab"])
     param = lambda key, *a, **kw: rows.param(f"{c}.{key}", *a, **kw)  # noqa: E731
     total = lambda key: f"SUM({p(key, ':')})"  # noqa: E731
-    articles = [ref(f"cx.{key}.amt") for key in capex["order"]]
+    articles = [ref(f"cx.{c}.land_rent.amt" if key == "land_rent" and c in book.rent_calendars
+                    else f"cx.{key}.amt") for key in capex["order"]]
     # Граница «до ввода» собственного участия — ввод последнего объекта на
     # своём кредите (`equity_participation_report`); без них — объектов по ДДУ.
     comm = [b.r("comm") for b in blocks] or [b.r("comm") for b in ddu] or [ref("t.comm_last")]
@@ -2261,7 +2392,9 @@ def _report_sheet(book: _Book, spec: dict[str, Any], capex: dict[str, Any], curr
             label = label.replace(": здание", "")
         else:
             formula = f"={ref(f'cx.{key}.amt')}"
-        line(f"art.{key.split('.')[0]}", label, (formula,) * len(PATHS))
+        cells = (("=" + ref(f"cx.{p['code']}.land_rent.amt") for p in PATHS)
+                 if key == "land_rent" and book.rent_calendars else (formula,) * len(PATHS))
+        line(f"art.{key.split('.')[0]}", label, tuple(cells))
     line("s_costs", "Расходы продаж и эксплуатации, налог на имущество, сделка", every("t_costs"))
     line("s_financing", "Проценты и комиссии", every("t_financing"))
     line("s_tax", "Налог на прибыль", every("t_tax"))
@@ -3341,7 +3474,12 @@ def build(result: dict[str, Any], spec: dict[str, Any], office_keys: set[str]) -
         raise ValueError("книга нежилого проекта без объектов с продажей или арендой")
     offices = [item for item in objects if item["office"]]
     months = len(spec.get("months") or [])
-    book = _Book(_horizon_months(spec, objects, start), start)
+    rentals = [spec.get("land_rent") or {},
+               *[p.get("land_rent") or {} for result_key in ("office_paths", "retail_paths")
+                 for p in (result.get(result_key) or {}).get("paths") or []]]
+    cash_ends = [_months_between(start, _month(rental["project_end"])) + 1
+                 for rental in rentals if rental.get("project_end")]
+    book = _Book(max([_horizon_months(spec, objects, start), *cash_ends]), start)
     book.groups = comparison_groups(result, objects)
     compared_keys = set().union(*(g["keys"] for g in book.groups)) if book.groups else set()
     for item in objects:
@@ -3352,8 +3490,9 @@ def build(result: dict[str, Any], spec: dict[str, Any], office_keys: set[str]) -
     info = _inputs_sheet(book, spec, objects)
     _time_sheet(book, objects)
     _tep_sheet(book, objects, info)
-    rent_ref = None
-    if land_rent_book.requested(spec):
+    _rent_calendars(book, result, spec, objects)
+    rent_ref = next(iter(book.rent_calendars.values()))[0] if book.rent_calendars else None
+    if land_rent_book.requested(spec) and not book.rent_calendars:
         start_ref = book.cell_ref("in.start")
         rental = spec.get("land_rent") or {}
         # The canonical model declares which enabled, positive-volume/cost
@@ -3394,6 +3533,7 @@ def build(result: dict[str, Any], spec: dict[str, Any], office_keys: set[str]) -
                 if item["key"] not in group["keys"]:
                     continue
                 block = _Block(item, path["strategy"], f"{item['code']}{path['code']}", path["key"])
+                block.path_code = path["code"]
                 block.exit_override = path.get("exit_override")
                 if path["strategy"] == ns.STRATEGY_DDU:
                     _ddu_flows(book, rows, block, info)
@@ -3409,32 +3549,33 @@ def build(result: dict[str, Any], spec: dict[str, Any], office_keys: set[str]) -
             CHECK_SHEET, SOURCES_SHEET, PF_SHEET, REPORT_SHEET, DASH_SHEET, *comparison_sheets,
             *(p["cf"] for p in book.paths), *(g["report"] for g in book.groups),
             *(g["dashboard"] for g in book.groups)}
-    for item in objects:
-        if not (item.get("nonres") or item.get("ddu")):
-            continue
-        if len(book.groups) == 1 and item["key"] in compared_keys:
-            continue
-        name = re.sub(r"[\[\]:*?/\\]", "-", item["title"])[:31]
-        while name in used:
-            name = name[:28] + f" {len(used) % 10}"
-        used.add(name)
-        other_sheets.append(name)
-        ws = book.sheet(name, f"{item['title'].upper()} · {STRATEGY[item['strategy']].upper()}",
-                        "Исходная стратегия объекта. Используется в сравнении другого типа объектов. млн ₽ с НДС."
-                        if book.groups else "Стратегия объекта, выбранная в проекте. млн ₽ с НДС.",
-                        monthly=True, tab=DDU_TAB if item.get("ddu") else
-                        RENT_TAB if item["strategy"] == ns.STRATEGY_INCOME else SALE_TAB)
-        rows = _Rows(book, ws, 5)
-        block = _Block(item, item["strategy"], item["code"])
-        if item.get("ddu"):
-            _ddu_flows(book, rows, block, info)
-            fixed_ddu.append(block)
-        else:
-            _flows(book, rows, rows, block, info)
-            _finance(book, rows, block)
-            _block_totals(rows, block)
-            fixed_blocks.append(block)
-
+    for rental_path in (book.paths if book.rent_calendars else (None,)):
+        for item in objects:
+            if not (item.get("nonres") or item.get("ddu")):
+                continue
+            if len(book.groups) == 1 and item["key"] in compared_keys:
+                continue
+            name = re.sub(r"[\[\]:*?/\\]", "-", item["title"])[:25] + (" " + rental_path["code"] if rental_path else "")
+            while name in used:
+                name = name[:28] + f" {len(used) % 10}"
+            used.add(name)
+            other_sheets.append(name)
+            ws = book.sheet(name, f"{item['title'].upper()} · {STRATEGY[item['strategy']].upper()}",
+                            "Исходная стратегия объекта. Используется в сравнении другого типа объектов. млн ₽ с НДС."
+                            if book.groups else "Стратегия объекта, выбранная в проекте. млн ₽ с НДС.",
+                            monthly=True, tab=DDU_TAB if item.get("ddu") else
+                            RENT_TAB if item["strategy"] == ns.STRATEGY_INCOME else SALE_TAB)
+            rows = _Rows(book, ws, 5)
+            block = _Block(item, item["strategy"], item["code"] + rental_path["code"] + "f" if rental_path else item["code"])
+            block.path_code = rental_path["code"] if rental_path else None
+            if item.get("ddu"):
+                _ddu_flows(book, rows, block, info)
+                fixed_ddu.append(block)
+            else:
+                _flows(book, rows, rows, block, info)
+                _finance(book, rows, block)
+                _block_totals(rows, block)
+                fixed_blocks.append(block)
     tax_ws = book.sheet(TAX_SHEET, "НАЛОГИ · НАЛОГ НА ПРИБЫЛЬ И НДС ПРОЕКТА",
                         "Налоговая база, общие затраты и проценты каждого варианта отдельно.", monthly=True, tab=GREY)
     tax_rows = _Rows(book, tax_ws, 5)
@@ -3446,8 +3587,8 @@ def build(result: dict[str, Any], spec: dict[str, Any], office_keys: set[str]) -
         keys = path.get("object_keys", set())
         ddu_path = path["strategy"] == ns.STRATEGY_DDU
         focus = [] if ddu_path else focus_blocks[c]
-        ddu = (focus_blocks[c] if ddu_path else []) + [b for b in fixed_ddu if b.item["key"] not in keys]
-        blocks = focus + [b for b in fixed_blocks if b.item["key"] not in keys]
+        ddu = (focus_blocks[c] if ddu_path else []) + [b for b in fixed_ddu if b.item["key"] not in keys and b.path_code in (None, c)]
+        blocks = focus + [b for b in fixed_blocks if b.item["key"] not in keys and b.path_code in (None, c)]
         path_blocks[c], path_ddu[c] = blocks, ddu
         pf_sheet = ddu_path or (book.project_only and bool(ddu))
         if pf_sheet:
@@ -3518,12 +3659,26 @@ def build(result: dict[str, Any], spec: dict[str, Any], office_keys: set[str]) -
         count = "+".join(f'IF(\'{group["report"]}\'!${L(2 + j)}${header}<>"",1,0)'
                          for j in range(len(group["paths"])))
         checks.append((group["title"], "Число вариантов сравнения", count, len(data["paths"]), True))
+    for path in book.paths:
+        c = path["code"]
+        if c not in book.rent_calendars:
+            continue
+        paid, valuation = book.rent_calendars[c]
+        exposures = book.rent_exposures[c]
+        for kind, label, source in (("total", "Вся оплата аренды ЗУ", "monthly"),
+                ("construction", "Оплата аренды в стоимости разработки", "construction_monthly"),
+                ("operating", "Оплата эксплуатационной аренды", "operating_monthly"),
+                ("operating_accrual", "Эксплуатационная аренда в расходах", "operating_accrual_monthly")):
+            expected = sum(sum(float(value) for value in (e.get(source) or {}).values()) for e in exposures)
+            checks.append((section_of(path), label, paid.total(book.n, kind), expected / _MLN, False))
     _check_sheet(book, checks, missing)
+    rental_sheets = [calendar.sheet_name for pair in book.rent_calendars.values() for calendar in pair if calendar]
     if rent_ref:
         for name in [*dashboards, *reports]:
-            land_rent_book.qualify(book.wb[name])
+            for rental_sheet in rental_sheets or [land_rent_book.SHEET]:
+                land_rent_book.qualify(book.wb[name], rental_sheet)
     book.resolve()
-    order = [*dashboards, *reports, DISCLOSURE_SHEET, *([DISCLOSURE_PLAN_SHEET] if DISCLOSURE_PLAN_SHEET in book.wb.sheetnames else []), INPUTS_SHEET, *([land_rent_book.SHEET] if rent_ref else []), GUIDE_SHEET, TEP_SHEET, TIME_SHEET, CAPEX_SHEET, RATE_SHEET,
+    order = [*dashboards, *reports, DISCLOSURE_SHEET, *([DISCLOSURE_PLAN_SHEET] if DISCLOSURE_PLAN_SHEET in book.wb.sheetnames else []), INPUTS_SHEET, *(rental_sheets or ([land_rent_book.SHEET] if rent_ref else [])), GUIDE_SHEET, TEP_SHEET, TIME_SHEET, CAPEX_SHEET, RATE_SHEET,
              *comparison_sheets, *other_sheets, *pf_sheets,
              *(path["cf"] for path in book.paths), TAX_SHEET, CHECK_SHEET, *([SOURCES_SHEET] if offices else [])]
     book.wb._sheets = [book.wb[name] for name in order]

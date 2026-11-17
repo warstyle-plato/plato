@@ -161,7 +161,13 @@ def hotel():
 def test_native_hotel_includes_rent_in_capex_not_land_asset(hotel):
     _, result, w = hotel
     evaluator = Evaluator(w)
-    assert evaluator.cell(native.SHEET, "B19") * 1e6 == pytest.approx(result["capex"]["land_rent"])
+    assert evaluator.cell(native.SHEET, "B19") * 1e6 == pytest.approx(result["land_rent"]["cash_total"])
+    assert result["land_rent"]["development_cash_total"] == pytest.approx(result["capex"]["land_rent"])
+    operating = result["finance"]["hotel"]["totals"]["land_rent_operating"]
+    row = next(r for r in range(3, w[hw.CHECK_SHEET].max_row + 1)
+               if w[hw.CHECK_SHEET][f"A{r}"].value == "Аренда ЗУ: начислено в расходы")
+    assert evaluator.cell(hw.CHECK_SHEET, f"B{row}") == pytest.approx(operating)
+    assert operating > 0
     assert evaluator.cell(hw.INPUTS_SHEET, "C"+str(hw._ROWS["capex_total"])) == pytest.approx(result["capex"]["total"])
     assert evaluator.cell(hw.INPUTS_SHEET, "C"+str(hw._ROWS["land_total"])) == 0
     assert evaluator.cell(hw.INPUTS_SHEET, "C"+str(hw._ROWS["building_net"])) == pytest.approx(result["finance"]["hotel"]["kpi"]["building_net"])
@@ -215,7 +221,8 @@ def test_native_retail_cash_and_finance_consume_editable_rent(retail):
     evaluator = ow.evaluate(w)
     assert not report["unresolved"], report["unresolved_examples"]
     assert report["verdict"] == ow.PASSED, report["mismatches"]
-    assert evaluator.cell(native.SHEET, "B19") * 1e6 == pytest.approx(result["capex"]["land_rent"])
+    assert evaluator.cell(native.SHEET, "B19") * 1e6 == pytest.approx(result["land_rent"]["cash_total"])
+    assert result["land_rent"]["development_cash_total"] == pytest.approx(result["capex"]["land_rent"])
     sheet = w[ow.CAPEX_SHEET]
     row = next(r for r in range(1, sheet.max_row+1) if sheet[f"A{r}"].value == "Аренда земельного участка")
     assert evaluator.cell(ow.CAPEX_SHEET, f"B{row}") == pytest.approx(2)
@@ -225,8 +232,8 @@ def test_native_retail_cash_and_finance_consume_editable_rent(retail):
     report_sheet = report["comparisons"][0]["report"] if report["comparisons"] else ow.REPORT_SHEET
     qualifier = evaluator.cell(native.SHEET, "L13")
     assert qualifier and qualifier in ow.evaluate(w).cell(report_sheet, "A2")
-    # Only the active object's build duration changes, not project/RnS or
-    # holding/exit dates. Its later commissioning prolongs the common lease.
+    # Later commissioning moves the same retained operating period and
+    # prolongs construction rent, without changing project/RnS inputs.
     w[native.SHEET]["B9"] = 100
     inputs = w[ow.INPUTS_SHEET]
     months_row = next(r for r in range(1, inputs.max_row+1) if inputs[f"A{r}"].value == "Срок стройки")
