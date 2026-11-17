@@ -26,7 +26,10 @@ def _normal(text):
 
 
 def _cover_model(tmp_path, monkeypatch, variant, credit):
-    state = copy.deepcopy(monitor.build(PROJECT, CUT)['schedule']['readiness'])
+    native = monitor.build(PROJECT, CUT)
+    # Keep readiness, selected source and calendar membership together. Grafting
+    # only the weights onto another project's Gantt is deliberately rejected.
+    gpr = report.gantt(native, native.get('dashboard') or {})
     monkeypatch.setattr(monitor, '_SNAPSHOT_DIR', tmp_path / 'other-monitor')
     monkeypatch.setenv('DATA_DIR', str(tmp_path / 'other-data'))
     if variant == 'budget':
@@ -36,7 +39,7 @@ def _cover_model(tmp_path, monkeypatch, variant, credit):
         from test_management_report_analytics import _full
         built = _full()
     built['end'] = CUT
-    built['gantt']['readiness'] = state
+    built['gantt'] = gpr
     if credit != 'missing':
         native_credit = _built(monkeypatch)
         built['credit_due'] = (_with_the_increase(native_credit) if credit == 'extra'

@@ -125,6 +125,9 @@ def _physical_notes(block: dict[str, Any]) -> list[str]:
     elif not block.get("fresh"):
         out.append(f"За этот период новый график с процентами не загружали, "
                    f"последний — от {_day(block['fact_snapshot'])}.")
+    if block.get('delta') is None:
+        out.append("Прирост за период посчитать не из чего: на начало "
+                   "периода не было ни одного графика с процентами выполнения.")
     if source.get("packages"):
         out.append(_packages_note(source["packages"]))
     return out
@@ -1938,7 +1941,9 @@ def build(project: str, kind: str, end: Any, sales_project: str | None = None,
     if declined:
         blocks["sales"] = _missing("Продажи в сводку не входят: так выбрано на "
                                    "странице «Сводка руководству».")
-    blocks["construction_summary"] = _executive_schedule(dict(blocks, end=bounds['end'].isoformat()))
+    # Keep the source-specific physical/RNV DTO intact. The selected-project
+    # display below is a separate projection, not an approval of these facts.
+    blocks["construction_summary"] = _source_schedule(blocks)
     blocks["findings"] = findings({"kind": kind, "end": bounds["end"].isoformat(), **blocks})
     return {"project": project, "kind": kind,
             "start": bounds["start"].isoformat(),
@@ -3562,6 +3567,8 @@ def render_text(report: dict[str, Any]) -> str:
     if isinstance((report.get('gantt') or {}).get('readiness'), dict):
         lines.append(esc(assessment['readiness_text']) if assessment else
                      'Оценка учтённых работ не подтверждена для этого источника и даты среза.')
+        if block.get('state') == 'ok':
+            lines.extend(esc(line) for line in _physical_notes(block))
     elif block.get("state") == "ok":
         lines.append(f"Выполнено по графику работ {_pct(block['fact'])}, "
                      f"по плану к этой дате должно быть {_pct(block['plan'])}.")
@@ -3570,9 +3577,6 @@ def render_text(report: dict[str, Any]) -> str:
                 f"За {PERIODS[report['kind']]} выполнение "
                 f"{'выросло' if block['delta'] >= 0 else 'снизилось'} на "
                 f"{_pp(abs(block['delta']))[1:]}"))
-        else:
-            lines.append("Прирост за период посчитать не из чего: на начало "
-                         "периода не было ни одного графика с процентами выполнения.")
         lines.extend(esc(line) for line in _physical_notes(block))
     else:
         lines.append(esc(block.get("reason") or "Данных нет."))
@@ -4588,7 +4592,10 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
     return out
 
 
-def _executive_schedule(report: dict[str, Any]) -> dict[str, Any]:
+def _source_schedule(report: dict[str, Any]) -> dict[str, Any]:
+    """The original physical/RNV population, independent of display readiness."""
+    if report.get('construction_summary') is not None:
+        return report['construction_summary']
     timeline = (report.get("gantt") or {}).get("dependency_timeline") or {}
     schedule_block = report.get("schedule") or {}
     if not timeline:
@@ -4596,8 +4603,13 @@ def _executive_schedule(report: dict[str, Any]) -> dict[str, Any]:
             "state": "complete" if schedule_block.get("known") else "unknown",
             "approved": schedule_block.get("approved"), "forecast": schedule_block.get("forecast"),
             "delay_days": schedule_block.get("delay_days")}}
-    legacy = (report.get('construction_summary') if report.get('construction_summary') is not None
-              else report_schedule.model(timeline, stalled=schedule_block.get('stalled')))
+    return report_schedule.model(timeline, stalled=schedule_block.get('stalled'))
+
+
+def _executive_schedule(report: dict[str, Any]) -> dict[str, Any]:
+    legacy = _source_schedule(report)
+    timeline = (report.get('gantt') or {}).get('dependency_timeline') or {}
+    schedule_block = report.get('schedule') or {}
     readiness = (report.get('gantt') or {}).get('readiness')
     if not isinstance(readiness, dict):
         return legacy

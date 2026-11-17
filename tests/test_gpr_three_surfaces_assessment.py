@@ -11,6 +11,7 @@ import developaid_report_schedule as schedule_report
 from test_report_compact_gpr import block, CUT
 from test_gpr_why_page import why_view, serve, show
 from test_monitor_cumulative_controls import browser_page
+from test_schedule_physical_print_summary import gpr_sources
 
 
 def report_value():
@@ -84,6 +85,53 @@ def test_legacy_only_summary_still_has_its_original_qualified_scope():
     value = report_value()
     del value['gantt']['readiness']
     assert report._executive_schedule(value) == value['construction_summary']
+
+
+@pytest.mark.parametrize('width', [390, 1440])
+def test_unconfirmed_quantities_do_not_gain_a_forecast_from_the_separate_gpr_display(
+        gpr_sources, monkeypatch, width):
+    """Keep the physical unknown, but show the dated original GPR consistently."""
+    import fitz
+    import developaid_monitor as monitor
+    from test_schedule_physical_print_summary import PROJECT, CUT as cut
+    payload = gpr_sources('unconfirmed')
+    frozen = copy.deepcopy(payload)
+    physical = payload['construction_summary']
+    assert physical['source_status']['state'] == 'unconfirmed'
+    assert physical['facts'] == [] and physical['forecast'] is None
+    selected = report._executive_schedule(payload)
+    assert selected['forecast'] == '2026-11-18'
+    assert selected['gpr_assessment']['method'] == 'conditional'
+    assert selected['rnv_forecast'] is None
+    view = monitor.build(PROJECT, cut)
+    assert view['schedule']['gpr_assessment']['finish'] == selected['forecast']
+    assert view['schedule']['gpr_assessment']['progress'] is None
+    assert view['schedule']['work_fact']['works']['1']['primary']['basis'] == 'gpr_percent'
+    assert view['schedule']['physical_progress']['tasks'][0]['scope_confirmed'] is False
+    assert next(t for t in report.tiles(payload) if t['label'] == selected['forecast_label'])['value'] == '18.11.2026'
+    assert '18.11.2026' in report.render_text(payload)
+    serve(monkeypatch, view)
+    with browser_page(width) as (page, _, errors):
+        show(page, view)
+        expect(page.locator('#gprCalendarOverview')).to_contain_text('18.11.2026')
+        expect(page.locator('#readinessSummary .gpr-legacy-fallback')).to_have_count(0)
+        page.evaluate('(v)=>renderDash(v)', view)
+        page.locator('#moneyTab').click()
+        primary = page.locator('#gprProjectAssessment')
+        expect(primary).to_be_visible()
+        expect(primary.locator('.n')).to_have_text('18.11.2026')
+        expect(primary).to_contain_text('При плановом темпе')
+        rnv = page.locator('#kpis .kpi').filter(has=page.locator('.l', has_text='Прогноз РНВ'))
+        expect(rnv.locator('.n')).to_have_text('—')
+        page.set_content(report.render_html(payload))
+        expect(page.locator('[data-gpr-block=forecast]>.rg-project-date')).to_have_text('18.11.2026')
+        assert '50 из 100 м²' not in page.locator('.report-gpr-compact').inner_text()
+        raw = page.pdf(format='A4')
+        with fitz.open(stream=raw, filetype='pdf') as pdf:
+            text = ' '.join(' '.join(p.get_text() for p in pdf).split())
+        assert '18.11.2026' in text and 'При плановом темпе' in text
+        assert not errors
+    assert payload == frozen
 
 
 def test_a_confirmed_rnv_and_credit_shift_are_not_replaced_by_the_selected_assessment():
