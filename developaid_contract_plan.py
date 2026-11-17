@@ -69,9 +69,13 @@ def edition(estimates: list[dict], schedule: dict | None, start: dt.date | None)
     dated = {line["code"]: line for line in links.leaves(schedule)}
     money, outside, without = {}, {status: {"count": 0, "amount": 0.0} for status in _OUTSIDE}, 0
     volumes, auto, auto_positions = {}, {}, 0
+    components, material_volumes = {}, {}
     accepted, accepted_without = None, 0
     for estimate in estimates:
         positions = (estimate.get("links") or {}).get("positions") or []
+        source_parts = {}
+        for raw in estimate.get('positions') or []:
+            source_parts.setdefault(links.position_key(raw), []).append(raw.get('amount') or {})
         if estimate.get("scope") == "accepted":
             # A position without a sum is named, not counted as zero: the sum is then of the others only.
             known = [p["amount"] for p in positions if p["amount"] is not None]
@@ -86,15 +90,32 @@ def edition(estimates: list[dict], schedule: dict | None, start: dt.date | None)
                 outside[position["status"]]["count"] += 1
                 outside[position["status"]]["amount"] += position["amount"]
             elif position["status"] in _LINKED:
+                source = source_parts.get(position.get('key')) or []
+                component = source[0] if len(source) == 1 else {}
+                work = position.get('work_amount', component.get('work'))
+                material = position.get('material_amount', component.get('material'))
                 # A position split over several lines is one automatic link, not one per line.
                 auto_positions += position["status"] == "proposed"
                 for line in position["lines"]:
                     money[line["code"]] = money.get(line["code"], 0.0) + position["amount"] * line["share"]
                     auto[line["code"]] = auto.get(line["code"], 0) + (position["status"] == "proposed")
-                    volumes.setdefault(line["code"], []).append(
-                        (position.get("unit"), position.get("quantity"), line["share"]))
+                    parts = components.setdefault(line['code'], {'work': [], 'material': []})
+                    parts['work'].append(None if work is None else work * line['share'])
+                    parts['material'].append(None if material is None else material * line['share'])
+                    if work != 0 or material in (None, 0):
+                        volumes.setdefault(line["code"], []).append(
+                            (position.get("unit"), position.get("quantity"), line["share"]))
+                    if material is not None and material > 0:
+                        material_volumes.setdefault(line['code'], []).append(
+                            (position.get('unit'), position.get('quantity'), line['share']))
+    component_total = lambda code, key: (None if any(v is None for v in components[code][key]) else
+                                          sum(components[code][key]))
     lines = [{"code": code, "name": dated[code]["name"], "start": dated[code]["start"],
               "finish": dated[code]["finish"], "amount": amount, "volume": _volume(volumes.get(code)),
+              "work_amount": component_total(code, 'work'),
+              "material_amount": component_total(code, 'material'),
+              "material_volume": _volume(material_volumes.get(code)),
+              "supply_only": component_total(code, 'work') == 0 and bool(component_total(code, 'material')),
               "auto": auto.get(code, 0),
               "overdue": bool(start and _day(dated[code]["finish"]) < start)}
              for code, amount in sorted(money.items(), key=lambda kv: list(dated).index(kv[0]))]
@@ -127,6 +148,7 @@ def build(editions: list[dict], cut: str) -> dict:
                  "estimate": item.get("estimate_title") or item["title"],
                  "until": (_day(later) - dt.timedelta(days=1)).isoformat() if later else None,
                  "schedule": item.get("schedule_title") or "", "start": item.get("start"),
+                 "start_source": item.get("start_source"),
                  "schedule_sha256": item.get("schedule_sha256") or "",
                  "in_force": item is in_force, **plan}
         # The plan on the cut belongs to the edition in force: an older one would answer with a superseded plan.

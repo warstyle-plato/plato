@@ -34,11 +34,12 @@ def _register():
 
 def assert_behind_with_scope(observed):
     assert {key: observed[key] for key in BEHIND} == BEHIND
-    assert set(observed) == set(BEHIND) | {'coverage', 'forecast_scope', 'whole_contract_finish'}
+    assert set(observed) == set(BEHIND) | {'coverage', 'forecast_scope', 'whole_contract_finish', 'data_gaps'}
     coverage = observed['coverage']
     assert (coverage['calculated'], coverage['source_works'], coverage['source_rows'], coverage['unknown']) == (3, 4, 6, 1)
     assert coverage['source_known'] and coverage['partial']
     assert coverage['calculation_start'] == '2026-02-01' and coverage['prior_periods'] == 1
+    assert observed['data_gaps']
     assert observed['forecast_scope'] == 'matched_works' and observed['whole_contract_finish'] is None
 
 
@@ -129,7 +130,7 @@ def test_the_table_shows_lag_deviation_and_forecast_in_plain_words(card, width):
         expect(first).to_contain_text('Отставание: 3 дня')
         more.locator('#contractComparisonMethodology > details > summary').click()
         expect(more.locator('.contract-comparison-money')).to_have_text(
-            'По сопоставленным работам: план 10 000 ₽, факт 5 500 ₽, отклонение −4 500 ₽.')
+            'Денежный план и факт, включая материалы: план 10 000 ₽, факт 5 500 ₽, отклонение −4 500 ₽.')
         assert more.locator('#contractCardSummary [data-label="Прогноз окончания"] .risktext').count()==0
         assert first.locator('.contract-compare-status.risktext').evaluate(color)!=row.evaluate(color)
         assert red!=row.evaluate(color)
