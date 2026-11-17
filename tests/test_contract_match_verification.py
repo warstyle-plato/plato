@@ -50,7 +50,7 @@ def test_prepopulated_cache_is_not_extended_and_nested_pure_compute_is_uncached(
             assert proof['entered_scopes']==proof['exited_scopes']==0
             assert proof['hits']['reference']=={'attempted':1,'verified':1}
             assert proof['hits']['party']=={'attempted':0,'verified':0}
-            assert proof['unexercised_kinds']==['party','scope']
+            assert proof['unexercised_kinds']==['party','scope','party_parts','work_words']
     assert verify._VERIFY.get() is None
 
 

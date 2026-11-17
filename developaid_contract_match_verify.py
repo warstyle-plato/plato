@@ -9,8 +9,8 @@ import contextlib
 import contextvars
 import threading
 
-PURPOSE = 'contract-pure-matching-hit-verify-v1'
-KINDS = ('party', 'reference', 'scope')
+PURPOSE = 'contract-pure-matching-hit-verify-v2'
+KINDS = ('party', 'reference', 'scope', 'party_parts', 'work_words')
 MAX_COUNT = 2**53 - 1
 _VERIFY = contextvars.ContextVar('contract_pure_match_verification', default=None)
 
