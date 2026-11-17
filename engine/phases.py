@@ -2205,7 +2205,7 @@ def _calculate_phased_once(req: PhasedCalcRequest, *, _land_rent_cutoff: date | 
         result.setdefault("phase_shares", list(shares))
         return result
 
-    rent_switch = master_vri_obligation if base_amounts.get("land_rights", 0.0) > 0 else None
+    rent_switch = vri_cadastral_change_date(x_master, base_op["permit"])
     common_land_rent = _common_land_rent(rent_rve, rent_end, _land_rent_areas)
     shared_base_mln = {
         "purchase": n(x_master, "purchase_price_mln"),

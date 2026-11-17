@@ -894,8 +894,8 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         rent_end = max(rent_end, hotel_strategy.plan_horizon_end({
             "commissioning": rve, "params": hotel_strategy.params_from_inputs(x)}))
     rent_rve = developaid_land_rent.construction_cutoff(rve, object_commissioning, pure_nonres=is_nonresidential(x))
-    # The cadastral value after the VRI change applies from the VRI date.
-    rent_switch = vri_obligation_date(x, permit)[0] if amounts.get("land_rights", 0.0) > 0 else None
+    # A zero payment after relief does not cancel the VRI change or its date.
+    rent_switch = vri_cadastral_change_date(x, permit)
     land_rent = copy.deepcopy(x.get("_land_rent_phase_model")) if x.get("_land_rent_phase_model") else developaid_land_rent.build(
         x, project_start, rent_rve, add_months(max(rent_end, rent_rve), 1), cadastral_switch=rent_switch)
     land_rent["local_object_commissioning"] = {key: value.isoformat() for key, value in object_commissioning.items()}

@@ -239,7 +239,7 @@ def test_target_cadastral_value_applies_from_the_vri_obligation_date():
     model = op(x)
     switch = model["land_rent"]["cadastral_switch"]
     assert switch and switch["date"] == "2027-07-01" and switch["target_mln"] == 300
-    without_vri = op(inputs(land_rent_cadastral_target_mln=300, land_rights_cost_mln=0))
+    without_vri = op(inputs(land_rent_cadastral_target_mln=300, land_rights_cost_mln=0, land_rent_vri_change=False))
     assert without_vri["land_rent"]["cadastral_switch"] is None
     assert model["capex_amounts"]["land_rent"] > without_vri["capex_amounts"]["land_rent"]
 

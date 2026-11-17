@@ -292,6 +292,29 @@ def vri_obligation_date(x: dict[str, Any], permit: date) -> tuple[date, str, boo
     return add_months(permit, -1), "Оценочная дата — за месяц до РнС", True
 
 
+def vri_cadastral_change_date(x: dict[str, Any], permit: date) -> date | None:
+    """Дата новой кадастровой базы аренды, независимо от платы и льгот.
+
+    Отдельное решение об изменении ВРИ не связано с флагом оплаты старых
+    проектов. Пока это решение не задано, положительная исходная плата или
+    сохранённое требование смены ВРИ подтверждают событие. Подтверждённая
+    дата применения новой КС имеет приоритет; пока её нет, расчёт использует
+    сценарную дату. Неверная дата не заменяется другой датой молча.
+    """
+    change = x.get("land_rent_vri_change")
+    if change is False:
+        return None
+    if change is not True and not (vri_payment_active(x) or x.get("vri_required") is True):
+        return None
+    raw = x.get("land_rent_cadastral_change_date")
+    if raw not in (None, ""):
+        try:
+            return d(raw)
+        except (TypeError, ValueError):
+            return None
+    return vri_obligation_date(x, permit)[0]
+
+
 def _vri_settings(x: dict[str, Any], permit: date, amount: float = 0.0) -> dict[str, Any]:
     region = _vri_region(x.get("vri_region"))
     obligation_date, obligation_basis, obligation_estimated = vri_obligation_date(x, permit)
