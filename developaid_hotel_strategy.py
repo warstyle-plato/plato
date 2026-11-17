@@ -965,7 +965,7 @@ def hotel_flows(plan: dict[str, Any], key_rate: Callable[[date], float], *,
         project_cf.append(m["project_cf"][month])
         equity_cf.append(m["equity_cf"][month])
 
-    annual = annual_table(months, m)
+    annual = annual_table(months, m, asset_horizon_end=horizon_end)
     dscr_by_year = [row["dscr"] for row in annual if row.get("dscr") is not None]
     if dscr_target > 0:
         low = [row["year"] for row in annual
@@ -1128,8 +1128,15 @@ ANNUAL_ROWS: tuple[tuple[str, str], ...] = (
 )
 
 
-def annual_table(months: list[date], m: dict[str, dict[date, float]]) -> list[dict[str, Any]]:
-    """Годовой USALI по календарным годам — свод тех же месяцев."""
+def annual_table(months: list[date], m: dict[str, dict[date, float]], *,
+                 asset_horizon_end: date | None = None) -> list[dict[str, Any]]:
+    """USALI and seller cash by calendar year, with a separate asset horizon.
+
+    Older callers without a cash tail retain their last-month convention.
+    Hotel flows pass the asset horizon explicitly: a deferred seller payment
+    does not turn the terminal loan repayment into regular annual service.
+    """
+    asset_end = month_key(asset_horizon_end) if asset_horizon_end is not None else (months[-1] if months else None)
     years: dict[int, list[date]] = defaultdict(list)
     for mm in months:
         years[mm.year].append(mm)
@@ -1150,15 +1157,15 @@ def annual_table(months: list[date], m: dict[str, dict[date, float]]) -> list[di
                                     + m["loan_interest_paid"].get(mm, 0.0) for mm in span))
         paid = float(sum(m["loan_interest_paid"].get(mm, 0.0) for mm in span))
         # Тело в DSCR — плановое: возмещённый НДС стройки, досрочное
-        # погашение удержанными деньгами и остаток, гасимый выходом в последний
-        # месяц расчёта, обслуживанием года не считаются.
-        last = span[-1]
+        # погашение удержанными деньгами и остаток, гасимый в конце владения,
+        # обслуживанием года не считаются. Денежный хвост может быть позже,
+        # в том же календарном году либо в следующих годах.
         scheduled = (row["loan_repayment"]
                      - float(sum(m["loan_vat_prepayment"].get(mm, 0.0)
                                  + m["loan_cash_sweep"].get(mm, 0.0) for mm in span))
-                     - (m["loan_repayment"].get(last, 0.0)
-                        - m["loan_vat_prepayment"].get(last, 0.0)
-                        if last == months[-1] else 0.0))
+                     - (m["loan_repayment"].get(asset_end, 0.0)
+                        - m["loan_vat_prepayment"].get(asset_end, 0.0)
+                        if asset_end in span else 0.0))
         row["debt_service"] = paid + max(0.0, scheduled)
         row["dscr"] = (row["ebitda"] / row["debt_service"]
                        if row["debt_service"] > 1.0 and row["rooms_available"] > 0 else None)
