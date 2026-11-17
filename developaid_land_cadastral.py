@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import copy
 import math
+import re
 
 
 def positive(value):
@@ -37,7 +38,11 @@ def parcels(x):
     region = x.get("vri_region")
     mo = mapping(mapping(x.get("_mo_calc")).get("vri")).get("parcels") or []
     gl = mapping(x.get("_glavapu_import"))
-    numbers = gl.get("recognized") or []
+    # ГлавАПУ stores recognized table cells here, not just parcel numbers.
+    # Match the browser's explicit cadastral-number filter; never treat a
+    # recognized metric dict as the identity of a parcel.
+    numbers = [n for n in gl.get("recognized", []) or []
+               if isinstance(n, str) and re.fullmatch(r"\d{2}:\d{2}:\d{6,8}:\d+", n)]
     lookup = mapping(x.get("_land_lookup")).get("results") or []
     raw = mo if region == "mo" and mo else [p for p in lookup if isinstance(p, dict)
         and p.get("found") and p.get("kind") == "land"

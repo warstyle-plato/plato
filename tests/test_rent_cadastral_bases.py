@@ -90,6 +90,16 @@ def test_one_missing_record_is_not_a_partial_sum_for_the_accepted_territory():
     assert len(cadastral.parcels(x))==2
 
 
+def test_recognized_glavapu_metrics_are_not_parcel_ids():
+    x=settings()
+    x['_glavapu_import']['recognized']=[{'label':'Площадь','key':'site_area_ha',
+        'value':3,'display':'3','unit':'га','target':'inputs.site_area_ha'}]
+    result=cadastral.prepare(x)
+    assert len(cadastral.parcels(x))==2
+    assert result['land_rent_cadastral_mln']==300
+    assert result['land_rent_cadastral_target_mln']==600
+
+
 @pytest.mark.parametrize('region',['msk','mo'])
 def test_removing_the_normalized_territory_invalidates_only_automatic_bases(region):
     x=cadastral.prepare(settings(region))
