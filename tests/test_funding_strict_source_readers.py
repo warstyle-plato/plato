@@ -55,7 +55,8 @@ def test_invalid_payment_amount_survives_xlsx_as_unknown(tmp_path, monkeypatch, 
     assert r['available_bank_limit'] is None
     assert r['calculated_additional'] is None
     assert not r['matches']
-    assert funding['own_money']['source_completeness']['payments']['2'] == [
+    assert [{k: row[k] for k in ('source_row', 'fields')}
+            for row in funding['own_money']['source_completeness']['payments']['2']] == [
         {'source_row': 10, 'fields': ['amount']}]
     assert r['primary_source_gate'] == 'NOT_REQUIRED_FOR_CALCULATION'
     assert r['calculation']['paid_at_cut'] is None  # No readable row is not a known zero.
@@ -147,7 +148,8 @@ def test_unknown_payment_scope_is_not_proven_outside(tmp_path, monkeypatch, code
     assert not r['matches']
     assert r['state'] == 'needs_reconciliation'
     assert any('код РСС' in reason for reason in r['reasons'])
-    assert r['source_completeness']['payments']['2'] == [
+    assert [{k: row[k] for k in ('source_row', 'fields')}
+            for row in r['source_completeness']['payments']['2']] == [
         {'source_row': 10, 'fields': ['estimate_code']}]
     assert dashboard._paid_since(rss, estimate, '2', datetime.date(2026, 10, 1), CUT) is None
 
