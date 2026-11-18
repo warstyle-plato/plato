@@ -4311,6 +4311,11 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
             note = " ".join(filter(None, (reason.rstrip(" .;") + "." if reason else "",
                                           base_note, summary["note"])))
         else:
+            if reconciliation is not None and summary.get("scope") == "calculated_total":
+                from developaid_funding_reconciliation import calculation_note
+
+                # The shared summary supplies this qualifier once, after the row's explanation.
+                note = note.removesuffix(" " + calculation_note(reconciliation))
             note = ". ".join(part for part in (note.rstrip(" .;"), summary["note"]) if part)
         add(label, _rub(amount) if amount is not None else None,
             note, "bad" if amount is not None and amount > 0 else "good" if amount is not None else "missing")
