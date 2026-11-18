@@ -36,7 +36,7 @@ import re
 from math import fsum
 
 # Raise when reading changes: stored documents are then read again from their PDF.
-READER_VERSION = 10
+READER_VERSION = 11
 MONTHS = {'январь': 1, 'февраль': 2, 'март': 3, 'апрель': 4, 'май': 5, 'июнь': 6, 'июль': 7,
           'август': 8, 'сентябрь': 9, 'октябрь': 10, 'ноябрь': 11, 'декабрь': 12}
 _CODE = re.compile(r'^\d+(?:\.\d+)*\.?$')
@@ -45,7 +45,11 @@ _GENITIVE = {'января': 1, 'февраля': 2, 'марта': 3, 'апре�
              'августа': 8, 'сентября': 9, 'октября': 10, 'ноября': 11, 'декабря': 12}
 # A date in figures (16.03.2026) or in words («16» марта 2026 г.).
 _WHEN = (r'(?:\d\d\.\d\d\.\d{4}|[«"“]?\d{1,2}[»"”]?\s+(?:' + '|'.join(_GENITIVE) + r')\s+\d{4})')
-_CONTRACT = re.compile(r'Договор\w*\s+подряда\s+№\s*(.+?)\s+(?:от\s+(' + _WHEN + r')|на\s+выполнение)', re.I)
+_CONTRACT_HEADER = r'Договор\w*\s+подряда\s+№'
+# An undated running header must not borrow a later annex's dated reference.
+# Keep searching for a complete reference instead of joining two headings.
+_CONTRACT = re.compile(_CONTRACT_HEADER + r'\s*((?:(?!' + _CONTRACT_HEADER +
+                       r').)+?)\s+(?:от\s+(' + _WHEN + r')|на\s+выполнение)', re.I)
 _AGREEMENT = re.compile(r'Дополнительн\w+\s+соглашени\w+\s+№\s*(\d+)(?:\s+от\s+(' + _WHEN + r'))?', re.I)
 # The date line under the title («г. Москва «16» марта 2026 г.») follows it closely.
 _DATELINE = 400
