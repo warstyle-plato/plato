@@ -362,11 +362,15 @@ def test_actuals_outside_calendar_are_an_explicit_export_limit(month):
 def test_actual_in_last_calendar_month_is_exported_without_truncation():
     inputs = {**_base(), "vri_required":False, "land_rent_vat_treatment":"public_exempt",
               "land_rent_payment_mode":"manual", "land_rent_payment_schedule":"100%@0"}
+    _,_,baseline = _build(inputs)
     actuals = {"cut":"2042-01-01","land_rent_mapping_version":1,
                "capex_by_article":{"land_rent":{"2041-12-01":100_000}}}
     _,ev,canonical = _build(inputs,actuals=actuals)
-    assert canonical["monthly"] == {"2041-12-01":100_000}
-    assert ev.cell(book.SHEET,"B19") == pytest.approx(.1)
+    # One observed month does not turn uncovered earlier months into zero fact.
+    assert canonical["monthly"] == {**baseline["monthly"], "2041-12-01":100_000}
+    last_col = openpyxl.utils.get_column_letter(3 + book.MONTHS)
+    assert ev.cell(book.SHEET,f"{last_col}6") == pytest.approx(.1)
+    assert ev.cell(book.SHEET,"B19")*1e6 == pytest.approx(baseline["cash_total"]+100_000,abs=.01)
 
 
 def test_confirmed_cutoff_before_project_start_is_zero_construction_not_unknown():
