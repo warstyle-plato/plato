@@ -81,20 +81,24 @@ async function post(path,body){
 function say(text,bad){$('msg').textContent=text||'';$('msg').className='msg'+(bad?' bad':'')}
 function phone(){return window.matchMedia('(max-width:700px)').matches}
 function countText(c){return 'Выполнено '+c.done+' из '+c.total+(c.behind?', отстают '+c.behind:'')+(c.no_reading?', без показания '+c.no_reading:'')}
+function expected(e){
+ const note=[e.text,e.date?e.delta_text:'',e.date?e.plan_text:''].filter(Boolean).join(' ');
+ return '<div class="tile" id="expected"><span>'+esc(e.label)+'</span><b>'+(dt(e.date)||'Не определена')+'</b><p>'+esc(note)+'</p></div>';
+}
 function deadlines(b){
  const p=b.progress,c=b.counts,dates=b.fact_dates||[];
  const when=dates.length?(dates.length===1?'на '+dt(dates[0]):'с '+dt(dates[0])+' по '+dt(dates[dates.length-1])):'';
  return '<section class="card" id="deadlines"><h2>Сроки проекта</h2><div class="tiles">'
   +'<div class="tile"><span>'+esc(b.plan_finish.label)+'</span><b>'+(dt(b.plan_finish.date)||'Не указан')+'</b></div>'
-  +'<div class="tile" id="expected"><span>Ожидаемое окончание</span><b>—</b><p>'+esc(b.expected_finish.text)+'</p></div>'
+  +expected(b.expected_finish)
   +'<div class="tile"><span>'+(p.estimated?'Готовность проекта (оценочная)':'Готовность проекта')+'</span><b>'+(pct(p.value)||'Не определена')+'</b>'+(p.value==null&&p.reason?'<p>'+esc(p.reason)+'</p>':'')+'</div>'
   +'<div class="tile"><span>Отстают от плана</span><b class="'+(c.behind?'behind':'')+'">'+c.behind+' из '+c.total+'</b><p>работ на дату среза</p></div>'
   +'</div><p class="muted" id="factDates">'+(when?'Выполнение работ указано '+when+'.':'Датированных показаний выполнения нет.')+'</p></section>';
 }
 function corpora(b){
  if(!b.corpora.length)return '';
- return '<section class="card"><h2>Корпуса</h2><div class="scroll"><table class="corpora"><thead><tr><th>Корпус</th><th>Готовность</th><th>Выполнено работ</th><th>Отстают</th><th>Без показания</th><th>План окончания</th></tr></thead><tbody>'
-  +b.corpora.map(c=>'<tr><td>'+esc(c.name)+'</td><td data-label="Готовность">'+(pct(c.progress)||'—')+'</td><td data-label="Выполнено работ">'+c.done+' из '+c.total+'</td><td data-label="Отстают" class="'+(c.behind?'behind':'')+'">'+c.behind+'</td><td data-label="Без показания">'+c.no_reading+'</td><td data-label="План окончания">'+(dt(c.plan_finish)||'—')+'</td></tr>').join('')
+ return '<section class="card"><h2>Корпуса</h2><div class="scroll"><table class="corpora"><thead><tr><th>Корпус</th><th>Готовность</th><th>Выполнено работ</th><th>Отстают</th><th>Без показания</th><th>План окончания</th><th>Ожидаемое окончание</th></tr></thead><tbody>'
+  +b.corpora.map(c=>'<tr><td>'+esc(c.name)+'</td><td data-label="Готовность">'+(pct(c.progress)||'—')+'</td><td data-label="Выполнено работ">'+c.done+' из '+c.total+'</td><td data-label="Отстают" class="'+(c.behind?'behind':'')+'">'+c.behind+'</td><td data-label="Без показания">'+c.no_reading+'</td><td data-label="План окончания">'+(dt(c.plan_finish)||'—')+'</td><td data-label="Ожидаемое окончание">'+(dt(c.expected_finish)||'—')+'</td></tr>').join('')
   +'</tbody></table></div></section>';
 }
 function workChip(w){return '<span class="chip '+esc(w.state)+'">'+esc(w.object)+': '+(w.reason?esc(w.reason):w.fact==null?(w.state==='done'?'завершено по источнику':'нет показания'):'выполнено '+pct(w.fact))+(w.plan==null?'':', по плану '+pct(w.plan))+'</span>'}
@@ -129,6 +133,7 @@ function matrix(b){
 }
 function method(b){
  return '<section class="card"><details id="method"><summary><b>Как считали и ограничения</b></summary><p>'+esc(b.lag_rule)+'</p>'
+  +(b.expected_finish.scope_text?'<p>'+esc(b.expected_finish.scope_text)+'</p>':'')
   +b.notes.map(n=>'<p>'+esc(n)+'</p>').join('')
   +(b.outside_matrix?'<p>Работ вне матрицы: '+b.outside_matrix+'.</p>':'')
   +'</details></section>'
