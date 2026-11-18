@@ -50,6 +50,22 @@ body.gpr-new-view #gprFactMatrix,body.gpr-new-view #readinessSummary .canonical-
 #gprBrief .gb-corpora td[data-label]:not(:last-child)::after{content:' · ';color:#5b6b7d}
 #gprBrief th,#gprBrief td{padding:5px 4px}}
 @media print{#gprBrief .gb-test{display:none}}
+#gantt .gb-ks{margin:0 0 6px 18px;padding:6px 10px;border-left:3px solid #d7e0ea;background:#fafbfd;font-size:13px}
+#gantt .gb-ks-toggle{font:inherit;font-size:12px;background:none;border:0;padding:2px 0;color:var(--navy,#183153);cursor:pointer;text-align:left}
+#gantt .gb-ks-list{margin:4px 0 0;padding:0;list-style:none}
+#gantt .gb-ks-item{border-top:1px solid #edf1f5;padding:6px 0;overflow-wrap:anywhere}
+#gantt .gb-ks-item p{margin:2px 0}
+#gantt .gb-ks-tag{display:inline-block;font-size:11px;border-radius:999px;padding:0 7px;margin-right:6px;border:1px solid}
+#gantt .gb-ks-tag.yes{color:#1d6b3a;border-color:#a8d5b5;background:#effaf2}
+#gantt .gb-ks-tag.no{color:#8a5300;border-color:#ebcf9c;background:#fff8ea}
+#gantt .gb-ks-tag.part{color:#a12b2b;border-color:#e9b4b4;background:#fff3f3}
+#gantt .gb-ks-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
+#gantt .gb-ks-actions .btn{font-size:12px;padding:3px 9px;min-height:0}
+#gantt .gb-ks-form{margin-top:6px;display:grid;gap:6px}
+#gantt .gb-ks-form select,#gantt .gb-ks-form textarea{width:100%;max-width:100%;box-sizing:border-box;font:inherit;font-size:13px}
+#gantt .gb-ks-msg{font-size:12px}#gantt .gb-ks-msg.bad{color:#a12b2b}#gantt .gb-ks-msg.good{color:#1d6b3a}
+.gpr-print-mode #gantt .gb-ks{display:none!important}
+@media print{#gantt .gb-ks{display:none!important}}
 </style>"""
 
 SCRIPT = r"""<script>
@@ -168,6 +184,150 @@ renderGantt=function(v){
 const baseClear=clearReadiness;
 clearReadiness=function(){const result=baseClear.apply(this,arguments);brief=null;briefKey='';render();return result};
 window.matchMedia('(max-width:700px)').addEventListener('change',render);
+// КС-6а under the works of the Gantt (owner 18.11.2026: «Б с возможностью поменять»).
+// Confirmed positions are the saved binding of the page's own physical state;
+// candidates are the review's suggestions and are marked «не подтверждено».
+// A candidate never enters progress or the forecast until it is saved here or
+// in «Данные и настройки»: both go through the same saved configuration.
+const ksOpen=new Set(),ksAll=new Set(),ksMsg=new Map();let ksForm=null;
+const ksLimit=10;
+function ksState(){
+ const s=physicalState,v=currentView;
+ if(!s||s.source_kind!=='gpr'||!s.review)return null;
+ // Only positions of the very GPR version and archive the Gantt is drawn from.
+ const observed=v?.schedule?.physical_progress,plan=v?.schedule?.approved_plan?.source_sha256||observed?.source_sha256;
+ if(!plan||plan!==s.source_sha256||observed&&observed.source_kind==='gpr'&&!physicalSourceMatches(observed,s))return null;
+ return s;
+}
+function ksIndex(s){
+ const linked=new Map();for(const c of s.configuration?.components||[])for(const i of c.item_ids)linked.set(i,c.task_id);
+ const byTask=new Map(),add=(task,entry)=>{if(!byTask.has(task))byTask.set(task,[]);byTask.get(task).push(entry)};
+ for(const g of s.review.groups||[]){
+  const owners=new Set(g.item_ids.filter(i=>linked.has(i)).map(i=>linked.get(i)));
+  if(owners.size){const whole=owners.size===1&&g.item_ids.every(i=>linked.has(i));for(const t of owners)add(t,{group:g,kind:whole?'yes':'part'});continue}
+  for(const c of g.candidates||[])add(c.task_id,{group:g,kind:'no',candidate:c,others:(g.candidates||[]).length-1});
+ }
+ for(const list of byTask.values())list.sort((a,b)=>({yes:0,part:1,no:2}[a.kind]-{yes:0,part:1,no:2}[b.kind])||(b.candidate?.score||0)-(a.candidate?.score||0));
+ return byTask;
+}
+function ksTaskName(s,id){const t=(s.tasks||[]).find(x=>x.task_id===id);return t?[t.object,t.name].filter(Boolean).join(' — '):id}
+function ksAmounts(g){
+ const plan=g.plan_quantity!=null?numberWithUnit(g.plan_quantity,g.unit):'',done=g.completed_quantity!=null?numberWithUnit(g.completed_quantity,g.unit):'';
+ return plan?'Выполнено '+(done||'неизвестно')+' из '+plan+(g.progress!=null?' ('+pct(g.progress)+')':'')+'.':'Объём в источнике не указан.';
+}
+function ksItem(s,task,e,key){
+ const g=e.group,place=[g.scope,[g.contractor,g.contract?'договор '+g.contract:''].filter(Boolean).join(', '),(g.years||[]).join(', ')].filter(Boolean).join(' · ');
+ const tag={yes:'<span class="gb-ks-tag yes">подтверждено</span>',part:'<span class="gb-ks-tag part">привязано частично</span>',no:'<span class="gb-ks-tag no">не подтверждено</span>'}[e.kind];
+ let why='';
+ if(e.kind==='no')why='<p class="gb-muted">Предложено автоматически: '+esc(e.candidate.reason||g.match_reason||'похожее название')+(e.others>0?' Эта позиция может относиться и к другим работам графика: вариантов ещё '+e.others+'.':'')+' Пока вы её не подтвердите, она не входит в выполнение работы и в прогноз.</p>';
+ if(e.kind==='part')why='<p class="gb-muted">Часть строк этой позиции привязана к другой работе или не привязана. Проверьте позицию и выберите одну работу.</p>';
+ const issues=(g.issues||[]).length?'<p class="gb-muted">'+g.issues.map(esc).join(' ')+'</p>':'';
+ let actions='';
+ if(s.can_edit===true){
+  const confirm=e.kind==='no'?'<button type="button" class="btn" data-ks-act="bind"'+(g.can_bind?'':' disabled title="Подтвердить нельзя: данные позиции требуют проверки"')+'>Подтвердить для этой работы</button>':'';
+  actions='<div class="gb-ks-actions">'+confirm+'<button type="button" class="btn ghost" data-ks-act="move">Привязать к другой работе</button>'+(e.kind!=='no'?'<button type="button" class="btn ghost" data-ks-act="unbind">Отвязать от работы</button>':'')+'</div>';
+ }
+ const form=ksForm&&ksForm.key===key?ksFormHtml(s,task,e):'';
+ return '<li class="gb-ks-item" data-ks-key="'+esc(key)+'" data-group="'+esc(g.group_id)+'"><p>'+tag+'<b>'+esc(g.name||'Позиция без названия')+'</b></p>'+(place?'<p class="gb-muted">'+esc(place)+'</p>':'')+'<p>'+esc(ksAmounts(g))+'</p>'+why+issues+actions+form+'</li>';
+}
+function ksFormHtml(s,task,e){
+ const g=e.group,act=ksForm.act;
+ let head=act==='bind'?'Подтвердить, что позиция «'+esc(g.name)+'» относится к работе «'+esc(ksTaskName(s,task))+'».':act==='unbind'?'Отвязать позицию «'+esc(g.name)+'» от работы «'+esc(ksTaskName(s,task))+'».':'Выберите работу графика для позиции «'+esc(g.name)+'».';
+ let select='';
+ if(act==='move'){
+  const offered=(g.candidates||[]).map(c=>c.task_id).filter(id=>id!==task),rest=(s.tasks||[]).map(t=>t.task_id).filter(id=>id!==task&&!offered.includes(id));
+  const option=id=>'<option value="'+esc(id)+'"'+(ksForm.target===id?' selected':'')+'>'+esc(ksTaskName(s,id))+'</option>';
+  select='<select class="gb-ks-target" aria-label="Работа графика"><option value="">Выберите работу</option>'+(offered.length?'<optgroup label="Предложены по названию">'+offered.map(option).join('')+'</optgroup>':'')+'<optgroup label="Все работы графика">'+rest.map(option).join('')+'</optgroup></select>';
+ }
+ return '<div class="gb-ks-form"><p>'+head+' После сохранения выполнение работы и прогноз пересчитаются. Полный состав работы нужно будет подтвердить заново в разделе «Данные и настройки».</p>'+select
+  +'<textarea class="gb-ks-note" rows="2" aria-label="Основание" placeholder="Кто проверил и на каком основании (обязательно)">'+esc(ksForm.note||'')+'</textarea>'
+  +'<div class="gb-ks-actions"><button type="button" class="btn" data-ks-act="save">Сохранить</button><button type="button" class="btn ghost" data-ks-act="cancel">Отмена</button></div></div>';
+}
+function ksConfiguration(s,group,target){
+ const saved=s.configuration||{tasks:[],components:[]},ids=new Set(group.item_ids);
+ const cfg={tasks:saved.tasks.map(t=>({...t})),components:saved.components.map(c=>({...c,item_ids:[...c.item_ids]})),note:''};
+ const touched=new Set(cfg.components.filter(c=>c.item_ids.some(i=>ids.has(i))).map(c=>c.task_id));
+ cfg.components=cfg.components.map(c=>({...c,item_ids:c.item_ids.filter(i=>!ids.has(i))})).filter(c=>c.item_ids.length);
+ if(target){
+  let task=cfg.tasks.find(t=>t.task_id===target);
+  if(task&&task.mode!=='quantities')return {error:'Для работы «'+ksTaskName(s,target)+'» выбрано другое основание выполнения: по сроку плана или подтверждённое завершение. Поменять основание можно в разделе «Данные и настройки».'};
+  if(!task){task={task_id:target,mode:'quantities',scope_confirmed:false,actual_finish:''};cfg.tasks.push(task)}
+  touched.add(target);
+  let component_id=group.component_id;
+  for(let suffix=2;cfg.components.some(c=>c.component_id===component_id);suffix++)component_id=group.component_id.slice(0,110)+' ('+suffix+')';
+  cfg.components.push({task_id:target,component_id,item_ids:[...group.item_ids]});
+ }
+ for(const t of cfg.tasks)if(touched.has(t.task_id))t.scope_confirmed=false;
+ cfg.tasks=cfg.tasks.filter(t=>!(touched.has(t.task_id)&&t.mode==='quantities'&&!cfg.components.some(c=>c.task_id===t.task_id)));
+ const limit=s.review.component_limit;
+ if(limit&&(cfg.components.length>limit||cfg.tasks.length>limit))return {error:'В одном составе поддерживается до '+limit+' позиций и работ. Уточните группировку в разделе «Данные и настройки».'};
+ return {configuration:cfg};
+}
+function ksSameDraft(s){
+ if(!physicalDraft)return true;
+ const shape=c=>JSON.stringify([(c?.tasks||[]),(c?.components||[])]);
+ return shape(physicalDraft)===shape(s.configuration);
+}
+async function ksSave(task,group){
+ const s=ksState(),c=cumulativeContext();if(!s||!ksForm)return;
+ const note=ksForm.note.trim(),target=ksForm.act==='bind'?task:ksForm.act==='move'?ksForm.target:'';
+ const say=(text,cls)=>{ksMsg.set(task,{text,cls});decorate()};
+ if(ksForm.act==='move'&&!target)return say('Выберите работу графика.','bad');
+ if(!note)return say('Укажите, кто проверил и на каком основании.','bad');
+ if(!ksSameDraft(s))return say('В разделе «Данные и настройки» есть несохранённые изменения привязок. Сохраните или перечитайте их, затем повторите.','bad');
+ if(target&&ksForm.act!=='unbind'&&!group.can_bind)return say('Эту позицию нельзя привязать: '+((group.issues||[]).join(' ')||'данные позиции требуют проверки.'),'bad');
+ const built=ksConfiguration(s,group,target);if(built.error)return say(built.error,'bad');
+ built.configuration.note=note;
+ const payload={project:c.project,source_kind:'gpr',source_sha256:s.source_sha256,snapshot_id:s.snapshot_id,revision:s.revision,configuration:built.configuration};
+ say('Сохраняю привязку…','');
+ try{
+  const result=await post('/monitor/schedule-gpr-physical/save',payload,{timeout:60000});
+  if(!sameCumulativeContext(c))return;
+  ksForm=null;ksMsg.set(target||task,{text:target?'Привязка сохранена. Обновляю выполнение и прогноз.':'Позиция отвязана. Обновляю выполнение и прогноз.',cls:'good'});
+  invalidatePhysicalForecast();renderPhysicalSchedule(result);await refresh();
+ }catch(e){
+  if(!sameCumulativeContext(c))return;
+  say(e.status===409?e.message+' Перечитываю сохранённые привязки.':e.name==='AbortError'||e instanceof TypeError?'Связь прервалась. Перечитайте страницу перед повтором.':e.message,'bad');
+  if(e.status===409)loadPhysicalSchedule();
+ }
+}
+function decorate(){
+ const gantt=el('gantt');if(!gantt)return;
+ for(const old of gantt.querySelectorAll('.gb-ks'))old.remove();
+ const s=ksState();if(!s)return;
+ const index=ksIndex(s);
+ for(const row of gantt.querySelectorAll('.g-row.lvl-task[data-work-id]')){
+  const task=row.dataset.workId,list=index.get(task)||[];if(!list.length)continue;
+  const yes=list.filter(e=>e.kind!=='no').length,no=list.length-yes,open=ksOpen.has(task),shown=ksAll.has(task)?list:list.slice(0,ksLimit),note=ksMsg.get(task);
+  const box=document.createElement('div');box.className='gb-ks';box.dataset.task=task;
+  box.innerHTML='<button type="button" class="gb-ks-toggle" aria-expanded="'+open+'">'+(open?'▾':'▸')+' Позиции КС-6а: подтверждено '+yes+', не подтверждено '+no+'</button>'
+   +(note?'<div class="gb-ks-msg '+esc(note.cls)+'">'+esc(note.text)+'</div>':'')
+   +(open?'<ul class="gb-ks-list">'+shown.map(e=>ksItem(s,task,e,task+'|'+e.group.group_id)).join('')+'</ul>'
+    +(shown.length<list.length?'<button type="button" class="gb-ks-toggle gb-ks-more">Показать все позиции ('+list.length+')</button>':'')
+    +(s.can_edit===true?'':'<p class="gb-muted">'+esc(s.source_reason||'Поменять привязку можно после загрузки утверждённого ГПР и архива накопительных.')+'</p>'):'');
+  row.after(box);
+  box.querySelector('.gb-ks-toggle').onclick=()=>{open?ksOpen.delete(task):ksOpen.add(task);decorate()};
+  const more=box.querySelector('.gb-ks-more');if(more)more.onclick=()=>{ksAll.add(task);decorate()};
+  for(const item of box.querySelectorAll('.gb-ks-item')){
+   const key=item.dataset.ksKey,entry=list.find(e=>e.group.group_id===item.dataset.group);
+   const note=item.querySelector('.gb-ks-note');if(note)note.oninput=()=>{ksForm.note=note.value};
+   const target=item.querySelector('.gb-ks-target');if(target)target.onchange=()=>{ksForm.target=target.value};
+   for(const button of item.querySelectorAll('[data-ks-act]'))button.onclick=()=>{
+    const act=button.dataset.ksAct;ksMsg.delete(task);
+    if(act==='cancel'){ksForm=null;return decorate()}
+    if(act==='save')return ksSave(task,entry.group);
+    ksForm={key,act,note:ksForm?.note||'',target:''};decorate();
+    gantt.querySelector('.gb-ks-item[data-ks-key="'+CSS.escape(key)+'"] .gb-ks-form textarea')?.focus();
+   };
+  }
+ }
+}
+const ganttWithBrief=renderGantt;
+renderGantt=function(){const result=ganttWithBrief.apply(this,arguments);decorate();return result};
+const basePhysical=renderPhysicalSchedule;
+renderPhysicalSchedule=function(){const result=basePhysical.apply(this,arguments);decorate();return result};
+const basePhysicalClear=clearPhysicalSchedule;
+clearPhysicalSchedule=function(){const result=basePhysicalClear.apply(this,arguments);ksForm=null;decorate();return result};
 })();
 </script>"""
 
