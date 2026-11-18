@@ -3519,16 +3519,24 @@ def evaluate(workbook) -> Evaluator:
     n = workbook[TIME_SHEET].max_column - FIRST_COL + 1
     monthly = [ws for ws in workbook.worksheets
                if ws.max_column >= FIRST_COL + n - 1 and ws.cell(K_ROW, FIRST_COL).value is not None]
+    # Discovery must not allocate a rectangle of empty openpyxl cells. Keep
+    # the same month/sheet/row order, including forward dependencies.
+    formulas = []
+    for ws in monthly:
+        columns = {}
+        for cell in ws._cells.values():
+            if (FIRST_COL <= cell.column < FIRST_COL + n
+                    and isinstance(cell.value, str) and cell.value.startswith("=")):
+                columns.setdefault(cell.column, []).append(cell)
+        formulas.append((ws, {col: sorted(cells, key=lambda cell: cell.row)
+                              for col, cells in columns.items()}))
     limit = sys.getrecursionlimit()
     sys.setrecursionlimit(max(limit, 20000))
     try:
         for col in range(FIRST_COL, FIRST_COL + n):
-            letter = L(col)
-            for ws in monthly:
-                for r in range(1, ws.max_row + 1):
-                    value = ws[f"{letter}{r}"].value
-                    if isinstance(value, str) and value.startswith("="):
-                        evaluator.cell(ws.title, f"{letter}{r}")
+            for ws, columns in formulas:
+                for cell in columns.get(col, ()):
+                    evaluator.cell(ws.title, cell.coordinate)
     finally:
         sys.setrecursionlimit(limit)
     return evaluator
