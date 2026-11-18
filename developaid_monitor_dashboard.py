@@ -1153,7 +1153,7 @@ def _paid_in_chapters(rss: Path, estimate: dict[str, Any],
     """
     keep = payment_in_chapters(estimate, chapters)
     selected, incomplete = [], []
-    for row in actuals.read_payments(rss, include_incomplete=True).get("rows") or []:
+    for row in actuals.read_payments(rss, include_incomplete=True, include_cell_metadata=True).get("rows") or []:
         day = row.get("date")
         if day is not None and ((cut is not None and day > cut)
                                 or (since is not None and day < since)):
@@ -1168,7 +1168,8 @@ def _paid_in_chapters(rss: Path, estimate: dict[str, Any],
         if scope is None:
             errors.append("estimate_code")
         if errors:
-            incomplete.append({"source_row": row.get("source_row"), "fields": errors})
+            incomplete.append({"source_row": row.get("source_row"), "fields": errors,
+                               **actuals.payment_issue_context(row)})
         selected.append({**row, "amount": amount, "complete": not errors})
     total = (sum(row["amount"] for row in selected)
              if all(row["complete"] for row in selected) else None)
