@@ -77,14 +77,14 @@ def test_native_known_values_zero_units_and_dates_survive_roundtrip():
     before = copy.deepcopy(cached)
     sheet, header = table(xlsx(cached))
     natural, money = cached["comparison"]["lines"]
-    assert sheet.max_column == 6
-    assert [sheet.cell(header + 1, i).value for i in (2, 3, 4)] == [natural[k] for k in ("planned", "fact", "deviation")]
+    assert sheet.max_column == 7
+    assert [sheet.cell(header + 1, i).value for i in (2, 3, 4, 5)] == [natural[k] for k in ("contract_total", "planned", "fact", "deviation")]
     assert "м3" in sheet.cell(header + 1, 1).value
-    assert sheet.cell(header + 1, 5).value.date() == dt.date.fromisoformat(natural["due"])
-    assert sheet.cell(header + 1, 6).value.date() == dt.date.fromisoformat(natural["forecast_finish"])
-    assert sheet.cell(header + 3, 3).value == money["fact"] == 0
-    assert sheet.cell(header + 3, 3).data_type == "n"
-    assert "₽" in sheet.cell(header + 3, 3).number_format
+    assert sheet.cell(header + 1, 6).value.date() == dt.date.fromisoformat(natural["due"])
+    assert sheet.cell(header + 1, 7).value.date() == dt.date.fromisoformat(natural["forecast_finish"])
+    assert sheet.cell(header + 3, 4).value == money["fact"] == 0
+    assert sheet.cell(header + 3, 4).data_type == "n"
+    assert "₽" in sheet.cell(header + 3, 4).number_format
     assert cached == before
 
 
@@ -104,23 +104,23 @@ def test_remaining_start_source_and_missing_data_remain_inspectable_in_excel():
 def test_unknown_and_empty_native_comparisons_are_qualified_not_zero():
     cached = native_card(unknown=True)
     sheet, header = table(xlsx(cached))
-    assert sheet.cell(header + 1, 2).value is not None  # Known plan survives.
-    assert sheet.cell(header + 1, 3).value is None
+    assert sheet.cell(header + 1, 3).value is not None  # Known plan survives.
     assert sheet.cell(header + 1, 4).value is None
+    assert sheet.cell(header + 1, 5).value is None
     text = "\n".join(str(c.value) for row in sheet for c in row if c.value is not None)
     assert "Дата выполнения не подтверждена" in text and "Факт неизвестен" in text
     empty = native_card(empty=True)
     sheet, header = table(xlsx(empty))
     assert "нет действующей редакции плана" in sheet.cell(header + 1, 1).value
-    assert all(sheet.cell(header + 1, n).value is None for n in range(2, 7))
+    assert all(sheet.cell(header + 1, n).value is None for n in range(2, 8))
 
 
 def test_completed_period_date_and_forecast_qualification_stay_visible():
     cached = native_card(finished=True)
     sheet, header = table(xlsx(cached))
-    assert sheet.cell(header + 1, 6).value.date() == dt.date(2026, 3, 14)
-    assert "По периоду КС, завершено" in sheet.cell(header + 2, 6).value
-    assert "Позже срока на 4 дн." in sheet.cell(header + 2, 6).value
+    assert sheet.cell(header + 1, 7).value.date() == dt.date(2026, 3, 14)
+    assert "По периоду КС, завершено" in sheet.cell(header + 2, 7).value
+    assert "Позже срока на 4 дн." in sheet.cell(header + 2, 7).value
     date_row = next(row for row in sheet if row[0].value == "Дата редакции")
     assert date_row[1].value.date() == dt.date(2026, 2, 1)
     assert any(c.value == "ГПР: ГПР.pdf" for row in sheet for c in row)
@@ -157,7 +157,7 @@ def test_snapshot_context_cannot_be_relabelled(field, value):
 def test_selection_only_uses_server_values_and_keeps_empty_filter_explicit():
     cached = native_card()
     sheet, header = table(xlsx(cached, [cached["comparison_export"]["row_tokens"][1]], query="нулевым", filter="behind"))
-    assert "нулевым" in sheet.cell(header + 1, 1).value and sheet.cell(header + 1, 3).value == 0
+    assert "нулевым" in sheet.cell(header + 1, 1).value and sheet.cell(header + 1, 4).value == 0
     sheet, header = table(xlsx(cached, [], query="нет такой работы"))
     assert sheet.cell(header + 1, 1).value == "По выбранному фильтру работ нет."
     meta, comparison, rows = export.select_snapshot(cached, PROJECT, CUT, CONTRACT,

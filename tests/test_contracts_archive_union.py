@@ -189,7 +189,10 @@ def test_page_names_each_archive_and_the_missing_contract(stored, width):
         expect(page.locator('#contractsMsg')).to_contain_text(
             f'В архиве от {ru(SECOND)} представлены договоры: 1. Подробные КС из прежних архивов сохранены для договоров: 2.', timeout=10000)
         line = contract_row(page, carried['id']).locator('.contract-carried')
-        expect(line).to_have_text(note)
+        expect(line).to_have_text(f'Данные на {ru(FIRST)}')
+        expect(page.locator('#contractsRows')).not_to_contain_text(note)
+        expect(page.locator('#contractsRows')).not_to_contain_text('в архиве от')
+        expect(page.locator('#contractsRows')).not_to_contain_text('Сохранённые КС объединены')
         assert line.is_visible()
         box = line.bounding_box()
         assert box['x'] >= 0 and box['x'] + box['width'] <= width

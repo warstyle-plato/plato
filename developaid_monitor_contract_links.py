@@ -697,7 +697,7 @@ def enrich(project: str, register: dict, cut: str, start: str = "", *,
     import developaid_contract_ownership as ownership
     with ownership.read_scope(project, _day(cut)) as context:
         context.require_current(register)
-        if 'raw_rows' not in register:
+        if not ownership.has_raw_views(register):
             return _enrich_raw(project, register, cut, start, _reports=_reports, _parties=_parties)
         enriched = _enrich_raw(project, ownership.raw_view(register), cut, start,
                                _reports=_reports, _parties=_parties)

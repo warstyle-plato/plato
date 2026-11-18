@@ -186,6 +186,12 @@ def _review_raw(project, contract_id, cut):
     row = contracts.find_raw_row(register, contract_id)
     if row is None:
         raise SourceReviewProblem('Договор не найден в данных выбранного проекта на эту дату.')
+    if row.get('source_kind') == 'contract_document':
+        return {'contract_id': contract_id, 'cut': cut, 'state': 'read',
+                'source_family': 'confirmed_contract_pdf', 'sources': row.get('document_provenance') or [],
+                'source_count': len(row.get('document_provenance') or []),
+                'archive_count': 0, 'verified_archive_count': 0,
+                'unavailable_originals': [], 'identity_exclusions': [], 'note': row['performance_basis']}
     identity = contracts._identity(row)
     if identity is None:
         raise SourceReviewProblem('Реквизиты карточки не подтверждены; исходники не выбраны по совпадению названия.')
@@ -264,6 +270,8 @@ def _review_raw(project, contract_id, cut):
               'unavailable_originals': unavailable, 'identity_exclusions': exclusions, 'source_count': len(result),
               'note': 'Исходные значения и подписи сохранённых КС. Проверка не назначает даты '
                       'периодов, не создаёт факты и не меняет связи договора.'}
+    if row.get('document_provenance'):
+        output['document_provenance'] = row['document_provenance']
     if len(json.dumps(output, ensure_ascii=False, default=str).encode()) > MAX_RESULT_BYTES:
         raise SourceReviewProblem('Результат проверки превышает предел; исходные строки не возвращены частично.')
     return output
