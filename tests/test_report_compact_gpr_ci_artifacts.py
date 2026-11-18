@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import json
 from pathlib import Path
+from html.parser import HTMLParser
 import re
 from urllib.parse import urlsplit
 
@@ -305,12 +306,49 @@ def _axis_node(code):
     return result.stdout
 
 
+def _axis_scripts(page):
+    """Extract trusted PAGE script text with HTML tokenization."""
+    class Scripts(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=False)
+            self.scripts = []
+            self.parts = None
+
+        def handle_starttag(self, tag, attrs):
+            if tag == 'script':
+                self.parts = []
+
+        def handle_data(self, data):
+            if self.parts is not None:
+                self.parts.append(data)
+
+        def handle_endtag(self, tag):
+            if tag == 'script' and self.parts is not None:
+                self.scripts.append(''.join(self.parts))
+                self.parts = None
+
+    parser = Scripts()
+    parser.feed(page)
+    parser.close()
+    return parser.scripts
+
+
+@pytest.mark.parametrize('markup, expected', [
+    ("<ScRiPt>const ok = true;</sCrIpT>", ["const ok = true;"]),
+    ("<script data-note=\">\">const text = \"&amp; <b>\";\nconst n = 1;</script>", ["const text = \"&amp; <b>\";\nconst n = 1;"]),
+    ("<p>outside</p><script>a();</script><SCRIPT> b(); </SCRIPT><scriptx>ignored</scriptx>", ["a();"," b(); "]),
+    ("<script>unfinished", []),
+])
+def test_axis_script_extraction_uses_html_tokens_and_preserves_script_text(markup, expected):
+    assert _axis_scripts(markup) == expected
+
+
 def test_native_monitor_axis_script_compiles_and_layout_preserves_anchors_and_lifecycle():
     """Execute actual PAGE functions against measured-box/event counterexamples."""
     page = _axis_page_literal()
     source = page[page.index('let ganttAxisCleanup=null;'):
                   page.index("window.addEventListener('pagehide',clearGanttAxisLayout);")]
-    script = next(script for script in re.findall(r'<script[^>]*>(.*?)</script>', page, re.S)
+    script = next(script for script in _axis_scripts(page)
                   if 'function renderGantt(' in script)
     result = _axis_node('''const vm=require('node:vm');
         new vm.Script('''+json.dumps(script)+''');
