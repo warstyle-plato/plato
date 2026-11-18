@@ -35,7 +35,6 @@ import developaid_contract_scan as scan
 import developaid_contract_schedule_links as links
 import developaid_contract_terms as terms
 import developaid_contract_price as price
-import developaid_monitor as monitor
 import developaid_contract_stage_profile as stage_profile
 
 MAX_BYTES = 20 * 1024 * 1024
@@ -51,7 +50,14 @@ def _directory(project: str, contract_id: str) -> Path:
         raise ContractFilesProblem("Выберите договор из списка.")
     if not str(project or "").strip():
         raise ContractFilesProblem("Выберите проект.")
-    return monitor._project_dir(project) / "contract_documents" / contract_id
+    # Initial source commits pin this namespace while native merge holds the
+    # same global aliases lock. Follow that pin even if aliases change late.
+    import developaid_contract_identity_store as namespace
+    try:
+        root = namespace.project_root(project)
+    except namespace.IdentityProblem as exc:
+        raise ContractFilesProblem(str(exc)) from None
+    return root / "contract_documents" / contract_id
 
 
 def _write(path: Path, data: bytes) -> None:
@@ -148,6 +154,7 @@ def store(project: str, row: dict, filename: str, content: bytes) -> dict:
     if not content.startswith(b"%PDF"):
         raise ContractFilesProblem("Файл не открылся как PDF. Сохраните документ в PDF заново, например выгрузкой из системы электронного документооборота, и загрузите ещё раз.")
     sha = hashlib.sha256(content).hexdigest()
+    folder = _document_folder(project, row.get('id'), sha, {'document_source_ids': row.get('document_source_ids') or []})
     folder.mkdir(parents=True, exist_ok=True, mode=0o700)
     # Identity inventory/CAS shares this native lock, including first upload.
     with _locked(folder):
@@ -254,6 +261,26 @@ def _records(folder: Path) -> list[dict]:
     return records
 
 
+def _folders(project: str, contract_id: str, found: dict | None = None) -> list[Path]:
+    """Native archive IDs stay unchanged; initial PDF folders stay at their source IDs."""
+    identifiers = [contract_id, *((found or {}).get('document_source_ids') or [])]
+    return [_directory(project, identifier) for identifier in dict.fromkeys(identifiers)]
+
+
+def _all_records(folders: list[Path]) -> list[dict]:
+    records = {}
+    for folder in reversed(folders):
+        records.update({record['sha256']: record for record in _records(folder)})
+    return sorted(records.values(), key=lambda r: (_edition(r), r.get('uploaded_at', ''), r['sha256']))
+
+
+def _document_folder(project: str, contract_id: str, sha: str, found: dict | None = None) -> Path:
+    if not re.fullmatch(r'[0-9a-f]{64}', str(sha or '')):
+        raise ContractFilesProblem('Документ не найден в карточке: обновите карточку.')
+    folders = _folders(project, contract_id, found)
+    return next((folder for folder in folders if (folder / (sha+'.json')).exists()), folders[0])
+
+
 def _in_force(records: list[dict]):
     """Each estimate with the latest schedule at or before its edition."""
     current = None
@@ -347,16 +374,14 @@ def _choices(folder: Path) -> dict:
     return stored.get("choices") or {}
 
 
-def document_terms(project: str, contract_id: str, cut: str) -> dict:
+def document_terms(project: str, contract_id: str, cut: str, source_ids: list[str] | None = None) -> dict:
     """Source-bound conditions, read from the same saved PDFs as the card."""
-    folder = _directory(project, contract_id)
-    return terms.resolve(_records(folder) if folder.is_dir() else [], cut)
+    return terms.resolve(_all_records(_folders(project, contract_id, {'document_source_ids': source_ids or []})), cut)
 
 
-def document_prices(project: str, contract_id: str, cut: str) -> dict:
+def document_prices(project: str, contract_id: str, cut: str, source_ids: list[str] | None = None) -> dict:
     """Explicit full price from saved clauses; never an estimate's maximum total."""
-    folder = _directory(project, contract_id)
-    return price.resolve(_records(folder) if folder.is_dir() else [], cut)
+    return price.resolve(_all_records(_folders(project, contract_id, {'document_source_ids': source_ids or []})), cut)
 
 
 @stage_profile.stage('card_listing')
@@ -365,15 +390,15 @@ def listing(project: str, contract_id: str, cut: str = "", acts: dict | None = N
 
     `acts` are the KS-6a works of the contract on `cut` (`fact.acts`); None when the register has none.
     """
-    folder = _directory(project, contract_id)
+    folders = _folders(project, contract_id, acts)
     cut = cut or dt.date.today().isoformat()
-    if not folder.is_dir():
+    if not any(candidate.is_dir() for candidate in folders):
         acts = act_dates.resolve(acts, [])
         performed = acts_in_card.accumulated([], cut)
         return _with_control({"contract_id": contract_id, "documents": [], "removed": [],
                               "plan": plan.build([], cut), "fact": _fact([], None, acts, cut, performed),
                               "performed": performed}, acts, cut)
-    every = _records(folder)
+    every = _all_records(folders)
     records = [r for r in every if not r.get("removed_at")]
     # An unconfirmed scan is listed with its proposal; the plan, the fact and the act dates do not see it.
     counted = [r for r in records if not awaits_confirmation(r)]
@@ -400,7 +425,7 @@ def listing(project: str, contract_id: str, cut: str = "", acts: dict | None = N
         if record.get("schedule"):
             # Редактор связей предлагает строки по тому же правилу, что сервер.
             record["schedule"] = {**record["schedule"], "unfit": links.unfit(record["schedule"])}
-    chosen = _choices(folder)
+    chosen = {key: value for candidate in reversed(folders) for key, value in _choices(candidate).items()}
     for record, _, estimate, schedule in _in_force(counted):
         result = choices.apply(_proposal(record, estimate, schedule), chosen, schedule and schedule["schedule"])
         estimate["links"] = {**result, "schedule": schedule["title"] if schedule else "",
@@ -443,7 +468,7 @@ def confirm_scan(project: str, row: dict, sha256: str, kind: str, values: dict, 
     `kind` is what the document is (contract, agreement, act) and `values` its header as the user
     confirmed it; each value that differs from the recognised one is named as corrected by hand.
     """
-    folder = _directory(project, row.get("id"))
+    folder = _document_folder(project, row.get('id'), sha256, acts)
     if not re.fullmatch(r"[0-9a-f]{64}", str(sha256 or "")) or not (folder / f"{sha256}.json").exists():
         raise ContractFilesProblem("Документ не найден в карточке: обновите карточку.")
     if kind not in ("contract", "agreement", "act"):
@@ -621,12 +646,12 @@ def register_control(project: str, register: dict, cut: str) -> dict:
 def save_links(project: str, contract_id: str, sha256: str, estimate: int, picked: list[dict],
                clear: bool = False, cut: str = "", acts: dict | None = None) -> dict:
     """Confirm, choose or clear links of positions of one estimate; all positions or none are saved."""
-    folder = _directory(project, contract_id)
+    folder = _document_folder(project, contract_id, sha256, acts)
     if not folder.is_dir():
         # No documents, no card folder: an id without a card does not get an empty folder.
         raise ContractFilesProblem("Расчёт не найден среди документов карточки: обновите карточку.")
     with _locked(folder):
-        records = [r for r in _records(folder) if not r.get("removed_at")]
+        records = [r for r in _all_records(_folders(project, contract_id, acts)) if not r.get("removed_at")]
         found = next(((record, current, schedule) for record, index, current, schedule in _in_force(records)
                       if record["sha256"] == sha256 and index == estimate), None)
         if found is None:
@@ -654,7 +679,7 @@ def save_links(project: str, contract_id: str, sha256: str, estimate: int, picke
 def remove(project: str, contract_id: str, sha256: str, *, restore: bool = False, cut: str = "",
            acts: dict | None = None) -> dict:
     """Take a file out of the card, or return it; the file itself is kept."""
-    folder = _directory(project, contract_id)
+    folder = _document_folder(project, contract_id, sha256, acts)
     if not re.fullmatch(r"[0-9a-f]{64}", str(sha256 or "")) or not (folder / f"{sha256}.json").exists():
         raise ContractFilesProblem("Документ не найден в карточке: обновите карточку.")
     with _locked(folder):

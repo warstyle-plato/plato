@@ -161,6 +161,31 @@ class MonitorContractDocumentUpload(MonitorContractDocuments):
     content_base64: str = _CumulativeField(max_length=28 * 1024 * 1024)
 
 
+class MonitorContractPdfParty(BaseModel):
+    model_config = {"extra": "forbid", "strict": True}
+    name: str = _CumulativeField(min_length=1, max_length=300)
+    designation: str = _CumulativeField(min_length=1, max_length=300)
+    page: int = _CumulativeField(ge=1, le=300, strict=True)
+    quote: str = _CumulativeField(min_length=1, max_length=2000)
+
+
+class MonitorContractPdfPreview(MonitorCumulativeProject):
+    model_config = {"extra": "forbid", "strict": True}
+    ticket: str = ""
+    content_base64: str = _CumulativeField(max_length=28 * 1024 * 1024)
+    source_sha256: str = _CumulativeField(pattern=r"^[0-9a-f]{64}$")
+    contract_number: str = _CumulativeField(min_length=1, max_length=80)
+    contract_date: str = _CumulativeField(min_length=10, max_length=10)
+    customer: MonitorContractPdfParty
+    contractor: MonitorContractPdfParty
+
+
+class MonitorContractPdfCommit(MonitorContractPdfPreview):
+    filename: str = _CumulativeField(min_length=1, max_length=240)
+    expected_revision: int = _CumulativeField(ge=0, strict=True)
+    preview_token: str = _CumulativeField(pattern=r"^[0-9a-f]{64}$")
+
+
 class MonitorContractLinkChoice(BaseModel):
     index: int = _CumulativeField(ge=0, le=100000, strict=True)
     # No lines confirms the proposed link; shares are percents, none means by duration.
@@ -262,7 +287,8 @@ class MonitorGprPhysicalSave(MonitorCumulativeProject):
 
 _IDENTITY_PATHS = frozenset('/monitor/contracts/identity/'+name for name in
                             ('inventory', 'confirm', 'revoke', 'resolve', 'result'))
-_CUMULATIVE_PATHS = _IDENTITY_PATHS | frozenset({
+_PDF_INTAKE_PATHS = frozenset('/monitor/contracts/pdf-intake/'+name for name in ('preview', 'commit', 'result'))
+_CUMULATIVE_PATHS = _IDENTITY_PATHS | _PDF_INTAKE_PATHS | frozenset({
     '/monitor/schedule/version-preview', '/monitor/schedule/version-approve',
     "/monitor/cumulative/upload", "/monitor/cumulative/result",
     "/monitor/cumulative/list", "/monitor/contracts/build",
@@ -290,9 +316,11 @@ _CUMULATIVE_PATHS = _IDENTITY_PATHS | frozenset({
 
 @app.middleware("http")
 async def monitor_cumulative_private_headers(request: Request, call_next):
-    if (request.url.path in _IDENTITY_PATHS or request.url.path == "/monitor/contracts/comparison.xlsx") and request.method == 'POST':
+    if (request.url.path in _IDENTITY_PATHS | _PDF_INTAKE_PATHS or request.url.path == "/monitor/contracts/comparison.xlsx") and request.method == 'POST':
         private = {"Cache-Control": "private, no-store"}
         cap = 1024*1024 if request.url.path == "/monitor/contracts/comparison.xlsx" else 64*1024
+        if request.url.path in _PDF_INTAKE_PATHS - {'/monitor/contracts/pdf-intake/result'}:
+            cap = 28 * 1024 * 1024 + 64 * 1024
         # Bound the stream before FastAPI parses JSON, including chunked input.
         try:
             declared = request.headers.get('content-length')
@@ -440,6 +468,17 @@ def monitor_schedule_gpr_physical_save(req: MonitorGprPhysicalSave) -> Response:
 def _monitor_cumulative_execute_raw(operation: str, payload: dict, archive: bytes = b"") -> dict:
     """Only validated calculation inputs enter the background worker."""
     from fastapi.encoders import jsonable_encoder
+    if operation.startswith('pdf-initial-'):
+        import developaid_contract_pdf_intake as pdf_intake
+        import developaid_contract_identity_store as pdf_namespace
+        import developaid_contract_files as pdf_files
+        try:
+            values = dict(payload)
+            result = (pdf_intake.preview(content=archive, **values) if operation == 'pdf-initial-preview'
+                      else pdf_intake.commit(content=archive, **values))
+            return {'ok': True, 'pdf_intake': result}
+        except (pdf_intake.IntakeProblem, pdf_namespace.IdentityProblem, pdf_files.ContractFilesProblem) as exc:
+            return {'ok': False, 'status': getattr(exc, 'status', 409), 'detail': str(exc)}
     if operation in {"finance-management-view", "finance-management-apply"}:
         import developaid_finance_management as management
         try:
@@ -613,7 +652,17 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
             if not payload["project"]:
                 raise HTTPException(400, "Выберите проект.")
             archive = b""
-            if operation == "upload":
+            if operation.startswith('pdf-initial-'):
+                payload.update(req.model_dump(exclude={'key', 'session', 'ticket', 'project', 'content_base64'}))
+                if operation == 'pdf-initial-commit':
+                    payload['actor'] = owner
+                try:
+                    archive = base64.b64decode(req.content_base64, validate=True)
+                except (_binascii.Error, ValueError):
+                    raise HTTPException(400, 'PDF не передан целиком. Выберите исходный файл заново.') from None
+                if not archive or len(archive) > 20 * 1024 * 1024:
+                    raise HTTPException(413, 'Выберите непустой PDF размером не больше 20 МБ.')
+            elif operation == "upload":
                 payload.update(taken_at=_monitor_cumulative_day(req.taken_at), filename=req.filename)
                 try:
                     archive = base64.b64decode(req.content_base64, validate=True)
@@ -864,6 +913,21 @@ def monitor_finance_management_result(req: MonitorCumulativeResult) -> Response:
 @app.post("/monitor/contracts/documents", include_in_schema=False)
 def monitor_contracts_documents(req: MonitorContractDocuments) -> Response:
     return _monitor_cumulative_job(req, family="contracts", operation="documents")
+
+
+@app.post('/monitor/contracts/pdf-intake/preview', include_in_schema=False)
+def monitor_contract_pdf_preview(req: MonitorContractPdfPreview) -> Response:
+    return _monitor_cumulative_job(req, family='contracts-pdf', operation='pdf-initial-preview')
+
+
+@app.post('/monitor/contracts/pdf-intake/commit', include_in_schema=False)
+def monitor_contract_pdf_commit(req: MonitorContractPdfCommit) -> Response:
+    return _monitor_cumulative_job(req, family='contracts-pdf', operation='pdf-initial-commit')
+
+
+@app.post('/monitor/contracts/pdf-intake/result', include_in_schema=False)
+def monitor_contract_pdf_result(req: MonitorCumulativeResult) -> Response:
+    return _monitor_cumulative_job(req, family='contracts-pdf')
 
 
 @app.post("/monitor/contracts/comparison.xlsx", include_in_schema=False)
