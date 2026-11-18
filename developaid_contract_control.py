@@ -303,6 +303,8 @@ def _data_gaps(fact):
     if fact.get('missing_acts'):
         gaps.append('В карточке нет актов КС-2 № ' + ', '.join(fact['missing_acts']) +
                     ', которые указаны в сводной. Их выполнение в расчёт не вошло.')
+    for act in fact.get('unavailable_acts') or []:
+        gaps.append(f'КС-2 № {act["number"]} — {act["reason"]}. Его выполнение в расчёт не вошло.')
     if fact.get('unread'):
         gaps.append(f'Работ КС-6а без подтверждённой истории выполнения: {len(fact["unread"])}.')
     outside = sum(v.get('count', 0) for v in (fact.get('outside') or {}).values())
