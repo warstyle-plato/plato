@@ -325,6 +325,9 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
     put(15, "M15", "После ввода до регистрации, мес. · сценарное допущение")
     from developaid_land_rent import registration_months
     put(15, "N15", registration_months(inputs) if inputs.get("land_rent_registration_months") in (None, "") else inputs["land_rent_registration_months"], style=styles["input"])
+    put(15, "O15", "land_rent_registration_months")
+    put(16, "M16", "Даты выхода объектов: в колонке I таблицы ниже")
+    put(16, "N16", "land_rent_exposure_exit_dates")
     origins = inputs.get("_field_origin") if isinstance(inputs.get("_field_origin"), dict) else {}
     origin = result.get("base_origin") or origins.get("inputs.land_rent_cadastral_mln")
     if isinstance(origin, dict):
