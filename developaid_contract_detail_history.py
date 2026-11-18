@@ -336,6 +336,34 @@ def _history(record):
     return dict(copy.deepcopy(record['provenance']), view=copy.deepcopy(record['original_view']))
 
 
+def _incomplete_identity(record):
+    """Name a repeated observation without certifying its quantities or scope.
+
+    Absent fields stay absent. Conflicting scope evidence and malformed context
+    are part of this key so different unknown observations cannot look equal.
+    """
+    identity, _ = record['identity']
+    ledger, view = record['ledger'], record['view']
+    quantity = _number(view.get('plan_quantity')) if not identity[1] else None
+    if not identity[2] or not (identity[1] or quantity is not None or identity[8]):
+        return None
+    evidence = tuple(tuple(sorted({_norm(item.get('raw')) for item in
+                     (ledger.get('scope_evidence') or {}).get(field, [])
+                     if isinstance(item, dict) and _norm(item.get('raw'))})) for field in _SCOPES)
+    malformed = tuple(_digest(view.get(field)) if not _headings(view.get(field))[1] else ''
+                      for field in ('section_path', 'context_headings'))
+    return ('incomplete', _digest(identity), quantity, evidence, malformed)
+
+
+def _source_row_identity(record, ordinal):
+    """Only identical workbook bytes prove a repeat of an otherwise unnamed row."""
+    provenance, place = record['provenance'], _place(record['view'])
+    if _valid_provenance(provenance) and place[1] and type(place[2]) is int and place[2] > 0:
+        return ('source_row', provenance['file_sha256'], place[1:],
+                _digest((record['identity'][0], record['ledger'].get('scope_evidence'))))
+    return ('unresolved', ordinal)
+
+
 def _project(records, cut, identity, identity_valid):
     records = sorted(records, key=lambda record: (
         str(record['provenance']['source_date'] or ''), _digest(record['provenance'])))
@@ -353,6 +381,7 @@ def _project(records, cut, identity, identity_valid):
         # Aggregation consumers already exclude is_group; no group total is
         # composed with a different archive's leaves here.
         result['detail_history_state'] = 'group'
+        result['snapshot_date'] = newest['provenance']['source_date']
         result['periods'] = [dict(copy.deepcopy(period),
             selected_source=copy.deepcopy(newest['provenance']),
             history_sources=[dict(copy.deepcopy(newest['provenance']), period=copy.deepcopy(period))])
@@ -538,8 +567,8 @@ def compose(sources, cut):
     day = _day(cut)
     if day is None:
         raise ValueError('Укажите действительную дату среза в формате ГГГГ-ММ-ДД.')
-    buckets, warnings = {}, []
-    ordinal = 0
+    buckets, warnings, observations = {}, [], []
+    places = {}
     for ledger, views in sources:
         source_day = _day(ledger.get('source_date'))
         if source_day and source_day > day:
@@ -547,9 +576,20 @@ def compose(sources, cut):
             continue
         for record in _records(ledger, views):
             identity, valid = record['identity']
-            key = identity if valid else ('unresolved', ordinal)
-            ordinal += 1
-            buckets.setdefault(key, (identity, valid, []))[2].append(record)
+            key = identity if valid else _incomplete_identity(record)
+            observations.append((key, record))
+            if key is not None and not valid:
+                provenance, place = record['provenance'], _place(record['view'])
+                source_key = key, provenance['snapshot_id'], provenance['file_sha256'], place[1]
+                places.setdefault(source_key, set()).add(place[2])
+    # Two equal captions in one source are not proof of one work. For those
+    # ambiguous names only re-uploading the same workbook row can coalesce.
+    ambiguous = {key[0] for key, rows in places.items() if len(rows) > 1}
+    for ordinal, (key, record) in enumerate(observations):
+        identity, valid = record['identity']
+        if key is None or (not valid and key in ambiguous):
+            key = _source_row_identity(record, ordinal)
+        buckets.setdefault(key, (identity, valid, []))[2].append(record)
     # Filling absent header or row location fields does not prove independent work.
     # Keep both original observations, but do not add their plans or facts.
     # Two explicitly different non-empty scopes remain distinct. Checking

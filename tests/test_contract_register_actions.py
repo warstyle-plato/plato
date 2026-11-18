@@ -33,6 +33,7 @@ def test_partial_match_displays_a_verification_action_without_technical_counts_o
     for number in ['255','129','44','140','360','96,9']:
         assert number not in result['graph']
     assert 'отста' not in result['graph'] and 'Сверить с КС-6а' not in result['attention']
+    assert 'Срок прошёл' in result['attention']
     assert 'Прогноз' not in result['term']
     assert result['unchanged']
 
@@ -51,7 +52,7 @@ def test_genuinely_incomplete_fully_covered_work_keeps_its_schedule_warning():
     result=rendered({'schedule_control':full_control(),'deadline':'2026-03-01',
                      'deadline_passed':True,'amount':1000,'completed':500,'remaining':500})
     assert 'Есть отставание' in result['graph'] and 'risk-bad' in result['graph']
-    assert 'Проверить срок работ' in result['attention']
+    assert 'Срок прошёл' in result['attention']
     assert result['unchanged']
 
 
@@ -65,8 +66,12 @@ def test_native_register_shows_only_the_verification_action_for_partial_results(
         s.update(incomplete=True,whole_contract_finish=None)
         s['coverage'].update(calculated=44,source_works=140,partial=True)
         row['schedule_control']=s
+        row.update(deadline='2026-07-11', deadline_passed=True, warnings=[])
         page.locator('#contractsTab').click()
         graph=page.locator(f'tr[data-contract-id="{CONTRACT}"] .contract-schedule')
         expect(graph).to_have_text('Сверить с КС-6а')
+        line = page.locator(f'tr[data-contract-id="{CONTRACT}"]')
+        expect(line.locator('.contract-attention')).to_contain_text('Срок прошёл')
+        expect(line.locator('.term')).to_contain_text('11.07.2026')
         assert len(graph.inner_text())<30
         assert not errors

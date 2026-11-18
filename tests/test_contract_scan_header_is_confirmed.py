@@ -107,6 +107,25 @@ def test_an_unconfirmed_act_scan_dates_nothing_until_it_is_confirmed(card, ocr):
     assert document["warnings"][0].endswith("; исправлено вручную: начало отчётного периода.")
 
 
+@pytest.mark.parametrize('has_read_act', [False, True])
+def test_present_scan_is_named_as_unconfirmed_and_only_absent_summary_acts_are_missing(card, ocr, has_read_act):
+    from tests.test_contract_fact_dates_ks6_periods_by_acts import act_pdf
+    if has_read_act:
+        files.store('Учебный', ROW, 'КС-2 1.pdf', act_pdf(number='1', date='31.01.2026',
+                    start='01.01.2026', finish='31.01.2026'))
+    sha = files.store('Учебный', ROW, 'КС-2 2 скан.pdf', scan_pdf())['sha256']
+    row = _row(WALLS, summary=[('1', '2026-01-31', 4000.0), ('2', '2026-02-04', 4000.0),
+                               ('5', '2026-02-04', 4000.0), ('9', '2026-12-01', 4000.0)])
+    listed = files.listing('Учебный', CONTRACT, '2026-02-04', fact.acts(row))
+    assert listed['fact']['missing_acts'] == (['5'] if has_read_act else ['1', '5'])
+    text = ' '.join(listed['control']['data_gaps'])
+    assert 'КС-2 № 2 — скан, значения не подтверждены' in text
+    assert 'нет актов КС-2 № 2' not in text and '№ 9' not in text
+    assert any(d['sha256'] == sha and not d['scan']['confirmed_at'] for d in listed['documents'])
+    assert all(a['number'] != '2' for a in listed['performed']['acts'])
+    assert any(a['number'] == '2' and 'скан' in a['reason'] for a in listed['performed']['excluded'])
+
+
 def test_confirming_checks_the_fields_and_the_contract_of_the_card(card, ocr):
     sha = files.store("Учебный", ROW, "скан.pdf", scan_pdf())["sha256"]
     act = {"contract_number": "12-ТСТ", "act_number": "2", "act_date": "2026-02-03",

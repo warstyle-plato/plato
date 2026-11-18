@@ -304,15 +304,20 @@ def from_acts(performed: dict | None) -> list[dict]:
     return rows
 
 
+def _expected_acts(found: dict | None, cut: str) -> set:
+    return {contract_acts.edition(a) for a in (found or {}).get('summary_acts') or []
+            if a.get('date') and a['date'] <= cut} - {None}
+
+
 def _missing_acts(performed: dict | None, found: dict | None, cut: str) -> list[str]:
     """Only acts explicitly observed by this contract's dated summary can be missing.
 
     Do not infer gaps from consecutive numbering or combine their volumes with
     uploaded acts. Full normalized numbers keep different years distinct.
     """
-    present = {contract_acts.edition(a) for a in (performed or {}).get('acts') or []}
-    expected = {contract_acts.edition(a) for a in (found or {}).get('summary_acts') or []
-                if a.get('date') and a['date'] <= cut}
+    present = {contract_acts.edition(a) for a in [*((performed or {}).get('acts') or []),
+                                               *((performed or {}).get('excluded') or [])]}
+    expected = _expected_acts(found, cut)
     return sorted((n for n in expected-present if n is not None),
                   key=lambda n: (tuple(map(int, re.findall(r'\d+', n))), n))
 
@@ -361,6 +366,15 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
               "materials": [], "component_gaps": [], 'material_statement': statement_materials(found, cut),
               'physical_groups': (found or {}).get('physical_groups') or []}
     rows = from_acts(performed)
+    missing = _missing_acts(performed, found, cut)
+    if missing:
+        result['missing_acts'] = missing
+    expected = _expected_acts(found, cut)
+    present = {contract_acts.edition(a) for a in (performed or {}).get('acts') or []}
+    unavailable = [dict(a) for a in (performed or {}).get('excluded') or []
+                   if contract_acts.edition(a) in expected - present - {None}]
+    if unavailable:
+        result['unavailable_acts'] = unavailable
     if rows:
         result["source"] = "ks2"
         result["preliminary"] = any(a["preliminary"] for a in rows)
@@ -368,7 +382,7 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
         result["reconciliation"] = reconcile(performed, None if (found or {}).get("problem") else found, cut)
         # The KS-6a works without a dated period are not reconciled: they are named, not dropped.
         result["unread"] = [] if (found or {}).get("problem") else (found or {}).get("unread") or []
-        result['missing_acts'] = _missing_acts(performed, found, cut)
+        result['missing_acts'] = missing
     elif found is None:
         result["note"] = ("Актов КС-2 в карточке нет, а накопительная КС-6а этого договора на дату среза "
                           "не найдена: факт не рассчитан.")
