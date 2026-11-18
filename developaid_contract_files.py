@@ -646,10 +646,13 @@ def register_control(project: str, register: dict, cut: str) -> dict:
 def save_links(project: str, contract_id: str, sha256: str, estimate: int, picked: list[dict],
                clear: bool = False, cut: str = "", acts: dict | None = None) -> dict:
     """Confirm, choose or clear links of positions of one estimate; all positions or none are saved."""
-    folder = _document_folder(project, contract_id, sha256, acts)
-    if not folder.is_dir():
+    source_folder = _document_folder(project, contract_id, sha256, acts)
+    if not (source_folder / (sha256+'.json')).is_file():
         # No documents, no card folder: an id without a card does not get an empty folder.
         raise ContractFilesProblem("Расчёт не найден среди документов карточки: обновите карточку.")
+    # Choices belong to the visible card/position, not to the PDF's physical
+    # folder. This primary overlay can also suppress inherited source choices.
+    folder = _directory(project, contract_id)
     with _locked(folder):
         records = [r for r in _all_records(_folders(project, contract_id, acts)) if not r.get("removed_at")]
         found = next(((record, current, schedule) for record, index, current, schedule in _in_force(records)
@@ -665,7 +668,7 @@ def save_links(project: str, contract_id: str, sha256: str, estimate: int, picke
                 raise ContractFilesProblem("Позиция не найдена в расчёте: обновите карточку.")
             item = positions[index]
             if clear:
-                stored.pop(item["key"], None)
+                stored[item['key']] = None  # An explicit clear masks lower-priority source folders.
                 continue
             try:
                 stored[item["key"]] = choices.decide(item, schedule and schedule["schedule"], choice.get("lines"),

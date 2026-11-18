@@ -113,9 +113,14 @@ def _quote(proof, texts):
           and all(isinstance(proof[k], str) and 0 < len(proof[k]) <= (2000 if k == 'quote' else 300)
                   for k in ('name', 'designation', 'quote')), 'Укажите сторону, её роль, страницу и цитату из PDF.', 400)
     quote = documents._space(proof['quote'])
-    _need(contracts._norm(quote) in contracts._norm(documents._space(texts[proof['page']-1])),
-          'Цитата стороны не найдена на указанной странице исходного PDF.', 400)
-    return quote
+    # Legal-name and role quotation boundaries are evidence, not decoration.
+    # Normalize whitespace and case only, then retain the actual source slice.
+    source = documents._space(texts[proof['page']-1])
+    found = re.search(re.escape(quote), source, re.I)
+    _need(found is not None, 'Цитата стороны не найдена на указанной странице исходного PDF.', 400)
+    _need(not re.search(r'\b(?:не|ни)\s*$', source[:found.start()], re.I),
+          'Цитата не должна отсекать отрицание роли стороны в исходном PDF.', 400)
+    return found[0]
 
 
 def _quoted_parties(quote):
@@ -137,6 +142,21 @@ def _quoted_parties(quote):
                 depth += 1
             end += 1
     return found
+
+
+def _role_assertion(quote, designation, named):
+    role = re.escape(designation)
+    quoted_role = r'(?:«'+role+r'»|“'+role+r'”|"'+role+r'")'
+    clause = re.search(r'\bименуем(?:ое|ый|ая|ые|ым|ой|ыми)\s+(?:в\s+дальнейшем\s+)?'
+                       + quoted_role + r'(?![\w/\-‐‑‒–—―])', quote, re.I)
+    if clause:
+        prefix = quote[:clause.start()]
+        # A negative or alternative assertion cannot establish a party's role.
+        if re.search(r'\b(?:не|ни)\b', re.split(r'[.;!?]', prefix)[-1], re.I):
+            return False
+        return named in contracts._party_norm(prefix)
+    labelled = re.match(r'(?:'+quoted_role+'|'+role+r')\s*:\s*', quote, re.I)
+    return bool(labelled and named in contracts._party_norm(quote[labelled.end():]))
 
 
 def _evidence(project, content, source_sha256, contract_number, contract_date, customer, contractor):
@@ -175,11 +195,7 @@ def _evidence(project, content, source_sha256, contract_number, contract_date, c
         _need(named in quoted,
               'Цитата должна содержать полное наименование выбранной стороны с правовой формой.', 400)
         _need(quoted == {named}, 'Для каждой стороны нужна отдельная цитата с её собственной ролью.', 400)
-        clause = re.search(r'именуем\w*\s+(?:в\s+дальнейшем\s+)?' + re.escape(designation) +
-                           r'(?![а-я])', normalized)
-        labelled = re.match(re.escape(designation) + r'\s*:\s*', normalized)
-        _need(named and (clause and named in normalized[:clause.start()] or
-                        labelled and named in normalized[labelled.end():]),
+        _need(named and _role_assertion(quote, designation, named),
               'Цитата не подтверждает выбранную сторону в указанной роли.', 400)
         other = proofs['contractor' if role == 'customer' else 'customer']
         _need(contracts._party_norm(other.get('name')) not in normalized,
@@ -216,6 +232,25 @@ def preview(project, content, *, source_sha256, contract_number, contract_date, 
                 'financial_acceptance': False}
 
 
+def _verify_native_source(project, source, content):
+    """Caller holds the native card lock; cached metadata cannot prove its own origin."""
+    import developaid_contract_files as files
+    folder = _path(_root(project), 'contract_documents', source['contract_id'])
+    sha = source['source_sha256']
+    persisted = namespace.read_bytes(_path(folder, sha+'.pdf'), documents_limit())
+    _need(persisted is not None and persisted == content and hashlib.sha256(persisted).hexdigest() == sha,
+          'Сохранённый оригинал PDF не совпал с проверенным источником; карточка не опубликована.', 503)
+    metadata = namespace.read_bytes(_path(folder, sha+'.json'), 16 * 1024 * 1024)
+    _need(metadata is not None and isinstance(namespace.strict_json(metadata), dict),
+          'Сохранённый разбор PDF недоступен; карточка не опубликована.', 503)
+    record = files._current(folder, sha)
+    expected = files._record(sha, record.get('filename', ''), content, record.get('uploaded_at', ''))
+    operational = {'filename', 'uploaded_at', 'removed_at'}
+    _need(namespace.canonical({key: value for key, value in record.items() if key not in operational}) ==
+          namespace.canonical({key: value for key, value in expected.items() if key not in operational}),
+          'Сохранённый разбор PDF не совпал с разбором проверенного источника; карточка не опубликована.', 503)
+
+
 def commit(project, content, *, filename, expected_revision, preview_token, actor, **claims):
     import developaid_contract_files as files
     with _locked(project):
@@ -229,6 +264,9 @@ def commit(project, content, *, filename, expected_revision, preview_token, acto
             if source['source_sha256'] == evidence['source_sha256']:
                 _need(source['evidence'] == evidence, 'Этот PDF уже принят с другими реквизитами.', 409)
                 sources(project, evidence['identity']['contract_date'])
+                folder = _path(_root(project), 'contract_documents', source['contract_id'])
+                with files._locked(folder):
+                    _verify_native_source(project, source, content)
                 return {'contract_id': source['contract_id'], 'revision': state['revision'],
                         'already': True, 'source_sha256': source['source_sha256'], 'financial_acceptance': False}
         _need(expected_revision == state['revision'], 'Реестр PDF уже изменился. Повторите предварительную проверку.', 409)
@@ -256,9 +294,13 @@ def commit(project, content, *, filename, expected_revision, preview_token, acto
         updated = {**state, 'revision': state['revision']+1, 'sources': [*state['sources'], source]}
         packed = namespace.canonical(updated)
         _need(len(packed) <= MAX_REGISTRY_BYTES, 'Достигнут предел реестра происхождения PDF.', 413)
-        files.store(project, {'id': identifier, **evidence['identity']}, filename, content)
-        namespace.assert_namespace(project)
-        files._write(_path(_root(project), REGISTRY), packed)
+        with files._locked(folder):
+            if (folder/(evidence['source_sha256']+'.pdf')).exists() or (folder/(evidence['source_sha256']+'.json')).exists():
+                _verify_native_source(project, source, content)
+            files.store(project, {'id': identifier, **evidence['identity']}, filename, content)
+            _verify_native_source(project, source, content)
+            namespace.assert_namespace(project)
+            files._write(_path(_root(project), REGISTRY), packed)
         return {'contract_id': identifier, 'revision': updated['revision'], 'already': False,
                 'source_sha256': evidence['source_sha256'], 'financial_acceptance': False}
 
