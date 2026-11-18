@@ -2008,6 +2008,31 @@ def monitor_gpr_view(req: MonitorGanttRequest) -> Response:
         raise HTTPException(400, str(exc), headers={"Cache-Control":"private, no-store"}) from None
 
 
+@app.post("/monitor/gpr-brief", include_in_schema=False)
+def monitor_gpr_brief(req: MonitorGanttRequest) -> Response:
+    """Короткий вид блока ГПР для тестовой страницы: тот же расчёт, что /monitor/gpr-view."""
+    try:
+        _require_team_access(req.session, req.key, "Монитор проекта", write=False)
+    except HTTPException as exc:
+        raise HTTPException(exc.status_code, exc.detail,
+                            headers={**(exc.headers or {}), "Cache-Control": "private, no-store"}) from None
+    from fastapi.encoders import jsonable_encoder
+    import developaid_gpr_brief as gpr_brief
+    import developaid_monitor_pace as pace
+    try:
+        brief = gpr_brief.build(pace.schedule_view(req.project, req.cut))
+        return JSONResponse(content=jsonable_encoder(brief), headers={"Cache-Control":"private, no-store"})
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(400, str(exc), headers={"Cache-Control":"private, no-store"}) from None
+
+
+@app.get("/gpr-preview", include_in_schema=False)
+def monitor_gpr_preview_page() -> HTMLResponse:
+    """Тестовая страница «ГПР — новый вид». Оболочка открыта, данные — за входом, как у /monitor."""
+    from developaid_gpr_preview_page import PAGE
+    return HTMLResponse(PAGE.replace("__VERSION__", VERSION))
+
+
 @app.post("/monitor/gantt", include_in_schema=False)
 def monitor_gantt(req: MonitorGanttRequest) -> dict[str, Any]:
     """Гант по последнему снимку графика. Считает сервер, страница рисует."""

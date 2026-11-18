@@ -2719,9 +2719,16 @@ def _gap_by_chapter_sentence(funding: dict[str, Any]) -> str:
     return text + (f" {note}" if note else "")
 
 
-def _schedule_summary(schedule: dict[str, Any]) -> str | None:
+def _schedule_summary(schedule: dict[str, Any], assessment=None, *, readiness_present=False) -> str | None:
     """Use the same qualified RNV as the cards, including partial/unknown."""
     qualified = schedule.get("qualified_rnv")
+    if readiness_present:
+        text = ((assessment['forecast_text']+' '+assessment['scope_text']+' '+assessment['as_of_text'])
+                if assessment else 'Оценка учтённых работ не подтверждена для этого источника и даты среза.')
+        rnv_state = qualified if isinstance(qualified, dict) else {}
+        rnv = rnv_state.get('forecast') if rnv_state.get('state') == 'complete' else None
+        return 'Срок. '+text+(' Прогноз РНВ: '+monitor._day(rnv).strftime('%d.%m.%Y')+'.'
+                                 if monitor._day(rnv) else ' Прогноз РНВ не определён.')
     if isinstance(qualified, dict):
         if qualified.get("state") == "estimate":
             approved = monitor._day(qualified.get("approved"))
@@ -2773,9 +2780,12 @@ def _schedule_summary(schedule: dict[str, Any]) -> str | None:
 def _work_schedule_summary(view: dict[str, Any]) -> str | None:
     """Read the same source-bound work date as the Monitor and report cards."""
     schedule = view.get('schedule') or {}
-    if 'work_forecast' not in schedule:
+    from developaid_gpr_work_forecast import for_schedule, describe, owns_response, legacy_model
+    if not owns_response(schedule):
+        if schedule.get('work_forecast_applicable') is False:
+            summary = legacy_model(schedule, view.get('cut')).get('summary')
+            return 'Срок. '+summary['forecast_text'] if summary else 'Срок. Оценка окончания работ не определена.'
         return None
-    from developaid_gpr_work_forecast import for_schedule, describe
     value = for_schedule(schedule, view.get('cut'))
     summary = value.get('summary') or describe(value, view.get('cut'))
     return 'Срок. ' + ' '.join(filter(None, [summary['forecast_text'], summary['scope_text'],

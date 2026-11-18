@@ -19,8 +19,10 @@ def report_for(funding):
         "interest": {"period": 0, "month": 0, "total": 0}, "limit": funding}}
 
 
-def test_partial_payments_keep_full_unknown_and_show_the_readable_calculation(tmp_path, monkeypatch):
-    _, funding = source_case(tmp_path, monkeypatch, [(CUT, 100, "2.6"), (CUT, None, "2.6")])
+@pytest.mark.parametrize("incomplete_count", [1, 7])
+def test_partial_payments_keep_full_unknown_and_show_the_readable_calculation(tmp_path, monkeypatch, incomplete_count):
+    _, funding = source_case(tmp_path, monkeypatch,
+                            [(CUT, 100, "2.6")] + [(CUT, None, "2.6")] * incomplete_count)
     r = funding["reconciliation"]
     assert r["paid_at_cut"] is r["available_bank_limit"] is r["calculated_additional"] is None
     observed = r["calculation"]
@@ -29,7 +31,7 @@ def test_partial_payments_keep_full_unknown_and_show_the_readable_calculation(tm
     assert observed["paid_at_cut"] == 100
     assert observed["available_bank_limit"] == sum(SMETA.values()) - 100
     assert observed["calculated_additional"] == r["budget"] - sum(SMETA.values())
-    assert len(observed["missing_payment_rows"]) == 1
+    assert len(observed["missing_payment_rows"]) == incomplete_count
     before = copy.deepcopy(funding)
     built = report_for(funding)
     tiles = {item["label"]: item for item in report.tiles(built)}
@@ -37,7 +39,11 @@ def test_partial_payments_keep_full_unknown_and_show_the_readable_calculation(tm
     assert tiles["Доступный остаток лимита банка"]["value"] == "расчётно " + report._rub(observed["available_bank_limit"])
     need = tiles["Расчётная потребность в допфинансировании"]
     assert need["value"] == report._rub(observed["calculated_additional"])
-    assert "по учтённым оплатам" in need["note"] and "реквизитами: 1" in need["note"]
+    for label in ("Оплачено с начала проекта", "Доступный остаток лимита банка",
+                  "Расчётная потребность в допфинансировании"):
+        assert tiles[label]["note"].count("Расчёт по учтённым оплатам.") == 1
+        assert tiles[label]["note"].count(
+            f"Строк с непрочитанными реквизитами: {incomplete_count}.") == 1
     summary = dashboard.funding_cash_summary(funding, {"balance_after_observed_payments": 999}, report._rub)
     assert summary["amount"] == observed["calculated_additional"]
     finding = next(row for row in report.findings(built) if row["topic"] == "Финансирование")
@@ -58,6 +64,35 @@ def test_unknown_only_is_not_a_known_zero(tmp_path, monkeypatch):
     assert "не прочитано ни одной оплаты" in reconciliation.calculation_note(funding["reconciliation"])
 
 
+def test_legacy_canonical_row_keeps_the_summary_payment_warning(tmp_path, monkeypatch):
+    _, funding = source_case(tmp_path, monkeypatch, [(CUT, 100, "2.6"), (CUT, None, "2.6")])
+    row = next(row for row in funding["reconciliation"]["display_rows"]
+               if row["key"] == "calculated_additional")
+    row["note"] = "Пояснение сохранённого отчёта."
+    need = next(tile for tile in report.tiles(report_for(funding))
+                if tile.get("group") == "additional_funding")
+    assert "Пояснение сохранённого отчёта." in need["note"]
+    assert need["note"].count("Расчёт по учтённым оплатам.") == 1
+    assert need["note"].count("Строк с непрочитанными реквизитами: 1.") == 1
+
+
+@pytest.mark.parametrize("partial", [True, False])
+def test_saved_canonical_row_with_only_calculation_note_keeps_it_once(tmp_path, monkeypatch, partial):
+    payments = [(CUT, 100, "2.6")] + ([(CUT, None, "2.6")] if partial else [])
+    _, funding = source_case(tmp_path, monkeypatch, payments)
+    state = funding["reconciliation"]
+    row = next(row for row in state["display_rows"] if row["key"] == "calculated_additional")
+    qualifier = reconciliation.calculation_note(state)
+    row["note"] = qualifier
+    before = copy.deepcopy(funding)
+    need = next(tile for tile in report.tiles(report_for(funding))
+                if tile.get("group") == "additional_funding")
+    assert need["note"].count(qualifier) == 1
+    assert need["value"] == report._rub(state["calculation"]["calculated_additional"])
+    assert "Утверждённый бюджет уже включает АХР." in need["note"]
+    assert funding == before
+
+
 @pytest.mark.parametrize("payments,count", [([], 0), ([(CUT, 0, "2.6")], 1)])
 def test_complete_empty_or_explicit_zero_stays_a_known_zero(tmp_path, monkeypatch, payments, count):
     _, funding = source_case(tmp_path, monkeypatch, payments)
@@ -65,6 +100,9 @@ def test_complete_empty_or_explicit_zero_stays_a_known_zero(tmp_path, monkeypatc
     assert not c["partial"] and c["observed_count"] == count
     assert c["paid_at_cut"] == 0 and c["available_bank_limit"] == sum(SMETA.values())
     assert dashboard.funding_cash_summary(funding, {}, cash.money)["amount"] is not None
+    need = next(tile for tile in report.tiles(report_for(funding))
+                if tile.get("group") == "additional_funding")
+    assert need["note"].count("Расчёт по сохранённым данным.") == 1
 
 
 def test_unknown_scope_or_date_is_not_added_to_the_observed_subset(tmp_path, monkeypatch):
@@ -124,3 +162,46 @@ def test_missing_limit_preserves_readable_paid_amount(tmp_path, monkeypatch):
 def test_known_bank_base_is_visible_with_unknown_ahr_cash():
     summary = cash.funding_summary(250, {"observed_payments": 100, "balance_after_observed_payments": None}, cash.money)
     assert summary["scope"] == "bank_only" and summary["amount"] == 250
+
+
+@pytest.mark.parametrize("width", [390, 1440])
+def test_rendered_partial_funding_tile_has_one_warning_in_screen_and_pdf(tmp_path, monkeypatch, width):
+    import io
+    import re
+    from pypdf import PdfReader
+    from playwright.sync_api import sync_playwright, expect
+    from browser import chromium_or_skip
+    from developaid_report_page import REPORT_PAGE
+
+    _, funding = source_case(tmp_path, monkeypatch,
+                            [(CUT, 100, "2.6")] + [(CUT, None, "2.6")] * 7)
+    built = report_for(funding)
+    need = next(tile for tile in report.tiles(built) if tile.get("group") == "additional_funding")
+    value = report._rub(funding["reconciliation"]["calculation"]["calculated_additional"])
+    qualifier = "Расчёт по учтённым оплатам."
+    count = "Строк с непрочитанными реквизитами: 7."
+    styles = re.search(r'<style>(.*?)</style>', REPORT_PAGE, re.S)[0]
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(executable_path=str(chromium_or_skip()), headless=True)
+        page = browser.new_page(viewport={"width": width, "height": 950})
+        page.set_content('<meta charset="utf-8">' + styles + '<main id="reportBox">'
+                         + report._tiles_html(report.tiles(built)) + '</main>')
+        tile = page.locator('.tile[data-group="additional_funding"]')
+        expect(tile).to_have_count(1)
+        expect(tile.locator('.v')).to_have_text(value)
+        text = tile.inner_text()
+        assert text.count(qualifier) == text.count(count) == 1
+        assert "Утверждённый бюджет уже включает АХР." in text
+        assert tile.evaluate('(e)=>e.scrollWidth <= e.clientWidth')
+        page.screenshot(path=str(tmp_path/f'partial-funding-{width}.png'), full_page=True)
+        if width == 1440:
+            # Print the same canonical tile renderer on its own to count its warning in PDF.
+            page.set_content('<meta charset="utf-8">' + styles + '<main id="reportBox">'
+                             + report._tiles_html([need]) + '</main>')
+            raw = page.pdf(format="A4")
+            (tmp_path/'partial-funding.pdf').write_bytes(raw)
+            text = " ".join(" ".join(sheet.extract_text() or '' for sheet in
+                                       PdfReader(io.BytesIO(raw)).pages).split())
+            assert text.count(qualifier) == text.count(count) == 1
+            assert value in text
+        browser.close()

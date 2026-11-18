@@ -101,14 +101,9 @@ def test_the_table_shows_lag_deviation_and_forecast_in_plain_words(card, width):
         page.route("**/monitor/contracts/documents",lambda route:route.fulfill(json={"pending":False,"ok":True,**(listed if route.request.post_data_json["contract_id"]==CONTRACT else files.listing(PROJECT,OTHER,CUT))}))
         page.locator("#contractsTab").click()
         row = page.locator(f'tr[data-contract-id="{CONTRACT}"]')
-        # The short row: one chip with the lag, the deviation and the forecast in a few words.
+        # The register gives an action, with scoped figures inside the card.
         brief = row.locator(".contract-schedule")
-        for text in ['отстаёт на 2 дня', 'готовность сопоставленных работ 50 %, выполнение плана 55 %',
-                     'Сопоставлено работ по ГПР: 3 из 4.', 'Выполнение остальных работ не определено.',
-                     'Расчёт с 01.02.2026.', 'Периоды КС до этой даты учтены отдельно: 1.',
-                     'просрочено работ: 2', 'отставание неполное: 2 периода КС не вошли в факт',
-                     'Прогноз всего договора не определён.', 'Оценка сопоставленных работ: 06.02.2026.']:
-            expect(brief).to_contain_text(text)
+        expect(brief).to_have_text('Сверить с КС-6а')
         assert brief.get_attribute("data-label") == "График договора"
         head = page.locator(".contract-register thead th")
         expect(head).to_have_count(6)
@@ -116,8 +111,6 @@ def test_the_table_shows_lag_deviation_and_forecast_in_plain_words(card, width):
         assert names == ["Договор", "Сумма и выполнение", "Срок", "График договора", "Внимание", "Открыть"]
         color = "e => getComputedStyle(e).color"
         red = brief.locator(".contract-risk").evaluate(color)
-        assert brief.locator(".contract-sub").nth(1).evaluate(color) == brief.locator(".contract-sub").first.evaluate(
-            color) != row.evaluate(color)
         # The same native result is presented once, in the modal work table.
         more = opened(page, CONTRACT)
         expect(more.locator('#contractCardSummary')).to_contain_text('55 %')
@@ -136,9 +129,7 @@ def test_the_table_shows_lag_deviation_and_forecast_in_plain_words(card, width):
         assert red!=row.evaluate(color)
         page.locator('#contractDialogClose').click()
         other = page.locator(f'tr[data-contract-id="{OTHER}"]')
-        expect(other.locator(".contract-schedule")).to_have_text("ГПР не загружен")
-        assert other.locator(".contract-schedule .contract-risk").get_attribute("title") == (
-            "ГПР и расчёт договора в карточку не загружены.")
+        expect(other.locator(".contract-schedule")).to_have_text("Загрузить ГПР")
         more = opened(page, OTHER)
         expect(more.locator('#contractComparisonInfo')).to_contain_text(files.listing(PROJECT,OTHER,CUT)['comparison']['reason'])
         expect(more.locator('#contractCardSummary [data-label="Прогноз окончания"]')).to_contain_text('Не рассчитан')

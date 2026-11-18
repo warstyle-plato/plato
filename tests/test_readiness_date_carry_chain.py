@@ -320,3 +320,35 @@ def test_multi_edge_summary_json_kinds_cannot_be_normalized_away(site,target,fie
     for row in s['rows']:
         if row.get('gpr_fact_source_carry'):corrupt(row['gpr_fact_source_carry'])
     assert not work._carry_consistent(s,state,profile)
+
+
+@pytest.mark.parametrize('hops,cut,owned,forged,expected',[
+    (1, CUT, False, False, True),
+    (2, CUT, False, False, True),
+    (2, FIRST_DAY, False, False, False),
+    (2, FIRST_DAY, False, True, False),
+    (2, FIRST_DAY, True, False, True),
+    (2, FIRST_DAY, True, True, False),
+    (2, CUT, False, True, False),
+])
+def test_original_owner_reference_or_complete_fact_chain_is_required(site,hops,cut,owned,forged,expected):
+    save_profile(site)
+    if hops == 1:
+        next_source(site,'F5','01.01.2031','02.01.2031',FIRST_DAY)
+    else:
+        two_hops(site)
+    schedule=monitor.build(PROJECT,cut)['schedule'];state=schedule['readiness']
+    profile=state['profile_source_carry'];fact=state['fact_source_carry']
+    assert work._carry_consistent(schedule,state,profile)
+    assert len(work._carry_steps(profile)) == hops
+    assert len(work._carry_steps(fact)) == (1 if cut == FIRST_DAY else hops)
+    if not owned:
+        state.pop('profile_reference_source_sha256')
+    if forged:
+        # A valid nearest-ancestor suffix says nothing about an earlier root.
+        false_root='f'*64
+        profile['from_source_sha256']=profile['reference_source_sha256']=false_root
+        profile['lineage_steps'][0]['from_source_sha256']=false_root
+        assert work._carry_steps(profile) is not None
+    assert work._carry_consistent(schedule,state,profile) is expected
+    assert (work.build(schedule,cut)['state'] != 'unavailable') is expected

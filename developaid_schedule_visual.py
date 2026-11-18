@@ -177,7 +177,7 @@ def physical_summary(block, *, include_covered=True):
                 out.append('<p>Расчётное окончание компонента: '+esc(date_text(component['forecast_finish']))+'</p>')
             if component.get('reason'):
                 out.append('<p>'+esc(component['reason'])+'</p>')
-            if task.get('reason'):
+            if task.get('reason') and task['reason'] != component.get('reason'):
                 out.append('<p>'+esc(task['reason'])+'</p>')
             out.append('</article>')
         if task.get('actual_finish'):

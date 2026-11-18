@@ -19,7 +19,7 @@ def test_gpr_tasks_show_plan_fact_and_forecast_shift():
     from test_monitor_cumulative_controls import browser_page
     from test_monitor_gpr_sections import monitor_view
     with browser_page(390) as (page, responses, errors):
-        page.evaluate('(v)=>renderGantt(v)', monitor_view())
+        page.evaluate('(v)=>{document.activeElement?.blur();document.getElementById(`cut`).value=v.cut;currentView=v;renderGantt(v)}', monitor_view())
         expect(page.locator('#gprFactMatrix [data-work-id]')).to_have_count(3)
         expand_gantt(page)
         work = page.locator('#gantt .lvl-task', has_text='Монтаж фасада')

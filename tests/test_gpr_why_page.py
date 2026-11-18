@@ -59,13 +59,20 @@ def why_view(count=2):
                          included[1]: dict(element_id='underground', share=100)}))
     state = ready.model({'works': facts}, cut=CUT, baseline_scope='remaining_work',
                         source_sha256=SOURCE, profile=profile, full_rows=facts)
+    state.update(profile_revision=1, profile_sha256=ready._digest(profile),
+                 profile_effective_from=OBSERVED)
     q = dict(basis='gpr', state='unknown', approved='2033-09-22', plan_date='2033-09-22',
              plan_label='Учебный план окончания', forecast=None, indicative_forecast=None,
              delay_days=None, reasons=['Для даты ввода нужна подтверждённая последовательность работ.'])
     scenario.decorate_readiness(state, all_rows, q)
-    schedule.update(readiness=state, readiness_html=ready.render(state),
+    schedule.update(cut=CUT, approved_plan=dict(source_sha256=SOURCE), work_forecast_applicable=True,
+        readiness=state, readiness_html=ready.render(state),
         dependency_timeline=dict(rnv=q, rows=[], edges=[]),
         dependency_timeline_html='<section class="schedule-overview"><h3>Повторная сводка сроков</h3></section>')
+    from developaid_gpr_work_forecast import for_schedule
+    schedule['work_forecast'] = for_schedule(schedule, CUT)
+    assert schedule['work_forecast']['scope_kind'] == 'readiness_profile'
+    schedule['readiness_html'] = ready.render(schedule['work_forecast'], show_forecast=False)
     return view
 
 
@@ -141,7 +148,9 @@ def test_wrong_or_stale_explanation_never_promotes_other_work(monkeypatch, mutat
         show(page, view)
         expect(page.locator('.gpr-why-unavailable')).to_be_visible()
         assert page.locator('[data-why-open]').count() == 0
-        assert page.locator('.readiness-project-value').text_content()
+        # Reject the whole stale owner response, including its old percentage.
+        assert page.locator('.readiness-project-value').count() == 0
+        assert page.locator('#gprFactMatrix [data-work-id]').count() == 9
         assert not errors
 
 

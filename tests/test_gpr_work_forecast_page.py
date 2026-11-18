@@ -12,6 +12,33 @@ from test_gpr_work_forecast import fallback, profiled, task
 from test_gpr_why_page import serve, why_view
 from test_management_calendar_membership import _native_scoped_view
 from test_monitor_cumulative_controls import browser_page
+from test_schedule_physical_print_summary import gpr_sources
+
+
+@pytest.mark.parametrize('width', [390, 1440])
+@pytest.mark.parametrize('kind', ['confirmed', 'unconfirmed'])
+def test_actual_legacy_producer_keeps_source_date_and_per_work_facts(monkeypatch, gpr_sources, width, kind):
+    value = gpr_sources(kind, view=True, with_readiness_profile=False)
+    schedule = value['schedule']
+    expected = work_dates.legacy_model(schedule, value['cut'])['finish']
+    assert schedule['work_forecast_applicable'] is False and 'work_forecast' not in schedule
+    serve(monkeypatch, value)
+    with browser_page(width) as (page, _, errors):
+        show(page, value)
+        box = page.locator('#readinessSummary .legacy-work-forecast')
+        expect(box).to_be_visible()
+        expect(box.locator('strong')).to_have_text('.'.join(reversed(expected.split('-'))) if expected else 'Дата не определена')
+        assert page.locator('#readinessSummary .canonical-work-forecast').count() == 0
+        assert page.locator('[data-work-forecast-kpi]').count() == 0
+        page.locator('#gprMatrixExpand').click()
+        cell = page.locator('#gprFactMatrix [data-work-id="1"]')
+        expect(cell.locator('b')).to_have_text('50%' if kind == 'confirmed' else '80%')
+        if expected:
+            expect(cell.locator('.gpr-cell-forecast')).to_contain_text('.'.join(reversed(expected.split('-'))))
+        else:
+            expect(cell.locator('.gpr-cell-forecast')).not_to_contain_text('2099')
+        assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+        assert not errors
 
 
 def view(kind):
@@ -19,7 +46,8 @@ def view(kind):
     schedule = profiled() if kind == 'profile' else fallback()
     result.update(cut=schedule['cut'], schedule=schedule)
     schedule['work_forecast'] = work_dates.build(schedule, schedule['cut'])
-    schedule['readiness_html'] = readiness.render(schedule['readiness'], show_forecast=False)
+    display = schedule['work_forecast'] if schedule['work_forecast']['scope_kind'] == 'readiness_profile' else schedule['readiness']
+    schedule['readiness_html'] = readiness.render(display, show_forecast=False)
     return result
 
 
@@ -91,6 +119,75 @@ def test_native_stale_dto_shows_one_reason_and_does_not_use_legacy_date(monkeypa
         assert not errors
 
 
+@pytest.mark.parametrize('width', [390, 1440])
+@pytest.mark.parametrize('change', ['revision', 'hash', 'state', 'effective', 'readiness_cut', 'readiness_source', 'schedule_cut', 'summary_progress', 'summary_plan', 'unavailable'])
+def test_a_rejected_owner_cannot_revive_project_aggregates_from_readiness_html(monkeypatch, width, change):
+    value = view('profile')
+    schedule = value['schedule']
+    serve(monkeypatch, value)
+    with browser_page(width) as (page, _, errors):
+        show(page, value)
+        expect(page.locator('#readinessSummary .readiness-project-value')).to_have_count(1)
+        if change == 'revision':
+            schedule['readiness']['profile_revision'] = (schedule['readiness'].get('profile_revision') or 0) + 1
+        elif change == 'hash':
+            schedule['readiness']['profile_sha256'] = 'e'*64
+        elif change == 'state':
+            schedule['readiness']['profile_state'] = 'invalid'
+        elif change == 'effective':
+            schedule['readiness']['profile_effective_from'] = '2049-01-01'
+        elif change == 'readiness_cut':
+            schedule['readiness']['cut'] = '2049-01-01'
+        elif change == 'readiness_source':
+            schedule['readiness']['source_sha256'] = 'e'*64
+        elif change == 'schedule_cut':
+            schedule['cut'] = '2049-01-01'
+        elif change == 'summary_progress':
+            schedule['work_forecast']['summary'].update(progress=.99, value='99%')
+        elif change == 'summary_plan':
+            schedule['work_forecast']['summary'].update(plan_finish='2099-01-01', plan_text='План 01.01.2099')
+        else:
+            schedule['work_forecast'] = work_dates.unavailable(schedule, value['cut'], 'Обновите срез.', 'dto_binding')
+        show(page, value)
+        expect(page.locator('#readinessSummary .readiness-project-value')).to_have_count(0)
+        expect(page.locator('#readinessSummary .gpr-legacy-fallback')).to_have_count(0)
+        expect(page.locator('#gprCalendarOverview .gpr-forecast-strip')).to_have_count(0)
+        expect(page.locator('#gprProjectAssessment .n')).to_have_text('Не определена')
+        # Invalid project composition does not erase the source readings of
+        # individual works, which retain their own dates and qualifications.
+        assert page.locator('#gprFactMatrix [data-work-id]').count() > 0
+        assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+        assert not errors
+
+
+@pytest.mark.parametrize('width', [390, 1440])
+@pytest.mark.parametrize('invalid_owner', [False, True])
+def test_stage_headers_read_owner_aggregates_and_ignore_old_group_dates(monkeypatch, width, invalid_owner):
+    value = view('profile')
+    schedule = value['schedule']
+    owner = copy.deepcopy(schedule['work_forecast'])
+    stage = next(iter(schedule['display_groups']['by_id'].values()))
+    schedule['display_groups'].setdefault('summaries', {})[stage] = dict(
+        finish='2099-01-01', total=99, covered=99, all_complete=False)
+    schedule['plan_pace_scenarios'] = [dict(finish='2099-01-01', covered=999, total=999)]
+    if invalid_owner:
+        schedule['readiness']['profile_revision'] = 98
+    serve(monkeypatch, value)
+    with browser_page(width) as (page, _, errors):
+        show(page, value)
+        header = page.locator('#gprFactMatrix .gpr-matrix-stage').filter(
+            has=page.locator('summary').filter(has_text=re.compile('^'+re.escape(stage)+' '))).locator(':scope > summary')
+        expect(header).not_to_contain_text('2099')
+        if invalid_owner:
+            expect(header).to_contain_text('Срок не определён')
+        else:
+            expect(header).to_contain_text('.'.join(reversed(owner['summary']['finish'].split('-'))))
+        expect(page.locator('#gprFactMatrix')).not_to_contain_text('2099')
+        expect(page.locator('#gprFactMatrix')).not_to_contain_text('999')
+        assert schedule['work_forecast'] == owner
+        assert not errors
+
+
 def test_native_source_invalidation_drops_the_work_date_and_its_cards(monkeypatch):
     value = view('profile')
     serve(monkeypatch, value)
@@ -119,6 +216,15 @@ def test_native_group_keeps_an_attested_member_without_a_calendar_point(monkeypa
           gprCalendarProjection(currentView))''')
         assert group['total'] == 2 and group['covered'] == 1 and group['missing'] == 1
         assert group['work_ids'] == ['build', 'other']
+        page.locator('#gprCalendar > summary').click()
+        page.locator('#ganttExpand').click()
+        missing = page.locator('#gantt [data-work-id="other"]')
+        expect(missing).to_have_attribute('data-forecast-scope', 'selected')
+        expect(missing).to_contain_text('Окончание неизвестно')
+        expect(missing).not_to_contain_text('Вне состава')
+        assert missing.locator('.gpr-forecast-strip').count() == 0
+        missing.locator('.g-label').click()
+        expect(page.locator('#detailWhy')).not_to_contain_text('вне учтённого состава')
         assert not errors
 
 
@@ -152,4 +258,44 @@ def test_native_summary_renders_missing_work_markup_and_financial_ampersand_as_t
         assert summary.inner_text().count('A&B') == 1
         assert 'A&amp;amp;B' not in summary.inner_html()
         assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+        assert not errors
+
+
+@pytest.mark.parametrize('width', [390, 1440])
+def test_missing_owner_never_uses_old_assessment_or_readiness_dates(monkeypatch, width):
+    value = view('profile')
+    schedule = value['schedule']
+    schedule.pop('work_forecast')
+    schedule['gpr_assessment'] = dict(finish='2099-01-01', progress=.99)
+    serve(monkeypatch, value)
+    with browser_page(width) as (page, _, errors):
+        show(page, value)
+        expect(page.locator('#readinessSummary .canonical-work-forecast')).to_contain_text('Обновите срез')
+        expect(page.locator('#readinessSummary .readiness-project-value')).to_have_count(0)
+        expect(page.locator('#gprCalendarOverview .gpr-forecast-strip')).to_have_count(0)
+        expect(page.locator('#gprFactMatrix')).not_to_contain_text('2099')
+        assert page.locator('#gprFactMatrix [data-work-id]').count() > 0
+        assert not errors
+
+
+@pytest.mark.parametrize('width', [390, 1440])
+def test_cached_conditional_date_cannot_cross_the_construction_method_boundary(monkeypatch, width):
+    value = view('fallback')
+    schedule = value['schedule']
+    building = next(row for row in schedule['rows'] if row['id'] == 'building')
+    old = copy.deepcopy(schedule['work_forecast'])
+    building['construction_work'] = False
+    assert building['plan_pace_scenario']['finish']
+    assert work_dates.for_schedule(schedule, value['cut'])['state'] == 'unavailable'
+    serve(monkeypatch, value)
+    with browser_page(width) as (page, _, errors):
+        show(page, value)
+        expect(page.locator('#gprProjectAssessment .n')).to_have_text('Не определена')
+        expect(page.locator('#gprCalendarOverview .gpr-forecast-strip')).to_have_count(0)
+        page.locator('#gprMatrixExpand').click()
+        cell = page.locator('#gprFactMatrix [data-work-id="building"]')
+        expect(cell.locator('.gpr-cell-plan')).to_contain_text('01.08.2035')
+        expect(cell.locator('b')).to_have_text('0%')
+        expect(cell.locator('.gpr-cell-forecast')).to_have_text('Расчётная дата не определена')
+        assert schedule['work_forecast'] == old
         assert not errors

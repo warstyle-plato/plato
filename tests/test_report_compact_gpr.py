@@ -17,12 +17,12 @@ def block():
         task=dict(id=key,object=obj,name='Работа с упоминанием корпуса 99',plan_start='2026-01-01',plan_finish='2027-09-30',plan_pace_scenario=dict(finish=finish,source_date=CUT))
         rows.append(dict(task=task))
         points[key]=dict(work_id=key,reference_work_id=key,finish=finish,plan_finish=task['plan_finish'],complete=False,basis='conditional',source_date=CUT)
-        groups.append(dict(name=obj,work_ids=[key],progress=.2*index,partial=True))
+        groups.append(dict(name=obj,work_ids=[key],progress=.2*index,partial=True,forecast={}))
     rows.append(dict(task=dict(id='parking',object='ПАРКИНГ',name='Корпус 1 в названии',plan_start='2025-01-01',plan_finish='2040-01-01')))
     display=dict(schema=1,basis='readiness_project_forecast',cut=CUT,source_sha256='a'*64,full_source_sha256='a'*64,id_scope='full_source',finish='2028-05-31',total=3,covered=3,reference_total=3,truncated=False,rows=list(points.values()),paragraphs=['Not copied','Not copied'])
     forecast={**{k:display[k]for k in ['source_sha256','full_source_sha256','id_scope','finish','total','covered','reference_total']},'display':display,'excluded':[]}
     state=dict(cut=CUT,source_sha256='a'*64,project=dict(progress=.4,known_readings=3,total=3,source_dates=[CUT],work_ids=list(points),forecast=forecast),corpora=groups,forecast_identity=dict(source_sha256='a'*64,full_source_sha256='a'*64,id_scope='full_source',remaining_ids={key:key for key in points}),matrix=[dict(stage='Конструктив',cells=copy.deepcopy(groups))])
-    return dict(readiness=state,calendar=dict(schema=1,cut=CUT,qualified=True,display=copy.deepcopy(display),rows=rows,points=copy.deepcopy(points),issues=[],owner_rnv=dict(date='2027-09-30',source='owner_decision')))
+    return dict(approved_plan=dict(source_sha256='a'*64),readiness=state,calendar=dict(schema=1,cut=CUT,qualified=True,display=copy.deepcopy(display),rows=rows,points=copy.deepcopy(points),issues=[],owner_rnv=dict(date='2027-09-30',source='owner_decision')))
 
 
 class DOM(HTMLParser):
@@ -66,7 +66,8 @@ def test_missing_or_foreign_canonical_projection_never_becomes_a_plan_forecast(f
     assert all(g['finish']is None and g['plan_finish']is None for g in model['groups'])
     assert 'class="rg-forecast"'not in body and 'class="rg-plan"'not in body
     assert 'Пока не определён'in body and 'Оценка: <b>30.09.2027'not in body
-    assert report._report_gpr_summary(dict(gantt=value,end=CUT))['finish']is None
+    # This exercises the historical compact formatter. Current report consumers
+    # use the bound work_forecast envelope, covered separately below.
     assert value==before
 
 
@@ -181,30 +182,35 @@ def test_compact_uses_the_native_calendar_guard_for_scope_and_point_dates(fault)
     assert all(group['finish']is None for group in model['groups'])
 
 
-@pytest.mark.parametrize('missing',['attested_gap','calendar','display'])
-def test_independent_partial_assessment_and_matrix_survive_unavailable_corpus_calendar(missing):
+@pytest.mark.parametrize('missing', ['attested_gap', 'calendar', 'display'])
+def test_partial_owner_keeps_attested_missing_members_but_rejects_broken_transport(missing):
+    import developaid_gpr_work_forecast as owner
     from test_management_calendar_membership import _native_scoped_view
-    from developaid_gpr_summary import gpr_summary
-    view=_native_scoped_view(classification=None)
-    value=report.gantt(view,{})
-    expected=gpr_summary(value['readiness'],view['cut'])
-    assert value['calendar']['readiness_forecast_invalid']is False
-    assert expected['finish'] and expected['progress']is not None
-    if missing=='calendar':value.pop('calendar')
-    elif missing=='display':
+    view = _native_scoped_view(classification=None)
+    schedule = view['schedule']
+    schedule.update(cut=view['cut'], approved_plan=dict(source_sha256=schedule['readiness']['source_sha256']))
+    schedule['work_forecast'] = owner.build(schedule, view['cut'])
+    expected = schedule['work_forecast']['summary']
+    assert expected['finish'] and expected['progress'] is not None
+    value = report.gantt(view, {})
+    if missing == 'calendar':
+        value.pop('calendar')
+    elif missing == 'display':
+        value['readiness'] = copy.deepcopy(value['readiness'])
         value['readiness']['project']['forecast'].pop('display')
-        tasks=[dict(row['task'],level='task')for row in value['calendar']['rows']]
-        value['calendar']=gantt.calendar(dict(rows=tasks,management=tasks,readiness=value['readiness']),view['cut'])
-    before=copy.deepcopy(value);model=gantt.compact_model(value,view['cut'])
-    assert not model['qualified']and model['assessment_qualified']and model['readiness_qualified']
-    assert model['finish']==expected['finish']
-    assert all(group['finish']is None and group['plan_finish']is None for group in model['groups'])
-    assert any(value is not None for row in model['matrix']for value in row['values'])
-    body=gantt.render_compact(model)
-    assert body.count('data-project-forecast="'+expected['finish']+'"')==3
-    assert 'Календарные даты корпусов пока не подтверждены'in body
-    assert 'class="rg-forecast"'not in body and 'class="rg-plan"'not in body
-    assert 'None'not in body and '0 из'not in body
-    summary=report._report_gpr_summary(dict(gantt=value,end=view['cut']))
-    assert summary['finish']==expected['finish']and summary['forecast_text']==expected['forecast_text']
-    assert summary['progress']==expected['progress']and value==before
+    before = copy.deepcopy(value)
+    model = report._report_gpr_compact(dict(gantt=value, end=view['cut']))
+    body = gantt.render_compact(model)
+    summary = report._report_gpr_summary(dict(gantt=value, end=view['cut']))
+    if missing == 'attested_gap':
+        assert model['qualified'] and model['total'] == 2 and model['covered'] == 1
+        assert summary['finish'] == expected['finish']
+        assert summary['progress'] == expected['progress']
+        assert sum(group.get('outside', 0) for group in model['groups']) == 0
+        assert body.count('data-project-forecast="'+expected['finish']+'"') == 3
+        assert any(item is not None for row in model['matrix'] for item in row['values'])
+    else:
+        assert not model['qualified'] and model['finish'] is None and summary is None
+        assert 'class="rg-forecast"' not in body and 'class="rg-plan"' not in body
+        assert 'Оценка: <b>'+report._day(expected['finish']) not in body
+    assert 'None' not in body and value == before

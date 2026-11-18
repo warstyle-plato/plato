@@ -143,12 +143,72 @@ def test_all_undated_corpus_keeps_same_catalog_format_in_both_producer_paths(tmp
 
 
 def test_legacy_confirmed_physical_date_keeps_its_existing_report_reader(gpr_sources):
-    payload = gpr_sources('confirmed')
+    payload = gpr_sources('confirmed', with_readiness_profile=False)
     block = payload['gantt']
     assert 'work_forecast' not in block
     expected = payload['construction_summary']['forecast']
     assert expected is not None
     assert gantt.compact_model(block, payload['end'])['finish'] == expected
+
+
+@pytest.mark.parametrize('kind', ['confirmed', 'stale', 'unconfirmed'])
+def test_legacy_actual_report_and_dashboard_keep_the_same_validated_source_reader(gpr_sources, kind):
+    import developaid_management_report as report
+    import developaid_monitor_dashboard as dashboard
+    value = gpr_sources(kind, view=True, with_readiness_profile=False)
+    schedule = value['schedule']
+    assert schedule['work_forecast_applicable'] is False
+    assert not work_dates.owns_response(schedule)
+    model = work_dates.legacy_model(schedule, value['cut'])
+    block = report.gantt(value, {})
+    payload = dict(gantt=block, end=value['cut'], schedule={},
+                   construction_summary=report.report_schedule.model(schedule['dependency_timeline']))
+    current = report._report_gpr_compact(payload)
+    assert block['work_forecast_applicable'] is False
+    assert current['finish'] == model['finish'] == payload['construction_summary']['forecast']
+    assert report._executive_schedule(payload)['forecast'] == model['finish']
+    sentence = dashboard._work_schedule_summary(value)
+    if kind == 'confirmed':
+        assert model['finish'] is not None
+        assert schedule['legacy_work_forecast']['finish'] == model['finish']
+        assert '.'.join(reversed(model['finish'].split('-'))) in sentence
+    else:
+        assert model['finish'] is None
+
+
+@pytest.mark.parametrize('kind', ['profile', 'corpus', 'old_response'])
+def test_false_legacy_marker_cannot_disable_owned_or_old_typed_response(kind):
+    schedule = profiled() if kind == 'profile' else fallback()
+    schedule['work_forecast_applicable'] = False
+    if kind == 'old_response':
+        for row in schedule['rows'] + schedule['undated_works']:
+            row['source_format'] = 'legacy-gpr'
+        schedule.pop('work_forecast_applicable')
+    assert work_dates.owns_response(schedule)
+
+
+@pytest.mark.parametrize('qualification', [None, dict(basis='rss', state='estimate', forecast='2099-01-01')])
+def test_missing_or_foreign_legacy_qualification_cannot_restore_a_calendar_only_date(gpr_sources, qualification):
+    import developaid_management_report as report
+    import developaid_monitor_dashboard as dashboard
+    value = gpr_sources('confirmed', view=True, with_readiness_profile=False)
+    schedule = value['schedule']
+    assert work_dates.legacy_model(schedule, value['cut'])['finish'] is not None
+    if qualification is None:
+        schedule['dependency_timeline'].pop('rnv')
+    else:
+        schedule['dependency_timeline']['rnv'] = qualification
+    before = copy.deepcopy(value)
+    model = work_dates.legacy_model(schedule, value['cut'])
+    assert model['finish'] is None and model['summary']['finish'] is None
+    assert '2099' not in model['summary']['forecast_text']
+    assert all(group['finish'] is None for group in model['groups'])
+    payload = dict(end=value['cut'], gantt=report.gantt(value, {}), schedule={})
+    compact = report._report_gpr_compact(payload)
+    assert compact['finish'] is None and compact['summary']['finish'] is None
+    assert '2099' not in compact['summary']['forecast_text']
+    assert '2099' not in dashboard._work_schedule_summary(value)
+    assert value == before
 
 
 def test_comparable_plan_uses_exactly_the_covered_members_and_names_missing_work():
@@ -324,7 +384,7 @@ def test_dashboard_schedule_sentence_shares_the_dto_and_preserves_money_and_rnv(
 def test_no_usable_readings_names_the_missing_evidence_instead_of_missing_weights():
     schedule = fallback([task('unread', display_progress=dict(value=None, date='2035-04-09'))])
     value = work_dates.build(schedule, CUT)
-    assert value['state'] == 'unavailable' and value['reason_code'] == 'no_usable_work_dates'
+    assert value['state'] == 'partial' and value['reason_code'] == 'no_usable_work_dates'
     assert value['project']['forecast']['total'] == 1 and value['project']['forecast']['missing'] == 1
     assert 'Учебная работа unread' in value['reason'] and 'профил' not in value['reason']
 
@@ -351,3 +411,43 @@ def test_legacy_wbs_keeps_the_existing_plan_pace_policy(source_format):
 def test_corpus_unknown_type_never_uses_calendar_duration(construction):
     row = task('corpus', construction_work=construction)
     assert row['plan_pace_scenario']['finish'] is None
+
+
+@pytest.mark.parametrize('invalid_source', [False, True])
+def test_dashboard_compiles_missing_owner_or_reports_unknown_without_legacy_date(invalid_source):
+    from developaid_monitor_dashboard import refresh_schedule_summary
+    schedule = profiled()
+    expected = work_dates.for_schedule(schedule, schedule['cut'])['summary']['finish']
+    value = dict(cut=schedule['cut'], schedule=schedule, dashboard=dict(
+        schedule=dict(qualified_rnv=dict(state='estimate', basis='gpr', approved='2048-01-01',
+                                         forecast='2049-01-01', reasons=[])),
+        summary=['Срок. Прежняя дата.', 'Бюджет: текст сохранён.']))
+    if invalid_source:
+        schedule['approved_plan']['source_sha256'] = 'e'*64
+    before = copy.deepcopy(value)
+    refresh_schedule_summary(value)
+    sentence = value['dashboard']['summary'][0]
+    assert '2049' not in sentence and '2048' not in sentence
+    if invalid_source:
+        assert 'не определена' in sentence
+    else:
+        assert '.'.join(reversed(expected.split('-'))) in sentence
+    assert value['dashboard']['summary'][1:] == before['dashboard']['summary'][1:]
+    assert schedule == before['schedule']
+
+
+def test_weighted_matrix_reads_owner_dates_and_comparison_instead_of_old_aliases():
+    from developaid_schedule_readiness import render
+    source = profiled()
+    value = work_dates.build(source, source['cut'])
+    expected = value['summary']['finish']
+    groups = [value['project'], *value['corpora'],
+              *(cell for stage in value['matrix'] for cell in stage['cells'])]
+    for group in groups:
+        group['forecast'].update(plan_finish='2099-01-01', all_complete=True)
+    before = copy.deepcopy(value)
+    body = render(value, show_forecast=False)
+    assert '2099' not in body
+    assert '.'.join(reversed(expected.split('-'))) in body
+    assert 'class="readiness-cell-forecast"' in body
+    assert value == before

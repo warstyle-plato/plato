@@ -619,9 +619,10 @@ def render(state, *, show_forecast=True):
         if project.get('partial'):
             out.append('<p>Оценка по известной части состава.</p><details class="readiness-project-reasons"><summary>Что не учтено в оценке</summary><p>'+esc(project['reason'])+'</p></details>')
     elif known:
-        out.append('<details class="readiness-project-gap readiness-gap"><summary>Общий показатель проекта пока не определён</summary><p>'+esc(state['reason'])+'</p><p>'+esc(facts(project))+'</p><p>'+esc(evidence(project))+'</p></details>')
+        out.append('<details class="readiness-project-gap readiness-gap"><summary>Общий показатель проекта пока не определён</summary><p>'+esc(project.get('reason') or state.get('reason'))+'</p><p>'+esc(facts(project))+'</p><p>'+esc(evidence(project))+'</p></details>')
     else:
-        out.append('<p class="readiness-gap">Общая готовность пока не определена. '+esc(state.get('reason'))+'</p>')
+        out.append('<p class="readiness-gap">Общая готовность пока не определена. '
+                   +esc(project.get('reason') or state.get('reason'))+'</p>')
     if known:
         out.append('<details class="readiness-corpus-counts readiness-weighted-evidence"><summary>Состав и показания по корпусам</summary>')
     eligible = project.get('eligible_readings', project['known_readings'])

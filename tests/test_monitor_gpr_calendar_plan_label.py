@@ -34,7 +34,7 @@ def _task(**changes):
 def _render(rows, page=None, cut="2031-06-15"):
     prelude = r"""
 const host={innerHTML:'',querySelectorAll:()=>[]};
-const elements={gprFactMatrix:host,project:{value:'Синтетический проект'},
+const elements={gprFactMatrix:host,project:{value:'Синтетический проект'},cut:{value:'2031-06-15'},
  gprMatrixExpand:{},gprMatrixPrint:{}};
 const $=id=>elements[id];
 const window={};
@@ -62,8 +62,11 @@ def test_matrix_shows_source_plan_dates_without_inventing_physical_plan_percent(
     assert 'не определяет плановую готовность по объёму работ' in html
     assert '37,5%' not in html and 'Δ' not in html and 'п.п.' not in html
     assert 'data-fact="0" data-calendar-fraction="0.375"' in html
-    assert 'data-scenario-finish="2033-02-17"' in html
-    assert 'При плановом темпе: 17.02.2033' in html
+    # No compiled owner was supplied to this render-only stand. Source plan
+    # and zero fact remain, but a stale legacy scenario cannot supply the date.
+    assert 'data-scenario-finish="2033-02-17"' not in html
+    assert 'Расчётная дата не определена' in html
+    assert 'При плановом темпе: 17.02.2033' not in html
 
 
 def test_calendar_duration_does_not_become_physical_readiness_for_other_formats():

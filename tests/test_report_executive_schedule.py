@@ -66,7 +66,7 @@ def storage(tmp_path, monkeypatch):
 def test_real_source_states_and_values(scenario):
     cut = sources(scenario)
     built = report.build(PROJECT, "week", cut)
-    executive = built["construction_summary"]
+    executive = report._executive_schedule(built)
     expected = {"noarchive": "no_archive", "unmapped": "unmapped", "unknownpace": "pace_unknown",
                 "historical": "historical", "partialRNV": "pace_unknown", "versionspresent": "pace_unknown"}[scenario]
     assert executive["source_status"]["state"] == expected
@@ -80,7 +80,11 @@ def test_real_source_states_and_values(scenario):
     else:
         assert not executive["facts"]
     if scenario == "partialRNV":
+        # Retained legacy WBS keeps its qualified partial work estimate.
+        # That date does not become a confirmed RNV milestone.
+        assert built['gantt']['work_forecast_applicable'] is False
         assert executive["state"] == "partial" and executive["forecast"] == "2026-12-31"
+        assert 'rnv_state' not in executive and 'rnv_forecast' not in executive
         assert built["schedule"]["qualification"]["forecast"] is None
         assert executive["forecast_label"] == "Оценка по части работ"
     elif scenario in {"unknownpace", "versionspresent"}:
@@ -105,17 +109,26 @@ def stalled_sources(partial):
 def test_stalled_gpr_work_and_its_cause_remain_in_the_executive_conclusion(partial):
     stalled_sources(partial)
     built = report.build(PROJECT, "week", CUT)
-    assert built["construction_summary"]["state"] == ("partial" if partial else "unknown")
-    risk = built["construction_summary"]["stalled_text"]
+    executive = report._executive_schedule(built)
+    # Source qualification retains a partial work date without a confirmed RNV.
+    assert built["construction_summary"]["forecast"] == ("2026-12-31" if partial else None)
+    assert built['gantt']['work_forecast_applicable'] is False
+    assert executive["state"] == ("partial" if partial else "unknown")
+    assert executive["forecast"] == ("2026-12-31" if partial else None)
+    # The source-qualified partial work date preserves the stalled work risk;
+    # the independent RNV milestone remains unconfirmed.
+    assert 'rnv_state' not in executive and 'rnv_forecast' not in executive
+    risk = executive["stalled_text"]
     assert "Демонтаж башенных кранов К-1,2" in risk
     assert built["schedule"]["stalled"][0]["reason"] in risk
     assert "процент в ГПР" in risk and "актов" not in risk
     conclusion = next(item["text"] for item in built["findings"] if item["topic"] == "Срок")
     assert risk in conclusion
     if partial:
-        assert "Фасад" in conclusion  # the known driver does not erase the other risk
+        # The source still identifies the work behind its partial date.
+        assert "Фасад" in executive["driver"]
     from developaid_report_schedule import render
-    assert risk in render(built["construction_summary"])
+    assert risk in render(executive)
     assert built["schedule"]["qualification"]["forecast"] is None
 
 
@@ -267,7 +280,7 @@ def test_confirmed_zero_is_known_natural_fact_even_without_pace():
                                  "components": [{"component_id": "Стены", "task_id": "1", "item_ids": ["0:0"]}],
                                  "note": "Подтверждён учебный нулевой объём за закрытые периоды."})
     built = report.build(PROJECT, "week", CUT)
-    executive = built["construction_summary"]
+    executive = report._executive_schedule(built)
     assert executive["facts"][0]["done"] == 0
     assert executive["source_status"]["state"] == "pace_unknown"
     assert executive["forecast"] is None

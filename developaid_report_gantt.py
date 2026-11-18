@@ -879,8 +879,9 @@ def render_compact(model: dict[str, Any], *, stalled_risk: str = '') -> str:
         out.append('<p>Для этого среза нет подтверждённой общей календарной оценки. Плановая дата её не заменяет.</p>')
     if summary:
         out.append('<p>'+esc(summary['readiness_text'])+'</p>')
-    if not model.get('work_forecast') and summary.get('progress') is None and summary.get('reason'):
-        out.append('<p class="rg-gap">'+esc(str(summary['reason'])[:240])+'</p>')
+    readiness_reason = model.get('readiness_reason') if model.get('work_forecast') else summary.get('reason')
+    if summary.get('progress') is None and readiness_reason:
+        out.append('<p class="rg-gap">'+esc(str(readiness_reason)[:240])+'</p>')
     if stalled_risk:
         out.append('<p class="rg-stalled">По всему текущему ГПР: '+esc(stalled_risk)+'</p>')
     if model['owner_plan']:

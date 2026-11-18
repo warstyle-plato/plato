@@ -24,9 +24,11 @@ def gpr_sources(tmp_path, monkeypatch):
     monkeypatch.setattr(monitor, '_SNAPSHOT_DIR', tmp_path / 'monitor')
     monkeypatch.setenv('DATA_DIR', str(tmp_path / 'data'))
     monkeypatch.setattr(physical, '_now', lambda: dt.datetime(2026, 11, 6, 12, tzinfo=dt.timezone.utc))
+    import developaid_schedule_versions as versions
+    monkeypatch.setattr(versions, '_now', lambda: dt.datetime(2026, 11, 6, 12, tzinfo=dt.timezone.utc))
     import developaid_monitor_page  # noqa: F401 — actual production overlays
 
-    def build(scenario='confirmed', *, view=False):
+    def build(scenario='confirmed', *, view=False, with_readiness_profile=True):
         monitor.store_schedule(PROJECT, _gpr_book([
             (1, 'Монтаж корпуса 1', .8, dt.date(2026, 9, 1), dt.date(2026, 10, 31),
              'В работе', '2.2.1.1')]), None, '2026-10-01')
@@ -47,6 +49,25 @@ def gpr_sources(tmp_path, monkeypatch):
                            'scope_confirmed': scenario != 'unconfirmed', 'actual_finish': ''}],
                 'components': [{'component_id': 'Монтаж корпуса 1', 'task_id': '1', 'item_ids': ['0:0']}],
                 'note': 'Проверены работа, корпус, единица и полный объём.'})
+        if with_readiness_profile:
+            # Declare project membership separately from the natural binding.
+            # The one-work frame assignment qualifies this synthetic project's
+            # aggregate; it never confirms the separate natural correspondence.
+            import developaid_schedule_readiness as ready
+            import developaid_schedule_elements as elements
+            source = monitor._working_baseline_state(PROJECT, CUT)
+            configuration = dict(label='Учебный состав монтажа', scope_kind=ready.CURRENT_ESTIMATE,
+                scope_note='Единственная работа учебного проекта', basis='estimated_elements',
+                source_reference='Учебная декларация состава', building_type='Учебный корпус',
+                full_source_sha256=source['source_sha256'], effective_from=CUT,
+                full_scope_confirmed=False, included_ids=['1'], excluded_ids=[],
+                outside_completed_ids=[], weights=[], element_profile=dict(
+                    id=elements.PROFILE_ID, overrides={}, objects={'Корпус 1': 'residential'},
+                    assignments={'1': dict(element_id='frame', share=100)}))
+            options = dict(expected_source_sha256=source['source_sha256'],
+                           expected_source_revision=source['revision'], expected_revision=0)
+            checked = ready.preview(PROJECT, configuration, **options)
+            ready.save(PROJECT, configuration, **options, expected_profile_sha256=checked['profile_sha256'])
         # An unconfirmed relationship must not erase the original archive or
         # pretend that its quantities are already confirmed for the GPR work.
         catalog = physical.catalog(PROJECT, CUT)

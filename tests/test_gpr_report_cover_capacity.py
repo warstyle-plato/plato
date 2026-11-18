@@ -60,11 +60,11 @@ def test_full_cover_notes_and_page2_keep_their_normal_font(saved, tmp_path, monk
     assert len([item for item in items if item.get('group') == 'gpr_readiness']) == 2
     assert len([item for item in items if item.get('group') == 'additional_funding']) == 1
     assert not any(item.get('group') == 'admin_expenses_cash' for item in items)
-    readiness = next(item for item in items if item.get('group') == 'gpr_readiness'
-                     and item['label'] != 'Оценка окончания учтённых работ')
-    cover_items = [item for item in items if item is not readiness]
-    assert sum(item['label'] == 'Оценка окончания учтённых работ' for item in cover_items) == 1
     summary = report._report_gpr_summary(built)
+    readiness = next(item for item in items if item.get('group') == 'gpr_readiness'
+                     and item['label'] != summary['forecast_label'])
+    cover_items = [item for item in items if item is not readiness]
+    assert sum(item['label'] == summary['forecast_label'] for item in cover_items) == 1
     assert summary['progress'] is not None and summary['value'] == readiness['value']
     body = report.render_html(built)
     heading = "<h2 class='block' id='block-build'>"

@@ -69,10 +69,9 @@ def test_findings_carry_numbers_and_sources():
                            "Бюджет месяца", "Продажи", "Финансирование", "Споры",
                            "Открытые вопросы"]
     assert "ГПР" == found["Срок"]["source"]
-    from developaid_gpr_summary import gpr_summary
-    canonical = gpr_summary(built['gantt']['readiness'], built['end'])
+    canonical = report._report_gpr_summary(built)
     assert canonical['forecast_text'] in found['Срок']['text']
-    assert "Это не прогноз РНВ" in found["Срок"]["text"]
+    assert "не подтверждает дату получения разрешения на ввод" in found["Срок"]["text"]
     assert "PM" not in found["Срок"]["text"]
     assert found['Стройка']['text'] == canonical['readiness_text']
     assert "ГПР" == found["Стройка"]["source"]
