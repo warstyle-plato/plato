@@ -63,6 +63,9 @@ def acts(row: dict | None) -> dict | None:
     """
     if row is None:
         return None
+    if row.get('source_kind') == 'contract_document':
+        return {**unavailable(row.get('performance_basis') or 'КС этого договора не предоставлены.'),
+                'document_source_ids': row.get('document_source_ids') or []}
     found, unread, works, sums, groups = [], [], [], {}, []
     for index, item in enumerate(row.get("physical_items") or []):
         if item.get('is_group') and not item.get('is_duplicate'):
@@ -113,6 +116,7 @@ def acts(row: dict | None) -> dict | None:
                           "source": period.get("source") or item.get("source") or {}})
     summary = [act for source in row.get("financial_sources") or [] for act in source.get("acts") or []]
     return {"acts": found, "unread": unread, "works": len(works), "items": works, "period_amounts": sums,
+            'document_source_ids': row.get('document_source_ids') or [],
             'physical_groups': groups,
             "summary_acts": summary,
             "deadline": row.get("deadline"), "deadline_label": (row.get("deadline_source") or {}).get("label") or "",
@@ -370,10 +374,12 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
         result["unread"] = [] if (found or {}).get("problem") else (found or {}).get("unread") or []
         result['missing_acts'] = _missing_acts(performed, found, cut)
     elif found is None:
+        result['total'] = None
         result["note"] = ("Актов КС-2 в карточке нет, а накопительная КС-6а этого договора на дату среза "
                           "не найдена: факт не рассчитан.")
         return result
     elif found.get("problem"):
+        result['total'] = None
         result["note"] = f"Актов КС-2 в карточке нет, а факт по КС-6а не рассчитан. {found['problem']}"
         return result
     else:

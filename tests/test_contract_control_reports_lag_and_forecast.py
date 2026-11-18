@@ -247,7 +247,7 @@ def test_the_card_reports_the_lag_and_the_threat_in_plain_words(card, width):  #
         page.locator(f'tr[data-contract-id="{CONTRACT}"] .contract-open').click()
         report=page.locator('#contractComparison')
         expect(report.locator('thead th')).to_have_text([
-            'Работа / единица','План на дату','Факт','Отклонение','Срок работы','Прогноз окончания'])
+            'Работа / единица','Всего по договору','План на дату','Факт','Отклонение','Срок работы','Прогноз окончания'])
         expect(page.locator('#contractCardSummary')).to_contain_text('55 %')
         expect(page.locator('#contractCardSummary')).to_contain_text('Готовность сопоставленных работ: 50 %')
         expect(report.locator('#contractComparisonInfo')).to_contain_text('Сравнено 3 из 4')
@@ -261,6 +261,7 @@ def test_the_card_reports_the_lag_and_the_threat_in_plain_words(card, width):  #
         expect(first.locator('[data-label="Отклонение"]')).to_contain_text('Отставание: 3 дня')
         expect(first.locator('[data-label="Срок работы"]')).to_contain_text('Просрочка: 3 дня')
         second=report.locator('tr[data-comparison-code="1.2"]')
+        expect(second.locator('[data-label="Всего по договору"]')).to_have_text('0,625 м3')
         expect(second.locator('[data-label="План на дату"]')).to_have_text('0,5 м3')
         expect(second.locator('[data-label="Факт"]')).to_contain_text('0,313 м3')
         expect(second.locator('[data-label="Факт"]')).to_contain_text('62,5 %')
@@ -269,6 +270,7 @@ def test_the_card_reports_the_lag_and_the_threat_in_plain_words(card, width):  #
         expect(second.locator('[data-label="Отклонение"]')).to_contain_text('−37,5 %')
         expect(second.locator('[data-label="Прогноз окончания"]')).to_have_text('06.02.2026')
         unknown=report.locator('tr[data-comparison-code="2.1"]')
+        expect(unknown.locator('[data-label="Всего по договору"]')).to_have_text('Неизвестно')
         expect(unknown.locator('[data-label="Факт"]')).to_contain_text('Неизвестно')
         report.locator('.contract-methodology > summary').click()
         expect(report.locator('.contract-comparison-money')).to_have_text(

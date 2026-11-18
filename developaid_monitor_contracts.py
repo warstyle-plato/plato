@@ -1000,6 +1000,8 @@ def _build_raw(project: str, cut: str = "", *, include_history: bool = True,
     by_snapshot = composition["by_snapshot"]
     warnings = list(composition["warnings"])
     primary, unresolved = composition["primary"], composition["unresolved"]
+    import developaid_contract_pdf_intake as pdf_intake
+    pdf_sources = pdf_intake.sources(project, cut)
     summary_sources = composition["summaries"]
     rss, rss_day = [], None
     if primary:
@@ -1033,6 +1035,8 @@ def _build_raw(project: str, cut: str = "", *, include_history: bool = True,
         # retains its own archive; a summary never replaces detailed KS.
         row_snapshot = by_snapshot.get(first.get("archive_snapshot_id")) or snapshot or {}
         identity = _identity(first)
+        pdf_source_ids = [source['contract_id'] for source in pdf_sources
+                          if _identity(source['evidence']['identity']) == identity]
         matched = [entry for entry in extras if entry not in ledger_items and identity and not _reference_differences(identity, entry)
                    and claims.get(id(entry), 0) == 1]
         items = ledger_items + matched
@@ -1051,7 +1055,7 @@ def _build_raw(project: str, cut: str = "", *, include_history: bool = True,
                          "РСС: полная сумма договора" if rss_amount is not None else "Полная сумма договора не подтверждена")
         from developaid_contract_files import document_prices, ContractFilesProblem
         try:
-            amount_documents = document_prices(project, identifier, cut)
+            amount_documents = document_prices(project, identifier, cut, source_ids=pdf_source_ids)
         except ContractFilesProblem as exc:
             amount_documents = None
             row_warnings.append(str(exc))
@@ -1115,7 +1119,7 @@ def _build_raw(project: str, cut: str = "", *, include_history: bool = True,
         # earlier text. An agreement changing only prices does not erase it.
         from developaid_contract_files import document_terms, ContractFilesProblem
         try:
-            deadline_documents = document_terms(project, identifier, cut)
+            deadline_documents = document_terms(project, identifier, cut, source_ids=pdf_source_ids)
         except ContractFilesProblem as exc:
             deadline_documents = None
             row_warnings.append(str(exc))
@@ -1372,6 +1376,7 @@ def _build_raw(project: str, cut: str = "", *, include_history: bool = True,
         result['counts']['contracts_from_documents'] = len(rows)
         result['counts']['contracts_from_closing_summary_only'] = sum(row['source_kind'] == 'closing_summary' for row in rows)
         result['source_coverage']['closing_summary_sections'] = len(summary_sources)
+    result = pdf_intake.attach(project, cut, result)
     if include_history:
         import developaid_monitor_contract_history as progress_history
         with ownership.raw_history():
@@ -1470,7 +1475,7 @@ def confirm_header_date(project: str, cut: str, snapshot_id: str, **fields) -> d
         raise ContractProblem(str(exc)) from None
 
 
-def set_term(project: str, contract_id: str, deadline: str, note: str = "") -> dict:
+def set_term(project: str, contract_id: str, deadline: str, note: str = "", *, _locked_raw_row=None) -> dict:
     """Save one explicit contractual deadline, independently of GPR dates."""
     if not re.fullmatch(r"[0-9a-f]{64}", str(contract_id or "")):
         raise ContractProblem("Выберите договор из списка.")
@@ -1481,14 +1486,22 @@ def set_term(project: str, contract_id: str, deadline: str, note: str = "") -> d
         raise ContractProblem("Срок договора нужен в виде ГГГГ-ММ-ДД.")
     if not isinstance(note, str) or len(note) > 500:
         raise ContractProblem("Пояснение к сроку должно быть не длиннее 500 символов.")
-    if find_raw_row(build(project), contract_id) is None:
-        raise ContractProblem("Договор не найден в текущих данных выбранного проекта.")
+    if _locked_raw_row is None:
+        if find_raw_row(build(project), contract_id) is None:
+            raise ContractProblem("Договор не найден в текущих данных выбранного проекта.")
+    else:
+        import developaid_contract_identity_store as identity_store
+        if (_locked_raw_row.get('id') != contract_id
+                or str(_terms_path(project).with_suffix('.lock')) not in identity_store._HELD_NATIVE_LOCKS.get()):
+            raise ContractProblem('Привязка срока к исходной карточке не подтверждена.')
     path = _terms_path(project)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     import fcntl
     fd = os.open(path.with_suffix(".lock"), os.O_RDWR | os.O_CREAT, 0o600)
     with os.fdopen(fd, "a+b") as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
+        import developaid_contract_identity_store as identity_store
+        if str(path.with_suffix(".lock")) not in identity_store._HELD_NATIVE_LOCKS.get():
+            fcntl.flock(handle, fcntl.LOCK_EX)
         data = _read_terms(project)
         if deadline:
             record = {"deadline": deadline, "note": note,

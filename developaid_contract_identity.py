@@ -30,6 +30,14 @@ def _ids(raw_ids, *, pair=True):
     return sorted(raw_ids)
 
 
+def correction_ids(raw_ids):
+    if (not isinstance(raw_ids, (list, tuple)) or not 1 <= len(raw_ids) <= 8
+            or any(not isinstance(value, str) or not store.HASH.fullmatch(value) for value in raw_ids)
+            or len(set(raw_ids)) != len(raw_ids)):
+        raise IdentityProblem('Выберите от двух до восьми разных исходных карточек.', 400)
+    return sorted(raw_ids)
+
+
 def _safe_path(project, *parts):
     path = store.project_root(project)
     for part in parts:
@@ -41,11 +49,11 @@ def _safe_path(project, *parts):
     return path
 
 
-def _source_inventory(project, cut, raw_ids):
+def _source_inventory(project, cut, raw_ids, *, correction=False, cache=None):
     """Use the register's exact qualification and ID hashing, without enrichers."""
     import developaid_monitor_contracts as contracts
     import developaid_monitor_ledgers as ledgers
-    wanted = set(_ids(raw_ids, pair=False))
+    wanted = set(correction_ids(raw_ids) if correction else _ids(raw_ids, pair=False))
     cut = contracts._cut(cut)
     root = store.project_root(project)
     if not root.is_dir():
@@ -84,17 +92,30 @@ def _source_inventory(project, cut, raw_ids):
             if not snapshot or snapshot.get('snapshot_id') not in dates[day]:
                 raise IdentityProblem('Версия источника изменилась. Обновите проверку.', 409)
             sid = snapshot['snapshot_id']
-            raw = store.read_bytes(_safe_path(project, 'cumulative', sid+'.zip'), ledgers.MAX_ARCHIVE_BYTES)
+            raw = (cache.get(('zip', sid)) if cache is not None else None)
+            if raw is None:
+                raw = store.read_bytes(_safe_path(project, 'cumulative', sid+'.zip'), ledgers.MAX_ARCHIVE_BYTES)
+                if cache is not None and raw is not None:
+                    cache[('zip', sid)] = raw
             if raw is None or hashlib.sha256(raw).hexdigest() != sid[11:]:
                 raise IdentityProblem('Исходный архив недоступен или его SHA изменился. Уточнение не подтверждено.', 409)
             total_bytes += len(raw)
             if total_bytes > MAX_TOTAL_ARCHIVE_BYTES:
                 raise IdentityProblem('Объём исходных версий превышает предел проверки.', 413)
-            parsed = ledgers._current_archive(raw, sid[11:], snapshot.get('filename') or 'Source.zip')
-            parsed = ledgers._preserve_source_indices(snapshot, parsed)
+            if cache is not None and sid in cache:
+                parsed = cache[sid]
+            else:
+                parsed = ledgers._current_archive(raw, sid[11:], snapshot.get('filename') or 'Source.zip')
+                parsed = ledgers._preserve_source_indices(snapshot, parsed)
+                if cache is not None:
+                    cache[sid] = parsed
             snapshot = {**snapshot, **parsed}
             snapshot = ledgers.effective_snapshot(project, cut, snapshot=snapshot)
-            primary, _, _ = contracts.qualified_sources(snapshot, cut)
+            primary, _, unresolved = contracts.qualified_sources(snapshot, cut)
+            if cache is not None:
+                cache[('identities', sid)] = [{'raw_id': identifier, 'reference': contracts._reference_key(items[0])}
+                                             for identifier, items in contracts._groups(primary, project)]
+                cache[('unresolved', sid)] = bool(unresolved)
             files = {}
             for item in snapshot.get('files') or []:
                 if isinstance(item.get('filename'), str) and store.HASH.fullmatch(str(item.get('sha256') or '')):
@@ -165,8 +186,8 @@ def _time_status(value, absent):
         return 'unknown'
 
 
-def metadata_inventory(project, raw_ids):
-    ids = _ids(raw_ids)
+def metadata_inventory(project, raw_ids, *, correction=False):
+    ids = correction_ids(raw_ids) if correction else _ids(raw_ids)
     read = _Metadata()
     terms, terms_pin = read.entry(_safe_path(project, 'cumulative_terms.json'))
     if terms is not None and not isinstance(terms, dict):
@@ -287,7 +308,7 @@ def _validate_members(project, members, canonical_number, anchor_id):
 
 
 @contextlib.contextmanager
-def _binding_locks(project, raw_ids):
+def _binding_locks(project, raw_ids, *, correction=False):
     """Use the existing native writers' locks, without migrating any data.
 
     The identity lock is always outermost. No legacy writer takes that lock,
@@ -296,8 +317,9 @@ def _binding_locks(project, raw_ids):
     import fcntl
     paths = [('cumulative', '.lock'), ('cumulative_header_dates.lock',),
              ('cumulative_terms.lock',), ('.contract_links.lock',)]
-    paths += [('contract_documents', value, '.lock') for value in _ids(raw_ids)]
+    paths += [('contract_documents', value, '.lock') for value in (correction_ids(raw_ids) if correction else _ids(raw_ids))]
     with contextlib.ExitStack() as stack:
+        held_paths = set(store._HELD_NATIVE_LOCKS.get())
         for parts in paths:
             path = _safe_path(project, *parts)
             path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -308,7 +330,12 @@ def _binding_locks(project, raw_ids):
             if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
                 raise IdentityProblem('Блокировка привязок недоступна.', 503)
             fcntl.flock(handle, fcntl.LOCK_EX)
-        yield
+            held_paths.add(str(path))
+        token = store._HELD_NATIVE_LOCKS.set(frozenset(held_paths))
+        try:
+            yield
+        finally:
+            store._HELD_NATIVE_LOCKS.reset(token)
 
 
 @store.in_namespace
@@ -406,7 +433,7 @@ def resolve(project, raw_id, cut, *, source_token=None):
     if source_token is not None and (not isinstance(source_token, str) or not store.HASH.fullmatch(source_token)):
         raise IdentityProblem('Укажите подтверждённую версию источника.', 400)
     state = store.load(project)
-    related = [event for event in state['events'] if event['action'] == 'confirm'
+    related = [event for event in state['events'] if event['action'] in {'confirm', 'correct_sources'}
                and raw_id in {member['raw_id'] for member in event['payload']['members']}]
     if not related:
         versions = source_versions(project, cut, [raw_id])
@@ -422,6 +449,9 @@ def resolve(project, raw_id, cut, *, source_token=None):
                 'decision_id': related[-1]['event_id'], 'financial_acceptance': False,
                 'reason': 'Уточнение отменено. Исходные карточки доступны; логическое объединение не подтверждено.'}
     payload = active['payload']
+    if active['action'] == 'correct_sources':
+        import developaid_contract_correction as correction
+        return correction.resolve(project, active, cut)
     _validate_members(project, payload['members'], payload['canonical_number'], payload['anchor_id'])
     ids = sorted({member['raw_id'] for member in payload['members']})
     versions, reviewed_archives = _source_inventory(project, cut, ids)

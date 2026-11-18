@@ -38,6 +38,10 @@ class MonitorContractRegisterBuild(MonitorContractsBuild):
 
 
 class MonitorContractsTerm(MonitorContractsBuild):
+    view: str = _CumulativeField(default="raw", pattern=r"^(raw|operational)$")
+    correction_id: str = _CumulativeField(default="", pattern=r"^([0-9a-f]{64})?$")
+    correction_guard: str = _CumulativeField(default="", pattern=r"^([0-9a-f]{64})?$")
+    logical_contract_id: str = _CumulativeField(default="", pattern=r"^([0-9a-f]{64})?$")
     contract_id: str = _CumulativeField(min_length=1, max_length=128)
     deadline: str = _CumulativeField(default="", max_length=10)
     note: str = _CumulativeField(default="", max_length=500)
@@ -62,6 +66,10 @@ class MonitorContractsHeaderDate(MonitorContractsBuild):
 
 
 class MonitorContractDocuments(MonitorContractsBuild):
+    view: str = _CumulativeField(default="raw", pattern=r"^(raw|operational)$")
+    correction_id: str = _CumulativeField(default="", pattern=r"^([0-9a-f]{64})?$")
+    correction_guard: str = _CumulativeField(default="", pattern=r"^([0-9a-f]{64})?$")
+    logical_contract_id: str = _CumulativeField(default="", pattern=r"^([0-9a-f]{64})?$")
     contract_id: str = _CumulativeField(pattern=r"^[0-9a-f]{64}$")
 
 
@@ -140,6 +148,27 @@ class MonitorContractIdentityConfirm(MonitorContractIdentityInventory):
     note: str = _CumulativeField(min_length=1, max_length=500)
 
 
+class MonitorContractCorrectionInventory(MonitorContractsBuild):
+    model_config = {"extra": "forbid", "strict": True}
+    raw_ids: list[_IdentityHash] = _CumulativeField(min_length=2, max_length=8)
+
+
+class MonitorContractCorrectionPreview(MonitorContractCorrectionInventory):
+    canonical_source_token: _IdentityHash
+    execution_token: _IdentityHash
+    price_token: _IdentityHash | None
+    documents_raw_id: _IdentityHash
+
+
+class MonitorContractCorrectionConfirm(MonitorContractCorrectionPreview):
+    expected_revision: int = _CumulativeField(ge=0, strict=True)
+    expected_decision_head: _IdentityHash
+    inventory_sha256: _IdentityHash
+    preview_sha256: _IdentityHash
+    source_tokens: list[_IdentityHash] = _CumulativeField(min_length=2, max_length=64)
+    note: str = _CumulativeField(min_length=1, max_length=500)
+
+
 class MonitorContractIdentityRevoke(MonitorContractsBuild):
     model_config = {"extra": "forbid", "strict": True}
     expected_revision: int = _CumulativeField(ge=0, strict=True)
@@ -159,6 +188,31 @@ class MonitorContractIdentityResult(MonitorCumulativeAuth):
 class MonitorContractDocumentUpload(MonitorContractDocuments):
     filename: str = _CumulativeField(default="", max_length=240)
     content_base64: str = _CumulativeField(max_length=28 * 1024 * 1024)
+
+
+class MonitorContractPdfParty(BaseModel):
+    model_config = {"extra": "forbid", "strict": True}
+    name: str = _CumulativeField(min_length=1, max_length=300)
+    designation: str = _CumulativeField(min_length=1, max_length=300)
+    page: int = _CumulativeField(ge=1, le=300, strict=True)
+    quote: str = _CumulativeField(min_length=1, max_length=2000)
+
+
+class MonitorContractPdfPreview(MonitorCumulativeProject):
+    model_config = {"extra": "forbid", "strict": True}
+    ticket: str = ""
+    content_base64: str = _CumulativeField(max_length=28 * 1024 * 1024)
+    source_sha256: str = _CumulativeField(pattern=r"^[0-9a-f]{64}$")
+    contract_number: str = _CumulativeField(min_length=1, max_length=80)
+    contract_date: str = _CumulativeField(min_length=10, max_length=10)
+    customer: MonitorContractPdfParty
+    contractor: MonitorContractPdfParty
+
+
+class MonitorContractPdfCommit(MonitorContractPdfPreview):
+    filename: str = _CumulativeField(min_length=1, max_length=240)
+    expected_revision: int = _CumulativeField(ge=0, strict=True)
+    preview_token: str = _CumulativeField(pattern=r"^[0-9a-f]{64}$")
 
 
 class MonitorContractLinkChoice(BaseModel):
@@ -261,8 +315,10 @@ class MonitorGprPhysicalSave(MonitorCumulativeProject):
 
 
 _IDENTITY_PATHS = frozenset('/monitor/contracts/identity/'+name for name in
-                            ('inventory', 'confirm', 'revoke', 'resolve', 'result'))
-_CUMULATIVE_PATHS = _IDENTITY_PATHS | frozenset({
+                            ('inventory', 'confirm', 'revoke', 'resolve', 'result',
+                             'correction-inventory', 'correction-preview', 'correct-sources'))
+_PDF_INTAKE_PATHS = frozenset('/monitor/contracts/pdf-intake/'+name for name in ('preview', 'commit', 'result'))
+_CUMULATIVE_PATHS = _IDENTITY_PATHS | _PDF_INTAKE_PATHS | frozenset({
     '/monitor/schedule/version-preview', '/monitor/schedule/version-approve',
     "/monitor/cumulative/upload", "/monitor/cumulative/result",
     "/monitor/cumulative/list", "/monitor/contracts/build",
@@ -290,9 +346,11 @@ _CUMULATIVE_PATHS = _IDENTITY_PATHS | frozenset({
 
 @app.middleware("http")
 async def monitor_cumulative_private_headers(request: Request, call_next):
-    if (request.url.path in _IDENTITY_PATHS or request.url.path == "/monitor/contracts/comparison.xlsx") and request.method == 'POST':
+    if (request.url.path in _IDENTITY_PATHS | _PDF_INTAKE_PATHS or request.url.path == "/monitor/contracts/comparison.xlsx") and request.method == 'POST':
         private = {"Cache-Control": "private, no-store"}
         cap = 1024*1024 if request.url.path == "/monitor/contracts/comparison.xlsx" else 64*1024
+        if request.url.path in _PDF_INTAKE_PATHS - {'/monitor/contracts/pdf-intake/result'}:
+            cap = 28 * 1024 * 1024 + 64 * 1024
         # Bound the stream before FastAPI parses JSON, including chunked input.
         try:
             declared = request.headers.get('content-length')
@@ -440,6 +498,17 @@ def monitor_schedule_gpr_physical_save(req: MonitorGprPhysicalSave) -> Response:
 def _monitor_cumulative_execute_raw(operation: str, payload: dict, archive: bytes = b"") -> dict:
     """Only validated calculation inputs enter the background worker."""
     from fastapi.encoders import jsonable_encoder
+    if operation.startswith('pdf-initial-'):
+        import developaid_contract_pdf_intake as pdf_intake
+        import developaid_contract_identity_store as pdf_namespace
+        import developaid_contract_files as pdf_files
+        try:
+            values = dict(payload)
+            result = (pdf_intake.preview(content=archive, **values) if operation == 'pdf-initial-preview'
+                      else pdf_intake.commit(content=archive, **values))
+            return {'ok': True, 'pdf_intake': result}
+        except (pdf_intake.IntakeProblem, pdf_namespace.IdentityProblem, pdf_files.ContractFilesProblem) as exc:
+            return {'ok': False, 'status': getattr(exc, 'status', 409), 'detail': str(exc)}
     if operation in {"finance-management-view", "finance-management-apply"}:
         import developaid_finance_management as management
         try:
@@ -464,7 +533,13 @@ def _monitor_cumulative_execute_raw(operation: str, payload: dict, archive: byte
     try:
         if operation.startswith('identity-'):
             values = dict(payload)
-            if operation == 'identity-inventory':
+            if operation in {'identity-correction-inventory', 'identity-correction-preview', 'identity-correct-sources'}:
+                import developaid_contract_correction as correction
+                function = {'identity-correction-inventory': correction.inventory,
+                            'identity-correction-preview': correction.preview,
+                            'identity-correct-sources': correction.confirm}[operation]
+                result = {'source_correction': function(**values)}
+            elif operation == 'identity-inventory':
                 result = {'identity_inventory': contract_identity.inventory(**values)}
             elif operation == 'identity-confirm':
                 result = {'identity_decision': contract_identity.confirm(**values)}
@@ -490,8 +565,20 @@ def _monitor_cumulative_execute_raw(operation: str, payload: dict, archive: byte
             # The table row shows the card's deviation, lag and forecast by the contract ГПР.
             result = {"register": contract_files.register_control(payload["project"], register, payload["cut"])}
         elif operation == "term":
+            term_correction = None
+            if payload.get('view') == 'operational':
+                register = contracts.build(payload['project'], payload['cut'], include_history=False)
+                active = next((r for r in register['rows'] if r['id'] == payload.get('logical_contract_id')), None)
+                term_correction = (active or {}).get('source_correction')
+                if (not term_correction or payload.get('correction_id') != term_correction['decision_id']
+                        or payload.get('correction_guard') != term_correction['read_guard']
+                        or payload['contract_id'] != term_correction['roles']['documents_raw_id']):
+                    raise contracts.ContractProblem('Выбор источников изменился. Обновите договор перед сохранением срока.')
             result = {"term": contracts.set_term(
-                payload["project"], payload["contract_id"], payload["deadline"], payload["note"])}
+                payload["project"], payload["contract_id"], payload["deadline"], payload["note"],
+                _locked_raw_row=contracts.find_raw_row(register, payload["contract_id"]) if term_correction else None)}
+            if term_correction:
+                result["source_correction"] = term_correction
         elif operation == "header-date":
             result = {"header_date": contracts.confirm_header_date(**payload)}
         elif operation == "source-review":
@@ -531,17 +618,36 @@ def _monitor_cumulative_execute_raw(operation: str, payload: dict, archive: byte
                     raise
                 register, rows, problem = {}, [], str(exc)
             row = next((r for r in rows if r["id"] == payload["contract_id"]), None)
+            documents_owner = payload['contract_id']
+            correction_state = None
+            if payload.get('view') == 'operational':
+                import developaid_contract_correction as correction
+                logical_id = payload.get('logical_contract_id') or payload['contract_id']
+                active = next((r for r in register.get('rows') or [] if r['id'] == logical_id), None)
+                correction_state = (active or {}).get('source_correction')
+                if not correction_state:
+                    raise contracts.ContractProblem('Исправленная карточка не представлена на выбранную дату. Обновите реестр.')
+                if (payload.get('correction_id') != correction_state['decision_id']
+                        or payload.get('correction_guard') != correction_state['read_guard']):
+                    raise contracts.ContractProblem('Выбор источников изменился. Обновите реестр перед открытием карточки.')
+                if operation != 'documents' and payload['contract_id'] != correction_state['roles']['documents_raw_id']:
+                    raise contracts.ContractProblem('Карточка документов изменилась. Обновите договор перед сохранением.')
+                row = correction.materialize(register, active)
+                documents_owner = correction_state['roles']['documents_raw_id']
+            owner_row = contracts.find_raw_row(register, documents_owner) if correction_state else row
             acts = contract_fact.unavailable(problem) if problem else contract_fact.acts(row)
             if operation == "documents":
                 ownership_state = register.get('logical_ownership',{}).get('states') or {}
                 related = {member for state in ownership_state.values() for member in state.get('member_ids') or []}
                 if row is None and payload['contract_id'] in related:
                     raise contracts.ContractProblem('Исходная карточка не представлена на выбранную дату.')
-                result = contract_files.listing(payload["project"], payload["contract_id"], payload["cut"], acts)
+                result = contract_files.listing(payload["project"], documents_owner, payload["cut"], acts)
+                if correction_state:
+                    result.update(contract_id=payload["contract_id"], documents_raw_id=documents_owner, source_correction=correction_state)
             elif operation == "document-upload":
                 if row is None:
                     raise contracts.ContractProblem("Договор не найден в данных выбранного проекта на эту дату.")
-                result = {"document": contract_files.store(payload["project"], row, payload["filename"], archive),
+                result = {"document": contract_files.store(payload["project"], owner_row, payload["filename"], archive),
                           **contract_files.listing(payload["project"], payload["contract_id"], payload["cut"], acts)}
             elif operation == "document-links":
                 result = contract_files.save_links(payload["project"], payload["contract_id"], payload["sha256"],
@@ -550,13 +656,15 @@ def _monitor_cumulative_execute_raw(operation: str, payload: dict, archive: byte
             elif operation == "document-confirm":
                 if row is None:
                     raise contracts.ContractProblem("Договор не найден в данных выбранного проекта на эту дату.")
-                result = contract_files.confirm_scan(payload["project"], row, payload["sha256"], payload["kind"],
+                result = contract_files.confirm_scan(payload["project"], owner_row, payload["sha256"], payload["kind"],
                                                      payload["values"], payload["cut"], acts)
             elif operation == "document-remove":
                 result = contract_files.remove(payload["project"], payload["contract_id"], payload["sha256"],
                                                restore=payload["restore"], cut=payload["cut"], acts=acts)
             else:
                 raise RuntimeError("unknown monitor operation")
+            if correction_state:
+                result.update(contract_id=logical_id, documents_raw_id=documents_owner, source_correction=correction_state)
         else:
             raise RuntimeError("unknown monitor operation")
         import developaid_contract_stage_profile as stage_profile
@@ -564,7 +672,7 @@ def _monitor_cumulative_execute_raw(operation: str, payload: dict, archive: byte
         if operation.startswith("document") and "comparison" in encoded:
             import developaid_contract_comparison_export as comparison_export
             encoded["comparison_export"] = comparison_export.bind_snapshot(
-                payload["project"], payload["cut"], payload["contract_id"], encoded,
+                payload["project"], payload["cut"], encoded.get("contract_id") or payload["contract_id"], encoded,
                 {key: (row or {}).get(key) or "" for key in ("contract", "contractor", "contract_date")})
         return {"ok": True, **encoded}
     except ledgers.LedgerProblem as exc:
@@ -576,13 +684,41 @@ def _monitor_cumulative_execute_raw(operation: str, payload: dict, archive: byte
 
 
 def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = b"") -> dict:
-    if operation not in {'view', 'documents', 'source-review'}:
-        return _monitor_cumulative_execute_raw(operation, payload, archive)
+    import contextlib
     import developaid_contract_ownership as ownership
+    import developaid_contract_identity as identity
+    import developaid_contract_identity_store as identity_store
+    mutation = (operation.startswith('document-') or operation == 'term') and payload.get('view') == 'operational'
     try:
-        with ownership.read_scope(payload['project'], payload['cut']):
-            return _monitor_cumulative_execute_raw(operation, payload, archive)
-    except ownership.OwnershipProblem as exc:
+        with contextlib.ExitStack() as locks:
+            if mutation:
+                locks.enter_context(identity_store.locked(payload['project']))
+                event = next((event for event in identity_store.load(payload['project'])['active']
+                              if event['event_id'] == payload.get('correction_id') and event['action'] == 'correct_sources'), None)
+                if event is None:
+                    raise ownership.OwnershipProblem('Выбор источников изменился. Обновите договор перед сохранением.')
+                ids = sorted({member['raw_id'] for member in event['payload']['members']})
+                locks.enter_context(identity._binding_locks(payload['project'], ids, correction=True))
+            if operation not in {'view', 'source-review'} and not operation.startswith('document') and not mutation:
+                return _monitor_cumulative_execute_raw(operation, payload, archive)
+            with ownership.read_scope(payload['project'], payload['cut']) as context:
+                result = _monitor_cumulative_execute_raw(operation, payload, archive)
+                if mutation and result.get('ok'):
+                    # Own native write is under all source/binding locks. Refresh
+                    # just the changed binding pins before the final read seal.
+                    for group in context.binding_pins:
+                        context.binding_pins[group] = identity_store.digest(identity.metadata_inventory(
+                            context.project, list(group), correction=group in context.corrections))
+                    selected = result.get('source_correction')
+                    if selected:
+                        selected.update(read_guard=ownership.store_guard(context.pin()), input_guard=context.pin())
+                        if result.get('comparison_export'):
+                            import developaid_contract_comparison_export as comparison_export
+                            label = result['comparison_export'].get('label') or {}
+                            result['comparison_export'] = comparison_export.bind_snapshot(
+                                payload['project'], payload['cut'], result['contract_id'], result, label)
+                return result
+    except (ownership.OwnershipProblem, identity_store.IdentityProblem) as exc:
         return {'ok': False, 'detail': str(exc)}
 
 
@@ -613,7 +749,17 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
             if not payload["project"]:
                 raise HTTPException(400, "Выберите проект.")
             archive = b""
-            if operation == "upload":
+            if operation.startswith('pdf-initial-'):
+                payload.update(req.model_dump(exclude={'key', 'session', 'ticket', 'project', 'content_base64'}))
+                if operation == 'pdf-initial-commit':
+                    payload['actor'] = owner
+                try:
+                    archive = base64.b64decode(req.content_base64, validate=True)
+                except (_binascii.Error, ValueError):
+                    raise HTTPException(400, 'PDF не передан целиком. Выберите исходный файл заново.') from None
+                if not archive or len(archive) > 20 * 1024 * 1024:
+                    raise HTTPException(413, 'Выберите непустой PDF размером не больше 20 МБ.')
+            elif operation == "upload":
                 payload.update(taken_at=_monitor_cumulative_day(req.taken_at), filename=req.filename)
                 try:
                     archive = base64.b64decode(req.content_base64, validate=True)
@@ -633,9 +779,10 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
             else:
                 payload["cut"] = _monitor_cumulative_day(req.cut)
                 if operation.startswith('identity-'):
-                    fields = req.model_dump(exclude={'key', 'session', 'ticket', 'project', 'cut'})
+                    fields = req.model_dump(exclude={'key', 'session', 'ticket', 'project', 'cut',
+                                                     'view', 'correction_id', 'correction_guard', 'logical_contract_id'})
                     payload.update(fields)
-                    if operation in {'identity-confirm', 'identity-revoke'}:
+                    if operation in {'identity-confirm', 'identity-revoke', 'identity-correct-sources'}:
                         payload['actor'] = owner
                 elif operation == "documents":
                     payload["contract_id"] = req.contract_id
@@ -672,6 +819,9 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
                 elif operation == "finance-management-apply":
                     payload.update(source_sha256=req.source_sha256, revision=req.revision,
                                    item_ids=list(req.item_ids), management_article=req.management_article, note=req.note)
+            if operation.startswith('document') or operation == 'term':
+                payload.update(view=getattr(req, 'view', 'raw'), correction_id=getattr(req, 'correction_id', ''),
+                               correction_guard=getattr(req, 'correction_guard', ''), logical_contract_id=getattr(req, 'logical_contract_id', ''))
             # The store persists only the fingerprint, not these private inputs.
             # A fresh click must not reuse another running view of older data.
             # Retrying the same admission keeps its exact ticket and fingerprint.
@@ -785,6 +935,21 @@ def monitor_contract_identity_confirm(req: MonitorContractIdentityConfirm) -> Re
     return _monitor_cumulative_job(req, family='contract-identity', operation='identity-confirm')
 
 
+@app.post('/monitor/contracts/identity/correction-inventory', include_in_schema=False)
+def monitor_contract_correction_inventory(req: MonitorContractCorrectionInventory) -> Response:
+    return _monitor_cumulative_job(req, family='contract-identity', operation='identity-correction-inventory')
+
+
+@app.post('/monitor/contracts/identity/correction-preview', include_in_schema=False)
+def monitor_contract_correction_preview(req: MonitorContractCorrectionPreview) -> Response:
+    return _monitor_cumulative_job(req, family='contract-identity', operation='identity-correction-preview')
+
+
+@app.post('/monitor/contracts/identity/correct-sources', include_in_schema=False)
+def monitor_contract_correct_sources(req: MonitorContractCorrectionConfirm) -> Response:
+    return _monitor_cumulative_job(req, family='contract-identity', operation='identity-correct-sources')
+
+
 @app.post('/monitor/contracts/identity/revoke', include_in_schema=False)
 def monitor_contract_identity_revoke(req: MonitorContractIdentityRevoke) -> Response:
     return _monitor_cumulative_job(req, family='contract-identity', operation='identity-revoke')
@@ -866,6 +1031,21 @@ def monitor_contracts_documents(req: MonitorContractDocuments) -> Response:
     return _monitor_cumulative_job(req, family="contracts", operation="documents")
 
 
+@app.post('/monitor/contracts/pdf-intake/preview', include_in_schema=False)
+def monitor_contract_pdf_preview(req: MonitorContractPdfPreview) -> Response:
+    return _monitor_cumulative_job(req, family='contracts-pdf', operation='pdf-initial-preview')
+
+
+@app.post('/monitor/contracts/pdf-intake/commit', include_in_schema=False)
+def monitor_contract_pdf_commit(req: MonitorContractPdfCommit) -> Response:
+    return _monitor_cumulative_job(req, family='contracts-pdf', operation='pdf-initial-commit')
+
+
+@app.post('/monitor/contracts/pdf-intake/result', include_in_schema=False)
+def monitor_contract_pdf_result(req: MonitorCumulativeResult) -> Response:
+    return _monitor_cumulative_job(req, family='contracts-pdf')
+
+
 @app.post("/monitor/contracts/comparison.xlsx", include_in_schema=False)
 def monitor_contract_comparison_xlsx(req: MonitorContractComparisonExport) -> Response:
     private = {"Cache-Control": "private, no-store"}
@@ -880,6 +1060,7 @@ def monitor_contract_comparison_xlsx(req: MonitorContractComparisonExport) -> Re
         cached = store.poll(req.ticket, owner, profile)
         meta, comparison, rows = comparison_export.select_snapshot(
             cached, project, cut, req.contract_id, req.revision, req.selected_tokens)
+        comparison_export.require_current_sources(meta)
         raw = comparison_export.workbook(meta, comparison, rows, query=req.query, filter=req.filter)
         return Response(raw, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         headers={**private, "Content-Disposition":

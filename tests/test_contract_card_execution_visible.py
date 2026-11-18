@@ -146,6 +146,28 @@ def test_logical_parent_does_not_claim_an_unselected_source_or_resurrect_raw_mon
 
 
 @pytest.mark.parametrize('width', [390, 1440])
+def test_active_logical_lookup_and_explicit_raw_lookup_stay_distinct(no_plan, width):
+    from playwright.sync_api import expect
+
+    original = summary_row()
+    parent = summary_row('unknown', None, None)
+    parent.update(source_kind='logical_ownership', amount=None, source_date=None,
+                  raw_observations=[original], financial_sources=[], reported_performance_sources=[])
+    with execution_page(width, parent, no_plan) as (page, _, errors):
+        values = page.evaluate('''id => ({
+            activeKind: contractById(id).source_kind,
+            activeAmount: contractById(id).amount,
+            rawKind: contractById(id,true).source_kind,
+            rawAmount: contractById(id,true).amount
+        })''', parent['id'])
+        assert values == {'activeKind': 'logical_ownership', 'activeAmount': None,
+                          'rawKind': original['source_kind'], 'rawAmount': original['amount']}
+        expect(visible_execution(page).locator('.contract-main-money')).to_have_text('—')
+        expect(visible_execution(page)).not_to_contain_text('27,5%')
+        assert not errors
+
+
+@pytest.mark.parametrize('width', [390, 1440])
 def test_native_physical_rows_are_accessible_without_a_comparison_plan(no_plan, width):
     from playwright.sync_api import expect
 
