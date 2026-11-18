@@ -108,7 +108,7 @@ def _percent(value) -> str:
 
 
 def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "", filter: str = "all") -> bytes:
-    """Six visible columns, native numbers/dates and adjacent visible qualifications."""
+    """Seven visible columns, native numbers/dates and adjacent visible qualifications."""
     if filter not in FILTERS or len(rows) > MAX_ROWS:
         raise ExportProblem("Не удалось определить строки для выгрузки.")
     book = Workbook()
@@ -122,7 +122,7 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
         values = [_text(value) if isinstance(value, str) else value for value in values]
         sheet.append(values)
         row_number += 1
-        cells = [sheet.cell(row_number, column) for column in range(1, 7)]
+        cells = [sheet.cell(row_number, column) for column in range(1, 8)]
         for cell in cells:
             if isinstance(cell.value, str):
                 cell.value = _text(cell.value)
@@ -134,7 +134,7 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
 
     def note(text):
         append([_text(text)])
-        sheet.merge_cells(start_row=row_number, start_column=1, end_row=row_number, end_column=6)
+        sheet.merge_cells(start_row=row_number, start_column=1, end_row=row_number, end_column=7)
 
     label = meta.get("label") or {}
     note("Накопленные план и факт по работам договора")
@@ -171,10 +171,11 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
                   comparison.get("weights")]:
         if value:
             note(value)
+    note("Всего по договору — полный объём позиции по действующей редакции договора в единицах строки.")
     note("Пустая числовая ячейка означает неизвестное значение, а не ноль. "
          "Прогноз относится к сопоставленным работам и не меняет срок ввода проекта.")
     note("Версия таблицы: " + meta["revision"])
-    append(["Работа / единица", "План на дату", "Факт", "Отклонение", "Срок работы", "Прогноз окончания"])
+    append(["Работа / единица", "Всего по договору", "План на дату", "Факт", "Отклонение", "Срок работы", "Прогноз окончания"])
     header = row_number
     for cell in sheet[header]:
         cell.font = Font(bold=True, color="FFFFFF")
@@ -200,15 +201,16 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
                      ' ' + _text(scope.get('unit')) + ' · ' + origin
                      if scope.get('quantity') is not None else '\nПолный объём конструкции в этой редакции не указан.')
             name += '\nВыполнение — по отдельным операциям.'
-        cells = append([name, _number(row.get("planned")), _number(row.get("fact")), _number(row.get("deviation")),
+        cells = append([name, _number(row.get("contract_total")), _number(row.get("planned")), _number(row.get("fact")), _number(row.get("deviation")),
                         _date(row.get("due")), _date(row.get("finished") or row.get("forecast_finish"))])
-        for cell in cells[1:4]:
+        for cell in cells[1:5]:
             cell.number_format = '#,##0.00" ₽"' if row.get("basis") == "money" else "#,##0.###"
         movement = (f"Отставание: {row['lag_days']} дн." if row.get("lag_days", 0) else
                     f"Опережение: {row['ahead_days']} дн." if row.get("ahead_days", 0) else
                     {"done": "Работа завершена.", "on_plan": "По плану."}.get(row.get("state"), ""))
         remarks = ["\n".join(_text(v) for v in [row.get("money_fallback"), row.get("reason"),
                    "Готовность: " + _percent(row["readiness"]) if row.get("readiness") is not None else ""] if v),
+                   "Полный объём неизвестен." if row.get("contract_total") is None else "",
                    "План неизвестен." if row.get("planned") is None else "",
                    ("Факт неизвестен. " if row.get("fact") is None else "") +
                    ("Выполнение плана: " + _percent(row["plan_done"]) if row.get("plan_done") is not None else ""),
@@ -222,7 +224,7 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
         if any(remarks):
             for cell in append(remarks):
                 cell.font = Font(size=10, color="526579")
-    for column, width in zip("ABCDEF", [48, 22, 24, 26, 23, 30]):
+    for column, width in zip("ABCDEFG", [48, 22, 22, 24, 26, 23, 30]):
         sheet.column_dimensions[column].width = width
     sheet.freeze_panes = f"B{header + 1}"
     sheet.print_title_rows = f"{header}:{header}"
