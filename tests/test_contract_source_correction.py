@@ -162,6 +162,8 @@ def test_browser_opens_canonical_card_and_sends_selected_owner_with_guard(pair, 
         expect(page.locator('#contractsRows tr[data-contract-id]')).to_have_count(1)
         expect(page.locator('#contractsRows')).not_to_contain_text('Исходные карточки и их данные')
         expect(page.locator('#contractsRows')).not_to_contain_text('Сохранённые КС объединены')
+        expect(page.locator('#contractsRows .contract-carried')).to_have_text(
+            'Данные на '+'.'.join(reversed(row['source_date'].split('-'))))
         page.locator('.contract-open').click()
         expect(page.locator('#contractDialogTitle')).to_contain_text('SOURCE-A')
         expect(page.locator('#contractCardSummary')).to_contain_text('1\u00a0500 ₽')
