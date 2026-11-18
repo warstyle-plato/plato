@@ -280,6 +280,11 @@ def test_the_book_counts_what_the_engine_counts(phasing) -> None:
     assert meta["missing"] == [], meta["missing"]
     book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
     evaluator = Evaluator(book)
+    assert x["land_right"]=="ownership"
+    assert meta["land_rent"]["status"]=="not_applicable"
+    assert meta["land_rent"].get("land_exposures",[])==bundle["consolidated"]["land_rent"].get("land_exposures",[])
+    if "Аренда ЗУ" in book:
+        assert evaluator.cell("Аренда ЗУ","B19")==0
     clean_x, clean_t = _vavilov()
     clean_t["underground_parking"].update(units=0, gns=0, total_area=0)
     clean_x.update(underground_manual_spaces=0, underground_manual_gns_sqm=0)

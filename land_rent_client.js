@@ -370,7 +370,7 @@ function landRentSummaryHtml(){
  const preliminary=r&&r.status!=='not_applicable'&&r.financial_complete!==true;
  let html='<div class="kpis lr-hero"><div class="kpi"><span class="lr-eyebrow">Начислено по ставкам:</span><b class="lr-amount" title="'+escapeHtml(total==null?'Сумма ещё не определена':new Intl.NumberFormat('ru-RU',{maximumFractionDigits:2}).format(total)+' ₽')+'">'+escapeHtml(landRentMoney(total))+'</b>';
  if(total==null&&r?.known_total>0)html+='<div class="lr-note">Известная часть: '+escapeHtml(landRentMoney(r.known_total))+'</div>';
- html+='</div><div class="kpi lr-cutoff"><span>Аренда учитывается до</span><b>'+escapeHtml(landRentDate(r?.rve))+'</b><small>'+(r?.cutoff_origin==='exposures'?'Регистрация после ввода или выход из владения; ввод и ПФ не меняются':r?.cutoff_origin==='manual'?'Дата, которую вы указали':'Сценарная граница арендного расчёта')+'</small></div></div>';
+ html+='</div><div class="kpi lr-cutoff"><span>Аренда учитывается до</span><b>'+escapeHtml(landRentDate(r?.rve))+'</b><small>'+(r?.cutoff_origin==='exposures'?'Регистрация жилья или выход из владения':r?.cutoff_origin==='manual'?'Дата, которую вы указали':'Сценарная граница арендного расчёта')+'</small></div></div>';
  if(!r)html+='<p class="note warning lr-status">Введите условия аренды. Результат появится после расчёта.</p>';
  else if(r.status==='not_applicable')html+='<p class="lr-status">'+escapeHtml(r.source||'Аренда не применяется')+'</p>';
  else if(preliminary)html+='<div class="note warning lr-status"><b>Предварительный расчёт</b><span>'+escapeHtml(landRentPrimaryReason(r))+'</span><a href="#landRentEditor" class="lr-link" onclick="event.preventDefault();landRentOpenConditions(this)">Условия и уточнения</a></div>';
@@ -497,7 +497,7 @@ function renderLandRentEditor(){
  const advancedTitle=document.createElement('summary');advancedTitle.textContent='Уточнить расчёт';advanced.appendChild(advancedTitle);
  note(advanced,'Необязательно для предварительной оценки. Меняйте только условия своего договора; введённые значения сохраняются.');
  const detail=(key,label)=>{const box=document.createElement('details');box.className='lr-detail';box.dataset.landRentDetail=key;box.open=open.has(key);const summary=document.createElement('summary');summary.textContent=label;box.appendChild(summary);advanced.appendChild(box);return box};
- const lead=note(root,'Аренда до регистрации жилья или выхода из владения нежилым объектом. Плата за ВРИ учитывается отдельно.');lead.className='lr-note lr-intro';
+ const lead=note(root,'Аренда до регистрации жилья или выхода из владения объектом. Плата за ВРИ учитывается отдельно.');lead.className='lr-note lr-intro';
  note(root,territory.label+' · '+territory.source);
  const mode=inputs.land_rent_mode||'unspecified',preset=LAND_RENT_SPEC.presets[mode];
  if(String(inputs.land_right||'ownership')==='ownership'){
@@ -507,12 +507,12 @@ function renderLandRentEditor(){
  if(preset){
   const guide=document.createElement('div');guide.className='lr-defaults';
   const heading=document.createElement('b');heading.textContent=preset.region!==territory.region?'Сохранённые условия: проверьте регион':territory.region==='msk'?'Москва: расчёт по ставкам региона':'Подмосковье: расчёт по ставке региона';guide.appendChild(heading);
-  note(guide,'Кадастр — из ЕГРН; ставки — '+preset.short_source+'. Аренда начисляется помесячно до регистрации жилья или выхода из владения объектом. Срок можно изменить в «Уточнить расчёт». Ваши изменения сохраняются.');
+  note(guide,'Кадастр — из ЕГРН; ставки — '+preset.short_source+'. Срок и условия договора меняются в «Уточнить расчёт»; ваши значения сохраняются.');
   if(inputs.land_rent_simple_estimate===true&&mode==='mo_housing_new_2026')note(guide,'Для пустых будущих лет принята индексация 0%: это оценка в текущих ценах, а не утверждённая аренда. Сохранённые индексы не меняются.');
   if(preset.region===territory.region&&mode==='mo_housing_new_2026'&&inputs.land_rent_simple_estimate!==true){
    const simple=document.createElement('button');simple.type='button';simple.className='tep-refill';simple.textContent='Оценить без будущей индексации';simple.onclick=landRentEnableSimpleEstimate;guide.appendChild(simple);
   }
-  note(guide,'Если стоимость не подставилась, впишите её ниже. Договор и особые условия — в «Уточнить расчёт».');root.appendChild(guide);
+  root.appendChild(guide);
  }
  const basis=fields(root);
  if(mode!=='unspecified'&&mode!=='not_applicable'){

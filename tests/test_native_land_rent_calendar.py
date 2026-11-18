@@ -60,6 +60,19 @@ def _hotel_evaluate(w):
     return evaluator
 
 
+def _daily_rent(end):
+    """Independent Actual/Actual oracle on exact Jan-17 contract years."""
+    start=date(2027,1,17)
+    total=0.0
+    day=start
+    while day<end:
+        year=day.year-(day<date(day.year,1,17))
+        denominator=(date(year+1,1,17)-date(year,1,17)).days
+        total+=1_000_000/denominator
+        day+=timedelta(days=1)
+    return total
+
+
 @pytest.mark.parametrize("kind", ["hotel", "office", "retail"])
 def test_actual_native_export_conserves_day17_rent_and_finance(kind):
     x, t = _project(kind)
@@ -67,11 +80,30 @@ def test_actual_native_export_conserves_day17_rent_and_finance(kind):
     content, _, meta = core.build_project_workbook(x, t, [], {}, project_name="Synthetic day17")
     w = openpyxl.load_workbook(io.BytesIO(content))
     assert meta.get("hotel_book") if kind == "hotel" else meta.get("nonres_book")
-    assert result["land_rent"]["construction_total"] == pytest.approx(2e6)
-    assert result["land_rent"]["rve"] == "2029-01-17"
+    rent=result["land_rent"]
+    commissioning=date(2029,1,17)
+    prefix='hotel' if kind=='hotel' else 'offices' if kind=='office' else 'retail'
+    hold_years=int(x[prefix+'_hold_years'])
+    lease_exit=date(commissioning.year+hold_years,1,1)
+    expected=_daily_rent(lease_exit)
+    assert rent["derived_rve"] == commissioning.isoformat()
+    assert rent["rve"] == lease_exit.isoformat()
+    assert rent["land_exposures"][0]["commissioning"]==commissioning.isoformat()
+    assert rent["land_exposures"][0]["lease_exit"]==lease_exit.isoformat()
+    assert rent["land_exposures"][0]["share"]==1
+    assert rent["land_exposures"][0]["retained"]
+    assert result["capex"]["land_rent"]==pytest.approx(2e6)
+    assert rent["construction_total"]==pytest.approx(expected,abs=.01)
+    assert rent["operating_cash_total"]==pytest.approx(expected-2e6,abs=.01)
     evaluator = _hotel_evaluate(w) if kind == "hotel" else ow.evaluate(w)
     assert _date_value(evaluator.cell(native.SHEET, "B14")) == date(2027, 1, 17)
-    assert evaluator.cell(native.SHEET, "B19") * 1e6 == pytest.approx(result["capex"]["land_rent"])
+    assert evaluator.cell(native.SHEET, "B19") * 1e6 == pytest.approx(expected,abs=.01)
+    assert _date_value(evaluator.cell(native.SHEET,"B15"))==lease_exit
+    # The same exact-day schedule crosses the capex / operation boundary once.
+    for label,amount in (("Аренда в разработке: платежи",2e6),
+                         ("Операционная аренда: платежи",expected-2e6)):
+        row=next(r for r in range(1,w[native.SHEET].max_row+1) if w[native.SHEET][f"A{r}"].value==label)
+        assert evaluator.cell(native.SHEET,f"B{row}")*1e6==pytest.approx(amount,abs=.01)
     assert evaluator.cell(native.SHEET, "D3") == (date(2027, 1, 1)-date(1899, 12, 30)).days
     if kind == "hotel":
         checks = w[hw.CHECK_SHEET]

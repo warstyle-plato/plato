@@ -2549,6 +2549,12 @@ def _build_project_workbook(
         _rent_end = _v4_excel_serial(_rent.get("project_end")) or 0
         _rent_meta = copy.deepcopy(_rent)
         _rent_meta["workbook_supported"] = False
+        # An owned parcel has no lease cash flow. Its planning exposures can
+        # include empty queues, which must not trigger lease-writer limits.
+        # Keep the authoritative observation in metadata; only the writer's
+        # non-applicable view omits those unused exposure calendars.
+        if _rent.get("status") == "not_applicable":
+            _rent = {**_rent, "land_exposures": []}
         _rent_exposures = _rent.get("land_exposures") or []
         if any(item.get("retained") for item in _rent_exposures):
             raise ValueError("Аренда ЗУ: общий шаблон v4 пока не связывает операционную аренду удерживаемых объектов с их доходным расчётом. Нужна нативная книга офиса или гостиницы; смешанный проект с такой арендой пока не выгружается.")
