@@ -232,23 +232,29 @@ def preview(project, content, *, source_sha256, contract_number, contract_date, 
                 'financial_acceptance': False}
 
 
-def _verify_native_source(project, source, content):
+def _verify_native_source(project, source, content, *, allow_missing=False):
     """Caller holds the native card lock; cached metadata cannot prove its own origin."""
     import developaid_contract_files as files
     folder = _path(_root(project), 'contract_documents', source['contract_id'])
     sha = source['source_sha256']
     persisted = namespace.read_bytes(_path(folder, sha+'.pdf'), documents_limit())
-    _need(persisted is not None and persisted == content and hashlib.sha256(persisted).hexdigest() == sha,
+    _need((persisted is None and allow_missing) or
+          (persisted == content and hashlib.sha256(persisted).hexdigest() == sha),
           'Сохранённый оригинал PDF не совпал с проверенным источником; карточка не опубликована.', 503)
     metadata = namespace.read_bytes(_path(folder, sha+'.json'), 16 * 1024 * 1024)
-    _need(metadata is not None and isinstance(namespace.strict_json(metadata), dict),
+    _need(metadata is not None or allow_missing,
           'Сохранённый разбор PDF недоступен; карточка не опубликована.', 503)
-    record = files._current(folder, sha)
-    expected = files._record(sha, record.get('filename', ''), content, record.get('uploaded_at', ''))
-    operational = {'filename', 'uploaded_at', 'removed_at'}
-    _need(namespace.canonical({key: value for key, value in record.items() if key not in operational}) ==
-          namespace.canonical({key: value for key, value in expected.items() if key not in operational}),
-          'Сохранённый разбор PDF не совпал с разбором проверенного источника; карточка не опубликована.', 503)
+    if metadata is not None:
+        record = namespace.strict_json(metadata)
+        _need(isinstance(record, dict), 'Сохранённый разбор PDF не подтверждён.', 503)
+        if persisted is not None:
+            record = files._current(folder, sha)
+        expected = files._record(sha, record.get('filename', ''), content, record.get('uploaded_at', ''))
+        operational = {'filename', 'uploaded_at', 'removed_at'}
+        _need(namespace.canonical({key: value for key, value in record.items() if key not in operational}) ==
+              namespace.canonical({key: value for key, value in expected.items() if key not in operational}),
+              'Сохранённый разбор PDF не совпал с разбором проверенного источника; карточка не опубликована.', 503)
+    return persisted is None, metadata is None
 
 
 def commit(project, content, *, filename, expected_revision, preview_token, actor, **claims):
@@ -296,8 +302,16 @@ def commit(project, content, *, filename, expected_revision, preview_token, acto
         _need(len(packed) <= MAX_REGISTRY_BYTES, 'Достигнут предел реестра происхождения PDF.', 413)
         with files._locked(folder):
             if (folder/(evidence['source_sha256']+'.pdf')).exists() or (folder/(evidence['source_sha256']+'.json')).exists():
-                _verify_native_source(project, source, content)
-            files.store(project, {'id': identifier, **evidence['identity']}, filename, content)
+                missing_pdf, missing_json = _verify_native_source(project, source, content, allow_missing=True)
+                # Only this unpublished branch may finish an interrupted pair.
+                # Existing components and position choices are never replaced.
+                if missing_pdf:
+                    files._write(folder/(source['source_sha256']+'.pdf'), content)
+                if missing_json:
+                    files._json(folder/(source['source_sha256']+'.json'),
+                                files._record(source['source_sha256'], source['filename'], content, files._now()))
+            else:
+                files.store(project, {'id': identifier, **evidence['identity']}, filename, content)
             _verify_native_source(project, source, content)
             namespace.assert_namespace(project)
             files._write(_path(_root(project), REGISTRY), packed)
