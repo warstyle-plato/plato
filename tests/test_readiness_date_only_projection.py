@@ -1,4 +1,4 @@
-"""Only one approved, source-audited date correction preserves saved choices."""
+"""Approved, source-audited date corrections preserve saved choices."""
 import copy
 import datetime as dt
 import io
@@ -171,7 +171,7 @@ def test_semantic_and_provenance_changes_never_carry(site,edits):
     assert 'Перенос долей' in state['reason']
 
 
-def test_second_hop_and_arbitrary_replacement_do_not_map_a_profile(site):
+def test_verified_second_hop_preserves_profile_but_single_edge_does_not_skip_parent(site):
     original=save_profile(site)
     approve(prepared(site))
     current=monitor._working_baseline_state(PROJECT)
@@ -180,7 +180,15 @@ def test_second_hop_and_arbitrary_replacement_do_not_map_a_profile(site):
             'value':'26.02.2027','note':'Another synthetic correction'}])['data']
     approve(second)
     state=monitor.build(PROJECT,'2026-11-16')['schedule']['readiness']
-    assert state['project']['progress'] is None and 'profile_source_carry' not in state
+    # Intentional capability change: a second fully audited edge now carries
+    # decisions. Arbitrary replacements remain rejected in the separate case.
+    assert state['project']['progress'] is not None
+    assert len(state['profile_source_carry']['lineage_steps']) == 2
+    assert state['profile_sha256'] == original['profile_sha256']
+    latest = monitor._working_baseline_state(PROJECT)
+    with pytest.raises(carry.DateCarryProblem):
+        carry.verified_transition(PROJECT, latest['source_sha256'],
+                                  expected_parent_sha=original['profile']['full_source_sha256'])
     with pytest.raises(ValueError):carry.project(PROJECT,original['profile'],current['source_sha256'])
 
 

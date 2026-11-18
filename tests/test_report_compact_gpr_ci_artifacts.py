@@ -1,6 +1,6 @@
 """Public synthetic PAGE/PDF review artifacts; no stored projects or source files.
 
-All names, IDs, dates, amounts and source hashes below are fictional literals.
+All inputs are fictional literals from this module and public test fixtures.
 Only this module writes .ci-ui-review/gpr-synthetic; never copy private captures.
 """
 from __future__ import annotations
@@ -19,6 +19,92 @@ PROJECT = 'Вымышленный квартал — публичный CI-пр�
 CUT = '2031-05-12'
 FINISH = '2032-08-20'
 ORIGIN = 'https://gpr-synthetic.invalid'
+
+
+def _axis_page_literal():
+    """Read the real PAGE script without importing the application for Node."""
+    import ast
+    module = ast.parse((ROOT / 'developaid_monitor_page.py').read_text())
+    assignment = next(node for node in module.body if isinstance(node, ast.Assign)
+                      and any(isinstance(target, ast.Name) and target.id == 'MONITOR_PAGE'
+                              for target in node.targets))
+    return next(node.value for node in ast.walk(assignment.value)
+                if isinstance(node, ast.Constant) and isinstance(node.value, str)
+                and len(node.value) > 100_000)
+
+
+def _axis_node(code):
+    import os
+    import shutil
+    import subprocess
+    node = shutil.which('node')
+    assert node, 'Node is required for the native axis lifecycle guard'
+    try:
+        result = subprocess.run([node, '--single-threaded', '--v8-pool-size=1'], input=code,
+                                text=True, capture_output=True, timeout=30,
+                                env={**os.environ, 'UV_THREADPOOL_SIZE': '1'})
+    except subprocess.TimeoutExpired as error:
+        pytest.fail('Native axis Node timed out; stdout='+repr(error.stdout)[-1000:]
+                    +'; stderr='+repr(error.stderr)[-1000:])
+    assert result.returncode == 0, result.stderr
+    return result.stdout
+
+
+def test_native_monitor_axis_script_compiles_and_layout_preserves_anchors_and_lifecycle():
+    """Execute actual PAGE functions against measured-box/event counterexamples."""
+    page = _axis_page_literal()
+    source = page[page.index('let ganttAxisCleanup=null;'):
+                  page.index("window.addEventListener('pagehide',clearGanttAxisLayout);")]
+    script = next(script for script in re.findall(r'<script[^>]*>(.*?)</script>', page, re.S)
+                  if 'function renderGantt(' in script)
+    result = _axis_node('''const vm=require('node:vm');
+        new vm.Script('''+json.dumps(script)+''');
+        const assert=require('node:assert/strict');
+        class Events{constructor(){this.events=new Map()}
+          addEventListener(k,f){if(!this.events.has(k))this.events.set(k,new Set());this.events.get(k).add(f)}
+          removeEventListener(k,f){this.events.get(k)?.delete(f)}
+          emit(k){for(const f of this.events.get(k)||[])f()}
+          count(){return [...this.events.values()].reduce((n,s)=>n+s.size,0)}}
+        globalThis.window=new Events();const details=new Events();
+        let frames=new Map(),next=0,current;
+        globalThis.requestAnimationFrame=f=>{frames.set(++next,f);return next};
+        globalThis.cancelAnimationFrame=id=>frames.delete(id);
+        const flush=()=>{const pending=[...frames.values()];frames.clear();pending.forEach(f=>f())};
+        const observers=[];
+        globalThis.ResizeObserver=class{constructor(f){this.f=f;this.active=false;observers.push(this)}observe(){this.active=true}disconnect(){this.active=false}};
+        globalThis.$=id=>id==='gprCalendar'?details:{querySelector:()=>current};
+        globalThis.getComputedStyle=el=>({display:el.visible?'block':'none'});
+        class Label{constructor(position,width,visible=true){this.dataset={axisPosition:String(position),axisDate:'2044-01-15'};this.style={left:position+'%'};this.natural=width;this.visible=visible;this.hidden=false}
+          getBoundingClientRect(){return {width:Math.min(this.natural,this.axis.width),height:16*Math.ceil(this.natural/this.axis.width)}}}
+        class Axis{constructor(width){this.width=width;this.style={};this.dataset={};this.isConnected=true;
+          this.ticks=Array.from({length:7},(_,i)=>new Label(i/6*100,76));
+          this.labels=[new Label(0,130),new Label(1,130,false),new Label(99,150),new Label(99,140),new Label(100,900)];delete this.labels.at(-1).dataset.axisPosition;
+          [...this.ticks,...this.labels].forEach(el=>el.axis=this)}
+          getBoundingClientRect(){return {width:this.width}}
+          querySelectorAll(s){assert.ok(['.tick','.axis-lab'].includes(s));return s==='.tick'?this.ticks:this.labels}}
+        '''+source+'''
+        assert.match(ganttAxisTickLabel(new Date('2044-01-15T12:00:00Z')),/2044/);
+        const counts=[];
+        for(const width of [840,364,240,81,100]){
+          const axis=new Axis(width),anchors=JSON.stringify([...axis.ticks,...axis.labels].map(e=>[e.style.left,e.dataset]));
+          layoutGanttAxis(axis);const boxes=[...axis.ticks.filter(e=>!e.hidden),...axis.labels.filter(e=>e.visible)].map(e=>{
+            const x=width*parseFloat(e.style.left)/100+parseFloat(e.style.transform.slice(11));
+            return {left:x,right:x+e.getBoundingClientRect().width,top:parseFloat(e.style.top),bottom:parseFloat(e.style.top)+e.getBoundingClientRect().height}});
+          for(const a of boxes){assert.ok(a.left>=-0.01&&a.right<=width+0.01);for(const b of boxes)if(a!==b)assert.ok(a.right<=b.left||b.right<=a.left||a.bottom<=b.top||b.bottom<=a.top)}
+          assert.equal(JSON.stringify([...axis.ticks,...axis.labels].map(e=>[e.style.left,e.dataset])),anchors);
+          counts.push(axis.ticks.filter(e=>!e.hidden).length);
+        }
+        assert.ok(counts[0]>counts[2]&&counts[2]>=2);
+        assert.equal(counts[3],1);assert.equal(counts[4],1);
+        current=new Axis(400);const old=current;observeGanttAxis();const stale=[...frames.values()][0];const prior=observers.at(-1);
+        current=new Axis(240);observeGanttAxis();assert.equal(prior.active,false);assert.equal(frames.size,1);stale();assert.equal(old.dataset.axisLayout,undefined);flush();
+        assert.equal(current.dataset.axisLayout,'ready');assert.equal(observers.filter(o=>o.active).length,1);
+        current.width=600;window.emit('resize');details.emit('toggle');assert.equal(frames.size,1);flush();assert.equal(current.dataset.axisLayoutWidth,'600');
+        window.emit('resize');clearGanttAxisLayout();assert.equal(frames.size,0);assert.equal(window.count(),0);assert.equal(details.count(),0);assert.equal(observers.filter(o=>o.active).length,0);
+        prior.f();stale();assert.equal(frames.size,0);
+        console.log(JSON.stringify({counts,anchorsPreserved:true,staleCallbacksIgnored:true,cleanup:true}));
+    ''')
+    assert json.loads(result)['cleanup'] is True
 
 
 def synthetic_report(project_finish=FINISH):
@@ -92,6 +178,151 @@ def _body_and_financial_check():
 def _output():
     OUTPUT.mkdir(parents=True, exist_ok=True)
     return OUTPUT
+
+
+def _public_monitor_axis_view():
+    from test_gpr_work_forecast_page import view
+    value = view('profile')  # Fictional public fixture; no stored source input.
+    value['project'] = PROJECT
+    # Deliberately coincident fictional milestones exercise separate rows.
+    value['schedule']['owner_rnv'] = dict(
+        date=value['schedule']['work_forecast']['summary']['finish'], source='owner_decision')
+    return value
+
+
+def test_public_monitor_axis_fixture_keeps_one_source_bound_work_date():
+    from developaid_gpr_work_forecast import for_schedule
+    value = _public_monitor_axis_view()
+    actual = for_schedule(value['schedule'], value['cut'])
+    assert actual == value['schedule']['work_forecast']
+    assert actual['state'] == 'known' and actual['project']['forecast']['covered'] > 0
+    assert value['schedule']['owner_rnv']['date'] == actual['summary']['finish']
+
+
+def test_monitor_axis_responsive_columns_leave_a_readable_plot_budget():
+    """Static width budget supplements genuine641/700px geometry below."""
+    css = _axis_page_literal().split('</style>', 1)[0]
+    rule = re.search(r'@media\(min-width:641px\) and \(max-width:1100px\)\{'
+                     r'#gantt \.g-axis,#gantt \.g-row\{grid-template-columns:'
+                     r'([0-9]+)px minmax\(([0-9]+)px,1fr\) ([0-9]+)px\}\}', css)
+    assert rule, 'The narrow plot must share bounded responsive columns with its rows'
+    left, plot_minimum, right = map(int, rule.groups())
+    padding = int(re.search(r'\.wrap\{[^}]*padding:([0-9]+)px', css)[1])
+    border = int(re.search(r'\.card\{[^}]*border:([0-9]+)px', css)[1])
+    for viewport in (641, 700):
+        available = viewport - 2 * padding - 2 * border
+        assert available >= left + plot_minimum + right
+        assert available - left - right >= plot_minimum >= 240
+
+
+def _monitor_axis_geometry(page):
+    return page.evaluate('''()=>{
+      const axis=document.querySelector('#gantt .axis'),r=axis.getBoundingClientRect();
+      const visible=e=>e.checkVisibility()&&!e.hidden;
+      const inspect=e=>{const b=e.getBoundingClientRect(),range=document.createRange();range.selectNodeContents(e);
+        return {text:e.textContent,date:e.dataset.axisDate||null,anchor:e.style.left,
+          left:b.left,right:b.right,top:b.top,bottom:b.bottom,font:parseFloat(getComputedStyle(e).fontSize),
+          textRects:[...range.getClientRects()].map(x=>({left:x.left,right:x.right,top:x.top,bottom:x.bottom}))}};
+      return {width:innerWidth,axis:{left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width},
+        ticks:[...axis.querySelectorAll('.tick')].filter(visible).map(inspect),
+        milestones:[...axis.querySelectorAll('.axis-lab')].filter(visible).map(inspect),
+        overview:[...document.querySelectorAll('.gpr-overview-axis span')].filter(visible).map(inspect),
+        horizontalOverflow:document.documentElement.scrollWidth>innerWidth,
+        observers:window.publicAxisObservers,
+        sourceSignature:{domain:[axis.parentElement.dataset.domainStart,axis.parentElement.dataset.domainEnd],
+          ticks:[...axis.querySelectorAll('.tick')].map(e=>({time:e.dataset.axisTime,anchor:e.style.left})),
+          marks:[...document.querySelectorAll('#gantt .cut,#gantt .owner-rnv-plan,#gantt .gpr-scoped-finish,#gantt .planbar,#gantt .factbar,#gantt .gpr-forecast-strip,#gantt .gpr-forecast-end')].map(e=>({kind:e.className,date:e.dataset.date||e.dataset.finish||e.title,left:e.style.left,width:e.style.width})),
+          work:JSON.stringify(currentView.schedule.work_forecast)}};
+    }''')
+
+
+def _assert_monitor_axis_geometry(geometry):
+    axis = geometry['axis']
+    assert axis['width'] > 0 and not geometry['horizontalOverflow']
+    assert len(geometry['ticks']) >= 2
+    assert all(re.search(r'\b[0-9]{4}\b', tick['text']) for tick in geometry['ticks'])
+    assert len(geometry['milestones']) == 3
+    boxes = geometry['ticks'] + geometry['milestones']
+    for box in boxes:
+        assert box['font'] >= 12
+        assert axis['left']-1 <= box['left'] < box['right'] <= axis['right']+1
+        assert axis['top']-1 <= box['top'] < box['bottom'] <= axis['bottom']+1
+        assert all(axis['left']-1 <= text['left'] <= text['right'] <= axis['right']+1
+                   for text in box['textRects'])
+    for index, first in enumerate(boxes):
+        for second in boxes[index+1:]:
+            assert (first['right'] <= second['left']+0.5 or second['right'] <= first['left']+0.5
+                    or first['bottom'] <= second['top']+0.5 or second['bottom'] <= first['top']+0.5), (first, second)
+    assert geometry['overview'] and all(box['font'] >= 12 for box in geometry['overview'])
+    assert geometry['observers']['active'] == 1
+
+
+@pytest.mark.parametrize('width', [1440, 390, 641, 700])
+def test_public_synthetic_full_monitor_axis_fonts_bounds_dates_and_reflow(monkeypatch, width):
+    """Genuine PAGE geometry; public artifacts contain only fictional inputs."""
+    from playwright.sync_api import expect
+    from test_gpr_why_page import serve
+    from test_gpr_work_forecast_page import show
+    from test_monitor_cumulative_controls import browser_page
+    value = _public_monitor_axis_view()
+    serve(monkeypatch, value)
+    init = '''(()=>{
+      const Native=ResizeObserver;window.publicAxisObservers={active:0,created:0,disconnected:0};
+      window.ResizeObserver=class extends Native{
+        constructor(callback){super(callback);this.axisTargets=new Set()}
+        observe(target,options){if(target.matches?.('#gantt .axis')&&!this.axisTargets.has(target)){this.axisTargets.add(target);publicAxisObservers.active++;publicAxisObservers.created++}super.observe(target,options)}
+        disconnect(){publicAxisObservers.active-=this.axisTargets.size;publicAxisObservers.disconnected+=this.axisTargets.size;this.axisTargets.clear();super.disconnect()}
+      };
+    })();'''
+    with browser_page(width, init=init) as (page, _, errors):
+        show(page, value)
+        page.locator('#gprCalendar > summary').click()
+        axis = page.locator('#gantt .axis')
+        expect(axis).to_be_visible()
+        wait = '''()=>{const a=document.querySelector('#gantt .axis');return a?.dataset.axisLayout==='ready'&&Math.abs(Number(a.dataset.axisLayoutWidth)-a.getBoundingClientRect().width)<.1}'''
+        page.wait_for_function(wait)
+        initial = _monitor_axis_geometry(page)
+        out = _output()
+        artifact = out / f'public-synthetic-monitor-axis-{width}-geometry.json'
+        artifact.write_text(json.dumps(dict(public_synthetic_only=True,
+            real_project_or_source_data=False, validation_passed=False, initial=initial), ensure_ascii=False, indent=2))
+        page.locator('#gantt').screenshot(path=str(out / f'public-synthetic-monitor-axis-{width}.png'))
+        _assert_monitor_axis_geometry(initial)
+        if width in (641, 700):
+            assert initial['axis']['width'] >= 240
+        expected = value['schedule']['work_forecast']['summary']['finish']
+        assert {x['date'] for x in initial['milestones']} == {value['cut'], expected}
+        assert initial['milestones'][1]['date'] == initial['milestones'][2]['date'] == expected
+        assert initial['milestones'][1]['bottom'] <= initial['milestones'][2]['top']
+
+        # The plot changes width while hidden, then opens; no source values,
+        # native date domain or percentage anchors may move with its labels.
+        page.evaluate("$('gprCalendar').open=false")
+        expect(axis).to_be_hidden()
+        alternate = 700 if width != 700 else 1440
+        page.set_viewport_size(dict(width=alternate, height=950))
+        page.evaluate("$('gprCalendar').open=true")
+        expect(axis).to_be_visible()
+        page.wait_for_function(wait)
+        resized = _monitor_axis_geometry(page)
+        _assert_monitor_axis_geometry(resized)
+        assert resized['sourceSignature'] == initial['sourceSignature']
+        if width == 1440:
+            assert len(resized['ticks']) < len(initial['ticks'])
+
+        page.set_viewport_size(dict(width=width, height=950))
+        page.wait_for_function(wait)
+        page.evaluate('()=>{renderGantt(currentView);renderGantt(currentView)}')
+        page.wait_for_function(wait)
+        rendered = _monitor_axis_geometry(page)
+        _assert_monitor_axis_geometry(rendered)
+        assert rendered['sourceSignature'] == initial['sourceSignature']
+        assert rendered['observers']['disconnected'] >= 2
+        assert not errors
+        artifact.write_text(json.dumps(dict(public_synthetic_only=True, real_project_or_source_data=False,
+            validation_passed=True, initial=initial, resized=resized, rendered=rendered), ensure_ascii=False, indent=2))
+        page.evaluate('clearReadiness()')
+        assert page.evaluate('publicAxisObservers.active') == 0
 
 
 @pytest.mark.parametrize('width', [390, 1440])

@@ -510,7 +510,8 @@ def _sums(rows: list[dict[str, Any]], bounds: dict[str, datetime.date],
         if fields:
             for key in targets:
                 known[key] = False
-            issues.append({"source_row": row.get("source_row"), "fields": fields})
+            issues.append({"source_row": row.get("source_row"), "fields": fields,
+                           **actuals.payment_issue_context(row)})
         else:
             for key in targets:
                 known_part[key] += amount
@@ -850,7 +851,7 @@ def funding(project: str, kind: str, end: Any, sales_project: str = "",
     if rss is None:
         return _missing("Не загружен ни один отчёт РСС с реестром платежей "
                         f"на {bounds['end']:%d.%m.%Y}.")
-    payments = actuals.read_payments(rss, include_incomplete=True)["rows"]
+    payments = actuals.read_payments(rss, include_incomplete=True, include_cell_metadata=True)["rows"]
     previous = previous_bounds(kind, bounds)
     if dashboard is not None:
         limit = dashboard.get("funding") or {
