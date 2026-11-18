@@ -1,6 +1,4 @@
 """Real PAGE: parcel values, future estimates and owner overrides survive edits."""
-from pathlib import Path
-
 import pytest
 
 import main
@@ -41,7 +39,7 @@ def state(page):
 
 @pytest.mark.parametrize("region", ["msk", "mo"])
 @pytest.mark.parametrize("width,surface", [(390, "/"), (1440, "/classic")])
-def test_parcel_sources_future_estimate_manual_override_and_reload(region, width, surface, monkeypatch):
+def test_parcel_sources_future_estimate_manual_override_and_reload(region, width, surface, monkeypatch, tmp_path):
     from playwright.sync_api import expect, sync_playwright
     from main_registry import app as registry_app
 
@@ -181,7 +179,7 @@ def test_parcel_sources_future_estimate_manual_override_and_reload(region, width
             assert "ЕГРН" not in restored["origins"]["inputs.land_rent_cadastral_target_mln"]["text"].replace("не ЕГРН", "")
             assert page.evaluate("document.documentElement.scrollWidth<=innerWidth+2")
             assert page.locator("#landRentEditor").evaluate("e=>e.scrollWidth<=e.clientWidth+1")
-            output = Path("/tmp/cadastral1194-integration-evidence/ui")
+            output = tmp_path / "ui"
             output.mkdir(mode=0o700, exist_ok=True)
             page.locator("#landRentEditor").screenshot(path=str(output / f"{region}-{width}.png"))
             if region == "msk" and width == 1440:

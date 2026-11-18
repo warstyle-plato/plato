@@ -299,6 +299,19 @@ def test_numeric_native_inputs_tep_and_phasing_are_preserved_without_default_rec
     assert all(after[path]==value for path,value in before.items())
 
 
+@pytest.mark.parametrize('value,accepted',[(3,True),(0,True),(None,True),(6,True),('CANARY-PRIVATE-TEXT',False)])
+def test_reviewed_registration_scalar_preserves_values_and_closed_export_boundary(value,accepted):
+    field='land_rent_registration_months'
+    native={'model_inputs':{'inputs':{field:value,'land_rent_unreviewed_value':123456,
+        'land_rent_registration_monthsToken':'CANARY-CREDENTIAL'}}}
+    stats={'unknown_fields':0,'unsupported_values':0}
+    projected=audit._scrub(native,stats=stats)
+    assert projected=={'model_inputs':{'inputs':{field:value} if accepted else {}}}
+    assert stats=={'unknown_fields':2,'unsupported_values':0 if accepted else 1}
+    assert 'CANARY' not in json.dumps(projected)
+    assert native['model_inputs']['inputs'][field]==value
+
+
 def test_authoritative_snapshot_numeric_metrics_are_preserved_including_null():
     native=core._result_snapshot({'summary':{'revenue':123000000,'net_profit':10000000,
         'npv':None,'irr_project':0.23,'irr_equity':None,'llcr':1.21},'finance':{}})

@@ -71,6 +71,9 @@ function resetTerritoryData(options){
   // району → 1,0): пустое поле — не ноль, и сброс ставит пустоту.
   inputs[key]=SITE_ONLY_INPUTS.includes(key)?'':0;
  });
+ if(!keepLeaseTerms)Object.keys(INPUT_DEFAULT).filter(key=>key.startsWith('land_rent_')).forEach(key=>{
+  inputs[key]=cloneValue(INPUT_DEFAULT[key]);
+ });
  syncMoCompensation();
  TERRITORY_MARKERS.forEach(key=>{delete inputs[key]});
  if(keepLeaseTerms)Object.assign(fieldOrigins(),leaseOrigins);
