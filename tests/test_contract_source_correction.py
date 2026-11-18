@@ -263,3 +263,44 @@ def test_new_canonical_native_ks_follows_without_adding_cumulative_copies(pair):
     active=correction.materialize(view,row)
     assert active['completed']==native['completed'] and active['physical_items']==native['physical_items']
     assert active['amount']==1500 and len(contracts.raw_rows(view))==2
+
+
+def test_legacy_strict_parent_and_raw_children_survive_beside_source_roles(pair):
+    original=pair['before']
+    native=original['rows']
+    legacy=dict(status='confirmed',logical_id=pair['new'],member_ids=sorted([pair['old'],pair['new']]),
+        canonical_number='SOURCE-B',decision_id='a'*64,decision_recorded_at='2026-11-14T00:00:00+00:00',
+        binding_resolution='not_combined',binding_conflicts=[],financial_acceptance=False)
+    expected,=ownership.fold(original,{key:legacy for key in legacy['member_ids']})['rows']
+    modern_raw=[dict(row,id=digest,contract='CORRECTED-OTHER') for row,digest in zip(native,['c'*64,'d'*64])]
+    modern=dict(resolution_kind='source_correction',status='confirmed',membership_confirmed=True,
+        logical_id='c'*64,member_ids=['c'*64,'d'*64],decision_id='e'*64,
+        decision_recorded_at='2026-11-14T00:00:00+00:00',canonical_identity={key:modern_raw[0].get(key) for key in
+            ('customer','contractor','contract','contract_date')},
+        roles=dict(execution_raw_id='c'*64,execution_token=correction.execution_token(modern_raw[0]),
+                   price_raw_id='d'*64,price_token=correction.price_token(modern_raw[1]),documents_raw_id='d'*64),
+        role_freshness={'execution':True,'price':True},reason='')
+    register=dict(original,rows=[*native,*modern_raw])
+    states={**{key:legacy for key in legacy['member_ids']},**{key:modern for key in modern['member_ids']}}
+    folded=ownership.fold(register,states)
+    legacy_rows=[row for row in folded['rows'] if row['id'] in legacy['member_ids']]
+    assert legacy_rows==[expected]
+    assert contracts.raw_rows(folded)==register['rows']
+    assert len(folded['rows'])==2 and len(folded['raw_source_rows'])==2
+    assert contracts.find_raw_row(folded,pair['new'])==native[1]
+
+
+def test_revoked_source_roles_cannot_reactivate_through_new_strict_event(pair):
+    saved=confirm(pair)
+    identity.revoke(PROJECT,expected_revision=saved['revision'],decision_id=saved['event_id'],
+                    note='Revoke selected roles.',actor='a'*64)
+    checked=identity.inventory(PROJECT,[pair['old'],pair['new']],CUT)
+    strict=identity.confirm(PROJECT,checked['raw_ids'],CUT,expected_revision=checked['revision'],
+        inventory_sha256=checked['inventory_sha256'],source_tokens=[m['source_token'] for m in checked['source_versions']],
+        anchor_id=pair['new'],canonical_number='SOURCE-B',note='Strict number confirmation only.',actor='a'*64)
+    view=contracts.build(PROJECT,CUT,include_history=False)
+    row,=view['rows']
+    assert 'source_correction' not in row
+    assert row['logical_ownership']['decision_id']==strict['event_id']
+    assert row['amount'] is None and row['completed'] is None
+    assert contracts.raw_rows(view)==pair['before']['rows']

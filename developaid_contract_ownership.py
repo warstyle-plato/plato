@@ -34,7 +34,13 @@ def has_raw_views(register):
 def raw_rows(register):
     if 'raw_source_rows' in register:
         indexed = {row['id']: row for row in register['raw_source_rows']}
-        indexed.update({row['id']: row for row in register.get('rows') or [] if not row.get('source_correction')})
+        for row in register.get('rows') or []:
+            if row.get('source_correction'):
+                continue
+            # A legacy parent already contains its original raw observations.
+            # Reuse them once instead of treating the unknown parent as raw.
+            for original in row.get('raw_observations') or [row]:
+                indexed[original['id']] = original
         return [indexed[identifier] for identifier in register['raw_source_order'] if identifier in indexed]
     return register.get('raw_rows', register.get('rows') or [])
 
@@ -86,10 +92,13 @@ class ReadContext:
                 pair = tuple(sorted({member['raw_id'] for member in event['payload']['members']}))
                 if event['action'] == 'correct_sources':
                     self.corrections[pair] = event
+                else:
+                    self.corrections.pop(pair, None)
                 for identifier in pair:
                     self.pairs[identifier] = pair
-        self.active = {tuple(sorted({member['raw_id'] for member in event['payload']['members']}))
-                       for event in self.state['active']}
+        self.active_events = {tuple(sorted({member['raw_id'] for member in event['payload']['members']})): event
+                              for event in self.state['active']}
+        self.active = set(self.active_events)
 
     def _roster(self):
         import developaid_monitor_ledgers as ledgers
@@ -191,7 +200,8 @@ class ReadContext:
             import developaid_contract_correction as correction
             event = self.corrections[pair]
             resolved = correction.resolve(self.project, event, self.cut, register=register,
-                cache=self.source_cache, active=pair in self.active)
+                cache=self.source_cache, active=self.active_events.get(pair, {}).get('event_id') == event['event_id']
+                and self.active_events[pair]['action'] == 'correct_sources')
             self.cache[pair] = resolved
             return resolved
         if any(self.members[identifier].get('history_snapshots') for identifier in observed):
@@ -451,8 +461,24 @@ def fold_corrections(register, states):
     result.pop('raw_source_rows', None)
     result.pop('raw_source_order', None)
     rows, pool, done = [], [], set()
+    legacy_unresolved = 0
     for row in originals:
         state = states.get(row['id']) or {}
+        if state and state.get('resolution_kind') != 'source_correction':
+            # Preserve the existing strict-confirm fold verbatim beside new
+            # source-role groups, including its own financial/binding gaps.
+            group = tuple(state['member_ids'])
+            if state.get('status') == 'confirmed':
+                if group in done:
+                    continue
+                done.add(group)
+                observed = [original for original in originals if original['id'] in group]
+                rows.append(row if len(observed) == 1 else unknown_row(observed, state['logical_id'],
+                    resolution=state, members=list(group), cut=register['cut']))
+            else:
+                legacy_unresolved += 1
+                rows.append(unknown_row([row], row['id'], resolution=state, members=list(group), cut=register['cut']))
+            continue
         applies = state.get('resolution_kind') == 'source_correction' and state.get('membership_confirmed')
         if not applies:
             rows.append(row)
@@ -466,13 +492,13 @@ def fold_corrections(register, states):
     result['raw_source_rows'] = pool
     result['raw_source_order'] = [row['id'] for row in originals]
     result['logical_ownership'] = {'states': states, 'financial_acceptance_required': False,
-        'raw_source_cards': len(originals), 'logical_contracts': len(rows),
-        'unresolved_source_cards': len({state['decision_id'] for state in states.values() if state.get('status') == 'source_conflict'}),
+        'raw_source_cards': len(originals), 'logical_contracts': None if legacy_unresolved else len(rows),
+        'unresolved_source_cards': legacy_unresolved + len({state['decision_id'] for state in states.values() if state.get('resolution_kind') == 'source_correction' and state.get('status') == 'source_conflict'}),
         'historical_corrections': sorted({state['applies_from'] for state in states.values() if state.get('status') == 'historical_raw'})}
     if register.get('logical_ownership', {}).get('read_guard'):
         result['logical_ownership']['read_guard'] = register['logical_ownership']['read_guard']
     result['risk_summary'] = risk.summary(rows)
-    result['counts'] = dict(register.get('counts') or {}, raw_source_cards=len(originals), logical_contracts=len(rows),
+    result['counts'] = dict(register.get('counts') or {}, raw_source_cards=len(originals), logical_contracts=None if legacy_unresolved else len(rows),
         contracts_from_cumulative=sum(row.get('source_kind') == 'cumulative' for row in rows),
         contracts_from_closing_summary_only=sum(row.get('source_kind') == 'closing_summary' for row in rows))
     if 'contracts_from_documents' in result['counts']:
