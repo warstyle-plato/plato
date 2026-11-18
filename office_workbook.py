@@ -1121,9 +1121,9 @@ def _rent_calendars(book: _Book, result: dict[str, Any], spec: dict[str, Any],
                     exit_ = f"EDATE({start},{horizon}+1)"
                     exit_ = f"({exit_})-DAY({exit_})+1"
                 elif strategy == ns.STRATEGY_DDU:
-                    # DDU deliveries keep the object's exact day. Only the
-                    # cash buckets are floored to the first of the month.
-                    last_delivery = f"EDATE({comm},{horizon}-{ref(prefix + '.comm')})"
+                    # The cash-flow producer owns the actual positive
+                    # delivery dates, including both default-sale streams.
+                    last_delivery = ref(prefix + ".last_delivery")
                     exit_ = f"EDATE(MAX({comm},{last_delivery}),'{master or land_rent_book.SHEET}'!$N$15)"
                 else:
                     # Direct-sale plan_horizon_end is a monthly date, or the
@@ -1622,6 +1622,20 @@ def _flows(book: _Book, rows: _Rows, exit_rows: _Rows | None, block: _Block, inf
           f"-{b('opex')}-{b('ptax')}-{b('exit_cost')})")
 
 
+def _ddu_delivery_date_formula(b, i, k: str, profile: bool) -> str:
+    """Exact delivery dates for the same positive quantities as the cash row."""
+    sales_date = f"EDATE({i('sales_start')},{k}-{b('price_start')})"
+    if profile:
+        return f"IF({b('qty')}>0,{sales_date},0)"
+    commissioning = f"EDATE({i('start')},INT({i('months')}))"
+    pre = f"AND({k}>={b('price_start')},{k}<{b('price_start')}+{b('pre_n')},{b('share')}>0)"
+    post = (f"AND({b('residual')}>0,{k}>={b('comm')},"
+            f"{k}<{b('comm')}+{b('residual')},{b('share')}<1)")
+    post_date = f"EDATE({commissioning},{k}-{b('comm')})"
+    return (f"IF({b('qty')}>0,MAX(IF({pre},{sales_date},0),"
+            f"IF({post},{post_date},0)),0)")
+
+
 def _ddu_flows(book: _Book, rows: _Rows, block: _Block, info: _Inputs) -> None:
     """Продажа объекта по ДДУ — `sales_schedule` движка: доля продаж до ввода
     объекта ровными долями от старта продаж, остаток — ровными долями после
@@ -1693,6 +1707,11 @@ def _ddu_flows(book: _Book, rows: _Rows, block: _Block, info: _Inputs) -> None:
     month("last_k", "Служебная: месяц с продажами", f"IF({b('weight')}>0,{k},-1)", unit="№", fmt=INT, total=False)
     param("qty_total", "Продано за весь срок", f"=SUM({b('qty', ':')})", "м² / шт.", NUM0)
     param("horizon", "Последний месяц продаж, №", f"=MAX({b('last_k', ':')})", "№", INT)
+    month("delivery_date", "Дата передачи при положительных продажах месяца",
+          _ddu_delivery_date_formula(b, i, k, weights is not None),
+          unit="дата", fmt=DATE, total=False)
+    param("last_delivery", "Последняя дата передачи при положительных продажах",
+          f"=MAX({b('delivery_date', ':')})", "дата", DATE)
 
 
 def _pf(book: _Book, rows: _Rows, path: dict[str, str], ddu: list[_Block], credit: list[_Block],
