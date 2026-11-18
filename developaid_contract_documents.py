@@ -360,6 +360,11 @@ def _estimate_rows(cells, page_number, state, warnings):
                     state['section'], state['headings'] = state['untitled'], {}
                 state['untitled'] = None if _CODE.match(number) else title
                 state['group'] = {'number': number if _CODE.match(number) else '', 'name': title}
+                if unit and quantity is not None:
+                    # A numbered parent may print its physical scope while
+                    # prices belong to the operations below it. Keep that
+                    # declaration; summing the operations is not its volume.
+                    state['group'].update(unit=unit, quantity=quantity, page=page_number)
                 if state['group']['number']:
                     state['headings'][number] = state['group']
             continue

@@ -19,12 +19,13 @@ def rendered(control, source=None):
         'const row=' + json.dumps(row) + ';const before=JSON.stringify(row);',
         'console.log(JSON.stringify({brief:contractScheduleBrief(row),parts:contractScheduleParts(row),'
         'unchanged:before===JSON.stringify(row)}))', page=source or page.MONITOR_PAGE)
-    assert 'contractReadiness' in taken
+    assert 'contractScheduleBrief' in taken
     return json.loads(out)
 
 
 def assert_matched_scope(result):
-    assert 'готовность сопоставленных работ 0,1 %' in result['brief']
+    assert 'Сверить с КС-6а' in result['brief']
+    assert '0,1 %' not in result['brief']
     assert 'готовность сопоставленных работ' in result['parts']
     assert 'готовность договора' not in result['parts']
     assert result['unchanged']
@@ -56,7 +57,8 @@ def test_partial_coverage_and_remaining_start_are_visible_next_to_the_measured_r
              coverage={'source_known': True, 'calculated': 2, 'source_works': 5, 'unknown': 3,
                        'partial': True, 'calculation_start': '2026-02-01', 'prior_periods': 7})
     result = rendered(c)
-    for html in (result['brief'], result['parts']):
+    assert 'Сверить с КС-6а' in result['brief']
+    for html in (result['parts'],):
         assert 'Сопоставлено работ по ГПР: 2 из 5.' in html
         assert 'Выполнение остальных работ не определено.' in html
         assert 'Расчёт с 01.02.2026.' in html
@@ -71,7 +73,8 @@ def test_complete_known_scope_keeps_its_finish_visible():
              coverage={'source_known': True, 'calculated': 2, 'source_works': 2,
                        'unknown': 0, 'partial': False})
     result = rendered(c)
-    for html in (result['brief'], result['parts']):
+    assert 'Есть отставание' in result['brief']
+    for html in (result['parts'],):
         assert '04.03.2026' in html
         assert 'Прогноз всего договора не определён' not in html
         assert 'Сопоставлено работ по ГПР: 2 из 2.' in html
