@@ -2719,9 +2719,16 @@ def _gap_by_chapter_sentence(funding: dict[str, Any]) -> str:
     return text + (f" {note}" if note else "")
 
 
-def _schedule_summary(schedule: dict[str, Any]) -> str | None:
+def _schedule_summary(schedule: dict[str, Any], assessment=None, *, readiness_present=False) -> str | None:
     """Use the same qualified RNV as the cards, including partial/unknown."""
     qualified = schedule.get("qualified_rnv")
+    if readiness_present:
+        text = ((assessment['forecast_text']+' '+assessment['scope_text']+' '+assessment['as_of_text'])
+                if assessment else 'Оценка учтённых работ не подтверждена для этого источника и даты среза.')
+        rnv_state = qualified if isinstance(qualified, dict) else {}
+        rnv = rnv_state.get('forecast') if rnv_state.get('state') == 'complete' else None
+        return 'Срок. '+text+(' Прогноз РНВ: '+monitor._day(rnv).strftime('%d.%m.%Y')+'.'
+                                 if monitor._day(rnv) else ' Прогноз РНВ не определён.')
     if isinstance(qualified, dict):
         if qualified.get("state") == "estimate":
             approved = monitor._day(qualified.get("approved"))
@@ -2770,6 +2777,22 @@ def _schedule_summary(schedule: dict[str, Any]) -> str | None:
     return None
 
 
+def _work_schedule_summary(view: dict[str, Any]) -> str | None:
+    """Read the same source-bound work date as the Monitor and report cards."""
+    schedule = view.get('schedule') or {}
+    from developaid_gpr_work_forecast import for_schedule, describe, owns_response, legacy_model
+    if not owns_response(schedule):
+        if schedule.get('work_forecast_applicable') is False:
+            summary = legacy_model(schedule, view.get('cut')).get('summary')
+            return 'Срок. '+summary['forecast_text'] if summary else 'Срок. Оценка окончания работ не определена.'
+        return None
+    value = for_schedule(schedule, view.get('cut'))
+    summary = value.get('summary') or describe(value, view.get('cut'))
+    return 'Срок. ' + ' '.join(filter(None, [summary['forecast_text'], summary['scope_text'],
+        summary['as_of_text'], summary['plan_text'],
+        summary['delta_text'] if summary.get('delta_days') is not None else '']))
+
+
 def refresh_schedule_summary(view: dict[str, Any]) -> None:
     """Refresh only the schedule sentence; preserve financial prose verbatim."""
     dashboard = view.get("dashboard") or {}
@@ -2777,7 +2800,7 @@ def refresh_schedule_summary(view: dict[str, Any]) -> None:
     if not isinstance(current, list):
         return
     schedule = dashboard.get("schedule") or view.get("schedule") or {}
-    sentence = _schedule_summary(schedule)
+    sentence = _work_schedule_summary(view) or _schedule_summary(schedule)
     rest = [line for line in current if not isinstance(line, str) or not line.startswith("Срок.")]
     dashboard["summary"] = ([sentence] if sentence else []) + rest
 
@@ -2791,7 +2814,7 @@ def _summary(view: dict[str, Any], funding: dict[str, Any],
     """
     out: list[str] = []
     schedule = (view.get("dashboard") or {}).get("schedule") or view.get("schedule") or {}
-    sentence = _schedule_summary(schedule)
+    sentence = _work_schedule_summary(view) or _schedule_summary(schedule)
     if sentence:
         out.append(sentence)
 

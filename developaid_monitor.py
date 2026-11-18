@@ -1025,6 +1025,7 @@ def _undated_works(baseline: dict[str, Any]) -> list[dict[str, Any]]:
              "object": item.get("object", ""), "section": item.get("section", ""),
              "level": "task", "plan_start": _iso(item.get("start")), "plan_finish": _iso(item.get("finish")),
              "construction_work": item.get("construction_work"), "source_cells": item.get("source_cells"),
+             "source_format": item.get("source_format") or baseline.get("source_format") or "",
              "reason": item.get("date_problem") or "в утверждённом ГПР нет даты начала или окончания"}
             for item in baseline.get("works") or [] if not item.get("start") or not item.get("finish")]
 
@@ -1102,6 +1103,7 @@ def _schedule_plan_fact(project: str, rss_path: Path, cut: Any) -> dict[str, Any
     forecast_end = max((r["forecast_finish"] for r in rows if r["forecast_finish"]), default=None)
     baseline_end = max((r["plan_finish"] for r in rows), default=None)
     return {"cut": cut_date, "rows": rows, "risks": len(risks),
+            "source_format": baseline.get("source_format") or "",
             "baseline_end": baseline_end, "forecast_end": forecast_end,
             "reason": _schedule_reason(baseline, rows), "undated_works": _undated_works(baseline)}
 

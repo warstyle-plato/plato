@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 import html
+import re
 
 from developaid_schedule_visual import date_text, day
 
@@ -98,10 +99,26 @@ def render_analysis(display):
                      for text in display['paragraphs'])+'</section>')
 
 
+def _forecast_method(forecast):
+    explanation = forecast.get('explanation')
+    counts = explanation.get('counts') if isinstance(explanation, dict) else None
+    counts = counts if isinstance(counts, dict) else {}
+    count = lambda key: counts[key] if type(counts.get(key)) is int and counts[key] > 0 else 0
+    conditional, measured = count('conditional'), count('measured')
+    method = ('mixed' if conditional and measured else 'conditional' if conditional
+              else 'measured' if measured else 'complete' if count('complete') and not count('unknown') else 'unknown')
+    label = {'mixed': 'Измеренный и плановый темп', 'conditional': 'При плановом темпе',
+             'measured': 'По измеренному темпу', 'complete': 'Завершено по источникам',
+             'unknown': 'Основание срока не определено'}[method]
+    return method, label
+
+
 def gpr_summary(state, cut):
     """Read supplied project scalars only; never infer weights, dates or scope."""
     if not isinstance(state, dict) or state.get('cut') != str(cut) or not isinstance(state.get('project'), dict):
         return None
+    if state.get('basis') == 'gpr_work_forecast' and isinstance(state.get('summary'), dict):
+        return dict(state['summary'])
     project = state['project']
     number = lambda value: isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
     progress = project.get('progress')
@@ -133,7 +150,8 @@ def gpr_summary(state, cut):
     as_of_text += ' Срез '+date_text(cut)+'.'
     plan_text = ('План окончания учтённых работ: '+date_text(plan)+'. Даты известны для '
                  +str(forecast.get('plan_covered'))+' из '+str(forecast.get('total'))+' работ.') if plan else ''
-    forecast_text = ('Оценка окончания: '+date_text(finish)+'. При плановом темпе. Сроки известны для '
+    method, method_label = _forecast_method(forecast)
+    forecast_text = ('Оценка окончания: '+date_text(finish)+'. '+method_label+'. Сроки известны для '
                      +str(forecast.get('covered'))+' из '+str(forecast.get('total'))+' работ. Это не прогноз РНВ.') if finish else 'Оценка окончания учтённых работ пока не определена.'
     return dict(schema=1, source_sha256=state.get('source_sha256'), cut=str(cut),
                 full_source_sha256=forecast.get('full_source_sha256'), id_scope=forecast.get('id_scope'),
@@ -141,8 +159,28 @@ def gpr_summary(state, cut):
                 profile_effective_from=state.get('profile_effective_from'),
                 progress=progress, coverage=coverage, total=total, known_readings=known,
                 estimated=estimated, partial=partial, fact_as_of=fact_as_of,
+                method=method, method_label=method_label,
                 label=label, value=value, scope_text=scope_text, as_of_text=as_of_text,
                 finish=finish, plan_finish=plan, forecast_text=forecast_text, plan_text=plan_text,
                 display=forecast.get('display'),
                 reason=project.get('reason') or state.get('reason') or '',
                 readiness_text=label+': '+value+'. '+scope_text+' '+as_of_text)
+
+
+def project_assessment(schedule, cut):
+    """Read the one canonical work-date DTO; never derive a second scope/date."""
+    if not isinstance(schedule, dict):
+        return None
+    from developaid_gpr_work_forecast import for_schedule, describe, owns_response
+    if not owns_response(schedule):
+        return None
+    try:
+        value = for_schedule(schedule, cut)
+        if not value.get('project'):
+            return None
+        summary = value.get('summary') or describe(value, cut)
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return None
+    return dict(summary, basis='gpr_work_forecast',
+                finish_label=summary.get('forecast_label') or 'Оценка окончания учтённых работ',
+                work_ids=list((value.get('project') or {}).get('work_ids') or []))

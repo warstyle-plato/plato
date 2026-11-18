@@ -36,7 +36,6 @@ import developaid_admin_expenses as admin_expenses
 import developaid_admin_expenses_cash as admin_cash
 import developaid_credit_repayment as credit_repayment
 import developaid_monitor as monitor
-from developaid_gpr_summary import gpr_summary
 import developaid_funding_schedule as funding_schedule
 import developaid_monitor_manager as manager
 import developaid_monthly_budget as monthly_budget
@@ -50,6 +49,7 @@ from market_search import contracting, salesroom, sales_store, chessboard
 
 PERIODS = {"week": "неделю", "month": "месяц"}
 _PREVIOUS = {"week": "прошлую неделю", "month": "прошлый месяц"}
+_GPR_UNCONFIRMED = 'Оценка учтённых работ не подтверждена для этого источника и даты среза.'
 
 
 def _sold(amount: float | None) -> str:
@@ -125,6 +125,9 @@ def _physical_notes(block: dict[str, Any]) -> list[str]:
     elif not block.get("fresh"):
         out.append(f"За этот период новый график с процентами не загружали, "
                    f"последний — от {_day(block['fact_snapshot'])}.")
+    if block.get('delta') is None:
+        out.append("Прирост за период посчитать не из чего: на начало "
+                   "периода не было ни одного графика с процентами выполнения.")
     if source.get("packages"):
         out.append(_packages_note(source["packages"]))
     return out
@@ -1180,10 +1183,18 @@ def gantt(view: dict[str, Any], dashboard: dict[str, Any]) -> dict[str, Any]:
     schedule_view = view.get("schedule") or {}
     result = report_gantt.model(schedule_view.get("management") or [])
     result['calendar'] = report_gantt.calendar(schedule_view, view.get('cut'))
+    if 'work_forecast' in schedule_view:
+        result['work_forecast'] = result['calendar']['work_forecast']
+        result['approved_plan'] = copy.deepcopy(schedule_view.get('approved_plan'))
+        result['work_forecast_groups'] = copy.deepcopy(schedule_view.get('display_groups'))
     result["dependency_timeline"] = schedule_view.get("dependency_timeline")
     result["corpus_gpr"] = schedule_view.get("corpus_gpr")
     result["work_fact"] = schedule_view.get("work_fact")
     result["readiness"] = schedule_view.get("readiness")
+    result['source_format'] = schedule_view.get('source_format') or ''
+    if 'work_forecast_applicable' in schedule_view:
+        result['work_forecast_applicable'] = schedule_view['work_forecast_applicable']
+    result['approved_plan'] = schedule_view.get('approved_plan')
     if (isinstance(result['readiness'], dict) and result['calendar'].get('readiness_forecast_invalid')
             and isinstance(result['readiness'].get('project'), dict)):
         # A broken display membership must not leave its global calendar date
@@ -1938,7 +1949,9 @@ def build(project: str, kind: str, end: Any, sales_project: str | None = None,
     if declined:
         blocks["sales"] = _missing("Продажи в сводку не входят: так выбрано на "
                                    "странице «Сводка руководству».")
-    blocks["construction_summary"] = _executive_schedule(blocks)
+    # Keep the source-specific physical/RNV DTO intact. The selected-project
+    # display below is a separate projection, not an approval of these facts.
+    blocks["construction_summary"] = _source_schedule(blocks)
     blocks["findings"] = findings({"kind": kind, "end": bounds["end"].isoformat(), **blocks})
     return {"project": project, "kind": kind,
             "start": bounds["start"].isoformat(),
@@ -2014,10 +2027,12 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
         out.append({"topic": topic, "text": text, "source": source, "tone": tone})
 
     block = report.get("physical") or {}
-    readiness = gpr_summary((report.get('gantt') or {}).get('readiness'), report.get('end'))
+    readiness = _report_gpr_summary(report)
     if readiness is not None:
         add('Стройка', readiness['readiness_text'], 'ГПР',
             'missing' if readiness['progress'] is None else '')
+    elif _report_uses_owner(report):
+        add('Стройка', _GPR_UNCONFIRMED, 'ГПР', 'missing')
     elif block.get("state") == "ok":
         lag = block["lag"]
         text = _sentence(f"По ГПР выполнено {_pct(block['fact'])} при плане "
@@ -3558,7 +3573,13 @@ def render_text(report: dict[str, Any]) -> str:
 
     lines += ["", "<b>Стройка</b>"]
     block = report.get("physical") or {}
-    if block.get("state") == "ok":
+    assessment = _report_gpr_summary(report)
+    if _report_uses_owner(report):
+        lines.append(esc(assessment['readiness_text']) if assessment else
+                     _GPR_UNCONFIRMED)
+        if block.get('state') == 'ok':
+            lines.extend(esc(line) for line in _physical_notes(block))
+    elif block.get("state") == "ok":
         lines.append(f"Выполнено по графику работ {_pct(block['fact'])}, "
                      f"по плану к этой дате должно быть {_pct(block['plan'])}.")
         if block.get("delta") is not None:
@@ -3566,9 +3587,6 @@ def render_text(report: dict[str, Any]) -> str:
                 f"За {PERIODS[report['kind']]} выполнение "
                 f"{'выросло' if block['delta'] >= 0 else 'снизилось'} на "
                 f"{_pp(abs(block['delta']))[1:]}"))
-        else:
-            lines.append("Прирост за период посчитать не из чего: на начало "
-                         "периода не было ни одного графика с процентами выполнения.")
         lines.extend(esc(line) for line in _physical_notes(block))
     else:
         lines.append(esc(block.get("reason") or "Данных нет."))
@@ -4311,6 +4329,11 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
             note = " ".join(filter(None, (reason.rstrip(" .;") + "." if reason else "",
                                           base_note, summary["note"])))
         else:
+            if reconciliation is not None and summary.get("scope") == "calculated_total":
+                from developaid_funding_reconciliation import calculation_note
+
+                # The shared summary supplies this qualifier once, after the row's explanation.
+                note = note.removesuffix(calculation_note(reconciliation)).rstrip()
             note = ". ".join(part for part in (note.rstrip(" .;"), summary["note"]) if part)
         add(label, _rub(amount) if amount is not None else None,
             note, "bad" if amount is not None and amount > 0 else "good" if amount is not None else "missing")
@@ -4321,10 +4344,17 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
     if readiness is not None:
         add(readiness['label'], readiness['value'] if readiness['progress'] is not None else None,
             readiness['scope_text']+' '+readiness['as_of_text'], hint=readiness['reason'])
-        add('Оценка окончания учтённых работ', _day(readiness['finish']) if readiness['finish'] else None,
+        add(readiness.get('forecast_label') or 'Оценка окончания учтённых работ', _day(readiness['finish']) if readiness['finish'] else None,
             readiness['forecast_text']+' '+readiness['scope_text']+' '+readiness['as_of_text'])
-        for tile in out[-2:]:
+        for role, tile in zip(('readiness', 'forecast'), out[-2:]):
             tile['group'] = 'gpr_readiness'
+            tile['gpr_role'] = role
+    elif _report_uses_owner(report):
+        add('Готовность по ГПР', None, _GPR_UNCONFIRMED)
+        add('Оценка окончания учтённых работ', None, _GPR_UNCONFIRMED)
+        for role, tile in zip(('readiness', 'forecast'), out[-2:]):
+            tile['group'] = 'gpr_readiness'
+            tile['gpr_role'] = role
     elif block.get("state") == "ok":
         lag = block.get("lag")
         add("Выполнение по ГПР", _pct(block["fact"]),
@@ -4584,9 +4614,10 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
     return out
 
 
-def _executive_schedule(report: dict[str, Any]) -> dict[str, Any]:
-    if report.get("construction_summary") is not None:
-        return report["construction_summary"]
+def _source_schedule(report: dict[str, Any]) -> dict[str, Any]:
+    """The original physical/RNV population, independent of display readiness."""
+    if report.get('construction_summary') is not None:
+        return report['construction_summary']
     timeline = (report.get("gantt") or {}).get("dependency_timeline") or {}
     schedule_block = report.get("schedule") or {}
     if not timeline:
@@ -4594,32 +4625,78 @@ def _executive_schedule(report: dict[str, Any]) -> dict[str, Any]:
             "state": "complete" if schedule_block.get("known") else "unknown",
             "approved": schedule_block.get("approved"), "forecast": schedule_block.get("forecast"),
             "delay_days": schedule_block.get("delay_days")}}
-    return report_schedule.model(timeline, stalled=schedule_block.get("stalled"))
+    return report_schedule.model(timeline, stalled=schedule_block.get('stalled'))
+
+
+def _executive_schedule(report: dict[str, Any]) -> dict[str, Any]:
+    legacy = _source_schedule(report)
+    timeline = (report.get('gantt') or {}).get('dependency_timeline') or {}
+    schedule_block = report.get('schedule') or {}
+    readiness = (report.get('gantt') or {}).get('readiness')
+    if not _report_uses_owner(report):
+        if (report.get('gantt') or {}).get('work_forecast_applicable') is False:
+            legacy = dict(legacy, forecast=_report_gpr_compact(report)['finish'])
+        return legacy
+    # This is the presentation summary, built after credit/funding. Keep the
+    # independent RNV qualification intact and never send this conditional
+    # selected-work date back into financial inputs or the official milestone.
+    assessment = _report_gpr_summary(report)
+    rnv = timeline.get('rnv') or schedule_block.get('qualification') or {}
+    return dict(legacy, forecast=(assessment or {}).get('finish'),
+                forecast_label=(assessment or {}).get('forecast_label') or 'Оценка окончания учтённых работ', assessment_basis='gpr_work_forecast',
+                state='selected_gpr' if (assessment or {}).get('finish') else 'unknown',
+                rnv_state=rnv.get('state', 'unknown'),
+                delay_days=None, driver=None, driver_reason=None, driver_method=None,
+                rnv_driver=legacy.get('rnv_driver') or legacy.get('driver'),
+                rnv_driver_reason=legacy.get('rnv_driver_reason') or legacy.get('driver_reason'),
+                rnv_driver_method=legacy.get('rnv_driver_method') or legacy.get('driver_method'),
+                caveat=((assessment['forecast_text']+' '+assessment['scope_text']+' '+assessment['as_of_text'])
+                        if assessment else _GPR_UNCONFIRMED),
+                gpr_assessment=assessment, rnv_context=copy.deepcopy(rnv),
+                rnv_forecast=rnv.get('forecast') if rnv.get('state') == 'complete' else None)
 
 
 def _gantt_html(report: dict[str, Any]) -> str:
-    return report_gantt.render_compact(report_gantt.compact_model(
-        report.get('gantt') or {}, report.get('end')),
+    return report_gantt.render_compact(_report_gpr_compact(report),
         stalled_risk=_stalled_words(report.get('schedule') or {}))
 
 
+def _report_uses_owner(report: dict[str, Any]) -> bool:
+    from developaid_gpr_work_forecast import owns_response
+    return owns_response(report.get('gantt') or {})
+
+
+def _report_gpr_compact(report: dict[str, Any]) -> dict[str, Any]:
+    """All current and retained typed report rosters use the same owner."""
+    block = report.get('gantt') or {}
+    if _report_uses_owner(report):
+        from developaid_gpr_work_forecast import report_model
+        return report_model(block, report.get('end'))
+    from developaid_gpr_work_forecast import legacy_report_model
+    return legacy_report_model(block, report.get('end'))
+
+
 def _report_gpr_summary(report: dict[str, Any]) -> dict[str, Any] | None:
-    """The report cover shares the same bound date as its compact matrix/Gantt."""
-    model = report_gantt.compact_model(report.get('gantt') or {}, report.get('end'))
-    summary = model.get('summary')
-    if summary is None:
+    """The cover reads the already-validated canonical compact projection."""
+    try:
+        model = _report_gpr_compact(report)
+    except (KeyError, TypeError, ValueError, AttributeError):
         return None
-    summary = dict(summary)
-    if summary['finish'] != model['finish']:
-        summary['forecast_text'] = 'Оценка окончания учтённых работ пока не определена.'
-    summary['finish'] = model['finish']
-    return summary
+    if not model.get('assessment_qualified'):
+        return None
+    return dict(model['summary'])
 
 
 
 def _schedule_source_details(report: dict[str, Any]) -> str:
-    content = report_schedule.details(_executive_schedule(report),
+    executive = _executive_schedule(report)
+    content = report_schedule.details(executive,
         include_completed=not bool((report.get('gantt') or {}).get('dependency_timeline')))
+    if executive.get('rnv_driver_reason'):
+        content += ('<p class="note">Отдельный состав проверки РНВ: «'
+                    +html.escape(str(executive.get('rnv_driver') or 'Работа'))+'». '
+                    +html.escape(str(executive['rnv_driver_reason']))
+                    +' Это не основание общей оценки учтённых работ.</p>')
     block = report.get("schedule") or {}
     content += ''.join("<p class='note'>" + html.escape(line) + "</p>"
                        for line in report_gantt.notes(report.get("gantt") or {}, block))
@@ -5082,11 +5159,11 @@ def render_html(report: dict[str, Any]) -> str:
 
     cover = [item for item in tiles(report)
              if (item.get('group') != 'gpr_readiness' and item['label'] != 'Выполнение по ГПР')
-             or item['label'] == 'Оценка окончания учтённых работ']
-    if not any(item['label'] == 'Оценка окончания учтённых работ' for item in cover):
+             or item.get('gpr_role') == 'forecast']
+    if not any(item.get('gpr_role') == 'forecast' for item in cover):
         cover.append(dict(label='Оценка окончания учтённых работ', value='нет данных',
                           note='Каноническая оценка для этого среза отсутствует; плановая дата её не заменяет.',
-                          tone='missing', group='gpr_readiness'))
+                          tone='missing', group='gpr_readiness', gpr_role='forecast'))
     out.append(_tiles_html(cover, tiles_footnote(report)))
     out.append(_block_heading("main") + "<ul class='findings'>")
     for item in report.get("findings") or []:

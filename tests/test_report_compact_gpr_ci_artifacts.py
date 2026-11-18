@@ -23,46 +23,57 @@ ORIGIN = 'https://gpr-synthetic.invalid'
 
 def synthetic_report(project_finish=FINISH):
     """Small public post-calculation DTO, including an explicit ref/current join."""
-    rows, points, corpora = [], {}, []
-    mapping = {}
+    import developaid_management_report as report
+    import developaid_gpr_work_forecast as work_dates
+    import developaid_schedule_elements as elements
+    import developaid_schedule_plan_scenario as scenario
+    import developaid_schedule_readiness as readiness
+    rows, full, assignments, mapping = [], {}, {}, {}
     for index, finish in enumerate(['2032-04-15', project_finish, '2032-06-07'], 1):
         name = 'Учебный корпус '+str(index)
-        members = []
-        for stage in ['frame', 'services']:
+        for stage, element in [('frame', 'frame'), ('services', 'engineering')]:
             reference = f'fictional-reference-{index}-{stage}'
             current = f'fictional-current-{index}-{stage}'
-            members.append(reference)
             mapping[reference] = current
-            task = dict(id=current, object=name, name='Вымышленный пакет '+stage,
+            observation = dict(value=[.25, .5, None][index-1], date=CUT,
+                               label='Вымышленное датированное показание')
+            task = dict(id=current, level='task', object=name, section='Учебный конструктив',
+                        name='Вымышленный пакет '+stage, construction_work=True,
                         plan_start='2028-01-10', plan_finish='2031-09-30',
-                        plan_pace_scenario=dict(finish=finish, source_date=CUT))
-            rows.append(dict(task=task))
-            points[current] = dict(work_id=current, reference_work_id=reference,
-                                   finish=finish, plan_finish='2031-09-30',
-                                   complete=False, basis='conditional', source_date=CUT)
-        corpora.append(dict(name=name, work_ids=members, progress=[.25, .5, None][index-1], partial=True))
-    rows.append(dict(task=dict(id='fictional-parking', object='Учебный паркинг',
-                               name='Вымышленный пакет вне состава', plan_start='2031-01-10',
-                               plan_finish='2038-12-31')))
-    display = dict(schema=1, basis='readiness_project_forecast', cut=CUT,
-                   source_sha256='d'*64, full_source_sha256='d'*64, id_scope='full_source',
-                   finish=project_finish, total=6, covered=6, reference_total=6,
-                   truncated=False, rows=list(points.values()),
-                   paragraphs=['Public synthetic explanation only.', 'No private source or project.'])
-    forecast = {key: display[key] for key in ['source_sha256', 'full_source_sha256', 'id_scope',
-                                             'finish', 'total', 'covered', 'reference_total']}
-    forecast.update(display=copy.deepcopy(display), excluded=[])
-    state = dict(cut=CUT, source_sha256='d'*64,
-                 project=dict(progress=.375, coverage=88, partial=True, known_readings=4, total=6, source_dates=[CUT],
-                              work_ids=list(mapping), forecast=forecast),
-                 corpora=corpora,
-                 forecast_identity=dict(source_sha256='d'*64, full_source_sha256='d'*64,
-                                        id_scope='full_source', remaining_ids=mapping),
-                 matrix=[dict(stage='Учебный конструктив', cells=copy.deepcopy(corpora))])
+                        primary=observation, display_progress=observation,
+                        forecast_known=True, forecast_finish=finish,
+                        plan_pace_scenario=dict(finish=None, source_date=CUT))
+            rows.append(task)
+            full[reference] = dict(task, id=reference)
+            assignments[reference] = dict(element_id=element, share=100)
+    rows.append(dict(id='fictional-parking', level='task', object='Учебный паркинг',
+                     name='Вымышленный пакет вне состава', construction_work=True,
+                     plan_start='2031-01-10', plan_finish='2038-12-31'))
+    full['fictional-parking'] = rows[-1]
+    profile = dict(scope_kind='construction', basis='estimated_elements',
+        full_scope_confirmed=True, full_source_sha256='d'*64,
+        remaining_source_sha256='d'*64, effective_from=CUT,
+        crosswalk=[dict(full_id=key, remaining_id=value) for key, value in mapping.items()]
+                  + [dict(full_id='fictional-parking', remaining_id='fictional-parking')],
+        outside_completed_ids=[], included_ids=list(mapping), excluded_ids=['fictional-parking'],
+        weights=[], label='Публичный вымышленный профиль',
+        element_profile=dict(id=elements.PROFILE_ID,
+            overrides={key:50 if key in {'frame', 'engineering'} else 0 for key, _, _ in elements.ELEMENTS},
+            objects={'Учебный корпус '+str(i):'residential' for i in (1, 2, 3)},
+            corpus_shares={'Учебный корпус 1':44, 'Учебный корпус 2':44, 'Учебный корпус 3':12},
+            assignments=assignments))
+    state = readiness.model(dict(works={row['id']:row for row in rows}), cut=CUT,
+        baseline_scope='remaining_work', source_sha256='d'*64, profile=profile, full_rows=full)
+    state.update(profile_revision=1, profile_sha256=readiness._digest(profile), profile_effective_from=CUT)
+    scenario.decorate_readiness(state, rows)
+    schedule = dict(cut=CUT, approved_plan=dict(source_sha256='d'*64), work_forecast_applicable=True,
+                    rows=rows, undated_works=[], management=copy.deepcopy(rows), readiness=state,
+                    owner_rnv=dict(date='2031-09-30', source='owner_decision'))
+    schedule['work_forecast'] = work_dates.for_schedule(schedule, CUT)
+    assert schedule['work_forecast']['state'] != 'unavailable'
+    view = dict(cut=CUT, schedule=schedule)
     return dict(project=PROJECT, kind='week', start='2031-05-06', end=CUT,
-                gantt=dict(readiness=state, calendar=dict(schema=1, cut=CUT, qualified=True,
-                           display=copy.deepcopy(display), rows=rows, points=points, issues=[],
-                           owner_rnv=dict(date='2031-09-30', source='owner_decision'))),
+                gantt=report.gantt(view, {}),
                 funding=dict(state='ok', rss='2031-05-11', limit=dict(known=False, reason='Учебный лимит не задан.'),
                              draws=dict(total=1_234_567, period=12_345, month=23_456),
                              interest=dict(total=100, period=20, month=30),
@@ -143,7 +154,7 @@ def test_public_synthetic_native_page_and_print_layout(width):
             qualifier = host.locator('[data-gpr-block=forecast] p').filter(has_text='Покрытие веса: 88,0%.')
             expect(qualifier).to_have_count(1)
             expect(qualifier).to_be_visible()
-            expect(qualifier).to_contain_text('Пригодные показания: 4 из 6 работ.')
+            expect(qualifier).to_contain_text('Показания с весом: 4 из 6 работ.')
             expect(qualifier).to_contain_text('Оценка по известной части состава.')
             expect(host.locator('.rg-corpus:visible')).to_have_count(4)
             expect(host.locator('.rg-plan')).to_have_count(3)
@@ -230,7 +241,7 @@ def test_public_synthetic_native_pdf_has_compact_layout_and_canonical_date():
                                                'Гант по корпусам', 'Вне выбранного состава проекта'])
         assert text.count('20.08.2032') >= 3
         qualification = text.split('Прогноз учтённых работ', 1)[1].split('Матрица готовности', 1)[0]
-        assert 'Пригодные показания: 4 из 6 работ.' in qualification
+        assert 'Показания с весом: 4 из 6 работ.' in qualification
         assert 'Покрытие веса: 88,0%.' in qualification
         assert 'Оценка по известной части состава.' in qualification
         assert 'План РНВ владельца: 30.09.2031' in text

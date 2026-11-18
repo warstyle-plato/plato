@@ -372,12 +372,24 @@ def test_one_broken_block_does_not_hide_the_others(monkeypatch):
 def test_message_carries_all_three_blocks():
     _project()
     _sales([_contract("2026-10-13", "Квартира", 50.0, 12.5 * M)])
-    text = report.render_text(report.build(PROJECT, "month", "2026-10-31",
-                                           sales_project="ЖК Гродненская"))
+    built = report.build(PROJECT, "month", "2026-10-31", sales_project="ЖК Гродненская")
+    text = report.render_text(built)
     assert "за октябрь 2026" in text
     assert "Стройка и проектирование за октябрь 2026: оплачено 150,0 млн ₽." in text
     assert "План банка на квартал — 280,0 млн ₽" in text
-    assert "Выполнено по графику работ" in text
+    # The primary readiness stays unknown without explicit composition/weights.
+    # The retained legacy section still reports its own labelled GPR reading.
+    assessment = report._report_gpr_summary(built)
+    assert built['gantt']['work_forecast_applicable'] is False
+    assert assessment['progress'] is None and assessment['finish'] == '2026-11-06'
+    assert assessment['forecast_text'] in text
+    assert "Оценка окончания работ: 06.11.2026" in text
+    assert "не подтверждает дату получения разрешения на ввод" in text
+    main_text=text.split('<b>Стройка</b>',1)[0]
+    assert assessment['readiness_text'] in main_text
+    assert "Выполнено по графику работ" not in main_text
+    assert "Выполнено по графику работ 50,0%, по плану к этой дате должно быть 67,7%" in text
+    assert "ГПР-факт от 16.10.2026" in text
 
 
 def test_period_bounds():
