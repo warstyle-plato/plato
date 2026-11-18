@@ -249,7 +249,7 @@ def nonres_overlay(x: dict, rates: list[dict[str, Any]], op: dict) -> dict[str, 
                 "nonres_revenue": get("sale_revenue", month) + get("rent_revenue", month)
                 + get("exit_revenue", month) + get("residual_value", month),
                 "nonres_residual_value": get("residual_value", month),
-                "nonres_costs": get("selling_cost", month) + get("opex", month)
+                "nonres_costs": get("selling_cost", month) + get("opex_cash" if "opex_cash" in series else "opex", month)
                 + get("property_tax", month) + get("exit_cost", month),
                 "nonres_vat_paid": get("vat_paid", month),
                 "nonres_vat_charged": get("vat_charged", month),
@@ -749,7 +749,7 @@ def hotel_overlay(x: dict, rates: list[dict[str, Any]], op: dict) -> dict[str, A
             "nonres_revenue": get("revenue", month) + get("exit_revenue", month)
             + get("residual_value", month),
             "nonres_residual_value": get("residual_value", month),
-            "nonres_costs": get("opex", month) + get("property_tax", month)
+            "nonres_costs": get("opex_cash" if "opex_cash" in series else "opex", month) + get("property_tax", month)
             + get("insurance", month) + get("exit_cost", month),
             "nonres_vat_paid": get("vat_paid", month),
             "nonres_loan_draw": get("loan_draw", month),

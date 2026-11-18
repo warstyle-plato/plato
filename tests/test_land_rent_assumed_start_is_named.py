@@ -15,7 +15,10 @@ ASK_RENT = 'Предварительный расчёт'
 
 
 def calculated(**changes):
-    inputs = rental_inputs(land_rent_regime_start=None, land_rights_cost_mln=0)
+    # Isolate the start-date assumption: the VRI event may exist at zero
+    # fee, but its confirmed future base equals the current base here.
+    inputs = rental_inputs(land_rent_regime_start=None, land_rights_cost_mln=0,
+                           land_rent_cadastral_target_mln=100)
     inputs.update(changes)
     return core.calculate(core.CalcRequest(inputs=inputs, tep=copy.deepcopy(core.TEP_DEFAULT), rates=[]))
 
@@ -33,7 +36,7 @@ def test_computed_rent_keeps_unknown_state_and_names_its_assumed_start():
 
 @pytest.mark.parametrize('changes', [
     {'land_rent_rates': []},
-    {'land_rent_termination_date': None},
+    {'land_rent_registration_months': -1},
     {'land_rent_cadastral_target_mln': None, 'land_rights_cost_mln': 100},
     {'land_rent_tail_rule': 'unknown'},
 ])
@@ -85,7 +88,8 @@ def test_native_page_keeps_assumptions_in_state_and_uses_a_compact_rent_notice(w
             if page.locator('#iaFabHint button').count():
                 page.locator('#iaFabHint button').click()
             page.evaluate('''async x=>{Object.assign(inputs,x);renderInputs();await settledCalculate()}''',
-                          rental_inputs(land_rent_regime_start=None, land_rights_cost_mln=0))
+                          rental_inputs(land_rent_regime_start=None, land_rights_cost_mln=0,
+                                        land_rent_cadastral_target_mln=100))
             page.locator('.ia-nav').get_by_role('button', name='Результат', exact=True).click()
             expect(page.locator('#iaVerdictTitle')).to_have_text(ASK_DATE)
             assert not page.locator('#iaVerdict').evaluate("e=>e.classList.contains('pass')")

@@ -301,6 +301,9 @@ def project_save(owner: int, name: str, payload: dict[str, Any],
     body = json.dumps(payload or {}, ensure_ascii=False)
     if len(body.encode("utf-8")) > _PROJECT_PAYLOAD_LIMIT:
         raise HTTPException(status_code=413, detail="Проект слишком велик для хранилища")
+    payload = json.loads(body)
+    if isinstance(payload.get("inputs"), dict):
+        normalize_mo_vri_region(payload["inputs"])
     directory = _project_dir(owner)
     directory.mkdir(parents=True, exist_ok=True)
     existing = sorted(directory.glob("*.json"))

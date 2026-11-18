@@ -6,6 +6,7 @@ statutory payment calendar. No missing input is converted to a zero rate.
 from __future__ import annotations
 
 import calendar
+import copy
 import math
 import re
 from collections import defaultdict
@@ -55,7 +56,8 @@ CONVENTION = "Плановое начисление по фактическим 
 
 
 def page_spec() -> dict[str, Any]:
-    return {"presets": PRESETS, "convention": CONVENTION}
+    import developaid_land_cadastral
+    return {"presets": PRESETS, "convention": CONVENTION, "cadastral_methodology": developaid_land_cadastral.METHODOLOGY}
 
 
 def _mapping(value: Any) -> dict:
@@ -67,6 +69,96 @@ def excluded_input_vat_articles(result: dict[str, Any]) -> tuple[str, ...]:
     a deduction; that conservative exclusion is disclosed by the importer.
     """
     return ("land_tax", "land_use_other") + (() if result.get("vat_treatment") == "taxable" else ("land_rent",))
+
+
+def construction_plan(result: dict[str, Any], object_key: str) -> dict[str, Any]:
+    """Accrued development cost and its seller liability are separate clocks.
+
+    Gross eligible VAT base is an accrual input, not a new deduction right.
+    The hotel consumer applies its existing eligible input-VAT treatment;
+    office common costs retain their existing non-deductible classification.
+    Calendar keys remain ISO dates until the application caller converts them.
+    """
+    accrued = {month:value for month,value in
+               ((result.get("construction_accrual_monthly_by_object") or {}).get(object_key) or {}).items() if value}
+    cash = {month:value for month,value in
+            ((result.get("construction_monthly_by_object") or {}).get(object_key) or {}).items() if value}
+    complete = bool(result.get("complete") and not result.get("financial_missing"))
+    return {
+        "land_rent_construction_incurred": accrued,
+        "land_rent_construction_cash": cash,
+        "land_rent_construction_vat_exempt": result.get("vat_treatment") != "taxable",
+        "land_rent_construction_input_vat_base": dict(accrued) if result.get("vat_treatment") == "taxable" else {},
+        "land_rent_construction_complete": complete,
+        "land_rent_construction_cash_complete": complete and result.get("construction_cash_complete", True) is True,
+    }
+
+
+def stream_totals(result: dict[str, Any]) -> dict[str, Any]:
+    """Scalar metadata for exactly the supplied lease streams.
+
+    ``construction_total`` retains its legacy meaning: all accrued rent for
+    the covered lease period. The two explicit accrual totals distinguish
+    development from operation without changing that existing alias.
+    """
+    known = result.get("construction_total") is not None
+    development_cash = result.get("construction_monthly", result.get("monthly")) or {}
+    development_accrual = result.get("construction_accrual_monthly", result.get("accrual_monthly")) or {}
+    operating_cash = result.get("operating_monthly_by_object") or {}
+    operating_accrual = result.get("operating_accrual_monthly_by_object") or {}
+    return {
+        "cash_total":sum((result.get("monthly") or {}).values()),
+        "development_cash_total":sum(development_cash.values()),
+        "operating_cash_total":sum(sum(own.values()) for own in operating_cash.values()),
+        "development_accrual_total":sum(development_accrual.values()) if known else None,
+        "operating_accrual_total":sum(sum(own.values()) for own in operating_accrual.values()) if known else None,
+    }
+
+
+def sync_construction_cash(result: dict[str, Any], cash: dict[str, float]) -> None:
+    """Refresh an overlaid article without treating payments as service dates.
+
+    Existing explicit exposure shares may allocate cash for the forecast.
+    That model allocation is disclosed and does not become a primary fact.
+    Accruals and the separately modelled operating cash remain unchanged.
+    """
+    previous = result.get("construction_monthly") or {}
+    changed = cash != previous
+    if changed:
+        by_object = result.get("construction_monthly_by_object") or {}
+        weights: dict[str, float] = defaultdict(float)
+        for item in result.get("land_exposures") or []:
+            share = _number(item.get("share"))
+            if share is not None and share >= 0 and item.get("object_key"):
+                weights[item["object_key"]] += share
+        allocated = {key:{} for key in weights}
+        unallocated = {}
+        for month, value in cash.items():
+            old_total = sum(own.get(month,0.0) for own in by_object.values())
+            own_weights = ({key:own.get(month,0.0)/old_total for key,own in by_object.items()}
+                           if old_total else weights)
+            if not own_weights or not math.isclose(sum(own_weights.values()),1.0,abs_tol=1e-9):
+                unallocated[month] = value
+                continue
+            for key, weight in own_weights.items():
+                allocated.setdefault(key,{})[month] = value*weight
+        result["construction_monthly_by_object"] = allocated
+        result["unallocated_construction_cash"] = unallocated
+        result["construction_cash_complete"] = False
+        result["construction_cash_allocation"] = {
+            "kind":"model", "primary_fact":False,
+            "source":"Существующие явные доли объектов; месяцы с прежним графиком сохраняют его распределение",
+            "reason":"Факт оплаты аренды не подтверждает объект и период начисления; распределение по объектам остаётся модельной оценкой.",
+        }
+        result["notes"] = list(dict.fromkeys([*result.get("notes",[]),result["construction_cash_allocation"]["reason"]]))
+    result["construction_monthly"] = dict(cash)
+    result["development_cash_total"] = sum(cash.values())
+    combined = defaultdict(float,cash)
+    for own in (result.get("operating_monthly_by_object") or {}).values():
+        for month,value in own.items():
+            combined[month] += value
+    result["monthly"] = dict(sorted(combined.items()))
+    result["cash_total"] = result["applied_total"] = sum(combined.values())
 
 
 def construction_cutoff(housing_rve: date, object_dates: dict[str, date], *, pure_nonres: bool = False) -> date:
@@ -121,6 +213,123 @@ PHASE_SHARE_BASIS = {
     "gns_preliminary": "предварительно по ГНС очередей, потому что не известны ни площадь участка очередей, ни общая площадь их объектов",
     "equal_preliminary": "предварительно поровну, потому что не известны ни площадь участка очередей, ни площадь их объектов",
 }
+
+
+def registration_months(inputs: dict[str, Any]) -> int:
+    """Signed scenario, not a legal deadline or an extra confirmation gate."""
+    raw = inputs.get("land_rent_registration_months")
+    value = 3 if raw in (None, "") else _number(raw)
+    return int(value) if value is not None and 0 <= value <= 120 and value == int(value) else 3
+
+
+def payment_horizon(inputs: dict[str, Any], project_start: date, minimum_end: date) -> date:
+    """Seller payment calendar can outlive the asset; it does not move RVE."""
+    if inputs.get("land_rent_payment_mode") != "manual":
+        return minimum_end
+    end = minimum_end
+    for raw in str(inputs.get("land_rent_payment_schedule") or "").split(";"):
+        if not raw.strip():
+            continue
+        match = re.fullmatch(r'\s*([0-9]+(?:[.,][0-9]+)?)\s*(%)?\s*@\s*([0-9]+)\s*',raw)
+        if not match:
+            return minimum_end
+        amount, _, offset = match.groups()
+        if int(offset) > 1200:
+            return minimum_end
+        if float(amount.replace(",",".")) > 0:
+            end = max(end,_next_month(_add_months(project_start,int(offset))))
+    return end
+
+
+def planning_exposures(inputs: dict[str, Any], commissioning: date, *,
+                       housing_area: float | None, objects: list[dict[str, Any]],
+                       housing: bool = True) -> tuple[list[dict[str, Any]], list[str]]:
+    """One parcel split by canonical total area, with independent exit dates.
+
+    Object dates/areas come from the operating model, never from a second
+    strategy calculator. A missing mixed allocation is explicitly incomplete.
+    """
+    lag = registration_months(inputs)
+    items = [dict(item) for item in objects]
+    missing = []
+    if housing:
+        items.insert(0, {"id": "housing", "object_key": "housing", "name": "Жильё и встроенные помещения",
+            "total_area": housing_area, "commissioning": commissioning.isoformat(),
+            "lease_exit": _add_months(commissioning, lag).isoformat(), "policy": "sale_registration",
+            "registration_months": lag,
+            "source": "Сценарное допущение: до регистрации первых квартир после ввода"})
+    if not items:
+        missing.append("Не определены объекты арендуемого участка и срок владения: добавьте объект проекта.")
+        items = [{"id": "unallocated", "object_key": "unallocated", "total_area": None,
+            "commissioning": commissioning.isoformat(), "lease_exit": _add_months(commissioning, lag).isoformat(),
+            "policy": "unallocated", "source": "Не определены объекты арендуемого участка"}]
+    raw_lag = inputs.get("land_rent_registration_months")
+    lag_value = _number(raw_lag) if raw_lag not in (None, "") else 3
+    if housing and (lag_value is None or lag_value < 0 or lag_value > 120 or lag_value != int(lag_value)):
+        missing.append("Срок аренды после ввода до регистрации должен быть целым числом месяцев от 0 до 120; пока принято сценарное допущение 3 месяца.")
+    areas = [_number(item.get("total_area")) for item in items]
+    if len(items) > 1 and (any(area is None or area < 0 for area in areas) or sum(a or 0 for a in areas) <= 0):
+        missing.append("Не определено распределение арендуемой земли между жильём и нежилыми объектами: заполните общую площадь каждого объекта.")
+        first = min((_date(item.get("lease_exit")) for item in items if _date(item.get("lease_exit"))), default=commissioning)
+        items = [{"id": "unallocated", "object_key": "unallocated", "share": 1.0,
+            "commissioning": commissioning.isoformat(), "lease_exit": first.isoformat(), "policy": "unallocated",
+            "source": "Известная общая часть; аренда после этой даты ещё не распределена"}]
+    else:
+        total = sum(a or 0 for a in areas)
+        for item, area in zip(items, areas):
+            item["share"] = (area / total if total else 1.0) if len(items) > 1 else 1.0
+    manual = _date(inputs.get("land_rent_manual_cutoff"))
+    termination = _date(inputs.get("land_rent_termination_date"))
+    for item in items:
+        item.setdefault("phase_index", 0)
+        item.setdefault("retained", item.get("policy") == "income_horizon")
+        item.setdefault("name", str(item.get("object_key") or item["id"]))
+        end = _date(item.get("lease_exit"))
+        object_raw = _mapping(inputs.get("land_rent_exposure_exit_dates")).get(item["id"])
+        object_manual = _date(object_raw)
+        if object_raw and object_manual is None:
+            missing.append("Не распознана дата выхода из аренды объекта «" + item["name"] + "»; взят сценарный срок.")
+        if object_manual is not None:
+            end = object_manual
+            item.update(manual_exit=object_manual.isoformat(),policy="manual",source="Дата выхода объекта из аренды введена пользователем")
+        elif manual is not None:
+            end = manual
+            item.update(policy="manual", source="Дата выхода из арендного расчёта введена пользователем")
+        if end is None:
+            missing.append("Не определена дата выхода из аренды объекта «" + item["name"] + "».")
+            end = commissioning
+        item["lease_exit"] = min(end, termination).isoformat() if termination else end.isoformat()
+    return items, missing
+
+
+def qualify_exposures(result: dict[str, Any], reasons: list[str]) -> dict[str, Any]:
+    if reasons and result.get("status") != "not_applicable":
+        result["financial_missing"] = list(dict.fromkeys([*result.get("financial_missing", []), *reasons]))
+        result["financial_missing_codes"] = list(dict.fromkeys([*result.get("financial_missing_codes", []), "land_exposures"]))
+        result["financial_complete"] = False
+        result["status"] = "preliminary" if result.get("complete") else "incomplete"
+    return result
+
+
+def attach_valuation(inputs: dict[str, Any], result: dict[str, Any], project_start: date,
+                     commissioning: date, project_end: date, *, cadastral_switch: date | None = None) -> dict[str, Any]:
+    """Contractual forward-year accrual for the buyer, never seller cash."""
+    items = copy.deepcopy(result.get("land_exposures") or [])
+    if not any(item.get("retained") for item in items):
+        return result
+    for item in items:
+        if item.get("retained"):
+            item["lease_exit"] = _add_months(_date(item["lease_exit"]), 12).isoformat()
+    horizon = max([project_end, *[_date(item["lease_exit"]) for item in items]])
+    valuation = build(inputs, project_start, commissioning, horizon, cadastral_switch=cadastral_switch, exposures=items)
+    result["valuation"] = valuation
+    result["valuation_complete"] = bool(valuation.get("complete") and not valuation.get("financial_missing") and
+                                        not valuation.get("missing") and valuation.get("scope_complete", True))
+    result["valuation_missing"] = list(dict.fromkeys([*valuation.get("missing", []), *valuation.get("financial_missing", [])]))
+    if not result["valuation_complete"]:
+        qualify_exposures(result,["Для оценки удерживаемого объекта не полностью определена аренда следующего года: "+
+            " ".join(result["valuation_missing"])])
+    return result
 
 
 def phase_release(rves: list[date], cutoff: date,
@@ -350,7 +559,8 @@ def vri_premium(x: dict[str, Any]) -> dict[str, Any]:
 
 def build(inputs: dict[str, Any], project_start: date, rve: date,
           project_end: date | None = None, *, cadastral_switch: date | None = None,
-          phase_land: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+          phase_land: list[dict[str, Any]] | None = None,
+          exposures: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """Known accrual parts are usable; unknown total is always None.
 
     All returned date keys are ISO strings, suitable for saved/public API.
@@ -361,12 +571,26 @@ def build(inputs: dict[str, Any], project_start: date, rve: date,
     cadastral value after the change. ``phase_land`` — queues' shares of the
     parcel with the dates their land leaves the lease (``phase_release``).
     """
-    x = inputs or {}
-    end = project_end or rve
+    import developaid_land_cadastral
+    x = developaid_land_cadastral.prepare(inputs)
+    end = payment_horizon(x,project_start,project_end or rve)
     derived_rve = rve
-    release = [(float(p["share"]), _date(p["rve"])) for p in (phase_land or [])]
-    phased = len(release) > 1
-    if phased:
+    geometry = exposures if exposures is not None else phase_land
+    release = [(_number(p.get("share")), _date(p.get("lease_exit" if exposures is not None else "rve")))
+               for p in (geometry or []) if isinstance(p, dict)]
+    phased = exposures is not None or len(phase_land or []) > 1
+    valid_release = (bool(release) and len(release) == len(geometry or [])
+        and all(share is not None and share >= 0 and day is not None and 1900 <= day.year <= 2200
+                for share, day in release)
+        and math.isclose(sum(share for share, _ in release if share is not None), 1.0, abs_tol=1e-9))
+    if exposures is not None and valid_release:
+        ids = [item.get("id") for item in exposures]
+        indices = [item.get("phase_index", 0) for item in exposures]
+        valid_release = (all(isinstance(key, str) and key for key in ids) and len(set(ids)) == len(ids)
+            and all(type(index) is int and index >= 0 for index in indices)
+            and set(indices) == set(range(max(indices) + 1))
+            and all(_date(item.get("commissioning")) is not None for item in exposures))
+    if phased and valid_release:
         rve = max(r for _, r in release)
         end = max(end, rve)
     raw_manual_cutoff = None if phased else x.get("land_rent_manual_cutoff")
@@ -380,6 +604,7 @@ def build(inputs: dict[str, Any], project_start: date, rve: date,
         "schema_version": 1, "status": "incomplete", "complete": False,
         "financial_complete": False, "total": None, "known_total": 0.0,
         "construction_total": None, "cash_total": 0.0, "monthly": {}, "accrual_monthly": {},
+        "development_accrual_total": None, "operating_accrual_total": None,
         "annual_rows": [], "missing": [], "notes": [], "financial_missing": [], "financial_missing_codes": ["inputs"], "source": "",
         "convention": CONVENTION, "cash_schedule_estimated": True,
         "scope": "До сценарного ввода; после ввода — отдельный режим",
@@ -399,6 +624,15 @@ def build(inputs: dict[str, Any], project_start: date, rve: date,
         "cutoff_field_origin": _mapping(x.get("_field_origin")).get("inputs.land_rent_manual_cutoff"),
         "assumptions": [],
     }
+    if exposures is not None:
+        out["land_exposures"] = [dict(item) for item in exposures]
+        out["scope"] = "По долям земли до сценарных дат регистрации жилья или выхода из владения нежилыми объектами"
+        out["commissioning"] = derived_rve.isoformat()
+        out["cutoff_origin"] = "exposures"
+        out["cutoff_basis"] = "Аренда учитывается по долям земли до выхода каждого объекта; ввод и условия ПФ от этой даты не меняются"
+        out["registration_months"] = registration_months(x)
+        out["assumptions"].append("Для жилья приняты " + str(registration_months(x)) +
+            " мес. аренды после ввода до регистрации первых квартир. Это редактируемое сценарное допущение, а не подтверждение прекращения договора. Нежилые объекты в собственности застройщика учитываются до конца их операционного горизонта.")
     missing = out["missing"]
     # Unconfirmed but not contradicted conditions: the rent is counted and
     # the result is preliminary, instead of silently leaving it out of costs.
@@ -406,8 +640,28 @@ def build(inputs: dict[str, Any], project_start: date, rve: date,
     if mode == "not_applicable" or x.get("land_right", "ownership") == "ownership":
         out.update(status="not_applicable", complete=True, financial_complete=True,
                    total=0.0, construction_total=0.0, cash_schedule_estimated=False,
+                   development_accrual_total=0.0, operating_accrual_total=0.0,
                    source="Аренда не применяется: выбранное право собственности" if mode == "unspecified" else "По выбранному пользователем режиму аренда не применяется", financial_missing_codes=[])
         return out
+    if phased and not valid_release:
+        missing.append("Для аренды нужны даты выхода всех очередей и неотрицательные доли участка в сумме 100%.")
+        out["post_rve_unknown"] = end > max(rve, project_start)
+        out["post_rve_policy"] = "unmodelled"
+        return out
+    if phased:
+        # Missing contract/base/rate inputs do not erase the parcel geometry.
+        # The editable book still needs every exit date when the owner fills
+        # those inputs later; an empty known amount is not a missing queue.
+        out["phase_land"] = [{"share": share, "rve": day.isoformat(),
+                              "accrual_total": 0.0, "cash_total": 0.0}
+                             for share, day in release]
+        out["phase_shares"] = [share for share, _ in release]
+        if exposures is not None:
+            out["phase_land"] = [{"share": sum(float(item["share"]) for item in exposures if item.get("phase_index", 0) == p),
+                "rve": max(item["lease_exit"] for item in exposures if item.get("phase_index", 0) == p),
+                "accrual_total": 0.0, "cash_total": 0.0}
+                for p in range(max(item.get("phase_index", 0) for item in exposures) + 1)]
+            out["phase_shares"] = [item["share"] for item in out["phase_land"]]
     if mode == "unspecified":
         missing.append("Для арендуемой земли не заданы кадастровая база, дата и годовые ставки аренды.")
         return out
@@ -454,6 +708,12 @@ def build(inputs: dict[str, Any], project_start: date, rve: date,
     out["base_kind"] = base_kind
     out["base_origin"] = _mapping(x.get("_field_origin")).get("inputs.land_rent_cadastral_mln" if base_kind == "cadastral_percent" else "inputs.land_rent_annual_base_mln")
     base = _number(x.get("land_rent_cadastral_mln" if base_kind == "cadastral_percent" else "land_rent_annual_base_mln"))
+    out["base_value_mln"] = base
+    out["cadastral_estimate"] = x.get("_land_rent_cadastral_estimate")
+    out["target_cadastral_origin"] = _mapping(x.get("_field_origin")).get("inputs.land_rent_cadastral_target_mln")
+    target_origin = _mapping(out["target_cadastral_origin"])
+    out["target_cadastral_kind"] = target_origin.get("value_type") or (
+        "estimate" if target_origin.get("kind") == "land_rent_estimate" and target_origin.get("source") != "manual" else "manual_confirmed")
     if base_kind not in ("cadastral_percent", "annual_amount") or (preset and base_kind != "cadastral_percent"):
         missing.append("Для выбранного режима не подтверждена база аренды.")
     if base is None or base <= 0:
@@ -490,12 +750,31 @@ def build(inputs: dict[str, Any], project_start: date, rve: date,
     # VRI change: before the change date the base is the current cadastral
     # value, from it — the value after the change (owner's decision).
     target = _number(x.get("land_rent_cadastral_target_mln")) if base_kind == "cadastral_percent" else None
-    switch = cadastral_switch if target and base and target > 0 and abs(target - base) > 1e-9 else None
+    raw_change_date = x.get("land_rent_cadastral_change_date")
+    if raw_change_date and _date(raw_change_date) is None and x.get("land_rent_vri_change") is not False:
+        missing.append("Не распознана дата применения новой кадастровой стоимости. Укажите дату из ЕГРН или оставьте поле пустым для сценарной даты.")
+    out["cadastral_change"] = ({"date": cadastral_switch.isoformat(),
+        "estimated": not bool(raw_change_date),
+        "basis": "Указанная дата применения новой КС" if raw_change_date else "Сценарная дата смены ВРИ; уточните дату применения новой КС по ЕГРН"}
+        if cadastral_switch else None)
+    switch = cadastral_switch if target and base and target > 0 else None
     out["cadastral_switch"] = ({"date": switch.isoformat(), "current_mln": base, "target_mln": target,
                                 "origin": _mapping(x.get("_field_origin")).get("inputs.land_rent_cadastral_target_mln")}
                                if switch else None)
     if target and target > 0 and base and abs(target - base) > 1e-9 and switch is None:
-        out["notes"].append("Кадастровая стоимость после смены ВРИ не применена: в проекте нет платы за смену ВРИ, поэтому нет и даты смены.")
+        out["notes"].append("Кадастровая стоимость после смены ВРИ не применена: событие смены ВРИ не задано или отключено.")
+    if switch and out["target_cadastral_kind"] == "estimate":
+        preliminary.append(("cadastral_estimate", "После смены ВРИ применяется расчётная оценка будущей КС, а не официальная новая стоимость из ЕГРН."))
+        estimate = out.get("cadastral_estimate") or {}
+        if estimate.get("region") == "msk" and estimate.get("applied") and any(
+                not p.get("source") or not p.get("source_date") or not p.get("target_use") or not p.get("valuation_territory") for p in estimate.get("parcels", [])):
+            preliminary.append(("cadastral_parameters", "Для оценки КС Москвы укажите целевой ВРИ, группу и территорию оценки, источник и дату земельного УПКС каждого арендуемого участка."))
+    if cadastral_switch and not raw_change_date:
+        text = "Для аренды дата применения новой КС пока сценарная: принята дата смены ВРИ. Уточните её по ЕГРН."
+        if switch and abs(target - base) > 1e-9:
+            preliminary.append(("cadastral_date", text))
+        else:
+            out["notes"].append(text)
     if cadastral_switch and base_kind == "cadastral_percent" and not (target and target > 0):
         preliminary.append(("cadastral_change", "Кадастровая стоимость участка после смены ВРИ не указана, поэтому аренда и после смены ВРИ считается от нынешней стоимости. Впишите новую стоимость, когда она станет известна."))
     if switch and mode == "mo_housing_new_2026":
@@ -551,6 +830,7 @@ def build(inputs: dict[str, Any], project_start: date, rve: date,
     # Allocate within each rate/index/exclusion segment, before month totals
     # lose that information. Payments and every consumer reuse these amounts.
     phase_accrual = [defaultdict(float) for _ in release]
+    development_accrual = [defaultdict(float) for _ in release]
     indices: dict[int, float | None] = {}
     if mode == "mo_housing_new_2026":
         raw_indices = x.get("land_rent_calendar_indices") or []
@@ -651,6 +931,10 @@ def build(inputs: dict[str, Any], project_start: date, rve: date,
                         whole = weighted(month, finish)
                         for i, own in enumerate(phase_accrual):
                             own[month_key] += amount * weighted(month, finish, only=i) / whole if whole else 0.0
+                            until = (_date(exposures[i].get("commissioning")) if exposures is not None and
+                                     (exposures[i].get("retained") or exposures[i].get("policy") == "income_horizon") else finish)
+                            hi_development = max(month, min(finish, until))
+                            development_accrual[i][month_key] += amount * weighted(month, hi_development, only=i) / whole if whole else 0.0
                     construction_known += amount
                     row["known_amount"] += amount
                     if row["amount"] is not None:
@@ -676,7 +960,19 @@ def build(inputs: dict[str, Any], project_start: date, rve: date,
     after_unknown = False
     after_start = max(rve, project_start, anchor)
     after_end = min(end, termination) if termination else end
-    if after_start < after_end:
+    # The owner's phased investment scenario already releases every part of
+    # the parcel on its own exit date. Residual sales after the last release
+    # do not create another, unmodelled parcel. This is a modelling boundary,
+    # not evidence that the lease contract legally ends on commissioning.
+    phased_release_complete = phased and valid_release
+    out["post_rve_policy"] = ("object_exposure_exit" if exposures is not None else "proportional_phase_release") if phased_release_complete else "unmodelled"
+    if phased_release_complete:
+        out["scope"] = "До выхода каждой доли участка из инвестиционного расчёта по датам очередей"
+        if exposures is None:
+            out["assumptions"].append(
+                "Аренда уменьшается пропорционально долям очередей по датам выхода; после выхода последней доли "
+                "аренда в инвестиционном расчёте равна нулю. Это допущение расчёта, а не подтверждение прекращения договора.")
+    if after_start < after_end and not phased_release_complete:
         after_unknown = True
         out["notes"].append("Аренда после ввода требует отдельного расчёта и не считается прекращённой по одной дате ввода.")
     out["post_rve_unknown"] = after_unknown
@@ -714,6 +1010,62 @@ def build(inputs: dict[str, Any], project_start: date, rve: date,
                              for (share, r), b, c in zip(release, phase_accrual, phase_cash)]
         cash = out["cash_total"]
         out["phase_shares"] = [p["cash_total"] / cash if cash else share for p, (share, _) in zip(out["phase_land"], release)]
+        if exposures is not None:
+            for i, item in enumerate(out["land_exposures"]):
+                item.update(accrual_total=sum(phase_accrual[i].values()), cash_total=sum(phase_cash[i].values()),
+                            monthly=out["phase_monthly"][i], accrual_monthly=out["phase_accrual_monthly"][i])
+                if out["cash_schedule_estimated"]:
+                    development = {m.isoformat(): value for m,value in development_accrual[i].items()}
+                else:
+                    fraction = sum(development_accrual[i].values()) / item["accrual_total"] if item["accrual_total"] else 1.0
+                    development = {month:value*fraction for month,value in item["monthly"].items()}
+                item["construction_monthly"] = development
+                item["operating_monthly"] = {month:value-development.get(month,0.0) for month,value in item["monthly"].items()}
+                item["construction_accrual_monthly"] = {month.isoformat():value for month,value in development_accrual[i].items()}
+                item["operating_accrual_monthly"] = {month:value-item["construction_accrual_monthly"].get(month,0.0) for month,value in item["accrual_monthly"].items()}
+            construction_cash = defaultdict(float)
+            construction_accrual = defaultdict(float)
+            construction_cash_by_object: dict[str, Any] = {}
+            construction_accrual_by_object: dict[str, Any] = {}
+            operating_cash: dict[str, Any] = {}
+            operating_accrual: dict[str, Any] = {}
+            for item in out["land_exposures"]:
+                own_construction_cash = construction_cash_by_object.setdefault(item["object_key"], defaultdict(float))
+                for month,value in item["construction_monthly"].items():
+                    construction_cash[month] += value
+                    own_construction_cash[month] += value
+                own_construction_accrual = construction_accrual_by_object.setdefault(item["object_key"], defaultdict(float))
+                for month,value in item["construction_accrual_monthly"].items():
+                    construction_accrual[month] += value
+                    own_construction_accrual[month] += value
+                own = operating_cash.setdefault(item["object_key"], defaultdict(float))
+                for month,value in item["operating_monthly"].items():
+                    own[month] += value
+                own_accrual = operating_accrual.setdefault(item["object_key"], defaultdict(float))
+                for month,value in item["operating_accrual_monthly"].items():
+                    own_accrual[month] += value
+            out["construction_monthly"] = dict(construction_cash)
+            out["construction_accrual_monthly"] = dict(construction_accrual)
+            out["construction_monthly_by_object"] = {key:dict(value) for key,value in construction_cash_by_object.items()}
+            out["construction_accrual_monthly_by_object"] = {key:dict(value) for key,value in construction_accrual_by_object.items()}
+            out["operating_monthly_by_object"] = {key:dict(value) for key,value in operating_cash.items()}
+            out["operating_accrual_monthly_by_object"] = {key:dict(value) for key,value in operating_accrual.items()}
+            out["development_cash_total"] = sum(construction_cash.values())
+            out["operating_cash_total"] = sum(sum(own.values()) for own in operating_cash.values())
+            phase_count = max(int(item.get("phase_index", 0)) for item in exposures) + 1
+            def grouped(series):
+                result = [defaultdict(float) for _ in range(phase_count)]
+                for item, own in zip(exposures, series):
+                    for month, value in own.items():
+                        result[int(item.get("phase_index", 0))][month] += value
+                return [dict(own) for own in result]
+            out["phase_monthly"] = grouped(out["phase_monthly"])
+            out["phase_accrual_monthly"] = grouped(out["phase_accrual_monthly"])
+            out["phase_land"] = [{"share": sum(float(item["share"]) for item in exposures if int(item.get("phase_index", 0)) == p),
+                "rve": max(item["lease_exit"] for item in exposures if int(item.get("phase_index", 0)) == p),
+                "cash_total": sum(out["phase_monthly"][p].values()),
+                "accrual_total": sum(out["phase_accrual_monthly"][p].values())} for p in range(phase_count)]
+            out["phase_shares"] = [item["cash_total"] / cash if cash else item["share"] for item in out["phase_land"]]
     out["financial_complete"] = out["complete"] and not after_unknown and not out["cash_schedule_estimated"] and not tax_unknown and not out["financial_missing"]
     out["financial_missing_codes"] = list(dict.fromkeys([*out["financial_missing_codes"],
         *(["inputs"] if missing else []), *(["post_rve"] if after_unknown else []),
@@ -721,6 +1073,7 @@ def build(inputs: dict[str, Any], project_start: date, rve: date,
     out["status"] = "complete" if out["financial_complete"] else "preliminary" if out["complete"] else "incomplete"
     if out["cash_schedule_estimated"]:
         out["notes"].append("Плановое начисление; сроки оплаты уточняются по договору. Для Москвы первый год может оплачиваться единовременно по п. 3.2.2.")
+    out.update(stream_totals(out))
     return out
 
 

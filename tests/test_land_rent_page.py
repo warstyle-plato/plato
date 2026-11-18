@@ -1,3 +1,5 @@
+import calendar
+import datetime as dt
 from pathlib import Path
 
 import pytest
@@ -6,6 +8,17 @@ import main
 from tests import browser
 
 core = main.core
+
+
+def _housing_rent_until_registration(first_year_rate):
+    """Independent Actual/Actual oracle: two build years and three months after RVE."""
+    day, exit_date = dt.date(2027, 1, 1), dt.date(2029, 4, 1)
+    total = 0.0
+    while day < exit_date:
+        rate = first_year_rate if day < dt.date(2028, 1, 1) else 3
+        total += 100e6 * rate / 100 / (366 if calendar.isleap(day.year) else 365)
+        day += dt.timedelta(days=1)
+    return total
 
 
 # Корень прода — со слоем IA, /classic — прежний вид: проверяются оба, и какой
@@ -32,7 +45,7 @@ def test_rental_editor_uses_real_page_retains_rates_and_recalculates(width, surf
             else:
                 assert not page.locator("body.ia-on").count()
             page.evaluate("""async()=>{
-                Object.assign(inputs,{land_right:'lease',vri_region:'msk',land_rent_mode:'manual',
+                Object.assign(inputs,{land_right:'lease',vri_region:'msk',vri_required:false,land_rent_mode:'manual',
                   land_rent_cadastral_mln:100,land_rent_regime_start:'2027-01-01',
                   land_rent_rates:[{year:1,rate_pct:1.5},{year:2,rate_pct:3}],
                   land_rent_tail_rule:'repeat_last',land_rent_vat_treatment:'public_exempt',
@@ -46,7 +59,12 @@ def test_rental_editor_uses_real_page_retains_rates_and_recalculates(width, surf
             browser.open_vri(page)
             assert page.locator("#landRentEditor").is_visible()
             assert page.locator("#f_land_rent_cadastral_mln").input_value() == "100"
-            assert page.evaluate("lastResult.land_rent.construction_total") == pytest.approx(4.5e6)
+            assert page.evaluate("inputs.land_rent_registration_months") == 3
+            assert page.evaluate("lastResult.land_rent.housing_rve") == "2029-01-01"
+            assert page.evaluate("lastResult.land_rent.land_exposures.map(p=>({id:p.id,share:p.share,commissioning:p.commissioning,lease_exit:p.lease_exit}))") == [
+                {"id": "housing", "share": 1, "commissioning": "2029-01-01", "lease_exit": "2029-04-01"}]
+            assert page.evaluate("lastResult.land_rent.construction_total") == pytest.approx(
+                _housing_rent_until_registration(1.5), abs=.01)
             page.locator('#landRentEditor [data-land-rent-advanced] > summary').click()
             page.locator('#landRentEditor details[data-land-rent-detail="conditions"] > summary').click()
             page.locator("#f_land_rent_mode").select_option("msk_mkd_3_2")
@@ -58,12 +76,15 @@ def test_rental_editor_uses_real_page_retains_rates_and_recalculates(width, surf
             field = page.locator("input[aria-label='Ставка за 1 год']")
             field.fill("2");field.dispatch_event("change")
             browser.wait_for_result(page)
-            assert page.evaluate("lastResult.land_rent.construction_total") == pytest.approx(5e6)
+            assert page.evaluate("lastResult.land_rent.construction_total") == pytest.approx(
+                _housing_rent_until_registration(2), abs=.01)
             page.reload(wait_until="domcontentloaded")
             browser.wait_for_result(page)
             browser.open_vri(page)
             assert page.evaluate("inputs.land_rent_rates[0].rate_pct") == 2
             assert page.locator("#f_land_rent_regime_start").input_value() == "2027-01-01"
+            assert page.evaluate("lastResult.land_rent.construction_total") == pytest.approx(
+                _housing_rent_until_registration(2), abs=.01)
             assert page.locator("#landRentSummary").get_by_text("Начислено по ставкам:", exact=False).count() > 0
             if width == 390:
                 assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 2")

@@ -260,6 +260,29 @@ def _chain(row: dict) -> dict[str, dict]:
     return {str(s.get("number")): s for s in registry.chain_steps(row)}
 
 
+def test_investment_method_amendments_are_distinct_from_the_rate_table() -> None:
+    """932-ПП меняет методику 1860-ПП, а 933-ПП устанавливает ставки N."""
+    rows = _rows()
+    method = rows["mo-1860-investment-projects"]
+    rates = rows["mo-933-investment-cost"]
+    chain = _chain(method)
+
+    assert chain["294-ПП"]["act_date"] == "26.03.2026"
+    assert chain["932-ПП"]["act_date"] == "07.08.2026"
+    official = next(source["url"] for source in method["verification"]["sources"]
+                    if source["label"] == "Официальная карточка последующей поправки 932-ПП")
+    assert chain["932-ПП"]["file_url"] == official
+    assert "S × N × Ки" in " ".join(chain["932-ПП"]["touches"])
+    assert "932-пп" in registry.cited_numbers([method])
+    assert "933-пп" not in registry.cited_numbers([method])
+    assert registry.cited_numbers([rates]) == {"933-пп"}
+    assert rates["scope"] == "Московская область"
+    assert rates["level"] == "mo" and rates["impact"] == "money"
+    section = next(section for section in registry.page_sections([rates])
+                   if rates in section["rows"])
+    assert section["key"] == "mo"
+
+
 def test_the_healthcare_card_has_a_text_and_names_the_27_sqm_ceiling() -> None:
     """2150-ПП стоял без ссылки на текст; 16.10.2026 сводный текст прочитан.
 

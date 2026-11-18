@@ -1,5 +1,6 @@
 """Actual v4 export consumes one global lease schedule, not one per queue."""
 import copy
+import datetime as dt
 import io
 import re
 import sys
@@ -23,6 +24,7 @@ def phased_lease():
         offices_gba_sqm=20000,offices_saleable_sqm=14000,
         offices_start="2030-01-01",offices_months=36)
     tep = copy.deepcopy(core.TEP_DEFAULT)
+    tep["offices"].update(gns=20000,total_area=20000,saleable=14000,useful=14000)
     phasing = {"enabled":True,"phase_count":2,"phase_gap_months":12,"cost_inflation_pct":20,
         "phases":[{"name":"Поздняя","start_offset_months":12,"construction_months":24},
                   {"name":"Ранняя","start_offset_months":0,"construction_months":24}],
@@ -95,7 +97,8 @@ def test_land_relations_heading_groups_separate_vri_and_rent_without_another_exp
 
 
 def test_editing_only_object_months_changes_rent_without_moving_housing_rve(phased_lease):
-    _,_,source,initial,_ = phased_lease
+    bundle,_,source,initial,_ = phased_lease
+    canonical = bundle["consolidated"]["land_rent"]
     workbook = copy.deepcopy(source)
     def editable(technical):
         formula = workbook["Параметры модели"][technical].value
@@ -106,34 +109,59 @@ def test_editing_only_object_months_changes_rent_without_moving_housing_rve(phas
     housing_rve = initial.cell("CF_2","B8")
     editable("K28").value = 48
     changed = Evaluator(workbook)
-    # Only the queue commissioned last holds its land until the objects finish.
-    late = max(_queue_rows(workbook), key=lambda r: initial.cell(v4_land_rent.SHEET,f"C{r}"))
-    last = initial.cell(v4_land_rent.SHEET,f"B{late}")
-    assert changed.cell(v4_land_rent.SHEET,"B19")-before == pytest.approx(3.0*last,abs=0.000001)
+    # Only the office's absolute parcel share stays for its extra year.
+    rows = _exposure_rows(workbook,canonical)
+    office = next(i for i,item in enumerate(canonical["land_exposures"]) if item["object_key"]=="offices")
+    share = initial.cell(v4_land_rent.SHEET,f"B{rows[office]}")
+    assert share > 0
+    assert changed.cell(v4_land_rent.SHEET,"B19")-before == pytest.approx(3.0*share,abs=0.000001)
+    for row,item in zip(rows,canonical["land_exposures"]):
+        assert changed.cell(v4_land_rent.SHEET,f"B{row}")==pytest.approx(item["share"])
+        if item["object_key"]=="housing":
+            assert changed.cell(v4_land_rent.SHEET,f"D{row}")==initial.cell(v4_land_rent.SHEET,f"D{row}")
     assert changed.cell("CF_2","B8") == housing_rve
     editable("K20").value = "Нет"
     disabled = Evaluator(workbook)
-    assert disabled.cell(v4_land_rent.SHEET,"B19") < before
+    # Removing sales does not erase the explicit parcel metres. It shortens
+    # this object's last-delivery tail on the same 48-month calendar.
+    end_before=_date_serial(changed.cell(v4_land_rent.SHEET,f"D{rows[office]}"))
+    end_after=_date_serial(disabled.cell(v4_land_rent.SHEET,f"D{rows[office]}"))
+    assert end_after<end_before
+    assert changed.cell(v4_land_rent.SHEET,"B19")-disabled.cell(v4_land_rent.SHEET,"B19")==pytest.approx(
+        3*share*(end_before-end_after)/365,abs=1e-6)
+    assert disabled.cell("CF_2","B8")==housing_rve
 
 
-def _queue_rows(workbook):
+def _date_serial(value):
+    return v4_land_rent._serial(value) if isinstance(value,(dt.date,dt.datetime)) else float(value)
+
+
+def _exposure_rows(workbook,canonical):
     sheet = workbook[v4_land_rent.SHEET]
-    return [r for r in range(1,sheet.max_row+1) if str(sheet[f"A{r}"].value or "").startswith("Очередь ")
-            and ":" not in str(sheet[f"A{r}"].value)]
+    head=next(r for r in range(1,sheet.max_row+1) if sheet[f"A{r}"].value=="Объект / очередь"
+              and sheet[f"B{r}"].value=="Доля участка")
+    rows=list(range(head+1,head+1+len(canonical["land_exposures"])))
+    assert [sheet[f"A{r}"].value for r in rows]==[p["name"] for p in canonical["land_exposures"]]
+    return rows
 
 
 def test_queue_commissioning_and_share_stay_editable_in_the_book(phased_lease):
-    _,_,source,initial,_ = phased_lease
+    bundle,_,source,initial,_ = phased_lease
+    canonical=bundle["consolidated"]["land_rent"]
     workbook = copy.deepcopy(source)
     sheet = workbook[v4_land_rent.SHEET]
-    rows = _queue_rows(workbook)
-    assert len(rows) == 2
+    rows = _exposure_rows(workbook,canonical)
+    assert len(rows) == 3
     before = [initial.cell("CAPEX",f"B{145+k}") for k in range(2)]
-    # A larger share of the early queue moves rent from the late one to it.
-    sheet[f"B{rows[0]}"], sheet[f"B{rows[1]}"] = 0.25, 0.75
+    # Transfer an absolute parcel share between the two housing exposures;
+    # the office keeps its own share and the parcel still sums to one.
+    transfer=0.1
+    sheet[f"B{rows[0]}"] = canonical["land_exposures"][0]["share"]-transfer
+    sheet[f"B{rows[1]}"] = canonical["land_exposures"][1]["share"]+transfer
     moved = Evaluator(workbook)
     assert moved.cell("CAPEX","B145") < before[0] and moved.cell("CAPEX","B146") > before[1]
-    sheet[f"B{rows[1]}"] = 0.5  # shares no longer sum to one: not a silent result
+    assert moved.cell(v4_land_rent.SHEET,f"B{rows[2]}")==pytest.approx(canonical["land_exposures"][2]["share"])
+    sheet[f"B{rows[1]}"] = canonical["land_exposures"][1]["share"]  # sum < 1 is incomplete, never renormalized
     assert Evaluator(workbook).cell(v4_land_rent.SHEET,"I20") == "Не полны"
 
 
@@ -178,32 +206,38 @@ def test_book_queue_share_follows_its_metres_and_rent_only_exit_date(phased_leas
     bundle,_,workbook,ev,_ = phased_lease
     canonical = bundle["consolidated"]["land_rent"]
     ws = workbook[v4_land_rent.SHEET]
-    head = next(r for r in range(1, ws.max_row+1)
-                if ws[f"A{r}"].value == "Очередь" and ws[f"B{r}"].value == "Доля участка")
-    first = head + 1
+    rows = _exposure_rows(workbook,canonical)
+    first,head=rows[0],rows[0]-1
     assert canonical["phase_share_basis"] == "total_area"
     assert ws[f"H{head}"].value == "Общая площадь объектов очереди, м²"
-    for k, p in enumerate(canonical["phase_land"]):
+    for k, p in enumerate(canonical["land_exposures"]):
         assert ws[f"H{first+k}"].value == pytest.approx(p["total_area"])
         assert ev.cell(v4_land_rent.SHEET, f"B{first+k}") == pytest.approx(p["share"])
-        assert ev.cell(v4_land_rent.SHEET, f"D{first+k}") == pytest.approx(v4_land_rent._serial(p["rve"]))
-    assert ev.cell(v4_land_rent.SHEET, "B15") == pytest.approx(v4_land_rent._serial(canonical["rve"]))
+        assert _date_serial(ev.cell(v4_land_rent.SHEET, f"D{first+k}")) == pytest.approx(v4_land_rent._serial(p["lease_exit"]))
+    assert _date_serial(ev.cell(v4_land_rent.SHEET, "B15")) == pytest.approx(v4_land_rent._serial(canonical["rve"]))
     saved = [ws[f"H{first}"].value, ws[f"I{first}"].value]
     try:
-        # Равные метры — равные доли; ручная дата выхода — только у этой очереди.
+        # Equal housing metres have equal shares; the office still occupies
+        # its own part of the parcel, so neither housing share becomes 1/2.
         ws[f"H{first}"] = ws[f"H{first+1}"].value
         ws[f"I{first}"] = v4_land_rent._serial("2027-06-01")
         fresh = Evaluator(workbook)
-        assert fresh.cell(v4_land_rent.SHEET, f"B{first}") == pytest.approx(0.5)
-        assert fresh.cell(v4_land_rent.SHEET, f"D{first}") == pytest.approx(v4_land_rent._serial("2027-06-01"))
-        assert fresh.cell(v4_land_rent.SHEET, f"C{first}") == pytest.approx(ev.cell(v4_land_rent.SHEET, f"C{first}"))
-        assert fresh.cell(v4_land_rent.SHEET, f"D{first+1}") == pytest.approx(ev.cell(v4_land_rent.SHEET, f"D{first+1}"))
+        housing=ws[f"H{first+1}"].value
+        office=ws[f"H{first+2}"].value
+        assert office>0
+        assert fresh.cell(v4_land_rent.SHEET, f"B{first}") == pytest.approx(housing/(2*housing+office))
+        assert fresh.cell(v4_land_rent.SHEET, f"B{first+1}") == pytest.approx(housing/(2*housing+office))
+        assert fresh.cell(v4_land_rent.SHEET, f"B{first+2}") == pytest.approx(office/(2*housing+office))
+        assert sum(fresh.cell(v4_land_rent.SHEET,f"B{r}") for r in rows)==pytest.approx(1)
+        assert _date_serial(fresh.cell(v4_land_rent.SHEET, f"D{first}")) == pytest.approx(v4_land_rent._serial("2027-06-01"))
+        assert _date_serial(fresh.cell(v4_land_rent.SHEET, f"C{first}")) == pytest.approx(_date_serial(ev.cell(v4_land_rent.SHEET, f"C{first}")))
+        assert _date_serial(fresh.cell(v4_land_rent.SHEET, f"D{first+1}")) == pytest.approx(_date_serial(ev.cell(v4_land_rent.SHEET, f"D{first+1}")))
     finally:
         ws[f"H{first}"], ws[f"I{first}"] = saved
     # Ручная дата последней очереди раньше общей границы: «Расчёт до» (B15)
     # идёт за фактическими датами выхода, как rve движка, а не за границей.
-    n = len(canonical["phase_land"])
-    exits = [ev.cell(v4_land_rent.SHEET, f"D{first+k}") for k in range(n)]
+    n = len(canonical["land_exposures"])
+    exits = [_date_serial(ev.cell(v4_land_rent.SHEET, f"D{first+k}")) for k in range(n)]
     last = max(range(n), key=lambda k: exits[k])
     early = exits[last] - 100
     saved = ws[f"I{first+last}"].value
@@ -211,7 +245,7 @@ def test_book_queue_share_follows_its_metres_and_rent_only_exit_date(phased_leas
         ws[f"I{first+last}"] = early
         fresh = Evaluator(workbook)
         expected = max([early] + [exits[k] for k in range(n) if k != last])
-        assert fresh.cell(v4_land_rent.SHEET, "B15") == pytest.approx(expected)
+        assert _date_serial(fresh.cell(v4_land_rent.SHEET, "B15")) == pytest.approx(expected)
         assert expected < exits[last]
     finally:
         ws[f"I{first+last}"] = saved

@@ -799,8 +799,12 @@ def _sync_land_overlay(updated: dict, original: dict, actuals: dict, cut, notes:
         if extra_land:
             land["additional_land_costs"] = extra_land
         cash = dict(articles.get("land_rent") or {})
-        land.update(applied_total=sum(cash.values()), cash_total=sum(cash.values()),
-                    monthly={m.isoformat(): v for m, v in sorted(cash.items())})
+        if "construction_monthly_by_object" in land:
+            import developaid_land_rent
+            developaid_land_rent.sync_construction_cash(land,{m.isoformat():v for m,v in cash.items()})
+        else:
+            land.update(applied_total=sum(cash.values()), cash_total=sum(cash.values()),
+                        monthly={m.isoformat(): v for m, v in sorted(cash.items())})
 
         def qualify(code: str, reason: str) -> None:
             land["financial_complete"] = False
@@ -830,7 +834,13 @@ def _sync_land_overlay(updated: dict, original: dict, actuals: dict, cut, notes:
         plans = copy.deepcopy(original["nonres_plans"])
         for key, plan in plans.items():
             plan["capex"] = _months(articles.get(key, plan.get("capex") or {}))
+            if "land_rent_construction_cash" in plan:
+                import developaid_land_rent
+                plan.update({name:_months(value) if isinstance(value,dict) else value
+                             for name,value in developaid_land_rent.construction_plan(land,key).items()})
             for month, value in plan["capex"].items():
+                updated["debt_capex"][month] = max(0.0, updated["debt_capex"].get(month, 0.0) - value)
+            for month, value in (plan.get("land_rent_construction_cash") or {}).items():
                 updated["debt_capex"][month] = max(0.0, updated["debt_capex"].get(month, 0.0) - value)
         if original.get("common_on_object_loans"):
             shares = original.get("common_capex_shares") or {}
@@ -850,9 +860,16 @@ def _sync_land_overlay(updated: dict, original: dict, actuals: dict, cut, notes:
     if original.get("hotel_plan"):
         hotel = dict(original["hotel_plan"])
         hotel["capex"] = dict(updated.get("capex") or {})
+        if "land_rent_construction_cash" in hotel:
+            import developaid_land_rent
+            hotel.update({name:_months(value) if isinstance(value,dict) else value
+                          for name,value in developaid_land_rent.construction_plan(land,"hotel").items()})
+            for month,value in hotel["land_rent_construction_cash"].items():
+                hotel["capex"][month] = hotel["capex"].get(month,0.0)-value
         for target, metadata in (("capex_land", "land_articles"), ("capex_vat_exempt", "vat_exempt_articles")):
             if metadata in hotel:
-                hotel[target] = {m: sum(articles.get(k, {}).get(m, 0.0) for k in hotel[metadata])
+                hotel[target] = {m: sum(articles.get(k, {}).get(m, 0.0) for k in hotel[metadata]
+                                       if not (k=="land_rent" and "land_rent_construction_cash" in hotel))
                                  for m in hotel["capex"]}
         updated["hotel_plan"] = hotel
 

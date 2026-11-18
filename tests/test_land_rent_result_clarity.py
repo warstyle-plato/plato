@@ -18,6 +18,7 @@ def rental_inputs(**overrides):
             "land_rent_rates": [{"year": 1, "rate_pct": 1.5}],
             "land_rent_tail_rule": "repeat_last", "land_rent_vat_treatment": "public_exempt",
             "land_rent_termination_date": "2029-01-01", "land_rent_cadastral_target_mln": 120,
+            "land_rent_cadastral_change_date": "2027-12-01",
             **overrides}
 
 

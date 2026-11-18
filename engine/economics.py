@@ -125,6 +125,7 @@ def capex_unit_rows(capex: dict[str, float], bases: dict[str, float]) -> dict[st
 
 def calculate(req: CalcRequest) -> dict:
     _partial_tep_preflight(req.inputs, req.tep)
+    mo_benefits_update = apply_mo_vri_benefits(req.inputs, req.tep)
     # Решение о доходности капитала принимается один раз, на выходе расчёта:
     # у раннего выхода (наложение фактов) и у основного пути одно правило.
     # Проект, сохранённый до «одной вводной роста после РВЭ», переносится
@@ -140,6 +141,8 @@ def calculate(req: CalcRequest) -> dict:
     result = _finalize_result(_intake_qualification_apply(req.inputs, _calculate_economics(req)))
     if migrations and isinstance(result, dict):
         result["input_migrations"] = migrations
+    if mo_benefits_update and isinstance(result, dict):
+        result["mo_vri_benefits_update"] = mo_benefits_update
     if isinstance(result, dict):
         result["office_classes"] = office_class_rows(req.inputs)
     if original is not None and isinstance(result, dict) and result.get("summary"):
@@ -279,6 +282,10 @@ def _office_path_metrics(result: dict[str, Any], prefixes: tuple[str, ...],
 
     return {
         "comparison_missing": missing,
+        # Lease policy depends on this variant's sale/retention horizon.
+        # The native workbook must not reuse the selected variant's rental
+        # calendar for every comparison column.
+        "land_rent": copy.deepcopy(result.get("land_rent") or {}),
         "revenue": float(summary.get("revenue") or 0.0),
         "capex": float(summary.get("capex") or 0.0),
         "selling_cost": total("selling_cost"),
@@ -397,6 +404,8 @@ def prepared_calculation(x: dict, t: dict, rates: list[dict[str, Any]] | None) -
     как правил расчёт до выноса.
     """
     _partial_tep_preflight(x, t)
+    import developaid_land_cadastral
+    x.update(developaid_land_cadastral.prepare(x))
     if not rates:
         rates = generate_rate_curve(
             d(x.get("rate_start_date", date.today().isoformat())),

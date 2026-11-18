@@ -435,13 +435,20 @@ def test_queues_replace_single_cutoff_and_premium_question_uses_composition_evid
     expect_basis=scope.locator('.lr-phases').inner_text()
     assert 'пропорционально общей площади объектов каждой очереди' in expect_basis
     assert 'м² общей площади' in expect_basis
-    assert 'ещё не введены, в том числе ещё не начатыми' in scope.inner_text()
+    assert 'Аренда общего участка начинается с начала проекта' in scope.inner_text()
+    assert 'Каждая доля земли учитывается до её собственного сценарного выхода' in scope.inner_text()
+    rent=page.evaluate('()=>landRentResult()')
+    # All absolute shares accrue from the common start, including the queue
+    # whose own works have not started yet.
+    assert rent['regime_start']=='2027-01-01'
+    assert all(p['2027-01-01']>0 for p in rent['phase_accrual_monthly'])
 
 
 def test_default_dates_follow_the_economics_until_typed_and_queues_add_up(rental_page):
     page,view,errors=rental_page
     set_value="""([sel,v])=>{const el=document.querySelector(sel);el.value=v;el.dispatchEvent(new Event('change',{bubbles:true}))}"""
     page.evaluate("""async()=>{delete inputs.land_rent_regime_start;delete inputs.land_rent_manual_cutoff;
+        delete inputs.land_rent_termination_date;
         renderInputs();await settledCalculate()}""")
     browser.open_vri(page)
     # Начало аренды видно в поле, но во вводные не пишется и следует за стартом проекта.
@@ -466,10 +473,12 @@ def test_default_dates_follow_the_economics_until_typed_and_queues_add_up(rental
     browser.open_vri(page)
     assert page.evaluate("()=>inputs.land_rent_regime_start")is None
     assert page.locator('#f_land_rent_regime_start').input_value()=='2027-03-01'
-    # «Учитывать аренду до» показывает дату ввода из экономики.
+    # Default lease exit follows commissioning plus three registration months.
     scope=open_detail(page,'scope')
     derived=page.evaluate("()=>landRentResult().derived_rve")
-    assert derived and scope.locator('#f_land_rent_manual_cutoff').input_value()==derived
+    assert derived=='2030-03-01'
+    assert page.evaluate('()=>landRentResult().land_exposures[0].lease_exit')=='2030-06-01'
+    assert scope.locator('#f_land_rent_manual_cutoff').input_value()=='2030-06-01'
     assert page.evaluate("()=>inputs.land_rent_manual_cutoff")is None
     assert 'граница расчёта, а не прекращение договора' in scope.inner_text()
     # Очереди: таблица долей с метрами, итог по участку равен сумме очередей.

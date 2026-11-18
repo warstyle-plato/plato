@@ -496,10 +496,13 @@ def _build_project_workbook(
     # Отпечаток расчёта снимается с ПРИСЛАННЫХ вводных, а не с производных от
     # них: он отвечает на «по чему это посчитано», и книга с PDF обязаны нести
     # один и тот же. Правка ТЭП до отпечатка подписала бы книгу другим расчётом.
+    calculation_source_inputs = inputs
+    inputs = copy.deepcopy(inputs or {})
     calculation_source_tep = tep
     tep = copy.deepcopy(tep or {})
     applied_parking = apply_object_parking(inputs, tep)
 
+    _mo_benefits_update = apply_mo_vri_benefits(inputs, tep)
     x = {**DEFAULT_INPUTS, **{k: v for k, v in (inputs or {}).items() if not str(k).startswith("_")}}
     # У книги отдельной очереди плата уже net, как у её атомарного расчёта.
     # Сохраняем только этот внутренний признак происхождения базы: иначе
@@ -1191,7 +1194,7 @@ def _build_project_workbook(
         # в проекте — та, что этот расчёт дал: вписанная поверх сумма — уже
         # не плата за вычетом, а введённая сумма вычетом не была. Служебные
         # ключи с «_» в `x` не попадают, поэтому расчёт МО читается из `inputs`.
-        _mo_vri = mo_vri_applied_details(inputs or {})
+        _mo_vri = (_mo_benefits_update.get("vri") or mo_vri_applied_details(inputs or {}))
         _applied_rub = _mo_vri.get("compensation_applied_rub")
         _used_mln = _mo_vri.get("payment_used_mln")
         _compensation_mln = (
@@ -1208,7 +1211,14 @@ def _build_project_workbook(
                     f"(1310-ПП, Ксу*), вписанную пользователем: вычтено "
                     f"{_compensation_text} млн ₽, плата не ниже 1 ₽"
                     if _compensation_mln > 0 else ""))
-    calculation_id = _calculation_fingerprint(inputs, calculation_source_tep, phasing)
+        if _mo_vri.get("benefits"):
+            _benefit_rows = _mo_vri["benefits"].get("rows", [])
+            sources_xml, _ = _v4_set_cell(sources_xml, "I7", text=(
+                "Предварительная оценка уменьшения ВРИ по 1310-ПП; право требует соглашения. "
+                + "; ".join(f"{r['label']}: {r['formula']} = {r['amount_rub']:,.2f} ₽. "
+                            + str(r.get("valuation_basis", "")) + ". " + " ".join(r.get("notes", []))
+                            for r in _benefit_rows)))
+    calculation_id = _calculation_fingerprint(calculation_source_inputs, calculation_source_tep, phasing)
     sources_xml, _ = _v4_set_cell(
         sources_xml, "C16", text=f"Сборка DevelopAid {VERSION}")
     sources_xml, _ = _v4_set_cell(
@@ -2519,15 +2529,21 @@ def _build_project_workbook(
         if not _rent:
             if count > 1 and x.get("land_right", "ownership") != "ownership":
                 raise ValueError("движок не передал единый график аренды всех очередей")
-            _rent = developaid_land_rent.build(
-                x, _engine_op["project_start"], _engine_op["rve"], _engine_op["end"])
+            # The ordinary single-project route already has the authoritative
+            # exposure calendar, cadastral event and sourced bases. Rebuilding
+            # from dates alone would lose the registration/retention policy.
+            _rent = copy.deepcopy(_engine_op.get("land_rent") or {})
+            if not _rent:
+                _rent = developaid_land_rent.build(
+                    x, _engine_op["project_start"], _engine_op["rve"], _engine_op["end"],
+                    cadastral_switch=vri_cadastral_change_date(x, _engine_op["permit"]))
         _rent_shares = list((finance_hints or {}).get("land_rent_phase_shares") or
                             ([1.0] + [0.0] * (count - 1)))
-        _rent_start_refs = [f'IF(\'Параметры модели\'!$B${88+k}="Да",\'CF_{k+1}\'!$B$6,1000000)'
-                            for k in range(count)]
         _rent_rve_refs = [f'IF(\'Параметры модели\'!$B${88+k}="Да",\'CF_{k+1}\'!$B$8,0)'
                           for k in range(count)]
-        _rent_start_formula = "MIN(" + ",".join(_rent_start_refs) + ")"
+        # The common parcel is leased from the master's project start, even
+        # if none of the queues has started yet (engine/phases.py).
+        _rent_start_formula = "'Параметры модели'!$B$8"
         _rent_housing_rve = "MAX(" + ",".join(_rent_rve_refs) + ")"
         _rent_object_refs = []
         for _rent_layout in _v4_layouts():
@@ -2543,12 +2559,64 @@ def _build_project_workbook(
         _rent_end = _v4_excel_serial(_rent.get("project_end")) or 0
         _rent_meta = copy.deepcopy(_rent)
         _rent_meta["workbook_supported"] = False
+        # An owned parcel has no lease cash flow. Its planning exposures can
+        # include empty queues, which must not trigger lease-writer limits.
+        # Keep the authoritative observation in metadata; only the writer's
+        # non-applicable view omits those unused exposure calendars.
+        if _rent.get("status") == "not_applicable":
+            _rent = {**_rent, "land_exposures": []}
+        _rent_exposures = _rent.get("land_exposures") or []
+        if any(item.get("retained") for item in _rent_exposures):
+            raise ValueError("Аренда ЗУ: общий шаблон v4 пока не связывает операционную аренду удерживаемых объектов с их доходным расчётом. Нужна нативная книга офиса или гостиницы; смешанный проект с такой арендой пока не выгружается.")
+        _rent_calendars = [{} for _ in (_rent.get("phase_land") or [])]
+        # The fifth source queue has no CF sheet in v4. Its editable lease
+        # calendar must reproduce the engine's actual commissioning date,
+        # not silently reconstruct a different or missing one.
+        for i in range(count, len(_rent.get("phase_land") or [])):
+            if i >= len(phases):
+                raise ValueError("Аренда ЗУ: не передан календарь всех очередей")
+            raw = phases[i] or {}
+            offset, duration = raw.get("start_offset_months"), raw.get("construction_months")
+            cfg = _rent_calendars[i] = {
+                "start_offset_months": int(i * int(p.get("phase_gap_months", 12)) if offset in (None, "") else offset),
+                "ird_months": max(IRD_MONTHS_MIN, int(n(x, "ird_months", 18))),
+                "ird_formula": "'Параметры модели'!$E$88",
+                "construction_months": int(n(x, "construction_months", 24) if duration in (None, "") else duration),
+            }
+            commissioning = add_months(add_months(add_months(d(x["project_start"]),
+                cfg["start_offset_months"]), cfg["ird_months"]), cfg["construction_months"])
+            if commissioning.isoformat() != _rent["phase_land"][i].get("commissioning"):
+                raise ValueError("Аренда ЗУ: календарь очереди не совпадает с датой ввода движка")
+        _rent_exposure_formulas = {}
+        _rent_seen_objects = set()
+        for item in _rent_exposures:
+            phase = int(item.get("phase_index",0))
+            if item.get("object_key") == "housing":
+                own = {"share":"auto","commissioning":_rent_rve_refs[phase] if phase < count else "",
+                       "lease_exit":"EDATE({commissioning},$N$15)"}
+                if phase >= count:
+                    own["calendar"] = _rent_calendars[phase]
+            else:
+                key = item.get("object_key")
+                layout = next((lay for lay in _v4_layouts() if lay.obj.key==key),None)
+                if layout is None or key in _rent_seen_objects or item.get("sale_exit_basis") != "last_delivery":
+                    raise ValueError("Аренда ЗУ: календарь передачи отдельно стоящего объекта в общем шаблоне пока не связан с арендой. Нужна нативная книга нежилого проекта.")
+                _rent_seen_objects.add(key)
+                quantity_row = _V4_OBJECT_ROWS[layout.obj.prefix][0]
+                own = {"share":"auto","commissioning":f"'ОБЪЕКТЫ'!$B${layout.object_head+4}",
+                    "lease_exit":"EDATE(MAX({commissioning},{last_delivery}),$N$15)",
+                    "last_delivery":[f"'ОБЪЕКТЫ'!{_v4_column_letter(4+i)}{quantity_row}" for i in range(v4_land_rent.MONTHS)]}
+            _rent_exposure_formulas[item["id"]] = own
         content = v4_land_rent.apply(
             content, x, _rent, project_start_formula=_rent_start_formula,
             rve_formula=_rent_rve_formula,
             project_end_formula=f"MAX({_rent_end},EDATE('Аренда ЗУ'!$B$15,1))",
             phase_shares=_rent_shares, hostvri_amount_formula="'Параметры модели'!$B$16",
-            phase_rve_formulas=_rent_rve_refs if len(_rent.get("phase_land") or []) > 1 else None)
+            phase_rve_formulas=_rent_rve_refs if len(_rent.get("phase_land") or []) > 1 else None,
+            phase_calendars=_rent_calendars,
+            exposure_formulas=_rent_exposure_formulas if _rent_exposures else None,
+            phase_capex_groups=([[i] for i in range(count-1)] + [list(range(count-1, len(_rent_shares)))])
+                if len(_rent_shares) > count else None)
         _rent_meta["workbook_supported"] = True
     except Exception as exc:
         _rent_meta["workbook_supported"] = False

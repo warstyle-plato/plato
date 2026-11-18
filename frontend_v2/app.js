@@ -632,7 +632,13 @@ function draftFromResult(result) {
 function fieldControl(field, value, onChange) {
   const id = `f_${field.key}`;
   let control;
-  if (field.type === 'checkbox') {
+  if (field.type === 'preserved') {
+    control = document.createElement('span');
+    control.className = 'input-preserved';
+    control.textContent = field.description;
+    control.setAttribute('role', 'note');
+    control.dataset.fieldOwner = field.owner;
+  } else if (field.type === 'checkbox') {
     control = document.createElement('input');
     control.type = 'checkbox';
     control.checked = value === true;
@@ -650,7 +656,11 @@ function fieldControl(field, value, onChange) {
   } else {
     control = document.createElement('input');
     control.type = field.type === 'date' ? 'date' : 'number';
-    if (control.type === 'number') control.step = 'any';
+    if (control.type === 'number') {
+      control.step = field.step === undefined ? 'any' : String(field.step);
+      if (field.min !== undefined) control.min = String(field.min);
+      if (field.max !== undefined) control.max = String(field.max);
+    }
     control.value = value === undefined || value === null ? '' : String(value);
     control.addEventListener('change', () => onChange(
       control.type === 'number'
