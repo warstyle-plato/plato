@@ -2780,14 +2780,12 @@ def _schedule_summary(schedule: dict[str, Any], assessment=None, *, readiness_pr
 def _work_schedule_summary(view: dict[str, Any]) -> str | None:
     """Read the same source-bound work date as the Monitor and report cards."""
     schedule = view.get('schedule') or {}
-    from developaid_gpr_work_forecast import for_schedule, describe, owns_response, legacy_model
-    if not owns_response(schedule):
+    from developaid_gpr_work_forecast import current
+    summary, value = current(schedule, view.get('cut'))
+    if value is None:
         if schedule.get('work_forecast_applicable') is False:
-            summary = legacy_model(schedule, view.get('cut')).get('summary')
             return 'Срок. '+summary['forecast_text'] if summary else 'Срок. Оценка окончания работ не определена.'
         return None
-    value = for_schedule(schedule, view.get('cut'))
-    summary = value.get('summary') or describe(value, view.get('cut'))
     return 'Срок. ' + ' '.join(filter(None, [summary['forecast_text'], summary['scope_text'],
         summary['as_of_text'], summary['plan_text'],
         summary['delta_text'] if summary.get('delta_days') is not None else '']))

@@ -7,6 +7,7 @@ The previous PM/act-cost implementation remains isolated for compatibility.
 from __future__ import annotations
 
 import datetime
+import logging
 from typing import Any
 
 import developaid_monitor as monitor
@@ -29,6 +30,7 @@ _ORIGINAL_BUILD = None
 # Формула прогноза и правило отбора seeds объявлены один раз — в
 # `developaid_monitor_forecast`. Копия здесь отвечала иначе на завершённых
 # задачах, и сценарий «Текущий темп» получал другую сеть, чем эта карточка.
+_log = logging.getLogger(__name__)
 _clamp = forecast._clamp
 _pace_finish = forecast.pace_finish
 
@@ -603,7 +605,7 @@ def _build(project: str, cut: Any, programme: dict[str, Any] | None = None, upto
     # числа — свой сдвиг, унаследованный, запас — и ничего не считает сама.
     # Красный хвост без объяснения читается как сдвиг ниоткуда, особенно у
     # работы, по которой фактов нет вовсе (владелец, 29.08.2026).
-    return reason.annotate(view)
+    return _with_brief(reason.annotate(view))
 
 
 @monitor.approved_schedule_read
@@ -615,7 +617,21 @@ def schedule_view(project: str, cut: Any) -> dict[str, Any]:
         raise ValueError('Укажите существующую дату среза.')
     view = _schedule_only(project, day)
     view['financial_state'] = {'state': 'not_requested', 'reason': 'Денежные показатели загружаются отдельно.'}
-    return reason.annotate(_apply_pace(project, view, day))
+    return _with_brief(reason.annotate(_apply_pace(project, view, day)))
+
+
+def _with_brief(view: dict[str, Any]) -> dict[str, Any]:
+    """Attach the short GPR view arranged from this very schedule (no second read)."""
+    schedule = view.get('schedule')
+    if not isinstance(schedule, dict):
+        return view
+    import developaid_gpr_brief as gpr_brief
+    try:
+        schedule['brief'] = gpr_brief.build(view)
+    except Exception as exc:  # the brief must not take the Monitor down with it
+        _log.exception('GPR brief failed')
+        schedule['brief'] = {'error': gpr_brief.FAILED + ' (' + type(exc).__name__ + ').'}
+    return view
 
 
 def install() -> None:
