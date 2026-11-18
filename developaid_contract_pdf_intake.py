@@ -173,7 +173,10 @@ def _evidence(project, content, source_sha256, contract_number, contract_date, c
     with pdf:
         _need(0 < pdf.page_count <= documents.MAX_PAGES, 'Превышен предел страниц PDF.', 413)
         texts = [page.get_text() for page in pdf]
-    found = documents.identity(texts[0])
+    try:
+        found = documents.identity(texts[0])
+    except documents.ContractHeaderAmbiguity as exc:
+        raise IntakeProblem(str(exc), 400) from None
     _need(found.get('contract') and not found.get('agreement')
           and not all(pattern.search(texts[0]) for pattern in documents._ACT_FORM),
           'Начальная карточка создаётся только по основному договору, не по соглашению или акту.', 400)

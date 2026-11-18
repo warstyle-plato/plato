@@ -79,6 +79,10 @@ _ACT_BELOW = 30.0
 _ACT_COLUMN = 25.0
 
 
+class ContractHeaderAmbiguity(ValueError):
+    """Skipped running headings disagree with the source's dated reference."""
+
+
 def _space(text):
     return re.sub(r'\s+', ' ', str(text or '').replace('\xa0', ' ')).strip()
 
@@ -130,6 +134,26 @@ def _dated(text, start):
     return _date(match[0]) if match else None
 
 
+def _check_skipped_contract_headers(text, contract):
+    """Only an undated header skipped by the boundary may repeat this reference."""
+    previous = list(re.finditer(_CONTRACT_HEADER, text[:contract.start()], re.I))
+    if not previous:
+        return
+    from developaid_monitor_contracts import _contract_number as identity_number
+    for index, header in enumerate(previous):
+        if _CONTRACT.match(text, header.start()):
+            continue  # A complete earlier reference was not skipped by this fix.
+        end = previous[index+1].start() if index+1 < len(previous) else contract.start()
+        fragment = text[header.end():end]
+        number = re.split(r'\bПриложение\s*№|\b(?:Генподрядчик|Подрядчик)\s*[:_]',
+                          fragment, maxsplit=1, flags=re.I)[0]
+        number = re.sub(r'\s+к\s*$', '', number, flags=re.I).strip()
+        if number and identity_number(_contract_number(number), reference=True) != \
+                identity_number(_contract_number(contract[1]), reference=True):
+            raise ContractHeaderAmbiguity('Реквизиты договора в заголовках документа неоднозначны: номера различаются. '
+                                          'Проверьте исходный PDF и загрузите документ одного договора.')
+
+
 def identity(text):
     """Contract and agreement named on the first page; absent parts stay None.
 
@@ -140,6 +164,8 @@ def identity(text):
     agreement = _AGREEMENT.search(text)
     after = agreement.end() if agreement else 0
     contract = _CONTRACT.search(text, after) or _CONTRACT.search(text)
+    if contract:
+        _check_skipped_contract_headers(text, contract)
     contract_date = _date(contract[2]) if contract and contract[2] else contract and _dated(text, contract.end())
     agreement_date = None
     if agreement:
