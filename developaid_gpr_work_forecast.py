@@ -391,6 +391,21 @@ def for_schedule(schedule, cut):
     return copy.deepcopy(schedule['work_forecast'])
 
 
+def current(schedule, cut):
+    """The one work-date assessment the Monitor shows for this schedule and cut.
+
+    Returns ``(summary, value)``: the public summary and, for the canonical
+    producer, its validated DTO. ``(None, None)`` when no producer owns the
+    schedule. Every reader of «ожидаемое окончание» goes through here.
+    """
+    if not owns_response(schedule):
+        if schedule.get('work_forecast_applicable') is False:
+            return legacy_model(schedule, cut).get('summary'), None
+        return None, None
+    value = for_schedule(schedule, cut)
+    return value.get('summary') or describe(value, cut), value
+
+
 def describe(value, cut):
     """Public text reads compiled dates; readiness weights remain independent."""
     from developaid_gpr_summary import gpr_summary

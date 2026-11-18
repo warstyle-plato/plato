@@ -59,7 +59,9 @@ def test_brief_keeps_absent_fact_apart_and_reads_stages_only_from_the_matrix():
     assert set(frame['lines'][0]['by_object']) == {'Корпус 1', 'Корпус 2'}
     assert b['attention'] == {'items': [{'name': 'Монолит', 'works': [b['matrix']['stages'][0]['lines'][0]['by_object']['Корпус 1'][0]]}], 'total': 1}
     assert b['plan_finish'] == {'date': '2026-12-01', 'label': 'План ввода'}
-    assert b['expected_finish']['state'] == 'pending' and b['progress']['value'] is None
+    # No approved source in this synthetic view: the single estimate says so, no date is made up.
+    assert b['expected_finish']['state'] == 'unknown' and b['expected_finish']['date'] is None
+    assert b['progress']['value'] is None
     assert b['notes'] == ['Нет подтверждённого полного состава и весов.']
     assert [(c['name'], c['behind'], c['no_reading']) for c in b['corpora']] == [('Корпус 1', 1, 1), ('Корпус 2', 0, 0)]
 
@@ -96,7 +98,7 @@ def test_full_source_matrix_follows_canonical_translation_even_when_namespaces_o
     assert [(item['reference_work_id'], item['id'], item['fact']) for item in brief_works(result)] == [
         (ids[0], ids[2], .2), (ids[1], ids[3], .7)]
     assert result['counts']['total'] == 2
-    assert result['expected_finish']['state'] == 'pending'
+    assert result['expected_finish']['date'] is None
     assert source == before
 
 
@@ -233,7 +235,7 @@ def test_rendered_preview_shows_deadlines_attention_and_an_opening_matrix(site, 
     with preview(width, data) as (page, calls, errors):
         expect(page.locator('#deadlines')).to_contain_text('План ввода')
         expect(page.locator('#deadlines')).to_contain_text('01.12.2026')
-        expect(page.locator('#expected')).to_contain_text('единая оценка срока')
+        expect(page.locator('#expected b')).to_have_text('Не определена')
         expect(page.locator('#deadlines')).to_contain_text('1 из 4')
         expect(page.locator('#factDates')).to_contain_text('на 12.11.2026')
         corpus = page.locator('.corpora tbody tr').first
@@ -282,7 +284,11 @@ def test_rendered_preview_shows_deadlines_attention_and_an_opening_matrix(site, 
 def test_rendered_preview_shows_real_readiness_and_asks_for_a_key(site):
     activate(site)
     data = json.loads(json.dumps(brief.build(pace.schedule_view(PROJECT, DAY)), default=str))
+    assert data['expected_finish']['date']
     with preview(1440, data) as (page, _, errors):
+        shown = data['expected_finish']['date']
+        expect(page.locator('#expected b')).to_have_text(shown[8:10] + '.' + shown[5:7] + '.' + shown[:4])
+        expect(page.locator('#expected span')).to_have_text(data['expected_finish']['label'])
         expect(page.locator('#deadlines')).to_contain_text('Готовность проекта (оценочная)')
         expect(page.locator('#deadlines')).to_contain_text('70%')
         assert not errors
@@ -297,3 +303,33 @@ def test_rendered_preview_names_the_reason_when_no_schedule_is_loaded(api):
     with preview(390, data) as (page, _, errors):
         expect(page.locator('#deadlines')).to_contain_text('Утверждённый график работ не загружен.')
         assert page.locator('#matrix').count() == 0 and not errors
+
+
+def test_expected_finish_is_the_monitor_single_estimate_for_project_and_corpora(site, monkeypatch):
+    import developaid_gpr_work_forecast as forecast
+    for step in ('legacy catalog', 'active profile'):
+        if step == 'active profile':
+            activate(site)
+        source = pace.schedule_view(PROJECT, DAY)
+        summary, value = forecast.current(source['schedule'], DAY)
+        b = brief.build(source)
+        assert summary and b['expected_finish']['date'] == summary['finish'], step
+        assert b['expected_finish']['label'] == summary['forecast_label']
+        corpora = {c['name']: (c.get('forecast') or {}).get('finish') for c in (value or {}).get('corpora') or []}
+        assert {c['name']: c['expected_finish'] for c in b['corpora']} == {
+            c['name']: corpora.get(c['name']) for c in b['corpora']}
+    # A different single estimate moves every date of the page; nothing is computed here.
+    fake = dict(summary, finish='2031-05-07', forecast_label='Оценка окончания учтённых работ',
+                forecast_text='Оценка окончания учтённых работ: 07.05.2031. Подставлено тестом.', delta_days=3,
+                delta_text='+3 дн. к плану того же состава.')
+    fake_value = {'state': 'partial', 'project': {'forecast': {}},
+                  'corpora': [{'name': 'Корпус 1', 'forecast': {'finish': '2031-04-01'}}]}
+    monkeypatch.setattr(forecast, 'current', lambda schedule, cut: (fake, fake_value))
+    b = brief.build(source)
+    assert (b['expected_finish']['date'], b['expected_finish']['text']) == ('2031-05-07', 'Подставлено тестом.')
+    assert {c['name']: c['expected_finish'] for c in b['corpora']} == {'Корпус 1': '2031-04-01', 'Корпус 2': None}
+    import developaid_monitor_dashboard as dashboard
+    assert '07.05.2031' in dashboard._work_schedule_summary(source)
+    monkeypatch.setattr(forecast, 'current', lambda schedule, cut: (None, None))
+    assert brief.build(source)['expected_finish'] == dict(brief.build(source)['expected_finish'],
+                                                          state='unknown', date=None, text=brief.EXPECTED_UNKNOWN)
