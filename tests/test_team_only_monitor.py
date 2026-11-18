@@ -54,6 +54,13 @@ def _gated_routes() -> list[tuple[str, str]]:
 
 ROUTES = _gated_routes()
 _FILL = {str: "проверка", int: 1, float: 1.0, bool: False, list: [], dict: {}}
+_PDF_INTAKE_PAYLOAD = {
+    "contract_number": "SYNTHETIC-PDF",
+    "customer": {"name": "ООО «Учебный заказчик»", "designation": "Заказчик", "page": 1,
+                 "quote": "ООО «Учебный заказчик», именуемое в дальнейшем «Заказчик»"},
+    "contractor": {"name": "ООО «Учебный подрядчик»", "designation": "Подрядчик", "page": 1,
+                   "quote": "ООО «Учебный подрядчик», именуемое в дальнейшем «Подрядчик»"},
+}
 _ENDPOINT_PAYLOADS = {
     ("POST", "/monitor/finance-allocation/apply"): {"assignments": [{"row_id": "a" * 64, "bank_code": "2.6"}]},
     ("POST", "/monitor/finance-management/apply"): {"item_ids": ["a" * 64], "management_article": "2.6"},
@@ -72,6 +79,9 @@ _ENDPOINT_PAYLOADS = {
         "cut": "2036-08-19", "ticket": "1" * 32, "contract_id": "a" * 64,
         "revision": "b" * 64, "selected_tokens": []},
     ("POST", "/monitor/contracts/document-upload"): {"contract_id": "a" * 64},
+    ("POST", "/monitor/contracts/pdf-intake/preview"): _PDF_INTAKE_PAYLOAD,
+    ("POST", "/monitor/contracts/pdf-intake/commit"): {
+        **_PDF_INTAKE_PAYLOAD, "filename": "synthetic.pdf", "expected_revision": 0, "preview_token": "b" * 64},
     ("POST", "/monitor/contracts/document-links"): {
         "contract_id": "a" * 64, "sha256": "b" * 64, "estimate": 0, "choices": [{"index": 0}]},
     ("POST", "/monitor/contracts/document-remove"): {"contract_id": "a" * 64, "sha256": "b" * 64},
