@@ -2465,6 +2465,25 @@
     "cited_as": [
       "1860-ПП"
     ],
+    "amendment_chain": [
+      {
+        "number": "294-ПП",
+        "act_date": "26.03.2026",
+        "status": "не получен",
+        "reason": "Назван в п. 1 постановления 932-ПП; содержание этой поправки отдельно не сверено."
+      },
+      {
+        "number": "932-ПП",
+        "act_date": "07.08.2026",
+        "status": "не получен",
+        "file_url": "https://mosreg.ru/dokumenty/normotvorchestvo/prinyato-pravitelstvom/postanovleniya-pmo/postanovlenie-pravitelstva-moskovskoi-oblasti-ot-07082026-932-pp-o-vnesenii-izmenenii-v-postanovlenie-pravitelstva-moskovskoi-oblasti-ot-30122025-1860-pp-ob-utverzdenii-poriadka-realizacii-investicionnyx-proektov-po-sozdaniiu-obieektov-kapitalnogo-stroitelstva-na-territorii-moskovskoi-oblasti",
+        "touches": [
+          "Поправки, п. 2 подп. 4: п. 9 Порядка — стоимость обязательств S × N × Ки и повышающий коэффициент 1,2 для предусмотренных законом муниципалитетов."
+        ],
+        "reason": "Официальная карточка известна, 18.11.2026 отвечает 403; официальный текст в библиотеке не получен. Реквизиты и формула п. 9 сверены по справочному тексту mosoblpravo.ru; дата официального опубликования и полнота действующей редакции этим не подтверждены."
+      }
+    ],
+    "amendment_chain_source": "Известные поправки к 1860-ПП: реквизиты 294-ПП названы в п. 1 справочного текста 932-ПП; реквизиты 932-ПП и формула п. 9 сверены 18.11.2026 на https://mosoblpravo.ru/postanovlenie/2026/08/07/n-932-pp/. Полнота ряда последующих изменений не подтверждена.",
     "level": "mo",
     "impact": "reference",
     "unconfirmed_reason": "Прочитан исходный акт. Известны поправки 294-ПП и 932-ПП; их содержание и полнота актуальной консолидированной редакции в этой карточке не подтверждены.",
@@ -2484,6 +2503,10 @@
         {
           "label": "Официальная карточка последующей поправки 932-ПП",
           "url": "https://mosreg.ru/dokumenty/normotvorchestvo/prinyato-pravitelstvom/postanovleniya-pmo/postanovlenie-pravitelstva-moskovskoi-oblasti-ot-07082026-932-pp-o-vnesenii-izmenenii-v-postanovlenie-pravitelstva-moskovskoi-oblasti-ot-30122025-1860-pp-ob-utverzdenii-poriadka-realizacii-investicionnyx-proektov-po-sozdaniiu-obieektov-kapitalnogo-stroitelstva-na-territorii-moskovskoi-oblasti"
+        },
+        {
+          "label": "Справочный текст 932-ПП: реквизиты и п. 9 сверены 18.11.2026; не является официальным опубликованием",
+          "url": "https://mosoblpravo.ru/postanovlenie/2026/08/07/n-932-pp/"
         },
         {
           "label": "ГАРАНТ: сводный текст с поправкой 294-ПП, не учитывающий выявленный 932-ПП",
@@ -2535,8 +2558,8 @@
     "cited_as": [
       "933-ПП"
     ],
-    "level": "regional",
-    "impact": "financial",
+    "level": "mo",
+    "impact": "money",
     "unconfirmed_reason": "Таблица исходного акта проверена; полнота последующих изменений и актуальный накопленный индекс не подтверждены этой карточкой.",
     "to_confirm": "Сверять последующие изменения, индекс Росстата на дату заявления и соответствие инвестиционного объекта условиям соглашения.",
     "verification": {
