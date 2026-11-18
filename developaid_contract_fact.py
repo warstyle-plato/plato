@@ -63,8 +63,13 @@ def acts(row: dict | None) -> dict | None:
     """
     if row is None:
         return None
-    found, unread, works, sums = [], [], [], {}
+    found, unread, works, sums, groups = [], [], [], {}, []
     for index, item in enumerate(row.get("physical_items") or []):
+        if item.get('is_group') and not item.get('is_duplicate'):
+            groups.append({'number': item.get('position') or '', 'name': item.get('name') or '',
+                           'section': item.get('scope') or '', 'unit': item.get('unit') or '',
+                           'quantity': item.get('plan_quantity'), 'source': item.get('source') or {},
+                           'source_kind': 'ks6a'})
         if item.get("is_group") or item.get("is_duplicate"):
             continue  # A group sums its works; a verified duplicate repeats one.
         periods = list(item.get("periods") or []) + list(item.get("undated_periods") or [])
@@ -108,6 +113,7 @@ def acts(row: dict | None) -> dict | None:
                           "source": period.get("source") or item.get("source") or {}})
     summary = [act for source in row.get("financial_sources") or [] for act in source.get("acts") or []]
     return {"acts": found, "unread": unread, "works": len(works), "items": works, "period_amounts": sums,
+            'physical_groups': groups,
             "summary_acts": summary,
             "deadline": row.get("deadline"), "deadline_label": (row.get("deadline_source") or {}).get("label") or "",
             "deadline_manual": (row.get("deadline_source") or {}).get("label") == "Указан вручную"}
@@ -352,7 +358,8 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
               "outside": {status: {"count": 0, "amount": 0.0} for status in _STATUSES},
               "before": None, "review": [], "unread": [], "price_differs": 0, "after_cut": 0, "note": "",
               "source": None, "source_note": "", "preliminary": False, "reconciliation": None,
-              "materials": [], "component_gaps": [], 'material_statement': statement_materials(found, cut)}
+              "materials": [], "component_gaps": [], 'material_statement': statement_materials(found, cut),
+              'physical_groups': (found or {}).get('physical_groups') or []}
     rows = from_acts(performed)
     if rows:
         result["source"] = "ks2"
@@ -393,7 +400,7 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
     known_lines = {}
     work_money, material_money, material_volumes = {}, {}, {}
     unknown_work, unknown_material = set(), set()
-    last, done_quantity = {}, {}
+    last, done_quantity, position_facts = {}, {}, {}
     for act in rows:
         end = _day(act["end"])
         if end > _day(cut):
@@ -450,6 +457,16 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
             if place in _LINKED:
                 for line in link["lines"]:
                     code, share = line['code'], line['share']
+                    if act.get('basis') != 'material':
+                        part = position_facts.setdefault(code, {}).setdefault(link['key'],
+                            {'key': link['key'], 'quantity': 0.0, 'last': None, 'sources': []})
+                        part['quantity'] += components['work_quantity'] * share
+                        if components['work_quantity']:
+                            part['last'] = max(part['last'] or act['end'], act['end'])
+                        evidence = {'end': act['end'], 'label': act.get('label') or '',
+                                    'source': act.get('source') or {}}
+                        if evidence not in part['sources']:
+                            part['sources'].append(evidence)
                     part_money = money * share if money is not None else None
                     lines[code] = _add_money(lines.get(code, 0.0), part_money)
                     known_lines[code] = known_lines.get(code, 0.0) + components['known_total'] * share
@@ -517,6 +534,7 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
         return bool(keys) and all(items_of.get(key) and all(full(work) for work in items_of[key]) for key in keys)
 
     result["lines"] = [{"code": code, "fact": lines[code], "volumes": list(volumes.get(code, {}).values()),
+                        'position_facts': list(position_facts.get(code, {}).values()),
                         **({'known_fact': known_lines.get(code, 0.0)} if lines[code] is None else {}),
                         'work_fact': None if code in unknown_work else work_money.get(code, 0.0),
                         'material_fact': None if code in unknown_material else material_money.get(code, 0.0),

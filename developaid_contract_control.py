@@ -109,6 +109,61 @@ def _ratio(part, whole):
     return part / whole if whole else None
 
 
+def _operation_rows(line, got, day, start, physical_groups):
+    """Measure each indexed operation; their areas never become the parent's physical area."""
+    operations = line.get('operations')
+    if not operations:
+        return None
+    group = dict(operations['group'])
+    group['physical_fact'] = None
+    group['physical_fact_reason'] = ('Объём выполненной конструкции не определён: каркас, узлы, '
+                                     'остекление и другие операции учитываются отдельно.')
+    if group.get('quantity') is None:
+        candidates = [item for item in physical_groups
+                      if group.get('section') and item.get('number') == group['number']
+                      and item.get('section') == group['section']]
+        if len(candidates) == 1:
+            observed = candidates[0]
+            group.update(quantity=observed.get('quantity'), unit=observed.get('unit'),
+                         source=observed.get('source') or {}, source_kind='ks6a')
+    else:
+        group['source_kind'] = 'contract_estimate'
+    facts = {part['key']: part for part in got.get('position_facts') or []}
+    begin, finish = _span(line, start)
+    curve = lambda d: plan.done(line, d, start)
+    due = curve(day)
+    result = []
+    for part in operations['parts']:
+        known = part.get('quantity')
+        quantity = known * part['share'] if known is not None else None
+        observed = facts.get(part['key']) or {}
+        actual = observed.get('quantity', 0.0) if ('position_facts' in got or got.get('fact') == 0) else None
+        natural = quantity is not None and quantity > 0 and bool(part.get('unit'))
+        if natural and actual is not None:
+            ready = actual / quantity
+            state, lag, ahead, forecast = _measure(curve, ready, due, begin, finish, day, _SHARE)
+            finished = observed.get('last') if state == 'done' else None
+            if state == 'done' and not finished:
+                state, forecast = 'unknown', None
+        else:
+            ready, state, lag, ahead, forecast, finished = None, 'unknown', 0, 0, None, None
+        result.append({'code': line['code'] + '::operation:' + part['key'],
+            'display_code': part['number'], 'name': part['name'], 'parent_code': line['code'],
+            'position_key': part['key'], 'source': part.get('source') or {},
+            'start': line['start'], 'finish': line['finish'], 'due': finish.isoformat(),
+            'volume': {'unit': part['unit'], 'quantity': quantity, 'planned': quantity * due,
+                       'fact': actual, 'deviation': actual - quantity * due if actual is not None else None} if natural else None,
+            'planned': None, 'fact': None, 'deviation': None,
+            'readiness': ready, 'plan_done': ready / due if ready is not None and due > _SHARE else None,
+            'percent': ready / due - 1 if ready is not None and due > _SHARE else None,
+            'state': state, 'lag_days': lag, 'ahead_days': ahead,
+            'overdue_days': (None if state == 'unknown' else
+                             (day-finish).days if state != 'done' and day > finish else 0),
+            'forecast_finish': forecast.isoformat() if forecast else None,
+            'finished': finished, 'late_days': (_day(finished)-finish).days if finished else None})
+    return {'group': group, 'lines': result}
+
+
 def build(planned: dict, fact: dict, deadline: str | None, deadline_label: str, cut: str) -> dict:
     """Natural plan and fact, percentages, lag, overdue and forecast of the edition in force on `cut`."""
     result = {"cut": cut, "assumption": ASSUMPTION, "weights": WEIGHTS, "note": "", "total": None, "lines": [],
@@ -174,6 +229,9 @@ def build(planned: dict, fact: dict, deadline: str | None, deadline_label: str, 
                "late_days": (finished - finish).days if finished else 0,
                "shortfall": (max(line["amount"] - got["fact"], 0.0) if got['fact'] is not None else None)
                              if finished else 0.0}
+        operations = _operation_rows(line, got, day, start, fact.get('physical_groups') or [])
+        if operations:
+            row['operations'] = operations
         result["lines"].append(row)
         if forecast or finished:
             finishes.append((forecast or finished, row))

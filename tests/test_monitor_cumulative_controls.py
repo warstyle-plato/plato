@@ -210,7 +210,7 @@ def test_contracts_render_exact_money_unknowns_and_separate_physics(width):
         expect(page.locator('#contractsRows')).to_contain_text('197,8%')
         row = page.locator(f'tr[data-contract-id="{CONTRACT}"]')
         expect(row).to_contain_text('1\u00a0000\u00a0000 ₽')
-        expect(row.locator('.term')).to_contain_text('Нужен срок')
+        expect(row.locator('.term')).to_contain_text('Указать срок договора')
         from contract_rows import opened
         expect(page.locator(f'tr[data-contract-id="{OTHER}"]')).to_contain_text('выполнено 0 ₽')
         assert page.locator(f'tr[data-contract-id="{OTHER}"] .contract-main-money').all_text_contents() == ['—']
@@ -397,7 +397,7 @@ def test_undated_quantity_and_later_manual_deadline_are_only_references():
         page.locator('#contractsTab').click()
         row = page.locator(f'tr[data-contract-id="{CONTRACT}"]')
         row.wait_for()
-        expect(row.locator('.term')).to_contain_text('Нужен срок')
+        expect(row.locator('.term')).to_contain_text('Указать срок договора')
         expect(row.locator('.term')).not_to_contain_text('01.02.2027')
         assert page.evaluate('document.querySelector("#contractsRows").scrollWidth <= document.querySelector("#contractsRows").clientWidth')
         row.locator('.contract-open').click()

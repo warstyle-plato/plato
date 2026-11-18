@@ -192,7 +192,14 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
             sheet.cell(row_number, 1).fill = PatternFill('solid', fgColor='E8EFF7')
         previous_section = section
         name = "\n".join(_text(v) for v in [row.get("name"), row.get("context"),
-                         " · ".join(_text(v) for v in [row.get("code"), row.get("unit")] if v)] if v)
+                         " · ".join(_text(v) for v in [row.get("display_code") or row.get("code"), row.get("unit")] if v)] if v)
+        scope = row.get('physical_scope')
+        if scope:
+            origin = 'по КС-6а' if scope.get('source_kind') == 'ks6a' else 'по расчёту договора'
+            name += ('\nПолный объём конструкции: ' + str(_number(scope['quantity'])) +
+                     ' ' + _text(scope.get('unit')) + ' · ' + origin
+                     if scope.get('quantity') is not None else '\nПолный объём конструкции в этой редакции не указан.')
+            name += '\nВыполнение — по отдельным операциям.'
         cells = append([name, _number(row.get("planned")), _number(row.get("fact")), _number(row.get("deviation")),
                         _date(row.get("due")), _date(row.get("finished") or row.get("forecast_finish"))])
         for cell in cells[1:4]:
