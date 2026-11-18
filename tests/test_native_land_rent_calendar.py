@@ -5,6 +5,7 @@ import copy
 import io
 import sys
 from datetime import date, datetime, timedelta
+from types import SimpleNamespace
 
 import openpyxl
 import pytest
@@ -71,6 +72,52 @@ def _daily_rent(end):
         total+=1_000_000/denominator
         day+=timedelta(days=1)
     return total
+
+
+@pytest.mark.parametrize('path_key,object_day,share_before,residual,last_month,expected',[
+    ('ddu',17,85,6,29,date(2029,9,17)),
+    ('ddu',31,85,6,29,date(2029,9,30)),
+    ('ddu',31,100,0,23,date(2029,4,30)),
+    ('direct',17,85,6,35,date(2030,4,1)),
+    ('direct',31,85,6,35,date(2030,4,1)),
+    ('presale',17,85,6,24,date(2029,5,17)),
+    ('presale',31,85,6,24,date(2029,5,28)),
+])
+def test_native_sale_exit_preserves_own_date_convention(monkeypatch,path_key,object_day,share_before,residual,last_month,expected):
+    x,t=_project('office')
+    x.update(offices_strategy='ddu',offices_start=f'2028-01-{object_day:02d}',
+             offices_share_before_rve_pct=share_before,offices_residual_months=residual)
+    result=core._run_authoritative_model(x,t,[],{})['consolidated']
+    engine_path=next(p for p in result['office_paths']['paths'] if p['key']==path_key)
+    rental=engine_path['land_rent']
+    exposure=rental['land_exposures'][0]
+    assert exposure['lease_exit']==expected.isoformat()
+    assert exposure['sale_exit_basis']==('last_delivery' if path_key=='ddu' else 'exclusive_direct_end')
+    commissioning=date(2029,1,object_day)
+    workbook=openpyxl.Workbook()
+    calendar=workbook.active;calendar.title=ow.TIME_SHEET
+    for cell,value in {'A1':date(2027,1,17),'B1':date(2028,1,object_day),
+                       'C1':12,'D1':last_month,'E1':24,'F1':5000}.items():
+        calendar[cell]=value
+    for k in range(48):
+        calendar.cell(3,4+k,core.add_months(date(2027,1,17),k))
+    ref=lambda cell:f"'{ow.TIME_SHEET}'!${cell[0]}${cell[1:]}"
+    bindings={'in.o1.start':'B1','in.o1.months':'C1','o1d.horizon':'D1',
+              'o1d.comm':'E1','in.o1.total_area':'F1'}
+    monkeypatch.setattr(ow,'ref',lambda name,*args:ref(bindings[name]))
+    path={'code':'d','key':path_key,'strategy':engine_path['strategy'],'object_keys':{'offices'},
+          'result_key':'office_paths','label':'Synthetic sale'}
+    book=SimpleNamespace(wb=workbook,n=48,cell_ref=lambda name:ref('A1'),
+        project_only=False,groups=[{'current':path_key,'paths':[path]}],paths=[path],
+        rent_calendars={},rent_exposures={},pending=[])
+    ow._rent_calendars(book,result,{'land_rent_inputs':x,'land_rent':rental},
+        [{'key':'offices','code':'o1','ddu':True,'strategy':'ddu'}])
+    evaluator=Evaluator(workbook)
+    assert _date_value(evaluator.cell(native.SHEET,'B15'))==expected
+    assert evaluator.cell(native.SHEET,'B19')*1e6==pytest.approx(_daily_rent(expected),abs=.01)
+    metadata=book.rent_calendars['d'][0].layout['exposure_rows'][exposure['id']]['metadata']
+    assert _date_value(evaluator.cell(native.SHEET,f'C{metadata}'))==commissioning
+    assert evaluator.cell(native.SHEET,'D3')==(date(2027,1,1)-date(1899,12,30)).days
 
 
 @pytest.mark.parametrize("kind", ["hotel", "office", "retail"])

@@ -1121,11 +1121,18 @@ def _rent_calendars(book: _Book, result: dict[str, Any], spec: dict[str, Any],
                     exit_ = f"EDATE({start},{horizon}+1)"
                     exit_ = f"({exit_})-DAY({exit_})+1"
                 elif strategy == ns.STRATEGY_DDU:
-                    last_delivery = f"EDATE(({start})-DAY({start})+1,{horizon})"
+                    # DDU deliveries keep the object's exact day. Only the
+                    # cash buckets are floored to the first of the month.
+                    last_delivery = f"EDATE({comm},{horizon}-{ref(prefix + '.comm')})"
                     exit_ = f"EDATE(MAX({comm},{last_delivery}),'{master or land_rent_book.SHEET}'!$N$15)"
                 else:
-                    exit_ = (f"EDATE({comm},{horizon}+1-{ref(prefix + '.comm')}"
-                             f"+'{master or land_rent_book.SHEET}'!$N$15)")
+                    # Direct-sale plan_horizon_end is a monthly date, or the
+                    # exact commissioning date when every sale is earlier.
+                    # Its exclusive end and registration are separate moves:
+                    # Jan 31 -> Feb 28 -> May 28, not Jan 31 -> May 31.
+                    last_sale = f"EDATE(({start})-DAY({start})+1,{horizon})"
+                    exit_ = (f"EDATE(EDATE(MAX({comm},{last_sale}),1),"
+                             f"'{master or land_rent_book.SHEET}'!$N$15)")
                 share = (f'IF(AND(COUNT({",".join(area_refs)})={len(mapped)},SUM({",".join(area_refs)})>0),'
                          f'{mapped_share!r}*{ref("in." + item["code"] + ".total_area")}/SUM({",".join(area_refs)}),'
                          f'"")' if live_areas else str(exposure["share"]))
