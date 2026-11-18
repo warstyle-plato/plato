@@ -12,6 +12,7 @@ import developaid_schedule_elements as elements
 from test_schedule_readiness import site, PROJECT, DAY, activate
 from test_monitor_cumulative_api import api, post
 from test_monitor_cumulative_controls import browser_page, KEY as BROWSER_KEY
+from gpr_view_fixtures import projected_readiness, readiness_view
 
 
 def element_site(site):
@@ -165,7 +166,7 @@ def test_real_page_edit_save_recompute_reset_and_history(site,api,monkeypatch,wi
         page.route('**/monitor/daily/summary*',lambda route:route.fulfill(json={}))
         page.route('**/monitor/view',lambda route:route.fulfill(json=monitor.build(PROJECT,DAY)))
         page.locator('#project').fill(PROJECT);page.locator('#cut').fill(DAY)
-        page.evaluate('(v)=>{currentView=v;renderGantt(v)}',monitor.build(PROJECT,DAY))
+        page.evaluate('(v)=>{document.activeElement?.blur();document.getElementById(`cut`).value=v.cut;currentView=v;renderGantt(v)}',monitor.build(PROJECT,DAY))
         expect(page.locator('#gprMatrix')).to_be_visible()
         expect(page.locator('#gprMatrix')).to_contain_text('66,2%')
         page.locator('#readinessEditor>summary').click()
@@ -198,7 +199,7 @@ def test_page_configures_a_saved_full_source_explicitly_and_reports_conflict(sit
         page.route('**/monitor/daily/summary*',lambda route:route.fulfill(json={}))
         page.route('**/monitor/view',lambda route:route.fulfill(json=monitor.build(PROJECT,DAY)))
         page.locator('#project').fill(PROJECT);page.locator('#cut').fill(DAY)
-        page.evaluate('(v)=>{currentView=v;renderGantt(v)}',monitor.build(PROJECT,DAY))
+        page.evaluate('(v)=>{document.activeElement?.blur();document.getElementById(`cut`).value=v.cut;currentView=v;renderGantt(v)}',monitor.build(PROJECT,DAY))
         page.locator('#readinessEditor>summary').click()
         # The new editor opens today's remaining source, not an unrelated old
         # full book. This case deliberately chooses the historical reference.
@@ -237,15 +238,11 @@ def test_page_configures_a_saved_full_source_explicitly_and_reports_conflict(sit
 def test_multi_building_matrix_is_readable_and_known_unweighted_facts_are_not_missing(width):
     rows=[reading(str(i),.5,obj='Корпус '+str(i)) for i in range(1,5)]
     config=dict(id=elements.PROFILE_ID,overrides={},assignments={},objects={})
-    wf={'works':{r['id']:r for r in rows}}
-    state=ready.model(wf,cut=DAY,baseline_scope='full_schedule',source_sha256='a'*64)
-    # A saved draft has dated observations even before weights are assigned.
-    state.update(elements.projection(rows,config,cut=DAY,confirmed=False))
-    markup=ready.render(state)
+    state=projected_readiness(rows,config,DAY,confirmed=False)
+    # A saved draft keeps dated observations before weights are assigned.
     with browser_page(width) as (page,responses,errors):
-        from test_monitor_gpr_sections import monitor_view
-        view=monitor_view();view['schedule']['readiness_html']=markup
-        page.evaluate('(v)=>{currentView=v;renderGantt(v)}',view)
+        view=readiness_view(rows,state)
+        page.evaluate('(v)=>{document.activeElement?.blur();document.getElementById(`cut`).value=v.cut;currentView=v;renderGantt(v)}',view)
         expect(page.locator('#readinessSummary')).to_contain_text('Пригодные показания: 4 из 4')
         expect(page.locator('#readinessSummary')).to_contain_text('включено во взвешенный расчёт: 0')
         expect(page.locator('#readinessSummary #gprMatrix')).to_have_count(0)
@@ -268,14 +265,12 @@ def test_matrix_total_is_the_weighted_corpus_value_and_mobile_numbers_are_compac
             assignments[key]=dict(element_id=element,share=100)
     config=dict(id=elements.PROFILE_ID,overrides={},assignments=assignments,
                 objects={obj:'residential' for obj in ('Корпус 1','Корпус 2','Корпус 3')})
-    state=ready.model({'works':{r['id']:r for r in rows}},cut=DAY,baseline_scope='remaining_work',source_sha256='a'*64)
-    state.update(elements.projection(rows,config,cut=DAY,confirmed=True))
+    state=projected_readiness(rows,config,DAY)
     # Frame carries25 and masonry5: corpus1 is41.7%, not the25% mean of its stages.
     assert state['corpora'][0]['progress']==pytest.approx((25*.5+5*0)/30)
     with browser_page(width) as (page,_,errors):
-        from test_monitor_gpr_sections import monitor_view
-        view=monitor_view();view['schedule']['readiness_html']=ready.render(state)
-        page.evaluate('(v)=>{currentView=v;renderGantt(v)}',view)
+        view=readiness_view(rows,state)
+        page.evaluate('(v)=>{document.activeElement?.blur();document.getElementById(`cut`).value=v.cut;currentView=v;renderGantt(v)}',view)
         total=page.locator('#gprMatrix .readiness-total')
         expect(total.locator('td strong')).to_have_text(['41,7%','91,7%','35,0%'])
         expect(total.locator('.readiness-meter')).to_have_count(3)
@@ -289,7 +284,10 @@ def test_matrix_total_is_the_weighted_corpus_value_and_mobile_numbers_are_compac
         assert max(box['y'] for box in boxes)-min(box['y'] for box in boxes)<1
         assert boxes[0]['x']<boxes[1]['x']<boxes[2]['x']
         bounds=page.locator('#gprMatrix table').bounding_box()
-        assert bounds['height']<240  # The whole comparison fits without a long text list.
+        # The canonical producer adds a plan/date/basis ribbon to each total.
+        expect(total.locator('.readiness-cell-plan')).to_have_count(3)
+        expect(total.locator('.readiness-cell-forecast')).to_have_count(3)
+        assert bounds['height']<420  # Three comparison rows retain a compact dated layout.
         cards=page.locator('.readiness-item')
         assert cards.nth(0).bounding_box()['y']<page.locator('.readiness-method').bounding_box()['y']
         expect(page.locator('.readiness-corpus-table')).to_be_hidden()
@@ -310,13 +308,11 @@ def test_compact_weighted_matrix_distinguishes_known_zero_from_unknown():
     config=dict(id=elements.PROFILE_ID,overrides={},
         objects={'Корпус 1':'residential','Корпус 2':'residential'},
         assignments={row['id']:dict(element_id='frame',share=100) for row in rows})
-    state=ready.model({'works':{r['id']:r for r in rows}},cut=DAY,baseline_scope='remaining_work',source_sha256='a'*64)
-    state.update(elements.projection(rows,config,cut=DAY,confirmed=True))
+    state=projected_readiness(rows,config,DAY)
     assert state['project']['progress'] is None  # No comparable corpus scales.
     with browser_page(390) as (page,_,errors):
-        from test_monitor_gpr_sections import monitor_view
-        view=monitor_view();view['schedule']['readiness_html']=ready.render(state)
-        page.evaluate('(v)=>{currentView=v;renderGantt(v)}',view)
+        view=readiness_view(rows,state)
+        page.evaluate('(v)=>{document.activeElement?.blur();document.getElementById(`cut`).value=v.cut;currentView=v;renderGantt(v)}',view)
         total=page.locator('#gprMatrix .readiness-total')
         expect(total.locator('td[data-object="Корпус 1"] strong')).to_have_text('0,0%')
         expect(total.locator('td[data-object="Корпус 1"] .readiness-meter')).to_have_count(1)

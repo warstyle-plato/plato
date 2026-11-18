@@ -169,6 +169,23 @@ def test_render_escapes_component_work_names_and_reasons():
     assert '50 / 100 м²' in body
 
 
+@pytest.mark.parametrize('same_reason', [True, False])
+def test_a_component_card_prints_equal_reasons_once_and_keeps_distinct_reasons(same_reason):
+    import html
+    from developaid_schedule_visual import physical_summary
+    component_reason = 'Сверьте даты <img src=x onerror=alert(1)> и объёмы.'
+    task_reason = component_reason if same_reason else 'Отдельное основание <b>работы</b>.'
+    model = {'tasks': [{'task_id': '1', 'name': 'Учебный монтаж', 'reason': task_reason,
+                       'components': [{'component_id': 'Учебный объём',
+                                       'completed_quantity': 50, 'plan_quantity': 100,
+                                       'unit': 'м2', 'reason': component_reason}]}]}
+    body = physical_summary(model)
+    assert body.count(html.escape(component_reason)) == 1
+    assert body.count(html.escape(task_reason)) == 1
+    assert '<img' not in body and '<b>' not in body
+    assert '50 / 100 м²' in body
+
+
 @pytest.mark.parametrize('change', [
     {'components':[dict(component_id='x',task_id='1',item_ids=['0:0','0:0'])]},
     {'components':[dict(component_id='x',task_id='1',item_ids=['../../secret'])]},

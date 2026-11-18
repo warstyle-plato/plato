@@ -271,7 +271,26 @@ def _apply_gpr(project: str, view: dict[str, Any], cut: datetime.date) -> dict[s
     from developaid_schedule_groups import metadata as group_metadata
     schedule['display_groups'] = group_metadata(display_rows)
     decorate_readiness(schedule['readiness'], display_rows, qualified)
-    schedule['readiness_html'] = readiness.render(schedule['readiness'])
+    schedule.setdefault('cut', view.get('cut'))
+    from developaid_gpr_work_forecast import applies_to, build as work_forecast, legacy_model
+    canonical = applies_to(schedule)
+    schedule['work_forecast_applicable'] = canonical
+    if canonical:
+        schedule['work_forecast'] = work_forecast(schedule, cut.isoformat())
+        schedule.pop('legacy_work_forecast', None)
+    else:
+        schedule.pop('work_forecast', None)
+        legacy = legacy_model(schedule, cut.isoformat())
+        schedule['legacy_work_forecast'] = legacy.get('summary') if legacy.get('assessment_qualified') else None
+    display_readiness = schedule['work_forecast'] if canonical else schedule['readiness']
+    if not canonical or display_readiness.get('scope_kind') != 'readiness_profile':
+        # Keep source facts/counts available without restoring a second date.
+        from copy import deepcopy
+        display_readiness = deepcopy(schedule['readiness'])
+        for group in [display_readiness.get('project') or {}, *display_readiness.get('corpora', []),
+                      *(cell for stage in display_readiness.get('matrix', []) for cell in stage.get('cells', []))]:
+            group.pop('forecast', None)
+    schedule['readiness_html'] = readiness.render(display_readiness, show_forecast=False)
     if schedule.get('completed_facts') is not None:
         summary = schedule['readiness']['project']
         # This legacy field means the whole scope. A known weighted fraction

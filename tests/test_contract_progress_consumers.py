@@ -238,8 +238,10 @@ def test_monitor_gpr_shows_statement_observation_not_manual_gpr_percentage(width
          'progress_kind':'cumulative_statement','pace_forecast_method':'cumulative_statement',
          'pace_forecast_known':False,'forecast_finish':None,
          'progress_source':{'label':'Накопительная ведомость','date':'2026-11-06','date_basis':'snapshot'}}]}}
+    from gpr_view_fixtures import legacy_response
+    view = legacy_response(view)
     with browser_page(width) as (page, responses, errors):
-        page.evaluate('(v)=>renderGantt(v)', view)
+        page.evaluate('(v)=>{document.activeElement?.blur();document.getElementById(`cut`).value=v.cut;currentView=v;renderGantt(v)}', view)
         expand_gantt(page)
         gantt = page.locator('#gantt')
         expect(gantt).to_contain_text('По ведомости: 40% от 06.11.2026')

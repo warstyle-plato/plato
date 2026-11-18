@@ -15,7 +15,8 @@ def cover(monkeypatch):
     # Execute the exact pure presentation functions without importing the app,
     # starting background services or loading any saved project sources.
     source = Path(__file__).resolve().parents[1] / "developaid_management_report.py"
-    names = {"tiles", "_rub", "_payment_total_gap_note", "_payment_observation_note"}
+    names = {"tiles", "_rub", "_payment_total_gap_note", "_payment_observation_note",
+             "_report_uses_owner"}
     nodes = [node for node in ast.parse(source.read_text()).body
              if isinstance(node, ast.FunctionDef) and node.name in names]
     scope = {

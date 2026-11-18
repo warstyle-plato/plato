@@ -62,6 +62,7 @@ def test_saved_source_uses_one_summary_in_monitor_tiles_and_findings(saved):
     state = view['schedule']['readiness']
     before = copy.deepcopy(state)
     summary = gpr_summary(state, CUT)
+    work_summary = gpr_summary(view['schedule']['work_forecast'], CUT)
     built = report.build(PROJECT, 'week', CUT)
     assert summary['progress'] == pytest.approx((25*.6)/37)
     assert summary['progress'] != pytest.approx(built['physical']['fact'])
@@ -72,12 +73,12 @@ def test_saved_source_uses_one_summary_in_monitor_tiles_and_findings(saved):
     assert built['gantt']['readiness'] == state
     tiles = report.tiles(built)
     assert tiles[0]['value'] == summary['value']
-    assert tiles[1]['value'] == report._day(summary['finish'])
-    assert summary['forecast_text'] in tiles[1]['note']
-    assert summary['as_of_text'] in tiles[0]['note']
+    assert tiles[1]['value'] == report._day(work_summary['finish'])
+    assert work_summary['forecast_text'] in tiles[1]['note']
+    assert work_summary['as_of_text'] in tiles[0]['note']
     findings = {r['topic']: r['text'] for r in built['findings']}
     assert findings['Стройка'] == summary['readiness_text']
-    assert summary['forecast_text'] in findings['Срок']
+    assert work_summary['forecast_text'] in findings['Срок']
     html = ready.render(state)
     assert summary['value'] in html and summary['forecast_text'] in html
     assert state == before
@@ -86,10 +87,13 @@ def test_saved_source_uses_one_summary_in_monitor_tiles_and_findings(saved):
 
 @pytest.mark.parametrize('progress', [0, None])
 def test_zero_and_unknown_stay_distinct_and_never_fall_back_to_physical(saved, progress):
-    state = monitor.build(PROJECT, CUT)['schedule']['readiness']
+    import developaid_gpr_work_forecast as work_dates
+    view = monitor.build(PROJECT, CUT)
+    state = view['schedule']['readiness']
     state['project']['progress'] = progress
     state['project']['coverage'] = None
-    built = dict(end=CUT, kind='week', gantt=dict(readiness=state),
+    view['schedule']['work_forecast'] = work_dates.build(view['schedule'], CUT)
+    built = dict(end=CUT, kind='week', gantt=report.gantt(view, {}),
                  physical=dict(state='ok', fact=.99, plan=.5, lag=.49))
     tile = report.tiles(built)[0]
     assert tile['value'] == ('0,0%' if progress == 0 else 'нет данных')

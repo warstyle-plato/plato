@@ -132,7 +132,7 @@ def test_actual_monitor_and_report_share_readiness_without_an_empty_matrix(site,
     import developaid_management_report as report
     with browser_page(width) as (page,responses,errors):
         view=monitor.build(PROJECT,DAY)
-        page.evaluate('(v)=>{currentView=v;renderGantt(v)}',view)
+        page.evaluate('(v)=>{document.activeElement?.blur();document.getElementById(`cut`).value=v.cut;currentView=v;renderGantt(v)}',view)
         summary=page.locator('#readinessSummary')
         expect(summary).to_contain_text('Нет подтверждённого полного состава и весов')
         assert summary.locator('.readiness-grid').count()==0
@@ -140,7 +140,7 @@ def test_actual_monitor_and_report_share_readiness_without_an_empty_matrix(site,
         expect(summary.locator('#gprMatrix')).to_have_count(0)
         expect(summary.locator('.readiness-corpus-table')).to_be_visible()
         activate(site);view=monitor.build(PROJECT,DAY)
-        page.evaluate('(v)=>{currentView=v;renderGantt(v)}',view)
+        page.evaluate('(v)=>{document.activeElement?.blur();document.getElementById(`cut`).value=v.cut;currentView=v;renderGantt(v)}',view)
         expect(summary.locator('.readiness-project-value')).to_have_text('70,0%')
         expect(summary).to_contain_text('87,5%')
         assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
@@ -242,11 +242,11 @@ def test_distinct_source_dates_remain_a_set_instead_of_becoming_a_new_measuremen
 def test_actual_page_clears_ready_percentage_on_project_change_and_binding_invalidation(site):
     activate(site);view=monitor.build(PROJECT,DAY)
     with browser_page(390) as (page,responses,errors):
-        page.evaluate('(v)=>{currentView=v;renderGantt(v)}',view)
+        page.evaluate('(v)=>{document.activeElement?.blur();document.getElementById(`cut`).value=v.cut;currentView=v;renderGantt(v)}',view)
         expect(page.locator('#readinessSummary')).to_contain_text('70,0%')
         page.locator('#project').fill('Another synthetic project')
         assert page.locator('#readinessSummary').inner_text()==''
-        page.evaluate('(v)=>{currentView=v;renderGantt(v);invalidatePhysicalForecast()}',view)
+        page.evaluate('(v)=>{document.activeElement?.blur();document.getElementById(`cut`).value=v.cut;currentView=v;renderGantt(v);invalidatePhysicalForecast()}',view)
         assert page.locator('#readinessSummary').inner_text()==''
         assert page.evaluate('!currentView.schedule.readiness&&!currentView.schedule.readiness_html')
         assert not errors

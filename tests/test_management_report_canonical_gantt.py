@@ -12,6 +12,7 @@ from pypdf import PdfReader
 import developaid_management_report as report
 import developaid_report_gantt as gantt
 import developaid_schedule_plan_scenario as scenario
+import developaid_gpr_work_forecast as work_dates
 from test_gpr_why_page import why_view
 
 
@@ -66,7 +67,9 @@ def test_a_foreign_projection_has_a_named_gap_and_keeps_all_plan_and_fact_rows(f
         'full_source_sha256':'b'*64,'finish':'2039-01-01','covered':0}[field]
     before=copy.deepcopy(view);body=_body(view)
     assert len(_rows(body))==9 and 'Общая календарная оценка не подтверждена'in body
-    assert 'не совпадают с текущим ГПР'in body and 'gpr-scoped-finish"'not in body
+    rejected=work_dates.for_schedule(view['schedule'],view['cut'])
+    assert rejected['reason_code']=='dto_binding' and rejected['reason'] in body
+    assert 'gpr-scoped-finish"'not in body
     assert 'class="gpr-analysis-paragraph"'not in body
     assert 'class="readiness-project-forecast"'not in body
     assert 'class="gpr-forecast-end 'not in body
@@ -86,7 +89,11 @@ def test_one_bad_point_cannot_hide_valid_source_rows_or_attach_a_foreign_date(mu
     assert len(_rows(body))==9 and 'Общая календарная оценка не подтверждена'in body
     assert 'class="gpr-scoped-finish"'not in body
     assert 'class="readiness-project-forecast"'not in body
-    assert 'class="gpr-forecast-end 'in _row(body,points[0]['work_id'])
+    # All dates from the stale owned DTO are rejected; the valid source work
+    # keeps both its plan and observation instead of losing its source row.
+    valid_source=_row(body,points[0]['work_id'])
+    assert 'class="cg-plan"'in valid_source and 'class="cg-fact"'in valid_source
+    assert 'class="gpr-forecast-end 'not in body
     assert 'class="gpr-forecast-end 'not in _row(body,target)
     assert 'не подтверждена'in _row(body,target).lower()
     assert 'data-finish="2040-02-03"'not in body and view==before
@@ -101,7 +108,8 @@ def test_all_undated_work_and_repeated_names_remain_separate_without_invented_sc
     before=copy.deepcopy(view);body=_body(view)
     assert len(_rows(body))==9
     assert html.escape(rows[0]['name'])in _row(body,rows[0]['id'])and html.escape(rows[1]['name'])in _row(body,rows[1]['id'])
-    assert 'нет подтверждённой календарной проекции'in body
+    rejected=work_dates.for_schedule(view['schedule'],view['cut'])
+    assert rejected['reason_code']=='dto_binding' and rejected['reason'] in body
     assert 'class="cg-plan"'not in body and 'class="gpr-forecast-end 'not in body
     assert view==before
 
@@ -111,9 +119,12 @@ def test_a_source_work_missing_from_the_tree_is_preserved_with_a_named_hierarchy
     tasks[:]=[row for row in tasks if row['id']!='why-1']
     before=copy.deepcopy(view);body=_body(view)
     assert len(_rows(body))==9 and 'Иерархию работы нужно проверить'in _row(body,'why-1')
-    assert 'В исходном перечне есть работы без строки в иерархии'in body
+    rejected=work_dates.for_schedule(view['schedule'],view['cut'])
+    assert rejected['reason_code']=='dto_binding' and rejected['reason'] in body
     assert 'class="gpr-scoped-finish"'not in body
-    assert 'class="gpr-forecast-end 'in _row(body,'why-0')and view==before
+    assert 'class="gpr-forecast-end 'not in body
+    assert 'class="cg-plan"'in _row(body,'why-0')and 'class="cg-fact"'in _row(body,'why-0')
+    assert view==before
 
 
 @pytest.mark.parametrize('mutation',['scope_shape','status_shape','source_date_shape'])
@@ -151,6 +162,8 @@ def test_source_completion_does_not_invent_an_actual_finish(actual):
         if row['id']=='why-0':
             row['work_done']=True;row['actual_finish']=actual;row['plan_pace_scenario']['complete']=True
     scenario.decorate_readiness(view['schedule']['readiness'],view['schedule']['rows']+view['schedule']['undated_works'])
+    from developaid_gpr_work_forecast import build
+    view['schedule']['work_forecast']=build(view['schedule'],view['cut'])
     row=_row(_body(view),'why-0')
     assert 'gpr-forecast-end'not in row
     if actual:assert 'Фактическое окончание: 19.04.2033'in row

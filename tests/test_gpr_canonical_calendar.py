@@ -63,6 +63,8 @@ def test_native_known_completion_date_is_not_replaced_with_unknown(monkeypatch):
     state = view['schedule']['readiness']
     scenario.decorate_readiness(state, rows)
     view['schedule']['readiness_html'] = readiness.render(state)
+    from developaid_gpr_work_forecast import build
+    view['schedule']['work_forecast'] = build(view['schedule'], view['cut'])
     serve(monkeypatch, view)
     with browser_page() as (page, _, errors):
         show(page, view)
@@ -96,7 +98,10 @@ def test_native_gantt_shows_conditional_dates_and_automatic_analysis_first(monke
         expect(row).to_contain_text('Условное окончание')
         assert 0 < float(row.locator('.gpr-forecast-end').evaluate('(e)=>parseFloat(e.style.left)')) < 100
         expect(page.locator('#gantt .g-row[data-work-id="why-3"]')).to_have_attribute('data-forecast-scope', 'outside')
-        assert page.locator('#gantt .g-row[data-work-id="why-3"] .gpr-forecast-end').count() == 0
+        outside = view['schedule']['work_forecast']['outside_points']['why-3']
+        assert outside['finish'] != finish
+        expect(page.locator('#gantt .g-row[data-work-id="why-3"] .gpr-forecast-end')).to_have_attribute('data-finish', outside['finish'])
+        expect(page.locator('#gprCalendarOverview .gpr-forecast-strip')).to_have_attribute('data-finish', finish)
         assert page.locator('#gantt .g-row[data-work-id]').count() == 9
         assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
         page.locator('#gprWhyAsk').click()
@@ -111,7 +116,7 @@ def test_native_gantt_shows_conditional_dates_and_automatic_analysis_first(monke
 @pytest.mark.parametrize('mutation', ['source', 'scope', 'finish', 'outside', 'unknown'])
 def test_wrong_display_scope_is_never_drawn_as_the_upper_forecast(monkeypatch, mutation):
     view = why_view()
-    display = view['schedule']['readiness']['project']['forecast']['display']
+    display = view['schedule']['work_forecast']['project']['forecast']['display']
     if mutation == 'source': display['source_sha256'] = 'c'*64
     elif mutation == 'scope': display['id_scope'] = 'current_source'
     elif mutation == 'finish': display['finish'] = '2038-01-01'

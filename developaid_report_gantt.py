@@ -439,7 +439,7 @@ def _attested_partial_calendar_gap(reference, references, scope, mapping, gaps, 
     return indexed.get(reference) in {'unclassified_scope','outside_current_source'}
 
 
-def calendar(schedule: dict[str, Any], cut: Any) -> dict[str, Any]:
+def _readiness_calendar(schedule: dict[str, Any], cut: Any) -> dict[str, Any]:
     """Copy the compiled source roster and qualify its canonical display points.
 
     No forecast or group progress is calculated here. A bad point remains a
@@ -607,6 +607,30 @@ def calendar(schedule: dict[str, Any], cut: Any) -> dict[str, Any]:
     return result
 
 
+def calendar(schedule: dict[str, Any], cut: Any) -> dict[str, Any]:
+    result = _readiness_calendar(schedule, cut)
+    if 'work_forecast' not in schedule:
+        return result
+    from developaid_gpr_work_forecast import for_schedule
+    value = for_schedule(schedule, cut)
+    source_rows = {str(r.get('id')):r for r in
+                   [*(schedule.get('rows') or []), *(schedule.get('undated_works') or [])]}
+    for item in result['rows']:
+        if str(item['task'].get('id')) in source_rows:
+            item['task'].update(copy.deepcopy(source_rows[str(item['task']['id'])]))
+    result.update(work_forecast=value, fact_source_carry=copy.deepcopy(schedule.get('fact_source_carry')),
+                  source_order=[r.get('id') for r in
+                  [*(schedule.get('rows') or []), *(schedule.get('undated_works') or [])]])
+    if value['state'] == 'unavailable':
+        result.update(display=None, points={}, qualified=False, readiness_forecast_invalid=True,
+                      issues=[value['reason']])
+    else:
+        display = value['project']['forecast']['display']
+        result.update(display=copy.deepcopy(display), points={p['work_id']:copy.deepcopy(p) for p in display['rows']},
+                      qualified=True, readiness_forecast_invalid=False, issues=[])
+    return result
+
+
 def _calendar_progress(task):
     """Read a supplied physical/GPR observation; monetary acceptance is separate."""
     physical = ('gpr_percent','cumulative_quantities','cumulative_statement','confirmed_completion')
@@ -732,6 +756,9 @@ _CALENDAR_STYLE = '''<style>
 
 def compact_model(block: dict[str, Any], cut: Any) -> dict[str, Any]:
     """Report-only overview. Join explicit reference IDs; never calculate a forecast."""
+    if 'work_forecast' in block:
+        from developaid_gpr_work_forecast import report_model
+        return report_model(block, cut)
     from developaid_gpr_summary import gpr_summary
     state = block.get('readiness') or {}
     projection = block.get('calendar') or {}
@@ -839,7 +866,11 @@ def render_compact(model: dict[str, Any], *, stalled_risk: str = '') -> str:
     project_attr = ' data-project-forecast="'+esc(finish)+'"'
     summary = model.get('summary') or {}
     out = [_COMPACT_STYLE, '<div class="report-gpr-compact">', '<section data-gpr-block="forecast"'+project_attr+'><h3>Прогноз учтённых работ</h3><strong class="rg-project-date">'+esc(finish_text)+'</strong>']
-    if finish:
+    if model.get('work_forecast'):
+        out.append('<p>'+esc(summary['forecast_text'])+'</p><p>'+esc(summary['scope_text']+' '+summary['as_of_text'])+'</p>')
+        if summary.get('plan_finish'):
+            out.append('<p>'+esc(summary['plan_text']+(' '+summary['delta_text'] if summary.get('delta_days') is not None else ''))+'</p>')
+    elif finish:
         count_text = lambda value: str(value) if type(value) is int and value >= 0 else 'неизвестно'
         out.append('<p>Условная оценка при плановом темпе. Сроки учтены для '+count_text(model['covered'])+' из '+count_text(model['total'])+' работ. Это не прогноз разрешения на ввод.</p>')
         if not model['qualified']:
@@ -848,8 +879,9 @@ def render_compact(model: dict[str, Any], *, stalled_risk: str = '') -> str:
         out.append('<p>Для этого среза нет подтверждённой общей календарной оценки. Плановая дата её не заменяет.</p>')
     if summary:
         out.append('<p>'+esc(summary['readiness_text'])+'</p>')
-    if summary.get('progress') is None and summary.get('reason'):
-        out.append('<p class="rg-gap">'+esc(str(summary['reason'])[:240])+'</p>')
+    readiness_reason = model.get('readiness_reason') if model.get('work_forecast') else summary.get('reason')
+    if summary.get('progress') is None and readiness_reason:
+        out.append('<p class="rg-gap">'+esc(str(readiness_reason)[:240])+'</p>')
     if stalled_risk:
         out.append('<p class="rg-stalled">По всему текущему ГПР: '+esc(stalled_risk)+'</p>')
     if model['owner_plan']:
@@ -862,10 +894,12 @@ def render_compact(model: dict[str, Any], *, stalled_risk: str = '') -> str:
         for stage in model['matrix']:
             out.append('<tr><th scope="row">'+esc(stage['stage'])+'</th>'+''.join('<td>'+esc(pct(v))+'</td>' for v in stage['values'])+'</tr>')
         out.append('<tr class="rg-total"><th scope="row">По корпусу</th>'+''.join('<td>'+esc(pct(g['progress']) if model['readiness_qualified'] else 'Нет данных')+(' · частично' if g['partial_progress'] else '')+'</td>' for g in selected_groups)+'</tr>')
-        out.append('<tr class="rg-project-total"><th scope="row">Прогноз проекта</th><td colspan="'+str(cols)+'">'+esc(finish_text)+'</td></tr></tbody></table>')
+        forecast_label = 'Оценка учтённых работ' if model.get('work_forecast') else 'Прогноз проекта'
+        out.append('<tr class="rg-project-total"><th scope="row">'+forecast_label+'</th><td colspan="'+str(cols)+'">'+esc(finish_text)+'</td></tr></tbody></table>')
     else:
         out.append('<p>Матрица выбранного состава для этого среза отсутствует.</p>')
-    out.append('</section><section data-gpr-block="gantt"'+project_attr+'><h3>Гант по корпусам</h3><p>Пунктир — план учтённых работ, цветная полоса — их оценка окончания. Вертикальная линия — прогноз проекта: '+esc(finish_text)+'.</p>')
+    line_label = 'общая оценка учтённых работ' if model.get('work_forecast') else 'прогноз проекта'
+    out.append('</section><section data-gpr-block="gantt"'+project_attr+'><h3>Гант по корпусам</h3><p>Пунктир — план учтённых работ, цветная полоса — их оценка окончания. Вертикальная линия — '+line_label+': '+esc(finish_text)+'.</p>')
     dates = [value for g in model['groups'] for value in (g['plan_start'], g['plan_finish'], g['finish']) if _date(value)]
     dates += [v for v in (finish, model['cut']) if _date(v)]
     first = datetime.date(min(_date(v).year for v in dates), 1, 1) if dates else None

@@ -252,13 +252,22 @@ def render_matrix(state):
         if not value.get('total'):
             return ''
         from developaid_schedule_visual import date_text
-        text = 'Выполнено' if value.get('all_complete') else date_text(value['finish']) if value.get('finish') else 'Нет срока'
+        canonical = state.get('basis') == 'gpr_work_forecast'
+        complete = value.get('complete') if canonical else value.get('all_complete')
+        text = 'Выполнено' if complete else date_text(value['finish']) if value.get('finish') else 'Нет срока'
         title = value.get('note', '')+' Учтено '+str(value['covered'])+' из '+str(value['total'])+' работ.'
-        plan = date_text(value['plan_finish']) if value.get('plan_finish') else 'нет даты'
-        missing_plan = value.get('plan_covered', 0) < value['total']
-        plan_text = 'План: <time>'+esc(plan)+'</time>'+(' · '+str(value.get('plan_covered', 0))+'/'+str(value['total']) if missing_plan else '')
-        basis = value.get('label') or 'При плановом темпе'
-        basis = 'Плановый темп' if basis == 'При плановом темпе' else basis
+        plan_value = value.get('comparison_plan_finish') if canonical else value.get('plan_finish')
+        plan = date_text(plan_value) if plan_value else 'нет даты'
+        plan_covered = (value['covered'] if plan_value else 0) if canonical else value.get('plan_covered', 0)
+        missing_plan = plan_covered < value['total']
+        plan_text = 'План: <time>'+esc(plan)+'</time>'+(' · '+str(plan_covered)+'/'+str(value['total']) if missing_plan else '')
+        if canonical:
+            basis = ('Измеренный и плановый темп' if value.get('conditional') and value.get('measured') else
+                     'Плановый темп' if value.get('conditional') else 'Измеренный темп' if value.get('measured') else
+                     'По источнику' if complete else 'Основание срока не определено')
+        else:
+            basis = value.get('label') or 'При плановом темпе'
+            basis = 'Плановый темп' if basis == 'При плановом темпе' else basis
         return '<span class="readiness-cell-plan">'+plan_text+'</span><small class="readiness-forecast-label">Оценка</small><span class="readiness-cell-forecast" title="'+esc(title)+'">'+esc(text)+'</span><small class="readiness-forecast-basis">'+esc(basis)+'</small><small class="readiness-forecast-coverage">'+str(value['covered'])+'/'+str(value['total'])+' работ</small>'
     def cell(row):
         if not row['total']:
