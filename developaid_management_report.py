@@ -4315,7 +4315,7 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
                 from developaid_funding_reconciliation import calculation_note
 
                 # The shared summary supplies this qualifier once, after the row's explanation.
-                note = note.removesuffix(" " + calculation_note(reconciliation))
+                note = note.removesuffix(calculation_note(reconciliation)).rstrip()
             note = ". ".join(part for part in (note.rstrip(" .;"), summary["note"]) if part)
         add(label, _rub(amount) if amount is not None else None,
             note, "bad" if amount is not None and amount > 0 else "good" if amount is not None else "missing")

@@ -76,6 +76,23 @@ def test_legacy_canonical_row_keeps_the_summary_payment_warning(tmp_path, monkey
     assert need["note"].count("Строк с непрочитанными реквизитами: 1.") == 1
 
 
+@pytest.mark.parametrize("partial", [True, False])
+def test_saved_canonical_row_with_only_calculation_note_keeps_it_once(tmp_path, monkeypatch, partial):
+    payments = [(CUT, 100, "2.6")] + ([(CUT, None, "2.6")] if partial else [])
+    _, funding = source_case(tmp_path, monkeypatch, payments)
+    state = funding["reconciliation"]
+    row = next(row for row in state["display_rows"] if row["key"] == "calculated_additional")
+    qualifier = reconciliation.calculation_note(state)
+    row["note"] = qualifier
+    before = copy.deepcopy(funding)
+    need = next(tile for tile in report.tiles(report_for(funding))
+                if tile.get("group") == "additional_funding")
+    assert need["note"].count(qualifier) == 1
+    assert need["value"] == report._rub(state["calculation"]["calculated_additional"])
+    assert "Утверждённый бюджет уже включает АХР." in need["note"]
+    assert funding == before
+
+
 @pytest.mark.parametrize("payments,count", [([], 0), ([(CUT, 0, "2.6")], 1)])
 def test_complete_empty_or_explicit_zero_stays_a_known_zero(tmp_path, monkeypatch, payments, count):
     _, funding = source_case(tmp_path, monkeypatch, payments)
