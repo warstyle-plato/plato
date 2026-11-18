@@ -42,6 +42,7 @@ def _row(line, volume, *, unknown=False, reason=''):
             **{key: line[key] for key in ('display_code', 'parent_code', 'position_key', 'source') if key in line},
             **({'physical_scope': line['operations']['group']} if line.get('operations') else {}),
             'unit': volume['unit'] if natural else '₽',
+            'contract_total': volume.get('quantity') if natural else line.get('work_amount' if split else 'amount'),
             'planned': volume['planned'] if natural else money_plan,
             'fact': None if unknown else volume['fact'] if natural else money_fact,
             'deviation': None if unknown else volume['deviation'] if natural else money_deviation,
@@ -104,7 +105,7 @@ def build(listed: dict, cut: str, source_sha256: str | None = None) -> dict:
             if row['code'] in shown:
                 continue
             result['lines'].append({'code':row['code'],'name':row['name'],'basis':'unknown','unit':row.get('unit') or '',
-                'planned':None,'fact':None,'deviation':None,'plan_done':None,'readiness':None,
+                'contract_total':None,'planned':None,'fact':None,'deviation':None,'plan_done':None,'readiness':None,
                 'lag_days':None,'ahead_days':None,'overdue_days':None,'forecast_finish':None,'finished':None,
                 'due':row.get('finish'),'state':'unknown','reason':unfit.get(row['code']) or
                 'Работа есть в ГПР, но объём из расчёта и выполнение КС с ней не сопоставлены.', 'money_fallback':''})
