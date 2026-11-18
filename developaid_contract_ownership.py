@@ -12,7 +12,7 @@ import hashlib
 import stat
 from pathlib import Path
 
-MAX_RELEVANT_PAIRS = 4
+MAX_RELEVANT_PAIRS = 8
 MAX_ARCHIVES = 32
 MAX_VERIFIED_READ_BYTES = 128 * 1024 * 1024
 _CONTEXT = contextvars.ContextVar('contract_ownership_read', default=None)
@@ -27,13 +27,23 @@ class OwnershipProblem(ValueError):
     pass
 
 
+def has_raw_views(register):
+    return 'raw_rows' in register or 'raw_source_rows' in register
+
+
 def raw_rows(register):
+    if 'raw_source_rows' in register:
+        indexed = {row['id']: row for row in register['raw_source_rows']}
+        indexed.update({row['id']: row for row in register.get('rows') or [] if not row.get('source_correction')})
+        return [indexed[identifier] for identifier in register['raw_source_order'] if identifier in indexed]
     return register.get('raw_rows', register.get('rows') or [])
 
 
 def raw_view(register):
     result = dict(register, rows=raw_rows(register))
     result.pop('raw_rows', None)
+    result.pop('raw_source_rows', None)
+    result.pop('raw_source_order', None)
     result.pop('logical_ownership', None)
     return result
 
@@ -69,9 +79,13 @@ class ReadContext:
         self.header_digest = None
         self.paths = {}
         self.pairs = {}
+        self.corrections = {}
+        self.source_cache = {}
         for event in self.state['events']:
-            if event['action'] == 'confirm':
+            if event['action'] in {'confirm', 'correct_sources'}:
                 pair = tuple(sorted({member['raw_id'] for member in event['payload']['members']}))
+                if event['action'] == 'correct_sources':
+                    self.corrections[pair] = event
                 for identifier in pair:
                     self.pairs[identifier] = pair
         self.active = {tuple(sorted({member['raw_id'] for member in event['payload']['members']}))
@@ -103,8 +117,15 @@ class ReadContext:
         active_passes = len(relevant & self.active)
         if relevant:
             import developaid_contract_identity as identity
-            self.binding_pins = {pair:store.digest(identity.metadata_inventory(self.project,list(pair)))
-                                 for pair in relevant}
+            metadata_bytes = 0
+            self.binding_pins = {}
+            for pair in relevant:
+                bindings = identity.metadata_inventory(self.project, list(pair), correction=pair in self.corrections)
+                metadata_bytes += bindings['metadata_bytes_read']
+                if metadata_bytes > identity.MAX_METADATA_BYTES:
+                    raise OwnershipProblem('Общий объём метаданных уточнений превышает предел одной сборки.')
+                self.binding_pins[pair] = store.digest(bindings)
+                self.source_cache[('bindings', pair)] = bindings
         if active_passes:
             self.roster = self._roster()
             if len(self.roster) > MAX_ARCHIVES or len(set(self.roster)) != len(self.roster):
@@ -122,7 +143,8 @@ class ReadContext:
                     raise OwnershipProblem('Исходный архив не подходит для ограниченной проверки уточнения.')
                 total += info.st_size
                 self.paths[sid] = path
-            if (2*active_passes+1)*total > MAX_VERIFIED_READ_BYTES:
+            strict_passes = len((relevant & self.active) - set(self.corrections))
+            if (2*strict_passes+3)*total > MAX_VERIFIED_READ_BYTES:
                 raise OwnershipProblem('Объём повторной проверки источников превышает предел одной сборки. Частичное объединение не выполнено.')
             self.header = store.read_bytes(self.root/'cumulative_header_dates.json', 4*1024*1024)
             self.header_digest = store.digest(self.header.hex() if self.header is not None else None)
@@ -130,6 +152,9 @@ class ReadContext:
             if identifier not in self.pairs or self.pairs[identifier] not in relevant:
                 continue
             snapshots = {item.get('archive_snapshot_id') for item in items}
+            if self.pairs[identifier] in self.corrections:
+                self.members[identifier] = {'raw_id': identifier, 'source_snapshots': sorted(snapshots)}
+                continue
             if len(snapshots) != 1:
                 # Incremental KS history may legitimately use several source
                 # archives. A former one-snapshot identity decision does not
@@ -153,7 +178,7 @@ class ReadContext:
                 'identity':{key:items[0].get(key) for key in ('customer','contractor','contract','contract_date')},
                 'sources':sorted(refs,key=store.digest)}
 
-    def resolve(self, pair):
+    def resolve(self, pair, register=None):
         if pair in self.cache:
             return self.cache[pair]
         import developaid_contract_identity as identity
@@ -162,6 +187,13 @@ class ReadContext:
                     if identifier in self.members and self.pairs.get(identifier) == pair]
         if not observed:
             return None
+        if pair in self.corrections:
+            import developaid_contract_correction as correction
+            event = self.corrections[pair]
+            resolved = correction.resolve(self.project, event, self.cut, register=register,
+                cache=self.source_cache, active=pair in self.active)
+            self.cache[pair] = resolved
+            return resolved
         if any(self.members[identifier].get('history_snapshots') for identifier in observed):
             resolved = {'status': 'source_conflict', 'logical_id': None,
                 'member_ids': list(pair),
@@ -187,7 +219,7 @@ class ReadContext:
                     resolved = dict(resolved,status='source_conflict',logical_id=None,
                                     reason='Используемая исходная версия не совпала с подтверждённым уточнением.')
                     break
-            if self.binding_pins[pair] != store.digest(identity.metadata_inventory(self.project,list(pair))):
+            if self.binding_pins[pair] != store.digest(identity.metadata_inventory(self.project,list(pair), correction=pair in self.corrections)):
                 raise OwnershipProblem('Исходные привязки изменились во время сборки. Обновите реестр.')
         self.cache[pair] = resolved
         return resolved
@@ -236,7 +268,7 @@ class ReadContext:
             self.binding_pins[pair] = item['sha256']
 
     def require_current(self, register):
-        if 'raw_rows' in register:
+        if has_raw_views(register):
             self.adopt(register)
         elif any(row.get('id') in self.pairs for row in raw_rows(register)):
             raise OwnershipProblem('Уточнения появились после сборки исходных карточек. Обновите реестр.')
@@ -256,7 +288,7 @@ class ReadContext:
                     raise OwnershipProblem('Исходная версия изменилась во время чтения; логическое объединение не подтверждено.')
         if self.binding_pins:
             import developaid_contract_identity as identity
-            if any(store.digest(identity.metadata_inventory(self.project,list(pair))) != digest
+            if any(store.digest(identity.metadata_inventory(self.project,list(pair), correction=pair in self.corrections)) != digest
                    for pair,digest in self.binding_pins.items()):
                 raise OwnershipProblem('Исходные привязки изменились во время чтения. Обновите реестр.')
 
@@ -326,6 +358,8 @@ def unknown_row(raw, identifier, *, resolution, members, cut):
 def fold(register, states):
     import developaid_monitor_contract_risk as risk
     originals = raw_rows(register)
+    if any(state.get('resolution_kind') == 'source_correction' for state in states.values()):
+        return fold_corrections(register, states)
     result = dict(register,raw_rows=originals)
     done, rows = set(), []
     unresolved = 0
@@ -366,7 +400,7 @@ def apply(register, context):
         return register
     states = {}
     for pair in sorted({context.pairs[identifier] for identifier in context.members}):
-        resolved = context.resolve(pair)
+        resolved = context.resolve(pair, register)
         if resolved:
             for identifier in pair:
                 if identifier in context.members and context.pairs.get(identifier) == pair:
@@ -375,11 +409,15 @@ def apply(register, context):
         return register
     result = fold(register,states)
     result['logical_ownership']['read_guard'] = context.pin()
+    for row in result['rows']:
+        if row.get('source_correction'):
+            row['source_correction']['read_guard'] = store_guard(context.pin())
+            row['source_correction']['input_guard'] = context.pin()
     return result
 
 
 def refresh(register, enriched_raw):
-    if 'raw_rows' not in register:
+    if not has_raw_views(register):
         return enriched_raw
     context = _CONTEXT.get()
     if context is None:
@@ -387,5 +425,61 @@ def refresh(register, enriched_raw):
     context.adopt(register)
     result = dict(register)
     result.update({key:value for key,value in enriched_raw.items() if key != 'rows'})
+    result.pop('raw_source_rows', None)
+    result.pop('raw_source_order', None)
     result['raw_rows'] = enriched_raw.get('rows') or []
-    return fold(result,register['logical_ownership']['states'])
+    refreshed = fold(result,register['logical_ownership']['states'])
+    for row in refreshed['rows']:
+        if row.get('source_correction'):
+            row['source_correction']['read_guard'] = store_guard(context.pin())
+            row['source_correction']['input_guard'] = context.pin()
+    return refreshed
+
+
+def store_guard(pin):
+    import developaid_contract_identity_store as store
+    return store.digest(pin)
+
+
+def fold_corrections(register, states):
+    """Each heavy raw source appears once in transport, never in each parent."""
+    import developaid_contract_correction as correction
+    import developaid_monitor_contract_risk as risk
+    originals = raw_rows(register)
+    result = dict(register)
+    result.pop('raw_rows', None)
+    result.pop('raw_source_rows', None)
+    result.pop('raw_source_order', None)
+    rows, pool, done = [], [], set()
+    for row in originals:
+        state = states.get(row['id']) or {}
+        applies = state.get('resolution_kind') == 'source_correction' and state.get('membership_confirmed')
+        if not applies:
+            rows.append(row)
+            continue
+        group = tuple(state['member_ids'])
+        pool.append(row)
+        if group not in done:
+            done.add(group)
+            rows.append(correction.project_row(register, state))
+    result['rows'] = rows
+    result['raw_source_rows'] = pool
+    result['raw_source_order'] = [row['id'] for row in originals]
+    result['logical_ownership'] = {'states': states, 'financial_acceptance_required': False,
+        'raw_source_cards': len(originals), 'logical_contracts': len(rows),
+        'unresolved_source_cards': len({state['decision_id'] for state in states.values() if state.get('status') == 'source_conflict'}),
+        'historical_corrections': sorted({state['applies_from'] for state in states.values() if state.get('status') == 'historical_raw'})}
+    if register.get('logical_ownership', {}).get('read_guard'):
+        result['logical_ownership']['read_guard'] = register['logical_ownership']['read_guard']
+    result['risk_summary'] = risk.summary(rows)
+    result['counts'] = dict(register.get('counts') or {}, raw_source_cards=len(originals), logical_contracts=len(rows),
+        contracts_from_cumulative=sum(row.get('source_kind') == 'cumulative' for row in rows),
+        contracts_from_closing_summary_only=sum(row.get('source_kind') == 'closing_summary' for row in rows))
+    if 'contracts_from_documents' in result['counts']:
+        result['counts']['contracts_from_documents'] = len(rows)
+    if register.get('progress_summary'):
+        result['progress_summary'] = dict(register['progress_summary'],
+            known=sum((row.get('progress') or {}).get('ratio') is not None for row in rows),
+            unknown=sum((row.get('progress') or {}).get('ratio') is None for row in rows),
+            comparable=sum((row.get('progress') or {}).get('comparison_state') == 'comparable' for row in rows))
+    return result

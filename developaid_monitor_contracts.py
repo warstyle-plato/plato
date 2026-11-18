@@ -1475,7 +1475,7 @@ def confirm_header_date(project: str, cut: str, snapshot_id: str, **fields) -> d
         raise ContractProblem(str(exc)) from None
 
 
-def set_term(project: str, contract_id: str, deadline: str, note: str = "") -> dict:
+def set_term(project: str, contract_id: str, deadline: str, note: str = "", *, _locked_raw_row=None) -> dict:
     """Save one explicit contractual deadline, independently of GPR dates."""
     if not re.fullmatch(r"[0-9a-f]{64}", str(contract_id or "")):
         raise ContractProblem("Выберите договор из списка.")
@@ -1486,14 +1486,22 @@ def set_term(project: str, contract_id: str, deadline: str, note: str = "") -> d
         raise ContractProblem("Срок договора нужен в виде ГГГГ-ММ-ДД.")
     if not isinstance(note, str) or len(note) > 500:
         raise ContractProblem("Пояснение к сроку должно быть не длиннее 500 символов.")
-    if find_raw_row(build(project), contract_id) is None:
-        raise ContractProblem("Договор не найден в текущих данных выбранного проекта.")
+    if _locked_raw_row is None:
+        if find_raw_row(build(project), contract_id) is None:
+            raise ContractProblem("Договор не найден в текущих данных выбранного проекта.")
+    else:
+        import developaid_contract_identity_store as identity_store
+        if (_locked_raw_row.get('id') != contract_id
+                or str(_terms_path(project).with_suffix('.lock')) not in identity_store._HELD_NATIVE_LOCKS.get()):
+            raise ContractProblem('Привязка срока к исходной карточке не подтверждена.')
     path = _terms_path(project)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     import fcntl
     fd = os.open(path.with_suffix(".lock"), os.O_RDWR | os.O_CREAT, 0o600)
     with os.fdopen(fd, "a+b") as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
+        import developaid_contract_identity_store as identity_store
+        if str(path.with_suffix(".lock")) not in identity_store._HELD_NATIVE_LOCKS.get():
+            fcntl.flock(handle, fcntl.LOCK_EX)
         data = _read_terms(project)
         if deadline:
             record = {"deadline": deadline, "note": note,

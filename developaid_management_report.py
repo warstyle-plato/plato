@@ -5350,7 +5350,7 @@ _CONTRACT_PERFORMANCE_FIELDS = (
     'completion_ratio', 'monetary_comparable', 'completed_works', 'completed_materials', 'works_materials_split',
     'works_materials_note', 'progress', 'statement_progress', 'summary_progress', 'reported_performance_sources',
     'observation_forecast', 'risk', 'advance', 'warnings', 'performance_basis', 'date_evidence', 'rss_match',
-    'logical_ownership', 'raw_observations', 'raw_member_ids', 'logical_id', 'source_snapshot_id')
+    'logical_ownership', 'source_correction', 'raw_observations', 'raw_member_ids', 'logical_id', 'source_snapshot_id')
 
 
 def contract_risks(project: str, end: Any) -> dict[str, Any]:
@@ -5510,7 +5510,11 @@ def _contract_performance_details(row: dict[str, Any]) -> str:
                 body += '<div>'+esc(point['reason'])+'</div>'
             body += '</td></tr>'
         body += '</tbody></table>'
-    if row.get('logical_ownership'):
+    if row.get('source_correction'):
+        body += '<p>Реквизиты уточнены владельцем. Цена и выполнение показаны по выбранным источникам.</p>'
+        if row['source_correction'].get('warning'):
+            body += '<p>'+esc(row['source_correction']['warning'])+'</p>'
+    elif row.get('logical_ownership'):
         body += '<p>Исходные карточки сохранены отдельно. Финансовый источник, срок и общий прогноз между ними не выбраны.</p>'
         for source_row in row.get('raw_observations') or []:
             heading = ' · '.join(str(value) for value in
@@ -5546,11 +5550,12 @@ def _contract_performance_html(block: dict[str, Any]) -> str:
         if row.get('contract_date'):
             name += ' от '+_day(row['contract_date'])
         ownership = row.get('logical_ownership') or {}
-        caption = ('Единый договор: исходные карточки отдельно' if ownership.get('resolution_status') == 'confirmed' else
+        caption = ('Реквизиты уточнены' if row.get('source_correction') else
+                   'Единый договор: исходные карточки отдельно' if ownership.get('resolution_status') == 'confirmed' else
                    'Принадлежность исходных карточек не подтверждена' if ownership else
                    'КС-2 по сводной' if _work_closing_summary(row) else 'Накопительные КС-6а')
         name += '</div><div class="contract-caption">'+caption+'</div>'
-        if row.get('logical_ownership'):
+        if row.get('logical_ownership') and not row.get('source_correction'):
             name += '<div class="contract-ownership-summary"><p>Финансовый источник, срок и общий прогноз между карточками не выбраны.</p>'
             for raw in row.get('raw_observations') or []:
                 source = 'Исходная карточка '+str(raw.get('contract') or 'без номера')

@@ -51,6 +51,8 @@ def bind_snapshot(project: str, cut: str, contract_id: str, result: dict, label:
                  for d in result.get("documents") or []]
     context = {"project": project, "cut": cut, "contract_id": contract_id,
                "label": label, "source_documents": documents}
+    if result.get("source_correction"):
+        context["source_correction"] = result["source_correction"]
     revision = _sha({**context, "comparison": comparison})
     return {"schema": SCHEMA, "available": True, **context, "revision": revision,
             "row_tokens": [_sha([revision, index, _sha(row)]) for index, row in enumerate(rows)]}
@@ -75,6 +77,18 @@ def select_snapshot(cached: dict, project: str, cut: str, contract_id: str,
         raise ExportProblem("Выбранные строки не относятся к этой версии таблицы.")
     rows = cached["comparison"]["lines"]
     return meta, cached["comparison"], [row for token, row in zip(tokens, rows) if token in chosen]
+
+
+def require_current_sources(meta):
+    correction = meta.get('source_correction')
+    if not correction:
+        return
+    import developaid_contract_ownership as ownership
+    try:
+        with ownership.read_scope(meta['project'], meta['cut']) as context:
+            context.adopt({'logical_ownership': {'read_guard': correction['input_guard']}})
+    except (ownership.OwnershipProblem, KeyError):
+        raise ExportProblem('Источники карточки изменились. Откройте её заново перед выгрузкой.') from None
 
 
 def _text(value) -> str:
@@ -174,6 +188,13 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
     note("Всего по договору — полный объём позиции по действующей редакции договора в единицах строки.")
     note("Пустая числовая ячейка означает неизвестное значение, а не ноль. "
          "Прогноз относится к сопоставленным работам и не меняет срок ввода проекта.")
+    if meta.get('source_correction'):
+        correction = meta['source_correction']
+        note('Источники договора уточнены владельцем. Версия выбора: ' + correction['decision_id'])
+        note('Источник выполнения: ' + correction['roles']['execution_raw_id'] +
+             '. Карточка документов: ' + correction['roles']['documents_raw_id'])
+        if correction.get('warning'):
+            note(correction['warning'])
     note("Версия таблицы: " + meta["revision"])
     append(["Работа / единица", "Всего по договору", "План на дату", "Факт", "Отклонение", "Срок работы", "Прогноз окончания"])
     header = row_number

@@ -82,6 +82,10 @@ _held = threading.local()
 @contextlib.contextmanager
 def _locked(folder: Path):
     """One writer per card across both workers; a thread already holding the card's lock goes on."""
+    import developaid_contract_identity_store as identity_store
+    if str(folder / ".lock") in identity_store._HELD_NATIVE_LOCKS.get():
+        yield
+        return
     held = _held.__dict__.setdefault("folders", set())
     key = str(folder)
     if key in held:
@@ -602,7 +606,7 @@ def _register_control_raw(project: str, register: dict, cut: str) -> dict:
     for row in register.get("rows") or []:
         try:
             acts = stage_profile.call('card_acts', fact.acts, row)
-            listed = listing(project, row["id"], cut, acts)
+            listed = listing(project, row.get("_documents_raw_id") or row["id"], cut, acts)
         except ContractFilesProblem as exc:
             row["schedule_control"] = {"documents": None, "note": str(exc)}
             continue
@@ -637,10 +641,27 @@ def register_control(project: str, register: dict, cut: str) -> dict:
     import developaid_contract_ownership as ownership
     with ownership.read_scope(project, cut) as context:
         context.require_current(register)
-        if 'raw_rows' not in register:
+        if not ownership.has_raw_views(register):
             return _register_control_raw(project, register, cut)
-        enriched = _register_control_raw(project, ownership.raw_view(register), cut)
-        return ownership.refresh(register, enriched)
+        raw = ownership.raw_view(register)
+        corrected_ids = {identifier for state in register['logical_ownership']['states'].values()
+                         if state.get('membership_confirmed') for identifier in state['member_ids']}
+        # Historical raw controls are read lazily when their card is opened.
+        # Do not calculate all duplicate source folders and then throw them away.
+        _register_control_raw(project, dict(raw, rows=[row for row in raw['rows'] if row['id'] not in corrected_ids]), cut)
+        result = ownership.refresh(register, raw)
+        import developaid_contract_correction as correction
+        for row in result['rows']:
+            if not row.get('source_correction'):
+                continue
+            try:
+                active = correction.materialize(result, row)
+                active['_documents_raw_id'] = row['source_correction']['roles']['documents_raw_id']
+                _register_control_raw(project, {'rows': [active]}, cut)
+                row['schedule_control'] = active['schedule_control']
+            except correction.store.IdentityProblem as exc:
+                row['schedule_control'] = {'state': 'unknown', 'documents': None, 'note': str(exc)}
+        return result
 
 
 def save_links(project: str, contract_id: str, sha256: str, estimate: int, picked: list[dict],

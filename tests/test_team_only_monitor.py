@@ -101,6 +101,17 @@ _ENDPOINT_PAYLOADS = {
         "effective_from": "2026-10-22", "gpr_base64": "eA==",
         "expected_previous_sha256": "a" * 64, "expected_source_sha256": "b" * 64},
 }
+_CORRECTION_PREVIEW = {"raw_ids": ["a" * 64, "b" * 64], "canonical_source_token": "c" * 64,
+                       "execution_token": "d" * 64, "price_token": None, "documents_raw_id": "a" * 64}
+_ENDPOINT_PAYLOADS.update({
+    ("POST", "/monitor/contracts/identity/correction-inventory"): {"raw_ids": ["a" * 64, "b" * 64]},
+    ("POST", "/monitor/contracts/identity/correction-preview"): _CORRECTION_PREVIEW,
+    ("POST", "/monitor/contracts/identity/correct-sources"): {
+        **_CORRECTION_PREVIEW, "expected_revision": 0, "expected_decision_head": "0" * 64,
+        "inventory_sha256": "e" * 64, "preview_sha256": "f" * 64,
+        "source_tokens": ["1" * 64, "2" * 64], "note": "Synthetic reviewed sources."},
+})
+
 
 
 def _route(method: str, path: str):
