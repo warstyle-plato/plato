@@ -13,7 +13,7 @@ import developaid_schedule_readiness as readiness
 
 
 def legacy_response(view):
-    """Retained non-corpus WBS fixtures use the actual qualified legacy reader."""
+    """Retained WBS fixtures use the actual owner selected by their source rows."""
     view = copy.deepcopy(view)
     schedule = view['schedule']
     if 'work_forecast' in schedule or not view.get('cut'):
@@ -34,19 +34,37 @@ def legacy_response(view):
         row.setdefault('source_format', 'legacy-gpr')
         row['forecast_known'] = bool(row.get('pace_forecast_known')
                                      and row.get('pace_forecast_method') in trusted)
+        if row['source_format'] == 'corpus-gpr-v1':
+            row.setdefault('display_progress', dict(value=row.get('actual_progress'),
+                                                    **(row.get('progress_source') or {})))
+            row['plan_pace_scenario'] = scenario.work(row, view['cut'])
     source = (schedule.get('approved_plan') or {}).get('source_sha256') or 'a'*64
     state = readiness.model(dict(works={row['id']: dict(row,
-        primary=dict(value=row.get('actual_progress'), **(row.get('progress_source') or {})))
+        primary=copy.deepcopy(row.get('display_progress') or dict(
+            value=row.get('actual_progress'), **(row.get('progress_source') or {}))))
         for row in rows}), cut=view['cut'], baseline_scope='remaining_work', source_sha256=source)
     scenario.decorate_readiness(state, rows)
     schedule.update(cut=view['cut'], approved_plan=dict(source_sha256=source),
         rows=[row for row in rows if row not in (schedule.get('undated_works') or [])],
-        readiness=state, work_forecast_applicable=False)
+        readiness=state)
     schedule.setdefault('dependency_timeline', dict(rnv=dict(basis='gpr', state='unknown',
         forecast=None, indicative_forecast=None, reasons=['Нет датированного темпа работ.'])))
-    assert not work_dates.applies_to(schedule)
-    model = work_dates.legacy_model(schedule, view['cut'])
-    schedule['legacy_work_forecast'] = model.get('summary')
+    canonical = work_dates.applies_to(schedule)
+    schedule['work_forecast_applicable'] = canonical
+    if canonical:
+        schedule['display_groups'] = groups.metadata(rows)
+        schedule['work_forecast'] = work_dates.for_schedule(schedule, view['cut'])
+        schedule.pop('legacy_work_forecast', None)
+        display = schedule['work_forecast']
+        if display['scope_kind'] != 'readiness_profile':
+            display = copy.deepcopy(state)
+            for group in [display['project'], *display['corpora'],
+                          *(cell for stage in display.get('matrix', []) for cell in stage['cells'])]:
+                group.pop('forecast', None)
+        schedule['readiness_html'] = readiness.render(display, show_forecast=False)
+    else:
+        model = work_dates.legacy_model(schedule, view['cut'])
+        schedule['legacy_work_forecast'] = model.get('summary')
     return view
 
 
