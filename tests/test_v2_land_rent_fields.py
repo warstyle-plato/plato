@@ -129,7 +129,9 @@ async function fetch(url,options){requests.push(JSON.parse(options.body));return
  ok:true,json:async()=>({request:requests[requests.length-1],project:{name:'Synthetic'}})}}
 function descendants(node){return [node,...node.children.flatMap(descendants)]}
 """
-    prelude=(stubs+page_blocks.constant('form',script)+
+    declaration=re.search(r'^const form\s*=\s*.*;$',script,re.M)
+    assert declaration, 'actual V2 form state declaration must be present'
+    prelude=(stubs+declaration.group(0)+
         f'const description={json.dumps(description)};const state={{result:{{request:{json.dumps(request)}}}}};'+functions)
     tail="""
 (async()=>{
