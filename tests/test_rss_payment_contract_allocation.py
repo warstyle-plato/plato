@@ -96,6 +96,46 @@ def test_unverified_additional_header_cannot_confirm_or_attribute_cash(tmp_path)
     assert result['confirmed_paid'] == 0 and result['unmatched_candidates'] == 1
 
 
+@pytest.mark.parametrize('dated', [False, True])
+def test_one_cash_row_is_not_summed_across_identical_contract_levels(tmp_path, dated):
+    def edit(pay, _):
+        pay['B10'], pay['C10'] = 'Child', 'SUB-1'
+        pay['D10'] = dt.date(2026, 2, 1) if dated else None
+    path = native_book(tmp_path, edit)
+    result = observe(path, child())
+    assert result['allocation_recorded_total'] == 100
+    assert len(result['sources']) == 2  # Both observed levels remain inspectable.
+    if dated:
+        assert result['paid'] == 100 and result['payments_count'] == 1
+    else:
+        assert result['paid'] is None and result['unmatched_amount'] == 100
+        assert result['unmatched_candidates'] == 1
+
+
+def test_different_cash_rows_are_not_deduplicated_by_equal_names_or_amounts(tmp_path):
+    def edit(pay, _):
+        for column in range(1, 15):
+            pay.cell(11, column, pay.cell(10, column).value)
+    path = native_book(tmp_path, edit)
+    result = observe(path, child())
+    assert result['paid'] is None and result['unmatched_candidates'] == 2
+    assert result['unmatched_amount'] == result['allocation_recorded_total'] == 200
+
+
+def test_contradictory_cash_observations_stay_unknown_instead_of_being_summed(tmp_path):
+    def edit(pay, _):
+        pay['B10'], pay['C10'], pay['D10'] = 'Child', 'SUB-1', None
+    rows, _ = risk.payments(native_book(tmp_path, edit), DAY)
+    allocation = next(p for p in rows if p['source'].get('kind') == 'contract_allocation')
+    allocation['amount'] = 200
+    result = risk.advance(child(), rows, reference_key=contracts._reference_key,
+                          completed_basis='with_vat')
+    assert result['paid'] is None and result['unworked'] is None
+    assert result['unmatched_candidates'] == 1 and result['unmatched_amount'] is None
+    assert result['allocation_recorded_total'] is None
+    assert 'противоречат' in result['reason']
+
+
 def test_native_headers_and_unused_lookup_rows_share_one_closed_definition(tmp_path):
     def edit(pay, _):
         pay['H11'] = 0  # Only the unused lookup is populated.
